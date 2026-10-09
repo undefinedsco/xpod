@@ -53,6 +53,9 @@ const CLOSED_AUTH_WINDOW: AuthWindowStatus = {
   ready: false,
 }
 
+/**
+ * @deprecated Use PodSignIn (see `pod-sign-in/`). Kept for one more version; behavior is unchanged.
+ */
 export function LoginView({
   state,
   identity,

@@ -1,0 +1,25 @@
+{
+  "name": "@undefineds.co/pod-settings",
+  "version": "0.1.5",
+  "type": "module",
+  "sideEffects": false,
+  "files": [
+    "dist"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && bun ../../scripts/fix-dist-js-imports.mjs dist"
+  },
+  "peerDependencies": {
+    "react": "^19.2.0"
+  },
+  "private": false,
+  "dependencies": {
+    "@undefineds.co/shared-ui": "workspace:*"
+  }
+}

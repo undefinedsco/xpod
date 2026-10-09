@@ -248,8 +248,9 @@ export class MinioDataAccessor implements DataAccessor {
    * @param identifier - Resource to delete.
    */
   public async deleteResource(identifier: ResourceIdentifier): Promise<void> {
-    const link = new URL(identifier.path)
-    await this.client.removeObject(this.bucketName, this.objectName(link));
+    const link = new URL(identifier.path);
+    const key = isContainerIdentifier(identifier) ? this.containerObjectName(link) : this.objectName(link);
+    await this.client.removeObject(this.bucketName, key);
   }
 
   /**

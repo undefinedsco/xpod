@@ -8,12 +8,13 @@
 
 核心约束：
 
-- **SP canonical URI 不变**：WebID、Pod Root、ACL、OIDC resource audience 都以 canonical URL 为准。
+- **身份与存储地址分别稳定**：Cloud/managed Local 的 WebID 及独立 `profile/card` 始终在 Cloud；Pod Root、ACL 和数据请求使用所属 SP 的 canonical URL。不能从 SP URL 推导或改写 Cloud WebID。
 - **访问渠道可变**：本机、局域网、公网直连、P2P、用户隧道、显式 relay 只是不同 access route。
 - **不要求用户改路由器 DNS**：桌面 App / CLI 可自动选择 route；普通浏览器能力降级。
 - **不分叉身份和权限**：不能为本机、局域网、外网生成三套 WebID 或权限。
 - **Local 首次启动不依赖公网**：没有可达公网 route 时，本机和局域网仍可完成验证和使用。
 - **Cloud-managed Local 域名由 Cloud 分配**：LinX 不让用户手填平台域名；Cloud 首次注册时可返回随机节点域名，也可返回已预配的测试节点域名，注册后与设备 nodeId 绑定并稳定复用。
+- **Cloud card 不随数据路由切换**：card 用 `solid:storage` 发现实际 Pod；Local 公网数据入口关闭时，Cloud card 仍须公开可读。loopback/LAN/P2P 路由用于访问 Local 数据，不把权威 card 移到 Local，也不额外创建 Cloud 数据 Pod。
 - **Cloud-managed 域名不等于 Cloud 数据转发**：Cloud 默认负责控制面和信令，Local Pod 数据优先走本机、局域网、公网直连、P2P 或用户自管 tunnel；Xpod Cloud relay 只做显式、限额、临时兜底。
 
 关键限制：
@@ -324,10 +325,11 @@ Local SP 启动
 
 ## 验收标准
 
-- Cloud 全套创建 Pod 后，WebID 和 Pod Root 使用 Cloud SP 域名，不启动 Local SP。
+- Cloud 模式创建 Pod 后，WebID/card 属于 Cloud 身份服务，Pod Root 属于 Cloud SP；card 声明该 Pod 的存储指针，不启动 Local SP。
 - Local 基础 / Standalone 不要求 `publicUrl`，必须能启动本地 xpod 并通过本机登录、读写。
 - Cloud IDP + Local SP 使用 Cloud 分配并绑定 `nodeId` 的 `spDomain`，或使用用户明确提供的自有 HTTPS origin；不能把 localhost/LAN 当 remote canonical URL。
-- Cloud-managed Local 即使没有 public route，也必须保留同一个 canonical URL，并允许 Desktop / CLI 通过 managed route 使用。
+- Cloud-managed Local 即使没有 public route，也必须保留同一个 Cloud WebID/card 与 Local canonical Pod URL；Cloud card 匿名 GET 成功，Desktop / CLI 通过 managed route 完成本机数据读写。创建、Consent、token/session 与 Local owner 必须使用同一个精确 Cloud WebID。
+- 验收须分别记录 card 的 Cloud 请求地址和 Pod 数据的实际 transport 地址；关闭 Local 数据入口不能被当作 card 不可达的预期，也不能以跳过 profile 验证替代架构验收。当前 Local-profile 预配偏差及相关历史测试限制见 [验收记录](testing/2026-10-02-local-consent-acceptance.md)。
 - Cloud IDP + Local SP 在公网直连、用户 tunnel 或显式 relay 可用时，登录后数据写入 Local SP，Pod URL 以 canonical URL 开头。
 - 局域网 IP 只出现在 route 表中，不成为 Cloud remote 路径的 WebID 或 Pod Root。
 - 已经以 canonical URL 创建的 Local SP，加入隧道、P2P 或 relay 后只新增/启用 access route，不迁移 Pod 数据。

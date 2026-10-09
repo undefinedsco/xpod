@@ -1,5 +1,5 @@
 import { useId, useState, type FormEvent, type ReactNode } from 'react'
-import { AlertCircle, CheckCircle, Loader2 } from 'lucide-react'
+import { AlertCircle, Loader2 } from 'lucide-react'
 import {
   Badge,
   Button,
@@ -9,6 +9,7 @@ import {
   CardHeader,
   CardTitle,
   Input,
+  EmailInput,
   Label,
   ScrollArea,
   cn,
@@ -59,8 +60,6 @@ export interface AccountCredentialsViewProps {
   onRememberAccountChange?: (remember: boolean) => void
   pending?: boolean
   errors?: Partial<Record<AccountCredentialField | 'form', string>>
-  usernameAvailability?: 'idle' | 'checking' | 'available' | 'unavailable' | { status: 'idle' | 'checking' | 'available' | 'unavailable'; message?: string }
-  usernameSuggestions?: readonly string[]
   copy: AccountCredentialsCopy
   frame?: 'card' | 'bare'
   showHeader?: boolean
@@ -196,8 +195,6 @@ export function AccountCredentialsView({
   onRememberAccountChange,
   pending = false,
   errors,
-  usernameAvailability = 'idle',
-  usernameSuggestions = [],
   copy,
   frame = 'card',
   showHeader = true,
@@ -205,13 +202,11 @@ export function AccountCredentialsView({
 }: AccountCredentialsViewProps) {
   const [submittedMismatch, setSubmittedMismatch] = useState(false)
   const [confirmationTouched, setConfirmationTouched] = useState(false)
-  const usernameId = useId()
   const emailId = useId()
   const passwordId = useId()
   const confirmationId = useId()
   const formErrorId = useId()
   const isRegister = mode === 'register'
-  const availability = typeof usernameAvailability === 'string' ? usernameAvailability : usernameAvailability.status
   const mismatch = isRegister
     && values.password.length > 0
     && values.confirmation !== undefined
@@ -248,65 +243,10 @@ export function AccountCredentialsView({
           : showHeader ? undefined : 'pt-6',
       )}>
         <form onSubmit={submit} className={isCompact ? 'space-y-3' : 'space-y-4'}>
-          {isRegister ? (
-            <div className="space-y-2">
-              <CredentialField floating={isCompact} id={usernameId} label={copy.usernameLabel} error={errors?.username}>
-                <Input
-                  id={usernameId}
-                  name="username"
-                  autoComplete="username"
-                  placeholder={isCompact ? ' ' : copy.usernamePlaceholder}
-                  title={copy.usernamePlaceholder}
-                  value={values.username ?? ''}
-                  disabled={pending}
-                  aria-invalid={errors?.username ? true : undefined}
-                  aria-describedby={errors?.username ? `${usernameId}-error` : undefined}
-                  className={inputClassName}
-                  onChange={(event) => setCredentialValue(values, 'username', event.currentTarget.value, onChange, onFieldChange)}
-                />
-              </CredentialField>
-              {availability === 'checking' ? (
-                <p role="status" aria-live="polite" className="text-sm text-muted-foreground">
-                  <Loader2 aria-hidden="true" className="mr-1 inline h-3.5 w-3.5 animate-spin" />
-                  {copy.usernameChecking}
-                </p>
-              ) : null}
-              {availability === 'available' ? (
-                <p aria-live="polite" className="flex items-center gap-1 text-sm text-primary">
-                  <CheckCircle aria-hidden="true" className="h-4 w-4" />
-                  {copy.usernameAvailable}
-                </p>
-              ) : null}
-              {availability === 'unavailable' && !errors?.username ? (
-                <p aria-live="polite" className="text-sm text-destructive">{typeof usernameAvailability === 'object' && usernameAvailability.message ? usernameAvailability.message : copy.usernameUnavailable}</p>
-              ) : null}
-              {!isCompact && usernameSuggestions.length > 0 ? (
-                <div className="space-y-2" aria-label={copy.suggestionsLabel}>
-                  <p className="text-sm text-muted-foreground">{copy.suggestionsLabel}</p>
-                  <div className="flex flex-wrap gap-2">
-                    {usernameSuggestions.map((suggestion) => (
-                      <Button
-                        key={suggestion}
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        disabled={pending}
-                        onClick={() => setCredentialValue(values, 'username', suggestion, onChange, onFieldChange)}
-                      >
-                        {suggestion}
-                      </Button>
-                    ))}
-                  </div>
-                </div>
-              ) : null}
-            </div>
-          ) : null}
-
           <CredentialField floating={isCompact} id={emailId} label={copy.emailLabel} error={errors?.email}>
-            <Input
+            <EmailInput
               id={emailId}
               name="email"
-              type="email"
               autoComplete="email"
               placeholder={isCompact ? ' ' : copy.emailPlaceholder}
               title={copy.emailPlaceholder}
@@ -530,7 +470,7 @@ export function PasswordRecoveryView({
           <form onSubmit={submit} className="space-y-4">
             <div className="space-y-2">
               <Label htmlFor={emailId}>{copy.emailLabel}</Label>
-              <Input id={emailId} type="email" autoComplete="email" placeholder={copy.emailPlaceholder} value={email} disabled={isPending} onChange={(event) => onEmailChange(event.currentTarget.value)} />
+              <EmailInput id={emailId} name="email" autoComplete="email" placeholder={copy.emailPlaceholder} value={email} disabled={isPending} onChange={(event) => onEmailChange(event.currentTarget.value)} />
             </div>
             {error ? <p role="alert" aria-live="polite" className="text-sm text-destructive">{error}</p> : null}
             <Button type="submit" className="w-full" disabled={isPending || !email.trim() || !recover}>{isPending ? <Loader2 aria-hidden="true" className="mr-2 h-4 w-4 animate-spin" /> : null}{copy.actionLabel}</Button>

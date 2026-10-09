@@ -1,81 +1,68 @@
-/**
- * Where the product lands when no safe `returnTo` is available: the workspace
- * that only needs a WebID/Pod session. Account-protected workspaces
- * (`/status`, `/dashboard`) are something the user navigates to, not the entry.
- */
+/** Product entry needs a WebID; local device and settings remain reachable without one. */
 export const XPOD_DEFAULT_RETURN_PATH = '/ai-connections';
-
-/** The pre-rail default that older entry documents and bookmarks still carry. */
-const LEGACY_DEFAULT_RETURN_PATH = '/dashboard/overview';
-
 export const canonicalRoutes = {
-  status: '/status/overview',
-  gateway: '/status/services/gateway',
-  solidServer: '/status/services/solid-server',
-  apiServer: '/status/services/api-server',
-  network: '/network',
+  tasks: '/tasks',
+  pod: '/pod/models',
+  device: '/device/network',
+  status: '/device/services',
+  gateway: '/device/services',
+  solidServer: '/device/services',
+  apiServer: '/device/services',
+  network: '/device/network',
   aiConnections: '/ai-connections',
-  aiConfig: '/ai-config/model-assignments',
-  settings: '/settings/pod',
+  aiConfig: '/pod/models',
+  settings: '/settings/appearance',
 } as const;
 
-/**
- * §3.3 的历史入口映射。兼容期从采用本 spec 的稳定版起保留至少两个稳定版且不少于 90 天。
- *
- * 两点与 §3.3 的差异是当前实现的现实，不是口径变化：
- * - `/network/overview`、`/network/domain-dns` 均已可用（前者为显式路由，后者由网络页的子路径提供）；
- * - `/status/usage/*` 已由 W4 建立（`ui/src/pages/admin/UsagePage.tsx`），`/dashboard/usage` 按 §3.3 落
- *   `/status/usage/overview`。
- * 记录见 docs/superpowers/audits/2026-09-27-w2-shell-layout-self-review.md（W2-DESIGN-04）。
- */
+/** Old entry points lead to the one editing surface for each choice. */
 export const legacyProductRedirects: Readonly<Record<string, string>> = {
   '/dashboard': canonicalRoutes.status,
-  [LEGACY_DEFAULT_RETURN_PATH]: canonicalRoutes.status,
+  '/dashboard/overview': canonicalRoutes.status,
   '/dashboard/status': canonicalRoutes.status,
-  '/dashboard/runtime': canonicalRoutes.status,
-  '/dashboard/logs': '/status/logs',
-  '/dashboard/rdf': '/status/index/rdf',
-  '/dashboard/network': '/network/overview',
-  '/dashboard/usage': '/status/usage/overview',
+  '/dashboard/runtime': '/device/runtime',
+  '/dashboard/logs': '/device/logs',
+  '/dashboard/network': canonicalRoutes.network,
+  '/dashboard/usage': '/pod/data',
   '/dashboard/models': canonicalRoutes.aiConnections,
-  '/dashboard/pod': canonicalRoutes.settings,
-  // §3.3：服务与启动归「服务与访问」，不再落 Pod 页面
-  '/dashboard/services': '/settings/runtime',
-  '/dashboard/settings': '/settings/runtime',
+  '/dashboard/pod': canonicalRoutes.pod,
+  '/dashboard/services': canonicalRoutes.status,
+  '/dashboard/settings': '/device/runtime',
+  '/status': canonicalRoutes.status,
+  '/status/overview': canonicalRoutes.status,
+  '/status/services/gateway': canonicalRoutes.status,
+  '/status/services/solid-server': canonicalRoutes.status,
+  '/status/services/api-server': canonicalRoutes.status,
+  '/status/logs': '/device/logs',
+  '/network': canonicalRoutes.network,
+  '/network/overview': canonicalRoutes.network,
   '/settings/models': canonicalRoutes.aiConnections,
   '/settings/ai-connections': canonicalRoutes.aiConnections,
-  '/settings/ai-config': canonicalRoutes.aiConfig,
-  '/settings/pod': canonicalRoutes.settings,
-  '/settings/network': '/network/overview',
-  '/settings/services': '/settings/runtime',
-  '/settings/system': '/settings/runtime',
+  '/settings/ai-config': canonicalRoutes.pod,
+  '/settings/pod': canonicalRoutes.pod,
+  '/settings/identity-access': '/pod/apps',
+  '/settings/storage': '/pod/data',
+  '/settings/network': canonicalRoutes.network,
+  '/settings/services': canonicalRoutes.status,
+  '/settings/system': '/device/runtime',
+  '/settings/runtime': '/device/runtime',
+  '/ai-config': canonicalRoutes.pod,
+  '/ai-config/model-assignments': canonicalRoutes.pod,
+  '/ai-config/document-processing': canonicalRoutes.pod,
+  '/ai-config/search-indexing': '/pod/search',
+  '/ai-config/index-lifecycle': '/pod/search',
 } as const;
-
 export type ProductSurface = {
   app: 'dashboard' | 'settings';
-  basename: '/dashboard' | '/status' | '/network' | '/settings' | '/ai-connections' | '/ai-config';
+  basename: '/dashboard' | '/status' | '/network' | '/settings' | '/ai-connections' | '/ai-config' | '/tasks' | '/pod' | '/device' | '/inbox' | '/notifications';
 };
-
-/**
- * Authoritative product-shell roots shared by the normal entry documents and
- * the OIDC callback document. Keep route ownership in one place so adding a
- * rail surface cannot silently strand an authenticated callback elsewhere.
- */
 export const productSurfaceRoots: readonly ProductSurface[] = [
-  { app: 'dashboard', basename: '/dashboard' },
-  { app: 'dashboard', basename: '/status' },
-  { app: 'dashboard', basename: '/network' },
-  { app: 'settings', basename: '/settings' },
-  { app: 'settings', basename: '/ai-connections' },
-  { app: 'settings', basename: '/ai-config' },
+  ...(['/dashboard', '/status', '/network'] as const).map(basename => ({ app: 'dashboard' as const, basename })),
+  ...(['/settings', '/ai-connections', '/ai-config', '/tasks', '/pod', '/device', '/inbox', '/notifications'] as const).map(basename => ({ app: 'settings' as const, basename })),
 ];
-
 export function canonicalProductPathname(pathname: string): string {
-  return legacyProductRedirects[pathname] ?? pathname;
+  return legacyProductRedirects[pathname.replace(/\/$/, '')] ?? pathname;
 }
-
 export function surfaceForPathname(pathname: string): ProductSurface {
-  return productSurfaceRoots.find(({ basename }) => (
-    pathname === basename || pathname.startsWith(`${basename}/`)
-  )) ?? { app: 'settings', basename: '/settings' };
+  return productSurfaceRoots.find(({ basename }) => pathname === basename || pathname.startsWith(`${basename}/`))
+    ?? { app: 'settings', basename: '/settings' };
 }

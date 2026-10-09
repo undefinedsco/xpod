@@ -1,3 +1,9 @@
+import { withTaskResumeStage } from './TaskResumeDiagnostics';
+import { monitorRunCancellation } from '../runs/RunCancellation';
+import { getLoggerFor } from 'global-logger-factory';
+import { persistRunApproval, updateRunApprovalSession } from '../runs/RunApproval';
+import { RunStateCenter } from '../runs/RunStateCenter';
+import { nextCronOccurrence } from './cron';
 import type { ChatKitStore, StoreContext } from '../chatkit/store';
 import type {
   ThreadItem,
@@ -5,6 +11,7 @@ import type {
   ThreadRef,
   AssistantMessageItem,
   UserMessageItem,
+  ClientToolCallItem,
 } from '../chatkit/types';
 import {
   generateId,
@@ -23,8 +30,6 @@ import {
   extractResourceLocalId,
   generateRunResourceId,
   generateRunStepResourceId,
-  resolveDataResource,
-  resolveRunUrn,
   type RunRecordData,
   type RunStepRecordData,
   type RunStore,
@@ -37,7 +42,7 @@ import {
 } from '../runs/AgentRuntimeTypes';
 import { isWorkspaceRef } from '../workspace/types';
 import { TaskStatus, TaskTriggerKind } from './schema';
-import { resolveTaskResource as expandTaskResource, resolveTaskUrn, type TaskRecordData } from './store';
+import type { TaskRecordData } from './store';
 import type { AiConnectionsInvocationKeyIssuer } from '../ai-gateway/auth/AiConnectionsInvocationKeyIssuer';
 
 export interface MaterializedTaskRun {
@@ -59,6 +64,7 @@ export class TaskMaterializer<TContext = StoreContext> {
   private readonly store: ChatKitStore<TContext> & RunStore<TContext>;
   private readonly executionBackend: RunExecutionBackend;
   private readonly executeRuns: boolean;
+  private readonly continuation: RunStateCenter<TContext>;
   private readonly contextRetriever?: RunContextRetriever<TContext>;
   private readonly aiConnectionInvocationKeyIssuer?: Pick<AiConnectionsInvocationKeyIssuer, 'issue'>;
   private readonly requireAiConnectionsInvocationKeyIssuer: boolean;
@@ -67,6 +73,8 @@ export class TaskMaterializer<TContext = StoreContext> {
     this.store = options.store;
     this.executionBackend = options.executionBackend ?? new InngestRunExecutionBackend();
     this.executeRuns = options.executeRuns ?? true;
+    this.continuation = new RunStateCenter({ store: options.store, enableAgentRuntime: true,
+      executionBackend: this.executionBackend, contextRetriever: options.contextRetriever });
     this.contextRetriever = options.contextRetriever;
     this.aiConnectionInvocationKeyIssuer = options.aiConnectionInvocationKeyIssuer;
     this.requireAiConnectionsInvocationKeyIssuer = options.requireAiConnectionsInvocationKeyIssuer ?? false;
@@ -75,6 +83,8 @@ export class TaskMaterializer<TContext = StoreContext> {
   public async materialize(input: {
     task: TaskRecordData;
     context: TContext;
+    /** Return the persisted Run while the existing runner executes it. */
+    background?: boolean;
     trigger: {
       kind: 'once' | 'interval' | 'cron' | 'event' | 'manual';
       scheduledFor?: number;
@@ -83,9 +93,10 @@ export class TaskMaterializer<TContext = StoreContext> {
     };
   }): Promise<MaterializedTaskRun> {
     const { task, context, trigger } = input;
-    if (task.status !== TaskStatus.ACTIVE) {
+    if (task.status !== TaskStatus.ACTIVE && !(trigger.kind === 'manual' && task.status === TaskStatus.BLOCKED)) {
       throw new Error(`Task ${task.id} is not active`);
     }
+    const executionContext = this.executeRuns ? await this.withInvocationAiConnections(context) : context;
 
     const threadRef = this.threadRefFromTask(task);
     const thread = await this.ensureThread(task, context);
@@ -99,9 +110,9 @@ export class TaskMaterializer<TContext = StoreContext> {
 
     if (task.triggerKind === TaskTriggerKind.ONCE) {
       task.nextRunAt = undefined;
-    } else if (task.triggerKind === TaskTriggerKind.INTERVAL) {
+    } else if (trigger.kind !== 'manual' && task.triggerKind === TaskTriggerKind.INTERVAL) {
       task.nextRunAt = this.computeNextIntervalRunAt(task, task.lastRunAt);
-    } else if (task.triggerKind === TaskTriggerKind.CRON) {
+    } else if (trigger.kind !== 'manual' && task.triggerKind === TaskTriggerKind.CRON) {
       task.nextRunAt = this.computeNextCronRunAt(task, task.lastRunAt);
     }
 
@@ -110,16 +121,29 @@ export class TaskMaterializer<TContext = StoreContext> {
     }
 
     if (this.executeRuns) {
-      const executionContext = await this.withInvocationAiConnections(context);
-      const assistant = await this.executeRun({ task, thread, run, userMessage, context: executionContext });
-      if (task.triggerKind === TaskTriggerKind.ONCE) {
-        task.status = run.status === RunStatus.COMPLETED ? TaskStatus.COMPLETED : TaskStatus.FAILED;
-        task.updatedAt = nowTimestamp();
-        if (this.hasSaveTask(this.store)) {
-          await this.store.saveTask(task, context);
+      const execute = async (): Promise<MaterializedTaskRun> => {
+        const assistant = await this.executeRun({ task, thread, run, userMessage, context: executionContext });
+        if (task.triggerKind === TaskTriggerKind.ONCE) {
+          task.status = run.status === RunStatus.COMPLETED ? TaskStatus.COMPLETED : TaskStatus.FAILED;
+          task.updatedAt = nowTimestamp();
+          if (this.hasSaveTask(this.store)) {
+            await this.store.saveTask(task, context);
+          }
         }
+        return { task, run, assistant };
+      };
+      if (input.background) {
+        const accepted = { task: { ...task }, run: { ...run } };
+        void execute().catch(async error => {
+          try {
+            await this.finishRun(run, RunStatus.FAILED, executionContext, String(error));
+          } catch (persistenceError) {
+            getLoggerFor(this).error(`Unable to persist background Run failure: ${String(persistenceError)}`);
+          }
+        });
+        return accepted;
       }
-      return { task, run, assistant };
+      return execute();
     }
 
     if (task.triggerKind === TaskTriggerKind.ONCE) {
@@ -146,6 +170,28 @@ export class TaskMaterializer<TContext = StoreContext> {
     } as TContext;
   }
 
+  public async resumeClientToolOutput(run: RunRecordData, itemId: string, output: string, approval: string, context: TContext): Promise<boolean> {
+    const executionContext = await withTaskResumeStage('invocation_issue', () => this.withInvocationAiConnections(context));
+    const prepared = await withTaskResumeStage('continuation_prepare', async () => {
+      const prepared = await this.continuation.prepareClientToolOutput({
+        threadRef: toThreadRef({ thread_id: run.thread }), itemId, output, context: executionContext,
+      });
+      if (prepared) prepared.claim.item.metadata = { ...prepared.claim.item.metadata, approval };
+      return prepared;
+    });
+    if (!prepared) return false;
+    let completed = false;
+    try {
+      await withTaskResumeStage('continuation_complete', async () => {
+        for await (const _event of this.continuation.completePreparedClientToolOutput(prepared, executionContext)) { /* Durable state is the result. */ }
+      });
+      completed = true;
+      return true;
+    } finally {
+      if (!completed) await withTaskResumeStage('continuation_release', () => this.continuation.releaseClientToolOutput(prepared, executionContext));
+    }
+  }
+
   private async executeRun(input: {
     task: TaskRecordData;
     thread: ThreadMetadata;
@@ -158,99 +204,129 @@ export class TaskMaterializer<TContext = StoreContext> {
     const threadRef = this.threadRefFromTask(task);
     const assistantItem = await this.createAssistantMessage(thread, context);
     await this.store.addThreadItem(threadRef, assistantItem, context);
-    await this.markRunStarted(run, context);
+    if (!await this.markRunStarted(run, context)) {
+      assistantItem.status = 'incomplete';
+      await this.store.saveItem(threadRef, assistantItem, context);
+      return assistantItem;
+    }
 
     let fullText = '';
     let runtimeError: string | undefined;
     const prompt = run.prompt ?? task.prompt;
-    const conversation = await this.loadConversation(threadRef, userMessage.id, context);
-    const retrievedContext = await this.retrieveRunContext({
-      runId: run.id,
-      threadId: thread.id,
-      prompt,
-      conversation,
-      config: runtimeConfig,
-      context,
-    });
-
-    for await (
-      const event of this.executionBackend.start({
+    let monitor: Awaited<ReturnType<typeof monitorRunCancellation<TContext>>> | undefined;
+    try {
+      const conversation = await this.loadConversation(threadRef, userMessage.id, context);
+      const retrievedContext = await this.retrieveRunContext({
         runId: run.id,
         threadId: thread.id,
         prompt,
         conversation,
-        retrievedContext,
         config: runtimeConfig,
-        authBindingId: task.authBinding?.id,
-        context: context as StoreContext,
-      })
-    ) {
-      if (event.type === 'text') {
-        fullText += event.text;
-        await this.appendRunStep(run, RunStepType.TEXT_DELTA, context, {
-          message: event.text,
-          data: { delta: event.text },
-        });
-        continue;
-      }
-
-      if (event.type === 'auth_required') {
-        await this.appendRunStep(run, RunStepType.AUTH_REQUIRED, context, {
-          message: event.message,
-          data: {
-            method: event.method,
-            url: event.url,
-            options: event.options,
-          },
-        });
-        continue;
-      }
-
-      if (event.type === 'tool_call') {
-        await this.appendRunStep(run, RunStepType.TOOL_CALL, context, {
-          message: event.name,
-          data: {
-            requestId: event.requestId,
-            name: event.name,
-            arguments: event.arguments,
-          },
-        });
-        await this.finishRun(run, RunStatus.WAITING_INPUT, context, `Tool call ${event.name} requires steering`);
-        assistantItem.status = 'incomplete';
-        assistantItem.content = [{ type: 'output_text', text: fullText }];
-        await this.store.saveItem(threadRef, assistantItem, context);
-        return assistantItem;
-      }
-
-      if (event.type === 'waiting_runner') {
-        runtimeError = event.message;
-        await this.appendRunStep(run, RunStepType.WAITING_RUNNER, context, {
-          message: event.message,
-          data: { workspace: event.workspace },
-        });
-        await this.finishRun(run, RunStatus.WAITING_RUNNER, context, event.message);
-        assistantItem.status = 'incomplete';
-        assistantItem.content = [{ type: 'output_text', text: fullText }];
-        await this.store.saveItem(threadRef, assistantItem, context);
-        return assistantItem;
-      }
-
-      runtimeError = event.message;
-      await this.appendRunStep(run, RunStepType.ERROR, context, {
-        message: event.message,
+        context,
       });
-      break;
+      monitor = await monitorRunCancellation({ store: this.store, runId: run.id, context });
+      for await (
+        const event of this.executionBackend.start({
+          signal: monitor.signal,
+          runId: run.id,
+          threadId: thread.id,
+          prompt,
+          conversation,
+          retrievedContext,
+          config: runtimeConfig,
+          authBindingId: task.authBinding?.id,
+          context: context as StoreContext,
+        })
+      ) {
+        const latest = await this.store.loadRun(run.id, context);
+        if (latest.cancelRequestedAt) {
+          run.cancelRequestedAt = latest.cancelRequestedAt;
+
+          break;
+        }
+        if (event.type === 'text') {
+          fullText += event.text;
+          await this.appendRunStep(run, RunStepType.TEXT_DELTA, context, {
+            message: event.text,
+            data: { delta: event.text },
+          });
+          continue;
+        }
+
+        if (event.type === 'auth_required') {
+          await this.appendRunStep(run, RunStepType.AUTH_REQUIRED, context, {
+            message: event.message,
+            data: {
+              method: event.method,
+              url: event.url,
+              options: event.options,
+            },
+          });
+          continue;
+        }
+
+        if (event.type === 'tool_call') {
+          await this.appendRunStep(run, RunStepType.TOOL_CALL, context, {
+            message: event.name,
+            data: {
+              requestId: event.requestId,
+              name: event.name,
+              arguments: event.arguments,
+            },
+          });
+          const toolItem: ClientToolCallItem = {
+            id: this.store.generateItemId('client_tool_call', thread, context), thread_id: thread.id,
+            type: 'client_tool_call', name: event.name, arguments: event.arguments,
+            call_id: event.requestId, status: 'pending', created_at: nowTimestamp(),
+            metadata: { runId: run.id, assistantItemId: assistantItem.id },
+          };
+          await this.store.addThreadItem(threadRef, toolItem, context);
+          await persistRunApproval({ store: this.store, run, event, context });
+          run.metadata = { ...run.metadata, assistantItemId: assistantItem.id,
+            waitingTool: { itemId: toolItem.id, requestId: event.requestId, name: event.name } };
+          await this.finishRun(run, RunStatus.WAITING_INPUT, context, `Tool call ${event.name} requires steering`);
+          assistantItem.status = 'incomplete';
+          assistantItem.content = [{ type: 'output_text', text: fullText }];
+          await this.store.saveItem(threadRef, assistantItem, context);
+          return assistantItem;
+        }
+
+        if (event.type === 'waiting_runner') {
+          runtimeError = event.message;
+          await this.appendRunStep(run, RunStepType.WAITING_RUNNER, context, {
+            message: event.message,
+            data: { workspace: event.workspace },
+          });
+          await this.finishRun(run, RunStatus.WAITING_RUNNER, context, event.message);
+          assistantItem.status = 'incomplete';
+          assistantItem.content = [{ type: 'output_text', text: fullText }];
+          await this.store.saveItem(threadRef, assistantItem, context);
+          return assistantItem;
+        }
+
+        runtimeError = event.message;
+        await this.appendRunStep(run, RunStepType.ERROR, context, {
+          message: event.message,
+        });
+        break;
+      }
+
+    } catch (error) {
+      if (!monitor?.signal.aborted) runtimeError = String(error);
+    } finally {
+      monitor?.dispose();
     }
 
-    assistantItem.status = runtimeError ? 'incomplete' : 'completed';
+    if (monitor?.error) runtimeError = `Unable to read execution state: ${String(monitor.error)}`;
     assistantItem.content = [{ type: 'output_text', text: fullText }];
-    await this.store.saveItem(threadRef, assistantItem, context);
     await this.finishRun(
       run,
       runtimeError ? RunStatus.FAILED : RunStatus.COMPLETED,
       context,
       runtimeError,
     );
+    assistantItem.status = run.status === RunStatus.COMPLETED ? 'completed' : 'incomplete';
+    await this.store.saveItem(threadRef, assistantItem, context);
     return assistantItem;
   }
 
@@ -285,7 +361,7 @@ export class TaskMaterializer<TContext = StoreContext> {
         created_at: now,
         updated_at: now,
         metadata: {
-          task: this.resolveTaskResource(task, context),
+          task: task.id,
           runtime: {
             workspace: task.workspace,
             runner: this.parseRunner(task.runner),
@@ -318,7 +394,7 @@ export class TaskMaterializer<TContext = StoreContext> {
         parentKey: taskParentKey,
         createdAt: now,
       }),
-      task: this.resolveTaskResource(task, context),
+      task: task.id,
       thread: task.thread,
       workspace: task.workspace,
       status: RunStatus.QUEUED,
@@ -351,15 +427,21 @@ export class TaskMaterializer<TContext = StoreContext> {
     return run;
   }
 
-  private async markRunStarted(run: RunRecordData, context: TContext): Promise<void> {
+  private async markRunStarted(run: RunRecordData, context: TContext): Promise<boolean> {
     const now = nowTimestamp();
     run.status = RunStatus.RUNNING;
     run.startedAt = now;
     run.updatedAt = now;
     await this.store.saveRun(run, context);
+    if (run.cancelRequestedAt || (run as RunRecordData).status === RunStatus.CANCELLED) {
+      await this.finishRun(run, RunStatus.CANCELLED, context);
+      return false;
+    }
+    await updateRunApprovalSession(this.store, run, 'active', context);
     await this.appendRunStep(run, RunStepType.STARTED, context, {
       message: 'Task run started',
     });
+    return true;
   }
 
   private async finishRun(
@@ -374,6 +456,9 @@ export class TaskMaterializer<TContext = StoreContext> {
     run.updatedAt = now;
     run.error = error;
     await this.store.saveRun(run, context);
+    status = run.status;
+    error = run.error;
+    await updateRunApprovalSession(this.store, run, status === 'waiting_input' || status === 'waiting_runner' ? 'paused' : status === 'failed' ? 'error' : 'completed', context);
     await this.appendRunStep(
       run,
       this.stepTypeForStatus(status),
@@ -422,7 +507,7 @@ export class TaskMaterializer<TContext = StoreContext> {
         createdAt,
       }),
       runId: run.id,
-      run: this.resolveRunResource(run, context),
+      run: run.id,
       type,
       message: options.message,
       data: options.data,
@@ -543,12 +628,7 @@ export class TaskMaterializer<TContext = StoreContext> {
   }
 
   private computeNextCronRunAt(task: TaskRecordData, from: number): number {
-    const firstField = task.cron?.trim().split(/\s+/)[0];
-    const everyMinuteMatch = firstField?.match(/^\*\/(\d+)$/);
-    if (everyMinuteMatch) {
-      return from + Math.max(1, Number(everyMinuteMatch[1])) * 60;
-    }
-    return from + 60;
+    return nextCronOccurrence(task.cron ?? '', from);
   }
 
   private threadRefFromTask(task: TaskRecordData): ThreadRef {
@@ -605,44 +685,6 @@ export class TaskMaterializer<TContext = StoreContext> {
       return parts.length > 1 ? decodeURIComponent(parts[1]) : decodeURIComponent(parts[0]);
     }
     return thread;
-  }
-
-  private resolveTaskResource(task: TaskRecordData, context: TContext): string {
-    const podBaseUrl = this.resolvePodBaseUrl(context);
-    if (podBaseUrl) {
-      return expandTaskResource(podBaseUrl, task.id);
-    }
-    return resolveTaskUrn(task.id);
-  }
-
-  private resolveRunResource(run: RunRecordData, context: TContext): string {
-    const podBaseUrl = this.resolvePodBaseUrl(context);
-    if (podBaseUrl) {
-      return resolveDataResource(podBaseUrl, run.id);
-    }
-    return resolveRunUrn(run.id);
-  }
-
-  private resolvePodBaseUrl(context: TContext): string | undefined {
-    const auth = (context as Record<string, unknown>).auth as { webId?: unknown } | undefined;
-    const webId = typeof auth?.webId === 'string' ? auth.webId : undefined;
-    if (!webId) {
-      return undefined;
-    }
-    try {
-      const url = new URL(webId);
-      url.hash = '';
-      url.search = '';
-      const normalizedPath = url.pathname.replace(/\/+$/, '');
-      if (!normalizedPath.endsWith('/profile/card')) {
-        return undefined;
-      }
-      const podPath = normalizedPath.slice(0, -'/profile/card'.length) || '/';
-      url.pathname = podPath;
-      return url.toString().replace(/\/$/, '');
-    } catch {
-      return undefined;
-    }
   }
 
   private hasSaveTask(value: unknown): value is { saveTask(task: TaskRecordData, context: TContext): Promise<void> } {

@@ -19,7 +19,7 @@ vi.mock('node:os', () => ({
   networkInterfaces: networkInterfacesMock,
 }));
 
-import { getFreePort, getFreePortForWildcard } from '../../src/runtime/port-finder';
+import { getFreePort, getFreePortForWildcard, requireFreePortForWildcard } from '../../src/runtime/port-finder';
 import { PORT_RESERVATION_DIR_ENV, RESERVED_PORTS_ENV } from '../../src/runtime/port-reservations';
 
 type ServerBehavior = 'error' | 'listening' | 'hang';
@@ -101,6 +101,8 @@ describe('getFreePort', () => {
       .mockReturnValueOnce(createMockServer('listening'))
       .mockReturnValueOnce(createMockServer('error'))
       .mockReturnValueOnce(createMockServer('listening'))
+      .mockReturnValueOnce(createMockServer('listening'))
+      .mockReturnValueOnce(createMockServer('listening'))
       .mockReturnValueOnce(createMockServer('listening'));
 
     await expect(getFreePortForWildcard(5600)).resolves.toBe(5601);
@@ -130,6 +132,37 @@ describe('getFreePort', () => {
     }
   });
 
+  it('should skip a port that is only occupied on concrete loopback IPv4', async() => {
+    createServerMock
+      .mockReturnValueOnce(createMockServer('listening'))
+      .mockReturnValueOnce(createMockServer('listening'))
+      .mockReturnValueOnce(createMockServer('error'))
+      .mockReturnValueOnce(createMockServer('listening'))
+      .mockReturnValueOnce(createMockServer('listening'))
+      .mockReturnValueOnce(createMockServer('listening'))
+      .mockReturnValueOnce(createMockServer('listening'));
+
+    await expect(getFreePortForWildcard(5600)).resolves.toBe(5601);
+
+    // BSD sockets keep wildcard and concrete-address binds independent, so the wildcard probes
+    // alone would report an occupied loopback port as free. Every address the runtime may bind
+    // has to be probed.
+    const probedHosts = createServerMock.mock.results.map((result) => result.value.listen.mock.calls[0][1]);
+    expect(probedHosts.slice(0, 3)).toEqual([ '0.0.0.0', '::', '127.0.0.1' ]);
+    expect(probedHosts).toContain('::1');
+  });
+
+  it('should reject an explicitly required port occupied on loopback', async() => {
+    createServerMock
+      .mockReturnValueOnce(createMockServer('listening'))
+      .mockReturnValueOnce(createMockServer('listening'))
+      .mockReturnValueOnce(createMockServer('error'));
+
+    await expect(requireFreePortForWildcard(5600)).rejects.toThrow(
+      'ingress port 5600 is already in use; free it or point the tunnel at another port',
+    );
+  });
+
   it('should not probe IPv6 when the host has no IPv6 address', async() => {
     networkInterfacesMock.mockReturnValue({
       lo0: [
@@ -138,9 +171,10 @@ describe('getFreePort', () => {
     });
     createServerMock
       .mockReturnValueOnce(createMockServer('error'))
+      .mockReturnValueOnce(createMockServer('listening'))
       .mockReturnValueOnce(createMockServer('listening'));
 
     await expect(getFreePortForWildcard(5600)).resolves.toBe(5601);
-    expect(createServerMock).toHaveBeenCalledTimes(2);
+    expect(createServerMock).toHaveBeenCalledTimes(3);
   });
 });

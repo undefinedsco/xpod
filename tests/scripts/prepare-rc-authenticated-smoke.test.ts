@@ -1,24 +1,13 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile, stat } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import {
-  canAdvanceSolidOidcAt,
-  clickSolidOidcAction,
-  SOLID_OIDC_ACTION_NAME,
-  isCanonicalAiConnectionsUrl,
-  loadRcSeedAccounts,
-  prepareRcAuthenticatedSmoke,
-  trySubmitSolidPassword,
-  verifySeedProfileStorageBinding,
-} from '../../scripts/prepare-rc-authenticated-smoke';
+import { loadRcSeedAccounts, prepareRcAuthenticatedSmoke, writeSolidOidcBrowserStates } from '../../scripts/prepare-rc-authenticated-smoke';
 
-describe('SOLID_OIDC_ACTION_NAME', () => {
-  it('matches the Chinese approval label used by the account consent page', () => {
-    expect(SOLID_OIDC_ACTION_NAME.test('批准')).toBe(true);
-  });
-});
+import { chromium } from 'playwright';
+import * as externalRp from '../helpers/browserExternalRp';
+import * as lightWeb from '../helpers/rcLightWeb';
 
 const defaultFetch = globalThis.fetch;
 
@@ -32,89 +21,6 @@ describe('RC authenticated smoke seed preparation', () => {
       await rm(tempRoot, { recursive: true, force: true });
       tempRoot = undefined;
     }
-  });
-
-  it('does not wait on the obsolete OIDC page after consent redirects to settings', async () => {
-    const action = {
-      click: vi.fn(async () => undefined),
-    } as any;
-
-    await clickSolidOidcAction(action);
-
-    expect(action.click).toHaveBeenCalledWith({
-      noWaitAfter: true,
-      timeout: 5_000,
-    });
-  });
-
-  it('accepts a consent click that navigates after disabling and detaching the button', async () => {
-    const action = {
-      click: vi.fn(async () => { throw new Error('element was detached from the DOM'); }),
-      isVisible: vi.fn(async () => false),
-      isEnabled: vi.fn(async () => false),
-    } as any;
-
-    await expect(clickSolidOidcAction(action)).resolves.toBeUndefined();
-  });
-
-  it('preserves a click failure while the consent action remains interactive', async () => {
-    const error = new Error('click failed');
-    const action = {
-      click: vi.fn(async () => { throw error; }),
-      isVisible: vi.fn(async () => true),
-      isEnabled: vi.fn(async () => true),
-    } as any;
-
-    await expect(clickSolidOidcAction(action)).rejects.toBe(error);
-  });
-
-  it('recognizes the canonical AI Connections route and never advances its inner login card', () => {
-    const baseUrl = 'https://id-rc.undefineds.co/';
-
-    expect(isCanonicalAiConnectionsUrl(
-      new URL('https://id-rc.undefineds.co/ai-connections'),
-      baseUrl,
-    )).toBe(true);
-    expect(isCanonicalAiConnectionsUrl(
-      new URL('https://id-rc.undefineds.co/ai-connections/openai'),
-      baseUrl,
-    )).toBe(true);
-    expect(canAdvanceSolidOidcAt(
-      new URL('https://id-rc.undefineds.co/ai-connections'),
-      baseUrl,
-    )).toBe(false);
-    expect(canAdvanceSolidOidcAt(
-      new URL('https://id-rc.undefineds.co/.account/oidc/consent/'),
-      baseUrl,
-    )).toBe(true);
-    expect(canAdvanceSolidOidcAt(
-      new URL('https://accounts.example/authorize'),
-      baseUrl,
-    )).toBe(true);
-  });
-
-  it('retries a login form replaced between visibility and password fill', async () => {
-    const emailInput = {
-      isVisible: vi.fn(async () => true),
-      fill: vi.fn(async () => undefined),
-    };
-    const passwordInput = {
-      isVisible: vi.fn(async () => true),
-      fill: vi.fn()
-        .mockRejectedValueOnce(new Error('element was detached'))
-        .mockResolvedValueOnce(undefined),
-      press: vi.fn(async () => undefined),
-    };
-    const page = {
-      locator: vi.fn((selector: string) => ({
-        first: () => selector.includes('password') ? passwordInput : emailInput,
-      })),
-    } as any;
-    const account = { email: 'alice@example.com', password: 'private', podName: 'alice' };
-
-    await expect(trySubmitSolidPassword(page, account)).resolves.toBe(false);
-    await expect(trySubmitSolidPassword(page, account)).resolves.toBe(true);
-    expect(passwordInput.press).toHaveBeenCalledWith('Enter', { timeout: 2_000 });
   });
 
   it('loads only named Alice and Bob accounts from the fixed RC seed config', async () => {
@@ -150,7 +56,7 @@ describe('RC authenticated smoke seed preparation', () => {
     await expect(loadRcSeedAccounts(seedPath)).rejects.toThrow(/Alice and Bob/i);
   });
 
-  it('performs real browser OIDC state preparation without inventing Pod URLs or unused credentials', async () => {
+  it('delegates seed credentials and state paths without inventing Pod URLs or unused credentials', async () => {
     tempRoot = await mkdtemp(path.join(os.tmpdir(), 'xpod-rc-smoke-'));
     const seedPath = path.join(tempRoot, 'seed.json');
     const outputEnvPath = path.join(tempRoot, 'smoke.env');
@@ -207,31 +113,37 @@ describe('RC authenticated smoke seed preparation', () => {
     expect(envFile).not.toContain('XPOD_SETTINGS_E2E_TEST_API_KEY');
   });
 
-  it('requires each prepared account profile to publicly advertise its storage', async () => {
-    const fetchImpl = vi.fn(async () => new Response(
-      `<https://id-rc.undefineds.co/bob/profile/card#me> <http://www.w3.org/ns/solid/terms#storage> <https://id-rc.undefineds.co/bob/> .`,
-      { status: 200, headers: { 'content-type': 'text/turtle' } },
-    ));
-
-    await expect(verifySeedProfileStorageBinding({
-      baseUrl: 'https://id-rc.undefineds.co/',
-      account: { email: 'bob@rc.example', password: 'private', podName: 'bob' },
-      fetchImpl: fetchImpl as unknown as typeof fetch,
-    })).resolves.toBeUndefined();
-
-    expect(fetchImpl).toHaveBeenCalledWith('https://id-rc.undefineds.co/bob/profile/card#me', expect.any(Object));
-  });
-
-  it('reports the profile status when a prepared account profile is not public', async () => {
-    const fetchImpl = vi.fn(async () => new Response('Not logged in', {
-      status: 401,
-      headers: { 'content-type': 'text/plain' },
+  it('persists only browser storage and safe identity from the shared real-RP driver', async () => {
+    tempRoot = await mkdtemp(path.join(os.tmpdir(), 'xpod-rc-smoke-'));
+    const close = vi.fn(async () => undefined);
+    const contexts = ['alice', 'bob'].map(name => ({
+      newPage: vi.fn(async () => ({ name })), close: vi.fn(async () => undefined),
+      storageState: vi.fn(async () => ({ cookies: [{ name: 'account', value: `fixture-${name}`, httpOnly: true }], origins: [] })),
     }));
-
-    await expect(verifySeedProfileStorageBinding({
-      baseUrl: 'https://id-rc.undefineds.co/',
-      account: { email: 'bob@rc.example', password: 'private', podName: 'bob' },
-      fetchImpl: fetchImpl as unknown as typeof fetch,
-    })).rejects.toThrow(/not publicly readable; status=401/i);
+    vi.spyOn(chromium, 'launch').mockResolvedValue({ close, newContext: vi.fn()
+      .mockResolvedValueOnce(contexts[0]).mockResolvedValueOnce(contexts[1]) } as any);
+    const rp = { close: vi.fn(async () => undefined) };
+    vi.spyOn(externalRp, 'startBrowserExternalRp').mockResolvedValue(rp as any);
+    const authorize = vi.spyOn(lightWeb, 'authorizeRcSession').mockImplementation(async page => ({
+      identity: { accountId: (page as any).name, webId: `https://id.example/${(page as any).name}/profile/card#me`,
+        storageUrl: `https://pods.example/${(page as any).name}/` },
+      authenticatedFetch: vi.fn() as any,
+    }));
+    const aliceStatePath = path.join(tempRoot, 'alice-state.json');
+    const bobStatePath = path.join(tempRoot, 'bob-state.json');
+    await writeSolidOidcBrowserStates({ baseUrl: 'https://id.example/',
+      alice: { email: 'alice@example.com', password: 'SYNTHETIC_SECRET', podName: 'alice' },
+      bob: { email: 'bob@example.com', password: 'SYNTHETIC_SECRET', podName: 'bob' }, aliceStatePath, bobStatePath });
+    expect(authorize).toHaveBeenCalledTimes(2);
+    for (const statePath of [aliceStatePath, bobStatePath]) {
+      expect((await stat(statePath)).mode & 0o777).toBe(0o600);
+      expect((await stat(`${statePath}.identity.json`)).mode & 0o777).toBe(0o600);
+      const identity = await readFile(`${statePath}.identity.json`, 'utf8');
+      expect(Object.keys(JSON.parse(identity)).sort()).toEqual(['accountId', 'storageUrl', 'webId']);
+      expect(identity).not.toContain('SYNTHETIC_SECRET');
+    }
+    expect(close).toHaveBeenCalledOnce();
+    expect(rp.close).toHaveBeenCalledOnce();
+    expect(contexts.every(context => context.close.mock.calls.length === 1)).toBe(true);
   });
 });

@@ -1,3 +1,4 @@
+import { useXpodAccountCredentialValues, useXpodAccountRememberChoice } from '../auth/useXpodAccountRememberChoice';
 import { scopeAccountUrl } from '../utils/account-interaction-url';
 import { useEffect, useState } from 'react';
 import { Navigate, useLocation, useNavigate } from 'react-router-dom';
@@ -9,16 +10,13 @@ import {
 import { useAuth } from '../context/AuthContextValue';
 import { persistReturnTo, consumeReturnTo, getReturnToFromLocation, consumeAccountContinuation } from '../utils/returnTo';
 import {
-  checkRegistrationUsernameAvailability,
-  getRegistrationUsernameError,
-  normalizeRegistrationUsername,
 } from '../utils/registration';
 import {
   RegistrationError,
   bootstrapAccountPasswordLogin,
   loginAccountPassword,
 } from '../utils/registration-flow';
-import { readPendingXpodAccountEmail, rememberPendingXpodAccountEmail } from '../auth/xpod-remembered-login';
+import { rememberPendingXpodAccountEmail } from '../auth/xpod-remembered-login';
 import { storeAccountSessionToken, storedAccountTokenHeaders } from '../utils/account-session';
 import { resolveHostedAccountControlUrl } from '../utils/account-control-url';
 import { XpodBlockingAccountCredentialsSurface } from '../auth/XpodAuthSurface';
@@ -40,75 +38,25 @@ function safeRegistrationMessage(error: unknown): string {
 }
 
 export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
-  const { controls, idpIndex, isLoggedIn, hasOidcPending } = useAuth();
+  const { controls, idpIndex, isLoggedIn, hasOidcPending, isInitializing } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
-  const isRegister = initialIsRegister;
-  const [values, setValues] = useState<AccountCredentialsValues>({
-    username: '',
-    email: readPendingXpodAccountEmail(undefined, idpIndex) ?? '',
-    password: '',
-    confirmation: '',
-  });
+  // The route decides the mode, but a router transition can land a frame after the click.
+  // The switch is shown at once so the next field the user (or automation) touches already
+  // belongs to the new form; the override lapses as soon as the route prop catches up.
+  const [modeSwitch, setModeSwitch] = useState<{ from: boolean; register: boolean }>();
+  const isRegister = modeSwitch && modeSwitch.from === initialIsRegister ? modeSwitch.register : initialIsRegister;
+  const [values, setValues, credentialScope] = useXpodAccountCredentialValues(idpIndex, isInitializing);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [rememberAccount, setRememberAccount] = useState(true);
+  const [rememberAccount, setRememberAccount] = useXpodAccountRememberChoice(idpIndex, isInitializing);
   const [isCancelling, setIsCancelling] = useState(false);
-  const [isCheckingUsername, setIsCheckingUsername] = useState(false);
-  const [isUsernameAvailable, setIsUsernameAvailable] = useState<boolean | null>(null);
-  const [usernameSuggestions, setUsernameSuggestions] = useState<string[]>([]);
-  const [usernameAvailabilityError, setUsernameAvailabilityError] = useState<string | null>(null);
   const [emailError, setEmailError] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
-
-  const normalizedUsername = normalizeRegistrationUsername(values.username ?? '');
-  const usernameError = isRegister ? getRegistrationUsernameError(normalizedUsername) : undefined;
 
   useEffect(() => {
     const returnTo = getReturnToFromLocation();
     if (returnTo) persistReturnTo(returnTo);
   }, []);
-
-  useEffect(() => {
-    let cancelled = false;
-    if (!isRegister || !normalizedUsername) {
-      queueMicrotask(() => {
-        if (cancelled) return;
-        setIsCheckingUsername(false);
-        setIsUsernameAvailable(null);
-        setUsernameSuggestions([]);
-        setUsernameAvailabilityError(null);
-      });
-      return () => { cancelled = true; };
-    }
-
-    if (usernameError) {
-      queueMicrotask(() => {
-        if (cancelled) return;
-        setIsCheckingUsername(false);
-        setIsUsernameAvailable(false);
-        setUsernameSuggestions([]);
-        setUsernameAvailabilityError(usernameError);
-      });
-      return () => { cancelled = true; };
-    }
-
-    queueMicrotask(() => {
-      if (!cancelled) setIsCheckingUsername(true);
-    });
-    const timer = window.setTimeout(async () => {
-      const result = await checkRegistrationUsernameAvailability(normalizedUsername, idpIndex);
-      if (cancelled) return;
-      setIsCheckingUsername(false);
-      setIsUsernameAvailable(result.available);
-      setUsernameSuggestions(result.suggestions);
-      setUsernameAvailabilityError(result.error ?? null);
-    }, 300);
-
-    return () => {
-      cancelled = true;
-      window.clearTimeout(timer);
-    };
-  }, [idpIndex, isRegister, normalizedUsername, usernameError]);
 
   if (isLoggedIn) {
     // 账号已登录不等于 Pod 就绪（设计 §4.1）：落到 Account 管理，由用户显式建 Pod。
@@ -123,7 +71,6 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
 
   const handleFieldChange = (field: AccountCredentialField, value: string) => {
     if (field === 'email') setEmailError(null);
-    if (field === 'username') setUsernameAvailabilityError(null);
     setFormError(null);
     setValues((current) => ({ ...current, [field]: value }));
   };
@@ -135,7 +82,7 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
   };
 
   const handleSubmit = async (submitted: AccountCredentialsValues) => {
-    if (isSubmitting) return;
+    if (isSubmitting || isInitializing) return;
     setIsSubmitting(true);
     setEmailError(null);
     setFormError(null);
@@ -145,15 +92,8 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
 
     try {
       if (isRegister) {
-        const username = normalizeRegistrationUsername(submitted.username ?? '');
-        const normalizedUsernameError = getRegistrationUsernameError(username);
-        if (normalizedUsernameError) {
-          setIsUsernameAvailable(false);
-          setUsernameAvailabilityError(normalizedUsernameError);
-          return;
-        }
-
-        const availability = await checkRegistrationUsernameAvailability(username, idpIndex);
+        // Registration completes the Account only (email + password). Pod name,
+        // machine and storage belong to the Pod flow, never to this form.
         const fallbackLoginUrl = await resolveHostedAccountControlUrl(controls?.password?.login, fetch, idpIndex)
           ?? scopeAccountUrl('/.account/login/password/');
         const recoverExistingAccount = async (duplicateEmailRecovery = false): Promise<string> => {
@@ -168,30 +108,6 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
           storeAccountSessionToken(login.accountToken);
           return login.accountToken;
         };
-
-        if (!availability.available) {
-          let recoveredAccountToken: string | undefined;
-          try {
-            recoveredAccountToken = await recoverExistingAccount();
-          } catch {
-            // An unavailable Pod name may still be independent from this account.
-          }
-
-          if (recoveredAccountToken) {
-            finishRegistration();
-            return;
-          }
-
-          setIsUsernameAvailable(false);
-          setUsernameSuggestions(availability.suggestions);
-          setUsernameAvailabilityError(availability.error ?? 'Pod 名称已被占用。');
-          return;
-        }
-        if (availability.error) {
-          setIsUsernameAvailable(false);
-          setUsernameAvailabilityError(availability.error);
-          return;
-        }
 
         let accountToken: string;
         const recoveredAccountToken = await recoverExistingAccount().catch(() => undefined);
@@ -236,7 +152,7 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
       storeAccountSessionToken(typeof json.authorization === 'string' ? json.authorization : undefined);
       // CSS owns the password form; the Xpod host remembers only this public
       // identity hint after the eventual Account + WebID + Pod composition.
-      rememberPendingXpodAccountEmail(email, undefined, idpIndex);
+      rememberPendingXpodAccountEmail(email, undefined, idpIndex, rememberAccount);
       const locationHeader = response.headers.get('Location');
       if (typeof json.location === 'string' && json.location) {
         window.location.href = scopeAccountUrl(json.location);
@@ -270,9 +186,6 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
     } catch (error: unknown) {
       if (error instanceof RegistrationError && error.code === 'EMAIL_ALREADY_REGISTERED') {
         setEmailError(error.message);
-      } else if (error instanceof RegistrationError && error.code === 'USERNAME_ALREADY_TAKEN') {
-        setIsUsernameAvailable(false);
-        setUsernameAvailabilityError(error.message);
       } else if (isRegister) {
         setFormError(safeRegistrationMessage(error));
       } else {
@@ -284,15 +197,12 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
   };
 
   const toggleMode = (mode: 'login' | 'register') => {
+    setModeSwitch({ from: initialIsRegister, register: mode === 'register' });
     navigate({
       pathname: mode === 'register' ? scopeAccountUrl('/.account/login/password/register/') : scopeAccountUrl('/.account/login/password/'),
       search: location.search,
     });
-    setValues({ username: '', email: '', password: '', confirmation: '' });
-    setIsCheckingUsername(false);
-    setIsUsernameAvailable(null);
-    setUsernameSuggestions([]);
-    setUsernameAvailabilityError(null);
+    setValues({ email: '', password: '', confirmation: '' });
     setEmailError(null);
     setFormError(null);
   };
@@ -323,6 +233,7 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
 
   return (
     <XpodBlockingAccountCredentialsSurface
+      key={credentialScope ?? 'bootstrap'}
       surface="page"
       surfaceTitle={isRegister ? xpodAccountPageCopy.registerSurfaceTitle : xpodAccountPageCopy.loginSurfaceTitle}
       mode={isRegister ? 'register' : 'login'}
@@ -337,48 +248,14 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
       errors={{
         ...(emailError ? { email: emailError } : {}),
         ...(formError ? { form: formError } : {}),
-        ...(isRegister && usernameAvailabilityError && !isCheckingUsername ? { username: usernameAvailabilityError } : {}),
       }}
-      usernameAvailability={isCheckingUsername
-        ? 'checking'
-        : isUsernameAvailable === true
-          ? 'available'
-          : isUsernameAvailable === false
-            ? { status: 'unavailable', message: usernameAvailabilityError ?? undefined }
-            : 'idle'}
-      usernameSuggestions={usernameSuggestions}
       copy={xpodAccountCredentialsCopy}
-      footer={!isRegister ? (
-        <>
-          {!isRegister && hasOidcPending && controls?.oidc?.cancel ? (
-            <Button type="button" variant="outline" className="w-full" disabled={isSubmitting || isCancelling} onClick={handleCancel}>
-              {isCancelling ? xpodAccountPageCopy.cancellingAuthorization : xpodAccountPageCopy.cancelAuthorization}
-            </Button>
-          ) : null}
-          {!isRegister ? (
-            <div className="flex items-center justify-center gap-3 text-xs text-muted-foreground">
-              <Button
-                type="button"
-                variant="ghost"
-                className="h-auto px-2 py-1 text-xs font-normal text-muted-foreground hover:text-foreground"
-                disabled={isSubmitting}
-                onClick={() => toggleMode('register')}
-              >
-                创建账号
-              </Button>
-              <span aria-hidden="true" className="text-border">·</span>
-              <Button
-                type="button"
-                variant="ghost"
-                className="h-auto px-2 py-1 text-xs font-normal text-muted-foreground hover:text-foreground"
-                disabled={isSubmitting}
-                onClick={() => navigate({ pathname: scopeAccountUrl('/.account/login/password/forgot/'), search: location.search })}
-              >
-                {xpodAccountPageCopy.forgotPassword}
-              </Button>
-            </div>
-          ) : null}
-        </>
+      onRegister={() => toggleMode('register')}
+      onForgot={() => navigate({ pathname: scopeAccountUrl('/.account/login/password/forgot/'), search: location.search })}
+      footer={!isRegister && hasOidcPending && controls?.oidc?.cancel ? (
+        <Button type="button" variant="outline" className="h-11 w-full rounded-lg" disabled={isSubmitting || isCancelling} onClick={handleCancel}>
+          {isCancelling ? xpodAccountPageCopy.cancellingAuthorization : xpodAccountPageCopy.cancelAuthorization}
+        </Button>
       ) : undefined}
     />
   );

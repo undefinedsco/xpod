@@ -1,3 +1,5 @@
+import type { RunApprovalStore } from '../runs/RunApproval';
+import type { ApprovalRow } from '@undefineds.co/models';
 import type { WorkspaceRef } from '../workspace/types';
 import type { TaskAuthBindingSnapshot } from './TaskAuthBinding';
 import type { TaskStatusType, TaskTriggerKindType } from './schema';
@@ -6,6 +8,12 @@ export interface TaskRecordData {
   /** Base-relative Solid resource id, e.g. `index.ttl#task_x`. */
   id: string;
   title?: string;
+  assignedTo?: string;
+  source?: string;
+  dueAt?: number;
+  completedAt?: number;
+  notes?: string;
+  priority?: string;
   prompt: string;
   thread: string;
   workspace: WorkspaceRef;
@@ -31,7 +39,8 @@ export interface TaskListOptions {
   limit?: number;
 }
 
-export interface TaskStore<TContext> {
+export interface TaskStore<TContext> extends RunApprovalStore<TContext> {
+  readTaskApproval?(iri: string, context: TContext): Promise<ApprovalRow | null>;
   saveTask(task: TaskRecordData, context: TContext): Promise<void>;
   loadTask(taskId: string, context: TContext): Promise<TaskRecordData>;
   listTasks(options: TaskListOptions, context: TContext): Promise<TaskRecordData[]>;

@@ -1,22 +1,15 @@
+import { resolveOwnerPodBaseUrl, type PodBaseUrlResolver } from '../ai-gateway/pod/PodBaseUrlResolver';
 import type { ServerResponse } from 'node:http';
-import { createHash } from 'node:crypto';
 import { getLoggerFor } from 'global-logger-factory';
 import type { ApiServer } from '../ApiServer';
 import type { AuthenticatedRequest } from '../middleware/AuthMiddleware';
 import { readBoundedJsonBody } from '../http/readBoundedJsonBody';
 import {
-  canManageGatewayKeys,
   isInternalGatewayInvocationPrincipal,
   isGatewayApiKeyPrincipal,
-  ownerWebIdForGatewayKeyManagement,
 } from '../ai-gateway/auth/GatewayPrincipal';
 import type { SolidAuthContext } from '../auth/AuthContext';
-import type { AuthResult } from '../auth/Authenticator';
-import type { GatewayDeployment } from '../ai-gateway/auth/GatewayApiKey';
-import {
-  type GatewayAccessKeyRecord,
-  type GatewayAccessKeyRepository,
-} from '../ai-gateway/auth/GatewayApiKeyAuthenticator';
+import type { GatewayDeployment } from '../ai-gateway/auth/InvocationTokenCodec';
 import type {
   CompleteApiKeyInput,
   ConnectBeginInput,
@@ -26,12 +19,11 @@ import type { ProviderModelSelectionService } from '../ai-gateway/models/Provide
 import type { ProviderQuotaService } from '../ai-gateway/quota';
 import { ProviderModelsFetchError, ProviderModelsResponseError, type ProviderCustomModelsService, type ProviderModelsService } from '../ai-gateway/models';
 import { createAiConnectionsServiceAccess } from '../ai-gateway/service-access/AiConnectionsServiceAccess';
-import { isPodAccessFailure } from '../ai-gateway/pod/OwnerPodAccess';
+import { sendPodAccessFailure } from './PodAccessFailureResponse';
 import type { AiConnectionsInvocationKeyIssuer } from '../ai-gateway/auth/AiConnectionsInvocationKeyIssuer';
 import {
   type AiClientConfigurationCapabilityDescriptor,
   unavailableAiClientConfigurationCapability,
-  redactSecretText,
 } from '../service/AiClientConfigurationService';
 import { GatewayProtocolError, normalizeGatewayError } from '../ai-gateway/errors';
 import {
@@ -44,6 +36,8 @@ const logger = getLoggerFor('AiGatewayManagementHandler');
 
 export interface AiGatewayManagementHandlerOptions {
   deployment: GatewayDeployment;
+  /** The storage adapter verifies ownership and an optional current-Pod selection. */
+  podBaseUrlResolver?: PodBaseUrlResolver;
   connectService?: ProviderConnectService;
   quotaService?: ProviderQuotaService;
   modelsService?: ProviderModelsService;
@@ -54,15 +48,6 @@ export interface AiGatewayManagementHandlerOptions {
   servicePrincipal?: {
     getServicePrincipal(): Promise<{ webId: string }>;
   };
-  gatewayAccessKeyRepository?: GatewayAccessKeyRepository;
-  /** Reuses the configured CSS authenticator; never trusts the claimed registration owner. */
-  validateClientCredential?: (apiKey: string) => Promise<AuthResult>;
-  /**
-   * Forget sessions cached for a client whose registration is gone. Revocation happens at the
-   * issuer, so deleting the record is the moment this process learns the credential must stop
-   * being accepted - without it a revoked API Key keeps working until its token expires.
-   */
-  invalidateClientCredential?: (clientId: string) => void;
   aiClientConfiguration?: AiClientConfigurationCapabilityDescriptor;
   aiConnectionInvocationKeyIssuer?: Pick<AiConnectionsInvocationKeyIssuer, 'issue' | 'issueClientConfiguration'>;
   jsonBodyLimitBytes?: number;
@@ -91,17 +76,31 @@ export function registerAiGatewayManagementRoutes(
           logger.warn('Local AI Connection service identity is unavailable; using the authenticated WebID for this interactive request');
         }
       }
+      const selectedPod = request.headers['x-xpod-pod-url'];
+      if (Array.isArray(selectedPod)) {
+        throw new GatewayProtocolError('Provide exactly one X-Xpod-Pod-Url', { status: 400 });
+      }
+      if (!options.podBaseUrlResolver) throw new Error('Pod storage binding resolver is unavailable');
+      const podBaseUrl = await resolveOwnerPodBaseUrl(request.auth.webId, options.podBaseUrlResolver, {
+        ...request.auth,
+        ...(selectedPod ? { requestedPodUrl: selectedPod } : {}),
+      });
+      if (!podBaseUrl) {
+        throw new GatewayProtocolError('No owned Pod storage binding is available', { status: 404, code: 'service_access_missing' });
+      }
       const descriptor = createAiConnectionsServiceAccess({
         ownerWebId: request.auth.webId,
         serviceWebId: service.webId,
+        podBaseUrl,
       });
+      const boundAuth = { ...request.auth, authorizedPodUrl: podBaseUrl };
       const invocation = options.aiConnectionInvocationKeyIssuer
-        ? await options.aiConnectionInvocationKeyIssuer.issue({ auth: request.auth })
+        ? await options.aiConnectionInvocationKeyIssuer.issue({ auth: boundAuth })
         : undefined;
       const aiClientConfiguration = await withAiClientConfigurationInvocation(
         options.aiClientConfiguration ?? unavailableAiClientConfigurationCapability(),
         options.aiConnectionInvocationKeyIssuer,
-        request.auth,
+        boundAuth,
       );
       logger.debug(`Issuing AI Connection service access for ${request.auth.webId}; invocation=${Boolean(invocation)}`);
       sendJson(response, 200, {
@@ -111,172 +110,6 @@ export function registerAiGatewayManagementRoutes(
       });
     } catch (error) {
       sendAiConnectionsServiceAccessError(response, error);
-    }
-  });
-
-  server.get('/api/ai/gateway/keys', async (request, response) => {
-    if (!authorizeGatewayKeyManagement(request, response)) {
-      return;
-    }
-    const repository = requireGatewayAccessKeyRepository(options, response);
-    if (!repository) {
-      return;
-    }
-    try {
-      const auth = request.auth!;
-      const owner = ownerWebIdForGatewayKeyManagement(auth, undefined);
-      if (!owner) {
-        sendJson(response, 403, { error: 'Gateway API key management requires an owner WebID' });
-        return;
-      }
-      const records = await repository.listByOwner(owner, { auth });
-      // Issued credentials keep no copy of the wrapper, so the list can only
-      // report where each one is in effect.
-      sendJson(response, 200, {
-        data: records.map((record) => publicGatewayAccessKeyRecord(record, false)),
-      });
-    } catch (error) {
-      sendGatewayAccessKeyError(response, error);
-    }
-  });
-
-  server.post('/api/ai/gateway/keys', async (request, response) => {
-    if (!authorizeGatewayKeyManagement(request, response)) {
-      return;
-    }
-    const repository = requireGatewayAccessKeyRepository(options, response);
-    if (!repository) {
-      return;
-    }
-    const body = await readJsonObject(request, response, jsonBodyLimitBytes);
-    if (!body) {
-      return;
-    }
-    try {
-      const auth = request.auth!;
-      const owner = auth.type === 'solid' ? ownerWebIdForGatewayKeyManagement(auth, undefined) : undefined;
-      if (!owner) {
-        sendJson(response, 403, { error: 'Gateway API key management requires an owner WebID' });
-        return;
-      }
-      const apiKey = typeof body.apiKey === 'string' ? body.apiKey : '';
-      if (!validClientCredentialWrapper(apiKey)) {
-        sendJson(response, 400, { error: 'A CSS client credential wrapper is required' });
-        return;
-      }
-      if (!options.validateClientCredential || !repository.createKeyId) {
-        sendJson(response, 503, { error: 'CSS credential registration is unavailable' });
-        return;
-      }
-      const verified = await options.validateClientCredential(apiKey);
-      if (!verified.success || verified.context?.type !== 'solid') {
-        sendJson(response, verified.category === 'service_unavailable' ? 503 : 401, {
-          error: 'CSS client credential verification failed',
-        });
-        return;
-      }
-      if (verified.context.webId !== owner) {
-        sendJson(response, 403, { error: 'CSS client credential belongs to another WebID' });
-        return;
-      }
-      // Registering an application is about that application's own credential - where it is in
-      // effect, and how to revoke it. Background Pod access is a separate, explicit grant the user
-      // makes where they manage index/embedding work (`POST /api/ai/task-credentials`), so nothing
-      // about it is written here.
-      const name = normalizeOptionalString(body.name) ?? 'Xpod API Key';
-      const keyId = repository.createKeyId(owner, options.deployment);
-      const createdAt = new Date();
-      const record = await repository.create({
-        id: keyId,
-        kind: 'client-credentials',
-        owner,
-        secretHash: '',
-        deployment: options.deployment,
-        scopes: [],
-        createdAt,
-        name,
-        // The CSS label is the OIDC client id inside the wrapper; keeping it is
-        // what lets a later destroy find the credential at CSS.
-        clientCredentialId: verified.context.clientId,
-        appliedTo: normalizeOptionalString(body.appliedTo),
-        appliedOn: normalizeOptionalString(body.appliedOn),
-      }, { auth });
-      sendJson(response, 201, {
-        // The only time the wrapper leaves Xpod: the caller applies it now.
-        key: apiKey,
-        record: publicGatewayAccessKeyRecord(record, false, apiKey),
-      });
-    } catch (error) {
-      sendGatewayAccessKeyError(response, error);
-    }
-  });
-
-  server.patch('/api/ai/gateway/keys/:keyId', async (request, response, params) => {
-    if (!authorizeGatewayKeyManagement(request, response)) {
-      return;
-    }
-    const repository = requireGatewayAccessKeyRepository(options, response);
-    if (!repository) {
-      return;
-    }
-    const body = await readJsonObject(request, response, jsonBodyLimitBytes);
-    if (!body) {
-      return;
-    }
-    if (typeof body.enabled !== 'boolean') {
-      sendJson(response, 400, { error: 'enabled must be a boolean' });
-      return;
-    }
-    try {
-      const record = await ownedGatewayAccessKey(repository, params.keyId, request.auth!);
-      if (!record) {
-        sendJson(response, 404, { error: 'Gateway API Key not found' });
-        return;
-      }
-      if (record.kind === 'client-credentials') {
-        sendJson(response, 409, { error: 'CSS client credentials cannot be suspended through Pod metadata' });
-        return;
-      }
-      const updated = await repository.setEnabled(record.id, body.enabled, new Date(), { auth: request.auth });
-      if (!updated) {
-        sendJson(response, 404, { error: 'Gateway API Key not found' });
-        return;
-      }
-      const plaintext = await repository.revealPlaintext(updated.id, { auth: request.auth });
-      sendJson(response, 200, {
-        record: publicGatewayAccessKeyRecord(updated, Boolean(plaintext)),
-      });
-    } catch (error) {
-      sendGatewayAccessKeyError(response, error);
-    }
-  });
-
-  server.delete('/api/ai/gateway/keys/:keyId', async (request, response, params) => {
-    if (!authorizeGatewayKeyManagement(request, response)) {
-      return;
-    }
-    const repository = requireGatewayAccessKeyRepository(options, response);
-    if (!repository) {
-      return;
-    }
-    try {
-      const record = await ownedGatewayAccessKey(repository, params.keyId, request.auth!);
-      if (!record) {
-        sendJson(response, 404, { error: 'Gateway API Key not found' });
-        return;
-      }
-      // This removes the saved client configuration only. The Account host
-      // revokes CSS credentials before requesting this companion cleanup.
-      await repository.delete(record.id, { auth: request.auth });
-      if (record.clientCredentialId) {
-        options.invalidateClientCredential?.(record.clientCredentialId);
-      }
-      sendJson(response, 200, {
-        deleted: true,
-        record: publicGatewayAccessKeyRecord(record, false),
-      });
-    } catch (error) {
-      sendGatewayAccessKeyError(response, error);
     }
   });
 
@@ -1033,7 +866,6 @@ function authorizeManagementCaller(
   options: {
     gatewayKeyPrincipalError: string;
     nonSolidPrincipalError: string;
-    allowServiceGatewayKeyManagement?: boolean;
   },
 ): boolean {
   const auth = request.auth;
@@ -1046,9 +878,6 @@ function authorizeManagementCaller(
       sendJson(response, 403, { error: options.gatewayKeyPrincipalError });
       return false;
     }
-    return true;
-  }
-  if (options.allowServiceGatewayKeyManagement && canManageGatewayKeys(auth)) {
     return true;
   }
   sendJson(response, 403, { error: options.nonSolidPrincipalError });
@@ -1102,28 +931,6 @@ function authorizeProviderModels(
     gatewayKeyPrincipalError: 'Gateway API keys cannot manage provider model selections',
     nonSolidPrincipalError: 'Provider model management requires the current Solid identity',
   });
-}
-
-function authorizeGatewayKeyManagement(
-  request: AuthenticatedRequest,
-  response: ServerResponse,
-): boolean {
-  return authorizeManagementCaller(request, response, {
-    gatewayKeyPrincipalError: 'Gateway API keys cannot manage Gateway API keys',
-    nonSolidPrincipalError: 'Gateway API key management requires the current Solid identity',
-    allowServiceGatewayKeyManagement: true,
-  });
-}
-
-function requireGatewayAccessKeyRepository(
-  options: AiGatewayManagementHandlerOptions,
-  response: ServerResponse,
-): GatewayAccessKeyRepository | undefined {
-  if (!options.gatewayAccessKeyRepository) {
-    sendJson(response, 503, { error: 'Gateway API Key repository is not configured' });
-    return undefined;
-  }
-  return options.gatewayAccessKeyRepository;
 }
 
 function requireConnectService(
@@ -1290,68 +1097,8 @@ function normalizeCustomModelInput(body: Record<string, unknown>): {
   };
 }
 
-function validClientCredentialWrapper(value: string): boolean {
-  if (!value.startsWith('sk-')) return false;
-  const encoded = value.slice(3);
-  const decoded = Buffer.from(encoded, 'base64').toString('utf8');
-  return Buffer.from(decoded, 'utf8').toString('base64') === encoded
-    && /^[^\s\x00-\x1f\x7f:]+:[^\s\x00-\x1f\x7f]+$/u.test(decoded);
-}
-
-
-async function ownedGatewayAccessKey(
-  repository: GatewayAccessKeyRepository,
-  keyId: string | undefined,
-  auth: NonNullable<AuthenticatedRequest['auth']>,
-): Promise<GatewayAccessKeyRecord | undefined> {
-  if (!keyId) {
-    return undefined;
-  }
-  const record = await repository.findById(keyId, { auth });
-  if (!record) {
-    return undefined;
-  }
-  const owner = ownerWebIdForGatewayKeyManagement(auth, record.owner);
-  return owner && owner === record.owner ? record : undefined;
-}
-
-
-function publicGatewayAccessKeyRecord(
-  record: GatewayAccessKeyRecord,
-  plaintextAvailable: boolean,
-  plaintext?: string,
-): Record<string, unknown> {
-  const suffix = plaintext?.slice(-8) ?? record.plaintext?.slice(-8) ?? record.id.slice(-8);
-  const enabled = !record.disabledAt && !record.revokedAt;
-  return {
-    id: record.id,
-    ...(record.kind ? { kind: record.kind } : {}),
-    ...(record.credentialResource ? { credentialResource: record.credentialResource } : {}),
-    ...(plaintext ? { fingerprint: createHash('sha256').update(plaintext).digest('hex') } : {}),
-    owner: record.owner,
-    deployment: record.deployment,
-    scopes: record.scopes,
-    createdAt: record.createdAt.toISOString(),
-    ...(record.expiresAt ? { expiresAt: record.expiresAt.toISOString() } : {}),
-    ...(record.lastUsedAt ? { lastUsedAt: record.lastUsedAt.toISOString() } : {}),
-    ...(record.disabledAt ? { disabledAt: record.disabledAt.toISOString() } : {}),
-    ...(record.revokedAt ? { revokedAt: record.revokedAt.toISOString() } : {}),
-    ...(record.name ? { name: record.name } : {}),
-    // The CSS client id is what a later destroy needs; the applied state says
-    // where the wrapper was written.
-    ...(record.clientCredentialId ? { clientCredentialId: record.clientCredentialId } : {}),
-    ...(record.status ? { status: record.status } : {}),
-    ...(record.appliedTo ? { appliedTo: record.appliedTo } : {}),
-    ...(record.appliedOn ? { appliedOn: record.appliedOn } : {}),
-    ...(record.appliedAt ? { appliedAt: record.appliedAt.toISOString() } : {}),
-    enabled,
-    plaintextAvailable,
-    suffix,
-    maskedHint: `••••••••${suffix}`,
-  };
-}
-
 function normalizeCredentialPatch(body: Record<string, unknown>): {
+  apiKey?: string;
   label?: string;
   enabled?: boolean;
   priority?: number;
@@ -1359,12 +1106,17 @@ function normalizeCredentialPatch(body: Record<string, unknown>): {
   proxyUrl?: string;
 } | undefined {
   const patch: {
+    apiKey?: string;
     label?: string;
     enabled?: boolean;
     priority?: number;
     baseUrl?: string;
     proxyUrl?: string;
   } = {};
+  if (Object.prototype.hasOwnProperty.call(body, 'apiKey')) {
+    if (typeof body.apiKey !== 'string' || !body.apiKey.trim()) return undefined;
+    patch.apiKey = body.apiKey.trim();
+  }
   if (body.label !== undefined) {
     const label = normalizeOptionalString(body.label);
     if (!label) {
@@ -1415,6 +1167,12 @@ function normalizeStringList(value: unknown): string[] | null {
 }
 
 function sendCustomModelsError(response: ServerResponse, error: unknown): void {
+  // A Pod this caller cannot open has to answer with the code callers already act on
+  // (`service_access_missing`), not as an internal failure: the retry with the caller's own
+  // credential depends on reading it.
+  if (sendPodAccessFailure(response, error)) {
+    return;
+  }
   const message = error instanceof Error ? error.message : String(error);
   if (message === 'provider_not_available_in_deployment') {
     sendJson(response, 403, {
@@ -1460,6 +1218,12 @@ function sendCustomModelsError(response: ServerResponse, error: unknown): void {
 }
 
 function sendCredentialPoolError(response: ServerResponse, error: unknown): void {
+  // A Pod this caller cannot open has to answer with the code callers already act on
+  // (`service_access_missing`), not as an internal failure: the retry with the caller's own
+  // credential depends on reading it.
+  if (sendPodAccessFailure(response, error)) {
+    return;
+  }
   if (error instanceof GatewayProtocolError) {
     const normalized = normalizeGatewayError(error);
     sendJson(response, normalized.error.status, normalized);
@@ -1485,6 +1249,10 @@ function sendCredentialPoolError(response: ServerResponse, error: unknown): void
     sendJson(response, message === 'local_session_refresh_failed' ? 502 : 409, { error: message });
     return;
   }
+  if (message === 'invalid_api_key' || message === 'credential_auth_mode_mismatch') {
+    sendJson(response, 400, { error: message });
+    return;
+  }
   if (message === 'credential_version_conflict') {
     sendJson(response, 409, { error: 'credential_version_conflict' });
     return;
@@ -1504,30 +1272,13 @@ function sendCredentialPoolError(response: ServerResponse, error: unknown): void
   sendJson(response, 500, { error: 'Provider credential pool operation failed' });
 }
 
-function sendGatewayAccessKeyError(response: ServerResponse, error: unknown): void {
-  const message = error instanceof Error ? error.message : String(error);
-  if (isPodAccessFailure(message)) {
-    logger.warn(`Gateway API Key operation refused: ${redactSecretText(message)}`);
-    sendJson(response, 403, { error: 'service_access_missing' });
-    return;
-  }
-  if (message === 'caller_owner_mismatch') {
-    sendJson(response, 403, { error: 'Gateway API Key owner mismatch' });
-    return;
-  }
-  if (message === 'caller_pod_access_unavailable') {
-    sendJson(response, 401, { error: 'Authentication required' });
-    return;
-  }
-  if (message === 'gateway_key_secret_write_failed') {
-    sendJson(response, 500, { error: 'Gateway API Key secret could not be saved' });
-    return;
-  }
-  logger.error(`Gateway API Key operation failed: ${redactSecretText(message)}`);
-  sendJson(response, 500, { error: 'Gateway API Key operation failed' });
-}
-
 function sendLegacyProviderConnectError(response: ServerResponse, error: unknown): void {
+  // A Pod this caller cannot open has to answer with the code callers already act on
+  // (`service_access_missing`), not as an internal failure: the retry with the caller's own
+  // credential depends on reading it.
+  if (sendPodAccessFailure(response, error)) {
+    return;
+  }
   if (error instanceof GatewayProtocolError) {
     const normalized = normalizeGatewayError(error);
     sendJson(response, normalized.error.status, normalized);
@@ -1582,6 +1333,12 @@ function sendLegacyProviderConnectError(response: ServerResponse, error: unknown
 }
 
 function sendModelsError(response: ServerResponse, error: unknown): void {
+  // A Pod this caller cannot open has to answer with the code callers already act on
+  // (`service_access_missing`), not as an internal failure: the retry with the caller's own
+  // credential depends on reading it.
+  if (sendPodAccessFailure(response, error)) {
+    return;
+  }
   if (error instanceof ProviderModelsResponseError) {
     sendJson(response, 502, {
       error: 'provider_models_response_error',
@@ -1600,6 +1357,10 @@ function sendModelsError(response: ServerResponse, error: unknown): void {
     return;
   }
   const message = error instanceof Error ? error.message : String(error);
+  if (message === 'provider_request_timeout') {
+    sendJson(response, 504, { error: 'provider_request_timeout' });
+    return;
+  }
   if (message === 'models_credential_not_found') {
     sendJson(response, 404, { error: 'Provider credential not found for current identity' });
     return;
@@ -1627,6 +1388,12 @@ function sendModelsError(response: ServerResponse, error: unknown): void {
 }
 
 function sendModelSelectionError(response: ServerResponse, error: unknown): void {
+  // A Pod this caller cannot open has to answer with the code callers already act on
+  // (`service_access_missing`), not as an internal failure: the retry with the caller's own
+  // credential depends on reading it.
+  if (sendPodAccessFailure(response, error)) {
+    return;
+  }
   if (error instanceof GatewayProtocolError) {
     const normalized = normalizeGatewayError(error);
     const details = safeModelSelectionErrorDetails(error.details);
@@ -1693,6 +1460,12 @@ function safeModelSelectionErrorDetails(details: unknown): Record<string, unknow
 }
 
 function sendQuotaError(response: ServerResponse, error: unknown): void {
+  // A Pod this caller cannot open has to answer with the code callers already act on
+  // (`service_access_missing`), not as an internal failure: the retry with the caller's own
+  // credential depends on reading it.
+  if (sendPodAccessFailure(response, error)) {
+    return;
+  }
   const message = error instanceof Error ? error.message : String(error);
   if (message === 'quota_credential_not_found') {
     sendJson(response, 404, { error: 'Provider credential not found for current identity' });
@@ -1806,6 +1579,10 @@ function publicCredentialPoolCredential(value: unknown): Record<string, unknown>
     enabled: record.enabled ?? (record.status ? record.status === 'active' : undefined),
     priority: record.priority ?? numberMetadata(metadata, 'priority'),
     health: record.health ?? stringMetadata(metadata, 'health'),
+    lastFailureCode: record.lastFailureCode,
+    lastFailureAt: record.lastFailureAt,
+    rateLimitResetAt: record.rateLimitResetAt,
+    failCount: record.failCount,
     maskedHint: record.maskedHint ?? stringMetadata(metadata, 'maskedHint'),
     expiresAt: record.expiresAt instanceof Date ? record.expiresAt.toISOString() : record.expiresAt,
     baseUrl: record.baseUrl ?? stringMetadata(metadata, 'baseUrl'),
@@ -1896,6 +1673,12 @@ function publicConnectResult(value: unknown): unknown {
 }
 
 function sendAiConnectionsServiceAccessError(response: ServerResponse, error: unknown): void {
+  // A Pod this caller cannot open has to answer with the code callers already act on
+  // (`service_access_missing`), not as an internal failure: the retry with the caller's own
+  // credential depends on reading it.
+  if (sendPodAccessFailure(response, error)) {
+    return;
+  }
   if (error instanceof GatewayProtocolError && error.status >= 400 && error.status < 500) {
     sendJson(response, error.status, {
       error: error.code,

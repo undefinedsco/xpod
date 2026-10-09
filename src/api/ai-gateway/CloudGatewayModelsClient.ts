@@ -1,3 +1,4 @@
+import { gatewayInvocationHeaders, type GatewayInvocationMetadata } from './InvocationMetadata';
 import { getLoggerFor } from 'global-logger-factory';
 import type { AuthContext } from '../auth/AuthContext';
 import { GatewayProtocolError } from './errors';
@@ -75,6 +76,7 @@ export class CloudGatewayModelsClient {
     protocol: GatewayProtocol;
     body: unknown;
     signal?: AbortSignal;
+    invocationMetadata?: GatewayInvocationMetadata;
   }): Promise<Record<string, unknown>> {
     const response = await this.inferenceResponse({
       ...input,
@@ -93,6 +95,7 @@ export class CloudGatewayModelsClient {
     protocol: GatewayProtocol;
     body: unknown;
     signal?: AbortSignal;
+    invocationMetadata?: GatewayInvocationMetadata;
   }): AsyncIterable<GatewayEvent> {
     const response = await this.inferenceResponse({
       ...input,
@@ -112,6 +115,7 @@ export class CloudGatewayModelsClient {
     stream: boolean;
     accept: string;
     signal?: AbortSignal;
+    invocationMetadata?: GatewayInvocationMetadata;
   }): Promise<Response> {
     const authorization = callerIdentityAuthorization(input.auth);
     if (!authorization) {
@@ -128,6 +132,7 @@ export class CloudGatewayModelsClient {
       return await this.fetchImpl(url, {
         method: 'POST',
         headers: {
+          ...gatewayInvocationHeaders(input.invocationMetadata),
           accept: input.accept,
           authorization,
           'content-type': 'application/json',

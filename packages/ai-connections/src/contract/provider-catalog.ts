@@ -10,6 +10,17 @@ import { AI_CONNECTIONS_PROVIDERS } from './client/types'
 // provider or an offering; display layers project from it instead of keeping a
 // second copy, which is how the same offering used to appear under two names.
 
+export const PROVIDER_LABELS: Record<AiConnectionsProvider, string> = {
+  openai: 'OpenAI',
+  anthropic: 'Anthropic',
+  kimi: 'Kimi',
+  bailian: '百炼',
+  deepseek: 'DeepSeek',
+  zhipu: '智谱 AI',
+  ollama: 'Ollama',
+  custom: 'Custom',
+};
+
 export const DEFAULT_PROVIDER_OFFERINGS: AiProviderOffering[] = [
   { id: 'api-platform', label: 'API Platform', kind: 'api-platform', lifecycle: 'active', authModes: ['apiKey'] },
 ];
@@ -35,9 +46,8 @@ export const API_KEY_METHOD: AiProviderAuthorizationMethod = {
  * truth, `apiKey`) instead of on a provider-level label, and it points at the
  * `consoleUrl` the offering already carries.
  *
- * Providers without one say something real by not declaring it: DeepSeek has no
- * account console to sign into, Ollama is a local service, and `custom` is
- * configured inside Xpod rather than at a provider.
+ * Providers without this action use the API Key form directly or a local
+ * service. Opening a console does not perform OAuth or connect an account.
  *
  * The id names the action the way its siblings do (browser-login / device-code /
  * local-session-import); the wording follows from the id in the applet, and the
@@ -87,6 +97,7 @@ export const CUSTOM_DEFAULT_OFFERINGS: AiProviderOffering[] = [
 ];
 
 const KIMI_SUBSCRIPTION_URL = 'https://www.kimi.com/code';
+const KIMI_SUBSCRIPTION_CONSOLE_URL = 'https://www.kimi.com/code/console';
 const KIMI_USAGE_POLICY_URL = 'https://www.kimi.com/user/agreement';
 const KIMI_CODING_BASE_URL = 'https://api.kimi.com/coding/v1';
 const KIMI_ANTHROPIC_BASE_URL = 'https://api.kimi.com/coding/';
@@ -151,15 +162,16 @@ export const PROVIDER_OFFERINGS: Partial<Record<AiConnectionsProvider, AiProvide
   anthropic: [
     {
       id: 'official-subscription',
-      label: 'Claude Code Subscription',
+      label: 'Claude Pro / Max',
       kind: 'oauth-subscription',
       lifecycle: 'unavailable',
       authModes: ['oauth'],
-      productLabel: 'Anthropic',
+      authorizationMethods: [],
+      productLabel: 'Claude Code',
       runtimeProviderIds: ['anthropic'],
       credentialPrefixHints: [],
       consoleUrl: 'https://claude.ai/',
-      subscriptionUrl: 'https://claude.ai/settings/billing',
+      subscriptionUrl: 'https://claude.com/pricing',
       endpoints: [],
       modelDiscovery: { strategy: 'unsupported', path: '/models', endpointProtocol: 'anthropic' },
       quota: { strategy: 'subscription', url: 'https://claude.ai/settings/usage' },
@@ -198,7 +210,7 @@ export const PROVIDER_OFFERINGS: Partial<Record<AiConnectionsProvider, AiProvide
       anthropicBaseUrl: KIMI_ANTHROPIC_BASE_URL,
       quotaStrategy: 'subscription',
       quotaUrl: KIMI_SUBSCRIPTION_URL,
-      consoleUrl: KIMI_SUBSCRIPTION_URL,
+      consoleUrl: KIMI_SUBSCRIPTION_CONSOLE_URL,
       subscriptionUrl: KIMI_SUBSCRIPTION_URL,
       usagePolicyUrl: KIMI_USAGE_POLICY_URL,
       // The coding endpoint rejects developer messages, which the runtime has to

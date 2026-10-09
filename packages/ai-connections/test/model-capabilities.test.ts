@@ -1,11 +1,18 @@
 import { describe, expect, it } from 'vitest'
-import { modelIconTokens } from '../src/AiModelCatalog'
+import { modelIconTokens, catalogModelClass, MODEL_CLASS_LABELS } from '../src/AiModelCatalog'
 // `parseGatewayModel` is an internal payload parser on purpose - the published
 // `/client` barrel lists its surface explicitly - so this test reads the core's
 // source directly rather than widening the contract for a test.
 import { parseGatewayModel } from '../src/contract/client/normalize'
 
 describe('model capability surfacing', () => {
+  it('preserves a declared embedding dimension and does not invent one', () => {
+    expect(parseGatewayModel({ id: 'vector', provider: 'openai', modelType: 'embedding', dimension: 1536 })).toMatchObject({ modelType: 'embedding', dimension: 1536 })
+    expect(parseGatewayModel({ id: 'speech', provider: 'openai', modelType: 'speech_synthesis' })?.modelType).toBe('speech_synthesis')
+    expect(parseGatewayModel({ id: 'vector', provider: 'openai' })?.dimension).toBeUndefined()
+    expect(parseGatewayModel({ id: 'vector', provider: 'openai', dimension: -1 })?.dimension).toBeUndefined()
+  })
+
   it('turns catalog capability flags into the tokens a row renders', () => {
     const model = parseGatewayModel({
       id: 'deepseek-v4.1-flash',
@@ -59,5 +66,14 @@ describe('model capability surfacing', () => {
       custom_capabilities: ['tool_call', 'something-new'],
     })
     expect(modelIconTokens(model!)).toEqual(['tool_call'])
+  })
+})
+
+describe('model classes', () => {
+  it('keeps class membership separate from glyph capabilities', () => {
+    expect(catalogModelClass({ modelType: 'embedding', capabilities: ['reasoning'] })).toBe('embedding')
+    expect(catalogModelClass({ capabilities: ['image_generation'] })).toBe('image_generation')
+    expect(catalogModelClass({ capabilities: ['reasoning', 'tool_call'] })).toBe('chat')
+    expect(MODEL_CLASS_LABELS.document_understanding).toBe('文档理解')
   })
 })

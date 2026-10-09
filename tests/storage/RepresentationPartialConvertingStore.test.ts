@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { Readable } from 'node:stream';
-import type { Representation, RepresentationPreferences, ResourceIdentifier } from '@solid/community-server';
+import { BasicRepresentation, type Representation, type RepresentationPreferences, type ResourceIdentifier } from '@solid/community-server';
 import { RepresentationPartialConvertingStore } from '../../src/storage/RepresentationPartialConvertingStore';
 
 vi.mock('rdf-parse', () => ({
@@ -15,11 +15,7 @@ type MockConverterCallArgs = {
   preferences: RepresentationPreferences;
 };
 
-const createRepresentation = (contentType: string): Representation => ({
-  binary: false,
-  metadata: { contentType },
-  data: Readable.from(['dummy']),
-} as unknown as Representation);
+const createRepresentation = (contentType: string): Representation => new BasicRepresentation('dummy', contentType);
 
 describe('RepresentationPartialConvertingStore', () => {
   const baseStore = {
@@ -46,7 +42,6 @@ describe('RepresentationPartialConvertingStore', () => {
       handleSafe: vi.fn(async (args: MockConverterCallArgs) => {
         inConverterCalls.push(args);
         const converted = createRepresentation('internal/quads');
-        converted.metadata = { contentType: 'internal/quads' } as any;
         converted.data = Readable.from(['converted quads']) as any;
         return converted;
       }),
@@ -57,7 +52,6 @@ describe('RepresentationPartialConvertingStore', () => {
       handleSafe: vi.fn(async (args: MockConverterCallArgs) => {
         outConverterCalls.push(args);
         const converted = createRepresentation('text/turtle');
-        converted.metadata = { contentType: 'text/turtle' } as any;
         converted.data = Readable.from(['converted turtle']) as any;
         return converted;
       }),

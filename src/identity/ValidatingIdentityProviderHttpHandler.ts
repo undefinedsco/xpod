@@ -271,37 +271,55 @@ export class ValidatingIdentityProviderHttpHandler extends OperationHttpHandler 
    * belongs to, never another one.
    */
   private async findSessionAccount(request: OperationHttpHandlerInput['request']): Promise<string | undefined> {
-    if (!this.sessionExtractor) {
-      return undefined;
-    }
-
     // Only a DPoP-bound session may name an Account. A Bearer token is replayable, so accepting
     // one here would let anybody who copied it mint Account authority from a Pod credential.
     if (!/^DPoP /iu.test(request.headers.authorization ?? '')) {
+      return undefined;
+    }
+    if (!this.sessionExtractor) {
+      this.logger.warn('Host session Account authorization rejected: extractor_missing');
       return undefined;
     }
 
     let credentials: Credentials;
     try {
       credentials = await this.sessionExtractor.handleSafe(request);
-    } catch (error: unknown) {
+    } catch {
       // No session at all, or one this deployment does not accept: stay anonymous.
-      this.logger.debug(`No host session credentials: ${createErrorMessage(error)}`);
+      this.logger.warn('Host session Account authorization rejected: verification_failed');
       return undefined;
     }
 
     const webId = credentials.agent?.webId;
     const clientId = credentials.client?.clientId;
-    if (!webId || !clientId || !this.hostClientIds.includes(clientId)) {
+    if (!webId) {
+      this.logger.warn('Host session Account authorization rejected: webid_missing');
+      return undefined;
+    }
+    if (!clientId) {
+      this.logger.warn('Host session Account authorization rejected: client_missing');
+      return undefined;
+    }
+    if (!this.hostClientIds.includes(clientId)) {
+      this.logger.warn('Host session Account authorization rejected: client_not_host');
       return undefined;
     }
 
     const links = await this.accountStorage.find(WEBID_STORAGE_TYPE, { webId });
-    const accountId = links
+    const accountIds = new Set(links
       .map((link) => link.accountId)
-      .find((value): value is string => typeof value === 'string' && value !== '');
-    if (!accountId) {
-      this.logger.debug(`WebID ${webId} is not linked to an Account.`);
+      .filter((value): value is string => typeof value === 'string' && value !== ''));
+    if (accountIds.size === 0) {
+      this.logger.warn('Host session Account authorization rejected: webid_not_linked');
+      return undefined;
+    }
+    if (accountIds.size !== 1) {
+      this.logger.warn('Host session Account authorization rejected: webid_link_ambiguous');
+      return undefined;
+    }
+    const [accountId] = accountIds;
+    if (!await this.accountStorage.has(ACCOUNT_TYPE, accountId)) {
+      this.logger.warn('Host session Account authorization rejected: account_missing');
       return undefined;
     }
 

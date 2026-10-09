@@ -1,7 +1,8 @@
 import { scopeAccountUrl } from '../utils/account-interaction-url';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
-import { LogOut, User, HardDrive, Key, Plus, Trash2, Globe, Database, Shield, Copy, Check, ChevronDown, Info, ArrowRight, AlertCircle, X } from 'lucide-react';
+import type { StorageBinding } from '@undefineds.co/solid-sdk';
+import { LogOut, Key, Copy, Check, ChevronDown, Info, AlertCircle, X } from 'lucide-react';
 import { useAuth } from '../context/AuthContextValue';
 import {
   clearStoredProvisionCode,
@@ -19,18 +20,50 @@ import {
   type ScopedWebIdEntry,
   type StorageMode,
 } from '../utils/storage-scope';
-import { xpodFirstPodErrors } from '../auth/xpod-account-copy';
+import {
+  resolveXpodAccountPageLocale,
+  xpodAccountDashboardCopy,
+  xpodFirstPodErrors,
+} from '../auth/xpod-account-copy';
 import { fetchAccountStorageBindings } from '../auth/account-storage-bindings';
+import {
+  ConsentResumeBanner,
+  CredentialSection,
+  IdpChrome,
+  Input,
+  Button,
+  ConfirmationDialog,
+  WebIdSection,
+  resolvePodSignInCopy,
+  webIdShortName,
+  type CredentialEntry,
+  type StorageLocation,
+  type UnlinkedPodEntry,
+  type WebIdEntry,
+} from '@undefineds.co/shared-ui';
+import { fetchOidcCancelRedirectLocation, resolveOidcCancelUrl } from './ConsentPage.utils';
+import {
+  clearConsentContinuation,
+  clearManagementContinuation,
+  currentInteractionScope,
+  resolveAuthoritativeAccountId,
+  saveConsentContinuation,
+  saveManagementContinuation,
+} from '../utils/safe-continuation';
 
 interface PodView {
   id: string;
   resourceUrl?: string;
+  deletionUrl?: string;
+  authorizationUrl?: string;
   name?: string;
   storageMode?: StorageMode;
 }
 
 interface AccountPodResponse {
   pods?: Record<string, string>;
+  podDeletionControls?: Record<string, string>;
+  podDeletionAuthorizationControls?: Record<string, string>;
 }
 
 interface AccountWebIdResponse {
@@ -46,6 +79,12 @@ interface CredentialView {
   resourceUrl: string;
   webId?: string;
 }
+
+type RemovalAction =
+  | { kind: 'pod'; target: PodView }
+  | { kind: 'credential'; target: CredentialView };
+
+type PendingRemoval = RemovalAction & { assertAccount?: () => void };
 
 function derivePodName(storageUrl: string): string | undefined {
   try {
@@ -66,6 +105,8 @@ function normalizePods(json: AccountPodResponse | undefined): PodView[] {
   return Object.entries(pods).map(([storageUrl, resourceUrl]) => ({
     id: storageUrl,
     resourceUrl,
+    deletionUrl: typeof json?.podDeletionControls?.[storageUrl] === 'string' ? json.podDeletionControls[storageUrl] : undefined,
+    authorizationUrl: typeof json?.podDeletionAuthorizationControls?.[storageUrl] === 'string' ? json.podDeletionAuthorizationControls[storageUrl] : undefined,
     name: derivePodName(storageUrl),
   }));
 }
@@ -85,6 +126,33 @@ function podsFromScopedEntries(entries: ScopedWebIdEntry[]): PodView[] {
     });
   }
   return pods;
+}
+
+/** Merge bindings with separately advertised owner-management and deletion controls. */
+function mergePodsByStorageUrl(existing: PodView[], incoming: PodView[]): PodView[] {
+  const byId = new Map(existing.map((pod) => [pod.id, pod] as const));
+  for (const pod of incoming) {
+    const current = byId.get(pod.id);
+    if (!current) {
+      byId.set(pod.id, pod);
+      continue;
+    }
+    byId.set(pod.id, {
+      ...current,
+      resourceUrl: pod.resourceUrl ?? current.resourceUrl,
+      deletionUrl: pod.deletionUrl ?? current.deletionUrl,
+      authorizationUrl: pod.authorizationUrl ?? current.authorizationUrl,
+      name: current.name ?? pod.name,
+      storageMode: current.storageMode ?? pod.storageMode,
+    });
+  }
+  return Array.from(byId.values());
+}
+
+/** Scope filtering must retain both inventory capabilities for the same storage URL. */
+function attachInventoryManagement(pod: PodView, inventory: PodView[]): PodView {
+  const match = inventory.find((candidate) => candidate.id === pod.id);
+  return match ? { ...pod, resourceUrl: match.resourceUrl, deletionUrl: match.deletionUrl, authorizationUrl: match.authorizationUrl } : pod;
 }
 
 function credentialIdFromUrl(resourceUrl: string): string {
@@ -126,24 +194,21 @@ async function responseError(response: Response, fallback: string): Promise<stri
   );
 }
 
-const brandTileClass = 'flex items-center justify-center rounded-lg bg-primary text-primary-foreground';
 const cardClass = 'bg-card border border-border rounded-xl shadow-sm';
-const iconMutedClass = 'w-4 h-4 text-muted-foreground shrink-0';
-const labelClass = 'block text-xs text-muted-foreground mb-1';
+const labelClass = 'block text-sm text-muted-foreground mb-1';
 const primaryButtonClass = 'bg-primary hover:bg-primary/90 text-primary-foreground transition-colors disabled:opacity-50';
 const quietButtonClass = 'text-muted-foreground hover:text-foreground hover:bg-muted rounded-lg transition-colors';
-const sectionTitleClass = 'text-sm font-semibold text-foreground flex items-center gap-2';
 const inputClass = 'bg-background border border-input rounded-lg text-sm text-foreground focus:border-primary focus:outline-none';
-const linkClass = 'text-xs font-mono text-primary hover:text-primary/80 truncate';
 const copyButtonClass = 'p-1.5 text-muted-foreground hover:text-foreground hover:bg-muted rounded transition-colors shrink-0';
-const dangerButtonClass = 'p-2 text-muted-foreground hover:text-destructive hover:bg-destructive/10 rounded-lg transition-colors';
 
-export function AccountPage() {
-  const { controls, refetchControls, hasOidcPending, idpIndex } = useAuth();
+export function AccountPage({ locale }: { locale?: string } = {}) {
+  const { bindAccountCapability, controls, refetchControls, hasOidcPending, idpIndex, identity } = useAuth();
+  const copy = xpodAccountDashboardCopy(resolveXpodAccountPageLocale(locale));
   const navigate = useNavigate();
   const [isLoading, setIsLoading] = useState(false);
   const [webIds, setWebIds] = useState<string[]>([]);
   const [pods, setPods] = useState<PodView[]>([]);
+  const [bindings, setBindings] = useState<StorageBinding[]>([]);
   const [credentials, setCredentials] = useState<CredentialView[]>([]);
   const [newCredential, setNewCredential] = useState<{ id: string; secret: string } | null>(null);
   const [showCreateCredential, setShowCreateCredential] = useState(false);
@@ -152,6 +217,10 @@ export function AccountPage() {
   const [copiedField, setCopiedField] = useState<string | null>(null);
   const [showWebIdDropdown, setShowWebIdDropdown] = useState(false);
   const [accountError, setAccountError] = useState<string | null>(null);
+  const [pendingRemoval, setPendingRemoval] = useState<PendingRemoval | null>(null);
+  const [removalError, setRemovalError] = useState<string | null>(null);
+  const [removalPending, setRemovalPending] = useState(false);
+  const removalPendingRef = useRef(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
   const [accountWebIdUrl, setAccountWebIdUrl] = useState<string>();
   const [accountPodUrl, setAccountPodUrl] = useState<string>();
@@ -160,6 +229,16 @@ export function AccountPage() {
   const [accountLogoutUrl, setAccountLogoutUrl] = useState<string>();
   const passwordForgotUrl = resolveSameOriginAccountControlUrl(controls?.password?.forgot)
     ?? scopeAccountUrl('/.account/login/password/forgot/');
+
+  useEffect(() => {
+    let active = true;
+    queueMicrotask(() => {
+      if (!active) return;
+      setPendingRemoval(null);
+      setRemovalError(null);
+    });
+    return () => { active = false; };
+  }, [controls, idpIndex]);
 
   useEffect(() => {
     let active = true;
@@ -193,6 +272,35 @@ export function AccountPage() {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
+  const handleManagePods = useCallback(() => {
+    // Daily management entry. Only a genuinely pending authorization — both the
+    // scoped route and the provider's own pending flag — carries the consent task
+    // so the heavy page can offer the way back. A daily visit (or a bare
+    // interaction-shaped URL with no pending authorization) stores only the
+    // Account return address and must never fabricate an authorization task.
+    const accountId = resolveAuthoritativeAccountId(controls, identity);
+    const interaction = currentInteractionScope();
+    if (accountId && interaction && hasOidcPending) {
+      // This entry came from the authorization flow: that is the active intent,
+      // so drop any daily-management context instead of letting the heavy page
+      // offer two contradictory returns.
+      clearManagementContinuation();
+      saveConsentContinuation({ accountId, interaction, returnTo: `${interaction}/oidc/consent/` });
+    } else if (accountId) {
+      // A daily visit is the active intent. Any leftover consent record from an
+      // earlier flow for this same Account must not override it on the heavy
+      // page, which would send the user "back to authorization" they are not in.
+      clearConsentContinuation();
+      saveManagementContinuation({ accountId, returnTo: scopeAccountUrl('/.account/account/') });
+    } else {
+      // No authoritative Account id: never let a stale task from a previous
+      // session ride along into the management page.
+      clearConsentContinuation();
+      clearManagementContinuation();
+    }
+    window.location.href = '/settings/pod';
+  }, [controls, hasOidcPending, identity]);
+
   const copyToClipboard = async (text: string, field: string) => {
     try {
       await navigator.clipboard.writeText(text);
@@ -223,12 +331,15 @@ export function AccountPage() {
           origin: window.location.origin,
           trustedAccountIndex: idpIndex,
         });
+        setBindings(bindings);
         allWebIds = bindings.map((entry) => entry.webId);
         allPods = podsFromScopedEntries(bindings.map((entry) => ({
           webId: entry.webId,
           storageUrl: entry.storageUrl,
           storageMode: storageModeFor(entry.webId, entry.storageUrl),
         })));
+      } else {
+        setBindings([]);
       }
       if (accountWebIdUrl) {
         const res = await fetch(scopeAccountUrl(accountWebIdUrl), { headers: storedAccountTokenHeaders(), credentials: 'include' });
@@ -243,8 +354,7 @@ export function AccountPage() {
         const res = await fetch(scopeAccountUrl(accountPodUrl), { headers: storedAccountTokenHeaders(), credentials: 'include' });
         if (res.ok) {
           const json = await res.json() as AccountPodResponse;
-          const seen = new Set(allPods.map((pod) => pod.id));
-          allPods = [...allPods, ...normalizePods(json).filter((pod) => !seen.has(pod.id))];
+          allPods = mergePodsByStorageUrl(allPods, normalizePods(json));
         }
       }
 
@@ -269,7 +379,7 @@ export function AccountPage() {
       // stuck sync when this device simply has no Pod yet.
       nextWebIds = allWebIds;
       const nextPods = scope?.serviceToken
-        ? podsFromScopedEntries(scopedEntries)
+        ? podsFromScopedEntries(scopedEntries).map((pod) => attachInventoryManagement(pod, allPods))
         : scope
           ? allPods
           .filter((pod) => storageUrlBelongsToRoot(pod.id, scope?.root))
@@ -331,6 +441,8 @@ export function AccountPage() {
   }, [fetchData]);
 
   const handleLogout = async () => {
+    clearConsentContinuation();
+    clearManagementContinuation();
     if (!accountLogoutUrl) return;
     setIsLoading(true);
     setAccountError(null);
@@ -356,22 +468,87 @@ export function AccountPage() {
   };
 
 
-  const handleDeletePod = async (pod: PodView) => {
-    const podResourceUrl = await resolveHostedAccountControlUrl(pod.resourceUrl, fetch, idpIndex);
-    if (!podResourceUrl) return;
-    if (!confirm(`Delete pod ${pod.id}? This cannot be undone.`)) return;
+  const openRemoval = (action: RemovalAction) => {
+    if (isLoading || removalPendingRef.current) return;
+    setAccountError(null);
+    setRemovalError(null);
+    setPendingRemoval({ ...action, assertAccount: bindAccountCapability?.() });
+  };
+
+  const confirmRemoval = async () => {
+    if (!pendingRemoval || removalPendingRef.current) return;
+    const action = pendingRemoval;
+    const fallback = action.kind === 'pod' ? copy.deletePodFailed : copy.revokeCredentialFailed;
+    removalPendingRef.current = true;
+    setRemovalPending(true);
+    setIsLoading(true);
+    setRemovalError(null);
+    try {
+      action.assertAccount?.();
+      const resourceUrl = await resolveHostedAccountControlUrl(action.kind === 'pod' ? action.target.deletionUrl : action.target.resourceUrl, fetch, idpIndex);
+      action.assertAccount?.();
+      if (!resourceUrl) throw new Error('xpod-account-session-changed');
+      const res = await fetch(scopeAccountUrl(resourceUrl), { method: 'DELETE', headers: storedAccountTokenHeaders(), credentials: 'include' });
+      action.assertAccount?.();
+      if (res.ok) {
+        await fetchData();
+        action.assertAccount?.();
+        setPendingRemoval(null);
+      } else {
+        const body = await res.json().catch(() => ({})) as { message?: unknown; code?: unknown };
+        const code = typeof body.code === 'string' ? body.code : body.message;
+        const errors: Record<string, string> = {
+          POD_DELETE_NODE_UNAVAILABLE: copy.deletePodNodeUnavailable,
+          POD_DELETE_NODE_FAILED: copy.deletePodNodeFailed,
+          POD_DELETE_NOT_ACKNOWLEDGED: copy.deletePodNotAcknowledged,
+          POD_DELETE_UNSUPPORTED_PROVIDER: copy.deletePodUnsupported,
+        };
+        setRemovalError(action.kind === 'pod' && typeof code === 'string' && Object.prototype.hasOwnProperty.call(errors, code)
+          ? errors[code] : fallback);
+      }
+    } catch (err: unknown) {
+      setRemovalError(err instanceof Error && err.message === 'xpod-account-session-changed'
+        ? copy.actionUnavailable : accountActionError(err, fallback));
+    } finally {
+      removalPendingRef.current = false;
+      setRemovalPending(false);
+      setIsLoading(false);
+    }
+  };
+
+  const beginDeletionAuthorization = async (pod: PodView | undefined) => {
+    if (!pod?.authorizationUrl || removalPendingRef.current) return;
+    const assertAccount = bindAccountCapability?.();
+    removalPendingRef.current = true;
     setIsLoading(true);
     setAccountError(null);
     try {
-      const res = await fetch(scopeAccountUrl(podResourceUrl), { method: 'DELETE', headers: storedAccountTokenHeaders(), credentials: 'include' });
-      if (res.ok) {
-        await fetchData();
-      } else {
-        setAccountError('无法删除存储空间，请重试。');
+      assertAccount?.();
+      const control = await resolveHostedAccountControlUrl(pod.authorizationUrl, fetch, idpIndex);
+      assertAccount?.();
+      if (!control) throw new Error('invalid-control');
+      const response = await fetch(scopeAccountUrl(control), {
+        method: 'POST', credentials: 'include', redirect: 'error',
+        headers: storedAccountTokenHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ action: 'requestDeletionAuthorization' }),
+      });
+      const body = await response.json();
+      assertAccount?.();
+      if (!response.ok) throw new Error('authorization-failed');
+      const request = body.deletionAuthorization;
+      const target = new URL(request.localManagementUrl);
+      if (!['http:', 'https:'].includes(target.protocol) || target.username || target.password || target.hash
+        || target.origin !== new URL(pod.id).origin || !target.pathname.endsWith('/settings/pod')
+        || typeof request.challenge !== 'string' || !request.challenge || typeof request.podName !== 'string'
+        || target.searchParams.get('deletionAuthorization') !== request.challenge
+        || target.searchParams.get('podName') !== request.podName || !(request.expiresAt > Date.now())) {
+        throw new Error('invalid-target');
       }
-    } catch (err: unknown) {
-      setAccountError(accountActionError(err, '无法删除存储空间，请重试。'));
+      window.location.assign(target.href);
+    } catch {
+      setAccountError(copy.enablePodDeletionFailed);
     } finally {
+      removalPendingRef.current = false;
       setIsLoading(false);
     }
   };
@@ -415,55 +592,172 @@ export function AccountPage() {
     setShowCreateCredential(true);
   };
 
-  const handleDeleteCredential = async (credential: CredentialView) => {
-    const credentialResourceUrl = await resolveHostedAccountControlUrl(credential.resourceUrl, fetch, idpIndex);
-    if (!credentialResourceUrl) return;
-    if (!confirm('Delete this credential? This cannot be undone.')) return;
-    setIsLoading(true);
-    setAccountError(null);
+  const accountLocale = resolveXpodAccountPageLocale(locale);
+  const signInCopy = resolvePodSignInCopy(accountLocale);
+  const pendingInteraction = currentInteractionScope();
+  // Only the provider's own pending flag, together with this page's scoped
+  // interaction, is proof an authorization is still live. A bare
+  // interaction-shaped URL must never fabricate a resume task.
+  const showPendingBanner = hasOidcPending && Boolean(pendingInteraction);
+
+  const storageLocationFor = (storageUrl: string | undefined): StorageLocation | undefined => {
+    if (!storageUrl) return undefined;
     try {
-      const res = await fetch(scopeAccountUrl(credentialResourceUrl), { method: 'DELETE', headers: storedAccountTokenHeaders(), credentials: 'include' });
-      if (res.ok) {
-        await fetchData();
-      } else {
-        setAccountError('无法撤销客户端凭据，请重试。');
-      }
-    } catch (err: unknown) {
-      setAccountError(accountActionError(err, '无法撤销客户端凭据，请重试。'));
-    } finally {
-      setIsLoading(false);
+      // A WebID and Pod can share an edge origin. Their being same-origin says
+      // nothing about cloud hosting; compare the real binding to its issuer.
+      const issuer = new URL(idpIndex ?? '/.account/', window.location.origin);
+      const storage = new URL(storageUrl);
+      if (!['https:', 'http:'].includes(storage.protocol)) return undefined;
+      return storage.origin === issuer.origin
+        ? { kind: 'cloud', label: signInCopy.hostedStorage }
+        : { kind: 'edge', label: signInCopy.independentStorage };
+    } catch {
+      return undefined;
     }
   };
 
+  const podForWebId = (webId: string): PodView | undefined => {
+    const storageUrl = bindings.find((item) => item.webId === webId)?.storageUrl;
+    return storageUrl ? pods.find((pod) => pod.id === storageUrl) : undefined;
+  };
+
+  const webIdEntries: WebIdEntry[] = webIds.map((webId) => {
+    const storageUrl = bindings.find((item) => item.webId === webId)?.storageUrl;
+    const pod = storageUrl ? pods.find((item) => item.id === storageUrl) : undefined;
+    const storage = storageLocationFor(storageUrl);
+    return {
+      id: webId,
+      displayName: webIdShortName(webId),
+      webId,
+      podUrl: storageUrl,
+      ...(storage ? { storage } : {}),
+      removable: Boolean(pod?.deletionUrl),
+      authorizable: Boolean(pod?.authorizationUrl),
+    };
+  });
+  // Real Pods that the account advertises but that have no WebID binding must
+  // stay visible: they are genuine storage, and hiding them would drop the
+  // only management action the account advertises. No WebID link is invented.
+  const linkedStorageUrls = new Set(bindings.map((item) => item.storageUrl));
+  const unlinkedPodEntries: UnlinkedPodEntry[] = pods
+    .filter((pod) => !linkedStorageUrls.has(pod.id))
+    .map((pod) => {
+      const storage = storageLocationFor(pod.id);
+      return {
+        id: pod.id,
+        storageUrl: pod.id,
+        displayName: pod.name ?? pod.id,
+        ...(storage ? { storage } : {}),
+        removable: Boolean(pod.deletionUrl),
+        authorizable: Boolean(pod.authorizationUrl),
+      };
+    });
+  const webIdLabelById = new Map(webIdEntries.map((entry) => [entry.id, entry.displayName]));
+  const credentialEntries: CredentialEntry[] = credentials.map((credential) => ({
+    id: credential.id,
+    label: credential.id,
+    webIdName: credential.webId
+      ? webIdLabelById.get(credential.webId) ?? webIdShortName(credential.webId)
+      : '',
+  }));
+
+  const handleRemoveWebIdEntry = (entry: WebIdEntry) => {
+    const pod = podForWebId(entry.id);
+    if (pod) openRemoval({ kind: 'pod', target: pod });
+  };
+
+  const handleRemoveUnlinkedPod = (entry: UnlinkedPodEntry) => {
+    const pod = pods.find((item) => item.id === entry.id);
+    if (pod) openRemoval({ kind: 'pod', target: pod });
+  };
+
+  /**
+   * The banner actions capture the current Account capability exactly once and
+   * re-check it after every await: a switch that lands while the server call is
+   * in flight must not clear the new session's task or navigate this tab to the
+   * old client. The authoritative Account id and interaction scope are re-read
+   * at the same time, so a stale banner never resumes an old task.
+   */
+  const assertActionSession = useCallback((
+    expectedAccountId: string,
+    expectedInteraction: string,
+    assertAccount: (() => void) | undefined,
+  ) => {
+    assertAccount?.();
+    const currentAccountId = resolveAuthoritativeAccountId(controls, identity);
+    if (!currentAccountId
+      || currentAccountId !== expectedAccountId
+      || currentInteractionScope() !== expectedInteraction) {
+      throw new Error('xpod-account-session-changed');
+    }
+  }, [controls, identity]);
+
+  const handleContinuePendingAuthorization = useCallback(() => {
+    if (!pendingInteraction) return;
+    const expectedAccountId = resolveAuthoritativeAccountId(controls, identity);
+    if (!expectedAccountId) {
+      setAccountError(copy.authorizationUnavailable);
+      return;
+    }
+    try {
+      assertActionSession(expectedAccountId, pendingInteraction, bindAccountCapability?.());
+    } catch {
+      setAccountError(copy.authorizationUnavailable);
+      return;
+    }
+    navigate(`${pendingInteraction}/oidc/consent/`);
+  }, [assertActionSession, bindAccountCapability, controls, copy.authorizationUnavailable, identity, navigate, pendingInteraction]);
+
+  const handleCancelPendingAuthorization = useCallback(async () => {
+    if (!pendingInteraction) return;
+    const expectedAccountId = resolveAuthoritativeAccountId(controls, identity);
+    if (!expectedAccountId) {
+      setAccountError(copy.authorizationUnavailable);
+      return;
+    }
+    // One capability closure for the whole call; never re-bind the new session.
+    const assertAccount = bindAccountCapability?.();
+    setIsLoading(true);
+    setAccountError(null);
+    try {
+      assertActionSession(expectedAccountId, pendingInteraction, assertAccount);
+      const redirect = await fetchOidcCancelRedirectLocation({
+        cancelUrl: scopeAccountUrl(resolveOidcCancelUrl(controls, idpIndex)),
+        headers: storedAccountTokenHeaders({ 'Content-Type': 'application/json', Accept: 'application/json' }),
+      });
+      assertActionSession(expectedAccountId, pendingInteraction, assertAccount);
+      clearConsentContinuation();
+      window.location.assign(scopeAccountUrl(redirect));
+    } catch {
+      // A failed cancel must stay retryable and must not pretend the
+      // authorization was cancelled.
+      setAccountError(copy.cancelAuthorizationFailed);
+      setIsLoading(false);
+    }
+  }, [assertActionSession, bindAccountCapability, controls, copy.authorizationUnavailable, copy.cancelAuthorizationFailed, identity, idpIndex, pendingInteraction]);
+
   return (
-    <div className="min-h-screen bg-background text-foreground font-sans">
-      <div className="fixed inset-0 overflow-hidden pointer-events-none">
-        <div className="absolute top-0 left-1/2 -translate-x-1/2 w-[1000px] h-[500px] bg-primary/5 rounded-full blur-[120px]" />
-      </div>
-      <header className="relative z-10 border-b border-border bg-background/80 backdrop-blur">
-        <div className="max-w-2xl mx-auto px-4 py-4 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className={`w-8 h-8 ${brandTileClass}`}>
-              <div className="w-4 h-4 border-2 border-primary-foreground rounded opacity-80" />
-            </div>
-            <div>
-              <div className="font-semibold leading-tight">Xpod</div>
-              <div className="text-[10px] text-muted-foreground leading-tight">Personal Messages Platform</div>
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
-            <Link to={scopeAccountUrl("/.account/about/")} className={`flex items-center gap-1.5 px-3 py-1.5 text-xs ${quietButtonClass}`}>
+    <div className="flex min-h-screen flex-col bg-background font-sans text-foreground">
+      <IdpChrome
+        serviceName={copy.brandName}
+        serviceHost={typeof window !== 'undefined' ? window.location.host : undefined}
+        locale={accountLocale}
+      />
+      <main className="mx-auto flex w-full max-w-[880px] flex-1 flex-col gap-6 px-4 py-8">
+        <div className="flex items-center justify-between gap-4">
+          <h1 className="text-xl font-semibold text-foreground">{copy.dashboardTitle}</h1>
+          <div className="flex items-center gap-1">
+            <Link to={scopeAccountUrl('/.account/about/')} className={`flex items-center gap-1.5 px-3 py-1.5 text-sm ${quietButtonClass}`}>
               <Info className="w-3.5 h-3.5" />
-              About
+              {copy.about}
             </Link>
-            <button onClick={handleLogout} disabled={isLoading} className={`flex items-center gap-2 px-3 py-1.5 text-xs ${quietButtonClass}`}>
+            <button type="button" onClick={handleLogout} disabled={isLoading} className={`flex items-center gap-2 px-3 py-1.5 text-sm ${quietButtonClass}`}>
               <LogOut className="w-3.5 h-3.5" />
-              Sign out
+              {copy.signOut}
             </button>
           </div>
         </div>
-      </header>
-      <main className="relative z-10 max-w-2xl mx-auto px-4 py-8 space-y-8">
+
         {accountError ? (
           <div role="alert" className="flex items-start gap-3 rounded-xl border border-destructive/30 bg-destructive/10 p-4 text-destructive">
             <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
@@ -472,261 +766,194 @@ export function AccountPage() {
               type="button"
               onClick={() => setAccountError(null)}
               className="rounded p-1 text-destructive/70 transition-colors hover:bg-destructive/10 hover:text-destructive"
-              aria-label="关闭错误提示"
+              aria-label={copy.closeError}
             >
               <X className="h-4 w-4" />
             </button>
           </div>
         ) : null}
-        {/* OIDC Authorization Pending Banner */}
-        {hasOidcPending && (
-          <div className="p-4 bg-primary/10 border border-primary/30 rounded-xl">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <div className="p-2 bg-primary/20 rounded-lg">
-                  <Shield className="w-5 h-5 text-primary" />
+
+        {showPendingBanner ? (
+          <ConsentResumeBanner
+            app={{ name: '' }}
+            podReady={pods.length > 0}
+            pending={isLoading}
+            onContinue={handleContinuePendingAuthorization}
+            onCancel={() => void handleCancelPendingAuthorization()}
+            locale={accountLocale}
+            copy={{
+              resumeTitle: copy.authorizationPendingTitle,
+              resumeWaiting: copy.authorizationPendingLead,
+              resumeCancel: copy.cancelAuthorization,
+              resumeContinue: copy.continueAuthorization,
+            }}
+          />
+        ) : null}
+
+        {accountPodUrl ? (
+          <section aria-label={copy.workspaceTitle} className="flex flex-col gap-3 rounded-xl border border-border bg-card p-4 sm:flex-row sm:items-center sm:justify-between">
+            <div className="min-w-0">
+              <h2 className="text-sm font-semibold">{copy.workspaceTitle}</h2>
+              <p className="mt-1 text-sm text-muted-foreground">{copy.workspaceHint}</p>
+            </div>
+            <Button onClick={handleManagePods} className="shrink-0">{copy.openWorkspace}</Button>
+          </section>
+        ) : null}
+
+        <WebIdSection
+          webIds={webIdEntries}
+          locale={accountLocale}
+          onRemoveStorage={handleRemoveWebIdEntry}
+          removeStorageLabel={copy.deletePod}
+          authorizeStorageLabel={copy.enablePodDeletion}
+          onAuthorizeStorage={(entry) => void beginDeletionAuthorization(podForWebId(entry.id))}
+          onAuthorizeUnlinkedPod={(entry) => void beginDeletionAuthorization(pods.find((pod) => pod.id === entry.id))}
+          unlinkedPods={unlinkedPodEntries}
+          onRemoveUnlinkedPod={handleRemoveUnlinkedPod}
+        />
+        {webIds.length > 0 && pods.length === 0 ? (
+          <p className="text-[13px] text-muted-foreground">{copy.noPodOnDevice}</p>
+        ) : null}
+
+        {accountClientCredentialsUrl ? (
+          <>
+            <CredentialSection
+              credentials={credentialEntries}
+              canCreate={webIds.length > 0 && !isLoading}
+              onCreate={openCreateCredential}
+              onRevoke={(credentialId) => {
+                const credential = credentials.find((item) => item.id === credentialId);
+                if (credential) openRemoval({ kind: 'credential', target: credential });
+              }}
+              locale={accountLocale}
+              copy={{
+                credentialSectionTitle: copy.credentialsTitle,
+                credentialSectionHint: copy.credentialsLead,
+                createCredential: copy.newCredential,
+                credentialEmpty: copy.noCredentials,
+                revokeCredential: copy.revokeCredential,
+              }}
+            />
+
+            {showCreateCredential ? (
+              <form onSubmit={handleCreateCredential} className={`${cardClass} space-y-3 p-4`}>
+                <div>
+                  <label className={labelClass} htmlFor="account-credential-name">{copy.credentialName}</label>
+                  <Input
+                    id="account-credential-name"
+                    name="credentialName"
+                    type="text"
+                    value={credentialName}
+                    onChange={(e) => setCredentialName(e.target.value)}
+                    placeholder="my-solid-client"
+                    required
+                  />
                 </div>
                 <div>
-                  <p className="text-sm font-medium text-foreground">Authorization Pending</p>
-                  <p className="text-xs text-muted-foreground">An application is waiting for your authorization</p>
+                  <label className={labelClass}>WebID</label>
+                  <div className="relative" ref={dropdownRef}>
+                    <button
+                      type="button"
+                      onClick={() => setShowWebIdDropdown(!showWebIdDropdown)}
+                      className={`flex w-full items-center justify-between px-3 py-2 text-left ${inputClass}`}
+                    >
+                      <span className="truncate text-foreground">{credentialWebId || copy.selectWebId}</span>
+                      <ChevronDown className={`w-4 h-4 text-muted-foreground transition-transform ${showWebIdDropdown ? 'rotate-180' : ''}`} />
+                    </button>
+                    {showWebIdDropdown && (
+                      <div className="absolute z-10 mt-1 max-h-48 w-full overflow-auto rounded-lg border border-border bg-popover text-popover-foreground shadow-lg">
+                        {webIds.map((id) => (
+                          <button
+                            key={id}
+                            type="button"
+                            onClick={() => {
+                              setCredentialWebId(id);
+                              setShowWebIdDropdown(false);
+                            }}
+                            className={`w-full truncate px-3 py-2 text-left text-sm hover:bg-muted ${credentialWebId === id ? 'bg-primary/10 text-primary' : 'text-foreground'}`}
+                          >
+                            {id}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                    <input type="hidden" name="webId" value={credentialWebId} required />
+                  </div>
+                </div>
+                <div className="flex justify-end gap-2">
+                  <button type="button" onClick={() => setShowCreateCredential(false)} className="px-3 py-2 text-sm text-muted-foreground hover:text-foreground">{copy.cancel}</button>
+                  <button type="submit" disabled={isLoading} className={`rounded-lg px-4 py-2 text-sm ${primaryButtonClass}`}>{isLoading ? copy.creating : copy.create}</button>
+                </div>
+              </form>
+            ) : null}
+
+            {newCredential ? (
+              <div className="rounded-xl border border-primary/30 bg-primary/10 p-4">
+                <div className="flex items-start gap-3">
+                  <div className="rounded-lg bg-primary/15 p-2"><Key className="w-4 h-4 text-primary" /></div>
+                  <div className="flex-1">
+                    <p className="mb-1 text-sm font-medium text-primary">{copy.credentialCreated}</p>
+                    <p className="mb-3 text-sm text-muted-foreground">{copy.credentialCreatedLead}</p>
+                    <div className="space-y-3 rounded-lg border border-border bg-card p-3 font-mono text-sm">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="min-w-0">
+                          <span className="select-none text-muted-foreground">{copy.clientId}</span>
+                          <p className="truncate text-foreground">{newCredential.id}</p>
+                        </div>
+                        <button onClick={() => copyToClipboard(newCredential.id, 'id')} className={copyButtonClass} title={copy.copyClientId}>
+                          {copiedField === 'id' ? <Check className="w-3.5 h-3.5 text-primary" /> : <Copy className="w-3.5 h-3.5" />}
+                        </button>
+                      </div>
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="min-w-0">
+                          <span className="select-none text-muted-foreground">{copy.clientSecret}</span>
+                          <p className="break-all text-foreground">{newCredential.secret}</p>
+                        </div>
+                        <button onClick={() => copyToClipboard(newCredential.secret, 'secret')} className={copyButtonClass} title={copy.copyClientSecret}>
+                          {copiedField === 'secret' ? <Check className="w-3.5 h-3.5 text-primary" /> : <Copy className="w-3.5 h-3.5" />}
+                        </button>
+                      </div>
+                    </div>
+                    <button onClick={() => setNewCredential(null)} className="mt-2 text-xs font-medium text-muted-foreground hover:text-foreground">{copy.done}</button>
+                  </div>
                 </div>
               </div>
-              <Link
-                to={scopeAccountUrl("/.account/oidc/consent/")}
-                className={`flex items-center gap-2 px-4 py-2 ${primaryButtonClass} text-sm font-medium rounded-lg`}
-              >
-                Continue
-                <ArrowRight className="w-4 h-4" />
-              </Link>
-            </div>
-          </div>
+            ) : null}
+          </>
+        ) : (
+          <section aria-label={copy.credentialsTitle} className={`${cardClass} p-4`}>
+            <p className="text-sm text-muted-foreground">{copy.credentialEndpointMissing}</p>
+          </section>
         )}
 
-        <h1 className="text-2xl font-bold">Account Dashboard</h1>
-
-        {/* Pods Section */}
-        <section>
-          <div className="flex justify-between items-center mb-1">
-            <h2 className={sectionTitleClass}><HardDrive className="w-4 h-4 text-primary" />Storage</h2>
-            {accountPodUrl && (
-              <button
-                type="button"
-                onClick={() => { window.location.href = '/settings/pod'; }}
-                className={`flex items-center gap-1.5 px-3 py-1.5 ${primaryButtonClass} text-xs rounded-lg`}
-              >
-                <Plus className="w-3.5 h-3.5" />Manage Pods
-              </button>
-            )}
+        <section aria-label={copy.securityTitle} className={`${cardClass} flex items-center justify-between p-4`}>
+          <div>
+            <h2 className="mb-1 text-sm font-medium text-foreground">{copy.passwordLabel}</h2>
+            <p className="text-[13px] text-muted-foreground">{copy.passwordLead}</p>
           </div>
-          <p className="text-[11px] text-muted-foreground mb-3">Your personal data stores (Pods). You own and control all data stored here.</p>
-          
-          {/* 创建只在统一的 Pod 管理页发生（设计第二部分 §4.1 / U04）：
-              这里不再内嵌第二套 prepare+POST 事务。 */}
-          <div className={cardClass}>
-            {pods.length === 0 ? (
-              <div className="p-4">
-                <p className="text-xs text-muted-foreground mb-3">
-                  {webIds.length > 0
-                    ? 'This device has no Pod yet. Create one to store data here.'
-                    : 'No Pods found. Create one to get started.'}
-                </p>
-              </div>
-            ) : (
-              <ul className="divide-y divide-border">
-                {pods.map((pod) => (
-                  <li key={pod.id} className="p-3 flex items-center justify-between">
-                    <div className="flex items-center gap-3 overflow-hidden">
-                      <Database className={iconMutedClass} />
-                      <div className="min-w-0">
-                        <a href={pod.id} target="_blank" rel="noopener" className={`${linkClass} block`}>{pod.id}</a>
-                        {pod.name && (
-                          <p className="text-[11px] text-muted-foreground truncate">Pod: {pod.name}</p>
-                        )}
-                      </div>
-                    </div>
-                    {pod.resourceUrl ? (
-                      <button onClick={() => handleDeletePod(pod)} className={dangerButtonClass} title="Delete Pod">
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-                    ) : null}
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-        </section>
-
-        {/* WebIDs Section */}
-        <section>
-          <div className="flex items-center mb-1">
-            <h2 className={sectionTitleClass}><User className="w-4 h-4 text-primary" />Identity</h2>
-          </div>
-          <p className="text-[11px] text-muted-foreground mb-3">Your unique decentralized identifiers (WebIDs). This is your identity on the Solid network.</p>
-          <div className={cardClass}>
-            {webIds.length === 0 ? (
-              <p className="p-4 text-xs text-muted-foreground">No WebIDs found. Create a Pod first to get a WebID.</p>
-            ) : (
-              <ul className="divide-y divide-border">
-                {webIds.map((id) => (
-                  <li key={id} className="p-3 flex items-center gap-3">
-                    <Globe className={iconMutedClass} />
-                    <a href={id} target="_blank" rel="noopener" className={linkClass}>{id}</a>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-        </section>
-
-        {/* Client Credentials Section */}
-        <section>
-          <div className="flex justify-between items-center mb-1">
-            <h2 className={sectionTitleClass}><Key className="w-4 h-4 text-primary" />Solid Client Credentials</h2>
-            {accountClientCredentialsUrl && (
-              <button onClick={openCreateCredential} disabled={isLoading} className={`flex items-center gap-1.5 px-3 py-1.5 ${primaryButtonClass} text-xs rounded-lg`}>
-                <Plus className="w-3.5 h-3.5" />New Credential
-              </button>
-            )}
-          </div>
-          <p className="text-[11px] text-muted-foreground mb-3">
-            Solid credentials for clients that need direct Pod access. Xpod API Keys are managed in AI Connections.
-          </p>
-          
-          {!accountClientCredentialsUrl ? (
-            <div className={`${cardClass} p-4`}>
-              <p className="text-xs text-muted-foreground">Client credential endpoint not configured.</p>
-            </div>
-          ) : (
-            <>
-              {showCreateCredential && (
-                <form onSubmit={handleCreateCredential} className={`mb-4 p-4 ${cardClass} space-y-3`}>
-                  <div>
-                    <label className={labelClass}>Credential Name</label>
-                    <input
-                      type="text"
-                      value={credentialName}
-                      onChange={(e) => setCredentialName(e.target.value)}
-                      placeholder="my-solid-client"
-                      className={`w-full px-3 py-2 ${inputClass}`}
-                      required
-                    />
-                  </div>
-                  <div>
-                    <label className={labelClass}>WebID</label>
-                    <div className="relative" ref={dropdownRef}>
-                      <button
-                        type="button"
-                        onClick={() => setShowWebIdDropdown(!showWebIdDropdown)}
-                        className={`w-full px-3 py-2 ${inputClass} text-left flex items-center justify-between`}
-                      >
-                        <span className="truncate text-foreground">{credentialWebId || 'Select WebID'}</span>
-                        <ChevronDown className={`w-4 h-4 text-muted-foreground transition-transform ${showWebIdDropdown ? 'rotate-180' : ''}`} />
-                      </button>
-                      {showWebIdDropdown && (
-                        <div className="absolute z-10 mt-1 w-full bg-popover text-popover-foreground border border-border rounded-lg shadow-lg max-h-48 overflow-auto">
-                          {webIds.map((id) => (
-                            <button
-                              key={id}
-                              type="button"
-                              onClick={() => {
-                                setCredentialWebId(id);
-                                setShowWebIdDropdown(false);
-                              }}
-                              className={`w-full px-3 py-2 text-left text-sm hover:bg-muted truncate ${credentialWebId === id ? 'bg-primary/10 text-primary' : 'text-foreground'}`}
-                            >
-                              {id}
-                            </button>
-                          ))}
-                        </div>
-                      )}
-                      <input type="hidden" name="webId" value={credentialWebId} required />
-                    </div>
-                  </div>
-                  <div className="flex gap-2 justify-end">
-                    <button type="button" onClick={() => setShowCreateCredential(false)} className="px-3 py-2 text-muted-foreground hover:text-foreground text-xs">Cancel</button>
-                    <button type="submit" disabled={isLoading} className={`px-4 py-2 ${primaryButtonClass} text-xs rounded-lg`}>{isLoading ? 'Creating...' : 'Create'}</button>
-                  </div>
-                </form>
-              )}
-
-              {newCredential && (
-                <div className="mb-4 p-4 bg-success/10 border border-success/30 rounded-xl">
-                  <div className="flex items-start gap-3">
-                    <div className="p-2 bg-success/15 rounded-lg"><Key className="w-4 h-4 text-success dark:text-success" /></div>
-                    <div className="flex-1">
-                      <p className="text-sm font-medium text-success dark:text-success mb-1">New Solid Client Credential Created</p>
-                      <p className="text-xs text-muted-foreground mb-3">Copy the Client ID and Client Secret now. The secret will not be shown again.</p>
-                      <div className="space-y-3 text-xs font-mono bg-card p-3 rounded-lg border border-border">
-                        <div className="flex items-center justify-between gap-2">
-                          <div className="min-w-0">
-                            <span className="text-muted-foreground select-none">Client ID</span>
-                            <p className="text-foreground truncate">{newCredential.id}</p>
-                          </div>
-                          <button
-                            onClick={() => copyToClipboard(newCredential.id, 'id')}
-                            className={copyButtonClass}
-                            title="Copy Client ID"
-                          >
-                            {copiedField === 'id' ? <Check className="w-3.5 h-3.5 text-success" /> : <Copy className="w-3.5 h-3.5" />}
-                          </button>
-                        </div>
-                        <div className="flex items-center justify-between gap-2">
-                          <div className="min-w-0">
-                            <span className="text-muted-foreground select-none">Client Secret</span>
-                            <p className="text-foreground break-all">{newCredential.secret}</p>
-                          </div>
-                          <button
-                            onClick={() => copyToClipboard(newCredential.secret, 'secret')}
-                            className={copyButtonClass}
-                            title="Copy Client Secret"
-                          >
-                            {copiedField === 'secret' ? <Check className="w-3.5 h-3.5 text-success" /> : <Copy className="w-3.5 h-3.5" />}
-                          </button>
-                        </div>
-                      </div>
-                      <button onClick={() => setNewCredential(null)} className="mt-2 text-xs text-muted-foreground hover:text-foreground font-medium">Done</button>
-                    </div>
-                  </div>
-                </div>
-              )}
-              
-              <div className={cardClass}>
-                {credentials.length === 0 ? (
-                  <p className="p-4 text-xs text-muted-foreground">No client credentials found.</p>
-                ) : (
-                  <ul className="divide-y divide-border">
-                    {credentials.map((cred) => (
-                      <li key={cred.id} className="p-3 flex items-center justify-between">
-                        <div className="flex items-center gap-3 overflow-hidden">
-                          <Key className={iconMutedClass} />
-                          <span className="text-xs font-mono text-foreground truncate">{cred.id}</span>
-                        </div>
-                        <button onClick={() => handleDeleteCredential(cred)} className={dangerButtonClass} title="Revoke Credential">
-                          <Trash2 className="w-4 h-4" />
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-            </>
-          )}
-        </section>
-
-        {/* Security Section */}
-        <section>
-          <h2 className={`${sectionTitleClass} mb-3`}><Shield className="w-4 h-4 text-primary" />Security</h2>
-          <div className={`${cardClass} p-4 flex items-center justify-between`}>
-            <div>
-              <h3 className="text-xs font-medium mb-1">Password</h3>
-              <p className="text-[10px] text-muted-foreground">Update your account password</p>
-            </div>
-            <a href={passwordForgotUrl} className="px-3 py-1.5 bg-secondary hover:bg-secondary/80 text-secondary-foreground text-xs rounded-lg transition-colors">
-              Change Password
-            </a>
-          </div>
+          <a href={passwordForgotUrl} className="rounded-lg bg-secondary px-3 py-1.5 text-sm text-secondary-foreground transition-colors hover:bg-secondary/80">
+            {copy.changePassword}
+          </a>
         </section>
       </main>
+      <ConfirmationDialog
+        open={Boolean(pendingRemoval)}
+        onOpenChange={(open) => { if (!open) setPendingRemoval(null); }}
+        title={pendingRemoval?.kind === 'credential' ? copy.revokeCredential : copy.deletePod}
+        description={pendingRemoval?.kind === 'credential' ? copy.deleteCredentialConfirm : copy.deletePodWarning}
+        confirmLabel={removalPending ? copy.deleting : pendingRemoval?.kind === 'credential' ? copy.revokeCredential : copy.deletePod}
+        cancelLabel={copy.cancel}
+        pending={removalPending}
+        error={removalError}
+        onConfirm={() => void confirmRemoval()}
+      >
+        {pendingRemoval ? (
+          <div className="rounded-lg border border-border bg-muted/40 p-3 text-sm">
+            <p className="text-muted-foreground">{pendingRemoval.kind === 'pod' ? signInCopy.storageAddress : copy.clientId}</p>
+            <p className="mt-1 break-all font-mono">{pendingRemoval.target.id}</p>
+          </div>
+        ) : null}
+      </ConfirmationDialog>
     </div>
   );
 }

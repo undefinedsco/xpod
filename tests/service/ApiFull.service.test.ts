@@ -37,14 +37,17 @@ describe('API Full Service', () => {
     repo = new EdgeNodeRepository(db);
 
     // A stub session factory keeps the exchange offline; the authenticator's own behaviour is
-    // covered by its unit test against the real factory.
+    // covered by its unit test against the real factory. Both entry points answer with the same
+    // offline session, so the request still reaches the route under test.
+    const offlineSession = {
+      accessToken: 'fake-token',
+      tokenType: 'Bearer' as const,
+      webId: 'https://bot#me',
+      expiresAt: Date.now() + 3600_000,
+    };
     const sessions = {
-      session: async () => ({
-        accessToken: 'fake-token',
-        tokenType: 'Bearer' as const,
-        webId: 'https://bot#me',
-        expiresAt: Date.now() + 3600_000,
-      }),
+      session: async () => offlineSession,
+      admit: async () => offlineSession,
       invalidate: () => undefined,
     } as unknown as SolidSessionFactory;
     const clientAuth = new ClientCredentialsAuthenticator({ sessions });

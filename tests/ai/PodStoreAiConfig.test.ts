@@ -117,6 +117,7 @@ describe('PodChatKitStore AI Config Operations', () => {
 
     // Create mock db
     mockDb = {
+      getDialect: () => ({ getPodUrl: () => 'http://localhost:3000/test/' }),
       select: vi.fn().mockImplementation(() => createSelectChain()),
       from: vi.fn().mockReturnThis(),
       where: vi.fn().mockResolvedValue([]),
@@ -278,6 +279,7 @@ describe('PodChatKitStore AI Config Operations', () => {
       (mockContext as any)._cachedFetch = sparqlFetch;
       (mockContext as any)._cachedWebId = 'https://id.undefineds.co/glocal/profile/card#me';
       (mockContext as any)._cachedPodBaseUrl = 'https://node-0000.undefineds.co/glocal/';
+      mockDb.getDialect = () => ({ getPodUrl: () => 'https://node-0000.undefineds.co/glocal/' });
       mockDb.select = vi.fn(() => {
         throw new Error('document-mode collection query should not be used');
       });

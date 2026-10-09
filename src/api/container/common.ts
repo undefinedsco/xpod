@@ -1,3 +1,5 @@
+import { getSocketPathForOrigin } from '../../runtime/socket-origin-registry';
+import { SqlMatrixEventJournal } from '../matrix/MatrixEventJournal';
 /**
  * 共享服务注册
  *
@@ -8,7 +10,6 @@ import { asFunction, type AwilixContainer } from 'awilix';
 import { randomBytes } from 'node:crypto';
 import { getLoggerFor } from 'global-logger-factory';
 import type { ApiContainerCradle } from './types';
-import { resolvePersistentGatewayLocatorSecret } from '../../runtime/gateway-locator-secret';
 
 import { getIdentityDatabase } from '../../identity/drizzle/db';
 import { EdgeNodeRepository } from '../../identity/drizzle/EdgeNodeRepository';
@@ -26,8 +27,7 @@ import { InvocationTokenAuthenticator } from '../ai-gateway/auth/InvocationToken
 import { AiConnectionsInvocationKeyIssuer } from '../ai-gateway/auth/AiConnectionsInvocationKeyIssuer';
 import { AesInvocationTokenCodec } from '../ai-gateway/auth/InvocationTokenCodec';
 import { GatewayApiKeyAuthenticator } from '../ai-gateway/auth/GatewayApiKeyAuthenticator';
-import { AesGatewayKeyLocatorCodec } from '../ai-gateway/auth/GatewayKeyLocatorCodec';
-import { PodGatewayAccessKeyRepository } from '../ai-gateway/auth/PodGatewayAccessKeyRepository';
+import { createOwnerPodBaseUrlResolver } from '../ai-gateway/pod/PodBaseUrlResolver';
 import { OwnerPodAccess } from '../ai-gateway/pod/OwnerPodAccess';
 import { resolveHostedPodRoute } from '../ai-gateway/pod/HostedPodRoute';
 import { getTaskCredentialDatabase, resolveTaskCredentialDatabaseUrl } from '../tasks/TaskCredentialDatabase';
@@ -36,6 +36,8 @@ import { PodInterfaceKeyRepository } from '../../identity/drizzle/PodInterfaceKe
 import { PodInterfaceKeyStore } from '../ai-gateway/pod/PodInterfaceKeyStore';
 import { migratePodInterfaceKeysToTaskCredentials } from '../tasks/PodInterfaceKeyMigration';
 import { AiGatewayService } from '../ai-gateway/AiGatewayService';
+import type { GatewayCredentialRenewalRequest } from '../ai-gateway/AiGatewayService';
+import type { GatewayDeployment } from '../ai-gateway/auth/InvocationTokenCodec';
 import { PlaintextCredentialVault } from '../ai-gateway/credentials/PlaintextCredentialVault';
 import { createAiCredentialSecretDecoder } from '../ai-gateway/credentials/AiCredentialSecretDecoder';
 import type { CredentialVault } from '../ai-gateway/credentials/CredentialVault';
@@ -110,20 +112,37 @@ import {
   resolveEdgeNodeCertificateCapabilityBridgeId,
 } from '../../edge/EdgeNodeCertificateCapabilityBridge';
 
+const logger = getLoggerFor('ApiContainer');
+
 function resolveCssServiceBaseUrl(): string {
   return `http://127.0.0.1:${process.env.CSS_PORT ?? '3000'}/`;
 }
 
-function resolveHostedPodCssBaseUrl(): string {
-  return `http://127.0.0.1:${process.env.XPOD_MAIN_PORT ?? '3000'}/`;
+function resolveHostedPodCssBaseUrl(config: ApiContainerCradle['config']): string | undefined {
+  const gatewayPort = process.env.XPOD_MAIN_PORT?.trim();
+  if (gatewayPort) {
+    return `http://127.0.0.1:${gatewayPort}/`;
+  }
+  // Socket transport binds no gateway port. Its canonical origin is the one the runtime maps
+  // onto the owned gateway socket, so internal WebID/JWKS reads resolve through that origin
+  // instead of a foreign loopback port.
+  return config.solidBaseUrl;
 }
 
-function resolveAiConnectionsBaseUrl(config: ApiContainerCradle['config']): string {
-  const origin = config.publicUrl
+function resolveAiConnectionsCanonicalOrigin(config: ApiContainerCradle['config']): string {
+  return config.publicUrl
     ?? process.env.XPOD_PUBLIC_URL
     ?? process.env.CSS_BASE_URL
     ?? `http://${config.host === '0.0.0.0' ? '127.0.0.1' : config.host}:${config.port}`;
+}
+
+function aiConnectionsV1Url(origin: string): string {
   return new URL('/v1', origin.endsWith('/') ? origin : `${origin}/`).toString().replace(/\/$/u, '');
+}
+
+/** The canonical identity realm: token audience/issuer and the two authenticators use this. */
+function resolveAiConnectionsBaseUrl(config: ApiContainerCradle['config']): string {
+  return aiConnectionsV1Url(resolveAiConnectionsCanonicalOrigin(config));
 }
 
 function credentialVaultForConfig(config: ApiContainerCradle['config']): CredentialVault {
@@ -132,25 +151,21 @@ function credentialVaultForConfig(config: ApiContainerCradle['config']): Credent
   });
 }
 
+function resolveAiConnectionsRuntimeBaseUrl(config: ApiContainerCradle['config']): string {
+  // Runtime inference must reach the Gateway even when the canonical public route is absent.
+  // Socket mode keeps the canonical origin registered on the owned Gateway socket.
+  const internalBaseUrl = resolveHostedPodCssBaseUrl(config);
+  return internalBaseUrl
+    ? new URL('/v1', internalBaseUrl).toString().replace(/\/$/u, '')
+    : resolveAiConnectionsBaseUrl(config);
+}
+
 function resolveAiConnectionsAudience(config: ApiContainerCradle['config']): string {
   return new URL(resolveAiConnectionsBaseUrl(config)).origin;
 }
 
-function resolveGatewayLocatorSecret(config: ApiContainerCradle['config']): string {
-  if (config.gatewayLocatorSecret?.trim()) {
-    return config.gatewayLocatorSecret;
-  }
-  return resolvePersistentGatewayLocatorSecret({
-    databaseUrl: config.databaseUrl,
-    edition: config.edition,
-  });
-}
-
-function podBaseUrlResolver(cradle: ApiContainerCradle) {
-  return async (webId: string): Promise<string | undefined> => {
-    const pod = await cradle.podLookupRepo?.findByWebId(webId);
-    return pod?.storageUrl ?? pod?.baseUrl;
-  };
+function podBaseUrlResolver(cradle: ApiContainerCradle, selection: 'first' | 'unique' = 'first') {
+  return createOwnerPodBaseUrlResolver(cradle.podLookupRepo, selection);
 }
 
 /**
@@ -160,6 +175,7 @@ export function registerCommonServices(
   container: AwilixContainer<ApiContainerCradle>,
 ): void {
   container.register({
+    aiConnectionsPodBaseUrlResolver: asFunction((cradle: ApiContainerCradle) => podBaseUrlResolver(cradle, 'unique')).singleton(),
     // 数据库
     db: asFunction(({ config }: ApiContainerCradle) => {
       return getIdentityDatabase(config.databaseUrl);
@@ -229,7 +245,8 @@ export function registerCommonServices(
     solidSessions: asFunction(({ config }: ApiContainerCradle) => {
       return new SolidSessionFactory({
         tokenEndpoint: config.cssTokenEndpoint,
-        publicBaseUrl: config.solidBaseUrl,
+        // Managed Local's Pod origin differs from the issuer of its client credentials.
+        publicBaseUrl: config.oidcIssuer ?? config.solidBaseUrl,
       });
     }).singleton(),
 
@@ -263,21 +280,6 @@ export function registerCommonServices(
       });
     }).singleton(),
 
-    gatewayAccessKeyRepository: asFunction((cradle: ApiContainerCradle) => {
-      const { config, ownerPodAccess } = cradle;
-      return new PodGatewayAccessKeyRepository({
-        locatorCodec: new AesGatewayKeyLocatorCodec({
-          active: {
-            kid: config.gatewayLocatorKeyId ?? 'active',
-            secret: resolveGatewayLocatorSecret(config),
-          },
-          previous: config.gatewayPreviousLocatorSecrets,
-        }),
-        podAccess: ownerPodAccess,
-        podBaseUrlResolver: podBaseUrlResolver(cradle),
-      });
-    }).singleton(),
-
     aiConnectionInvocationKeyIssuer: asFunction((cradle: ApiContainerCradle) => {
       const { config } = cradle;
       return new AiConnectionsInvocationKeyIssuer({
@@ -285,6 +287,13 @@ export function registerCommonServices(
         deployment: config.edition,
         baseUrl: resolveAiConnectionsBaseUrl(config),
         audience: resolveAiConnectionsAudience(config),
+        issuer: resolveAiConnectionsAudience(config),
+        // The task runtime reaches the Gateway through this key, so it must name the owner's
+        // active model; otherwise the runner asks the Gateway for a placeholder it cannot route.
+        resolveModel: async ({ auth }) => {
+          const models = await cradle.aiGatewayService?.listModels(auth);
+          return models?.find((model) => typeof model.id === 'string' && model.id.trim().length > 0)?.id;
+        },
       });
     }).singleton(),
 
@@ -292,7 +301,7 @@ export function registerCommonServices(
       const { config } = cradle;
       const credentialRepository = new PodConnectedCredentialRepository({
         podAccess: cradle.ownerPodAccess,
-        podBaseUrlResolver: podBaseUrlResolver(cradle),
+        podBaseUrlResolver: cradle.aiConnectionsPodBaseUrlResolver,
       });
       const vault = credentialVaultForConfig(config);
       // AI Gateway Connect has no on/off switch: installing ai-connections
@@ -305,6 +314,21 @@ export function registerCommonServices(
       });
       const adapterOptions = {
         attempts, credentialRepository, vault, deployment: config.edition, signingSecret,
+        // Connect owns its official endpoints, form bodies and timeout signal;
+        // the shared transport owns proxy routing, target validation and cleanup.
+        fetch: (input: RequestInfo | URL, init?: RequestInit) => {
+          if (typeof input !== 'string' && !(input instanceof URL)) {
+            throw new TypeError('Connect transport requires an endpoint URL');
+          }
+          return cradle.providerHttpTransport.request({
+            url: input.toString(),
+            method: init?.method,
+            headers: init?.headers,
+            body: init?.body,
+            signal: init?.signal ?? undefined,
+            redirect: 'error',
+          });
+        },
       };
       const callbackReceiver = new LoopbackAuthorizationCallbackReceiver();
       const adapters = [
@@ -313,9 +337,12 @@ export function registerCommonServices(
           .map((provider) => new BrowserAssistedApiKeyConnectAdapter({
             ...adapterOptions,
             provider: provider.id,
-            consoleUrl: registry.requireProduct(provider.id).offerings
-              .find((offering) => offering.kind === 'api-platform')?.consoleUrl
-              ?? registry.requireProduct(provider.id).offerings[0].consoleUrl,
+            consoleUrl: (input) => {
+              const offerings = registry.requireProduct(provider.id).offerings;
+              const offeringId = input.offeringId
+                ?? (offerings.find((offering) => offering.kind === 'api-platform') ?? offerings[0]).id;
+              return registry.requireOffering(provider.id, offeringId).consoleUrl;
+            },
           })),
         ...(config.edition === 'local' ? createBrowserOAuthIntegrations().map((integration) => new AuthorizationCodeConnectAdapter({
           ...adapterOptions, integration, callbackReceiver,
@@ -366,9 +393,25 @@ export function registerCommonServices(
 
     gatewayCredentialStore: asFunction((cradle: ApiContainerCradle) => {
       const { ownerPodAccess } = cradle;
-      return new PodConnectedCredentialRepository({
+      const store = new PodConnectedCredentialRepository({
         podAccess: ownerPodAccess,
-        podBaseUrlResolver: podBaseUrlResolver(cradle),
+        podBaseUrlResolver: cradle.aiConnectionsPodBaseUrlResolver,
+      });
+      // Use-time OAuth renewal belongs to the shared credential lifecycle: inference only asks the
+      // store for a usable session. Delegated lazily to the composed Connect service so the
+      // container keeps no construction-time cycle, and the hook stays absent for stores that
+      // cannot renew.
+      return Object.assign(store, {
+        renewCredential: (input: GatewayCredentialRenewalRequest) =>
+          cradle.providerConnectService.renewCredential({
+            webId: input.webId,
+            deployment: input.deployment as GatewayDeployment,
+            provider: input.provider,
+            credentialId: input.credentialId,
+            observedVersion: input.observedVersion,
+            reason: input.reason,
+            auth: input.auth,
+          }),
       });
     }).singleton(),
 
@@ -376,7 +419,7 @@ export function registerCommonServices(
       const { ownerPodAccess } = cradle;
       return new PodModelSelectionRepository({
         podAccess: ownerPodAccess,
-        podBaseUrlResolver: podBaseUrlResolver(cradle),
+        podBaseUrlResolver: cradle.aiConnectionsPodBaseUrlResolver,
       });
     }).singleton(),
 
@@ -391,7 +434,7 @@ export function registerCommonServices(
       return new ProviderModelSelectionService({
         credentialRepository: new PodConnectedCredentialRepository({
           podAccess: ownerPodAccess,
-          podBaseUrlResolver: podBaseUrlResolver(cradle),
+          podBaseUrlResolver: cradle.aiConnectionsPodBaseUrlResolver,
         }),
         selectionRepository: podModelSelectionRepository,
         providerRegistry: gatewayProviderRegistry,
@@ -474,11 +517,11 @@ export function registerCommonServices(
       return new ProviderQuotaService({
         repository: new PodQuotaSnapshotRepository({
           podAccess,
-          podBaseUrlResolver: podBaseUrlResolver(cradle),
+          podBaseUrlResolver: cradle.aiConnectionsPodBaseUrlResolver,
         }),
         credentialRepository: new PodConnectedCredentialRepository({
           podAccess,
-          podBaseUrlResolver: podBaseUrlResolver(cradle),
+          podBaseUrlResolver: cradle.aiConnectionsPodBaseUrlResolver,
         }),
         vault: credentialVaultForConfig(config),
         providerRegistry: cradle.gatewayProviderRegistry,
@@ -508,7 +551,7 @@ export function registerCommonServices(
       return new ProviderModelsService({
         credentialRepository: new PodConnectedCredentialRepository({
           podAccess,
-          podBaseUrlResolver: podBaseUrlResolver(cradle),
+          podBaseUrlResolver: cradle.aiConnectionsPodBaseUrlResolver,
         }),
         vault: credentialVaultForConfig(config),
         providerRegistry: registry,
@@ -574,7 +617,7 @@ export function registerCommonServices(
       return new ProviderCustomModelsService({
         credentialRepository: new PodConnectedCredentialRepository({
           podAccess: cradle.ownerPodAccess,
-          podBaseUrlResolver: podBaseUrlResolver(cradle),
+          podBaseUrlResolver: cradle.aiConnectionsPodBaseUrlResolver,
         }),
         embeddingModelPolicy: cradle.embeddingModelPolicy,
         registry: cradle.gatewayProviderRegistry,
@@ -585,7 +628,6 @@ export function registerCommonServices(
       nodeRepo,
       serviceTokenRepo,
       invocationTokenCodec,
-      gatewayAccessKeyRepository,
       solidSessions,
       config,
     }: ApiContainerCradle) => {
@@ -594,7 +636,7 @@ export function registerCommonServices(
         publicBaseUrl: config.solidBaseUrl,
         // Token discovery is a public OIDC concern. WebID/JWKS verification is
         // an internal service call and must not hairpin through public ingress.
-        internalBaseUrl: resolveHostedPodCssBaseUrl(),
+        internalBaseUrl: resolveHostedPodCssBaseUrl(config),
       });
 
       const clientCredAuthenticator = new ClientCredentialsAuthenticator({
@@ -617,8 +659,10 @@ export function registerCommonServices(
         })
         : undefined;
 
+      // Verifies the AI-Connections invocation tokens that carry `models:read` / `inference:write`
+      // for the model gateway. It no longer accepts `xpod_gw_v1.*` Gateway API Keys: those are
+      // gone, so such a bearer now falls through to the client-credentials authenticator.
       const gatewayApiKeyAuthenticator = new GatewayApiKeyAuthenticator({
-        repository: gatewayAccessKeyRepository,
         deployment: config.edition,
         invocationTokenCodec,
         invocationTokenAudience: resolveAiConnectionsAudience(config),
@@ -629,7 +673,7 @@ export function registerCommonServices(
         // inference tokens, so route-scoped authentication must run before the
         // generic client-credentials authenticator claims the bearer.
         // Order: Solid DPoP → Service Token → Node Token →
-        // Client Configuration Invocation → Gateway API Key → Client Credentials.
+        // Client Configuration Invocation → Inference Invocation → Client Credentials.
         // Agent execution is scoped by ChatKit thread/workspace and Run state, not standalone Agent JWTs.
         authenticators: [
           solidAuthenticator,
@@ -654,9 +698,11 @@ export function registerCommonServices(
     }).singleton(),
 
     // ChatKit 存储与服务
-    chatKitStore: asFunction(({ config, ownerPodAccess, serverGroupReconcilerService }: ApiContainerCradle) => {
+    chatKitStore: asFunction((cradle: ApiContainerCradle) => {
+      const { config, ownerPodAccess, serverGroupReconcilerService } = cradle;
       return new PodChatKitStore({
         podAccess: ownerPodAccess,
+        podBaseUrlResolver: cradle.aiConnectionsPodBaseUrlResolver,
         serverGroupReconcilerService,
         deployment: config.edition,
         credentialSecretDecoder: createAiCredentialSecretDecoder({
@@ -671,9 +717,11 @@ export function registerCommonServices(
       });
     }).singleton(),
 
-    matrixStore: asFunction(({ config, serverGroupReconcilerService }: ApiContainerCradle) => {
+    matrixStore: asFunction(({ db, ownerPodAccess, serverGroupReconcilerService }: ApiContainerCradle) => {
       return new PodMatrixStore({
         serverGroupReconcilerService,
+        podAccess: ownerPodAccess,
+        journal: new SqlMatrixEventJournal(db),
         serverName: (() => {
           try {
             return new URL(process.env.CSS_BASE_URL ?? '').host || undefined;
@@ -708,8 +756,10 @@ export function registerCommonServices(
       return createApiRdfEngine(config);
     }).singleton(),
 
-    runContextRetriever: asFunction(({ rdfEngine, chatKitStore, embeddingService }: ApiContainerCradle) => {
-      return createApiRunContextRetriever(rdfEngine, { chatKitStore, embeddingService });
+    runContextRetriever: asFunction((cradle: ApiContainerCradle) => {
+      const { rdfEngine, chatKitStore, embeddingService, ownerPodAccess } = cradle;
+      return createApiRunContextRetriever(rdfEngine, { chatKitStore, embeddingService,
+        podAccess: ownerPodAccess, podBaseUrlResolver: podBaseUrlResolver(cradle) });
     }).singleton(),
 
     rdfSearchIndexingService: asFunction(({ rdfEngine, chatKitStore, embeddingService }: ApiContainerCradle) => {
@@ -748,12 +798,18 @@ export function registerCommonServices(
       });
     }).singleton(),
 
-    runExecutionBackend: asFunction(({ config, inngestRuntimeConfig, chatKitStore, taskAuthBindingService, runAuthContextRegistry, runContextRetriever, rdfSearchIndexingService, rdfSearchReconciliationRepository, aiConnectionInvocationKeyIssuer }: ApiContainerCradle) => {
+    runExecutionBackend: asFunction(({ config, inngestRuntimeConfig, chatKitStore, taskAuthBindingService, runAuthContextRegistry, runContextRetriever, rdfSearchIndexingService, rdfSearchReconciliationRepository, aiConnectionInvocationKeyIssuer, ownerPodAccess }: ApiContainerCradle) => {
       return new InngestRunExecutionBackend({
         baseUrl: inngestRuntimeConfig?.baseUrl,
         eventKey: inngestRuntimeConfig?.eventKey,
         signingKey: inngestRuntimeConfig?.signingKey,
-        isDev: inngestRuntimeConfig?.enabled ? !inngestRuntimeConfig.durableDelivery : true,
+        // Signature protocol follows the executor that actually started
+        // (`EmbeddedInngestRuntimeConfig.mode`): the spawned `inngest dev`
+        // executor never signs its callbacks, a managed Inngest server does.
+        // This is independent of whether delivery is durable; deriving it from
+        // durableDelivery made a durable spawned executor reject every callback
+        // with 401 and stall Task Runs in queued.
+        isDev: inngestRuntimeConfig?.enabled ? inngestRuntimeConfig.mode === 'spawn' : true,
         durableDelivery: inngestRuntimeConfig?.durableDelivery ?? false,
         store: chatKitStore,
         contextRetriever: runContextRetriever,
@@ -767,6 +823,15 @@ export function registerCommonServices(
           return fallback;
         },
         runtimeDriver: new PiAgentRuntimeDriver({
+          podWorkspaceMapping: config.solidBaseUrl && config.solidRootFilePath
+            ? { baseUrl: config.solidBaseUrl, rootFilePath: config.solidRootFilePath }
+            : undefined,
+          podAccess: ownerPodAccess,
+          gatewayTransport: {
+            canonicalBaseUrl: resolveAiConnectionsBaseUrl(config),
+            baseUrl: resolveAiConnectionsRuntimeBaseUrl(config),
+            socketPath: getSocketPathForOrigin(resolveAiConnectionsRuntimeBaseUrl(config)),
+          },
           agentLoopIsolation: config.edition === 'cloud' ? 'sandboxed-process' : 'in-process',
           requireSandbox: config.edition === 'cloud',
           rdfSearchIndexingService,

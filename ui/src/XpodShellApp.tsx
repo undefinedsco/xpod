@@ -11,6 +11,7 @@ import { canonicalProductPathname, XPOD_DEFAULT_RETURN_PATH } from './routes/can
 import type { XpodSolidRuntimeCore } from './solid/XpodSolidRuntime';
 import { XpodSolidRuntimeProvider } from './solid/XpodSolidRuntimeProvider';
 import { XpodThemeRoot } from './theme/XpodThemeRoot';
+import { ShellStateProvider } from './shell/ShellStateProvider';
 import { xpodShellRoutes } from './xpod-shell-routes';
 
 export interface XpodShellAppProps {
@@ -23,9 +24,7 @@ function XpodShellRoutes() {
   const routes = useRoutes(xpodShellRoutes);
 
   useEffect(() => {
-    document.title = location.pathname.startsWith('/status')
-      ? 'Xpod Dashboard'
-      : 'Xpod Settings';
+    document.title = 'Xpod';
   }, [location.pathname]);
 
   return routes;
@@ -46,7 +45,7 @@ export function XpodShellApp({ runtime, initialPathname }: XpodShellAppProps = {
           <BrowserRouter key={initialLocation}>
             <XpodDesktopNavigationBridge />
             <XpodServiceAvailability>
-              <XpodProductLogoutBoundary><XpodShellRoutes /></XpodProductLogoutBoundary>
+              <ShellStateProvider><XpodProductLogoutBoundary><XpodShellRoutes /></XpodProductLogoutBoundary></ShellStateProvider>
             </XpodServiceAvailability>
             <Toaster />
           </BrowserRouter>

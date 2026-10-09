@@ -34,6 +34,13 @@ export interface SanitizedAccountIdentity {
   webId?: string;
 }
 
+/** A current SDK capability; Account ownership still comes only from server controls. */
+export interface AccountSessionTransport {
+  issuer: string;
+  fetch: typeof fetch;
+  assertCurrent: () => void;
+}
+
 export interface AuthContextType {
   controls: Controls | null;
   isInitializing: boolean;
@@ -47,6 +54,10 @@ export interface AuthContextType {
   authenticating: boolean;
   hasOidcPending: boolean;
   refetchControls: () => Promise<AccountAuthState | void>;
+  /** Register the existing standard session, without replacing a Cookie Account actor. */
+  registerAccountSession?: (transport: AccountSessionTransport) => (() => void);
+  /** Fetch owned Account controls with the transport that established their actor. */
+  accountFetch?: typeof fetch;
   retry: () => Promise<void>;
   logout: () => Promise<void>;
   accountState: AccountAuthState;

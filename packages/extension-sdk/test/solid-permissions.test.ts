@@ -13,18 +13,27 @@ const request: SolidServiceAccessRequest = {
   }],
 };
 
+function responseAt(url: string | URL | Request, status: number): Response {
+  const href = String(url);
+  const response = new Response(null, { status, headers: { link: `<${href}.acl>; rel="acl"` } });
+  Object.defineProperty(response, 'url', { value: href });
+  return response;
+}
+
 describe('createSolidPermissionCapability', () => {
   it('creates a missing resource and grants the declared agent access', async () => {
+    const created = new Set<string>();
     const fetch = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
-      if (init?.method !== 'HEAD') return new Response(null, { status: 201 });
+      if (init?.method !== 'HEAD') { created.add(String(url)); return responseAt(url, 201); }
+      if (created.has(String(url))) return responseAt(url, 200);
       return String(url).endsWith('/settings/')
-        ? new Response(null, { status: 200 })
-        : new Response(null, { status: 404 });
+        ? responseAt(url, 200)
+        : responseAt(url, 404);
     });
     const setAgentAccess = vi.fn(async () => ({ read: true, append: true, write: true }));
     const capability = createSolidPermissionCapability({
       fetch: fetch as typeof globalThis.fetch,
-      access: { getAgentAccess: vi.fn(), setAgentAccess } as never,
+      access: { getAgentAccess: vi.fn(async () => ({ read: false, append: false, write: false, controlRead: false, controlWrite: false })), setAgentAccess } as never,
     });
 
     await expect(capability.ensureAgentAccess(request)).resolves.toMatchObject({ status: 'granted' });
@@ -44,16 +53,18 @@ describe('createSolidPermissionCapability', () => {
       ...request,
       resources: [{ ...request.resources[0], url: 'https://pod.example/alice/.data/ai/gateway/keys.ttl' }],
     };
+    const created = new Set<string>();
     const fetch = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
-      if (init?.method !== 'HEAD') return new Response(null, { status: 201 });
+      if (init?.method !== 'HEAD') { created.add(String(url)); return responseAt(url, 201); }
+      if (created.has(String(url))) return responseAt(url, 200);
       return String(url) === 'https://pod.example/alice/'
-        ? new Response(null, { status: 200 })
-        : new Response(null, { status: 404 });
+        ? responseAt(url, 200)
+        : responseAt(url, 404);
     });
     const capability = createSolidPermissionCapability({
       fetch: fetch as typeof globalThis.fetch,
       access: {
-        getAgentAccess: vi.fn(),
+        getAgentAccess: vi.fn(async () => ({ read: false, append: false, write: false, controlRead: false, controlWrite: false })),
         setAgentAccess: vi.fn(async () => ({ read: true, append: true, write: true })),
       } as never,
     });
@@ -71,13 +82,13 @@ describe('createSolidPermissionCapability', () => {
   it('does not report granted when the Pod refuses the ACL/ACP update', async () => {
     const capability = createSolidPermissionCapability({
       fetch: vi.fn(async () => new Response(null, { status: 200 })) as typeof globalThis.fetch,
-      access: { getAgentAccess: vi.fn(), setAgentAccess: vi.fn(async () => null) } as never,
+      access: { getAgentAccess: vi.fn(async () => ({ read: false, append: false, write: false, controlRead: false, controlWrite: false })), setAgentAccess: vi.fn(async () => null) } as never,
     });
 
     await expect(capability.ensureAgentAccess(request)).resolves.toMatchObject({ status: 'permissionDenied' });
   });
 
-  it('inspects and revokes exact service-agent grants', async () => {
+  it('reports that a cold capability cannot revoke an unattributed existing grant', async () => {
     const getAgentAccess = vi.fn(async () => ({ read: true, append: true, write: true }));
     const setAgentAccess = vi.fn(async () => ({ read: false, append: false, write: false }));
     const capability = createSolidPermissionCapability({
@@ -86,12 +97,7 @@ describe('createSolidPermissionCapability', () => {
     });
 
     await expect(capability.inspectAgentAccess(request)).resolves.toMatchObject({ status: 'granted' });
-    await expect(capability.revokeAgentAccess(request)).resolves.toMatchObject({ status: 'missing' });
-    expect(setAgentAccess).toHaveBeenCalledWith(
-      request.resources[0].url,
-      request.service.webId,
-      expect.objectContaining({ read: false, append: false, write: false }),
-      expect.any(Object),
-    );
+    await expect(capability.revokeAgentAccess(request)).resolves.toMatchObject({ status: 'permissionDenied', message: expect.stringContaining('attribution') });
+    expect(setAgentAccess).not.toHaveBeenCalled();
   });
 });

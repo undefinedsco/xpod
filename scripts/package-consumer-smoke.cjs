@@ -85,6 +85,38 @@ function resolveInstalledQleverRuntime(requireFromConsumer, rootPackage) {
   throw new Error('Installed package is missing its platform QLever runtime');
 }
 
+function resolveInstalledEmbeddedSource(requireFromConsumer, rootPackage) {
+  const candidates = Object.keys(rootPackage.optionalDependencies ?? {})
+    .filter((name) => name.startsWith('@undefineds.co/xpod-'));
+  for (const packageName of candidates) {
+    try {
+      const packageJsonPath = requireFromConsumer.resolve(`${packageName}/package.json`);
+      const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
+      if (typeof packageJson.xpodEmbeddedSource !== 'string' || typeof packageJson.xpodEmbeddedSourceSha256 !== 'string') continue;
+      return {
+        packageRoot: path.dirname(packageJsonPath),
+        manifestRelativePath: packageJson.xpodEmbeddedSource,
+        manifestSha256: packageJson.xpodEmbeddedSourceSha256,
+      };
+    } catch {
+      // npm skips optional packages that do not match the current platform.
+    }
+  }
+  throw new Error('Installed package is missing its embedded native source sidecar');
+}
+
+// Parent (repo) process only. The isolated child is a byte copy of this file
+// placed in the consumer dir, where repo helpers do not exist; keeping the
+// require lazy and inside this function guarantees the child never needs it.
+function verifyInstalledEmbeddedSource(consumerDir) {
+  const { verifyInstalledNativeSource } = require('./lib/embedded-native-source.cjs');
+  const requireFromConsumer = createRequire(path.join(consumerDir, 'package.json'));
+  const rootPackageJsonPath = requireFromConsumer.resolve('@undefineds.co/xpod/package.json');
+  const rootPackage = JSON.parse(fs.readFileSync(rootPackageJsonPath, 'utf8'));
+  const selected = resolveInstalledEmbeddedSource(requireFromConsumer, rootPackage);
+  return verifyInstalledNativeSource(selected);
+}
+
 function runInstalledQleverConformance(
   consumerDir,
   packageRoot,
@@ -163,6 +195,12 @@ async function main() {
   const smokeMode = getSmokeMode();
   if (process.env.XPOD_CONSUMER_SMOKE_CHILD !== '1') {
     runInIsolatedConsumerProcess(consumerDir, smokeMode);
+    // The package-only smoke intentionally runs without a native optional
+    // runtime, so the embedded source sidecar only exists in runtime mode.
+    if (smokeMode !== 'package-only') {
+      const embeddedSource = verifyInstalledEmbeddedSource(consumerDir);
+      console.log(`[consumer-smoke] embedded native source verified: ${embeddedSource.manifestPath}`);
+    }
     return;
   }
 

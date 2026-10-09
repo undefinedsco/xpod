@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
-import { cn } from '@undefineds.co/shared-ui'
+import { cn, interactiveFocusClass, ListSurface } from '@undefineds.co/shared-ui'
 import { GripVertical } from 'lucide-react'
 import type { AiProviderCredentialSummary } from './contract/ai-connections-client'
 import { credentialDisplayLabel } from './credential-labels'
@@ -131,7 +131,12 @@ export function AiSortableCredentialList({ credentials, disabled, onMove, childr
   }
 
   return (
-    <div ref={listRef} className={cn(credentials.length > 0 && 'rounded-xl border border-border/70')}>
+    <ListSurface
+      asChild
+      ref={listRef}
+      className={cn('divide-y-0 bg-transparent', credentials.length > 0 ? 'border-border/70' : 'border-0 rounded-none')}
+    >
+      <div>
       <span className="sr-only" role="status">{announcement}</span>
       {credentials.map((credential, index) => (
         // `-of-type` rather than `first:`/`last:`: the status span above is the
@@ -142,7 +147,7 @@ export function AiSortableCredentialList({ credentials, disabled, onMove, childr
             <button type="button" disabled={unavailable}
               aria-label={`拖动排序 ${credentialDisplayLabel(credential)}`}
               title={credentials.length < 2 ? '至少添加两条连接后可拖动排序' : '拖动调整优先级，或使用方向键、Home / End 排序'}
-              className="flex h-8 w-6 shrink-0 touch-none select-none items-center justify-center rounded text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:opacity-40 enabled:cursor-grab active:cursor-grabbing"
+              className={cn('flex h-8 w-6 shrink-0 touch-none select-none items-center justify-center rounded text-muted-foreground hover:text-foreground disabled:opacity-40 enabled:cursor-grab active:cursor-grabbing', interactiveFocusClass)}
               onKeyDown={(event) => {
                 if (event.key === 'Escape') { finish(false); return }
                 const next = event.key === 'ArrowUp' ? index - 1 : event.key === 'ArrowDown' ? index + 1
@@ -199,6 +204,7 @@ export function AiSortableCredentialList({ credentials, disabled, onMove, childr
           ) : null)}
         </div>
       ))}
-    </div>
+      </div>
+    </ListSurface>
   )
 }

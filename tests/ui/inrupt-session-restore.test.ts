@@ -1,3 +1,4 @@
+import { SOLID_CLIENT_AUTHN_KEY_PREFIX } from '@inrupt/solid-client-authn-core';
 import { createHash, createSign, generateKeyPairSync, type KeyObject } from 'node:crypto';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { afterEach, describe, expect, test, vi } from 'vitest';
@@ -12,7 +13,7 @@ import {
 } from '../../ui/src/solid/XpodSolidRuntime';
 import { completeXpodOidcCallback } from '../../ui/src/solid/XpodOidcCallbackApp';
 
-const INRUPT_CURRENT_SESSION_STORAGE_KEY = 'solidClientAuthn:currentSession';
+const INRUPT_CURRENT_SESSION_STORAGE_KEY = `${SOLID_CLIENT_AUTHN_KEY_PREFIX}currentSession`;
 
 // Uses the installed Inrupt SDK and real HTTP discovery/token/JWKS endpoints.
 // The local OIDC fixture signs tokens; it is not a live Xpod deployment.
@@ -50,6 +51,31 @@ describe('Xpod Inrupt session restore integration', () => {
       expect(oidc.registrationRequests).toHaveLength(0);
     });
   });
+
+  test.each(['foreign-selected-record', 'missing-selected-pointer'])(
+    'does not restore a matching bystander instead of the SDK selected record: %s', async scenario => {
+      await withOidcFixture(async ({ oidc, providerLogin, silentAuthorizations }) => {
+        const original = await providerLogin(createXpodSolidRuntimeValue());
+        await completeAuthorization(original, oidc.webId);
+        const sessionId = window.localStorage.getItem(INRUPT_CURRENT_SESSION_STORAGE_KEY)!;
+        const recordKey = `xpod.inrupt.insecure:solidClientAuthenticationUser:${sessionId}`;
+        const record = JSON.parse(window.localStorage.getItem(recordKey)!);
+        window.localStorage.setItem('xpod.inrupt.insecure:solidClientAuthenticationUser:bystander', JSON.stringify(record));
+        if (scenario === 'foreign-selected-record') {
+          window.localStorage.setItem(recordKey, JSON.stringify({ ...record, issuer: 'https://foreign.example/' }));
+        } else {
+          window.localStorage.removeItem(INRUPT_CURRENT_SESSION_STORAGE_KEY);
+          window.localStorage.setItem('solidClientAuthenticationUser:currentSession', sessionId);
+        }
+        window.history.replaceState(null, '', 'https://app.example/ai-connections');
+        const before = { ...window.localStorage };
+        const restored = await createXpodSolidRuntimeValue().session.initialize({ restorePreviousSession: true });
+        expect(restored.status).toBe('anonymous');
+        expect(silentAuthorizations).toEqual([]);
+        expect({ ...window.localStorage }).toEqual(before);
+      });
+    },
+  );
 
   test('returns a rejected silent restoration to the application without authenticating', async () => {
     await withOidcFixture(async ({ oidc, providerLogin, silentAuthorizations }) => {

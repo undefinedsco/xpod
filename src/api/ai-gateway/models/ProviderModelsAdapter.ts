@@ -100,6 +100,10 @@ export interface CodexSubscriptionModelsAdapterOptions {
   clientVersion?: string;
 }
 
+// Codex protocol compatibility baseline, independent of Xpod and ACP wrapper versions.
+// Verified release: https://github.com/openai/codex/releases/tag/rust-v0.160.0
+const CODEX_MODELS_CLIENT_VERSION = '0.160.0';
+
 /** Discovers the models currently enabled for a ChatGPT Codex subscription. */
 export class CodexSubscriptionModelsAdapter implements ProviderModelsAdapter {
   public readonly protocol = 'codex-models';
@@ -108,7 +112,7 @@ export class CodexSubscriptionModelsAdapter implements ProviderModelsAdapter {
 
   public constructor(options: CodexSubscriptionModelsAdapterOptions = {}) {
     this.transport = options.transport ?? new ProviderHttpTransport();
-    this.clientVersion = options.clientVersion ?? '0.0.0';
+    this.clientVersion = options.clientVersion ?? CODEX_MODELS_CLIENT_VERSION;
   }
 
   public async fetch(input: ProviderModelsFetchInput): Promise<DiscoveredProviderModel[]> {
@@ -130,7 +134,7 @@ export class CodexSubscriptionModelsAdapter implements ProviderModelsAdapter {
       const models: unknown[] = Array.isArray(body?.models) ? body.models : [];
       return models
         .filter((model: unknown): model is Record<string, unknown> => Boolean(model) && typeof model === 'object')
-        .filter((model) => model.visibility !== 'hide')
+        .filter((model) => model.visibility === 'list')
         .map((model) => ({
           id: String(model.slug ?? model.id ?? '').trim(),
           ...(typeof model.display_name === 'string' && model.display_name.trim()

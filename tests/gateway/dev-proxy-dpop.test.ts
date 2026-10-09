@@ -19,6 +19,8 @@ describe('Web dev proxy preserves DPoP request identity', () => {
   let devProxy: httpProxy;
   let gateway: GatewayProxy;
   let browserOrigin: string;
+  let gatewayOrigin: string;
+  let ingressOrigin: string;
   let accessToken: string;
   let proofKeys: Awaited<ReturnType<typeof generateKeyPair>>;
   let cssServer: http.Server;
@@ -28,6 +30,9 @@ describe('Web dev proxy preserves DPoP request identity', () => {
     const upstreamPort = await getFreePort(46000, '127.0.0.1');
     const gatewayPort = await getFreePort(upstreamPort + 1, '127.0.0.1');
     const devPort = await getFreePort(gatewayPort + 1, '127.0.0.1');
+    const ingressPort = await getFreePort(devPort + 1, '127.0.0.1');
+    gatewayOrigin = `http://127.0.0.1:${gatewayPort}`;
+    ingressOrigin = `http://127.0.0.1:${ingressPort}`;
     const issuer = `http://localhost:${upstreamPort}/`;
     const webId = `${issuer}alice/profile/card#me`;
     browserOrigin = `http://127.0.0.1:${devPort}`;
@@ -83,6 +88,7 @@ describe('Web dev proxy preserves DPoP request identity', () => {
     gateway = new GatewayProxy(gatewayPort, new Supervisor(), '127.0.0.1', {
       baseUrl: 'https://canonical-pod.example/',
       internalAdminAuthSecret: internalSecret,
+      ingressPort,
     });
     gateway.setTargets({ api: issuer, css: { socketPath } });
     await gateway.start();
@@ -104,13 +110,13 @@ describe('Web dev proxy preserves DPoP request identity', () => {
     vi.unstubAllEnvs();
   });
 
-  async function request(path: string, signedOrigin = browserOrigin, method = 'GET', headers: Record<string, string> = {}): Promise<Response> {
+  async function request(path: string, signedOrigin = browserOrigin, method = 'GET', headers: Record<string, string> = {}, destinationOrigin = browserOrigin): Promise<Response> {
     const proof = await new SignJWT({
       htu: `${signedOrigin}${path}`, htm: method,
       ath: createHash('sha256').update(accessToken).digest('base64url'),
     }).setProtectedHeader({ alg: 'ES256', typ: 'dpop+jwt', jwk: await exportJWK(proofKeys.publicKey) })
       .setJti(randomUUID()).setIssuedAt().sign(proofKeys.privateKey);
-    return fetch(`${browserOrigin}${path}`, {
+    return fetch(`${destinationOrigin}${path}`, {
       method,
       headers: { Authorization: `DPoP ${accessToken}`, DPoP: proof, ...headers },
     });
@@ -126,6 +132,40 @@ describe('Web dev proxy preserves DPoP request identity', () => {
 
   it('still rejects a proof signed for another origin', async () => {
     const response = await request('/api/ai/client-configuration/capability', 'https://wrong.example');
+    expect(response.status).toBe(401);
+  });
+
+  it('verifies a directly signed loopback Account request without client route headers', async () => {
+    const response = await request('/.account/', gatewayOrigin, 'GET', {}, gatewayOrigin);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ webId: expect.stringContaining('/alice/profile/card#me'), unixPeer: true });
+  });
+
+  it('verifies an ordinary Account request through the trusted dev proxy', async () => {
+    const response = await request('/.account/');
+    expect(response.status).toBe(200);
+  });
+
+  it('rejects a forged local route even when the Account proof is valid for that forged URL', async () => {
+    const response = await request('/.account/', 'http://127.0.0.2:9999', 'GET', {
+      'x-xpod-canonical-url': 'https://canonical-pod.example/.account/',
+      'x-xpod-local-route-url': 'http://127.0.0.2:9999/.account/',
+    }, gatewayOrigin);
+    expect(response.status).toBe(401);
+  });
+
+  it.each(['ingress', 'forwarded'])('does not attest a remote Account request arriving via %s', async (route) => {
+    const destination = route === 'ingress' ? ingressOrigin : gatewayOrigin;
+    const response = await request('/.account/', destination, 'GET', {
+      'x-xpod-canonical-host': 'canonical-pod.example',
+      'x-xpod-canonical-origin': 'https://canonical-pod.example',
+      'x-xpod-canonical-url': 'https://canonical-pod.example/.account/',
+      'x-xpod-local-route-url': `${destination}/.account/`,
+      'x-xpod-admin-proxy-loopback': '1',
+      'x-xpod-admin-proxy-timestamp': String(Date.now()),
+      'x-xpod-admin-proxy-signature': 'forged',
+      ...(route === 'forwarded' ? { 'x-forwarded-for': '203.0.113.8' } : {}),
+    }, destination);
     expect(response.status).toBe(401);
   });
 

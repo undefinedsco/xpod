@@ -80,7 +80,7 @@ suite('ChatKit PodStore Integration', () => {
       tokenEndpoint: `${account.issuer.replace(/\/$/, '')}/.oidc/token`,
       publicBaseUrl: account.issuer,
     }));
-    store = new PodChatKitStore({ podAccess });
+    store = new PodChatKitStore({ podAccess, podBaseUrlResolver: async () => podUrl });
 
     service = new ChatKitService({
       store,
@@ -209,7 +209,7 @@ suite('ChatKit PodStore Integration', () => {
     it('should retrieve thread from Pod with a fresh store instance', async () => {
       expect(threadId).toBeDefined();
 
-      const freshStore = new PodChatKitStore({ podAccess });
+      const freshStore = new PodChatKitStore({ podAccess, podBaseUrlResolver: async () => podUrl });
       const freshService = new ChatKitService({
         store: freshStore,
         aiProvider: new MockAiProvider(),
@@ -535,9 +535,12 @@ suite('ChatKit PodStore Integration', () => {
       const loadedRun = await store.loadRun(runResourceId, testContext);
       const loadedEvents = await store.loadRunSteps(runResourceId, testContext);
 
+      // The store reports current-Pod relations as opaque base-relative ids; the ORM resolves
+      // them against the configured Pod on write and query.
+      const threadRelative = threadResource.replace(`${podUrl}.data/`, '');
       expect(loadedRun).toMatchObject({
         id: runResourceId,
-        thread: threadResource,
+        thread: threadRelative,
         workspace: workspaceRef,
         status: RunStatus.RUNNING,
         runner: 'pi:codex',
@@ -548,7 +551,7 @@ suite('ChatKit PodStore Integration', () => {
       expect(loadedEvents[0]).toMatchObject({
         id: stepResourceId,
         runId: runResourceId,
-        run: runResource,
+        run: runResourceId,
         type: RunStepType.STARTED,
         message: 'Run started',
         data: { workspace: workspaceRef },
@@ -596,7 +599,7 @@ suite('ChatKit PodStore Integration', () => {
       await store.appendRunStep({
         id: stepResourceId,
         runId: runResourceId,
-        run: runResource,
+        run: runResourceId,
         type: RunStepType.STARTED,
         message: 'Task run started',
         data: { workspace: workspaceRef },
@@ -609,7 +612,7 @@ suite('ChatKit PodStore Integration', () => {
       expect(loadedEvents[0]).toMatchObject({
         id: stepResourceId,
         runId: runResourceId,
-        run: runResource,
+        run: runResourceId,
         type: RunStepType.STARTED,
         message: 'Task run started',
         data: { workspace: workspaceRef },

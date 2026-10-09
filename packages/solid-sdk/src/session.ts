@@ -135,6 +135,8 @@ export function createSolidSessionRuntime(
   let snapshot: SolidSessionSnapshot = { status: 'initializing' };
   let lastNotifiedSnapshot: SolidSessionSnapshot | undefined;
   let initialization: Promise<SolidSessionSnapshot> | undefined;
+  let initializationDeadline: ReturnType<typeof setTimeout> | undefined;
+  let settleInitializationWait: (() => void) | undefined;
   let initialized = false;
   let isInitializing = false;
   let initializationErrorSnapshot: SolidSessionSnapshot | undefined;
@@ -195,6 +197,7 @@ export function createSolidSessionRuntime(
     code: string | null,
     description?: string | null,
   ) => {
+    if (pendingIdentity && pendingIdentity.generation !== identityOperationGeneration) return;
     identityOperationGeneration += 1;
     const errorSnapshot = snapshotFromSessionError(
       description ?? code ?? 'Solid session error',
@@ -212,6 +215,48 @@ export function createSolidSessionRuntime(
   session.events.on(EVENTS.SESSION_EXPIRED, publishSessionExpired);
   const errorEvents = session.events as SolidSessionErrorEventTarget;
   errorEvents.on(EVENTS.ERROR, publishSessionError);
+
+  const boundIdentityCompletion = (
+    completion: Promise<SolidSessionSnapshot>,
+    operation: NonNullable<typeof pendingIdentity>,
+  ): Promise<SolidSessionSnapshot> => {
+    const bounded = new Promise<SolidSessionSnapshot>((resolve, reject) => {
+      settleInitializationWait = () => resolve(snapshot);
+      initializationDeadline = setTimeout(() => {
+        initializationDeadline = undefined;
+        if (!disposed && operation.generation === identityOperationGeneration) {
+          // Inrupt cannot cancel redirect completion and its events carry no
+          // operation id. Keep the pending operation quarantined until it
+          // settles; retrying with this same signer would race its mutations.
+          identityOperationGeneration += 1;
+          if (snapshot.status === 'initializing') {
+            const error = new Error('Previous login is still completing. Reload before reconnecting.');
+            error.name = 'SolidSessionPendingError';
+            publish(snapshotFromSessionError(error, session.info));
+          }
+        }
+        resolve(snapshot);
+      }, 15_000);
+      const cleanup = () => {
+        if (initialization !== bounded) return;
+        clearTimeout(initializationDeadline);
+        initializationDeadline = undefined;
+        settleInitializationWait = undefined;
+        if (pendingIdentity === operation) pendingIdentity = undefined;
+        initialization = undefined;
+        isInitializing = false;
+        initializationErrorSnapshot = undefined;
+      };
+      void completion.then((value) => {
+        cleanup();
+        resolve(value);
+      }, (error: unknown) => {
+        cleanup();
+        reject(error);
+      });
+    });
+    return bounded;
+  };
 
   return {
     fetch: session.fetch,
@@ -267,7 +312,7 @@ export function createSolidSessionRuntime(
       isInitializing = true;
       initializationErrorSnapshot = undefined;
       publish({ status: 'initializing' });
-      const nextInitialization = session.handleIncomingRedirect({
+      const completion = session.handleIncomingRedirect({
         restorePreviousSession: options.restorePreviousSession ?? true,
       }).then((info) => {
         if (!isCurrentOperation(info ?? session.info)) return snapshot;
@@ -279,16 +324,8 @@ export function createSolidSessionRuntime(
         return publish(nextSnapshot);
       })
         .catch((error: unknown) => isCurrentOperation()
-          ? publish(snapshotFromSessionError(error, session.info)) : snapshot)
-        .finally(() => {
-          if (initialization === nextInitialization) {
-            if (pendingIdentity === operation) pendingIdentity = undefined;
-            initialization = undefined;
-            isInitializing = false;
-            initializationErrorSnapshot = undefined;
-          }
-        });
-      initialization = nextInitialization;
+          ? publish(snapshotFromSessionError(error, session.info)) : snapshot);
+      initialization = boundIdentityCompletion(completion, operation);
 
       return initialization;
     },
@@ -307,7 +344,7 @@ export function createSolidSessionRuntime(
       isInitializing = true;
       initializationErrorSnapshot = undefined;
       publish({ status: 'initializing' });
-      const nextInitialization = session.handleIncomingRedirect(url).then((info) => {
+      const completion = session.handleIncomingRedirect(url).then((info) => {
         if (!isCurrentOperation(info ?? session.info)) return snapshot;
         const nextSnapshot = snapshotFromSessionInfo(info ?? session.info);
         if (nextSnapshot.status === 'anonymous' && initializationErrorSnapshot?.status === 'error') {
@@ -317,18 +354,10 @@ export function createSolidSessionRuntime(
         return publish(nextSnapshot);
       })
         .catch((error: unknown) => isCurrentOperation()
-          ? publish(snapshotFromSessionError(error, session.info)) : snapshot)
-        .finally(() => {
-          if (initialization === nextInitialization) {
-            if (pendingIdentity === operation) pendingIdentity = undefined;
-            initialization = undefined;
-            isInitializing = false;
-            initializationErrorSnapshot = undefined;
-          }
-        });
-      initialization = nextInitialization;
+          ? publish(snapshotFromSessionError(error, session.info)) : snapshot);
+      initialization = boundIdentityCompletion(completion, operation);
 
-      return nextInitialization;
+      return initialization;
     },
 
     async login(options: ILoginInputOptions) {
@@ -377,9 +406,12 @@ export function createSolidSessionRuntime(
     },
 
     dispose() {
+      clearTimeout(initializationDeadline);
       identityOperationGeneration += 1;
       invalidateAuthentication();
       disposed = true;
+      settleInitializationWait?.();
+      settleInitializationWait = undefined;
       listeners.clear();
       session.events.off(EVENTS.LOGIN, publishSessionInfo);
       session.events.off(EVENTS.SESSION_RESTORED, publishSessionInfo);

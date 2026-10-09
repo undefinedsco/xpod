@@ -1,3 +1,4 @@
+import { CHAT_ACCEPTANCE_MAX_OUTPUT_TOKENS, streamedChatBodyMatches, type ChatAcceptanceProtocol } from './helpers/chat-acceptance';
 import { drizzle, type SolidAuthSession, type SolidDatabase } from '@undefineds.co/drizzle-solid';
 import { aiModelResource, aiProviderResource, credentialResource } from '@undefineds.co/models';
 import {
@@ -26,8 +27,6 @@ if (!deepseekApiKey || !kimiApiKey) {
 const runtimeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xpod-live-ai-acceptance-'));
 const stack = new XpodTestStack();
 const liveClientModels = ['deepseek-v4-flash', 'kimi-for-coding'];
-let aiConnectionsClient: ReturnType<typeof createXpodAiConnectionsClient> | undefined;
-let createdGatewayKeyId: string | undefined;
 
 try {
   await stack.start('local', {
@@ -80,7 +79,6 @@ try {
     authenticatedFetch: session.fetch,
     invocationFetch: fetch,
   });
-  aiConnectionsClient = client;
 
   const providers = [
     {
@@ -164,27 +162,22 @@ try {
     }));
   }
 
-  const issuedGatewayKey = await client.createGatewayKey({
-    name: `Live AI acceptance ${new Date().toISOString()}`,
-    scopes: ['models:read', 'inference:write'],
-  });
-  createdGatewayKeyId = issuedGatewayKey.record.id;
-  const listedGatewayKeys = await client.listGatewayKeys();
-  if (!listedGatewayKeys.some((record) => record.id === createdGatewayKeyId)) {
-    throw new Error('Created Xpod API Key was not listed from the Pod-backed management API');
-  }
-  const revealedGatewayKey = await client.revealGatewayKey(createdGatewayKeyId);
-  if (revealedGatewayKey !== issuedGatewayKey.plaintext) {
-    throw new Error('Created Xpod API Key plaintext could not be recovered from the Pod-backed management API');
-  }
-  const clientApiKey = issuedGatewayKey.plaintext;
+  // An Xpod key *is* an Account client credential, and this runner signs in with
+  // a client-credentials grant, so the Account control that issues a new
+  // credential is not mounted in this process. It therefore uses the credential
+  // `setupAccount` already obtained from the real Account API and applies the
+  // canonical wrapper the host capability builds (see
+  // ui/src/auth/account-client-credentials.ts) instead of inventing a key store.
+  // Creating, listing and revoking through that capability is proven by the
+  // browser acceptance and by scripts/accept-live-gateway-login-chat.ts.
+  const clientApiKey = `sk-${Buffer.from(`${account.clientId}:${account.clientSecret}`, 'utf8').toString('base64')}`;
   console.log(JSON.stringify({
     step: 'auth',
-    operation: 'xpod-api-key-created',
-    keyId: issuedGatewayKey.record.id,
-    owner: issuedGatewayKey.record.owner,
-    scopes: issuedGatewayKey.record.scopes,
-    plaintextAvailable: issuedGatewayKey.record.plaintextAvailable === true,
+    operation: 'xpod-api-key-from-account-credential',
+    clientId: account.clientId,
+    owner: account.webId,
+    scope: 'entire-pod',
+    wrapperIssued: true,
   }));
   const gatewayHeaders = {
     Authorization: `Bearer ${clientApiKey}`,
@@ -214,13 +207,13 @@ try {
       body: JSON.stringify({
         model,
         messages: [{ role: 'user', content: 'Reply with exactly: XPOD_OK' }],
-        max_tokens: 128,
+        max_tokens: CHAT_ACCEPTANCE_MAX_OUTPUT_TOKENS,
         temperature: 0,
         stream: true,
       }),
     });
     const chatText = await readText(chatResponse, `POST /v1/chat/completions (${model})`);
-    assertSemanticSuccess(chatText, `chat/completions ${model}`);
+    assertSemanticSuccess(chatText, 'chatCompletions', `chat/completions ${model}`);
     console.log(JSON.stringify({
       step: 'chat',
       protocol: 'openai-chat-completions',
@@ -235,12 +228,12 @@ try {
       body: JSON.stringify({
         model,
         input: 'Reply with exactly: XPOD_OK',
-        max_output_tokens: 128,
+        max_output_tokens: CHAT_ACCEPTANCE_MAX_OUTPUT_TOKENS,
         stream: true,
       }),
     });
     const responsesText = await readText(responsesResponse, `POST /v1/responses (${model})`);
-    assertSemanticSuccess(responsesText, `responses ${model}`);
+    assertSemanticSuccess(responsesText, 'responses', `responses ${model}`);
     console.log(JSON.stringify({ step: 'chat', protocol: 'openai-responses', status: responsesResponse.status, model, ok: true }));
 
     const messagesResponse = await stack.runtimeFetch('/v1/messages', {
@@ -252,13 +245,13 @@ try {
       body: JSON.stringify({
         model,
         messages: [{ role: 'user', content: 'Reply with exactly: XPOD_OK' }],
-        max_tokens: 128,
+        max_tokens: CHAT_ACCEPTANCE_MAX_OUTPUT_TOKENS,
         temperature: 0,
         stream: true,
       }),
     });
     const messagesText = await readText(messagesResponse, `POST /v1/messages (${model})`);
-    assertSemanticSuccess(messagesText, `messages ${model}`);
+    assertSemanticSuccess(messagesText, 'anthropic', `messages ${model}`);
     console.log(JSON.stringify({ step: 'chat', protocol: 'anthropic-messages', status: messagesResponse.status, model, ok: true }));
   }
 
@@ -270,32 +263,15 @@ try {
       webId: account.webId,
     });
   }
-  await client.deleteGatewayKey(createdGatewayKeyId);
+  // The wrapper is not deleted here: it belongs to the account `setupAccount`
+  // created for this run, and stopping the stack removes the account with it.
   console.log(JSON.stringify({
     step: 'cleanup',
-    operation: 'xpod-api-key-deleted',
-    keyId: createdGatewayKeyId,
+    operation: 'account-scoped-run',
+    note: 'credential belongs to the temporary acceptance account; the stack teardown revokes it',
   }));
-  createdGatewayKeyId = undefined;
 } finally {
   try {
-    if (aiConnectionsClient && createdGatewayKeyId) {
-      try {
-        await aiConnectionsClient.deleteGatewayKey(createdGatewayKeyId);
-        console.log(JSON.stringify({
-          step: 'cleanup',
-          operation: 'xpod-api-key-deleted-after-failure',
-          keyId: createdGatewayKeyId,
-        }));
-      } catch (error) {
-        console.error(JSON.stringify({
-          step: 'cleanup',
-          operation: 'xpod-api-key-delete-failed',
-          keyId: createdGatewayKeyId,
-          error: error instanceof Error ? error.message : String(error),
-        }));
-      }
-    }
     await stack.stop();
   } finally {
     fs.rmSync(runtimeRoot, { recursive: true, force: true });
@@ -541,27 +517,8 @@ async function readText(response: Response, operation: string): Promise<string> 
   return text;
 }
 
-function assertSemanticSuccess(text: string, operation: string): void {
-  const semanticText = text
-    .split(/\r?\n/u)
-    .filter((line) => line.startsWith('data: ') && line !== 'data: [DONE]')
-    .flatMap((line) => {
-      try {
-        const event = JSON.parse(line.slice(6)) as Record<string, any>;
-        return [
-          event.choices?.[0]?.delta?.content,
-          event.choices?.[0]?.delta?.reasoning_content,
-          event.delta,
-          event.delta?.text,
-          event.delta?.thinking,
-          event.text,
-        ].filter((value): value is string => typeof value === 'string');
-      } catch {
-        return [];
-      }
-    })
-    .join('');
-  if (!semanticText.includes('XPOD_OK')) {
-    throw new Error(`${operation} did not contain the expected semantic response: ${text.slice(0, 800)}`);
+function assertSemanticSuccess(text: string, protocol: ChatAcceptanceProtocol, operation: string): void {
+  if (!streamedChatBodyMatches(text, protocol, 'XPOD_OK')) {
+    throw new Error(`${operation} did not contain a completed assistant acceptance response`);
   }
 }

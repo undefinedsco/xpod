@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>网络访问（窄窗）</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+body{margin:0;font-family:'PingFang SC','SF Pro Text',-apple-system,BlinkMacSystemFont,'Segoe UI','Noto Sans SC','Microsoft YaHei',sans-serif;color:#2B2621;background:#F7F4ED}
+a{color:#563E84}
+button:focus-visible,a:focus-visible{outline:2px solid #563E84;outline-offset:3px}
+</style>
+</helmet>
+<div style="width: 390px; height: 1100px; display: flex; flex-direction: column; background: #F7F4ED; font-family: 'PingFang SC','SF Pro Text',-apple-system,BlinkMacSystemFont,'Segoe UI','Noto Sans SC','Microsoft YaHei',sans-serif; color: #2B2621">
+<header style="height: 56px; flex-shrink: 0; box-sizing: border-box; padding: 0 8px; display: flex; align-items: center; gap: 4px; background: #F2EDE2; border-bottom: 1px solid #DFDBD5">
+<a href="NarrowDrawer.dc.html" aria-label="打开导航" style="width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; border-radius: 8px; color: #2B2621"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"></path></svg></a>
+<span style="display: flex; flex-direction: column"><span style="font-size: 12px; color: #655D53; line-height: 16px">这台设备</span><h1 style="margin: 0; font-size: 17px; font-weight: 600; line-height: 22px">网络访问</h1></span>
+</header>
+<main style="padding: 16px; display: flex; flex-direction: column; gap: 16px">
+<div role="status" style="display: flex; align-items: flex-start; gap: 10px">
+<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#8A6A12" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex-shrink: 0; margin-top: 2px"><path d="M12 3l10 18H2z"></path><path d="M12 10v5"></path><path d="M12 18h.01"></path></svg>
+<span style="display: flex; flex-direction: column; gap: 2px"><span style="font-size: 15px; font-weight: 600">其他设备暂时访问不到</span><span style="font-size: 13px; color: #655D53">这台电脑上照常可用</span></span>
+</div>
+<dc-import name="NetworkPanel" scenario="blocked" narrow="{{yes}}" h="780" hint-size="358px,780px"></dc-import>
+</main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":390,"height":1100}}'>
+class Component extends DCLogic {
+  renderVals() { return { yes: true }; }
+}
+</script>
+</body>
+</html>

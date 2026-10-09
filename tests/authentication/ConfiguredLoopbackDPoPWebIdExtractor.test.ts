@@ -95,6 +95,50 @@ afterEach(() => {
 });
 
 describe('ConfiguredLoopbackDPoPWebIdExtractor', () => {
+  it.each([ 'webid-profile', 'oidc-discovery', 'issuer-jwks' ] as const)(
+    'includes safe %s diagnostics in the HTTPS verifier warning and still rejects credentials', async(stage) => {
+      const canonicalWebId = 'https://pod.example/private/profile#me';
+      const canonicalRequestUrl = `${canonicalIssuer}.account/`;
+      const { accessToken, dpopProof } = await createDpopCredentials(canonicalRequestUrl, canonicalWebId, canonicalIssuer);
+      const targetExtractor = { handleSafe: vi.fn(async() => ({ path: canonicalRequestUrl })) } as unknown as TargetExtractor;
+      const failure = Object.assign(new Error('socket closed https://user:password@private.example/?token=secret'), {
+        code: 'BunFetchSocketClosed',
+      });
+      vi.stubEnv('CSS_PORT', '');
+      vi.stubGlobal('fetch', vi.fn(async(input: URL | RequestInfo) => {
+        const url = new URL(String(input));
+        const fetchStage = url.pathname === '/.well-known/openid-configuration' ? 'oidc-discovery'
+          : url.pathname === '/jwks' ? 'issuer-jwks' : 'webid-profile';
+        if (fetchStage === stage) throw failure;
+        if (fetchStage === 'webid-profile') {
+          return new Response(`<${canonicalWebId}> <http://www.w3.org/ns/solid/terms#oidcIssuer> <${canonicalIssuer}> .`);
+        }
+        return Response.json({ jwks_uri: `${canonicalIssuer}jwks` });
+      }));
+      try {
+        const extractor = new ConfiguredLoopbackDPoPWebIdExtractor(targetExtractor, canonicalIssuer);
+        const logger = (extractor as unknown as { logger: { warn: (message: string) => void } }).logger;
+        const warning = vi.spyOn(logger, 'warn');
+        try {
+          await expect(extractor.handleSafe(createRequest(accessToken, dpopProof))).rejects.toMatchObject({
+            statusCode: 400,
+            message: expect.stringContaining(`stage=${stage}, phase=headers, route=external`),
+          });
+          expect(warning).toHaveBeenCalledOnce();
+          const message = warning.mock.calls[0][0];
+          expect(message).toContain('cause=BunFetchSocketClosed');
+          for (const sensitive of [ canonicalWebId, canonicalIssuer, 'private.example', 'password', 'token=secret' ]) {
+            expect(message).not.toContain(sensitive);
+          }
+        } finally {
+          warning.mockRestore();
+        }
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    },
+  );
+
   it('extracts credentials from a fully verified DPoP token on the configured 127/8 origin', async() => {
     const { accessToken, dpopProof } = await createDpopCredentials();
     const targetExtractor = {
@@ -112,6 +156,46 @@ describe('ConfiguredLoopbackDPoPWebIdExtractor', () => {
     expect(targetExtractor.handleSafe).toHaveBeenCalledWith({ request });
 
     await expect(extractor.handleSafe(request)).rejects.toMatchObject({ statusCode: 400 });
+  });
+
+  it('extracts credentials from a fully verified Bearer access token on the configured loopback origin', async() => {
+    const accessToken = await createBearerAccessToken();
+    const targetExtractor = {
+      handleSafe: vi.fn(async() => ({ path: requestUrl })),
+    } as unknown as TargetExtractor;
+    vi.stubEnv('CSS_PORT', new URL(origin).port);
+    const extractor = new ConfiguredLoopbackDPoPWebIdExtractor(targetExtractor, issuer);
+
+    await expect(extractor.handleSafe(createBearerRequest(accessToken))).resolves.toEqual({
+      agent: { webId },
+      client: { clientId: 'desktop-client' },
+      issuer: { url: issuer },
+    });
+    // A Bearer token is not URL-bound, so the DPoP target extractor must not run.
+    expect(targetExtractor.handleSafe).not.toHaveBeenCalled();
+  });
+
+  it('rejects a DPoP-bound token presented as Bearer without its proof', async() => {
+    const { accessToken } = await createDpopCredentials();
+    const targetExtractor = {
+      handleSafe: vi.fn(async() => ({ path: requestUrl })),
+    } as unknown as TargetExtractor;
+    vi.stubEnv('CSS_PORT', new URL(origin).port);
+    const extractor = new ConfiguredLoopbackDPoPWebIdExtractor(targetExtractor, issuer);
+
+    await expect(extractor.handleSafe(createBearerRequest(accessToken))).rejects.toMatchObject({ statusCode: 400 });
+    expect(targetExtractor.handleSafe).not.toHaveBeenCalled();
+  });
+
+  it('rejects a Bearer access token whose WebID does not trust the token issuer', async() => {
+    const accessToken = await createBearerAccessToken(webId, 'https://other-issuer.example/');
+    const targetExtractor = {
+      handleSafe: vi.fn(async() => ({ path: requestUrl })),
+    } as unknown as TargetExtractor;
+    vi.stubEnv('CSS_PORT', new URL(origin).port);
+    const extractor = new ConfiguredLoopbackDPoPWebIdExtractor(targetExtractor, issuer);
+
+    await expect(extractor.handleSafe(createBearerRequest(accessToken))).rejects.toMatchObject({ statusCode: 400 });
   });
 
   it('rejects a DPoP request URL from any origin other than the configured CSS origin', async() => {
@@ -233,12 +317,12 @@ describe('ConfiguredLoopbackDPoPWebIdExtractor', () => {
     await expect(extractor.handleSafe(createUnixSocketRequest(accessToken, dpopProof, {
       'x-xpod-canonical-url': canonicalUrl,
       'x-xpod-local-route-url': localRouteUrl,
-      ...createGatewayAdminProxyHeaders({
+      ...(createGatewayAdminProxyHeaders({
         secret: 'wrong-secret',
         method: 'POST',
         url: requestPath(),
         originalClientLoopback: true,
-      }),
+      }) as Record<string, string>),
     }))).rejects.toMatchObject({ statusCode: 400 });
   });
 
@@ -321,7 +405,7 @@ describe('ConfiguredLoopbackDPoPWebIdExtractor', () => {
     const extractor = new ConfiguredLoopbackDPoPWebIdExtractor(targetExtractor, issuer);
 
     await expect(extractor.handleSafe({
-      headers: { authorization: 'Bearer token' },
+      headers: { authorization: 'Basic token' },
       method: 'GET',
     } as HttpRequest)).rejects.toMatchObject({ statusCode: 501 });
     await expect(extractor.handleSafe({
@@ -381,6 +465,28 @@ async function createDpopCredentials(
     .setIssuedAt()
     .sign(dpopPrivateKey);
   return { accessToken, dpopProof };
+}
+
+async function createBearerAccessToken(tokenWebId = webId, tokenIssuer = issuer): Promise<string> {
+  return await new SignJWT({
+    webid: tokenWebId,
+    client_id: 'desktop-client',
+  })
+    .setProtectedHeader({ alg: 'ES256', kid: 'issuer-key' })
+    .setIssuer(tokenIssuer)
+    .setAudience('solid')
+    .setIssuedAt()
+    .setExpirationTime('5m')
+    .sign(issuerPrivateKey);
+}
+
+function createBearerRequest(accessToken: string, remoteAddress = '127.0.0.1'): HttpRequest {
+  return {
+    headers: { authorization: `Bearer ${accessToken}` },
+    method: 'GET',
+    url: requestPath(),
+    socket: { remoteAddress },
+  } as unknown as HttpRequest;
 }
 
 function createRequest(

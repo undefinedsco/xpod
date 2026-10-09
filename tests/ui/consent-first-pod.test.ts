@@ -109,16 +109,18 @@ describe('consent first Pod helpers', () => {
     registerLocalProvisionResolver(async () => provisionCode);
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(emptyAccountInventory())
+      .mockResolvedValueOnce(jsonResponse(200, { controls: { account: { profile: '/.account/account/profile/' } } }))
+      .mockResolvedValueOnce(jsonResponse(201, { webId: 'https://cloud.example/glocal/profile/card#me' }))
       .mockResolvedValueOnce(jsonResponse(201, {
         podUrl: 'https://node.example/glocal/',
         provisionReceipt: 'provision-receipt',
       }))
       .mockResolvedValueOnce(jsonResponse(201, {
         podUrl: 'https://node.example/glocal/',
-        webId: 'https://node.example/glocal/profile/card#me',
+        webId: 'https://cloud.example/glocal/profile/card#me',
       }))
       .mockResolvedValueOnce(jsonResponse(200, {
-        webIds: [ 'https://node.example/glocal/profile/card#me' ],
+        webIds: [ 'https://cloud.example/glocal/profile/card#me' ],
       }));
 
     await expect(createFirstPodAndWaitForWebIds({
@@ -130,11 +132,11 @@ describe('consent first Pod helpers', () => {
       pollIntervalMs: 0,
       provisionCode,
       username: 'GLOCAL',
-    })).resolves.toEqual([ 'https://node.example/glocal/profile/card#me' ]);
+    })).resolves.toEqual([ 'https://cloud.example/glocal/profile/card#me' ]);
 
     expect(fetchMock.mock.calls[0]?.[0]).toBe('http://localhost:3000/.account/account/pod');
     expect(fetchMock.mock.calls[0]?.[1]?.method).toBeUndefined();
-    expect(fetchMock.mock.calls[1]).toEqual([
+    expect(fetchMock.mock.calls[3]).toEqual([
       'http://localhost:3000/provision/pods',
       {
         method: 'POST',
@@ -144,10 +146,10 @@ describe('consent first Pod helpers', () => {
           'Content-Type': 'application/json',
         },
         credentials: 'include',
-        body: JSON.stringify({ podName: 'glocal' }),
+        body: JSON.stringify({ podName: 'glocal', webId: 'https://cloud.example/glocal/profile/card#me' }),
       },
     ]);
-    expect(fetchMock.mock.calls[2]).toEqual([
+    expect(fetchMock.mock.calls[4]).toEqual([
       'http://localhost:3000/.account/account/pod',
       {
         method: 'POST',
@@ -162,6 +164,7 @@ describe('consent first Pod helpers', () => {
           settings: {
             provisionCode,
             provisionReceipt: 'provision-receipt',
+            webId: 'https://cloud.example/glocal/profile/card#me',
           },
         }),
       },

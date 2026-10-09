@@ -1263,7 +1263,7 @@ async function runA01ConfigurationRestart(
     child?: ChildProcess;
     /** Explicit ingress port, so a restart does not land on a different one. */
     ingressPort?: number;
-    },
+  },
   checks: CheckResult[],
 ): Promise<{ endpoint?: string; child?: ChildProcess; logFile?: string }> {
   const base = `http://127.0.0.1:${options.candidatePort}`;
@@ -1594,7 +1594,6 @@ export function stripCloudRegistrationEnv(env: NodeJS.ProcessEnv): NodeJS.Proces
     'XPOD_SERVICE_TOKEN',
     'XPOD_PUBLIC_URL',
     'XPOD_SP_DOMAIN',
-    'XPOD_GATEWAY_LOCATOR_SECRET',
   ]) {
     delete cleaned[key];
   }

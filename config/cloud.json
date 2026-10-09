@@ -2,7 +2,15 @@
   "@context": [
     "https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^8.0.0/components/context.jsonld",
     "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/components/context.jsonld",
-    "https://linkedsoftwaredependencies.org/bundles/npm/asynchronous-handlers/^1.0.0/components/context.jsonld"
+    "https://linkedsoftwaredependencies.org/bundles/npm/asynchronous-handlers/^1.0.0/components/context.jsonld",
+    {
+      "mutationSource": "PodMutationLockingHttpHandler:_source",
+      "mutationPodStore": "PodMutationLockingHttpHandler:_podStore",
+      "mutationLocker": "PodMutationLockingHttpHandler:_resourceLocker",
+      "mutationDb": "PodMutationLockingHttpHandler:_identityDbUrl",
+      "mutationBase": "PodMutationLockingHttpHandler:_baseUrl",
+      "podLifecycleRedis": "PodLifecycleRedisLocker:_options_redisClient"
+    }
   ],
   "import": [
     "./main.json",
@@ -10,21 +18,36 @@
   ],
   "@graph": [
     {
-      "comment": "Redis-based locker with expiration wrapper for clustered deployments",
+      "@id": "urn:solid-server:default:CleanupInitializer",
+      "@type": "SequenceHandler",
+      "handlers": [
+        { "@type": "InitializableHandler", "initializable": { "@id": "urn:undefineds:xpod:PodLifecycleLocker" } }
+      ]
+    },
+    {
+      "comment": "Drain active Pod mutations before closing their RDF authority and Redis connection.",
+      "@type": "Override",
+      "overrideInstance": { "@id": "urn:solid-server:default:CleanupFinalizer" },
+      "overrideParameters": {
+        "@type": "SequenceHandler",
+        "handlers": [
+          { "@type": "FinalizableHandler", "finalizable": { "@id": "urn:undefineds:xpod:PodLifecycleLocker" } },
+          { "@type": "FinalizableHandler", "finalizable": { "@id": "urn:undefineds:xpod:SolidRdfDataAccessor" } }
+        ]
+      }
+    },
+    {
+      "comment": "Owner-checked Redis locks; do not expire in-flight writers without storage fencing.",
       "@type": "Override",
       "overrideInstance": {
         "@id": "urn:solid-server:default:ResourceLocker"
       },
       "overrideParameters": {
-        "@type": "WrappedExpiringReadWriteLocker",
-        "locker": {
-          "@type": "UrlAwareRedisLocker",
-          "redisClient": {
-            "@id": "urn:solid-server:default:variable:redisClient",
-            "@type": "Variable"
-          }
-        },
-        "expiration": 6000
+        "@type": "UrlAwareRedisLocker",
+        "redisClient": {
+          "@id": "urn:solid-server:default:variable:redisClient",
+          "@type": "Variable"
+        }
       }
     },
     {
@@ -506,8 +529,19 @@
         "@id": "urn:solid-server:default:BaseHttpHandler"
       },
       "overrideParameters": {
+        "@type": "PodMutationLockingHttpHandler",
+        "mutationPodStore": { "@id": "urn:solid-server:default:PodStore" },
+        "mutationLocker": { "@id": "urn:undefineds:xpod:PodLifecycleLocker" },
+        "mutationDb": { "@id": "urn:solid-server:default:variable:identityDbUrl" },
+        "mutationBase": { "@id": "urn:solid-server:default:variable:baseUrl" },
+        "mutationSource": {
         "@type": "StatusWaterfallHandler",
         "handlers": [
+          { "@id": "urn:undefineds:xpod:PodDeletionMutationGuard" },
+          { "@id": "urn:undefineds:xpod:LocalPodDeletionHttpHandler" },
+          {
+            "@id": "urn:undefineds:xpod:AgentDirectoryHttpHandler"
+          },
           {
             "@id": "urn:undefineds:xpod:SubgraphSparqlHttpHandler"
           },
@@ -539,6 +573,15 @@
             "@id": "urn:solid-server:default:LdpHandler"
           }
         ]
+      }
+      }
+    },
+    {
+      "@type": "Override",
+      "overrideInstance": { "@id": "urn:undefineds:xpod:PodLifecycleLocker" },
+      "overrideParameters": {
+        "@type": "PodLifecycleRedisLocker",
+        "podLifecycleRedis": { "@id": "urn:solid-server:default:variable:redisClient" }
       }
     }
   ]

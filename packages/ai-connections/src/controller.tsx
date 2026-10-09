@@ -1,6 +1,6 @@
+import { PROVIDER_LABELS } from './contract/provider-catalog'
 import { useSyncExternalStore } from 'react'
 import type {
-  AiClientCredentialsCapability,
   AiConnectionsPodStore,
   SolidLiveUpdateState,
   WebExtensionHost,
@@ -18,6 +18,7 @@ import {
   type AiProviderCredentialSummary,
   type AiProviderSummary,
 } from './contract/ai-connections-client'
+import { parseAiConnectionsServiceAccess } from './service-access'
 import { aiConnectionsErrorMessage } from './error-wording'
 import type { AiClientConfigurationBridge } from './AiClientConfigurationSection'
 import {
@@ -65,14 +66,14 @@ export interface AiProviderDefinition {
  * declares.
  */
 export const PROVIDERS: AiProviderDefinition[] = [
-  { id: 'openai', name: 'OpenAI', description: 'OpenAI 官方 GPT 与推理模型，支持 API Key 与订阅导入。', homeUrl: 'https://openai.com', apiKeyUrl: 'https://platform.openai.com/api-keys', apiKeyPlaceholder: 'sk-...', defaultBaseUrl: 'https://api.openai.com/v1' },
-  { id: 'anthropic', name: 'Anthropic', description: 'Anthropic 官方 Claude 模型，支持 API Key 与订阅导入。', homeUrl: 'https://www.anthropic.com', apiKeyUrl: 'https://console.anthropic.com/settings/keys', apiKeyPlaceholder: 'sk-ant-...', defaultBaseUrl: 'https://api.anthropic.com' },
-  { id: 'kimi', name: 'Kimi', description: '月之暗面 Kimi 模型，支持账号订阅、编码套餐与开放平台。', homeUrl: 'https://www.moonshot.cn', apiKeyUrl: 'https://platform.moonshot.cn/console/api-keys', apiKeyPlaceholder: 'sk-...', defaultBaseUrl: 'https://api.moonshot.cn/v1' },
-  { id: 'bailian', name: '百炼', description: '阿里云百炼的通义千问等模型，提供按量与多种套餐。', homeUrl: 'https://www.aliyun.com/product/bailian', apiKeyUrl: 'https://bailian.console.aliyun.com/#/api-key', apiKeyPlaceholder: 'sk-...', defaultBaseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1' },
-  { id: 'deepseek', name: 'DeepSeek', description: 'DeepSeek 官方模型，API Key 接入，接口兼容 OpenAI。', homeUrl: 'https://www.deepseek.com', apiKeyUrl: 'https://platform.deepseek.com/api_keys', apiKeyPlaceholder: 'sk-...', defaultBaseUrl: 'https://api.deepseek.com/v1' },
-  { id: 'zhipu', name: '智谱 AI', description: '智谱 GLM 系列模型，支持 API Key 与 GLM 编码套餐。', homeUrl: 'https://open.bigmodel.cn', apiKeyUrl: 'https://open.bigmodel.cn/usercenter/apikeys', apiKeyPlaceholder: 'id.secret-...', defaultBaseUrl: 'https://open.bigmodel.cn/api/paas/v4' },
-  { id: 'ollama', name: 'Ollama', description: '运行在本机的 Ollama 模型，无需 API Key，仅本机可达。', homeUrl: 'https://ollama.com', defaultBaseUrl: 'http://localhost:11434/v1' },
-  { id: 'custom', name: 'Custom', description: '任意 OpenAI 或 Anthropic 兼容服务，自填地址与 API Key。', homeUrl: 'https://undefineds.co', apiKeyPlaceholder: 'sk-...', defaultBaseUrl: 'https://example.com/v1' },
+  { id: 'openai', name: PROVIDER_LABELS.openai, description: 'OpenAI 官方 GPT 与推理模型，支持 API Key 与订阅导入。', homeUrl: 'https://openai.com', apiKeyUrl: 'https://platform.openai.com/api-keys', apiKeyPlaceholder: 'sk-...', defaultBaseUrl: 'https://api.openai.com/v1' },
+  { id: 'anthropic', name: PROVIDER_LABELS.anthropic, description: 'Anthropic 官方 Claude 模型，API Key 接入；Pro/Max 订阅通过 Claude Code 使用。', homeUrl: 'https://www.anthropic.com', apiKeyUrl: 'https://console.anthropic.com/settings/keys', apiKeyPlaceholder: 'sk-ant-...', defaultBaseUrl: 'https://api.anthropic.com' },
+  { id: 'kimi', name: PROVIDER_LABELS.kimi, description: '月之暗面 Kimi 模型，支持账号订阅、编码套餐与开放平台。', homeUrl: 'https://www.moonshot.cn', apiKeyUrl: 'https://platform.moonshot.cn/console/api-keys', apiKeyPlaceholder: 'sk-...', defaultBaseUrl: 'https://api.moonshot.cn/v1' },
+  { id: 'bailian', name: PROVIDER_LABELS.bailian, description: '阿里云百炼的通义千问等模型，提供按量与多种套餐。', homeUrl: 'https://www.aliyun.com/product/bailian', apiKeyUrl: 'https://bailian.console.aliyun.com/#/api-key', apiKeyPlaceholder: 'sk-...', defaultBaseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1' },
+  { id: 'deepseek', name: PROVIDER_LABELS.deepseek, description: 'DeepSeek 官方模型，API Key 接入，接口兼容 OpenAI。', homeUrl: 'https://www.deepseek.com', apiKeyUrl: 'https://platform.deepseek.com/api_keys', apiKeyPlaceholder: 'sk-...', defaultBaseUrl: 'https://api.deepseek.com/v1' },
+  { id: 'zhipu', name: PROVIDER_LABELS.zhipu, description: '智谱 GLM 系列模型，支持 API Key 与 GLM 编码套餐。', homeUrl: 'https://open.bigmodel.cn', apiKeyUrl: 'https://open.bigmodel.cn/usercenter/apikeys', apiKeyPlaceholder: 'id.secret-...', defaultBaseUrl: 'https://open.bigmodel.cn/api/paas/v4' },
+  { id: 'ollama', name: PROVIDER_LABELS.ollama, description: '运行在本机的 Ollama 模型，无需 API Key，仅本机可达。', homeUrl: 'https://ollama.com', defaultBaseUrl: 'http://localhost:11434/v1' },
+  { id: 'custom', name: PROVIDER_LABELS.custom, description: '任意 OpenAI 或 Anthropic 兼容服务，自填地址与 API Key。', homeUrl: 'https://undefineds.co', apiKeyPlaceholder: 'sk-...', defaultBaseUrl: 'https://example.com/v1' },
 ]
 
 export type ProviderProductState =
@@ -83,9 +84,7 @@ export type ProviderProductState =
   | 'attention'
 
 export const AI_CONNECTIONS_PINNED_SECTIONS = [
-  // §7.3：入口以"把客户端接上"的任务开场，密钥管理紧随其后
-  { id: 'clients', label: '连接客户端', title: 'CONNECT CLIENT' },
-  { id: 'keys', label: 'Xpod', title: 'API KEYS' },
+  { id: 'keys', label: 'Xpod', title: 'Xpod' },
 ] as const
 
 /**
@@ -108,6 +107,7 @@ export interface AiConnectionsController {
   readonly client: AiConnectionsClient | null
   readonly openExternal: (url: string) => Promise<void>
   readonly clientConfigurationBridge?: AiClientConfigurationBridge
+  readonly authorizeService?: () => Promise<void>
   readonly selectedSection: AiConnectionsWorkspaceSection
   readonly selectedProvider: AiConnectionsProvider
   readonly selectedCredentialId?: string
@@ -245,17 +245,20 @@ export function createAiConnectionsController(host: WebExtensionHost): AiConnect
   }
   const client = authenticated
     ? createInteractiveAiConnectionsClient(
-      withAccountClientCredentials(createAiConnectionsClient({
+      createAiConnectionsClient({
         webId: sessionSnapshot.webId,
         podBaseUrl: readyPod.current.podUrl,
         authenticatedFetch: host.solid.session.fetch,
-      }), host.capabilities.aiClientCredentials),
+        // Account client credentials are the only Xpod key store there is; the
+        // key calls are backed by this capability and never by a Pod route.
+        clientCredentials: host.capabilities.aiClientCredentials,
+      }),
       host.capabilities.aiConnectionsPodStore,
       liveCredentials,
       beginProviderLoad,
     )
     : null
-  let selectedSection: AiConnectionsWorkspaceSection = 'clients'
+  let selectedSection: AiConnectionsWorkspaceSection = 'keys'
   let selectedProvider: AiConnectionsProvider = 'openai'
   let selectedCredentialId: string | undefined
   let searchQuery = ''
@@ -415,6 +418,15 @@ export function createAiConnectionsController(host: WebExtensionHost): AiConnect
     client,
     openExternal: host.navigation.openExternal,
     clientConfigurationBridge: host.capabilities.aiClientConfiguration,
+    authorizeService: client && readyPod && host.solid.permissions ? async () => {
+      if (!isCurrentSession()) throw new Error('登录状态已变化，请重新打开 AI 连接。')
+      const descriptor = parseAiConnectionsServiceAccess(await client.getServiceAccess(), readyPod.current.podUrl)
+      if (!isCurrentSession()) throw new Error('登录状态已变化，请重新打开 AI 连接。')
+      const result = await host.solid.permissions!.ensureAgentAccess(descriptor)
+      if (result.status !== 'granted') throw new Error('未能授权 Xpod 访问，请确认你有这个 Pod 的管理权限。')
+      if (!isCurrentSession()) throw new Error('登录状态已变化，请重新打开 AI 连接。')
+      await controller.loadProviders()
+    } : undefined,
     get credentialsCollection() {
       return credentials?.collection
     },
@@ -553,50 +565,6 @@ export function createAiConnectionsController(host: WebExtensionHost): AiConnect
   }
 
   return controller
-}
-
-function withAccountClientCredentials(
-  client: AiConnectionsClient,
-  credentials?: AiClientCredentialsCapability,
-): AiConnectionsClient {
-  return {
-    ...client,
-    async createGatewayKey(input) {
-      if (!credentials) throw new Error('当前账号登录状态不支持创建客户端凭据。')
-      const issued = await credentials.create({ name: input.name, webId: client.webId })
-      try {
-        // The wrapper is issued here; the declared purpose and the rest of the
-        // caller's input travel with it so the record keeps where it applies.
-        return await client.createGatewayKey({
-          ...input,
-          apiKey: issued.apiKey,
-          credentialResource: issued.resource,
-        })
-      } catch (cause) {
-        try {
-          await credentials.revoke({
-            clientId: clientIdFromApiKey(issued.apiKey), resource: issued.resource, webId: client.webId,
-          })
-        } catch {
-          throw new Error('API Key 未能保存到 Pod，且账号凭据撤销失败。该凭据尚未应用到客户端。')
-        }
-        throw cause
-      }
-    },
-    async deleteGatewayKey(keyId) {
-      const record = (await client.listGatewayKeys()).find((key) => key.id === keyId)
-      if (record?.kind === 'client-credentials') {
-        if (!credentials || !record.clientCredentialId) {
-          throw new Error('当前账号登录状态无法撤销此客户端凭据，Key 记录已保留。')
-        }
-        const issued = await credentials.list()
-        const target = issued.find((entry) => entry.clientId === record.clientCredentialId)
-        if (!target) throw new Error('账号服务中已找不到该客户端凭据，请刷新后重试。')
-        await credentials.revoke({ clientId: target.clientId, resource: target.resource, webId: client.webId })
-      }
-      await client.deleteGatewayKey(keyId)
-    },
-  }
 }
 
 function createInteractiveAiConnectionsClient(
@@ -1274,10 +1242,3 @@ function errorMessage(error: unknown): string {
   return aiConnectionsErrorMessage(error)
 }
 
-/** The wrapper carries the OIDC client id; parsing it needs no stored secret. */
-function clientIdFromApiKey(apiKey: string): string {
-  const decoded = atob(apiKey.replace(/^sk-/u, ''))
-  const separator = decoded.indexOf(':')
-  if (separator <= 0) throw new Error('客户端凭据格式无效。')
-  return decoded.slice(0, separator)
-}

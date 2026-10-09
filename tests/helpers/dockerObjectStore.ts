@@ -11,7 +11,7 @@ import { Client } from 'minio';
  * The official MinIO images can no longer be pulled anonymously
  * (`quay.io/minio/minio` answers 401 for the index this repository used to pin,
  * and `minio/minio` was removed from Docker Hub), so the test stacks run
- * VersityGW instead: one static Apache-2.0 Rust binary that serves the same
+ * VersityGW instead: an Apache-2.0 Go S3 gateway that serves the same
  * path-style S3 API on the same port with the same root credentials. That
  * keeps `MinioDataAccessor`, `CSS_MINIO_*` and every test unchanged while
  * shrinking the image from ~58 MiB to ~28 MiB compressed and ~350 MiB to
@@ -52,16 +52,74 @@ export function objectStoreContainerArgs(bucket: string): string[] {
 }
 
 /**
+ * errno-style codes a service that has not started listening yet (or whose
+ * container port is published before the process accepts) produces. These come
+ * from Node's net layer directly, from undici's `fetch` wrappers
+ * (`TypeError: fetch failed` with the real code under `cause`), or from Bun's
+ * fetch error, which carries the code on the error itself.
+ */
+const TRANSIENT_TRANSPORT_CODES = new Set([
+  'ECONNRESET',
+  'ECONNREFUSED',
+  'ECONNABORTED',
+  'EPIPE',
+  'ETIMEDOUT',
+  'ENOTFOUND',
+  'EHOSTDOWN',
+  'EHOSTUNREACH',
+  'ENETDOWN',
+  'ENETUNREACH',
+  'EAI_AGAIN',
+  'ERR_SOCKET_CONNECTION_TIMEOUT',
+  'ERR_HTTP_REQUEST_TIMEOUT',
+  'UND_ERR_SOCKET',
+  'UND_ERR_CONNECT_TIMEOUT',
+  'UND_ERR_CONNECT_ERROR',
+  'UND_ERR_HEADERS_TIMEOUT',
+  'UND_ERR_BODY_TIMEOUT',
+]);
+
+/**
+ * True only for connection-level failures, walking the `cause` chain and any
+ * `AggregateError` members so the same classification works for Node, undici
+ * and Bun. A server that answered with an S3 error code is *not* a transport
+ * failure and must not be mistaken for one.
+ */
+function isTransientTransportError(error: unknown): boolean {
+  const seen = new Set<unknown>();
+  const queue: unknown[] = [ error ];
+  while (queue.length > 0) {
+    const current = queue.shift();
+    if (typeof current !== 'object' || current === null || seen.has(current)) {
+      continue;
+    }
+    seen.add(current);
+    const candidate = current as { code?: unknown; name?: unknown; cause?: unknown; errors?: unknown };
+    if (typeof candidate.code === 'string' && TRANSIENT_TRANSPORT_CODES.has(candidate.code)) {
+      return true;
+    }
+    if (typeof candidate.cause === 'object' && candidate.cause !== null) {
+      queue.push(candidate.cause);
+    }
+    if (Array.isArray(candidate.errors)) {
+      queue.push(...candidate.errors);
+    }
+  }
+  return false;
+}
+
+/**
  * Readiness probe for the object store: the authenticated bucket probe the
  * accessor itself needs, so an endpoint that listens but cannot serve the test
  * bucket is not reported as ready.
  *
- * The probe answers, it never throws. While a container is still coming up,
+ * Transport failures return a diagnostic verdict. While a container is still coming up,
  * `ECONNRESET`/`ECONNREFUSED` is the *expected* reply, and a caller that retries
  * has to be able to retry: an escaping rejection used to abort a 60-attempt
  * readiness loop on its first try (and, under Bun, to kill the runner with an
  * unhandled error), which is what made the full integration stack look flaky.
  * The reason travels with the verdict so a caller that does give up can say why.
+ * Permanent S3/configuration errors still throw, rather than waiting out the readiness deadline.
  */
 export async function probeObjectStore(
   port: number,
@@ -83,6 +141,7 @@ export async function probeObjectStore(
       detail: exists ? `bucket ${bucket} is served on :${port}` : `bucket ${bucket} does not exist on :${port}`,
     };
   } catch (error) {
+    if (!isTransientTransportError(error)) throw error;
     const failure = error as Error & { code?: string | number };
     const detail = `${failure.code !== undefined ? `code ${String(failure.code)}: ` : ''}${failure.message}`;
     return { ok: false, detail: detail.replace(/\s+/gu, ' ').slice(0, 200) };

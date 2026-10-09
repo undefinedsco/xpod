@@ -86,9 +86,9 @@ test('remembered desktop grants resume with only the Account cookie, while expli
 
     const first = await authorize();
     await completeAccountLogin(page);
-    await expect(page.getByRole('button', { name: '批准', exact: true })).toBeVisible({ timeout: 45_000 });
-    await page.getByRole('checkbox', { name: '记住这个应用', exact: true }).check();
-    await page.getByRole('button', { name: '批准', exact: true }).click();
+    await expect(page.getByRole('button', { name: '允许', exact: true })).toBeVisible({ timeout: 45_000 });
+    await page.getByRole('checkbox', { name: '以后不再询问', exact: true }).check();
+    await page.getByRole('button', { name: '允许', exact: true }).click();
     await verifyCallback(first);
     expect(posts.filter((url) => url === '/.account/oidc/consent/')).toHaveLength(1);
 
@@ -135,10 +135,10 @@ test('remembered desktop grants resume with only the Account cookie, while expli
 
     posts.length = 0;
     const explicit = await authorize('consent');
-    await expect(page.getByRole('button', { name: '批准', exact: true })).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByRole('button', { name: '允许', exact: true })).toBeVisible({ timeout: 30_000 });
     expect(posts.filter((url) => url === '/.account/oidc/consent/')).toHaveLength(0);
     await testInfo.attach('explicit-consent', { body: await page.screenshot(), contentType: 'image/png' });
-    await page.getByRole('button', { name: '批准', exact: true }).click();
+    await page.getByRole('button', { name: '允许', exact: true }).click();
     await verifyCallback(explicit);
     expect(posts.filter((url) => url === '/.account/oidc/consent/')).toHaveLength(1);
 

@@ -2,6 +2,7 @@ import { SuffixIdentifierGenerator } from '@solid/community-server';
 import type { ResourceIdentifier } from '@solid/community-server';
 import { BadRequestHttpError } from '@solid/community-server/dist/util/errors/BadRequestHttpError';
 import { sanitizeUrlPart } from '@solid/community-server/dist/util/StringUtil';
+import { SERVER_ROOT_SEGMENTS } from '../util/identifiers/ClusterIdentifierStrategy';
 
 interface ReservedSuffixIdentifierGeneratorOptions {
   baseUrl: string;
@@ -18,7 +19,7 @@ export class ReservedSuffixIdentifierGenerator {
     const { baseUrl, reserved } = options;
     this.inner = new SuffixIdentifierGenerator(baseUrl);
     this.reserved = new Set(
-      (reserved ?? DEFAULT_RESERVED).map((value) => sanitizeUrlPart(value).toLowerCase()),
+      [...SERVER_ROOT_SEGMENTS, ...(reserved ?? DEFAULT_RESERVED)].map((value) => sanitizeUrlPart(value).toLowerCase()),
     );
   }
 

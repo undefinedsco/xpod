@@ -241,7 +241,6 @@ async function main(): Promise<void> {
       XPOD_AI_CLIENT_CONFIGURATION_HOME_DIR: path.join(runtimeRoot, 'client-home'),
       XPOD_ACCEPTANCE_PROVIDER_ORIGIN: new URL(providerFixture.baseUrl).origin,
       XPOD_AI_GATEWAY_OPENAI_BASE_URL: providerFixture.baseUrl,
-      XPOD_GATEWAY_LOCATOR_SECRET: 'xpod-settings-acceptance-locator-secret',
     },
   });
   const alice = await setupAccount(stack.baseUrl, 'alice');

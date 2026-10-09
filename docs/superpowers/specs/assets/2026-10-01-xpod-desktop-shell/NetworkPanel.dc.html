@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>网络访问</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+body{margin:0}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+button:focus-visible,a:focus-visible,input:focus-visible{outline:2px solid #563E84;outline-offset:3px}
+label:focus-within{outline:2px solid #563E84;outline-offset:2px}
+button:disabled{cursor:not-allowed}
+</style>
+</helmet>
+<div style="width: {{w}}px; height: {{h}}px; box-sizing: border-box; display: flex; flex-direction: column; gap: 14px; font-family: 'PingFang SC','SF Pro Text',-apple-system,BlinkMacSystemFont,'Segoe UI','Noto Sans SC','Microsoft YaHei',sans-serif; color: #2B2621">
+<ul role="status" aria-live="polite" style="{{checksStyle}}">
+<sc-for list="{{checks}}" as="ch" hint-placeholder-count="3">
+<li style="display: flex; gap: 8px; align-items: flex-start; padding: 10px 12px; border-radius: 8px; border: 1px solid #DFDBD5; background: #FBFAF7">
+<span style="width: 18px; height: 20px; flex-shrink: 0; display: flex; align-items: center; justify-content: center">
+<sc-if value="{{ch.isOk}}" hint-placeholder-val="{{no}}"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#2F6B55" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12l5 5 9-10"></path></svg></sc-if>
+<sc-if value="{{ch.isFail}}" hint-placeholder-val="{{no}}"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#8A6A12" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l10 18H2z"></path><path d="M12 10v5"></path><path d="M12 18h.01"></path></svg></sc-if>
+<sc-if value="{{ch.isIdle}}" hint-placeholder-val="{{no}}"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#87837D" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 12h12"></path></svg></sc-if>
+</span>
+<span style="display: flex; flex-direction: column; gap: 2px; line-height: 20px"><span style="font-size: 14px">{{ch.label}}</span><span style="font-size: 12px; line-height: 16px; color: #655D53">{{ch.detail}}</span></span>
+</li>
+</sc-for>
+</ul>
+
+<sc-if value="{{hasTunnels}}" hint-placeholder-val="{{yes}}">
+<section aria-labelledby="h-tun" style="display: flex; flex-direction: column; gap: 6px">
+<div style="display: flex; align-items: center; gap: 8px">
+<span id="h-tun" style="font-size: 13px; font-weight: 600; flex-grow: 1">隧道 · 可以同时开多条</span>
+<button type="button" onClick="{{toggleAdd}}" style="height: 32px; padding: 0 12px; border: 1px solid #87837D; border-radius: 8px; background: #FBFAF7; color: #2B2621; font-size: 13px; font-family: inherit; cursor: pointer">＋ 添加隧道</button>
+</div>
+<div style="display: flex; flex-direction: column; border: 1px solid #DFDBD5; border-radius: 12px; background: #FBFAF7">
+<sc-for list="{{tunnels}}" as="t" hint-placeholder-count="2">
+<div style="{{t.rowStyle}}">
+<span style="display: flex; flex-direction: column; gap: 2px; flex-grow: 1; min-width: 0">
+<span style="display: flex; align-items: center; gap: 6px"><span style="font-size: 14px; font-weight: 600">{{t.name}}</span><sc-if value="{{t.primary}}" hint-placeholder-val="{{no}}"><span style="font-size: 11px; color: #563E84; border: 1px solid #563E84; border-radius: 5px; padding: 0 5px; line-height: 16px">主地址</span></sc-if></span>
+<span style="font-size: 12px; color: #655D53; font-family: ui-monospace, 'SF Mono', Menlo, monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{t.addr}}</span>
+</span>
+<span style="display: flex; align-items: center; gap: 6px; font-size: 12px; min-width: 120px"><span aria-hidden="true" style="{{t.dot}}"></span>{{t.state}}</span>
+<label style="display: flex; align-items: center; cursor: pointer"><span class="sr">启用 {{t.name}}</span><input class="sr" type="checkbox" checked="{{t.on}}" onChange="{{t.toggle}}"><span aria-hidden="true" style="{{t.sw}}"><span style="width: 16px; height: 16px; border-radius: 50%; background: #FBFAF7"></span></span></label>
+<button type="button" aria-label="{{t.name}} 的更多操作：设为主地址、修改、删除" style="width: 30px; height: 30px; border: 0; border-radius: 8px; background: transparent; color: #655D53; cursor: pointer"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.8"></circle><circle cx="12" cy="12" r="1.8"></circle><circle cx="19" cy="12" r="1.8"></circle></svg></button>
+</div>
+</sc-for>
+</div>
+</section>
+</sc-if>
+
+<sc-if value="{{showAdd}}" hint-placeholder-val="{{no}}">
+<div style="display: flex; flex-direction: column; gap: 10px; padding: 12px; border: 1px dashed #87837D; border-radius: 12px">
+<span id="fix-label" style="font-size: 13px">{{addLabel}}</span>
+<div role="radiogroup" aria-labelledby="fix-label" style="{{tunGridStyle}}">
+<sc-for list="{{fixes}}" as="f" hint-placeholder-count="4">
+<label style="{{f.rowStyle}}">
+<input class="sr" type="radio" name="tunnel" checked="{{f.selected}}" disabled="{{f.disabled}}" onChange="{{f.pick}}">
+<span style="{{f.nameStyle}}">{{f.name}}</span>
+<span style="font-size: 12px; color: #655D53">{{f.meta}}</span>
+</label>
+</sc-for>
+</div>
+<div style="{{fieldGridStyle}}">
+<sc-for list="{{fields}}" as="fd" hint-placeholder-count="1">
+<div style="display: flex; flex-direction: column; gap: 6px">
+<label for="{{fd.id}}" style="font-size: 13px">{{fd.label}}</label>
+<input id="{{fd.id}}" type="{{fd.type}}" placeholder="{{fd.ph}}" style="height: 40px; box-sizing: border-box; border: 1px solid #87837D; border-radius: 8px; background: #FBFAF7; padding: 0 12px; font-size: 14px; font-family: inherit; color: #2B2621">
+</div>
+</sc-for>
+</div>
+<sc-if value="{{consoleStep}}" hint-placeholder-val="{{no}}">
+<div style="display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; font-size: 13px; background: #F2EDE2; border-radius: 8px; padding: 10px 12px">
+<span>在 {{curName}} 控制台里，把隧道指向</span>
+<code style="font-size: 12px; font-family: ui-monospace, 'SF Mono', Menlo, monospace; background: #FBFAF7; border: 1px solid #DFDBD5; border-radius: 6px; padding: 2px 6px">127.0.0.1:40558</code>
+<button type="button" style="height: 28px; padding: 0 8px; border: 0; background: transparent; color: #563E84; font-size: 13px; font-family: inherit; cursor: pointer">复制</button>
+<a href="#" style="font-size: 13px; text-decoration: none">打开控制台 ↗</a>
+</div>
+</sc-if>
+<div style="display: flex; justify-content: flex-end; gap: 8px">
+<sc-if value="{{hasTunnels}}" hint-placeholder-val="{{yes}}"><button type="button" onClick="{{toggleAdd}}" style="height: 36px; padding: 0 12px; border: 0; background: transparent; color: #563E84; font-size: 14px; font-family: inherit; cursor: pointer">取消</button></sc-if>
+<button type="button" style="height: 36px; padding: 0 16px; border: 0; border-radius: 8px; background: #563E84; color: #F7F4ED; font-size: 14px; font-weight: 600; font-family: inherit; cursor: pointer">添加并检测</button>
+</div>
+</div>
+</sc-if>
+
+<div style="display: flex; align-items: center; gap: 8px">
+<span style="font-size: 12px; color: #655D53; flex-grow: 1">{{netHint}}</span>
+<sc-if value="{{canCheck}}" hint-placeholder-val="{{yes}}"><button type="button" style="height: 32px; padding: 0 12px; border: 0; background: transparent; color: #563E84; font-size: 13px; font-family: inherit; cursor: pointer">重新检测</button></sc-if>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"scenario":{"editor":"enum","options":["ok","partial","blocked","stopped"],"default":"ok"},"narrow":{"editor":"boolean","default":false},"h":{"editor":null,"default":420},"$preview":{"width":880,"height":420}}'>
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    const sc = props.scenario ?? 'ok';
+    this.state = { fix: 'cloudflare', adding: sc === 'blocked', cf: true, sk: true };
+  }
+  renderVals() {
+    const self = this;
+    const st = this.state;
+    const sc = this.props.scenario ?? 'ok';
+    const narrow = this.props.narrow === true || this.props.narrow === 'true';
+    const stopped = sc === 'stopped';
+    // Tunnel options come from the tunnel catalog's declared facts, never from a per-provider branch.
+    const TUN = [
+      { id: 'cloudflare', name: 'Cloudflare Tunnel', declared: true, console: true, supported: true, meta: '令牌 + 你的域名' },
+      { id: 'ngrok', name: 'ngrok', declared: false, console: false, supported: true, meta: '只要令牌' },
+      { id: 'sakura_frp', name: 'Sakura FRP', declared: false, console: true, supported: true, meta: '只要令牌' },
+      { id: 'frp', name: 'FRP', declared: true, console: true, supported: false, meta: '这台设备暂不支持' }
+    ];
+    const cur = TUN.find((t) => t.id === st.fix);
+    const fixes = TUN.map((t) => {
+      const on = t.id === st.fix;
+      return {
+        name: t.name, meta: t.meta, selected: on, disabled: !t.supported,
+        pick: () => { if (t.supported) self.setState({ fix: t.id }); },
+        nameStyle: 'font-size: 14px; font-weight: 600; color: ' + (t.supported ? '#2B2621' : '#87837D'),
+        rowStyle: 'position: relative; display: flex; flex-direction: column; justify-content: center; gap: 2px; min-height: 56px; box-sizing: border-box; padding: 8px 12px; border-radius: 8px; cursor: ' + (t.supported ? 'pointer' : 'not-allowed') + '; background: ' + (on ? '#E9E4E4' : '#FBFAF7') + '; border: ' + (on ? '1.5px solid #563E84' : '1px solid #DFDBD5')
+      };
+    });
+    const fields = [{ id: 'tun-token', label: '令牌', type: 'password', ph: '粘贴 ' + cur.name + ' 令牌' }];
+    if (cur.declared) fields.push({ id: 'tun-url', label: '公网地址', type: 'url', ph: 'https://pod.example.com' });
+    const sw = (on) => 'width: 34px; height: 20px; border-radius: 10px; box-sizing: border-box; padding: 2px; display: flex; background: ' + (on ? '#563E84' : '#87837D') + '; justify-content: ' + (on ? 'flex-end' : 'flex-start');
+    const T = sc === 'blocked' ? [] : [
+      { key: 'cf', name: 'Cloudflare Tunnel', addr: 'pod.example.com', primary: true, state: stopped ? '已停止' : sc === 'partial' ? '失败：令牌已失效' : '可访问', tone: stopped ? 'off' : sc === 'partial' ? 'warn' : 'ok' },
+      { key: 'sk', name: 'Sakura FRP', addr: 'frp-cn-sh.natfrp.cloud:24816', primary: false, state: stopped ? '已停止' : '可访问', tone: stopped ? 'off' : 'ok' }
+    ];
+    const tunnels = T.map((t, i) => {
+      const on = st[t.key];
+      const color = { ok: '#2F6B55', warn: '#8A6A12', off: '#87837D' }[on ? t.tone : 'off'];
+      return Object.assign({}, t, {
+        on, toggle: () => self.setState({ [t.key]: !on }), sw: sw(on),
+        state: on ? t.state : '已停用',
+        dot: 'width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; ' + ((on && t.tone !== 'off') ? 'background: ' + color : 'border: 1.5px solid #87837D; box-sizing: border-box'),
+        rowStyle: 'display: flex; align-items: center; gap: 12px; min-height: 56px; padding: 0 8px 0 14px; ' + (i ? 'border-top: 1px solid #DFDBD5' : '')
+      });
+    });
+    const okCount = T.filter((t) => st[t.key] && t.tone === 'ok').length;
+    const detailOther = stopped ? '启动 Xpod 后检测' : T.length === 0 ? '没有隧道，其他设备访问不到' : okCount + ' / ' + T.length + ' 条隧道可用';
+    const otherOk = !stopped && okCount > 0;
+    const checks = [
+      ['这台电脑', 'localhost:3000 可用', stopped ? 'idle' : 'ok'],
+      ['局域网', '192.168.1.23 可用', stopped ? 'idle' : 'ok'],
+      ['其他网络', detailOther, stopped ? 'idle' : otherOk ? (okCount < T.length ? 'fail' : 'ok') : 'fail']
+    ].map((c) => ({ label: c[0], detail: stopped ? '启动 Xpod 后检测' : c[1], isOk: c[2] === 'ok', isFail: c[2] === 'fail', isIdle: c[2] === 'idle' }));
+    if (!stopped && T.length > 0 && okCount > 0 && okCount < T.length) checks[2].detail = detailOther + ' · 仍可访问';
+    return {
+      yes: true, no: false,
+      w: narrow ? 358 : 880,
+      h: Number(this.props.h ?? 420),
+      checks, fixes, fields, tunnels,
+      hasTunnels: T.length > 0,
+      showAdd: st.adding && !stopped,
+      toggleAdd: () => self.setState({ adding: !st.adding }),
+      addLabel: T.length === 0 ? '添加一条隧道，让其他设备也能访问：' : '再添加一条隧道：',
+      consoleStep: cur.console,
+      curName: cur.name,
+      canCheck: !stopped,
+      netHint: stopped ? '启动 Xpod 后再检测' : T.length === 0 ? '只影响其他设备；这台电脑上照常可用' : '多条隧道同时开着时，一条坏了别的设备仍能通过其他隧道访问',
+      checksStyle: 'margin: 0; padding: 0; list-style: none; display: grid; grid-template-columns: ' + (narrow ? 'minmax(0, 1fr)' : 'repeat(3, minmax(0, 1fr))') + '; gap: 8px',
+      tunGridStyle: 'display: grid; grid-template-columns: ' + (narrow ? 'repeat(2, minmax(0, 1fr))' : 'repeat(4, minmax(0, 1fr))') + '; gap: 8px',
+      fieldGridStyle: 'display: grid; grid-template-columns: ' + (narrow ? 'minmax(0, 1fr)' : 'repeat(2, minmax(0, 1fr))') + '; gap: 8px'
+    };
+  }
+}
+</script>
+</body>
+</html>

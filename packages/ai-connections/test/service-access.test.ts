@@ -39,40 +39,13 @@ describe('parseAiConnectionsServiceAccess', () => {
       })
   })
 
-  it('accepts the complete backend descriptor including gateway access keys', () => {
-    expect(parseAiConnectionsServiceAccess(descriptor({
-      resources: [
-        {
-          id: 'providerCredentials',
-          url: 'https://pod.example/alice/settings/credentials.ttl',
-          mediaType: 'text/turtle',
-          access: { read: true, append: true, write: true },
-        },
-        {
-          id: 'providerDefinitions',
-          url: 'https://pod.example/alice/settings/providers/__service_access__.ttl',
-          mediaType: 'text/turtle',
-          access: { read: true, append: true, write: true },
-        },
-        {
-          id: 'gatewayAccessKeys',
-          url: 'https://pod.example/alice/.data/ai/gateway/access-keys.ttl',
-          mediaType: 'text/turtle',
-          access: { read: true, append: true, write: true },
-        },
-        {
-          id: 'quotaSnapshots',
-          url: 'https://pod.example/alice/.data/ai/gateway/quota.ttl',
-          mediaType: 'text/turtle',
-          access: { read: true, append: true, write: true },
-        },
-      ],
-    }), CURRENT_POD_URL).resources.map((resource) => resource.id)).toEqual([
-      'providerCredentials',
-      'providerDefinitions',
-      'gatewayAccessKeys',
-      'quotaSnapshots',
-    ])
+  it('rejects JSON for an RDF document and unknown JSON resources', () => {
+    for (const id of ['providerCredentials', 'unknownResource']) {
+      expect(() => parseAiConnectionsServiceAccess(descriptor({ resources: [{
+        id, url: 'https://pod.example/alice/settings/credentials.ttl',
+        mediaType: 'application/json', access: { read: true, append: true, write: true },
+      }] }), CURRENT_POD_URL)).toThrow('invalid_resource')
+    }
   })
 
   it('accepts provider-specific documents advertised by the service descriptor', () => {

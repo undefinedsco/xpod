@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import {
+  credentialCarriers,
   credentialSummariesForProvider,
   providerOfCredentialRow,
   type CredentialRow,
 } from '../src/collections'
+import type { AiProviderCredentialSummary } from '../src/contract/ai-connections-client'
 import { providerOfCredentialKey } from '../src/contract/ai-connections-client'
 
 /**
@@ -55,6 +57,75 @@ describe('providerOfCredentialRow', () => {
 })
 
 describe('credentialSummariesForProvider', () => {
+  it('projects persisted failure and cooldown fields and clears them when the live row clears them', () => {
+    const carrier: AiProviderCredentialSummary = {
+      id: 'credentials.ttl#openai-1', provider: 'openai', authMode: 'apiKey', offeringId: 'api-platform',
+      enabled: true, priority: 7, health: 'healthy', version: 4,
+      lastFailureCode: 'authentication', failCount: 2,
+    }
+    const failed = credentialRow({
+      id: 'openai-1', provider: PROVIDER_RELATION,
+      lastFailureCode: 'rate_limited', lastFailureAt: new Date('2026-10-05T00:00:00Z'),
+      rateLimitResetAt: new Date('2026-10-05T00:01:00Z'), failCount: 3,
+    })
+    expect(credentialSummariesForProvider('openai', [failed], [carrier])[0]).toMatchObject({
+      lastFailureCode: 'rate_limited', lastFailureAt: '2026-10-05T00:00:00.000Z',
+      rateLimitResetAt: '2026-10-05T00:01:00.000Z', failCount: 3,
+    })
+    const recovered = credentialRow({
+      id: 'openai-1', provider: PROVIDER_RELATION,
+      lastFailureCode: null, lastFailureAt: null, rateLimitResetAt: null, failCount: 0,
+    })
+    expect(credentialSummariesForProvider('openai', [recovered], [carrier])[0]).toMatchObject({
+      lastFailureCode: undefined, lastFailureAt: undefined, rateLimitResetAt: undefined, failCount: 0,
+    })
+  })
+
+  it.each(['openai-1', 'credentials.ttl#openai-1'])(
+    'joins a live row to its exact carrier using the models resource id (%s)',
+    (carrierId) => {
+      const row = credentialRow({ id: 'openai-1', provider: PROVIDER_RELATION })
+      const carrier: AiProviderCredentialSummary = {
+        id: carrierId,
+        provider: 'openai',
+        authMode: 'apiKey',
+        offeringId: 'api-platform',
+        enabled: true,
+        priority: 7,
+        health: 'healthy',
+        baseUrl: 'http://127.0.0.1:39220/v1',
+        proxyUrl: 'http://127.0.0.1:7890',
+        version: 4,
+      }
+
+      expect(credentialSummariesForProvider('openai', [row], [carrier])).toEqual([
+        expect.objectContaining({ ...carrier, id: 'credentials.ttl#openai-1' }),
+      ])
+    },
+  )
+
+  it('does not borrow an endpoint or health from a different credential or Pod', () => {
+    const row = credentialRow({ id: 'openai-1', provider: PROVIDER_RELATION })
+    const carriers: AiProviderCredentialSummary[] = [
+      {
+        id: 'credentials.ttl#openai-2',
+        provider: 'openai', authMode: 'apiKey', offeringId: 'api-platform',
+        enabled: true, priority: 7, health: 'healthy', version: 4,
+        baseUrl: 'https://wrong.example/v1',
+      },
+      {
+        id: 'https://other.example/settings/credentials.ttl#openai-1',
+        provider: 'openai', authMode: 'apiKey', offeringId: 'api-platform',
+        enabled: true, priority: 7, health: 'healthy', version: 4,
+        baseUrl: 'https://other.example/v1',
+      },
+    ]
+
+    expect(credentialSummariesForProvider('openai', [row], carriers)).toEqual([
+      expect.objectContaining({ baseUrl: undefined, health: 'unknown' }),
+    ])
+  })
+
   it('lists a row its relation attributes to the provider, not the rows its key would', () => {
     const attributed = credentialRow({
       id: 'credential-1',
@@ -67,10 +138,58 @@ describe('credentialSummariesForProvider', () => {
     })
 
     expect(credentialSummariesForProvider('openai', [attributed, otherProvidersRow])).toEqual([
-      expect.objectContaining({ id: 'credential-1', provider: 'openai', label: 'Work key' }),
+      expect.objectContaining({ id: 'credentials.ttl#credential-1', provider: 'openai', label: 'Work key' }),
     ])
     expect(credentialSummariesForProvider('kimi', [attributed, otherProvidersRow])).toEqual([
-      expect.objectContaining({ id: 'openai-2', provider: 'kimi' }),
+      expect.objectContaining({ id: 'credentials.ttl#openai-2', provider: 'kimi' }),
     ])
+  })
+
+  it('joins live collection keys to the store credential identity and preserves enrichment', () => {
+    const carrier = {
+      id: 'credentials.ttl#openai-subscription',
+      provider: 'openai' as const,
+      offeringId: 'official-subscription',
+      authMode: 'oauth' as const,
+      enabled: true,
+      priority: 10,
+      health: 'healthy' as const,
+      proxyUrl: 'http://127.0.0.1:7890',
+    }
+    const row = credentialRow({
+      id: 'openai-subscription',
+      provider: PROVIDER_RELATION,
+      authMode: 'deviceCodeOAuth',
+    })
+
+    expect(credentialSummariesForProvider('openai', [row], [carrier])).toEqual([
+      expect.objectContaining({
+        id: carrier.id,
+        offeringId: carrier.offeringId,
+        health: carrier.health,
+        priority: carrier.priority,
+        proxyUrl: carrier.proxyUrl,
+      }),
+    ])
+  })
+})
+
+describe('credentialCarriers', () => {
+  it('lets newer mutation health reach a live row, then accepts a newer store echo', () => {
+    const overlay: AiProviderCredentialSummary = {
+      id: 'openai-1', provider: 'openai', authMode: 'apiKey', offeringId: 'api-platform',
+      enabled: true, priority: 100, health: 'invalid', version: 2,
+      baseUrl: 'https://old.example/v1',
+    }
+    const store = { ...overlay, id: 'credentials.ttl#openai-1', health: 'healthy' as const, version: 1, baseUrl: 'https://current.example/v1' }
+    const product = (credential: AiProviderCredentialSummary) => ({
+      id: 'openai' as const, name: 'OpenAI', offerings: [], selectedModels: [],
+      status: 'configured' as const, credentials: [credential],
+    })
+
+    expect(credentialCarriers({ openai: product(store) }, { openai: product(overlay) }).openai).toEqual([overlay])
+    const echo = { ...store, version: 3 }
+    expect(credentialCarriers({ openai: product(echo) }, { openai: product(overlay) }).openai).toEqual([echo])
+    expect(credentialCarriers({ openai: product({ ...store, version: 2 }) }, { openai: product(overlay) }).openai).toEqual([overlay])
   })
 })

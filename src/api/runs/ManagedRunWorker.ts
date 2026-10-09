@@ -1,6 +1,7 @@
 import type { ChatKitStore, StoreContext } from '../chatkit/store';
 import type {
   AssistantMessageItem,
+  ClientToolCallItem,
   ThreadItem,
   ThreadMetadata,
   ThreadRef,
@@ -30,13 +31,14 @@ import { RunStatus, XpodRunStepType as RunStepType } from './schema';
 import {
   canClaimRun,
   generateRunStepResourceId,
-  resolveDataResource,
-  resolveRunUrn,
+  resolveRunAuthBindingId,
   type RunRecordData,
   type RunStepRecordData,
   type RunStore,
 } from './store';
 import { isWorkspaceRef } from '../workspace/types';
+import { monitorRunCancellation } from './RunCancellation';
+import { persistRunApproval, updateRunApprovalSession } from './RunApproval';
 
 export type ManagedRunStore<TContext = StoreContext> = ChatKitStore<TContext> & RunStore<TContext>;
 
@@ -120,56 +122,76 @@ export class ManagedRunWorker<TContext = StoreContext> {
       context,
     });
 
-    for await (
-      const event of this.runtimeDriver.start({
-        runId: run.id,
-        threadId: thread.id,
-        prompt,
-        conversation,
-        retrievedContext,
-        config: runtimeConfig,
-        authBindingId: this.authBindingIdFromRun(run),
-        context: context as StoreContext,
-      })
-    ) {
-      const cancellation = await this.checkCancellation(run, context);
-      if (cancellation) {
-        assistantItem.status = 'incomplete';
-        assistantItem.content = [{ type: 'output_text', text: fullText }];
-        await this.store.saveItem(threadRef, assistantItem, context);
-        return { runId, status: cancellation };
-      }
+    const cancellationMonitor = await monitorRunCancellation({ store: this.store, runId: run.id, context });
+    const finishCancellation = async (): Promise<ManagedRunExecutionResult | undefined> => {
+      const status = await this.checkCancellation(run, context);
+      if (!status) return undefined;
+      assistantItem.status = 'incomplete';
+      assistantItem.content = [{ type: 'output_text', text: fullText }];
+      await this.store.saveItem(threadRef, assistantItem, context);
+      return { runId, status };
+    };
+    try {
+      if (cancellationMonitor.error) throw cancellationMonitor.error;
+      const initialCancellation = await finishCancellation();
+      if (initialCancellation) return initialCancellation;
+      for await (
+        const event of this.runtimeDriver.start({
+          signal: cancellationMonitor.signal,
+          runId: run.id,
+          threadId: thread.id,
+          prompt,
+          conversation,
+          retrievedContext,
+          config: runtimeConfig,
+          authBindingId: resolveRunAuthBindingId(run),
+          context: context as StoreContext,
+        })
+      ) {
+        const cancelled = await finishCancellation();
+        if (cancelled) return cancelled;
 
-      if (event.type === 'text') {
-        fullText += event.text;
-        await this.appendRunStep(run, RunStepType.TEXT_DELTA, context, {
-          message: event.text,
-          data: { delta: event.text },
-        });
-        continue;
-      }
-
-      if (event.type === 'auth_required' || event.type === 'tool_call' || event.type === 'waiting_runner') {
-        const terminalStatus = await this.handleRuntimeControlEvent(event, run, assistantItem, threadRef, context, fullText);
-        if (terminalStatus) {
-          return { runId, status: terminalStatus };
+        if (event.type === 'text') {
+          fullText += event.text;
+          await this.appendRunStep(run, RunStepType.TEXT_DELTA, context, {
+            message: event.text,
+            data: { delta: event.text },
+          });
+          continue;
         }
-        continue;
+
+        if (event.type === 'auth_required' || event.type === 'tool_call' || event.type === 'waiting_runner') {
+          const terminalStatus = await this.handleRuntimeControlEvent(event, run, assistantItem, threadRef, context, fullText);
+          if (terminalStatus) {
+            return { runId, status: terminalStatus };
+          }
+          continue;
+        }
+
+        runtimeError = event.message;
+        await this.appendRunStep(run, RunStepType.ERROR, context, {
+          message: event.message,
+        });
+        break;
       }
-
-      runtimeError = event.message;
-      await this.appendRunStep(run, RunStepType.ERROR, context, {
-        message: event.message,
-      });
-      break;
+    } catch (error) {
+      if (cancellationMonitor.error) throw cancellationMonitor.error;
+      const cancelled = await finishCancellation();
+      if (cancelled) return cancelled;
+      throw error;
+    } finally {
+      cancellationMonitor.dispose();
     }
+    if (cancellationMonitor.error) throw cancellationMonitor.error;
+    const cancelled = await finishCancellation();
+    if (cancelled) return cancelled;
 
-    assistantItem.status = runtimeError ? 'incomplete' : 'completed';
-    assistantItem.content = [{ type: 'output_text', text: fullText }];
-    await this.store.saveItem(threadRef, assistantItem, context);
     const finalStatus = runtimeError ? RunStatus.FAILED : RunStatus.COMPLETED;
     await this.finishRun(run, finalStatus, context, runtimeError);
-    return { runId, status: finalStatus };
+    assistantItem.status = run.status === RunStatus.COMPLETED ? 'completed' : 'incomplete';
+    assistantItem.content = [{ type: 'output_text', text: fullText }];
+    await this.store.saveItem(threadRef, assistantItem, context);
+    return { runId, status: run.status };
   }
 
   private async retrieveRunContext(input: {
@@ -244,11 +266,8 @@ export class ManagedRunWorker<TContext = StoreContext> {
     if (!latest.cancelRequestedAt) {
       return undefined;
     }
+    run.cancelRequestedAt = latest.cancelRequestedAt;
     await this.finishRun(run, RunStatus.CANCELLED, context, 'Run cancellation requested');
-    await this.appendRunStep(run, RunStepType.CANCELLED, context, {
-      message: 'Run cancelled',
-      data: { status: RunStatus.CANCELLED },
-    });
     return RunStatus.CANCELLED;
   }
 
@@ -271,7 +290,7 @@ export class ManagedRunWorker<TContext = StoreContext> {
       conversation,
       retrievedContext,
       config: loaded.runtimeConfig,
-      authBindingId: this.authBindingIdFromRun(loaded.run),
+      authBindingId: resolveRunAuthBindingId(loaded.run),
       context: context as StoreContext,
     };
   }
@@ -339,19 +358,6 @@ export class ManagedRunWorker<TContext = StoreContext> {
     };
   }
 
-  private authBindingIdFromRun(run: RunRecordData): string | undefined {
-    const authBindingId = run.metadata?.authBindingId;
-    if (typeof authBindingId === 'string' && authBindingId.length > 0) {
-      return authBindingId;
-    }
-    const authBinding = run.metadata?.authBinding;
-    if (authBinding && typeof authBinding === 'object') {
-      const id = (authBinding as { id?: unknown }).id;
-      return typeof id === 'string' && id.length > 0 ? id : undefined;
-    }
-    return undefined;
-  }
-
   private asRuntimeConfig(value: unknown): AgentRuntimeConfig | undefined {
     if (!value || typeof value !== 'object') {
       return undefined;
@@ -416,11 +422,30 @@ export class ManagedRunWorker<TContext = StoreContext> {
           arguments: event.arguments,
         },
       });
+      const thread = await this.store.loadThread(threadRef, context);
+      const toolItem: ClientToolCallItem = {
+        id: this.store.generateItemId('client_tool_call', thread, context),
+        thread_id: thread.id,
+        type: 'client_tool_call',
+        name: event.name,
+        arguments: event.arguments,
+        call_id: event.requestId,
+        status: 'pending',
+        metadata: { runId: run.id, assistantItemId: assistantItem.id },
+        created_at: nowTimestamp(),
+      };
+      await this.store.addThreadItem(threadRef, toolItem, context);
+      await persistRunApproval({ store: this.store, run, event, context });
+      run.metadata = {
+        ...run.metadata,
+        assistantItemId: assistantItem.id,
+        waitingTool: { itemId: toolItem.id, requestId: event.requestId, name: event.name },
+      };
       assistantItem.status = 'incomplete';
       assistantItem.content = [{ type: 'output_text', text: fullText }];
       await this.store.saveItem(threadRef, assistantItem, context);
       await this.finishRun(run, RunStatus.WAITING_INPUT, context, `Tool call ${event.name} requires steering`);
-      return RunStatus.WAITING_INPUT;
+      return run.status;
     }
 
     if (event.type === 'waiting_runner') {
@@ -432,7 +457,7 @@ export class ManagedRunWorker<TContext = StoreContext> {
       assistantItem.content = [{ type: 'output_text', text: fullText }];
       await this.store.saveItem(threadRef, assistantItem, context);
       await this.finishRun(run, RunStatus.WAITING_RUNNER, context, event.message);
-      return RunStatus.WAITING_RUNNER;
+      return run.status;
     }
 
     return undefined;
@@ -445,6 +470,8 @@ export class ManagedRunWorker<TContext = StoreContext> {
     run.heartbeatAt = now;
     run.updatedAt = now;
     await this.store.saveRun(run, context);
+    await updateRunApprovalSession(this.store, run, (run as RunRecordData).status === RunStatus.CANCELLED ? 'completed' : 'active', context);
+    if ((run as RunRecordData).status === RunStatus.CANCELLED || run.cancelRequestedAt !== undefined) return;
     await this.appendRunStep(run, RunStepType.STARTED, context, {
       message: 'Run started',
     });
@@ -465,6 +492,10 @@ export class ManagedRunWorker<TContext = StoreContext> {
     run.updatedAt = now;
     run.error = error;
     await this.store.saveRun(run, context);
+    status = run.status;
+    error = run.error;
+    await updateRunApprovalSession(this.store, run,
+      RUN_WAITING_STATUSES.has(status) ? 'paused' : status === RunStatus.FAILED ? 'error' : 'completed', context);
     await this.appendRunStep(
       run,
       this.stepTypeForStatus(status),
@@ -509,7 +540,7 @@ export class ManagedRunWorker<TContext = StoreContext> {
         createdAt,
       }),
       runId: run.id,
-      run: this.resolveRunResource(run, context),
+      run: run.id,
       type,
       message: options.message,
       data: options.data,
@@ -593,35 +624,5 @@ export class ManagedRunWorker<TContext = StoreContext> {
       return parts.length > 1 ? decodeURIComponent(parts[1]) : decodeURIComponent(parts[0]);
     }
     return thread;
-  }
-
-  private resolveRunResource(run: RunRecordData, context: TContext): string {
-    const podBaseUrl = this.resolvePodBaseUrl(context);
-    if (podBaseUrl) {
-      return resolveDataResource(podBaseUrl, run.id);
-    }
-    return resolveRunUrn(run.id);
-  }
-
-  private resolvePodBaseUrl(context: TContext): string | undefined {
-    const auth = (context as Record<string, unknown>).auth as { webId?: unknown } | undefined;
-    const webId = typeof auth?.webId === 'string' ? auth.webId : undefined;
-    if (!webId) {
-      return undefined;
-    }
-    try {
-      const url = new URL(webId);
-      url.hash = '';
-      url.search = '';
-      const normalizedPath = url.pathname.replace(/\/+$/, '');
-      if (!normalizedPath.endsWith('/profile/card')) {
-        return undefined;
-      }
-      const podPath = normalizedPath.slice(0, -'/profile/card'.length) || '/';
-      url.pathname = podPath;
-      return url.toString().replace(/\/$/, '');
-    } catch {
-      return undefined;
-    }
   }
 }

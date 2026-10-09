@@ -1,11 +1,11 @@
 import type { GatewayProtocol } from '../types';
-import { getBuiltinProvider } from '@undefineds.co/models';
 import { DEFAULT_EMBEDDING_MODEL_ID } from '../../../ai/service/defaultEmbeddingProfile';
 import {
   API_KEY_METHOD,
   CUSTOM_DEFAULT_OFFERINGS,
   DEFAULT_PROVIDER_OFFERINGS,
   PROVIDER_OFFERINGS,
+  PROVIDER_LABELS,
 } from '@undefineds.co/ai-connections/provider-catalog';
 import type { AiConnectionsProvider, AiProviderAuthorizationMethod, AiProviderOffering } from '@undefineds.co/ai-connections/client';
 import {
@@ -14,7 +14,9 @@ import {
   type OfferingAuthorizationMethod,
 } from './OfferingAuthorization';
 
-export const OPENAI_SUBSCRIPTION_BASE_URL = 'https://chatgpt.com/backend-api/codex';
+export const OPENAI_SUBSCRIPTION_BASE_URL = PROVIDER_OFFERINGS.openai!
+  .find((offering) => offering.id === 'official-subscription')!.endpoints!
+  .find((endpoint) => endpoint.protocol === 'responses')!.baseUrl;
 
 export type ProviderId = 'openai' | 'anthropic' | 'kimi' | 'bailian' | 'deepseek' | string;
 export type ProviderProductId = 'openai' | 'anthropic' | 'kimi' | 'bailian' | 'deepseek' | string;
@@ -540,10 +542,8 @@ export function providerProductsForDeployment(deployment: 'local' | 'cloud'): Pr
 }
 
 function catalogOffering(
-  productId: ProviderProductId,
-  productLabel: string,
   input: Omit<ProviderOfferingDescriptor,
-    'productLabel' | 'credentialPrefixHints' | 'consoleUrl' | 'subscriptionUrl' |
+    'credentialPrefixHints' | 'consoleUrl' | 'subscriptionUrl' |
     'auth' | 'upstream' | 'modelDiscovery' | 'quota' | 'usagePolicyUrl' | 'region' | 'lifecycle'> &
   Partial<Pick<ProviderOfferingDescriptor,
     'auth' | 'upstream' | 'credentialPrefixHints' | 'consoleUrl' | 'subscriptionUrl' |
@@ -559,7 +559,6 @@ function catalogOffering(
   const quota = input.quota ?? { strategy: 'console' as const, url: consoleUrl };
   return {
     ...input,
-    productLabel,
     credentialPrefixHints: input.credentialPrefixHints ?? [],
     consoleUrl,
     subscriptionUrl: input.subscriptionUrl ?? consoleUrl,
@@ -620,17 +619,6 @@ function defaultUpstreamCapabilities(
 // authorization actions that a property-definition package must not own. Only
 // the runtime capability descriptors below stay server-side - they describe how
 // Xpod talks to an upstream, which is behaviour rather than shared content.
-const PROVIDER_PRODUCT_LABELS: Record<string, string> = {
-  openai: 'OpenAI',
-  anthropic: 'Anthropic',
-  kimi: 'Moonshot (Kimi)',
-  bailian: 'Alibaba Bailian',
-  deepseek: 'DeepSeek',
-  ollama: 'Ollama',
-  zhipu: '智谱 AI',
-  custom: 'Custom Provider',
-};
-
 const PROVIDER_UPSTREAM_OVERRIDES: Partial<Record<string, Record<string, ProviderUpstreamCapabilityDescriptor[]>>> = {
   openai: {
     'official-subscription': [
@@ -734,179 +722,23 @@ function offeringsForProduct(provider: string): AiProviderOffering[] {
   return PROVIDER_OFFERINGS[provider as AiConnectionsProvider] ?? DEFAULT_PROVIDER_OFFERINGS;
 }
 
-const LEGACY_PROVIDER_PRODUCT_DESCRIPTORS: ProviderProductDescriptor[] = (
-  Object.keys(PROVIDER_PRODUCT_LABELS) as ProviderProductId[]
-).map((provider) => ({
-  id: provider,
-  label: PROVIDER_PRODUCT_LABELS[provider]!,
-  offerings: offeringsForProduct(provider).map((offering) =>
-    // The shared catalog is the source of the offering content; the server's
-    // descriptor type narrows the same fields, so the projection converts at
-    // this boundary rather than duplicating the values.
-    catalogOffering(provider, PROVIDER_PRODUCT_LABELS[provider]!, {
+/** Project capability-owned product content; only upstream implementation choices stay here. */
+export const DEFAULT_PROVIDER_PRODUCT_DESCRIPTORS: ProviderProductDescriptor[] =
+  Object.entries(PROVIDER_LABELS).map(([provider, label]) => ({
+    id: provider,
+    label,
+    offerings: offeringsForProduct(provider).map((offering) => catalogOffering({
       ...offering,
-      endpoints: offering.endpoints ?? [],
+      productLabel: offering.productLabel ?? label,
+      runtimeProviderIds: offering.runtimeProviderIds ?? [provider],
+      endpoints: (offering.endpoints ?? [])
+        .map((endpoint) => ({ ...endpoint, protocol: toGatewayProtocol(endpoint.protocol) }))
+        .filter((endpoint): endpoint is ProviderOfferingEndpointDescriptor => endpoint.protocol !== undefined),
       ...(PROVIDER_UPSTREAM_OVERRIDES[provider]?.[offering.id]
         ? { upstream: PROVIDER_UPSTREAM_OVERRIDES[provider]![offering.id]! }
         : {}),
-    } as Parameters<typeof catalogOffering>[2])),
-}));
-
-/**
- * The provider/offering catalog belongs to `@undefineds.co/ai-connections`: it
- * is content rather than schema, and it carries endpoints, console links and
- * authorization actions that a property-definition package must not own. The
- * descriptors above are the pre-existing copy that is being replaced by that
- * shared catalog; only runtime capability descriptors stay server-side.
- */
-export const DEFAULT_PROVIDER_PRODUCT_DESCRIPTORS: ProviderProductDescriptor[] =
-  canonicalProviderProducts(LEGACY_PROVIDER_PRODUCT_DESCRIPTORS)
-    .map(normalizeOpenAiSubscriptionProduct);
-
-type CanonicalOffering = {
-  id: string;
-  label: string;
-  kind: ProviderOfferingKind;
-  lifecycle?: ProviderOfferingLifecycle;
-  authModes: OfferingAuthMode[];
-  runtimeProviderIds?: string[];
-  productLabel?: string;
-  credentialPrefixHints?: string[];
-  consoleUrl?: string;
-  subscriptionUrl?: string;
-  endpoints: Array<{
-    protocol: string;
-    baseUrl: string;
-    region?: string;
-    supportsDeveloperMessages?: boolean;
-  }>;
-  modelDiscovery?: {
-    strategy: ProviderModelDiscoveryStrategy;
-    path: string;
-    endpointProtocol: string;
-  };
-  quota?: {
-    strategy: ProviderQuotaStrategy;
-    url: string;
-  };
-  usagePolicyUrl?: string;
-  region?: string;
-};
-
-function canonicalProviderProducts(
-  legacy: ProviderProductDescriptor[],
-): ProviderProductDescriptor[] {
-  return legacy.map((fallback) => {
-    const canonicalSlug = discoveryProviderSlug(fallback.id);
-    const provider = getBuiltinProvider(canonicalSlug) as unknown as {
-      slug: string;
-      displayName: string;
-      homepage: string;
-      offerings?: CanonicalOffering[];
-    } | undefined;
-    if (!provider?.offerings?.length) return fallback;
-    return {
-      id: fallback.id,
-      label: provider.displayName || fallback.label,
-      offerings: provider.offerings.map((offering) => canonicalOfferingDescriptor(
-        provider,
-        offering,
-        fallback.offerings.find((candidate) => candidate.id === offering.id),
-      )),
-    };
-  }).concat(canonicalStandaloneProducts());
-}
-
-function normalizeOpenAiSubscriptionProduct(product: ProviderProductDescriptor): ProviderProductDescriptor {
-  if (product.id !== 'openai') {
-    return product;
-  }
-  return {
-    ...product,
-    offerings: product.offerings.map((offering) => offering.id === 'official-subscription'
-      ? {
-          ...offering,
-          label: 'OpenAI Subscription',
-          authModes: ['local'],
-          auth: [{ protocol: 'local-none' }],
-          consoleUrl: 'https://chatgpt.com/',
-          subscriptionUrl: 'https://chatgpt.com/#pricing',
-          quota: { strategy: 'subscription', url: 'https://chatgpt.com/' },
-          endpoints: [{ protocol: 'responses', baseUrl: OPENAI_SUBSCRIPTION_BASE_URL }],
-          lifecycle: 'unavailable',
-        }
-      : offering),
-  };
-}
-
-function canonicalStandaloneProducts(): ProviderProductDescriptor[] {
-  const fallback = new Map(LEGACY_PROVIDER_PRODUCT_DESCRIPTORS.map((product) => [product.id, product]));
-  const ollama = getBuiltinProvider('ollama') as unknown as {
-    slug: string;
-    displayName: string;
-    homepage: string;
-    offerings?: CanonicalOffering[];
-  } | undefined;
-  if (!ollama?.offerings?.length || fallback.has('ollama')) return [];
-  return [{
-    id: 'ollama',
-    label: ollama.displayName,
-    offerings: ollama.offerings.map((offering) => canonicalOfferingDescriptor(ollama, offering)),
-  }];
-}
-
-function canonicalOfferingDescriptor(
-  provider: { slug: string; displayName: string; homepage: string },
-  offering: CanonicalOffering,
-  fallback?: ProviderOfferingDescriptor,
-): ProviderOfferingDescriptor {
-  const endpoints = offering.endpoints
-    .map((endpoint) => ({
-      ...endpoint,
-      protocol: toGatewayProtocol(endpoint.protocol),
-    }))
-    .filter((endpoint): endpoint is ProviderOfferingEndpointDescriptor => endpoint.protocol !== undefined);
-  const modelDiscovery = offering.modelDiscovery
-    ? {
-        strategy: offering.modelDiscovery.strategy,
-        path: offering.modelDiscovery.path,
-        endpointProtocol: toGatewayProtocol(offering.modelDiscovery.endpointProtocol)
-          ?? endpoints[0]?.protocol
-          ?? 'chatCompletions',
-      }
-    : fallback?.modelDiscovery ?? {
-        strategy: endpoints[0]?.protocol === 'anthropic' ? 'anthropic' as const : 'openaiCompatible' as const,
-        path: '/models',
-        endpointProtocol: endpoints[0]?.protocol ?? 'chatCompletions' as const,
-      };
-  const quota = offering.quota ?? fallback?.quota ?? {
-    strategy: 'unsupported' as const,
-    url: offering.consoleUrl ?? provider.homepage,
-  };
-  return {
-    id: offering.id,
-    runtimeProviderIds: offering.runtimeProviderIds ?? [provider.slug],
-    label: offering.label,
-    productLabel: offering.productLabel ?? provider.displayName,
-    kind: offering.kind,
-    authModes: offering.authModes,
-    // The canonical source carries schema, not actions: which connect entries an
-    // offering declares stays with the catalog that declared them.
-    ...(fallback?.authorizationMethods ? { authorizationMethods: fallback.authorizationMethods } : {}),
-    auth: fallback?.auth ?? defaultAuthCapabilities(offering.kind, offering.authModes),
-    upstream: fallback?.upstream ?? defaultUpstreamCapabilities(endpoints, modelDiscovery, quota),
-    endpoints,
-    credentialPrefixHints: offering.credentialPrefixHints ?? fallback?.credentialPrefixHints ?? [],
-    consoleUrl: offering.consoleUrl ?? fallback?.consoleUrl ?? provider.homepage,
-    subscriptionUrl: offering.subscriptionUrl ?? fallback?.subscriptionUrl ?? offering.consoleUrl ?? provider.homepage,
-    modelDiscovery,
-    quota,
-    usagePolicyUrl: offering.usagePolicyUrl ?? fallback?.usagePolicyUrl ?? provider.homepage,
-    region: offering.region ?? fallback?.region ?? 'global',
-    lifecycle: offering.lifecycle ?? fallback?.lifecycle ?? 'active',
-    ...(fallback?.oauthIntegrationId ? { oauthIntegrationId: fallback.oauthIntegrationId } : {}),
-  };
-}
+    } as Parameters<typeof catalogOffering>[0])),
+  }));
 
 function toGatewayProtocol(value: string | undefined): GatewayProtocol | undefined {
   return value === 'responses' || value === 'anthropic' || value === 'chatCompletions'
@@ -917,7 +749,7 @@ function toGatewayProtocol(value: string | undefined): GatewayProtocol | undefin
 export const DEFAULT_PROVIDER_DESCRIPTORS: ProviderDescriptor[] = [
   {
     id: 'openai',
-    label: 'OpenAI',
+    label: PROVIDER_LABELS.openai,
     authModes: ['browserAssistedApiKey', 'apiKey'],
     connect: {
       mode: 'browserAssistedApiKey',
@@ -947,7 +779,7 @@ export const DEFAULT_PROVIDER_DESCRIPTORS: ProviderDescriptor[] = [
   },
   {
     id: 'anthropic',
-    label: 'Anthropic',
+    label: PROVIDER_LABELS.anthropic,
     authModes: ['browserAssistedApiKey', 'apiKey'],
     connect: {
       mode: 'browserAssistedApiKey',
@@ -973,7 +805,7 @@ export const DEFAULT_PROVIDER_DESCRIPTORS: ProviderDescriptor[] = [
   },
   {
     id: 'kimi',
-    label: 'Kimi',
+    label: PROVIDER_LABELS.kimi,
     authModes: ['browserAssistedApiKey', 'apiKey'],
     connect: {
       mode: 'browserAssistedApiKey',
@@ -998,7 +830,7 @@ export const DEFAULT_PROVIDER_DESCRIPTORS: ProviderDescriptor[] = [
   },
   {
     id: 'bailian',
-    label: 'Alibaba Bailian',
+    label: PROVIDER_LABELS.bailian,
     authModes: ['browserAssistedApiKey', 'apiKey'],
     connect: {
       mode: 'browserAssistedApiKey',
@@ -1030,7 +862,7 @@ export const DEFAULT_PROVIDER_DESCRIPTORS: ProviderDescriptor[] = [
   },
   {
     id: 'deepseek',
-    label: 'DeepSeek',
+    label: PROVIDER_LABELS.deepseek,
     authModes: ['browserAssistedApiKey', 'apiKey'],
     connect: {
       mode: 'browserAssistedApiKey',
@@ -1066,7 +898,7 @@ export const DEFAULT_PROVIDER_DESCRIPTORS: ProviderDescriptor[] = [
   },
   {
     id: 'zhipu',
-    label: '智谱 AI',
+    label: PROVIDER_LABELS.zhipu,
     authModes: ['browserAssistedApiKey', 'apiKey'],
     connect: {
       mode: 'browserAssistedApiKey',
@@ -1095,7 +927,7 @@ export const DEFAULT_PROVIDER_DESCRIPTORS: ProviderDescriptor[] = [
   },
   {
     id: 'ollama',
-    label: 'Ollama',
+    label: PROVIDER_LABELS.ollama,
     authModes: ['connectUnsupported'],
     connect: {
       mode: 'connectUnsupported',
@@ -1116,7 +948,7 @@ export const DEFAULT_PROVIDER_DESCRIPTORS: ProviderDescriptor[] = [
   },
   {
     id: 'custom',
-    label: 'Custom Provider',
+    label: PROVIDER_LABELS.custom,
     authModes: ['apiKey'],
     connect: {
       mode: 'browserAssistedApiKey',

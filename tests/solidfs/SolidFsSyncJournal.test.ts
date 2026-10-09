@@ -1,6 +1,5 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
-import os from 'node:os';
 import path from 'node:path';
 
 import {
@@ -13,6 +12,8 @@ import {
   type SolidFsSyncer,
 } from '../../src/solidfs';
 
+import { getSqliteRuntime } from '../../src/storage/SqliteRuntime';
+
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 describe('SolidFS sync journal', () => {
@@ -22,7 +23,8 @@ describe('SolidFS sync journal', () => {
   let now: number;
 
   beforeEach(async () => {
-    root = await mkdtemp(path.join(os.tmpdir(), 'xpod-solidfs-journal-'));
+    await mkdir(path.resolve('.test-data', 'solidfs-sync-journal'), { recursive: true });
+    root = await mkdtemp(path.resolve('.test-data', 'solidfs-sync-journal', 'case-'));
     workspaceRoot = path.join(root, 'workspace');
     journalPath = path.join(root, 'control', 'sync-journal.sqlite');
     now = 1_000;
@@ -141,6 +143,212 @@ describe('SolidFS sync journal', () => {
       }),
     ]));
     journal.close();
+  });
+
+  it('does not checkpoint different bytes written while indexing was in progress', async () => {
+    const file = path.join(workspaceRoot, 'data.ttl');
+    await writeFile(file, '<#data> <urn:name> "before" .\n');
+    const journal = openJournal();
+    try {
+      const operation = await journal.recordLocalCommitted(changeFor('data.ttl', 'updated'), manifestFor(workspaceRoot));
+      await writeFile(file, '<#data> <urn:name> "concurrent change" .\n');
+      await expect(journal.markDone(operation.id)).rejects.toThrow('source changed');
+      expect(journal.getOperation(operation.id)?.stage).toBe('failed_retryable');
+      const bootstrap = await journal.bootstrapWorkspace({
+        workspace: manifestFor(workspaceRoot).workspace,
+        cwd: workspaceRoot,
+        shouldTrackPath: (value) => value.endsWith('.ttl'),
+      });
+      expect(bootstrap.skipped).toBe(0);
+      expect(bootstrap.enqueued).toBe(1);
+    } finally {
+      journal.close();
+    }
+  });
+
+  const directProjectionChange = (file: string): SolidFsChange => ({
+    path: 'seed.txt',
+    resource: 'https://pod.example/alice/projects/demo/seed.txt',
+    source: 'pod-http',
+    sourcePath: file,
+    contentType: 'text/plain',
+    projection: 'direct',
+    type: 'created',
+  });
+
+  it('checkpoints a direct-projection sync whose own write only advanced the timestamp (same bytes)', async () => {
+    const file = path.join(workspaceRoot, 'seed.txt');
+    await writeFile(file, 'Acceptance workspace\n', 'utf8');
+    const journal = openJournal();
+    try {
+      // A direct-projection Pod write PUTs the resource whose local file is the same
+      // authority CSS serves, so the sync write itself advances the file version
+      // (mtime) without changing the bytes. That must still checkpoint.
+      const writingSyncer: SolidFsSyncer = {
+        sync: async (change) => { await writeFile(change.sourcePath, 'Acceptance workspace\n', 'utf8'); },
+      };
+      const journaled = new JournaledSolidFsSyncer({ journal, syncer: writingSyncer });
+      await journaled.sync(directProjectionChange(file), manifestFor(workspaceRoot));
+
+      const [operation] = journal.listOperations(['done']);
+      expect(operation?.change.path).toBe('seed.txt');
+      expect(operation?.stage).toBe('done');
+    } finally {
+      journal.close();
+    }
+  });
+
+  it('keeps the guard when a concurrent writer changed the authority bytes during the sync', async () => {
+    const file = path.join(workspaceRoot, 'seed.txt');
+    await writeFile(file, 'Acceptance workspace\n', 'utf8');
+    const journal = openJournal();
+    try {
+      // A different writer replacing the content during an in-flight sync is not
+      // this operation's result and must not be checkpointed as done.
+      const concurrentSyncer: SolidFsSyncer = {
+        sync: async (change) => { await writeFile(change.sourcePath, 'concurrent different bytes\n', 'utf8'); },
+      };
+      const journaled = new JournaledSolidFsSyncer({ journal, syncer: concurrentSyncer });
+      await expect(journaled.sync(directProjectionChange(file), manifestFor(workspaceRoot)))
+        .rejects.toThrow('source changed');
+
+      expect(journal.listOperations(['done'])).toHaveLength(0);
+      const [operation] = journal.listOperations(['failed_retryable']);
+      expect(operation?.change.path).toBe('seed.txt');
+    } finally {
+      journal.close();
+    }
+  });
+
+  it('supersedes only older failed authority work after a newer version is verified complete', async () => {
+    const file = path.join(workspaceRoot, 'data.ttl');
+    const journal = openJournal();
+    try {
+      await writeFile(file, '<#data> <urn:name> "before" .\n');
+      const first = await journal.recordLocalCommitted(changeFor('data.ttl', 'updated'), manifestFor(workspaceRoot));
+      await journal.markRetryableFailure(first.id, new Error('index temporarily unavailable'));
+      await writeFile(file, '<#data> <urn:name> "after" .\n');
+      const second = await journal.recordLocalCommitted(changeFor('data.ttl', 'updated'), manifestFor(workspaceRoot));
+      await journal.markDone(second.id);
+      expect(journal.getOperation(first.id)?.stage).toBe('failed_permanent');
+      expect(journal.getOperation(second.id)?.stage).toBe('done');
+      expect(journal.listPending()).toEqual([]);
+      const third = await journal.recordLocalCommitted(changeFor('data.ttl', 'created'), manifestFor(workspaceRoot));
+      await journal.markDone(second.id);
+      expect(journal.getOperation(third.id)?.stage).toBe('local_committed');
+    } finally {
+      journal.close();
+    }
+  });
+
+  it('orders same-millisecond operations by insertion rather than hash id', async () => {
+    const journal = openJournal();
+    try {
+      const ids: string[] = [];
+      for (let index = 0; index < 8; index += 1) {
+        const name = `file-${index}.ttl`;
+        await writeFile(path.join(workspaceRoot, name), '<#data> <urn:name> "body" .\n');
+        ids.push((await journal.recordLocalCommitted(changeFor(name, 'updated'), manifestFor(workspaceRoot))).id);
+      }
+      expect(journal.listPending().map((op) => op.id)).toEqual(ids);
+      expect(journal.listOperations().map((op) => op.id)).toEqual(ids);
+    } finally {
+      journal.close();
+    }
+  });
+
+  it('skips superseded work from a replay snapshot even when newer work runs first', async () => {
+    const file = path.join(workspaceRoot, 'data.ttl');
+    const journal = openJournal();
+    try {
+      await writeFile(file, '<#data> <urn:name> "before" .\n');
+      const old = await journal.recordLocalCommitted(changeFor('data.ttl', 'updated'), manifestFor(workspaceRoot));
+      await writeFile(file, '<#data> <urn:name> "after" .\n');
+      const latest = await journal.recordLocalCommitted(changeFor('data.ttl', 'updated'), manifestFor(workspaceRoot));
+      vi.spyOn(journal, 'listPending').mockReturnValueOnce([latest, old]);
+      const sync = vi.fn().mockResolvedValue(undefined);
+      expect(await journal.replayPending({ sync })).toEqual({ attempted: 1, completed: 1, failed: 0, reconcileRequired: 0 });
+      expect(sync).toHaveBeenCalledTimes(1);
+      expect(journal.getOperation(old.id)?.stage).toBe('failed_permanent');
+      expect(journal.getOperation(latest.id)?.stage).toBe('done');
+      expect(journal.listOperations(['failed_retryable', 'reconcile_required'])).toEqual([]);
+    } finally {
+      journal.close();
+    }
+  });
+
+  it('ignores late completion and failure callbacks for terminal operations', async () => {
+    await writeFile(path.join(workspaceRoot, 'data.ttl'), '<#data> <urn:name> "body" .\n');
+    const journal = openJournal();
+    try {
+      const done = await journal.recordLocalCommitted(changeFor('data.ttl', 'updated'), manifestFor(workspaceRoot));
+      await journal.markDone(done.id);
+      const failed = await journal.recordLocalCommitted(changeFor('data.ttl', 'created'), manifestFor(workspaceRoot));
+      await journal.markFailedPermanent(failed.id, 'abandoned');
+      for (const operation of [done, failed]) {
+        const before = journal.getOperation(operation.id);
+        await journal.markRetryableFailure(operation.id, 'late failure');
+        await journal.markReconcileRequired(operation.id, 'late validation');
+        await journal.markFailedPermanent(operation.id, 'late abandonment');
+        await journal.markDone(operation.id);
+        expect(journal.getOperation(operation.id)).toEqual(before);
+      }
+    } finally {
+      journal.close();
+    }
+  });
+
+  it('reuses a completed child-workspace receipt only for the same physical file and resource', async () => {
+    const child = path.join(workspaceRoot, 'child');
+    await mkdir(child);
+    const file = path.join(child, 'data.ttl');
+    await writeFile(file, '<#data> <urn:name> "body" .\n');
+    const journal = openJournal();
+    try {
+      const resource = 'https://pod.example/child/data.ttl';
+      const operation = await journal.recordLocalCommitted({
+        path: 'data.ttl', resource, source: 'filesystem', sourcePath: file, type: 'updated', projection: 'direct',
+      }, { workspace: 'https://pod.example/child/', cwd: child, projection: 'direct', entries: [] });
+      await journal.markDone(operation.id);
+      const input = { workspace: 'https://pod.example/', cwd: workspaceRoot, shouldTrackPath: (value: string) => value.endsWith('.ttl') };
+      expect(await journal.bootstrapWorkspace(input)).toEqual({ scanned: 1, enqueued: 0, skipped: 1 });
+      expect(await journal.bootstrapWorkspace({ ...input, resolveResource: async () => 'https://other.example/data.ttl' }))
+        .toEqual({ scanned: 1, enqueued: 1, skipped: 0 });
+    } finally {
+      journal.close();
+    }
+  });
+
+  it('migrates legacy checkpoints with resource bindings and replays those lacking retained proof', async () => {
+    await writeFile(path.join(workspaceRoot, 'data.ttl'), '<#data> <urn:name> "body" .\n');
+    const initial = openJournal();
+    const manifest = manifestFor(workspaceRoot);
+    const operation = await initial.recordLocalCommitted(changeFor('data.ttl', 'updated'), manifest);
+    await initial.markDone(operation.id);
+    initial.close();
+    const database = getSqliteRuntime().openDatabase(journalPath);
+    database.exec('ALTER TABLE sync_checkpoints DROP COLUMN resource');
+    database.close();
+    const migrated = openJournal();
+    try {
+      expect(await migrated.bootstrapWorkspace({ workspace: manifest.workspace, cwd: workspaceRoot }))
+        .toEqual({ scanned: 1, enqueued: 0, skipped: 1 });
+      expect(await migrated.bootstrapWorkspace({
+        workspace: manifest.workspace, cwd: workspaceRoot, resolveResource: async () => 'https://other.example/data.ttl',
+      })).toEqual({ scanned: 1, enqueued: 1, skipped: 0 });
+    } finally {
+      migrated.close();
+    }
+    const compacted = getSqliteRuntime().openDatabase(journalPath);
+    compacted.exec('DELETE FROM sync_ops; ALTER TABLE sync_checkpoints DROP COLUMN resource');
+    compacted.close();
+    const withoutProof = openJournal();
+    try {
+      expect(await withoutProof.bootstrapWorkspace({ workspace: manifest.workspace, cwd: workspaceRoot }))
+        .toEqual({ scanned: 1, enqueued: 1, skipped: 0 });
+    } finally {
+      withoutProof.close();
+    }
   });
 
   it('persists and replays moved entries with previous path and shared transaction id', async () => {

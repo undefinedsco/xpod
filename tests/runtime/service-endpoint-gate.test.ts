@@ -12,11 +12,13 @@ describe('service endpoints require operator authority', () => {
   let proxy: GatewayProxy;
   let proxyPort: number;
   let ingressPort: number;
+  let supervisor: Supervisor;
 
   beforeAll(async () => {
     proxyPort = await getFreePort(46500, '127.0.0.1');
     ingressPort = await getFreePort(proxyPort + 1, '127.0.0.1');
-    proxy = new GatewayProxy(proxyPort, new Supervisor(), '127.0.0.1', {
+    supervisor = new Supervisor({ handleProcessSignals: false });
+    proxy = new GatewayProxy(proxyPort, supervisor, '127.0.0.1', {
       internalAdminAuthSecret: 'service-gate-secret',
       ingressPort,
     });
@@ -50,6 +52,15 @@ describe('service endpoints require operator authority', () => {
     });
     await response.arrayBuffer();
     expect(response.status).toBe(403);
+  });
+
+  it('filters real service facts after ANSI normalization and credential redaction', async () => {
+    supervisor.addLog('css', 'info', '2026-10-02 12:00:00 [Store] \u001b[34mdebug\u001b[39m: token=super-secret-value');
+    const response = await fetch(`http://127.0.0.1:${proxyPort}/service/logs?source=css&level=debug`);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual([expect.objectContaining({
+      source: 'css', level: 'debug', message: '2026-10-02 12:00:00 [Store] debug: token=***',
+    })]);
   });
 
   it('keeps them available to a caller on this machine', async () => {

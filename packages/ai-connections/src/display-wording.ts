@@ -1,3 +1,4 @@
+import { PROVIDER_LABELS } from './contract/provider-catalog'
 import type {
   AiConnectionsProvider,
   AiProviderAuthorizationMethod,
@@ -25,7 +26,7 @@ import type {
  */
 const AUTHORIZATION_METHOD_LABEL_BY_ID: Record<string, string> = {
   'api-key': '添加 API Key',
-  'browser-login': '浏览器登录',
+  'browser-login': '打开控制台',
   'browser-oauth': '浏览器登录',
   'device-code': '设备码登录',
   'local-session-import': '已有登录态',
@@ -55,29 +56,7 @@ export function withAuthorizationMethodLabels(
   })
 }
 
-/**
- * The name this applet shows for a provider. English for the providers whose
- * product name is English, Chinese where the product is known by its Chinese
- * name - a display decision, so it lives with the display layer instead of
- * travelling in every payload.
- */
+/** Project the capability catalog's provider names for applet consumers. */
 export function providerDisplayName(provider: AiConnectionsProvider): string {
-  switch (provider) {
-    case 'openai':
-      return 'OpenAI';
-    case 'anthropic':
-      return 'Anthropic';
-    case 'kimi':
-      return 'Kimi';
-    case 'bailian':
-      return '百炼';
-    case 'deepseek':
-      return 'DeepSeek';
-    case 'zhipu':
-      return '智谱 AI';
-    case 'ollama':
-      return 'Ollama';
-    case 'custom':
-      return 'Custom';
-  }
+  return PROVIDER_LABELS[provider]
 }

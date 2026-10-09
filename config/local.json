@@ -2,7 +2,16 @@
   "@context": [
     "https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^8.0.0/components/context.jsonld",
     "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/components/context.jsonld",
-    "https://linkedsoftwaredependencies.org/bundles/npm/asynchronous-handlers/^1.0.0/components/context.jsonld"
+    "https://linkedsoftwaredependencies.org/bundles/npm/asynchronous-handlers/^1.0.0/components/context.jsonld",
+    {
+      "deletionLegacyQuints": "PodDataDeletionService:_legacyQuintStore",
+      "deletionMirrorPath": "SqliteQuintStore:_options_path",
+      "mutationSource": "PodMutationLockingHttpHandler:_source",
+      "mutationPodStore": "PodMutationLockingHttpHandler:_podStore",
+      "mutationLocker": "PodMutationLockingHttpHandler:_resourceLocker",
+      "mutationDb": "PodMutationLockingHttpHandler:_identityDbUrl",
+      "mutationBase": "PodMutationLockingHttpHandler:_baseUrl"
+    }
   ],
   "import": [
     "./main.json",
@@ -11,6 +20,16 @@
     "./extensions.local.initializer.json"
   ],
   "@graph": [
+    {
+      "@type": "Override",
+      "overrideInstance": { "@id": "urn:undefineds:xpod:PodDataDeletionService" },
+      "overrideParameters": {
+        "deletionLegacyQuints": {
+          "@type": "SqliteQuintStore",
+          "deletionMirrorPath": { "@id": "urn:solid-server:default:variable:sparqlEndpoint" }
+        }
+      }
+    },
     {
       "comment": "Quota service backed by identity DB, no env defaults = unlimited",
       "@id": "urn:undefineds:xpod:QuotaService",
@@ -347,8 +366,19 @@
         "@id": "urn:solid-server:default:BaseHttpHandler"
       },
       "overrideParameters": {
+        "@type": "PodMutationLockingHttpHandler",
+        "mutationPodStore": { "@id": "urn:solid-server:default:PodStore" },
+        "mutationLocker": { "@id": "urn:undefineds:xpod:PodLifecycleLocker" },
+        "mutationDb": { "@id": "urn:solid-server:default:variable:identityDbUrl" },
+        "mutationBase": { "@id": "urn:solid-server:default:variable:baseUrl" },
+        "mutationSource": {
         "@type": "StatusWaterfallHandler",
         "handlers": [
+          { "@id": "urn:undefineds:xpod:PodDeletionMutationGuard" },
+          { "@id": "urn:undefineds:xpod:LocalPodDeletionHttpHandler" },
+          {
+            "@id": "urn:undefineds:xpod:AgentDirectoryHttpHandler"
+          },
           {
             "@id": "urn:undefineds:xpod:SubgraphSparqlHttpHandler"
           },
@@ -387,6 +417,7 @@
             "@id": "urn:solid-server:default:LdpHandler"
           }
         ]
+      }
       }
     }
   ]

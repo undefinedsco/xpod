@@ -12,6 +12,8 @@ export const badgeVariants = cva(
         secondary: 'border-transparent bg-secondary text-secondary-foreground hover:bg-secondary/80',
         destructive: 'border-transparent bg-destructive text-destructive-foreground shadow-sm shadow-destructive/20 hover:bg-destructive/90',
         outline: 'border-border/40 text-foreground bg-muted/30 backdrop-blur-sm',
+        // Purely visual "not connected yet" marker: dashed, unfilled, muted.
+        pending: 'border border-dashed border-muted-foreground bg-transparent text-muted-foreground shadow-none hover:bg-transparent',
       },
     },
     defaultVariants: { variant: 'default' },

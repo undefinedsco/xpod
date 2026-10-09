@@ -76,8 +76,6 @@ struct XpodRdfSqliteBackendState {
   std::vector<std::string> owned_denied_graph_prefix_strings;
   std::vector<xpod_rdf_bytes> owned_allowed_graph_prefixes;
   std::vector<xpod_rdf_bytes> owned_denied_graph_prefixes;
-  xpod_rdf_term_key cached_default_graph_key = 0;
-  bool has_cached_default_graph_key = false;
   bool read_only = true;
   bool has_text = false;
   bool has_vector = false;
@@ -752,10 +750,10 @@ xpod_rdf_status default_graph_key(
     XpodRdfSqliteBackendState* state,
     xpod_rdf_term_key* out_key) {
   if (state == nullptr || out_key == nullptr) return XPOD_RDF_STATUS_BACKEND_ERROR;
-  if (state->has_cached_default_graph_key) {
-    *out_key = state->cached_default_graph_key;
-    return XPOD_RDF_STATUS_OK;
-  }
+  // The default-graph term is created lazily by whichever writer first needs
+  // it, and prepared-update transactions roll it back. Never cache this lookup:
+  // a stale key either hides externally written default-graph data or points at
+  // a rolled-back term id that later mutations fail to satisfy by foreign key.
   Statement stmt;
   xpod_rdf_status status = prepare(
       state,
@@ -764,15 +762,14 @@ xpod_rdf_status default_graph_key(
   if (status != XPOD_RDF_STATUS_OK) return status;
   const int rc = sqlite3_step(stmt.stmt);
   if (rc == SQLITE_ROW) {
-    state->cached_default_graph_key =
-        static_cast<uint64_t>(sqlite3_column_int64(stmt.stmt, 0));
-  } else {
-    state->cached_default_graph_key = XPOD_RDF_DEFAULT_GRAPH_KEY;
+    *out_key = static_cast<uint64_t>(sqlite3_column_int64(stmt.stmt, 0));
+    return XPOD_RDF_STATUS_OK;
   }
-  state->has_cached_default_graph_key = true;
-  *out_key = state->cached_default_graph_key;
-  return rc == SQLITE_DONE || rc == SQLITE_ROW ? XPOD_RDF_STATUS_OK
-                                               : XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (rc == SQLITE_DONE) {
+    *out_key = XPOD_RDF_DEFAULT_GRAPH_KEY;
+    return XPOD_RDF_STATUS_OK;
+  }
+  return XPOD_RDF_STATUS_BACKEND_ERROR;
 }
 
 xpod_rdf_status ensure_default_graph_key(
@@ -794,7 +791,6 @@ xpod_rdf_status ensure_default_graph_key(
   sqlite3_bind_text(stmt.stmt, 1, hash.c_str(), -1, SQLITE_TRANSIENT);
   status = sqlite_done_status(stmt.stmt);
   if (status != XPOD_RDF_STATUS_OK) return status;
-  state->has_cached_default_graph_key = false;
   return default_graph_key(state, out_key);
 }
 

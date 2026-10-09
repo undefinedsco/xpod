@@ -1,3 +1,4 @@
+import { ensureSupportedBun } from '../runtime/compat/ensureSupportedBun';
 import { asValue, type AwilixContainer } from 'awilix';
 import { setGlobalLoggerFactory, getLoggerFor } from 'global-logger-factory';
 import { ConfigurableLoggerFactory } from '../logging/ConfigurableLoggerFactory';
@@ -583,6 +584,11 @@ async function startEmbeddedInngestService(
     signingKey: config.inngest?.signingKey,
     binaryPath: config.inngest?.binaryPath,
     sqliteDir: config.inngest?.sqliteDir,
+    // Unix-socket transport cannot name a TCP callback address; the service
+    // derives a private loopback bridge and signs it with the Gateway marker.
+    socketPath: config.socketPath,
+    gatewayAdminProxyAuthSecret: config.gatewayAdminProxyAuthSecret,
+    runtimeHost: config.runtimeHost,
   });
   const runtimeConfig = await service.start();
   if (runtimeConfig.enabled) {
@@ -594,6 +600,7 @@ async function startEmbeddedInngestService(
 }
 
 export async function startApiService(options: StartApiServiceOptions = {}): Promise<ApiServiceHandle> {
+  ensureSupportedBun();
   if (options.initializeLogger !== false) {
     initApiLogger();
   }

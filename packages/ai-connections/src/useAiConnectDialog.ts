@@ -19,6 +19,7 @@ import { isOAuthMode, isPendingAttempt } from './authorization-methods'
  */
 export interface AiConnectDialogController {
   open: boolean
+  choosingConsole: boolean
   title: string
   editing?: AiProviderCredentialSummary
   authorizationOfferingId?: string
@@ -35,7 +36,7 @@ export interface AiConnectDialogController {
     method?: AiProviderAuthorizationMethod,
   ): void
   /** Start the browser-assisted API key flow the dialog reports progress for. */
-  beginBrowser(): void
+  beginBrowser(offering?: AiProviderOffering, method?: AiProviderAuthorizationMethod): void
   /** Import the local client's login state, reporting failures inside the dialog. */
   beginLocal(offering: AiProviderOffering, method?: AiProviderAuthorizationMethod): Promise<void>
   /** Report the nested form's busy state so the dialog's own controls stay disabled. */
@@ -57,13 +58,15 @@ export function useAiConnectDialog({
   onCreateLocalCredential?: (offering: AiProviderOffering, method?: AiProviderAuthorizationMethod) => Promise<void>
 }): AiConnectDialogController {
   const [creatingApiKey, setCreatingApiKey] = useState(false)
+  const [choosingConsole, setChoosingConsole] = useState(false)
   const [editing, setEditing] = useState<AiProviderCredentialSummary>()
   const [authorizationOfferingId, setAuthorizationOfferingId] = useState<string>()
   const [error, setError] = useState<string>()
   const [saving, setSaving] = useState(false)
 
-  const open = creatingApiKey || Boolean(editing) || Boolean(authorizationOfferingId)
+  const open = choosingConsole || creatingApiKey || Boolean(editing) || Boolean(authorizationOfferingId)
   const close = useCallback(() => {
+    setChoosingConsole(false)
     setCreatingApiKey(false)
     setAuthorizationOfferingId(undefined)
     setEditing(undefined)
@@ -90,10 +93,18 @@ export function useAiConnectDialog({
     setCreatingApiKey(true)
   }, [dismissErrors])
 
-  const beginBrowser = useCallback(() => {
+  const beginBrowser = useCallback((offering?: AiProviderOffering, method?: AiProviderAuthorizationMethod) => {
     dismissErrors()
-    onBeginBrowser()
-  }, [dismissErrors, onBeginBrowser])
+    if (!offering) {
+      setChoosingConsole(true)
+      return
+    }
+    setChoosingConsole(false)
+    setCreatingApiKey(true)
+    setAuthorizationOfferingId(offering.id)
+    if (onBeginOffering) onBeginOffering(offering, 'browserAssistedApiKey', method)
+    else onBeginBrowser()
+  }, [dismissErrors, onBeginBrowser, onBeginOffering])
 
   const beginAuthorization = useCallback((
     offering: AiProviderOffering,
@@ -129,7 +140,8 @@ export function useAiConnectDialog({
 
   return {
     open,
-    title: editing ? '编辑连接' : authorizationOfferingId ? '连接账号' : '新建连接',
+    choosingConsole,
+    title: choosingConsole ? '选择控制台' : editing ? '编辑连接' : creatingApiKey ? '新建连接' : authorizationOfferingId ? '连接账号' : '新建连接',
     ...(editing ? { editing } : {}),
     ...(authorizationOfferingId ? { authorizationOfferingId } : {}),
     ...(error ? { error } : {}),

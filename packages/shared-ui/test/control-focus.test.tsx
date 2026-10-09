@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { cleanup, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
-import { Button, Input } from '../src'
+import { Button, Checkbox, Input, NativeSelect, Textarea } from '../src'
 
 afterEach(() => cleanup())
 
@@ -10,16 +10,23 @@ describe('shared control focus presentation', () => {
     render(
       <>
         <Input aria-label="Name" />
+        <NativeSelect aria-label="Choice"><option>One</option></NativeSelect>
+        <Textarea aria-label="Notes" />
+        <Checkbox aria-label="Enabled" />
         <Button>Continue</Button>
       </>,
     )
 
-    for (const control of [screen.getByLabelText('Name'), screen.getByRole('button', { name: 'Continue' })]) {
+    for (const control of [...['Name', 'Choice', 'Notes', 'Enabled'].map(label => screen.getByLabelText(label)), screen.getByRole('button', { name: 'Continue' })]) {
       expect(control.className).not.toContain('focus-visible:ring-2')
       expect(control.className).not.toContain('ring-offset')
     }
-    expect(screen.getByLabelText('Name').className).toContain('focus-visible:border-ring')
-    expect(screen.getByLabelText('Name').className).not.toContain('focus-visible:outline-2')
+    // Focus recolours and strengthens the existing border, without an outer frame.
+    const input = screen.getByLabelText('Name')
+    expect(input.className).toContain('focus-visible:border-ring')
+    expect(input.className).toContain('focus-visible:border-2')
+    expect(input.className).not.toContain('outline-ring')
+    expect(input.className).not.toContain('outline-offset')
     expect(screen.getByRole('button', { name: 'Continue' }).className)
       .toContain('focus-visible:outline-none')
     expect(screen.getByRole('button', { name: 'Continue' }).className)

@@ -30,11 +30,141 @@ function close(server: Server): Promise<void> {
 }
 
 describe('ProviderHttpTransport network policy', () => {
+  it('preserves raw form requests and non-success responses without retrying or adding credentials', async () => {
+    const body = new URLSearchParams({ grant_type: 'refresh_token', refresh_token: 'fixture-only' });
+    const fetchMock = vi.fn(async (_input: unknown, init?: RequestInit) => {
+      expect(init?.method).toBe('POST');
+      expect(init?.body).toBe(body);
+      expect(new Headers(init?.headers).get('content-type')).toBe('application/x-www-form-urlencoded');
+      expect(new Headers(init?.headers).has('authorization')).toBe(false);
+      expect(init?.redirect).toBe('error');
+      return new Response('{"error":"invalid_grant"}', {
+        status: 400, statusText: 'Bad Request', headers: { 'x-fixture': 'oauth-error' },
+      });
+    }) as unknown as typeof fetch;
+    const transport = new ProviderHttpTransport({ fetch: fetchMock, resolver: resolverFor(['203.0.113.10']) });
+
+    const response = await transport.request({
+      url: 'https://auth.provider.test/oauth/token', method: 'POST', body,
+      headers: { 'content-type': 'application/x-www-form-urlencoded' }, redirect: 'error', timeoutMs: 10_000,
+    });
+    expect(response.status).toBe(400);
+    expect(response.statusText).toBe('Bad Request');
+    expect(response.headers.get('x-fixture')).toBe('oauth-error');
+    expect(await response.json()).toEqual({ error: 'invalid_grant' });
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it('returns manual redirects without following them and rejects a follow policy', async () => {
+    const fetchMock = vi.fn(async (_input: unknown, init?: RequestInit) => {
+      expect(init?.redirect).toBe('manual');
+      return new Response(null, { status: 302, headers: { location: 'http://169.254.169.254/metadata' } });
+    }) as unknown as typeof fetch;
+    const transport = new ProviderHttpTransport({ fetch: fetchMock, resolver: resolverFor(['203.0.113.10']) });
+    expect((await transport.request({ url: 'https://auth.provider.test/oauth/token' })).status).toBe(302);
+    await expect(transport.request({ url: 'https://auth.provider.test/oauth/token', redirect: 'follow' as never }))
+      .rejects.toThrow('invalid_provider_redirect_policy');
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it('keeps raw response body reads bounded and cleans up their dispatcher', async () => {
+    let destroy: MockInstance | undefined;
+    const fetchMock = vi.fn(async (_input: unknown, init?: RequestInit) => {
+      destroy = vi.spyOn((init as RequestInit & { dispatcher: { destroy: () => Promise<void> } }).dispatcher, 'destroy');
+      return new Response(new ReadableStream(), { status: 200 });
+    }) as unknown as typeof fetch;
+    const transport = new ProviderHttpTransport({ fetch: fetchMock, resolver: resolverFor(['203.0.113.10']) });
+    const response = await transport.request({ url: 'https://auth.provider.test/oauth/token', timeoutMs: 5 });
+    await expect(response.text()).rejects.toThrow('provider_request_timeout');
+    expect(destroy).toHaveBeenCalled();
+  });
+
+  it('times out raw target DNS before any fetch and preserves upstream cancellation', async () => {
+    const fetchMock = okFetch();
+    const resolver = vi.fn(async () => new Promise<never>(() => undefined));
+    const transport = new ProviderHttpTransport({ fetch: fetchMock, resolver });
+    await expect(transport.request({ url: 'https://auth.provider.test/oauth/token', timeoutMs: 5 }))
+      .rejects.toThrow('provider_request_timeout');
+    const controller = new AbortController();
+    controller.abort(new Error('upstream_cancelled'));
+    await expect(transport.request({ url: 'https://auth.provider.test/oauth/token', signal: controller.signal }))
+      .rejects.toThrow('upstream_cancelled');
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(resolver).toHaveBeenCalledOnce();
+  });
+
+  it('rejects raw private targets before fetch even with a trusted system proxy', async () => {
+    const fetchMock = okFetch();
+    const transport = new ProviderHttpTransport({ fetch: fetchMock, systemProxy: 'http://127.0.0.1:7897' });
+    await expect(transport.request({ url: 'http://169.254.169.254/token' })).rejects.toThrow('unsafe_provider_target');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('pins raw Node proxy targets while retaining their HTTP host', async () => {
+    const proxy = createServer();
+    const destinations: string[] = [];
+    const requests: string[] = [];
+    proxy.on('connect', (request, socket) => {
+      destinations.push(request.url ?? '');
+      socket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+      socket.once('data', (data) => {
+        requests.push(data.toString());
+        socket.end('HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}');
+      });
+    });
+    await listen(proxy);
+    const address = proxy.address();
+    if (!address || typeof address === 'string') throw new Error('test_proxy_not_listening');
+    const transport = new ProviderHttpTransport({
+      resolver: resolverFor(['203.0.113.10']), systemProxy: `http://127.0.0.1:${address.port}`, timeoutMs: 1_000,
+    });
+    try {
+      const response = await transport.request({ url: 'http://models.example/oauth/token', method: 'POST', body: 'fixture' });
+      expect(await response.json()).toEqual({});
+      expect(destinations).toEqual(['203.0.113.10:80']);
+      expect(requests).toHaveLength(1);
+      expect(requests[0]).toMatch(/host: models\.example\r\n/iu);
+      expect(requests[0]).toContain('fixture');
+    } finally {
+      await close(proxy);
+    }
+  });
+
+  it('aborts a raw connection-time DNS lookup before it can open a socket', async () => {
+    let connections = 0;
+    const server = createServer();
+    server.on('connection', () => { connections += 1; });
+    await listen(server);
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('test_server_not_listening');
+    let finishLookup: ((records: { address: string }[]) => void) | undefined;
+    const resolver = vi.fn<Parameters<ProviderAddressResolver>, ReturnType<ProviderAddressResolver>>()
+      .mockResolvedValueOnce([{ address: '127.0.0.1' }])
+      .mockImplementationOnce(() => new Promise((resolve) => { finishLookup = resolve; }));
+    const origin = `http://slow.provider.test:${address.port}`;
+    const transport = new ProviderHttpTransport({ resolver, allowedPrivateOrigins: [origin] });
+    try {
+      await expect(transport.request({ url: origin, timeoutMs: 30 })).rejects.toThrow('provider_request_timeout');
+      expect(resolver).toHaveBeenCalledTimes(2);
+      finishLookup?.([{ address: '127.0.0.1' }]);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(connections).toBe(0);
+    } finally {
+      await close(server);
+    }
+  });
+
   it('tolerates Bun dispatcher shims that expose neither close nor destroy', async () => {
     await expect(closeProviderDispatcher({} as never)).resolves.toBeUndefined();
     const destroy = vi.fn();
     await closeProviderDispatcher({ destroy } as never);
     expect(destroy).toHaveBeenCalledOnce();
+  });
+
+  it('does not mask an abort error by closing an already destroyed dispatcher', async () => {
+    const close = vi.fn().mockRejectedValue(new Error('UND_ERR_DESTROYED'));
+    await expect(closeProviderDispatcher({ destroyed: true, close } as never)).resolves.toBeUndefined();
+    expect(close).not.toHaveBeenCalled();
   });
 
   it('rejects a private connection-time lookup after a public preflight without establishing a request', async () => {
@@ -206,6 +336,25 @@ describe('ProviderHttpTransport network policy', () => {
     await expect(transport.getJson({
       url: 'https://models.example/v1/models',
     })).resolves.toEqual({ ok: true });
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it('allows an explicit proxy matching the trusted system proxy but rejects other private proxies', async () => {
+    const fetchMock = okFetch();
+    const transport = new ProviderHttpTransport({
+      fetch: fetchMock,
+      resolver: resolverFor(['203.0.113.10']),
+      systemProxy: 'http://127.0.0.1:7897',
+    });
+
+    await expect(transport.getJson({
+      url: 'https://models.example/v1/models',
+      proxy: 'http://127.0.0.1:7897/',
+    })).resolves.toEqual({ ok: true });
+    await expect(transport.getJson({
+      url: 'https://models.example/v1/models',
+      proxy: 'http://127.0.0.1:7898',
+    })).rejects.toThrow('unsafe_provider_target');
     expect(fetchMock).toHaveBeenCalledOnce();
   });
 

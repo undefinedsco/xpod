@@ -1,3 +1,9 @@
+import { registerPodDeletionGrantRoutes } from '../handlers/PodDeletionGrantHandler';
+import { PodDeletionOperationRepository } from '../../identity/drizzle/PodDeletionOperationRepository';
+import { NodeTokenAuthenticator } from '../auth/NodeTokenAuthenticator';
+import { createMatrixPodResolver, resolveMatrixContext } from '../matrix/MatrixPodResolver';
+import { AgentWakeRuntimeService } from '../reconciler/AgentWakeRuntimeService';
+import { registerAgentWakeRoutes } from '../handlers/AgentWakeHandler';
 /**
  * 路由注册
  *
@@ -23,6 +29,9 @@ import { registerDdnsRoutes } from '../handlers/DdnsHandler';
 import { registerChatKitRoutes } from '../handlers/ChatKitHandler';
 import { registerChatKitV1Routes } from '../handlers/ChatKitV1Handler';
 import { registerInngestRoutes } from '../handlers/InngestHandler';
+import { createGrantedTaskAgentResolver } from '../tasks/TaskAgentBinding';
+import { createTaskCredentialSource } from '../tasks/TaskCredentialStore';
+import { registerTaskRoutes } from '../handlers/TaskHandler';
 import { registerRunRoutes } from '../handlers/RunHandler';
 import { registerMatrixRoutes } from '../handlers/MatrixHandler';
 import { registerCoordinationRoutes } from '../handlers/CoordinationHandler';
@@ -69,6 +78,7 @@ import {
 } from '../../edge/EdgeNodeCertificateCapabilityBridge';
 import * as path from 'node:path';
 import { PACKAGE_ROOT } from '../../runtime';
+import { registerServiceInfoRoute } from '../handlers/ServiceInfoHandler';
 
 /**
  * 注册所有 API 路由
@@ -77,8 +87,19 @@ export function registerRoutes(container: AwilixContainer<ApiContainerCradle>): 
   const server = container.resolve('apiServer') as ApiServer;
   const config = container.resolve('config') as ApiContainerConfig;
 
+  if (config.edition === 'cloud') {
+    registerPodDeletionGrantRoutes(server, new PodDeletionOperationRepository(config.databaseUrl), new NodeTokenAuthenticator({ repository: container.resolve('nodeRepo') }), { pods: container.resolve('podLookupRepo')!, nodes: container.resolve('nodeRepo') });
+  }
+
   // 公共健康检查端点
   registerHealthRoutes(server);
+
+  // Local identity is registered by the provisioning-state owner below.
+  if (config.edition === 'cloud') {
+    registerServiceInfoRoute(server, () => ({
+      edition: config.edition, managed: false, publicUrl: config.publicUrl ?? config.solidBaseUrl,
+    }));
+  }
 
   // 共享路由
   registerSharedRoutes(container, server);
@@ -138,7 +159,6 @@ function registerSharedRoutes(
   const rdfSearchIndexingService = container.resolve('rdfSearchIndexingService', { allowUnregistered: true });
   const ownerPodAccess = container.resolve('ownerPodAccess');
   const aiConnectionInvocationKeyIssuer = container.resolve('aiConnectionInvocationKeyIssuer');
-  const gatewayAccessKeyRepository = container.resolve('gatewayAccessKeyRepository', { allowUnregistered: true });
   const providerConnectService = container.resolve('providerConnectService');
   const providerQuotaService = container.resolve('providerQuotaService', { allowUnregistered: true });
   const providerModelsService = container.resolve('providerModelsService', { allowUnregistered: true });
@@ -188,30 +208,37 @@ function registerSharedRoutes(
   registerChatKitRoutes(server, { chatKitService });
   registerChatKitV1Routes(server, { store: chatKitStore });
   registerRunRoutes(server, { runStore: chatKitStore });
-  registerMatrixRoutes(server, { store: matrixStore });
+  const taskCredentialStore = container.resolve('taskCredentialStore', { allowUnregistered: true });
+  const taskIssuer = config.solidBaseUrl ?? config.publicUrl;
+  registerTaskRoutes(server, {
+    taskService: container.resolve('taskService'), runStore: chatKitStore,
+    ...(taskCredentialStore && taskIssuer ? { resolveAgentBinding: createGrantedTaskAgentResolver(createTaskCredentialSource({ store: taskCredentialStore, issuer: taskIssuer })) } : {}),
+    resolveExecutionContext: (task, context) => task.authBinding ? container.resolve('taskAuthBindingService').resolveRunContext(task.authBinding.id, context) : Promise.resolve(undefined),
+  });
+  const matrixPodResolver = createMatrixPodResolver(podLookupRepository);
+  registerMatrixRoutes(server, { store: matrixStore, resolvePodUrl: matrixPodResolver, baseUrl: process.env.CSS_BASE_URL });
+  registerAgentWakeRoutes(server, {
+    service: new AgentWakeRuntimeService(container.resolve('serverGroupReconcilerService').getQueue(), matrixStore),
+    resolveContext: request => resolveMatrixContext(request, matrixPodResolver),
+  });
   registerCoordinationRoutes(server, { clientReconcilerCoordinator });
   registerInngestRoutes(server, {
     backend: runExecutionBackend,
     taskScheduler: inngestTaskScheduler,
     runtimeConfig: inngestRuntimeConfig,
+    gatewayAdminProxyAuthSecret: config.gatewayAdminProxyAuthSecret,
   });
   registerRdfStatsRoutes(server, {
     rdfStorageStatsService,
   });
   registerAiGatewayManagementRoutes(server, {
     deployment: config.edition,
+    podBaseUrlResolver: container.resolve('aiConnectionsPodBaseUrlResolver'),
     connectService: providerConnectService,
     quotaService: providerQuotaService,
     modelsService: providerModelsService,
     providerModelSelectionService,
     customModelsService: providerCustomModelsService,
-    gatewayAccessKeyRepository,
-    invalidateClientCredential: (clientId) => container.resolve('solidSessions').invalidateClientCredential(clientId),
-    validateClientCredential: (apiKey) => container.resolve('authenticator').authenticate({
-      headers: { authorization: `Bearer ${apiKey}` },
-      method: 'POST',
-      url: '/api/ai/gateway/keys',
-    } as IncomingMessage),
     aiClientConfiguration: aiClientConfigurationService?.capability(),
     aiConnectionInvocationKeyIssuer,
   });
@@ -287,6 +314,10 @@ function registerSharedRoutes(
     store: aiConfigStore,
     lifecycle: aiConfigLifecycle,
     embeddingModelPolicy: container.resolve('embeddingModelPolicy', { allowUnregistered: true }),
+    embeddingModels: () => {
+      const registry = container.resolve('gatewayProviderRegistry');
+      return registry.listProviders().flatMap(provider => registry.listManagedEmbeddingModels(provider.id).map(model => ({ provider: provider.id, model: model.id })));
+    },
     capabilities: () => ({
       textBackends: config.edition === 'cloud' && config.sparqlEndpoint ? ['postgres-fts'] : [],
       vectorBackends: config.edition === 'cloud' && config.sparqlEndpoint ? ['pgvector'] : ['vec'],
@@ -553,6 +584,7 @@ function registerLocalRoutes(
 
       registerPodManagementRoutes(server, {
         rootDir,
+        internalAdminAuthSecret: config.gatewayAdminProxyAuthSecret,
         verifyServiceToken: async (token: string) => (
           token === expectedServiceToken
           || verifyServiceAccessToken(token, { serviceToken: expectedServiceToken }).valid
@@ -581,6 +613,7 @@ function registerLocalRoutes(
       nodeToken: config.nodeToken,
       serviceToken: config.serviceToken,
       publicUrl: process.env.XPOD_PUBLIC_URL ?? config.publicUrl ?? process.env.CSS_BASE_URL,
+      publicUrlIsFallback: !(process.env.XPOD_PUBLIC_URL ?? config.publicUrl),
       spDomain: process.env.XPOD_SP_DOMAIN ?? config.spDomain,
       localPort: readPositiveInteger(
         process.env.XPOD_MAIN_PORT ?? process.env.CSS_PORT ?? process.env.XPOD_PORT ?? process.env.PORT,

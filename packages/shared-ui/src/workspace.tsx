@@ -14,6 +14,11 @@ interface WorkspaceNavigation {
 
 const WorkspaceNavigationContext = createContext<WorkspaceNavigation | null>(null)
 
+/**
+ * @deprecated Legacy LinX compatibility only. New hosts use TwoPaneLayout from
+ * @undefineds.co/extension-sdk/react and supply its listHeader/mainHeader slots.
+ * Migration and removal conditions: docs/ui-modernization.md §6.1.
+ */
 export function TwoPaneWorkspace({
   header,
   list,
@@ -100,6 +105,10 @@ export function TwoPaneWorkspace({
   )
 }
 
+/**
+ * @deprecated Use useWorkspaceLayout from @undefineds.co/extension-sdk/react
+ * inside TwoPaneLayout; backToList becomes openList. Do not mix providers.
+ */
 export function useAppletLayout(): Pick<
   WorkspaceNavigation,
   'mode' | 'activePane' | 'openMain' | 'backToList'
@@ -115,6 +124,11 @@ export function AppletList(props: ComponentProps<'nav'>) {
   return <nav className={cn('space-y-1 p-3', props.className)} {...props} />
 }
 
+/**
+ * @deprecated Legacy implicit pane navigation. In SDK layouts, the consumer
+ * must explicitly call useWorkspaceLayout().openMain() after its selection
+ * action. Visual list primitives remain owned by shared-ui.
+ */
 export function AppletListItem({
   selected,
   className,

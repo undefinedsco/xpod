@@ -145,6 +145,8 @@ export type AgentRuntimeEvent =
   }
   | {
     type: 'tool_call';
+    /** A request for human authority; the action has not been executed. */
+    approval?: { target: string; action: string; risk: 'low' | 'medium' | 'high'; description: string };
     requestId: string;
     name: string;
     arguments: string;

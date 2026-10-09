@@ -8,9 +8,34 @@ import {
 const THREAD = 'https://alice.example/.data/chat/team/index.ttl#this';
 const MESSAGE = 'https://alice.example/.data/chat/team/2026/06/14/messages.ttl#msg_1';
 const SECRETARY = 'https://alice.example/.data/agents/secretary.ttl#this';
+const ACTOR = 'https://alice.example/profile/card#me';
 const REVIEWER = 'https://alice.example/.data/agents/reviewer.ttl#this';
 
 describe('ServerGroupReconcilerService', () => {
+  it.each([
+    { routeTargetAgent: REVIEWER, participants: [SECRETARY] },
+    { routeTargetAgent: SECRETARY },
+    { mentions: [SECRETARY] },
+    { mentions: [SECRETARY], participants: [] },
+  ])('fails closed for targets outside the authorized roster: %j', async (selection) => {
+    const service = new ServerGroupReconcilerService({ wakeQueue: new InMemoryWakeAgentQueue() });
+    const result = await service.reconcileThreadMessage({ thread: THREAD, triggerMessage: MESSAGE, actor: ACTOR, role: 'user', ...selection });
+    expect(result).toEqual({ wakeJobs: [], inserted: 0, skippedReason: 'no_agent_selected' });
+    expect(await service.listQueued(THREAD)).toEqual([]);
+  });
+
+  it.each([undefined, '', '   '])('requires a nonempty actor (%j)', async (actor) => {
+    const service = new ServerGroupReconcilerService({ wakeQueue: new InMemoryWakeAgentQueue() });
+    expect(await service.reconcileThreadMessage({ thread: THREAD, triggerMessage: MESSAGE, actor, role: 'user', routeTargetAgent: SECRETARY, participants: [SECRETARY] }))
+      .toEqual({ wakeJobs: [], inserted: 0, skippedReason: 'missing_actor' });
+  });
+
+  it('does not turn assistant output into another wake', async () => {
+    const service = new ServerGroupReconcilerService({ wakeQueue: new InMemoryWakeAgentQueue() });
+    expect(await service.reconcileThreadMessage({ thread: THREAD, triggerMessage: MESSAGE, actor: ACTOR, role: 'assistant', routeTargetAgent: SECRETARY, participants: [SECRETARY] }))
+      .toEqual({ wakeJobs: [], inserted: 0, skippedReason: 'not_user_message' });
+  });
+
   it('enqueues explicit routeTargetAgent with semantic wake fields', async () => {
     const queue = new InMemoryWakeAgentQueue();
     const service = new ServerGroupReconcilerService({
@@ -26,6 +51,7 @@ describe('ServerGroupReconcilerService', () => {
       content: 'hello team',
       reconcilerOwner: 'server',
       routeTargetAgent: SECRETARY,
+      participants: [SECRETARY],
     });
 
     expect(result.inserted).toBe(1);
@@ -38,7 +64,9 @@ describe('ServerGroupReconcilerService', () => {
         status: 'queued',
       }),
     ]);
-    expect(wakeAgentQueueKey(result.wakeJobs[0])).toBe(`steer_queue:${THREAD}:${SECRETARY}`);
+    expect(wakeAgentQueueKey(result.wakeJobs[0])).toMatch(/^steer_queue:[a-f0-9]{32}$/);
+    expect(wakeAgentQueueKey(result.wakeJobs[0])).toBe(wakeAgentQueueKey({ thread: THREAD, agent: SECRETARY }));
+    expect(service.getQueue()).toBe(queue);
   });
 
   it('skips client-owned threads because client reconciliation is client-side', async () => {
@@ -66,6 +94,8 @@ describe('ServerGroupReconcilerService', () => {
       role: 'user',
       content: '@secretary please help',
       mentions: [SECRETARY],
+      participants: [SECRETARY],
+      actor: ACTOR,
     };
 
     const first = await service.reconcileThreadMessage(input);
@@ -86,6 +116,7 @@ describe('ServerGroupReconcilerService', () => {
       role: 'user',
       content: '@reviewer check this',
       mentions: [REVIEWER],
+      actor: ACTOR,
       participants: [SECRETARY, REVIEWER],
     });
 

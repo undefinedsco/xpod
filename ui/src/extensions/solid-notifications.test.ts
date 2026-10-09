@@ -233,7 +233,7 @@ async function settle(): Promise<void> {
 }
 
 /** Burns the harness' default three-attempt budget (1s + 2s apart): `unavailable`. */
-async function exhaustBudget(harness: ReturnType<typeof createHarness>): Promise<void> {
+async function exhaustBudget(): Promise<void> {
   await settle();
   await vi.advanceTimersByTimeAsync(1_000);
   await settle();
@@ -409,7 +409,7 @@ describe('Solid notification subscriptions', () => {
     const states: string[] = [];
     const unsubscribeState = harness.capability.subscribeState((state) => states.push(state));
     const release = harness.capability.watch(CREDENTIALS, listener);
-    await exhaustBudget(harness);
+    await exhaustBudget();
     expect(harness.posts()).toHaveLength(3);
     expect(harness.capability.getState()).toBe('unavailable');
     expect(states).toEqual(['unavailable']);
@@ -439,7 +439,7 @@ describe('Solid notification subscriptions', () => {
   test('re-arms an exhausted budget when the browser comes back online', async () => {
     const harness = createHarness({ failSubscriptions: true });
     const release = harness.capability.watch(CREDENTIALS, vi.fn());
-    await exhaustBudget(harness);
+    await exhaustBudget();
     expect(harness.capability.getState()).toBe('unavailable');
 
     harness.setFailSubscriptions(false);
@@ -511,7 +511,7 @@ describe('Solid notification subscriptions', () => {
     const states: string[] = [];
     const unsubscribeState = harness.capability.subscribeState((state) => states.push(state));
     const release = harness.capability.watch(CREDENTIALS, vi.fn());
-    await exhaustBudget(harness);
+    await exhaustBudget();
     expect(harness.capability.getState()).toBe('unavailable');
 
     // A re-arm hands the same three attempts back, not an endless supply.
@@ -547,7 +547,7 @@ describe('Solid notification subscriptions', () => {
     const harness = createHarness({ failSubscriptions: true });
     const listener = vi.fn();
     const release = harness.capability.watch(CREDENTIALS, listener);
-    await exhaustBudget(harness);
+    await exhaustBudget();
     expect(harness.capability.getState()).toBe('unavailable');
 
     harness.setFailSubscriptions(false);

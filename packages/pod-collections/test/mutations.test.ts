@@ -78,6 +78,21 @@ describe('pod collection mutations', () => {
     expect(patch?.body).toContain(`<${harness.podUrl}settings/models/c.ttl#c>`);
   });
 
+  it('confirms relative URI arrays after insert and update without changing literal fields', async () => {
+    const external = 'https://external.test/models/model#this';
+    const inserted = harness.collection.insert({ id: 'relative-array', label: 'https://literal.test/value', hasModel: ['models/c.ttl#c', external] });
+    await inserted.isPersisted.promise;
+    const normalized = [`${harness.podUrl}settings/models/c.ttl#c`, external];
+    expect(harness.collection.get('relative-array')?.hasModel).toEqual(normalized);
+    expect(harness.collection.get('relative-array')?.label).toBe('https://literal.test/value');
+    expect(harness.fakeDatabase.fetchCalls.at(-1)?.body).toContain(`<${normalized[0]}>`);
+    const updated = harness.collection.update('w1', draft => { draft.hasModel = ['models/c.ttl#c', external]; });
+    await updated.isPersisted.promise;
+    expect(harness.collection.get('w1')?.hasModel).toEqual(normalized);
+    expect(harness.collection.pendingKeys.size).toBe(0);
+    expect(harness.collection.conflicts).toHaveLength(0);
+  });
+
   it('maps onDelete to deleteById and removes the row', async () => {
     const transaction = harness.collection.delete('w2');
     await transaction.isPersisted.promise;

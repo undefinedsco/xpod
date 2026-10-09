@@ -1,0 +1,469 @@
+{
+  "v": 3,
+  "attachments": {},
+  "boards": {
+    "Ai.dc.html": {
+      "h": 800,
+      "is_interactive": true,
+      "title": "A2 OpenAI（上游）：标签页 = models 里的模型类型，只显示有模型的；能力用图标，已加入的标出「用于」",
+      "w": 1280,
+      "x": 1360,
+      "y": 3040
+    },
+    "AiConnect.dc.html": {
+      "h": 800,
+      "is_interactive": true,
+      "title": "A4 新建密钥：名称 + 下拉选客户端（列表来自宿主声明，带安装状态）",
+      "w": 1280,
+      "x": 4080,
+      "y": 3040
+    },
+    "AiCreated.dc.html": {
+      "h": 800,
+      "is_interactive": true,
+      "title": "A5 创建后：复制地址和密钥（只显示一次），在这里「写入 Codex」",
+      "w": 1280,
+      "x": 5440,
+      "y": 3040
+    },
+    "AiEmpty.dc.html": {
+      "h": 800,
+      "is_interactive": true,
+      "title": "A1 还没有连接：选中服务商就能用它支持的授权方式连接",
+      "w": 1280,
+      "x": 0,
+      "y": 3040
+    },
+    "AiXpod.dc.html": {
+      "h": 800,
+      "is_interactive": true,
+      "title": "A3 Xpod（下游）：每把密钥写明应用到哪里，没有单独的客户端列表（点「新建密钥」）",
+      "w": 1280,
+      "x": 2720,
+      "y": 3040
+    },
+    "Device.dc.html": {
+      "h": 800,
+      "is_interactive": true,
+      "title": "D1 这台设备 · 日常：两条隧道同时开着，一条是主地址（列表可点）",
+      "w": 1280,
+      "x": 0,
+      "y": 1820
+    },
+    "DeviceBlocked.dc.html": {
+      "h": 800,
+      "is_interactive": true,
+      "title": "D3 没有可用隧道：直接展开「添加隧道」（可点试）",
+      "w": 1280,
+      "x": 2720,
+      "y": 1820
+    },
+    "DeviceLogs.dc.html": {
+      "h": 800,
+      "is_interactive": true,
+      "title": "D5 查看日志：四个筛选",
+      "w": 1280,
+      "x": 5440,
+      "y": 1820
+    },
+    "DeviceStopped.dc.html": {
+      "h": 800,
+      "is_interactive": true,
+      "title": "D4 Xpod 已停止：服务状态里列出核心服务和可选组件，主按钮「启动 Xpod」",
+      "w": 1280,
+      "x": 4080,
+      "y": 1820
+    },
+    "HostBar.dc.html": {
+      "h": 48,
+      "title": "内容栏右上角：同步状态 / 通知 / 收件箱",
+      "w": 220,
+      "x": 288,
+      "y": 8220
+    },
+    "IdentityMenu.dc.html": {
+      "h": 800,
+      "title": "S2 点头像：微信式个人卡片（WebID、地区、签名、Pod、账号操作）",
+      "w": 1280,
+      "x": 1360,
+      "y": 300
+    },
+    "Inbox.dc.html": {
+      "h": 800,
+      "title": "S4 收件箱：Pod 的 Solid Inbox——别人发给你的请求、分享、回复",
+      "w": 1280,
+      "x": 4080,
+      "y": 300
+    },
+    "LinxAi.dc.html": {
+      "h": 800,
+      "is_interactive": true,
+      "title": "L1 同一个 AI 连接 applet 在 LinX 里：只换 rail",
+      "w": 1280,
+      "x": 0,
+      "y": 7000
+    },
+    "LinxAiConnect.dc.html": {
+      "h": 800,
+      "is_interactive": true,
+      "title": "L2 LinX 里新建密钥：同一个弹窗；创建后没有写入能力，只能复制",
+      "w": 1280,
+      "x": 1360,
+      "y": 7000
+    },
+    "LinxPod.dc.html": {
+      "h": 800,
+      "is_interactive": true,
+      "title": "L3 同一个 Pod applet 在 LinX 里",
+      "w": 1280,
+      "x": 2720,
+      "y": 7000
+    },
+    "LinxRail.dc.html": {
+      "h": 800,
+      "title": "LinX rail",
+      "w": 64,
+      "x": 144,
+      "y": 8220
+    },
+    "Main.dc.html": {
+      "h": 800,
+      "title": "S1 还没登录 WebID：头像位变成「登录」；这台设备和设置照样能开",
+      "w": 1280,
+      "x": 0,
+      "y": 300
+    },
+    "NarrowDevice.dc.html": {
+      "h": 1100,
+      "is_interactive": true,
+      "title": "S5 390 宽：只剩内容栏（点左上角）",
+      "w": 390,
+      "x": 5440,
+      "y": 300
+    },
+    "NarrowDrawer.dc.html": {
+      "h": 844,
+      "is_interactive": true,
+      "title": "S6 390 宽：抽屉 = rail + 列表栏",
+      "w": 390,
+      "x": 5910,
+      "y": 300
+    },
+    "Nav.dc.html": {
+      "h": 800,
+      "title": "Xpod rail（只有图标）",
+      "w": 64,
+      "x": 0,
+      "y": 8220
+    },
+    "NetworkPanel.dc.html": {
+      "h": 420,
+      "is_interactive": true,
+      "title": "网络访问 body：隧道可多条同时生效（账号页设备行与这台设备共用）",
+      "w": 880,
+      "x": 588,
+      "y": 8220
+    },
+    "Notices.dc.html": {
+      "h": 800,
+      "title": "S3 通知中心：上面「需要你处理」（处理完才消失，和托盘同一份），下面「动态」（看过即过）",
+      "w": 1280,
+      "x": 2720,
+      "y": 300
+    },
+    "Pod.dc.html": {
+      "h": 980,
+      "is_interactive": true,
+      "title": "P1 模型设置：按模型类型分组（对话 / 文档理解 / 向量 / 语音 / 图像与视频 / 决策），和 AI 连接一致",
+      "w": 1280,
+      "x": 0,
+      "y": 5480
+    },
+    "PodApps.dc.html": {
+      "h": 800,
+      "is_interactive": true,
+      "title": "P4 授权应用：每个应用展开看流量和访问记录（按应用计量待接入）",
+      "w": 1280,
+      "x": 4080,
+      "y": 5480
+    },
+    "PodData.dc.html": {
+      "h": 800,
+      "is_interactive": true,
+      "title": "P5 数据管理：用量（现有数据）+ 导入 / 导出 / 迁移（待接入）",
+      "w": 1280,
+      "x": 5440,
+      "y": 5480
+    },
+    "PodEmbed.dc.html": {
+      "h": 800,
+      "is_interactive": true,
+      "title": "P3 更换 Embedding：Xpod 提供 / 自己的 Key（BYOK）；确认后重建语义索引",
+      "w": 1280,
+      "x": 2720,
+      "y": 5480
+    },
+    "PodFirst.dc.html": {
+      "h": 800,
+      "is_interactive": true,
+      "title": "P6 刚创建：授权应用里 Xpod 后台未授权；点「模型设置」看没有模型时的「领免费额度」入口",
+      "w": 1280,
+      "x": 6800,
+      "y": 5480
+    },
+    "PodSearch.dc.html": {
+      "h": 800,
+      "is_interactive": true,
+      "title": "P2 检索与索引：语义检索显示当前 Embedding + 「更换」",
+      "w": 1280,
+      "x": 1360,
+      "y": 5480
+    },
+    "Tray.dc.html": {
+      "h": 600,
+      "title": "T1 日常：顶部是你（名字 + WebID，点一下复制）和状态；打开 Xpod；停止 / 更新 / 退出",
+      "w": 600,
+      "x": 0,
+      "y": 9060
+    },
+    "TrayIssue.dc.html": {
+      "h": 600,
+      "title": "T2 有待处理：和通知中心「需要你处理」同一份，托盘只列前 3 条；每条都能跳回原处处理",
+      "w": 600,
+      "x": 680,
+      "y": 9060
+    },
+    "TrayQuit.dc.html": {
+      "h": 600,
+      "title": "T4 退出确认：写清会一起停止这台设备上的 Xpod",
+      "w": 600,
+      "x": 2040,
+      "y": 9060
+    },
+    "TrayStopped.dc.html": {
+      "h": 600,
+      "title": "T3 已停止：状态只写「已停止」，第一项「启动 Xpod」",
+      "w": 600,
+      "x": 1360,
+      "y": 9060
+    },
+    "DevicePartial.dc.html": {
+      "x": 1360,
+      "y": 1820,
+      "w": 1280,
+      "h": 800,
+      "title": "D2 一条隧道失败：其他设备仍可通过另一条访问，只轻提醒",
+      "is_interactive": true
+    },
+    "AiKeyIssues.dc.html": {
+      "x": 6800,
+      "y": 3040,
+      "w": 1280,
+      "h": 800,
+      "title": "A6 Xpod 密钥异常：每把只留一行原因 + 一个直接解决的按钮；后台无权限时整组一行提示",
+      "is_interactive": true
+    },
+    "AiCredIssues.dc.html": {
+      "x": 8160,
+      "y": 3040,
+      "w": 1280,
+      "h": 800,
+      "title": "A7 上游凭据异常（401 / 402 / 403 / 429 / 登录过期）：每条一行原因 + 一个解决按钮；池里还有可用的就自动顶上（灰色 HTTP 码只在开发者模式显示）",
+      "is_interactive": true
+    },
+    "Task.dc.html": {
+      "x": 0,
+      "y": 4260,
+      "w": 1280,
+      "h": 800,
+      "title": "K1 任务详情 + 不会爆的列表：在等你常开；我的待办按截止排序只显示 5 条；AI 按计划和已结束默认收起只显示数量（列表可点）",
+      "is_interactive": true
+    },
+    "TaskWaiting.dc.html": {
+      "x": 1360,
+      "y": 4260,
+      "w": 1280,
+      "h": 800,
+      "title": "K2 一次运行停下来等你确认：在这里直接决定，确认后同一次运行接着做",
+      "is_interactive": true
+    },
+    "TaskFailed.dc.html": {
+      "x": 2720,
+      "y": 4260,
+      "w": 1280,
+      "h": 800,
+      "title": "K3 运行失败：哪一步、做完了什么、有没有副作用；修好连接后从失败的步骤继续，不从头重跑",
+      "is_interactive": true
+    },
+    "TaskEmpty.dc.html": {
+      "x": 4080,
+      "y": 4260,
+      "w": 1280,
+      "h": 800,
+      "title": "K4 还没有任务",
+      "is_interactive": true
+    },
+    "TaskCreate.dc.html": {
+      "x": 5440,
+      "y": 4260,
+      "w": 1280,
+      "h": 800,
+      "title": "K5 新建任务：要做什么 + 定时 / 周期 / 事件三选一；一次性的事直接在对话里交给 AI 或记成待办",
+      "is_interactive": true
+    },
+    "LinxTask.dc.html": {
+      "x": 4080,
+      "y": 6700,
+      "w": 1280,
+      "h": 800,
+      "title": "L4 同一个任务 applet 在 LinX 里",
+      "is_interactive": true
+    },
+    "TaskEvent.dc.html": {
+      "x": 6800,
+      "y": 4260,
+      "w": 1280,
+      "h": 800,
+      "title": "K6 事件任务：有新照片进入「照片 / 收件」时运行；每次运行写明是被什么触发的",
+      "is_interactive": true
+    },
+    "TaskTodo.dc.html": {
+      "x": 8160,
+      "y": 4260,
+      "w": 1280,
+      "h": 800,
+      "title": "K7 我的待办：勾选完成、截止日期、重要程度、怎么来的；可以「交给 AI 去做」（列表可点、可筛选）",
+      "is_interactive": true
+    },
+    "TaskAgenda.dc.html": {
+      "x": 9520,
+      "y": 4260,
+      "w": 1280,
+      "h": 800,
+      "title": "K8 日程：今天 / 明天 / 本周，放有截止的待办、定时任务的下次运行和在等你的事；周期和事件任务不进日程",
+      "is_interactive": true
+    }
+  },
+  "createdOnFiles": {
+    "at": "2026-09-30T02:40:00Z",
+    "v": 1
+  },
+  "designSystems": [],
+  "launch": {
+    "view": "canvas"
+  },
+  "notes": {
+    "rowA": {
+      "kind": "title1",
+      "maxW": 9440,
+      "text": "A AI 连接：沿用现有结构——Xpod（下游）+ 各家服务商（上游）",
+      "w": 240,
+      "x": 0,
+      "y": 2740
+    },
+    "rowC": {
+      "kind": "title1",
+      "maxW": 1468,
+      "text": "共用组件",
+      "w": 240,
+      "x": 0,
+      "y": 7920
+    },
+    "rowD": {
+      "kind": "title1",
+      "maxW": 6720,
+      "text": "D 这台设备：Xpod 桌面独有，本机权限，不登录也能用；隧道可多条同时生效",
+      "w": 240,
+      "x": 0,
+      "y": 1520
+    },
+    "rowL": {
+      "kind": "title1",
+      "maxW": 5360,
+      "text": "L 两个宿主共用 applet：LinX 里只换 rail，能力差异按宿主能力降级",
+      "w": 240,
+      "x": 0,
+      "y": 6700
+    },
+    "rowP": {
+      "kind": "title1",
+      "maxW": 8000,
+      "text": "P Pod：模型设置 / 检索与索引 / 授权应用 / 数据管理；模型在哪里起作用就在哪里选",
+      "w": 240,
+      "x": 0,
+      "y": 5180
+    },
+    "rowS": {
+      "kind": "title1",
+      "maxW": 6300,
+      "text": "S 外壳：rail 只有图标；列表头和内容头一样高；右上角是同步状态、通知、收件箱",
+      "w": 240,
+      "x": 0,
+      "y": 0
+    },
+    "rowT": {
+      "kind": "title1",
+      "maxW": 2640,
+      "text": "T 托盘：你是谁、能不能用、要你处理什么、你发起的事；设置类（开机启动）不放托盘",
+      "w": 240,
+      "x": 0,
+      "y": 8760
+    },
+    "rowK": {
+      "x": 0,
+      "y": 3960,
+      "text": "K 任务与待办：同一个 Task，交给 AI 的带触发方式和运行记录，交给你的就是待办；只读 Pod，不读调度引擎",
+      "kind": "title1",
+      "maxW": 10800,
+      "w": 240
+    }
+  },
+  "order": [
+    "Main.dc.html",
+    "IdentityMenu.dc.html",
+    "Notices.dc.html",
+    "Inbox.dc.html",
+    "NarrowDevice.dc.html",
+    "NarrowDrawer.dc.html",
+    "Device.dc.html",
+    "DevicePartial.dc.html",
+    "DeviceBlocked.dc.html",
+    "DeviceStopped.dc.html",
+    "DeviceLogs.dc.html",
+    "AiEmpty.dc.html",
+    "Ai.dc.html",
+    "AiXpod.dc.html",
+    "AiConnect.dc.html",
+    "AiCreated.dc.html",
+    "AiKeyIssues.dc.html",
+    "AiCredIssues.dc.html",
+    "Task.dc.html",
+    "TaskWaiting.dc.html",
+    "TaskFailed.dc.html",
+    "TaskEmpty.dc.html",
+    "TaskCreate.dc.html",
+    "TaskEvent.dc.html",
+    "TaskTodo.dc.html",
+    "TaskAgenda.dc.html",
+    "Pod.dc.html",
+    "PodSearch.dc.html",
+    "PodEmbed.dc.html",
+    "PodApps.dc.html",
+    "PodData.dc.html",
+    "PodFirst.dc.html",
+    "LinxAi.dc.html",
+    "LinxAiConnect.dc.html",
+    "LinxPod.dc.html",
+    "LinxTask.dc.html",
+    "Nav.dc.html",
+    "LinxRail.dc.html",
+    "HostBar.dc.html",
+    "NetworkPanel.dc.html",
+    "Tray.dc.html",
+    "TrayIssue.dc.html",
+    "TrayStopped.dc.html",
+    "TrayQuit.dc.html"
+  ],
+  "pages": [],
+  "title": "Xpod 桌面外壳设计"
+}

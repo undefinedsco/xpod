@@ -1,6 +1,7 @@
+import { AI_MODEL_CLASS, type AIModelClass } from '@undefineds.co/models'
 import { type ReactNode } from 'react'
 import {
-  Input,
+  SearchInput,
   Tooltip,
   TooltipContent,
   TooltipProvider,
@@ -18,7 +19,6 @@ import {
   Pause,
   Pencil,
   Play,
-  Search,
   Trash2,
   Video,
   Zap,
@@ -178,28 +178,16 @@ export function AiModelSearchInput({ value, onChange }: {
 }) {
   return (
     <div className="relative w-full sm:w-auto">
-      <Search aria-hidden="true" className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-      <Input
+      <SearchInput
+        aria-label="搜索模型"
         value={value}
         onChange={(event) => onChange(event.target.value)}
-        placeholder="搜索模型..."
-        className="h-8 w-full bg-background pl-8 text-xs sm:w-[232px]"
+        placeholder="搜索模型"
+        className="sm:w-[232px]"
         autoComplete="off"
         data-lpignore="true"
         data-1p-ignore
       />
-    </div>
-  )
-}
-
-/** Inline placeholder used when a model list has nothing to show. */
-export function AiModelEmptyPanel({ tone, children }: {
-  tone?: 'destructive'
-  children: ReactNode
-}) {
-  return (
-    <div className="flex items-center gap-2 py-6 text-sm text-muted-foreground">
-      {tone === 'destructive' ? <p className="text-destructive">{children}</p> : children}
     </div>
   )
 }
@@ -337,4 +325,26 @@ export function AiModelTile({
       {actions}
     </div>
   )
+}
+
+export const MODEL_CLASS_LABELS: Record<AIModelClass, string> = {
+  chat: '对话', embedding: '向量', document_understanding: '文档理解', reranking: '重排',
+  speech_synthesis: '语音合成', speech_recognition: '语音识别', image_generation: '图像生成', video_generation: '视频生成',
+}
+
+export function catalogModelClass(model: { modelType?: string; capabilities?: readonly string[] }): AIModelClass {
+  if (model.modelType && model.modelType in AI_MODEL_CLASS) return model.modelType as AIModelClass
+  return (Object.keys(AI_MODEL_CLASS) as AIModelClass[]).find((kind) => kind !== 'chat' && model.capabilities?.includes(kind)) ?? 'chat'
+}
+
+export function AiModelClassTabs({ classes, selected, onChange }: {
+  classes: AIModelClass[]; selected: AIModelClass; onChange(value: AIModelClass): void
+}) {
+  return <div role="tablist" aria-label="模型类型" className="flex flex-wrap gap-2">
+    {classes.map((kind) => <button key={kind} type="button" role="tab" aria-selected={kind === selected}
+      onClick={() => onChange(kind)} className={cn('rounded-md px-3 py-2 text-sm', kind === selected ? 'bg-accent text-accent-foreground' : 'text-muted-foreground')}>
+      {MODEL_CLASS_LABELS[kind]}
+    </button>)}
+    <span className="px-3 py-2 text-xs text-muted-foreground">决策 · 待接入</span>
+  </div>
 }

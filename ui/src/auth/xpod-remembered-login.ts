@@ -6,6 +6,7 @@ import { XPOD_LOGIN_ROUTE_ID } from './xpod-login-route';
 export const XPOD_REMEMBERED_LOGIN_KEY = 'xpod.remembered-login.v1';
 export const XPOD_PENDING_ACCOUNT_EMAIL_KEY = 'xpod.pending-account-email.v1';
 export const XPOD_PENDING_ACCOUNT_ISSUER_KEY = 'xpod.pending-account-issuer.v1';
+export const XPOD_ACCOUNT_REMEMBER_CHOICE_KEY = 'xpod.account-remember-choice.v1';
 
 export interface RememberedXpodAccount extends SanitizedAccountIdentity {
   email?: string;
@@ -18,6 +19,8 @@ export interface RememberedXpodAccount extends SanitizedAccountIdentity {
  * session. This record never grants access or serializes either session.
  */
 export interface RememberedXpodLogin {
+  /** Public Account authority scope; never an authentication credential. */
+  issuer?: string;
   account: RememberedXpodAccount;
   webId: string;
   storageBinding: StorageBinding;
@@ -92,8 +95,9 @@ export function rememberXpodLogin(
 
   try {
     storage.setItem(XPOD_REMEMBERED_LOGIN_KEY, JSON.stringify(remembered));
-    storage.removeItem(XPOD_PENDING_ACCOUNT_EMAIL_KEY);
-    storage.removeItem(XPOD_PENDING_ACCOUNT_ISSUER_KEY);
+    const issuer = remembered.issuer ?? normalizedIssuer(options.origin ?? currentOrigin() ?? '');
+    clearPendingEmailForIssuer(storage, issuer);
+    clearPendingEmailForIssuer(optionalTemporaryStorage(), issuer);
     return remembered;
   } catch {
     return undefined;
@@ -101,12 +105,14 @@ export function rememberXpodLogin(
 }
 
 export function clearRememberedXpodLogin(storage: Storage | undefined = optionalPersistentStorage()): void {
-  try {
-    storage?.removeItem(XPOD_REMEMBERED_LOGIN_KEY);
-    storage?.removeItem(XPOD_PENDING_ACCOUNT_EMAIL_KEY);
-    storage?.removeItem(XPOD_PENDING_ACCOUNT_ISSUER_KEY);
-  } catch {
-    // Clearing a convenience record remains best-effort during account switch.
+  for (const target of [storage, optionalTemporaryStorage()]) {
+    try {
+      target?.removeItem(XPOD_REMEMBERED_LOGIN_KEY);
+      target?.removeItem(XPOD_PENDING_ACCOUNT_EMAIL_KEY);
+      target?.removeItem(XPOD_PENDING_ACCOUNT_ISSUER_KEY);
+    } catch {
+      // Clearing a convenience record remains best-effort during account switch.
+    }
   }
 }
 
@@ -144,43 +150,83 @@ export function rememberedXpodAccountMatchesActive(
   return matchingOptionalEmail(remembered.account.email, active.accountEmail);
 }
 
+/** Undefined means no Account remember decision exists on this origin for this issuer. */
+export function readXpodAccountRememberChoice(
+  issuer?: string,
+  storage: Storage | undefined = optionalPersistentStorage(),
+): boolean | undefined {
+  try {
+    const choices = JSON.parse(storage?.getItem(XPOD_ACCOUNT_REMEMBER_CHOICE_KEY) ?? '{}');
+    const choice = choices[normalizedIssuer(issuer ?? currentOrigin() ?? '')];
+    return typeof choice === 'boolean' ? choice : undefined;
+  } catch { return undefined; }
+}
+
+function optionalTemporaryStorage(): Storage | undefined {
+  try { return typeof window === 'undefined' ? undefined : window.sessionStorage; }
+  catch { return undefined; }
+}
+
+function clearPendingEmailForIssuer(storage: Storage | undefined, issuer: string): void {
+  const previous = storage?.getItem(XPOD_PENDING_ACCOUNT_ISSUER_KEY);
+  if (!previous || previous === issuer) {
+    storage?.removeItem(XPOD_PENDING_ACCOUNT_EMAIL_KEY);
+    storage?.removeItem(XPOD_PENDING_ACCOUNT_ISSUER_KEY);
+  }
+}
+
 export function rememberPendingXpodAccountEmail(
   email: string,
   storage: Storage | undefined = optionalPersistentStorage(),
   issuer?: string,
+  remember = true,
+  temporaryStorage: Storage | undefined = optionalTemporaryStorage(),
 ): string | undefined {
   const normalized = normalizedEmail(email);
-  if (!storage || !normalized) return undefined;
+  if (!normalized) return undefined;
+  const scope = normalizedIssuer(issuer ?? currentOrigin() ?? '');
   try {
-    storage.setItem(XPOD_PENDING_ACCOUNT_EMAIL_KEY, normalized);
-    if (issuer) storage.setItem(XPOD_PENDING_ACCOUNT_ISSUER_KEY, normalizedIssuer(issuer));
-    else storage.removeItem(XPOD_PENDING_ACCOUNT_ISSUER_KEY);
+    const storedChoices = JSON.parse(storage?.getItem(XPOD_ACCOUNT_REMEMBER_CHOICE_KEY) ?? '{}');
+    const choices = storedChoices && typeof storedChoices === 'object' && !Array.isArray(storedChoices) ? storedChoices : {};
+    storage?.setItem(XPOD_ACCOUNT_REMEMBER_CHOICE_KEY, JSON.stringify({ ...choices, [scope]: remember }));
+    if (!remember) {
+      clearPendingEmailForIssuer(storage, scope);
+      const previous = readRememberedXpodLogin({ storage });
+      // Legacy records have no authority evidence; do not retain their Account hint.
+      if (!previous?.issuer || previous.issuer === scope) storage?.removeItem(XPOD_REMEMBERED_LOGIN_KEY);
+    }
+    const target = remember ? storage : temporaryStorage;
+    if (!target) return undefined;
+    target.setItem(XPOD_PENDING_ACCOUNT_EMAIL_KEY, normalized);
+    target.setItem(XPOD_PENDING_ACCOUNT_ISSUER_KEY, scope);
+    if (remember) {
+      clearPendingEmailForIssuer(temporaryStorage, scope);
+    }
     return normalized;
-  } catch {
-    return undefined;
-  }
+  } catch { return undefined; }
 }
 
 export function readPendingXpodAccountEmail(
   storage: Storage | undefined = optionalPersistentStorage(),
   issuer?: string,
+  temporaryStorage: Storage | undefined = optionalTemporaryStorage(),
 ): string | undefined {
-  if (!storage) return undefined;
+  const source = readXpodAccountRememberChoice(issuer, storage) === false ? temporaryStorage : storage;
+  if (!source) return undefined;
   try {
-    const email = normalizedEmail(storage.getItem(XPOD_PENDING_ACCOUNT_EMAIL_KEY));
+    const email = normalizedEmail(source.getItem(XPOD_PENDING_ACCOUNT_EMAIL_KEY));
     if (issuer) {
-      const storedIssuer = storage.getItem(XPOD_PENDING_ACCOUNT_ISSUER_KEY);
-      if (!storedIssuer || storedIssuer !== normalizedIssuer(issuer)) {
-        storage.removeItem(XPOD_PENDING_ACCOUNT_EMAIL_KEY);
-        storage.removeItem(XPOD_PENDING_ACCOUNT_ISSUER_KEY);
+      const storedIssuer = source.getItem(XPOD_PENDING_ACCOUNT_ISSUER_KEY);
+      if (!storedIssuer) {
+        source.removeItem(XPOD_PENDING_ACCOUNT_EMAIL_KEY);
+        source.removeItem(XPOD_PENDING_ACCOUNT_ISSUER_KEY);
         return undefined;
       }
+      if (storedIssuer !== normalizedIssuer(issuer)) return undefined;
     }
-    if (!email) storage.removeItem(XPOD_PENDING_ACCOUNT_EMAIL_KEY);
+    if (!email) source.removeItem(XPOD_PENDING_ACCOUNT_EMAIL_KEY);
     return email;
-  } catch {
-    return undefined;
-  }
+  } catch { return undefined; }
 }
 
 function normalizedIssuer(value: string): string {
@@ -218,8 +264,10 @@ function normalizeRememberedXpodLogin(value: unknown, origin: string | undefined
     webId?: unknown;
     storageBinding?: unknown;
     routeId?: unknown;
+    issuer?: unknown;
   };
   if (candidate.routeId !== XPOD_LOGIN_ROUTE_ID) return undefined;
+  if (candidate.issuer !== undefined && !normalizedUrl(candidate.issuer)) return undefined;
   if (!candidate.account || typeof candidate.account !== 'object') return undefined;
   if (!candidate.storageBinding || typeof candidate.storageBinding !== 'object') return undefined;
 
@@ -234,6 +282,7 @@ function normalizeRememberedXpodLogin(value: unknown, origin: string | undefined
   const avatarUrl = normalizedAvatarUrl(account.avatarUrl, [webId, storageUrl, origin]);
 
   return {
+    ...(typeof candidate.issuer === 'string' ? { issuer: normalizedIssuer(candidate.issuer) } : {}),
     account: {
       ...(email ? { email } : {}),
       ...(normalizedText(account.id) ? { id: normalizedText(account.id) } : {}),

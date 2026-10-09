@@ -19,28 +19,104 @@ export interface DiscoverSolidLocalRouteOptions {
   fetch: typeof globalThis.fetch
   localBaseUrl: string
   statusUrl?: string
+  /** The owner of the probe; aborting it settles the whole exchange. */
+  signal?: AbortSignal
+}
+
+/**
+ * The reachability budget of one optional route probe. The provisioning status
+ * endpoint only exists to locate a route, so a host that never answers it must
+ * not hold identity open any longer than a route probe does
+ * (`chooseAccessRoute`'s default `probeTimeoutMs`).
+ */
+const SOLID_ROUTE_PROBE_TIMEOUT_MS = 1_000
+
+export interface SolidRouteProbeOptions<T> {
+  fetch: typeof globalThis.fetch
+  url: string
+  /** The owner of the probe; aborting it settles the whole exchange. */
+  signal?: AbortSignal
+  /**
+   * Reads and normalizes the response under the same deadline as the request,
+   * so a body that stalls after its headers cannot hold the caller open.
+   */
+  read: (response: Response) => Promise<T>
+}
+
+/**
+ * Probe one optional runtime endpoint with a bounded, cancellable exchange.
+ *
+ * The budget covers the whole operation, including the caller's body decode.
+ * The probe settles at the deadline or when its owner aborts, even if the fetch
+ * adapter ignores the signal, and always clears its timer and listeners. Any
+ * failure reports `undefined`, so a missing optional endpoint can never
+ * fabricate a route.
+ */
+export async function probeSolidLocalRouteStatus<T>(
+  options: SolidRouteProbeOptions<T>,
+): Promise<T | undefined> {
+  if (options.signal?.aborted) return undefined
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), SOLID_ROUTE_PROBE_TIMEOUT_MS)
+  const relayAbort = () => controller.abort()
+  options.signal?.addEventListener('abort', relayAbort, { once: true })
+  if (options.signal?.aborted) controller.abort()
+  try {
+    return await settleOnAbort(controller.signal, async () => {
+      const response = await options.fetch.call(globalThis, options.url, {
+        credentials: 'include',
+        headers: { accept: 'application/json' },
+        signal: controller.signal,
+      })
+      return options.read(response)
+    })
+  } catch {
+    return undefined
+  } finally {
+    clearTimeout(timer)
+    options.signal?.removeEventListener('abort', relayAbort)
+  }
+}
+
+/**
+ * Settle `operation` as soon as `signal` aborts, whether or not the operation
+ * itself observes the signal, and stop listening once it has settled.
+ */
+async function settleOnAbort<T>(signal: AbortSignal, operation: () => Promise<T>): Promise<T> {
+  if (signal.aborted) {
+    return Promise.reject(signal.reason ?? new DOMException('Aborted', 'AbortError'))
+  }
+  let remove: () => void = () => undefined
+  const aborted = new Promise<never>((_resolve, reject) => {
+    const onAbort = () => reject(signal.reason ?? new DOMException('Aborted', 'AbortError'))
+    signal.addEventListener('abort', onAbort, { once: true })
+    remove = () => signal.removeEventListener('abort', onAbort)
+  })
+  try {
+    return await Promise.race([operation(), aborted])
+  } finally {
+    remove()
+  }
 }
 
 /** Discover the canonical origin currently hosted by this local Xpod. */
 export async function discoverSolidLocalRoute(
   options: DiscoverSolidLocalRouteOptions,
 ): Promise<SolidLocalRoute | undefined> {
-  let response: Response | undefined
-  try {
-    response = await options.fetch.call(globalThis, options.statusUrl ?? '/provision/status', {
-      credentials: 'include',
-      headers: { accept: 'application/json' },
-    })
-  } catch {
-    return undefined
-  }
-  if (!response?.ok) return undefined
-
-  const body = await response.json().catch(() => undefined) as { publicUrl?: unknown } | undefined
-  if (typeof body?.publicUrl !== 'string') return undefined
+  const publicUrl = await probeSolidLocalRouteStatus({
+    fetch: options.fetch,
+    url: options.statusUrl ?? '/provision/status',
+    signal: options.signal,
+    read: async (response) => {
+      if (!response.ok) return undefined
+      const body = await response.json().catch(() => undefined) as { publicUrl?: unknown } | undefined
+      return typeof body?.publicUrl === 'string' ? body.publicUrl : undefined
+    },
+  })
+  if (typeof publicUrl !== 'string') return undefined
   try {
     return normalizeRoute({
-      canonicalBaseUrl: body.publicUrl,
+      canonicalBaseUrl: publicUrl,
       localBaseUrl: options.localBaseUrl,
     })
   } catch {

@@ -6,9 +6,16 @@ const path = require('node:path');
 const childProcess = require('node:child_process');
 const zlib = require('node:zlib');
 const esbuild = require('esbuild');
+const { stageEmbeddedNativeCli } = require('./lib/embedded-native-cli.cjs');
+const { createSingleBinaryEntry } = require('./lib/bun-single-runtime-entry.cjs');
+const { stageRuntimeEsmPackages } = require('./lib/runtime-esm-packages.cjs');
 
 const repoRoot = path.resolve(__dirname, '..');
 const distRoot = path.join(repoRoot, 'dist');
+// Packages a built runtime loads by bare specifier at request time.
+const RUNTIME_WORKSPACE_PACKAGES = [
+  '@undefineds.co/solid-sdk',
+];
 const COMMON_BUNDLE_EXTERNALS = [
   'bun:sqlite',
   'mysql',
@@ -41,6 +48,9 @@ for (const entry of requiredEntries) {
     process.exit(1);
   }
 }
+
+// Validate the compiler too: it embeds its Bun runtime in the shipped binary.
+require('../dist/runtime/compat/ensureSupportedBun').ensureSupportedBun(run('bun', ['--version']).stdout.trim());
 
 const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xpod-bun-single-'));
 const stageRoot = path.join(tempRoot, 'package');
@@ -245,6 +255,22 @@ function sharedDataFactoryPlugin(bundleOutputPath) {
   };
 }
 
+// Logger state is module-local: CSS initialization and Xpod components must
+// resolve one factory, including loggers created before initialization.
+function sharedLoggerFactoryPlugin(bundleOutputPath) {
+  const entryPath = path.join(stageRoot, 'node_modules', 'global-logger-factory', 'dist', '__bundle__.cjs');
+  const relativePath = path.relative(path.dirname(bundleOutputPath), entryPath).split(path.sep).join('/');
+  return {
+    name: 'shared-global-logger-factory',
+    setup(build) {
+      build.onResolve({ filter: /^global-logger-factory$/ }, () => ({
+        path: relativePath.startsWith('.') ? relativePath : `./${relativePath}`,
+        external: true,
+      }));
+    },
+  };
+}
+
 function copySharedDataFactory() {
   const packageDir = resolvePackageDir('rdf-data-factory');
   const stageDir = resolveStageDir('rdf-data-factory');
@@ -296,6 +322,8 @@ async function bundlePackageMain(packageName, packageDir, packageJson, stageDir)
     entryPoints: [entryPoint],
     outfile: bundleOutputPath,
     bundle: true,
+    minify: true,
+    keepNames: true,
     platform: 'node',
     format: 'cjs',
     target: 'node22',
@@ -316,6 +344,7 @@ async function bundlePackageMain(packageName, packageDir, packageJson, stageDir)
       },
       createPackagePatchPlugin(packageName, packageDir), extractedComponentsPlugin,
       kyUniversalBrowserPlugin, sharedDataFactoryPlugin(bundleOutputPath),
+      packageName !== 'global-logger-factory' && sharedLoggerFactoryPlugin(bundleOutputPath),
     ].filter(Boolean),
   });
   return bundleMainRelative;
@@ -346,7 +375,7 @@ const rootPackage = readJson(path.join(repoRoot, 'package.json'));
 
 async function main() {
   copySharedDataFactory();
-  const queue = [rootPackage.name];
+  const queue = [rootPackage.name, 'global-logger-factory'];
   const visited = new Set(['rdf-data-factory']);
 
   while (queue.length > 0) {
@@ -388,17 +417,66 @@ async function main() {
     visited.add(packageName);
   }
 
+  // Runtime-only workspace packages.
+  //
+  // Components.js references pull in every *declared* dependency, but code paths
+  // that load a package by specifier at request time (the AI gateway's
+  // `@undefineds.co/solid-sdk/local-route-fetch` import) never appear there. The
+  // compiled binary then resolved that specifier against the extracted runtime and
+  // failed with `Cannot find module`, which surfaced as HTTP 500 from the AI
+  // gateway. Stage them explicitly, keeping their ESM entry points intact.
+  for (const packageName of RUNTIME_WORKSPACE_PACKAGES) {
+    const packageDir = resolvePackageDir(packageName);
+    const packageJsonPath = path.join(packageDir, 'package.json');
+    if (!fs.existsSync(packageJsonPath)) {
+      throw new Error(`Runtime workspace package is missing: ${packageName}`);
+    }
+    const packageJson = readJson(packageJsonPath);
+    const stageDir = resolveStageDir(packageName);
+    for (const root of [ 'dist', 'src' ]) {
+      const absoluteRoot = path.join(packageDir, root);
+      for (const sourcePath of iterFiles(absoluteRoot)) {
+        if (sourcePath.endsWith('.d.ts') || sourcePath.endsWith('.map') || sourcePath.endsWith('.ts')) {
+          continue;
+        }
+        const relativePath = path.relative(packageDir, sourcePath).split(path.sep).join(path.posix.sep);
+        copyIfNeeded(sourcePath, path.join(stageDir, relativePath));
+      }
+    }
+    writeJson(path.join(stageDir, 'package.json'), {
+      name: packageJson.name,
+      version: packageJson.version,
+      type: packageJson.type,
+      main: packageJson.main,
+      module: packageJson.module,
+      exports: packageJson.exports,
+    });
+  }
+
+  await stageRuntimeEsmPackages({ nodeModulesRoot: path.join(repoRoot, 'node_modules'), stageRoot, compileTarget });
+
+  // Native CLIs the runtime spawns by path. Components.js reference walking
+  // never discovers them, so stage the installed binary for the matching
+  // target. A cross target fails here instead of embedding the host binary.
+  const embeddedNativeCli = stageEmbeddedNativeCli(stageRoot, {
+    nodeModulesRoot: path.join(repoRoot, 'node_modules'),
+    compileTarget,
+  });
+  console.log(`[build:bun-single] embedded native CLI: ${embeddedNativeCli.join(', ')}`);
+
   const cliOutputPath = path.join(stageRoot, 'dist', '__cli__.cjs');
   await esbuild.build({
     entryPoints: [path.join(repoRoot, 'src', 'cli', 'index.ts')],
     outfile: cliOutputPath,
     bundle: true,
+    minify: true,
+    keepNames: true,
     platform: 'node',
     format: 'cjs',
     target: 'node22',
     logLevel: 'silent',
     external: COMMON_BUNDLE_EXTERNALS,
-    plugins: [kyUniversalBrowserPlugin, sharedDataFactoryPlugin(cliOutputPath)],
+    plugins: [kyUniversalBrowserPlugin, sharedDataFactoryPlugin(cliOutputPath), sharedLoggerFactoryPlugin(cliOutputPath)],
   });
 
   const manifest = [];
@@ -413,85 +491,13 @@ async function main() {
   }
 
   manifest.sort((left, right) => left.path.localeCompare(right.path));
-  const compressedManifest = zlib.gzipSync(Buffer.from(JSON.stringify(manifest)));
+  const compressedManifest = zlib.brotliCompressSync(Buffer.from(JSON.stringify(manifest)), {
+    params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 9 },
+  });
   const manifestSha = crypto.createHash('sha256').update(compressedManifest).digest('hex');
 
   const generatedEntryPath = path.join(tempRoot, 'bun-single-entry.ts');
-  fs.writeFileSync(generatedEntryPath, [
-    'import crypto from \'node:crypto\';',
-    'import fs from \'node:fs\';',
-    'import os from \'node:os\';',
-    'import path from \'node:path\';',
-    'import zlib from \'node:zlib\';',
-    'import { pathToFileURL } from \'node:url\';',
-    '',
-    `const ARCHIVE_SHA256 = '${manifestSha}';`,
-    `const MANIFEST_BASE64 = '${compressedManifest.toString('base64')}';`,
-    '',
-    'function resolveCacheRoot(): string {',
-    '  const candidates = [',
-    '    process.env.XPOD_BUN_SINGLE_CACHE_DIR,',
-    '    path.join(os.tmpdir(), \'xpod-bun-cache\'),',
-    '    path.join(os.homedir(), \'.xpod\', \'bun-single-cache\'),',
-    '  ].filter((value): value is string => typeof value === \'string\' && value.length > 0);',
-    '  for (const candidate of candidates) {',
-    '    try {',
-    '      const absolute = path.resolve(candidate);',
-    '      fs.mkdirSync(absolute, { recursive: true });',
-    '      return absolute;',
-    '    } catch {',
-    '    }',
-    '  }',
-    '  throw new Error(\'No writable cache directory found for Bun single binary.\');',
-    '}',
-    '',
-    'function ensureExtracted(cacheDir: string): void {',
-    '  const marker = path.join(cacheDir, \'.xpod-bun-single-ready\');',
-    '  const entryPath = path.join(cacheDir, \'dist\', \'__cli__.cjs\');',
-    '  try {',
-    '    if (fs.readFileSync(marker, \'utf8\').trim() === ARCHIVE_SHA256 && fs.statSync(entryPath).isFile()) {',
-    '      return;',
-    '    }',
-    '  } catch {',
-    '  }',
-    '  if (fs.existsSync(cacheDir)) {',
-    '    fs.rmSync(cacheDir, { recursive: true, force: true });',
-    '  }',
-    '  fs.mkdirSync(cacheDir, { recursive: true });',
-    '  const compressedManifest = Buffer.from(MANIFEST_BASE64, \'base64\');',
-    '  const actualSha = crypto.createHash(\'sha256\').update(compressedManifest).digest(\'hex\');',
-    '  if (actualSha !== ARCHIVE_SHA256) {',
-    '    throw new Error(\'Embedded manifest checksum mismatch.\');',
-    '  }',
-    '  const manifest = JSON.parse(zlib.gunzipSync(compressedManifest).toString(\'utf8\')) as Array<{ path: string; contentBase64: string; mode: number }>;',
-    '  for (const item of manifest) {',
-    '    const targetPath = path.join(cacheDir, item.path);',
-    '    fs.mkdirSync(path.dirname(targetPath), { recursive: true });',
-    '    fs.writeFileSync(targetPath, Buffer.from(item.contentBase64, \'base64\'));',
-    '    if (process.platform !== \'win32\' && typeof item.mode === \'number\') {',
-    '      fs.chmodSync(targetPath, item.mode);',
-    '    }',
-    '  }',
-    '  fs.writeFileSync(marker, `${ARCHIVE_SHA256}\\n`);',
-    '}',
-    '',
-    'async function main(): Promise<void> {',
-    '  const cacheRoot = resolveCacheRoot();',
-    '  const cacheDir = path.join(cacheRoot, ARCHIVE_SHA256.slice(0, 16));',
-    '  ensureExtracted(cacheDir);',
-    '  const entryPath = path.join(cacheDir, \'dist\', \'__cli__.cjs\');',
-    '  const argv0 = process.argv[0] ?? process.execPath;',
-    '  const childEntrypointAtArgv1 = process.argv[1]?.startsWith(\'__internal-\') === true;',
-    '  const userArgs = childEntrypointAtArgv1 ? process.argv.slice(1) : process.argv.slice(2);',
-    '  process.argv = [argv0, entryPath, ...userArgs];',
-    '  process.env.XPOD_BUN_SINGLE_RUNTIME = \'1\';',
-    '  process.chdir(cacheDir);',
-    '  await import(pathToFileURL(entryPath).href);',
-    '}',
-    '',
-    'void main();',
-    '',
-  ].join('\n'));
+  fs.writeFileSync(generatedEntryPath, createSingleBinaryEntry(manifestSha, compressedManifest));
 
   fs.mkdirSync(path.dirname(outputPath), { recursive: true });
   run('bun', [

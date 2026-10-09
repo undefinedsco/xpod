@@ -1,18 +1,30 @@
+import { getXpodAuthSurfaceHost } from '../auth/xpod-auth-surface-host';
 import { scopeAccountUrl } from '../utils/account-interaction-url';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Button,
+  ConsentView,
+  IdpNoWebIdView,
+  resolvePodSignInCopy,
+  webIdShortName,
 } from '@undefineds.co/shared-ui';
 import type { StorageBinding, WebIdLoginTransaction } from '@undefineds.co/solid-sdk';
 import { XpodAccountPageSurface } from '../auth/XpodAuthSurface';
+import { XpodDeploymentIdentity } from '../auth/XpodDeploymentIdentity';
 import type { WebAccountConsentOption, WebAccountConsentSelection } from '../auth/WebAccountViews';
-import { WebAccountConsentView, WebAccountErrorBanner, WebAccountFailureView, WebAccountRestoringView } from '../auth/WebAccountViews';
+import { WebAccountErrorBanner, WebAccountFailureView, WebAccountRestoringView } from '../auth/WebAccountViews';
 import { useAuth } from '../context/AuthContextValue';
 import { consumeReturnTo, persistReturnTo } from '../utils/returnTo';
 import { storedAccountTokenHeaders } from '../utils/account-session';
 import { getStoredProvisionCode, resolveProvisionCodeForCurrentScope } from '../utils/pod';
-import { FirstPodReadinessError } from '../utils/consent-first-pod';
+import {
+  clearConsentContinuation,
+  clearManagementContinuation,
+  currentInteractionScope,
+  resolveAuthoritativeAccountId,
+  saveConsentContinuation,
+} from '../utils/safe-continuation';
 import {
   createXpodLoginTransactionStore,
   type XpodLoginTransactionStore,
@@ -22,6 +34,7 @@ import {
   storageBindingKey,
   type XpodStorageSelectionState,
 } from '../auth/xpod-storage-selection';
+import { xpodStorageLocationKind } from '../auth/xpod-storage-location';
 import {
   consentResponseError,
   fetchOidcCancelRedirectLocation,
@@ -62,8 +75,20 @@ interface ParsedPickWebIdResponse {
   hasExplicitEmptyEntries: boolean;
 }
 
+/** The application's host for the consent header: its client_uri, else its client_id when that is a URL. */
+function consentClientHost(client: ConsentClientInfo | null): string {
+  for (const candidate of [client?.client_uri, client?.client_id]) {
+    if (!candidate) continue;
+    try {
+      return new URL(candidate).host;
+    } catch {
+      // not a URL; try the next identifier
+    }
+  }
+  return '';
+}
+
 function safeConsentError(value: unknown, fallback: string): string {
-  if (value instanceof FirstPodReadinessError) return value.message;
   const message = value instanceof Error ? value.message : '';
   if (message === 'Invalid OIDC interaction'
     || message === 'This action can only be performed as part of an OIDC authentication flow.'
@@ -116,7 +141,7 @@ function parsePickWebIdResponse(data: PickWebIdResponse): ParsedPickWebIdRespons
 }
 
 export function ConsentPage() {
-  const { idpIndex, isLoggedIn, isAnonymous, controls, logout: accountLogout, refetchControls } = useAuth();
+  const { idpIndex, identity, isLoggedIn, isAnonymous, controls, logout: accountLogout, refetchControls } = useAuth();
   const navigate = useNavigate();
   const [isLoading, setIsLoading] = useState(true);
   const [clientInfo, setClientInfo] = useState<ConsentClientInfo | null>(null);
@@ -127,14 +152,20 @@ export function ConsentPage() {
   const [storageSelection, setStorageSelection] = useState<XpodStorageSelectionState>({ status: 'loading' });
   const [pendingTransaction, setPendingTransaction] = useState<WebIdLoginTransaction>();
   const [selectedWebId, setSelectedWebId] = useState('');
+  // The operator's explicit Pod binding is a session-local observation, not an
+  // Account fact: an authoritative reload may re-list bindings at any time, and
+  // it must keep the exact chosen pair while that pair still exists instead of
+  // dropping the choice (and re-disabling 允许) back to the empty chooser.
+  const explicitBindingRef = useRef<StorageBinding | undefined>(undefined);
   const [error, setError] = useState<string | null>(null);
   const [failedAction, setFailedAction] = useState<'load' | 'authorize' | 'cancel' | 'switch' | 'return'>('load');
-  const [rememberClient, setRememberClient] = useState(true);
+  const [rememberClient, setRememberClient] = useState(false);
   const [provisionCode, setProvisionCode] = useState<string | undefined>(() => getStoredProvisionCode());
   const [isAuthorizing, setIsAuthorizing] = useState(false);
   const [isCancelling, setIsCancelling] = useState(false);
   const [isSwitchingAccount, setIsSwitchingAccount] = useState(false);
   const [isReturning, setIsReturning] = useState(false);
+  const [firstPodError, setFirstPodError] = useState<string | null>(null);
   const missingOwnerBinding = useRef<string | undefined>(undefined);
   const resumeAttemptedRef = useRef(false);
   const entryBindingScope = useRef<{ transactionId?: string; binding?: StorageBinding } | undefined>(undefined);
@@ -154,6 +185,30 @@ export function ConsentPage() {
   const consentUrl = `${idpIndex}oidc/consent/`;
   const pickWebIdUrl = `${idpIndex}oidc/pick-webid/`;
   const cancelUrl = resolveOidcCancelUrl(controls, idpIndex);
+
+  /**
+   * Post the user's explicit consent and leave for the client callback.
+   */
+  const completeConsent = useCallback(async (remember: boolean): Promise<void> => {
+    const consentRes = await fetch(scopeAccountUrl(consentUrl), {
+      method: 'POST',
+      headers: storedAccountTokenHeaders({ 'Content-Type': 'application/json', Accept: 'application/json' }),
+      credentials: 'include',
+      redirect: 'manual',
+      body: JSON.stringify({ remember }),
+    });
+    const consentJson = await consentRes.json().catch(() => ({})) as ConsentResponse & { message?: string };
+    if (!consentRes.ok) {
+      throw consentResponseError(consentJson, xpodConsentErrors.authorizationFailed);
+    }
+    const redirectUrl = consentJson.location || consentRes.headers.get('Location');
+    if (!redirectUrl) {
+      // Authorization complete but nowhere to go; this happens when the OIDC
+      // session was lost between the approval and the response.
+      throw new Error(xpodConsentErrors.missingRedirect);
+    }
+    window.location.assign(scopeAccountUrl(redirectUrl));
+  }, [consentUrl]);
 
   const refreshConsentState = useCallback(async (preferredBinding?: StorageBinding): Promise<string[]> => {
     let activeTransaction: WebIdLoginTransaction | undefined;
@@ -234,9 +289,20 @@ export function ConsentPage() {
     const eligibleBindings = selectedPendingBinding
       ? exactBindings.filter((binding) => storageBindingKey(binding) === storageBindingKey(selectedPendingBinding))
       : exactBindings;
+    const requestedBinding = preferredBinding ?? explicitBindingRef.current;
+    const requestedBindingSurvives = requestedBinding !== undefined
+      && eligibleBindings.some((binding) => storageBindingKey(binding) === storageBindingKey(requestedBinding));
+    if (requestedBinding && !requestedBindingSurvives) {
+      // The selected pair is gone from the fresh Account enumeration; drop the
+      // session-local observation instead of keeping a stale preference.
+      explicitBindingRef.current = undefined;
+    }
     const selection: XpodStorageSelectionState = entryBindingScope.current.binding && eligibleBindings.length === 0
       ? { status: 'conflict', message: xpodConsentErrors.bindingUnavailable }
-      : reconcileXpodStorageSelection({ bindings: eligibleBindings, remembered: preferredBinding });
+      : reconcileXpodStorageSelection({
+        bindings: eligibleBindings,
+        remembered: requestedBindingSurvives ? requestedBinding : undefined,
+      });
     setConsentBindings(exactBindings);
     if (exactBindings.length === 0 && missingOwnerBinding.current) {
       setError(missingOwnerBinding.current);
@@ -298,6 +364,10 @@ export function ConsentPage() {
       }
     }
 
+    // A fresh interaction may ask for different authority. Its own server-provided
+    // remembered-grant path above is authoritative; the browser never transfers an
+    // approval merely because client, Account, or WebID happen to match.
+
     return ids;
   }, [consentUrl, isLoggedIn, pickWebIdUrl, provisionCode, refetchControls, transactionStore]);
 
@@ -329,6 +399,8 @@ export function ConsentPage() {
 
   // Account switching is owned by CSS. WebID logout is a separate Solid action.
   const handleSwitchAccount = async () => {
+    clearConsentContinuation();
+    clearManagementContinuation();
     setIsSwitchingAccount(true);
     try {
       await accountLogout();
@@ -354,6 +426,7 @@ export function ConsentPage() {
   };
 
   const handleReturn = async () => {
+    clearConsentContinuation();
     if (window.xpodDesktop?.cancelLogin) {
       setIsReturning(true);
       try {
@@ -379,6 +452,8 @@ export function ConsentPage() {
   };
 
   const handleCancelConsent = useCallback(async () => {
+    // Cancelling the authorization invalidates any quick-create task bound to it.
+    clearConsentContinuation();
     try {
       setIsCancelling(true);
       const redirectUrl = await fetchOidcCancelRedirectLocation({
@@ -463,31 +538,7 @@ export function ConsentPage() {
         return;
       }
 
-      const consentRes = await fetch(scopeAccountUrl(consentUrl), {
-        method: 'POST',
-        headers: storedAccountTokenHeaders({ 'Content-Type': 'application/json', Accept: 'application/json' }),
-        credentials: 'include',
-        redirect: 'manual',
-        body: JSON.stringify({ remember: rememberClient })
-      });
-      const consentJson = await consentRes.json().catch(() => ({})) as ConsentResponse & { message?: string };
-      if (!consentRes.ok) {
-        throw consentResponseError(consentJson, xpodConsentErrors.authorizationFailed);
-      }
-
-      // Try to get redirect location from response
-      const headerLocation = consentRes.headers.get('Location');
-      const redirectUrl = consentJson.location || headerLocation;
-      
-      if (redirectUrl) {
-        window.location.assign(scopeAccountUrl(redirectUrl));
-      } else {
-        // No redirect URL - authorization complete but nowhere to go
-        // This might happen if the OIDC session was lost
-        setError(xpodConsentErrors.missingRedirect);
-        setFailedAction('authorize');
-        setIsLoading(false);
-      }
+      await completeConsent(rememberClient);
     } catch (err: unknown) {
       setFailedAction('authorize');
       setError(safeConsentError(err, xpodConsentErrors.authorizationFailed));
@@ -495,8 +546,8 @@ export function ConsentPage() {
       setIsAuthorizing(false);
     }
   }, [
+    completeConsent,
     consentBindings,
-    consentUrl,
     currentWebId,
     handleCancelConsent,
     pendingTransaction,
@@ -514,8 +565,9 @@ export function ConsentPage() {
   const displayBindings = entryBinding
     ? consentBindings.filter((binding) => storageBindingKey(binding) === storageBindingKey(entryBinding))
     : consentBindings;
-  // 授权流程不代用户创建 Pod（设计第二部分 §4.1 / U06）：缺 Pod 时说明原因并给出去向，
-  // 绝不在授权页发起 prepare 或创建请求。
+  // 授权流程仍然不代用户创建 Pod（设计第二部分 §4.1 / U06）：缺 Pod 时说明原因，
+  // 并给出创建/管理/拒绝三个出口；创建只在用户显式点击主操作后才发生，且复用
+  // 全仓唯一的受守卫创建事务（U04 / U11）。
   const showNoPodStorage = Boolean(
     !isLoading
     && !error
@@ -542,19 +594,51 @@ export function ConsentPage() {
       ? storageBindingKey(selectedBinding)
       : selectedWebId;
   // 只有"冲突/绑定异常"仍走存储引导视图；"完全没有 Pod"由 showNoPodStorage 处理，
-  // 不再进入创建流程（设计第二部分 §4.1 / U06）。
+  // 在那里由用户显式决定是否创建第一个 Pod（设计第二部分 §4.1 / U06 的显式例外）。
   const showStorageBootstrap = hasStorageConflict
     || (displayBindings.length === 0 && storageSelection.status === 'error');
 
-  // 保留原 interaction 与返回地址：建好 Pod 回到这里后会重新读取权威绑定与服务健康。
-  // 目标是统一的 Pod 管理页（设计第二部分 §4.1 / U08+U09）；该页由 Account 边界准入，
-  // 零 Pod 时也可达，因此不再回退到 Account 页。
+
+  // 缺 Pod 的主操作进入 Consent 专用的轻量快速创建页（`/.account/create-pod/`），
+  // 并把当前 Account + 原 interaction + 校验过的回程地址 + TTL 一次性续接一起带过去。
+  // 轻页只提交本次创建所需字段，创建事务仍由全仓唯一的受守卫 prepare+POST 负责。
+  const handleGoToCreatePod = useCallback(() => {
+    const accountId = resolveAuthoritativeAccountId(controls, identity);
+    const interaction = currentInteractionScope();
+    if (!accountId || !interaction
+      || !saveConsentContinuation({ accountId, interaction, returnTo: `${interaction}/oidc/consent/` })) {
+      setFirstPodError(xpodFirstPodErrors.accountIdentityMissing);
+      return;
+    }
+    clearManagementContinuation();
+    navigate(scopeAccountUrl('/.account/create-pod/'));
+  }, [controls, identity, navigate]);
+
+  // 完整管理是明确的次要出口：保留当前 Account + 原 interaction + 回程地址 + TTL，
+  // Web 轻量桌面入口或桌面管理页验证原任务后，回到同一个 Consent。
   const handleGoToPodManagement = () => {
+    const accountId = resolveAuthoritativeAccountId(controls, identity);
+    const interaction = currentInteractionScope();
+    if (!accountId || !interaction
+      || !saveConsentContinuation({ accountId, interaction, returnTo: `${interaction}/oidc/consent/` })) {
+      setFirstPodError(xpodFirstPodErrors.accountIdentityMissing);
+      return;
+    }
+    clearManagementContinuation();
+    if (getXpodAuthSurfaceHost() === 'window') navigate(scopeAccountUrl('/.account/manage-pod/'));
+    else window.location.assign('/settings/pod');
+  };
+
+  // Manage the account elsewhere and come back: the interaction and its return address are kept.
+  const handleManageAccount = () => {
     persistReturnTo(window.location.href);
-    navigate('/settings/pod');
+    navigate(scopeAccountUrl('/.account/account/'));
   };
 
   const interactionExpired = error === xpodConsentErrors.expiredInteraction;
+  useEffect(() => {
+    if (interactionExpired) clearConsentContinuation();
+  }, [interactionExpired]);
   const needsSignIn = !isLoggedIn || error === xpodConsentErrors.signInRequired;
   const showFailure = Boolean(error && (
     interactionExpired || failedAction !== 'load' || resumeState === 'failed' || !clientInfo
@@ -568,9 +652,35 @@ export function ConsentPage() {
     else retryConsentLoad(failedAction !== 'authorize');
   };
 
+  const waiting = isLoading || resumeState === 'pending';
+  const contentAvailable = !needsSignIn && !interactionExpired && !waiting;
+  const noPodVisible = contentAvailable && showNoPodStorage;
+  const consentVisible = contentAvailable && !showNoPodStorage && !showFailure && !showStorageBootstrap;
+  const clientName = clientInfo?.client_name || consentClientHost(clientInfo) || xpodConsentCopy.applicationFallback;
+  const wording = resolvePodSignInCopy('zh-CN');
+  const serviceHost = window.location.host;
+  const consentWebIds = displayOptions.map((option) => {
+    const binding = displayBindings.find((candidate) => storageBindingKey(candidate) === option.id);
+    const kind = xpodStorageLocationKind(option.storageUrl);
+    return {
+      id: option.id,
+      displayName: binding?.label ?? webIdShortName(option.webId ?? option.id),
+      shortName: webIdShortName(option.webId ?? option.id),
+      webId: option.webId,
+      storage: { kind, label: kind === 'cloud' ? wording.storageCloud : wording.storageEdge },
+    };
+  });
+
   return (
-    <XpodAccountPageSurface title={xpodConsentCopy.surfaceTitle} presentation="compact">
-      <div className="space-y-4">
+    // The consent and no-WebID views bring their own service bar and heading.
+    // §4/§11.1/§13.11: the native desktop authentication surface fills the
+    // host-selected 440x620 window; only a browser document is the two-column page.
+    <XpodAccountPageSurface
+      title={xpodConsentCopy.surfaceTitle}
+      presentation={getXpodAuthSurfaceHost() === 'window' ? 'compact' : 'standard'}
+      bare={noPodVisible || consentVisible}
+    >
+      <div className="flex min-h-0 flex-1 flex-col gap-4">
       {interactionExpired ? (
         <WebAccountFailureView
           title="授权请求已失效"
@@ -621,71 +731,72 @@ export function ConsentPage() {
       {!needsSignIn && !interactionExpired ? (isLoading || resumeState === 'pending' ? (
         <WebAccountRestoringView label={xpodConsentCopy.restoring} />
       ) : showNoPodStorage ? (
-        <WebAccountFailureView
-          title={xpodConsentCopy.missingPodTitle}
-          description={xpodConsentCopy.missingPodDescription}
-          primaryLabel={xpodConsentCopy.goToPodManagementLabel}
-          onPrimary={handleGoToPodManagement}
-          secondaryLabel={xpodConsentCopy.denyLabel}
-          onSecondary={() => void handleCancelConsent()}
-          pending={isSubmitting}
-        />
+        // WebID 和 Pod 绑定：授权页"缺 Pod"就是账号还没有任何 WebID。这里可以起名并创建，
+        // 创建走轻量快速创建页（受守卫的一次性续接）；也可去账号页存到边缘设备，或拒绝。
+        <>
+          <IdpNoWebIdView
+            serviceName="Xpod"
+            serviceHost={serviceHost}
+            serviceIcon={<XpodDeploymentIdentity />}
+            appName={clientName}
+            error={firstPodError ?? undefined}
+            pending={isSubmitting}
+            onCreate={handleGoToCreatePod}
+            onChooseOtherLocation={handleManageAccount}
+          />
+          <div className="flex flex-wrap justify-center gap-2">
+            <Button type="button" variant="ghost" className="h-9 rounded-lg px-2"
+              disabled={isSubmitting} onClick={() => void handleCancelConsent()}>
+              {xpodConsentCopy.denyLabel}
+            </Button>
+          </div>
+        </>
       ) : showFailure ? null : (
-        <div className="space-y-4">
+        <div className="flex min-h-0 flex-1 flex-col gap-4">
           {!showStorageBootstrap ? (
-            <WebAccountConsentView
-              client={{
-                name: clientInfo?.client_name || xpodConsentCopy.applicationFallback,
-                description: clientInfo?.client_uri,
+            <ConsentView
+              serviceName="Xpod"
+              serviceHost={serviceHost}
+              serviceIcon={<XpodDeploymentIdentity />}
+              app={{
+                name: clientName,
+                host: consentClientHost(clientInfo),
+                clientId: clientInfo?.client_id,
+                // The account service does not report a verification result yet.
+                verified: false,
               }}
-              webIds={displayOptions}
-              storageOptions={[]}
-              selectedWebIdId={selectedOptionId}
-              showIdentitySelection={displayBindings.length > 1}
-              rememberClient={rememberClient}
-              onWebIdChange={(optionId) => {
+              webIds={consentWebIds}
+              selectedWebId={selectedOptionId}
+              scopes={[]}
+              rememberChoice={rememberClient}
+              allowRememberChoice
+              pending={isAuthorizing ? 'approve' : isCancelling ? 'deny' : undefined}
+              disabled={isSubmitting}
+              approveDisabled={!displayOptions.some((option) => option.id === selectedOptionId)}
+              automationSelectId="oidc-consent-webid"
+              onSelectWebId={(optionId) => {
                 const binding = displayBindings.find((candidate) => storageBindingKey(candidate) === optionId);
                 if (binding) {
+                  explicitBindingRef.current = binding;
                   setSelectedWebId(binding.webId);
                   setSelectedStorageUrl(binding.storageUrl);
                   setStorageSelection({ status: 'ready', selected: binding });
                 } else {
+                  explicitBindingRef.current = undefined;
                   setSelectedWebId(optionId);
                   setSelectedStorageUrl('');
                 }
               }}
-              onStorageChange={(optionId) => {
-                const binding = displayBindings.find((candidate) => storageBindingKey(candidate) === optionId);
-                if (binding) {
-                  setSelectedWebId(binding.webId);
-                  setSelectedStorageUrl(binding.storageUrl);
-                  setStorageSelection({ status: 'ready', selected: binding });
-                }
-              }}
-              onRememberClientChange={setRememberClient}
-              onApprove={(selection) => void handleConsent(true, selection)}
+              onRememberChange={setRememberClient}
+              onApprove={() => void handleConsent(true, { webIdId: selectedOptionId, rememberClient })}
               onDeny={() => void handleConsent(false)}
-              onEditAccount={async () => {
-                persistReturnTo(window.location.href);
-                navigate(scopeAccountUrl('/.account/account/'));
-              }}
-              onSwitchAccount={handleSwitchAccount}
-              pending={isSubmitting}
-              copy={{
-                description: xpodConsentCopy.description(clientInfo?.client_name || xpodConsentCopy.applicationFallback),
-                webIdLabel: displayBindings.length > 1 ? xpodConsentCopy.bindingLabel : xpodConsentCopy.webIdLabel,
-                storageLabel: xpodConsentCopy.storageLabel,
-                rememberClientLabel: xpodConsentCopy.rememberClientLabel,
-                approveLabel: isAuthorizing ? xpodConsentCopy.approvingLabel : xpodConsentCopy.approveLabel,
-                denyLabel: isCancelling ? xpodConsentCopy.denyingLabel : xpodConsentCopy.denyLabel,
-                editAccountLabel: xpodConsentCopy.editAccountLabel,
-                switchAccountLabel: xpodConsentCopy.switchAccountLabel,
-              }}
+              onManageAccount={handleManageAccount}
+              onSwitchAccount={() => void handleSwitchAccount()}
             />
           ) : null}
           {showStorageBootstrap ? (
-            // 冲突/绑定异常只给"重试"与"切换账号"（设计第一部分 C7、第二部分 §4.1 / U06）：
-            // 授权页不提供任何创建动作，创建只在 Pod 管理页由用户显式发起。
+            // 冲突/绑定异常只给"重试/换账号/前往 Pod 管理"（设计第一部分 C7、第二部分 §4.1 / U06）：
+            // 授权页在这里不提供创建动作，修复绑定由 Pod 管理页显式完成。
             <WebAccountFailureView
               title={hasStorageConflict ? xpodConsentCopy.conflictMessage : xpodConsentCopy.unavailableTitle}
               description={storageSelection.status === 'conflict' || storageSelection.status === 'error'
@@ -695,6 +806,8 @@ export function ConsentPage() {
               onPrimary={() => retryConsentLoad(true)}
               secondaryLabel={xpodConsentCopy.switchAccountLabel}
               onSecondary={handleSwitchAccount}
+              tertiaryLabel={xpodConsentCopy.goToPodManagementLabel}
+              onTertiary={handleGoToPodManagement}
               pending={isSubmitting}
             />
           ) : null}

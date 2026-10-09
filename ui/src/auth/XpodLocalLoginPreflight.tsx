@@ -1,9 +1,10 @@
 import { useContext, useEffect, useRef } from 'react';
-import { LoginRestoringView } from '@undefineds.co/shared-ui';
 import { AuthContext } from '../context/AuthContextValue';
 
 /**
  * 登录预检只等待身份发现，不再内嵌建 Pod（设计第二部分 §4.1 / U07）。
+ *
+ * 它不渲染任何界面：等待期间由发起登录的那一屏（A1/A3）的主按钮 busy 承担。
  *
  * 账号已登录不等于 Pod 就绪：登录必须在零 Pod 时继续，Pod 由 Pod 管理页的
  * 显式操作创建。这里只负责"等 Account 发现结束"，不做任何侧写。
@@ -22,5 +23,7 @@ export function XpodLocalLoginPreflight({ onReady }: { onReady: () => void }) {
     }
   }, [checking, onReady]);
 
-  return <LoginRestoringView label="正在准备登录…" />;
+  // Renderless: the sign-in screen that started the login keeps showing its busy
+  // primary action, so there is no separate "preparing" screen.
+  return null;
 }

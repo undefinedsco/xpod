@@ -1,3 +1,5 @@
+import { monitorRunCancellation } from './RunCancellation';
+import { persistRunApproval, updateRunApprovalSession } from './RunApproval';
 import type {
   ChatKitStore,
   ClientToolContinuationClaim,
@@ -41,8 +43,7 @@ import { XpodRunStepType as RunStepType, RunStatus } from './schema';
 import {
   generateRunResourceId,
   generateRunStepResourceId,
-  resolveDataResource,
-  resolveRunUrn,
+  resolveRunAuthBindingId,
   type RunRecordData,
   type RunStepRecordData,
   type RunStore,
@@ -199,40 +200,58 @@ export class RunStateCenter<TContext = StoreContext> {
       context,
     });
 
-    for await (
-      const event of this.executionBackend.start({
-        runId: run.id,
-        threadId: thread.id,
-        prompt,
-        conversation,
-        retrievedContext,
-        config: runtimeConfig,
-        context: context as StoreContext,
-      })
-    ) {
-      const cancellation = await this.checkCancellation(run, threadRef, assistantState, context);
-      if (cancellation) {
-        yield { type: 'item_done', item: cancellation };
-        yield { type: 'error', code: 'runtime_cancelled', message: 'Run cancellation requested' };
-        return;
+    const monitor = this.runStore ? await monitorRunCancellation({ store: this.runStore, runId: run.id, context }) : undefined;
+    try {
+      for await (
+        const event of this.executionBackend.start({
+          signal: monitor?.signal,
+          runId: run.id,
+          threadId: thread.id,
+          prompt,
+          conversation,
+          retrievedContext,
+          config: runtimeConfig,
+          context: context as StoreContext,
+        })
+      ) {
+        const cancellation = await this.checkCancellation(run, threadRef, assistantState, context);
+        if (cancellation) {
+          yield { type: 'item_done', item: cancellation };
+          yield { type: 'error', code: 'runtime_cancelled', message: 'Run cancellation requested' };
+          return;
+        }
+
+        const result = yield* this.projectRuntimeEvent(event, {
+          run,
+          thread,
+          threadRef,
+          assistant: assistantState,
+          context,
+        });
+        if (result.action === 'continue') {
+          continue;
+        }
+        if (result.action === 'return') {
+          return;
+        }
+
+        runtimeError = result.message;
+        break;
       }
 
-      const result = yield* this.projectRuntimeEvent(event, {
-        run,
-        thread,
-        threadRef,
-        assistant: assistantState,
-        context,
-      });
-      if (result.action === 'continue') {
-        continue;
-      }
-      if (result.action === 'return') {
-        return;
-      }
-
-      runtimeError = result.message;
-      break;
+    } catch (error) {
+      const cancelled = await this.checkCancellation(run, threadRef, assistantState, context);
+      if (!cancelled) throw error;
+      yield { type: 'item_done', item: cancelled };
+      return;
+    } finally {
+      monitor?.dispose();
+    }
+    if (monitor?.error) throw monitor.error;
+    const cancellation = await this.checkCancellation(run, threadRef, assistantState, context);
+    if (cancellation) {
+      yield { type: 'item_done', item: cancellation };
+      return;
     }
 
     const finalStatus = runtimeError ? 'incomplete' : 'completed';
@@ -382,7 +401,7 @@ export class RunStateCenter<TContext = StoreContext> {
     };
     await this.markRunStarted(run, context);
     const continuationPrompt = this.buildContinuationPrompt(updatedItem);
-    const conversation = await this.loadConversation(threadRef, String(run.metadata?.userMessageId ?? updatedItem.id), context);
+    const conversation = await this.loadConversation(threadRef, undefined, context);
     const runtimeConfig = this.resolveRuntimeConfigForContinuation(run, context);
     const retrievedContext = await this.retrieveRunContext({
       runId: run.id,
@@ -393,42 +412,66 @@ export class RunStateCenter<TContext = StoreContext> {
       context,
     });
 
-    for await (
-      const event of this.executionBackend.start({
-        runId: run.id,
-        threadId: this.extractThreadIdFromRef(threadRef),
-        prompt: continuationPrompt,
-        conversation,
-        retrievedContext,
-        config: runtimeConfig,
-        continuation: {
-          kind: 'client_tool_output',
-          itemId: updatedItem.id,
-        },
-        context: context as StoreContext,
-      })
-    ) {
-      const cancellation = await this.checkCancellation(run, threadRef, assistantState, context);
-      if (cancellation) {
-        yield { type: 'item_done', item: cancellation };
-        yield { type: 'error', code: 'runtime_cancelled', message: 'Run cancellation requested' };
+    const monitor = this.runStore ? await monitorRunCancellation({ store: this.runStore, runId: run.id, context }) : undefined;
+    try {
+      const initialCancellation = await this.checkCancellation(run, threadRef, assistantState, context);
+      if (initialCancellation) {
+        yield { type: 'item_done', item: initialCancellation };
         return;
+      }
+      for await (
+        const event of this.executionBackend.start({
+          signal: monitor?.signal,
+          runId: run.id,
+          threadId: this.extractThreadIdFromRef(threadRef),
+          prompt: continuationPrompt,
+          conversation,
+          retrievedContext,
+          config: runtimeConfig,
+          continuation: {
+            kind: 'client_tool_output',
+            itemId: updatedItem.id,
+          },
+          authBindingId: resolveRunAuthBindingId(run),
+          context: context as StoreContext,
+        })
+      ) {
+        const cancellation = await this.checkCancellation(run, threadRef, assistantState, context);
+        if (cancellation) {
+          yield { type: 'item_done', item: cancellation };
+          yield { type: 'error', code: 'runtime_cancelled', message: 'Run cancellation requested' };
+          return;
+        }
+
+        const result = yield* this.projectRuntimeEvent(event, {
+          run,
+          thread,
+          threadRef,
+          assistant: assistantState,
+          context,
+        });
+        if (result.action === 'continue') {
+          continue;
+        }
+        if (result.action === 'return') {
+          return;
+        }
+        throw new Error(result.message);
       }
 
-      const result = yield* this.projectRuntimeEvent(event, {
-        run,
-        thread,
-        threadRef,
-        assistant: assistantState,
-        context,
-      });
-      if (result.action === 'continue') {
-        continue;
-      }
-      if (result.action === 'return') {
-        return;
-      }
-      throw new Error(result.message);
+    } catch (error) {
+      const cancelled = await this.checkCancellation(run, threadRef, assistantState, context);
+      if (!cancelled) throw error;
+      yield { type: 'item_done', item: cancelled };
+      return;
+    } finally {
+      monitor?.dispose();
+    }
+    if (monitor?.error) throw monitor.error;
+    const cancellation = await this.checkCancellation(run, threadRef, assistantState, context);
+    if (cancellation) {
+      yield { type: 'item_done', item: cancellation };
+      return;
     }
 
     const finalItem = this.finalizeAssistantMessage(assistantState.item, assistantState.fullText, 'completed');
@@ -467,7 +510,7 @@ export class RunStateCenter<TContext = StoreContext> {
         parentKey: parent.parentKey,
         createdAt: now,
       }),
-      thread: this.resolveThreadResource(thread, context),
+      thread: thread.id,
       workspace: runtimeConfig.workspace,
       status: RunStatus.QUEUED,
       runner: `${runtimeConfig.runner.protocol ?? 'pi'}:${runtimeConfig.runner.type}`,
@@ -498,6 +541,8 @@ export class RunStateCenter<TContext = StoreContext> {
     run.startedAt = now;
     run.updatedAt = now;
     await this.saveRun(run, context);
+    await updateRunApprovalSession(this.store, run, (run as RunRecordData).status === RunStatus.CANCELLED ? 'completed' : 'active', context);
+    if ((run as RunRecordData).status === RunStatus.CANCELLED || run.cancelRequestedAt !== undefined) return;
     await this.appendRunStep(run, RunStepType.STARTED, context, {
       message: 'Run started',
     });
@@ -517,6 +562,9 @@ export class RunStateCenter<TContext = StoreContext> {
     run.updatedAt = now;
     run.error = error;
     await this.saveRun(run, context);
+    status = run.status;
+    error = run.error;
+    await updateRunApprovalSession(this.store, run, status === 'waiting_input' || status === 'waiting_runner' ? 'paused' : status === 'failed' ? 'error' : 'completed', context);
     await this.appendRunStep(
       run,
       this.stepTypeForTerminalStatus(status),
@@ -543,6 +591,7 @@ export class RunStateCenter<TContext = StoreContext> {
     run.updatedAt = now;
     run.error = message;
     await this.saveRun(run, context);
+    await updateRunApprovalSession(this.store, run, run.status === RunStatus.CANCELLED ? 'completed' : 'paused', context);
   }
 
   private async *projectRuntimeEvent(
@@ -615,6 +664,7 @@ export class RunStateCenter<TContext = StoreContext> {
         created_at: nowTimestamp(),
       };
       await this.store.addThreadItem(threadRef, toolItem, context);
+      await persistRunApproval({ store: this.store, run, event, context });
       yield { type: 'item_added', item: toolItem };
 
       const incomplete = this.finalizeAssistantMessage(assistant.item, assistant.fullText, 'incomplete');
@@ -693,7 +743,9 @@ export class RunStateCenter<TContext = StoreContext> {
   }
 
   private async saveRun(run: RunRecordData, context: TContext): Promise<void> {
-    await this.runStore?.saveRun(deepScrubApiKey(run), context);
+    const persisted = deepScrubApiKey(run);
+    await this.runStore?.saveRun(persisted, context);
+    Object.assign(run, persisted);
   }
 
   private async appendRunStep(
@@ -713,37 +765,12 @@ export class RunStateCenter<TContext = StoreContext> {
         createdAt,
       }),
       runId: run.id,
-      run: this.resolveRunResource(run, context),
+      run: run.id,
       type,
       message: options.message,
       data: options.data,
       createdAt,
     }, context);
-  }
-
-  private resolveThreadResource(thread: ThreadMetadata, context: TContext): string {
-    const threadId = thread.id;
-    if (/^https?:\/\//.test(threadId)) {
-      return threadId;
-    }
-
-    const parent = this.resolveThreadStorageParent(thread);
-    const podBaseUrl = this.resolvePodBaseUrl(context);
-    if (podBaseUrl) {
-      if (threadId.includes('#') && !threadId.startsWith('#')) {
-        return resolveDataResource(podBaseUrl, threadId);
-      }
-      return `${podBaseUrl}/.data/${parent.parentKind}/${parent.parentKey}/index.ttl#${threadId}`;
-    }
-    return `urn:xpod:thread:${parent.parentKind}:${encodeURIComponent(parent.parentKey)}:${encodeURIComponent(threadId)}`;
-  }
-
-  private resolveRunResource(run: RunRecordData, context: TContext): string {
-    const podBaseUrl = this.resolvePodBaseUrl(context);
-    if (podBaseUrl) {
-      return resolveDataResource(podBaseUrl, run.id);
-    }
-    return resolveRunUrn(run.id);
   }
 
   private async resolveWaitingRunForToolOutput(
@@ -763,7 +790,7 @@ export class RunStateCenter<TContext = StoreContext> {
       return undefined;
     }
 
-    const threadCandidates = this.threadCandidatesForRunLookup(threadRef, context);
+    const threadCandidates = await this.threadCandidatesForRunLookup(threadRef, context);
     for (const thread of threadCandidates) {
       const candidates = await this.runStore.listRuns({
         thread,
@@ -785,7 +812,7 @@ export class RunStateCenter<TContext = StoreContext> {
     return threadRef.thread_id;
   }
 
-  private threadCandidatesForRunLookup(threadRef: ThreadRef, context: TContext): string[] {
+  private async threadCandidatesForRunLookup(threadRef: ThreadRef, context: TContext): Promise<string[]> {
     const candidates: string[] = [];
     const add = (value: string | undefined): void => {
       if (value && !candidates.includes(value)) {
@@ -795,12 +822,7 @@ export class RunStateCenter<TContext = StoreContext> {
 
     const threadId = this.extractThreadIdFromRef(threadRef);
     add(threadId);
-    const relative = this.extractBaseRelativeThreadId(threadId);
-    add(relative);
-    const podBaseUrl = this.resolvePodBaseUrl(context);
-    if (podBaseUrl && relative) {
-      add(resolveDataResource(podBaseUrl, relative));
-    }
+    add(this.extractBaseRelativeThreadId(threadId));
     return candidates;
   }
 
@@ -825,6 +847,9 @@ export class RunStateCenter<TContext = StoreContext> {
   }
 
   private buildContinuationPrompt(item: ClientToolCallItem): string {
+    if (item.metadata?.approval) {
+      return `Continue this same run from its approval checkpoint. The following is an authorization decision, not a tool result; the requested action has NOT been executed. Carry out only the approved action, preserving prior completed work.\n\nRequested tool: ${item.name}\nArguments: ${item.arguments}\nApproval decision: ${item.output ?? ''}`;
+    }
     return `Continue the previous run after client tool output.\n\nTool: ${item.name}\nOutput:\n${item.output ?? ''}`;
   }
 
@@ -856,28 +881,6 @@ export class RunStateCenter<TContext = StoreContext> {
       parentKind: parent?.kind ?? 'chat',
       parentKey: parent?.key ?? 'default',
     };
-  }
-
-  private resolvePodBaseUrl(context: TContext): string | undefined {
-    const auth = (context as Record<string, unknown>).auth as { webId?: unknown } | undefined;
-    const webId = typeof auth?.webId === 'string' ? auth.webId : undefined;
-    if (!webId) {
-      return undefined;
-    }
-    try {
-      const url = new URL(webId);
-      url.hash = '';
-      url.search = '';
-      const normalizedPath = url.pathname.replace(/\/+$/, '');
-      if (!normalizedPath.endsWith('/profile/card')) {
-        return undefined;
-      }
-      const podPath = normalizedPath.slice(0, -'/profile/card'.length) || '/';
-      url.pathname = podPath;
-      return url.toString().replace(/\/$/, '');
-    } catch {
-      return undefined;
-    }
   }
 
   private async createAssistantMessage(
@@ -914,14 +917,14 @@ export class RunStateCenter<TContext = StoreContext> {
 
   private async loadConversation(
     threadRef: ThreadRef,
-    currentUserMessageId: string,
+    currentUserMessageId: string | undefined,
     context: TContext,
   ): Promise<Array<{ role: 'user' | 'assistant'; text: string; createdAt: number }>> {
     const items = await this.store.loadThreadItems(threadRef, undefined, 1000, 'asc', context);
     const conversation: Array<{ role: 'user' | 'assistant'; text: string; createdAt: number }> = [];
 
     for (const item of items.data) {
-      if (item.id === currentUserMessageId) {
+      if (currentUserMessageId !== undefined && item.id === currentUserMessageId) {
         break;
       }
       if (item.type === 'user_message') {

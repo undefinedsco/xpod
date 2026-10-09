@@ -153,6 +153,7 @@ export interface AiConnectionsPodStore {
     input: AiConnectionsOAuthCredential,
   ): Promise<unknown>;
   updateProviderCredential?(provider: string, credentialId: string, input: {
+    apiKey?: string;
     expectedVersion: number;
     label?: string;
     enabled?: boolean;
@@ -235,7 +236,7 @@ export interface SolidAgentAccess {
 export interface SolidServiceAccessResource {
   id: string;
   url: string;
-  mediaType: 'text/turtle';
+  mediaType: 'text/turtle' | 'application/json';
   access: SolidAgentAccess;
 }
 
@@ -418,7 +419,12 @@ export interface AiClientCredentialSummary {
 }
 
 export interface AiClientCredentialsCapability {
-  create(input: { name: string; webId: string }): Promise<{ apiKey: string; resource: string }>;
+  /**
+   * Issues one Account client credential. `apiKey` is the ephemeral
+   * `sk-<base64(client_id:client_secret)>` wrapper and is only ever returned
+   * here; `clientId` is the Account identity the credential is revoked by.
+   */
+  create(input: { name: string; webId: string }): Promise<{ apiKey: string; clientId: string; resource: string }>;
   /** Credentials the Account still knows about; the secret is never returned. */
   list(): Promise<AiClientCredentialSummary[]>;
   revoke(input: { clientId: string; resource: string; webId: string }): Promise<void>;

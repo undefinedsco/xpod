@@ -10,6 +10,11 @@ describe('ReservedSuffixIdentifierGenerator', () => {
     expect(() => generator.generate('signal')).toThrow('Pod identifier');
   });
 
+  it.each(['app', 'settings', '.account', 'login', 'provision', 'API'])('rejects server route %s even with custom reservations', (name) => {
+    const generator = new ReservedSuffixIdentifierGenerator({ baseUrl: 'https://example.com/', reserved: ['pods'] });
+    expect(() => generator.generate(name)).toThrow('reserved');
+  });
+
   it('allows normal names', () => {
     const generator = new ReservedSuffixIdentifierGenerator({ baseUrl: 'https://example.com/' });
     const identifier = generator.generate('alice');

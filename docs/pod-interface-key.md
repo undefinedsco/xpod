@@ -3,6 +3,13 @@
 > 状态：2026-09-24 审查修订。本文区分当前实现与已确认的目标设计；迁移清单尚未实施，不表示运行验收通过。
 > 范围：API sidecar、普通浏览器交互、Inngest/任务执行层访问 Pod 的凭证边界。
 > 相关：[`multi-channel-access.md`](multi-channel-access.md)、[`ai-connections-storage-model.md`](ai-connections-storage-model.md)、[`caller-owned access`](superpowers/specs/2026-08-09-caller-owned-ai-connections-access-design.md)。
+>
+> 2026-10-07 更新：本文第 2、4 节描述的 `POST /api/ai/gateway/keys` 登记路径**已删除**。
+> Xpod 密钥现在就是 Account 的 client credential，Account 控制端点的
+> client-credentials 集合是唯一清单，Xpod 不再保存 wrapper、companion 记录或
+> RDF `GatewayAccessKey`。目标与边界以
+> [`client-credentials-convergence`](superpowers/plans/2026-08-04-client-credentials-convergence.md)
+> 和 [`ai-connections-product-spec.md`](ai-connections-product-spec.md) 为准；下文涉及该路由的行只作历史记录。
 
 ## 1. 已确认的设计
 

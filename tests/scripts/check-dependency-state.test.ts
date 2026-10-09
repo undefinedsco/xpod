@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'vitest';
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -8,6 +8,9 @@ const testDirectory = path.dirname(fileURLToPath(import.meta.url));
 const script = path.resolve(testDirectory, '../../scripts/check-dependency-state.ts');
 const fixtures: string[] = [];
 const testRoot = path.resolve(testDirectory, '../../.test-data/dependency-state-checker');
+// The postinstall transport patch also validates the installed core package, so a
+// fixture that declares that postinstall must expose the same installed core link.
+const inruptCore = path.resolve(testDirectory, '../../node_modules/@inrupt/solid-client-authn-core');
 const original = Array.from({ length: 6 }, (_, index) => `declare Alias${index} {\ncreatedAt: optional;\n}`).join('\n') + '\n';
 const patch = '--- a/types.d.ts\n+++ b/types.d.ts\n' + Array.from({ length: 6 }, (_, index) =>
   `@@ -${index * 3 + 2},2 +${index * 3 + 2},2 @@\n-createdAt: required;\n+createdAt: optional;\n }\n`).join('');
@@ -106,6 +109,19 @@ const transportFiles = [
   'dist/index.js', 'dist/index.mjs', 'dist/Session.d.ts', 'dist/dependencies.d.ts',
   'dist/login/oidc/incomingRedirectHandler/AuthCodeRedirectHandler.d.ts',
 ];
+const coreTransportFiles = [
+  'src/authenticatedFetch/dpopUtils.ts', 'src/authenticatedFetch/fetchFactory.ts',
+  'dist/authenticatedFetch/dpopUtils.d.ts', 'dist/index.js', 'dist/index.mjs',
+];
+
+/** Copy an installed transport package into a fixture so the postinstall check sees it. */
+function installTransportPackage(root: string, relative: string, files: readonly string[]): void {
+  for (const entry of ['package.json', ...files]) {
+    const target = path.join(root, relative, entry);
+    mkdirSync(path.dirname(target), { recursive: true });
+    writeFileSync(target, readFileSync(path.resolve(testDirectory, '../..', relative, entry), 'utf8'));
+  }
+}
 test.each([
   [undefined, undefined, 'all'],
   ['dist/Session.d.ts', 'fetch?: typeof fetch;', 'all'],
@@ -126,6 +142,8 @@ test.each([
   const manifest = JSON.parse(readFileSync(path.join(f.root, 'package.json'), 'utf8'));
   manifest.scripts = { postinstall: 'bun scripts/patch-inrupt-authn-transport.js' };
   writeFileSync(path.join(f.root, 'package.json'), JSON.stringify(manifest));
+  mkdirSync(path.join(f.root, 'node_modules/@inrupt'), { recursive: true });
+  symlinkSync(inruptCore, path.join(f.root, 'node_modules/@inrupt/solid-client-authn-core'));
   const relative = 'node_modules/@inrupt/solid-client-authn-browser';
   for (const entry of ['package.json', ...transportFiles]) {
     const target = path.join(f.root, relative, entry);
@@ -142,6 +160,9 @@ test.each([
     }
     writeFileSync(target, updated);
   }
+  // The postinstall check covers the core resource-DPoP branch too; without a
+  // pinned core package every case would fail on the missing manifest.
+  installTransportPackage(f.root, 'node_modules/@inrupt/solid-client-authn-core', coreTransportFiles);
   const result = await run(f.root);
   expect(result.code).toBe(file ? 1 : 0);
   if (file) expect(result.output).toContain(file);

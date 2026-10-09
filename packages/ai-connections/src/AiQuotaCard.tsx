@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Button, Dialog, DialogContent, DialogTitle, DialogTrigger } from '@undefineds.co/shared-ui'
+import { Button, Dialog, DialogContent, DialogTitle, DialogTrigger, Meter } from '@undefineds.co/shared-ui'
 import type { AiQuotaSnapshot } from './contract/ai-connections-client'
 import { Info, Loader2, RefreshCcw, Wallet } from 'lucide-react'
 
@@ -192,16 +192,10 @@ function QuotaDetails({ quota, hideBalance = false }: { quota: AiQuotaSnapshot; 
             <span className="text-muted-foreground">{remainingLabel(window)}</span>
           </div>
           {remainingPercent(window) !== undefined ? (
-            <div
-              aria-label={`${quotaWindowLabel(window.name)}剩余 ${String(remainingPercent(window))}%`}
-              className="h-1.5 overflow-hidden rounded-full bg-muted"
-              role="progressbar"
-              aria-valuemin={0}
-              aria-valuemax={100}
-              aria-valuenow={remainingPercent(window)}
-            >
-              <div className="h-full rounded-full bg-primary" style={{ width: `${String(remainingPercent(window))}%` }} />
-            </div>
+            <Meter
+              label={`${quotaWindowLabel(window.name)}剩余 ${String(remainingPercent(window))}%`}
+              value={remainingPercent(window)}
+            />
           ) : null}
           {window.resetsAt ? <p className="text-xs text-muted-foreground">重置：{formatTimestamp(window.resetsAt)}</p> : null}
         </div>

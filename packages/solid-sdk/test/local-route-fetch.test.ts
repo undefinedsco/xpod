@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   buildAuthenticatedFetch,
   createDpopHeader,
@@ -100,6 +100,117 @@ describe('discoverSolidLocalRoute', () => {
     )).resolves.toBeUndefined()
   })
 })
+
+/**
+ * The optional provisioning status endpoint must be bounded by the same
+ * route-probe budget wherever it is read: the SDK discovery used by the browser
+ * Account/credential path and the UI's own status helper share one operation.
+ * A host that never answers - or answers headers and then stalls its body - must
+ * settle, and a torn-down owner must settle immediately even against a fetch
+ * adapter that ignores the abort signal. Neither outcome may invent a route.
+ */
+describe('bounded provisioning probe', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+  })
+
+  it('settles a fetch that ignores abort at the route-probe deadline', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+
+    const probe = discoverSolidLocalRoute({
+      fetch: unreactingHangingFetch(),
+      localBaseUrl: 'http://127.0.0.1:3000/',
+    })
+
+    await vi.advanceTimersByTimeAsync(60_000)
+
+    await expect(probe).resolves.toBeUndefined()
+  })
+
+  it('bounds a response body that stalls after its headers', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+
+    const probe = discoverSolidLocalRoute({
+      fetch: fetchMock(async () => stalledBodyResponse()),
+      localBaseUrl: 'http://127.0.0.1:3000/',
+    })
+
+    await vi.advanceTimersByTimeAsync(60_000)
+
+    await expect(probe).resolves.toBeUndefined()
+  })
+
+  it('settles on caller abort even when the fetch ignores it, ignoring the late response', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const controller = new AbortController()
+    let resolveLate!: (response: Response) => void
+    const fetchImpl = fetchMock(() => new Promise<Response>((resolve) => {
+      resolveLate = resolve
+    }))
+
+    const probe = discoverSolidLocalRoute({
+      fetch: fetchImpl,
+      localBaseUrl: 'http://127.0.0.1:3000/',
+      signal: controller.signal,
+    })
+
+    controller.abort()
+    await expect(probe).resolves.toBeUndefined()
+
+    resolveLate(jsonResponse({ publicUrl: 'https://late.example/' }))
+    await vi.runAllTimersAsync()
+    await expect(probe).resolves.toBeUndefined()
+  })
+
+  it('keeps the original HTTP, JSON, shape, and normalization behavior', async () => {
+    await expect(discoverSolidLocalRoute({
+      fetch: fetchMock(async () => new Response('{}', { status: 500 })),
+      localBaseUrl: 'http://127.0.0.1:3000/',
+    })).resolves.toBeUndefined()
+
+    await expect(discoverSolidLocalRoute({
+      fetch: fetchMock(async () => jsonResponse({ publicUrl: 42 })),
+      localBaseUrl: 'http://127.0.0.1:3000/',
+    })).resolves.toBeUndefined()
+
+    await expect(discoverSolidLocalRoute({
+      fetch: fetchMock(async () => jsonResponse({ publicUrl: 'not-a-url' })),
+      localBaseUrl: 'http://127.0.0.1:3000/',
+    })).resolves.toBeUndefined()
+
+    await expect(discoverSolidLocalRoute({
+      fetch: fetchMock(async () => jsonResponse({ publicUrl: 'https://pod.example/' })),
+      localBaseUrl: 'http://127.0.0.1:3000/',
+    })).resolves.toEqual({
+      canonicalBaseUrl: 'https://pod.example/',
+      localBaseUrl: 'http://127.0.0.1:3000/',
+    })
+  })
+})
+
+function jsonResponse(body: unknown): Response {
+  return new Response(JSON.stringify(body), {
+    status: 200,
+    headers: { 'content-type': 'application/json' },
+  })
+}
+
+function stalledBodyResponse(): Response {
+  const response = new Response(null, {
+    status: 200,
+    headers: { 'content-type': 'application/json' },
+  })
+  Object.defineProperty(response, 'json', {
+    value: () => new Promise<never>(() => undefined),
+    configurable: true,
+  })
+  return response
+}
+
+function unreactingHangingFetch(): typeof fetch {
+  return fetchMock(() => new Promise<Response>(() => undefined)) as unknown as typeof fetch
+}
 
 describe('createSolidLocalRouteFetch', () => {
   it.each([200, 401])('keeps canonical response metadata after local transport (HTTP %i)', async (status) => {
