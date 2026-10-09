@@ -1,6 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { ApiServer } from '../../src/api/ApiServer';
-import { getFreePort } from '../../src/runtime/port-finder';
 import { registerChatRoutes } from '../../src/api/handlers/ChatHandler';
 import { AuthMiddleware } from '../../src/api/middleware/AuthMiddleware';
 
@@ -64,13 +63,10 @@ vi.mock('@inrupt/solid-client-authn-node', () => {
 
 describe('Chat Mock Logic Flow', () => {
   let server: ApiServer;
-  let port: number;
   let baseUrl: string;
   let gatewayComplete: ReturnType<typeof vi.fn>;
 
   beforeAll(async () => {
-    port = await getFreePort(10000);
-    baseUrl = `http://127.0.0.1:${port}`;
 
     gatewayComplete = vi.fn().mockResolvedValue({
       id: 'chatcmpl-mock',
@@ -100,7 +96,7 @@ describe('Chat Mock Logic Flow', () => {
       } as any
     });
 
-    server = new ApiServer({ port, authMiddleware });
+    server = new ApiServer({ host: '127.0.0.1', port: 0, authMiddleware });
     registerChatRoutes(server, {
       aiGatewayService: {
         complete: gatewayComplete,
@@ -110,6 +106,9 @@ describe('Chat Mock Logic Flow', () => {
     });
 
     await server.start();
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('Missing API server address');
+    baseUrl = `http://127.0.0.1:${address.port}`;
   });
 
   afterAll(async () => {

@@ -160,6 +160,54 @@ describe('WebIdAuthBoundary', () => {
     expect(window.localStorage.getItem('xpod.auth.login-cancelled')).toBeNull();
   });
 
+  test('retains a switch request across remounts while Account discovery is pending', async () => {
+    window.history.replaceState(null, '', '/ai-connections?xpod-login=switch');
+    const initialize = vi.fn(async () => ({ status: 'anonymous' as const }));
+    const login = vi.fn(async () => undefined);
+    const value = runtime({ state: { status: 'loading' }, session: { initialize } as never, login });
+    const account = { isInitializing: true } as AuthContextType;
+    const first = renderBoundary(value, { autoStart: true }, account);
+    await waitFor(() => expect(initialize).toHaveBeenCalledWith({ restorePreviousSession: false }));
+    expect(login).not.toHaveBeenCalled();
+    first.unmount();
+
+    renderBoundary(value, { autoStart: true }, { ...account, isInitializing: false });
+    await waitFor(() => expect(login).toHaveBeenCalledWith(expect.objectContaining({ prompt: 'login' })));
+    expect(login).toHaveBeenCalledTimes(1);
+    expect(new URL(window.location.href).searchParams.has('xpod-login')).toBe(false);
+    expect(initialize).not.toHaveBeenCalledWith({ restorePreviousSession: true });
+  });
+
+  test('cancelling a pending switch consumes the request without starting login on remount', async () => {
+    window.history.replaceState(null, '', '/ai-connections?xpod-login=switch');
+    const initialize = vi.fn(async () => ({ status: 'anonymous' as const }));
+    const login = vi.fn(async () => undefined);
+    const value = runtime({ session: { initialize } as never, login });
+    const first = renderBoundary(value, { autoStart: true }, { isInitializing: true } as AuthContextType);
+    fireEvent.click(screen.getByRole('button', { name: '取消', exact: true }));
+    expect(new URL(window.location.href).searchParams.has('xpod-login')).toBe(false);
+    first.unmount();
+
+    renderBoundary(value, { autoStart: true }, { isInitializing: false } as AuthContextType);
+    expect(screen.getByRole('button', { name: '使用 Xpod 账号登录' })).toBeTruthy();
+    expect(login).not.toHaveBeenCalled();
+    expect(initialize).not.toHaveBeenCalledWith({ restorePreviousSession: true });
+  });
+
+  test('does not start the switched login when cancelled during SDK initialization', async () => {
+    window.history.replaceState(null, '', '/ai-connections?xpod-login=switch');
+    let finishInitialization!: () => void;
+    const initialize = vi.fn(() => new Promise<void>(resolve => { finishInitialization = resolve; }));
+    const login = vi.fn(async () => undefined);
+    renderBoundary(runtime({ session: { initialize } as never, login }), { autoStart: true });
+    await waitFor(() => expect(initialize).toHaveBeenCalledTimes(1));
+    fireEvent.click(screen.getByRole('button', { name: '取消', exact: true }));
+    await act(async () => { finishInitialization(); });
+    expect(login).not.toHaveBeenCalled();
+    expect(window.localStorage.getItem('xpod.auth.login-cancelled')).toBe('1');
+    expect(new URL(window.location.href).searchParams.has('xpod-login')).toBe(false);
+  });
+
   test('recovery suppresses SDK silent restoration without logging out a valid runtime', async () => {
     window.history.replaceState(null, '', '/ai-connections?xpod-login=cancelled');
     const initialize = vi.fn(async () => ({ status: 'anonymous' as const }));
