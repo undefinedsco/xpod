@@ -1,5 +1,4 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
-import { createServer } from 'node:net';
 import { ApiServer } from '../../src/api/ApiServer';
 import { AuthMiddleware } from '../../src/api/middleware/AuthMiddleware';
 import { registerChatRoutes } from '../../src/api/handlers/ChatHandler';
@@ -14,28 +13,6 @@ const authMiddleware = new AuthMiddleware({
   } as any,
 });
 
-async function getFreePort(): Promise<number> {
-  return await new Promise((resolve, reject) => {
-    const tester = createServer();
-    tester.once('error', reject);
-    tester.listen(0, '127.0.0.1', () => {
-      const address = tester.address();
-      if (!address || typeof address === 'string') {
-        tester.close(() => reject(new Error('Failed to resolve free port')));
-        return;
-      }
-      const port = address.port;
-      tester.close((closeError) => {
-        if (closeError) {
-          reject(closeError);
-          return;
-        }
-        resolve(port);
-      });
-    });
-  });
-}
-
 describe('AiHandler Integration (Responses & Messages)', () => {
   let server: ApiServer;
   let baseUrl: string;
@@ -48,13 +25,14 @@ describe('AiHandler Integration (Responses & Messages)', () => {
 
 
   beforeAll(async () => {
-    const port = await getFreePort();
-    baseUrl = 'http://localhost:' + port;
-    server = new ApiServer({ port, authMiddleware });
+    server = new ApiServer({ host: '127.0.0.1', port: 0, authMiddleware });
     registerChatRoutes(server, {
       aiGatewayService: aiGatewayService as any,
     });
     await server.start();
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('Missing API server address');
+    baseUrl = `http://127.0.0.1:${address.port}`;
   });
 
   beforeEach(() => {

@@ -252,6 +252,16 @@ export async function createMountedKeyInUi(page: Page, phase: MountedPodPermissi
     await dialog.getByRole('button', { name: '完成', exact: true }).click();
     const remove = async (): Promise<true> => {
       try {
+        // Restore only this fixture's projection while its owning WebID and
+        // service grant are still active, before revoking the issued key.
+        await phase.handle.evaluate(async ({ host }) => {
+          const capability = host.capabilities.aiClientConfiguration;
+          if (!capability) throw new Error('Missing original configuration actor');
+          await capability.restore('pi');
+          if ((await capability.inspect('pi')).status !== 'notConfigured') {
+            throw new Error('Owned Pi configuration remains after restore');
+          }
+        });
         await phase.handle.evaluate(({ controller }) => controller.selectSection('keys'));
         const row = page.locator(`[data-key-id=${JSON.stringify(id)}]`);
         await row.getByRole('button', { name: /^销毁 /u }).click();

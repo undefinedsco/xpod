@@ -4,7 +4,6 @@ import { AuthMiddleware } from '../../src/api/middleware/AuthMiddleware';
 import { registerChatRoutes, type ChatCompletionResponse } from '../../src/api/handlers/ChatHandler';
 import { ChatCompletionsFrontend, MessagesFrontend, ResponsesFrontend } from '../../src/api/ai-gateway/protocol';
 import { GatewayProtocolError } from '../../src/api/ai-gateway/errors';
-import { getFreePort } from '../../src/runtime/port-finder';
 
 const authMiddleware = new AuthMiddleware({
   authenticator: {
@@ -18,7 +17,6 @@ const authMiddleware = new AuthMiddleware({
 
 describe('ChatHandler Integration', () => {
   let server: ApiServer;
-  let port: number;
   let baseUrl: string;
 
   const aiGatewayService = {
@@ -43,11 +41,12 @@ describe('ChatHandler Integration', () => {
   };
 
   beforeAll(async () => {
-    port = await getFreePort(10000);
-    baseUrl = `http://localhost:${port}`;
-    server = new ApiServer({ port, authMiddleware });
+    server = new ApiServer({ host: '127.0.0.1', port: 0, authMiddleware });
     registerChatRoutes(server, { aiGatewayService: aiGatewayService as any });
     await server.start();
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('Missing API server address');
+    baseUrl = `http://127.0.0.1:${address.port}`;
   });
 
   beforeEach(() => {
@@ -227,7 +226,6 @@ describe('ChatHandler without service', () => {
 
 describe('ChatHandler delegates public v1 AI routes to AiGatewayHandler when configured', () => {
   let server: ApiServer;
-  let port: number;
   let baseUrl: string;
 
   const legacyChatService = {
@@ -288,14 +286,15 @@ describe('ChatHandler delegates public v1 AI routes to AiGatewayHandler when con
   };
 
   beforeAll(async () => {
-    port = await getFreePort(12000);
-    baseUrl = `http://localhost:${port}`;
-    server = new ApiServer({ port, authMiddleware });
+    server = new ApiServer({ host: '127.0.0.1', port: 0, authMiddleware });
     registerChatRoutes(server, {
       chatService: legacyChatService as any,
       aiGatewayService: aiGatewayService as any,
     });
     await server.start();
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('Missing API server address');
+    baseUrl = `http://127.0.0.1:${address.port}`;
   });
 
   beforeEach(() => {

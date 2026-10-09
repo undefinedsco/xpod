@@ -12,7 +12,7 @@ it('retains grant failures before any case exists without publishing private tex
 });
 
 it('rejects injected diagnostics and retains only bounded reviewed facts', () => {
-  const evidence = { ok: false, cases: [{ ok: true, taskId: 'private-url', producerFailure: { status: 'private-status', errorClass: 'private-error' } }], acceptancePhase: 'private-key',
+  const evidence = { ok: false, cases: [{ ok: true, taskId: 'private-url', approval: 'https://private.example/approval#original', producerFailure: { status: 'private-status', errorClass: 'private-error' } }], acceptancePhase: 'private-key',
     failureDetails: { substage: 'private-substage', category: 'private-body', httpStatus: 999, taskError: 'private-token' },
     cleanup: { ok: false } } as unknown as LiveTaskEvidence;
   expect(summarizeLiveTaskFailure(evidence)).toEqual({ phase: 'other', completedCases: 1, cleanupOk: false });
