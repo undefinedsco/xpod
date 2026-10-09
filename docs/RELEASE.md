@@ -79,6 +79,12 @@ policy 为空。上线前必须补齐分支与环境策略；创建/推送 stagi
    `stable-staging` tag，并由 Node/Bun 重新安装验证；然后才移动 npm `latest`、把 accepted digest
    重新标记为 stable/latest 容器 tag，并调用生产部署。
 
+macOS QLever 以原生输入、构建 workflow、验收脚本和 Clang 身份缓存已验证的完整 runtime，
+不以 Xpod 提交 SHA 作为缓存键。精确命中后跳过 C++ 编译和构建工具安装，先校验旧产物的
+归档/manifest/二进制摘要，再重新执行 ready、ABI、RDF、FTS、VEC 和 shutdown smoke，
+最后为本轮候选 SHA 生成新证据。缓存首次建立、过期或原生输入变化时才重新构建；
+复用不继承上一轮候选的整体通过状态。ccache 只作为需要编译时的第二层加速。
+
 ## 一次性 RC 环境
 
 GitHub 需要配置独立的 GitHub Environment `rc`：
@@ -166,6 +172,11 @@ RC.300 的 `operations-a/task-isolation` 也只证明 Task 验收失败，不证
 包括尚未创建 case 的 grant 失败；原始错误、资源地址、凭据和响应正文继续只存私有证据。
 RC.301 已定位为 `approved:checkpoint/assertion`，清理成功，但具体断言仍未证明。
 公开摘要进一步保留白名单子步骤和 producer 状态/错误类，不发布 provider 文本或资源标识。
+RC.302 将失败收敛为 `checkpoint-match` 时 producer 已失败；同源码本机安装包复现得到
+`Cannot find package '@mariozechner/pi-coding-agent'`。其原生动态导入不在 Components.js 依赖闭包内，
+单文件构建必须额外收录 ESM SDK 和原生资源依赖。快速回归在禁止借用源码仓库依赖的目录中
+创建真实 Agent 会话；该回归不能替代同包 Task 审批、Stop 和跨 Pod 的桌面验收。
+SDK 的 Windows 终端输入依赖 Koffi 不属于 macOS/Linux 原生产物，不能整包收录其多平台二进制。
 
 这些值必须由 RC seed 自动生成，不能作为 GitHub secret/variable 手工维护：
 
@@ -457,7 +468,9 @@ tarball 损坏、integrity 不匹配、出现重复成员、路径穿越、链�
 ## 构建耗时与缓存
 
 RC 里最重的一环是 `build_qlever_macos_runtime`（macOS ARM64 原生运行时）。
-它用 ccache 做了增量：构建步实测 **23.1 分钟（冷）→ 1.5 分钟（暖）**，暖启动
+它现在优先精确复用完整 runtime，命中时不进入编译；原生输入和工具链身份变化或缓存失效
+才回到构建路径。每次复用都重新校验摘要并运行原生 smoke，不能复用旧候选的整体验收结论。
+此前仅用 ccache 做增量时，构建步曾实测 **23.1 分钟（冷）→ 1.5 分钟（暖）**，暖启动
 631 次编译命中 630 次（99.8%，只有 1 次新增未命中），签名的 smoke 验收照常通过。
 缓存体积只有约 0.1 GiB，恢复代价可忽略。
 

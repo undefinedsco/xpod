@@ -41,7 +41,24 @@ jobs:
           [[ "$SOURCE_SHA" =~ ^[a-f0-9]{40}$ ]]
           echo "artifact_name=qlever-local-runtime-darwin-arm64-${SOURCE_SHA}" >> "$GITHUB_OUTPUT"
 
+      # Reuse the finished runtime, not just compiler objects. Xpod-only commits
+      # must not trigger C++ compilation; native inputs/toolchain changes do.
+      - name: Resolve native toolchain identity
+        id: toolchain
+        run: |
+          set -euo pipefail
+          identity=$(xcrun clang --version | shasum -a 256 | cut -d ' ' -f 1)
+          echo "identity=$identity" >> "$GITHUB_OUTPUT"
+
+      - name: Restore verified native runtime
+        id: runtime_cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/xpod-qlever-runtime
+          key: qlever-macos-runtime-v1-${{ runner.arch }}-15-${{ steps.toolchain.outputs.identity }}-${{ hashFiles('qlever/**', '.github/workflows/build-qlever-macos-runtime.yml', 'scripts/release-gate-evidence.cjs') }}
+
       - name: Cache Homebrew downloads
+        if: steps.runtime_cache.outputs.cache-hit != 'true'
         uses: actions/cache@v4
         with:
           path: ~/Library/Caches/Homebrew
@@ -51,11 +68,13 @@ jobs:
           key: brew-${{ runner.os }}-15-${{ hashFiles('.github/workflows/build-qlever-macos-runtime.yml') }}
 
       - name: Install the upstream native toolchain
+        if: steps.runtime_cache.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
           brew install boost icu4c openssl@3 zstd jemalloc pkg-config sqlite dylibbundler ninja ccache
 
       - name: Cache the compiler cache
+        if: steps.runtime_cache.outputs.cache-hit != 'true'
         uses: actions/cache@v4
         with:
           path: ${{ runner.temp }}/ccache
@@ -72,6 +91,7 @@ jobs:
             ccache-${{ runner.os }}-15-
 
       - name: Resolve build parallelism
+        if: steps.runtime_cache.outputs.cache-hit != 'true'
         id: parallelism
         run: |
           set -euo pipefail
@@ -88,6 +108,7 @@ jobs:
           echo "jobs=$jobs" >> "$GITHUB_OUTPUT"
 
       - name: Build, bundle, sign, and smoke the native runtime
+        if: steps.runtime_cache.outputs.cache-hit != 'true'
         env:
           CCACHE_DIR: ${{ runner.temp }}/ccache
           CCACHE_MAXSIZE: 2G
@@ -96,6 +117,24 @@ jobs:
           XPOD_QLEVER_PLATFORM_RUNTIME_ARCHIVE: ${{ runner.temp }}/xpod-qlever-runtime/qlever-local-runtime-darwin-arm64.tar.gz
           XPOD_QLEVER_BUILD_JOBS: ${{ steps.parallelism.outputs.jobs }}
         run: qlever/scripts/build-macos-local-runtime.sh
+
+      - name: Verify and smoke the reused native runtime
+        if: steps.runtime_cache.outputs.cache-hit == 'true'
+        env:
+          RUNTIME_ROOT: ${{ runner.temp }}/xpod-qlever-runtime
+          SMOKE_ROOT: ${{ runner.temp }}/xpod-qlever-reuse-smoke
+        run: |
+          set -euo pipefail
+          prior_source=$(node -p 'JSON.parse(require("fs").readFileSync(process.env.RUNTIME_ROOT + "/qlever-local-acceptance.json", "utf8")).sourceSha')
+          node scripts/release-gate-evidence.cjs verify-qlever-local \
+            --source-sha "$prior_source" \
+            --evidence "$RUNTIME_ROOT/qlever-local-acceptance.json" \
+            --expected-archive "$RUNTIME_ROOT/qlever-local-runtime-darwin-arm64.tar.gz"
+          mkdir -p "$SMOKE_ROOT"
+          tar -xzf "$RUNTIME_ROOT/qlever-local-runtime-darwin-arm64.tar.gz" -C "$SMOKE_ROOT"
+          python3 qlever/scripts/verify-local-runtime-artifacts.py \
+            --prefix "$SMOKE_ROOT" --lock qlever/qlever.lock.json \
+            --build-source macos-arm64 --smoke-database "$RUNNER_TEMP/qlever-reuse-smoke.sqlite"
 
       # Runs only after the real runtime smoke (ready/ABI/RDF/FTS/VEC/shutdown)
       # succeeded, so the recorded hashes describe a functionally verified build.
@@ -109,11 +148,11 @@ jobs:
             --source-sha "$SOURCE_SHA" \
             --archive "$RUNTIME_ARCHIVE" \
             --abi-platform macos-arm64 \
-            --smoke-command 'qlever/scripts/build-macos-local-runtime.sh (verify-local-runtime-artifacts.py --build-source macos-arm64: ready/ABI/RDF/FTS/VEC/shutdown smoke)' \
+            --smoke-command 'verify-local-runtime-artifacts.py --build-source macos-arm64 (fresh or reused runtime: ready/ABI/RDF/FTS/VEC/shutdown smoke)' \
             --out "$(dirname "$RUNTIME_ARCHIVE")/qlever-local-acceptance.json"
 
       - name: Report compiler cache statistics
-        if: always()
+        if: always() && steps.runtime_cache.outputs.cache-hit != 'true'
         env:
           CCACHE_DIR: ${{ runner.temp }}/ccache
         run: ccache --show-stats --verbose || true
