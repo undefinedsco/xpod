@@ -251,7 +251,7 @@
     },
     "packages/xpod-cli": {
       "name": "@undefineds.co/xpod-cli",
-      "version": "0.1.0-preview.1",
+      "version": "0.1.0-preview.2",
       "bin": {
         "xpod": "./dist/bin/xpod",
       },

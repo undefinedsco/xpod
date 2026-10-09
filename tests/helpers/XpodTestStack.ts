@@ -1,5 +1,6 @@
 import path from 'path';
 import { randomUUID } from 'node:crypto';
+import { isIP } from 'node:net';
 import { getFreePortForWildcard } from '../../src/runtime/port-finder';
 import { startXpodRuntime, type XpodRuntimeHandle, type XpodRuntimeOptions } from '../../src/runtime/XpodRuntime';
 import { resolveTestRuntimeTransport } from './runtimeTransport';
@@ -54,6 +55,14 @@ export class XpodTestStack {
           if (attempt >= attempts || !isPortConflict(error)) {
             throw error;
           }
+          const failure = error && typeof error === 'object' ? error as NodeJS.ErrnoException & { address?: unknown; port?: unknown } : undefined;
+          console.warn('[XpodTestStack] port-conflict retry', JSON.stringify({
+            attempt, maxAttempts: attempts,
+            code: failure?.code === 'EADDRINUSE' ? failure.code : null,
+            syscall: failure?.syscall === 'listen' ? failure.syscall : null,
+            address: typeof failure?.address === 'string' && isIP(failure.address) ? failure.address : null,
+            port: typeof failure?.port === 'number' && Number.isInteger(failure.port) && failure.port > 0 && failure.port <= 65535 ? failure.port : null,
+          }));
           await this.stop().catch(() => undefined);
         }
       }

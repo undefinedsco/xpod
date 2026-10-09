@@ -38,6 +38,7 @@ import { exportApplicationSources } from '../src/application-sources';
 import { validateNativeBuildReceipt, verifyNativeSources } from '../src/native-sources';
 import { verifySourceFiles } from '../src/source-materials';
 import { externalRuntimeLauncher } from '../src/launcher';
+import { CLIUI_MODIFICATION_NOTICE, SOURCE_KIT_GOOGLE_NOTICE } from '../src/promotion';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const packageRoot = path.resolve(here, '..');
@@ -265,6 +266,8 @@ License terms: https://www.mozilla.org/en-US/MPL/2.0/
 This notice concerns that covered source; it does not assign MPL to the whole CLI.
 ` : ''}
 
+${includeNative ? SOURCE_KIT_GOOGLE_NOTICE : ''}
+${CLIUI_MODIFICATION_NOTICE}
 ## Not included
 - rclone (MIT): research backend only, not part of this artifact.
 `;

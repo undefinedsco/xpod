@@ -17,6 +17,8 @@ import type { ProviderRuntimeAdapter } from './ProviderRuntimeAdapter';
 export interface ProviderRuntimeRegistryOptions {
   registry?: ProviderRegistry;
   transport?: ProviderHttpTransport;
+  /** Operator endpoints use their own transport trust policy. */
+  deploymentTransport?: ProviderHttpTransport;
   /**
    * Whether a credential may supply its own base URL. Only a Local deployment
    * may; Cloud resolves every provider against the catalog endpoint.
@@ -79,6 +81,20 @@ export class ProviderRuntimeRegistry {
       descriptor: custom,
       allowCredentialBaseUrl: options.allowCredentialBaseUrl,
     }));
+    for (const descriptor of registry.listProviders()) {
+      if (descriptor.runtimeProtocol !== 'openai-compatible') continue;
+      this.adapters.set(descriptor.id, new OpenAiCompatibleRuntimeAdapter({
+        transport: descriptor.deploymentManaged ? options.deploymentTransport ?? transport : transport,
+        resolveModel,
+        provider: descriptor.id,
+        descriptor,
+        defaultBaseUrl: descriptor.defaultBaseUrl,
+        safeBaseUrls: descriptor.safeBaseUrls,
+        supportsImages: descriptor.capabilities.imageInput,
+        supportsDeveloperMessages: true,
+        allowToolChoiceRequired: true,
+      }));
+    }
   }
 
   public get(provider: string): ProviderRuntimeAdapter {

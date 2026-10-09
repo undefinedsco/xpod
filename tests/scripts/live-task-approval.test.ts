@@ -1,3 +1,4 @@
+import { projectTaskRunFailureDiagnostic } from '../../src/api/tasks/TaskRunFailureDiagnostic';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { drizzle } from '@undefineds.co/drizzle-solid';
 import { approvalResource, threadResource, type ApprovalRow } from '@undefineds.co/models';
@@ -132,5 +133,21 @@ describe('live Task acceptance evidence gates (unit checks, not live proof)', ()
     await expect(pollLiveTask(async () => { throw new Error('HTTP 403'); }, () => true, 'checkpoint')).rejects.toThrow('HTTP 403');
     await expect(pollLiveTask(async () => ({ ...run, status: 'failed' }), value =>
       requireLiveTerminal(value, run.id, 'completed'), 'terminal')).rejects.toThrow('expected completed');
+  });
+});
+
+describe('Task failure diagnostic safe projection', () => {
+  const diagnostic = { code: 'TASK_RUNTIME_ERROR', stage: 'start_backend', status: 'failed' };
+  it('preserves only fixed failed-state fields', () => {
+    expect(projectTaskRunFailureDiagnostic({ ...diagnostic, message: 'Bearer secret https://private.example/prompt', owner: 'private' }, 'failed')).toEqual(diagnostic);
+  });
+  it.each(['running', 'completed', 'cancelled', 'waiting_input', 'waiting_runner'])('omits diagnostics for %s', status => {
+    expect(projectTaskRunFailureDiagnostic(diagnostic, status)).toBeUndefined();
+  });
+  it('rejects unknown enums and malformed fields without parsing arbitrary text', () => {
+    for (const bad of [{ ...diagnostic, code: 'HTTP_401_secret' }, { ...diagnostic, stage: 'https://secret.example' },
+      { ...diagnostic, status: 'running' }, null, [], 'Bearer secret']) {
+      expect(projectTaskRunFailureDiagnostic(bad, 'failed')).toBeUndefined();
+    }
   });
 });

@@ -199,6 +199,10 @@ describe('stable release promotion workflow', () => {
       'models',
       'chat',
       'task-approval',
+      'native-sparql',
+      'native-public16',
+      'native-private17',
+      'native-namespace-pull',
       'qlever-local',
       'desktop',
     ]) {

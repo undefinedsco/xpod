@@ -126,7 +126,7 @@ for (const mode of ['local', 'cloud'] as const) {
 
     it('runs Range, metadata/search and conditional file writes through production components', async () => {
       const report = await acceptLiveDirectory({
-        gateway: baseUrl, podRoot: privateRoot, write: true,
+        baseUrl, podRoot: privateRoot, write: true,
         discover: (url, init) => fetch(url, init),
         authenticate: async () => ({ webId: account.webId, request: (url, init) => session.fetch(url, init) }),
       });
