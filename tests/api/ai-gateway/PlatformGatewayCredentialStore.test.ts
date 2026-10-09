@@ -23,7 +23,13 @@ function setup(personal: GatewayCredentialStore = { listCredentials: async() => 
       calls.push({ url: String(url), authorization: new Headers(init?.headers).get('authorization') });
       if (String(url).endsWith('/models')) {
         if (failure) return new Response('unavailable', { status: 503 });
-        return Response.json({ data: empty ? [] : [{ id: 'linx-lite' }, { id: 'linx-pro', display_name: 'Linx Pro' }] });
+        return Response.json({ data: empty ? [] : [{ id: 'linx-lite' }, {
+          id: 'linx-pro', display_name: 'Linx Pro', owned_by: 'untrusted-upstream-owner',
+          context_window: 200_000, capabilities: { toolCalls: true, imageInput: false, apiKey: config.apiKey },
+          protocols: ['chatCompletions', 'responses', 'unsafe-protocol'],
+          modalities: { input: ['text', 'image'], output: ['text'], secret: config.apiKey },
+          custom_capabilities: ['reasoning'], secret: config.apiKey,
+        }] });
       }
       return new Response('data: {"id":"chatcmpl-platform","choices":[{"index":0,"delta":{"content":"platform answer"},"finish_reason":null}]}\n\ndata: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } });
     }) as typeof fetch,
@@ -49,6 +55,11 @@ describe('platform Gateway capacity', () => {
     const models = await fixture.service.listModels(auth);
     expect(models.map((model) => model.id)).toEqual(['linx-lite', 'linx-pro']);
     expect(JSON.stringify(models)).not.toContain(config.apiKey);
+    expect(models.find((model) => model.id === 'linx-pro')).toMatchObject({
+      owned_by: config.provider, context_window: 200_000,
+      capabilities: { toolCalls: true, imageInput: false }, protocols: ['chatCompletions', 'responses'],
+      modalities: { input: ['text', 'image'], output: ['text'] }, custom_capabilities: ['reasoning'],
+    });
     const response = await fixture.service.complete({ auth, protocol: 'chatCompletions', body: { model: 'linx-pro', messages: [{ role: 'user', content: 'hello' }] } });
     expect(JSON.stringify(response)).toContain('platform answer');
     expect(JSON.stringify(response)).not.toContain(config.apiKey);
@@ -74,6 +85,19 @@ describe('platform Gateway capacity', () => {
     const fixture = setup();
     fixture.fail();
     expect((await fixture.store.listCredentials(input))[0].models).toEqual(['linx-lite']);
+  });
+
+  it('returns independent safe metadata snapshots without exposing nested raw fields', async() => {
+    const fixture = setup();
+    const first = (await fixture.store.listCredentials(input))[0];
+    const projection = first.modelProjections!.find((model) => model.id === 'linx-pro')!;
+    expect(JSON.stringify(first.modelProjections)).not.toContain(config.apiKey);
+    expect(projection.capabilities).toEqual({ toolCalls: true, imageInput: false });
+    projection.modalities!.input!.push('mutation');
+    projection.capabilities!.toolCalls = false;
+    const next = (await fixture.store.listCredentials(input))[0].modelProjections!.find((model) => model.id === 'linx-pro')!;
+    expect(next.modalities!.input).toEqual(['text', 'image']);
+    expect(next.capabilities!.toolCalls).toBe(true);
   });
 
   it('keeps platform lifecycle out of the personal repository and preserves personal delegation', async() => {

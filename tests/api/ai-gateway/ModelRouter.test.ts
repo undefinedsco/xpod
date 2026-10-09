@@ -37,6 +37,7 @@ function credential(input: Partial<GatewayCredentialCandidate> & {
     enabled: input.enabled ?? true,
     priority: input.priority ?? 100,
     models: input.models,
+    modelProjections: input.modelProjections,
     defaultModel: input.defaultModel,
     health: input.health ?? 'healthy',
     quota: input.quota ?? { status: 'available' },
@@ -75,6 +76,19 @@ function router(input: {
 }
 
 describe('ModelRouter platform and personal model union', () => {
+  it('preserves platform metadata while binding model ownership to the configured route', async () => {
+    const registry = createDefaultProviderRegistry();
+    registry.register({ ...registry.requireProvider('openai'), id: 'platform-test', models: [], deploymentManaged: true });
+    const modelRouter = router({ registry, credentials: [credential({
+      id: 'platform', source: 'platform', provider: 'platform-test', models: ['org/model'],
+      modelProjections: [{ id: 'org/model', object: 'model', owned_by: 'upstream', context_window: 32768, modalities: { input: ['text', 'image'], output: ['text'] }, protocols: ['chatCompletions'] }],
+    })], selections: [] });
+    const models = await modelRouter.listVisibleModels({ webId: WEB_ID, deployment: 'cloud' });
+    expect(models).toContainEqual({ id: 'org/model', object: 'model', owned_by: 'platform-test', context_window: 32768, modalities: { input: ['text', 'image'], output: ['text'] }, protocols: ['chatCompletions'] });
+    expect((await modelRouter.route({ webId: WEB_ID, deployment: 'cloud', model: 'org/model' })).provider.id).toBe('platform-test');
+    models[0].modalities!.input!.push('audio');
+    expect((await modelRouter.listVisibleModels({ webId: WEB_ID, deployment: 'cloud' }))[0].modalities!.input).toEqual(['text', 'image']);
+  });
   function setup(selections?: Array<{ provider: string; models: string[] }>) {
     const registry = createDefaultProviderRegistry();
     registry.register({ ...registry.requireProvider('openai'), id: 'platform-test', models: [], deploymentManaged: true });
@@ -137,6 +151,23 @@ describe('ModelRouter platform and personal model union', () => {
     ] });
     expect((await modelRouter.listVisibleModels({ webId: WEB_ID, deployment: 'local' }))[0]).toMatchObject({ id: 'gpt-5', owned_by: 'custom' });
     expect((await modelRouter.route({ webId: WEB_ID, deployment: 'local', model: 'gpt-5' })).credential.id).toBe('personal-compatible');
+  });
+
+  it.each([
+    ['org/model', undefined],
+    ['openai/gpt-5', undefined],
+    ['smart', { smart: { provider: 'openai', model: 'gpt-5' } }],
+  ])('routes the published opaque id %s before provider prefixes and aliases', async (model, aliases) => {
+    const registry = new ProviderRegistry(createDefaultProviderRegistry().listProviders(), { aliases });
+    registry.register({ ...registry.requireProvider('openai'), id: 'platform-test', models: [], deploymentManaged: true });
+    for (const selections of [undefined, []]) {
+      const modelRouter = router({ registry, selections, credentials: [
+        credential({ id: 'personal', provider: 'openai', models: ['gpt-5'] }),
+        credential({ id: 'platform', provider: 'platform-test', source: 'platform', models: [model] }),
+      ] });
+      expect(await modelRouter.listVisibleModels({ webId: WEB_ID, deployment: 'cloud' })).toContainEqual(expect.objectContaining({ id: model, owned_by: 'platform-test' }));
+      expect(await modelRouter.route({ webId: WEB_ID, deployment: 'cloud', model })).toMatchObject({ model, provider: { id: 'platform-test' }, credential: { id: 'platform' } });
+    }
   });
 });
 

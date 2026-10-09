@@ -1,7 +1,8 @@
 import type { GatewayCredentialStore, StoredGatewayCredential, GatewayCredentialHealthRecord, GatewayCredentialRenewalRequest } from '../AiGatewayService';
 import { encodePlaintextCredential } from './PlaintextCredentialPayload';
 import { normalizeProviderId, type ProviderRegistry } from '../providers/ProviderRegistry';
-import { normalizeDiscoveredModels } from '../models/ProviderModelsAdapter';
+import { parseGatewayModelList } from '../models/GatewayModelProjection';
+import type { GatewayModelProjection } from '../routing/ModelRouter';
 import { ProviderHttpTransport } from '../../service/provider-http-transport';
 
 export interface PlatformGatewayConfiguration {
@@ -53,6 +54,7 @@ export class PlatformGatewayCredentialStore implements GatewayCredentialStore {
   private readonly credentialId: string;
   private models: string[];
   private names: Record<string, string> = {};
+  private projections: GatewayModelProjection[];
   private refreshedAt = 0;
   private refresh?: Promise<void>;
   private health: StoredGatewayCredential['health'] = 'healthy';
@@ -66,6 +68,7 @@ export class PlatformGatewayCredentialStore implements GatewayCredentialStore {
   }) {
     this.credentialId = `urn:xpod:platform-credential:${options.config.provider}`;
     this.models = options.config.defaultModel ? [options.config.defaultModel] : [];
+    this.projections = this.models.map((id) => ({ id, object: 'model', owned_by: options.config.provider }));
   }
 
   public async listCredentials(input: Parameters<GatewayCredentialStore['listCredentials']>[0]): Promise<StoredGatewayCredential[]> {
@@ -80,6 +83,7 @@ export class PlatformGatewayCredentialStore implements GatewayCredentialStore {
       priority: Number.MAX_SAFE_INTEGER,
       models: [...this.models],
       modelNames: { ...this.names },
+      modelProjections: structuredClone(this.projections),
       defaultModel: this.options.config.defaultModel,
       health: this.health,
       cooldownUntil: this.cooldownUntil,
@@ -129,12 +133,21 @@ export class PlatformGatewayCredentialStore implements GatewayCredentialStore {
         headers: { authorization: `Bearer ${this.options.config.apiKey}` },
         signal: AbortSignal.timeout(5_000),
       });
-      const models = normalizeDiscoveredModels(body);
+      if (!body || typeof body !== 'object' || !Array.isArray((body as { data?: unknown }).data)) {
+        throw new Error('invalid_platform_models_response');
+      }
+      const models = parseGatewayModelList(body, { ownerOverride: this.options.config.provider });
       this.models = Array.from(new Set([
         ...models.map((model) => model.id),
         ...(this.options.config.defaultModel ? [this.options.config.defaultModel] : []),
       ]));
-      this.names = Object.fromEntries(models.flatMap((model) => model.displayName ? [[model.id, model.displayName]] : []));
+      this.names = Object.fromEntries(models.flatMap((model) => model.display_name ? [[model.id, model.display_name]] : []));
+      this.projections = [...models];
+      for (const id of this.models) {
+        if (!this.projections.some((model) => model.id === id)) {
+          this.projections.push({ id, object: 'model', owned_by: this.options.config.provider });
+        }
+      }
     } catch {
       // Keep the last successful discovery, or the explicitly configured default on first failure.
       // Upstream error bodies can contain service secrets and are deliberately not logged.

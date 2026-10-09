@@ -37,6 +37,8 @@ export interface GatewayCredentialCandidate {
   models?: string[];
   /** Display names the Pod recorded for `models`, keyed by model id. */
   modelNames?: Record<string, string>;
+  /** Validated public model metadata supplied by the deployment-owned gateway. */
+  modelProjections?: GatewayModelProjection[];
   customModels?: CustomProviderModel[];
   defaultModel?: string;
   health?: GatewayCredentialHealth;
@@ -349,6 +351,12 @@ export class ModelRouter {
   ): ResolvedModelTarget {
     const requestedModel = input.model?.trim();
     if (requestedModel) {
+      // Published ids are opaque upstream identifiers, including slashes and
+      // names that also happen to be configured aliases.
+      const published = this.credentialVisibleModels(candidates).find((model) => model.id === requestedModel);
+      if (published) {
+        return { providerId: published.owned_by, model: published.id, source: 'exact-model' };
+      }
       const alias = this.registry.resolveAlias(requestedModel);
       if (alias) {
         return {
@@ -405,6 +413,11 @@ export class ModelRouter {
   ): ResolvedModelTarget {
     const requestedModel = input.model?.trim();
     if (requestedModel) {
+      const publishedMatches = visibleTargets.filter((target) => target.projection.id === requestedModel);
+      const published = publishedMatches.find((target) => target.selectionDefault) ?? publishedMatches[0];
+      if (published) {
+        return { providerId: published.providerId, model: published.model, source: 'exact-model' };
+      }
       const alias = this.registry.resolveAlias(requestedModel);
       if (alias) {
         const visible = visibleTargets.find((target) =>
@@ -541,12 +554,6 @@ export class ModelRouter {
       .map((candidate) => modelPreference(candidate, modelId)));
     const registryMatches = this.registry.findModel(model).sort((left, right) =>
       providerPreference(right.provider.id, right.model.id) - providerPreference(left.provider.id, left.model.id));
-    const declaredPlatform = orderedCandidates.find((candidate) => candidate.source === 'platform' && modelPreference(candidate, model) > 0);
-    const hasPersonalRoute = registryMatches.some((match) => providerPreference(match.provider.id, match.model.id) === 2)
-      || orderedCandidates.some((candidate) => candidate.source !== 'platform' && candidate.models !== undefined && modelPreference(candidate, model) > 0);
-    if (declaredPlatform && !hasPersonalRoute) {
-      return { providerId: this.routeProviderIdForCredential(declaredPlatform), model, source: 'exact-model' };
-    }
     if (registryMatches.length > 0) {
       const candidateMatch = registryMatches.find((match) =>
         candidates.some((candidate) =>
@@ -782,8 +789,15 @@ export class ModelRouter {
           }
         }
       }
+      const platformProjections = new Map(providerCandidates
+        .filter((candidate) => candidate.source === 'platform')
+        .flatMap((candidate) => candidate.modelProjections ?? [])
+        .map((projection) => [projection.id, projection] as const));
       for (const model of selected) {
-        const projection = modelProjection(provider, model, selectedNames.get(modelIdentity(model)));
+        const platformProjection = platformProjections.get(model);
+        const projection: GatewayModelProjection = platformProjection
+          ? { ...structuredClone(platformProjection), id: model, object: 'model', owned_by: provider.id }
+          : modelProjection(provider, model, selectedNames.get(modelIdentity(model)));
         if (seen.has(projection.id)) {
           continue;
         }
