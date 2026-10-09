@@ -92,3 +92,8 @@ Provider confirmation compares collection descriptor keys and provider resource 
 ### 2026-10-09：跨 WebID 验收的客户端配置清理
 
 每轮验收写入的 Pi 配置应在该 WebID 的权限仍有效时，通过原 mounted host 的正式 `aiClientConfiguration.restore('pi')` 恢复，并独立回读为 `notConfigured`；随后才撤销本次 Key、回滚 Pod 授权并切换身份。只撤销 Key 会遗留上一 WebID 的配置归属，下一身份的 plan 被正确拒绝，不能算作登录或新 Key 签发失败。回归使用真实 Pi adapter 证明旧状态阻止跨身份覆盖、恢复后新身份可规划，并保留原有用户设置；不绕过归属检查或删除用户配置目录。
+
+
+### 2026-10-09：Task 的调用预算须贯穿 renderer 传输
+
+真实 Task 批准后的 resume 本已使用 180 秒预算，renderer owner transport 不得另设 20 秒而截断它。转发层以原调用方 `AbortSignal` 驱动本机浏览器的原生 `AbortController`，保留取消原因，结束后释放监听器和句柄；没有调用方 signal 时仍默认 20 秒。回归使用真实 HTTP 请求证明取消可以跨该边界中止，预先取消不会启动请求。CLI owner credential transport 已保留原 signal；Pod CRUD 与匿名 profile 的独立 20 秒预算不代替 Task resume 的预算。本规则不增加原验收门槛的超时值，不重试写请求，也不绕过真实 Gateway 或权限检查。

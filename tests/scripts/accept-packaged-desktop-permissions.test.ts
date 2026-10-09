@@ -1,11 +1,12 @@
 import { errors, type Page } from '@playwright/test';
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { createServer } from 'node:http';
 import { expect, it, vi } from 'vitest';
 import { AiConnectionsInvocationKeyIssuer } from '../../src/api/ai-gateway/auth/AiConnectionsInvocationKeyIssuer';
 import { AesInvocationTokenCodec } from '../../src/api/ai-gateway/auth/InvocationTokenCodec';
 import { acceptPackagedDesktopPermissions, assertOwnedTaskRows, DesktopAcceptanceError, describeFailure,
-  publishedFailures, requirePackagedInvocationKey } from '../../scripts/accept-packaged-desktop-permissions';
+  publishedFailures, requirePackagedInvocationKey, rendererOwnerFetch } from '../../scripts/accept-packaged-desktop-permissions';
 import { acceptMountedPodPermissions, attributeMountedOperation, MountedPermissionError } from '../../scripts/helpers/packaged-desktop-permissions';
 import { attributeOidcOperation, OidcApprovalError } from '../../tests/helpers/browserSolidOidc';
 
@@ -272,4 +273,58 @@ it('requires two independent Cloud WebIDs for the two-Pod isolation claim', asyn
     [a, { ...b, webId: 'https://foreign.example/card#me' }], [a]]) {
     expect(() => assertIndependentPackagedBindings(pair, issuer)).toThrow('identity/storage');
   }
+});
+
+
+it('forwards caller cancellation through the renderer without replacing its deadline', async () => {
+  let requestStarted!: () => void;
+  const started = new Promise<void>(resolve => { requestStarted = resolve; });
+  const server = createServer((request, response) => {
+    expect(request.headers.authorization).toBe('Bearer fixture-owner-key');
+    expect(request.headers['x-xpod-pod-url']).toBe('https://pod.example/alice/');
+    requestStarted();
+    const timer = setTimeout(() => { response.setHeader('content-type', 'application/json'); response.end('{}'); }, 250);
+    response.on('close', () => clearTimeout(timer));
+  });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  if (!address || typeof address === 'string') throw new Error('Missing owned test address');
+  const gateway = `http://127.0.0.1:${address.port}/`;
+  const dispose = vi.fn(async () => undefined);
+  const page = {
+    evaluateHandle: async (fn: () => AbortController) => {
+      const value = fn();
+      return { value, evaluate: async (fn: (controller: AbortController) => unknown) => fn(value), dispose };
+    },
+    evaluate: async (fn: Function, input: { controller?: { value: AbortController } }) =>
+      fn({ ...input, ...(input.controller ? { controller: input.controller.value } : {}) }),
+  } as unknown as Page;
+  vi.stubGlobal('window', { location: { origin: new URL(gateway).origin } });
+  try {
+    const controller = new AbortController();
+    const ownerFetch = rendererOwnerFetch(page, gateway, 'https://pod.example/alice/', 'fixture-owner-key');
+    const pending = ownerFetch(new URL('api/tasks/resume', gateway), { signal: controller.signal });
+    const rejection = expect(pending).rejects.toThrow('fixture-cancelled');
+    await started;
+    controller.abort(new Error('fixture-cancelled'));
+    await rejection;
+    expect(dispose).toHaveBeenCalledOnce();
+  } finally {
+    vi.unstubAllGlobals();
+    server.closeAllConnections();
+    await new Promise<void>(resolve => server.close(() => resolve()));
+  }
+});
+
+
+it('does not start a renderer request when the caller has already cancelled it', async () => {
+  const controller = new AbortController();
+  const reason = new Error('cancelled-before-renderer');
+  controller.abort(reason);
+  const evaluateHandle = vi.fn();
+  const page = { evaluateHandle } as unknown as Page;
+  await expect(rendererOwnerFetch(page, 'http://127.0.0.1:41234/', 'https://pod.example/alice/', 'fixture-key')(
+    'http://127.0.0.1:41234/api/tasks', { signal: controller.signal },
+  )).rejects.toBe(reason);
+  expect(evaluateHandle).not.toHaveBeenCalled();
 });

@@ -190,24 +190,38 @@ function mountedPodFetch(phase: MountedPodPermissionPhase, podUrl: string): type
   }) as typeof fetch;
 }
 
-function rendererOwnerFetch(page: Page, gateway: string, podUrl: string, key: string): typeof fetch {
+export function rendererOwnerFetch(page: Page, gateway: string, podUrl: string, key: string): typeof fetch {
   return (async (input, init) => {
     const url = input instanceof Request ? input.url : String(input);
     const method = init?.method ?? 'GET';
     if (init?.body !== undefined && typeof init.body !== 'string') throw new DesktopAcceptanceError('task-isolation', 'Unsupported acceptance API body');
-    const result = await page.evaluate(async input => {
-      const target = new URL(input.url), gateway = new URL(input.gateway);
-      if (target.origin !== window.location.origin || target.origin !== gateway.origin || target.username || target.password || target.hash
-        || !(target.pathname === '/api/tasks' || target.pathname.startsWith('/api/tasks/')
-          || target.pathname === '/api/ai/task-credentials' || target.pathname.startsWith('/api/ai/task-credentials/'))) {
-        throw new DesktopAcceptanceError('task-isolation', 'Task acceptance API is outside the owned Gateway');
-      }
-      const response = await fetch(target.href, { method: input.method, redirect: 'error', signal: AbortSignal.timeout(20_000),
-        headers: { Authorization: `Bearer ${input.key}`, 'X-Xpod-Pod-Url': input.podUrl, 'Content-Type': 'application/json' },
-        ...(input.body === undefined ? {} : { body: input.body }) });
-      return { status: response.status, body: await response.text(), headers: Object.fromEntries(response.headers.entries()) };
-    }, { url, gateway, podUrl, key, method, body: init?.body as string | undefined });
-    return new Response([204, 205, 304].includes(result.status) ? null : result.body, { status: result.status, headers: result.headers });
+    const signal = init?.signal ?? AbortSignal.timeout(20_000);
+    signal.throwIfAborted();
+    const controller = await page.evaluateHandle(() => new AbortController());
+    const abort = () => { void controller.evaluate(value => value.abort()).catch(() => undefined); };
+    signal.addEventListener('abort', abort, { once: true });
+    try {
+      signal.throwIfAborted();
+      const result = await page.evaluate(async input => {
+        const target = new URL(input.url), gateway = new URL(input.gateway);
+        if (target.origin !== window.location.origin || target.origin !== gateway.origin || target.username || target.password || target.hash
+          || !(target.pathname === '/api/tasks' || target.pathname.startsWith('/api/tasks/')
+            || target.pathname === '/api/ai/task-credentials' || target.pathname.startsWith('/api/ai/task-credentials/'))) {
+          throw new DesktopAcceptanceError('task-isolation', 'Task acceptance API is outside the owned Gateway');
+        }
+        const response = await fetch(target.href, { method: input.method, redirect: 'error', signal: input.controller.signal,
+          headers: { Authorization: `Bearer ${input.key}`, 'X-Xpod-Pod-Url': input.podUrl, 'Content-Type': 'application/json' },
+          ...(input.body === undefined ? {} : { body: input.body }) });
+        return { status: response.status, body: await response.text(), headers: Object.fromEntries(response.headers.entries()) };
+      }, { url, gateway, podUrl, key, method, body: init?.body as string | undefined, controller });
+      return new Response([204, 205, 304].includes(result.status) ? null : result.body, { status: result.status, headers: result.headers });
+    } catch (error) {
+      if (signal.aborted) throw signal.reason;
+      throw error;
+    } finally {
+      signal.removeEventListener('abort', abort);
+      await controller.dispose();
+    }
   }) as typeof fetch;
 }
 
