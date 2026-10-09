@@ -1,7 +1,7 @@
 import { readFile, mkdtemp, mkdir, writeFile, rm, chmod } from 'node:fs/promises';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { parseDocument } from 'yaml';
 import { describe, expect, it } from 'vitest';
@@ -1053,6 +1053,42 @@ esac
 
 
 describe('native RC predeployment admission', () => {
+  it.each([
+    { original: 0, unexpected: false, expected: 0 },
+    { original: 42, unexpected: false, expected: 42 },
+    { original: 0, unexpected: true, expected: 70 },
+    { original: 42, unexpected: true, expected: 42 },
+  ])('closes registry files and preserves failure codes: $original/$unexpected', async ({ original, unexpected, expected }) => {
+    const workflow = await loadWorkflow();
+    const step = workflow.jobs.deploy_and_accept.steps.find((entry: any) =>
+      entry.name === 'Preflight immutable native images before any RC mutation');
+    const boundary = step.run.indexOf('kubectl -n "$SEALOS_NAMESPACE" get statefulset');
+    expect(boundary).toBeGreaterThan(0);
+    const parent = path.join(repoRoot, '.test-data/native-registry-cleanup');
+    mkdirSync(parent, { recursive: true, mode: 0o700 });
+    const directory = mkdtempSync(path.join(parent, 'case-'));
+    try {
+      const result = spawnSync('bash', ['-c', `${step.run.slice(0, boundary)}
+printf '{}' > "$docker_config_dir/config.json"
+printf '{}' > "$docker_config_dir/pg-workload.json"
+if [ "$TEST_UNEXPECTED" = 1 ]; then printf 'retain' > "$docker_config_dir/unexpected"; fi
+exit "$TEST_ORIGINAL"
+`], { encoding: 'utf8', env: { ...process.env, RUNNER_TEMP: directory,
+        TEST_UNEXPECTED: unexpected ? '1' : '0', TEST_ORIGINAL: String(original) } });
+      expect(result.signal).toBeNull();
+      expect(result.status).toBe(expected);
+      const remaining = readdirSync(directory);
+      if (unexpected) {
+        expect(remaining).toHaveLength(1);
+        expect(readdirSync(path.join(directory, remaining[0]))).toEqual(['unexpected']);
+        expect(result.stderr).toContain('owned-cleanup-failed');
+      } else {
+        expect(remaining).toEqual([]);
+        expect(result.stderr).not.toContain('owned-cleanup-failed');
+      }
+    } finally { rmSync(directory, { recursive: true, force: true }); }
+  });
+
   it('uses one candidate PG for the public full suite before any RC mutation', async () => {
     const workflow = await loadWorkflow();
     expect(workflow.env.NATIVE_PG_IMAGE).toMatch(/@sha256:[a-f0-9]{64}$/);
@@ -1115,7 +1151,10 @@ describe('native RC predeployment admission', () => {
     const run = jobRunText(workflow, 'deploy_and_accept');
     expect(run).toContain('private17-admission-check.json');
     expect(run).toContain("nativePair.ownedCleanup !== 'verified-absent'");
-    expect(run).toContain("private17.database === nativePair.database");
+    expect(run).not.toContain('private17.database === nativePair.database');
+    expect(run).toContain("private17.evidenceBoundary !== 'immutable-installed-joint'");
+    expect(run).toContain('private17.publicCases !== 16 || private17.proCases !== 17');
+    expect(run).toContain('!private17.serverIdentifier || !private17.pgContainerId || !private17.baseTableOID');
   });
 });
 

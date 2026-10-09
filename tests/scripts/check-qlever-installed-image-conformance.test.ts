@@ -354,55 +354,88 @@ describe('actual installed helper with fake Docker producers', () => {
 describe('private17 sanitized single JSON boundary', () => {
   const expected = { admissionSha256: '', installedImage: `ghcr.io/undefinedsco/xpod@sha256:${'a'.repeat(64)}`,
     pgImage: `ccr.ccs.tencentyun.com/undefineds/xpod-rdf-postgres@sha256:${'b'.repeat(64)}`,
-    sourceSha: 'c'.repeat(40), runnerSha256: 'd'.repeat(64), publicDatabase: 'xpod_public16_unique' };
+    sourceSha: 'c'.repeat(40), runnerSha256: 'd'.repeat(64) };
   function proof(): Record<string, any> {
-    return { schemaVersion: 1, kind: 'immutable-installed-component-admission', status: 'ok',
+    const server = { systemIdentifier: '7694358013082710061', containerId: '1'.repeat(64),
+      database: `xpod_joint_${'2'.repeat(32)}`, versionNum: 170010 };
+    const suite = (count: number) => ({ systemIdentifier: server.systemIdentifier, containerId: server.containerId,
+      database: server.database, completeCaseCount: count, canonicalDigest: `sha256:${'e'.repeat(64)}`,
+      reportSHA256: 'f'.repeat(64), failed: 0, skipped: 0, deniedRowsObserved: 0, search: 'verified' });
+    return { schemaVersion: 2, kind: 'immutable-installed-joint-admission', status: 'ok',
       sourceSha: expected.sourceSha, serviceImage: expected.installedImage, postgresImage: expected.pgImage,
-      runnerSHA256: expected.runnerSha256, fixtureSHA256: '09e389146adc51a10a26785a34ef471c66d8bbf00f61b0b69d536d29874120b8',
-      database: 'xpod_private17_owned', semantic: { completeCaseCount: 17,
-        expectedCaseSetSHA256: '348777fe09a4e4baba4287e579cb7b665e5d83aeab144819beb16cb34e12d24e',
-        validatorVersion: 'private17-canonical-digest-search-v1',
-        validatorSourceSHA256: '3436b584435f2ea25f28d14cede7721444d333da4ca2305919b4e7cbdc726034',
-        contractSourceSHA256: '6f1346e598f11959b1e696639fd151f498bd8901ef658c5613435a44d5c46ca1',
-        canonicalDigest: `sha256:${'e'.repeat(64)}`, failed: 0, skipped: 0, deniedRowsObserved: 0 },
-      search: 'verified', abi: '1|true', producer: { actualExit: 0, signal: null, childCount: 1,
-        closedRawSHA256: ['f'.repeat(64)], producerSourceSHA256: '0fe0ca179fd4544188dc5a5d60ea7ee1ebe24f8ac4acb7f56471c3294271aa34', closedReceiptSHA256: '9'.repeat(64) },
-      cleanup: { databaseAbsent: true, ownedResourcesAbsent: true } };
+      runnerSHA256: expected.runnerSha256,
+      contractSHA256: createHash('sha256').update(readFileSync(path.join(root, 'scripts/lib/joint-installed-admission.ts'))).digest('hex'),
+      privateContractSHA256: '6f1346e598f11959b1e696639fd151f498bd8901ef658c5613435a44d5c46ca1',
+      server, schema: { beforeOID: 17238, afterPrepareOID: 17238, afterSuitesOID: 17238, projectionColumns: 2, projectionTriggers: 1 },
+      public: { ...suite(16), fixtureSHA256: 'c15f1bba83aff573b9e3bab685bf66bacb35cd82bac7a13e93e8163559ed5778',
+        caseSetSHA256: '2ce68e4cc93952d123c133baf0cbd92497d73e8d246ea81d48906fd9792bcd99',
+        validatorSHA256: createHash('sha256').update(script).digest('hex') },
+      pro: { ...suite(17), fixtureSHA256: '09e389146adc51a10a26785a34ef471c66d8bbf00f61b0b69d536d29874120b8',
+        caseSetSHA256: '348777fe09a4e4baba4287e579cb7b665e5d83aeab144819beb16cb34e12d24e',
+        validatorSHA256: 'e962c8b94e771f753661810179b8ad982e9dfd4158e6620518b5dbf56cc73374' },
+      abi: '1|true', producer: { actualExit: 0, signal: null, childCount: 1,
+        closedRawSHA256: ['f'.repeat(64)], sourceSHA256: '7c2176daae1ee2b356dd02471a942866faceab24b2cf429a2305471b3e7194da', closedReceiptSHA256: '9'.repeat(64) },
+      cleanup: { databaseAbsent: true, semanticSchemasAbsent: true, ownedResourcesAbsent: true } };
   }
-  function check(bytes: string, authority?: string): Record<string, unknown> {
+  function check(bytes: string, authority?: string, installedImage = expected.installedImage): Record<string, unknown> {
     const base = path.join(root, '.test-data/private17-admission-test'); mkdirSync(base, { recursive: true, mode: 0o700 });
     const dir = mkdtempSync(path.join(base, 'json-')); chmodSync(dir, 0o700);
     const file = path.join(dir, 'private17-admission.json');
     try {
       writeFileSync(file, bytes, { mode: 0o600 });
-      return verifyPrivate17Admission(file, { ...expected,
+      return verifyPrivate17Admission(file, { ...expected, installedImage,
         admissionSha256: authority ?? createHash('sha256').update(bytes).digest('hex') });
     } finally { rmSync(dir, { recursive: true, force: true }); }
   }
   it('accepts only a closed source-bound sanitized JSON without private fixture execution', () => {
     expect(check(JSON.stringify(proof()))).toMatchObject({ status: 'ok', sourceSha: expected.sourceSha,
-      installedImage: expected.installedImage, pgImage: expected.pgImage, database: 'xpod_private17_owned',
-      evidenceBoundary: 'immutable-installed-component' });
+      installedImage: expected.installedImage, pgImage: expected.pgImage, database: `xpod_joint_${'2'.repeat(32)}`,
+      evidenceBoundary: 'immutable-installed-joint' });
+  });
+  it('accepts byte-authorized CNB evidence without changing GHCR release transport', () => {
+    const image = `docker.cnb.cool/undefineds.co/native-builder/xpod-installed@sha256:${'a'.repeat(64)}`;
+    const value = proof(); value.serviceImage = image;
+    const bytes = JSON.stringify(value);
+    expect(check(bytes, undefined, image)).toMatchObject({ status: 'ok', installedImage: image });
+    expect(() => check(bytes, '0'.repeat(64), image)).toThrow(/authority mismatch/);
+    expect(() => private17ProofTag(expected.sourceSha, image)).toThrow();
+  });
+  it('rejects unapproved local proof image repositories', () => {
+    for (const image of [`docker.cnb.cool/other/repo/xpod-installed@sha256:${'a'.repeat(64)}`,
+      `ghcr.io/other/xpod@sha256:${'a'.repeat(64)}`]) {
+      const value = proof(); value.serviceImage = image;
+      expect(() => check(JSON.stringify(value), undefined, image)).toThrow();
+    }
   });
   it('hashes exact bytes before parsing malformed JSON', () => {
     expect(() => check('{PRIVATE_SENTINEL', '0'.repeat(64))).toThrow(/authority mismatch/);
     expect(() => check('{PRIVATE_SENTINEL')).toThrow(/JSON/);
   });
+  it('rejects legacy or cross-instance evidence even with approved bytes', () => {
+    const legacy = proof(); legacy.schemaVersion = 1; legacy.kind = 'immutable-installed-component-admission';
+    const otherServer = proof(); otherServer.pro.systemIdentifier = '7694358013082710062';
+    const otherContainer = proof(); otherContainer.public.containerId = '3'.repeat(64);
+    const replacedTable = proof(); replacedTable.schema.afterSuitesOID = 17239;
+    const wrongPublicValidator = proof(); wrongPublicValidator.public.validatorSHA256 = '4'.repeat(64);
+    for (const value of [legacy, otherServer, otherContainer, replacedTable, wrongPublicValidator]) {
+      expect(() => check(JSON.stringify(value))).toThrow();
+    }
+  });
   it('rejects private payload fields even under approved byte authority', () => {
     const value = proof(); value.fixture = 'PRIVATE_SENTINEL';
     expect(() => check(JSON.stringify(value))).toThrow(/fields/);
   });
-  it.each(['sourceSha', 'serviceImage', 'postgresImage', 'runnerSHA256', 'fixtureSHA256', 'search', 'abi', 'status', 'kind'])
+  it.each(['sourceSha', 'serviceImage', 'postgresImage', 'runnerSHA256', 'contractSHA256', 'privateContractSHA256', 'abi', 'status', 'kind'])
   ('rejects a mismatched %s', key => {
     const value = proof(); value[key] = 'PRIVATE_SENTINEL';
     expect(() => check(JSON.stringify(value))).toThrow();
   });
-  it.each(['completeCaseCount', 'expectedCaseSetSHA256', 'validatorVersion', 'validatorSourceSHA256',
-    'contractSourceSHA256', 'canonicalDigest', 'failed', 'skipped', 'deniedRowsObserved'])('rejects semantic %s', key => {
-    const value = proof(); value.semantic[key] = key.endsWith('Count') || ['failed', 'skipped', 'deniedRowsObserved'].includes(key) ? 1 : 'PRIVATE_SENTINEL';
+  it.each(['completeCaseCount', 'caseSetSHA256', 'validatorSHA256', 'fixtureSHA256',
+    'reportSHA256', 'canonicalDigest', 'failed', 'skipped', 'deniedRowsObserved'])('rejects semantic %s', key => {
+    const value = proof(); value.pro[key] = key.endsWith('Count') || ['failed', 'skipped', 'deniedRowsObserved'].includes(key) ? 1 : 'PRIVATE_SENTINEL';
     expect(() => check(JSON.stringify(value))).toThrow();
   });
-  it.each(['actualExit', 'signal', 'childCount', 'closedRawSHA256', 'producerSourceSHA256', 'closedReceiptSHA256'])
+  it.each(['actualExit', 'signal', 'childCount', 'closedRawSHA256', 'sourceSHA256', 'closedReceiptSHA256'])
   ('rejects unclosed producer %s', key => {
     const value = proof(); value.producer[key] = key === 'closedRawSHA256' ? [] : 'PRIVATE_SENTINEL';
     expect(() => check(JSON.stringify(value))).toThrow();
@@ -410,7 +443,7 @@ describe('private17 sanitized single JSON boundary', () => {
   it('rejects missing/nested unknown fields, business database and uncertain cleanup', () => {
     const missing = proof(); delete missing.abi;
     const nested = proof(); nested.producer.raw = 'PRIVATE_SENTINEL';
-    const business = proof(); business.database = 'xpod_rc';
+    const business = proof(); business.server.database = 'xpod_rc';
     const cleanup = proof(); cleanup.cleanup.databaseAbsent = false;
     const count = proof(); count.producer.childCount = 2;
     for (const value of [missing, nested, business, cleanup, count]) expect(() => check(JSON.stringify(value))).toThrow();
@@ -419,7 +452,7 @@ describe('private17 sanitized single JSON boundary', () => {
     const base = path.join(root, '.test-data/private17-admission-test'); mkdirSync(base, { recursive: true, mode: 0o700 });
     const dir = mkdtempSync(path.join(base, 'public-binding-'));
     const report = path.join(dir, 'public16.json'); const receipt = path.join(dir, 'receipt.json');
-    writeFileSync(report, JSON.stringify({ database: expected.publicDatabase, sourceSha: 'PRIVATE_SENTINEL' }), { mode: 0o600 });
+    writeFileSync(report, JSON.stringify({ database: 'xpod_public16_unique', sourceSha: 'PRIVATE_SENTINEL' }), { mode: 0o600 });
     try {
       const result = spawnSync('bun', [path.join(root, 'scripts/check-qlever-installed-image-conformance.ts'),
         '--verify-private17-admission', path.join(dir, 'private17-admission.json'), '--public16-report', report,

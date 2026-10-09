@@ -116,6 +116,8 @@ export interface LiveTaskEvidence {
   cases: LiveTaskCaseEvidence[];
   cleanup: { ok: boolean; tasksPaused: number; runsStopped: number; sessionsTerminal: number; grantRevoked: boolean };
   failure?: string;
+  acceptancePhase?: string;
+  failureDetails?: LiveTaskFailureDetails;
 }
 
 const taskHttpErrors = {
@@ -148,6 +150,31 @@ const taskDocumentErrors = ['run_document_read_failed', 'run_document_update_fai
 const taskErrorEnvelopes = ['error_string', 'json_other', 'non_json', 'oversized', 'unreadable'] as const;
 type TaskErrorEnvelope = typeof taskErrorEnvelopes[number];
 type TaskHttpErrorToken = typeof taskHttpErrors[keyof typeof taskHttpErrors] | typeof taskDocumentErrors[number] | 'other_error';
+
+/** Public desktop diagnostics contain reviewed tokens and bounded facts only. */
+export function summarizeLiveTaskFailure(evidence: LiveTaskEvidence) {
+  const phase = evidence.acceptancePhase;
+  const details = evidence.failureDetails;
+  const category = details?.category;
+  const status = details?.httpStatus;
+  const taskError = details?.taskError;
+  const substage = details?.substage;
+  const producer = [...evidence.cases].reverse().find(row => row.producerFailure)?.producerFailure;
+  return {
+    phase: phase && /^(?:grant|(?:approved|rejected|stopped):(?:prepare|queued|checkpoint|decision|terminal|duplicate))$/u.test(phase)
+      ? phase : 'other',
+    ...(['assertion', 'timeout', 'connection', 'parse', 'other'].includes(category ?? '') ? { category } : {}),
+    ...(Number.isInteger(status) && status! >= 100 && status! <= 599 ? { httpStatus: status } : {}),
+    ...(taskError && ['other_error', ...Object.values(taskHttpErrors), ...taskDocumentErrors].includes(taskError)
+      ? { taskError } : {}),
+    ...(substage && /^(?:queued-(?:request|assert)|checkpoint-(?:run-read|approval-read|match|session-read|session-assert|marker-read|marker-assert)|decision-(?:request|assert|persisted-read|persisted-assert|resume-request|resume-assert))$/u.test(substage) ? { substage } : {}),
+    ...(producer && ['failed', 'cancelled', 'completed'].includes(producer.status) ? { producerStatus: producer.status } : {}),
+    ...(producer && ['none', 'unknown', 'auth_required', 'service_access_missing', 'token_exchange_failed', 'provider_error', 'provider_aborted', 'sandbox_unavailable', 'worker_start_failed', 'worker_exited', 'execution_state_error'].includes(producer.errorClass) ? { producerErrorClass: producer.errorClass } : {}),
+    completedCases: evidence.cases.filter(row => row.ok === true).length,
+    cleanupOk: evidence.cleanup.ok === true,
+  };
+}
+
 class LiveTaskEvidenceError extends Error {
   public httpStatus?: number;
   public runDocumentHttpStatus?: number;
@@ -485,6 +512,8 @@ export async function acceptLiveTaskApproval(options: {
     }
   } catch (error) {
     // Only our controlled assertion vocabulary is safe; never emit raw upstream exceptions.
+    evidence.acceptancePhase = phase;
+    evidence.failureDetails = safeFailureDetails(failureSubstage, error);
     evidence.failure = `Task acceptance failed at ${phase}${error instanceof LiveTaskEvidenceError ? `: ${error.message}` : ''}`;
     const row = evidence.cases[evidence.cases.length - 1];
     if (row) {
