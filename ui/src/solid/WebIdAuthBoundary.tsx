@@ -10,7 +10,7 @@ import {
 } from '@undefineds.co/shared-ui';
 import { Loader2 } from 'lucide-react';
 import type { RememberedWebIdLogin, StorageSelectionState, WebIdAuthState } from '@undefineds.co/solid-sdk';
-import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
+import { useCallback, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { XpodProductLogoutBoundary } from '../auth/XpodProductLogoutBoundary';
 import { XpodLocalLoginPreflight } from '../auth/XpodLocalLoginPreflight';
 import { consumeXpodAccountSwitch, readXpodAccountSwitch, readXpodLoginCancelled, setXpodLoginCancelled } from '../auth/xpod-login-recovery';
@@ -51,9 +51,6 @@ function WebIdAuthBoundaryContent({
   const loginController = useMemo(() => createXpodLoginController({ runtime }), [runtime]);
   const [switchOnEntry] = useState(readXpodAccountSwitch);
   const [loginCancelled, setLoginCancelled] = useState(() => switchOnEntry || readXpodLoginCancelled());
-  useLayoutEffect(() => {
-    if (switchOnEntry) consumeXpodAccountSwitch();
-  }, [switchOnEntry]);
   useEffect(() => {
     if (!loginCancelled) return;
     try { loginController.cancelLogin(); } catch { /* Expired records are cleared by the store. */ }
@@ -116,11 +113,16 @@ function WebIdAuthBoundaryContent({
   const continueLogin = useCallback(() => {
     if (!preflight) return;
     const prompt = preflight.prompt;
-    setXpodLoginCancelled(false);
     setLoginCancelled(false);
     setPreflight(undefined);
     runAction(async () => {
+      const version = actionVersion.current;
       if (switchOnEntry) await runtime.session.initialize({ restorePreviousSession: false });
+      if (version !== actionVersion.current) return;
+      // Account discovery can outlive this mount. Keep the navigation intent
+      // until login actually starts, then omit it from the callback return path.
+      if (switchOnEntry) consumeXpodAccountSwitch();
+      setXpodLoginCancelled(false);
       await loginController.startLogin(undefined, undefined, prompt);
     });
   }, [loginController, preflight, runAction, runtime.session, switchOnEntry]);
@@ -138,6 +140,7 @@ function WebIdAuthBoundaryContent({
   const cancel = () => {
     if (switchRequested) return;
     try { loginController.cancelLogin(); } catch { /* Expired records are already cleared. */ }
+    if (switchOnEntry) consumeXpodAccountSwitch();
     setXpodLoginCancelled(true);
     setLoginCancelled(true);
     setPreflight(undefined);

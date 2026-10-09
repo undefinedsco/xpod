@@ -1,10 +1,11 @@
 import { lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import type { Page } from '@playwright/test';
+import type { Page, Response } from '@playwright/test';
 import { expect, it, vi } from 'vitest';
 import { credentialResource } from '@undefineds.co/models';
+import { PiConfigAdapter } from '@undefineds.co/ai-connections/client-config';
 import type { MountedPodPermissionPhase } from '../../scripts/helpers/packaged-desktop-permissions';
-import { accountCreationResponseSucceeded, assertAccountCredentialsRestored, assertNewAccountCredential, assertMountedModelBinding, createConfirmedMountedProvider, readOwnedPiConfiguration } from '../../scripts/helpers/packaged-desktop-operations';
+import { accountCreationResponseSucceeded, assertAccountCredentialsRestored, assertNewAccountCredential, assertMountedModelBinding, createConfirmedMountedProvider, createMountedKeyInUi, readOwnedPiConfiguration } from '../../scripts/helpers/packaged-desktop-operations';
 
 it('confirms collection row keys against credential resource ids through the shared model', async () => {
   const rowKey = 'deepseek-fixture';
@@ -303,4 +304,60 @@ it.each(['complete', 'truncated', 'wrong-body', 'rejected'] as const)('checks a 
     expect(body.max_tokens).toBeLessThanOrEqual(1024);
     expect(page.off).toHaveBeenCalled();
   } finally { vi.unstubAllGlobals(); }
+});
+
+
+it('restores the fixture Pi projection before revoking its key so another WebID can use it', async () => {
+  const root = path.join(process.cwd(), '.test-data', 'packaged-desktop-operations');
+  await mkdir(root, { recursive: true });
+  const home = await mkdtemp(path.join(root, 'key-config-cleanup-'));
+  const directory = path.join(home, '.pi', 'agent');
+  await mkdir(directory, { recursive: true });
+  const original = { defaultProvider: 'ollama', theme: 'user-theme' };
+  await writeFile(path.join(directory, 'settings.json'), JSON.stringify(original));
+  const adapter = new PiConfigAdapter({ homeDir: home });
+  const webId = 'https://id.example/alice/profile/card#me';
+  const gateway = 'http://127.0.0.1:41234/';
+  const wrapper = 'sk-Y2xpZW50LWlkOmNsaWVudC1zZWNyZXQ=';
+  const profile = { endpoint: gateway, apiKey: wrapper, webId };
+  const control = 'https://id.example/.account/client-credentials';
+  let present = false;
+  let observeResponse: (response: Response) => void = () => undefined;
+  const restore = vi.fn(async () => { await adapter.restore(webId); return { status: 'notConfigured' }; });
+  const record = { id: 'issued-client', clientCredentialId: 'issued-client', owner: webId, kind: 'client-credentials' };
+  const host = { capabilities: {
+    aiClientCredentials: { list: async () => present ? [{ clientId: record.id }] : [] },
+    aiClientConfiguration: { restore, inspect: async () => ({ status: (await adapter.inspect()).ownership === 'owned' ? 'configured' : 'notConfigured' }) },
+  } };
+  const controller = { selectSection: () => undefined, client: {
+    webId, listGatewayKeys: async () => present ? [record] : [], deleteGatewayKey: async () => { present = false; },
+  } };
+  const locator = (name: unknown): Record<string, unknown> => ({
+    fill: async () => undefined, selectOption: async () => undefined, waitFor: async () => undefined,
+    getByRole: (_role: string, options: { name: unknown }) => locator(options.name),
+    getByText: (text: string) => locator(text),
+    click: async () => {
+      if (name === '创建 Xpod 密钥') {
+        present = true;
+        observeResponse({ url: () => control, status: () => 201, json: async () => ({ id: record.id }), request: () => ({
+          method: () => 'POST', postDataJSON: () => ({ name: 'fixture-key', webId }), allHeaders: async () => ({ authorization: 'CSS-Account-Token fixture' }),
+        }) } as unknown as Response);
+      } else if (name === '写入 Pi') await adapter.apply(await adapter.plan(profile));
+      else if (name instanceof RegExp && name.source.startsWith('^确认删除')) present = false;
+    },
+  });
+  const page = { on: (_event: string, listener: typeof observeResponse) => { observeResponse = listener; }, off: () => undefined,
+    getByRole: (role: string, options?: { name: unknown }) => locator(options?.name ?? role), locator: () => locator('row'),
+  } as unknown as Page;
+  const phase = { handle: { evaluate: async (fn: Function, input: unknown) => fn({ host, controller }, input) } } as unknown as MountedPodPermissionPhase;
+  try {
+    const issued = await createMountedKeyInUi(page, phase, { name: 'fixture-key', configurationHome: home, gateway, accountCredentialControl: control });
+    expect(issued.key).toBe(wrapper);
+    await expect(adapter.plan({ ...profile, webId: webId.replace('alice', 'bob') })).rejects.toThrow('another WebID');
+    await expect(issued.remove()).resolves.toBe(true);
+    await expect(adapter.plan({ ...profile, webId: webId.replace('alice', 'bob') })).resolves.toBeDefined();
+    expect(restore).toHaveBeenCalledOnce();
+    expect(JSON.parse(await readFile(path.join(directory, 'settings.json'), 'utf8'))).toEqual(original);
+    expect(present).toBe(false);
+  } finally { await rm(home, { recursive: true, force: true }); }
 });

@@ -87,3 +87,16 @@ Provider confirmation compares collection descriptor keys and provider resource 
 本节是源码审计及回归范围，不代表上述入口已全部通过真实实例或安装包验收。`22b614677` 的第一次完整集成通过，第二次在 notification 性能基线失败（5020ms，要求 <5000ms）；保留失败，不提高门槛，下一冻结源码的完整门禁串行运行，避免同时构建安装包。旧安装探测 Account token 在 RC 数据重置后返回 401，只能证明旧清理会话不可用，不能声称已独立确认旧凭据删除。
 
 证据校验器也要求两个不同的 `webIdSha256`，并拒绝旧的 `sameWebId` 字段；仅有两个不同存储绑定不能通过独立身份验收。
+
+
+### 2026-10-09：跨 WebID 验收的客户端配置清理
+
+每轮验收写入的 Pi 配置应在该 WebID 的权限仍有效时，通过原 mounted host 的正式 `aiClientConfiguration.restore('pi')` 恢复，并独立回读为 `notConfigured`；随后才撤销本次 Key、回滚 Pod 授权并切换身份。只撤销 Key 会遗留上一 WebID 的配置归属，下一身份的 plan 被正确拒绝，不能算作登录或新 Key 签发失败。回归使用真实 Pi adapter 证明旧状态阻止跨身份覆盖、恢复后新身份可规划，并保留原有用户设置；不绕过归属检查或删除用户配置目录。
+
+
+### 2026-10-09：Task 的调用预算须贯穿 renderer 传输
+
+真实 Task 批准后的 resume 本已使用 180 秒预算，renderer owner transport 不得另设 20 秒而截断它。转发层以原调用方 `AbortSignal` 驱动本机浏览器的原生 `AbortController`，保留取消原因，结束后释放监听器和句柄；没有调用方 signal 时仍默认 20 秒。回归使用真实 HTTP 请求证明取消可以跨该边界中止，预先取消不会启动请求。CLI owner credential transport 已保留原 signal；Pod CRUD 与匿名 profile 的独立 20 秒预算不代替 Task resume 的预算。本规则不增加原验收门槛的超时值，不重试写请求，也不绕过真实 Gateway 或权限检查。
+
+旧 Run 的跨 Pod 续跑检查必须携带首个真实审批的 IRI，先通过请求验证，再确认 `route_run_read` 返回 Run 不存在。
+空审批体得到的 `route_validation` 错误不能作为跨 Pod 隔离证据；审批 IRI 仅保留在私有验收记录，不进入公开摘要。

@@ -8,6 +8,7 @@ const zlib = require('node:zlib');
 const esbuild = require('esbuild');
 const { stageEmbeddedNativeCli } = require('./lib/embedded-native-cli.cjs');
 const { createSingleBinaryEntry } = require('./lib/bun-single-runtime-entry.cjs');
+const { stageRuntimeEsmPackages } = require('./lib/runtime-esm-packages.cjs');
 
 const repoRoot = path.resolve(__dirname, '..');
 const distRoot = path.join(repoRoot, 'dist');
@@ -321,6 +322,8 @@ async function bundlePackageMain(packageName, packageDir, packageJson, stageDir)
     entryPoints: [entryPoint],
     outfile: bundleOutputPath,
     bundle: true,
+    minify: true,
+    keepNames: true,
     platform: 'node',
     format: 'cjs',
     target: 'node22',
@@ -450,6 +453,8 @@ async function main() {
     });
   }
 
+  await stageRuntimeEsmPackages({ nodeModulesRoot: path.join(repoRoot, 'node_modules'), stageRoot, compileTarget });
+
   // Native CLIs the runtime spawns by path. Components.js reference walking
   // never discovers them, so stage the installed binary for the matching
   // target. A cross target fails here instead of embedding the host binary.
@@ -464,6 +469,8 @@ async function main() {
     entryPoints: [path.join(repoRoot, 'src', 'cli', 'index.ts')],
     outfile: cliOutputPath,
     bundle: true,
+    minify: true,
+    keepNames: true,
     platform: 'node',
     format: 'cjs',
     target: 'node22',

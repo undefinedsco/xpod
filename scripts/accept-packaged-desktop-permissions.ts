@@ -190,25 +190,44 @@ function mountedPodFetch(phase: MountedPodPermissionPhase, podUrl: string): type
   }) as typeof fetch;
 }
 
-function rendererOwnerFetch(page: Page, gateway: string, podUrl: string, key: string): typeof fetch {
+export function rendererOwnerFetch(page: Page, gateway: string, podUrl: string, key: string): typeof fetch {
   return (async (input, init) => {
     const url = input instanceof Request ? input.url : String(input);
     const method = init?.method ?? 'GET';
     if (init?.body !== undefined && typeof init.body !== 'string') throw new DesktopAcceptanceError('task-isolation', 'Unsupported acceptance API body');
-    const result = await page.evaluate(async input => {
-      const target = new URL(input.url), gateway = new URL(input.gateway);
-      if (target.origin !== window.location.origin || target.origin !== gateway.origin || target.username || target.password || target.hash
-        || !(target.pathname === '/api/tasks' || target.pathname.startsWith('/api/tasks/')
-          || target.pathname === '/api/ai/task-credentials' || target.pathname.startsWith('/api/ai/task-credentials/'))) {
-        throw new DesktopAcceptanceError('task-isolation', 'Task acceptance API is outside the owned Gateway');
-      }
-      const response = await fetch(target.href, { method: input.method, redirect: 'error', signal: AbortSignal.timeout(20_000),
-        headers: { Authorization: `Bearer ${input.key}`, 'X-Xpod-Pod-Url': input.podUrl, 'Content-Type': 'application/json' },
-        ...(input.body === undefined ? {} : { body: input.body }) });
-      return { status: response.status, body: await response.text(), headers: Object.fromEntries(response.headers.entries()) };
-    }, { url, gateway, podUrl, key, method, body: init?.body as string | undefined });
-    return new Response([204, 205, 304].includes(result.status) ? null : result.body, { status: result.status, headers: result.headers });
+    const signal = init?.signal ?? AbortSignal.timeout(20_000);
+    signal.throwIfAborted();
+    const controller = await page.evaluateHandle(() => new AbortController());
+    const abort = () => { void controller.evaluate(value => value.abort()).catch(() => undefined); };
+    signal.addEventListener('abort', abort, { once: true });
+    try {
+      signal.throwIfAborted();
+      const result = await page.evaluate(async input => {
+        const target = new URL(input.url), gateway = new URL(input.gateway);
+        if (target.origin !== window.location.origin || target.origin !== gateway.origin || target.username || target.password || target.hash
+          || !(target.pathname === '/api/tasks' || target.pathname.startsWith('/api/tasks/')
+            || target.pathname === '/api/ai/task-credentials' || target.pathname.startsWith('/api/ai/task-credentials/'))) {
+          throw new DesktopAcceptanceError('task-isolation', 'Task acceptance API is outside the owned Gateway');
+        }
+        const response = await fetch(target.href, { method: input.method, redirect: 'error', signal: input.controller.signal,
+          headers: { Authorization: `Bearer ${input.key}`, 'X-Xpod-Pod-Url': input.podUrl, 'Content-Type': 'application/json' },
+          ...(input.body === undefined ? {} : { body: input.body }) });
+        return { status: response.status, body: await response.text(), headers: Object.fromEntries(response.headers.entries()) };
+      }, { url, gateway, podUrl, key, method, body: init?.body as string | undefined, controller });
+      return new Response([204, 205, 304].includes(result.status) ? null : result.body, { status: result.status, headers: result.headers });
+    } catch (error) {
+      if (signal.aborted) throw signal.reason;
+      throw error;
+    } finally {
+      signal.removeEventListener('abort', abort);
+      await controller.dispose();
+    }
   }) as typeof fetch;
+}
+
+export function requestPackagedForeignRun(ownerFetch: typeof fetch, gateway: string, runId: string, approval: string): Promise<Response> {
+  return ownerFetch(new URL(`/api/tasks/resume?id=${encodeURIComponent(runId)}`, gateway),
+    { method: 'POST', body: JSON.stringify({ approval }) });
 }
 
 export async function acceptPackagedDesktopPermissions(options: PackagedPermissionOptions): Promise<void> {
@@ -261,6 +280,7 @@ export async function acceptPackagedDesktopPermissions(options: PackagedPermissi
     const podEvidence = [];
     let firstInvocation: string | undefined;
     let originalRun: string | undefined;
+    let originalApproval: string | undefined;
     let originalTaskIds: string[] = [];
     let allCallbacks = true;
     const configurationHome = path.join(fixture.directory, 'profile', 'client-config-home');
@@ -342,13 +362,14 @@ export async function acceptPackagedDesktopPermissions(options: PackagedPermissi
           onEvidence: evidence => { taskSnapshot = evidence; } });
         if (!task.ok || !task.cleanup.ok || task.cases.length !== 3) throw new DesktopAcceptanceError('task-isolation', 'Actual packaged task approval/Stop cleanup failed');
         originalRun = task.cases[0].runId;
+        originalApproval = task.cases[0].approval;
         originalTaskIds = task.cases.flatMap(row => row.taskId ? [row.taskId] : []);
         if (new Set(originalTaskIds).size !== 3) throw new DesktopAcceptanceError('task-isolation', 'Actual first-Pod task IDs are incomplete');
         const rows = await rendererOwnerFetch(page, gateway, binding.storageUrl, key.key)(new URL('/api/tasks', gateway));
         if (rows.status !== 200) throw new DesktopAcceptanceError('task-isolation', 'Cannot independently read first-Pod task rows');
         assertOwnedTaskRows(await rows.json(), originalTaskIds);
       } else {
-        if (!firstInvocation || !originalRun) throw new DesktopAcceptanceError('task-isolation', 'Missing actual first-Pod capability/Run');
+        if (!firstInvocation || !originalRun || !originalApproval) throw new DesktopAcceptanceError('task-isolation', 'Missing actual first-Pod capability/Run/approval');
         const rows = await rendererOwnerFetch(page, gateway, binding.storageUrl, key.key)(new URL('/api/tasks', gateway));
         if (rows.status !== 200 || originalTaskIds.length !== 3) throw new DesktopAcceptanceError('task-isolation', 'Cannot independently read second-Pod task rows');
         assertOwnedTaskRows(await rows.json(), [], true);
@@ -360,12 +381,14 @@ export async function acceptPackagedDesktopPermissions(options: PackagedPermissi
               redirect: 'error', signal: AbortSignal.timeout(20_000) });
             await response.arrayBuffer(); return response.status;
           }, { token: firstInvocation, podUrl: binding.storageUrl });
-          const resumed = await rendererOwnerFetch(page, gateway, binding.storageUrl, key.key)(
-            new URL(`/api/tasks/resume?id=${encodeURIComponent(originalRun)}`, gateway), { method: 'POST', body: '{}' });
+          const resumed = await requestPackagedForeignRun(rendererOwnerFetch(page, gateway, binding.storageUrl, key.key),
+            gateway, originalRun, originalApproval);
           const resumeBody = await resumed.text();
+          const resumeResult = JSON.parse(resumeBody) as { taskResumeStage?: string };
           await privateJson(options.privateDirectory, 'cross-pod-private.json', { foreign, status: resumed.status, body: resumeBody });
           const traffic = writes.snapshot();
-          if (foreign !== 403 || resumed.status !== 400 || traffic.writes !== 0 || !/not found|找不到|不存在/iu.test(resumeBody)) {
+          if (foreign !== 403 || resumed.status !== 400 || resumeResult.taskResumeStage !== 'route_run_read'
+            || traffic.writes !== 0 || !/not found|找不到|不存在/iu.test(resumeBody)) {
             throw new DesktopAcceptanceError('task-isolation', 'Actual cross-Pod capability or old Run rejection failed');
           }
         } finally { writes.stop(); }
@@ -379,7 +402,7 @@ export async function acceptPackagedDesktopPermissions(options: PackagedPermissi
       if (index === 0) {
         advance('switch');
         await page.getByRole('button', { name: /打开 .* 的个人卡片/u }).click();
-        await page.getByRole('button', { name: '切换账号', exact: true }).click();
+        await page.getByRole('button', { name: '切换 WebID', exact: true }).click();
       }
     }
     record = { schemaVersion: 1, kind: 'desktop-permission-acceptance', ok: true,
