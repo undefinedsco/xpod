@@ -354,7 +354,7 @@ describe('actual installed helper with fake Docker producers', () => {
 describe('private17 sanitized single JSON boundary', () => {
   const expected = { admissionSha256: '', installedImage: `ghcr.io/undefinedsco/xpod@sha256:${'a'.repeat(64)}`,
     pgImage: `ccr.ccs.tencentyun.com/undefineds/xpod-rdf-postgres@sha256:${'b'.repeat(64)}`,
-    sourceSha: 'c'.repeat(40), runnerSha256: 'd'.repeat(64), publicDatabase: 'xpod_public16_unique' };
+    sourceSha: 'c'.repeat(40), runnerSha256: 'd'.repeat(64) };
   function proof(): Record<string, any> {
     const server = { systemIdentifier: '7694358013082710061', containerId: '1'.repeat(64),
       database: `xpod_joint_${'2'.repeat(32)}`, versionNum: 170010 };
@@ -374,16 +374,16 @@ describe('private17 sanitized single JSON boundary', () => {
         caseSetSHA256: '348777fe09a4e4baba4287e579cb7b665e5d83aeab144819beb16cb34e12d24e',
         validatorSHA256: 'e962c8b94e771f753661810179b8ad982e9dfd4158e6620518b5dbf56cc73374' },
       abi: '1|true', producer: { actualExit: 0, signal: null, childCount: 1,
-        closedRawSHA256: ['f'.repeat(64)], sourceSHA256: '0fe0ca179fd4544188dc5a5d60ea7ee1ebe24f8ac4acb7f56471c3294271aa34', closedReceiptSHA256: '9'.repeat(64) },
+        closedRawSHA256: ['f'.repeat(64)], sourceSHA256: '7c2176daae1ee2b356dd02471a942866faceab24b2cf429a2305471b3e7194da', closedReceiptSHA256: '9'.repeat(64) },
       cleanup: { databaseAbsent: true, semanticSchemasAbsent: true, ownedResourcesAbsent: true } };
   }
-  function check(bytes: string, authority?: string): Record<string, unknown> {
+  function check(bytes: string, authority?: string, installedImage = expected.installedImage): Record<string, unknown> {
     const base = path.join(root, '.test-data/private17-admission-test'); mkdirSync(base, { recursive: true, mode: 0o700 });
     const dir = mkdtempSync(path.join(base, 'json-')); chmodSync(dir, 0o700);
     const file = path.join(dir, 'private17-admission.json');
     try {
       writeFileSync(file, bytes, { mode: 0o600 });
-      return verifyPrivate17Admission(file, { ...expected,
+      return verifyPrivate17Admission(file, { ...expected, installedImage,
         admissionSha256: authority ?? createHash('sha256').update(bytes).digest('hex') });
     } finally { rmSync(dir, { recursive: true, force: true }); }
   }
@@ -391,6 +391,21 @@ describe('private17 sanitized single JSON boundary', () => {
     expect(check(JSON.stringify(proof()))).toMatchObject({ status: 'ok', sourceSha: expected.sourceSha,
       installedImage: expected.installedImage, pgImage: expected.pgImage, database: `xpod_joint_${'2'.repeat(32)}`,
       evidenceBoundary: 'immutable-installed-joint' });
+  });
+  it('accepts byte-authorized CNB evidence without changing GHCR release transport', () => {
+    const image = `docker.cnb.cool/undefineds.co/native-builder/xpod-installed@sha256:${'a'.repeat(64)}`;
+    const value = proof(); value.serviceImage = image;
+    const bytes = JSON.stringify(value);
+    expect(check(bytes, undefined, image)).toMatchObject({ status: 'ok', installedImage: image });
+    expect(() => check(bytes, '0'.repeat(64), image)).toThrow(/authority mismatch/);
+    expect(() => private17ProofTag(expected.sourceSha, image)).toThrow();
+  });
+  it('rejects unapproved local proof image repositories', () => {
+    for (const image of [`docker.cnb.cool/other/repo/xpod-installed@sha256:${'a'.repeat(64)}`,
+      `ghcr.io/other/xpod@sha256:${'a'.repeat(64)}`]) {
+      const value = proof(); value.serviceImage = image;
+      expect(() => check(JSON.stringify(value), undefined, image)).toThrow();
+    }
   });
   it('hashes exact bytes before parsing malformed JSON', () => {
     expect(() => check('{PRIVATE_SENTINEL', '0'.repeat(64))).toThrow(/authority mismatch/);
@@ -437,7 +452,7 @@ describe('private17 sanitized single JSON boundary', () => {
     const base = path.join(root, '.test-data/private17-admission-test'); mkdirSync(base, { recursive: true, mode: 0o700 });
     const dir = mkdtempSync(path.join(base, 'public-binding-'));
     const report = path.join(dir, 'public16.json'); const receipt = path.join(dir, 'receipt.json');
-    writeFileSync(report, JSON.stringify({ database: expected.publicDatabase, sourceSha: 'PRIVATE_SENTINEL' }), { mode: 0o600 });
+    writeFileSync(report, JSON.stringify({ database: 'xpod_public16_unique', sourceSha: 'PRIVATE_SENTINEL' }), { mode: 0o600 });
     try {
       const result = spawnSync('bun', [path.join(root, 'scripts/check-qlever-installed-image-conformance.ts'),
         '--verify-private17-admission', path.join(dir, 'private17-admission.json'), '--public16-report', report,

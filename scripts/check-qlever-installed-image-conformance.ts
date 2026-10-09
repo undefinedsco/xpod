@@ -292,7 +292,7 @@ const PRIVATE17_CASE_SET_SHA256 = '348777fe09a4e4baba4287e579cb7b665e5d83aeab144
 const PRIVATE17_VALIDATOR_SHA256 = 'e962c8b94e771f753661810179b8ad982e9dfd4158e6620518b5dbf56cc73374';
 const PRIVATE17_CONTRACT_SHA256 = '6f1346e598f11959b1e696639fd151f498bd8901ef658c5613435a44d5c46ca1';
 // Fail closed until the private producer's final frozen source is admitted by ROOT.
-const PRIVATE17_PRODUCER_SHA256 = '0fe0ca179fd4544188dc5a5d60ea7ee1ebe24f8ac4acb7f56471c3294271aa34';
+const PRIVATE17_PRODUCER_SHA256 = '7c2176daae1ee2b356dd02471a942866faceab24b2cf429a2305471b3e7194da';
 const PRIVATE17_MAX_BYTES = 64 * 1024;
 const PRIVATE17_ASSET = 'private17-admission.json';
 const SHA256 = /^[a-f0-9]{64}$/;
@@ -346,11 +346,17 @@ function private17Bytes(file: string): Buffer {
 }
 
 export function verifyPrivate17Admission(file: string, expected: {
-  admissionSha256: string; installedImage: string; pgImage: string; sourceSha: string; runnerSha256: string; publicDatabase: string;
+  admissionSha256: string; installedImage: string; pgImage: string; sourceSha: string; runnerSha256: string;
 }): Record<string, unknown> {
-  private17ProofTag(expected.sourceSha, expected.installedImage);
-  if (!IMMUTABLE_IMAGE_REF.test(expected.pgImage) || !SHA256.test(expected.runnerSha256)
-    || !/^xpod_public16_[a-z0-9_]+$/.test(expected.publicDatabase)) throw new Error('private17 pair input mismatch');
+  // Local byte-authorized proofs also cover the approved native CNB builder.
+  // Release acquisition keeps its separate GHCR-only tag boundary above.
+  if (!/^[a-f0-9]{40}$/.test(expected.sourceSha)
+    || !/^(?:ghcr\.io\/undefinedsco\/xpod|docker\.cnb\.cool\/undefineds\.co\/native-builder\/xpod-installed)@sha256:[a-f0-9]{64}$/.test(expected.installedImage)) {
+    throw new StepError('private17-binding', 1, 'invalid-source-or-image');
+  }
+  if (!IMMUTABLE_IMAGE_REF.test(expected.pgImage) || !SHA256.test(expected.runnerSha256)) {
+    throw new Error('private17 pair input mismatch');
+  }
   if (!SHA256.test(expected.admissionSha256)) throw new Error('private17 artifact authority is required');
   const bytes = private17Bytes(file);
   if (byteDigest(bytes) !== expected.admissionSha256) throw new Error('private17 artifact authority mismatch');
@@ -538,6 +544,7 @@ async function cli(): Promise<void> {
   } else if (argValue('--verify-private17-admission')) {
     const publicEvidence = JSON.parse(readFileSync(required('public16-report', argValue('--public16-report')), 'utf8'));
     if (publicEvidence.schemaVersion !== 1 || publicEvidence.status !== 'ok'
+      || !/^xpod_public16_[a-z0-9_]+$/.test(publicEvidence.database)
       || publicEvidence.admissionScope !== 'public16-only' || publicEvidence.ownedCleanup !== 'verified-absent'
       || publicEvidence.sourceSha !== argValue('--source-sha')
       || publicEvidence.installedImage !== argValue('--installed-image')
@@ -552,7 +559,6 @@ async function cli(): Promise<void> {
       pgImage: required('pg-image', argValue('--pg-image')),
       sourceSha: required('source-sha', argValue('--source-sha')),
       runnerSha256: required('runner-sha256', argValue('--runner-sha256')),
-      publicDatabase: required('public-database', publicEvidence.database),
     });
     writeFileSync(required('private17-receipt', argValue('--private17-receipt')), `${JSON.stringify(result)}\n`, { mode: 0o600, flag: 'wx' });
   } else if (argValue('--select-registry-authority')) {
