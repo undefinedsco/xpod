@@ -177,6 +177,9 @@ RC.302 将失败收敛为 `checkpoint-match` 时 producer 已失败；同源码�
 单文件构建必须额外收录 ESM SDK 和原生资源依赖。快速回归在禁止借用源码仓库依赖的目录中
 创建真实 Agent 会话；该回归不能替代同包 Task 审批、Stop 和跨 Pod 的桌面验收。
 SDK 的 Windows 终端输入依赖 Koffi 不属于 macOS/Linux 原生产物，不能整包收录其多平台二进制。
+补齐 SDK 后，本机同提交安装包仍复现 compiled Bun 裸包名解析失败，文件已实际嵌入。
+Task adapter 使用已验证 runtime 根目录下的 ESM 文件 URL 加载，普通 JS 安装保留 hoisted
+依赖解析；回归必须同时覆盖 Node 隔离会话和真实 Bun 编译后二进制，不能只测源码运行时。
 
 这些值必须由 RC seed 自动生成，不能作为 GitHub secret/variable 手工维护：
 

@@ -1127,7 +1127,12 @@ export class PiAgentRuntimeDriver implements RunExecutionBackend {
     // Keep a native dynamic import so the CommonJS build can lazily load pi's
     // ESM-only package instead of requiring it during CSS component discovery.
     const nativeImport = new Function('specifier', 'return import(specifier)') as (specifier: string) => Promise<PiSdk>;
-    PiAgentRuntimeDriver.sdkPromise = nativeImport('@mariozechner/pi-coding-agent');
+    // Compiled Bun cannot resolve this bare specifier in its extracted runtime
+    // (the Components.js adapter has the same constraint). Use the staged ESM
+    // entry directly; ordinary JS installs can still resolve a hoisted package.
+    const stagedEntry = path.join(PACKAGE_ROOT, 'node_modules', '@mariozechner/pi-coding-agent', 'dist', 'index.js');
+    PiAgentRuntimeDriver.sdkPromise = nativeImport(fs.existsSync(stagedEntry)
+      ? pathToFileURL(stagedEntry).href : '@mariozechner/pi-coding-agent');
     return PiAgentRuntimeDriver.sdkPromise;
   }
 }
