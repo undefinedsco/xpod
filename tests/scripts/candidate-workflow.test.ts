@@ -1129,6 +1129,7 @@ exit "$TEST_ORIGINAL"
     expect(steps[pair].run).not.toMatch(/docker login|create secret|registry-mirror/);
     expect(steps[private17].run).toContain('--verify-private17-admission');
     expect(steps[private17].run).toContain('--admission-sha256');
+    expect(steps[private17].run).not.toContain('--public16-report');
     expect(steps[private17].run).toContain('RC mutation refused');
     expect(steps[private17].run).not.toMatch(/checkout|PAT|GITHUB_TOKEN/);
   });
