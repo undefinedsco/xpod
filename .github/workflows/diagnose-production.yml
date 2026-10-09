@@ -36,3 +36,25 @@ jobs:
           kubectl -n "$SEALOS_NAMESPACE" describe pods -l app=$XPOD_DEPLOYMENT
           kubectl -n "$SEALOS_NAMESPACE" logs -l app=$XPOD_DEPLOYMENT --all-containers=true --tail=300 --prefix=true --max-log-requests=10 || true
           kubectl -n "$SEALOS_NAMESPACE" logs -l app=$XPOD_DEPLOYMENT --all-containers=true --previous --tail=300 --prefix=true --max-log-requests=10 || true
+
+      - name: Inspect container configuration references without credential values
+        if: always()
+        env:
+          SEALOS_NAMESPACE: ${{ vars.SEALOS_NAMESPACE }}
+          XPOD_DEPLOYMENT: xpod-${{ inputs.environment }}
+        run: |
+          set -euo pipefail
+          kubectl -n "$SEALOS_NAMESPACE" get pods -l "app=$XPOD_DEPLOYMENT" -o json |
+            jq '[.items[] | {name: .metadata.name, phase: .status.phase,
+              containers: [.status.containerStatuses[]? | {name, ready, restartCount, image, imageID, state, lastState}]}]'
+          deployment_file="$RUNNER_TEMP/xpod-deployment.json"
+          kubectl -n "$SEALOS_NAMESPACE" get deployment "$XPOD_DEPLOYMENT" -o json > "$deployment_file"
+          jq '[.spec.template.spec.containers[] | {name,
+            envFrom, references: [.env[]? | select(.valueFrom != null) | {name, valueFrom}]}]' "$deployment_file"
+          jq -r '[.spec.template.spec.containers[] |
+            .envFrom[]?.secretRef.name, .env[]?.valueFrom.secretKeyRef.name] |
+            map(select(. != null)) | unique[]' "$deployment_file" |
+          while IFS= read -r secret_name; do
+            kubectl -n "$SEALOS_NAMESPACE" get secret "$secret_name" -o json |
+              jq '{name: .metadata.name, keys: ((.data // {}) | keys)}'
+          done
