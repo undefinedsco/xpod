@@ -29,6 +29,7 @@ function credential(input: Partial<GatewayCredentialCandidate> & {
   models?: string[];
 }): GatewayCredentialCandidate {
   return {
+    source: input.source,
     id: input.id,
     credentialIri: input.credentialIri ?? `https://pod.example/alice/settings/credentials.ttl#${input.id}`,
     provider: input.provider,
@@ -72,6 +73,72 @@ function router(input: {
     now: () => input.now ?? new Date('2026-07-23T00:00:00.000Z'),
   });
 }
+
+describe('ModelRouter platform and personal model union', () => {
+  function setup(selections?: Array<{ provider: string; models: string[] }>) {
+    const registry = createDefaultProviderRegistry();
+    registry.register({ ...registry.requireProvider('openai'), id: 'platform-test', models: [], deploymentManaged: true });
+    const platform = credential({ id: 'platform-credential', source: 'platform', provider: 'platform-test', models: ['gpt-5', 'platform-only'], priority: 1000 });
+    const personal = credential({ id: 'personal-credential', provider: 'openai', models: ['gpt-5'] });
+    return router({ registry, credentials: [platform, personal], selections });
+  }
+
+  it('deduplicates a shared model in favor of the personal route even when platform candidates arrive first', async () => {
+    const modelRouter = setup();
+    const models = await modelRouter.listVisibleModels({ webId: WEB_ID, deployment: 'local' });
+    expect(models.filter((model) => model.id === 'gpt-5')).toEqual([expect.objectContaining({ owned_by: 'openai' })]);
+    expect(models).toContainEqual(expect.objectContaining({ id: 'platform-only', owned_by: 'platform-test' }));
+    const route = await modelRouter.route({ webId: WEB_ID, deployment: 'local', model: 'gpt-5' });
+    expect(route.credential.id).toBe('personal-credential');
+  });
+
+  it('keeps platform models visible and routable when a new account has no personal selections', async () => {
+    const modelRouter = setup([]);
+    expect(await modelRouter.listVisibleModels({ webId: WEB_ID, deployment: 'local' })).toEqual([
+      expect.objectContaining({ id: 'gpt-5', owned_by: 'platform-test' }),
+      expect.objectContaining({ id: 'platform-only', owned_by: 'platform-test' }),
+    ]);
+    expect((await modelRouter.route({ webId: WEB_ID, deployment: 'local', model: 'platform-only' })).credential.id).toBe('platform-credential');
+  });
+
+  it('merges platform models with explicit personal selections without duplicating a shared id', async () => {
+    const modelRouter = setup([{ provider: 'openai', models: ['gpt-5'] }]);
+    const models = await modelRouter.listVisibleModels({ webId: WEB_ID, deployment: 'local' });
+    expect(models.filter((model) => model.id === 'gpt-5')).toEqual([expect.objectContaining({ owned_by: 'openai' })]);
+    expect(models).toContainEqual(expect.objectContaining({ id: 'platform-only' }));
+  });
+
+  it('uses a healthy platform model when the matching personal credential is disabled', async () => {
+    const registry = createDefaultProviderRegistry();
+    registry.register({ ...registry.requireProvider('openai'), id: 'platform-test', models: [], deploymentManaged: true });
+    const modelRouter = router({ registry, credentials: [
+      credential({ id: 'disabled', provider: 'openai', models: ['gpt-5'], enabled: false }),
+      credential({ id: 'platform', provider: 'platform-test', source: 'platform', models: ['gpt-5'] }),
+    ] });
+    expect((await modelRouter.listVisibleModels({ webId: WEB_ID, deployment: 'cloud' }))[0].owned_by).toBe('platform-test');
+    expect((await modelRouter.route({ webId: WEB_ID, deployment: 'cloud', model: 'gpt-5' })).credential.id).toBe('platform');
+  });
+
+  it('rejects a personal credential that forges the deployment platform provider identity', async () => {
+    const registry = createDefaultProviderRegistry();
+    registry.register({ ...registry.requireProvider('openai'), id: 'platform-test', models: [], deploymentManaged: true });
+    const modelRouter = router({ registry, credentials: [credential({ id: 'forged', provider: 'platform-test', models: ['platform-only'] })] });
+    expect(await modelRouter.listVisibleModels({ webId: WEB_ID, deployment: 'cloud' })).toEqual([]);
+    await expect(modelRouter.route({ webId: WEB_ID, deployment: 'cloud', model: 'platform-test/platform-only' })).rejects.toMatchObject({ code: 'credential_unavailable' });
+  });
+
+  it('does not let a disabled catalog credential intercept a healthy personal compatible route with a platform alternative', async () => {
+    const registry = createDefaultProviderRegistry();
+    registry.register({ ...registry.requireProvider('openai'), id: 'platform-test', models: [], deploymentManaged: true });
+    const modelRouter = router({ registry, credentials: [
+      credential({ id: 'disabled-catalog', provider: 'openai', models: ['gpt-5'], enabled: false }),
+      credential({ id: 'personal-compatible', provider: 'custom', models: ['gpt-5'] }),
+      credential({ id: 'platform', provider: 'platform-test', source: 'platform', models: ['gpt-5'] }),
+    ] });
+    expect((await modelRouter.listVisibleModels({ webId: WEB_ID, deployment: 'local' }))[0]).toMatchObject({ id: 'gpt-5', owned_by: 'custom' });
+    expect((await modelRouter.route({ webId: WEB_ID, deployment: 'local', model: 'gpt-5' })).credential.id).toBe('personal-compatible');
+  });
+});
 
 describe('ProviderRegistry', () => {
   it('seeds first-phase providers with safe endpoints, protocols and auth modes', () => {

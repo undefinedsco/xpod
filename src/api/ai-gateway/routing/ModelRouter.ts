@@ -26,6 +26,8 @@ export type ModelRouteSource =
   | 'default-model';
 
 export interface GatewayCredentialCandidate {
+  /** Deployment-owned credentials stay separate from the user's Pod. */
+  source?: 'platform';
   id: string;
   credentialIri: string;
   provider: string;
@@ -277,7 +279,7 @@ export class ModelRouter {
     }
 
     const targets: VisibleModelTarget[] = [];
-    for (const provider of this.registry.listProviders()) {
+    for (const provider of this.orderedProviders(candidates)) {
       const providerId = normalizeProviderId(provider.id);
       const selection = selectionByProvider.get(providerId);
       if (!selection) {
@@ -303,6 +305,21 @@ export class ModelRouter {
           source: 'exact-model',
           selectionDefault: Boolean(selection.defaultModel && sameModel(selection.defaultModel, selected.id)),
           projection: modelProjection(provider, model, selected.displayName),
+        });
+      }
+    }
+    const seen = new Set(targets.map((target) => target.projection.id));
+    const platformCandidates = candidates.filter((candidate) => candidate.source === 'platform');
+    for (const projection of this.credentialVisibleModels(platformCandidates)) {
+      if (!seen.has(projection.id)) {
+        seen.add(projection.id);
+        targets.push({
+          providerId: projection.owned_by,
+          model: projection.id,
+          source: 'exact-model',
+          selectionDefault: platformCandidates.some((candidate) =>
+            candidate.provider === projection.owned_by && candidate.defaultModel === projection.id),
+          projection,
         });
       }
     }
@@ -515,18 +532,33 @@ export class ModelRouter {
     model: string,
     candidates: GatewayCredentialCandidate[],
   ): ResolvedModelTarget | undefined {
-    const registryMatches = this.registry.findModel(model);
+    const modelPreference = (candidate: GatewayCredentialCandidate, modelId: string): number =>
+      this.isCredentialModelVisible(candidate) && credentialSupportsModel(candidate, modelId)
+        ? (candidate.source === 'platform' ? 1 : 2) : 0;
+    const orderedCandidates = [...candidates].sort((left, right) => modelPreference(right, model) - modelPreference(left, model));
+    const providerPreference = (providerId: string, modelId: string): number => Math.max(0, ...orderedCandidates
+      .filter((candidate) => this.credentialMatchesProvider(candidate, providerId))
+      .map((candidate) => modelPreference(candidate, modelId)));
+    const registryMatches = this.registry.findModel(model).sort((left, right) =>
+      providerPreference(right.provider.id, right.model.id) - providerPreference(left.provider.id, left.model.id));
+    const declaredPlatform = orderedCandidates.find((candidate) => candidate.source === 'platform' && modelPreference(candidate, model) > 0);
+    const hasPersonalRoute = registryMatches.some((match) => providerPreference(match.provider.id, match.model.id) === 2)
+      || orderedCandidates.some((candidate) => candidate.source !== 'platform' && candidate.models !== undefined && modelPreference(candidate, model) > 0);
+    if (declaredPlatform && !hasPersonalRoute) {
+      return { providerId: this.routeProviderIdForCredential(declaredPlatform), model, source: 'exact-model' };
+    }
     if (registryMatches.length > 0) {
       const candidateMatch = registryMatches.find((match) =>
         candidates.some((candidate) =>
-          this.credentialMatchesProvider(candidate, match.provider.id)
+          this.isCredentialModelVisible(candidate)
+          && this.credentialMatchesProvider(candidate, match.provider.id)
           && credentialSupportsModel(candidate, match.model.id)));
       // A compatible endpoint can explicitly offer a catalog model without
       // belonging to its original provider. Unrestricted credentials alone do
       // not establish that cross-provider route.
       if (!candidateMatch) {
-        const declaredCandidate = candidates.find((candidate) =>
-          candidate.models !== undefined && credentialSupportsModel(candidate, model));
+        const declaredCandidate = orderedCandidates.find((candidate) =>
+          this.isCredentialModelVisible(candidate) && candidate.models !== undefined && credentialSupportsModel(candidate, model));
         if (declaredCandidate) {
           return {
             providerId: this.routeProviderIdForCredential(declaredCandidate),
@@ -543,7 +575,7 @@ export class ModelRouter {
       };
     }
 
-    const candidate = candidates.find((item) => credentialSupportsModel(item, model));
+    const candidate = orderedCandidates.find((item) => this.isCredentialModelVisible(item) && credentialSupportsModel(item, model));
     if (candidate) {
       return {
         providerId: this.routeProviderIdForCredential(candidate),
@@ -671,7 +703,9 @@ export class ModelRouter {
    * a credential lifecycle write and its next use is never handed to the provider runtime.
    */
   public isCredentialEligible(candidate: GatewayCredentialCandidate): boolean {
-    return candidate.enabled
+    const provider = this.registry.getProvider(this.routeProviderIdForCredential(candidate));
+    return (!provider?.deploymentManaged || candidate.source === 'platform')
+      && candidate.enabled
       && (!candidate.health || candidate.health === 'healthy')
       && candidate.quota?.status !== 'exhausted';
   }
@@ -696,6 +730,9 @@ export class ModelRouter {
 
   private credentialMatchesProvider(candidate: GatewayCredentialCandidate, providerId: string): boolean {
     const normalizedProviderId = normalizeProviderId(providerId);
+    if (this.registry.getProvider(normalizedProviderId)?.deploymentManaged && candidate.source !== 'platform') {
+      return false;
+    }
     const candidateProviderId = normalizeProviderId(candidate.provider);
     if (candidateProviderId === normalizedProviderId) {
       return true;
@@ -725,7 +762,7 @@ export class ModelRouter {
   private credentialVisibleModels(candidates: GatewayCredentialCandidate[]): GatewayModelProjection[] {
     const seen = new Set<string>();
     const models: GatewayModelProjection[] = [];
-    for (const provider of this.registry.listProviders()) {
+    for (const provider of this.orderedProviders(candidates)) {
       const providerId = normalizeProviderId(provider.id);
       const providerCandidates = candidates
         .filter((candidate) => this.isCredentialModelVisible(candidate))
@@ -792,6 +829,12 @@ export class ModelRouter {
   private isCredentialModelVisible(candidate: GatewayCredentialCandidate): boolean {
     return this.isCredentialEligible(candidate)
       && (!candidate.cooldownUntil || candidate.cooldownUntil.getTime() <= this.now().getTime());
+  }
+
+  private orderedProviders(candidates: GatewayCredentialCandidate[]): ProviderDescriptor[] {
+    const hasPersonalCredential = (provider: ProviderDescriptor): boolean => candidates.some((candidate) =>
+      candidate.source !== 'platform' && this.isCredentialModelVisible(candidate) && this.credentialMatchesProvider(candidate, provider.id));
+    return this.registry.listProviders().sort((left, right) => Number(hasPersonalCredential(right)) - Number(hasPersonalCredential(left)));
   }
 
   /**

@@ -290,8 +290,10 @@ export interface ApiContainerCradle {
   providerCustomModelsService?: ProviderCustomModelsService;
   gatewayProviderRegistry: GatewayProviderRegistry;
   gatewayCredentialStore: GatewayCredentialStore;
+  platformGatewayConfiguration?: import('../ai-gateway/credentials/PlatformGatewayCredentialStore').PlatformGatewayConfiguration;
   gatewayRuntimeRegistry: ProviderRuntimeRegistry;
   providerHttpTransport: ProviderHttpTransport;
+  platformHttpTransport: ProviderHttpTransport;
   gatewaySessionAffinityStore: SessionAffinityStore;
   aiGatewayService?: AiGatewayService;
 
