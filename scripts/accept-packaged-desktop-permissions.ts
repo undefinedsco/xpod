@@ -379,7 +379,7 @@ export async function acceptPackagedDesktopPermissions(options: PackagedPermissi
       if (index === 0) {
         advance('switch');
         await page.getByRole('button', { name: /打开 .* 的个人卡片/u }).click();
-        await page.getByRole('button', { name: '切换账号', exact: true }).click();
+        await page.getByRole('button', { name: '切换 WebID', exact: true }).click();
       }
     }
     record = { schemaVersion: 1, kind: 'desktop-permission-acceptance', ok: true,

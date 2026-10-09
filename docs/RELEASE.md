@@ -180,6 +180,9 @@ SDK 的 Windows 终端输入依赖 Koffi 不属于 macOS/Linux 原生产物，�
 补齐 SDK 后，本机同提交安装包仍复现 compiled Bun 裸包名解析失败，文件已实际嵌入。
 Task adapter 使用已验证 runtime 根目录下的 ESM 文件 URL 加载，普通 JS 安装保留 hoisted
 依赖解析；回归必须同时覆盖 Node 隔离会话和真实 Bun 编译后二进制，不能只测源码运行时。
+修复后的安装版已完成 Task 批准、拒绝和 Stop 三个用例；后续切换阶段暴露验收脚本仍查找
+旧文案“切换账号”，实际个人卡片操作为“切换 WebID”。选择器必须对应实际产品操作，
+不能因 Task 用例通过就跳过第二个 Pod 与跨 Pod 拒绝验收。
 
 这些值必须由 RC seed 自动生成，不能作为 GitHub secret/variable 手工维护：
 
