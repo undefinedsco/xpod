@@ -1,6 +1,8 @@
 import { expect, test } from 'bun:test';
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { bunCompileTarget } from '../src/native-target';
 import { collectJavascriptNotices } from '../src/javascript-notices';
 import { sha256File } from '../src/manifest';
 
@@ -130,5 +132,28 @@ test('inventories scoped/nested versions, skips type-only manifests and preserve
     const refused = path.join(work, 'refused');
     expect(() => collectJavascriptNotices({ ...options, destination: refused })).toThrow('outside staging/dependencies');
     expect(existsSync(refused)).toBe(false);
+  } finally { rmSync(work, { recursive: true, force: true }); }
+});
+
+test('collects actual portable JS metafile on Windows metadata without admitting Windows native', () => {
+  const parent = path.resolve('.test-data/xpod-cli/portable-notices');
+  mkdirSync(parent, { recursive: true });
+  const work = mkdtempSync(path.join(parent, 'case-'));
+  try {
+    const stage = path.join(work, 'stage'); const repo = path.join(work, 'repo');
+    mkdirSync(stage); mkdirSync(path.join(repo, 'node_modules'), { recursive: true });
+    const entry = path.join(stage, 'main.ts'); const cli = path.join(work, 'main.mjs'); const metafile = path.join(work, 'metafile.json');
+    writeFileSync(entry, 'export const portable = 42;');
+    const built = spawnSync(process.execPath, ['build', '--target=node', '--format=esm', '--outfile', cli, '--metafile=' + metafile, entry], { cwd: stage });
+    expect(built.status).toBe(0); expect(built.error).toBeUndefined();
+    const options = { metafile, stageRoot: stage, repoRoot: repo, destination: path.join(work, 'notices'), target: 'win32-x64', cli, bunVersion: process.versions.bun! };
+    collectJavascriptNotices(options);
+    const index = JSON.parse(readFileSync(path.join(options.destination, 'index.json'), 'utf8'));
+    expect(index.target).toBe('win32-x64'); expect(index.cliSha256).toBe(sha256File(cli)); expect(index.inputs.length).toBe(1);
+    expect(index.inputs[0].sha256).toBe(sha256File(entry));
+    expect(() => collectJavascriptNotices({ ...options, target: '../win32-x64', destination: path.join(work, 'unsafe') })).toThrow('Invalid JavaScript build target metadata');
+    expect(existsSync(path.join(work, 'unsafe'))).toBe(false);
+    expect(() => bunCompileTarget('win32-x64')).toThrow('Unsupported build target');
+    for (const target of ['darwin-arm64', 'darwin-x64', 'linux-arm64', 'linux-x64']) { expect(bunCompileTarget(target)).toBe('bun-' + target); }
   } finally { rmSync(work, { recursive: true, force: true }); }
 });

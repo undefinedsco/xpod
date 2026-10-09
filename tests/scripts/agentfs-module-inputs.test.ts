@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { collectModule, exportSafe, nativeFacts, projectReceipt } from '../../scripts/agentfs-native-ci/mounted/prepare-module-inputs';
 
@@ -9,6 +9,25 @@ function fixture(run: (root: string) => void): void {
   const root = mkdtempSync(path.join(parent, 'case-')); try { run(root); } finally { rmSync(root, { recursive: true, force: true }); }
 }
 describe('module mounted input preparation', () => {
+  it('actual workflow directory setup creates a private cold parent and fresh leaf, writes GitHub env, and refuses leaf reuse', () => fixture(root => {
+    const workflow = readFileSync(path.resolve('.github/workflows/agentfs-module-mounted-acceptance.yml'), 'utf8');
+    const start = workflow.indexOf('          root="$GITHUB_WORKSPACE/.test-data/module-mounted-');
+    const end = workflow.indexOf('\n          bun scripts/agentfs-native-ci/mounted/prepare-module-inputs.ts native-info', start);
+    expect(start).toBeGreaterThan(0); expect(end).toBeGreaterThan(start);
+    const directorySetup = workflow.slice(start, end).split('\n').map(line => line.slice(10)).join('\n');
+    const envFile = path.join(root, 'github-env'); writeFileSync(envFile, '');
+    const env = { PATH: process.env.PATH, GITHUB_WORKSPACE: root, GITHUB_RUN_ID: 'cold-run', GITHUB_RUN_ATTEMPT: '1', GITHUB_ENV: envFile };
+    expect(existsSync(path.join(root, '.test-data'))).toBe(false);
+    const first = spawnSync('bash', ['-c', `set -euo pipefail\numask 077\n${directorySetup}`], { env, encoding: 'utf8' });
+    expect(first.status).toBe(0); expect(first.signal).toBeNull();
+    const leaf = path.join(root, '.test-data/module-mounted-cold-run-1');
+    expect(statSync(path.join(root, '.test-data')).mode & 0o777).toBe(0o700); expect(statSync(leaf).mode & 0o777).toBe(0o700);
+    const initialEnv = readFileSync(envFile, 'utf8'); expect(initialEnv).toBe(`MODULE_RUN_ROOT=${leaf}\n`);
+    const second = spawnSync('bash', ['-c', `set -euo pipefail\numask 077\n${directorySetup}`], { env, encoding: 'utf8' });
+    expect(second.status).not.toBe(0); expect(second.signal).toBeNull(); expect(readFileSync(envFile, 'utf8')).toBe(initialEnv);
+    const close = workflow.slice(workflow.indexOf('      - name: Close owned image'), workflow.indexOf('      - uses: actions/upload-artifact'));
+    expect(close).toContain("if: always() && env.MODULE_RUN_ROOT != ''");
+  }));
   it('fixed nested schemas discard unknown credentials, token, clientSecret and argv at every allowed container', () => {
     const secret = { credentials: { token: 'private-marker', clientSecret: 'private-marker' }, argv: ['private-marker'], arbitrary: { value: 'private-marker' } };
     const input = { ...secret, schemaVersion: 1, producerClosed: true, moduleBinding: { ...secret, moduleSourceSHA: '1'.repeat(40), runtime: 'node' },

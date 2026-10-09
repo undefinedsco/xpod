@@ -48,6 +48,7 @@ jobs:
           test -z "$(git status --porcelain --untracked-files=all)"
           test "$(uname -m)" = arm64 || test "$(uname -m)" = aarch64
           root="$GITHUB_WORKSPACE/.test-data/module-mounted-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          mkdir -p -m 700 "$GITHUB_WORKSPACE/.test-data"
           mkdir -m 700 "$root"
           echo "MODULE_RUN_ROOT=$root" >> "$GITHUB_ENV"
           bun scripts/agentfs-native-ci/mounted/prepare-module-inputs.ts native-info --target "$TARGET" --out "$root/native"
@@ -171,7 +172,7 @@ jobs:
           ENTRY_RUNTIME: bun
         run: *module_lane
       - name: Close owned image and export only whitelisted safe evidence
-        if: always()
+        if: always() && env.MODULE_RUN_ROOT != ''
         env:
           TARGET: ${{ matrix.target }}
           NODE_OUTCOME: ${{ steps.node.outcome }}
@@ -220,7 +221,7 @@ jobs:
           with open(sys.argv[1],'x') as f: json.dump({'sourceSHA':os.environ['GITHUB_SHA'],'target':os.environ['TARGET'],'nodeOutcome':os.environ['NODE_OUTCOME'],'bunOutcome':os.environ['BUN_OUTCOME'],'ownedImageAbsent':True if os.environ['OWNED_IMAGE_ABSENT']=='true' else None,'normalizers':normalizers,'noPromotion':True},f)
           PY
       - uses: actions/upload-artifact@v4
-        if: always()
+        if: always() && env.MODULE_RUN_ROOT != ''
         with:
           name: afs-module-mounted-${{ matrix.target }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: .test-data/module-mounted-${{ github.run_id }}-${{ github.run_attempt }}/export/

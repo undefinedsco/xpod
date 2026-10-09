@@ -1,7 +1,6 @@
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { bunCompileTarget } from './native-target';
 import { sha256File } from './manifest';
 
 interface BuildMetafile {
@@ -113,7 +112,10 @@ export function collectJavascriptNotices(options: {
   generated?: string;
   generatedProfile?: 'core' | 'client';
 }): string[] {
-  bunCompileTarget(options.target);
+  // Producer metadata for portable JavaScript, not native ABI admission.
+  if (!/^[a-z][a-z0-9]*-[a-z][a-z0-9]*$/.test(options.target)) {
+    throw new Error('Invalid JavaScript build target metadata');
+  }
   const stageRoot = realpathSync(options.stageRoot);
   const dependencyRoot = realpathSync(path.join(options.repoRoot, 'node_modules'));
   const metadata = JSON.parse(readFileSync(options.metafile, 'utf8')) as BuildMetafile;

@@ -6,6 +6,7 @@ import zipfile
 import importlib.util
 import itertools
 import json
+import struct
 import os
 from pathlib import Path
 import subprocess
@@ -700,6 +701,10 @@ class SupervisorTests(unittest.TestCase):
         job = workflow['jobs']['native-linux']
         self.assertEqual(job['needs'], 'native-macos')
         self.assertEqual(job['env']['BOOKWORM_IMAGE'], a.BOOKWORM_IMAGE)
+        self.assertEqual([(x['target'], x['runner']) for x in job['strategy']['matrix']['include']],
+                         [('linux-arm64', 'ubuntu-24.04-arm'), ('linux-x64', 'ubuntu-24.04')])
+        self.assertEqual([(x['target'], x['runner']) for x in workflow['jobs']['native-macos']['strategy']['matrix']['include']],
+                         [('darwin-arm64', 'macos-14'), ('darwin-x64', 'macos-15-intel')])
         commands = '\n'.join(step.get('run', '') for step in job['steps'])
         self.assertIn('--init', commands)
         self.assertIn('bookworm-entry.sh', commands)
@@ -873,10 +878,48 @@ class WholeCiGateTests(unittest.TestCase):
         self.assertFalse(g.gate_passed(base, True, True, True, False))
 
 
+class NativeArchitectureTests(unittest.TestCase):
+    def test_expected_workflow_sha_is_immutable_when_supplied(self):
+        a.assert_expected_head('a' * 40, 'a' * 40)
+        a.assert_expected_head('a' * 40, None)
+        for expected in ['b' * 40, 'a' * 39, 'main', '']:
+            with self.assertRaisesRegex(RuntimeError, 'immutable workflow SHA'):
+                a.assert_expected_head('a' * 40, expected)
+
+    def test_actual_host_and_unsupported_targets(self):
+        for machine, arch in [('arm64', 'arm64'), ('aarch64', 'arm64'), ('x86_64', 'x64'), ('AMD64', 'x64')]:
+            self.assertEqual(a.actual_arch(machine), arch)
+        for machine in ['i386', 'unknown', '']:
+            with self.assertRaises(RuntimeError): a.actual_arch(machine)
+        for target in [('win32', 'x64'), ('linux', 'x86_64')]:
+            with self.assertRaises(RuntimeError): a.native_target(*target)
+
+    def test_actual_elf_and_macho_architecture_bytes(self):
+        for arch, elf_cpu, macho_cpu in [('arm64', 183, 0x0100000c), ('x64', 62, 0x01000007)]:
+            elf = bytearray(64); elf[:6] = b'\x7fELF\x02\x01'; struct.pack_into('<HH', elf, 16, 3, elf_cpu)
+            macho = struct.pack('<IIIIIIII', 0xfeedfacf, macho_cpu, 0, 2, 0, 0, 0, 0)
+            for host, data in [('linux', elf), ('darwin', macho)]:
+                self.assertEqual(a.assert_binary_arch(data, host, arch)['target'], f'{host}-{arch}')
+                with self.assertRaises(RuntimeError): a.assert_binary_arch(data, host, 'x64' if arch == 'arm64' else 'arm64')
+                with self.assertRaises(RuntimeError): a.assert_binary_arch(data[:20], host, arch)
+        with self.assertRaises(RuntimeError): a.assert_binary_arch(b'\xca\xfe\xba\xbe' + bytes(64), 'darwin', 'x64')
+
+    def test_linux_x64_baseline_does_not_accept_arm(self):
+        sdk = dict(osRelease='debian 12', glibc='glibc 2.36', machine='x86_64')
+        a.assert_bookworm_baseline('linux', sdk, 'x64')
+        with self.assertRaises(RuntimeError): a.assert_bookworm_baseline('linux', sdk)
+        with self.assertRaises(RuntimeError): a.assert_bookworm_baseline('linux', dict(sdk, glibc='glibc 2.39'), 'x64')
+
+    def test_x64_authority_is_required_before_reading_archive(self):
+        for pins in [{}, {'PRODUCT_TARGET': 'darwin-arm64'}]:
+            with self.assertRaisesRegex(RuntimeError, 'per-target authority'):
+                a.verify_reuse_archive(Path('/does-not-exist'), pins, 'darwin', 'x64')
+
+
 class NativeReuseTests(unittest.TestCase):
     def fixture(self, directory, change=None):
         inventory = dict(declaredTests=98, passedTests=96, ignoredTests=2, filteredTests=0)
-        helper = b'owned-unit-helper'
+        helper = struct.pack('<IIIIIIII', 0xfeedfacf, 0x0100000c, 0, 2, 0, 0, 0, 0) + b'owned-unit-helper'
         tar_bytes = io.BytesIO()
         with tarfile.open(fileobj=tar_bytes, mode='w:gz') as tar:
             member = tarfile.TarInfo('install/helper/agentfs-pod'); member.size = len(helper)
@@ -919,6 +962,34 @@ class NativeReuseTests(unittest.TestCase):
                 result = a.verify_reuse_archive(archive, pins, 'darwin')
             self.assertEqual(result['passedTests'], 96)
             self.assertEqual(len(result['stages']), 13)
+
+    def test_x64_reuse_is_target_bound_and_checks_actual_helper_bytes(self):
+        def x64(entries):
+            # Synthetic unit bytes never represent a producer result.
+            with tarfile.open(fileobj=io.BytesIO(entries.pop('xpod-cli-unit-darwin-arm64.tar.gz')), mode='r:gz') as tar:
+                helper = bytearray(tar.extractfile('install/helper/agentfs-pod').read())
+            struct.pack_into('<I', helper, 4, 0x01000007)
+            buffer = io.BytesIO()
+            with tarfile.open(fileobj=buffer, mode='w:gz') as tar:
+                member = tarfile.TarInfo('install/helper/agentfs-pod'); member.size = len(helper)
+                tar.addfile(member, io.BytesIO(helper))
+            package = buffer.getvalue()
+            native = json.loads(entries['native-receipt.json']); native['target'] = 'darwin-x64'
+            native['helperSha256'] = hashlib.sha256(helper).hexdigest()
+            final = json.loads(entries['final.json']); final.update(target='darwin-x64', nativeReceipt=native, expectedWorkflowSHA=final['head'],
+                bunAssetSHA256=a.BUN_TARGET_SHA['darwin-x64'], binaryArchitecture={'target': 'darwin-x64', 'arch': 'x64'},
+                archiveSHA256=hashlib.sha256(package).hexdigest())
+            entries['native-receipt.json'] = json.dumps(native).encode(); entries['final.json'] = json.dumps(final).encode()
+            entries['xpod-cli-unit-darwin-x64.tar.gz'] = package
+        with owned_scratch() as directory:
+            archive, pins, inventory = self.fixture(directory, x64)
+            with zipfile.ZipFile(archive) as z:
+                final = json.loads(z.read('final.json'))
+            pins.update(PRODUCT_TARGET='darwin-x64', DARWIN_ARCHIVE_SHA=final['archiveSHA256'], DARWIN_HELPER_SHA=final['nativeReceipt']['helperSha256'])
+            with patch.object(a, 'check_tests', return_value=inventory):
+                result = a.verify_reuse_archive(archive, pins, 'darwin', 'x64')
+                self.assertEqual(result['arch'], 'x64'); self.assertEqual(result['target'], 'darwin-x64')
+                with self.assertRaises(RuntimeError): a.verify_reuse_archive(archive, pins, 'darwin')
 
     def test_missing_or_unclosed_stage_cannot_reuse(self):
         for kind in ['missing', 'wait', 'group', 'raw']:

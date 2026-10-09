@@ -1,5 +1,6 @@
 """Fresh source-bound native acceptance; no release or mount operation."""
 import json
+import struct
 import hashlib
 import io
 import tarfile
@@ -22,6 +23,59 @@ BUN_SHA = {
     'darwin': '90987a3a16d7db556d886ac3d551e7b6d3edf0a1cf43acaed622e8676be1d12f',
     'linux': '54328bbc2d9c8e0c9f892c544d66c57a83b84139e34909e5ee81758f1ac8fda7',
 }
+# Official Bun GitHub release asset digests, keyed by actual target.
+# The legacy host-only BUN_SHA remains the existing ARM contract.
+BUN_TARGET_SHA = {
+    'darwin-arm64': BUN_SHA['darwin'], 'linux-arm64': BUN_SHA['linux'],
+    'darwin-x64': '80520d7e17526308c9185d261679ac6d27798d3803a0e9f7ff9121ab8affb012',
+    'linux-x64': '36368faef7527875d5ffa52e53cd48021741f2a83eb6208a8dd64068d422a913',
+}
+
+
+def actual_arch(machine):
+    names = {'arm64': 'arm64', 'aarch64': 'arm64', 'x86_64': 'x64', 'amd64': 'x64'}
+    arch = names.get(machine.lower())
+    if arch is None:
+        raise RuntimeError('Unsupported actual native host architecture')
+    return arch
+
+
+def assert_expected_head(head, expected_head):
+    if expected_head is not None and (not re.fullmatch(r'[0-9a-f]{40}', expected_head) or head != expected_head):
+        raise RuntimeError('Native producer checkout does not match immutable workflow SHA')
+
+
+def native_target(os_name, arch):
+    target = f'{os_name}-{arch}'
+    if target not in BUN_TARGET_SHA:
+        raise RuntimeError('Unsupported native target')
+    return target
+
+
+def assert_binary_arch(data, os_name, arch):
+    """Inspect actual thin executable bytes, not its filename or receipt.
+    Fat Mach-O and 32-bit binaries are deliberately unsupported: each producer
+    must build one exact native target rather than accepting another slice.
+    This checks architecture only; existing real execution and Linux loader
+    admission continue to prove dynamic ABI compatibility.
+    """
+    native_target(os_name, arch)
+    if os_name == 'linux':
+        if len(data) < 64 or data[:4] != b'\x7fELF' or data[4:6] != b'\x02\x01':
+            raise RuntimeError('Native helper must be a little-endian ELF64 executable')
+        kind, machine = struct.unpack_from('<HH', data, 16)
+        if kind not in (2, 3) or machine != {'arm64': 183, 'x64': 62}[arch]:
+            raise RuntimeError('Native helper ELF target architecture mismatch')
+    else:
+        if len(data) < 32 or data[:4] != b'\xcf\xfa\xed\xfe':
+            raise RuntimeError('Native helper must be a thin little-endian Mach-O64 executable')
+        cpu = struct.unpack_from('<I', data, 4)[0]
+        kind = struct.unpack_from('<I', data, 12)[0]
+        if cpu != {'arm64': 0x0100000c, 'x64': 0x01000007}[arch] or kind != 2:
+            raise RuntimeError('Native helper Mach-O target architecture mismatch')
+    return {'target': native_target(os_name, arch), 'arch': arch}
+
+
 # Linux is built inside this pinned Bookworm GNU image, so the helper targets
 # glibc 2.36 / OpenSSL 3 instead of the Ubuntu 24.04 runner's glibc 2.39.
 BOOKWORM_IMAGE = 'rust@sha256:93ce27a88655056a51dbdd8f5f2d7ddc071c7b0070fb288a37b5a285fc83971e'
@@ -94,9 +148,9 @@ def assert_bookworm_image(image):
         raise RuntimeError(f'AGENTFS_BOOKWORM_IMAGE must equal the canonical pin {BOOKWORM_IMAGE}')
 
 
-def assert_bookworm_baseline(host, sdk):
+def assert_bookworm_baseline(host, sdk, arch='arm64'):
     """Reject an invalid interior before the build: the Linux chain must run on
-    Debian 12 / glibc 2.36 / aarch64, never the Ubuntu ARM runner it is hosted by."""
+    Debian 12 / glibc 2.36 / the exact declared architecture, never Ubuntu."""
     if host != 'linux':
         return
     release = tuple(str(sdk.get('osRelease', '')).split())
@@ -104,8 +158,9 @@ def assert_bookworm_baseline(host, sdk):
         raise RuntimeError(f'Linux admission must run inside Debian 12 Bookworm, got {release!r}')
     if str(sdk.get('glibc', '')).strip() != 'glibc 2.36':
         raise RuntimeError(f'Linux admission requires the Bookworm glibc 2.36 baseline, got {sdk.get("glibc")!r}')
-    if str(sdk.get('machine', '')).strip() != 'aarch64':
-        raise RuntimeError(f'Linux admission requires an aarch64 interior, got {sdk.get("machine")!r}')
+    expected_machine = {'arm64': 'aarch64', 'x64': 'x86_64'}.get(arch)
+    if expected_machine is None or str(sdk.get('machine', '')).strip() != expected_machine:
+        raise RuntimeError(f'Linux admission requires an {expected_machine} interior for the declared target')
 
 
 def assert_bun_absent(path):
@@ -287,6 +342,7 @@ def runtime_admission(archive, evidence, node, base):
     helper = install / 'helper/agentfs-pod'
     if not launcher.is_file() or not helper.is_file():
         raise RuntimeError('Admission archive lacks the launcher or bundled helper')
+    assert_binary_arch(helper.read_bytes(), sys.platform, actual_arch(platform.machine()))
     node_dir = str(Path(node).parent)
     path = os.pathsep.join([node_dir, '/usr/local/sbin', '/usr/local/bin', '/usr/sbin', '/usr/bin', '/sbin', '/bin'])
     assert_bun_absent(path)
@@ -387,13 +443,13 @@ def main():
     os.umask(0o077)
     clean = tool_environment(os.environ)
     bookworm_image = os.environ.get('AGENTFS_BOOKWORM_IMAGE')
+    expected_head = os.environ.get('GITHUB_SHA')
     os.environ.clear()
     os.environ.update(clean)
     root = Path(__file__).resolve().parents[2]
     host = sys.platform
-    if host not in BUN_SHA or platform.machine().lower() not in ('arm64', 'aarch64'):
-        raise RuntimeError('This acceptance requires actual macOS/Linux ARM64')
-    target = f'{host}-arm64'
+    arch = actual_arch(platform.machine())
+    target = native_target(host, arch)
     if os.environ['NATIVE_TARGET'] != target:
         raise RuntimeError('Matrix and actual host target differ')
     # Fail closed before any download/build: the exact canonical pin and a valid
@@ -401,7 +457,7 @@ def main():
     if host == 'linux':
         assert_bookworm_image(bookworm_image)
     sdk_before = sdk_identity(host)
-    assert_bookworm_baseline(host, sdk_before)
+    assert_bookworm_baseline(host, sdk_before, arch)
     base = Path(os.environ['RUNNER_TEMP']) / 'agentfs-native-acceptance'
     base.mkdir(mode=0o700)  # fresh only, never reuse another run's outputs
     evidence = base / 'evidence'
@@ -411,13 +467,15 @@ def main():
         raise RuntimeError('Fresh tool/source preparation requires at least 4 GiB')
     source_before = source_snapshot(root)
     head = source_before['head']
+    assert_expected_head(head, expected_head)
     if source_before['status']:
         raise RuntimeError('Acceptance checkout must be clean')
     # Official immutable Bun asset and dated Rust distribution manifest.
     bun_asset = base / 'bun.zip'
-    download(f'https://github.com/oven-sh/bun/releases/download/bun-v1.4.2/bun-{host}-aarch64.zip', bun_asset, BUN_SHA[host])
+    bun_arch = 'aarch64' if arch == 'arm64' else 'x64'
+    download(f'https://github.com/oven-sh/bun/releases/download/bun-v1.4.2/bun-{host}-{bun_arch}.zip', bun_asset, BUN_TARGET_SHA[target])
     gate('bun-extract', ['unzip', '-q', str(bun_asset), '-d', str(base / 'runtime')])
-    bun = str(base / f'runtime/bun-{host}-aarch64/bun')
+    bun = str(base / f'runtime/bun-{host}-{bun_arch}/bun')
     os.environ['PATH'] = str(Path(bun).parent) + os.pathsep + os.environ['PATH']
     manifest = base / 'channel-rust-nightly.toml'
     download('https://static.rust-lang.org/dist/2026-09-30/channel-rust-nightly.toml', manifest, RUST_MANIFEST_SHA)
@@ -429,11 +487,18 @@ def main():
     os.environ['RUSTC'] = rustc
     os.environ['PATH'] = str(Path(rustc).parent) + os.pathsep + os.environ['PATH']
     version = subprocess.check_output([rustc, '-vV'], text=True)
+    rust_host = {'darwin-arm64': 'aarch64-apple-darwin', 'darwin-x64': 'x86_64-apple-darwin',
+                 'linux-arm64': 'aarch64-unknown-linux-gnu', 'linux-x64': 'x86_64-unknown-linux-gnu'}[target]
+    if f'host: {rust_host}' not in version:
+        raise RuntimeError('Actual native Rust host differs from target')
     if 'commit-hash: 5c543b0b8c73c7b72bc8284ced4fb22ead15734d' not in version:
         raise RuntimeError('Dated compiler identity drift')
     node = shutil.which('node')
     if subprocess.check_output([node, '--version'], text=True).strip() != 'v22.21.1':
         raise RuntimeError('External Node version drift')
+    for runtime in [node, bun]:
+        if subprocess.check_output([runtime, '-p', 'process.arch'], text=True).strip() != arch:
+            raise RuntimeError('Pinned JS runtime actual architecture mismatch')
     gate('dependencies', [bun, 'install', '--frozen-lockfile'])
     gate('workspace-packages', [bun, 'run', 'build:packages'])
     upstream = base / 'upstream'
@@ -464,6 +529,7 @@ def main():
             or receipt['compiler']['rustcSha256'] != sha256(rustc)
             or receipt['buildArguments'] != ['build', '--release', '--frozen']):
         raise RuntimeError('Actual native receipt binding mismatch')
+    binary_arch = assert_binary_arch((rebuilt / 'agentfs-pod').read_bytes(), host, arch)
     suites = upstream_suites(kit / 'upstream', evidence, cargo, base)
     package = base / 'package'
     gate('package', [bun, str(scripts / 'build.ts'), '--target', target, '--helper', str(rebuilt / 'agentfs-pod'),
@@ -485,10 +551,10 @@ def main():
     shutil.copyfile(kit / 'source-kit.json', evidence / 'source-kit.json')
     shutil.copyfile(archives[0], evidence / archives[0].name)
     final = dict(scope='source-bound native helper, pinned upstream SDK and no-default-features CLI suites, install and Bookworm loader/ABI verification; no mount or release',
-                 target=target, head=head,
+                 target=target, head=head, expectedWorkflowSHA=expected_head,
                  sourceBefore=source_before, sourceAfter=source_after, sdkBefore=sdk_before, sdkAfter=sdk_after,
                  nodeSHA256=sha256(node), hostUname=list(platform.uname()), rustManifestSHA256=RUST_MANIFEST_SHA,
-                 bunAssetSHA256=BUN_SHA[host], compiler=receipt['compiler'], nativeReceipt=receipt,
+                 bunAssetSHA256=BUN_TARGET_SHA[target], binaryArchitecture=binary_arch, compiler=receipt['compiler'], nativeReceipt=receipt,
                  bookwormImage=bookworm_image if host == 'linux' else None, runtimeAdmission=runtime,
                  **test_inventory,
                  ignoredScope='owned lease subprocess invoked by parent; historical RED intentionally ignored',
@@ -531,8 +597,10 @@ def verify_reuse_sources(root, product):
         raise RuntimeError('Native reuse inputs are dirty')
 
 
-def verify_reuse_archive(archive, pins, os_name):
-    prefix = os_name.upper(); target = 'darwin-arm64' if os_name == 'darwin' else 'linux-arm64'
+def verify_reuse_archive(archive, pins, os_name, arch='arm64'):
+    prefix = os_name.upper(); target = native_target(os_name, arch)
+    if (arch != 'arm64' or 'PRODUCT_TARGET' in pins) and pins.get('PRODUCT_TARGET') != target:
+        raise RuntimeError('Native reuse per-target authority mismatch')
     if sha256(archive) != pins[f'{prefix}_ZIP_SHA']:
         raise RuntimeError('Native reuse ZIP hash mismatch')
     with zipfile.ZipFile(archive) as z:
@@ -551,8 +619,12 @@ def verify_reuse_archive(archive, pins, os_name):
         inventory = check_tests(read('native-test.log').decode())
         if final.get('target') != target or any(final.get(k) != v for k, v in inventory.items()) \
                 or final.get('sdkBefore') != final.get('sdkAfter') or not final.get('sdkBefore') \
-                or final.get('rustManifestSHA256') != RUST_MANIFEST_SHA or final.get('bunAssetSHA256') != BUN_SHA[os_name]:
+                or final.get('rustManifestSHA256') != RUST_MANIFEST_SHA or final.get('bunAssetSHA256') != BUN_TARGET_SHA[target]:
             raise RuntimeError('Native reuse inventory, target or SDK binding mismatch')
+        if arch != 'arm64' and final.get('expectedWorkflowSHA') != pins['PRODUCT_SHA']:
+            raise RuntimeError('Native reuse x64 immutable workflow SHA binding missing')
+        if arch != 'arm64' and final.get('binaryArchitecture') != {'target': target, 'arch': arch}:
+            raise RuntimeError('Native reuse x64 producer architecture binding missing')
         stages = [n[:-len('.receipt.json')] for n in names if n.endswith('.receipt.json')]
         required = set(['bun-extract', 'toolchain', 'dependencies', 'workspace-packages', 'upstream',
                         'upstream-checkout', 'export', 'verify-source', 'rebuild', 'sdk-suite', 'cli-suite', 'package', 'verify-install'])
@@ -600,8 +672,9 @@ def verify_reuse_archive(archive, pins, os_name):
             helpers = [m for m in tar.getmembers() if m.name in ['install/helper/agentfs-pod', './install/helper/agentfs-pod'] and m.isfile()]
             if len(helpers) != 1 or hashlib.sha256(tar.extractfile(helpers[0]).read()).hexdigest() != pins[f'{prefix}_HELPER_SHA']:
                 raise RuntimeError('Native reuse packaged helper hash mismatch')
+            assert_binary_arch(tar.extractfile(helpers[0]).read(), os_name, arch)
         if os_name == 'linux':
-            assert_bookworm_baseline('linux', final['sdkBefore'])
+            assert_bookworm_baseline('linux', final['sdkBefore'], arch)
             runtime = final.get('runtimeAdmission', {})
             metadata = json.loads(read('runtime-admission.metadata.json'))
             highest = assert_bookworm_glibc(read('runtime-readelf.raw.log').decode())
@@ -620,7 +693,7 @@ def verify_reuse_archive(archive, pins, os_name):
                 if stage.get('receiptSha256') != hashlib.sha256(read(f'{name}.receipt.json')).hexdigest() \
                         or stage.get('rawSha256') != hashlib.sha256(read(f'{name}.raw.log')).hexdigest():
                     raise RuntimeError('Native reuse Linux runtime metadata is not stage-bound')
-        return dict(target=target, productHead=pins['PRODUCT_SHA'], zipSHA256=pins[f'{prefix}_ZIP_SHA'],
+        return dict(target=target, arch=arch, productHead=pins['PRODUCT_SHA'], zipSHA256=pins[f'{prefix}_ZIP_SHA'],
                     archiveSHA256=pins[f'{prefix}_ARCHIVE_SHA'], helperSHA256=pins[f'{prefix}_HELPER_SHA'],
                     sourceKitSHA256=native['sourceKitSha256'], stages=sorted(stages), **inventory)
 

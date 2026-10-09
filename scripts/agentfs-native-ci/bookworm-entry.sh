@@ -17,7 +17,16 @@ git config --global --add safe.directory "$repo"
 [ "$ID" = debian ] && [ "$VERSION_CODENAME" = bookworm ] || { echo "Bookworm interior expected, got $ID $VERSION_CODENAME" >&2; exit 1; }
 libc=$(getconf GNU_LIBC_VERSION)
 [ "$libc" = "glibc 2.36" ] || { echo "Bookworm interior glibc expected, got $libc" >&2; exit 1; }
-[ "$(uname -m)" = aarch64 ] || { echo "Bookworm baseline requires aarch64" >&2; exit 1; }
+case "${NATIVE_TARGET:?NATIVE_TARGET required}" in
+  linux-arm64)
+    machine=aarch64; node_arch=arm64
+    node_sha256=e660365729b434af422bcd2e8e14228637ecf24a1de2cd7c916ad48f2a0521e1 ;;
+  linux-x64)
+    machine=x86_64; node_arch=x64
+    node_sha256=680d3f30b24a7ff24b98db5e96f294c0070f8f9078df658da1bce1b9c9873c88 ;;
+  *) echo 'Unsupported Bookworm native target' >&2; exit 1 ;;
+esac
+[ "$(uname -m)" = "$machine" ] || { echo 'Bookworm target architecture mismatch' >&2; exit 1; }
 
 # Plain HTTP repository traffic can be truncated by host network proxies; keep
 # signature verification and the same Debian sources via TLS.
@@ -28,16 +37,16 @@ DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=3 install -y -qq --no
 
 # Pinned official Node 22.21.1 for the noBun loader admission.
 node_version=22.21.1
-node_sha256=e660365729b434af422bcd2e8e14228637ecf24a1de2cd7c916ad48f2a0521e1
-node_dir=/opt/node-v${node_version}-linux-arm64
+node_dir=/opt/node-v${node_version}-linux-${node_arch}
 if [ ! -x "$node_dir/bin/node" ]; then
-  curl -fsSL -o /tmp/node.tar.xz "https://nodejs.org/dist/v${node_version}/node-v${node_version}-linux-arm64.tar.xz"
+  curl -fsSL -o /tmp/node.tar.xz "https://nodejs.org/dist/v${node_version}/node-v${node_version}-linux-${node_arch}.tar.xz"
   printf '%s  %s\n' "$node_sha256" /tmp/node.tar.xz | sha256sum -c -
   mkdir -p /opt
   tar -xJf /tmp/node.tar.xz -C /opt
   rm -f /tmp/node.tar.xz
 fi
 export PATH="$node_dir/bin:$PATH"
+[ "$(node -p process.arch)" = "$node_arch" ] || { echo "Pinned Node architecture drift" >&2; exit 1; }
 [ "$(node --version)" = "v${node_version}" ] || { echo "Pinned Node identity drift" >&2; exit 1; }
 
 cd "$repo"
