@@ -1,0 +1,38 @@
+name: CLI package
+on:
+  pull_request:
+    branches: [staging, main]
+    paths:
+      - 'packages/xpod-cli/**'
+      - 'src/cli/**'
+      - 'scripts/check-cli-package.cjs'
+      - 'scripts/patch-jose.js'
+      - 'scripts/patch-inrupt-*.js'
+      - 'types/bun/**'
+      - '.github/workflows/cli-package.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  standalone-cli:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Build and install CLI without the server workspace
+        run: node scripts/check-cli-package.cjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: xpod-cli-${{ runner.os }}-${{ github.sha }}
+          path: |
+            .test-data/cli-package/xpod-cli.tgz
+            .test-data/cli-package/result.json

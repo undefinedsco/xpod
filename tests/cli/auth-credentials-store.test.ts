@@ -50,8 +50,8 @@ afterEach(() => {
 
 describe('CLI shared Solid auth credentials store', () => {
   it('removes SDK restoration material on logout and allows repeated logout', async () => {
-    const store = await import('../../src/cli/lib/credentials-store');
-    const { createOidcSessionStorage } = await import('../../src/cli/lib/oidc-session-storage');
+    const store = await import('../../packages/xpod-cli/src/lib/credentials-store');
+    const { createOidcSessionStorage } = await import('../../packages/xpod-cli/src/lib/oidc-session-storage');
     store.saveCredentials({
       url: 'https://id.example/', webId: 'https://id.example/alice/profile/card#me',
       authType: 'oidc_oauth', secrets: {
@@ -73,7 +73,7 @@ describe('CLI shared Solid auth credentials store', () => {
   });
 
   it('resolves credentials under SOLID_HOME/auth', async () => {
-    const store = await import('../../src/cli/lib/credentials-store');
+    const store = await import('../../packages/xpod-cli/src/lib/credentials-store');
 
     expect(store.getSolidHomeDir()).toBe(solidHome);
     expect(store.getSolidAuthDir()).toBe(join(solidHome, 'auth'));
@@ -81,7 +81,7 @@ describe('CLI shared Solid auth credentials store', () => {
   });
 
   it('saves and loads client credentials from the shared Solid auth store', async () => {
-    const store = await import('../../src/cli/lib/credentials-store');
+    const store = await import('../../packages/xpod-cli/src/lib/credentials-store');
 
     store.saveCredentials({
       url: 'https://id.undefineds.co/',
@@ -128,8 +128,8 @@ describe('CLI shared Solid auth credentials store', () => {
       },
     });
 
-    const store = await import('../../src/cli/lib/credentials-store');
-    const authContext = await import('../../src/cli/lib/auth-context');
+    const store = await import('../../packages/xpod-cli/src/lib/credentials-store');
+    const authContext = await import('../../packages/xpod-cli/src/lib/auth-context');
 
     expect(store.loadCredentials()).toMatchObject({
       url: 'https://id.undefineds.co/',
@@ -162,8 +162,8 @@ describe('CLI shared Solid auth credentials store', () => {
       clientSecret: 'app-local-secret',
     });
 
-    const store = await import('../../src/cli/lib/credentials-store');
-    const authContext = await import('../../src/cli/lib/auth-context');
+    const store = await import('../../packages/xpod-cli/src/lib/credentials-store');
+    const authContext = await import('../../packages/xpod-cli/src/lib/auth-context');
 
     expect(store.loadCredentials()).toBeNull();
     expect(authContext.getStoredAuthStatus()).toEqual({ authenticated: false });
@@ -255,7 +255,7 @@ describe('CLI shared Solid auth credentials store', () => {
     });
     writeJson(join(testHome, '.xpod', 'config.json'), { url: 'app-local' });
 
-    const store = await import('../../src/cli/lib/credentials-store');
+    const store = await import('../../packages/xpod-cli/src/lib/credentials-store');
     store.clearCredentials();
 
     expect(existsSync(join(solidHome, 'auth', 'credentials.json'))).toBe(false);

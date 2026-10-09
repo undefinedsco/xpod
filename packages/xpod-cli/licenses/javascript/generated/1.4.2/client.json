@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "bunVersion": "1.4.2",
+  "prefixSha256": "b7da41c9687f29df76843d1ec3b196850f0bd4881b29cdc42d23b621dcf6e102",
+  "prefixBytes": 2229,
+  "provenance": {
+    "basePrefixSha256": "a3e72d01f26bcd39142331f3a6d2033a495188dc06ab7b477f728f88afcff0a7",
+    "derivation": "CJS client prefix: base ESM helpers plus __getOwnPropDesc, __toCommonJS and __moduleCache from the stored Bun src/runtime.js (lines 12, 88-104)."
+  },
+  "file": {
+    "sourcePath": "generated-prefix.js",
+    "object": "objects/b7da41c9687f29df76843d1ec3b196850f0bd4881b29cdc42d23b621dcf6e102.txt",
+    "sha256": "b7da41c9687f29df76843d1ec3b196850f0bd4881b29cdc42d23b621dcf6e102",
+    "provenance": {
+      "role": "Actual CJS client prefix, compared with stored Bun runtime.js helpers."
+    }
+  }
+}

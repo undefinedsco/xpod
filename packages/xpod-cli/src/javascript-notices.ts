@@ -111,6 +111,7 @@ export function collectJavascriptNotices(options: {
   bunVersion: string;
   supplements?: string;
   generated?: string;
+  generatedProfile?: 'core' | 'client';
 }): string[] {
   bunCompileTarget(options.target);
   const stageRoot = realpathSync(options.stageRoot);
@@ -125,6 +126,15 @@ export function collectJavascriptNotices(options: {
   let generated: GeneratedNoticeIndex | undefined;
   if (options.generated) {
     generated = JSON.parse(readFileSync(path.join(options.generated, 'index.json'), 'utf8')) as GeneratedNoticeIndex;
+    if (options.generatedProfile) {
+      const profile = JSON.parse(readFileSync(path.join(options.generated, `${options.generatedProfile}.json`), 'utf8'));
+      if (profile.schemaVersion !== 1 || profile.bunVersion !== generated.bunVersion || profile.file?.sourcePath !== 'generated-prefix.js') {
+        throw new Error('Unsupported generated JavaScript profile');
+      }
+      generated = { ...generated, prefixSha256: profile.prefixSha256, prefixBytes: profile.prefixBytes,
+        provenance: { original: generated.provenance, profile: profile.provenance },
+        files: [...generated.files.filter(file => file.sourcePath !== 'generated-prefix.js'), profile.file] };
+    }
     if (generated.schemaVersion !== 1 || generated.bunVersion !== options.bunVersion ||
       !/^[a-f0-9]{64}$/.test(generated.prefixSha256) || !Number.isSafeInteger(generated.prefixBytes) || generated.prefixBytes < 1 ||
       !Array.isArray(generated.files) || !generated.files.length) {

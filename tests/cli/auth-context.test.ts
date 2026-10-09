@@ -66,7 +66,7 @@ describe('CLI resource auth context', () => {
       },
     });
 
-    const authContext = await import('../../src/cli/lib/auth-context');
+    const authContext = await import('../../packages/xpod-cli/src/lib/auth-context');
 
     await expect(authContext.requireAuthContext()).resolves.toMatchObject({
       accessToken: 'access-token',
@@ -124,7 +124,7 @@ describe('CLI resource auth context', () => {
       Session: class Session {},
     }));
 
-    const authContext = await import('../../src/cli/lib/auth-context');
+    const authContext = await import('../../packages/xpod-cli/src/lib/auth-context');
 
     await expect(authContext.requireAuthContext()).resolves.toMatchObject({
       accessToken: 'new-access',

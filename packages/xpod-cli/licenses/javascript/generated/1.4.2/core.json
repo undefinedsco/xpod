@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "bunVersion": "1.4.2",
+  "prefixSha256": "1f97067a415ad8b02afa1de831ea663aa44ced20fbcfb3666072e1fb87b88055",
+  "prefixBytes": 1529,
+  "provenance": {
+    "basePrefixSha256": "a3e72d01f26bcd39142331f3a6d2033a495188dc06ab7b477f728f88afcff0a7",
+    "derivation": "Exact base prefix with unused __returnValue/__exportSetter/__export declarations removed; all remaining helper bytes match the existing Bun source evidence."
+  },
+  "file": {
+    "sourcePath": "generated-prefix.js",
+    "object": "objects/1f97067a415ad8b02afa1de831ea663aa44ced20fbcfb3666072e1fb87b88055.txt",
+    "sha256": "1f97067a415ad8b02afa1de831ea663aa44ced20fbcfb3666072e1fb87b88055",
+    "provenance": {
+      "role": "Actual core CLI prefix, compared byte-for-byte with the existing audited source prefix after removing unused export helpers."
+    }
+  }
+}

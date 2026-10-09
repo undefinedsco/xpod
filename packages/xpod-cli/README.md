@@ -1,4 +1,21 @@
-# @undefineds.co/xpod-cli (preview packaging)
+# @undefineds.co/xpod-cli
+
+默认 npm 产物安装 `xpod`：认证、原始 Pod HTTP 客户端及模块管理独立构建，CSS/API/AFS 按需下载。规范与当前模块发布边界见 [模块分发规范](../../docs/module-distribution.md)。
+
+```sh
+bun run typecheck
+bun run test
+bun run build
+bun pm pack
+./dist/bin/xpod --help
+./dist/bin/xpod module list
+```
+
+默认包不带服务、UI 或 native helper。`xpod afs` 首次使用下载匹配的平台模块，`xpod module install afs --version <version>` 显式更新；平台模块尚未发布时返回 unavailable。单独发布 CLI 不会自动发布服务或修改服务版本。
+
+## 旧预览产物（迁移期）
+
+默认 `test` 和 `verify` 只检查独立 CLI；`test:preview` 与 `verify:preview` 保留旧预览兼容门禁。下文只描述显式 `build:preview` 的旧客户端/helper 预览。新 npm 入口为 `src/npm-entry.ts`；旧 `src/entry.ts` 不在默认发行构建中。
 
 Client-only build profile of Xpod. Xpod is the overall product; CLI and App are
 its user surfaces, with CSS, API and AFS as optional capability modules. This

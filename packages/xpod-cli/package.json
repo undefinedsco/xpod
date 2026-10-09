@@ -1,17 +1,61 @@
 {
   "name": "@undefineds.co/xpod-cli",
   "version": "0.1.0-preview.1",
-  "description": "Standalone Xpod CLI client (auth + agent-fs) for reviewable preview artifacts.",
+  "description": "Xpod command-line client with on-demand capability modules",
   "license": "MIT",
-  "private": true,
   "type": "module",
   "bin": {
-    "xpodcli": "./dist/bin/xpodcli"
+    "xpod": "./dist/bin/xpod"
   },
   "scripts": {
-    "build": "bun scripts/build.ts",
+    "build": "bun scripts/build-package.ts",
     "build:cli-only": "bun scripts/build.ts --cli-only",
-    "verify": "bun scripts/verify-install.ts",
-    "test": "bun test ./tests"
+    "verify": "bun run typecheck && bun run test && bun run build",
+    "test": "bun test tests/module-store.test.ts tests/launcher.test.ts tests/javascript-notices.test.ts",
+    "build:preview": "bun scripts/build.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.core.json",
+    "test:preview": "bun test ./tests",
+    "verify:preview": "bun scripts/verify-install.ts"
+  },
+  "files": [
+    "dist",
+    "LICENSE",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "devDependencies": {
+    "@inrupt/solid-client-authn-node": "^3.1.0",
+    "yargs": "^17.7.2",
+    "tar": "^7.5.3",
+    "typescript": "5.5",
+    "@types/node": "^22",
+    "@types/yargs": "^17.0.33"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "exports": {
+    "./client": {
+      "types": "./dist/client-types/client.d.ts",
+      "import": "./dist/client.mjs",
+      "require": "./dist/client.cjs"
+    }
+  },
+  "peerDependencies": {
+    "@inrupt/solid-client-authn-node": "^3.1.1"
+  },
+  "peerDependenciesMeta": {
+    "@inrupt/solid-client-authn-node": {
+      "optional": true
+    }
+  },
+  "typesVersions": {
+    "*": {
+      "client": [
+        "dist/client-types/client.d.ts"
+      ]
+    }
   }
 }

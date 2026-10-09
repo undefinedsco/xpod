@@ -25,8 +25,12 @@ it('keeps workspace icon consumers on one external runtime while preserving thei
   const tarball = path.join(root, 'package.tgz');
   execFileSync('tar', ['czf', tarball, '-C', path.join(root, 'seed'), 'package']);
   const dependencies = getBundledLocalDependencies(repoRoot).filter((entry: { name: string }) =>
-    ['ai-connections', 'extension-sdk', 'shared-ui', 'solid-sdk'].some((name) => entry.name === `@undefineds.co/${name}`));
+    ['ai-connections', 'extension-sdk', 'shared-ui', 'solid-sdk', 'xpod-cli'].some((name) => entry.name === `@undefineds.co/${name}`));
   bundleLocalDependenciesIntoTarball(tarball, dependencies);
+  const extracted = path.join(root, 'installed'); mkdirSync(extracted);
+  execFileSync('tar', ['xzf', tarball, '-C', extracted]);
+  const client = createRequire(path.join(extracted, 'package/package.json'))('@undefineds.co/xpod-cli/client');
+  expect(typeof client.authFetch).toBe('function');
   const entries = execFileSync('tar', ['tzf', tarball], { encoding: 'utf8' }).split('\n');
   expect(entries.filter((entry) => entry.includes('/node_modules/lucide-react/'))).toEqual([]);
   const readManifest = (entry: string) => JSON.parse(execFileSync('tar', ['xOf', tarball, entry], { encoding: 'utf8' }));
