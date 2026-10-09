@@ -2,7 +2,6 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { ApiServer } from '../../src/api/ApiServer';
 import { AuthMiddleware } from '../../src/api/middleware/AuthMiddleware';
 import type { Authenticator, AuthResult } from '../../src/api/auth/Authenticator';
-import { getFreePort } from '../../src/runtime/port-finder';
 
 class MockAuthenticator implements Authenticator {
   public canAuthenticate(_request: any): boolean {
@@ -27,19 +26,17 @@ class MockAuthenticator implements Authenticator {
 
 describe('ApiServer Integration', () => {
   let server: ApiServer;
-  let port: number;
   let baseUrl: string;
 
   beforeAll(async () => {
-    port = await getFreePort(10000);
-    baseUrl = `http://localhost:${port}`;
 
     const authMiddleware = new AuthMiddleware({
       authenticator: new MockAuthenticator(),
     });
 
     server = new ApiServer({
-      port,
+      host: '127.0.0.1',
+      port: 0,
       authMiddleware,
     });
 
@@ -69,6 +66,9 @@ describe('ApiServer Integration', () => {
     });
 
     await server.start();
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('Missing API server address');
+    baseUrl = `http://127.0.0.1:${address.port}`;
   });
 
   afterAll(async () => {
