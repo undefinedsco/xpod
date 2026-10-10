@@ -248,10 +248,14 @@ def native_test_contract(root, source_sha, source_kit):
     """Select inventory only from exact Git patch bytes bound to the source kit."""
     if not re.fullmatch('[a-f0-9]{40}', source_sha):
         raise RuntimeError('Native test source commit is invalid')
+    # The hash-bound checkout is intentionally mounted from the runner UID into
+    # an owned root container. Trust only this exact directory for these read-only
+    # Git commands; never write global config or use safe.directory=*.
+    git = ['git', '-c', 'safe.directory=' + str(Path(root).resolve())]
     prefix = 'tools/agentfs-pod/patches/'
     supported = {'fuse-revalidation.patch', 'nfs-directory-cookie.patch', 'fuse-owned-session-ready.patch'}
     try:
-        paths = subprocess.check_output(['git', 'ls-tree', '-r', '--name-only', source_sha, '--', prefix], cwd=root, stderr=subprocess.PIPE).decode().splitlines()
+        paths = subprocess.check_output(git + ['ls-tree', '-r', '--name-only', source_sha, '--', prefix], cwd=root, stderr=subprocess.PIPE).decode().splitlines()
         names = {name.removeprefix(prefix) for name in paths}
         if names not in [supported, supported - {'fuse-owned-session-ready.patch'}] or len(paths) != len(names):
             raise RuntimeError('Unsupported native test source patch contract')
@@ -260,7 +264,7 @@ def native_test_contract(root, source_sha, source_kit):
         if len(recorded) != len([row for row in files if row.get('path', '').startswith('patches/')]) or set(recorded) != {'patches/' + name for name in names}:
             raise RuntimeError('Native test source kit patch inventory mismatch')
         for name in names:
-            blob = subprocess.check_output(['git', 'show', source_sha + ':' + prefix + name], cwd=root, stderr=subprocess.PIPE)
+            blob = subprocess.check_output(git + ['show', source_sha + ':' + prefix + name], cwd=root, stderr=subprocess.PIPE)
             if hashlib.sha256(blob).hexdigest() != recorded['patches/' + name]:
                 raise RuntimeError('Native test source kit patch bytes mismatch')
     except (subprocess.CalledProcessError, KeyError, TypeError) as error:

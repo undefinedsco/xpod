@@ -965,6 +965,26 @@ class NativeArchitectureTests(unittest.TestCase):
 
 
 class NativeReuseTests(unittest.TestCase):
+    def test_source_git_trust_is_exact_and_readonly(self):
+        names = ['fuse-revalidation.patch', 'nfs-directory-cookie.patch', 'fuse-owned-session-ready.patch']
+        kit = {'files': [{'path': 'patches/' + n, 'sha256': hashlib.sha256(n.encode()).hexdigest()} for n in names]}
+        calls = []
+        def git(argv, **kwargs):
+            calls.append(argv)
+            self.assertEqual(argv[:3], ['git', '-c', 'safe.directory=' + str(ROOT.resolve())])
+            self.assertEqual(kwargs['cwd'], ROOT)
+            self.assertIn(argv[3], ['ls-tree', 'show'])
+            if argv[3] == 'ls-tree':
+                return ('\n'.join('tools/agentfs-pod/patches/' + n for n in names) + '\n').encode()
+            return argv[4].split('/')[-1].encode()
+        with patch.object(a.subprocess, 'check_output', side_effect=git):
+            result = a.native_test_contract(ROOT, 'a' * 40, kit)
+            self.assertTrue(result['current'])
+            self.assertEqual(len(calls), 4)
+            kit['files'][0]['sha256'] = '0' * 64
+            with self.assertRaisesRegex(RuntimeError, 'patch bytes mismatch'):
+                a.native_test_contract(ROOT, 'a' * 40, kit)
+
     def test_generated_stage_inventory_is_exact_on_both_platforms(self):
         base = ['bun-extract', 'toolchain', 'dependencies', 'workspace-packages', 'upstream', 'upstream-checkout', 'export', 'verify-source', 'rebuild', 'sdk-suite', 'cli-suite', 'package', 'verify-install']
         linux = ['runtime-extract', 'runtime-readelf', 'runtime-dynamic', 'runtime-launcher-version', 'runtime-helper-version', 'runtime-status', 'runtime-ldd', 'runtime-node-version']
