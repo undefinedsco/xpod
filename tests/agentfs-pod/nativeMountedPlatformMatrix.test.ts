@@ -543,6 +543,7 @@ describe.runIf(runOverlay)('native mounted platform matrix: remote stream, RSS, 
     let writer: OwnedDaemon | undefined;
     let second: OwnedDaemon | undefined;
     let primaryError: unknown;
+    const recoveryStages = Object.fromEntries(['copyUpObserved', 'seedObserved', 'killedClosed', 'unmountSucceeded', 'writerClosed', 'remountObserved', 'orphanRemoved', 'conditionalConflictObserved'].map(name => [name, { executed: false, success: null as boolean | null }]));
     const unmountResults: Record<string, unknown>[] = [];
     const proofs: Record<'first' | 'second', OwnedUnmountProof> = { first: { daemonClosed: false }, second: { daemonClosed: false } };
     const unmountOwned = async (instance: 'first' | 'second', phase: string): Promise<void> => {
@@ -574,19 +575,25 @@ describe.runIf(runOverlay)('native mounted platform matrix: remote stream, RSS, 
         "await h.write(Buffer.from('KILL'),0,4,13);await h.sync();}finally{await h?.close();}})().catch(e=>{console.error(e);process.exitCode=1;});",
         path.join(mnt, remote) ], { stdio: [ 'ignore', 'pipe', 'pipe' ] }));
       // Observe the copy-up GET actually before killing.
+      recoveryStages.copyUpObserved.executed = true;
       const deadline = Date.now() + 20_000; let observed = false;
       while (Date.now() < deadline) { if (server.log.some((entry) => entry.resource === remote && entry.method === 'GET')) { observed = true; break; } await new Promise((r) => setTimeout(r, 100)); }
+      recoveryStages.copyUpObserved.success = observed;
       expect(observed, 'the copy-up GET must be observed while stalled (in flight)').toBe(true);
       // Bounded observed predicate: poll the REAL owned seed while the barrier
       // is held (production session.rs SEED_PREFIX "seed-lease-v1-").
+      recoveryStages.seedObserved.executed = true;
       let seed: { rel: string; size: number } | undefined;
       const seedDeadline = Date.now() + 20_000;
       while (!seed && Date.now() < seedDeadline) { seed = await findSeedLease(session, 16 * 1024 * 1024); if (!seed) await new Promise((r) => setTimeout(r, 100)); }
+      recoveryStages.seedObserved.success = Boolean(seed);
       expect(seed, 'a real seed-lease-v1- orphan with 0<size<16MiB must be observed while in flight').toBeTruthy();
       expect(seed!.size, 'seed must be a partial (0<size<16MiB)').toBeGreaterThan(0);
       expect(seed!.size).toBeLessThan(16 * 1024 * 1024);
+      recoveryStages.killedClosed.executed = true;
       first.child.kill('SIGKILL');                    // kill only the owned daemon while the read is in flight
       const killed = await awaitClose(first, 30_000); // actual close after the real signal
+      recoveryStages.killedClosed.success = killed.state === 'closed' && killed.signal === 'SIGKILL';
       expect(killed.state, 'must be an actual close, not spawn-error/pending').toBe('closed');
       expect(killed.state === 'closed' ? killed.signal : null, 'owned daemon must observe SIGKILL').toBe('SIGKILL');
       // Release the stalled read BEFORE unmount so the copy-up can progress, then
@@ -594,16 +601,26 @@ describe.runIf(runOverlay)('native mounted platform matrix: remote stream, RSS, 
       // writer. Only then bound-wait the writer and require actual settlement.
       proofs.first.daemonClosed = killed.state === 'closed';
       server.releaseStall();
+      recoveryStages.unmountSucceeded.executed = true;
       await unmountOwned('first', 'after-sigkill');
+      recoveryStages.unmountSucceeded.success = true;
+      recoveryStages.writerClosed.executed = true;
       const writerClose = await awaitClose(writer, 60_000);
+      recoveryStages.writerClosed.success = writerClose.state === 'closed';
       await captureDaemonEvidence('recovery-writer', writer, writerClose, { phase: 'after-detach' });
       if (writerClose.state !== 'closed') throw new Error(`owned writer did not settle before same-session reuse: ${writerClose.state}`);
       writerOutcome = writerClose.code === 0 && writerClose.signal === null ? 'write-completed' : `write-failed:${JSON.stringify(writerClose)}`;
       second = spawnOwnedForeground(binary, server, mnt, session);
       let secondError: unknown;
       try {
-        expect(await waitForKernelMount(mnt, 'alpha.txt')).toBe(true);
-        await expect(stat(path.join(session, seed!.rel)), `the EXACT observed orphan must be GCed (writer=${writerOutcome})`).rejects.toBeTruthy();
+        recoveryStages.remountObserved.executed = true;
+        const remounted = await waitForKernelMount(mnt, 'alpha.txt');
+        recoveryStages.remountObserved.success = remounted;
+        expect(remounted).toBe(true);
+        recoveryStages.orphanRemoved.executed = true;
+        const orphanStat = stat(path.join(session, seed!.rel));
+        recoveryStages.orphanRemoved.success = await orphanStat.then(() => false, (error: NodeJS.ErrnoException) => error.code === 'ENOENT' ? true : null);
+        await expect(orphanStat, `the EXACT observed orphan must be GCed (writer=${writerOutcome})`).rejects.toBeTruthy();
         expect(server.fileSize(remote), 'OLD complete remote size intact').toBe(16 * 1024 * 1024);
         expect(server.readSegment(remote, 0, 65536), 'OLD remote head intact').toEqual(baselineHead);
         expect(server.readSegment(remote, 16 * 1024 * 1024 - 65536, 65536), 'OLD remote tail intact').toEqual(baselineTail);
@@ -613,8 +630,10 @@ describe.runIf(runOverlay)('native mounted platform matrix: remote stream, RSS, 
         expect(await readFile(local, 'utf8')).toBe('LOCAL_RECOVERY_EDIT\n');
         server.mutate('alpha.txt', 'REMOTE_RECOVERY_MOVE\n');
         const commitLogStart = server.log.length;
+        recoveryStages.conditionalConflictObserved.executed = true;
         const conflict = await exec(binary, [ 'commit', '--pod-root', server.podRoot, '--session-dir', session ], { XPOD_AGENTFS_TOKEN: TOKEN });
-        expect(isObservedConditionalConflict(conflict, server.log.slice(commitLogStart), 'alpha.txt'),
+        recoveryStages.conditionalConflictObserved.success = isObservedConditionalConflict(conflict, server.log.slice(commitLogStart), 'alpha.txt');
+        expect(recoveryStages.conditionalConflictObserved.success,
           `actual closed conditional 412 conflict required: ${JSON.stringify(conflict)}`).toBe(true);
         expect(server.readBody('alpha.txt')).toBe('REMOTE_RECOVERY_MOVE\n');
         expect(await readFile(local, 'utf8')).toBe('LOCAL_RECOVERY_EDIT\n');
@@ -674,8 +693,15 @@ describe.runIf(runOverlay)('native mounted platform matrix: remote stream, RSS, 
         if (cleanupError === undefined) cleanupError = new Error(`scene retained: kernel=${kernelState}`);
 
       }
+      if (recoveryStages.unmountSucceeded.executed && recoveryStages.unmountSucceeded.success === null) {
+        const result = proofs.first.result;
+        if (result?.state === 'closed' && ['absent', 'present'].includes(proofs.first.postKernel ?? 'unknown')) {
+          recoveryStages.unmountSucceeded.success = result.actualExit === 0 && result.signal === null && proofs.first.postKernel === 'absent';
+        }
+      }
       await captureDaemonEvidence('recovery-final', first, await awaitClose(first, 100), {
         unmountResults, ownedUnmountProofs: proofs, kernelState, sceneRetained: !safeToDelete,
+        recoveryStages,
         primaryError: primaryError === undefined ? null : String(primaryError),
         cleanupError: cleanupError === undefined ? null : String(cleanupError), writerOutcome,
       }).catch(addCleanupError);

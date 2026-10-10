@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { collectModule, exportSafe, nativeFacts, projectReceipt, INSTALLED_CONSUMER_STAGES, verifyInstalledConsumerReceipts } from '../../scripts/agentfs-native-ci/mounted/prepare-module-inputs';
+import { collectModule, exportSafe, nativeFacts, projectReceipt, projectRecoveryDiagnostic, INSTALLED_CONSUMER_STAGES, verifyInstalledConsumerReceipts } from '../../scripts/agentfs-native-ci/mounted/prepare-module-inputs';
 import { hashBytes } from '../../scripts/agentfs-native-ci/mounted/module-admission';
 
 function fixture(run: (root: string) => void): void {
@@ -10,6 +10,29 @@ function fixture(run: (root: string) => void): void {
   const root = mkdtempSync(path.join(parent, 'case-')); try { run(root); } finally { rmSync(root, { recursive: true, force: true }); }
 }
 describe('module mounted input preparation', () => {
+  it('projects observed recovery failures without private errors, arguments or paths', () => fixture(root => {
+    const row = { label: 'recovery-final', backend: 'fuse', primaryError: 'Error: owned unmount after-sigkill failed: private-secret',
+      cleanupError: 'private-secret', kernelState: 'absent', sceneRetained: false, writerOutcome: 'write-failed:private-secret',
+      recoveryStages: { seedObserved: { executed: true, success: true }, killedClosed: { executed: true, success: null },
+        orphanRemoved: { executed: false, success: true } },
+      unmountResults: [{ instance: 'first', phase: 'after-sigkill', preKernel: { state: 'present' }, postKernel: { state: 'absent' },
+        result: { state: 'closed', actualExit: 1, signal: null, stderr: 'private-secret' } }], argv: ['private-secret'] };
+    const projected = projectRecoveryDiagnostic(row);
+    expect((projected.stages as any).seedObserved).toEqual({ executed: true, success: true });
+    expect((projected.stages as any).killedClosed).toEqual({ executed: true, success: null });
+    expect((projected.stages as any).orphanRemoved).toEqual({ executed: false, success: null });
+    expect((projected.stages as any).remountObserved).toEqual({ executed: null, success: null });
+    expect(projected.primaryFailure).toBe('first-unmount-failed'); expect(projected.cleanupFailure).toBe('unclassified');
+    expect(JSON.stringify(projected)).not.toContain('private-secret'); expect(projected.diagnosticOnly).toBe(true);
+    const evidence = path.join(root, 'evidence'); mkdirSync(evidence);
+    writeFileSync(path.join(evidence, 'daemon-recovery-final-123-456.json'), JSON.stringify(row));
+    writeFileSync(path.join(evidence, 'daemon-recovery-final-123-456.raw.log'), 'private-secret');
+    exportSafe(evidence, path.join(root, 'export'));
+    const exported = readFileSync(path.join(root, 'export/recovery-diagnostic.safe.json'), 'utf8');
+    expect(exported).not.toContain('private-secret'); expect(JSON.parse(exported).unmounts[0].result.actualExit).toBe(1);
+    expect(readdirSync(path.join(root, 'export'))).toEqual(['export.safe.json', 'recovery-diagnostic.safe.json']);
+    expect(() => projectRecoveryDiagnostic({ ...row, label: 'private-secret' })).toThrow('invalid recovery diagnostic');
+  }));
   it('rejects failure diagnostics with free text instead of approved values', () => {
     const valid = { backend: 'fuse', stage: 'native-identity', errorCode: 'ENOENT', errorSHA256: 'a'.repeat(64), primaryFailureObserved: true };
     expect(projectReceipt('module-chain-failure.safe.json', { ...valid, token: 'private-secret' })).toEqual(valid);

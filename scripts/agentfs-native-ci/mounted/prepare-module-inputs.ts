@@ -147,15 +147,55 @@ export function projectReceipt(name: string, original: unknown): unknown {
   }
   const schema = receipts[name]; if (!schema) throw new Error('unapproved receipt'); return projectBySchema(original, schema);
 }
+/** Diagnostic only: fixed enums and closed command facts, never admission or free error text. */
+export function projectRecoveryDiagnostic(original: unknown): Record<string, unknown> {
+  const row = original as Record<string, any> | null;
+  if (!row || row.label !== 'recovery-final' || !['fuse', 'nfs'].includes(row.backend)) throw new Error('invalid recovery diagnostic');
+  const category = (error: unknown): string => {
+    if (error === null || error === undefined) return 'none';
+    if (typeof error !== 'string') return 'unclassified';
+    for (const [pattern, code] of [
+      ['owned unmount after-sigkill failed', 'first-unmount-failed'],
+      ['owned unmount second', 'second-unmount-failed'],
+      ['the copy-up GET must', 'copy-up-not-observed'],
+      ['a real seed-lease-v1-', 'partial-seed-not-observed'],
+      ['the EXACT observed orphan', 'orphan-not-collected'],
+      ['OLD remote', 'remote-baseline-changed'],
+      ['OLD complete remote', 'remote-baseline-changed'],
+      ['owned writer did not settle', 'writer-not-closed'],
+      ['actual closed conditional 412', 'conditional-conflict-not-observed'],
+      ['scene retained', 'scene-retained'],
+    ]) if (error.includes(pattern)) return code;
+    return 'unclassified';
+  };
+  const kernel = (value: unknown) => typeof value === 'string' && ['absent', 'present', 'unknown'].includes(value) ? value : 'unknown';
+  const result = (value: any) => ({ state: ['closed', 'pending', 'spawn-error'].includes(value?.state) ? value.state : 'unknown',
+    actualExit: Number.isInteger(value?.actualExit) ? value.actualExit : null,
+    signal: value?.signal === null ? null : ['SIGTERM', 'SIGKILL', 'SIGINT'].includes(value?.signal) ? value.signal : 'unknown' });
+  const stageNames = ['copyUpObserved', 'seedObserved', 'killedClosed', 'unmountSucceeded', 'writerClosed', 'remountObserved', 'orphanRemoved', 'conditionalConflictObserved'];
+  const stages = Object.fromEntries(stageNames.map(name => { const stage = row.recoveryStages?.[name]; return [name, {
+    executed: typeof stage?.executed === 'boolean' ? stage.executed : null,
+    success: stage?.executed === true && typeof stage.success === 'boolean' ? stage.success : null,
+  }]; }));
+  return { diagnosticOnly: true, stages, backend: row.backend, primaryFailure: category(row.primaryError), cleanupFailure: category(row.cleanupError),
+    kernelState: kernel(row.kernelState), sceneRetained: row.sceneRetained === true,
+    writerOutcome: ['not-started', 'write-completed'].includes(row.writerOutcome) ? row.writerOutcome : 'write-failed-or-unknown',
+    unmounts: (Array.isArray(row.unmountResults) ? row.unmountResults : []).filter((v: any) => ['first', 'second'].includes(v?.instance)
+      && ['after-sigkill', 'second-cleanup', 'first-cleanup', 'second-final-cleanup'].includes(v?.phase)).map((v: any) => ({
+        instance: v.instance, phase: v.phase, result: result(v.result ?? v.retainedProof?.result),
+        preKernel: kernel(v.preKernel?.state), postKernel: kernel(v.postKernel?.state ?? v.retainedProof?.postKernel),
+      })) };
+}
 export function exportSafe(evidence: string, destination: string): void {
   mkdirSync(destination, { mode: 0o700 }); const files = [];
   for (const name of readdirSync(evidence)) {
-    if (!Object.prototype.hasOwnProperty.call(receipts, name)) continue;
+    const recovery = /^daemon-recovery-final-[0-9]+-[0-9]+\.json$/.test(name);
+    if (!recovery && !Object.prototype.hasOwnProperty.call(receipts, name)) continue;
     const filename = path.join(evidence, name); const sha256 = hashFile(filename); verifyBoundFile({ path: filename, sha256 });
     const original = JSON.parse(readFileSync(filename, 'utf8'));
-    const projection = projectReceipt(name, original) as Record<string, unknown>;
+    const projection = recovery ? projectRecoveryDiagnostic(original) : projectReceipt(name, original) as Record<string, unknown>;
     const bytes = JSON.stringify({ ...projection, sourceReceiptSHA256: sha256 }, null, 2) + '\n';
-    const safeName = name === 'linux-container-binding.json' ? 'linux-container-binding.safe.json' : /^rss-/.test(name) ? name.replace('.json', '.safe.json') : name;
+    const safeName = recovery ? 'recovery-diagnostic.safe.json' : name === 'linux-container-binding.json' ? 'linux-container-binding.safe.json' : /^rss-/.test(name) ? name.replace('.json', '.safe.json') : name;
     writeFileSync(path.join(destination, safeName), bytes, { flag: 'wx', mode: 0o600 }); files.push({ name: safeName, sha256: hashBytes(bytes) });
   }
   writeFileSync(path.join(destination, 'export.safe.json'), JSON.stringify({ schemaVersion: 1, files, rawLogsAndHomesExcluded: true }, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
