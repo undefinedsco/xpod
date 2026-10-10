@@ -65,6 +65,23 @@ def consumer_command(archive, evidence, cidfile, workspace, image, module_direct
     return command + [image, 'sh', '-c', gate]
 
 
+
+def wait_owned_cid(cidfile, producer, timeout=60):
+    # Docker creates its exclusive cidfile before the daemon returns the CID.
+    # An empty file is pending publication, never an identity or release proof.
+    deadline = time.monotonic() + timeout
+    while True:
+        if cidfile.exists():
+            raw = cidfile.read_bytes()
+            if raw != b'':
+                if not re.fullmatch(b'[a-f0-9]{64}\n?', raw):
+                    raise RuntimeError('owned container cidfile is invalid')
+                return raw.removesuffix(b'\n').decode('ascii')
+        if producer.done() or time.monotonic() >= deadline:
+            raise RuntimeError('owned container cid was not observed before deadline')
+        time.sleep(.1)
+
+
 def run(archive, evidence, cidfile, workspace, image, image_id, module_directory=None):
     evidence, cidfile, workspace = Path(evidence), Path(cidfile), Path(workspace)
     release = evidence / 'linux-binding.release'
@@ -80,15 +97,7 @@ def run(archive, evidence, cidfile, workspace, image, image_id, module_directory
         producer = pool.submit(run_stage, 'linux-consumer', consumer_command(archive, evidence, cidfile, workspace, image, module_directory),
                                evidence, workspace, timeout=4500)
         try:
-            deadline = time.monotonic() + 60
-            while not cidfile.exists():
-                if producer.done() or time.monotonic() >= deadline:
-                    raise RuntimeError('owned container cid was not observed before deadline')
-                time.sleep(.1)
-            candidate = cidfile.read_text().strip()
-            if not re.fullmatch('[a-f0-9]{64}', candidate):
-                raise RuntimeError('owned container cidfile is invalid')
-            cid = candidate
+            cid = wait_owned_cid(cidfile, producer)
             binding['cid'] = cid
             live = json.loads(checked('linux-live-inspect', ['docker', 'inspect', '--format', INSPECT, cid]))
             daemon = json.loads(checked('linux-daemon-seccomp', ['docker', 'info', '--format', '{{json .SecurityOptions}}']))

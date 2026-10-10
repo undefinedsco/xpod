@@ -37,6 +37,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Owned container identity publication regression
+        run: python3 tests/scripts/agentfs_linux_cidfile_test.py -v
       - name: Establish immutable source and exact native authority
         env:
           TARGET: ${{ matrix.target }}

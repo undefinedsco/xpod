@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { spawn, spawnSync, execFileSync } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
 import { createServer } from 'node:http';
 import { randomBytes } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, symlinkSync, writeFileSync, rmSync, existsSync } from 'node:fs';
@@ -49,21 +49,46 @@ describe('installed module admission nonmount negative contracts', () => {
   it.each(['bun', 'node'])('%s: actual failed bundled CLI closes and writes a private rejection receipt without exposing input bytes', async (runtimeName) => {
     const parent = path.resolve('.test-data/module-admission-negative'); mkdirSync(parent, { recursive: true, mode: 0o700 });
     const root = mkdtempSync(path.join(parent, 'case-')); const input = path.join(root, 'inputs.json'); writeFileSync(input, 'private-fixture-secret-marker', { mode: 0o600 });
-    const source = fileURLToPath(new URL('../../scripts/agentfs-native-ci/mounted/module-admission.ts', import.meta.url)); const driver = path.join(root, 'module-admission.mjs');
-    const build = spawnSync('bun', ['build', source, '--target=node', '--format=esm', '--outfile', driver], { encoding: 'utf8' });
-    if (build.error || build.status !== 0) throw new Error('negative CLI fixture compile failed');
-    const child = spawn(runtimeName, [driver, '--inputs', input, '--inputs-sha256', '0'.repeat(64), '--runtime', 'node'],
-      { cwd: root, env: { ...isolatedModuleEnvironment(root), PATH: process.env.PATH }, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
-    const lifecycle = observeChildLifecycle(child); const raw: Buffer[] = [];
-    child.stdout.on('data', (chunk: Buffer) => raw.push(chunk)); child.stderr.on('data', (chunk: Buffer) => raw.push(chunk));
+    let child: ReturnType<typeof spawn> | undefined;
+    let lifecycle: ReturnType<typeof observeChildLifecycle> | undefined;
     try {
+      const fixture = process.env.XPOD_AGENTFS_ADMISSION_FIXTURE;
+      let driver: string; let executable: string;
+      if (fixture !== undefined) {
+        const bound = JSON.parse(fixture) as Pick<ModuleAdmissionInputs, 'driver' | 'runtimes'>;
+        verifyBoundFile(bound.driver); verifyBoundFile(bound.runtimes.node); verifyBoundFile(bound.runtimes.bun);
+        driver = bound.driver.path; executable = bound.runtimes[runtimeName as 'node' | 'bun'].path;
+      } else {
+        if (process.env.XPOD_AGENTFS_MODULE_ENTRY !== undefined) throw new Error('mounted admission fixture authority missing');
+        const tool = (name: string): string => {
+          const filename = execFileSync('/bin/sh', ['-c', `command -v ${name}`], { encoding: 'utf8' }).trim();
+          if (!path.isAbsolute(filename)) throw new Error('negative CLI fixture runtime is not absolute');
+          return filename;
+        };
+        executable = tool(runtimeName); driver = path.join(root, 'module-admission.mjs');
+        const source = fileURLToPath(new URL('../../scripts/agentfs-native-ci/mounted/module-admission.ts', import.meta.url));
+        const build = spawn(tool('bun'), ['build', source, '--target=node', '--format=esm', '--outfile', driver], { stdio: ['ignore', 'pipe', 'pipe'], detached: true });
+        const buildLifecycle = observeChildLifecycle(build); const buildRaw: Buffer[] = [];
+        build.stdout.on('data', (chunk: Buffer) => buildRaw.push(chunk)); build.stderr.on('data', (chunk: Buffer) => buildRaw.push(chunk));
+        try {
+          const fact = await buildLifecycle.wait(30_000);
+          const absent = await reapOwnedGroup(build.pid, 5000);
+          if (fact.state !== 'closed' || fact.code !== 0 || fact.signal !== null || !absent) {
+            throw new Error(`negative CLI fixture compile failed: ${JSON.stringify({ fact, groupAbsent: absent, outputSHA256: hashBytes(Buffer.concat(buildRaw)) })}`);
+          }
+        } finally { await reapOwnedGroup(build.pid, 5000); await buildLifecycle.waitClose(5000); }
+      }
+      child = spawn(executable, [driver, '--inputs', input, '--inputs-sha256', '0'.repeat(64), '--runtime', 'node'],
+        { cwd: root, env: { ...isolatedModuleEnvironment(root), PATH: process.env.PATH }, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
+      lifecycle = observeChildLifecycle(child); const raw: Buffer[] = [];
+      child.stdout!.on('data', (chunk: Buffer) => raw.push(chunk)); child.stderr!.on('data', (chunk: Buffer) => raw.push(chunk));
       const fact = await lifecycle.wait(15_000); expect(fact).toEqual({ state: 'closed', code: 70, signal: null });
       expect(await reapOwnedGroup(child.pid, 5000)).toBe(true);
       expect(Buffer.concat(raw).toString()).not.toContain('private-fixture-secret-marker');
       const evidenceParent = path.join(root, '.test-data/module-admission-preflight'); const failures = readdirSync(evidenceParent); expect(failures).toHaveLength(1);
       const receipt = JSON.parse(readFileSync(path.join(evidenceParent, failures[0], 'module-admission-failure.safe.json'), 'utf8'));
       expect(receipt).toMatchObject({ status: 'failed', stage: 'inputs', accepted: false, nativeReceiptPresent: null, mountedReceiptPresent: null });
-    } finally { await reapOwnedGroup(child.pid, 5000); await lifecycle.waitClose(5000); rmSync(root, { recursive: true, force: true }); }
+    } finally { if (child) await reapOwnedGroup(child.pid, 5000); if (lifecycle) await lifecycle.waitClose(5000); rmSync(root, { recursive: true, force: true }); }
   });
 });
 

@@ -134,7 +134,9 @@ export async function installModuleProduct(input: ModuleAdmissionInputs, runtime
     binding, additionalTests: ['tests/agentfs-pod/installedModuleMountedChain.test.ts'], additionalRequiredCases: [MODULE_CHAIN_CASE],
     env: { ...isolatedModuleEnvironment(input.home, input.evidence),
       XPOD_AGENTFS_MODULE_ENTRY: entry, XPOD_AGENTFS_MODULE_RUNTIME: executable.path,
-      XPOD_AGENTFS_MODULE_CORE: input.core.path, XPOD_AGENTFS_MODULE_STORE: store.root, XPOD_AGENTFS_MODULE_EVIDENCE: input.evidence } };
+      XPOD_AGENTFS_MODULE_CORE: input.core.path, XPOD_AGENTFS_MODULE_STORE: store.root, XPOD_AGENTFS_MODULE_EVIDENCE: input.evidence,
+      // Test tooling is separate from the deliberately Bun-free consumer PATH.
+      XPOD_AGENTFS_ADMISSION_FIXTURE: JSON.stringify({ driver: input.driver, runtimes: input.runtimes }) } };
 }
 
 let failureEvidence: string | undefined;
