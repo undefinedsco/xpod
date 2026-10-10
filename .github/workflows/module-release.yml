@@ -1,0 +1,70 @@
+name: Module release
+on:
+  push:
+    tags: ['cli-v*', 'afs-v*', 'api-v*', 'css-v*']
+permissions:
+  contents: read
+concurrency:
+  group: module-release-${{ startsWith(github.ref_name, 'cli-v') && 'cli' || startsWith(github.ref_name, 'afs-v') && 'afs' || startsWith(github.ref_name, 'api-v') && 'api' || 'css' }}
+  cancel-in-progress: false
+jobs:
+  candidate:
+    runs-on: ubuntu-latest
+    outputs:
+      channel: ${{ steps.review.outputs.channel }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - name: Validate immutable staging source and available module
+        env:
+          MODULE_TAG: ${{ github.ref_name }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin '+refs/heads/staging:refs/remotes/origin/staging'
+          [[ "$(git rev-parse "${MODULE_TAG}^{commit}")" == "$SOURCE_SHA" ]]
+          git merge-base --is-ancestor "$SOURCE_SHA" origin/staging
+          node -e 'const tag=require("./scripts/module-release.cjs").parseTag(process.env.MODULE_TAG); if(tag.id !== "cli") throw Error("module_artifact_not_ready:"+tag.id); const p=require("./packages/xpod-cli/package.json"); if(p.version!==tag.version) throw Error("module_version_mismatch")'
+      - name: Build and verify the independent CLI artifact
+        run: node scripts/check-cli-package.cjs
+      - name: Check existing distribution review and exact evidence
+        id: review
+        env:
+          MODULE_TAG: ${{ github.ref_name }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: node scripts/module-release.cjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: module-release-${{ github.sha }}
+          path: .test-data/module-release/
+          include-hidden-files: true
+          if-no-files-found: error
+  publish:
+    needs: candidate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - uses: actions/download-artifact@v4
+        with:
+          name: module-release-${{ github.sha }}
+          path: module-release
+      - name: Verify artifact binding and publish without lifecycle scripts
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          SOURCE_SHA: ${{ github.sha }}
+          MODULE_TAG: ${{ github.ref_name }}
+          DIST_CHANNEL: ${{ needs.candidate.outputs.channel }}
+        run: |
+          set -euo pipefail
+          node -e 'const fs=require("node:fs"),crypto=require("node:crypto");const r=JSON.parse(fs.readFileSync("module-release/release.json"));const h=crypto.createHash("sha256").update(fs.readFileSync("module-release/package.tgz")).digest("hex");if(r.sourceSha!==process.env.SOURCE_SHA||`${r.id}-v${r.version}`!==process.env.MODULE_TAG||r.channel!==process.env.DIST_CHANNEL||r.artifactSha256!==h)throw Error("module_release_binding_changed")'
+          npm publish module-release/package.tgz --ignore-scripts --access public --tag "$DIST_CHANNEL" --registry https://registry.npmjs.org

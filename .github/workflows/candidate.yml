@@ -3,6 +3,20 @@ name: Release Candidate
 on:
   push:
     branches: ['staging']
+    paths-ignore:
+      # Generated from module-ci.cjs CLI_ONLY; run node scripts/module-ci.cjs sync.
+      - 'packages/xpod-cli/src/core.ts'
+      - 'packages/xpod-cli/src/npm-entry.ts'
+      - 'packages/xpod-cli/src/module-catalog.ts'
+      - 'packages/xpod-cli/src/module-catalog.json'
+      - 'packages/xpod-cli/src/module-store.ts'
+      - 'packages/xpod-cli/tests/module-store.test.ts'
+      - 'packages/xpod-cli/tsconfig.core.json'
+      - 'scripts/check-cli-package.cjs'
+      - '.github/workflows/cli-package.yml'
+      - '.github/workflows/module-release.yml'
+      - 'scripts/module-release.cjs'
+
   workflow_dispatch:
     inputs:
       task_diagnostic_only:
@@ -19,8 +33,26 @@ permissions:
   contents: read
 
 jobs:
+  impact:
+    runs-on: ubuntu-latest
+    outputs:
+      cli: ${{ steps.impact.outputs.cli }}
+      service: ${{ steps.impact.outputs.service }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - id: impact
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: node scripts/module-ci.cjs
   metadata:
-    if: ${{ inputs.task_diagnostic_only != true }}
+    needs: impact
+    if: ${{ inputs.task_diagnostic_only != true && needs.impact.outputs.service == 'true' }}
     runs-on: ubuntu-latest
     outputs:
       target: ${{ steps.candidate.outputs.target }}
@@ -1528,8 +1560,8 @@ jobs:
 
   cleanup_rc:
     name: Cleanup RC after all acceptance jobs
-    needs: [deploy_and_accept, build_desktop_rc, finalize_acceptance]
-    if: ${{ always() }}
+    needs: [impact, deploy_and_accept, build_desktop_rc, finalize_acceptance]
+    if: ${{ always() && inputs.task_diagnostic_only != true && needs.impact.outputs.service == 'true' }}
     runs-on: ubuntu-latest
     environment: rc
     concurrency:

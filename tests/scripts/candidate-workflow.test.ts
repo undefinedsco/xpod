@@ -962,7 +962,9 @@ esac
     expect(diagnostics.run).toContain('docker inspect "$local_name"');
     expect(diagnostics.run).toContain('docker logs "$local_name"');
     expect(workflow.jobs.deploy_and_accept.steps.some((step: any) => step.name === 'Scale RC deployments to zero')).toBe(false);
-    expect(workflow.jobs.cleanup_rc.needs).toEqual(['deploy_and_accept', 'build_desktop_rc', 'finalize_acceptance']);
+    expect(workflow.jobs.cleanup_rc.needs).toEqual(['impact', 'deploy_and_accept', 'build_desktop_rc', 'finalize_acceptance']);
+    expect(workflow.jobs.cleanup_rc.if).toContain("needs.impact.outputs.service == 'true'");
+    expect(workflow.jobs.cleanup_rc.if).toContain('inputs.task_diagnostic_only != true');
     expect(workflow.jobs.cleanup_rc.if).toContain('always()');
     const cleanup = workflow.jobs.cleanup_rc.steps.find((step: any) => step.name === 'Scale RC deployments to zero');
     expect(cleanup.run).toContain('scripts/rc-cleanup-ownership.cjs');

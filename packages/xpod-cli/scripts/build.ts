@@ -16,7 +16,7 @@
  */
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdirSync, cpSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, cpSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -368,6 +368,19 @@ function main(): void {
     mkdirSync(path.join(stageDir, 'packages/xpod-cli'), { recursive: true });
     cpSync(path.join(repoRoot, 'src'), path.join(stageDir, 'src'), { recursive: true });
     cpSync(path.join(packageRoot, 'src'), path.join(stageDir, 'packages/xpod-cli/src'), { recursive: true });
+    // Bind transitional adapters to the canonical source inside this audited
+    // preview staging tree, rather than following the workspace's bundle symlink.
+    const clientSource = path.join(stageDir, 'packages/xpod-cli/src/client');
+    for (const folder of ['commands', 'lib']) {
+      const directory = path.join(stageDir, 'src/cli', folder);
+      for (const name of readdirSync(directory).filter(name => name.endsWith('.ts'))) {
+        const filename = path.join(directory, name);
+        const source = readFileSync(filename, 'utf8');
+        if (source.includes("'@undefineds.co/xpod-cli/client'")) {
+          writeFileSync(filename, source.replaceAll("'@undefineds.co/xpod-cli/client'", `'${path.relative(directory, clientSource).split(path.sep).join('/')}'`));
+        }
+      }
+    }
     cpSync(path.join(repoRoot, 'package.json'), path.join(stageDir, 'package.json'));
     symlinkSync(path.join(repoRoot, 'node_modules'), path.join(stageDir, 'node_modules'));
 

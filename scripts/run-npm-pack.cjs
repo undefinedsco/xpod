@@ -15,6 +15,8 @@ const WORKSPACE_PACKAGES = [
   '@undefineds.co/pod-collections',
   '@undefineds.co/shared-ui',
   '@undefineds.co/solid-sdk',
+  // Transitional server CLI adapters import the independent client's public API.
+  '@undefineds.co/xpod-cli',
 ];
 // These runtime patches must survive installation without repository postinstall hooks.
 const PATCHED_RUNTIME_PACKAGES = [

@@ -107,7 +107,7 @@ describe('OIDC OAuth token refresh', () => {
       Session: class Session {},
     }));
 
-    const { getOidcAccessToken } = await import('../../src/cli/lib/oidc-auth');
+    const { getOidcAccessToken } = await import('../../packages/xpod-cli/src/lib/oidc-auth');
 
     await expect(getOidcAccessToken(JSON.parse(readFileSync(join(solidHome, 'auth', 'credentials.json'), 'utf-8')))).resolves
       .toBe('new-access');

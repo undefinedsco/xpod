@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { checkServer, getAccountData } from '../../src/cli/lib/css-account';
+import { checkServer, getAccountData } from '../../packages/xpod-cli/src/lib/css-account';
 
 describe('CLI CSS account helpers', () => {
   afterEach(() => {

@@ -66,7 +66,7 @@
   },
   "scripts": {
     "build": "bun run build:packages && bun run build:ts && bun run build:components && bun run build:ui",
-    "build:packages": "bun run --filter '@undefineds.co/solid-sdk' build && bun run --filter '@undefineds.co/shared-ui' build && bun run --filter '@undefineds.co/pod-collections' build && bun run --filter '@undefineds.co/extension-sdk' build && bun run --filter '@undefineds.co/ai-connections' build && bun run --filter '@undefineds.co/pod-settings' build && bun run --filter '@undefineds.co/tasks' build",
+    "build:packages": "bun run --filter @undefineds.co/xpod-cli build && bun run --filter '@undefineds.co/solid-sdk' build && bun run --filter '@undefineds.co/shared-ui' build && bun run --filter '@undefineds.co/pod-collections' build && bun run --filter '@undefineds.co/extension-sdk' build && bun run --filter '@undefineds.co/ai-connections' build && bun run --filter '@undefineds.co/pod-settings' build && bun run --filter '@undefineds.co/tasks' build",
     "test:packages": "bun run --filter './packages/*' test",
     "postinstall": "bun scripts/patch-jose.js && bun scripts/patch-inrupt-authn-refresh.js && bun scripts/patch-inrupt-authn-transport.js && bun scripts/patch-inrupt-authn-operation-cleanup.js",
     "prepack": "bun scripts/prepare-package-manifest.cjs pack",
@@ -256,7 +256,8 @@
     "winston-daily-rotate-file": "^5.0.0",
     "yaml": "^2.8.2",
     "yargs": "^17.7.2",
-    "zod": "^3.25.76"
+    "zod": "^3.25.76",
+    "@undefineds.co/xpod-cli": "workspace:*"
   },
   "peerDependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.39",

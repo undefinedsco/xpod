@@ -55,7 +55,9 @@ test('RC scale-down waits for desktop and final acceptance even when upstream jo
   const { jobs } = read('candidate.yml');
   assert.ok(!jobs.deploy_and_accept.steps.some(step => step.name === 'Scale RC deployments to zero'));
   const cleanup = jobs.cleanup_rc;
-  assert.equal(cleanup.if, '${{ always() }}');
+  assert.match(cleanup.if, /always\(\)/);
+  assert.ok(cleanup.if.includes("needs.impact.outputs.service == 'true'"));
+  assert.ok(cleanup.if.includes('inputs.task_diagnostic_only != true'));
   for (const name of ['deploy_and_accept', 'build_desktop_rc', 'finalize_acceptance']) assert.ok(cleanup.needs.includes(name));
   assert.equal(cleanup.concurrency.group, jobs.deploy_and_accept.concurrency.group);
   const scale = cleanup.steps.find(step => step.name === 'Scale RC deployments to zero');

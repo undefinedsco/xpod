@@ -11,7 +11,53 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  impact:
+    runs-on: ubuntu-latest
+    outputs:
+      cli: ${{ steps.impact.outputs.cli }}
+      service: ${{ steps.impact.outputs.service }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - id: impact
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: node scripts/module-ci.cjs
+  contracts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node --test tests/scripts/module-ci.node-test.cjs tests/scripts/module-release.node-test.cjs
+
+  cli:
+    needs: impact
+    if: ${{ needs.impact.outputs.cli == 'true' }}
+    uses: ./.github/workflows/cli-package.yml
+
+  required:
+    if: ${{ always() }}
+    needs: [impact, contracts, cli, test, integration-lite, integration-full, bun-runtime, package-smoke, package-smoke-bun]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: node scripts/module-ci.cjs required
+
   test:
+    needs: impact
+    if: ${{ needs.impact.outputs.service == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -45,6 +91,9 @@ jobs:
 
       - name: Standalone Xpod CLI tests
         run: bun run --filter '@undefineds.co/xpod-cli' test
+
+      - name: Standalone Xpod CLI preview compatibility tests
+        run: bun run --filter '@undefineds.co/xpod-cli' test:preview
 
       - name: Build Components artifacts
         run: bun run build:components
@@ -87,6 +136,8 @@ jobs:
           include-hidden-files: true
 
   integration-lite:
+    needs: impact
+    if: ${{ needs.impact.outputs.service == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -112,6 +163,8 @@ jobs:
         run: bun run test:integration:lite
 
   bun-runtime:
+    needs: impact
+    if: ${{ needs.impact.outputs.service == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -134,6 +187,8 @@ jobs:
         run: bun run test:bun:runtime
 
   integration-full:
+    needs: impact
+    if: ${{ needs.impact.outputs.service == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
@@ -159,6 +214,8 @@ jobs:
         run: bun run test:integration:full
 
   package-smoke:
+    needs: impact
+    if: ${{ needs.impact.outputs.service == 'true' }}
     name: package-smoke (${{ matrix.os }} / node${{ matrix.node-version }})
     runs-on: ${{ matrix.os }}
     continue-on-error: ${{ matrix.os == 'windows-latest' }}
@@ -202,6 +259,8 @@ jobs:
         run: node scripts/package-consumer-smoke.cjs "${{ runner.temp }}/xpod-package-smoke" --package-only
 
   package-smoke-bun:
+    needs: impact
+    if: ${{ needs.impact.outputs.service == 'true' }}
     name: package-smoke-bun (${{ matrix.os }} / node${{ matrix.node-version }})
     runs-on: ${{ matrix.os }}
     continue-on-error: ${{ matrix.os == 'windows-latest' }}
