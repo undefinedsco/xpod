@@ -31,21 +31,29 @@ cpSync(path.join(packageRoot, 'src'), path.join(stage, 'src'), { recursive: true
 const metadata = path.join(output, 'bundle-inputs.json');
 checked('bun', ['build', '--target=node', '--format=cjs', '--external=@undefineds.co/xpod-cli/client', '--external=drizzle-orm', '--external=bun:sqlite', `--metafile=${metadata}`, '--outfile', path.join(stage, 'dist/library.cjs'), path.join(packageRoot, 'dist/library-source.ts')], packageRoot);
 copyFileSync(path.join(packageRoot, 'dist/entry.mjs'), path.join(stage, 'dist/entry.mjs'));
-// Bundle the public client exactly once as a real installed dependency. Its
-// CJS/ESM bridge preserves the same implementation instance and credential store.
-const client = path.join(stage, 'node_modules/@undefineds.co/xpod-cli');
-mkdirSync(client, { recursive: true });
-mkdirSync(path.join(client, 'dist'), { recursive: true });
-for (const file of ['client.cjs', 'client.mjs', 'client-types', 'licenses/client']) {
-  const dest = path.join(client, 'dist', file); mkdirSync(path.dirname(dest), { recursive: true });
-  cpSync(path.join(repoRoot, 'packages/xpod-cli/dist', file), dest, { recursive: true, dereference: false });
+// A single declaration drives each staged vendor copy and notice collection.
+const clientVendor = { sourceRoot: path.join(repoRoot, 'packages/xpod-cli'),
+  files: ['dist/client.cjs', 'dist/client.mjs', 'dist/client-types', 'dist/licenses/client', 'LICENSE'],
+  manifestFields: ['name', 'version', 'type', 'license', 'engines', 'exports', 'typesVersions'],
+  preserveManifestAt: 'provenance/cli-client-package-source.json' };
+const vendoredPackages: Array<{ sourceRoot: string; files?: string[]; manifestFields?: string[]; preserveManifestAt?: string; stageRoot?: string }> = [
+  clientVendor, { sourceRoot: path.join(repoRoot, 'node_modules/drizzle-orm') },
+];
+for (const vendor of vendoredPackages) {
+  const original = JSON.parse(readFileSync(path.join(vendor.sourceRoot, 'package.json'), 'utf8'));
+  if (typeof original.name !== 'string' || !/^(?:@[a-z0-9._-]+\/)?[a-z0-9._-]+$/i.test(original.name)) { throw new Error('Invalid vendored package name'); }
+  vendor.stageRoot = path.join(stage, 'node_modules', original.name);
+  if (vendor.files) {
+    mkdirSync(vendor.stageRoot, { recursive: true });
+    for (const file of vendor.files) {
+      const destination = path.join(vendor.stageRoot, file); mkdirSync(path.dirname(destination), { recursive: true });
+      cpSync(path.join(vendor.sourceRoot, file), destination, { recursive: true, dereference: false });
+    }
+    writeFileSync(path.join(vendor.stageRoot, 'package.json'), JSON.stringify(Object.fromEntries(vendor.manifestFields!.map(field => [field, original[field]])), null, 2) + '\n');
+  } else { cpSync(vendor.sourceRoot, vendor.stageRoot, { recursive: true, dereference: true }); }
+  if (vendor.preserveManifestAt) { copyFileSync(path.join(vendor.sourceRoot, 'package.json'), path.join(stage, vendor.preserveManifestAt)); }
 }
-const originalClient = JSON.parse(readFileSync(path.join(repoRoot, 'packages/xpod-cli/package.json'), 'utf8'));
-writeFileSync(path.join(client, 'package.json'), JSON.stringify({ name: originalClient.name, version: originalClient.version, type: 'module',
-  license: originalClient.license, engines: originalClient.engines, exports: originalClient.exports, typesVersions: originalClient.typesVersions }, null, 2) + '\n');
-copyFileSync(path.join(repoRoot, 'packages/xpod-cli/package.json'), path.join(stage, 'provenance/cli-client-package-source.json'));
-copyFileSync(path.join(repoRoot, 'packages/xpod-cli/LICENSE'), path.join(client, 'LICENSE'));
-cpSync(path.join(repoRoot, 'node_modules/drizzle-orm'), path.join(stage, 'node_modules/drizzle-orm'), { recursive: true, dereference: true });
+const client = vendoredPackages[0].stageRoot!;
 copyFileSync(path.join(repoRoot, 'LICENSE'), path.join(stage, 'LICENSE'));
 writeFileSync(path.join(stage, 'LICENSES.txt'), 'This artifact contains materials with separate licenses.\nXpod-owned source: MIT, original terms in LICENSE.\nThe assembled AgentFS native helper has no asserted aggregate SPDX license here; consult the preserved native collection/declarations and AgentFS notices under licenses/native and licenses/agentfs.\nThe public CLI client and vendored drizzle-orm retain their original notices and source provenance.\nPackaging or hash verification does not grant artifact review clearance.\n');
 const inputs = Object.keys(JSON.parse(readFileSync(metadata, 'utf8')).inputs) as string[];
@@ -74,7 +82,8 @@ writeFileSync(path.join(generated, 'index.json'), JSON.stringify(generatedIndex,
 collectJavascriptNotices({ metafile: metadata, stageRoot: packageRoot, repoRoot,
   destination: path.join(stage, 'licenses/javascript-afs'), target,
   cli: path.join(stage, 'dist/library.cjs'), bunVersion: process.versions.bun ?? 'unknown',
-  supplements: path.join(repoRoot, 'packages/xpod-cli/licenses/javascript'),
+  supplements: [path.join(repoRoot, 'packages/xpod-cli/licenses/javascript'), path.join(packageRoot, 'licenses/javascript')],
+  vendoredRoots: vendoredPackages.map(vendor => vendor.stageRoot!), requireVendoredOriginals: true,
   generated });
 const sourceFiles = [...inputs.filter(p => !p.includes('node_modules/')).map(p => path.relative(repoRoot, path.resolve(packageRoot, p))), 'package.json', 'bun.lock', '.componentsjs-generator-config.json', 'config/components-ignore.json'];
 function sourceTree(directory: string): void {

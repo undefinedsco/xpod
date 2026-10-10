@@ -1,9 +1,11 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { copyFileSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { hashBytes, hashFile, verifyBoundFile, type ModuleAdmissionInputs } from './module-admission';
+import { isolatedModuleEnvironment } from './module-admission';
+import { observeChildLifecycle, reapOwnedGroup } from './platform-admission';
 
 const source = 'b5a058cffa50026702f7679365e7b17e383115d2';
 const artifacts = {
@@ -58,8 +60,11 @@ with tarfile.open(sys.argv[1],'r|gz') as t:
  print(json.dumps({'hashes':hashes,'documents':documents,'sources':sources}))`;
 interface Collected { hashes: Record<string, { sha256: string; size: number; mode: number }>; documents: Record<string, any>; sources: Record<string, { sha256: string; bytes: number }> }
 export function collectModule(archive: string, target: string, sourceSHA: string, nativeReceipt: string, nativeKit: string) {
-  nativeFacts(target);
   const c = JSON.parse(execFileSync('python3', ['-c', collectArchive, archive], { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 })) as Collected;
+  return validateCollectedModule(c, target, sourceSHA, nativeReceipt, nativeKit);
+}
+function validateCollectedModule(c: Collected, target: string, sourceSHA: string, nativeReceipt: string, nativeKit: string) {
+  nativeFacts(target);
   const pkg = c.documents['package.json']; const kit = c.documents['provenance/module-source-kit.json']; const reuse = c.documents['provenance/native-reuse.json'];
   if (pkg?.name !== `@undefineds.co/xpod-afs-${target}` || pkg?.xpodModule?.schemaVersion !== 1 || pkg.xpodModule.id !== 'afs'
     || pkg.xpodModule.platform !== target.split('-')[0] || pkg.xpodModule.arch !== 'arm64' || pkg.xpodModule.entry !== 'dist/entry.mjs'
@@ -95,6 +100,9 @@ const child: Projection = { ...fields('string', 'command state signal groupState
 const binding: Record<string, Projection> = { ...fields('string', 'profile moduleSourceSHA nativeBuildSourceSHA moduleArchiveSHA256 moduleSRI manifestSHA256 inventorySHA256 moduleSourceTreeSHA256 coreSHA256 runtime runtimePath runtimeVersion runtimeSHA256 installedEntry installedEntrySHA256 installedHelper installedHelperSHA256 installedLibrarySHA256 installedClientSHA256 storeRoot transport'),
   ...fields('string', 'inputAuthoritySHA256 driverSHA256 chainReceiptSHA256 chainCleanupReceiptSHA256 platformReceiptSHA256'), actualPlatformExit: 'number', moduleAndCoreArtifactUnchanged: 'boolean', installedInventoryReverified: 'boolean' };
 const close: Projection = { ...fields('number', 'exit'), ...fields('string', 'signal rawSHA256 resourceStop supervisorError'), ...fields('boolean', 'actualWait rawClosedBeforeHash ownedGroupAbsentAfterWait'), cleanupErrors: ['string'] };
+const installedStage: Projection = { ...fields('string', 'stage actualSignal stdoutSHA256 stderrSHA256'), ...fields('number', 'pid actualExit'), ...fields('boolean', 'actualWait rawClosed groupAbsent') };
+const installedProxy: Projection = { pid: 'number', groupAbsent: 'boolean', tokenFixtureObserved: 'boolean', nativeMountStarted: 'boolean' };
+export const INSTALLED_CONSUMER_STAGES = ['public-workcopy-types-Node16', 'public-workcopy-types-Node', 'node-esm-public-runtime', 'node-status', 'node-workcopy-sqlite', 'bun-esm-public-runtime', 'bun-status', 'bun-workcopy-sqlite', 'node-startup-cancel'] as const;
 const platform: Projection = { ...fields('number', 'schemaVersion exit passedCases minPassedCases'), ...fields('string', 'os backend nodePath nodeVersion nodeSha256 nativeRg nativeRgVersion nativeRgSha256 productArchiveSha256 installedHelperSha256 installedLauncherPath harnessRunnerSha256 producerState rawLog rawSHA256 snapshotSHA256 status failureReason signal'),
   ...fields('boolean', 'producerStarted producerClosed actualWait rawClosedBeforeHash ownedGroupAbsent consumerBunVisible mountExecuted'), moduleBinding: binding, producerLifecycle: lifecycle,
   ownedProcessObservations: [{ phase: 'string', known: 'boolean', reason: 'string', members: [{ ...fields('number', 'pid ppid pgid'), state: 'string' }] }],
@@ -107,6 +115,10 @@ const receipts: Record<string, Projection> = {
   'module-chain-cleanup.safe.json': { ...fields('boolean', 'cleanupVerified kernelAbsent daemonsAbsent groupsAbsent identitiesKnown proxyIdentityObserved nativeIdentityObserved unmountClosedSuccessfully sceneRetained'), ownedPids: ['number'], ownedGroups: ['number'], children: [child] },
   'module-admission-failure.safe.json': { ...fields('string', 'status stage nativeReceiptPresent mountedReceiptPresent cleanupClaim'), accepted: 'boolean' },
   'mounted-linux.receipt.json': platform, 'mounted-darwin.receipt.json': platform,
+  'installed-consumer.safe.json': { ...fields('string', 'status archiveSHA256 moduleSourceSHA manifestSHA256 rawSHA256 sourceTestSHA256 nodeVersion bunVersion'),
+    ...fields('boolean', 'accepted producerClosed groupAbsent rawClosedBeforeHash'), code: 'number', signal: 'string', lifecycle,
+    passed: 'number', failed: 'number', skipped: 'number', stages: [installedStage],
+    proxyCancel: installedProxy },
   'linux-container-binding.json': { ...fields('string', 'state cid'), ...fields('boolean', 'released containerAbsent'), pid1Seccomp: 'number', daemonSecurityOptions: ['string'], consumerReceipt: close, removalReceipt: close,
     container: { ...fields('string', 'cid imageID AppArmorProfile NetworkMode'), ...fields('boolean', 'running privileged'), SecurityOpt: ['string'], CapAdd: ['string'], CapDrop: ['string'],
       Devices: [{ ...fields('string', 'PathOnHost PathInContainer CgroupPermissions') }], Mounts: [{ destination: 'string', RW: 'boolean' }] } },
@@ -114,8 +126,7 @@ const receipts: Record<string, Projection> = {
 for (const mib of [64, 512, 1024]) receipts[`rss-${mib}.json`] = { phaseRead: ['number'], phaseCopyUp: ['number'], ...fields('number', 'readPeakKib copyUpPeakKib limitKib') };
 /** Every nesting level has an explicit schema. Unknown keys and wrong-type
  * objects are omitted, including arbitrary credential/argv containers. */
-export function projectReceipt(name: string, original: unknown): unknown {
-  const schema = receipts[name]; if (!schema) throw new Error('unapproved receipt');
+function projectBySchema(original: unknown, schema: Projection): unknown {
   const project = (value: unknown, shape: Projection): unknown => {
     if (value === null) return null;
     if (typeof shape === 'string') return typeof value === shape && (shape !== 'number' || Number.isFinite(value)) ? value : undefined;
@@ -124,6 +135,9 @@ export function projectReceipt(name: string, original: unknown): unknown {
     return Object.fromEntries(Object.entries(shape).map(([key, rule]) => [key, project((value as Record<string, unknown>)[key], rule)]).filter(([, child]) => child !== undefined));
   };
   return project(original, schema);
+}
+export function projectReceipt(name: string, original: unknown): unknown {
+  const schema = receipts[name]; if (!schema) throw new Error('unapproved receipt'); return projectBySchema(original, schema);
 }
 export function exportSafe(evidence: string, destination: string): void {
   mkdirSync(destination, { mode: 0o700 }); const files = [];
@@ -138,10 +152,53 @@ export function exportSafe(evidence: string, destination: string): void {
   }
   writeFileSync(path.join(destination, 'export.safe.json'), JSON.stringify({ schemaVersion: 1, files, rawLogsAndHomesExcluded: true }, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
 }
-function main(): void {
+export function verifyInstalledConsumerReceipts(directory: string): { stages: unknown[]; proxyCancel: unknown } {
+  const safeFiles = readdirSync(directory).filter(name => name.endsWith('.safe.json'));
+  if (safeFiles.length !== INSTALLED_CONSUMER_STAGES.length + 1 || safeFiles.some(name => name !== 'proxy-cancel.safe.json' && !INSTALLED_CONSUMER_STAGES.some(stage => name === stage + '.safe.json'))) throw new Error('unexpected installed consumer receipt inventory');
+  const stages = INSTALLED_CONSUMER_STAGES.map(stage => {
+    const filename = path.join(directory, stage + '.safe.json'); verifyBoundFile({ path: filename, sha256: hashFile(filename) });
+    const row = JSON.parse(readFileSync(filename, 'utf8'));
+    const expectedExit = stage === 'node-startup-cancel' ? 143 : 0;
+    if (row.stage !== stage || row.actualExit !== expectedExit || row.actualSignal !== null
+      || row.actualWait !== true || row.rawClosed !== true || row.groupAbsent !== true || !Number.isSafeInteger(row.pid) || row.pid <= 1) throw new Error('installed consumer stage incomplete');
+    for (const stream of ['stdout', 'stderr']) verifyBoundFile({ path: path.join(directory, `${stage}.${stream}`), sha256: row[`${stream}SHA256`] });
+    return projectBySchema(row, installedStage);
+  });
+  const proxy = path.join(directory, 'proxy-cancel.safe.json'); verifyBoundFile({ path: proxy, sha256: hashFile(proxy) }); const proxyCancel = JSON.parse(readFileSync(proxy, 'utf8'));
+  if (!Number.isSafeInteger(proxyCancel.pid) || proxyCancel.pid <= 1 || proxyCancel.groupAbsent !== true || proxyCancel.tokenFixtureObserved !== true || proxyCancel.nativeMountStarted !== false) throw new Error('installed consumer proxy cleanup incomplete');
+  return { stages, proxyCancel: projectBySchema(proxyCancel, installedProxy) };
+}
+export async function runInstalledConsumer(archive: string, archiveSHA: string, sourceSHA: string, workspace: string, evidence: string): Promise<void> {
+  verifyBoundFile({ path: archive, sha256: archiveSHA }); if (!/^[a-f0-9]{40}$/.test(sourceSHA)) throw new Error('invalid consumer source authority');
+  const c = JSON.parse(execFileSync('python3', ['-c', collectArchive, archive], { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 })) as Collected;
+  const properties = validateCollectedModule(c, `${process.platform}-${process.arch}`, sourceSHA, c.hashes['provenance/native-build.receipt.json']?.sha256, c.hashes['provenance/native-source-kit.json']?.sha256);
+  mkdirSync(evidence, { mode: 0o700 }); const run = path.join(evidence, 'private-run'); mkdirSync(run, { mode: 0o700 }); const home = path.join(run, 'home'); mkdirSync(home, { mode: 0o700 });
+  const sourceTest = path.join(workspace, 'packages/xpod-afs/tests/installed-module.test.ts'); const env = { ...isolatedModuleEnvironment(home), PATH: process.env.PATH, XPOD_AFS_TEST_ARCHIVE: archive };
+  const sourceTestSHA256 = hashFile(sourceTest);
+  const nodeVersion = (() => { try { return execFileSync('node', ['--version'], { encoding: 'utf8', env }).trim(); } catch { return null; } })();
+  const child = spawn(process.execPath, ['test', sourceTest], { cwd: run, env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
+  const lifecycle = observeChildLifecycle(child); const raw: Buffer[] = []; child.stdout.on('data', (b: Buffer) => raw.push(b)); child.stderr.on('data', (b: Buffer) => raw.push(b));
+  let fact = await lifecycle.wait(180_000); const groupAbsent = await reapOwnedGroup(child.pid, 15_000); if (fact.state !== 'closed') fact = await lifecycle.waitClose(15_000);
+  const bytes = Buffer.concat(raw); writeFileSync(path.join(evidence, 'installed-consumer.raw.log'), bytes, { flag: 'wx', mode: 0o600 });
+  const text = bytes.toString('utf8').replace(/\u001b\[[0-9;]*m/g, ''); const count = (name: string) => Number(new RegExp(`(?:^|\\n)\\s*(\\d+) ${name}\\b`).exec(text)?.[1] ?? 0);
+  let stages: unknown[] = []; let proxyCancel: unknown = null; let accepted = false;
+  try {
+    if (fact.state !== 'closed' || fact.code !== 0 || fact.signal !== null || !groupAbsent || nodeVersion !== 'v22.21.1' || process.versions.bun !== '1.4.2'
+      || count('pass') !== 1 || count('fail') !== 0 || count('skip') !== 0 || hashFile(sourceTest) !== sourceTestSHA256) throw new Error('installed consumer producer incomplete');
+    const parent = path.join(run, '.test-data/afs-installed-receipts'); const directories = readdirSync(parent); if (directories.length !== 1) throw new Error('fresh consumer receipt directory required');
+    ({ stages, proxyCancel } = verifyInstalledConsumerReceipts(path.join(parent, directories[0]))); verifyBoundFile({ path: archive, sha256: archiveSHA }); accepted = true;
+  } finally {
+    writeFileSync(path.join(evidence, 'installed-consumer.safe.json'), JSON.stringify({ status: accepted ? 'passed' : 'failed', accepted, archiveSHA256: archiveSHA, moduleSourceSHA: sourceSHA, manifestSHA256: properties.manifestSHA256,
+      sourceTestSHA256, lifecycle: lifecycle.facts(), producerClosed: fact.state === 'closed', code: fact.code, signal: fact.signal, groupAbsent,
+      rawClosedBeforeHash: fact.state === 'closed' && groupAbsent, rawSHA256: fact.state === 'closed' && groupAbsent ? hashBytes(bytes) : null,
+      nodeVersion, bunVersion: process.versions.bun, passed: count('pass'), failed: count('fail'), skipped: count('skip'), stages, proxyCancel }, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
+  }
+}
+async function main(): Promise<void> {
   const args = process.argv.slice(2); const mode = args.shift();
   const option = (name: string): string => { const i = args.indexOf(name); if (i < 0 || !args[i + 1] || args[i + 1].startsWith('--')) throw new Error(`missing ${name}`); return args[i + 1]; };
   if (mode === 'export') { exportSafe(path.resolve(option('--evidence')), path.resolve(option('--out'))); return; }
+  if (mode === 'installed-consumer') { await runInstalledConsumer(path.resolve(option('--archive')), option('--archive-sha256'), option('--source-sha'), path.resolve(option('--workspace')), path.resolve(option('--evidence'))); return; }
   const target = option('--target'); const facts = nativeFacts(target);
   if (mode === 'native-info') { const out = path.resolve(option('--out')); mkdirSync(out, { mode: 0o700 }); writeFileSync(path.join(out, 'native-pins.json'), JSON.stringify(facts.pins) + '\n', { flag: 'wx', mode: 0o600 }); writeFileSync(path.join(out, 'native-facts.safe.json'), JSON.stringify(facts) + '\n', { flag: 'wx', mode: 0o600 }); return; }
   if (mode !== 'prepare') throw new Error('unknown preparation operation');
@@ -173,4 +230,4 @@ function main(): void {
   writeFileSync(path.join(out, 'preparation.safe.json'), JSON.stringify({ schemaVersion: 1, sourceSHA, sourceClean: true, buildReceiptSHA256: hashFile(buildPath), build, native: facts, inputSHA256: hashBytes(bytes), input, archiveMembersValidated: true }, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
   process.stdout.write(hashBytes(bytes) + '\n');
 }
-if (fileURLToPath(import.meta.url) === path.resolve(process.argv[1] ?? '')) { try { main(); } catch { process.stderr.write('module preparation rejected\n'); process.exitCode = 1; } }
+if (fileURLToPath(import.meta.url) === path.resolve(process.argv[1] ?? '')) { main().catch(() => { process.stderr.write('module preparation rejected\n'); process.exitCode = 1; }); }

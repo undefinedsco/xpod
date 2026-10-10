@@ -15,6 +15,8 @@ interface PackageNotice {
   packageJsonSha256: string;
   declaredLicense: unknown;
   inputCount: number;
+  vendored?: boolean;
+  sourceAuthority?: NoticeFile;
   noticeStatus: 'collected-candidates' | 'missing-original';
   files: NoticeFile[];
 }
@@ -27,6 +29,8 @@ interface NoticeFile {
 }
 
 interface NoticeSupplement {
+  directory?: string;
+  authority?: NoticeFile;
   name: string;
   version: string;
   provenance: unknown;
@@ -42,20 +46,21 @@ interface GeneratedNoticeIndex {
   files: NoticeFile[];
 }
 
-function supplements(directory?: string): Map<string, NoticeSupplement> {
+function supplements(directories?: string | string[]): Map<string, NoticeSupplement> {
   const entries = new Map<string, NoticeSupplement>();
-  if (!directory) { return entries; }
-  const index = JSON.parse(readFileSync(path.join(directory, 'index.json'), 'utf8')) as { schemaVersion: number; entries: NoticeSupplement[] };
-  if (index.schemaVersion !== 1 || !Array.isArray(index.entries)) { throw new Error('Invalid JavaScript notice supplements'); }
-  for (const entry of index.entries) {
-    const key = JSON.stringify([entry.name, entry.version]);
-    if (typeof entry.name !== 'string' || !entry.name || typeof entry.version !== 'string' || !entry.version || !Array.isArray(entry.files) || entries.has(key)) {
-      throw new Error('Invalid or duplicate JavaScript notice supplement');
+  for (const directory of typeof directories === 'string' ? [directories] : directories ?? []) {
+    const index = JSON.parse(readFileSync(path.join(directory, 'index.json'), 'utf8')) as { schemaVersion: number; entries: NoticeSupplement[] };
+    if (index.schemaVersion !== 1 || !Array.isArray(index.entries)) { throw new Error('Invalid JavaScript notice supplements'); }
+    for (const entry of index.entries) {
+      const key = JSON.stringify([entry.name, entry.version]);
+      if (typeof entry.name !== 'string' || !entry.name || typeof entry.version !== 'string' || !entry.version || !Array.isArray(entry.files) || entries.has(key)) {
+        throw new Error('Invalid or duplicate JavaScript notice supplement');
+      }
+      for (const file of [...entry.files, ...(entry.authority ? [entry.authority] : [])]) {
+        if (!/^[a-f0-9]{64}$/.test(file.sha256) || file.object !== `objects/${file.sha256}.txt`) { throw new Error('Unsafe JavaScript supplement object'); }
+      }
+      entries.set(key, { ...entry, directory });
     }
-    for (const file of entry.files) {
-      if (!/^[a-f0-9]{64}$/.test(file.sha256) || file.object !== `objects/${file.sha256}.txt`) { throw new Error('Unsafe JavaScript supplement object'); }
-    }
-    entries.set(key, entry);
   }
   return entries;
 }
@@ -99,7 +104,7 @@ function noticeCandidates(root: string): string[] {
   return files.sort();
 }
 
-/** Inventory the exact portable JS bundle inputs; externally installed runtimes are not shipped. */
+/** Inventory the exact portable JS bundle inputs; explicit vendored roots are shipped even when imports are external. */
 export function collectJavascriptNotices(options: {
   metafile: string;
   stageRoot: string;
@@ -108,7 +113,10 @@ export function collectJavascriptNotices(options: {
   target: string;
   cli: string;
   bunVersion: string;
-  supplements?: string;
+  supplements?: string | string[];
+  /** Actual staged packages shipped independently of the bundler import graph. */
+  vendoredRoots?: string[];
+  requireVendoredOriginals?: boolean;
   generated?: string;
   generatedProfile?: 'core' | 'client';
 }): string[] {
@@ -125,6 +133,38 @@ export function collectJavascriptNotices(options: {
   const packages = new Map<string, PackageNotice>();
   const supplementIndex = supplements(options.supplements);
   const objects = new Map<string, string>();
+  function registerPackage(root: string, info: Record<string, unknown>, label: string): PackageNotice {
+    const packageJsonSha256 = sha256File(path.join(root, 'package.json'));
+    const existing = packages.get(label);
+    if (existing) {
+      if (existing.packageJsonSha256 !== packageJsonSha256) { throw new Error('Bundled and vendored package metadata differs'); }
+      return existing;
+    }
+    const notices: NoticeFile[] = noticeCandidates(root).map(file => {
+      const sha256 = sha256File(file); const object = `objects/${sha256}.txt`;
+      objects.set(object, file);
+      return { sourcePath: slash(path.relative(root, file)), object, sha256 };
+    });
+    const supplemental = supplementIndex.get(JSON.stringify([info.name, info.version]));
+    const supplementFile = (file: NoticeFile): NoticeFile => {
+      const source = path.join(supplemental!.directory!, file.object);
+      if (sha256File(source) !== file.sha256) { throw new Error(`JavaScript supplement hash mismatch: ${file.object}`); }
+      objects.set(file.object, source);
+      return { ...file, provenance: file.provenance ?? supplemental!.provenance };
+    };
+    for (const file of supplemental?.files ?? []) { notices.push(supplementFile(file)); }
+    let sourceAuthority: NoticeFile | undefined;
+    if (supplemental?.authority) {
+      sourceAuthority = supplementFile(supplemental.authority);
+      const authority = JSON.parse(readFileSync(path.join(supplemental.directory!, sourceAuthority.object), 'utf8'));
+      if (authority.name !== info.name || authority.version !== info.version) { throw new Error('JavaScript supplement source version authority mismatch'); }
+    }
+    const entry: PackageNotice = { name: info.name as string, version: info.version as string, root: label, packageJsonSha256,
+      declaredLicense: info.license ?? info.licenses ?? null, inputCount: 0,
+      noticeStatus: notices.length ? 'collected-candidates' : 'missing-original', files: notices,
+      ...(sourceAuthority ? { sourceAuthority } : {}) };
+    packages.set(label, entry); return entry;
+  }
   let generated: GeneratedNoticeIndex | undefined;
   if (options.generated) {
     generated = JSON.parse(readFileSync(path.join(options.generated, 'index.json'), 'utf8')) as GeneratedNoticeIndex;
@@ -168,29 +208,7 @@ export function collectJavascriptNotices(options: {
     if (dependency) {
       const owner = packageOwner(filename, dependencyRoot);
       packageRoot = `node_modules/${slash(path.relative(dependencyRoot, owner.root))}`;
-      let entry = packages.get(packageRoot);
-      if (!entry) {
-        const notices: NoticeFile[] = noticeCandidates(owner.root).map((file) => {
-          const sha256 = sha256File(file);
-          const object = `objects/${sha256}.txt`;
-          objects.set(object, file);
-          return { sourcePath: slash(path.relative(owner.root, file)), object, sha256 };
-        });
-        const supplemental = supplementIndex.get(JSON.stringify([owner.info.name, owner.info.version]));
-        for (const file of supplemental?.files ?? []) {
-          const source = path.join(options.supplements!, file.object);
-          if (sha256File(source) !== file.sha256) { throw new Error(`JavaScript supplement hash mismatch: ${file.object}`); }
-          objects.set(file.object, source);
-          notices.push({ ...file, provenance: supplemental!.provenance });
-        }
-        entry = {
-          name: owner.info.name as string, version: owner.info.version as string, root: packageRoot,
-          packageJsonSha256: sha256File(path.join(owner.root, 'package.json')),
-          declaredLicense: owner.info.license ?? owner.info.licenses ?? null,
-          inputCount: 0, noticeStatus: notices.length > 0 ? 'collected-candidates' : 'missing-original', files: notices,
-        };
-        packages.set(packageRoot, entry);
-      }
+      const entry = registerPackage(owner.root, owner.info, packageRoot);
       entry.inputCount += 1;
     }
     let bytesInOutput = 0;
@@ -214,6 +232,15 @@ export function collectJavascriptNotices(options: {
       }
       externalImports.add(name);
     }
+  }
+  for (const declaredRoot of options.vendoredRoots ?? []) {
+    const root = realpathSync(declaredRoot);
+    const info = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8')) as Record<string, unknown>;
+    if (typeof info.name !== 'string' || !/^(?:@[a-z0-9._-]+\/)?[a-z0-9._-]+$/i.test(info.name) || typeof info.version !== 'string' || !info.version) {
+      throw new Error('Invalid vendored JavaScript package identity');
+    }
+    const entry = registerPackage(root, info, `node_modules/${info.name}`); entry.vendored = true;
+    if (options.requireVendoredOriginals && entry.noticeStatus === 'missing-original') { throw new Error('Vendored JavaScript original notice missing'); }
   }
   const cliSha256 = sha256File(options.cli);
   // Inspect every input before writing. Preserve original bytes, including CRLF;

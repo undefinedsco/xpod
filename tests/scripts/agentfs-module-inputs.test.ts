@@ -2,13 +2,42 @@ import { describe, expect, it } from 'vitest';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { collectModule, exportSafe, nativeFacts, projectReceipt } from '../../scripts/agentfs-native-ci/mounted/prepare-module-inputs';
+import { collectModule, exportSafe, nativeFacts, projectReceipt, INSTALLED_CONSUMER_STAGES, verifyInstalledConsumerReceipts } from '../../scripts/agentfs-native-ci/mounted/prepare-module-inputs';
+import { hashBytes } from '../../scripts/agentfs-native-ci/mounted/module-admission';
 
 function fixture(run: (root: string) => void): void {
   const parent = path.resolve('.test-data/module-input-preparation'); mkdirSync(parent, { recursive: true, mode: 0o700 });
   const root = mkdtempSync(path.join(parent, 'case-')); try { run(root); } finally { rmSync(root, { recursive: true, force: true }); }
 }
 describe('module mounted input preparation', () => {
+  it('requires all nine closed actual consumer stages and proxy cleanup, verifies raw hashes, and projects only fixed fields', () => fixture(root => {
+    for (const stage of INSTALLED_CONSUMER_STAGES) {
+      for (const stream of ['stdout', 'stderr']) writeFileSync(path.join(root, `${stage}.${stream}`), 'private-marker');
+      writeFileSync(path.join(root, stage + '.safe.json'), JSON.stringify({ stage, pid: 123, actualExit: stage === 'node-startup-cancel' ? 143 : 0, actualSignal: null,
+        actualWait: true, rawClosed: true, groupAbsent: true, stdoutSHA256: hashBytes('private-marker'), stderrSHA256: hashBytes('private-marker'), unknown: { credentials: 'private-marker' } }));
+    }
+    const proxy = path.join(root, 'proxy-cancel.safe.json'); writeFileSync(proxy, JSON.stringify({ pid: 321, groupAbsent: true, tokenFixtureObserved: true, nativeMountStarted: false, clientSecret: 'private-marker' }));
+    const facts = verifyInstalledConsumerReceipts(root); expect(facts.stages).toHaveLength(9); expect(JSON.stringify(facts)).not.toContain('private-marker');
+    const first = path.join(root, INSTALLED_CONSUMER_STAGES[0] + '.stdout'); writeFileSync(first, 'tampered'); expect(() => verifyInstalledConsumerReceipts(root)).toThrow('identity mismatch'); writeFileSync(first, 'private-marker');
+    writeFileSync(proxy, JSON.stringify({ pid: 321, groupAbsent: false, tokenFixtureObserved: true, nativeMountStarted: false })); expect(() => verifyInstalledConsumerReceipts(root)).toThrow('proxy cleanup incomplete');
+    rmSync(path.join(root, INSTALLED_CONSUMER_STAGES[0] + '.safe.json')); expect(() => verifyInstalledConsumerReceipts(root)).toThrow('receipt inventory');
+  }));
+  it('actual workflow Bun command compiles the real driver and produces physical input metadata', () => fixture(root => {
+    const workflow = readFileSync(path.resolve('.github/workflows/agentfs-module-mounted-acceptance.yml'), 'utf8');
+    const commands = workflow.split('\n').filter(line => line.trimStart().startsWith('bun build scripts/agentfs-native-ci/mounted/module-admission.ts '));
+    expect(commands).toHaveLength(1);
+    const result = spawnSync('bash', ['-c', `set -euo pipefail\n${commands[0].trim()}`], {
+      cwd: process.cwd(), env: { PATH: process.env.PATH, MODULE_RUN_ROOT: root }, encoding: 'utf8',
+    });
+    expect(result.status).toBe(0); expect(result.signal).toBeNull();
+    const driver = path.join(root, 'module-admission.mjs'); const metadata = path.join(root, 'driver-inputs.json');
+    expect(statSync(driver).isFile()).toBe(true);
+    const inputs = Object.keys(JSON.parse(readFileSync(metadata, 'utf8')).inputs);
+    expect(inputs.map(input => path.resolve(input))).toContain(path.resolve('scripts/agentfs-native-ci/mounted/module-admission.ts'));
+    expect(inputs.length).toBeGreaterThan(1);
+    for (const input of inputs) expect(statSync(path.resolve(input)).isFile()).toBe(true);
+    // This test compiles the real entry, but deliberately never executes it.
+  }));
   it('actual workflow directory setup creates a private cold parent and fresh leaf, writes GitHub env, and refuses leaf reuse', () => fixture(root => {
     const workflow = readFileSync(path.resolve('.github/workflows/agentfs-module-mounted-acceptance.yml'), 'utf8');
     const start = workflow.indexOf('          root="$GITHUB_WORKSPACE/.test-data/module-mounted-');

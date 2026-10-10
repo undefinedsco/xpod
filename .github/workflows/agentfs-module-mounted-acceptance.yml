@@ -81,7 +81,7 @@ jobs:
           bun install --frozen-lockfile
           bun run build:packages
           bun packages/xpod-afs/scripts/build-package.ts --target "$TARGET" --out "$MODULE_RUN_ROOT/build" --native-evidence "$MODULE_RUN_ROOT/native/native.zip" --native-pins "$MODULE_RUN_ROOT/native/native-pins.json"
-          bun build scripts/agentfs-native-ci/mounted/module-admission.ts --target=node --format=esm --metafile "$MODULE_RUN_ROOT/driver-inputs.json" --outfile "$MODULE_RUN_ROOT/module-admission.mjs"
+          bun build scripts/agentfs-native-ci/mounted/module-admission.ts --target=node --format=esm --metafile="$MODULE_RUN_ROOT/driver-inputs.json" --outfile "$MODULE_RUN_ROOT/module-admission.mjs"
           test -z "$(git status --porcelain --untracked-files=all)"
           python3 - "$MODULE_RUN_ROOT" <<'PY'
           import hashlib,json,os,pathlib,subprocess,sys
@@ -115,6 +115,24 @@ jobs:
           version=subprocess.check_output([str(binary),'--version'],text=True).strip()
           with open(sys.argv[1],'x') as f:json.dump({'sourceSHA':os.environ['GITHUB_SHA'],'path':str(binary),'version':version,'sha256':hashlib.file_digest(open(binary,'rb'),'sha256').hexdigest(),'actualProbeExit':0},f)
           PY
+      - name: Prepare actual Linux host ripgrep for installed consumers
+        if: matrix.target == 'linux-arm64'
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ripgrep
+          command -v rg
+          rg --version
+      - name: Require the actual freshly built archive through installed Node and Bun consumers
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          umask 077
+          module=$(find "$MODULE_RUN_ROOT/build" -maxdepth 1 -name '*.tgz' -type f)
+          test -n "$module"; test "$(printf '%s\n' "$module" | wc -l | tr -d ' ')" = 1
+          archive_sha=$(shasum -a 256 "$module" | cut -d' ' -f1)
+          bun scripts/agentfs-native-ci/mounted/prepare-module-inputs.ts installed-consumer --archive "$module" --archive-sha256 "$archive_sha" --source-sha "$GITHUB_SHA" --workspace "$GITHUB_WORKSPACE" --evidence "$MODULE_RUN_ROOT/installed-consumer"
       - name: Prepare owned Linux Bookworm FUSE image
         if: matrix.target == 'linux-arm64'
         run: |
@@ -182,6 +200,9 @@ jobs:
           umask 077
           test -n "${MODULE_RUN_ROOT:-}"
           mkdir -m 700 "$MODULE_RUN_ROOT/export"
+          if [ -d "$MODULE_RUN_ROOT/installed-consumer" ]; then
+            bun scripts/agentfs-native-ci/mounted/prepare-module-inputs.ts export --evidence "$MODULE_RUN_ROOT/installed-consumer" --out "$MODULE_RUN_ROOT/export/installed-consumer"
+          fi
           image_absent=unknown
           if [ "$TARGET" = linux-arm64 ] && [ -n "${XPOD_MOUNT_IMAGE:-}" ]; then
             # Only the two task-owned evidence directories, never HOME/session.

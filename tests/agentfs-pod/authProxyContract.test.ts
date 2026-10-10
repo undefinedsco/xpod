@@ -17,7 +17,7 @@ const state = vi.hoisted(() => ({
   handler: undefined as undefined | ((url: string, init: CapturedCall['init']) => Promise<Response>),
 }));
 
-vi.mock('../../src/cli/lib/auth-context', () => ({
+vi.mock('@undefineds.co/xpod-cli/client', () => ({
   authFetch: async (_context: unknown, url: string, init: CapturedCall['init']) => {
     state.calls.push({ url, init });
     if (!state.handler) {

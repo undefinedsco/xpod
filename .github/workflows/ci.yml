@@ -52,6 +52,9 @@ jobs:
       - name: Standalone Xpod CLI tests
         run: bun run --filter '@undefineds.co/xpod-cli' test
 
+      - name: AFS Bun tests
+        run: bun run --filter '@undefineds.co/xpod-afs' test
+
       - name: Standalone Xpod CLI preview compatibility tests
         run: bun run --filter '@undefineds.co/xpod-cli' test:preview
 
