@@ -510,13 +510,31 @@ class SupervisorTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'resolves bun'):
                 a.assert_bun_absent(directory)
 
-    def test_ldd_requires_resolved_openssl3_sonames(self):
-        ready = '\tlibssl.so.3 => /usr/lib/libssl.so.3\n\tlibcrypto.so.3 => /usr/lib/libcrypto.so.3\n'
-        self.assertEqual(a.assert_ldd_ready(ready), ['libssl.so.3', 'libcrypto.so.3'])
-        with self.assertRaisesRegex(RuntimeError, 'unresolved'):
-            a.assert_ldd_ready('\tlibssl.so.3 => not found\n')
-        with self.assertRaisesRegex(RuntimeError, 'libcrypto.so.3'):
-            a.assert_ldd_ready('\tlibssl.so.3 => /usr/lib/libssl.so.3\n')
+    def test_dynamic_dependencies_use_actual_needed_not_a_tls_assumption(self):
+        def dynamic(names):
+            return 'Dynamic section at offset 0x123 contains 4 entries:\n' + ''.join(
+                ' 0x0000000000000001 (NEEDED) Shared library: [' + name + ']\n' for name in names)
+        for names in [['libgcc_s.so.1', 'libm.so.6', 'libc.so.6'], ['libssl.so.3', 'libcrypto.so.3', 'libc.so.6']]:
+            loaded = ''.join(name + ' => /usr/lib/' + name + ' (0x123)\n' for name in names)
+            self.assertEqual(a.assert_dynamic_dependencies(dynamic(names), loaded), names)
+            gnu = '\n' + dynamic(names).replace('entries:\n', 'entries:\n  Tag        Type                         Name/Value\n') + ' 0x0000000000000000 (NULL) 0x0\n'
+            self.assertEqual(a.assert_dynamic_dependencies(gnu.strip(), loaded.strip()), names)
+        needed = dynamic(['libc.so.6'])
+        valid = 'libc.so.6 => /usr/lib/libc.so.6 (0x123)\n/lib64/ld-linux-x86-64.so.2 (0x456)\n'
+        for bad_dynamic in ['', 'no dynamic section', dynamic([]), dynamic(['libc.so.6', 'libc.so.6']),
+                            dynamic(['../libc.so.6']), needed.replace('(NEEDED)', '(NEEDED broken)'),
+                            needed.replace('[libc.so.6]', 'libc.so.6'), needed + 'unexpected garbage\n',
+                            needed.replace('0000000000000001', '0000000000000002')]:
+            with self.subTest(dynamic=bad_dynamic), self.assertRaises(RuntimeError):
+                a.assert_dynamic_dependencies(bad_dynamic, valid)
+        for bad_loaded in ['', 'statically linked', 'libc.so.6 => not found\n',
+                           'libother.so.1 => /usr/lib/libother.so.1 (0x123)\n',
+                           'libc.so.6 => /usr/lib/libc.so.6\n', valid + valid,
+                           'libc.so.6 => relative/libc.so.6 (0x123)\n']:
+            with self.subTest(loaded=bad_loaded), self.assertRaises(RuntimeError):
+                a.assert_dynamic_dependencies(needed, bad_loaded)
+        # An interpreter that is itself DT_NEEDED must also resolve by basename.
+        self.assertEqual(a.assert_dynamic_dependencies(dynamic(['ld-linux-x86-64.so.2']), valid), ['ld-linux-x86-64.so.2'])
 
     def test_status_json_is_parsed_semantically_not_counted(self):
         helper = '/opt/install/helper/agentfs-pod'
@@ -949,8 +967,8 @@ class NativeArchitectureTests(unittest.TestCase):
 class NativeReuseTests(unittest.TestCase):
     def test_generated_stage_inventory_is_exact_on_both_platforms(self):
         base = ['bun-extract', 'toolchain', 'dependencies', 'workspace-packages', 'upstream', 'upstream-checkout', 'export', 'verify-source', 'rebuild', 'sdk-suite', 'cli-suite', 'package', 'verify-install']
-        linux = ['runtime-extract', 'runtime-readelf', 'runtime-launcher-version', 'runtime-helper-version', 'runtime-status', 'runtime-ldd', 'runtime-node-version']
-        for os_name, expected in [('darwin', 14), ('linux', 21)]:
+        linux = ['runtime-extract', 'runtime-readelf', 'runtime-dynamic', 'runtime-launcher-version', 'runtime-helper-version', 'runtime-status', 'runtime-ldd', 'runtime-node-version']
+        for os_name, expected in [('darwin', 14), ('linux', 22)]:
             stages = base + (linux if os_name == 'linux' else []) + ['toolchain-docs']
             self.assertEqual(len(stages), expected)
             a.verify_native_stage_inventory(stages, os_name, True)
@@ -1120,26 +1138,31 @@ class NativeReuseTests(unittest.TestCase):
                 a.verify_reuse_archive(archive, pins, 'linux')
 
     def test_linux_reuse_executes_metadata_binding_for_legacy_and_generated_notices(self):
-        for generated in [False, True]:
-            for failure in [None, 'missing-stage', 'extra-stage', 'receipt-hash', 'raw-hash']:
+        for generated, arch in [(False, 'arm64'), (True, 'arm64'), (True, 'x64')]:
+            target = 'linux-' + arch
+            needed = ['libssl.so.3', 'libcrypto.so.3'] if arch == 'arm64' else ['libgcc_s.so.1', 'libm.so.6', 'libc.so.6']
+            loaded = '\n'.join(name + ' => /usr/lib/' + name + ' (0x123)' for name in needed)
+            dynamic = 'Dynamic section at offset 0x123 contains 4 entries:\n' + ''.join(' 0x0000000000000001 (NEEDED) Shared library: [' + name + ']\n' for name in needed)
+            for failure in [None, 'missing-stage', 'extra-stage', 'receipt-hash', 'raw-hash', 'needed-metadata', 'ldd-metadata', 'missing-dynamic', 'missing-dynamic-raw', 'unclosed-dynamic', 'dynamic-raw-binding', 'missing-needed']:
                 def change(entries):
                     entries.pop('xpod-cli-unit-darwin-arm64.tar.gz')
                     helper = b'\x7fELF\x02\x01' + b'\x00' * 58
-                    helper = bytearray(helper); struct.pack_into('<HH', helper, 16, 2, 183)
+                    helper = bytearray(helper); struct.pack_into('<HH', helper, 16, 2, 183 if arch == 'arm64' else 62)
                     output = io.BytesIO()
                     with tarfile.open(fileobj=output, mode='w:gz') as tar:
                         member = tarfile.TarInfo('install/helper/agentfs-pod'); member.size = len(helper); tar.addfile(member, io.BytesIO(helper))
-                    entries['xpod-cli-unit-linux-arm64.tar.gz'] = output.getvalue()
-                    native = json.loads(entries['native-receipt.json']); native.update(target='linux-arm64', helperSha256=hashlib.sha256(helper).hexdigest())
+                    entries['xpod-cli-unit-' + target + '.tar.gz'] = output.getvalue()
+                    native = json.loads(entries['native-receipt.json']); native.update(target=target, helperSha256=hashlib.sha256(helper).hexdigest())
                     status = dict(platform='linux', helperPresent=True, helperPath='/opt/install/helper/agentfs-pod', pendingOperations=0)
-                    runtime = dict(nodeVersion='v22.21.1', bunAbsentFromPath=True, runtime='node', status=status, opensslSonames=['libssl.so.3', 'libcrypto.so.3'], highestGlibcRequirement='2.36')
-                    sdk = dict(osRelease='debian 12', glibc='glibc 2.36', machine='aarch64')
-                    final = json.loads(entries['final.json']); final.update(target='linux-arm64', nativeReceipt=native, archiveSHA256=hashlib.sha256(output.getvalue()).hexdigest(),
-                        bunAssetSHA256=a.BUN_TARGET_SHA['linux-arm64'], sdkBefore=sdk, sdkAfter=sdk, bookwormImage=a.BOOKWORM_IMAGE, runtimeAdmission=runtime)
+                    runtime = dict(nodeVersion='v22.21.1', bunAbsentFromPath=True, runtime='node', status=status, neededSonames=needed, ldd=loaded, highestGlibcRequirement='2.36')
+                    sdk = dict(osRelease='debian 12', glibc='glibc 2.36', machine='aarch64' if arch == 'arm64' else 'x86_64')
+                    final = json.loads(entries['final.json']); final.update(target=target, nativeReceipt=native, archiveSHA256=hashlib.sha256(output.getvalue()).hexdigest(),
+                        bunAssetSHA256=a.BUN_TARGET_SHA[target], sdkBefore=sdk, sdkAfter=sdk, bookwormImage=a.BOOKWORM_IMAGE, runtimeAdmission=runtime)
+                    if arch == 'x64': final.update(expectedWorkflowSHA=final['head'], binaryArchitecture=dict(target=target, arch=arch))
                     entries['native-receipt.json'] = json.dumps(native).encode(); entries['final.json'] = json.dumps(final).encode()
                     metadata = dict(record=runtime, stages={})
-                    for name in ['runtime-extract', 'runtime-readelf', 'runtime-launcher-version', 'runtime-helper-version', 'runtime-status', 'runtime-ldd', 'runtime-node-version']:
-                        raw = {'runtime-readelf': b'  0000: Name: GLIBC_2.36 Flags: none Version: 1', 'runtime-ldd': b'libssl.so.3 => /usr/lib/libssl.so.3\nlibcrypto.so.3 => /usr/lib/libcrypto.so.3\n',
+                    for name in ['runtime-extract', 'runtime-readelf', 'runtime-dynamic', 'runtime-launcher-version', 'runtime-helper-version', 'runtime-status', 'runtime-ldd', 'runtime-node-version']:
+                        raw = {'runtime-readelf': b'  0000: Name: GLIBC_2.36 Flags: none Version: 1', 'runtime-dynamic': dynamic.encode(), 'runtime-ldd': (runtime['ldd'] + '\n').encode(),
                                'runtime-status': json.dumps(dict(ok=True, data=status)).encode(), 'runtime-node-version': b'v22.21.1\n'}.get(name, b'owned unit closed stage')
                         receipt = json.loads(entries['toolchain.receipt.json']); receipt['rawSHA256'] = hashlib.sha256(raw).hexdigest()
                         entries[name + '.raw.log'] = raw; entries[name + '.receipt.json'] = json.dumps(receipt).encode()
@@ -1149,17 +1172,31 @@ class NativeReuseTests(unittest.TestCase):
                     if failure == 'extra-stage': metadata['stages']['unknown-runtime'] = {}
                     if failure == 'receipt-hash': metadata['stages']['runtime-status']['receiptSha256'] = '0' * 64
                     if failure == 'raw-hash': metadata['stages']['runtime-status']['rawSha256'] = '0' * 64
+                    if failure == 'needed-metadata': runtime['neededSonames'] = ['libinvented.so.1']
+                    if failure == 'ldd-metadata': runtime['ldd'] = 'unbound metadata output'
+                    if failure in ['needed-metadata', 'ldd-metadata']:
+                        final = json.loads(entries['final.json']); final['runtimeAdmission'] = runtime; entries['final.json'] = json.dumps(final).encode()
+                    if failure == 'missing-dynamic': del entries['runtime-dynamic.receipt.json']
+                    if failure == 'missing-dynamic-raw': del entries['runtime-dynamic.raw.log']
+                    if failure == 'unclosed-dynamic':
+                        receipt = json.loads(entries['runtime-dynamic.receipt.json']); receipt['actualWait'] = False; entries['runtime-dynamic.receipt.json'] = json.dumps(receipt).encode()
+                    if failure == 'dynamic-raw-binding': entries['runtime-dynamic.raw.log'] += b'unbound appended bytes'
+                    if failure == 'missing-needed':
+                        raw = ('libother.so.1 => /usr/lib/libother.so.1 (0x123)\n').encode()
+                        receipt = json.loads(entries['runtime-ldd.receipt.json']); receipt['rawSHA256'] = hashlib.sha256(raw).hexdigest()
+                        entries['runtime-ldd.raw.log'] = raw; entries['runtime-ldd.receipt.json'] = json.dumps(receipt).encode()
+                        metadata['stages']['runtime-ldd'] = dict(receiptSha256=hashlib.sha256(entries['runtime-ldd.receipt.json']).hexdigest(), rawSha256=hashlib.sha256(raw).hexdigest())
                     entries['runtime-admission.metadata.json'] = json.dumps(metadata).encode()
                 with self.subTest(generated=generated, failure=failure), owned_scratch() as directory:
                     archive, pins, inventory = self.fixture(directory, change)
                     with zipfile.ZipFile(archive) as z: final = json.loads(z.read('final.json'))
-                    pins.update(PRODUCT_TARGET='linux-arm64', LINUX_ZIP_SHA=a.sha256(archive), LINUX_ARCHIVE_SHA=final['archiveSHA256'], LINUX_HELPER_SHA=final['nativeReceipt']['helperSha256'])
+                    pins.update(PRODUCT_TARGET=target, LINUX_ZIP_SHA=a.sha256(archive), LINUX_ARCHIVE_SHA=final['archiveSHA256'], LINUX_HELPER_SHA=final['nativeReceipt']['helperSha256'])
                     with patch.object(a, 'check_tests', return_value=inventory):
                         if failure is None:
-                            result = a.verify_reuse_archive(archive, pins, 'linux'); self.assertEqual(len(result['stages']), 21 if generated else 20)
+                            result = a.verify_reuse_archive(archive, pins, 'linux', arch); self.assertEqual(len(result['stages']), 22 if generated else 21)
                         else:
-                            with self.assertRaisesRegex(RuntimeError, 'runtime metadata'):
-                                a.verify_reuse_archive(archive, pins, 'linux')
+                            with self.assertRaises(RuntimeError):
+                                a.verify_reuse_archive(archive, pins, 'linux', arch)
 
     def test_missing_pins_and_changed_native_or_sdk_inputs_fail_closed(self):
         with owned_scratch() as directory:

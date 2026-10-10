@@ -137,7 +137,6 @@ def assert_bookworm_glibc(readelf_output):
 
 
 BOOKWORM_OS_RELEASE = ('debian', '12')
-OPENSSL_SONAMES = ('libssl.so.3', 'libcrypto.so.3')
 
 
 def assert_bookworm_image(image):
@@ -169,14 +168,50 @@ def assert_bun_absent(path):
         raise RuntimeError('Node admission PATH unexpectedly resolves bun')
 
 
-def assert_ldd_ready(text):
-    """A bundled helper must actually resolve its OpenSSL 3 runtime."""
-    if 'not found' in text:
+def assert_dynamic_dependencies(dynamic, loaded):
+    """Match the helper's actual DT_NEEDED to its successfully closed ldd output.
+
+    Cargo dependency metadata is not a runtime link graph. Neither a target nor
+    a crate name supplies additional required SONAMEs here.
+    """
+    if not isinstance(dynamic, str) or not dynamic.strip() or not isinstance(loaded, str) or not loaded.strip():
+        raise RuntimeError('Bundled helper dynamic loader output is empty or unavailable')
+    if 'not found' in loaded:
         raise RuntimeError('Bundled helper has unresolved dynamic dependencies at load time')
-    missing = [soname for soname in OPENSSL_SONAMES if soname not in text]
+    lines = [line for line in dynamic.strip().splitlines() if line.strip()]
+    if not re.fullmatch(r'Dynamic section at offset 0x[0-9a-fA-F]+ contains [1-9][0-9]* entries:', lines[0]):
+        raise RuntimeError('Bundled helper dynamic section is malformed or unavailable')
+    needed = []
+    for line in lines[1:]:
+        if 'NEEDED' not in line:
+            if not re.fullmatch(r'\s*(?:Tag\s+Type\s+Name/Value|0x[0-9a-fA-F]+\s+\([A-Za-z0-9_]+\)\s+.+)\s*', line):
+                raise RuntimeError('Bundled helper dynamic section contains a malformed entry')
+            continue
+        match = re.fullmatch(r'\s*0x0*1\s+\(NEEDED\)\s+Shared library: \[([A-Za-z0-9][A-Za-z0-9_.+-]*)\]\s*', line)
+        if not match or match[1] in needed:
+            raise RuntimeError('Bundled helper DT_NEEDED is malformed or duplicated')
+        needed.append(match[1])
+    if not needed:
+        raise RuntimeError('Bundled helper DT_NEEDED inventory is empty or unavailable')
+    resolved = set()
+    for line in loaded.splitlines():
+        if not line.strip():
+            continue
+        mapped = re.fullmatch(r'\s*([A-Za-z0-9][A-Za-z0-9_.+-]*)\s+=>\s+(/[^\s]+)\s+\(0x[0-9a-fA-F]+\)\s*', line)
+        direct = re.fullmatch(r'\s*(/[^\s]+|linux-vdso\.so\.[0-9]+)\s+\(0x[0-9a-fA-F]+\)\s*', line)
+        if mapped:
+            name = mapped[1]
+        elif direct:
+            name = Path(direct[1]).name
+        else:
+            raise RuntimeError('Bundled helper ldd output is malformed or unavailable')
+        if name in resolved:
+            raise RuntimeError('Bundled helper ldd dependency is duplicated')
+        resolved.add(name)
+    missing = [name for name in needed if name not in resolved]
     if missing:
-        raise RuntimeError(f'Bundled helper does not resolve OpenSSL 3 at load time: {", ".join(missing)}')
-    return list(OPENSSL_SONAMES)
+        raise RuntimeError('Bundled helper DT_NEEDED is not resolved: ' + ', '.join(missing))
+    return needed
 
 
 def unwrap_status(text):
@@ -398,6 +433,7 @@ def runtime_admission(archive, evidence, node, base):
     version_info = stage('runtime-readelf', ['readelf', '--version-info', str(helper)])
     (evidence / 'helper-glibc-requirements.raw.log').write_text(version_info)
     highest = assert_bookworm_glibc(version_info)
+    dynamic = stage('runtime-dynamic', ['readelf', '--dynamic', str(helper)])
     launcher_version = stage('runtime-launcher-version', [str(launcher), '--version'])
     helper_version = stage('runtime-helper-version', [str(helper), '--version'])
     status = stage('runtime-status', [str(launcher), 'agent-fs', 'status', '--json', '--session-dir', str(session)])
@@ -407,11 +443,11 @@ def runtime_admission(archive, evidence, node, base):
     if status_data.get('sessionDir') != str(session):
         raise RuntimeError('agent-fs status did not report the controlled fresh session directory')
     loaded = stage('runtime-ldd', ['ldd', str(helper)])
-    sonames = assert_ldd_ready(loaded)
+    sonames = assert_dynamic_dependencies(dynamic, loaded)
     record = {
         'runtime': 'node', 'nodeVersion': stage('runtime-node-version', [node, '--version']),
         'launcherVersion': launcher_version, 'helperVersion': helper_version,
-        'highestGlibcRequirement': f'{highest[0]}.{highest[1]}', 'opensslSonames': sonames,
+        'highestGlibcRequirement': f'{highest[0]}.{highest[1]}', 'neededSonames': sonames,
         'bunAbsentFromPath': True, 'status': status_data, 'statusJsonBytes': len(status.encode()),
         'ldd': loaded,
     }
@@ -636,7 +672,7 @@ def verify_native_stage_inventory(stages, os_name, generated_notices):
     if generated_notices:
         required.add('toolchain-docs')
     if os_name == 'linux':
-        required.update(['runtime-extract', 'runtime-readelf', 'runtime-launcher-version', 'runtime-helper-version',
+        required.update(['runtime-extract', 'runtime-readelf', 'runtime-dynamic', 'runtime-launcher-version', 'runtime-helper-version',
                          'runtime-status', 'runtime-ldd', 'runtime-node-version'])
     if set(stages) != required or len(stages) != len(required):
         raise RuntimeError('Native reuse stage inventory mismatch')
@@ -767,13 +803,14 @@ def verify_reuse_archive(archive, pins, os_name, arch='arm64'):
             runtime = final.get('runtimeAdmission', {})
             metadata = json.loads(read('runtime-admission.metadata.json'))
             highest = assert_bookworm_glibc(read('runtime-readelf.raw.log').decode())
-            sonames = assert_ldd_ready(read('runtime-ldd.raw.log').decode())
+            loaded = read('runtime-ldd.raw.log').decode().strip()
+            sonames = assert_dynamic_dependencies(read('runtime-dynamic.raw.log').decode(), loaded)
             status = assert_status_ready(read('runtime-status.raw.log').decode(), 'linux',
                                         Path(runtime.get('status', {}).get('helperPath', '')), expected_pending=0)
             if final.get('bookwormImage') != BOOKWORM_IMAGE or metadata.get('record') != runtime \
                     or runtime.get('nodeVersion') != 'v22.21.1' or read('runtime-node-version.raw.log').decode().strip() != 'v22.21.1' \
                     or runtime.get('bunAbsentFromPath') is not True or runtime.get('runtime') != 'node' \
-                    or runtime.get('status') != status or runtime.get('opensslSonames') != sonames \
+                    or runtime.get('status') != status or runtime.get('neededSonames') != sonames or runtime.get('ldd') != loaded \
                     or runtime.get('highestGlibcRequirement') != f'{highest[0]}.{highest[1]}':
                 raise RuntimeError('Native reuse Linux loader/ABI admission mismatch')
             if set(metadata.get('stages', {})) != {n for n in required if n.startswith('runtime-') and n != 'runtime-extract'}:
