@@ -638,18 +638,21 @@ def main():
 # mounted harness, or final release. Its sole pin registration remains the
 # existing mounted workflow; incomplete or stale pins fail closed.
 def mounted_reuse_pins(root):
-    text = (root / '.github/workflows/agentfs-mounted-platform-acceptance.yml').read_text()
-    keys = ['PRODUCT_RUN', 'PRODUCT_SHA'] + [f'{os}_{suffix}' for os in ['DARWIN', 'LINUX']
-           for suffix in ['ARTIFACT_ID', 'ZIP_SHA', 'ARCHIVE_SHA', 'HELPER_SHA']]
-    pins = {}
-    for key in keys:
-        values = re.findall(r'^  ' + key + r": ['\"]?([0-9a-f]+)['\"]?\s*$", text, re.M)
-        size = 40 if key == 'PRODUCT_SHA' else 64
-        if len(values) != 1 or (not key.endswith(('RUN', 'ID')) and len(values[0]) != size):
-            raise RuntimeError(f'Missing or ambiguous native reuse pin: {key}')
-        if key.endswith(('RUN', 'ID')) and not values[0].isdigit():
-            raise RuntimeError(f'Invalid native reuse identifier: {key}')
-        pins[key] = values[0]
+    try:
+        authority = json.loads((root / 'scripts/agentfs-native-ci/mounted/native-authority.json').read_text())
+    except (OSError, ValueError) as error:
+        raise RuntimeError('Missing native authority inventory') from error
+    if authority.get('schemaVersion') != 1:
+        raise RuntimeError('Invalid native authority schema')
+    pins = {'PRODUCT_RUN': authority['run'], 'PRODUCT_SHA': authority['source']}
+    for platform in ['darwin', 'linux']:
+        artifact = authority['artifacts'][platform + '-arm64']
+        for suffix, field in [('ARTIFACT_ID', 'id'), ('ZIP_SHA', 'zip'), ('ARCHIVE_SHA', 'archive'), ('HELPER_SHA', 'helper')]:
+            pins[platform.upper() + '_' + suffix] = artifact[field]
+    for key, value in pins.items():
+        pattern = r'[0-9]+' if key.endswith(('RUN', 'ID')) else r'[0-9a-f]{' + ('40' if key == 'PRODUCT_SHA' else '64') + '}'
+        if not isinstance(value, str) or not re.fullmatch(pattern, value):
+            raise RuntimeError('Invalid native authority pin: ' + key)
     return pins
 
 

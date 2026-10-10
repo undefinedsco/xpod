@@ -4,7 +4,7 @@ name: AgentFS mounted platform acceptance
 # separate development branch so a harness-only push never recompiles the frozen
 # admitted product (the native compiler workflow only runs on
 # codex/agentfs-native-acceptance). Product archive/helper pins come from the
-# accepted native jobs of run 37592276758; the harness SHA is this branch's checkout.
+# the single mounted/native-authority.json inventory; the harness SHA is this branch's checkout.
 on:
   push:
     branches: ['codex/agentfs-mounted-platform-acceptance']
@@ -16,17 +16,7 @@ permissions:
   actions: read
 
 env:
-  PRODUCT_RUN: '37592276758'
-  PRODUCT_SHA: '48a71dceddf4ab40eddc52a5bb04c54474eeb030'
-  LINUX_ARTIFACT_ID: '11470781946'
-  LINUX_ZIP_SHA: '7ca934792713057afbc1911e99a3431cfa1d509bb20fd4c9d1684fc28c90a703'
-  LINUX_ARCHIVE_SHA: 'bba85186a15895c7b5f32fe58781185db62196e3a53206d057315daa804f389e'
-  LINUX_HELPER_SHA: '28d496fc4ce7c40b82607dd256c1d8e1d171c0463e36d3e4ec6bb99db120da10'
   BOOKWORM_IMAGE: rust@sha256:93ce27a88655056a51dbdd8f5f2d7ddc071c7b0070fb288a37b5a285fc83971e
-  DARWIN_ARTIFACT_ID: '11469149971'
-  DARWIN_ZIP_SHA: 'bcf70912f12c3f9657f19b3fb03fcc1d14bfd6b99900ec1e3c1816efc1b0ba45'
-  DARWIN_ARCHIVE_SHA: 'c62a190c17ea5a1755a7d272d0815044a8f5e02c5795e78acfad9d98c7f3411d'
-  DARWIN_HELPER_SHA: 'c4068f00dbe05e1989077de68fecab426cddb27960a041fd12c31b2ceb6b7384'
 
 jobs:
   linux-fuse:
@@ -36,6 +26,19 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - name: Load the single native artifact authority
+        run: |
+          python3 - <<'PYTHON'
+          import json,os
+          a=json.load(open('scripts/agentfs-native-ci/mounted/native-authority.json'))
+          values={'PRODUCT_RUN':a['run'],'PRODUCT_SHA':a['source']}
+          for platform in ['linux','darwin']:
+            item=a['artifacts'][platform+'-arm64']; prefix=platform.upper()
+            for key,field in [('ARTIFACT_ID','id'),('ZIP_SHA','zip'),('ARCHIVE_SHA','archive'),('HELPER_SHA','helper')]:
+              values[prefix+'_'+key]=item[field]
+          with open(os.environ['GITHUB_ENV'],'a') as out:
+            for key,value in values.items():out.write(key+'='+value+'\n')
+          PYTHON
       - name: Reject native inputs that differ from the pinned product
         run: python3 scripts/agentfs-native-ci/accept.py --verify-native-source
       - uses: oven-sh/setup-bun@v2
@@ -127,6 +130,19 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - name: Load the single native artifact authority
+        run: |
+          python3 - <<'PYTHON'
+          import json,os
+          a=json.load(open('scripts/agentfs-native-ci/mounted/native-authority.json'))
+          values={'PRODUCT_RUN':a['run'],'PRODUCT_SHA':a['source']}
+          for platform in ['linux','darwin']:
+            item=a['artifacts'][platform+'-arm64']; prefix=platform.upper()
+            for key,field in [('ARTIFACT_ID','id'),('ZIP_SHA','zip'),('ARCHIVE_SHA','archive'),('HELPER_SHA','helper')]:
+              values[prefix+'_'+key]=item[field]
+          with open(os.environ['GITHUB_ENV'],'a') as out:
+            for key,value in values.items():out.write(key+'='+value+'\n')
+          PYTHON
       - name: Reject native inputs that differ from the pinned product
         run: python3 scripts/agentfs-native-ci/accept.py --verify-native-source
       - uses: actions/setup-node@v4

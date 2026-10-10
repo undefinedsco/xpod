@@ -485,16 +485,13 @@ esac
     expect(runText).not.toContain('kubectl -n "$SEALOS_NAMESPACE" set image deployment/xpod-rc');
     expect(runText).not.toContain('kubectl -n "$SEALOS_NAMESPACE" rollout restart deployment/xpod-rc');
     expect(runText).toContain('kubectl rollout status deployment/xpod-rc');
-    expect(runText).toContain("CREATE EXTENSION IF NOT EXISTS vector");
-    expect(runText).toContain("CREATE EXTENSION IF NOT EXISTS xpod_rdf VERSION '0.2.0'");
-    expect(runText).toContain("CREATE EXTENSION IF NOT EXISTS xpod_qlever VERSION '0.4.0'");
     expect(runText).toContain('delete deployment/xpod-rc --cascade=foreground --wait=true --ignore-not-found');
     expect(runText).not.toContain('delete statefulset/xpod-rc-postgres');
     expect(runText).not.toContain('pvc/data-xpod-rc-postgres-0');
     expect(runText).not.toContain('delete pvc -l');
-    expect(runText.indexOf('DROP DATABASE IF EXISTS xpod_rc WITH (FORCE)'))
-      .toBeLessThan(runText.indexOf('kubectl apply -f "$rendered_manifest"'));
-    expect(runText).toContain('CREATE DATABASE xpod_rc OWNER xpod_rc');
+    expect(runText).not.toMatch(/DROP DATABASE|CREATE DATABASE|CREATE EXTENSION|ALTER SCHEMA/);
+    expect(runText.indexOf('scripts/verify-protected-rc-database.sh'))
+      .toBeLessThan(runText.indexOf('create secret generic'));
     expect(runText).not.toContain('kubectl rollout status deployment/xpod-inngest');
     expect(runText).toContain('node scripts/update-gateway-rc-configmap.cjs');
     expect(runText).toContain('https://id-rc.undefineds.cn/service/status');
@@ -597,9 +594,8 @@ esac
         else expect(runValidation).toThrow(/must use the isolated xpod_rc database and role/);
       }
     } finally { await rm(directory, { recursive: true, force: true }); }
-    const reset = workflow.jobs.deploy_and_accept.steps.find((step: any) => step.name === 'Reset the shared RC database').run;
-    expect(reset).toContain('SHOW server_version_num');
-    expect(reset).toContain("SELECT extversion FROM pg_extension WHERE extname = 'vector'");
+    const preflight = workflow.jobs.deploy_and_accept.steps.find((step: any) => step.name === 'Verify protected RC database without changing data').run;
+    expect(preflight).toContain('scripts/verify-protected-rc-database.sh');
   });
 
   it('derives authenticated smoke configuration from the fixed RC seed instead of manual secrets', async () => {

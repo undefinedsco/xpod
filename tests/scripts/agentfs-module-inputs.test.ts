@@ -84,12 +84,12 @@ describe('module mounted input preparation', () => {
     expect(projectReceipt('rss-512.json', { ...secret, phaseRead: [1234], readPeakKib: 1234 })).toEqual({ phaseRead: [1234], readPeakKib: 1234 });
     expect(projectReceipt('module-install.safe.json', { runtime: secret, ownedPids: secret })).toEqual({});
   });
-  it('binds both exact original b5 artifacts and rejects unsupported targets', () => {
-    for (const target of ['linux-arm64', 'darwin-arm64']) {
-      const facts = nativeFacts(target); expect(facts.run).toBe('37977251553'); expect(facts.source).toBe('b5a058cffa50026702f7679365e7b17e383115d2');
+  it('binds all four exact reviewed native artifacts and rejects unsupported targets', () => {
+    for (const target of ['linux-arm64', 'darwin-arm64', 'linux-x64', 'darwin-x64']) {
+      const facts = nativeFacts(target); expect(facts.run).toBe('38018419923'); expect(facts.source).toBe('9efac6a9c02379385f1c882cbd56ec2bc7cf05f1');
       expect(facts.zipSHA256).toMatch(/^[a-f0-9]{64}$/); expect(facts.pins.PRODUCT_SHA).toBe(facts.source);
     }
-    expect(() => nativeFacts('linux-x64')).toThrow('unsupported');
+    expect(() => nativeFacts('linux-riscv64')).toThrow('unsupported');
   });
   it.each(['changed-manifest', 'duplicate', 'symlink', 'unlisted'])('rejects actual serialized archive %s before installer or mount', (variant) => fixture(root => {
     const archive = path.join(root, 'module.tgz');

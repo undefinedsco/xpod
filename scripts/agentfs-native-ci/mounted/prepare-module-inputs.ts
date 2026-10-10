@@ -7,16 +7,13 @@ import { hashBytes, hashFile, verifyBoundFile, type ModuleAdmissionInputs } from
 import { isolatedModuleEnvironment } from './module-admission';
 import { observeChildLifecycle, reapOwnedGroup } from './platform-admission';
 
-const source = 'b5a058cffa50026702f7679365e7b17e383115d2';
-const artifacts = {
-  'darwin-arm64': { id: '11640530802', zip: 'e275f3eb04f9a8bc023149353891f42597d3d8cbae5459510031b8c18750dd34', archive: '391ad4b1ecedf0a90be1a2b03661a85e64e426aab7579f64026e15887cce74d8', helper: '608c7e22702049841c1063bea12920fb371b73a3da96a8a917488567ec6de75e' },
-  'linux-arm64': { id: '11640947333', zip: 'a8856c145dd3afc363b812affd6286c2f154f888dfe0a22b050de0e2fced0e86', archive: '8caff51560422becda67dc46e59e8fefaf77e7297fe558ac1c36698734311358', helper: 'ece07a199caa2d12493e8a5648b770395922bdcb31001e7eb50599bd960d6e7b' },
-} as const;
+import nativeAuthority from './native-authority.json';
+const { source, artifacts } = nativeAuthority;
 export function nativeFacts(target: string) {
-  if (!(target in artifacts)) throw new Error('unsupported module target');
+  if (!Object.prototype.hasOwnProperty.call(artifacts, target)) throw new Error('unsupported module target');
   const facts = artifacts[target as keyof typeof artifacts]; const prefix = target.split('-')[0].toUpperCase();
-  return { source, run: '37977251553', artifactID: facts.id, zipSHA256: facts.zip,
-    pins: { PRODUCT_SHA: source, [`${prefix}_ZIP_SHA`]: facts.zip, [`${prefix}_ARCHIVE_SHA`]: facts.archive, [`${prefix}_HELPER_SHA`]: facts.helper } };
+  return { source, run: nativeAuthority.run, artifactID: facts.id, zipSHA256: facts.zip,
+    pins: { PRODUCT_SHA: source, PRODUCT_TARGET: target, [`${prefix}_ZIP_SHA`]: facts.zip, [`${prefix}_ARCHIVE_SHA`]: facts.archive, [`${prefix}_HELPER_SHA`]: facts.helper } };
 }
 // Collect actual serialized archive bytes, never a separately trusted staging directory.
 const collectArchive = `import tarfile,hashlib,json,sys,posixpath,tempfile
@@ -67,7 +64,7 @@ function validateCollectedModule(c: Collected, target: string, sourceSHA: string
   nativeFacts(target);
   const pkg = c.documents['package.json']; const kit = c.documents['provenance/module-source-kit.json']; const reuse = c.documents['provenance/native-reuse.json'];
   if (pkg?.name !== `@undefineds.co/xpod-afs-${target}` || pkg?.xpodModule?.schemaVersion !== 1 || pkg.xpodModule.id !== 'afs'
-    || pkg.xpodModule.platform !== target.split('-')[0] || pkg.xpodModule.arch !== 'arm64' || pkg.xpodModule.entry !== 'dist/entry.mjs'
+    || pkg.xpodModule.platform !== target.split('-')[0] || pkg.xpodModule.arch !== target.split('-')[1] || pkg.xpodModule.entry !== 'dist/entry.mjs'
     || !/^\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?$/.test(pkg.version ?? '') || !Array.isArray(pkg.xpodModule.files)) throw new Error('module manifest mismatch');
   const seen = new Set<string>();
   for (const file of pkg.xpodModule.files) {
@@ -221,6 +218,7 @@ async function main(): Promise<void> {
   const archive = bound('--native', 'native.zip'); if (archive.sha256 !== facts.zipSHA256) throw new Error('native ZIP pin mismatch');
   const pins = bound('--pins', 'native-pins.json'); if (JSON.stringify(JSON.parse(readFileSync(path.join(out, 'native-pins.json'), 'utf8'))) !== JSON.stringify(facts.pins)) throw new Error('native pins mismatch');
   const native = JSON.parse(execFileSync('python3', ['-c', "import zipfile,hashlib,json,sys\nwith zipfile.ZipFile(sys.argv[1]) as z:\n assert len(z.namelist())==len(set(z.namelist()))\n print(json.dumps({n:hashlib.sha256(z.read(n)).hexdigest() for n in ['native-receipt.json','source-kit.json']}))", path.join(out, 'native.zip')], { encoding: 'utf8' })) as Record<string, string>;
+  if (native['source-kit.json'] !== artifacts[target as keyof typeof artifacts].sourceKit) throw new Error('native source-kit authority mismatch');
   const module = bound('--module', 'module.tgz'); const properties = collectModule(path.join(out, 'module.tgz'), target, sourceSHA, native['native-receipt.json'], native['source-kit.json']);
   const core = bound('--core', 'core.mjs'); const driver = bound('--driver', 'module-admission.mjs');
   const buildPath = path.resolve(option('--build-receipt')); const build = JSON.parse(readFileSync(buildPath, 'utf8'));

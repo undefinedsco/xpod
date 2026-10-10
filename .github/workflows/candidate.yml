@@ -578,6 +578,13 @@ jobs:
             --pg-image "$NATIVE_PG_IMAGE" \
             --pull-receipt "${RUNNER_TEMP}/namespace-native-pull-check.json"
 
+      - name: Verify protected RC database without changing data
+        run: |
+          set -euo pipefail
+          # Never reset a shared database. Missing/mismatched state requires a
+          # separately verified protected backup/restore, not deployment DDL.
+          kubectl -n "$SEALOS_NAMESPACE" exec -i statefulset/xpod-rdf-postgres -- sh -s < scripts/verify-protected-rc-database.sh
+
       - name: Create runtime secrets
         run: |
           set -euo pipefail
@@ -588,39 +595,6 @@ jobs:
           kubectl -n "$SEALOS_NAMESPACE" create secret generic "$XPOD_RC_SEED_SECRET_NAME" \
             --from-file=rc.json="${RUNNER_TEMP}/xpod-rc-seed.json" \
             --dry-run=client -o yaml | kubectl apply -f -
-
-      - name: Reset the shared RC database
-        run: |
-          set -euo pipefail
-          # RC 与 cn/co 共用 xpod-rdf-postgres：不重建实例，只重置 RC 自己的库。
-          # 扩展顺序是硬要求：vector -> xpod_rdf -> xpod_qlever；
-          # 顺序错了会缺 native_sparql_capabilities，应用启动即失败。
-          # 用 statefulset/<name> 交给 kubectl 挑就绪 Pod；不用 items[0]（可能选中正在终止的那个）
-          kubectl -n "$SEALOS_NAMESPACE" exec -i statefulset/xpod-rdf-postgres -- sh -s <<'SQL'
-          set -e
-          export PGPASSWORD="$POSTGRES_PASSWORD"
-          version="$(psql -U "$POSTGRES_USER" -d postgres -v ON_ERROR_STOP=1 -Atc 'SHOW server_version_num')"
-          case "$version" in
-            17????) ;;
-            *) echo 'RC requires PostgreSQL 17 before database reset'; exit 1 ;;
-          esac
-          psql -U "$POSTGRES_USER" -d postgres -v ON_ERROR_STOP=1 -c 'DROP DATABASE IF EXISTS xpod_rc WITH (FORCE)'
-          psql -U "$POSTGRES_USER" -d postgres -v ON_ERROR_STOP=1 -c 'CREATE DATABASE xpod_rc OWNER xpod_rc'
-          psql -U "$POSTGRES_USER" -d xpod_rc -v ON_ERROR_STOP=1 -c 'CREATE EXTENSION IF NOT EXISTS vector'
-          psql -U "$POSTGRES_USER" -d xpod_rc -v ON_ERROR_STOP=1 -c "CREATE EXTENSION IF NOT EXISTS xpod_rdf VERSION '0.2.0'"
-          psql -U "$POSTGRES_USER" -d xpod_rc -v ON_ERROR_STOP=1 -c "CREATE EXTENSION IF NOT EXISTS xpod_qlever VERSION '0.4.0'"
-          psql -U "$POSTGRES_USER" -d xpod_rc -v ON_ERROR_STOP=1 <<'GRANTS'
-          ALTER SCHEMA xpod_rdf OWNER TO xpod_rc;
-          GRANT ALL ON SCHEMA public, xpod_rdf TO xpod_rc;
-          GRANT ALL ON ALL TABLES IN SCHEMA public, xpod_rdf TO xpod_rc;
-          GRANT ALL ON ALL SEQUENCES IN SCHEMA public, xpod_rdf TO xpod_rc;
-          GRANT ALL ON ALL FUNCTIONS IN SCHEMA public, xpod_rdf TO xpod_rc;
-          GRANTS
-          extensions="$(psql -U "$POSTGRES_USER" -d xpod_rc -v ON_ERROR_STOP=1 -Atc "SELECT count(*) FROM pg_extension WHERE extname IN ('vector', 'xpod_rdf', 'xpod_qlever')")"
-          test "$extensions" = 3
-          vector_version="$(psql -U "$POSTGRES_USER" -d xpod_rc --no-align --tuples-only --command "SELECT extversion FROM pg_extension WHERE extname = 'vector'" | tr -d '[:space:]')"
-          test -n "$vector_version"
-          SQL
 
       - name: Deploy RC image by digest
         run: |

@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "source": "9efac6a9c02379385f1c882cbd56ec2bc7cf05f1",
+  "run": "38018419923",
+  "artifacts": {
+    "darwin-arm64": {
+      "id": "11658328509",
+      "zip": "71c6d982978c016fe80aae8c922077294bd7a115fda0872506254c9648bc17fa",
+      "archive": "c11360fa28fdca9679a10481c88bf44ecaccac3728c036719859b7ad4cfe54b2",
+      "helper": "a0242ebdcd30fed10394f82a6c10862f38e0676461ebaa6c35eca5e967181381",
+      "sourceKit": "6833ce1f58d1c9b5eca65b5f139de67e90a05b3e449f0f7c24ea6de43024c591"
+    },
+    "darwin-x64": {
+      "id": "11659005729",
+      "zip": "3b4a708cb1f45e4d7b87fab1d1f5ddc5f2eb8247c106cf736c30afb6dc0496fe",
+      "archive": "c99a0c2b4231b5378c2542f8d2fa619138b0d2125c972dc0a7eac9db63a680da",
+      "helper": "67a83b04e8e1e2e6c6431e3ce1a755a3540e7a6565a04cb0a70f5448f56efead",
+      "sourceKit": "6833ce1f58d1c9b5eca65b5f139de67e90a05b3e449f0f7c24ea6de43024c591"
+    },
+    "linux-x64": {
+      "id": "11659931669",
+      "zip": "65371e2493372a66186ccc676cafff84e62e8712bd7cada50f1c742ef0eecf8a",
+      "archive": "a685ffc7bc8dc3634302cbaeb8e55be22346c7b009bdd41701b7871a34b68f26",
+      "helper": "0ae627238d2cff2d168f88d385a1a5cf8a094ab32460a9895937e560124a5ae8",
+      "sourceKit": "6833ce1f58d1c9b5eca65b5f139de67e90a05b3e449f0f7c24ea6de43024c591"
+    },
+    "linux-arm64": {
+      "id": "11659846895",
+      "zip": "ce321aa8ca3363761e0bd505c00cb35fc8696adf583d746c98e30d09e42a6efe",
+      "archive": "118e493c57ccb8bc0fb7483d3c4cdae62116528a24db2d84854068d15242ffdb",
+      "helper": "d87b485a98338b7cbce1c7f487f76bee2689304148e2422c74233d46b9395d14",
+      "sourceKit": "6833ce1f58d1c9b5eca65b5f139de67e90a05b3e449f0f7c24ea6de43024c591"
+    }
+  }
+}
