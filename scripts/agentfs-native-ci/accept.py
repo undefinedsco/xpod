@@ -209,15 +209,45 @@ def assert_status_ready(text, platform_name, helper, expected_pending=None):
     return data
 
 
-def check_tests(text):
+def native_test_contract(root, source_sha, source_kit):
+    """Select inventory only from exact Git patch bytes bound to the source kit."""
+    if not re.fullmatch('[a-f0-9]{40}', source_sha):
+        raise RuntimeError('Native test source commit is invalid')
+    prefix = 'tools/agentfs-pod/patches/'
+    supported = {'fuse-revalidation.patch', 'nfs-directory-cookie.patch', 'fuse-owned-session-ready.patch'}
+    try:
+        paths = subprocess.check_output(['git', 'ls-tree', '-r', '--name-only', source_sha, '--', prefix], cwd=root, stderr=subprocess.PIPE).decode().splitlines()
+        names = {name.removeprefix(prefix) for name in paths}
+        if names not in [supported, supported - {'fuse-owned-session-ready.patch'}] or len(paths) != len(names):
+            raise RuntimeError('Unsupported native test source patch contract')
+        files = source_kit.get('files', [])
+        recorded = {row['path']: row['sha256'] for row in files if row.get('path', '').startswith('patches/')}
+        if len(recorded) != len([row for row in files if row.get('path', '').startswith('patches/')]) or set(recorded) != {'patches/' + name for name in names}:
+            raise RuntimeError('Native test source kit patch inventory mismatch')
+        for name in names:
+            blob = subprocess.check_output(['git', 'show', source_sha + ':' + prefix + name], cwd=root, stderr=subprocess.PIPE)
+            if hashlib.sha256(blob).hexdigest() != recorded['patches/' + name]:
+                raise RuntimeError('Native test source kit patch bytes mismatch')
+    except (subprocess.CalledProcessError, KeyError, TypeError) as error:
+        raise RuntimeError('Native test source commit or patch evidence unavailable') from error
+    current = 'fuse-owned-session-ready.patch' in names
+    return dict(passed=102 if current else 98, ignored=2, current=current,
+                requiredNames=['foreign_fuse_startup_snapshot_cannot_bind_or_start_unmount',
+                               'fuse_control_closes_only_after_actual_owned_unmount_and_kernel_absence',
+                               'fuse_owner_uses_actual_runtime_and_rejects_nfs_or_changed_binding',
+                               'legacy_owner_without_backend_remains_nfs'] if current else [])
+
+
+def check_tests(text, source_kit, source_sha, root=None):
+    contract = native_test_contract(root or Path.cwd(), source_sha, source_kit)
     summaries = re.findall(r'test result: ok\. (\d+) passed; (\d+) failed; (\d+) ignored; (\d+) measured; (\d+) filtered out', text)
-    expected = ('98', '0', '2', '0', '0')
-    if expected not in summaries:
-        raise RuntimeError('Latest full Rust inventory must report 98 passed, two declared ignores, zero filtered (100 total)')
+    expected = (str(contract['passed']), '0', '2', '0', '0')
+    if summaries != [expected]:
+        raise RuntimeError(f"Source-bound full Rust inventory must report {contract['passed']} passed, two declared ignores, zero filtered ({contract['passed'] + 2} total)")
     ignored = re.findall(r'^test (\S+) \.\.\. ignored', text, re.MULTILINE)
     if set(ignored) != {'mount::tests::legacy_output_exceeds_observation_budget', 'mount_control::tests::lease_child'}:
         raise RuntimeError('Unexpected ignored tests')
-    for test in ['closed_marker_is_read_only_after_actual_lease_release', 'closed_proof_survives_ack_loss_and_partial_socket_cleanup',
+    for test in contract['requiredNames'] + ['closed_marker_is_read_only_after_actual_lease_release', 'closed_proof_survives_ack_loss_and_partial_socket_cleanup',
                  'actual_dead_owner_releases_flock_and_only_proven_stale_socket_is_collected',
                  'owned_atomic_record_replacement_transient_is_not_a_foreign_entry',
                  'actual_store_owner_temp_before_rename_is_tolerated_by_live_readers',
@@ -521,7 +551,6 @@ def main():
         for name in ['build.log', 'test.log', 'receipt.json']:
             if (rebuilt / name).is_file():
                 shutil.copyfile(rebuilt / name, evidence / f'native-{name}')
-    test_inventory = check_tests((rebuilt / 'test.log').read_text())
     receipt = json.loads((rebuilt / 'receipt.json').read_text())
     if (receipt['target'] != target or receipt['engine']['commit'] != UPSTREAM
             or receipt['compiler']['toolchain'] != TOOLCHAIN or receipt['compilerParallelism'] != 2 or not receipt['testsPassed']
@@ -531,6 +560,7 @@ def main():
             or receipt['compiler']['rustcSha256'] != sha256(rustc)
             or receipt['buildArguments'] != ['build', '--release', '--frozen']):
         raise RuntimeError('Actual native receipt binding mismatch')
+    test_inventory = check_tests((rebuilt / 'test.log').read_text(), json.loads((kit / 'source-kit.json').read_text()), source_before['head'], root)
     binary_arch = assert_binary_arch((rebuilt / 'agentfs-pod').read_bytes(), host, arch)
     suites = upstream_suites(kit / 'upstream', evidence, cargo, base)
     package = base / 'package'
@@ -671,7 +701,10 @@ def verify_reuse_archive(archive, pins, os_name, arch='arm64'):
         if not isinstance(before, dict) or before.get('head') != pins['PRODUCT_SHA'] or before.get('status') != '' \
                 or not before.get('files') or before != final.get('sourceAfter') or final.get('head') != pins['PRODUCT_SHA']:
             raise RuntimeError('Native reuse source receipt is not closed and product-bound')
-        inventory = check_tests(read('native-test.log').decode())
+        native = json.loads(read('native-receipt.json')); kit_bytes = read('source-kit.json'); kit = json.loads(kit_bytes)
+        if native.get('sourceKitSha256') != hashlib.sha256(kit_bytes).hexdigest() or native.get('engine') != kit.get('engine') or native.get('engine', {}).get('commit') != UPSTREAM or native.get('target') != target:
+            raise RuntimeError('Native test source kit is not producer-bound')
+        inventory = check_tests(read('native-test.log').decode(), kit, pins['PRODUCT_SHA'])
         if final.get('target') != target or any(final.get(k) != v for k, v in inventory.items()) \
                 or final.get('sdkBefore') != final.get('sdkAfter') or not final.get('sdkBefore') \
                 or final.get('rustManifestSHA256') != RUST_MANIFEST_SHA or final.get('bunAssetSHA256') != BUN_TARGET_SHA[target]:

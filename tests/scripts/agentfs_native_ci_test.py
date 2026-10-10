@@ -36,6 +36,24 @@ b = importlib.util.module_from_spec(spec4)
 spec4.loader.exec_module(b)
 
 
+def native_patch_git_fixture(directory):
+    """Owned synthetic Git blobs test binding, never claim real native evidence."""
+    root = Path(directory) / 'native-contract-git'; root.mkdir()
+    subprocess.run(['git', 'init', '--quiet', str(root)], check=True)
+    patches = root / 'tools/agentfs-pod/patches'; patches.mkdir(parents=True)
+    def snapshot():
+        subprocess.run(['git', '-C', str(root), 'add', 'tools/agentfs-pod/patches'], check=True)
+        subprocess.run(['git', '-C', str(root), '-c', 'user.name=fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '--quiet', '-m', 'owned fixture'], check=True)
+        commit = subprocess.check_output(['git', '-C', str(root), 'rev-parse', 'HEAD']).decode().strip()
+        kit = dict(files=[dict(path='patches/' + p.name, sha256=hashlib.sha256(p.read_bytes()).hexdigest()) for p in sorted(patches.iterdir())])
+        return commit, kit
+    for name in ['fuse-revalidation.patch', 'nfs-directory-cookie.patch']: (patches / name).write_text('synthetic ' + name)
+    legacy = snapshot()
+    (patches / 'fuse-owned-session-ready.patch').write_text('synthetic third patch')
+    current = snapshot()
+    return root, legacy, current
+
+
 class LinuxContainerBindingTests(unittest.TestCase):
     def fixture(self):
         return dict(cid='a' * 64, imageID='sha256:' + 'b' * 64, running=True, privileged=False,
@@ -275,8 +293,20 @@ class SupervisorTests(unittest.TestCase):
                           'pod_fs::clean_cache_integration_tests::identity_and_canonical_pod_are_isolated_and_loopback_has_no_directory',
                           'pod_fs::clean_cache_integration_tests::denied_head_invalidates_and_never_serves_a_cached_body']:
             text += f'test {qualified} ... ok\n'
-        self.assertEqual(a.check_tests(text), dict(declaredTests=100, passedTests=98, ignoredTests=2, filteredTests=0))
-        for invalid in [text.replace('98 passed', '95 passed'),
+        with owned_scratch() as directory:
+            root, (legacy_sha, legacy_kit), (current_sha, current_kit) = native_patch_git_fixture(directory)
+            self.assertEqual(a.check_tests(text, legacy_kit, legacy_sha, root), dict(declaredTests=100, passedTests=98, ignoredTests=2, filteredTests=0))
+            names = ['foreign_fuse_startup_snapshot_cannot_bind_or_start_unmount', 'fuse_control_closes_only_after_actual_owned_unmount_and_kernel_absence', 'fuse_owner_uses_actual_runtime_and_rejects_nfs_or_changed_binding', 'legacy_owner_without_backend_remains_nfs']
+            current = text.replace('98 passed', '102 passed') + ''.join(f'test mount_control::tests::{name} ... ok\n' for name in names)
+            self.assertEqual(a.check_tests(current, current_kit, current_sha, root), dict(declaredTests=104, passedTests=102, ignoredTests=2, filteredTests=0))
+            for wrong_text, kit, sha in [(text, current_kit, current_sha), (current, legacy_kit, legacy_sha), (current + text, current_kit, current_sha), (current, legacy_kit, current_sha), (current, current_kit, legacy_sha), (current, current_kit, '0' * 40)]:
+                with self.assertRaises(RuntimeError): a.check_tests(wrong_text, kit, sha, root)
+            for name in names:
+                with self.assertRaisesRegex(RuntimeError, 'Missing latest regression'):
+                    a.check_tests(current.replace(f'test mount_control::tests::{name} ... ok\n', ''), current_kit, current_sha, root)
+            corrupted = copy.deepcopy(current_kit); corrupted['files'][0]['sha256'] = '0' * 64
+            with self.assertRaisesRegex(RuntimeError, 'patch bytes mismatch'): a.check_tests(current, corrupted, current_sha, root)
+            for invalid in [text.replace('98 passed', '95 passed'),
                         text.replace('whole_file_deadlines_bind_verified_sizes_and_leave_metadata_unchanged ... ok',
                                      'whole_file_deadlines_bind_verified_sizes_and_leave_metadata_unchanged ... FAILED'),
                         text.replace('0 filtered out', '2 filtered out'),
@@ -284,8 +314,8 @@ class SupervisorTests(unittest.TestCase):
                                      'closed_marker_is_read_only_after_actual_lease_release ... FAILED'),
                         text.replace('clean_cache::tests::strong_etag_classification ... ok',
                                      'clean_cache::tests::strong_etag_classification ... FAILED')]:
-            with self.assertRaises(RuntimeError):
-                a.check_tests(invalid)
+                with self.assertRaises(RuntimeError):
+                    a.check_tests(invalid, legacy_kit, legacy_sha, root)
 
     def test_target_allocation_budget_stops_owned_child(self):
         # The 1.5 GiB target guard is only armed when run_stage is handed the

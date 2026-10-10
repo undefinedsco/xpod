@@ -1,6 +1,7 @@
 import { afterEach, expect, test } from 'bun:test';
 import { createHash } from 'node:crypto';
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { chmod, link, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -114,8 +115,48 @@ async function waitForFile(filename: string): Promise<void> {
   }
   throw new Error(`Process did not publish readiness: ${filename}`);
 }
+function parseReadyPid(value: string): number {
+  if (!/^[1-9]\d*$/.test(value) || !Number.isSafeInteger(Number(value))) throw new Error('Invalid readiness PID');
+  return Number(value);
+}
+test('readiness PID rejects incomplete, zero, negative and unsafe identities', () => {
+  for (const value of ['', '0', '-1', '1\n', 'NaN', '9007199254740992']) {
+    expect(() => parseReadyPid(value)).toThrow('Invalid readiness PID');
+  }
+  expect(parseReadyPid('123')).toBe(123);
+});
 function childClosure(child: ChildProcess): Promise<{ code: number | null; signal: string | null }> {
   return new Promise((resolve, reject) => { child.once('error', reject); child.once('close', (code, signal) => resolve({ code, signal })); });
+}
+function safeErrorCode(cause: unknown): string {
+  const code = (cause as NodeJS.ErrnoException | undefined)?.code;
+  return typeof code === 'string' && /^[A-Z0-9_]+$/.test(code) ? code : 'UNKNOWN';
+}
+function linuxProcessIdentity(pid: number) {
+  if (process.platform !== 'linux') {
+    const result = spawnSync('ps', ['-o', 'lstart=', '-p', String(pid)], { encoding: 'utf8', timeout: 5_000 });
+    const birth = result.stdout.trim();
+    return result.status === 0 && /^[A-Za-z0-9 :]+$/.test(birth)
+      ? { birth } : { errorCode: 'IDENTITY_UNAVAILABLE' };
+  }
+  try {
+    // comm can contain spaces and parentheses; fields after its final ')' start at state.
+    const raw = readFileSync(`/proc/${pid}/stat`, 'utf8');
+    const fields = raw.slice(raw.lastIndexOf(')') + 2).trim().split(/\s+/);
+    if (!/^[A-Za-z]$/.test(fields[0] ?? '') || !/^\d+$/.test(fields[1] ?? '')
+      || !/^\d+$/.test(fields[19] ?? '')) return { errorCode: 'INVALID_STAT' };
+    return { state: fields[0], ppid: Number(fields[1]), birth: fields[19] };
+  } catch (cause) { return { errorCode: safeErrorCode(cause) }; }
+}
+function independentNodePresence(pid: number) {
+  const observer = spawnSync('node', ['-e',
+    "try { process.kill(Number(process.argv[1]), 0); process.stdout.write('PRESENT'); } catch (e) { process.stdout.write(typeof e.code === 'string' && /^[A-Z0-9_]+$/.test(e.code) ? e.code : 'UNKNOWN'); }",
+    String(pid)], { encoding: 'utf8', timeout: 5_000 });
+  return {
+    exit: observer.status,
+    errorCode: observer.error ? safeErrorCode(observer.error)
+      : /^[A-Z0-9_]+$/.test(observer.stdout) ? observer.stdout : 'INVALID_OBSERVER_RESULT',
+  };
 }
 function bundle(entry: string, outfile: string): string {
   const result = spawnSync('bun', ['build', entry, '--target=node', '--outfile', outfile], { encoding: 'utf8' });
@@ -153,7 +194,7 @@ test('SQLite fixed-inode lock requires a private owned store and rejects linked 
 for (const runtime of ['bun', 'node']) {
   for (const signal of ['SIGINT', 'SIGTERM'] as const) {
     test(`${runtime}: forwards ${signal}, waits for close, cleans listeners and releases lock`, async () => {
-      const f = await fixture({ source: "import { writeFile } from 'node:fs/promises'; await writeFile(process.argv[2], String(process.pid)); setInterval(() => {}, 1000);" });
+      const f = await fixture({ source: "import { writeFile, rename } from 'node:fs/promises'; const pending=process.argv[2]+'.tmp'; await writeFile(pending, String(process.pid)); await rename(pending,process.argv[2]); setInterval(() => {}, 1000);" });
       await f.store.install('afs');
       const bundled = bundle(path.join(coreSource, 'module-store.ts'), path.join(f.root, 'module-store.mjs'));
       const ready = path.join(f.root, 'child.ready'); const result = path.join(f.root, 'result.json');
@@ -167,15 +208,28 @@ process.exitCode=status;
 `);
       const child = spawn(runtime, [script, f.store.root, ready, result], { stdio: 'ignore' }); const closed = childClosure(child);
       let modulePid: number | undefined;
+      let readyIdentity: ReturnType<typeof linuxProcessIdentity> | undefined;
       try {
-        await waitForFile(ready); modulePid = Number(await readFile(ready, 'utf8'));
+        await waitForFile(ready); modulePid = parseReadyPid(await readFile(ready, 'utf8'));
+        readyIdentity = linuxProcessIdentity(modulePid);
         child.kill(signal); expect((await closed).code).toBe(signal === 'SIGINT' ? 130 : 143);
+        const closedIdentity = linuxProcessIdentity(modulePid);
+        const nodeObserver = independentNodePresence(modulePid);
         const receipt = JSON.parse(await readFile(result, 'utf8')); expect(receipt.after).toEqual(receipt.before);
+        let localObserver = 'PRESENT';
+        try { process.kill(modulePid, 0); } catch (cause) { localObserver = safeErrorCode(cause); }
+        if (localObserver !== 'ESRCH') {
+          console.error(JSON.stringify({ diagnostic: 'module_signal_pid_presence', pid: modulePid,
+            readyIdentity, closedIdentity, nodeObserver, localObserver }));
+        }
         expect(() => process.kill(modulePid!, 0)).toThrow();
         await f.store.remove('afs'); expect(await f.store.current('afs')).toBeUndefined();
       } finally {
         if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
-        if (modulePid) { try { process.kill(modulePid, 'SIGKILL'); } catch {} }
+        if (modulePid && readyIdentity?.birth
+          && linuxProcessIdentity(modulePid).birth === readyIdentity.birth) {
+          try { process.kill(modulePid, 'SIGKILL'); } catch {}
+        }
         await closed;
       }
     }, 30_000);
