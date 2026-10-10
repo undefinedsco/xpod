@@ -934,7 +934,7 @@ class NativeReuseTests(unittest.TestCase):
         original = b'synthetic unit notice, never producer evidence'; sha = hashlib.sha256(original).hexdigest()
         file = dict(object='objects/' + sha + '.txt', sha256=sha)
         index = json.dumps(dict(schemaVersion=1, target=target, packages=[dict(files=[file])], runtimeNotices=dict(toolchain=a.TOOLCHAIN, compilerCommit='c' * 40, files=[file]))).encode()
-        triple = ('aarch64' if target.endswith('arm64') else 'x86_64') + '-apple-darwin'
+        triple = ('aarch64' if target.endswith('arm64') else 'x86_64') + ('-apple-darwin' if target.startswith('darwin') else '-unknown-linux-gnu')
         observations = [dict(stage=stage, arguments=args, exit=0, signal=None, stdoutSHA256='f' * 64, stderrSHA256='0' * 64)
                         for stage, args in [('cargo-metadata', ['metadata', '--format-version', '1', '--frozen', '--filter-platform', triple]), ('rustc-sysroot', ['--print', 'sysroot'])]]
         provenance = json.dumps(dict(schemaVersion=1, target=target, sourceKitSHA256=native['sourceKitSha256'], compilerCommit='c' * 40,
@@ -1088,6 +1088,48 @@ class NativeReuseTests(unittest.TestCase):
             pins.update({key.replace('DARWIN_', 'LINUX_'): value for key, value in list(pins.items()) if key.startswith('DARWIN_')})
             with patch.object(a, 'check_tests', return_value=inventory), self.assertRaises(RuntimeError):
                 a.verify_reuse_archive(archive, pins, 'linux')
+
+    def test_linux_reuse_executes_metadata_binding_for_legacy_and_generated_notices(self):
+        for generated in [False, True]:
+            for failure in [None, 'missing-stage', 'extra-stage', 'receipt-hash', 'raw-hash']:
+                def change(entries):
+                    entries.pop('xpod-cli-unit-darwin-arm64.tar.gz')
+                    helper = b'\x7fELF\x02\x01' + b'\x00' * 58
+                    helper = bytearray(helper); struct.pack_into('<HH', helper, 16, 2, 183)
+                    output = io.BytesIO()
+                    with tarfile.open(fileobj=output, mode='w:gz') as tar:
+                        member = tarfile.TarInfo('install/helper/agentfs-pod'); member.size = len(helper); tar.addfile(member, io.BytesIO(helper))
+                    entries['xpod-cli-unit-linux-arm64.tar.gz'] = output.getvalue()
+                    native = json.loads(entries['native-receipt.json']); native.update(target='linux-arm64', helperSha256=hashlib.sha256(helper).hexdigest())
+                    status = dict(platform='linux', helperPresent=True, helperPath='/opt/install/helper/agentfs-pod', pendingOperations=0)
+                    runtime = dict(nodeVersion='v22.21.1', bunAbsentFromPath=True, runtime='node', status=status, opensslSonames=['libssl.so.3', 'libcrypto.so.3'], highestGlibcRequirement='2.36')
+                    sdk = dict(osRelease='debian 12', glibc='glibc 2.36', machine='aarch64')
+                    final = json.loads(entries['final.json']); final.update(target='linux-arm64', nativeReceipt=native, archiveSHA256=hashlib.sha256(output.getvalue()).hexdigest(),
+                        bunAssetSHA256=a.BUN_TARGET_SHA['linux-arm64'], sdkBefore=sdk, sdkAfter=sdk, bookwormImage=a.BOOKWORM_IMAGE, runtimeAdmission=runtime)
+                    entries['native-receipt.json'] = json.dumps(native).encode(); entries['final.json'] = json.dumps(final).encode()
+                    metadata = dict(record=runtime, stages={})
+                    for name in ['runtime-extract', 'runtime-readelf', 'runtime-launcher-version', 'runtime-helper-version', 'runtime-status', 'runtime-ldd', 'runtime-node-version']:
+                        raw = {'runtime-readelf': b'  0000: Name: GLIBC_2.36 Flags: none Version: 1', 'runtime-ldd': b'libssl.so.3 => /usr/lib/libssl.so.3\nlibcrypto.so.3 => /usr/lib/libcrypto.so.3\n',
+                               'runtime-status': json.dumps(dict(ok=True, data=status)).encode(), 'runtime-node-version': b'v22.21.1\n'}.get(name, b'owned unit closed stage')
+                        receipt = json.loads(entries['toolchain.receipt.json']); receipt['rawSHA256'] = hashlib.sha256(raw).hexdigest()
+                        entries[name + '.raw.log'] = raw; entries[name + '.receipt.json'] = json.dumps(receipt).encode()
+                        if name != 'runtime-extract': metadata['stages'][name] = dict(receiptSha256=hashlib.sha256(entries[name + '.receipt.json']).hexdigest(), rawSha256=hashlib.sha256(raw).hexdigest())
+                    if generated: self.add_generated_notices(entries)
+                    if failure == 'missing-stage': del metadata['stages']['runtime-status']
+                    if failure == 'extra-stage': metadata['stages']['unknown-runtime'] = {}
+                    if failure == 'receipt-hash': metadata['stages']['runtime-status']['receiptSha256'] = '0' * 64
+                    if failure == 'raw-hash': metadata['stages']['runtime-status']['rawSha256'] = '0' * 64
+                    entries['runtime-admission.metadata.json'] = json.dumps(metadata).encode()
+                with self.subTest(generated=generated, failure=failure), owned_scratch() as directory:
+                    archive, pins, inventory = self.fixture(directory, change)
+                    with zipfile.ZipFile(archive) as z: final = json.loads(z.read('final.json'))
+                    pins.update(PRODUCT_TARGET='linux-arm64', LINUX_ZIP_SHA=a.sha256(archive), LINUX_ARCHIVE_SHA=final['archiveSHA256'], LINUX_HELPER_SHA=final['nativeReceipt']['helperSha256'])
+                    with patch.object(a, 'check_tests', return_value=inventory):
+                        if failure is None:
+                            result = a.verify_reuse_archive(archive, pins, 'linux'); self.assertEqual(len(result['stages']), 21 if generated else 20)
+                        else:
+                            with self.assertRaisesRegex(RuntimeError, 'runtime metadata'):
+                                a.verify_reuse_archive(archive, pins, 'linux')
 
     def test_missing_pins_and_changed_native_or_sdk_inputs_fail_closed(self):
         with owned_scratch() as directory:

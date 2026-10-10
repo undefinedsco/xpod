@@ -610,6 +610,7 @@ def verify_native_stage_inventory(stages, os_name, generated_notices):
                          'runtime-status', 'runtime-ldd', 'runtime-node-version'])
     if set(stages) != required or len(stages) != len(required):
         raise RuntimeError('Native reuse stage inventory mismatch')
+    return required
 
 
 def verify_generated_notice_archive(tar, target, native):
@@ -685,7 +686,7 @@ def verify_reuse_archive(archive, pins, os_name, arch='arm64'):
         generated_notices = json.loads(read('native-receipt.json')).get('nativeNotices')
         if arch == 'x64' and generated_notices is None:
             raise RuntimeError('Native reuse x64 requires actual generated notice provenance')
-        verify_native_stage_inventory(stages, os_name, generated_notices is not None)
+        required = verify_native_stage_inventory(stages, os_name, generated_notices is not None)
         for stage in stages:
             receipt = json.loads(read(f'{stage}.receipt.json'))
             raw = read(f'{stage}.raw.log')
