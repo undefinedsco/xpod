@@ -1,15 +1,6 @@
 name: CLI package
 on:
-  pull_request:
-    branches: [staging, main]
-    paths:
-      - 'packages/xpod-cli/**'
-      - 'src/cli/**'
-      - 'scripts/check-cli-package.cjs'
-      - 'scripts/patch-jose.js'
-      - 'scripts/patch-inrupt-*.js'
-      - 'types/bun/**'
-      - '.github/workflows/cli-package.yml'
+  workflow_call:
   workflow_dispatch:
 permissions:
   contents: read

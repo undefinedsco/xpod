@@ -1,0 +1,5 @@
+{
+  "css": { "commands": ["css"], "packagePrefix": "@undefineds.co/xpod-css" },
+  "api": { "commands": ["api"], "packagePrefix": "@undefineds.co/xpod-api" },
+  "afs": { "commands": ["afs", "agent-fs"], "packagePrefix": "@undefineds.co/xpod-afs" }
+}

@@ -1,6 +1,6 @@
 # 发布流程
 
-本文的 RC、stable tag 和容器 digest 规则约束 Xpod 服务/桌面发行。`xpod` CLI 独立版本、独立构建与按需模块分发遵守 [模块分发规范](module-distribution.md)，不通过发布 CLI 占用共享服务 RC 或触发生产部署。当前 CLI package workflow 只产出并验证 tarball；公开 npm 发布仍需完成既有分发审核，不把构建 artifact 视为已发布模块。
+本文的 RC、stable tag 和容器 digest 规则约束 Xpod 服务/桌面发行。`xpod` CLI 独立版本、独立构建与按需模块分发遵守 [模块分发规范](module-distribution.md)，不通过发布 CLI 占用共享服务 RC 或触发生产部署。模块 CI/CD 路由与独立 tag 发布流程见 [模块流水线](module-cicd.md)。CLI package workflow 验证 tarball，Module release workflow 在不可变 staging 来源和既有分发审核证据通过后发布；不把构建 artifact 视为已发布模块。
 
 Xpod 发布必须先经过 Release Candidate，再由 stable tag 提升同一个 commit
 和同一个容器 digest。不要用 stable tag 调试发布问题；修复必须继续提交到

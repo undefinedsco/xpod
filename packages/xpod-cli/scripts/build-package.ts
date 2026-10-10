@@ -25,7 +25,7 @@ for (const [entryName, filename, format, profile] of [['npm-entry', 'xpod.mjs', 
   if (inputs.some(file => {
     const absolute = path.resolve(packageRoot, file);
     const relative = path.relative(packageRoot, absolute).replaceAll(path.sep, '/');
-    return !relative.includes('node_modules/') && !/^(?:src\/(?:npm-entry|client|core|module-[^/]+|manifest)\.ts|src\/(?:lib|commands)\/[^/]+\.ts)$/.test(relative);
+    return !relative.includes('node_modules/') && relative !== 'src/module-catalog.json' && !/^(?:src\/(?:npm-entry|client|core|module-[^/]+|manifest)\.ts|src\/(?:lib|commands)\/[^/]+\.ts)$/.test(relative);
   }) || inputs.some(file => /node_modules\/(?:@solid\/community-server|inngest(?:-cli)?\/|@undefineds.co\/xpod)/.test(file))) {
     throw new Error('Public CLI unexpectedly depends on server, UI or native module sources');
   }
