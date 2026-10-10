@@ -15,8 +15,8 @@ describe('module mounted input preparation', () => {
       cleanupError: 'private-secret', kernelState: 'absent', sceneRetained: false, writerOutcome: 'write-failed:private-secret',
       recoveryStages: { seedObserved: { executed: true, success: true }, killedClosed: { executed: true, success: null },
         orphanRemoved: { executed: false, success: true } },
-      unmountResults: [{ instance: 'first', phase: 'after-sigkill', preKernel: { state: 'present' }, postKernel: { state: 'absent' },
-        result: { state: 'closed', actualExit: 1, signal: null, stderr: 'private-secret' } }], argv: ['private-secret'] };
+      unmountResults: [{ instance: 'first', phase: 'after-sigkill', preKernel: { state: 'mounted', reason: 'classify-unknown:unknown-ancestor-type', classifyReason: 'unknown-ancestor-type', errorCode: 'ENOTCONN' }, postKernel: { state: 'absent' },
+        result: { state: 'closed', actualExit: 1, signal: null, stderr: 'crashed runtime kernel binding changed or unknown: private-secret' } }], argv: ['private-secret'] };
     const projected = projectRecoveryDiagnostic(row);
     expect((projected.stages as any).seedObserved).toEqual({ executed: true, success: true });
     expect((projected.stages as any).killedClosed).toEqual({ executed: true, success: null });
@@ -30,6 +30,8 @@ describe('module mounted input preparation', () => {
     exportSafe(evidence, path.join(root, 'export'));
     const exported = readFileSync(path.join(root, 'export/recovery-diagnostic.safe.json'), 'utf8');
     expect(exported).not.toContain('private-secret'); expect(JSON.parse(exported).unmounts[0].result.actualExit).toBe(1);
+    expect(JSON.parse(exported).unmounts[0].result.failure).toBe('crashed-kernel-binding-mismatch');
+    expect(JSON.parse(exported).unmounts[0].preKernel).toEqual({ state: 'mounted', reason: 'classify-unknown', classifyReason: 'unknown-ancestor-type', errorCode: 'ENOTCONN' });
     expect(readdirSync(path.join(root, 'export'))).toEqual(['export.safe.json', 'recovery-diagnostic.safe.json']);
     expect(() => projectRecoveryDiagnostic({ ...row, label: 'private-secret' })).toThrow('invalid recovery diagnostic');
   }));

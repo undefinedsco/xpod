@@ -681,7 +681,8 @@ describe.runIf(runOverlay)('native mounted platform matrix: remote stream, RSS, 
         await captureDaemonEvidence('recovery-writer-cleanup', writer, writerClose, { phase: 'failure-or-final-cleanup' }).catch(addCleanupError);
         if (writerClose.state !== 'closed') cleanupError = new AggregateError([ cleanupError, new Error(`owned writer retained: ${writerClose.state}`) ].filter(Boolean), 'cleanup remains unresolved');
       }
-      const kernelState = observeKernelMounts(work);
+      const finalKernel = observeKernelMountsDetailed(work);
+      const kernelState = finalKernel.state;
       let safeToDelete = !cleanupError && kernelState === 'absent';
       if (safeToDelete) {
         try { await guard.remove(work); } catch (error) { addCleanupError(error); safeToDelete = false; }
@@ -695,13 +696,13 @@ describe.runIf(runOverlay)('native mounted platform matrix: remote stream, RSS, 
       }
       if (recoveryStages.unmountSucceeded.executed && recoveryStages.unmountSucceeded.success === null) {
         const result = proofs.first.result;
-        if (result?.state === 'closed' && ['absent', 'present'].includes(proofs.first.postKernel ?? 'unknown')) {
+        if (result?.state === 'closed' && ['absent', 'mounted'].includes(proofs.first.postKernel ?? 'unknown')) {
           recoveryStages.unmountSucceeded.success = result.actualExit === 0 && result.signal === null && proofs.first.postKernel === 'absent';
         }
       }
       await captureDaemonEvidence('recovery-final', first, await awaitClose(first, 100), {
         unmountResults, ownedUnmountProofs: proofs, kernelState, sceneRetained: !safeToDelete,
-        recoveryStages,
+        recoveryStages, finalKernel,
         primaryError: primaryError === undefined ? null : String(primaryError),
         cleanupError: cleanupError === undefined ? null : String(cleanupError), writerOutcome,
       }).catch(addCleanupError);

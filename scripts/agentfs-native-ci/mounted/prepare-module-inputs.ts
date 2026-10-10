@@ -168,22 +168,41 @@ export function projectRecoveryDiagnostic(original: unknown): Record<string, unk
     ]) if (error.includes(pattern)) return code;
     return 'unclassified';
   };
-  const kernel = (value: unknown) => typeof value === 'string' && ['absent', 'present', 'unknown'].includes(value) ? value : 'unknown';
-  const result = (value: any) => ({ state: ['closed', 'pending', 'spawn-error'].includes(value?.state) ? value.state : 'unknown',
-    actualExit: Number.isInteger(value?.actualExit) ? value.actualExit : null,
-    signal: value?.signal === null ? null : ['SIGTERM', 'SIGKILL', 'SIGINT'].includes(value?.signal) ? value.signal : 'unknown' });
+  const kernel = (value: unknown) => typeof value === 'string' && ['absent', 'mounted', 'unknown'].includes(value) ? value : 'unknown';
+  const classify = (value: unknown, choices: string[]) => typeof value === 'string' && choices.includes(value) ? value : 'unknown';
+  const observer = (value: any) => ({ state: kernel(value?.state),
+    reason: typeof value?.reason === 'string' && value.reason.startsWith('classify-unknown:') ? 'classify-unknown' : classify(value?.reason,
+      ['invalid-mount-path', 'python-observer-nonzero', 'json-parse-failed', 'mountinfo-parse-failed', 'unsupported-platform', 'observer-threw', 'classify-absent', 'classify-mounted']),
+    classifyReason: typeof value?.classifyReason === 'string' && /^(malformed-row:|ancestor-mount:)/.test(value.classifyReason) ? value.classifyReason.split(':')[0]
+      : classify(value?.classifyReason, ['invalid-root', 'empty-rows', 'target-mounted', 'unknown-ancestor-type', 'no-baseline', 'baseline-present']),
+    errorCode: value?.errorCode == null ? null : classify(value.errorCode, ['ENOENT', 'EACCES', 'EPERM', 'EIO', 'ENOTCONN', 'ENODEV', 'ETIMEDOUT', 'EINVAL', 'ENOSYS', 'ENOTDIR', 'ELOOP', 'EBUSY']),
+  });
+  const result = (value: any) => {
+    const text = [value?.stdout, value?.stderr].filter(v => typeof v === 'string').join('\n').toLowerCase();
+    let failure = value?.state === 'closed' && value.actualExit === 0 ? 'none' : 'unclassified';
+    for (const [phrase, code] of [
+      ['crashed runtime kernel binding changed or unknown', 'crashed-kernel-binding-mismatch'],
+      ['runtime identity', 'runtime-identity-mismatch'], ['socket binding', 'socket-binding-mismatch'],
+      ['unmount child failed', 'unmount-child-failed'], ['transport endpoint is not connected', 'disconnected-fuse'],
+      ['permission denied', 'permission-denied'],
+    ]) if (text.includes(phrase)) { failure = code; break; }
+    return { state: ['closed', 'pending', 'spawn-error'].includes(value?.state) ? value.state : 'unknown',
+      actualExit: Number.isInteger(value?.actualExit) ? value.actualExit : null,
+      signal: value?.signal === null ? null : ['SIGTERM', 'SIGKILL', 'SIGINT'].includes(value?.signal) ? value.signal : 'unknown',
+      failure, errorSHA256: text ? hashBytes(text) : null };
+  };
   const stageNames = ['copyUpObserved', 'seedObserved', 'killedClosed', 'unmountSucceeded', 'writerClosed', 'remountObserved', 'orphanRemoved', 'conditionalConflictObserved'];
   const stages = Object.fromEntries(stageNames.map(name => { const stage = row.recoveryStages?.[name]; return [name, {
     executed: typeof stage?.executed === 'boolean' ? stage.executed : null,
     success: stage?.executed === true && typeof stage.success === 'boolean' ? stage.success : null,
   }]; }));
   return { diagnosticOnly: true, stages, backend: row.backend, primaryFailure: category(row.primaryError), cleanupFailure: category(row.cleanupError),
-    kernelState: kernel(row.kernelState), sceneRetained: row.sceneRetained === true,
+    kernelState: kernel(row.kernelState), finalKernel: observer(row.finalKernel), sceneRetained: row.sceneRetained === true,
     writerOutcome: ['not-started', 'write-completed'].includes(row.writerOutcome) ? row.writerOutcome : 'write-failed-or-unknown',
     unmounts: (Array.isArray(row.unmountResults) ? row.unmountResults : []).filter((v: any) => ['first', 'second'].includes(v?.instance)
       && ['after-sigkill', 'second-cleanup', 'first-cleanup', 'second-final-cleanup'].includes(v?.phase)).map((v: any) => ({
         instance: v.instance, phase: v.phase, result: result(v.result ?? v.retainedProof?.result),
-        preKernel: kernel(v.preKernel?.state), postKernel: kernel(v.postKernel?.state ?? v.retainedProof?.postKernel),
+        preKernel: observer(v.preKernel), postKernel: observer(v.postKernel ?? { state: v.retainedProof?.postKernel }),
       })) };
 }
 export function exportSafe(evidence: string, destination: string): void {
