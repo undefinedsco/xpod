@@ -91,6 +91,7 @@ GLIBC_SYMBOL = re.compile(r'GLIBC_(\d+)\.(\d+)')
 STAGE_TIMEOUTS = {
     'bun-extract': 180,
     'toolchain': 1500,
+    'toolchain-docs': 1500,
     'dependencies': 1500,
     'workspace-packages': 1200,
     'upstream': 600,
@@ -481,6 +482,7 @@ def main():
     download('https://static.rust-lang.org/dist/2026-09-30/channel-rust-nightly.toml', manifest, RUST_MANIFEST_SHA)
     os.environ['RUSTUP_DIST_SERVER'] = 'https://static.rust-lang.org'
     gate('toolchain', ['rustup', 'toolchain', 'install', TOOLCHAIN, '--profile', 'minimal'])
+    gate('toolchain-docs', ['rustup', 'component', 'add', 'rust-docs', '--toolchain', TOOLCHAIN])
     cargo = subprocess.check_output(['rustup', 'which', '--toolchain', TOOLCHAIN, 'cargo'], text=True).strip()
     rustc = subprocess.check_output(['rustup', 'which', '--toolchain', TOOLCHAIN, 'rustc'], text=True).strip()
     os.environ['RUSTUP_TOOLCHAIN'] = TOOLCHAIN
@@ -533,7 +535,8 @@ def main():
     suites = upstream_suites(kit / 'upstream', evidence, cargo, base)
     package = base / 'package'
     gate('package', [bun, str(scripts / 'build.ts'), '--target', target, '--helper', str(rebuilt / 'agentfs-pod'),
-                     '--native-sources', str(kit), '--native-receipt', str(rebuilt / 'receipt.json'), '--out', str(package)])
+                     '--native-sources', str(kit), '--native-receipt', str(rebuilt / 'receipt.json'),
+                     '--native-notices', str(rebuilt / 'native-notices'), '--out', str(package)])
     archives = list((package / target).glob('xpod-cli-*.tar.gz'))
     if len(archives) != 1:
         raise RuntimeError('Expected exactly one newly built install archive')
@@ -597,6 +600,57 @@ def verify_reuse_sources(root, product):
         raise RuntimeError('Native reuse inputs are dirty')
 
 
+def verify_native_stage_inventory(stages, os_name, generated_notices):
+    required = set(['bun-extract', 'toolchain', 'dependencies', 'workspace-packages', 'upstream',
+                    'upstream-checkout', 'export', 'verify-source', 'rebuild', 'sdk-suite', 'cli-suite', 'package', 'verify-install'])
+    if generated_notices:
+        required.add('toolchain-docs')
+    if os_name == 'linux':
+        required.update(['runtime-extract', 'runtime-readelf', 'runtime-launcher-version', 'runtime-helper-version',
+                         'runtime-status', 'runtime-ldd', 'runtime-node-version'])
+    if set(stages) != required or len(stages) != len(required):
+        raise RuntimeError('Native reuse stage inventory mismatch')
+
+
+def verify_generated_notice_archive(tar, target, native):
+    """Verify actual packaged notice bytes, not just a metadata-only receipt."""
+    root = 'install/licenses/native/collection/'
+    def material(relative):
+        members = [m for m in tar.getmembers() if m.name.removeprefix('./') == root + relative and m.isfile()]
+        if len(members) != 1:
+            raise RuntimeError('Generated native notice material missing or duplicate')
+        return tar.extractfile(members[0]).read()
+    binding = native['nativeNotices']
+    index_bytes = material(target + '.json'); provenance_bytes = material('provenance.json')
+    if hashlib.sha256(index_bytes).hexdigest() != binding.get('indexSHA256') or hashlib.sha256(provenance_bytes).hexdigest() != binding.get('provenanceSHA256'):
+        raise RuntimeError('Generated native notice binding hash mismatch')
+    index = json.loads(index_bytes); provenance = json.loads(provenance_bytes)
+    compiler = native['compiler']; commit_match = re.search(r'^commit-hash: ([a-f0-9]{40})$', compiler.get('rustcVersion', ''), re.M)
+    commit = commit_match.group(1) if commit_match else None
+    runtime = index.get('runtimeNotices', {})
+    if not commit or index.get('schemaVersion') != 1 or index.get('target') != target or provenance.get('schemaVersion') != 1 or provenance.get('target') != target \
+            or provenance.get('sourceKitSHA256') != native.get('sourceKitSha256') or provenance.get('indexSHA256') != binding.get('indexSHA256') \
+            or provenance.get('compilerCommit') != commit or runtime.get('compilerCommit') != commit \
+            or provenance.get('toolchain') != compiler.get('toolchain') or runtime.get('toolchain') != compiler.get('toolchain') \
+            or provenance.get('cargoSHA256') != compiler.get('cargoSha256') or provenance.get('rustcSHA256') != compiler.get('rustcSha256') \
+            or not runtime.get('files') or not isinstance(index.get('packages'), list):
+        raise RuntimeError('Generated native notice actual compiler/source binding mismatch')
+    triple = ('aarch64' if target.endswith('arm64') else 'x86_64') + ('-apple-darwin' if target.startswith('darwin') else '-unknown-linux-gnu')
+    observations = provenance.get('observations', [])
+    expected = [('cargo-metadata', ['metadata', '--format-version', '1', '--frozen', '--filter-platform', triple]), ('rustc-sysroot', ['--print', 'sysroot'])]
+    if len(observations) != 2 or any(o.get('stage') != stage or o.get('arguments') != args or type(o.get('exit')) is not int or o['exit'] != 0 or o.get('signal') is not None \
+            or not re.fullmatch('[a-f0-9]{64}', o.get('stdoutSHA256', '')) or not re.fullmatch('[a-f0-9]{64}', o.get('stderrSHA256', ''))
+            for o, (stage, args) in zip(observations, expected)) or provenance.get('metadataSHA256') != observations[0]['stdoutSHA256']:
+        raise RuntimeError('Generated native notice producer observations not closed')
+    for entry in [*index['packages'], runtime]:
+        if not isinstance(entry.get('files'), list):
+            raise RuntimeError('Generated native notice file list invalid')
+        for file in entry['files']:
+            sha = file.get('sha256', '')
+            if not re.fullmatch('[a-f0-9]{64}', sha) or file.get('object') != 'objects/' + sha + '.txt' or hashlib.sha256(material(file['object'])).hexdigest() != sha:
+                raise RuntimeError('Generated native notice original object mismatch')
+
+
 def verify_reuse_archive(archive, pins, os_name, arch='arm64'):
     prefix = os_name.upper(); target = native_target(os_name, arch)
     if (arch != 'arm64' or 'PRODUCT_TARGET' in pins) and pins.get('PRODUCT_TARGET') != target:
@@ -626,13 +680,12 @@ def verify_reuse_archive(archive, pins, os_name, arch='arm64'):
         if arch != 'arm64' and final.get('binaryArchitecture') != {'target': target, 'arch': arch}:
             raise RuntimeError('Native reuse x64 producer architecture binding missing')
         stages = [n[:-len('.receipt.json')] for n in names if n.endswith('.receipt.json')]
-        required = set(['bun-extract', 'toolchain', 'dependencies', 'workspace-packages', 'upstream',
-                        'upstream-checkout', 'export', 'verify-source', 'rebuild', 'sdk-suite', 'cli-suite', 'package', 'verify-install'])
-        if os_name == 'linux':
-            required.update(['runtime-extract', 'runtime-readelf', 'runtime-launcher-version', 'runtime-helper-version',
-                             'runtime-status', 'runtime-ldd', 'runtime-node-version'])
-        if set(stages) != required:
-            raise RuntimeError('Native reuse stage inventory mismatch')
+        # Historical ARM archives predate generated notice output. New producer
+        # receipts require the independently closed actual docs preparation.
+        generated_notices = json.loads(read('native-receipt.json')).get('nativeNotices')
+        if arch == 'x64' and generated_notices is None:
+            raise RuntimeError('Native reuse x64 requires actual generated notice provenance')
+        verify_native_stage_inventory(stages, os_name, generated_notices is not None)
         for stage in stages:
             receipt = json.loads(read(f'{stage}.receipt.json'))
             raw = read(f'{stage}.raw.log')
@@ -673,6 +726,8 @@ def verify_reuse_archive(archive, pins, os_name, arch='arm64'):
             if len(helpers) != 1 or hashlib.sha256(tar.extractfile(helpers[0]).read()).hexdigest() != pins[f'{prefix}_HELPER_SHA']:
                 raise RuntimeError('Native reuse packaged helper hash mismatch')
             assert_binary_arch(tar.extractfile(helpers[0]).read(), os_name, arch)
+            if generated_notices is not None:
+                verify_generated_notice_archive(tar, target, native)
         if os_name == 'linux':
             assert_bookworm_baseline('linux', final['sdkBefore'], arch)
             runtime = final.get('runtimeAdmission', {})

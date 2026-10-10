@@ -1,4 +1,4 @@
-//! Private local NFS lifecycle coordination, independent of the session journal.
+//! Private local mount lifecycle coordination, independent of the session journal.
 //! Actual ordinary completion or separately proven dead-owner detach retires NFS.
 use crate::mount::{self, CommandObservation, MountIdentity, MountState};
 use anyhow::{Context, Result};
@@ -42,7 +42,12 @@ impl Binding {
 // Process identity is an independent kernel observation, not the unmount child's PID.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-struct RuntimeIdentity { pid: u32, start: Vec<u64>, boot: String }
+struct RuntimeIdentity {
+    pid: u32, start: Vec<u64>, boot: String,
+    #[serde(default)] executable: Vec<u8>,
+    // Only program-owned option names, never values/credentials or raw argv.
+    #[serde(default)] command_shape: Vec<String>,
+}
 
 fn boot_identity() -> Result<String> {
     #[cfg(target_os = "macos")]
@@ -102,7 +107,9 @@ fn process_start(pid: u32) -> Result<Option<Vec<u64>>> {
 impl RuntimeIdentity {
     fn current() -> Result<Self> {
         let pid = std::process::id();
-        Ok(Self { pid, start: process_start(pid)?.context("current runtime disappeared")?, boot: boot_identity()? })
+        Ok(Self { pid, start: process_start(pid)?.context("current runtime disappeared")?, boot: boot_identity()?,
+            executable: std::env::current_exe()?.as_os_str().as_bytes().to_vec(),
+            command_shape: std::env::args().filter(|arg| matches!(arg.as_str(), "mount" | "--foreground" | "--server" | "--mountpoint" | "--backend" | "--session-dir")).collect() })
     }
     fn require_dead(&self) -> Result<()> {
         #[cfg(target_os = "macos")]
@@ -142,9 +149,25 @@ impl CrashDetach {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Backend { #[default] Nfs, Fuse }
+impl Backend {
+    fn matches(self, identity: &MountIdentity) -> bool {
+        match self { Self::Nfs => identity.is_expected_nfs(), Self::Fuse => identity.is_expected_fuse() }
+    }
+    fn matches_binding(self, binding: &Binding) -> bool {
+        match self {
+            Self::Nfs => binding.source == b"127.0.0.1:/" && binding.filesystem == b"nfs",
+            Self::Fuse => binding.source == b"agentfs-pod" && matches!(binding.filesystem.as_slice(), b"fuse" | b"fuse.agentfs-pod"),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 struct Owner {
+    #[serde(default)] backend: Backend,
     schema_version: u32,
     marker: String,
     uid: u32,
@@ -162,6 +185,19 @@ struct Owner {
     socket_directory_path: Vec<u8>,
     socket_directory: FileIdentity,
     record: FileIdentity,
+}
+
+impl Owner {
+    fn matches_mount(&self, identity: &MountIdentity) -> bool {
+        self.backend.matches(identity) && (self.backend != Backend::Fuse || identity.source == format!("agentfs-pod-{}", self.nonce).as_bytes())
+    }
+    fn matches_binding(&self, binding: &Binding) -> bool {
+        match self.backend {
+            Backend::Nfs => self.backend.matches_binding(binding),
+            Backend::Fuse => binding.source == format!("agentfs-pod-{}", self.nonce).as_bytes()
+                && matches!(binding.filesystem.as_slice(), b"fuse" | b"fuse.agentfs-pod"),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -191,7 +227,7 @@ impl KernelObservation {
         match observed {
             MountState::Absent => Self::Absent,
             MountState::Mounted(identity) if identity.target.as_os_str().as_bytes() == owner.target
-                && identity.is_expected_nfs() && Binding::from_mount(identity) == *binding => Self::Mounted,
+                && owner.matches_mount(identity) && Binding::from_mount(identity) == *binding => Self::Mounted,
             // Foreign or changed bindings cannot attest the owned mount's state.
             _ => Self::Unknown,
         }
@@ -400,10 +436,18 @@ pub struct RuntimeControl {
 }
 impl RuntimeControl {
     pub fn acquire(session: &Path, target: &Path) -> Result<Self> {
-        Self::acquire_observed(session, target, mount::mount_state)
+        Self::acquire_for_backend(session, target, Backend::Nfs)
+    }
+
+    pub fn acquire_for_backend(session: &Path, target: &Path, backend: Backend) -> Result<Self> {
+        Self::acquire_backend_observed(session, target, backend, mount::mount_state)
     }
 
     fn acquire_observed(session: &Path, target: &Path, observe: impl Fn(&Path) -> MountState) -> Result<Self> {
+        Self::acquire_backend_observed(session, target, Backend::Nfs, observe)
+    }
+
+    fn acquire_backend_observed(session: &Path, target: &Path, backend: Backend, observe: impl Fn(&Path) -> MountState) -> Result<Self> {
         let session = mount::canonical_mountpoint(session).context("canonical private session unavailable")?;
         directory_identity(&session)?;
         if !target.is_absolute() { anyhow::bail!("runtime target must be absolute"); }
@@ -462,7 +506,7 @@ impl RuntimeControl {
         let nonce = nonce()?;
         let temporary = directory.join(format!("owner.{nonce}.new"));
         let mut file = OpenOptions::new().write(true).create_new(true).mode(0o600).custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC).open(&temporary)?;
-        let owner = Owner { schema_version: 2, marker: MAGIC.into(), uid: current_uid(), nonce, target: target.as_os_str().as_bytes().to_vec(), binding: None, closed: None, runtime: Some(RuntimeIdentity::current()?), crash_detach: None, directory: directory_id, lease: lease_id, socket, socket_directory_path: socket_directory_path.as_os_str().as_bytes().to_vec(), socket_directory: socket_directory_id, record: FileIdentity::of(&file.metadata()?) };
+        let owner = Owner { backend, schema_version: 2, marker: MAGIC.into(), uid: current_uid(), nonce, target: target.as_os_str().as_bytes().to_vec(), binding: None, closed: None, runtime: Some(RuntimeIdentity::current()?), crash_detach: None, directory: directory_id, lease: lease_id, socket, socket_directory_path: socket_directory_path.as_os_str().as_bytes().to_vec(), socket_directory: socket_directory_id, record: FileIdentity::of(&file.metadata()?) };
         let bytes = serde_json::to_vec(&owner)?;
         if bytes.len() > LIMIT { anyhow::bail!("runtime binding exceeds protocol limit"); }
         file.write_all(&bytes)?; file.sync_all()?;
@@ -510,9 +554,15 @@ impl RuntimeControl {
         Ok(())
     }
 
+    pub fn fuse_name(&self) -> Result<String> {
+        let owner = self.verify_owned()?;
+        if owner.backend != Backend::Fuse { anyhow::bail!("FUSE readiness requested for a different backend"); }
+        Ok(format!("agentfs-pod-{}", owner.nonce))
+    }
+
     pub fn bind_identity(&self, identity: &MountIdentity) -> Result<()> {
         let verified = self.verify_owned()?;
-        if identity.target.as_os_str().as_bytes() != verified.target || !identity.is_expected_nfs() { anyhow::bail!("mount identity binding mismatch"); }
+        if identity.target.as_os_str().as_bytes() != verified.target || !verified.matches_mount(identity) { anyhow::bail!("mount identity binding mismatch"); }
         let binding = Binding::from_mount(identity);
         if let Some(previous) = &verified.binding {
             if previous != &binding { anyhow::bail!("runtime mount identity changed"); }
@@ -665,7 +715,7 @@ fn live_owner(session: &Path, target: &Path) -> Result<(PathBuf, Owner)> {
 
 pub fn ready(session: &Path, target: &Path, identity: &MountIdentity) -> Result<bool> {
     let (_, owner) = live_owner(session, target)?;
-    Ok(owner.binding.as_ref() == Some(&Binding::from_mount(identity)))
+    Ok(owner.matches_mount(identity) && owner.binding.as_ref() == Some(&Binding::from_mount(identity)))
 }
 
 #[derive(Debug)]
@@ -795,7 +845,7 @@ fn completed_owner_for_operation(session: &Path, target: &Path, observe: impl Fn
         || (snapshot.actual_wait && (snapshot.actual_exit != Some(closed.actual_exit) || snapshot.actual_signal != closed.actual_signal))).unwrap_or(false) {
         anyhow::bail!("closed operation binding changed; retained");
     }
-    if closed.pid == 0 || closed.binding.source != b"127.0.0.1:/" || closed.binding.filesystem != b"nfs" || closed.actual_exit != 0 || closed.actual_signal.is_some() || owner.binding.as_ref() != Some(&closed.binding)
+    if closed.pid == 0 || !owner.matches_binding(&closed.binding) || closed.actual_exit != 0 || closed.actual_signal.is_some() || owner.binding.as_ref() != Some(&closed.binding)
         || !matches!(observe(), MountState::Absent) { anyhow::bail!("closed unmount proof unresolved"); }
     if !closed.cleanup_complete && !recover { anyhow::bail!("umount actual_exit=0 actual_signal=null; IPC cleanup secondary failure; proxy retained"); }
     reconcile_socket_resources(&owner)?;
@@ -957,6 +1007,87 @@ mod tests {
         file.sync_all().unwrap();
         fs::rename(&temporary, directory.join(RECORD)).unwrap();
         record
+    }
+
+    #[test]
+    fn fuse_owner_uses_actual_runtime_and_rejects_nfs_or_changed_binding() {
+        let fixture = Fixture::new();
+        let control = RuntimeControl::acquire_for_backend(&fixture.session, &fixture.target, Backend::Fuse).unwrap();
+        let owner = control.verify_owned().unwrap();
+        assert_eq!(owner.backend, Backend::Fuse);
+        let runtime = owner.runtime.as_ref().unwrap();
+        assert_eq!(runtime.pid, std::process::id());
+        assert_eq!(runtime.start, process_start(std::process::id()).unwrap().unwrap());
+        assert_eq!(runtime.executable, std::env::current_exe().unwrap().as_os_str().as_bytes());
+        assert!(runtime.command_shape.iter().all(|arg| matches!(arg.as_str(), "mount" | "--foreground" | "--server" | "--mountpoint" | "--backend" | "--session-dir")));
+        assert!(control.bind_identity(&fixture.identity()).is_err());
+        let fuse = MountIdentity { target: fixture.target.clone(), source: control.fuse_name().unwrap().into_bytes(), filesystem: b"fuse.agentfs-pod".to_vec(), id: vec![5, 6] };
+        control.bind_identity(&fuse).unwrap();
+        assert!(ready(&fixture.session, &fixture.target, &fuse).unwrap());
+        let mut changed = fuse.clone(); changed.id.push(7);
+        assert!(!ready(&fixture.session, &fixture.target, &changed).unwrap());
+        assert!(!ready(&fixture.session, &fixture.target, &fixture.identity()).unwrap());
+        clean_fixture_runtime(&control, None);
+    }
+
+    #[test]
+    fn foreign_fuse_startup_snapshot_cannot_bind_or_start_unmount() {
+        let fixture = Fixture::new();
+        let control = Arc::new(RuntimeControl::acquire_for_backend(&fixture.session, &fixture.target, Backend::Fuse).unwrap());
+        let foreign = MountIdentity { target: fixture.target.clone(), source: format!("agentfs-pod-{}", "0".repeat(64)).into_bytes(), filesystem: b"fuse".to_vec(), id: vec![9, 10] };
+        assert!(foreign.is_expected_fuse());
+        assert!(control.bind_identity(&foreign).is_err());
+        assert!(control.verify_owned().unwrap().binding.is_none());
+        assert!(!ready(&fixture.session, &fixture.target, &foreign).unwrap());
+        let owner = control.verify_owned().unwrap();
+        let state = Arc::new(Mutex::new(State::default()));
+        tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+            let server = tokio::spawn(control.clone().serve_with_observer(state.clone(),
+                Arc::new(move || MountState::Mounted(foreign.clone())), Arc::new(|| anyhow::bail!("foreign startup must never spawn unmount")), IO_BUDGET));
+            assert!(matches!(send_request(&owner, true).await, Reply::Rejected { .. }));
+            assert!(state.lock().unwrap().child.is_none());
+            assert!(control.verify_owned().unwrap().closed.is_none());
+            server.abort(); let _ = server.await;
+        });
+        clean_fixture_runtime(&control, None);
+    }
+
+    #[test]
+    fn legacy_owner_without_backend_remains_nfs() {
+        let fixture = Fixture::new();
+        let control = RuntimeControl::acquire(&fixture.session, &fixture.target).unwrap();
+        let owner = control.verify_owned().unwrap();
+        let mut json = serde_json::to_value(&owner).unwrap();
+        json.as_object_mut().unwrap().remove("backend");
+        let decoded: Owner = serde_json::from_value(json).unwrap();
+        assert_eq!(decoded.backend, Backend::Nfs);
+        assert!(decoded.backend.matches(&fixture.identity()));
+        clean_fixture_runtime(&control, None);
+    }
+
+    #[test]
+    fn fuse_control_closes_only_after_actual_owned_unmount_and_kernel_absence() {
+        let fixture = Fixture::new();
+        let control = Arc::new(RuntimeControl::acquire_for_backend(&fixture.session, &fixture.target, Backend::Fuse).unwrap());
+        let fuse = MountIdentity { target: fixture.target.clone(), source: control.fuse_name().unwrap().into_bytes(), filesystem: b"fuse".to_vec(), id: vec![7, 8] };
+        control.bind_identity(&fuse).unwrap();
+        let owner = control.verify_owned().unwrap();
+        let state = Arc::new(Mutex::new(State { binding: Some(Binding::from_mount(&fuse)), child: None }));
+        let table = Arc::new(Mutex::new(MountState::Mounted(fuse)));
+        tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+            let observed = table.clone();
+            let server = tokio::spawn(control.clone().serve_with_observer(state.clone(),
+                Arc::new(move || observed.lock().unwrap().clone()), Arc::new(|| Ok(actual_exit(0))), IO_BUDGET));
+            let _ = send_request(&owner, true).await;
+            assert!(!server.is_finished(), "actual child exit alone cannot attest kernel detach");
+            assert!(control.verify_owned().unwrap().closed.is_none());
+            *table.lock().unwrap() = MountState::Absent;
+            tokio::time::timeout(IO_BUDGET, server).await.unwrap().unwrap().unwrap();
+            let closed = control.owner.lock().unwrap().closed.clone().unwrap();
+            assert!(closed.pid > 0 && closed.actual_exit == 0 && closed.actual_signal.is_none() && closed.cleanup_complete);
+            assert!(owner.matches_binding(&closed.binding));
+            assert!(!socket_path(&owner).unwrap().exists());
+        });
     }
 
     #[test]

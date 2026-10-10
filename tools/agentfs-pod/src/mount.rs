@@ -155,7 +155,8 @@ pub struct MountIdentity {
 
 impl MountIdentity {
     pub fn is_expected_fuse(&self) -> bool {
-        (self.filesystem == b"fuse" || self.filesystem == b"fuse.agentfs-pod") && self.source == b"agentfs-pod"
+        (self.filesystem == b"fuse" || self.filesystem == b"fuse.agentfs-pod") && (self.source == b"agentfs-pod" ||
+            self.source.strip_prefix(b"agentfs-pod-").is_some_and(|nonce| nonce.len() == 64 && nonce.iter().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(byte))))
     }
 
     pub fn is_expected_nfs(&self) -> bool {
@@ -196,7 +197,9 @@ pub fn wait_for_mount(mountpoint: &Path, timeout: Duration, backend: &str, sessi
             MountState::Mounted(identity) if backend == "nfs" && identity.is_expected_nfs() => {
                 if crate::mount_control::ready(session, mountpoint, &identity)? { return Ok(identity); }
             },
-            MountState::Mounted(identity) if backend == "fuse" && identity.is_expected_fuse() => return Ok(identity),
+            MountState::Mounted(identity) if backend == "fuse" && identity.is_expected_fuse() => {
+                if crate::mount_control::ready(session, mountpoint, &identity)? { return Ok(identity); }
+            },
             MountState::Mounted(_) => anyhow::bail!("unexpected mount at startup target"),
             MountState::Unknown(error) => anyhow::bail!("mount readiness unknown: {error}"),
             MountState::Absent => {},
@@ -333,18 +336,18 @@ pub fn unmount(mountpoint: &Path) -> Result<CommandObservation> {
 /// (no fuser/sandbox dependency added). `auto_unmount=false` keeps it working
 /// without fusermount3 on a minimal container.
 #[cfg(target_os = "linux")]
-pub fn mount_fuse(fs: Arc<dyn agentfs_sdk::FileSystem>, mountpoint: &Path) -> Result<()> {
+pub fn mount_fuse<F: FnOnce() -> Result<()>>(fs: Arc<dyn agentfs_sdk::FileSystem>, mountpoint: &Path, fsname: String, ready: F) -> Result<()> {
     use agentfs::fuse::FuseMountOptions;
     let opts = FuseMountOptions {
         mountpoint: mountpoint.to_path_buf(),
         auto_unmount: false,
         allow_root: false,
         allow_other: false,
-        fsname: "agentfs-pod".to_string(),
+        fsname,
         uid: None,
         gid: None,
     };
-    agentfs::fuse::mount(fs, opts, agentfs::get_runtime())
+    agentfs::fuse::mount_with_ready(fs, opts, agentfs::get_runtime(), ready)
 }
 
 #[cfg(target_os = "linux")]
@@ -353,7 +356,7 @@ pub fn fuse_available() -> bool {
 }
 
 #[cfg(not(target_os = "linux"))]
-pub fn mount_fuse(_fs: Arc<dyn agentfs_sdk::FileSystem>, _mountpoint: &Path) -> Result<()> {
+pub fn mount_fuse<F: FnOnce() -> Result<()>>(_fs: Arc<dyn agentfs_sdk::FileSystem>, _mountpoint: &Path, _fsname: String, _ready: F) -> Result<()> {
     anyhow::bail!("FUSE is only supported on Linux")
 }
 

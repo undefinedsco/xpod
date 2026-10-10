@@ -917,6 +917,39 @@ class NativeArchitectureTests(unittest.TestCase):
 
 
 class NativeReuseTests(unittest.TestCase):
+    def test_generated_stage_inventory_is_exact_on_both_platforms(self):
+        base = ['bun-extract', 'toolchain', 'dependencies', 'workspace-packages', 'upstream', 'upstream-checkout', 'export', 'verify-source', 'rebuild', 'sdk-suite', 'cli-suite', 'package', 'verify-install']
+        linux = ['runtime-extract', 'runtime-readelf', 'runtime-launcher-version', 'runtime-helper-version', 'runtime-status', 'runtime-ldd', 'runtime-node-version']
+        for os_name, expected in [('darwin', 14), ('linux', 21)]:
+            stages = base + (linux if os_name == 'linux' else []) + ['toolchain-docs']
+            self.assertEqual(len(stages), expected)
+            a.verify_native_stage_inventory(stages, os_name, True)
+            for wrong in [stages[:-1], stages + ['unknown'], stages + ['toolchain-docs']]:
+                with self.assertRaises(RuntimeError): a.verify_native_stage_inventory(wrong, os_name, True)
+            a.verify_native_stage_inventory(stages[:-1], os_name, False)
+
+    def add_generated_notices(self, entries):
+        native = json.loads(entries['native-receipt.json']); target = native['target']
+        native['compiler'].update(rustcVersion='commit-hash: ' + 'c' * 40 + '\n', cargoSha256='d' * 64, rustcSha256='e' * 64)
+        original = b'synthetic unit notice, never producer evidence'; sha = hashlib.sha256(original).hexdigest()
+        file = dict(object='objects/' + sha + '.txt', sha256=sha)
+        index = json.dumps(dict(schemaVersion=1, target=target, packages=[dict(files=[file])], runtimeNotices=dict(toolchain=a.TOOLCHAIN, compilerCommit='c' * 40, files=[file]))).encode()
+        triple = ('aarch64' if target.endswith('arm64') else 'x86_64') + '-apple-darwin'
+        observations = [dict(stage=stage, arguments=args, exit=0, signal=None, stdoutSHA256='f' * 64, stderrSHA256='0' * 64)
+                        for stage, args in [('cargo-metadata', ['metadata', '--format-version', '1', '--frozen', '--filter-platform', triple]), ('rustc-sysroot', ['--print', 'sysroot'])]]
+        provenance = json.dumps(dict(schemaVersion=1, target=target, sourceKitSHA256=native['sourceKitSha256'], compilerCommit='c' * 40,
+            toolchain=a.TOOLCHAIN, cargoSHA256='d' * 64, rustcSHA256='e' * 64, indexSHA256=hashlib.sha256(index).hexdigest(), metadataSHA256='f' * 64, observations=observations)).encode()
+        native['nativeNotices'] = dict(indexSHA256=hashlib.sha256(index).hexdigest(), provenanceSHA256=hashlib.sha256(provenance).hexdigest())
+        package_name = next(name for name in entries if name.endswith('.tar.gz')); output = io.BytesIO()
+        with tarfile.open(fileobj=io.BytesIO(entries[package_name]), mode='r:gz') as previous, tarfile.open(fileobj=output, mode='w:gz') as tar:
+            for member in previous.getmembers(): tar.addfile(member, previous.extractfile(member))
+            for name, content in [(target + '.json', index), ('provenance.json', provenance), (file['object'], original)]:
+                member = tarfile.TarInfo('install/licenses/native/collection/' + name); member.size = len(content); tar.addfile(member, io.BytesIO(content))
+        entries[package_name] = output.getvalue()
+        final = json.loads(entries['final.json']); final.update(nativeReceipt=native, archiveSHA256=hashlib.sha256(output.getvalue()).hexdigest())
+        entries['native-receipt.json'] = json.dumps(native).encode(); entries['final.json'] = json.dumps(final).encode()
+        entries['toolchain-docs.raw.log'] = entries['toolchain.raw.log']; entries['toolchain-docs.receipt.json'] = entries['toolchain.receipt.json']
+
     def fixture(self, directory, change=None):
         inventory = dict(declaredTests=98, passedTests=96, ignoredTests=2, filteredTests=0)
         helper = struct.pack('<IIIIIIII', 0xfeedfacf, 0x0100000c, 0, 2, 0, 0, 0, 0) + b'owned-unit-helper'
@@ -981,6 +1014,7 @@ class NativeReuseTests(unittest.TestCase):
                 archiveSHA256=hashlib.sha256(package).hexdigest())
             entries['native-receipt.json'] = json.dumps(native).encode(); entries['final.json'] = json.dumps(final).encode()
             entries['xpod-cli-unit-darwin-x64.tar.gz'] = package
+            self.add_generated_notices(entries)
         with owned_scratch() as directory:
             archive, pins, inventory = self.fixture(directory, x64)
             with zipfile.ZipFile(archive) as z:
@@ -990,6 +1024,38 @@ class NativeReuseTests(unittest.TestCase):
                 result = a.verify_reuse_archive(archive, pins, 'darwin', 'x64')
                 self.assertEqual(result['arch'], 'x64'); self.assertEqual(result['target'], 'darwin-x64')
                 with self.assertRaises(RuntimeError): a.verify_reuse_archive(archive, pins, 'darwin')
+                with zipfile.ZipFile(archive) as z: missing = {name: z.read(name) for name in z.namelist()}
+                native = json.loads(missing['native-receipt.json']); del native['nativeNotices']; missing['native-receipt.json'] = json.dumps(native).encode()
+                final = json.loads(missing['final.json']); final['nativeReceipt'] = native; missing['final.json'] = json.dumps(final).encode()
+                del missing['toolchain-docs.receipt.json']; del missing['toolchain-docs.raw.log']
+                with zipfile.ZipFile(archive, 'w') as z:
+                    for name, content in missing.items(): z.writestr(name, content)
+                pins['DARWIN_ZIP_SHA'] = a.sha256(archive)
+                with self.assertRaisesRegex(RuntimeError, 'x64 requires actual generated notice provenance'):
+                    a.verify_reuse_archive(archive, pins, 'darwin', 'x64')
+
+    def test_generated_notices_require_fourteen_closed_stages_and_actual_originals(self):
+        for failure in [None, 'missing-docs', 'unclosed-docs', 'missing-binding', 'missing-object']:
+            def change(entries):
+                self.add_generated_notices(entries)
+                if failure == 'missing-docs': del entries['toolchain-docs.receipt.json']
+                if failure == 'unclosed-docs':
+                    receipt = json.loads(entries['toolchain-docs.receipt.json']); receipt['actualWait'] = False; entries['toolchain-docs.receipt.json'] = json.dumps(receipt).encode()
+                if failure == 'missing-binding':
+                    receipt = json.loads(entries['native-receipt.json']); del receipt['nativeNotices']; entries['native-receipt.json'] = json.dumps(receipt).encode()
+                if failure == 'missing-object':
+                    name = 'xpod-cli-unit-darwin-arm64.tar.gz'; output = io.BytesIO()
+                    with tarfile.open(fileobj=io.BytesIO(entries[name]), mode='r:gz') as previous, tarfile.open(fileobj=output, mode='w:gz') as tar:
+                        for member in previous.getmembers():
+                            if '/objects/' not in member.name: tar.addfile(member, previous.extractfile(member))
+                    entries[name] = output.getvalue(); final = json.loads(entries['final.json']); final['archiveSHA256'] = hashlib.sha256(output.getvalue()).hexdigest(); entries['final.json'] = json.dumps(final).encode()
+            with owned_scratch() as directory:
+                archive, pins, inventory = self.fixture(directory, change)
+                with zipfile.ZipFile(archive) as z: pins['DARWIN_ARCHIVE_SHA'] = json.loads(z.read('final.json'))['archiveSHA256']
+                with patch.object(a, 'check_tests', return_value=inventory):
+                    if failure is None: self.assertEqual(len(a.verify_reuse_archive(archive, pins, 'darwin')['stages']), 14)
+                    else:
+                        with self.assertRaises(RuntimeError): a.verify_reuse_archive(archive, pins, 'darwin')
 
     def test_missing_or_unclosed_stage_cannot_reuse(self):
         for kind in ['missing', 'wait', 'group', 'raw']:

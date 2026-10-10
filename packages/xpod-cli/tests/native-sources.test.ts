@@ -22,9 +22,10 @@ function fixture(run: (root: string, kit: NativeSourceKit, refresh: () => void) 
     'helper/Cargo.toml': nativeWorkingManifest(originalManifest, engine), 'helper/Cargo.lock': nativeWorkingLock(originalLock, engine),
     'helper/.cargo/config.toml': '[source.crates-io]\nreplace-with = "vendored-sources"\n[source.vendored-sources]\ndirectory = "../vendor"\n',
     'helper/src/main.rs': 'fn main() {}\n', 'upstream/README.md': 'Fixture\n', 'upstream/sdk/rust/Cargo.toml': '[package]\nname = "agentfs-sdk"\n',
-    'upstream/cli/src/fuse.rs': 'after\n', 'upstream/cli/src/nfs.rs': 'after\n',
+    'upstream/cli/src/fuse.rs': 'after\n', 'upstream/cli/src/nfs.rs': 'after\n', 'upstream/cli/src/owned.rs': 'after\n',
     'patches/fuse-revalidation.patch': patch('fuse'), 'patches/nfs-directory-cookie.patch': patch('nfs'),
-    'packages/xpod-cli/scripts/rebuild-native.ts': '// fixture\n',
+    'patches/fuse-owned-session-ready.patch': patch('owned'),
+    'packages/xpod-cli/scripts/rebuild-native.ts': '// fixture\n', 'packages/xpod-cli/scripts/collect-native-notices.ts': '// fixture\n',
     'original-upstream.tar': 'fixture archive\n',
     'packages/xpod-cli/src/native-sources.ts': '// fixture\n', 'packages/xpod-cli/src/source-materials.ts': '// fixture\n',
     'packages/xpod-cli/src/manifest.ts': '// fixture\n', 'packages/xpod-cli/src/native-target.ts': '// fixture\n',
@@ -89,7 +90,7 @@ test('native build environment clears explicit Git overrides as well as parent d
 test('native source archive requires its original archive and every rebuild import', () => {
   fixture((root, kit) => {
     const archive = path.join(path.dirname(root), 'source.tar.gz');
-    for (const required of ['licenses/xpod/LICENSE', 'licenses/native/valuable-0.1.1/LICENSE', 'licenses/native/valuable-0.1.1/provenance.json', 'original-upstream.tar', 'packages/xpod-cli/src/native-sources.ts', 'packages/xpod-cli/src/source-materials.ts', 'packages/xpod-cli/src/manifest.ts', 'packages/xpod-cli/src/native-target.ts']) {
+    for (const required of ['packages/xpod-cli/scripts/collect-native-notices.ts', 'patches/fuse-owned-session-ready.patch', 'licenses/xpod/LICENSE', 'licenses/native/valuable-0.1.1/LICENSE', 'licenses/native/valuable-0.1.1/provenance.json', 'original-upstream.tar', 'packages/xpod-cli/src/native-sources.ts', 'packages/xpod-cli/src/source-materials.ts', 'packages/xpod-cli/src/manifest.ts', 'packages/xpod-cli/src/native-target.ts']) {
       const incomplete = { ...kit, files: kit.files.filter((file) => file.path !== required) };
       writeFileSync(path.join(root, 'source-kit.json'), JSON.stringify(incomplete));
       runSourceCommand('tar', ['-czf', archive, '-C', path.dirname(root), 'native-source'], root);
@@ -103,6 +104,13 @@ test('native verifier rejects unpatched bytes even when the outer file inventory
     runSourceCommand('git', ['init', '--quiet'], path.dirname(root));
     expect(verifyNativeSources(root).registryPackages).toBe(1);
     writeFileSync(path.join(root, 'upstream/cli/src/nfs.rs'), 'before\n'); refresh();
+    expect(() => verifyNativeSources(root)).toThrow('git failed');
+  });
+});
+
+test('native verifier rejects an unapplied ownership handshake patch even with refreshed inventory', () => {
+  fixture((root, _kit, refresh) => {
+    writeFileSync(path.join(root, 'upstream/cli/src/owned.rs'), 'before\n'); refresh();
     expect(() => verifyNativeSources(root)).toThrow('git failed');
   });
 });
@@ -143,7 +151,7 @@ test('native receipts bind binary, kit, compiler and target independently', () =
 
 test('native rebuild fixes compiler parallelism after clearing inherited build overrides', () => {
   fixture((root, _kit, refresh) => {
-    for (const relative of ['scripts/rebuild-native.ts', 'src/native-sources.ts', 'src/source-materials.ts', 'src/manifest.ts', 'src/native-target.ts']) {
+    for (const relative of ['scripts/rebuild-native.ts', 'scripts/collect-native-notices.ts', 'src/native-sources.ts', 'src/source-materials.ts', 'src/manifest.ts', 'src/native-target.ts']) {
       copyFileSync(fileURLToPath(new URL(`../${relative}`, import.meta.url)), path.join(root, 'packages/xpod-cli', relative));
     }
     refresh();
@@ -152,12 +160,17 @@ test('native rebuild fixes compiler parallelism after clearing inherited build o
     mkdirSync(tools);
     const cargo = path.join(tools, 'cargo');
     const rustc = path.join(tools, 'rustc');
+    const triple = `${process.arch === 'arm64' ? 'aarch64' : 'x86_64'}-${process.platform === 'darwin' ? 'apple-darwin' : 'unknown-linux-gnu'}`;
+    const sysroot = path.join(work, 'fake-sysroot');
+    mkdirSync(path.join(sysroot, 'share/doc/rust/licenses'), { recursive: true });
+    writeFileSync(path.join(sysroot, 'share/doc/rust/COPYRIGHT-library.html'), 'synthetic sysroot copyright\n');
+    writeFileSync(path.join(sysroot, 'share/doc/rust/licenses/MIT.txt'), 'synthetic sysroot notice\n');
     const capture = path.join(work, 'cargo-invocations.jsonl');
     writeFileSync(path.join(tools, 'rustup'), `#!${process.execPath}
 process.stdout.write(process.argv.at(-1) === 'cargo' ? ${JSON.stringify(cargo)} : ${JSON.stringify(rustc)});
 `, { mode: 0o700 });
     writeFileSync(rustc, `#!${process.execPath}
-process.stdout.write('fake rustc fixture\\n');
+process.stdout.write(process.argv.includes('--print') ? ${JSON.stringify(sysroot)} : ${JSON.stringify('commit-hash: ' + 'a'.repeat(40) + '\nhost: ' + triple + '\n')});
 `, { mode: 0o700 });
     writeFileSync(cargo, `#!${process.execPath}
 import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs';
@@ -172,6 +185,9 @@ if (process.argv[2] === 'build') {
   else { Buffer.from([0x7f, 0x45, 0x4c, 0x46, 2, 1]).copy(bytes); bytes.writeUInt16LE(process.arch === 'arm64' ? 183 : 62, 18); }
   writeFileSync(destination, bytes);
 }
+if (process.argv[2] === 'metadata') {
+  process.stdout.write(JSON.stringify({ packages: [{ id: 'agentfs-pod', name: 'agentfs-pod', version: '0.1.0', source: null, license: null, license_file: null, manifest_path: path.join(process.cwd(), 'Cargo.toml') }], resolve: { root: 'agentfs-pod', nodes: [{ id: 'agentfs-pod', features: [], deps: [] }] } }));
+}
 `, { mode: 0o700 });
     const output = path.join(work, 'rebuild-output');
     const result = spawnSync(process.execPath, [path.join(root, 'packages/xpod-cli/scripts/rebuild-native.ts'), '--out', output, '--test'], {
@@ -184,7 +200,7 @@ if (process.argv[2] === 'build') {
     if (result.status !== 0) { throw new Error(`Native fixture rebuild failed: ${result.stderr}`); }
     expect(result.status).toBe(0);
     const invocations = readFileSync(capture, 'utf8').trim().split('\n').map(line => JSON.parse(line));
-    expect(invocations.map(invocation => invocation.args)).toEqual([['build', '--release', '--frozen'], ['test', '--release', '--frozen']]);
+    expect(invocations.map(invocation => invocation.args)).toEqual([['build', '--release', '--frozen'], ['test', '--release', '--frozen'], ['metadata', '--format-version', '1', '--frozen', '--filter-platform', triple]]);
     for (const invocation of invocations) {
       expect(invocation.env.CARGO_BUILD_JOBS).toBe('2');
       expect(invocation.env.CARGO_HOME).not.toBe('/untrusted/cargo-home');
@@ -200,6 +216,8 @@ if (process.argv[2] === 'build') {
     expect(receipt.testsPassed).toBe(true);
     expect(receipt.helperSha256).toBe(sha256File(path.join(output, 'agentfs-pod')));
     expect(receipt.sourceKitSha256).toBe(sha256File(path.join(root, 'source-kit.json')));
+    expect(receipt.nativeNotices.indexSHA256).toBe(sha256File(path.join(output, 'native-notices', `${process.platform}-${process.arch}.json`)));
+    expect(receipt.nativeNotices.provenanceSHA256).toBe(sha256File(path.join(output, 'native-notices/provenance.json')));
     console.log(JSON.stringify({ fixture: 'fake cargo, no native compilation', childInvocations: invocations.map(invocation => ({ pid: invocation.pid, args: invocation.args, jobs: invocation.env.CARGO_BUILD_JOBS })), receiptCompilerParallelism: receipt.compilerParallelism }));
   });
 });

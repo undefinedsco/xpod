@@ -241,11 +241,7 @@ fn run_mount(
     let session = session_dir.unwrap_or_else(default_session_dir);
     if backend == "fuse" {
         let concrete = build_concrete(server, token, Some(session.clone()))?;
-        // Upstream fuser::mount2 blocks until this mount is unmounted. Polling
-        // the path afterwards can attach our lifetime to a later remount and
-        // leave the old daemon alive indefinitely.
-        mount::mount_fuse(concrete, &mountpoint)?;
-        return Ok(());
+        return run_fuse_owned(concrete, &session, &mountpoint);
     }
     mount::validate_local_session_path(&session)?;
     let fs = build_fs(server, token, Some(session.clone()))?;
@@ -315,11 +311,62 @@ fn run_mount(
     })
 }
 
+// FUSE's blocking mount and the shared private control live in the actual
+// daemon. Its lease is released only after actual mount-thread completion.
+fn run_fuse_owned(fs: Arc<dyn agentfs_sdk::FileSystem>, session: &std::path::Path, target: &std::path::Path) -> Result<()> {
+    mount::validate_local_session_path(session)?;
+    let control = Arc::new(mount_control::RuntimeControl::acquire_for_backend(session, target, mount_control::Backend::Fuse)?);
+    let target = target.to_path_buf();
+    agentfs::get_runtime().block_on(async move {
+        let state = Arc::new(std::sync::Mutex::new(mount_control::State::default()));
+        let mut completion = tokio::spawn(control.clone().serve(state.clone(), target.clone()));
+        let mount_target = target.clone();
+        let mount_control = control.clone(); let mount_state = state.clone();
+        let fsname = control.fuse_name()?;
+        let created = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let session_created = created.clone();
+        let mut mount_task = tokio::task::spawn_blocking(move || mount::mount_fuse(fs, &mount_target, fsname, || {
+            // This callback is inside the successful, still-owned FUSE Session.
+            // Its unique fsname must match our owner, not a foreign startup mount.
+            session_created.store(true, std::sync::atomic::Ordering::SeqCst);
+            let identity = match mount::mount_state(&mount_target) {
+                mount::MountState::Mounted(identity) => identity,
+                _ => anyhow::bail!("owned FUSE session kernel binding unavailable"),
+            };
+            mount_control.bind_identity(&identity)?;
+            mount_state.lock().map_err(|_| anyhow::anyhow!("runtime state poisoned"))?.binding = Some(mount_control::Binding::from_mount(&identity));
+            Ok(())
+        }));
+        let mut mount_result = None;
+        let mut control_available = true;
+        loop {
+            tokio::select! {
+                result = &mut completion, if control_available => {
+                    if !matches!(result, Ok(Ok(()))) {
+                        control_available = false;
+                        eprintln!("agentfs-pod: lifecycle control unresolved; preserving FUSE runtime");
+                        continue;
+                    }
+                    // Successful OS-unmount completion alone cannot stand in
+                    // for fuser's actual return; join the real blocking task.
+                    if let Some(result) = mount_result { return result; }
+                    return mount_task.await.context("FUSE mount task failed")?;
+                }
+                result = &mut mount_task, if mount_result.is_none() => {
+                    let result = result.unwrap_or_else(|error| Err(anyhow::anyhow!("FUSE mount task failed: {error}")));
+                    if !created.load(std::sync::atomic::Ordering::SeqCst) { completion.abort(); let _ = completion.await; return result.and_then(|_| Err(anyhow::anyhow!("FUSE startup ended before ownership binding"))); }
+                    // External detach is not an owned actual-unmount proof.
+                    // Retain control/lease; do not claim closure or stop proxy.
+                    mount_result = Some(result);
+                }
+                _ = tokio::time::sleep(Duration::from_millis(100)) => {},
+            }
+        }
+    })
+}
+
 fn run_unmount(mountpoint: &PathBuf, session_dir: Option<PathBuf>) -> Result<()> {
     let target = mount::unmount_target(mountpoint)?;
-    if matches!(mount::mount_state(&target), mount::MountState::Mounted(identity) if identity.is_expected_fuse()) {
-        return mount::unmount(&target).map(|_| ());
-    }
     let session = session_dir.unwrap_or_else(default_session_dir);
     agentfs::get_runtime().block_on(async move {
         mount_control::unmount(&session, &target).await

@@ -112,6 +112,7 @@ const receipts: Record<string, Projection> = {
   'module-admission.safe.json': binding,
   'native-reuse.safe.json': { lifecycle, ...fields('string', 'state signal rawPath rawSHA256 nativeBuildSourceSHA archiveSHA256 pinsSHA256'), code: 'number', groupAbsent: 'boolean', rawClosedBeforeHash: 'boolean' },
   'module-chain.safe.json': { ...fields('string', 'status entry entrySHA256 helper helperSHA256 runtime runtimeSHA256 launcherSHA256 proxyCommandSHA256 nativeCommandSHA256 proxyOwnerSHA256'), authExchanges: 'number', ownedPids: ['number'], children: [child], ...fields('boolean', 'actualAuthenticatedRead actualConditionalWriteback daemonAbsenceProven kernelAbsent') },
+  'module-chain-failure.safe.json': { ...fields('string', 'backend stage errorCode errorSHA256'), primaryFailureObserved: 'boolean' },
   'module-chain-cleanup.safe.json': { ...fields('boolean', 'cleanupVerified kernelAbsent daemonsAbsent groupsAbsent identitiesKnown proxyIdentityObserved nativeIdentityObserved unmountClosedSuccessfully sceneRetained'), ownedPids: ['number'], ownedGroups: ['number'], children: [child] },
   'module-admission-failure.safe.json': { ...fields('string', 'status stage nativeReceiptPresent mountedReceiptPresent cleanupClaim'), accepted: 'boolean' },
   'mounted-linux.receipt.json': platform, 'mounted-darwin.receipt.json': platform,
@@ -136,7 +137,17 @@ function projectBySchema(original: unknown, schema: Projection): unknown {
   };
   return project(original, schema);
 }
+export const MODULE_CHAIN_STAGES = ['mount', 'kernel-identity', 'proxy-identity', 'native-identity', 'read', 'writeback', 'unmount', 'final-verification'] as const;
+export const MODULE_CHAIN_ERROR_CODES = ['ENOENT', 'EACCES', 'EPERM', 'ETIMEDOUT', 'unknown'] as const;
 export function projectReceipt(name: string, original: unknown): unknown {
+  if (name === 'module-chain-failure.safe.json') {
+    const row = original as Record<string, unknown> | null;
+    if (!row || typeof row.backend !== 'string' || !['fuse', 'nfs'].includes(row.backend)
+      || !MODULE_CHAIN_STAGES.includes(row.stage as typeof MODULE_CHAIN_STAGES[number])
+      || !MODULE_CHAIN_ERROR_CODES.includes(row.errorCode as typeof MODULE_CHAIN_ERROR_CODES[number])
+      || typeof row.errorSHA256 !== 'string' || !/^[a-f0-9]{64}$/.test(row.errorSHA256)
+      || row.primaryFailureObserved !== true) throw new Error('invalid module chain failure receipt');
+  }
   const schema = receipts[name]; if (!schema) throw new Error('unapproved receipt'); return projectBySchema(original, schema);
 }
 export function exportSafe(evidence: string, destination: string): void {

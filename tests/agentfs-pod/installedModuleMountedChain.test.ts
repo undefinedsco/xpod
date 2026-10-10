@@ -8,6 +8,7 @@ import path from 'node:path';
 import { ModuleStore } from '../../packages/xpod-cli/src/module-store';
 import { MODULE_CHAIN_CASE, artifactFetch, hashBytes, hashFile, isolatedModuleEnvironment, readModuleAdmissionInputs, verifyBoundFile, type ModuleAdmissionInputs } from '../../scripts/agentfs-native-ci/mounted/module-admission';
 import { observeChildLifecycle, probeOwnedGroup, reapOwnedGroup } from '../../scripts/agentfs-native-ci/mounted/platform-admission';
+import { MODULE_CHAIN_STAGES, MODULE_CHAIN_ERROR_CODES } from '../../scripts/agentfs-native-ci/mounted/prepare-module-inputs';
 import { observeKernelMounts } from './support/mountCleanup';
 import { startPodContractServer } from './support/podContractServer';
 
@@ -126,6 +127,8 @@ describe.runIf(enabled)('actual installed npm AFS module mount chain', () => {
     const env: NodeJS.ProcessEnv = { ...process.env, SOLID_HOME: solidHome }; delete env.XPOD_AGENT_FS_ACCESS_TOKEN; delete env.XPOD_AGENTFS_TOKEN;
     const children: Record<string, unknown>[] = []; let count = 0; const ownedPids: number[] = []; const ownedGroups: number[] = [];
     let attempted = false; let cleanupVerified = false; let chainOperationsCompleted = false;
+    let primaryFailureObserved = false; let primaryCause: unknown;
+    let stage: typeof MODULE_CHAIN_STAGES[number] = 'mount';
     let proxyIdentityObserved = false; let nativeIdentityObserved = false; let unmountClosedSuccessfully = false;
     const collectOwnerIdentities = (): void => {
       try {
@@ -167,10 +170,13 @@ describe.runIf(enabled)('actual installed npm AFS module mount chain', () => {
     try {
       attempted = true;
       await run(launcher, ['afs', 'mount', '--pod-root', pod.podRoot, '--mountpoint', mountpoint, '--backend', process.env.XPOD_MOUNTED_BACKEND!, '--session-dir', session, '--json'], 90_000);
+      stage = 'kernel-identity';
       expect(observeKernelMounts(mountpoint)).toBe('mounted');
       collectOwnerIdentities();
       const proxyOwnerPath = path.join(session, 'proxy-owner.json'); const runtimeOwnerPath = path.join(session, '.nfs-runtime/owner.json');
+      stage = 'proxy-identity';
       const proxyPid = JSON.parse(readFileSync(proxyOwnerPath, 'utf8')).pid as number;
+      stage = 'native-identity';
       const nativeOwner = JSON.parse(readFileSync(runtimeOwnerPath, 'utf8')) as { runtime?: { pid: number }; closed?: { pid: number } };
       const nativePid = nativeOwner.runtime?.pid;
       if (!Number.isSafeInteger(proxyPid) || !nativePid || !Number.isSafeInteger(nativePid)) throw new Error('actual module daemon identities missing');
@@ -178,11 +184,15 @@ describe.runIf(enabled)('actual installed npm AFS module mount chain', () => {
       const proxyCommand = execFileSync('/bin/ps', ['-p', String(proxyPid), '-o', 'command='], { encoding: 'utf8' });
       expect(proxyCommand).toContain(entry); expect(proxyCommand).toContain('proxy');
       const nativeCommand = execFileSync('/bin/ps', ['-p', String(nativePid), '-o', 'command='], { encoding: 'utf8' }); expect(nativeCommand).toContain(helper);
+      stage = 'read';
       expect(await run(process.execPath, ['-e', "process.stdout.write(require('node:fs').readFileSync(process.argv[1],'utf8'))", path.join(mountpoint, 'alpha.txt')])).toBe('AUTHENTICATED_MODULE_READ\n');
       expect(authExchanges).toBeGreaterThan(0); expect(pod.history.some(row => row.resource === 'alpha.txt' && row.status === 200)).toBe(true);
+      stage = 'writeback';
       await run(process.execPath, ['-e', "require('node:fs').writeFileSync(process.argv[1],'MODULE_WRITE\\n')", path.join(mountpoint, 'alpha.txt')]);
       await run(launcher, ['afs', 'commit', '--pod-root', pod.podRoot, '--session-dir', session, '--json']); expect(pod.readBody('alpha.txt')).toBe('MODULE_WRITE\n');
+      stage = 'unmount';
       await run(launcher, ['afs', 'unmount', '--mountpoint', mountpoint, '--session-dir', session, '--json'], 90_000); attempted = false; unmountClosedSuccessfully = true;
+      stage = 'final-verification';
       expect(observeKernelMounts(scene)).toBe('absent');
       for (const pid of new Set(ownedPids)) expect(await waitAbsent(pid)).toBe(true);
       expect(existsSync(path.join(session, 'proxy.json'))).toBe(false);
@@ -192,26 +202,41 @@ describe.runIf(enabled)('actual installed npm AFS module mount chain', () => {
         runtime, runtimeSHA256: hashFile(runtime), launcherSHA256: hashFile(launcher), authExchanges, actualAuthenticatedRead: true, actualConditionalWriteback: true,
         proxyCommandSHA256: hashBytes(proxyCommand), nativeCommandSHA256: hashBytes(nativeCommand), proxyOwnerSHA256: hashFile(proxyOwnerPath),
         ownedPids, daemonAbsenceProven: true, kernelAbsent: true, children }, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
+    } catch (cause) {
+      primaryFailureObserved = true; primaryCause = cause;
+      const code = (cause as NodeJS.ErrnoException)?.code;
+      const errorCode = MODULE_CHAIN_ERROR_CODES.includes(code as typeof MODULE_CHAIN_ERROR_CODES[number]) ? code : 'unknown';
+      try { writeFileSync(path.join(evidence, 'module-chain-failure.safe.json'), JSON.stringify({
+        backend: process.env.XPOD_MOUNTED_BACKEND === 'fuse' ? 'fuse' : 'nfs', stage,
+        errorCode, errorSHA256: hashBytes(String(cause)), primaryFailureObserved,
+      }, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
+      } catch (diagnosticCause) { throw new AggregateError([cause, diagnosticCause], 'module chain failed and diagnostic persistence failed'); }
+      throw cause;
     } finally {
-      collectOwnerIdentities();
-      if (attempted) {
-        try { await run(launcher, ['afs', 'unmount', '--mountpoint', mountpoint, '--session-dir', session, '--json'], 90_000); unmountClosedSuccessfully = true; }
-        catch { /* retained below */ }
+      try {
+        collectOwnerIdentities();
+        if (attempted) {
+          try { await run(launcher, ['afs', 'unmount', '--mountpoint', mountpoint, '--session-dir', session, '--json'], 90_000); unmountClosedSuccessfully = true; }
+          catch { /* retained below */ }
+        }
+        collectOwnerIdentities();
+        const kernelAbsent = observeKernelMounts(scene) === 'absent';
+        const identitiesKnown = proxyIdentityObserved && nativeIdentityObserved && ownedPids.length > 0;
+        const daemonsAbsent = identitiesKnown && (await Promise.all([...new Set(ownedPids)].map(waitAbsent))).every(Boolean);
+        const groupsDeadline = Date.now() + 15_000;
+        while (Date.now() < groupsDeadline && ownedGroups.some(pgid => probeOwnedGroup(pgid) !== 'absent')) await new Promise(resolve => setTimeout(resolve, 50));
+        const groupsAbsent = ownedGroups.every(pgid => probeOwnedGroup(pgid) === 'absent');
+        cleanupVerified = chainOperationsCompleted && unmountClosedSuccessfully && kernelAbsent && daemonsAbsent && groupsAbsent;
+        writeFileSync(path.join(evidence, 'module-chain-cleanup.safe.json'), JSON.stringify({ cleanupVerified, kernelAbsent, daemonsAbsent,
+          groupsAbsent, ownedGroups, identitiesKnown, proxyIdentityObserved, nativeIdentityObserved, unmountClosedSuccessfully,
+          ownedPids: [...new Set(ownedPids)], sceneRetained: !cleanupVerified, children }, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
+        issuer.closeAllConnections(); await new Promise<void>(resolve => issuer.close(() => resolve())); await pod.close();
+        if (!primaryFailureObserved && (!unmountClosedSuccessfully || !kernelAbsent || !daemonsAbsent || !groupsAbsent)) throw new Error('module mount cleanup unresolved; owned scene retained');
+        // Credentials/raw remain private in this owned evidence scene; never upload it wholesale.
+      } catch (cleanupCause) {
+        if (primaryFailureObserved) throw new AggregateError([primaryCause, cleanupCause], 'module chain and cleanup failed');
+        throw cleanupCause;
       }
-      collectOwnerIdentities();
-      const kernelAbsent = observeKernelMounts(scene) === 'absent';
-      const identitiesKnown = proxyIdentityObserved && nativeIdentityObserved && ownedPids.length > 0;
-      const daemonsAbsent = identitiesKnown && (await Promise.all([...new Set(ownedPids)].map(waitAbsent))).every(Boolean);
-      const groupsDeadline = Date.now() + 15_000;
-      while (Date.now() < groupsDeadline && ownedGroups.some(pgid => probeOwnedGroup(pgid) !== 'absent')) await new Promise(resolve => setTimeout(resolve, 50));
-      const groupsAbsent = ownedGroups.every(pgid => probeOwnedGroup(pgid) === 'absent');
-      cleanupVerified = chainOperationsCompleted && unmountClosedSuccessfully && kernelAbsent && daemonsAbsent && groupsAbsent;
-      writeFileSync(path.join(evidence, 'module-chain-cleanup.safe.json'), JSON.stringify({ cleanupVerified, kernelAbsent, daemonsAbsent,
-        groupsAbsent, ownedGroups, identitiesKnown, proxyIdentityObserved, nativeIdentityObserved, unmountClosedSuccessfully,
-        ownedPids: [...new Set(ownedPids)], sceneRetained: !cleanupVerified, children }, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
-      issuer.closeAllConnections(); await new Promise<void>(resolve => issuer.close(() => resolve())); await pod.close();
-      if (!unmountClosedSuccessfully || !kernelAbsent || !daemonsAbsent || !groupsAbsent) throw new Error('module mount cleanup unresolved; owned scene retained');
-      // Credentials/raw remain private in this owned evidence scene; never upload it wholesale.
     }
   }, 360_000);
 });

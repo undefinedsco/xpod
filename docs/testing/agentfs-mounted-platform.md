@@ -1,5 +1,35 @@
 # AgentFS mounted platform acceptance
 
+## Owned FUSE lifecycle contract
+
+The owned FUSE entry publishes readiness only after its actual Session is
+created. Its unique filesystem source name derives from the same private owner
+nonce; target, source and kernel mount identity must match before binding.
+A matching generic FUSE label is insufficient to claim this invocation's mount.
+
+The owned entry preserves its Session without the upstream path-based Drop
+cleanup. Unknown or changed kernel identity retains the daemon and lease and
+rejects unmount. Successful control completion requires the actual unmount
+child's successful close and bound kernel absence; the daemon also waits for
+its real blocking Session loop to return. Its actual process exit releases the
+retained FUSE descriptor. Native policy tests and source review do not replace
+the real installed-module mounted acceptance.
+
+## Installed module failure diagnostics
+
+The installed-module mounted chain records its primary failure separately from
+`module-chain-cleanup.safe.json`. `module-chain-failure.safe.json` contains only
+the backend, a fixed operation stage, an approved error code, the exception's
+SHA-256 and `primaryFailureObserved`. The exporter rejects invalid enum values,
+non-hex hashes and non-boolean success claims; it drops unrelated fields.
+Messages, stacks, raw logs, credentials and argv remain private.
+
+A cleanup failure cannot turn a failed chain into a pass or replace its primary
+exception: both causes are retained when cleanup also fails. Kernel absence and
+successful unmount child closure alone do not prove daemon absence. Unknown
+native identity leaves the mounted chain unaccepted. Ordinary tests that skip
+the actual mount case do not validate this mounted contract.
+
 ## mini mounted gate passed (2026-10-07)
 
 [Run 37611622913](https://github.com/undefinedsco/xpod/actions/runs/37611622913)

@@ -10,6 +10,14 @@ function fixture(run: (root: string) => void): void {
   const root = mkdtempSync(path.join(parent, 'case-')); try { run(root); } finally { rmSync(root, { recursive: true, force: true }); }
 }
 describe('module mounted input preparation', () => {
+  it('rejects failure diagnostics with free text instead of approved values', () => {
+    const valid = { backend: 'fuse', stage: 'native-identity', errorCode: 'ENOENT', errorSHA256: 'a'.repeat(64), primaryFailureObserved: true };
+    expect(projectReceipt('module-chain-failure.safe.json', { ...valid, token: 'private-secret' })).toEqual(valid);
+    expect(() => projectReceipt('module-chain-failure.safe.json', { ...valid, backend: { toString: () => 'fuse' } })).toThrow('invalid module chain failure receipt');
+    for (const key of ['backend', 'stage', 'errorCode', 'errorSHA256', 'primaryFailureObserved']) {
+      expect(() => projectReceipt('module-chain-failure.safe.json', { ...valid, [key]: 'private-secret' })).toThrow('invalid module chain failure receipt');
+    }
+  });
   it('requires all nine closed actual consumer stages and proxy cleanup, verifies raw hashes, and projects only fixed fields', () => fixture(root => {
     for (const stage of INSTALLED_CONSUMER_STAGES) {
       for (const stream of ['stdout', 'stderr']) writeFileSync(path.join(root, `${stage}.${stream}`), 'private-marker');
