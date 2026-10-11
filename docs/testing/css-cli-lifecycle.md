@@ -48,3 +48,16 @@ borrowed indexes open. The native client shares actual child-close completion,
 waits for failed process cleanup before restarting, and retains ownership on a
 final timeout. Normal shutdown requiring a signal or ending with a nonzero child
 status is a failure after reaping, rather than a successful App stop.
+
+## 创建后的校验失败
+
+CSS 上游在实例化 App 后才执行 SingleThreaded 检查。local 的内存锁和
+通知组件不能配置多 worker；Xpod 保留这一拒绝，不绕过线程安全契约。
+Runner 通过公开的 `createComponentsManager` 与实例 registry 保留本次
+创建的 App。若后续校验失败，先等待同一个 App 的 `stop()`，再返回原始
+创建错误；清理失败时同时报告两种错误。一个 Runner 不允许并发创建，
+避免错误路径清理其他实例。正常创建不触发清理。
+
+App 尚未成功构造的部分实例化失败没有公开 rollback 契约，此路径不遍历
+依赖调用 `close` / `finalize`，也不以清空 registry 或强制退出伪装成功。
+这是独立未闭合项。错误配置拒绝测试不证明多 worker 配置可运行。
