@@ -1,3 +1,4 @@
+import { buildFileMetadataNote as publicHelper } from '@undefineds.co/xpod-afs/workcopy/SolidFsMetaNotes';
 import { describe, expect, it } from 'vitest';
 import { Parser } from 'n3';
 import { buildFileMetadataNote, buildReaderCoverageNote } from '../../src/solidfs';
@@ -144,3 +145,5 @@ describe('SolidFS .meta notes', () => {
     })).toThrow(RangeError);
   });
 });
+
+it('keeps the root compatibility export identical to the public AFS helper', () => { expect(buildFileMetadataNote).toBe(publicHelper); });

@@ -209,7 +209,19 @@
       "require": "./dist/index.cjs",
       "default": "./dist/index.cjs"
     },
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./workcopy/SolidFsMetaNotes": {
+      "types": "./dist/types/workcopy/SolidFsMetaNotes.d.ts",
+      "import": "./dist/workcopy/SolidFsMetaNotes.mjs",
+      "require": "./dist/workcopy/SolidFsMetaNotes.cjs",
+      "default": "./dist/workcopy/SolidFsMetaNotes.cjs"
+    },
+    "./workcopy/WorkspacePrompt": {
+      "types": "./dist/types/workcopy/WorkspacePrompt.d.ts",
+      "import": "./dist/workcopy/WorkspacePrompt.mjs",
+      "require": "./dist/workcopy/WorkspacePrompt.cjs",
+      "default": "./dist/workcopy/WorkspacePrompt.cjs"
+    }
   },
   "dependencies": {
     "@undefineds.co/xpod-cli": "workspace:*",
@@ -322,6 +334,12 @@
       ],
       "*": [
         "dist/types/*"
+      ],
+      "workcopy/SolidFsMetaNotes": [
+        "dist/types/workcopy/SolidFsMetaNotes.d.ts"
+      ],
+      "workcopy/WorkspacePrompt": [
+        "dist/types/workcopy/WorkspacePrompt.d.ts"
       ]
     }
   },

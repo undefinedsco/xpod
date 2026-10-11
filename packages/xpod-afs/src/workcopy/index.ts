@@ -7,3 +7,5 @@ export * from './PodSolidFsHydrator';
 export * from './PodSolidFsSyncer';
 export * from './PodSolidFsHttpClient';
 export * from './RdfContentTypes';
+export * from './SolidFsMetaNotes';
+export * from './WorkspacePrompt';
