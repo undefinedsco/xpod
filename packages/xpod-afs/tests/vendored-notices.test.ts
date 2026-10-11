@@ -3,7 +3,14 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
-import { collectJavascriptNotices } from '../../xpod-cli/src/javascript-notices';
+import { createRequire } from 'node:module';
+import { pathToFileURL } from 'node:url';
+
+// Test-only explicit public CLI package input until its exports are integrated.
+// Missing exports fail; never resolve a private source implementation.
+const cliPackage = path.resolve(process.env.XPOD_AFS_TEST_CLI_PACKAGE ?? path.join(import.meta.dir, '../../xpod-cli'));
+const publicRequire = createRequire(path.join(cliPackage, 'package.json'));
+const { collectJavascriptNotices } = await import(pathToFileURL(publicRequire.resolve('@undefineds.co/xpod-cli/build-tools')).href);
 
 const hash = (bytes: Buffer | string): string => createHash('sha256').update(bytes).digest('hex');
 
