@@ -50,7 +50,11 @@
       "types": "./dist/test-utils/index.d.ts",
       "default": "./dist/test-utils/index.js"
     },
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./runtime/module-host": {
+      "types": "./dist/runtime/module-host.d.ts",
+      "default": "./dist/runtime/module-host.js"
+    }
   },
   "lsd:module": "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod",
   "lsd:components": "dist/components/components.jsonld",

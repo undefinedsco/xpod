@@ -51,4 +51,20 @@ describe('host-derived runtime plan', () => {
     expect(plan.modules[0]?.process.args[0]).toBe('/installed/css/entry.mjs');
     expect(plan.targets.css?.url).toBe('http://127.0.0.1:4101');
   });
+
+  it.each([
+    { url: 'file:///module' },
+    { url: 'http://user:secret@localhost:4101' },
+    { url: 'http://localhost:4101', socketPath: '/tmp/module.sock' },
+    { socketPath: 'relative.sock' },
+    { url: 'http://localhost:4101?token=secret' },
+  ])('rejects malformed endpoint before invoking a host (%j)', target => {
+    expect(() => deriveRuntimePlan({modules: [{...moduleDescription('css'), target}],
+      baseUrl: 'https://pod.example/'})).toThrow(/Invalid runtime/);
+  });
+
+  it.each(['invalid', 'file:///pod', 'https://user:secret@pod.example/'])('rejects invalid public authority (%s)', baseUrl => {
+    expect(() => deriveRuntimePlan({modules: [moduleDescription('css')], baseUrl})).toThrow('Invalid runtime base URL');
+  });
+
 });
