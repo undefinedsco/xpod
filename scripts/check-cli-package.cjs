@@ -7,7 +7,12 @@ const os = require('node:os');
 const { spawnSync } = require('node:child_process');
 const root = path.resolve(__dirname, '..');
 const original = path.join(root, 'packages/xpod-cli');
-const evidence = path.join(root, '.test-data/cli-package');
+const evidenceIndex = process.argv.indexOf('--evidence');
+const evidenceArgument = evidenceIndex < 0 ? '.test-data/cli-package' : process.argv[evidenceIndex + 1];
+if (!evidenceArgument || evidenceArgument.startsWith('--')) throw new Error('cli_evidence_path_missing');
+const evidence = path.resolve(root, evidenceArgument);
+const evidenceRelative = path.relative(path.join(root, '.test-data'), evidence);
+if (!evidenceRelative || evidenceRelative.startsWith('..') || path.isAbsolute(evidenceRelative)) throw new Error('cli_evidence_path_invalid');
 // A tree nested under the repository can still resolve undeclared optional
 // imports from repository ancestors. Build outside that ancestor chain.
 const buildParent = path.join(os.tmpdir(), '.test-data/xpod-cli-builds');

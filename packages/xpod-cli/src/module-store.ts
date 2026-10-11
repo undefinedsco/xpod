@@ -117,6 +117,8 @@ export class ModuleStore {
       if (url.origin !== REGISTRY || url.username || url.password) throw error('module_origin_invalid', 'Module download must come from the npm registry.');
       const parent = path.join(this.root, definition.id, `${this.platform}-${this.arch}`); await mkdir(parent, { recursive: true, mode: 0o700 });
       const stage = await mkdtemp(path.join(parent, '.install-'));
+      let primaryError: unknown;
+      let failed = false;
       try {
         const archive = await this.request(url, { signal: AbortSignal.timeout(120_000), redirect: 'error' });
         if (!archive.ok || !archive.body) throw error('module_download_failed', 'Module archive download failed.');
@@ -137,7 +139,9 @@ export class ModuleStore {
             || ++entries > 50_000 || (expanded += entry.size) > 2 * 1024 * 1024 * 1024) invalidArchive = true;
         } });
         if (invalidArchive) throw error('module_archive_invalid', 'Module archive has unsafe or unsupported members.');
-        await extractTar({ file: tarball, cwd: stage, strict: true, noChmod: false });
+        // Installation precedes service startup. The public synchronous extractor
+        // uses bounded reads and closes every write before returning or throwing.
+        extractTar({ file: tarball, cwd: stage, strict: true, noChmod: false, sync: true });
         await rm(tarball);
         const source = await readFile(path.join(stage, 'package/package.json'));
         const row: InstalledModule = { id: definition.id, package: packageName, version: metadata.version, integrity: metadata.dist.integrity,
@@ -154,7 +158,16 @@ export class ModuleStore {
         catch (cause) { if ((cause as NodeJS.ErrnoException).code !== 'ENOENT') throw cause; await rename(stage, destination); }
         const pending = `${this.pointer(definition.id)}.tmp`; await writeFile(pending, JSON.stringify(row), { mode: 0o600 }); await rename(pending, this.pointer(definition.id));
         return row;
-      } finally { await rm(stage, { recursive: true, force: true }); }
+      } catch (cause) {
+        failed = true; primaryError = cause; throw cause;
+      } finally {
+        try { await rm(stage, { recursive: true, force: true }); }
+        catch (cleanupError) {
+          if (failed) throw new AggregateError([primaryError, cleanupError],
+            `Module installation failed (${primaryError instanceof Error ? primaryError.message : String(primaryError)}); staging cleanup failed (${String(cleanupError)})`);
+          throw cleanupError;
+        }
+      }
     });
   }
   public async remove(id: string): Promise<void> {

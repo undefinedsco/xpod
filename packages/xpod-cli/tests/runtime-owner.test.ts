@@ -13,14 +13,15 @@ for (const runtime of ['bun', 'node']) test(`${runtime}: failed close retains a 
   const entry = path.join(root, 'driver.ts'); const payload = path.join(root, 'driver.mjs');
   await writeFile(entry, `
 import { createRequire } from 'node:module'; globalThis.require=createRequire(import.meta.url);
-const {writeFile}=await import('node:fs/promises');
+const {writeFile,rename}=await import('node:fs/promises');
+const publish=async(file,bytes)=>{await writeFile(file+'.tmp',bytes);await rename(file+'.tmp',file);};
 const {runForegroundModuleRuntime}=await import(${JSON.stringify(path.join(packageRoot, 'src/commands/module-runtime.ts'))});
 const {withModuleOwnedLock}=await import(${JSON.stringify(path.join(packageRoot, 'src/module-owned-lock.ts'))});
 const {NodeRuntimeHost}=await import(${JSON.stringify(path.resolve(packageRoot, '../../src/runtime/host/node/NodeRuntimeHost.ts'))});
 class Host extends NodeRuntimeHost {
   calls=0;
-  async listen(server, endpoint) { await super.listen(server,endpoint); await writeFile(${JSON.stringify(ready)},String(process.pid)); }
-  async close(server, endpoint) { if (++this.calls===1) { await super.close(server,endpoint); await writeFile(${JSON.stringify(failed)},'all HTTP handles closed'); throw Error('Controlled confirmation failure'); } }
+  async listen(server, endpoint) { await super.listen(server,endpoint); await publish(${JSON.stringify(ready)},String(process.pid)); }
+  async close(server, endpoint) { if (++this.calls===1) { await super.close(server,endpoint); await publish(${JSON.stringify(failed)},'all HTTP handles closed'); throw Error('Controlled confirmation failure'); } }
 }
 await withModuleOwnedLock(${JSON.stringify(lock)},()=>runForegroundModuleRuntime({modules:[],baseUrl:'http://localhost/',port:0,bindHost:'127.0.0.1',runtimeHost:new Host()}));
 `);
