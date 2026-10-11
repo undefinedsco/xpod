@@ -31,11 +31,15 @@ Xpod 遵循**等位替换原则**：用自定义组件替换 CSS 同层级的默
 | `HandlebarsTemplateEngine` | `RdfHandlebarsTemplateEngine` | 仅在 CSS 内置 Profile、WAC ACL 和 ACP ACR 模板中校验并原样输出完整身份 IRI，避免 HTML 转义改变 WebID；拒绝 Turtle IRIREF 禁字符，保留 EJS、HTML、Markdown 与非受控模板行为 |
 | `PodCreator` | `ProvisionPodCreator` | 同源创建保留 CSS 原生资源；managed Local 核验当前 Account 的 Cloud WebID 和 Local 签名回执，将 canonical storage URL 登记到 Account 和 Cloud card |
 | `WebSocket2023Storer` | `ReclaimingWebSocket2023Storer` | 保留原有 socket 记账与过期清理；某个通道的最后一个 socket 关闭/出错时一并删除通道记录，避免通道在 KV 里留到 `endAt`（CSS 默认 2 周） |
+| `WebSocketServerConfigurator` | `FinalizingWebSocketServerConfigurator` | 保留 CSS upgrade 与 handler 契约；App 停止时移除自身 upgrade 监听、关闭已有 WebSocket，并等待实际连接关闭；超时终止仍报告失败 |
 | Account Pod resource/view | `PodDeletionInteractionHandler` + `PodDeletionInventoryHandler` | 保留 GET/POST owner 管理，新增创建账号授权的 DELETE，并单独声明 `podDeletionControls` 能力 |
 | `BaseHttpHandler` 数据写入边界 | `PodMutationLockingHttpHandler` | 包装原有处理链，让完整写入参与 Pod 删除屏障；避免子资源与删除快照并发提交 |
 | Local `DELETE /provision/pods/:podName` | `LocalPodDeletionHttpHandler` | Gateway 精确转交 CSS，在既有节点认证下执行统一数据/metadata 生命周期，替代 API 只删目录的路径 |
 
 Pod 删除的计划持久化、Cloud/Local 回执、重建代次与验收边界见 [Pod 删除生命周期](pod-deletion-lifecycle.md)。
+
+`FinalizingWebSocketServerConfigurator` 位于 `src/http/FinalizingWebSocketServerConfigurator.ts`；
+配置、正常关闭和超时失败契约见 [CSS WebSocket 生命周期](css-resource-lifecycle.md)。
 
 ### 桌面应用授权记忆
 
