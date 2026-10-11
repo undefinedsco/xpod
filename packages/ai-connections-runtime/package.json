@@ -48,7 +48,7 @@
     "test": "vitest run --config ../../vitest.packages.config.mts"
   },
   "dependencies": {
-    "@undefineds.co/models": "0.2.60",
+    "@undefineds.co/models": "0.2.62",
     "@undefineds.co/extension-host-contracts": "workspace:*"
   },
   "devDependencies": {

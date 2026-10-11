@@ -106,3 +106,7 @@ CSS/API/AFS 的平台包尚未在 registry 发布，服务内部也尚未完成�
 两包的 `dist/materials` 保存 canonical 源码、原始许可证、逐文件大小与 SHA-256 库存和构建 provenance。Git 来源按完整源码目录核对 tracked 清单与删除状态；dirty、untracked 或缺失源码的快照不得冒充提交的清洁构建。AI 的三份 CJS 输出分别保存实际 payload、metafile 和生成代码原始通知。新生成 helper 逐项与同版本 pin 的 Bun runtime 或既有已审生成前缀比较，并记录每项权威对象和完整两级绑定；AST 比较保留声明类型、字面量和块结构，仅规范化 export 修饰符与冗余括号。任何不匹配都阻断构建，不能借旧 profile 摘要批准新生成体。
 
 本地构建、tar 库存校验和消费者通过仍不是 registry 发布证明。正式发行须从已审 staging 不可变源码重新构建，按依赖顺序发布，再读回实际 tarball 与 SRI；client/CLI/AFS 的独立模块门禁继续有效。
+
+### AFS Note 契约与命名空间
+
+AFS 的文件元数据和 reader coverage Note 输入类型、枚举与 noteKind 由 models 的轻量公共契约入口提供；该入口发布并读回后才冻结 adapter 依赖版本。Adapter 使用共享 UDFS 命名空间 `https://undefineds.co/ns#` 生成新 RDF；旧的 `https://vocab.undefineds.co/udfs#` 不再作为新写入契约。没有生产调用证据或已有资源清单时，不推测并批量改写用户 Pod。现有资源若含旧谓词，须单独审计后迁移；本次不提供第二套共享建模定义或隐式命名空间回退。
