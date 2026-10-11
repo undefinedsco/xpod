@@ -9,3 +9,9 @@ test('canonical API input is retained and host/CLI input blocks packaging', () =
 test('native authority and outside source cannot be silently dropped', () => {
   assert.deepEqual(classifyInputs([{path:'../foreign.ts',bytes:1},{path:'node_modules/addon/a.node',bytes:1}], '/repo').blockers,['input_outside_repository','native_input_requires_platform_authority:node_modules/addon/a.node']);
 });
+test('CSS local storage runtime cannot enter an API product closure', () => {
+  const inputs = ['src/storage/rdf/PostgresRdfEngine.ts', 'src/storage/rdf/LocalQleverNativeSparqlClient.ts', 'src/storage/rdf/QleverSparqlEngine.ts', 'native/qlever/bin/xpod_qlever_local_runtime'];
+  const result = classifyInputs(inputs.map(path => ({ path, bytes: 1 })), '/repo');
+  assert.equal(result.blockers.length, 3);
+  assert.ok(result.blockers.every(value => value.startsWith('css_storage_input:')));
+});
