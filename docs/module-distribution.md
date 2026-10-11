@@ -58,7 +58,7 @@ xpod module remove afs
 }
 ```
 
-`files` 覆盖除 package.json 外的全部普通文件，包括 helper、LICENSE/NOTICE 和需要的源码材料。entry 是库存内的 Node 兼容 `.mjs`，通过当前 Bun/Node 运行；模块自行调用自己的 native payload。接口 v1 传递 argv、继承环境与 stdio，并传播退出状态；不通过 argv 或安装记录传递凭据。关闭的服务路径不得回落到另一模块。统一运行计划、Gateway 路由与 readiness 属于后续服务模块迁移，CLI 下载器不能冒充它们已实现。
+`files` 覆盖除 package.json 外的全部普通文件，包括 helper、LICENSE/NOTICE 和需要的源码材料。entry 是库存内的 Node 兼容 `.mjs`，通过当前 Bun/Node 运行；模块自行调用自己的 native payload。接口 v1 传递 argv、继承环境与 stdio，并传播退出状态；不通过 argv 或安装记录传递凭据。关闭的服务路径不得回落到另一模块。统一运行计划、Gateway 路由与 readiness 由独立服务宿主负责，接口见下文；CLI 下载与安装成功仍须与宿主启动、真实模块功能分别验收。
 
 下载使用 npm registry 的 SHA-512 SRI；验证后才解包。拒绝路径穿越、符号/硬链接、特殊文件和超限归档；校验包身份、平台、接口与每个文件摘要/size/mode 后原子激活。调用时复核安装内容，失败保持明确失败状态。失败安装不替换当前版本，不留下半安装目录。
 
@@ -86,7 +86,7 @@ CLI、AFS、API、CSS 独立版本与独立发布，分别使用 `cli-v<version>
 
 已执行的第一步是 CLI 核心源码归属、独立 npm 构建与通用按需模块下载/校验入口。默认 test/verify 同样只覆盖 CLI 核心；test:preview/verify:preview 显式保留旧预览兼容门禁。既有 `build:preview`/`build:cli-only` 保存旧客户端+helper 预览的证据链，不是新的默认发行路径；其 `src/main.ts`/`src/entry.ts` 为显式迁移期入口，公共 npm 包只运行 `npm-entry.ts`，切换点是 package.json 的 build/bin。
 
-CSS/API/AFS 的平台包尚未在 registry 发布，服务内部也尚未完成可选运行计划。下一步先将 AFS 客户端与真实 helper 按上述格式交付，再迁移服务入口及 CSS/API adapter；不能把本轮 CLI fixture 的下载成功表述为真实模块发布或 OS 挂载通过。
+CSS/API/AFS 的平台包尚未在 registry 发布。服务已有按已验证模块描述生成运行计划的独立宿主入口；CLI 安装锁接线、独立 producer 的最终产物与联合验收仍须完成。不能把 CLI fixture 的下载成功或宿主入口测试表述为真实模块发布或 OS 挂载通过。
 
 拆分后的 mounted 验收 driver 要求 `module-source-kit.publicClientMaterials` 显式声明唯一 `runtimeClients` 和 `workspaceSources`。它核对公开客户端的完整文件集合、大小与摘要，并将声明绑定到实际 producer index、源码库存和逐成员验证的源码归档；缺少声明直接拒绝。历史归档继续使用其原提交绑定的 driver，不由新 driver 根据文件存在情况回退。安装回执以 `installedClientPath` 和 `installedClientSHA256` 记录实际客户端入口。
 
@@ -104,3 +104,13 @@ CSS/API/AFS 的平台包尚未在 registry 发布，服务内部也尚未完成�
 Gateway 的 API host、API path、web product 和 API WebSocket 路径属于 API 能力；没有 API target 时返回 503，不回落 CSS。正常 CSS HTTP/WebSocket 路径保持既有路由。Supervisor 的停止 Promise 只在真实 child close 后成功，包含已排空的子进程输出；发送 SIGTERM 的回调不代表停止完成。并发停止共用同一 Promise，超时或信号失败明确失败，重启先等待原进程关闭。关闭中的服务不计入 readiness。
 
 这些前置契约不等于 CSS/API 独立模块已交付。独立 producer、真实依赖闭包与单一运行计划仍须分别实现并验证，不能把现有整包复制成多个名字后声明拆分完成。
+
+### 已验证模块的服务宿主入口
+
+`src/runtime/module-host.ts`（公开子路径 `@undefineds.co/xpod/runtime/module-host`）接收安装器已经验证且保持执行锁的 `RuntimeModuleDescription`，用同一个 `RuntimePlan` 注册子进程和设置 Gateway target。部署 edition 不选择 CSS/API 能力，宿主不扫描安装目录、不解析版本、不执行安装，也不加载 CSS/API 初始化实现。API-only 须传入独立 OIDC issuer；重复角色、进程角色不匹配和无效 endpoint 在创建资源前拒绝。
+
+`startModuleRuntime` 等所选 endpoint 可连接后才开放 Gateway。返回的 handle 暴露 plan、supervisor、gateway 与 stop；模块实际启动由当前 Bun/Node 执行安装器提供的入口参数。停止同时清理所有 listener 和所拥有的子进程；并发 stop 共用结果，失败可重试，超时不代表资源已关闭。启动失败且清理未完成时抛出 `ModuleRuntimeStartupError`，保留启动与清理错误及 runtime handle，调用方须保留安装锁并重试清理，不能在 finally 无条件释放。
+
+`POST /service/stop` 返回 `202 {accepted:true}`，仅确认请求被接受。异步关闭失败会记录错误并保留所有权；HTTP 成功不能当作子进程或监听器已关闭的证据。
+
+这条入口与独立 producer、CLI 安装锁接线分别验收；源代码中具备入口不等于平台模块已经发布。

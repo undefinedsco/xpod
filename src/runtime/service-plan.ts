@@ -1,3 +1,4 @@
+import { isAbsolute } from 'node:path';
 import type { ServiceConfig } from '../supervisor/types';
 import type { RuntimeConnectionTarget } from './host/types';
 
@@ -21,6 +22,10 @@ export function deriveRuntimePlan(options: {
   baseUrl: string;
   externalOidcIssuer?: string;
 }): RuntimePlan {
+  let baseUrl: URL;
+  try { baseUrl = new URL(options.baseUrl); } catch { throw new Error('Invalid runtime base URL'); }
+  if (!['http:', 'https:'].includes(baseUrl.protocol) || baseUrl.username || baseUrl.password
+    || baseUrl.search || baseUrl.hash) throw new Error('Invalid runtime base URL');
   const selected = new Map<RuntimeCapability, RuntimeModuleDescription>();
   for (const module of options.modules) {
     if (module.id !== 'css' && module.id !== 'api') throw new Error('Unknown runtime capability');
@@ -28,6 +33,19 @@ export function deriveRuntimePlan(options: {
     if (module.process.name !== module.id) throw new Error('Runtime process capability mismatch');
     if (!module.process.command || (!module.target.url && !module.target.socketPath)) {
       throw new Error('Runtime module process or endpoint missing');
+    }
+    if (!Array.isArray(module.process.args) || module.process.args.some(arg => typeof arg !== 'string')
+      || module.process.command.trim() === '' || (module.target.url && module.target.socketPath)) {
+      throw new Error('Invalid runtime module process or endpoint');
+    }
+    if (module.target.socketPath && (!isAbsolute(module.target.socketPath) || module.target.socketPath.includes('\0'))) {
+      throw new Error('Invalid runtime endpoint socket');
+    }
+    if (module.target.url) {
+      let target: URL;
+      try { target = new URL(module.target.url); } catch { throw new Error('Invalid runtime endpoint URL'); }
+      if (!['http:', 'https:'].includes(target.protocol) || target.username || target.password
+        || target.search || target.hash) throw new Error('Invalid runtime endpoint URL');
     }
     selected.set(module.id, module);
   }
@@ -39,7 +57,7 @@ export function deriveRuntimePlan(options: {
       throw new Error('API-only runtime requires an independent OIDC issuer');
     }
     if (!['http:', 'https:'].includes(issuer.protocol) || issuer.username || issuer.password
-      || issuer.search || issuer.hash || issuer.origin === new URL(options.baseUrl).origin) {
+      || issuer.search || issuer.hash || issuer.origin === baseUrl.origin) {
       throw new Error('API-only runtime requires an independent OIDC issuer');
     }
   }
