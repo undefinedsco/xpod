@@ -9,7 +9,7 @@ import { observeChildLifecycle, reapOwnedGroup, runMountedPlatformAdmission, typ
 export const MODULE_CHAIN_CASE = 'mounts through the installed core and AFS module with public-client authentication, then closes its proxy and kernel mount';
 export interface BoundFile { path: string; sha256: string }
 export interface ModuleAdmissionInputs {
-  schemaVersion: 1; target: 'linux-arm64' | 'darwin-arm64'; workspace: string; evidence: string; home: string;
+  schemaVersion: 1; target: 'linux-arm64' | 'darwin-arm64' | 'linux-x64' | 'darwin-x64'; workspace: string; evidence: string; home: string;
   moduleSourceSHA: string; nativeBuildSourceSHA: string;
   driver: BoundFile & { sourceSHA: string };
   module: BoundFile & { name: string; version: string; integrity: string; manifestSHA256: string; inventorySHA256: string;
@@ -29,7 +29,7 @@ export function verifyBoundFile(file: BoundFile): void {
 export function readModuleAdmissionInputs(filename: string, authoritySHA256: string): ModuleAdmissionInputs {
   verifyBoundFile({ path: filename, sha256: authoritySHA256 });
   const input = JSON.parse(readFileSync(filename, 'utf8')) as ModuleAdmissionInputs;
-  if (input.schemaVersion !== 1 || !['linux-arm64', 'darwin-arm64'].includes(input.target)
+  if (input.schemaVersion !== 1 || !['linux-arm64', 'darwin-arm64', 'linux-x64', 'darwin-x64'].includes(input.target)
     || !/^[a-f0-9]{40}$/.test(input.moduleSourceSHA) || !/^[a-f0-9]{40}$/.test(input.nativeBuildSourceSHA)
     || input.core?.sourceSHA !== input.moduleSourceSHA || input.driver?.sourceSHA !== input.moduleSourceSHA
     || !input.driver?.path?.endsWith('.mjs') || input.module?.name !== `@undefineds.co/xpod-afs-${input.target}`
@@ -38,6 +38,7 @@ export function readModuleAdmissionInputs(filename: string, authoritySHA256: str
     || [input.workspace, input.evidence, input.home].some(value => typeof value !== 'string' || !path.isAbsolute(value))) {
     throw new Error('module admission authority is invalid');
   }
+  if (input.target !== `${process.platform}-${process.arch}`) throw new Error('module admission platform mismatch');
   for (const value of [input.module, input.core, input.driver, input.native?.archive, input.native?.pins, input.runtimes?.node, input.runtimes?.bun]) verifyBoundFile(value);
   for (const value of [input.module.manifestSHA256, input.module.inventorySHA256, input.module.sourceTreeSHA256,
     input.module.helperSHA256, input.module.entrySHA256, input.module.librarySHA256, input.module.clientSHA256,
@@ -72,8 +73,8 @@ export function artifactFetch(input: ModuleAdmissionInputs): typeof fetch {
 }
 
 async function verifyNative(input: ModuleAdmissionInputs): Promise<void> {
-  const script = `import importlib.util,json,pathlib,sys,zipfile,hashlib\nr=pathlib.Path(sys.argv[1]);sys.path.insert(0,str(r/'scripts/agentfs-native-ci'))\ns=importlib.util.spec_from_file_location('accept',r/'scripts/agentfs-native-ci/accept.py');m=importlib.util.module_from_spec(s);s.loader.exec_module(m)\nf=m.verify_reuse_archive(pathlib.Path(sys.argv[2]),json.loads(pathlib.Path(sys.argv[3]).read_text()),sys.argv[4])\nwith zipfile.ZipFile(sys.argv[2]) as z:\n assert hashlib.sha256(z.read('native-receipt.json')).hexdigest()==sys.argv[5]\n assert hashlib.sha256(z.read('source-kit.json')).hexdigest()==sys.argv[6]\nprint(json.dumps(f))`;
-  const child = spawn('python3', ['-c', script, input.workspace, input.native.archive.path, input.native.pins.path, input.target.split('-')[0], input.native.receiptSHA256, input.native.sourceKitSHA256],
+  const script = `import importlib.util,json,pathlib,sys,zipfile,hashlib\nr=pathlib.Path(sys.argv[1]);sys.path.insert(0,str(r/'scripts/agentfs-native-ci'))\ns=importlib.util.spec_from_file_location('accept',r/'scripts/agentfs-native-ci/accept.py');m=importlib.util.module_from_spec(s);s.loader.exec_module(m)\nf=m.verify_reuse_archive(pathlib.Path(sys.argv[2]),json.loads(pathlib.Path(sys.argv[3]).read_text()),sys.argv[4],sys.argv[7])\nwith zipfile.ZipFile(sys.argv[2]) as z:\n assert hashlib.sha256(z.read('native-receipt.json')).hexdigest()==sys.argv[5]\n assert hashlib.sha256(z.read('source-kit.json')).hexdigest()==sys.argv[6]\nprint(json.dumps(f))`;
+  const child = spawn('python3', ['-c', script, input.workspace, input.native.archive.path, input.native.pins.path, input.target.split('-')[0], input.native.receiptSHA256, input.native.sourceKitSHA256, input.target.split('-')[1]],
     { cwd: input.workspace, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
   const lifecycle = observeChildLifecycle(child); const raw: Buffer[] = [];
   child.stdout.on('data', (value: Buffer) => raw.push(value)); child.stderr.on('data', (value: Buffer) => raw.push(value));
@@ -163,7 +164,7 @@ async function main(): Promise<void> {
   stage = 'module-install'; const product = await installModuleProduct(input, runtime);
   Object.assign(process.env, { XPOD_MOUNTED_ARCHIVE: input.module.path, XPOD_MOUNTED_ARCHIVE_SHA: input.module.sha256,
     XPOD_MOUNTED_HELPER_SHA: input.module.helperSHA256, XPOD_MOUNTED_WORKSPACE: input.workspace,
-    XPOD_MOUNTED_EVIDENCE: input.evidence, XPOD_MOUNTED_OS: process.platform, XPOD_MOUNTED_BACKEND: process.platform === 'linux' ? 'fuse' : 'nfs',
+    XPOD_MOUNTED_EVIDENCE: input.evidence, XPOD_MOUNTED_OS: process.platform, XPOD_MOUNTED_ARCH: input.target.split('-')[1], XPOD_MOUNTED_BACKEND: process.platform === 'linux' ? 'fuse' : 'nfs',
     XPOD_MOUNTED_NODE: input.runtimes.node.path, XPOD_MOUNTED_REQUIRE_NOBUN: runtime === 'node' ? '1' : '0', XPOD_MOUNTED_MIN_PASSED: '7' });
   stage = 'actual-mounted-consumer'; const exit = await runMountedPlatformAdmission(product);
   stage = 'post-consumer-inventory';

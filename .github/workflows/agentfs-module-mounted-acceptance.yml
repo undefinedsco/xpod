@@ -3,7 +3,7 @@ name: AgentFS module mounted development acceptance
 # Isolated candidate development evidence. No release, RC or deployment writes.
 on:
   push:
-    branches: ['codex/afs-module-integration-20261010']
+    branches: ['codex/protected-rc-mounted-ci']
   workflow_dispatch:
 
 permissions:
@@ -21,6 +21,10 @@ jobs:
             runner: ubuntu-24.04-arm
           - target: darwin-arm64
             runner: macos-14
+          - target: linux-x64
+            runner: ubuntu-24.04
+          - target: darwin-x64
+            runner: macos-15-intel
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
     steps:
@@ -48,7 +52,11 @@ jobs:
           umask 077
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           test -z "$(git status --porcelain --untracked-files=all)"
-          test "$(uname -m)" = arm64 || test "$(uname -m)" = aarch64
+          python3 scripts/agentfs-native-ci/accept.py --verify-native-source
+          case "$TARGET:$(uname -m)" in
+            *-arm64:arm64|*-arm64:aarch64|*-x64:x86_64) ;;
+            *) echo '::error::runner architecture differs from target'; exit 1 ;;
+          esac
           root="$GITHUB_WORKSPACE/.test-data/module-mounted-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           mkdir -p -m 700 "$GITHUB_WORKSPACE/.test-data"
           mkdir -m 700 "$root"
@@ -104,7 +112,7 @@ jobs:
           with open(root/'build.safe.json','x') as f:json.dump({'sourceSHA':os.environ['GITHUB_SHA'],'sourceClean':True,'exit':0,'commands':['bun run build:packages','bun packages/xpod-afs/scripts/build-package.ts','bun build module-admission.ts --target=node --format=esm'],'coreSHA256':digest(workspace/'packages/xpod-cli/dist/xpod.mjs'),'driverSHA256':digest(root/'module-admission.mjs'),'metafiles':records},f)
           PY
       - name: Prepare actual Darwin ripgrep for mounted shell cases
-        if: matrix.target == 'darwin-arm64'
+        if: startsWith(matrix.target, 'darwin-')
         run: |
           set -euo pipefail
           umask 077
@@ -118,7 +126,7 @@ jobs:
           with open(sys.argv[1],'x') as f:json.dump({'sourceSHA':os.environ['GITHUB_SHA'],'path':str(binary),'version':version,'sha256':hashlib.file_digest(open(binary,'rb'),'sha256').hexdigest(),'actualProbeExit':0},f)
           PY
       - name: Prepare actual Linux host ripgrep for installed consumers
-        if: matrix.target == 'linux-arm64'
+        if: startsWith(matrix.target, 'linux-')
         run: |
           set -euo pipefail
           sudo apt-get update
@@ -136,7 +144,7 @@ jobs:
           archive_sha=$(shasum -a 256 "$module" | cut -d' ' -f1)
           bun scripts/agentfs-native-ci/mounted/prepare-module-inputs.ts installed-consumer --archive "$module" --archive-sha256 "$archive_sha" --source-sha "$GITHUB_SHA" --workspace "$GITHUB_WORKSPACE" --evidence "$MODULE_RUN_ROOT/installed-consumer"
       - name: Prepare owned Linux Bookworm FUSE image
-        if: matrix.target == 'linux-arm64'
+        if: startsWith(matrix.target, 'linux-')
         run: |
           set -euo pipefail
           test -e /dev/fuse
@@ -154,7 +162,7 @@ jobs:
           echo "XPOD_MOUNT_IMAGE=$tag" >> "$GITHUB_ENV"
           docker build -t "$tag" "$context"
           echo "XPOD_MOUNT_IMAGE_ID=$(docker image inspect "$tag" --format '{{.Id}}')" >> "$GITHUB_ENV"
-      - name: Four lane constituent — Node entry, six native cases and actual module chain
+      - name: Eight lane constituent — Node entry, six native cases and actual module chain
         id: node
         env:
           TARGET: ${{ matrix.target }}
@@ -166,7 +174,7 @@ jobs:
           product="$MODULE_RUN_ROOT/product-$ENTRY_RUNTIME"
           module=$(find "$MODULE_RUN_ROOT/build" -maxdepth 1 -name '*.tgz' -type f)
           test -n "$module"; test "$(printf '%s\n' "$module" | wc -l | tr -d ' ')" = 1
-          if [ "$TARGET" = linux-arm64 ]; then
+          if [[ "$TARGET" == linux-* ]]; then
             consumer=/module-product; workspace=/workspace; ev=/evidence
             home="/workspace/.test-data/module-home-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-$ENTRY_RUNTIME"
             node=/opt/node22/bin/node; bun=/opt/bun/bin/bun
@@ -176,7 +184,7 @@ jobs:
             node="$MODULE_RUN_ROOT/tools/node/node"; bun="$MODULE_RUN_ROOT/tools/bun/bun"
           fi
           authority=$(bun scripts/agentfs-native-ci/mounted/prepare-module-inputs.ts prepare --target "$TARGET" --source-sha "$GITHUB_SHA" --workspace "$GITHUB_WORKSPACE" --out "$product" --consumer-product "$consumer" --consumer-workspace "$workspace" --evidence "$ev" --home "$home" --module "$module" --core packages/xpod-cli/dist/xpod.mjs --driver "$MODULE_RUN_ROOT/module-admission.mjs" --build-receipt "$MODULE_RUN_ROOT/build.safe.json" --native "$MODULE_RUN_ROOT/native/native.zip" --pins "$MODULE_RUN_ROOT/native/native-pins.json" --node "$MODULE_RUN_ROOT/tools/node/node" --bun "$MODULE_RUN_ROOT/tools/bun/bun" --consumer-node "$node" --consumer-bun "$bun")
-          if [ "$TARGET" = linux-arm64 ]; then
+          if [[ "$TARGET" == linux-* ]]; then
             export XPOD_MOUNTED_MODULE_INPUTS_SHA256="$authority" XPOD_MOUNTED_MODULE_RUNTIME="$ENTRY_RUNTIME"
             export LINUX_ARCHIVE_SHA=$(shasum -a 256 "$module" | cut -d' ' -f1)
             export LINUX_HELPER_SHA=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["LINUX_HELPER_SHA"])' "$MODULE_RUN_ROOT/native/native-pins.json")
@@ -184,7 +192,7 @@ jobs:
           else
             "$node" "$product/module-admission.mjs" --inputs "$product/inputs.json" --inputs-sha256 "$authority" --runtime "$ENTRY_RUNTIME"
           fi
-      - name: Four lane constituent — Bun entry, same module and core, fresh private home
+      - name: Eight lane constituent — Bun entry, same module and core, fresh private home
         id: bun
         if: always() && steps.node.outcome != 'skipped'
         env:
@@ -206,7 +214,7 @@ jobs:
             bun scripts/agentfs-native-ci/mounted/prepare-module-inputs.ts export --evidence "$MODULE_RUN_ROOT/installed-consumer" --out "$MODULE_RUN_ROOT/export/installed-consumer"
           fi
           image_absent=unknown
-          if [ "$TARGET" = linux-arm64 ] && [ -n "${XPOD_MOUNT_IMAGE:-}" ]; then
+          if [[ "$TARGET" == linux-* ]] && [ -n "${XPOD_MOUNT_IMAGE:-}" ]; then
             # Only the two task-owned evidence directories, never HOME/session.
             for runtime in node bun; do
               dir="$MODULE_RUN_ROOT/evidence-$runtime"

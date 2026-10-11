@@ -242,7 +242,8 @@ export async function runMountedPlatformAdmission(product?: InstalledMountedProd
   const minPassed = Number(process.env.XPOD_MOUNTED_MIN_PASSED ?? '2');
   evidenceDir = required('XPOD_MOUNTED_EVIDENCE'); os = required('XPOD_MOUNTED_OS');
   if (![ 'linux', 'darwin' ].includes(os) || process.platform !== os) throw new Error(`mounted os mismatch: ${os} vs ${process.platform}`);
-  if (process.arch !== 'arm64') throw new Error(`mounted acceptance requires arm64, got ${process.arch}`);
+  const arch = process.env.XPOD_MOUNTED_ARCH ?? 'arm64';
+  if (!['arm64', 'x64'].includes(arch) || process.arch !== arch) throw new Error(`mounted architecture mismatch: ${arch} vs ${process.arch}`);
   mkdirSync(evidenceDir, { recursive: true, mode: 0o700 });
   rawPath = path.join(evidenceDir, `mounted-${os}.raw.log`);
 

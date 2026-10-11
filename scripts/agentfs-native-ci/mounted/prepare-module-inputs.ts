@@ -7,16 +7,13 @@ import { hashBytes, hashFile, verifyBoundFile, type ModuleAdmissionInputs } from
 import { isolatedModuleEnvironment } from './module-admission';
 import { observeChildLifecycle, reapOwnedGroup } from './platform-admission';
 
-const source = 'b5a058cffa50026702f7679365e7b17e383115d2';
-const artifacts = {
-  'darwin-arm64': { id: '11640530802', zip: 'e275f3eb04f9a8bc023149353891f42597d3d8cbae5459510031b8c18750dd34', archive: '391ad4b1ecedf0a90be1a2b03661a85e64e426aab7579f64026e15887cce74d8', helper: '608c7e22702049841c1063bea12920fb371b73a3da96a8a917488567ec6de75e' },
-  'linux-arm64': { id: '11640947333', zip: 'a8856c145dd3afc363b812affd6286c2f154f888dfe0a22b050de0e2fced0e86', archive: '8caff51560422becda67dc46e59e8fefaf77e7297fe558ac1c36698734311358', helper: 'ece07a199caa2d12493e8a5648b770395922bdcb31001e7eb50599bd960d6e7b' },
-} as const;
+import nativeAuthority from './native-authority.json';
+const { source, artifacts } = nativeAuthority;
 export function nativeFacts(target: string) {
-  if (!(target in artifacts)) throw new Error('unsupported module target');
+  if (!Object.prototype.hasOwnProperty.call(artifacts, target)) throw new Error('unsupported module target');
   const facts = artifacts[target as keyof typeof artifacts]; const prefix = target.split('-')[0].toUpperCase();
-  return { source, run: '37977251553', artifactID: facts.id, zipSHA256: facts.zip,
-    pins: { PRODUCT_SHA: source, [`${prefix}_ZIP_SHA`]: facts.zip, [`${prefix}_ARCHIVE_SHA`]: facts.archive, [`${prefix}_HELPER_SHA`]: facts.helper } };
+  return { source, run: nativeAuthority.run, artifactID: facts.id, zipSHA256: facts.zip,
+    pins: { PRODUCT_SHA: source, PRODUCT_TARGET: target, [`${prefix}_ZIP_SHA`]: facts.zip, [`${prefix}_ARCHIVE_SHA`]: facts.archive, [`${prefix}_HELPER_SHA`]: facts.helper } };
 }
 // Collect actual serialized archive bytes, never a separately trusted staging directory.
 const collectArchive = `import tarfile,hashlib,json,sys,posixpath,tempfile
@@ -67,7 +64,7 @@ function validateCollectedModule(c: Collected, target: string, sourceSHA: string
   nativeFacts(target);
   const pkg = c.documents['package.json']; const kit = c.documents['provenance/module-source-kit.json']; const reuse = c.documents['provenance/native-reuse.json'];
   if (pkg?.name !== `@undefineds.co/xpod-afs-${target}` || pkg?.xpodModule?.schemaVersion !== 1 || pkg.xpodModule.id !== 'afs'
-    || pkg.xpodModule.platform !== target.split('-')[0] || pkg.xpodModule.arch !== 'arm64' || pkg.xpodModule.entry !== 'dist/entry.mjs'
+    || pkg.xpodModule.platform !== target.split('-')[0] || pkg.xpodModule.arch !== target.split('-')[1] || pkg.xpodModule.entry !== 'dist/entry.mjs'
     || !/^\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?$/.test(pkg.version ?? '') || !Array.isArray(pkg.xpodModule.files)) throw new Error('module manifest mismatch');
   const seen = new Set<string>();
   for (const file of pkg.xpodModule.files) {
@@ -102,7 +99,9 @@ const binding: Record<string, Projection> = { ...fields('string', 'profile modul
 const close: Projection = { ...fields('number', 'exit'), ...fields('string', 'signal rawSHA256 resourceStop supervisorError'), ...fields('boolean', 'actualWait rawClosedBeforeHash ownedGroupAbsentAfterWait'), cleanupErrors: ['string'] };
 const installedStage: Projection = { ...fields('string', 'stage actualSignal stdoutSHA256 stderrSHA256'), ...fields('number', 'pid actualExit'), ...fields('boolean', 'actualWait rawClosed groupAbsent') };
 const installedProxy: Projection = { pid: 'number', groupAbsent: 'boolean', tokenFixtureObserved: 'boolean', nativeMountStarted: 'boolean' };
-export const INSTALLED_CONSUMER_STAGES = ['public-workcopy-types-Node16', 'public-workcopy-types-Node', 'node-esm-public-runtime', 'node-status', 'node-workcopy-sqlite', 'bun-esm-public-runtime', 'bun-status', 'bun-workcopy-sqlite', 'node-startup-cancel'] as const;
+export const INSTALLED_CONSUMER_STAGES = ['public-workcopy-types-Node16', 'public-workcopy-types-Node', 'node-esm-public-runtime', 'node-status', 'node-workcopy-sqlite', 'bun-esm-public-runtime', 'bun-status', 'bun-workcopy-sqlite', 'node-startup-cancel',
+  'node-cli-before-list', 'node-cli-install', 'node-cli-installed-list', 'node-cli-tampered-list', 'node-cli-remove', 'node-cli-removed-list',
+  'bun-cli-before-list', 'bun-cli-install', 'bun-cli-installed-list', 'bun-cli-tampered-list', 'bun-cli-remove', 'bun-cli-removed-list'] as const;
 const platform: Projection = { ...fields('number', 'schemaVersion exit passedCases minPassedCases'), ...fields('string', 'os backend nodePath nodeVersion nodeSha256 nativeRg nativeRgVersion nativeRgSha256 productArchiveSha256 installedHelperSha256 installedLauncherPath harnessRunnerSha256 producerState rawLog rawSHA256 snapshotSHA256 status failureReason signal'),
   ...fields('boolean', 'producerStarted producerClosed actualWait rawClosedBeforeHash ownedGroupAbsent consumerBunVisible mountExecuted'), moduleBinding: binding, producerLifecycle: lifecycle,
   ownedProcessObservations: [{ phase: 'string', known: 'boolean', reason: 'string', members: [{ ...fields('number', 'pid ppid pgid'), state: 'string' }] }],
@@ -150,15 +149,74 @@ export function projectReceipt(name: string, original: unknown): unknown {
   }
   const schema = receipts[name]; if (!schema) throw new Error('unapproved receipt'); return projectBySchema(original, schema);
 }
+/** Diagnostic only: fixed enums and closed command facts, never admission or free error text. */
+export function projectRecoveryDiagnostic(original: unknown): Record<string, unknown> {
+  const row = original as Record<string, any> | null;
+  if (!row || row.label !== 'recovery-final' || !['fuse', 'nfs'].includes(row.backend)) throw new Error('invalid recovery diagnostic');
+  const category = (error: unknown): string => {
+    if (error === null || error === undefined) return 'none';
+    if (typeof error !== 'string') return 'unclassified';
+    for (const [pattern, code] of [
+      ['owned unmount after-sigkill failed', 'first-unmount-failed'],
+      ['owned unmount second', 'second-unmount-failed'],
+      ['the copy-up GET must', 'copy-up-not-observed'],
+      ['a real seed-lease-v1-', 'partial-seed-not-observed'],
+      ['the EXACT observed orphan', 'orphan-not-collected'],
+      ['OLD remote', 'remote-baseline-changed'],
+      ['OLD complete remote', 'remote-baseline-changed'],
+      ['owned writer did not settle', 'writer-not-closed'],
+      ['actual closed conditional 412', 'conditional-conflict-not-observed'],
+      ['scene retained', 'scene-retained'],
+    ]) if (error.includes(pattern)) return code;
+    return 'unclassified';
+  };
+  const kernel = (value: unknown) => typeof value === 'string' && ['absent', 'mounted', 'unknown'].includes(value) ? value : 'unknown';
+  const classify = (value: unknown, choices: string[]) => typeof value === 'string' && choices.includes(value) ? value : 'unknown';
+  const observer = (value: any) => ({ state: kernel(value?.state),
+    reason: typeof value?.reason === 'string' && value.reason.startsWith('classify-unknown:') ? 'classify-unknown' : classify(value?.reason,
+      ['invalid-mount-path', 'python-observer-nonzero', 'json-parse-failed', 'mountinfo-parse-failed', 'unsupported-platform', 'observer-threw', 'classify-absent', 'classify-mounted']),
+    classifyReason: typeof value?.classifyReason === 'string' && /^(malformed-row:|ancestor-mount:)/.test(value.classifyReason) ? value.classifyReason.split(':')[0]
+      : classify(value?.classifyReason, ['invalid-root', 'empty-rows', 'target-mounted', 'unknown-ancestor-type', 'no-baseline', 'baseline-present']),
+    errorCode: value?.errorCode == null ? null : classify(value.errorCode, ['ENOENT', 'EACCES', 'EPERM', 'EIO', 'ENOTCONN', 'ENODEV', 'ETIMEDOUT', 'EINVAL', 'ENOSYS', 'ENOTDIR', 'ELOOP', 'EBUSY']),
+  });
+  const result = (value: any) => {
+    const text = [value?.stdout, value?.stderr].filter(v => typeof v === 'string').join('\n').toLowerCase();
+    let failure = value?.state === 'closed' && value.actualExit === 0 ? 'none' : 'unclassified';
+    for (const [phrase, code] of [
+      ['crashed runtime kernel binding changed or unknown', 'crashed-kernel-binding-mismatch'],
+      ['runtime identity', 'runtime-identity-mismatch'], ['socket binding', 'socket-binding-mismatch'],
+      ['unmount child failed', 'unmount-child-failed'], ['transport endpoint is not connected', 'disconnected-fuse'],
+      ['permission denied', 'permission-denied'],
+    ]) if (text.includes(phrase)) { failure = code; break; }
+    return { state: ['closed', 'pending', 'spawn-error'].includes(value?.state) ? value.state : 'unknown',
+      actualExit: Number.isInteger(value?.actualExit) ? value.actualExit : null,
+      signal: value?.signal === null ? null : ['SIGTERM', 'SIGKILL', 'SIGINT'].includes(value?.signal) ? value.signal : 'unknown',
+      failure, errorSHA256: text ? hashBytes(text) : null };
+  };
+  const stageNames = ['copyUpObserved', 'seedObserved', 'killedClosed', 'unmountSucceeded', 'writerClosed', 'remountObserved', 'orphanRemoved', 'conditionalConflictObserved'];
+  const stages = Object.fromEntries(stageNames.map(name => { const stage = row.recoveryStages?.[name]; return [name, {
+    executed: typeof stage?.executed === 'boolean' ? stage.executed : null,
+    success: stage?.executed === true && typeof stage.success === 'boolean' ? stage.success : null,
+  }]; }));
+  return { diagnosticOnly: true, stages, backend: row.backend, primaryFailure: category(row.primaryError), cleanupFailure: category(row.cleanupError),
+    kernelState: kernel(row.kernelState), finalKernel: observer(row.finalKernel), sceneRetained: row.sceneRetained === true,
+    writerOutcome: ['not-started', 'write-completed'].includes(row.writerOutcome) ? row.writerOutcome : 'write-failed-or-unknown',
+    unmounts: (Array.isArray(row.unmountResults) ? row.unmountResults : []).filter((v: any) => ['first', 'second'].includes(v?.instance)
+      && ['after-sigkill', 'second-cleanup', 'first-cleanup', 'second-final-cleanup'].includes(v?.phase)).map((v: any) => ({
+        instance: v.instance, phase: v.phase, result: result(v.result ?? v.retainedProof?.result),
+        preKernel: observer(v.preKernel), postKernel: observer(v.postKernel ?? { state: v.retainedProof?.postKernel }),
+      })) };
+}
 export function exportSafe(evidence: string, destination: string): void {
   mkdirSync(destination, { mode: 0o700 }); const files = [];
   for (const name of readdirSync(evidence)) {
-    if (!Object.prototype.hasOwnProperty.call(receipts, name)) continue;
+    const recovery = /^daemon-recovery-final-[0-9]+-[0-9]+\.json$/.test(name);
+    if (!recovery && !Object.prototype.hasOwnProperty.call(receipts, name)) continue;
     const filename = path.join(evidence, name); const sha256 = hashFile(filename); verifyBoundFile({ path: filename, sha256 });
     const original = JSON.parse(readFileSync(filename, 'utf8'));
-    const projection = projectReceipt(name, original) as Record<string, unknown>;
+    const projection = recovery ? projectRecoveryDiagnostic(original) : projectReceipt(name, original) as Record<string, unknown>;
     const bytes = JSON.stringify({ ...projection, sourceReceiptSHA256: sha256 }, null, 2) + '\n';
-    const safeName = name === 'linux-container-binding.json' ? 'linux-container-binding.safe.json' : /^rss-/.test(name) ? name.replace('.json', '.safe.json') : name;
+    const safeName = recovery ? 'recovery-diagnostic.safe.json' : name === 'linux-container-binding.json' ? 'linux-container-binding.safe.json' : /^rss-/.test(name) ? name.replace('.json', '.safe.json') : name;
     writeFileSync(path.join(destination, safeName), bytes, { flag: 'wx', mode: 0o600 }); files.push({ name: safeName, sha256: hashBytes(bytes) });
   }
   writeFileSync(path.join(destination, 'export.safe.json'), JSON.stringify({ schemaVersion: 1, files, rawLogsAndHomesExcluded: true }, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
@@ -169,7 +227,7 @@ export function verifyInstalledConsumerReceipts(directory: string): { stages: un
   const stages = INSTALLED_CONSUMER_STAGES.map(stage => {
     const filename = path.join(directory, stage + '.safe.json'); verifyBoundFile({ path: filename, sha256: hashFile(filename) });
     const row = JSON.parse(readFileSync(filename, 'utf8'));
-    const expectedExit = stage === 'node-startup-cancel' ? 143 : 0;
+    const expectedExit = stage === 'node-startup-cancel' ? 143 : stage.endsWith('-cli-tampered-list') ? 1 : 0;
     if (row.stage !== stage || row.actualExit !== expectedExit || row.actualSignal !== null
       || row.actualWait !== true || row.rawClosed !== true || row.groupAbsent !== true || !Number.isSafeInteger(row.pid) || row.pid <= 1) throw new Error('installed consumer stage incomplete');
     for (const stream of ['stdout', 'stderr']) verifyBoundFile({ path: path.join(directory, `${stage}.${stream}`), sha256: row[`${stream}SHA256`] });
@@ -221,6 +279,7 @@ async function main(): Promise<void> {
   const archive = bound('--native', 'native.zip'); if (archive.sha256 !== facts.zipSHA256) throw new Error('native ZIP pin mismatch');
   const pins = bound('--pins', 'native-pins.json'); if (JSON.stringify(JSON.parse(readFileSync(path.join(out, 'native-pins.json'), 'utf8'))) !== JSON.stringify(facts.pins)) throw new Error('native pins mismatch');
   const native = JSON.parse(execFileSync('python3', ['-c', "import zipfile,hashlib,json,sys\nwith zipfile.ZipFile(sys.argv[1]) as z:\n assert len(z.namelist())==len(set(z.namelist()))\n print(json.dumps({n:hashlib.sha256(z.read(n)).hexdigest() for n in ['native-receipt.json','source-kit.json']}))", path.join(out, 'native.zip')], { encoding: 'utf8' })) as Record<string, string>;
+  if (native['source-kit.json'] !== artifacts[target as keyof typeof artifacts].sourceKit) throw new Error('native source-kit authority mismatch');
   const module = bound('--module', 'module.tgz'); const properties = collectModule(path.join(out, 'module.tgz'), target, sourceSHA, native['native-receipt.json'], native['source-kit.json']);
   const core = bound('--core', 'core.mjs'); const driver = bound('--driver', 'module-admission.mjs');
   const buildPath = path.resolve(option('--build-receipt')); const build = JSON.parse(readFileSync(buildPath, 'utf8'));

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { collectModule, exportSafe, nativeFacts, projectReceipt, INSTALLED_CONSUMER_STAGES, verifyInstalledConsumerReceipts } from '../../scripts/agentfs-native-ci/mounted/prepare-module-inputs';
+import { collectModule, exportSafe, nativeFacts, projectReceipt, projectRecoveryDiagnostic, INSTALLED_CONSUMER_STAGES, verifyInstalledConsumerReceipts } from '../../scripts/agentfs-native-ci/mounted/prepare-module-inputs';
 import { hashBytes } from '../../scripts/agentfs-native-ci/mounted/module-admission';
 
 function fixture(run: (root: string) => void): void {
@@ -10,6 +10,31 @@ function fixture(run: (root: string) => void): void {
   const root = mkdtempSync(path.join(parent, 'case-')); try { run(root); } finally { rmSync(root, { recursive: true, force: true }); }
 }
 describe('module mounted input preparation', () => {
+  it('projects observed recovery failures without private errors, arguments or paths', () => fixture(root => {
+    const row = { label: 'recovery-final', backend: 'fuse', primaryError: 'Error: owned unmount after-sigkill failed: private-secret',
+      cleanupError: 'private-secret', kernelState: 'absent', sceneRetained: false, writerOutcome: 'write-failed:private-secret',
+      recoveryStages: { seedObserved: { executed: true, success: true }, killedClosed: { executed: true, success: null },
+        orphanRemoved: { executed: false, success: true } },
+      unmountResults: [{ instance: 'first', phase: 'after-sigkill', preKernel: { state: 'mounted', reason: 'classify-unknown:unknown-ancestor-type', classifyReason: 'unknown-ancestor-type', errorCode: 'ENOTCONN' }, postKernel: { state: 'absent' },
+        result: { state: 'closed', actualExit: 1, signal: null, stderr: 'crashed runtime kernel binding changed or unknown: private-secret' } }], argv: ['private-secret'] };
+    const projected = projectRecoveryDiagnostic(row);
+    expect((projected.stages as any).seedObserved).toEqual({ executed: true, success: true });
+    expect((projected.stages as any).killedClosed).toEqual({ executed: true, success: null });
+    expect((projected.stages as any).orphanRemoved).toEqual({ executed: false, success: null });
+    expect((projected.stages as any).remountObserved).toEqual({ executed: null, success: null });
+    expect(projected.primaryFailure).toBe('first-unmount-failed'); expect(projected.cleanupFailure).toBe('unclassified');
+    expect(JSON.stringify(projected)).not.toContain('private-secret'); expect(projected.diagnosticOnly).toBe(true);
+    const evidence = path.join(root, 'evidence'); mkdirSync(evidence);
+    writeFileSync(path.join(evidence, 'daemon-recovery-final-123-456.json'), JSON.stringify(row));
+    writeFileSync(path.join(evidence, 'daemon-recovery-final-123-456.raw.log'), 'private-secret');
+    exportSafe(evidence, path.join(root, 'export'));
+    const exported = readFileSync(path.join(root, 'export/recovery-diagnostic.safe.json'), 'utf8');
+    expect(exported).not.toContain('private-secret'); expect(JSON.parse(exported).unmounts[0].result.actualExit).toBe(1);
+    expect(JSON.parse(exported).unmounts[0].result.failure).toBe('crashed-kernel-binding-mismatch');
+    expect(JSON.parse(exported).unmounts[0].preKernel).toEqual({ state: 'mounted', reason: 'classify-unknown', classifyReason: 'unknown-ancestor-type', errorCode: 'ENOTCONN' });
+    expect(readdirSync(path.join(root, 'export')).sort()).toEqual(['export.safe.json', 'recovery-diagnostic.safe.json']);
+    expect(() => projectRecoveryDiagnostic({ ...row, label: 'private-secret' })).toThrow('invalid recovery diagnostic');
+  }));
   it('rejects failure diagnostics with free text instead of approved values', () => {
     const valid = { backend: 'fuse', stage: 'native-identity', errorCode: 'ENOENT', errorSHA256: 'a'.repeat(64), primaryFailureObserved: true };
     expect(projectReceipt('module-chain-failure.safe.json', { ...valid, token: 'private-secret' })).toEqual(valid);
@@ -18,14 +43,21 @@ describe('module mounted input preparation', () => {
       expect(() => projectReceipt('module-chain-failure.safe.json', { ...valid, [key]: 'private-secret' })).toThrow('invalid module chain failure receipt');
     }
   });
-  it('requires all nine closed actual consumer stages and proxy cleanup, verifies raw hashes, and projects only fixed fields', () => fixture(root => {
+  it('requires all 21 closed actual consumer stages and proxy cleanup, verifies raw hashes, and projects only fixed fields', () => fixture(root => {
     for (const stage of INSTALLED_CONSUMER_STAGES) {
       for (const stream of ['stdout', 'stderr']) writeFileSync(path.join(root, `${stage}.${stream}`), 'private-marker');
-      writeFileSync(path.join(root, stage + '.safe.json'), JSON.stringify({ stage, pid: 123, actualExit: stage === 'node-startup-cancel' ? 143 : 0, actualSignal: null,
+      writeFileSync(path.join(root, stage + '.safe.json'), JSON.stringify({ stage, pid: 123, actualExit: stage === 'node-startup-cancel' ? 143 : stage.endsWith('-cli-tampered-list') ? 1 : 0, actualSignal: null,
         actualWait: true, rawClosed: true, groupAbsent: true, stdoutSHA256: hashBytes('private-marker'), stderrSHA256: hashBytes('private-marker'), unknown: { credentials: 'private-marker' } }));
     }
     const proxy = path.join(root, 'proxy-cancel.safe.json'); writeFileSync(proxy, JSON.stringify({ pid: 321, groupAbsent: true, tokenFixtureObserved: true, nativeMountStarted: false, clientSecret: 'private-marker' }));
-    const facts = verifyInstalledConsumerReceipts(root); expect(facts.stages).toHaveLength(9); expect(JSON.stringify(facts)).not.toContain('private-marker');
+    const facts = verifyInstalledConsumerReceipts(root); expect(facts.stages).toHaveLength(21); expect(JSON.stringify(facts)).not.toContain('private-marker');
+    const negative = path.join(root, 'node-cli-tampered-list.safe.json');
+    const rejected = readFileSync(negative, 'utf8');
+    writeFileSync(negative, JSON.stringify({ ...JSON.parse(rejected), actualExit: 0 }));
+    expect(() => verifyInstalledConsumerReceipts(root)).toThrow('stage incomplete');
+    writeFileSync(negative, rejected);
+    const legacy = path.join(root, 'node-cli-module-list.safe.json'); writeFileSync(legacy, rejected);
+    expect(() => verifyInstalledConsumerReceipts(root)).toThrow('receipt inventory'); rmSync(legacy);
     const first = path.join(root, INSTALLED_CONSUMER_STAGES[0] + '.stdout'); writeFileSync(first, 'tampered'); expect(() => verifyInstalledConsumerReceipts(root)).toThrow('identity mismatch'); writeFileSync(first, 'private-marker');
     writeFileSync(proxy, JSON.stringify({ pid: 321, groupAbsent: false, tokenFixtureObserved: true, nativeMountStarted: false })); expect(() => verifyInstalledConsumerReceipts(root)).toThrow('proxy cleanup incomplete');
     rmSync(path.join(root, INSTALLED_CONSUMER_STAGES[0] + '.safe.json')); expect(() => verifyInstalledConsumerReceipts(root)).toThrow('receipt inventory');
@@ -84,12 +116,12 @@ describe('module mounted input preparation', () => {
     expect(projectReceipt('rss-512.json', { ...secret, phaseRead: [1234], readPeakKib: 1234 })).toEqual({ phaseRead: [1234], readPeakKib: 1234 });
     expect(projectReceipt('module-install.safe.json', { runtime: secret, ownedPids: secret })).toEqual({});
   });
-  it('binds both exact original b5 artifacts and rejects unsupported targets', () => {
-    for (const target of ['linux-arm64', 'darwin-arm64']) {
-      const facts = nativeFacts(target); expect(facts.run).toBe('37977251553'); expect(facts.source).toBe('b5a058cffa50026702f7679365e7b17e383115d2');
+  it('binds all four exact reviewed native artifacts and rejects unsupported targets', () => {
+    for (const target of ['linux-arm64', 'darwin-arm64', 'linux-x64', 'darwin-x64']) {
+      const facts = nativeFacts(target); expect(facts.run).toBe('38104482639'); expect(facts.source).toBe('5f037c09bd54980c68406d4a1aa534af14fcbd70');
       expect(facts.zipSHA256).toMatch(/^[a-f0-9]{64}$/); expect(facts.pins.PRODUCT_SHA).toBe(facts.source);
     }
-    expect(() => nativeFacts('linux-x64')).toThrow('unsupported');
+    expect(() => nativeFacts('linux-riscv64')).toThrow('unsupported');
   });
   it.each(['changed-manifest', 'duplicate', 'symlink', 'unlisted'])('rejects actual serialized archive %s before installer or mount', (variant) => fixture(root => {
     const archive = path.join(root, 'module.tgz');
