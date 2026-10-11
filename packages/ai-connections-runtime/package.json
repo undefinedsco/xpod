@@ -7,7 +7,8 @@
   "sideEffects": false,
   "files": [
     "dist",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
   "exports": {
     "./client": {
@@ -43,7 +44,7 @@
     }
   },
   "scripts": {
-    "build": "rm -rf dist && tsc -p tsconfig.json && bun ../../scripts/fix-dist-js-imports.mjs dist && bun build src/contract/client-config/index.ts --target=node --format=cjs --outfile=dist/contract/client-config/index.cjs && bun build src/contract/provider-catalog.ts --target=node --format=cjs --outfile=dist/contract/provider-catalog.cjs && bun build src/service-access-resources.ts --target=node --format=cjs --external @undefineds.co/models --outfile=dist/service-access-resources.cjs",
+    "build": "rm -rf dist && tsc -p tsconfig.json && bun ../../scripts/fix-dist-js-imports.mjs dist && bun build src/contract/client-config/index.ts --target=node --format=cjs --metafile=dist/client-config-inputs.json --outfile=dist/contract/client-config/index.cjs && bun build src/contract/provider-catalog.ts --target=node --format=cjs --metafile=dist/provider-catalog-inputs.json --outfile=dist/contract/provider-catalog.cjs && bun build src/service-access-resources.ts --target=node --format=cjs --external @undefineds.co/models --metafile=dist/service-access-resources-inputs.json --outfile=dist/service-access-resources.cjs && bun ../../scripts/workspace-runtime-materials.cjs . '[{\"name\":\"client-config\",\"payload\":\"dist/contract/client-config/index.cjs\",\"metafile\":\"dist/client-config-inputs.json\"},{\"name\":\"provider-catalog\",\"payload\":\"dist/contract/provider-catalog.cjs\",\"metafile\":\"dist/provider-catalog-inputs.json\"},{\"name\":\"service-access-resources\",\"payload\":\"dist/service-access-resources.cjs\",\"metafile\":\"dist/service-access-resources-inputs.json\"}]'",
     "test": "vitest run --config ../../vitest.packages.config.mts"
   },
   "dependencies": {
@@ -53,7 +54,8 @@
   "devDependencies": {
     "typescript": "^6.0.3",
     "@types/node": "^22",
-    "vitest": "^4.1.8"
+    "vitest": "^4.1.8",
+    "@undefineds.co/xpod-cli": "workspace:*"
   },
   "typesVersions": {
     "*": {

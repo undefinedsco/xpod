@@ -98,3 +98,11 @@ CSS/API/AFS 的平台包尚未在 registry 发布，服务内部也尚未完成�
 产品 artifact 的 inventory schema 2 包含三个实际打包的归档：`client.tgz`、`cli.tgz`、`afs.tgz`。每个归档独立记录大小、SHA-256 和 SHA-512 SRI，并绑定源码 SHA、实际运行及尝试编号。客户端归档核验公开入口、类型、Session/peer 桥接、完整 dist 和原始通知材料，不能用 CLI 内嵌客户端替代其独立发布材料。历史 schema 1 只有 CLI/AFS 两个归档，不提供独立客户端的发布证明。
 
 这些产物属于开发验收证据。客户端实际 registry 归档与 SRI 读回、依赖该版本的模块安装验收，以及 staging 发布条件仍须分别通过。
+
+### AI runtime 与宿主契约的发布材料
+
+`ai-connections-runtime` 是能力模块的运行包，`extension-host-contracts` 提供无 UI 的宿主类型；旧 `ai-connections` 与 `extension-sdk` 的兼容入口转发到这两个包。共享包发布列表按依赖顺序包含新包，已发布旧版本不可改写，迁移必须正常增版。实际 tarball 消费者须覆盖全部公开 JS、类型和 CSS 入口；现有消费者对外部依赖声明诊断的排除属于其验证边界，不能表述为所有依赖声明均无错误。
+
+两包的 `dist/materials` 保存 canonical 源码、原始许可证、逐文件大小与 SHA-256 库存和构建 provenance。Git 来源按完整源码目录核对 tracked 清单与删除状态；dirty、untracked 或缺失源码的快照不得冒充提交的清洁构建。AI 的三份 CJS 输出分别保存实际 payload、metafile 和生成代码原始通知。新生成 helper 逐项与同版本 pin 的 Bun runtime 或既有已审生成前缀比较，并记录每项权威对象和完整两级绑定；AST 比较保留声明类型、字面量和块结构，仅规范化 export 修饰符与冗余括号。任何不匹配都阻断构建，不能借旧 profile 摘要批准新生成体。
+
+本地构建、tar 库存校验和消费者通过仍不是 registry 发布证明。正式发行须从已审 staging 不可变源码重新构建，按依赖顺序发布，再读回实际 tarball 与 SRI；client/CLI/AFS 的独立模块门禁继续有效。
