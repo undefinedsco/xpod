@@ -16,6 +16,9 @@ import { extractComponentParameterContext, normalizeComponentParameterKeys } fro
 import { rewriteConfigAssetPaths } from './config-asset-paths';
 import { createGatewayAdminProxyAuthSecret } from './GatewayAdminProxyAuth';
 import { resolveRuntimeDatabasePaths } from './database-url';
+import { cssAuthModeConfigImports } from './css-auth-config';
+
+export { cssAuthModeConfigImports } from './css-auth-config';
 
 const CSS_CONFIG_BASE = 'https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^8.0.0/config/';
 const XPOD_CONFIG_BASE = 'https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/config/';
@@ -145,27 +148,6 @@ function readRuntimeEnvFile(
   platform: Pick<RuntimePlatform, 'fileExists' | 'readTextFile'>,
 ): Record<string, string> {
   return envFilePath ? loadEnvFile(envFilePath, platform) : {};
-}
-
-export function cssAuthModeConfigImports(authMode: AuthMode): string[] {
-  switch (authMode) {
-    case 'acl':
-      return [
-        'css:config/ldp/authorization/webacl.json',
-        'css:config/util/auxiliary/acl.json',
-      ];
-    case 'allow-all':
-      return [
-        'css:config/ldp/authorization/allow-all.json',
-        'css:config/util/auxiliary/empty.json',
-      ];
-    case 'acp':
-    default:
-      return [
-        'css:config/ldp/authorization/acp.json',
-        'css:config/util/auxiliary/acr.json',
-      ];
-  }
 }
 
 export async function resolveRuntimeBootstrap(

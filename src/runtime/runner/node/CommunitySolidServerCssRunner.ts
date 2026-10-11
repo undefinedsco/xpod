@@ -16,8 +16,10 @@ class ExtractedPackageModuleStateBuilder extends ModuleStateBuilder {
   }
 }
 
-export async function createPackageRootPreferredModuleState(packageRoot: string): Promise<IModuleState> {
-  const extracted = process.env.XPOD_BUN_SINGLE_RUNTIME === '1';
+export interface CssModuleLoaderOptions { isolatedDependencies?: boolean }
+
+export async function createPackageRootPreferredModuleState(packageRoot: string, options: CssModuleLoaderOptions = {}): Promise<IModuleState> {
+  const extracted = options.isolatedDependencies === true || process.env.XPOD_BUN_SINGLE_RUNTIME === '1';
   const builder = extracted ? new ExtractedPackageModuleStateBuilder() : new ModuleStateBuilder();
   const moduleState = await builder.buildModuleState(require, packageRoot);
   if (extracted && moduleState.nodeModulePaths.some(directory => {
@@ -31,13 +33,13 @@ export async function createPackageRootPreferredModuleState(packageRoot: string)
 }
 
 /** Keep CSS's CLI parsing and startup while supplying the extracted dependency state. */
-export function createPackageRootPreferredAppRunner(Runner: typeof AppRunner, packageRoot: string): AppRunner {
-  if (process.env.XPOD_BUN_SINGLE_RUNTIME !== '1') {
+export function createPackageRootPreferredAppRunner(Runner: typeof AppRunner, packageRoot: string, options: CssModuleLoaderOptions = {}): AppRunner {
+  if (!options.isolatedDependencies && process.env.XPOD_BUN_SINGLE_RUNTIME !== '1') {
     return new Runner();
   }
   return new class extends Runner {
     public override async create(input: AppRunnerInput = {}): Promise<App> {
-      const moduleState = await createPackageRootPreferredModuleState(packageRoot);
+      const moduleState = await createPackageRootPreferredModuleState(packageRoot, options);
       return super.create({
         ...input,
         loaderProperties: { ...input.loaderProperties, mainModulePath: packageRoot, moduleState },
