@@ -118,7 +118,7 @@
     },
     "packages/ai-connections": {
       "name": "@undefineds.co/ai-connections",
-      "version": "0.1.5",
+      "version": "0.1.6",
       "dependencies": {
         "@undefineds.co/ai-connections-runtime": "workspace:*",
         "@undefineds.co/extension-sdk": "workspace:*",
@@ -150,20 +150,21 @@
       },
       "devDependencies": {
         "@types/node": "^22",
+        "@undefineds.co/xpod-cli": "workspace:*",
         "typescript": "^6.0.3",
         "vitest": "^4.1.8",
       },
     },
     "packages/extension-host-contracts": {
       "name": "@undefineds.co/extension-host-contracts",
-      "version": "0.1.0-preview.1",
+      "version": "0.1.0",
       "devDependencies": {
         "typescript": "5.5",
       },
     },
     "packages/extension-sdk": {
       "name": "@undefineds.co/extension-sdk",
-      "version": "0.1.5",
+      "version": "0.1.6",
       "dependencies": {
         "@inrupt/solid-client": "^3.0.0",
         "@undefineds.co/extension-host-contracts": "workspace:*",
