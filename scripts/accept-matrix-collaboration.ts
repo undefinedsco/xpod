@@ -1,11 +1,33 @@
 /** Real Gateway acceptance with deterministic runtimes. Run with Bun; no model calls. */
-import { lstat, mkdir, realpath } from 'node:fs/promises';
-import { appendFileSync } from 'node:fs';
+import { lstat, realpath } from 'node:fs/promises';
+import { appendFileSync, chmodSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve, relative, isAbsolute } from 'node:path';
 import { parseArgs } from 'node:util';
 import { resolveMatrixRequestBudgetMs } from './matrix-request-budget';
 
 class AcceptanceError extends Error {}
+
+/**
+ * Create a directory we own private (0700) from creation. `mode` alone is not enough: recursive
+ * creation can leave intermediate directories with umask defaults, so enforce the exact mode on the
+ * leaf we created. It never touches a foreign parent or an unrelated existing file.
+ */
+export function createPrivateDirSync(dir: string): void {
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  chmodSync(dir, 0o700);
+}
+
+/** Write a private (0600) diagnostic/report file from creation, regardless of the process umask. */
+export function writePrivateFileSync(file: string, data: string): void {
+  writeFileSync(file, data, { mode: 0o600 });
+  chmodSync(file, 0o600);
+}
+
+/** Append to a private (0600) diagnostic log, creating it privately on first use. */
+export function appendPrivateFileSync(file: string, data: string): void {
+  appendFileSync(file, data, { mode: 0o600 });
+  chmodSync(file, 0o600);
+}
 
 // Opt-in, bounded diagnostics for the Matrix integration stall. Default off so
 // test semantics, timing and failure messages stay unchanged.
@@ -17,7 +39,7 @@ const inflight = new Map<number, { method: string; path: string; start: number }
 function diagLog(event: string, fields: Record<string, unknown>): void {
   if (!DIAG) return;
   const line = `[matrix-diag] ${new Date().toISOString()} ${event} ${JSON.stringify(fields)}\n`;
-  if (DIAG_FILE) appendFileSync(DIAG_FILE, line);
+  if (DIAG_FILE) appendPrivateFileSync(DIAG_FILE, line);
   else process.stderr.write(line);
 }
 const diagWatch = DIAG ? setInterval(() => {
@@ -28,6 +50,196 @@ const diagWatch = DIAG ? setInterval(() => {
   diagLog(stalled.length ? 'INFLIGHT' : 'HEARTBEAT', { inflight: inflight.size, stalled });
 }, 5_000) : undefined;
 diagWatch?.unref?.();
+
+export type RequestState = 'inflight' | 'headers' | 'body' | 'done' | 'error' | 'cancelled';
+
+/**
+ * Sanitized classification of a body-read rejection. The recorded name is the allowlisted actual
+ * error name (letters only) so malformed JSON, a mid-stream failure and a native timeout/abort stay
+ * distinguishable; a timeout/abort is cancelled, every other rejection (including SyntaxError) is an
+ * error. No error message, raw body, URL, query or token is ever derived here.
+ */
+export function classifyBodyReadFailure(error: unknown): { state: 'error' | 'cancelled'; name: string } {
+  const name = error instanceof Error && /^[A-Za-z]+$/.test(error.name) ? error.name : 'Error';
+  return { state: name === 'TimeoutError' || name === 'AbortError' ? 'cancelled' : 'error', name };
+}
+
+/** Sanitized, monotonic per-request timing. Never carries token/query/body/raw response. */
+export interface RequestTiming {
+  id: number;
+  step: string;
+  method: string;
+  path: string;
+  state: RequestState;
+  startMs: number;
+  elapsedMs: number;
+  status: number | null;
+  headersStartMs?: number;
+  headersEndMs?: number;
+  headersMs?: number;
+  bodyStartMs?: number;
+  bodyEndMs?: number;
+  bodyMs?: number;
+  error?: string;
+}
+
+export interface StepTiming { step: string; ms: number; requests: number; }
+export type InflightTiming = Pick<RequestTiming, 'id' | 'step' | 'method' | 'path' | 'state' | 'startMs' | 'elapsedMs'>;
+
+export interface DiagnosticsSnapshot {
+  status: string;
+  nowMs: number;
+  elapsedMs: number;
+  steps: StepTiming[];
+  requests: RequestTiming[];
+  inflight: InflightTiming[];
+  note?: string;
+}
+
+/**
+ * Request/phase timing on a monotonic clock. `now` defaults to `performance.now()` so elapsed and
+ * deadline evidence never depends on wall time. Header receipt and `response.json()` body reading
+ * are recorded as separate phases; pending, errored and cancelled requests all stay in `snapshot()`.
+ */
+export class RequestTracker {
+  private readonly now: () => number;
+  private readonly records: RequestTiming[] = [];
+  private readonly steps: StepTiming[] = [];
+  private readonly stepRequestCount = new Map<string, number>();
+  private readonly startedAtMs: number;
+  private step = 'startup';
+  private stepStartedAtMs: number;
+  private nextId = 1;
+
+  public constructor(now: () => number = () => performance.now()) {
+    this.now = now;
+    this.startedAtMs = now();
+    this.stepStartedAtMs = this.startedAtMs;
+  }
+
+  public beginStep(step: string): void {
+    const at = this.now();
+    if (this.step !== 'startup') {
+      this.steps.push({ step: this.step, ms: at - this.stepStartedAtMs, requests: this.stepRequestCount.get(this.step) ?? 0 });
+    }
+    this.step = step;
+    this.stepStartedAtMs = at;
+    this.stepRequestCount.set(step, 0);
+  }
+
+  public start(method: string, path: string): number {
+    const id = this.nextId++;
+    // The single recording entry strips the query string, so no caller can leak it into evidence.
+    const sanitizedPath = path.split('?')[0];
+    this.records.push({ id, step: this.step, method, path: sanitizedPath, state: 'inflight', startMs: this.now(), elapsedMs: 0, status: null });
+    this.stepRequestCount.set(this.step, (this.stepRequestCount.get(this.step) ?? 0) + 1);
+    return id;
+  }
+
+  public headersReceived(id: number, status: number): void {
+    const record = this.find(id);
+    if (!record) return;
+    const at = this.now();
+    record.status = status;
+    record.headersStartMs = record.startMs;
+    record.headersEndMs = at;
+    record.headersMs = at - record.startMs;
+    record.state = 'headers';
+    record.elapsedMs = at - record.startMs;
+  }
+
+  public bodyStarted(id: number): void {
+    const record = this.find(id);
+    if (!record) return;
+    record.bodyStartMs = this.now();
+    record.state = 'body';
+    record.elapsedMs = record.bodyStartMs - record.startMs;
+  }
+
+  public bodyFinished(id: number): void {
+    const record = this.find(id);
+    if (!record) return;
+    const at = this.now();
+    record.bodyEndMs = at;
+    record.bodyMs = record.bodyStartMs === undefined ? undefined : at - record.bodyStartMs;
+    record.state = 'done';
+    record.elapsedMs = at - record.startMs;
+  }
+
+  public finished(id: number, state: 'error' | 'cancelled', error: string): void {
+    const record = this.find(id);
+    if (!record) return;
+    const at = this.now();
+    record.state = state;
+    record.error = error;
+    // A body read that was cancelled or failed still gets its body-phase duration.
+    if (record.bodyStartMs !== undefined && record.bodyEndMs === undefined) {
+      record.bodyEndMs = at;
+      record.bodyMs = at - record.bodyStartMs;
+    }
+    record.elapsedMs = at - record.startMs;
+  }
+
+  public inflight(): InflightTiming[] {
+    const at = this.now();
+    return this.records
+      .filter((record) => record.state === 'inflight' || record.state === 'headers' || record.state === 'body')
+      .map((record) => ({ id: record.id, step: record.step, method: record.method, path: record.path,
+        state: record.state, startMs: record.startMs, elapsedMs: at - record.startMs }));
+  }
+
+  public snapshot(status: string, note?: string): DiagnosticsSnapshot {
+    const at = this.now();
+    return {
+      status, nowMs: at, elapsedMs: at - this.startedAtMs,
+      steps: [ ...this.steps, { step: this.step, ms: at - this.stepStartedAtMs, requests: this.stepRequestCount.get(this.step) ?? 0 } ],
+      requests: this.records.map((record) => ({
+        ...record,
+        elapsedMs: record.state === 'done' || record.state === 'error' || record.state === 'cancelled'
+          ? record.elapsedMs : at - record.startMs,
+      })),
+      inflight: this.inflight(),
+      ...(note ? { note } : {}),
+    };
+  }
+
+  private find(id: number): RequestTiming | undefined {
+    return this.records.find((record) => record.id === id);
+  }
+}
+
+/**
+ * Read and JSON-parse a successful (2xx) response body while timing the body phase, and record the
+ * actual, allowlisted failure identity so a body timeout/abort is cancelled while malformed JSON
+ * (SyntaxError) and other stream failures stay errors. This is the single seam the acceptance `api`
+ * uses, so the body-phase phase timings and error classification are pinned by real integration tests,
+ * not a mirrored re-implementation. The public rejection and its message never carry the raw error
+ * text, URL, query or body.
+ */
+export async function readJsonBody(
+  tracker: RequestTracker,
+  trackerId: number,
+  response: Response,
+  label: string,
+): Promise<any> {
+  tracker.bodyStarted(trackerId);
+  try {
+    const parsed = await response.json();
+    tracker.bodyFinished(trackerId);
+    persistDiagnostics?.('running');
+    return parsed;
+  } catch (error) {
+    const failure = classifyBodyReadFailure(error);
+    tracker.finished(trackerId, failure.state, failure.name);
+    // `label` is the already-sanitized method + route (query stripped at tracker.start).
+    persistDiagnostics?.('body-error', `${label} (${failure.name})`);
+    throw new AcceptanceError('Gateway returned a non-JSON response');
+  }
+}
+
+// Sanitized trace hook: written next to --output so a SIGTERM timeout (the
+// harness kills the child at 900s) still leaves where each phase spent time.
+let persistDiagnostics: ((status: string, note?: string) => void) | undefined;
 
 const help = `Usage: bun scripts/accept-matrix-collaboration.ts --url <gateway> [--webid <caller-WebID>] [--pod <registered-Pod>] [--token-env XPOD_MATRIX_TOKEN] [--output .test-data/matrix-collaboration/result.json]
 
@@ -57,11 +269,25 @@ async function main(): Promise<void> {
   };
   const output = values.output ? await outputPath(values.output) : undefined;
 
+  const tracker = new RequestTracker();
+  const beginStep = (name: string): void => { tracker.beginStep(name); diagLog('STEP', { step: name }); };
+  persistDiagnostics = (status: string, note?: string): void => {
+    if (!output) return;
+    try {
+      writePrivateFileSync(`${output}.diagnostics.json`, `${JSON.stringify(tracker.snapshot(status, note), null, 2)}\n`);
+    } catch { /* diagnostics are best-effort and must never mask the acceptance outcome */ }
+  };
+  // SIGTERM/SIGINT snapshots retain every in-flight method/path/start/elapsed, so a killed run still
+  // shows what was pending when it stopped. Never writes token, query, body or raw response.
+  process.once('SIGTERM', () => { persistDiagnostics?.('killed', 'SIGTERM'); process.exit(143); });
+  process.once('SIGINT', () => { persistDiagnostics?.('killed', 'SIGINT'); process.exit(130); });
+
   async function api(path: string, method = 'GET', body?: unknown, status = 200): Promise<any> {
+    const route = path.split('?')[0];
     const id = ++diagSeq;
     const started = Date.now();
     const startedMonotonic = DIAG ? performance.now() : 0;
-    const route = path.split('?')[0];
+    const trackerId = tracker.start(method, route);
     if (DIAG) { inflight.set(id, { method, path: route, start: started }); diagLog('START', { id, method, path: route }); }
     let response: Response;
     let requestSignal: AbortSignal | undefined;
@@ -92,13 +318,23 @@ async function main(): Promise<void> {
               'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT', 'ABORT_ERR'].includes(causeCode) ? causeCode : 'unknown',
         });
       }
+      // A timeout/abort never completed; keep it as a cancelled request, other failures as errors.
+      tracker.finished(trackerId, kind === 'TimeoutError' || kind === 'AbortError' ? 'cancelled' : 'error', kind);
+      persistDiagnostics?.('request-error', `${method} ${route}`);
       throw new AcceptanceError(`${method} ${route} failed (${kind}; request budget ${REQUEST_BUDGET_MS / 1000}s)`);
     }
     if (DIAG) { inflight.delete(id); diagLog('DONE', { id, method, path: route, status: response.status, durationMs: Date.now() - started }); }
-    if (response.status !== status) throw new AcceptanceError(`${method} ${route} returned ${response.status}; expected ${status}`);
-    try { return await response.json(); } catch { throw new AcceptanceError('Gateway returned a non-JSON response'); }
+    // Fetch resolution is header receipt; readJsonBody below times and classifies the separate body phase.
+    tracker.headersReceived(trackerId, response.status);
+    if (response.status !== status) {
+      tracker.finished(trackerId, 'error', `expected ${status}`);
+      persistDiagnostics?.('unexpected-status', `${method} ${route} -> ${response.status}`);
+      throw new AcceptanceError(`${method} ${route} returned ${response.status}; expected ${status}`);
+    }
+    return readJsonBody(tracker, trackerId, response, `${method} ${route}`);
   }
   const assert = (condition: unknown, label: string): void => { if (!condition) throw new AcceptanceError(`Acceptance failed: ${label}`); };
+  beginStep('identity');
   const account = await api('/_matrix/client/v3/account/whoami');
   assert(typeof account.user_id === 'string', 'whoami user_id');
   const webId = account['co.undefineds.webid'] ?? values.webid;
@@ -110,10 +346,12 @@ async function main(): Promise<void> {
   headers['X-Xpod-Pod-Url'] = pod;
   const tag = crypto.randomUUID();
   const agents = ['author', 'reviewer'].map(name => new URL(`.data/agents/matrix-accept-${tag}-${name}.ttl#this`, pod).toString());
+  beginStep('create-room');
   const room = await api('/_matrix/client/v3/createRoom', 'POST', { name: `Matrix collaboration acceptance ${tag}`, visibility: 'private' });
   assert(typeof room.room_id === 'string', 'created room ID');
   const roomId: string = room.room_id;
   const roomPath = `/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}`;
+  beginStep('agent-grants');
   await api(`${roomPath}/state/co.undefineds.agents`, 'PUT', { agents: agents.map((agent, index) => ({
     agent, executor: webId, workspace: pod, allowedActors: [webId], handoffTo: index === 0 ? [agents[1]] : [],
   })) });
@@ -121,18 +359,21 @@ async function main(): Promise<void> {
   const savedGrants = await api(`${roomPath}/state/co.undefineds.agents`);
   assert(Array.isArray(savedGrants.agents) && savedGrants.agents.length === 2 && savedGrants.agents[0].agent === agents[0], 'agent grants survive Pod persistence');
 
+  beginStep('baseline-sync');
   const initialSync = await api('/_matrix/client/v3/sync?limit=7');
   assert(typeof initialSync.next_batch === 'string', 'baseline sync returns cursor');
   const startingCursor: string = initialSync.next_batch;
   const prompt = `Review deterministic collaboration sample ${tag}`;
   const sendPath = `${roomPath}/send/m.room.message/${encodeURIComponent(`accept-${tag}`)}`;
   const sendBody = { msgtype: 'm.text', body: prompt, mentions: [agents[0]] };
+  beginStep('message-idempotency');
   const original = await api(sendPath, 'PUT', sendBody);
   const duplicate = await api(sendPath, 'PUT', sendBody);
   assert(original.event_id === duplicate.event_id, 'transaction retry preserves event ID');
 
   const resultBodies = [`Scripted author result ${tag}`, `Scripted reviewer accepted ${tag}`];
   const results: Array<{ eventId: string; run: string }> = [];
+  beginStep('agent-runs');
   for (let index = 0; index < agents.length; index++) {
     const request = { roomId, agent: agents[index], runtimeId: `accept-${tag}-${index}`, leaseMs:180_000 };
     const claimed = await api('/v1/agent-wakes/claim', 'POST', request);
@@ -150,9 +391,11 @@ async function main(): Promise<void> {
   }
 
   // Remove grants so backlog verification creates no unrelated pending agent work.
+  beginStep('clear-grants');
   await api(`${roomPath}/state/co.undefineds.agents`, 'PUT', { agents: [] });
   const expected = new Map<string, string>([[original.event_id, prompt], ...results.map((result, index) => [result.eventId, resultBodies[index]] as [string, string])]);
   // Four concurrent senders exercise same-document append while keeping load bounded.
+  beginStep('backlog-63');
   for (let batch = 0; batch < 60; batch += 4) {
     diagLog('BATCH_START', { batch, indices: [ batch, batch + 1, batch + 2, batch + 3 ] });
     await Promise.all(Array.from({length:4}, async (_, offset) => {
@@ -163,6 +406,7 @@ async function main(): Promise<void> {
     }));
     diagLog('BATCH_DONE', { batch });
   }
+  beginStep('pagination-sync');
   let since: string | undefined = startingCursor;
   const seen = new Set<string>();
   let pages = 0;
@@ -189,26 +433,46 @@ async function main(): Promise<void> {
     evidenceScope: 'Real Gateway and Pod HTTP persistence; scripted output, no LLM, no external tool execution, one authenticated executor.',
   };
   const json = `${JSON.stringify(report, null, 2)}\n`;
-  if (output) await Bun.write(output, json);
+  persistDiagnostics?.('passed');
+  if (output) writePrivateFileSync(output, json);
   console.log(json);
 }
 
-async function outputPath(path: string): Promise<string> {
+export async function outputPath(path: string): Promise<string> {
   const root = resolve('.test-data');
   const target = resolve(path);
   const inside = (base: string, candidate: string): boolean => { const tail = relative(base, candidate); return Boolean(tail) && tail !== '..' && !tail.startsWith('../') && !isAbsolute(tail); };
   if (!inside(root, target)) throw new AcceptanceError('--output must be a file under .test-data/');
-  await mkdir(dirname(target), { recursive: true });
-  const realRoot = await realpath(root);
-  const realParent = await realpath(dirname(target));
-  if (realParent !== realRoot && !inside(realRoot, realParent)) throw new AcceptanceError('--output must not escape .test-data/ via a symlink');
+  // Validate every existing ancestor before creating anything. Existing directories are shared;
+  // only missing directories created by this request receive private permissions.
+  const rootExists = await lstat(root).catch(error => { if (error.code === 'ENOENT') return undefined; throw error; });
+  const realRoot = rootExists ? await realpath(root) : resolve(await realpath(dirname(root)), '.test-data');
+  const missing: string[] = [];
+  let parent = dirname(target);
+  while (parent !== root) {
+    const existingParent = await lstat(parent).catch(error => { if (error.code === 'ENOENT') return undefined; throw error; });
+    if (existingParent) {
+      const realParent = await realpath(parent);
+      if (realParent !== realRoot && !inside(realRoot, realParent)) throw new AcceptanceError('--output must not escape .test-data/ via a symlink');
+    } else {
+      missing.push(parent);
+    }
+    parent = dirname(parent);
+  }
   const existing = await lstat(target).catch(error => { if (error.code === 'ENOENT') return undefined; throw error; });
   if (existing?.isSymbolicLink()) throw new AcceptanceError('--output must not be a symbolic link');
+  if (!rootExists) missing.push(root);
+  for (const directory of missing.reverse()) mkdirSync(directory, { mode: 0o700 });
   return target;
 }
 
-main().catch(error => {
-  // Do not dump caught fetch errors, headers, server responses or credential-bearing URLs.
-  console.error(error instanceof AcceptanceError ? error.message : 'Matrix collaboration acceptance failed. Check Gateway logs and command arguments; no credentials or response bodies were printed.');
-  process.exitCode = 1;
-});
+// Importable for tests: only run the acceptance when executed directly under Bun.
+if (import.meta.main) {
+  main().catch(error => {
+    // Do not dump caught fetch errors, headers, server responses or credential-bearing URLs.
+    const message = error instanceof AcceptanceError ? error.message : 'unexpected-error';
+    persistDiagnostics?.('failed', message);
+    console.error(error instanceof AcceptanceError ? error.message : 'Matrix collaboration acceptance failed. Check Gateway logs and command arguments; no credentials or response bodies were printed.');
+    process.exitCode = 1;
+  });
+}

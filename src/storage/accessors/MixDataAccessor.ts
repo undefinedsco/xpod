@@ -113,22 +113,8 @@ export interface SourceScopedStructuredRdfAccessor {
   deleteVectorSource?(source: string): Promise<number>;
 }
 
-export interface LocalRdfAuthorityJournalOperation {
-  id: string;
-  afterHash?: string;
-}
-
-export interface LocalRdfAuthorityJournal {
-  recordLocalCommitted(
-    change: SolidFsChange,
-    workspace: SolidFsManifest,
-    txId?: string,
-  ): Promise<LocalRdfAuthorityJournalOperation>;
-  markDone(id: string): Promise<void>;
-  markRetryableFailure(id: string, error: unknown): Promise<void>;
-  markReconcileRequired(id: string, reason: string): Promise<void>;
-  markFailedPermanent(id: string, error: unknown): Promise<void>;
-}
+export type { LocalRdfAuthorityJournalOperation, LocalRdfAuthorityJournal } from '../../solidfs/types';
+import type { LocalRdfAuthorityJournalOperation, LocalRdfAuthorityJournal } from '../../solidfs/types';
 
 interface LocalRdfAuthorityPatch {
   identifier: ResourceIdentifier;

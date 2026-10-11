@@ -1,5 +1,7 @@
 # 发布流程
 
+本文的 RC、stable tag 和容器 digest 规则约束 Xpod 服务/桌面发行。`xpod` CLI 独立版本、独立构建与按需模块分发遵守 [模块分发规范](module-distribution.md)，不通过发布 CLI 占用共享服务 RC 或触发生产部署。当前 CLI package workflow 只产出并验证 tarball；公开 npm 发布仍需完成既有分发审核，不把构建 artifact 视为已发布模块。
+
 Xpod 发布必须先经过 Release Candidate，再由 stable tag 提升同一个 commit
 和同一个容器 digest。不要用 stable tag 调试发布问题；修复必须继续提交到
 开发分支，通过 PR 普通 merge 合入 `staging` 后，由新的 RC 重新验收。
@@ -564,3 +566,7 @@ bun run test:integration
 ### 本地安装包前置门禁
 
 桌面版本发布前，必须先构建候选 DMG/ZIP，实际安装 DMG，使用安装后的应用完成本地 full 验收；通过后才继续发布。开发启动、仅解压 ZIP、单元或隔离集成测试不能替代安装后的完整登录、Consent、会话复用与业务链路验收。安装隔离、产物一致性和清理规则见 [桌面权限验收](testing/desktop-permission-acceptance.md)。
+
+## 受保护 RC 数据库
+
+候选部署不再重置共享 `xpod_rc`，也不创建或升级扩展。部署前只读检查现有 PG17 数据库、owner 和扩展版本；不满足时保留源数据并停止。真实迁移须独立完成受保护备份、全量恢复核对和产品验收，工具或夹具通过不能代替。详见 [受保护部署边界](testing/protected-rc-deployment.md)。

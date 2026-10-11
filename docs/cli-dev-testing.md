@@ -104,12 +104,14 @@ test:integration`、Vitest 临时端口、mock server 和临时数据目录只�
    端点。使用该 `sk-` wrapper 调用 `/v1/models` 与 `/v1/chat/completions`。结束时
    先按 resource 重读并同时匹配 `id` 与 `webId`，再 `DELETE` 撤销该凭据，并验证
    wrapper 已无法认证；仅从列表里移掉一项不等于撤销凭据。
-5. **AI Connections**：先确认当前测试 Pod 中存在可用的 Provider credential 与模型。
-   新账号的空 Pod 默认没有 AI Connection。
-6. **Models**：实际调用 `/v1/models`。`200` 但 `data: []` 只说明认证和路由已通，
-   不代表模型或 Chat 可用。
+5. **模型能力来源**：确认当前运行时提供可用的平台模型，或当前测试 Pod 中存在可用的
+   Provider credential 与模型。新账号的空 Pod 默认没有个人 AI Connection，但已配置的
+   平台模型必须可见、可路由；平台凭据由部署者管理，不写入用户 Pod。
+6. **Models**：实际调用 `/v1/models`，验证平台模型与个人模型的合并列表，同名模型优先
+   使用个人配置。新账号没有个人配置时也应显示可用的平台模型。`200` 但 `data: []`
+   只说明认证和路由已通，不代表模型或 Chat 可用；已提供平台模型时，空列表验收失败。
 7. **Chat**：实际调用 `/v1/chat/completions`，并校验 HTTP 2xx、响应结构和预期内容。
-   `credential_unavailable` 表示该 Pod 没有目标模型的可用凭证，必须报告为 Chat 未通过。
+   `credential_unavailable` 表示目标模型没有可用的平台或个人凭据，必须报告为 Chat 未通过。
 
 OpenAI API Platform 与 ChatGPT Codex Subscription 是两种 offering，模型目录不可混用：
 API Key 连接使用 OpenAI `/v1/models`；本机导入的 ChatGPT 订阅必须使用
@@ -305,7 +307,7 @@ credential，再清理 Pod 登记；任一步失败都必须明确报告。验�
 credential，避免撤销它后影响用于清理 Pod 的 Solid 管理 Session。
 
 `scripts/accept-live-gateway-login-chat.ts` 按上述流程执行真实验收。它会创建测试账号、
-Pod 和 Provider 配置，仅在任务已授权这些操作时运行；通过 `XPOD_LIVE_GATEWAY_URL`
+Pod 和 Provider 配置，仅在任务已授权这些操作时运行；通过 `XPOD_BASE_URL`
 指定当前实际入口，Cloud 分配的二级域名不能由默认 localhost 结果替代。
 
 ## 运行 CLI 测试脚本

@@ -1,0 +1,278 @@
+name: AgentFS module mounted development acceptance
+
+# Isolated candidate development evidence. No release, RC or deployment writes.
+on:
+  push:
+    branches: ['codex/protected-rc-mounted-ci']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+  actions: read
+
+jobs:
+  mounted-module:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-arm64
+            runner: ubuntu-24.04-arm
+          - target: darwin-arm64
+            runner: macos-14
+          - target: linux-x64
+            runner: ubuntu-24.04
+          - target: darwin-x64
+            runner: macos-15-intel
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.21.1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Owned container identity publication regression
+        run: python3 tests/scripts/agentfs_linux_cidfile_test.py -v
+      - name: Establish immutable source and exact native authority
+        env:
+          TARGET: ${{ matrix.target }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          umask 077
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          python3 scripts/agentfs-native-ci/accept.py --verify-module-native-source
+          case "$TARGET:$(uname -m)" in
+            *-arm64:arm64|*-arm64:aarch64|*-x64:x86_64) ;;
+            *) echo '::error::runner architecture differs from target'; exit 1 ;;
+          esac
+          root="$GITHUB_WORKSPACE/.test-data/module-mounted-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          mkdir -p -m 700 "$GITHUB_WORKSPACE/.test-data"
+          mkdir -m 700 "$root"
+          echo "MODULE_RUN_ROOT=$root" >> "$GITHUB_ENV"
+          bun scripts/agentfs-native-ci/mounted/prepare-module-inputs.ts native-info --target "$TARGET" --out "$root/native"
+          id=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["artifactID"])' "$root/native/native-facts.safe.json")
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$id" > "$root/native/artifact.safe.json"
+          python3 - "$root/native/native-facts.safe.json" "$root/native/artifact.safe.json" <<'PY'
+          import json,sys
+          f,a=[json.load(open(p)) for p in sys.argv[1:]]
+          assert str(a['id'])==f['artifactID'] and not a['expired']
+          assert str(a['workflow_run']['id'])==f['run'] and a['workflow_run']['head_sha']==f['source']
+          assert a['digest']=='sha256:'+f['zipSHA256']
+          PY
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$id/zip" > "$root/native/native.zip"
+          python3 - "$root/native/native-facts.safe.json" "$root/native/native.zip" <<'PY'
+          import hashlib,json,sys
+          assert hashlib.file_digest(open(sys.argv[2],'rb'),'sha256').hexdigest()==json.load(open(sys.argv[1]))['zipSHA256']
+          PY
+          mkdir -m 700 "$root/tools"
+          mkdir -m 700 "$root/tools/node" "$root/tools/bun"
+          cp "$(command -v node)" "$root/tools/node/node"
+          cp "$(command -v bun)" "$root/tools/bun/bun"
+          chmod 700 "$root/tools/node/node" "$root/tools/bun/bun"
+          test "$("$root/tools/node/node" --version)" = v22.21.1
+          test "$("$root/tools/bun/bun" --version)" = 1.4.2
+      - name: Build module and core once for this platform
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          bun install --frozen-lockfile
+          bun run build:packages
+          bun packages/xpod-afs/scripts/build-package.ts --target "$TARGET" --out "$MODULE_RUN_ROOT/build" --native-evidence "$MODULE_RUN_ROOT/native/native.zip" --native-pins "$MODULE_RUN_ROOT/native/native-pins.json"
+          bun build scripts/agentfs-native-ci/mounted/module-admission.ts --target=node --format=esm --metafile="$MODULE_RUN_ROOT/driver-inputs.json" --outfile "$MODULE_RUN_ROOT/module-admission.mjs"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          python3 - "$MODULE_RUN_ROOT" <<'PY'
+          import hashlib,json,os,pathlib,subprocess,sys
+          root=pathlib.Path(sys.argv[1]); workspace=pathlib.Path(os.environ['GITHUB_WORKSPACE'])
+          digest=lambda p:hashlib.file_digest(open(p,'rb'),'sha256').hexdigest()
+          metadata=[workspace/'packages/xpod-cli/.test-data/build/npm-entry-inputs.json',root/'driver-inputs.json']
+          records=[]
+          for p in metadata:
+            inputs=json.load(open(p))['inputs']; base=workspace/'packages/xpod-cli' if p==metadata[0] else workspace
+            members=[]
+            for n in sorted(inputs):
+              file=(base/n).resolve()
+              assert file.is_file(), 'compiler input is not a physical file'
+              members.append({'path':str(file),'sha256':digest(file)})
+            records.append({'path':str(p),'sha256':digest(p),'inputs':members})
+          assert subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()==os.environ['GITHUB_SHA']
+          assert not subprocess.check_output(['git','status','--porcelain','--untracked-files=all'],text=True).strip()
+          with open(root/'build.safe.json','x') as f:json.dump({'sourceSHA':os.environ['GITHUB_SHA'],'sourceClean':True,'exit':0,'commands':['bun run build:packages','bun packages/xpod-afs/scripts/build-package.ts','bun build module-admission.ts --target=node --format=esm'],'coreSHA256':digest(workspace/'packages/xpod-cli/dist/xpod.mjs'),'driverSHA256':digest(root/'module-admission.mjs'),'metafiles':records},f)
+          PY
+      - name: Preserve exact CLI and AFS product materials for this source
+        id: products
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          umask 077
+          (cd packages/xpod-cli && bun pm pack --filename "$MODULE_RUN_ROOT/cli.tgz" --ignore-scripts)
+          module=$(find "$MODULE_RUN_ROOT/build" -maxdepth 1 -name '*.tgz' -type f)
+          test -n "$module"; test "$(printf '%s\n' "$module" | wc -l | tr -d ' ')" = 1
+          bun scripts/agentfs-native-ci/mounted/export-products.ts --workspace "$GITHUB_WORKSPACE" --module "$module" --cli "$MODULE_RUN_ROOT/cli.tgz" --native-archive "$MODULE_RUN_ROOT/native/native.zip" --target "$TARGET" --source-sha "$GITHUB_SHA" --build-receipt "$MODULE_RUN_ROOT/build.safe.json" --out "$MODULE_RUN_ROOT/product-export"
+      - uses: actions/upload-artifact@v4
+        if: steps.products.outcome == 'success'
+        with:
+          name: afs-module-products-${{ matrix.target }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .test-data/module-mounted-${{ github.run_id }}-${{ github.run_attempt }}/product-export/
+          if-no-files-found: error
+          retention-days: 30
+      - name: Prepare actual Darwin ripgrep for mounted shell cases
+        if: startsWith(matrix.target, 'darwin-')
+        run: |
+          set -euo pipefail
+          umask 077
+          brew install ripgrep
+          rg --version
+          python3 - "$MODULE_RUN_ROOT/ripgrep.safe.json" <<'PY'
+          import hashlib,json,os,pathlib,shutil,subprocess,sys
+          binary=pathlib.Path(shutil.which('rg')).resolve()
+          assert binary.is_file()
+          version=subprocess.check_output([str(binary),'--version'],text=True).strip()
+          with open(sys.argv[1],'x') as f:json.dump({'sourceSHA':os.environ['GITHUB_SHA'],'path':str(binary),'version':version,'sha256':hashlib.file_digest(open(binary,'rb'),'sha256').hexdigest(),'actualProbeExit':0},f)
+          PY
+      - name: Prepare actual Linux host ripgrep for installed consumers
+        if: startsWith(matrix.target, 'linux-')
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ripgrep
+          command -v rg
+          rg --version
+      - name: Require the actual freshly built archive through installed Node and Bun consumers
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          umask 077
+          module=$(find "$MODULE_RUN_ROOT/build" -maxdepth 1 -name '*.tgz' -type f)
+          test -n "$module"; test "$(printf '%s\n' "$module" | wc -l | tr -d ' ')" = 1
+          archive_sha=$(shasum -a 256 "$module" | cut -d' ' -f1)
+          bun scripts/agentfs-native-ci/mounted/prepare-module-inputs.ts installed-consumer --archive "$module" --archive-sha256 "$archive_sha" --source-sha "$GITHUB_SHA" --workspace "$GITHUB_WORKSPACE" --evidence "$MODULE_RUN_ROOT/installed-consumer"
+      - name: Prepare owned Linux Bookworm FUSE image
+        if: startsWith(matrix.target, 'linux-')
+        run: |
+          set -euo pipefail
+          test -e /dev/fuse
+          context="$MODULE_RUN_ROOT/image"; mkdir -m 700 "$context"
+          cp "$MODULE_RUN_ROOT/tools/node/node" "$context/node"
+          cp "$MODULE_RUN_ROOT/tools/bun/bun" "$context/bun"
+          cat > "$context/Dockerfile" <<'DOCKERFILE'
+          FROM rust@sha256:93ce27a88655056a51dbdd8f5f2d7ddc071c7b0070fb288a37b5a285fc83971e
+          RUN apt-get update && apt-get install -y --no-install-recommends fuse3 ca-certificates ripgrep procps git python3 && rm -rf /var/lib/apt/lists/*
+          COPY node /opt/node22/bin/node
+          COPY bun /opt/bun/bin/bun
+          RUN chmod 755 /opt/node22/bin/node /opt/bun/bin/bun && test "$(/opt/node22/bin/node --version)" = v22.21.1 && test "$(/opt/bun/bin/bun --version)" = 1.4.2
+          DOCKERFILE
+          tag="xpod-module-mount:${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          echo "XPOD_MOUNT_IMAGE=$tag" >> "$GITHUB_ENV"
+          docker build -t "$tag" "$context"
+          echo "XPOD_MOUNT_IMAGE_ID=$(docker image inspect "$tag" --format '{{.Id}}')" >> "$GITHUB_ENV"
+      - name: Eight lane constituent — Node entry, six native cases and actual module chain
+        id: node
+        env:
+          TARGET: ${{ matrix.target }}
+          ENTRY_RUNTIME: node
+        run: &module_lane |
+          set -euo pipefail
+          umask 077
+          evidence="$MODULE_RUN_ROOT/evidence-$ENTRY_RUNTIME"; mkdir -m 700 "$evidence"
+          product="$MODULE_RUN_ROOT/product-$ENTRY_RUNTIME"
+          module=$(find "$MODULE_RUN_ROOT/build" -maxdepth 1 -name '*.tgz' -type f)
+          test -n "$module"; test "$(printf '%s\n' "$module" | wc -l | tr -d ' ')" = 1
+          if [[ "$TARGET" == linux-* ]]; then
+            consumer=/module-product; workspace=/workspace; ev=/evidence
+            home="/workspace/.test-data/module-home-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-$ENTRY_RUNTIME"
+            node=/opt/node22/bin/node; bun=/opt/bun/bin/bun
+          else
+            consumer="$product"; workspace="$GITHUB_WORKSPACE"; ev="$evidence"
+            home="$MODULE_RUN_ROOT/home-$ENTRY_RUNTIME"
+            node="$MODULE_RUN_ROOT/tools/node/node"; bun="$MODULE_RUN_ROOT/tools/bun/bun"
+          fi
+          authority=$(bun scripts/agentfs-native-ci/mounted/prepare-module-inputs.ts prepare --target "$TARGET" --source-sha "$GITHUB_SHA" --workspace "$GITHUB_WORKSPACE" --out "$product" --consumer-product "$consumer" --consumer-workspace "$workspace" --evidence "$ev" --home "$home" --module "$module" --core packages/xpod-cli/dist/xpod.mjs --driver "$MODULE_RUN_ROOT/module-admission.mjs" --build-receipt "$MODULE_RUN_ROOT/build.safe.json" --native "$MODULE_RUN_ROOT/native/native.zip" --pins "$MODULE_RUN_ROOT/native/native-pins.json" --node "$MODULE_RUN_ROOT/tools/node/node" --bun "$MODULE_RUN_ROOT/tools/bun/bun" --consumer-node "$node" --consumer-bun "$bun")
+          if [[ "$TARGET" == linux-* ]]; then
+            export XPOD_MOUNTED_MODULE_INPUTS_SHA256="$authority" XPOD_MOUNTED_MODULE_RUNTIME="$ENTRY_RUNTIME"
+            export LINUX_ARCHIVE_SHA=$(shasum -a 256 "$module" | cut -d' ' -f1)
+            export LINUX_HELPER_SHA=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["LINUX_HELPER_SHA"])' "$MODULE_RUN_ROOT/native/native-pins.json")
+            python3 scripts/agentfs-native-ci/mounted/linux-container-binding.py "$module" "$evidence" "$MODULE_RUN_ROOT/$ENTRY_RUNTIME.cid" "$product"
+          else
+            "$node" "$product/module-admission.mjs" --inputs "$product/inputs.json" --inputs-sha256 "$authority" --runtime "$ENTRY_RUNTIME"
+          fi
+      - name: Eight lane constituent — Bun entry, same module and core, fresh private home
+        id: bun
+        if: always() && steps.node.outcome != 'skipped'
+        env:
+          TARGET: ${{ matrix.target }}
+          ENTRY_RUNTIME: bun
+        run: *module_lane
+      - name: Close owned image and export only whitelisted safe evidence
+        if: always() && env.MODULE_RUN_ROOT != ''
+        env:
+          TARGET: ${{ matrix.target }}
+          NODE_OUTCOME: ${{ steps.node.outcome }}
+          BUN_OUTCOME: ${{ steps.bun.outcome }}
+        run: |
+          set -euo pipefail
+          umask 077
+          test -n "${MODULE_RUN_ROOT:-}"
+          mkdir -m 700 "$MODULE_RUN_ROOT/export"
+          if [ -d "$MODULE_RUN_ROOT/installed-consumer" ]; then
+            bun scripts/agentfs-native-ci/mounted/prepare-module-inputs.ts export --evidence "$MODULE_RUN_ROOT/installed-consumer" --out "$MODULE_RUN_ROOT/export/installed-consumer"
+          fi
+          image_absent=unknown
+          if [[ "$TARGET" == linux-* ]] && [ -n "${XPOD_MOUNT_IMAGE:-}" ]; then
+            # Only the two task-owned evidence directories, never HOME/session.
+            for runtime in node bun; do
+              dir="$MODULE_RUN_ROOT/evidence-$runtime"
+              if [ -d "$dir" ]; then
+                cidfile="$MODULE_RUN_ROOT/normalize-$runtime.cid"
+                docker run --rm --init --network none --cidfile "$cidfile" --mount "type=bind,src=$dir,dst=/owned-evidence" "$XPOD_MOUNT_IMAGE" chown -R "$(id -u):$(id -g)" /owned-evidence
+                cid=$(cat "$cidfile")
+                test -n "$cid"
+                test -z "$(docker ps -aq --no-trunc --filter "id=$cid")"
+              fi
+            done
+            docker image rm "$XPOD_MOUNT_IMAGE"
+            if docker image inspect "$XPOD_MOUNT_IMAGE" >/dev/null 2>&1; then exit 1; fi
+            image_absent=true
+          fi
+          export OWNED_IMAGE_ABSENT="$image_absent"
+          for runtime in node bun; do
+            if [ -d "$MODULE_RUN_ROOT/evidence-$runtime" ]; then
+              bun scripts/agentfs-native-ci/mounted/prepare-module-inputs.ts export --evidence "$MODULE_RUN_ROOT/evidence-$runtime" --out "$MODULE_RUN_ROOT/export/$runtime"
+            fi
+            if [ -f "$MODULE_RUN_ROOT/product-$runtime/preparation.safe.json" ]; then
+              cp "$MODULE_RUN_ROOT/product-$runtime/preparation.safe.json" "$MODULE_RUN_ROOT/export/preparation-$runtime.safe.json"
+            fi
+          done
+          cp "$MODULE_RUN_ROOT/native/native-facts.safe.json" "$MODULE_RUN_ROOT/export/native-facts.safe.json"
+          if [ -f "$MODULE_RUN_ROOT/ripgrep.safe.json" ]; then
+            cp "$MODULE_RUN_ROOT/ripgrep.safe.json" "$MODULE_RUN_ROOT/export/ripgrep.safe.json"
+          fi
+          python3 - "$MODULE_RUN_ROOT/export/workflow-close.safe.json" <<'PY'
+          import json,os,sys
+          root=os.path.dirname(os.path.dirname(sys.argv[1])); normalizers=[]
+          for runtime in ['node','bun']:
+            p=os.path.join(root,'normalize-'+runtime+'.cid')
+            if os.path.exists(p):normalizers.append({'runtime':runtime,'cid':open(p).read().strip(),'actualClosedExit':0,'containerAbsent':True})
+          with open(sys.argv[1],'x') as f: json.dump({'sourceSHA':os.environ['GITHUB_SHA'],'target':os.environ['TARGET'],'nodeOutcome':os.environ['NODE_OUTCOME'],'bunOutcome':os.environ['BUN_OUTCOME'],'ownedImageAbsent':True if os.environ['OWNED_IMAGE_ABSENT']=='true' else None,'normalizers':normalizers,'noPromotion':True},f)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always() && env.MODULE_RUN_ROOT != ''
+        with:
+          name: afs-module-mounted-${{ matrix.target }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .test-data/module-mounted-${{ github.run_id }}-${{ github.run_attempt }}/export/
+          if-no-files-found: error
+          retention-days: 14

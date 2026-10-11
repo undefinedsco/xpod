@@ -25,13 +25,36 @@ it('keeps workspace icon consumers on one external runtime while preserving thei
   const tarball = path.join(root, 'package.tgz');
   execFileSync('tar', ['czf', tarball, '-C', path.join(root, 'seed'), 'package']);
   const dependencies = getBundledLocalDependencies(repoRoot).filter((entry: { name: string }) =>
-    ['ai-connections', 'extension-sdk', 'shared-ui', 'solid-sdk'].some((name) => entry.name === `@undefineds.co/${name}`));
+    ['ai-connections', 'extension-sdk', 'shared-ui', 'solid-sdk', 'xpod-cli', 'xpod-afs'].some((name) => entry.name === `@undefineds.co/${name}`));
   bundleLocalDependenciesIntoTarball(tarball, dependencies);
+  const extracted = path.join(root, 'installed'); mkdirSync(extracted);
+  execFileSync('tar', ['xzf', tarball, '-C', extracted]);
+  const client = createRequire(path.join(extracted, 'package/package.json'))('@undefineds.co/xpod-cli/client');
+  expect(typeof client.authFetch).toBe('function');
+  const installedRequire = createRequire(path.join(extracted, 'package/package.json'));
+  const afsRoot = path.join(extracted, 'package/node_modules/@undefineds.co/xpod-afs');
+  const afsManifest = JSON.parse(readFileSync(path.join(afsRoot, 'package.json'), 'utf8'));
+  // Installed server DI resolves these files from the bundled package, without
+  // the producer workspace's declarations or generated component directory.
+  expect(readFileSync(path.join(afsRoot, afsManifest.types), 'utf8')).toContain('workcopy/types');
+  const afsComponents = JSON.parse(readFileSync(path.join(afsRoot, afsManifest['lsd:components']), 'utf8'));
+  expect(afsComponents.import.some((iri: string) => iri.endsWith('/workcopy/SolidFsSyncJournal.jsonld'))).toBe(true);
+  for (const relative of Object.values(afsManifest['lsd:contexts']) as string[]) {
+    expect(JSON.parse(readFileSync(path.join(afsRoot, relative), 'utf8'))['@context']).toBeTruthy();
+  }
+  const workcopy = installedRequire('@undefineds.co/xpod-afs/workcopy');
+  const diContracts = installedRequire('@undefineds.co/xpod-afs');
+  expect(typeof diContracts.RootedSolidFsSyncJournal).toBe('function');
+  expect(diContracts.RootedSolidFsSyncJournal).toBe(
+    installedRequire('@undefineds.co/xpod-afs/workcopy/SolidFsSyncJournal').RootedSolidFsSyncJournal);
+  expect(typeof workcopy.LocalSolidFS).toBe('function');
+  expect(workcopy.LocalSolidFS).toBe(installedRequire('@undefineds.co/xpod-afs/workcopy/LocalSolidFS').LocalSolidFS);
   const entries = execFileSync('tar', ['tzf', tarball], { encoding: 'utf8' }).split('\n');
   expect(entries.filter((entry) => entry.includes('/node_modules/lucide-react/'))).toEqual([]);
   const readManifest = (entry: string) => JSON.parse(execFileSync('tar', ['xOf', tarball, entry], { encoding: 'utf8' }));
   expect(readManifest('package/package.json').dependencies['lucide-react']).toBe(manifests[0].dependencies['lucide-react']);
   const rootManifest = readManifest('package/package.json');
+  expect(entries.some((entry) => entry.endsWith('/helper/agentfs-pod'))).toBe(false);
   for (const dependency of dependencies) {
     expect(rootManifest.dependencies[dependency.name]).toBe(`file:./node_modules/${dependency.name}`);
     expect(rootManifest.bundledDependencies).toContain(dependency.name);

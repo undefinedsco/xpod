@@ -22,6 +22,14 @@ function fixture(run: (directory: string) => void): void {
 }
 
 describe('Solid SDK Bun distribution entries', () => {
+  it('quotes external subpath patterns so Bun shell does not expand them as file globs', () => {
+    const manifest = JSON.parse(readFileSync(path.join(root, 'packages/solid-sdk/package.json'), 'utf8'));
+    for (const dependency of ['react', 'zustand']) {
+      expect(manifest.scripts.build).toContain(`--external='${dependency}/*'`);
+      expect(manifest.scripts.build).not.toContain(`--external=${dependency}/*`);
+    }
+  });
+
   it('derives the Bun root from existing reexports without changing the ESM root', () => fixture((directory) => {
     const source = "export * from './session.js';\nexport * from './react.js';\nexport * from './future-entry.js';\n";
     writeFileSync(path.join(directory, 'index.js'), source);
@@ -61,7 +69,7 @@ describe('Solid SDK Bun distribution entries', () => {
     expect(Object.keys(manifest.exports['./session'])).toEqual(['types', 'bun', 'import']);
     expect(manifest.exports['./react'].import).toBe('./dist/react.js');
     expect(manifest.exports['./login-store'].import).toBe('./dist/login-store.js');
-    expect(manifest.scripts.build).toContain('bun build src/session.ts --target=node --format=cjs --packages=external --outfile=dist/session.cjs');
+    expect(manifest.scripts.build).toContain('bun build src/session.ts --target=node --format=cjs --outfile=dist/session.cjs');
     expect(manifest.scripts.build).toContain('bun scripts/build-bun-entries.cjs');
   });
 });

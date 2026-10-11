@@ -1,8 +1,8 @@
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { afterEach, describe, expect, it } from 'vitest';
-import { PodHttpLowerFileSystem, PodLowerConflictError, PodLowerHttpError } from '../../src/cli/agent-fs/pod-lower';
-import { AgentDirectoryClient, type AgentDirectoryRequest } from '../../src/agent-directory/client/AgentDirectoryClient';
+import { PodHttpLowerFileSystem, PodLowerConflictError, PodLowerHttpError } from '../../packages/xpod-afs/src/agent-fs/pod-lower';
+import { AgentDirectoryClient, type AgentDirectoryRequest } from '../../packages/xpod-afs/src/directory/client';
 import { startPodContractServer, type PodContractServer } from './support/podContractServer';
 
 const TOKEN = 'counterexample-token';

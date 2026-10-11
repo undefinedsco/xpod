@@ -569,3 +569,7 @@ This strategy provides **performance where needed** and **developer experience w
 `RdfHandlebarsTemplateEngine` 仅信任已安装 CSS 的五个精确模板路径：`base/profile/card$.ttl.hbs`、`wac/.acl.hbs`、`wac/README.acl.hbs`、`wac/profile/card.acl.hbs`、`acp/.acr.hbs`。它仅为这些模板内的 `webId`、`oidcIssuer` 和 `mailto:` email 变量提供经校验的 IRI 原文；`name` 等 literal 不参与此处理。任意同后缀文件或字符串模板仍使用原有 HTML 转义。
 
 IRI 必须是绝对 URL，WebID/issuer 限 HTTP(S) 且无用户密码部分；禁止 Turtle IRIREF 禁字符、控制字符及孤立 UTF-16 代理字符。URL 解析仅校验，不使用规范化结果替换身份。查询参数、大小写、显式端口、Unicode 与 percent 编码原文均保留。本修复只影响新生成资源；不会自动改写已存在 Profile 或授权文件。
+
+### SolidFS journal component boundary
+
+`RootedSolidFsSyncJournal` and `SqliteSolidFsSyncJournal` retain their service component IRIs and constructor parameters through thin adapters. Journal behavior and shared interfaces are canonical in `@undefineds.co/xpod-afs`; the canonical service package publishes its declarations and Components metadata. Local configuration imports the AFS context before the service context. Platform AFS CLI modules do not declare service DI metadata.

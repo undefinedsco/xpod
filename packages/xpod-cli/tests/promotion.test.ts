@@ -16,6 +16,7 @@ import {
 import {
   ACCEPTANCE_REPORT_SCHEMA_VERSION,
   PROMOTION_EVIDENCE_SCHEMA_VERSION,
+  SOURCE_DISTRIBUTION_NOTES,
   buildPromotionRecord,
   derivePromotedManifest,
   isPathWithin,
@@ -171,6 +172,7 @@ describe('validatePromotionEvidence', () => {
     const promoted = derivePromotedManifest(manifest, evidence);
     expect(publicGateProblems(promoted)).toEqual([]);
     expect(isPublicReleaseReady(promoted)).toBe(true);
+    for (const note of SOURCE_DISTRIBUTION_NOTES) expect(promoted.notes).toContain(note);
     expect(promoted.channel).toBe('preview');
     expect(promoted.validationState).toBe('full-verified');
     for (const entry of promoted.artifacts.filter((item) => item.included)) {
@@ -287,6 +289,7 @@ describe('validatePromotionEvidence', () => {
       promotedAt: '2026-10-02T00:00:00.000Z',
     });
     expect(record.sanitized).toBe(true);
+    for (const note of SOURCE_DISTRIBUTION_NOTES) expect(record.notes).toContain(note);
     expect(record.publicReleaseReady).toBe(true);
     expect(record.promotedManifestSha256).toBe(manifestContentSha256(promoted));
     expect(record.candidateManifestSha256).toBe(manifestContentSha256(manifest));

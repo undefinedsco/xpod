@@ -4,6 +4,7 @@ import type { AuthContext } from '../auth/AuthContext';
 import { GatewayProtocolError } from './errors';
 import type { GatewayEvent, GatewayProtocol } from './types';
 import type { GatewayModelProjection } from './routing/ModelRouter';
+import { parseGatewayModelList } from './models/GatewayModelProjection';
 
 const DEFAULT_TIMEOUT_MS = 3_000;
 const INFERENCE_TIMEOUT_MS = 60_000;
@@ -64,7 +65,7 @@ export class CloudGatewayModelsClient {
         await response.arrayBuffer().catch(() => undefined);
         return [];
       }
-      return parseCloudModelList(await response.json());
+      return parseGatewayModelList(await response.json(), { fallbackOwner: 'cloud' });
     } catch (error) {
       this.logger.warn(`Cloud /v1/models unreachable; keeping local models only: ${errorMessage(error)}`);
       return [];
@@ -183,10 +184,10 @@ export function unionGatewayModelLists(
   local: readonly GatewayModelProjection[],
   cloud: readonly GatewayModelProjection[],
 ): GatewayModelProjection[] {
-  const seen = new Set(local.map((model) => model.id.toLowerCase()));
+  const seen = new Set(local.map((model) => model.id));
   const merged = [...local];
   for (const model of cloud) {
-    const key = model.id.toLowerCase();
+    const key = model.id;
     if (seen.has(key)) {
       continue;
     }
@@ -208,73 +209,6 @@ export function callerIdentityAuthorization(auth: AuthContext): string | undefin
     return undefined;
   }
   return `Bearer ${accessToken}`;
-}
-
-function parseCloudModelList(payload: unknown): GatewayModelProjection[] {
-  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
-    return [];
-  }
-  const data = (payload as { data?: unknown }).data;
-  if (!Array.isArray(data)) {
-    return [];
-  }
-  const models: GatewayModelProjection[] = [];
-  const seen = new Set<string>();
-  for (const item of data) {
-    const model = projectCloudModel(item);
-    if (!model) {
-      continue;
-    }
-    const key = model.id.toLowerCase();
-    if (seen.has(key)) {
-      continue;
-    }
-    seen.add(key);
-    models.push(model);
-  }
-  return models;
-}
-
-function projectCloudModel(item: unknown): GatewayModelProjection | undefined {
-  if (!item || typeof item !== 'object' || Array.isArray(item)) {
-    return undefined;
-  }
-  const record = item as Record<string, unknown>;
-  const id = typeof record.id === 'string' ? record.id.trim() : '';
-  if (!id) {
-    return undefined;
-  }
-  const ownedBy = typeof record.owned_by === 'string' && record.owned_by.trim()
-    ? record.owned_by.trim()
-    : 'cloud';
-  const projection: GatewayModelProjection = {
-    id,
-    object: 'model',
-    owned_by: ownedBy,
-  };
-  if (typeof record.context_window === 'number' && Number.isFinite(record.context_window)) {
-    projection.context_window = record.context_window;
-  }
-  if (record.capabilities && typeof record.capabilities === 'object' && !Array.isArray(record.capabilities)) {
-    projection.capabilities = record.capabilities as GatewayModelProjection['capabilities'];
-  }
-  if (Array.isArray(record.protocols)) {
-    projection.protocols = record.protocols.filter((value): value is NonNullable<GatewayModelProjection['protocols']>[number] =>
-      typeof value === 'string');
-  }
-  if (record.custom === true) {
-    projection.custom = true;
-  }
-  if (typeof record.display_name === 'string' && record.display_name.trim()) {
-    projection.display_name = record.display_name.trim();
-  }
-  if (record.modalities && typeof record.modalities === 'object' && !Array.isArray(record.modalities)) {
-    projection.modalities = record.modalities as GatewayModelProjection['modalities'];
-  }
-  if (Array.isArray(record.custom_capabilities)) {
-    projection.custom_capabilities = record.custom_capabilities.filter((value): value is string => typeof value === 'string');
-  }
-  return projection;
 }
 
 function withStreamFlag(body: unknown, stream: boolean): unknown {

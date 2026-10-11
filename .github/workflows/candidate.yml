@@ -18,6 +18,10 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  NATIVE_PG_IMAGE: ccr.ccs.tencentyun.com/undefineds/xpod-rdf-postgres@sha256:1199698c789fb65897e4b0bd370f7faa959bcbdd3499784af256ad5bb8f0a5f3
+  PG_REGISTRY_AUTHORITY_IMAGE: ccr.ccs.tencentyun.com/undefineds/xpod-rdf-postgres@sha256:635a5eee0ea1461c8cde8425fdf0ca7d0965bc083d8860bb7aa04498c9688986
+
 jobs:
   metadata:
     if: ${{ inputs.task_diagnostic_only != true }}
@@ -199,6 +203,9 @@ jobs:
           tags: |
             ghcr.io/undefinedsco/xpod:sha-${{ needs.metadata.outputs.sourceSha }}
             ghcr.io/undefinedsco/xpod:${{ needs.metadata.outputs.candidate }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/undefinedsco/xpod
+            org.opencontainers.image.revision=${{ needs.metadata.outputs.sourceSha }}
           cache-from: type=gha,scope=xpod-server
           cache-to: type=gha,mode=max,scope=xpod-server
           build-args: |
@@ -394,6 +401,190 @@ jobs:
             --suffix "rc-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           echo '{"secret-isolation":"passed"}' > "${RUNNER_TEMP}/secret-isolation-check.json"
 
+      - name: Compile current source before comparing installed runner bytes
+        run: bun run build:ts
+
+      - name: Preflight immutable native images before any RC mutation
+        env:
+          NATIVE_SOURCE_SHA: ${{ needs.metadata.outputs.sourceSha }}
+          NATIVE_SERVICE_IMAGE: ghcr.io/undefinedsco/xpod@${{ needs.build_image.outputs.digest }}
+        run: |
+          set -euo pipefail
+          umask 077
+          docker_config_dir="$(mktemp -d "${RUNNER_TEMP}/native-registry.XXXXXX")"
+          chmod 700 "$docker_config_dir"
+          cleanup_native_registry() {
+            original_exit=$?
+            cleanup_exit=0
+            rm -f "$docker_config_dir/config.json" "$docker_config_dir/pg-workload.json" || cleanup_exit=$?
+            rmdir "$docker_config_dir" || cleanup_exit=$?
+            if [ "$cleanup_exit" -ne 0 ]; then
+              printf '%s\n' '{"stage":"registry-cleanup","errorClass":"owned-cleanup-failed"}' >&2
+              if [ "$original_exit" -eq 0 ]; then original_exit=70; fi
+            fi
+            trap - EXIT
+            exit "$original_exit"
+          }
+          trap cleanup_native_registry EXIT
+          kubectl -n "$SEALOS_NAMESPACE" get statefulset xpod-rdf-postgres -o json > "$docker_config_dir/pg-workload.json"
+          pg_workload_authority="$(bun scripts/check-qlever-installed-image-conformance.ts \
+            --select-registry-authority "$docker_config_dir/pg-workload.json" --pg-image "$PG_REGISTRY_AUTHORITY_IMAGE")"
+          kubectl -n "$SEALOS_NAMESPACE" get secret "$pg_workload_authority" -o jsonpath='{.data.\.dockerconfigjson}' 2>/dev/null \
+            | base64 --decode 2>/dev/null \
+            | bun scripts/check-qlever-installed-image-conformance.ts \
+                --install-registry-config "$docker_config_dir/config.json" \
+                --existing-docker-config "$HOME/.docker/config.json"
+          for image in "$NATIVE_SERVICE_IMAGE" "$NATIVE_PG_IMAGE"; do
+            pull_exit=0
+            DOCKER_CONFIG="$docker_config_dir" docker pull "$image" >/dev/null 2>&1 || pull_exit=$?
+            if [ "$pull_exit" -ne 0 ]; then
+              printf '%s\n' '{"stage":"exact-image-pull","errorClass":"authorized-pull-failed"}' >&2
+              exit "$pull_exit"
+            fi
+          done
+          runner_sha="$(sha256sum dist/acceptance/run-installed-qlever-conformance.js | cut -d ' ' -f 1)"
+          printf '%s\n' "$runner_sha" > "${RUNNER_TEMP}/native-runner.sha256"
+          mkdir -m 700 "${RUNNER_TEMP}/immutable-native-conformance"
+          DOCKER_CONFIG="$docker_config_dir" bun scripts/check-qlever-installed-image-conformance.ts \
+            --installed-image "$NATIVE_SERVICE_IMAGE" --pg-image "$NATIVE_PG_IMAGE" \
+            --source-sha "$NATIVE_SOURCE_SHA" --runner-sha256 "$runner_sha" \
+            --fixture qlever/tests/fixtures/qlever-semantic-conformance.cjs \
+            --artifact-dir "${RUNNER_TEMP}/immutable-native-conformance"
+
+      - name: Run full integration against the same PG17 candidate before RC mutation
+        env:
+          XPOD_FULL_POSTGRES_IMAGE: ${{ env.NATIVE_PG_IMAGE }}
+          XPOD_FULL_PROJECT: xpod-native-full-${{ github.run_id }}-${{ github.run_attempt }}
+          XPOD_FULL_RUN_ID: native-${{ github.run_id }}-${{ github.run_attempt }}
+        run: bun run test:integration
+
+      # ROOT publishes only the sanitized proof after private exact-image acceptance.
+      # Missing proof/authority fails before rotation. Rerun this failed job using
+      # the existing build outputs; do not rebuild the dynamic candidate image.
+      # First real rerun/output retention and vars refresh remain to be verified.
+      - name: Require independent exact-pair Private17 admission before RC mutation
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRIVATE17_ADMISSION_SHA256: ${{ vars.XPOD_PRIVATE17_ADMISSION_SHA256 }}
+          NATIVE_SOURCE_SHA: ${{ needs.metadata.outputs.sourceSha }}
+          NATIVE_SERVICE_IMAGE: ghcr.io/undefinedsco/xpod@${{ needs.build_image.outputs.digest }}
+        run: |
+          set -euo pipefail
+          umask 077
+          test -n "$PRIVATE17_ADMISSION_SHA256" || { echo 'Private17 independent authority missing; RC mutation refused' >&2; exit 1; }
+          [[ "$NATIVE_SOURCE_SHA" =~ ^[a-f0-9]{40}$ && "$NATIVE_SERVICE_IMAGE" =~ ^ghcr\.io/undefinedsco/xpod@sha256:[a-f0-9]{64}$ ]] || { echo 'Private17 original build outputs missing; RC mutation refused' >&2; exit 1; }
+          proof_dir="$(mktemp -d "${RUNNER_TEMP}/private17-proof.XXXXXX")"
+          cleanup_private17_proof() {
+            original_exit=$?
+            cleanup_exit=0
+            rm -f "$proof_dir/private17-admission.json" || cleanup_exit=$?
+            rmdir "$proof_dir" || cleanup_exit=$?
+            if [ "$cleanup_exit" -ne 0 ]; then
+              printf '%s\n' '{"stage":"private17-cleanup","errorClass":"owned-cleanup-failed"}' >&2
+              if [ "$original_exit" -eq 0 ]; then original_exit=70; fi
+            fi
+            trap - EXIT
+            exit "$original_exit"
+          }
+          trap cleanup_private17_proof EXIT
+          runner_sha="$(cat "${RUNNER_TEMP}/native-runner.sha256")"
+          bun scripts/check-qlever-installed-image-conformance.ts \
+            --acquire-private17-admission "$proof_dir/private17-admission.json" \
+            --source-sha "$NATIVE_SOURCE_SHA" --installed-image "$NATIVE_SERVICE_IMAGE" \
+            --admission-sha256 "$PRIVATE17_ADMISSION_SHA256"
+          bun scripts/check-qlever-installed-image-conformance.ts \
+            --verify-private17-admission "$proof_dir/private17-admission.json" \
+            --admission-sha256 "$PRIVATE17_ADMISSION_SHA256" \
+            --installed-image "$NATIVE_SERVICE_IMAGE" --pg-image "$NATIVE_PG_IMAGE" \
+            --source-sha "$NATIVE_SOURCE_SHA" --runner-sha256 "$runner_sha" \
+            --private17-receipt "${RUNNER_TEMP}/private17-admission-check.json"
+
+      - name: Preflight exact PostgreSQL image pull in the assigned namespace
+        run: |
+          set -euo pipefail
+          umask 077
+          preflight_dir="$(mktemp -d "${RUNNER_TEMP}/namespace-native.XXXXXX")"
+          nonce="$(bun -e 'console.log(crypto.randomUUID())')"
+          job_name="xpod-rc-pg-preflight-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${nonce:0:8}"
+          job_uid=""
+          job_created=false
+          job_create_attempted=false
+          cleanup_namespace_native() {
+            original_exit=$?
+            cleanup_exit=0
+            if [ "$job_create_attempted" = true ]; then
+              kubectl -n "$SEALOS_NAMESPACE" get job "$job_name" --ignore-not-found -o json > "$preflight_dir/current-job.json" 2>/dev/null || cleanup_exit=$?
+              if [ "$cleanup_exit" -eq 0 ] && [ -s "$preflight_dir/current-job.json" ]; then
+                ownership_exit=0
+                PREFLIGHT_NONCE="$nonce" PREFLIGHT_UID="$job_uid" bun -e '
+                  try {
+                    const fs=require("node:fs"); const job=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));
+                    if(job.metadata.annotations?.["xpod.undefineds.co/preflight-owner"]!==process.env.PREFLIGHT_NONCE) process.exit(3);
+                    if(!job.metadata.uid || (process.env.PREFLIGHT_UID && job.metadata.uid!==process.env.PREFLIGHT_UID)) process.exit(4);
+                    fs.writeFileSync(process.argv[2], JSON.stringify({apiVersion:"v1",kind:"DeleteOptions",preconditions:{uid:job.metadata.uid}}),{mode:0o600});
+                  } catch { process.exit(1); }
+                ' "$preflight_dir/current-job.json" "$preflight_dir/delete-options.json" || ownership_exit=$?
+                if [ "$ownership_exit" -eq 3 ] && [ "$job_created" = false ]; then
+                  : # Failed create collided with a foreign object; preserve it.
+                elif [ "$ownership_exit" -ne 0 ]; then
+                  cleanup_exit=1
+                fi
+                if [ "$ownership_exit" -eq 0 ] && [ "$cleanup_exit" -eq 0 ]; then
+                  kubectl delete --raw "/apis/batch/v1/namespaces/${SEALOS_NAMESPACE}/jobs/${job_name}" \
+                    -f "$preflight_dir/delete-options.json" >/dev/null 2>&1 || cleanup_exit=$?
+                fi
+                if [ "$ownership_exit" -eq 0 ] && [ "$cleanup_exit" -eq 0 ]; then
+                  kubectl -n "$SEALOS_NAMESPACE" wait --for=delete "job/$job_name" --timeout=120s >/dev/null 2>&1 || cleanup_exit=$?
+                  kubectl -n "$SEALOS_NAMESPACE" wait --for=delete pod -l "job-name=$job_name" --timeout=120s >/dev/null 2>&1 || cleanup_exit=$?
+                fi
+              elif [ "$cleanup_exit" -eq 0 ]; then
+                # An acknowledged/attempted Job may already be gone; still prove
+                # its uniquely named dependent Pods have disappeared.
+                kubectl -n "$SEALOS_NAMESPACE" wait --for=delete pod -l "job-name=$job_name" --timeout=120s >/dev/null 2>&1 || cleanup_exit=$?
+              fi
+            fi
+            if [ "$cleanup_exit" -ne 0 ]; then
+              printf '%s\n' '{"stage":"namespace-cleanup","errorClass":"owned-cleanup-failed"}' >&2
+              if [ "$original_exit" -eq 0 ]; then original_exit=70; fi
+            fi
+            trap - EXIT
+            exit "$original_exit"
+          }
+          trap cleanup_namespace_native EXIT
+          kubectl -n "$SEALOS_NAMESPACE" get statefulset xpod-rdf-postgres -o json > "$preflight_dir/pg-workload.json"
+          pg_authority="$(bun scripts/check-qlever-installed-image-conformance.ts \
+            --select-registry-authority "$preflight_dir/pg-workload.json" \
+            --pg-image "$PG_REGISTRY_AUTHORITY_IMAGE")"
+          PREFLIGHT_NAME="$job_name" PREFLIGHT_NONCE="$nonce" PREFLIGHT_AUTHORITY="$pg_authority" bun -e '
+            const fs=require("node:fs");const {parseDocument}=require("yaml");
+            const job=parseDocument(fs.readFileSync("deploy/sealos/rc/pull-preflight.yaml","utf8")).toJSON();
+            job.metadata.name=process.env.PREFLIGHT_NAME;job.metadata.namespace=process.env.SEALOS_NAMESPACE;
+            job.spec.template.spec.containers[0].image=process.env.NATIVE_PG_IMAGE;
+            job.metadata.annotations={"xpod.undefineds.co/preflight-owner":process.env.PREFLIGHT_NONCE};
+            job.spec.template.spec.imagePullSecrets=[{name:process.env.PREFLIGHT_AUTHORITY}];
+            fs.writeFileSync(process.argv[1],JSON.stringify(job),{mode:0o600});
+          ' "$preflight_dir/manifest.json"
+          job_create_attempted=true
+          kubectl create -f "$preflight_dir/manifest.json" -o json > "$preflight_dir/created-job.json" 2>/dev/null
+          job_created=true
+          job_uid="$(bun -e 'try {const j=require(process.argv[1]);if(!j.metadata?.uid)process.exit(1);console.log(j.metadata.uid)} catch {process.exit(1)}' "$preflight_dir/created-job.json")"
+          kubectl -n "$SEALOS_NAMESPACE" wait --for=condition=complete "job/$job_name" --timeout=600s >/dev/null 2>&1
+          kubectl -n "$SEALOS_NAMESPACE" get job "$job_name" -o json > "$preflight_dir/job.json" 2>/dev/null
+          kubectl -n "$SEALOS_NAMESPACE" get pods -l "job-name=$job_name" -o json > "$preflight_dir/pods.json" 2>/dev/null
+          bun scripts/check-qlever-installed-image-conformance.ts \
+            --validate-pull-job "$preflight_dir/job.json" --pods "$preflight_dir/pods.json" \
+            --job-name "$job_name" --job-uid "$job_uid" --namespace "$SEALOS_NAMESPACE" \
+            --authority-name "$pg_authority" \
+            --pg-image "$NATIVE_PG_IMAGE" \
+            --pull-receipt "${RUNNER_TEMP}/namespace-native-pull-check.json"
+
+      - name: Verify protected RC database without changing data
+        run: |
+          set -euo pipefail
+          # Never reset a shared database. Missing/mismatched state requires a
+          # separately verified protected backup/restore, not deployment DDL.
+          kubectl -n "$SEALOS_NAMESPACE" exec -i statefulset/xpod-rdf-postgres -- sh -s < scripts/verify-protected-rc-database.sh
+
       - name: Create runtime secrets
         run: |
           set -euo pipefail
@@ -404,39 +595,6 @@ jobs:
           kubectl -n "$SEALOS_NAMESPACE" create secret generic "$XPOD_RC_SEED_SECRET_NAME" \
             --from-file=rc.json="${RUNNER_TEMP}/xpod-rc-seed.json" \
             --dry-run=client -o yaml | kubectl apply -f -
-
-      - name: Reset the shared RC database
-        run: |
-          set -euo pipefail
-          # RC 与 cn/co 共用 xpod-rdf-postgres：不重建实例，只重置 RC 自己的库。
-          # 扩展顺序是硬要求：vector -> xpod_rdf -> xpod_qlever；
-          # 顺序错了会缺 native_sparql_capabilities，应用启动即失败。
-          # 用 statefulset/<name> 交给 kubectl 挑就绪 Pod；不用 items[0]（可能选中正在终止的那个）
-          kubectl -n "$SEALOS_NAMESPACE" exec -i statefulset/xpod-rdf-postgres -- sh -s <<'SQL'
-          set -e
-          export PGPASSWORD="$POSTGRES_PASSWORD"
-          version="$(psql -U "$POSTGRES_USER" -d postgres -v ON_ERROR_STOP=1 -Atc 'SHOW server_version_num')"
-          case "$version" in
-            17????) ;;
-            *) echo 'RC requires PostgreSQL 17 before database reset'; exit 1 ;;
-          esac
-          psql -U "$POSTGRES_USER" -d postgres -v ON_ERROR_STOP=1 -c 'DROP DATABASE IF EXISTS xpod_rc WITH (FORCE)'
-          psql -U "$POSTGRES_USER" -d postgres -v ON_ERROR_STOP=1 -c 'CREATE DATABASE xpod_rc OWNER xpod_rc'
-          psql -U "$POSTGRES_USER" -d xpod_rc -v ON_ERROR_STOP=1 -c 'CREATE EXTENSION IF NOT EXISTS vector'
-          psql -U "$POSTGRES_USER" -d xpod_rc -v ON_ERROR_STOP=1 -c "CREATE EXTENSION IF NOT EXISTS xpod_rdf VERSION '0.2.0'"
-          psql -U "$POSTGRES_USER" -d xpod_rc -v ON_ERROR_STOP=1 -c "CREATE EXTENSION IF NOT EXISTS xpod_qlever VERSION '0.4.0'"
-          psql -U "$POSTGRES_USER" -d xpod_rc -v ON_ERROR_STOP=1 <<'GRANTS'
-          ALTER SCHEMA xpod_rdf OWNER TO xpod_rc;
-          GRANT ALL ON SCHEMA public, xpod_rdf TO xpod_rc;
-          GRANT ALL ON ALL TABLES IN SCHEMA public, xpod_rdf TO xpod_rc;
-          GRANT ALL ON ALL SEQUENCES IN SCHEMA public, xpod_rdf TO xpod_rc;
-          GRANT ALL ON ALL FUNCTIONS IN SCHEMA public, xpod_rdf TO xpod_rc;
-          GRANTS
-          extensions="$(psql -U "$POSTGRES_USER" -d xpod_rc -v ON_ERROR_STOP=1 -Atc "SELECT count(*) FROM pg_extension WHERE extname IN ('vector', 'xpod_rdf', 'xpod_qlever')")"
-          test "$extensions" = 3
-          vector_version="$(psql -U "$POSTGRES_USER" -d xpod_rc --no-align --tuples-only --command "SELECT extversion FROM pg_extension WHERE extname = 'vector'" | tr -d '[:space:]')"
-          test -n "$vector_version"
-          SQL
 
       - name: Deploy RC image by digest
         run: |
@@ -635,7 +793,7 @@ jobs:
 
           XPOD_LIVE_PROVIDER_KEY_FILE="$provider_file" \
           XPOD_LIVE_TASK_APPROVAL=1 \
-          XPOD_LIVE_GATEWAY_URL="$gateway" \
+          XPOD_BASE_URL="$gateway" \
           XPOD_LIVE_CLOUD_IDP="https://id-rc.undefineds.cn/" \
           bun run ai-connections:accept:live
 
@@ -670,7 +828,20 @@ jobs:
           const fs = require('node:fs');
           const path = require('node:path');
           const temp = process.env.RUNNER_TEMP;
+          const nativePair = JSON.parse(fs.readFileSync(path.join(temp, 'immutable-native-conformance/installed-image-conformance.json'), 'utf8'));
+          const private17 = JSON.parse(fs.readFileSync(path.join(temp, 'private17-admission-check.json'), 'utf8'));
+          const namespacePull = JSON.parse(fs.readFileSync(path.join(temp, 'namespace-native-pull-check.json'), 'utf8'));
+          if (nativePair.status !== 'ok' || nativePair.nativeAbiVersion !== 1 || nativePair.ownedCleanup !== 'verified-absent' ||
+            private17.status !== 'ok' || private17.installedImage !== nativePair.installedImage || private17.pgImage !== nativePair.pgImage ||
+            private17.sourceSha !== nativePair.sourceSha || private17.runnerSha256 !== nativePair.runnerSha256 ||
+            private17.evidenceBoundary !== 'immutable-installed-joint' || private17.publicCases !== 16 || private17.proCases !== 17 ||
+            !private17.serverIdentifier || !private17.pgContainerId || !private17.baseTableOID ||
+            namespacePull.status !== 'ok' || !namespacePull.jobUID || !namespacePull.podUID) {
+            throw new Error('independent source-bound native admission did not complete');
+          }
+          const nativeChecks = { 'native-sparql': 'passed', 'native-public16': 'passed', 'native-private17': 'passed', 'native-namespace-pull': 'passed' };
           const checks = {
+            ...nativeChecks,
             ...JSON.parse(fs.readFileSync(path.join(temp, 'deployment-checks.json'), 'utf8')),
             ...JSON.parse(fs.readFileSync(path.join(temp, 'secret-isolation-check.json'), 'utf8')),
             ...JSON.parse(fs.readFileSync(path.join(temp, 'public-checks.json'), 'utf8')),
@@ -692,9 +863,11 @@ jobs:
         name: Project safe Task approval evidence
         if: always()
         run: |
-          node - <<'NODE'
+          bun - <<'BUN'
           const fs = require('node:fs');
           const path = require('node:path');
+          const { projectTaskRunFailureDiagnostic } = await import(
+            path.join(process.env.GITHUB_WORKSPACE, 'src/api/tasks/TaskRunFailureDiagnostic.ts'));
           const input = path.join(process.cwd(), '.test-data', 'acceptance', 'live-gateway-login-chat-local.json');
           const diagnostic = Boolean(process.env.DIAGNOSTIC_RUNTIME_SOURCE_SHA);
           let task;
@@ -798,6 +971,10 @@ jobs:
                 }
               }
             }
+            if (row.ok !== true) {
+              const failure = projectTaskRunFailureDiagnostic(row.failureDiagnostic, 'failed');
+              if (failure) safe.failureDiagnostic = failure;
+            }
             return safe;
           });
           const cleanup = {};
@@ -819,7 +996,7 @@ jobs:
           const output = diagnostic ? path.join(process.env.RUNNER_TEMP, 'task-diagnostic-safe') : process.env.RUNNER_TEMP;
           fs.mkdirSync(output, { recursive: true });
           fs.writeFileSync(path.join(output, 'task-approval-evidence.json'), `${JSON.stringify(evidence, null, 2)}\n`);
-          NODE
+          BUN
 
       - name: Upload safe Task approval evidence
         if: always()
@@ -937,7 +1114,7 @@ jobs:
       - name: Build desktop with the accepted native runtime
         working-directory: desktop
         env:
-          # Raises the anonymous api.github.com rate limit for the native-source docs tree read.
+          # Authenticate the pinned GitHub API docs tree with the existing workflow token.
           GH_TOKEN: ${{ github.token }}
         run: bun run dist
       # The Account document links `/app/assets/main.css` by name. A build that
@@ -1442,7 +1619,7 @@ jobs:
           curl --fail --silent --show-error --max-time 5 "${gateway}service/status" > /dev/null
           XPOD_LIVE_PROVIDER_KEY_FILE="$provider_file" \
           XPOD_LIVE_TASK_APPROVAL=1 \
-          XPOD_LIVE_GATEWAY_URL="$gateway" \
+          XPOD_BASE_URL="$gateway" \
           XPOD_LIVE_CLOUD_IDP=https://id-rc.undefineds.cn/ \
           bun run ai-connections:accept:live
 

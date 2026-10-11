@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { getLoggerFor } from 'global-logger-factory';
 import { drizzle, eq } from '@undefineds.co/drizzle-solid';
 import {
@@ -55,6 +56,55 @@ export interface PodMatrixStoreOptions {
 type Db = any;
 type JsonObjectSource = string | Record<string, unknown> | null | undefined;
 
+/**
+ * A phase slower than this is reported with its monotonic duration. The
+ * threshold keeps normal traffic quiet while still capturing a stalled Pod
+ * request, which is the only way to see where a 500's time actually went.
+ */
+const SLOW_PHASE_MS = 3_000;
+const SAFE_ERROR_TOKEN = /^[A-Za-z0-9_]{1,64}$/;
+// `DOMException.code` is a prototype getter that returns a number, so a
+// string-only filter silently drops a real native timeout. Numeric `23`
+// (TimeoutError) is the only numeric code allowed through.
+const DOM_TIMEOUT_CODE = 23;
+// Fixed standard HTTP methods only: a request's method may carry an opaque
+// credential token, so an unrecognized value is reported as `unknown`.
+const SAFE_HTTP_METHODS = new Set<string>([
+  'GET', 'HEAD', 'POST', 'PUT', 'DELETE', 'CONNECT', 'OPTIONS', 'TRACE', 'PATCH',
+]);
+
+/**
+ * Per-operation diagnostic correlation.
+ *
+ * A trace is created for one operation/request/call and passed down its awaited
+ * boundaries. No phase is ever stored on the store instance, so concurrent
+ * operations cannot overwrite each other's phase.
+ */
+interface MatrixPhaseTrace {
+  readonly operation: string;
+  readonly id: string;
+}
+
+/**
+ * The trace of the public operation currently running, scoped to its async
+ * call chain.
+ *
+ * Each public store method opens one operation trace; every internal helper
+ * (`getDb`, `appendEvent`, `listEvents`, ...) inherits it, so a single call
+ * shares one `opId`. A cached fetch reads the trace active at execution time
+ * instead of the first caller's, and concurrent operations stay isolated
+ * because AsyncLocalStorage is per async context, not a mutable field on the
+ * store instance.
+ */
+const operationTrace = new AsyncLocalStorage<MatrixPhaseTrace>();
+
+/** Public store entry points, each of which opens exactly one operation trace. */
+const TRACED_PUBLIC_OPERATIONS = [
+  'getAccount', 'createRoom', 'joinRoom', 'inviteUser', 'leaveRoom', 'sendEvent', 'setState',
+  'sync', 'listJoinedRooms', 'getMembers', 'listMessages', 'getEvent', 'getState',
+  'authorize', 'recover', 'loadInput', 'commitResult', 'recordFailure',
+] as const;
+
 interface MatrixRoomSource {
   id: string;
   title?: string | null;
@@ -93,6 +143,8 @@ export class PodMatrixStore {
   private readonly podAccess?: PodAccessFetchProvider;
   private readonly journal: MatrixEventJournal;
   private readonly logger = getLoggerFor(this);
+  private fetchSequence = 0;
+  private readonly rawBodyReaders = new WeakMap<ReadableStream, ReadableStream['getReader']>();
   private readonly serverName?: string;
   private readonly serverGroupReconcilerService?: ServerGroupReconcilerService;
 
@@ -101,6 +153,7 @@ export class PodMatrixStore {
     this.podAccess = options.podAccess;
     this.journal = options.journal ?? new InMemoryMatrixEventJournal();
     this.serverGroupReconcilerService = options.serverGroupReconcilerService;
+    this.wrapPublicOperations();
   }
 
   public async getAccount(context: MatrixStoreContext): Promise<MatrixAccountInfo> {
@@ -275,30 +328,36 @@ export class PodMatrixStore {
 
   public async sendEvent(roomId: string, eventType: string, txnId: string, content: MatrixSendEventRequest,
     context: MatrixStoreContext): Promise<MatrixEventRecord> {
-    const db = await this.getDb(context);
+    // One public operation trace is opened for this call; every phase below and
+    // every nested helper inherits it, so the whole PUT shares one opId.
+    const trace = this.currentTrace('sendEvent');
+    const db = await this.getDb(context, trace);
     // Reuse the room and timeline within this operation. The exact receipt lookup
     // remains independent: its resource may have moved out of this timeline.
-    const room = await this.roomSource(db,roomId);
-    const events = await this.listEvents(db, roomId, context);
-    await this.requireJoined(db, roomId, context, events, room);
+    const room = await this.runPhase(trace, 'sendEvent.roomSource', {}, () => this.roomSource(db,roomId));
+    const events = await this.runPhase(trace, 'sendEvent.listEvents', {}, () =>
+      this.listEvents(db, roomId, context, {}, trace));
+    await this.runPhase(trace, 'sendEvent.requireJoined', {}, () => this.requireJoined(db, roomId, context, events, room));
     if (eventType !== 'm.room.message') throw new MatrixError(400, 'M_UNRECOGNIZED', 'Only m.room.message timeline events are supported');
-    await this.authorizeTargets(db, roomId, content, context, events);
-    const reservation = await this.journal.reserveTransaction(this.scope(context),
-      JSON.stringify([this.deviceId(context), roomId, eventType, txnId]), {
-        eventId: this.generateEventId(context), createdAt: Date.now(), contentHash: this.hash(this.canonicalJson(['user',context.webId,eventType,content])),
-      });
+    await this.runPhase(trace, 'sendEvent.authorizeTargets', {}, () => this.authorizeTargets(db, roomId, content, context, events));
+    const reservation = await this.runPhase(trace, 'sendEvent.journal.reserveTransaction', {}, () =>
+      this.journal.reserveTransaction(this.scope(context),
+        JSON.stringify([this.deviceId(context), roomId, eventType, txnId]), {
+          eventId: this.generateEventId(context), createdAt: Date.now(), contentHash: this.hash(this.canonicalJson(['user',context.webId,eventType,content])),
+        }));
     if (reservation.contentHash !== this.hash(this.canonicalJson(['user',context.webId,eventType,content]))) {
       throw new MatrixError(409, 'M_CONFLICT', 'Transaction already reserved with different content');
     }
-    const resourceId = this.messageResourceIdFromEvent(roomId,reservation.eventId,reservation.createdAt);
-    const source = await db.findById(messageResource, resourceId);
+    const source = await this.runPhase<MatrixEventSource | undefined>(trace, 'sendEvent.db.findById', {}, () =>
+      db.findById(messageResource,this.messageResourceIdFromEvent(roomId,reservation.eventId,reservation.createdAt)));
     if (source) {
-      const existing = this.eventSourceToRecord(source, roomId, context);
+      const existing = this.eventSourceToRecord(source,roomId,context);
       if (reservation.contentHash !== this.hash(this.canonicalJson(['user',existing.senderWebId,existing.type,existing.content]))) {
         throw new MatrixError(409,'M_CONFLICT','Stored event no longer matches its receipt');
       }
-      existing.depth = await this.journal.registerEvent(this.scope(context),roomId,existing.eventId);
-      await this.reconcileEvent(db, existing, context, events);
+      existing.depth = await this.runPhase(trace, 'journal.register', {}, () =>
+        this.journal.registerEvent(this.scope(context),roomId,existing.eventId));
+      await this.runPhase(trace, 'reconcileEvent', {}, () => this.reconcileEvent(db, existing, context, events));
       return existing;
     }
     return this.appendEvent(db, { roomId, type: eventType, sender: this.getMatrixUserId(context), txnId,
@@ -320,34 +379,50 @@ export class PodMatrixStore {
   }
 
   public async sync(context: MatrixStoreContext, options: { since?: string; limit?: number; timeout?: number; signal?: AbortSignal } = {}): Promise<MatrixSyncResponse> {
-    const deadline = Date.now() + Math.min(Math.max(options.timeout ?? 0, 0), 30_000);
-    let result: MatrixSyncResponse;
-    // First pass indexes native Pod writes; the second reads a committed journal watermark.
-    await this.syncOnce(context, options);
-    do {
-      result = await this.syncOnce(context, options);
-      if (Object.values(result.rooms.join).some(room => room.timeline.events.length)
-        || Object.keys(result.rooms.invite ?? {}).length || Date.now() >= deadline || options.signal?.aborted) return result;
-      await new Promise<void>((resolve) => {
-        const done = (): void => { clearTimeout(timer); options.signal?.removeEventListener('abort', done); resolve(); };
-        const timer = setTimeout(done, Math.min(500, Math.max(0, deadline - Date.now())));
-        options.signal?.addEventListener('abort', done, { once: true });
-      });
-    } while (!options.signal?.aborted);
-    return result;
+    const trace = this.currentTrace('sync');
+    const startedAt = performance.now();
+    let passes = 0;
+    let completed = false;
+    try {
+      const deadline = Date.now() + Math.min(Math.max(options.timeout ?? 0, 0), 30_000);
+      let result: MatrixSyncResponse;
+      // First pass indexes native Pod writes; the second reads a committed journal watermark.
+      await this.syncOnce(context, options, trace);
+      passes = 1;
+      do {
+        result = await this.syncOnce(context, options, trace);
+        passes += 1;
+        if (Object.values(result.rooms.join).some(room => room.timeline.events.length)
+          || Object.keys(result.rooms.invite ?? {}).length || Date.now() >= deadline || options.signal?.aborted) {
+          completed = true;
+          return result;
+        }
+        await new Promise<void>((resolve) => {
+          const done = (): void => { clearTimeout(timer); options.signal?.removeEventListener('abort', done); resolve(); };
+          const timer = setTimeout(done, Math.min(500, Math.max(0, deadline - Date.now())));
+          options.signal?.addEventListener('abort', done, { once: true });
+        });
+      } while (!options.signal?.aborted);
+      completed = true;
+      return result;
+    } finally {
+      if (completed) this.logPhase(trace, 'sync.done', startedAt, { passes });
+    }
   }
 
-  private async syncOnce(context: MatrixStoreContext, options: { since?: string; limit?: number }): Promise<MatrixSyncResponse> {
-    const db = await this.getDb(context);
+  private async syncOnce(context: MatrixStoreContext, options: { since?: string; limit?: number }, trace: MatrixPhaseTrace): Promise<MatrixSyncResponse> {
+    const startedAt = performance.now();
+    const db = await this.getDb(context, trace);
     const since = this.parseSyncToken(options.since);
-    const snapshot = await this.journal.getHighWatermark(this.scope(context));
+    const snapshot = await this.runPhase(trace, 'sync.watermark', {}, () => this.journal.getHighWatermark(this.scope(context)));
     const limit = Math.min(Math.max(options.limit ?? 50, 1), 1000);
     const join: MatrixSyncResponse['rooms']['join'] = {};
     const invite: NonNullable<MatrixSyncResponse['rooms']['invite']> = {};
     const leave: NonNullable<MatrixSyncResponse['rooms']['leave']> = {};
     const batches: Array<{room: MatrixRoomRecord; events: MatrixEventRecord[]}> = [];
-    for (const room of await this.listRooms(db)) {
-      const events = (await this.listEvents(db, room.roomId, context)).filter(e=>e.depth! <= snapshot);
+    const rooms = await this.runPhase(trace, 'sync.rooms.select', {}, () => this.listRooms(db));
+    for (const room of rooms) {
+      const events = (await this.listEvents(db, room.roomId, context, {}, trace)).filter(e=>e.depth! <= snapshot);
       const membership = this.latestState(events, 'm.room.member', this.getMatrixUserId(context));
       if (membership?.content.membership === 'invite') {
         if ((membership.depth ?? 0) > since) invite[room.roomId] = { invite_state: { events: [this.toClientEvent(membership)] } };
@@ -379,6 +454,12 @@ export class PodMatrixStore {
     // When a joined timeline has backlog, do not advance past its last delivered event.
     const next = selected.length ? selected[selected.length-1].depth! : since;
     const high = candidates.length === 0 && transitionPositions.length ? snapshot : next;
+    this.logPhase(trace, 'sync.once.done', startedAt, {
+      rooms: rooms.length,
+      events: batches.reduce((total, batch) => total + batch.events.length, 0),
+      selected: selected.length,
+      cursorAdvanced: high !== since,
+    });
     return {next_batch: this.encodeSyncToken(high), rooms: {join, invite, leave}};
   }
 
@@ -444,23 +525,22 @@ export class PodMatrixStore {
     return event.content;
   }
 
-  private async getDb(context: MatrixStoreContext): Promise<Db> {
+  private async getDb(context: MatrixStoreContext, parent?: MatrixPhaseTrace): Promise<Db> {
     if ((context as any)._matrixDb) {
       return (context as any)._matrixDb;
     }
 
+    const trace = parent ?? this.currentTrace('getDb');
     const auth = context.auth as AuthContext | undefined;
     if (!auth || !isSolidAuth(auth) || !auth.webId) {
       throw new MatrixError(401, 'M_UNKNOWN_TOKEN', 'Solid authentication is required');
     }
-
-    const podFetch = this.podAccess
-      ? await this.podAccess.getPodFetch(context.webId, {auth, podBaseUrl: context.podUrl})
-      : undefined;
+    const podFetch = await this.runPhase(trace, 'getDb.credentials', {}, async () =>
+      this.podAccess ? await this.podAccess.getPodFetch(context.webId, {auth, podBaseUrl: context.podUrl}) : undefined);
     if (!podFetch) throw new MatrixError(403, 'M_FORBIDDEN', 'Grant Pod interface access before using Matrix');
     const db: Db = drizzle(
       {
-        fetch: podFetch,
+        fetch: this.tracePodFetch(podFetch),
         info: {
           webId: auth.webId,
           isLoggedIn: true,
@@ -472,16 +552,310 @@ export class PodMatrixStore {
         podUrl: context.podUrl,
       },
     );
-    await db.init(
+    await this.runPhase(trace, 'getDb.init', {}, () => db.init(
       chatResource,
       threadResource,
       runResource,
       runStepResource,
       deliveryResource,
       messageResource,
-    );
+    ));
     (context as any)._matrixDb = db;
     return db;
+  }
+
+  /**
+   * Wrap a Pod fetch so each outbound request reports its monotonic phase.
+   *
+   * Fetch starts and header/error ends are recorded even when fast. Body
+   * method boundaries are separate, so a stalled select can be correlated
+   * with the actual awaited transport or body-consumption method. The correlation is read
+   * from the operation trace active at execution time, so a cached fetch
+   * reused by a later call reports that call, not its first creator. The
+   * method is reduced to a fixed standard token; no URL, query, body, token or
+   * DSN is ever read. The original request/signal and Response object pass
+   * through; response consumption methods are observed without pre-reading.
+   */
+  private tracePodFetch(podFetch: typeof fetch): typeof fetch {
+    // Fetches cached in a DB inherit the operation active when they execute.
+    const owner = operationTrace.getStore();
+    return async (input, init) => {
+      const startedAt = performance.now();
+      const trace = operationTrace.getStore() ?? owner ?? this.createTrace('podFetch');
+      const fetchId = ++this.fetchSequence;
+      const rawMethod = init?.method ?? (input instanceof Request ? input.method : 'GET');
+      const method = typeof rawMethod === 'string' && SAFE_HTTP_METHODS.has(rawMethod.toUpperCase())
+        ? rawMethod.toUpperCase()
+        : 'unknown';
+      const detail = { fetchId, method };
+      this.startPhase(trace, 'podFetch', startedAt, detail);
+      try {
+        const response = await podFetch(input, init);
+        this.logPhase(trace, 'podFetch.headers', startedAt, {
+          ...detail, status: response.status, ok: response.ok, ...this.safeBodyHeaders(response),
+        }, true);
+        this.traceRawBody(response, trace, detail, init?.signal ?? (input instanceof Request ? input.signal : undefined));
+        return this.traceResponseBody(response, trace, detail);
+      } catch (error) {
+        this.logPhase(trace, 'podFetch.error', startedAt, { ...detail, ...this.errorDetail(error) }, true);
+        throw error;
+      }
+    };
+  }
+
+  private safeBodyHeaders(response: Response): Record<string, unknown> {
+    try {
+      const headers = response.headers;
+      const fixed = (key: string, values: string[]): string => {
+        const raw = headers.get(key);
+        return raw === null ? 'absent' : values.includes(raw.trim().toLowerCase()) ? raw.trim().toLowerCase() : 'unknown';
+      };
+      const rawLength = headers.get('content-length');
+      const length = rawLength !== null && /^\d+$/.test(rawLength) ? Number(rawLength) : NaN;
+      const type = headers.get('content-type')?.split(';', 1)[0].trim().toLowerCase();
+      return {
+        contentType: type === undefined ? 'absent' :
+          ['text/turtle', 'application/ld+json', 'application/n-triples', 'application/n-quads',
+            'application/trig', 'application/rdf+xml', 'application/sparql-results+json',
+            'application/json', 'text/plain'].includes(type) ? type : 'unknown',
+        contentLength: rawLength === null ? 'absent' : Number.isSafeInteger(length) && length >= 0 ? length : 'unknown',
+        transferEncoding: fixed('transfer-encoding', ['chunked', 'identity']),
+        contentEncoding: fixed('content-encoding', ['identity', 'gzip', 'br', 'deflate']),
+      };
+    } catch { return { bodyHeaders: 'unobserved' }; }
+  }
+
+  /** Observe original reader calls without pulling, replacing promises or copying chunks. */
+  private traceRawBody(response: Response, trace: MatrixPhaseTrace, detail: Record<string, unknown>, signal?: AbortSignal | null): void {
+    const startedAt = performance.now();
+    let receivedBytes = 0;
+    let reads = 0;
+    let terminal = false;
+    let aborted = false;
+    let cancelled = false;
+    let coverage = 'complete';
+    let released = false;
+    let unobserved = false;
+    const emit = (phase: string, extra: Record<string, unknown> = {}): void => {
+      if (phase === 'unobserved') { if (unobserved) return; unobserved = true; }
+      try { this.logPhase(trace, `podFetch.stream.${phase}`, startedAt, { ...detail, receivedBytes, reads, coverage, ...extra }, true); } catch { /* diagnostics never affect consumption */ }
+    };
+    const abort = (): void => {
+      if (!terminal && !aborted) { aborted = true; emit('callerAbort'); }
+    };
+    const finish = (phase: string, extra: Record<string, unknown> = {}): void => {
+      if (terminal) return;
+      terminal = true;
+      try { signal?.removeEventListener('abort', abort); } catch { coverage = 'partial'; emit('unobserved'); }
+      emit(phase, extra.transportEOS === true ? { ...extra, transportEOS: coverage === 'complete' } : extra);
+    };
+    const degrade = (level: 'partial' | 'unobserved'): void => {
+      if (coverage !== 'unobserved') coverage = level;
+      emit('unobserved');
+    };
+    const observe = <T>(promise: Promise<T>, done: (value: T) => void, error: (reason: unknown) => void): void => {
+      try {
+        const then = promise.then;
+        Reflect.apply(then, promise, [
+          (value: T) => { try { done(value); } catch { degrade('partial'); } },
+          (reason: unknown) => { try { error(reason); } catch { degrade('partial'); } },
+        ]);
+      } catch { degrade('partial'); }
+    };
+    const hook = (target: object, key: string, value: unknown): boolean => {
+      try {
+        const descriptor = Object.getOwnPropertyDescriptor(target, key);
+        if (descriptor && !descriptor.configurable) return false;
+        Object.defineProperty(target, key, { configurable: true, writable: true,
+          enumerable: descriptor?.enumerable ?? false, value });
+        return true;
+      } catch { return false; }
+    };
+    try {
+      const stream = response.body;
+      if (!stream) { emit('absent'); return; }
+      const getReader = this.rawBodyReaders.get(stream) ?? stream.getReader;
+      this.rawBodyReaders.set(stream, getReader);
+      const store = this;
+      if (!hook(stream, 'getReader', function(this: ReadableStream, ...args: unknown[]) {
+        const reader = Reflect.apply(getReader, this, args);
+        if (this !== stream) return reader;
+        try {
+          const read = reader.read;
+          const cancel = reader.cancel;
+          const release = reader.releaseLock;
+          const observed = hook(reader, 'read', function(this: ReadableStreamDefaultReader, ...readArgs: unknown[]) {
+          const promise = Reflect.apply(read, this, readArgs) as Promise<ReadableStreamReadResult<unknown>>;
+          if (this === reader) {
+            if (++reads === 1) emit('start');
+            observe(promise, (result: ReadableStreamReadResult<unknown>) => {
+              try {
+                const done = Object.getOwnPropertyDescriptor(result, 'done')?.value;
+                const value = Object.getOwnPropertyDescriptor(result, 'value')?.value;
+                if (done === true) finish(aborted || cancelled ? 'doneAfterStop' : 'done', { transportEOS: !aborted && !cancelled && coverage === 'complete' });
+                else if (value instanceof Uint8Array) {
+                  const length = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(Uint8Array.prototype), 'byteLength')?.get?.call(value);
+                  if (Number.isSafeInteger(length) && length >= 0 && Number.isSafeInteger(receivedBytes + length)) receivedBytes += length;
+                }
+              } catch { /* observation only */ }
+            }, (error: unknown) => { try { finish('error', store.errorDetail(error)); } catch { /* observation only */ } });
+          }
+          return promise;
+        });
+        if (!observed) { degrade('unobserved'); return reader; }
+          const cancelObserved = hook(reader, 'cancel', function(this: ReadableStreamDefaultReader, ...cancelArgs: unknown[]) {
+          const promise = Reflect.apply(cancel, this, cancelArgs) as Promise<void>;
+          if (this === reader) {
+            if (!cancelled) { cancelled = true; emit('cancel'); }
+            observe(promise, () => finish('cancelDone'), (error: unknown) => {
+              try { finish('cancelError', store.errorDetail(error)); } catch { /* observation only */ }
+            });
+          }
+          return promise;
+        });
+          const releaseObserved = hook(reader, 'releaseLock', function(this: ReadableStreamDefaultReader, ...releaseArgs: unknown[]) {
+          const result = Reflect.apply(release, this, releaseArgs);
+          if (this === reader && !terminal && !released) { released = true; emit('release'); }
+          return result;
+        });
+        if (!cancelObserved || !releaseObserved) degrade('partial');
+        } catch { degrade('unobserved'); }
+        return reader;
+      })) { degrade('unobserved'); return; }
+      try {
+        if (signal?.aborted) abort();
+        else signal?.addEventListener('abort', abort, { once: true });
+      } catch { degrade('partial'); }
+    } catch { degrade('unobserved'); }
+  }
+
+  /**
+   * Observe only body methods the caller invokes. Keep the original Response,
+   * native receiver, clone behavior and untouched stream; never pull or tee a
+   * body for diagnostics. Raw readers are observed separately without pulling the stream.
+   */
+  private traceResponseBody(response: Response, trace: MatrixPhaseTrace, detail: Record<string, unknown>): Response {
+    const store = this;
+    let bodySequence = 0;
+    const decorate = (target: Response): Response => {
+      const bodyId = ++bodySequence;
+      if (!Object.isExtensible(target)) return target;
+      for (const method of ['arrayBuffer', 'blob', 'formData', 'json', 'text', 'bytes'] as const) {
+        const original = (target as unknown as Record<string, unknown>)[method];
+        if (typeof original !== 'function') continue;
+        const descriptor = Object.getOwnPropertyDescriptor(target, method);
+        // A custom nonconfigurable method is left alone; diagnostics must not
+        // change a response's success or turn it into an instrumentation error.
+        if (descriptor && !descriptor.configurable) continue;
+        Object.defineProperty(target, method, {
+          configurable: true, writable: true, enumerable: descriptor?.enumerable ?? false,
+          value: function(this: Response, ...args: unknown[]): Promise<unknown> {
+            return store.runPhase(trace, `podFetch.body.${method}`, { ...detail, bodyId }, () =>
+              Reflect.apply(original, this, args));
+          },
+        });
+      }
+      const clone = target.clone;
+      const descriptor = Object.getOwnPropertyDescriptor(target, 'clone');
+      if (typeof clone === 'function' && (!descriptor || descriptor.configurable)) {
+        Object.defineProperty(target, 'clone', {
+          configurable: true, writable: true, enumerable: descriptor?.enumerable ?? false,
+          value: function(this: Response): Response {
+            // clone remains synchronous, including its native locked-body error.
+            return decorate(Reflect.apply(clone, this, []));
+          },
+        });
+      }
+      return target;
+    };
+    return decorate(response);
+  }
+
+  private createTrace(operation: string): MatrixPhaseTrace {
+    return { operation, id: randomBytes(4).toString('hex') };
+  }
+
+  /**
+   * Open one operation trace around every public entry point, so internal
+   * helpers inherit it and a cached fetch correlates with the call that
+   * actually runs it. A nested public call (for example `recordFailure` from
+   * `ensureDelivery`) keeps the enclosing operation's trace.
+   */
+  private wrapPublicOperations(): void {
+    const target = this as unknown as Record<string, (...args: unknown[]) => Promise<unknown>>;
+    for (const operation of TRACED_PUBLIC_OPERATIONS) {
+      const original = target[operation];
+      target[operation] = (...args: unknown[]) => this.runOperation(operation, () => original.apply(this, args));
+    }
+  }
+
+  private runOperation<T>(operation: string, work: () => Promise<T>): Promise<T> {
+    if (operationTrace.getStore()) return work();
+    return operationTrace.run(this.createTrace(operation), work);
+  }
+
+  /** The enclosing operation trace, or a fresh one when called standalone. */
+  private currentTrace(operation: string): MatrixPhaseTrace {
+    return operationTrace.getStore() ?? this.createTrace(operation);
+  }
+
+  private logPhase(trace: MatrixPhaseTrace, phase: string, startedAt: number, detail: Record<string, unknown> = {}, force = false): void {
+    const elapsedMs = Math.round(performance.now() - startedAt);
+    if (!force && elapsedMs < SLOW_PHASE_MS) return;
+    this.logger.warn(`[matrix-phase] ${JSON.stringify({ op: trace.operation, opId: trace.id, phase, elapsedMs, ...detail })}`);
+  }
+
+  private startPhase(trace: MatrixPhaseTrace, phase: string, startedAt: number, detail: Record<string, unknown>): void {
+    this.logger.warn(`[matrix-phase] ${JSON.stringify({
+      op: trace.operation, opId: trace.id, phase: `${phase}.start`, startedAtMs: startedAt, elapsedMs: 0, ...detail,
+    })}`);
+  }
+
+  private async runPhase<T>(trace: MatrixPhaseTrace, phase: string, detail: Record<string, unknown>, run: () => Promise<T>): Promise<T> {
+    const startedAt = performance.now();
+    this.startPhase(trace, phase, startedAt, detail);
+    try {
+      const value = await run();
+      this.logPhase(trace, phase.startsWith('podFetch.body.') ? `${phase}.done` : phase, startedAt, detail, true);
+      return value;
+    } catch (error) {
+      this.logPhase(trace, `${phase}.failed`, startedAt, { ...this.errorDetail(error), ...detail }, true);
+      throw error;
+    }
+  }
+
+  /**
+   * Fixed, allowlisted projection of an error for a phase line.
+   *
+   * A native `TimeoutError` is a `DOMException` whose `code` is the numeric
+   * prototype getter `23`; a string-only filter would omit it and make it look
+   * like no code was present. Only the boolean timeout flag, `typeof code`, the
+   * single allowed numeric code `23`, a signal's presence/aborted state and an
+   * allowlisted `reason.name` ever leave. Messages, stacks, URLs, bodies,
+   * tokens, DSNs and raw arguments are never read.
+   */
+  private errorDetail(error: unknown): Record<string, unknown> {
+    const detail: Record<string, unknown> = {};
+    const name = (error as { name?: unknown } | null | undefined)?.name;
+    if (typeof name === 'string' && SAFE_ERROR_TOKEN.test(name)) detail.errorName = name;
+    if (name === 'TimeoutError') detail.domTimeout = true;
+    const code = (error as { code?: unknown } | null | undefined)?.code;
+    if (typeof code === 'string') {
+      if (SAFE_ERROR_TOKEN.test(code)) detail.code = code;
+    } else if (code !== undefined) {
+      detail.codeType = typeof code;
+      if (typeof code === 'number' && code === DOM_TIMEOUT_CODE) detail.code = DOM_TIMEOUT_CODE;
+    }
+    const causeCode = (error as { cause?: { code?: unknown } } | null | undefined)?.cause?.code;
+    if (typeof causeCode === 'string' && SAFE_ERROR_TOKEN.test(causeCode)) detail.causeCode = causeCode;
+    const signal = (error as { signal?: { aborted?: unknown } } | null | undefined)?.signal;
+    if (signal !== null && typeof signal === 'object') {
+      detail.signalPresent = true;
+      detail.signalAborted = (signal as { aborted?: unknown }).aborted === true;
+    }
+    const reason = (error as { reason?: unknown } | null | undefined)?.reason;
+    if (reason instanceof Error && SAFE_ERROR_TOKEN.test(reason.name)) detail.reasonName = reason.name;
+    return detail;
   }
 
   private async appendEvent(
@@ -502,13 +876,18 @@ export class PodMatrixStore {
     },
     context: MatrixStoreContext,
   ): Promise<MatrixEventRecord> {
+    // Inherit the enclosing public operation's trace (e.g. sendEvent), so a
+    // nested append reports the same op/opId rather than opening a new one.
+    const trace = this.currentTrace('appendEvent');
     const eventId = input.eventId ?? this.generateEventId(context);
     const depth = 0;
     const originIso = new Date(input.originServerTs).toISOString();
     const needsRoomMetadata = input.reconcilerOwner === undefined
       || (input.type === 'm.room.message' && this.serverGroupReconcilerService !== undefined);
     const roomContext = input.roomContext
-      ?? (needsRoomMetadata ? await this.getRoomContext(db, input.roomId) : undefined);
+      ?? (needsRoomMetadata
+        ? await this.runPhase(trace, 'appendEvent.getRoomContext', {}, () => this.getRoomContext(db, input.roomId))
+        : undefined);
     const roomMetadata = roomContext?.metadata;
     const reconcilerOwner = input.reconcilerOwner ?? this.reconcilerOwnerFromRoomMetadata(roomMetadata);
     const coordination = reconcilerCoordinationMetadata(reconcilerOwner);
@@ -532,7 +911,7 @@ export class PodMatrixStore {
       content: input.content,
       createdAt: originIso,
     };
-    await db.insert(messageResource).values({
+    await this.runPhase(trace, 'appendEvent.db.insert', {}, () => db.insert(messageResource).values({
       id: messageResourceId,
       parent: this.chatIri(input.roomId, context),
       chat: this.chatIri(input.roomId, context),
@@ -564,10 +943,13 @@ export class PodMatrixStore {
       }),
       createdAt: originIso,
       updatedAt: originIso,
-    });
+    }));
 
-    record.depth = await this.journal.registerEvent(this.scope(context), input.roomId, eventId);
-    if (record.role === MessageRole.USER) await this.reconcileEvent(db, record, context);
+    record.depth = await this.runPhase(trace, 'journal.register', {}, () =>
+      this.journal.registerEvent(this.scope(context), input.roomId, eventId));
+    if (record.role === MessageRole.USER) {
+      await this.runPhase(trace, 'reconcileEvent', {}, () => this.reconcileEvent(db, record, context));
+    }
 
     return record;
   }
@@ -637,16 +1019,22 @@ export class PodMatrixStore {
       limit?: number;
       newestFirst?: boolean;
     } = {},
+    parent?: MatrixPhaseTrace,
   ): Promise<MatrixEventRecord[]> {
-    const sources = await db.select().from(messageResource)
-      .where(eq(messageResource.thread, this.threadIri(roomId, context))) as MatrixEventSource[];
+    const trace = parent ?? this.currentTrace('listEvents');
+    const sources = await this.runPhase(trace, 'events.select', {}, async () =>
+      await db.select().from(messageResource)
+        .where(eq(messageResource.thread, this.threadIri(roomId, context))) as MatrixEventSource[]);
     sources.sort((a,b) => (this.isoToMillis(a.createdAt) ?? 0) - (this.isoToMillis(b.createdAt) ?? 0) || a.id.localeCompare(b.id));
-    const events: MatrixEventRecord[] = [];
-    for (const source of sources) {
-      const event = this.eventSourceToRecord(source, roomId, context);
-      event.depth = await this.journal.registerEvent(this.scope(context), roomId, event.eventId);
-      events.push(event);
-    }
+    const events = await this.runPhase(trace, 'journal.register', { count: sources.length }, async () => {
+      const records: MatrixEventRecord[] = [];
+      for (const source of sources) {
+        const event = this.eventSourceToRecord(source, roomId, context);
+        event.depth = await this.journal.registerEvent(this.scope(context), roomId, event.eventId);
+        records.push(event);
+      }
+      return records;
+    });
     events.sort((a,b)=>a.depth! - b.depth!);
     return options.newestFirst ? events.reverse() : events;
   }

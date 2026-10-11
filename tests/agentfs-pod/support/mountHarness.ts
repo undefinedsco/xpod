@@ -2,7 +2,43 @@ import { spawn } from 'node:child_process';
 import { mkdir, open, readdir, readFile, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { AgentFsHelper } from './helperDiscovery';
-import type { PodContractServer } from './podContractServer';
+import type { PodAccessLogEntry, PodContractServer } from './podContractServer';
+
+/** A failed process alone never proves a conditional write conflict. */
+export function isObservedConditionalConflict(result: {
+  state: string; actualExit: number | null; signal: string | null; stdout: string; stderr: string;
+}, mutations: PodAccessLogEntry[], resource: string): boolean {
+  return result.state === 'closed' && Number.isInteger(result.actualExit) && result.actualExit !== 0
+    && result.signal === null && /^commit applied=\d+ conflicts=[1-9]\d* errors=0$/mu.test(result.stdout)
+    && [ resource, `/${resource}` ].some((name) => result.stderr.includes(`agentfs-pod: conflict kept for ${name} (first baseline preserved)`))
+    && mutations.some((entry) => entry.resource === resource && entry.method === 'PUT' && entry.status === 412);
+}
+
+export interface OwnedUnmountProof {
+  result?: { state: string; actualExit: number | null; signal: string | null };
+  postKernel?: 'absent' | 'mounted' | 'unknown';
+  daemonClosed: boolean;
+}
+
+export function ownedUnmountDecision(proof: OwnedUnmountProof): 'unmount' | 'wait-daemon' | 'complete' | 'retain' {
+  if (!proof.result) return 'unmount';
+  if (proof.result.state !== 'closed') return 'retain';
+  if (proof.result.actualExit === 0 && proof.result.signal === null && proof.postKernel === 'absent') {
+    return proof.daemonClosed ? 'complete' : 'wait-daemon';
+  }
+  return 'unmount';
+}
+
+/** A proven detach is never reissued while waiting for the same daemon's close. */
+export async function runOwnedUnmountOnce(proof: OwnedUnmountProof, perform: () => Promise<{
+  result: NonNullable<OwnedUnmountProof['result']>; postKernel: NonNullable<OwnedUnmountProof['postKernel']>;
+}>): Promise<void> {
+  const decision = ownedUnmountDecision(proof);
+  if (decision === 'retain') throw new Error('prior owned unmount child remains unresolved; retained');
+  if (decision !== 'unmount') return;
+  const observed = await perform();
+  proof.result = observed.result; proof.postKernel = observed.postKernel;
+}
 
 export interface AcceptanceCheck {
   name: string;
@@ -33,6 +69,8 @@ export interface MountAcceptanceOptions {
   token: string;
   workDir: string;
   mountReadyTimeoutMs?: number;
+  /** Mount backend. Defaults to the original NFS path so existing callers are unchanged. */
+  backend?: 'nfs' | 'fuse';
 }
 
 interface ExecResult {
@@ -138,7 +176,7 @@ export async function runMountAcceptance(options: MountAcceptanceOptions): Promi
 
   const mountResult = await run(
     command[0],
-    [ ...command.slice(1), 'mount', '--server', server.podRoot, '--mountpoint', mountpoint, '--backend', 'nfs' ],
+    [ ...command.slice(1), 'mount', '--server', server.podRoot, '--mountpoint', mountpoint, '--backend', options.backend ?? 'nfs', '--session-dir', sessionDir ],
     { env: { XPOD_AGENTFS_TOKEN: token }, timeoutMs: 30_000 },
   );
   if (mountResult.status !== 0) {
@@ -310,6 +348,11 @@ export async function runMountAcceptance(options: MountAcceptanceOptions): Promi
       notes,
     };
   } finally {
-    await run(command[0], [ ...command.slice(1), 'unmount', '--mountpoint', mountpoint ], { env: { XPOD_AGENTFS_TOKEN: token }, timeoutMs: 30_000 });
+    const unmounted = await run(command[0], [ ...command.slice(1), 'unmount', '--mountpoint', mountpoint, '--session-dir', sessionDir ], { env: { XPOD_AGENTFS_TOKEN: token }, timeoutMs: 30_000 });
+    // An ignored failed unmount must never be followed by removing a possibly
+    // still-mounted tree; surface it instead.
+    if (unmounted.status !== 0) {
+      throw new Error(`mounted harness unmount failed: ${(unmounted.stderr || unmounted.stdout).trim() || unmounted.status}`);
+    }
   }
 }

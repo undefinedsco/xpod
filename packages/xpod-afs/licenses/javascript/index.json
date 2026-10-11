@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 1,
+  "entries": [
+    {
+      "name": "drizzle-orm",
+      "version": "0.45.2",
+      "provenance": {
+        "repository": "https://github.com/drizzle-team/drizzle-orm",
+        "tag": "0.45.2",
+        "commit": "273c78071d4841b497f5144734b38294df7ec64b",
+        "sourcePath": "LICENSE",
+        "sourceUrl": "https://raw.githubusercontent.com/drizzle-team/drizzle-orm/273c78071d4841b497f5144734b38294df7ec64b/LICENSE",
+        "gitBlobSHA": "261eeb9e9f8b2b4b0d119366dda99c6fd7d35c64",
+        "retrieval": "GitHub Contents API at exact commit; base64-decoded original bytes",
+        "relation": "Official version tag; npm package declares Apache-2.0 but omits original terms"
+      },
+      "files": [
+        {
+          "sourcePath": "LICENSE",
+          "object": "objects/c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4.txt",
+          "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+        }
+      ],
+      "authority": {
+        "sourcePath": "drizzle-orm/package.json",
+        "object": "objects/ac07c1fa8a76092eb7db755757b13cf4708878c12aea021154371cb4ee7eb771.txt",
+        "sha256": "ac07c1fa8a76092eb7db755757b13cf4708878c12aea021154371cb4ee7eb771",
+        "provenance": {
+          "repository": "https://github.com/drizzle-team/drizzle-orm",
+          "tag": "0.45.2",
+          "commit": "273c78071d4841b497f5144734b38294df7ec64b",
+          "sourcePath": "drizzle-orm/package.json",
+          "sourceUrl": "https://raw.githubusercontent.com/drizzle-team/drizzle-orm/273c78071d4841b497f5144734b38294df7ec64b/drizzle-orm/package.json",
+          "gitBlobSHA": "11680f4cffef0828af10ea6a824c94d48571fd80",
+          "retrieval": "GitHub Contents API at exact commit; base64-decoded original bytes"
+        }
+      }
+    }
+  ]
+}
