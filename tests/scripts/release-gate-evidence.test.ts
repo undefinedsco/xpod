@@ -118,6 +118,24 @@ function craftQleverEvidence(archive: QleverArchive, sourceSha: string, outFile:
 }
 
 describe('qlever-local gate evidence', () => {
+  it('binds explicit Linux target evidence and rejects verification under a different target', () => {
+    const archive = makeQleverArchive('linux-target', { platform: 'linux-x64' });
+    const out = path.join(tempRoot, 'qlever-linux.json');
+    run([ 'create-qlever-local', '--source-sha', 'a'.repeat(40), '--archive', archive.archive, '--abi-platform', 'linux-x64', '--out', out ]);
+    const evidence = JSON.parse(readFileSync(out, 'utf8'));
+    expect(evidence.platform).toBe('linux-x64');
+    expect(evidence.manifest.platform).toBe('linux-x64');
+    const checks = path.join(tempRoot, 'qlever-linux-checks.json');
+    run([ 'verify-qlever-local', '--evidence', out, '--source-sha', 'a'.repeat(40), '--expected-archive', archive.archive, '--abi-platform', 'linux-x64', '--checks-out', checks ]);
+    expect(readChecks(checks)).toEqual({ 'qlever-local': 'passed' });
+    expectFailure([ 'verify-qlever-local', '--evidence', out, '--source-sha', 'a'.repeat(40), '--expected-archive', archive.archive ]);
+    expectFailure([ 'verify-qlever-local', '--evidence', out, '--source-sha', 'a'.repeat(40), '--expected-archive', archive.archive, '--abi-platform', 'linux-arm64' ]);
+    evidence.manifest.platform = 'linux-arm64';
+    const crossManifest = path.join(tempRoot, 'qlever-linux-cross-manifest.json');
+    writeFileSync(crossManifest, JSON.stringify(evidence));
+    expectFailure([ 'verify-qlever-local', '--evidence', crossManifest, '--source-sha', 'a'.repeat(40), '--expected-archive', archive.archive, '--abi-platform', 'linux-x64' ]);
+  });
+
   it('binds a source-conformant runtime archive and verifies it against the downloaded bytes', () => {
     const archive = makeQleverArchive('valid');
     const out = path.join(tempRoot, 'qlever-valid.json');
