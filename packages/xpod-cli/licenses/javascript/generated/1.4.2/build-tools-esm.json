@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "bunVersion": "1.4.2",
+  "prefixSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "prefixBytes": 0,
+  "provenance": {
+    "derivation": "Actual build-tools ESM starts directly with source boundary // src/javascript-notices.ts; zero generated prefix bytes. Original Bun source and terms preserved."
+  },
+  "file": {
+    "sourcePath": "generated-prefix.js",
+    "object": "objects/e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855.txt",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  }
+}

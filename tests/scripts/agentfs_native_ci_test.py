@@ -1277,5 +1277,65 @@ class NativeReuseTests(unittest.TestCase):
         self.assertLess(text.index('accept.py --reuse-native'), text.index('whole_ci_gate.py'))
 
 
+
+class ModuleNativeSourceProfileTests(unittest.TestCase):
+    def fixture(self, directory):
+        root = Path(directory) / 'module-input-git'
+        root.mkdir()
+        def git(*args):
+            return subprocess.check_output(['git', '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', *args], cwd=root).decode().strip()
+        git('init', '--quiet')
+        files = {'tools/agentfs-pod/src/main.rs': 'native', 'tools/agentfs-pod/Cargo.lock': 'lock',
+                 'tools/agentfs-pod/recipe.sh': 'recipe', 'packages/xpod-cli/tests/test.ts': 'old test',
+                 'package.json': '{}', 'bun.lock': 'lock'}
+        for name, content in files.items():
+            file = root / name; file.parent.mkdir(parents=True, exist_ok=True); file.write_text(content)
+        git('add', '--', *files)
+        git('commit', '--quiet', '-m', 'fixture')
+        return root, git, git('rev-parse', 'HEAD')
+
+    def test_cli_test_change_is_separate_from_strict_whole_source_reuse(self):
+        with owned_scratch() as directory:
+            root, git, original = self.fixture(directory)
+            (root / 'packages/xpod-cli/tests/test.ts').write_text('new typed assertion')
+            git('add', '--', 'packages/xpod-cli/tests/test.ts'); git('commit', '--quiet', '-m', 'test change')
+            rows = a.verify_module_native_sources(root, original)
+            self.assertEqual(len(rows), 3)
+            self.assertEqual(rows[0]['sha256'], hashlib.sha256(b'lock').hexdigest())
+            with self.assertRaisesRegex(RuntimeError, 'Native reuse input changed: packages/xpod-cli'):
+                a.verify_reuse_sources(root, original)
+
+    def test_native_bytes_paths_modes_and_dirty_files_fail_closed(self):
+        for change in ['bytes', 'add', 'remove', 'mode', 'dirty', 'symlink', 'untracked', 'assume-unchanged']:
+            with self.subTest(change=change), owned_scratch() as directory:
+                root, git, original = self.fixture(directory)
+                file = root / 'tools/agentfs-pod/src/main.rs'
+                if change in ['bytes', 'dirty', 'assume-unchanged']: file.write_text('changed')
+                if change in ['add', 'untracked']: (file.parent / 'extra.rs').write_text('new')
+                if change == 'remove': file.unlink()
+                if change == 'mode': file.chmod(0o755)
+                if change == 'symlink': file.unlink(); file.symlink_to('../Cargo.lock')
+                if change == 'assume-unchanged': git('update-index', '--assume-unchanged', 'tools/agentfs-pod/src/main.rs')
+                if change in ['bytes', 'add', 'remove', 'mode', 'symlink']:
+                    git('add', '--', 'tools/agentfs-pod'); git('commit', '--quiet', '-m', 'native drift')
+                with self.assertRaises(RuntimeError): a.verify_module_native_sources(root, original)
+
+    def test_missing_native_inventory_fails_closed(self):
+        with owned_scratch() as directory:
+            root, git, original = self.fixture(directory)
+            git('rm', '-r', '--quiet', 'tools/agentfs-pod'); git('commit', '--quiet', '-m', 'missing native')
+            with self.assertRaises(RuntimeError): a.verify_module_native_sources(root, git('rev-parse', 'HEAD'))
+
+    def test_module_workflow_uses_module_profile_without_changing_preview_gate(self):
+        module = (ROOT / '.github/workflows/agentfs-module-mounted-acceptance.yml').read_text()
+        self.assertIn('accept.py --verify-module-native-source', module)
+        self.assertNotIn('accept.py --verify-native-source', module)
+        preview = (ROOT / '.github/workflows/agentfs-mounted-platform-acceptance.yml').read_text()
+        self.assertIn('accept.py --verify-native-source', preview)
+        material = (ROOT / 'packages/xpod-afs/scripts/native-material.py').read_text()
+        self.assertIn("accept.verify_module_native_sources(root, pins['PRODUCT_SHA'])", material)
+        self.assertNotIn("'ls-tree'", material)
+
+
 if __name__ == '__main__':
     unittest.main()

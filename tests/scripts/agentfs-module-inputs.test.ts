@@ -94,7 +94,8 @@ describe('module mounted input preparation', () => {
     const initialEnv = readFileSync(envFile, 'utf8'); expect(initialEnv).toBe(`MODULE_RUN_ROOT=${leaf}\n`);
     const second = spawnSync('bash', ['-c', `set -euo pipefail\numask 077\n${directorySetup}`], { env, encoding: 'utf8' });
     expect(second.status).not.toBe(0); expect(second.signal).toBeNull(); expect(readFileSync(envFile, 'utf8')).toBe(initialEnv);
-    const close = workflow.slice(workflow.indexOf('      - name: Close owned image'), workflow.indexOf('      - uses: actions/upload-artifact'));
+    const closeStart = workflow.indexOf('      - name: Close owned image');
+    const close = workflow.slice(closeStart, workflow.indexOf('      - uses: actions/upload-artifact', closeStart));
     expect(close).toContain("if: always() && env.MODULE_RUN_ROOT != ''");
   }));
   it('fixed nested schemas discard unknown credentials, token, clientSecret and argv at every allowed container', () => {

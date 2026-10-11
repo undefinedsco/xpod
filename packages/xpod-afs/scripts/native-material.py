@@ -22,23 +22,8 @@ facts = accept.verify_reuse_archive(archive, pins, os_name, arch)
 if facts.get('target') != target or facts.get('arch') != arch or facts.get('productHead') != pins['PRODUCT_SHA']:
     raise RuntimeError('Native target or source authority mismatch')
 
-# Complete native helper input tree, including locks, recipe and patches.
-inputs = subprocess.check_output(['git', 'ls-tree', '-rz', pins['PRODUCT_SHA'], 'tools/agentfs-pod'], cwd=root)
-rows = []
-expected_names = set()
-for row in inputs.split(b'\0'):
-    if not row:
-        continue
-    meta, name = row.split(b'\t', 1)
-    mode, kind, oid = meta.split()
-    assert kind == b'blob'
-    name = name.decode()
-    expected_names.add(name)
-    expected = subprocess.check_output(['git', 'cat-file', 'blob', oid.decode()], cwd=root)
-    current = (root / name).read_bytes()
-    assert current == expected, 'Native input bytes changed: ' + name
-    rows.append({'path': name, 'mode': mode.decode(), 'sha256': hashlib.sha256(current).hexdigest()})
-assert expected_names == set(subprocess.check_output(['git', 'ls-files', 'tools/agentfs-pod'], cwd=root, text=True).splitlines())
+# One strict module reuse input contract; whole-preview reuse stays separate.
+rows = accept.verify_module_native_sources(root, pins['PRODUCT_SHA'])
 
 with zipfile.ZipFile(archive) as zipped:
     packages = [n for n in zipped.namelist() if n.endswith('-' + target + '.tar.gz')]

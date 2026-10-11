@@ -62,7 +62,9 @@ for (const [format, extension] of [['esm', 'mjs'], ['cjs', 'cjs']] as const) {
   collectJavascriptNotices({ metafile: toolingMetadata, stageRoot: packageRoot, repoRoot,
     destination: path.join(output, 'licenses/build-tools', format), target: `${process.platform}-${process.arch}`,
     cli: path.join(output, `build-tools.${extension}`), bunVersion: process.versions.bun ?? 'unknown',
-    supplements: path.join(packageRoot, 'licenses/javascript') });
+    supplements: path.join(packageRoot, 'licenses/javascript'),
+    generated: path.join(packageRoot, 'licenses/javascript/generated', process.versions.bun ?? 'unknown'),
+    generatedProfile: `build-tools-${format}` });
 }
 const toolingDeclarations = spawnSync('bun', ['x', '--no-install', 'tsc', '-p', 'tsconfig.build-tools.json'],
   { cwd: packageRoot, stdio: 'inherit' });

@@ -52,7 +52,7 @@ jobs:
           umask 077
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           test -z "$(git status --porcelain --untracked-files=all)"
-          python3 scripts/agentfs-native-ci/accept.py --verify-native-source
+          python3 scripts/agentfs-native-ci/accept.py --verify-module-native-source
           case "$TARGET:$(uname -m)" in
             *-arm64:arm64|*-arm64:aarch64|*-x64:x86_64) ;;
             *) echo '::error::runner architecture differs from target'; exit 1 ;;
@@ -111,6 +111,24 @@ jobs:
           assert not subprocess.check_output(['git','status','--porcelain','--untracked-files=all'],text=True).strip()
           with open(root/'build.safe.json','x') as f:json.dump({'sourceSHA':os.environ['GITHUB_SHA'],'sourceClean':True,'exit':0,'commands':['bun run build:packages','bun packages/xpod-afs/scripts/build-package.ts','bun build module-admission.ts --target=node --format=esm'],'coreSHA256':digest(workspace/'packages/xpod-cli/dist/xpod.mjs'),'driverSHA256':digest(root/'module-admission.mjs'),'metafiles':records},f)
           PY
+      - name: Preserve exact CLI and AFS product materials for this source
+        id: products
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          umask 077
+          (cd packages/xpod-cli && bun pm pack --filename "$MODULE_RUN_ROOT/cli.tgz" --ignore-scripts)
+          module=$(find "$MODULE_RUN_ROOT/build" -maxdepth 1 -name '*.tgz' -type f)
+          test -n "$module"; test "$(printf '%s\n' "$module" | wc -l | tr -d ' ')" = 1
+          bun scripts/agentfs-native-ci/mounted/export-products.ts --workspace "$GITHUB_WORKSPACE" --module "$module" --cli "$MODULE_RUN_ROOT/cli.tgz" --native-archive "$MODULE_RUN_ROOT/native/native.zip" --target "$TARGET" --source-sha "$GITHUB_SHA" --build-receipt "$MODULE_RUN_ROOT/build.safe.json" --out "$MODULE_RUN_ROOT/product-export"
+      - uses: actions/upload-artifact@v4
+        if: steps.products.outcome == 'success'
+        with:
+          name: afs-module-products-${{ matrix.target }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .test-data/module-mounted-${{ github.run_id }}-${{ github.run_attempt }}/product-export/
+          if-no-files-found: error
+          retention-days: 30
       - name: Prepare actual Darwin ripgrep for mounted shell cases
         if: startsWith(matrix.target, 'darwin-')
         run: |

@@ -698,6 +698,45 @@ def verify_reuse_sources(root, product):
         raise RuntimeError('Native reuse inputs are dirty')
 
 
+
+def verify_module_native_sources(root, product):
+    """Reuse the original helper, never the old CLI/JS or packaging recipe.
+
+    Original source-kit recipes, SDK/locks and notices remain archive-bound by
+    verify_reuse_archive. The current module is built and bound separately.
+    """
+    scope = 'tools/agentfs-pod'
+    def tree(ref):
+        result = {}
+        for row in subprocess.check_output(['git', 'ls-tree', '-rz', ref, scope], cwd=root).split(b'\0'):
+            if not row:
+                continue
+            meta, name = row.split(b'\t', 1)
+            mode, kind, oid = meta.split()
+            if kind != b'blob' or mode not in (b'100644', b'100755'):
+                raise RuntimeError('Invalid module native input type')
+            result[name.decode()] = (mode, oid)
+        if not result:
+            raise RuntimeError('Missing module native input inventory')
+        return result
+    original = tree(product)
+    if tree('HEAD') != original:
+        raise RuntimeError('Module native input inventory changed')
+    if subprocess.check_output(['git', 'status', '--porcelain', '--untracked-files=all', '--', scope], cwd=root).strip():
+        raise RuntimeError('Module native inputs are dirty')
+    rows = []
+    for name, (mode, oid) in sorted(original.items()):
+        file = root / name
+        if file.is_symlink() or not file.is_file():
+            raise RuntimeError('Invalid module native input file')
+        content = file.read_bytes()
+        expected = subprocess.check_output(['git', 'cat-file', 'blob', oid.decode()], cwd=root)
+        if content != expected or bool(file.stat().st_mode & 0o111) != (mode == b'100755'):
+            raise RuntimeError('Module native input bytes or mode changed')
+        rows.append(dict(path=name, mode=mode.decode(), sha256=hashlib.sha256(content).hexdigest()))
+    return rows
+
+
 def verify_native_stage_inventory(stages, os_name, generated_notices):
     required = set(['bun-extract', 'toolchain', 'dependencies', 'workspace-packages', 'upstream',
                     'upstream-checkout', 'export', 'verify-source', 'rebuild', 'sdk-suite', 'cli-suite', 'package', 'verify-install'])
@@ -903,6 +942,9 @@ if __name__ == '__main__':
     if sys.argv[1:] == ['--verify-native-source']:
         root = Path.cwd()
         verify_reuse_sources(root, mounted_reuse_pins(root)['PRODUCT_SHA'])
+    elif sys.argv[1:] == ['--verify-module-native-source']:
+        root = Path.cwd()
+        verify_module_native_sources(root, mounted_reuse_pins(root)['PRODUCT_SHA'])
     elif sys.argv[1:] == ['--reuse-native']:
         reuse_native_main()
     elif sys.argv[1:]:

@@ -118,7 +118,7 @@ export function collectJavascriptNotices(options: {
   vendoredRoots?: string[];
   requireVendoredOriginals?: boolean;
   generated?: string;
-  generatedProfile?: 'core' | 'client';
+  generatedProfile?: 'core' | 'client' | 'build-tools-esm' | 'build-tools-cjs';
 }): string[] {
   // Producer metadata for portable JavaScript, not native ABI admission.
   if (!/^[a-z][a-z0-9]*-[a-z][a-z0-9]*$/.test(options.target)) {
@@ -165,6 +165,7 @@ export function collectJavascriptNotices(options: {
       ...(sourceAuthority ? { sourceAuthority } : {}) };
     packages.set(label, entry); return entry;
   }
+  if (options.generatedProfile && !options.generated) { throw new Error('Generated JavaScript profile requires source provenance'); }
   let generated: GeneratedNoticeIndex | undefined;
   if (options.generated) {
     generated = JSON.parse(readFileSync(path.join(options.generated, 'index.json'), 'utf8')) as GeneratedNoticeIndex;
@@ -178,12 +179,12 @@ export function collectJavascriptNotices(options: {
         files: [...generated.files.filter(file => file.sourcePath !== 'generated-prefix.js'), profile.file] };
     }
     if (generated.schemaVersion !== 1 || generated.bunVersion !== options.bunVersion ||
-      !/^[a-f0-9]{64}$/.test(generated.prefixSha256) || !Number.isSafeInteger(generated.prefixBytes) || generated.prefixBytes < 1 ||
+      !/^[a-f0-9]{64}$/.test(generated.prefixSha256) || !Number.isSafeInteger(generated.prefixBytes) || generated.prefixBytes < 0 || (generated.prefixBytes === 0 && !options.generatedProfile) ||
       !Array.isArray(generated.files) || !generated.files.length) {
       throw new Error('Unsupported generated JavaScript notice provenance');
     }
     const bytes = readFileSync(options.cli);
-    const boundary = bytes.indexOf('\n// ');
+    const boundary = bytes.subarray(0, 3).toString() === '// ' ? 0 : bytes.indexOf('\n// ');
     const prefix = bytes.subarray(0, boundary);
     if (boundary < 0 || prefix.length !== generated.prefixBytes || createHash('sha256').update(prefix).digest('hex') !== generated.prefixSha256) {
       throw new Error('Generated JavaScript prefix differs from audited sources');

@@ -191,3 +191,32 @@ test('requires original notices for explicitly shipped packages outside the impo
     expect(() => collectJavascriptNotices({ ...options, supplements: [supplement, supplement], destination: path.join(work, 'duplicate') })).toThrow('duplicate');
   } finally { rmSync(work, { recursive: true, force: true }); }
 });
+
+
+test('binds actual public build-tools prefixes including the explicit zero-prefix ESM profile', () => {
+  const packageRoot = path.resolve(import.meta.dir, '..');
+  const repoRoot = path.resolve(packageRoot, '../..');
+  const parent = path.join(repoRoot, '.test-data/xpod-cli/build-tools-generated'); mkdirSync(parent, { recursive: true });
+  const work = mkdtempSync(path.join(parent, 'case-'));
+  try {
+    for (const [format, extension] of [['esm', 'mjs'], ['cjs', 'cjs']] as const) {
+      const cli = path.join(work, format + '.js');
+      const metafile = path.join(work, format + '-inputs.json');
+      const compiled = spawnSync(process.execPath, ['build', '--target=node', '--format=' + format, '--metafile=' + metafile, '--outfile', cli, path.join(packageRoot, 'src/build-tools.ts')], { cwd: packageRoot, encoding: 'utf8' });
+      expect(compiled.error).toBeUndefined(); expect(compiled.status).toBe(0); expect(compiled.signal).toBeNull();
+      const options = { metafile, stageRoot: packageRoot, repoRoot, destination: path.join(work, format), target: process.platform + '-' + process.arch, cli, bunVersion: '1.4.2', supplements: path.join(packageRoot, 'licenses/javascript'), generated: path.join(packageRoot, 'licenses/javascript/generated/1.4.2'), generatedProfile: ('build-tools-' + format) as 'build-tools-esm' | 'build-tools-cjs' };
+      collectJavascriptNotices(options);
+      const index = JSON.parse(readFileSync(path.join(options.destination, 'index.json'), 'utf8'));
+      expect(index.generated.prefixBytes).toBe(format === 'esm' ? 0 : 2129);
+      if (format === 'esm') {
+        const ordinary = path.join(work, 'ordinary-empty'); cpSync(options.generated, ordinary, { recursive: true });
+        writeFileSync(path.join(ordinary, 'index.json'), JSON.stringify(index.generated));
+        expect(() => collectJavascriptNotices({ ...options, generated: ordinary, generatedProfile: undefined, destination: path.join(work, 'ordinary-refused') })).toThrow('Unsupported generated');
+      }
+      expect(index.generated.files.some((row: {sourcePath:string}) => row.sourcePath === 'src/runtime.js')).toBe(true);
+      expect(() => collectJavascriptNotices({ ...options, generated: undefined, destination: path.join(work, format + '-missing') })).toThrow('requires source provenance');
+      writeFileSync(cli, 'var __unreviewed = 1;\n' + readFileSync(cli, 'utf8'));
+      expect(() => collectJavascriptNotices({ ...options, destination: path.join(work, format + '-drift') })).toThrow('prefix differs');
+    }
+  } finally { rmSync(work, { recursive: true, force: true }); }
+});
