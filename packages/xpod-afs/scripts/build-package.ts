@@ -3,10 +3,16 @@ import { createHash } from 'node:crypto';
 import { chmodSync, copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { collectJavascriptNotices } from '../../xpod-cli/src/javascript-notices';
+import { createRequire } from 'node:module';
+import { resolveProducerMaterials } from './producer-materials';
+import { collectJavascriptNotices } from '@undefineds.co/xpod-cli/build-tools';
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const repoRoot = path.resolve(packageRoot, '../..');
+const publicRequire = createRequire(import.meta.url);
+const clientPackageRoot = path.resolve(path.dirname(publicRequire.resolve('@undefineds.co/xpod-cli/client')), '..');
+const producer = await resolveProducerMaterials(publicRequire.resolve('@undefineds.co/xpod-cli/producer-materials'));
+const publicInputs = producer.clientMetafile;
 const args = process.argv.slice(2);
 function option(name: string): string {
   const index = args.indexOf(name);
@@ -32,7 +38,7 @@ const metadata = path.join(output, 'bundle-inputs.json');
 checked('bun', ['build', '--target=node', '--format=cjs', '--external=@undefineds.co/xpod-cli/client', '--external=drizzle-orm', '--external=bun:sqlite', `--metafile=${metadata}`, '--outfile', path.join(stage, 'dist/library.cjs'), path.join(packageRoot, 'dist/library-source.ts')], packageRoot);
 copyFileSync(path.join(packageRoot, 'dist/entry.mjs'), path.join(stage, 'dist/entry.mjs'));
 // A single declaration drives each staged vendor copy and notice collection.
-const clientVendor = { sourceRoot: path.join(repoRoot, 'packages/xpod-cli'),
+const clientVendor = { sourceRoot: clientPackageRoot,
   files: ['dist/client.cjs', 'dist/client.mjs', 'dist/client-types', 'dist/licenses/client', 'LICENSE'],
   manifestFields: ['name', 'version', 'type', 'license', 'engines', 'exports', 'typesVersions'],
   preserveManifestAt: 'provenance/cli-client-package-source.json' };
@@ -49,18 +55,23 @@ for (const vendor of vendoredPackages) {
       const destination = path.join(vendor.stageRoot, file); mkdirSync(path.dirname(destination), { recursive: true });
       cpSync(path.join(vendor.sourceRoot, file), destination, { recursive: true, dereference: false });
     }
-    writeFileSync(path.join(vendor.stageRoot, 'package.json'), JSON.stringify(Object.fromEntries(vendor.manifestFields!.map(field => [field, original[field]])), null, 2) + '\n');
+    writeFileSync(path.join(vendor.stageRoot, 'package.json'), JSON.stringify({ ...Object.fromEntries(vendor.manifestFields!.map(field => [field, original[field]])), exports: { './client': original.exports['./client'] }, typesVersions: { '*': { client: original.typesVersions['*'].client } } }, null, 2) + '\n');
   } else { cpSync(vendor.sourceRoot, vendor.stageRoot, { recursive: true, dereference: true }); }
   if (vendor.preserveManifestAt) { copyFileSync(path.join(vendor.sourceRoot, 'package.json'), path.join(stage, vendor.preserveManifestAt)); }
 }
 const client = vendoredPackages[0].stageRoot!;
+const runtimeClient = JSON.parse(readFileSync(path.join(client, 'package.json'), 'utf8'));
+if (Object.keys(runtimeClient.exports).join() !== './client' || Object.keys(runtimeClient.typesVersions['*']).join() !== 'client') throw new Error('Runtime client advertises unstaged producer exports');
+for (const file of Object.values(runtimeClient.exports['./client']) as string[]) {
+  if (!file.startsWith('./dist/') || !existsSync(path.join(client, file))) throw new Error('Runtime client export payload missing');
+}
 copyFileSync(path.join(repoRoot, 'LICENSE'), path.join(stage, 'LICENSE'));
 writeFileSync(path.join(stage, 'LICENSES.txt'), 'This artifact contains materials with separate licenses.\nXpod-owned source: MIT, original terms in LICENSE.\nThe assembled AgentFS native helper has no asserted aggregate SPDX license here; consult the preserved native collection/declarations and AgentFS notices under licenses/native and licenses/agentfs.\nThe public CLI client and vendored drizzle-orm retain their original notices and source provenance.\nPackaging or hash verification does not grant artifact review clearance.\n');
 const inputs = Object.keys(JSON.parse(readFileSync(metadata, 'utf8')).inputs) as string[];
 if (inputs.some(p => /(?:@solid\/community-server|src\/(?:api|storage)|inngest)/.test(p))) { throw new Error('AFS bundle contains service inputs'); }
 // AFS CJS uses the reviewed client helpers without the unused __commonJS
 // wrapper. Compare the entire emitted prefix with that exact derivation.
-const originalGenerated = path.join(repoRoot, 'packages/xpod-cli/licenses/javascript/generated', process.versions.bun ?? 'unknown');
+const originalGenerated = path.join(producer.generatedRoot, process.versions.bun ?? 'unknown');
 const profile = JSON.parse(readFileSync(path.join(originalGenerated, 'client.json'), 'utf8'));
 const basePrefix = readFileSync(path.join(originalGenerated, profile.file.object), 'utf8');
 if (createHash('sha256').update(basePrefix).digest('hex') !== profile.file.sha256) { throw new Error('Client helper source hash mismatch'); }
@@ -82,10 +93,10 @@ writeFileSync(path.join(generated, 'index.json'), JSON.stringify(generatedIndex,
 collectJavascriptNotices({ metafile: metadata, stageRoot: packageRoot, repoRoot,
   destination: path.join(stage, 'licenses/javascript-afs'), target,
   cli: path.join(stage, 'dist/library.cjs'), bunVersion: process.versions.bun ?? 'unknown',
-  supplements: [path.join(repoRoot, 'packages/xpod-cli/licenses/javascript'), path.join(packageRoot, 'licenses/javascript')],
+  supplements: [producer.supplements, path.join(packageRoot, 'licenses/javascript')],
   vendoredRoots: vendoredPackages.map(vendor => vendor.stageRoot!), requireVendoredOriginals: true,
   generated });
-const sourceFiles = [...inputs.filter(p => !p.includes('node_modules/')).map(p => path.relative(repoRoot, path.resolve(packageRoot, p))), 'package.json', 'bun.lock', '.componentsjs-generator-config.json', 'config/components-ignore.json'];
+const sourceFiles = [...inputs.filter(p => !p.includes('node_modules/')).map(p => path.relative(repoRoot, path.resolve(packageRoot, p))), 'package.json', 'bun.lock', '.componentsjs-generator-config.json', 'config/components-ignore.json', 'scripts/check-afs-package.cjs'];
 function sourceTree(directory: string): void {
   for (const name of readdirSync(directory).sort()) {
     if (['node_modules', 'dist', '.test-data', 'build'].includes(name)) { continue; }
@@ -95,9 +106,26 @@ function sourceTree(directory: string): void {
     else { throw new Error('Source kit contains a nonregular input'); }
   }
 }
-sourceTree(packageRoot); sourceTree(path.join(repoRoot, 'packages/xpod-cli'));
-const publicInputs = path.join(repoRoot, 'packages/xpod-cli/.test-data/build/client-inputs.json');
-sourceFiles.push(path.relative(repoRoot, publicInputs));
+sourceTree(packageRoot); sourceTree(path.join(repoRoot, 'types/bun'));
+// These are actual source inputs of native-material.py, not proof that the
+// delivered directory supplies a genuine Git object authority by itself.
+sourceTree(path.join(repoRoot, 'tools/agentfs-pod'));
+for (const name of ['accept.py', 'supervise.py']) sourceFiles.push('scripts/agentfs-native-ci/' + name);
+mkdirSync(path.join(stage, 'sources'), { recursive: true });
+copyFileSync(producer.clientSource, path.join(stage, 'sources/cli-client-source.tar.gz'));
+copyFileSync(producer.sourceInventory, path.join(stage, 'provenance/cli-client-source-inventory.json'));
+copyFileSync(producer.indexPath, path.join(stage, 'provenance/cli-producer-materials.json'));
+copyFileSync(publicInputs, path.join(stage, 'provenance/cli-client-inputs.json'));
+const copiedBindings: Array<[string, string]> = [
+  ['sources/cli-client-source.tar.gz', producer.binding.clientSourceSHA256],
+  ['provenance/cli-client-source-inventory.json', producer.binding.sourceInventorySHA256],
+  ['provenance/cli-producer-materials.json', producer.binding.indexSHA256],
+  ['node_modules/@undefineds.co/xpod-cli/dist/client.cjs', producer.binding.clientPayloads.cjsSHA256],
+  ['node_modules/@undefineds.co/xpod-cli/dist/client.mjs', producer.binding.clientPayloads.esmSHA256],
+];
+for (const [relative, expected] of copiedBindings) {
+  if (createHash('sha256').update(readFileSync(path.join(stage, relative))).digest('hex') !== expected) throw new Error('Copied public producer payload is not snapshot-bound');
+}
 const sourceRoot = path.join(output, 'module-source');
 for (const name of new Set(sourceFiles)) {
   if (name.startsWith('..') || path.isAbsolute(name)) { throw new Error('Source outside repository'); }
@@ -115,7 +143,8 @@ writeFileSync(path.join(stage, 'provenance/module-source-kit.json'), JSON.string
   baseCommit: nativeFacts.baseCommit, dirty: nativeFacts.moduleSourceDirty, moduleSourceSHA: nativeFacts.moduleSourceSHA,
   moduleSourceTreeSHA256: sourceTreeDigest, files: sourceInventory,
   publicClientPayloadSHA256: createHash('sha256').update(readFileSync(path.join(client, 'dist/client.cjs'))).digest('hex'),
-  publicClientMetafileSHA256: createHash('sha256').update(readFileSync(publicInputs)).digest('hex') }, null, 2) + '\n');
+  publicClientMetafileSHA256: createHash('sha256').update(readFileSync(publicInputs)).digest('hex'),
+  publicClientMaterials: producer.binding }, null, 2) + '\n');
 mkdirSync(path.join(stage, 'sources'), { recursive: true });
 checked('tar', ['-czf', path.join(stage, 'sources/module-source.tar.gz'), '-C', sourceRoot, '.']);
 const files: Array<{ path: string; sha256: string; size: number; mode: number }> = [];
@@ -130,6 +159,7 @@ function inventory(directory: string): void {
     files.push({ path: relative, sha256: createHash('sha256').update(bytes).digest('hex'), size: bytes.length, mode });
   }
 }
+if (JSON.stringify((await resolveProducerMaterials(producer.indexPath)).binding) !== JSON.stringify(producer.binding)) throw new Error('Public producer authority changed during packaging');
 inventory(stage);
 const version = JSON.parse(readFileSync(path.join(packageRoot, 'package.json'), 'utf8')).version;
 const manifest = { name: `@undefineds.co/xpod-afs-${target}`, version, type: 'module', license: 'SEE LICENSE IN LICENSES.txt',

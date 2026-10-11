@@ -5,27 +5,22 @@ import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { ModuleStore } from '../../xpod-cli/src/module-store';
 
 const owned: string[] = [];
 afterEach(async () => { await Promise.all(owned.splice(0).map(p => rm(p, { recursive: true, force: true }))); });
 const archive = process.env.XPOD_AFS_TEST_ARCHIVE;
 const artifactTest = test as typeof test & { skipIf(condition: boolean): typeof test };
-artifactTest.skipIf(!archive)('real AFS payload installs through ModuleStore and runs without workspace dependencies under Node22 and Bun', async () => {
+artifactTest.skipIf(!archive)('real AFS payload installs through public CLI and runs without workspace dependencies under Node22 and Bun', async () => {
   // Outside every workspace ancestor: NODE_PATH alone does not isolate Node.
   const root = await mkdtemp(path.join(tmpdir(), 'xpod-afs-installed-')); owned.push(root);
   const bytes = await readFile(archive!); const integrity = `sha512-${createHash('sha512').update(bytes).digest('base64')}`;
-  let downloads = 0;
   const version = '0.1.0-preview.1';
   const name = `@undefineds.co/xpod-afs-${process.platform}-${process.arch}`;
-  const request = (async (url: string | URL | Request) => {
-    if (String(url).endsWith('.tgz')) { downloads++; return new Response(bytes); }
-    return Response.json({ name, version, dist: { integrity, tarball: 'https://registry.npmjs.org/actual-afs.tgz' } });
-  }) as typeof fetch;
-  const store = new ModuleStore({ root: path.join(root, 'modules'), fetch: request });
-  expect(await store.current('afs')).toBeUndefined(); expect(downloads).toBe(0);
-  const installed = await store.install('afs', version); expect(installed.integrity).toBe(integrity);
-  const payload = path.join(store.root, 'afs', `${process.platform}-${process.arch}`, version, 'package');
+  // Optional test-only public package input; no fallback to another checkout.
+  const cliPackage = path.resolve(process.env.XPOD_AFS_TEST_CLI_PACKAGE ?? path.join(import.meta.dir, '../../xpod-cli'));
+  const cli = path.join(cliPackage, 'dist/xpod.mjs');
+  const payloads = new Map<string, { payload: string; home: string; counter: string }>();
+  const payload = path.join(root, 'node-home', '.xpod/modules/afs', `${process.platform}-${process.arch}`, version, 'package');
   await mkdir(path.join(root, 'home')); await writeFile(path.join(root, 'runtime-test.cjs'), `
     const assert = require('node:assert/strict');
     const fs = require('node:fs'); const path = require('node:path');
@@ -110,6 +105,42 @@ artifactTest.skipIf(!archive)('real AFS payload installs through ModuleStore and
         error: error ?? (timedOut ? new Error('Owned consumer timeout') : undefined) } as SpawnSyncReturns<Buffer>);
     }));
   }
+  // Controlled registry fixture, not registry publication evidence. Only these
+  // two exact URLs are served; unexpected requests fail instead of using network.
+  const preload = path.join(root, 'registry-fixture.mjs');
+  await writeFile(preload, `
+import {readFileSync,appendFileSync} from 'node:fs';
+const metadataURL=${JSON.stringify('https://registry.npmjs.org/' + encodeURIComponent(name) + '/' + version)};
+const tarball='https://registry.npmjs.org/actual-afs.tgz';
+globalThis.fetch=async (input) => {
+  const url=typeof input==='string'?input:input instanceof URL?input.href:input.url;
+  if(url===metadataURL) return Response.json(${JSON.stringify({name,version,dist:{integrity,tarball:'https://registry.npmjs.org/actual-afs.tgz'}})});
+  if(url===tarball) {appendFileSync(process.env.XPOD_TEST_DOWNLOAD_COUNTER,'download\\n'); return new Response(readFileSync(${JSON.stringify(path.resolve(archive!))}));}
+  throw new Error('Unexpected controlled registry request');
+};
+`);
+  async function cliRun(runtime: string, label: string, args: string[]): Promise<SpawnSyncReturns<Buffer>> {
+    const row = payloads.get(label)!;
+    const result = await runOwned(runtime, [runtime === node ? '--import' : '--preload', preload, cli, ...args],
+      {...process.env, HOME: row.home, NODE_PATH: '', XPOD_TEST_DOWNLOAD_COUNTER: row.counter});
+    await receipt(label + '-cli-' + args.join('-'), result);
+    expect(result.error).toBeUndefined(); expect(result.signal).toBeNull();
+    return result;
+  }
+  for (const [label, runtime] of [['node', node], ['bun', process.execPath]]) {
+    const home = path.join(root, label! + '-home'); await mkdir(home);
+    const counter = path.join(root, label! + '-downloads'); await writeFile(counter, '');
+    payloads.set(label!, {home,counter,payload:path.join(home,'.xpod/modules/afs',`${process.platform}-${process.arch}`,version,'package')});
+    const before = await cliRun(runtime!, label!, ['module','list']); expect(before.status).toBe(0);
+    expect(JSON.parse(before.stdout.toString()).data.find((row: {id:string})=>row.id==='afs').installed).toBeNull();
+    expect(await readFile(counter,'utf8')).toBe('');
+    const installed = await cliRun(runtime!, label!, ['module','install','afs','--version',version]); expect(installed.status).toBe(0);
+    expect(JSON.parse(installed.stdout.toString()).data.integrity).toBe(integrity);
+    const listed = await cliRun(runtime!, label!, ['module','list']); expect(listed.status).toBe(0);
+    expect(JSON.parse(listed.stdout.toString()).data.find((row: {id:string})=>row.id==='afs').installed)
+      .toMatchObject({package:name,version,platform:process.platform,arch:process.arch,integrity});
+    expect(await readFile(counter,'utf8')).toBe('download\n');
+  }
   // Type consumers are outside workspace ancestors and resolve the installed
   // public package, through exports and through classic typesVersions.
   await mkdir(path.join(root, 'node_modules/@undefineds.co'), { recursive: true });
@@ -166,7 +197,7 @@ console.log(JSON.stringify({esmNamedImports:true,allPublicIdentity:true,sqliteSi
 `);
   for (const runtime of [node, process.execPath]) {
     const label = runtime === node ? 'node' : 'bun';
-    const env = { ...process.env, HOME: path.join(root, 'home'), SOLID_HOME: path.join(root, 'home'), NODE_PATH: '', PATH: '/usr/bin:/bin' };
+    const env = { ...process.env, HOME: payloads.get(label)!.home, SOLID_HOME: payloads.get(label)!.home, NODE_PATH: '', PATH: '/usr/bin:/bin' };
     const esm = await runOwned(runtime, [esmConsumer, path.join(root, label + '-esm')], env);
     await receipt(label + '-esm-public-runtime', esm);
     expect(esm.error).toBeUndefined(); expect(esm.status).toBe(0); expect(esm.signal).toBeNull();
@@ -245,8 +276,15 @@ console.log(JSON.stringify({esmNamedImports:true,allPublicIdentity:true,sqliteSi
       server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve()));
     }
   }
-  expect(downloads).toBe(1);
-  await writeFile(path.join(payload, 'dist/entry.mjs'), 'tampered');
-  await expect(store.current('afs')).rejects.toMatchObject({ code: 'module_file_changed' });
-  expect(downloads).toBe(1);
-}, 30_000);
+  for (const [label, runtime] of [['node', node], ['bun', process.execPath]]) {
+    const row = payloads.get(label!)!;
+    expect(await readFile(row.counter,'utf8')).toBe('download\n');
+    await writeFile(path.join(row.payload,'dist/entry.mjs'),'tampered');
+    const changed = await cliRun(runtime!,label!,['module','list']); expect(changed.status).not.toBe(0);
+    expect(Buffer.concat([changed.stdout,changed.stderr]).toString()).toContain('Installed module contents changed');
+    expect(await readFile(row.counter,'utf8')).toBe('download\n');
+    const removed = await cliRun(runtime!,label!,['module','remove','afs']); expect(removed.status).toBe(0);
+    const empty = await cliRun(runtime!,label!,['module','list']); expect(empty.status).toBe(0);
+    expect(JSON.parse(empty.stdout.toString()).data.find((item: {id:string})=>item.id==='afs').installed).toBeNull();
+  }
+}, 60_000);

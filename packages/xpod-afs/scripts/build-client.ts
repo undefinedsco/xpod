@@ -3,6 +3,7 @@ import path from 'node:path';
 import ts from 'typescript';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
+import { createRequire } from 'node:module';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const pkg = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8'));
@@ -92,5 +93,6 @@ for (const file of declarationFiles(path.join(root, 'dist/types'))) {
 }
 
 
-const components = spawnSync('bun', [path.resolve(root, '../../node_modules/componentsjs-generator/bin/componentsjs-generator.js'), '-s', 'src', '-c', 'dist/components', '-i', 'config/components-ignore.json', 'packages/xpod-afs'], { cwd: path.resolve(root, '../..'), stdio: 'inherit' });
+const generator = path.join(path.dirname(createRequire(import.meta.url).resolve('componentsjs-generator/package.json')), 'bin/componentsjs-generator.js');
+const components = spawnSync('bun', [generator, '-s', 'src', '-c', 'dist/components', '-i', '../../config/components-ignore.json', '.'], { cwd: root, stdio: 'inherit' });
 if (components.status !== 0) { throw new Error('AFS contract metadata build failed'); }

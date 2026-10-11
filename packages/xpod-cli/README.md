@@ -267,3 +267,25 @@ CLI/source identity binding, `--version`, `--help`,
 `agent-fs status`, placeholder/check-masquerade and (optionally) the public
 gate. A bundled helper must actually run `--version` and `--help`; file presence
 alone is insufficient. Source-TS resolution is not accepted as install proof.
+
+### Public producer tooling
+
+Capability package build scripts import `collectJavascriptNotices` from
+`@undefineds.co/xpod-cli/build-tools` as a build-time dependency. This public
+subpath ships portable ESM/CJS bundles and TypeScript declarations, bundles its declared tar parser without consumer install dependencies, and shares the collector implementation used by the CLI producer.
+It is not imported by the CLI runtime and adds no consumer install dependencies.
+Do not import sibling package source files.
+
+Producer materials are exposed at `@undefineds.co/xpod-cli/producer-materials`.
+Resolve that JSON subpath with `createRequire(import.meta.url).resolve(...)`,
+read its schema-versioned index, and resolve listed paths relative to the index.
+The index inventories every material with byte size and SHA256: `supplements`,
+`generatedRoot` (select the exact Bun version), `clientMetafile`, and the
+`clientSource` archive with `sourceInventory` and `sourceDirectory`.
+These are build inputs and source provenance; their presence does not establish
+native admission, license clearance, release eligibility, or a clean commit.
+
+`verifyProducerSourceArchive({ archive, inventory })` validates the actual shipped
+source tar against its inventory, including member types, duplicates, paths,
+complete file membership, sizes and SHA256. Call it after checking material
+hashes; an outer tar hash alone does not prove the source inventory relation.

@@ -129,12 +129,31 @@ pub(crate) fn spawn_stdin_command(command: &mut Command, stage: &'static str) ->
     spawn_configured_command(command, stage)
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum UnmountKind { Normal, CrashedNfs, CrashedFuse }
+
+/// Single command declaration for normal and proven-dead backend recovery.
+/// Linux FUSE uses the existing ordinary unmount: no lazy/force flags, no new
+/// privileged helper dependency, and no fallback after an ambiguous outcome.
+pub(crate) fn unmount_command(target: &Path, kind: UnmountKind) -> Result<Command> {
+    unmount_command_for(std::env::consts::OS, target, kind)
+}
+
+fn unmount_command_for(platform: &str, target: &Path, kind: UnmountKind) -> Result<Command> {
+    let (program, flags): (&str, &[&str]) = match (platform, kind) {
+        ("macos", UnmountKind::CrashedNfs) => ("/sbin/umount", &["-f"]),
+        ("macos", UnmountKind::Normal | UnmountKind::CrashedFuse) => ("/sbin/umount", &[]),
+        ("linux", UnmountKind::Normal | UnmountKind::CrashedFuse) => ("umount", &[]),
+        (_, UnmountKind::Normal) => ("umount", &[]),
+        _ => anyhow::bail!("controlled crashed backend detach unsupported on this platform"),
+    };
+    let mut command = Command::new(program);
+    command.args(flags).arg(target);
+    Ok(command)
+}
+
 pub(crate) fn spawn_unmount(target: &Path) -> Result<CommandObservation> {
-    #[cfg(target_os = "macos")]
-    let mut command = Command::new("/sbin/umount");
-    #[cfg(not(target_os = "macos"))]
-    let mut command = Command::new("umount");
-    spawn_command(command.arg(target), "umount")
+    spawn_command(&mut unmount_command(target, UnmountKind::Normal)?, "umount")
 }
 
 /// Resolve only a verified local parent, never stat the mounted target.
@@ -314,11 +333,7 @@ fn mount_syscall(port: u32, mountpoint: &Path) -> Result<CommandObservation> {
 fn mount_syscall(_port: u32, _mountpoint: &Path) -> Result<CommandObservation> { anyhow::bail!("NFS mount unsupported on this platform") }
 
 pub fn unmount(mountpoint: &Path) -> Result<CommandObservation> {
-    #[cfg(target_os = "macos")]
-    let mut command = Command::new("/sbin/umount");
-    #[cfg(not(target_os = "macos"))]
-    let mut command = Command::new("umount");
-    let observation = observe_command(command.arg(mountpoint), "umount", UNMOUNT_OBSERVATION)?;
+    let observation = observe_command(&mut unmount_command(mountpoint, UnmountKind::Normal)?, "umount", UNMOUNT_OBSERVATION)?;
     // Dropping Child does not kill it. A pending flush remains unresolved;
     // the normal API never force/lazy detaches or pretends it was waited.
     observation.require_success()?;
@@ -429,6 +444,23 @@ fn validate_local_resolution(path: &Path, entries: &[MountIdentity], depth: usiz
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn unmount_command_registry_keeps_backend_and_platform_policy() {
+        let target = Path::new("/tmp/owned mount with spaces");
+        for kind in [UnmountKind::Normal, UnmountKind::CrashedFuse] {
+            for platform in ["linux", "macos"] {
+                let command = unmount_command_for(platform, target, kind).unwrap();
+                assert_eq!(command.get_program(), if platform == "linux" { "umount" } else { "/sbin/umount" });
+                assert_eq!(command.get_args().collect::<Vec<_>>(), vec![target.as_os_str()]);
+            }
+        }
+        let legacy = unmount_command_for("macos", target, UnmountKind::CrashedNfs).unwrap();
+        assert_eq!(legacy.get_program(), "/sbin/umount");
+        assert_eq!(legacy.get_args().collect::<Vec<_>>(), vec![std::ffi::OsStr::new("-f"), target.as_os_str()]);
+        assert!(unmount_command_for("linux", target, UnmountKind::CrashedNfs).is_err());
+        assert!(unmount_command_for("unknown", target, UnmountKind::CrashedFuse).is_err());
+    }
+
     use super::*;
     use std::io::Write;
 

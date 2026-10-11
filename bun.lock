@@ -261,6 +261,7 @@
       "devDependencies": {
         "@types/node": "^22",
         "@types/yargs": "^17.0.33",
+        "componentsjs-generator": "^4.3.0",
         "typescript": "5.5",
       },
     },

@@ -11,7 +11,7 @@
     "build": "bun scripts/build-package.ts",
     "build:cli-only": "bun scripts/build.ts --cli-only",
     "verify": "bun run typecheck && bun run test && bun run build",
-    "test": "bun test tests/module-store.test.ts tests/launcher.test.ts tests/javascript-notices.test.ts",
+    "test": "bun test ./tests/module-store.test.ts ./tests/launcher.test.ts ./tests/javascript-notices.test.ts ./tests/producer-materials.test.ts",
     "build:preview": "bun scripts/build.ts",
     "typecheck": "tsc --noEmit -p tsconfig.core.json",
     "test:preview": "bun test ./tests",
@@ -41,7 +41,13 @@
       "types": "./dist/client-types/client.d.ts",
       "import": "./dist/client.mjs",
       "require": "./dist/client.cjs"
-    }
+    },
+    "./build-tools": {
+      "types": "./dist/build-tools-types/build-tools.d.ts",
+      "import": "./dist/build-tools.mjs",
+      "require": "./dist/build-tools.cjs"
+    },
+    "./producer-materials": "./dist/producer-materials/index.json"
   },
   "peerDependencies": {
     "@inrupt/solid-client-authn-node": "^3.1.1"
@@ -55,6 +61,9 @@
     "*": {
       "client": [
         "dist/client-types/client.d.ts"
+      ],
+      "build-tools": [
+        "dist/build-tools-types/build-tools.d.ts"
       ]
     }
   }

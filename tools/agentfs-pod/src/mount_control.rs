@@ -796,15 +796,19 @@ fn crash_detach_observed(directory: &Path, owner: &Owner, target: &Path,
     Ok(true)
 }
 
-fn spawn_crash_detach(target: &Path) -> Result<CommandObservation> {
-    #[cfg(target_os = "macos")]
-    {
-        // Only invoked after independently proven dead owner + exact kernel
-        // mount binding while holding the original private runtime lease.
-        mount::spawn_command(std::process::Command::new("/sbin/umount").arg("-f").arg(target), "crash-detach")
-    }
-    #[cfg(not(target_os = "macos"))]
-    { let _ = target; anyhow::bail!("controlled crashed NFS detach unsupported on this platform") }
+fn crash_detach_command(backend: Backend, target: &Path) -> Result<std::process::Command> {
+    let kind = match backend {
+        Backend::Nfs => mount::UnmountKind::CrashedNfs,
+        Backend::Fuse => mount::UnmountKind::CrashedFuse,
+    };
+    mount::unmount_command(target, kind)
+}
+
+fn spawn_crash_detach(backend: Backend, target: &Path) -> Result<CommandObservation> {
+    // Only invoked after independently proven dead owner + exact kernel mount
+    // binding while holding the original private runtime lease. The backend is
+    // from that unchanged owner; neither a caller nor a mountpoint guess selects it.
+    mount::spawn_command(&mut crash_detach_command(backend, target)?, "crash-detach")
 }
 
 fn completed_owner_observed(session: &Path, target: &Path, observe: impl Fn() -> MountState, recover: bool) -> Result<bool> {
@@ -838,7 +842,7 @@ fn completed_owner_for_operation(session: &Path, target: &Path, observe: impl Fn
     }
     if owner.closed.is_none() && recover && expected.is_none() && last.is_none() {
         return crash_detach_observed(&directory, &owner, target, observe, RuntimeIdentity::require_dead,
-            || spawn_crash_detach(target), mount::UNMOUNT_OBSERVATION);
+            || spawn_crash_detach(owner.backend, target), mount::UNMOUNT_OBSERVATION);
     }
     let closed = owner.closed.as_ref().context("no actual closed unmount proof")?;
     if last.map(|snapshot| snapshot.nonce != owner.nonce || snapshot.pid != closed.pid
@@ -1402,10 +1406,12 @@ mod tests {
             lease_inherit_fixture(&session);
             return;
         }
-        let control = RuntimeControl::acquire(&session, &session.join("target")).unwrap();
+        let backend = if std::env::var("XPOD_TEST_CONTROL_BACKEND").ok().as_deref() == Some("fuse") { Backend::Fuse } else { Backend::Nfs };
+        let control = RuntimeControl::acquire_for_backend(&session, &session.join("target"), backend).unwrap();
         if std::env::var_os("XPOD_TEST_NFS_CRASH_BINDING").is_some() {
-            control.bind_identity(&MountIdentity { target: session.join("target"), source: b"127.0.0.1:/".to_vec(),
-                filesystem: b"nfs".to_vec(), id: vec![1, 2, 3, 4] }).unwrap();
+            let (source, filesystem) = if backend == Backend::Fuse { (control.fuse_name().unwrap().into_bytes(), b"fuse.agentfs-pod".to_vec()) }
+                else { (b"127.0.0.1:/".to_vec(), b"nfs".to_vec()) };
+            control.bind_identity(&MountIdentity { target: session.join("target"), source, filesystem, id: vec![1, 2, 3, 4] }).unwrap();
         }
         let mut ready = OpenOptions::new().write(true).create_new(true).mode(0o600).open(session.join("ready")).unwrap();
         ready.write_all(b"ready").unwrap(); ready.sync_all().unwrap();
@@ -1776,38 +1782,60 @@ mod tests {
     }
 
     #[test]
-    fn crash_detach_rejects_alive_unknown_boot_legacy_and_changed_kernel() {
-        let fixture = Fixture::new();
-        let control = RuntimeControl::acquire(&fixture.session, &fixture.target).unwrap();
-        control.bind_identity(&fixture.identity()).unwrap();
-        let owner = control.verify_owned().unwrap();
-        assert!(owner.runtime.as_ref().unwrap().require_dead().is_err());
-        assert!(crash_detach_observed(&control.directory, &owner, &fixture.target,
-            || MountState::Mounted(fixture.identity()), RuntimeIdentity::require_dead,
-            || panic!("live original runtime must not detach"), Duration::ZERO).is_err());
-        let mut invalid_start = owner.runtime.clone().unwrap(); invalid_start.start.clear();
-        assert!(invalid_start.require_dead().is_err());
-        let mut different_boot = owner.runtime.clone().unwrap();
-        different_boot.boot.push_str("-foreign");
-        assert!(different_boot.require_dead().is_err());
-        let call = |candidate: &Owner, state: MountState| crash_detach_observed(&control.directory, candidate,
-            &fixture.target, || state.clone(), |_| Ok(()), || panic!("rejected state must not spawn detach"), Duration::ZERO);
-        let mut legacy = owner.clone(); legacy.schema_version = 1; legacy.runtime = None;
-        assert!(call(&legacy, MountState::Mounted(fixture.identity())).is_err());
-        let mut foreign = fixture.identity(); foreign.source = b"foreign:/".to_vec();
-        let mut changed = fixture.identity(); changed.id.push(99);
-        for state in [MountState::Unknown("controlled unavailable kernel table".into()),
-            MountState::Mounted(foreign), MountState::Mounted(changed), MountState::Absent] {
-            assert!(call(&owner, state).is_err());
+    fn crash_detach_dispatches_recorded_fuse_backend_without_force_or_lazy() {
+        let target = Path::new("/tmp/owned-fuse-target");
+        let fuse = crash_detach_command(Backend::Fuse, target).unwrap();
+        assert_eq!(fuse.get_args().collect::<Vec<_>>(), vec![target.as_os_str()]);
+        #[cfg(target_os = "linux")]
+        {
+            assert_eq!(fuse.get_program(), "umount");
+            assert!(crash_detach_command(Backend::Nfs, target).is_err());
         }
-        assert!(crash_detach_observed(&control.directory, &owner, &fixture.target,
-            || MountState::Mounted(fixture.identity()), |_| anyhow::bail!("controlled process permission unknown"),
-            || panic!("unknown process must not spawn"), Duration::ZERO).is_err());
-        assert!(!completed_owner_observed(&fixture.session, &fixture.target,
-            || MountState::Mounted(fixture.identity()), true).unwrap(), "held original lease refuses recovery");
-        clean_fixture_runtime(&control, None);
+        #[cfg(target_os = "macos")]
+        {
+            assert_eq!(fuse.get_program(), "/sbin/umount");
+            let nfs = crash_detach_command(Backend::Nfs, target).unwrap();
+            assert_eq!(nfs.get_args().collect::<Vec<_>>(), vec![std::ffi::OsStr::new("-f"), target.as_os_str()]);
+        }
     }
 
+    #[test]
+    fn crash_detach_rejects_alive_unknown_boot_legacy_and_changed_kernel() {
+        for backend in [Backend::Nfs, Backend::Fuse] {
+            let fixture = Fixture::new();
+            let control = RuntimeControl::acquire_for_backend(&fixture.session, &fixture.target, backend).unwrap();
+            let identity = if backend == Backend::Fuse {
+                MountIdentity { target: fixture.target.clone(), source: control.fuse_name().unwrap().into_bytes(), filesystem: b"fuse.agentfs-pod".to_vec(), id: vec![1, 2, 3, 4] }
+            } else { fixture.identity() };
+            control.bind_identity(&identity).unwrap();
+            let owner = control.verify_owned().unwrap();
+            assert!(owner.runtime.as_ref().unwrap().require_dead().is_err());
+            assert!(crash_detach_observed(&control.directory, &owner, &fixture.target,
+                || MountState::Mounted(identity.clone()), RuntimeIdentity::require_dead,
+                || panic!("live original runtime must not detach"), Duration::ZERO).is_err());
+            let mut invalid_start = owner.runtime.clone().unwrap(); invalid_start.start.clear();
+            assert!(invalid_start.require_dead().is_err());
+            let mut different_boot = owner.runtime.clone().unwrap();
+            different_boot.boot.push_str("-foreign");
+            assert!(different_boot.require_dead().is_err());
+            let call = |candidate: &Owner, state: MountState| crash_detach_observed(&control.directory, candidate,
+                &fixture.target, || state.clone(), |_| Ok(()), || panic!("rejected state must not spawn detach"), Duration::ZERO);
+            let mut legacy = owner.clone(); legacy.schema_version = 1; legacy.runtime = None;
+            assert!(call(&legacy, MountState::Mounted(identity.clone())).is_err());
+            let mut foreign = identity.clone(); foreign.source = b"foreign:/".to_vec();
+            let mut changed = identity.clone(); changed.id.push(99);
+            for state in [MountState::Unknown("controlled unavailable kernel table".into()),
+                MountState::Mounted(foreign), MountState::Mounted(changed), MountState::Absent] {
+                assert!(call(&owner, state).is_err());
+            }
+            assert!(crash_detach_observed(&control.directory, &owner, &fixture.target,
+                || MountState::Mounted(identity.clone()), |_| anyhow::bail!("controlled process permission unknown"),
+                || panic!("unknown process must not spawn"), Duration::ZERO).is_err());
+            assert!(!completed_owner_observed(&fixture.session, &fixture.target,
+                || MountState::Mounted(identity.clone()), true).unwrap(), "held original lease refuses recovery");
+            clean_fixture_runtime(&control, None);
+        }
+    }
     #[test]
     fn crash_detach_pending_proof_never_reissues_an_operation() {
         // Controlled negative markers: kernel absence cannot replace the owned
@@ -1837,39 +1865,40 @@ mod tests {
 
     #[test]
     fn actual_dead_runtime_crash_detach_waits_and_preserves_distinct_proof() {
-        let fixture = Fixture::new();
-        let child = Command::new(std::env::current_exe().unwrap())
-            .args(["--ignored", "--exact", "mount_control::tests::lease_child", "--nocapture"])
-            .env("XPOD_TEST_NFS_CONTROL_SESSION", &fixture.session).env("XPOD_TEST_NFS_CRASH_BINDING", "1")
-            .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
-        let mut helper = OwnedHelper::new(child);
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while !fixture.session.join("ready").exists() && Instant::now() < deadline { std::thread::sleep(Duration::from_millis(10)); }
-        assert!(fixture.session.join("ready").exists());
-        let directory = fixture.session.join(DIRECTORY);
-        let owner = read_owner(&directory).unwrap();
-        assert!(owner.runtime.as_ref().unwrap().require_dead().is_err());
-        helper.child.as_mut().unwrap().kill().unwrap();
-        let status = helper.wait_bounded(Instant::now() + Duration::from_secs(5));
-        assert_eq!(status.signal(), Some(libc::SIGKILL));
-        owner.runtime.as_ref().unwrap().require_dead().unwrap();
-        let lease = open_private(&directory.join(LEASE)).unwrap();
-        assert_eq!(unsafe { libc::flock(lease.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) }, 0);
-        assert_eq!(FileIdentity::of(&lease.metadata().unwrap()), owner.lease);
-        let observations = std::cell::Cell::new(0);
-        let result = crash_detach_observed(&directory, &owner, &fixture.target, || {
-            let number = observations.get(); observations.set(number + 1);
-            if number < 3 { MountState::Mounted(fixture.identity()) } else { MountState::Absent }
-        }, RuntimeIdentity::require_dead, || Ok(actual_exit(0)), Duration::from_secs(1));
-        assert!(result.unwrap(), "controlled kernel observation + actual child wait completes");
-        let completed = read_owner(&directory).unwrap();
-        assert!(completed.closed.is_none(), "crash detach never manufactures a normal runtime closed proof");
-        let proof = completed.crash_detach.as_ref().unwrap();
-        assert!(proof.actual_wait); assert_eq!(proof.actual_exit, Some(0)); assert_eq!(proof.actual_signal, None);
-        assert!(!socket_path(&completed).unwrap().exists());
-        remove_known(&directory.join(RECORD), completed.record, false).unwrap();
+        for backend in [Backend::Nfs, Backend::Fuse] {
+            let fixture = Fixture::new();
+            let child = Command::new(std::env::current_exe().unwrap())
+                .args(["--ignored", "--exact", "mount_control::tests::lease_child", "--nocapture"])
+                .env("XPOD_TEST_NFS_CONTROL_SESSION", &fixture.session).env("XPOD_TEST_CONTROL_BACKEND", if backend == Backend::Fuse { "fuse" } else { "nfs" }).env("XPOD_TEST_NFS_CRASH_BINDING", "1")
+                .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+            let mut helper = OwnedHelper::new(child);
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !fixture.session.join("ready").exists() && Instant::now() < deadline { std::thread::sleep(Duration::from_millis(10)); }
+            assert!(fixture.session.join("ready").exists());
+            let directory = fixture.session.join(DIRECTORY);
+            let owner = read_owner(&directory).unwrap();
+            assert!(owner.runtime.as_ref().unwrap().require_dead().is_err());
+            helper.child.as_mut().unwrap().kill().unwrap();
+            let status = helper.wait_bounded(Instant::now() + Duration::from_secs(5));
+            assert_eq!(status.signal(), Some(libc::SIGKILL));
+            owner.runtime.as_ref().unwrap().require_dead().unwrap();
+            let lease = open_private(&directory.join(LEASE)).unwrap();
+            assert_eq!(unsafe { libc::flock(lease.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) }, 0);
+            assert_eq!(FileIdentity::of(&lease.metadata().unwrap()), owner.lease);
+            let observations = std::cell::Cell::new(0);
+            let result = crash_detach_observed(&directory, &owner, &fixture.target, || {
+                let number = observations.get(); observations.set(number + 1);
+                if number < 3 { MountState::Mounted(MountIdentity { target: fixture.target.clone(), source: owner.binding.as_ref().unwrap().source.clone(), filesystem: owner.binding.as_ref().unwrap().filesystem.clone(), id: owner.binding.as_ref().unwrap().id.clone() }) } else { MountState::Absent }
+            }, RuntimeIdentity::require_dead, || Ok(actual_exit(0)), Duration::from_secs(1));
+            assert!(result.unwrap(), "controlled kernel observation + actual child wait completes");
+            let completed = read_owner(&directory).unwrap();
+            assert!(completed.closed.is_none(), "crash detach never manufactures a normal runtime closed proof");
+            let proof = completed.crash_detach.as_ref().unwrap();
+            assert!(proof.actual_wait); assert_eq!(proof.actual_exit, Some(0)); assert_eq!(proof.actual_signal, None);
+            assert!(!socket_path(&completed).unwrap().exists());
+            remove_known(&directory.join(RECORD), completed.record, false).unwrap();
+        }
     }
-
     #[test]
     fn actual_dead_owner_releases_flock_and_only_proven_stale_socket_is_collected() {
         let fixture = Fixture::new();
