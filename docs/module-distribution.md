@@ -89,3 +89,12 @@ CLI、AFS、API、CSS 独立版本与独立发布，分别使用 `cli-v<version>
 CSS/API/AFS 的平台包尚未在 registry 发布，服务内部也尚未完成可选运行计划。下一步先将 AFS 客户端与真实 helper 按上述格式交付，再迁移服务入口及 CSS/API adapter；不能把本轮 CLI fixture 的下载成功表述为真实模块发布或 OS 挂载通过。
 
 拆分后的 mounted 验收 driver 要求 `module-source-kit.publicClientMaterials` 显式声明唯一 `runtimeClients` 和 `workspaceSources`。它核对公开客户端的完整文件集合、大小与摘要，并将声明绑定到实际 producer index、源码库存和逐成员验证的源码归档；缺少声明直接拒绝。历史归档继续使用其原提交绑定的 driver，不由新 driver 根据文件存在情况回退。安装回执以 `installedClientPath` 和 `installedClientSHA256` 记录实际客户端入口。
+
+
+### 独立客户端的 CI 产物
+
+模块挂载 CI 先安装并构建声明依赖，再调用原生材料查询工具；工具的共享运行包不能依赖 runner 预留的构建目录。构建后显式执行 `node --test tests/scripts/service-runtime-boundary.node-test.cjs`，该文件不由默认 Vitest 门禁发现。
+
+产品 artifact 的 inventory schema 2 包含三个实际打包的归档：`client.tgz`、`cli.tgz`、`afs.tgz`。每个归档独立记录大小、SHA-256 和 SHA-512 SRI，并绑定源码 SHA、实际运行及尝试编号。客户端归档核验公开入口、类型、Session/peer 桥接、完整 dist 和原始通知材料，不能用 CLI 内嵌客户端替代其独立发布材料。历史 schema 1 只有 CLI/AFS 两个归档，不提供独立客户端的发布证明。
+
+这些产物属于开发验收证据。客户端实际 registry 归档与 SRI 读回、依赖该版本的模块安装验收，以及 staging 发布条件仍须分别通过。

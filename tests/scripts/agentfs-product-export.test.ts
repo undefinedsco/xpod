@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { scanProduct, validateCliProduct, projectProductBuild, exportProducts } from '../../scripts/agentfs-native-ci/mounted/export-products';
+import { scanProduct, validateCliProduct, projectProductBuild, exportProducts, validateClientProduct } from '../../scripts/agentfs-native-ci/mounted/export-products';
 
 const source = 'a'.repeat(40);
 const hash = (value: string) => createHash('sha256').update(value).digest('hex');
@@ -61,7 +61,7 @@ describe('exact product export', () => {
       const actualSHA = git('rev-parse', 'HEAD'); const build = path.join(root, 'build.safe.json');
       writeFileSync(build, JSON.stringify({ ...receipt, sourceSHA: actualSHA, ...injected }));
       const out = path.join(root, 'product-export');
-      await expect(exportProducts(root, archive, archive, archive, 'darwin-arm64', actualSHA, build, out)).rejects.toThrow('invalid product build receipt');
+      await expect(exportProducts(root, archive, archive, archive, 'darwin-arm64', actualSHA, build, out, archive)).rejects.toThrow('invalid product build receipt');
       expect(existsSync(out)).toBe(false);
     }));
   }
@@ -90,5 +90,48 @@ describe('exact product export', () => {
     expect(workflow).toContain('afs-module-products-${{ matrix.target }}-${{ github.sha }}');
     expect(workflow).toContain('/product-export/'); expect(workflow).toContain('/export/');
     expect(workflow).toContain('bun pm pack --filename "$MODULE_RUN_ROOT/cli.tgz" --ignore-scripts');
+  });
+});
+
+
+describe('independent shared client product', () => {
+  for (const change of ['', 'missing-session', 'changed-build', 'unbound-notices', 'unbound-peer', 'workspace-runtime', 'missing-notice-object']) {
+    it(`validates actual client tar: ${change || 'complete public runtime'}`, () => {
+      const parent = path.resolve('.test-data/agentfs-product-export'); mkdirSync(parent, { recursive: true });
+      const root = mkdtempSync(path.join(parent, 'client-'));
+      try {
+        const exports = { '.': { types: './dist/types/index.d.ts', import: './dist/index.mjs', require: './dist/library.cjs' }, './session': { types: './dist/types/session.d.ts', import: './dist/session.mjs', require: './dist/session.cjs' } };
+        const clientManifest: any = { name: '@undefineds.co/xpod-client', version: '1', exports, peerDependencies: { sdk: '1' }, peerDependenciesMeta: { sdk: { optional: true } } };
+        const entries: Record<string, string> = { 'LICENSE': 'MIT', 'README.md': 'Client', 'dist/peer.cjs': 'peer', 'dist/inputs.json': JSON.stringify({ inputs: { 'src/index.ts': {} } }), 'dist/licenses/index.json': JSON.stringify({ cliSha256: hash('runtime') }), 'dist/library.cjs': 'runtime', 'dist/licenses/objects/notice.txt': 'original notice' };
+        for (const value of Object.values(exports)) for (const member of Object.values(value)) entries[member.slice(2)] ??= 'bridge';
+        const packageRoot = path.join(root, 'package');
+        for (const [name, value] of Object.entries({ ...entries, 'package.json': JSON.stringify(clientManifest), 'src/peer.cjs': 'peer' })) {
+          mkdirSync(path.dirname(path.join(packageRoot, name)), { recursive: true }); writeFileSync(path.join(packageRoot, name), value);
+        }
+        if (change === 'missing-notice-object') delete entries['dist/licenses/objects/notice.txt'];
+        if (change === 'missing-session') delete entries['dist/session.cjs'];
+        if (change === 'changed-build') entries['dist/library.cjs'] = 'replacement';
+        if (change === 'unbound-notices') entries['dist/licenses/index.json'] = JSON.stringify({ cliSha256: hash('other') });
+        if (change === 'unbound-peer') writeFileSync(path.join(packageRoot, 'src/peer.cjs'), 'other');
+        if (change === 'workspace-runtime') clientManifest.dependencies = { runtime: 'workspace:*' };
+        entries['package.json'] = JSON.stringify(clientManifest);
+        const archive = path.join(root, 'client.tgz');
+        execFileSync('python3', ['-c', `import io,tarfile,json,sys
+with tarfile.open(sys.argv[1],'w:gz') as t:
+ for n,v in json.loads(sys.argv[2]).items():
+  b=v.encode();m=tarfile.TarInfo('package/'+n);m.size=len(b);t.addfile(m,io.BytesIO(b))`, archive, JSON.stringify(entries)]);
+        const validate = () => validateClientProduct(archive, path.join(root, 'validation'), packageRoot, source);
+        if (change) expect(validate).toThrow();
+        else { const result = validate(); expect(result.name).toBe('@undefineds.co/xpod-client'); expect(result.sourceCommit).toBe(source); }
+      } finally { rmSync(root, { recursive: true, force: true }); }
+    });
+  }
+  it('requires separate serialized client and the explicit service boundary gate in CI', () => {
+    const workflow = readFileSync('.github/workflows/agentfs-module-mounted-acceptance.yml', 'utf8');
+    expect(workflow).toContain('node --test tests/scripts/service-runtime-boundary.node-test.cjs');
+    expect(workflow).toContain('cd packages/xpod-client && bun pm pack');
+    expect(workflow.indexOf('bun run build:packages')).toBeLessThan(workflow.indexOf('prepare-module-inputs.ts native-info'));
+    expect(workflow).toContain('if [ -f "$MODULE_RUN_ROOT/native/native-facts.safe.json" ]; then');
+    expect(workflow).toContain('--client "$MODULE_RUN_ROOT/client.tgz"');
   });
 });
