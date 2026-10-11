@@ -49,14 +49,14 @@ it('ships runtime assets and declares external and uninstalled optional dependen
   expect(require(path.join(packaged, 'node_modules/auth/lib/runtime.js'))).toBe(42);
   for (const dir of ['config', 'templates', 'bin']) expect(readFileSync(path.join(packaged, `node_modules/auth/${dir}/runtime.js`), 'utf8')).toContain('42');
 });
-it('declares private bundles as package-local files so publish normalization cannot invent registry edges', () => {
+it('declares exact public versions with standard bundles for normal registry consumers', () => {
   const f = fixture();
-  // npm publication fills missing bundle edges with "*". File edges retain
-  // the bundled copy without asking Bun to resolve an unpublished registry version.
+  // The bundled payload supplies the exact version before npm resolves
+  // dependencies; package-local file edges cannot be read before extraction.
   const dependencies = f.dependencies.map(({ patchedRuntime: _patched, ...entry }) => entry);
   bundleLocalDependenciesIntoTarball(f.tarball, dependencies);
   const manifest = JSON.parse(readFileSync(path.join(unpack(f), 'package.json'), 'utf8'));
-  expect(manifest.dependencies.auth).toBe('file:./node_modules/auth');
+  expect(manifest.dependencies.auth).toBe(JSON.parse(readFileSync(path.join(f.source, 'package.json'), 'utf8')).version);
   expect(manifest.bundledDependencies).toContain('auth');
 });
 it('preserves the root version and nests conflicting pure-JS dependencies without losing their external edges', () => {

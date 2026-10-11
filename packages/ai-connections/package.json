@@ -42,7 +42,7 @@
     }
   },
   "scripts": {
-    "build": "rm -rf dist && tsc -p tsconfig.json && bun ../../scripts/fix-dist-js-imports.mjs dist && bun build src/contract/client-config/index.ts --target=node --format=cjs --outfile=dist/contract/client-config/index.cjs && bun build src/contract/provider-catalog.ts --target=node --format=cjs --outfile=dist/contract/provider-catalog.cjs && bun build src/service-access-resources.ts --target=node --format=cjs --external @undefineds.co/models --outfile=dist/service-access-resources.cjs",
+    "build": "rm -rf dist && tsc -p tsconfig.json && bun ../../scripts/fix-dist-js-imports.mjs dist && bun build src/contract/client-config/index.ts --target=node --format=cjs --external @undefineds.co/ai-connections-runtime --outfile=dist/contract/client-config/index.cjs && bun build src/contract/provider-catalog.ts --target=node --format=cjs --external @undefineds.co/ai-connections-runtime --outfile=dist/contract/provider-catalog.cjs && bun build src/service-access-resources.ts --target=node --format=cjs --external @undefineds.co/models --external @undefineds.co/ai-connections-runtime --outfile=dist/service-access-resources.cjs",
     "test": "vitest run --config ../../vitest.packages.config.mts"
   },
   "dependencies": {
@@ -50,7 +50,8 @@
     "@undefineds.co/models": "0.2.60",
     "@undefineds.co/pod-collections": "workspace:*",
     "@undefineds.co/shared-ui": "workspace:*",
-    "lucide-react": "^0.525.0"
+    "lucide-react": "^0.525.0",
+    "@undefineds.co/ai-connections-runtime": "workspace:*"
   },
   "peerDependencies": {
     "react": "^19.2.0"
