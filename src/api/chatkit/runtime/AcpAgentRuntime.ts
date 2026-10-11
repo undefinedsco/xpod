@@ -4,7 +4,8 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import { getLoggerFor } from 'global-logger-factory';
 import type { WorkspaceRef } from '../../workspace/types';
-import { PACKAGE_ROOT } from '../../../runtime';
+import { packageBinArgv } from '../../../runtime/package-bins';
+import { PACKAGE_ROOT } from '../../../runtime/package-root';
 import {
   projectAnthropicCompatibleEnv,
   projectOpenAiCompatibleEnv,
@@ -306,22 +307,18 @@ export class AcpAgentRuntime {
     }
     switch (type) {
       case 'codebuddy':
-        return [ this.resolveLocalBin('codebuddy'), '--acp' ];
+        return [ ...this.resolveLocalBin('codebuddy'), '--acp' ];
       case 'claude':
-        return [ this.resolveLocalBin('claude-code-acp') ];
+        return this.resolveLocalBin('claude-code-acp');
       case 'codex':
-        return [ this.resolveLocalBin('codex-acp') ];
+        return this.resolveLocalBin('codex-acp');
       default:
         return [ type ];
     }
   }
 
-  private resolveLocalBin(binName: string): string {
-    const localBin = path.join(PACKAGE_ROOT, 'node_modules', '.bin', binName);
-    if (fs.existsSync(localBin)) {
-      return localBin;
-    }
-    return binName;
+  private resolveLocalBin(binName: string): string[] {
+    return packageBinArgv(PACKAGE_ROOT, binName);
   }
 
   private buildRunnerEnv(
