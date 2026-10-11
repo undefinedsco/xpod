@@ -49,6 +49,27 @@ test('archive integrity failure leaves no selection or partial install', async (
   expect(await f.store.current('afs')).toBeUndefined();
   expect(await readdir(path.join(f.store.root, 'afs/darwin-arm64'))).toEqual([]);
 });
+test('admitted entry remains locked until the consuming lifecycle completes', async () => {
+  const f = await fixture();
+  await f.store.withAdmittedModules(['agent-fs'], async modules => {
+    expect(modules[0].installed.id).toBe('afs');
+    expect(await readFile(modules[0].entry, 'utf8')).toContain('process.exit');
+    expect(path.dirname(path.dirname(modules[0].entry))).toBe(modules[0].cwd);
+    expect(await f.store.remove('afs').then(() => null, cause => cause.code)).toBe('module_busy');
+  });
+  await f.store.remove('afs');
+  expect(await f.store.current('afs')).toBeUndefined();
+});
+test('admission rejects duplicate aliases before installation and checks installed bytes', async () => {
+  const f = await fixture();
+  await expect(f.store.withAdmittedModules(['afs', 'agent-fs'], async () => {})).rejects.toThrow();
+  expect(f.downloads).toBe(0);
+  await f.store.install('afs');
+  await writeFile(path.join(f.store.root, 'afs/darwin-arm64/0.1.0/package/dist/entry.mjs'), 'changed');
+  let consumed = false;
+  await expect(f.store.withAdmittedModules(['afs'], async () => { consumed = true; })).rejects.toThrow();
+  expect(consumed).toBe(false);
+});
 test('incompatible API/platform and missing or changed file inventories cannot activate', async () => {
   for (const options of [{ api: 2 }, { wrongPlatform: true }, { drift: true }]) {
     const f = await fixture(options); await expect(f.store.install('afs')).rejects.toThrow();

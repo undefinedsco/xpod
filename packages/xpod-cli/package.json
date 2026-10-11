@@ -11,7 +11,7 @@
     "build": "bun scripts/build-package.ts",
     "build:cli-only": "bun scripts/build.ts --cli-only",
     "verify": "bun run typecheck && bun run test && bun run build",
-    "test": "bun test ./tests/module-catalog.test.ts ./tests/module-store.test.ts ./tests/launcher.test.ts ./tests/javascript-notices.test.ts ./tests/producer-materials.test.ts",
+    "test": "bun test ./tests/module-catalog.test.ts ./tests/module-store.test.ts ./tests/start.test.ts ./tests/runtime-owner.test.ts ./tests/launcher.test.ts ./tests/javascript-notices.test.ts ./tests/producer-materials.test.ts",
     "build:preview": "bun scripts/build.ts",
     "typecheck": "tsc --noEmit -p tsconfig.core.json",
     "test:preview": "bun test ./tests",
@@ -27,6 +27,12 @@
     "node": ">=22.13"
   },
   "devDependencies": {
+    "http-proxy": "^1.18.1",
+    "global-logger-factory": "1.0.0",
+    "ws": "^8.18.0",
+    "debug": "^4.4.3",
+    "@types/http-proxy": "^1.17.17",
+    "@types/ws": "^8.18.1",
     "@inrupt/solid-client-authn-node": "^3.1.0",
     "yargs": "^17.7.2",
     "tar": "^7.5.3",

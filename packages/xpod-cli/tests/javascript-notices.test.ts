@@ -6,6 +6,29 @@ import { bunCompileTarget } from '../src/native-target';
 import { collectJavascriptNotices } from '../src/javascript-notices';
 import { sha256File } from '../src/manifest';
 
+test('canonical source admission permits exact regular files and rejects symlink substitution', () => {
+  const parent = path.resolve('.test-data/xpod-cli/canonical-notices'); mkdirSync(parent, { recursive: true });
+  const work = mkdtempSync(path.join(parent, 'case-'));
+  try {
+    const stage = path.join(work, 'stage'); const repo = path.join(work, 'repo');
+    mkdirSync(stage); mkdirSync(path.join(repo, 'node_modules'), { recursive: true });
+    mkdirSync(path.join(repo, 'src')); const source = path.join(repo, 'src/host.ts'); writeFileSync(source, 'export const value = 1;');
+    const metadata = path.join(work, 'metadata.json'); const cli = path.join(work, 'cli'); writeFileSync(cli, 'compiled');
+    const raw = path.relative(stage, source);
+    writeFileSync(metadata, JSON.stringify({ inputs: { [raw]: { bytes: 23, imports: [] } }, outputs: { 'main.js': { inputs: {} } } }));
+    const options = { metafile: metadata, stageRoot: stage, repoRoot: repo, destination: path.join(work, 'out'),
+      target: 'darwin-arm64', cli, bunVersion: '1.4.2' };
+    expect(() => collectJavascriptNotices(options)).toThrow('outside staging');
+    const canonicalSources = { root: path.join(repo, 'src'), files: [{ path: source, sha256: sha256File(source) }] };
+    collectJavascriptNotices({ ...options, canonicalSources });
+    const index = JSON.parse(readFileSync(path.join(options.destination, 'index.json'), 'utf8'));
+    expect(index.inputs[0].sha256).toBe(sha256File(source));
+    const other = path.join(repo, 'other.ts'); writeFileSync(other, 'substituted');
+    rmSync(source); symlinkSync(other, source);
+    expect(() => collectJavascriptNotices({ ...options, canonicalSources })).toThrow('outside staging');
+  } finally { rmSync(work, { recursive: true, force: true }); }
+});
+
 test('binds generated source notices to the compiler and exact emitted prefix before writing', () => {
   const parent = path.resolve('.test-data/xpod-cli/generated-notices');
   mkdirSync(parent, { recursive: true });

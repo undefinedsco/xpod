@@ -1,5 +1,4 @@
 import { spawn, type ChildProcess } from 'node:child_process';
-import kill from 'tree-kill';
 import { normalizeLog, type LogLevel } from '../logging/normalize-log';
 import { redactConfiguredLogSecrets } from '../logging/log-secrets';
 import type { ServiceConfig, ServiceState, ServiceStatus, StatusChangeHandler } from './types';
@@ -404,15 +403,21 @@ export class Supervisor {
           reject(error);
         } else resolve();
       };
-      const closed = (): void => finish();
+      const closed = (code: number | null, signal: NodeJS.Signals | null): void => {
+        if ((code !== null && code !== 0) || (signal !== null && signal !== 'SIGTERM')) {
+          finish(new Error(`${name} closed unsuccessfully (code=${code}, signal=${signal})`));
+        } else finish();
+      };
       const timer = setTimeout(() => finish(new Error(`Timed out waiting for ${name} child to close`)), STOP_TIMEOUT_MS);
       child.once('close', closed);
       // Signal delivery does not prove process termination or drained output.
-      kill(child.pid!, 'SIGTERM', (error) => {
+      // The service owner coordinates its native and other descendant runtimes.
+      // Signalling the whole tree races that owner's graceful cleanup protocol.
+      try { child.kill('SIGTERM'); } catch (error) {
         if (error && (error as NodeJS.ErrnoException).code !== 'ESRCH') {
           finish(new Error(`Failed to stop ${name}: ${String(error)}`));
         }
-      });
+      }
     });
     const pending = completion.finally(() => { this.pendingStops.delete(name); });
     this.pendingStops.set(name, pending);

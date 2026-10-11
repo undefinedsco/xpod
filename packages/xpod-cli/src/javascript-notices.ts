@@ -114,6 +114,8 @@ export function collectJavascriptNotices(options: {
   cli: string;
   bunVersion: string;
   supplements?: string | string[];
+  /** Exact canonical first-party files admitted by the producer's boundary gate. */
+  canonicalSources?: { root: string; files: readonly { path: string; sha256: string }[] };
   /** Actual staged packages shipped independently of the bundler import graph. */
   vendoredRoots?: string[];
   requireVendoredOriginals?: boolean;
@@ -202,10 +204,17 @@ export function collectJavascriptNotices(options: {
   const inputs: { path: string; sha256: string; bytes: number; bytesInOutput: number; packageRoot?: string }[] = [];
   for (const [raw, input] of Object.entries(metadata.inputs)) {
     const candidate = path.resolve(stageRoot, raw);
-    if (!within(dependencyRoot, candidate) && !within(stageRoot, candidate)) { throw new Error(`Unexpected bundler input outside staging/dependencies: ${raw}`); }
+    const binding = options.canonicalSources?.files.find(file => file.path === candidate);
+    const canonical = binding !== undefined && options.canonicalSources !== undefined
+      && path.basename(options.canonicalSources.root) === 'src'
+      && realpathSync(options.canonicalSources.root) === options.canonicalSources.root
+      && within(options.canonicalSources.root, candidate)
+      && /^[a-f0-9]{64}$/.test(binding.sha256);
+    if (!canonical && !within(dependencyRoot, candidate) && !within(stageRoot, candidate)) { throw new Error(`Unexpected bundler input outside staging/dependencies: ${raw}`); }
     const filename = realpathSync(candidate);
     const dependency = within(dependencyRoot, filename);
-    if (!dependency && !within(stageRoot, filename)) { throw new Error(`Unexpected bundler input outside staging/dependencies: ${raw}`); }
+    if (!dependency && !within(stageRoot, filename) && !(canonical && filename === candidate)) { throw new Error(`Unexpected bundler input outside staging/dependencies: ${raw}`); }
+    if (canonical && sha256File(filename) !== binding!.sha256) throw new Error('Canonical source hash changed');
     if (!Number.isFinite(input.bytes) || input.bytes < 0 || !Array.isArray(input.imports)) { throw new Error(`Invalid bundler input: ${raw}`); }
     let packageRoot: string | undefined;
     if (dependency) {

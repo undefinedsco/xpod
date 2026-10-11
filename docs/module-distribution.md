@@ -120,7 +120,9 @@ Gateway 的 API host、API path、web product 和 API WebSocket 路径属于 API
 
 `src/runtime/module-host.ts`（公开子路径 `@undefineds.co/xpod/runtime/module-host`）接收安装器已经验证且保持执行锁的 `RuntimeModuleDescription`，用同一个 `RuntimePlan` 注册子进程和设置 Gateway target。部署 edition 不选择 CSS/API 能力，宿主不扫描安装目录、不解析版本、不执行安装，也不加载 CSS/API 初始化实现。API-only 须传入独立 OIDC issuer；重复角色、进程角色不匹配和无效 endpoint 在创建资源前拒绝。
 
-`startModuleRuntime` 等所选 endpoint 可连接后才开放 Gateway。返回的 handle 暴露 plan、supervisor、gateway 与 stop；模块实际启动由当前 Bun/Node 执行安装器提供的入口参数。停止同时清理所有 listener 和所拥有的子进程；并发 stop 共用结果，失败可重试，超时不代表资源已关闭。启动失败且清理未完成时抛出 `ModuleRuntimeStartupError`，保留启动与清理错误及 runtime handle，调用方须保留安装锁并重试清理，不能在 finally 无条件释放。
+`startModuleRuntime` 等所选 endpoint 可连接后才开放 Gateway。返回的 handle 暴露 plan、supervisor、gateway、closed 与 stop；closed 仅在所有关闭成功后完成。模块实际启动由当前 Bun/Node 执行安装器提供的入口参数。停止同时清理所有 listener 和所拥有的子进程；并发 stop 共用结果，失败可重试，超时不代表资源已关闭。启动失败且清理未完成时抛出 `ModuleRuntimeStartupError`，保留启动与清理错误及 runtime handle，调用方须保留安装锁并重试清理，不能在 finally 无条件释放。
+
+独立 CLI 的正式 core 注册 `start`，通过 `ModuleStore.withAdmittedModules` 校验真实安装入口并在整个宿主生命周期持有所有所选模块锁。`--modules` 只选择 css/api，`--mode` 同时写入两者既有运行模式；API-only 继续要求独立 OIDC issuer。关闭拒绝时保留进程存活句柄和锁，记录失败状态，允许再次发送停止信号重试，不能靠自然退出释放锁。CLI 构建只引入 `canonical-host-sources.json` 声明的宿主源码及其类型源码，并随 producer source 材料保留；不引入 CSS/API 初始化实现。
 
 `POST /service/stop` 返回 `202 {accepted:true}`，仅确认请求被接受。异步关闭失败会记录错误并保留所有权；HTTP 成功不能当作子进程或监听器已关闭的证据。
 

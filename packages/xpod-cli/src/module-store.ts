@@ -30,6 +30,11 @@ export interface InstalledModule {
 export interface StoreOptions {
   root?: string; platform?: string; arch?: string; fetch?: typeof fetch;
 }
+export interface AdmittedModule {
+  readonly installed: InstalledModule;
+  readonly entry: string;
+  readonly cwd: string;
+}
 
 /** Self-contained artifacts; installation never executes package lifecycle scripts. */
 export class ModuleStore {
@@ -155,6 +160,29 @@ export class ModuleStore {
   public async remove(id: string): Promise<void> {
     const definition = this.definition(id);
     await this.withLock(definition.id, async () => { await rm(path.dirname(this.pointer(definition.id)), { recursive: true, force: true }); });
+  }
+  /** Admission and its locks remain valid until the entire consumer lifecycle completes. */
+  public async withAdmittedModules<T>(ids: readonly string[], action: (modules: readonly AdmittedModule[]) => Promise<T>): Promise<T> {
+    const definitions = ids.map(id => this.definition(id));
+    if (new Set(definitions.map(row => row.id)).size !== definitions.length) {
+      throw error('module_selection_invalid', 'Select each module only once.');
+    }
+    const selected: InstalledModule[] = [];
+    for (const definition of definitions) selected.push(await this.current(definition.id) ?? await this.install(definition.id));
+    const ordered = [...selected].sort((a, b) => a.id.localeCompare(b.id));
+    const admitted = new Map<ModuleId, AdmittedModule>();
+    const acquire = async (index: number): Promise<T> => {
+      if (index === ordered.length) return action(selected.map(row => admitted.get(row.id)!));
+      const row = ordered[index];
+      return this.withLock(row.id, async () => {
+        const directory = this.directory(row);
+        const manifest = await this.verify(directory, row);
+        admitted.set(row.id, Object.freeze({ installed: Object.freeze({ ...row }),
+          entry: path.join(directory, 'package', manifest.entry), cwd: path.join(directory, 'package') }));
+        return acquire(index + 1);
+      });
+    };
+    return acquire(0);
   }
   public async run(id: string, args: string[]): Promise<number> {
     const row = await this.current(id) ?? await this.install(id);

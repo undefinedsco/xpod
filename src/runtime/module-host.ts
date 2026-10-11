@@ -21,6 +21,8 @@ export interface ModuleRuntimeHandle {
   readonly plan: RuntimePlan;
   readonly supervisor: Supervisor;
   readonly gateway: GatewayProxy;
+  readonly closed: Promise<void>;
+  readonly cleanupFailure: Promise<unknown>;
   /** Failed cleanup remains retryable; callers must retain module leases. */
   stop(): Promise<void>;
 }
@@ -38,14 +40,19 @@ export async function startModuleRuntime(options: ModuleRuntimeOptions): Promise
   const plan = deriveRuntimePlan(options);
   const runtimeHost = options.runtimeHost ?? nodeRuntimeHost;
   const supervisor = new Supervisor({ handleProcessSignals: false });
+  let reportClosed!: () => void;
+  const closed = new Promise<void>(resolve => { reportClosed = resolve; });
+  let reportFailure!: (error: unknown) => void;
+  const cleanupFailure = new Promise<unknown>(resolve => { reportFailure = resolve; });
   let stopping: Promise<void> | undefined;
   const stop = (): Promise<void> => {
     if (!stopping) {
       stopping = Promise.allSettled([gateway.stop(), supervisor.stopAll()]).then(results => {
         const errors = results.flatMap(result => result.status === 'rejected' ? [result.reason] : []);
         if (errors.length) throw new AggregateError(errors, 'Module runtime cleanup did not complete');
+        reportClosed();
       });
-      void stopping.catch(() => { stopping = undefined; });
+      void stopping.catch(error => { reportFailure(error); stopping = undefined; });
     }
     return stopping;
   };
@@ -54,7 +61,7 @@ export async function startModuleRuntime(options: ModuleRuntimeOptions): Promise
     ingressPort: options.ingressPort, internalAdminAuthSecret: options.internalAdminAuthSecret,
     exitOnStop: false, shutdownHandler: stop, requireCloseCompletion: true,
   });
-  const handle: ModuleRuntimeHandle = Object.freeze({plan, supervisor, gateway, stop});
+  const handle: ModuleRuntimeHandle = Object.freeze({plan, supervisor, gateway, closed, cleanupFailure, stop});
   applyRuntimePlan(plan, {
     register: config => supervisor.register(config),
     setTargets: targets => gateway.setTargets(targets),

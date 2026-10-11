@@ -5,7 +5,7 @@ import path from 'node:path';
 import { verifyProducerSourceArchive } from '../src/producer-source';
 
 /** Public producer inputs travel with the package, never through sibling sources. */
-export async function exportProducerMaterials(packageRoot: string): Promise<void> {
+export async function exportProducerMaterials(packageRoot: string, canonicalSources: readonly string[] = []): Promise<void> {
   const root = path.join(packageRoot, 'dist/producer-materials');
   rmSync(root, { recursive: true, force: true });
   mkdirSync(root, { recursive: true });
@@ -32,6 +32,20 @@ export async function exportProducerMaterials(packageRoot: string): Promise<void
     }
   };
   visit(packageRoot);
+  const repositoryRoot = path.resolve(packageRoot, '../..');
+  const hostSources = canonicalSources.filter(file => {
+    const relative = path.relative(repositoryRoot, file);
+    if (relative.startsWith('..') || path.isAbsolute(relative) || !relative.startsWith(`src${path.sep}`)) throw new Error('Unsafe canonical host source');
+    return true;
+  });
+  for (const file of hostSources) {
+    if (!lstatSync(file).isFile() || lstatSync(file).isSymbolicLink()) throw new Error('Canonical host source must be regular');
+    const relative = 'repository/' + path.relative(repositoryRoot, file).split(path.sep).join('/');
+    const destination = path.join(source, relative);
+    mkdirSync(path.dirname(destination), { recursive: true }); cpSync(file, destination);
+    const bytes = readFileSync(destination);
+    files.push({ path: relative, bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') });
+  }
   // The declared workspace dependencies identify canonical source mappings; no second dependency registry.
   const packageManifest = JSON.parse(readFileSync(path.join(packageRoot, 'package.json'), 'utf8'));
   const workspaceSources: Array<{ name: string; version: string; directory: string; role: string }> = [];
@@ -76,10 +90,10 @@ export async function exportProducerMaterials(packageRoot: string): Promise<void
   inventoryDirectory(root);
   const producer = JSON.parse(readFileSync(path.join(packageRoot, 'package.json'), 'utf8'));
   const commit = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: packageRoot, encoding: 'utf8' });
-  const state = spawnSync('git', ['status', '--porcelain', '--', '.', ...workspaceSources.map(source => '../' + source.directory.split('/')[1])], { cwd: packageRoot, encoding: 'utf8' });
+  const state = spawnSync('git', ['status', '--porcelain', '--', '.', ...hostSources, ...workspaceSources.map(source => '../' + source.directory.split('/')[1])], { cwd: packageRoot, encoding: 'utf8' });
   // A copied producer under an ignored test directory must not inherit its
   // ancestor repository's commit or appear clean merely because it is ignored.
-  const tracked = spawnSync('git', ['ls-files', '--error-unmatch', '--', 'package.json', 'src/client.ts', ...workspaceSources.flatMap(source => ['../' + source.directory.split('/')[1] + '/package.json', '../' + source.directory.split('/')[1] + '/src/index.ts'])],
+  const tracked = spawnSync('git', ['ls-files', '--error-unmatch', '--', 'package.json', 'src/client.ts', ...hostSources, ...workspaceSources.flatMap(source => ['../' + source.directory.split('/')[1] + '/package.json', '../' + source.directory.split('/')[1] + '/src/index.ts'])],
     { cwd: packageRoot, encoding: 'utf8' });
   const sourceCommit = tracked.status === 0 && commit.status === 0 && /^[a-f0-9]{40}$/.test(commit.stdout.trim()) ? commit.stdout.trim() : null;
   const payload = (filename: string): string => createHash('sha256').update(readFileSync(path.join(packageRoot, 'dist', filename))).digest('hex');
@@ -89,7 +103,7 @@ export async function exportProducerMaterials(packageRoot: string): Promise<void
     workspaceSources, runtimeClients,
     sourceAuthority: { sourceCommit, dirty: sourceCommit && state.status === 0 ? Boolean(state.stdout.trim()) : null,
       snapshotSHA256: createHash('sha256').update(JSON.stringify(files)).digest('hex'),
-      scope: 'CLI source plus explicitly mapped canonical runtime-client source; no claim of release acceptance or external dependency closure.' },
+      scope: 'CLI source plus explicitly mapped canonical host and runtime-client source; no claim of release acceptance or external dependency closure.' },
     clientPayloads: { cjsSHA256: payload('client.cjs'), esmSHA256: payload('client.mjs') },
     ...(hasOutput ? { outputMetafile: 'output-inputs.json', outputPayloads: { esmSHA256: payload('output.mjs') } } : {}),
     supplements: 'javascript', generatedRoot: 'javascript/generated', clientMetafile: 'client-inputs.json',

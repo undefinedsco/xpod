@@ -71,6 +71,7 @@ describe('admitted module host with real child HTTP listeners', () => {
         if (admitted.has(id)) expect(response.body).toBe(id + ':' + resource);
       }
       const first = runtime.stop(); expect(runtime.stop()).toBe(first); await first;
+      await runtime.closed;
       for (const id of ids) assertClosed(suffix, id);
     } finally { await runtime.stop(); }
   });
