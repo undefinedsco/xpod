@@ -173,3 +173,29 @@ describe('Supervisor lifecycle (N20)', () => {
     expect(supervisor.isReady()).toBe(false);
   });
 });
+
+
+describe('Supervisor process close contract', () => {
+  it('waits for graceful exit and trailing output rather than signal delivery', async () => {
+    const supervisor = new Supervisor({ handleProcessSignals: false });
+    supervisor.register({ name: 'draining', command: process.execPath, args: ['-e', `
+      process.on('SIGTERM', () => setTimeout(() => { console.log('drained'); process.exit(0); }, 200));
+      console.log('ready'); setInterval(() => {}, 1000);
+    `] });
+    try {
+      supervisor.start('draining');
+      await waitFor(() => supervisor.getLogs().some(row => row.message === 'ready'), 'child ready');
+      const stopping = supervisor.stop('draining');
+      expect(supervisor.stop('draining')).toBe(stopping);
+      expect(supervisor.isReady()).toBe(false);
+      let closed = false;
+      void stopping.then(() => { closed = true; });
+      await sleep(50);
+      expect(closed).toBe(false);
+      await stopping;
+      expect(supervisor.getStatus('draining')?.pid).toBeUndefined();
+      expect(supervisor.getStatus('draining')?.lastExitCode).toBe(0);
+      expect(supervisor.getLogs().some(row => row.message === 'drained')).toBe(true);
+    } finally { await supervisor.stopAll(); }
+  });
+});

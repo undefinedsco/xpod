@@ -185,9 +185,13 @@ export class GatewayProxy {
 
     server.on('upgrade', (req, socket, head) => {
       this.trackUpgradeSocket(socket);
-      const target = this.resolveUpgradeTarget(req.url ?? '/');
+      const target = this.resolveUpgradeTarget(req);
       if (!target) {
-        socket.destroy();
+        if (this.isApiUpgrade(req)) {
+          socket.end('HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
+        } else {
+          socket.destroy();
+        }
         return;
       }
       if (this.nativeUpgradeRelay) {
@@ -218,11 +222,15 @@ export class GatewayProxy {
    * `/ws/*` and the device notification multiplex live on the API server; every
    * other upgrade (Solid notification channels, edge node tunnels) goes to CSS.
    */
-  private resolveUpgradeTarget(url: string): GatewayProxyTarget | undefined {
-    if ((url.startsWith('/ws/') || url.startsWith('/v1/notifications/ws')) && this.targets.api) {
-      return this.targets.api;
-    }
-    return this.targets.css;
+  private resolveUpgradeTarget(req: http.IncomingMessage): GatewayProxyTarget | undefined {
+    return this.isApiUpgrade(req) ? this.targets.api : this.targets.css;
+  }
+
+  private isApiUpgrade(req: http.IncomingMessage): boolean {
+    const pathname = this.pathnameFromRequestUrl(req.url ?? '/');
+    return pathname.startsWith('/ws/') || pathname.startsWith('/v1/notifications/ws')
+      || this.isApiWebProductPath(pathname) || this.shouldRouteToApi(pathname, req.method)
+      || (podDeletionRouteName(req.method, pathname) === undefined && this.isApiHost(req.headers.host));
   }
 
   private relayUpgradeWithHttpProxy(
@@ -436,14 +444,13 @@ export class GatewayProxy {
     // path prefix to the IdP/Pod host. Path-based routing remains for local/dev
     // single-origin clients and existing legacy endpoints.
 
-    // 2a. Xpod web products are served by the API server.
-    if (this.isApiWebProductPath(pathname) && this.targets.api) {
-      this.applyInternalAdminProxyHeaders(req, originalClientLoopback);
-      this.proxy.web(req, res, { target: this.toProxyTarget(this.targets.api) as any });
-      return;
-    }
-
-    if ((apiHost || apiPath) && this.targets.api) {
+    // API-owned routes remain API-owned when that capability is unavailable.
+    if (this.isApiWebProductPath(pathname) || apiHost || apiPath) {
+      if (!this.targets.api) {
+        res.writeHead(503);
+        res.end('API Service Not Available');
+        return;
+      }
       this.applyInternalAdminProxyHeaders(req, originalClientLoopback);
       this.proxy.web(req, res, { target: this.toProxyTarget(this.targets.api) as any });
       return;

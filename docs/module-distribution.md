@@ -98,3 +98,9 @@ CSS/API/AFS 的平台包尚未在 registry 发布，服务内部也尚未完成�
 产品 artifact 的 inventory schema 2 包含三个实际打包的归档：`client.tgz`、`cli.tgz`、`afs.tgz`。每个归档独立记录大小、SHA-256 和 SHA-512 SRI，并绑定源码 SHA、实际运行及尝试编号。客户端归档核验公开入口、类型、Session/peer 桥接、完整 dist 和原始通知材料，不能用 CLI 内嵌客户端替代其独立发布材料。历史 schema 1 只有 CLI/AFS 两个归档，不提供独立客户端的发布证明。
 
 这些产物属于开发验收证据。客户端实际 registry 归档与 SRI 读回、依赖该版本的模块安装验收，以及 staging 发布条件仍须分别通过。
+
+### 服务模块关闭路径前置契约
+
+Gateway 的 API host、API path、web product 和 API WebSocket 路径属于 API 能力；没有 API target 时返回 503，不回落 CSS。正常 CSS HTTP/WebSocket 路径保持既有路由。Supervisor 的停止 Promise 只在真实 child close 后成功，包含已排空的子进程输出；发送 SIGTERM 的回调不代表停止完成。并发停止共用同一 Promise，超时或信号失败明确失败，重启先等待原进程关闭。关闭中的服务不计入 readiness。
+
+这些前置契约不等于 CSS/API 独立模块已交付。独立 producer、真实依赖闭包与单一运行计划仍须分别实现并验证，不能把现有整包复制成多个名字后声明拆分完成。
