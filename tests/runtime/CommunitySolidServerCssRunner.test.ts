@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { PACKAGE_ROOT } from '../../src/runtime/package-root';
+import type { ComponentsManager } from 'componentsjs';
 import { AppRunner, type App } from '@solid/community-server';
 import { createPackageRootPreferredModuleState, createPackageRootPreferredAppRunner } from '../../src/runtime/runner/node/CommunitySolidServerCssRunner';
 
@@ -31,6 +32,107 @@ describe('CommunitySolidServerCssRunner module loading', () => {
     expect(input.loaderProperties).toMatchObject({ mainModulePath: PACKAGE_ROOT, logLevel: 'warn' });
     expect(input.loaderProperties?.moduleState?.nodeModuleImportPaths).toEqual([PACKAGE_ROOT]);
     expect(app.start).toHaveBeenCalledOnce();
+  });
+
+  const rejectAfterManager = (registry: Record<string, Promise<unknown>>, failure: Error): void => {
+    vi.spyOn(AppRunner.prototype, 'createComponentsManager').mockResolvedValue({
+      configConstructorPool: { getInstanceRegistry: () => registry },
+    } as unknown as ComponentsManager<unknown>);
+    vi.spyOn(AppRunner.prototype, 'create').mockImplementation(async function(this: AppRunner, input) {
+      await this.createComponentsManager(input?.loaderProperties as never, []);
+      throw failure;
+    });
+  };
+
+  it('stops the same constructed App when upstream rejects its thread safety', async () => {
+    const failure = new Error('singlethreaded-only component');
+    const app = { stop: vi.fn().mockResolvedValue(undefined) };
+    const unrelated = { stop: vi.fn() };
+    rejectAfterManager({ 'urn:solid-server:default:App': Promise.resolve(app), other: Promise.resolve(unrelated) }, failure);
+    await expect(createPackageRootPreferredAppRunner(AppRunner, PACKAGE_ROOT).create()).rejects.toBe(failure);
+    expect(app.stop).toHaveBeenCalledOnce();
+    expect(unrelated.stop).not.toHaveBeenCalled();
+  });
+
+  it('preserves creation and cleanup failures without claiming successful shutdown', async () => {
+    const failure = new Error('validation failed');
+    const cleanup = new Error('native shutdown failed');
+    const app = { stop: vi.fn().mockRejectedValue(cleanup) };
+    rejectAfterManager({ 'urn:solid-server:default:App': Promise.resolve(app) }, failure);
+    await expect(createPackageRootPreferredAppRunner(AppRunner, PACKAGE_ROOT).create())
+      .rejects.toMatchObject({ errors: [failure, cleanup] });
+    expect(app.stop).toHaveBeenCalledOnce();
+  });
+
+  it('does not instantiate or blindly finalize partial dependencies when App construction rejects', async () => {
+    const failure = new Error('construction failed');
+    const rejected = Promise.reject(failure);
+    void rejected.catch(() => undefined);
+    const dependency = { finalize: vi.fn(), close: vi.fn() };
+    rejectAfterManager({ 'urn:solid-server:default:App': rejected, dependency: Promise.resolve(dependency) }, failure);
+    await expect(createPackageRootPreferredAppRunner(AppRunner, PACKAGE_ROOT).create()).rejects.toBe(failure);
+    expect(dependency.finalize).not.toHaveBeenCalled();
+    expect(dependency.close).not.toHaveBeenCalled();
+  });
+
+  it('preserves failures before any App was constructed', async () => {
+    const failure = new Error('CLI resolver failed');
+    rejectAfterManager({}, failure);
+    await expect(createPackageRootPreferredAppRunner(AppRunner, PACKAGE_ROOT).create()).rejects.toBe(failure);
+  });
+
+  it('does not own an App from a separate public manager creation', async () => {
+    const failure = new Error('failed before this creation built its manager');
+    const unrelated = { stop: vi.fn() };
+    vi.spyOn(AppRunner.prototype, 'createComponentsManager').mockResolvedValue({
+      configConstructorPool: { getInstanceRegistry: () => ({ 'urn:solid-server:default:App': Promise.resolve(unrelated) }) },
+    } as unknown as ComponentsManager<unknown>);
+    vi.spyOn(AppRunner.prototype, 'create').mockRejectedValue(failure);
+    const runner = createPackageRootPreferredAppRunner(AppRunner, PACKAGE_ROOT);
+    await runner.createComponentsManager({} as never, []);
+    await expect(runner.create()).rejects.toBe(failure);
+    expect(unrelated.stop).not.toHaveBeenCalled();
+  });
+
+  it('isolates an interleaved public manager from the failing creation', async () => {
+    const failure = new Error('thread safety rejected');
+    const owned = { stop: vi.fn().mockResolvedValue(undefined) };
+    const external = { stop: vi.fn() };
+    let ready!: () => void;
+    let release!: () => void;
+    const ownedReady = new Promise<void>(resolve => { ready = resolve; });
+    const resume = new Promise<void>(resolve => { release = resolve; });
+    vi.spyOn(AppRunner.prototype, 'createComponentsManager').mockImplementation(async (_properties, configs) => ({
+      configConstructorPool: { getInstanceRegistry: () => ({ 'urn:solid-server:default:App': Promise.resolve(configs[0] === 'owned' ? owned : external) }) },
+    } as unknown as ComponentsManager<unknown>));
+    vi.spyOn(AppRunner.prototype, 'create').mockImplementation(async function(this: AppRunner, input) {
+      await this.createComponentsManager(input?.loaderProperties as never, ['owned']);
+      ready();
+      await resume;
+      throw failure;
+    });
+    const runner = createPackageRootPreferredAppRunner(AppRunner, PACKAGE_ROOT);
+    const pending = runner.create();
+    await ownedReady;
+    await runner.createComponentsManager({} as never, ['external']);
+    release();
+    await expect(pending).rejects.toBe(failure);
+    expect(owned.stop).toHaveBeenCalledOnce();
+    expect(external.stop).not.toHaveBeenCalled();
+  });
+
+  it('rejects concurrent creation before it can replace the first App ownership', async () => {
+    let release!: () => void;
+    const started = new Promise<void>(resolve => { release = resolve; });
+    const app = { stop: vi.fn() } as unknown as App;
+    const create = vi.spyOn(AppRunner.prototype, 'create').mockImplementation(async () => { await started; return app; });
+    const runner = createPackageRootPreferredAppRunner(AppRunner, PACKAGE_ROOT);
+    const first = runner.create();
+    await expect(runner.create()).rejects.toThrow('already in progress');
+    expect(create).toHaveBeenCalledOnce();
+    release();
+    await expect(first).resolves.toBe(app);
+    expect(app.stop).not.toHaveBeenCalled();
   });
 
   it('isolates a physical CSS module independently of Bun single-file mode', async () => {

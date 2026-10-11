@@ -1,8 +1,9 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { ensureSupportedBun } from '../../compat/ensureSupportedBun';
 import path from 'node:path';
 import fs from 'node:fs';
 import type { App, AppRunner, AppRunnerInput } from '@solid/community-server';
-import { ModuleStateBuilder, type IModuleState } from 'componentsjs';
+import { ModuleStateBuilder, type IModuleState, type IComponentsManagerBuilderOptions, type ComponentsManager } from 'componentsjs';
 import {
   ensureBunCommunitySolidServerJwkCompat,
   ensureBunUndiciCompat,
@@ -17,6 +18,7 @@ class ExtractedPackageModuleStateBuilder extends ModuleStateBuilder {
 }
 
 export interface CssModuleLoaderOptions { isolatedDependencies?: boolean }
+interface AppCreationScope { active: boolean; getApp?: () => Promise<unknown> | undefined }
 
 export async function createPackageRootPreferredModuleState(packageRoot: string, options: CssModuleLoaderOptions = {}): Promise<IModuleState> {
   const extracted = options.isolatedDependencies === true || process.env.XPOD_BUN_SINGLE_RUNTIME === '1';
@@ -34,16 +36,49 @@ export async function createPackageRootPreferredModuleState(packageRoot: string,
 
 /** Keep CSS's CLI parsing and startup while supplying the extracted dependency state. */
 export function createPackageRootPreferredAppRunner(Runner: typeof AppRunner, packageRoot: string, options: CssModuleLoaderOptions = {}): AppRunner {
-  if (!options.isolatedDependencies && process.env.XPOD_BUN_SINGLE_RUNTIME !== '1') {
-    return new Runner();
-  }
   return new class extends Runner {
+    private creating = false;
+    private readonly creationScope = new AsyncLocalStorage<AppCreationScope>();
+
+    public override async createComponentsManager<T>(loaderProperties: IComponentsManagerBuilderOptions<T>, configs: string[]): Promise<ComponentsManager<T>> {
+      const manager = await super.createComponentsManager(loaderProperties, configs);
+      const scope = this.creationScope.getStore();
+      if (scope?.active) scope.getApp = () => manager.configConstructorPool.getInstanceRegistry()['urn:solid-server:default:App'];
+      return manager;
+    }
+
     public override async create(input: AppRunnerInput = {}): Promise<App> {
-      const moduleState = await createPackageRootPreferredModuleState(packageRoot, options);
-      return super.create({
-        ...input,
-        loaderProperties: { ...input.loaderProperties, mainModulePath: packageRoot, moduleState },
-      });
+      if (this.creating) throw new Error('CSS App creation is already in progress for this runner');
+      this.creating = true;
+      const scope: AppCreationScope = { active: true };
+      try {
+        return await this.creationScope.run(scope, async(): Promise<App> => {
+          try {
+            if (options.isolatedDependencies || process.env.XPOD_BUN_SINGLE_RUNTIME === '1') {
+              const moduleState = await createPackageRootPreferredModuleState(packageRoot, options);
+              input = { ...input, loaderProperties: { ...input.loaderProperties, mainModulePath: packageRoot, moduleState } };
+            }
+            return await super.create(input);
+          } catch (creationError: unknown) {
+            // Upstream can reject thread safety after constructing App. Retain that
+            // validation and finalize only the App belonging to this creation.
+            let app: App | undefined;
+            try { app = await scope.getApp?.() as App | undefined; }
+            catch { throw creationError; } // Partial construction has no public rollback contract.
+            if (app) {
+              try { await app.stop(); }
+              catch (cleanupError: unknown) {
+                throw new AggregateError([creationError, cleanupError], 'CSS App creation and cleanup failed');
+              }
+            }
+            throw creationError;
+          }
+        });
+      } finally {
+        scope.active = false;
+        scope.getApp = undefined;
+        this.creating = false;
+      }
     }
   }();
 }
@@ -100,7 +135,7 @@ export class CommunitySolidServerCssRunner implements CssRuntimeRunner {
     const communitySolidServer = await import('@solid/community-server');
     ensureBunCommunitySolidServerJwkCompat(communitySolidServer);
     const { AppRunner } = communitySolidServer;
-    const runner = new AppRunner();
+    const runner = createPackageRootPreferredAppRunner(AppRunner, options.packageRoot);
     const app = await runner.create({
       config: options.configPath,
       loaderProperties: {
