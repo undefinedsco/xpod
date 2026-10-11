@@ -6,6 +6,7 @@ import type { ServiceConfig, ServiceState, ServiceStatus, StatusChangeHandler } 
 
 const MAX_RESTARTS = 5;
 const MAX_LOGS = 500;
+const STOP_TIMEOUT_MS = 30_000;
 /** Restart backoff: 2s, 4s, 8s, 16s, 32s, capped at 60s. */
 const RESTART_BASE_DELAY_MS = 2_000;
 const RESTART_MAX_DELAY_MS = 60_000;
@@ -63,6 +64,7 @@ export class Supervisor {
   private childOutput: Map<string, string[]> = new Map();
   private pendingRestarts: Map<string, ReturnType<typeof setTimeout>> = new Map();
   private intentionalStops: Set<string> = new Set();
+  private pendingStops: Map<string, Promise<void>> = new Map();
   private readonly maxRestarts: number;
   private readonly restartBaseDelayMs: number;
   private readonly healthyUptimeMs: number;
@@ -284,7 +286,8 @@ export class Supervisor {
       this.updateState(name, { status: 'crashed', givenUpReason: `Spawn error: ${String(err)}` });
     });
 
-    child.on('exit', (code, signal) => {
+    // Close also confirms that the child output streams have finished.
+    child.on('close', (code, signal) => {
       const exitedAt = Date.now();
       const stateBeforeExit = this.states.get(name);
       const uptimeMs = stateBeforeExit?.startTime ? exitedAt - stateBeforeExit.startTime : 0;
@@ -362,6 +365,7 @@ export class Supervisor {
    * (for example the gateway itself) are lifecycle-owned elsewhere and are not required here.
    */
   public isReady(): boolean {
+    if (this.isShuttingDown || this.intentionalStops.size > 0) return false;
     for (const name of this.configs.keys()) {
       if (this.states.get(name)?.status !== 'running') {
         return false;
@@ -371,37 +375,48 @@ export class Supervisor {
   }
 
   public stop(name: string): Promise<void> {
-    return new Promise((resolve) => {
-      const pendingRestart = this.pendingRestarts.get(name);
-      if (pendingRestart) {
-        // A service waiting out its backoff is not running, but it is not stopped either:
-        // cancel the timer so a stop request cannot be undone by a scheduled restart.
-        clearTimeout(pendingRestart);
-        this.pendingRestarts.delete(name);
+    const existing = this.pendingStops.get(name);
+    if (existing) return existing;
+    const pendingRestart = this.pendingRestarts.get(name);
+    if (pendingRestart) {
+      clearTimeout(pendingRestart);
+      this.pendingRestarts.delete(name);
+    }
+    const child = this.processes.get(name);
+    if (!child?.pid) {
+      if (this.states.has(name)) {
+        this.updateState(name, { status: 'stopped', pid: undefined, givenUpReason: undefined });
       }
+      return Promise.resolve();
+    }
 
-      const child = this.processes.get(name);
-      if (!child || !child.pid) {
-        if (this.states.has(name)) {
-          this.updateState(name, { status: 'stopped', pid: undefined, givenUpReason: undefined });
+    this.intentionalStops.add(name);
+    this.addLog(name, 'info', 'Stopping service');
+    const completion = new Promise<void>((resolve, reject) => {
+      let finished = false;
+      const finish = (error?: Error): void => {
+        if (finished) return;
+        finished = true;
+        clearTimeout(timer);
+        child.removeListener('close', closed);
+        if (error) {
+          this.addLog(name, 'error', error.message);
+          reject(error);
+        } else resolve();
+      };
+      const closed = (): void => finish();
+      const timer = setTimeout(() => finish(new Error(`Timed out waiting for ${name} child to close`)), STOP_TIMEOUT_MS);
+      child.once('close', closed);
+      // Signal delivery does not prove process termination or drained output.
+      kill(child.pid!, 'SIGTERM', (error) => {
+        if (error && (error as NodeJS.ErrnoException).code !== 'ESRCH') {
+          finish(new Error(`Failed to stop ${name}: ${String(error)}`));
         }
-        resolve();
-        return;
-      }
-
-      // Mark as stopped first to prevent auto-restart
-      this.intentionalStops.add(name);
-      this.updateState(name, { status: 'stopped' });
-      this.addLog(name, 'info', 'Stopping service');
-
-      kill(child.pid, 'SIGTERM', (err) => {
-        if (err) {
-          console.error(`[Supervisor] Failed to kill ${name}:`, err);
-          this.addLog(name, 'error', `Failed to stop: ${String(err)}`);
-        }
-        resolve();
       });
     });
+    const pending = completion.finally(() => { this.pendingStops.delete(name); });
+    this.pendingStops.set(name, pending);
+    return pending;
   }
 
   public async restart(name: string): Promise<boolean> {
@@ -409,13 +424,9 @@ export class Supervisor {
       return false;
     }
 
-    await this.stop(name);
-    const deadline = Date.now() + 5_000;
-    while (this.processes.has(name) && Date.now() < deadline) {
-      await new Promise((resolve) => setTimeout(resolve, 25));
-    }
-    if (this.processes.has(name)) {
-      this.addLog(name, 'error', 'Timed out waiting for service to stop before restart');
+    try {
+      await this.stop(name);
+    } catch {
       return false;
     }
 
