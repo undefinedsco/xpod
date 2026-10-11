@@ -33,6 +33,17 @@ describe('CommunitySolidServerCssRunner module loading', () => {
     expect(app.start).toHaveBeenCalledOnce();
   });
 
+  it('isolates a physical CSS module independently of Bun single-file mode', async () => {
+    vi.stubEnv('XPOD_BUN_SINGLE_RUNTIME', '0');
+    const create = vi.spyOn(AppRunner.prototype, 'create').mockResolvedValue({ start: vi.fn() } as unknown as App);
+    vi.spyOn(AppRunner.prototype, 'getPackageSettings').mockResolvedValue(undefined);
+    await createPackageRootPreferredAppRunner(AppRunner, PACKAGE_ROOT, { isolatedDependencies: true })
+      .createCli(['node', 'css-module', '--mainModulePath', '/foreign/root']);
+    const state = create.mock.calls[0][0]?.loaderProperties?.moduleState;
+    expect(state?.nodeModuleImportPaths).toEqual([PACKAGE_ROOT]);
+    expect(state?.mainModulePath).toBe(PACKAGE_ROOT);
+  });
+
   it('leaves the official development CLI loader behavior intact', async () => {
     vi.stubEnv('XPOD_BUN_SINGLE_RUNTIME', '0');
     const create = vi.spyOn(AppRunner.prototype, 'create').mockResolvedValue({ start: vi.fn() } as unknown as App);
@@ -66,8 +77,8 @@ describe('CommunitySolidServerCssRunner module loading', () => {
       const bundledDependency = path.join(extracted, 'node_modules', dependencyName);
       await writePackage(bundledDependency, '1.0.0', 'dist/__bundle__.cjs');
       await writePackage(path.join(parent, 'node_modules', dependencyName), '1.1.0', 'dist/foreign.js');
-      vi.stubEnv('XPOD_BUN_SINGLE_RUNTIME', '1');
-      const state = await createPackageRootPreferredModuleState(extracted);
+      vi.stubEnv('XPOD_BUN_SINGLE_RUNTIME', '0');
+      const state = await createPackageRootPreferredModuleState(extracted, { isolatedDependencies: true });
       expect(state.nodeModuleImportPaths).toEqual([extracted]);
       expect(Object.keys(state.packageJsons).sort()).toEqual([extracted, bundledDependency].sort());
       expect(state.componentModules[moduleIri]?.[1]).toBe(path.join(bundledDependency, 'components', 'components.jsonld'));
@@ -76,7 +87,7 @@ describe('CommunitySolidServerCssRunner module loading', () => {
       if (process.platform !== 'win32') {
         await symlink(path.join(parent, 'node_modules', dependencyName),
           path.join(extracted, 'node_modules', 'escaped-dependency'));
-        await expect(createPackageRootPreferredModuleState(extracted))
+        await expect(createPackageRootPreferredModuleState(extracted, { isolatedDependencies: true }))
           .rejects.toThrow('Extracted Components dependency is outside its packaged runtime');
       }
     } finally {

@@ -64,6 +64,7 @@
         "@types/pg": "^8.10.2",
         "@types/react": "^19.2.5",
         "@types/react-dom": "^18.2.22",
+        "@types/semver": "7.7.1",
         "@undefineds.co/ai-connections": "workspace:*",
         "@vitest/coverage-v8": "^1.4.0",
         "@zed-industries/claude-code-acp": "^0.16.1",
@@ -84,6 +85,7 @@
         "react-dom": "^19.2.0",
         "react-i18next": "^13.3.1",
         "react-router-dom": "^6.22.3",
+        "semver": "7.8.5",
         "tailwind-merge": "^3.5.0",
         "ts-node": "^10.9.2",
         "typescript": "5.5",
@@ -331,6 +333,10 @@
       "optionalPeers": [
         "@inrupt/solid-client-authn-node",
       ],
+    },
+    "packages/xpod-css": {
+      "name": "@undefineds.co/xpod-css",
+      "version": "0.1.0-preview.1",
     },
     "ui": {
       "name": "ui",
@@ -2085,6 +2091,8 @@
     "@undefineds.co/xpod-cli": ["@undefineds.co/xpod-cli@workspace:packages/xpod-cli"],
 
     "@undefineds.co/xpod-client": ["@undefineds.co/xpod-client@workspace:packages/xpod-client"],
+
+    "@undefineds.co/xpod-css": ["@undefineds.co/xpod-css@workspace:packages/xpod-css"],
 
     "@undefineds.co/xpod-desktop": ["@undefineds.co/xpod-desktop@workspace:desktop"],
 
