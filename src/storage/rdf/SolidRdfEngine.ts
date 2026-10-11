@@ -62,6 +62,10 @@ export class SolidRdfEngine implements RdfEngineLike {
   private readonly ownsTextIndex: boolean;
   private readonly ownsVectorIndex: boolean;
   private readonly nativeSparqlClient?: LocalNativeSparqlClientLike;
+  private opening?: Promise<void>;
+  private closing?: Promise<void>;
+  private closeFailure?: unknown;
+  private cleanupFailed = false;
 
   public constructor(options: SolidRdfEngineOptions) {
     if (options.index instanceof RdfQuadIndex) {
@@ -91,28 +95,51 @@ export class SolidRdfEngine implements RdfEngineLike {
     }
     this.nativeSparqlClient = options.nativeSparqlClient;
     if (options.autoOpen) {
-      void this.open();
+      // Preserve the failure for explicit open callers without an unhandled
+      // rejection from the constructor's eager initialization.
+      void this.open().catch(() => {});
     }
   }
 
   public async open(): Promise<void> {
-    this.index.open();
-    this.textIndex?.open();
-    this.vectorIndex?.open();
-    await this.nativeSparqlClient?.start();
+    if (this.closing) await this.closing;
+    if (this.cleanupFailed) throw this.closeFailure;
+    this.opening ??= (async(): Promise<void> => {
+      this.index.open();
+      this.textIndex?.open();
+      this.vectorIndex?.open();
+      await this.nativeSparqlClient?.start();
+    })();
+    await this.opening;
   }
 
   public async close(): Promise<void> {
-    await this.nativeSparqlClient?.close();
-    if (this.ownsVectorIndex) {
-      this.vectorIndex?.close();
-    }
-    if (this.ownsTextIndex) {
-      this.textIndex?.close();
-    }
-    if (this.ownsIndex) {
-      this.index.close();
-    }
+    if (this.closing) return this.closing;
+    const closing = Promise.resolve().then(async(): Promise<void> => {
+      if (this.opening) await this.opening.catch(() => {});
+      const failures: unknown[] = [];
+      try { await this.nativeSparqlClient?.close(); } catch (error: unknown) { failures.push(error); }
+      for (const [owned, resource] of [
+        [this.ownsVectorIndex, this.vectorIndex],
+        [this.ownsTextIndex, this.textIndex],
+        [this.ownsIndex, this.index],
+      ] as const) {
+        if (owned && resource) {
+          try { resource.close(); } catch (error: unknown) { failures.push(error); }
+        }
+      }
+      this.opening = undefined;
+      if (failures.length) {
+        this.cleanupFailed = true;
+        this.closeFailure = failures.length === 1 ? failures[0] : new AggregateError(failures, 'Solid RDF resources could not close');
+        throw this.closeFailure;
+      }
+      this.closeFailure = undefined;
+      this.cleanupFailed = false;
+    });
+    this.closing = closing;
+    try { await closing; }
+    finally { if (this.closing === closing) this.closing = undefined; }
   }
 
   public put(quads: Quad | Quad[], options?: RdfIndexPutOptions): void {
