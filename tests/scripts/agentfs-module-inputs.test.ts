@@ -32,7 +32,7 @@ describe('module mounted input preparation', () => {
     expect(exported).not.toContain('private-secret'); expect(JSON.parse(exported).unmounts[0].result.actualExit).toBe(1);
     expect(JSON.parse(exported).unmounts[0].result.failure).toBe('crashed-kernel-binding-mismatch');
     expect(JSON.parse(exported).unmounts[0].preKernel).toEqual({ state: 'mounted', reason: 'classify-unknown', classifyReason: 'unknown-ancestor-type', errorCode: 'ENOTCONN' });
-    expect(readdirSync(path.join(root, 'export'))).toEqual(['export.safe.json', 'recovery-diagnostic.safe.json']);
+    expect(readdirSync(path.join(root, 'export')).sort()).toEqual(['export.safe.json', 'recovery-diagnostic.safe.json']);
     expect(() => projectRecoveryDiagnostic({ ...row, label: 'private-secret' })).toThrow('invalid recovery diagnostic');
   }));
   it('rejects failure diagnostics with free text instead of approved values', () => {
@@ -43,14 +43,21 @@ describe('module mounted input preparation', () => {
       expect(() => projectReceipt('module-chain-failure.safe.json', { ...valid, [key]: 'private-secret' })).toThrow('invalid module chain failure receipt');
     }
   });
-  it('requires all nine closed actual consumer stages and proxy cleanup, verifies raw hashes, and projects only fixed fields', () => fixture(root => {
+  it('requires all 21 closed actual consumer stages and proxy cleanup, verifies raw hashes, and projects only fixed fields', () => fixture(root => {
     for (const stage of INSTALLED_CONSUMER_STAGES) {
       for (const stream of ['stdout', 'stderr']) writeFileSync(path.join(root, `${stage}.${stream}`), 'private-marker');
-      writeFileSync(path.join(root, stage + '.safe.json'), JSON.stringify({ stage, pid: 123, actualExit: stage === 'node-startup-cancel' ? 143 : 0, actualSignal: null,
+      writeFileSync(path.join(root, stage + '.safe.json'), JSON.stringify({ stage, pid: 123, actualExit: stage === 'node-startup-cancel' ? 143 : stage.endsWith('-cli-tampered-list') ? 1 : 0, actualSignal: null,
         actualWait: true, rawClosed: true, groupAbsent: true, stdoutSHA256: hashBytes('private-marker'), stderrSHA256: hashBytes('private-marker'), unknown: { credentials: 'private-marker' } }));
     }
     const proxy = path.join(root, 'proxy-cancel.safe.json'); writeFileSync(proxy, JSON.stringify({ pid: 321, groupAbsent: true, tokenFixtureObserved: true, nativeMountStarted: false, clientSecret: 'private-marker' }));
-    const facts = verifyInstalledConsumerReceipts(root); expect(facts.stages).toHaveLength(9); expect(JSON.stringify(facts)).not.toContain('private-marker');
+    const facts = verifyInstalledConsumerReceipts(root); expect(facts.stages).toHaveLength(21); expect(JSON.stringify(facts)).not.toContain('private-marker');
+    const negative = path.join(root, 'node-cli-tampered-list.safe.json');
+    const rejected = readFileSync(negative, 'utf8');
+    writeFileSync(negative, JSON.stringify({ ...JSON.parse(rejected), actualExit: 0 }));
+    expect(() => verifyInstalledConsumerReceipts(root)).toThrow('stage incomplete');
+    writeFileSync(negative, rejected);
+    const legacy = path.join(root, 'node-cli-module-list.safe.json'); writeFileSync(legacy, rejected);
+    expect(() => verifyInstalledConsumerReceipts(root)).toThrow('receipt inventory'); rmSync(legacy);
     const first = path.join(root, INSTALLED_CONSUMER_STAGES[0] + '.stdout'); writeFileSync(first, 'tampered'); expect(() => verifyInstalledConsumerReceipts(root)).toThrow('identity mismatch'); writeFileSync(first, 'private-marker');
     writeFileSync(proxy, JSON.stringify({ pid: 321, groupAbsent: false, tokenFixtureObserved: true, nativeMountStarted: false })); expect(() => verifyInstalledConsumerReceipts(root)).toThrow('proxy cleanup incomplete');
     rmSync(path.join(root, INSTALLED_CONSUMER_STAGES[0] + '.safe.json')); expect(() => verifyInstalledConsumerReceipts(root)).toThrow('receipt inventory');

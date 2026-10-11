@@ -62,14 +62,14 @@ artifactTest.skipIf(!archive)('real AFS payload installs through public CLI and 
   await mkdir(receipts, { recursive: true, mode: 0o700 });
   async function receipt(stage: string, result: SpawnSyncReturns<string | Buffer>): Promise<void> {
     const stdout = Buffer.from(result.stdout ?? ''); const stderr = Buffer.from(result.stderr ?? '');
-    await writeFile(path.join(receipts, stage + '.stdout'), stdout, { mode: 0o600 });
-    await writeFile(path.join(receipts, stage + '.stderr'), stderr, { mode: 0o600 });
+    await writeFile(path.join(receipts, stage + '.stdout'), stdout, { mode: 0o600, flag: 'wx' });
+    await writeFile(path.join(receipts, stage + '.stderr'), stderr, { mode: 0o600, flag: 'wx' });
     let absent = false;
     try { process.kill(-result.pid, 0); } catch (cause) { absent = (cause as NodeJS.ErrnoException).code === 'ESRCH'; }
     const row = { stage, pid: result.pid, actualExit: result.status, actualSignal: result.signal,
       actualWait: true, rawClosed: true, groupAbsent: absent,
       stdoutSHA256: createHash('sha256').update(stdout).digest('hex'), stderrSHA256: createHash('sha256').update(stderr).digest('hex') };
-    await writeFile(path.join(receipts, stage + '.safe.json'), JSON.stringify(row) + '\n', { mode: 0o600 });
+    await writeFile(path.join(receipts, stage + '.safe.json'), JSON.stringify(row) + '\n', { mode: 0o600, flag: 'wx' });
     process.stdout.write(JSON.stringify(row) + '\n'); expect(absent).toBe(true);
   }
   async function runOwned(runtime: string, args: string[], env: NodeJS.ProcessEnv): Promise<SpawnSyncReturns<Buffer>> {
@@ -119,11 +119,11 @@ globalThis.fetch=async (input) => {
   throw new Error('Unexpected controlled registry request');
 };
 `);
-  async function cliRun(runtime: string, label: string, args: string[]): Promise<SpawnSyncReturns<Buffer>> {
+  async function cliRun(runtime: string, label: string, phaseLabel: string, args: string[]): Promise<SpawnSyncReturns<Buffer>> {
     const row = payloads.get(label)!;
     const result = await runOwned(runtime, [runtime === node ? '--import' : '--preload', preload, cli, ...args],
       {...process.env, HOME: row.home, NODE_PATH: '', XPOD_TEST_DOWNLOAD_COUNTER: row.counter});
-    await receipt(label + '-cli-' + args.join('-'), result);
+    await receipt(`${label}-cli-${phaseLabel}`, result);
     expect(result.error).toBeUndefined(); expect(result.signal).toBeNull();
     return result;
   }
@@ -131,12 +131,12 @@ globalThis.fetch=async (input) => {
     const home = path.join(root, label! + '-home'); await mkdir(home);
     const counter = path.join(root, label! + '-downloads'); await writeFile(counter, '');
     payloads.set(label!, {home,counter,payload:path.join(home,'.xpod/modules/afs',`${process.platform}-${process.arch}`,version,'package')});
-    const before = await cliRun(runtime!, label!, ['module','list']); expect(before.status).toBe(0);
+    const before = await cliRun(runtime!, label!, 'before-list', ['module','list']); expect(before.status).toBe(0);
     expect(JSON.parse(before.stdout.toString()).data.find((row: {id:string})=>row.id==='afs').installed).toBeNull();
     expect(await readFile(counter,'utf8')).toBe('');
-    const installed = await cliRun(runtime!, label!, ['module','install','afs','--version',version]); expect(installed.status).toBe(0);
+    const installed = await cliRun(runtime!, label!, 'install', ['module','install','afs','--version',version]); expect(installed.status).toBe(0);
     expect(JSON.parse(installed.stdout.toString()).data.integrity).toBe(integrity);
-    const listed = await cliRun(runtime!, label!, ['module','list']); expect(listed.status).toBe(0);
+    const listed = await cliRun(runtime!, label!, 'installed-list', ['module','list']); expect(listed.status).toBe(0);
     expect(JSON.parse(listed.stdout.toString()).data.find((row: {id:string})=>row.id==='afs').installed)
       .toMatchObject({package:name,version,platform:process.platform,arch:process.arch,integrity});
     expect(await readFile(counter,'utf8')).toBe('download\n');
@@ -227,7 +227,7 @@ console.log(JSON.stringify({esmNamedImports:true,allPublicIdentity:true,sqliteSi
   const address = server.address() as { port: number }; const origin = `http://127.0.0.1:${address.port}/`;
   const auth = path.join(root, 'auth'); await mkdir(auth);
   await writeFile(path.join(auth, 'credentials.json'), JSON.stringify({ url: origin, webId: origin + 'pod/profile/card#me',
-    authType: 'client_credentials', secrets: { clientId: 'controlled-fixture', clientSecret: 'controlled-fixture' } }), { mode: 0o600 });
+    authType: 'client_credentials', secrets: { clientId: 'controlled-fixture', clientSecret: 'controlled-fixture' } }), { mode: 0o600, flag: 'wx' });
   const session = path.join(root, 'cancel-session');
   const child = spawn(node, [path.join(payload, 'dist/entry.mjs'), 'mount', '--pod-root', origin + 'pod/', '--session-dir', session, '--backend', 'nfs', '--json'],
     { cwd: root, detached: true, env: { ...process.env, HOME: path.join(root, 'home'), SOLID_HOME: root, NODE_PATH: '', PATH: '/usr/bin:/bin' }, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -248,7 +248,7 @@ console.log(JSON.stringify({esmNamedImports:true,allPublicIdentity:true,sqliteSi
     let absent = false;
     try { process.kill(-owner!.pid, 0); } catch (cause) { absent = (cause as NodeJS.ErrnoException).code === 'ESRCH'; }
     expect(absent).toBe(true);
-    await writeFile(path.join(receipts, 'proxy-cancel.safe.json'), JSON.stringify({ pid: owner!.pid, groupAbsent: absent, tokenFixtureObserved: true, nativeMountStarted: false }) + '\n', { mode: 0o600 });
+    await writeFile(path.join(receipts, 'proxy-cancel.safe.json'), JSON.stringify({ pid: owner!.pid, groupAbsent: absent, tokenFixtureObserved: true, nativeMountStarted: false }) + '\n', { mode: 0o600, flag: 'wx' });
   } finally {
     clearTimeout(startupDeadline);
     try {
@@ -280,11 +280,11 @@ console.log(JSON.stringify({esmNamedImports:true,allPublicIdentity:true,sqliteSi
     const row = payloads.get(label!)!;
     expect(await readFile(row.counter,'utf8')).toBe('download\n');
     await writeFile(path.join(row.payload,'dist/entry.mjs'),'tampered');
-    const changed = await cliRun(runtime!,label!,['module','list']); expect(changed.status).not.toBe(0);
+    const changed = await cliRun(runtime!,label!, 'tampered-list',['module','list']); expect(changed.status).toBe(1);
     expect(Buffer.concat([changed.stdout,changed.stderr]).toString()).toContain('Installed module contents changed');
     expect(await readFile(row.counter,'utf8')).toBe('download\n');
-    const removed = await cliRun(runtime!,label!,['module','remove','afs']); expect(removed.status).toBe(0);
-    const empty = await cliRun(runtime!,label!,['module','list']); expect(empty.status).toBe(0);
+    const removed = await cliRun(runtime!,label!, 'remove',['module','remove','afs']); expect(removed.status).toBe(0);
+    const empty = await cliRun(runtime!,label!, 'removed-list',['module','list']); expect(empty.status).toBe(0);
     expect(JSON.parse(empty.stdout.toString()).data.find((item: {id:string})=>item.id==='afs').installed).toBeNull();
   }
 }, 60_000);

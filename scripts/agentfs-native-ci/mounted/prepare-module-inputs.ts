@@ -99,7 +99,9 @@ const binding: Record<string, Projection> = { ...fields('string', 'profile modul
 const close: Projection = { ...fields('number', 'exit'), ...fields('string', 'signal rawSHA256 resourceStop supervisorError'), ...fields('boolean', 'actualWait rawClosedBeforeHash ownedGroupAbsentAfterWait'), cleanupErrors: ['string'] };
 const installedStage: Projection = { ...fields('string', 'stage actualSignal stdoutSHA256 stderrSHA256'), ...fields('number', 'pid actualExit'), ...fields('boolean', 'actualWait rawClosed groupAbsent') };
 const installedProxy: Projection = { pid: 'number', groupAbsent: 'boolean', tokenFixtureObserved: 'boolean', nativeMountStarted: 'boolean' };
-export const INSTALLED_CONSUMER_STAGES = ['public-workcopy-types-Node16', 'public-workcopy-types-Node', 'node-esm-public-runtime', 'node-status', 'node-workcopy-sqlite', 'bun-esm-public-runtime', 'bun-status', 'bun-workcopy-sqlite', 'node-startup-cancel'] as const;
+export const INSTALLED_CONSUMER_STAGES = ['public-workcopy-types-Node16', 'public-workcopy-types-Node', 'node-esm-public-runtime', 'node-status', 'node-workcopy-sqlite', 'bun-esm-public-runtime', 'bun-status', 'bun-workcopy-sqlite', 'node-startup-cancel',
+  'node-cli-before-list', 'node-cli-install', 'node-cli-installed-list', 'node-cli-tampered-list', 'node-cli-remove', 'node-cli-removed-list',
+  'bun-cli-before-list', 'bun-cli-install', 'bun-cli-installed-list', 'bun-cli-tampered-list', 'bun-cli-remove', 'bun-cli-removed-list'] as const;
 const platform: Projection = { ...fields('number', 'schemaVersion exit passedCases minPassedCases'), ...fields('string', 'os backend nodePath nodeVersion nodeSha256 nativeRg nativeRgVersion nativeRgSha256 productArchiveSha256 installedHelperSha256 installedLauncherPath harnessRunnerSha256 producerState rawLog rawSHA256 snapshotSHA256 status failureReason signal'),
   ...fields('boolean', 'producerStarted producerClosed actualWait rawClosedBeforeHash ownedGroupAbsent consumerBunVisible mountExecuted'), moduleBinding: binding, producerLifecycle: lifecycle,
   ownedProcessObservations: [{ phase: 'string', known: 'boolean', reason: 'string', members: [{ ...fields('number', 'pid ppid pgid'), state: 'string' }] }],
@@ -225,7 +227,7 @@ export function verifyInstalledConsumerReceipts(directory: string): { stages: un
   const stages = INSTALLED_CONSUMER_STAGES.map(stage => {
     const filename = path.join(directory, stage + '.safe.json'); verifyBoundFile({ path: filename, sha256: hashFile(filename) });
     const row = JSON.parse(readFileSync(filename, 'utf8'));
-    const expectedExit = stage === 'node-startup-cancel' ? 143 : 0;
+    const expectedExit = stage === 'node-startup-cancel' ? 143 : stage.endsWith('-cli-tampered-list') ? 1 : 0;
     if (row.stage !== stage || row.actualExit !== expectedExit || row.actualSignal !== null
       || row.actualWait !== true || row.rawClosed !== true || row.groupAbsent !== true || !Number.isSafeInteger(row.pid) || row.pid <= 1) throw new Error('installed consumer stage incomplete');
     for (const stream of ['stdout', 'stderr']) verifyBoundFile({ path: path.join(directory, `${stage}.${stream}`), sha256: row[`${stream}SHA256`] });
