@@ -6,7 +6,7 @@ const crypto = require('node:crypto');
 const { execFileSync } = require('node:child_process');
 const { packWorkspacePackages } = require('./workspace-package-pack.cjs');
 
-const PACKAGES = ['solid-sdk', 'shared-ui', 'pod-collections', 'extension-sdk', 'ai-connections', 'pod-settings', 'tasks'];
+const PACKAGES = ['solid-sdk', 'shared-ui', 'pod-collections', 'extension-host-contracts', 'extension-sdk', 'ai-connections-runtime', 'ai-connections', 'pod-settings', 'tasks'];
 function run(command, args, cwd, options = {}) {
   return execFileSync(command, args, { cwd, ...options, encoding: 'utf8', stdio: ['ignore', 'inherit', 'inherit'] });
 }

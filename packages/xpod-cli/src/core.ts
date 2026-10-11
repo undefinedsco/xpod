@@ -3,6 +3,7 @@ import { MODULE_CATALOG, moduleDefinition } from './module-catalog';
 import { ModuleStore } from './module-store';
 import { writeJsonResult } from './lib/output';
 import { XPOD_CLI_VERSION } from './manifest';
+import { startCommand } from './commands/start';
 
 /** Public CLI contains client operations and the module host, never server or AFS code. */
 export async function runCli(args: string[], store = new ModuleStore()): Promise<number> {
@@ -12,6 +13,7 @@ export async function runCli(args: string[], store = new ModuleStore()): Promise
     import('./commands/auth'), import('./commands/login'), import('./commands/resource'), import('./commands/pod'),
   ]);
   await yargs(args).scriptName('xpod').usage('$0 <command> [options]')
+    .command(startCommand(store))
     .command(auth.authCommand).command(login.loginCommandModule).command(pod.podCommand)
     .command(resources.getCommand).command(resources.putCommand).command(resources.patchCommand)
     .command(resources.deleteCommand).command(resources.headCommand).command(resources.listCommand)

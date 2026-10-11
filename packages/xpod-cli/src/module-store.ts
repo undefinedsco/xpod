@@ -6,7 +6,7 @@ import path from 'node:path';
 import { chmod, lstat, mkdir, mkdtemp, open, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { t as listTar, x as extractTar } from 'tar';
 import { CliCommandError } from './lib/output';
-import { MODULE_API_VERSION, moduleDefinition, type ModuleId } from './module-catalog';
+import { MODULE_API_VERSION, moduleDefinition, modulePackageName, moduleTarget, type ModuleId } from './module-catalog';
 import { withModuleOwnedLock } from './module-owned-lock';
 
 const REGISTRY = 'https://registry.npmjs.org';
@@ -30,6 +30,11 @@ export interface InstalledModule {
 export interface StoreOptions {
   root?: string; platform?: string; arch?: string; fetch?: typeof fetch;
 }
+export interface AdmittedModule {
+  readonly installed: InstalledModule;
+  readonly entry: string;
+  readonly cwd: string;
+}
 
 /** Self-contained artifacts; installation never executes package lifecycle scripts. */
 export class ModuleStore {
@@ -46,14 +51,14 @@ export class ModuleStore {
   private definition(id: string) {
     const row = moduleDefinition(id);
     if (!row) throw error('module_unknown', `Unknown module: ${id}`);
-    if (!['darwin', 'linux'].includes(this.platform) || !['arm64', 'x64'].includes(this.arch)) {
+    if (!moduleTarget(this.platform, this.arch)) {
       throw error('module_platform_unsupported', 'Capability modules currently support macOS/Linux on arm64/x64.');
     }
     return row;
   }
   private directory(row: InstalledModule): string {
     const definition = this.definition(row.id);
-    if (!VERSION.test(row.version) || row.package !== `${definition.packagePrefix}-${this.platform}-${this.arch}`
+    if (!VERSION.test(row.version) || row.package !== modulePackageName(definition.id, this.platform, this.arch)
       || row.platform !== this.platform || row.arch !== this.arch) throw error('module_binding_invalid', 'Installed module identity is invalid.');
     return path.join(this.root, row.id, `${this.platform}-${this.arch}`, row.version);
   }
@@ -102,7 +107,7 @@ export class ModuleStore {
     const definition = this.definition(id);
     if (version !== 'latest' && !VERSION.test(version)) throw error('module_version_invalid', 'Use an exact module version or latest.');
     return this.withLock(definition.id, async () => {
-      const packageName = `${definition.packagePrefix}-${this.platform}-${this.arch}`;
+      const packageName = modulePackageName(definition.id, this.platform, this.arch)!;
       const response = await this.request(`${REGISTRY}/${encodeURIComponent(packageName)}/${version}`, { signal: AbortSignal.timeout(30_000), redirect: 'error' });
       if (!response.ok) throw error('module_unavailable', `Module ${definition.id} is unavailable (${response.status}).`);
       const metadata = await response.json() as { name: string; version: string; dist: { integrity: string; tarball: string } };
@@ -112,6 +117,8 @@ export class ModuleStore {
       if (url.origin !== REGISTRY || url.username || url.password) throw error('module_origin_invalid', 'Module download must come from the npm registry.');
       const parent = path.join(this.root, definition.id, `${this.platform}-${this.arch}`); await mkdir(parent, { recursive: true, mode: 0o700 });
       const stage = await mkdtemp(path.join(parent, '.install-'));
+      let primaryError: unknown;
+      let failed = false;
       try {
         const archive = await this.request(url, { signal: AbortSignal.timeout(120_000), redirect: 'error' });
         if (!archive.ok || !archive.body) throw error('module_download_failed', 'Module archive download failed.');
@@ -132,7 +139,9 @@ export class ModuleStore {
             || ++entries > 50_000 || (expanded += entry.size) > 2 * 1024 * 1024 * 1024) invalidArchive = true;
         } });
         if (invalidArchive) throw error('module_archive_invalid', 'Module archive has unsafe or unsupported members.');
-        await extractTar({ file: tarball, cwd: stage, strict: true, noChmod: false });
+        // Installation precedes service startup. The public synchronous extractor
+        // uses bounded reads and closes every write before returning or throwing.
+        extractTar({ file: tarball, cwd: stage, strict: true, noChmod: false, sync: true });
         await rm(tarball);
         const source = await readFile(path.join(stage, 'package/package.json'));
         const row: InstalledModule = { id: definition.id, package: packageName, version: metadata.version, integrity: metadata.dist.integrity,
@@ -149,12 +158,44 @@ export class ModuleStore {
         catch (cause) { if ((cause as NodeJS.ErrnoException).code !== 'ENOENT') throw cause; await rename(stage, destination); }
         const pending = `${this.pointer(definition.id)}.tmp`; await writeFile(pending, JSON.stringify(row), { mode: 0o600 }); await rename(pending, this.pointer(definition.id));
         return row;
-      } finally { await rm(stage, { recursive: true, force: true }); }
+      } catch (cause) {
+        failed = true; primaryError = cause; throw cause;
+      } finally {
+        try { await rm(stage, { recursive: true, force: true }); }
+        catch (cleanupError) {
+          if (failed) throw new AggregateError([primaryError, cleanupError],
+            `Module installation failed (${primaryError instanceof Error ? primaryError.message : String(primaryError)}); staging cleanup failed (${String(cleanupError)})`);
+          throw cleanupError;
+        }
+      }
     });
   }
   public async remove(id: string): Promise<void> {
     const definition = this.definition(id);
     await this.withLock(definition.id, async () => { await rm(path.dirname(this.pointer(definition.id)), { recursive: true, force: true }); });
+  }
+  /** Admission and its locks remain valid until the entire consumer lifecycle completes. */
+  public async withAdmittedModules<T>(ids: readonly string[], action: (modules: readonly AdmittedModule[]) => Promise<T>): Promise<T> {
+    const definitions = ids.map(id => this.definition(id));
+    if (new Set(definitions.map(row => row.id)).size !== definitions.length) {
+      throw error('module_selection_invalid', 'Select each module only once.');
+    }
+    const selected: InstalledModule[] = [];
+    for (const definition of definitions) selected.push(await this.current(definition.id) ?? await this.install(definition.id));
+    const ordered = [...selected].sort((a, b) => a.id.localeCompare(b.id));
+    const admitted = new Map<ModuleId, AdmittedModule>();
+    const acquire = async (index: number): Promise<T> => {
+      if (index === ordered.length) return action(selected.map(row => admitted.get(row.id)!));
+      const row = ordered[index];
+      return this.withLock(row.id, async () => {
+        const directory = this.directory(row);
+        const manifest = await this.verify(directory, row);
+        admitted.set(row.id, Object.freeze({ installed: Object.freeze({ ...row }),
+          entry: path.join(directory, 'package', manifest.entry), cwd: path.join(directory, 'package') }));
+        return acquire(index + 1);
+      });
+    };
+    return acquire(0);
   }
   public async run(id: string, args: string[]): Promise<number> {
     const row = await this.current(id) ?? await this.install(id);

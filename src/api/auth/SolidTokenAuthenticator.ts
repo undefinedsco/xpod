@@ -7,7 +7,7 @@ import type { SolidAuthContext } from './AuthContext';
 import {
   configuredHttpLoopbackOrigin,
   createConfiguredLoopbackSolidTokenVerifier,
-} from './ConfiguredLoopbackSolidTokenVerifier';
+} from '../../authentication/ConfiguredLoopbackSolidTokenVerifier';
 
 const SOLID_LOCAL_ROUTE_CANONICAL_URL_HEADER = 'x-xpod-canonical-url';
 const SOLID_LOCAL_ROUTE_LOCAL_URL_HEADER = 'x-xpod-local-route-url';

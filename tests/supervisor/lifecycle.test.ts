@@ -173,3 +173,59 @@ describe('Supervisor lifecycle (N20)', () => {
     expect(supervisor.isReady()).toBe(false);
   });
 });
+
+
+describe('Supervisor process close contract', () => {
+  it('reports nonzero shutdown after actual close instead of claiming success', async () => {
+    const supervisor = new Supervisor({ handleProcessSignals: false });
+    supervisor.register({ name: 'failed-cleanup', command: process.execPath, args: ['-e', `
+      process.on('SIGTERM', () => { console.log('cleanup-failed'); process.exit(1); });
+      console.log('ready'); setInterval(() => {}, 1000);
+    `] });
+    try {
+      supervisor.start('failed-cleanup');
+      await waitFor(() => supervisor.getLogs().some(row => row.message === 'ready'), 'failed-cleanup ready');
+      await expect(supervisor.stop('failed-cleanup')).rejects.toThrow('closed unsuccessfully');
+      expect(supervisor.getStatus('failed-cleanup')?.lastExitCode).toBe(1);
+      expect(supervisor.getStatus('failed-cleanup')?.pid).toBeUndefined();
+    } finally { await supervisor.stopAll(); }
+  });
+  it('signals only the service owner so it can coordinate descendant shutdown', async () => {
+    const supervisor = new Supervisor({ handleProcessSignals: false });
+    const descendant = `process.on('SIGTERM',()=>{console.log('descendant-raw-signal');process.exit(17);}); process.on('message',()=>{console.log('descendant-owner-cleanup');process.exit(0);});process.send('ready');`;
+    supervisor.register({ name: 'owner', command: process.execPath, args: ['-e', `
+      const child=require('node:child_process').spawn(process.execPath,['-e',${JSON.stringify(descendant)}],{stdio:['ignore','inherit','inherit','ipc']});
+      child.on('message',()=>console.log('ready'));
+      process.on('SIGTERM',()=>{child.once('close',code=>process.exit(code??1));child.send('close');});
+    `] });
+    try {
+      supervisor.start('owner');
+      await waitFor(() => supervisor.getLogs().some(row => row.message === 'ready'), 'owner ready');
+      await supervisor.stop('owner');
+      expect(supervisor.getLogs().some(row => row.message === 'descendant-owner-cleanup')).toBe(true);
+      expect(supervisor.getLogs().some(row => row.message === 'descendant-raw-signal')).toBe(false);
+    } finally { await supervisor.stopAll(); }
+  });
+  it('waits for graceful exit and trailing output rather than signal delivery', async () => {
+    const supervisor = new Supervisor({ handleProcessSignals: false });
+    supervisor.register({ name: 'draining', command: process.execPath, args: ['-e', `
+      process.on('SIGTERM', () => setTimeout(() => { console.log('drained'); process.exit(0); }, 200));
+      console.log('ready'); setInterval(() => {}, 1000);
+    `] });
+    try {
+      supervisor.start('draining');
+      await waitFor(() => supervisor.getLogs().some(row => row.message === 'ready'), 'child ready');
+      const stopping = supervisor.stop('draining');
+      expect(supervisor.stop('draining')).toBe(stopping);
+      expect(supervisor.isReady()).toBe(false);
+      let closed = false;
+      void stopping.then(() => { closed = true; });
+      await sleep(50);
+      expect(closed).toBe(false);
+      await stopping;
+      expect(supervisor.getStatus('draining')?.pid).toBeUndefined();
+      expect(supervisor.getStatus('draining')?.lastExitCode).toBe(0);
+      expect(supervisor.getLogs().some(row => row.message === 'drained')).toBe(true);
+    } finally { await supervisor.stopAll(); }
+  });
+});

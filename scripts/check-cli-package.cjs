@@ -7,13 +7,27 @@ const os = require('node:os');
 const { spawnSync } = require('node:child_process');
 const root = path.resolve(__dirname, '..');
 const original = path.join(root, 'packages/xpod-cli');
-const evidence = path.join(root, '.test-data/cli-package');
-const source = path.join(evidence, 'source');
+const evidenceIndex = process.argv.indexOf('--evidence');
+const evidenceArgument = evidenceIndex < 0 ? '.test-data/cli-package' : process.argv[evidenceIndex + 1];
+if (!evidenceArgument || evidenceArgument.startsWith('--')) throw new Error('cli_evidence_path_missing');
+const evidence = path.resolve(root, evidenceArgument);
+const evidenceRelative = path.relative(path.join(root, '.test-data'), evidence);
+if (!evidenceRelative || evidenceRelative.startsWith('..') || path.isAbsolute(evidenceRelative)) throw new Error('cli_evidence_path_invalid');
+// A tree nested under the repository can still resolve undeclared optional
+// imports from repository ancestors. Build outside that ancestor chain.
+const buildParent = path.join(os.tmpdir(), '.test-data/xpod-cli-builds');
+fs.mkdirSync(buildParent, { recursive: true });
+const source = fs.mkdtempSync(path.join(buildParent, 'case-'));
 const packageRoot = path.join(source, 'packages/xpod-cli');
 const consumerParent = path.join(os.tmpdir(), '.test-data/xpod-cli-consumers');
 fs.mkdirSync(consumerParent, { recursive: true });
 const consumer = fs.mkdtempSync(path.join(consumerParent, 'case-'));
-process.on('exit', (actualExit) => { fs.rmSync(consumer, { recursive: true, force: true }); fs.writeFileSync(path.join(evidence, 'consumer-cleanup.json'), JSON.stringify({ actualExit, path: consumer, absent: !fs.existsSync(consumer) })); });
+process.on('exit', (actualExit) => {
+  fs.rmSync(consumer, { recursive: true, force: true });
+  fs.rmSync(source, { recursive: true, force: true });
+  fs.writeFileSync(path.join(evidence, 'consumer-cleanup.json'), JSON.stringify({ actualExit, path: consumer,
+    absent: !fs.existsSync(consumer), source, sourceAbsent: !fs.existsSync(source) }));
+});
 const runtimeClientRoot = path.join(source, 'packages/xpod-client');
 const runtimeClientTar = path.join(evidence, 'xpod-client.tgz');
 const run = (command, args, cwd, env = process.env) => {
@@ -33,6 +47,12 @@ for (const entry of ['src', 'scripts', 'tests', 'licenses', 'tsconfig.json', 'pa
 }
 fs.cpSync(path.join(root, 'types/bun'), path.join(source, 'types/bun'), { recursive: true });
 fs.copyFileSync(path.join(root, 'LICENSE'), path.join(source, 'LICENSE'));
+for (const relative of require('../packages/xpod-cli/scripts/canonical-host-sources.json')) {
+  if (!/^[A-Za-z0-9/_-]+\.ts$/.test(relative) || relative.includes('..')) throw new Error('cli_host_source_invalid');
+  const destination = path.join(source, 'src', relative);
+  fs.mkdirSync(path.dirname(destination), { recursive: true });
+  fs.copyFileSync(path.join(root, 'src', relative), destination);
+}
 const information = JSON.parse(fs.readFileSync(path.join(original, 'package.json')));
 // Build dependencies are declared once, in the CLI package; never install the root server graph.
 fs.writeFileSync(path.join(source, 'package.json'), JSON.stringify({ name: 'xpod-cli-build', private: true, devDependencies: information.devDependencies }));
@@ -121,7 +141,7 @@ for (const runtime of ['bun', 'node']) {
     }
   `], { cwd: consumer, env: environment, encoding: 'utf8' });
   if (producer.status !== 0 || producer.signal) throw new Error('cli_consumer_producer_contract_failed:' + producer.stderr);
-  for (const args of [['--version'], ['--help'], ['auth', '--help'], ['module', 'list']]) {
+  for (const args of [['--version'], ['--help'], ['start', '--help'], ['auth', '--help'], ['module', 'list']]) {
     const result = spawnSync(runtime, [path.join(installed, 'dist/xpod.mjs'), ...args], { cwd: consumer, env: environment, encoding: 'utf8' });
     if (result.status !== 0 || result.signal) throw new Error('cli_consumer_failed');
     if (args[0] === '--version' && result.stdout.trim() !== information.version) throw new Error('cli_consumer_version_invalid');

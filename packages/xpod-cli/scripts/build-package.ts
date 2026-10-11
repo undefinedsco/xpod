@@ -1,6 +1,8 @@
+import canonicalHostSources from './canonical-host-sources.json';
 import { buildPublicTools } from './public-build-tools';
 import { exportProducerMaterials } from './producer-materials';
 import ts from 'typescript';
+import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
@@ -12,6 +14,11 @@ import { externalRuntimeLauncher } from '../src/launcher';
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const repoRoot = existsSync(path.join(packageRoot, 'node_modules')) ? packageRoot : path.resolve(packageRoot, '../..');
 const output = path.join(packageRoot, 'dist');
+// Canonical host source closure. Capability implementations never enter this allowlist.
+const hostSources = new Set(canonicalHostSources.map(file => path.resolve(packageRoot, '../../src', file)));
+const hostBindings = { root: path.resolve(packageRoot, '../../src'), files: [...hostSources].map(file => ({
+  path: file, sha256: createHash('sha256').update(readFileSync(file)).digest('hex'),
+})) };
 const version = JSON.parse(readFileSync(path.join(packageRoot, 'package.json'), 'utf8')).version;
 const configured = readFileSync(path.join(packageRoot, 'src/manifest.ts'), 'utf8').match(/XPOD_CLI_VERSION = '([^']+)'/)?.[1];
 if (version !== configured) throw new Error('CLI manifest/package version mismatch');
@@ -27,11 +34,13 @@ for (const [entryName, filename, format, profile] of [['npm-entry', 'xpod.mjs', 
   if (inputs.some(file => {
     const absolute = path.resolve(packageRoot, file);
     const relative = path.relative(packageRoot, absolute).replaceAll(path.sep, '/');
-    return !relative.includes('node_modules/') && !/^(?:src\/(?:npm-entry|client|core|module-[^/]+|manifest)\.ts|src\/(?:lib|commands)\/[^/]+\.ts)$/.test(relative);
+    return !relative.includes('node_modules/') && !hostSources.has(absolute)
+      && !/^(?:src\/(?:npm-entry|client|core|module-[^/]+|manifest)\.ts|src\/(?:lib|commands)\/[^/]+\.ts)$/.test(relative);
   }) || inputs.some(file => /node_modules\/(?:@solid\/community-server|inngest(?:-cli)?\/|@undefineds.co\/xpod)/.test(file))) {
     throw new Error('Public CLI unexpectedly depends on server, UI or native module sources');
   }
   collectJavascriptNotices({ metafile: metadata, stageRoot: packageRoot, repoRoot,
+    canonicalSources: hostBindings,
     destination: path.join(output, 'licenses', profile), target: `${process.platform}-${process.arch}`, cli: payload,
     bunVersion: process.versions.bun ?? 'unknown', supplements: path.join(packageRoot, 'licenses/javascript'),
     generated: path.join(packageRoot, 'licenses/javascript/generated', process.versions.bun ?? 'unknown'), generatedProfile: profile });
@@ -65,4 +74,4 @@ if (!existsSync(path.join(packageRoot, 'LICENSE'))) copyFileSync(path.join(repoR
 
 buildPublicTools(packageRoot, repoRoot, path.join(output, 'licenses/core/objects'));
 
-await exportProducerMaterials(packageRoot);
+await exportProducerMaterials(packageRoot, [...hostSources]);

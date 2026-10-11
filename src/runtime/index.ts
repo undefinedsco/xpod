@@ -85,3 +85,9 @@ export type {
   XpodRuntimePorts,
   XpodRuntimeSockets,
 } from './runtime-types';
+
+export { deriveRuntimePlan, applyRuntimePlan } from './service-plan';
+export type { RuntimePlan, RuntimeCapability, RuntimeModuleDescription } from './service-plan';
+
+export { startModuleRuntime, ModuleRuntimeStartupError } from './module-host';
+export type { ModuleRuntimeOptions, ModuleRuntimeHandle } from './module-host';

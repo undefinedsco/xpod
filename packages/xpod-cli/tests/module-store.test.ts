@@ -5,7 +5,8 @@ import { readFileSync } from 'node:fs';
 import { chmod, link, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { c as packTar } from 'tar';
+import { c as packTar, Header } from 'tar';
+import { gzipSync } from 'node:zlib';
 import { ModuleStore, type ModuleManifest } from '../src/module-store';
 import { MODULE_CATALOG } from '../src/module-catalog';
 import { withModuleOwnedLock } from '../src/module-owned-lock';
@@ -13,7 +14,8 @@ import { withModuleOwnedLock } from '../src/module-owned-lock';
 const roots: string[] = [];
 const coreSource = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../src');
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
-async function fixture(options: { version?: string; api?: number; link?: boolean; drift?: boolean; wrongPlatform?: boolean; source?: string } = {}) {
+async function fixture(options: { version?: string; api?: number; link?: boolean; drift?: boolean; wrongPlatform?: boolean; source?: string;
+  blockedParent?: boolean; beforeArchive?: (storeRoot: string) => Promise<void> } = {}) {
   const base = path.resolve('.test-data/cli-modules'); await mkdir(base, { recursive: true });
   const root = await mkdtemp(path.join(base, 'case-')); roots.push(root);
   const packageRoot = path.join(root, 'input/package'); await mkdir(path.join(packageRoot, 'dist'), { recursive: true });
@@ -25,16 +27,66 @@ async function fixture(options: { version?: string; api?: number; link?: boolean
     scripts: { postinstall: 'exit 99' } }));
   if (options.link) await symlink('/etc/passwd', path.join(packageRoot, 'escape'));
   const tarball = path.join(root, 'module.tgz'); await packTar({ gzip: true, file: tarball, cwd: path.dirname(packageRoot) }, ['package']);
+  if (options.blockedParent) {
+    const chunks: Buffer[] = [];
+    for (const [name, body] of [['package/package.json', await readFile(path.join(packageRoot, 'package.json'))],
+      ['package/dist', Buffer.from('parent is a file')], ['package/dist/entry.mjs', Buffer.from(source)]] as const) {
+      const header = new Header({ path: name, type: 'File', mode: 0o644, size: body.length }); header.encode();
+      chunks.push(header.block!, body, Buffer.alloc((512 - body.length % 512) % 512));
+    }
+    chunks.push(Buffer.alloc(1024)); await writeFile(tarball, gzipSync(Buffer.concat(chunks)));
+  }
   const bytes = await readFile(tarball); const integrity = `sha512-${createHash('sha512').update(bytes).digest('base64')}`;
   let downloads = 0; let corrupt = false; let denied = false;
   const request = (async (input: string | URL | Request) => {
     if (denied) return new Response('', { status: 404 });
-    if (String(input).endsWith('.tgz')) { downloads++; return new Response(corrupt ? Buffer.from('changed') : bytes); }
+    if (String(input).endsWith('.tgz')) { await options.beforeArchive?.(path.join(root, 'store')); downloads++; return new Response(corrupt ? Buffer.from('changed') : bytes); }
     return Response.json({ name: '@undefineds.co/xpod-afs-darwin-arm64', version, dist: { integrity, tarball: 'https://registry.npmjs.org/afs.tgz' } });
   }) as typeof fetch;
   const store = new ModuleStore({ root: path.join(root, 'store'), platform: 'darwin', arch: 'arm64', fetch: request });
-  return { root, store, get downloads() { return downloads; }, corrupt: () => { corrupt = true; }, deny: () => { denied = true; } };
+  return { root, store, tarball, integrity, get downloads() { return downloads; }, corrupt: () => { corrupt = true; }, deny: () => { denied = true; } };
 }
+
+for (const runtime of ['bun', 'node']) test(`${runtime}: extraction failure closes writes before staging cleanup and preserves the original error`, async () => {
+  const f = await fixture({ blockedParent: true });
+  const script = path.join(f.root, 'probe.ts'); const payload = path.join(f.root, 'probe.mjs');
+  await writeFile(script, `
+import {createRequire} from 'node:module';globalThis.require=createRequire(import.meta.url);
+const {readFile,readdir}=await import('node:fs/promises');
+const {ModuleStore}=await import(${JSON.stringify(path.join(coreSource, 'module-store.ts'))});
+const bytes=await readFile(${JSON.stringify(f.tarball)});
+const store=new ModuleStore({root:${JSON.stringify(path.join(f.root, 'probe-store'))},platform:'darwin',arch:'arm64',fetch:async input=>String(input).endsWith('.tgz')?new Response(bytes):Response.json({name:'@undefineds.co/xpod-afs-darwin-arm64',version:'0.1.0',dist:{integrity:${JSON.stringify(f.integrity)},tarball:'https://registry.npmjs.org/afs.tgz'}})});
+let code;try {await store.install('afs');}catch(error){code=error.code;}
+const directory=store.root+'/afs/darwin-arm64';const immediate=await readdir(directory);
+await new Promise(resolve=>setTimeout(resolve,300));
+console.log(JSON.stringify({code,immediate,later:await readdir(directory),current:await store.current('afs')??null}));
+`);
+  const built = spawnSync('bun', ['build', '--target=node', '--format=esm', '--outfile', payload, script], { encoding: 'utf8' });
+  expect(built.status).toBe(0);
+  const result = spawnSync(runtime, [payload], { encoding: 'utf8' });
+  expect(result.status).toBe(0); expect(result.signal).toBeNull();
+  expect(JSON.parse(result.stdout)).toEqual({ code: 'ENOTDIR', immediate: [], later: [], current: null });
+});
+
+test('a staging cleanup failure preserves the primary installation error', async () => {
+  if (process.getuid?.() === 0) return; // A privileged user bypasses the deterministic filesystem permission fault.
+  let protectedDirectory = '';
+  const f = await fixture({ drift: true, beforeArchive: async storeRoot => {
+    const parent = path.join(storeRoot, 'afs/darwin-arm64');
+    const stage = (await readdir(parent)).find(name => name.startsWith('.install-'))!;
+    protectedDirectory = path.join(parent, stage, 'protected');
+    await mkdir(protectedDirectory); await writeFile(path.join(protectedDirectory, 'file'), 'cleanup denied');
+    await chmod(protectedDirectory, 0o500);
+  } });
+  try {
+    const failure = await f.store.install('afs').then(() => undefined, error => error);
+    expect(failure instanceof AggregateError).toBe(true);
+    expect(failure.errors[0].code).toBe('module_file_changed');
+    expect(['EACCES', 'EPERM', 'ENOTEMPTY']).toContain(failure.errors[1].code);
+    expect(failure.message).toContain('Installed module contents changed');
+    expect(await f.store.current('afs')).toBeUndefined();
+  } finally { if (protectedDirectory) await chmod(protectedDirectory, 0o700); }
+});
 
 test('first use installs once, pins the version, relays exit status and never executes postinstall', async () => {
   const f = await fixture(); expect(await f.store.current('afs')).toBeUndefined();
@@ -48,6 +100,27 @@ test('archive integrity failure leaves no selection or partial install', async (
   expect(await f.store.install('afs').then(() => null, cause => cause.code)).toBe('module_integrity_failed');
   expect(await f.store.current('afs')).toBeUndefined();
   expect(await readdir(path.join(f.store.root, 'afs/darwin-arm64'))).toEqual([]);
+});
+test('admitted entry remains locked until the consuming lifecycle completes', async () => {
+  const f = await fixture();
+  await f.store.withAdmittedModules(['agent-fs'], async modules => {
+    expect(modules[0].installed.id).toBe('afs');
+    expect(await readFile(modules[0].entry, 'utf8')).toContain('process.exit');
+    expect(path.dirname(path.dirname(modules[0].entry))).toBe(modules[0].cwd);
+    expect(await f.store.remove('afs').then(() => null, cause => cause.code)).toBe('module_busy');
+  });
+  await f.store.remove('afs');
+  expect(await f.store.current('afs')).toBeUndefined();
+});
+test('admission rejects duplicate aliases before installation and checks installed bytes', async () => {
+  const f = await fixture();
+  await expect(f.store.withAdmittedModules(['afs', 'agent-fs'], async () => {})).rejects.toThrow();
+  expect(f.downloads).toBe(0);
+  await f.store.install('afs');
+  await writeFile(path.join(f.store.root, 'afs/darwin-arm64/0.1.0/package/dist/entry.mjs'), 'changed');
+  let consumed = false;
+  await expect(f.store.withAdmittedModules(['afs'], async () => { consumed = true; })).rejects.toThrow();
+  expect(consumed).toBe(false);
 });
 test('incompatible API/platform and missing or changed file inventories cannot activate', async () => {
   for (const options of [{ api: 2 }, { wrongPlatform: true }, { drift: true }]) {

@@ -293,3 +293,8 @@ hashes; an outer tar hash alone does not prove the source inventory relation.
 Public `@undefineds.co/xpod-cli/output` exposes the CLI JSON/error presentation adapter as ESM and declarations. It shares the runtime client's error identity and embeds no commands or launchers. Authentication and Pod HTTP runtime APIs are canonical in `@undefineds.co/xpod-client`; the legacy `/client` export forwards them for compatibility. Build tools and producer materials remain CLI build inputs.
 
 The legacy `/client` interface retains its real SDK `Session` value and therefore requires the optional SDK peer when imported in full. Default CLI help/module operations use the safe runtime root without loading that SDK; explicit SDK consumers can import `@undefineds.co/xpod-client/session`.
+# 服务模块组合启动
+
+`xpod start` 按需安装 CSS/API，并通过 Gateway 组合启动。使用 `xpod start --modules css` 可只启动 CSS；API 单独启动须提供独立的 `--oidcIssuer`。`--mode local|cloud` 同时控制两个子服务的运行模式，已有安装版本保持固定。
+
+启动只使用经安装清单校验的模块入口；模块锁持续到 Gateway 和所有子进程关闭。`/service/stop` 的 202 表示已接受停止请求，实际关闭完成后 CLI 才退出。关闭失败保留模块锁，可再次发送停止信号重试。
