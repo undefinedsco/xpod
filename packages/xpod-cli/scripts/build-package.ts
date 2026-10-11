@@ -1,3 +1,4 @@
+import { exportProducerMaterials } from './producer-materials';
 import ts from 'typescript';
 import { spawnSync } from 'node:child_process';
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -50,3 +51,21 @@ writeFileSync(path.join(output, 'client.mjs'), `import client from './client.cjs
 writeFileSync(path.join(output, 'bin/xpod'), externalRuntimeLauncher({ payload: 'xpod.mjs' }));
 chmodSync(path.join(output, 'bin/xpod'), 0o755);
 if (!existsSync(path.join(packageRoot, 'LICENSE'))) copyFileSync(path.join(repoRoot, 'LICENSE'), path.join(packageRoot, 'LICENSE'));
+
+// Producer tooling bundles its declared parser; consumers install no build dependencies.
+for (const [format, extension] of [['esm', 'mjs'], ['cjs', 'cjs']] as const) {
+  const toolingMetadata = path.join(packageRoot, '.test-data/build', `build-tools-${format}-inputs.json`);
+  const result = spawnSync('bun', ['build', '--target=node', `--format=${format}`, `--metafile=${toolingMetadata}`, '--outfile',
+    path.join(output, `build-tools.${extension}`), path.join(packageRoot, 'src/build-tools.ts')],
+    { cwd: packageRoot, stdio: 'inherit', env: bunBundleEnvironment(process.env) });
+  if (result.status !== 0) throw new Error('Public build tooling bundle failed');
+  collectJavascriptNotices({ metafile: toolingMetadata, stageRoot: packageRoot, repoRoot,
+    destination: path.join(output, 'licenses/build-tools', format), target: `${process.platform}-${process.arch}`,
+    cli: path.join(output, `build-tools.${extension}`), bunVersion: process.versions.bun ?? 'unknown',
+    supplements: path.join(packageRoot, 'licenses/javascript') });
+}
+const toolingDeclarations = spawnSync('bun', ['x', '--no-install', 'tsc', '-p', 'tsconfig.build-tools.json'],
+  { cwd: packageRoot, stdio: 'inherit' });
+if (toolingDeclarations.status !== 0) throw new Error('Public build tooling declarations failed');
+
+await exportProducerMaterials(packageRoot);

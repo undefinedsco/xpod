@@ -18,7 +18,7 @@ const started = Date.now();
 fs.mkdirSync(evidence, { recursive: true });
 fs.rmSync(source, { recursive: true, force: true }); fs.rmSync(consumer, { recursive: true, force: true });
 fs.mkdirSync(packageRoot, { recursive: true });
-for (const entry of ['src', 'scripts', 'tests', 'licenses', 'tsconfig.json', 'tsconfig.core.json', 'tsconfig.client.json', 'package.json', 'README.md', 'LICENSE']) {
+for (const entry of ['src', 'scripts', 'tests', 'licenses', 'tsconfig.json', 'tsconfig.core.json', 'tsconfig.client.json', 'tsconfig.build-tools.json', 'package.json', 'README.md', 'LICENSE']) {
   fs.cpSync(path.join(original, entry), path.join(packageRoot, entry), { recursive: true });
 }
 fs.cpSync(path.join(root, 'types/bun'), path.join(source, 'types/bun'), { recursive: true });
@@ -41,7 +41,7 @@ for (const absent of ['@solid/community-server', '@undefineds.co/models', 'innge
   if (fs.existsSync(path.join(source, 'node_modules', absent))) throw new Error('cli_server_dependency_present');
 }
 run('bun', ['run', 'typecheck'], packageRoot);
-run('bun', ['test', 'tests/module-store.test.ts', 'tests/launcher.test.ts', 'tests/javascript-notices.test.ts'], packageRoot);
+run('bun', ['run', 'test'], packageRoot);
 run('bun', ['run', 'build'], packageRoot);
 run('bun', ['pm', 'pack', '--filename', path.join(evidence, 'xpod-cli.tgz'), '--ignore-scripts'], packageRoot);
 fs.mkdirSync(consumer); fs.writeFileSync(path.join(consumer, 'package.json'), JSON.stringify({ name: 'xpod-cli-consumer', private: true }));
@@ -57,6 +57,27 @@ const environment = { ...process.env, HOME: privateHome, NODE_ENV: undefined, NO
 for (const runtime of ['bun', 'node']) {
   const bridge = spawnSync(runtime, ['--input-type=module', '-e', "import * as esm from '@undefineds.co/xpod-cli/client'; import { createRequire } from 'node:module'; const cjs = createRequire(import.meta.url)('@undefineds.co/xpod-cli/client'); if (esm.CliCommandError !== cjs.CliCommandError || typeof esm.authFetch !== 'function') throw new Error('client bridge invalid');"], { cwd: consumer, env: environment, encoding: 'utf8' });
   if (bridge.status !== 0 || bridge.signal) throw new Error('cli_consumer_client_bridge_failed:' + bridge.stderr);
+  const producer = spawnSync(runtime, ['--input-type=module', '-e', `
+    import { collectJavascriptNotices, verifyProducerSourceArchive } from '@undefineds.co/xpod-cli/build-tools';
+    import { createRequire } from 'node:module';
+    import { readFileSync } from 'node:fs';
+    import { createHash } from 'node:crypto';
+    import path from 'node:path';
+    const require = createRequire(import.meta.url);
+    if (typeof collectJavascriptNotices !== 'function' || typeof require('@undefineds.co/xpod-cli/build-tools').collectJavascriptNotices !== 'function') throw Error('build-tools unavailable');
+    const indexFile = require.resolve('@undefineds.co/xpod-cli/producer-materials');
+    const index = JSON.parse(readFileSync(indexFile));
+    if (index.schemaVersion !== 1 || index.producer.name !== '@undefineds.co/xpod-cli' || index.files.some(file => file.path === 'index.json')) throw Error('producer index invalid');
+    for (const file of index.files) {
+      const bytes = readFileSync(path.join(path.dirname(indexFile), file.path));
+      if (bytes.length !== file.bytes || createHash('sha256').update(bytes).digest('hex') !== file.sha256) throw Error('producer material changed');
+    }
+    await verifyProducerSourceArchive({ archive: path.join(path.dirname(indexFile), index.clientSource), inventory: path.join(path.dirname(indexFile), index.sourceInventory) });
+    for (const [filename, digest] of [['client.cjs', index.clientPayloads.cjsSHA256], ['client.mjs', index.clientPayloads.esmSHA256]]) {
+      if (createHash('sha256').update(readFileSync(path.join(path.dirname(indexFile), '..', filename))).digest('hex') !== digest) throw Error('producer client binding changed');
+    }
+  `], { cwd: consumer, env: environment, encoding: 'utf8' });
+  if (producer.status !== 0 || producer.signal) throw new Error('cli_consumer_producer_contract_failed:' + producer.stderr);
   for (const args of [['--version'], ['--help'], ['auth', '--help'], ['module', 'list']]) {
     const result = spawnSync(runtime, [path.join(installed, 'dist/xpod.mjs'), ...args], { cwd: consumer, env: environment, encoding: 'utf8' });
     if (result.status !== 0 || result.signal) throw new Error('cli_consumer_failed');

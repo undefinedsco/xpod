@@ -157,3 +157,37 @@ test('collects actual portable JS metafile on Windows metadata without admitting
     for (const target of ['darwin-arm64', 'darwin-x64', 'linux-arm64', 'linux-x64']) { expect(bunCompileTarget(target)).toBe('bun-' + target); }
   } finally { rmSync(work, { recursive: true, force: true }); }
 });
+
+
+test('requires original notices for explicitly shipped packages outside the import graph', () => {
+  const parent = path.resolve('.test-data/xpod-cli/vendored-notices');
+  mkdirSync(parent, { recursive: true });
+  const work = mkdtempSync(path.join(parent, 'case-'));
+  try {
+    const stage = path.join(work, 'stage'); const repo = path.join(work, 'repo');
+    const vendor = path.join(work, 'vendor');
+    mkdirSync(stage); mkdirSync(vendor); mkdirSync(path.join(repo, 'node_modules'), { recursive: true });
+    writeFileSync(path.join(stage, 'main.ts'), 'export const value = 1;');
+    writeFileSync(path.join(vendor, 'package.json'), JSON.stringify({ name: '@fixture/shipped', version: '1', license: 'MIT' }));
+    const cli = path.join(work, 'bundle'); writeFileSync(cli, 'fixture');
+    const metafile = path.join(work, 'inputs.json');
+    writeFileSync(metafile, JSON.stringify({ inputs: { 'main.ts': { bytes: 1, imports: [] } }, outputs: { bundle: { inputs: {} } } }));
+    const options = { stageRoot: stage, repoRoot: repo, cli, metafile, target: 'linux-x64', bunVersion: 'fixture',
+      destination: path.join(work, 'notices'), vendoredRoots: [vendor], requireVendoredOriginals: true };
+    expect(() => collectJavascriptNotices(options)).toThrow('Vendored JavaScript original notice missing');
+    expect(existsSync(options.destination)).toBe(false);
+    const supplement = path.join(work, 'supplement'); mkdirSync(path.join(supplement, 'objects'), { recursive: true });
+    const original = path.join(vendor, 'LICENSE'); writeFileSync(original, 'Original terms\r\n');
+    const sha = sha256File(original); const object = `objects/${sha}.txt`;
+    cpSync(original, path.join(supplement, object)); rmSync(original);
+    writeFileSync(path.join(supplement, 'index.json'), JSON.stringify({ schemaVersion: 1,
+      entries: [{ name: '@fixture/shipped', version: '1', provenance: { source: 'fixture' }, files: [{ sourcePath: 'LICENSE', object, sha256: sha }] }] }));
+    collectJavascriptNotices({ ...options, supplements: [supplement] });
+    const index = JSON.parse(readFileSync(path.join(options.destination, 'index.json'), 'utf8'));
+    expect(index.packages[0].vendored).toBe(true);
+    expect(index.packages[0].inputCount).toBe(0);
+    expect(readFileSync(path.join(options.destination, object), 'utf8')).toBe('Original terms\r\n');
+    expect(index.status).toBe('partial-collection');
+    expect(() => collectJavascriptNotices({ ...options, supplements: [supplement, supplement], destination: path.join(work, 'duplicate') })).toThrow('duplicate');
+  } finally { rmSync(work, { recursive: true, force: true }); }
+});
