@@ -269,8 +269,30 @@ def native_test_contract(root, source_sha, source_kit):
                 raise RuntimeError('Native test source kit patch bytes mismatch')
     except (subprocess.CalledProcessError, KeyError, TypeError) as error:
         raise RuntimeError('Native test source commit or patch evidence unavailable') from error
+    helper_blobs = {}
+    for name in ['mount.rs', 'mount_control.rs']:
+        material = 'helper/src/' + name
+        rows = [row for row in files if row.get('path') == material]
+        if len(rows) != 1:
+            raise RuntimeError('Native test source kit helper inventory mismatch')
+        try:
+            blob = subprocess.check_output(git + ['show', source_sha + ':tools/agentfs-pod/src/' + name], cwd=root, stderr=subprocess.PIPE)
+        except subprocess.CalledProcessError as error:
+            raise RuntimeError('Native test helper source evidence unavailable') from error
+        if hashlib.sha256(blob).hexdigest() != rows[0].get('sha256'):
+            raise RuntimeError('Native test source kit helper bytes mismatch')
+        helper_blobs[name] = blob.decode('utf8')
+    crash_tests = [('mount.rs', 'unmount_command_registry_keeps_backend_and_platform_policy'),
+                   ('mount_control.rs', 'crash_detach_dispatches_recorded_fuse_backend_without_force_or_lazy')]
+    crash_present = [bool(re.search(r'\bfn\s+' + name + r'\s*\(', helper_blobs[file])) for file, name in crash_tests]
+    if any(crash_present) and not all(crash_present):
+        raise RuntimeError('Incomplete native crash-detach test source contract')
+    crash_current = all(crash_present)
     current = 'fuse-owned-session-ready.patch' in names
-    return dict(passed=102 if current else 98, ignored=2, current=current,
+    if crash_current and not current:
+        raise RuntimeError('Unsupported native crash-detach source patch contract')
+    return dict(passed=104 if crash_current else (102 if current else 98), ignored=2, current=current,
+                requiredQualified=[file.removesuffix('.rs') + '::tests::' + name for file, name in crash_tests] if crash_current else [],
                 requiredNames=['foreign_fuse_startup_snapshot_cannot_bind_or_start_unmount',
                                'fuse_control_closes_only_after_actual_owned_unmount_and_kernel_absence',
                                'fuse_owner_uses_actual_runtime_and_rejects_nfs_or_changed_binding',
@@ -304,6 +326,9 @@ def check_tests(text, source_kit, source_sha, root=None):
                  'actual_dead_runtime_crash_detach_waits_and_preserves_distinct_proof']:
         if not re.search(r'^test mount_control::tests::' + test + r' \.\.\. ok$', text, re.MULTILINE):
             raise RuntimeError(f'Missing latest regression: {test}')
+    for qualified in contract['requiredQualified']:
+        if not re.search(r'^test ' + re.escape(qualified) + r' \.\.\. ok$', text, re.MULTILINE):
+            raise RuntimeError('Missing latest regression: ' + qualified)
     # Exact cache-candidate regression names derived from the current source.
     # Every one must report ok; the original inventory above is unchanged.
     for qualified in ['pod_fs::range_stream_tests::whole_file_deadlines_bind_verified_sizes_and_leave_metadata_unchanged',
