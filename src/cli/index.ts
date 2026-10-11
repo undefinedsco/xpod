@@ -3,93 +3,46 @@ import { ensureSupportedBun } from '../runtime/compat/ensureSupportedBun';
 import '../runtime/configure-drizzle-solid';
 import yargs from 'yargs';
 import { hideBin } from 'yargs/helpers';
-import { createRequire } from 'node:module';
-import path from 'node:path';
-import { PACKAGE_ROOT } from '../runtime/package-root';
+import type { CommandModule } from 'yargs';
 
-// Known subcommands
-const KNOWN_COMMANDS = [
-  'get', 'put', 'patch', 'delete', 'head', 'list',
-  'rdf', 'obj', 'secret', 'server', 'start', 'stop', 'status', 'logs',
-  'auth', 'login', 'import', 'pod',
-  'account', 'backup', 'restore', 'doctor', 'agent-fs',
-];
+// Command declarations own both help names and lazy host registration.
+// Builders own each command's argument types; the heterogeneous host registry
+// erases only that type parameter, after each module has been typechecked.
+const commandLoaders: Array<{ names: string[]; load(): Promise<Array<CommandModule<object, any>>> }> = [
+  { names: ['start'], load: async () => { const module = await import('./commands/start'); return [module.startCommand]; } },
+  { names: ['stop'], load: async () => { const module = await import('./commands/stop'); return [module.stopCommand]; } },
+  { names: ['status'], load: async () => { const module = await import('./commands/status'); return [module.statusCommand]; } },
+  { names: ['logs'], load: async () => { const module = await import('./commands/logs'); return [module.logsCommand]; } },
+  { names: ['server'], load: async () => { const module = await import('./commands/server'); return [module.serverCommand]; } },
+  { names: ['get', 'put', 'patch', 'delete', 'head', 'list'], load: async () => { const module = await import('./commands/resource'); return [module.getCommand, module.putCommand, module.patchCommand, module.deleteCommand, module.headCommand, module.listCommand]; } },
+  { names: ['rdf'], load: async () => { const module = await import('./commands/rdf'); return [module.rdfCommand]; } },
+  { names: ['obj'], load: async () => { const module = await import('./commands/obj'); return [module.objCommand]; } },
+  { names: ['secret'], load: async () => { const module = await import('./commands/secret'); return [module.secretCommand]; } },
+  { names: ['auth'], load: async () => { const module = await import('./commands/auth'); return [module.authCommand]; } },
+  { names: ['login'], load: async () => { const module = await import('./commands/login'); return [module.loginCommandModule]; } },
+  { names: ['import'], load: async () => { const module = await import('./commands/import'); return [module.importCommand]; } },
+  { names: ['pod'], load: async () => { const module = await import('./commands/pod'); return [module.podCommand]; } },
+  { names: ['account'], load: async () => { const module = await import('./commands/account'); return [module.accountCommand]; } },
+  { names: ['backup', 'restore'], load: async () => { const module = await import('./commands/backup'); return [module.backupCommand, module.restoreCommand]; } },
+  { names: ['doctor'], load: async () => { const module = await import('./commands/doctor'); return [module.doctorCommand]; } },
+  { names: ['agent-fs'], load: async () => { const module = await import('./commands/agent-fs'); return [module.agentFsCommand]; } },
+ ];
+const KNOWN_COMMANDS = commandLoaders.flatMap((loader) => loader.names);
 
 function createRootParser() {
-  return yargs(hideBin(process.argv))
-    .scriptName('xpod')
-    .usage('$0 <command> [options]')
-    .epilog(`Commands: ${KNOWN_COMMANDS.join(', ')}`)
-    .help()
-    .version();
+  return yargs(hideBin(process.argv)).scriptName('xpod').usage('$0 <command> [options]')
+    .epilog(`Commands: ${KNOWN_COMMANDS.join(', ')}`).help().version();
 }
 
-async function createCommandParser() {
-  const [
-    { startCommand },
-    { stopCommand },
-    { statusCommand },
-    { logsCommand },
-    { serverCommand },
-    { getCommand, putCommand, patchCommand, deleteCommand, headCommand, listCommand },
-    { rdfCommand },
-    { objCommand },
-    { secretCommand },
-    { authCommand },
-    { loginCommandModule },
-    { importCommand },
-    { podCommand },
-    { accountCommand },
-    { backupCommand, restoreCommand },
-    { doctorCommand },
-    { agentFsCommand },
-  ] = await Promise.all([
-    import('./commands/start'),
-    import('./commands/stop'),
-    import('./commands/status'),
-    import('./commands/logs'),
-    import('./commands/server'),
-    import('./commands/resource'),
-    import('./commands/rdf'),
-    import('./commands/obj'),
-    import('./commands/secret'),
-    import('./commands/auth'),
-    import('./commands/login'),
-    import('./commands/import'),
-    import('./commands/pod'),
-    import('./commands/account'),
-    import('./commands/backup'),
-    import('./commands/doctor'),
-    import('./commands/agent-fs'),
-  ]);
-
-  return createRootParser()
-    .command(startCommand)
-    .command(stopCommand)
-    .command(statusCommand)
-    .command(logsCommand)
-    .command(serverCommand)
-    .command(getCommand)
-    .command(putCommand)
-    .command(patchCommand)
-    .command(deleteCommand)
-    .command(headCommand)
-    .command(listCommand)
-    .command(rdfCommand)
-    .command(objCommand)
-    .command(secretCommand)
-    .command(authCommand)
-    .command(loginCommandModule)
-    .command(importCommand)
-    .command(podCommand)
-    .command(accountCommand)
-    .command(backupCommand)
-    .command(restoreCommand)
-    .command(doctorCommand)
-    .command(agentFsCommand)
-    .strict()
-    .help()
-    .version();
+async function createCommandParser(requestedCommand?: string) {
+  let parser = createRootParser();
+  // Flags before the command retain the complete legacy parser.
+  const selected = KNOWN_COMMANDS.includes(requestedCommand ?? '')
+    ? commandLoaders.filter((loader) => loader.names.includes(requestedCommand!)) : commandLoaders;
+  for (const loader of selected) {
+    for (const command of await loader.load()) parser = parser.command(command);
+  }
+  return parser.strict().help().version();
 }
 
 async function main() {
@@ -100,23 +53,8 @@ async function main() {
     await runRgWrapperMain(argv.slice(2));
     return;
   }
-  if (argv[0] === '__internal-api') {
-    await import('../api/main');
-    return;
-  }
-  if (argv[0] === '__internal-css') {
-    process.argv = [process.argv[0], process.argv[1], ...argv.slice(1)];
-    const { ensureBunUndiciCompat, ensureBunCommunitySolidServerJwkCompat } = await import('../runtime/compat/ensureBunUndiciCompat');
-    ensureBunUndiciCompat();
-    // The packaged module has CSS asset-path patches. An inlined copy in the
-    // CLI bundle would resolve Components.js assets relative to the wrong file.
-    const css = process.env.XPOD_BUN_SINGLE_RUNTIME === '1'
-      ? createRequire(path.join(PACKAGE_ROOT, 'package.json'))(path.join(PACKAGE_ROOT, 'node_modules/@solid/community-server/dist/__bundle__.cjs')) as typeof import('@solid/community-server')
-      : await import('@solid/community-server');
-    ensureBunCommunitySolidServerJwkCompat(css);
-    const { AppRunner } = css;
-    const { createPackageRootPreferredAppRunner } = await import('../runtime/runner/node/CommunitySolidServerCssRunner');
-    await createPackageRootPreferredAppRunner(AppRunner, PACKAGE_ROOT).runCli(process.argv);
+  if (argv[0] === 'start' || argv[0]?.startsWith('__internal-')) {
+    await import('../runtime/service-entry');
     return;
   }
   const wantsRootHelp = argv.length === 0 || argv[0] === 'help' || argv[0] === '--help' || argv[0] === '-h';
@@ -128,7 +66,7 @@ async function main() {
     return;
   }
 
-  (await createCommandParser())
+  (await createCommandParser(argv[0]))
     .demandCommand(1, 'Please specify an operations command')
     .parse();
 }

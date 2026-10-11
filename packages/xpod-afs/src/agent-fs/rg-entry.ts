@@ -1,5 +1,5 @@
 import { AgentDirectoryClient } from '../directory/client';
-import { authFetch, requireAuthContext } from '@undefineds.co/xpod-cli/client';
+import { authFetch, requireAuthContext } from '@undefineds.co/xpod-client';
 import { parseRgArgs } from './args';
 import { resolveNativeBinary, execNativeBinary } from './native';
 import { loadManagedRoots, resolveManagedTarget } from './roots';

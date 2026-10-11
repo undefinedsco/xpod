@@ -15,7 +15,8 @@
     "build:preview": "bun scripts/build.ts",
     "typecheck": "tsc --noEmit -p tsconfig.core.json",
     "test:preview": "bun test ./tests",
-    "verify:preview": "bun scripts/verify-install.ts"
+    "verify:preview": "bun scripts/verify-install.ts",
+    "build:tools": "bun scripts/build-tools-package.ts"
   },
   "files": [
     "dist",
@@ -47,7 +48,11 @@
       "import": "./dist/build-tools.mjs",
       "require": "./dist/build-tools.cjs"
     },
-    "./producer-materials": "./dist/producer-materials/index.json"
+    "./producer-materials": "./dist/producer-materials/index.json",
+    "./output": {
+      "types": "./dist/client-types/lib/output.d.ts",
+      "import": "./dist/output.mjs"
+    }
   },
   "peerDependencies": {
     "@inrupt/solid-client-authn-node": "^3.1.1"
@@ -64,7 +69,13 @@
       ],
       "build-tools": [
         "dist/build-tools-types/build-tools.d.ts"
+      ],
+      "output": [
+        "dist/client-types/lib/output.d.ts"
       ]
     }
+  },
+  "dependencies": {
+    "@undefineds.co/xpod-client": "workspace:*"
   }
 }

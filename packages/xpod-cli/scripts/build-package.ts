@@ -1,3 +1,4 @@
+import { buildPublicTools } from './public-build-tools';
 import { exportProducerMaterials } from './producer-materials';
 import ts from 'typescript';
 import { spawnSync } from 'node:child_process';
@@ -19,7 +20,7 @@ for (const [entryName, filename, format, profile] of [['npm-entry', 'xpod.mjs', 
   const entry = path.join(packageRoot, `src/${entryName}.ts`); const payload = path.join(output, filename);
   const evidence = path.join(packageRoot, '.test-data/build'); mkdirSync(evidence, { recursive: true });
   const metadata = path.join(evidence, `${entryName}-inputs.json`);
-  const build = spawnSync('bun', ['build', '--target=node', `--format=${format}`, `--metafile=${metadata}`, '--outfile', payload, entry],
+  const build = spawnSync('bun', ['build', '--target=node', '--external=@undefineds.co/xpod-client', `--format=${format}`, `--metafile=${metadata}`, '--outfile', payload, entry],
     { cwd: packageRoot, stdio: 'inherit', env: bunBundleEnvironment(process.env) });
   if (build.status !== 0) throw new Error('CLI build failed');
   const inputs = Object.keys(JSON.parse(readFileSync(metadata, 'utf8')).inputs);
@@ -36,6 +37,16 @@ for (const [entryName, filename, format, profile] of [['npm-entry', 'xpod.mjs', 
     generated: path.join(packageRoot, 'licenses/javascript/generated', process.versions.bun ?? 'unknown'), generatedProfile: profile });
   console.log(`CLI ${version} ${profile}: ${inputs.length} inputs, no CSS/API/AFS runtime payload`);
 }
+// Public presentation adapter: one CLI-owned implementation, no command or launcher graph.
+const outputMetadata = path.join(packageRoot, '.test-data/build/output-inputs.json');
+const outputBuild = spawnSync('bun', ['build', '--target=node', '--format=esm', '--external=@undefineds.co/xpod-client',
+  `--metafile=${outputMetadata}`, '--outfile', path.join(output, 'output.mjs'), path.join(packageRoot, 'src/lib/output.ts')],
+  { cwd: packageRoot, stdio: 'inherit', env: bunBundleEnvironment(process.env) });
+if (outputBuild.error || outputBuild.status !== 0) throw new Error('Public output build failed');
+collectJavascriptNotices({ metafile: outputMetadata, stageRoot: packageRoot, repoRoot,
+  destination: path.join(output, 'licenses/output'), sharedObjectRoot: path.join(output, 'licenses/core/objects'),
+  target: `${process.platform}-${process.arch}`, cli: path.join(output, 'output.mjs'), bunVersion: process.versions.bun ?? 'unknown',
+  generated: path.join(packageRoot, 'licenses/javascript/generated', process.versions.bun ?? 'unknown'), generatedProfile: 'output-esm' });
 const declarations = spawnSync('bun', ['x', '--no-install', 'tsc', '-p', 'tsconfig.client.json'], { cwd: packageRoot, stdio: 'inherit' });
 if (declarations.status !== 0) throw new Error('Client declarations failed');
 const program = ts.createProgram([path.join(packageRoot, 'src/client.ts')], { moduleResolution: ts.ModuleResolutionKind.Bundler, module: ts.ModuleKind.ESNext, skipLibCheck: true });
@@ -52,22 +63,6 @@ writeFileSync(path.join(output, 'bin/xpod'), externalRuntimeLauncher({ payload: 
 chmodSync(path.join(output, 'bin/xpod'), 0o755);
 if (!existsSync(path.join(packageRoot, 'LICENSE'))) copyFileSync(path.join(repoRoot, 'LICENSE'), path.join(packageRoot, 'LICENSE'));
 
-// Producer tooling bundles its declared parser; consumers install no build dependencies.
-for (const [format, extension] of [['esm', 'mjs'], ['cjs', 'cjs']] as const) {
-  const toolingMetadata = path.join(packageRoot, '.test-data/build', `build-tools-${format}-inputs.json`);
-  const result = spawnSync('bun', ['build', '--target=node', `--format=${format}`, `--metafile=${toolingMetadata}`, '--outfile',
-    path.join(output, `build-tools.${extension}`), path.join(packageRoot, 'src/build-tools.ts')],
-    { cwd: packageRoot, stdio: 'inherit', env: bunBundleEnvironment(process.env) });
-  if (result.status !== 0) throw new Error('Public build tooling bundle failed');
-  collectJavascriptNotices({ metafile: toolingMetadata, stageRoot: packageRoot, repoRoot,
-    destination: path.join(output, 'licenses/build-tools', format), target: `${process.platform}-${process.arch}`,
-    cli: path.join(output, `build-tools.${extension}`), bunVersion: process.versions.bun ?? 'unknown',
-    supplements: path.join(packageRoot, 'licenses/javascript'),
-    generated: path.join(packageRoot, 'licenses/javascript/generated', process.versions.bun ?? 'unknown'),
-    generatedProfile: `build-tools-${format}` });
-}
-const toolingDeclarations = spawnSync('bun', ['x', '--no-install', 'tsc', '-p', 'tsconfig.build-tools.json'],
-  { cwd: packageRoot, stdio: 'inherit' });
-if (toolingDeclarations.status !== 0) throw new Error('Public build tooling declarations failed');
+buildPublicTools(packageRoot, repoRoot, path.join(output, 'licenses/core/objects'));
 
 await exportProducerMaterials(packageRoot);

@@ -311,7 +311,7 @@ async function startRuntime(options: RunOptions): Promise<void> {
   supervisor.register({
     name: 'css',
     command: childRuntime.command,
-    args: [...jsEntrypointArgs(path.join(__dirname, 'cli', isDevMode ? 'index.ts' : 'index.js'), childRuntime.isBun), ...buildCssArgs({
+    args: [...jsEntrypointArgs(path.join(__dirname, 'runtime', isDevMode ? 'service-entry.ts' : 'service-entry.js'), childRuntime.isBun), ...buildCssArgs({
       cssBinary: '__internal-css',
       configPath: cssRuntimeConfig.configPath,
       cssModuleRoot,

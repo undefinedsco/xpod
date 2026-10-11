@@ -48,6 +48,13 @@ RUN NODE_TLS_REJECT_UNAUTHORIZED=0 bun install --frozen-lockfile
 
 COPY . .
 RUN bun run build:packages && bun run build:ts && bun run build:components && bun scripts/check-components-runtime-metadata.cjs && bun run build:ui
+RUN node scripts/run-npm-pack.cjs .test-data/service-pack .test-data/service-pack-cache service \
+ && mkdir /service \
+ && tar -xzf .test-data/service-pack/*.tgz -C /service --strip-components=1 \
+ && cd /service && bun install --production --ignore-scripts \
+ && node -e "for (const name of ['refresh','transport','operation-cleanup']) require('/app/scripts/patch-inrupt-authn-' + name + '.js').patchInstalledPackage('/service', {runtimeOnly:true}); require('/app/scripts/patch-jose.js').patchInstalledPackages('/service')" \
+ && bun /app/scripts/check-dependency-state.ts --dependency-root /service --runtime-only \
+ && rm -rf /service/runtime-packages
 
 FROM node:22-bookworm-slim AS node-runtime
 
@@ -68,15 +75,7 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 
-COPY --from=build /app/package.json ./
-COPY --from=build /app/desktop/package.json ./desktop/package.json
-COPY --from=build /app/ui/package.json ./ui/package.json
-COPY --from=build /app/config ./config
-COPY --from=build /app/dist ./dist
-COPY --from=build /app/node_modules ./node_modules
-COPY --from=build /app/packages ./packages
-COPY --from=build /app/static ./static
-COPY --from=build /app/templates ./templates
+COPY --from=build /service ./
 
 RUN mkdir -p /app/data /app/logs \
  && mkdir -p /app/node_modules/@undefineds.co \
@@ -92,4 +91,4 @@ ENV XPOD_QLEVER_LOCAL_RUNTIME_COMMAND=/opt/xpod/qlever/bin/xpod_qlever_local_run
 EXPOSE 5737 5738 6300 6301
 
 ENTRYPOINT []
-CMD ["sh", "-c", "bun --no-env-file dist/cli/index.js start --mode ${XPOD_EDITION} --port ${CSS_PORT} --host 0.0.0.0"]
+CMD ["sh", "-c", "bun --no-env-file dist/runtime/service-entry.js start --mode ${XPOD_EDITION} --port ${CSS_PORT} --host 0.0.0.0"]

@@ -25,6 +25,7 @@
         "@undefineds.co/models": "0.2.60",
         "@undefineds.co/xpod-afs": "workspace:*",
         "@undefineds.co/xpod-cli": "workspace:*",
+        "@undefineds.co/xpod-client": "workspace:*",
         "abstract-level": "^1.0.4",
         "acme-client": "^5.1.3",
         "ai": "^6.0.6",
@@ -254,13 +255,15 @@
       "name": "@undefineds.co/xpod-afs",
       "version": "0.1.0-preview.1",
       "dependencies": {
-        "@undefineds.co/xpod-cli": "workspace:*",
+        "@undefineds.co/xpod-client": "workspace:*",
         "drizzle-orm": "^0.45.1",
         "yargs": "^17.7.2",
       },
       "devDependencies": {
+        "@inrupt/solid-client-authn-node": "^3.1.1",
         "@types/node": "^22",
         "@types/yargs": "^17.0.33",
+        "@undefineds.co/xpod-cli": "workspace:*",
         "componentsjs-generator": "^4.3.0",
         "typescript": "5.5",
       },
@@ -271,6 +274,9 @@
       "bin": {
         "xpod": "./dist/bin/xpod",
       },
+      "dependencies": {
+        "@undefineds.co/xpod-client": "workspace:*",
+      },
       "devDependencies": {
         "@inrupt/solid-client-authn-node": "^3.1.0",
         "@types/node": "^22",
@@ -278,6 +284,22 @@
         "tar": "^7.5.3",
         "typescript": "5.5",
         "yargs": "^17.7.2",
+      },
+      "peerDependencies": {
+        "@inrupt/solid-client-authn-node": "^3.1.1",
+      },
+      "optionalPeers": [
+        "@inrupt/solid-client-authn-node",
+      ],
+    },
+    "packages/xpod-client": {
+      "name": "@undefineds.co/xpod-client",
+      "version": "0.1.0-preview.1",
+      "devDependencies": {
+        "@inrupt/solid-client-authn-node": "^3.1.1",
+        "@types/node": "^22",
+        "@undefineds.co/xpod-cli": "workspace:*",
+        "typescript": "5.5",
       },
       "peerDependencies": {
         "@inrupt/solid-client-authn-node": "^3.1.1",
@@ -2033,6 +2055,8 @@
     "@undefineds.co/xpod-afs": ["@undefineds.co/xpod-afs@workspace:packages/xpod-afs"],
 
     "@undefineds.co/xpod-cli": ["@undefineds.co/xpod-cli@workspace:packages/xpod-cli"],
+
+    "@undefineds.co/xpod-client": ["@undefineds.co/xpod-client@workspace:packages/xpod-client"],
 
     "@undefineds.co/xpod-desktop": ["@undefineds.co/xpod-desktop@workspace:desktop"],
 

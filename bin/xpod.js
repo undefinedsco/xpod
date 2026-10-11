@@ -148,7 +148,7 @@ function runChild(command, args, env = process.env) {
 }
 
 async function main() {
-  if (process.env.XPOD_PREFER_JS_CLI === 'true') {
+  if (process.env.XPOD_PREFER_JS_CLI === 'true' || !isServiceInvocation(process.argv.slice(2))) {
     process.exit(await runJsCli());
     return;
   }
@@ -170,6 +170,12 @@ async function main() {
   }
 }
 
+function isServiceInvocation(args) {
+  // The native artifact is the service host; client and operations commands
+  // retain the complete JS CLI host. Flags before commands also use that parser.
+  return args[0] === 'start' || args[0]?.startsWith('__internal-') === true;
+}
+
 if (require.main === module) {
   main().catch((error) => {
     console.error(error);
@@ -178,6 +184,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+  isServiceInvocation,
   createPlatformEnv,
   createPlatformEnvForPackage,
   detectLinuxLibc,

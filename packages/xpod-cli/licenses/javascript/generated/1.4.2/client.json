@@ -1,18 +1,18 @@
 {
   "schemaVersion": 1,
   "bunVersion": "1.4.2",
-  "prefixSha256": "b7da41c9687f29df76843d1ec3b196850f0bd4881b29cdc42d23b621dcf6e102",
-  "prefixBytes": 2229,
+  "prefixSha256": "e07a7f5f990de5cffd0f1753580be4be40ca826cd0bf899597fdd74189865554",
+  "prefixBytes": 2749,
   "provenance": {
     "basePrefixSha256": "a3e72d01f26bcd39142331f3a6d2033a495188dc06ab7b477f728f88afcff0a7",
-    "derivation": "CJS client prefix: base ESM helpers plus __getOwnPropDesc, __toCommonJS and __moduleCache from the stored Bun src/runtime.js (lines 12, 88-104)."
+    "derivation": "Actual modular CLI CJS prefix: existing client helpers with unused __commonJS removed and __reExport added. Its initializer AST equals stored official Bun src/runtime.js (source SHA256 02644972b775ee7bc4ed4b088808a3ea34ac6922ec52f897b7ea76b9f0ed92c4), ignoring only comments/formatting/redundant parentheses."
   },
   "file": {
     "sourcePath": "generated-prefix.js",
-    "object": "objects/b7da41c9687f29df76843d1ec3b196850f0bd4881b29cdc42d23b621dcf6e102.txt",
-    "sha256": "b7da41c9687f29df76843d1ec3b196850f0bd4881b29cdc42d23b621dcf6e102",
+    "object": "objects/e07a7f5f990de5cffd0f1753580be4be40ca826cd0bf899597fdd74189865554.txt",
+    "sha256": "e07a7f5f990de5cffd0f1753580be4be40ca826cd0bf899597fdd74189865554",
     "provenance": {
-      "role": "Actual CJS client prefix, compared with stored Bun runtime.js helpers."
+      "role": "Actual modular CLI CJS prefix; original Bun source and terms retained."
     }
   }
 }

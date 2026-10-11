@@ -224,11 +224,13 @@
     }
   },
   "dependencies": {
-    "@undefineds.co/xpod-cli": "workspace:*",
+    "@undefineds.co/xpod-client": "workspace:*",
     "yargs": "^17.7.2",
     "drizzle-orm": "^0.45.1"
   },
   "devDependencies": {
+    "@inrupt/solid-client-authn-node": "^3.1.1",
+    "@undefineds.co/xpod-cli": "workspace:*",
     "@types/node": "^22",
     "@types/yargs": "^17.0.33",
     "typescript": "5.5",

@@ -6,13 +6,20 @@
 
 | 产物 | 所有权与默认安装内容 | 依赖限制 |
 | --- | --- | --- |
-| `@undefineds.co/xpod-cli` | `xpod` 命令、认证、原始 Pod HTTP 客户端、模块管理 | 不依赖 CSS/API/AFS 实现、UI、Agent SDK、数据库引擎或原生 helper |
+| `@undefineds.co/xpod-cli` | `xpod` 命令、交互与输出、模块管理；通过共享运行包使用认证与 Pod HTTP | 不依赖 CSS/API/AFS 实现、UI、Agent SDK、数据库引擎或原生 helper |
+| `@undefineds.co/xpod-client` | 认证上下文、凭据存储、CSS 账户与 OIDC 会话、原始 Pod HTTP；无命令与展示行为 | 运行时不依赖 CLI、服务或 AFS；认证 SDK 通过既有 peer 契约提供 |
 | CSS 模块 | Solid 协议处理、Components.js 配置及需要的存储引擎 | 可依赖共享业务/存储 adapter，不依赖 CLI 实现 |
 | API 模块 | 管理/业务 HTTP 入口及运行依赖 | 可依赖共享服务，不直接穿透 CSS 实现 |
 | AFS 模块 | 目录客户端、挂载/搜索/工作副本能力和平台 helper | 连接远端 Pod 时不要求本机 CSS/API；服务端目录扩展依赖 CSS 的授权/存储契约 |
 | 共享模块 | schema、协议或业务服务，按既有所有权规则归属 | 使用包的公开接口，禁止跨包引用源码；schema 继续归 models |
 
-入口与功能模块分别版本化。模块不是独立产品，不另造凭据库；认证实现与凭据存储保持一个权威来源。CLI 核心源码归 `packages/xpod-cli/src/commands` 和 `src/lib`。根 `src/cli` 中迁移过的同名文件仅保留转发 adapter，供尚未迁移的服务入口使用；不得在这里恢复实现。adapter 已使用 `@undefineds.co/xpod-cli/client` 公开接口，CJS/ESM 共享同一实现实例；后续服务入口迁移后删除这层 adapter。旧服务包暂时依赖 CLI 包，既有受控 npm 打包流程随服务保留该兼容包，防止工作区依赖泄漏；此过渡不会反向增加独立 CLI 的服务依赖。程序侧 client 类型接口有可选的认证 SDK peer，命令行消费者不会因此下载 SDK。
+入口与功能模块分别版本化。模块不是独立产品，不另造凭据库；认证实现与凭据存储保持一个权威来源。共享认证与 Pod HTTP 的源码归 `packages/xpod-client/src`，CLI 命令、提示与输出归 `packages/xpod-cli/src`。CLI 的 `./client` 公开接口保留转发兼容，根 `src/cli/lib` 同样只保留 adapter；不得在转发层恢复实现。`auth-helper` 含交互提示，仍归 CLI。CJS 与 ESM 必须引用同一个运行库，保持错误类、会话和认证缓存身份。
+
+共享运行包的认证 SDK 是可选 peer：原始 HTTP 与错误类型入口不提前加载它，真正需要 SDK 的认证操作按需加载。CLI 宿主通过同一 SDK loader 接口提供其产物中已绑定源码与通知的认证 SDK，保留默认安装后的 OAuth 能力，不要求用户另装 SDK。程序消费方未注册宿主实现时，通过随包交付且不参与 bundle 的 `peer.cjs` 加载真实 peer；解析以实际安装目录为准，并与 `./session` 共用同一 SDK 实例。默认 loader 缓存成功和失败，宿主 loader 一旦绑定或开始加载就不能更换，显式宿主失败不回退到其他来源。真实 `Session` 构造器由运行包的显式 `./session` 子路径导出，保持 SDK 类身份。旧 CLI `./client` 保留其 `Session` 值导出，因此使用这个完整 SDK 兼容接口的程序须安装 peer；不能用代理类替代 SDK，也不能把完整接口的要求反向施加给默认 CLI 安装。
+
+AFS 的 SQLite、工作副本与目录接口属于共享运行库；命令入口单独构建，不得让共享库反向加载 CLI 命令。命令展示通过 CLI 的窄 `./output` 构建接口复用同一份实现，CLI 是这条构建路径的工具依赖，不是 AFS 的运行依赖。共享错误类仍来自 `xpod-client`，不得在命令 bundle 中生成第二个类。
+
+服务启动及内部 CSS/API 子进程使用 `src/runtime/service-entry.ts`，完整兼容 CLI 仍使用 `src/cli/index.ts`。这两个入口对应不同产物的依赖面：服务产物只交付服务运行闭包，兼容 CLI 保留完整命令及其依赖。仅改变启动时的动态 import 不足以证明分离，必须检查实际单文件输入、npm manifest、安装后的依赖和产物库存。拆分迁移期间的旧服务兼容包仍可依赖 CLI，但不得据此声称服务产物已完成裁剪。公开 npm 兼容包通过真实版本依赖和标准 `bundledDependencies` 保留完整命令及模块接口。内部服务产物的 `runtime-packages/*.tgz` 仅用于外层解包后的 Bun 生产安装，库存分别绑定公共 tarball、源码 manifest 与规范发布 manifest 的摘要；这个内部传输方式不作为公开 npm 安装契约。两个产物分别验证预算、实际安装与运行。
 
 ## 用户操作与下载
 
@@ -63,7 +70,9 @@ xpod module remove afs
 
 CLI：`bun run --cwd packages/xpod-cli typecheck`、`test`、`build`，之后在包目录 `bun pm pack`。默认 build 不编译 CSS/API/UI/AFS 或原生引擎；构建输入检查拒绝意外服务依赖。npm tarball 只包含 CLI payload、启动器、原始依赖通知、LICENSE 与说明，不包含工作区路径依赖。清洁目录安装后分别验证 Bun 和 Node；不能用仓库内直接运行替代安装验证。
 
-独立门禁为 `node scripts/check-cli-package.cjs`：只复制 CLI 源码与共用的认证兼容补丁/测试类型声明，使用 CLI 的最小构建 lock，不安装根服务依赖。`packages/xpod-cli/build.bun.lock` 是这个派生构建环境的 lock；变更 CLI 构建依赖时通过 `--update-lock` 更新，普通验证使用 frozen lock。共用补丁仍由根 scripts 管理，在 bundle 前应用，不为独立包复制第二份长期实现。
+独立门禁为 `node scripts/check-cli-package.cjs`：复制 CLI 与共享运行包的必要构建输入，以及共用的认证兼容补丁/测试类型声明，使用独立构建 lock，不安装根服务依赖。`packages/xpod-cli/build.bun.lock` 是这个派生构建环境的 lock；变更构建依赖时通过 `--update-lock` 更新，普通验证使用 frozen lock。共用补丁仍由根 scripts 管理，在 bundle 前应用，不为独立包复制第二份长期实现。
+
+共享运行包拆分后的清洁构建先生成 CLI 的公共构建工具，再构建 `xpod-client`，最后构建 CLI 与 AFS。构建工具只有一个源码生产者，不允许靠工作区里残留的 `dist` 打破构建循环。清洁消费者须安装实际 `xpod-client` tarball，并分别检验 Node/Bun 与 CJS/ESM；工作区别名只证明本地链接，不证明 registry 已可获取。发布 CLI 或 AFS 前，其依赖版本的实际 tarball、SRI 和可获取状态须独立验证；新运行包的原始通知、源码材料和 Bun 生成代码 provenance 也须独立绑定，不能借用旧 CLI bundle 的摘要。
 
 CLI 使用独立版本和 `cli-v<version>` release 标识；不得因此改服务版本、占共享 RC、触发服务镜像构建或生产部署。发布仍必须从 staging 的不可变源码构建，完整通知/源码与既有 release 审核要求继续有效，不能用“CLI 没有 native”消除 JS 分发审核。服务发布的 accepted SHA/digest 和安装包验收保持原规则。模块发布各自执行接口、平台/native、通知与真实功能验收，并在正式产物可获取后开放使用；缺模块时返回 unavailable，不借用服务整包冒充拆分完成。
 
@@ -78,3 +87,5 @@ CLI、AFS、API、CSS 独立版本与独立发布，分别使用 `cli-v<version>
 已执行的第一步是 CLI 核心源码归属、独立 npm 构建与通用按需模块下载/校验入口。默认 test/verify 同样只覆盖 CLI 核心；test:preview/verify:preview 显式保留旧预览兼容门禁。既有 `build:preview`/`build:cli-only` 保存旧客户端+helper 预览的证据链，不是新的默认发行路径；其 `src/main.ts`/`src/entry.ts` 为显式迁移期入口，公共 npm 包只运行 `npm-entry.ts`，切换点是 package.json 的 build/bin。
 
 CSS/API/AFS 的平台包尚未在 registry 发布，服务内部也尚未完成可选运行计划。下一步先将 AFS 客户端与真实 helper 按上述格式交付，再迁移服务入口及 CSS/API adapter；不能把本轮 CLI fixture 的下载成功表述为真实模块发布或 OS 挂载通过。
+
+拆分后的 mounted 验收 driver 要求 `module-source-kit.publicClientMaterials` 显式声明唯一 `runtimeClients` 和 `workspaceSources`。它核对公开客户端的完整文件集合、大小与摘要，并将声明绑定到实际 producer index、源码库存和逐成员验证的源码归档；缺少声明直接拒绝。历史归档继续使用其原提交绑定的 driver，不由新 driver 根据文件存在情况回退。安装回执以 `installedClientPath` 和 `installedClientSHA256` 记录实际客户端入口。

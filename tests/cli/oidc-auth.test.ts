@@ -35,7 +35,6 @@ beforeEach(() => {
   refreshTimeout = undefined;
   tokenListener = undefined;
   vi.resetModules();
-  vi.doUnmock('@inrupt/solid-client-authn-node');
 });
 
 afterEach(() => {
@@ -47,7 +46,6 @@ afterEach(() => {
   if (originalSolidHome === undefined) delete process.env.SOLID_HOME;
   else process.env.SOLID_HOME = originalSolidHome;
   vi.resetModules();
-  vi.doUnmock('@inrupt/solid-client-authn-node');
   if (testRoot && existsSync(testRoot)) {
     rmSync(testRoot, { recursive: true, force: true });
   }
@@ -100,14 +98,15 @@ describe('OIDC OAuth token refresh', () => {
       return session;
     });
 
-    vi.doMock('@inrupt/solid-client-authn-node', () => ({
+    const { registerSolidAuthnSdkLoader } = await import('../../packages/xpod-client/src/sdk');
+    registerSolidAuthnSdkLoader(async () => ({
       EVENTS: { NEW_TOKENS: 'newTokens' },
       getSessionFromStorage,
       refreshSession,
       Session: class Session {},
-    }));
+    }) as unknown as typeof import('@inrupt/solid-client-authn-node'));
 
-    const { getOidcAccessToken } = await import('../../packages/xpod-cli/src/lib/oidc-auth');
+    const { getOidcAccessToken } = await import('../../packages/xpod-client/src/oidc-auth');
 
     await expect(getOidcAccessToken(JSON.parse(readFileSync(join(solidHome, 'auth', 'credentials.json'), 'utf-8')))).resolves
       .toBe('new-access');

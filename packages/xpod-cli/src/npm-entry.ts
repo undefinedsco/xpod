@@ -1,3 +1,5 @@
+import { registerSolidAuthnSdkLoader } from '@undefineds.co/xpod-client';
+registerSolidAuthnSdkLoader(() => import('@inrupt/solid-client-authn-node'));
 import { runCli } from './core';
 import { handleCliError } from './lib/output';
 const [major, minor, patch] = (process.versions.bun ?? process.versions.node).split('.').map(Number);

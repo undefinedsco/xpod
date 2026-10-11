@@ -207,6 +207,31 @@ test('binds actual public build-tools prefixes including the explicit zero-prefi
       const options = { metafile, stageRoot: packageRoot, repoRoot, destination: path.join(work, format), target: process.platform + '-' + process.arch, cli, bunVersion: '1.4.2', supplements: path.join(packageRoot, 'licenses/javascript'), generated: path.join(packageRoot, 'licenses/javascript/generated/1.4.2'), generatedProfile: ('build-tools-' + format) as 'build-tools-esm' | 'build-tools-cjs' };
       collectJavascriptNotices(options);
       const index = JSON.parse(readFileSync(path.join(options.destination, 'index.json'), 'utf8'));
+      const shared = path.join(packageRoot, '.test-data', path.basename(work), 'objects');
+      const sharedDestination = path.join(packageRoot, '.test-data', path.basename(work), format);
+      try {
+        collectJavascriptNotices({ ...options, destination: sharedDestination, sharedObjectRoot: shared });
+        const sharedIndex = JSON.parse(readFileSync(path.join(sharedDestination, 'index.json'), 'utf8'));
+        for (const file of sharedIndex.generated.files) expect(sha256File(path.resolve(sharedDestination, file.object))).toBe(file.sha256);
+        expect(sharedIndex.generated.prefixSha256).toBe(index.generated.prefixSha256);
+        const object = path.resolve(sharedDestination, sharedIndex.generated.files[0].object);
+        const original = readFileSync(object); writeFileSync(object, 'tampered');
+        expect(() => collectJavascriptNotices({ ...options, destination: sharedDestination, sharedObjectRoot: shared })).toThrow('hash mismatch');
+        expect(readFileSync(object, 'utf8')).toBe('tampered');
+        writeFileSync(object, original); rmSync(object); symlinkSync(cli, object);
+        expect(() => collectJavascriptNotices({ ...options, destination: sharedDestination, sharedObjectRoot: shared })).toThrow('Unsafe shared');
+        expect(readFileSync(cli)).toEqual(readFileSync(object));
+        rmSync(object); const missingTarget = path.join(work, 'missing-outside'); symlinkSync(missingTarget, object);
+        expect(() => collectJavascriptNotices({ ...options, destination: sharedDestination, sharedObjectRoot: shared })).toThrow('Unsafe shared');
+        expect(existsSync(missingTarget)).toBe(false);
+        rmSync(object); writeFileSync(object, original);
+        const escape = path.join(packageRoot, '.test-data', path.basename(work), 'escape'); symlinkSync(work, escape);
+        expect(() => collectJavascriptNotices({ ...options, destination: sharedDestination, sharedObjectRoot: path.join(escape, 'not-created') })).toThrow('outside stage');
+        expect(existsSync(path.join(work, 'not-created'))).toBe(false);
+
+        expect(() => collectJavascriptNotices({ ...options, sharedObjectRoot: path.join(work, 'escaped'), destination: sharedDestination })).toThrow('outside stage');
+      } finally { rmSync(path.dirname(shared), { recursive: true, force: true }); }
+
       expect(index.generated.prefixBytes).toBe(format === 'esm' ? 0 : 2129);
       if (format === 'esm') {
         const ordinary = path.join(work, 'ordinary-empty'); cpSync(options.generated, ordinary, { recursive: true });

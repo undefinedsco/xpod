@@ -4,6 +4,21 @@ import ts from 'typescript';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
+import { resolveProducerMaterials } from './producer-materials';
+import { collectAfsJavascriptMaterials } from './javascript-materials';
+
+// The build script uses only this Bun build API; avoid exposing Bun globals to
+// the Node-compatible runtime and declaration graph.
+declare const Bun: {
+  build(options: {
+    entrypoints: string[]; target: 'node'; format: 'esm'; metafile: true; external: string[];
+    plugins: Array<{ name: string; setup(build: {
+      onResolve(options: { filter: RegExp }, resolve: (args: { importer: string; path: string }) => { path: string; external: true } | undefined): void;
+    }): void }>;
+  }): Promise<{ success: boolean; outputs: Array<{ text(): Promise<string> }>; metafile: {
+    inputs: Record<string, unknown>; outputs: Record<string, { inputs?: Record<string, unknown>; [key: string]: unknown }>;
+  } }>;
+};
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const pkg = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8'));
@@ -30,9 +45,16 @@ function valueExports(source: string): string[] {
     return true;
   }).map(symbol => symbol.name).sort();
 }
-const declarations: string[] = ["export * as entry from '../src/entry';", "export * as runtime from '../src/runtime';"];
+const declarations: string[] = ["export * as runtime from '../src/runtime';"];
+const sharedSources = new Map<string, string>();
 for (const [subpath, target] of Object.entries(pkg.exports).filter(([, target]) => typeof target === 'object') as Array<[string, { default: string }]>) {
   const source = subpath === '.' ? 'index' : subpath.slice(2);
+  // Commands are a public host API, but do not belong to the canonical
+  // storage/authentication library. Their bridges are emitted below.
+  if (subpath === './commands') { publicValueExports[subpath] = valueExports(source); continue; }
+  const physicalSource = [path.join(root, 'src', source + '.ts'), path.join(root, 'src', source, 'index.ts')].find(existsSync);
+  if (!physicalSource) { throw new Error('AFS shared source unavailable'); }
+  sharedSources.set(physicalSource, target.default.replace(/^\.\/dist\//, './').replace(/\.cjs$/, '.mjs'));
   const key = source.replaceAll('/', '_').replaceAll('-', '_');
   declarations.push(`export * as ${key} from '../src/${source}';`);
   const names = valueExports(source); publicValueExports[subpath] = names;
@@ -48,9 +70,40 @@ for (const [subpath, target] of Object.entries(pkg.exports).filter(([, target]) 
 }
 writeFileSync(path.join(root, 'dist/public-value-exports.json'), JSON.stringify(publicValueExports, null, 2) + '\n');
 writeFileSync(path.join(root, 'dist/library-source.ts'), declarations.join('\n') + '\n');
-const main = spawnSync('bun', ['build', '--target=node', '--format=cjs', '--external=@undefineds.co/xpod-cli/client', '--external=drizzle-orm', '--external=bun:sqlite', '--metafile=' + path.join(root, 'dist/library-inputs.json'), '--outfile', path.join(root, 'dist/library.cjs'), path.join(root, 'dist/library-source.ts')], { cwd: root, stdio: 'inherit' });
+const main = spawnSync('bun', ['build', '--target=node', '--format=cjs', '--external=@undefineds.co/xpod-client', '--external=drizzle-orm', '--external=bun:sqlite', '--metafile=' + path.join(root, 'dist/library-inputs.json'), '--outfile', path.join(root, 'dist/library.cjs'), path.join(root, 'dist/library-source.ts')], { cwd: root, stdio: 'inherit' });
 if (main.status !== 0) { throw new Error('AFS entry build failed'); }
-writeFileSync(path.join(root, 'dist/entry.mjs'), "import afs from './library.cjs';\nimport { fileURLToPath } from 'node:url';\nimport { handleCliError } from '@undefineds.co/xpod-cli/client';\nafs.runtime.bindModuleRoot(fileURLToPath(new URL('../', import.meta.url)));\ntry { await afs.entry.runAfs(process.argv.slice(2)); } catch (error) { handleCliError(error, process.argv.includes('--json'), 'module_failed'); }\n");
+writeFileSync(path.join(root, 'dist/runtime.mjs'), "import library from './library.cjs';\nexport const { bindModuleRoot, moduleRoot, moduleLauncher } = library.runtime;\n");
+sharedSources.set(path.join(root, 'src/runtime.ts'), './runtime.mjs');
+const commandSource = path.join(root, 'dist/commands-source.ts');
+writeFileSync(commandSource, "import { registerSolidAuthnSdkLoader } from '@undefineds.co/xpod-client';\nexport function registerModuleSdk() { registerSolidAuthnSdkLoader(() => import('@inrupt/solid-client-authn-node')); }\nexport * from '../src/commands';\nexport { runAfs } from '../src/entry';\nexport { handleCliError } from '@undefineds.co/xpod-cli/output';\n");
+const entry = await Bun.build({
+  entrypoints: [commandSource], target: 'node', format: 'esm', metafile: true,
+  external: ['@undefineds.co/xpod-client', 'drizzle-orm', 'bun:sqlite'],
+  plugins: [{ name: 'canonical-afs-runtime', setup(build) {
+    build.onResolve({ filter: /^\./ }, (args) => {
+      const base = path.resolve(path.dirname(args.importer), args.path);
+      const source = [base + '.ts', path.join(base, 'index.ts')].find((candidate) => sharedSources.has(candidate));
+      return source ? { path: sharedSources.get(source)!, external: true } : undefined;
+    });
+  } }],
+});
+if (!entry.success || entry.outputs.length !== 1) { throw new Error('AFS command entry build failed'); }
+writeFileSync(path.join(root, 'dist/command-host.mjs'), await entry.outputs[0].text());
+// In-memory Bun.build paths are relative to the actual invoking cwd. Record
+// their absolute physical inputs so the library and command graphs can share
+// a repository-confined notice/source collector without guessing path roots.
+const absoluteInput = (filename: string) => path.resolve(process.cwd(), filename);
+const commandMetafile = {
+  inputs: Object.fromEntries(Object.entries(entry.metafile.inputs).map(([filename, input]) => [absoluteInput(filename), input])),
+  outputs: Object.fromEntries(Object.entries(entry.metafile.outputs).map(([filename, output]) => [filename, {
+    ...output, inputs: Object.fromEntries(Object.entries(output.inputs ?? {}).map(([input, contribution]) => [absoluteInput(input), contribution])),
+  }])),
+};
+writeFileSync(path.join(root, 'dist/commands-inputs.json'), JSON.stringify(commandMetafile, null, 2) + '\n');
+const commandNames = publicValueExports['./commands'];
+writeFileSync(path.join(root, 'dist/commands.mjs'), "import * as commands from './command-host.mjs';\n" + commandNames.map(name => `export const ${name} = commands.${name};`).join('\n') + '\n');
+writeFileSync(path.join(root, 'dist/commands.cjs'), "const commands = require('./command-host.mjs');\nmodule.exports = { " + commandNames.map(name => `${name}: commands.${name}`).join(', ') + ' };\n');
+writeFileSync(path.join(root, 'dist/entry.mjs'), "import { runAfs, handleCliError, registerModuleSdk } from './command-host.mjs';\nimport { bindModuleRoot } from './runtime.mjs';\nimport { fileURLToPath } from 'node:url';\nbindModuleRoot(fileURLToPath(new URL('../', import.meta.url)));\nregisterModuleSdk();\ntry { await runAfs(process.argv.slice(2)); } catch (error) { handleCliError(error, process.argv.includes('--json'), 'module_failed'); }\n");
 
 const types = spawnSync('bun', ['x', 'tsc', '-p', 'tsconfig.build.json'], { cwd: root, stdio: 'inherit' });
 if (types.status !== 0) { throw new Error('AFS declarations build failed'); }
@@ -96,3 +149,11 @@ for (const file of declarationFiles(path.join(root, 'dist/types'))) {
 const generator = path.join(path.dirname(createRequire(import.meta.url).resolve('componentsjs-generator/package.json')), 'bin/componentsjs-generator.js');
 const components = spawnSync('bun', [generator, '-s', 'src', '-c', 'dist/components', '-i', '../../config/components-ignore.json', '.'], { cwd: root, stdio: 'inherit' });
 if (components.status !== 0) { throw new Error('AFS contract metadata build failed'); }
+const publicRequire = createRequire(import.meta.url);
+const clientRoot = path.resolve(path.dirname(publicRequire.resolve('@undefineds.co/xpod-client')), '..');
+const producer = await resolveProducerMaterials(publicRequire.resolve('@undefineds.co/xpod-cli/producer-materials'), clientRoot);
+collectAfsJavascriptMaterials({ packageRoot: root, repoRoot: path.resolve(root, '../..'),
+  destination: path.join(root, 'dist/licenses'), target: `${process.platform}-${process.arch}`,
+  library: path.join(root, 'dist/library.cjs'), libraryMetafile: path.join(root, 'dist/library-inputs.json'),
+  commands: path.join(root, 'dist/command-host.mjs'), commandsMetafile: path.join(root, 'dist/commands-inputs.json'),
+  producer, vendoredRoots: [clientRoot] });

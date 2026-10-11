@@ -289,3 +289,7 @@ native admission, license clearance, release eligibility, or a clean commit.
 source tar against its inventory, including member types, duplicates, paths,
 complete file membership, sizes and SHA256. Call it after checking material
 hashes; an outer tar hash alone does not prove the source inventory relation.
+
+Public `@undefineds.co/xpod-cli/output` exposes the CLI JSON/error presentation adapter as ESM and declarations. It shares the runtime client's error identity and embeds no commands or launchers. Authentication and Pod HTTP runtime APIs are canonical in `@undefineds.co/xpod-client`; the legacy `/client` export forwards them for compatibility. Build tools and producer materials remain CLI build inputs.
+
+The legacy `/client` interface retains its real SDK `Session` value and therefore requires the optional SDK peer when imported in full. Default CLI help/module operations use the safe runtime root without loading that SDK; explicit SDK consumers can import `@undefineds.co/xpod-client/session`.

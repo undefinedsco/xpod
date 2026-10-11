@@ -5,13 +5,13 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import { resolveProducerMaterials } from './producer-materials';
-import { collectJavascriptNotices } from '@undefineds.co/xpod-cli/build-tools';
+import { collectAfsJavascriptMaterials } from './javascript-materials';
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const repoRoot = path.resolve(packageRoot, '../..');
 const publicRequire = createRequire(import.meta.url);
-const clientPackageRoot = path.resolve(path.dirname(publicRequire.resolve('@undefineds.co/xpod-cli/client')), '..');
-const producer = await resolveProducerMaterials(publicRequire.resolve('@undefineds.co/xpod-cli/producer-materials'));
+const clientPackageRoot = path.resolve(path.dirname(publicRequire.resolve('@undefineds.co/xpod-client')), '..');
+const producer = await resolveProducerMaterials(publicRequire.resolve('@undefineds.co/xpod-cli/producer-materials'), clientPackageRoot);
 const publicInputs = producer.clientMetafile;
 const args = process.argv.slice(2);
 function option(name: string): string {
@@ -35,14 +35,13 @@ mkdirSync(path.join(stage, 'dist'), { recursive: true });
 cpSync(path.join(packageRoot, 'dist'), path.join(stage, 'dist'), { recursive: true });
 cpSync(path.join(packageRoot, 'src'), path.join(stage, 'src'), { recursive: true });
 const metadata = path.join(output, 'bundle-inputs.json');
-checked('bun', ['build', '--target=node', '--format=cjs', '--external=@undefineds.co/xpod-cli/client', '--external=drizzle-orm', '--external=bun:sqlite', `--metafile=${metadata}`, '--outfile', path.join(stage, 'dist/library.cjs'), path.join(packageRoot, 'dist/library-source.ts')], packageRoot);
+checked('bun', ['build', '--target=node', '--format=cjs', '--external=@undefineds.co/xpod-client', '--external=drizzle-orm', '--external=bun:sqlite', `--metafile=${metadata}`, '--outfile', path.join(stage, 'dist/library.cjs'), path.join(packageRoot, 'dist/library-source.ts')], packageRoot);
 copyFileSync(path.join(packageRoot, 'dist/entry.mjs'), path.join(stage, 'dist/entry.mjs'));
 // A single declaration drives each staged vendor copy and notice collection.
 const clientVendor = { sourceRoot: clientPackageRoot,
-  files: ['dist/client.cjs', 'dist/client.mjs', 'dist/client-types', 'dist/licenses/client', 'LICENSE'],
-  manifestFields: ['name', 'version', 'type', 'license', 'engines', 'exports', 'typesVersions'],
-  preserveManifestAt: 'provenance/cli-client-package-source.json' };
-const vendoredPackages: Array<{ sourceRoot: string; files?: string[]; manifestFields?: string[]; preserveManifestAt?: string; stageRoot?: string }> = [
+  files: ['dist', 'package.json', 'LICENSE', 'README.md'],
+  preserveManifestAt: 'provenance/runtime-client-package-source.json' };
+const vendoredPackages: Array<{ sourceRoot: string; files?: string[]; preserveManifestAt?: string; stageRoot?: string }> = [
   clientVendor, { sourceRoot: path.join(repoRoot, 'node_modules/drizzle-orm') },
 ];
 for (const vendor of vendoredPackages) {
@@ -55,48 +54,31 @@ for (const vendor of vendoredPackages) {
       const destination = path.join(vendor.stageRoot, file); mkdirSync(path.dirname(destination), { recursive: true });
       cpSync(path.join(vendor.sourceRoot, file), destination, { recursive: true, dereference: false });
     }
-    writeFileSync(path.join(vendor.stageRoot, 'package.json'), JSON.stringify({ ...Object.fromEntries(vendor.manifestFields!.map(field => [field, original[field]])), exports: { './client': original.exports['./client'] }, typesVersions: { '*': { client: original.typesVersions['*'].client } } }, null, 2) + '\n');
   } else { cpSync(vendor.sourceRoot, vendor.stageRoot, { recursive: true, dereference: true }); }
   if (vendor.preserveManifestAt) { copyFileSync(path.join(vendor.sourceRoot, 'package.json'), path.join(stage, vendor.preserveManifestAt)); }
 }
 const client = vendoredPackages[0].stageRoot!;
 const runtimeClient = JSON.parse(readFileSync(path.join(client, 'package.json'), 'utf8'));
-if (Object.keys(runtimeClient.exports).join() !== './client' || Object.keys(runtimeClient.typesVersions['*']).join() !== 'client') throw new Error('Runtime client advertises unstaged producer exports');
-for (const file of Object.values(runtimeClient.exports['./client']) as string[]) {
-  if (!file.startsWith('./dist/') || !existsSync(path.join(client, file))) throw new Error('Runtime client export payload missing');
+for (const entry of Object.values(runtimeClient.exports) as Array<Record<string, string>>) {
+  for (const file of Object.values(entry)) {
+    if (!file.startsWith('./dist/') || !existsSync(path.join(client, file))) throw new Error('Runtime client export payload missing');
+  }
+}
+for (const entry of producer.runtimeClient!.files) {
+  const file = path.join(client, entry.path); const bytes = readFileSync(file);
+  if (bytes.length !== entry.bytes || createHash('sha256').update(bytes).digest('hex') !== entry.sha256) throw new Error('Copied runtime client payload is not snapshot-bound');
 }
 copyFileSync(path.join(repoRoot, 'LICENSE'), path.join(stage, 'LICENSE'));
 writeFileSync(path.join(stage, 'LICENSES.txt'), 'This artifact contains materials with separate licenses.\nXpod-owned source: MIT, original terms in LICENSE.\nThe assembled AgentFS native helper has no asserted aggregate SPDX license here; consult the preserved native collection/declarations and AgentFS notices under licenses/native and licenses/agentfs.\nThe public CLI client and vendored drizzle-orm retain their original notices and source provenance.\nPackaging or hash verification does not grant artifact review clearance.\n');
 const inputs = Object.keys(JSON.parse(readFileSync(metadata, 'utf8')).inputs) as string[];
 if (inputs.some(p => /(?:@solid\/community-server|src\/(?:api|storage)|inngest)/.test(p))) { throw new Error('AFS bundle contains service inputs'); }
-// AFS CJS uses the reviewed client helpers without the unused __commonJS
-// wrapper. Compare the entire emitted prefix with that exact derivation.
-const originalGenerated = path.join(producer.generatedRoot, process.versions.bun ?? 'unknown');
-const profile = JSON.parse(readFileSync(path.join(originalGenerated, 'client.json'), 'utf8'));
-const basePrefix = readFileSync(path.join(originalGenerated, profile.file.object), 'utf8');
-if (createHash('sha256').update(basePrefix).digest('hex') !== profile.file.sha256) { throw new Error('Client helper source hash mismatch'); }
-const expectedPrefix = basePrefix.replace('var __commonJS = (cb, mod) => () => (mod || cb((mod = { exports: {} }).exports, mod), mod.exports);\n', '');
-const payload = readFileSync(path.join(stage, 'dist/library.cjs'));
-const actualPrefix = payload.subarray(0, payload.indexOf('\n// '));
-if (!actualPrefix.equals(Buffer.from(expectedPrefix)) && !actualPrefix.equals(Buffer.from(basePrefix))) { throw new Error('AFS generated runtime differs from reviewed client helpers'); }
-const generated = path.join(output, 'generated-provenance');
-cpSync(originalGenerated, generated, { recursive: true });
-const prefixHash = createHash('sha256').update(actualPrefix).digest('hex');
-writeFileSync(path.join(generated, 'objects', `${prefixHash}.txt`), actualPrefix);
-const generatedIndex = JSON.parse(readFileSync(path.join(generated, 'index.json'), 'utf8'));
-generatedIndex.prefixSha256 = prefixHash; generatedIndex.prefixBytes = actualPrefix.length;
-generatedIndex.provenance = { original: generatedIndex.provenance, clientProfile: profile.provenance,
-  derivation: actualPrefix.equals(Buffer.from(basePrefix)) ? 'Exact reviewed CJS client prefix; full emitted bytes compared.' : 'Exact reviewed CJS client prefix minus the unused __commonJS wrapper declaration; full emitted bytes compared.' };
-generatedIndex.files = [...generatedIndex.files.filter((file: { sourcePath: string }) => file.sourcePath !== 'generated-prefix.js'),
-  { sourcePath: 'generated-prefix.js', object: `objects/${prefixHash}.txt`, sha256: prefixHash }];
-writeFileSync(path.join(generated, 'index.json'), JSON.stringify(generatedIndex, null, 2) + '\n');
-collectJavascriptNotices({ metafile: metadata, stageRoot: packageRoot, repoRoot,
-  destination: path.join(stage, 'licenses/javascript-afs'), target,
-  cli: path.join(stage, 'dist/library.cjs'), bunVersion: process.versions.bun ?? 'unknown',
-  supplements: [producer.supplements, path.join(packageRoot, 'licenses/javascript')],
-  vendoredRoots: vendoredPackages.map(vendor => vendor.stageRoot!), requireVendoredOriginals: true,
-  generated });
+collectAfsJavascriptMaterials({ packageRoot, repoRoot, destination: path.join(stage, 'licenses/javascript-afs'), target,
+  library: path.join(stage, 'dist/library.cjs'), libraryMetafile: metadata,
+  commands: path.join(stage, 'dist/command-host.mjs'), commandsMetafile: path.join(packageRoot, 'dist/commands-inputs.json'),
+  producer, vendoredRoots: vendoredPackages.map(vendor => vendor.stageRoot!) });
 const sourceFiles = [...inputs.filter(p => !p.includes('node_modules/')).map(p => path.relative(repoRoot, path.resolve(packageRoot, p))), 'package.json', 'bun.lock', '.componentsjs-generator-config.json', 'config/components-ignore.json', 'scripts/check-afs-package.cjs'];
+const commandInputs = Object.keys(JSON.parse(readFileSync(path.join(packageRoot, 'dist/commands-inputs.json'), 'utf8')).inputs) as string[];
+sourceFiles.push(...commandInputs.filter(filename => !filename.includes('node_modules/')).map(filename => path.relative(repoRoot, path.resolve(repoRoot, filename))));
 function sourceTree(directory: string): void {
   for (const name of readdirSync(directory).sort()) {
     if (['node_modules', 'dist', '.test-data', 'build'].includes(name)) { continue; }
@@ -116,12 +98,12 @@ copyFileSync(producer.clientSource, path.join(stage, 'sources/cli-client-source.
 copyFileSync(producer.sourceInventory, path.join(stage, 'provenance/cli-client-source-inventory.json'));
 copyFileSync(producer.indexPath, path.join(stage, 'provenance/cli-producer-materials.json'));
 copyFileSync(publicInputs, path.join(stage, 'provenance/cli-client-inputs.json'));
+copyFileSync(producer.outputMetafile!, path.join(stage, 'provenance/cli-output-inputs.json'));
+copyFileSync(path.join(packageRoot, 'dist/commands-inputs.json'), path.join(stage, 'provenance/afs-commands-inputs.json'));
 const copiedBindings: Array<[string, string]> = [
   ['sources/cli-client-source.tar.gz', producer.binding.clientSourceSHA256],
   ['provenance/cli-client-source-inventory.json', producer.binding.sourceInventorySHA256],
   ['provenance/cli-producer-materials.json', producer.binding.indexSHA256],
-  ['node_modules/@undefineds.co/xpod-cli/dist/client.cjs', producer.binding.clientPayloads.cjsSHA256],
-  ['node_modules/@undefineds.co/xpod-cli/dist/client.mjs', producer.binding.clientPayloads.esmSHA256],
 ];
 for (const [relative, expected] of copiedBindings) {
   if (createHash('sha256').update(readFileSync(path.join(stage, relative))).digest('hex') !== expected) throw new Error('Copied public producer payload is not snapshot-bound');
@@ -142,7 +124,7 @@ writeFileSync(path.join(stage, 'provenance/native-reuse.json'), JSON.stringify(n
 writeFileSync(path.join(stage, 'provenance/module-source-kit.json'), JSON.stringify({ schemaVersion: 1,
   baseCommit: nativeFacts.baseCommit, dirty: nativeFacts.moduleSourceDirty, moduleSourceSHA: nativeFacts.moduleSourceSHA,
   moduleSourceTreeSHA256: sourceTreeDigest, files: sourceInventory,
-  publicClientPayloadSHA256: createHash('sha256').update(readFileSync(path.join(client, 'dist/client.cjs'))).digest('hex'),
+  publicClientPayloadSHA256: createHash('sha256').update(readFileSync(path.join(client, 'dist/library.cjs'))).digest('hex'),
   publicClientMetafileSHA256: createHash('sha256').update(readFileSync(publicInputs)).digest('hex'),
   publicClientMaterials: producer.binding }, null, 2) + '\n');
 mkdirSync(path.join(stage, 'sources'), { recursive: true });
@@ -159,7 +141,7 @@ function inventory(directory: string): void {
     files.push({ path: relative, sha256: createHash('sha256').update(bytes).digest('hex'), size: bytes.length, mode });
   }
 }
-if (JSON.stringify((await resolveProducerMaterials(producer.indexPath)).binding) !== JSON.stringify(producer.binding)) throw new Error('Public producer authority changed during packaging');
+if (JSON.stringify((await resolveProducerMaterials(producer.indexPath, clientPackageRoot)).binding) !== JSON.stringify(producer.binding)) throw new Error('Public producer authority changed during packaging');
 inventory(stage);
 const version = JSON.parse(readFileSync(path.join(packageRoot, 'package.json'), 'utf8')).version;
 const manifest = { name: `@undefineds.co/xpod-afs-${target}`, version, type: 'module', license: 'SEE LICENSE IN LICENSES.txt',

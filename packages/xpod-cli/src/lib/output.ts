@@ -1,3 +1,5 @@
+import { CliCommandError } from '@undefineds.co/xpod-client';
+export { CliCommandError } from '@undefineds.co/xpod-client';
 export interface CliEnvelope<T = unknown> {
   ok: boolean;
   code: string;
@@ -7,19 +9,6 @@ export interface CliEnvelope<T = unknown> {
   items?: unknown[];
 }
 
-export class CliCommandError extends Error {
-  public readonly code: string;
-  public readonly exitCode: number;
-  public readonly data?: unknown;
-
-  public constructor(code: string, message: string, exitCode = 1, data?: unknown) {
-    super(message);
-    this.name = 'CliCommandError';
-    this.code = code;
-    this.exitCode = exitCode;
-    this.data = data;
-  }
-}
 
 export function ok<T>(data: T, code = 'ok', warnings: string[] = []): CliEnvelope<T> {
   return { ok: true, code, data, warnings };

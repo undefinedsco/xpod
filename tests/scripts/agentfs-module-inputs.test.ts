@@ -1,15 +1,127 @@
 import { describe, expect, it } from 'vitest';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { collectModule, exportSafe, nativeFacts, projectReceipt, projectRecoveryDiagnostic, INSTALLED_CONSUMER_STAGES, verifyInstalledConsumerReceipts } from '../../scripts/agentfs-native-ci/mounted/prepare-module-inputs';
-import { hashBytes } from '../../scripts/agentfs-native-ci/mounted/module-admission';
+import { collectModule, exportSafe, nativeFacts, projectReceipt, projectRecoveryDiagnostic, INSTALLED_CONSUMER_STAGES, verifyInstalledConsumerReceipts, recordInstalledConsumerFailure, assertInstalledConsumerProducer, persistInstalledConsumerReceipt } from '../../scripts/agentfs-native-ci/mounted/prepare-module-inputs';
+import { verifyModuleClientMaterials, moduleClientPath, hashBytes } from '../../scripts/agentfs-native-ci/mounted/module-admission';
 
 function fixture(run: (root: string) => void): void {
   const parent = path.resolve('.test-data/module-input-preparation'); mkdirSync(parent, { recursive: true, mode: 0o700 });
   const root = mkdtempSync(path.join(parent, 'case-')); try { run(root); } finally { rmSync(root, { recursive: true, force: true }); }
 }
+
+async function asyncFixture(run: (root: string) => Promise<void>): Promise<void> {
+  const parent = path.resolve('.test-data/module-input-preparation'); mkdirSync(parent, { recursive: true, mode: 0o700 });
+  const root = mkdtempSync(path.join(parent, 'case-')); try { await run(root); } finally { rmSync(root, { recursive: true, force: true }); }
+}
+
 describe('module mounted input preparation', () => {
+  it('binds runtime source claims to actual producer metadata and nested source bytes', () => {
+    const sources = { 'workspace/xpod-client/package.json': { bytes: 2, sha256: hashBytes('{}') }, 'workspace/xpod-client/src/index.ts': { bytes: 3, sha256: hashBytes('abc') } };
+    const inventory = { schemaVersion: 1, files: Object.entries(sources).map(([path, file]) => ({ path, ...file })) };
+    const index = { schemaVersion: 1, runtimeClients: [], workspaceSources: [], producer: { name: '@undefineds.co/xpod-cli', version: '0.1.0-preview.2', bunVersion: '1.4.2' }, sourceInventory: 'source-inventory.json', clientSource: 'client-source.tar.gz', files: [] as any[], sourceAuthority: { sourceCommit: null, dirty: null, scope: 'copied producer', snapshotSHA256: hashBytes(JSON.stringify(inventory.files)) } };
+    const bytes: Record<string, string> = { 'provenance/cli-producer-materials.json': JSON.stringify(index), 'provenance/cli-client-source-inventory.json': JSON.stringify(inventory), 'sources/cli-client-source.tar.gz': 'actual archive bytes' };
+    index.files = [['source-inventory.json', 'provenance/cli-client-source-inventory.json'], ['client-source.tar.gz', 'sources/cli-client-source.tar.gz']].map(([path, actual]) => ({ path, bytes: bytes[actual].length, sha256: hashBytes(bytes[actual]) }));
+    bytes['provenance/cli-producer-materials.json'] = JSON.stringify(index);
+    const kit = { publicClientMaterials: { ...index, files: index.files.length, indexSHA256: hashBytes(bytes['provenance/cli-producer-materials.json']), sourceInventorySHA256: hashBytes(bytes['provenance/cli-client-source-inventory.json']), clientSourceSHA256: hashBytes(bytes['sources/cli-client-source.tar.gz']) } };
+    const member = (name: string) => ({ sha256: hashBytes(bytes[name]), size: bytes[name].length });
+    const document = (name: string) => JSON.parse(bytes[name]);
+    expect(() => verifyModuleClientMaterials(kit, member, document, sources)).not.toThrow();
+    expect(() => verifyModuleClientMaterials(kit, member, document, { ...sources, 'workspace/xpod-client/src/index.ts': { bytes: 3, sha256: hashBytes('bad') } })).toThrow('source inventory mismatch');
+    expect(() => verifyModuleClientMaterials({ publicClientMaterials: { ...kit.publicClientMaterials, workspaceSources: [{ directory: 'wrong' }] } }, member, document, sources)).toThrow('producer binding mismatch');
+    expect(() => verifyModuleClientMaterials(kit, member, document, {})).toThrow('source inventory mismatch');
+    index.files[0].bytes += 1; bytes['provenance/cli-producer-materials.json'] = JSON.stringify(index);
+    expect(() => verifyModuleClientMaterials({ publicClientMaterials: { ...kit.publicClientMaterials, indexSHA256: hashBytes(bytes['provenance/cli-producer-materials.json']) } }, member, document, sources)).toThrow('producer inventory mismatch');
+  });
+  it('selects the declared runtime client and rejects changed bytes, unsafe paths and ambiguous mappings', () => {
+    const files = ['package.json', 'LICENSE', 'README.md', 'dist/library.cjs'].map(path => ({ path, bytes: 3, sha256: 'a'.repeat(64) }));
+    const client = { name: '@undefineds.co/xpod-client', version: '0.1.0-preview.1', sourceDirectory: 'workspace/xpod-client', files };
+    const mapping = { name: client.name, version: client.version, directory: client.sourceDirectory, role: 'declared-runtime-dependency' };
+    const kit = { publicClientMaterials: { runtimeClients: [client], workspaceSources: [mapping] } };
+    const member = (name: string) => { expect(name.startsWith('node_modules/@undefineds.co/xpod-client/')).toBe(true); return { size: 3, sha256: 'a'.repeat(64) }; };
+    expect(moduleClientPath(kit, member)).toBe('node_modules/@undefineds.co/xpod-client/dist/library.cjs');
+    expect(() => moduleClientPath(kit, member, [...files.map(file => 'node_modules/@undefineds.co/xpod-client/' + file.path), 'node_modules/@undefineds.co/xpod-client/dist/unlisted.js'])).toThrow('inventory incomplete');
+    expect(() => moduleClientPath(kit, () => ({ size: 3, sha256: 'b'.repeat(64) }))).toThrow('inventory mismatch');
+    expect(() => moduleClientPath({ publicClientMaterials: { runtimeClients: [client, client], workspaceSources: [mapping] } }, member)).toThrow('authority mismatch');
+    expect(() => moduleClientPath({ publicClientMaterials: { runtimeClients: [{ ...client, files: [...files, { ...files[0], path: 'dist/../secret' }] }], workspaceSources: [mapping] } }, member)).toThrow('inventory mismatch');
+    expect(() => moduleClientPath({ publicClientMaterials: {} }, () => { throw new Error('must not probe filesystem'); })).toThrow('authority mismatch');
+  });
+
+  it('retains actual failed producer observations while the original gate still throws and safe export excludes raw secrets', () => asyncFixture(async root => {
+    const evidence = path.join(root, 'evidence'); mkdirSync(evidence);
+    const run = path.join(evidence, 'private-run'); mkdirSync(run);
+    const program = `const fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypto'),cp=require('node:child_process');
+      const child=cp.spawn(process.execPath,['-e','process.stdout.write("private-secret");process.exit(1)'],{detached:true,stdio:['ignore','pipe','pipe']});
+      const out=[],err=[];child.stdout.on('data',b=>out.push(b));child.stderr.on('data',b=>err.push(b));
+      child.on('close',(status,signal)=>{const result={pid:child.pid,status,signal,stdout:Buffer.concat(out),stderr:Buffer.concat(err)};
+      let absent=false;try{process.kill(-result.pid,0)}catch(e){absent=e.code==='ESRCH'}
+      const directory=path.join(${JSON.stringify(run)},'.test-data/afs-installed-receipts','actual-failed');fs.mkdirSync(directory,{recursive:true});
+      const stage='node-cli-install';const hash=b=>crypto.createHash('sha256').update(b).digest('hex');
+      const row={stage,pid:result.pid,actualExit:result.status,actualSignal:result.signal,actualWait:true,rawClosed:true,groupAbsent:absent,
+        stdoutSHA256:hash(result.stdout),stderrSHA256:hash(result.stderr),credentials:{token:'private-secret'},argv:['private-secret']};
+      for(const stream of ['stdout','stderr'])fs.writeFileSync(path.join(directory,stage+'.'+stream),result[stream]);
+      fs.writeFileSync(path.join(directory,stage+'.safe.json'),JSON.stringify(row));process.stdout.write(JSON.stringify(row)+'\\n');process.exit(1);});`;
+    const child = await new Promise<{ pid: number; status: number | null; signal: NodeJS.Signals | null; stdout: Buffer; stderr: Buffer }>((resolve, reject) => {
+      const producer = spawn(process.execPath, ['-e', program], { detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
+      const stdout: Buffer[] = []; const stderr: Buffer[] = [];
+      producer.stdout.on('data', (bytes: Buffer) => stdout.push(bytes)); producer.stderr.on('data', (bytes: Buffer) => stderr.push(bytes));
+      producer.once('error', reject);
+      producer.once('close', (status, signal) => resolve({ pid: producer.pid!, status, signal, stdout: Buffer.concat(stdout), stderr: Buffer.concat(stderr) }));
+    });
+    expect(child.status).toBe(1); expect(child.signal).toBeNull();
+    let groupAbsent = false; try { process.kill(-child.pid, 0); } catch (error) { groupAbsent = (error as NodeJS.ErrnoException).code === 'ESRCH'; }
+    expect(groupAbsent).toBe(true);
+    const gate = { state: 'closed', code: child.status, signal: child.signal, groupAbsent, nodeVersion: 'v22.21.1', bunVersion: '1.4.2', passed: 0, failed: 1, skipped: 0, sourceUnchanged: true };
+    expect(() => assertInstalledConsumerProducer(gate)).toThrow('producer incomplete');
+    const raw = Buffer.concat([child.stdout, child.stderr]);
+    writeFileSync(path.join(evidence, 'installed-consumer.raw.log'), raw);
+    const parent = { accepted: false, status: 'failed', producerClosed: true, code: child.status, signal: child.signal, groupAbsent, rawClosedBeforeHash: true, credentials: { token: 'private-secret' } };
+    persistInstalledConsumerReceipt(evidence, run, parent, raw);
+    const diagnostic = JSON.parse(readFileSync(path.join(evidence, 'installed-consumer-failure.safe.json'), 'utf8'));
+    expect(diagnostic.accepted).toBe(false); expect(diagnostic.diagnosticOnly).toBe(true);
+    expect(diagnostic.category).toBe('observed-stage-nonexpected-exit'); expect(diagnostic.lastObservedStage).toBe('node-cli-install');
+    expect(diagnostic.observedStages).toHaveLength(1); expect(diagnostic.observedStages[0].rawHashesBound).toBe(true);
+    expect(() => verifyInstalledConsumerReceipts(path.join(run, '.test-data/afs-installed-receipts/actual-failed'))).toThrow('receipt inventory');
+    const output = path.join(root, 'safe'); exportSafe(evidence, output);
+    expect(readdirSync(output).sort()).toEqual(['export.safe.json', 'installed-consumer-failure.safe.json', 'installed-consumer.safe.json']);
+    const exported = readFileSync(path.join(output, 'installed-consumer-failure.safe.json'), 'utf8');
+    expect(exported).not.toContain('private-secret'); expect(exported).not.toContain('credentials'); expect(exported).not.toContain(run);
+    const failedEvidence = path.join(root, 'diagnostic-write-failed'); mkdirSync(failedEvidence);
+    writeFileSync(path.join(failedEvidence, 'installed-consumer-failure.safe.json'), 'existing-diagnostic');
+    expect(() => persistInstalledConsumerReceipt(failedEvidence, run, parent, raw)).not.toThrow();
+    expect(JSON.parse(readFileSync(path.join(failedEvidence, 'installed-consumer.safe.json'), 'utf8')).accepted).toBe(false);
+    expect(readFileSync(path.join(failedEvidence, 'installed-consumer-failure.safe.json'), 'utf8')).toBe('existing-diagnostic');
+    expect(() => assertInstalledConsumerProducer(gate)).toThrow('producer incomplete');
+    const directory = path.join(run, '.test-data/afs-installed-receipts/actual-failed');
+    const receiptPath = path.join(directory, 'node-cli-install.safe.json');
+    const receipt = JSON.parse(readFileSync(receiptPath, 'utf8')); receipt.groupAbsent = false;
+    writeFileSync(receiptPath, JSON.stringify(receipt));
+    const unresolved = path.join(root, 'group-unresolved'); mkdirSync(unresolved);
+    recordInstalledConsumerFailure(unresolved, run, parent, Buffer.from('Error: Owned consumer timeout\n'));
+    const groupDiagnostic = JSON.parse(readFileSync(path.join(unresolved, 'installed-consumer-failure.safe.json'), 'utf8'));
+    expect(groupDiagnostic.category).toBe('stage-group-not-absent'); expect(groupDiagnostic.observedStages[0].stdoutSHA256).toBeNull();
+    receipt.groupAbsent = true; writeFileSync(receiptPath, JSON.stringify(receipt));
+    writeFileSync(path.join(directory, 'node-cli-install.stdout'), 'tampered-raw');
+    const invalid = path.join(root, 'invalid-hash'); mkdirSync(invalid);
+    recordInstalledConsumerFailure(invalid, run, parent, raw);
+    const invalidDiagnostic = JSON.parse(readFileSync(path.join(invalid, 'installed-consumer-failure.safe.json'), 'utf8'));
+    expect(invalidDiagnostic.category).toBe('invalid-stage-receipt'); expect(invalidDiagnostic.observedStages).toEqual([]);
+  }));
+  for (const state of ['unclosed', 'group-unknown', 'raw-open']) {
+    it(`never hashes incomplete ${state} producer output`, () => fixture(root => {
+      const evidence = path.join(root, 'evidence'); mkdirSync(evidence);
+      recordInstalledConsumerFailure(evidence, root, { producerClosed: state !== 'unclosed', groupAbsent: state !== 'group-unknown', rawClosedBeforeHash: state !== 'raw-open', code: null, signal: null }, Buffer.from('Error: Owned consumer timeout\nprivate-secret'));
+      const diagnostic = JSON.parse(readFileSync(path.join(evidence, 'installed-consumer-failure.safe.json'), 'utf8'));
+      expect(diagnostic.parentRawSHA256).toBeNull(); expect(diagnostic.lastObservedStage).toBeNull(); expect(diagnostic.observedStages).toEqual([]);
+      expect(diagnostic.category).not.toBe('consumer-timeout-observed'); expect(diagnostic.accepted).toBe(false);
+    }));
+  }
+  it('rejects free-text diagnostic categories or stage names', () => {
+    for (const row of [ { diagnosticOnly: true, accepted: false, category: 'private-secret' },
+      { diagnosticOnly: true, accepted: false, category: 'test-failed-cause-unknown', receiptInventoryState: 'observed', lastObservedStage: 'private-secret', observedStages: [] } ]) {
+      expect(() => projectReceipt('installed-consumer-failure.safe.json', row)).toThrow('invalid installed failure');
+    }
+  });
   it('projects observed recovery failures without private errors, arguments or paths', () => fixture(root => {
     const row = { label: 'recovery-final', backend: 'fuse', primaryError: 'Error: owned unmount after-sigkill failed: private-secret',
       cleanupError: 'private-secret', kernelState: 'absent', sceneRetained: false, writerOutcome: 'write-failed:private-secret',

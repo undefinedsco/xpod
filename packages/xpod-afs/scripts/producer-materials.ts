@@ -8,9 +8,12 @@ interface MaterialIndex {
   sourceAuthority: { sourceCommit: string | null; dirty: boolean | null; snapshotSHA256: string; scope: string };
   clientPayloads: { cjsSHA256: string; esmSHA256: string }; supplements: string; generatedRoot: string;
   clientMetafile: string; clientSource: string; sourceDirectory: string; sourceInventory: string; files: MaterialFile[];
+  workspaceSources?: Array<{ name: string; version: string; directory: string; role: string }>;
+  runtimeClients?: Array<{ name: string; version: string; sourceDirectory: string; files: MaterialFile[] }>;
+  outputMetafile?: string; outputPayloads?: { esmSHA256: string };
 }
 /** Resolve only the public producer-materials index; repository siblings are not authorities. */
-export async function resolveProducerMaterials(indexPath: string) {
+export async function resolveProducerMaterials(indexPath: string, runtimeClientRoot?: string) {
   const root = path.dirname(realpathSync(indexPath));
   const bytes = readFileSync(indexPath);
   const index = JSON.parse(bytes.toString()) as MaterialIndex;
@@ -64,11 +67,50 @@ export async function resolveProducerMaterials(indexPath: string) {
     const payload = path.join(clientRoot, 'dist', filename!);
     if (!expectedHash || !/^[a-f0-9]{64}$/.test(expectedHash) || !lstatSync(payload).isFile() || hash(readFileSync(payload)) !== expectedHash) throw new Error('Public producer client payload mismatch');
   }
+  if (runtimeClientRoot) {
+    const runtimeRoot = realpathSync(runtimeClientRoot);
+    const runtimePackage = JSON.parse(readFileSync(path.join(runtimeRoot, 'package.json'), 'utf8'));
+    const clients = index.runtimeClients?.filter(row => row.name === runtimePackage.name) ?? [];
+    const sources = index.workspaceSources?.filter(row => row.name === runtimePackage.name) ?? [];
+    if (clients.length !== 1 || sources.length !== 1 || runtimePackage.name !== '@undefineds.co/xpod-client') throw new Error('Public runtime client authority missing');
+    const client = clients[0]; const mapping = sources[0];
+    safe(client.sourceDirectory);
+    if (client.version !== runtimePackage.version || mapping.version !== client.version || mapping.directory !== client.sourceDirectory || mapping.role !== 'declared-runtime-dependency' || !source.files.some(file => file.path.startsWith(client.sourceDirectory + '/'))) throw new Error('Public runtime client source mapping mismatch');
+    if (!Array.isArray(client.files) || !client.files.length) throw new Error('Public runtime client payload inventory missing');
+    const expectedRuntime = new Set<string>();
+    for (const entry of client.files) {
+      safe(entry.path);
+      if (expectedRuntime.has(entry.path) || !/^(?:package\.json|LICENSE|README\.md|dist\/.+)$/u.test(entry.path) || !Number.isSafeInteger(entry.bytes) || entry.bytes < 0 || !/^[a-f0-9]{64}$/.test(entry.sha256)) throw new Error('Invalid public runtime client payload inventory');
+      expectedRuntime.add(entry.path);
+      const payload = path.join(runtimeRoot, entry.path);
+      let ancestor = payload;
+      while (ancestor !== runtimeRoot) {
+        if (lstatSync(ancestor).isSymbolicLink()) throw new Error('Public runtime client payload symlink');
+        ancestor = path.dirname(ancestor);
+      }
+      const stat = lstatSync(payload);
+      if (!stat.isFile() || stat.size !== entry.bytes || hash(readFileSync(payload)) !== entry.sha256) throw new Error('Public runtime client payload mismatch');
+    }
+    const actualRuntime: string[] = [];
+    const visitRuntime = (filename: string): void => {
+      const stat = lstatSync(filename);
+      if (stat.isSymbolicLink()) throw new Error('Public runtime client payload symlink');
+      if (stat.isDirectory()) for (const name of readdirSync(filename)) visitRuntime(path.join(filename, name));
+      else if (stat.isFile()) actualRuntime.push(path.relative(runtimeRoot, filename).split(path.sep).join('/'));
+      else throw new Error('Public runtime client payload nonregular');
+    };
+    for (const filename of ['package.json', 'LICENSE', 'README.md', 'dist']) visitRuntime(path.join(runtimeRoot, filename));
+    if (actualRuntime.length !== expectedRuntime.size || actualRuntime.some(filename => !expectedRuntime.has(filename))) throw new Error('Public runtime client payload inventory incomplete');
+    if (!index.outputMetafile || !expected.has(index.outputMetafile) || !index.outputPayloads?.esmSHA256 || hash(readFileSync(path.join(clientRoot, 'dist/output.mjs'))) !== index.outputPayloads.esmSHA256) throw new Error('Public command output authority missing');
+  }
   };
   validateSnapshot();
   await verifyProducerSourceArchive({ archive: safe(index.clientSource), inventory: safe(index.sourceInventory) });
   validateSnapshot();
   if (!readFileSync(indexPath).equals(bytes)) throw new Error('Public producer index changed during validation');
   return { indexPath, supplements: safe(index.supplements), generatedRoot: safe(index.generatedRoot), clientMetafile: safe(index.clientMetafile), clientSource: safe(index.clientSource), sourceInventory: safe(index.sourceInventory),
-    binding: { indexSHA256: hash(bytes), files: index.files.length, clientSourceSHA256: index.files.find(file => file.path === index.clientSource)!.sha256, sourceInventorySHA256: index.files.find(file => file.path === index.sourceInventory)!.sha256, producer: index.producer, clientPayloads: index.clientPayloads, sourceAuthority: index.sourceAuthority } };
+    outputMetafile: index.outputMetafile ? safe(index.outputMetafile) : undefined,
+    runtimeClient: runtimeClientRoot ? index.runtimeClients!.find(row => row.name === '@undefineds.co/xpod-client')! : undefined,
+    binding: { indexSHA256: hash(bytes), files: index.files.length, clientSourceSHA256: index.files.find(file => file.path === index.clientSource)!.sha256, sourceInventorySHA256: index.files.find(file => file.path === index.sourceInventory)!.sha256, producer: index.producer, clientPayloads: index.clientPayloads, sourceAuthority: index.sourceAuthority,
+      ...(runtimeClientRoot ? { runtimeClients: index.runtimeClients, workspaceSources: index.workspaceSources, outputPayloads: index.outputPayloads } : {}) } };
 }

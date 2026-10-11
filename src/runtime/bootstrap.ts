@@ -15,7 +15,7 @@ import { applyAuthModeEnv, resolveAuthModeInput } from '../authorization/AuthMod
 import { extractComponentParameterContext, normalizeComponentParameterKeys } from './component-parameter-keys';
 import { rewriteConfigAssetPaths } from './config-asset-paths';
 import { createGatewayAdminProxyAuthSecret } from './GatewayAdminProxyAuth';
-import { normalizeDatabaseUrl, resolveDefaultRdfIndexPath } from './database-url';
+import { resolveRuntimeDatabasePaths } from './database-url';
 
 const CSS_CONFIG_BASE = 'https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^8.0.0/config/';
 const XPOD_CONFIG_BASE = 'https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/config/';
@@ -179,12 +179,7 @@ export async function resolveRuntimeBootstrap(
   const bindHost = options.bindHost ?? '127.0.0.1';
   const runtimeRoot = platform.resolvePath(options.runtimeRoot ?? platform.joinPath(platform.cwd(), '.test-data', 'xpod-runtime', id));
   const rootFilePath = platform.resolvePath(options.rootFilePath ?? platform.joinPath(runtimeRoot, 'data'));
-  const sparqlEndpoint = normalizeDatabaseUrl(options.sparqlEndpoint ?? platform.joinPath(runtimeRoot, 'quadstore.sqlite'), platform);
-  const rdfIndexPath = options.rdfIndexPath?.trim()
-    ? platform.resolvePath(options.rdfIndexPath)
-    : resolveDefaultRdfIndexPath({ sparqlEndpoint, fallbackRoot: runtimeRoot, platform });
-  const identityDbUrl = normalizeDatabaseUrl(options.identityDbUrl ?? platform.joinPath(runtimeRoot, 'identity.sqlite'), platform);
-  const usageDbUrl = normalizeDatabaseUrl(options.usageDbUrl ?? platform.joinPath(runtimeRoot, 'usage.sqlite'), platform);
+  const { sparqlEndpoint, rdfIndexPath, identityDbUrl, usageDbUrl } = resolveRuntimeDatabasePaths({ ...options, runtimeRoot, platform });
   const envFilePath = options.envFile ? platform.resolvePath(options.envFile) : undefined;
   const authModeEnv = {
     ...platform.baseEnv,

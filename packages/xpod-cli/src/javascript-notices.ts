@@ -1,4 +1,4 @@
-import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { sha256File } from './manifest';
@@ -117,8 +117,10 @@ export function collectJavascriptNotices(options: {
   /** Actual staged packages shipped independently of the bundler import graph. */
   vendoredRoots?: string[];
   requireVendoredOriginals?: boolean;
+  /** Optional shared content-addressed output, confined to the actual stage. */
+  sharedObjectRoot?: string;
   generated?: string;
-  generatedProfile?: 'core' | 'client' | 'build-tools-esm' | 'build-tools-cjs';
+  generatedProfile?: 'core' | 'client' | 'build-tools-esm' | 'build-tools-cjs' | 'output-esm';
 }): string[] {
   // Producer metadata for portable JavaScript, not native ABI admission.
   if (!/^[a-z][a-z0-9]*-[a-z][a-z0-9]*$/.test(options.target)) {
@@ -246,20 +248,38 @@ export function collectJavascriptNotices(options: {
   const cliSha256 = sha256File(options.cli);
   // Inspect every input before writing. Preserve original bytes, including CRLF;
   // no package license declaration is converted into distribution clearance.
-  mkdirSync(path.join(options.destination, 'objects'), { recursive: true });
+  const objectRoot = options.sharedObjectRoot ?? path.join(options.destination, 'objects');
+  if (options.sharedObjectRoot && (!within(stageRoot, path.resolve(objectRoot)) || !within(stageRoot, path.resolve(options.destination)))) { throw new Error('Shared notice object store outside stage'); }
+  if (options.sharedObjectRoot) {
+    for (const target of [objectRoot, options.destination]) {
+      let ancestor = path.resolve(target);
+      while (!existsSync(ancestor)) { const parent = path.dirname(ancestor); if (parent === ancestor) { throw new Error('Shared notice object store outside stage'); } ancestor = parent; }
+      if (!within(stageRoot, realpathSync(ancestor))) { throw new Error('Shared notice object store outside stage'); }
+    }
+  }
+  mkdirSync(objectRoot, { recursive: true }); mkdirSync(options.destination, { recursive: true });
+  if (options.sharedObjectRoot && (!within(stageRoot, realpathSync(objectRoot)) || !within(stageRoot, realpathSync(options.destination)))) { throw new Error('Shared notice object store outside stage'); }
+  const outputReferences = new Map<string, string>();
   for (const [object, source] of objects) {
-    const output = path.join(options.destination, object);
-    cpSync(source, output);
+    const output = path.join(objectRoot, path.basename(object));
+    let existing: ReturnType<typeof lstatSync> | undefined;
+    try { existing = lstatSync(output); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') { throw error; } }
+    if (existing) { if (existing.isSymbolicLink() || !existing.isFile()) { throw new Error('Unsafe shared notice object'); } if (sha256File(output) !== path.basename(object, '.txt')) { throw new Error('Shared notice object hash mismatch'); } }
+    else { cpSync(source, output); }
     if (sha256File(output) !== path.basename(object, '.txt')) { throw new Error(`JavaScript notice changed during copy: ${object}`); }
+    outputReferences.set(object, slash(path.relative(options.destination, output)));
+  }
+  function withOutputReferences<T>(value: T): T {
+    return JSON.parse(JSON.stringify(value, (key, entry) => key === 'object' && outputReferences.has(entry) ? outputReferences.get(entry) : entry));
   }
   writeFileSync(path.join(options.destination, 'index.json'), JSON.stringify({
     schemaVersion: 1, status: 'partial-collection', target: options.target, bunVersion: options.bunVersion,
     cliSha256,
-    ...(generated ? { generated } : {}),
+    ...(generated ? { generated: withOutputReferences(generated) } : {}),
     scope: 'All inputs of this portable JS bundle invocation, including zero output contributions; no Bun/Node runtime is shipped. This is not a complete file-level license audit.',
-    packages: [...packages.values()].sort((a, b) => a.root.localeCompare(b.root)),
+    packages: withOutputReferences([...packages.values()]).sort((a, b) => a.root.localeCompare(b.root)),
     inputs: inputs.sort((a, b) => a.path.localeCompare(b.path)),
     externalImports: [...externalImports].sort(),
   }, null, 2) + '\n');
-  return ['index.json', ...objects.keys()];
+  return ['index.json', ...outputReferences.values()];
 }

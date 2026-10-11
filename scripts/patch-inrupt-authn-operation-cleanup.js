@@ -70,7 +70,7 @@ function patch(content, source) {
 const patchSource = (content) => patch(content, true);
 const patchBundle = (content) => patch(content, false);
 
-function patchInstalledPackage(repositoryRoot = path.join(__dirname, '..')) {
+function patchInstalledPackage(repositoryRoot = path.join(__dirname, '..'), { runtimeOnly = false } = {}) {
   const packageRoot = path.join(repositoryRoot, 'node_modules/@inrupt/solid-client-authn-browser');
   const manifest = path.join(packageRoot, 'package.json');
   if (!fs.existsSync(manifest)) return { patched: 0, alreadyPatched: 0 };
@@ -82,7 +82,7 @@ function patchInstalledPackage(repositoryRoot = path.join(__dirname, '..')) {
     ['src/Session.ts', patchSource],
     ['dist/index.js', patchBundle],
     ['dist/index.mjs', patchBundle],
-  ].map(([relativePath, patcher]) => {
+  ].filter(([relativePath]) => !runtimeOnly || relativePath.startsWith('dist/')).map(([relativePath, patcher]) => {
     const file = path.join(packageRoot, relativePath);
     const original = fs.readFileSync(file, 'utf8');
     return { file, original, updated: patcher(original) };

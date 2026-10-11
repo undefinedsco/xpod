@@ -73,3 +73,35 @@ test('rejects source omissions, substitutions, extra files, links and duplicate 
     await pack(['a', 'b']); await expect(verifyProducerSourceArchive({ archive, inventory })).rejects.toThrow('differs from inventory');
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+test('preserves declared canonical workspace runtime source in the same verified archive', async () => {
+  const parent = path.resolve('.test-data/xpod-cli/producer-workspace');
+  mkdirSync(parent, { recursive: true });
+  const scene = mkdtempSync(path.join(parent, 'case-'));
+  const root = path.join(scene, 'xpod-cli');
+  const client = path.join(scene, 'xpod-client');
+  try {
+    for (const [file, value] of Object.entries({
+      'xpod-cli/package.json': JSON.stringify({ name: '@undefineds.co/xpod-cli', version: '1', dependencies: { '@undefineds.co/xpod-client': 'workspace:*' } }),
+      'xpod-cli/licenses/javascript/index.json': '{"schemaVersion":1,"entries":[]}',
+      'xpod-cli/.test-data/build/client-inputs.json': '{"inputs":{}}',
+      'xpod-cli/dist/client.cjs': 'module.exports = {};', 'xpod-cli/dist/client.mjs': 'export {};',
+      'xpod-cli/src/client.ts': 'export {};',
+      'xpod-client/package.json': JSON.stringify({ name: '@undefineds.co/xpod-client', version: '1' }),
+      'xpod-client/src/index.ts': 'export const canonical = "original";',
+      'xpod-client/LICENSE': 'fixture original terms', 'xpod-client/README.md': 'fixture source',
+      'xpod-client/dist/library.cjs': 'module.exports = {};',
+    })) {
+      mkdirSync(path.dirname(path.join(scene, file)), { recursive: true });
+      writeFileSync(path.join(scene, file), value);
+    }
+    await exportProducerMaterials(root);
+    const materials = path.join(root, 'dist/producer-materials');
+    const inventory = JSON.parse(readFileSync(path.join(materials, 'source-inventory.json'), 'utf8'));
+    expect(inventory.files.some((file: { path: string }) => file.path === 'workspace/xpod-client/src/index.ts')).toBe(true);
+    expect(readFileSync(path.join(materials, 'source/workspace/xpod-client/src/index.ts'), 'utf8')).toBe(readFileSync(path.join(client, 'src/index.ts'), 'utf8'));
+    await expect(verifyProducerSourceArchive({ archive: path.join(materials, 'client-source.tar.gz'), inventory: path.join(materials, 'source-inventory.json') })).resolves.toBeUndefined();
+    writeFileSync(path.join(client, 'package.json'), JSON.stringify({ name: '@wrong/client', version: '1' }));
+    await expect(exportProducerMaterials(root)).rejects.toThrow('source identity mismatch');
+  } finally { rmSync(scene, { recursive: true, force: true }); }
+});

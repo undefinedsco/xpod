@@ -20,6 +20,70 @@ export interface ModuleAdmissionInputs {
 }
 export const hashBytes = (bytes: Buffer | string): string => createHash('sha256').update(bytes).digest('hex');
 export const hashFile = (filename: string): string => hashBytes(readFileSync(filename));
+/** Select from the declared producer contract, never from whichever file exists. */
+export function moduleClientPath(kit: any, member: (name: string) => { sha256: string; size: number }, members?: string[]): string {
+  const materials = kit?.publicClientMaterials;
+  const clients = materials?.runtimeClients;
+  const mappings = materials?.workspaceSources;
+  if (!Array.isArray(clients) || clients.length !== 1 || !Array.isArray(mappings) || mappings.length !== 1) throw new Error('runtime client authority mismatch');
+  const client = clients[0]; const mapping = mappings[0];
+  if (client.name !== '@undefineds.co/xpod-client' || mapping.name !== client.name || mapping.version !== client.version
+    || !/^\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?$/.test(client.version ?? '')
+    || client.sourceDirectory !== 'workspace/xpod-client' || mapping.directory !== client.sourceDirectory
+    || mapping.role !== 'declared-runtime-dependency' || !Array.isArray(client.files) || !client.files.length) throw new Error('runtime client authority mismatch');
+  const names = new Set<string>();
+  for (const file of client.files) {
+    if (typeof file.path !== 'string' || file.path.split('/').some((part: string) => !part || part === '.' || part === '..')
+      || !/^(?:package\.json|LICENSE|README\.md|dist\/.+)$/.test(file.path) || names.has(file.path)
+      || !Number.isSafeInteger(file.bytes) || file.bytes < 0 || !/^[a-f0-9]{64}$/.test(file.sha256)) throw new Error('runtime client inventory mismatch');
+    names.add(file.path);
+    const actual = member('node_modules/@undefineds.co/xpod-client/' + file.path);
+    if (actual.sha256 !== file.sha256 || actual.size !== file.bytes) throw new Error('runtime client inventory mismatch');
+  }
+  if (!['package.json', 'LICENSE', 'README.md', 'dist/library.cjs'].every(name => names.has(name))) throw new Error('runtime client inventory incomplete');
+  if (members) {
+    const prefix = 'node_modules/@undefineds.co/xpod-client/';
+    const actual = members.filter(name => name.startsWith(prefix)).map(name => name.slice(prefix.length));
+    if (actual.length !== names.size || actual.some(name => !names.has(name))) throw new Error('runtime client inventory incomplete');
+  }
+  return 'node_modules/@undefineds.co/xpod-client/dist/library.cjs';
+}
+
+export function verifyModuleClientMaterials(kit: any, member: (name: string) => { sha256: string; size: number }, document: (name: string) => any, sources?: Record<string, { sha256: string; bytes: number }>): void {
+  const materials = kit?.publicClientMaterials;
+  const index = document('provenance/cli-producer-materials.json');
+  const inventory = document('provenance/cli-client-source-inventory.json');
+  if (!materials || member('provenance/cli-producer-materials.json').sha256 !== materials.indexSHA256
+    || member('provenance/cli-client-source-inventory.json').sha256 !== materials.sourceInventorySHA256
+    || member('sources/cli-client-source.tar.gz').sha256 !== materials.clientSourceSHA256
+    || JSON.stringify(index.runtimeClients) !== JSON.stringify(materials.runtimeClients)
+    || JSON.stringify(index.workspaceSources) !== JSON.stringify(materials.workspaceSources)
+    || JSON.stringify(index.producer) !== JSON.stringify(materials.producer)
+    || index.schemaVersion !== 1 || inventory.schemaVersion !== 1 || !Array.isArray(inventory.files)
+    || hashBytes(JSON.stringify(inventory.files)) !== index.sourceAuthority?.snapshotSHA256) throw new Error('runtime client producer binding mismatch');
+  const authority = index.sourceAuthority;
+  if (index.producer?.name !== '@undefineds.co/xpod-cli' || !/^\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?$/.test(index.producer?.version ?? '')
+    || typeof index.producer?.bunVersion !== 'string' || !/^\d+\.\d+\.\d+/.test(index.producer.bunVersion)
+    || !authority || (authority.sourceCommit !== null && !/^[a-f0-9]{40}$/.test(authority.sourceCommit))
+    || (authority.dirty !== null && typeof authority.dirty !== 'boolean') || typeof authority.scope !== 'string' || !authority.scope
+    || JSON.stringify(authority) !== JSON.stringify(materials.sourceAuthority) || !Array.isArray(index.files)
+    || index.files.length !== materials.files || index.sourceInventory !== 'source-inventory.json' || index.clientSource !== 'client-source.tar.gz') throw new Error('runtime client producer authority mismatch');
+  for (const [declared, actualPath] of [['source-inventory.json', 'provenance/cli-client-source-inventory.json'], ['client-source.tar.gz', 'sources/cli-client-source.tar.gz']]) {
+    const rows = index.files.filter((file: any) => file.path === declared);
+    const actual = member(actualPath);
+    if (rows.length !== 1 || rows[0].sha256 !== actual.sha256 || rows[0].bytes !== actual.size) throw new Error('runtime client producer inventory mismatch');
+  }
+  const names = new Set<string>();
+  for (const file of inventory.files) {
+    if (typeof file.path !== 'string' || file.path.startsWith('/') || file.path.split('/').some((part: string) => !part || part === '.' || part === '..')
+      || names.has(file.path) || !Number.isSafeInteger(file.bytes) || file.bytes < 0 || !/^[a-f0-9]{64}$/.test(file.sha256)) throw new Error('runtime client source inventory mismatch');
+    names.add(file.path);
+    if (sources && (sources[file.path]?.sha256 !== file.sha256 || sources[file.path]?.bytes !== file.bytes)) throw new Error('runtime client source inventory mismatch');
+  }
+  if (sources && Object.keys(sources).length !== names.size) throw new Error('runtime client source inventory mismatch');
+  if (!names.has('workspace/xpod-client/package.json') || !names.has('workspace/xpod-client/src/index.ts')) throw new Error('runtime client source mapping mismatch');
+}
+
 export function verifyBoundFile(file: BoundFile): void {
   if (!file || !path.isAbsolute(file.path) || !/^[a-f0-9]{64}$/.test(file.sha256)
     || !lstatSync(file.path).isFile() || lstatSync(file.path).isSymbolicLink() || hashFile(file.path) !== file.sha256) {
@@ -102,14 +166,18 @@ export async function installModuleProduct(input: ModuleAdmissionInputs, runtime
   const directory = path.join(store.root, 'afs', input.target, installed.version, 'package');
   const pkgPath = path.join(directory, 'package.json'); const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'));
   const entry = path.join(directory, 'dist/entry.mjs'); const helper = path.join(directory, 'helper/agentfs-pod');
+  const clientKit = JSON.parse(readFileSync(path.join(directory, 'provenance/module-source-kit.json'), 'utf8'));
+  const installedMember = (name: string) => { const bytes = readFileSync(path.join(directory, name)); return { sha256: hashBytes(bytes), size: bytes.length }; };
+  verifyModuleClientMaterials(clientKit, installedMember, name => JSON.parse(readFileSync(path.join(directory, name), 'utf8')));
+  const clientPath = moduleClientPath(clientKit, name => { const bytes = readFileSync(path.join(directory, name)); return { sha256: hashBytes(bytes), size: bytes.length }; }, pkg.xpodModule.files.map((file: { path: string }) => file.path));
   if (hashFile(pkgPath) !== input.module.manifestSHA256 || hashBytes(JSON.stringify(pkg.xpodModule.files)) !== input.module.inventorySHA256
     || hashFile(entry) !== input.module.entrySHA256 || hashFile(helper) !== input.module.helperSHA256
     || hashFile(path.join(directory, 'dist/library.cjs')) !== input.module.librarySHA256
-    || hashFile(path.join(directory, 'node_modules/@undefineds.co/xpod-cli/dist/client.cjs')) !== input.module.clientSHA256) {
+    || hashFile(path.join(directory, clientPath)) !== input.module.clientSHA256) {
     throw new Error('installed module authority mismatch');
   }
   const provenance = JSON.parse(readFileSync(path.join(directory, 'provenance/native-reuse.json'), 'utf8'));
-  const kit = JSON.parse(readFileSync(path.join(directory, 'provenance/module-source-kit.json'), 'utf8'));
+  const kit = clientKit;
   if (provenance.moduleSourceDirty !== false || provenance.moduleSourceSHA !== input.moduleSourceSHA
     || provenance.nativeBuildSourceSHA !== input.nativeBuildSourceSHA || provenance.moduleSourceTreeSHA256 !== input.module.sourceTreeSHA256
     || kit.dirty !== false || kit.moduleSourceSHA !== input.moduleSourceSHA || kit.moduleSourceTreeSHA256 !== input.module.sourceTreeSHA256
@@ -128,7 +196,7 @@ export async function installModuleProduct(input: ModuleAdmissionInputs, runtime
     inventorySHA256: input.module.inventorySHA256, moduleSourceTreeSHA256: input.module.sourceTreeSHA256,
     coreSHA256: input.core.sha256, runtime, runtimePath: executable.path, runtimeVersion: version, runtimeSHA256: executable.sha256,
     installedEntry: entry, installedEntrySHA256: input.module.entrySHA256, installedHelper: helper, installedHelperSHA256: input.module.helperSHA256,
-    installedLibrarySHA256: input.module.librarySHA256, installedClientSHA256: input.module.clientSHA256, storeRoot: store.root,
+    installedLibrarySHA256: input.module.librarySHA256, installedClientSHA256: input.module.clientSHA256, installedClientPath: clientPath, storeRoot: store.root,
     transport: 'offline exact original artifact through ModuleStore; not registry publication acceptance' };
   writeFileSync(path.join(input.evidence, 'module-install.safe.json'), JSON.stringify(binding, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
   return { helper, launcher, helperSha256: input.module.helperSHA256, launcherSha256: hashFile(launcher), entry, entrySha256: input.module.entrySHA256,

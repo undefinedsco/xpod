@@ -3,7 +3,7 @@ import type { AddressInfo } from 'node:net';
 import { randomBytes } from 'node:crypto';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
-import { authFetch, requireAuthContext } from '@undefineds.co/xpod-cli/client';
+import { authFetch, requireAuthContext } from '@undefineds.co/xpod-client';
 
 export interface AuthProxyOptions {
   /** Real Pod container root, e.g. https://pod.example/alice/ */
