@@ -1,13 +1,10 @@
 import type { StoreContext } from '../chatkit/store';
 import { RdfRunContextRetriever, type RdfRunContextRetrieverOptions } from '../runs/RdfRunContextRetriever';
 import type { RunContextRetriever } from '../runs/RunExecutionBackend';
-import {
-  LocalQleverNativeSparqlClient,
-  PostgresRdfEngine,
-  SolidRdfEngine,
-  type RdfAccessScope,
-  type RdfEngineLike,
-} from '../../storage/rdf';
+import { PostgresRdfEngine } from '../../storage/rdf/PostgresRdfEngine';
+import { SolidRdfEngine } from '../../storage/rdf/SolidRdfEngine';
+import type { RdfAccessScope } from '../../storage/rdf/RdfAccessScope';
+import type { RdfEngineLike } from '../../storage/rdf/types';
 import type { ApiContainerConfig } from './types';
 import type { PodChatKitStore } from '../chatkit';
 import type { EmbeddingService } from '../../ai/service';
@@ -42,12 +39,6 @@ export function createApiRdfEngine(config: ApiContainerConfig): RdfEngineLike | 
       index: { path },
       textIndex: { path },
       vectorIndex: { path },
-      nativeSparqlClient: new LocalQleverNativeSparqlClient({
-        args: [
-          '--sqlite-path',
-          path,
-        ],
-      }),
     });
   }
 

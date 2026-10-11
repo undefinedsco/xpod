@@ -34,7 +34,7 @@ import { RdfQuadIndex } from './RdfQuadIndex';
 import { RdfTextIndex } from './RdfTextIndex';
 import { RdfVectorIndex } from './RdfVectorIndex';
 import { RdfQueryExecutor } from './RdfQueryExecutor';
-import { LocalQleverRuntimeError } from './LocalQleverNativeSparqlClient';
+import { LocalQleverRuntimeError } from './NativeSparqlRuntimeError';
 import type { RdfQuery, RdfQueryResult } from './types';
 
 type RdfTextIndexInput = RdfTextIndexSyncLike | RdfTextIndexOptions;
