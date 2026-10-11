@@ -30,7 +30,8 @@ test('rebuilds a closed producer inventory without stale source or a previous in
     expect(index.files.some((file: { path: string }) => file.path === 'index.json')).toBe(false);
     expect(index.producer).toMatchObject({ name: '@fixture/client', version: '1' });
     expect(index.status).toBe('producer-materials-only');
-    expect(index.sourceAuthority.snapshotSHA256).toMatch(/^[a-f0-9]{64}$/);
+    expect(typeof index.sourceAuthority.snapshotSHA256).toBe('string');
+    expect(/^[a-f0-9]{64}$/.test(index.sourceAuthority.snapshotSHA256)).toBe(true);
     expect(index.sourceAuthority.sourceCommit).toBeNull();
     expect(index.sourceAuthority.dirty).toBeNull();
     for (const file of index.files) {
