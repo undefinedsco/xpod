@@ -4,6 +4,7 @@ on:
     branches: [staging, main]
     paths:
       - 'packages/xpod-cli/**'
+      - 'packages/xpod-client/**'
       - 'src/cli/**'
       - 'scripts/check-cli-package.cjs'
       - 'scripts/patch-jose.js'
@@ -35,4 +36,5 @@ jobs:
           name: xpod-cli-${{ runner.os }}-${{ github.sha }}
           path: |
             .test-data/cli-package/xpod-cli.tgz
+            .test-data/cli-package/xpod-client.tgz
             .test-data/cli-package/result.json

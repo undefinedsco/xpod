@@ -93,7 +93,7 @@ CSS/API/AFS 的平台包尚未在 registry 发布，服务内部也尚未完成�
 
 ### 独立客户端的 CI 产物
 
-模块挂载 CI 先安装并构建声明依赖，再调用原生材料查询工具；工具的共享运行包不能依赖 runner 预留的构建目录。构建后显式执行 `node --test tests/scripts/service-runtime-boundary.node-test.cjs`，该文件不由默认 Vitest 门禁发现。
+模块挂载 CI 先安装并构建声明依赖，再调用原生材料查询工具；工具的共享运行包不能依赖 runner 预留的构建目录。构建后显式执行 `node --test tests/scripts/service-runtime-boundary.node-test.cjs`，该文件不由默认 Vitest 门禁发现。共享客户端的包测试由主 CI 与挂载 CI 显式执行 `bun test ./packages/xpod-client/tests`；独立 CLI 的隔离脚本在其最小构建树中执行同一包测试，客户端源码变更也必须触发 CLI 包 CI。
 
 产品 artifact 的 inventory schema 2 包含三个实际打包的归档：`client.tgz`、`cli.tgz`、`afs.tgz`。每个归档独立记录大小、SHA-256 和 SHA-512 SRI，并绑定源码 SHA、实际运行及尝试编号。客户端归档核验公开入口、类型、Session/peer 桥接、完整 dist 和原始通知材料，不能用 CLI 内嵌客户端替代其独立发布材料。历史 schema 1 只有 CLI/AFS 两个归档，不提供独立客户端的发布证明。
 

@@ -92,6 +92,7 @@ jobs:
         run: |
           set -euo pipefail
           node --test tests/scripts/service-runtime-boundary.node-test.cjs
+          bun test ./packages/xpod-client/tests
           bun packages/xpod-afs/scripts/build-package.ts --target "$TARGET" --out "$MODULE_RUN_ROOT/build" --native-evidence "$MODULE_RUN_ROOT/native/native.zip" --native-pins "$MODULE_RUN_ROOT/native/native-pins.json"
           bun build scripts/agentfs-native-ci/mounted/module-admission.ts --target=node --format=esm --metafile="$MODULE_RUN_ROOT/driver-inputs.json" --outfile "$MODULE_RUN_ROOT/module-admission.mjs"
           test -z "$(git status --porcelain --untracked-files=all)"
