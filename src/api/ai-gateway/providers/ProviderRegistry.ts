@@ -6,8 +6,8 @@ import {
   DEFAULT_PROVIDER_OFFERINGS,
   PROVIDER_OFFERINGS,
   PROVIDER_LABELS,
-} from '@undefineds.co/ai-connections/provider-catalog';
-import type { AiConnectionsProvider, AiProviderAuthorizationMethod, AiProviderOffering } from '@undefineds.co/ai-connections/client';
+} from '@undefineds.co/ai-connections-runtime/provider-catalog';
+import type { AiConnectionsProvider, AiProviderAuthorizationMethod, AiProviderOffering } from '@undefineds.co/ai-connections-runtime/client';
 import {
   SUBSCRIPTION_AUTHORIZATION_BINDINGS,
   subscriptionAuthorizationMethods,

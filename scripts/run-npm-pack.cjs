@@ -8,6 +8,8 @@ const DRIZZLE_SOLID_PACKAGE = '@undefineds.co/drizzle-solid';
 const EXTENSIONS_PACKAGE = '@undefineds.co/extensions';
 const WORKSPACE_PACKAGES = [
   '@undefineds.co/ai-connections',
+  '@undefineds.co/ai-connections-runtime',
+  '@undefineds.co/extension-host-contracts',
   '@undefineds.co/extension-sdk',
   // `ai-connections` and `extension-sdk` depend on this one, so leaving it out
   // leaks their `workspace:*` specifier into the packed manifest - npm cannot
@@ -47,6 +49,27 @@ function getNpmInvocation(args) {
   };
 }
 
+function serviceWorkspacePackages(repoRoot) {
+  const rootManifest = JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8'));
+  const requiredPeers = Object.keys(rootManifest.peerDependencies ?? {})
+    .filter(name => !rootManifest.peerDependenciesMeta?.[name]?.optional);
+  const queue = [...Object.keys(rootManifest.dependencies ?? {}),
+    ...Object.keys(rootManifest.optionalDependencies ?? {}), ...requiredPeers]
+    .filter(name => name !== '@undefineds.co/xpod-cli');
+  const selected = new Set();
+  while (queue.length) {
+    const name = queue.shift();
+    if (!WORKSPACE_PACKAGES.includes(name) || selected.has(name)) continue;
+    selected.add(name);
+    const manifest = JSON.parse(fs.readFileSync(path.join(repoRoot, 'packages', name.slice('@undefineds.co/'.length), 'package.json'), 'utf8'));
+    queue.push(...Object.keys(manifest.dependencies ?? {}), ...Object.keys(manifest.optionalDependencies ?? {}));
+    for (const peer of Object.keys(manifest.peerDependencies ?? {})) {
+      if (!manifest.peerDependenciesMeta?.[peer]?.optional) queue.push(peer);
+    }
+  }
+  return WORKSPACE_PACKAGES.filter(name => selected.has(name));
+}
+
 function getBundledLocalDependencies(repoRoot, profile = 'compat') {
   const privatePatchedDependencies = [ DRIZZLE_SOLID_PACKAGE, EXTENSIONS_PACKAGE ].flatMap((name) => {
     const sourcePackageRoot = path.join(repoRoot, 'node_modules', ...name.split('/'));
@@ -56,7 +79,7 @@ function getBundledLocalDependencies(repoRoot, profile = 'compat') {
     return [{ name, sourcePackageRoot: fs.realpathSync(sourcePackageRoot) }];
   });
 
-  const workspaceDependencies = WORKSPACE_PACKAGES.filter((name) => profile !== 'service' || name !== '@undefineds.co/xpod-cli').map((name) => ({
+  const workspaceDependencies = (profile === 'service' ? serviceWorkspacePackages(repoRoot) : WORKSPACE_PACKAGES).map((name) => ({
     name,
     sourcePackageRoot: path.join(repoRoot, 'packages', name.slice('@undefineds.co/'.length)),
   }));
@@ -639,7 +662,7 @@ function main() {
   console.log(`[npm-pack] tarball ${tarballPath}`);
 }
 
-module.exports = { getBundledLocalDependencies, bundleLocalDependenciesIntoTarball, packWithManifestRestoration, applyServiceProfile, shouldCopyBundledDependency };
+module.exports = { serviceWorkspacePackages, getBundledLocalDependencies, bundleLocalDependenciesIntoTarball, packWithManifestRestoration, applyServiceProfile, shouldCopyBundledDependency };
 
 if (require.main === module) {
   try {

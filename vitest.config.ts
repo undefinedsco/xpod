@@ -40,6 +40,8 @@ export default defineConfig({
       'desktop/test/**',
       // bun:test suites are run by the standalone CLI test gate in CI.
       'packages/xpod-cli/tests/**',
+      // Client peer-loader contracts run via the package's explicit Bun test gate.
+      'packages/xpod-client/tests/**',
       // AFS bun:test suites have an explicit Bun CI gate; installed artifact cases
       // additionally require XPOD_AFS_TEST_ARCHIVE and separate package evidence.
       'packages/xpod-afs/tests/**',

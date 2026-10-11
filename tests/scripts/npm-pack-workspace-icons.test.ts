@@ -25,7 +25,7 @@ it('keeps workspace icon consumers on one external runtime while preserving thei
   const tarball = path.join(root, 'package.tgz');
   execFileSync('tar', ['czf', tarball, '-C', path.join(root, 'seed'), 'package']);
   const dependencies = getBundledLocalDependencies(repoRoot).filter((entry: { name: string }) =>
-    ['ai-connections', 'extension-sdk', 'shared-ui', 'solid-sdk', 'xpod-cli', 'xpod-afs'].some((name) => entry.name === `@undefineds.co/${name}`));
+    ['ai-connections', 'ai-connections-runtime', 'extension-host-contracts', 'extension-sdk', 'shared-ui', 'solid-sdk', 'xpod-cli', 'xpod-client', 'xpod-afs'].some((name) => entry.name === `@undefineds.co/${name}`));
   bundleLocalDependenciesIntoTarball(tarball, dependencies);
   const extracted = path.join(root, 'installed'); mkdirSync(extracted);
   execFileSync('tar', ['xzf', tarball, '-C', extracted]);
@@ -56,7 +56,8 @@ it('keeps workspace icon consumers on one external runtime while preserving thei
   const rootManifest = readManifest('package/package.json');
   expect(entries.some((entry) => entry.endsWith('/helper/agentfs-pod'))).toBe(false);
   for (const dependency of dependencies) {
-    expect(rootManifest.dependencies[dependency.name]).toBe(`file:./node_modules/${dependency.name}`);
+    const originalManifest = JSON.parse(readFileSync(path.join(dependency.sourcePackageRoot, 'package.json'), 'utf8'));
+    expect(rootManifest.dependencies[dependency.name]).toBe(originalManifest.version);
     expect(rootManifest.bundledDependencies).toContain(dependency.name);
   }
   for (const [index, name] of names.entries()) {
