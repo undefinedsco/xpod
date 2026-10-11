@@ -1,30 +1,12 @@
-export type SolidFsMaterializationClass = 'byline-local' | 'placeholder-r2' | 'hydrated-r2';
-export type SolidFsReaderCoverageStatus = 'none' | 'partial' | 'complete' | 'stale' | 'failed';
+import { FILE_METADATA_NOTE_KIND, READER_COVERAGE_NOTE_KIND } from '@undefineds.co/models/file-reader-notes';
+import { UDFS } from '@undefineds.co/models/namespaces';
+import type { FileMaterializationClass, ReaderCoverageStatus, FileMetadataNoteInput, ReaderCoverageNoteInput } from '@undefineds.co/models/file-reader-notes';
 
-export interface FileMetadataNoteInput {
-  subject: string;
-  about: string;
-  title: string;
-  description: string;
-  mediaType?: string;
-  byteSize?: number;
-  contentHash?: string;
-  materializationClass: SolidFsMaterializationClass;
-}
+export type { FileMetadataNoteInput, ReaderCoverageNoteInput } from '@undefineds.co/models/file-reader-notes';
+export type SolidFsMaterializationClass = FileMaterializationClass;
+export type SolidFsReaderCoverageStatus = ReaderCoverageStatus;
 
-export interface ReaderCoverageNoteInput {
-  subject: string;
-  about: string;
-  readerKind: string;
-  readerVersion: string;
-  coverageUnit: 'page' | 'line' | 'byte' | 'section' | 'symbol' | 'rdf-resource';
-  coveredRange: string;
-  readUnits: number;
-  totalUnits?: number;
-  status: SolidFsReaderCoverageStatus;
-}
-
-const PREFIXES = '@prefix dct: <http://purl.org/dc/terms/> .\n@prefix sioc: <http://rdfs.org/sioc/ns#> .\n@prefix udfs: <https://vocab.undefineds.co/udfs#> .\n\n';
+const PREFIXES = `@prefix dct: <http://purl.org/dc/terms/> .\n@prefix sioc: <http://rdfs.org/sioc/ns#> .\n@prefix udfs: <${UDFS.uri}> .\n\n`;
 const BLANK_NODE_LABEL = /^_:[A-Za-z][A-Za-z0-9_-]*$/;
 const ABSOLUTE_IRI = /^[A-Za-z][A-Za-z0-9+.-]*:/;
 const IRIREF_REQUIRES_ENCODING = /[\u0000-\u0020<>"{}|^`\\]/;
@@ -37,7 +19,7 @@ export function buildFileMetadataNote(input: FileMetadataNoteInput): string {
     `  sioc:about ${term(input.about)} ;`,
     `  dct:title ${literal(input.title)} ;`,
     `  dct:description ${literal(input.description)} ;`,
-    '  udfs:noteKind "file-metadata" ;',
+    `  udfs:noteKind ${literal(FILE_METADATA_NOTE_KIND)} ;`,
   ];
   if (input.mediaType) {
     lines.push(`  udfs:mediaType ${literal(input.mediaType)} ;`);
@@ -58,7 +40,7 @@ export function buildReaderCoverageNote(input: ReaderCoverageNoteInput): string 
     `  sioc:about ${term(input.about)} ;`,
     '  dct:title "Reader coverage" ;',
     `  dct:description ${literal(`Read ${input.coveredRange}.`)} ;`,
-    '  udfs:noteKind "reader-coverage" ;',
+    `  udfs:noteKind ${literal(READER_COVERAGE_NOTE_KIND)} ;`,
     `  udfs:readerKind ${literal(input.readerKind)} ;`,
     `  udfs:readerVersion ${literal(input.readerVersion)} ;`,
     `  udfs:coverageUnit ${literal(input.coverageUnit)} ;`,
