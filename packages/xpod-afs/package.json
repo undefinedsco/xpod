@@ -226,7 +226,8 @@
   "dependencies": {
     "@undefineds.co/xpod-client": "workspace:*",
     "yargs": "^17.7.2",
-    "drizzle-orm": "^0.45.1"
+    "drizzle-orm": "^0.45.1",
+    "@undefineds.co/models": "0.2.63"
   },
   "devDependencies": {
     "@inrupt/solid-client-authn-node": "^3.1.1",

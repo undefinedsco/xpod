@@ -20,6 +20,7 @@ import { resolveAuthModeFromEnv } from './authorization/AuthMode';
 import { ConfigurableLoggerFactory } from './logging/ConfigurableLoggerFactory';
 import { resolveLogFilePattern } from './logging/log-file';
 import { Supervisor } from './supervisor';
+import { deriveRuntimePlan, applyRuntimePlan } from './runtime/service-plan';
 import { jsEntrypointArgs, resolveJsRuntime } from './runtime/js-runtime';
 import { resolveDefaultRdfIndexPath } from './runtime/database-url';
 
@@ -308,7 +309,7 @@ async function startRuntime(options: RunOptions): Promise<void> {
 
   const gatewayAdminProxyAuthSecret = createGatewayAdminProxyAuthSecret();
 
-  supervisor.register({
+  const cssProcess = {
     name: 'css',
     command: childRuntime.command,
     args: [...jsEntrypointArgs(path.join(__dirname, 'runtime', isDevMode ? 'service-entry.ts' : 'service-entry.js'), childRuntime.isBun), ...buildCssArgs({
@@ -322,9 +323,9 @@ async function startRuntime(options: RunOptions): Promise<void> {
     })],
     cwd: cssRuntimeConfig.cwd,
     env: buildCssChildEnv(baseUrl, cssPort, externalOidcIssuer, authMode, process.env, gatewayAdminProxyAuthSecret, mode),
-  });
+  };
 
-  supervisor.register({
+  const apiProcess = {
     name: 'api',
     command: childRuntime.command,
     args: apiArgs,
@@ -339,7 +340,7 @@ async function startRuntime(options: RunOptions): Promise<void> {
       externalOidcIssuer,
       gatewayAdminProxyAuthSecret,
     }),
-  });
+  };
 
   // Bind host: use CLI --host value; if not explicitly set, derive from the public Base URL.
   // In local dev/sandboxed environments, binding 0.0.0.0 can fail with EPERM.
@@ -361,9 +362,19 @@ async function startRuntime(options: RunOptions): Promise<void> {
     internalAdminAuthSecret: gatewayAdminProxyAuthSecret,
     ingressPort,
   });
-  proxy.setTargets({
-    css: `http://localhost:${cssPort}`,
-    api: `http://localhost:${apiPort}`,
+  // The compatibility start entry remains combined. Module hosts supply their
+  // admitted descriptions to the same public plan API, not a second selector.
+  const plan = deriveRuntimePlan({
+    baseUrl,
+    externalOidcIssuer,
+    modules: [
+      { id: 'css', process: cssProcess, target: { url: `http://localhost:${cssPort}` } },
+      { id: 'api', process: apiProcess, target: { url: `http://localhost:${apiPort}` } },
+    ],
+  });
+  applyRuntimePlan(plan, {
+    register: config => supervisor.register(config),
+    setTargets: targets => proxy.setTargets(targets),
   });
 
   await supervisor.startAll();

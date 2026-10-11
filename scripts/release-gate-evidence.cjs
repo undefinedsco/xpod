@@ -21,7 +21,7 @@
  *     [--smoke-command <text>] --out <evidence.json>
  *   node scripts/release-gate-evidence.cjs verify-qlever-local \
  *     --evidence <file> --source-sha <40-hex> --expected-archive <tar.gz> \
- *     [--checks-out <file>]
+ *     [--abi-platform <expected-platform>] [--checks-out <file>]
  *   node scripts/release-gate-evidence.cjs create-package-consumers \
  *     --source-sha <40-hex> --pack-json <pack.json> \
  *     --node-result <result.json> --bun-result <result.json> \
@@ -277,12 +277,12 @@ function createQleverLocal(args) {
   })}\n`);
 }
 
-function validateQleverLocalEvidence(evidence) {
+function validateQleverLocalEvidence(evidence, platform) {
   if (!isPlainObject(evidence) || evidence.schemaVersion !== 1) fail('evidence schemaVersion must be 1');
   if (evidence.kind !== 'qlever-local-acceptance') fail('evidence kind must be qlever-local-acceptance');
   if (evidence.ok !== true) fail('evidence ok must be true');
   validateSourceSha(evidence.sourceSha);
-  if (evidence.platform !== 'macos-arm64') fail('evidence platform must be macos-arm64');
+  if (evidence.platform !== platform) fail(`evidence platform must be ${platform}`);
   if (!isPlainObject(evidence.smoke) || evidence.smoke.completed !== true) {
     fail('evidence smoke.completed must be true');
   }
@@ -300,7 +300,7 @@ function validateQleverLocalEvidence(evidence) {
     || evidence.manifest.adapterAbiVersion <= 0
     || !Number.isSafeInteger(evidence.manifest.physicalBackendAbiVersion)
     || evidence.manifest.physicalBackendAbiVersion <= 0
-    || evidence.manifest.platform !== 'macos-arm64'
+    || evidence.manifest.platform !== platform
     || !isPlainObject(evidence.manifest.qlever)) {
     fail('evidence manifest must record the ABI, platform and qlever pin');
   }
@@ -311,7 +311,8 @@ function verifyQleverLocal(args) {
   if (!args.evidence) fail('--evidence is required');
   if (!args.expectedArchive) fail('--expected-archive is required');
   const evidence = readJsonFile(args.evidence, '--evidence');
-  validateQleverLocalEvidence(evidence);
+  const platform = args.abiPlatform || 'macos-arm64';
+  validateQleverLocalEvidence(evidence, platform);
   if (evidence.sourceSha !== args.sourceSha) {
     fail('qlever-local evidence sourceSha does not match the accepted source SHA');
   }
@@ -335,7 +336,7 @@ function verifyQleverLocal(args) {
   } catch (error) {
     fail(`downloaded runtime manifest is not valid JSON: ${error.message}`);
   }
-  const conformance = { ...loadQleverSourceConformance(), platform: 'macos-arm64' };
+  const conformance = { ...loadQleverSourceConformance(), platform };
   validateRuntimeManifest(manifest, conformance);
   if (manifest.adapterAbiVersion !== evidence.manifest.adapterAbiVersion
     || manifest.physicalBackendAbiVersion !== evidence.manifest.physicalBackendAbiVersion) {

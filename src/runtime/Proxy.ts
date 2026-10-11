@@ -90,6 +90,9 @@ export class GatewayProxy {
   private readonly ingressPort?: number;
   private ingressServer?: http.Server;
   private startupFailed = false;
+  private readonly requireCloseCompletion: boolean;
+  private readonly listenerClosures = new Map<http.Server, Promise<void>>();
+  private readonly ownedListeners = new Set<http.Server>();
 
   constructor(
     port: number | undefined,
@@ -104,6 +107,7 @@ export class GatewayProxy {
       socketPath: options.socketPath,
     });
     this.exitOnStop = options.exitOnStop ?? false;
+    this.requireCloseCompletion = options.requireCloseCompletion ?? false;
     this.shutdownHandler = options.shutdownHandler;
     this.baseUrl = options.baseUrl;
     this.internalAdminAuthSecret = options.internalAdminAuthSecret;
@@ -185,9 +189,13 @@ export class GatewayProxy {
 
     server.on('upgrade', (req, socket, head) => {
       this.trackUpgradeSocket(socket);
-      const target = this.resolveUpgradeTarget(req.url ?? '/');
+      const target = this.resolveUpgradeTarget(req);
       if (!target) {
-        socket.destroy();
+        if (this.isApiUpgrade(req)) {
+          socket.end('HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
+        } else {
+          socket.destroy();
+        }
         return;
       }
       if (this.nativeUpgradeRelay) {
@@ -218,11 +226,15 @@ export class GatewayProxy {
    * `/ws/*` and the device notification multiplex live on the API server; every
    * other upgrade (Solid notification channels, edge node tunnels) goes to CSS.
    */
-  private resolveUpgradeTarget(url: string): GatewayProxyTarget | undefined {
-    if ((url.startsWith('/ws/') || url.startsWith('/v1/notifications/ws')) && this.targets.api) {
-      return this.targets.api;
-    }
-    return this.targets.css;
+  private resolveUpgradeTarget(req: http.IncomingMessage): GatewayProxyTarget | undefined {
+    return this.isApiUpgrade(req) ? this.targets.api : this.targets.css;
+  }
+
+  private isApiUpgrade(req: http.IncomingMessage): boolean {
+    const pathname = this.pathnameFromRequestUrl(req.url ?? '/');
+    return pathname.startsWith('/ws/') || pathname.startsWith('/v1/notifications/ws')
+      || this.isApiWebProductPath(pathname) || this.shouldRouteToApi(pathname, req.method)
+      || (podDeletionRouteName(req.method, pathname) === undefined && this.isApiHost(req.headers.host));
   }
 
   private relayUpgradeWithHttpProxy(
@@ -244,9 +256,11 @@ export class GatewayProxy {
   public async start(): Promise<void> {
     try {
       await this.runtimeHost.listen(this.server, this.listenEndpoint);
+      this.ownedListeners.add(this.server);
       this.logger.info(`Listening on ${this.runtimeHost.formatListenEndpoint(this.listenEndpoint)}`);
       if (this.ingressServer) {
         await this.runtimeHost.listen(this.ingressServer, this.ingressListenEndpoint());
+        this.ownedListeners.add(this.ingressServer);
         this.logger.info(`Ingress listener on 127.0.0.1:${this.ingressPort} (never local)`);
       }
     } catch (error) {
@@ -272,10 +286,12 @@ export class GatewayProxy {
     }
     this.upgradeSockets.clear();
     this.proxy.close();
-    await this.closeServer(this.server, this.listenEndpoint);
-    if (this.ingressServer) {
-      await this.closeServer(this.ingressServer, this.ingressListenEndpoint());
-    }
+    const closures = [ this.closeServer(this.server, this.listenEndpoint) ];
+    if (this.ingressServer) closures.push(this.closeServer(this.ingressServer, this.ingressListenEndpoint()));
+    const results = await Promise.allSettled(closures);
+    const errors = results.flatMap(result => result.status === 'rejected' ? [result.reason] : []);
+    if (errors.length === 1) throw errors[0];
+    if (errors.length > 1) throw new AggregateError(errors, 'Gateway listener cleanup did not complete');
   }
 
   /**
@@ -290,23 +306,31 @@ export class GatewayProxy {
   private async closeServer(server: http.Server, endpoint: RuntimeListenEndpoint): Promise<void> {
     // A listener whose bind failed owns no listening socket. Calling close on
     // it would report ERR_SERVER_NOT_RUNNING and hide the startup error.
-    if (this.startupFailed && server.listening === false) return;
-    const closing = this.runtimeHost.close(server, endpoint);
+    if (server.listening === false && !this.ownedListeners.has(server) && !this.listenerClosures.has(server)) return;
+    this.ownedListeners.add(server);
+    let closing = this.listenerClosures.get(server);
+    if (!closing) {
+      closing = Promise.resolve().then(() => this.runtimeHost.close(server, endpoint));
+      this.listenerClosures.set(server, closing);
+      void closing.catch(() => { this.listenerClosures.delete(server); });
+    }
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const timedOut = await Promise.race([
-      closing.then(() => false),
-      new Promise<boolean>((resolve) => {
-        timer = setTimeout(() => resolve(true), SERVER_CLOSE_GRACE_MS);
-        timer.unref?.();
-      }),
-    ]);
-    if (timer) {
-      clearTimeout(timer);
+    let timedOut: boolean;
+    try {
+      timedOut = await Promise.race([
+        closing.then(() => false),
+        new Promise<boolean>((resolve) => {
+          timer = setTimeout(() => resolve(true), SERVER_CLOSE_GRACE_MS);
+          timer.unref?.();
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
     }
     if (timedOut) {
-      if (this.startupFailed) {
+      if (this.startupFailed || this.requireCloseCompletion) {
         void closing.catch(() => undefined);
-        throw new Error('Gateway startup listener close completion is unknown');
+        throw new Error('Gateway listener close completion is unknown');
       }
       this.logger.warn(`Gateway server did not report a clean close within ${SERVER_CLOSE_GRACE_MS}ms; continuing shutdown`);
       void closing.catch(() => undefined);
@@ -436,14 +460,13 @@ export class GatewayProxy {
     // path prefix to the IdP/Pod host. Path-based routing remains for local/dev
     // single-origin clients and existing legacy endpoints.
 
-    // 2a. Xpod web products are served by the API server.
-    if (this.isApiWebProductPath(pathname) && this.targets.api) {
-      this.applyInternalAdminProxyHeaders(req, originalClientLoopback);
-      this.proxy.web(req, res, { target: this.toProxyTarget(this.targets.api) as any });
-      return;
-    }
-
-    if ((apiHost || apiPath) && this.targets.api) {
+    // API-owned routes remain API-owned when that capability is unavailable.
+    if (this.isApiWebProductPath(pathname) || apiHost || apiPath) {
+      if (!this.targets.api) {
+        res.writeHead(503);
+        res.end('API Service Not Available');
+        return;
+      }
       this.applyInternalAdminProxyHeaders(req, originalClientLoopback);
       this.proxy.web(req, res, { target: this.toProxyTarget(this.targets.api) as any });
       return;
@@ -822,14 +845,16 @@ export class GatewayProxy {
           sendOperatorRequired(res);
           return;
         }
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: true }));
+        res.writeHead(202, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ accepted: true }));
         setImmediate(() => {
           const shutdown = this.shutdownHandler ?? (() => this.supervisor.stopAll());
-          void shutdown().then(() => {
+          void Promise.resolve().then(shutdown).then(() => {
             if (this.exitOnStop) {
               process.exit(0);
             }
+          }).catch((error) => {
+            this.logger.error('Gateway shutdown did not complete:', error);
           });
         });
         return;
@@ -881,6 +906,8 @@ export interface GatewayProxyTarget {
 }
 
 export interface GatewayProxyOptions {
+  /** Module leases may be released only after actual listener closure. */
+  requireCloseCompletion?: boolean;
   socketPath?: string;
   listenEndpoint?: RuntimeListenEndpoint;
   runtimeHost?: RuntimeHost;

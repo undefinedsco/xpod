@@ -1,0 +1,24 @@
+import {buildStaticProducts} from './static-material';
+import { mkdirSync, readFileSync, writeFileSync, realpathSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { createHash } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
+import { classifyInputs } from './closure';
+const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const repoRoot = realpathSync(path.resolve(packageRoot, '../..'));
+const out = path.join(packageRoot, 'dist');
+mkdirSync(out, { recursive: true });
+const built = spawnSync(process.execPath, ['build', '--target=node', '--format=esm', '--outfile', path.join(out, 'runtime.mjs'), '--metafile='+path.join(out, 'inputs.json'), path.join(repoRoot, 'src/api/main.ts')], { cwd: repoRoot, stdio: 'inherit' });
+if (built.error || built.status !== 0) throw new Error('API bundle failed');
+const metadata = JSON.parse(readFileSync(path.join(out, 'inputs.json'), 'utf8')) as { inputs: Record<string, { bytes: number }> };
+if (!metadata.inputs || !Object.keys(metadata.inputs).length) throw new Error('API physical input metadata missing');
+const inputs = Object.entries(metadata.inputs).map(([file, item]) => ({ path: file, bytes: item.bytes }));
+const closure = classifyInputs(inputs, repoRoot);
+const git = (args: string[]) => { const r = spawnSync('git', args, { cwd: repoRoot, encoding: 'utf8' }); if (r.status !== 0) throw new Error('Git authority unavailable'); return r.stdout.trim(); };
+writeFileSync(path.join(out, 'entry.mjs'), "import { createRequire } from 'node:module';\nglobalThis.require = createRequire(import.meta.url);\nawait import('./runtime.mjs');\n", { flag: 'w' });
+const payload = readFileSync(path.join(out, 'runtime.mjs'));
+writeFileSync(path.join(out, 'closure.safe.json'), JSON.stringify({ schemaVersion: 1, entry: 'src/api/main.ts', sourceCommit: git(['rev-parse','HEAD']), dirty: git(['status','--porcelain']).length>0, platform: process.platform, arch: process.arch, payloadSHA256: createHash('sha256').update(payload).digest('hex'), ...closure, installable: false, pending: ['ModuleStore executes process.execPath; Node and Bun compatibility must be proven', 'Embedded Inngest executable requires exact platform authority and preserved originals', 'Complete physical-input source and third-party NOTICE inventory required before package emission'] }, null, 2)+'\n');
+if (closure.blockers.length) throw new Error('API runtime closure is not isolated; see dist/closure.safe.json');
+
+buildStaticProducts(repoRoot,out);

@@ -13,7 +13,7 @@ import { getLoggerFor } from 'global-logger-factory';
 import {
   configuredHttpLoopbackOrigin,
   createConfiguredLoopbackSolidTokenVerifier,
-} from '../api/auth/ConfiguredLoopbackSolidTokenVerifier';
+} from './ConfiguredLoopbackSolidTokenVerifier';
 import { verifyGatewayAdminProxyHeaders } from '../runtime/GatewayAdminProxyAuth';
 import { createRoutedSolidTokenCaches } from './SolidTokenCaches';
 
