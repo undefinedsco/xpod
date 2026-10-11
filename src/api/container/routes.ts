@@ -77,7 +77,7 @@ import {
   resolveEdgeNodeCertificateCapabilityBridgeId,
 } from '../../edge/EdgeNodeCertificateCapabilityBridge';
 import * as path from 'node:path';
-import { PACKAGE_ROOT } from '../../runtime';
+import { PACKAGE_ROOT } from '../../runtime/package-root';
 import { registerServiceInfoRoute } from '../handlers/ServiceInfoHandler';
 
 /**

@@ -64,6 +64,7 @@
         "@types/pg": "^8.10.2",
         "@types/react": "^19.2.5",
         "@types/react-dom": "^18.2.22",
+        "@types/semver": "7.7.1",
         "@undefineds.co/ai-connections": "workspace:*",
         "@vitest/coverage-v8": "^1.4.0",
         "@zed-industries/claude-code-acp": "^0.16.1",
@@ -84,6 +85,7 @@
         "react-dom": "^19.2.0",
         "react-i18next": "^13.3.1",
         "react-router-dom": "^6.22.3",
+        "semver": "7.8.5",
         "tailwind-merge": "^3.5.0",
         "ts-node": "^10.9.2",
         "typescript": "5.5",
@@ -289,6 +291,19 @@
         "@types/yargs": "^17.0.33",
         "@undefineds.co/xpod-cli": "workspace:*",
         "componentsjs-generator": "^4.3.0",
+        "typescript": "5.5",
+      },
+    },
+    "packages/xpod-api": {
+      "name": "@undefineds.co/xpod-api",
+      "version": "0.0.0-preview.1",
+      "dependencies": {
+        "@zed-industries/claude-code-acp": "^0.16.1",
+        "@zed-industries/codex-acp": "^0.9.2",
+        "inngest-cli": "1.40.0",
+      },
+      "devDependencies": {
+        "@types/node": "^22",
         "typescript": "5.5",
       },
     },
@@ -2081,6 +2096,8 @@
     "@undefineds.co/tasks": ["@undefineds.co/tasks@workspace:packages/tasks"],
 
     "@undefineds.co/xpod-afs": ["@undefineds.co/xpod-afs@workspace:packages/xpod-afs"],
+
+    "@undefineds.co/xpod-api": ["@undefineds.co/xpod-api@workspace:packages/xpod-api"],
 
     "@undefineds.co/xpod-cli": ["@undefineds.co/xpod-cli@workspace:packages/xpod-cli"],
 
