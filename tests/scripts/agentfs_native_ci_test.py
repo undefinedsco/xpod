@@ -41,11 +41,14 @@ def native_patch_git_fixture(directory):
     root = Path(directory) / 'native-contract-git'; root.mkdir()
     subprocess.run(['git', 'init', '--quiet', str(root)], check=True)
     patches = root / 'tools/agentfs-pod/patches'; patches.mkdir(parents=True)
+    sources = root / 'tools/agentfs-pod/src'; sources.mkdir()
+    for name in ['mount.rs', 'mount_control.rs']: (sources / name).write_text('synthetic old helper ' + name)
     def snapshot():
-        subprocess.run(['git', '-C', str(root), 'add', 'tools/agentfs-pod/patches'], check=True)
+        subprocess.run(['git', '-C', str(root), 'add', 'tools/agentfs-pod'], check=True)
         subprocess.run(['git', '-C', str(root), '-c', 'user.name=fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '--quiet', '-m', 'owned fixture'], check=True)
         commit = subprocess.check_output(['git', '-C', str(root), 'rev-parse', 'HEAD']).decode().strip()
-        kit = dict(files=[dict(path='patches/' + p.name, sha256=hashlib.sha256(p.read_bytes()).hexdigest()) for p in sorted(patches.iterdir())])
+        kit = dict(files=[dict(path='patches/' + p.name, sha256=hashlib.sha256(p.read_bytes()).hexdigest()) for p in sorted(patches.iterdir())]
+                   + [dict(path='helper/src/' + p.name, sha256=hashlib.sha256(p.read_bytes()).hexdigest()) for p in sorted(sources.iterdir())])
         return commit, kit
     for name in ['fuse-revalidation.patch', 'nfs-directory-cookie.patch']: (patches / name).write_text('synthetic ' + name)
     legacy = snapshot()
@@ -304,6 +307,45 @@ class SupervisorTests(unittest.TestCase):
             for name in names:
                 with self.assertRaisesRegex(RuntimeError, 'Missing latest regression'):
                     a.check_tests(current.replace(f'test mount_control::tests::{name} ... ok\n', ''), current_kit, current_sha, root)
+            crash_names = ['mount::tests::unmount_command_registry_keeps_backend_and_platform_policy',
+                           'mount_control::tests::crash_detach_dispatches_recorded_fuse_backend_without_force_or_lazy']
+            sources = root / 'tools/agentfs-pod/src'
+            for qualified in crash_names:
+                module, _, name = qualified.split('::')
+                (sources / (module + '.rs')).write_text('fn ' + name + '() {}')
+            subprocess.run(['git', '-C', str(root), 'add', 'tools/agentfs-pod/src'], check=True)
+            subprocess.run(['git', '-C', str(root), '-c', 'user.name=fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '--quiet', '-m', 'owned crash fixture'], check=True)
+            crash_sha = subprocess.check_output(['git', '-C', str(root), 'rev-parse', 'HEAD']).decode().strip()
+            crash_kit = copy.deepcopy(current_kit)
+            for row in crash_kit['files']:
+                if row['path'].startswith('helper/src/'):
+                    row['sha256'] = hashlib.sha256((sources / Path(row['path']).name).read_bytes()).hexdigest()
+            crash_text = current.replace('102 passed', '104 passed') + ''.join('test ' + name + ' ... ok\n' for name in crash_names)
+            self.assertEqual(a.check_tests(crash_text, crash_kit, crash_sha, root), dict(declaredTests=106, passedTests=104, ignoredTests=2, filteredTests=0))
+            for wrong_text, kit, sha in [(current, crash_kit, crash_sha), (crash_text, current_kit, current_sha),
+                                         (crash_text, current_kit, crash_sha), (crash_text, crash_kit, current_sha)]:
+                with self.assertRaises(RuntimeError): a.check_tests(wrong_text, kit, sha, root)
+            for qualified in crash_names:
+                with self.assertRaisesRegex(RuntimeError, 'Missing latest regression'):
+                    a.check_tests(crash_text.replace('test ' + qualified + ' ... ok\n', ''), crash_kit, crash_sha, root)
+            for mutation in ['missing', 'duplicate', 'changed']:
+                broken = copy.deepcopy(crash_kit)
+                row = next(row for row in broken['files'] if row['path'] == 'helper/src/mount.rs')
+                if mutation == 'missing': broken['files'].remove(row)
+                elif mutation == 'duplicate': broken['files'].append(dict(row))
+                else: row['sha256'] = '0' * 64
+                with self.assertRaisesRegex(RuntimeError, 'helper (inventory|bytes) mismatch'):
+                    a.native_test_contract(root, crash_sha, broken)
+            (sources / 'mount_control.rs').write_text('synthetic old helper mount_control.rs')
+            subprocess.run(['git', '-C', str(root), 'add', 'tools/agentfs-pod/src'], check=True)
+            subprocess.run(['git', '-C', str(root), '-c', 'user.name=fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '--quiet', '-m', 'owned incomplete crash fixture'], check=True)
+            incomplete_sha = subprocess.check_output(['git', '-C', str(root), 'rev-parse', 'HEAD']).decode().strip()
+            incomplete = copy.deepcopy(crash_kit)
+            for row in incomplete['files']:
+                if row['path'] == 'helper/src/mount_control.rs':
+                    row['sha256'] = hashlib.sha256((sources / 'mount_control.rs').read_bytes()).hexdigest()
+            with self.assertRaisesRegex(RuntimeError, 'Incomplete native crash-detach'):
+                a.native_test_contract(root, incomplete_sha, incomplete)
             corrupted = copy.deepcopy(current_kit); corrupted['files'][0]['sha256'] = '0' * 64
             with self.assertRaisesRegex(RuntimeError, 'patch bytes mismatch'): a.check_tests(current, corrupted, current_sha, root)
             for invalid in [text.replace('98 passed', '95 passed'),
@@ -965,6 +1007,27 @@ class NativeArchitectureTests(unittest.TestCase):
 
 
 class NativeReuseTests(unittest.TestCase):
+    def test_source_git_trust_is_exact_and_readonly(self):
+        names = ['fuse-revalidation.patch', 'nfs-directory-cookie.patch', 'fuse-owned-session-ready.patch']
+        kit = {'files': [{'path': 'patches/' + n, 'sha256': hashlib.sha256(n.encode()).hexdigest()} for n in names]}
+        kit['files'] += [{'path': 'helper/src/' + n, 'sha256': hashlib.sha256(n.encode()).hexdigest()} for n in ['mount.rs', 'mount_control.rs']]
+        calls = []
+        def git(argv, **kwargs):
+            calls.append(argv)
+            self.assertEqual(argv[:3], ['git', '-c', 'safe.directory=' + str(ROOT.resolve())])
+            self.assertEqual(kwargs['cwd'], ROOT)
+            self.assertIn(argv[3], ['ls-tree', 'show'])
+            if argv[3] == 'ls-tree':
+                return ('\n'.join('tools/agentfs-pod/patches/' + n for n in names) + '\n').encode()
+            return argv[4].split('/')[-1].encode()
+        with patch.object(a.subprocess, 'check_output', side_effect=git):
+            result = a.native_test_contract(ROOT, 'a' * 40, kit)
+            self.assertTrue(result['current'])
+            self.assertEqual(len(calls), 6)
+            kit['files'][0]['sha256'] = '0' * 64
+            with self.assertRaisesRegex(RuntimeError, 'patch bytes mismatch'):
+                a.native_test_contract(ROOT, 'a' * 40, kit)
+
     def test_generated_stage_inventory_is_exact_on_both_platforms(self):
         base = ['bun-extract', 'toolchain', 'dependencies', 'workspace-packages', 'upstream', 'upstream-checkout', 'export', 'verify-source', 'rebuild', 'sdk-suite', 'cli-suite', 'package', 'verify-install']
         linux = ['runtime-extract', 'runtime-readelf', 'runtime-dynamic', 'runtime-launcher-version', 'runtime-helper-version', 'runtime-status', 'runtime-ldd', 'runtime-node-version']
