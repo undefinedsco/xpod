@@ -20,10 +20,11 @@ original=b'original';source=io.BytesIO()
 with tarfile.open(fileobj=source,mode='w:gz') as t:
  m=tarfile.TarInfo('src/main.ts');m.size=len(original);t.addfile(m,io.BytesIO(original if change!='nested-source' else b'replaced'))
 producer={'source-inventory.json':json.dumps({'schemaVersion':1,'files':[{'path':'src/main.ts','bytes':len(original),'sha256':hashlib.sha256(original).hexdigest()}]}).encode(),'client-source.tar.gz':source.getvalue()}
-index={'producer':{'name':manifest['name'],'version':manifest['version']},'sourceAuthority':{'sourceCommit':'a'*40,'dirty':False,'snapshotSHA256':'b'*64,'scope':'Package source snapshot only; no claim of release acceptance or dependency closure.'},'clientPayloads':{'cjsSHA256':hashlib.sha256(b'payload').hexdigest(),'esmSHA256':hashlib.sha256(b'payload').hexdigest()},'clientSource':'client-source.tar.gz','sourceInventory':'source-inventory.json','files':[{'path':n,'bytes':len(b),'sha256':hashlib.sha256(b).hexdigest()} for n,b in producer.items()]}
+index={'producer':{'name':manifest['name'],'version':manifest['version']},'sourceAuthority':{'sourceCommit':'a'*40,'dirty':False,'snapshotSHA256':'b'*64,'scope':'CLI source plus explicitly mapped canonical runtime-client source; no claim of release acceptance or external dependency closure.'},'clientPayloads':{'cjsSHA256':hashlib.sha256(b'payload').hexdigest(),'esmSHA256':hashlib.sha256(b'payload').hexdigest()},'clientSource':'client-source.tar.gz','sourceInventory':'source-inventory.json','files':[{'path':n,'bytes':len(b),'sha256':hashlib.sha256(b).hexdigest()} for n,b in producer.items()]}
 if change=='unknown-source':index['sourceAuthority']['sourceCommit']=None
 if change=='authority-injection':index['sourceAuthority']['credentials']={'argv':['private-marker']}
 if change=='authority-snapshot-type':index['sourceAuthority']['snapshotSHA256']={'token':'private-marker'}
+if change=='old-source-scope':index['sourceAuthority']['scope']='Package source snapshot only; no claim of release acceptance or dependency closure.'
 if change=='dirty':index['sourceAuthority']['dirty']=True
 if change=='unbound-client':index['clientPayloads']['cjsSHA256']='0'*64
 if change=='material-hash':index['files'][0]['sha256']='0'*64
@@ -71,7 +72,7 @@ describe('exact product export', () => {
     expect(Object.keys(value.producerSourceAuthority).sort()).toEqual(['dirty', 'scope', 'snapshotSHA256', 'sourceCommit']);
     expect(value.producerSourceAuthority.sourceCommit).toBe(source);
   }));
-  for (const change of ['authority-injection', 'authority-snapshot-type', 'unknown-source', 'dirty', 'unbound-client', 'material-hash', 'extra-material', 'missing-type', 'missing-bin', 'nested-source']) {
+  for (const change of ['authority-injection', 'authority-snapshot-type', 'unknown-source', 'old-source-scope', 'dirty', 'unbound-client', 'material-hash', 'extra-material', 'missing-type', 'missing-bin', 'nested-source']) {
     it(`rejects actual ${change} product`, () => fixture(change, async (archive, root) => {
       await expect(validateCliProduct(archive, path.join(root, 'materials'), source, hash('payload'), manifest)).rejects.toThrow();
     }));
@@ -129,6 +130,10 @@ with tarfile.open(sys.argv[1],'w:gz') as t:
   it('requires separate serialized client and the explicit service boundary gate in CI', () => {
     const workflow = readFileSync('.github/workflows/agentfs-module-mounted-acceptance.yml', 'utf8');
     expect(workflow).toContain('node --test tests/scripts/service-runtime-boundary.node-test.cjs');
+    expect(workflow).toContain('bun test ./packages/xpod-client/tests');
+    expect(readFileSync('.github/workflows/ci.yml', 'utf8')).toContain('bun test ./packages/xpod-client/tests');
+    expect(readFileSync('.github/workflows/cli-package.yml', 'utf8')).toContain("'packages/xpod-client/**'");
+    expect(readFileSync('scripts/check-cli-package.cjs', 'utf8')).toContain("run('bun', ['run', 'test'], runtimeClientRoot)");
     expect(workflow).toContain('cd packages/xpod-client && bun pm pack');
     expect(workflow.indexOf('bun run build:packages')).toBeLessThan(workflow.indexOf('prepare-module-inputs.ts native-info'));
     expect(workflow).toContain('if [ -f "$MODULE_RUN_ROOT/native/native-facts.safe.json" ]; then');

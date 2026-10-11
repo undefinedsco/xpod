@@ -31,7 +31,7 @@ export function scanProduct(archive: string, directory: string): { files: Record
   return JSON.parse(execFileSync('python3', ['-c', scan, archive, directory], { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 }));
 }
 const hash = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
-const producerScope = 'Package source snapshot only; no claim of release acceptance or dependency closure.';
+const producerScope = 'CLI source plus explicitly mapped canonical runtime-client source; no claim of release acceptance or external dependency closure.';
 const buildCommands = ['bun run build:packages', 'bun packages/xpod-afs/scripts/build-package.ts', 'bun build module-admission.ts --target=node --format=esm'];
 export function projectProductBuild(build: any, sourceSHA: string) {
   const keys = ['sourceSHA', 'sourceClean', 'exit', 'coreSHA256', 'driverSHA256', 'commands', 'metafiles'];
