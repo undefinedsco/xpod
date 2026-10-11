@@ -6,7 +6,7 @@ import path from 'node:path';
 import { chmod, lstat, mkdir, mkdtemp, open, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { t as listTar, x as extractTar } from 'tar';
 import { CliCommandError } from './lib/output';
-import { MODULE_API_VERSION, moduleDefinition, type ModuleId } from './module-catalog';
+import { MODULE_API_VERSION, moduleDefinition, modulePackageName, moduleTarget, type ModuleId } from './module-catalog';
 import { withModuleOwnedLock } from './module-owned-lock';
 
 const REGISTRY = 'https://registry.npmjs.org';
@@ -46,14 +46,14 @@ export class ModuleStore {
   private definition(id: string) {
     const row = moduleDefinition(id);
     if (!row) throw error('module_unknown', `Unknown module: ${id}`);
-    if (!['darwin', 'linux'].includes(this.platform) || !['arm64', 'x64'].includes(this.arch)) {
+    if (!moduleTarget(this.platform, this.arch)) {
       throw error('module_platform_unsupported', 'Capability modules currently support macOS/Linux on arm64/x64.');
     }
     return row;
   }
   private directory(row: InstalledModule): string {
     const definition = this.definition(row.id);
-    if (!VERSION.test(row.version) || row.package !== `${definition.packagePrefix}-${this.platform}-${this.arch}`
+    if (!VERSION.test(row.version) || row.package !== modulePackageName(definition.id, this.platform, this.arch)
       || row.platform !== this.platform || row.arch !== this.arch) throw error('module_binding_invalid', 'Installed module identity is invalid.');
     return path.join(this.root, row.id, `${this.platform}-${this.arch}`, row.version);
   }
@@ -102,7 +102,7 @@ export class ModuleStore {
     const definition = this.definition(id);
     if (version !== 'latest' && !VERSION.test(version)) throw error('module_version_invalid', 'Use an exact module version or latest.');
     return this.withLock(definition.id, async () => {
-      const packageName = `${definition.packagePrefix}-${this.platform}-${this.arch}`;
+      const packageName = modulePackageName(definition.id, this.platform, this.arch)!;
       const response = await this.request(`${REGISTRY}/${encodeURIComponent(packageName)}/${version}`, { signal: AbortSignal.timeout(30_000), redirect: 'error' });
       if (!response.ok) throw error('module_unavailable', `Module ${definition.id} is unavailable (${response.status}).`);
       const metadata = await response.json() as { name: string; version: string; dist: { integrity: string; tarball: string } };

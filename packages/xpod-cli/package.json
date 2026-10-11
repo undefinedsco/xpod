@@ -11,7 +11,7 @@
     "build": "bun scripts/build-package.ts",
     "build:cli-only": "bun scripts/build.ts --cli-only",
     "verify": "bun run typecheck && bun run test && bun run build",
-    "test": "bun test ./tests/module-store.test.ts ./tests/launcher.test.ts ./tests/javascript-notices.test.ts ./tests/producer-materials.test.ts",
+    "test": "bun test ./tests/module-catalog.test.ts ./tests/module-store.test.ts ./tests/launcher.test.ts ./tests/javascript-notices.test.ts ./tests/producer-materials.test.ts",
     "build:preview": "bun scripts/build.ts",
     "typecheck": "tsc --noEmit -p tsconfig.core.json",
     "test:preview": "bun test ./tests",
