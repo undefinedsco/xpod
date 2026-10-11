@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { collectModule, nativeFacts } from './prepare-module-inputs';
@@ -19,7 +19,7 @@ with tarfile.open(sys.argv[1],'r|gz') as tar:
   b=tar.extractfile(m).read();name=n[8:]
   if len(b)!=m.size:raise ValueError('truncated product member')
   files[name]={'bytes':len(b),'sha256':hashlib.sha256(b).hexdigest(),'mode':m.mode&511}
-  if name in ['package.json','dist/producer-materials/index.json','provenance/native-build.receipt.json','provenance/native-source-kit.json']:
+  if name in ['package.json','dist/producer-materials/index.json','provenance/native-build.receipt.json','provenance/native-source-kit.json','dist/inputs.json','dist/licenses/index.json']:
    documents[name]=json.loads(b)
   if name.startswith('dist/producer-materials/'):
    out=pathlib.Path(sys.argv[2])/name;out.parent.mkdir(parents=True,exist_ok=True)
@@ -85,7 +85,45 @@ export async function validateCliProduct(archive: string, directory: string, sou
     producerSourceAuthority: { sourceCommit: sourceSHA, dirty: false, snapshotSHA256: authority.snapshotSHA256, scope: producerScope } };
 }
 
-export async function exportProducts(workspace: string, moduleArchive: string, cliArchive: string, nativeArchive: string, target: string, sourceSHA: string, buildReceipt: string, out: string) {
+export function validateClientProduct(archive: string, directory: string, packageRoot: string, sourceSHA: string) {
+  const { files, documents } = scanProduct(archive, directory);
+  const manifest = documents['package.json'];
+  const expected = JSON.parse(readFileSync(path.join(packageRoot, 'package.json'), 'utf8'));
+  if (manifest?.name !== '@undefineds.co/xpod-client' || manifest.version !== expected.version
+    || JSON.stringify(manifest.exports) !== JSON.stringify(expected.exports)
+    || JSON.stringify(manifest.peerDependencies) !== JSON.stringify(expected.peerDependencies)
+    || JSON.stringify(manifest.peerDependenciesMeta) !== JSON.stringify(expected.peerDependenciesMeta)
+    || manifest.dependencies && Object.values(manifest.dependencies).some(value => typeof value !== 'string' || /^(workspace:|file:|link:)/.test(value))) throw new Error('client public manifest mismatch');
+  const required = ['LICENSE', 'README.md', 'dist/peer.cjs', 'dist/inputs.json', 'dist/licenses/index.json'];
+  for (const name of ['.', './session']) for (const field of ['types', 'import', 'require']) {
+    const member = manifest.exports[name]?.[field];
+    if (typeof member !== 'string' || !member.startsWith('./') || member.includes('..')) throw new Error('missing client public export');
+    required.push(member.slice(2));
+  }
+  if (required.some(name => !files[name]) || documents['dist/licenses/index.json']?.cliSha256 !== files['dist/library.cjs']?.sha256
+    || !Object.keys(documents['dist/inputs.json']?.inputs ?? {}).length) throw new Error('missing or unbound client build materials');
+  for (const [name, fact] of Object.entries(files)) {
+    if (name === 'package.json') continue;
+    const original = path.join(packageRoot, name);
+    if (!lstatSync(original).isFile() || lstatSync(original).isSymbolicLink()) throw new Error('nonregular client build output');
+    const bytes = readFileSync(original);
+    if (bytes.length !== fact.bytes || hash(bytes) !== fact.sha256) throw new Error('client archive differs from actual build');
+  }
+  const verifyCompleteDist = (directory: string, prefix: string): void => {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const member = prefix + '/' + entry.name;
+      if (entry.isDirectory()) verifyCompleteDist(path.join(directory, entry.name), member);
+      else if (!entry.isFile() || !files[member]) throw new Error('missing or nonregular client distribution member');
+    }
+  };
+  verifyCompleteDist(path.join(packageRoot, 'dist'), 'dist');
+  if (files['dist/peer.cjs'].sha256 !== hash(readFileSync(path.join(packageRoot, 'src/peer.cjs')))) throw new Error('client peer source mismatch');
+  return { name: manifest.name, version: manifest.version, exports: manifest.exports, peerDependencies: manifest.peerDependencies,
+    peerDependenciesMeta: manifest.peerDependenciesMeta, sourceCommit: sourceSHA, files,
+    scope: 'Exact serialized runtime and build materials; source and dependency audit remains required.' };
+}
+
+export async function exportProducts(workspace: string, moduleArchive: string, cliArchive: string, nativeArchive: string, target: string, sourceSHA: string, buildReceipt: string, out: string, clientArchive: string) {
   const git = (...args: string[]) => execFileSync('git', args, { cwd: workspace, encoding: 'utf8' }).trim();
   if (!/^[a-f0-9]{40}$/.test(sourceSHA) || git('rev-parse', 'HEAD') !== sourceSHA || git('status', '--porcelain', '--untracked-files=all')) throw new Error('immutable clean product source required');
   const build = JSON.parse(readFileSync(buildReceipt, 'utf8'));
@@ -93,7 +131,7 @@ export async function exportProducts(workspace: string, moduleArchive: string, c
   const tempParent = path.join(workspace, '.test-data/product-export-validation'); mkdirSync(tempParent, { recursive: true, mode: 0o700 });
   const temp = mkdtempSync(path.join(tempParent, 'case-'));
   try {
-    const originalHashes = [moduleArchive, cliArchive].map(file => hash(readFileSync(file)));
+    const originalHashes = [moduleArchive, cliArchive, clientArchive].map(file => hash(readFileSync(file)));
     const authority = nativeFacts(target);
     if (lstatSync(nativeArchive).isSymbolicLink() || hash(readFileSync(nativeArchive)) !== authority.zipSHA256) throw new Error('unbound original native artifact');
     const original = JSON.parse(execFileSync('python3', ['-c', "import zipfile,hashlib,json,sys\nwith zipfile.ZipFile(sys.argv[1]) as z:\n print(json.dumps({n:hashlib.sha256(z.read(n)).hexdigest() for n in ['native-receipt.json','source-kit.json']}))", nativeArchive], { encoding: 'utf8' }));
@@ -103,6 +141,7 @@ export async function exportProducts(workspace: string, moduleArchive: string, c
     if (!nativeReceipt || !nativeKit) throw new Error('missing product native provenance');
     const afs = collectModule(moduleArchive, target, sourceSHA, nativeReceipt, nativeKit);
     const cli = await validateCliProduct(cliArchive, path.join(temp, 'cli'), sourceSHA, build.coreSHA256, JSON.parse(readFileSync(path.join(workspace, 'packages/xpod-cli/package.json'), 'utf8')));
+    const client = validateClientProduct(clientArchive, path.join(temp, 'client'), path.join(workspace, 'packages/xpod-client'), sourceSHA);
     const event = process.env.GITHUB_EVENT_NAME ?? null;
     const githubSHA = process.env.GITHUB_SHA ?? null;
     const eventDocument = process.env.GITHUB_EVENT_PATH ? JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, 'utf8')) : {};
@@ -112,6 +151,7 @@ export async function exportProducts(workspace: string, moduleArchive: string, c
     const records = [
       { filename: 'afs.tgz', original: moduleArchive, metadata: { ...afs, files: module.files } },
       { filename: 'cli.tgz', original: cliArchive, metadata: cli },
+      { filename: 'client.tgz', original: clientArchive, metadata: client },
     ].map(({ filename, original, metadata }, index) => {
       const bytes = readFileSync(original);
       if (hash(bytes) !== originalHashes[index]) throw new Error('product archive changed during validation');
@@ -120,7 +160,7 @@ export async function exportProducts(workspace: string, moduleArchive: string, c
     if (git('rev-parse', 'HEAD') !== sourceSHA || git('status', '--porcelain', '--untracked-files=all')) throw new Error('product source changed during validation');
     mkdirSync(out, { mode: 0o700 });
     for (const record of records) writeFileSync(path.join(out, record.filename), record.payload, { flag: 'wx', mode: 0o600 });
-    const inventory = { schemaVersion: 1, scope: 'Exact product materials; no publication or license clearance', actualGitSHA: sourceSHA, githubSHA, event,
+    const inventory = { schemaVersion: 2, scope: 'Exact product materials; no publication or license clearance', actualGitSHA: sourceSHA, githubSHA, event,
       eventHeadSHA, ref: process.env.GITHUB_REF, run: process.env.GITHUB_RUN_ID, attempt: process.env.GITHUB_RUN_ATTEMPT,
       sourceClean: true, target, nativeBuildSourceSHA: authority.source, originalNativeZIP_SHA256: authority.zipSHA256,
       originalNativeReceiptSHA256: nativeReceipt, originalNativeSourceKitSHA256: nativeKit, buildReceiptSHA256: hash(readFileSync(buildReceipt)),
@@ -132,5 +172,5 @@ export async function exportProducts(workspace: string, moduleArchive: string, c
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const args = process.argv.slice(2); const option = (key: string) => { const i = args.indexOf(key); if (i < 0 || !args[i + 1]) throw new Error('missing product argument'); return args[i + 1]; };
-  await exportProducts(path.resolve(option('--workspace')), path.resolve(option('--module')), path.resolve(option('--cli')), path.resolve(option('--native-archive')), option('--target'), option('--source-sha'), path.resolve(option('--build-receipt')), path.resolve(option('--out')));
+  await exportProducts(path.resolve(option('--workspace')), path.resolve(option('--module')), path.resolve(option('--cli')), path.resolve(option('--native-archive')), option('--target'), option('--source-sha'), path.resolve(option('--build-receipt')), path.resolve(option('--out')), path.resolve(option('--client')));
 }

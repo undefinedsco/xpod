@@ -61,6 +61,9 @@ jobs:
           mkdir -p -m 700 "$GITHUB_WORKSPACE/.test-data"
           mkdir -m 700 "$root"
           echo "MODULE_RUN_ROOT=$root" >> "$GITHUB_ENV"
+          # native-info imports the shared runtime; build its declared dependencies first.
+          bun install --frozen-lockfile
+          bun run build:packages
           bun scripts/agentfs-native-ci/mounted/prepare-module-inputs.ts native-info --target "$TARGET" --out "$root/native"
           id=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["artifactID"])' "$root/native/native-facts.safe.json")
           gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$id" > "$root/native/artifact.safe.json"
@@ -88,8 +91,7 @@ jobs:
           TARGET: ${{ matrix.target }}
         run: |
           set -euo pipefail
-          bun install --frozen-lockfile
-          bun run build:packages
+          node --test tests/scripts/service-runtime-boundary.node-test.cjs
           bun packages/xpod-afs/scripts/build-package.ts --target "$TARGET" --out "$MODULE_RUN_ROOT/build" --native-evidence "$MODULE_RUN_ROOT/native/native.zip" --native-pins "$MODULE_RUN_ROOT/native/native-pins.json"
           bun build scripts/agentfs-native-ci/mounted/module-admission.ts --target=node --format=esm --metafile="$MODULE_RUN_ROOT/driver-inputs.json" --outfile "$MODULE_RUN_ROOT/module-admission.mjs"
           test -z "$(git status --porcelain --untracked-files=all)"
@@ -119,9 +121,10 @@ jobs:
           set -euo pipefail
           umask 077
           (cd packages/xpod-cli && bun pm pack --filename "$MODULE_RUN_ROOT/cli.tgz" --ignore-scripts)
+          (cd packages/xpod-client && bun pm pack --filename "$MODULE_RUN_ROOT/client.tgz" --ignore-scripts)
           module=$(find "$MODULE_RUN_ROOT/build" -maxdepth 1 -name '*.tgz' -type f)
           test -n "$module"; test "$(printf '%s\n' "$module" | wc -l | tr -d ' ')" = 1
-          bun scripts/agentfs-native-ci/mounted/export-products.ts --workspace "$GITHUB_WORKSPACE" --module "$module" --cli "$MODULE_RUN_ROOT/cli.tgz" --native-archive "$MODULE_RUN_ROOT/native/native.zip" --target "$TARGET" --source-sha "$GITHUB_SHA" --build-receipt "$MODULE_RUN_ROOT/build.safe.json" --out "$MODULE_RUN_ROOT/product-export"
+          bun scripts/agentfs-native-ci/mounted/export-products.ts --workspace "$GITHUB_WORKSPACE" --module "$module" --cli "$MODULE_RUN_ROOT/cli.tgz" --client "$MODULE_RUN_ROOT/client.tgz" --native-archive "$MODULE_RUN_ROOT/native/native.zip" --target "$TARGET" --source-sha "$GITHUB_SHA" --build-receipt "$MODULE_RUN_ROOT/build.safe.json" --out "$MODULE_RUN_ROOT/product-export"
       - uses: actions/upload-artifact@v4
         if: steps.products.outcome == 'success'
         with:
@@ -257,7 +260,9 @@ jobs:
               cp "$MODULE_RUN_ROOT/product-$runtime/preparation.safe.json" "$MODULE_RUN_ROOT/export/preparation-$runtime.safe.json"
             fi
           done
-          cp "$MODULE_RUN_ROOT/native/native-facts.safe.json" "$MODULE_RUN_ROOT/export/native-facts.safe.json"
+          if [ -f "$MODULE_RUN_ROOT/native/native-facts.safe.json" ]; then
+            cp "$MODULE_RUN_ROOT/native/native-facts.safe.json" "$MODULE_RUN_ROOT/export/native-facts.safe.json"
+          fi
           if [ -f "$MODULE_RUN_ROOT/ripgrep.safe.json" ]; then
             cp "$MODULE_RUN_ROOT/ripgrep.safe.json" "$MODULE_RUN_ROOT/export/ripgrep.safe.json"
           fi
