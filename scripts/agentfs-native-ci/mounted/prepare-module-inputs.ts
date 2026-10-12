@@ -111,6 +111,11 @@ const platform: Projection = { ...fields('number', 'schemaVersion exit passedCas
 const receipts: Record<string, Projection> = {
   'module-install.safe.json': binding,
   'module-admission.safe.json': binding,
+  'cli-bare-bootstrap.safe.json': { ...fields('string', 'runtime coreSHA256 stdoutSHA256 stderrSHA256 category'), actualExit: 'number', actualSignal: 'string', actualWait: 'boolean' },
+  'cli-runtime.safe.json': { ...fields('string', 'runtime directory binSHA256 coreSHA256 clientCoreSHA256 cliArchiveSHA256 clientArchiveSHA256 bootstrapStdoutSHA256 bootstrapStderrSHA256 scope'),
+    bootstrapActualExit: 'number', bootstrapSignal: 'string', bootstrapActualWait: 'boolean' },
+  'cli-runtime-final.safe.json': { ...fields('string', 'runtime directory binSHA256 coreSHA256 clientCoreSHA256 cliArchiveSHA256 clientArchiveSHA256 bootstrapStdoutSHA256 bootstrapStderrSHA256 scope'),
+    bootstrapActualExit: 'number', bootstrapSignal: 'string', bootstrapActualWait: 'boolean', inventoryReverified: 'boolean' },
   'native-reuse.safe.json': { lifecycle, ...fields('string', 'state signal rawPath rawSHA256 nativeBuildSourceSHA archiveSHA256 pinsSHA256'), code: 'number', groupAbsent: 'boolean', rawClosedBeforeHash: 'boolean' },
   'module-chain.safe.json': { ...fields('string', 'status entry entrySHA256 helper helperSHA256 runtime runtimeSHA256 launcherSHA256 proxyCommandSHA256 nativeCommandSHA256 proxyOwnerSHA256'), authExchanges: 'number', ownedPids: ['number'], children: [child], ...fields('boolean', 'actualAuthenticatedRead actualConditionalWriteback daemonAbsenceProven kernelAbsent') },
   'module-chain-failure.safe.json': { ...fields('string', 'backend stage errorCode errorSHA256'), primaryFailureObserved: 'boolean' },
@@ -144,6 +149,26 @@ function projectBySchema(original: unknown, schema: Projection): unknown {
 export const MODULE_CHAIN_STAGES = ['mount', 'kernel-identity', 'proxy-identity', 'native-identity', 'read', 'writeback', 'unmount', 'final-verification'] as const;
 export const MODULE_CHAIN_ERROR_CODES = ['ENOENT', 'EACCES', 'EPERM', 'ETIMEDOUT', 'unknown'] as const;
 export function projectReceipt(name: string, original: unknown): unknown {
+  if (name === 'cli-bare-bootstrap.safe.json') {
+    const row = original as Record<string, any> | null; const schema = receipts[name] as Record<string, Projection>;
+    if (!row || Object.keys(row).some(key => !(key in schema)) || !['node', 'bun'].includes(row.runtime)
+      || row.actualWait !== true || row.actualSignal !== null || !Number.isSafeInteger(row.actualExit) || row.actualExit <= 0
+      || row.category !== 'missing_public_runtime_client'
+      || !['coreSHA256', 'stdoutSHA256', 'stderrSHA256'].every(key => typeof row[key] === 'string' && /^[a-f0-9]{64}$/.test(row[key]))) throw new Error('invalid bare CLI bootstrap receipt');
+    return projectBySchema(row, schema);
+  }
+  if (name === 'cli-runtime.safe.json' || name === 'cli-runtime-final.safe.json') {
+    const row = original as Record<string, any> | null;
+    const schema = receipts[name] as Record<string, Projection>;
+    if (!row || Object.keys(row).some(key => !(key in schema)) || !['node', 'bun'].includes(row.runtime)
+      || typeof row.directory !== 'string' || !path.isAbsolute(row.directory) || !/^xpod-afs-cli-runtime-[A-Za-z0-9]+$/.test(path.basename(row.directory))
+      || !['binSHA256', 'coreSHA256', 'clientCoreSHA256', 'cliArchiveSHA256', 'clientArchiveSHA256', 'bootstrapStdoutSHA256', 'bootstrapStderrSHA256'].every(key => typeof row[key] === 'string' && /^[a-f0-9]{64}$/.test(row[key]))
+      || row.bootstrapActualWait !== true || row.bootstrapActualExit !== null && (!Number.isSafeInteger(row.bootstrapActualExit) || row.bootstrapActualExit < 0)
+      || row.bootstrapSignal !== null && !/^SIG[A-Z0-9]+$/.test(row.bootstrapSignal)
+      || row.scope !== 'Exact validated tar dependency layout; not package-manager installation or registry publication'
+      || name === 'cli-runtime-final.safe.json' && row.inventoryReverified !== true) throw new Error('invalid CLI bootstrap receipt');
+    return projectBySchema(row, schema);
+  }
   if (name === 'installed-consumer-failure.safe.json') {
     const row = original as Record<string, any> | null;
     const validHash = (value: unknown) => value === null || typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
@@ -387,9 +412,24 @@ async function main(): Promise<void> {
     if (!Array.isArray(metadata.inputs) || metadata.inputs.length === 0) throw new Error('build inputs missing');
     for (const file of metadata.inputs) verifyBoundFile(file);
   }
+  const cliArchive = bound('--cli-archive', 'cli.tgz');
+  const clientArchive = bound('--client-archive', 'client.tgz');
+  // Reuse the serialized product validators; import after initialization of this module.
+  const { validateCliProduct, validateClientProduct } = await import('./export-products');
+  const cliProduct = await validateCliProduct(path.join(out, 'cli.tgz'), path.join(out, 'cli-validation'), sourceSHA, core.sha256,
+    JSON.parse(readFileSync(path.join(workspace, 'packages/xpod-cli/package.json'), 'utf8')), workspace);
+  const clientProduct = validateClientProduct(path.join(out, 'client.tgz'), path.join(out, 'client-validation'),
+    path.join(workspace, 'packages/xpod-client'), sourceSHA);
+  const cliManifest = JSON.parse(execFileSync('tar', ['-xOf', path.join(out, 'cli.tgz'), 'package/package.json'], { encoding: 'utf8' }));
+  if (Object.keys(cliManifest.dependencies ?? {}).length !== 1
+    || cliManifest.dependencies['@undefineds.co/xpod-client'] !== clientProduct.version) {
+    throw new Error('CLI tar must declare the exact public runtime client dependency');
+  }
   const runtime = (name: 'node' | 'bun') => { const filename = path.resolve(option(`--${name}`)); const sha256 = hashFile(filename); verifyBoundFile({ path: filename, sha256 }); const version = execFileSync(filename, ['--version'], { encoding: 'utf8' }).trim(); if (version !== (name === 'node' ? 'v22.21.1' : '1.4.2')) throw new Error('runtime pin mismatch'); return { path: path.resolve(option(`--consumer-${name}`)), sha256 }; };
   const input: ModuleAdmissionInputs = { schemaVersion: 1, target: target as ModuleAdmissionInputs['target'], workspace: path.resolve(option('--consumer-workspace')), evidence: path.resolve(option('--evidence')), home: path.resolve(option('--home')),
     moduleSourceSHA: sourceSHA, nativeBuildSourceSHA: source, driver: { ...driver, sourceSHA }, core: { ...core, sourceSHA },
+    cli: { archive: cliArchive, clientArchive, version: cliProduct.version, clientVersion: clientProduct.version,
+      files: cliProduct.files, clientFiles: clientProduct.files },
     module: { ...module, ...properties, integrity: `sha512-${createHash('sha512').update(readFileSync(path.join(out, 'module.tgz'))).digest('base64')}` },
     native: { archive, pins, receiptSHA256: native['native-receipt.json'], sourceKitSHA256: native['source-kit.json'] }, runtimes: { node: runtime('node'), bun: runtime('bun') } };
   if (git('rev-parse', 'HEAD') !== sourceSHA || git('status', '--porcelain', '--untracked-files=all')) throw new Error('source changed during preparation');

@@ -3,7 +3,7 @@ import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { collectModule, exportSafe, nativeFacts, projectReceipt, projectRecoveryDiagnostic, INSTALLED_CONSUMER_STAGES, verifyInstalledConsumerReceipts, recordInstalledConsumerFailure, assertInstalledConsumerProducer, persistInstalledConsumerReceipt } from '../../scripts/agentfs-native-ci/mounted/prepare-module-inputs';
-import { verifyModuleClientMaterials, moduleClientPath, hashBytes } from '../../scripts/agentfs-native-ci/mounted/module-admission';
+import { verifyModuleClientMaterials, moduleClientPath, hashBytes, verifyCliRuntimeTree, writeBootstrapEvidence } from '../../scripts/agentfs-native-ci/mounted/module-admission';
 
 function fixture(run: (root: string) => void): void {
   const parent = path.resolve('.test-data/module-input-preparation'); mkdirSync(parent, { recursive: true, mode: 0o700 });
@@ -16,6 +16,37 @@ async function asyncFixture(run: (root: string) => Promise<void>): Promise<void>
 }
 
 describe('module mounted input preparation', () => {
+  it('keeps the primary bootstrap error when private evidence recording fails', () => fixture(root => {
+    mkdirSync(path.join(root, 'cli-bootstrap.stdout.raw'));
+    const primary = new Error('bootstrap primary failure');
+    try { writeBootstrapEvidence(root, 'cli-bootstrap', Buffer.alloc(0), Buffer.alloc(0), {}, primary); throw new Error('expected rejection'); }
+    catch (error) { expect(error instanceof AggregateError).toBe(true); expect((error as AggregateError).errors[0]).toBe(primary); }
+  }));
+  it('exports only closed bootstrap identities and rejects injected private fields', () => {
+    const receipt = { runtime: 'node', directory: '/tmp/xpod-afs-cli-runtime-abc123', binSHA256: '1'.repeat(64), coreSHA256: '2'.repeat(64),
+      cliArchiveSHA256: '3'.repeat(64), clientArchiveSHA256: '4'.repeat(64), clientCoreSHA256: '7'.repeat(64), bootstrapStdoutSHA256: '5'.repeat(64), bootstrapStderrSHA256: '6'.repeat(64),
+      bootstrapActualExit: 0, bootstrapSignal: null, bootstrapActualWait: true,
+      scope: 'Exact validated tar dependency layout; not package-manager installation or registry publication' };
+    expect(projectReceipt('cli-runtime.safe.json', receipt)).toEqual(receipt);
+    const negative = { runtime: 'node', actualExit: 1, actualSignal: null, actualWait: true, coreSHA256: '1'.repeat(64),
+      stdoutSHA256: '2'.repeat(64), stderrSHA256: '3'.repeat(64), category: 'missing_public_runtime_client' };
+    expect(projectReceipt('cli-bare-bootstrap.safe.json', negative)).toEqual(negative);
+    expect(() => projectReceipt('cli-bare-bootstrap.safe.json', { ...negative, stderr: 'private-marker' })).toThrow();
+    expect(projectReceipt('cli-runtime-final.safe.json', { ...receipt, inventoryReverified: true })).toEqual({ ...receipt, inventoryReverified: true });
+    expect(() => projectReceipt('cli-runtime-final.safe.json', { ...receipt, inventoryReverified: false })).toThrow();
+    for (const addition of [{ credentials: 'private-marker' }, { stderr: 'private-marker' }, { coreSHA256: 'private-marker' }, { bootstrapActualWait: false }]) {
+      expect(() => projectReceipt('cli-runtime.safe.json', { ...receipt, ...addition })).toThrow('invalid CLI bootstrap receipt');
+    }
+  });
+  it('verifies the full installed dependency tree and rejects tampering and extra files', () => fixture(root => {
+    const client = path.join(root, 'node_modules/@undefineds.co/xpod-client'); mkdirSync(client, { recursive: true });
+    writeFileSync(path.join(root, 'package.json'), 'cli'); writeFileSync(path.join(client, 'package.json'), 'client');
+    const fact = (file: string) => ({ bytes: statSync(file).size, mode: statSync(file).mode & 0o777, sha256: hashBytes(readFileSync(file)) });
+    const authority = { files: { 'package.json': fact(path.join(root, 'package.json')) }, clientFiles: { 'package.json': fact(path.join(client, 'package.json')) } } as any;
+    verifyCliRuntimeTree(root, authority);
+    writeFileSync(path.join(client, 'extra'), 'unexpected'); expect(() => verifyCliRuntimeTree(root, authority)).toThrow('inventory mismatch'); rmSync(path.join(client, 'extra'));
+    writeFileSync(path.join(client, 'package.json'), 'tamper'); expect(() => verifyCliRuntimeTree(root, authority)).toThrow('inventory mismatch');
+  }));
   it('binds runtime source claims to actual producer metadata and nested source bytes', () => {
     const sources = { 'workspace/xpod-client/package.json': { bytes: 2, sha256: hashBytes('{}') }, 'workspace/xpod-client/src/index.ts': { bytes: 3, sha256: hashBytes('abc') } };
     const inventory = { schemaVersion: 1, files: Object.entries(sources).map(([path, file]) => ({ path, ...file })) };
