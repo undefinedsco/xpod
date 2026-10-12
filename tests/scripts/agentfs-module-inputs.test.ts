@@ -16,6 +16,30 @@ async function asyncFixture(run: (root: string) => Promise<void>): Promise<void>
 }
 
 describe('module mounted input preparation', () => {
+  it('restores only verified tar file modes under a restrictive process umask', () => fixture(root => {
+    const cliFiles = {
+      'package.json': JSON.stringify({ name: '@undefineds.co/xpod-cli', version: '0.1.0', bin: { xpod: './dist/bin/xpod' }, dependencies: { '@undefineds.co/xpod-client': '0.1.0' } }),
+      'dist/xpod.mjs': 'export {};\n', 'dist/bin/xpod': '#!/bin/sh\nexit 0\n',
+    };
+    const clientFiles = { 'package.json': JSON.stringify({ name: '@undefineds.co/xpod-client', version: '0.1.0' }), 'dist/library.cjs': 'module.exports = {};\n' };
+    const inventory = (files: Record<string, string>) => Object.fromEntries(Object.entries(files).map(([name, bytes]) => [name, {
+      bytes: Buffer.byteLength(bytes), sha256: hashBytes(bytes), mode: name === 'dist/bin/xpod' ? 0o755 : 0o644,
+    }]));
+    const pack = `import tarfile,io,json,sys\nwith tarfile.open(sys.argv[1],'w:gz') as t:\n for n,b in json.loads(sys.argv[2]).items():\n  b=b.encode();m=tarfile.TarInfo('package/'+n);m.size=len(b);m.mode=0o755 if n=='dist/bin/xpod' else 0o644;t.addfile(m,io.BytesIO(b))\n`;
+    const cli = path.join(root, 'cli.tgz'); const client = path.join(root, 'client.tgz');
+    execFileSync('python3', ['-c', pack, cli, JSON.stringify(cliFiles)]);
+    execFileSync('python3', ['-c', pack, client, JSON.stringify(clientFiles)]);
+    const input = path.join(root, 'input.json');
+    writeFileSync(input, JSON.stringify({ workspace: process.cwd(), core: { sha256: hashBytes(cliFiles['dist/xpod.mjs']) }, cli: {
+      archive: { path: cli, sha256: hashBytes(readFileSync(cli)) }, clientArchive: { path: client, sha256: hashBytes(readFileSync(client)) },
+      version: '0.1.0', clientVersion: '0.1.0', files: inventory(cliFiles), clientFiles: inventory(clientFiles),
+    } }));
+    const runner = path.join(root, 'umask.ts');
+    const module = path.resolve('scripts/agentfs-native-ci/mounted/module-admission.ts');
+    writeFileSync(runner, `import {materializeCliRuntime,verifyCliRuntimeTree} from ${JSON.stringify(module)};\nimport {readFileSync,rmSync} from 'node:fs';\nprocess.umask(0o077);const input=JSON.parse(readFileSync(process.argv[2],'utf8'));const result=materializeCliRuntime(input);try{verifyCliRuntimeTree(result.directory,input.cli);if(process.umask()!==0o077)throw Error('global umask changed');console.log('verified');}finally{rmSync(result.directory,{recursive:true,force:true});}\n`);
+    const result = spawnSync('bun', [runner, input], { encoding: 'utf8', timeout: 15_000 });
+    expect(result.error).toBeUndefined(); expect(result.status).toBe(0); expect(result.stdout.trim()).toBe('verified');
+  }));
   it('keeps the primary bootstrap error when private evidence recording fails', () => fixture(root => {
     mkdirSync(path.join(root, 'cli-bootstrap.stdout.raw'));
     const primary = new Error('bootstrap primary failure');

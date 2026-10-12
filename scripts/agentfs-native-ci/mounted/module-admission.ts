@@ -1,6 +1,6 @@
 import { spawn, spawnSync, execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { copyFileSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { x as extractTar } from 'tar';
@@ -70,22 +70,29 @@ function validateCliArtifacts(cli: CliRuntimeArtifacts, coreSHA256: string): voi
   }
 }
 
-export function verifyCliRuntimeTree(directory: string, expected: CliRuntimeArtifacts): void {
+function inspectCliRuntimeTree(directory: string, expected: CliRuntimeArtifacts, checkModes: boolean): Array<{ path: string; mode: number }> {
   const wanted = new Map(Object.entries(expected.files));
   for (const [name, fact] of Object.entries(expected.clientFiles)) wanted.set('node_modules/@undefineds.co/xpod-client/' + name, fact);
   const found = new Set<string>();
+  const verified: Array<{ path: string; mode: number }> = [];
   const visit = (current: string): void => {
     for (const name of readdirSync(current)) {
       const file = path.join(current, name); const stat = lstatSync(file);
       if (stat.isSymbolicLink()) throw new Error('CLI runtime link rejected');
       if (stat.isDirectory()) { visit(file); continue; }
       const relative = path.relative(directory, file).split(path.sep).join('/'); const fact = wanted.get(relative);
-      if (!stat.isFile() || !fact || stat.size !== fact.bytes || (stat.mode & 0o777) !== fact.mode || hashFile(file) !== fact.sha256) throw new Error('CLI runtime inventory mismatch');
+      if (!stat.isFile() || !fact || stat.size !== fact.bytes || (checkModes && (stat.mode & 0o777) !== fact.mode) || hashFile(file) !== fact.sha256) throw new Error('CLI runtime inventory mismatch');
       found.add(relative);
+      verified.push({ path: file, mode: fact.mode });
     }
   };
   visit(directory);
   if (found.size !== wanted.size) throw new Error('CLI runtime inventory incomplete');
+  return verified;
+}
+
+export function verifyCliRuntimeTree(directory: string, expected: CliRuntimeArtifacts): void {
+  inspectCliRuntimeTree(directory, expected, true);
 }
 
 /** Exact validated tar payloads, not package-manager or registry installation evidence. */
@@ -97,8 +104,11 @@ export function materializeCliRuntime(input: ModuleAdmissionInputs): { directory
   const relative = path.relative(workspace, realpathSync(directory));
   if (!relative || !relative.startsWith('..' + path.sep) && !path.isAbsolute(relative)) throw new Error('CLI consumer must be outside the workspace');
   const client = path.join(directory, 'node_modules/@undefineds.co/xpod-client'); mkdirSync(client, { recursive: true });
-  extractTar({ file: input.cli.archive.path, cwd: directory, strip: 1, strict: true, sync: true, noChmod: false });
-  extractTar({ file: input.cli.clientArchive.path, cwd: client, strip: 1, strict: true, sync: true, noChmod: false });
+  extractTar({ file: input.cli.archive.path, cwd: directory, strip: 1, strict: true, sync: true });
+  extractTar({ file: input.cli.clientArchive.path, cwd: client, strip: 1, strict: true, sync: true });
+  // Verify regular members and original bytes before restoring archive modes.
+  // The synchronous extractor leaves regular file modes filtered by umask.
+  for (const file of inspectCliRuntimeTree(directory, input.cli, false)) chmodSync(file.path, file.mode);
   verifyCliRuntimeTree(directory, input.cli);
   const manifest = JSON.parse(readFileSync(path.join(directory, 'package.json'), 'utf8'));
   const clientManifest = JSON.parse(readFileSync(path.join(client, 'package.json'), 'utf8'));
