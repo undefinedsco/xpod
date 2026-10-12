@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
+import canonicalHostSources from '../../packages/xpod-cli/scripts/canonical-host-sources.json';
 import { scanProduct, validateCliProduct, projectProductBuild, exportProducts, validateClientProduct } from '../../scripts/agentfs-native-ci/mounted/export-products';
 
 const source = 'a'.repeat(40);
@@ -16,11 +17,19 @@ const pack = `import tarfile,io,json,hashlib,sys
 manifest=json.loads(sys.argv[2]);change=sys.argv[3];files={}
 for n in ['dist/xpod.mjs','dist/bin/xpod','LICENSE','README.md','dist/client.d.ts','dist/client.mjs','dist/client.cjs','dist/tools.d.ts','dist/tools.mjs','dist/tools.cjs']:files[n]=b'payload'
 files['package.json']=json.dumps(manifest).encode()
-original=b'original';source=io.BytesIO()
+original=b'original';source=io.BytesIO();host_names=json.loads(sys.argv[4])
+source_files={'src/main.ts':original,**{'repository/src/'+n:b'canonical-host' for n in host_names}}
+if change=='missing-host':source_files.pop('repository/src/'+host_names[0])
+if change=='extra-host':source_files['repository/src/foreign.ts']=b'canonical-host'
+if change=='changed-host':source_files['repository/src/'+host_names[0]]=b'changed-host'
+source_rows=[{'path':n,'bytes':len(b),'sha256':hashlib.sha256(b).hexdigest()} for n,b in source_files.items()]
 with tarfile.open(fileobj=source,mode='w:gz') as t:
- m=tarfile.TarInfo('src/main.ts');m.size=len(original);t.addfile(m,io.BytesIO(original if change!='nested-source' else b'replaced'))
-producer={'source-inventory.json':json.dumps({'schemaVersion':1,'files':[{'path':'src/main.ts','bytes':len(original),'sha256':hashlib.sha256(original).hexdigest()}]}).encode(),'client-source.tar.gz':source.getvalue()}
-index={'producer':{'name':manifest['name'],'version':manifest['version']},'sourceAuthority':{'sourceCommit':'a'*40,'dirty':False,'snapshotSHA256':'b'*64,'scope':'CLI source plus explicitly mapped canonical runtime-client source; no claim of release acceptance or external dependency closure.'},'clientPayloads':{'cjsSHA256':hashlib.sha256(b'payload').hexdigest(),'esmSHA256':hashlib.sha256(b'payload').hexdigest()},'clientSource':'client-source.tar.gz','sourceInventory':'source-inventory.json','files':[{'path':n,'bytes':len(b),'sha256':hashlib.sha256(b).hexdigest()} for n,b in producer.items()]}
+ for n,b in source_files.items():
+  m=tarfile.TarInfo(n);m.size=len(b);t.addfile(m,io.BytesIO(b'replaced' if change=='nested-source' and n=='src/main.ts' else b))
+producer={'source-inventory.json':json.dumps({'schemaVersion':1,'files':source_rows}).encode(),'client-source.tar.gz':source.getvalue()}
+index={'producer':{'name':manifest['name'],'version':manifest['version']},'sourceAuthority':{'sourceCommit':'a'*40,'dirty':False,'snapshotSHA256':hashlib.sha256(json.dumps(source_rows,separators=(',',':')).encode()).hexdigest(),'scope':'CLI source plus explicitly mapped canonical host and runtime-client source; no claim of release acceptance or external dependency closure.'},'clientPayloads':{'cjsSHA256':hashlib.sha256(b'payload').hexdigest(),'esmSHA256':hashlib.sha256(b'payload').hexdigest()},'clientSource':'client-source.tar.gz','sourceInventory':'source-inventory.json','files':[{'path':n,'bytes':len(b),'sha256':hashlib.sha256(b).hexdigest()} for n,b in producer.items()]}
+if change=='changed-snapshot':index['sourceAuthority']['snapshotSHA256']='0'*64
+if change=='legacy-scope':index['sourceAuthority']['scope']='CLI source plus explicitly mapped canonical runtime-client source; no claim of release acceptance or external dependency closure.'
 if change=='unknown-source':index['sourceAuthority']['sourceCommit']=None
 if change=='authority-injection':index['sourceAuthority']['credentials']={'argv':['private-marker']}
 if change=='authority-snapshot-type':index['sourceAuthority']['snapshotSHA256']={'token':'private-marker'}
@@ -44,7 +53,12 @@ with tarfile.open(sys.argv[1],'w:gz') as t:
 async function fixture(change: string, action: (archive: string, root: string) => Promise<void> | void) {
   const parent = path.resolve('.test-data/agentfs-product-export'); mkdirSync(parent, { recursive: true });
   const root = mkdtempSync(path.join(parent, 'case-')); const archive = path.join(root, 'cli.tgz');
-  try { execFileSync('python3', ['-c', pack, archive, JSON.stringify(manifest), change]); await action(archive, root); }
+  try {
+    for (const name of canonicalHostSources) {
+      const file = path.join(root, 'src', name); mkdirSync(path.dirname(file), { recursive: true }); writeFileSync(file, 'canonical-host');
+    }
+    execFileSync('python3', ['-c', pack, archive, JSON.stringify(manifest), change, JSON.stringify(canonicalHostSources)]); await action(archive, root);
+  }
   finally { rmSync(root, { recursive: true, force: true }); }
 }
 describe('exact product export', () => {
@@ -67,14 +81,14 @@ describe('exact product export', () => {
     }));
   }
   it('validates actual serialized public payloads, types and nested producer source', () => fixture('', async (archive, root) => {
-    const value = await validateCliProduct(archive, path.join(root, 'materials'), source, hash('payload'), manifest);
+    const value = await validateCliProduct(archive, path.join(root, 'materials'), source, hash('payload'), manifest, root);
     expect(value.name).toBe(manifest.name); expect(value.files['dist/tools.d.ts'].sha256).toBe(hash('payload'));
     expect(Object.keys(value.producerSourceAuthority).sort()).toEqual(['dirty', 'scope', 'snapshotSHA256', 'sourceCommit']);
     expect(value.producerSourceAuthority.sourceCommit).toBe(source);
   }));
-  for (const change of ['authority-injection', 'authority-snapshot-type', 'unknown-source', 'old-source-scope', 'dirty', 'unbound-client', 'material-hash', 'extra-material', 'missing-type', 'missing-bin', 'nested-source']) {
+  for (const change of ['missing-host', 'extra-host', 'changed-host', 'changed-snapshot', 'legacy-scope', 'authority-injection', 'authority-snapshot-type', 'unknown-source', 'old-source-scope', 'dirty', 'unbound-client', 'material-hash', 'extra-material', 'missing-type', 'missing-bin', 'nested-source']) {
     it(`rejects actual ${change} product`, () => fixture(change, async (archive, root) => {
-      await expect(validateCliProduct(archive, path.join(root, 'materials'), source, hash('payload'), manifest)).rejects.toThrow();
+      await expect(validateCliProduct(archive, path.join(root, 'materials'), source, hash('payload'), manifest, root)).rejects.toThrow();
     }));
   }
   for (const change of ['duplicate', 'symlink', 'escape', 'control']) {
@@ -83,7 +97,7 @@ describe('exact product export', () => {
     }));
   }
   it('rejects a packed core different from the actual mounted core', () => fixture('', async (archive, root) => {
-    await expect(validateCliProduct(archive, path.join(root, 'materials'), source, hash('different'), manifest)).rejects.toThrow('payload mismatch');
+    await expect(validateCliProduct(archive, path.join(root, 'materials'), source, hash('different'), manifest, root)).rejects.toThrow('payload mismatch');
   }));
   it('keeps product artifact separate from safe consumer evidence and success gated', () => {
     const workflow = readFileSync('.github/workflows/agentfs-module-mounted-acceptance.yml', 'utf8');

@@ -7,7 +7,11 @@ fail() {
 }
 
 [[ "$(uname -s)" == "Darwin" ]] || fail "macOS is required"
-[[ "$(uname -m)" == "arm64" ]] || fail "macOS arm64 is required"
+case "$(uname -m)" in
+  arm64) native_arch=arm64 ;;
+  x86_64) native_arch=x64 ;;
+  *) fail "unsupported macOS architecture" ;;
+esac
 
 workspace_root=${XPOD_QLEVER_WORKSPACE_ROOT:?XPOD_QLEVER_WORKSPACE_ROOT is required}
 work_root=${XPOD_QLEVER_PLATFORM_BUILD_ROOT:?XPOD_QLEVER_PLATFORM_BUILD_ROOT is required}
@@ -154,7 +158,7 @@ fi
 python3 "$qlever_root/scripts/verify-local-runtime-artifacts.py" \
   --prefix "$artifact_dir" \
   --lock "$lock_file" \
-  --build-source macos-arm64 \
+  --build-source "macos-$native_arch" \
   --smoke-database "$smoke_database"
 test -f "$artifact_dir/manifest.json"
 

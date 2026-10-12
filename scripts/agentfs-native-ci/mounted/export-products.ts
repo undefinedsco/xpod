@@ -5,6 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { collectModule, nativeFacts } from './prepare-module-inputs';
 import { verifyProducerSourceArchive } from '../../../packages/xpod-cli/src/producer-source';
+import canonicalHostSources from '../../../packages/xpod-cli/scripts/canonical-host-sources.json';
 
 // Inspect the serialized package, never trust a separately built directory.
 const scan = `import tarfile,json,hashlib,pathlib,sys,re
@@ -31,7 +32,7 @@ export function scanProduct(archive: string, directory: string): { files: Record
   return JSON.parse(execFileSync('python3', ['-c', scan, archive, directory], { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 }));
 }
 const hash = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
-const producerScope = 'CLI source plus explicitly mapped canonical runtime-client source; no claim of release acceptance or external dependency closure.';
+const producerScope = 'CLI source plus explicitly mapped canonical host and runtime-client source; no claim of release acceptance or external dependency closure.';
 const buildCommands = ['bun run build:packages', 'bun packages/xpod-afs/scripts/build-package.ts', 'bun build module-admission.ts --target=node --format=esm'];
 export function projectProductBuild(build: any, sourceSHA: string) {
   const keys = ['sourceSHA', 'sourceClean', 'exit', 'coreSHA256', 'driverSHA256', 'commands', 'metafiles'];
@@ -42,7 +43,7 @@ export function projectProductBuild(build: any, sourceSHA: string) {
     || typeof build.driverSHA256 !== 'string' || !/^[a-f0-9]{64}$/.test(build.driverSHA256)) throw new Error('invalid product build receipt');
   return { sourceSHA, sourceClean: true, exit: 0, coreSHA256: build.coreSHA256, driverSHA256: build.driverSHA256, commands: [...buildCommands] };
 }
-export async function validateCliProduct(archive: string, directory: string, sourceSHA: string, coreSHA256: string, expected: any) {
+export async function validateCliProduct(archive: string, directory: string, sourceSHA: string, coreSHA256: string, expected: any, workspace: string) {
   const { files, documents } = scanProduct(archive, directory);
   const manifest = documents['package.json'];
   if (manifest?.name !== '@undefineds.co/xpod-cli' || manifest.version !== expected.version
@@ -78,6 +79,17 @@ export async function validateCliProduct(archive: string, directory: string, sou
   // Exact public source archive membership/bytes uses the canonical verifier.
   for (const field of ['clientSource', 'sourceInventory']) if (!names.has(producer[field])) throw new Error('unbound producer source');
   await verifyProducerSourceArchive({ archive: path.join(root, producer.clientSource), inventory: path.join(root, producer.sourceInventory) });
+  const sourceInventory = JSON.parse(readFileSync(path.join(root, producer.sourceInventory), 'utf8'));
+  if (hash(Buffer.from(JSON.stringify(sourceInventory.files))) !== authority.snapshotSHA256) throw new Error('producer source snapshot mismatch');
+  const hosts = sourceInventory.files.filter((file: any) => file.path.startsWith('repository/'));
+  const expectedHosts = canonicalHostSources.map(file => `repository/src/${file}`).sort();
+  if (JSON.stringify(hosts.map((file: any) => file.path).sort()) !== JSON.stringify(expectedHosts)) throw new Error('canonical host inventory mismatch');
+  for (const file of hosts) {
+    const canonical = path.join(workspace, file.path.slice('repository/'.length));
+    if (!lstatSync(canonical).isFile() || lstatSync(canonical).isSymbolicLink()) throw new Error('canonical host source is not regular');
+    const bytes = readFileSync(canonical);
+    if (bytes.length !== file.bytes || hash(bytes) !== file.sha256) throw new Error('canonical host source mismatch');
+  }
   for (const [kind, member] of [['cjs', 'dist/client.cjs'], ['esm', 'dist/client.mjs']]) {
     if (producer.clientPayloads?.[kind + 'SHA256'] !== files[member].sha256) throw new Error('producer client binding mismatch');
   }
@@ -140,7 +152,7 @@ export async function exportProducts(workspace: string, moduleArchive: string, c
     const nativeKit = original['source-kit.json'];
     if (!nativeReceipt || !nativeKit) throw new Error('missing product native provenance');
     const afs = collectModule(moduleArchive, target, sourceSHA, nativeReceipt, nativeKit);
-    const cli = await validateCliProduct(cliArchive, path.join(temp, 'cli'), sourceSHA, build.coreSHA256, JSON.parse(readFileSync(path.join(workspace, 'packages/xpod-cli/package.json'), 'utf8')));
+    const cli = await validateCliProduct(cliArchive, path.join(temp, 'cli'), sourceSHA, build.coreSHA256, JSON.parse(readFileSync(path.join(workspace, 'packages/xpod-cli/package.json'), 'utf8')), workspace);
     const client = validateClientProduct(clientArchive, path.join(temp, 'client'), path.join(workspace, 'packages/xpod-client'), sourceSHA);
     const event = process.env.GITHUB_EVENT_NAME ?? null;
     const githubSHA = process.env.GITHUB_SHA ?? null;
