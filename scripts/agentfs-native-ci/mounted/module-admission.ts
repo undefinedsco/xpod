@@ -1,13 +1,23 @@
-import { spawn, execFileSync } from 'node:child_process';
+import { spawn, spawnSync, execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { lstatSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
+import { tmpdir } from 'node:os';
+import { x as extractTar } from 'tar';
 import { fileURLToPath } from 'node:url';
 import { ModuleStore } from '../../../packages/xpod-cli/src/module-store';
 import { observeChildLifecycle, reapOwnedGroup, runMountedPlatformAdmission, type InstalledMountedProduct } from './platform-admission';
 
 export const MODULE_CHAIN_CASE = 'mounts through the installed core and AFS module with public-client authentication, then closes its proxy and kernel mount';
 export interface BoundFile { path: string; sha256: string }
+export interface CliRuntimeArtifacts {
+  archive: BoundFile;
+  clientArchive: BoundFile;
+  version: string;
+  clientVersion: string;
+  files: Record<string, { bytes: number; sha256: string; mode: number }>;
+  clientFiles: Record<string, { bytes: number; sha256: string; mode: number }>;
+}
 export interface ModuleAdmissionInputs {
   schemaVersion: 1; target: 'linux-arm64' | 'darwin-arm64' | 'linux-x64' | 'darwin-x64'; workspace: string; evidence: string; home: string;
   moduleSourceSHA: string; nativeBuildSourceSHA: string;
@@ -15,11 +25,101 @@ export interface ModuleAdmissionInputs {
   module: BoundFile & { name: string; version: string; integrity: string; manifestSHA256: string; inventorySHA256: string;
     sourceTreeSHA256: string; helperSHA256: string; entrySHA256: string; librarySHA256: string; clientSHA256: string };
   core: BoundFile & { sourceSHA: string };
+  cli: CliRuntimeArtifacts;
   native: { archive: BoundFile; pins: BoundFile; receiptSHA256: string; sourceKitSHA256: string };
   runtimes: { node: BoundFile; bun: BoundFile };
 }
 export const hashBytes = (bytes: Buffer | string): string => createHash('sha256').update(bytes).digest('hex');
 export const hashFile = (filename: string): string => hashBytes(readFileSync(filename));
+
+function createCliFixtureDirectory(prefix: string): string {
+  const parent = path.join(tmpdir(), '.test-data');
+  mkdirSync(parent, { recursive: true, mode: 0o700 });
+  const stat = lstatSync(parent);
+  if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error('regular fixture parent required');
+  return mkdtempSync(path.join(parent, prefix));
+}
+
+export function writeBootstrapEvidence(evidence: string, prefix: string, stdout: Buffer | null, stderr: Buffer | null,
+  receipt: object, primaryFailure?: Error): void {
+  try {
+    writeFileSync(path.join(evidence, prefix + '.stdout.raw'), stdout ?? Buffer.alloc(0), { flag: 'wx', mode: 0o600 });
+    writeFileSync(path.join(evidence, prefix + '.stderr.raw'), stderr ?? Buffer.alloc(0), { flag: 'wx', mode: 0o600 });
+    writeFileSync(path.join(evidence, prefix === 'cli-bootstrap' ? 'cli-runtime.safe.json' : prefix + '.safe.json'), JSON.stringify(receipt) + '\n', { flag: 'wx', mode: 0o600 });
+  } catch (recordingFailure) {
+    if (primaryFailure) throw new AggregateError([primaryFailure, recordingFailure], 'CLI bootstrap and evidence write failed');
+    throw recordingFailure;
+  }
+  if (primaryFailure) throw primaryFailure;
+}
+
+function validateCliArtifacts(cli: CliRuntimeArtifacts, coreSHA256: string): void {
+  if (!cli || !/^\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?$/.test(cli.version ?? '')
+    || !/^\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?$/.test(cli.clientVersion ?? '')) throw new Error('CLI runtime authority invalid');
+  for (const inventory of [cli.files, cli.clientFiles]) {
+    if (!inventory || !Object.keys(inventory).length) throw new Error('CLI runtime inventory missing');
+    for (const [name, fact] of Object.entries(inventory)) {
+      if (name.split('/').some(part => !part || part === '.' || part === '..') || /[\x00-\x1f\\:]/.test(name)
+        || !Number.isSafeInteger(fact.bytes) || fact.bytes < 0 || !Number.isInteger(fact.mode) || fact.mode < 0 || fact.mode > 0o777
+        || !/^[a-f0-9]{64}$/.test(fact.sha256)) throw new Error('CLI runtime inventory invalid');
+    }
+  }
+  if (!cli.files['package.json'] || !cli.files['dist/bin/xpod'] || !(cli.files['dist/bin/xpod'].mode & 0o111)
+    || cli.files['dist/xpod.mjs']?.sha256 !== coreSHA256 || !cli.clientFiles['package.json'] || !cli.clientFiles['dist/library.cjs']) {
+    throw new Error('CLI runtime payload binding missing');
+  }
+}
+
+function inspectCliRuntimeTree(directory: string, expected: CliRuntimeArtifacts, checkModes: boolean): Array<{ path: string; mode: number }> {
+  const wanted = new Map(Object.entries(expected.files));
+  for (const [name, fact] of Object.entries(expected.clientFiles)) wanted.set('node_modules/@undefineds.co/xpod-client/' + name, fact);
+  const found = new Set<string>();
+  const verified: Array<{ path: string; mode: number }> = [];
+  const visit = (current: string): void => {
+    for (const name of readdirSync(current)) {
+      const file = path.join(current, name); const stat = lstatSync(file);
+      if (stat.isSymbolicLink()) throw new Error('CLI runtime link rejected');
+      if (stat.isDirectory()) { visit(file); continue; }
+      const relative = path.relative(directory, file).split(path.sep).join('/'); const fact = wanted.get(relative);
+      if (!stat.isFile() || !fact || stat.size !== fact.bytes || (checkModes && (stat.mode & 0o777) !== fact.mode) || hashFile(file) !== fact.sha256) throw new Error('CLI runtime inventory mismatch');
+      found.add(relative);
+      verified.push({ path: file, mode: fact.mode });
+    }
+  };
+  visit(directory);
+  if (found.size !== wanted.size) throw new Error('CLI runtime inventory incomplete');
+  return verified;
+}
+
+export function verifyCliRuntimeTree(directory: string, expected: CliRuntimeArtifacts): void {
+  inspectCliRuntimeTree(directory, expected, true);
+}
+
+/** Exact validated tar payloads, not package-manager or registry installation evidence. */
+export function materializeCliRuntime(input: ModuleAdmissionInputs): { directory: string; bin: string; core: string } {
+  validateCliArtifacts(input.cli, input.core.sha256);
+  verifyBoundFile(input.cli.archive); verifyBoundFile(input.cli.clientArchive);
+  const directory = createCliFixtureDirectory('xpod-afs-cli-runtime-');
+  const workspace = realpathSync(input.workspace);
+  const relative = path.relative(workspace, realpathSync(directory));
+  if (!relative || !relative.startsWith('..' + path.sep) && !path.isAbsolute(relative)) throw new Error('CLI consumer must be outside the workspace');
+  const client = path.join(directory, 'node_modules/@undefineds.co/xpod-client'); mkdirSync(client, { recursive: true });
+  extractTar({ file: input.cli.archive.path, cwd: directory, strip: 1, strict: true, sync: true });
+  extractTar({ file: input.cli.clientArchive.path, cwd: client, strip: 1, strict: true, sync: true });
+  // Verify regular members and original bytes before restoring archive modes.
+  // The synchronous extractor leaves regular file modes filtered by umask.
+  for (const file of inspectCliRuntimeTree(directory, input.cli, false)) chmodSync(file.path, file.mode);
+  verifyCliRuntimeTree(directory, input.cli);
+  const manifest = JSON.parse(readFileSync(path.join(directory, 'package.json'), 'utf8'));
+  const clientManifest = JSON.parse(readFileSync(path.join(client, 'package.json'), 'utf8'));
+  if (manifest.name !== '@undefineds.co/xpod-cli' || manifest.version !== input.cli.version
+    || manifest.bin?.xpod !== './dist/bin/xpod' || Object.keys(manifest.dependencies ?? {}).length !== 1
+    || manifest.dependencies['@undefineds.co/xpod-client'] !== input.cli.clientVersion
+    || clientManifest.name !== '@undefineds.co/xpod-client' || clientManifest.version !== input.cli.clientVersion) throw new Error('CLI dependency layout mismatch');
+  const core = path.join(directory, 'dist/xpod.mjs');
+  if (hashFile(core) !== input.core.sha256) throw new Error('CLI core payload mismatch');
+  return { directory, core, bin: path.join(directory, 'dist/bin/xpod') };
+}
 /** Select from the declared producer contract, never from whichever file exists. */
 export function moduleClientPath(kit: any, member: (name: string) => { sha256: string; size: number }, members?: string[]): string {
   const materials = kit?.publicClientMaterials;
@@ -103,7 +203,8 @@ export function readModuleAdmissionInputs(filename: string, authoritySHA256: str
     throw new Error('module admission authority is invalid');
   }
   if (input.target !== `${process.platform}-${process.arch}`) throw new Error('module admission platform mismatch');
-  for (const value of [input.module, input.core, input.driver, input.native?.archive, input.native?.pins, input.runtimes?.node, input.runtimes?.bun]) verifyBoundFile(value);
+  validateCliArtifacts(input.cli, input.core.sha256);
+  for (const value of [input.module, input.core, input.cli?.archive, input.cli?.clientArchive, input.driver, input.native?.archive, input.native?.pins, input.runtimes?.node, input.runtimes?.bun]) verifyBoundFile(value);
   for (const value of [input.module.manifestSHA256, input.module.inventorySHA256, input.module.sourceTreeSHA256,
     input.module.helperSHA256, input.module.entrySHA256, input.module.librarySHA256, input.module.clientSHA256,
     input.native.receiptSHA256, input.native.sourceKitSHA256]) {
@@ -189,8 +290,33 @@ export async function installModuleProduct(input: ModuleAdmissionInputs, runtime
   const executable = input.runtimes[runtime]; verifyBoundFile(executable); verifyBoundFile(input.core);
   const version = execFileSync(executable.path, ['--version'], { encoding: 'utf8' }).trim();
   if (runtime === 'node' ? version !== 'v22.21.1' : version !== '1.4.2') throw new Error('consumer runtime version mismatch');
+  const bareDirectory = createCliFixtureDirectory('xpod-afs-bare-core-');
+  const bareCore = path.join(bareDirectory, 'core.mjs'); copyFileSync(input.core.path, bareCore); verifyBoundFile({ path: bareCore, sha256: input.core.sha256 });
+  const bare = spawnSync(executable.path, [bareCore, '--help'], { cwd: bareDirectory, env: isolatedModuleEnvironment(input.home), timeout: 15000 });
+  const missingClient = /@undefineds\.co\/xpod-client/.test(String(bare.stderr)) && /Cannot find|ERR_MODULE_NOT_FOUND/.test(String(bare.stderr));
+  const bareFailure = bare.error || bare.signal || bare.status === null || bare.status === 0 || !missingClient
+    ? bare.error ?? new Error('bare core negative control did not prove missing Client dependency') : undefined;
+  writeBootstrapEvidence(input.evidence, 'cli-bare-bootstrap', bare.stdout, bare.stderr, { runtime, actualExit: bare.status, actualSignal: bare.signal,
+    actualWait: true, coreSHA256: input.core.sha256, stdoutSHA256: hashBytes(bare.stdout ?? Buffer.alloc(0)), stderrSHA256: hashBytes(bare.stderr ?? Buffer.alloc(0)),
+    category: missingClient ? 'missing_public_runtime_client' : 'unclassified' }, bareFailure);
   const launcher = path.join(input.evidence, 'module-core-launcher');
-  writeFileSync(launcher, `#!/bin/sh\nunset NODE_PATH NODE_OPTIONS BUN_OPTIONS\nexport HOME=${quote(input.home)}\nexport SOLID_HOME=${quote(path.join(input.home, '.solid'))}\nexec ${quote(executable.path)} ${quote(input.core.path)} "$@"\n`, { flag: 'wx', mode: 0o700 });
+  const cli = materializeCliRuntime(input);
+  const runtimePath = createCliFixtureDirectory('xpod-afs-cli-path-');
+  symlinkSync(executable.path, path.join(runtimePath, runtime));
+  const consumerPath = `${runtimePath}:/usr/bin:/bin`;
+  const selected = execFileSync('/bin/sh', ['-c', 'command -v bun || command -v node'], { env: { PATH: consumerPath }, encoding: 'utf8' }).trim();
+  if (selected !== path.join(runtimePath, runtime)) throw new Error('public launcher runtime selection mismatch');
+  writeFileSync(launcher, `#!/bin/sh\nunset NODE_PATH NODE_OPTIONS BUN_OPTIONS\nexport HOME=${quote(input.home)}\nexport SOLID_HOME=${quote(path.join(input.home, '.solid'))}\nexport PATH=${quote(consumerPath)}\nexec ${quote(cli.bin)} "$@"\n`, { flag: 'wx', mode: 0o700 });
+  const help = spawnSync(launcher, ['--help'], { env: isolatedModuleEnvironment(input.home), timeout: 15000 });
+  const helpFailure = help.error || help.status !== 0 || help.signal ? help.error ?? new Error('public CLI bootstrap failed') : undefined;
+  writeBootstrapEvidence(input.evidence, 'cli-bootstrap', help.stdout, help.stderr, {
+    runtime, directory: cli.directory, binSHA256: hashFile(cli.bin), coreSHA256: hashFile(cli.core),
+    clientCoreSHA256: hashFile(path.join(cli.directory, 'node_modules/@undefineds.co/xpod-client/dist/library.cjs')),
+    cliArchiveSHA256: input.cli.archive.sha256, clientArchiveSHA256: input.cli.clientArchive.sha256,
+    bootstrapActualExit: help.status, bootstrapSignal: help.signal, bootstrapActualWait: true,
+    bootstrapStdoutSHA256: hashBytes(help.stdout ?? Buffer.alloc(0)), bootstrapStderrSHA256: hashBytes(help.stderr ?? Buffer.alloc(0)),
+    scope: 'Exact validated tar dependency layout; not package-manager installation or registry publication',
+  }, helpFailure);
   const binding = { profile: 'afs-module', moduleSourceSHA: input.moduleSourceSHA, nativeBuildSourceSHA: input.nativeBuildSourceSHA,
     moduleArchiveSHA256: input.module.sha256, moduleSRI: input.module.integrity, manifestSHA256: input.module.manifestSHA256,
     inventorySHA256: input.module.inventorySHA256, moduleSourceTreeSHA256: input.module.sourceTreeSHA256,
@@ -203,7 +329,7 @@ export async function installModuleProduct(input: ModuleAdmissionInputs, runtime
     binding, additionalTests: ['tests/agentfs-pod/installedModuleMountedChain.test.ts'], additionalRequiredCases: [MODULE_CHAIN_CASE],
     env: { ...isolatedModuleEnvironment(input.home, input.evidence),
       XPOD_AGENTFS_MODULE_ENTRY: entry, XPOD_AGENTFS_MODULE_RUNTIME: executable.path,
-      XPOD_AGENTFS_MODULE_CORE: input.core.path, XPOD_AGENTFS_MODULE_STORE: store.root, XPOD_AGENTFS_MODULE_EVIDENCE: input.evidence,
+      XPOD_AGENTFS_MODULE_CORE: cli.core, XPOD_AGENTFS_MODULE_STORE: store.root, XPOD_AGENTFS_MODULE_EVIDENCE: input.evidence,
       // Test tooling is separate from the deliberately Bun-free consumer PATH.
       XPOD_AGENTFS_ADMISSION_FIXTURE: JSON.stringify({ driver: input.driver, runtimes: input.runtimes }) } };
 }
@@ -242,7 +368,11 @@ async function main(): Promise<void> {
     || chain.helperSHA256 !== input.module.helperSHA256 || cleanup.cleanupVerified !== true || cleanup.identitiesKnown !== true
     || cleanup.daemonsAbsent !== true || cleanup.kernelAbsent !== true || cleanup.groupsAbsent !== true
     || cleanup.unmountClosedSuccessfully !== true) throw new Error('actual module chain or cleanup proof incomplete');
-  verifyBoundFile(input.module); verifyBoundFile(input.core); await new ModuleStore({ root: String(product.binding.storeRoot), platform: process.platform, arch: process.arch }).current('afs');
+  verifyBoundFile(input.module); verifyBoundFile(input.core); verifyBoundFile(input.cli.archive); verifyBoundFile(input.cli.clientArchive);
+  const cliReceipt = JSON.parse(readFileSync(path.join(input.evidence, 'cli-runtime.safe.json'), 'utf8'));
+  verifyCliRuntimeTree(cliReceipt.directory, input.cli);
+  writeFileSync(path.join(input.evidence, 'cli-runtime-final.safe.json'), JSON.stringify({ ...cliReceipt, inventoryReverified: true }) + '\n', { flag: 'wx', mode: 0o600 });
+  await new ModuleStore({ root: String(product.binding.storeRoot), platform: process.platform, arch: process.arch }).current('afs');
   writeFileSync(path.join(input.evidence, 'module-admission.safe.json'), JSON.stringify({ ...product.binding, inputAuthoritySHA256: authority,
     actualPlatformExit: exit, moduleAndCoreArtifactUnchanged: true, installedInventoryReverified: true,
     driverSHA256: input.driver.sha256, chainReceiptSHA256: hashFile(path.join(input.evidence, 'module-chain.safe.json')),
