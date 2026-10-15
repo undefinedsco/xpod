@@ -119,6 +119,13 @@ function archiveManifests(file, limits = {}) {
   const manifests = [root, ...[...bundled].sort().map(item => read('package/node_modules/' + name(item) + '/package.json'))];
   return { archive: { bytes: bytes.length, sha256: sha256(bytes) }, expandedBytes, manifestBytes: total, manifests };
 }
+function writeDiagnosticEvidence(output, result) {
+  try {
+    const bytes = Buffer.from(JSON.stringify(result, null, 2) + '\n');
+    fs.writeFileSync(output, bytes, { flag: 'wx', mode: 0o600 });
+    return { status: result.status, bytes: bytes.length, sha256: sha256(bytes) };
+  } catch { return { status: 'unavailable', reason: 'evidence-write-failed' }; }
+}
 function captureManifestEvidence(output, original, actual = original, runtime = null) {
   // Diagnostic failure must never replace the original build/install outcome.
   let result;
@@ -137,10 +144,60 @@ function captureManifestEvidence(output, original, actual = original, runtime = 
     result = { schemaVersion: 1, kind: 'legacy-package-manifest-evidence', status: 'unavailable',
       reason: error.evidenceReason ?? 'archive-read-failed', sourceQualified: false, releaseQualified: false };
   }
-  try {
-    const bytes = Buffer.from(JSON.stringify(result, null, 2) + '\n');
-    fs.writeFileSync(output, bytes, { flag: 'wx', mode: 0o600 });
-    return { status: result.status, bytes: bytes.length, sha256: sha256(bytes) };
-  } catch { return { status: 'unavailable', reason: 'evidence-write-failed' }; }
+  return writeDiagnosticEvidence(output, result);
 }
-module.exports = { archiveManifests, captureManifestEvidence };
+/** Observe the actual parsed publication record; never rewrite registry supply. */
+function captureRegistryMetadataEvidence(output, record, artifact, inputEvidenceFile) {
+  let result;
+  try {
+    if (!record || typeof record !== 'object') fail('registry-publication-record-unavailable');
+    if (Object.prototype.hasOwnProperty.call(record, '_attachments')) fail('registry-unprocessed-publication-record');
+    const inputStat = fs.lstatSync(inputEvidenceFile);
+    if (!inputStat.isFile() || inputStat.isSymbolicLink() || inputStat.size > TOTAL_LIMIT) fail('registry-input-evidence-invalid');
+    const inputBytes = fs.readFileSync(inputEvidenceFile), input = JSON.parse(inputBytes);
+    const archive = { bytes: artifact.bytes.length, sha256: sha256(artifact.bytes) };
+    if (input.status !== 'captured' || input.runtime !== 'bun' || input.transformation !== 'none'
+      || input.original?.archive?.bytes !== archive.bytes || input.original.archive.sha256 !== archive.sha256
+      || input.selectedInput?.archive?.bytes !== archive.bytes || input.selectedInput.archive.sha256 !== archive.sha256) fail('registry-input-archive-mismatch');
+    const root = input.selectedInput.manifests.find(row => row.path === 'package/package.json' && row.status === 'present');
+    if (!root || root.manifest.name !== artifact.manifest.name || root.manifest.version !== artifact.manifest.version) fail('registry-input-identity-mismatch');
+    const recordBytes = Buffer.from(JSON.stringify(record));
+    if (recordBytes.length > TOTAL_LIMIT) fail('registry-record-bound');
+    // This snapshot is of the API's parsed attachment-stripped object. It is not wire bytes.
+    const snapshot = JSON.parse(recordBytes);
+    const version = snapshot.versions?.[artifact.manifest.version];
+    if (!version) fail('registry-version-unavailable');
+    const manifest = projection(version), versionBytes = Buffer.from(JSON.stringify(version));
+    const fields = ['name', 'version', 'dependencies', 'optionalDependencies', 'peerDependencies',
+      'peerDependenciesMeta', 'bundledDependencies', 'bundleDependencies'];
+    const stable = value => JSON.stringify(value, (_key, item) => item && typeof item === 'object' && !Array.isArray(item)
+      ? Object.fromEntries(Object.entries(item).sort(([a], [b]) => a.localeCompare(b))) : item);
+    const comparison = Object.fromEntries(fields.map(field => [field,
+      stable(root.manifest[field]) === stable(manifest[field]) ? 'equal'
+        : manifest[field] === undefined ? 'metadata-missing'
+          : root.manifest[field] === undefined ? 'archive-missing' : 'different']));
+    const dist = version.dist ?? {};
+    const hashed = value => typeof value === 'string'
+      ? { bytes: Buffer.byteLength(value), sha256: sha256(Buffer.from(value)) } : null;
+    result = { schemaVersion: 1, kind: 'legacy-registry-metadata-evidence', status: 'captured', archive,
+      selectedInputEvidence: { path: 'install.manifests.json', bytes: inputBytes.length, sha256: sha256(inputBytes) },
+      publicationRecord: { source: 'createRegistry.publishedMetadata()',
+        encoding: 'JSON.stringify of parsed PUT body after removing _attachments; not original HTTP bytes',
+        rawPutBytesRetained: false, bytes: recordBytes.length, sha256: sha256(recordBytes) },
+      packumentName: name(snapshot.name), packumentNameMatchesArchive: snapshot.name === artifact.manifest.name,
+      versionRecord: { key: artifact.manifest.version, bytes: versionBytes.length, sha256: sha256(versionBytes), manifest,
+        dist: { integrity: typeof dist.integrity === 'string' && /^sha512-[A-Za-z0-9+/]{86}==$/.test(dist.integrity) ? dist.integrity : hashed(dist.integrity),
+          shasum: typeof dist.shasum === 'string' && /^[a-f0-9]{40}$/.test(dist.shasum) ? dist.shasum : hashed(dist.shasum),
+          tarball: hashed(dist.tarball) } },
+      comparison, distMatchesArchive: {
+        integrity: dist.integrity === 'sha512-' + crypto.createHash('sha512').update(artifact.bytes).digest('base64'),
+        shasum: dist.shasum === crypto.createHash('sha1').update(artifact.bytes).digest('hex') },
+      installationOutcome: 'not-attested', sourceQualified: false, releaseQualified: false };
+    if (Buffer.byteLength(JSON.stringify(result, null, 2) + '\n') > TOTAL_LIMIT) fail('registry-evidence-output-bound');
+  } catch (error) {
+    result = { schemaVersion: 1, kind: 'legacy-registry-metadata-evidence', status: 'unavailable',
+      reason: error.evidenceReason ?? 'registry-metadata-projection-unavailable', sourceQualified: false, releaseQualified: false };
+  }
+  return writeDiagnosticEvidence(output, result);
+}
+module.exports = { archiveManifests, captureManifestEvidence, captureRegistryMetadataEvidence };

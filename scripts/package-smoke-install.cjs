@@ -5,7 +5,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { pathToFileURL } = require('node:url');
 const { execFileSync } = require('node:child_process');
-const { captureManifestEvidence } = require('./lib/compat-manifest-evidence.cjs');
+const { captureManifestEvidence, captureRegistryMetadataEvidence } = require('./lib/compat-manifest-evidence.cjs');
 const { createOwnedTempRoot, withOwnedTempRoot } = require('./lib/owned-temp-root.cjs');
 const { createRegistry, publishArtifact, run } = require('./check-package-registry-consumer.cjs');
 
@@ -230,7 +230,7 @@ async function runCommand(packageManager, args, cwd, cacheDir, baseEnv) {
 // bundled `file:` edges. Uses npm's real publication capture (no hand-written
 // packument) and pins the loopback registry so an inherited override cannot
 // redirect the install elsewhere.
-async function installLocalTarballViaRegistry(tarballPath, targetDir, cacheDir, baseEnv) {
+async function installLocalTarballViaRegistry(tarballPath, targetDir, cacheDir, baseEnv, manifestEvidenceFile) {
   // Fail closed rather than let the installer walk up to an ancestor project and
   // write outside the target (a consumer manifest must exist in the target).
   if (!fs.existsSync(path.join(targetDir, 'package.json'))) {
@@ -255,6 +255,13 @@ async function installLocalTarballViaRegistry(tarballPath, targetDir, cacheDir, 
   // removes the evidence, even if close reports an error.
   const evidenceRoot = fs.mkdtempSync(path.join(cacheDir, 'registry-publish-'));
   let listening = false;
+  let metadataCaptured = false;
+  const captureMetadata = () => {
+    if (!manifestEvidenceFile || metadataCaptured) return;
+    metadataCaptured = true;
+    try { captureRegistryMetadataEvidence(path.join(path.dirname(manifestEvidenceFile), 'registry.metadata.json'),
+      server.publishedMetadata(), artifact, manifestEvidenceFile); } catch { /* Diagnostic cannot replace the install outcome. */ }
+  };
   try {
     await new Promise((resolve, reject) => {
       server.once('error', reject);
@@ -262,6 +269,7 @@ async function installLocalTarballViaRegistry(tarballPath, targetDir, cacheDir, 
     });
     const registry = `http://127.0.0.1:${server.address().port}`;
     await publishArtifact(artifact, registry, token, evidenceRoot);
+    captureMetadata();
     // The shared resolver reads XPOD_INSTALL_REGISTRY; pinning it is the single
     // source of truth and prevents an inherited override redirecting the install.
     await runCommand('bun', [ 'add', `${manifest.name}@${manifest.version}` ], targetDir, cacheDir, {
@@ -270,6 +278,7 @@ async function installLocalTarballViaRegistry(tarballPath, targetDir, cacheDir, 
     });
     return registry;
   } finally {
+    captureMetadata();
     if (listening) {
       server.closeAllConnections?.();
       await new Promise((resolve) => server.close(() => resolve()));
@@ -315,7 +324,7 @@ async function main() {
     if (packageManager === 'bun') {
       await runCommand(packageManager, [ 'init', '-y' ], targetDir, cacheDir, installEnv);
       if (fs.existsSync(resolvedInstallSpec) && resolvedInstallSpec.endsWith('.tgz')) {
-        usedRegistry = await installLocalTarballViaRegistry(resolvedInstallSpec, targetDir, cacheDir, installEnv);
+        usedRegistry = await installLocalTarballViaRegistry(resolvedInstallSpec, targetDir, cacheDir, installEnv, process.env.XPOD_COMPAT_MANIFEST_EVIDENCE_FILE);
         installedLabel = resolvedInstallSpec;
       } else {
         await runCommand(packageManager, [ 'add', installerSpec ], targetDir, cacheDir, installEnv);

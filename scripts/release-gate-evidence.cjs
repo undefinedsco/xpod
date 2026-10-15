@@ -712,6 +712,10 @@ function runRootCompatLane(args) {
       if (phase === 'install') {
         try { receipt.installManifests = { path: 'install.manifests.json', ...compatFile(path.join(out, 'install.manifests.json')) }; }
         catch { receipt.installManifests = { status: 'unavailable' }; }
+        if (lane.runtime === 'bun') {
+          try { receipt.registryMetadata = { path: 'registry.metadata.json', ...compatFile(path.join(out, 'registry.metadata.json')) }; }
+          catch { receipt.registryMetadata = { status: 'unavailable' }; }
+        } else receipt.registryMetadata = { status: 'not-applicable' };
       }
       console.log(`[legacy-root-compat] ${lane.id} ${phase}: exit=${result.status} signal=${result.signal}`);
       if (result.error || result.status !== 0 || result.signal) fail(`legacy root compat failed: ${lane.id}/${phase}`);

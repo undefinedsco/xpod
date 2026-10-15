@@ -582,3 +582,6 @@ bun run test:integration
 ## 受保护 RC 数据库
 
 候选部署不再重置共享 `xpod_rc`，也不创建或升级扩展。部署前只读检查现有 PG17 数据库、owner 和扩展版本；不满足时保留源数据并停止。真实迁移须独立完成受保护备份、全量恢复核对和产品验收，工具或夹具通过不能代替。详见 [受保护部署边界](testing/protected-rc-deployment.md)。
+
+
+兼容 Bun 通道另存受限 `registry.metadata.json`：从 `createRegistry.publishedMetadata()` 读取真实 PUT 后已经解析、移除 `_attachments` 的记录，保留 exact version 的 name/version/运行依赖/bundle 字段及 dist integrity/shasum，URL 只保哈希。记录哈希来自该解析对象的 JSON 序列化，**不是原始 HTTP body 哈希**；原 wire bytes 未保留。它与原 tgz SHA/字节、`install.manifests.json` 的原件及 selectedInput 绑定，比较字段缺失或变化但不修补 registry 供给。安装失败仍保留这份诊断，未成功发布记录、绑定不符或超过 1 MiB 时记固定 unavailable；不提供安装成功、resolver 父边或发布资格证明。
