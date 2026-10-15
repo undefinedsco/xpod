@@ -19,6 +19,8 @@ test('PR bootstrap runs only tiny contracts and never acquires candidates', () =
   const contracts = workflow.slice(workflow.indexOf('  contracts:'), workflow.indexOf('  prepare:'));
   assert.match(contracts, /if: \$\{\{ github.event_name == 'pull_request' \}\}/);
   assert.match(contracts, /node --test tests\/scripts\/module-installed-consumer-workflow.node-test.cjs/);
+  assert.match(contracts, /uses: oven-sh\/setup-bun@v2\n        with:\n          bun-version: '1\.4\.2'/);
+  assert.ok(contracts.indexOf('uses: oven-sh/setup-bun@v2') < contracts.indexOf('node --test'), 'Bun discovery needs its runtime before the contract executes');
   assert.doesNotMatch(contracts, /GH_TOKEN|acquire|bun install|--run|prepare-module-consumer-plan.ts/);
   assert.match(workflow, /  prepare:\n    if: \$\{\{ github.event_name == 'workflow_dispatch' \}\}/);
 });

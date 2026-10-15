@@ -41,6 +41,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22.21.1'
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.2'
       - run: node --test tests/scripts/module-installed-consumer-workflow.node-test.cjs
   prepare:
     if: ${{ github.event_name == 'workflow_dispatch' }}
