@@ -1,0 +1,28 @@
+# Legacy Bun registry supply: producer gaps
+
+The a0dde77a compatibility lane checked out `3606ffbaa6103d2dd804aefebeb791322f9cd6b9`. Its actual archive and parsed publication record retain the same 22 bundled packages. Bun 1.4.2 nevertheless resolves declared internal dependencies through the registry. Changing the bundle alias does not fix the isolated reproducer. Supplying the complete small fixture registry closure does; this is diagnostic evidence, not product acceptance.
+
+## Evidence and closure
+
+The audit consumes the actual lane's `install.manifests.json` and raw install stderr. It derives the observed nine unavailable identities and all 32 captured internal runtime/optional/peer edges; it does not introduce a maintained package catalog. `models` has a range on `drizzle-solid`, so the captured selected version must not be confused with an exact declared edge. The nine failures are an observed missing set, not proof that all remaining registry versions are available.
+
+The local report is `.test-data/real-supply-audit/audit.safe.json` in the diagnostic worktree, SHA256 `ef582e1d916972d376a90ae0acf5187e13ca83921507365684e5503e762fff0b`. It binds the actual manifest evidence, exact names/versions, edge list, normal build scripts, and four historical archive originals with independently computed SHA256/SRI. No historical archive is admitted for the actual candidate source by this audit.
+
+## Producer gaps and smallest normal changes
+
+| Observed missing identity | Existing normal producer | Required change before local supply |
+| --- | --- | --- |
+| ai-connections 0.1.6; ai-connections-runtime 0.1.5; extension-host-contracts 0.1.0; extension-sdk 0.1.6; pod-collections 0.1.6 (all under @undefineds.co/) | Existing `PACKAGES` authority in `scripts/workspace-package-consumer.cjs`; `build:packages`, `packWorkspacePackages`, and `consumeLocal` | Retain originals from one normal same-source pack/consumer run with the existing archive/evidence options. Add SRI and actual source-state verification to that one evidence path before registry admission; do not create another package list. No matching same-source originals were located in the audited local material roots. |
+| @undefineds.co/xpod-cli 0.1.0-preview.2; @undefineds.co/xpod-client 0.1.0-preview.1 | `scripts/check-cli-publication.cjs` provides the publication-preparation chain and normal publication originals. `scripts/check-cli-package.cjs` and `.github/workflows/cli-package.yml` produce/upload consumer-test file-install archives, which are test evidence and must not be treated as publication originals. CLI producer materials retain their separately bound client publication archive. | Reuse current-source normal producer originals and existing source/provenance validation. Historical local CLI/client originals exist, but source equivalence and admission for the actual merge SHA have not been established. Do not rebuild the client from the root bundle. |
+| @undefineds.co/xpod-afs 0.1.0-preview.1 | `build-afs-from-producer.ts --mode client` / `packages/xpod-afs/scripts/build-client.ts` build the JS library. `build-package.ts` produces **@undefineds.co/xpod-afs-TARGET**, a different identity. Workspace source is private. | A standalone JS-client normal pack producer is missing from the inspected publication path. Stage from the verified client build and its source manifest, normalize workspace edges using the existing shared pack logic, deliberately define its publication/private boundary, retain original tgz plus payload/source inventory and SHA/SRI. Never rename a platform module archive or silently flip the source package's private flag. A historical same-name archive exists but remains private and lacks admitted source binding. |
+| @undefineds.co/extensions 0.1.0 | External Git dependency: canonical root `package.json` pins `undefinedsco/extensions#497942519bc211b6b5bc684f47f41bad189cf632`. It is outside the shared workspace publication list. | Obtain the normal archive and source receipt from that repository's pinned producer, or add archive retention there. No inspected Xpod producer can establish its standalone source authority. Do not pack its installed directory. |
+
+## Reviewable implementation order
+
+1. Add source-state/SRI binding to the existing workspace consumer evidence emitter, using its existing `PACKAGES` and retained originals. Preserve the default execution path and published-package reuse policy.
+2. Close the standalone AFS JS package publication boundary through its existing client producer. The platform module producer is not a substitute. This needs a source/payload/legal consumer receipt, not only a tar command.
+3. Obtain the external extensions producer original at the pinned revision. Keep this input separate from Xpod's source SHA.
+4. Accept an immutable exact artifact map derived from these admitted receipts. Extend the existing loopback registry publication helper to validate each normal original and retain its real parsed publication metadata. Reject missing identities, duplicate name/version with different hashes, changed dependency declarations, and source mismatches. No fallback to public registry for a declared private fixture input.
+5. Run the unchanged real Bun compatibility install and installed inventory/functionality checks against the unchanged root archive; preserve original failures until that new run has closed naturally.
+
+No product supply patch is included while the AFS and external producer originals remain unresolved. A fixture made by stripping dependency edges, repacking root embedded members, or reusing unrelated historical same-version bytes would conceal these gaps.
