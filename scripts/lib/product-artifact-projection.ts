@@ -3,6 +3,7 @@ import { lstatSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync }
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { exactVersion } from '../independent-release-plan';
 import { assertNewAcquisitionOutput, verifyAcquiredMetadata } from '../acquire-independent-product-input';
 const { withOwnedTempRoot } = createRequire(import.meta.url)('./owned-temp-root.cjs');
 const hash = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
@@ -10,7 +11,7 @@ export interface ProductCustodyInput { acquisitionRoot: string; custodyReceiptSh
 interface ProjectionPolicy { workflowPath: string; materialRole: string; artifactNames(custody: any): string[] }
 export interface ProjectionSession {
   root: string; custody: any; metadata: any; temporary: string;
-  member(name: string, bound: number): any;
+  member(name: string, bound: number, minimum?: 0 | 1): any;
   project(selections: any[]): void;
   select(row: any, destination: string): any;
   writeOutput(receipt: any, extras?: Record<string, Buffer>): void;
@@ -22,6 +23,22 @@ export function productOriginal(file: string, expected?: string): Buffer {
   const bytes = readFileSync(file);
   if (expected && hash(bytes) !== expected) fail('original hash mismatch');
   return bytes;
+}
+
+/** Common producer claims only: transport comparison is not independent admission. */
+export function assertPreviewProductContext(producer: any, custody: any, run: any, workflowPath: string, kind: string): any {
+  const context = producer?.context;
+  if (producer?.schemaVersion !== 1 || producer.kind !== kind || producer.status !== 'controlled-preview-materials'
+    || !context || context.repository !== custody.repository || context.workflowPath !== workflowPath
+    || typeof context.workflowRef !== 'string' || !context.workflowRef.startsWith(`${custody.repository}/${workflowPath}@`)
+    || !/^[a-f0-9]{40}$/u.test(context.workflowSha) || context.runId !== custody.runId || context.runAttempt !== custody.runAttempt
+    || context.runHeadSha !== custody.runHeadSha || context.event !== run.event || context.actualCheckoutSha !== custody.expectedSourceSha
+    || context.githubSha !== context.actualCheckoutSha || context.target !== 'darwin-arm64' || !exactVersion(context.version)
+    || producer.sourceBefore?.sha !== context.actualCheckoutSha || producer.sourceAfter?.sha !== context.actualCheckoutSha
+    || producer.sourceBefore.status !== '' || producer.sourceAfter.status !== ''
+    || producer.published !== false || producer.releaseQualified !== false || producer.consumerValidated !== false
+    || producer.legalClearance !== false || producer.nativeAdmission !== false) fail('producer context/source/preview binding mismatch');
+  return context;
 }
 
 export async function withProductProjection<T>(input: ProductCustodyInput, output: string, policy: ProjectionPolicy, operation: (session: ProjectionSession) => Promise<T>): Promise<T> {
@@ -45,10 +62,10 @@ export async function withProductProjection<T>(input: ProductCustodyInput, outpu
   const registered = new Map<string, any>();
   const inventory = custody.inventory?.members;
   if (!Array.isArray(inventory)) fail('ZIP member inventory required');
-  function member(name: string, bound: number) {
+  function member(name: string, bound: number, minimum: 0 | 1 = 1) {
     const selected = inventory.filter((row: any) => row.path === name);
     if (selected.length !== 1 || selected[0].kind !== 'file' || !Number.isSafeInteger(selected[0].bytes)
-      || selected[0].bytes < 1 || selected[0].bytes > bound || !/^[a-f0-9]{64}$/u.test(selected[0].sha256)) fail('unique ordinary bounded member required: ' + name);
+      || selected[0].bytes < minimum || selected[0].bytes > bound || !/^[a-f0-9]{64}$/u.test(selected[0].sha256)) fail('unique ordinary bounded member required: ' + name);
     registered.set(name, selected[0]);
     return selected[0];
   }

@@ -2,9 +2,8 @@ import { createHash } from 'node:crypto';
 import { createReadStream, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { API_PRODUCT_WORKFLOW } from './acquire-independent-product-input';
-import { productOriginal, withProductProjection } from './lib/product-artifact-projection';
+import { assertPreviewProductContext, productOriginal, withProductProjection } from './lib/product-artifact-projection';
 import { parseApiPackReceipt } from './collect-api-release-input';
-import { exactVersion } from './independent-release-plan';
 const hash = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
 const BOUNDS = { archive: 512 * 1024 ** 2, packRaw: 64 * 1024, producer: 1024 * 1024 };
 export interface ApiProductProjectionInput {
@@ -25,17 +24,7 @@ export async function projectApiProductInput(input: ApiProductProjectionInput, o
   const packMember = member(input.members.packRaw, BOUNDS.packRaw);
     project([select(producerMember, 'producer.receipt.json')]);
     const producer = JSON.parse(productOriginal(path.join(temporary, 'producer.receipt.json'), producerMember.sha256).toString());
-    const context = producer.context;
-    if (producer.schemaVersion !== 1 || producer.kind !== 'api-module-product-production' || producer.status !== 'controlled-preview-materials'
-      || !context || context.repository !== custody.repository || context.workflowPath !== API_PRODUCT_WORKFLOW
-      || typeof context.workflowRef !== 'string' || !context.workflowRef.startsWith(`${custody.repository}/${API_PRODUCT_WORKFLOW}@`)
-      || !/^[a-f0-9]{40}$/u.test(context.workflowSha) || context.runId !== custody.runId || context.runAttempt !== custody.runAttempt
-      || context.runHeadSha !== custody.runHeadSha || context.event !== run.event || context.actualCheckoutSha !== custody.expectedSourceSha
-      || context.githubSha !== context.actualCheckoutSha || context.target !== 'darwin-arm64' || !exactVersion(context.version)
-      || producer.sourceBefore?.sha !== context.actualCheckoutSha || producer.sourceAfter?.sha !== context.actualCheckoutSha
-      || producer.sourceBefore.status !== '' || producer.sourceAfter.status !== ''
-      || producer.published !== false || producer.releaseQualified !== false || producer.consumerValidated !== false
-      || producer.legalClearance !== false || producer.nativeAdmission !== false) fail('producer context/source/preview binding mismatch');
+    const context = assertPreviewProductContext(producer, custody, run, API_PRODUCT_WORKFLOW, 'api-module-product-production');
     if (producer.archive?.path !== input.members.archive || producer.archive.bytes !== archiveMember.bytes || producer.archive.sha256 !== archiveMember.sha256
       || producer.packRaw?.path !== input.members.packRaw || producer.packRaw.bytes !== packMember.bytes || producer.packRaw.sha256 !== packMember.sha256) fail('producer selected member binding mismatch');
     project([select(archiveMember, 'product.tgz'), select(packMember, 'pack.raw.log')]);

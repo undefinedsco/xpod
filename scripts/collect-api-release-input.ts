@@ -1,3 +1,4 @@
+import { parsePhysicalPackReceipt } from './lib/physical-pack-receipt';
 import { createHash } from 'node:crypto';
 import { lstatSync, readFileSync, readdirSync, realpathSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -29,16 +30,7 @@ function bound(ref: Reference, base: string): { ref: Reference; data: Buffer } {
   return { ref: { path: absolute, sha256: ref.sha256 }, data };
 }
 /** Normal producer JSON stdout, optionally preceded by Bun's recorded command line. */
-export function parseApiPackReceipt(data: Buffer): any {
-  if (data.length > 64 * 1024) fail('pack receipt exceeds small producer output bound');
-  const lines = data.toString('utf8').trim().split(/\r?\n/u);
-  if (lines.length === 2 && lines[0].startsWith('$ bun scripts/pack.ts ')) lines.shift();
-  if (lines.length !== 1) fail('ambiguous pack producer output');
-  const result = JSON.parse(lines[0]);
-  if (typeof result.archive !== 'string' || !result.archive || !/^[a-f0-9]{64}$/u.test(result.sha256)
-    || !/^sha512-[A-Za-z0-9+/]{86}==$/u.test(result.integrity) || !Number.isSafeInteger(result.members) || result.members < 1) fail('pack producer result required');
-  return result;
-}
+export function parseApiPackReceipt(data: Buffer): any { return parsePhysicalPackReceipt(data, fail); }
 /** Reads originals and invokes existing stage verification when its exact historical inputs exist. */
 export async function collectApiReleaseInput(input: ApiCollectionInput, base = process.cwd()) {
   if (input?.schemaVersion !== 1 || !/^[a-f0-9]{40}$/u.test(input.expectedSourceSha)) fail('exact source and existing materials required');

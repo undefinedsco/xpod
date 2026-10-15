@@ -170,3 +170,18 @@ test('bounds expanded data and member count before member projection', async () 
   const many = fixture([{ name: 'one', body: 'a', mode: 0o100644 }, { name: 'two', body: 'b', mode: 0o100644 }]);
   await expect(acquireIndependentProductInput(many.input, many.output, { fetch: many.transport, limits: { members: 1 } })).rejects.toThrow('ZIP inspection');
 });
+test('CSS registration accepts only exact successful product runs, never in-progress same-run or diagnostics', async () => {
+ for(const mode of ['success','ongoing','failed','diagnostics','wrong-attempt','native-workflow']) {
+  const f=fixture();f.workflow.path=f.run.path='.github/workflows/css-module-product.yml';
+  f.artifact.name=`css-module-products-darwin-arm64-${f.input.sourceSha}-42-2`;
+  if(mode==='ongoing')f.run.status='in_progress';
+  if(mode==='failed')f.run.conclusion='failure';
+  if(mode==='diagnostics')f.artifact.name=f.artifact.name.replace('products','diagnostics');
+  if(mode==='wrong-attempt')f.artifact.name=f.artifact.name.replace('-42-2','-42-1');
+  if(mode==='native-workflow')f.run.path=f.workflow.path='.github/workflows/build-qlever-macos-runtime.yml';
+  if(mode==='success') {
+   const result=await acquireIndependentProductInput(f.input,f.output,{fetch:f.transport});
+   expect(result.materialRole).toBe('controlled-preview-materials');expect(result.releaseQualified).toBe(false);
+  } else {await expect(acquireIndependentProductInput(f.input,f.output,{fetch:f.transport})).rejects.toThrow();expect(existsSync(f.output)).toBe(false);}
+ }
+});

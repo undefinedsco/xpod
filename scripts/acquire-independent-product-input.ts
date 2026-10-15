@@ -16,7 +16,8 @@ export function cliPublicationArtifactNames(input: { expectedSourceSha: string; 
   return ['Linux', 'macOS'].map(os => `xpod-cli-publication-preparation-${os}-${input.expectedSourceSha}-${input.runId}-${input.runAttempt}`);
 }
 export const API_PRODUCT_WORKFLOW = '.github/workflows/api-module-product.yml';
-const PRODUCERS = new Set([CLI_PRODUCT_WORKFLOW, '.github/workflows/agentfs-module-mounted-acceptance.yml', API_PRODUCT_WORKFLOW]);
+export const CSS_PRODUCT_WORKFLOW = '.github/workflows/css-module-product.yml';
+const PRODUCERS = new Set([CLI_PRODUCT_WORKFLOW, '.github/workflows/agentfs-module-mounted-acceptance.yml', API_PRODUCT_WORKFLOW, CSS_PRODUCT_WORKFLOW]);
 const LIMITS = { packedBytes: 512 * 1024 ** 2, expandedBytes: 1024 ** 3, members: 50_000 };
 const METADATA_NAMES = ['run', 'workflow', 'artifact'] as const;
 type FileBinding = { path: string; bytes: number; sha256: string };
@@ -140,8 +141,8 @@ export async function acquireIndependentProductInput(input: ArtifactAcquisitionI
     const cliPublicationNames = cliPublicationArtifactNames({ expectedSourceSha: input.sourceSha, runId: input.runId, runAttempt: input.runAttempt });
     const allowedNames = workflow.path === CLI_PRODUCT_WORKFLOW
       ? [...['Linux', 'macOS'].map(os => `xpod-cli-${os}-${input.sourceSha}`), ...cliPublicationNames]
-      : workflow.path === API_PRODUCT_WORKFLOW
-        ? [`api-module-products-darwin-arm64-${input.sourceSha}-${input.runId}-${input.runAttempt}`]
+      : [API_PRODUCT_WORKFLOW, CSS_PRODUCT_WORKFLOW].includes(workflow.path)
+        ? [`${workflow.path === CSS_PRODUCT_WORKFLOW ? 'css' : 'api'}-module-products-darwin-arm64-${input.sourceSha}-${input.runId}-${input.runAttempt}`]
       : MODULE_TARGETS.map(target => `afs-module-products-${target.platform}-${target.arch}-${input.sourceSha}-${input.runId}-${input.runAttempt}`);
     const created = Date.parse(artifact.created_at), started = Date.parse(run.run_started_at), completed = Date.parse(run.updated_at);
     if (artifact.id !== input.artifactId || !allowedNames.includes(artifact.name) || artifact.expired !== false || artifact.workflow_run?.id !== run.id
@@ -174,7 +175,7 @@ export async function acquireIndependentProductInput(input: ArtifactAcquisitionI
     const cliPublication = workflow.path === CLI_PRODUCT_WORKFLOW && cliPublicationNames.includes(artifact.name);
     const cliTestMaterial = workflow.path === CLI_PRODUCT_WORKFLOW && !cliPublication;
     const receipt = { schemaVersion: 1, kind: 'independent-product-artifact-acquisition', status: 'blocked',
-      materialRole: cliPublication ? CLI_PUBLICATION_MATERIAL_ROLE : cliTestMaterial ? 'test-materials' : workflow.path === API_PRODUCT_WORKFLOW ? 'controlled-preview-materials' : 'module-product-materials',
+      materialRole: cliPublication ? CLI_PUBLICATION_MATERIAL_ROLE : cliTestMaterial ? 'test-materials' : [API_PRODUCT_WORKFLOW, CSS_PRODUCT_WORKFLOW].includes(workflow.path) ? 'controlled-preview-materials' : 'module-product-materials',
       repository: REPOSITORY, expectedSourceSha: input.sourceSha, runHeadSha: input.runHeadSha,
       runId: input.runId, runAttempt: input.runAttempt, artifactId: input.artifactId, workflowPath: workflow.path,
       archive: { path: 'artifact.zip', ...downloaded }, inventory,
