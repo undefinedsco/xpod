@@ -28,6 +28,7 @@ export interface RuntimeChild {
 
 export interface RuntimeManagerOptions {
   targetOrigin: string
+  packaged?: boolean
   fetchImpl?: typeof fetch
   resolveLaunch?: () => RuntimeLaunchCommand | undefined
   spawnImpl?: (command: string, args: string[], options: { env: NodeJS.ProcessEnv; stdio: 'ignore' }) => RuntimeChild
@@ -56,6 +57,7 @@ export class RuntimeManager {
     this.fetchImpl = options.fetchImpl ?? fetch
     this.resolveLaunch = options.resolveLaunch ?? (() => resolveRuntimeLaunchCommand({
       env: process.env,
+      packaged: options.packaged,
       resourcesPath: process.resourcesPath,
       execPath: process.execPath,
       moduleDir: path.dirname(fileURLToPath(import.meta.url)),
@@ -245,6 +247,7 @@ export class RuntimeManager {
 
 export function resolveRuntimeLaunchCommand({
   env,
+  packaged = false,
   resourcesPath,
   execPath = process.execPath,
   moduleDir,
@@ -252,6 +255,7 @@ export function resolveRuntimeLaunchCommand({
   resolveBunCommand = resolveSystemBunCommand,
 }: {
   env: NodeJS.ProcessEnv
+  packaged?: boolean
   resourcesPath: string
   execPath?: string
   moduleDir?: string
@@ -262,7 +266,7 @@ export function resolveRuntimeLaunchCommand({
     return { command: env.XPOD_RUNTIME_COMMAND, args: ['start', '--foreground'] }
   }
   const packagedBinary = path.join(resourcesPath, 'runtime', 'xpod')
-  if (pathExists(packagedBinary)) {
+  if (!packaged && pathExists(packagedBinary)) {
     const qleverRuntime = path.join(resourcesPath, 'runtime', 'qlever', 'bin', 'xpod_qlever_local_runtime')
     if (!pathExists(qleverRuntime)) return undefined
     return {
@@ -271,7 +275,8 @@ export function resolveRuntimeLaunchCommand({
       env: { XPOD_QLEVER_LOCAL_RUNTIME_COMMAND: qleverRuntime },
     }
   }
-  const packagedCli = path.join(resourcesPath, 'runtime', 'bin', 'xpod.js')
+  const runtimeRoot = path.join(resourcesPath, 'runtime')
+  const packagedCli = path.join(runtimeRoot, 'node_modules', '@undefineds.co', 'xpod-cli', 'dist', 'xpod.mjs')
   if (pathExists(packagedCli)) {
     const packagedBun = resolvePackagedBun(resourcesPath, pathExists)
     const bunCommand = packagedBun ?? resolveBunCommand()
@@ -287,6 +292,7 @@ export function resolveRuntimeLaunchCommand({
       env: { ELECTRON_RUN_AS_NODE: '1' },
     }
   }
+  if (packaged) return undefined
   const localDesktopRuntime = moduleDir ? path.resolve(moduleDir, '..', 'runtime', 'xpod') : undefined
   if (localDesktopRuntime && pathExists(localDesktopRuntime)) {
     return { command: localDesktopRuntime, args: ['start', '--foreground'] }

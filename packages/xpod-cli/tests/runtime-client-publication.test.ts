@@ -3,8 +3,20 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
-import { collectPublishedRuntimeClient } from '../scripts/producer-materials';
+import { collectPublishedRuntimeClient, runtimePublicationFileMembers } from '../scripts/producer-materials';
 import { verifyProducerSourceArchive } from '../src/producer-source';
+
+test('publication listing decodes LF and Windows CRLF without admitting unsafe archive names', () => {
+  const names = ['package/package.json', 'package/dist/index.mjs', 'package/dist/session.mjs'];
+  for (const delimiter of ['\n', '\r\n']) {
+    expect(runtimePublicationFileMembers(names.join(delimiter) + delimiter)).toEqual(names);
+  }
+  for (const unsafe of ['package\\dist\\index.mjs\r\n', 'package/../escape\r\n',
+    'package/dist/./index.js\n', 'package/dist/a\rb.js\n', 'package/dist/a\nb.js\n',
+    'package/dist/index.js\npackage/dist/index.js\n', 'package/dist/a.js\n\n']) {
+    expect(() => runtimePublicationFileMembers(unsafe)).toThrow('unsafe');
+  }
+});
 
 test('runtime publication binds normal packed bytes while preserving raw workspace source manifest', async () => {
   const base=path.resolve(import.meta.dir,'../.test-data/runtime-client-publication');mkdirSync(base,{recursive:true});

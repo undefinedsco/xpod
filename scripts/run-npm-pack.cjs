@@ -434,6 +434,19 @@ function exposeBundledRuntimeDependencies(packageDir, dependencies) {
   fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + '\n');
 }
 
+// Both installed inputs and normalized public packages use the same runtime
+// materialization rules. Public transport archives retain their original bytes.
+function copyBundledRuntimeDependency(dependency, sourceRoot, destinationDir) {
+  fs.rmSync(destinationDir, { recursive: true, force: true });
+  fs.mkdirSync(path.dirname(destinationDir), { recursive: true });
+  fs.cpSync(sourceRoot, destinationDir, {
+    recursive: true,
+    dereference: true,
+    filter: (sourcePath) => shouldCopyBundledDependency(sourceRoot, sourcePath, dependency.patchedRuntime),
+  });
+  if (dependency.name === DRIZZLE_SOLID_PACKAGE) patchBundledDrizzleSolid(destinationDir);
+}
+
 function bundleLocalDependenciesIntoTarball(tarballPath, dependencies, profile = 'compat') {
   if (dependencies.length === 0) {
     return;
@@ -450,16 +463,7 @@ function bundleLocalDependenciesIntoTarball(tarballPath, dependencies, profile =
 
     for (const dependency of dependencies) {
       const destinationDir = path.join(packageDir, 'node_modules', ...dependency.name.split('/'));
-      fs.rmSync(destinationDir, { recursive: true, force: true });
-      fs.mkdirSync(path.dirname(destinationDir), { recursive: true });
-      fs.cpSync(dependency.sourcePackageRoot, destinationDir, {
-        recursive: true,
-        dereference: true,
-        filter: (sourcePath) => shouldCopyBundledDependency(dependency.sourcePackageRoot, sourcePath, dependency.patchedRuntime),
-      });
-      if (dependency.name === DRIZZLE_SOLID_PACKAGE) {
-        patchBundledDrizzleSolid(destinationDir);
-      }
+      copyBundledRuntimeDependency(dependency, dependency.sourcePackageRoot, destinationDir);
       console.log(`[npm-pack] bundled local dependency ${dependency.name}`);
     }
 
@@ -501,15 +505,12 @@ function bundleLocalDependenciesIntoTarball(tarballPath, dependencies, profile =
         if (profile === 'compat') {
           // A standard npm consumer resolves dependencies before extracting the
           // outer package. Relative embedded tarball edges are not a registry
-          // contract. Carry the complete normalized public package through the
-          // standard bundledDependencies mechanism with its real version edge.
-          const publicPackageDir = path.join(tempRoot, 'public-package');
-          fs.rmSync(publicPackageDir, { recursive: true, force: true });
-          fs.mkdirSync(publicPackageDir);
+          // contract. Carry the normalized public manifest and filtered runtime
+          // payload through bundledDependencies with its real version edge.
+          const publicPackageDir = fs.mkdtempSync(path.join(tempRoot, 'public-package-'));
           execFileSync('tar', ['xf', archivePath, '-C', publicPackageDir]);
           const destinationDir = path.join(packageDir, 'node_modules', ...dependency.name.split('/'));
-          fs.rmSync(destinationDir, { recursive: true, force: true });
-          fs.renameSync(path.join(publicPackageDir, 'package'), destinationDir);
+          copyBundledRuntimeDependency(dependency, path.join(publicPackageDir, 'package'), destinationDir);
           manifest.dependencies[dependency.name] = JSON.parse(publicManifest).version;
           manifest.bundledDependencies ??= [];
           if (!manifest.bundledDependencies.includes(dependency.name)) manifest.bundledDependencies.push(dependency.name);
@@ -588,18 +589,22 @@ function summarizeTarball(tarballPath) {
   const unpackDir = path.join(tempRoot, 'unpack');
   const packageDir = path.join(unpackDir, 'package');
 
-  fs.mkdirSync(unpackDir, { recursive: true });
-  execFileSync('tar', [ 'xf', tarballPath, '-C', unpackDir ]);
+  try {
+    fs.mkdirSync(unpackDir, { recursive: true });
+    execFileSync('tar', [ 'xf', tarballPath, '-C', unpackDir ]);
 
-  const buffer = fs.readFileSync(tarballPath);
-  const files = walkFiles(packageDir);
-  return {
-    size: buffer.length,
-    unpackedSize: files.reduce((sum, file) => sum + file.size, 0),
-    shasum: crypto.createHash('sha1').update(buffer).digest('hex'),
-    integrity: `sha512-${crypto.createHash('sha512').update(buffer).digest('base64')}`,
-    files,
-  };
+    const buffer = fs.readFileSync(tarballPath);
+    const files = walkFiles(packageDir);
+    return {
+      size: buffer.length,
+      unpackedSize: files.reduce((sum, file) => sum + file.size, 0),
+      shasum: crypto.createHash('sha1').update(buffer).digest('hex'),
+      integrity: `sha512-${crypto.createHash('sha512').update(buffer).digest('base64')}`,
+      files,
+    };
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
 }
 
 function packWithManifestRestoration(repoRoot, invocation, env) {
@@ -662,7 +667,7 @@ function main() {
   console.log(`[npm-pack] tarball ${tarballPath}`);
 }
 
-module.exports = { serviceWorkspacePackages, getBundledLocalDependencies, bundleLocalDependenciesIntoTarball, packWithManifestRestoration, applyServiceProfile, shouldCopyBundledDependency };
+module.exports = { summarizeTarball, serviceWorkspacePackages, getBundledLocalDependencies, bundleLocalDependenciesIntoTarball, packWithManifestRestoration, applyServiceProfile, shouldCopyBundledDependency };
 
 if (require.main === module) {
   try {

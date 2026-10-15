@@ -4,6 +4,27 @@ import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { verifyProducerSourceArchive } from '../src/producer-source';
 
+/** Decode tar's text listing delimiters; member bytes and archive checks stay strict. */
+export function runtimePublicationFileMembers(listing: string): string[] {
+  const lines = listing.split(/\r?\n/u);
+  if (lines[lines.length - 1] === '') lines.pop();
+  const seen = new Set<string>();
+  const files: string[] = [];
+  for (const member of lines) {
+    const directory = member.endsWith('/');
+    if (directory && member === 'package/') continue;
+    const name = directory ? member.slice(0, -1) : member;
+    const relative = name.replace(/^package\//u, '');
+    if (!name.startsWith('package/') || !relative || /[\x00-\x1f\x7f\\]/u.test(relative)
+      || relative.split('/').some(part => !part || part === '.' || part === '..') || seen.has(name)) {
+      throw new Error('Runtime client publication member is unsafe');
+    }
+    seen.add(name);
+    if (!directory) files.push(member);
+  }
+  return files;
+}
+
 /** Bind the actual normal package archive, including Bun's publication manifest rewrite. */
 export function collectPublishedRuntimeClient(origin: string, destination: string) {
   mkdirSync(destination, { recursive: true });
@@ -15,15 +36,8 @@ export function collectPublishedRuntimeClient(origin: string, destination: strin
   const listed = spawnSync('tar', ['-tf', archive], { encoding: 'utf8' });
   if (listed.status !== 0) throw new Error('Runtime client publication archive cannot be listed');
   const files: Array<{ path: string; bytes: number; sha256: string }> = [];
-  const seen = new Set<string>();
-  for (const member of listed.stdout.trim().split('\n')) {
-    if (member.endsWith('/')) continue;
-    const relative = member.replace(/^package\//u, '');
-    if (!member.startsWith('package/') || !relative || /[\x00-\x1f\x7f\\]/u.test(relative)
-      || relative.split('/').some(part => !part || part === '.' || part === '..') || seen.has(relative)) {
-      throw new Error('Runtime client publication member is unsafe');
-    }
-    seen.add(relative);
+  for (const member of runtimePublicationFileMembers(listed.stdout)) {
+    const relative = member.slice('package/'.length);
     const bytes = spawnSync('tar', ['-xOf', archive, member], { maxBuffer: 16 * 1024 * 1024 });
     if (bytes.status !== 0) throw new Error('Runtime client publication member cannot be read');
     files.push({ path: relative, bytes: bytes.stdout.length, sha256: createHash('sha256').update(bytes.stdout).digest('hex') });
