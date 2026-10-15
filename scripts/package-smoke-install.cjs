@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 const fs = require('node:fs');
 const net = require('node:net');
-const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { pathToFileURL } = require('node:url');
 const { execFileSync } = require('node:child_process');
+const { createOwnedTempRoot, withOwnedTempRoot } = require('./lib/owned-temp-root.cjs');
 const { createRegistry, publishArtifact, run } = require('./check-package-registry-consumer.cjs');
 
 function getCommandInvocation(packageManager, args) {
@@ -48,12 +48,11 @@ function resolveInstallSpec(input) {
   return normalizeInstallSpec(input);
 }
 
-function createSmokeTarball(installSpec) {
-  if (!fs.existsSync(installSpec) || !installSpec.endsWith('.tgz')) {
-    return installSpec;
-  }
+function isLocalTarball(installSpec) {
+  return fs.existsSync(installSpec) && installSpec.endsWith('.tgz');
+}
 
-  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xpod-package-smoke-'));
+function buildSmokeTarball(installSpec, tempRoot) {
   const unpackDir = path.join(tempRoot, 'unpack');
   const packageDir = path.join(unpackDir, 'package');
   const packageJsonPath = path.join(packageDir, 'package.json');
@@ -70,6 +69,20 @@ function createSmokeTarball(installSpec) {
 
   execFileSync('tar', [ '-czf', smokeTarballPath, '-C', unpackDir, 'package' ]);
   return smokeTarballPath;
+}
+
+// Legacy path-returning API: the caller owns the returned archive's lifetime.
+// Normal install/probe callers use withSmokeTarball instead.
+function createSmokeTarball(installSpec) {
+  if (!isLocalTarball(installSpec)) return installSpec;
+  const owned = createOwnedTempRoot('xpod-package-smoke-');
+  try { return buildSmokeTarball(installSpec, owned.path); }
+  catch (error) { owned.cleanup({ error }); throw error; }
+}
+
+async function withSmokeTarball(installSpec, operation) {
+  if (!isLocalTarball(installSpec)) return await operation(installSpec);
+  return await withOwnedTempRoot('xpod-package-smoke-', root => operation(buildSmokeTarball(installSpec, root)));
 }
 
 function toInstallerSpec(installSpec, packageManager) {
@@ -283,48 +296,52 @@ async function main() {
   const resolvedInstallSpec = resolveInstallSpec(rawInstallSpec);
   // The npm local smoke strips optionalDependencies; the Bun registry route must
   // consume the untouched original artifact bytes with all metadata retained.
-  const installSpec = packageManager === 'npm' ? createSmokeTarball(resolvedInstallSpec) : resolvedInstallSpec;
-  const installerSpec = toInstallerSpec(installSpec, packageManager);
-  const installEnv = await sanitizeProxyEnv(process.env);
-  const installRegistry = resolveInstallRegistry(installEnv);
-  let usedRegistry = installRegistry;
-  let installedLabel = installerSpec;
+  const install = async(installSpec) => {
+    const installerSpec = toInstallerSpec(installSpec, packageManager);
+    const installEnv = await sanitizeProxyEnv(process.env);
+    const installRegistry = resolveInstallRegistry(installEnv);
+    let usedRegistry = installRegistry;
+    let installedLabel = installerSpec;
 
-  fs.rmSync(targetDir, { recursive: true, force: true });
-  fs.mkdirSync(targetDir, { recursive: true });
-  fs.mkdirSync(cacheDir, { recursive: true });
+    fs.rmSync(targetDir, { recursive: true, force: true });
+    fs.mkdirSync(targetDir, { recursive: true });
+    fs.mkdirSync(cacheDir, { recursive: true });
 
-  if (packageManager === 'bun') {
-    await runCommand(packageManager, [ 'init', '-y' ], targetDir, cacheDir, installEnv);
-    if (fs.existsSync(resolvedInstallSpec) && resolvedInstallSpec.endsWith('.tgz')) {
-      usedRegistry = await installLocalTarballViaRegistry(resolvedInstallSpec, targetDir, cacheDir, installEnv);
-      installedLabel = resolvedInstallSpec;
+    if (packageManager === 'bun') {
+      await runCommand(packageManager, [ 'init', '-y' ], targetDir, cacheDir, installEnv);
+      if (fs.existsSync(resolvedInstallSpec) && resolvedInstallSpec.endsWith('.tgz')) {
+        usedRegistry = await installLocalTarballViaRegistry(resolvedInstallSpec, targetDir, cacheDir, installEnv);
+        installedLabel = resolvedInstallSpec;
+      } else {
+        await runCommand(packageManager, [ 'add', installerSpec ], targetDir, cacheDir, installEnv);
+      }
     } else {
-      await runCommand(packageManager, [ 'add', installerSpec ], targetDir, cacheDir, installEnv);
+      await runCommand(packageManager, [ 'init', '-y' ], targetDir, cacheDir, installEnv);
+      const optionalArgs = installEnv.XPOD_PACKAGE_SMOKE_INCLUDE_OPTIONAL === 'true'
+        ? []
+        : [ '--omit=optional' ];
+      await runCommand(packageManager, [ 'install', ...optionalArgs, '--prefer-offline', '--no-audit', '--no-fund', installerSpec ], targetDir, cacheDir, installEnv);
     }
-  } else {
-    await runCommand(packageManager, [ 'init', '-y' ], targetDir, cacheDir, installEnv);
-    const optionalArgs = installEnv.XPOD_PACKAGE_SMOKE_INCLUDE_OPTIONAL === 'true'
-      ? []
-      : [ '--omit=optional' ];
-    await runCommand(packageManager, [ 'install', ...optionalArgs, '--prefer-offline', '--no-audit', '--no-fund', installerSpec ], targetDir, cacheDir, installEnv);
-  }
 
-  const probe = path.join(__dirname, '..', 'tests', 'scripts', 'packaged-auth-probe.cjs');
-  const runtime = packageManager === 'bun' ? (process.platform === 'win32' ? 'bun.exe' : 'bun') : (process.platform === 'win32' ? 'node.exe' : 'node');
-  const probeArgs = [probe, path.join(targetDir, 'node_modules', '@undefineds.co', 'xpod')];
-  if (packageManager === 'bun') probeArgs.unshift('--no-install');
-  execFileSync(runtime, probeArgs, {
-    cwd: targetDir, stdio: 'inherit', env: { ...installEnv, NODE_PATH: '' },
-  });
+    const probe = path.join(__dirname, '..', 'tests', 'scripts', 'packaged-auth-probe.cjs');
+    const runtime = packageManager === 'bun' ? (process.platform === 'win32' ? 'bun.exe' : 'bun') : (process.platform === 'win32' ? 'node.exe' : 'node');
+    const probeArgs = [probe, path.join(targetDir, 'node_modules', '@undefineds.co', 'xpod')];
+    if (packageManager === 'bun') probeArgs.unshift('--no-install');
+    execFileSync(runtime, probeArgs, {
+      cwd: targetDir, stdio: 'inherit', env: { ...installEnv, NODE_PATH: '' },
+    });
 
-  console.log(`[package-install] manager=${packageManager}`);
-  console.log(`[package-install] installed ${installedLabel}`);
-  console.log(`[package-install] registry=${usedRegistry ?? 'package-manager-default'}`);
-  if (packageManager === 'npm' && resolvedInstallSpec !== installSpec) {
-    console.log(`[package-install] sanitized optionalDependencies for local tarball smoke`);
-  }
-  console.log(`[package-install] target ${targetDir}`);
+    console.log(`[package-install] manager=${packageManager}`);
+    console.log(`[package-install] installed ${installedLabel}`);
+    console.log(`[package-install] registry=${usedRegistry ?? 'package-manager-default'}`);
+    if (packageManager === 'npm' && resolvedInstallSpec !== installSpec) {
+      console.log(`[package-install] sanitized optionalDependencies for local tarball smoke`);
+    }
+    console.log(`[package-install] target ${targetDir}`);
+  };
+  return packageManager === 'npm'
+    ? await withSmokeTarball(resolvedInstallSpec, install)
+    : await install(resolvedInstallSpec);
 }
 
 if (require.main === module) {
@@ -334,4 +351,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { installLocalTarballViaRegistry, createSmokeTarball, resolveInstallSpec };
+module.exports = { installLocalTarballViaRegistry, createSmokeTarball, withSmokeTarball, resolveInstallSpec };

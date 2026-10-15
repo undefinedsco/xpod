@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 const crypto = require('node:crypto');
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
 const childProcess = require('node:child_process');
 const zlib = require('node:zlib');
 const esbuild = require('esbuild');
+const { withOwnedTempRoot } = require('./lib/owned-temp-root.cjs');
 const { stageEmbeddedNativeCli } = require('./lib/embedded-native-cli.cjs');
 const { createSingleBinaryEntry } = require('./lib/bun-single-runtime-entry.cjs');
 const { stageRuntimeEsmPackages } = require('./lib/runtime-esm-packages.cjs');
@@ -61,8 +61,8 @@ for (const entry of requiredEntries) {
 // Validate the compiler too: it embeds its Bun runtime in the shipped binary.
 require('../dist/runtime/compat/ensureSupportedBun').ensureSupportedBun(run('bun', ['--version']).stdout.trim());
 
-const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xpod-bun-single-'));
-const stageRoot = path.join(tempRoot, 'package');
+let tempRoot;
+let stageRoot;
 
 function run(command, args, options = {}) {
   const result = childProcess.spawnSync(command, args, {
@@ -576,9 +576,11 @@ async function main() {
   console.log(`[build:bun-single] component package closure: ${[ ...visited ].sort().join(', ')}`);
 }
 
-main().catch((error) => {
+withOwnedTempRoot('xpod-bun-single-', async(root) => {
+  tempRoot = root;
+  stageRoot = path.join(root, 'package');
+  await main();
+}).catch((error) => {
   console.error(error);
-  process.exit(1);
-}).finally(() => {
-  fs.rmSync(tempRoot, { recursive: true, force: true });
+  process.exitCode = 1;
 });
