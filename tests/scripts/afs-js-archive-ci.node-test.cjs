@@ -115,3 +115,31 @@ test('server close callback errors cannot be lost behind an earlier close event'
   assert.equal(after, true); assert.ok(failure); assert.equal(receipt.registry.serverCloseObserved, true);
   assert.equal(receipt.registry.closeCallbackObserved, true); assert.deepEqual(receipt.registry.errors, [{ operation: 'server-close', code: 'E_CLOSE' }]);
 });
+
+test('driver coordinates satisfy the original CLI entry boundary without running a producer', () => {
+  const { normalCliEvidence } = require('../../scripts/check-afs-js-archive-ci.cjs');
+  const { spawnSync } = require('node:child_process');
+  const root = path.resolve(__dirname, '../..'), entry = path.join(root, 'scripts/check-cli-publication.cjs');
+  const target = normalCliEvidence(root);
+  assert.equal(fs.existsSync(target), false); fs.mkdirSync(target, { recursive: true });
+  try {
+    // Existing evidence short-circuits produce() before source/context/install/build.
+    const inside = spawnSync(process.execPath, [entry, '--evidence', target], { encoding: 'utf8' });
+    assert.equal(inside.status, 1); assert.match(inside.stderr, /publication_evidence_already_exists/);
+    assert.doesNotMatch(inside.stderr, /publication_evidence_invalid/);
+    const outside = spawnSync(process.execPath, [entry, '--evidence', path.join(root, '..', 'afs-outside-' + process.pid)], { encoding: 'utf8' });
+    assert.equal(outside.status, 1); assert.match(outside.stderr, /publication_evidence_invalid/);
+    assert.deepEqual(fs.readdirSync(target), []);
+    const ignored = spawnSync('git', ['check-ignore', path.relative(root, target)], { cwd: root, encoding: 'utf8' });
+    assert.equal(ignored.status, 0);
+  } finally { fs.rmdirSync(target); }
+});
+
+test('workflow preserves both exact evidence roots even when the CLI root is hidden', () => {
+  const workflow = require('yaml').parse(fs.readFileSync(path.resolve(__dirname, '../../.github/workflows/afs-js-archive-consumer.yml'), 'utf8'));
+  const uploads = workflow.jobs['normal-archive'].steps.filter(step => step.uses === 'actions/upload-artifact@v4');
+  assert.equal(uploads.length, 2); assert.ok(uploads.every(step => step.if === 'always()'));
+  const cli = uploads.find(step => step.with.path === '.test-data/afs-js-archive-ci-producer/');
+  assert.ok(cli); assert.equal(cli.with['include-hidden-files'], true);
+  assert.ok(uploads.some(step => step.with.path === '${{ runner.temp }}/afs-js-archive/'));
+});

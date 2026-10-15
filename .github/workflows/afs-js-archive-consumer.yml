@@ -51,3 +51,11 @@ jobs:
           name: afs-js-archive-${{ runner.os }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/afs-js-archive/
           if-no-files-found: error
+      - name: Preserve original CLI producer evidence in its required checkout directory
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: afs-js-cli-producer-${{ runner.os }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .test-data/afs-js-archive-ci-producer/
+          include-hidden-files: true
+          if-no-files-found: warn

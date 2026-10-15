@@ -118,6 +118,9 @@ async function finalizeRun({ lifecycle, primary, sourceAfter, persist }) {
   try { await persist({ primary, registry }); } catch (error) { primary = combineFailure(primary, error); }
   return primary;
 }
+// The original CLI entry requires a fresh child of the checkout's ignored .test-data.
+// AFS/consumer evidence has a separate external-directory contract.
+const normalCliEvidence = root => path.join(root, '.test-data', 'afs-js-archive-ci-producer');
 async function main(output) {
   const root = path.resolve(__dirname, '..');
   output = path.resolve(output);
@@ -135,7 +138,7 @@ async function main(output) {
     before = snapshotWorkspace(root, output, 'before'); write(path.join(output, 'source-before.original.json'), before);
     assert.ok(before.clean && before.files.every(file => file.matchesGit));
     assert.equal(before.sourceSha, process.env.GITHUB_SHA);
-    const cliDirectory = path.join(output, 'cli');
+    const cliDirectory = normalCliEvidence(root);
     await phase(process.execPath, [path.join(root, 'scripts/check-cli-publication.cjs'), '--evidence', cliDirectory], 'normal-cli');
     const normal = cliArtifacts(cliDirectory, before);
     const cliRoot = extract(normal.cli, path.join(output, 'cli-input'));
@@ -181,12 +184,12 @@ async function main(output) {
   finally {
     primary = await finalizeRun({ lifecycle, primary,
       sourceAfter: () => { after = snapshotWorkspace(root, output, 'after'); write(path.join(output, 'source-after.original.json'), after); assert.ok(after.clean); assert.equal(after.sourceSha, before.sourceSha); assert.equal(after.inputSHA256, before.inputSHA256); },
-      persist: ({ primary: failure, registry }) => write(path.join(output, 'ci.original.json'), { kind: 'afs-js-normal-ci', source: before?.sourceSha ?? null, passed: !failure, phases, registryClosure: registry, sourceBefore: fs.existsSync(path.join(output, 'source-before.original.json')) ? ref(path.join(output, 'source-before.original.json')) : null, sourceAfter: fs.existsSync(path.join(output, 'source-after.original.json')) ? ref(path.join(output, 'source-after.original.json')) : null, error: failure ? String(failure.stack || failure) : null, errors: failureDetails(failure), dependencyTransport: 'first-party exact npm PUT on loopback; public recursion via npmjs using unchanged resolver, not offline', sourceAdmission: false, legalQualified: false, nativeQualified: false, releaseQualified: false, published: false })
+      persist: ({ primary: failure, registry }) => write(path.join(output, 'ci.original.json'), { kind: 'afs-js-normal-ci', source: before?.sourceSha ?? null, cliEvidence: normalCliEvidence(root), passed: !failure, phases, registryClosure: registry, sourceBefore: fs.existsSync(path.join(output, 'source-before.original.json')) ? ref(path.join(output, 'source-before.original.json')) : null, sourceAfter: fs.existsSync(path.join(output, 'source-after.original.json')) ? ref(path.join(output, 'source-after.original.json')) : null, error: failure ? String(failure.stack || failure) : null, errors: failureDetails(failure), dependencyTransport: 'first-party exact npm PUT on loopback; public recursion via npmjs using unchanged resolver, not offline', sourceAdmission: false, legalQualified: false, nativeQualified: false, releaseQualified: false, published: false })
     });
   }
   if (primary) throw primary;
 }
-module.exports = { artifact, extract, cliArtifacts, closedOriginal, observeRegistryClosure, finalizeRun, failureDetails };
+module.exports = { normalCliEvidence, artifact, extract, cliArtifacts, closedOriginal, observeRegistryClosure, finalizeRun, failureDetails };
 if (require.main === module) (async () => {
   if (process.argv[2] === '--publish' && process.argv.length === 4) {
     const request = json(process.argv[3]);
