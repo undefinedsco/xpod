@@ -66,6 +66,8 @@ export async function exportProducerMaterials(packageRoot: string, canonicalSour
   mkdirSync(root, { recursive: true });
   cpSync(path.join(packageRoot, 'licenses/javascript'), path.join(root, 'javascript'), { recursive: true });
   cpSync(path.join(packageRoot, '.test-data/build/client-inputs.json'), path.join(root, 'client-inputs.json'));
+  // Preserve the raw main-entry invocation alongside the existing client/output evidence.
+  cpSync(path.join(packageRoot, '.test-data/build/npm-entry-inputs.json'), path.join(root, 'npm-entry-inputs.json'));
   const earlyManifest = JSON.parse(readFileSync(path.join(packageRoot, 'package.json'), 'utf8'));
   const hasOutput = Boolean(earlyManifest.exports?.['./output']);
   if (hasOutput) cpSync(path.join(packageRoot, '.test-data/build/output-inputs.json'), path.join(root, 'output-inputs.json'));
@@ -153,6 +155,7 @@ export async function exportProducerMaterials(packageRoot: string, canonicalSour
     sourceAuthority: { sourceCommit, dirty: sourceCommit && state.status === 0 ? Boolean(state.stdout.trim()) : null,
       snapshotSHA256: createHash('sha256').update(JSON.stringify(files)).digest('hex'),
       scope: 'CLI source plus explicitly mapped canonical host and runtime-client source; no claim of release acceptance or external dependency closure.' },
+    coreMetafile: 'npm-entry-inputs.json', corePayloads: { esmSHA256: payload('xpod.mjs') },
     clientPayloads: { cjsSHA256: payload('client.cjs'), esmSHA256: payload('client.mjs') },
     ...(hasOutput ? { outputMetafile: 'output-inputs.json', outputPayloads: { esmSHA256: payload('output.mjs') } } : {}),
     supplements: 'javascript', generatedRoot: 'javascript/generated', clientMetafile: 'client-inputs.json',

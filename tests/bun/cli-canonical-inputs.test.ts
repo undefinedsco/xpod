@@ -47,3 +47,29 @@ test('rejects absent canonical member and replaced payload', () => {
   const f = fixture(); f.members.splice(f.members.findIndex(row => row.path.endsWith('repository/src/' + rules[0])), 1); expect(f.verify).toThrow('binding');
   const g = fixture(); g.members.find(row => row.path === 'package/dist/client.cjs').content = Buffer.from('replacement'); expect(g.verify).toThrow('output binding');
 });
+function withCore() {
+  const f = fixture(), content = git('packages/xpod-cli/src/npm-entry.ts');
+  f.put('source/src/npm-entry.ts', content);
+  const meta: any = { inputs: { 'src/npm-entry.ts': { bytes: content.length, imports: [] } }, outputs: { './xpod.mjs': { entryPoint: 'src/npm-entry.ts' } } };
+  const payload = Buffer.from('synthetic main payload');
+  f.index.coreMetafile = 'npm-entry-inputs.json'; f.index.corePayloads = { esmSHA256: hash(payload) };
+  f.members.push({ path: 'package/dist/xpod.mjs', type: 'file', content: payload });
+  const saveCore = () => f.put('npm-entry-inputs.json', Buffer.from(JSON.stringify(meta)));
+  saveCore(); return { ...f, meta, saveCore };
+}
+test('new main metafile binds first-party inputs and payload without promoting closure', () => {
+  const result = withCore().verify(); expect(result.coreMetafilePresent).toBe(true); expect(result.completeRuntimeClosure).toBe(false);
+  expect(fixture().verify().coreMetafilePresent).toBe(false);
+});
+test('main entrypoint cannot be replaced with the client invocation', () => {
+  const f = withCore(); delete f.meta.inputs['src/npm-entry.ts']; f.meta.inputs['src/client.ts'] = { bytes: 0 }; f.saveCore(); expect(f.verify).toThrow('entrypoint');
+});
+test('main original cannot omit an imported source or replace the output', () => {
+  const f = withCore(); f.meta.inputs['src/npm-entry.ts'].imports.push({ path: 'src/lib/missing.ts' }); f.saveCore(); expect(f.verify).toThrow('Omitted');
+  const g = withCore(); g.members.find(row => row.path === 'package/dist/xpod.mjs').content = Buffer.from('wrong'); expect(g.verify).toThrow('output binding');
+});
+test('core dependency inputs retain a separate source-evidence blocker', () => {
+  const f = withCore(); f.meta.inputs['node_modules/yargs/index.mjs'] = { bytes: 1, imports: [] }; f.saveCore();
+  const result = f.verify(); expect(result.checks[0].dependencyInputs).toBe(1); expect(result.completeRuntimeClosure).toBe(false);
+  f.meta.inputs['node_modules/@solid/community-server/index.js'] = { bytes: 1, imports: [] }; f.saveCore(); expect(f.verify).toThrow('dependency input');
+});

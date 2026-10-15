@@ -27,6 +27,8 @@ test('rebuilds a closed producer inventory without stale source or a previous in
     for (const [file, value] of Object.entries({
       'package.json': JSON.stringify({ name: '@fixture/client', version: '1' }),
       'licenses/javascript/index.json': '{"schemaVersion":1,"entries":[]}',
+      '.test-data/build/npm-entry-inputs.json': '{"inputs":{}}',
+      'dist/xpod.mjs': 'export {};',
       '.test-data/build/client-inputs.json': '{"inputs":{}}',
       'dist/client.cjs': 'module.exports = {};', 'dist/client.mjs': 'export {};',
       'src/current.ts': 'export {};', 'src/removed.ts': 'old source',
@@ -43,6 +45,9 @@ test('rebuilds a closed producer inventory without stale source or a previous in
     expect(index.files.some((file: { path: string }) => file.path === 'index.json')).toBe(false);
     expect(index.producer).toMatchObject({ name: '@fixture/client', version: '1' });
     expect(index.status).toBe('producer-materials-only');
+    expect(index.coreMetafile).toBe('npm-entry-inputs.json');
+    expect(readFileSync(path.join(materials, index.coreMetafile), 'utf8')).toBe(readFileSync(path.join(root, '.test-data/build/npm-entry-inputs.json'), 'utf8'));
+    expect(index.corePayloads.esmSHA256).toBe(createHash('sha256').update(readFileSync(path.join(root, 'dist/xpod.mjs'))).digest('hex'));
     expect(typeof index.sourceAuthority.snapshotSHA256).toBe('string');
     expect(/^[a-f0-9]{64}$/.test(index.sourceAuthority.snapshotSHA256)).toBe(true);
     expect(index.sourceAuthority.sourceCommit).toBeNull();
@@ -97,6 +102,8 @@ test('preserves declared canonical workspace runtime source in the same verified
     for (const [file, value] of Object.entries({
       'xpod-cli/package.json': JSON.stringify({ name: '@undefineds.co/xpod-cli', version: '1', dependencies: { '@undefineds.co/xpod-client': 'workspace:*' } }),
       'xpod-cli/licenses/javascript/index.json': '{"schemaVersion":1,"entries":[]}',
+      'xpod-cli/.test-data/build/npm-entry-inputs.json': '{"inputs":{}}',
+      'xpod-cli/dist/xpod.mjs': 'export {};',
       'xpod-cli/.test-data/build/client-inputs.json': '{"inputs":{}}',
       'xpod-cli/dist/client.cjs': 'module.exports = {};', 'xpod-cli/dist/client.mjs': 'export {};',
       'xpod-cli/src/client.ts': 'export {};',

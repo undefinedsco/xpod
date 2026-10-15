@@ -82,30 +82,42 @@ export function verifyCanonicalPublicationInputs(members: PublicationMember[], i
   for (const file of trusted) {
     if (!bound('source/repository/src/' + file).equals(git('src/' + file))) throw new Error('Canonical host source differs from trusted repository');
   }
-  const checks: Array<{ metafile: string; sourceInputs: number }> = [];
-  for (const metafile of [index.clientMetafile, ...(index.outputMetafile ? [index.outputMetafile] : [])]) {
+  const checks: Array<{ metafile: string; sourceInputs: number; dependencyInputs: number }> = [];
+  for (const metafile of [...(index.coreMetafile ? [index.coreMetafile] : []), index.clientMetafile, ...(index.outputMetafile ? [index.outputMetafile] : [])]) {
     if (typeof metafile !== 'string') throw new Error('Canonical metafile missing');
     const meta = JSON.parse(bound(metafile).toString());
     if (!meta.inputs || !Object.keys(meta.inputs).length || !meta.outputs) throw new Error('Canonical metafile inputs missing');
-    let sourceInputs = 0;
+    if (metafile === index.coreMetafile && (!Object.prototype.hasOwnProperty.call(meta.inputs, 'src/npm-entry.ts') || !Object.values(meta.outputs).some((row: any) => row.entryPoint === 'src/npm-entry.ts'))) throw new Error('Main CLI metafile entrypoint missing');
+    let sourceInputs = 0, dependencyInputs = 0;
     for (const [file, raw] of Object.entries(meta.inputs)) {
       const row = raw as any;
-      if (!/^src\/(?:client|npm-entry|core|module-[^/]+|manifest)\.ts$/u.test(file) && !/^src\/(?:lib|commands)\/[^/]+\.ts$/u.test(file)) throw new Error('Unexpected canonical bundler input: ' + file);
-      const content = bound('source/' + file);
-      if (row.bytes !== content.length || !content.equals(git('packages/xpod-cli/' + file))) throw new Error('Bundler source differs from trusted repository');
+      const host = file.startsWith('../../src/') ? file.slice('../../src/'.length) : null;
+      const dependency = /(?:^|\/)node_modules\//u.test(file);
+      if (dependency) {
+        // Bundled dependency bytes lack a trusted source archive here. Preserve that gap;
+        // never turn a producer's own input inventory into registry/source authority.
+        if (metafile !== index.coreMetafile || /node_modules\/(?:@solid\/community-server|inngest(?:-cli)?\/|@undefineds.co\/xpod)/u.test(file)) throw new Error('Unexpected canonical dependency input');
+        dependencyInputs++;
+      } else {
+        if (host ? !trusted.includes(host) : !/^src\/(?:client|npm-entry|core|module-[^/]+|manifest)\.ts$/u.test(file) && !/^src\/(?:lib|commands)\/[^/]+\.ts$/u.test(file)) throw new Error('Unexpected canonical bundler input: ' + file);
+        const content = bound(host ? 'source/repository/src/' + host : 'source/' + file);
+        if (row.bytes !== content.length || !content.equals(git(host ? 'src/' + host : 'packages/xpod-cli/' + file))) throw new Error('Bundler source differs from trusted repository');
+        sourceInputs++;
+      }
       for (const edge of row.imports ?? []) {
         if (edge.external && !isBuiltin(edge.path) && !/^@undefineds\.co\/xpod-client(?:\/session)?$/u.test(edge.path)) throw new Error('Unexpected canonical external import');
         if (!edge.external && !Object.prototype.hasOwnProperty.call(meta.inputs, edge.path)) throw new Error('Omitted canonical bundler input');
       }
-      sourceInputs++;
     }
-    checks.push({ metafile, sourceInputs });
+    checks.push({ metafile, sourceInputs, dependencyInputs });
   }
-  for (const [file, hash] of [['client.cjs', index.clientPayloads?.cjsSHA256], ['client.mjs', index.clientPayloads?.esmSHA256], ...(index.outputMetafile ? [['output.mjs', index.outputPayloads?.esmSHA256]] : [])]) {
+  for (const [file, hash] of [...(index.coreMetafile ? [['xpod.mjs', index.corePayloads?.esmSHA256]] : []), ['client.cjs', index.clientPayloads?.cjsSHA256], ['client.mjs', index.clientPayloads?.esmSHA256], ...(index.outputMetafile ? [['output.mjs', index.outputPayloads?.esmSHA256]] : [])]) {
     const entry = members.find(row => row.path === 'package/dist/' + file && row.type === 'file');
     if (!entry || sha256(entry.content) !== hash) throw new Error('Canonical output binding mismatch');
   }
-  return { sourceSha, checks, canonicalHostFiles: trusted.length, scope: 'Git source and preserved metafile bindings; no rebuild proof; core npm-entry metafile is not preserved by current producer', completeRuntimeClosure: false };
+  return { sourceSha, checks, canonicalHostFiles: trusted.length, coreMetafilePresent: Boolean(index.coreMetafile),
+    scope: 'Git first-party source and preserved metafile bindings only; no rebuild proof or independent dependency source proof',
+    blockers: [...(!index.coreMetafile ? ['Main npm-entry metafile absent in this original'] : []), 'No independently verified dependency source closure or rebuild evidence'], completeRuntimeClosure: false };
 }
 
 /** Repository source tool only. Not copied by check-cli-package or shipped as an npm CLI command.
