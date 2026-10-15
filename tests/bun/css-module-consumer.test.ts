@@ -319,3 +319,71 @@ with tempfile.TemporaryDirectory(dir=testbase) as temp:
    else:raise AssertionError('allocation error ignored')
 `);
 });
+
+test('normal service TERM reaches parent first and parent closes its child', () => {
+  python(`
+with tempfile.TemporaryDirectory(dir=testbase) as temp:
+ root=pathlib.Path(temp);runner=m.Runner({}, {'output':root,'parent':root})
+ events=root/'events';ready=root/'ready'
+ child="import signal,time,sys,pathlib;signal.signal(signal.SIGTERM,lambda *_:(open(sys.argv[2],'a').write('child TERM|'),sys.exit(0)));pathlib.Path(sys.argv[1]).write_text('ready');time.sleep(10)"
+ parent="""import signal,subprocess,time,sys,pathlib
+p=subprocess.Popen([sys.executable,'-c',sys.argv[1],sys.argv[2],sys.argv[3]])
+def close(*_):
+ pathlib.Path(sys.argv[3]).write_text('parent TERM|')
+ p.terminate();assert p.wait(timeout=2)==0
+ with open(sys.argv[3],'a') as f:f.write('child waited|')
+ sys.exit(0)
+signal.signal(signal.SIGTERM,close)
+while not pathlib.Path(sys.argv[2]).exists():time.sleep(.01)
+time.sleep(10)
+"""
+ process=m.subprocess.Popen([m.sys.executable,'-c',parent,child,str(ready),str(events)],start_new_session=True)
+ try:
+  deadline=m.time.monotonic()+3
+  while not ready.exists():
+   assert m.time.monotonic()<deadline;m.time.sleep(.01)
+  signals=[];original=m.os.killpg
+  def observe(pid,sig):
+   signals.append(sig);return original(pid,sig)
+  with patch.object(m.os,'killpg',observe),patch.object(runner,'gate',lambda:None):runner.close_service(process)
+  assert process.returncode==0 and not runner.forced and not runner.groups_unknown
+  assert events.read_text()=='parent TERM|child TERM|child waited|'
+  assert signals and all(sig==0 for sig in signals)
+ finally:
+  if process.poll() is None:runner.stop(process,timeout=2)
+`);
+});
+
+test('service graceful timeout fails before group cleanup broadcasts TERM', () => {
+  python(`
+with tempfile.TemporaryDirectory(dir=testbase) as temp:
+ root=pathlib.Path(temp);runner=m.Runner({}, {'output':root,'parent':root});runner.result={'records':runner.records}
+ ready=root/'ready';events=root/'events'
+ code="""import signal,time,sys,pathlib
+count=0
+def close(*_):
+ global count
+ count+=1
+ with open(sys.argv[2],'a') as f:f.write('TERM|')
+ if count==2:sys.exit(0)
+signal.signal(signal.SIGTERM,close)
+pathlib.Path(sys.argv[1]).write_text('ready')
+time.sleep(10)
+"""
+ def healthy(process):
+  deadline=m.time.monotonic()+3
+  while not ready.exists():
+   assert m.time.monotonic()<deadline;m.time.sleep(.01)
+ close=runner.close_service;signals=[];original=m.os.killpg
+ def broadcast(pid,sig):
+  if sig:signals.append(sig)
+  return original(pid,sig)
+ with patch.object(runner,'gate',lambda:None),patch.object(runner,'close_service',lambda p:close(p,timeout=.15)),patch.object(m.os,'killpg',broadcast):
+  try:runner.command('timeout',[m.sys.executable,'-c',code,str(ready),str(events)],os.environ.copy(),root,healthy)
+  except m.subprocess.TimeoutExpired:pass
+  else:raise AssertionError('graceful timeout passed')
+ row=runner.records[0]
+ assert row['status']=='failed' and row['returncode']==0 and row['ownedGroupAbsent'] and row['rawClosed']
+ assert signals==[m.signal.SIGTERM] and events.read_text()=='TERM|TERM|'
+`);
+});

@@ -270,6 +270,25 @@ class Runner:
         self.group_members[process.pid] = members
         return members
 
+    def close_service(self, process, timeout=20):
+        # The public CLI owns ordered shutdown of its runtime descendants.
+        # Broadcasting here bypasses that order; group signals belong to failure cleanup.
+        deadline = time.monotonic() + timeout
+        if process.poll() is None:
+            process.send_signal(signal.SIGTERM)
+        process.wait(timeout=max(0, deadline - time.monotonic()))
+        require(process.returncode == 0, 'service did not close gracefully with exit 0')
+        while True:
+            try:
+                os.killpg(process.pid, 0)
+            except ProcessLookupError:
+                return
+            self.observe_group(process)
+            self.gate()
+            if time.monotonic() >= deadline:
+                raise subprocess.TimeoutExpired(process.args, timeout)
+            time.sleep(.1)
+
     def stop(self, process, timeout=20):
         try:
             return self._stop(process, timeout)
@@ -335,8 +354,7 @@ class Runner:
                 self.save()
                 if service:
                     service(process)
-                    self.stop(process)
-                    require(process.returncode == 0, 'service did not close gracefully with exit 0')
+                    self.close_service(process)
                 else:
                     try:
                         deadline = time.monotonic() + self.plan.get('timeoutSeconds', 180)
