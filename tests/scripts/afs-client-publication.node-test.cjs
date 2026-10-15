@@ -112,3 +112,29 @@ test('JSON-LD fragments cannot hide missing, unsafe, linked or unsupported docum
     write('dist/components/context.jsonld', { '@id': 'undefinedsAfs:dist/types/linked.jsonld#Class' });fs.symlinkSync('index.d.ts', path.join(pkg, 'dist/types/linked.jsonld'));assert.throws(() => emitClientPublication(options), /symlink/);assert.equal(fs.existsSync(destination), false);
   });
 });
+
+
+test('preserves the real collector root LICENSE bytes and conventional nested notice documents', () => fixture(({ write, options, destination }) => {
+  // collectAfsJavascriptMaterials copies this exact repository input to dist/licenses/LICENSE.
+  const license = fs.readFileSync(path.resolve(__dirname, '../../LICENSE'));
+  write('dist/licenses/LICENSE', license);
+  for (const name of ['LICENCE', 'NOTICE', 'COPYING', 'nested/license']) write('dist/licenses/' + name, license);
+  const result = emitClientPublication(options);
+  for (const name of ['LICENSE', 'LICENCE', 'NOTICE', 'COPYING', 'nested/license']) {
+    const relative = 'dist/licenses/' + name;
+    assert.deepEqual(fs.readFileSync(path.join(destination, relative)), license);
+    const row = result.inventory.find(item => item.path === relative);
+    assert.equal(row.bytes, license.length);assert.equal(row.sha256, crypto.createHash('sha256').update(license).digest('hex'));
+  }
+  for (const key of ['buildQualified', 'consumerQualified', 'sourceQualified', 'releaseQualified']) assert.equal(result[key], false);
+}));
+test('notice classification keeps unknown, executable, linked and out-of-tree payloads blocked', () => {
+  for (const name of ['dist/licenses/unknown', 'dist/licenses/LICENSE.bin', 'dist/licenses/NOTICE.js', 'dist/types/LICENSE']) fixture(({ write, options, destination }) => {
+    write(name, 'unexpected');assert.throws(() => emitClientPublication(options));assert.equal(fs.existsSync(destination), false);
+  });
+  for (const native of [false, true]) fixture(({ pkg, write, options, destination }) => {
+    if (native) write('dist/licenses/LICENSE', Buffer.from('7f454c4601020304', 'hex'));
+    else fs.symlinkSync('../../../LICENSE', path.join(pkg, 'dist/licenses/LICENSE'));
+    assert.throws(() => emitClientPublication(options), native ? /Native/ : /symlink/);assert.equal(fs.existsSync(destination), false);
+  });
+});

@@ -61,10 +61,13 @@ function emitClientPublication({ packageRoot, repoRoot, destination, assertCurre
     if (/\.(?:node|so|dylib|dll|exe|wasm|a)$/i.test(relative) || (bytes.length >= 4 && ['7f454c46','cffaedfe','feedfacf','cafebabe','0061736d'].includes(bytes.subarray(0,4).toString('hex'))) || bytes.subarray(0,2).toString() === 'MZ') throw new Error('Native publication payload rejected');
     payload.set(relative, bytes);total += bytes.length;
   }
+  // Notice collectors also preserve conventional extensionless legal documents.
+  // Keep this classification inside the notice tree, separate from executable closure.
+  const isNoticeDocument = relative => relative.startsWith('dist/licenses/') && /^(?:LICENSE|LICENCE|NOTICE|COPYING)$/i.test(path.posix.basename(relative));
   function include(relative) {
     relative = safe(relative.replace(/^\.\//, ''));
     if (payload.has(relative)) return;
-    if (!relative.startsWith('dist/') || !/\.(?:[cm]?js|d\.ts|jsonld|json|txt|md)$/.test(relative)) throw new Error('Unsupported generated payload');
+    if (!relative.startsWith('dist/') || (!/\.(?:[cm]?js|d\.ts|jsonld|json|txt|md)$/.test(relative) && !isNoticeDocument(relative))) throw new Error('Unsupported generated payload');
     const bytes = read(relative);add(relative, bytes);
     if (/\.(?:[cm]?js|d\.ts)$/.test(relative)) {
       const syntax = ts.createSourceFile(relative, bytes.toString('utf8'), ts.ScriptTarget.Latest, true);
@@ -119,7 +122,7 @@ function emitClientPublication({ packageRoot, repoRoot, destination, assertCurre
   }
   subtree('dist/types', name => /\.(?:d\.ts|jsonld)$/.test(name));
   subtree('dist/components', name => /\.jsonld$/.test(name));
-  subtree('dist/licenses', name => /\.(?:json|txt|md)$/.test(name));
+  subtree('dist/licenses', name => /\.(?:json|txt|md)$/.test(name) || isNoticeDocument(name));
   for (const relative of Object.values(manifest['lsd:contexts'] || {})) include(relative);
   if (manifest['lsd:components']) include(manifest['lsd:components']);
   const typeTargets = value => {
