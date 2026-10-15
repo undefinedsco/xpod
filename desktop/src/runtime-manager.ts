@@ -164,14 +164,15 @@ export class RuntimeManager {
       const targetUrl = new URL(this.options.targetOrigin)
       const runtimePort = targetUrl.port || (targetUrl.protocol === 'https:' ? '443' : '80')
       const runtimeBaseUrl = `${targetUrl.origin}/`
-      const child = this.spawnImpl(launch.command, launch.args, {
-        env: {
+      const runtimeEnvironment = {
           ...process.env,
           ...launch.env,
           ...this.options.resolveEnvironment?.(),
           CSS_BASE_URL: runtimeBaseUrl,
           XPOD_PORT: runtimePort,
-        },
+      }
+      const child = this.spawnImpl(launch.command, desktopRuntimeArguments(launch.args, this.options.targetOrigin, runtimeEnvironment), {
+        env: runtimeEnvironment,
         stdio: 'ignore',
       })
       this.child = child
@@ -263,7 +264,7 @@ export function resolveRuntimeLaunchCommand({
   resolveBunCommand?: () => string | undefined
 }): RuntimeLaunchCommand | undefined {
   if (env.XPOD_RUNTIME_COMMAND) {
-    return { command: env.XPOD_RUNTIME_COMMAND, args: ['start', '--foreground'] }
+    return { command: env.XPOD_RUNTIME_COMMAND, args: ['start'] }
   }
   const packagedBinary = path.join(resourcesPath, 'runtime', 'xpod')
   if (!packaged && pathExists(packagedBinary)) {
@@ -271,7 +272,7 @@ export function resolveRuntimeLaunchCommand({
     if (!pathExists(qleverRuntime)) return undefined
     return {
       command: packagedBinary,
-      args: ['start', '--foreground'],
+      args: ['start'],
       env: { XPOD_QLEVER_LOCAL_RUNTIME_COMMAND: qleverRuntime },
     }
   }
@@ -283,21 +284,21 @@ export function resolveRuntimeLaunchCommand({
     if (bunCommand) {
       return {
         command: bunCommand,
-        args: [packagedCli, 'start', '--foreground'],
+        args: [packagedCli, 'start'],
       }
     }
     return {
       command: execPath,
-      args: [packagedCli, 'start', '--foreground'],
+      args: [packagedCli, 'start'],
       env: { ELECTRON_RUN_AS_NODE: '1' },
     }
   }
   if (packaged) return undefined
   const localDesktopRuntime = moduleDir ? path.resolve(moduleDir, '..', 'runtime', 'xpod') : undefined
   if (localDesktopRuntime && pathExists(localDesktopRuntime)) {
-    return { command: localDesktopRuntime, args: ['start', '--foreground'] }
+    return { command: localDesktopRuntime, args: ['start'] }
   }
-  return { command: 'xpod', args: ['start', '--foreground'] }
+  return { command: 'xpod', args: ['start'] }
 }
 
 function resolvePackagedBun(
@@ -332,4 +333,14 @@ function hasRunningService(value: unknown, name: 'css' | 'api'): boolean {
     'status' in item &&
     item.name === name &&
     item.status === 'running')
+}
+
+/** Translate desktop state to the public CLI start contract, without aliases. */
+export function desktopRuntimeArguments(prefix: string[], targetOrigin: string, env: NodeJS.ProcessEnv): string[] {
+  const target = new URL(targetOrigin)
+  const port = target.port || (target.protocol === 'https:' ? '443' : '80')
+  const args = [...prefix, '--port', port, '--baseUrl', `${target.origin}/`]
+  if (env.XPOD_EDITION) args.push('--mode', env.XPOD_EDITION)
+  if (env.CSS_ROOT_FILE_PATH) args.push('--data', env.CSS_ROOT_FILE_PATH)
+  return args
 }

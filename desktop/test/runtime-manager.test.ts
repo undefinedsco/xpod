@@ -339,7 +339,7 @@ describe('resolveRuntimeLaunchCommand', () => {
       env: { XPOD_RUNTIME_COMMAND: '/opt/xpod/bin/xpod' },
       resourcesPath: '/Applications/Xpod.app/Contents/Resources',
       pathExists: () => false,
-    })).toEqual({ command: '/opt/xpod/bin/xpod', args: ['start', '--foreground'] });
+    })).toEqual({ command: '/opt/xpod/bin/xpod', args: ['start'] });
   });
 
   it('uses a packaged runtime before falling back to PATH', () => {
@@ -353,7 +353,7 @@ describe('resolveRuntimeLaunchCommand', () => {
       execPath: '/Applications/Xpod.app/Contents/MacOS/Xpod',
     })).toEqual({
       command: '/Applications/Xpod.app/Contents/Resources/runtime/xpod',
-      args: ['start', '--foreground'],
+      args: ['start'],
       env: {
         XPOD_QLEVER_LOCAL_RUNTIME_COMMAND: '/Applications/Xpod.app/Contents/Resources/runtime/qlever/bin/xpod_qlever_local_runtime',
       },
@@ -380,7 +380,7 @@ describe('resolveRuntimeLaunchCommand', () => {
       resolveBunCommand: () => '/usr/local/bin/bun',
     })).toEqual({
       command: '/Applications/Xpod.app/Contents/Resources/runtime/bin/bun',
-      args: ['/Applications/Xpod.app/Contents/Resources/runtime/node_modules/@undefineds.co/xpod-cli/dist/xpod.mjs', 'start', '--foreground'],
+      args: ['/Applications/Xpod.app/Contents/Resources/runtime/node_modules/@undefineds.co/xpod-cli/dist/xpod.mjs', 'start'],
     });
   });
 
@@ -393,7 +393,7 @@ describe('resolveRuntimeLaunchCommand', () => {
       resolveBunCommand: () => '/usr/local/bin/bun',
     })).toEqual({
       command: '/usr/local/bin/bun',
-      args: ['/Applications/Xpod.app/Contents/Resources/runtime/node_modules/@undefineds.co/xpod-cli/dist/xpod.mjs', 'start', '--foreground'],
+      args: ['/Applications/Xpod.app/Contents/Resources/runtime/node_modules/@undefineds.co/xpod-cli/dist/xpod.mjs', 'start'],
     });
   });
 
@@ -406,7 +406,7 @@ describe('resolveRuntimeLaunchCommand', () => {
       resolveBunCommand: () => undefined,
     })).toEqual({
       command: '/Applications/Xpod.app/Contents/MacOS/Xpod',
-      args: ['/Applications/Xpod.app/Contents/Resources/runtime/node_modules/@undefineds.co/xpod-cli/dist/xpod.mjs', 'start', '--foreground'],
+      args: ['/Applications/Xpod.app/Contents/Resources/runtime/node_modules/@undefineds.co/xpod-cli/dist/xpod.mjs', 'start'],
       env: { ELECTRON_RUN_AS_NODE: '1' },
     });
   });
@@ -419,7 +419,7 @@ describe('resolveRuntimeLaunchCommand', () => {
       pathExists: (value) => value === '/Users/ganlu/develop/xpod/desktop/runtime/xpod',
     })).toEqual({
       command: '/Users/ganlu/develop/xpod/desktop/runtime/xpod',
-      args: ['start', '--foreground'],
+      args: ['start'],
     });
   });
 
@@ -436,7 +436,7 @@ describe('resolveRuntimeLaunchCommand', () => {
       resourcesPath: '/Electron.app/Contents/Resources',
       moduleDir: '/Users/ganlu/develop/xpod/desktop/dist',
       pathExists: () => false,
-    })).toEqual({ command: 'xpod', args: ['start', '--foreground'] });
+    })).toEqual({ command: 'xpod', args: ['start'] });
   });
 });
 
