@@ -27,6 +27,12 @@ on:
       - 'package.json'
       - 'bun.lock'
   workflow_dispatch:
+    inputs:
+      registry_readback:
+        description: 'Optional exact registry readback JSON (registry/package/version/expected sha256, integrity, bytes); read-only, no qualification'
+        required: false
+        type: string
+        default: ''
   workflow_call:
 
 permissions:
@@ -70,10 +76,21 @@ jobs:
         run: |
           node --test tests/scripts/independent-release-workflow.node-test.cjs
           bun test tests/bun/independent-release-plan.test.ts
+      - name: Read back an explicitly requested exact registry product
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.registry_readback != '' }}
+        env:
+          REGISTRY_READBACK_INPUT: ${{ inputs.registry_readback }}
+        run: bun scripts/run-registry-readback-preflight.ts
       - name: Explain preparation boundary
         if: ${{ always() }}
+        env:
+          REGISTRY_READBACK_ENABLED: ${{ github.event_name == 'workflow_dispatch' && inputs.registry_readback != '' }}
         run: |
-          echo 'Contract fixtures only: no actual candidate archive or receipt was inspected. Planner success is not release qualification; missing source/native/legal/consumer admission remains blocked.' >> "$GITHUB_STEP_SUMMARY"
+          if [ "$REGISTRY_READBACK_ENABLED" = true ]; then
+            echo 'Explicit registry readback requested: inspect registry-readback.json for actual network readback-only, not-published-blocked, or failure. A byte match is not release qualification. Contract checkout is not candidate product source authority; source/native/legal/consumer admission remains blocked.' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'Contract fixtures only: no actual candidate archive or receipt was inspected. Planner success is not release qualification; missing source/native/legal/consumer admission remains blocked.' >> "$GITHUB_STEP_SUMMARY"
+          fi
       - uses: actions/upload-artifact@v4
         if: ${{ always() && steps.source.outputs.sha != '' }}
         with:

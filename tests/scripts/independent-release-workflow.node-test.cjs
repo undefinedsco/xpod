@@ -87,3 +87,101 @@ test('actual YAML source-binding script distinguishes PR head and rejects an unr
     fs.rmSync(parent, { recursive: true, force: true });
   }
 });
+
+function parsedWorkflow() {
+  const result = spawnSync('bun', ['-e', 'console.log(JSON.stringify(Bun.YAML.parse(require("node:fs").readFileSync(process.argv[1],"utf8"))))', path.resolve(__dirname, '../../.github/workflows/independent-release-prepare.yml')], { encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stderr);
+  return JSON.parse(result.stdout);
+}
+
+test('exact readback is opt-in manual only and JSON crosses the shell exclusively through env', () => {
+  const document = parsedWorkflow();
+  assert.deepEqual(document.on.workflow_dispatch.inputs.registry_readback, {
+    description: 'Optional exact registry readback JSON (registry/package/version/expected sha256, integrity, bytes); read-only, no qualification',
+    required: false, type: 'string', default: '',
+  });
+  const step = document.jobs.contracts.steps.find(step => step.run === 'bun scripts/run-registry-readback-preflight.ts');
+  assert.equal(step.if, "${{ github.event_name == 'workflow_dispatch' && inputs.registry_readback != '' }}");
+  assert.deepEqual(step.env, { REGISTRY_READBACK_INPUT: '${{ inputs.registry_readback }}' });
+  assert.doesNotMatch(step.run, /\$\{\{|eval|\$REGISTRY_READBACK_INPUT/u);
+  assert.deepEqual(document.permissions, { contents: 'read' });
+  assert.equal(document.jobs.contracts.permissions, undefined);
+  assert.equal(document.jobs.contracts.environment, undefined);
+  assert.equal(document.on.workflow_call, null);
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'xpod-readback-env-'));
+  try {
+    fs.writeFileSync(path.join(parent, 'bun'), '#!/bin/sh\nprintf "%s" "$REGISTRY_READBACK_INPUT" > captured.json\n');
+    fs.chmodSync(path.join(parent, 'bun'), 0o700);
+    const input = '`touch injected`;$(touch injected);\n"secret"';
+    const result = spawnSync('/bin/bash', ['-c', step.run], { cwd: parent, env: { ...process.env, PATH: parent, REGISTRY_READBACK_INPUT: input }, encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(fs.readFileSync(path.join(parent, 'captured.json'), 'utf8'), input);
+    assert.equal(fs.existsSync(path.join(parent, 'injected')), false);
+  } finally { fs.rmSync(parent, { recursive: true, force: true }); }
+});
+
+test('real runner uses injected GET transport, preserves 404 blocked report and refuses input authority', () => {
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'xpod-readback-runner-'));
+  const runner = path.resolve(__dirname, '../../scripts/run-registry-readback-preflight.ts');
+  const program = `
+import {runRegistryReadbackPreflight} from ${JSON.stringify(runner)};
+import {readFileSync,existsSync} from 'node:fs';
+import {createHash} from 'node:crypto';
+import {gzipSync} from 'node:zlib';
+const mode=process.argv[1];
+const manifest=Buffer.from(JSON.stringify({name:'@example/product',version:'1.2.3'}));
+const header=Buffer.alloc(512);header.write('package/package.json');header.write('0000644\\0',100);header.write('0000000\\0',108);header.write('0000000\\0',116);header.write(manifest.length.toString(8).padStart(11,'0')+'\\0',124);header.fill(32,148,156);header[156]=48;header.write([...header].reduce((a,b)=>a+b,0).toString(8).padStart(6,'0')+'\\0 ',148);
+const archive=gzipSync(Buffer.concat([header,manifest,Buffer.alloc((512-manifest.length%512)%512+1024)]));
+const input={registry:'https://registry.example/',package:'@example/product',version:'1.2.3',expected:{bytes:archive.length,sha256:createHash('sha256').update(archive).digest('hex'),integrity:'sha512-'+createHash('sha512').update(archive).digest('base64')}};
+if(mode==='token')input.token='SENSITIVE-INPUT';
+if(mode==='path')input.output='../elsewhere';
+let calls=0;
+const transport=async(url,options)=>{calls++;if(mode==='transporterror')throw Error('SENSITIVE-INPUT');if(options.method!=='GET'||new Headers(options.headers).has('authorization'))throw Error('write or token');
+ if(mode==='success')return String(url).endsWith('.tgz')?new Response(archive):Response.json({name:input.package,version:input.version,dist:{integrity:input.expected.integrity,tarball:'https://cdn.example/product.tgz'}});
+ return new Response(null,{status:404});};
+const env={GITHUB_EVENT_NAME:mode==='pr'?'pull_request':mode==='call'?'workflow_call':mode==='push'?'push':'workflow_dispatch',REGISTRY_READBACK_INPUT:mode==='empty'?'':mode==='malformed'?'SENSITIVE-INPUT {':JSON.stringify(input)};
+const code=await runRegistryReadbackPreflight(env,transport);
+const file='.test-data/independent-release-prepare/registry-readback.json';
+console.log(JSON.stringify({code,calls,record:existsSync(file)?JSON.parse(readFileSync(file,'utf8')):null}));process.exitCode=code;
+`;
+  try {
+    for (const mode of ['pr', 'call', 'push', 'empty', 'missing', 'token', 'path', 'malformed', 'transporterror', 'success']) {
+      const cwd = path.join(parent, mode); fs.mkdirSync(cwd);
+      const result = spawnSync('bun', ['-e', program, mode], { cwd, encoding: 'utf8' });
+      const data = JSON.parse(result.stdout);
+      assert.equal(result.stderr, '');
+      assert.doesNotMatch(result.stdout, /SENSITIVE-INPUT|elsewhere/u);
+      if (['pr', 'call', 'push', 'empty'].includes(mode)) {
+        assert.equal(result.status, 0); assert.deepEqual(data, { code: 0, calls: 0, record: null }); continue;
+      }
+      assert.equal(result.status, mode === 'missing' ? 2 : mode === 'success' ? 0 : 1);
+      assert.equal(data.calls, ['missing', 'transporterror'].includes(mode) ? 1 : mode === 'success' ? 2 : 0);
+      assert.equal(data.record.status, mode === 'missing' ? 'not-published-blocked' : mode === 'success' ? 'readback-only' : 'readback-failed');
+      for (const field of ['published', 'candidatePlanGenerated', 'releaseQualified', 'sourceVerified', 'nativeAdmission', 'legalClearance', 'consumerValidated']) assert.equal(data.record[field], false);
+      assert.equal(fs.existsSync(path.join(cwd, 'elsewhere')), false);
+    }
+    const cli = path.join(parent, 'cli'); fs.mkdirSync(cli);
+    const execution = spawnSync('bun', [runner], { cwd: cli, env: { ...process.env, GITHUB_EVENT_NAME: 'workflow_dispatch', REGISTRY_READBACK_INPUT: 'SENSITIVE-INPUT malformed {' }, encoding: 'utf8' });
+    assert.equal(execution.status, 1);
+    assert.equal(execution.stdout, ''); assert.equal(execution.stderr, '');
+    const report = fs.readFileSync(path.join(cli, '.test-data/independent-release-prepare/registry-readback.json'), 'utf8');
+    assert.doesNotMatch(report, /SENSITIVE-INPUT/u); assert.equal(JSON.parse(report).status, 'readback-failed');
+  } finally { fs.rmSync(parent, { recursive: true, force: true }); }
+});
+
+test('summary distinguishes fixture checks from explicitly requested network readback', () => {
+  const summary = parsedWorkflow().jobs.contracts.steps.find(step => step.name === 'Explain preparation boundary');
+  assert.equal(summary.env.REGISTRY_READBACK_ENABLED, "${{ github.event_name == 'workflow_dispatch' && inputs.registry_readback != '' }}");
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'xpod-readback-summary-'));
+  try {
+    for (const enabled of ['true', 'false']) {
+      const file = path.join(parent, enabled);
+      const result = spawnSync('bash', ['-c', summary.run], { env: { ...process.env, REGISTRY_READBACK_ENABLED: enabled, GITHUB_STEP_SUMMARY: file }, encoding: 'utf8' });
+      assert.equal(result.status, 0, result.stderr);
+      const text = fs.readFileSync(file, 'utf8');
+      assert.match(text, enabled === 'true' ? /Explicit registry readback requested/u : /Contract fixtures only/u);
+      if (enabled === 'true') { assert.doesNotMatch(text, /Contract fixtures only/u); assert.match(text, /not candidate product source authority/u); }
+      assert.match(text, /not release qualification/u);
+    }
+  } finally { fs.rmSync(parent, { recursive: true, force: true }); }
+});
