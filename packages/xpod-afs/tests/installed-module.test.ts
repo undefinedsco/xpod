@@ -91,7 +91,7 @@ globalThis.fetch=async (input) => {
 `);
   async function cliRun(runtime: string, label: string, phaseLabel: string, args: string[]): Promise<SpawnSyncReturns<Buffer>> {
     const row = payloads.get(label)!;
-    const result = await runOwned(runtime, [runtime === node ? '--import' : '--preload', preload, cli, ...args],
+    const result = await runOwned(runtime, [runtime === node ? '--import' : '--preload', preload, cli, ...args, ...(phaseLabel === 'install' ? ['--diagnostics'] : [])],
       {...process.env, HOME: row.home, NODE_PATH: '', XPOD_TEST_DOWNLOAD_COUNTER: row.counter});
     await receipt(`${label}-cli-${phaseLabel}`, result);
     expect(result.error).toBeUndefined(); expect(result.signal).toBeNull();

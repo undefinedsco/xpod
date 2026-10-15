@@ -341,3 +341,48 @@ try { await withModuleOwnedLock(process.argv[2], async () => {
     } finally { for (const child of children) { if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL'); } await Promise.allSettled(closures); }
   }, 30_000);
 }
+
+test('diagnostics: successful phases are ordered, bounded and do not disclose paths', async () => {
+  const events: import('../src/module-install-diagnostics').ModuleInstallDiagnostic[] = [];
+  let archiveChecks = 0;
+  const f = await fixture({ beforeArchive: async () => {
+    if (archiveChecks++ > 0) return;
+    expect(events.slice(0, 2).map(event => [event.phase, event.state])).toEqual([['lock-acquire', 'started'], ['lock-acquire', 'completed']]);
+    expect(events[events.length - 1].phase).toBe('archive-download-hash');
+    expect(events[events.length - 1].state).toBe('started');
+  } });
+  const installed = await f.store.install('afs', '0.1.0', event => events.push(event));
+  expect(installed.version).toBe('0.1.0');
+  const phases = ['lock-acquire', 'metadata', 'archive-download-hash', 'archive-scan', 'archive-extract', 'manifest-modes',
+    'verify-manifest', 'verify-files', 'verify-walk', 'publish', 'cleanup'];
+  expect(events.filter(event => event.state === 'started').map(event => event.phase)).toEqual(phases);
+  expect(events.map(event => event.state)).toEqual(phases.flatMap(() => ['started', 'completed']));
+  expect(events.length).toBe(22);
+  for (let index = 0; index < events.length; index++) {
+    const event = events[index];
+    expect(event.kind).toBe('module-install-phase');
+    expect(event.elapsedMs >= (events[index - 1]?.elapsedMs ?? 0)).toBe(true);
+    expect(Object.keys(event).sort()).toEqual((event.state === 'started' ? ['kind', 'phase', 'state', 'elapsedMs'] : ['kind', 'phase', 'state', 'elapsedMs', 'durationMs']).sort());
+  }
+  expect(JSON.stringify(events).includes(f.root)).toBe(false);
+  expect(JSON.stringify(events).includes('registry.npmjs.org')).toBe(false);
+  const again: typeof events = []; await f.store.install('afs', '0.1.0', event => again.push(event));
+  expect(again.filter(event => event.phase === 'verify-manifest' && event.state === 'completed').length).toBe(2);
+});
+test('diagnostics: observer failures never alter successful install or original failure', async () => {
+  const f = await fixture();
+  expect((await f.store.install('afs', '0.1.0', () => { throw new Error('observer private data'); })).version).toBe('0.1.0');
+  f.corrupt(); const events: import('../src/module-install-diagnostics').ModuleInstallDiagnostic[] = [];
+  const failure = await f.store.install('afs', '0.1.0', event => { events.push(event); throw new Error('observer'); }).catch(error => error);
+  expect(failure.code).toBe('module_integrity_failed');
+  expect(events.filter(event => event.state === 'failed').map(event => event.phase)).toEqual(['archive-download-hash']);
+  expect(events.slice(-2).map(event => [event.phase, event.state])).toEqual([['cleanup', 'started'], ['cleanup', 'completed']]);
+});
+test('diagnostics: lock acquisition completes before metadata work and failures mark only acquisition', async () => {
+  const f = await fixture(); await mkdir(f.store.root, { recursive: true, mode: 0o700 });
+  await writeFile(path.join(f.store.root, 'afs-darwin-arm64.lock'), 'legacy busy lock');
+  const events: import('../src/module-install-diagnostics').ModuleInstallDiagnostic[] = [];
+  const failure = await f.store.install('afs', '0.1.0', event => events.push(event)).catch(error => error);
+  expect(failure.code).toBe('module_busy');
+  expect(events.map(event => [event.phase, event.state])).toEqual([['lock-acquire', 'started'], ['lock-acquire', 'failed']]);
+});

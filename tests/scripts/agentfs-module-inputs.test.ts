@@ -217,7 +217,12 @@ describe('module mounted input preparation', () => {
         actualWait: true, rawClosed: true, groupAbsent: true, stdoutSHA256: hashBytes('private-marker'), stderrSHA256: hashBytes('private-marker'), unknown: { credentials: 'private-marker' } }));
     }
     const proxy = path.join(root, 'proxy-cancel.safe.json'); writeFileSync(proxy, JSON.stringify({ pid: 321, groupAbsent: true, tokenFixtureObserved: true, nativeMountStarted: false, clientSecret: 'private-marker' }));
+    const install = 'node-cli-install'; const stderr = JSON.stringify({ kind: 'module-install-phase', phase: 'archive-extract', state: 'started', elapsedMs: 1 }) + '\n'
+      + JSON.stringify({ kind: 'module-install-phase', phase: 'archive-extract', state: 'completed', elapsedMs: 2, durationMs: 1 }) + '\n';
+    writeFileSync(path.join(root, install + '.stderr'), stderr);
+    const installReceipt = path.join(root, install + '.safe.json'); writeFileSync(installReceipt, JSON.stringify({ ...JSON.parse(readFileSync(installReceipt, 'utf8')), stderrSHA256: hashBytes(stderr) }));
     const facts = verifyInstalledConsumerReceipts(root); expect(facts.stages).toHaveLength(21); expect(JSON.stringify(facts)).not.toContain('private-marker');
+    expect((facts.stages.find((row: any) => row.stage === install) as any).installPhases).toEqual(stderr.trim().split('\n').map(line => JSON.parse(line)));
     const negative = path.join(root, 'node-cli-tampered-list.safe.json');
     const rejected = readFileSync(negative, 'utf8');
     writeFileSync(negative, JSON.stringify({ ...JSON.parse(rejected), actualExit: 0 }));
@@ -356,10 +361,53 @@ with tarfile.open(sys.argv[1],'w:gz') as t:
 });
 
 describe('owned installed consumer diagnostics', () => {
+  function traceFailure(root: string, text: string, tamper = false) {
+    const run = path.join(root, 'run'); const directory = path.join(run, '.test-data/afs-installed-receipts/case'); mkdirSync(directory, { recursive: true });
+    const stage = 'node-cli-install'; writeFileSync(path.join(directory, stage + '.stdout'), ''); writeFileSync(path.join(directory, stage + '.stderr'), tamper ? 'changed' : text);
+    const row = { stage, pid: 123, actualExit: null, actualSignal: 'SIGTERM', actualWait: true, rawClosed: true, groupAbsent: true,
+      observation: { timeoutMs: 10000, elapsedMs: 10001, timeoutObserved: true, closeObserved: true, groupClosed: true },
+      stdoutSHA256: hashBytes(''), stderrSHA256: hashBytes(text) };
+    writeFileSync(path.join(directory, stage + '.safe.json'), JSON.stringify(row));
+    const evidence = path.join(root, 'evidence'); mkdirSync(evidence);
+    recordInstalledConsumerFailure(evidence, run, { producerClosed: true, groupAbsent: true, rawClosedBeforeHash: true, code: 1, signal: null }, Buffer.from(JSON.stringify(row)));
+    return JSON.parse(readFileSync(path.join(evidence, 'installed-consumer-failure.safe.json'), 'utf8'));
+  }
+  it('retains only bounded chronological phase prefixes and rejects free fields, unknown phases and invalid timings', () => {
+    const start = { kind: 'module-install-phase', phase: 'archive-extract', state: 'started', elapsedMs: 1 };
+    for (const invalid of [{ ...start, token: 'private-secret' }, { ...start, phase: 'private-secret' },
+      { ...start, elapsedMs: -1 }, { ...start, elapsedMs: 'private-secret' },
+      { ...start, state: 'completed', durationMs: 2 }, { ...start, durationMs: 0 }]) fixture(root => {
+      const diagnostic = traceFailure(root, JSON.stringify(invalid) + '\n');
+      expect(diagnostic.observedStages[0].summary.stderr.installPhases).toEqual([]);
+      expect(diagnostic.observedStages[0].summary.stderr.installPhasesTruncated).toBe(true);
+      expect(JSON.stringify(diagnostic)).not.toContain('private-secret');
+    });
+    fixture(root => {
+      const lines = Array.from({ length: 80 }, (_, index) => ({ ...start, state: index % 2 ? 'completed' : 'started', elapsedMs: index,
+        ...(index % 2 ? { durationMs: 1 } : {}) }));
+      const diagnostic = traceFailure(root, lines.map(row => JSON.stringify(row)).join('\n'));
+      expect(diagnostic.observedStages[0].summary.stderr.installPhases).toEqual(lines.slice(0, 64));
+      expect(diagnostic.observedStages[0].summary.stderr.installPhasesTruncated).toBe(true);
+    });
+    fixture(root => {
+      const diagnostic = traceFailure(root, JSON.stringify(start) + '\n', true);
+      expect(diagnostic.receiptInventoryState).toBe('invalid'); expect(diagnostic.observedStages).toEqual([]);
+    });
+    const stage = { stage: 'node-cli-install', actualWait: true, rawClosed: true, groupAbsent: true,
+      stdoutSHA256: 'a'.repeat(64), stderrSHA256: 'b'.repeat(64), installPhases: [start], installPhasesTruncated: false };
+    const parent = { producerClosed: true, groupAbsent: true, rawClosedBeforeHash: true, stages: [stage] };
+    expect(() => projectReceipt('installed-consumer.safe.json', parent)).not.toThrow();
+    for (const bad of [{ ...stage, installPhases: [{ ...start, phase: 'private-secret' }] }, { ...stage, rawClosed: false }, { ...stage, stage: 'node-cli-before-list' }]) {
+      expect(() => projectReceipt('installed-consumer.safe.json', { ...parent, stages: [bad] })).toThrow('invalid installed phase diagnostic');
+    }
+  });
   for (const mode of ['failure', 'timeout']) {
     it(`preserves actual ${mode} lifecycle and exports only closed hash-bound summaries`, () => asyncFixture(async root => {
       const { runOwnedInstalledConsumer } = await import('../../scripts/agentfs-native-ci/mounted/owned-installed-consumer');
-      const script = mode === 'timeout' ? 'setInterval(()=>{},1000)' : `process.stdout.write(JSON.stringify({ok:false,code:'module_install_failed',token:'private-secret'},null,2)+'\\n');process.stderr.write('(node:123) ExperimentalWarning: SQLite is an experimental feature and might change at any time\\nnpm error code ENOSPC\\nhttps://private-secret/key\\n'+'x'.repeat(70000));process.exitCode=7;`;
+      const phases = [{ kind: 'module-install-phase', phase: 'archive-scan', state: 'started', elapsedMs: 0 },
+        { kind: 'module-install-phase', phase: 'archive-scan', state: 'completed', elapsedMs: 1, durationMs: 1 },
+        { kind: 'module-install-phase', phase: 'archive-extract', state: 'started', elapsedMs: 2 }];
+      const script = mode === 'timeout' ? `process.stderr.write(${JSON.stringify(phases.map(row => JSON.stringify(row)).join('\n') + '\n')});setInterval(()=>{},1000)` : `process.stdout.write(JSON.stringify({ok:false,code:'module_install_failed',token:'private-secret'},null,2)+'\\n');process.stderr.write('(node:123) ExperimentalWarning: SQLite is an experimental feature and might change at any time\\nnpm error code ENOSPC\\nhttps://private-secret/key\\n'+'x'.repeat(70000));process.exitCode=7;`;
       const timeoutMs = mode === 'timeout' ? 50 : 1000;
       const result = await runOwnedInstalledConsumer(process.execPath, ['-e', script], process.env, root, timeoutMs);
       expect(result.observation.timeoutMs).toBe(timeoutMs);
@@ -388,6 +436,10 @@ describe('owned installed consumer diagnostics', () => {
         expect(observed.summary.stdout.codes).toEqual(['cli-error', 'module_install_failed']);
         expect(observed.summary.stderr.codes).toEqual(['sqlite-experimental-warning', 'ENOSPC']);
         expect(observed.summary.stderr.truncated).toBe(true); expect(observed.summary.stderr.bytes).toBe(result.stderr.length);
+      } else {
+        expect(observed.summary.stderr.installPhases).toEqual(phases);
+        expect(observed.summary.stderr.installPhasesTruncated).toBe(false);
+        expect(observed.actualSignal).toBe('SIGTERM'); expect(observed.observation.timeoutObserved).toBe(true);
       }
       const out = path.join(root, 'export'); exportSafe(evidence, out);
       const exported = readFileSync(path.join(out, 'installed-consumer-failure.safe.json'), 'utf8');

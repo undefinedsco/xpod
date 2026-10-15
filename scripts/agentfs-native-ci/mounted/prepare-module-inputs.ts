@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { verifyModuleClientMaterials, moduleClientPath, hashBytes, hashFile, verifyBoundFile, type ModuleAdmissionInputs } from './module-admission';
 import { isolatedModuleEnvironment } from './module-admission';
 import { observeChildLifecycle, reapOwnedGroup } from './platform-admission';
+import { MODULE_INSTALL_PHASES, MODULE_INSTALL_DIAGNOSTIC_LIMIT, type ModuleInstallPhaseEvent } from '../../../packages/xpod-cli/src/module-install-diagnostics';
 
 import nativeAuthority from './native-authority.json';
 const { source, artifacts } = nativeAuthority;
@@ -100,8 +101,9 @@ const binding: Record<string, Projection> = { ...fields('string', 'profile modul
   ...fields('string', 'inputAuthoritySHA256 driverSHA256 chainReceiptSHA256 chainCleanupReceiptSHA256 platformReceiptSHA256'), actualPlatformExit: 'number', moduleAndCoreArtifactUnchanged: 'boolean', installedInventoryReverified: 'boolean' };
 const close: Projection = { ...fields('number', 'exit'), ...fields('string', 'signal rawSHA256 resourceStop supervisorError'), ...fields('boolean', 'actualWait rawClosedBeforeHash ownedGroupAbsentAfterWait'), cleanupErrors: ['string'] };
 const installedObservation: Projection = { ...fields('number', 'timeoutMs elapsedMs'), ...fields('boolean', 'timeoutObserved closeObserved groupClosed') };
-const installedSummary: Projection = { bytes: 'number', truncated: 'boolean', codes: ['string'] };
-const installedStage: Projection = { observation: installedObservation, ...fields('string', 'stage actualSignal stdoutSHA256 stderrSHA256'), ...fields('number', 'pid actualExit'), ...fields('boolean', 'actualWait rawClosed groupAbsent') };
+const installPhase: Projection = { ...fields('string', 'kind phase state'), ...fields('number', 'elapsedMs durationMs') };
+const installedSummary: Projection = { bytes: 'number', truncated: 'boolean', codes: ['string'], installPhases: [installPhase], installPhasesTruncated: 'boolean' };
+const installedStage: Projection = { observation: installedObservation, ...fields('string', 'stage actualSignal stdoutSHA256 stderrSHA256'), ...fields('number', 'pid actualExit'), ...fields('boolean', 'actualWait rawClosed groupAbsent'), installPhases: [installPhase], installPhasesTruncated: 'boolean' };
 const installedProxy: Projection = { pid: 'number', groupAbsent: 'boolean', tokenFixtureObserved: 'boolean', nativeMountStarted: 'boolean' };
 export const INSTALLED_CONSUMER_STAGES = ['public-workcopy-types-Node16', 'public-workcopy-types-Node', 'node-esm-public-runtime', 'node-status', 'node-workcopy-sqlite', 'bun-esm-public-runtime', 'bun-status', 'bun-workcopy-sqlite', 'node-startup-cancel',
   'node-cli-before-list', 'node-cli-install', 'node-cli-installed-list', 'node-cli-tampered-list', 'node-cli-remove', 'node-cli-removed-list',
@@ -159,10 +161,32 @@ function validInstalledObservation(row: any): boolean {
 function validInstalledSummary(row: any): boolean {
   return row && Number.isSafeInteger(row.bytes) && row.bytes >= 0 && typeof row.truncated === 'boolean'
     && Array.isArray(row.codes) && row.codes.length <= INSTALLED_SUMMARY_CODES.length
-    && new Set(row.codes).size === row.codes.length && row.codes.every((code: any) => INSTALLED_SUMMARY_CODES.includes(code));
+    && new Set(row.codes).size === row.codes.length && row.codes.every((code: any) => INSTALLED_SUMMARY_CODES.includes(code))
+    && (row.installPhases === undefined || validInstallPhases(row.installPhases))
+    && (row.installPhasesTruncated === undefined || typeof row.installPhasesTruncated === 'boolean');
+}
+function validInstallPhase(row: any): row is ModuleInstallPhaseEvent {
+  return row && typeof row === 'object' && !Array.isArray(row) && row.kind === 'module-install-phase'
+    && Object.keys(row).every(key => ['kind', 'phase', 'state', 'elapsedMs', 'durationMs'].includes(key))
+    && MODULE_INSTALL_PHASES.includes(row.phase) && ['started', 'completed', 'failed'].includes(row.state)
+    && Number.isFinite(row.elapsedMs) && row.elapsedMs >= 0 && row.elapsedMs <= 86_400_000
+    && (row.state === 'started' ? row.durationMs === undefined : Number.isFinite(row.durationMs)
+      && row.durationMs >= 0 && row.durationMs <= row.elapsedMs + 0.001);
+}
+/** A bounded chronological prefix may end with an interrupted started phase. */
+function validInstallPhases(rows: any): rows is ModuleInstallPhaseEvent[] {
+  if (!Array.isArray(rows) || rows.length > MODULE_INSTALL_DIAGNOSTIC_LIMIT) return false;
+  let active: string | undefined; let elapsed = 0;
+  for (const row of rows) {
+    if (!validInstallPhase(row) || row.elapsedMs < elapsed) return false;
+    elapsed = row.elapsedMs;
+    if (row.state === 'started') { if (active) return false; active = row.phase; }
+    else { if (active !== row.phase) return false; active = undefined; }
+  }
+  return true;
 }
 /** Read only a bounded prefix after the caller has verified raw custody and closure. */
-function summarizeInstalledStream(file: string) {
+function summarizeInstalledStream(file: string, allowInstallPhases = false) {
   const fd = openSync(file, 'r');
   try {
     const bytes = fstatSync(fd).size;
@@ -171,12 +195,17 @@ function summarizeInstalledStream(file: string) {
     while (offset < buffer.length) { const count = readSync(fd, buffer, offset, buffer.length - offset, offset); if (!count) break; offset += count; }
     const text = buffer.subarray(0, offset).toString('utf8').replace(/\u001b\[[0-9;]*m/g, '');
     const codes = new Set<string>();
-    const inspectJSON = (value: string) => {
+    const installPhases: ModuleInstallPhaseEvent[] = []; let installPhasesTruncated = false;
+    const inspectJSON = (value: string, inspectPhases = false) => {
       try {
         const json = JSON.parse(value);
         if (json?.ok === true) codes.add('cli-ok');
         if (json?.ok === false) codes.add('cli-error');
         if (typeof json?.code === 'string' && INSTALLED_SUMMARY_CODES.includes(json.code)) codes.add(json.code);
+        if (allowInstallPhases && inspectPhases && json?.kind === 'module-install-phase') {
+          if (!installPhasesTruncated && validInstallPhases([...installPhases, json])) installPhases.push(json);
+          else installPhasesTruncated = true;
+        }
       } catch { /* Arbitrary text is never projected. */ }
     };
     if (offset === bytes) inspectJSON(text);
@@ -184,9 +213,12 @@ function summarizeInstalledStream(file: string) {
       if (/^(?:\(node:[0-9]+\) )?ExperimentalWarning: SQLite is an experimental feature and might change at any time$/.test(line)) codes.add('sqlite-experimental-warning');
       const error = /^(?:npm (?:ERR!|error) code |error code: )(E[A-Z]+)$/.exec(line)?.[1];
       if (error && INSTALLED_SUMMARY_CODES.includes(error as any)) codes.add(error);
-      if (line.length <= 4096) inspectJSON(line);
+      if (line.length <= 4096) inspectJSON(line, true);
+      else if (allowInstallPhases) installPhasesTruncated = true;
     }
-    return { bytes, truncated: offset < bytes || text.split('\n').length > 1024, codes: [...codes] };
+    return { bytes, truncated: offset < bytes || text.split('\n').length > 1024, codes: [...codes],
+      installPhases, installPhasesTruncated: installPhasesTruncated || installPhases.length === MODULE_INSTALL_DIAGNOSTIC_LIMIT
+        || allowInstallPhases && (offset < bytes || text.split('\n').length > 1024) };
   } finally { closeSync(fd); }
 }
 export function projectReceipt(name: string, original: unknown): unknown {
@@ -210,6 +242,15 @@ export function projectReceipt(name: string, original: unknown): unknown {
       || name === 'cli-runtime-final.safe.json' && row.inventoryReverified !== true) throw new Error('invalid CLI bootstrap receipt');
     return projectBySchema(row, schema);
   }
+  if (name === 'installed-consumer.safe.json') {
+    const row = original as Record<string, any> | null;
+    if (Array.isArray(row?.stages) && row.stages.some((stage: any) => stage.installPhases !== undefined
+      && (!validInstallPhases(stage.installPhases) || !['node-cli-install', 'bun-cli-install'].includes(stage.stage)
+        || row?.producerClosed !== true || row?.groupAbsent !== true || row?.rawClosedBeforeHash !== true
+        || stage.actualWait !== true || stage.rawClosed !== true || stage.groupAbsent !== true
+        || !['stdoutSHA256', 'stderrSHA256'].every(key => typeof stage[key] === 'string' && /^[a-f0-9]{64}$/.test(stage[key])))
+      || stage.installPhasesTruncated !== undefined && typeof stage.installPhasesTruncated !== 'boolean')) throw new Error('invalid installed phase diagnostic');
+  }
   if (name === 'installed-consumer-failure.safe.json') {
     const row = original as Record<string, any> | null;
     const validHash = (value: unknown) => value === null || typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
@@ -227,6 +268,7 @@ export function projectReceipt(name: string, original: unknown): unknown {
         || !Number.isSafeInteger(stage.pid) || stage.pid <= 1 || !validExit(stage.actualExit) || installedSignal(stage.actualSignal) !== stage.actualSignal
         || !['actualWait', 'rawClosed', 'groupAbsent', 'rawHashesBound'].every(key => typeof stage[key] === 'boolean')
         || !validInstalledObservation(stage.observation)
+        || stage.installPhases !== undefined && (!validInstallPhases(stage.installPhases) || !stage.rawHashesBound || !['node-cli-install', 'bun-cli-install'].includes(stage.stage))
         || stage.summary != null && (!stage.rawHashesBound || !validInstalledSummary(stage.summary.stdout) || !validInstalledSummary(stage.summary.stderr))
         || !validHash(stage.stdoutSHA256) || !validHash(stage.stderrSHA256)
         || stage.rawHashesBound && stage.observation && (!stage.observation.closeObserved || !stage.observation.groupClosed)
@@ -326,7 +368,10 @@ export function verifyInstalledConsumerReceipts(directory: string): { stages: un
       || row.stage !== stage || row.actualExit !== expectedExit || row.actualSignal !== null
       || row.actualWait !== true || row.rawClosed !== true || row.groupAbsent !== true || !Number.isSafeInteger(row.pid) || row.pid <= 1) throw new Error('installed consumer stage incomplete');
     for (const stream of ['stdout', 'stderr']) verifyBoundFile({ path: path.join(directory, `${stage}.${stream}`), sha256: row[`${stream}SHA256`] });
-    return projectBySchema(row, installedStage);
+    const stderr = path.join(directory, `${stage}.stderr`);
+    const diagnostic = stage.endsWith('-cli-install') ? summarizeInstalledStream(stderr, true) : undefined;
+    if (diagnostic) verifyBoundFile({ path: stderr, sha256: row.stderrSHA256 });
+    return projectBySchema({ ...row, ...(diagnostic ? { installPhases: diagnostic.installPhases, installPhasesTruncated: diagnostic.installPhasesTruncated } : {}) }, installedStage);
   });
   const proxy = path.join(directory, 'proxy-cancel.safe.json'); verifyBoundFile({ path: proxy, sha256: hashFile(proxy) }); const proxyCancel = JSON.parse(readFileSync(proxy, 'utf8'));
   if (!Number.isSafeInteger(proxyCancel.pid) || proxyCancel.pid <= 1 || proxyCancel.groupAbsent !== true || proxyCancel.tokenFixtureObserved !== true || proxyCancel.nativeMountStarted !== false) throw new Error('installed consumer proxy cleanup incomplete');
@@ -364,7 +409,7 @@ export function recordInstalledConsumerFailure(evidence: string, run: string, pr
           && (!row.observation || row.observation.closeObserved && row.observation.groupClosed);
         if (bound) for (const stream of ['stdout', 'stderr']) verifyBoundFile({ path: path.join(directory, `${stage}.${stream}`), sha256: row[`${stream}SHA256`] });
         const summary = bound ? Object.fromEntries(['stdout', 'stderr'].map(stream => {
-          const file = path.join(directory, `${stage}.${stream}`); const value = summarizeInstalledStream(file);
+          const file = path.join(directory, `${stage}.${stream}`); const value = summarizeInstalledStream(file, stream === 'stderr' && stage.endsWith('-cli-install'));
           verifyBoundFile({ path: file, sha256: row[`${stream}SHA256`] }); return [stream, value];
         })) : null;
         observedStages.push({ stage, pid: row.pid, observation: row.observation, summary, actualExit: row.actualExit, actualSignal: installedSignal(row.actualSignal),

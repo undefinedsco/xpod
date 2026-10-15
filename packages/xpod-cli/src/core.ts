@@ -1,4 +1,5 @@
 import yargs from 'yargs';
+import { writeSync } from 'node:fs';
 import { MODULE_CATALOG, moduleDefinition } from './module-catalog';
 import { ModuleStore } from './module-store';
 import { writeJsonResult } from './lib/output';
@@ -20,12 +21,12 @@ export async function runCli(args: string[], store = new ModuleStore()): Promise
     .command('module <operation> [id]', 'Manage optional CSS/API/AFS modules', parser => parser
       .version(false)
       .positional('operation', { choices: ['list', 'install', 'remove'] as const, demandOption: true })
-      .positional('id', { type: 'string' }).option('version', { type: 'string', default: 'latest', description: 'Exact module version, or latest on explicit installation' }), async argv => {
+      .positional('id', { type: 'string' }).option('diagnostics', { type: 'boolean', default: false, description: 'Write bounded module install phase timings to stderr' }).option('version', { type: 'string', default: 'latest', description: 'Exact module version, or latest on explicit installation' }), async argv => {
       if (argv.operation === 'list') {
         writeJsonResult(await Promise.all(MODULE_CATALOG.map(async definition => ({ id: definition.id, installed: await store.current(definition.id) ?? null }))));
       } else {
         if (!argv.id) throw new Error('Specify a module id: css, api or afs.');
-        if (argv.operation === 'install') writeJsonResult(await store.install(argv.id, argv.version));
+        if (argv.operation === 'install') writeJsonResult(await store.install(argv.id, argv.version, argv.diagnostics ? event => { writeSync(2, JSON.stringify(event) + '\n'); } : undefined));
         else { await store.remove(argv.id); writeJsonResult({ id: argv.id, removed: true }); }
       }
     })

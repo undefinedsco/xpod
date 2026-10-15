@@ -7,6 +7,7 @@ import { chmod, lstat, mkdir, mkdtemp, open, readFile, readdir, rename, rm, writ
 import { t as listTar, x as extractTar } from 'tar';
 import { CliCommandError } from './lib/output';
 import { MODULE_API_VERSION, moduleDefinition, modulePackageName, moduleTarget, type ModuleId } from './module-catalog';
+import { createModuleInstallDiagnostics, type ModuleInstallDiagnosticObserver } from './module-install-diagnostics';
 import { withModuleOwnedLock } from './module-owned-lock';
 
 const REGISTRY = 'https://registry.npmjs.org';
@@ -63,23 +64,28 @@ export class ModuleStore {
     return path.join(this.root, row.id, `${this.platform}-${this.arch}`, row.version);
   }
   private pointer(id: ModuleId) { return path.join(this.root, id, `${this.platform}-${this.arch}`, 'current.json'); }
-  private async verify(directory: string, row: InstalledModule): Promise<ModuleManifest> {
-    const source = await readFile(path.join(directory, 'package', 'package.json'));
-    if (createHash('sha256').update(source).digest('hex') !== row.manifestSha256) throw error('module_manifest_changed', 'Installed module manifest changed.');
-    const pkg = JSON.parse(source.toString()); const manifest: ModuleManifest = pkg.xpodModule;
-    if (pkg.name !== row.package || pkg.version !== row.version || manifest?.schemaVersion !== 1
-      || manifest.id !== row.id || manifest.cliApiVersion !== MODULE_API_VERSION || manifest.platform !== row.platform || manifest.arch !== row.arch
-      || !safePath(manifest.entry) || !manifest.entry.endsWith('.mjs') || !Array.isArray(manifest.files) || !manifest.files.length) throw error('module_contract_invalid', 'Module is incompatible with this CLI or platform.');
+  private async verify(directory: string, row: InstalledModule, diagnostics = createModuleInstallDiagnostics()): Promise<ModuleManifest> {
+    const manifest = await diagnostics.run('verify-manifest', async () => {
+      const source = await readFile(path.join(directory, 'package', 'package.json'));
+      if (createHash('sha256').update(source).digest('hex') !== row.manifestSha256) throw error('module_manifest_changed', 'Installed module manifest changed.');
+      const pkg = JSON.parse(source.toString()); const manifest: ModuleManifest = pkg.xpodModule;
+      if (pkg.name !== row.package || pkg.version !== row.version || manifest?.schemaVersion !== 1
+        || manifest.id !== row.id || manifest.cliApiVersion !== MODULE_API_VERSION || manifest.platform !== row.platform || manifest.arch !== row.arch
+        || !safePath(manifest.entry) || !manifest.entry.endsWith('.mjs') || !Array.isArray(manifest.files) || !manifest.files.length) throw error('module_contract_invalid', 'Module is incompatible with this CLI or platform.');
+      return manifest;
+    });
     const names = new Set<string>();
-    for (const file of manifest.files) {
-      if (!file || !safePath(file.path) || file.path === 'package.json' || names.has(file.path) || !/^[a-f0-9]{64}$/.test(file.sha256)
-        || !Number.isSafeInteger(file.size) || file.size < 0 || ![0o644, 0o755].includes(file.mode)) throw error('module_inventory_invalid', 'Module file inventory is invalid.');
-      names.add(file.path);
-      const absolute = path.join(directory, 'package', file.path); const stat = await lstat(absolute);
-      if (!stat.isFile() || stat.isSymbolicLink() || stat.size !== file.size || (stat.mode & 0o777) !== file.mode
-        || await fileDigest(absolute) !== file.sha256) throw error('module_file_changed', 'Installed module contents changed.');
-    }
-    if (!names.has(manifest.entry)) throw error('module_entry_unbound', 'Module entry is missing from its inventory.');
+    await diagnostics.run('verify-files', async () => {
+      for (const file of manifest.files) {
+        if (!file || !safePath(file.path) || file.path === 'package.json' || names.has(file.path) || !/^[a-f0-9]{64}$/.test(file.sha256)
+          || !Number.isSafeInteger(file.size) || file.size < 0 || ![0o644, 0o755].includes(file.mode)) throw error('module_inventory_invalid', 'Module file inventory is invalid.');
+        names.add(file.path);
+        const absolute = path.join(directory, 'package', file.path); const stat = await lstat(absolute);
+        if (!stat.isFile() || stat.isSymbolicLink() || stat.size !== file.size || (stat.mode & 0o777) !== file.mode
+          || await fileDigest(absolute) !== file.sha256) throw error('module_file_changed', 'Installed module contents changed.');
+      }
+      if (!names.has(manifest.entry)) throw error('module_entry_unbound', 'Module entry is missing from its inventory.');
+    });
     const visit = async (relative = ''): Promise<void> => {
       for (const entry of await readdir(path.join(directory, 'package', relative), { withFileTypes: true })) {
         const name = relative ? `${relative}/${entry.name}` : entry.name;
@@ -88,7 +94,7 @@ export class ModuleStore {
         else if (!entry.isFile() || (name !== 'package.json' && !names.has(name))) throw error('module_inventory_invalid', 'Module contains an unbound file.');
       }
     };
-    await visit(); return manifest;
+    await diagnostics.run('verify-walk', () => visit()); return manifest;
   }
   public async current(id: string): Promise<InstalledModule | undefined> {
     const definition = this.definition(id); let source;
@@ -103,72 +109,91 @@ export class ModuleStore {
     const lock = path.join(this.root, `${id}-${this.platform}-${this.arch}.lock`);
     return withModuleOwnedLock(lock, action);
   }
-  public async install(id: string, version = 'latest'): Promise<InstalledModule> {
+  public async install(id: string, version = 'latest', onDiagnostic?: ModuleInstallDiagnosticObserver): Promise<InstalledModule> {
+    const diagnostics = createModuleInstallDiagnostics(onDiagnostic);
     const definition = this.definition(id);
     if (version !== 'latest' && !VERSION.test(version)) throw error('module_version_invalid', 'Use an exact module version or latest.');
-    return this.withLock(definition.id, async () => {
+    const lockFinished = diagnostics.start('lock-acquire');
+    try { return await this.withLock(definition.id, async () => {
+      lockFinished('completed');
       const packageName = modulePackageName(definition.id, this.platform, this.arch)!;
-      const response = await this.request(`${REGISTRY}/${encodeURIComponent(packageName)}/${version}`, { signal: AbortSignal.timeout(30_000), redirect: 'error' });
-      if (!response.ok) throw error('module_unavailable', `Module ${definition.id} is unavailable (${response.status}).`);
-      const metadata = await response.json() as { name: string; version: string; dist: { integrity: string; tarball: string } };
-      if (metadata.name !== packageName || !VERSION.test(metadata.version) || (version !== 'latest' && metadata.version !== version)
-        || !/^sha512-[A-Za-z0-9+/]{86}==$/.test(metadata.dist?.integrity || '')) throw error('module_metadata_invalid', 'Module registry identity or integrity is invalid.');
+      const metadata = await diagnostics.run('metadata', async () => {
+        const response = await this.request(`${REGISTRY}/${encodeURIComponent(packageName)}/${version}`, { signal: AbortSignal.timeout(30_000), redirect: 'error' });
+        if (!response.ok) throw error('module_unavailable', `Module ${definition.id} is unavailable (${response.status}).`);
+        const metadata = await response.json() as { name: string; version: string; dist: { integrity: string; tarball: string } };
+        if (metadata.name !== packageName || !VERSION.test(metadata.version) || (version !== 'latest' && metadata.version !== version)
+          || !/^sha512-[A-Za-z0-9+/]{86}==$/.test(metadata.dist?.integrity || '')) throw error('module_metadata_invalid', 'Module registry identity or integrity is invalid.');
+        const url = new URL(metadata.dist.tarball);
+        if (url.origin !== REGISTRY || url.username || url.password) throw error('module_origin_invalid', 'Module download must come from the npm registry.');
+        return metadata;
+      });
       const url = new URL(metadata.dist.tarball);
-      if (url.origin !== REGISTRY || url.username || url.password) throw error('module_origin_invalid', 'Module download must come from the npm registry.');
       const parent = path.join(this.root, definition.id, `${this.platform}-${this.arch}`); await mkdir(parent, { recursive: true, mode: 0o700 });
       const stage = await mkdtemp(path.join(parent, '.install-'));
       let primaryError: unknown;
       let failed = false;
       try {
-        const archive = await this.request(url, { signal: AbortSignal.timeout(120_000), redirect: 'error' });
-        if (!archive.ok || !archive.body) throw error('module_download_failed', 'Module archive download failed.');
-        const tarball = path.join(stage, 'module.tgz'); const handle = await open(tarball, 'wx', 0o600);
-        const hasher = createHash('sha512'); let size = 0;
-        try {
-          for await (const chunk of archive.body as unknown as AsyncIterable<Uint8Array>) {
-            size += chunk.length; if (size > 512 * 1024 * 1024) throw error('module_archive_too_large', 'Module archive exceeds the supported size.');
-            hasher.update(chunk); await handle.writeFile(chunk);
-          }
-        } finally { await handle.close(); }
-        const digest = hasher.digest(); const expected = Buffer.from(metadata.dist.integrity.slice(7), 'base64');
-        if (expected.length !== digest.length || !timingSafeEqual(digest, expected)) throw error('module_integrity_failed', 'Module archive integrity check failed.');
-        let expanded = 0; let entries = 0; let invalidArchive = false;
-        await listTar({ file: tarball, strict: true, onReadEntry: entry => {
-          const name = entry.path.replace(/\/$/, '');
-          if (!safePath(name) || name.split('/')[0] !== 'package' || !['File', 'Directory'].includes(entry.type)
-            || ++entries > 50_000 || (expanded += entry.size) > 2 * 1024 * 1024 * 1024) invalidArchive = true;
-        } });
-        if (invalidArchive) throw error('module_archive_invalid', 'Module archive has unsafe or unsupported members.');
+        const tarball = path.join(stage, 'module.tgz');
+        await diagnostics.run('archive-download-hash', async () => {
+          const archive = await this.request(url, { signal: AbortSignal.timeout(120_000), redirect: 'error' });
+          if (!archive.ok || !archive.body) throw error('module_download_failed', 'Module archive download failed.');
+          const handle = await open(tarball, 'wx', 0o600);
+          const hasher = createHash('sha512'); let size = 0;
+          try {
+            for await (const chunk of archive.body as unknown as AsyncIterable<Uint8Array>) {
+              size += chunk.length; if (size > 512 * 1024 * 1024) throw error('module_archive_too_large', 'Module archive exceeds the supported size.');
+              hasher.update(chunk); await handle.writeFile(chunk);
+            }
+          } finally { await handle.close(); }
+          const digest = hasher.digest(); const expected = Buffer.from(metadata.dist.integrity.slice(7), 'base64');
+          if (expected.length !== digest.length || !timingSafeEqual(digest, expected)) throw error('module_integrity_failed', 'Module archive integrity check failed.');
+        });
+        await diagnostics.run('archive-scan', async () => {
+          let expanded = 0; let entries = 0; let invalidArchive = false;
+          await listTar({ file: tarball, strict: true, onReadEntry: entry => {
+            const name = entry.path.replace(/\/$/, '');
+            if (!safePath(name) || name.split('/')[0] !== 'package' || !['File', 'Directory'].includes(entry.type)
+              || ++entries > 50_000 || (expanded += entry.size) > 2 * 1024 * 1024 * 1024) invalidArchive = true;
+          } });
+          if (invalidArchive) throw error('module_archive_invalid', 'Module archive has unsafe or unsupported members.');
+        });
         // Installation precedes service startup. The public synchronous extractor
         // uses bounded reads and closes every write before returning or throwing.
-        extractTar({ file: tarball, cwd: stage, strict: true, noChmod: false, sync: true });
+        await diagnostics.run('archive-extract', () => extractTar({ file: tarball, cwd: stage, strict: true, noChmod: false, sync: true }));
         await rm(tarball);
-        const source = await readFile(path.join(stage, 'package/package.json'));
-        const row: InstalledModule = { id: definition.id, package: packageName, version: metadata.version, integrity: metadata.dist.integrity,
-          platform: this.platform, arch: this.arch, manifestSha256: createHash('sha256').update(source).digest('hex') };
-        // Normalize only declared file modes; never execute an installation script.
-        const manifest: ModuleManifest = JSON.parse(source.toString()).xpodModule;
-        if (Array.isArray(manifest?.files)) for (const file of manifest.files) {
-          if (!file || !safePath(file.path) || ![0o644, 0o755].includes(file.mode)) throw error('module_inventory_invalid', 'Module file permissions are invalid.');
-          await chmod(path.join(stage, 'package', file.path), file.mode);
-        }
-        await this.verify(stage, row);
+        const row = await diagnostics.run('manifest-modes', async () => {
+          const source = await readFile(path.join(stage, 'package/package.json'));
+          const row: InstalledModule = { id: definition.id, package: packageName, version: metadata.version, integrity: metadata.dist.integrity,
+            platform: this.platform, arch: this.arch, manifestSha256: createHash('sha256').update(source).digest('hex') };
+          // Normalize only declared file modes; never execute an installation script.
+          const manifest: ModuleManifest = JSON.parse(source.toString()).xpodModule;
+          if (Array.isArray(manifest?.files)) for (const file of manifest.files) {
+            if (!file || !safePath(file.path) || ![0o644, 0o755].includes(file.mode)) throw error('module_inventory_invalid', 'Module file permissions are invalid.');
+            await chmod(path.join(stage, 'package', file.path), file.mode);
+          }
+          return row;
+        });
+        await this.verify(stage, row, diagnostics);
         const destination = this.directory(row);
-        try { await lstat(destination); await this.verify(destination, row); }
-        catch (cause) { if ((cause as NodeJS.ErrnoException).code !== 'ENOENT') throw cause; await rename(stage, destination); }
-        const pending = `${this.pointer(definition.id)}.tmp`; await writeFile(pending, JSON.stringify(row), { mode: 0o600 }); await rename(pending, this.pointer(definition.id));
+        let destinationNeedsPublish = false;
+        try { await lstat(destination); await this.verify(destination, row, diagnostics); }
+        catch (cause) { if ((cause as NodeJS.ErrnoException).code !== 'ENOENT') throw cause; destinationNeedsPublish = true; }
+        await diagnostics.run('publish', async () => {
+          if (destinationNeedsPublish) await rename(stage, destination);
+          const pending = `${this.pointer(definition.id)}.tmp`; await writeFile(pending, JSON.stringify(row), { mode: 0o600 }); await rename(pending, this.pointer(definition.id));
+        });
         return row;
       } catch (cause) {
         failed = true; primaryError = cause; throw cause;
       } finally {
-        try { await rm(stage, { recursive: true, force: true }); }
+        try { await diagnostics.run('cleanup', () => rm(stage, { recursive: true, force: true })); }
         catch (cleanupError) {
           if (failed) throw new AggregateError([primaryError, cleanupError],
             `Module installation failed (${primaryError instanceof Error ? primaryError.message : String(primaryError)}); staging cleanup failed (${String(cleanupError)})`);
           throw cleanupError;
         }
       }
-    });
+    }); } catch (cause) { lockFinished('failed'); throw cause; }
   }
   public async remove(id: string): Promise<void> {
     const definition = this.definition(id);
