@@ -1,3 +1,4 @@
+import { API_BUILD_INTEGRATION_TIMEOUT_MS } from './repo-root';
 import { test } from 'bun:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
@@ -26,7 +27,7 @@ test('real Bun metafiles normalize root, package and outside build cwd to the sa
     assert.deepEqual(results[0].inputs, ['src/api/dep.ts', 'src/api/main.ts']);
     assert.deepEqual(results[0], results[1]); assert.deepEqual(results[1], results[2]);
   } finally { rmSync(root, { recursive: true, force: true }); }
-});
+}, API_BUILD_INTEGRATION_TIMEOUT_MS);
 
 test('bundle receipts bind both entries, all metadata inputs, adapter identity and explicit externals', () => {
   const root = mkdtempSync(path.join(os.tmpdir(), 'xpod-api-products-'));
@@ -79,4 +80,4 @@ test('bundle receipts bind both entries, all metadata inputs, adapter identity a
     put('src/runtime/package-root.ts', 'changed original input');
     assert.throws(() => verifyApiBundleProducts(root, out, receipt, []), /drift/);
   } finally { rmSync(root, { recursive: true, force: true }); }
-});
+}, API_BUILD_INTEGRATION_TIMEOUT_MS);

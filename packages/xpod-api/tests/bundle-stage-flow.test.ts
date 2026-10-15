@@ -1,4 +1,4 @@
-import { apiTestRepoRoot } from './repo-root';
+import { apiTestRepoRoot, API_BUILD_INTEGRATION_TIMEOUT_MS } from './repo-root';
 import { buildWithBun } from '../scripts/bun-build-api';
 import { test } from 'bun:test';
 import assert from 'node:assert/strict';
@@ -62,4 +62,4 @@ test('normal API bundle stage and archive callbacks require strict receipts, sta
     fs.appendFileSync(stage+'/static/dashboard/index.html','drift');
     assert.throws(()=>packPhysicalModule(stage,base+'/rejected.tgz',{moduleId:'api',entry:'entry.mjs',verifyArchiveMaterials:()=>verifyApiStageMaterials(root,build,stage)}),/static asset drift/);assert.equal(fs.existsSync(base+'/rejected.tgz'),false);
   }finally{fs.rmSync(base,{recursive:true,force:true});}
-}, 30_000);
+}, API_BUILD_INTEGRATION_TIMEOUT_MS);

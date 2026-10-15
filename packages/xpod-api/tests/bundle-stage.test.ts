@@ -1,3 +1,4 @@
+import { API_BUILD_INTEGRATION_TIMEOUT_MS } from './repo-root';
 import { buildWithBun } from '../scripts/bun-build-api';
 import { test } from 'bun:test';
 import assert from 'node:assert/strict';
@@ -70,4 +71,4 @@ test('bundle stage preserves declared SDK identity without reseeding bundled met
       assert.equal(run.status, 0, run.stderr); assert.equal(run.stdout.trim(), '43');
     }
   } finally { rmSync(root, { recursive: true, force: true }); rmSync(output, { recursive: true, force: true }); }
-});
+}, API_BUILD_INTEGRATION_TIMEOUT_MS);

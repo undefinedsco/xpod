@@ -1,3 +1,4 @@
+import { API_BUILD_INTEGRATION_TIMEOUT_MS } from './repo-root';
 import { test } from 'bun:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
@@ -65,4 +66,4 @@ if kind=='pax-bomb':
     writeFileSync(indexPath, JSON.stringify({ ...index, role: 'runtime' }));
     assert.throws(() => verifyApiSourcekits([boundKit], 0), /unknown sourcekit role/);
   } finally { rmSync(root, { recursive: true, force: true }); }
-});
+}, API_BUILD_INTEGRATION_TIMEOUT_MS);

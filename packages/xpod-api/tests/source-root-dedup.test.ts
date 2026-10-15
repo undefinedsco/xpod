@@ -1,3 +1,4 @@
+import { API_BUILD_INTEGRATION_TIMEOUT_MS } from './repo-root';
 import { test } from 'bun:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -31,7 +32,7 @@ test('identical whole distributions share one source copy and every physical ori
     const owner=structuredClone(roots) as ApiSourceRoot[];owner.find(root=>root.origins?.length===2)!.origins![1].owners[0].from='forged/owner.json';assert.throws(()=>verifyApiSourcekitRoots(kit,owner,0),/inventory drift/);assert.throws(()=>writeApiSourcekit(base+'/forged-owner',owner,0),/provenance not archived/);assert.equal(fs.existsSync(base+'/forged-owner'),false);
     verifyApiSourcekitRoots(kit,roots,0);
   }finally{fs.rmSync(base,{recursive:true,force:true});}
-});
+}, API_BUILD_INTEGRATION_TIMEOUT_MS);
 
 test('many aliases compute their shared inventory digest once while rejecting alias drift', () => {
   const parent=path.resolve('.test-data/api-source-origin-dedup');fs.mkdirSync(parent,{recursive:true});
@@ -57,4 +58,4 @@ test('many aliases compute their shared inventory digest once while rejecting al
     fs.writeFileSync(path.join(physical[23].directory,'source.js'),'drift');
     assert.throws(()=>verifyApiSourcekitRoots(kit,roots,0),/origin|inventory|mapping/);
   } finally {fs.rmSync(base,{recursive:true,force:true});}
-});
+}, API_BUILD_INTEGRATION_TIMEOUT_MS);

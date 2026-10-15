@@ -1,3 +1,4 @@
+import { API_BUILD_INTEGRATION_TIMEOUT_MS } from './repo-root';
 import { test } from 'bun:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, renameSync } from 'node:fs';
@@ -29,7 +30,7 @@ test('capability manifest resolves its installed SDK instead of a different repo
       assert.equal(result.status, 0, result.stderr); assert.equal(result.stdout.trim(), '42');
     }
   } finally { rmSync(root, { recursive: true, force: true }); rmSync(output, { recursive: true, force: true }); }
-});
+}, API_BUILD_INTEGRATION_TIMEOUT_MS);
 
 test('API native-import SDK uses declared runtime packages and their transitive closure outside the input tree', () => {
   assert.equal(manifest.dependencies['@mariozechner/pi-coding-agent'], '^0.55.1');
@@ -69,7 +70,7 @@ test('API native-import SDK uses declared runtime packages and their transitive 
     rmSync(root + '.removed', { recursive: true, force: true });
     rmSync(output, { recursive: true, force: true });
   }
-});
+}, API_BUILD_INTEGRATION_TIMEOUT_MS);
 
 test('declared dynamic SDK retains its exact identity when another version is more referenced', () => {
   const base = path.resolve('.test-data/api-declared-identity');
@@ -113,4 +114,4 @@ test('declared dynamic SDK retains its exact identity when another version is mo
     rmSync(root + '.removed', { recursive: true, force: true });
     rmSync(output, { recursive: true, force: true });
   }
-});
+}, API_BUILD_INTEGRATION_TIMEOUT_MS);

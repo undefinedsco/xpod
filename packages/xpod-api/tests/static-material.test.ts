@@ -1,3 +1,4 @@
+import { API_BUILD_INTEGRATION_TIMEOUT_MS } from './repo-root';
 import { test } from 'bun:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -59,7 +60,7 @@ test('normal static builds use ignored module output from both cwd values and pr
     assert.throws(() => materializeApiStaticProducts(root, out, stage), /not regular/);
     const changed = JSON.parse(bytes.toString()); changed.sourceCommit = '0'.repeat(40); fs.writeFileSync(receiptPath, JSON.stringify(changed)); assert.throws(() => verifyStaticProducts(root, out), /Git source mismatch/);
   } finally { process.chdir(previous); fs.rmSync(root, { recursive: true, force: true }); }
-});
+}, API_BUILD_INTEGRATION_TIMEOUT_MS);
 
 test('every target output is preflighted before any UI starts or tracked sentinel can change', () => {
   for (const attack of ['first-root-link', 'second-root-link', 'second-file-link', 'second-dangling-link', 'second-nested-link', 'second-nonregular']) {

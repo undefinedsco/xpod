@@ -1,3 +1,4 @@
+import { API_BUILD_INTEGRATION_TIMEOUT_MS } from './repo-root';
 import { buildWithBun } from '../scripts/bun-build-api';
 import { test } from 'bun:test';
 import assert from 'node:assert/strict';
@@ -25,7 +26,7 @@ test('worker path adapter preserves explicit overrides and rejects changed defau
     }
     assert.throws(() => adaptPiWorkerDriver(source.replace('path.join(__dirname,', 'path.resolve(__dirname,')));
   } finally { rmSync(base, { recursive: true, force: true }); }
-});
+}, API_BUILD_INTEGRATION_TIMEOUT_MS);
 
 test('worker entry adapter refuses ambiguous guards and altered error handlers', () => {
   const source = 'async function main() {} if(require.main===module){main().catch(error=>{process.exitCode=1;});}';
@@ -71,7 +72,7 @@ test('API bundle locates its installed root and retains the injected platform co
       assert.equal(run.status, 0, run.stderr);
     }
   } finally { rmSync(base, { recursive: true, force: true }); }
-});
+}, API_BUILD_INTEGRATION_TIMEOUT_MS);
 
 test('Observable adapter narrows only the canonical superclass import and fails on drift', async () => {
   const { adaptObservableStore, observableStoreBundlePlugin } = await import('../scripts/bundle-runtime');

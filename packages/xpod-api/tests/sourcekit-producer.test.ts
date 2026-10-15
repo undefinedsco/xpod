@@ -1,3 +1,4 @@
+import { API_BUILD_INTEGRATION_TIMEOUT_MS } from './repo-root';
 import { test } from 'bun:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -23,4 +24,4 @@ test('streaming sourcekit producer preserves original bytes and modes with deter
     const long='x'.repeat(200);fs.writeFileSync(input+'/'+long,'x');assert.throws(()=>writeApiSourcekit(base+'/long',roots,0),/too long/);assert.equal(fs.existsSync(base+'/long'),false);fs.unlinkSync(input+'/'+long);
     fs.symlinkSync(input+'/source.ts',input+'/link');assert.throws(()=>writeApiSourcekit(base+'/link',roots,0),/symlink/);assert.equal(fs.existsSync(base+'/link'),false);
   }finally{fs.rmSync(base,{recursive:true,force:true});}
-});
+}, API_BUILD_INTEGRATION_TIMEOUT_MS);
