@@ -1,3 +1,4 @@
+import { apiTestRepoRoot } from './repo-root';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
@@ -23,7 +24,7 @@ function fixture() {
   // Actual short subprocesses use the existing native supervisor. Their stdout
   // is controlled evidence; this fixture does not pretend to compile the header.
   const code = `import sys, pathlib\nsys.path.insert(0,sys.argv[1])\nfrom supervise import run_checked_stage\nr=pathlib.Path(sys.argv[2])\nfor name,command in [('observe',[sys.executable,'-c','import pathlib,sys;sys.stdout.buffer.write(pathlib.Path(sys.argv[1]).read_bytes())',str(r/'provenance/native/fixture/input-observation.json')]),('build',[sys.executable,'-c','print("controlled build fixture only")']),('test',[sys.executable,'-c','print("controlled test fixture only")'])]:\n run_checked_stage(name,command,r/'provenance/native/fixture/stages',r,timeout=10,poll_seconds=.01,fresh_bytes=1048576,stop_bytes=524288)\n`;
-  const child = spawnSync('python3', ['-c', code, path.resolve('scripts/agentfs-native-ci'), materialsRoot], { encoding: 'utf8', timeout: 30000 }); assert.equal(child.status, 0, child.stderr);
+  const child = spawnSync('python3', ['-c', code, path.join(apiTestRepoRoot,'scripts/agentfs-native-ci'), materialsRoot], { encoding: 'utf8', timeout: 30000 }); assert.equal(child.status, 0, child.stderr);
   const ref = (relative: string): NativeFile => { const bytes = readFileSync(path.join(materialsRoot, relative)); return { path: relative, sha256: hash(bytes), sizeBytes: bytes.length }; };
   const retained = path.join(base, 'closed-receipts', path.basename(owned)); mkdirSync(retained, { recursive: true }); for (const name of ['observe', 'build', 'test']) for (const suffix of ['receipt.json', 'raw.log']) copyFileSync(path.join(materialsRoot, 'provenance/native/fixture/stages', name + '.' + suffix), path.join(retained, name + '.' + suffix));
   const stage = (name: string) => ({ kind: 'local' as const, receipt: ref(`provenance/native/fixture/stages/${name}.receipt.json`), raw: ref(`provenance/native/fixture/stages/${name}.raw.log`) });

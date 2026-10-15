@@ -6,7 +6,8 @@
   "scripts": {
     "test": "bun test tests",
     "build:module": "bun scripts/build-package.ts",
-    "typecheck": "bun x tsc -p tsconfig.json"
+    "typecheck": "bun x tsc -p tsconfig.json",
+    "build:components": "bun scripts/build-components.ts"
   },
   "engines": {
     "node": ">=22.13",

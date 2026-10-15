@@ -4,6 +4,37 @@ import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { verifyProducerSourceArchive } from '../src/producer-source';
 
+/** Bind the actual normal package archive, including Bun's publication manifest rewrite. */
+export function collectPublishedRuntimeClient(origin: string, destination: string) {
+  mkdirSync(destination, { recursive: true });
+  const packed = spawnSync('bun', ['pm', 'pack', '--destination', destination], { cwd: origin, encoding: 'utf8' });
+  if (packed.error || packed.status !== 0) throw new Error('Runtime client normal pack failed: ' + (packed.error?.message ?? packed.stderr));
+  const archives = readdirSync(destination).filter(name => name.endsWith('.tgz'));
+  if (archives.length !== 1) throw new Error('Runtime client publication archive is ambiguous');
+  const archive = path.join(destination, archives[0]);
+  const listed = spawnSync('tar', ['-tf', archive], { encoding: 'utf8' });
+  if (listed.status !== 0) throw new Error('Runtime client publication archive cannot be listed');
+  const files: Array<{ path: string; bytes: number; sha256: string }> = [];
+  const seen = new Set<string>();
+  for (const member of listed.stdout.trim().split('\n')) {
+    if (member.endsWith('/')) continue;
+    const relative = member.replace(/^package\//u, '');
+    if (!member.startsWith('package/') || !relative || /[\x00-\x1f\x7f\\]/u.test(relative)
+      || relative.split('/').some(part => !part || part === '.' || part === '..') || seen.has(relative)) {
+      throw new Error('Runtime client publication member is unsafe');
+    }
+    seen.add(relative);
+    const bytes = spawnSync('tar', ['-xOf', archive, member], { maxBuffer: 16 * 1024 * 1024 });
+    if (bytes.status !== 0) throw new Error('Runtime client publication member cannot be read');
+    files.push({ path: relative, bytes: bytes.stdout.length, sha256: createHash('sha256').update(bytes.stdout).digest('hex') });
+  }
+  files.sort((a, b) => a.path.localeCompare(b.path));
+  if (!files.some(file => file.path === 'package.json')) throw new Error('Runtime client published manifest missing');
+  const inventory = path.join(destination, 'published-inventory.json');
+  writeFileSync(inventory, JSON.stringify({ schemaVersion: 1, files: files.map(file => ({ ...file, path: 'package/' + file.path })) }, null, 2) + '\n');
+  return { archive, inventory, files };
+}
+
 /** Public producer inputs travel with the package, never through sibling sources. */
 export async function exportProducerMaterials(packageRoot: string, canonicalSources: readonly string[] = []): Promise<void> {
   const root = path.join(packageRoot, 'dist/producer-materials');
@@ -49,7 +80,7 @@ export async function exportProducerMaterials(packageRoot: string, canonicalSour
   // The declared workspace dependencies identify canonical source mappings; no second dependency registry.
   const packageManifest = JSON.parse(readFileSync(path.join(packageRoot, 'package.json'), 'utf8'));
   const workspaceSources: Array<{ name: string; version: string; directory: string; role: string }> = [];
-  const runtimeClients: Array<{ name: string; version: string; sourceDirectory: string; files: Array<{ path: string; bytes: number; sha256: string }> }> = [];
+  const runtimeClients: Array<{ name: string; version: string; sourceDirectory: string; publication: { archive: string; inventory: string; sourceManifest: string }; files: Array<{ path: string; bytes: number; sha256: string }> }> = [];
   for (const [name, version] of Object.entries(packageManifest.dependencies ?? {})) {
     if (typeof version !== 'string' || !version.startsWith('workspace:')) continue;
     if (!/^@undefineds\.co\/[a-z0-9-]+$/.test(name)) throw new Error('Invalid workspace source name');
@@ -60,18 +91,12 @@ export async function exportProducerMaterials(packageRoot: string, canonicalSour
     const directory = `workspace/${dirname}`;
     visit(origin, origin, directory + '/');
     workspaceSources.push({ name, version: dependency.version, directory, role: 'declared-runtime-dependency' });
-    const payloadFiles: Array<{ path: string; bytes: number; sha256: string }> = [];
-    const payload = (file: string): void => {
-      const stat = lstatSync(file);
-      if (stat.isSymbolicLink()) throw new Error('Runtime client payload contains a link');
-      if (stat.isDirectory()) { for (const item of readdirSync(file).sort()) payload(path.join(file, item)); return; }
-      if (!stat.isFile()) throw new Error('Runtime client payload contains nonregular material');
-      const bytes = readFileSync(file);
-      payloadFiles.push({ path: path.relative(origin, file).split(path.sep).join('/'), bytes: bytes.length,
-        sha256: createHash('sha256').update(bytes).digest('hex') });
-    };
-    for (const entry of ['package.json', 'LICENSE', 'README.md', 'dist']) payload(path.join(origin, entry));
-    runtimeClients.push({ name, version: dependency.version, sourceDirectory: directory, files: payloadFiles });
+    const published = collectPublishedRuntimeClient(origin, path.join(root, 'runtime-clients', dirname));
+    await verifyProducerSourceArchive({ archive: published.archive, inventory: published.inventory });
+    runtimeClients.push({ name, version: dependency.version, sourceDirectory: directory,
+      publication: { archive: path.relative(root, published.archive).split(path.sep).join('/'),
+        inventory: path.relative(root, published.inventory).split(path.sep).join('/'), sourceManifest: directory + '/package.json' },
+      files: published.files });
   }
   writeFileSync(path.join(root, 'source-inventory.json'), JSON.stringify({ schemaVersion: 1, files }, null, 2) + '\n');
   const packed = spawnSync('tar', ['-czf', path.join(root, 'client-source.tar.gz'), '-C', source, '.']);

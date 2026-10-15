@@ -17,3 +17,23 @@ Native installed tests may explicitly receive `XPOD_AFS_TEST_CLI_PACKAGE` while 
 The module source inventory includes the shared `types/bun` declarations and `scripts/check-afs-package.cjs` library rebuild recipe, as well as the canonical `accept.py`/`supervise.py` source and actual `tools/agentfs-pod` inputs used by native material admission. A library rebuild runs that recipe with an explicitly supplied public CLI package whose client/tools/materials bytes match the preserved provenance. A complete capability pack also needs the genuine matching native ZIP/pins and Git objects required by the existing gate. The source directory or root lock alone is not that authority; do not initialize a synthetic Git history to satisfy admission. No complete platform rebuild is claimed until that real input closure has been tested.
 
 Material validation repeats the same complete inventory and client payload checks after the shared async archive verifier, then returns hashes from that fixed declared snapshot. Packaging checks copied client/source archive/inventory bytes against those bindings. Regression cases mutate real copied material during the async verification boundary; they do not mock the public parser.
+
+
+## Development verification and CI coverage
+
+The 2026-10-14 development run built a `darwin-arm64` module from the admitted original native ZIP/pins, then passed the unchanged installed-module test under Node 22.21.1 and Bun 1.4.2 (114 assertions). It exercised public CLI install/list/remove and tamper rejection, external Node16/classic type consumers, public ESM/CJS and SDK identities, SQLite, copy/commit, status, and foreground startup cancellation with owned-process cleanup. The archive records dirty module source and a null module source commit; the registry is a controlled test fixture. This is development evidence, not a clean release or live registry publication. Installed consumption on `darwin-x64`, `linux-arm64`, and `linux-x64`, native mounting, and release acceptance remain separate gates.
+
+The default AFS test command skips installed consumption unless `XPOD_AFS_TEST_ARCHIVE` is supplied. The producer lifetime regression also skips unless all three `XPOD_AFS_LIFETIME_NATIVE_EVIDENCE`, `XPOD_AFS_LIFETIME_NATIVE_PINS`, and `XPOD_AFS_LIFETIME_TARGET` are supplied. A green default test run therefore does not establish either capability. In an artifact CI step, require those explicit test inputs before invoking the corresponding tests, and use an archive matching the installed consumer host platform and architecture:
+
+```sh
+test -f "$XPOD_AFS_LIFETIME_NATIVE_EVIDENCE"
+test -f "$XPOD_AFS_LIFETIME_NATIVE_PINS"
+test -n "$XPOD_AFS_LIFETIME_TARGET"
+bun test packages/xpod-afs/tests/producer-build-lifetime.test.ts
+
+test -f "$XPOD_AFS_TEST_ARCHIVE"
+test -f "$XPOD_AFS_TEST_CLI_PACKAGE/dist/xpod.mjs"
+bun test packages/xpod-afs/tests/installed-module.test.ts
+```
+
+These commands require the normal CLI tools/client/CLI producer build to have completed. The lifetime regression invokes the normal client/module wrapper against genuine native evidence and cleans its own output. The installed consumer keeps its existing 10-second child deadlines and 60-second case deadline. The dedicated mounted workflow additionally binds the archive and source authority through `prepare-module-inputs.ts installed-consumer`; default unit results do not replace that admission.

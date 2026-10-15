@@ -1,4 +1,4 @@
-import { verifyProducerSourceArchive } from '@undefineds.co/xpod-cli/build-tools';
+import type { ProducerBuildTools } from './producer-input';
 import { createHash } from 'node:crypto';
 import { lstatSync, readFileSync, readdirSync, realpathSync } from 'node:fs';
 import path from 'node:path';
@@ -9,11 +9,11 @@ interface MaterialIndex {
   clientPayloads: { cjsSHA256: string; esmSHA256: string }; supplements: string; generatedRoot: string;
   clientMetafile: string; clientSource: string; sourceDirectory: string; sourceInventory: string; files: MaterialFile[];
   workspaceSources?: Array<{ name: string; version: string; directory: string; role: string }>;
-  runtimeClients?: Array<{ name: string; version: string; sourceDirectory: string; files: MaterialFile[] }>;
+  runtimeClients?: Array<{ name: string; version: string; sourceDirectory: string; publication: { archive: string; inventory: string; sourceManifest: string }; files: MaterialFile[] }>;
   outputMetafile?: string; outputPayloads?: { esmSHA256: string };
 }
 /** Resolve only the public producer-materials index; repository siblings are not authorities. */
-export async function resolveProducerMaterials(indexPath: string, runtimeClientRoot?: string) {
+export async function resolveProducerMaterials(indexPath: string, runtimeClientRoot: string | undefined, tools: ProducerBuildTools) {
   const root = path.dirname(realpathSync(indexPath));
   const bytes = readFileSync(indexPath);
   const index = JSON.parse(bytes.toString()) as MaterialIndex;
@@ -105,7 +105,23 @@ export async function resolveProducerMaterials(indexPath: string, runtimeClientR
   }
   };
   validateSnapshot();
-  await verifyProducerSourceArchive({ archive: safe(index.clientSource), inventory: safe(index.sourceInventory) });
+  await tools.verifyProducerSourceArchive({ archive: safe(index.clientSource), inventory: safe(index.sourceInventory) });
+  const sourceSnapshot = JSON.parse(readFileSync(safe(index.sourceInventory), 'utf8')) as { files: MaterialFile[] };
+  for (const client of index.runtimeClients ?? []) {
+    if (!client.publication) throw new Error('Runtime client publication binding missing');
+    const publication = client.publication;
+    safe(publication.sourceManifest);
+    if (publication.sourceManifest !== client.sourceDirectory + '/package.json'
+      || !sourceSnapshot.files.some(file => file.path === publication.sourceManifest)) throw new Error('Runtime client source manifest binding missing');
+    const sourceManifest = JSON.parse(readFileSync(safe(index.sourceDirectory + '/' + publication.sourceManifest), 'utf8'));
+    if (sourceManifest.name !== client.name || sourceManifest.version !== client.version) throw new Error('Runtime client source identity mismatch');
+    const published = JSON.parse(readFileSync(safe(publication.inventory), 'utf8'));
+    if (!Array.isArray(client.files) || !client.files.length) throw new Error('Runtime client publication inventory missing');
+    const expected = client.files.map(file => ({ ...file, path: 'package/' + file.path }));
+    if (published.schemaVersion !== 1 || JSON.stringify(published.files) !== JSON.stringify(expected)) throw new Error('Runtime client publication inventory mismatch');
+    await tools.verifyProducerSourceArchive({ archive: safe(publication.archive), inventory: safe(publication.inventory) });
+    validateSnapshot();
+  }
   validateSnapshot();
   if (!readFileSync(indexPath).equals(bytes)) throw new Error('Public producer index changed during validation');
   return { indexPath, supplements: safe(index.supplements), generatedRoot: safe(index.generatedRoot), clientMetafile: safe(index.clientMetafile), clientSource: safe(index.clientSource), sourceInventory: safe(index.sourceInventory),

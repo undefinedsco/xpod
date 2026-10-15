@@ -1,11 +1,12 @@
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { createRequire } from 'node:module';
+import { resolveProducerInput } from './producer-input';
 import os from 'node:os';
 import path from 'node:path';
 import { resolveProducerMaterials } from './producer-materials';
-const indexPath = createRequire(import.meta.url).resolve('@undefineds.co/xpod-cli/producer-materials');
+const producerInput = resolveProducerInput(process.argv.slice(2));
+const indexPath = producerInput.indexPath;
 const original = path.dirname(indexPath);
 const originalPackage = path.resolve(original, '../..');
 const scratch = mkdtempSync(path.join(os.tmpdir(), 'afs-material-negative-'));
@@ -13,7 +14,7 @@ const hash = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex')
 let passed = 0;
 const accepted: string[] = [];
 try {
-  await resolveProducerMaterials(indexPath);
+  await resolveProducerMaterials(indexPath, undefined, producerInput.tools);
   for (const change of ['missing', 'hash-drift', 'duplicate', 'path-traversal', 'symlink', 'unlisted', 'source-inventory', 'client-payload', 'source-authority', 'directory-traversal', 'control-path', 'tar-missing-member', 'tar-replaced-content', 'async-metafile-drift', 'async-archive-drift', 'async-inventory-drift', 'async-client-drift']) {
     const pkg = path.join(scratch, change); const root = path.join(pkg, 'dist/producer-materials');
     mkdirSync(path.dirname(root), { recursive: true }); cpSync(original, root, { recursive: true });
@@ -57,7 +58,7 @@ try {
     let rejected = false;
     // The real verifier is async. Mutate after validation has reached its await,
     // without mocking or replacing the public parser.
-    const pending = resolveProducerMaterials(indexFile);
+    const pending = resolveProducerMaterials(indexFile, undefined, producerInput.tools);
     if (change.startsWith('async-')) {
       const target = change === 'async-client-drift' ? path.join(pkg, 'dist/client.cjs')
         : path.join(root, change === 'async-archive-drift' ? index.clientSource : change === 'async-inventory-drift' ? index.sourceInventory : index.clientMetafile);

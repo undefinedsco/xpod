@@ -1,4 +1,4 @@
-import {staticSourcePaths,verifyStaticProducts} from './static-material';
+import {attachApiSourcekit, prepareApiBundleStage} from './bundle-stage';
 import { classifyInputs } from './closure';
 import { readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
@@ -10,13 +10,18 @@ const output=process.argv[2]; if (!output) throw new Error('Explicit fresh stage
 const mode=process.argv[3],version=process.argv[4];
 if ((mode||version) && (!['preview','release'].includes(mode)||!version)) throw new Error('Explicit build mode and exact version required together');
 const publication=mode?{mode:mode as 'preview'|'release',version}:undefined;
-const inputs=JSON.parse(readFileSync(path.join(root,'packages/xpod-api/dist/inputs.json'),'utf8'));
-const manifest=JSON.parse(readFileSync(path.join(root,'packages/xpod-api/package.json'),'utf8'));
-const runtimePackages=Object.keys(manifest.dependencies);
-const staticProducts=verifyStaticProducts(root,path.join(root,'packages/xpod-api/dist'));
-const sourceResources=staticSourcePaths(root);
-const facts=stagePhysicalService(root,path.resolve(output),Object.keys(inputs.inputs), { entry: 'src/api/main.ts', moduleId: 'api', publication, runtimePackages, resources: ['static/dashboard','static/settings'], sourceResources, validateInputs: paths => { const blockers=classifyInputs(paths.map(path=>({path,bytes:inputs.inputs[path]?.bytes ?? readFileSync(path.startsWith('/') ? path : root+'/'+path).length})),root).blockers; if(blockers.length) throw new Error('Forbidden service closure: '+blockers.join(',')); } });
+const build=path.join(root,'packages/xpod-api/dist');
+const plan=prepareApiBundleStage(root,build);
+const facts=stagePhysicalService(root,path.resolve(output),plan.inputs, {
+ entry:'src/api/main.ts',moduleId:'api',publication,runtimePackages:plan.runtimePackages,
+ runtimePackageManifest:plan.receipt.runtimePackageManifest.path,runtimePackageImports:plan.runtimeImports,
+ resources:['static/dashboard','static/settings'],
+ bundle:{files:plan.files,verify:()=>{prepareApiBundleStage(root,build);}},
+ validateInputs:paths=>{const blockers=classifyInputs(paths.map(file=>({path:file,bytes:readFileSync(path.join(root,file)).length})),root).blockers;if(blockers.length)throw new Error('Forbidden service closure: '+blockers.join(','));},
+});
 writeFileSync(path.join(output,'provenance','physical-closure.json'),JSON.stringify(facts,null,2)+'\n');
 
-materializePhysicalBins(path.resolve(output),runtimePackages);
-writeFileSync(path.join(output,'provenance/static-products.json'),JSON.stringify(staticProducts,null,2)+'\n',{flag:'wx'});
+materializePhysicalBins(path.resolve(output),plan.runtimePackages);
+writeFileSync(path.join(output,'provenance/static-products.json'),JSON.stringify(plan.staticProducts,null,2)+'\n',{flag:'wx'});
+
+attachApiSourcekit(root,path.resolve(output),plan);

@@ -264,7 +264,9 @@ export class LocalQleverNativeSparqlClient {
   public close(): Promise<void> {
     if (this.closePromise) return this.closePromise;
     this.closed = true;
-    const closing = this.closeOwnedProcess();
+    // Publish the flight before shutdown writes can synchronously trigger
+    // process callbacks or another close caller.
+    const closing = Promise.resolve().then(() => this.closeOwnedProcess());
     this.closePromise = closing;
     void closing.catch(() => {
       // A failed closure remains observable, and a later close can retry it.

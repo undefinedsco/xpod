@@ -1,5 +1,5 @@
 import { moduleDefinition, modulePackageName } from '../../packages/xpod-cli/src/module-catalog';
-import { valid as validSemVer } from 'semver';
+import { valid as validSemVer, satisfies } from 'semver';
 import { chmodSync, copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
 import { createRequire, isBuiltin } from 'node:module';
 import path from 'node:path';
@@ -7,7 +7,7 @@ import ts from 'typescript';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 const hash = (b: Buffer) => createHash('sha256').update(b).digest('hex');
-function packageRoot(file: string): string {
+export function packageRoot(file: string): string {
   let current = path.dirname(file);
   while (current !== path.dirname(current)) {
     if (existsSync(path.join(current, 'package.json'))) { const m=JSON.parse(readFileSync(path.join(current,'package.json'),'utf8')); if(typeof m.name==='string' && typeof m.version==='string') return current; }
@@ -35,76 +35,41 @@ function assertCanonicalPath(root: string, relative: string): void {
     if (lstatSync(current).isSymbolicLink()) throw new Error('Canonical path symlink rejected');
   }
 }
-export function stagePhysicalService(repoRoot: string, output: string, inputs: string[], options: { entry: string; moduleId: string; publication?: { mode: 'preview' | 'release'; version: string }; resources?: string[]; sourceResources?: string[]; extraSourceRoots?: string[]; runtimePackages?: string[]; materializeResources?: (stage: string) => void; manifestFields?: Record<string,unknown>; validateInputs: (inputs: string[]) => void }): { packages: Array<{name:string;version:string;files:number}>, sourceFiles: number } {
-  if (existsSync(output)) throw new Error('Physical stage output already exists');
-  if(!/^[a-z][a-z0-9-]*$/u.test(options.moduleId)) throw new Error('Invalid service module identity');
-  const definition = moduleDefinition(options.moduleId);
-  if (!definition || definition.id !== options.moduleId) throw new Error('Unregistered module role');
-  const packageName = modulePackageName(options.moduleId, process.platform, process.arch);
-  if (!packageName) throw new Error('Unsupported module product platform/architecture');
-  const publication = options.publication ?? { mode: 'preview', version: '0.0.0-preview.1' };
-  if (!['preview', 'release'].includes(publication.mode) || typeof publication.version !== 'string' || validSemVer(publication.version) !== publication.version) throw new Error('Invalid explicit publication mode/version');
-  const actualCleanCommit = (): string => {
-    const commit = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot, encoding: 'utf8' });
-    const status = spawnSync('git', ['status', '--porcelain', '--untracked-files=all'], { cwd: repoRoot, encoding: 'utf8' });
-    if (commit.status !== 0 || !/^[a-f0-9]{40}$/u.test(commit.stdout.trim()) || status.status !== 0 || status.stdout.trim()) throw new Error('Release material build requires an actual clean Git tree');
-    return commit.stdout.trim();
-  };
-  const publicationCommit = publication.mode === 'release' ? actualCleanCommit() : undefined;
-
-  for (const key of Object.keys(options.manifestFields ?? {})) {
-    if (!['main', 'exports', 'lsd:module', 'lsd:components', 'lsd:contexts', 'lsd:importPaths'].includes(key)) throw new Error('Unsupported service manifest adapter field');
-  }
-  const sourceSet = new Set([...inputs.filter(f => f.startsWith('src/')), ...(options.extraSourceRoots??[])]);
-  for(const relative of sourceSet) { if(!relative.startsWith('src/') || relative.split('/').some(p=>!p||p==='.'||p==='..') || lstatSync(path.join(repoRoot,relative)).isSymbolicLink()) throw new Error('Unsafe canonical source input'); }
-  const seeds = new Set<string>();
-  const directSeeds = new Set<string>();
-  const emittedSource = new Map<string,string>();
-  const inspectSource = (relative: string) => {
-    assertCanonicalPath(repoRoot, relative);
-    if(!/\.[cm]?tsx?$/u.test(relative)) return;
-    if(emittedSource.has(relative)) return;
-    const absolute=path.join(repoRoot,relative);
-    const emitted=ts.transpileModule(readFileSync(absolute,'utf8'),{fileName:absolute,compilerOptions:{target:ts.ScriptTarget.ES2021,module:ts.ModuleKind.CommonJS,esModuleInterop:true}}).outputText;
-    emittedSource.set(relative,emitted);
-    const syntax=ts.createSourceFile(relative,emitted,ts.ScriptTarget.ES2021,true,ts.ScriptKind.JS);
-    const visit=(node:ts.Node) => {
-      if(ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text==='require' && node.arguments.length===1 && ts.isStringLiteral(node.arguments[0])) {
-        const specifier=node.arguments[0].text;
-        if(specifier.startsWith('.')) {
-          const base=path.resolve(path.dirname(absolute),specifier);
-          const candidates=[base,base+'.ts',base+'.js',base+'.json',path.join(base,'index.ts'),path.join(base,'index.js'),base.replace(/\.js$/u,'.ts')];
-          const found=candidates.find(f=>existsSync(f)&&lstatSync(f).isFile());
-          if(!found) throw new Error('Local compiled dependency missing: '+relative+' -> '+specifier);
-          const local=path.relative(repoRoot,found).replaceAll('\\','/');
-          if(local==='package.json') { /* module manifest preserves runtime engines below */ }
-          else if(!local.startsWith('src/')) throw new Error('Undeclared local source dependency: '+local);
-          else { sourceSet.add(local); inspectSource(local); }
-        } else if(!isBuiltin(specifier)) {
-          const resolved=createRequire(absolute).resolve(specifier);const dependency=realpathSync(packageRoot(resolved));seeds.add(dependency);directSeeds.add(dependency);
-        }
-      }
-      ts.forEachChild(node,visit);
-    };visit(syntax);
-  };
-  for(const relative of sourceSet) inspectSource(relative);
-  const source=[...sourceSet].sort();
-  if (!source.includes(options.entry)) throw new Error('Canonical service entry missing');
-  options.validateInputs([...inputs,...source]);
-  for (const f of inputs) {
-    if (f.startsWith('src/')) continue;
-    const absolute = path.resolve(repoRoot, f);
-    if (f.startsWith('node_modules/') || f.startsWith('packages/')) seeds.add(realpathSync(packageRoot(absolute)));
-  }
-  for(const name of options.runtimePackages??[]) {
-    const root=path.join(repoRoot,'node_modules',name);
-    if(!existsSync(path.join(root,'package.json'))) throw new Error('Declared runtime package unavailable: '+name);
-    seeds.add(realpathSync(root));
-  }
-  const packages = new Map<string, {root:string;manifest:any;dependencies:Map<string,string>}>();
+export interface PhysicalServiceBundle {
+  files: Array<{ source: string; destination: string; sha256: string }>;
+  /** The service adapter verifies its source/metafile/adapter/material contracts before any writes. */
+  verify: () => void;
+}
+export interface PhysicalRuntimeImport { from: string; specifier: string; ownerManifest: string; ownerManifestSHA256: string; resolvedManifestSHA256: string }
+export function installedPackageRoot(owner: string, name: string): string {
+  // Bun shadows bare ws/undici as builtins even for Node-target builds. A
+  // manifest subpath asks the normal package lookup for the installed package.
+  const lookup = createRequire(owner).resolve.paths(name + '/package.json');
+  const candidate = lookup?.map(directory => path.join(directory, name)).find(directory => existsSync(path.join(directory, 'package.json')));
+  if (!candidate) throw new Error('Declared physical runtime package unavailable: ' + name);
+  return realpathSync(candidate);
+}
+export function resolvePhysicalRuntimeImport(repoRoot: string, from: string, specifier: string): { binding: PhysicalRuntimeImport; root: string } {
+  if (!/^(?:@[a-z0-9._-]+\/)?[a-z0-9._-]+$/iu.test(specifier)) throw new Error('Invalid physical runtime import');
+  assertCanonicalPath(repoRoot, from);
+  const ownerManifest = path.join(packageRoot(path.join(repoRoot, from)), 'package.json');
+  const ownerPath = path.relative(repoRoot, ownerManifest).replaceAll('\\', '/');
+  assertCanonicalPath(repoRoot, ownerPath);
+  const ownerBytes = readFileSync(ownerManifest), owner = JSON.parse(ownerBytes.toString('utf8'));
+  const requirement = { ...owner.dependencies, ...owner.optionalDependencies, ...owner.peerDependencies }[specifier];
+  if (typeof requirement !== 'string') throw new Error('Runtime external not declared by its actual owner');
+  const root = installedPackageRoot(path.join(repoRoot, from), specifier);
+  const manifestBytes = readFileSync(path.join(root, 'package.json')), manifest = JSON.parse(manifestBytes.toString('utf8'));
+  if (manifest.name !== specifier || !satisfies(manifest.version, requirement, { includePrerelease: true })) throw new Error('Runtime external identity/version drift');
+  return { root, binding: { from, specifier, ownerManifest: ownerPath, ownerManifestSHA256: hash(ownerBytes), resolvedManifestSHA256: hash(manifestBytes) } };
+}
+export interface PhysicalDependencyPackage { root: string; manifest: any; dependencies: Map<string, string> }
+/** Same complete dependency graph drives runtime placement and original source materials. */
+export function collectPhysicalDependencies(seeds: Iterable<string>): Map<string, PhysicalDependencyPackage> {
+  const packages = new Map<string, PhysicalDependencyPackage>();
   const visit = (root: string) => {
     const manifest = JSON.parse(readFileSync(path.join(root,'package.json'),'utf8'));
-    if (typeof manifest.name !== 'string' || !/^(?:@[a-z0-9._-]+\/)?[a-z0-9._-]+$/iu.test(manifest.name) || typeof manifest.version !== 'string') throw new Error('Invalid dependency package identity: '+String(manifest.name)+'@'+String(manifest.version)+' at '+path.relative(repoRoot,root));
+    if (typeof manifest.name !== 'string' || !/^(?:@[a-z0-9._-]+\/)?[a-z0-9._-]+$/iu.test(manifest.name) || typeof manifest.version !== 'string') throw new Error('Invalid dependency package identity: '+String(manifest.name)+'@'+String(manifest.version)+' at '+root);
     const previous = packages.get(root);
     if (previous) return;
     const dependencies=new Map<string,string>();
@@ -124,6 +89,115 @@ export function stagePhysicalService(repoRoot: string, output: string, inputs: s
     }
   };
   for (const seed of seeds) visit(seed);
+  return packages;
+}
+
+export function stagePhysicalService(repoRoot: string, output: string, inputs: string[], options: { entry: string; moduleId: string; publication?: { mode: 'preview' | 'release'; version: string }; resources?: string[]; sourceResources?: string[]; extraSourceRoots?: string[]; runtimePackages?: string[]; runtimePackageManifest?: string; runtimePackageImports?: PhysicalRuntimeImport[]; bundle?: PhysicalServiceBundle; materializeResources?: (stage: string) => void; manifestFields?: Record<string,unknown>; validateInputs: (inputs: string[]) => void }): { packages: Array<{name:string;version:string;files:number}>, sourceFiles: number } {
+  if (existsSync(output)) throw new Error('Physical stage output already exists');
+  if(!/^[a-z][a-z0-9-]*$/u.test(options.moduleId)) throw new Error('Invalid service module identity');
+  const definition = moduleDefinition(options.moduleId);
+  if (!definition || definition.id !== options.moduleId) throw new Error('Unregistered module role');
+  const packageName = modulePackageName(options.moduleId, process.platform, process.arch);
+  if (!packageName) throw new Error('Unsupported module product platform/architecture');
+  const publication = options.publication ?? { mode: 'preview', version: '0.0.0-preview.1' };
+  if (!['preview', 'release'].includes(publication.mode) || typeof publication.version !== 'string' || validSemVer(publication.version) !== publication.version) throw new Error('Invalid explicit publication mode/version');
+  const actualCleanCommit = (): string => {
+    const commit = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot, encoding: 'utf8' });
+    const status = spawnSync('git', ['status', '--porcelain', '--untracked-files=all'], { cwd: repoRoot, encoding: 'utf8' });
+    if (commit.status !== 0 || !/^[a-f0-9]{40}$/u.test(commit.stdout.trim()) || status.status !== 0 || status.stdout.trim()) throw new Error('Release material build requires an actual clean Git tree');
+    return commit.stdout.trim();
+  };
+  const publicationCommit = publication.mode === 'release' ? actualCleanCommit() : undefined;
+  if (options.bundle) {
+    if (typeof options.bundle.verify !== 'function' || !options.bundle.files.length) throw new Error('Verified physical bundle required');
+    options.bundle.verify();
+    const destinations = new Set<string>();
+    for (const file of options.bundle.files) {
+      assertCanonicalPath(repoRoot, file.source);
+      if (!file.destination || path.isAbsolute(file.destination) || file.destination.includes('\\') || /[\x00-\x1f\x7f]/u.test(file.destination)
+        || file.destination.split('/').some(part => !part || part === '.' || part === '..') || !/^(?:entry\.mjs|dist\/[^/]+|provenance\/[^/]+)$/u.test(file.destination)
+        || destinations.has(file.destination) || !/^[a-f0-9]{64}$/u.test(file.sha256)
+        || !lstatSync(path.join(repoRoot, file.source)).isFile() || hash(readFileSync(path.join(repoRoot, file.source))) !== file.sha256) throw new Error('Physical bundle output binding invalid');
+      destinations.add(file.destination);
+    }
+    if (!destinations.has('entry.mjs')) throw new Error('Physical bundle public entry missing');
+  }
+
+  for (const key of Object.keys(options.manifestFields ?? {})) {
+    if (!['main', 'exports', 'lsd:module', 'lsd:components', 'lsd:contexts', 'lsd:importPaths'].includes(key)) throw new Error('Unsupported service manifest adapter field');
+  }
+  const sourceSet = new Set([...inputs.filter(f => f.startsWith('src/')), ...(options.extraSourceRoots??[])]);
+  for(const relative of sourceSet) { if(!relative.startsWith('src/') || relative.split('/').some(p=>!p||p==='.'||p==='..') || lstatSync(path.join(repoRoot,relative)).isSymbolicLink()) throw new Error('Unsafe canonical source input'); }
+  const seeds = new Set<string>();
+  const directSeeds = new Set<string>();
+  const addDirectSeed = (root: string) => { seeds.add(root); directSeeds.add(root); };
+  const emittedSource = new Map<string,string>();
+  const inspectSource = (relative: string) => {
+    assertCanonicalPath(repoRoot, relative);
+    if(!/\.[cm]?[jt]sx?$/u.test(relative)) return;
+    if(emittedSource.has(relative)) return;
+    const absolute=path.join(repoRoot,relative);
+    const emitted=ts.transpileModule(readFileSync(absolute,'utf8'),{fileName:absolute,compilerOptions:{target:ts.ScriptTarget.ES2021,module:ts.ModuleKind.CommonJS,esModuleInterop:true}}).outputText;
+    // JavaScript inputs keep their original module format and extension;
+    // transpilation is used only to inspect their dependency expressions.
+    emittedSource.set(relative,/\.[cm]?jsx?$/u.test(relative) ? readFileSync(absolute,'utf8') : emitted);
+    const syntax=ts.createSourceFile(relative,emitted,ts.ScriptTarget.ES2021,true,ts.ScriptKind.JS);
+    const visit=(node:ts.Node) => {
+      if(ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text==='require') {
+        if(node.arguments.length!==1 || !ts.isStringLiteral(node.arguments[0])) {
+          throw new Error('Unqualified dynamic dependency: '+relative);
+        }
+        const specifier=node.arguments[0].text;
+        if(specifier.startsWith('.')) {
+          const base=path.resolve(path.dirname(absolute),specifier);
+          const candidates=[base,base+'.ts',base+'.js',base+'.json',path.join(base,'index.ts'),path.join(base,'index.js'),base.replace(/\.js$/u,'.ts')];
+          const found=candidates.find(f=>existsSync(f)&&lstatSync(f).isFile());
+          if(!found) throw new Error('Local compiled dependency missing: '+relative+' -> '+specifier);
+          const local=path.relative(repoRoot,found).replaceAll('\\','/');
+          if(local==='package.json') { /* module manifest preserves runtime engines below */ }
+          else if(!local.startsWith('src/')) throw new Error('Undeclared local source dependency: '+local);
+          else { sourceSet.add(local); inspectSource(local); }
+        } else if(!isBuiltin(specifier)) {
+          const resolved=createRequire(absolute).resolve(specifier);const dependency=realpathSync(packageRoot(resolved));addDirectSeed(dependency);
+        }
+      }
+      ts.forEachChild(node,visit);
+    };visit(syntax);
+  };
+  if (!options.bundle) for(const relative of sourceSet) inspectSource(relative);
+  const source=[...sourceSet].sort();
+  if (!source.includes(options.entry)) throw new Error('Canonical service entry missing');
+  options.validateInputs([...inputs,...source]);
+  for (const f of options.bundle ? [] : inputs) {
+    if (f.startsWith('src/')) continue;
+    const absolute = path.resolve(repoRoot, f);
+    if (f.startsWith('node_modules/') || f.startsWith('packages/')) seeds.add(realpathSync(packageRoot(absolute)));
+  }
+  for(const name of options.runtimePackages??[]) {
+    let root=path.join(repoRoot,'node_modules',name);
+    if (options.runtimePackageManifest) {
+      assertCanonicalPath(repoRoot, options.runtimePackageManifest);
+      const owner = path.join(repoRoot, options.runtimePackageManifest), manifest = JSON.parse(readFileSync(owner, 'utf8'));
+      const range = manifest.dependencies?.[name];
+      if (typeof range !== 'string') throw new Error('Runtime package is not declared by its capability manifest');
+      root = installedPackageRoot(owner, name);
+      const actual = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8'));
+      if (actual.name !== name || !satisfies(actual.version, range, { includePrerelease: true })) throw new Error('Capability runtime package identity/version drift');
+    }
+    if(!existsSync(path.join(root,'package.json'))) throw new Error('Declared runtime package unavailable: '+name);
+    const dependency = realpathSync(root);
+    // Native dynamic imports use this explicit root identity, just as static
+    // canonical imports do; popularity of a transitive version cannot replace it.
+    addDirectSeed(dependency);
+  }
+  for (const imported of options.runtimePackageImports ?? []) {
+    if (!inputs.includes(imported.from) || !/^(?:@[a-z0-9._-]+\/)?[a-z0-9._-]+$/iu.test(imported.specifier)) throw new Error('Unbound physical runtime import declaration');
+    const actual = resolvePhysicalRuntimeImport(repoRoot, imported.from, imported.specifier);
+    if (actual.binding.ownerManifest !== imported.ownerManifest || actual.binding.ownerManifestSHA256 !== imported.ownerManifestSHA256
+      || actual.binding.resolvedManifestSHA256 !== imported.resolvedManifestSHA256) throw new Error('Runtime import manifest binding drift');
+    addDirectSeed(actual.root);
+  }
+  const packages = collectPhysicalDependencies(seeds);
   // Merge only byte-identical originals whose complete dependency graph is
   // equivalent. Partition refinement preserves distinct downstream versions.
   const originals=new Map<string,string>();
@@ -145,13 +219,23 @@ export function stagePhysicalService(repoRoot: string, output: string, inputs: s
   for(const root of representatives.values()){const item=packages.get(root)!;canonical.set(root,{...item,dependencies:new Map([...item.dependencies].map(([name,target])=>[name,aliases.get(target)!]))});}
   const originalRootCount=packages.size;packages.clear();for(const [root,item] of canonical)packages.set(root,item);
   const normalizeSet=(set:Set<string>)=>{const values=[...set].map(root=>aliases.get(root)!);set.clear();for(const root of values)set.add(root);};normalizeSet(seeds);normalizeSet(directSeeds);
+  if (options.bundle) {
+    const bindings = new Map<string, string>();
+    for (const root of directSeeds) {
+      const name = packages.get(root)!.manifest.name, previous = bindings.get(name);
+      if (previous && previous !== root) throw new Error('Bundled runtime imports have conflicting physical package identities: ' + name);
+      bindings.set(name, root);
+    }
+  }
   // All dependency identities are resolved before writing any output.
   mkdirSync(output,{recursive:true});
   for (const relative of source) {
     const absolute = path.join(repoRoot,relative), original = readFileSync(absolute,'utf8');
     const emitted = path.join(output,relative.replace(/\.[cm]?tsx?$/u,'.js'));
-    mkdirSync(path.dirname(emitted),{recursive:true});
-    if(emittedSource.has(relative)) writeFileSync(emitted,emittedSource.get(relative)!); else copyFileSync(absolute,emitted);
+    if (!options.bundle) {
+      mkdirSync(path.dirname(emitted),{recursive:true});
+      if(emittedSource.has(relative)) writeFileSync(emitted,emittedSource.get(relative)!); else copyFileSync(absolute,emitted);
+    }
     const copy = path.join(output,'source',relative); mkdirSync(path.dirname(copy),{recursive:true});copyFileSync(absolute,copy);
   }
   const facts: Array<{name:string;version:string;files:number;path:string}>=[];
@@ -207,14 +291,22 @@ export function stagePhysicalService(repoRoot: string, output: string, inputs: s
   }
   options.materializeResources?.(output);
   if (publicationCommit && actualCleanCommit() !== publicationCommit) throw new Error('Release source identity changed during stage');
-  writeFileSync(path.join(output,'entry.mjs'),"import {createRequire} from 'node:module';\ncreateRequire(import.meta.url)("+JSON.stringify('./'+options.entry.replace(/\.[cm]?tsx?$/u,'.js'))+");\n");
+  if (options.bundle) {
+    for (const file of options.bundle.files) {
+      const original = path.join(repoRoot, file.source), target = path.join(output, file.destination);
+      if (hash(readFileSync(original)) !== file.sha256) throw new Error('Physical bundle changed during stage');
+      mkdirSync(path.dirname(target), { recursive: true }); copyFileSync(original, target);
+    }
+  } else writeFileSync(path.join(output,'entry.mjs'),"import {createRequire} from 'node:module';\ncreateRequire(import.meta.url)("+JSON.stringify('./'+options.entry.replace(/\.[cm]?tsx?$/u,'.js'))+");\n");
   copyFileSync(path.join(repoRoot,'LICENSE'),path.join(output,'LICENSE'));
   writeFileSync(path.join(output,'package.json'),JSON.stringify({name:packageName,version:publication.version,type:'commonjs',private:publication.mode==='preview',license:'MIT',engines:JSON.parse(readFileSync(path.join(repoRoot,'package.json'),'utf8')).engines,...options.manifestFields},null,2)+'\n');
   mkdirSync(path.join(output, 'provenance'), { recursive: true });
   writeFileSync(path.join(output,'provenance','publication.json'), JSON.stringify({ schemaVersion: 1, mode: publication.mode, version: publication.version, sourceCommit: publicationCommit ?? null, status: publication.mode === 'release' ? 'candidate' : 'controlled-preview', declaredSourceClean: publication.mode === 'release', gateStatus: 'material-build-only' }, null, 2)+'\n');
   writeFileSync(path.join(output,'provenance','identity-dedup.json'),JSON.stringify({algorithm:'original-bytes-mode-and-complete-dependency-partition-v1',originalRootCount,canonicalIdentityCount:packages.size,identities:[...packages.keys()].map(root=>({name:packages.get(root)!.manifest.name,version:packages.get(root)!.manifest.version,originalContentSHA256:originals.get(root),identityClass:partition.get(root),dependencies:[...packages.get(root)!.dependencies].map(([name,target])=>({name,identityClass:partition.get(target)}))}))},null,2)+'\n');
+  if (!options.bundle) {
   const compilerRoot=packageRoot(createRequire(import.meta.url).resolve('typescript'));
   const compilerFiles=files(compilerRoot).map(f=>{const relative=path.relative(compilerRoot,f).replaceAll('\\','/');const destination=path.join(output,'provenance','compiler-originals','typescript',relative);mkdirSync(path.dirname(destination),{recursive:true});copyFileSync(f,destination);return {path:relative,sha256:hash(readFileSync(f)),bytes:lstatSync(f).size};});
   writeFileSync(path.join(output,'provenance','compiler.json'),JSON.stringify({package:'typescript',version:ts.version,format:'commonjs',target:'ES2021',esModuleInterop:true,originalCompilerFiles:compilerFiles,compiledSources:source.filter(f=>emittedSource.has(f)).map(f=>({source:f,sourceSHA256:hash(readFileSync(path.join(repoRoot,f))),output:f.replace(/\.[cm]?tsx?$/u,'.js'),outputSHA256:hash(readFileSync(path.join(output,f.replace(/\.[cm]?tsx?$/u,'.js'))))}))},null,2)+'\n');
+  }
   return {packages:facts,sourceFiles:source.length};
 }

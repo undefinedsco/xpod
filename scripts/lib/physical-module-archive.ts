@@ -18,7 +18,7 @@ with tarfile.open(out,'w:gz',format=tarfile.USTAR_FORMAT) as t:
  if(packed.error||packed.status!==0)throw new Error('Module archive failed');
 }
 
-export function packPhysicalModule(stage:string,output:string,adapter:{moduleId:string;entry:string;sourceRoot?:string;verifyReleaseMaterials?:(stage:string)=>void}):{archive:string;sha256:string;integrity:string;members:number} {
+export function packPhysicalModule(stage:string,output:string,adapter:{moduleId:string;entry:string;sourceRoot?:string;verifyReleaseMaterials?:(stage:string)=>void;verifyArchiveMaterials?:(stage:string)=>void}):{archive:string;sha256:string;integrity:string;members:number} {
  if(!stage||!output||existsSync(output))throw new Error('Explicit fresh archive path required');
  if(!/^[a-z][a-z0-9-]*$/u.test(adapter.moduleId)||!adapter.entry||path.isAbsolute(adapter.entry)||adapter.entry.split('/').some(p=>!p||p==='.'||p==='..'))throw new Error('Invalid module adapter identity/entry');
  const definition=moduleDefinition(adapter.moduleId);
@@ -42,6 +42,7 @@ export function packPhysicalModule(stage:string,output:string,adapter:{moduleId:
  const hash=(b:Buffer)=>createHash('sha256').update(b).digest('hex');
  const files=names.filter(f=>f!=='package.json').map(f=>{const b=readFileSync(path.join(stage,f));return {path:f,size:b.length,sha256:hash(b),mode:(lstatSync(path.join(stage,f)).mode&0o111)?0o755:0o644};});
  manifest.xpodModule={schemaVersion:1,id:adapter.moduleId,cliApiVersion:MODULE_API_VERSION,platform:process.platform,arch:process.arch,entry:adapter.entry,files};writeFileSync(path.join(stage,'package.json'),JSON.stringify(manifest,null,2)+'\n');
+ adapter.verifyArchiveMaterials?.(stage);
  writePhysicalModuleArchive(stage,output);
  const readback=spawnSync('python3',['-c',`import sys,tarfile,json,hashlib
 with tarfile.open(sys.argv[1]) as t:

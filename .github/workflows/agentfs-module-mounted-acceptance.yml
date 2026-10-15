@@ -61,9 +61,11 @@ jobs:
           mkdir -p -m 700 "$GITHUB_WORKSPACE/.test-data"
           mkdir -m 700 "$root"
           echo "MODULE_RUN_ROOT=$root" >> "$GITHUB_ENV"
-          # native-info imports the shared runtime; build its declared dependencies first.
+          # Build only the public producer chain required by this AFS module.
           bun install --frozen-lockfile
-          bun run build:packages
+          bun run --filter @undefineds.co/xpod-cli build:tools
+          bun run --filter @undefineds.co/xpod-client build
+          bun run --filter @undefineds.co/xpod-cli build
           bun scripts/agentfs-native-ci/mounted/prepare-module-inputs.ts native-info --target "$TARGET" --out "$root/native"
           id=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["artifactID"])' "$root/native/native-facts.safe.json")
           gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$id" > "$root/native/artifact.safe.json"
@@ -93,7 +95,7 @@ jobs:
           set -euo pipefail
           node --test tests/scripts/service-runtime-boundary.node-test.cjs
           bun test ./packages/xpod-client/tests
-          bun packages/xpod-afs/scripts/build-package.ts --target "$TARGET" --out "$MODULE_RUN_ROOT/build" --native-evidence "$MODULE_RUN_ROOT/native/native.zip" --native-pins "$MODULE_RUN_ROOT/native/native-pins.json"
+          bun scripts/build-afs-from-producer.ts --mode module --cli-package "$GITHUB_WORKSPACE/packages/xpod-cli" --target "$TARGET" --out "$MODULE_RUN_ROOT/build" --native-evidence "$MODULE_RUN_ROOT/native/native.zip" --native-pins "$MODULE_RUN_ROOT/native/native-pins.json"
           bun build scripts/agentfs-native-ci/mounted/module-admission.ts --target=node --format=esm --metafile="$MODULE_RUN_ROOT/driver-inputs.json" --outfile "$MODULE_RUN_ROOT/module-admission.mjs"
           test -z "$(git status --porcelain --untracked-files=all)"
           python3 - "$MODULE_RUN_ROOT" <<'PY'
@@ -112,8 +114,14 @@ jobs:
             records.append({'path':str(p),'sha256':digest(p),'inputs':members})
           assert subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()==os.environ['GITHUB_SHA']
           assert not subprocess.check_output(['git','status','--porcelain','--untracked-files=all'],text=True).strip()
-          with open(root/'build.safe.json','x') as f:json.dump({'sourceSHA':os.environ['GITHUB_SHA'],'sourceClean':True,'exit':0,'commands':['bun run build:packages','bun packages/xpod-afs/scripts/build-package.ts','bun build module-admission.ts --target=node --format=esm'],'coreSHA256':digest(workspace/'packages/xpod-cli/dist/xpod.mjs'),'driverSHA256':digest(root/'module-admission.mjs'),'metafiles':records},f)
+          with open(root/'build.safe.json','x') as f:json.dump({'sourceSHA':os.environ['GITHUB_SHA'],'sourceClean':True,'exit':0,'commands':['bun run --filter @undefineds.co/xpod-cli build:tools','bun run --filter @undefineds.co/xpod-client build','bun run --filter @undefineds.co/xpod-cli build','bun scripts/build-afs-from-producer.ts --mode module --cli-package packages/xpod-cli','bun build module-admission.ts --target=node --format=esm'],'coreSHA256':digest(workspace/'packages/xpod-cli/dist/xpod.mjs'),'driverSHA256':digest(root/'module-admission.mjs'),'metafiles':records},f)
           PY
+      - name: Verify client cleanup followed by fresh module packaging
+        env:
+          XPOD_AFS_LIFETIME_NATIVE_EVIDENCE: ${{ env.MODULE_RUN_ROOT }}/native/native.zip
+          XPOD_AFS_LIFETIME_NATIVE_PINS: ${{ env.MODULE_RUN_ROOT }}/native/native-pins.json
+          XPOD_AFS_LIFETIME_TARGET: ${{ matrix.target }}
+        run: bun test packages/xpod-afs/tests/producer-build-lifetime.test.ts
       - name: Preserve exact CLI and AFS product materials for this source
         id: products
         env:

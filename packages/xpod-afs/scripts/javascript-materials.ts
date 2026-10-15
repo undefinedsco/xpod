@@ -1,11 +1,11 @@
-import { collectJavascriptNotices } from '@undefineds.co/xpod-cli/build-tools';
+import type { ProducerBuildTools } from './producer-input';
 import { createHash } from 'node:crypto';
 import { copyFileSync, cpSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
 /** Both the public library and platform producer preserve the same original materials. */
 export function collectAfsJavascriptMaterials(options: {
-  packageRoot: string; repoRoot: string; destination: string; target: string;
+  buildTools: ProducerBuildTools; packageRoot: string; repoRoot: string; destination: string; target: string;
   library: string; libraryMetafile: string; commands: string; commandsMetafile: string;
   producer: { generatedRoot: string; supplements: string }; vendoredRoots?: string[];
 }): void {
@@ -34,12 +34,12 @@ export function collectAfsJavascriptMaterials(options: {
     { sourcePath: 'generated-prefix.js', object: `objects/${prefixHash}.txt`, sha256: prefixHash }];
   writeFileSync(path.join(generated, 'index.json'), JSON.stringify(generatedIndex, null, 2) + '\n');
   const supplements = [options.producer.supplements, path.join(options.packageRoot, 'licenses/javascript')];
-  collectJavascriptNotices({ metafile: options.libraryMetafile, stageRoot: options.packageRoot, repoRoot: options.repoRoot,
+  options.buildTools.collectJavascriptNotices({ metafile: options.libraryMetafile, stageRoot: options.packageRoot, repoRoot: options.repoRoot,
     destination: path.join(options.destination, 'library'), target: options.target,
     cli: options.library, bunVersion, supplements, generated,
     vendoredRoots: options.vendoredRoots, requireVendoredOriginals: true });
   // Command SDK/output inputs have their own actual compiler graph and original prefix.
-  collectJavascriptNotices({ metafile: options.commandsMetafile, stageRoot: options.repoRoot, repoRoot: options.repoRoot,
+  options.buildTools.collectJavascriptNotices({ metafile: options.commandsMetafile, stageRoot: options.repoRoot, repoRoot: options.repoRoot,
     destination: path.join(options.destination, 'commands'), target: options.target,
     cli: options.commands, bunVersion, supplements, generated: originalGenerated });
   mkdirSync(options.destination, { recursive: true });

@@ -70,7 +70,7 @@
   },
   "scripts": {
     "build": "bun run build:packages && bun run build:ts && bun run build:components && bun run build:ui",
-    "build:packages": "bun run --filter @undefineds.co/xpod-cli build:tools && bun run --filter @undefineds.co/xpod-client build && bun run --filter @undefineds.co/xpod-cli build && bun run --filter @undefineds.co/xpod-afs build && bun run --filter '@undefineds.co/solid-sdk' build && bun run --filter '@undefineds.co/shared-ui' build && bun run --filter '@undefineds.co/pod-collections' build && bun run --filter '@undefineds.co/extension-host-contracts' build && bun run --filter '@undefineds.co/extension-sdk' build && bun run --filter '@undefineds.co/ai-connections-runtime' build && bun run --filter '@undefineds.co/ai-connections' build && bun run --filter '@undefineds.co/pod-settings' build && bun run --filter '@undefineds.co/tasks' build",
+    "build:packages": "bun run --filter @undefineds.co/xpod-cli build:tools && bun run --filter @undefineds.co/xpod-client build && bun run --filter @undefineds.co/xpod-cli build && bun scripts/build-afs-from-producer.ts --mode client --cli-package packages/xpod-cli && bun run --filter '@undefineds.co/solid-sdk' build && bun run --filter '@undefineds.co/shared-ui' build && bun run --filter '@undefineds.co/pod-collections' build && bun run --filter '@undefineds.co/extension-host-contracts' build && bun run --filter '@undefineds.co/extension-sdk' build && bun run --filter '@undefineds.co/ai-connections-runtime' build && bun run --filter '@undefineds.co/ai-connections' build && bun run --filter '@undefineds.co/pod-settings' build && bun run --filter '@undefineds.co/tasks' build",
     "test:packages": "bun run --filter './packages/*' test",
     "postinstall": "bun scripts/patch-jose.js && bun scripts/patch-inrupt-authn-refresh.js && bun scripts/patch-inrupt-authn-transport.js && bun scripts/patch-inrupt-authn-operation-cleanup.js",
     "prepack": "bun scripts/prepare-package-manifest.cjs pack",
@@ -220,6 +220,8 @@
     "@types/semver": "7.7.1"
   },
   "dependencies": {
+    "@comunica/actor-query-result-serialize-sparql-json": "^4.5.0",
+    "@comunica/actor-query-result-serialize-stats": "^4.5.0",
     "@agentclientprotocol/sdk": "^0.14.1",
     "@ai-sdk/openai": "^3.0.2",
     "@comunica/core": "^4.5.0",
