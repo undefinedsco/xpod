@@ -25,65 +25,110 @@ function readArtifact(input) {
   return { tarball, bytes, manifest, integrity: `sha512-${crypto.createHash('sha512').update(bytes).digest('base64')}` };
 }
 
-function createRegistry(artifact, publishToken, upstreamRegistry) {
+function createRegistry(artifact, publishToken, upstreamRegistry, supply = {}) {
   // Public program dependencies leave the fixture through the caller's upstream
   // (a configured mirror), defaulting to npmjs so existing callers do not drift.
   const upstream = typeof upstreamRegistry === 'string' && upstreamRegistry.trim()
     ? upstreamRegistry.trim().replace(/\/+$/, '')
     : 'https://registry.npmjs.org';
-  let published;
-  let tarballPath;
-  let publishing = false;
+  // Transport facts only. The CLI may pass supply only after its normal producer
+  // receipt reader has verified original files; this is not source admission.
+  const packages = new Map();
+  const artifacts = supply.artifacts ?? [];
+  const required = supply.required ?? [];
+  if (!Array.isArray(artifacts) || !Array.isArray(required) || artifacts.length > 1000 || required.length > 1000
+    || Object.keys(supply).some(key => !['artifacts', 'required'].includes(key))) throw new Error('Invalid exact artifact supply');
+  if (artifact.manifest?.name !== '@undefineds.co/xpod') throw new Error('Expected root Xpod artifact');
+  for (const row of [artifact, ...artifacts]) {
+    const manifest = JSON.parse(JSON.stringify(row.manifest));
+    if (!/^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/.test(manifest?.name)
+      || typeof manifest.version !== 'string' || require('semver').valid(manifest.version) !== manifest.version
+      || !Buffer.isBuffer(row.bytes) || !row.bytes.length
+      || row.integrity !== `sha512-${crypto.createHash('sha512').update(row.bytes).digest('base64')}`) throw new Error('Exact artifact identity/integrity mismatch');
+    // Preserve the original root fixture construction path. Its publisher still
+    // checks this policy before writing configuration or spawning npm.
+    if (row !== artifact) assertSafeFixturePublishConfig(manifest);
+    let state = packages.get(manifest.name);
+    if (!state) { state = { versions: new Map(), metadata: undefined, publishing: false }; packages.set(manifest.name, state); }
+    if (state.versions.has(manifest.version)) throw new Error('Duplicate exact artifact identity');
+    state.versions.set(manifest.version, { manifest, bytes: row === artifact ? row.bytes : Buffer.from(row.bytes), integrity: row.integrity, published: false });
+  }
+  const requiredSeen = new Set();
+  for (const row of required) {
+    const key = `${row?.name}@${row?.version}`;
+    if (requiredSeen.has(key) || !packages.get(row?.name)?.versions.has(row?.version)) throw new Error('Missing or duplicate required local artifact');
+    requiredSeen.add(key);
+  }
   const server = http.createServer(async (req, res) => {
     let pathname;
     try { pathname = decodeURIComponent(new URL(req.url, 'http://localhost').pathname); }
     catch { res.writeHead(400); res.end(); return; }
     if (req.method === 'PUT') {
-      if (pathname !== '/@undefineds.co/xpod' || !publishToken || req.headers.authorization !== `Bearer ${publishToken}`) {
+      const state = packages.get(pathname.slice(1));
+      if (!state || !publishToken || req.headers.authorization !== `Bearer ${publishToken}`) {
         res.writeHead(403); res.end(); return;
       }
-      if (published || publishing) { res.writeHead(409); res.end(); return; }
-      publishing = true;
+      if (state.publishing) { res.writeHead(409); res.end(); return; }
+      state.publishing = true;
       try {
         const chunks = [];
         let size = 0;
         for await (const chunk of req) {
           size += chunk.length;
-          if (size > artifact.bytes.length * 2 + 1024 * 1024) throw new Error('Publication too large');
+          const largest = Math.max(...[...state.versions.values()].map(row => row.bytes.length));
+          if (size > largest * 2 + 1024 * 1024) throw new Error('Publication too large');
           chunks.push(chunk);
         }
         const payload = JSON.parse(Buffer.concat(chunks).toString('utf8'));
-        const version = payload.versions?.[artifact.manifest.version];
+        if (!payload.versions || typeof payload.versions !== 'object' || Array.isArray(payload.versions)) throw new Error('Unexpected publication');
+        const newVersions = Object.keys(payload.versions).filter(version => !state.versions.get(version)?.published);
+        if (newVersions.length === 0) { res.writeHead(409); res.end(); return; }
+        if (newVersions.length !== 1) throw new Error('Unexpected publication versions');
+        const selected = state.versions.get(newVersions[0]);
+        if (!selected) throw new Error('Undeclared publication version');
+        const version = payload.versions[selected.manifest.version];
         const attachments = Object.values(payload._attachments || {});
-        if (payload.name !== artifact.manifest.name || Object.keys(payload.versions || {}).length !== 1
-          || version?.name !== artifact.manifest.name || version.version !== artifact.manifest.version || attachments.length !== 1) throw new Error('Unexpected publication');
+        const previous = Object.keys(state.metadata?.versions ?? {});
+        if (payload.name !== selected.manifest.name || Object.keys(payload.versions).length !== previous.length + 1
+          || previous.some(key => JSON.stringify(payload.versions[key]) !== JSON.stringify(state.metadata.versions[key]))
+          || version?.name !== selected.manifest.name || version.version !== selected.manifest.version || attachments.length !== 1) throw new Error('Unexpected publication');
         const bytes = Buffer.from(attachments[0].data, 'base64');
         const origin = `http://127.0.0.1:${server.address().port}`;
         const target = new URL(version.dist.tarball);
         if (target.origin !== origin || target.username || target.password || target.search || target.hash
-          || !target.pathname.startsWith('/@undefineds.co/xpod/-/') || attachments[0].length !== artifact.bytes.length
-          || !bytes.equals(artifact.bytes) || version.dist.integrity !== artifact.integrity
+          || !decodeURIComponent(target.pathname).startsWith(`/${selected.manifest.name}/-/`) || attachments[0].length !== selected.bytes.length
+          || !bytes.equals(selected.bytes) || version.dist.integrity !== selected.integrity
+          || [...state.versions.values()].some(row => row.published && row.tarballPath === decodeURIComponent(target.pathname))
           || version.dist.shasum !== crypto.createHash('sha1').update(bytes).digest('hex')) throw new Error('Publication artifact mismatch');
         // Keep exactly npm's publication metadata, including its dependency
         // normalization. Never rebuild a packument from the tar manifest.
         const { _attachments, ...metadata } = payload;
-        published = metadata;
-        tarballPath = decodeURIComponent(target.pathname);
+        state.metadata = metadata;
+        selected.published = true;
+        selected.tarballPath = decodeURIComponent(target.pathname);
         res.writeHead(201, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: true }));
       } catch { res.writeHead(400); res.end(); }
-      finally { publishing = false; }
+      finally { state.publishing = false; }
       return;
     }
     if (req.method !== 'GET' && req.method !== 'HEAD') { res.writeHead(405); res.end(); return; }
-    if (published && pathname === tarballPath) {
-      res.setHeader('content-type', 'application/octet-stream');
-      res.setHeader('content-length', artifact.bytes.length);
-      res.end(req.method === 'HEAD' ? undefined : artifact.bytes); return;
-    }
-    if (pathname === '/@undefineds.co/xpod') {
-      if (!published) { res.writeHead(404); res.end(); return; }
+    for (const [name, state] of packages) {
+      if (pathname !== `/${name}` && !pathname.startsWith(`/${name}/`)) continue;
+      for (const selected of state.versions.values()) {
+        if (selected.published && pathname === selected.tarballPath) {
+          res.setHeader('content-type', 'application/octet-stream');
+          res.setHeader('content-length', selected.bytes.length);
+          res.end(req.method === 'HEAD' ? undefined : selected.bytes); return;
+        }
+      }
+      const version = pathname.slice(name.length + 2);
+      const declared = state.versions.get(version);
+      const metadata = pathname === `/${name}` ? state.metadata
+        : declared?.published && Object.prototype.hasOwnProperty.call(state.metadata?.versions ?? {}, version)
+          ? state.metadata.versions[version] : undefined;
+      if (!metadata) { res.writeHead(404); res.end(); return; }
       res.setHeader('content-type', 'application/json');
-      res.end(req.method === 'HEAD' ? undefined : JSON.stringify(published)); return;
+      res.end(req.method === 'HEAD' ? undefined : JSON.stringify(metadata)); return;
     }
     // Only GET/HEAD for public program dependencies may leave the fixture.
     // Redirect to the caller's upstream using the path only: no publisher
@@ -91,7 +136,7 @@ function createRegistry(artifact, publishToken, upstreamRegistry) {
     res.writeHead(302, { location: `${upstream}${new URL(req.url, 'http://localhost').pathname}` });
     res.end();
   });
-  server.publishedMetadata = () => published;
+  server.publishedMetadata = (name = artifact.manifest.name) => packages.get(name)?.metadata;
   return server;
 }
 
