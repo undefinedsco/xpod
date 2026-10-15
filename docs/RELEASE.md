@@ -16,6 +16,8 @@ Windows 保留平台默认 shell/PATH。完整 build 产生的 UI 变化由 Vite
 
 2026-10-15 的 [run 38750639516](https://github.com/undefinedsco/xpod/actions/runs/38750639516) 实际 checkout 为 `0b5aad17fdc2bd17b017d3d2a3119c062689ed90`，事件 head 为 `1ac0526d676e59a240a1bd3f665ea54b275d2fa3`。Node 9/9 成功（包含 Windows 22/24/25），Bun 9/9 失败，verify 阻断。Windows tar listing 和正常 UI 输出误判未再现；原 Bun registry 安装兼容阻塞仍未解决，不能将 wrapper 修复或矩阵拆分视为整体兼容/发布资格通过。具体 GNU tar/PATH 根因仍未由旧失败日志证明。
 
+兼容通道另外保留受限的 `pack.manifests.json` / `install.manifests.json`：从当次 tgz 读取根 manifest 和根包实际声明的 bundle manifests，记录原成员 SHA/字节及 name/version/依赖/bundle 字段；未知 URL 型依赖值只记哈希，不复制凭据。单 manifest 上限 128 KiB，合计及输出上限 1 MiB，采集失败只记 unavailable，不替代原命令退出状态。Bun registry 安装消费原 tgz；npm local smoke 才沿既有规则删除 optionalDependencies，证据分别绑定原包与实际 smoke 包 SHA/字节及 manifest。证据不含完整 tarball，也不证明 resolver 请求来源或提供发布资格。
+
 ## 先合入，再发 RC
 
 `staging` 是唯一集成与 RC 来源分支。开发工作树的 Docker/Compose 验证使用

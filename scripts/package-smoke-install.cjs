@@ -5,6 +5,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { pathToFileURL } = require('node:url');
 const { execFileSync } = require('node:child_process');
+const { captureManifestEvidence } = require('./lib/compat-manifest-evidence.cjs');
 const { createOwnedTempRoot, withOwnedTempRoot } = require('./lib/owned-temp-root.cjs');
 const { createRegistry, publishArtifact, run } = require('./check-package-registry-consumer.cjs');
 
@@ -297,8 +298,12 @@ async function main() {
   // The npm local smoke strips optionalDependencies; the Bun registry route must
   // consume the untouched original artifact bytes with all metadata retained.
   const install = async(installSpec) => {
+    if (process.env.XPOD_COMPAT_MANIFEST_EVIDENCE_FILE) {
+      captureManifestEvidence(process.env.XPOD_COMPAT_MANIFEST_EVIDENCE_FILE, resolvedInstallSpec, installSpec, packageManager);
+    }
     const installerSpec = toInstallerSpec(installSpec, packageManager);
     const installEnv = await sanitizeProxyEnv(process.env);
+    delete installEnv.XPOD_COMPAT_MANIFEST_EVIDENCE_FILE;
     const installRegistry = resolveInstallRegistry(installEnv);
     let usedRegistry = installRegistry;
     let installedLabel = installerSpec;

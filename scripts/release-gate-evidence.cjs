@@ -622,6 +622,7 @@ function rootCompatConsumerPath(os, value) {
   }
   return path.posix.isAbsolute(value) && !value.includes('\\') && !value.startsWith('//');
 }
+const { captureManifestEvidence } = require('./lib/compat-manifest-evidence.cjs');
 const ROOT_COMPAT_PHASES = ['dependencies', 'platform-versions', 'build', 'pack', 'pack-verification', 'install', 'consumer'];
 function compatFile(file) {
   const stat = fs.lstatSync(file);
@@ -697,7 +698,9 @@ function runRootCompatLane(args) {
       try {
         stdout = fs.openSync(path.join(out, stdoutName), 'wx'); stderr = fs.openSync(path.join(out, stderrName), 'wx');
         result = spawnSync(command[0], command.slice(1), { stdio: ['ignore', stdout, stderr],
-          ...(phase === 'build' ? { env: { ...process.env, XPOD_UI_BUILD_EVIDENCE_DIR: uiEvidence } } : {}) });
+          ...(['build', 'install'].includes(phase) ? { env: { ...process.env, ...(phase === 'build'
+            ? { XPOD_UI_BUILD_EVIDENCE_DIR: uiEvidence }
+            : { XPOD_COMPAT_MANIFEST_EVIDENCE_FILE: path.join(out, 'install.manifests.json') }) } } : {}) });
       } finally {
         if (stdout !== undefined) fs.closeSync(stdout);
         if (stderr !== undefined) fs.closeSync(stderr);
@@ -706,6 +709,10 @@ function runRootCompatLane(args) {
         actualWaitCompleted: Number.isInteger(result.status), rawLogsClosed: true,
         stdout: { path: stdoutName, ...compatFile(path.join(out, stdoutName)) }, stderr: { path: stderrName, ...compatFile(path.join(out, stderrName)) } };
       receipt.steps.push(step);
+      if (phase === 'install') {
+        try { receipt.installManifests = { path: 'install.manifests.json', ...compatFile(path.join(out, 'install.manifests.json')) }; }
+        catch { receipt.installManifests = { status: 'unavailable' }; }
+      }
       console.log(`[legacy-root-compat] ${lane.id} ${phase}: exit=${result.status} signal=${result.signal}`);
       if (result.error || result.status !== 0 || result.signal) fail(`legacy root compat failed: ${lane.id}/${phase}`);
       if (phase === 'pack') {
@@ -725,6 +732,7 @@ function runRootCompatLane(args) {
         fs.writeFileSync(path.join(out, 'pack.original.json'), original, { flag: 'wx' });
         receipt.pack = { original: { path: 'pack.original.json', ...compatFile(path.join(out, 'pack.original.json')) },
           archive: { filename: row.filename, name: row.name, version: row.version, bytes, sha256: sha256.digest('hex'), integrity } };
+        receipt.pack.manifests = { path: 'pack.manifests.json', ...captureManifestEvidence(path.join(out, 'pack.manifests.json'), file) };
       }
     }
     receipt.sourceAfter = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
