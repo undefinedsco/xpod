@@ -26,6 +26,20 @@ function readArtifact(input) {
 }
 
 function createRegistry(artifact, publishToken, upstreamRegistry, supply = {}) {
+  const artifacts = supply.artifacts ?? [];
+  if (!Array.isArray(artifacts) || Object.keys(supply).some(key => !['artifacts', 'required'].includes(key))) throw new Error('Invalid exact artifact supply');
+  if (artifact.manifest?.name !== '@undefineds.co/xpod') throw new Error('Expected root Xpod artifact');
+  return createArtifactRegistry([artifact, ...artifacts], publishToken, upstreamRegistry, supply.required ?? [], artifact);
+}
+
+// Transport only: callers must verify normal producer originals before supply.
+// A module fixture does not need a synthetic root package or gain admission.
+function createExactArtifactRegistry(artifacts, publishToken, upstreamRegistry, required = []) {
+  return createArtifactRegistry(artifacts, publishToken, upstreamRegistry, required);
+}
+
+// Both public entry points use this single HTTP state and publication path.
+function createArtifactRegistry(artifacts, publishToken, upstreamRegistry, required, legacyRootArtifact = null) {
   // Public program dependencies leave the fixture through the caller's upstream
   // (a configured mirror), defaulting to npmjs so existing callers do not drift.
   const upstream = typeof upstreamRegistry === 'string' && upstreamRegistry.trim()
@@ -34,12 +48,9 @@ function createRegistry(artifact, publishToken, upstreamRegistry, supply = {}) {
   // Transport facts only. The CLI may pass supply only after its normal producer
   // receipt reader has verified original files; this is not source admission.
   const packages = new Map();
-  const artifacts = supply.artifacts ?? [];
-  const required = supply.required ?? [];
-  if (!Array.isArray(artifacts) || !Array.isArray(required) || artifacts.length > 1000 || required.length > 1000
-    || Object.keys(supply).some(key => !['artifacts', 'required'].includes(key))) throw new Error('Invalid exact artifact supply');
-  if (artifact.manifest?.name !== '@undefineds.co/xpod') throw new Error('Expected root Xpod artifact');
-  for (const row of [artifact, ...artifacts]) {
+  if (!Array.isArray(artifacts) || artifacts.length === 0 || !Array.isArray(required)
+    || artifacts.length > (legacyRootArtifact ? 1001 : 1000) || required.length > 1000) throw new Error('Invalid exact artifact supply');
+  for (const row of artifacts) {
     const manifest = JSON.parse(JSON.stringify(row.manifest));
     if (!/^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/.test(manifest?.name)
       || typeof manifest.version !== 'string' || require('semver').valid(manifest.version) !== manifest.version
@@ -47,11 +58,11 @@ function createRegistry(artifact, publishToken, upstreamRegistry, supply = {}) {
       || row.integrity !== `sha512-${crypto.createHash('sha512').update(row.bytes).digest('base64')}`) throw new Error('Exact artifact identity/integrity mismatch');
     // Preserve the original root fixture construction path. Its publisher still
     // checks this policy before writing configuration or spawning npm.
-    if (row !== artifact) assertSafeFixturePublishConfig(manifest);
+    if (row !== legacyRootArtifact) assertSafeFixturePublishConfig(manifest);
     let state = packages.get(manifest.name);
     if (!state) { state = { versions: new Map(), metadata: undefined, publishing: false }; packages.set(manifest.name, state); }
     if (state.versions.has(manifest.version)) throw new Error('Duplicate exact artifact identity');
-    state.versions.set(manifest.version, { manifest, bytes: row === artifact ? row.bytes : Buffer.from(row.bytes), integrity: row.integrity, published: false });
+    state.versions.set(manifest.version, { manifest, bytes: row === legacyRootArtifact ? row.bytes : Buffer.from(row.bytes), integrity: row.integrity, published: false });
   }
   const requiredSeen = new Set();
   for (const row of required) {
@@ -136,7 +147,8 @@ function createRegistry(artifact, publishToken, upstreamRegistry, supply = {}) {
     res.writeHead(302, { location: `${upstream}${new URL(req.url, 'http://localhost').pathname}` });
     res.end();
   });
-  server.publishedMetadata = (name = artifact.manifest.name) => packages.get(name)?.metadata;
+  const primaryName = artifacts[0].manifest.name;
+  server.publishedMetadata = (name = primaryName) => packages.get(name)?.metadata;
   return server;
 }
 
@@ -311,4 +323,4 @@ for (const specifier of ['@undefineds.co/ai-connections', '@undefineds.co/ai-con
   }
 }
 if (require.main === module) main(...process.argv.slice(2)).catch((error) => { console.error(error); process.exitCode = 1; });
-module.exports = { readArtifact, createRegistry, publishArtifact, isolatedEnvironment, run, assertSafeFixturePublishConfig };
+module.exports = { readArtifact, createRegistry, createExactArtifactRegistry, publishArtifact, isolatedEnvironment, run, assertSafeFixturePublishConfig };

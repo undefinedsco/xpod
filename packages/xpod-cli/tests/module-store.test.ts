@@ -2,10 +2,10 @@ import { afterEach, expect, test } from 'bun:test';
 import { createHash } from 'node:crypto';
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { readFileSync } from 'node:fs';
-import { chmod, link, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, link, lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { c as packTar, Header } from 'tar';
+import { c as packTar, x as extractTar, Header } from 'tar';
 import { gzipSync } from 'node:zlib';
 import { ModuleStore, type ModuleManifest } from '../src/module-store';
 import { MODULE_CATALOG } from '../src/module-catalog';
@@ -15,7 +15,7 @@ const roots: string[] = [];
 const coreSource = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../src');
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
 async function fixture(options: { version?: string; api?: number; link?: boolean; drift?: boolean; wrongPlatform?: boolean; source?: string;
-  inventoryCase?: 'many' | 'late-tamper' | 'duplicate' | 'extra'; blockedParent?: boolean; beforeArchive?: (storeRoot: string) => Promise<void> } = {}) {
+  inventoryCase?: 'many' | 'late-tamper' | 'duplicate' | 'extra'; archiveMtime?: Date; blockedParent?: boolean; beforeArchive?: (storeRoot: string) => Promise<void> } = {}) {
   const base = path.resolve('.test-data/cli-modules'); await mkdir(base, { recursive: true });
   const root = await mkdtemp(path.join(base, 'case-')); roots.push(root);
   const packageRoot = path.join(root, 'input/package'); await mkdir(path.join(packageRoot, 'dist'), { recursive: true });
@@ -37,7 +37,7 @@ async function fixture(options: { version?: string; api?: number; link?: boolean
   await writeFile(path.join(packageRoot, 'package.json'), JSON.stringify({ name: '@undefineds.co/xpod-afs-darwin-arm64', version, xpodModule: manifest,
     scripts: { postinstall: 'exit 99' } }));
   if (options.link) await symlink('/etc/passwd', path.join(packageRoot, 'escape'));
-  const tarball = path.join(root, 'module.tgz'); await packTar({ gzip: true, file: tarball, cwd: path.dirname(packageRoot) }, ['package']);
+  const tarball = path.join(root, 'module.tgz'); await packTar({ gzip: true, file: tarball, cwd: path.dirname(packageRoot), mtime: options.archiveMtime }, ['package']);
   if (options.blockedParent) {
     const chunks: Buffer[] = [];
     for (const [name, body] of [['package/package.json', await readFile(path.join(packageRoot, 'package.json'))],
@@ -416,4 +416,30 @@ test('bounded inventory verification covers files beyond the first worker batch 
     expect(await f.store.current('afs')).toBeUndefined();
     expect(await readdir(path.join(f.store.root, 'afs/darwin-arm64'))).toEqual([]);
   }
+});
+
+
+test('installation skips historical archive mtime restoration while retaining content, mode and exact inventory checks', async () => {
+  const historical = new Date('2001-01-01T00:00:00Z');
+  const f = await fixture({ archiveMtime: historical });
+  const control = path.join(f.root, 'mtime-control'); await mkdir(control);
+  await extractTar({ file: f.tarball, cwd: control, strict: true, noChmod: false, sync: true });
+  const relative = 'package/dist/entry.mjs';
+  expect((await lstat(path.join(control, relative))).mtimeMs).toBe(historical.getTime());
+  const originalUmask = process.umask(0o077);
+  try { await f.store.install('afs'); } finally { process.umask(originalUmask); }
+  const installed = path.join(f.store.root, 'afs/darwin-arm64/0.1.0');
+  const filename = path.join(installed, relative); const stat = await lstat(filename);
+  expect(stat.mtimeMs).not.toBe(historical.getTime());
+  expect(stat.mode & 0o7777).toBe(0o644);
+  expect(await readFile(filename)).toEqual(await readFile(path.join(control, relative)));
+  expect((await f.store.current('afs'))?.version).toBe('0.1.0');
+  await chmod(filename, 0o755);
+  expect(await f.store.current('afs').then(() => null, cause => cause.code)).toBe('module_file_changed');
+  await chmod(filename, 0o644);
+  const extra = path.join(installed, 'package/undeclared'); await writeFile(extra, 'extra');
+  expect(await f.store.current('afs').then(() => null, cause => cause.code)).toBe('module_inventory_invalid');
+  await rm(extra);
+  const source = await readFile(filename, 'utf8'); await writeFile(filename, source.replace('process.exit', 'process.exiT'));
+  expect(await f.store.current('afs').then(() => null, cause => cause.code)).toBe('module_file_changed');
 });

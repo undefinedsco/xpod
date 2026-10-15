@@ -88,8 +88,11 @@ function emitClientPublication({ packageRoot, repoRoot, destination, assertCurre
     if (relative.endsWith('.jsonld')) {
       const walk = value => {
         if (typeof value === 'string') {
-          if (value.startsWith('./') || value.startsWith('../')) include(path.posix.normalize(path.posix.join(path.posix.dirname(relative), value)));
-          else if (/^[A-Za-z][A-Za-z0-9]*:dist\//.test(value)) include(value.slice(value.indexOf(':') + 1));
+          // JSON-LD resource fragments identify terms within a document; they
+          // are not part of the generated document's filesystem filename.
+          const document = value.split('#', 1)[0];
+          if (document.startsWith('./') || document.startsWith('../')) include(path.posix.normalize(path.posix.join(path.posix.dirname(relative), document)));
+          else if (/^[A-Za-z][A-Za-z0-9]*:dist\//.test(document)) include(document.slice(document.indexOf(':') + 1));
         } else if (value && typeof value === 'object') for (const item of Object.values(value)) walk(item);
       };walk(JSON.parse(bytes));
     }

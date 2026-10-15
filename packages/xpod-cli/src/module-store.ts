@@ -162,7 +162,7 @@ export class ModuleStore {
         });
         // Installation precedes service startup. The public synchronous extractor
         // uses bounded reads and closes every write before returning or throwing.
-        await diagnostics.run('archive-extract', () => extractTar({ file: tarball, cwd: stage, strict: true, noChmod: false, sync: true }));
+        await diagnostics.run('archive-extract', () => extractTar({ file: tarball, cwd: stage, strict: true, noChmod: false, noMtime: true, sync: true }));
         await rm(tarball);
         const row = await diagnostics.run('manifest-modes', async () => {
           const source = await readFile(path.join(stage, 'package/package.json'));

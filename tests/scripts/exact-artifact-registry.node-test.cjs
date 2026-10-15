@@ -1,7 +1,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
-const { createRegistry } = require('../../scripts/check-package-registry-consumer.cjs');
+const { createRegistry, createExactArtifactRegistry } = require('../../scripts/check-package-registry-consumer.cjs');
 
 // Tiny synthetic HTTP protocol fixtures, never normal-producer or npm evidence.
 function artifact(name, version = '1.0.0') {
@@ -120,4 +120,50 @@ test('fully published identities reject duplicate malformed bodies as conflicts'
   assert.equal((await send(first.manifest.name)).status, 400);
   assert.equal((await put(origin, publication(origin, second, server.publishedMetadata(first.manifest.name)))).status, 201);
   assert.equal((await send(first.manifest.name)).status, 409);
+});
+
+
+test('generic exact registry accepts modules without a root and preserves publication metadata and version isolation', async t => {
+  const first = artifact('@fixture/module'), second = artifact('@fixture/module', '2.0.0');
+  const server = createExactArtifactRegistry([first, second], 'fixture-token', 'https://mirror.invalid',
+    [first, second].map(row => ({ name: row.manifest.name, version: row.manifest.version })));
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const origin = 'http://127.0.0.1:' + server.address().port;
+  for (const row of [first, second]) {
+    const payload = publication(origin, row, server.publishedMetadata());
+    assert.equal((await put(origin, payload, 'wrong')).status, 403);
+    assert.equal((await put(origin, payload)).status, 201);
+    const { _attachments, ...metadata } = payload;
+    assert.deepEqual(server.publishedMetadata(), metadata);
+    assert.deepEqual(Buffer.from(await (await fetch(payload.versions[row.manifest.version].dist.tarball)).arrayBuffer()), row.bytes);
+    assert.equal((await fetch(origin + '/@fixture/module/toString')).status, 404);
+    assert.equal((await fetch(origin + '/@fixture/module/9.0.0')).status, 404);
+    assert.equal((await fetch(origin + '/@fixture/module/-/missing.tgz')).status, 404);
+  }
+  assert.equal((await fetch(origin + '/@undefineds.co/xpod', { redirect: 'manual' })).status, 302);
+});
+
+test('generic entry validates exact coverage and publish policy while old root wrapper still rejects modules', () => {
+  const module = artifact('@fixture/module');
+  assert.throws(() => createRegistry(module, 'token'), /root Xpod/);
+  assert.throws(() => createExactArtifactRegistry([], 'token'), /Invalid exact artifact supply/);
+  assert.throws(() => createExactArtifactRegistry([module, module], 'token'), /Duplicate/);
+  assert.throws(() => createExactArtifactRegistry([module], 'token', undefined, [{ name: '@fixture/absent', version: '1.0.0' }]), /Missing/);
+  assert.throws(() => createExactArtifactRegistry([{ ...module, integrity: 'sha512-wrong' }], 'token'), /integrity/);
+  assert.throws(() => createExactArtifactRegistry([{ ...module, manifest: { ...module.manifest, publishConfig: { registry: 'https://external.invalid' } } }], 'token'), /publishConfig/);
+});
+
+test('generic registry snapshots bytes and its default primary identity at construction', async t => {
+  const input = artifact('@fixture/module');
+  const original = { ...input, bytes: Buffer.from(input.bytes), manifest: { ...input.manifest } };
+  const server = createExactArtifactRegistry([input], 'fixture-token');
+  input.bytes.fill(0); input.manifest.name = '@fixture/renamed';
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const origin = 'http://127.0.0.1:' + server.address().port;
+  const payload = publication(origin, original);
+  assert.equal((await put(origin, payload)).status, 201);
+  assert.equal(server.publishedMetadata().name, original.manifest.name);
+  assert.deepEqual(Buffer.from(await (await fetch(payload.versions[original.manifest.version].dist.tarball)).arrayBuffer()), original.bytes);
 });

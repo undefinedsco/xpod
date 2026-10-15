@@ -92,3 +92,23 @@ test('cleanup never removes a replacement stage after ownership changes', () => 
   assert.equal(fs.readFileSync(path.join(destination,'foreign'),'utf8'),'keep');
   assert.equal(fs.existsSync(path.join(owned,'package.json')),true);
 }));
+
+test('JSON-LD compact and relative resource fragments retain their document and original bytes', () => fixture(({ pkg, write, options, destination }) => {
+  const context = { '@context': { Journal: { '@id': 'undefinedsAfs:dist/types/Journal.jsonld#Journal' }, path: { '@id': 'undefinedsAfs:dist/types/Journal.jsonld#Journal_rootFilePath' } }, import: ['../types/Journal.jsonld#Journal'] };
+  const document = { '@id': '#Journal', '@type': 'Class' };
+  write('dist/components/context.jsonld', context);write('dist/types/Journal.jsonld', document);
+  const original = fs.readFileSync(path.join(pkg, 'dist/components/context.jsonld'));
+  const result = emitClientPublication(options);
+  assert.ok(result.inventory.some(row => row.path === 'dist/types/Journal.jsonld'));
+  assert.deepEqual(fs.readFileSync(path.join(destination, 'dist/components/context.jsonld')), original);
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(destination, 'dist/types/Journal.jsonld'))), document);
+  assert.equal(result.inventory.some(row => row.path.includes('#')), false);
+}));
+test('JSON-LD fragments cannot hide missing, unsafe, linked or unsupported documents', () => {
+  for (const value of ['undefinedsAfs:dist/types/missing.jsonld#Missing', 'undefinedsAfs:dist/../../outside.jsonld#Class', '../../../outside.jsonld#Class', 'undefinedsAfs:dist/types/file.bin#Class', 'undefinedsAfs:dist/types/index.d.ts?query#Class']) fixture(({ write, options, destination }) => {
+    write('dist/components/context.jsonld', { '@id': value });assert.throws(() => emitClientPublication(options));assert.equal(fs.existsSync(destination), false);
+  });
+  fixture(({ pkg, write, options, destination }) => {
+    write('dist/components/context.jsonld', { '@id': 'undefinedsAfs:dist/types/linked.jsonld#Class' });fs.symlinkSync('index.d.ts', path.join(pkg, 'dist/types/linked.jsonld'));assert.throws(() => emitClientPublication(options), /symlink/);assert.equal(fs.existsSync(destination), false);
+  });
+});
