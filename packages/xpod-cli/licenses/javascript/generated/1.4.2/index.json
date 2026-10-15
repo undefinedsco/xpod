@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
   "bunVersion": "1.4.2",
-  "prefixSha256": "3ebc0b0d70e161eed359ca6057bdb960e72ea886916b35534b57e9a2b34c21d5",
-  "prefixBytes": 755,
+  "prefixSha256": "a3e72d01f26bcd39142331f3a6d2033a495188dc06ab7b477f728f88afcff0a7",
+  "prefixBytes": 1867,
   "provenance": {
     "bunCommit": "744846f844374847c902b5e7fd59b4342a51ef99",
     "revision": "1.4.2+744846f84",
@@ -17,45 +17,101 @@
     },
     "generatedHelpers": [
       {
+        "name": "__create",
+        "sourcePath": "src/runtime.js",
+        "sourceLine": 7,
+        "preambleLine": 2,
+        "sourceUrl": "https://github.com/oven-sh/bun/blob/744846f844374847c902b5e7fd59b4342a51ef99/src/runtime.js#L7"
+      },
+      {
+        "name": "__getProtoOf",
+        "sourcePath": "src/runtime.js",
+        "sourceLine": 9,
+        "preambleLine": 3,
+        "sourceUrl": "https://github.com/oven-sh/bun/blob/744846f844374847c902b5e7fd59b4342a51ef99/src/runtime.js#L9"
+      },
+      {
         "name": "__defProp",
         "sourcePath": "src/runtime.js",
         "sourceLine": 10,
-        "preambleLine": 2,
+        "preambleLine": 4,
         "sourceUrl": "https://github.com/oven-sh/bun/blob/744846f844374847c902b5e7fd59b4342a51ef99/src/runtime.js#L10"
+      },
+      {
+        "name": "__getOwnPropNames",
+        "sourcePath": "src/runtime.js",
+        "sourceLine": 11,
+        "preambleLine": 5,
+        "sourceUrl": "https://github.com/oven-sh/bun/blob/744846f844374847c902b5e7fd59b4342a51ef99/src/runtime.js#L11"
+      },
+      {
+        "name": "__hasOwnProp",
+        "sourcePath": "src/runtime.js",
+        "sourceLine": 13,
+        "preambleLine": 6,
+        "sourceUrl": "https://github.com/oven-sh/bun/blob/744846f844374847c902b5e7fd59b4342a51ef99/src/runtime.js#L13"
+      },
+      {
+        "name": "__accessProp",
+        "sourcePath": "src/runtime.js",
+        "sourceLine": 18,
+        "preambleLine": 7,
+        "sourceUrl": "https://github.com/oven-sh/bun/blob/744846f844374847c902b5e7fd59b4342a51ef99/src/runtime.js#L18"
+      },
+      {
+        "name": "__toESMCache_node",
+        "sourcePath": "src/runtime.js",
+        "sourceLine": 51,
+        "preambleLine": 10,
+        "sourceUrl": "https://github.com/oven-sh/bun/blob/744846f844374847c902b5e7fd59b4342a51ef99/src/runtime.js#L51"
+      },
+      {
+        "name": "__toESMCache_esm",
+        "sourcePath": "src/runtime.js",
+        "sourceLine": 53,
+        "preambleLine": 11,
+        "sourceUrl": "https://github.com/oven-sh/bun/blob/744846f844374847c902b5e7fd59b4342a51ef99/src/runtime.js#L53"
+      },
+      {
+        "name": "__toESM",
+        "sourcePath": "src/runtime.js",
+        "sourceLine": 58,
+        "preambleLine": 12,
+        "sourceUrl": "https://github.com/oven-sh/bun/blob/744846f844374847c902b5e7fd59b4342a51ef99/src/runtime.js#L58"
       },
       {
         "name": "__commonJS",
         "sourcePath": "src/runtime.js",
         "sourceLine": 107,
-        "preambleLine": 3,
+        "preambleLine": 34,
         "sourceUrl": "https://github.com/oven-sh/bun/blob/744846f844374847c902b5e7fd59b4342a51ef99/src/runtime.js#L107"
       },
       {
         "name": "__returnValue",
         "sourcePath": "src/runtime.js",
         "sourceLine": 122,
-        "preambleLine": 4,
+        "preambleLine": 35,
         "sourceUrl": "https://github.com/oven-sh/bun/blob/744846f844374847c902b5e7fd59b4342a51ef99/src/runtime.js#L122"
       },
       {
         "name": "__exportSetter",
         "sourcePath": "src/runtime.js",
         "sourceLine": 123,
-        "preambleLine": 5,
+        "preambleLine": 36,
         "sourceUrl": "https://github.com/oven-sh/bun/blob/744846f844374847c902b5e7fd59b4342a51ef99/src/runtime.js#L123"
       },
       {
         "name": "__export",
         "sourcePath": "src/runtime.js",
         "sourceLine": 127,
-        "preambleLine": 8,
+        "preambleLine": 39,
         "sourceUrl": "https://github.com/oven-sh/bun/blob/744846f844374847c902b5e7fd59b4342a51ef99/src/runtime.js#L127"
       },
       {
         "name": "__esm",
         "sourcePath": "src/runtime.js",
         "sourceLine": 329,
-        "preambleLine": 17,
+        "preambleLine": 48,
         "sourceUrl": "https://github.com/oven-sh/bun/blob/744846f844374847c902b5e7fd59b4342a51ef99/src/runtime.js#L329"
       }
     ],
@@ -127,10 +183,10 @@
     },
     {
       "sourcePath": "generated-prefix.js",
-      "object": "objects/3ebc0b0d70e161eed359ca6057bdb960e72ea886916b35534b57e9a2b34c21d5.txt",
-      "sha256": "3ebc0b0d70e161eed359ca6057bdb960e72ea886916b35534b57e9a2b34c21d5",
+      "object": "objects/a3e72d01f26bcd39142331f3a6d2033a495188dc06ab7b477f728f88afcff0a7.txt",
+      "sha256": "a3e72d01f26bcd39142331f3a6d2033a495188dc06ab7b477f728f88afcff0a7",
       "provenance": {
-        "role": "Actual prefix emitted by Bun 1.4.2+744846f84 for the hermetic --cli-only --target darwin-arm64 build with canonical SDK and output sources. Exact prior audited prefix with only unused __toESM helpers removed; original runtime.js and ParseTask source attribution retained."
+        "role": "Actual prefix emitted by Bun 1.4.2+744846f84 for the existing hermetic --cli-only --target darwin-arm64 build; extracted before the first newline followed by //, matching the collector boundary."
       }
     }
   ]

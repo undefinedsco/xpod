@@ -408,6 +408,7 @@ function main(): void {
       target: args.target, cli: cliOut, bunVersion: process.versions.bun ?? 'unknown',
       supplements: path.join(packageRoot, 'licenses/javascript'),
       generated: path.join(packageRoot, 'licenses/javascript/generated', process.versions.bun ?? 'unknown'),
+      generatedProfile: 'preview',
     })) {
       const file = path.join(collectionOutput, name);
       javascriptNotices.push(artifact(`javascript-notice:${name}`, 'notice', true, {

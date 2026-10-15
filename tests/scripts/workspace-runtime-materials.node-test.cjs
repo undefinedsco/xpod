@@ -78,3 +78,21 @@ test('production AST comparison preserves regex/template text and nested declara
   ]) assert.notDeepEqual(normalized(before), normalized(after));
   assert.deepEqual(normalized('const value = (key);'), normalized('const value = key;'));
 });
+test('audited transformed toESM helper retains the shared base authority independently of preview selection', () => fixture(async root => {
+  const ts = require('typescript');
+  const { deriveGeneratedIndex } = require('../../scripts/workspace-runtime-materials.cjs');
+  const originals = path.resolve('packages/xpod-cli/licenses/javascript/generated/1.4.2');
+  const profile = JSON.parse(fs.readFileSync(path.join(originals, 'core.json')));
+  const file = ts.createSourceFile('reviewed.js', fs.readFileSync(path.join(originals, profile.file.object), 'utf8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+  const declaration = file.statements.find(statement => ts.isVariableStatement(statement)
+    && statement.declarationList.declarations.some(node => node.name.text === '__toESM'));
+  assert.ok(declaration);
+  const payload = path.join(root, 'payload.cjs');
+  fs.writeFileSync(payload, declaration.getText(file) + '\n// controlled/source.js\n');
+  deriveGeneratedIndex(originals, payload, path.join(root, 'derived'));
+  const result = JSON.parse(fs.readFileSync(path.join(root, 'derived/index.json')));
+  assert.equal(result.provenance.derivation.helperAuthorities.find(row => row.name === '__toESM').sourceSHA256, profile.prefixSha256);
+  fs.writeFileSync(payload, declaration.getText(file).replace('new WeakMap', 'new Map') + '\n// controlled/source.js\n');
+  assert.throws(() => deriveGeneratedIndex(originals, payload, path.join(root, 'changed')), /differs from admitted/);
+  assert.equal(fs.existsSync(path.join(root, 'changed')), false);
+}));

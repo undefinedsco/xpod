@@ -41,7 +41,7 @@ export function collectAfsJavascriptMaterials(options: {
   // Command SDK/output inputs have their own actual compiler graph and original prefix.
   options.buildTools.collectJavascriptNotices({ metafile: options.commandsMetafile, stageRoot: options.repoRoot, repoRoot: options.repoRoot,
     destination: path.join(options.destination, 'commands'), target: options.target,
-    cli: options.commands, bunVersion, supplements, generated: originalGenerated });
+    cli: options.commands, bunVersion, supplements, generated: originalGenerated, generatedProfile: 'afs-commands' });
   mkdirSync(options.destination, { recursive: true });
   copyFileSync(path.join(options.repoRoot, 'LICENSE'), path.join(options.destination, 'LICENSE'));
 }

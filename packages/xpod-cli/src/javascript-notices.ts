@@ -122,7 +122,7 @@ export function collectJavascriptNotices(options: {
   /** Optional shared content-addressed output, confined to the actual stage. */
   sharedObjectRoot?: string;
   generated?: string;
-  generatedProfile?: 'core' | 'client' | 'build-tools-esm' | 'build-tools-cjs' | 'output-esm';
+  generatedProfile?: 'core' | 'client' | 'build-tools-esm' | 'build-tools-cjs' | 'output-esm' | 'preview' | 'afs-commands';
 }): string[] {
   // Producer metadata for portable JavaScript, not native ABI admission.
   if (!/^[a-z][a-z0-9]*-[a-z][a-z0-9]*$/.test(options.target)) {
@@ -174,6 +174,9 @@ export function collectJavascriptNotices(options: {
   if (options.generated) {
     generated = JSON.parse(readFileSync(path.join(options.generated, 'index.json'), 'utf8')) as GeneratedNoticeIndex;
     if (options.generatedProfile) {
+      if (!['core', 'client', 'build-tools-esm', 'build-tools-cjs', 'output-esm', 'preview', 'afs-commands'].includes(options.generatedProfile)) {
+        throw new Error('Unsupported generated JavaScript profile');
+      }
       const profile = JSON.parse(readFileSync(path.join(options.generated, `${options.generatedProfile}.json`), 'utf8'));
       if (profile.schemaVersion !== 1 || profile.bunVersion !== generated.bunVersion || profile.file?.sourcePath !== 'generated-prefix.js') {
         throw new Error('Unsupported generated JavaScript profile');
