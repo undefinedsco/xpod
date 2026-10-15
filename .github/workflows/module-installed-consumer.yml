@@ -9,8 +9,8 @@ on:
       - 'scripts/prepare-module-consumer-plan.ts'
       - 'scripts/export-module-consumer-evidence.ts'
       - 'tests/scripts/module-installed-consumer-workflow.node-test.cjs'
-      - 'tests/scripts/prepare-module-consumer-plan.test.ts'
-      - 'tests/scripts/export-module-consumer-evidence.test.ts'
+      - 'tests/bun/prepare-module-consumer-plan.test.ts'
+      - 'tests/bun/export-module-consumer-evidence.test.ts'
       - 'docs/module-consumer-ci.md'
   workflow_dispatch:
     inputs:

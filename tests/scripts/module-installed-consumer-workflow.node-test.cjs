@@ -66,3 +66,17 @@ test('module routing selects only explicit CSS or API drivers from a validated r
   assert.match(workflow, /case "\$MODULE_CONSUMER_MODULE" in\n            css\) driver=scripts\/css-module-consumer.py ;;\n            api\) driver=scripts\/api-module-consumer.py ;;\n            \*\) echo 'Unsupported module' >&2; exit 1 ;;/);
   assert.match(workflow, /name: module-consumer-preparation-\$\{\{ steps.request.outputs.module \}\}/);
 });
+
+test('Bun consumer contracts live in the Bun runner directory and are actually discovered', () => {
+  const { existsSync } = require('node:fs');
+  const { execFileSync } = require('node:child_process');
+  const root = path.resolve(__dirname, '../..');
+  const listed = execFileSync('bun', ['scripts/run-bun-tests.ts', '--list'], { cwd: root, encoding: 'utf8', timeout: 10000 }).split('\n');
+  for (const name of ['prepare-module-consumer-plan', 'export-module-consumer-evidence']) {
+    const file = 'tests/bun/' + name + '.test.ts';
+    assert.ok(listed.includes(file), 'Bun runner must execute ' + file);
+    assert.match(readFileSync(path.join(root, file), 'utf8'), /from 'bun:test'/);
+    assert.ok(workflow.includes("- '" + file + "'"), 'workflow path filter must follow ' + file);
+    assert.equal(existsSync(path.join(root, 'tests/scripts/' + name + '.test.ts')), false);
+  }
+});
