@@ -67,12 +67,35 @@ export function readPublicationMetafile(bound: (name: string) => Buffer, name: s
   const meta = JSON.parse(bound(name).toString());
   if (!meta.inputs || !Object.keys(meta.inputs).length || !meta.outputs) throw new Error('Canonical metafile inputs missing');
   if (core && (!Object.prototype.hasOwnProperty.call(meta.inputs, 'src/npm-entry.ts') || !Object.values(meta.outputs).some((row: any) => row.entryPoint === 'src/npm-entry.ts'))) throw new Error('Main CLI metafile entrypoint missing');
-  for (const row of Object.values(meta.inputs) as any[]) {
+  const dependencyImportGaps: Array<{ importer: string; path: string; original: string; reason: string }> = [];
+  const hasInput = (name: string) => Object.prototype.hasOwnProperty.call(meta.inputs, name);
+  const owner = (name: string): string | null => {
+    const match = /^(.*(?:^|\/)node_modules\/(?:@[^/]+\/)?[^/]+)\/[^/]/u.exec(name);
+    return match?.[1] ?? null;
+  };
+  for (const [importer, row] of Object.entries(meta.inputs) as Array<[string, any]>) {
     for (const edge of row.imports ?? []) {
-      if (!edge.external && !Object.prototype.hasOwnProperty.call(meta.inputs, edge.path)) throw new Error('Omitted canonical bundler input');
+      if (edge.external === true || hasInput(edge.path)) continue;
+      // Bun 1.4.2 emits this runtime helper as an input edge without an input row.
+      if (edge.path === 'bun:wrap' && edge.kind === 'import-statement' && edge.original === undefined) continue;
+      const packageRoot = owner(importer);
+      if (packageRoot && edge.kind === 'import-statement' && typeof edge.original === 'string'
+        && /^\.\.?\//u.test(edge.original) && !edge.original.includes('\\')
+        && owner(edge.path) === packageRoot && path.posix.normalize(path.posix.join(path.posix.dirname(importer), edge.original)) === edge.path) {
+        // Observed in real Bun metadata, but omission alone proves neither tree
+        // shaking nor dependency completeness. Keep the exact unresolved edge.
+        dependencyImportGaps.push({ importer, path: edge.path, original: edge.original, reason: 'dependency-input-row-absent-unverified' });
+        continue;
+      }
+      throw new Error('Omitted canonical bundler input: ' + JSON.stringify({ importer, path: edge.path, kind: edge.kind }));
     }
   }
-  return meta;
+  for (const output of Object.values(meta.outputs) as any[]) {
+    for (const name of Object.keys(output.inputs ?? {})) {
+      if (!hasInput(name)) throw new Error('Omitted output-contributing bundler input: ' + name);
+    }
+  }
+  return { ...meta, dependencyImportGaps };
 }
 
 /** A caller-selected Git revision is the authority, never sourceAuthority.sourceCommit.
@@ -95,7 +118,7 @@ export function verifyCanonicalPublicationInputs(members: PublicationMember[], i
   for (const file of trusted) {
     if (!bound('source/repository/src/' + file).equals(git('src/' + file))) throw new Error('Canonical host source differs from trusted repository');
   }
-  const checks: Array<{ metafile: string; sourceInputs: number; dependencyInputs: number }> = [];
+  const checks: Array<{ metafile: string; sourceInputs: number; dependencyInputs: number; dependencyImportGaps: Array<{ importer: string; path: string; original: string; reason: string }> }> = [];
   for (const metafile of [...(index.coreMetafile ? [index.coreMetafile] : []), index.clientMetafile, ...(index.outputMetafile ? [index.outputMetafile] : [])]) {
     if (typeof metafile !== 'string') throw new Error('Canonical metafile missing');
     const meta = readPublicationMetafile(bound, metafile, metafile === index.coreMetafile);
@@ -119,7 +142,7 @@ export function verifyCanonicalPublicationInputs(members: PublicationMember[], i
         if (edge.external && !isBuiltin(edge.path) && !/^@undefineds\.co\/xpod-client(?:\/session)?$/u.test(edge.path)) throw new Error('Unexpected canonical external import');
       }
     }
-    checks.push({ metafile, sourceInputs, dependencyInputs });
+    checks.push({ metafile, sourceInputs, dependencyInputs, dependencyImportGaps: meta.dependencyImportGaps });
   }
   for (const [file, hash] of [...(index.coreMetafile ? [['xpod.mjs', index.corePayloads?.esmSHA256]] : []), ['client.cjs', index.clientPayloads?.cjsSHA256], ['client.mjs', index.clientPayloads?.esmSHA256], ...(index.outputMetafile ? [['output.mjs', index.outputPayloads?.esmSHA256]] : [])]) {
     const entry = members.find(row => row.path === 'package/dist/' + file && row.type === 'file');
@@ -187,13 +210,13 @@ export function preparePublication(input: PublicationInput, inputRoot = process.
   };
   // This path runs for normal producer and projection inputs, which deliberately
   // carry no trusted Git revision. Reuse the same parser as the Git-bound checks.
-  let coreMaterial: { metafile: string; sha256: string; payloadSha256: string; sourceVerified: false } | null = null;
+  let coreMaterial: { metafile: string; sha256: string; payloadSha256: string; sourceVerified: false; dependencyImportGaps: Array<{ importer: string; path: string; original: string; reason: string }> } | null = null;
   if (index.coreMetafile !== undefined) {
     if (index.coreMetafile !== 'npm-entry-inputs.json') throw new Error('Unexpected main CLI metafile reference');
-    readPublicationMetafile(name => indexed(name).content, index.coreMetafile, true);
+    const coreMetadata = readPublicationMetafile(name => indexed(name).content, index.coreMetafile, true);
     const payload = member('package/dist/xpod.mjs');
     if (payload.sha256 !== index.corePayloads?.esmSHA256) throw new Error('Canonical output binding mismatch');
-    coreMaterial = { metafile: index.coreMetafile, sha256: indexed(index.coreMetafile).sha256, payloadSha256: payload.sha256, sourceVerified: false };
+    coreMaterial = { metafile: index.coreMetafile, sha256: indexed(index.coreMetafile).sha256, payloadSha256: payload.sha256, sourceVerified: false, dependencyImportGaps: coreMetadata.dependencyImportGaps };
   }
   const embedded = indexed(rows[0].publication?.archive), inventoryEntry = indexed(rows[0].publication?.inventory);
   if (embedded.sha256 !== client.archive.sha256 || sha512Integrity(embedded.content) !== client.archive.integrity) throw new Error('CLI embedded client bytes differ from supplied client archive');
