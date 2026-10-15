@@ -1,3 +1,4 @@
+import { makeRuntimeFixture } from './bun-runtime-fixture';
 import { expect, test } from 'bun:test';
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
@@ -35,14 +36,15 @@ test('normal packed CLI resolves its installed client after temporary archives a
     expect(existsSync(path.join(root, 'packages/xpod-cli/dist'))).toBe(false);
     expect(existsSync(path.join(root, 'packages/xpod-client/dist'))).toBe(false);
     mkdirSync(path.join(root, 'desktop'));
-    stageDesktopRuntime(root);
+    const runtimeInput = makeRuntimeFixture(root);
+    stageDesktopRuntime(root, undefined, runtimeInput);
     const entry = path.join(root, 'desktop/runtime/node_modules/@undefineds.co/xpod-cli/dist/xpod.mjs');
     const result = spawnSync('bun', [entry], { cwd: root });
     expect(result.status).toBe(0);
     expect(result.stdout.toString().trim()).toBe('42');
     expect(existsSync(path.join(root, 'desktop/runtime/package.json'))).toBe(false);
     writeFileSync(path.join(root, 'desktop/runtime/sentinel'), 'previous runtime');
-    expect(() => stageDesktopRuntime(root, () => { throw new Error('build failed'); })).toThrow('build failed');
+    expect(() => stageDesktopRuntime(root, () => { throw new Error('build failed'); }, runtimeInput)).toThrow('build failed');
     expect(readFileSync(path.join(root, 'desktop/runtime/sentinel'), 'utf8')).toBe('previous runtime');
   } finally {
     rmSync(root, { recursive: true, force: true });

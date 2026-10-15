@@ -280,18 +280,16 @@ export function resolveRuntimeLaunchCommand({
   const packagedCli = path.join(runtimeRoot, 'node_modules', '@undefineds.co', 'xpod-cli', 'dist', 'xpod.mjs')
   if (pathExists(packagedCli)) {
     const packagedBun = resolvePackagedBun(resourcesPath, pathExists)
-    const bunCommand = packagedBun ?? resolveBunCommand()
+    const bunCommand = packagedBun ?? (packaged ? undefined : resolveBunCommand())
     if (bunCommand) {
       return {
         command: bunCommand,
         args: [packagedCli, 'start'],
       }
     }
-    return {
-      command: execPath,
-      args: [packagedCli, 'start'],
-      env: { ELECTRON_RUN_AS_NODE: '1' },
-    }
+    const normalLauncher = path.join(runtimeRoot, 'node_modules', '@undefineds.co', 'xpod-cli', 'dist', 'bin', 'xpod')
+    if (!packaged && pathExists(normalLauncher)) return { command: normalLauncher, args: ['start'] }
+    return undefined
   }
   if (packaged) return undefined
   const localDesktopRuntime = moduleDir ? path.resolve(moduleDir, '..', 'runtime', 'xpod') : undefined

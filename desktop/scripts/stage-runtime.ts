@@ -1,3 +1,4 @@
+import { stageBundledBun } from './bun-runtime-material';
 import { randomUUID } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
@@ -5,7 +6,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 /** Install the normal public CLI and client packages; ModuleStore owns capabilities. */
-export function stageDesktopRuntime(repoRoot: string, run = runCommand): void {
+export function stageDesktopRuntime(repoRoot: string, run = runCommand, runtimeInput?: string): void {
+  if (!runtimeInput) throw new Error('Desktop build requires an explicit --runtime-input descriptor');
   const desktop = path.join(repoRoot, 'desktop');
   const scratch = path.join(repoRoot, '.test-data', 'desktop-runtime');
   mkdirSync(scratch, { recursive: true });
@@ -28,6 +30,7 @@ export function stageDesktopRuntime(repoRoot: string, run = runCommand): void {
       archives[metadata.name] = path.join(archiveDir, archivesFound[0]);
     }
     mkdirSync(install);
+    stageBundledBun(repoRoot, install, path.resolve(runtimeInput));
     const dependencies = Object.fromEntries(Object.entries(archives).map(([name, archive]) => [name, `file:${archive}`]));
     writeFileSync(path.join(install, 'package.json'), JSON.stringify({ private: true, dependencies,
       overrides: { '@undefineds.co/xpod-client': dependencies['@undefineds.co/xpod-client'] } }));
@@ -79,4 +82,8 @@ function runCommand(command: string[], cwd: string): void {
   if (result.status !== 0) throw new Error(`${command.join(' ')} exited ${result.status}`);
 }
 
-if (import.meta.main) stageDesktopRuntime(path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..'));
+if (import.meta.main) {
+  const args = process.argv.slice(2);
+  if (args.length !== 2 || args[0] !== '--runtime-input') throw new Error('Usage: stage-runtime.ts --runtime-input <descriptor.json>');
+  stageDesktopRuntime(path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..'), runCommand, args[1]);
+}
