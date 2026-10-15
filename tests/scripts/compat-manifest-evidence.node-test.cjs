@@ -90,7 +90,8 @@ test('native tar long-name metadata elsewhere does not make exact manifest evide
   put('unrelated/' + 'long-name-'.repeat(20) + '.json', { material: true });
   const archive = pack();
   const { inspectTarballBuffer } = require('../../scripts/workspace-package-payload.cjs');
-  assert.throws(() => inspectTarballBuffer(fs.readFileSync(archive)), /Unsupported tar entry type/);
+  // BSD/PAX rejects the metadata type; GNU rejects its synthetic LongLink path.
+  assert.throws(() => inspectTarballBuffer(fs.readFileSync(archive)), /Unsupported tar entry type|Unsafe tar path: "\.\/\.\/@LongLink"/);
   const output = path.join(root, 'evidence.json'); assert.equal(captureManifestEvidence(output, archive).status, 'captured');
   assert.equal(JSON.parse(fs.readFileSync(output)).original.manifests[0].manifest.name, '@fixture/root');
 }));
