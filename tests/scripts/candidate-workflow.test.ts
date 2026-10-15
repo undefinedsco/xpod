@@ -324,7 +324,7 @@ esac
     const preflight = workflow.jobs.rc_prerequisites;
     const runText = jobRunText(workflow, 'rc_prerequisites');
 
-    expect(preflight.needs).toBe('metadata');
+    expect(preflight.needs).toEqual(['metadata', 'legacy_root_compat']);
     expect(preflight.environment).toBe('rc');
     expect(preflight.env.KUBE_CONFIG_DATA).toBe('${{ secrets.KUBE_CONFIG_DATA }}');
     expect(preflight.env.SEALOS_NAMESPACE).toBe('${{ vars.SEALOS_NAMESPACE }}');
@@ -917,6 +917,7 @@ esac
       'build_image',
       'deploy_and_accept',
       'build_desktop_rc',
+      'legacy_root_compat',
     ]);
     expect(finalizeText).toContain('node scripts/release-acceptance-manifest.cjs create');
     for (const check of [
@@ -966,7 +967,7 @@ esac
     expect(packageUpload.with.path).toContain('package-consumer-evidence.json');
     expect(finalizeText).not.toContain('npm');
     expect(finalUpload.with.name).toBe('release-acceptance-${{ github.sha }}');
-    expect(finalUpload.with.path).toBe('${{ runner.temp }}/release-acceptance.json');
+    expect(finalUpload.with.path).toBe('${{ runner.temp }}/accepted-release/');
 
     const diagnostics = workflow.jobs.deploy_and_accept.steps.find((step: any) => step.name === 'Dump diagnostics');
     expect(diagnostics.if).toContain('failure()');

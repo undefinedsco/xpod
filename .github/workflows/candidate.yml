@@ -64,8 +64,14 @@ jobs:
             fs.appendFileSync(process.env.GITHUB_OUTPUT, `runAttempt=${process.env.RUN_ATTEMPT}\n`);
           ' "$metadata"
 
-  rc_prerequisites:
+  legacy_root_compat:
     needs: metadata
+    uses: ./.github/workflows/legacy-root-compat.yml
+    with:
+      source-sha: ${{ needs.metadata.outputs.sourceSha }}
+
+  rc_prerequisites:
+    needs: [metadata, legacy_root_compat]
     runs-on: ubuntu-latest
     environment: rc
     env:
@@ -1341,6 +1347,7 @@ jobs:
       - build_image
       - deploy_and_accept
       - build_desktop_rc
+      - legacy_root_compat
     runs-on: ubuntu-latest
     environment: rc
     permissions:
@@ -1358,6 +1365,18 @@ jobs:
           node-version: 22
       - run: bun install --frozen-lockfile
       - run: bun run build:packages
+      - name: Download the exact successful legacy compatibility proof
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.legacy_root_compat.outputs.evidence-artifact }}
+          path: ${{ runner.temp }}/legacy-root-compat
+      - name: Verify legacy compatibility original lane receipts
+        run: |
+          node scripts/release-gate-evidence.cjs verify-root-compat \
+            --source-sha "${{ needs.metadata.outputs.sourceSha }}" --run-id "$GITHUB_RUN_ID" \
+            --archive-dir "${RUNNER_TEMP}/legacy-root-compat" \
+            --evidence "${RUNNER_TEMP}/legacy-root-compat/compat.receipt.json" \
+            --checks-out "${RUNNER_TEMP}/legacy-root-compat-check.json"
       - uses: actions/download-artifact@v4
         with:
           name: release-service-acceptance-${{ github.sha }}
@@ -1443,6 +1462,7 @@ jobs:
           }
           const checks = {
             ...JSON.parse(fs.readFileSync(checksPath, 'utf8')),
+            ...JSON.parse(fs.readFileSync(path.join(process.env.RUNNER_TEMP, 'legacy-root-compat-check.json'), 'utf8')),
             'qlever-local': qleverChecks['qlever-local'],
             'desktop': desktopChecks.desktop,
             'package-consumers': packageConsumerChecks['package-consumers'],
@@ -1458,11 +1478,14 @@ jobs:
             --endpoint "https://id-rc.undefineds.cn" \
             --accepted-at "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" \
             --checks-file "${RUNNER_TEMP}/checks.json" > "${RUNNER_TEMP}/release-acceptance.json"
+          mkdir "${RUNNER_TEMP}/accepted-release"
+          cp "${RUNNER_TEMP}/release-acceptance.json" "${RUNNER_TEMP}/accepted-release/release-acceptance.json"
+          cp -R "${RUNNER_TEMP}/legacy-root-compat" "${RUNNER_TEMP}/accepted-release/compat"
       - name: Upload the only stable-promotion evidence
         uses: actions/upload-artifact@v4
         with:
           name: release-acceptance-${{ github.sha }}
-          path: ${{ runner.temp }}/release-acceptance.json
+          path: ${{ runner.temp }}/accepted-release/
           if-no-files-found: error
 
   task_runtime_diagnostic:
