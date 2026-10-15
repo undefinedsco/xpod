@@ -296,12 +296,12 @@ with tempfile.TemporaryDirectory(dir=testbase) as temp:
   if (owned/'renamed').exists():(owned/'renamed').unlink()
  runner=m.Runner({'budget':dict(estimatedPeakBytes=100000,remainingFloorBytes=m.GIB,cushionBytes=128*m.MIB)}, {'output':output,'parent':root});runner.owned=owned
  runner.disk_coverage.update(peakCompleteBytes=123,lastCompleteBytes=123,completeSamples=1)
- with patch.object(m,'allocated_bytes',lambda _:dict(observedBytes=999999,complete=False,disappearedEntries=1)),patch.object(m.shutil,'disk_usage',lambda _:types.SimpleNamespace(free=2*m.GIB)):
+ with patch.object(m.lifecycle,'allocated_bytes',lambda _:dict(observedBytes=999999,complete=False,disappearedEntries=1)),patch.object(m.shutil,'disk_usage',lambda _:types.SimpleNamespace(free=2*m.GIB)):
   runner.gate()
  assert runner.disk_coverage['peakCompleteBytes']==123 and runner.disk_coverage['lastCompleteBytes']==123
  assert runner.disk_coverage['partialSamples']==1 and runner.disk_coverage['capCheckedOnLastSample'] is False
  # Partial allocation sampling never bypasses the independent free-space floor.
- with patch.object(m,'allocated_bytes',lambda _:dict(observedBytes=0,complete=False,disappearedEntries=1)),patch.object(m.shutil,'disk_usage',lambda _:types.SimpleNamespace(free=m.GIB-1)):
+ with patch.object(m.lifecycle,'allocated_bytes',lambda _:dict(observedBytes=0,complete=False,disappearedEntries=1)),patch.object(m.shutil,'disk_usage',lambda _:types.SimpleNamespace(free=m.GIB-1)):
   try:runner.gate()
   except ValueError:pass
   else:raise AssertionError('partial sample bypassed floor')
@@ -460,5 +460,18 @@ with tempfile.TemporaryDirectory(dir=testbase) as temp:
  except RuntimeError as error:assert error is failure
  else:raise AssertionError('poll error lost')
  assert runner.groups_unknown and runner.records[-1]['groupObservationFailure']['pollBefore'] is None
+`);
+});
+
+
+test('CSS adapter inherits shared ownership and records the actual shared driver', () => {
+  python(`
+assert issubclass(m.Runner, m.lifecycle.ModuleConsumerRunner)
+for name in ['gate','observe_group','close_service','stop','command']:
+ assert name not in m.Runner.__dict__, name
+ assert getattr(m.Runner,name) is getattr(m.lifecycle.ModuleConsumerRunner,name)
+source=pathlib.Path(m.__file__).read_text()
+assert "self.result['lifecycle']" in source
+assert pathlib.Path(m.lifecycle.__file__).is_file()
 `);
 });
