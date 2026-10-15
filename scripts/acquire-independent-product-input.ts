@@ -10,8 +10,13 @@ const { withOwnedTempRoot } = createRequire(import.meta.url)('./lib/owned-temp-r
 // Trust is program policy, not a caller-supplied workflow allowlist. Neither the
 // API native-input workflow nor contract fixtures are product producers.
 const REPOSITORY = 'undefinedsco/xpod';
+export const CLI_PRODUCT_WORKFLOW = '.github/workflows/cli-package.yml';
+export const CLI_PUBLICATION_MATERIAL_ROLE = 'cli-publication-preparation-materials';
+export function cliPublicationArtifactNames(input: { expectedSourceSha: string; runId: number; runAttempt: number }): string[] {
+  return ['Linux', 'macOS'].map(os => `xpod-cli-publication-preparation-${os}-${input.expectedSourceSha}-${input.runId}-${input.runAttempt}`);
+}
 export const API_PRODUCT_WORKFLOW = '.github/workflows/api-module-product.yml';
-const PRODUCERS = new Set(['.github/workflows/cli-package.yml', '.github/workflows/agentfs-module-mounted-acceptance.yml', API_PRODUCT_WORKFLOW]);
+const PRODUCERS = new Set([CLI_PRODUCT_WORKFLOW, '.github/workflows/agentfs-module-mounted-acceptance.yml', API_PRODUCT_WORKFLOW]);
 const LIMITS = { packedBytes: 512 * 1024 ** 2, expandedBytes: 1024 ** 3, members: 50_000 };
 const METADATA_NAMES = ['run', 'workflow', 'artifact'] as const;
 type FileBinding = { path: string; bytes: number; sha256: string };
@@ -132,8 +137,9 @@ export async function acquireIndependentProductInput(input: ArtifactAcquisitionI
     const workflow = await json('workflow', `actions/workflows/${run.workflow_id}`);
     if (workflow.id !== run.workflow_id || !PRODUCERS.has(workflow.path) || run.path?.split('@')[0] !== workflow.path) fail('untrusted producer workflow');
     const artifact = await json('artifact', `actions/artifacts/${input.artifactId}`);
-    const allowedNames = workflow.path === '.github/workflows/cli-package.yml'
-      ? ['Linux', 'macOS'].map(os => `xpod-cli-${os}-${input.sourceSha}`)
+    const cliPublicationNames = cliPublicationArtifactNames({ expectedSourceSha: input.sourceSha, runId: input.runId, runAttempt: input.runAttempt });
+    const allowedNames = workflow.path === CLI_PRODUCT_WORKFLOW
+      ? [...['Linux', 'macOS'].map(os => `xpod-cli-${os}-${input.sourceSha}`), ...cliPublicationNames]
       : workflow.path === API_PRODUCT_WORKFLOW
         ? [`api-module-products-darwin-arm64-${input.sourceSha}-${input.runId}-${input.runAttempt}`]
       : MODULE_TARGETS.map(target => `afs-module-products-${target.platform}-${target.arch}-${input.sourceSha}-${input.runId}-${input.runAttempt}`);
@@ -165,9 +171,10 @@ export async function acquireIndependentProductInput(input: ArtifactAcquisitionI
     const projection = Buffer.from(JSON.stringify(metadata, null, 2) + '\n');
     const metadataBinding: MetadataBinding = { originals,
       projection: { path: 'metadata.json', bytes: projection.length, sha256: sha256(projection) } };
-    const cliTestMaterial = workflow.path === '.github/workflows/cli-package.yml';
+    const cliPublication = workflow.path === CLI_PRODUCT_WORKFLOW && cliPublicationNames.includes(artifact.name);
+    const cliTestMaterial = workflow.path === CLI_PRODUCT_WORKFLOW && !cliPublication;
     const receipt = { schemaVersion: 1, kind: 'independent-product-artifact-acquisition', status: 'blocked',
-      materialRole: cliTestMaterial ? 'test-materials' : workflow.path === API_PRODUCT_WORKFLOW ? 'controlled-preview-materials' : 'module-product-materials',
+      materialRole: cliPublication ? CLI_PUBLICATION_MATERIAL_ROLE : cliTestMaterial ? 'test-materials' : workflow.path === API_PRODUCT_WORKFLOW ? 'controlled-preview-materials' : 'module-product-materials',
       repository: REPOSITORY, expectedSourceSha: input.sourceSha, runHeadSha: input.runHeadSha,
       runId: input.runId, runAttempt: input.runAttempt, artifactId: input.artifactId, workflowPath: workflow.path,
       archive: { path: 'artifact.zip', ...downloaded }, inventory,

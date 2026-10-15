@@ -18,7 +18,7 @@ def inspect(archive, expected, packed_limit, expanded_limit, member_limit, selec
     selected = {}
     for row in selections or []:
         if (set(row) != {'path', 'destination', 'bytes', 'sha256'} or row['path'] in selected
-                or row['destination'] not in ('producer.receipt.json', 'product.tgz', 'pack.raw.log')
+                or row['destination'] not in ('producer.receipt.json', 'product.tgz', 'pack.raw.log', 'result.json', 'inventory.json', 'source-inputs.json', 'preparation.json', 'producer-index.json', 'input.json', 'cli.tgz', 'client.tgz', 'cli.package.json', 'client.package.json')
                 or type(row['bytes']) is not int or row['bytes'] < 0
                 or len(row['sha256']) != 64):
             raise ValueError('invalid exact projection selection')
