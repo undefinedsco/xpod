@@ -470,8 +470,21 @@ assert issubclass(m.Runner, m.lifecycle.ModuleConsumerRunner)
 for name in ['gate','observe_group','close_service','stop','command']:
  assert name not in m.Runner.__dict__, name
  assert getattr(m.Runner,name) is getattr(m.lifecycle.ModuleConsumerRunner,name)
-source=pathlib.Path(m.__file__).read_text()
+source=pathlib.Path(m.lifecycle.__file__).read_text()
 assert "self.result['lifecycle']" in source
 assert pathlib.Path(m.lifecycle.__file__).is_file()
+`);
+});
+
+test('source recheck failure denies acceptance without aborting final cleanup', () => {
+  python(`
+with tempfile.TemporaryDirectory(dir=testbase) as temp:
+ source=pathlib.Path(temp)/'driver.py';source.write_text('original')
+ rows=[dict(path=str(source),sha256=m.digest(source))]
+ assert m.lifecycle.driver_sources_unchanged(rows)
+ source.write_text('changed');assert not m.lifecycle.driver_sources_unchanged(rows)
+ with patch.object(m.lifecycle,'digest',side_effect=PermissionError('source unreadable')):
+  assert not m.lifecycle.driver_sources_unchanged(rows)
+ source.unlink();assert not m.lifecycle.driver_sources_unchanged(rows)
 `);
 });
