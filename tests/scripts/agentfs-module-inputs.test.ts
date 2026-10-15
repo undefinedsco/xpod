@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
@@ -353,4 +353,76 @@ with tarfile.open(sys.argv[1],'w:gz') as t:
     const result = spawnSync('bun', ['scripts/agentfs-native-ci/mounted/prepare-module-inputs.ts', 'prepare', '--target', 'linux-arm64', '--workspace', process.cwd(), '--source-sha', '0'.repeat(40)], { encoding: 'utf8' });
     expect(result.status).toBe(1); expect(result.signal).toBeNull(); expect(result.stderr).toContain('module preparation rejected'); expect(result.stdout).toBe('');
   }));
+});
+
+describe('owned installed consumer diagnostics', () => {
+  for (const mode of ['failure', 'timeout']) {
+    it(`preserves actual ${mode} lifecycle and exports only closed hash-bound summaries`, () => asyncFixture(async root => {
+      const { runOwnedInstalledConsumer } = await import('../../scripts/agentfs-native-ci/mounted/owned-installed-consumer');
+      const script = mode === 'timeout' ? 'setInterval(()=>{},1000)' : `process.stdout.write(JSON.stringify({ok:false,code:'module_install_failed',token:'private-secret'},null,2)+'\\n');process.stderr.write('(node:123) ExperimentalWarning: SQLite is an experimental feature and might change at any time\\nnpm error code ENOSPC\\nhttps://private-secret/key\\n'+'x'.repeat(70000));process.exitCode=7;`;
+      const timeoutMs = mode === 'timeout' ? 50 : 1000;
+      const result = await runOwnedInstalledConsumer(process.execPath, ['-e', script], process.env, root, timeoutMs);
+      expect(result.observation.timeoutMs).toBe(timeoutMs);
+      expect(result.observation.timeoutObserved).toBe(mode === 'timeout');
+      expect(result.observation.closeObserved).toBe(true); expect(result.observation.groupClosed).toBe(true);
+      expect(result.observation.elapsedMs).toBeGreaterThanOrEqual(mode === 'timeout' ? timeoutMs : 0);
+      if (mode === 'timeout') { expect(result.error?.message).toBe('Owned consumer timeout'); expect(result.signal).toBe('SIGTERM'); }
+      else { expect(result.status).toBe(7); expect(result.error).toBeUndefined(); }
+      const evidence = path.join(root, 'evidence'); mkdirSync(evidence);
+      const run = path.join(evidence, 'private-run'); mkdirSync(run);
+      const directory = path.join(run, '.test-data/afs-installed-receipts/case'); mkdirSync(directory, { recursive: true });
+      const stage = 'node-cli-install';
+      const row = { stage, pid: result.pid, actualExit: result.status, actualSignal: result.signal, actualWait: true, rawClosed: true, groupAbsent: true,
+        observation: result.observation, stdoutSHA256: hashBytes(result.stdout), stderrSHA256: hashBytes(result.stderr) };
+      for (const stream of ['stdout', 'stderr'] as const) writeFileSync(path.join(directory, stage + '.' + stream), result[stream]);
+      writeFileSync(path.join(directory, stage + '.safe.json'), JSON.stringify(row));
+      const raw = Buffer.from(JSON.stringify(row) + '\n');
+      const parent = { accepted: false, status: 'failed', producerClosed: true, code: 1, signal: null, groupAbsent: true, rawClosedBeforeHash: true,
+        sourceHelperSHA256: hashBytes(readFileSync('scripts/agentfs-native-ci/mounted/owned-installed-consumer.ts')) };
+      persistInstalledConsumerReceipt(evidence, run, parent, raw);
+      const diagnostic = JSON.parse(readFileSync(path.join(evidence, 'installed-consumer-failure.safe.json'), 'utf8'));
+      const observed = diagnostic.observedStages[0];
+      expect(observed.observation).toEqual(result.observation);
+      expect(observed.rawHashesBound).toBe(true); expect(observed.stderrSHA256).toBe(row.stderrSHA256);
+      if (mode === 'failure') {
+        expect(observed.summary.stdout.codes).toEqual(['cli-error', 'module_install_failed']);
+        expect(observed.summary.stderr.codes).toEqual(['sqlite-experimental-warning', 'ENOSPC']);
+        expect(observed.summary.stderr.truncated).toBe(true); expect(observed.summary.stderr.bytes).toBe(result.stderr.length);
+      }
+      const out = path.join(root, 'export'); exportSafe(evidence, out);
+      const exported = readFileSync(path.join(out, 'installed-consumer-failure.safe.json'), 'utf8');
+      expect(exported).not.toContain('private-secret'); expect(exported).not.toContain('https://'); expect(exported).not.toContain(root);
+      expect(JSON.parse(exported).observedStages[0]).toEqual(observed);
+      expect(JSON.parse(readFileSync(path.join(out, 'installed-consumer.safe.json'), 'utf8')).sourceHelperSHA256).toBe(parent.sourceHelperSHA256);
+      const unknown = path.join(root, 'unknown'); mkdirSync(unknown); row.observation.groupClosed = false;
+      writeFileSync(path.join(directory, stage + '.safe.json'), JSON.stringify(row));
+      recordInstalledConsumerFailure(unknown, run, parent, raw);
+      const unresolved = JSON.parse(readFileSync(path.join(unknown, 'installed-consumer-failure.safe.json'), 'utf8')).observedStages[0];
+      expect(unresolved.summary).toBeNull(); expect(unresolved.stdoutSHA256).toBeNull(); expect(unresolved.stderrSHA256).toBeNull();
+      expect(() => assertInstalledConsumerProducer({ state: 'closed', code: 1, signal: null, groupAbsent: true, nodeVersion: 'v22.21.1', bunVersion: '1.4.2', passed: 0, failed: 1, skipped: 0, sourceUnchanged: true })).toThrow('producer incomplete');
+    }));
+  }
+  it('keeps the production watchdog and helper source in the producer identity', () => {
+    const testSource = readFileSync('packages/xpod-afs/tests/installed-module.test.ts', 'utf8');
+    expect(testSource).toContain('runOwnedInstalledConsumer(runtime, args, env, root, 10_000)');
+    expect(testSource.match(/artifactTest\.skipIf/g)).toHaveLength(1);
+    expect(testSource.match(/import \{ runOwnedInstalledConsumer/g)).toHaveLength(1);
+    const producer = readFileSync('scripts/agentfs-native-ci/mounted/prepare-module-inputs.ts', 'utf8');
+    expect(producer).toContain('hashFile(sourceHelper) === sourceHelperSHA256');
+    expect(producer).toContain('sourceTestSHA256, sourceHelperSHA256, lifecycle:');
+  });
+  it('does not classify EPERM group observation as closure', () => asyncFixture(async root => {
+    const { runOwnedInstalledConsumer } = await import('../../scripts/agentfs-native-ci/mounted/owned-installed-consumer');
+    const original = process.kill.bind(process);
+    const kill = vi.spyOn(process, 'kill').mockImplementation(((pid: number, signal?: string | number) => {
+      if (pid < 0) throw Object.assign(new Error('private-secret'), { code: 'EPERM' });
+      return original(pid, signal as NodeJS.Signals);
+    }) as typeof process.kill);
+    try {
+      const result = await runOwnedInstalledConsumer(process.execPath, ['-e', 'process.exit(7)'], process.env, root, 1000);
+      expect(result.status).toBe(7); expect(result.observation.closeObserved).toBe(true);
+      expect(result.observation.groupClosed).toBe(false); expect(result.error?.message).toBe('Owned group absence unconfirmed');
+    } finally { kill.mockRestore(); }
+  }));
+
 });

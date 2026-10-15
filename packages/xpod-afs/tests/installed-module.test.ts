@@ -5,6 +5,7 @@ import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { runOwnedInstalledConsumer, type OwnedInstalledResult } from '../../../scripts/agentfs-native-ci/mounted/owned-installed-consumer';
 
 const owned: string[] = [];
 afterEach(async () => { await Promise.all(owned.splice(0).map(p => rm(p, { recursive: true, force: true }))); });
@@ -67,44 +68,13 @@ artifactTest.skipIf(!archive)('real AFS payload installs through public CLI and 
     let absent = false;
     try { process.kill(-result.pid, 0); } catch (cause) { absent = (cause as NodeJS.ErrnoException).code === 'ESRCH'; }
     const row = { stage, pid: result.pid, actualExit: result.status, actualSignal: result.signal,
-      actualWait: true, rawClosed: true, groupAbsent: absent,
-      stdoutSHA256: createHash('sha256').update(stdout).digest('hex'), stderrSHA256: createHash('sha256').update(stderr).digest('hex') };
+      actualWait: true, rawClosed: absent, groupAbsent: absent,
+      observation: (result as Partial<OwnedInstalledResult>).observation,
+      stdoutSHA256: absent ? createHash('sha256').update(stdout).digest('hex') : null, stderrSHA256: absent ? createHash('sha256').update(stderr).digest('hex') : null };
     await writeFile(path.join(receipts, stage + '.safe.json'), JSON.stringify(row) + '\n', { mode: 0o600, flag: 'wx' });
     process.stdout.write(JSON.stringify(row) + '\n'); expect(absent).toBe(true);
   }
-  async function runOwned(runtime: string, args: string[], env: NodeJS.ProcessEnv): Promise<SpawnSyncReturns<Buffer>> {
-    const child = spawn(runtime, args, { cwd: root, env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
-    const stdout: Buffer[] = []; const stderr: Buffer[] = []; let error: Error | undefined; let timedOut = false;
-    const signalGroup = (signal: NodeJS.Signals): void => {
-      if (!child.pid) { return; }
-      try { process.kill(-child.pid, signal); } catch (cause) {
-        if ((cause as NodeJS.ErrnoException).code !== 'ESRCH') { error = new Error('Owned group signal failed'); }
-      }
-    };
-    let escalation: ReturnType<typeof setTimeout> | undefined;
-    const watchdog = setTimeout(() => {
-      timedOut = true; signalGroup('SIGTERM'); escalation = setTimeout(() => signalGroup('SIGKILL'), 1000);
-    }, 10_000);
-    child.stdout.on('data', chunk => stdout.push(Buffer.from(chunk))); child.stderr.on('data', chunk => stderr.push(Buffer.from(chunk)));
-    child.once('error', cause => { error = cause; });
-    return new Promise(resolve => child.once('close', async (status, signal) => {
-      clearTimeout(watchdog); clearTimeout(escalation);
-      const present = (): boolean => {
-        if (!child.pid) { return false; }
-        try { process.kill(-child.pid, 0); return true; }
-        catch (cause) { if ((cause as NodeJS.ErrnoException).code === 'ESRCH') { return false; } error = new Error('Owned group absence unconfirmed'); return true; }
-      };
-      if (present()) {
-        signalGroup('SIGTERM');
-        for (let n = 0; n < 40 && present(); n++) { await new Promise(done => setTimeout(done, 25)); }
-        if (present()) { signalGroup('SIGKILL'); }
-        for (let n = 0; n < 40 && present(); n++) { await new Promise(done => setTimeout(done, 25)); }
-        if (present()) { error = new Error('Owned group absence unconfirmed'); }
-      }
-      resolve({ pid: child.pid!, status, signal, stdout: Buffer.concat(stdout), stderr: Buffer.concat(stderr),
-        error: error ?? (timedOut ? new Error('Owned consumer timeout') : undefined) } as SpawnSyncReturns<Buffer>);
-    }));
-  }
+  const runOwned = (runtime: string, args: string[], env: NodeJS.ProcessEnv) => runOwnedInstalledConsumer(runtime, args, env, root, 10_000);
   // Controlled registry fixture, not registry publication evidence. Only these
   // two exact URLs are served; unexpected requests fail instead of using network.
   const preload = path.join(root, 'registry-fixture.mjs');

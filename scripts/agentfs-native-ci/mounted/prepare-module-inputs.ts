@@ -1,6 +1,6 @@
 import { execFileSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { copyFileSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { closeSync, copyFileSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { verifyModuleClientMaterials, moduleClientPath, hashBytes, hashFile, verifyBoundFile, type ModuleAdmissionInputs } from './module-admission';
@@ -99,7 +99,9 @@ const child: Projection = { ...fields('string', 'command state signal groupState
 const binding: Record<string, Projection> = { ...fields('string', 'profile moduleSourceSHA nativeBuildSourceSHA moduleArchiveSHA256 moduleSRI manifestSHA256 inventorySHA256 moduleSourceTreeSHA256 coreSHA256 runtime runtimePath runtimeVersion runtimeSHA256 installedEntry installedEntrySHA256 installedHelper installedHelperSHA256 installedLibrarySHA256 installedClientSHA256 installedClientPath storeRoot transport'),
   ...fields('string', 'inputAuthoritySHA256 driverSHA256 chainReceiptSHA256 chainCleanupReceiptSHA256 platformReceiptSHA256'), actualPlatformExit: 'number', moduleAndCoreArtifactUnchanged: 'boolean', installedInventoryReverified: 'boolean' };
 const close: Projection = { ...fields('number', 'exit'), ...fields('string', 'signal rawSHA256 resourceStop supervisorError'), ...fields('boolean', 'actualWait rawClosedBeforeHash ownedGroupAbsentAfterWait'), cleanupErrors: ['string'] };
-const installedStage: Projection = { ...fields('string', 'stage actualSignal stdoutSHA256 stderrSHA256'), ...fields('number', 'pid actualExit'), ...fields('boolean', 'actualWait rawClosed groupAbsent') };
+const installedObservation: Projection = { ...fields('number', 'timeoutMs elapsedMs'), ...fields('boolean', 'timeoutObserved closeObserved groupClosed') };
+const installedSummary: Projection = { bytes: 'number', truncated: 'boolean', codes: ['string'] };
+const installedStage: Projection = { observation: installedObservation, ...fields('string', 'stage actualSignal stdoutSHA256 stderrSHA256'), ...fields('number', 'pid actualExit'), ...fields('boolean', 'actualWait rawClosed groupAbsent') };
 const installedProxy: Projection = { pid: 'number', groupAbsent: 'boolean', tokenFixtureObserved: 'boolean', nativeMountStarted: 'boolean' };
 export const INSTALLED_CONSUMER_STAGES = ['public-workcopy-types-Node16', 'public-workcopy-types-Node', 'node-esm-public-runtime', 'node-status', 'node-workcopy-sqlite', 'bun-esm-public-runtime', 'bun-status', 'bun-workcopy-sqlite', 'node-startup-cancel',
   'node-cli-before-list', 'node-cli-install', 'node-cli-installed-list', 'node-cli-tampered-list', 'node-cli-remove', 'node-cli-removed-list',
@@ -122,13 +124,13 @@ const receipts: Record<string, Projection> = {
   'module-chain-cleanup.safe.json': { ...fields('boolean', 'cleanupVerified kernelAbsent daemonsAbsent groupsAbsent identitiesKnown proxyIdentityObserved nativeIdentityObserved unmountClosedSuccessfully sceneRetained'), ownedPids: ['number'], ownedGroups: ['number'], children: [child] },
   'module-admission-failure.safe.json': { ...fields('string', 'status stage nativeReceiptPresent mountedReceiptPresent cleanupClaim'), accepted: 'boolean' },
   'mounted-linux.receipt.json': platform, 'mounted-darwin.receipt.json': platform,
-  'installed-consumer.safe.json': { ...fields('string', 'status archiveSHA256 moduleSourceSHA manifestSHA256 rawSHA256 sourceTestSHA256 nodeVersion bunVersion'),
+  'installed-consumer.safe.json': { ...fields('string', 'status archiveSHA256 moduleSourceSHA manifestSHA256 rawSHA256 sourceTestSHA256 sourceHelperSHA256 nodeVersion bunVersion'),
     ...fields('boolean', 'accepted producerClosed groupAbsent rawClosedBeforeHash'), code: 'number', signal: 'string', lifecycle,
     passed: 'number', failed: 'number', skipped: 'number', stages: [installedStage],
     proxyCancel: installedProxy },
   'installed-consumer-failure.safe.json': { diagnosticOnly: 'boolean', accepted: 'boolean', category: 'string', receiptInventoryState: 'string',
     producerClosed: 'boolean', groupAbsent: 'boolean', rawClosedBeforeHash: 'boolean', producerExit: 'number', producerSignal: 'string',
-    parentRawSHA256: 'string', lastObservedStage: 'string', observedStages: [{ ...installedStage, rawHashesBound: 'boolean' }] },
+    parentRawSHA256: 'string', lastObservedStage: 'string', observedStages: [{ ...installedStage, rawHashesBound: 'boolean', summary: { stdout: installedSummary, stderr: installedSummary } }] },
   'linux-container-binding.json': { ...fields('string', 'state cid'), ...fields('boolean', 'released containerAbsent'), pid1Seccomp: 'number', daemonSecurityOptions: ['string'], consumerReceipt: close, removalReceipt: close,
     container: { ...fields('string', 'cid imageID AppArmorProfile NetworkMode'), ...fields('boolean', 'running privileged'), SecurityOpt: ['string'], CapAdd: ['string'], CapDrop: ['string'],
       Devices: [{ ...fields('string', 'PathOnHost PathInContainer CgroupPermissions') }], Mounts: [{ destination: 'string', RW: 'boolean' }] } },
@@ -148,6 +150,45 @@ function projectBySchema(original: unknown, schema: Projection): unknown {
 }
 export const MODULE_CHAIN_STAGES = ['mount', 'kernel-identity', 'proxy-identity', 'native-identity', 'read', 'writeback', 'unmount', 'final-verification'] as const;
 export const MODULE_CHAIN_ERROR_CODES = ['ENOENT', 'EACCES', 'EPERM', 'ETIMEDOUT', 'unknown'] as const;
+const INSTALLED_SUMMARY_CODES = ['sqlite-experimental-warning', 'ENOENT', 'EACCES', 'EPERM', 'ENOSPC', 'ETIMEDOUT', 'ECONNRESET', 'cli-ok', 'cli-error', 'module_install_failed', 'module_metadata_invalid', 'module_integrity_failed', 'module_download_failed'] as const;
+function validInstalledObservation(row: any): boolean {
+  return row === undefined || row && Number.isInteger(row.timeoutMs) && row.timeoutMs > 0 && row.timeoutMs <= 10_000
+    && Number.isFinite(row.elapsedMs) && row.elapsedMs >= 0 && row.elapsedMs <= 86_400_000
+    && ['timeoutObserved', 'closeObserved', 'groupClosed'].every(key => typeof row[key] === 'boolean');
+}
+function validInstalledSummary(row: any): boolean {
+  return row && Number.isSafeInteger(row.bytes) && row.bytes >= 0 && typeof row.truncated === 'boolean'
+    && Array.isArray(row.codes) && row.codes.length <= INSTALLED_SUMMARY_CODES.length
+    && new Set(row.codes).size === row.codes.length && row.codes.every((code: any) => INSTALLED_SUMMARY_CODES.includes(code));
+}
+/** Read only a bounded prefix after the caller has verified raw custody and closure. */
+function summarizeInstalledStream(file: string) {
+  const fd = openSync(file, 'r');
+  try {
+    const bytes = fstatSync(fd).size;
+    const buffer = Buffer.alloc(Math.min(bytes, 64 * 1024));
+    let offset = 0;
+    while (offset < buffer.length) { const count = readSync(fd, buffer, offset, buffer.length - offset, offset); if (!count) break; offset += count; }
+    const text = buffer.subarray(0, offset).toString('utf8').replace(/\u001b\[[0-9;]*m/g, '');
+    const codes = new Set<string>();
+    const inspectJSON = (value: string) => {
+      try {
+        const json = JSON.parse(value);
+        if (json?.ok === true) codes.add('cli-ok');
+        if (json?.ok === false) codes.add('cli-error');
+        if (typeof json?.code === 'string' && INSTALLED_SUMMARY_CODES.includes(json.code)) codes.add(json.code);
+      } catch { /* Arbitrary text is never projected. */ }
+    };
+    if (offset === bytes) inspectJSON(text);
+    for (const line of text.split('\n').slice(0, 1024)) {
+      if (/^(?:\(node:[0-9]+\) )?ExperimentalWarning: SQLite is an experimental feature and might change at any time$/.test(line)) codes.add('sqlite-experimental-warning');
+      const error = /^(?:npm (?:ERR!|error) code |error code: )(E[A-Z]+)$/.exec(line)?.[1];
+      if (error && INSTALLED_SUMMARY_CODES.includes(error as any)) codes.add(error);
+      if (line.length <= 4096) inspectJSON(line);
+    }
+    return { bytes, truncated: offset < bytes || text.split('\n').length > 1024, codes: [...codes] };
+  } finally { closeSync(fd); }
+}
 export function projectReceipt(name: string, original: unknown): unknown {
   if (name === 'cli-bare-bootstrap.safe.json') {
     const row = original as Record<string, any> | null; const schema = receipts[name] as Record<string, Projection>;
@@ -185,7 +226,10 @@ export function projectReceipt(name: string, original: unknown): unknown {
       || row.observedStages.some((stage: any) => !INSTALLED_CONSUMER_STAGES.includes(stage.stage)
         || !Number.isSafeInteger(stage.pid) || stage.pid <= 1 || !validExit(stage.actualExit) || installedSignal(stage.actualSignal) !== stage.actualSignal
         || !['actualWait', 'rawClosed', 'groupAbsent', 'rawHashesBound'].every(key => typeof stage[key] === 'boolean')
+        || !validInstalledObservation(stage.observation)
+        || stage.summary != null && (!stage.rawHashesBound || !validInstalledSummary(stage.summary.stdout) || !validInstalledSummary(stage.summary.stderr))
         || !validHash(stage.stdoutSHA256) || !validHash(stage.stderrSHA256)
+        || stage.rawHashesBound && stage.observation && (!stage.observation.closeObserved || !stage.observation.groupClosed)
         || stage.rawHashesBound && !(row.producerClosed && row.groupAbsent && row.rawClosedBeforeHash && stage.actualWait && stage.rawClosed && stage.groupAbsent && stage.stdoutSHA256 !== null && stage.stderrSHA256 !== null)
         || !stage.rawHashesBound && (stage.stdoutSHA256 !== null || stage.stderrSHA256 !== null))) throw new Error('invalid installed failure diagnostic');
   }
@@ -278,7 +322,8 @@ export function verifyInstalledConsumerReceipts(directory: string): { stages: un
     const filename = path.join(directory, stage + '.safe.json'); verifyBoundFile({ path: filename, sha256: hashFile(filename) });
     const row = JSON.parse(readFileSync(filename, 'utf8'));
     const expectedExit = stage === 'node-startup-cancel' ? 143 : stage.endsWith('-cli-tampered-list') ? 1 : 0;
-    if (row.stage !== stage || row.actualExit !== expectedExit || row.actualSignal !== null
+    if (!validInstalledObservation(row.observation) || row.observation && (row.observation.timeoutObserved || !row.observation.closeObserved || !row.observation.groupClosed)
+      || row.stage !== stage || row.actualExit !== expectedExit || row.actualSignal !== null
       || row.actualWait !== true || row.rawClosed !== true || row.groupAbsent !== true || !Number.isSafeInteger(row.pid) || row.pid <= 1) throw new Error('installed consumer stage incomplete');
     for (const stream of ['stdout', 'stderr']) verifyBoundFile({ path: path.join(directory, `${stage}.${stream}`), sha256: row[`${stream}SHA256`] });
     return projectBySchema(row, installedStage);
@@ -314,10 +359,15 @@ export function recordInstalledConsumerFailure(evidence: string, run: string, pr
         const file = path.join(directory, stage + '.safe.json'); verifyBoundFile({ path: file, sha256: hashFile(file) });
         const row = JSON.parse(readFileSync(file, 'utf8'));
         if (row.stage !== stage || !Number.isSafeInteger(row.pid) || row.pid <= 1 || row.actualExit !== null && !Number.isSafeInteger(row.actualExit)
-          || typeof row.actualWait !== 'boolean' || typeof row.rawClosed !== 'boolean' || typeof row.groupAbsent !== 'boolean') throw new Error('invalid stage');
-        const bound = closed && row.actualWait === true && row.rawClosed === true && row.groupAbsent === true;
+          || !validInstalledObservation(row.observation) || typeof row.actualWait !== 'boolean' || typeof row.rawClosed !== 'boolean' || typeof row.groupAbsent !== 'boolean') throw new Error('invalid stage');
+        const bound = closed && row.actualWait === true && row.rawClosed === true && row.groupAbsent === true
+          && (!row.observation || row.observation.closeObserved && row.observation.groupClosed);
         if (bound) for (const stream of ['stdout', 'stderr']) verifyBoundFile({ path: path.join(directory, `${stage}.${stream}`), sha256: row[`${stream}SHA256`] });
-        observedStages.push({ stage, pid: row.pid, actualExit: row.actualExit, actualSignal: installedSignal(row.actualSignal),
+        const summary = bound ? Object.fromEntries(['stdout', 'stderr'].map(stream => {
+          const file = path.join(directory, `${stage}.${stream}`); const value = summarizeInstalledStream(file);
+          verifyBoundFile({ path: file, sha256: row[`${stream}SHA256`] }); return [stream, value];
+        })) : null;
+        observedStages.push({ stage, pid: row.pid, observation: row.observation, summary, actualExit: row.actualExit, actualSignal: installedSignal(row.actualSignal),
           actualWait: row.actualWait, rawClosed: row.rawClosed, groupAbsent: row.groupAbsent, rawHashesBound: bound,
           stdoutSHA256: bound ? row.stdoutSHA256 : null, stderrSHA256: bound ? row.stderrSHA256 : null });
       }
@@ -366,6 +416,8 @@ export async function runInstalledConsumer(archive: string, archiveSHA: string, 
   mkdirSync(evidence, { mode: 0o700 }); const run = path.join(evidence, 'private-run'); mkdirSync(run, { mode: 0o700 }); const home = path.join(run, 'home'); mkdirSync(home, { mode: 0o700 });
   const sourceTest = path.join(workspace, 'packages/xpod-afs/tests/installed-module.test.ts'); const env = { ...isolatedModuleEnvironment(home), PATH: process.env.PATH, XPOD_AFS_TEST_ARCHIVE: archive };
   const sourceTestSHA256 = hashFile(sourceTest);
+  const sourceHelper = path.join(workspace, 'scripts/agentfs-native-ci/mounted/owned-installed-consumer.ts');
+  const sourceHelperSHA256 = hashFile(sourceHelper);
   const nodeVersion = (() => { try { return execFileSync('node', ['--version'], { encoding: 'utf8', env }).trim(); } catch { return null; } })();
   const child = spawn(process.execPath, ['test', sourceTest], { cwd: run, env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
   const lifecycle = observeChildLifecycle(child); const raw: Buffer[] = []; child.stdout.on('data', (b: Buffer) => raw.push(b)); child.stderr.on('data', (b: Buffer) => raw.push(b));
@@ -375,12 +427,12 @@ export async function runInstalledConsumer(archive: string, archiveSHA: string, 
   let stages: unknown[] = []; let proxyCancel: unknown = null; let accepted = false;
   try {
     assertInstalledConsumerProducer({ state: fact.state, code: fact.code, signal: fact.signal, groupAbsent, nodeVersion, bunVersion: process.versions.bun,
-      passed: count('pass'), failed: count('fail'), skipped: count('skip'), sourceUnchanged: hashFile(sourceTest) === sourceTestSHA256 });
+      passed: count('pass'), failed: count('fail'), skipped: count('skip'), sourceUnchanged: hashFile(sourceTest) === sourceTestSHA256 && hashFile(sourceHelper) === sourceHelperSHA256 });
     const parent = path.join(run, '.test-data/afs-installed-receipts'); const directories = readdirSync(parent); if (directories.length !== 1) throw new Error('fresh consumer receipt directory required');
     ({ stages, proxyCancel } = verifyInstalledConsumerReceipts(path.join(parent, directories[0]))); verifyBoundFile({ path: archive, sha256: archiveSHA }); accepted = true;
   } finally {
     persistInstalledConsumerReceipt(evidence, run, { status: accepted ? 'passed' : 'failed', accepted, archiveSHA256: archiveSHA, moduleSourceSHA: sourceSHA, manifestSHA256: properties.manifestSHA256,
-      sourceTestSHA256, lifecycle: lifecycle.facts(), producerClosed: fact.state === 'closed', code: fact.code, signal: fact.signal, groupAbsent,
+      sourceTestSHA256, sourceHelperSHA256, lifecycle: lifecycle.facts(), producerClosed: fact.state === 'closed', code: fact.code, signal: fact.signal, groupAbsent,
       rawClosedBeforeHash: fact.state === 'closed' && groupAbsent, rawSHA256: fact.state === 'closed' && groupAbsent ? hashBytes(bytes) : null,
       nodeVersion, bunVersion: process.versions.bun, passed: count('pass'), failed: count('fail'), skipped: count('skip'), stages, proxyCancel }, bytes);
   }
