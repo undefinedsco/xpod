@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
@@ -273,7 +273,13 @@ describe('AFS producer event identity', () => {
     rejected(head, env, document);
     rejected(head, { ...env, GITHUB_SHA: head }, document);
     rejected(merge, env, { ...document, pull_request: { ...document.pull_request, head: { ...document.pull_request.head, sha: merge } } });
-    rejected(merge, env, { ...document, pull_request: { ...document.pull_request, merge_commit_sha: head } });
+    for (const merge_commit_sha of [null, head, 'a'.repeat(40)]) {
+      expect(projectProductEvent(merge, env, { ...document, pull_request: { ...document.pull_request, merge_commit_sha } }, workspace)).toEqual({ event: 'pull_request', githubSHA: merge, eventHeadSHA: head });
+      for (const field of ['head', 'base'] as const) {
+        const mismatched = { ...document, pull_request: { ...document.pull_request, merge_commit_sha, [field]: { ...document.pull_request[field], sha: 'c'.repeat(40) } } };
+        expect(() => projectProductEvent(merge, env, mismatched, workspace)).toThrow('merge-' + field + '-parent-mismatch');
+      }
+    }
     rejected(merge, { ...env, GITHUB_REF: 'refs/heads/feature' }, document);
     rejected(merge, env, { ...document, number: 63 });
     for (const field of ['head', 'base'] as const) rejected(merge, env, { ...document, pull_request: { ...document.pull_request, [field]: { ...document.pull_request[field], repo: { full_name: 'fork/xpod' } } } });
@@ -290,8 +296,8 @@ describe('AFS producer event identity', () => {
       expect(() => git('cat-file', '-e', head)).toThrow();
       expect(git('show', '-s', '--format=%P', 'HEAD')).toBe('');
       expect(projectProductEvent(merge, environment(merge), pr(merge, head, base), shallow)).toEqual({ event: 'pull_request', githubSHA: merge, eventHeadSHA: head });
-      expect(() => projectProductEvent(merge, environment(merge), pr(merge, 'a'.repeat(40), base), shallow)).toThrow('actual merge parents');
-      expect(() => projectProductEvent(merge, environment(merge), pr(merge, head, 'b'.repeat(40)), shallow)).toThrow('actual merge parents');
+      expect(() => projectProductEvent(merge, environment(merge), pr(merge, 'a'.repeat(40), base), shallow)).toThrow('merge-');
+      expect(() => projectProductEvent(merge, environment(merge), pr(merge, head, 'b'.repeat(40)), shallow)).toThrow('merge-');
       expect(git('rev-parse', '--is-shallow-repository')).toBe('true');
     } finally { rmSync(shallow, { recursive: true, force: true }); }
   }));
@@ -303,8 +309,52 @@ describe('AFS producer event identity', () => {
       const raw = `tree ${tree}\n${parents.map(parent => `parent ${parent}\n`).join('')}author Fixture <fixture@example.invalid> 1 +0000\ncommitter Fixture <fixture@example.invalid> 1 +0000\n\nparent ${head}\nparent ${base}\n`;
       const source = execFileSync('git', ['hash-object', '-t', 'commit', '-w', '--stdin'], { cwd: workspace, input: raw, encoding: 'utf8' }).trim();
       git('checkout', '--quiet', '--detach', source);
-      expect(() => projectProductEvent(source, environment(source), pr(source, head, base), workspace)).toThrow('actual merge parents');
+      expect(() => projectProductEvent(source, environment(source), pr(source, head, base), workspace)).toThrow('merge-');
     }
+  }));
+
+  it('reports stable predicate reasons with only whitelisted safe identity', () => mergedSource((merge, head, base, workspace) => {
+    const document = pr(merge, head, base), env = environment(merge);
+    const canary = 'SECRET-CANARY@invalid\nprivate';
+    const check = (reason: string, event: any, environment: NodeJS.ProcessEnv = env, source = merge, checkout: string | undefined = workspace) => {
+      try { projectProductEvent(source, environment, { ...event, token: canary, arbitrary: { value: canary } }, checkout); throw new Error('accepted'); }
+      catch (error) {
+        const message = (error as Error).message;
+        expect(message).toMatch(new RegExp('^Product source event: ' + reason + ' '));
+        expect(message).not.toContain('SECRET-CANARY');
+        const identity = JSON.parse(message.slice(message.indexOf('{')));
+        expect(identity.mergeCommitSHA).toHaveProperty('present');
+        return identity;
+      }
+    };
+    check('source-sha-invalid', document, env, canary);
+    check('github-sha-source-mismatch', document, { ...env, GITHUB_SHA: canary });
+    check('event-unsupported', document, { ...env, GITHUB_EVENT_NAME: canary });
+    check('repository-unsupported', document, { ...env, GITHUB_REPOSITORY: canary });
+    check('event-repository-mismatch', { ...document, repository: { full_name: canary } });
+    for (const field of ['head', 'base'] as const) check(field + '-repository-mismatch', { ...document, pull_request: { ...document.pull_request, [field]: { ...document.pull_request[field], repo: { full_name: canary } } } });
+    check('event-number-invalid', { ...document, number: canary });
+    check('pr-number-mismatch', { ...document, pull_request: { ...document.pull_request, number: 63 } });
+    check('merge-ref-mismatch', document, { ...env, GITHUB_REF: canary });
+    check('head-sha-invalid', { ...document, pull_request: { ...document.pull_request, head: { ...document.pull_request.head, sha: canary } } });
+    check('head-is-source', pr(merge, merge, base));
+    check('base-sha-invalid', pr(merge, head, canary));
+    check('checkout-required', document, env, merge, '');
+    check('checkout-source-mismatch', { ...document, pull_request: { ...document.pull_request, head: { ...document.pull_request.head, sha: base } } }, environment(head), head);
+    check('merge-base-parent-mismatch', pr(merge, head, 'a'.repeat(40)));
+    const stale = { ...pr(merge, 'a'.repeat(40), base), pull_request: { ...pr(merge, 'a'.repeat(40), base).pull_request, merge_commit_sha: { token: canary } } };
+    const safe = check('merge-head-parent-mismatch', stale);
+    expect(safe.mergeCommitSHA).toEqual({ present: true, type: 'object' });
+    const modulePath = path.resolve('scripts/agentfs-native-ci/mounted/export-products.ts');
+    const child = spawnSync('bun', ['-e', `import {projectProductEvent} from ${JSON.stringify(modulePath)}; projectProductEvent(process.env.FIXTURE_SOURCE, JSON.parse(process.env.FIXTURE_ENV), JSON.parse(process.env.FIXTURE_EVENT), process.env.FIXTURE_WORKSPACE);`], {
+      encoding: 'utf8', env: { ...process.env, FIXTURE_SOURCE: merge, FIXTURE_ENV: JSON.stringify(env), FIXTURE_EVENT: JSON.stringify(stale), FIXTURE_WORKSPACE: workspace },
+    });
+    expect(child.status).not.toBe(0);
+    expect(child.stderr).toContain('Product source event: merge-head-parent-mismatch');
+    expect(child.stderr).toContain('mergeCommitSHA');
+    expect(child.stderr).not.toContain('SECRET-CANARY');
+    writeFileSync(path.join(workspace, 'dirty-file'), 'dirty');
+    check('checkout-dirty', document);
   }));
 
 });

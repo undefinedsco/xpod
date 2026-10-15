@@ -139,29 +139,59 @@ export function validateClientProduct(archive: string, directory: string, packag
 export function projectProductEvent(sourceSHA: string, environment: NodeJS.ProcessEnv, document: any, workspace?: string) {
   const event = environment.GITHUB_EVENT_NAME ?? null;
   const githubSHA = environment.GITHUB_SHA ?? null;
+  const pr = document?.pull_request;
+  const sha = (value: unknown): value is string => typeof value === 'string' && /^[a-f0-9]{40}$/.test(value);
+  const repo = (value: unknown) => typeof value === 'string' && value.length <= 201 && /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(value);
+  const number = (value: unknown) => Number.isSafeInteger(value) && Number(value) > 0;
+  const field = (value: unknown, valid: (value: unknown) => boolean) => ({ present: value !== undefined,
+    type: value === null ? 'null' : Array.isArray(value) ? 'array' : typeof value, ...(valid(value) ? { value } : {}) });
+  // Whitelist only bounded identity values and field shape; never serialize payloads or errors.
+  const identity: Record<string, unknown> = {
+    sourceSHA: field(sourceSHA, sha), githubSHA: field(githubSHA, sha),
+    event: field(event, value => ['push', 'workflow_dispatch', 'pull_request'].includes(String(value))),
+    repository: field(environment.GITHUB_REPOSITORY, repo), eventRepository: field(document?.repository?.full_name, repo),
+    baseRepository: field(pr?.base?.repo?.full_name, repo), headRepository: field(pr?.head?.repo?.full_name, repo),
+    number: field(document?.number, number), prNumber: field(pr?.number, number),
+    ref: field(environment.GITHUB_REF, value => typeof value === 'string' && value.length <= 80 && /^refs\/pull\/[1-9][0-9]*\/merge$/.test(value)),
+    baseSHA: field(pr?.base?.sha, sha), headSHA: field(pr?.head?.sha, sha),
+    // GitHub's nullable/asynchronously computed merge_commit_sha is diagnostic only.
+    mergeCommitSHA: field(pr?.merge_commit_sha, sha),
+  };
+  function reject(reason: string): never { throw new Error('Product source event: ' + reason + ' ' + JSON.stringify(identity)); }
+  if (!sha(sourceSHA)) reject('source-sha-invalid');
+  if (githubSHA !== sourceSHA) reject('github-sha-source-mismatch');
+  if (!['push', 'workflow_dispatch', 'pull_request'].includes(event ?? '')) reject('event-unsupported');
   let eventHeadSHA = document?.after ?? null;
-  if (!/^[a-f0-9]{40}$/.test(sourceSHA) || githubSHA !== sourceSHA
-    || !['push', 'workflow_dispatch', 'pull_request'].includes(event ?? '')) throw new Error('unsupported product source event');
-  if (event === 'push' && eventHeadSHA !== sourceSHA) throw new Error('unsupported product source event');
+  if (event === 'push' && eventHeadSHA !== sourceSHA) reject('push-head-source-mismatch');
   if (event === 'pull_request') {
-    const pr = document?.pull_request;
     const repository = environment.GITHUB_REPOSITORY;
     eventHeadSHA = pr?.head?.sha;
-    if (repository !== 'undefinedsco/xpod' || document?.repository?.full_name !== repository
-      || pr?.base?.repo?.full_name !== repository || pr?.head?.repo?.full_name !== repository
-      || !Number.isSafeInteger(document?.number) || document.number < 1 || pr?.number !== document.number
-      || environment.GITHUB_REF !== `refs/pull/${document.number}/merge`
-      || pr?.merge_commit_sha !== sourceSHA || typeof eventHeadSHA !== 'string'
-      || !/^[a-f0-9]{40}$/.test(eventHeadSHA) || eventHeadSHA === sourceSHA) throw new Error('invalid same-repository PR merge source event');
-    if (!workspace) throw new Error('actual PR merge checkout required');
+    if (repository !== 'undefinedsco/xpod') reject('repository-unsupported');
+    if (document?.repository?.full_name !== repository) reject('event-repository-mismatch');
+    if (pr?.base?.repo?.full_name !== repository) reject('base-repository-mismatch');
+    if (pr?.head?.repo?.full_name !== repository) reject('head-repository-mismatch');
+    if (!number(document?.number)) reject('event-number-invalid');
+    if (!number(pr?.number) || pr.number !== document.number) reject('pr-number-mismatch');
+    if (environment.GITHUB_REF !== `refs/pull/${document.number}/merge`) reject('merge-ref-mismatch');
+    if (!sha(eventHeadSHA)) reject('head-sha-invalid');
+    if (eventHeadSHA === sourceSHA) reject('head-is-source');
+    if (!sha(pr?.base?.sha)) reject('base-sha-invalid');
+    if (!workspace) reject('checkout-required');
     const git = (...args: string[]) => execFileSync('git', args, { cwd: workspace, encoding: 'utf8' }).trim();
-    if (git('rev-parse', 'HEAD') !== sourceSHA || git('status', '--porcelain', '--untracked-files=all')) throw new Error('immutable clean PR merge source required');
-    // GitHub refs/pull/N/merge is a two-parent synthetic merge: base first,
-    // PR head second. Raw commit headers retain both SHAs at a shallow boundary.
-    const headers = git('cat-file', 'commit', sourceSHA).split('\n\n', 1)[0].split('\n');
-    const parents = headers.filter(line => line.startsWith('parent ')).map(line => line.slice(7));
-    if (parents.length !== 2 || parents.some(parent => !/^[a-f0-9]{40}$/.test(parent) || parent === sourceSHA)
-      || parents[0] === parents[1] || parents[0] !== pr?.base?.sha || parents[1] !== eventHeadSHA) throw new Error('PR payload differs from actual merge parents');
+    let actualSHA: string, status: string, commit: string;
+    try { actualSHA = git('rev-parse', 'HEAD'); status = git('status', '--porcelain', '--untracked-files=all'); }
+    catch { reject('checkout-read-failed'); }
+    identity.actualSHA = field(actualSHA, sha);
+    if (actualSHA !== sourceSHA) reject('checkout-source-mismatch');
+    if (status) reject('checkout-dirty');
+    try { commit = git('cat-file', 'commit', sourceSHA); } catch { reject('commit-read-failed'); }
+    // Synthetic merge: base first, PR head second. Raw headers survive shallow boundaries.
+    const parents = commit.split('\n\n', 1)[0].split('\n').filter(line => line.startsWith('parent ')).map(line => line.slice(7));
+    identity.parents = parents.slice(0, 3).map(parent => field(parent, sha));
+    if (parents.length !== 2) reject('merge-parent-count-invalid');
+    if (parents.some(parent => !sha(parent) || parent === sourceSHA) || parents[0] === parents[1]) reject('merge-parent-identity-invalid');
+    if (parents[0] !== pr.base.sha) reject('merge-base-parent-mismatch');
+    if (parents[1] !== eventHeadSHA) reject('merge-head-parent-mismatch');
   }
   return { event, githubSHA, eventHeadSHA };
 }
@@ -171,7 +201,9 @@ export async function exportProducts(workspace: string, moduleArchive: string, c
   if (!/^[a-f0-9]{40}$/.test(sourceSHA) || git('rev-parse', 'HEAD') !== sourceSHA || git('status', '--porcelain', '--untracked-files=all')) throw new Error('immutable clean product source required');
   const build = JSON.parse(readFileSync(buildReceipt, 'utf8'));
   const safeBuild = projectProductBuild(build, sourceSHA);
-  const eventDocument = process.env.GITHUB_EVENT_PATH ? JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, 'utf8')) : {};
+  let eventDocument: any;
+  try { eventDocument = process.env.GITHUB_EVENT_PATH ? JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, 'utf8')) : {}; }
+  catch { throw new Error('Product source event: event-document-invalid'); }
   const { event, githubSHA, eventHeadSHA } = projectProductEvent(sourceSHA, process.env, eventDocument, workspace);
   const tempParent = path.join(workspace, '.test-data/product-export-validation'); mkdirSync(tempParent, { recursive: true, mode: 0o700 });
   const temp = mkdtempSync(path.join(tempParent, 'case-'));
