@@ -16,6 +16,9 @@ export class XpodTestStack {
   private runtime: XpodRuntimeHandle | null = null;
   private runtimeGatewayAdminProxyAuthSecret?: string;
 
+  /** Unit fixtures can isolate startup coordination; real stacks keep the shared default. */
+  constructor(private readonly startLockDir?: string) {}
+
   /**
    * Test-only access to the ephemeral gateway secret generated for this
    * runtime. The production runtime intentionally does not expose it on its
@@ -66,7 +69,7 @@ export class XpodTestStack {
           await this.stop().catch(() => undefined);
         }
       }
-    });
+    }, this.startLockDir);
   }
 
   private async startOnce(

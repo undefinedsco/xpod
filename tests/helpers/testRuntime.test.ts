@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import { rm } from 'node:fs/promises';
+import { rm, mkdir, writeFile } from 'node:fs/promises';
+import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -143,7 +144,8 @@ describe('withRuntimeStartLock', () => {
 
 describe('XpodTestStack retry evidence', () => {
   it('records only the attempted listen fields before replanning a recoverable conflict', async () => {
-    const stack = new XpodTestStack();
+    const lockDir = privateLockDir();
+    const stack = new XpodTestStack(lockDir);
     const conflict = Object.assign(new Error('listen EADDRINUSE: credential-must-not-be-logged'), {
       code: 'EADDRINUSE', syscall: 'listen', address: '127.0.0.1', port: 38504,
       privateContext: 'credential-must-not-be-logged',
@@ -169,13 +171,15 @@ describe('XpodTestStack retry evidence', () => {
       await stack.stop(); expect(stop).toHaveBeenCalledTimes(1);
     } finally {
       start.mockRestore(); plans.mockRestore(); warn.mockRestore();
+      await rm(lockDir, { recursive: true, force: true });
       if (previous === undefined) delete process.env.XPOD_GATEWAY_ADMIN_PROXY_AUTH_SECRET;
       else process.env.XPOD_GATEWAY_ADMIN_PROXY_AUTH_SECRET = previous;
     }
   });
 
   it('does not replan or advertise a retry when startup cleanup is unknown', async () => {
-    const stack = new XpodTestStack();
+    const lockDir = privateLockDir();
+    const stack = new XpodTestStack(lockDir);
     const failure = new AggregateError([ portConflict(), new Error('close completion unknown') ], 'Gateway startup cleanup did not complete');
     const start = vi.spyOn(runtimeModule, 'startXpodRuntime').mockRejectedValue(failure);
     const plans = vi.spyOn(stack, 'resolvePortOptions').mockResolvedValue({ gatewayPort: 18501, cssPort: 18502, apiPort: 18503 });
@@ -184,6 +188,38 @@ describe('XpodTestStack retry evidence', () => {
       await expect(stack.start('cloud', { transport: 'port' })).rejects.toBe(failure);
       expect(start).toHaveBeenCalledTimes(1); expect(plans).toHaveBeenCalledTimes(1);
       expect(warn).not.toHaveBeenCalled();
-    } finally { start.mockRestore(); plans.mockRestore(); warn.mockRestore(); }
+    } finally {
+      start.mockRestore(); plans.mockRestore(); warn.mockRestore();
+      await rm(lockDir, { recursive: true, force: true });
+    }
   });
+});
+
+it('isolates mocked stack retries while an owned foreign default startup lock is held', async () => {
+  const root = privateLockDir();
+  const helper = path.resolve('tests/helpers/XpodTestStack.ts');
+  await mkdir(root, { recursive: true });
+  const script = path.join(root, 'lock-probe.ts');
+  try {
+    await writeFile(script, `import {XpodTestStack} from ${JSON.stringify(helper)};
+import assert from 'node:assert/strict';
+import fs from 'node:fs';import path from 'node:path';
+const foreign=path.join(process.cwd(),'.test-data/runtime-start.lock');
+fs.mkdirSync(foreign,{recursive:true});fs.writeFileSync(path.join(foreign,'owner'),'owned foreign fixture');
+const inode=fs.statSync(foreign).ino;
+const own=path.join(process.cwd(),'.test-data/private-start.lock');
+const stack=new XpodTestStack(own);let plans=0,attempts=0;
+stack.resolvePortOptions=async()=>{plans++;return {gatewayPort:18501,cssPort:18502,apiPort:18503};};
+stack.startOnce=async()=>{assert(fs.existsSync(own));assert.equal(fs.statSync(foreign).ino,inode);attempts++;if(attempts===1)throw Object.assign(new Error('listen EADDRINUSE'),{code:'EADDRINUSE',syscall:'listen',address:'127.0.0.1',port:18501});};
+await stack.start('cloud',{transport:'port'});
+assert.equal(plans,2);assert.equal(attempts,2);assert(!fs.existsSync(own));
+assert.equal(fs.statSync(foreign).ino,inode);assert.equal(fs.readFileSync(path.join(foreign,'owner'),'utf8'),'owned foreign fixture');
+console.log('owned lock isolation passed');
+`);
+    // The bound only guards this deliberately occupied private fixture. The
+    // original unit timeout and the production lock waiting policy are unchanged.
+    const child = spawnSync('bun', [script], { cwd: root, encoding: 'utf8', timeout: 5000 });
+    expect(child.status, child.stderr).toBe(0);
+    expect(child.stdout).toContain('owned lock isolation passed');
+  } finally { await rm(root, { recursive: true, force: true }); }
 });

@@ -1,6 +1,6 @@
 import { buildWithBun } from '../scripts/bun-build-api';
 import { apiTestRepoRoot } from './repo-root';
-import {test} from 'node:test';
+import {test} from 'bun:test';
 import assert from 'node:assert/strict';
 import {mkdirSync,mkdtempSync,writeFileSync,readFileSync,rmSync,existsSync} from 'node:fs';
 import path from 'node:path';

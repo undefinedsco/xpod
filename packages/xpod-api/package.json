@@ -6,7 +6,7 @@
   "license": "MIT",
   "scripts": {
     "build": "bun scripts/build.ts",
-    "test": "bun test tests",
+    "test": "bun ../../scripts/run-module-tests.cjs --group api",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "stage": "bun scripts/stage.ts",
     "pack": "bun scripts/pack.ts"

@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "bun test tests",
+    "test": "bun ../../scripts/run-module-tests.cjs --group css",
     "build:module": "bun scripts/build-package.ts",
     "typecheck": "bun x tsc -p tsconfig.json",
     "build:components": "bun scripts/build-components.ts"
