@@ -37,6 +37,7 @@ export interface PodContractServerOptions {
    * fixture never leaks a generic tmpdir scratch.
    */
   scratchDir?: string;
+  observeRequest?: (phase: 'start' | 'finish' | 'close', requestId: number) => void;
 }
 
 export interface PodContractServer {
@@ -114,7 +115,13 @@ export async function startPodContractServer(options: PodContractServerOptions =
   chmodSync(scratch, 0o700);
   const MAX_TEXT_BYTES = 8 * 1024 * 1024;
 
+  let requestSequence = 0;
   const server: Server = createServer((request, response) => {
+    if (options.observeRequest) {
+      const requestId = ++requestSequence;
+      const observe = (phase: 'start' | 'finish' | 'close'): void => { try { options.observeRequest?.(phase, requestId); } catch { /* Diagnostics never change HTTP behavior. */ } };
+      observe('start'); response.once('finish', () => observe('finish')); response.once('close', () => observe('close'));
+    }
     void (async () => {
       const url = new URL(request.url ?? '/', 'http://placeholder');
 

@@ -7,6 +7,7 @@ import { startPodContractServer, type PodContractServer } from './support/podCon
 import { isObservedConditionalConflict, ownedUnmountDecision, runOwnedUnmountOnce, runMountAcceptance, type MountAcceptanceReport, type OwnedUnmountProof } from './support/mountHarness';
 import { discoverAgentFsHelper } from './support/helperDiscovery';
 import { mountedCommandDiagnostic, emitMountedCommandDiagnostic } from './support/commandDiagnostic';
+import { MountedCommandTiming, type MountedTimingOperation as MountedCommandOperation } from './support/commandTiming';
 import { MountCleanupGuard, makeObservingKernelObserver, observeKernelMounts, observeKernelMountsDetailed } from './support/mountCleanup';
 
 /**
@@ -79,22 +80,27 @@ function execSampled(command: string, args: string[], env: NodeJS.ProcessEnv, ti
 }
 // Plain (NON-sampling) spawn/wait. RSS sampling must never route through this,
 // or sampling `ps` would recursively sample its own `ps` child (process storm).
-async function exec(command: string, args: string[], env: NodeJS.ProcessEnv = {}, timeoutMs = 120_000, cwd = process.cwd()): Promise<ExecResult> {
+async function exec(command: string, args: string[], env: NodeJS.ProcessEnv = {}, timeoutMs = 120_000, cwd = process.cwd(), diagnosticContext?: { operation: MountedCommandOperation; timing: MountedCommandTiming }): Promise<ExecResult> {
+  diagnosticContext?.timing.begin(diagnosticContext.operation);
   const started = performance.now(); let timeoutObserved = false;
   const role = command === '/bin/sh' ? 'shell' : command === 'git' ? 'git' : 'consumer-command';
+  const diagnosticFields = () => diagnosticContext ? { operation: diagnosticContext.operation, timing: diagnosticContext.timing.snapshot() } : {};
   let owned: OwnedDaemon;
   try { owned = observeOwnedChild(spawn(command, args, { cwd, env: { ...process.env, ...env }, stdio: [ 'ignore', 'pipe', 'pipe' ] })); }
   catch (error) {
-    emitMountedCommandDiagnostic(mountedCommandDiagnostic(role, command, args, cwd, started, timeoutMs, false,
-      { state: 'spawn-threw', actualExit: null, signal: null }, error));
+    diagnosticContext?.timing.mark('spawn-threw');
+    emitMountedCommandDiagnostic({ ...mountedCommandDiagnostic(role, command, args, cwd, started, timeoutMs, false,
+      { state: 'spawn-threw', actualExit: null, signal: null }, error), ...diagnosticFields() });
     throw error;
   }
+  diagnosticContext?.timing.mark('spawn-returned');
   const timer = setTimeout(() => { timeoutObserved = true; owned.child.kill('SIGKILL'); }, timeoutMs);
   try {
     const fact = await awaitClose(owned, timeoutMs + 15_000);
+    diagnosticContext?.timing.mark(fact.state);
     if (fact.state !== 'closed' || fact.code !== 0 || fact.signal !== null) {
-      emitMountedCommandDiagnostic(mountedCommandDiagnostic(role, command, args, cwd, started, timeoutMs, timeoutObserved,
-        { state: fact.state, actualExit: fact.state === 'closed' ? fact.code : null, signal: fact.state === 'closed' ? fact.signal : null }, owned.spawnFailure.error));
+      emitMountedCommandDiagnostic({ ...mountedCommandDiagnostic(role, command, args, cwd, started, timeoutMs, timeoutObserved,
+        { state: fact.state, actualExit: fact.state === 'closed' ? fact.code : null, signal: fact.state === 'closed' ? fact.signal : null }, owned.spawnFailure.error), ...diagnosticFields() });
     }
     return { state: fact.state, actualExit: fact.state === 'closed' ? fact.code : null,
       status: fact.state === 'closed' ? fact.code ?? 1 : 1,
@@ -104,12 +110,12 @@ async function exec(command: string, args: string[], env: NodeJS.ProcessEnv = {}
 }
 
 interface OwnedDaemon { child: ChildProcess; closed: Promise<{ code: number | null; signal: NodeJS.Signals | null }>; spawnError: Promise<boolean>; spawnFailure: { error?: Error }; stdout: Buffer[]; stderr: Buffer[]; }
-function spawnOwnedForeground(binary: string, server: PodContractServer, mnt: string, session: string, onSpawnFailure?: () => void): OwnedDaemon {
+function spawnOwnedForeground(binary: string, server: PodContractServer, mnt: string, session: string, onSpawnFailure?: () => void, onOutput?: (channel: 'stdout' | 'stderr', bytes: number) => void): OwnedDaemon {
   const args = [ 'mount', '--server', server.podRoot, '--mountpoint', mnt, '--backend', backend, '--session-dir', session, '--foreground' ];
   const started = performance.now();
   try {
     const owned = observeOwnedChild(spawn(binary, args,
-      { env: { ...process.env, XPOD_AGENTFS_TOKEN: TOKEN }, stdio: [ 'ignore', 'pipe', 'pipe' ] }));
+      { env: { ...process.env, XPOD_AGENTFS_TOKEN: TOKEN }, stdio: [ 'ignore', 'pipe', 'pipe' ] }), onOutput);
     owned.child.once('error', (error) => {
       onSpawnFailure?.();
       emitMountedCommandDiagnostic(mountedCommandDiagnostic('mount-daemon', binary, args, process.cwd(), started, null, false,
@@ -124,10 +130,11 @@ function spawnOwnedForeground(binary: string, server: PodContractServer, mnt: st
     throw error;
   }
 }
-function observeOwnedChild(child: ChildProcess): OwnedDaemon {
+function observeOwnedChild(child: ChildProcess, onOutput?: (channel: 'stdout' | 'stderr', bytes: number) => void): OwnedDaemon {
   const stdout: Buffer[] = []; const stderr: Buffer[] = [];
-  child.stdout?.on('data', (chunk: Buffer) => stdout.push(chunk));
-  child.stderr?.on('data', (chunk: Buffer) => stderr.push(chunk));
+  const observeOutput = (channel: 'stdout' | 'stderr', bytes: number): void => { try { onOutput?.(channel, bytes); } catch { /* Diagnostic observers do not change child handling. */ } };
+  child.stdout?.on('data', (chunk: Buffer) => { stdout.push(chunk); observeOutput('stdout', chunk.length); });
+  child.stderr?.on('data', (chunk: Buffer) => { stderr.push(chunk); observeOutput('stderr', chunk.length); });
   // ONLY an actual `close` event resolves `closed`. A spawn error is separate
   // metadata and never fabricates an exit/signal.
   let resolveSpawnError: (value: boolean) => void = () => undefined;
@@ -139,6 +146,42 @@ function observeOwnedChild(child: ChildProcess): OwnedDaemon {
   });
   return { child, closed, spawnError, spawnFailure, stdout, stderr };
 }
+
+describe('mounted metadata command timing', () => {
+  it('keeps a real synchronous spawn error and unknown closure with a fixed operation identifier', async () => {
+    const output = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      const timing = new MountedCommandTiming();
+      const failure = await exec('invalid\0binary', [], {}, 60_000, process.cwd(), { operation: 'metadata-index', timing })
+        .then(() => undefined, error => error);
+      expect(failure).toBeInstanceOf(TypeError);
+      expect(failure.code).toBe('ERR_INVALID_ARG_VALUE');
+      const diagnostic = JSON.parse(output.mock.calls[0][1] as string);
+      expect(diagnostic).toMatchObject({ operation: 'metadata-index', state: 'spawn-threw', actualWait: false,
+        closeObserved: false, timeoutObserved: false, timeoutMs: 60_000, signal: 'unknown' });
+      expect(diagnostic.timing.observation).toBe('event-loop-observation-only');
+      expect(diagnostic.timing.windows[0].events).toContainEqual(expect.objectContaining({ kind: 'mark', mark: 'spawn-threw' }));
+    } finally { output.mockRestore(); }
+  });
+  it('observes actual HTTP lifecycle and original child output without projecting payload text', async () => {
+    const timing = new MountedCommandTiming(); timing.begin('metadata-objects');
+    const fixture = await startPodContractServer({ token: 'private-fixture-token', files: { 'private-file': 'private-content' },
+      observeRequest: (phase, id) => timing.http(phase, id) });
+    try {
+      const response = await fetch(fixture.podRoot + 'private-file', { headers: { authorization: 'Bearer private-fixture-token' } });
+      expect(await response.text()).toBe('private-content');
+      const child = observeOwnedChild(spawn(process.execPath, ['-e', "process.stdout.write('private-output')"]),
+        (channel, bytes) => timing.helper(channel, bytes));
+      await child.closed;
+      const snapshot = timing.snapshot();
+      expect(snapshot.windows[0].events).toContainEqual(expect.objectContaining({ kind: 'http', phase: 'start' }));
+      expect(snapshot.windows[0].events).toContainEqual(expect.objectContaining({ kind: 'http', phase: 'finish' }));
+      expect(snapshot.windows[0].events).toContainEqual(expect.objectContaining({ kind: 'helper', channel: 'stdout', bytes: 14 }));
+      expect(JSON.stringify(snapshot)).not.toContain('private');
+      expect(Buffer.concat(child.stdout).toString()).toBe('private-output');
+    } finally { await fixture.close(); }
+  });
+});
 
 describe('mounted daemon spawn diagnostics', () => {
   const server = { podRoot: 'http://fixture.invalid/pod/' } as PodContractServer;
@@ -283,11 +326,12 @@ describe.runIf(runOverlay)('native mounted platform matrix: remote stream, RSS, 
   // refuses to delete a live/unknown daemon. afterAll must NOT erase a retained
   // scene (that would destroy evidence of the leak).
   let retainedScene = false;
+  let consumerTiming: MountedCommandTiming | undefined;
 
   beforeAll(async () => {
     await guard.remove(ROOT);
     await mkdir(ROOT, { recursive: true });
-    server = await startPodContractServer({ token: TOKEN, files: { 'alpha.txt': 'ALPHA_BODY_0123456789\n', 'big.txt': 'x'.repeat(100_016) }, scratchDir: path.join(ROOT, 'server-scratch') });
+    server = await startPodContractServer({ token: TOKEN, files: { 'alpha.txt': 'ALPHA_BODY_0123456789\n', 'big.txt': 'x'.repeat(100_016) }, scratchDir: path.join(ROOT, 'server-scratch'), observeRequest: (phase, requestId) => consumerTiming?.http(phase, requestId) });
   });
   afterAll(async () => {
     await server?.close().catch(() => undefined);
@@ -323,15 +367,16 @@ describe.runIf(runOverlay)('native mounted platform matrix: remote stream, RSS, 
     await guard.remove(work); await mkdir(mnt, { recursive: true }); await mkdir(session, { recursive: true });
     await mkdir(hooks, { recursive: true }); await mkdir(template, { recursive: true });
     const expectedRemote = server.readBody('alpha.txt').trim();
-    const daemon = spawnOwnedForeground(binary, server, mnt, session, () => { retainedScene = true; });
+    const timing = new MountedCommandTiming(); consumerTiming = timing;
+    const daemon = spawnOwnedForeground(binary, server, mnt, session, () => { retainedScene = true; }, (channel, bytes) => timing.helper(channel, bytes));
     const commands: Record<string, unknown>[] = [];
     const proof: OwnedUnmountProof = { daemonClosed: false };
     let primaryError: unknown; let cleanupError: unknown; let worktreeAdded = false; let unresolvedCommand = false;
-    const run = async (command: string, args: string[], cwd = project, env: NodeJS.ProcessEnv = {}): Promise<string> => {
+    const run = async (command: string, args: string[], cwd = project, env: NodeJS.ProcessEnv = {}, operation?: MountedCommandOperation): Promise<string> => {
       const row: Record<string, unknown> = { command, args, cwd, state: 'attempted' };
       commands.push(row);
       let result: ExecResult;
-      try { result = await exec(command, args, env, 60_000, cwd); }
+      try { result = await exec(command, args, env, 60_000, cwd, operation ? { operation, timing } : undefined); }
       catch (error) { row.state = 'spawn-threw'; unresolvedCommand = true; throw error; }
       row.state = result.state; row.result = result;
       if (result.state !== 'closed') unresolvedCommand = true;
@@ -341,11 +386,11 @@ describe.runIf(runOverlay)('native mounted platform matrix: remote stream, RSS, 
       return normaliseCommandOutput(result.stdout);
     };
     const cleanGitEnv: NodeJS.ProcessEnv = Object.fromEntries(Object.keys(process.env).filter((key) => key.startsWith('GIT_')).map((key) => [ key, undefined ]));
-    const git = (args: string[], cwd = project) => run('git', [
+    const git = (args: string[], cwd = project, operation?: MountedCommandOperation) => run('git', [
       '-c', 'user.name=Mounted Acceptance', '-c', 'user.email=mounted-acceptance@example.invalid',
       '-c', `core.hooksPath=${hooks}`, '-c', 'core.autocrlf=false', ...args,
     ], cwd, { ...cleanGitEnv,
-      GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' });
+      GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' }, operation);
     const verifyMetadata = async (cwd: string): Promise<void> => {
       const pointer = await readFile(path.join(cwd, '.git'), 'utf8');
       expect(pointer).toMatch(/^gitdir: /u);
@@ -354,8 +399,8 @@ describe.runIf(runOverlay)('native mounted platform matrix: remote stream, RSS, 
       expect(path.relative(host, actualGitDir)).not.toMatch(/^(?:\.\.(?:[/\\]|$)|[/\\])/u);
       expect(path.relative(host, common)).not.toMatch(/^(?:\.\.(?:[/\\]|$)|[/\\])/u);
       expect(path.resolve(pointer.trim().slice('gitdir: '.length))).toBe(path.resolve(actualGitDir));
-      for (const name of [ 'objects', 'refs', 'index' ]) {
-        const actualPath = await git([ 'rev-parse', '--path-format=absolute', '--git-path', name ], cwd);
+      for (const name of [ 'objects', 'refs', 'index' ] as const) {
+        const actualPath = await git([ 'rev-parse', '--path-format=absolute', '--git-path', name ], cwd, `metadata-${name}`);
         expect(path.relative(host, actualPath)).not.toMatch(/^(?:\.\.(?:[/\\]|$)|[/\\])/u);
       }
       const names = await readdir(cwd);
@@ -448,6 +493,8 @@ describe.runIf(runOverlay)('native mounted platform matrix: remote stream, RSS, 
       if (cleanupError !== undefined) safeToDelete = false;
       if (safeToDelete) { try { await guard.remove(work); } catch (error) { addCleanupError(error); safeToDelete = false; } }
       if (!safeToDelete) retainedScene = true;
+      consumerTiming = undefined;
+      if (primaryError !== undefined || cleanupError !== undefined) console.error('[mounted-consumer-timing]', JSON.stringify(timing.snapshot()));
       if (primaryError !== undefined && cleanupError !== undefined) throw new AggregateError([ primaryError, cleanupError ], 'consumer failed; cleanup also unresolved');
       if (primaryError !== undefined) throw primaryError;
       if (cleanupError !== undefined) throw cleanupError;
