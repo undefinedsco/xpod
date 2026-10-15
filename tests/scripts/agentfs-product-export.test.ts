@@ -5,6 +5,7 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
 import canonicalHostSources from '../../packages/xpod-cli/scripts/canonical-host-sources.json';
+import { commands } from '../../scripts/agentfs-native-ci/mounted/producer-commands.json';
 import { scanProduct, validateCliProduct, projectProductBuild, exportProducts, validateClientProduct } from '../../scripts/agentfs-native-ci/mounted/export-products';
 
 const source = 'a'.repeat(40);
@@ -63,14 +64,13 @@ async function fixture(change: string, action: (archive: string, root: string) =
   finally { rmSync(root, { recursive: true, force: true }); }
 }
 describe('exact product export', () => {
-  const commands = ['bun run build:packages', 'bun packages/xpod-afs/scripts/build-package.ts', 'bun build module-admission.ts --target=node --format=esm'];
   const receipt = { sourceSHA: source, sourceClean: true, exit: 0, coreSHA256: hash('payload'), driverSHA256: hash('driver'), commands, metafiles: [] };
   it('projects exact safe build commands and drops build-only metadata', () => {
     const projected = projectProductBuild(receipt, source);
     expect(projected).toEqual({ sourceSHA: source, sourceClean: true, exit: 0, coreSHA256: hash('payload'), driverSHA256: hash('driver'), commands });
     expect(Object.keys(projected)).not.toContain('metafiles');
   });
-  for (const injected of [ { commands: ['private-marker'] }, { commands: { argv: 'private-marker' } }, { credentials: { token: 'private-marker' } }, { driverSHA256: { token: 'private-marker' } } ]) {
+  for (const injected of [ { commands: ['private-marker'] }, { commands: ['bun run build:packages', 'bun packages/xpod-afs/scripts/build-package.ts', 'bun build module-admission.ts --target=node --format=esm'] }, { commands: [...commands].reverse() }, { commands: commands.slice(1) }, { commands: [...commands, 'bun run build:packages'] }, { commands: { argv: 'private-marker' } }, { credentials: { token: 'private-marker' } }, { driverSHA256: { token: 'private-marker' } } ]) {
     it('rejects injected build receipt before actual exporter writes any product', () => fixture('', async (archive, root) => {
       const git = (...args: string[]) => execFileSync('git', ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', ...args], { cwd: root, encoding: 'utf8' }).trim();
       git('init', '--quiet'); writeFileSync(path.join(root, '.gitignore'), '*\n!.gitignore\n'); git('add', '--', '.gitignore'); git('commit', '--quiet', '-m', 'fixture');
@@ -203,4 +203,36 @@ describe('AgentFS mounted development workflow entry contract', () => {
       'afs-module-mounted-${{ matrix.target }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}',
     ]);
   });
+});
+
+
+it('binds the canonical five receipt commands to actual workflow run steps in order', () => {
+  const workflow = parse(readFileSync('.github/workflows/agentfs-module-mounted-acceptance.yml', 'utf8'));
+  const steps = workflow.jobs['mounted-module'].steps;
+  const actualCommands = (sourceSteps: any[]) => sourceSteps.flatMap((step: any) => typeof step.run === 'string' ? step.run.split('\n') : [])
+    .map((line: string) => line.trim())
+    .filter((line: string) => /^bun (?:run |build |scripts\/build-afs-from-producer\.ts )/.test(line));
+  expect(commands).toHaveLength(5);
+  // Only deployment paths/outputs are expanded; no command tokens are discarded.
+  const expanded = commands.map((command, index) => {
+    if (index === 3) return command.replace('--cli-package packages/xpod-cli', '--cli-package "$GITHUB_WORKSPACE/packages/xpod-cli"')
+      + ' --target "$TARGET" --out "$MODULE_RUN_ROOT/build" --native-evidence "$MODULE_RUN_ROOT/native/native.zip" --native-pins "$MODULE_RUN_ROOT/native/native-pins.json"';
+    if (index === 4) return command.replace('module-admission.ts', 'scripts/agentfs-native-ci/mounted/module-admission.ts')
+      + ' --metafile="$MODULE_RUN_ROOT/driver-inputs.json" --outfile "$MODULE_RUN_ROOT/module-admission.mjs"';
+    return command;
+  });
+  expect(actualCommands(steps)).toEqual(expanded);
+  // Counterexamples use the actual run bodies, not just fabricated receipts.
+  for (const mutate of [
+    (run: string) => run.replace(commands[0], 'bun run build:packages'),
+    (run: string) => run.replace(commands[0], ''),
+    (run: string) => run.replace(commands[0], commands[2]).replace(commands[1], commands[0]),
+    (run: string) => run.replace('--native-pins "$MODULE_RUN_ROOT/native/native-pins.json"', ''),
+    (run: string) => run.replace(commands[0], commands[0] + ' --unexpected'),
+  ]) {
+    const changed = steps.map((step: any) => ({ ...step, run: typeof step.run === 'string' ? mutate(step.run) : step.run }));
+    expect(actualCommands(changed)).not.toEqual(expanded);
+  }
+  const receiptStep = steps.find((step: any) => step.name === 'Build module and core once for this platform').run;
+  expect(receiptStep).toContain("'commands':json.load(open(workspace/'scripts/agentfs-native-ci/mounted/producer-commands.json'))['commands']");
 });

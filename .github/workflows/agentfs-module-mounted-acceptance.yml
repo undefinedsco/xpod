@@ -116,7 +116,7 @@ jobs:
             records.append({'path':str(p),'sha256':digest(p),'inputs':members})
           assert subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()==os.environ['GITHUB_SHA']
           assert not subprocess.check_output(['git','status','--porcelain','--untracked-files=all'],text=True).strip()
-          with open(root/'build.safe.json','x') as f:json.dump({'sourceSHA':os.environ['GITHUB_SHA'],'sourceClean':True,'exit':0,'commands':['bun run --filter @undefineds.co/xpod-cli build:tools','bun run --filter @undefineds.co/xpod-client build','bun run --filter @undefineds.co/xpod-cli build','bun scripts/build-afs-from-producer.ts --mode module --cli-package packages/xpod-cli','bun build module-admission.ts --target=node --format=esm'],'coreSHA256':digest(workspace/'packages/xpod-cli/dist/xpod.mjs'),'driverSHA256':digest(root/'module-admission.mjs'),'metafiles':records},f)
+          with open(root/'build.safe.json','x') as f:json.dump({'sourceSHA':os.environ['GITHUB_SHA'],'sourceClean':True,'exit':0,'commands':json.load(open(workspace/'scripts/agentfs-native-ci/mounted/producer-commands.json'))['commands'],'coreSHA256':digest(workspace/'packages/xpod-cli/dist/xpod.mjs'),'driverSHA256':digest(root/'module-admission.mjs'),'metafiles':records},f)
           PY
       - name: Verify client cleanup followed by fresh module packaging
         env:

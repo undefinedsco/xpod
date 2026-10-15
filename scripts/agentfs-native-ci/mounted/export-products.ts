@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { collectModule, nativeFacts } from './prepare-module-inputs';
 import { verifyProducerSourceArchive } from '../../../packages/xpod-cli/src/producer-source';
 import canonicalHostSources from '../../../packages/xpod-cli/scripts/canonical-host-sources.json';
+import { commands as buildCommands } from './producer-commands.json';
 
 // Inspect the serialized package, never trust a separately built directory.
 const scan = `import tarfile,json,hashlib,pathlib,sys,re
@@ -33,7 +34,6 @@ export function scanProduct(archive: string, directory: string): { files: Record
 }
 const hash = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 const producerScope = 'CLI source plus explicitly mapped canonical host and runtime-client source; no claim of release acceptance or external dependency closure.';
-const buildCommands = ['bun run build:packages', 'bun packages/xpod-afs/scripts/build-package.ts', 'bun build module-admission.ts --target=node --format=esm'];
 export function projectProductBuild(build: any, sourceSHA: string) {
   const keys = ['sourceSHA', 'sourceClean', 'exit', 'coreSHA256', 'driverSHA256', 'commands', 'metafiles'];
   if (!build || Object.keys(build).some(key => !keys.includes(key)) || build.sourceSHA !== sourceSHA
