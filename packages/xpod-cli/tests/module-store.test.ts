@@ -15,7 +15,7 @@ const roots: string[] = [];
 const coreSource = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../src');
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
 async function fixture(options: { version?: string; api?: number; link?: boolean; drift?: boolean; wrongPlatform?: boolean; source?: string;
-  blockedParent?: boolean; beforeArchive?: (storeRoot: string) => Promise<void> } = {}) {
+  inventoryCase?: 'many' | 'late-tamper' | 'duplicate' | 'extra'; blockedParent?: boolean; beforeArchive?: (storeRoot: string) => Promise<void> } = {}) {
   const base = path.resolve('.test-data/cli-modules'); await mkdir(base, { recursive: true });
   const root = await mkdtemp(path.join(base, 'case-')); roots.push(root);
   const packageRoot = path.join(root, 'input/package'); await mkdir(path.join(packageRoot, 'dist'), { recursive: true });
@@ -23,6 +23,17 @@ async function fixture(options: { version?: string; api?: number; link?: boolean
   const manifest: ModuleManifest = { schemaVersion: 1, id: 'afs', cliApiVersion: options.api ?? 1, platform: options.wrongPlatform ? 'linux' : 'darwin', arch: 'arm64', entry: 'dist/entry.mjs',
     files: [{ path: 'dist/entry.mjs', sha256: createHash('sha256').update(options.drift ? 'different' : source).digest('hex'), size: Buffer.byteLength(source), mode: 0o644 }] };
   await writeFile(path.join(packageRoot, 'dist/entry.mjs'), source); await chmod(path.join(packageRoot, 'dist/entry.mjs'), 0o644);
+  if (options.inventoryCase) {
+    for (let index = 0; index < 12; index++) {
+      const relative = `dist/file-${index}.txt`; const contents = `inventory-${index}`;
+      await writeFile(path.join(packageRoot, relative), contents);
+      await chmod(path.join(packageRoot, relative), 0o644);
+      manifest.files.push({ path: relative, sha256: createHash('sha256').update(contents).digest('hex'), size: Buffer.byteLength(contents), mode: 0o644 });
+    }
+    if (options.inventoryCase === 'late-tamper') await writeFile(path.join(packageRoot, 'dist/file-11.txt'), 'inventory-XX');
+    if (options.inventoryCase === 'duplicate') manifest.files.push({ ...manifest.files[12] });
+    if (options.inventoryCase === 'extra') await writeFile(path.join(packageRoot, 'dist/undeclared.txt'), 'unbound');
+  }
   await writeFile(path.join(packageRoot, 'package.json'), JSON.stringify({ name: '@undefineds.co/xpod-afs-darwin-arm64', version, xpodModule: manifest,
     scripts: { postinstall: 'exit 99' } }));
   if (options.link) await symlink('/etc/passwd', path.join(packageRoot, 'escape'));
@@ -385,4 +396,24 @@ test('diagnostics: lock acquisition completes before metadata work and failures 
   const failure = await f.store.install('afs', '0.1.0', event => events.push(event)).catch(error => error);
   expect(failure.code).toBe('module_busy');
   expect(events.map(event => [event.phase, event.state])).toEqual([['lock-acquire', 'started'], ['lock-acquire', 'failed']]);
+});
+
+
+test('bounded inventory verification covers files beyond the first worker batch and retains the exact walk', async () => {
+  const valid = await fixture({ inventoryCase: 'many' });
+  await valid.store.install('afs');
+  expect((await valid.store.current('afs'))?.version).toBe('0.1.0');
+  const lastFile = path.join(valid.store.root, 'afs/darwin-arm64/0.1.0/package/dist/file-11.txt');
+  await chmod(lastFile, 0o755);
+  expect(await valid.store.current('afs').then(() => null, cause => cause.code)).toBe('module_file_changed');
+  await chmod(lastFile, 0o644);
+  await rm(lastFile);
+  expect(await valid.store.current('afs').then(() => null, cause => cause.code)).toBe('ENOENT');
+  for (const [inventoryCase, code] of [['late-tamper', 'module_file_changed'], ['duplicate', 'module_inventory_invalid'],
+    ['extra', 'module_inventory_invalid']] as const) {
+    const f = await fixture({ inventoryCase });
+    expect(await f.store.install('afs').then(() => null, cause => cause.code)).toBe(code);
+    expect(await f.store.current('afs')).toBeUndefined();
+    expect(await readdir(path.join(f.store.root, 'afs/darwin-arm64'))).toEqual([]);
+  }
 });

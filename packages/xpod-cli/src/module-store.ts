@@ -8,6 +8,7 @@ import { t as listTar, x as extractTar } from 'tar';
 import { CliCommandError } from './lib/output';
 import { MODULE_API_VERSION, moduleDefinition, modulePackageName, moduleTarget, type ModuleId } from './module-catalog';
 import { createModuleInstallDiagnostics, type ModuleInstallDiagnosticObserver } from './module-install-diagnostics';
+import { checkInventoryFiles } from './module-inventory-workers';
 import { withModuleOwnedLock } from './module-owned-lock';
 
 const REGISTRY = 'https://registry.npmjs.org';
@@ -80,11 +81,13 @@ export class ModuleStore {
         if (!file || !safePath(file.path) || file.path === 'package.json' || names.has(file.path) || !/^[a-f0-9]{64}$/.test(file.sha256)
           || !Number.isSafeInteger(file.size) || file.size < 0 || ![0o644, 0o755].includes(file.mode)) throw error('module_inventory_invalid', 'Module file inventory is invalid.');
         names.add(file.path);
+      }
+      if (!names.has(manifest.entry)) throw error('module_entry_unbound', 'Module entry is missing from its inventory.');
+      await checkInventoryFiles(manifest.files, async file => {
         const absolute = path.join(directory, 'package', file.path); const stat = await lstat(absolute);
         if (!stat.isFile() || stat.isSymbolicLink() || stat.size !== file.size || (stat.mode & 0o777) !== file.mode
           || await fileDigest(absolute) !== file.sha256) throw error('module_file_changed', 'Installed module contents changed.');
-      }
-      if (!names.has(manifest.entry)) throw error('module_entry_unbound', 'Module entry is missing from its inventory.');
+      });
     });
     const visit = async (relative = ''): Promise<void> => {
       for (const entry of await readdir(path.join(directory, 'package', relative), { withFileTypes: true })) {
