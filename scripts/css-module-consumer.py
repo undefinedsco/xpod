@@ -254,9 +254,14 @@ class Runner:
             return self._observe_group(process)
         except BaseException:
             self.groups_unknown = True
+            if self.records:
+                self.records[-1]['groupObservationFailure'] = self.last_group_observation
             raise
 
     def _observe_group(self, process):
+        observation = dict(pollBefore=None, pollAfter=None, members={}, previous=self.group_members.get(process.pid, {}), absenceProbe='not-run')
+        self.last_group_observation = observation
+        observation['pollBefore'] = process.poll()
         output = subprocess.check_output(['/bin/ps', '-axo', 'pid=,pgid=,lstart='], text=True)
         members = {}
         for line in output.splitlines():
@@ -264,9 +269,21 @@ class Runner:
             if len(parts) == 3 and parts[1] == str(process.pid):
                 members[int(parts[0])] = parts[2]
         previous = self.group_members.get(process.pid, {})
-        # After the leader exits, only a previously observed member proves ownership.
-        if process.poll() is not None and members:
-            require(any(pid in previous and previous[pid] == start for pid, start in members.items()), 'process group ownership unknown after leader exit')
+        observation.update(pollAfter=process.poll(), members=members)
+        # A ps snapshot may predate a fast leader's exit. Only ESRCH proves
+        # that stale members are gone; a live or inaccessible group is not absence.
+        if observation['pollAfter'] is not None:
+            try:
+                os.killpg(process.pid, 0)
+            except ProcessLookupError:
+                observation['absenceProbe'] = 'ESRCH'
+                members = {}
+            except BaseException as error:
+                observation['absenceProbe'] = type(error).__name__
+                raise
+            else:
+                observation['absenceProbe'] = 'present'
+                require(any(pid in previous and previous[pid] == start for pid, start in members.items()), 'process group ownership unknown after leader exit')
         self.group_members[process.pid] = members
         return members
 
@@ -349,9 +366,9 @@ class Runner:
             with open(out, 'xb') as stdout, open(err, 'xb') as stderr:
                 process = subprocess.Popen(argv, cwd=cwd, env=env, stdout=stdout, stderr=stderr, start_new_session=True)
                 self.child = process
-                self.observe_group(process)
                 row['pid'] = process.pid
                 self.save()
+                self.observe_group(process)
                 if service:
                     service(process)
                     self.close_service(process)

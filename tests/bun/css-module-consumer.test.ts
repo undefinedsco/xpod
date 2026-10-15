@@ -387,3 +387,78 @@ time.sleep(10)
  assert signals==[m.signal.SIGTERM] and events.read_text()=='TERM|TERM|'
 `);
 });
+
+test('stale leader snapshot requires an ESRCH recheck after fast exit', () => {
+  python(`
+with tempfile.TemporaryDirectory(dir=testbase) as temp:
+ root=pathlib.Path(temp);runner=m.Runner({}, {'output':root,'parent':root})
+ polls=iter([None,0]);process=types.SimpleNamespace(pid=424242,poll=lambda:next(polls))
+ probes=[]
+ def gone(pid,sig):
+  probes.append((pid,sig));raise ProcessLookupError()
+ with patch.object(m.subprocess,'check_output',lambda *a,**k:'424242 424242 original start'),patch.object(m.os,'killpg',gone):
+  assert runner.observe_group(process)=={}
+ assert probes==[(424242,0)] and not runner.groups_unknown
+ assert runner.last_group_observation['members']=={424242:'original start'}
+ assert runner.last_group_observation['pollBefore'] is None and runner.last_group_observation['pollAfter']==0
+ assert runner.last_group_observation['absenceProbe']=='ESRCH'
+`);
+});
+
+test('fast exit rejects EPERM, unknown descendants and reused identities', () => {
+  python(`
+with tempfile.TemporaryDirectory(dir=testbase) as temp:
+ root=pathlib.Path(temp)
+ for mode,snapshot in [('EPERM','424242 424242 original start'),('unknown','424243 424242 stranger'),('reused','424243 424242 new start'),('empty','')]:
+  runner=m.Runner({}, {'output':root,'parent':root});runner.records.append({})
+  runner.group_members[424242]={424243:'old start'}
+  polls=iter([None,0]);process=types.SimpleNamespace(pid=424242,poll=lambda:next(polls))
+  def probe(pid,sig):
+   assert (pid,sig)==(424242,0)
+   if mode=='EPERM':raise PermissionError('denied')
+  with patch.object(m.subprocess,'check_output',lambda *a,**k:snapshot),patch.object(m.os,'killpg',probe):
+   try:runner.observe_group(process)
+   except PermissionError:assert mode=='EPERM'
+   except ValueError:assert mode!='EPERM'
+   else:raise AssertionError('unknown group admitted: '+mode)
+  assert runner.groups_unknown
+  diagnostic=runner.records[-1]['groupObservationFailure']
+  assert diagnostic['absenceProbe']==('PermissionError' if mode=='EPERM' else 'present')
+  assert diagnostic['previous']=={424243:'old start'}
+`);
+});
+
+test('initial observation failure retains the spawned PID and bounded diagnostics', () => {
+  python(`
+with tempfile.TemporaryDirectory(dir=testbase) as temp:
+ root=pathlib.Path(temp);runner=m.Runner({}, {'output':root,'parent':root});runner.result={'records':runner.records}
+ class Fake:
+  pid=424242;returncode=0
+  def __init__(self,*a,**k):pass
+  def poll(self):return 0
+  def wait(self,**k):return 0
+ def denied(*a):raise PermissionError('group probe denied')
+ with patch.object(m.subprocess,'Popen',Fake),patch.object(runner,'gate',lambda:None),patch.object(m.subprocess,'check_output',lambda *a,**k:'424243 424242 stranger'),patch.object(m.os,'killpg',denied):
+  try:runner.command('fast',['fake'],{},root)
+  except PermissionError:pass
+  else:raise AssertionError('initial group denial passed')
+ row=runner.records[0]
+ assert row['pid']==424242 and row['status']=='failed' and not row['rawEligible']
+ assert row['groupObservationFailure']['absenceProbe']=='PermissionError'
+ assert json.loads((root/'result.json').read_text())['records'][0]['pid']==424242
+`);
+});
+
+test('poll failure preserves the original exception and initialized diagnostics', () => {
+  python(`
+with tempfile.TemporaryDirectory(dir=testbase) as temp:
+ root=pathlib.Path(temp);runner=m.Runner({}, {'output':root,'parent':root});runner.records.append({})
+ failure=RuntimeError('poll failed')
+ def broken():raise failure
+ process=types.SimpleNamespace(pid=424242,poll=broken)
+ try:runner.observe_group(process)
+ except RuntimeError as error:assert error is failure
+ else:raise AssertionError('poll error lost')
+ assert runner.groups_unknown and runner.records[-1]['groupObservationFailure']['pollBefore'] is None
+`);
+});
