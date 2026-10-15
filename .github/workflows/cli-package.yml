@@ -7,6 +7,15 @@ on:
       - 'packages/xpod-client/**'
       - 'src/cli/**'
       - 'scripts/check-cli-package.cjs'
+      - 'scripts/check-cli-publication.cjs'
+      - 'scripts/cli-build-inputs.cjs'
+      - 'scripts/prepare-cli-publication.ts'
+      - 'scripts/independent-release-plan.ts'
+      - 'scripts/workspace-package-payload.cjs'
+      - 'tests/scripts/cli-publication-producer.node-test.cjs'
+      - 'src/**'
+      - 'package.json'
+      - 'bunfig.toml'
       - 'scripts/patch-jose.js'
       - 'scripts/patch-inrupt-*.js'
       - 'types/bun/**'
@@ -23,12 +32,23 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.2
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - name: Bind actual checkout
+        id: source
+        run: |
+          actual_sha="$(git rev-parse HEAD)"
+          test "$actual_sha" = "$GITHUB_SHA"
+          echo "sha=$actual_sha" >> "$GITHUB_OUTPUT"
+      - name: Check publication producer contracts
+        run: node --test tests/scripts/cli-publication-producer.node-test.cjs
       - name: Build and install CLI without the server workspace
         run: node scripts/check-cli-package.cjs
       - uses: actions/upload-artifact@v4
@@ -38,3 +58,14 @@ jobs:
             .test-data/cli-package/xpod-cli.tgz
             .test-data/cli-package/xpod-client.tgz
             .test-data/cli-package/result.json
+
+      - name: Build normal CLI publication preparation
+        env:
+          EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: node scripts/check-cli-publication.cjs
+      - name: Upload publication preparation originals
+        uses: actions/upload-artifact@v4
+        with:
+          name: xpod-cli-publication-preparation-${{ runner.os }}-${{ steps.source.outputs.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .test-data/cli-publication-preparation/
+          if-no-files-found: error

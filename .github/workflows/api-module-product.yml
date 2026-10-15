@@ -1,0 +1,74 @@
+name: API module preview product pilot
+
+on:
+  pull_request:
+    branches: [staging, main]
+    # No path filter: API source and static closures include evolving shared
+    # inputs. Their authoritative producers must not acquire a second allowlist.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - run: bun test tests/bun/api-module-producer.test.ts
+
+  darwin-arm64-preview:
+    needs: contract
+    runs-on: macos-14
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.21.1
+      - name: Produce the actual API preview once
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir -p "$GITHUB_WORKSPACE/.test-data"
+          root="$GITHUB_WORKSPACE/.test-data/api-product-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-darwin-arm64"
+          echo "API_PRODUCT_ROOT=$root" >> "$GITHUB_ENV"
+          python3 scripts/api-module-producer.py --out "$root"
+      - name: Upload preview product and its original evidence
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: api-module-products-darwin-arm64-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ env.API_PRODUCT_ROOT }}/product.tgz
+            ${{ env.API_PRODUCT_ROOT }}/producer.receipt.json
+            ${{ env.API_PRODUCT_ROOT }}/evidence/
+            ${{ env.API_PRODUCT_ROOT }}/originals/prepare-inputs.receipt.safe.json
+          if-no-files-found: error
+          retention-days: 30
+      - name: Upload failed production diagnostics separately
+        if: failure() && env.API_PRODUCT_ROOT != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: api-module-diagnostics-darwin-arm64-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ env.API_PRODUCT_ROOT }}/producer.receipt.json
+            ${{ env.API_PRODUCT_ROOT }}/evidence/
+            ${{ env.API_PRODUCT_ROOT }}/originals/prepare-inputs.receipt.safe.json
+          if-no-files-found: warn
+          retention-days: 30

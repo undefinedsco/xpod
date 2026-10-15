@@ -10,7 +10,8 @@ const { withOwnedTempRoot } = createRequire(import.meta.url)('./lib/owned-temp-r
 // Trust is program policy, not a caller-supplied workflow allowlist. Neither the
 // API native-input workflow nor contract fixtures are product producers.
 const REPOSITORY = 'undefinedsco/xpod';
-const PRODUCERS = new Set(['.github/workflows/cli-package.yml', '.github/workflows/agentfs-module-mounted-acceptance.yml']);
+export const API_PRODUCT_WORKFLOW = '.github/workflows/api-module-product.yml';
+const PRODUCERS = new Set(['.github/workflows/cli-package.yml', '.github/workflows/agentfs-module-mounted-acceptance.yml', API_PRODUCT_WORKFLOW]);
 const LIMITS = { packedBytes: 512 * 1024 ** 2, expandedBytes: 1024 ** 3, members: 50_000 };
 const METADATA_NAMES = ['run', 'workflow', 'artifact'] as const;
 type FileBinding = { path: string; bytes: number; sha256: string };
@@ -25,6 +26,7 @@ export function verifyAcquiredMetadata(root: string, binding: MetadataBinding): 
       || !/^[a-f0-9]{64}$/u.test(reference.sha256)) fail('metadata reference invalid');
     const file = path.join(root, reference.path), stat = lstatSync(file);
     if (!stat.isFile() || stat.isSymbolicLink()) fail('metadata original must be regular');
+    if (stat.size !== reference.bytes) fail('metadata original hash mismatch (size)');
     const bytes = readFileSync(file);
     if (bytes.length !== reference.bytes || sha256(bytes) !== reference.sha256) fail('metadata original hash mismatch');
     return bytes;
@@ -51,6 +53,18 @@ interface Dependencies {
 }
 function fail(message: string): never { throw new Error('Artifact acquisition: ' + message); }
 function positive(value: unknown): boolean { return Number.isSafeInteger(value) && Number(value) > 0; }
+export function assertNewAcquisitionOutput(output: string): string {
+  output = path.resolve(output);
+  let parent = path.parse(output).root;
+  for (const part of path.dirname(output).slice(parent.length).split(path.sep).filter(Boolean)) {
+    parent = path.join(parent, part);
+    const stat = lstatSync(parent);
+    if (stat.isSymbolicLink() || !stat.isDirectory()) fail('output parent must be an existing directory without links');
+  }
+  try { lstatSync(output); fail('output already exists'); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+  return output;
+}
 function limit(value: number | undefined, maximum: number): number {
   if (value === undefined) return maximum;
   if (!positive(value) || value > maximum) fail('invalid lower resource bound');
@@ -88,15 +102,7 @@ export async function acquireIndependentProductInput(input: ArtifactAcquisitionI
   if (input?.schemaVersion !== 1 || !/^[a-f0-9]{40}$/u.test(input.sourceSha) || !/^[a-f0-9]{40}$/u.test(input.runHeadSha)
     || !/^[a-f0-9]{64}$/u.test(input.artifactSha256) || ![input.runId, input.runAttempt, input.artifactId].every(positive)) fail('exact source/run/attempt/artifact binding required');
   if (Object.keys(input).some(key => !['schemaVersion', 'sourceSha', 'runHeadSha', 'runId', 'runAttempt', 'artifactId', 'artifactSha256'].includes(key))) fail('unknown acquisition selector');
-  output = path.resolve(output);
-  let parent = path.parse(output).root;
-  for (const part of path.dirname(output).slice(parent.length).split(path.sep).filter(Boolean)) {
-    parent = path.join(parent, part);
-    const stat = lstatSync(parent);
-    if (stat.isSymbolicLink() || !stat.isDirectory()) fail('output parent must be an existing directory without links');
-  }
-  try { lstatSync(output); fail('output already exists'); }
-  catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+  output = assertNewAcquisitionOutput(output);
   const limits = { packedBytes: limit(dependencies.limits?.packedBytes, LIMITS.packedBytes),
     expandedBytes: limit(dependencies.limits?.expandedBytes, LIMITS.expandedBytes), members: limit(dependencies.limits?.members, LIMITS.members) };
   const transport = dependencies.fetch ?? fetch;
@@ -128,6 +134,8 @@ export async function acquireIndependentProductInput(input: ArtifactAcquisitionI
     const artifact = await json('artifact', `actions/artifacts/${input.artifactId}`);
     const allowedNames = workflow.path === '.github/workflows/cli-package.yml'
       ? ['Linux', 'macOS'].map(os => `xpod-cli-${os}-${input.sourceSha}`)
+      : workflow.path === API_PRODUCT_WORKFLOW
+        ? [`api-module-products-darwin-arm64-${input.sourceSha}-${input.runId}-${input.runAttempt}`]
       : MODULE_TARGETS.map(target => `afs-module-products-${target.platform}-${target.arch}-${input.sourceSha}-${input.runId}-${input.runAttempt}`);
     const created = Date.parse(artifact.created_at), started = Date.parse(run.run_started_at), completed = Date.parse(run.updated_at);
     if (artifact.id !== input.artifactId || !allowedNames.includes(artifact.name) || artifact.expired !== false || artifact.workflow_run?.id !== run.id
@@ -159,7 +167,7 @@ export async function acquireIndependentProductInput(input: ArtifactAcquisitionI
       projection: { path: 'metadata.json', bytes: projection.length, sha256: sha256(projection) } };
     const cliTestMaterial = workflow.path === '.github/workflows/cli-package.yml';
     const receipt = { schemaVersion: 1, kind: 'independent-product-artifact-acquisition', status: 'blocked',
-      materialRole: cliTestMaterial ? 'test-materials' : 'module-product-materials',
+      materialRole: cliTestMaterial ? 'test-materials' : workflow.path === API_PRODUCT_WORKFLOW ? 'controlled-preview-materials' : 'module-product-materials',
       repository: REPOSITORY, expectedSourceSha: input.sourceSha, runHeadSha: input.runHeadSha,
       runId: input.runId, runAttempt: input.runAttempt, artifactId: input.artifactId, workflowPath: workflow.path,
       archive: { path: 'artifact.zip', ...downloaded }, inventory,

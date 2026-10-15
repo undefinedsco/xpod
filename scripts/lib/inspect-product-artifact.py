@@ -1,7 +1,8 @@
-"""Read a GitHub artifact ZIP in bounded chunks; never extract or execute it.
+"""Inspect a GitHub artifact ZIP; optionally copy explicit bounded members.
 
 Uses the same stdlib zipfile/duplicate-name approach as agentfs-native-ci/accept.py.
-This is transport inventory only, not a product or release admission verifier.
+Selected members are copied as original bytes; inner archives are never expanded
+or executed. This is transport inventory, not product or release admission.
 """
 import hashlib
 import json
@@ -10,9 +11,20 @@ import pathlib
 import stat
 import sys
 import zipfile
+from contextlib import nullcontext
 
 
-def inspect(archive, expected, packed_limit, expanded_limit, member_limit):
+def inspect(archive, expected, packed_limit, expanded_limit, member_limit, selections=None, destination=None):
+    selected = {}
+    for row in selections or []:
+        if (set(row) != {'path', 'destination', 'bytes', 'sha256'} or row['path'] in selected
+                or row['destination'] not in ('producer.receipt.json', 'product.tgz', 'pack.raw.log')
+                or type(row['bytes']) is not int or row['bytes'] < 0
+                or len(row['sha256']) != 64):
+            raise ValueError('invalid exact projection selection')
+        selected[row['path']] = row
+    if len({row['destination'] for row in selected.values()}) != len(selected):
+        raise ValueError('duplicate projection destination')
     fd = os.open(archive, os.O_RDONLY | os.O_NOFOLLOW)
     with os.fdopen(fd, 'rb') as source:
         before = os.fstat(source.fileno())
@@ -60,27 +72,47 @@ def inspect(archive, expected, packed_limit, expanded_limit, member_limit):
             if any('/'.join(pathlib.PurePosixPath(name).parts[:i]) in files
                    for name in names for i in range(1, len(pathlib.PurePosixPath(name).parts))):
                 raise ValueError('artifact file/directory conflict')
+            if not set(selected).issubset(files):
+                raise ValueError('selected ordinary member missing')
             inventory = []
             actual_expanded = 0
             for entry in entries:
                 digest = hashlib.sha256()
                 size = 0
-                with archive_zip.open(entry) as member:
+                row = selected.get(entry.filename)
+                if row and entry.file_size != row['bytes']:
+                    raise ValueError('projection declared size mismatch')
+                output = open(pathlib.Path(destination) / row['destination'], 'xb') if row else None
+                with (output if output else nullcontext()), archive_zip.open(entry) as member:
                     while chunk := member.read(65536):
                         size += len(chunk)
                         actual_expanded += len(chunk)
                         if size > entry.file_size or actual_expanded > expanded_limit:
                             raise ValueError('artifact actual expanded bound')
                         digest.update(chunk)
+                        if output:
+                            output.write(chunk)
                 if size != entry.file_size or (entry.is_dir() and size):
                     raise ValueError('artifact member size mismatch')
+                if row:
+                    if digest.hexdigest() != row['sha256']:
+                        raise ValueError('projection member hash mismatch')
+                    os.chmod(pathlib.Path(destination) / row['destination'], 0o400)
                 inventory.append({'path': entry.filename, 'kind': 'directory' if entry.is_dir() else 'file',
                                   'bytes': size, 'sha256': digest.hexdigest(), 'mode': (entry.external_attr >> 16) & 0o777})
         after = os.fstat(source.fileno())
         if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns):
             raise ValueError('artifact changed during inspection')
-        return {'members': inventory, 'expandedBytes': actual_expanded, 'extracted': False}
+        result = {'members': inventory, 'expandedBytes': actual_expanded,
+                  'selectedMembersProjected': len(selected), 'innerArchiveExpanded': False}
+        # Preserve the original no-write acquisition contract. Projection callers
+        # use the explicit count instead of an ambiguous extracted:false flag.
+        if not selected:
+            result['extracted'] = False
+        return result
 
 
 if __name__ == '__main__':
-    print(json.dumps(inspect(sys.argv[1], sys.argv[2], *map(int, sys.argv[3:6]))))
+    selections = json.loads(sys.argv[6]) if len(sys.argv) > 6 else None
+    destination = sys.argv[7] if len(sys.argv) > 7 else None
+    print(json.dumps(inspect(sys.argv[1], sys.argv[2], *map(int, sys.argv[3:6]), selections, destination)))

@@ -38,21 +38,7 @@ const started = Date.now();
 fs.mkdirSync(evidence, { recursive: true });
 fs.rmSync(source, { recursive: true, force: true });
 fs.mkdirSync(packageRoot, { recursive: true });
-for (const entry of ['src', 'scripts', 'tests', 'licenses', 'tsconfig.json', 'tsconfig.core.json', 'tsconfig.client.json', 'tsconfig.build-tools.json', 'package.json', 'README.md', 'LICENSE']) {
-  fs.cpSync(path.join(original, entry), path.join(packageRoot, entry), { recursive: true });
-}
-fs.mkdirSync(runtimeClientRoot, { recursive: true });
-for (const entry of ['src', 'scripts', 'tests', 'licenses', 'tsconfig.json', 'package.json', 'README.md', 'LICENSE']) {
-  fs.cpSync(path.join(root, 'packages/xpod-client', entry), path.join(runtimeClientRoot, entry), { recursive: true });
-}
-fs.cpSync(path.join(root, 'types/bun'), path.join(source, 'types/bun'), { recursive: true });
-fs.copyFileSync(path.join(root, 'LICENSE'), path.join(source, 'LICENSE'));
-for (const relative of require('../packages/xpod-cli/scripts/canonical-host-sources.json')) {
-  if (!/^[A-Za-z0-9/_-]+\.ts$/.test(relative) || relative.includes('..')) throw new Error('cli_host_source_invalid');
-  const destination = path.join(source, 'src', relative);
-  fs.mkdirSync(path.dirname(destination), { recursive: true });
-  fs.copyFileSync(path.join(root, 'src', relative), destination);
-}
+require('./cli-build-inputs.cjs').copyCliBuildInputs(root, source);
 const information = JSON.parse(fs.readFileSync(path.join(original, 'package.json')));
 // Build dependencies are declared once, in the CLI package; never install the root server graph.
 fs.writeFileSync(path.join(source, 'package.json'), JSON.stringify({ name: 'xpod-cli-build', private: true, devDependencies: information.devDependencies }));

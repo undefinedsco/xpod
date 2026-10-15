@@ -84,6 +84,14 @@ CLI、AFS、API、CSS 独立版本与独立发布，分别使用 `cli-v<version>
 
 ## 本轮迁移范围
 
+### 独立产物的 CI 接线
+
+`cli-package.yml` 保留私有 `file:` 消费者夹具及其测试归档，另以正常最小 workspace、独立 `publication.bun.lock` 和既有 hoisted 配置构建 CLI/client publication-preparation 原件。准备工具检查正常 tar 的精确版本依赖、原 source manifest，以及 CLI 内嵌 client 与独立归档的逐字节身份；准备成功不等于 registry 发布或消费者读回通过。
+
+`api-module-product.yml` 仅执行原生 `darwin-arm64` controlled-preview pilot，按正常 build/stage/material/pack 命令生成产品及证据。其他平台不据此获得资格。成功产品和失败诊断使用不同 artifact 名称，源码实际 checkout、事件 head、run/attempt、原 pack 日志及归档摘要分别绑定；native、legal、consumer 和 release 状态保持各自边界。
+
+`acquire-independent-product-input.ts` 保存 GitHub 元数据原字节与 ZIP 摘要链；`project-api-product-input.ts` 仅复制约定的 producer receipt、原 tgz 和 pack raw 成员，再生成 `collect-api-release-input.ts` 的输入。投影不展开内部 tgz，也不替代 collector 的库存和源码材料检查。producer 的 checkout/attempt/阶段关闭声明尚未被独立准入验证时仍为 blocked。CLI publication-preparation 的远端投影尚未接通，不能把旧 CLI 测试归档改名充当发布候选。
+
 已执行的第一步是 CLI 核心源码归属、独立 npm 构建与通用按需模块下载/校验入口。默认 test/verify 同样只覆盖 CLI 核心；test:preview/verify:preview 显式保留旧预览兼容门禁。既有 `build:preview`/`build:cli-only` 保存旧客户端+helper 预览的证据链，不是新的默认发行路径；其 `src/main.ts`/`src/entry.ts` 为显式迁移期入口，公共 npm 包只运行 `npm-entry.ts`，切换点是 package.json 的 build/bin。
 
 截至本轮验收，CLI 的安装/执行锁已与服务宿主生命周期接通，CLI/AFS/CSS/API 的独立 producer 已产生实际包并完成对应消费者验收；桌面也已完成独立端口上的真实组合启动。CSS/API/AFS 平台包仍未正式发布到 registry。各产物来源分别如下，不能将后续测试提交视为这些产物的重新构建：
