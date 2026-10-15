@@ -60,6 +60,19 @@ function dependencyOverrides(value: unknown): void {
     dependencyOverrides(nested);
   }
 }
+/** Validate only the publishing manifest; nested source manifests remain original material. */
+export function assertPublicationDependencies(manifest: Record<string, any>): void {
+  // The root is the publishing manifest. Nested distributions are original
+  // material: their development metadata is not an installer dependency edge.
+  for (const field of ['dependencies', 'optionalDependencies', 'peerDependencies', 'devDependencies']) {
+    for (const value of Object.values(manifest[field] ?? {})) {
+      dependency(value);
+    }
+  }
+  for (const field of ['overrides', 'resolutions']) {
+    if (manifest[field] !== undefined) dependencyOverrides(manifest[field]);
+  }
+}
 /** A local admission planner. It validates bound receipts, never grants legal clearance or publishes. */
 export function planIndependentRelease(input: ReleaseInput, root = process.cwd()) {
   if (input?.schemaVersion !== 1 || !shaPattern.test(input.sourceSha) || !shaPattern.test(input.runHeadSha) || input.checkoutSha !== input.sourceSha || !Array.isArray(input.products) || !input.products.length) fail('exact source and products required');
@@ -81,16 +94,7 @@ export function planIndependentRelease(input: ReleaseInput, root = process.cwd()
     const manifest = inspected.manifest;
     const integrity = sha512Integrity(archiveBytes);
     if (manifest.name !== name || manifest.version !== item.version || (manifest.private !== undefined && manifest.private !== false)) fail('publish package identity/private producer rejected');
-    // The root is the publishing manifest. Nested distributions are original
-    // material: their development metadata is not an installer dependency edge.
-    for (const field of ['dependencies', 'optionalDependencies', 'peerDependencies', 'devDependencies']) {
-      for (const value of Object.values(manifest[field] ?? {})) {
-        dependency(value);
-      }
-    }
-    for (const field of ['overrides', 'resolutions']) {
-      if (manifest[field] !== undefined) dependencyOverrides(manifest[field]);
-    }
+    assertPublicationDependencies(manifest);
     if (module && (manifest.xpodModule?.id !== module.id || manifest.xpodModule?.platform !== target!.platform
       || manifest.xpodModule?.arch !== target!.arch || manifest.xpodModule?.cliApiVersion !== MODULE_API_VERSION)) fail('module target ABI mismatch');
     if (module) {
