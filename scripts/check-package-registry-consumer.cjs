@@ -109,13 +109,21 @@ function isolatedEnvironment(userConfig, globalConfig, publication = false) {
     NPM_CONFIG_GLOBALCONFIG: globalConfig, npm_config_globalconfig: globalConfig };
 }
 
+function assertSafeFixturePublishConfig(manifest) {
+  const config = manifest.publishConfig;
+  // Keep original metadata. Only public access agrees with the fixed publisher
+  // command; registry/tag/auth and every other override remain forbidden.
+  if (config !== undefined && (!config || typeof config !== 'object' || Array.isArray(config)
+    || Object.entries(config).some(([key, value]) => key !== 'access' || value !== 'public'))) {
+    throw new Error('Registry fixture refuses publishConfig overrides');
+  }
+}
+
 async function publishArtifact(artifact, registry, token, evidenceRoot) {
-  // npm publishConfig may override command-line registry settings. Refuse it
-  // before invoking npm, rather than risk an unintended external publication.
   const targetRegistry = new URL(registry);
   if (targetRegistry.protocol !== 'http:' || targetRegistry.hostname !== '127.0.0.1' || !targetRegistry.port
     || targetRegistry.username || targetRegistry.password || targetRegistry.pathname !== '/' || targetRegistry.search || targetRegistry.hash) throw new Error('Publisher requires an explicit loopback registry');
-  if (artifact.manifest.publishConfig && Object.keys(artifact.manifest.publishConfig).length) throw new Error('Registry fixture refuses publishConfig overrides');
+  assertSafeFixturePublishConfig(artifact.manifest);
   const projectManifest = path.join(evidenceRoot, 'package.json');
   const userConfig = path.join(evidenceRoot, 'publish.npmrc');
   const globalConfig = path.join(evidenceRoot, 'publish-global.npmrc');
@@ -258,4 +266,4 @@ for (const specifier of ['@undefineds.co/ai-connections', '@undefineds.co/ai-con
   }
 }
 if (require.main === module) main(...process.argv.slice(2)).catch((error) => { console.error(error); process.exitCode = 1; });
-module.exports = { readArtifact, createRegistry, publishArtifact, isolatedEnvironment, run };
+module.exports = { readArtifact, createRegistry, publishArtifact, isolatedEnvironment, run, assertSafeFixturePublishConfig };
