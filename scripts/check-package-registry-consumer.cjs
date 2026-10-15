@@ -68,7 +68,7 @@ function createRegistry(artifact, publishToken, upstreamRegistry, supply = {}) {
       if (!state || !publishToken || req.headers.authorization !== `Bearer ${publishToken}`) {
         res.writeHead(403); res.end(); return;
       }
-      if (state.publishing) { res.writeHead(409); res.end(); return; }
+      if (state.publishing || [...state.versions.values()].every(row => row.published)) { res.writeHead(409); res.end(); return; }
       state.publishing = true;
       try {
         const chunks = [];

@@ -107,3 +107,17 @@ test('only declared published versions with own metadata keys are routable, incl
     }
   }
 });
+
+// Preserve the original root fixture's conflict before parsing another body.
+test('fully published identities reject duplicate malformed bodies as conflicts', async t => {
+  const first = artifact('@fixture/child'), second = artifact('@fixture/child', '2.0.0');
+  const { root, origin, server } = await fixture(t, [first, second]);
+  assert.equal((await put(origin, publication(origin, root))).status, 201);
+  const send = name => fetch(origin + '/' + encodeURIComponent(name), { method: 'PUT',
+    headers: { authorization: 'Bearer fixture-token' }, body: '{}' });
+  assert.equal((await send(root.manifest.name)).status, 409);
+  assert.equal((await put(origin, publication(origin, first))).status, 201);
+  assert.equal((await send(first.manifest.name)).status, 400);
+  assert.equal((await put(origin, publication(origin, second, server.publishedMetadata(first.manifest.name)))).status, 201);
+  assert.equal((await send(first.manifest.name)).status, 409);
+});
