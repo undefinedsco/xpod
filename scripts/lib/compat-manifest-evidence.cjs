@@ -3,10 +3,11 @@
 const fs = require('node:fs');
 const crypto = require('node:crypto');
 const zlib = require('node:zlib');
-const { parseTar } = require('../workspace-package-payload.cjs');
+const { execFileSync } = require('node:child_process');
 const MANIFEST_LIMIT = 128 * 1024;
 const TOTAL_LIMIT = 1024 * 1024;
 const packageName = /^(?:@[a-z0-9._-]+\/)?[a-z0-9._-]+$/i;
+function fail(reason) { const error = new Error(reason); error.evidenceReason = reason; throw error; }
 const sha256 = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
 function name(value) {
   if (typeof value !== 'string' || !packageName.test(value) || value.length > 214) throw Error('Invalid package identity');
@@ -38,23 +39,77 @@ function projection(manifest) {
   }
   return result;
 }
-function archiveManifests(file) {
+function archiveManifests(file, limits = {}) {
+  const compressedLimit = limits.compressed ?? 64 * 1024 * 1024;
+  const expandedLimit = limits.expanded ?? 128 * 1024 * 1024;
+  const manifestLimit = limits.manifests ?? TOTAL_LIMIT;
   const stat = fs.lstatSync(file);
-  if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 64 * 1024 * 1024) throw Error('Archive evidence bound');
-  const bytes = fs.readFileSync(file);
-  const entries = parseTar(zlib.gunzipSync(bytes, { maxOutputLength: 128 * 1024 * 1024 }));
+  if (!stat.isFile() || stat.isSymbolicLink()) fail('archive-not-regular');
+  if (stat.size > compressedLimit) fail('archive-compressed-bound');
+  // Read a bounded owned byte snapshot once. Tar never reopens this path.
+  const fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
+  const chunks = []; let length = 0;
+  try {
+    const started = fs.fstatSync(fd, { bigint: true });
+    const opened = fs.fstatSync(fd);
+    if (!opened.isFile() || opened.dev !== stat.dev || opened.ino !== stat.ino) fail('archive-identity-changed');
+    for (;;) {
+      const buffer = Buffer.alloc(Math.min(65536, compressedLimit - length + 1));
+      const count = fs.readSync(fd, buffer, 0, buffer.length, null);
+      if (!count) break;
+      length += count;
+      if (length > compressedLimit) fail('archive-compressed-bound');
+      chunks.push(buffer.subarray(0, count));
+    }
+    const ended = fs.fstatSync(fd, { bigint: true });
+    if (ended.size !== started.size || ended.mtimeNs !== started.mtimeNs || ended.ctimeNs !== started.ctimeNs) fail('archive-changed-during-read');
+  } finally { fs.closeSync(fd); }
+  const bytes = Buffer.concat(chunks, length);
+  let expandedBytes;
+  try {
+    if (expandedLimit <= 0) fail('archive-expanded-bound');
+    expandedBytes = zlib.gunzipSync(bytes, { maxOutputLength: expandedLimit }).length;
+  } catch (error) {
+    fail(error.evidenceReason ?? (error.code === 'ERR_BUFFER_TOO_LARGE' ? 'archive-expanded-bound' : 'archive-gzip-invalid'));
+  }
+  // Compat archives are repacked by platform tar (including long-name/PAX
+  // metadata). Reuse that reader, without weakening the module tar parser.
+  const deadline = Date.now() + 30_000;
+  const tar = (flags, member) => {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) fail('tar-read-deadline');
+    try {
+      return execFileSync('tar', [flags, '-', member], { input: bytes, maxBuffer: MANIFEST_LIMIT + 1,
+        timeout: Math.min(10_000, remaining), stdio: ['pipe', 'pipe', 'ignore'] });
+    } catch (error) {
+      if (error.code === 'ENOBUFS') fail(flags === '-xzOf' ? 'manifest-size-bound' : 'member-output-bound');
+      if (error.signal) fail('tar-read-deadline');
+      throw error;
+    }
+  };
   let total = 0;
   const read = member => {
-    const entry = entries.find(row => row.path === member);
-    if (!entry) return { path: member, status: 'missing' };
-    if (entry.type !== 'file' || entry.content.length > MANIFEST_LIMIT) throw Error('Manifest evidence bound');
-    total += entry.content.length;
-    if (total > TOTAL_LIMIT) throw Error('Manifest total bound');
-    return { path: member, status: 'present', bytes: entry.content.length, sha256: sha256(entry.content),
-      manifest: projection(JSON.parse(entry.content.toString('utf8'))) };
+    let listing;
+    try { listing = tar('-tvzf', member).toString('utf8').trim().split('\n'); }
+    catch (error) {
+      if (error.evidenceReason) throw error;
+      if (error.code === 'ENOBUFS') fail('member-output-bound');
+      if (error.signal) fail('tar-read-deadline');
+      if (Number.isInteger(error.status) && error.status !== 0) return { path: member, status: 'unresolved', reason: 'member-unresolved' };
+      fail('archive-tar-read-failed');
+    }
+    if (listing.length !== 1 || !listing[0].startsWith('-') || !listing[0].endsWith(' ' + member)) fail('member-not-unique-regular');
+    const content = tar('-xzOf', member);
+    if (content.length > MANIFEST_LIMIT) fail('manifest-size-bound');
+    total += content.length;
+    if (total > manifestLimit) fail('manifest-total-bound');
+    let manifest;
+    try { manifest = JSON.parse(content.toString('utf8')); } catch { fail('manifest-json-invalid'); }
+    try { manifest = projection(manifest); } catch { fail('manifest-projection-invalid'); }
+    return { path: member, status: 'present', bytes: content.length, sha256: sha256(content), manifest };
   };
   const root = read('package/package.json');
-  if (root.status !== 'present') throw Error('Root manifest missing');
+  if (root.status !== 'present') fail('root-manifest-unresolved');
   // The actual root declaration is the sole bundle registry. No nine-package copy.
   const bundled = new Set();
   for (const field of ['bundledDependencies', 'bundleDependencies']) {
@@ -62,28 +117,30 @@ function archiveManifests(file) {
     for (const item of value === true ? Object.keys(root.manifest.dependencies ?? {}) : Array.isArray(value) ? value : []) bundled.add(item);
   }
   const manifests = [root, ...[...bundled].sort().map(item => read('package/node_modules/' + name(item) + '/package.json'))];
-  return { archive: { bytes: bytes.length, sha256: sha256(bytes) }, manifestBytes: total, manifests };
+  return { archive: { bytes: bytes.length, sha256: sha256(bytes) }, expandedBytes, manifestBytes: total, manifests };
 }
 function captureManifestEvidence(output, original, actual = original, runtime = null) {
   // Diagnostic failure must never replace the original build/install outcome.
   let result;
   try {
     const source = archiveManifests(original);
-    const consumed = actual === original ? source : archiveManifests(actual);
-    if (source.manifestBytes + (actual === original ? 0 : consumed.manifestBytes) > TOTAL_LIMIT) throw Error('Manifest total bound');
+    const consumed = actual === original ? source : archiveManifests(actual, {
+      compressed: 64 * 1024 * 1024 - source.archive.bytes,
+      expanded: 128 * 1024 * 1024 - source.expandedBytes, manifests: TOTAL_LIMIT - source.manifestBytes });
+    if (source.manifestBytes + (actual === original ? 0 : consumed.manifestBytes) > TOTAL_LIMIT) fail('manifest-total-bound');
     result = { schemaVersion: 1, kind: 'legacy-package-manifest-evidence', status: 'captured', runtime,
       transformation: actual === original ? 'none' : 'existing-npm-optional-dependency-smoke', original: source, selectedInput: consumed,
       installationOutcome: 'not-attested',
       sourceQualified: false, releaseQualified: false };
-    if (Buffer.byteLength(JSON.stringify(result, null, 2) + '\n') > TOTAL_LIMIT) throw Error('Evidence output bound');
-  } catch {
+    if (Buffer.byteLength(JSON.stringify(result, null, 2) + '\n') > TOTAL_LIMIT) fail('evidence-output-bound');
+  } catch (error) {
     result = { schemaVersion: 1, kind: 'legacy-package-manifest-evidence', status: 'unavailable',
-      reason: 'archive-manifest-evidence-unavailable', sourceQualified: false, releaseQualified: false };
+      reason: error.evidenceReason ?? 'archive-read-failed', sourceQualified: false, releaseQualified: false };
   }
   try {
     const bytes = Buffer.from(JSON.stringify(result, null, 2) + '\n');
     fs.writeFileSync(output, bytes, { flag: 'wx', mode: 0o600 });
     return { status: result.status, bytes: bytes.length, sha256: sha256(bytes) };
-  } catch { return { status: 'unavailable' }; }
+  } catch { return { status: 'unavailable', reason: 'evidence-write-failed' }; }
 }
 module.exports = { archiveManifests, captureManifestEvidence };

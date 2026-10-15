@@ -16,7 +16,7 @@ Windows 保留平台默认 shell/PATH。完整 build 产生的 UI 变化由 Vite
 
 2026-10-15 的 [run 38750639516](https://github.com/undefinedsco/xpod/actions/runs/38750639516) 实际 checkout 为 `0b5aad17fdc2bd17b017d3d2a3119c062689ed90`，事件 head 为 `1ac0526d676e59a240a1bd3f665ea54b275d2fa3`。Node 9/9 成功（包含 Windows 22/24/25），Bun 9/9 失败，verify 阻断。Windows tar listing 和正常 UI 输出误判未再现；原 Bun registry 安装兼容阻塞仍未解决，不能将 wrapper 修复或矩阵拆分视为整体兼容/发布资格通过。具体 GNU tar/PATH 根因仍未由旧失败日志证明。
 
-兼容通道另外保留受限的 `pack.manifests.json` / `install.manifests.json`：从当次 tgz 读取根 manifest 和根包实际声明的 bundle manifests，记录原成员 SHA/字节及 name/version/依赖/bundle 字段；未知 URL 型依赖值只记哈希，不复制凭据。单 manifest 上限 128 KiB，合计及输出上限 1 MiB，采集失败只记 unavailable，不替代原命令退出状态。Bun registry 安装消费原 tgz；npm local smoke 才沿既有规则删除 optionalDependencies，证据分别绑定原包与实际 smoke 包 SHA/字节及 manifest。证据不含完整 tarball，也不证明 resolver 请求来源或提供发布资格。
+兼容通道另外保留受限的 `pack.manifests.json` / `install.manifests.json`：从当次 tgz 读取根 manifest 和根包实际声明的 bundle manifests，记录原成员 SHA/字节及 name/version/依赖/bundle 字段；未知 URL 型依赖值只记哈希，不复制凭据。单 manifest 上限 128 KiB，合计及输出上限 1 MiB，采集先有界读取同一 fd 的字节快照，gzip 和平台 tar 均只读该快照（tar 经 stdin，不重新打开路径），防止路径替换/ABA 混绑；再复用平台 tar 的 exact member 模式，兼容其他成员的 GNU/PAX 长名元记录；不抽盘或跟随其他符号链接。压缩输入总计 64 MiB、gzip 展开总计 128 MiB，单次 tar 读 10 秒、每份原件读 30 秒，均仅为诊断预算，不替代 48 MiB 产品门禁。采集失败只记 unavailable 和固定 reason 码，不输出异常正文、不替代原命令退出状态。Bun registry 安装消费原 tgz；npm local smoke 才沿既有规则删除 optionalDependencies，证据分别绑定原包与实际 smoke 包 SHA/字节及 manifest。证据不含完整 tarball，也不证明 resolver 请求来源或提供发布资格。
 
 ## 先合入，再发 RC
 
