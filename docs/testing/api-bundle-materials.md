@@ -69,3 +69,9 @@ API 的 Bun 构建类型位于模块内部的 `bun-build-api.ts`，producer 与�
 完整 installed distribution 仅在每个相对路径、内容 SHA-256、size、规范 mode 与原始 package manifest 身份都相等时共享一份源码副本。每个实际物理来源及其 bundle 输入、实际 manifest 声明或依赖解析事实都保留在同一 `source-kit.json` 的可选 `originMappings` 中；该索引同时置于归档内并与外部索引逐字节绑定，schemaVersion 仍为 1。运行依赖树不按源码副本去重改变。归档验证器核对映射格式、完整 inventory 身份、原始 manifest 和 owner 文件在归档中的哈希；pack 重新读取所有物理来源重建同一映射，不能只验证代表目录。来源遗漏、别名改写、任一来源内容/版本/规范 mode 漂移或 owner 哈希失配都会拒绝。来源映射只有这一处权威入口，外层材料记录不维护第二份别名目录。
 
 `apiProducerSourcePaths` 是 API producer 原件和 pack 源码复制的同一权威入口，复用上述 Git/路径过滤，不能原始扫描整个 API 目录收进 `.test-data`、嵌套 node_modules 或本地密钥。staged `source/` 的文件必须属于已验证 source index 的 canonical 项并保持原字节；正常构建的 static 资产另依其原有 receipt 允许，其他 runtime/material 文件继续按各自显式角色验证，不将它们当源码删除。额外 source 文件或已声明 source 字节漂移都会在归档创建前拒绝。
+
+### API 静态构建目录
+
+API 的正常构建继续执行 Dashboard、Settings 各自的 UI 构建命令，通过命令参数将输出定向到 `packages/xpod-api/dist/static/<target>`。这些目录必须被 Git 忽略且没有已跟踪文件；主线 UI 命令的默认输出和 CSS 静态资源契约保持原样。
+
+`static-products.json` schema 2 使用同一份 roots 声明绑定生产者 `sourceRoot` 与安装包 `destinationRoot`。资产同时记录 `sourcePath`、运行路径 `path`、大小和摘要；stage 先验证 receipt，再将实际输出复制到安装包 `static/dashboard`、`static/settings`，保留运行 URL。旧 schema、越界或未知 root、重复映射、源文件或资源漂移及符号链接均拒绝。

@@ -8,7 +8,7 @@ import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { buildApiBundleProducts, bundleFile } from '../scripts/bundle-products';
 import { prepareApiBundleStage, attachApiSourcekit, verifyApiStageMaterials } from '../scripts/bundle-stage';
-import { staticSourcePaths } from '../scripts/static-material';
+import { staticSourcePaths, apiStaticProductRoots, materializeApiStaticProducts } from '../scripts/static-material';
 import { stagePhysicalService } from '../../../scripts/lib/physical-module-stage';
 import { packPhysicalModule } from '../../../scripts/lib/physical-module-archive';
 
@@ -32,12 +32,14 @@ test('normal API bundle stage and archive callbacks require strict receipts, sta
     fs.mkdirSync(build,{recursive:true});
     await buildApiBundleProducts(root,build,[]);
     const rows=(files:string[])=>files.map(file=>{const bytes=fs.readFileSync(root+'/'+file);return {path:file,bytes:bytes.length,sha256:sha(bytes)};});
-    const builds=['dashboard','settings'].map(target=>{const bytes=Buffer.from('controlled static fixture '+target);fs.writeFileSync(build+'/static-'+target+'.raw.log',bytes);return {command:['bun','run','build:'+target],exitCode:0,rawSHA256:sha(bytes)};});
-    fs.writeFileSync(build+'/static-products.json',JSON.stringify({schemaVersion:1,sourceCommit:spawnSync('git',['rev-parse','HEAD'],{cwd:root,encoding:'utf8'}).stdout.trim(),builds,sources:rows(staticSourcePaths(root)),assets:rows(['static/dashboard/index.html','static/settings/index.html'])}));
+    const roots=apiStaticProductRoots(root,build);
+    const builds=roots.map(binding=>{const bytes=Buffer.from('controlled static fixture '+binding.target);fs.writeFileSync(build+'/static-'+binding.target+'.raw.log',bytes);put(binding.sourceRoot+'/index.html','built '+binding.target);return {command:['bun','run','build:'+binding.target,'--outDir',path.join(root,binding.sourceRoot)],exitCode:0,rawSHA256:sha(bytes)};});
+    const assets=roots.map(binding=>{const row=rows([binding.sourceRoot+'/index.html'])[0];return {path:binding.destinationRoot+'/index.html',sourcePath:row.path,bytes:row.bytes,sha256:row.sha256};});
+    fs.writeFileSync(build+'/static-products.json',JSON.stringify({schemaVersion:2,sourceCommit:spawnSync('git',['rev-parse','HEAD'],{cwd:root,encoding:'utf8'}).stdout.trim(),roots,builds,sources:rows(staticSourcePaths(root)),assets}));
     put('packages/xpod-api/.test-data/ignored-fixture','not source material');put('packages/xpod-api/.env.local','not a real secret');
     const plan=prepareApiBundleStage(root,build);
     stagePhysicalService(root,stage,plan.inputs,{entry:'src/api/main.ts',moduleId:'api',runtimePackages:plan.runtimePackages,runtimePackageImports:plan.runtimeImports,
-      bundle:{files:plan.files,verify:()=>{prepareApiBundleStage(root,build);}},resources:['static/dashboard','static/settings'],validateInputs:()=>{}});
+      bundle:{files:plan.files,verify:()=>{prepareApiBundleStage(root,build);}},materializeResources:output=>materializeApiStaticProducts(root,build,output),validateInputs:()=>{}});
     assert(fs.existsSync(stage+'/dist/PiAgentRuntimeWorker.mjs'));
     assert.throws(()=>verifyApiStageMaterials(root,build,stage),/ENOENT/);
     attachApiSourcekit(root,stage,plan);verifyApiStageMaterials(root,build,stage);

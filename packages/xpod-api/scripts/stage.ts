@@ -1,3 +1,4 @@
+import {materializeApiStaticProducts} from './static-material';
 import {attachApiSourcekit, prepareApiBundleStage} from './bundle-stage';
 import { classifyInputs } from './closure';
 import { readFileSync, writeFileSync } from 'node:fs';
@@ -15,7 +16,7 @@ const plan=prepareApiBundleStage(root,build);
 const facts=stagePhysicalService(root,path.resolve(output),plan.inputs, {
  entry:'src/api/main.ts',moduleId:'api',publication,runtimePackages:plan.runtimePackages,
  runtimePackageManifest:plan.receipt.runtimePackageManifest.path,runtimePackageImports:plan.runtimeImports,
- resources:['static/dashboard','static/settings'],
+ materializeResources:stage=>materializeApiStaticProducts(root,build,stage),
  bundle:{files:plan.files,verify:()=>{prepareApiBundleStage(root,build);}},
  validateInputs:paths=>{const blockers=classifyInputs(paths.map(file=>({path:file,bytes:readFileSync(path.join(root,file)).length})),root).blockers;if(blockers.length)throw new Error('Forbidden service closure: '+blockers.join(','));},
 });
