@@ -86,7 +86,18 @@ CLI、AFS、API、CSS 独立版本与独立发布，分别使用 `cli-v<version>
 
 已执行的第一步是 CLI 核心源码归属、独立 npm 构建与通用按需模块下载/校验入口。默认 test/verify 同样只覆盖 CLI 核心；test:preview/verify:preview 显式保留旧预览兼容门禁。既有 `build:preview`/`build:cli-only` 保存旧客户端+helper 预览的证据链，不是新的默认发行路径；其 `src/main.ts`/`src/entry.ts` 为显式迁移期入口，公共 npm 包只运行 `npm-entry.ts`，切换点是 package.json 的 build/bin。
 
-CSS/API/AFS 的平台包尚未在 registry 发布。服务已有按已验证模块描述生成运行计划的独立宿主入口；CLI 安装锁接线、独立 producer 的最终产物与联合验收仍须完成。不能把 CLI fixture 的下载成功或宿主入口测试表述为真实模块发布或 OS 挂载通过。
+截至本轮验收，CLI 的安装/执行锁已与服务宿主生命周期接通，CLI/AFS/CSS/API 的独立 producer 已产生实际包并完成对应消费者验收；桌面也已完成独立端口上的真实组合启动。CSS/API/AFS 平台包仍未正式发布到 registry。各产物来源分别如下，不能将后续测试提交视为这些产物的重新构建：
+
+| 产物 | 已验产物来源 | 已确认范围与入口 |
+| --- | --- | --- |
+| CLI / AFS | `dd5e04b4` 实际包 | 正常包消费者与模块验收；构建和专项验收入口分别见 [CLI](../packages/xpod-cli/README.md)、[AFS](../packages/xpod-afs/README.md) |
+| CSS | 原 `25f44885` dirty 候选，归档摘要 `4593e11e…` | 独立 producer、正常包消费者及桌面组合中的实际 CSS；材料边界见 [CSS scoped components](testing/css-scoped-components.md) |
+| API | clean `25f44885` 构建/消费者链，原归档摘要 `b9c60dfa…` | 独立 producer、实际包与正常消费者；构建材料见 [API bundle materials](testing/api-bundle-materials.md) |
+| 桌面 / 随包 CLI | `e6de7863` 实际 `.app`，组合运行使用上述原 CSS/API 归档 | 空 PATH、随包 Bun/正常 CLI、独立端口真实 CSS/API/QLever、HTTP 就绪、窗口/托盘、正常退出及签后封印；入口见 [桌面 runtime 材料与验收](../desktop/RUNTIME-MATERIALS.md) |
+
+桌面组合验收后，安装库存、逐文件摘要/权限、manifest、原归档 provenance、签前/签后及进程证据已封存，再由同一公开 CLI 正常卸载可重建模块，未删除原归档、签名应用或测试数据库。本地单入口记录为 `.test-data/module-isolation-integration-20261014/desktop-split-acceptance.final.safe.json`；该记录保留桌面与原模块各自来源，不声明同一 SHA 的整套重构建。
+
+`e9cb5b5b` 是当前代码/测试基准，不是上述产物的新构建身份。registry 发布与实际 tarball/SRI 读回、完整原生与法律/源码材料资格、真实交互登录后的 Pod 读写及 Chat 等仍未完成；桌面窗口当时显示“正在登录”，不构成这些功能通过的证据。OS 挂载及其他模块功能以各自专项验收为准，不能用下载成功或联合 HTTP 就绪替代。
 
 拆分后的 mounted 验收 driver 要求 `module-source-kit.publicClientMaterials` 显式声明唯一 `runtimeClients` 和 `workspaceSources`。它核对公开客户端的完整文件集合、大小与摘要，并将声明绑定到实际 producer index、源码库存和逐成员验证的源码归档；缺少声明直接拒绝。历史归档继续使用其原提交绑定的 driver，不由新 driver 根据文件存在情况回退。安装回执以 `installedClientPath` 和 `installedClientSHA256` 记录实际客户端入口。
 
@@ -97,7 +108,7 @@ CSS/API/AFS 的平台包尚未在 registry 发布。服务已有按已验证模�
 
 产品 artifact 的 inventory schema 2 包含三个实际打包的归档：`client.tgz`、`cli.tgz`、`afs.tgz`。每个归档独立记录大小、SHA-256 和 SHA-512 SRI，并绑定源码 SHA、实际运行及尝试编号。客户端归档核验公开入口、类型、Session/peer 桥接、完整 dist 和原始通知材料，不能用 CLI 内嵌客户端替代其独立发布材料。历史 schema 1 只有 CLI/AFS 两个归档，不提供独立客户端的发布证明。
 
-这些产物属于开发验收证据。客户端实际 registry 归档与 SRI 读回、依赖该版本的模块安装验收，以及 staging 发布条件仍须分别通过。
+这些产物属于开发验收证据；本地实际 tarball 消费者与模块安装验收的来源见上表。客户端及依赖模块的实际 registry 归档与 SRI 读回、staging 发布条件仍须分别通过。
 
 ### AI runtime 与宿主契约的发布材料
 
@@ -114,7 +125,7 @@ AFS 的文件元数据和 reader coverage Note 输入类型、枚举与 noteKind
 
 Gateway 的 API host、API path、web product 和 API WebSocket 路径属于 API 能力；没有 API target 时返回 503，不回落 CSS。正常 CSS HTTP/WebSocket 路径保持既有路由。Supervisor 的停止 Promise 只在真实 child close 后成功，包含已排空的子进程输出；发送 SIGTERM 的回调不代表停止完成。并发停止共用同一 Promise，超时或信号失败明确失败，重启先等待原进程关闭。关闭中的服务不计入 readiness。
 
-这些前置契约不等于 CSS/API 独立模块已交付。独立 producer、真实依赖闭包与单一运行计划仍须分别实现并验证，不能把现有整包复制成多个名字后声明拆分完成。
+这些关闭契约、独立 producer、实际依赖闭包及单一运行计划已分别验证，并完成上表所列实际产物的联合运行；这不等于平台模块已正式发布，仍须保留各模块的来源与功能验收边界。
 
 ### 已验证模块的服务宿主入口
 
@@ -126,4 +137,4 @@ Gateway 的 API host、API path、web product 和 API WebSocket 路径属于 API
 
 `POST /service/stop` 返回 `202 {accepted:true}`，仅确认请求被接受。异步关闭失败会记录错误并保留所有权；HTTP 成功不能当作子进程或监听器已关闭的证据。
 
-这条入口与独立 producer、CLI 安装锁接线分别验收；源代码中具备入口不等于平台模块已经发布。
+这条入口、独立 producer 与 CLI 安装锁接线已分别验收，真实组合运行的产物来源见上表；平台模块的 registry 发布与正式发行资格仍单独验证。
