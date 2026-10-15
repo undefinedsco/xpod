@@ -6,6 +6,16 @@ Xpod 发布必须先经过 Release Candidate，再由 stable tag 提升同一个
 和同一个容器 digest。不要用 stable tag 调试发布问题；修复必须继续提交到
 开发分支，通过 PR 普通 merge 合入 `staging` 后，由新的 RC 重新验收。
 
+## 完整旧包兼容门禁
+
+`legacy-root-compat.yml` 独立承担完整旧服务包的 18 条兼容通道：Node/Bun 消费者 × Linux/macOS/Windows × Node 22/24/25。每条通道执行原七阶段：frozen install、平台包版本检查、完整 build、pack、包校验、消费者安装、消费者 smoke。独立 CLI 与模块 producer 的成功不能代替这些检查，也不能把失败降为可选项。
+
+Windows 保留平台默认 shell/PATH。完整 build 产生的 UI 变化由 Vite 与验收器共用 `ui/build-targets.json` 声明输出边界：旧的 tracked 输出删除记录与本次 Rollup/publicDir 产物清单分别验证，保留完整 Git 状态；源码、锁文件和未知静态文件漂移继续阻断。不能通过忽略整个 `static/` 绕过源码检查。
+
+`candidate.yml` 通过 reusable workflow 在 RC 前置检查前要求矩阵成功；finalize 再校验 exact SHA、同次 RC run 的全部通道及原始日志/pack 摘要，并将 `compat.receipt.json` 和原件一并放入 `release-acceptance-${GITHUB_SHA}` 的 `compat/`。`release.yml` 从同一个 accepted artifact 重验 `legacy-root-compat`，不接受另一轮矩阵或手填通过标记。部分重跑按每条通道的最新实际 attempt 判定，不能退回旧的成功 attempt。
+
+2026-10-15 的 [run 38750639516](https://github.com/undefinedsco/xpod/actions/runs/38750639516) 实际 checkout 为 `0b5aad17fdc2bd17b017d3d2a3119c062689ed90`，事件 head 为 `1ac0526d676e59a240a1bd3f665ea54b275d2fa3`。Node 9/9 成功（包含 Windows 22/24/25），Bun 9/9 失败，verify 阻断。Windows tar listing 和正常 UI 输出误判未再现；原 Bun registry 安装兼容阻塞仍未解决，不能将 wrapper 修复或矩阵拆分视为整体兼容/发布资格通过。具体 GNU tar/PATH 根因仍未由旧失败日志证明。
+
 ## 先合入，再发 RC
 
 `staging` 是唯一集成与 RC 来源分支。开发工作树的 Docker/Compose 验证使用
@@ -77,9 +87,9 @@ policy 为空。上线前必须补齐分支与环境策略；创建/推送 stagi
 9. 只在接受的 exact commit 上创建 stable tag，例如 `v0.4.0`。
 10. `.github/workflows/release.yml` 下载 exact commit 对应的 acceptance
    artifact，校验 stable tag、staging 来源、required
-   checks 和 accepted digest 后，才首次发布该版本的 npm 包：先发布到不可见的
+   checks 和 accepted digest 后，才首次发布该版本的 npm 包：先发布到临时
    `stable-staging` tag，并由 Node/Bun 重新安装验证；然后才移动 npm `latest`、把 accepted digest
-   重新标记为 stable/latest 容器 tag，并调用生产部署。
+   重新标记为 stable/latest 容器 tag，并调用生产部署。`stable-staging` 是公开包的 dist-tag，不是私有或不可获取的发布。
 
 macOS QLever 以原生输入、构建 workflow、验收脚本和 Clang 身份缓存已验证的完整 runtime，
 不以 Xpod 提交 SHA 作为缓存键。精确命中后跳过 C++ 编译和构建工具安装，先校验旧产物的

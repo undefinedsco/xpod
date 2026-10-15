@@ -68,7 +68,7 @@ xpod module remove afs
 
 ## 独立构建与发布
 
-CLI：`bun run --cwd packages/xpod-cli typecheck`、`test`、`build`，之后在包目录 `bun pm pack`。默认 build 不编译 CSS/API/UI/AFS 或原生引擎；构建输入检查拒绝意外服务依赖。npm tarball 只包含 CLI payload、启动器、原始依赖通知、LICENSE 与说明，不包含工作区路径依赖。清洁目录安装后分别验证 Bun 和 Node；不能用仓库内直接运行替代安装验证。
+CLI：`bun run --cwd packages/xpod-cli typecheck`、`test`、`build`，之后在包目录 `bun pm pack`。默认 build 不编译 CSS/API/UI/AFS 或原生引擎；构建输入检查拒绝意外服务依赖。npm tarball 交付 CLI payload、启动器、公开的 `client` 兼容接口、`output` 与 `build-tools` 接口，以及 producer/source 材料、原始依赖通知、LICENSE 与说明；不携带 CSS/API/AFS 运行实现，也不包含工作区路径依赖。清洁目录安装后分别验证 Bun 和 Node；不能用仓库内直接运行替代安装验证。
 
 独立门禁为 `node scripts/check-cli-package.cjs`：复制 CLI 与共享运行包的必要构建输入，以及共用的认证兼容补丁/测试类型声明，使用独立构建 lock，不安装根服务依赖。`packages/xpod-cli/build.bun.lock` 是这个派生构建环境的 lock；变更构建依赖时通过 `--update-lock` 更新，普通验证使用 frozen lock。共用补丁仍由根 scripts 管理，在 bundle 前应用，不为独立包复制第二份长期实现。
 
@@ -80,6 +80,8 @@ CLI 使用独立版本和 `cli-v<version>` release 标识；不得因此改服�
 
 CLI、AFS、API、CSS 独立版本与独立发布，分别使用 `cli-v<version>`、`afs-v<version>`、`api-v<version>`、`css-v<version>`。同一模块的各平台产物共用一个 tag，并绑定各自的不可变摘要。整体服务/桌面发行保留既有 `v<version>` 与服务 RC 规则。需要联合交付时可协调一次触发多个模块发布，但仍分别打 tag，不要求模块版本号一致；兼容关系由模块接口版本与经过验收的依赖约束表达。
 
+上述 tag 是独立发行的命名约定，当前尚未接通这些 tag 的自动发布 workflow。`cli-package.yml` 的 PR/手动入口只交付构建与消费者证据和 publication-preparation 原件；`independent-release-plan.ts` 只生成 `blocked` 计划，不执行发布、tag 提升或服务部署。正式独立发行仍须完成 source/native/legal/consumer 准入、精确依赖的 registry tarball/SRI 读回及发行审核。
+
 开发任务名称不自动等于分发包。Matrix、Fabric 等业务能力先明确 API 路由、共享服务、CSS adapter 与客户端的职责；只有独立安装/更新需求与接口边界成立后，才在同一目录和宿主接口中登记独立能力包。不得把整个服务换一个包名作为业务模块交付。当前开发任务的落实责任见 [拆包交接清单](module-distribution-handoff.md)。
 
 ## 本轮迁移范围
@@ -87,6 +89,8 @@ CLI、AFS、API、CSS 独立版本与独立发布，分别使用 `cli-v<version>
 ### 独立产物的 CI 接线
 
 `cli-package.yml` 保留私有 `file:` 消费者夹具及其测试归档，另以正常最小 workspace、独立 `publication.bun.lock` 和既有 hoisted 配置构建 CLI/client publication-preparation 原件。准备工具检查正常 tar 的精确版本依赖、原 source manifest，以及 CLI 内嵌 client 与独立归档的逐字节身份；准备成功不等于 registry 发布或消费者读回通过。
+
+完整旧服务包的 Node/Bun 兼容矩阵已移至 `legacy-root-compat.yml`，继续作为服务 RC/stable 的必需门禁；独立 CLI/模块检查不能覆盖其失败，证据职责见 [服务发布流程](RELEASE.md#完整旧包兼容门禁)。
 
 `api-module-product.yml` 仅执行原生 `darwin-arm64` controlled-preview pilot，按正常 build/stage/material/pack 命令生成产品及证据。其他平台不据此获得资格。成功产品和失败诊断使用不同 artifact 名称，源码实际 checkout、事件 head、run/attempt、原 pack 日志及归档摘要分别绑定；native、legal、consumer 和 release 状态保持各自边界。
 
