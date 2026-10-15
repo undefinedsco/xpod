@@ -3,8 +3,21 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { c as createTar } from 'tar';
-import { exportProducerMaterials } from '../scripts/producer-materials';
+import { assertPublicationCommand, exportProducerMaterials } from '../scripts/producer-materials';
 import { verifyProducerSourceArchive } from '../src/producer-source';
+
+test('preserves failed tar status, native path, signal/error and original stderr without relaxing failure', () => {
+  const archive = 'D:\\a\\output\\client.tgz';
+  const outcome = { status: 2, signal: null, error: undefined, stderr: 'tar: Cannot connect to D: resolve failed\n' } as const;
+  let caught: Error | undefined;
+  try { assertPublicationCommand('tar', ['-tf', archive], outcome, 'cannot be listed'); } catch (error) { caught = error as Error; }
+  expect(caught instanceof Error).toBe(true);
+  const details = JSON.parse(caught!.message.slice('cannot be listed: '.length));
+  expect(details.status).toBe(2); expect(details.args).toEqual(['-tf', archive]); expect(details.stderr).toBe(outcome.stderr);
+  expect(() => assertPublicationCommand('tar', ['-tf', archive], { ...outcome, status: null, signal: 'SIGTERM' }, 'cannot be listed')).toThrow('SIGTERM');
+  expect(() => assertPublicationCommand('tar', ['-tf', archive], { ...outcome, status: null, error: Object.assign(new Error('spawn tar ENOENT'), { code: 'ENOENT' }) }, 'cannot be listed')).toThrow('ENOENT');
+  expect(() => assertPublicationCommand('tar', ['-tf', archive], { ...outcome, status: 0, stderr: '' }, 'cannot be listed')).not.toThrow();
+});
 
 test('rebuilds a closed producer inventory without stale source or a previous index', async () => {
   const parent = path.resolve('.test-data/xpod-cli/producer-materials');

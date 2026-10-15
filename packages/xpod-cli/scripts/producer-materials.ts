@@ -3,6 +3,16 @@ import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { verifyProducerSourceArchive } from '../src/producer-source';
+import type { SpawnSyncReturns } from 'node:child_process';
+
+/** Preserve the failing tool's outcome; diagnostics never turn failure into success. */
+export function assertPublicationCommand(command: string, args: string[], result: Pick<SpawnSyncReturns<string | Buffer>, 'status' | 'signal' | 'error' | 'stderr'>, message: string): void {
+  if (!result.error && result.status === 0 && !result.signal) return;
+  const stderr = result.stderr?.toString() ?? '';
+  throw new Error(message + ': ' + JSON.stringify({ command, args, status: result.status, signal: result.signal,
+    error: result.error ? { code: (result.error as NodeJS.ErrnoException).code ?? null, message: result.error.message } : null,
+    stderr: stderr.slice(0, 64 * 1024), stderrTruncated: stderr.length > 64 * 1024 }));
+}
 
 /** Decode tar's text listing delimiters; member bytes and archive checks stay strict. */
 export function runtimePublicationFileMembers(listing: string): string[] {
@@ -29,17 +39,17 @@ export function runtimePublicationFileMembers(listing: string): string[] {
 export function collectPublishedRuntimeClient(origin: string, destination: string) {
   mkdirSync(destination, { recursive: true });
   const packed = spawnSync('bun', ['pm', 'pack', '--destination', destination], { cwd: origin, encoding: 'utf8' });
-  if (packed.error || packed.status !== 0) throw new Error('Runtime client normal pack failed: ' + (packed.error?.message ?? packed.stderr));
+  assertPublicationCommand('bun', ['pm', 'pack', '--destination', destination], packed, 'Runtime client normal pack failed');
   const archives = readdirSync(destination).filter(name => name.endsWith('.tgz'));
   if (archives.length !== 1) throw new Error('Runtime client publication archive is ambiguous');
   const archive = path.join(destination, archives[0]);
   const listed = spawnSync('tar', ['-tf', archive], { encoding: 'utf8' });
-  if (listed.status !== 0) throw new Error('Runtime client publication archive cannot be listed');
+  assertPublicationCommand('tar', ['-tf', archive], listed, 'Runtime client publication archive cannot be listed');
   const files: Array<{ path: string; bytes: number; sha256: string }> = [];
   for (const member of runtimePublicationFileMembers(listed.stdout)) {
     const relative = member.slice('package/'.length);
     const bytes = spawnSync('tar', ['-xOf', archive, member], { maxBuffer: 16 * 1024 * 1024 });
-    if (bytes.status !== 0) throw new Error('Runtime client publication member cannot be read');
+    assertPublicationCommand('tar', ['-xOf', archive, member], bytes, 'Runtime client publication member cannot be read');
     files.push({ path: relative, bytes: bytes.stdout.length, sha256: createHash('sha256').update(bytes.stdout).digest('hex') });
   }
   files.sort((a, b) => a.path.localeCompare(b.path));

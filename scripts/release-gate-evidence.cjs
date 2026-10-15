@@ -629,6 +629,43 @@ function compatFile(file) {
   const bytes = fs.readFileSync(file);
   return { bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') };
 }
+// Vite and the observer consume the same producer declaration. No independent
+// static-directory allowlist: additions/modifications require emitted membership.
+const UI_BUILD_TARGETS = require('../ui/build-targets.json');
+function uiOutputRoot(target) {
+  const root = path.posix.normalize('ui/' + UI_BUILD_TARGETS[target].outDir);
+  if (!root.startsWith('static/') || root.includes('..')) fail('invalid UI output declaration');
+  return root + '/';
+}
+function uiOutputPath(value) {
+  return typeof value === 'string' && value.length > 0 && !/[\\\x00-\x1f\x7f]/.test(value)
+    && !value.startsWith('/') && value.split('/').every(part => part && part !== '.' && part !== '..');
+}
+function verifyCompatSourceObservation(status, observation) {
+  if (typeof status !== 'string') fail('compat source status missing');
+  if (!status) return;
+  const targets = Object.keys(UI_BUILD_TARGETS);
+  if (!observation || !Array.isArray(observation.before) || !Array.isArray(observation.generated)
+    || observation.generated.length !== targets.length) fail('compat UI observation missing');
+  const roots = targets.map(uiOutputRoot);
+  const before = new Set(observation.before);
+  if (before.size !== observation.before.length || observation.before.some(file => !uiOutputPath(file) || !roots.some(root => file.startsWith(root)))) fail('compat UI baseline invalid');
+  const emitted = new Set();
+  const seen = new Set();
+  for (const row of observation.generated) {
+    if (!targets.includes(row.target) || seen.has(row.target) || row.outDir !== UI_BUILD_TARGETS[row.target].outDir || !Array.isArray(row.files)) fail('compat UI producer declaration mismatch');
+    seen.add(row.target);
+    for (const file of row.files) {
+      if (!uiOutputPath(file)) fail('compat UI emitted path invalid');
+      emitted.add(uiOutputRoot(row.target) + file);
+    }
+  }
+  for (const line of status.split('\n')) {
+    const code = line.slice(0, 2), file = line.slice(3);
+    if (line[2] !== ' ' || !uiOutputPath(file)
+      || !(code === ' D' && before.has(file) || (code === ' M' || code === '??') && emitted.has(file))) fail('compat source input or unknown output changed');
+  }
+}
 function runRootCompatLane(args) {
   validateSourceSha(args.sourceSha);
   const lane = rootCompatLanes().find(row => row.runtime === args.runtime && row.os === args.os && row.node === Number(args.nodeMajor));
@@ -640,7 +677,7 @@ function runRootCompatLane(args) {
   let primary;
   try {
     const actual = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
-    receipt.sourceBeforeStatus = execFileSync('git', ['status', '--porcelain', '--untracked-files=all'], { encoding: 'utf8' }).trim();
+    receipt.sourceBeforeStatus = execFileSync('git', ['status', '--porcelain', '--untracked-files=all'], { encoding: 'utf8' }).trimEnd();
     if (receipt.sourceBeforeStatus) fail('compat checkout is dirty');
     if (actual !== args.sourceSha || Number(process.versions.node.split('.')[0]) !== lane.node) fail('compat actual checkout or Node mismatch');
     const platforms = { 'ubuntu-latest': 'linux', 'macos-latest': 'darwin', 'windows-latest': 'win32' };
@@ -650,6 +687,8 @@ function runRootCompatLane(args) {
     const bun = spawnSync('bun', ['--version'], { encoding: 'utf8' });
     if (bun.error || bun.status !== 0 || bun.signal || bun.stdout.trim() !== '1.4.2') fail('compat actual Bun version mismatch');
     receipt.bunVersion = bun.stdout.trim();
+    const uiEvidence = path.join(out, 'ui-build');
+    const uiBefore = execFileSync('git', ['ls-files', '-z', '--', ...Object.keys(UI_BUILD_TARGETS).map(target => uiOutputRoot(target))], { encoding: 'utf8' }).split('\0').filter(Boolean);
     const commands = rootCompatCommands(lane.runtime, args.consumerRoot);
     for (let index = 0; index < commands.length; index++) {
       const phase = ROOT_COMPAT_PHASES[index], command = commands[index];
@@ -657,7 +696,8 @@ function runRootCompatLane(args) {
       let stdout, stderr, result;
       try {
         stdout = fs.openSync(path.join(out, stdoutName), 'wx'); stderr = fs.openSync(path.join(out, stderrName), 'wx');
-        result = spawnSync(command[0], command.slice(1), { stdio: ['ignore', stdout, stderr] });
+        result = spawnSync(command[0], command.slice(1), { stdio: ['ignore', stdout, stderr],
+          ...(phase === 'build' ? { env: { ...process.env, XPOD_UI_BUILD_EVIDENCE_DIR: uiEvidence } } : {}) });
       } finally {
         if (stdout !== undefined) fs.closeSync(stdout);
         if (stderr !== undefined) fs.closeSync(stderr);
@@ -688,8 +728,13 @@ function runRootCompatLane(args) {
       }
     }
     receipt.sourceAfter = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
-    receipt.sourceAfterStatus = execFileSync('git', ['status', '--porcelain', '--untracked-files=all'], { encoding: 'utf8' }).trim();
-    if (receipt.sourceAfter !== args.sourceSha || receipt.sourceAfterStatus) fail('compat source changed');
+    receipt.sourceAfterStatus = execFileSync('git', ['status', '--porcelain', '--untracked-files=all', '--no-renames'], { encoding: 'utf8' }).trimEnd();
+    const observation = { before: uiBefore, generated: Object.keys(UI_BUILD_TARGETS).map(target => readJsonFile(path.join(uiEvidence, target + '.json'), 'UI producer observation')) };
+    const observationFile = path.join(out, 'source-observation.json');
+    writeJsonFile(observationFile, observation);
+    receipt.sourceObservation = { path: 'source-observation.json', ...compatFile(observationFile) };
+    if (receipt.sourceAfter !== args.sourceSha) fail('compat source changed');
+    verifyCompatSourceObservation(receipt.sourceAfterStatus, observation);
   } catch (error) { primary = error; receipt.failure = error.message; }
   finally { writeJsonFile(path.join(out, 'lane.receipt.json'), receipt); }
   if (primary) throw primary;
@@ -721,8 +766,17 @@ function verifyRootCompat(args) {
     const { receipt, directory, file } = rows[0];
     const nodeVersion = /^v(\d+)\.\d+\.\d+$/.exec(receipt.nodeVersion || '');
     if (!nodeVersion || Number(nodeVersion[1]) !== lane.node || receipt.bunVersion !== '1.4.2'
-      || receipt.actualCheckoutSha !== args.sourceSha || receipt.sourceAfter !== args.sourceSha || receipt.sourceBeforeStatus !== '' || receipt.sourceAfterStatus !== '' || receipt.failure
+      || receipt.actualCheckoutSha !== args.sourceSha || receipt.sourceAfter !== args.sourceSha || receipt.sourceBeforeStatus !== '' || typeof receipt.sourceAfterStatus !== 'string' || receipt.failure
       || !Array.isArray(receipt.steps) || receipt.steps.length !== ROOT_COMPAT_PHASES.length || !rootCompatConsumerPath(lane.os, receipt.consumerRoot)) fail('compat lane incomplete/failed');
+    let observation;
+    if (receipt.sourceObservation) {
+      const ref = receipt.sourceObservation;
+      if (ref.path !== 'source-observation.json') fail('compat source observation reference invalid');
+      const observationFile = path.join(directory, ref.path), fact = compatFile(observationFile);
+      if (fact.bytes !== ref.bytes || fact.sha256 !== ref.sha256) fail('compat source observation hash mismatch');
+      observation = readJsonFile(observationFile, 'compat source observation');
+    }
+    verifyCompatSourceObservation(receipt.sourceAfterStatus, observation);
     const commands = rootCompatCommands(lane.runtime, receipt.consumerRoot);
     const packRef = receipt.pack?.original, archive = receipt.pack?.archive;
     if (packRef?.path !== 'pack.original.json' || !archive || archive.name !== XPOD_ROOT_NAME || !SHA256_PATTERN.test(archive.sha256)
@@ -813,6 +867,7 @@ function main(argv = process.argv.slice(2)) {
 }
 
 module.exports = {
+  verifyCompatSourceObservation,
   rootCompatLanes,
   rootCompatCommands,
   rootCompatConsumerPath,

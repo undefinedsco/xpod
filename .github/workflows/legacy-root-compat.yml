@@ -60,19 +60,16 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
       - name: Run the unchanged complete-package commands and retain actual outcomes
-        shell: bash
         env:
           SOURCE_SHA: ${{ needs.plan.outputs.sha }}
           LANE_OS: ${{ matrix.os }}
           LANE_NODE: ${{ matrix.node }}
           LANE_RUNTIME: ${{ matrix.runtime }}
           CONSUMER_ROOT: ${{ runner.temp }}/xpod-package-smoke${{ matrix.runtime == 'bun' && '-bun' || '' }}
-        run: |
-          mkdir -p .test-data/legacy-root-compat
-          node scripts/release-gate-evidence.cjs run-root-compat-lane \
-            --source-sha "$SOURCE_SHA" --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
-            --os "$LANE_OS" --node-major "$LANE_NODE" --runtime "$LANE_RUNTIME" \
-            --consumer-root "$CONSUMER_ROOT" --out .test-data/legacy-root-compat/lane
+        # Preserve each runner's original default shell/PATH (PowerShell on
+        # Windows). Node reads native path strings directly from the environment.
+        run: >-
+          node -e "const fs=require('node:fs');const {runRootCompatLane}=require('./scripts/release-gate-evidence.cjs');fs.mkdirSync('.test-data/legacy-root-compat',{recursive:true});runRootCompatLane({sourceSha:process.env.SOURCE_SHA,runId:process.env.GITHUB_RUN_ID,runAttempt:process.env.GITHUB_RUN_ATTEMPT,os:process.env.LANE_OS,nodeMajor:process.env.LANE_NODE,runtime:process.env.LANE_RUNTIME,consumerRoot:process.env.CONSUMER_ROOT,out:'.test-data/legacy-root-compat/lane'});"
       - uses: actions/upload-artifact@v4
         if: always()
         with:

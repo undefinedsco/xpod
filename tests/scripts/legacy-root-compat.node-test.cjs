@@ -121,3 +121,62 @@ test('actual YAML keeps standalone triggers, strict matrix, RC-before-production
   assert.ok(guard.indexOf('verify-root-compat')<guard.indexOf('fs.appendFileSync(process.env.GITHUB_OUTPUT'));
   assert.ok(release.jobs.promote_npm_latest.needs.includes('verify_npm_consumer_node'));assert.ok(release.jobs.promote_npm_latest.needs.includes('verify_npm_consumer_bun'));
 });
+
+test('lane wrapper keeps platform default shell and passes native paths and PATH unchanged to Node', () => {
+  const parsed=spawnSync('bun',['-e','console.log(JSON.stringify(Bun.YAML.parse(require("node:fs").readFileSync(process.argv[1],"utf8"))))',path.resolve('.github/workflows/legacy-root-compat.yml')],{encoding:'utf8'});
+  assert.equal(parsed.status,0,parsed.stderr);
+  const workflow=JSON.parse(parsed.stdout);const step=workflow.jobs.lanes.steps.find(row=>row.name==='Run the unchanged complete-package commands and retain actual outcomes');
+  assert.equal(step.shell,undefined);assert.equal(workflow.defaults?.run?.shell,undefined);assert.equal(workflow.jobs.lanes.defaults?.run?.shell,undefined);
+  assert.doesNotMatch(step.run,/\$SOURCE_SHA|\$GITHUB_RUN_ID|\$CONSUMER_ROOT|\\\n/);
+  const base=path.resolve('.test-data/legacy-root-compat-contract');fs.mkdirSync(base,{recursive:true});const root=fs.mkdtempSync(path.join(base,'wrapper-'));
+  try {
+    fs.mkdirSync(path.join(root,'scripts'));
+    fs.writeFileSync(path.join(root,'scripts/release-gate-evidence.cjs'),"exports.runRootCompatLane=args=>process.stdout.write(JSON.stringify({args,path:process.env.PATH}));");
+    const consumer='D:\\a\\_temp\\with space\\xpod-package-smoke-bun';
+    const env={...process.env,SOURCE_SHA:'a'.repeat(40),GITHUB_RUN_ID:'42',GITHUB_RUN_ATTEMPT:'2',LANE_OS:'windows-latest',LANE_NODE:'22',LANE_RUNTIME:'bun',CONSUMER_ROOT:consumer};
+    const result=spawnSync('bash',['-c',step.run],{cwd:root,env,encoding:'utf8'});assert.equal(result.status,0,result.stderr);
+    const actual=JSON.parse(result.stdout);assert.equal(actual.args.consumerRoot,consumer);assert.equal(actual.args.sourceSha,env.SOURCE_SHA);
+    assert.equal(actual.args.runId,'42');assert.equal(actual.args.runAttempt,'2');assert.equal(actual.path,env.PATH);
+  }finally{fs.rmSync(root,{recursive:true,force:true});}
+});
+
+const { verifyCompatSourceObservation } = require('../../scripts/release-gate-evidence.cjs');
+const uiTargets = require('../../ui/build-targets.json');
+function uiObservation() {
+  return { before: ['static/app/assets/old.js'], generated: Object.entries(uiTargets).map(([target, config]) => ({
+    target, outDir: config.outDir, files: ['assets/new.js', target === 'app' ? 'index.html' : target + '.html'],
+  })) };
+}
+test('producer declarations accept generated replacements while preserving the original status', () => {
+  const status = ' D static/app/assets/old.js\n M static/settings/settings.html\n?? static/app/assets/new.js';
+  assert.doesNotThrow(() => verifyCompatSourceObservation(status, uiObservation()));
+  assert.equal(status.split('\n')[0], ' D static/app/assets/old.js');
+  const config = fs.readFileSync('ui/vite.config.ts', 'utf8');
+  assert.match(config, /import buildTargets from '\.\/build-targets.json'/);
+  assert.match(config, /const configs = buildTargets/);
+});
+for (const status of [' M bun.lock', ' M package.json', ' M ui/vite.config.ts', ' M ui/src/input.ts',
+  '?? static/app/assets/unknown.js', ' M static/app/assets/unknown.js', '?? static/unowned/output.js',
+  ' D static/app/assets/unknown.js', 'M  static/app/assets/new.js', '?? static/app/../input.ts']) {
+  test('rejects source drift or unobserved static output: ' + status, () => {
+    assert.throws(() => verifyCompatSourceObservation(status, uiObservation()), /source input or unknown output/);
+  });
+}
+test('producer evidence cannot redirect output roots, omit a target, or escape a member', () => {
+  for (const mutate of [o => { o.generated[0].outDir = '../src'; }, o => { o.generated.pop(); },
+    o => { o.generated[0].files.push('../escape'); }, o => { o.before.push('src/input.ts'); }]) {
+    const observation = uiObservation(); mutate(observation);
+    assert.throws(() => verifyCompatSourceObservation('?? static/app/assets/new.js', observation));
+  }
+  assert.throws(() => verifyCompatSourceObservation('?? static/app/assets/new.js'), /observation missing/);
+});
+test('downloaded lane evidence revalidates generated observations and rejects their tampering', () => fixture(({receipts,args}) => {
+  const row = receipts[0], file = path.join(row.directory, 'source-observation.json');
+  const bytes = Buffer.from(JSON.stringify(uiObservation())); fs.writeFileSync(file, bytes);
+  row.receipt.sourceAfterStatus = ' D static/app/assets/old.js\n?? static/app/assets/new.js';
+  row.receipt.sourceObservation = { path: 'source-observation.json', bytes: bytes.length, sha256: digest(bytes) }; row.save();
+  assert.equal(verifyRootCompat(args).lanes.length, 18);
+  row.receipt.sourceAfterStatus += '\n M bun.lock'; row.save(); assert.throws(() => verifyRootCompat(args), /source input/);
+  row.receipt.sourceAfterStatus = '?? static/app/assets/new.js'; row.save();
+  fs.appendFileSync(file, ' '); assert.throws(() => verifyRootCompat(args), /hash mismatch/);
+}));
