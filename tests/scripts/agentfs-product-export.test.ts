@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { parse } from 'yaml';
 import canonicalHostSources from '../../packages/xpod-cli/scripts/canonical-host-sources.json';
 import { scanProduct, validateCliProduct, projectProductBuild, exportProducts, validateClientProduct } from '../../scripts/agentfs-native-ci/mounted/export-products';
 
@@ -164,5 +165,42 @@ with tarfile.open(sys.argv[1],'w:gz') as t:
     expect(workflow).toContain('run: bun test packages/xpod-afs/tests/producer-build-lifetime.test.ts');
     expect(workflow).toContain('if [ -f "$MODULE_RUN_ROOT/native/native-facts.safe.json" ]; then');
     expect(workflow).toContain('--client "$MODULE_RUN_ROOT/client.tgz"');
+  });
+});
+
+
+describe('AgentFS mounted development workflow entry contract', () => {
+  const workflow = parse(readFileSync('.github/workflows/agentfs-module-mounted-acceptance.yml', 'utf8'));
+  it('runs maintained branch pushes and PR merge candidates without path omissions', () => {
+    expect(workflow.on).toEqual({
+      pull_request: { branches: ['staging', 'main'] },
+      push: { branches: ['staging', 'main'] },
+      workflow_dispatch: null,
+    });
+    const checkout = workflow.jobs['mounted-module'].steps.find((step: any) => step.uses === 'actions/checkout@v4');
+    // github.sha is the tested merge commit for pull_request, not the PR head.
+    expect(checkout.with).toEqual({ ref: '${{ github.sha }}', 'fetch-depth': 0 });
+  });
+  it('retains read-only isolated evidence jobs without shared RC or deployment writes', () => {
+    expect(workflow.permissions).toEqual({ contents: 'read', packages: 'read', actions: 'read' });
+    expect(Object.keys(workflow.jobs)).toEqual(['mounted-module']);
+    const job = workflow.jobs['mounted-module'];
+    expect(job.permissions).toBeUndefined();
+    expect(job.environment).toBeUndefined();
+    expect(job.secrets).toBeUndefined();
+    expect(job['timeout-minutes']).toBe(120);
+    expect(job.strategy['fail-fast']).toBe(false);
+    expect(job.strategy.matrix.include.map((entry: any) => entry.target)).toEqual([
+      'linux-arm64', 'darwin-arm64', 'linux-x64', 'darwin-x64',
+    ]);
+    const body = JSON.stringify(job);
+    expect(body).not.toMatch(/pull_request_target|secrets\.|gh (?:release|workflow run)|git push|(?:npm|bun) publish|kubectl|deployments:|id-token:/);
+    expect(body).toContain('--verify-module-native-source');
+    expect(body).toContain('noPromotion');
+    const uploads = job.steps.filter((step: any) => step.uses === 'actions/upload-artifact@v4');
+    expect(uploads.map((step: any) => step.with.name)).toEqual([
+      'afs-module-products-${{ matrix.target }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}',
+      'afs-module-mounted-${{ matrix.target }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}',
+    ]);
   });
 });

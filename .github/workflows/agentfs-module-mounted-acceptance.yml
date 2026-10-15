@@ -2,8 +2,10 @@ name: AgentFS module mounted development acceptance
 
 # Isolated candidate development evidence. No release, RC or deployment writes.
 on:
+  pull_request:
+    branches: [staging, main]
   push:
-    branches: ['codex/protected-rc-mounted-ci']
+    branches: [staging, main]
   workflow_dispatch:
 
 permissions:
