@@ -135,11 +135,44 @@ export function validateClientProduct(archive: string, directory: string, packag
     scope: 'Exact serialized runtime and build materials; source and dependency audit remains required.' };
 }
 
+/** PR identity binds payload to raw merge parents, including in shallow checkouts. */
+export function projectProductEvent(sourceSHA: string, environment: NodeJS.ProcessEnv, document: any, workspace?: string) {
+  const event = environment.GITHUB_EVENT_NAME ?? null;
+  const githubSHA = environment.GITHUB_SHA ?? null;
+  let eventHeadSHA = document?.after ?? null;
+  if (!/^[a-f0-9]{40}$/.test(sourceSHA) || githubSHA !== sourceSHA
+    || !['push', 'workflow_dispatch', 'pull_request'].includes(event ?? '')) throw new Error('unsupported product source event');
+  if (event === 'push' && eventHeadSHA !== sourceSHA) throw new Error('unsupported product source event');
+  if (event === 'pull_request') {
+    const pr = document?.pull_request;
+    const repository = environment.GITHUB_REPOSITORY;
+    eventHeadSHA = pr?.head?.sha;
+    if (repository !== 'undefinedsco/xpod' || document?.repository?.full_name !== repository
+      || pr?.base?.repo?.full_name !== repository || pr?.head?.repo?.full_name !== repository
+      || !Number.isSafeInteger(document?.number) || document.number < 1 || pr?.number !== document.number
+      || environment.GITHUB_REF !== `refs/pull/${document.number}/merge`
+      || pr?.merge_commit_sha !== sourceSHA || typeof eventHeadSHA !== 'string'
+      || !/^[a-f0-9]{40}$/.test(eventHeadSHA) || eventHeadSHA === sourceSHA) throw new Error('invalid same-repository PR merge source event');
+    if (!workspace) throw new Error('actual PR merge checkout required');
+    const git = (...args: string[]) => execFileSync('git', args, { cwd: workspace, encoding: 'utf8' }).trim();
+    if (git('rev-parse', 'HEAD') !== sourceSHA || git('status', '--porcelain', '--untracked-files=all')) throw new Error('immutable clean PR merge source required');
+    // GitHub refs/pull/N/merge is a two-parent synthetic merge: base first,
+    // PR head second. Raw commit headers retain both SHAs at a shallow boundary.
+    const headers = git('cat-file', 'commit', sourceSHA).split('\n\n', 1)[0].split('\n');
+    const parents = headers.filter(line => line.startsWith('parent ')).map(line => line.slice(7));
+    if (parents.length !== 2 || parents.some(parent => !/^[a-f0-9]{40}$/.test(parent) || parent === sourceSHA)
+      || parents[0] === parents[1] || parents[0] !== pr?.base?.sha || parents[1] !== eventHeadSHA) throw new Error('PR payload differs from actual merge parents');
+  }
+  return { event, githubSHA, eventHeadSHA };
+}
+
 export async function exportProducts(workspace: string, moduleArchive: string, cliArchive: string, nativeArchive: string, target: string, sourceSHA: string, buildReceipt: string, out: string, clientArchive: string) {
   const git = (...args: string[]) => execFileSync('git', args, { cwd: workspace, encoding: 'utf8' }).trim();
   if (!/^[a-f0-9]{40}$/.test(sourceSHA) || git('rev-parse', 'HEAD') !== sourceSHA || git('status', '--porcelain', '--untracked-files=all')) throw new Error('immutable clean product source required');
   const build = JSON.parse(readFileSync(buildReceipt, 'utf8'));
   const safeBuild = projectProductBuild(build, sourceSHA);
+  const eventDocument = process.env.GITHUB_EVENT_PATH ? JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, 'utf8')) : {};
+  const { event, githubSHA, eventHeadSHA } = projectProductEvent(sourceSHA, process.env, eventDocument, workspace);
   const tempParent = path.join(workspace, '.test-data/product-export-validation'); mkdirSync(tempParent, { recursive: true, mode: 0o700 });
   const temp = mkdtempSync(path.join(tempParent, 'case-'));
   try {
@@ -154,12 +187,6 @@ export async function exportProducts(workspace: string, moduleArchive: string, c
     const afs = collectModule(moduleArchive, target, sourceSHA, nativeReceipt, nativeKit);
     const cli = await validateCliProduct(cliArchive, path.join(temp, 'cli'), sourceSHA, build.coreSHA256, JSON.parse(readFileSync(path.join(workspace, 'packages/xpod-cli/package.json'), 'utf8')), workspace);
     const client = validateClientProduct(clientArchive, path.join(temp, 'client'), path.join(workspace, 'packages/xpod-client'), sourceSHA);
-    const event = process.env.GITHUB_EVENT_NAME ?? null;
-    const githubSHA = process.env.GITHUB_SHA ?? null;
-    const eventDocument = process.env.GITHUB_EVENT_PATH ? JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, 'utf8')) : {};
-    const eventHeadSHA = eventDocument.after ?? null;
-    if (githubSHA !== sourceSHA || event !== 'workflow_dispatch' && event !== 'push'
-      || event === 'push' && eventHeadSHA !== sourceSHA) throw new Error('unsupported product source event');
     const records = [
       { filename: 'afs.tgz', original: moduleArchive, metadata: { ...afs, files: module.files } },
       { filename: 'cli.tgz', original: cliArchive, metadata: cli },

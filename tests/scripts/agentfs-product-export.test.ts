@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
 import canonicalHostSources from '../../packages/xpod-cli/scripts/canonical-host-sources.json';
 import { commands } from '../../scripts/agentfs-native-ci/mounted/producer-commands.json';
-import { scanProduct, validateCliProduct, projectProductBuild, exportProducts, validateClientProduct } from '../../scripts/agentfs-native-ci/mounted/export-products';
+import { scanProduct, validateCliProduct, projectProductBuild, projectProductEvent, exportProducts, validateClientProduct } from '../../scripts/agentfs-native-ci/mounted/export-products';
 
 const source = 'a'.repeat(40);
 const hash = (value: string) => createHash('sha256').update(value).digest('hex');
@@ -235,4 +235,76 @@ it('binds the canonical five receipt commands to actual workflow run steps in or
   }
   const receiptStep = steps.find((step: any) => step.name === 'Build module and core once for this platform').run;
   expect(receiptStep).toContain("'commands':json.load(open(workspace/'scripts/agentfs-native-ci/mounted/producer-commands.json'))['commands']");
+});
+
+
+describe('AFS producer event identity', () => {
+  function mergedSource(action: (merge: string, head: string, base: string, workspace: string) => void) {
+    const parent = path.resolve('.test-data/agentfs-product-event'); mkdirSync(parent, { recursive: true });
+    const root = mkdtempSync(path.join(parent, 'merge-'));
+    const git = (...args: string[]) => execFileSync('git', ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', '-c', 'commit.gpgsign=false', ...args], { cwd: root, encoding: 'utf8' }).trim();
+    try {
+      git('init', '--quiet'); git('checkout', '--quiet', '-b', 'staging');
+      git('commit', '--quiet', '--allow-empty', '-m', 'base'); const base = git('rev-parse', 'HEAD');
+      git('checkout', '--quiet', '-b', 'feature'); git('commit', '--quiet', '--allow-empty', '-m', 'head'); const head = git('rev-parse', 'HEAD');
+      git('checkout', '--quiet', 'staging'); git('merge', '--quiet', '--no-ff', 'feature', '-m', 'PR merge');
+      const merge = git('rev-parse', 'HEAD');
+      expect(git('status', '--porcelain', '--untracked-files=all')).toBe('');
+      expect(git('rev-parse', 'HEAD^2')).toBe(head); expect(merge).not.toBe(head);
+      action(merge, head, base, root);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  }
+  function pr(merge: string, head: string, base: string) {
+    const repo = { full_name: 'undefinedsco/xpod' };
+    return { number: 62, repository: repo, pull_request: { number: 62, merge_commit_sha: merge, head: { sha: head, repo }, base: { sha: base, repo } } };
+  }
+  const environment = (merge: string) => ({ GITHUB_EVENT_NAME: 'pull_request', GITHUB_SHA: merge, GITHUB_REPOSITORY: 'undefinedsco/xpod', GITHUB_REF: 'refs/pull/62/merge' });
+  it('preserves actual clean merge source separately from PR event head', () => mergedSource((merge, head, base, workspace) => {
+    expect(projectProductEvent(merge, environment(merge), pr(merge, head, base), workspace)).toEqual({ event: 'pull_request', githubSHA: merge, eventHeadSHA: head });
+    expect(projectProductEvent(merge, { GITHUB_EVENT_NAME: 'push', GITHUB_SHA: merge }, { after: merge })).toEqual({ event: 'push', githubSHA: merge, eventHeadSHA: merge });
+    expect(projectProductEvent(merge, { GITHUB_EVENT_NAME: 'workflow_dispatch', GITHUB_SHA: merge }, {})).toEqual({ event: 'workflow_dispatch', githubSHA: merge, eventHeadSHA: null });
+  }));
+  it('rejects head-as-source, wrong merge/ref/number and forks', () => mergedSource((merge, head, base, workspace) => {
+    const document = pr(merge, head, base), env = environment(merge);
+    const rejected = (source: string, environment: NodeJS.ProcessEnv, event: any) => expect(() => projectProductEvent(source, environment, event, workspace)).toThrow();
+    rejected(merge, env, pr(merge, 'a'.repeat(40), base));
+    rejected(merge, env, pr(merge, head, 'b'.repeat(40)));
+    rejected(merge, env, pr(merge, base, head));
+    rejected(head, env, document);
+    rejected(head, { ...env, GITHUB_SHA: head }, document);
+    rejected(merge, env, { ...document, pull_request: { ...document.pull_request, head: { ...document.pull_request.head, sha: merge } } });
+    rejected(merge, env, { ...document, pull_request: { ...document.pull_request, merge_commit_sha: head } });
+    rejected(merge, { ...env, GITHUB_REF: 'refs/heads/feature' }, document);
+    rejected(merge, env, { ...document, number: 63 });
+    for (const field of ['head', 'base'] as const) rejected(merge, env, { ...document, pull_request: { ...document.pull_request, [field]: { ...document.pull_request[field], repo: { full_name: 'fork/xpod' } } } });
+    rejected(merge, env, { ...document, repository: { full_name: 'fork/xpod' } });
+    for (const event of ['pull_request_target', 'schedule', 'unknown']) rejected(merge, { ...env, GITHUB_EVENT_NAME: event }, document);
+    rejected(merge, { ...env, GITHUB_EVENT_NAME: 'push' }, { after: head });
+  }));
+  it('reads actual merge parents in a depth-1 checkout without fetching parents', () => mergedSource((merge, head, base, workspace) => {
+    const shallow = workspace + '-shallow';
+    try {
+      execFileSync('git', ['clone', '--quiet', '--depth=1', '--branch', 'staging', 'file://' + workspace, shallow]);
+      const git = (...args: string[]) => execFileSync('git', args, { cwd: shallow, encoding: 'utf8', stdio: 'pipe' }).trim();
+      expect(git('rev-parse', '--is-shallow-repository')).toBe('true');
+      expect(() => git('cat-file', '-e', head)).toThrow();
+      expect(git('show', '-s', '--format=%P', 'HEAD')).toBe('');
+      expect(projectProductEvent(merge, environment(merge), pr(merge, head, base), shallow)).toEqual({ event: 'pull_request', githubSHA: merge, eventHeadSHA: head });
+      expect(() => projectProductEvent(merge, environment(merge), pr(merge, 'a'.repeat(40), base), shallow)).toThrow('actual merge parents');
+      expect(() => projectProductEvent(merge, environment(merge), pr(merge, head, 'b'.repeat(40)), shallow)).toThrow('actual merge parents');
+      expect(git('rev-parse', '--is-shallow-repository')).toBe('true');
+    } finally { rmSync(shallow, { recursive: true, force: true }); }
+  }));
+  it('rejects actual commits with zero, one or more than two parents', () => mergedSource((merge, head, base, workspace) => {
+    const git = (...args: string[]) => execFileSync('git', args, { cwd: workspace, encoding: 'utf8' }).trim();
+    const tree = git('rev-parse', 'HEAD^{tree}');
+    for (const parents of [[], [base], [base, head, merge]]) {
+      // Real commit objects, with parent-looking message text deliberately ignored.
+      const raw = `tree ${tree}\n${parents.map(parent => `parent ${parent}\n`).join('')}author Fixture <fixture@example.invalid> 1 +0000\ncommitter Fixture <fixture@example.invalid> 1 +0000\n\nparent ${head}\nparent ${base}\n`;
+      const source = execFileSync('git', ['hash-object', '-t', 'commit', '-w', '--stdin'], { cwd: workspace, input: raw, encoding: 'utf8' }).trim();
+      git('checkout', '--quiet', '--detach', source);
+      expect(() => projectProductEvent(source, environment(source), pr(source, head, base), workspace)).toThrow('actual merge parents');
+    }
+  }));
+
 });
