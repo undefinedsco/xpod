@@ -9,6 +9,7 @@ const zlib = require('node:zlib');
 
 const MANIFEST_PATH = 'package/package.json';
 const BLOCK = 512;
+const MANIFEST_MAX_BYTES = 16 * 1024 ** 2;
 // Fixed invariant: the only manifest field npm rewrites between accepted SHAs is the
 // provenance commit. There is deliberately no caller-supplied override surface; any
 // other field difference is real content and must fail closed.
@@ -65,6 +66,29 @@ function assertSafePath(name) {
   }
 }
 
+function validateHeader(block, seen) {
+  const storedChecksum = readOctal(block, 148, 8);
+  const checksumBlock = Buffer.from(block);
+  checksumBlock.fill(0x20, 148, 156);
+  let computed = 0;
+  for (const byte of checksumBlock) computed += byte;
+  if (computed !== storedChecksum) throw new Error('Corrupted tar header checksum');
+  const name = readString(block, 0, 100);
+  const prefix = readString(block, 345, 155);
+  const fullName = prefix ? `${prefix}/${name}` : name;
+  assertSafePath(fullName);
+  const typeflag = String.fromCharCode(block[156]);
+  const mode = readOctal(block, 100, 8) & 0o7777;
+  const size = readOctal(block, 124, 12);
+  let type;
+  if (typeflag === '0' || typeflag === '\0' || typeflag === '') type = 'file';
+  else if (typeflag === '5') type = 'directory';
+  else throw new Error(`Unsupported tar entry type ${JSON.stringify(typeflag)} for ${fullName}`);
+  if (seen.has(fullName)) throw new Error(`Duplicate tar entry: ${fullName}`);
+  seen.add(fullName);
+  return { path: fullName, type, mode, size };
+}
+
 // `buffer` is an uncompressed tar archive. Returns validated entries in archive order and
 // rejects partial final blocks, a missing end-of-archive marker, truncated padding, and
 // any nonzero byte after the end-of-archive marker.
@@ -80,29 +104,11 @@ function parseTar(buffer) {
       offset += BLOCK;
       break;
     }
-    const storedChecksum = readOctal(block, 148, 8);
-    const checksumBlock = Buffer.from(block);
-    checksumBlock.fill(0x20, 148, 156);
-    let computed = 0;
-    for (const byte of checksumBlock) computed += byte;
-    if (computed !== storedChecksum) throw new Error('Corrupted tar header checksum');
-    const name = readString(block, 0, 100);
-    const prefix = readString(block, 345, 155);
-    const fullName = prefix ? `${prefix}/${name}` : name;
-    assertSafePath(fullName);
-    const typeflag = String.fromCharCode(block[156]);
-    const mode = readOctal(block, 100, 8) & 0o7777;
-    const size = readOctal(block, 124, 12);
+    const { path: fullName, type, mode, size } = validateHeader(block, seen);
     offset += BLOCK;
     const content = buffer.subarray(offset, offset + size);
     if (content.length < size) throw new Error(`Corrupted tar entry content: ${fullName}`);
     offset += Math.ceil(size / BLOCK) * BLOCK;
-    let type;
-    if (typeflag === '0' || typeflag === '\0' || typeflag === '') type = 'file';
-    else if (typeflag === '5') type = 'directory';
-    else throw new Error(`Unsupported tar entry type ${JSON.stringify(typeflag)} for ${fullName}`);
-    if (seen.has(fullName)) throw new Error(`Duplicate tar entry: ${fullName}`);
-    seen.add(fullName);
     entries.push({ path: fullName, type, mode, size, sha256: sha256(content), content });
   }
   if (!terminated) throw new Error('Corrupted tar payload: missing end-of-archive marker');
@@ -133,6 +139,63 @@ function inspectTarballBuffer(compressed) {
     throw new Error(`Corrupted tar payload: invalid ${MANIFEST_PATH}`);
   }
   return { entries, manifest };
+}
+
+// Single gunzip pass, bounded header/name set and manifest only; never materializes payloads.
+async function inspectTarballFile(file, limits, signal) {
+  for (const [key, maximum] of Object.entries({ expandedBytes: 4 * 1024 ** 3, members: 100000, manifestBytes: MANIFEST_MAX_BYTES })) {
+    if (!limits || !Number.isSafeInteger(limits[key]) || limits[key] < 1 || limits[key] > maximum) throw new Error('Invalid tar inspection budget');
+  }
+  signal?.throwIfAborted();
+  const source = require('node:fs').createReadStream(file, { highWaterMark: 65536 });
+  const gunzip = zlib.createGunzip({ chunkSize: 65536 });
+  source.on('error', error => gunzip.destroy(error));
+  const abort = () => gunzip.destroy(signal.reason);
+  signal?.addEventListener('abort', abort, { once: true });
+  source.pipe(gunzip);
+  const seen = new Set();
+  let header = Buffer.alloc(BLOCK), used = 0, remaining = 0, padding = 0;
+  let ended = false, expanded = 0, members = 0, manifestParts = [], manifestBytes = 0, current;
+  try {
+    for await (const chunk of gunzip) {
+      signal?.throwIfAborted();
+      expanded += chunk.length;
+      if (expanded > limits.expandedBytes) throw new Error('Tar expanded byte budget exceeded');
+      let offset = 0;
+      while (offset < chunk.length) {
+        if (ended) {
+          if (!isZeroBlock(chunk.subarray(offset))) throw new Error('Corrupted tar payload: nonzero data after end-of-archive marker');
+          offset = chunk.length;
+        } else if (remaining) {
+          const count = Math.min(remaining, chunk.length - offset);
+          if (current.path === MANIFEST_PATH) manifestParts.push(Buffer.from(chunk.subarray(offset, offset + count)));
+          remaining -= count; offset += count;
+        } else if (padding) {
+          const count = Math.min(padding, chunk.length - offset);
+          padding -= count; offset += count;
+        } else {
+          const count = Math.min(BLOCK - used, chunk.length - offset);
+          chunk.copy(header, used, offset, offset + count); used += count; offset += count;
+          if (used === BLOCK) {
+            used = 0;
+            if (isZeroBlock(header)) { ended = true; continue; }
+            if (++members > limits.members) throw new Error('Tar member budget exceeded');
+            current = validateHeader(header, seen);
+            remaining = current.size;
+            padding = (BLOCK - remaining % BLOCK) % BLOCK;
+            if (current.path === MANIFEST_PATH) {
+              if (current.type !== 'file' || current.size > limits.manifestBytes) throw new Error('Tar manifest byte budget/type exceeded');
+              manifestBytes = current.size;
+            }
+          }
+        }
+      }
+    }
+    if (!ended || remaining || padding || used || expanded % BLOCK) throw new Error('Corrupted tar payload: truncated or missing end-of-archive marker');
+    if (!members || !seen.has(MANIFEST_PATH)) throw new Error(`Corrupted tar payload: missing ${MANIFEST_PATH}`);
+    const manifest = JSON.parse(Buffer.concat(manifestParts, manifestBytes).toString('utf8'));
+    return { manifest, members, expandedBytes: expanded };
+  } finally { signal?.removeEventListener('abort', abort); source.destroy(); gunzip.destroy(); }
 }
 
 function walkDifference(published, local, pointer, reasons) {
@@ -197,6 +260,7 @@ function comparePackagePayloads(publishedBuffer, localBuffer) {
 
 module.exports = {
   MANIFEST_PATH,
+  MANIFEST_MAX_BYTES,
   PROVENANCE_FIELDS,
   sha256,
   sha512Integrity,
@@ -204,5 +268,6 @@ module.exports = {
   readOctal,
   parseTar,
   inspectTarballBuffer,
+  inspectTarballFile,
   comparePackagePayloads,
 };
