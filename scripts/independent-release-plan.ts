@@ -31,7 +31,7 @@ export interface ProductInputReceipt {
 }
 const shaPattern = /^[a-f0-9]{40}$/u;
 const hashPattern = /^[a-f0-9]{64}$/u;
-function exactVersion(value: unknown): value is string {
+export function exactVersion(value: unknown): value is string {
   // ModuleStore accepts exact versions without build metadata. Do not normalize
   // v-prefixes, whitespace or invalid numeric prerelease identifiers silently.
   return typeof value === 'string' && !value.includes('+') && validSemver(value) === value;
