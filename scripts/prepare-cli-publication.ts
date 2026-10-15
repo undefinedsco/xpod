@@ -62,6 +62,19 @@ export function assertCliPublicationClosure(manifest: Record<string, any>, membe
   }
 }
 
+/** Structural original-byte bindings apply even without trusted Git provenance. */
+export function readPublicationMetafile(bound: (name: string) => Buffer, name: string, core: boolean) {
+  const meta = JSON.parse(bound(name).toString());
+  if (!meta.inputs || !Object.keys(meta.inputs).length || !meta.outputs) throw new Error('Canonical metafile inputs missing');
+  if (core && (!Object.prototype.hasOwnProperty.call(meta.inputs, 'src/npm-entry.ts') || !Object.values(meta.outputs).some((row: any) => row.entryPoint === 'src/npm-entry.ts'))) throw new Error('Main CLI metafile entrypoint missing');
+  for (const row of Object.values(meta.inputs) as any[]) {
+    for (const edge of row.imports ?? []) {
+      if (!edge.external && !Object.prototype.hasOwnProperty.call(meta.inputs, edge.path)) throw new Error('Omitted canonical bundler input');
+    }
+  }
+  return meta;
+}
+
 /** A caller-selected Git revision is the authority, never sourceAuthority.sourceCommit.
  * No network, build or producer pass flag participates in this comparison. */
 export function verifyCanonicalPublicationInputs(members: PublicationMember[], index: any, indexPath: string, sourceSha: string) {
@@ -85,9 +98,7 @@ export function verifyCanonicalPublicationInputs(members: PublicationMember[], i
   const checks: Array<{ metafile: string; sourceInputs: number; dependencyInputs: number }> = [];
   for (const metafile of [...(index.coreMetafile ? [index.coreMetafile] : []), index.clientMetafile, ...(index.outputMetafile ? [index.outputMetafile] : [])]) {
     if (typeof metafile !== 'string') throw new Error('Canonical metafile missing');
-    const meta = JSON.parse(bound(metafile).toString());
-    if (!meta.inputs || !Object.keys(meta.inputs).length || !meta.outputs) throw new Error('Canonical metafile inputs missing');
-    if (metafile === index.coreMetafile && (!Object.prototype.hasOwnProperty.call(meta.inputs, 'src/npm-entry.ts') || !Object.values(meta.outputs).some((row: any) => row.entryPoint === 'src/npm-entry.ts'))) throw new Error('Main CLI metafile entrypoint missing');
+    const meta = readPublicationMetafile(bound, metafile, metafile === index.coreMetafile);
     let sourceInputs = 0, dependencyInputs = 0;
     for (const [file, raw] of Object.entries(meta.inputs)) {
       const row = raw as any;
@@ -106,7 +117,6 @@ export function verifyCanonicalPublicationInputs(members: PublicationMember[], i
       }
       for (const edge of row.imports ?? []) {
         if (edge.external && !isBuiltin(edge.path) && !/^@undefineds\.co\/xpod-client(?:\/session)?$/u.test(edge.path)) throw new Error('Unexpected canonical external import');
-        if (!edge.external && !Object.prototype.hasOwnProperty.call(meta.inputs, edge.path)) throw new Error('Omitted canonical bundler input');
       }
     }
     checks.push({ metafile, sourceInputs, dependencyInputs });
@@ -175,6 +185,16 @@ export function preparePublication(input: PublicationInput, inputRoot = process.
     if (declarations.length !== 1 || declarations[0].sha256 !== entry.sha256 || declarations[0].bytes !== entry.size) throw new Error('CLI producer inventory binding mismatch');
     return entry;
   };
+  // This path runs for normal producer and projection inputs, which deliberately
+  // carry no trusted Git revision. Reuse the same parser as the Git-bound checks.
+  let coreMaterial: { metafile: string; sha256: string; payloadSha256: string; sourceVerified: false } | null = null;
+  if (index.coreMetafile !== undefined) {
+    if (index.coreMetafile !== 'npm-entry-inputs.json') throw new Error('Unexpected main CLI metafile reference');
+    readPublicationMetafile(name => indexed(name).content, index.coreMetafile, true);
+    const payload = member('package/dist/xpod.mjs');
+    if (payload.sha256 !== index.corePayloads?.esmSHA256) throw new Error('Canonical output binding mismatch');
+    coreMaterial = { metafile: index.coreMetafile, sha256: indexed(index.coreMetafile).sha256, payloadSha256: payload.sha256, sourceVerified: false };
+  }
   const embedded = indexed(rows[0].publication?.archive), inventoryEntry = indexed(rows[0].publication?.inventory);
   if (embedded.sha256 !== client.archive.sha256 || sha512Integrity(embedded.content) !== client.archive.integrity) throw new Error('CLI embedded client bytes differ from supplied client archive');
   const publishedInventory = JSON.parse(inventoryEntry.content.toString('utf8'));
@@ -195,7 +215,7 @@ export function preparePublication(input: PublicationInput, inputRoot = process.
   for (const original of originals) if (sha256(readFileSync(original.path)) !== original.sha256) throw new Error('Original changed during preparation');
   return { schemaVersion: 1, kind: 'cli-publication-preparation', toolScope: 'repository-only; not an installed npm CLI command', status: 'prepared-not-published',
     embeddedClientIdentityVerified: true,
-    canonicalInputs, archiveBoundaryChecked: true, registryQualified: false, sourceQualified: false,
+    coreMaterial, canonicalInputs, archiveBoundaryChecked: true, registryQualified: false, sourceQualified: false,
     client: { name: client.manifest.name, version: client.manifest.version, archive: client.archive, files: client.files },
     cli: { name: cli.manifest.name, version: cli.manifest.version, archive: cli.archive, files: cli.files, embeddedClient,
       runtimeClient: { name: client.manifest.name, version: edge, archiveSha256: client.archive.sha256, integrity: client.archive.integrity } },

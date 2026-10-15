@@ -73,3 +73,12 @@ test('core dependency inputs retain a separate source-evidence blocker', () => {
   const result = f.verify(); expect(result.checks[0].dependencyInputs).toBe(1); expect(result.completeRuntimeClosure).toBe(false);
   f.meta.inputs['node_modules/@solid/community-server/index.js'] = { bytes: 1, imports: [] }; f.saveCore(); expect(f.verify).toThrow('dependency input');
 });
+
+test('ordinary preparation parser rejects main input omission without a trusted Git SHA', async () => {
+  const { readPublicationMetafile } = await import('../../scripts/prepare-cli-publication');
+  const f = withCore();
+  const bound = (name: string) => f.members.find(row => row.path === 'package/dist/producer-materials/' + name)!.content;
+  expect(readPublicationMetafile(bound, 'npm-entry-inputs.json', true).inputs['src/npm-entry.ts']).toBeDefined();
+  f.meta.inputs['src/npm-entry.ts'].imports.push({ path: 'src/lib/omitted.ts' }); f.saveCore();
+  expect(() => readPublicationMetafile(bound, 'npm-entry-inputs.json', true)).toThrow('Omitted');
+});

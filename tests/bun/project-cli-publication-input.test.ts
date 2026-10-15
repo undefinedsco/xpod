@@ -25,10 +25,13 @@ async function fixture(alter: (result: any, files: Record<string, Buffer>) => vo
   const client = tar({ 'package.json': json({ name: '@undefineds.co/xpod-client', version: '4.5.6' }), 'dist/index.mjs': Buffer.from('export {};') });
   const clientFiles = inspectTarballBuffer(client).entries.filter((row: any) => row.type === 'file').map((row: any) => ({ path: row.path, bytes: row.size, sha256: row.sha256, mode: row.mode }));
   const clientInventory = json({ schemaVersion: 1, files: clientFiles });
-  const index = json({ schemaVersion: 1, producer: { name: '@undefineds.co/xpod-cli', version: '1.2.3' },
+  const core = json({ inputs: { 'src/npm-entry.ts': { bytes: 1, imports: [] } }, outputs: { './xpod.mjs': { entryPoint: 'src/npm-entry.ts' } } });
+  const payload = Buffer.from('export {};');
+  const index = json({ coreMetafile: 'npm-entry-inputs.json', corePayloads: { esmSHA256: hash(payload) }, schemaVersion: 1, producer: { name: '@undefineds.co/xpod-cli', version: '1.2.3' },
     runtimeClients: [{ name: '@undefineds.co/xpod-client', version: '4.5.6', files: clientFiles.map((row: any) => ({ ...row, path: row.path.slice(8) })), publication: { archive: 'client.tgz', inventory: 'client.inventory.json' } }],
-    files: [{ path: 'client.tgz', bytes: client.length, sha256: hash(client) }, { path: 'client.inventory.json', bytes: clientInventory.length, sha256: hash(clientInventory) }] });
+    files: [{ path: 'npm-entry-inputs.json', bytes: core.length, sha256: hash(core) }, { path: 'client.tgz', bytes: client.length, sha256: hash(client) }, { path: 'client.inventory.json', bytes: clientInventory.length, sha256: hash(clientInventory) }] });
   const cli = tar({ 'package.json': json({ name: '@undefineds.co/xpod-cli', version: '1.2.3', dependencies: { '@undefineds.co/xpod-client': '4.5.6' }, exports: { './producer-materials': './dist/producer-materials/index.json' } }),
+    'dist/xpod.mjs': payload, 'dist/producer-materials/npm-entry-inputs.json': core,
     'dist/producer-materials/index.json': index, 'dist/producer-materials/client.tgz': client, 'dist/producer-materials/client.inventory.json': clientInventory });
   const source = 'a'.repeat(40), head = 'b'.repeat(40);
   const context = { checkoutSha: source, eventHeadSha: head, runId: '42', runAttempt: '2', environment: 'github-actions', runnerOS: 'Linux', workingTreeDirty: false };
@@ -65,6 +68,11 @@ test('projects normal publication originals and reuses their actual preparation 
   const f = await fixture(); const result = await projectCliPublicationInput(f.input, f.output);
   for (const file of ['cli.tgz', 'client.tgz', 'result.json', 'preparation.json']) expect(readFileSync(path.join(f.output, file)).equals(f.files[file])).toBe(true);
   expect(result.sourceSha).toBe('a'.repeat(40)); expect(result.eventHeadSha).toBe('b'.repeat(40)); expect(result.runId).toBe('42');
+  const projectedInput = JSON.parse(readFileSync(path.join(f.output, 'publication-input.json'), 'utf8'));
+  const prepared = preparePublication(projectedInput, f.output);
+  expect(prepared.coreMaterial?.metafile).toBe('npm-entry-inputs.json');
+  expect(prepared.coreMaterial?.sourceVerified).toBe(false);
+  expect(prepared.canonicalInputs).toBeNull();
   expect(result.releaseQualified).toBe(false); expect(result.actualCheckoutVerified).toBe(false);
 });
 for (const change of ['numeric-id', 'leading-zero', 'checkout', 'head', 'dirty', 'private-reuse', 'qualification', 'archive-hash', 'source-ref']) test(`rejects publication binding mismatch: ${change}`, async () => {
