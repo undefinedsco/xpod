@@ -18,7 +18,7 @@ const EXTERNAL_PROFILE = Object.freeze({
   commit: '497942519bc211b6b5bc684f47f41bad189cf632',
   name: '@undefineds.co/extensions', version: '0.1.0',
 });
-const WORKSPACE_COLLECTOR = '459e4b78fcd31d6341594a5578d996e70aeec98348c95a6aac77ad9ef48bcf81';
+const WORKSPACE_COLLECTOR = '8f14113cfa81702b2ebc7879481c7cbeb61ffb3e2acce3ed540ec6f5ea02fdf7';
 // Only the independently reviewed collector/runner pair is supported. This
 // allows original verification; it does not establish a successful normal run.
 const REVIEWED_WORKSPACE_RUNNERS = new Set([
@@ -30,13 +30,16 @@ const PHASES = ['bun-version', 'node-version', 'git-init', 'git-fetch-pin', 'git
   'node-remove', 'bun-archive-install', 'bun-public-exports', 'bun-remove'];
 const hash = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
 function need(ok, message) { if (!ok) throw new Error('Normal registry artifact blocked: ' + message); }
-function ordinary(file, maximum) {
+function noSymlinkPath(file) {
   need(typeof file === 'string' && path.isAbsolute(file) && path.resolve(file) === file, 'canonical absolute original path required');
   let current = path.parse(file).root;
   for (const part of file.slice(current.length).split(path.sep)) {
     current = path.join(current, part);
     need(!fs.lstatSync(current).isSymbolicLink(), 'original path contains a symlink');
   }
+}
+function ordinary(file, maximum) {
+  noSymlinkPath(file);
   const stat = fs.lstatSync(file);
   need(stat.isFile() && stat.size <= maximum, 'bounded regular original required');
   const fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
@@ -75,19 +78,33 @@ function verifyActualInputs(source, commit, expectedTree, inputs) {
     && !git(['status', '--porcelain', '--untracked-files=all']).trim(), 'actual retained checkout identity/state changed');
   const staged = git(['ls-files', '--stage', '-z']).split('\0').filter(Boolean);
   const head = new Map(git(['ls-tree', '-r', '-z', 'HEAD']).split('\0').filter(Boolean).map(row => {
-    const match = /^(100644|100755) blob ([a-f0-9]{40})\t(.+)$/.exec(row);
+    const match = /^(100644|100755|120000) blob ([a-f0-9]{40})\t(.+)$/.exec(row);
     need(match, 'HEAD contains an unsupported source input'); return [match[3], { mode: match[1], blob: match[2] }];
   }));
   need(staged.length === Object.keys(inputs).length && head.size === staged.length, 'actual source inventory changed');
   for (const row of staged) {
-    const match = /^(100644|100755) ([a-f0-9]{40}) 0\t(.+)$/.exec(row);
+    const match = /^(100644|100755|120000) ([a-f0-9]{40}) 0\t(.+)$/.exec(row);
     need(match && Object.prototype.hasOwnProperty.call(inputs, match[3]), 'unbound/nonregular source input');
-    const file = below(source, match[3]), bytes = ordinary(file, 16 * 1024 ** 2), ref = inputs[match[3]];
+    const file = below(source, match[3]), ref = inputs[match[3]];
+    let bytes;
+    if (match[1] === '120000') {
+      noSymlinkPath(path.dirname(file));
+      const before = fs.lstatSync(file);
+      need(before.isSymbolicLink() && ref.mode === '120000', 'tracked symlink mode mismatch');
+      bytes = fs.readlinkSync(file, { encoding: 'buffer' });
+      const target = bytes.toString('utf8'), relativeTarget = path.relative(source, path.resolve(path.dirname(file), target));
+      need(Buffer.from(target).equals(bytes) && target.length > 0 && !path.isAbsolute(target) && !path.win32.isAbsolute(target) && !target.includes('\\')
+        && relativeTarget !== '..' && !relativeTarget.startsWith('..' + path.sep) && !path.isAbsolute(relativeTarget),
+      'tracked symlink target escapes source');
+      const after = fs.lstatSync(file);
+      need(after.isSymbolicLink() && before.ino === after.ino && before.size === after.size && before.mtimeMs === after.mtimeMs
+        && ref.linkTargetBase64 === bytes.toString('base64'), 'tracked symlink changed while reading');
+    } else bytes = ordinary(file, 16 * 1024 ** 2);
     need(head.get(match[3])?.mode === match[1] && head.get(match[3])?.blob === match[2]
       && (ref.mode === undefined || ref.mode === match[1]) && (ref.gitBlob === undefined || ref.gitBlob === match[2])
       && bytes.length === ref.bytes && hash(bytes) === ref.sha256
       && crypto.createHash('sha1').update(Buffer.concat([Buffer.from(`blob ${bytes.length}\0`), bytes])).digest('hex') === match[2]
-      && Boolean(fs.statSync(file).mode & 0o111) === (match[1] === '100755'), 'actual source input content/mode mismatch');
+      && (match[1] === '120000' || Boolean(fs.statSync(file).mode & 0o111) === (match[1] === '100755')), 'actual source input content/mode mismatch');
   }
 }
 function inspectBoundedArchive(bytes) {
@@ -280,7 +297,7 @@ function readWorkspaceNormalArtifacts(input) {
     need(observed[0].toString().trim() === expected.commit && observed[1].length === 0
       && value.statusSHA256 === hash(observed[1]), 'workspace original source state is not clean/exact');
     const indexed = observed[2].toString().split('\0').filter(Boolean).map(row => {
-      const match = /^(100644|100755) ([a-f0-9]{40}) 0\t(.+)$/.exec(row); need(match, 'workspace source index unsupported');
+      const match = /^(100644|100755|120000) ([a-f0-9]{40}) 0\t(.+)$/.exec(row); need(match, 'workspace source index unsupported');
       return { path: match[3], mode: match[1], gitBlob: match[2] };
     });
     const files = new Map();
@@ -328,4 +345,4 @@ function readWorkspaceNormalArtifacts(input) {
   return { artifacts, binding: { repository: expected.repository, commit: expected.commit, receipt: input.receipt,
     compositePhases: 1, buildAuthority: false }, sourceAdmission: false, releaseQualified: false, published: false };
 }
-module.exports = { readExternalNormalArtifact, readWorkspaceNormalArtifacts };
+module.exports = { readExternalNormalArtifact, readWorkspaceNormalArtifacts, verifyActualInputs };

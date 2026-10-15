@@ -27,12 +27,28 @@ function snapshotWorkspace(root, rawDirectory = null, suffix = null){
  const status=git('status',['status','--porcelain','--untracked-files=all']);
  const rows=git('tracked-index',['ls-files','--stage','-z']).toString().split('\0').filter(Boolean);const files=[];
  for(const row of rows){
-  const match=/^(100644|100755) ([a-f0-9]{40}) 0\t(.+)$/.exec(row);if(!match)throw new Error('Tracked input must be a regular nonconflicted file');
+  const match=/^(100644|100755|120000) ([a-f0-9]{40}) 0\t(.+)$/.exec(row);if(!match)throw new Error('Tracked input mode unsupported (gitlink/conflict explicitly blocked)');
   const [,mode,blob,name]=match;
   if(path.isAbsolute(name)||name.split('/').some(x=>x==='..'||x==='.'||!x))throw new Error('Unsafe tracked input');
-  const file=path.join(root,name),stat=fs.lstatSync(file);if(!stat.isFile()||stat.isSymbolicLink())throw new Error('Tracked input is not regular');
-  const bytes=fs.readFileSync(file),actualBlob=crypto.createHash('sha1').update(Buffer.from('blob '+bytes.length+'\0')).update(bytes).digest('hex');
-  files.push({path:name,mode,bytes:bytes.length,sha256:hash(bytes),gitBlob:blob,matchesGit:actualBlob===blob});
+  let ancestor=root;
+  for(const part of name.split('/').slice(0,-1)){ancestor=path.join(ancestor,part);if(fs.lstatSync(ancestor).isSymbolicLink())throw new Error('Tracked input ancestor is a symlink');}
+  const file=path.join(root,name),stat=fs.lstatSync(file);let bytes,linkTargetBase64;
+  if(mode==='120000'){
+    if(!stat.isSymbolicLink())throw new Error('Tracked symlink mode/type mismatch');
+    bytes=fs.readlinkSync(file,{encoding:'buffer'});
+    const target=bytes.toString('utf8');
+    if(!Buffer.from(target,'utf8').equals(bytes)||!target||target.includes('\\')||path.isAbsolute(target)||path.win32.isAbsolute(target))throw new Error('Unsupported absolute/non-UTF8 tracked symlink');
+    const resolved=path.posix.normalize(path.posix.join(path.posix.dirname(name),target));
+    if(resolved==='..'||resolved.startsWith('../')||path.posix.isAbsolute(resolved))throw new Error('Tracked symlink target escapes source root');
+    const after=fs.lstatSync(file);
+    if(!after.isSymbolicLink()||after.dev!==stat.dev||after.ino!==stat.ino||after.size!==stat.size||after.mtimeMs!==stat.mtimeMs)throw new Error('Tracked symlink changed while reading');
+    linkTargetBase64=bytes.toString('base64');
+  }else{
+    if(!stat.isFile()||stat.isSymbolicLink())throw new Error('Tracked input is not regular');
+    bytes=fs.readFileSync(file);
+  }
+  const actualBlob=crypto.createHash('sha1').update(Buffer.from('blob '+bytes.length+'\0')).update(bytes).digest('hex');
+  files.push({path:name,mode,bytes:bytes.length,sha256:hash(bytes),gitBlob:blob,matchesGit:actualBlob===blob,...(linkTargetBase64===undefined?{}:{linkTargetBase64})});
  }
  const inputs={sourceSha,clean:status.length===0,statusSHA256:hash(status),files:files.sort((a,b)=>a.path.localeCompare(b.path))};
  return{...inputs,inputSHA256:hash(Buffer.from(JSON.stringify(inputs))),gitCommands};

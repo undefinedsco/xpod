@@ -2,10 +2,11 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, open, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { startPodContractServer, type PodContractServer } from './support/podContractServer';
 import { isObservedConditionalConflict, ownedUnmountDecision, runOwnedUnmountOnce, runMountAcceptance, type MountAcceptanceReport, type OwnedUnmountProof } from './support/mountHarness';
 import { discoverAgentFsHelper } from './support/helperDiscovery';
+import { mountedCommandDiagnostic, emitMountedCommandDiagnostic } from './support/commandDiagnostic';
 import { MountCleanupGuard, makeObservingKernelObserver, observeKernelMounts, observeKernelMountsDetailed } from './support/mountCleanup';
 
 /**
@@ -79,10 +80,22 @@ function execSampled(command: string, args: string[], env: NodeJS.ProcessEnv, ti
 // Plain (NON-sampling) spawn/wait. RSS sampling must never route through this,
 // or sampling `ps` would recursively sample its own `ps` child (process storm).
 async function exec(command: string, args: string[], env: NodeJS.ProcessEnv = {}, timeoutMs = 120_000, cwd = process.cwd()): Promise<ExecResult> {
-  const owned = observeOwnedChild(spawn(command, args, { cwd, env: { ...process.env, ...env }, stdio: [ 'ignore', 'pipe', 'pipe' ] }));
-  const timer = setTimeout(() => owned.child.kill('SIGKILL'), timeoutMs);
+  const started = performance.now(); let timeoutObserved = false;
+  const role = command === '/bin/sh' ? 'shell' : command === 'git' ? 'git' : 'consumer-command';
+  let owned: OwnedDaemon;
+  try { owned = observeOwnedChild(spawn(command, args, { cwd, env: { ...process.env, ...env }, stdio: [ 'ignore', 'pipe', 'pipe' ] })); }
+  catch (error) {
+    emitMountedCommandDiagnostic(mountedCommandDiagnostic(role, command, args, cwd, started, timeoutMs, false,
+      { state: 'spawn-threw', actualExit: null, signal: null }, error));
+    throw error;
+  }
+  const timer = setTimeout(() => { timeoutObserved = true; owned.child.kill('SIGKILL'); }, timeoutMs);
   try {
     const fact = await awaitClose(owned, timeoutMs + 15_000);
+    if (fact.state !== 'closed' || fact.code !== 0 || fact.signal !== null) {
+      emitMountedCommandDiagnostic(mountedCommandDiagnostic(role, command, args, cwd, started, timeoutMs, timeoutObserved,
+        { state: fact.state, actualExit: fact.state === 'closed' ? fact.code : null, signal: fact.state === 'closed' ? fact.signal : null }, owned.spawnFailure.error));
+    }
     return { state: fact.state, actualExit: fact.state === 'closed' ? fact.code : null,
       status: fact.state === 'closed' ? fact.code ?? 1 : 1,
       signal: fact.state === 'closed' ? fact.signal : null, pid: owned.child.pid,
@@ -90,10 +103,26 @@ async function exec(command: string, args: string[], env: NodeJS.ProcessEnv = {}
   } finally { clearTimeout(timer); }
 }
 
-interface OwnedDaemon { child: ChildProcess; closed: Promise<{ code: number | null; signal: NodeJS.Signals | null }>; spawnError: Promise<boolean>; stdout: Buffer[]; stderr: Buffer[]; }
-function spawnOwnedForeground(binary: string, server: PodContractServer, mnt: string, session: string): OwnedDaemon {
-  return observeOwnedChild(spawn(binary, [ 'mount', '--server', server.podRoot, '--mountpoint', mnt, '--backend', backend, '--session-dir', session, '--foreground' ],
-    { env: { ...process.env, XPOD_AGENTFS_TOKEN: TOKEN }, stdio: [ 'ignore', 'pipe', 'pipe' ] }));
+interface OwnedDaemon { child: ChildProcess; closed: Promise<{ code: number | null; signal: NodeJS.Signals | null }>; spawnError: Promise<boolean>; spawnFailure: { error?: Error }; stdout: Buffer[]; stderr: Buffer[]; }
+function spawnOwnedForeground(binary: string, server: PodContractServer, mnt: string, session: string, onSpawnFailure?: () => void): OwnedDaemon {
+  const args = [ 'mount', '--server', server.podRoot, '--mountpoint', mnt, '--backend', backend, '--session-dir', session, '--foreground' ];
+  const started = performance.now();
+  try {
+    const owned = observeOwnedChild(spawn(binary, args,
+      { env: { ...process.env, XPOD_AGENTFS_TOKEN: TOKEN }, stdio: [ 'ignore', 'pipe', 'pipe' ] }));
+    owned.child.once('error', (error) => {
+      onSpawnFailure?.();
+      emitMountedCommandDiagnostic(mountedCommandDiagnostic('mount-daemon', binary, args, process.cwd(), started, null, false,
+        { state: 'spawn-error', actualExit: null, signal: null }, error));
+    });
+    return owned;
+  }
+  catch (error) {
+    onSpawnFailure?.();
+    emitMountedCommandDiagnostic(mountedCommandDiagnostic('mount-daemon', binary, args, process.cwd(), started, null, false,
+      { state: 'spawn-threw', actualExit: null, signal: null }, error));
+    throw error;
+  }
 }
 function observeOwnedChild(child: ChildProcess): OwnedDaemon {
   const stdout: Buffer[] = []; const stderr: Buffer[] = [];
@@ -103,12 +132,40 @@ function observeOwnedChild(child: ChildProcess): OwnedDaemon {
   // metadata and never fabricates an exit/signal.
   let resolveSpawnError: (value: boolean) => void = () => undefined;
   const spawnError = new Promise<boolean>((resolve) => { resolveSpawnError = resolve; });
-  child.once('error', () => resolveSpawnError(true));
+  const spawnFailure: { error?: Error } = {};
+  child.once('error', (error) => { spawnFailure.error = error; resolveSpawnError(true); });
   const closed = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
     child.once('close', (code, signal) => resolve({ code, signal }));
   });
-  return { child, closed, spawnError, stdout, stderr };
+  return { child, closed, spawnError, spawnFailure, stdout, stderr };
 }
+
+describe('mounted daemon spawn diagnostics', () => {
+  const server = { podRoot: 'http://fixture.invalid/pod/' } as PodContractServer;
+  it('retains the scene on a synchronous spawn throw before the consumer try/finally', () => {
+    const output = vi.spyOn(console, 'error').mockImplementation(() => undefined); let retained = false;
+    try {
+      expect(() => spawnOwnedForeground('invalid\0binary', server, '/private/mount', '/private/session',
+        () => { retained = true; })).toThrow();
+      expect(retained).toBe(true);
+      const diagnostic = JSON.parse(output.mock.calls[0][1] as string);
+      expect(diagnostic).toMatchObject({ role: 'mount-daemon', state: 'spawn-threw', actualWait: false, closeObserved: false, timeoutMs: null });
+      expect(JSON.stringify(diagnostic)).not.toContain('/private/');
+    } finally { output.mockRestore(); }
+  });
+  it('emits asynchronous daemon spawn errors and retains the scene without inventing close', async () => {
+    const output = vi.spyOn(console, 'error').mockImplementation(() => undefined); let retained = false;
+    try {
+      const daemon = spawnOwnedForeground('/nonexistent-xpod-mount-helper', server, '/private/mount', '/private/session',
+        () => { retained = true; });
+      await daemon.spawnError;
+      expect(retained).toBe(true);
+      const diagnostic = JSON.parse(output.mock.calls[0][1] as string);
+      expect(diagnostic).toMatchObject({ role: 'mount-daemon', state: 'spawn-error', errorCode: 'ENOENT', actualWait: false, closeObserved: false });
+      await daemon.closed;
+    } finally { output.mockRestore(); }
+  });
+});
 /**
  * Persist the TRUE foreground daemon stdout/stderr buffers (already captured by
  * spawnOwnedForeground) plus safe identity into the driver-created evidence dir,
@@ -266,13 +323,17 @@ describe.runIf(runOverlay)('native mounted platform matrix: remote stream, RSS, 
     await guard.remove(work); await mkdir(mnt, { recursive: true }); await mkdir(session, { recursive: true });
     await mkdir(hooks, { recursive: true }); await mkdir(template, { recursive: true });
     const expectedRemote = server.readBody('alpha.txt').trim();
-    const daemon = spawnOwnedForeground(binary, server, mnt, session);
+    const daemon = spawnOwnedForeground(binary, server, mnt, session, () => { retainedScene = true; });
     const commands: Record<string, unknown>[] = [];
     const proof: OwnedUnmountProof = { daemonClosed: false };
     let primaryError: unknown; let cleanupError: unknown; let worktreeAdded = false; let unresolvedCommand = false;
     const run = async (command: string, args: string[], cwd = project, env: NodeJS.ProcessEnv = {}): Promise<string> => {
-      const result = await exec(command, args, env, 60_000, cwd);
-      commands.push({ command, args, cwd, result });
+      const row: Record<string, unknown> = { command, args, cwd, state: 'attempted' };
+      commands.push(row);
+      let result: ExecResult;
+      try { result = await exec(command, args, env, 60_000, cwd); }
+      catch (error) { row.state = 'spawn-threw'; unresolvedCommand = true; throw error; }
+      row.state = result.state; row.result = result;
       if (result.state !== 'closed') unresolvedCommand = true;
       expect(result.state, JSON.stringify(result)).toBe('closed');
       expect(result.actualExit, JSON.stringify(result)).toBe(0);

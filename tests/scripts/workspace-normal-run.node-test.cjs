@@ -104,3 +104,27 @@ test('collector independently requires two distinct ordered raw stream identitie
   assert.equal(JSON.parse(fs.readFileSync(path.join(output,'normal-run.original.json'))).ok,false);
  }
 }));
+
+test('tracked symlink binds readlink bytes and Git blob without following its target',()=>fixture(async options=>{
+ options.write('AGENTS.md','source text deliberately different from link bytes');fs.symlinkSync('AGENTS.md',path.join(options.root,'CLAUDE.md'));
+ options.git(['add','AGENTS.md','CLAUDE.md']);options.git(['commit','-m','tracked symlink']);
+ const sourceRead=fs.readFileSync;let followed=false;
+ fs.readFileSync=function(file,...args){if(typeof file==='string'&&path.basename(file)==='CLAUDE.md'){followed=true;throw new Error('symlink dereference forbidden');}return sourceRead.call(fs,file,...args);};
+ let snapshot;try{snapshot=snapshotWorkspace(options.root);}finally{fs.readFileSync=sourceRead;}
+ const row=snapshot.files.find(x=>x.path==='CLAUDE.md'),target=Buffer.from('AGENTS.md');assert.equal(row.mode,'120000');assert.equal(row.bytes,target.length);assert.equal(row.sha256,crypto.createHash('sha256').update(target).digest('hex'));assert.equal(row.linkTargetBase64,target.toString('base64'));assert.equal(row.gitBlob,crypto.createHash('sha1').update(Buffer.concat([Buffer.from('blob '+target.length+'\0'),target])).digest('hex'));assert.equal(row.matchesGit,true);assert.equal(followed,false);assert.equal(snapshot.clean,true);
+}));
+test('tracked symlink drift changes before/after input binding',()=>fixture(async options=>{
+ options.write('AGENTS.md','first');options.write('OTHER.md','second');const file=path.join(options.root,'CLAUDE.md');fs.symlinkSync('AGENTS.md',file);options.git(['add','AGENTS.md','OTHER.md','CLAUDE.md']);options.git(['commit','-m','link drift']);
+ const before=snapshotWorkspace(options.root);fs.unlinkSync(file);fs.symlinkSync('OTHER.md',file);const after=snapshotWorkspace(options.root);assert.notEqual(before.inputSHA256,after.inputSHA256);assert.equal(after.clean,false);assert.equal(after.files.find(x=>x.path==='CLAUDE.md').matchesGit,false);
+}));
+test('absolute and escaping tracked symlinks reject without reading external files',async()=>{
+ for(const target of ['/outside-owned-source-secret','../outside-owned-source-secret'])await fixture(async options=>{
+  const secret=path.join(options.temp,'outside-owned-source-secret');fs.writeFileSync(secret,'must never be read');fs.symlinkSync(target,path.join(options.root,'CLAUDE.md'));options.git(['add','CLAUDE.md']);options.git(['commit','-m','unsafe link']);
+  const original=fs.readFileSync;let externalRead=false;fs.readFileSync=function(file,...args){if(String(file).includes('outside-owned-source-secret')){externalRead=true;throw Error('external read forbidden');}return original.call(fs,file,...args);};
+  try{assert.throws(()=>snapshotWorkspace(options.root),/absolute|escapes/);}finally{fs.readFileSync=original;}
+  assert.equal(externalRead,false);
+ });
+});
+test('tracked gitlink remains explicitly unsupported rather than skipped',()=>fixture(async options=>{
+ const commit=options.git(['rev-parse','HEAD']).toString().trim();options.git(['update-index','--add','--cacheinfo','160000,'+commit+',module']);assert.throws(()=>snapshotWorkspace(options.root),/gitlink\/conflict explicitly blocked/);
+}));
