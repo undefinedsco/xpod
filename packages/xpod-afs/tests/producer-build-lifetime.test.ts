@@ -1,7 +1,7 @@
 import { expect, test } from 'bun:test';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
-import { spawnSync } from 'node:child_process';
+import { createRequire } from 'node:module';
 import path from 'node:path';
 
 test('the shared builder imports without resolving command arguments or starting a build', async () => {
@@ -14,30 +14,37 @@ test('the shared builder imports without resolving command arguments or starting
 
 // Explicit original native evidence enables the real packaging regression.
 // Ordinary unit runs do not download or manufacture native authority.
+const { runLifetimeCommand, createLifetimeDiagnostics } = createRequire(import.meta.url)('./helpers/lifetime-command.cjs');
 const evidence = process.env.XPOD_AFS_LIFETIME_NATIVE_EVIDENCE;
 const pins = process.env.XPOD_AFS_LIFETIME_NATIVE_PINS;
 const target = process.env.XPOD_AFS_LIFETIME_TARGET;
-(test as typeof test & { skipIf(condition: boolean): typeof test }).skipIf(!evidence || !pins || !target)('client cleanup followed by a new module build binds the new producer and preserves the runtime boundary', () => {
+(test as typeof test & { skipIf(condition: boolean): typeof test }).skipIf(!evidence || !pins || !target)('client cleanup followed by a new module build binds the new producer and preserves the runtime boundary', async () => {
+  const deadline = Date.now() + 180_000;
   const repo = path.resolve(import.meta.dir, '../../..');
   const output = mkdtempSync(path.join(repo, '.test-data/afs-lifetime-regression-'));
+  const diagnostics = createLifetimeDiagnostics(repo, process.env.MODULE_RUN_ROOT);
+  process.stdout.write(JSON.stringify({ stage: 'lifetime-diagnostics', evidence: diagnostics, deadline }) + '\n');
   const staged = path.join(repo, 'packages/xpod-afs/.test-data');
   const scopes = () => existsSync(staged) ? readdirSync(staged).filter(name => name.startsWith('producer-cli-')).sort() : [];
   const before = scopes();
-  const run = (args: string[]) => {
-    const result = spawnSync(process.execPath, ['scripts/build-afs-from-producer.ts', ...args,
-      '--cli-package', 'packages/xpod-cli'], { cwd: repo, encoding: 'utf8' });
-    expect({ exit: result.status, error: result.error?.message, signal: result.signal,
-      diagnostic: result.status === 0 ? '' : result.stderr.slice(-6000) })
+  let outputCleanupSafe = true;
+  const run = async (label: string, args: string[]) => {
+    outputCleanupSafe = false;
+    const result = await runLifetimeCommand(process.execPath, ['scripts/build-afs-from-producer.ts', ...args,
+      '--cli-package', 'packages/xpod-cli'], { cwd: repo, evidence: diagnostics, label, deadline });
+    outputCleanupSafe = result.actualClose && result.groupAbsent && result.rawClosed;
+    expect({ exit: result.code, error: result.spawnError ?? undefined, signal: result.signal,
+      diagnostic: result.code === 0 ? '' : readFileSync(path.join(diagnostics, label + '.stderr.raw.log'), 'utf8').slice(-6000) })
       .toEqual({ exit: 0, error: undefined, signal: null, diagnostic: '' });
   };
   try {
-    run(['--mode', 'client']);
+    await run('client', ['--mode', 'client']);
     expect(scopes()).toEqual(before);
     const old = Object.keys(JSON.parse(readFileSync(path.join(repo, 'packages/xpod-afs/dist/commands-inputs.json'), 'utf8')).inputs)
       .filter(name => name.includes('/producer-cli-'));
     expect(old.length > 0).toBe(true);
     expect(old.every(name => !existsSync(name))).toBe(true);
-    run(['--mode', 'module', '--target', target!, '--out', output,
+    await run('module', ['--mode', 'module', '--target', target!, '--out', output,
       '--native-evidence', evidence!, '--native-pins', pins!]);
     expect(scopes()).toEqual(before);
     const manifest = JSON.parse(readFileSync(path.join(output, 'package/package.json'), 'utf8'));
@@ -59,5 +66,9 @@ const target = process.env.XPOD_AFS_LIFETIME_TARGET;
       archiveSHA256: archive.sha256, nativeHelperSHA256: archive.native.helperSHA256,
       moduleSourceDirty: archive.native.moduleSourceDirty, moduleSourceSHA: archive.native.moduleSourceSHA,
       freshSourceBytes: copied.length, temporaryScopesCleaned: true }) + '\n');
-  } finally { rmSync(output, { recursive: true, force: true }); }
+  } finally {
+    if (outputCleanupSafe) rmSync(output, { recursive: true, force: true });
+    else process.stderr.write(JSON.stringify({ stage: 'lifetime-output-preserved', output, diagnostics,
+      reason: 'Build did not return verified closure; preserve its output rather than deleting beneath it.' }) + '\n');
+  }
 }, 180_000);

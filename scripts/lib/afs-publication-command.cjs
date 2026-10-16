@@ -4,8 +4,9 @@ const crypto = require('node:crypto');
 const { spawn } = require('node:child_process');
 const RAW_LIMIT = 8 * 1024 * 1024;
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
-async function runPublicationCommand(command, args, { cwd, env, evidence, label, timeoutMs = 180000 }) {
+async function runPublicationCommand(command, args, { cwd, env, evidence, label, timeoutMs = 180000, rawLimit = RAW_LIMIT }) {
   if (!/^[a-z0-9-]+$/.test(label) || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 600000) throw new Error('Invalid command evidence budget');
+  if (!Number.isSafeInteger(rawLimit) || rawLimit < 1 || rawLimit > RAW_LIMIT) throw new Error('Invalid command raw budget');
   const files = ['stdout','stderr'].map(kind => path.join(evidence, label + '.' + kind + '.raw.log'));
   const handles = [];
   try { for (const file of files) handles.push(fs.openSync(file,'wx',0o600)); }
@@ -37,7 +38,7 @@ async function runPublicationCommand(command, args, { cwd, env, evidence, label,
     for(const [index,stream] of [child.stdout,child.stderr].entries()){
       stream.on('data',bytes=>{
         observed[index]+=bytes.length;
-        const remaining=RAW_LIMIT-written[index],retained=bytes.subarray(0,Math.max(0,remaining));
+        const remaining=rawLimit-written[index],retained=bytes.subarray(0,Math.max(0,remaining));
         if(!ioErrors[index].length&&retained.length){
           try{
             const count=fs.writeSync(handles[index],retained,0,retained.length);
@@ -86,9 +87,9 @@ async function runPublicationCommand(command, args, { cwd, env, evidence, label,
     try{
       fd=fs.openSync(file,fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW);
       const before=fs.fstatSync(fd);
-      if(!before.isFile()||before.size!==written[index]||before.size>RAW_LIMIT)throw Object.assign(new Error('Raw file size mismatch'),{code:'ESIZE'});
+      if(!before.isFile()||before.size!==written[index]||before.size>rawLimit)throw Object.assign(new Error('Raw file size mismatch'),{code:'ESIZE'});
       const buffer=Buffer.alloc(65536),h=crypto.createHash('sha256');
-      for(let count;(count=fs.readSync(fd,buffer,0,buffer.length,null))>0;){total+=count;if(total>RAW_LIMIT)throw Object.assign(new Error('Raw hash budget exceeded'),{code:'EFBIG'});h.update(buffer.subarray(0,count));}
+      for(let count;(count=fs.readSync(fd,buffer,0,buffer.length,null))>0;){total+=count;if(total>rawLimit)throw Object.assign(new Error('Raw hash budget exceeded'),{code:'EFBIG'});h.update(buffer.subarray(0,count));}
       const after=fs.fstatSync(fd);
       if(total!==written[index]||before.size!==after.size||before.mtimeMs!==after.mtimeMs||before.ino!==after.ino)throw Object.assign(new Error('Raw changed while hashing'),{code:'ESTALE'});
       digest=h.digest('hex');
@@ -100,7 +101,7 @@ async function runPublicationCommand(command, args, { cwd, env, evidence, label,
   const rawComplete=rawClosed&&!truncated.some(Boolean)&&ioErrors.every(errors=>errors.length===0)&&observed.every((bytes,index)=>bytes===written[index]);
   const row={command,args,cwd,code,signal,spawnError,actualWait:leaderWaited,actualClose:childClosed,
     groupAbsent:absent,pipeEOF:ended,rawClosed,rawClosedBeforeHash:rawClosed,
-    descendantClosureVerified:false,failure:primary,rawBudgetPerStream:RAW_LIMIT,rawComplete,raw};
+    descendantClosureVerified:false,failure:primary,rawBudgetPerStream:rawLimit,rawComplete,raw};
   const failure=primary||code!==0||signal||spawnError||!leaderWaited||!absent||!rawComplete?Object.assign(new Error(primary||'Publication command failed: '+label),{outcome:row,cause:originalErrors[0]}):null;
   try{fs.writeFileSync(path.join(evidence,label+'.receipt.json'),JSON.stringify(row,null,2)+'\n',{flag:'wx'});}
   catch(error){throw Object.assign(new AggregateError(failure?[failure,error]:[error],'Publication receipt write failed'),{outcome:row,cause:originalErrors[0]||error});}

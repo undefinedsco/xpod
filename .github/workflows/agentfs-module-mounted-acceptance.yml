@@ -119,6 +119,7 @@ jobs:
           with open(root/'build.safe.json','x') as f:json.dump({'sourceSHA':os.environ['GITHUB_SHA'],'sourceClean':True,'exit':0,'commands':json.load(open(workspace/'scripts/agentfs-native-ci/mounted/producer-commands.json'))['commands'],'coreSHA256':digest(workspace/'packages/xpod-cli/dist/xpod.mjs'),'driverSHA256':digest(root/'module-admission.mjs'),'metafiles':records},f)
           PY
       - name: Verify client cleanup followed by fresh module packaging
+        id: lifetime
         env:
           XPOD_AFS_LIFETIME_NATIVE_EVIDENCE: ${{ env.MODULE_RUN_ROOT }}/native/native.zip
           XPOD_AFS_LIFETIME_NATIVE_PINS: ${{ env.MODULE_RUN_ROOT }}/native/native-pins.json
@@ -285,6 +286,12 @@ jobs:
             if os.path.exists(p):normalizers.append({'runtime':runtime,'cid':open(p).read().strip(),'actualClosedExit':0,'containerAbsent':True})
           with open(sys.argv[1],'x') as f: json.dump({'sourceSHA':os.environ['GITHUB_SHA'],'target':os.environ['TARGET'],'nodeOutcome':os.environ['NODE_OUTCOME'],'bunOutcome':os.environ['BUN_OUTCOME'],'ownedImageAbsent':True if os.environ['OWNED_IMAGE_ABSENT']=='true' else None,'normalizers':normalizers,'noPromotion':True},f)
           PY
+      - name: Export this job's exact lifetime diagnostics
+        if: always() && env.MODULE_RUN_ROOT != ''
+        env:
+          LIFETIME_OUTCOME: ${{ steps.lifetime.outcome }}
+        run: |
+          bun -e 'require("./packages/xpod-afs/tests/helpers/lifetime-command.cjs").exportLifetimeDiagnostics({root:process.env.MODULE_RUN_ROOT,sourceSHA:process.env.GITHUB_SHA,buildOutcome:process.env.LIFETIME_OUTCOME})'
       - uses: actions/upload-artifact@v4
         if: always() && env.MODULE_RUN_ROOT != ''
         with:
