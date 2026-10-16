@@ -242,8 +242,75 @@ function run(args, env, executable = process.execPath, cwd) {
   });
 }
 
-async function main(input, output, cache, packageManager = 'npm') {
-  if (!input || !output || !cache) throw new Error('Usage: node scripts/check-package-registry-consumer.cjs <pack-json|tgz> <new-evidence-dir> <package-cache> [npm|bun]');
+// Shared by the existing root CLI checker and the real legacy Bun install seam.
+async function publishRootSupply({ artifact, supply, server, registry, token, evidenceRoot, retainedDirectory }) {
+  const helper = require('./lib/root-registry-supply.cjs');
+  helper.verifyPublicationMetadata(artifact, server.publishedMetadata());
+  const publications = [];
+  for (const [index, value] of supply.artifacts.entries()) {
+    const directory = path.join(evidenceRoot, 'private-' + index); fs.mkdirSync(directory, { mode: 0o700 });
+    await publishArtifact(value, registry, token, directory);
+    const metadata = server.publishedMetadata(value.manifest.name);
+    helper.verifyPublicationMetadata(value, metadata);
+    const file = 'publication-' + index + '.original.json';
+    fs.writeFileSync(path.join(retainedDirectory, file), JSON.stringify(metadata, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
+    publications.push({ name: value.manifest.name, version: value.manifest.version, file, ...helper.reference(path.join(retainedDirectory, file)) });
+  }
+  fs.writeFileSync(path.join(retainedDirectory, 'publication.original.json'), JSON.stringify({ source: supply.receipt, required: supply.required,
+    root: server.publishedMetadata(), publications, publicDependencies: 'original-online-upstream', releaseQualified: false }, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
+}
+
+async function verifyRootRegistryInstallation(artifact, consumer, evidenceRoot, env) {
+  const installedRoot = path.join(consumer, 'node_modules', '@undefineds.co', 'xpod');
+  const bundles = verifyInstalledBundles(artifact.tarball, installedRoot, evidenceRoot);
+  fs.writeFileSync(path.join(evidenceRoot, 'bundle-proof.json'), `${JSON.stringify(bundles, null, 2)}\n`, { mode: 0o600 });
+  const exportsProbe = path.join(installedRoot, '.xpod-registry-exports-probe.mjs');
+  fs.writeFileSync(exportsProbe, `
+import assert from 'node:assert/strict';
+import { createRequire } from 'node:module';
+import { fileURLToPath } from 'node:url';
+import path from 'node:path';
+const require = createRequire(import.meta.url);
+// The package is bundled under the installed Xpod, so every probe has to
+// resolve inside that scope instead of a hoisted registry copy.
+const installedScope = path.join(path.dirname(fileURLToPath(import.meta.url)), 'node_modules', '@undefineds.co') + path.sep;
+const insideBundle = (file) => {
+assert(file.startsWith(installedScope), 'Resolved outside the installed bundle: ' + file);
+};
+// The interoperability contract inside the package owns the dual CommonJS/ESM
+// builds, and it is free of React, so it can be imported here.
+for (const subpath of ['provider-catalog', 'client-config']) {
+const specifier = '@undefineds.co/ai-connections/' + subpath;
+const cjsPath = require.resolve(specifier);
+const esmUrl = import.meta.resolve(specifier);
+insideBundle(cjsPath);
+insideBundle(fileURLToPath(esmUrl));
+const cjs = require(specifier);
+const esm = await import(specifier);
+assert.deepEqual(Object.keys(cjs).sort(), Object.keys(esm).sort(), 'ESM/CommonJS export mismatch for ' + subpath);
+console.log('[registry-exports] ' + specifier + ' CJS and ESM resolve inside the installed bundle');
+}
+for (const specifier of ['@undefineds.co/ai-connections/client', '@undefineds.co/ai-connections/endpoint-urls']) {
+const esmUrl = import.meta.resolve(specifier);
+insideBundle(fileURLToPath(esmUrl));
+await import(specifier);
+console.log('[registry-exports] ' + specifier + ' resolves inside the installed bundle');
+}
+// The applet entries pull in React components, so the probe only proves that
+// they still resolve inside the installed bundle.
+for (const specifier of ['@undefineds.co/ai-connections', '@undefineds.co/ai-connections/manifest']) {
+const esmUrl = import.meta.resolve(specifier);
+insideBundle(fileURLToPath(esmUrl));
+console.log('[registry-exports] ' + specifier + ' resolves inside the installed bundle');
+}
+`, { flag: 'wx', mode: 0o600 });
+  try { await run([exportsProbe], env); }
+  finally { fs.rmSync(exportsProbe, { force: true }); }
+  return bundles;
+}
+
+async function main(input, output, cache, packageManager = 'npm', supplyRequest) {
+  if (!input || !output || !cache) throw new Error('Usage: node scripts/check-package-registry-consumer.cjs <pack-json|tgz> <new-evidence-dir> <package-cache> [npm|bun] [normal-supply-request]');
   if (!['npm', 'bun'].includes(packageManager)) throw new Error('Expected npm or bun consumer');
   const artifact = readArtifact(input);
   const evidenceRoot = path.resolve(output);
@@ -255,12 +322,14 @@ async function main(input, output, cache, packageManager = 'npm') {
   const globalConfig = path.join(evidenceRoot, 'empty-global.npmrc');
   fs.writeFileSync(globalConfig, '', { flag: 'wx', mode: 0o600 });
   const publishToken = crypto.randomBytes(24).toString('hex');
-  const server = createRegistry(artifact, publishToken);
+  const supply = supplyRequest ? require('./lib/root-registry-supply.cjs').readRootSupply(supplyRequest, process.cwd(), artifact) : { artifacts: [], required: [] };
+  const server = createRegistry(artifact, publishToken, undefined, { artifacts: supply.artifacts, required: supply.required });
   const result = { name: artifact.manifest.name, version: artifact.manifest.version, integrity: artifact.integrity, node: process.version, packageManager, passed: false };
   try {
     await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
     const registry = `http://127.0.0.1:${server.address().port}`;
     await publishArtifact(artifact, registry, publishToken, evidenceRoot);
+    if (supplyRequest) await publishRootSupply({ artifact, supply, server, registry, token: publishToken, evidenceRoot, retainedDirectory: evidenceRoot });
     const metadata = server.publishedMetadata();
     if (!metadata) throw new Error('npm did not publish fixture metadata');
     fs.writeFileSync(path.join(evidenceRoot, 'published-metadata.json'), `${JSON.stringify(metadata, null, 2)}\n`, { mode: 0o600 });
@@ -268,51 +337,7 @@ async function main(input, output, cache, packageManager = 'npm') {
       XPOD_INSTALL_REGISTRY: registry, XPOD_SMOKE_NODE: packageManager === 'bun' ? 'bun' : process.execPath,
       XPOD_PACKAGE_SMOKE_INCLUDE_OPTIONAL: 'true' };
     await run([path.join(__dirname, 'package-smoke-install.cjs'), `${artifact.manifest.name}@${artifact.manifest.version}`, consumer, path.resolve(cache), packageManager], env);
-    const installedRoot = path.join(consumer, 'node_modules', '@undefineds.co', 'xpod');
-    result.bundles = verifyInstalledBundles(artifact.tarball, installedRoot, evidenceRoot);
-    fs.writeFileSync(path.join(evidenceRoot, 'bundle-proof.json'), `${JSON.stringify(result.bundles, null, 2)}\n`, { mode: 0o600 });
-    const exportsProbe = path.join(installedRoot, '.xpod-registry-exports-probe.mjs');
-    fs.writeFileSync(exportsProbe, `
-import assert from 'node:assert/strict';
-import { createRequire } from 'node:module';
-import { fileURLToPath } from 'node:url';
-import path from 'node:path';
-const require = createRequire(import.meta.url);
-// The package is bundled under the installed Xpod, so every probe has to
-// resolve inside that scope instead of a hoisted registry copy.
-const installedScope = path.join(path.dirname(fileURLToPath(import.meta.url)), 'node_modules', '@undefineds.co') + path.sep;
-const insideBundle = (file) => {
-  assert(file.startsWith(installedScope), 'Resolved outside the installed bundle: ' + file);
-};
-// The interoperability contract inside the package owns the dual CommonJS/ESM
-// builds, and it is free of React, so it can be imported here.
-for (const subpath of ['provider-catalog', 'client-config']) {
-  const specifier = '@undefineds.co/ai-connections/' + subpath;
-  const cjsPath = require.resolve(specifier);
-  const esmUrl = import.meta.resolve(specifier);
-  insideBundle(cjsPath);
-  insideBundle(fileURLToPath(esmUrl));
-  const cjs = require(specifier);
-  const esm = await import(specifier);
-  assert.deepEqual(Object.keys(cjs).sort(), Object.keys(esm).sort(), 'ESM/CommonJS export mismatch for ' + subpath);
-  console.log('[registry-exports] ' + specifier + ' CJS and ESM resolve inside the installed bundle');
-}
-for (const specifier of ['@undefineds.co/ai-connections/client', '@undefineds.co/ai-connections/endpoint-urls']) {
-  const esmUrl = import.meta.resolve(specifier);
-  insideBundle(fileURLToPath(esmUrl));
-  await import(specifier);
-  console.log('[registry-exports] ' + specifier + ' resolves inside the installed bundle');
-}
-// The applet entries pull in React components, so the probe only proves that
-// they still resolve inside the installed bundle.
-for (const specifier of ['@undefineds.co/ai-connections', '@undefineds.co/ai-connections/manifest']) {
-  const esmUrl = import.meta.resolve(specifier);
-  insideBundle(fileURLToPath(esmUrl));
-  console.log('[registry-exports] ' + specifier + ' resolves inside the installed bundle');
-}
-`, { flag: 'wx', mode: 0o600 });
-    try { await run([exportsProbe], env); }
-    finally { fs.rmSync(exportsProbe, { force: true }); }
+    result.bundles = await verifyRootRegistryInstallation(artifact, consumer, evidenceRoot, env);
     await run([path.join(__dirname, 'package-consumer-smoke.cjs'), consumer, '--package-only'], env);
     result.passed = true;
   } finally {
@@ -323,4 +348,4 @@ for (const specifier of ['@undefineds.co/ai-connections', '@undefineds.co/ai-con
   }
 }
 if (require.main === module) main(...process.argv.slice(2)).catch((error) => { console.error(error); process.exitCode = 1; });
-module.exports = { readArtifact, createRegistry, createExactArtifactRegistry, publishArtifact, isolatedEnvironment, run, assertSafeFixturePublishConfig };
+module.exports = { publishRootSupply, verifyRootRegistryInstallation, readArtifact, createRegistry, createExactArtifactRegistry, publishArtifact, isolatedEnvironment, run, assertSafeFixturePublishConfig };

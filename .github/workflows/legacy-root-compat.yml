@@ -15,6 +15,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   plan:
@@ -38,8 +39,53 @@ jobs:
           echo "sha=$actual" >> "$GITHUB_OUTPUT"
           node -e 'const fs=require("node:fs");const {rootCompatLanes}=require("./scripts/release-gate-evidence.cjs");fs.appendFileSync(process.env.GITHUB_OUTPUT,"matrix="+JSON.stringify({include:rootCompatLanes()})+"\n")'
 
-  lanes:
+  normal_afs:
     needs: plan
+    name: legacy-root-normal-afs
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
+      artifact-digest: ${{ steps.upload.outputs.artifact-digest }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: bun install --frozen-lockfile
+      - name: Produce original CLI, client and standalone AFS JS distributions
+        env:
+          SOURCE_SHA: ${{ needs.plan.outputs.sha }}
+          EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: bun scripts/legacy-root-afs-supply.ts produce "$RUNNER_TEMP/legacy-root-normal-afs" "$SOURCE_SHA"
+      - uses: actions/upload-artifact@v4
+        id: upload
+        with:
+          name: legacy-root-normal-afs-${{ needs.plan.outputs.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/legacy-root-normal-afs/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
+      - name: Retain original producer diagnostics even when supply fails
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: legacy-root-normal-afs-diagnostics-${{ needs.plan.outputs.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/legacy-root-normal-afs/
+            .test-data/afs-js-archive-ci-producer/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
+
+  lanes:
+    needs: [plan, normal_afs]
     name: legacy-root-${{ matrix.runtime }} (${{ matrix.os }} / node${{ matrix.node }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
@@ -59,12 +105,22 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
-      - name: Run the unchanged complete-package commands and retain actual outcomes
+      - name: Acquire exact same-run normal JS originals for Bun
+        if: matrix.runtime == 'bun'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ needs.plan.outputs.sha }}
+          RUN_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          SUPPLY_ARTIFACT_ID: ${{ needs.normal_afs.outputs.artifact-id }}
+          SUPPLY_ARTIFACT_SHA256: ${{ needs.normal_afs.outputs.artifact-digest }}
+        run: bun scripts/legacy-root-afs-supply.ts acquire "${{ runner.temp }}/legacy-root-afs-input"
+      - name: Run complete-package commands with original private supply and retain outcomes
         env:
           SOURCE_SHA: ${{ needs.plan.outputs.sha }}
           LANE_OS: ${{ matrix.os }}
           LANE_NODE: ${{ matrix.node }}
           LANE_RUNTIME: ${{ matrix.runtime }}
+          XPOD_LEGACY_AFS_SUPPLY: ${{ runner.temp }}/legacy-root-afs-input
           CONSUMER_ROOT: ${{ runner.temp }}/xpod-package-smoke${{ matrix.runtime == 'bun' && '-bun' || '' }}
         # Preserve each runner's original default shell/PATH (PowerShell on
         # Windows). Node reads native path strings directly from the environment.

@@ -1,6 +1,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
+const { getNpmInvocation } = require('./run-npm-pack.cjs');
 
 function normalizeWorkspaceDependencies(root, source) {
   const manifest = structuredClone(source);
@@ -30,7 +31,8 @@ function packWorkspacePackages(root, names, destination, sha) {
     if (sha) manifest.gitHead = sha;
     try {
       fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + '\n');
-      const packed = JSON.parse(execFileSync('npm', ['pack', '--ignore-scripts', '--json', '--pack-destination', destination], { cwd: directory, encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] }));
+      const invocation = getNpmInvocation(['pack', '--ignore-scripts', '--json', '--pack-destination', destination]);
+      const packed = JSON.parse(execFileSync(invocation.command, invocation.args, { cwd: directory, encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] }));
       tarballs[manifest.name] = path.join(destination, packed[0].filename);
     } finally { fs.writeFileSync(manifestPath, source); }
   }

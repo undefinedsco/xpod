@@ -667,7 +667,7 @@ function main() {
   console.log(`[npm-pack] tarball ${tarballPath}`);
 }
 
-module.exports = { summarizeTarball, serviceWorkspacePackages, getBundledLocalDependencies, bundleLocalDependenciesIntoTarball, packWithManifestRestoration, applyServiceProfile, shouldCopyBundledDependency };
+module.exports = { getNpmInvocation, summarizeTarball, serviceWorkspacePackages, getBundledLocalDependencies, bundleLocalDependenciesIntoTarball, packWithManifestRestoration, applyServiceProfile, shouldCopyBundledDependency };
 
 if (require.main === module) {
   try {

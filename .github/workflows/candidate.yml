@@ -65,6 +65,9 @@ jobs:
           ' "$metadata"
 
   legacy_root_compat:
+    permissions:
+      contents: read
+      actions: read
     needs: metadata
     uses: ./.github/workflows/legacy-root-compat.yml
     with:

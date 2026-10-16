@@ -4,7 +4,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSyn
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { acquireIndependentProductInput, verifyAcquiredMetadata, type ArtifactAcquisitionInput } from '../../scripts/acquire-independent-product-input';
+import { acquireIndependentProductInput, acquireLegacyRootSupply, verifyAcquiredMetadata, type ArtifactAcquisitionInput } from '../../scripts/acquire-independent-product-input';
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -184,4 +184,34 @@ test('CSS registration accepts only exact successful product runs, never in-prog
    expect(result.materialRole).toBe('controlled-preview-materials');expect(result.releaseQualified).toBe(false);
   } else {await expect(acquireIndependentProductInput(f.input,f.output,{fetch:f.transport})).rejects.toThrow();expect(existsSync(f.output)).toBe(false);}
  }
+});
+
+// Same-run legacy policy has its own entry; independent producer trust is unchanged.
+test('same-workflow legacy supply requires successful producer job and exact runtime/artifact custody', async () => {
+  const saved = Object.fromEntries(['GITHUB_ACTIONS', 'GITHUB_REPOSITORY', 'GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT'].map(key => [key, process.env[key]]));
+  try {
+    Object.assign(process.env, { GITHUB_ACTIONS: 'true', GITHUB_REPOSITORY: 'undefinedsco/xpod', GITHUB_RUN_ID: '42', GITHUB_RUN_ATTEMPT: '2' });
+    for (const negative of ['none', 'job-failed', 'job-open', 'expired', 'wrong-source', 'old-attempt', 'digest', 'runtime']) {
+      const f = fixture([{ name: 'supply-index.original.json', body: '{}', mode: 0o100644 }]);
+      f.run.status = 'in_progress'; f.run.conclusion = null; f.run.updated_at = f.run.run_started_at; f.run.path = '.github/workflows/legacy-root-compat.yml'; f.workflow.path = f.run.path;
+      f.artifact.name = `legacy-root-normal-afs-${f.input.sourceSha}-42-2`;
+      const jobs = { total_count: 1, jobs: [{ name: 'legacy-root-normal-afs', status: 'completed', conclusion: 'success', run_id: 42, run_attempt: 2, head_sha: f.input.runHeadSha, started_at: '2026-10-15T00:00:00Z', completed_at: '2026-10-15T00:02:00Z' }] };
+      if (negative === 'job-failed') jobs.jobs[0].conclusion = 'failure';
+      if (negative === 'job-open') jobs.jobs[0].status = 'in_progress';
+      if (negative === 'expired') f.artifact.expired = true;
+      if (negative === 'wrong-source') f.input.sourceSha = 'b'.repeat(40);
+      if (negative === 'old-attempt') jobs.jobs[0].run_attempt = 1;
+      if (negative === 'digest') f.artifact.digest = 'sha256:' + 'b'.repeat(64);
+      if (negative === 'runtime') process.env.GITHUB_RUN_ATTEMPT = '1';
+      const transport = (async (url: any, options: any) => String(url).endsWith('/jobs?per_page=100') ? Response.json(jobs) : f.transport(url, options)) as typeof fetch;
+      if (negative === 'none') {
+        const result = await acquireLegacyRootSupply(f.input, f.output, { fetch: transport });
+        expect(result.kind).toBe('legacy-root-same-run-acquisition');
+        expect(readFileSync(path.join(f.output, 'metadata/jobs.original.json')).length > 0).toBe(true);
+        expect(result.inventory.members.length).toBe(1);
+        await expect(acquireIndependentProductInput(f.input, path.join(f.root, 'independent'), { fetch: transport })).rejects.toThrow();
+      } else await expect(acquireLegacyRootSupply(f.input, f.output, { fetch: transport })).rejects.toThrow();
+      process.env.GITHUB_RUN_ATTEMPT = '2';
+    }
+  } finally { for (const [key, value] of Object.entries(saved)) if (value === undefined) delete process.env[key]; else process.env[key] = value; }
 });

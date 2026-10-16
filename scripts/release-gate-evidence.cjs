@@ -624,15 +624,62 @@ function rootCompatConsumerPath(os, value) {
 }
 const { captureManifestEvidence } = require('./lib/compat-manifest-evidence.cjs');
 const ROOT_COMPAT_PHASES = ['dependencies', 'platform-versions', 'build', 'pack', 'pack-verification', 'install', 'consumer'];
-function compatFile(file) {
+function compatFile(file, includeIntegrity = false) {
   const stat = fs.lstatSync(file);
   if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 128 * 1024 * 1024) fail('compat evidence must be a bounded regular file');
   const bytes = fs.readFileSync(file);
-  return { bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') };
+  return { bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex'),
+    ...(includeIntegrity ? { integrity: 'sha512-' + createHash('sha512').update(bytes).digest('base64') } : {}) };
+}
+function rootCompatArchivePath(archive) {
+  if (typeof archive?.filename !== 'string' || !archive.filename.endsWith('.tgz') || archive.filename !== path.basename(archive.filename)
+    || /[\\\x00-\x1f]/.test(archive.filename)) fail('compat retained archive reference invalid');
+  return 'archives/' + archive.filename;
+}
+function retainRootCompatArchive(file, directory, archive) {
+  const relative = rootCompatArchivePath(archive), destination = path.join(directory, relative);
+  const stat = fs.lstatSync(file), maximum = 128 * 1024 * 1024;
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.size !== archive.bytes || stat.size > maximum) fail('compat retained archive source invalid');
+  fs.mkdirSync(path.join(directory, 'archives'));
+  const archiveDirectory = fs.lstatSync(path.join(directory, 'archives'));
+  const input = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
+  let output, failure, total = 0;
+  try {
+    const before = fs.fstatSync(input, { bigint: true });
+    if (before.dev !== BigInt(stat.dev) || before.ino !== BigInt(stat.ino)) fail('compat retained archive source changed');
+    output = fs.openSync(destination, 'wx', 0o600);
+    const ownedOutput = fs.fstatSync(output);
+    const buffer = Buffer.alloc(65536), sha256 = createHash('sha256'), sha512 = createHash('sha512');
+    for (let count; (count = fs.readSync(input, buffer, 0, buffer.length, null)) > 0;) {
+      total += count;
+      if (total > archive.bytes || total > maximum) fail('compat retained archive source grew');
+      const chunk = buffer.subarray(0, count); fs.writeFileSync(output, chunk); sha256.update(chunk); sha512.update(chunk);
+    }
+    const after = fs.fstatSync(input, { bigint: true });
+    if (after.size !== before.size || after.mtimeNs !== before.mtimeNs || after.ctimeNs !== before.ctimeNs
+      || total !== archive.bytes || sha256.digest('hex') !== archive.sha256
+      || 'sha512-' + sha512.digest('base64') !== archive.integrity) fail('compat retained archive mismatch');
+    fs.fsyncSync(output);
+    const currentDirectory = fs.lstatSync(path.join(directory, 'archives')), currentOutput = fs.lstatSync(destination);
+    if (!currentDirectory.isDirectory() || currentDirectory.isSymbolicLink()
+      || currentDirectory.dev !== archiveDirectory.dev || currentDirectory.ino !== archiveDirectory.ino
+      || !currentOutput.isFile() || currentOutput.isSymbolicLink()
+      || currentOutput.dev !== ownedOutput.dev || currentOutput.ino !== ownedOutput.ino) fail('compat retained archive ownership changed');
+  } catch (error) { failure = error; }
+  finally {
+    for (const fd of [output, input]) if (fd !== undefined) try { fs.closeSync(fd); } catch (error) { failure ??= error; }
+  }
+  // Preserve partial output on failure: a path may have been replaced since open.
+  // Never delete through that path or risk removing another writer's evidence.
+  if (failure) throw failure;
+  return relative;
 }
 // Vite and the observer consume the same producer declaration. No independent
 // static-directory allowlist: additions/modifications require emitted membership.
 const UI_BUILD_TARGETS = require('../ui/build-targets.json');
+function compatSourceObservation(before, evidence) {
+  return { before, generated: Object.keys(UI_BUILD_TARGETS).map(target => readJsonFile(path.join(evidence, target + '.json'), 'UI producer observation')) };
+}
 function uiOutputRoot(target) {
   const root = path.posix.normalize('ui/' + UI_BUILD_TARGETS[target].outDir);
   if (!root.startsWith('static/') || root.includes('..')) fail('invalid UI output declaration');
@@ -673,7 +720,7 @@ function runRootCompatLane(args) {
   if (!lane || !/^[1-9]\d*$/.test(args.runId || '') || !/^[1-9]\d*$/.test(args.runAttempt || '') || !rootCompatConsumerPath(lane.os, args.consumerRoot)) fail('invalid compat lane/run inputs');
   const out = path.resolve(args.out);
   fs.mkdirSync(out, { recursive: false });
-  const receipt = { schemaVersion: 1, kind: 'legacy-root-compat-lane', ...lane, sourceSha: args.sourceSha,
+  const receipt = { schemaVersion: 2, kind: 'legacy-root-compat-lane', ...lane, sourceSha: args.sourceSha,
     runId: args.runId, runAttempt: Number(args.runAttempt), consumerRoot: args.consumerRoot, steps: [] };
   let primary;
   try {
@@ -693,6 +740,17 @@ function runRootCompatLane(args) {
     const commands = rootCompatCommands(lane.runtime, args.consumerRoot);
     for (let index = 0; index < commands.length; index++) {
       const phase = ROOT_COMPAT_PHASES[index], command = commands[index];
+      let supplyInput;
+      if (phase === 'install' && lane.runtime === 'bun') {
+        const observation = compatSourceObservation(uiBefore, uiEvidence);
+        verifyCompatSourceObservation(execFileSync('git', ['status', '--porcelain', '--untracked-files=all', '--no-renames'], { encoding: 'utf8' }).trimEnd(), observation);
+        const build = receipt.steps.find(step => step.phase === 'build');
+        const absoluteBuild = { ...build, ...Object.fromEntries(['stdout', 'stderr'].map(channel => [channel, { ...build[channel], path: path.join(out, build[channel].path) }])) };
+        supplyInput = path.join(out, 'registry-build-input.original.json');
+        writeJsonFile(supplyInput, { kind: 'legacy-root-normal-build-input', sourceSha: args.sourceSha, runId: args.runId, runAttempt: Number(args.runAttempt),
+          sourceBeforeStatus: receipt.sourceBeforeStatus, build: absoluteBuild, uiObservation: observation,
+          archive: { ...receipt.pack.archive, path: path.join(out, receipt.pack.archive.path) } });
+      }
       const stdoutName = `${phase}.stdout.raw.log`, stderrName = `${phase}.stderr.raw.log`;
       let stdout, stderr, result;
       try {
@@ -700,7 +758,8 @@ function runRootCompatLane(args) {
         result = spawnSync(command[0], command.slice(1), { stdio: ['ignore', stdout, stderr],
           ...(['build', 'install'].includes(phase) ? { env: { ...process.env, ...(phase === 'build'
             ? { XPOD_UI_BUILD_EVIDENCE_DIR: uiEvidence }
-            : { XPOD_COMPAT_MANIFEST_EVIDENCE_FILE: path.join(out, 'install.manifests.json') }) } } : {}) });
+            : { XPOD_COMPAT_MANIFEST_EVIDENCE_FILE: path.join(out, 'install.manifests.json'),
+              ...(supplyInput ? { XPOD_LEGACY_ROOT_SUPPLY_INPUT: supplyInput } : {}) }) } } : {}) });
       } finally {
         if (stdout !== undefined) fs.closeSync(stdout);
         if (stderr !== undefined) fs.closeSync(stderr);
@@ -715,6 +774,10 @@ function runRootCompatLane(args) {
         if (lane.runtime === 'bun') {
           try { receipt.registryMetadata = { path: 'registry.metadata.json', ...compatFile(path.join(out, 'registry.metadata.json')) }; }
           catch { receipt.registryMetadata = { status: 'unavailable' }; }
+          try { receipt.registrySupply = { path: 'registry-supply/publication.original.json', ...compatFile(path.join(out, 'registry-supply/publication.original.json')) }; }
+          catch { receipt.registrySupply = { status: 'unavailable' }; }
+          try { receipt.registryBundleProof = { path: 'registry-supply/bundle-proof.json', ...compatFile(path.join(out, 'registry-supply/bundle-proof.json')) }; }
+          catch { receipt.registryBundleProof = { status: 'unavailable' }; }
         } else receipt.registryMetadata = { status: 'not-applicable' };
       }
       console.log(`[legacy-root-compat] ${lane.id} ${phase}: exit=${result.status} signal=${result.signal}`);
@@ -736,12 +799,13 @@ function runRootCompatLane(args) {
         fs.writeFileSync(path.join(out, 'pack.original.json'), original, { flag: 'wx' });
         receipt.pack = { original: { path: 'pack.original.json', ...compatFile(path.join(out, 'pack.original.json')) },
           archive: { filename: row.filename, name: row.name, version: row.version, bytes, sha256: sha256.digest('hex'), integrity } };
+        receipt.pack.archive.path = retainRootCompatArchive(file, out, receipt.pack.archive);
         receipt.pack.manifests = { path: 'pack.manifests.json', ...captureManifestEvidence(path.join(out, 'pack.manifests.json'), file) };
       }
     }
     receipt.sourceAfter = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
     receipt.sourceAfterStatus = execFileSync('git', ['status', '--porcelain', '--untracked-files=all', '--no-renames'], { encoding: 'utf8' }).trimEnd();
-    const observation = { before: uiBefore, generated: Object.keys(UI_BUILD_TARGETS).map(target => readJsonFile(path.join(uiEvidence, target + '.json'), 'UI producer observation')) };
+    const observation = compatSourceObservation(uiBefore, uiEvidence);
     const observationFile = path.join(out, 'source-observation.json');
     writeJsonFile(observationFile, observation);
     receipt.sourceObservation = { path: 'source-observation.json', ...compatFile(observationFile) };
@@ -766,7 +830,7 @@ function verifyRootCompat(args) {
     if (!fs.existsSync(file)) continue;
     compatFile(file);
     const receipt = readJsonFile(file, 'compat lane');
-    if (receipt.schemaVersion !== 1 || receipt.kind !== 'legacy-root-compat-lane' || receipt.sourceSha !== args.sourceSha
+    if (receipt.schemaVersion !== 2 || receipt.kind !== 'legacy-root-compat-lane' || receipt.sourceSha !== args.sourceSha
       || receipt.runId !== args.runId || !Number.isSafeInteger(receipt.runAttempt) || receipt.runAttempt < 1
       || !expected.some(lane => lane.id === receipt.id && lane.os === receipt.os && lane.node === receipt.node && lane.runtime === receipt.runtime)) fail('compat lane source/run/identity mismatch');
     candidates.push({ receipt, directory, file });
@@ -798,6 +862,22 @@ function verifyRootCompat(args) {
     const pack = readJsonFile(packFile, 'compat original pack');
     if (!Array.isArray(pack) || pack.length !== 1 || pack[0].filename !== archive.filename || pack[0].name !== archive.name
       || pack[0].version !== archive.version || pack[0].integrity !== archive.integrity) fail('compat original pack identity mismatch');
+    if (archive.path !== rootCompatArchivePath(archive)) fail('compat retained archive reference invalid');
+    const retainedDirectory = path.join(directory, 'archives'), retainedStat = fs.lstatSync(retainedDirectory);
+    if (!retainedStat.isDirectory() || retainedStat.isSymbolicLink()) fail('compat retained archive directory invalid');
+    const retained = compatFile(path.join(directory, archive.path), true);
+    if (retained.bytes !== archive.bytes || retained.sha256 !== archive.sha256 || retained.integrity !== archive.integrity) fail('compat retained archive mismatch');
+    if (lane.runtime === 'bun') {
+      require('./lib/root-registry-supply.cjs').verifyRetainedSupply(directory, receipt.registrySupply, args.sourceSha, archive);
+      const proofRef = receipt.registryBundleProof;
+      if (proofRef?.path !== 'registry-supply/bundle-proof.json') fail('compat original bundle proof missing');
+      const proofFile = path.join(directory, proofRef.path), fact = compatFile(proofFile);
+      if (fact.bytes !== proofRef.bytes || fact.sha256 !== proofRef.sha256) fail('compat original bundle proof changed');
+      const proof = readJsonFile(proofFile, 'compat bundle proof');
+      const expectedBundles = require('./verify-installed-bundles.cjs').BUNDLES.map(name => '@undefineds.co/' + name).sort();
+      if (!Array.isArray(proof) || JSON.stringify(proof.map(row => row.name).sort()) !== JSON.stringify(expectedBundles)
+        || proof.some(row => row.bytesMatched !== true || row.containedInInstalledXpod !== true || !SHA256_PATTERN.test(row.sha256) || !Number.isSafeInteger(row.files) || row.files < 1)) fail('compat original bundle bytes unverified');
+    }
     receipt.steps.forEach((step, index) => {
       if (step.phase !== ROOT_COMPAT_PHASES[index] || JSON.stringify(step.command) !== JSON.stringify(commands[index])
         || step.actualExit !== 0 || step.signal !== null || step.spawnError !== null || step.actualWaitCompleted !== true || step.rawLogsClosed !== true) fail('compat phase failed/skipped/unknown');
@@ -879,6 +959,7 @@ function main(argv = process.argv.slice(2)) {
 }
 
 module.exports = {
+  retainRootCompatArchive,
   verifyCompatSourceObservation,
   rootCompatLanes,
   rootCompatCommands,

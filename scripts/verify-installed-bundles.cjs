@@ -48,4 +48,4 @@ function verifyInstalledBundles(tarball, installedRoot, evidenceRoot) {
     });
   } finally { fs.rmSync(scratch, { recursive: true, force: true }); }
 }
-module.exports = { verifyInstalledBundles };
+module.exports = { BUNDLES, verifyInstalledBundles };

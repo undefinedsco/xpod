@@ -7,7 +7,7 @@ const { pathToFileURL } = require('node:url');
 const { execFileSync } = require('node:child_process');
 const { captureManifestEvidence, captureRegistryMetadataEvidence } = require('./lib/compat-manifest-evidence.cjs');
 const { createOwnedTempRoot, withOwnedTempRoot } = require('./lib/owned-temp-root.cjs');
-const { createRegistry, publishArtifact, run } = require('./check-package-registry-consumer.cjs');
+const { createRegistry, publishArtifact, run, verifyRootRegistryInstallation, publishRootSupply } = require('./check-package-registry-consumer.cjs');
 
 function getCommandInvocation(packageManager, args) {
   if (packageManager === 'bun') {
@@ -249,7 +249,25 @@ async function installLocalTarballViaRegistry(tarballPath, targetDir, cacheDir, 
   // (docs/RELEASE.md XPOD_INSTALL_REGISTRY); only the Xpod metadata is pinned
   // to the loopback. Capture the upstream before overriding the install env.
   const upstreamRegistry = resolveInstallRegistry(baseEnv);
-  const server = createRegistry(artifact, token, upstreamRegistry);
+  // Only the explicit legacy lane supplies normal private originals. Other
+  // callers retain the original singleton registry behavior.
+  const inputFile = baseEnv.XPOD_LEGACY_ROOT_SUPPLY_INPUT;
+  let supply = { artifacts: [], required: [] }, supplyDirectory;
+  if (inputFile) {
+    const helper = require('./lib/root-registry-supply.cjs');
+    supplyDirectory = path.join(path.dirname(path.resolve(inputFile)), 'registry-supply');
+    try {
+      const produced = await helper.produceRootSupply({ inputFile, root: process.cwd(), rootArtifact: artifact, destination: supplyDirectory, cache: cacheDir });
+      const requestFile = path.join(supplyDirectory, 'request.original.json');
+      fs.writeFileSync(requestFile, JSON.stringify({ receipt: produced.receipt }, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
+      supply = helper.readRootSupply(requestFile, process.cwd(), artifact);
+    } catch (error) {
+      try { if (fs.existsSync(supplyDirectory)) fs.writeFileSync(path.join(supplyDirectory, 'failure.original.json'), JSON.stringify({ message: error.message, published: false }, null, 2) + '\n', { flag: 'wx', mode: 0o600 }); }
+      catch (secondary) { throw new AggregateError([error, secondary], 'Normal supply and failure receipt write failed', { cause: error }); }
+      throw error;
+    }
+  }
+  const server = createRegistry(artifact, token, upstreamRegistry, { artifacts: supply.artifacts, required: supply.required });
   // Acquire the evidence root before listening so a failure here cannot leave an
   // open server behind; the finally closes only a listening server and always
   // removes the evidence, even if close reports an error.
@@ -269,6 +287,10 @@ async function installLocalTarballViaRegistry(tarballPath, targetDir, cacheDir, 
     });
     const registry = `http://127.0.0.1:${server.address().port}`;
     await publishArtifact(artifact, registry, token, evidenceRoot);
+    if (inputFile) {
+      await publishRootSupply({ artifact, supply, server, registry, token, evidenceRoot, retainedDirectory: supplyDirectory });
+      require('./lib/root-registry-supply.cjs').readRootSupply(path.join(supplyDirectory, 'request.original.json'), process.cwd(), artifact);
+    }
     captureMetadata();
     // The shared resolver reads XPOD_INSTALL_REGISTRY; pinning it is the single
     // source of truth and prevents an inherited override redirecting the install.
@@ -276,6 +298,7 @@ async function installLocalTarballViaRegistry(tarballPath, targetDir, cacheDir, 
       ...baseEnv,
       XPOD_INSTALL_REGISTRY: registry,
     });
+    if (inputFile) await verifyRootRegistryInstallation(artifact, targetDir, supplyDirectory, baseEnv);
     return registry;
   } finally {
     captureMetadata();

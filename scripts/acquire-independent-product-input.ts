@@ -105,6 +105,15 @@ async function stream(response: Response, destination: string, bound: number) {
 }
 /** Acquires a ZIP and inventory, never extracts members or confers product admission. */
 export async function acquireIndependentProductInput(input: ArtifactAcquisitionInput, output: string, dependencies: Dependencies = {}) {
+  return acquireProductInput(input, output, dependencies, false);
+}
+/** Same-run legacy transport; never admits a still-running independent producer run. */
+export async function acquireLegacyRootSupply(input: ArtifactAcquisitionInput, output: string, dependencies: Dependencies = {}) {
+  if (process.env.GITHUB_ACTIONS !== 'true' || process.env.GITHUB_REPOSITORY !== REPOSITORY
+    || String(input.runId) !== process.env.GITHUB_RUN_ID || String(input.runAttempt) !== process.env.GITHUB_RUN_ATTEMPT) fail('same-run runtime binding required');
+  return acquireProductInput(input, output, { ...dependencies, limits: { packedBytes: 16 * 1024 ** 2, expandedBytes: 40 * 1024 ** 2, members: 4096 } }, true);
+}
+async function acquireProductInput(input: ArtifactAcquisitionInput, output: string, dependencies: Dependencies, legacy: boolean) {
   if (input?.schemaVersion !== 1 || !/^[a-f0-9]{40}$/u.test(input.sourceSha) || !/^[a-f0-9]{40}$/u.test(input.runHeadSha)
     || !/^[a-f0-9]{64}$/u.test(input.artifactSha256) || ![input.runId, input.runAttempt, input.artifactId].every(positive)) fail('exact source/run/attempt/artifact binding required');
   if (Object.keys(input).some(key => !['schemaVersion', 'sourceSha', 'runHeadSha', 'runId', 'runAttempt', 'artifactId', 'artifactSha256'].includes(key))) fail('unknown acquisition selector');
@@ -131,24 +140,33 @@ export async function acquireIndependentProductInput(input: ArtifactAcquisitionI
       return value;
     }
     const run = await json('run', `actions/runs/${input.runId}/attempts/${input.runAttempt}`);
-    if (run.id !== input.runId || run.run_attempt !== input.runAttempt || run.status !== 'completed' || run.conclusion !== 'success'
+    if (run.id !== input.runId || run.run_attempt !== input.runAttempt || (!legacy && (run.status !== 'completed' || run.conclusion !== 'success')) || (legacy && !['in_progress', 'completed'].includes(run.status))
       || run.repository?.full_name !== REPOSITORY || run.head_repository?.full_name !== REPOSITORY || run.head_sha !== input.runHeadSha
       || !['push', 'pull_request', 'workflow_dispatch'].includes(run.event) || !positive(run.workflow_id)) fail('untrusted producer run');
     if (run.event !== 'pull_request' && input.sourceSha !== input.runHeadSha) fail('non-PR build source differs from run head');
     const workflow = await json('workflow', `actions/workflows/${run.workflow_id}`);
-    if (workflow.id !== run.workflow_id || !PRODUCERS.has(workflow.path) || run.path?.split('@')[0] !== workflow.path) fail('untrusted producer workflow');
+    if (workflow.id !== run.workflow_id || !(legacy ? ['.github/workflows/legacy-root-compat.yml', '.github/workflows/candidate.yml'].includes(workflow.path) : PRODUCERS.has(workflow.path)) || run.path?.split('@')[0] !== workflow.path) fail('untrusted producer workflow');
+    let producerJob: any, legacyJobs: any;
+    if (legacy) {
+      const jobs = await json('jobs', `actions/runs/${input.runId}/attempts/${input.runAttempt}/jobs?per_page=100`);
+      legacyJobs = jobs;
+      producerJob = createRequire(import.meta.url)('./lib/legacy-root-artifact-context.cjs').verifyProducerJob(input, run, workflow, jobs);
+      // Retained separately: the original three-member custody projection stays unchanged.
+      delete metadata.jobs;
+    }
     const artifact = await json('artifact', `actions/artifacts/${input.artifactId}`);
     const cliPublicationNames = cliPublicationArtifactNames({ expectedSourceSha: input.sourceSha, runId: input.runId, runAttempt: input.runAttempt });
-    const allowedNames = workflow.path === CLI_PRODUCT_WORKFLOW
+    const allowedNames = legacy ? [`legacy-root-normal-afs-${input.sourceSha}-${input.runId}-${input.runAttempt}`] : workflow.path === CLI_PRODUCT_WORKFLOW
       ? [...['Linux', 'macOS'].map(os => `xpod-cli-${os}-${input.sourceSha}`), ...cliPublicationNames]
       : [API_PRODUCT_WORKFLOW, CSS_PRODUCT_WORKFLOW].includes(workflow.path)
         ? [`${workflow.path === CSS_PRODUCT_WORKFLOW ? 'css' : 'api'}-module-products-darwin-arm64-${input.sourceSha}-${input.runId}-${input.runAttempt}`]
       : MODULE_TARGETS.map(target => `afs-module-products-${target.platform}-${target.arch}-${input.sourceSha}-${input.runId}-${input.runAttempt}`);
-    const created = Date.parse(artifact.created_at), started = Date.parse(run.run_started_at), completed = Date.parse(run.updated_at);
+    const created = Date.parse(artifact.created_at), started = Date.parse(run.run_started_at), completed = Date.parse(legacy ? producerJob.completed_at : run.updated_at);
     if (artifact.id !== input.artifactId || !allowedNames.includes(artifact.name) || artifact.expired !== false || artifact.workflow_run?.id !== run.id
       || artifact.workflow_run?.head_sha !== input.runHeadSha || artifact.digest !== 'sha256:' + input.artifactSha256
       || !positive(artifact.size_in_bytes) || artifact.size_in_bytes > limits.packedBytes
-      || ![created, started, completed].every(Number.isFinite) || created < started || created > completed) fail('artifact identity/digest/attempt window mismatch');
+      || ![created, started, completed].every(Number.isFinite) || created < started || created > completed || (legacy && (created < Date.parse(producerJob.started_at) || created > Date.parse(producerJob.completed_at)))) fail('artifact identity/digest/attempt window mismatch');
+    if (legacy) createRequire(import.meta.url)('./lib/legacy-root-artifact-context.cjs').verifyContext(input, metadata, legacyJobs);
     let url = endpoint(`actions/artifacts/${input.artifactId}/zip`);
     let response: Response | undefined;
     for (let redirects = 0; redirects <= 3; redirects++) {
@@ -165,17 +183,20 @@ export async function acquireIndependentProductInput(input: ArtifactAcquisitionI
     const archive = path.join(temporary, 'artifact.zip');
     const downloaded = await stream(response, archive, limits.packedBytes);
     if (downloaded.sha256 !== input.artifactSha256 || downloaded.bytes !== artifact.size_in_bytes) fail('downloaded artifact digest/size mismatch');
-    const inspected = spawnSync('python3', [path.join(import.meta.dir, 'lib/inspect-product-artifact.py'), archive, input.artifactSha256,
+    const inspected = spawnSync(process.platform === 'win32' ? 'python' : 'python3', [path.join(import.meta.dir, 'lib/inspect-product-artifact.py'), archive, input.artifactSha256,
       String(limits.packedBytes), String(limits.expandedBytes), String(limits.members)], { encoding: 'utf8', timeout: 30_000, maxBuffer: 16 * 1024 * 1024 });
     if (inspected.status !== 0 || inspected.error) fail('artifact ZIP inspection failed');
     const inventory = JSON.parse(inspected.stdout);
     const projection = Buffer.from(JSON.stringify(metadata, null, 2) + '\n');
+    const jobsOriginal = legacy ? originals.jobs : undefined;
+    if (legacy) delete originals.jobs;
     const metadataBinding: MetadataBinding = { originals,
       projection: { path: 'metadata.json', bytes: projection.length, sha256: sha256(projection) } };
     const cliPublication = workflow.path === CLI_PRODUCT_WORKFLOW && cliPublicationNames.includes(artifact.name);
     const cliTestMaterial = workflow.path === CLI_PRODUCT_WORKFLOW && !cliPublication;
-    const receipt = { schemaVersion: 1, kind: 'independent-product-artifact-acquisition', status: 'blocked',
-      materialRole: cliPublication ? CLI_PUBLICATION_MATERIAL_ROLE : cliTestMaterial ? 'test-materials' : [API_PRODUCT_WORKFLOW, CSS_PRODUCT_WORKFLOW].includes(workflow.path) ? 'controlled-preview-materials' : 'module-product-materials',
+    const receipt = { schemaVersion: 1, kind: legacy ? 'legacy-root-same-run-acquisition' : 'independent-product-artifact-acquisition', status: 'blocked',
+      ...(legacy ? { producerJob: { ...jobsOriginal, path: 'metadata/jobs.original.json' } } : {}),
+      materialRole: legacy ? 'legacy-root-normal-js-originals' : cliPublication ? CLI_PUBLICATION_MATERIAL_ROLE : cliTestMaterial ? 'test-materials' : [API_PRODUCT_WORKFLOW, CSS_PRODUCT_WORKFLOW].includes(workflow.path) ? 'controlled-preview-materials' : 'module-product-materials',
       repository: REPOSITORY, expectedSourceSha: input.sourceSha, runHeadSha: input.runHeadSha,
       runId: input.runId, runAttempt: input.runAttempt, artifactId: input.artifactId, workflowPath: workflow.path,
       archive: { path: 'artifact.zip', ...downloaded }, inventory,
@@ -190,8 +211,8 @@ export async function acquireIndependentProductInput(input: ArtifactAcquisitionI
       mkdirSync(output, { mode: 0o700 }); outputOwned = true;
       renameSync(archive, path.join(output, 'artifact.zip'));
       mkdirSync(path.join(output, 'metadata'), { mode: 0o700 });
-      for (const name of METADATA_NAMES) {
-        const original = path.join(output, originals[name].path);
+      for (const name of [...METADATA_NAMES, ...(legacy ? ['jobs'] : [])]) {
+        const original = path.join(output, name === 'jobs' ? 'metadata/jobs.original.json' : originals[name].path);
         renameSync(path.join(temporary, name + '.json'), original);
         chmodSync(original, 0o400);
       }

@@ -8,18 +8,46 @@ const { rootCompatLanes, rootCompatCommands, rootCompatConsumerPath, runRootComp
 const source = 'a'.repeat(40);
 const digest = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
 const phases = ['dependencies', 'platform-versions', 'build', 'pack', 'pack-verification', 'install', 'consumer'];
+let syntheticSupplyBytes;
+function supplyFixture(directory) {
+  const base = path.join(directory, 'registry-supply'), archives = path.join(base, 'archives'); fs.mkdirSync(archives, { recursive: true });
+  const manifest = { name: '@fixture/local', version: '1.0.0' };
+  if (!syntheticSupplyBytes) {
+    const stage = path.join(base, 'stage'); fs.mkdirSync(path.join(stage, 'package'), { recursive: true });
+    fs.writeFileSync(path.join(stage, 'package/package.json'), JSON.stringify(manifest));
+    const tar = path.join(base, 'fixture.tgz'); execFileSync('tar', ['czf', tar, '-C', stage, 'package']);
+    syntheticSupplyBytes = fs.readFileSync(tar); fs.rmSync(tar); fs.rmSync(stage, { recursive: true });
+  }
+  const ref = file => { const bytes = fs.readFileSync(file); return { path: file, bytes: bytes.length, sha256: digest(bytes) }; };
+  const save = (file, value) => { fs.writeFileSync(file, JSON.stringify(value)); return ref(file); };
+  const artifactFile = path.join(archives, 'fixture.tgz'); fs.writeFileSync(artifactFile, syntheticSupplyBytes);
+  const artifact = { ...ref(artifactFile), file: 'fixture.tgz', name: manifest.name, version: manifest.version, integrity: 'sha512-' + crypto.createHash('sha512').update(syntheticSupplyBytes).digest('base64') };
+  const rootManifest = { name: '@undefineds.co/xpod', version: '1.2.3', dependencies: { [manifest.name]: '1.0.0' } };
+  const required = [{ name: manifest.name, version: manifest.version }];
+  const normal = save(path.join(base, 'supply.original.json'), { kind: 'legacy-root-normal-supply', sourceSha: source,
+    sourceBefore: { sourceSha: source, inputSHA256: source }, sourceAfter: { sourceSha: source, inputSHA256: source },
+    rootManifest, privateSources: { workspaces: [{ name: manifest.name, version: manifest.version }], git: [] }, artifacts: [artifact], required });
+  const metadata = (manifest, bytes) => ({ name: manifest.name, versions: { [manifest.version]: { ...manifest, dist: { integrity: 'sha512-' + crypto.createHash('sha512').update(bytes).digest('base64'), shasum: crypto.createHash('sha1').update(bytes).digest('hex') } } } });
+  const pubFile = path.join(base, 'publication-0.original.json'), pub = save(pubFile, metadata(manifest, syntheticSupplyBytes));
+  const publication = save(path.join(base, 'publication.original.json'), { source: normal, required, root: metadata(rootManifest, Buffer.from('fixture')),
+    publications: [{ ...pub, name: manifest.name, version: manifest.version, file: path.basename(pubFile) }], publicDependencies: 'original-online-upstream' });
+  const proof = save(path.join(base, 'bundle-proof.json'), require('../../scripts/verify-installed-bundles.cjs').BUNDLES.map(name => ({ name: '@undefineds.co/' + name, files: 1, sha256: source + 'a'.repeat(24), bytesMatched: true, containedInInstalledXpod: true })));
+  return { registrySupply: { ...publication, path: 'registry-supply/publication.original.json' }, registryBundleProof: { ...proof, path: 'registry-supply/bundle-proof.json' } };
+}
 function fixture(operation) {
   const base = path.resolve('.test-data/legacy-root-compat-contract'); fs.mkdirSync(base, { recursive: true });
   const root = fs.mkdtempSync(path.join(base, 'case-'));
   const receipts = [];
   function add(lane, attempt = 1) {
     const directory = path.join(root, lane.id + '-attempt' + attempt); fs.mkdirSync(directory);
-    const receipt = { schemaVersion: 1, kind: 'legacy-root-compat-lane', ...lane, sourceSha: source,
+    const receipt = { schemaVersion: 2, kind: 'legacy-root-compat-lane', ...lane, sourceSha: source,
       actualCheckoutSha: source, sourceAfter: source, sourceBeforeStatus:'',sourceAfterStatus:'',nodeVersion:`v${lane.node}.0.0`,bunVersion:'1.4.2',runId: '42', runAttempt: attempt, consumerRoot: lane.os==='windows-latest'?'D:\\a\\_temp\\xpod-package-smoke':path.resolve(root, 'consumer'), steps: [] };
     const integrity='sha512-'+crypto.createHash('sha512').update('fixture').digest('base64');
     const pack=Buffer.from(JSON.stringify([{filename:'root.tgz',name:'@undefineds.co/xpod',version:'1.2.3',integrity}]));
     fs.writeFileSync(path.join(directory,'pack.original.json'),pack);
     receipt.pack={original:{path:'pack.original.json',bytes:pack.length,sha256:digest(pack)},archive:{filename:'root.tgz',name:'@undefineds.co/xpod',version:'1.2.3',integrity,bytes:7,sha256:digest(Buffer.from('fixture'))}};
+    fs.mkdirSync(path.join(directory,'archives'));fs.writeFileSync(path.join(directory,'archives/root.tgz'),'fixture');receipt.pack.archive.path='archives/root.tgz';
+    if (lane.runtime === 'bun') Object.assign(receipt, supplyFixture(directory));
     rootCompatCommands(lane.runtime, receipt.consumerRoot).forEach((command, index) => {
       const phase = phases[index], refs = {};
       for (const stream of ['stdout', 'stderr']) {
@@ -125,7 +153,7 @@ test('actual YAML keeps standalone triggers, strict matrix, RC-before-production
 test('lane wrapper keeps platform default shell and passes native paths and PATH unchanged to Node', () => {
   const parsed=spawnSync('bun',['-e','console.log(JSON.stringify(Bun.YAML.parse(require("node:fs").readFileSync(process.argv[1],"utf8"))))',path.resolve('.github/workflows/legacy-root-compat.yml')],{encoding:'utf8'});
   assert.equal(parsed.status,0,parsed.stderr);
-  const workflow=JSON.parse(parsed.stdout);const step=workflow.jobs.lanes.steps.find(row=>row.name==='Run the unchanged complete-package commands and retain actual outcomes');
+  const workflow=JSON.parse(parsed.stdout);const step=workflow.jobs.lanes.steps.find(row=>row.name==='Run complete-package commands with original private supply and retain outcomes');
   assert.equal(step.shell,undefined);assert.equal(workflow.defaults?.run?.shell,undefined);assert.equal(workflow.jobs.lanes.defaults?.run?.shell,undefined);
   assert.doesNotMatch(step.run,/\$SOURCE_SHA|\$GITHUB_RUN_ID|\$CONSUMER_ROOT|\\\n/);
   const base=path.resolve('.test-data/legacy-root-compat-contract');fs.mkdirSync(base,{recursive:true});const root=fs.mkdtempSync(path.join(base,'wrapper-'));
@@ -180,3 +208,94 @@ test('downloaded lane evidence revalidates generated observations and rejects th
   row.receipt.sourceAfterStatus = '?? static/app/assets/new.js'; row.save();
   fs.appendFileSync(file, ' '); assert.throws(() => verifyRootCompat(args), /hash mismatch/);
 }));
+
+
+test('retained original root bytes, SRI and exact path are mandatory, including latest attempts', () => {
+  fixture(({receipts,args}) => {
+    const row=receipts[0], archive=path.join(row.directory,row.receipt.pack.archive.path);
+    fs.appendFileSync(archive,'changed');
+    assert.throws(()=>verifyRootCompat(args),/retained archive mismatch/);
+  });
+  fixture(({receipts,args}) => {
+    const row=receipts[0];delete row.receipt.pack.archive.path;row.save();
+    assert.throws(()=>verifyRootCompat(args),/retained archive reference invalid/);
+  });
+  fixture(({receipts,args}) => {
+    const row=receipts[0];row.receipt.pack.archive.path='../root.tgz';row.save();
+    assert.throws(()=>verifyRootCompat(args),/retained archive reference invalid/);
+  });
+  fixture(({receipts,args}) => {
+    const row=receipts[0];row.receipt.pack.archive.integrity='sha512-'+Buffer.alloc(64).toString('base64');
+    const pack=JSON.parse(fs.readFileSync(path.join(row.directory,'pack.original.json')));pack[0].integrity=row.receipt.pack.archive.integrity;
+    const bytes=Buffer.from(JSON.stringify(pack));fs.writeFileSync(path.join(row.directory,'pack.original.json'),bytes);row.receipt.pack.original={path:'pack.original.json',bytes:bytes.length,sha256:digest(bytes)};row.save();
+    assert.throws(()=>verifyRootCompat(args),/retained archive mismatch/);
+  });
+});
+
+for (const kind of ['missing-supply', 'missing-private-original', 'missing-bundle-proof', 'incomplete-bundle-proof', 'dependency-metadata-loss'])
+  test('Bun lane cannot pass with ' + kind, () => fixture(({ receipts, args }) => {
+    const row = receipts.find(value => value.receipt.runtime === 'bun'), base = path.join(row.directory, 'registry-supply');
+    if (kind === 'missing-supply') delete row.receipt.registrySupply;
+    if (kind === 'missing-private-original') fs.unlinkSync(path.join(base, 'archives/fixture.tgz'));
+    if (kind === 'missing-bundle-proof') delete row.receipt.registryBundleProof;
+    if (kind === 'incomplete-bundle-proof') {
+      const file = path.join(base, 'bundle-proof.json'), proof = JSON.parse(fs.readFileSync(file)); proof.pop();
+      const bytes = Buffer.from(JSON.stringify(proof)); fs.writeFileSync(file, bytes);
+      row.receipt.registryBundleProof = { path: 'registry-supply/bundle-proof.json', bytes: bytes.length, sha256: digest(bytes) };
+    }
+    if (kind === 'dependency-metadata-loss') {
+      const file = path.join(base, 'publication.original.json'), publication = JSON.parse(fs.readFileSync(file)); delete publication.root.versions['1.2.3'].dependencies;
+      const bytes = Buffer.from(JSON.stringify(publication)); fs.writeFileSync(file, bytes);
+      row.receipt.registrySupply = { path: 'registry-supply/publication.original.json', bytes: bytes.length, sha256: digest(bytes) };
+    }
+    row.save(); assert.throws(() => verifyRootCompat(args));
+  }));
+
+test('downloaded Windows supply uses portable archive members while retaining native original coordinates', () => fixture(({ receipts, args }) => {
+  const row = receipts.find(value => value.receipt.runtime === 'bun' && value.receipt.os === 'windows-latest');
+  const publicationFile = path.join(row.directory, row.receipt.registrySupply.path), publication = JSON.parse(fs.readFileSync(publicationFile));
+  const normalFile = path.join(row.directory, 'registry-supply/supply.original.json'), normal = JSON.parse(fs.readFileSync(normalFile));
+  normal.artifacts[0].path = 'D:\\a\\source\\registry-supply\\archives\\fixture.tgz';
+  const normalBytes = Buffer.from(JSON.stringify(normal)); fs.writeFileSync(normalFile, normalBytes);
+  publication.source = { path: 'D:\\a\\source\\registry-supply\\supply.original.json', bytes: normalBytes.length, sha256: digest(normalBytes) };
+  publication.publications[0].path = 'D:\\a\\source\\registry-supply\\publication-0.original.json';
+  const bytes = Buffer.from(JSON.stringify(publication)); fs.writeFileSync(publicationFile, bytes);
+  row.receipt.registrySupply = { path: row.receipt.registrySupply.path, bytes: bytes.length, sha256: digest(bytes) }; row.save();
+  assert.equal(verifyRootCompat(args).lanes.length, 18);
+  normal.artifacts[0].file = '../escape.tgz';
+  const changed = Buffer.from(JSON.stringify(normal)); fs.writeFileSync(normalFile, changed);
+  publication.source.bytes = changed.length; publication.source.sha256 = digest(changed);
+  const malformed = Buffer.from(JSON.stringify(publication)); fs.writeFileSync(publicationFile, malformed);
+  row.receipt.registrySupply.bytes = malformed.length; row.receipt.registrySupply.sha256 = digest(malformed); row.save();
+  assert.throws(() => verifyRootCompat(args), /invalid retained supply archive/);
+}));
+
+test('retention copies the original exclusively and rejects changed bytes without rewriting the producer input', () => {
+  const {retainRootCompatArchive}=require('../../scripts/release-gate-evidence.cjs');
+  const base=path.resolve('.test-data/legacy-root-retention');fs.mkdirSync(base,{recursive:true});const root=fs.mkdtempSync(path.join(base,'case-'));
+  try{
+    const bytes=Buffer.from('synthetic archive bytes'),file=path.join(root,'source.tgz'),out=path.join(root,'out');fs.writeFileSync(file,bytes);fs.mkdirSync(out);
+    const archive={filename:'root.tgz',bytes:bytes.length,sha256:digest(bytes),integrity:'sha512-'+crypto.createHash('sha512').update(bytes).digest('base64')};
+    assert.equal(retainRootCompatArchive(file,out,archive),'archives/root.tgz');assert.deepEqual(fs.readFileSync(path.join(out,'archives/root.tgz')),bytes);assert.deepEqual(fs.readFileSync(file),bytes);
+    assert.throws(()=>retainRootCompatArchive(file,out,archive));
+    const bad=path.join(root,'bad');fs.mkdirSync(bad);assert.throws(()=>retainRootCompatArchive(file,bad,{...archive,sha256:'0'.repeat(64)}),/retained archive mismatch/);
+  }finally{fs.rmSync(root,{recursive:true,force:true});}
+});
+
+for (const replacement of ['file', 'directory']) test('retention failure preserves replacement '+replacement+' and primary error', () => {
+  const {retainRootCompatArchive}=require('../../scripts/release-gate-evidence.cjs');
+  const base=path.resolve('.test-data/legacy-root-retention');fs.mkdirSync(base,{recursive:true});const root=fs.mkdtempSync(path.join(base,'replacement-'));
+  const original=fs.fsyncSync, failure=new Error('owned fsync failure');let injected=false;
+  try{
+    const bytes=Buffer.from('original'),source=path.join(root,'source.tgz'),out=path.join(root,'out'),directory=path.join(out,'archives'),target=path.join(directory,'root.tgz');
+    fs.writeFileSync(source,bytes);fs.mkdirSync(out);
+    fs.fsyncSync=()=>{
+      injected=true;
+      if(replacement==='file')fs.renameSync(target,target+'.owned');
+      else {fs.renameSync(directory,directory+'.owned');fs.mkdirSync(directory);}
+      fs.writeFileSync(target,'replacement must survive');throw failure;
+    };
+    assert.throws(()=>retainRootCompatArchive(source,out,{filename:'root.tgz',bytes:bytes.length,sha256:digest(bytes),integrity:'sha512-'+crypto.createHash('sha512').update(bytes).digest('base64')}),error=>error===failure);
+    assert.equal(injected,true);assert.equal(fs.readFileSync(target,'utf8'),'replacement must survive');assert.deepEqual(fs.readFileSync(source),bytes);
+  }finally{fs.fsyncSync=original;fs.rmSync(root,{recursive:true,force:true});}
+});
