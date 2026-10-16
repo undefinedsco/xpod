@@ -16,7 +16,7 @@ export async function acquire(input: ArtifactAcquisitionInput, output: string) {
   if (indexRows.length !== 1 || indexRows[0].bytes > 8 * 1024 ** 2) throw new Error('Unique original supply index required');
   const project = (rows: any[]) => {
     const result = require('./lib/product-artifact-command.cjs').inspectArtifact([path.join(import.meta.dir, 'lib/inspect-product-artifact.py'), path.join(custody, 'artifact.zip'), input.artifactSha256,
-      String(16 * 1024 ** 2), String(40 * 1024 ** 2), '4096', JSON.stringify(rows.map(row => ({ path: row.path, destination: row.path, bytes: row.bytes, sha256: row.sha256 }))), originals, 'legacy-root-normal-supply'], { evidence: path.join(output, 'diagnostics/projection'), label: 'zip-projection', timeout: 30_000, maxBuffer: 8 * 1024 ** 2 });
+      String(16 * 1024 ** 2), String(40 * 1024 ** 2), '4096', '--selection-stdin', originals, 'legacy-root-normal-supply'], { input: Buffer.from(JSON.stringify(rows.map(row => ({ path: row.path, destination: row.path, bytes: row.bytes, sha256: row.sha256 })))), evidence: path.join(output, 'diagnostics/projection'), label: 'zip-projection', timeout: 30_000, maxBuffer: 8 * 1024 ** 2 });
     if (result.error || result.status !== 0) throw new Error('Normal supply ZIP projection failed: ' + result.stderr);
   };
   project(indexRows);

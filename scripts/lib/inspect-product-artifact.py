@@ -15,9 +15,11 @@ from contextlib import nullcontext
 
 
 def inspect(archive, expected, packed_limit, expanded_limit, member_limit, selections=None, destination=None, legacy=False):
+    if selections is not None and type(selections) is not list:
+        raise ValueError('projection selections must be an array')
     selected = {}
     for row in selections or []:
-        if (set(row) != {'path', 'destination', 'bytes', 'sha256'} or row['path'] in selected
+        if (type(row) is not dict or set(row) != {'path', 'destination', 'bytes', 'sha256'} or row['path'] in selected
                 or not ((row['destination'] == row['path'] and (row['path'] == 'supply-index.original.json' or row['path'].startswith(('cli/', 'afs/', 'producer/')))) if legacy else row['destination'] in ('producer.receipt.json', 'product.tgz', 'pack.raw.log', 'result.json', 'inventory.json', 'source-inputs.json', 'preparation.json', 'producer-index.json', 'input.json', 'cli.tgz', 'client.tgz', 'cli.package.json', 'client.package.json'))
                 or type(row['bytes']) is not int or row['bytes'] < 0
                 or len(row['sha256']) != 64):
@@ -139,6 +141,12 @@ def inspect(archive, expected, packed_limit, expanded_limit, member_limit, selec
 
 
 if __name__ == '__main__':
-    selections = json.loads(sys.argv[6]) if len(sys.argv) > 6 else None
+    if len(sys.argv) > 6 and sys.argv[6] == '--selection-stdin':
+        request = sys.stdin.buffer.read(8 * 1024 * 1024 + 1)
+        if len(request) > 8 * 1024 * 1024:
+            raise ValueError('projection stdin request bound')
+        selections = json.loads(request.decode('utf-8'))
+    else:
+        selections = json.loads(sys.argv[6]) if len(sys.argv) > 6 else None
     destination = sys.argv[7] if len(sys.argv) > 7 else None
     print(json.dumps(inspect(sys.argv[1], sys.argv[2], *map(int, sys.argv[3:6]), selections, destination, len(sys.argv) > 8 and sys.argv[8] == 'legacy-root-normal-supply')))
