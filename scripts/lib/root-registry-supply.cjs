@@ -124,11 +124,30 @@ function verifyBuild(inputFile, root, rootArtifact) {
   for (const channel of ['stdout', 'stderr']) bound(step[channel], 128 * 1024 * 1024);
   const original = bound(input.archive, 128 * 1024 * 1024);
   if (!original.equals(rootArtifact.bytes) || input.archive.integrity !== rootArtifact.integrity) throw new Error('Root archive binding mismatch');
-  const snapshot = snapshotWorkspace(root);
-  if (snapshot.sourceSha !== actual) throw new Error('Supply checkout changed');
-  // The existing lane's exact emitted-UI observation is the only admitted tracked delta.
+  // Validate the actual parent's closed build/raw/source/archive before admitting
+  // any exact UI absence. Never substitute Git bytes for a missing current file.
   const status = execFileSync('git', ['status', '--porcelain', '--untracked-files=all', '--no-renames'], { cwd: root, encoding: 'utf8' }).trimEnd();
-  require('../release-gate-evidence.cjs').verifyCompatSourceObservation(status, input.uiObservation);
+  const lane = require('../release-gate-evidence.cjs');
+  const observed = lane.verifyCompatSourceObservation(status, input.uiObservation);
+  if (input.uiObservation) {
+    assert.equal(input.sourceAfterBuildStatus, status, 'UI observed source status changed');
+    assert.deepEqual(input.uiObservation.before, lane.rootCompatUIBaseline(root), 'UI tracked baseline changed');
+    if (!Array.isArray(input.uiOriginals) || input.uiOriginals.length !== input.uiObservation.generated.length) throw new Error('Original UI observations required');
+    const seen = new Set();
+    for (const row of input.uiOriginals) {
+      if (seen.has(row.target) || typeof row.target !== 'string' || !/^[a-z]+$/.test(row.target)
+        || row.path !== path.join(path.dirname(inputFile), 'ui-build', row.target + '.json')) throw new Error('Invalid original UI observation');
+      seen.add(row.target);
+      const original = JSON.parse(bound(row));
+      const matching = input.uiObservation.generated.filter(value => value.target === row.target);
+      if (matching.length !== 1) throw new Error('Missing original UI target');
+      assert.deepEqual(original, matching[0], 'UI producer observation changed');
+    }
+    assert.deepEqual(input.uiCurrent?.map(row => row.file), observed.emitted, 'UI current output inventory changed');
+    for (const row of input.uiCurrent) bound({ ...row, path: path.join(root, row.file) });
+  }
+  const snapshot = snapshotWorkspace(root, null, null, { missingTrackedInputs: new Set(observed.deleted) });
+  if (snapshot.sourceSha !== actual) throw new Error('Supply checkout changed');
   return { input, snapshot };
 }
 function producerRecipes(rootManifest, authority, normalManifests = []) {
@@ -207,7 +226,7 @@ async function produceRootSupply({ inputFile, root, rootArtifact, destination, c
     write(path.join(destination, 'external-' + externals.length + '.source-after.original.json'), after);
     externals.push({ name, directory, source, sourceBefore: before, sourceAfter: after, manifest: { bytes: manifestBytes.length, sha256: hash(manifestBytes) } }); packed[name] = archive;
   }
-  const after = snapshotWorkspace(root);
+  const after = verifyBuild(inputFile, root, rootArtifact).snapshot;
   if (after.inputSHA256 !== snapshot.inputSHA256) throw new Error('Source changed during normal pack');
   write(path.join(destination, 'source-after.original.json'), after);
   const artifacts = Object.entries(packed).map(([name, file]) => { const bytes = readRegular(file); const inspected = inspectTarballBuffer(bytes); if (inspected.manifest.name !== name) throw new Error('Normal pack identity mismatch'); return { ...reference(file), file: path.basename(file), integrity: sha512Integrity(bytes), name, version: inspected.manifest.version }; });

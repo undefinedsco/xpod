@@ -2,7 +2,6 @@ import { createHash } from 'node:crypto';
 import { chmodSync, closeSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync, writeSync } from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
-import { spawnSync } from 'node:child_process';
 import { isDeepStrictEqual } from 'node:util';
 import { MODULE_TARGETS } from '../packages/xpod-cli/src/module-catalog';
 const { withOwnedTempRoot } = createRequire(import.meta.url)('./lib/owned-temp-root.cjs');
@@ -54,6 +53,7 @@ export interface ArtifactAcquisitionInput {
 interface Dependencies {
   fetch?: typeof fetch;
   token?: string;
+  diagnostics?: string;
   // Tests and constrained callers may lower transport limits, never raise them.
   limits?: Partial<typeof LIMITS>;
 }
@@ -183,8 +183,8 @@ async function acquireProductInput(input: ArtifactAcquisitionInput, output: stri
     const archive = path.join(temporary, 'artifact.zip');
     const downloaded = await stream(response, archive, limits.packedBytes);
     if (downloaded.sha256 !== input.artifactSha256 || downloaded.bytes !== artifact.size_in_bytes) fail('downloaded artifact digest/size mismatch');
-    const inspected = spawnSync(process.platform === 'win32' ? 'python' : 'python3', [path.join(import.meta.dir, 'lib/inspect-product-artifact.py'), archive, input.artifactSha256,
-      String(limits.packedBytes), String(limits.expandedBytes), String(limits.members)], { encoding: 'utf8', timeout: 30_000, maxBuffer: 16 * 1024 * 1024 });
+    const inspected = createRequire(import.meta.url)('./lib/product-artifact-command.cjs').inspectArtifact([path.join(import.meta.dir, 'lib/inspect-product-artifact.py'), archive, input.artifactSha256,
+      String(limits.packedBytes), String(limits.expandedBytes), String(limits.members)], { evidence: dependencies.diagnostics, label: 'zip-inspection', timeout: 30_000, maxBuffer: 16 * 1024 * 1024 });
     if (inspected.status !== 0 || inspected.error) fail('artifact ZIP inspection failed');
     const inventory = JSON.parse(inspected.stdout);
     const projection = Buffer.from(JSON.stringify(metadata, null, 2) + '\n');

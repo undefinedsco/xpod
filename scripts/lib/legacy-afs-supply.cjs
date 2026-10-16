@@ -2,11 +2,10 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const assert = require('node:assert/strict');
-const { spawnSync } = require('node:child_process');
 const { snapshotWorkspace } = require('../collect-workspace-normal-run.cjs');
 const { runPublicationCommand } = require('./afs-publication-command.cjs');
 const normal = require('../check-afs-js-archive-ci.cjs');
-const tools = ['scripts/check-cli-publication.cjs', 'scripts/check-afs-js-archive-ci.cjs', 'scripts/lib/afs-publication-command.cjs', 'scripts/lib/legacy-afs-supply.cjs', 'scripts/lib/legacy-root-artifact-context.cjs', 'scripts/legacy-root-afs-supply.ts', 'scripts/acquire-independent-product-input.ts', 'scripts/lib/inspect-product-artifact.py', 'packages/xpod-afs/scripts/build-client-publication.ts', 'packages/xpod-afs/scripts/client-publication.cjs', 'packages/xpod-afs/scripts/client-publication-run.cjs'];
+const tools = ['scripts/check-cli-publication.cjs', 'scripts/check-afs-js-archive-ci.cjs', 'scripts/lib/afs-publication-command.cjs', 'scripts/lib/legacy-afs-supply.cjs', 'scripts/lib/product-artifact-command.cjs', 'scripts/lib/legacy-root-artifact-context.cjs', 'scripts/legacy-root-afs-supply.ts', 'scripts/acquire-independent-product-input.ts', 'scripts/lib/inspect-product-artifact.py', 'packages/xpod-afs/scripts/build-client-publication.ts', 'packages/xpod-afs/scripts/client-publication.cjs', 'packages/xpod-afs/scripts/client-publication-run.cjs'];
 const MAX = 8 * 1024 ** 2;
 function io() { return require('./root-registry-supply.cjs'); }
 function json(file) { return JSON.parse(io().readRegular(file)); }
@@ -160,8 +159,8 @@ function verifyCustody(directory, context, root, { retained = false } = {}) {
   require('./legacy-root-artifact-context.cjs').verifyContext(request.input, metadata, jobs);
   const originals = path.join(directory, 'originals');
   io().bound({ ...request.index, path: path.join(originals, 'supply-index.original.json') });
-  const checked = spawnSync(process.platform === 'win32' ? 'python' : 'python3', [path.join(root, 'scripts/lib/inspect-product-artifact.py'), path.join(custody, 'artifact.zip'), receipt.archive.sha256,
-    String(16 * 1024 ** 2), String(40 * 1024 ** 2), '4096', '[]', originals, 'legacy-root-normal-supply'], { encoding: 'utf8', timeout: 30_000, maxBuffer: MAX });
+  const checked = require('./product-artifact-command.cjs').inspectArtifact([path.join(root, 'scripts/lib/inspect-product-artifact.py'), path.join(custody, 'artifact.zip'), receipt.archive.sha256,
+    String(16 * 1024 ** 2), String(40 * 1024 ** 2), '4096', '[]', originals, 'legacy-root-normal-supply'], { evidence: path.join(directory, 'diagnostics/readback'), label: 'zip-readback', timeout: 30_000, maxBuffer: MAX });
   if (checked.error || checked.status !== 0) throw new Error('Retained original ZIP verification failed');
   const inventory = JSON.parse(checked.stdout); assert.deepEqual(inventory.members, receipt.inventory.members);
   const indexBytes = io().readRegular(path.join(originals, 'supply-index.original.json'));

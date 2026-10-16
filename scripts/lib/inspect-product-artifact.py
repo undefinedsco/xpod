@@ -118,10 +118,16 @@ def inspect(archive, expected, packed_limit, expanded_limit, member_limit, selec
                                   'bytes': size, 'sha256': digest.hexdigest(), 'mode': (entry.external_attr >> 16) & 0o777})
         after = os.fstat(source.fileno())
         named_after = os.lstat(archive)
+        # Windows path stat may expose birth time as ctime while fstat exposes
+        # change time (CPython #157671). Check each view over time, not against
+        # the other view's ctime. Identity/size/mtime still bind both views.
+        def stable(value):
+            return (value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns, value.st_ctime_ns, value.st_nlink)
         if (not stat.S_ISREG(named_after.st_mode) or named_after.st_nlink != 1
-                or (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns) != (named_after.st_dev, named_after.st_ino, named_after.st_size, named_after.st_mtime_ns, named_after.st_ctime_ns)):
+                or stable(named_before) != stable(named_after)
+                or (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns) != (named_after.st_dev, named_after.st_ino, named_after.st_size, named_after.st_mtime_ns)):
             raise ValueError('artifact name changed during inspection')
-        if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns):
+        if stable(before) != stable(after):
             raise ValueError('artifact changed during inspection')
         result = {'members': inventory, 'expandedBytes': actual_expanded,
                   'selectedMembersProjected': len(selected), 'innerArchiveExpanded': False}

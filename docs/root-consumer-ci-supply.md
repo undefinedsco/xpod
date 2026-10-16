@@ -75,3 +75,25 @@ CLI evidence directory and POSIX output, including failures. The successful
 supply artifact alone owns the artifact-ID/digest outputs. Ordinary successful
 `needs` and the successful producer-job checks still prevent all consumers from
 using a failed producer or diagnostic artifact.
+
+## ZIP diagnostics and Windows stat views
+
+ZIP inspection, legacy projection and retained readback share the existing
+`python` (Windows) / `python3` (POSIX) selection without an alternate executable
+fallback. The original timeout and buffer limits remain. Their bounded original
+stdout/stderr captures, hashes and actual spawn error/status/signal/argv are
+retained separately from admission facts. Failed acquisition diagnostics have
+an unconditional Bun-lane upload; its artifact name grants no supply authority.
+A diagnostic write failure preserves the child primary and write secondary.
+No environment or transport authorization header is recorded.
+
+The parser compares descriptor metadata before/after and named metadata
+before/after, including each view's own ctime. Cross-view device/inode/size/mtime
+still bind the open file to its name, and type/link/hash/path/budget checks stay
+in force. CPython [issue 157671](https://github.com/python/cpython/issues/157671)
+records Windows path-stat ctime and descriptor-stat ctime having different
+meanings. A real ZIP with only that documented stat-view difference reproduced
+rejection in the previous parser; within-view ctime changes, inode swaps and
+mtime changes remain rejected. This fixture establishes a portability defect,
+not the unrecorded Python stderr or exact cause of the earlier Windows CI
+failure. Actual Windows acceptance still requires a new run's original evidence.

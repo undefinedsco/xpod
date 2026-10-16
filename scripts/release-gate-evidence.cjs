@@ -691,7 +691,7 @@ function uiOutputPath(value) {
 }
 function verifyCompatSourceObservation(status, observation) {
   if (typeof status !== 'string') fail('compat source status missing');
-  if (!status) return;
+  if (!status && !observation) return { deleted: [], emitted: [] };
   const targets = Object.keys(UI_BUILD_TARGETS);
   if (!observation || !Array.isArray(observation.before) || !Array.isArray(observation.generated)
     || observation.generated.length !== targets.length) fail('compat UI observation missing');
@@ -708,11 +708,17 @@ function verifyCompatSourceObservation(status, observation) {
       emitted.add(uiOutputRoot(row.target) + file);
     }
   }
-  for (const line of status.split('\n')) {
+  const deleted = [];
+  for (const line of status ? status.split('\n') : []) {
     const code = line.slice(0, 2), file = line.slice(3);
     if (line[2] !== ' ' || !uiOutputPath(file)
       || !(code === ' D' && before.has(file) || (code === ' M' || code === '??') && emitted.has(file))) fail('compat source input or unknown output changed');
+    if (code === ' D') deleted.push(file);
   }
+  return { deleted, emitted: [...emitted].sort() };
+}
+function rootCompatUIBaseline(root) {
+  return execFileSync('git', ['ls-files', '-z', '--', ...Object.keys(UI_BUILD_TARGETS).map(uiOutputRoot)], { cwd: root, encoding: 'utf8' }).split('\0').filter(Boolean);
 }
 function runRootCompatLane(args) {
   validateSourceSha(args.sourceSha);
@@ -743,12 +749,15 @@ function runRootCompatLane(args) {
       let supplyInput;
       if (phase === 'install' && lane.runtime === 'bun') {
         const observation = compatSourceObservation(uiBefore, uiEvidence);
-        verifyCompatSourceObservation(execFileSync('git', ['status', '--porcelain', '--untracked-files=all', '--no-renames'], { encoding: 'utf8' }).trimEnd(), observation);
+        const sourceAfterBuildStatus = execFileSync('git', ['status', '--porcelain', '--untracked-files=all', '--no-renames'], { encoding: 'utf8' }).trimEnd();
+        const uiChanges = verifyCompatSourceObservation(sourceAfterBuildStatus, observation);
         const build = receipt.steps.find(step => step.phase === 'build');
         const absoluteBuild = { ...build, ...Object.fromEntries(['stdout', 'stderr'].map(channel => [channel, { ...build[channel], path: path.join(out, build[channel].path) }])) };
         supplyInput = path.join(out, 'registry-build-input.original.json');
         writeJsonFile(supplyInput, { kind: 'legacy-root-normal-build-input', sourceSha: args.sourceSha, runId: args.runId, runAttempt: Number(args.runAttempt),
-          sourceBeforeStatus: receipt.sourceBeforeStatus, build: absoluteBuild, uiObservation: observation,
+          sourceBeforeStatus: receipt.sourceBeforeStatus, sourceAfterBuildStatus, build: absoluteBuild, uiObservation: observation,
+          uiCurrent: uiChanges.emitted.map(file => ({ file, ...compatFile(file) })),
+          uiOriginals: Object.keys(UI_BUILD_TARGETS).map(target => { const file = path.join(uiEvidence, target + '.json'); return { target, path: file, ...compatFile(file) }; }),
           archive: { ...receipt.pack.archive, path: path.join(out, receipt.pack.archive.path) } });
       }
       const stdoutName = `${phase}.stdout.raw.log`, stderrName = `${phase}.stderr.raw.log`;
@@ -961,6 +970,7 @@ function main(argv = process.argv.slice(2)) {
 module.exports = {
   retainRootCompatArchive,
   verifyCompatSourceObservation,
+  rootCompatUIBaseline,
   rootCompatLanes,
   rootCompatCommands,
   rootCompatConsumerPath,

@@ -161,3 +161,41 @@ test('tiny real npm pack and npm PUT preserve original dependencies, aliases and
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+test('root build admits only byte-bound parent UI observations and records actual tracked absence', () => fixture(async ({ root, input, inputFile, rootArtifact, evidence }) => {
+  const git = args => execFileSync('git', ['-c', 'core.hooksPath=/dev/null', ...args], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  const oldUI = 'static/app/assets/index-oldHash.js', keptUI = 'static/app/kept.txt', currentUI = 'static/app/assets/index-currentHash.js';
+  write(path.join(root, oldUI), 'old tracked UI bytes'); write(path.join(root, keptUI), 'old tracked kept bytes');
+  git(['add', '--', oldUI, keptUI]); git(['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'tracked UI fixture']);
+  input.sourceSha = git(['rev-parse', 'HEAD']).trim();
+  const strict = require('../../scripts/collect-workspace-normal-run.cjs').snapshotWorkspace;
+  const before = strict(root), oldRow = before.files.find(row => row.path === oldUI);
+  assert.equal(oldRow.matchesGit, true);
+  fs.unlinkSync(path.join(root, oldUI)); write(path.join(root, keptUI), 'current kept UI bytes'); write(path.join(root, currentUI), 'current emitted UI bytes');
+  const gate = require('../../scripts/release-gate-evidence.cjs'), targets = require('../../ui/build-targets.json');
+  input.uiObservation = { before: gate.rootCompatUIBaseline(root), generated: Object.entries(targets).map(([target, config]) => ({ target, outDir: config.outDir, files: target === 'app' ? ['assets/index-currentHash.js', 'kept.txt'] : [] })) };
+  input.sourceAfterBuildStatus = git(['status', '--porcelain', '--untracked-files=all', '--no-renames']).trimEnd();
+  const observed = gate.verifyCompatSourceObservation(input.sourceAfterBuildStatus, input.uiObservation);
+  input.uiOriginals = input.uiObservation.generated.map(row => { const file = path.join(evidence, 'ui-build', row.target + '.json'); write(file, row); return { target: row.target, ...helper.reference(file) }; });
+  input.uiCurrent = observed.emitted.map(file => { const row = helper.reference(path.join(root, file)); return { file, bytes: row.bytes, sha256: row.sha256 }; });
+  write(inputFile, input);
+  assert.throws(() => strict(root), /ENOENT/);
+  const verified = helper.verifyBuild(inputFile, root, rootArtifact), missing = verified.snapshot.files.find(row => row.path === oldUI);
+  assert.equal(missing.missing, true); assert.equal(missing.matchesGit, false); assert.equal(missing.trackedGitBlob, oldRow.gitBlob);
+  for (const field of ['bytes', 'sha256', 'gitBlob']) assert.equal(Object.hasOwn(missing, field), false);
+  assert.equal(verified.snapshot.files.find(row => row.path === keptUI).sha256, hash(Buffer.from('current kept UI bytes')));
+  const produced = await helper.produceRootSupply({ root, inputFile, rootArtifact, destination: path.join(evidence, 'ui-supply'), cache: path.join(root, '.test-data/cache') });
+  const receipt = JSON.parse(fs.readFileSync(produced.receipt.path)); assert.equal(receipt.sourceBefore.inputSHA256, receipt.sourceAfter.inputSHA256);
+  const original = structuredClone(input);
+  for (const mutate of [v => v.sourceSha = '0'.repeat(40), v => v.uiOriginals = [], v => v.uiObservation.generated[1].files = ['invented.js'], v => v.uiObservation.before = [], v => v.sourceAfterBuildStatus = '', v => v.uiCurrent[0].sha256 = '0'.repeat(64)]) {
+    const changed = structuredClone(original); mutate(changed); write(inputFile, changed); assert.throws(() => helper.verifyBuild(inputFile, root, rootArtifact));
+  }
+  write(inputFile, original);
+  const raw = fs.readFileSync(input.build.stdout.path); fs.unlinkSync(input.build.stdout.path); assert.throws(() => helper.verifyBuild(inputFile, root, rootArtifact)); fs.writeFileSync(input.build.stdout.path, raw);
+  const uiRaw = fs.readFileSync(input.uiOriginals[0].path); fs.unlinkSync(input.uiOriginals[0].path); assert.throws(() => helper.verifyBuild(inputFile, root, rootArtifact)); fs.writeFileSync(input.uiOriginals[0].path, uiRaw);
+  const leaf = path.join(root, 'packages/leaf/index.js'), leafBytes = fs.readFileSync(leaf); fs.unlinkSync(leaf);
+  const extra = structuredClone(original); extra.sourceAfterBuildStatus = git(['status', '--porcelain', '--untracked-files=all', '--no-renames']).trimEnd(); write(inputFile, extra);
+  assert.throws(() => helper.verifyBuild(inputFile, root, rootArtifact), /source input or unknown output/); assert.throws(() => strict(root), /ENOENT/); fs.writeFileSync(leaf, leafBytes);
+  write(inputFile, original); fs.unlinkSync(path.join(root, keptUI)); assert.throws(() => helper.verifyBuild(inputFile, root, rootArtifact)); write(path.join(root, keptUI), 'current kept UI bytes');
+  write(path.join(root, currentUI), 'tampered emitted UI bytes'); assert.throws(() => helper.verifyBuild(inputFile, root, rootArtifact), /reference mismatch/); write(path.join(root, currentUI), 'current emitted UI bytes');
+  assert.equal(helper.verifyBuild(inputFile, root, rootArtifact).snapshot.inputSHA256, verified.snapshot.inputSHA256);
+}));

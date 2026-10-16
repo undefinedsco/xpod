@@ -134,6 +134,16 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+      - name: Retain exact Bun acquisition diagnostics
+        uses: actions/upload-artifact@v4
+        if: ${{ always() && matrix.runtime == 'bun' }}
+        with:
+          name: legacy-root-afs-acquisition-diagnostics-${{ needs.plan.outputs.sha }}-${{ github.run_id }}-${{ matrix.id }}-attempt${{ github.run_attempt }}
+          path: ${{ runner.temp }}/legacy-root-afs-input/
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 30
+
   verify:
     needs: [plan, lanes]
     if: ${{ always() && !cancelled() }}

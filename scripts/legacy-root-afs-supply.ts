@@ -1,7 +1,6 @@
 // Same-run custody and original byte projection; no product production in a consumer lane.
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { acquireLegacyRootSupply, type ArtifactAcquisitionInput } from './acquire-independent-product-input';
 const require = createRequire(import.meta.url);
@@ -10,14 +9,14 @@ const normal = require('./lib/legacy-afs-supply.cjs');
 export async function acquire(input: ArtifactAcquisitionInput, output: string) {
   fs.mkdirSync(output);
   const custody = path.join(output, 'custody');
-  const receipt = await acquireLegacyRootSupply(input, custody, { token: process.env.GH_TOKEN });
+  const receipt = await acquireLegacyRootSupply(input, custody, { token: process.env.GH_TOKEN, diagnostics: path.join(output, 'diagnostics/acquisition') });
   const originals = path.join(output, 'originals'); fs.mkdirSync(originals);
   const members = receipt.inventory.members;
   const indexRows = members.filter((row: any) => row.path === 'supply-index.original.json' && row.kind === 'file');
   if (indexRows.length !== 1 || indexRows[0].bytes > 8 * 1024 ** 2) throw new Error('Unique original supply index required');
   const project = (rows: any[]) => {
-    const result = spawnSync(process.platform === 'win32' ? 'python' : 'python3', [path.join(import.meta.dir, 'lib/inspect-product-artifact.py'), path.join(custody, 'artifact.zip'), input.artifactSha256,
-      String(16 * 1024 ** 2), String(40 * 1024 ** 2), '4096', JSON.stringify(rows.map(row => ({ path: row.path, destination: row.path, bytes: row.bytes, sha256: row.sha256 }))), originals, 'legacy-root-normal-supply'], { encoding: 'utf8', timeout: 30_000, maxBuffer: 8 * 1024 ** 2 });
+    const result = require('./lib/product-artifact-command.cjs').inspectArtifact([path.join(import.meta.dir, 'lib/inspect-product-artifact.py'), path.join(custody, 'artifact.zip'), input.artifactSha256,
+      String(16 * 1024 ** 2), String(40 * 1024 ** 2), '4096', JSON.stringify(rows.map(row => ({ path: row.path, destination: row.path, bytes: row.bytes, sha256: row.sha256 }))), originals, 'legacy-root-normal-supply'], { evidence: path.join(output, 'diagnostics/projection'), label: 'zip-projection', timeout: 30_000, maxBuffer: 8 * 1024 ** 2 });
     if (result.error || result.status !== 0) throw new Error('Normal supply ZIP projection failed: ' + result.stderr);
   };
   project(indexRows);

@@ -248,3 +248,19 @@ test('actual queued GitHub attempt admits only its already successful exact norm
     }
   } finally { for (const [key, value] of Object.entries(saved)) if (value === undefined) delete process.env[key]; else process.env[key] = value; }
 });
+test('failed actual ZIP inspection retains original bounded diagnostics without the transport token', async () => {
+  const f = fixture([{ name: '../unsafe', body: 'tiny', mode: 0o100644 }]);
+  const diagnostics = path.join(f.root, 'diagnostics');
+  await expect(acquireIndependentProductInput(f.input, f.output, { fetch: f.transport, token: 'test-secret-canary', diagnostics })).rejects.toThrow('ZIP inspection failed');
+  expect(existsSync(f.output)).toBe(false);
+  const directories = readdirSync(diagnostics); expect(directories.length).toBe(1);
+  const directory = path.join(diagnostics, directories[0]);
+  const receiptBytes = readFileSync(path.join(directory, 'command.original.json'));
+  const receipt = JSON.parse(receiptBytes.toString()); expect(receipt.status === 0).toBe(false);
+  for (const channel of ['stdout', 'stderr']) {
+    const row = receipt[channel], bytes = readFileSync(path.join(directory, row.path));
+    expect(bytes.length).toBe(row.bytes); expect(createHash('sha256').update(bytes).digest('hex')).toBe(row.sha256);
+    expect(bytes.includes(Buffer.from('test-secret-canary'))).toBe(false);
+  }
+  expect(receiptBytes.includes(Buffer.from('test-secret-canary'))).toBe(false);
+});

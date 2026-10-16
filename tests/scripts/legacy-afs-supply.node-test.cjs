@@ -138,6 +138,10 @@ test('workflow blocks every lane on the same-run successful producer and uses ar
   const diagnostics = workflow.jobs.normal_afs.steps.find(row => row.name === 'Retain original producer diagnostics even when supply fails');
   assert.equal(diagnostics.if, 'always()'); assert.equal(diagnostics['continue-on-error'], undefined); assert.ok(diagnostics.with.path.includes('.test-data/afs-js-archive-ci-producer/')); assert.notEqual(diagnostics.with.name, upload.with.name);
   assert.equal(workflow.jobs.lanes.if, undefined);
+  const acquisitionDiagnostics = workflow.jobs.lanes.steps.find(row => row.name === 'Retain exact Bun acquisition diagnostics');
+  assert.equal(acquisitionDiagnostics.if, "${{ always() && matrix.runtime == 'bun' }}");
+  assert.equal(acquisitionDiagnostics.with.path, '${{ runner.temp }}/legacy-root-afs-input/');
+  assert.notEqual(acquisitionDiagnostics.with.name, upload.with.name);
   const produce = workflow.jobs.normal_afs.steps.find(row => row.run?.includes('legacy-root-afs-supply.ts produce'));
   assert.equal(produce.env.EVENT_HEAD_SHA, '${{ github.event.pull_request.head.sha || github.sha }}'); assert.equal(produce.env.GITHUB_EVENT_HEAD_SHA, undefined);
   const acquire = workflow.jobs.lanes.steps.find(row => row.run?.includes('legacy-root-afs-supply.ts acquire'));

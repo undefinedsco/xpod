@@ -9,7 +9,7 @@ const {runPublicationCommand}=require('./lib/afs-publication-command.cjs');
 const hash=bytes=>crypto.createHash('sha256').update(bytes).digest('hex');
 const ref=(base,file)=>{const bytes=fs.readFileSync(file);return{path:path.relative(base,file).split(path.sep).join('/'),bytes:bytes.length,sha256:hash(bytes)};};
 const write=(file,value)=>fs.writeFileSync(file,JSON.stringify(value,null,2)+'\n',{flag:'wx'});
-function snapshotWorkspace(root, rawDirectory = null, suffix = null){
+function snapshotWorkspace(root, rawDirectory = null, suffix = null, { missingTrackedInputs = new Set() } = {}){
  const gitCommands=[];
  const git=(label,args)=>{
   const result=spawnSync('git',args,{cwd:root,stdio:['ignore','pipe','pipe']});
@@ -30,9 +30,18 @@ function snapshotWorkspace(root, rawDirectory = null, suffix = null){
   const match=/^(100644|100755|120000) ([a-f0-9]{40}) 0\t(.+)$/.exec(row);if(!match)throw new Error('Tracked input mode unsupported (gitlink/conflict explicitly blocked)');
   const [,mode,blob,name]=match;
   if(path.isAbsolute(name)||name.split('/').some(x=>x==='..'||x==='.'||!x))throw new Error('Unsafe tracked input');
-  let ancestor=root;
-  for(const part of name.split('/').slice(0,-1)){ancestor=path.join(ancestor,part);if(fs.lstatSync(ancestor).isSymbolicLink())throw new Error('Tracked input ancestor is a symlink');}
-  const file=path.join(root,name),stat=fs.lstatSync(file);let bytes,linkTargetBase64;
+  let stat; const file=path.join(root,name);
+  try {
+   let ancestor=root;
+   for(const part of name.split('/').slice(0,-1)){ancestor=path.join(ancestor,part);if(fs.lstatSync(ancestor).isSymbolicLink())throw new Error('Tracked input ancestor is a symlink');}
+   stat=fs.lstatSync(file);
+  } catch(error) {
+   if(error.code!=='ENOENT'||mode==='120000'||!missingTrackedInputs.has(name))throw error;
+   // Root compatibility alone supplies an already verified exact observation.
+   // Absence has no current bytes/hash; trackedGitBlob is only index identity.
+   files.push({path:name,mode,trackedGitBlob:blob,missing:true,matchesGit:false});continue;
+  }
+  let bytes,linkTargetBase64;
   if(mode==='120000'){
     if(!stat.isSymbolicLink())throw new Error('Tracked symlink mode/type mismatch');
     bytes=fs.readlinkSync(file,{encoding:'buffer'});
