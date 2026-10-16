@@ -1,6 +1,6 @@
 import { execFileSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { closeSync, copyFileSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, writeFileSync } from 'node:fs';
+import { closeSync, constants, copyFileSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { verifyModuleClientMaterials, moduleClientPath, hashBytes, hashFile, verifyBoundFile, type ModuleAdmissionInputs } from './module-admission';
@@ -285,6 +285,30 @@ export function projectReceipt(name: string, original: unknown): unknown {
   }
   const schema = receipts[name]; if (!schema) throw new Error('unapproved receipt'); return projectBySchema(original, schema);
 }
+const diagnosticKernelState = (value: unknown) => typeof value === 'string' && ['absent', 'mounted', 'unknown'].includes(value) ? value : 'unknown';
+const diagnosticEnum = (value: unknown, choices: string[]) => typeof value === 'string' && choices.includes(value) ? value : 'unknown';
+const projectKernelObservation = (value: any) => ({ state: diagnosticKernelState(value?.state),
+  reason: typeof value?.reason === 'string' && value.reason.startsWith('classify-unknown:') ? 'classify-unknown' : diagnosticEnum(value?.reason,
+    ['invalid-mount-path', 'python-observer-nonzero', 'json-parse-failed', 'mountinfo-parse-failed', 'unsupported-platform', 'observer-threw', 'classify-absent', 'classify-mounted']),
+  classifyReason: typeof value?.classifyReason === 'string' && /^(malformed-row:|ancestor-mount:)/.test(value.classifyReason) ? value.classifyReason.split(':')[0]
+    : diagnosticEnum(value?.classifyReason, ['invalid-root', 'empty-rows', 'target-mounted', 'unknown-ancestor-type', 'no-baseline', 'baseline-present']),
+  errorCode: value?.errorCode == null ? null : diagnosticEnum(value.errorCode, ['ENOENT', 'EACCES', 'EPERM', 'EIO', 'ENOTCONN', 'ENODEV', 'ETIMEDOUT', 'EINVAL', 'ENOSYS', 'ENOTDIR', 'ELOOP', 'EBUSY']),
+});
+const projectCommandResult = (value: any) => {
+  const text = [value?.stdout, value?.stderr].filter(v => typeof v === 'string').join('\n').toLowerCase();
+  let failure = value?.state === 'closed' && value.actualExit === 0 ? 'none' : 'unclassified';
+  for (const [phrase, code] of [
+    ['crashed runtime kernel binding changed or unknown', 'crashed-kernel-binding-mismatch'],
+    ['runtime identity', 'runtime-identity-mismatch'], ['socket binding', 'socket-binding-mismatch'],
+    ['unmount child failed', 'unmount-child-failed'], ['transport endpoint is not connected', 'disconnected-fuse'],
+    ['permission denied', 'permission-denied'],
+  ]) if (text.includes(phrase)) { failure = code; break; }
+  return { state: ['closed', 'pending', 'spawn-error'].includes(value?.state) ? value.state : 'unknown',
+    actualExit: Number.isInteger(value?.actualExit) ? value.actualExit : null,
+    signal: value?.signal === null ? null : ['SIGTERM', 'SIGKILL', 'SIGINT'].includes(value?.signal) ? value.signal : 'unknown',
+    failure, errorSHA256: text ? hashBytes(text) : null };
+};
+
 /** Diagnostic only: fixed enums and closed command facts, never admission or free error text. */
 export function projectRecoveryDiagnostic(original: unknown): Record<string, unknown> {
   const row = original as Record<string, any> | null;
@@ -306,48 +330,95 @@ export function projectRecoveryDiagnostic(original: unknown): Record<string, unk
     ]) if (error.includes(pattern)) return code;
     return 'unclassified';
   };
-  const kernel = (value: unknown) => typeof value === 'string' && ['absent', 'mounted', 'unknown'].includes(value) ? value : 'unknown';
-  const classify = (value: unknown, choices: string[]) => typeof value === 'string' && choices.includes(value) ? value : 'unknown';
-  const observer = (value: any) => ({ state: kernel(value?.state),
-    reason: typeof value?.reason === 'string' && value.reason.startsWith('classify-unknown:') ? 'classify-unknown' : classify(value?.reason,
-      ['invalid-mount-path', 'python-observer-nonzero', 'json-parse-failed', 'mountinfo-parse-failed', 'unsupported-platform', 'observer-threw', 'classify-absent', 'classify-mounted']),
-    classifyReason: typeof value?.classifyReason === 'string' && /^(malformed-row:|ancestor-mount:)/.test(value.classifyReason) ? value.classifyReason.split(':')[0]
-      : classify(value?.classifyReason, ['invalid-root', 'empty-rows', 'target-mounted', 'unknown-ancestor-type', 'no-baseline', 'baseline-present']),
-    errorCode: value?.errorCode == null ? null : classify(value.errorCode, ['ENOENT', 'EACCES', 'EPERM', 'EIO', 'ENOTCONN', 'ENODEV', 'ETIMEDOUT', 'EINVAL', 'ENOSYS', 'ENOTDIR', 'ELOOP', 'EBUSY']),
-  });
-  const result = (value: any) => {
-    const text = [value?.stdout, value?.stderr].filter(v => typeof v === 'string').join('\n').toLowerCase();
-    let failure = value?.state === 'closed' && value.actualExit === 0 ? 'none' : 'unclassified';
-    for (const [phrase, code] of [
-      ['crashed runtime kernel binding changed or unknown', 'crashed-kernel-binding-mismatch'],
-      ['runtime identity', 'runtime-identity-mismatch'], ['socket binding', 'socket-binding-mismatch'],
-      ['unmount child failed', 'unmount-child-failed'], ['transport endpoint is not connected', 'disconnected-fuse'],
-      ['permission denied', 'permission-denied'],
-    ]) if (text.includes(phrase)) { failure = code; break; }
-    return { state: ['closed', 'pending', 'spawn-error'].includes(value?.state) ? value.state : 'unknown',
-      actualExit: Number.isInteger(value?.actualExit) ? value.actualExit : null,
-      signal: value?.signal === null ? null : ['SIGTERM', 'SIGKILL', 'SIGINT'].includes(value?.signal) ? value.signal : 'unknown',
-      failure, errorSHA256: text ? hashBytes(text) : null };
-  };
   const stageNames = ['copyUpObserved', 'seedObserved', 'killedClosed', 'unmountSucceeded', 'writerClosed', 'remountObserved', 'orphanRemoved', 'conditionalConflictObserved'];
   const stages = Object.fromEntries(stageNames.map(name => { const stage = row.recoveryStages?.[name]; return [name, {
     executed: typeof stage?.executed === 'boolean' ? stage.executed : null,
     success: stage?.executed === true && typeof stage.success === 'boolean' ? stage.success : null,
   }]; }));
   return { diagnosticOnly: true, stages, backend: row.backend, primaryFailure: category(row.primaryError), cleanupFailure: category(row.cleanupError),
-    kernelState: kernel(row.kernelState), finalKernel: observer(row.finalKernel), sceneRetained: row.sceneRetained === true,
+    kernelState: diagnosticKernelState(row.kernelState), finalKernel: projectKernelObservation(row.finalKernel), sceneRetained: row.sceneRetained === true,
     writerOutcome: ['not-started', 'write-completed'].includes(row.writerOutcome) ? row.writerOutcome : 'write-failed-or-unknown',
     unmounts: (Array.isArray(row.unmountResults) ? row.unmountResults : []).filter((v: any) => ['first', 'second'].includes(v?.instance)
       && ['after-sigkill', 'second-cleanup', 'first-cleanup', 'second-final-cleanup'].includes(v?.phase)).map((v: any) => ({
-        instance: v.instance, phase: v.phase, result: result(v.result ?? v.retainedProof?.result),
-        preKernel: observer(v.preKernel), postKernel: observer(v.postKernel ?? { state: v.retainedProof?.postKernel }),
+        instance: v.instance, phase: v.phase, result: projectCommandResult(v.result ?? v.retainedProof?.result),
+        preKernel: projectKernelObservation(v.preKernel), postKernel: projectKernelObservation(v.postKernel ?? { state: v.retainedProof?.postKernel }),
       })) };
+}
+/** Exact ordinary-consumer scene only; free paths, arguments, output and error text never leave the runner. */
+export function projectConsumerDiagnostic(original: unknown): Record<string, unknown> {
+  const row = original as Record<string, any> | null;
+  if (!row || row.label !== 'consumers' || !['fuse', 'nfs'].includes(row.backend) || !Array.isArray(row.commands) || row.commands.length > 128) throw new Error('invalid consumer diagnostic');
+  const finite = (value: unknown) => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
+  const digest = (value: unknown) => value === undefined || value === null ? null : hashBytes(typeof value === 'string' ? value : JSON.stringify(value));
+  const error = (value: unknown) => ({ present: value != null, sha256: digest(value) });
+  const worker = (value: any) => value == null ? null : ({
+    launchState: diagnosticEnum(value.launchState, ['not-observed', 'returned', 'threw']), workerExit: Number.isInteger(value.workerExit) ? value.workerExit : null,
+    actualWait: value.actualWait === true, childCloseObserved: value.childCloseObserved === true, observedChildExit: Number.isInteger(value.observedChildExit) ? value.observedChildExit : null,
+    observedChildSignal: value.observedChildSignal === null ? null : diagnosticEnum(value.observedChildSignal, ['SIGTERM', 'SIGKILL', 'SIGINT']),
+    pipeEOF: [value.pipeEOF?.[0] === true, value.pipeEOF?.[1] === true], timeoutObserved: value.timeoutObserved === true,
+    elapsedMs: finite(value.elapsedMs), timeoutMs: finite(value.timeoutMs), waitBudgetMs: finite(value.waitBudgetMs), outputComplete: value.outputComplete === true,
+    launchError: value.launchError == null ? null : { code: diagnosticEnum(value.launchError.code, ['ETIMEDOUT', 'ENOENT', 'EACCES', 'EAGAIN', 'EMFILE', 'ENFILE', 'EIO']),
+      errno: Number.isInteger(value.launchError.errno) ? value.launchError.errno : null, syscall: value.launchError.syscall === 'spawn' ? 'spawn' : 'unknown', messageSHA256: digest(value.launchError.message) },
+    errors: (Array.isArray(value.errors) ? value.errors : []).slice(0, 8).map((v: any) => ({ source: diagnosticEnum(v.source, ['observer', 'control', 'worker', 'worker-start']), messageSHA256: digest(v.message) })),
+    errorsTruncated: Array.isArray(value.errors) && value.errors.length > 8, descendantClosureVerified: false,
+  });
+  const timing = row.commandTiming;
+  const windows = Array.isArray(timing?.windows) ? timing.windows : [];
+  return { diagnosticOnly: true, accepted: false, backend: row.backend, sceneRetained: row.sceneRetained === true,
+    primaryError: error(row.primaryError), cleanupError: error(row.cleanupError), kernel: projectKernelObservation(row.kernel),
+    daemon: { state: diagnosticEnum(row.closeState, ['closed', 'pending', 'spawn-error']), actualExit: Number.isInteger(row.closeCode) ? row.closeCode : null,
+      signal: row.closeSignal === null ? null : diagnosticEnum(row.closeSignal, ['SIGTERM', 'SIGKILL', 'SIGINT']) },
+    unmount: { daemonClosed: row.proof?.daemonClosed === true, postKernel: diagnosticKernelState(row.proof?.postKernel), result: projectCommandResult(row.proof?.result) },
+    commands: row.commands.map((command: any) => ({ role: command.command === 'git' ? 'git' : command.command === '/bin/sh' ? 'shell' : command.phase === 'unmount' ? 'unmount' : 'consumer-command',
+      commandSHA256: digest(command.command), argvSHA256: digest(command.args), cwdSHA256: digest(command.cwd), state: diagnosticEnum(command.state, ['attempted', 'closed', 'pending', 'spawn-error', 'spawn-threw']),
+      result: projectCommandResult(command.result), worker: worker(command.result?.workerFacts ?? command.workerFacts),
+      error: command.error == null ? null : { code: diagnosticEnum(command.error.code, ['ETIMEDOUT', 'ENOENT', 'EACCES', 'EIO']), messageSHA256: /^[a-f0-9]{64}$/.test(command.error.messageSHA256) ? command.error.messageSHA256 : null },
+      preKernel: command.phase === 'unmount' ? projectKernelObservation(command.preKernel) : null, postKernel: command.phase === 'unmount' ? projectKernelObservation(command.postKernel) : null,
+    })),
+    timing: { observation: 'event-loop-observation-only', windowsDropped: finite(timing?.windowsDropped), truncated: windows.length > 8,
+      windows: windows.slice(-8).map((window: any) => ({ id: finite(window.id), startedAtMs: finite(window.startedAtMs), ended: window.ended === true, operation: diagnosticEnum(window.operation, ['metadata-objects', 'metadata-refs', 'metadata-index']),
+        counters: Object.fromEntries(['httpStart', 'httpFinish', 'httpClose', 'stdoutBytes', 'stderrBytes'].map(key => [key, finite(window.counters?.[key])])),
+        events: (Array.isArray(window.events) ? window.events : []).slice(0, 16).map((event: any) => ({ kind: diagnosticEnum(event.kind, ['mark', 'http', 'helper']), elapsedMs: finite(event.elapsedMs),
+          mark: event.kind === 'mark' ? diagnosticEnum(event.mark, ['spawn-returned', 'spawn-threw', 'closed', 'spawn-error', 'pending']) : null,
+          phase: event.kind === 'http' ? diagnosticEnum(event.phase, ['start', 'finish', 'close']) : null, requestId: event.kind === 'http' ? finite(event.requestId) : null,
+          channel: event.kind === 'helper' ? diagnosticEnum(event.channel, ['stdout', 'stderr']) : null, bytes: event.kind === 'helper' ? finite(event.bytes) : null,
+        })), truncated: window.truncated === true || Array.isArray(window.events) && window.events.length > 16,
+      })) },
+  };
+}
+function readConsumerDiagnostic(filename: string): Buffer {
+  for (let ancestor = path.dirname(path.resolve(filename)); ; ancestor = path.dirname(ancestor)) {
+    const stat = lstatSync(ancestor); if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error('linked consumer diagnostic ancestor');
+    if (ancestor === path.dirname(ancestor)) break;
+  }
+  const before = lstatSync(filename);
+  if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1 || before.size > 256 * 1024) throw new Error('invalid consumer diagnostic file');
+  const fd = openSync(filename, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); let primary: unknown;
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile() || stat.dev !== before.dev || stat.ino !== before.ino || stat.size !== before.size || stat.nlink !== 1) throw new Error('consumer diagnostic identity changed');
+    const data = Buffer.alloc(stat.size); let offset = 0;
+    while (offset < data.length) { const count = readSync(fd, data, offset, data.length - offset, offset); if (!count) throw new Error('consumer diagnostic shortened'); offset += count; }
+    const after = fstatSync(fd); const named = lstatSync(filename);
+    if (after.size !== stat.size || after.mtimeMs !== stat.mtimeMs || named.isSymbolicLink() || named.ino !== stat.ino || named.dev !== stat.dev) throw new Error('consumer diagnostic changed during read');
+    return data;
+  } catch (error) { primary = error; throw error; }
+  finally { try { closeSync(fd); } catch (error) { throw primary ? new AggregateError([primary, error], 'Consumer diagnostic read and close failed') : error; } }
 }
 export function exportSafe(evidence: string, destination: string): void {
   mkdirSync(destination, { mode: 0o700 }); const files = [];
   for (const name of readdirSync(evidence)) {
     const recovery = /^daemon-recovery-final-[0-9]+-[0-9]+\.json$/.test(name);
-    if (!recovery && !Object.prototype.hasOwnProperty.call(receipts, name)) continue;
+    const consumer = /^daemon-consumers-[0-9]+-[0-9]+\.json$/.test(name);
+    if (!recovery && !consumer && !Object.prototype.hasOwnProperty.call(receipts, name)) continue;
+    if (consumer) {
+      const data = readConsumerDiagnostic(path.join(evidence, name));
+      const bytes = JSON.stringify({ ...projectConsumerDiagnostic(JSON.parse(data.toString('utf8'))), sourceReceiptSHA256: hashBytes(data) }, null, 2) + '\n';
+      if (Buffer.byteLength(bytes) > 128 * 1024) throw new Error('consumer diagnostic projection budget exceeded');
+      const safeName = 'consumer-scene.safe.json';
+      writeFileSync(path.join(destination, safeName), bytes, { flag: 'wx', mode: 0o600 }); files.push({ name: safeName, sha256: hashBytes(bytes) });
+      continue;
+    }
     const filename = path.join(evidence, name); const sha256 = hashFile(filename); verifyBoundFile({ path: filename, sha256 });
     const original = JSON.parse(readFileSync(filename, 'utf8'));
     const projection = recovery ? projectRecoveryDiagnostic(original) : projectReceipt(name, original) as Record<string, unknown>;

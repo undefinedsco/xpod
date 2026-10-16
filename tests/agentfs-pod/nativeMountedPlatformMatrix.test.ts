@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { createRequire } from 'node:module';
 import { mkdir, mkdtemp, open, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -107,6 +108,28 @@ async function exec(command: string, args: string[], env: NodeJS.ProcessEnv = {}
       signal: fact.state === 'closed' ? fact.signal : null, pid: owned.child.pid,
       stdout: Buffer.concat(owned.stdout).toString('utf8'), stderr: Buffer.concat(owned.stderr).toString('utf8') };
   } finally { clearTimeout(timer); }
+}
+
+// Only the ordinary mounted-content consumer uses this bridge. Stream/RSS/recovery keep their original execution paths.
+const { runMountedCommand } = createRequire(import.meta.url)('./support/mountedCommandWorker.cjs');
+async function execMountedConsumer(command: string, args: string[], env: NodeJS.ProcessEnv, timeoutMs: number, cwd: string,
+  timing: MountedCommandTiming, operation?: MountedCommandOperation): Promise<ExecResult & { workerFacts: Record<string, unknown> }> {
+  if (operation) timing.begin(operation);
+  const started = performance.now();
+  const result = await runMountedCommand({ command, args, cwd, env: { ...process.env, ...env }, timeoutMs, waitBudgetMs: timeoutMs + 15_000,
+    onEvent: (event: { type: string }) => { if (event.type === 'launch-returned') timing.mark('spawn-returned'); else if (event.type === 'launch-threw') timing.mark('spawn-threw'); },
+  });
+  if (result.workerFacts.launchState === 'threw') {
+    const error = Object.assign(new Error(result.workerFacts.launchError.message), result.workerFacts.launchError, { workerFacts: result.workerFacts });
+    emitMountedCommandDiagnostic(mountedCommandDiagnostic(command === 'git' ? 'git' : 'consumer-command', command, args, cwd, started, timeoutMs,
+      result.workerFacts.timeoutObserved, { state: 'spawn-threw', actualExit: null, signal: null }, error));
+    throw error;
+  }
+  timing.mark(result.state);
+  if (result.state !== 'closed' || result.actualExit !== 0 || result.signal !== null) emitMountedCommandDiagnostic(mountedCommandDiagnostic(
+    command === 'git' ? 'git' : 'consumer-command', command, args, cwd, started, timeoutMs, result.workerFacts.timeoutObserved,
+    { state: result.state, actualExit: result.actualExit, signal: result.signal }, result.workerFacts.launchError));
+  return result;
 }
 
 interface OwnedDaemon { child: ChildProcess; closed: Promise<{ code: number | null; signal: NodeJS.Signals | null }>; spawnError: Promise<boolean>; spawnFailure: { error?: Error }; stdout: Buffer[]; stderr: Buffer[]; }
@@ -375,11 +398,12 @@ describe.runIf(runOverlay)('native mounted platform matrix: remote stream, RSS, 
     const run = async (command: string, args: string[], cwd = project, env: NodeJS.ProcessEnv = {}, operation?: MountedCommandOperation): Promise<string> => {
       const row: Record<string, unknown> = { command, args, cwd, state: 'attempted' };
       commands.push(row);
-      let result: ExecResult;
-      try { result = await exec(command, args, env, 60_000, cwd, operation ? { operation, timing } : undefined); }
-      catch (error) { row.state = 'spawn-threw'; unresolvedCommand = true; throw error; }
+      let result: Awaited<ReturnType<typeof execMountedConsumer>>;
+      try { result = await execMountedConsumer(command, args, env, 60_000, cwd, timing, operation); }
+      catch (error) { row.state = 'spawn-threw'; row.error = error instanceof Error ? { code: (error as NodeJS.ErrnoException).code, errno: (error as NodeJS.ErrnoException).errno, syscall: (error as NodeJS.ErrnoException).syscall, messageSHA256: createHash('sha256').update(error.message).digest('hex') } : null; row.workerFacts = (error as { workerFacts?: unknown }).workerFacts ?? null; unresolvedCommand = true; throw error; }
       row.state = result.state; row.result = result;
       if (result.state !== 'closed') unresolvedCommand = true;
+      expect(result.workerFacts.timeoutObserved, JSON.stringify(result.workerFacts)).toBe(false);
       expect(result.state, JSON.stringify(result)).toBe('closed');
       expect(result.actualExit, JSON.stringify(result)).toBe(0);
       expect(result.signal, JSON.stringify(result)).toBeNull();
@@ -489,7 +513,7 @@ describe.runIf(runOverlay)('native mounted platform matrix: remote stream, RSS, 
       if (kernel.state !== 'absent') addCleanupError(new Error(`consumer kernel unresolved: ${kernel.state}`));
       let safeToDelete = cleanupError === undefined && kernel.state === 'absent';
       await captureDaemonEvidence('consumers', daemon, close, { commands, proof, kernel,
-        primaryError: primaryError === undefined ? null : String(primaryError), cleanupError: cleanupError === undefined ? null : String(cleanupError), sceneRetained: !safeToDelete }).catch(addCleanupError);
+        primaryError: primaryError === undefined ? null : String(primaryError), cleanupError: cleanupError === undefined ? null : String(cleanupError), sceneRetained: !safeToDelete, commandTiming: timing.snapshot() }).catch(addCleanupError);
       if (cleanupError !== undefined) safeToDelete = false;
       if (safeToDelete) { try { await guard.remove(work); } catch (error) { addCleanupError(error); safeToDelete = false; } }
       if (!safeToDelete) retainedScene = true;
