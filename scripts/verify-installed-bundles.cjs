@@ -3,7 +3,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { inspectTarballBuffer } = require('./workspace-package-payload.cjs');
 const ARCHIVE_LIMIT = 128 * 1024 ** 2;
-const TAR_LIMITS = { expandedBytes: 256 * 1024 ** 2, members: 100000 };
+const TAR_LIMITS = { expandedBytes: 256 * 1024 ** 2, members: 100000, gnuLongNames: true };
 
 // Explicit minimum release acceptance set: same leaf versions can contain
 // different bundled builds, so successful imports alone cannot prove freshness.

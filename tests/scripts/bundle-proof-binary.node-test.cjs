@@ -102,3 +102,45 @@ test('name and prefix decode losslessly: invalid UTF-8 cannot alias a real repla
   f.write([...f.rows, { path: 'prefix.js', prefix: literalPrefix, content: 'same bytes' }]);
   assert.equal(f.proof().find(row => row.name === '@undefineds.co/solid-sdk').files, 3);
 }));
+
+function longMetadata(name) { return { path: '././@LongLink', type: 'L', content: Buffer.isBuffer(name) ? name : Buffer.from(name + '\0') }; }
+const gnuLimits = { expandedBytes: 1024 * 1024, members: 100, gnuLongNames: true };
+test('GNU long name metadata binds only the next ordinary entry and preserves exact bundle bytes', () => fixture(f => {
+  const name = 'package/node_modules/@undefineds.co/solid-sdk/dist/' + 'long-'.repeat(25) + '.js';
+  f.write([...f.rows, longMetadata(name), { path: name.slice(0, 100), content: 'same bytes' }]);
+  const installed = path.join(f.installed, name.slice(8)); fs.writeFileSync(installed, 'same bytes');
+  const parsed = inspectTarballBuffer(fs.readFileSync(f.tarball), gnuLimits);
+  assert.ok(parsed.entries.some(entry => entry.path === name)); assert.ok(parsed.entries.every(entry => entry.type !== 'long-name'));
+  assert.equal(f.proof().find(row => row.name === '@undefineds.co/solid-sdk').files, 3);
+  assert.throws(() => inspectTarballBuffer(fs.readFileSync(f.tarball)), /Unsafe tar path/);
+  assert.throws(() => inspectTarballBuffer(fs.readFileSync(f.tarball), { ...gnuLimits, members: f.rows.length + 1 }), /member budget exceeded/);
+}));
+test('GNU malformed metadata, unsafe effective names and duplicate effective entries fail closed', () => fixture(f => {
+  const name = 'package/node_modules/@undefineds.co/solid-sdk/dist/' + 'x'.repeat(110) + '.js', file = { path: name.slice(0, 100), content: 'payload' };
+  const bad = [
+    [longMetadata(name)],
+    [longMetadata(name), longMetadata(name), file],
+    [{ ...longMetadata(name), path: 'package/not-the-gnu-marker' }, file],
+    [longMetadata(Buffer.from(name)), file],
+    [longMetadata(Buffer.from(name + '\0hidden\0')), file],
+    [longMetadata(Buffer.alloc(4097, 0x61)), file],
+    [longMetadata(Buffer.from([0xff, 0])), file],
+    [longMetadata(Buffer.from([0xe2, 0x82, 0])), file],
+    ...['/escape', 'package/../escape', 'package/a\\b', 'package/./file', 'package/evil\r', 'package/evil\n', 'package/evil\t'].map(path => [longMetadata(path), file]),
+    ...['1', '2', '3', '4', '6', '7', 'K', 'x', 'g'].map(type => [longMetadata(name), { ...file, type }]),
+    [{ ...longMetadata(name), type: '0' }],
+    [longMetadata(name), file, longMetadata(name), file],
+  ];
+  for (const rows of bad) { f.write([...f.rows, ...rows]); assert.throws(f.proof); }
+  f.write([...f.rows, longMetadata(name), file]); const raw = zlib.gunzipSync(fs.readFileSync(f.tarball));
+  const offset = raw.indexOf(Buffer.from('././@LongLink')); assert.ok(offset >= 0); raw[offset] ^= 1;
+  fs.writeFileSync(f.tarball, zlib.gzipSync(raw)); assert.throws(f.proof, /checksum/);
+}));
+test('stream inspection remains fail-closed for GNU metadata rather than treating it as a file', async () => {
+  const { inspectTarballFile } = require('../../scripts/workspace-package-payload.cjs');
+  const parent = path.resolve('.test-data/bundle-proof-binary'); fs.mkdirSync(parent, { recursive: true }); const root = fs.mkdtempSync(path.join(parent, 'stream-'));
+  try {
+    const file = path.join(root, 'long.tgz'); fs.writeFileSync(file, archive([{ path: 'package/package.json', content: '{}' }, longMetadata('package/' + 'x'.repeat(110)), { path: 'package/short', content: 'payload' }]));
+    await assert.rejects(inspectTarballFile(file, { expandedBytes: 1024 * 1024, members: 100, manifestBytes: 1024 }), /Unsafe tar path/);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});

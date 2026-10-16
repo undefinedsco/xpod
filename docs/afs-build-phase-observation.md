@@ -33,3 +33,15 @@ introduced. The outer lifetime owner still cancels/drains the original process
 group, and all original source/payload checks and fresh build boundaries remain.
 Small fixtures exercise phase errors, child exit/close separation and output
 bounds. Actual producer performance still requires new immutable-source evidence.
+
+The lifetime test's progress file indexes the original stdout/stderr by timestamp
+and observed byte count. It does not embed repeated raw tails. The original raw
+files still contain every phase event and are exported with closed receipt hashes;
+byte indexes are live observations, not a claim of child closure. Each summary is
+at most 160 encoded bytes including its newline, with the existing 512 sample
+attempts. A start row is at most 16 KiB. Thus nonterminal records occupy at most
+96 KiB (16 KiB + 512 × 160 B), leaving 32 KiB for the final event inside the
+unchanged 128 KiB progress cap. These are enforced byte limits. Oversize records,
+short writes, fsync/close errors or command failures still reject acceptance and
+retain the original error. The final diagnostic receipt is attempted independently.
+No raw limit, sampling frequency, deadline or export budget is increased.

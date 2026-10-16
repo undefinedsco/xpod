@@ -33,28 +33,31 @@ async function runLifetimeCommand(command, args, { cwd, evidence, label, deadlin
   const events = fs.openSync(path.join(evidence, label + '.progress.jsonl'), 'wx', 0o600);
   let samples = 0, progressBytes = 0, lastOutput, timer, result, primary, progressClosed = false;
   const diagnostics = [];
-  const persist = row => {
+  const persist = (row, terminal = false) => {
     const line = JSON.stringify({ at: new Date().toISOString(), elapsedMs: Date.now() - started, ...row }) + '\n';
     const bytes = Buffer.byteLength(line);
-    if (progressBytes + bytes > PROGRESS_LIMIT) throw new Error('Lifetime progress byte budget exceeded');
+    if (row.event === 'start' && bytes > 16 * 1024) throw new Error('Lifetime start progress byte budget exceeded');
+    if (terminal && bytes > RECEIPT_LIMIT) throw new Error('Lifetime terminal progress byte budget exceeded');
+    if (row.event === 'output-observation' && bytes > 160) throw new Error('Lifetime observation summary byte budget exceeded');
+    if (progressBytes + bytes > (terminal ? PROGRESS_LIMIT : PROGRESS_LIMIT - RECEIPT_LIMIT)) throw new Error('Lifetime progress byte budget exceeded');
     const written = fs.writeSync(events, line);
     progressBytes += written;
     if (written !== bytes) throw new Error('Lifetime progress short write');
     fs.fsyncSync(events);
   };
-  const tail = kind => {
+  // Progress indexes original raw files by observed byte count; never copies their tails.
+  // At most 512 summaries of 160B plus the bounded start leave the original 32KiB
+  // receipt budget inside the original 128KiB progress limit for the terminal event.
+  const observeOutput = kind => {
     const file = path.join(evidence, label + '.' + kind + '.raw.log');
     let fd, value, failure;
     try {
       const opened = openRegular(file, RAW_LIMIT, { live: true });
       fd = opened.fd;
       const stat = opened.stat;
-      const bytes = Buffer.alloc(Math.min(stat.size, 4096));
-      const count = fs.readSync(fd, bytes, 0, bytes.length, Math.max(0, stat.size - bytes.length));
-      if (count !== bytes.length) throw new Error('Diagnostic live tail shortened during read');
       const after = fs.fstatSync(fd);
-      if (after.size > RAW_LIMIT || after.size < stat.size) throw new Error('Diagnostic live tail size outside budget or truncated');
-      value = { bytes: stat.size, tail: bytes.toString('utf8') };
+      if (after.size > RAW_LIMIT || after.size < stat.size) throw new Error('Diagnostic live output size outside budget or truncated');
+      value = { bytes: stat.size };
     } catch (error) {
       if (error.code === 'ENOENT') value = { bytes: 0, pending: true };
       else failure = error;
@@ -67,7 +70,7 @@ async function runLifetimeCommand(command, args, { cwd, evidence, label, deadlin
   const sample = () => {
     if (samples++ >= 512 || diagnostics.length) return;
     try {
-      const output = { stdout: tail('stdout'), stderr: tail('stderr') };
+      const output = { stdout: observeOutput('stdout'), stderr: observeOutput('stderr') };
       const key = JSON.stringify(output);
       if (key === lastOutput) return;
       lastOutput = key;
@@ -86,7 +89,7 @@ async function runLifetimeCommand(command, args, { cwd, evidence, label, deadlin
     try {
       persist(primary || diagnostics.length
         ? { event: 'failed', primary: primary ? errorValue(primary) : null, diagnostics: diagnostics.map(errorValue), outcome: primary?.outcome ?? result ?? null }
-        : { event: 'closed', outcome: result });
+        : { event: 'closed', outcome: result }, true);
     } catch (error) { diagnostics.push(error); }
     try { fs.closeSync(events); progressClosed = true; } catch (error) { diagnostics.push(error); }
   }

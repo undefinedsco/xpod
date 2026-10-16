@@ -17,7 +17,7 @@ test('start and inner-stage output persist while the producer is still alive', a
   const evidence = fixture('live');
   const running = runLifetimeCommand(process.execPath, ['-e', "process.stdout.write('stage-start\\n');process.stderr.write('inner-stage-start\\n');setTimeout(()=>process.stdout.write('stage-end\\n'),250)"], { cwd: repo, evidence, label: 'client', deadline: Date.now() + 5000, sampleMs: 20 });
   const progress = path.join(evidence, 'client.progress.jsonl');
-  await waitFor(() => fs.existsSync(progress) && fs.readFileSync(progress, 'utf8').includes('inner-stage-start'));
+  await waitFor(() => fs.existsSync(progress) && fs.readFileSync(progress, 'utf8').includes('output-observation') && fs.existsSync(path.join(evidence, 'client.stderr.raw.log')) && fs.readFileSync(path.join(evidence, 'client.stderr.raw.log'), 'utf8').includes('inner-stage-start'));
   assert.equal(fs.existsSync(path.join(evidence, 'client.receipt.json')), false);
   const row = await running;
   assert.equal(row.code, 0); assert.equal(row.actualClose, true); assert.equal(row.rawComplete, true);
@@ -36,7 +36,7 @@ test('a stuck stage keeps pre-deadline originals and records actual timeout clos
   assert.equal(row.signal, 'SIGTERM'); assert.equal(row.actualWait, true); assert.equal(row.actualClose, true); assert.equal(row.groupAbsent, true);
   assert.match(fs.readFileSync(path.join(evidence, 'module.stdout.raw.log'), 'utf8'), /components-start/);
   const events = fs.readFileSync(path.join(evidence, 'module.progress.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
-  assert.ok(events.some(e => e.event === 'output-observation' && e.stdout.tail.includes('components-start')));
+  assert.ok(events.some(e => e.event === 'output-observation' && e.stdout.bytes >= Buffer.byteLength('components-start\n')));
   assert.equal(events.at(-1).event, 'failed');
 });
 
@@ -157,26 +157,73 @@ test('lower raw cap retains bounded originals and observes controlled shutdown',
   assert.equal(fs.statSync(path.join(evidence, 'overflow.stdout.raw.log')).size, 16);
   assert.equal(failure.outcome.raw[0].status, 'truncated'); assert.equal('sha256' in failure.outcome.raw[0], false);
 });
-test('JSON escaped progress is byte bounded and budget errors retain original command cause', async () => {
+// Exercise the exact live sampler and terminal writer with deterministic command/clock IO.
+async function replayProgress({ failure = false, terminalPadding = 0, writeFailure = false } = {}) {
   const source = fs.readFileSync(path.join(__dirname, 'helpers/lifetime-command.cjs'), 'utf8');
-  const primary = Object.assign(new Error('original-command-failed'), { outcome: { code: 7 } });
-  let tick, total = 0, value = 0;
+  const primary = Object.assign(new Error('original-command-failed'), { outcome: { code: 7, padding: 'x'.repeat(terminalPadding) } });
+  const rows = []; let tick, sampleIndex = 0, nowCalls = 0, diagnostic;
+  const clock = class extends Date { static now() { return nowCalls++ === 0 ? 0 : Number.MAX_SAFE_INTEGER; } };
   const mock = { constants: { O_RDONLY: 0, O_NOFOLLOW: 0, O_NONBLOCK: 2048 }, openSync(p) { return String(p).endsWith('jsonl') ? 1 : 2; },
-    lstatSync() { return { size: 4096, dev: 1, ino: 1, nlink: 1, isFile: () => true, isSymbolicLink: () => false }; },
-    fstatSync() { return this.lstatSync(); }, readSync(fd, buffer) { buffer[0] = ++value; return 4096; },
-    writeSync(fd, data) { const bytes = Buffer.byteLength(data); total += bytes; return bytes; },
-    fsyncSync() {}, closeSync() {}, writeFileSync() {} };
+    lstatSync() { return { size: sampleIndex * 256, dev: 1, ino: 1, nlink: 1, isFile: () => true, isSymbolicLink: () => false }; },
+    fstatSync() { return this.lstatSync(); },
+    writeSync(fd, data) { const row = JSON.parse(data); if (writeFailure && row.event === 'failed') throw new Error('terminal-write-failed'); rows.push({ row, bytes: Buffer.byteLength(data) }); return Buffer.byteLength(data); },
+    fsyncSync() {}, closeSync() {}, writeFileSync(p, data) { diagnostic = JSON.parse(data); } };
   const module = { exports: {} };
   vm.runInNewContext(source, { require(name) {
     if (name === 'node:fs') return mock;
     if (name.startsWith('node:')) return require(name);
-    return { runPublicationCommand: async () => { for (let i = 0; i < 10; i++) tick(); throw primary; } };
-  }, module, Buffer, Date, process, setInterval(fn) { tick = fn; return 1; }, clearInterval() {} });
-  await assert.rejects(module.exports.runLifetimeCommand('fake', [], { cwd: '.', evidence: '.', label: 'client', deadline: Date.now() + 5000 }), error => {
-    assert.equal(error.cause, primary); assert.equal(error.outcome.code, 7);
-    assert.ok(error.errors.some(e => /progress byte budget/.test(e.message))); return true;
-  });
-  assert.ok(total <= module.exports.PROGRESS_LIMIT);
+    return { runPublicationCommand: async () => { for (let i = 1; i <= 512; i++) { sampleIndex = i; tick(); } if (failure) throw primary; return { code: 0, actualClose: true, rawComplete: true, padding: 'x'.repeat(terminalPadding) }; } };
+  }, module, Buffer, Date: clock, process, setInterval(fn) { tick = fn; return 1; }, clearInterval() {} });
+  let result, error;
+  try { result = await module.exports.runLifetimeCommand('fake', ['中文'.repeat(1200)], { cwd: '.', evidence: '.', label: 'client', deadline: Number.MAX_SAFE_INTEGER }); }
+  catch (value) { error = value; }
+  return { rows, result, error, primary, diagnostic };
+}
+test('512 maximum-width byte indexes plus Unicode start and terminal fit the original budget', async () => {
+  const { rows, result, error, diagnostic } = await replayProgress({ terminalPadding: 30000 });
+  assert.equal(error, undefined); assert.equal(result.code, 0); assert.equal(diagnostic.accepted, true);
+  const samples = rows.filter(x => x.row.event === 'output-observation'); assert.equal(samples.length, 512);
+  assert.ok(samples.every(x => x.bytes <= 160 && !('tail' in x.row.stdout) && !('tail' in x.row.stderr)));
+  assert.equal(samples.at(-1).row.stdout.bytes, RAW_LIMIT); assert.equal(samples.at(-1).row.elapsedMs, Number.MAX_SAFE_INTEGER);
+  assert.ok(rows.slice(0, -1).reduce((sum, x) => sum + x.bytes, 0) <= 96 * 1024);
+  assert.ok(rows.reduce((sum, x) => sum + x.bytes, 0) <= 128 * 1024);
+  assert.equal(rows.at(-1).row.event, 'closed'); assert.equal(rows.at(-1).row.outcome.actualClose, true);
+});
+test('a terminal exactly at 32KiB fits and one extra byte fails without a closed event', async () => {
+  const baseline = await replayProgress(); const padding = 32768 - baseline.rows.at(-1).bytes;
+  const exact = await replayProgress({ terminalPadding: padding });
+  // The progress row fits exactly; the separate, larger diagnostic envelope still
+  // rejects its own 32KiB budget, preserving that independent admission gate.
+  assert.ok(exact.error.errors.some(e => /diagnostic receipt budget/.test(e.message))); assert.equal(exact.rows.at(-1).bytes, 32768);
+  assert.equal(exact.rows.at(-1).row.event, 'closed');
+  const overflow = await replayProgress({ terminalPadding: padding + 1 });
+  assert.ok(overflow.error); assert.equal(overflow.rows.some(x => x.row.event === 'closed'), false);
+});
+test('terminal budget boundary fails closed with original command cause and never invents closed', async () => {
+  for (const options of [{ failure: true, terminalPadding: 32768 }, { failure: true, writeFailure: true }, { terminalPadding: 32768 }]) {
+    const { rows, error, primary } = await replayProgress(options); assert.ok(error);
+    assert.equal(rows.some(x => x.row.event === 'closed'), false);
+    if (options.failure) { assert.equal(error.cause, primary); assert.equal(error.outcome.code, 7); }
+    assert.ok(error.errors.some(e => /terminal.*(budget|write)/.test(e.message)));
+    assert.ok(rows.reduce((sum, x) => sum + x.bytes, 0) <= 128 * 1024);
+  }
+});
+test('many real Unicode phase lines remain exact raw originals while progress only indexes offsets', async () => {
+  const evidence = fixture('many-phases');
+  const script = "let n=0;const t=setInterval(()=>{const line=JSON.stringify({kind:'afs-build-phase',phase:'fixture',event:'end',text:'中文\\u0000'.repeat(100),n:n++})+'\\n';process.stdout.write(line);process.stderr.write(line);if(n===60)clearInterval(t)},5)";
+  const result = await runLifetimeCommand(process.execPath, ['-e', script], { cwd: repo, evidence, label: 'module', deadline: Date.now() + 5000, sampleMs: 2 });
+  assert.equal(result.code, 0); assert.equal(result.actualClose, true);
+  const crypto = require('node:crypto');
+  for (const raw of result.raw) {
+    const bytes = fs.readFileSync(path.join(evidence, raw.path)); assert.equal(bytes.length, raw.bytes);
+    assert.equal(crypto.createHash('sha256').update(bytes).digest('hex'), raw.sha256);
+    const phases = bytes.toString().trim().split('\n').map(JSON.parse); assert.equal(phases.length, 60); assert.equal(phases.at(-1).n, 59);
+  }
+  const progress = fs.readFileSync(path.join(evidence, 'module.progress.jsonl'));
+  assert.ok(progress.length < 128 * 1024);
+  const rows = progress.toString().trim().split('\n').map(JSON.parse); assert.equal(rows.at(-1).event, 'closed');
+  assert.equal(rows.filter(x => x.event === 'output-observation').some(x => JSON.stringify(x).includes('中文')), false);
+  assert.equal(rows.filter(x => x.event === 'output-observation').at(-1).stderr.bytes, result.raw[1].bytes);
 });
 test('all allowed files at hard caps keep originals plus export within the whole-regression budget', () => {
   const { PROGRESS_LIMIT, RECEIPT_LIMIT } = require('./helpers/lifetime-command.cjs');
@@ -259,7 +306,9 @@ test('live same-inode append during descriptor admission is valid diagnostic out
   const { evidence, result, error, grew } = await injectLiveGrowth('bounded');
   assert.equal(error, undefined); assert.equal(result.code, 0); assert.equal(grew, true);
   const progress = fs.readFileSync(path.join(evidence, 'client.progress.jsonl'), 'utf8');
-  assert.match(progress, /appended-while-opening/);
+  const observed = progress.trim().split('\n').map(JSON.parse).find(x => x.event === 'output-observation');
+  assert.equal(observed.stdout.bytes, Buffer.byteLength('before appended-while-opening'));
+  assert.match(fs.readFileSync(path.join(evidence, 'client.stdout.raw.log'), 'utf8'), /appended-while-opening/);
   assert.equal(JSON.parse(fs.readFileSync(path.join(evidence, 'client.diagnostic.receipt.json'), 'utf8')).accepted, true);
 });
 for (const mode of ['over-budget', 'replacement']) test('live descriptor sampling still rejects ' + mode, async () => {

@@ -32,11 +32,16 @@ function assertIntegrity(buffer, expected, label) {
   return actual;
 }
 
+function decodeName(field) {
+  const value = field.toString('utf8');
+  if (!Buffer.from(value, 'utf8').equals(field)) throw new Error('Invalid UTF-8 tar name or prefix');
+  return value;
+}
+
 function readString(block, offset, length, trimSpaces = true) {
   let end = offset;
   while (end < offset + length && block[end] !== 0) end += 1;
-  const field = block.subarray(offset, end), value = field.toString('utf8');
-  if (!trimSpaces && !Buffer.from(value, 'utf8').equals(field)) throw new Error('Invalid UTF-8 tar name or prefix');
+  const field = block.subarray(offset, end), value = trimSpaces ? field.toString('utf8') : decodeName(field);
   return trimSpaces ? value.replace(/ +$/u, '') : value;
 }
 
@@ -68,7 +73,7 @@ function assertSafePath(name) {
   }
 }
 
-function validateHeader(block, seen) {
+function validateHeader(block, seen, { gnuLongNames = false, longName } = {}) {
   const storedChecksum = readOctal(block, 148, 8);
   const checksumBlock = Buffer.from(block);
   checksumBlock.fill(0x20, 148, 156);
@@ -78,28 +83,37 @@ function validateHeader(block, seen) {
   const name = readString(block, 0, 100, false);
   const prefix = readString(block, 345, 155, false);
   const fullName = prefix ? `${prefix}/${name}` : name;
-  assertSafePath(fullName);
   const typeflag = String.fromCharCode(block[156]);
   const mode = readOctal(block, 100, 8) & 0o7777;
   const size = readOctal(block, 124, 12);
+  if (gnuLongNames && typeflag === 'L') {
+    if (longName !== undefined) throw new Error('Repeated GNU long name metadata');
+    if (prefix || fullName !== '././@LongLink' || size < 2 || size > 4096) throw new Error('Invalid GNU long name metadata');
+    return { path: fullName, type: 'long-name', mode, size };
+  }
+  assertSafePath(fullName);
+  if (longName !== undefined && /[\u0000-\u001f\u007f]/u.test(fullName)) throw new Error('Unsafe GNU short header name');
+  const effectiveName = longName ?? fullName;
+  assertSafePath(effectiveName);
   let type;
   if (typeflag === '0' || typeflag === '\0' || typeflag === '') type = 'file';
   else if (typeflag === '5') type = 'directory';
   else throw new Error(`Unsupported tar entry type ${JSON.stringify(typeflag)} for ${fullName}`);
-  if (seen.has(fullName)) throw new Error(`Duplicate tar entry: ${fullName}`);
-  seen.add(fullName);
-  return { path: fullName, type, mode, size };
+  if (seen.has(effectiveName)) throw new Error(`Duplicate tar entry: ${effectiveName}`);
+  seen.add(effectiveName);
+  return { path: effectiveName, type, mode, size };
 }
 
 // `buffer` is an uncompressed tar archive. Returns validated entries in archive order and
 // rejects partial final blocks, a missing end-of-archive marker, truncated padding, and
 // any nonzero byte after the end-of-archive marker.
 function parseTar(buffer, limits) {
-  if (limits && (!Number.isSafeInteger(limits.members) || limits.members < 1 || limits.members > 100000)) throw new Error('Invalid tar member budget');
+  if (limits && (!Number.isSafeInteger(limits.members) || limits.members < 1 || limits.members > 100000
+    || limits.gnuLongNames !== undefined && typeof limits.gnuLongNames !== 'boolean')) throw new Error('Invalid tar member budget');
   const entries = [];
   const seen = new Set();
   let offset = 0;
-  let terminated = false;
+  let terminated = false, headers = 0, longName;
   while (offset + BLOCK <= buffer.length) {
     const block = buffer.subarray(offset, offset + BLOCK);
     if (isZeroBlock(block)) {
@@ -107,14 +121,23 @@ function parseTar(buffer, limits) {
       offset += BLOCK;
       break;
     }
-    if (limits && entries.length >= limits.members) throw new Error('Tar member budget exceeded');
-    const { path: fullName, type, mode, size } = validateHeader(block, seen);
+    if (limits && ++headers > limits.members) throw new Error('Tar member budget exceeded');
+    const { path: fullName, type, mode, size } = validateHeader(block, seen, { gnuLongNames: limits?.gnuLongNames, longName });
     offset += BLOCK;
     const content = buffer.subarray(offset, offset + size);
     if (content.length < size) throw new Error(`Corrupted tar entry content: ${fullName}`);
     offset += Math.ceil(size / BLOCK) * BLOCK;
+    if (type === 'long-name') {
+      if (content[content.length - 1] !== 0 || content.indexOf(0) !== content.length - 1) throw new Error('Invalid GNU long name terminator');
+      longName = decodeName(content.subarray(0, -1));
+      assertSafePath(longName);
+      if (/[\u0000-\u001f\u007f]/u.test(longName)) throw new Error('Unsafe GNU long name');
+      continue;
+    }
+    longName = undefined;
     entries.push({ path: fullName, type, mode, size, sha256: sha256(content), content });
   }
+  if (longName !== undefined) throw new Error('Dangling GNU long name metadata');
   if (!terminated) throw new Error('Corrupted tar payload: missing end-of-archive marker');
   if (entries.length === 0) throw new Error('Empty or corrupted tar payload');
   if ((buffer.length - offset) % BLOCK !== 0) throw new Error('Corrupted tar payload: partial final block');
@@ -126,7 +149,8 @@ function parseTar(buffer, limits) {
 
 function inspectTarballBuffer(compressed, limits) {
   if (limits && (!Number.isSafeInteger(limits.expandedBytes) || limits.expandedBytes < 1 || limits.expandedBytes > 4 * 1024 ** 3
-    || !Number.isSafeInteger(limits.members) || limits.members < 1 || limits.members > 100000)) throw new Error('Invalid tar inspection budget');
+    || !Number.isSafeInteger(limits.members) || limits.members < 1 || limits.members > 100000
+    || limits.gnuLongNames !== undefined && typeof limits.gnuLongNames !== 'boolean')) throw new Error('Invalid tar inspection budget');
   let raw;
   try {
     raw = zlib.gunzipSync(compressed, limits ? { maxOutputLength: limits.expandedBytes } : undefined);
