@@ -215,3 +215,36 @@ test('same-workflow legacy supply requires successful producer job and exact run
     }
   } finally { for (const [key, value] of Object.entries(saved)) if (value === undefined) delete process.env[key]; else process.env[key] = value; }
 });
+test('actual queued GitHub attempt admits only its already successful exact normal producer', async () => {
+  const observed = JSON.parse(readFileSync(path.resolve('tests/fixtures/legacy-root-queued-run.json'), 'utf8'));
+  expect(observed.run.status).toBe('queued');
+  const saved = Object.fromEntries(['GITHUB_ACTIONS', 'GITHUB_REPOSITORY', 'GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT'].map(key => [key, process.env[key]]));
+  try {
+    Object.assign(process.env, { GITHUB_ACTIONS: 'true', GITHUB_REPOSITORY: 'undefinedsco/xpod', GITHUB_RUN_ID: String(observed.run.id), GITHUB_RUN_ATTEMPT: String(observed.run.run_attempt) });
+    for (const negative of ['none', 'producer-queued', 'producer-failed', 'wrong-job', 'wrong-attempt']) {
+      // Original run and terminal producer fields; tiny synthetic ZIP/metadata transport.
+      const f = fixture([{ name: 'supply-index.original.json', body: '{}', mode: 0o100644 }]);
+      const run = structuredClone(observed.run), job = structuredClone(observed.producerJob);
+      Object.assign(f.input, { sourceSha: observed.actualSourceSha, runHeadSha: run.head_sha, runId: run.id, runAttempt: run.run_attempt });
+      Object.assign(f.artifact, { name: `legacy-root-normal-afs-${f.input.sourceSha}-${run.id}-${run.run_attempt}`, workflow_run: { id: run.id, head_sha: run.head_sha }, created_at: job.started_at });
+      if (negative === 'producer-queued') { job.status = 'queued'; job.conclusion = null; }
+      if (negative === 'producer-failed') job.conclusion = 'failure';
+      if (negative === 'wrong-job') job.name = 'another-normal-afs';
+      if (negative === 'wrong-attempt') job.run_attempt++;
+      const transport = (async (url: any) => {
+        const address = String(url);
+        if (address.endsWith(`/attempts/${run.run_attempt}`)) return Response.json(run);
+        if (address.endsWith(`/workflows/${run.workflow_id}`)) return Response.json({ id: run.workflow_id, path: run.path });
+        if (address.endsWith('/jobs?per_page=100')) return Response.json({ total_count: 1, jobs: [job] });
+        if (address.endsWith('/artifacts/91')) return Response.json(f.artifact);
+        if (address.endsWith('/artifacts/91/zip')) return new Response(f.bytes);
+        throw new Error('Unexpected endpoint');
+      }) as typeof fetch;
+      if (negative === 'none') {
+        const result = await acquireLegacyRootSupply(f.input, f.output, { fetch: transport });
+        expect(result.kind).toBe('legacy-root-same-run-acquisition');
+        await expect(acquireIndependentProductInput(f.input, path.join(f.root, 'independent'), { fetch: transport })).rejects.toThrow();
+      } else await expect(acquireLegacyRootSupply(f.input, f.output, { fetch: transport })).rejects.toThrow();
+    }
+  } finally { for (const [key, value] of Object.entries(saved)) if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+});

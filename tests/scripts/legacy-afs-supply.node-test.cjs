@@ -97,10 +97,18 @@ test('portable original verifier preserves native receipt coordinates and reject
     inventory: JSON.parse(inspected.stdout), metadata: { originals: originalsBinding, projection: { ...helper.reference(path.join(custody, 'metadata.json')), path: 'metadata.json' } }, producerJob: { ...helper.reference(path.join(custody, 'metadata/jobs.original.json')), path: 'metadata/jobs.original.json' } };
   write(path.join(custody, 'receipt.json'), custodyReceipt);
   const request = { input: f.input, custodyReceipt: helper.reference(path.join(custody, 'receipt.json')), index: helper.reference(indexFile) }; write(path.join(root, 'request.original.json'), request);
-  assert.equal(normal.verifyCustody(root, context, root).artifacts.length, 3);
-  const savedAttempt = process.env.GITHUB_RUN_ATTEMPT, savedActions = process.env.GITHUB_ACTIONS, savedRun = process.env.GITHUB_RUN_ID;
-  try { process.env.GITHUB_ACTIONS = 'true'; process.env.GITHUB_RUN_ID = '21'; process.env.GITHUB_RUN_ATTEMPT = '4'; assert.throws(() => normal.verifyCustody(root, context, root)); assert.equal(normal.verifyCustody(root, context, root, { retained: true }).artifacts.length, 3); }
-  finally { for (const [key, value] of [['GITHUB_RUN_ATTEMPT', savedAttempt], ['GITHUB_ACTIONS', savedActions], ['GITHUB_RUN_ID', savedRun]]) if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+  const environmentKeys = ['GITHUB_ACTIONS', 'GITHUB_REPOSITORY', 'GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT'];
+  const saved = Object.fromEntries(environmentKeys.map(key => [key, process.env[key]]));
+  try {
+    Object.assign(process.env, { GITHUB_ACTIONS: 'true', GITHUB_REPOSITORY: 'undefinedsco/xpod', GITHUB_RUN_ID: '21', GITHUB_RUN_ATTEMPT: '3' });
+    assert.equal(normal.verifyCustody(root, context, root).artifacts.length, 3);
+    process.env.GITHUB_RUN_ID = '22'; assert.throws(() => normal.verifyCustody(root, context, root));
+    process.env.GITHUB_RUN_ID = '21'; process.env.GITHUB_RUN_ATTEMPT = '4'; assert.throws(() => normal.verifyCustody(root, context, root));
+    assert.equal(normal.verifyCustody(root, context, root, { retained: true }).artifacts.length, 3);
+  } finally {
+    for (const [key, value] of Object.entries(saved)) if (value === undefined) delete process.env[key]; else process.env[key] = value;
+  }
+  assert.deepEqual(Object.fromEntries(environmentKeys.map(key => [key, process.env[key]])), saved);
 
   for (const mutate of [v => v.sourceSha = 'f'.repeat(40), v => v.runAttempt++, v => v.phases[0].groupAbsent = false, v => v.phases[0].command = '/posix/bun', v => v.nodeRuntime.args = ['-e', 'unqualified'], v => v.members[0].sha256 = '0'.repeat(64), v => v.members.push(v.members[0]), v => v.members[0].member = '../outside']) {
     const changed = structuredClone(index); mutate(changed); write(indexFile, changed); assert.throws(() => normal.verify(originals, context, root));
@@ -150,3 +158,15 @@ test('actual Bun entry starts the normal CLI command under explicitly qualified 
   const child = JSON.parse(fs.readFileSync(path.join(control, observed.phase.raw[0].path)));
   assert.equal(child.bun, null); assert.match(child.node, /^22\./); assert.equal(child.execPath, qualified.execPath); assert.deepEqual(child.args, ['--evidence', cliDirectory]);
 }));
+
+test('portable fixture isolates and restores a different CI run and attempt in a real child', () => {
+  const env = { ...process.env, GITHUB_ACTIONS: 'true', GITHUB_REPOSITORY: 'undefinedsco/xpod', GITHUB_RUN_ID: '38850607818', GITHUB_RUN_ATTEMPT: '7' };
+  // Start an independent test runner, rather than inheriting node:test child IPC mode.
+  delete env.NODE_TEST_CONTEXT;
+  const result = spawnSync(process.execPath, ['--test', '--test-name-pattern=^portable original verifier', __filename], {
+    env,
+    encoding: 'utf8', timeout: 10000,
+  });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /# pass 1/); assert.match(result.stdout, /# fail 0/);
+});

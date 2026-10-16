@@ -21,7 +21,7 @@ function verifyContext(input, metadata, jobs) {
   const job = verifyProducerJob(input, run, workflow, jobs);
   assert.equal(run.repository?.full_name, 'undefinedsco/xpod'); assert.equal(run.head_repository?.full_name, 'undefinedsco/xpod');
   assert.equal(run.id, input.runId); assert.equal(run.run_attempt, input.runAttempt); assert.equal(run.head_sha, input.runHeadSha);
-  assert.ok(['push', 'pull_request', 'workflow_dispatch'].includes(run.event)); assert.ok(['in_progress', 'completed'].includes(run.status));
+  assert.ok(['push', 'pull_request', 'workflow_dispatch'].includes(run.event)); assert.ok(['queued', 'in_progress', 'completed'].includes(run.status));
   assert.equal(artifact.id, input.artifactId); assert.equal(artifact.name, `legacy-root-normal-afs-${input.sourceSha}-${input.runId}-${input.runAttempt}`);
   assert.equal(artifact.expired, false); assert.equal(artifact.workflow_run?.id, input.runId); assert.equal(artifact.workflow_run?.head_sha, input.runHeadSha);
   assert.equal(artifact.digest, 'sha256:' + input.artifactSha256);

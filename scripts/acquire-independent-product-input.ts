@@ -140,7 +140,7 @@ async function acquireProductInput(input: ArtifactAcquisitionInput, output: stri
       return value;
     }
     const run = await json('run', `actions/runs/${input.runId}/attempts/${input.runAttempt}`);
-    if (run.id !== input.runId || run.run_attempt !== input.runAttempt || (!legacy && (run.status !== 'completed' || run.conclusion !== 'success')) || (legacy && !['in_progress', 'completed'].includes(run.status))
+    if (run.id !== input.runId || run.run_attempt !== input.runAttempt || (!legacy && (run.status !== 'completed' || run.conclusion !== 'success')) || (legacy && !['queued', 'in_progress', 'completed'].includes(run.status))
       || run.repository?.full_name !== REPOSITORY || run.head_repository?.full_name !== REPOSITORY || run.head_sha !== input.runHeadSha
       || !['push', 'pull_request', 'workflow_dispatch'].includes(run.event) || !positive(run.workflow_id)) fail('untrusted producer run');
     if (run.event !== 'pull_request' && input.sourceSha !== input.runHeadSha) fail('non-PR build source differs from run head');
