@@ -16,6 +16,35 @@ function requiredPackageDirectory(args: readonly string[], flag: string): string
   return realpathSync(path.resolve(value));
 }
 
+export function resolveArtifactExport(root: string, exports: Record<string, string | Record<string, string>> | undefined, subpath: string, condition: 'require' | 'import' | 'types'): string {
+  const declaration = exports?.[subpath ? './' + subpath : '.'];
+  const target = typeof declaration === 'string' ? declaration : declaration?.[condition] ?? (condition === 'types' ? undefined : declaration?.default);
+  if (typeof target !== 'string' || !target.startsWith('./')) throw new Error('Producer public export is missing: ' + subpath);
+  return resolveArtifactPath(root, path.resolve(root, target));
+}
+
+/** One confined path capability for public exports and compiler-owned SDK reads. */
+export function resolveArtifactPath(root: string, file: string, allowMissing = false): string {
+  if (lstatSync(root).isSymbolicLink() || realpathSync(root) !== root) throw new Error('Producer artifact root changed or contains a symlink');
+  file = path.resolve(file);
+  const relative = path.relative(root, file);
+  if (relative.startsWith('..' + path.sep) || relative === '..' || path.isAbsolute(relative) || (!relative && !allowMissing)) {
+    throw new Error('Producer export escapes declared artifact');
+  }
+  let entry = root;
+  for (const part of relative.split(path.sep).filter(Boolean)) {
+    entry = path.join(entry, part);
+    let stat;
+    try { stat = lstatSync(entry); }
+    catch (error) { if (allowMissing && (error as NodeJS.ErrnoException).code === 'ENOENT') return file; throw error; }
+    if (stat.isSymbolicLink()) throw new Error('Producer export must not contain a symlink');
+  }
+  if (!allowMissing && !statSync(file).isFile()) throw new Error('Producer export must be a file');
+  const real = realpathSync(file), physicalRelative = path.relative(root, real);
+  if (physicalRelative.startsWith('..' + path.sep) || physicalRelative === '..' || path.isAbsolute(physicalRelative)) throw new Error('Producer export escapes declared artifact');
+  return real;
+}
+
 /** Only a normal distribution SDK directory is admitted; the material verifier binds its bytes. */
 export function resolveRuntimeClientInput(args: readonly string[]): string {
   const root = requiredPackageDirectory(args, '--client-package');
@@ -43,21 +72,7 @@ export function resolveProducerInput(args: readonly string[]) {
     }
   };
   const resolve = (subpath: string, condition: 'require' | 'import' = 'require'): string => {
-    const declaration = manifest.exports?.['./' + subpath];
-    const target = typeof declaration === 'string' ? declaration : declaration?.[condition] ?? declaration?.default;
-    if (typeof target !== 'string' || !target.startsWith('./')) throw new Error('Producer public export is missing: ' + subpath);
-    const file = path.resolve(root, target);
-    const relative = path.relative(root, file);
-    if (!relative || relative.startsWith('..' + path.sep) || relative === '..' || path.isAbsolute(relative)) {
-      throw new Error('Producer export escapes declared artifact: ' + subpath);
-    }
-    let entry = root;
-    for (const part of relative.split(path.sep)) {
-      entry = path.join(entry, part);
-      if (lstatSync(entry).isSymbolicLink()) throw new Error('Producer export must not contain a symlink: ' + subpath);
-    }
-    if (!statSync(file).isFile()) throw new Error('Producer export must be a file: ' + subpath);
-    const real = realpathSync(file);
+    const real = resolveArtifactExport(root, manifest.exports, subpath, condition);
     const expected = hashes.get(real);
     if (expected && expected !== digest(real)) throw new Error('Explicit producer artifact hash changed: ' + real);
     hashes.set(real, digest(real));

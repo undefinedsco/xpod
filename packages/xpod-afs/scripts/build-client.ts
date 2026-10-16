@@ -8,6 +8,7 @@ import { resolveProducerMaterials } from './producer-materials';
 import { resolveProducerInput, resolveRuntimeClientInput } from './producer-input';
 import { withStagedProducerInput } from './staged-producer-input';
 import { collectAfsJavascriptMaterials } from './javascript-materials';
+import { createDeclarationInput, emitDeclarations } from './declaration-input';
 
 // The build script uses only this Bun build API; avoid exposing Bun globals to
 // the Node-compatible runtime and declaration graph.
@@ -25,12 +26,14 @@ declare const Bun: {
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 /** Compile and collect against the caller's live, verified producer scope. */
 export async function buildAfsClient(producerInput: ReturnType<typeof resolveProducerInput>, clientRoot: string): Promise<void> {
+  await resolveProducerMaterials(producerInput.indexPath, clientRoot, producerInput.tools);
+  const typeInput = createDeclarationInput([producerInput.root, clientRoot], producerInput.assertCurrent);
   const pkg = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8'));
   rmSync(path.join(root, 'dist'), { recursive: true, force: true });
   mkdirSync(path.join(root, 'dist'), { recursive: true });
   const parsedConfig = ts.getParsedCommandLineOfConfigFile(path.join(root, 'tsconfig.json'), {}, { ...ts.sys, onUnRecoverableConfigFileDiagnostic: () => { throw new Error('AFS TypeScript configuration invalid'); } });
   if (!parsedConfig) { throw new Error('AFS TypeScript configuration unavailable'); }
-  const program = ts.createProgram(parsedConfig.fileNames, parsedConfig.options);
+  const program = typeInput.createProgram(parsedConfig);
   const checker = program.getTypeChecker();
   const publicValueExports: Record<string, string[]> = {};
   function valueExports(source: string): string[] {
@@ -110,8 +113,7 @@ export async function buildAfsClient(producerInput: ReturnType<typeof resolvePro
   writeFileSync(path.join(root, 'dist/commands.cjs'), "const commands = require('./command-host.mjs');\nmodule.exports = { " + commandNames.map(name => `${name}: commands.${name}`).join(', ') + ' };\n');
   writeFileSync(path.join(root, 'dist/entry.mjs'), "import { runAfs, handleCliError, registerModuleSdk } from './command-host.mjs';\nimport { bindModuleRoot } from './runtime.mjs';\nimport { fileURLToPath } from 'node:url';\nbindModuleRoot(fileURLToPath(new URL('../', import.meta.url)));\nregisterModuleSdk();\ntry { await runAfs(process.argv.slice(2)); } catch (error) { handleCliError(error, process.argv.includes('--json'), 'module_failed'); }\n");
 
-  const types = spawnSync('bun', ['x', 'tsc', '-p', 'tsconfig.build.json'], { cwd: root, stdio: 'inherit' });
-  if (types.status !== 0) { throw new Error('AFS declarations build failed'); }
+  emitDeclarations(path.join(root, 'tsconfig.build.json'), typeInput);
   // Emitted declarations follow the package's ESM contract. Resolve against
   // actual output, so Node16 and classic Node see the same canonical graph.
   function declarationFiles(directory: string): string[] {
@@ -151,6 +153,7 @@ export async function buildAfsClient(producerInput: ReturnType<typeof resolvePro
   }
 
 
+  typeInput.assertCurrent();
   const generator = path.join(path.dirname(createRequire(import.meta.url).resolve('componentsjs-generator/package.json')), 'bin/componentsjs-generator.js');
   const components = spawnSync('bun', [generator, '-s', 'src', '-c', 'dist/components', '-i', '../../config/components-ignore.json', '.'], { cwd: root, stdio: 'inherit' });
   if (components.status !== 0) { throw new Error('AFS contract metadata build failed'); }
@@ -162,9 +165,10 @@ export async function buildAfsClient(producerInput: ReturnType<typeof resolvePro
     producer, vendoredRoots: [clientRoot] });
 
   // Keep original output notices and their shared content-addressed references.
+  typeInput.assertCurrent();
   cpSync(path.join(producerInput.root, 'dist/licenses'), path.join(root, 'dist/licenses/cli-producer-original'), { recursive: true });
   writeFileSync(path.join(root, 'dist/licenses/cli-producer-original-binding.json'), JSON.stringify({ status: 'build-input-only', producer: producer.binding.producer, indexSHA256: producer.binding.indexSHA256, outputPayloads: producer.binding.outputPayloads }, null, 2) + '\n');
-  producerInput.assertCurrent();
+  typeInput.assertCurrent();
 
 }
 
