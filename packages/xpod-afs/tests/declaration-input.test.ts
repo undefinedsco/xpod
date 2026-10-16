@@ -2,7 +2,11 @@ import { test, expect } from 'bun:test';
 import fs, { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import ts from 'typescript';
-import { createDeclarationInput, emitDeclarations } from '../scripts/declaration-input';
+import { createDeclarationInput, createDeclarationBuild } from '../scripts/declaration-input';
+
+function emitDeclarations(config: string, input: ReturnType<typeof createDeclarationInput>): void {
+  createDeclarationBuild(config, input).emitDeclarations();
+}
 
 function fixture(run: (context: { root: string; client: string; cli: string; config: string; write: (name: string, body: string | object) => void }) => void): void {
   const parent = path.resolve(import.meta.dir, '../../../.test-data/afs-declaration-input'); mkdirSync(parent, { recursive: true });
@@ -19,6 +23,74 @@ function fixture(run: (context: { root: string; client: string; cli: string; con
     run({ root, client: path.join(root, 'normal-client'), cli: path.join(root, 'normal-cli'), config: path.join(root, 'workspace/tsconfig.json'), write });
   } finally { rmSync(root, { recursive: true, force: true }); }
 }
+test('one canonical build Program supplies the same value exports and declaration bytes', () => fixture(({ root, client, cli, config, write }) => {
+  const options = JSON.parse(readFileSync(config, 'utf8'));
+  write('workspace/tsconfig.json', { ...options, include: ['src/**/*.ts', 'tests/**/*.ts', 'scripts/**/*.ts'] });
+  write('workspace/tests/not-a-build-root.ts', 'const invalid: number = "test-only";');
+  write('workspace/scripts/not-a-build-root.ts', 'const invalidScript: number = "script-only";');
+  const buildConfig = path.join(root, 'workspace/tsconfig.build.json');
+  write('workspace/tsconfig.build.json', { extends: './tsconfig.json', include: ['src/**/*.ts'] });
+  const input = createDeclarationInput([cli, client], () => {});
+  const parsed = ts.getParsedCommandLineOfConfigFile(buildConfig, {}, { ...ts.sys, onUnRecoverableConfigFileDiagnostic: () => { throw new Error('config'); } })!;
+  const control = input.createProgram(parsed);
+  const values = (program: ts.Program): string[] => {
+    const checker = program.getTypeChecker(), source = program.getSourceFile(path.join(root, 'workspace/src/consumer.ts'))!;
+    return checker.getExportsOfModule(checker.getSymbolAtLocation(source)!).filter(symbol => {
+      const actual = symbol.flags & ts.SymbolFlags.Alias ? checker.getAliasedSymbol(symbol) : symbol;
+      return Boolean(actual.flags & ts.SymbolFlags.Value);
+    }).map(symbol => symbol.name).sort();
+  };
+  const discoveryConfig = ts.getParsedCommandLineOfConfigFile(config, {}, { ...ts.sys, onUnRecoverableConfigFileDiagnostic: () => { throw new Error('config'); } })!;
+  const originalDiscoveryValues = values(input.createProgram(discoveryConfig));
+  expect(ts.getPreEmitDiagnostics(control)).toEqual([]);
+  expect(control.emit().diagnostics).toEqual([]);
+  const output = path.join(root, 'workspace/dist/types/consumer.d.ts'), expected = readFileSync(output);
+  rmSync(path.join(root, 'workspace/dist'), { recursive: true });
+  let programs = 0;
+  const createProgram = input.createProgram;
+  input.createProgram = parsed => { programs++; return createProgram(parsed); };
+  const build = createDeclarationBuild(buildConfig, input);
+  expect(programs).toBe(1);
+  expect(build.program.getRootFileNames()).toEqual([path.join(root, 'workspace/src/consumer.ts')]);
+  expect(build.program.getCompilerOptions().strict).toBe(true);
+  expect(values(build.program)).toEqual(originalDiscoveryValues);
+  expect(values(build.program)).toEqual(values(control));
+  build.emitDeclarations();
+  expect(programs).toBe(1);
+  expect(readFileSync(output).equals(expected)).toBe(true);
+  expect(createDeclarationBuild(buildConfig, input).program === build.program).toBe(false);
+  expect(programs).toBe(2);
+}));
+test('shared Program emission rechecks the live producer after export discovery', () => fixture(({ root, client, cli, config }) => {
+  let expired = false;
+  const input = createDeclarationInput([cli, client], () => { if (expired) throw new Error('producer expired'); });
+  const build = createDeclarationBuild(config, input);
+  build.program.getTypeChecker(); expired = true;
+  expect(() => build.emitDeclarations()).toThrow('producer expired');
+  expect(existsSync(path.join(root, 'workspace/dist'))).toBe(false);
+}));
+test('canonical build retains configuration and declaration diagnostics', () => {
+  for (const kind of ['configuration', 'declaration']) fixture(({ root, client, cli, config, write }) => {
+    if (kind === 'configuration') {
+      const options = JSON.parse(readFileSync(config, 'utf8')); options.compilerOptions.strict = 'invalid'; write('workspace/tsconfig.json', options);
+    } else write('workspace/src/consumer.ts', 'export const value = class { private hidden = 1; };');
+    expect(() => createDeclarationBuild(config, createDeclarationInput([cli, client], () => {})).emitDeclarations())
+      .toThrow(kind === 'configuration' ? 'boolean' : 'private or protected');
+    expect(existsSync(path.join(root, 'workspace/dist'))).toBe(false);
+  });
+});
+test('shared Program cannot emit from stale SDK bytes or accept a mutation during emit', () => {
+  for (const duringEmit of [false, true]) fixture(({ client, cli, config, write }) => {
+    const build = createDeclarationBuild(config, createDeclarationInput([cli, client], () => {}));
+    build.program.getTypeChecker();
+    const mutate = () => write('normal-client/dist/client.d.ts', "export declare function client(): 'changed-after-discovery';");
+    if (duringEmit) {
+      const emit = build.program.emit;
+      build.program.emit = (...args) => { const result = emit(...args); mutate(); return result; };
+    } else mutate();
+    expect(() => build.emitDeclarations()).toThrow('changed');
+  });
+});
 test('real TypeScript emits from explicit normal SDK declarations without workspace dist or leaking temporary paths', () => fixture(({ root, client, cli, config }) => {
   const workspace = path.join(root, 'workspace'); expect(existsSync(path.join(workspace, 'packages/xpod-client/dist'))).toBe(false);
   let assertions = 0; const input = createDeclarationInput([cli, client], () => { assertions++; });

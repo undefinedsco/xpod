@@ -8,7 +8,7 @@ import { resolveProducerMaterials } from './producer-materials';
 import { resolveProducerInput, resolveRuntimeClientInput } from './producer-input';
 import { withStagedProducerInput } from './staged-producer-input';
 import { collectAfsJavascriptMaterials } from './javascript-materials';
-import { createDeclarationInput, emitDeclarations } from './declaration-input';
+import { createDeclarationInput, createDeclarationBuild } from './declaration-input';
 
 // The build script uses only this Bun build API; avoid exposing Bun globals to
 // the Node-compatible runtime and declaration graph.
@@ -31,9 +31,8 @@ export async function buildAfsClient(producerInput: ReturnType<typeof resolvePro
   const pkg = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8'));
   rmSync(path.join(root, 'dist'), { recursive: true, force: true });
   mkdirSync(path.join(root, 'dist'), { recursive: true });
-  const parsedConfig = ts.getParsedCommandLineOfConfigFile(path.join(root, 'tsconfig.json'), {}, { ...ts.sys, onUnRecoverableConfigFileDiagnostic: () => { throw new Error('AFS TypeScript configuration invalid'); } });
-  if (!parsedConfig) { throw new Error('AFS TypeScript configuration unavailable'); }
-  const program = typeInput.createProgram(parsedConfig);
+  const declarationBuild = createDeclarationBuild(path.join(root, 'tsconfig.build.json'), typeInput);
+  const program = declarationBuild.program;
   const checker = program.getTypeChecker();
   const publicValueExports: Record<string, string[]> = {};
   function valueExports(source: string): string[] {
@@ -113,7 +112,7 @@ export async function buildAfsClient(producerInput: ReturnType<typeof resolvePro
   writeFileSync(path.join(root, 'dist/commands.cjs'), "const commands = require('./command-host.mjs');\nmodule.exports = { " + commandNames.map(name => `${name}: commands.${name}`).join(', ') + ' };\n');
   writeFileSync(path.join(root, 'dist/entry.mjs'), "import { runAfs, handleCliError, registerModuleSdk } from './command-host.mjs';\nimport { bindModuleRoot } from './runtime.mjs';\nimport { fileURLToPath } from 'node:url';\nbindModuleRoot(fileURLToPath(new URL('../', import.meta.url)));\nregisterModuleSdk();\ntry { await runAfs(process.argv.slice(2)); } catch (error) { handleCliError(error, process.argv.includes('--json'), 'module_failed'); }\n");
 
-  emitDeclarations(path.join(root, 'tsconfig.build.json'), typeInput);
+  declarationBuild.emitDeclarations();
   // Emitted declarations follow the package's ESM contract. Resolve against
   // actual output, so Node16 and classic Node see the same canonical graph.
   function declarationFiles(directory: string): string[] {

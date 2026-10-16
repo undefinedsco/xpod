@@ -113,14 +113,22 @@ export function createDeclarationInput(roots: readonly string[], assertProducerC
   return { assertCurrent, createProgram };
 }
 
-export function emitDeclarations(config: string, input: ReturnType<typeof createDeclarationInput>): void {
+/** One fresh build Program owns export discovery and declaration emission. */
+export function createDeclarationBuild(config: string, input: ReturnType<typeof createDeclarationInput>) {
   const parsed = ts.getParsedCommandLineOfConfigFile(config, {}, { ...ts.sys,
     onUnRecoverableConfigFileDiagnostic: diagnostic => { throw new Error(ts.flattenDiagnosticMessageText(diagnostic.messageText, '\n')); } });
   if (!parsed) throw new Error('AFS declaration configuration unavailable');
-  const program = input.createProgram(parsed), diagnostics = [...parsed.errors, ...ts.getPreEmitDiagnostics(program)];
-  if (!diagnostics.length) diagnostics.push(...program.emit().diagnostics);
-  if (diagnostics.length) throw new Error('AFS declarations build failed:\n' + ts.formatDiagnosticsWithColorAndContext(diagnostics, {
-    getCanonicalFileName: file => file, getCurrentDirectory: ts.sys.getCurrentDirectory, getNewLine: () => '\n',
-  }));
-  input.assertCurrent();
+  const program = input.createProgram(parsed);
+  return {
+    program,
+    emitDeclarations(): void {
+      input.assertCurrent();
+      const diagnostics = [...parsed.errors, ...ts.getPreEmitDiagnostics(program)];
+      if (!diagnostics.length) diagnostics.push(...program.emit().diagnostics);
+      if (diagnostics.length) throw new Error('AFS declarations build failed:\n' + ts.formatDiagnosticsWithColorAndContext(diagnostics, {
+        getCanonicalFileName: file => file, getCurrentDirectory: ts.sys.getCurrentDirectory, getNewLine: () => '\n',
+      }));
+      input.assertCurrent();
+    },
+  };
 }
