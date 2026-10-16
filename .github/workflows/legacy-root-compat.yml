@@ -155,6 +155,8 @@ jobs:
         with:
           ref: ${{ needs.plan.outputs.sha }}
           persist-credentials: false
+      - id: verifier_tooling
+        uses: ./.github/actions/setup-legacy-root-verifier
       - uses: actions/download-artifact@v4
         with:
           pattern: legacy-root-compat-${{ needs.plan.outputs.sha }}-${{ github.run_id }}-*-attempt*
@@ -162,15 +164,18 @@ jobs:
           merge-multiple: false
       - name: Require every matrix job and verify its original raw evidence
         env:
+          VERIFIER_NODE_PATH: ${{ steps.verifier_tooling.outputs.node-path }}
+          VERIFIER_NODE_OPTIONS: ${{ steps.verifier_tooling.outputs.node-options }}
           MATRIX_RESULT: ${{ needs.lanes.result }}
           SOURCE_SHA: ${{ needs.plan.outputs.sha }}
         run: |
           set -euo pipefail
           test "$MATRIX_RESULT" = success
-          node scripts/release-gate-evidence.cjs verify-root-compat \
+          NODE_PATH="$VERIFIER_NODE_PATH" NODE_OPTIONS="$VERIFIER_NODE_OPTIONS" node scripts/release-gate-evidence.cjs verify-root-compat \
             --source-sha "$SOURCE_SHA" --run-id "$GITHUB_RUN_ID" \
             --archive-dir .test-data/legacy-root-compat-proof \
             --out .test-data/legacy-root-compat-proof/compat.receipt.json
+          cp "$VERIFIER_NODE_PATH/../verification.receipt.json" .test-data/legacy-root-compat-proof/verifier-tooling.receipt.json
       - id: bundle
         run: echo "name=legacy-root-compat-verified-${{ needs.plan.outputs.sha }}-${{ github.run_id }}-attempt${{ github.run_attempt }}" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@v4

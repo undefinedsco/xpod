@@ -33,8 +33,14 @@ jobs:
         with:
           fetch-depth: 0
 
+      - id: verifier_tooling
+        uses: ./.github/actions/setup-legacy-root-verifier
+
       - name: Validate release tag and accepted candidate evidence
         id: acceptance
+        env:
+          VERIFIER_NODE_PATH: ${{ steps.verifier_tooling.outputs.node-path }}
+          VERIFIER_NODE_OPTIONS: ${{ steps.verifier_tooling.outputs.node-options }}
         run: |
           set -euo pipefail
           TAG_REGEX='^v[0-9]+\.[0-9]+\.[0-9]+$'
@@ -121,7 +127,7 @@ jobs:
 
           # Original compat proof is a sibling in this same accepted artifact.
           # A manifest-only passed value cannot authorize old service delivery.
-          node scripts/release-gate-evidence.cjs verify-root-compat \
+          NODE_PATH="$VERIFIER_NODE_PATH" NODE_OPTIONS="$VERIFIER_NODE_OPTIONS" node scripts/release-gate-evidence.cjs verify-root-compat \
             --source-sha "$TAG_SHA" --run-id "$CANDIDATE_RUN_ID" \
             --archive-dir "$ACCEPTANCE_DIR/compat" \
             --evidence "$ACCEPTANCE_DIR/compat/compat.receipt.json" \

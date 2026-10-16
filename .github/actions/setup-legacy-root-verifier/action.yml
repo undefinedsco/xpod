@@ -1,0 +1,24 @@
+name: Set up locked legacy root verifier tooling
+description: Install only the verifier's declared dependencies outside the checkout.
+outputs:
+  node-path:
+    value: ${{ steps.tooling.outputs.node-path }}
+    description: Exact isolated dependency directory.
+  node-options:
+    value: ${{ steps.tooling.outputs.node-options }}
+    description: Provenance and dependency-origin guard for the verifier only.
+  directory:
+    value: ${{ steps.tooling.outputs.directory }}
+    description: Isolated tooling and receipt directory.
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@v4
+      with:
+        node-version: '22'
+    - uses: oven-sh/setup-bun@v2
+      with:
+        bun-version: '1.4.2'
+    - id: tooling
+      shell: bash
+      run: env -u NODE_PATH -u NODE_OPTIONS node "$GITHUB_ACTION_PATH/../../tooling/legacy-root-verifier/prepare.cjs" "$RUNNER_TEMP"
