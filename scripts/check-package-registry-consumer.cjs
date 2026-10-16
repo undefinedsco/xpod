@@ -234,7 +234,7 @@ function run(args, env, executable = process.execPath, cwd) {
       process.removeListener('SIGTERM', onInterrupt);
     };
     child.once('error', (error) => { cleanup(); reject(error); });
-    child.once('exit', (code, signal) => {
+    child.once('close', (code, signal) => {
       cleanup();
       if (code === 0 && !interrupted) resolve();
       else reject(new Error(interrupted || `Registry consumer child failed (${signal || code})`));

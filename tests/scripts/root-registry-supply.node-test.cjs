@@ -40,7 +40,7 @@ async function fixture(operation) {
       write(path.join(root, 'packages', name, 'package.json'), { name: '@fixture/' + name, version: '1.0.0', files: ['index.js'], main: 'index.js', ...(name === 'first' ? { dependencies: { '@fixture/leaf': 'workspace:*' } } : {}) });
       write(path.join(root, 'packages', name, 'index.js'), 'module.exports = ' + JSON.stringify(name) + ';\n');
     }
-    for (const name of ['scripts/workspace-package-pack.cjs', 'scripts/lib/root-registry-supply.cjs']) write(path.join(root, name), fs.readFileSync(path.resolve(name), 'utf8'));
+    for (const name of helper.ROOT_SUPPLY_TOOLS) write(path.join(root, name), fs.readFileSync(path.resolve(name), 'utf8'));
     git(['init', '-q']); git(['add', '.']); git(['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'fixture']);
     const sha = git(['rev-parse', 'HEAD']).trim(), evidence = path.join(root, '.test-data/evidence'); fs.mkdirSync(evidence, { recursive: true });
     process.env.npm_config_cache = path.join(root, '.test-data/npm-cache');
@@ -198,4 +198,77 @@ test('root build admits only byte-bound parent UI observations and records actua
   write(inputFile, original); fs.unlinkSync(path.join(root, keptUI)); assert.throws(() => helper.verifyBuild(inputFile, root, rootArtifact)); write(path.join(root, keptUI), 'current kept UI bytes');
   write(path.join(root, currentUI), 'tampered emitted UI bytes'); assert.throws(() => helper.verifyBuild(inputFile, root, rootArtifact), /reference mismatch/); write(path.join(root, currentUI), 'current emitted UI bytes');
   assert.equal(helper.verifyBuild(inputFile, root, rootArtifact).snapshot.inputSHA256, verified.snapshot.inputSHA256);
+}));
+test('tiny external normal recipe keeps its pin/commands/archive and removes isolated source before readback', () => fixture(async ({ root, input, inputFile, rootArtifact, evidence }) => {
+  const source = path.join(evidence, 'tiny-upstream'); fs.mkdirSync(source);
+  const runGit = (cwd, args) => execFileSync('git', ['-c', 'core.hooksPath=/dev/null', ...args], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  write(path.join(source, '.gitignore'), 'node_modules/\ndist/\n');
+  write(path.join(source, 'package.json'), { name: '@fixture/external', version: '1.0.0', main: './dist/index.js', files: ['dist'], scripts: { build: 'node build.cjs', prepare: 'bun run build', test: 'node check.cjs', typecheck: 'node check.cjs' } });
+  write(path.join(source, 'build.cjs'), "const fs=require('node:fs');fs.mkdirSync('dist',{recursive:true});fs.writeFileSync('dist/index.js','module.exports=42;');");
+  write(path.join(source, 'check.cjs'), "if(!require('node:fs').existsSync('package.json'))throw Error('wrong cwd');");
+  runGit(source, ['init', '-q']); runGit(source, ['add', '.']); runGit(source, ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'tiny upstream']);
+  const pin = runGit(source, ['rev-parse', 'HEAD']).trim(), manifestPath = path.join(root, 'package.json'), manifest = JSON.parse(fs.readFileSync(manifestPath));
+  manifest.dependencies['@fixture/external'] = 'github:fixture/external#' + pin; write(manifestPath, manifest);
+  runGit(root, ['add', '--', 'package.json']); runGit(root, ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'pin tiny upstream']);
+  input.sourceSha = runGit(root, ['rev-parse', 'HEAD']).trim(); write(inputFile, input); rootArtifact.manifest.dependencies['@fixture/external'] = '1.0.0';
+  const commands = [];
+  const execute = async (args, env, command, cwd) => {
+    commands.push({ command, args: [...args], cwd });
+    if (command === 'git' && args[0] === 'fetch') return execFileSync(command, args.map(value => value === 'https://github.com/fixture/external' ? source : value), { cwd, env, stdio: 'pipe' });
+    // No dependency exists in this fixture; avoid a real dependency installation.
+    if (command === 'bun' && args[0] === 'install') return;
+    return execFileSync(command, args, { cwd, env, stdio: 'pipe' });
+  };
+  const produced = await helper.produceRootSupply({ root, inputFile, rootArtifact, destination: path.join(evidence, 'external-supply'), cache: path.join(root, '.test-data/cache') }, execute);
+  const receipt = JSON.parse(fs.readFileSync(produced.receipt.path)), external = receipt.externals[0];
+  assert.equal(external.source.commit, pin); assert.equal(external.sourceBefore.sourceSha, pin); assert.equal(external.sourceAfter.sourceSha, pin); assert.equal(external.sourceCleanup.removed, true); assert.equal(fs.existsSync(external.directory), false); assert.equal(external.directory.startsWith(root + path.sep), false);
+  for (const args of [['run', 'test'], ['run', 'typecheck']]) assert.ok(commands.some(row => row.command === 'bun' && JSON.stringify(row.args) === JSON.stringify(args) && row.cwd === external.directory));
+  assert.ok(commands.some(row => row.command === 'bun' && row.args[0] === 'pm' && row.args[1] === 'pack' && row.args[2] === '--filename' && row.cwd === external.directory));
+  const request = path.join(evidence, 'external-request.json'); write(request, { receipt: produced.receipt });
+  assert.equal(helper.readRootSupply(request, root, rootArtifact).artifacts.length, 3);
+  const value = produced.artifacts.find(row => row.manifest.name === '@fixture/external'); helper.verifyExternalOriginal(value, external, path.dirname(produced.receipt.path));
+  const originalReceiptBytes = fs.readFileSync(produced.receipt.path);
+  const snapshotMutations = [
+    row => row.sourceAfter.inputSHA256 = '0'.repeat(64),
+    row => row.sourceAfter.files.find(file => file.path === 'build.cjs').sha256 = '0'.repeat(64),
+    row => row.sourceBefore.files.find(file => file.path === 'check.cjs').sha256 = '0'.repeat(64),
+  ];
+  for (const mutate of snapshotMutations) {
+    const changed = structuredClone(receipt); mutate(changed.externals[0]); write(produced.receipt.path, changed); write(request, { receipt: helper.reference(produced.receipt.path) });
+    assert.throws(() => helper.readRootSupply(request, root, rootArtifact), /snapshot differs from original/);
+  }
+  fs.writeFileSync(produced.receipt.path, originalReceiptBytes); write(request, { receipt: helper.reference(produced.receipt.path) });
+  for (const phase of ['before', 'after']) {
+    const changed = structuredClone(external), file = path.join(path.dirname(produced.receipt.path), changed.sourceSnapshots[phase].file), original = fs.readFileSync(file);
+    try {
+      const snapshot = changed[phase === 'before' ? 'sourceBefore' : 'sourceAfter'];
+      snapshot.files.find(row => row.path === 'check.cjs').sha256 = '0'.repeat(64);
+      write(file, snapshot); changed.sourceSnapshots[phase] = { file: changed.sourceSnapshots[phase].file, ...helper.reference(file) };
+      assert.throws(() => helper.verifyExternalOriginal(value, changed, path.dirname(produced.receipt.path)), /input hash mismatch/);
+      const inputs = { sourceSha: snapshot.sourceSha, clean: snapshot.clean, statusSHA256: snapshot.statusSHA256, files: snapshot.files };
+      snapshot.inputSHA256 = hash(Buffer.from(JSON.stringify(inputs))); write(file, snapshot); changed.sourceSnapshots[phase] = { file: changed.sourceSnapshots[phase].file, ...helper.reference(file) };
+      assert.throws(() => helper.verifyExternalOriginal(value, changed, path.dirname(produced.receipt.path)), /immutable source changed/);
+    } finally { fs.writeFileSync(file, original); }
+  }
+
+  for (const mutate of [row => row.sourceCleanup.removed = false, row => row.manifest.sha256 = '0'.repeat(64), row => row.sourcePayloads[0].sha256 = '0'.repeat(64)]) {
+    const changed = structuredClone(external); mutate(changed); assert.throws(() => helper.verifyExternalOriginal(value, changed, path.dirname(produced.receipt.path)));
+  }
+  // Move all original supply members: native snapshot paths are now stale.
+  const lane = path.join(evidence, 'portable-lane'); fs.mkdirSync(lane);
+  const base = path.join(lane, 'registry-supply'); fs.renameSync(path.dirname(produced.receipt.path), base);
+  assert.equal(fs.existsSync(produced.receipt.path), false);
+  const metadata = row => ({ name: row.manifest.name, versions: { [row.manifest.version]: { ...row.manifest, dist: { integrity: row.integrity, shasum: crypto.createHash('sha1').update(row.bytes).digest('hex') } } } });
+  const publications = produced.artifacts.map((row, index) => { const file = 'publication-' + index + '.original.json'; write(path.join(base, file), metadata(row)); return { name: row.manifest.name, version: row.manifest.version, file, ...helper.reference(path.join(base, file)) }; });
+  const publication = { source: helper.reference(path.join(base, 'supply.original.json')), required: receipt.required, root: metadata(rootArtifact), publications };
+  const publicationFile = path.join(base, 'publication.original.json'); write(publicationFile, publication);
+  const rootFile = path.join(lane, 'root.tgz'); fs.writeFileSync(rootFile, rootArtifact.bytes);
+  const rootRef = { ...helper.reference(rootFile), path: 'root.tgz', name: rootArtifact.manifest.name, version: rootArtifact.manifest.version, integrity: rootArtifact.integrity };
+  const publicationRef = () => ({ ...helper.reference(publicationFile), path: 'registry-supply/publication.original.json' });
+  assert.equal(helper.verifyRetainedSupply(lane, publicationRef(), input.sourceSha, rootRef).originalArchives, 3);
+  for (const mutate of snapshotMutations) {
+    const changed = structuredClone(receipt); mutate(changed.externals[0]); write(path.join(base, 'supply.original.json'), changed);
+    publication.source = helper.reference(path.join(base, 'supply.original.json')); write(publicationFile, publication);
+    assert.throws(() => helper.verifyRetainedSupply(lane, publicationRef(), input.sourceSha, rootRef), /snapshot differs from original/);
+  }
 }));

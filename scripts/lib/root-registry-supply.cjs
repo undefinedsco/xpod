@@ -10,6 +10,7 @@ const { inspectTarballBuffer, sha512Integrity } = require('../workspace-package-
 const { packWorkspacePackages, normalizeWorkspaceDependencies } = require('../workspace-package-pack.cjs');
 const { snapshotWorkspace } = require('../collect-workspace-normal-run.cjs');
 const LIMIT = 8 * 1024 * 1024, TOTAL = 32 * 1024 * 1024;
+const ROOT_SUPPLY_TOOLS = ['scripts/workspace-package-pack.cjs', 'scripts/lib/root-registry-supply.cjs', 'scripts/lib/external-producer-workspace.cjs', 'scripts/lib/owned-temp-root.cjs'];
 const hash = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
 function readRegular(file, maximum = LIMIT) {
   const absolute = path.resolve(file);
@@ -150,6 +151,57 @@ function verifyBuild(inputFile, root, rootArtifact) {
   if (snapshot.sourceSha !== actual) throw new Error('Supply checkout changed');
   return { input, snapshot };
 }
+function externalOutputRoots(manifest) {
+  const roots = new Set();
+  const targets = [manifest.main, manifest.types, ...Object.values(manifest.exports ?? {}).flatMap(value => typeof value === 'string' ? [value] : Object.values(value))];
+  for (const target of targets) if (typeof target === 'string') { const first = target.replace(/^\.\//, '').split('/')[0]; if (first && first !== '.' && first !== '..' && target.includes('/')) roots.add(first); }
+  return roots;
+}
+function verifyExternalSnapshots(external, evidence, prefix, manifest) {
+  if (!/^[a-f0-9]{40}$/.test(external.source?.commit ?? '')) throw new Error('External snapshot pin missing');
+  for (const phase of ['before', 'after']) {
+    const row = external.sourceSnapshots?.[phase], file = prefix + '.source-' + phase + '.original.json';
+    if (row?.file !== file) throw new Error('External original snapshot reference missing');
+    const original = JSON.parse(bound({ ...row, path: path.join(evidence, file) }));
+    const snapshot = external[phase === 'before' ? 'sourceBefore' : 'sourceAfter'];
+    assert.deepEqual(snapshot, original, 'External snapshot differs from original');
+    if (snapshot.sourceSha !== external.source.commit || typeof snapshot.clean !== 'boolean' || !/^[a-f0-9]{64}$/.test(snapshot.statusSHA256) || !Array.isArray(snapshot.files) || !snapshot.files.length) throw new Error('External snapshot context invalid');
+    const names = new Set();
+    for (const entry of snapshot.files) {
+      if (typeof entry.path !== 'string' || /[\\:\x00-\x1f\x7f]/.test(entry.path) || entry.path.startsWith('/') || entry.path.split('/').some(part => !part || part === '.' || part === '..') || names.has(entry.path)
+        || !['100644', '100755', '120000'].includes(entry.mode) || !/^[a-f0-9]{40}$/.test(entry.gitBlob) || !/^[a-f0-9]{64}$/.test(entry.sha256) || !Number.isSafeInteger(entry.bytes) || entry.bytes < 0 || typeof entry.matchesGit !== 'boolean') throw new Error('External snapshot file invalid');
+      names.add(entry.path);
+    }
+    if (snapshot.clean !== (snapshot.statusSHA256 === hash(Buffer.alloc(0)))) throw new Error('External snapshot status flag mismatch');
+    const inputs = { sourceSha: snapshot.sourceSha, clean: snapshot.clean, statusSHA256: snapshot.statusSHA256, files: snapshot.files };
+    if (hash(Buffer.from(JSON.stringify(inputs))) !== snapshot.inputSHA256) throw new Error('External snapshot input hash mismatch');
+  }
+  const before = external.sourceBefore, after = external.sourceAfter, outputs = externalOutputRoots(manifest);
+  if (!before.clean || before.statusSHA256 !== hash(Buffer.alloc(0)) || before.files.some(row => !row.matchesGit) || before.files.length !== after.files.length) throw new Error('External original source was not clean or complete');
+  for (const [index, row] of before.files.entries()) {
+    const current = after.files[index];
+    if (current.path !== row.path || current.mode !== row.mode || current.gitBlob !== row.gitBlob) throw new Error('External tracked identity changed');
+    if (!outputs.has(row.path.split('/')[0])) assert.deepEqual(current, row, 'External immutable source changed');
+  }
+}
+function verifyExternalOriginal(value, external, evidence) {
+  for (const entry of value.entries) if (!['file', 'directory'].includes(entry.type) || !(entry.path.startsWith('package/') || entry.type === 'directory' && entry.path === 'package')) throw new Error('External normal archive layout changed');
+  if (external.sourceCleanup?.removed !== true || external.sourceCleanup.directory !== external.directory) throw new Error('External source cleanup evidence missing');
+  const file = external.manifest.file;
+  if (typeof file !== 'string' || !/^external-\d+\.package\.original\.json$/.test(file)) throw new Error('External original manifest path invalid');
+  const manifest = JSON.parse(bound({ ...external.manifest, path: path.join(evidence, file) }));
+  verifyExternalSnapshots(external, evidence, file.replace('.package.original.json', ''), manifest);
+  assert.deepEqual(value.manifest, manifest, 'External normal manifest changed');
+  if (!external.sourceBefore.clean || external.sourceBefore.files.some(row => !row.matchesGit)) throw new Error('External original source was not clean');
+  const tracked = external.sourceBefore.files.find(row => row.path === 'package.json');
+  if (!tracked?.matchesGit || tracked.sha256 !== external.manifest.sha256 || tracked.bytes !== external.manifest.bytes) throw new Error('External original manifest source mismatch');
+  const payloads = value.entries.filter(row => row.type === 'file' && row.path !== 'package/package.json');
+  if (!Array.isArray(external.sourcePayloads) || external.sourcePayloads.length !== payloads.length) throw new Error('External observed payloads missing');
+  for (const [index, entry] of payloads.entries()) {
+    const observed = external.sourcePayloads[index];
+    if (observed.path !== entry.path.slice('package/'.length) || observed.bytes !== entry.content.length || observed.sha256 !== hash(entry.content)) throw new Error('External observed normal payload mismatch');
+  }
+}
 function producerRecipes(rootManifest, authority, normalManifests = []) {
   const normal = new Map(normalManifests.map(row => [row.name, row]));
   const selected = new Map(), queue = [rootManifest];
@@ -204,27 +256,37 @@ async function produceRootSupply({ inputFile, root, rootArtifact, destination, c
   for (const [name, source] of authority.git) {
     if (!edges(rootArtifact.manifest).some(([dependency]) => dependency === name)) continue;
     fs.mkdirSync(cache, { recursive: true });
-    const directory = fs.mkdtempSync(path.join(cache, 'root-supply-source-'));
-    await run('git', ['init', '-q'], directory);
-    await run('git', ['config', '--local', 'core.autocrlf', 'false'], directory);
-    await run('git', ['fetch', '--no-tags', '--depth', '1', 'https://github.com/' + source.repository, source.commit], directory);
-    await run('git', ['checkout', '--detach', 'FETCH_HEAD'], directory);
-    if (execFileSync('git', ['rev-parse', 'HEAD'], { cwd: directory, encoding: 'utf8' }).trim() !== source.commit) throw new Error('External source mismatch');
-    const before = snapshotWorkspace(directory), manifestBytes = readRegular(path.join(directory, 'package.json')), manifest = JSON.parse(manifestBytes);
-    if (!before.clean || manifest.name !== name || !manifest.scripts?.prepare || !manifest.scripts?.test || !manifest.scripts?.typecheck) throw new Error('Normal external producer contract missing');
-    write(path.join(destination, 'external-' + externals.length + '.source-before.original.json'), before);
-    fs.writeFileSync(path.join(destination, 'external-' + externals.length + '.package.original.json'), manifestBytes, { flag: 'wx', mode: 0o600 });
-    await run('bun', ['install', '--frozen-lockfile', '--ignore-scripts', '--cache-dir', path.join(cache, 'external-install-cache')], directory);
-    await run('bun', ['run', 'test'], directory); await run('bun', ['run', 'typecheck'], directory);
-    const archive = path.join(archives, 'external-' + externals.length + '.tgz');
-    await run('bun', ['pm', 'pack', '--filename', archive], directory);
-    if (!readRegular(path.join(directory, 'package.json')).equals(manifestBytes)) throw new Error('External manifest changed');
-    const after = snapshotWorkspace(directory), outputRoots = new Set();
-    const targets = [manifest.main, manifest.types, ...Object.values(manifest.exports ?? {}).flatMap(value => typeof value === 'string' ? [value] : Object.values(value))];
-    for (const target of targets) if (typeof target === 'string') { const first = target.replace(/^\.\//, '').split('/')[0]; if (first && first !== '.' && first !== '..' && target.includes('/')) outputRoots.add(first); }
-    if (after.sourceSha !== source.commit || after.files.length !== before.files.length || after.files.some((row, index) => row.path !== before.files[index].path || row.sha256 !== before.files[index].sha256 && !outputRoots.has(row.path.split('/')[0]))) throw new Error('External immutable source changed');
-    write(path.join(destination, 'external-' + externals.length + '.source-after.original.json'), after);
-    externals.push({ name, directory, source, sourceBefore: before, sourceAfter: after, manifest: { bytes: manifestBytes.length, sha256: hash(manifestBytes) } }); packed[name] = archive;
+    const produced = await require('./external-producer-workspace.cjs').withExternalProducerWorkspace(root, async directory => {
+      await run('git', ['init', '-q'], directory);
+      await run('git', ['config', '--local', 'core.autocrlf', 'false'], directory);
+      await run('git', ['fetch', '--no-tags', '--depth', '1', 'https://github.com/' + source.repository, source.commit], directory);
+      await run('git', ['checkout', '--detach', 'FETCH_HEAD'], directory);
+      if (execFileSync('git', ['rev-parse', 'HEAD'], { cwd: directory, encoding: 'utf8' }).trim() !== source.commit) throw new Error('External source mismatch');
+      const before = snapshotWorkspace(directory), manifestBytes = readRegular(path.join(directory, 'package.json')), manifest = JSON.parse(manifestBytes);
+      if (!before.clean || manifest.name !== name || !manifest.scripts?.prepare || !manifest.scripts?.test || !manifest.scripts?.typecheck) throw new Error('Normal external producer contract missing');
+      const beforeFile = 'external-' + externals.length + '.source-before.original.json';
+      const beforeOriginal = { file: beforeFile, ...write(path.join(destination, beforeFile), before) };
+      fs.writeFileSync(path.join(destination, 'external-' + externals.length + '.package.original.json'), manifestBytes, { flag: 'wx', mode: 0o600 });
+      await run('bun', ['install', '--frozen-lockfile', '--ignore-scripts', '--cache-dir', path.join(cache, 'external-install-cache')], directory);
+      await run('bun', ['run', 'test'], directory); await run('bun', ['run', 'typecheck'], directory);
+      const archive = path.join(archives, 'external-' + externals.length + '.tgz');
+      await run('bun', ['pm', 'pack', '--filename', archive], directory);
+      if (!readRegular(path.join(directory, 'package.json')).equals(manifestBytes)) throw new Error('External manifest changed');
+      const after = snapshotWorkspace(directory), outputRoots = externalOutputRoots(manifest);
+      if (after.sourceSha !== source.commit || after.files.length !== before.files.length || after.files.some((row, index) => row.path !== before.files[index].path || row.sha256 !== before.files[index].sha256 && !outputRoots.has(row.path.split('/')[0]))) throw new Error('External immutable source changed');
+      const afterFile = 'external-' + externals.length + '.source-after.original.json';
+      const afterOriginal = { file: afterFile, ...write(path.join(destination, afterFile), after) };
+      const packedBytes = readRegular(archive), packedValue = artifact({ ...reference(archive), integrity: sha512Integrity(packedBytes), name, version: manifest.version });
+      verifyArtifactSource(packedValue, directory, manifest);
+      const sourcePayloads = packedValue.entries.filter(row => row.type === 'file' && row.path !== 'package/package.json').map(row => {
+        const original = readRegular(path.join(directory, row.path.slice('package/'.length)));
+        return { path: row.path.slice('package/'.length), bytes: original.length, sha256: hash(original) };
+      });
+      return { name, directory, source, sourceBefore: before, sourceAfter: after, sourceSnapshots: { before: beforeOriginal, after: afterOriginal }, sourcePayloads, manifest: { file: 'external-' + externals.length + '.package.original.json', bytes: manifestBytes.length, sha256: hash(manifestBytes) }, archive };
+    });
+    const { archive, ...originals } = produced.value;
+    const external = { ...originals, sourceCleanup: produced.cleanup };
+    externals.push(external); packed[name] = archive;
   }
   const after = verifyBuild(inputFile, root, rootArtifact).snapshot;
   if (after.inputSHA256 !== snapshot.inputSHA256) throw new Error('Source changed during normal pack');
@@ -236,12 +298,12 @@ async function produceRootSupply({ inputFile, root, rootArtifact, destination, c
     const supplied = normalArtifacts.find(item => item.manifest.name === row.name);
     if (supplied) { if (!value.bytes.equals(supplied.bytes)) throw new Error('Original distribution changed'); return value.manifest; }
     const external = externals.find(item => item.name === row.name);
-    const directory = local ? path.join(root, 'packages', local.directory) : external.directory;
-    const expected = local ? local.manifest : JSON.parse(readRegular(path.join(directory, 'package.json')));
-    verifyArtifactSource(value, directory, expected); return value.manifest;
+    if (external) verifyExternalOriginal(value, external, destination);
+    else verifyArtifactSource(value, path.join(root, 'packages', local.directory), local.manifest);
+    return value.manifest;
   }), required = requiredArtifacts(rootArtifact.manifest, manifests, authority);
   const receipt = { kind: 'legacy-root-normal-supply', sourceSha: input.sourceSha, runId: input.runId, runAttempt: input.runAttempt, buildInput: reference(inputFile), sourceBefore: snapshot, sourceAfter: after, rootManifest: rootArtifact.manifest, privateSources: privateSources(authority),
-    normalSupply, recipes, producerTools: ['scripts/workspace-package-pack.cjs', 'scripts/lib/root-registry-supply.cjs'].map(file => ({ file, ...reference(path.join(root, file)) })), commands, externals, artifacts, required, published: false, releaseQualified: false };
+    normalSupply, recipes, producerTools: ROOT_SUPPLY_TOOLS.map(file => ({ file, ...reference(path.join(root, file)) })), commands, externals, artifacts, required, published: false, releaseQualified: false };
   const receiptRef = write(path.join(destination, 'supply.original.json'), receipt);
   return { receipt: receiptRef, artifacts: manifests.map((_, i) => artifact(artifacts[i])), required };
 }
@@ -250,7 +312,7 @@ function readRootSupply(requestFile, root, rootArtifact) {
   const verified = verifyBuild(receipt.buildInput.path, root, rootArtifact);
   bound(receipt.buildInput);
   if (receipt.kind !== 'legacy-root-normal-supply' || receipt.sourceSha !== verified.input.sourceSha || receipt.sourceBefore?.inputSHA256 !== receipt.sourceAfter?.inputSHA256 || receipt.sourceAfter?.inputSHA256 !== verified.snapshot.inputSHA256) throw new Error('Normal supply source mismatch');
-  if (JSON.stringify(receipt.producerTools?.map(tool => tool.file)) !== JSON.stringify(['scripts/workspace-package-pack.cjs', 'scripts/lib/root-registry-supply.cjs'])) throw new Error('Missing normal producer tools');
+  if (JSON.stringify(receipt.producerTools?.map(tool => tool.file)) !== JSON.stringify(ROOT_SUPPLY_TOOLS)) throw new Error('Missing normal producer tools');
   for (const tool of receipt.producerTools) if (!bound(tool).equals(readRegular(path.join(root, tool.file)))) throw new Error('Supply producer tool changed');
   if (!Array.isArray(receipt.artifacts) || receipt.artifacts.length > 64 || receipt.artifacts.reduce((n, row) => n + row.bytes, 0) > TOTAL) throw new Error('Root supply budget exceeded');
   const artifacts = receipt.artifacts.map(artifact), authority = sourceAuthority(root);
@@ -269,8 +331,7 @@ function readRootSupply(requestFile, root, rootArtifact) {
       verifyArtifactSource(row, path.join(root, 'packages', local.directory), local.manifest);
     } else {
       const external = verifyExternalPin(row.manifest.name, authority, receipt.externals);
-      if (snapshotWorkspace(external.directory).inputSHA256 !== external.sourceAfter.inputSHA256) throw new Error('External producer source changed');
-      verifyArtifactSource(row, external.directory, JSON.parse(readRegular(path.join(external.directory, 'package.json'))));
+      verifyExternalOriginal(row, external, path.dirname(request.receipt.path));
     }
   }
   if (JSON.stringify(receipt.required) !== JSON.stringify(required)) throw new Error('Required closure changed');
@@ -307,7 +368,7 @@ function verifyRetainedSupply(directory, ref, sourceSha, rootArchive) {
   for (const value of artifacts) {
     const local = authority.workspaces.get(value.manifest.name);
     if (local) { if (local.version !== value.manifest.version) throw new Error('Retained workspace version mismatch'); }
-    else verifyExternalPin(value.manifest.name, authority, receipt.externals);
+    else { const external = verifyExternalPin(value.manifest.name, authority, receipt.externals); verifyExternalOriginal(value, external, base); }
   }
   const required = requiredArtifacts(receipt.rootManifest, artifacts.map(row => row.manifest), authority);
   if (required.length !== artifacts.length) throw new Error('Unexpected retained artifact outside private closure');
@@ -322,4 +383,4 @@ function verifyRetainedSupply(directory, ref, sourceSha, rootArchive) {
   verifyPublicationMetadata({ bytes: rootBytes, integrity: rootArchive.integrity, manifest: receipt.rootManifest }, publication.root);
   return { required, originalArchives: artifacts.length, sourceSha, publicDependencies: publication.publicDependencies };
 }
-module.exports = { readRegular, reference, bound, artifact, verifyArtifactSource, verifyPublicationMetadata, sourceAuthority, producerRecipes, requiredArtifacts, verifyExternalPin, verifyBuild, produceRootSupply, readRootSupply, verifyRetainedSupply };
+module.exports = { ROOT_SUPPLY_TOOLS, readRegular, reference, bound, artifact, verifyArtifactSource, verifyPublicationMetadata, sourceAuthority, producerRecipes, requiredArtifacts, verifyExternalPin, verifyExternalOriginal, verifyBuild, produceRootSupply, readRootSupply, verifyRetainedSupply };

@@ -1,9 +1,10 @@
 import { afterEach, expect, test } from 'bun:test';
 import { createHash } from 'node:crypto';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, renameSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { createRequire } from 'node:module';
 import { acquireIndependentProductInput, acquireLegacyRootSupply, verifyAcquiredMetadata, type ArtifactAcquisitionInput } from '../../scripts/acquire-independent-product-input';
 
 const roots: string[] = [];
@@ -263,4 +264,72 @@ test('failed actual ZIP inspection retains original bounded diagnostics without 
     expect(bytes.includes(Buffer.from('test-secret-canary'))).toBe(false);
   }
   expect(receiptBytes.includes(Buffer.from('test-secret-canary'))).toBe(false);
+});
+test('actual acquisition allocates beside checked output even when OS temp is elsewhere', async () => {
+  const f = fixture(), operatingSystem = createRequire(import.meta.url)('node:os'), previous = Object.getOwnPropertyDescriptor(operatingSystem, 'tmpdir')!, foreign = path.join(f.root, 'foreign-os-temp'); mkdirSync(foreign);
+  let observed = false;
+  const transport = (async (url: any, options: any) => {
+    if (String(url).endsWith('/artifacts/91/zip')) {
+      const temporary = readdirSync(f.root).filter(name => name.startsWith('xpod-artifact-acquisition-'));
+      expect(temporary.length).toBe(1); expect(readdirSync(foreign).length).toBe(0); expect(existsSync(f.output)).toBe(false); observed = true;
+    }
+    return f.transport(url, options);
+  }) as typeof fetch;
+  try {
+    Object.defineProperty(operatingSystem, 'tmpdir', { value: () => foreign, configurable: true });
+    await acquireIndependentProductInput(f.input, f.output, { fetch: transport });
+    expect(observed).toBe(true); expect(readFileSync(path.join(f.output, 'artifact.zip')).equals(f.bytes)).toBe(true);
+    expect(readdirSync(f.root).some(name => name.startsWith('xpod-artifact-acquisition-'))).toBe(false);
+  } finally { Object.defineProperty(operatingSystem, 'tmpdir', previous); }
+});
+
+test('parent identity swap during download preserves replacement output and primary plus cleanup errors', async () => {
+  const f = fixture(), moved = f.root + '.original'; let swapped = false;
+  const transport = (async (url: any, options: any) => {
+    if (String(url).endsWith('/artifacts/91/zip')) {
+      renameSync(f.root, moved); mkdirSync(f.root); mkdirSync(f.output); writeFileSync(path.join(f.output, 'sentinel'), 'another owner'); swapped = true;
+    }
+    return f.transport(url, options);
+  }) as typeof fetch;
+  try {
+    let failure: any;
+    try { await acquireIndependentProductInput(f.input, f.output, { fetch: transport }); } catch (error) { failure = error; }
+    expect(swapped).toBe(true); expect(failure instanceof AggregateError).toBe(true); expect(failure.errors.length).toBe(2);
+    expect(failure.cause).toBe(failure.errors[0]); expect(failure.errors[1].message.includes('parent identity changed')).toBe(true);
+    expect(readFileSync(path.join(f.output, 'sentinel'), 'utf8')).toBe('another owner');
+    expect(readdirSync(moved).some(name => name.startsWith('xpod-artifact-acquisition-'))).toBe(true);
+  } finally {
+    if (swapped) { rmSync(f.root, { recursive: true, force: true }); renameSync(moved, f.root); }
+  }
+});
+for (const replacement of ['directory', 'symlink', 'partial-owned']) test('actual publication failure retains '+replacement+' output without path-based deletion', () => {
+  const f = fixture(), resultFile = path.join(f.root, 'race-result.json');
+  const data = { input: f.input, run: f.run, workflow: f.workflow, artifact: f.artifact, bytes: f.bytes.toString('base64'), output: f.output, resultFile, replacement };
+  const code = `import {mock} from 'bun:test';import fs from 'node:fs';import path from 'node:path';
+const f=${JSON.stringify(data)},rename=fs.renameSync;const primary=new Error('actual injected publication failure');let observed=false;
+mock.module('node:fs',()=>({...fs,renameSync:(source,target)=>{
+ const trigger=f.replacement==='partial-owned'?String(source).endsWith('/run.json'):String(source).endsWith('artifact.zip');
+ if(trigger&&String(target).startsWith(f.output+path.sep)){
+  observed=true;
+  if(f.replacement!=='partial-owned'){
+   rename(f.output,f.output+'.original');
+   if(f.replacement==='directory'){fs.mkdirSync(f.output);fs.writeFileSync(path.join(f.output,'sentinel'),'another owner');}
+   else{const other=f.output+'.other';fs.mkdirSync(other);fs.writeFileSync(path.join(other,'sentinel'),'another owner');fs.symlinkSync(other,f.output,'dir');}
+  }
+  throw primary;
+ }
+ return rename(source,target);
+}}));
+const transport=async url=>{const a=String(url);if(a.endsWith('/attempts/2'))return Response.json(f.run);if(a.endsWith('/workflows/7'))return Response.json(f.workflow);if(a.endsWith('/artifacts/91'))return Response.json(f.artifact);if(a.endsWith('/artifacts/91/zip'))return new Response(Buffer.from(f.bytes,'base64'));throw Error('unexpected endpoint')};
+let failure;try{const {acquireIndependentProductInput}=await import(${JSON.stringify(path.resolve('scripts/acquire-independent-product-input.ts'))});await acquireIndependentProductInput(f.input,f.output,{fetch:transport});}catch(error){failure=error;}
+fs.writeFileSync(f.resultFile,JSON.stringify({observed,primarySame:failure===primary,aggregate:failure instanceof AggregateError,firstPrimary:failure?.errors?.[0]===primary,causePrimary:failure?.cause===primary,secondary:String(failure?.errors?.[1]),receiptExists:fs.existsSync(path.join(f.output,'receipt.json'))}));`;
+  const child = spawnSync('bun', ['-e', code], { encoding: 'utf8', timeout: 10000 }); expect(child.status).toBe(0);
+  const observed = JSON.parse(readFileSync(resultFile, 'utf8')); expect(observed.observed).toBe(true); expect(observed.receiptExists).toBe(false);
+  if (replacement === 'partial-owned') {
+    expect(observed.primarySame).toBe(true); expect(observed.aggregate).toBe(false); expect(readFileSync(path.join(f.output, 'artifact.zip')).equals(f.bytes)).toBe(true);
+  } else {
+    expect(observed.aggregate).toBe(true); expect(observed.firstPrimary).toBe(true); expect(observed.causePrimary).toBe(true); expect(observed.secondary.includes('ownership changed')).toBe(true);
+    expect(existsSync(f.output + '.original')).toBe(true); expect(readFileSync(path.join(f.output, 'sentinel'), 'utf8')).toBe('another owner');
+    expect(statSync(f.output + '.original').isDirectory()).toBe(true);
+  }
 });

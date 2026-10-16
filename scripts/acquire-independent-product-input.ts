@@ -1,10 +1,10 @@
 import { createHash } from 'node:crypto';
-import { chmodSync, closeSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync, writeSync } from 'node:fs';
+import { chmodSync, closeSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync, writeSync } from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { isDeepStrictEqual } from 'node:util';
 import { MODULE_TARGETS } from '../packages/xpod-cli/src/module-catalog';
-const { withOwnedTempRoot } = createRequire(import.meta.url)('./lib/owned-temp-root.cjs');
+const { withOwnedTempRoot, assertOwnedTempParent } = createRequire(import.meta.url)('./lib/owned-temp-root.cjs');
 
 // Trust is program policy, not a caller-supplied workflow allowlist. Neither the
 // API native-input workflow nor contract fixtures are product producers.
@@ -60,16 +60,21 @@ interface Dependencies {
 function fail(message: string): never { throw new Error('Artifact acquisition: ' + message); }
 function positive(value: unknown): boolean { return Number.isSafeInteger(value) && Number(value) > 0; }
 export function assertNewAcquisitionOutput(output: string): string {
+  return checkedAcquisitionOutput(output).output;
+}
+function checkedAcquisitionOutput(output: string) {
   output = path.resolve(output);
   let parent = path.parse(output).root;
+  let parentStat = lstatSync(parent);
   for (const part of path.dirname(output).slice(parent.length).split(path.sep).filter(Boolean)) {
     parent = path.join(parent, part);
     const stat = lstatSync(parent);
     if (stat.isSymbolicLink() || !stat.isDirectory()) fail('output parent must be an existing directory without links');
+    parentStat = stat;
   }
   try { lstatSync(output); fail('output already exists'); }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
-  return output;
+  return { output, temporaryParent: { parent: path.dirname(output), identity: { dev: parentStat.dev, ino: parentStat.ino } } };
 }
 function limit(value: number | undefined, maximum: number): number {
   if (value === undefined) return maximum;
@@ -117,7 +122,8 @@ async function acquireProductInput(input: ArtifactAcquisitionInput, output: stri
   if (input?.schemaVersion !== 1 || !/^[a-f0-9]{40}$/u.test(input.sourceSha) || !/^[a-f0-9]{40}$/u.test(input.runHeadSha)
     || !/^[a-f0-9]{64}$/u.test(input.artifactSha256) || ![input.runId, input.runAttempt, input.artifactId].every(positive)) fail('exact source/run/attempt/artifact binding required');
   if (Object.keys(input).some(key => !['schemaVersion', 'sourceSha', 'runHeadSha', 'runId', 'runAttempt', 'artifactId', 'artifactSha256'].includes(key))) fail('unknown acquisition selector');
-  output = assertNewAcquisitionOutput(output);
+  const checked = checkedAcquisitionOutput(output);
+  output = checked.output;
   const limits = { packedBytes: limit(dependencies.limits?.packedBytes, LIMITS.packedBytes),
     expandedBytes: limit(dependencies.limits?.expandedBytes, LIMITS.expandedBytes), members: limit(dependencies.limits?.members, LIMITS.members) };
   const transport = dependencies.fetch ?? fetch;
@@ -206,9 +212,14 @@ async function acquireProductInput(input: ArtifactAcquisitionInput, output: stri
         'producer-checkout-source-binding-unverified', 'product-member-projection-not-performed', 'source-native-legal-consumer-admission-unverified'],
       limitations: ['Run timestamps constrain artifact attempt association; a producer receipt must still bind the exact attempt and actual build checkout.',
         'ZIP custody and member integrity are transport facts. No members are extracted and no product or release admission is inferred.'] };
-    let outputOwned = false;
+    let outputIdentity: { dev: number; ino: number } | undefined;
     try {
-      mkdirSync(output, { mode: 0o700 }); outputOwned = true;
+      assertOwnedTempParent(checked.temporaryParent);
+      assertNewAcquisitionOutput(output);
+      mkdirSync(output, { mode: 0o700 });
+      const created = lstatSync(output);
+      if (!created.isDirectory() || created.isSymbolicLink() || created.dev !== checked.temporaryParent.identity.dev) fail('created output ownership changed');
+      outputIdentity = { dev: created.dev, ino: created.ino };
       renameSync(archive, path.join(output, 'artifact.zip'));
       mkdirSync(path.join(output, 'metadata'), { mode: 0o700 });
       for (const name of [...METADATA_NAMES, ...(legacy ? ['jobs'] : [])]) {
@@ -220,14 +231,19 @@ async function acquireProductInput(input: ArtifactAcquisitionInput, output: stri
       verifyAcquiredMetadata(output, metadataBinding);
       writeFileSync(path.join(output, 'receipt.json'), JSON.stringify(receipt, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
     } catch (error) {
-      if (outputOwned) {
-        try { rmSync(output, { recursive: true, force: true }); }
-        catch (cleanup) { throw Object.assign(new AggregateError([error, cleanup], 'Artifact output and cleanup failed'), { cause: error }); }
+      if (outputIdentity) {
+        try {
+          assertOwnedTempParent(checked.temporaryParent);
+          const current = lstatSync(output);
+          if (!current.isDirectory() || current.isSymbolicLink() || current.dev !== outputIdentity.dev || current.ino !== outputIdentity.ino) fail('output ownership changed; partial originals retained');
+        } catch (cleanup) { throw Object.assign(new AggregateError([error, cleanup], 'Artifact acquisition failed and output ownership changed; originals retained'), { cause: error }); }
+        // A check followed by recursive removal still races with replacement.
+        // Keep partial output on failure; never delete an uncertain directory.
       }
       throw error;
     }
     return receipt;
-  });
+  }, checked.temporaryParent);
 }
 if (import.meta.main) {
   try {
