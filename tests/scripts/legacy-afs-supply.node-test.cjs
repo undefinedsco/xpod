@@ -83,6 +83,11 @@ test('portable original verifier preserves native receipt coordinates and reject
   const index = { kind: 'legacy-root-original-afs-supply', nodeRuntime, nativeSourceRoot: '/posix/source', ...context, runHeadSha: 'b'.repeat(40), sourceBefore: 'producer/source-before.original.json', sourceAfter: 'producer/source-after.original.json', phases, producerTools: normal.tools.map(file => ({ file, ...helper.reference(path.join(root, file)) })), members: normal.inventory(originals), releaseQualified: false };
   const indexFile = path.join(originals, 'supply-index.original.json'); write(indexFile, index);
   assert.equal(normal.verify(originals, context, root).artifacts.length, 3);
+  const toolFile = path.join(root, normal.tools[0]), toolBytes = fs.readFileSync(toolFile);
+  fs.appendFileSync(toolFile, '\n// changed producer bytes\n');
+  assert.throws(() => normal.verify(originals, context, root), /strictly equal/);
+  fs.writeFileSync(toolFile, toolBytes);
+  assert.equal(normal.verify(originals, context, root).artifacts.length, 3);
   // Synthetic same-run custody joins the real shared ZIP parser to portable verification.
   const custody = path.join(root, 'custody'); fs.mkdirSync(custody);
   const archive = path.join(custody, 'artifact.zip');
