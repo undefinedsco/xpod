@@ -131,16 +131,17 @@ test('external public triple-slash type dependencies keep the standard resolver'
   emitDeclarations(config, createDeclarationInput([cli, client], () => {}));
 }));
 
-for (const dependencyKind of ['type-reference', 'module-import']) test(`public conditional ${dependencyKind} import/require and inferred NodeNext modes match original TypeScript`, () => {
-  const cases = [
-    { module: 'ESNext', moduleResolution: 'Bundler', directive: 'require', expected: 'require.d.cts' },
-    { module: 'ESNext', moduleResolution: 'Bundler', directive: 'import', expected: 'import.d.mts' },
-    { module: 'NodeNext', moduleResolution: 'NodeNext', directive: 'require', expected: 'require.d.cts' },
-    { module: 'NodeNext', moduleResolution: 'NodeNext', directive: 'import', expected: 'import.d.mts' },
-    { module: 'NodeNext', moduleResolution: 'NodeNext', directive: undefined, packageType: 'commonjs', expected: 'require.d.cts' },
-    { module: 'NodeNext', moduleResolution: 'NodeNext', directive: undefined, packageType: 'module', expected: 'import.d.mts' },
-  ];
-  for (const mode of cases) fixture(({ root, client, cli, config, write }) => {
+const resolutionCases = [
+  { module: 'ESNext', moduleResolution: 'Bundler', directive: 'require', expected: 'require.d.cts' },
+  { module: 'ESNext', moduleResolution: 'Bundler', directive: 'import', expected: 'import.d.mts' },
+  { module: 'NodeNext', moduleResolution: 'NodeNext', directive: 'require', expected: 'require.d.cts' },
+  { module: 'NodeNext', moduleResolution: 'NodeNext', directive: 'import', expected: 'import.d.mts' },
+  { module: 'NodeNext', moduleResolution: 'NodeNext', directive: undefined, packageType: 'commonjs', expected: 'require.d.cts' },
+  { module: 'NodeNext', moduleResolution: 'NodeNext', directive: undefined, packageType: 'module', expected: 'import.d.mts' },
+];
+// Each real compiler comparison gets the existing per-test budget; cases stay serial.
+for (const dependencyKind of ['type-reference', 'module-import']) for (const mode of resolutionCases)
+  test(`public conditional ${dependencyKind} ${mode.moduleResolution}/${mode.directive ?? mode.packageType} matches original TypeScript`, () => fixture(({ root, client, cli, config, write }) => {
     write('workspace/package.json', { type: 'module' });
     if (mode.packageType) {
       const manifest = JSON.parse(readFileSync(path.join(client, 'package.json'), 'utf8')); manifest.type = mode.packageType;
@@ -165,5 +166,4 @@ for (const dependencyKind of ['type-reference', 'module-import']) test(`public c
     const selected = (program: ts.Program): string[] => program.getSourceFiles().filter(file => file.fileName.includes('/fixture-mode/')).map(file => path.basename(file.fileName));
     expect(selected(original)).toEqual([mode.expected]); expect(selected(bound)).toEqual(selected(original));
     emitDeclarations(config, input);
-  });
-});
+  }));
