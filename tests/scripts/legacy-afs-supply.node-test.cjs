@@ -50,7 +50,7 @@ test('portable original verifier preserves native receipt coordinates and reject
   const originals = path.join(root, 'originals'); fs.mkdirSync(originals);
   const context = { sourceSha: 'a'.repeat(40), runId: '21', runAttempt: 3 };
   const files = normal.tools.map(file => { const bytes = fs.readFileSync(path.resolve(file)); write(path.join(root, file), bytes); return { path: file, bytes: bytes.length, sha256: hash(bytes), matchesGit: true }; });
-  write(path.join(root, 'packages/xpod-afs/package.json'), { name: '@undefineds.co/xpod-afs', version: '1.0.0', private: true });
+  write(path.join(root, 'packages/xpod-afs/package.json'), JSON.stringify({ name: '@undefineds.co/xpod-afs', version: '1.0.0', private: true }, null, 2) + '\n');
   const sourceHash = helper.reference(path.join(root, 'packages/xpod-afs/package.json')).sha256;
   const snapshot = { sourceSha: context.sourceSha, clean: true, inputSHA256: 'd'.repeat(64), files };
   for (const stage of ['before', 'after']) write(path.join(originals, 'producer/source-' + stage + '.original.json'), snapshot);
@@ -82,6 +82,14 @@ test('portable original verifier preserves native receipt coordinates and reject
   nodeRuntime.raw[0] = { ...helper.reference(path.join(originals, 'producer', nodeRuntime.raw[0].path)), path: nodeRuntime.raw[0].path };
   const index = { kind: 'legacy-root-original-afs-supply', nodeRuntime, nativeSourceRoot: '/posix/source', ...context, runHeadSha: 'b'.repeat(40), sourceBefore: 'producer/source-before.original.json', sourceAfter: 'producer/source-after.original.json', phases, producerTools: normal.tools.map(file => ({ file, ...helper.reference(path.join(root, file)) })), members: normal.inventory(originals), releaseQualified: false };
   const indexFile = path.join(originals, 'supply-index.original.json'); write(indexFile, index);
+  assert.equal(normal.verify(originals, context, root).artifacts.length, 3);
+  // All twelve tools remain canonical: only the cross-OS source manifest changes.
+  const manifestFile = path.join(root, 'packages/xpod-afs/package.json'), manifestLF = fs.readFileSync(manifestFile);
+  fs.writeFileSync(manifestFile, manifestLF.toString('utf8').replace(/\n/g, '\r\n'));
+  assert.throws(() => normal.verify(originals, context, root), error => error.code === 'ERR_ASSERTION' && error.actual === sourceHash && error.expected === hash(fs.readFileSync(manifestFile)));
+  fs.writeFileSync(manifestFile, Buffer.concat([manifestLF, Buffer.from(' ')]));
+  assert.throws(() => normal.verify(originals, context, root), error => error.code === 'ERR_ASSERTION' && error.actual === sourceHash && error.expected === hash(fs.readFileSync(manifestFile)));
+  fs.writeFileSync(manifestFile, manifestLF);
   assert.equal(normal.verify(originals, context, root).artifacts.length, 3);
   const toolFile = path.join(root, normal.tools[0]), toolBytes = fs.readFileSync(toolFile);
   fs.appendFileSync(toolFile, '\n// changed producer bytes\n');

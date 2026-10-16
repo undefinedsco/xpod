@@ -14,3 +14,6 @@ packages/**/licenses/** -text
 /packages/xpod-afs/scripts/build-client-publication.ts text eol=lf
 /packages/xpod-afs/scripts/client-publication.cjs text eol=lf
 /packages/xpod-afs/scripts/client-publication-run.cjs text eol=lf
+
+# The normal AFS stage binds this private source manifest by original byte hash.
+/packages/xpod-afs/package.json text eol=lf
