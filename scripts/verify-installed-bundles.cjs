@@ -1,7 +1,9 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const { execFileSync } = require('node:child_process');
+const { inspectTarballBuffer } = require('./workspace-package-payload.cjs');
+const ARCHIVE_LIMIT = 128 * 1024 ** 2;
+const TAR_LIMITS = { expandedBytes: 256 * 1024 ** 2, members: 100000 };
 
 // Explicit minimum release acceptance set: same leaf versions can contain
 // different bundled builds, so successful imports alone cannot prove freshness.
@@ -14,38 +16,38 @@ function inside(root, file) {
   return relative !== '' && relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
 }
 function verifyInstalledBundles(tarball, installedRoot, evidenceRoot) {
-  const tar = (args) => execFileSync('tar', args, { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 });
-  const names = tar(['tzf', tarball]).trimEnd().split('\n');
-  const modes = tar(['tvzf', tarball]).trimEnd().split('\n');
-  // Validate before extraction. Reject links, special files and ambiguous
-  // names, so an archive cannot write outside our newly created scratch root.
-  if (names.length !== modes.length || names.some((name, i) => !name.startsWith('package/')
-    || /[\\\r\n\u0000]/u.test(name) || name.split('/').some((part) => part === '..' || part === '.')
-    || !['-', 'd'].includes(modes[i][0]))) throw new Error('Unsafe bundle proof archive');
+  const compressed = require('./lib/root-registry-supply.cjs').readRegular(tarball, ARCHIVE_LIMIT);
+  // Binary names and types remain authoritative, including literal CR/LF bytes.
+  // There is no platform-specific tar listing protocol or extraction step.
+  const { entries } = inspectTarballBuffer(compressed, TAR_LIMITS);
+  if (entries.some(entry => !entry.path.startsWith('package/') || /[\u0000-\u001f\u007f]/u.test(entry.path))) throw new Error('Unsafe bundle proof archive');
   const realRoot = fs.realpathSync(installedRoot);
-  const scratch = fs.mkdtempSync(path.join(evidenceRoot, 'bundle-proof-'));
-  fs.chmodSync(scratch, 0o700);
+  const directoryNames = new Map();
+  function installedPath(entry) {
+    let current = installedRoot;
+    for (const part of entry.slice('package/'.length).split('/')) {
+      if (!directoryNames.has(current)) directoryNames.set(current, new Set(fs.readdirSync(current)));
+      if (!directoryNames.get(current).has(part)) throw new Error(`Missing installed bundle file: ${entry}`);
+      current = path.join(current, part);
+    }
+    return current;
+  }
   const hash = (file) => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
-  try {
-    const directories = BUNDLES.map((name) => `package/node_modules/@undefineds.co/${name}`);
-    tar(['xzf', tarball, '-C', scratch, '--', ...directories]);
-    return BUNDLES.map((name) => {
-      const prefix = `package/node_modules/@undefineds.co/${name}/`;
-      const files = names.filter((entry, i) => entry.startsWith(prefix) && modes[i][0] === '-');
-      if (!files.includes(`${prefix}package.json`)) throw new Error(`Missing bundled package ${name}`);
-      const inventory = crypto.createHash('sha256');
-      for (const entry of files.sort()) {
-        const expected = path.join(scratch, entry);
-        const installed = path.join(installedRoot, entry.slice('package/'.length));
-        let real;
-        try { real = fs.realpathSync(installed); } catch { throw new Error(`Missing installed bundle file: ${entry}`); }
-        if (!inside(realRoot, real) || !fs.statSync(real).isFile()) throw new Error(`Installed bundle escaped Xpod: ${entry}`);
-        const digest = hash(expected);
-        if (hash(real) !== digest) throw new Error(`Installed bundle bytes differ: ${entry}`);
-        inventory.update(`${entry}\0${digest}\n`);
-      }
-      return { name: `@undefineds.co/${name}`, files: files.length, sha256: inventory.digest('hex'), bytesMatched: true, containedInInstalledXpod: true };
-    });
-  } finally { fs.rmSync(scratch, { recursive: true, force: true }); }
+  return BUNDLES.map((name) => {
+    const prefix = `package/node_modules/@undefineds.co/${name}/`;
+    const files = entries.filter(entry => entry.path.startsWith(prefix) && entry.type === 'file');
+    if (!files.some(entry => entry.path === `${prefix}package.json`)) throw new Error(`Missing bundled package ${name}`);
+    const inventory = crypto.createHash('sha256');
+    for (const member of files.sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0)) {
+      const entry = member.path;
+      let real;
+      try { real = fs.realpathSync(installedPath(entry)); } catch { throw new Error(`Missing installed bundle file: ${entry}`); }
+      if (!inside(realRoot, real) || !fs.statSync(real).isFile()) throw new Error(`Installed bundle escaped Xpod: ${entry}`);
+      const digest = member.sha256;
+      if (hash(real) !== digest) throw new Error(`Installed bundle bytes differ: ${entry}`);
+      inventory.update(`${entry}\0${digest}\n`);
+    }
+    return { name: `@undefineds.co/${name}`, files: files.length, sha256: inventory.digest('hex'), bytesMatched: true, containedInInstalledXpod: true };
+  });
 }
 module.exports = { BUNDLES, verifyInstalledBundles };

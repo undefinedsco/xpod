@@ -2,7 +2,7 @@ import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, write
 import path from 'node:path';
 import ts from 'typescript';
 import { fileURLToPath } from 'node:url';
-import { spawnSync } from 'node:child_process';
+import { buildObserver } from './build-observation';
 import { createRequire } from 'node:module';
 import { resolveProducerMaterials } from './producer-materials';
 import { resolveProducerInput, resolveRuntimeClientInput } from './producer-input';
@@ -26,14 +26,14 @@ declare const Bun: {
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 /** Compile and collect against the caller's live, verified producer scope. */
 export async function buildAfsClient(producerInput: ReturnType<typeof resolveProducerInput>, clientRoot: string): Promise<void> {
-  await resolveProducerMaterials(producerInput.indexPath, clientRoot, producerInput.tools);
+  await buildObserver.phase('client-materials-before', () => resolveProducerMaterials(producerInput.indexPath, clientRoot, producerInput.tools));
   const typeInput = createDeclarationInput([producerInput.root, clientRoot], producerInput.assertCurrent);
   const pkg = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8'));
   rmSync(path.join(root, 'dist'), { recursive: true, force: true });
   mkdirSync(path.join(root, 'dist'), { recursive: true });
-  const declarationBuild = createDeclarationBuild(path.join(root, 'tsconfig.build.json'), typeInput);
+  const declarationBuild = await buildObserver.phase('client-declaration-program', () => createDeclarationBuild(path.join(root, 'tsconfig.build.json'), typeInput));
   const program = declarationBuild.program;
-  const checker = program.getTypeChecker();
+  const checker = await buildObserver.phase('client-type-checker', () => program.getTypeChecker());
   const publicValueExports: Record<string, string[]> = {};
   function valueExports(source: string): string[] {
     const file = program.getSourceFile(path.join(root, 'src', source + '.ts')) ?? program.getSourceFile(path.join(root, 'src', source, 'index.ts'));
@@ -76,13 +76,13 @@ export async function buildAfsClient(producerInput: ReturnType<typeof resolvePro
   }
   writeFileSync(path.join(root, 'dist/public-value-exports.json'), JSON.stringify(publicValueExports, null, 2) + '\n');
   writeFileSync(path.join(root, 'dist/library-source.ts'), declarations.join('\n') + '\n');
-  const main = spawnSync('bun', ['build', '--target=node', '--format=cjs', '--external=@undefineds.co/xpod-client', '--external=drizzle-orm', '--external=bun:sqlite', '--metafile=' + path.join(root, 'dist/library-inputs.json'), '--outfile', path.join(root, 'dist/library.cjs'), path.join(root, 'dist/library-source.ts')], { cwd: root, stdio: 'inherit' });
+  const main = await buildObserver.command('client-library-bundle', 'bun', ['build', '--target=node', '--format=cjs', '--external=@undefineds.co/xpod-client', '--external=drizzle-orm', '--external=bun:sqlite', '--metafile=' + path.join(root, 'dist/library-inputs.json'), '--outfile', path.join(root, 'dist/library.cjs'), path.join(root, 'dist/library-source.ts')], root);
   if (main.status !== 0) { throw new Error('AFS entry build failed'); }
   writeFileSync(path.join(root, 'dist/runtime.mjs'), "import library from './library.cjs';\nexport const { bindModuleRoot, moduleRoot, moduleLauncher } = library.runtime;\n");
   sharedSources.set(path.join(root, 'src/runtime.ts'), './runtime.mjs');
   const commandSource = path.join(root, 'dist/commands-source.ts');
   writeFileSync(commandSource, "import { registerSolidAuthnSdkLoader } from '@undefineds.co/xpod-client';\nexport function registerModuleSdk() { registerSolidAuthnSdkLoader(() => import('@inrupt/solid-client-authn-node')); }\nexport * from '../src/commands';\nexport { runAfs } from '../src/entry';\nexport { handleCliError } from '@undefineds.co/xpod-cli/output';\n");
-  const entry = await Bun.build({
+  const entry = await buildObserver.phase('client-command-bundle', () => Bun.build({
     entrypoints: [commandSource], target: 'node', format: 'esm', metafile: true,
     external: ['@undefineds.co/xpod-client', 'drizzle-orm', 'bun:sqlite'],
     plugins: [{ name: 'canonical-afs-runtime', setup(build) {
@@ -93,7 +93,7 @@ export async function buildAfsClient(producerInput: ReturnType<typeof resolvePro
         return source ? { path: sharedSources.get(source)!, external: true } : undefined;
       });
     } }],
-  });
+  }));
   if (!entry.success || entry.outputs.length !== 1) { throw new Error('AFS command entry build failed'); }
   writeFileSync(path.join(root, 'dist/command-host.mjs'), await entry.outputs[0].text());
   // In-memory Bun.build paths are relative to the actual invoking cwd. Record
@@ -112,7 +112,7 @@ export async function buildAfsClient(producerInput: ReturnType<typeof resolvePro
   writeFileSync(path.join(root, 'dist/commands.cjs'), "const commands = require('./command-host.mjs');\nmodule.exports = { " + commandNames.map(name => `${name}: commands.${name}`).join(', ') + ' };\n');
   writeFileSync(path.join(root, 'dist/entry.mjs'), "import { runAfs, handleCliError, registerModuleSdk } from './command-host.mjs';\nimport { bindModuleRoot } from './runtime.mjs';\nimport { fileURLToPath } from 'node:url';\nbindModuleRoot(fileURLToPath(new URL('../', import.meta.url)));\nregisterModuleSdk();\ntry { await runAfs(process.argv.slice(2)); } catch (error) { handleCliError(error, process.argv.includes('--json'), 'module_failed'); }\n");
 
-  declarationBuild.emitDeclarations();
+  await buildObserver.phase('client-declaration-emit', () => declarationBuild.emitDeclarations());
   // Emitted declarations follow the package's ESM contract. Resolve against
   // actual output, so Node16 and classic Node see the same canonical graph.
   function declarationFiles(directory: string): string[] {
@@ -154,14 +154,14 @@ export async function buildAfsClient(producerInput: ReturnType<typeof resolvePro
 
   typeInput.assertCurrent();
   const generator = path.join(path.dirname(createRequire(import.meta.url).resolve('componentsjs-generator/package.json')), 'bin/componentsjs-generator.js');
-  const components = spawnSync('bun', [generator, '-s', 'src', '-c', 'dist/components', '-i', '../../config/components-ignore.json', '.'], { cwd: root, stdio: 'inherit' });
+  const components = await buildObserver.command('client-components', 'bun', [generator, '-s', 'src', '-c', 'dist/components', '-i', '../../config/components-ignore.json', '.'], root);
   if (components.status !== 0) { throw new Error('AFS contract metadata build failed'); }
-  const producer = await resolveProducerMaterials(producerInput.indexPath, clientRoot, producerInput.tools);
-  collectAfsJavascriptMaterials({ buildTools: producerInput.tools, packageRoot: root, repoRoot: path.resolve(root, '../..'),
+  const producer = await buildObserver.phase('client-materials-after-components', () => resolveProducerMaterials(producerInput.indexPath, clientRoot, producerInput.tools));
+  await buildObserver.phase('client-notices', () => collectAfsJavascriptMaterials({ buildTools: producerInput.tools, packageRoot: root, repoRoot: path.resolve(root, '../..'),
     destination: path.join(root, 'dist/licenses'), target: `${process.platform}-${process.arch}`,
     library: path.join(root, 'dist/library.cjs'), libraryMetafile: path.join(root, 'dist/library-inputs.json'),
     commands: path.join(root, 'dist/command-host.mjs'), commandsMetafile: path.join(root, 'dist/commands-inputs.json'),
-    producer, vendoredRoots: [clientRoot] });
+    producer, vendoredRoots: [clientRoot] }));
 
   // Keep original output notices and their shared content-addressed references.
   typeInput.assertCurrent();

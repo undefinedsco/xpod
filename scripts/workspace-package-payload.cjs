@@ -32,10 +32,12 @@ function assertIntegrity(buffer, expected, label) {
   return actual;
 }
 
-function readString(block, offset, length) {
+function readString(block, offset, length, trimSpaces = true) {
   let end = offset;
   while (end < offset + length && block[end] !== 0) end += 1;
-  return block.toString('utf8', offset, end).replace(/ +$/u, '');
+  const field = block.subarray(offset, end), value = field.toString('utf8');
+  if (!trimSpaces && !Buffer.from(value, 'utf8').equals(field)) throw new Error('Invalid UTF-8 tar name or prefix');
+  return trimSpaces ? value.replace(/ +$/u, '') : value;
 }
 
 // Strict octal: the whole field (NUL/space trimmed) must be octal digits. parseInt alone
@@ -73,8 +75,8 @@ function validateHeader(block, seen) {
   let computed = 0;
   for (const byte of checksumBlock) computed += byte;
   if (computed !== storedChecksum) throw new Error('Corrupted tar header checksum');
-  const name = readString(block, 0, 100);
-  const prefix = readString(block, 345, 155);
+  const name = readString(block, 0, 100, false);
+  const prefix = readString(block, 345, 155, false);
   const fullName = prefix ? `${prefix}/${name}` : name;
   assertSafePath(fullName);
   const typeflag = String.fromCharCode(block[156]);
@@ -92,7 +94,8 @@ function validateHeader(block, seen) {
 // `buffer` is an uncompressed tar archive. Returns validated entries in archive order and
 // rejects partial final blocks, a missing end-of-archive marker, truncated padding, and
 // any nonzero byte after the end-of-archive marker.
-function parseTar(buffer) {
+function parseTar(buffer, limits) {
+  if (limits && (!Number.isSafeInteger(limits.members) || limits.members < 1 || limits.members > 100000)) throw new Error('Invalid tar member budget');
   const entries = [];
   const seen = new Set();
   let offset = 0;
@@ -104,6 +107,7 @@ function parseTar(buffer) {
       offset += BLOCK;
       break;
     }
+    if (limits && entries.length >= limits.members) throw new Error('Tar member budget exceeded');
     const { path: fullName, type, mode, size } = validateHeader(block, seen);
     offset += BLOCK;
     const content = buffer.subarray(offset, offset + size);
@@ -120,14 +124,17 @@ function parseTar(buffer) {
   return entries;
 }
 
-function inspectTarballBuffer(compressed) {
+function inspectTarballBuffer(compressed, limits) {
+  if (limits && (!Number.isSafeInteger(limits.expandedBytes) || limits.expandedBytes < 1 || limits.expandedBytes > 4 * 1024 ** 3
+    || !Number.isSafeInteger(limits.members) || limits.members < 1 || limits.members > 100000)) throw new Error('Invalid tar inspection budget');
   let raw;
   try {
-    raw = zlib.gunzipSync(compressed);
-  } catch {
+    raw = zlib.gunzipSync(compressed, limits ? { maxOutputLength: limits.expandedBytes } : undefined);
+  } catch (error) {
+    if (limits && error.code === 'ERR_BUFFER_TOO_LARGE') throw new Error('Tar expanded byte budget exceeded');
     throw new Error('Corrupted tar payload: not valid gzip');
   }
-  const entries = parseTar(raw);
+  const entries = parseTar(raw, limits);
   const manifestEntry = entries.find((entry) => entry.path === MANIFEST_PATH);
   if (!manifestEntry || manifestEntry.type !== 'file') {
     throw new Error(`Corrupted tar payload: missing ${MANIFEST_PATH}`);

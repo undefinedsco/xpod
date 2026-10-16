@@ -1,4 +1,4 @@
-import { spawnSync } from 'node:child_process';
+import { buildObserver } from './build-observation';
 import { createHash } from 'node:crypto';
 import { chmodSync, copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
@@ -16,8 +16,8 @@ const clientPackageRoot = resolveRuntimeClientInput(process.argv.slice(2));
 await withStagedProducerInput(originalProducerInput, path.join(packageRoot, '.test-data'), async producerInput => {
   // Never consume a previous client build's compiler graph: its producer scope
   // has already closed. Compile and package under this one verified lifetime.
-  await buildAfsClient(producerInput, clientPackageRoot);
-  const producer = await resolveProducerMaterials(producerInput.indexPath, clientPackageRoot, producerInput.tools);
+  await buildObserver.phase('module-fresh-client', () => buildAfsClient(producerInput, clientPackageRoot));
+  const producer = await buildObserver.phase('module-materials', () => resolveProducerMaterials(producerInput.indexPath, clientPackageRoot, producerInput.tools));
   const publicInputs = producer.clientMetafile;
   const args = process.argv.slice(2);
   function option(name: string): string {
@@ -32,16 +32,16 @@ await withStagedProducerInput(originalProducerInput, path.join(packageRoot, '.te
   const stage = path.join(output, 'package');
   if (existsSync(stage)) { throw new Error('Output already exists'); }
   mkdirSync(stage, { recursive: true });
-  function checked(command: string, args: string[], cwd = repoRoot): void {
-    const result = spawnSync(command, args, { cwd, stdio: 'inherit' });
+  async function checked(phase: string, command: string, args: string[], cwd = repoRoot): Promise<void> {
+    const result = await buildObserver.command(phase, command, args, cwd);
     if (result.error || result.status !== 0) { throw new Error('AFS build stage failed'); }
   }
-  checked('python3', [path.join(packageRoot, 'scripts/native-material.py'), repoRoot, path.resolve(option('--native-evidence')), path.resolve(option('--native-pins')), target, stage]);
+  await checked('module-native-material', 'python3', [path.join(packageRoot, 'scripts/native-material.py'), repoRoot, path.resolve(option('--native-evidence')), path.resolve(option('--native-pins')), target, stage]);
   mkdirSync(path.join(stage, 'dist'), { recursive: true });
   cpSync(path.join(packageRoot, 'dist'), path.join(stage, 'dist'), { recursive: true });
   cpSync(path.join(packageRoot, 'src'), path.join(stage, 'src'), { recursive: true });
   const metadata = path.join(output, 'bundle-inputs.json');
-  checked('bun', ['build', '--target=node', '--format=cjs', '--external=@undefineds.co/xpod-client', '--external=drizzle-orm', '--external=bun:sqlite', `--metafile=${metadata}`, '--outfile', path.join(stage, 'dist/library.cjs'), path.join(packageRoot, 'dist/library-source.ts')], packageRoot);
+  await checked('module-library-bundle', 'bun', ['build', '--target=node', '--format=cjs', '--external=@undefineds.co/xpod-client', '--external=drizzle-orm', '--external=bun:sqlite', `--metafile=${metadata}`, '--outfile', path.join(stage, 'dist/library.cjs'), path.join(packageRoot, 'dist/library-source.ts')], packageRoot);
   copyFileSync(path.join(packageRoot, 'dist/entry.mjs'), path.join(stage, 'dist/entry.mjs'));
   // A single declaration drives each staged vendor copy and notice collection.
   const clientVendor = { sourceRoot: clientPackageRoot,
@@ -78,10 +78,10 @@ await withStagedProducerInput(originalProducerInput, path.join(packageRoot, '.te
   writeFileSync(path.join(stage, 'LICENSES.txt'), 'This artifact contains materials with separate licenses.\nXpod-owned source: MIT, original terms in LICENSE.\nThe assembled AgentFS native helper has no asserted aggregate SPDX license here; consult the preserved native collection/declarations and AgentFS notices under licenses/native and licenses/agentfs.\nThe public CLI client and vendored drizzle-orm retain their original notices and source provenance.\nPackaging or hash verification does not grant artifact review clearance.\n');
   const inputs = Object.keys(JSON.parse(readFileSync(metadata, 'utf8')).inputs) as string[];
   if (inputs.some(p => /(?:@solid\/community-server|src\/(?:api|storage)|inngest)/.test(p))) { throw new Error('AFS bundle contains service inputs'); }
-  collectAfsJavascriptMaterials({ buildTools: producerInput.tools, packageRoot, repoRoot, destination: path.join(stage, 'licenses/javascript-afs'), target,
+  await buildObserver.phase('module-notices', () => collectAfsJavascriptMaterials({ buildTools: producerInput.tools, packageRoot, repoRoot, destination: path.join(stage, 'licenses/javascript-afs'), target,
     library: path.join(stage, 'dist/library.cjs'), libraryMetafile: metadata,
     commands: path.join(stage, 'dist/command-host.mjs'), commandsMetafile: path.join(packageRoot, 'dist/commands-inputs.json'),
-    producer, vendoredRoots: vendoredPackages.map(vendor => vendor.stageRoot!) });
+    producer, vendoredRoots: vendoredPackages.map(vendor => vendor.stageRoot!) }));
   const sourceFiles = [...inputs.filter(p => !p.includes('node_modules/')).map(p => path.relative(repoRoot, path.resolve(packageRoot, p))), 'package.json', 'bun.lock', '.componentsjs-generator-config.json', 'config/components-ignore.json', 'scripts/check-afs-package.cjs'];
   const commandInputs = Object.keys(JSON.parse(readFileSync(path.join(packageRoot, 'dist/commands-inputs.json'), 'utf8')).inputs) as string[];
   sourceFiles.push(...commandInputs.filter(filename => !filename.includes('node_modules/')).map(filename => path.relative(repoRoot, path.resolve(repoRoot, filename))));
@@ -134,7 +134,7 @@ await withStagedProducerInput(originalProducerInput, path.join(packageRoot, '.te
     publicClientMetafileSHA256: createHash('sha256').update(readFileSync(publicInputs)).digest('hex'),
     publicClientMaterials: producer.binding }, null, 2) + '\n');
   mkdirSync(path.join(stage, 'sources'), { recursive: true });
-  checked('tar', ['-czf', path.join(stage, 'sources/module-source.tar.gz'), '-C', sourceRoot, '.']);
+  await checked('module-source-archive', 'tar', ['-czf', path.join(stage, 'sources/module-source.tar.gz'), '-C', sourceRoot, '.']);
   const files: Array<{ path: string; sha256: string; size: number; mode: number }> = [];
   function inventory(directory: string): void {
     for (const name of readdirSync(directory).sort()) {
@@ -157,7 +157,7 @@ await withStagedProducerInput(originalProducerInput, path.join(packageRoot, '.te
     engines: { node: '>=22.13' }, xpodModule: { schemaVersion: 1, id: 'afs', cliApiVersion: 1, platform, arch, entry: 'dist/entry.mjs', files } };
   writeFileSync(path.join(stage, 'package.json'), JSON.stringify(manifest, null, 2) + '\n');
   const archive = path.join(output, `xpod-afs-${version}-${target}.tgz`);
-  checked('tar', ['-czf', archive, '-C', output, 'package']);
+  await checked('module-package-archive', 'tar', ['-czf', archive, '-C', output, 'package']);
   const bytes = readFileSync(archive);
   writeFileSync(path.join(output, 'build.safe.json'), JSON.stringify({ archive, target, version, inventoryFiles: files.length,
     sha256: createHash('sha256').update(bytes).digest('hex'), integrity: `sha512-${createHash('sha512').update(bytes).digest('base64')}`,
