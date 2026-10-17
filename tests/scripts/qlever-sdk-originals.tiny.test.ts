@@ -82,7 +82,7 @@ test('owned SDK RUNs select the complete PID1 registry/guard and preserve earlie
 
 test('source-prepared SDK group binds the complete changed recipe without mixing historical selectors',()=>{
  const old=QLEVER_SDK_EXECUTION_GROUPS[6]!,next=QLEVER_SDK_EXECUTION_GROUPS[7]!;
- expect(QLEVER_SDK_EXECUTION_GROUPS).toHaveLength(13);
+ expect(QLEVER_SDK_EXECUTION_GROUPS).toHaveLength(14);
  const selected=new Map([...next.selectors,...(next.secondarySelectors??[])].map(row=>[sourceBindingKey(row),row.sha256]));
  expect(selectGitHubSourceBindingGroup(QLEVER_SDK_EXECUTION_GROUPS,selected)).toBe(next);
  for(const path of ['docker/qlever-runtime-sdk/Dockerfile.module-bookworm','qlever/scripts/sdk-inner-materials.py']){
@@ -148,4 +148,20 @@ test('Debian binary collection selects a whole producer/parser closure after sha
  for(const path of ['qlever/scripts/sdk-inner-materials.py','qlever/scripts/sdk-image-originals.py']){
   const mixed=new Map(observed),prior=old.selectors.find(row=>row.path===path)!;mixed.set(sourceBindingKey(prior),prior.sha256);expect(()=>selectGitHubSourceBindingGroup(QLEVER_SDK_EXECUTION_GROUPS,mixed)).toThrow();
  }
+});
+
+
+test('write/read custody refines the binary tuple as one observer pair, preserving all historical groups',()=>{
+ const previous=QLEVER_SDK_EXECUTION_GROUPS[12]!,next=QLEVER_SDK_EXECUTION_GROUPS[13]!;
+ expect(next.selectors).toEqual(previous.selectors);expect(next.sourceBindings.filter(row=>!next.secondarySelectors!.some(helper=>helper.path===row.path))).toEqual(previous.sourceBindings.filter(row=>!previous.secondarySelectors!.some(helper=>helper.path===row.path)));
+ const primary=new Map(next.selectors.map(row=>[sourceBindingKey(row),row.sha256]));
+ expect(secondaryGitHubSourceBindingSelectors(QLEVER_SDK_EXECUTION_GROUPS,primary).map(row=>row.path).sort()).toEqual(next.secondarySelectors!.map(row=>row.path).sort());
+ for(const group of [previous,next])expect(selectGitHubSourceBindingGroup(QLEVER_SDK_EXECUTION_GROUPS,new Map([...group.selectors,...group.secondarySelectors!].map(row=>[sourceBindingKey(row),row.sha256])))).toBe(group);
+ for(const helper of next.secondarySelectors!){
+  const mixed=new Map([...primary,...previous.secondarySelectors!.map(row=>[sourceBindingKey(row),row.sha256] as const)]);mixed.set(sourceBindingKey(helper),helper.sha256);
+  expect(()=>selectGitHubSourceBindingGroup(QLEVER_SDK_EXECUTION_GROUPS,mixed)).toThrow();
+  mixed.delete(sourceBindingKey(helper));expect(()=>selectGitHubSourceBindingGroup(QLEVER_SDK_EXECUTION_GROUPS,mixed)).toThrow();
+  mixed.set(sourceBindingKey(helper),'0'.repeat(64));expect(()=>selectGitHubSourceBindingGroup(QLEVER_SDK_EXECUTION_GROUPS,mixed)).toThrow();
+ }
+ for(const group of QLEVER_SDK_EXECUTION_GROUPS.slice(0,13))expect(selectGitHubSourceBindingGroup(QLEVER_SDK_EXECUTION_GROUPS,new Map([...group.selectors,...(group.secondarySelectors??[])].map(row=>[sourceBindingKey(row),row.sha256])))).toBe(group);
 });
