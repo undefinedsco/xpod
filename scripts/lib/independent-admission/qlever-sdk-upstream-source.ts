@@ -16,7 +16,7 @@ const HELPERS = [
   ['sdk-git-source-bindings.py', '612063f44d09932b93883db2d186d197bd828e07d39e2df430d9dbe574fd66d0'],
   ['sdk-git-source-observer.py', 'fd578d0fef97c1d3b4b60e5510320c109c6930580d91db9335d67cbacff186f6'],
   ['sdk-git-patch-projection.py', '3e4051b50acf6be11ade6e5d6c05ca23ab8376aa4ff5861975088eab642c8f23'],
-  ['sdk-zip-originals.py', '2ca4929f58cfbdfeac43f2bf02564ffc46805de27b529e6e363080710e7c048d'],
+  ['sdk-zip-originals.py', 'ff57cbe26b9e18f83f41f01051dad2e361da9ae201cb4f905f6cc183f0a62ba6'],
 ] as const;
 export function assertSdkUpstreamCollectionProjection(upstream: any, inner: any): void {
   const normalize = (value: any): any => {
@@ -63,9 +63,15 @@ export async function observeQleverSdkUpstreamGitOriginals(capability: unknown, 
         return JSON.parse(row.data.toString()).jobs;
       }).filter((row: any) => row.id === sdk.originFacts.producerJobId);
       need(jobs.length === 1, 'unique actual SDK producer job required');
-      const execution = inspectSdkBuildExecution({master, members: sdk.members, jobWindow: {start: Date.parse(jobs[0].started_at), end: Date.parse(jobs[0].completed_at)},
-        readOriginal: (path, maximum) => sdk.readOriginal(path, maximum), readRange: (path, offset, length) => sdk.readOriginalRange(path, offset, length), check});
-      need(execution.stages[0]?.name === 'source-prepare', 'actual sourcePrepare execution required');
+      const actualPhases=master.stages.filter((stage:any)=>['configure','compile'].includes(stage.name));
+      if(actualPhases.length===2&&actualPhases.every((stage:any)=>stage.closureKind==='ptrace-tracked-phase-v1')){
+        const {qleverSdkExecutionOriginalObservation}=await import('./qlever-sdk-generation');
+        need(qleverSdkExecutionOriginalObservation(capability)?.sdkActualConfigureCompileTrackedWaitVerified===true,'actual typed configure/compile wait observation required');
+      }else{
+        const execution = inspectSdkBuildExecution({master, members: sdk.members, jobWindow: {start: Date.parse(jobs[0].started_at), end: Date.parse(jobs[0].completed_at)},
+          readOriginal: (path, maximum) => sdk.readOriginal(path, maximum), readRange: (path, offset, length) => sdk.readOriginalRange(path, offset, length), check});
+        need(execution.stages[0]?.name === 'source-prepare', 'actual sourcePrepare execution required');
+      }
       hookReceipt = json(upstream.phaseBindings.sourcePrepare.receipt);
       need(BigInt(hookReceipt.completedUnixNs) <= BigInt(configureReceipt.startedUnixNs), 'sourcePrepare must close before configure');
     }

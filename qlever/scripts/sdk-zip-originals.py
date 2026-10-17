@@ -13,7 +13,7 @@ def safe(name):
     return isinstance(name,str) and name and not name.startswith('/') and not any(c in name for c in '\\\0\r\n') and all(part not in ('','.','..') for part in name.split('/'))
 @contextlib.contextmanager
 def registered_zip_originals(archive_path,prefix,check):
-    need(prefix in ('inner/debian-source/indexes/','inner/upstream-source/'),'fixed SDK original domain required')
+    need(prefix in ('inner/debian-source/indexes/','inner/upstream-source/','inner/toolchain-execution/'),'fixed SDK original domain required')
     def identity(value):
         return value.st_dev, value.st_ino, value.st_size, value.st_mode, value.st_mtime_ns, value.st_ctime_ns
     flags = os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0)
@@ -56,6 +56,7 @@ def registered_zip_originals(archive_path,prefix,check):
                 need(len(rows) == 1 and rows[0].file_size == reference['bytes'] and 0 <= reference['bytes'] <= LIMITS['shardBytes'], 'exact ZIP index member required')
                 need(not rows[0].is_dir() and stat.S_IFMT(rows[0].external_attr >> 16) in (0, stat.S_IFREG), 'regular ZIP index original required')
                 return archive.open(rows[0])
+            member.names = tuple(info.filename for info in infos if not info.is_dir())
             yield member
         check(); need(identity(os.fstat(fd)) == identity(before) and identity(os.lstat(archive_path)) == identity(before), 'SDK ZIP changed during observation')
     finally:

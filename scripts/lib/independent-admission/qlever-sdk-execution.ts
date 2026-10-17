@@ -3,6 +3,12 @@ import { isDeepStrictEqual } from 'node:util';
 import limits from '../module-artifact-limits.json';
 type Ref = Readonly<{path: string; bytes: number; sha256: string}>;
 function need(value: unknown, why: string): asserts value { if (!value) throw Error('SDK build execution: ' + why); }
+export const SDK_TRACKED_PHASE_UNOBSERVED='qlever-sdk-ptrace-tracked-phase-process-originals-not-yet-observed';
+/** Only the owned verifier throws this after hashing/checking both exact typed
+ * phase envelopes. It is not used for malformed legacy receipts or custody. */
+export class SdkTrackedPhaseOriginalsUnobserved extends Error {
+ constructor(readonly generationMetadataOriginals:Readonly<{collection:Ref;before:Ref;after:Ref}>|undefined){super(SDK_TRACKED_PHASE_UNOBSERVED);}
+}
 /** Actual configure/build process mechanics. No compiler, source or signature
  * authority is inferred from a successful process. Readers are private SDK ZIP readers. */
 export function inspectSdkBuildExecution(input: {master: any; members: readonly Ref[]; jobWindow: {start: number; end: number};
@@ -11,8 +17,8 @@ export function inspectSdkBuildExecution(input: {master: any; members: readonly 
   const ref = (value: any): Ref => { input.check(); const row = members.get(value?.path); need(row && row.bytes === value.bytes && row.sha256 === value.sha256, 'same SDK original reference required'); return row; };
   const json = (value: any) => { const row = ref(value); need(row.bytes <= limits.metadataBytes, 'bounded command metadata required');
     const bytes = input.readOriginal(row.path, limits.metadataBytes); need(bytes.length === row.bytes && createHash('sha256').update(bytes).digest('hex') === row.sha256, 'command metadata bytes differ'); return JSON.parse(bytes.toString()); };
-  const raw = (value: any) => { const row = ref(value); rawBytes += row.bytes;
-    need(row.bytes <= 256 * 1024 ** 2 && rawBytes <= limits.sourceMaterialBytes, 'closed raw byte budget'); const hash = createHash('sha256');
+  const raw = (value: any, maximum = 256 * 1024 ** 2) => { const row = ref(value); rawBytes += row.bytes;
+    need(row.bytes <= maximum && rawBytes <= limits.sourceMaterialBytes, 'closed raw byte budget'); const hash = createHash('sha256');
     for (let at = 0; at < row.bytes; at += limits.rangeBytes) { input.check(); const count = Math.min(limits.rangeBytes, row.bytes - at), bytes = input.readRange(row.path, at, count); need(bytes.length === count, 'truncated closed raw'); hash.update(bytes); }
     need(hash.digest('hex') === row.sha256, 'closed raw bytes differ'); return row;
   };
@@ -71,10 +77,31 @@ export function inspectSdkBuildExecution(input: {master: any; members: readonly 
     ['configure', preparedMode ? ['bash', '/components/qlever/scripts/build-qlever-runtime-sdk.sh', 'configure-prepared'] : ['bash', '/components/qlever/scripts/build-module-runtime-sdk.sh', 'prepare-only']],
     ['compile', ['bash', '/components/qlever/scripts/build-qlever-runtime-sdk.sh', 'build-prepared']],
   ];
-  const observations = []; let previousEnd = input.jobWindow.start;
+  const observations = []; let trackedCount = 0; let previousEnd = input.jobWindow.start;
   for (const [name, command] of recipes) {
     const candidates = input.master.stages.filter((row: any) => row.name === name); need(candidates.length === 1, 'unique actual ' + name + ' stage required');
     const stage = candidates[0], root = 'inner/stages/' + name;
+    need(stage.closureKind === undefined || stage.closureKind === 'closed-process-group-v1' || stage.closureKind === 'ptrace-tracked-phase-v1', 'unknown execution closure tag');
+    if (stage.closureKind === 'ptrace-tracked-phase-v1') {
+      need(name !== 'source-prepare' && stage.supervisionReceipt === undefined && stage.supervisionRaw === undefined, 'typed phase cannot borrow closed-group roles');
+      for (const [key,suffix] of [['receipt','/command.receipt.json'],['stdout','/stdout.raw'],['stderr','/stderr.raw'],['trackingReceipt','/tracking.receipt.json']]) need(stage[key!]?.path === root + suffix, 'fixed typed phase role differs');
+      const actual=json(stage.receipt),tracking=json(stage.trackingReceipt);
+      need(actual.schemaVersion===1 && isDeepStrictEqual(actual.command,command) && actual.actualExecutable==='/usr/bin/bash' && actual.actualWait===true && actual.exit===0 && actual.signal===null && actual.rawClosedBeforeHash===true
+        && Number.isSafeInteger(actual.pid) && actual.pid>0 && Number.isSafeInteger(actual.pgid) && actual.pgid>0, 'actual typed command envelope differs');
+      need(tracking.schemaVersion===1 && tracking.kind==='sdk-observer-tracked-phase-original' && tracking.phase===name && isDeepStrictEqual(tracking.command,command)
+        && tracking.actualRootPid===actual.pid && tracking.actualRootReturnCode===0 && tracking.actualTrackedWait===true && tracking.trackedProcessesClosed===true
+        && Number.isSafeInteger(tracking.observerPid) && tracking.observerPid>0 && Number.isFinite(tracking.deadlineMonotonic) && tracking.deadlineMonotonic>0
+        && tracking.startedUnixNs===actual.startedUnixNs && tracking.completedUnixNs===actual.completedUnixNs
+        && Array.isArray(tracking.waitReferences) && tracking.waitReferences.length>0 && tracking.waitReferences.every((row:any)=>Number.isSafeInteger(row.pid)&&row.pid>0&&Number.isSafeInteger(row.sequence)&&row.sequence>0&&Number.isInteger(row.returnCode)&&row.phase===name), 'typed tracking envelope differs');
+      const start=Math.floor(Number(actual.startedUnixNs)/1e6),end=Math.floor(Number(actual.completedUnixNs)/1e6);
+      need([start,end].every(Number.isFinite)&&previousEnd<=start&&start<=end&&end<=input.jobWindow.end,'typed phase actual job/order window differs');
+      for(const field of ['stdout','stderr']){const row=raw(stage[field]);need(actual[field]?.path===field+'.raw'&&actual[field]?.bytes===row.bytes&&actual[field]?.sha256===row.sha256,'typed command dual raw differs');}
+      need(Array.isArray(stage.rawTraceShards)&&stage.rawTraceShards.length>0,'typed phase trace original shards required');
+      for(const original of stage.rawTraceShards){need(original.path.startsWith('inner/toolchain-execution/'),'fixed typed trace domain required');raw(original,limits.shardBytes);}
+      const expected=name==='compile'?[input.master.inputs?.before,input.master.inputs?.symlinks?.before,...(generationMetadataOriginals?[generationMetadataOriginals.before]:[])]:preparedReference?[preparedReference]:[];
+      need(expected.every(Boolean)&&isDeepStrictEqual(stage.inputs,expected)&&Array.isArray(stage.outputs)&&stage.outputs.length===0,'typed phase retained inputs differ');for(const value of expected)ref(value);
+      previousEnd=end;trackedCount++;continue;
+    }
     for (const [key, suffix] of [['receipt', '/command.receipt.json'], ['stdout', '/stdout.raw'], ['stderr', '/stderr.raw'], ['supervisionReceipt', '.receipt.json'], ['supervisionRaw', '.raw.log']]) need(stage[key!]?.path === root + suffix, 'fixed ' + name + ' original role differs');
     const actual = json(stage.receipt), supervision = json(stage.supervisionReceipt);
     need(actual.schemaVersion === 1 && isDeepStrictEqual(actual.command, command) && actual.actualWait === true && actual.exit === 0 && actual.signal === null && actual.rawClosedBeforeHash === true
@@ -93,5 +120,7 @@ export function inspectSdkBuildExecution(input: {master: any; members: readonly 
     for (const value of expectedInputs) ref(value);
     observations.push(Object.freeze({name, receipt: ref(stage.receipt), stdout: ref(stage.stdout), stderr: ref(stage.stderr), supervisionReceipt: ref(stage.supervisionReceipt), supervisionRaw: original, inputs: Object.freeze(expectedInputs.map(ref)), start, end})); previousEnd = end;
   }
+  need(trackedCount===0||trackedCount===2,'mixed typed/closed-group configure/compile envelope');
+  if(trackedCount===2)throw new SdkTrackedPhaseOriginalsUnobserved(generationMetadataOriginals);
   input.check(); return Object.freeze({verified: true as const, scope: 'SDK configure/compile actual closed process and retained before-input references' as const, stages: Object.freeze(observations), rawBytes, generationMetadataReferenceSealVerified: generationMetadataOriginals !== undefined, generationMetadataOriginals});
 }
