@@ -107,6 +107,21 @@ jobs:
           for file in cli.tgz client.tgz module-admission.mjs driver-inputs.json build.safe.json; do
             cp "$product/$file" "$MODULE_RUN_ROOT/$file"
           done
+      - name: Preserve bounded normal AFS producer diagnostics
+        timeout-minutes: 2
+        if: always() && env.AFS_PRODUCT_ROOT != ''
+        shell: bash
+        run: |
+          python3 scripts/export-afs-producer-diagnostics.py --product "$AFS_PRODUCT_ROOT"
+      - name: Upload bounded normal AFS producer diagnostics
+        timeout-minutes: 5
+        if: always() && env.AFS_PRODUCT_ROOT != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: afs-module-producer-diagnostics-${{ matrix.target }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.AFS_PRODUCT_ROOT }}/diagnostics/
+          if-no-files-found: warn
+          retention-days: 30
       - name: Upload controlled normal AFS product originals
         uses: actions/upload-artifact@v4
         with:

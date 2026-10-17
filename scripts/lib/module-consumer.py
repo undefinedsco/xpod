@@ -318,7 +318,7 @@ def validate_consumer_plan(plan, profile):
 class ModuleConsumerRunner:
     def __init__(self, plan, checked):
         self.plan, self.checked = plan, checked
-        self.deadline = time.monotonic() + 480 if consumer_transport(plan) != 'immutable-local-fixture' else None
+        self.deadline = time.monotonic() + self.total_deadline_seconds() if consumer_transport(plan) != 'immutable-local-fixture' else None
         self.output = checked['output']
         self.records = []
         self.child = None
@@ -329,6 +329,12 @@ class ModuleConsumerRunner:
         self.disk_coverage = dict(completeSamples=0, partialSamples=0, disappearedEntries=0,
                                   lastCompleteBytes=None, peakCompleteBytes=None, lastSampleComplete=None,
                                   capCheckedOnLastSample=False)
+
+    def total_deadline_seconds(self):
+        return 480
+
+    def command_timeout_seconds(self, label):
+        return self.plan.get('timeoutSeconds', 180)
 
     def gate(self, initial=False):
         require(self.deadline is None or time.monotonic() < self.deadline, 'total production consumer deadline exceeded')
@@ -485,12 +491,12 @@ class ModuleConsumerRunner:
                     self.close_service(process)
                 else:
                     try:
-                        deadline = time.monotonic() + self.plan.get('timeoutSeconds', 180)
+                        deadline = time.monotonic() + self.command_timeout_seconds(label)
                         while process.poll() is None:
                             self.observe_group(process)
                             self.gate()
                             if time.monotonic() >= deadline:
-                                raise subprocess.TimeoutExpired(argv, self.plan.get('timeoutSeconds', 180))
+                                raise subprocess.TimeoutExpired(argv, self.command_timeout_seconds(label))
                             time.sleep(.2)
                         process.wait(timeout=1)
                     except subprocess.TimeoutExpired:

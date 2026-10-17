@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import path from 'node:path';
-import { mkdirSync, mkdtempSync, rmSync, readFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
 import { reviewedModulePhasePlan, verifyClosedModulePhaseReceipts } from '../../scripts/lib/independent-admission/module-source-phases';
 
 describe('AFS normal recipe source production', () => {
@@ -11,6 +11,30 @@ describe('AFS normal recipe source production', () => {
     expect(plan[4]!.command).toContain('scripts/build-afs-from-producer.ts');
     expect(plan[4]!.command).toContain('/owned/originals/native.zip');
     expect(plan.flatMap(row => row.command).join(' ')).not.toMatch(/--native-build|docker|publish/);
+  });
+  it('executes both actual pack phases with Bun package-manager argument parsing', () => {
+    const parent = path.resolve('.test-data/afs-module-producer'); mkdirSync(parent, { recursive: true });
+    const root = mkdtempSync(path.join(parent, 'pack-')), output = path.join(root, 'output');
+    mkdirSync(output);
+    try {
+      for (const name of ['cli', 'client']) {
+        const pkg = path.join(root, 'packages/xpod-' + name); mkdirSync(pkg, { recursive: true });
+        writeFileSync(path.join(pkg, 'package.json'), JSON.stringify({ name: 'afs-pack-' + name, version: '0.0.1', files: ['index.js'] }));
+        writeFileSync(path.join(pkg, 'index.js'), 'export default ' + JSON.stringify(name) + ';');
+      }
+      const plan = reviewedModulePhasePlan('afs', root, output, '0.0.1', 'darwin-arm64');
+      const cli = plan.find(row => row.name === 'cli-pack')!.command;
+      const broken = spawnSync('bun', ['--cwd', path.join(root, 'packages/xpod-cli'), 'pm', ...cli.slice(4)], { cwd: root, encoding: 'utf8' });
+      expect(broken.status).not.toBe(0);
+      expect(broken.stderr).toContain('Script not found');
+      for (const name of ['cli', 'client']) {
+        const phase = plan.find(row => row.name === name + '-pack')!;
+        execFileSync(phase.command[0]!, phase.command.slice(1), { cwd: root, encoding: 'utf8' });
+        const packed = JSON.parse(execFileSync('tar', ['-xOf', path.join(output, name + '.tgz'), 'package/package.json'], { encoding: 'utf8' }));
+        expect(packed.name).toBe('afs-pack-' + name);
+        expect(packed.version).toBe('0.0.1');
+      }
+    } finally { rmSync(root, { recursive: true, force: true }); }
   });
   it('obtains actual waited and closed originals from the production supervisor', () => {
     const parent = path.resolve('.test-data/afs-module-producer'); mkdirSync(parent, { recursive: true });

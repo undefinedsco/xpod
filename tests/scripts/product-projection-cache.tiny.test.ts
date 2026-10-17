@@ -17,7 +17,14 @@ test('two genuine tgz projections alternate through the single active cache and 
   expect(productDiskProjectionUsage().count).toBe(1);
   expect(JSON.parse(first.readMember('package.json',1000).toString()).name).toBe('first');
   expect(JSON.parse(second.readMember('package.json',1000).toString()).name).toBe('second');
+  for(let pass=0;pass<12;pass++){expect(JSON.parse(first.readMember('package.json',1000).toString()).name).toBe('first');expect(JSON.parse(second.readMember('package.json',1000).toString()).name).toBe('second');}
   first.compactProjection();first.compactProjection();
+  second.compactProjection();const beforeInvalid=productDiskProjectionUsage();
+  expect(()=>first!.readMember('missing',1000)).toThrow();
+  expect(()=>first!.readMember('package.json',-1)).toThrow();
+  expect(()=>first!.readMemberRange('package.json',-1,1)).toThrow();
+  expect(()=>first!.readBoundMemberRange('package.json',0,65537)).toThrow();
+  expect(productDiskProjectionUsage()).toEqual(beforeInvalid);
   expect(JSON.parse(first.readMember('package.json',1000).toString()).name).toBe('first');
   expect(productDiskProjectionUsage().count).toBe(1);
   expect(first.archive).toBe(identity);expect(first.members).toBe(rows);

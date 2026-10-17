@@ -6,10 +6,17 @@ on:
     branches: [staging, main]
     paths:
       - '.github/workflows/module-installed-consumer.yml'
+      - '.github/workflows/independent-archive-consumer.yml'
+      - '.github/workflows/independent-registry-consumer.yml'
       - 'scripts/prepare-module-consumer-plan.ts'
       - 'scripts/api-module-consumer.py'
       - 'scripts/css-module-consumer.py'
       - 'scripts/lib/module-consumer.py'
+      - 'scripts/lib/afs-module-consumer.py'
+      - 'scripts/lib/afs-consumer-budget.json'
+      - 'scripts/lib/afs-consumer-budget.cjs'
+      - 'scripts/lib/consumer-workflow-budget.cjs'
+      - 'tests/bun/independent-consumer-workflow-budget.test.ts'
       - 'scripts/lib/module-consumer-targets.py'
       - 'scripts/verify-module-consumer-native.ts'
       - 'scripts/module-product-targets.ts'
@@ -26,7 +33,7 @@ on:
   workflow_dispatch:
     inputs:
       request_json:
-        description: 'Explicit target + exact CSS or API and normal CLI acquisition tuples at one actual source SHA; see docs/module-consumer-ci.md'
+        description: 'Explicit target + exact CSS, API or AFS and normal CLI acquisition tuples at one actual source SHA; see docs/module-consumer-ci.md'
         required: true
         type: string
       execute_consumer:
@@ -56,11 +63,19 @@ jobs:
         with:
           bun-version: '1.4.2'
       - run: node --test tests/scripts/module-installed-consumer-workflow.node-test.cjs
+      - run: bun test tests/bun/independent-consumer-workflow-budget.test.ts
   select:
     if: ${{ github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-24.04
     outputs:
       runner: ${{ steps.target.outputs.runner }}
+      module: ${{ steps.target.outputs.module }}
+      afs_job_minutes: ${{ steps.budget.outputs.afs_job_minutes }}
+      afs_command_minutes: ${{ steps.budget.outputs.afs_command_minutes }}
+      afs_setup_minutes: ${{ steps.budget.outputs.afs_setup_minutes }}
+      afs_upload_minutes: ${{ steps.budget.outputs.afs_upload_minutes }}
+      afs_export_minutes: ${{ steps.budget.outputs.afs_export_minutes }}
+      afs_finalization_minutes: ${{ steps.budget.outputs.afs_finalization_minutes }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -82,13 +97,24 @@ jobs:
             const target = productTarget(request.module, request.target);
             if (!target.nativeSourceAvailable) throw Error("Target native source is pending");
             appendFileSync(process.env.GITHUB_OUTPUT, `runner=${target.runner}\n`);
-          '
+            appendFileSync(process.env.GITHUB_OUTPUT, `module=${request.module}\n`);
+          '      - id: budget
+        name: Project the fixed AFS preparation windows
+        env:
+          CONSUMER_BUDGET_MODULE: ${{ steps.target.outputs.module }}
+          CONSUMER_BUDGET_STAGE: prepublish
+          CONSUMER_BUDGET_FLOW: module-installed
+        run: bun scripts/lib/consumer-workflow-budget.cjs
+
   prepare:
     needs: select
     if: ${{ github.event_name == 'workflow_dispatch' }}
     runs-on: ${{ needs.select.outputs.runner }}
-    timeout-minutes: 30
+    timeout-minutes: ${{ needs.select.outputs.module == 'afs' && fromJSON(needs.select.outputs.afs_job_minutes) || 30 }}
     steps:
+      - name: Start the bounded AFS setup clock
+        if: ${{ needs.select.outputs.module == 'afs' }}
+        run: node -e 'require("node:fs").appendFileSync(process.env.GITHUB_ENV,"AFS_WORKFLOW_SETUP_STARTED_NS="+process.hrtime.bigint()+"\n")'
       - uses: actions/checkout@v4
         with:
           path: tools
@@ -108,6 +134,7 @@ jobs:
           sudo apt-get install -y bubblewrap
           bwrap --unshare-user --unshare-pid --ro-bind / / --proc /proc --dev /dev --cap-drop ALL -- /usr/bin/true
       - name: Install tool dependencies without building products
+        timeout-minutes: ${{ needs.select.outputs.module == 'afs' && fromJSON(needs.select.outputs.afs_setup_minutes) || 30 }}
         working-directory: tools
         run: |
           set -euo pipefail
@@ -134,7 +161,16 @@ jobs:
           path: product-source
           ref: ${{ steps.request.outputs.source_sha }}
           persist-credentials: false
+      - name: Require the actual AFS setup to fit its host envelope
+        if: ${{ needs.select.outputs.module == 'afs' }}
+        working-directory: tools
+        env:
+          CONSUMER_BUDGET_MODULE: ${{ needs.select.outputs.module }}
+          CONSUMER_BUDGET_STAGE: prepublish
+          CONSUMER_BUDGET_CHECK_SETUP: 'true'
+        run: node scripts/lib/consumer-workflow-budget.cjs
       - name: Acquire originals and prepare an exact consumer plan
+        timeout-minutes: ${{ needs.select.outputs.module == 'afs' && fromJSON(needs.select.outputs.afs_command_minutes) || 30 }}
         id: plan
         working-directory: tools
         env:
@@ -147,6 +183,7 @@ jobs:
           case "$MODULE_CONSUMER_MODULE" in
             css) driver=scripts/css-module-consumer.py ;;
             api) driver=scripts/api-module-consumer.py ;;
+            afs) driver=scripts/lib/afs-module-consumer.py ;;
             *) echo 'Unsupported module' >&2; exit 1 ;;
           esac
           test -f "$driver"
@@ -174,6 +211,7 @@ jobs:
             python3 "$driver" "$root/consumer-plan.json" --run > "$root/consumer.stdout.json"
           fi
       - name: Record execution boundary
+        timeout-minutes: ${{ needs.select.outputs.module == 'afs' && fromJSON(needs.select.outputs.afs_finalization_minutes) || 30 }}
         if: ${{ always() }}
         env:
           EXECUTE_CONSUMER: ${{ inputs.execute_consumer }}
@@ -184,12 +222,14 @@ jobs:
             echo 'Preparation and driver validation only. The public consumer was not executed. Artifact custody, source binding and validation do not establish registry/native/legal/release admission.' >> "$GITHUB_STEP_SUMMARY"
           fi
       - name: Export bounded closed evidence without product archives or retained data
+        timeout-minutes: ${{ needs.select.outputs.module == 'afs' && fromJSON(needs.select.outputs.afs_export_minutes) || 30 }}
         if: ${{ always() && steps.plan.outputs.root != '' }}
         working-directory: tools
         env:
           MODULE_CONSUMER_ROOT: ${{ steps.plan.outputs.root }}
         run: bun scripts/export-module-consumer-evidence.ts "$MODULE_CONSUMER_ROOT" "$MODULE_CONSUMER_ROOT/safe-evidence"
       - uses: actions/upload-artifact@v4
+        timeout-minutes: ${{ needs.select.outputs.module == 'afs' && fromJSON(needs.select.outputs.afs_upload_minutes) || 30 }}
         if: ${{ always() && steps.plan.outputs.root != '' }}
         with:
           name: module-consumer-preparation-${{ steps.request.outputs.module }}-${{ steps.request.outputs.target }}-${{ steps.request.outputs.source_sha }}-${{ github.run_id }}-${{ github.run_attempt }}

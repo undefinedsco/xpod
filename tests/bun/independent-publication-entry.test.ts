@@ -113,7 +113,7 @@ it('registry consumer reusable workflow defaults to prepare, fixes names and nev
   expect(workflow.jobs.consume.name).toBe('registry-consumer-${{ inputs.module }}-${{ inputs.target }}');
   expect(workflow.jobs.consume['runs-on']).toBe('${{ needs.resolve.outputs.runner }}');
   expect(workflow.jobs.consume.if).toContain("inputs.mode == 'publish'");
-  expect(workflow.jobs.consume['timeout-minutes']).toBe(45);
+  expect(workflow.jobs.consume['timeout-minutes']).toBe("${{ inputs.module == 'afs' && fromJSON(needs.resolve.outputs.afs_job_minutes) || 45 }}");
   const command = workflow.jobs.consume.steps.find((row: any) => row.name === 'Run fixed registry-installed product consumer');
   expect(command.run).toBe('bun scripts/run-independent-publication.ts');
   expect(command.env.INDEPENDENT_PUBLICATION_PHASE).toBe('registry-consumer');

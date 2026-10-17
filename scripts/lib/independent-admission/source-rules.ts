@@ -18,7 +18,9 @@ const hash = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex')
 // The second reviewed supervisor only raises the command ceiling to 25 minutes;
 // command closure, raw limits and receipt semantics remain identical.
 const REVIEWED_SUPERVISORS = new Set([CLI_SOURCE_POLICY.supervisor,
-  'e00e81eac425ece4ab9fa76701591af835fb41634bd366907e88a91cedde7513']);
+  'e00e81eac425ece4ab9fa76701591af835fb41634bd366907e88a91cedde7513',
+  // Exact fixed CLI parent / AFS-only lazy budget projection; no caller ceiling override.
+  '57e1e940ab3022c655c155b0e14be86106fe1dd729212be379a3573ae199ca85']);
 const fail = (message: string): never => { throw new Error('Independent source rules: ' + message); };
 const canonicalJson = (value: any): string => JSON.stringify(value && typeof value === 'object'
   ? Array.isArray(value) ? value.map(item => JSON.parse(canonicalJson(item)))

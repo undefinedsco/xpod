@@ -11,6 +11,7 @@ test('AFS normal product projection uses normal archive originals and cannot bec
   const root = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'afs-product-projection-'));
   try {
     const source = 'a'.repeat(40), workflow = '.github/workflows/agentfs-module-mounted-acceptance.yml';
+    const driver=Buffer.from('actual producer bundled negative-contract fixture');
     const archive = Buffer.from('normal tar archive byte fixture'), raw = Buffer.from('closed AFS normal build original');
     const original = { path: 'evidence/afs-build.raw.log', bytes: raw.length, sha256: hash(raw) };
     const producer = { schemaVersion: 1, kind: 'afs-module-product-production', status: 'controlled-preview-materials',
@@ -21,7 +22,7 @@ test('AFS normal product projection uses normal archive originals and cannot bec
       archive: { path: 'product.tgz', bytes: archive.length, sha256: hash(archive), integrity: 'sha512-' + createHash('sha512').update(archive).digest('base64') },
       phases: Array.from({ length: 8 }, (_, index) => ({ name: index === 4 ? 'afs-build' : 'phase-' + index, raw: original })), packRaw: original,
       published: false, releaseQualified: false, consumerValidated: false, legalClearance: false, nativeAdmission: false };
-    const files = [['producer.receipt.json', Buffer.from(JSON.stringify(producer))], ['product.tgz', archive], [original.path, raw]]
+    const files = [['producer.receipt.json', Buffer.from(JSON.stringify(producer))], ['product.tgz', archive], ['module-admission.mjs',driver], [original.path, raw]]
       .map(([name, body]) => ({ name, body: (body as Buffer).toString('base64') }));
     const file = path.join(root, 'artifact.zip');
     const created = spawnSync('python3', ['-c', "import zipfile,json,base64,sys\nwith zipfile.ZipFile(sys.argv[1],'w',compression=zipfile.ZIP_DEFLATED) as z:\n for r in json.loads(sys.argv[2]):z.writestr(r['name'],base64.b64decode(r['body']))", file, JSON.stringify(files)]);
@@ -40,6 +41,8 @@ test('AFS normal product projection uses normal archive originals and cannot bec
     const result = await projectAfsProductInput({ schemaVersion: 1, acquisitionRoot,
       custodyReceiptSha256: hash(fs.readFileSync(path.join(acquisitionRoot, 'receipt.json'))), members: { producer: 'producer.receipt.json', archive: 'product.tgz' } }, output);
     expect(fs.readFileSync(path.join(output, 'product.tgz'))).toEqual(archive);
+    expect(fs.readFileSync(path.join(output,'module-admission.mjs'))).toEqual(driver);
+    expect(result.preflightDriver.sha256).toBe(hash(driver));
     expect(result.sourceAdmission).toBe(false); expect(result.nativeAdmission).toBe(false); expect(result.releaseQualified).toBe(false);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });

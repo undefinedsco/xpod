@@ -12,7 +12,7 @@ import { githubOriginFacts, githubOriginOriginals, type GitHubOriginObservation 
 export const moduleSourcePhasePolicy = Object.freeze({
   api: 'eaeddab536d6e606042039cfe5290393d5c5a3e454fb590354cc35e5afe2975f',
   css: '431d033a41f01ab317124e1e5488543ea1ac82fa59c2ef3845ddd43ab4e61f4c',
-  afs: '47fa36ae04f843fc41b40e4b703815f18ceaeed4e089e2285305885c8b8f009b',
+  afs: 'c44348bd2e28b04c5e427c0070045c0e28c9437b7abadae6bdcc72d405abd508',
   materials: '4f804fb8af61cfc53c7dc9428a0e8167315b9a430ede4048223c62610ff79b6d',
   limits: 'c1c529aba719356c682affbe630c215e28cc07163192f8f3b601aab7b0126bd4',
   supervisor: '49fd9c7a7a9c9dc1612b1261f0cbc218166f48487df726239437ae9ad98ba407',

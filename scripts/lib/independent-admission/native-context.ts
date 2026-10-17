@@ -254,6 +254,80 @@ export async function collectMacNativeRuntimeContext(input: {
   return capability;
 }
 
+/** Linux uses the same independently issued original custody as macOS. Only
+ * the reviewed CSS parent archive job is supported; SDK/source remains pending. */
+export async function collectLinuxNativeRuntimeContext(input: {
+  artifact: CollectedArtifactCapability; nativeOriginals: unknown; source: unknown;
+}): Promise<NativeMaterialCapability> {
+  const { nativeOriginalsView } = await import('./native-original-collector');
+  const { derivedSourceView } = await import('./source-context');
+  const { collectedProductOriginal, collectedProductOriginalBinding } = await import('./product-original');
+  const { observeRegisteredNativeTar } = await import('./native-tar-observation');
+  const { verifyLinuxQleverRuntimeOriginals, LINUX_QLEVER_REVIEWED_FILES } = await import('./native-linux-runtime');
+  const { modulePackageName } = await import('../../../packages/xpod-cli/src/module-catalog');
+  const product = collectedArtifactView(input.artifact), native = nativeOriginalsView(input.nativeOriginals), source = derivedSourceView(input.source);
+  if (!product || !native || !source || !product.identity.target || !['linux-x64', 'linux-arm64'].includes(product.identity.target)
+    || source.sourceSha !== product.identity.sourceSha || native.originFacts.sourceSha !== product.identity.sourceSha
+    || native.originFacts.target !== product.identity.target || native.originFacts.workflowPath !== '.github/workflows/css-native-products.yml'
+    || hash(source.readTracked('.github/workflows/css-native-products.yml')) !== '8312031501f9f0d640e100ddec75e0fe1150d0ee93812b3f8c6785b032319c0f'
+    || modulePackageName('css', ...product.identity.target.split('-') as [string, string]) !== product.identity.package) return fail('independent reviewed Linux CSS parent/product/Git custody required');
+  const refs = new Map(native.members.map(row => [row.path, { path: row.path, sha256: row.sha256, sizeBytes: row.bytes }]));
+  const read = (name: string, maximum = 8 * 1024 ** 2): Buffer => {
+    const ref = refs.get(name);
+    if (!ref || ref.sizeBytes > maximum) return fail('bounded Linux native original required');
+    const bytes = native.readOriginal(name, maximum);
+    if (bytes.length !== ref.sizeBytes || hash(bytes) !== ref.sha256) return fail('Linux native original changed');
+    return bytes;
+  };
+  const finalPath = 'native-build-materials.json', finalBytes = read(finalPath), final = JSON.parse(finalBytes.toString());
+  if (final.sourceSha !== native.originFacts.sourceSha || final.target !== product.identity.target
+    || String(final.runId) !== String(native.originFacts.runId) || String(final.runAttempt) !== String(native.originFacts.runAttempt)) return fail('Linux native final actual source/run/target differs');
+  const archive = refs.get(final.archive?.path);
+  if (!archive || archive.sha256 !== final.archive.sha256 || archive.sizeBytes !== final.archive.bytes) return fail('Linux native runtime archive original differs');
+  const rows = await observeRegisteredNativeTar(native, archive.path, 'runtime'), prefix = 'native/qlever/';
+  const runtime = new Map(rows.map(row => [row.path, row])), actual = product.members.filter(row => row.path.startsWith(prefix));
+  if (actual.length !== runtime.size) return fail('Linux runtime tar/product complete member set differs');
+  for (const row of actual) {
+    const original = runtime.get(row.path.slice(prefix.length));
+    if (!original || original.type === 'symlink' || original.sha256 !== row.sha256 || original.sizeBytes !== row.bytes) return fail('Linux runtime tar/product bytes differ');
+  }
+  const manifestBytes = product.readMember(prefix + 'manifest.json', 1024 ** 2), manifest = JSON.parse(manifestBytes.toString());
+  if (!Array.isArray(manifest.artifacts) || manifest.artifacts.length > 1024) return fail('bounded Linux runtime manifest required');
+  const members = new Map<string, import('./native-linux-runtime').LinuxNativeRanges>();
+  for (const item of manifest.artifacts) {
+    const original = collectedProductOriginal(input.artifact, { path: prefix + item.path, sha256: item.sha256, sizeBytes: item.size });
+    if (collectedProductOriginalBinding(original)?.artifact !== input.artifact) return fail('Linux product original private binding required');
+    members.set(item.path, { reference: { path: item.path, sha256: item.sha256, sizeBytes: item.size }, readRange: original.readRange });
+  }
+  const jobs = native.metadataOriginals.find(row => row.name === 'jobs.original.json'), expected = native.originFacts.originals.find(row => row.name === 'jobs.original.json');
+  if (!jobs || !expected || jobs.data.length !== expected.bytes || hash(jobs.data) !== expected.sha256) return fail('Linux archive job API original changed');
+  const job = JSON.parse(jobs.data.toString()).jobs.find((row: any) => row.id === native.originFacts.producerJobId);
+  if (job?.name !== `targets (${product.identity.target}) / native / linux / module_runtime_materials / archive`) return fail('reviewed Linux archive producer job required');
+  const observed = verifyLinuxQleverRuntimeOriginals({ target: product.identity.target, final: finalBytes, manifest: manifestBytes,
+    qleverLock: source.readTracked('qlever/qlever.lock.json'), physicalAbiHeader: source.readTracked('qlever/rdf_protocol/include/xpod_rdf_physical_backend.h'),
+    reviewedFiles: new Map(LINUX_QLEVER_REVIEWED_FILES.map(row => [row.path, source.readTracked(row.path)])), members,
+    originalInventory: [...refs.values()], readOriginal: (ref, maximum) => {
+      const actual = refs.get(ref.path);
+      if (!actual || actual.sha256 !== ref.sha256 || actual.sizeBytes !== ref.sizeBytes) return fail('Linux original reference not privately bound');
+      return read(ref.path, maximum);
+    }, jobWindow: { startedUTC: job.started_at, closedUTC: job.completed_at } });
+  const { uncoveredNativeImages, inventoryObserved } = await observeOtherProductNativeImages(input.artifact, new Set(actual.map(row => row.path)));
+  const capability = Object.freeze({}) as NativeMaterialCapability;
+  const validate = () => {
+    if (collectedArtifactView(input.artifact) !== product || derivedSourceView(input.source) !== source || nativeOriginalsView(input.nativeOriginals) !== native) return fail('Linux native custody revoked');
+  };
+  const pending = Object.freeze([...observed.pending, ...(!inventoryObserved ? ['whole-product-native-image-inventory-budget-exceeded'] : []), ...uncoveredNativeImages.map(row => 'uncovered-product-native-image:' + row.path)]);
+  const view: ControlledNativeRuntimeView = Object.freeze({ identity: product.identity, nativeSourceSha: native.originFacts.sourceSha,
+    nativeOriginVerified: true, originalStageBindingsVerified: true, binaryFormatsVerified: inventoryObserved && uncoveredNativeImages.length === 0,
+    qleverRuntimeAbiVerified: true, agentfsRuntimeAbiVerified: false, selectedNativeBinaryFormatsVerified: true,
+    runtimeAbiScope: 'css-qlever-bundle', uncoveredNativeImages, runtimeAbiVerified: inventoryObserved && uncoveredNativeImages.length === 0,
+    sourceMaterialsVerified: false, nativeSourceClosureVerified: false, pending });
+  runtimeIssued.set(capability, { view, validate });
+  issued.set(capability, () => { validate(); return Object.freeze({ identity: product.identity, custodyKind: 'collected-native-originals' as const,
+    indexPath: finalPath, indexSha256: hash(finalBytes), status: 'material-integrity-verified' as const, externalAdmission: 'pending' as const }); });
+  return capability;
+}
+
 async function observeOtherProductNativeImages(artifact: CollectedArtifactCapability, covered: ReadonlySet<string>) {
   const product = collectedArtifactView(artifact);
   if (!product) return fail('real product custody required for native image inventory');
@@ -287,7 +361,7 @@ export async function collectNativeAdmissionContext(input: {
   if (!product || !source || source.sourceSha !== product.identity.sourceSha || !product.identity.target) return fail('actual platform product and immutable Git source required');
   const [platform_, arch] = product.identity.target.split('-');
   const module_ = (['css', 'api', 'afs'] as const).find(id => modulePackageName(id, platform_, arch) === product.identity.package);
-  if (module_ === 'css') return collectMacNativeRuntimeContext({ ...input, nativeOriginals: input.nativeOriginals });
+  if (module_ === 'css') return (platform_ === 'linux' ? collectLinuxNativeRuntimeContext : collectMacNativeRuntimeContext)({ ...input, nativeOriginals: input.nativeOriginals });
   if (module_ !== 'api' && module_ !== 'afs') return fail('canonical supported native product identity required');
   const material = inspectModuleNativeMaterials({ module: module_, target: product.identity.target, members: product.members,
     readMember: product.readMember, sourcePins: source.readTracked(module_ === 'api' ? 'packages/xpod-api/scripts/inngest-input-pins.json' : 'scripts/agentfs-native-ci/mounted/native-authority.json'),

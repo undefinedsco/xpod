@@ -35,8 +35,8 @@ def phase_plan(repo, output, version, target):
                        '--native-pins', str(output / 'originals/native-pins.json')], 900),
         ('driver', ['bun', 'build', 'scripts/agentfs-native-ci/mounted/module-admission.ts', '--target=node', '--format=esm',
                     '--metafile=' + str(output / 'driver-inputs.json'), '--outfile', str(output / 'module-admission.mjs')], 300),
-        ('cli-pack', ['bun', '--cwd', str(repo / 'packages/xpod-cli'), 'pm', 'pack', '--filename', str(output / 'cli.tgz'), '--ignore-scripts'], 300),
-        ('client-pack', ['bun', '--cwd', str(repo / 'packages/xpod-client'), 'pm', 'pack', '--filename', str(output / 'client.tgz'), '--ignore-scripts'], 300),
+        ('cli-pack', ['bun', 'pm', '--cwd', str(repo / 'packages/xpod-cli'), 'pack', '--filename', str(output / 'cli.tgz'), '--ignore-scripts'], 300),
+        ('client-pack', ['bun', 'pm', '--cwd', str(repo / 'packages/xpod-client'), 'pack', '--filename', str(output / 'client.tgz'), '--ignore-scripts'], 300),
     ]
 
 

@@ -1,3 +1,4 @@
+import {productConsumerOriginalLimits} from './lib/independent-admission/product-consumer-limits';
 import { PUBLICATION_DISK_LIMITS } from './lib/independent-admission/publication-disk-budget';
 import { archiveConsumerArtifactName } from './lib/independent-admission/archive-consumer-originals';
 import { registryConsumerArtifactName } from './lib/independent-admission/registry-consumer-originals';
@@ -122,16 +123,16 @@ export async function acquireIndependentProductInput(input: ArtifactAcquisitionI
 }
 /** Fixed GET-only registry-consumer original transport. It grants no origin
  * or consumer authority; the reviewed GitHub observer independently binds it. */
-export async function acquireRegistryConsumerOriginals(input: ArtifactAcquisitionInput, output: string, options: { token?: string } = {}) {
-  if (Object.keys(options).some(key => key !== 'token')) fail('unknown registry original transport option');
+export async function acquireRegistryConsumerOriginals(input: ArtifactAcquisitionInput, output: string, options: { token?: string;module?:'afs' } = {}) {
+  if (Object.keys(options).some(key => !['token','module'].includes(key))||options.module!==undefined&&options.module!=='afs') fail('unknown registry original transport option');
   return acquireProductInput(input, output, { token: options.token,
-    limits: { packedBytes: 96 * 1024 ** 2, expandedBytes: 72 * 1024 ** 2, members: 2100 } }, false, true);
+    limits:productConsumerOriginalLimits(options.module??'cli') }, false, true,false,false,options.module);
 }
 
 /** Exact prepublish originals remain a separate artifact family and role. */
-export async function acquireArchiveConsumerOriginals(input:ArtifactAcquisitionInput,output:string,options:{token?:string}={}){
-  if(Object.keys(options).some(key=>key!=='token'))fail('unknown archive original transport option');
-  return acquireProductInput(input,output,{token:options.token,limits:{packedBytes:96*1024**2,expandedBytes:72*1024**2,members:2100}},false,true,false,true);
+export async function acquireArchiveConsumerOriginals(input:ArtifactAcquisitionInput,output:string,options:{token?:string;module?:'afs'}={}){
+  if(Object.keys(options).some(key=>!['token','module'].includes(key))||options.module!==undefined&&options.module!=='afs')fail('unknown archive original transport option');
+  return acquireProductInput(input,output,{token:options.token,limits:productConsumerOriginalLimits(options.module??'cli')},false,true,false,true,options.module);
 }
 /** Native original transport only. Independent origin observation is required
  * again by the central native collector; this does not issue admission. */
@@ -145,7 +146,7 @@ export async function acquireLegacyRootSupply(input: ArtifactAcquisitionInput, o
     || String(input.runId) !== process.env.GITHUB_RUN_ID || String(input.runAttempt) !== process.env.GITHUB_RUN_ATTEMPT) fail('same-run runtime binding required');
   return acquireProductInput(input, output, { ...dependencies, limits: { packedBytes: 16 * 1024 ** 2, expandedBytes: 40 * 1024 ** 2, members: 4096 } }, true);
 }
-async function acquireProductInput(input: ArtifactAcquisitionInput, output: string, dependencies: Dependencies, legacy: boolean, registryConsumer = false, nativeOriginals = false, archiveConsumer = false) {
+async function acquireProductInput(input: ArtifactAcquisitionInput, output: string, dependencies: Dependencies, legacy: boolean, registryConsumer = false, nativeOriginals = false, archiveConsumer = false,consumerModule?:'afs') {
   if (input?.schemaVersion !== 1 || !/^[a-f0-9]{40}$/u.test(input.sourceSha) || !/^[a-f0-9]{40}$/u.test(input.runHeadSha)
     || !/^[a-f0-9]{64}$/u.test(input.artifactSha256) || ![input.runId, input.runAttempt, input.artifactId].every(positive)) fail('exact source/run/attempt/artifact binding required');
   if (Object.keys(input).some(key => !['schemaVersion', 'sourceSha', 'runHeadSha', 'runId', 'runAttempt', 'artifactId', 'artifactSha256'].includes(key))) fail('unknown acquisition selector');
@@ -192,7 +193,7 @@ async function acquireProductInput(input: ArtifactAcquisitionInput, output: stri
     const consumerName=archiveConsumer?archiveConsumerArtifactName:registryConsumerArtifactName;
     const consumerNames = (['client', 'cli'] as const).map(module => consumerName({ module, sourceSha: input.sourceSha, runId: input.runId, runAttempt: input.runAttempt }))
       .concat((['api', 'css', 'afs'] as const).flatMap(module => MODULE_TARGETS.map(target => consumerName({ module, target: `${target.platform}-${target.arch}`, sourceSha: input.sourceSha, runId: input.runId, runAttempt: input.runAttempt }))));
-    const allowedNames = nativeOriginals ? workflow.path === '.github/workflows/agentfs-native-acceptance.yml' ? MODULE_TARGETS.map(target => `agentfs-native-${target.platform}-${target.arch}-${input.sourceSha}`) : (workflow.path === CSS_PRODUCT_WORKFLOW ? ['darwin-arm64'] : ['darwin-arm64','darwin-x64']).map(target => `qlever-local-runtime-${target}-${input.sourceSha}`) : registryConsumer ? consumerNames : legacy ? [`legacy-root-normal-afs-${input.sourceSha}-${input.runId}-${input.runAttempt}`] : workflow.path === CLI_PRODUCT_WORKFLOW
+    const allowedNames = nativeOriginals ? workflow.path === '.github/workflows/agentfs-native-acceptance.yml' ? MODULE_TARGETS.map(target => `agentfs-native-${target.platform}-${target.arch}-${input.sourceSha}`) : (workflow.path === CSS_PRODUCT_WORKFLOW ? ['darwin-arm64'] : ['darwin-arm64','darwin-x64']).map(target => `qlever-local-runtime-${target}-${input.sourceSha}`) : registryConsumer ? consumerNames.filter(name=>consumerModule!=='afs'||name.startsWith(archiveConsumer?'xpod-archive-consumer-afs-':'xpod-registry-consumer-afs-')) : legacy ? [`legacy-root-normal-afs-${input.sourceSha}-${input.runId}-${input.runAttempt}`] : workflow.path === CLI_PRODUCT_WORKFLOW
       ? [...['Linux', 'macOS'].map(os => `xpod-cli-${os}-${input.sourceSha}`), ...cliPublicationNames]
       : [API_PRODUCT_WORKFLOW, CSS_PRODUCT_WORKFLOW,CSS_ROUTED_PRODUCT_WORKFLOW].includes(workflow.path)
         ? productTargets(workflow.path !== API_PRODUCT_WORKFLOW ? 'css' : 'api').filter(row => row.nativeSourceAvailable)

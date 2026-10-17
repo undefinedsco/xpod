@@ -1,3 +1,4 @@
+import {productProjectionIoBudget} from './product-projection-io-budget';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -71,8 +72,9 @@ function safeName(name: string, directory: boolean): string {
 /** Index a real tgz into a private, hash-bound disk snapshot. The caller must
  * compare returned archive identity with independently authenticated custody. */
 const residentProjections=new Map<string,number>();
-export function productDiskProjectionUsage(){return Object.freeze({count:residentProjections.size,bytes:[...residentProjections.values()].reduce((sum,value)=>sum+value,0)});}
+export function productDiskProjectionUsage(){return Object.freeze({count:residentProjections.size,bytes:[...residentProjections.values()].reduce((sum,value)=>sum+value,0),rehydrationBytes:projectionBudget.snapshot().reservedBytes});}
 let activeProjection:ProductDiskInventory|undefined;
+let projectionBudget=productProjectionIoBudget(),liveProducts=0;
 let indexing=Promise.resolve(),projectionIndexing=false;
 export async function indexProductArchiveOnDisk(file:string):Promise<ProductDiskInventory>{
  const previous=indexing;let release!:()=>void;indexing=new Promise<void>(resolve=>{release=resolve;});
@@ -164,23 +166,25 @@ async function indexOneProductArchive(file: string): Promise<ProductDiskInventor
         ||(['dev','ino','size','mtimeNs','ctimeNs','mode'] as const).some(key=>current[key]!==retainedIdentity[key]))fail('retained product identity changed');
     };
     assertRetained();
-    let rehydrations=0;
+    if(liveProducts===0)projectionBudget=productProjectionIoBudget();
+    projectionBudget.register(packedSha256,expanded);liveProducts++;
     const ensureProjection=()=>{
       if(disposed)fail('product projection disposed; unchanged range unavailable');assertRetained();
       if(fd!==undefined)return;
       if(projectionIndexing)fail('product projection indexing in progress');
-      if(++rehydrations>8)fail('product projection rehydration count exceeded');
+      projectionBudget.reserve(expanded);
       if(activeProjection!==result){activeProjection?.compactProjection();activeProjection=undefined;}
       assertProductDiskBudget(fs.statfsSync(root,{bigint:true}),expanded);
       const original=fs.openSync(file,fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW);
       try{
         const before=fs.fstatSync(original,{bigint:true});
         if((['dev','ino','size','mtimeNs','ctimeNs','mode','nlink'] as const).some(key=>before[key]!==retainedIdentity[key]))fail('retained product fd identity changed');
+        const ioStarted=Date.now(),ioTimeout=Math.min(limits.timeoutMs,projectionBudget.remainingIoMilliseconds());
         const projected=spawnSync(process.platform==='win32'?'python':'python3',[path.resolve(import.meta.dir,'../rehydrate-bound-product.py')],{
-          input:JSON.stringify({packedBytes:packed,packedSha256,expandedBytes:expanded,tarSha256,destination:snapshot,timeoutMs:limits.timeoutMs,freeFloorBytes:2*1024**3}),
-          timeout:limits.timeoutMs,maxBuffer:65536,stdio:['pipe','pipe','pipe',original],
+          input:JSON.stringify({packedBytes:packed,packedSha256,expandedBytes:expanded,tarSha256,destination:snapshot,timeoutMs:ioTimeout,freeFloorBytes:2*1024**3}),
+          timeout:ioTimeout,maxBuffer:65536,stdio:['pipe','pipe','pipe',original],
         });
-        assertRetained();
+        projectionBudget.recordIo(Date.now()-ioStarted);assertRetained();
         if(projected.error||projected.status!==0||projected.signal)fail('bounded product projection rehydration failed');
         const actual=JSON.parse(String(projected.stdout));if(actual.bytes!==expanded||actual.sha256!==tarSha256)fail('product projection identity mismatch');
         fd=fs.openSync(snapshot,fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW);bound=fs.fstatSync(fd);residentProjections.set(snapshot,expanded);activeProjection=result;
@@ -190,23 +194,25 @@ async function indexOneProductArchive(file: string): Promise<ProductDiskInventor
       archive: Object.freeze({ bytes: packed, sha256: packedSha256, integrity }),
       members: Object.freeze(rows),
       readMember(name: string, maximumBytes: number): Buffer {
-        ensureProjection();
+        if(disposed)fail('product projection disposed; unchanged range unavailable');
         const row = byName.get(name);
-        if (disposed || !row || !Number.isSafeInteger(maximumBytes) || maximumBytes < 0 || row.bytes > maximumBytes
-          || !same(bound, fs.fstatSync(fd!))) return fail('unique bounded unchanged member required');
+        if (!row || !Number.isSafeInteger(maximumBytes) || maximumBytes < 0 || row.bytes > maximumBytes) return fail('unique bounded unchanged member required');
+        ensureProjection();
+        if(!same(bound,fs.fstatSync(fd!)))return fail('unique bounded unchanged member required');
         const bytes = Buffer.alloc(row.bytes); read(bytes, offsets.get(name)!);
         if (createHash('sha256').update(bytes).digest('hex') !== row.sha256 || !same(bound, fs.fstatSync(fd!))) fail('snapshot member changed');
         return bytes;
       },
       readMemberRange(name: string, offset: number, length: number): Buffer {
-        ensureProjection();
+        if(disposed)fail('product projection disposed; unchanged range unavailable');
         const row = byName.get(name);
-        if (disposed || !row || !Number.isSafeInteger(offset) || !Number.isSafeInteger(length)
-          || offset < 0 || length < 0 || length > 65536 || offset > row.bytes || length > row.bytes - offset
-          || !same(bound, fs.fstatSync(fd!))) return fail('bounded unchanged member range required');
+        if (!row || !Number.isSafeInteger(offset) || !Number.isSafeInteger(length)
+          || offset < 0 || length < 0 || length > 65536 || offset > row.bytes || length > row.bytes - offset) return fail('bounded unchanged member range required');
         // Reserve before work, including zero-length ranges and failed reads.
         if (rangeCalls >= limits.rangeCalls || row.bytes > limits.rangeHashBytes - rangeHashBytes)
           return fail('cumulative member range budget exceeded');
+        ensureProjection();
+        if(!same(bound,fs.fstatSync(fd!)))return fail('bounded unchanged member range required');
         rangeCalls++; rangeHashBytes += row.bytes;
         const rangeDeadline = Date.now() + limits.timeoutMs;
         const hash = createHash('sha256'); const buffer = Buffer.alloc(65536);
@@ -221,11 +227,13 @@ async function indexOneProductArchive(file: string): Promise<ProductDiskInventor
         return bytes;
       },
       readBoundMemberRange(name: string, offset: number, length: number): Buffer {
-        ensureProjection();
+        if(disposed)fail('product projection disposed; unchanged range unavailable');
         const row = byName.get(name);
-        if (disposed || !row || !Number.isSafeInteger(offset) || !Number.isSafeInteger(length)
-          || offset < 0 || length < 0 || length > 65536 || offset > row.bytes || length > row.bytes - offset
-          || !same(bound, fs.fstatSync(fd!))) return fail('bounded unchanged original range required');
+        if (!row || !Number.isSafeInteger(offset) || !Number.isSafeInteger(length)
+          || offset < 0 || length < 0 || length > 65536 || offset > row.bytes || length > row.bytes - offset) return fail('bounded unchanged original range required');
+        if(originalCalls>=32768||length>16*1024**2-originalBytes)return fail('native header original range budget exceeded');
+        ensureProjection();
+        if(!same(bound,fs.fstatSync(fd!)))return fail('bounded unchanged original range required');
         // Each member was fully hashed while building this same snapshot fd's
         // inventory. ctime/mtime/size/inode/nlink changes invalidate every range.
         // Rehashing a 33MiB image for each 8-byte load command would consume the
@@ -240,7 +248,7 @@ async function indexOneProductArchive(file: string): Promise<ProductDiskInventor
         if(fd!==undefined){fs.closeSync(fd);fd=undefined;fs.rmSync(snapshot,{force:true});residentProjections.delete(snapshot);}
         if(activeProjection===result)activeProjection=undefined;
       },
-      dispose() { if (!disposed) { disposed = true;if(fd!==undefined)fs.closeSync(fd); fd = undefined;if(activeProjection===result)activeProjection=undefined;residentProjections.delete(snapshot);fs.rmSync(root, { recursive: true, force: true }); } },
+      dispose() { if (!disposed) { disposed = true;liveProducts--;if(fd!==undefined)fs.closeSync(fd); fd = undefined;if(activeProjection===result)activeProjection=undefined;residentProjections.delete(snapshot);fs.rmSync(root, { recursive: true, force: true }); } },
     });
     activeProjection=result;return result;
   } catch (error) {

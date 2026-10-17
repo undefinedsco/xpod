@@ -10,6 +10,7 @@ import authority from '../agentfs-native-ci/mounted/native-authority.json';
 import limits from './module-artifact-limits.json';
 import { verifyNativeMaterialTarget } from './physical-module-native';
 import { runMountedPlatformAdmission, REQUIRED_MOUNTED_CASES } from '../agentfs-native-ci/mounted/platform-admission';
+import { defaultBackend } from '../../packages/xpod-afs/src/agent-fs/mount';
 import { MODULE_CHAIN_CASE } from '../agentfs-native-ci/mounted/module-admission';
 
 export function afsConsumerTarget(target: string, host?: { platform: string; arch: string }) {
@@ -74,7 +75,7 @@ export async function runInstalledAfsMounted(handoff: AfsInstalledConsumerHandof
   Object.assign(process.env, { XPOD_MOUNTED_ARCHIVE: handoff.archive.path, XPOD_MOUNTED_ARCHIVE_SHA: handoff.archive.sha256,
     XPOD_MOUNTED_HELPER_SHA: handoff.helper.sha256, XPOD_MOUNTED_WORKSPACE: workspace, XPOD_MOUNTED_NODE: handoff.node.path,
     XPOD_MOUNTED_EVIDENCE: handoff.evidence, XPOD_MOUNTED_OS: target.platform, XPOD_MOUNTED_ARCH: target.arch,
-    XPOD_MOUNTED_BACKEND: 'nfs', XPOD_MOUNTED_REQUIRE_NOBUN: handoff.runtime === 'node' ? '1' : '0' });
+    XPOD_MOUNTED_BACKEND: defaultBackend(target.platform), XPOD_MOUNTED_MIN_PASSED: String(new Set([...REQUIRED_MOUNTED_CASES, MODULE_CHAIN_CASE]).size), XPOD_MOUNTED_REQUIRE_NOBUN: handoff.runtime === 'node' ? '1' : '0' });
   const env = { ...process.env, HOME: handoff.home, SOLID_HOME: path.join(handoff.home, '.solid'),
     XPOD_AGENTFS_MODULE_ENTRY: handoff.entry.path, XPOD_AGENTFS_MODULE_RUNTIME: handoff.selectedRuntime.path,
     XPOD_AGENTFS_MODULE_CORE: handoff.cliCore.path, XPOD_AGENTFS_MODULE_STORE: handoff.storeRoot,

@@ -48,4 +48,4 @@ metadata = dict(schemaVersion=1, profile='module-bookworm-gcc12', baseImage=base
     lockSha256=hashfile(root / 'qlever.lock.json'))
 (profile / 'inputs.json').write_text(json.dumps(metadata, sort_keys=True, indent=2) + '\n')
 PY
-exec bash "$qlever_root/scripts/build-qlever-runtime-sdk.sh"
+exec bash "$qlever_root/scripts/build-qlever-runtime-sdk.sh" "$@"

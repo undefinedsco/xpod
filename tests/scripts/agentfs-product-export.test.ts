@@ -113,7 +113,7 @@ describe('exact product export', () => {
     expect(workflow).toContain("if: steps.products.outcome == 'success'");
     expect(workflow).toContain('afs-module-products-${{ matrix.target }}-${{ github.sha }}');
     expect(workflow).toContain('/product-export/'); expect(workflow).toContain('/export/');
-    expect(normalCommand('cli-pack')).toEqual(['bun', '--cwd', normalProducerRoot + '/packages/xpod-cli', 'pm', 'pack', '--filename', normalOutput + '/cli.tgz', '--ignore-scripts']);
+    expect(normalCommand('cli-pack')).toEqual(['bun', 'pm', '--cwd', normalProducerRoot + '/packages/xpod-cli', 'pack', '--filename', normalOutput + '/cli.tgz', '--ignore-scripts']);
     const parsed = parse(workflow), uploads = parsed.jobs['mounted-module'].steps.filter((step: any) => step.uses === 'actions/upload-artifact@v4');
     const production = uploads.find((step: any) => step.with.name.startsWith('afs-module-production-'));
     expect(production.if ?? 'success()').toBe('success()');
@@ -163,7 +163,7 @@ with tarfile.open(sys.argv[1],'w:gz') as t:
     expect(readFileSync('.github/workflows/ci.yml', 'utf8')).toContain('bun test ./packages/xpod-client/tests');
     expect(readFileSync('.github/workflows/cli-package.yml', 'utf8')).toContain("'packages/xpod-client/**'");
     expect(readFileSync('scripts/check-cli-package.cjs', 'utf8')).toContain("run('bun', ['run', 'test'], runtimeClientRoot)");
-    expect(normalCommand('client-pack')).toEqual(['bun', '--cwd', normalProducerRoot + '/packages/xpod-client', 'pm', 'pack', '--filename', normalOutput + '/client.tgz', '--ignore-scripts']);
+    expect(normalCommand('client-pack')).toEqual(['bun', 'pm', '--cwd', normalProducerRoot + '/packages/xpod-client', 'pack', '--filename', normalOutput + '/client.tgz', '--ignore-scripts']);
     const tools = workflow.indexOf('bun run --filter @undefineds.co/xpod-cli build:tools');
     const client = workflow.indexOf('bun run --filter @undefineds.co/xpod-client build');
     const cli = workflow.indexOf('bun run --filter @undefineds.co/xpod-cli build\n');
@@ -213,7 +213,12 @@ describe('AgentFS mounted development workflow entry contract', () => {
     expect(body).toContain('--verify-module-native-source');
     expect(body).toContain('noPromotion');
     const uploads = job.steps.filter((step: any) => step.uses === 'actions/upload-artifact@v4');
+    const diagnostics = uploads.find((step: any) => step.with.name.startsWith('afs-module-producer-diagnostics-'));
+    expect(diagnostics.if).toBe("always() && env.AFS_PRODUCT_ROOT != ''");
+    expect(diagnostics.with.path).toBe('${{ env.AFS_PRODUCT_ROOT }}/diagnostics/');
+    expect(job.steps.find((step: any) => step.name === 'Preserve bounded normal AFS producer diagnostics').if).toBe(diagnostics.if);
     expect(uploads.map((step: any) => step.with.name)).toEqual([
+      'afs-module-producer-diagnostics-${{ matrix.target }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}',
       'afs-module-production-${{ matrix.target }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}',
       'afs-module-products-${{ matrix.target }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}',
       'afs-module-mounted-${{ matrix.target }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}',

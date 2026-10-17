@@ -56,7 +56,7 @@ export async function preparePublicationGroup(input:PublicationGroupPreparationI
  validatePublicationConsumerRuns(input.consumerRuns??[],input.selectors[0]!.sourceSha);
  if(!path.isAbsolute(input.checkout)||!path.isAbsolute(input.output)||fs.existsSync(input.output))fail('canonical checkout and new absolute output required');
  fs.mkdirSync(input.output,{mode:0o700});
- const resources=await preflightPublicationResources({selectors:input.selectors,output:input.output,token:input.token,reservationDirectory:fs.realpathSync(os.tmpdir())});
+ const resources=await preflightPublicationResources({selectors:input.selectors,additionalAcquisitions:input.consumerRuns?.map(row=>row.consumerRun),output:input.output,token:input.token,reservationDirectory:fs.realpathSync(os.tmpdir())});
  if(resources.status==='pending')return {status:'pending',pending:resources.pending};
  const session:PreparationSession={requests:new Map()},products:import('./publication').ProductGroupPublicationInput['products'][number][]=[],registryDependencies:{artifact:CollectedArtifactCapability;registry:NonNullable<Awaited<ReturnType<typeof observeRegistryArtifactIfPublished>>>}[]=[];
  const selectedNames=new Set<string>(),portableReady=new Set<CollectedArtifactCapability>();

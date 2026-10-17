@@ -30,13 +30,15 @@ export async function projectAfsProductInput(input: {
       || producer.packRaw?.path !== 'evidence/afs-build.raw.log' || !isDeepStrictEqual(producer.packRaw, producer.phases[4].raw)) fail('normal archive/phase reference mismatch');
     const raw = member(producer.packRaw.path, 128 * 1024 ** 2, 0);
     if (raw.bytes !== producer.packRaw.bytes || raw.sha256 !== producer.packRaw.sha256) fail('actual normal build original mismatch');
-    project([select(archiveMember, 'product.tgz')]);
+    const preflightDriver=member('module-admission.mjs',16*1024**2);
+    project([select(archiveMember, 'product.tgz'),select(preflightDriver,'module-admission.mjs')]);
     const sha512 = createHash('sha512');
     for await (const chunk of createReadStream(path.join(temporary, 'product.tgz'))) sha512.update(chunk);
     if (producer.archive.integrity !== 'sha512-' + sha512.digest('base64')) fail('actual normal product integrity mismatch');
     const receipt = { schemaVersion: 1, kind: 'afs-product-input-projection', status: 'projected-blocked',
       custodyReceipt: { path: path.join(root, 'receipt.json'), sha256: input.custodyReceiptSha256 },
       producerReceipt: { path: 'producer.receipt.json', sha256: producerMember.sha256 },
+      preflightDriver:{path:'module-admission.mjs',bytes:preflightDriver.bytes,sha256:preflightDriver.sha256},
       archive: { ...producer.archive }, sourceSha: context.actualCheckoutSha, runHeadSha: context.runHeadSha,
       runId: context.runId, runAttempt: context.runAttempt, target, version: context.version,
       actualCheckoutVerified: false, exactAttemptAdmitted: false, published: false, releaseQualified: false,

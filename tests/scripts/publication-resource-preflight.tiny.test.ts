@@ -25,3 +25,15 @@ test('wrong immutable digest is a concrete resource pending and conflicting tupl
   await expect(preflightPublicationResources({selectors:[row,{...row,runAttempt:2}],output:root})).rejects.toThrow('Conflicting');
  }finally{fs.rmSync(root,{recursive:true,force:true});}
 });
+test('consumer locator metadata joins immutable ZIP reservation without adding fictitious product tgz bounds',async()=>{
+ const root=fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()),'resource-consumer-runs-'));let calls=0;
+ try{
+  const consumer={...row,artifactId:9,artifactSha256:'d'.repeat(64)};
+  const report=await preflightPublicationResources({selectors:[row],additionalAcquisitions:[consumer,consumer],output:root},(async(url)=>{
+   calls++;const selected=String(url).endsWith('/9')?consumer:row;
+   return new Response(JSON.stringify({id:selected.artifactId,expired:false,digest:'sha256:'+selected.artifactSha256,size_in_bytes:selected.artifactId===9?5678:1234,workflow_run:{id:4,head_sha:row.runHeadSha}}));
+  }) as typeof fetch);
+  expect(calls).toBe(2);expect(report.immutableArtifacts.map(row=>row.bytes)).toEqual([1234,5678]);
+  expect(fs.existsSync(path.join(root,'resource-artifact-9.original.json'))).toBe(true);
+ }finally{fs.rmSync(root,{recursive:true,force:true});}
+});

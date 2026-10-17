@@ -156,7 +156,7 @@ export async function collectModuleAdmissionArtifact(input: {
     custodyReceiptSha256: hash(receiptBytes), members: { producer: 'producer.receipt.json', archive: 'product.tgz', packRaw: 'evidence/pack.raw.log' } }, input.projectionOutput);
   const output = path.resolve(input.projectionOutput);
   const selections = input.module === 'afs'
-    ? [ ['producer.receipt.json', 'producer.receipt.json'], ['product.tgz', 'product.tgz'] ] as const
+    ? [ ['producer.receipt.json', 'producer.receipt.json'], ['product.tgz', 'product.tgz'],['module-admission.mjs','module-admission.mjs'] ] as const
     : [ ['producer.receipt.json', 'producer.receipt.json'], ['product.tgz', 'product.tgz'], ['evidence/pack.raw.log', 'pack.raw.log'] ] as const;
   const originals = selections.map(([name, destination]) => {
     const rows = custody.inventory.members.filter((row: any) => row.path === name && row.kind === 'file');

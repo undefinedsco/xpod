@@ -6,17 +6,17 @@ import { preflightPublicationDisk, PUBLICATION_DISK_LIMITS } from './publication
 /** Resource observation only. It deliberately issues no origin or product cap. */
 export async function preflightPublicationResources(input:{
   selectors:readonly Omit<ArtifactAcquisitionInput,'schemaVersion'>[];
-  output:string;token?:string;reservationDirectory?:string;
+  output:string;token?:string;reservationDirectory?:string;additionalAcquisitions?:readonly Omit<ArtifactAcquisitionInput,'schemaVersion'>[];
 }, transport:typeof fetch=fetch) {
   const pending:string[]=[];
   const tuples=new Map<string,Omit<ArtifactAcquisitionInput,'schemaVersion'>>();
   const ids=new Map<number,string>();
-  for(const row of input.selectors){
+  for(const row of [...input.selectors,...(input.additionalAcquisitions??[])]){
     const key=[row.sourceSha,row.runHeadSha,row.runId,row.runAttempt,row.artifactId,row.artifactSha256].join(':');
     if(ids.has(row.artifactId)&&ids.get(row.artifactId)!==key) throw Error('Conflicting immutable artifact reservation');
     ids.set(row.artifactId,key);tuples.set(key,row);
   }
-  if(!tuples.size||tuples.size>28)throw Error('Bounded nonempty immutable reservation required');
+  if(!tuples.size||tuples.size>42)throw Error('Bounded nonempty immutable reservation required');
   const sizes:number[]=[],observations:{artifactId:number;bytes:number;sha256:string}[]=[];
   const started=Date.now();
   for(const row of tuples.values()){

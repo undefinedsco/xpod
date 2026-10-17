@@ -36,6 +36,10 @@ jobs:
     outputs:
       runner: ${{ steps.resolve.outputs.runner }}
       artifact_name: ${{ steps.resolve.outputs.artifact_name }}
+      afs_job_minutes: ${{ steps.budget.outputs.afs_job_minutes }}
+      afs_command_minutes: ${{ steps.budget.outputs.afs_command_minutes }}
+      afs_setup_minutes: ${{ steps.budget.outputs.afs_setup_minutes }}
+      afs_upload_minutes: ${{ steps.budget.outputs.afs_upload_minutes }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -55,17 +59,27 @@ jobs:
           REGISTRY_CONSUMER_MODULE: ${{ inputs.module }}
           REGISTRY_CONSUMER_TARGET: ${{ inputs.target }}
         run: bun scripts/run-independent-publication.ts
+      - id: budget
+        name: Project the fixed AFS host windows
+        env:
+          CONSUMER_BUDGET_MODULE: ${{ inputs.module }}
+          CONSUMER_BUDGET_STAGE: postpublish
+          CONSUMER_BUDGET_FLOW: matching-host
+        run: bun scripts/lib/consumer-workflow-budget.cjs
 
   consume:
     needs: resolve
     if: ${{ inputs.mode == 'publish' && github.ref == 'refs/heads/staging' }}
     name: registry-consumer-${{ inputs.module }}-${{ inputs.target }}
     runs-on: ${{ needs.resolve.outputs.runner }}
-    timeout-minutes: 45
+    timeout-minutes: ${{ inputs.module == 'afs' && fromJSON(needs.resolve.outputs.afs_job_minutes) || 45 }}
     outputs:
       artifact_id: ${{ steps.upload.outputs.artifact-id }}
       artifact_digest: ${{ steps.upload.outputs.artifact-digest }}
     steps:
+      - name: Start the bounded AFS setup clock
+        if: ${{ inputs.module == 'afs' }}
+        run: node -e 'require("node:fs").appendFileSync(process.env.GITHUB_ENV,"AFS_WORKFLOW_SETUP_STARTED_NS="+process.hrtime.bigint()+"\n")'
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.source_sha }}
@@ -78,10 +92,17 @@ jobs:
         with:
           node-version: 22.21.1
       - name: Install the reviewed consumer toolchain
-        timeout-minutes: 10
+        timeout-minutes: ${{ inputs.module == 'afs' && fromJSON(needs.resolve.outputs.afs_setup_minutes) || 10 }}
         run: bun install --frozen-lockfile
+      - name: Require the actual AFS setup to fit its host envelope
+        if: ${{ inputs.module == 'afs' }}
+        env:
+          CONSUMER_BUDGET_MODULE: ${{ inputs.module }}
+          CONSUMER_BUDGET_STAGE: postpublish
+          CONSUMER_BUDGET_CHECK_SETUP: 'true'
+        run: node scripts/lib/consumer-workflow-budget.cjs
       - name: Run fixed registry-installed product consumer
-        timeout-minutes: 27
+        timeout-minutes: ${{ inputs.module == 'afs' && fromJSON(needs.resolve.outputs.afs_command_minutes) || 27 }}
         env:
           GH_TOKEN: ${{ github.token }}
           INDEPENDENT_PUBLICATION_PHASE: registry-consumer
@@ -91,7 +112,7 @@ jobs:
         run: bun scripts/run-independent-publication.ts
       - id: upload
         name: Upload registry consumer originals
-        timeout-minutes: 5
+        timeout-minutes: ${{ inputs.module == 'afs' && fromJSON(needs.resolve.outputs.afs_upload_minutes) || 5 }}
         uses: actions/upload-artifact@v4
         with:
           name: ${{ needs.resolve.outputs.artifact_name }}
@@ -99,8 +120,8 @@ jobs:
           if-no-files-found: error
           retention-days: 30
       - name: Upload registry consumer failure diagnostics
-        if: failure()
-        timeout-minutes: 5
+        if: ${{ failure() && (inputs.module != 'afs' || steps.upload.outcome != 'failure') }}
+        timeout-minutes: ${{ inputs.module == 'afs' && fromJSON(needs.resolve.outputs.afs_upload_minutes) || 5 }}
         uses: actions/upload-artifact@v4
         with:
           name: xpod-registry-consumer-diagnostics-${{ inputs.module }}-${{ inputs.target }}-${{ inputs.source_sha }}-${{ github.run_id }}-${{ github.run_attempt }}

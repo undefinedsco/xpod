@@ -67,7 +67,7 @@ def source_kit_inventory(kit_root):
     """Inventory original link objects; never recurse through directory links."""
     kit_root=Path(kit_root).resolve(strict=True)
     files=[]
-    for member in sorted(kit_root.rglob('*')):
+    for member in sorted(kit_root.rglob('*'),key=lambda member:member.relative_to(kit_root).as_posix()):
         relative=member.relative_to(kit_root)
         if member.is_symlink():
             parts=relative.parts
@@ -80,6 +80,22 @@ def source_kit_inventory(kit_root):
         elif member.is_file(): files.append(reference(member,kit_root))
         elif not member.is_dir(): raise RuntimeError('Native source nonregular member: '+str(relative))
     return files
+
+
+def assert_source_inventory(kit_root,expected):
+    actual=source_kit_inventory(kit_root)
+    if actual==expected:return
+    expected_by_path={row['path']:row for row in expected};actual_by_path={row['path']:row for row in actual}
+    mismatch=next((index for index,pair in enumerate(zip(expected,actual)) if pair[0]!=pair[1]),None)
+    diagnostic=dict(kind='native-source-inventory-mismatch',expectedMembers=len(expected),actualMembers=len(actual),
+                    missing=sorted(set(expected_by_path)-set(actual_by_path))[:8],
+                    extra=sorted(set(actual_by_path)-set(expected_by_path))[:8],
+                    changed=sorted(name for name in set(expected_by_path)&set(actual_by_path) if expected_by_path[name]!=actual_by_path[name])[:8],
+                    firstDifferentIndex=mismatch,
+                    expectedPath=expected[mismatch]['path'] if mismatch is not None else None,
+                    actualPath=actual[mismatch]['path'] if mismatch is not None else None)
+    print(json.dumps(diagnostic,sort_keys=True),file=sys.stderr)
+    raise RuntimeError('Native source snapshot differs from kit inventory')
 
 
 def snapshot_sources(roots, destination, tracked=None):
@@ -234,8 +250,7 @@ def observe(target, work, archive):
                       engine=dict(repository=lock['repository'],commit=lock['commit']),
                       files=[row['reference'] for row in snapshot],
                       scope='Actual sources/configuration and observed SDK/compiler identity; external SDK distribution is not copied')
-    if source_kit_inventory(kit_root)!=source_kit['files']:
-        raise RuntimeError('Native source snapshot differs from kit inventory')
+    assert_source_inventory(kit_root,source_kit['files'])
     kit_path = materials/'source-kit.json'
     kit_path.write_text(json.dumps(source_kit,sort_keys=True,indent=2)+'\n')
     observation_before = dict(filesBefore=[row['reference'] for row in snapshot], sourceSha=source_sha, engine=lock, toolchain=before)

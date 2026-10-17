@@ -49,7 +49,7 @@ def inspect(archive, expected, packed_limit, expanded_limit, member_limit, selec
             name = row.get('path')
             allowed_destination = type(name) is str and row.get('destination') == name and re.fullmatch(r'[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*', name) is not None
         if not source_originals and not module_source_originals and not module_material_originals and not registry_consumer_originals and not native_material_originals and type(row) is dict:
-            allowed_destination = ((row['destination'] == row['path'] and (row['path'] == 'supply-index.original.json' or row['path'].startswith(('cli/', 'afs/', 'producer/')))) if legacy else row['destination'] in ('producer.receipt.json', 'product.tgz', 'pack.raw.log', 'result.json', 'inventory.json', 'source-inputs.json', 'preparation.json', 'producer-index.json', 'input.json', 'cli.tgz', 'client.tgz', 'cli.package.json', 'client.package.json'))
+            allowed_destination = ((row['destination'] == row['path'] and (row['path'] == 'supply-index.original.json' or row['path'].startswith(('cli/', 'afs/', 'producer/')))) if legacy else row['destination'] in ('producer.receipt.json', 'product.tgz', 'pack.raw.log', 'result.json', 'inventory.json', 'source-inputs.json', 'preparation.json', 'producer-index.json', 'input.json', 'cli.tgz', 'client.tgz', 'cli.package.json', 'client.package.json', 'module-admission.mjs'))
         if (type(row) is not dict or set(row) != {'path', 'destination', 'bytes', 'sha256'} or row['path'] in selected
                 or not allowed_destination
                 or type(row['bytes']) is not int or row['bytes'] < 0

@@ -157,7 +157,7 @@ test('workflow blocks every lane on the same-run successful producer and uses ar
   assert.equal(workflow.jobs.normal_afs.if, undefined); assert.equal(workflow.jobs.normal_afs['continue-on-error'], undefined);
   const upload = workflow.jobs.normal_afs.steps.find(row => row.id === 'upload'); assert.equal(upload.if, undefined); assert.equal(upload['continue-on-error'], undefined);
   const diagnostics = workflow.jobs.normal_afs.steps.find(row => row.name === 'Retain original producer diagnostics even when supply fails');
-  assert.equal(diagnostics.if, 'always()'); assert.equal(diagnostics['continue-on-error'], undefined); assert.ok(diagnostics.with.path.includes('.test-data/afs-js-archive-ci-producer/')); assert.notEqual(diagnostics.with.name, upload.with.name);
+  assert.equal(diagnostics.if, 'always()'); assert.equal(diagnostics['continue-on-error'], undefined); assert.equal(diagnostics.with.path, '${{ runner.temp }}/legacy-root-normal-afs/'); const fullOriginals = workflow.jobs.normal_afs.steps.find(row => row.name === 'Retain full normal CLI sourcekit originals even when supply fails'); assert.equal(fullOriginals.if, 'always()'); assert.equal(fullOriginals.with.path, '.test-data/afs-js-archive-ci-producer/'); assert.match(fullOriginals.with.name, /^legacy-root-normal-cli-originals-/); assert.notEqual(diagnostics.with.name, upload.with.name);
   assert.equal(workflow.jobs.lanes.if, undefined);
   const acquisitionDiagnostics = workflow.jobs.lanes.steps.find(row => row.name === 'Retain exact Bun acquisition diagnostics');
   assert.equal(acquisitionDiagnostics.if, "${{ always() && matrix.runtime == 'bun' }}");
@@ -169,19 +169,17 @@ test('workflow blocks every lane on the same-run successful producer and uses ar
   assert.equal(acquire.if, "matrix.runtime == 'bun'"); assert.equal(acquire.env.SUPPLY_ARTIFACT_ID, '${{ needs.normal_afs.outputs.artifact-id }}'); assert.equal(acquire.env.SUPPLY_ARTIFACT_SHA256, '${{ needs.normal_afs.outputs.artifact-digest }}');
 });
 
-test('actual Bun entry starts the normal CLI command under explicitly qualified Node 22', () => fixture(root => {
+test('actual Bun entry qualifies Node 22 but refuses an extended parent budget outside the canonical recipe', () => fixture(root => {
   const control = path.join(root, 'control'); fs.mkdirSync(control);
-  const cliDirectory = path.join(root, 'cli-evidence');
-  write(path.join(root, 'scripts/check-cli-publication.cjs'), "process.stdout.write(JSON.stringify({execPath:process.execPath,node:process.versions.node,bun:process.versions.bun??null,args:process.argv.slice(2)}))");
+  const cliDirectory = path.join(root, 'cli-evidence'), executed = path.join(root, 'candidate-executed');
+  write(path.join(root, 'scripts/check-cli-publication.cjs'), `require('node:fs').writeFileSync(${JSON.stringify(executed)},'unexpected')`);
   const output = path.join(root, 'actual.original.json');
-  const code = `const fs=require('node:fs');const helper=require(${JSON.stringify(path.resolve('scripts/lib/legacy-afs-supply.cjs'))});const result=await helper.runNormalCli(${JSON.stringify(root)},${JSON.stringify(control)},${JSON.stringify(cliDirectory)});fs.writeFileSync(${JSON.stringify(output)},JSON.stringify({parentBun:process.versions.bun,...result}));`;
+  const code = `const fs=require('node:fs');const helper=require(${JSON.stringify(path.resolve('scripts/lib/legacy-afs-supply.cjs'))});try{await helper.runNormalCli(${JSON.stringify(root)},${JSON.stringify(control)},${JSON.stringify(cliDirectory)});throw new Error('unexpected success')}catch(error){fs.writeFileSync(${JSON.stringify(output)},JSON.stringify({parentBun:process.versions.bun,error:error.message}));}`;
   const result = spawnSync('bun', ['-e', code], { env: process.env, encoding: 'utf8', timeout: 10000 }); assert.equal(result.status, 0, result.stderr);
-  const observed = JSON.parse(fs.readFileSync(output)); assert.ok(observed.parentBun);
-  const qualified = normal.verifyNodeRuntime(observed.runtime, control);
-  assert.equal(observed.phase.command, qualified.execPath);
-  require('../../scripts/check-afs-js-archive-ci.cjs').closedOriginal(observed.phase, control);
-  const child = JSON.parse(fs.readFileSync(path.join(control, observed.phase.raw[0].path)));
-  assert.equal(child.bun, null); assert.match(child.node, /^22\./); assert.equal(child.execPath, qualified.execPath); assert.deepEqual(child.args, ['--evidence', cliDirectory]);
+  const observed = JSON.parse(fs.readFileSync(output)); assert.ok(observed.parentBun); assert.match(observed.error, /Invalid command evidence budget/);
+  const runtime = JSON.parse(fs.readFileSync(path.join(control, 'normal-node.receipt.json')));
+  normal.verifyNodeRuntime(runtime, control);
+  assert.equal(fs.existsSync(executed), false);
 }));
 
 test('portable fixture isolates and restores a different CI run and attempt in a real child', () => {

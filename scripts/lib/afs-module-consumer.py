@@ -22,6 +22,12 @@ HERE = pathlib.Path(__file__).resolve().parent
 spec = importlib.util.spec_from_file_location('afs_shared_consumer', HERE / 'module-consumer.py')
 lifecycle = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(lifecycle)
+budget_spec = importlib.util.spec_from_file_location('afs_consumer_budget', HERE / 'afs-consumer-budget.py')
+budget = importlib.util.module_from_spec(budget_spec)
+budget_spec.loader.exec_module(budget)
+tool_spec = importlib.util.spec_from_file_location('afs_tool_originals', HERE / 'afs-consumer-tool-originals.py')
+tool_originals = importlib.util.module_from_spec(tool_spec)
+tool_spec.loader.exec_module(tool_originals)
 require = lifecycle.require
 BRIDGE = HERE / 'afs-module-consumer-bridge.ts'
 WORKFLOW = '.github/workflows/agentfs-module-mounted-acceptance.yml'
@@ -145,6 +151,14 @@ def validate(plan):
 
 
 class Runner(lifecycle.ModuleConsumerRunner):
+    def total_deadline_seconds(self):
+        return budget.projection()['consumerRunSeconds']
+
+    def command_timeout_seconds(self, label):
+        if label in ('node-afs-full-mounted-profile', 'bun-afs-full-mounted-profile'):
+            return budget.projection()['fullMountedCommandSeconds']
+        return min(super().command_timeout_seconds(label), budget.projection()['ordinaryCommandSeconds'])
+
     module_id = 'afs'
     driver_path = __file__
     target_resolver = staticmethod(target)
@@ -164,7 +178,62 @@ class Runner(lifecycle.ModuleConsumerRunner):
         require(native.get('helperSHA256') == lifecycle.digest(root / 'helper/agentfs-pod'), 'installed AFS native helper original differs')
         return dict(helperSha256=lifecycle.digest(root / 'helper/agentfs-pod'), entrySha256=lifecycle.digest(root / 'dist/entry.mjs'))
 
+    def capture_tool_inputs(self, runtime, cycle, env):
+        if not hasattr(self, 'tool_capture'):
+            self.tool_capture = tool_originals.ToolOriginals(self.output, self.plan['sourceSha'])
+            capture = self.tool_capture
+            capture.start_stage()
+            roots = sorted({HERE.parent.parent.resolve(), pathlib.Path(self.plan['checkout']).resolve()})
+            for index, repo in enumerate(roots):
+                source_paths, seeds = tool_originals.literal_source_closure(repo)
+                capture.capture('source-' + str(index), 'harness', repo, 'source', source_paths,
+                                selector=dict(kind='literal-closure'))
+                paths, packages, optional = tool_originals.package_closure(repo, seeds)
+                component = capture.capture('harness-' + str(index), 'harness', repo, 'dependencies', paths,
+                                            selector=dict(kind='package-closure', seeds=seeds))
+                component['packages'] = packages
+                component['absentOptionalDeclarations'] = optional
+            tools = {}
+            declarations = [('node', self.plan['node'], ['--version']), ('bun', self.plan['bun'], ['--version']),
+                            ('python', sys.executable, ['--version'])]
+            for role in ('git', 'rg', 'mount'):
+                executable = shutil.which(role, path='/usr/bin:/bin:/usr/sbin:/sbin') or shutil.which(role)
+                require(executable is not None, 'fixed verifier executable absent: ' + role)
+                declarations.append((role, executable, ['--version']))
+            if self.checked['target']['platform'] == 'linux':
+                fuse = shutil.which('fusermount3') or shutil.which('fusermount')
+                require(fuse is not None, 'FUSE deployment requires actual fusermount executable')
+                declarations.append(('fusermount', fuse, ['--version']))
+            for role, invoked, arguments in declarations:
+                executable = pathlib.Path(invoked).resolve(strict=True)
+                command = [str(executable)] + arguments
+                version_kind = 'executable-version'
+                if role == 'mount' and self.checked['target']['platform'] == 'darwin':
+                    command = ['/usr/bin/sw_vers']
+                    version_kind = 'platform-build'
+                before_sha = lifecycle.digest(executable)
+                before_size = executable.stat().st_size
+                label = 'verifier-' + role + '-version'
+                self.command(label, command, env, cycle)
+                refs = [dict(path=(label + '.' + stream + '.raw.log'), bytes=(self.output / (label + '.' + stream + '.raw.log')).stat().st_size,
+                             sha256=lifecycle.digest(self.output / (label + '.' + stream + '.raw.log'))) for stream in ('stdout', 'stderr')]
+                require(lifecycle.digest(executable) == before_sha and executable.stat().st_size == before_size, 'actual verifier executable changed across version command')
+                tools[role] = dict(executable=str(executable), invokedPath=str(pathlib.Path(invoked).absolute()))
+                capture.executables.append(dict(role=role, **tools[role], bytes=before_size, sha256=before_sha, versionKind=version_kind, versionOriginals=refs,
+                                                supervisionLabel=label))
+            capture.capture('executables', 'executables', pathlib.Path('/'), 'toolchain', sorted(tools), tools)
+            capture.end_stage()
+        capture = self.tool_capture
+        capture.start_stage()
+        capture.capture(runtime + '-registry-tools', 'registry-tools', cycle, 'dependencies', tool_originals.registry_paths(cycle),
+                        selector=dict(kind='registry-tools'))
+        ref = capture.observe(runtime + '-before-mounted', [])
+        capture.end_stage()
+        self.result['verifierToolOriginals'] = ref
+        self.save()
+
     def exercise_service(self, runtime, cli, env, cycle, data, package_root, installed_package):
+        self.capture_tool_inputs(runtime, cycle, env)
         sandbox = cli[:-1]
         lifecycle.verify_registry_tools(cycle, self.plan['registryTools'])
         listing = json.loads((self.output / (runtime + '-list-afs.stdout.raw.log')).read_text())
@@ -219,6 +288,12 @@ class Runner(lifecycle.ModuleConsumerRunner):
                 and observed.get('authenticatedRead') is True and observed.get('conditionalWriteback') is True
                 and observed.get('cleanupVerified') is True, 'full installed AFS mounted profile did not pass')
         lifecycle.verify_registry_tools(cycle, self.plan['registryTools'])
+        self.tool_capture.start_stage()
+        self.result['verifierToolOriginals'] = self.tool_capture.observe(runtime + '-after-mounted', [])
+        self.tool_capture.end_stage()
+        for component in self.tool_capture.components:
+            if component['rootId'] == runtime + '-registry-tools':
+                component['observedRootRetiredAfter'] = runtime + '-after-mounted'
         self.result['installedVerification'][runtime]['mountedProfile'] = observed
         self.save()
         lifecycle.inventory(package_root, json.loads((cycle / 'home/.xpod/modules/afs' / self.plan['target'] / 'current.json').read_text()))
