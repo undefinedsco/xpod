@@ -7,7 +7,7 @@ import { expect, it, vi } from 'vitest';
 const fixture = vi.hoisted(() => ({cap: undefined as any, view: undefined as any}));
 // Protocol fixture only, NEVER a central issuer or actual OpenPGP authority.
 vi.mock('../../scripts/lib/independent-admission/qlever-sdk-originals', () => ({qleverSdkOriginalsView: (value: unknown) => value === fixture.cap ? fixture.view : undefined}));
-import { observeQleverSdkDebianIndexOriginals } from '../../scripts/lib/independent-admission/qlever-sdk-debian-index';
+import { observeQleverSdkDebianIndexOriginals, qleverSdkDebianIndexObservation } from '../../scripts/lib/independent-admission/qlever-sdk-debian-index';
 const hash = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
 async function scenario(change?: (rows: Map<string, Buffer>, collection: any, master: any) => void, remainingMilliseconds?: number, zipForm?: 'zip64' | 'oversized-directory', budgetFault?: 'pre-expired' | 'post-expired' | 'near-end') {
   mkdirSync('.test-data/sdk-debian-index-observer', {recursive: true});
@@ -69,6 +69,17 @@ async function scenario(change?: (rows: Map<string, Buffer>, collection: any, ma
         budget.check(); observedRemaining.push(budget.remainingMs()); return value;
       }};
     const result = await observeQleverSdkDebianIndexOriginals(fixture.cap, remainingMilliseconds);
+    const projection = qleverSdkDebianIndexObservation(fixture.cap);
+    if (result.facts.sdkDebianInReleaseSourcesDscChecksumChainVerified) {
+      expect(projection).toHaveLength(2); expect(Object.isFrozen(projection)).toBe(true);
+      expect(Object.isFrozen(projection![0]!.observation.signedIndexMatches[0])).toBe(true);
+      const first = projection![0]!.observation.signedIndexMatches[0]!.path;
+      (result.facts.sdkDebianIndexChecksumBindings as any[])[0].observation.signedIndexMatches[0].path = 'changed-public-report';
+      expect(projection![0]!.observation.signedIndexMatches[0]!.path).toBe(first);
+      const read = fixture.view.readOriginal; fixture.view.readOriginal = () => {throw Error('compacted reader');};
+      expect(() => qleverSdkDebianIndexObservation(fixture.cap)).toThrow('compacted reader'); fixture.view.readOriginal = read;
+    } else expect(projection).toBeUndefined();
+    expect(qleverSdkDebianIndexObservation({verified: true})).toBeUndefined();
     return {result, zipCalls, callbackCalls, observedRemaining};
   } finally {clock?.mockRestore(); fixture.cap = fixture.view = undefined; rmSync(root, {recursive: true, force: true});}
 }

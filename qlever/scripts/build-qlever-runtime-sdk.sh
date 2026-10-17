@@ -151,7 +151,7 @@ if [[ "$mode" == prepare-only ]] || [[ ! -f "$build_identity_file" ]] ||
    [[ $(cat "$build_identity_file") != "$build_identity" ]] ||
    [[ ! -f "$toolchain_identity_file" ]] ||
    [[ $(cat "$toolchain_identity_file") != "$toolchain_identity" ]]; then
-  CC="$c_compiler" CXX="$cxx_compiler" cmake \
+  cmake_command=(cmake \
     -S "$source_dir" \
     -B "$build_dir" \
     -DCMAKE_BUILD_TYPE=Release \
@@ -162,7 +162,14 @@ if [[ "$mode" == prepare-only ]] || [[ ! -f "$build_identity_file" ]] ||
     -DRANGES_NATIVE=OFF \
     -DUSE_PRECOMPILED_HEADERS=OFF \
     -DUSE_IO_URING=OFF \
-    -DCMAKE_CXX_FLAGS="$adapter_flags"
+    -DCMAKE_CXX_FLAGS="$adapter_flags")
+  if [[ "$mode" == prepare-only && -n ${XPOD_QLEVER_UPSTREAM_MATERIALS_DIR:-} ]]; then
+    generation_materials="${XPOD_QLEVER_UPSTREAM_MATERIALS_DIR%/upstream-source}/generation"
+    CC="$c_compiler" CXX="$cxx_compiler" python3 "$qlever_root/scripts/sdk-generation-materials.py" configure \
+      "$generation_materials" "$source_dir" "$build_dir" -- "${cmake_command[@]}"
+  else
+    CC="$c_compiler" CXX="$cxx_compiler" "${cmake_command[@]}"
+  fi
   if [[ "$mode" == prepare-only ]]; then
     python3 "$qlever_root/scripts/sdk-prepared-inputs.py" record "$qlever_root" "$build_dir" "$build_identity" "$toolchain_identity"
     exit 0

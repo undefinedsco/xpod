@@ -6,7 +6,11 @@ import {expect,it,vi} from 'vitest';
 
 // Isolate serialization from central issuance, input ownership and build execution.
 // This view is a fixture, never an issued capability or release qualification.
-const fixture = vi.hoisted(() => ({view: undefined as any}));
+const fixture = vi.hoisted(() => ({view: undefined as any, source: {sourceSha:'a'.repeat(40)}, proof: undefined as any, calls: [] as number[]}));
+vi.mock('../../scripts/lib/independent-admission/source-context',()=>({derivedSourceView:()=>fixture.source,assertDerivedSourceCurrent:()=>{}}));
+vi.mock('../../scripts/lib/independent-admission/qlever-sdk-debian-index',()=>({observeQleverSdkDebianIndexOriginals:async(_cap:unknown,remaining:number)=>{fixture.calls.push(remaining);return {facts:{sdkDebianInReleaseSourcesDscChecksumChainVerified:true},pending:['qlever-sdk-official-Debian-keyring-gpgv-and-suite-authority-unverified']};}}));
+vi.mock('../../scripts/lib/independent-admission/qlever-sdk-upstream-source',()=>({observeQleverSdkUpstreamGitOriginals:async(_cap:unknown,_source:unknown,remaining:number)=>{fixture.calls.push(remaining);return {facts:{},pending:['actual-generated-input-closure-unresolved']};}}));
+vi.mock('../../scripts/lib/independent-admission/qlever-sdk-debian-signature',()=>({observeQleverSdkDebianSignatureOriginals:async(_cap:unknown,remaining:number)=>{fixture.calls.push(remaining);return {facts:fixture.proof ?? {sdkDebianOfficialSignatureAndSuiteVerified:true},pending:[]};},qleverSdkDebianSignatureObservation:()=>fixture.proof}));
 vi.mock('../../scripts/lib/independent-admission/qlever-sdk-originals', () => ({qleverSdkOriginalsView: () => fixture.view}));
 vi.mock('../../scripts/lib/independent-admission/qlever-sdk-inputs', () => ({inspectSdkInputOwnership: () => ({
   requiredSources: [{name:'foo',version:'1.0'}],unresolvedInputs:[],unresolvedSymlinkOriginalTargets:[],
@@ -16,11 +20,11 @@ vi.mock('../../scripts/lib/independent-admission/qlever-sdk-execution', () => ({
   verified:false,pending:['schema-fixture-build-execution-not-observed'],
 }))}));
 import {inspectSdkBuildExecution} from '../../scripts/lib/independent-admission/qlever-sdk-execution';
-import {inspectQleverSdkSourceOriginals} from '../../scripts/lib/independent-admission/qlever-sdk-source';
+import {inspectQleverSdkSourceOriginals,observeQleverSdkSourceAdmission} from '../../scripts/lib/independent-admission/qlever-sdk-source';
 const root=path.resolve(__dirname,'../..');
 const sha=(data:Buffer)=>createHash('sha256').update(data).digest('hex');
 
-it('actual acquisition output satisfies receiver source schema; unrooted refs and old package groups fail',()=>{
+it('actual acquisition output satisfies receiver source schema; unrooted refs and old package groups fail',async()=>{
   mkdirSync(path.join(root,'.test-data'),{recursive:true});
   const temporary=mkdtempSync(path.join(root,'.test-data/sdk-receiver-contract-'));
   try {
@@ -40,6 +44,13 @@ it('actual acquisition output satisfies receiver source schema; unrooted refs an
     const jobsData=Buffer.from(JSON.stringify({jobs:[{id:17,started_at:'2026-01-01T00:00:00Z',completed_at:'2026-01-01T00:01:00Z'}]}));
     const jobsOriginal={name:'jobs.original.json',bytes:jobsData.length,sha256:sha(jobsData)};
     function reference(name:string) {const bytes=originals.get(name)!;return {path:name,bytes:bytes.length,sha256:sha(bytes)};}
+    // Ownership/input bytes are mocked above: retain an explicit empty row set
+    // for serialization only, never an actual full-shard SDK input observation.
+    const afterName=initialMaster.inputs.after.path;
+    const after=JSON.parse(originals.get(afterName)!.toString());
+    after.files ??= [];
+    originals.set(afterName,Buffer.from(JSON.stringify(after)));
+    initialMaster.inputs.after=reference(afterName);
     function observe(collection:any) {
       const collectionName=fixtureInfo.receiverCollection.path;
       originals.set(collectionName,Buffer.from(JSON.stringify(collection)));
@@ -70,6 +81,29 @@ it('actual acquisition output satisfies receiver source schema; unrooted refs an
       jobWindow:{start:Date.parse('2026-01-01T00:00:00Z'),end:Date.parse('2026-01-01T00:01:00Z')},
     }));
     expect(positive.pending).toContain('qlever-sdk-Debian-signed-Sources-InRelease-keyring-authority-not-yet-verified');
+    // This isolates orchestration only; mocked views never issue an SDK or signature capability.
+    const cap={fixture:true};
+    fixture.proof=Object.freeze({sdkDebianOfficialSignatureAndSuiteVerified:true});
+    fixture.calls=[];
+    const signed=await observeQleverSdkSourceAdmission({sdkOriginals:cap,source:{fixture:true},remainingMilliseconds:10000});
+    expect(signed.facts.sdkDebianOfficialSignatureAndSuiteVerified).toBe(true);
+    expect(signed.pending).not.toContain('qlever-sdk-Debian-signed-Sources-InRelease-keyring-authority-not-yet-verified');
+    expect(signed.pending).not.toContain('qlever-sdk-official-Debian-keyring-gpgv-and-suite-authority-unverified');
+    expect(signed.pending).toContain('actual-generated-input-closure-unresolved');
+    expect(signed.verified).toBe(false);
+    expect((signed.facts.sdkSourceRequiredAxes as any).generatedInputIoClosure).toBe('verifier-not-implemented');
+    expect(fixture.calls).toHaveLength(3);
+    expect(fixture.calls.every((value,index,values)=>value>0 && value<=10000 && (!index || value<=values[index-1]!))).toBe(true);
+    signed.assertCurrent(); fixture.proof=undefined;
+    expect(()=>signed.assertCurrent()).toThrow('signature observation custody changed');
+    const unbound=await observeQleverSdkSourceAdmission({sdkOriginals:cap,source:{fixture:true}});
+    expect(unbound.facts.sdkDebianOfficialSignatureAndSuiteVerified).toBe(false);
+    expect(unbound.pending).toContain('qlever-sdk-Debian-signed-Sources-InRelease-keyring-authority-not-yet-verified');
+    expect(unbound.pending).toContain('qlever-sdk-independent-Debian-signature-private-observation-unavailable');
+    expect(inspectQleverSdkSourceOriginals(cap,0).pending.join()).toContain('mechanical source observation deadline expired');
+    fixture.calls=[];
+    const expired=await observeQleverSdkSourceAdmission({sdkOriginals:cap,source:{fixture:true},remainingMilliseconds:0});
+    expect(expired.pending.join()).toContain('deadline expired');expect(fixture.calls).toEqual([]);
     expect(originals.has(fixtureInfo.innerCollection.path)).toBe(true);
     const internal=JSON.parse(originals.get(fixtureInfo.innerCollection.path)!.toString());
     expect(observe(internal).facts.debianDscAndAllSourceArchiveBytesVerified).not.toBe(true);

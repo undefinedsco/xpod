@@ -14,12 +14,30 @@ const same = isDeepStrictEqual;
 const ROOT = '/opt/qlever-sdk/materials';
 const LOCAL_HELPERS = [
   ['sdk-debian-index-bindings.py', 'ad87a17bdb781f34a6a78a5e970d1f9c69d0750a1fcc4ba3f711db317bd75e13'],
-  ['sdk-debian-index-observer.py', '12ba7e129aa381df04f926a49bc4751347991f69f128b1a1149976ddc885ee94'],
+  ['sdk-debian-index-observer.py', 'e5c632f9357c59be5401dcfd5e7d7daec2d9cf9fc54dae22f400bac21d8f5074'],
+  ['sdk-zip-originals.py', '2ca4929f58cfbdfeac43f2bf02564ffc46805de27b529e6e363080710e7c048d'],
 ] as const;
+
+export type QleverSdkDebianIndexObservation = Readonly<{inReleaseSha256: string;
+  sourceOriginal: Readonly<{path: string; bytes: number; sha256: string}>;
+  observation: Readonly<{signedIndexMatches: readonly Readonly<{path: string; form: string}>[]}>}>;
+const indexObservations = new WeakMap<object, Readonly<{sdk: NonNullable<ReturnType<typeof qleverSdkOriginalsView>>;
+  rows: readonly QleverSdkDebianIndexObservation[]}>>();
+/** Same successfully observed SDK only; metadata reader must remain active.
+ * This is not a serialized approval or an independent signature authority. */
+export function qleverSdkDebianIndexObservation(capability: unknown): readonly QleverSdkDebianIndexObservation[] | undefined {
+  if (!capability || typeof capability !== 'object') return undefined;
+  const value = indexObservations.get(capability);
+  if (!value || qleverSdkOriginalsView(capability) !== value.sdk) return undefined;
+  const master = value.sdk.masterReference, bytes = value.sdk.readOriginal(master.path, 8 * 1024 ** 2);
+  need(bytes.length === master.bytes && hash(bytes) === master.sha256, 'active index observation inventory custody differs');
+  return value.rows;
+}
 
 /** No new issuer: the same independently acquired SDK originals capability is
  * mandatory. Returned checksum facts do not grant OpenPGP/keyring authority. */
 export async function observeQleverSdkDebianIndexOriginals(capability: unknown, remainingMilliseconds = limits.timeoutMs) {
+  if (capability && typeof capability === 'object') indexObservations.delete(capability);
   const pending = new Set<string>(), facts: Record<string, unknown> = {};
   try {
     const sdk = qleverSdkOriginalsView(capability); need(sdk, 'issued related SDK originals required');
@@ -124,6 +142,19 @@ export async function observeQleverSdkDebianIndexOriginals(capability: unknown, 
     }
     need(collection.packages.every((item: any) => covered.has(item.name + '\0' + item.version)), 'exact dsc/source tuple absent from all authenticated-byte index observations');
     check(); need(qleverSdkOriginalsView(capability) === sdk, 'SDK index custody revoked');
+    const projection = Object.freeze(checksums.map((item: any) => {
+      need(Array.isArray(item.observation.signedIndexMatches) && item.observation.signedIndexMatches.length > 0, 'actual signed index matches required');
+      const matches = Object.freeze(item.observation.signedIndexMatches.map((match: any) => {
+        need(typeof match.path === 'string' && ['plain', 'original-compressed', 'decoded-plain'].includes(match.form), 'actual signed index match shape differs');
+        return Object.freeze({path: match.path, form: match.form});
+      }));
+      return Object.freeze({inReleaseSha256: item.observation.inReleaseSha256,
+        sourceOriginal: Object.freeze({path: item.sourceOriginal.path, bytes: item.sourceOriginal.bytes, sha256: item.sourceOriginal.sha256}),
+        observation: Object.freeze({signedIndexMatches: matches})});
+    }));
+    need(Buffer.byteLength(JSON.stringify(projection)) <= limits.metadataBytes, 'private index projection metadata bound');
+    check(); need(qleverSdkOriginalsView(capability) === sdk, 'SDK index projection custody changed');
+    indexObservations.set(capability as object, Object.freeze({sdk, rows: projection}));
     facts.sdkDebianIndexChecksumBindings = Object.freeze(checksums); facts.sdkGpgvClosedExecutionOriginals = Object.freeze(stages);
     facts.sdkDebianInReleaseSourcesDscChecksumChainVerified = true;
     pending.add('qlever-sdk-official-Debian-keyring-gpgv-and-suite-authority-unverified');
