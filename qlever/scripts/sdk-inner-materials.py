@@ -120,6 +120,9 @@ def configure_inputs(build):
         result.add(path)
     return result
 
+spec=importlib.util.spec_from_file_location('sdk_debian_acquisition',HERE/'sdk-debian-source-acquisition.py')
+debian_acquisition=importlib.util.module_from_spec(spec);spec.loader.exec_module(debian_acquisition)
+
 def build_materials(component,source,build,out,jobs):
     component=Path(component);source=Path(source);build=Path(build);out=Path(out);out.mkdir(parents=True,exist_ok=False)
     budget=initialize_budget(4200);stages=[]
@@ -206,10 +209,18 @@ def build_materials(component,source,build,out,jobs):
     inventory['packageOwnershipOriginals']=[str(path) for path in ownership]
     inventory['sourcePackageIdentityRaw']=ledger['stdout']
     dump(out/'inputs-after.json',inventory)
+    def source_stage(name,argv,cwd):
+        row=commands.capture(name,argv,out,cwd,timeout=budget.timeout(900,3600));stages.append(row);return row
+    debian_ref,debian_bytes=debian_acquisition.acquire(out,
+        [str(Path(path).resolve(strict=True)) for path in selected],
+        {path.name.removesuffix('.list'):path.read_bytes() for path in ownership},
+        ledger['stdout'],LIMIT-512*1024**2-sum(row['bytes'] for row in inventory['shards']),
+        source_stage,commands.ref,check_budget)
+
     dump(out/'build-inner.json',dict(schemaVersion=1,kind='qlever-linux-sdk-inner-originals',identity=identity,stages=stages,
         executionBudget=dict(deadlineUnix=budget.deadline_unix,remainingSeconds=budget.remaining()),inputsBefore=before_ref,inputsAfter=commands.ref(out/'inputs-after.json',out),domains=inventory['shards'],
-        grantOriginals=[str(path) for path in grants],
-        pending=['official-image-build-artifact-custody-unavailable','exact-Debian-source-archives-unavailable',
+        grantOriginals=[str(path) for path in grants],debianSources=debian_ref,debianSourceBytes=debian_bytes,
+        pending=['official-image-build-artifact-custody-unavailable','Debian-Sources-to-signed-InRelease-checksum-binding-unverified',
                  'toolchain-original-domain-not-yet-complete',*(['generated-input-causality-unavailable'] if inventory['pending'] else [])]))
 
 def linked_materials(component,source,build,out,jobs):

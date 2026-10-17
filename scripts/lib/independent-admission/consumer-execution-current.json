@@ -4,6 +4,10 @@
     "sha256": "87cfaf4e12092fb0e67eaba18985efadcc501a6c2112798fae217608f475048c"
   },
   {
+    "path": "docker/qlever-runtime-sdk/Dockerfile.module-bookworm",
+    "sha256": "8c187c493821b9e6054de3520d5ac35c6f42377799e874f0584027073a5f301a"
+  },
+  {
     "path": "package.json",
     "sha256": "6e6d692fc61a3cba8f71a7eeb2c088b7b27cd762406190c3781c7a20bb9e08df"
   },
@@ -268,6 +272,10 @@
     "sha256": "b84e1613e1f0c6fcf7ce9de4bca21e794f06fa9ac4c1049d9a71fd2d8b981ef5"
   },
   {
+    "path": "qlever/scripts/sdk-debian-source-acquisition.py",
+    "sha256": "a0578b452a53ebe925583ef7ae4f6e0554c57922a5bf1b6abd7a2b7c633dec51"
+  },
+  {
     "path": "qlever/scripts/sdk-debian-source-materials.py",
     "sha256": "dddb499b82df467ff41511dd6dfab5877ed7d63cbcfa88fb772be9e6152aca6c"
   },
@@ -277,11 +285,11 @@
   },
   {
     "path": "qlever/scripts/sdk-image-originals.py",
-    "sha256": "8a1acb11c921ad7aa766f7914ee40911d9ddde9d21161854a7767af31ae4d8d2"
+    "sha256": "4dbd05d82e6ad8d5a5f1e545282c86e59f60c41accafc1fed576f70f0c13b22e"
   },
   {
     "path": "qlever/scripts/sdk-inner-materials.py",
-    "sha256": "b316f48faf3ae233b0e467ba4aa440c1f865f3e8b2b7f49d1a493fb96b16ccad"
+    "sha256": "c243d76d3543dc9faf7f7700a8c20d4e2f9b1bd8d71c5a6b684e1a6a7b2658f1"
   },
   {
     "path": "qlever/scripts/sdk-tar-budget.py",
@@ -637,7 +645,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/module-source-phases.ts",
-    "sha256": "471fd95193b5a405cc0a19f6099a20cf50b34591c9d9826cabede6bcd127c771"
+    "sha256": "3e0027b8e485653c7a9f81f0e61d1936b90a3e7adf197354ba63a48eda45af67"
   },
   {
     "path": "scripts/lib/independent-admission/native-admission.ts",
@@ -757,7 +765,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-origin-policy.ts",
-    "sha256": "eaa4c3a16f31b98fa51083db168ab3f50f573aa21cce2dcd2003c73ff69e2188"
+    "sha256": "515a8f51a5960ec0908ce06857484c16a2c6997db7dd2762e635c9360c0002fc"
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-originals.ts",

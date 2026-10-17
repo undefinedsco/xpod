@@ -38,3 +38,18 @@ test('SDK tar recipes and staging producer select whole groups, never individual
  const map=new Map(old.selectors.map(row=>[sourceBindingKey(row),row.sha256]));const producer=staging.selectors.find(row=>row.path==='scripts/css-module-producer.py')!;map.set(sourceBindingKey(producer),producer.sha256);
  expect(()=>selectGitHubSourceBindingGroup(QLEVER_SDK_EXECUTION_GROUPS,map)).toThrow();
 });
+
+test('Debian v3 SDK execution binds inner/image/Docker/acquisition as one version',()=>{
+ const old=QLEVER_SDK_EXECUTION_GROUPS[2]!,next=QLEVER_SDK_EXECUTION_GROUPS[3]!;
+ const map=new Map(next.selectors.map(row=>[sourceBindingKey(row),row.sha256]));
+ expect(selectGitHubSourceBindingGroup(QLEVER_SDK_EXECUTION_GROUPS,map)).toBe(next);
+ for(const name of ['qlever/scripts/sdk-inner-materials.py','qlever/scripts/sdk-image-originals.py','docker/qlever-runtime-sdk/Dockerfile.module-bookworm']){
+  const before=old.selectors.find(row=>row.path===name)!;const mixed=new Map(map);mixed.set(sourceBindingKey(before),before.sha256);
+  expect(()=>selectGitHubSourceBindingGroup(QLEVER_SDK_EXECUTION_GROUPS,mixed)).toThrow();
+ }
+ for(const name of ['qlever/scripts/sdk-debian-source-acquisition.py','qlever/scripts/sdk-debian-source-materials.py']){
+  expect(next.selectors.some(row=>row.path===name)).toBe(false);
+  expect(next.sourceBindings.find(row=>row.path===name)?.sha256).toHaveLength(64);
+ }
+ expect(QLEVER_LINUX_EXECUTION_GROUPS.includes(next)).toBe(true);
+});
