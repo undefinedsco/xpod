@@ -653,7 +653,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/github-origin.ts",
-    "sha256": "289bb6c758f2c7bb7979fd724d751db190776f4f3360b41de07952f8059e2019"
+    "sha256": "8a52ceabf05927d8c7f27161062fe9423c002e5b3e95af3e51df97cd5df105db"
   },
   {
     "path": "scripts/lib/independent-admission/github-source-binding-groups.ts",
@@ -1042,6 +1042,10 @@
   {
     "path": "scripts/lib/product-artifact-projection.ts",
     "sha256": "6e45b58a056c78e2d1cf73bbab5e7bdbbbd9cdb680e685c3656a54b9dc0858ee"
+  },
+  {
+    "path": "scripts/lib/publication-control-input.cjs",
+    "sha256": "88d1876260e97c1c78e97d2a25348a326265a00cbc5541f80dc01e5bcc15b6f7"
   },
   {
     "path": "scripts/lib/registry-legal-original-limits.json",

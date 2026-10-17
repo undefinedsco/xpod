@@ -1,6 +1,20 @@
 name: Independent product group publication
 
 on:
+  workflow_call:
+    inputs:
+      source_sha:
+        required: true
+        type: string
+      producer_coordinates:
+        required: true
+        type: string
+      mode:
+        required: true
+        type: string
+    secrets:
+      NPM_TOKEN:
+        required: false
   workflow_dispatch:
     inputs:
       source_sha:
@@ -27,7 +41,28 @@ permissions:
   actions: read
 
 jobs:
+  control:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Validate immutable publication invocation
+        env:
+          CONTROL_EVENT: ${{ github.event_name }}
+          CONTROL_REF: ${{ github.ref }}
+          CONTROL_OPERATION: independent-publication
+          CONTROL_SOURCE_SHA: ${{ inputs.source_sha }}
+          CONTROL_MODE: ${{ inputs.mode }}
+          CONTROL_COORDINATES: ${{ inputs.producer_coordinates }}
+        run: node scripts/lib/publication-control-input.cjs
+
   publication:
+    needs: control
     if: ${{ inputs.mode == 'prepare' && github.ref == 'refs/heads/staging' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -74,6 +109,7 @@ jobs:
           retention-days: 14
 
   consumer-matrix:
+    needs: control
     if: ${{ inputs.mode == 'publish' && github.ref == 'refs/heads/staging' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15

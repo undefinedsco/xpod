@@ -25,7 +25,11 @@ it('keeps the publication workflow separate from service RC and defaults to prep
   const workflow = JSON.parse(execFileSync(process.execPath, ['-e',
     'console.log(JSON.stringify(Bun.YAML.parse(require("node:fs").readFileSync(process.argv[1],"utf8"))))',
     '.github/workflows/independent-publication.yml'], { encoding: 'utf8' }));
-  expect(Object.keys(workflow.on)).toEqual(['workflow_dispatch']);
+  expect(Object.keys(workflow.on)).toEqual(['workflow_call', 'workflow_dispatch']);
+  expect(Object.keys(workflow.on.workflow_call.inputs)).toEqual(['source_sha', 'producer_coordinates', 'mode']);
+  expect(workflow.on.workflow_call.secrets).toEqual({ NPM_TOKEN: { required: false } });
+  expect(workflow.jobs.publication.needs).toBe('control');
+  expect(workflow.jobs['consumer-matrix'].needs).toBe('control');
   expect(workflow.on.workflow_dispatch.inputs.mode.default).toBe('prepare');
   expect(workflow.permissions).toEqual({ contents: 'read', actions: 'read' });
   expect(workflow.concurrency['cancel-in-progress']).toBe(false);

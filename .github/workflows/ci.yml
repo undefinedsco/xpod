@@ -1,17 +1,39 @@
 name: CI
 
 on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: 'Explicit independent product publication control route'
+        required: true
+        type: choice
+        options: [independent-publication]
+      source_sha:
+        description: 'Reviewed immutable staging source SHA'
+        required: true
+        type: string
+      producer_coordinates:
+        description: 'Complete immutable product selector request; no approvals'
+        required: true
+        type: string
+      mode:
+        description: 'Prepare evidence, or explicitly publish after all gates'
+        required: true
+        type: choice
+        options: [prepare, publish]
+        default: prepare
   push:
     branches: [main, staging]
   pull_request:
     branches: [main, staging]
 
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.event_name == 'workflow_dispatch' && 'independent-publication-control' || format('ci-{0}', github.ref) }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
 
 jobs:
   test:
+    if: ${{ github.event_name != 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -108,6 +130,7 @@ jobs:
           include-hidden-files: true
 
   integration-lite:
+    if: ${{ github.event_name != 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -133,6 +156,7 @@ jobs:
         run: bun run test:integration:lite
 
   bun-runtime:
+    if: ${{ github.event_name != 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -159,6 +183,7 @@ jobs:
         run: bun run test:bun:runtime
 
   integration-full:
+    if: ${{ github.event_name != 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
@@ -182,3 +207,39 @@ jobs:
 
       - name: Full integration tests
         run: bun run test:integration:full
+
+  publication-control:
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Validate dedicated staging publication control route
+        env:
+          CONTROL_EVENT: ${{ github.event_name }}
+          CONTROL_REF: ${{ github.ref }}
+          CONTROL_OPERATION: ${{ inputs.operation }}
+          CONTROL_SOURCE_SHA: ${{ inputs.source_sha }}
+          CONTROL_MODE: ${{ inputs.mode }}
+          CONTROL_COORDINATES: ${{ inputs.producer_coordinates }}
+        run: node scripts/lib/publication-control-input.cjs
+
+  independent-publication:
+    name: independent-publication
+    needs: publication-control
+    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/staging' && inputs.operation == 'independent-publication' && (inputs.mode == 'prepare' || inputs.mode == 'publish') }}
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/independent-publication.yml
+    with:
+      source_sha: ${{ inputs.source_sha }}
+      producer_coordinates: ${{ inputs.producer_coordinates }}
+      mode: ${{ inputs.mode }}
+    secrets:
+      NPM_TOKEN: ${{ inputs.mode == 'publish' && secrets.NPM_TOKEN || '' }}
