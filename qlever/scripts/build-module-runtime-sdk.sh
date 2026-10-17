@@ -29,11 +29,17 @@ def hashfile(path):
 keyring = pathlib.Path('/usr/share/keyrings/debian-archive-keyring.gpg')
 indices = list(pathlib.Path('/var/lib/apt/lists').glob('*InRelease'))
 if not indices: raise RuntimeError('Authenticated Debian release originals absent')
+import importlib.util
+spec=importlib.util.spec_from_file_location('sdk_commands',root/'scripts/sdk-command-materials.py')
+commands=importlib.util.module_from_spec(spec);spec.loader.exec_module(commands)
+spec=importlib.util.spec_from_file_location('sdk_budget',root/'scripts/sdk-execution-budget.py')
+budget_module=importlib.util.module_from_spec(spec);spec.loader.exec_module(budget_module)
+budget=budget_module.ExecutionBudget(float(os.environ['XPOD_QLEVER_SDK_DEADLINE_UNIX']))
 signed = []
 for index in sorted(indices):
-    subprocess.run(['gpgv', '--keyring', str(keyring), str(index)], check=True)
+    verification=commands.capture_gpgv('profile-debian-index-'+str(len(signed)),keyring,index,pathlib.Path('/opt/qlever-sdk/materials'),root,timeout=budget.timeout(30,4200))
     destination = profile / 'apt' / index.name; destination.parent.mkdir(exist_ok=True); shutil.copyfile(index, destination)
-    signed.append(dict(path='apt/' + index.name, sha256=hashfile(index), bytes=index.stat().st_size))
+    signed.append(dict(path='apt/' + index.name, sha256=hashfile(index), bytes=index.stat().st_size,verificationStage=verification))
 index_hashes = {p.name: hashfile(p) for p in sorted(pathlib.Path('/var/lib/apt/lists').glob('*Packages*')) if p.is_file()}
 if not index_hashes: raise RuntimeError('Authenticated package index cache absent')
 ledger = subprocess.check_output(['dpkg-query', '-W', '-f=${binary:Package}\t${Version}\t${Architecture}\n'], text=True)

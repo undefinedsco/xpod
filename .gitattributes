@@ -23,3 +23,7 @@ packages/**/licenses/** -text
 /scripts/lib/legacy-afs-publication-budget.cjs text eol=lf
 /scripts/lib/cli-publication-budget.cjs text eol=lf
 /scripts/lib/module-artifact-limits.json text eol=lf
+
+# These signature fixtures retain the original transport and gpgv protocol bytes.
+/tests/fixtures/independent-admission/debian-bookworm-backports/** -text
+/tests/fixtures/independent-admission/debian-bookworm-backports/status.original.raw whitespace=-blank-at-eol

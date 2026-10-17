@@ -63,7 +63,7 @@ class UpstreamSourceTest(unittest.TestCase):
             for name in ['main.h','added.h']:
                 file=source/name;data=file.read_bytes();rows.append(dict(originalPath=str(file),archivePath=str(file).lstrip('/'),bytes=len(data),sha256=hashlib.sha256(data).hexdigest(),mode=file.stat().st_mode&0o7777))
             inventory=dict(files=rows);(inner/'inputs-after.json').write_text(json.dumps(inventory))
-            reference,total=module.finalize(inner,source,inventory,[dict(name='configure'),dict(name='compile')],lambda:None)
+            reference,total=module.finalize(inner,source,inventory,[dict(name='source-prepare'),dict(name='configure'),dict(name='compile')],lambda:None)
             final=json.loads((inner/reference['path']).read_text());mapping=json.loads((inner/final['selectedInputs']['path']).read_text())
             self.assertEqual([row['sourceRelativePath'] for row in mapping['files']],['main.h','added.h'])
             self.assertEqual(final['phaseBindings']['compile']['name'],'compile');self.assertGreater(total,0)

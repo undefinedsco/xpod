@@ -15,6 +15,7 @@ class OwnedRun(NamedTuple):
     command: tuple[str,...]
 
 RUNS=MappingProxyType({
+    'sourcePrepare':OwnedRun('owner-source-prepare.guard.json',('python3','/components/qlever/scripts/sdk-inner-materials.py','prepare')),
     'build':OwnedRun('owner-build.guard.json',('bash','-ceu',
         'python3 /components/qlever/scripts/sdk-inner-materials.py build\n'
         'test -f /opt/qlever-sdk/build/.xpod-build-contract.json\n'

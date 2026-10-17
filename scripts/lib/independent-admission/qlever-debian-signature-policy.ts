@@ -46,18 +46,18 @@ export function inspectDebianReleaseSuite(body: Buffer, acquisitionUTC: number, 
     const colon = line.indexOf(':'); const key = line.slice(0, colon).toLowerCase();
     need(colon > 0 && /^[a-z][a-z0-9-]*$/u.test(key) && !fields.has(key), 'duplicate/malformed signed Release field'); current = key; fields.set(key, line.slice(colon + 1).trim());
   }
-  const codename = fields.get('codename'), security = codename === 'bookworm-security';
-  const suites: Record<string, readonly string[]> = {bookworm: ['stable', 'oldstable'], 'bookworm-updates': ['stable-updates', 'oldstable-updates'], 'bookworm-security': ['stable-security', 'oldstable-security']};
-  need(codename && suites[codename]?.includes(fields.get('suite')!) && fields.get('origin') === 'Debian'
-    && fields.get('label') === (security ? 'Debian-Security' : 'Debian'), 'reviewed Bookworm suite identity required');
+  const codename = fields.get('codename'), security = codename === 'bookworm-security', backports = codename === 'bookworm-backports';
+  const suites: Record<string, readonly string[]> = {bookworm: ['stable', 'oldstable'], 'bookworm-updates': ['stable-updates', 'oldstable-updates'], 'bookworm-security': ['stable-security', 'oldstable-security'], 'bookworm-backports': ['oldstable-backports']};
+  need(codename && suites[codename]?.includes(fields.get('suite')!) && fields.get('origin') === (backports ? 'Debian Backports' : 'Debian')
+    && fields.get('label') === (security ? 'Debian-Security' : backports ? 'Debian Backports' : 'Debian'), 'reviewed Bookworm suite identity required');
   const date = Date.parse(fields.get('date') ?? ''), until = fields.has('valid-until') ? Date.parse(fields.get('valid-until')!) : undefined;
   need(Number.isFinite(date) && date <= acquisitionUTC + 10000 && (until === undefined || Number.isFinite(until) && date <= until && acquisitionUTC <= until), 'Release not valid at actual acquisition time');
   // Match default APT semantics: absent Valid-Until grants no invented expiry.
   // The absence is retained as an explicit fact, rather than silently supplied.
-  need(!security || until !== undefined, 'security Release requires Valid-Until');
+  need(!(security || backports) || until !== undefined, 'security/backports Release requires Valid-Until');
   const components = (fields.get('components') ?? '').split(/\s+/u).map(value => security ? value.replace(/^updates\//u, '') : value);
   need(indexPaths.length > 0 && indexPaths.every(value => /^(?:main|contrib|non-free|non-free-firmware)\/source\/Sources(?:\.(?:gz|xz|bz2))?$/u.test(value) && components.includes(value.split('/')[0]!)), 'signed Sources component differs');
-  return Object.freeze({codename, role: security ? 'security' as const : codename === 'bookworm-updates' ? 'updates' as const : 'archive' as const, dateUTC: date, validUntilUTC: until ?? null, validUntilPresent: until !== undefined});
+  return Object.freeze({codename, role: security ? 'security' as const : backports ? 'backports' as const : codename === 'bookworm-updates' ? 'updates' as const : 'archive' as const, dateUTC: date, validUntilUTC: until ?? null, validUntilPresent: until !== undefined});
 }
 
 /** Parse strict clear-signed Release framing. Signature mathematics remain gpgv's. */
@@ -84,7 +84,7 @@ export function extractDebianSignedRelease(original: Buffer): Buffer {
  * based on actual official Bookworm+Trixie co-signature gpgv status originals.
  * A complete permitted VALIDSIG is still mandatory for the identical input. */
 const isPlaintext = (args: string[]) => args.length === 3 && args[0] === '74' && args[1] === '0' && args[2] === '';
-export function inspectDebianGpgvStatus(status: Buffer, role: 'archive' | 'updates' | 'security', acquisitionUTC: number, exit = 0, expectPlaintext = false) {
+export function inspectDebianGpgvStatus(status: Buffer, role: 'archive' | 'updates' | 'security' | 'backports', acquisitionUTC: number, exit = 0, expectPlaintext = false) {
   need(status.length > 0 && status.length <= 65536 && !status.includes(0) && [0, 2].includes(exit), 'bounded completed gpgv status required');
   const groups: {name: string; args: string[]}[][] = []; let plaintext = false;
   for (const line of status.toString('utf8').trimEnd().split('\n')) {
@@ -109,7 +109,7 @@ export function inspectDebianGpgvStatus(status: Buffer, role: 'archive' | 'updat
     need(valid.length === 1 && good.length === 1 && ids.length === 1, 'complete single valid signature group required');
     const args = valid[0]!.args;
     const policy = DEBIAN_BOOKWORM_KEYS.find(key => key.primary === args[9] && key.signing === args[0]
-      && (role === 'security' ? key.role === 'security' : role === 'updates' ? key.role === 'archive' : key.role !== 'security'));
+      && (role === 'security' ? key.role === 'security' : role === 'updates' || role === 'backports' ? key.role === 'archive' : key.role !== 'security'));
     need(policy && args.length === 10 && ['8', '9', '10'].includes(args[7]!) && args[8] === '01' && args[6] === (policy.role === 'release' ? '22' : '1') && args[4] === '4' && args[5] === '0'
       && /^[0-9]+$/u.test(args[2]!) && /^[0-9]+$/u.test(args[3]!) && /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/u.test(args[1]!)
       && good[0]!.args[0] === policy.signing.slice(-16) && ids[0]!.args.length === 3 && ids[0]!.args[1] === args[1] && ids[0]!.args[2] === args[2]

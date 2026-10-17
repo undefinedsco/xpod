@@ -1,3 +1,4 @@
+import { inspectRetainedDebianGpgvExit } from './debian-signature-policy-bridge';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { readFileSync, realpathSync } from 'node:fs';
@@ -99,8 +100,12 @@ export async function observeQleverSdkDebianIndexOriginals(capability: unknown, 
       for (const [field, name] of [['receipt', base + '/command.receipt.json'], ['stdout', base + '/stdout.raw'], ['stderr', base + '/stderr.raw'],
         ['supervisionReceipt', base + '.receipt.json'], ['supervisionRaw', base + '.raw.log']]) need(stage[field!]?.path === name, 'fixed gpgv raw/receipt role required');
       const actual = json(stage.receipt), supervision = json(stage.supervisionReceipt);
-      const command = ['gpgv', '--keyring', ROOT + '/' + keyring.path.slice('inner/'.length), ROOT + '/' + release.path.slice('inner/'.length)];
-      need(same(actual.command, command) && actual.schemaVersion === 1 && actual.actualWait === true && actual.exit === 0 && actual.signal === null && actual.rawClosedBeforeHash === true
+      const unclassified = stage.classification === 'unclassified-producer-gpgv-originals';
+      need(stage.classification === undefined || unclassified, 'fixed gpgv retention classification differs');
+      const command = ['gpgv', ...(unclassified ? ['--status-fd', '1'] : []), '--keyring', ROOT + '/' + keyring.path.slice('inner/'.length), ROOT + '/' + release.path.slice('inner/'.length)];
+      const retainedExit = inspectRetainedDebianGpgvExit(actual.exit, supervision.exit);
+      need(unclassified || retainedExit === 0, 'legacy gpgv requires actual closed exit zero');
+      need(same(actual.command, command) && actual.schemaVersion === 1 && actual.actualWait === true && actual.exit === retainedExit && actual.signal === null && actual.rawClosedBeforeHash === true
         && Number.isSafeInteger(actual.pid) && actual.pid > 0 && actual.pgid === supervision.pgid && supervision.pid === supervision.pgid && Number.isSafeInteger(supervision.pid) && supervision.pid > 0, 'actual gpgv argv/wait/exit/group differs');
       for (const field of ['stdout', 'stderr']) {
         const bytes = read(stage[field]);
@@ -110,7 +115,7 @@ export async function observeQleverSdkDebianIndexOriginals(capability: unknown, 
       need(Array.isArray(argv) && argv.length === 6 && argv[0] === '/usr/bin/python3' && argv[1] === '-B' && argv[2] === '/components/qlever/scripts/sdk-command-materials.py'
         && argv[3] === '--exec-child' && argv[4] === ROOT + '/stages/' + stage.name && same(JSON.parse(argv[5]), command), 'fixed SDK command supervisor argv differs');
       const started = Date.parse(supervision.startedUTC), closed = Date.parse(supervision.closedUTC), actualStart = Math.floor(Number(actual.startedUnixNs) / 1e6), actualEnd = Math.floor(Number(actual.completedUnixNs) / 1e6);
-      need(supervision.actualWait === true && supervision.exit === 0 && supervision.signal === null && supervision.ownedGroupAbsentAfterWait === true && supervision.rawClosedBeforeHash === true
+      need(supervision.actualWait === true && supervision.exit === retainedExit && supervision.signal === null && supervision.ownedGroupAbsentAfterWait === true && supervision.rawClosedBeforeHash === true
         && supervision.rawSHA256 === hash(supervisorRaw) && supervision.resourceStop === null && supervision.supervisorError === null
         && Number.isFinite(supervision.elapsedSeconds) && supervision.elapsedSeconds >= 0
         && Array.isArray(supervision.cleanupErrors) && supervision.cleanupErrors.length === 0 && Array.isArray(supervision.ownedGroupMembers) && supervision.ownedGroupMembers.length === 0
@@ -137,7 +142,7 @@ export async function observeQleverSdkDebianIndexOriginals(capability: unknown, 
       need(qleverSdkOriginalsView(capability) === sdk && result.scope === 'checksum-mechanics-only-not-OpenPGP-or-keyring-authority'
         && result.inReleaseSha256 === release.sha256 && same(result.original, {bytes: sources.bytes, sha256: sources.sha256}) && Array.isArray(result.packages), 'private index checksum observation binding differs');
       for (const item of result.packages) covered.add(item.name + '\0' + item.version);
-      stages.push(Object.freeze({inRelease: release, keyring, receipt: ref(stage.receipt), stdout: ref(stage.stdout), stderr: ref(stage.stderr), supervisionReceipt: ref(stage.supervisionReceipt), supervisionRaw: ref(stage.supervisionRaw)}));
+      stages.push(Object.freeze({classification: 'unclassified-producer-gpgv-originals', actualExit: retainedExit, inRelease: release, keyring, receipt: ref(stage.receipt), stdout: ref(stage.stdout), stderr: ref(stage.stderr), supervisionReceipt: ref(stage.supervisionReceipt), supervisionRaw: ref(stage.supervisionRaw)}));
       checksums.push(Object.freeze({sourceOriginal: sources, observation: Object.freeze(result)}));
     }
     need(collection.packages.every((item: any) => covered.has(item.name + '\0' + item.version)), 'exact dsc/source tuple absent from all authenticated-byte index observations');

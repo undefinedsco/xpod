@@ -51,7 +51,7 @@ class ModuleBookwormSdkTests(unittest.TestCase):
         for package in ['gcc-12', 'g++-12', 'libboost-url1.81-dev', 'libicu-dev', 'libssl-dev']:
             self.assertIn(package, dockerfile)
         self.assertIn('Acquire::AllowInsecureRepositories=false', dockerfile); self.assertIn('APT::Get::AllowUnauthenticated=false', dockerfile)
-        self.assertIn("['gpgv', '--keyring'", wrapper); self.assertIn('packageIndexHashes', wrapper); self.assertIn('recipeHashes', wrapper)
+        self.assertIn('commands.capture_gpgv(', wrapper); self.assertIn('verificationStage=verification', wrapper); self.assertIn('packageIndexHashes', wrapper); self.assertIn('recipeHashes', wrapper)
         self.assertNotIn('REDUCED_FEATURE_SET_FOR_CPP17', dockerfile + wrapper)
         self.assertNotIn('clang-19', dockerfile)
         subprocess.run(['bash', '-n', str(ROOT / 'qlever/scripts/build-module-runtime-sdk.sh')], check=True)

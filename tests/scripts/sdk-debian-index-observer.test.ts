@@ -21,7 +21,7 @@ async function scenario(change?: (rows: Map<string, Buffer>, collection: any, ma
   const sources = packages.map(item => Buffer.from(`Package: ${item.name}\nVersion: ${item.version}\nDirectory: pool/main/${item.name[0]}/${item.name}\nDescription: ${'large-index-field-'.repeat(5000)}\nChecksums-Sha256:\n ${item.dsc.sha256} ${item.dsc.bytes} ${path.posix.basename(item.dsc.path)}\n\n`));
   const release = put(indexes + 'deb.example_debian_dists_bookworm_InRelease', Buffer.from('-----BEGIN PGP SIGNED MESSAGE-----\nHash: SHA256\n\nOrigin: Debian\nSHA256:\n' + sources.map((bytes, i) => ` ${hash(bytes)} ${bytes.length} ${i === 0 ? 'main' : 'contrib'}/source/Sources\n`).join('') + '-----BEGIN PGP SIGNATURE-----\nnot-real-signature\n-----END PGP SIGNATURE-----\n'));
   const keyring = put(indexes + 'debian-archive-keyring.gpg', Buffer.from('fixture-keyring-not-official-authority'));
-  const command = ['gpgv', '--keyring', '/opt/qlever-sdk/materials/' + keyring.path.slice(6), '/opt/qlever-sdk/materials/' + release.path.slice(6)];
+  const command = ['gpgv', '--status-fd', '1', '--keyring', '/opt/qlever-sdk/materials/' + keyring.path.slice(6), '/opt/qlever-sdk/materials/' + release.path.slice(6)];
   const stdout = put('inner/stages/debian-index-0/stdout.raw', Buffer.alloc(0)), stderr = put('inner/stages/debian-index-0/stderr.raw', Buffer.from('fixture raw; text never grants signature authority'));
   const receipt = put('inner/stages/debian-index-0/command.receipt.json', {schemaVersion: 1, command, actualWait: true, exit: 0, signal: null, pid: 42, pgid: 41,
     rawClosedBeforeHash: true, startedUnixNs: Date.parse('2026-10-17T00:00:10Z') * 1e6, completedUnixNs: Date.parse('2026-10-17T00:00:11Z') * 1e6,
@@ -30,7 +30,7 @@ async function scenario(change?: (rows: Map<string, Buffer>, collection: any, ma
   const supervisionReceipt = put('inner/stages/debian-index-0.receipt.json', {command: ['/usr/bin/python3', '-B', '/components/qlever/scripts/sdk-command-materials.py', '--exec-child', '/opt/qlever-sdk/materials/stages/debian-index-0', JSON.stringify(command)],
     pid: 41, pgid: 41, actualWait: true, exit: 0, signal: null, ownedGroupAbsentAfterWait: true, rawClosedBeforeHash: true, rawSHA256: supervisionRaw.sha256,
     resourceStop: null, supervisorError: null, elapsedSeconds: 3, cleanupErrors: [], ownedGroupMembers: [], startedUTC: '2026-10-17T00:00:09Z', closedUTC: '2026-10-17T00:00:12Z'});
-  const stage = {name: 'debian-index-0', receipt, stdout, stderr, supervisionRaw, supervisionReceipt, inputs: [], outputs: []};
+  const stage = {classification: 'unclassified-producer-gpgv-originals', name: 'debian-index-0', receipt, stdout, stderr, supervisionRaw, supervisionReceipt, inputs: [], outputs: []};
   const collection: any = {schemaVersion: 1, kind: 'qlever-sdk-exact-debian-source-originals', packages, indexOriginals: sources.map((bytes, i) => ({inRelease: release, keyring, verificationStage: stage,
     sources: put(indexes + ['main', 'contrib'][i] + '_source_Sources.gz', execFileSync('/usr/bin/python3', ['-I', '-S', '-B', '-c', 'import gzip,sys;sys.stdout.buffer.write(gzip.compress(sys.stdin.buffer.read(),mtime=0))'], {input: bytes}))}))};
   const master: any = {kind: 'qlever-linux-sdk-originals', identity: {sourceSha: '1'.repeat(40), target: 'linux-x64'}, stages: [stage]};
@@ -121,4 +121,30 @@ it('shares the caller deadline with both archive scans and rejects expired or su
   expect(normal.result.facts.sdkDebianInReleaseSourcesDscChecksumChainVerified).toBe(true);
   expect(normal.observedRemaining.every(value => value > 0 && value <= 5000)).toBe(true);
   expect(normal.observedRemaining[3]).toBeLessThan(normal.observedRemaining[0]!);
+});
+
+it('retains closed actual rc2 without granting signature authority, rejects mismatched exits', async () => {
+  for (const exits of [[2,2], [2,0], [0,2], [1,1]]) {
+    const value = await scenario(rows => {
+      for (const [index,name] of ['inner/stages/debian-index-0/command.receipt.json','inner/stages/debian-index-0.receipt.json'].entries()) {
+        const receipt = JSON.parse(rows.get(name)!.toString()); receipt.exit = exits[index]; rows.set(name, Buffer.from(JSON.stringify(receipt)));
+      }
+    });
+    expect(value.result.facts.sdkDebianInReleaseSourcesDscChecksumChainVerified === true).toBe(exits[0] === 2 && exits[1] === 2);
+    if (exits[0] === 2 && exits[1] === 2) expect(value.result.pending).toEqual(['qlever-sdk-official-Debian-keyring-gpgv-and-suite-authority-unverified']);
+  }
+});
+
+it('preserves the reviewed legacy exit-zero argv without widening legacy nonzero acceptance', async () => {
+  for (const exit of [0, 2]) {
+    const value = await scenario((rows, collection, master) => {
+      delete master.stages[0].classification;
+      const receiptName = 'inner/stages/debian-index-0/command.receipt.json', supervisorName = 'inner/stages/debian-index-0.receipt.json';
+      const actual = JSON.parse(rows.get(receiptName)!.toString()), supervisor = JSON.parse(rows.get(supervisorName)!.toString());
+      actual.command.splice(1, 2); actual.exit = supervisor.exit = exit; supervisor.command[5] = JSON.stringify(actual.command);
+      rows.set(receiptName, Buffer.from(JSON.stringify(actual))); rows.set(supervisorName, Buffer.from(JSON.stringify(supervisor)));
+      for (const item of collection.indexOriginals) delete item.verificationStage.classification;
+    });
+    expect(value.result.facts.sdkDebianInReleaseSourcesDscChecksumChainVerified === true).toBe(exit === 0);
+  }
 });

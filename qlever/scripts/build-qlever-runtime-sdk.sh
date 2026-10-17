@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 mode=${1:-all}
-[[ $# -le 1 && "$mode" =~ ^(all|prepare-only|build-prepared)$ ]] || { echo 'unsupported private SDK phase' >&2; exit 64; }
+[[ $# -le 1 && "$mode" =~ ^(all|prepare-only|source-only|configure-prepared|build-prepared)$ ]] || { echo 'unsupported private SDK phase' >&2; exit 64; }
 if [[ "$mode" != all && ( ${XPOD_QLEVER_CMAKE_C_COMPILER:-} != gcc-12 || ${XPOD_QLEVER_CMAKE_CXX_COMPILER:-} != g++-12 ) ]]; then
   echo 'private prepared phases require the module GCC12 profile' >&2; exit 64
 fi
@@ -87,6 +87,8 @@ if [[ "$mode" == build-prepared ]]; then
   exit 0
 fi
 mkdir -p "$build_dir"
+runtime_overlay_inputs_changed=0
+if [[ "$mode" != configure-prepared ]]; then
 if [[ "$incremental_sdk" == "1" ]]; then
   patched_source_dir=$(mktemp -d)
   cleanup_patched_source() {
@@ -145,9 +147,18 @@ if [[ $(cat "$overlay_identity_file" 2>/dev/null || true) != "$overlay_source_sh
   printf '%s' "$overlay_source_sha" >"$overlay_identity_file"
 fi
 rm -f "$overlay_manifest_current"
+# This marker binds the prepared source/overlay inputs; configure does not rerun
+# clone/reset/sync/touch after the source and components become read-only.
+printf '%s\n%s\n' "$build_identity" "$toolchain_identity" >"$build_dir/.xpod-source-prepared"
+fi
+if [[ "$mode" == source-only ]]; then exit 0; fi
+if [[ "$mode" == configure-prepared ]]; then
+  expected_prepared=$(printf '%s\n%s' "$build_identity" "$toolchain_identity")
+  [[ $(cat "$build_dir/.xpod-source-prepared") == "$expected_prepared" ]] || { echo 'prepared source/toolchain binding differs' >&2; exit 1; }
+fi
 
 adapter_flags="-DXPOD_QLEVER_ADAPTER_ENABLE_QLEVER=1 -I$qlever_root/qlever_adapter/src -I$qlever_root/qlever_adapter/include -I$qlever_root/rdf_protocol/include"
-if [[ "$mode" == prepare-only ]] || [[ ! -f "$build_identity_file" ]] ||
+if [[ "$mode" == prepare-only || "$mode" == configure-prepared ]] || [[ ! -f "$build_identity_file" ]] ||
    [[ $(cat "$build_identity_file") != "$build_identity" ]] ||
    [[ ! -f "$toolchain_identity_file" ]] ||
    [[ $(cat "$toolchain_identity_file") != "$toolchain_identity" ]]; then
@@ -163,14 +174,14 @@ if [[ "$mode" == prepare-only ]] || [[ ! -f "$build_identity_file" ]] ||
     -DUSE_PRECOMPILED_HEADERS=OFF \
     -DUSE_IO_URING=OFF \
     -DCMAKE_CXX_FLAGS="$adapter_flags")
-  if [[ "$mode" == prepare-only && -n ${XPOD_QLEVER_UPSTREAM_MATERIALS_DIR:-} ]]; then
+  if [[ ( "$mode" == prepare-only || "$mode" == configure-prepared ) && -n ${XPOD_QLEVER_UPSTREAM_MATERIALS_DIR:-} ]]; then
     generation_materials="${XPOD_QLEVER_UPSTREAM_MATERIALS_DIR%/upstream-source}/generation"
     CC="$c_compiler" CXX="$cxx_compiler" python3 "$qlever_root/scripts/sdk-generation-materials.py" configure \
       "$generation_materials" "$source_dir" "$build_dir" -- "${cmake_command[@]}"
   else
     CC="$c_compiler" CXX="$cxx_compiler" "${cmake_command[@]}"
   fi
-  if [[ "$mode" == prepare-only ]]; then
+  if [[ "$mode" == prepare-only || "$mode" == configure-prepared ]]; then
     python3 "$qlever_root/scripts/sdk-prepared-inputs.py" record "$qlever_root" "$build_dir" "$build_identity" "$toolchain_identity"
     exit 0
   fi
