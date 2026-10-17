@@ -689,7 +689,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/inngest-runtime-originals.ts",
-    "sha256": "64506fa4357eaf7c46890a51cf28e546850d6fb7e9c13dcd2f824aad5f0b465e"
+    "sha256": "5d763de08c5b0383e2f3664117a56d5404a2c4dda5f6c3a46b6c6c1972d2f0ef"
   },
   {
     "path": "scripts/lib/independent-admission/lazy-zip-originals.ts",
@@ -1001,7 +1001,7 @@
   },
   {
     "path": "scripts/lib/inngest-runtime-probe.py",
-    "sha256": "10c4111886000267d93435f1405fb746d61c141b899d50d9b027ae87e915d4fd"
+    "sha256": "da950f262c5d9e13082611b7b8360284fefc7cbb067515332f68b56ba035bbb6"
   },
   {
     "path": "scripts/lib/inspect-product-artifact.py",

@@ -7,6 +7,11 @@ import platform
 import stat
 import struct
 import time
+import socket
+import signal
+import http.client
+import secrets
+import threading
 POLICY=json.loads((Path(__file__).with_name('inngest-runtime-policy.json')).read_text())
 MAXIMUM=192*1024**2
 
@@ -66,6 +71,98 @@ def snapshot(file, expected, target, check):
     finally:os.close(fd)
     return dict(path=str(file),bytes=total,sha256=expected,identity=identity(before),loader=loader)
 
+def listener_owner(port, members, check, proc=Path('/proc')):
+    """Actual Linux socket inode must belong to this observed process group."""
+    check();inodes=set()
+    with (proc/'net/tcp').open('rb') as table:raw=table.read(4*1024**2+1)
+    need(len(raw)<=4*1024**2,'bounded TCP listener table')
+    for line in raw.decode('ascii').splitlines()[1:]:
+        fields=line.split()
+        if len(fields)>=10 and fields[1]=='0100007F:%04X'%port and fields[3]=='0A':inodes.add(fields[9])
+    need(len(inodes)==1,'unique actual loopback listener required');inode=next(iter(inodes));owners=[]
+    need(0<len(members)<=4096,'bounded observed process group required')
+    for pid in members:
+        check()
+        try:
+            directory=proc/str(pid)/'fd';matched=False;count=0
+            with os.scandir(directory) as descriptors:
+                for entry in descriptors:
+                    count+=1;need(count<=65536,'bounded process descriptors');check()
+                    if os.readlink(entry.path)=='socket:['+inode+']':matched=True
+            if matched:owners.append(int(pid))
+        except FileNotFoundError:continue
+    need(len(owners)==1,'listener is not uniquely owned by actual probe group')
+    return dict(pid=owners[0],inode=inode,port=port)
+
+def bounded_http_request(port,method,path,body,end,check):
+    """SIGALRM bounds all header/body parsing, including socket drip feeds.
+
+    This driver runs on the runner main thread. Never replace somebody else's
+    active timer: an unsupported caller context fails closed before networking.
+    """
+    check();need(threading.current_thread() is threading.main_thread(),'HTTP deadline requires main thread')
+    need(signal.getitimer(signal.ITIMER_REAL)==(0.0,0.0),'HTTP deadline cannot replace an active timer')
+    remaining=end-time.monotonic();need(remaining>0,'installed protocol deadline expired')
+    previous=signal.getsignal(signal.SIGALRM)
+    def expired(_signal,_frame):raise ValueError('Installed Inngest runtime: absolute HTTP deadline expired')
+    connection=None
+    try:
+        signal.signal(signal.SIGALRM,expired)
+        signal.setitimer(signal.ITIMER_REAL,remaining)
+        connection=http.client.HTTPConnection('127.0.0.1',port,timeout=min(1,remaining))
+        connection.request(method,path,body=body,headers={'Content-Type':'application/json'})
+        response=connection.getresponse();raw=response.read(16385)
+        check();need(len(raw)<=16384,'bounded protocol response');need(response.status==200,'actual protocol HTTP status differs')
+        value=json.loads(raw)
+        return value,dict(method=method,path=path,status=response.status,body=raw.decode('utf-8'))
+    finally:
+        # Cancel before restoring the handler; the original timer was inactive.
+        signal.setitimer(signal.ITIMER_REAL,0)
+        signal.signal(signal.SIGALRM,previous)
+        if connection is not None:connection.close()
+
+def protocol(runner,runtime,prefix,binary,env,cycle):
+    # One pre-existing command slot; no additional deadline/window is created.
+    end=min(time.monotonic()+POLICY['commandSeconds'],runner.deadline or float('inf'))
+    last_gate=[float('-inf')]
+    def check():
+        now=time.monotonic();need(now<end,'installed protocol deadline expired')
+        if now-last_gate[0]>=.2:runner.gate();last_gate[0]=now
+    check();sockets=[]
+    try:
+        for _ in range(4):
+            sock=socket.socket();sock.bind(('127.0.0.1',0));sockets.append(sock)
+        ports=[s.getsockname()[1] for s in sockets];need(len(set(ports))==4 and 60895 not in ports,'distinct owned probe ports required')
+    finally:
+        for sock in sockets:sock.close()
+    argv=[str(binary),'dev','--no-discovery','--no-poll','--host','127.0.0.1','--port',str(ports[0]),'--connect-gateway-port',str(ports[1]),'--connect-gateway-grpc-port',str(ports[2]),'--connect-executor-grpc-port',str(ports[3])]
+    requests=[];proof={}
+    def request(method,path,body=None):
+        value,original=bounded_http_request(ports[0],method,path,body,end,check)
+        requests.append(original);return value
+    def exercise(process):
+        while True:
+            check();need(process.poll() is None,'probe exited before readiness');members=runner.observe_group(process)
+            try:
+                owner=listener_owner(ports[0],members,check);health=request('GET','/health')
+                break
+            except (OSError,http.client.HTTPException):time.sleep(.05)
+            except ValueError as error:
+                if 'unique actual loopback listener required' not in str(error):raise
+                time.sleep(.05)
+        need(health=={'status':200,'message':'OK'},'fixed health response differs')
+        nonce=secrets.token_hex(16);event={'name':'xpod/module-native-probe','id':nonce,'data':{'nonce':nonce}}
+        accepted=request('POST','/e/xpod-module-probe',json.dumps(event,separators=(',',':')).encode())
+        need(set(accepted)=={'ids','status'} and accepted['status']==200 and isinstance(accepted['ids'],list) and len(accepted['ids'])==1 and isinstance(accepted['ids'][0],str) and 0<len(accepted['ids'][0])<=128,'actual event acceptance response differs')
+        need(listener_owner(ports[0],runner.observe_group(process),check)==owner and process.poll() is None,'owned listener changed across communication')
+        proof.update(commandLabel=runtime+'-inngest-protocol',ports=ports,owner=owner,requests=requests,event=event)
+        # Signal only the listener already bound to this exact observed group.
+        check();need(listener_owner(ports[0],runner.observe_group(process),check)==owner,'listener changed before shutdown')
+        os.kill(owner['pid'],signal.SIGTERM)
+        process.wait(timeout=max(.001,end-time.monotonic()));need(process.returncode==0,'native protocol did not close with actual exit 0')
+    runner.command(runtime+'-inngest-protocol',prefix+argv,env,cycle,exercise)
+    return proof
+
 def capture(runner,runtime,cli,env,cycle,package_root,installed_package):
     target=runner.checked['target']['target'];os_name,arch=target.split('-');machine={'x86_64':'x64','amd64':'x64','aarch64':'arm64','arm64':'arm64'}.get(platform.machine().lower())
     need(platform.system().lower()==os_name and machine==arch,'actual Python host does not match native target')
@@ -79,11 +176,12 @@ def capture(runner,runtime,cli,env,cycle,package_root,installed_package):
         return snapshot(binary,expected,target,check)
     before=checked_hash();native_env=dict(env,DO_NOT_TRACK='1');prefix=cli[:-1]
     runner.command(runtime+'-inngest-version',prefix+[str(binary),*POLICY['versionArguments']],native_env,cycle)
-    loader_label=None
+    loader_label=None;protocol_original=None
+    if os_name=='linux':protocol_original=protocol(runner,runtime,prefix,binary,native_env,cycle)
     if os_name=='darwin':
         loader_label=runtime+'-inngest-loader';runner.command(loader_label,prefix+['/usr/bin/otool','-L',str(binary)],native_env,cycle)
     after=checked_hash();need(before==after,'installed binary identity changed across actual runtime execution')
     result=dict(schemaVersion=1,kind='installed-inngest-version-runtime-originals',sourceSha=runner.plan['sourceSha'],target=target,runtime=runtime,host=dict(platform=os_name,arch=machine,release=platform.release(),macOS=platform.mac_ver()[0] if os_name=='darwin' else None),before=before,after=after,
-                versionCommandLabel=runtime+'-inngest-version',loaderCommandLabel=loader_label,environment=native_env,scope='actual installed version command and observed loader metadata; no full API service or toolchain/source closure')
+                versionCommandLabel=runtime+'-inngest-version',loaderCommandLabel=loader_label,protocol=protocol_original,environment=native_env,scope='actual installed version command and observed loader metadata; no full API service or toolchain/source closure')
     file=runner.output/(runtime+'-inngest-runtime.original.json');need(not file.exists(),'fresh runtime original required');file.write_text(json.dumps(result));os.chmod(file,0o400)
     runner.result['installedVerification'][runtime]['inngestRuntimeOriginal']=dict(path=file.name,bytes=file.stat().st_size,sha256=hashlib.sha256(file.read_bytes()).hexdigest());runner.save()
