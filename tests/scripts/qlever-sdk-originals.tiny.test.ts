@@ -19,7 +19,7 @@ test('SDK data reference/master checks bind exact producer tuple/image and every
 });
 test('SDK origin source recipes remain whole versioned groups',()=>{
  for(const group of QLEVER_LINUX_EXECUTION_GROUPS)expect(selectGitHubSourceBindingGroup(QLEVER_LINUX_EXECUTION_GROUPS,new Map(group.selectors.map(row=>[sourceBindingKey(row),row.sha256])))).toBe(group);
- const mixed=new Map(QLEVER_LINUX_EXECUTION_GROUPS[0]!.selectors.map(row=>[sourceBindingKey(row),row.sha256]));const next=QLEVER_LINUX_EXECUTION_GROUPS[1]!.selectors[0]!;mixed.set(sourceBindingKey(next),next.sha256);expect(()=>selectGitHubSourceBindingGroup(QLEVER_LINUX_EXECUTION_GROUPS,mixed)).toThrow();
+ const mixed=new Map(QLEVER_LINUX_EXECUTION_GROUPS[0]!.selectors.map(row=>[sourceBindingKey(row),row.sha256]));const next=QLEVER_LINUX_EXECUTION_GROUPS[1]!.selectors.find(row=>row.path==='.github/workflows/publish-qlever-runtime-sdk.yml')!;mixed.set(sourceBindingKey(next),next.sha256);expect(()=>selectGitHubSourceBindingGroup(QLEVER_LINUX_EXECUTION_GROUPS,mixed)).toThrow();
  for(const path of ['qlever/scripts/sdk-image-originals.py','qlever/scripts/sdk-inner-materials.py','qlever/scripts/sdk-command-materials.py','qlever/scripts/sdk-execution-budget.py','.dockerignore'])expect(QLEVER_SDK_B_SOURCE_BINDINGS.some(row=>row.path===path)).toBe(true);
 });
 test('serialized runtime materials cannot initiate an SDK network acquisition',async()=>{
@@ -82,7 +82,7 @@ test('owned SDK RUNs select the complete PID1 registry/guard and preserve earlie
 
 test('source-prepared SDK group binds the complete changed recipe without mixing historical selectors',()=>{
  const old=QLEVER_SDK_EXECUTION_GROUPS[6]!,next=QLEVER_SDK_EXECUTION_GROUPS[7]!;
- expect(QLEVER_SDK_EXECUTION_GROUPS).toHaveLength(8);
+ expect(QLEVER_SDK_EXECUTION_GROUPS).toHaveLength(9);
  const selected=new Map(next.selectors.map(row=>[sourceBindingKey(row),row.sha256]));
  expect(selectGitHubSourceBindingGroup(QLEVER_SDK_EXECUTION_GROUPS,selected)).toBe(next);
  for(const path of ['docker/qlever-runtime-sdk/Dockerfile.module-bookworm','qlever/scripts/sdk-inner-materials.py']){
@@ -93,4 +93,11 @@ test('source-prepared SDK group binds the complete changed recipe without mixing
   expect(next.sourceBindings.find(row=>row.path===path)?.sha256).not.toBe(old.sourceBindings.find(row=>row.path===path)?.sha256);
  }
  expect(QLEVER_LINUX_EXECUTION_GROUPS.includes(next)).toBe(true);
+});
+
+test('service context versions select whole recipes including the exact Docker ignore original',()=>{
+ const old=QLEVER_SDK_EXECUTION_GROUPS[7]!,next=QLEVER_SDK_EXECUTION_GROUPS[8]!;
+ for(const group of [old,next]){const observed=new Map(group.selectors.map(row=>[sourceBindingKey(row),row.sha256]));expect(selectGitHubSourceBindingGroup(QLEVER_SDK_EXECUTION_GROUPS,observed)).toBe(group);expect(group.selectors.some(row=>row.path==='.dockerignore')).toBe(true);}
+ const observed=new Map(next.selectors.map(row=>[sourceBindingKey(row),row.sha256]));const context=next.selectors.find(row=>row.path==='.dockerignore')!;observed.set(sourceBindingKey(context),'0'.repeat(64));expect(()=>selectGitHubSourceBindingGroup(QLEVER_SDK_EXECUTION_GROUPS,observed)).toThrow();
+ expect(next.sourceBindings).toEqual(old.sourceBindings);
 });

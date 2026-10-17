@@ -1,5 +1,9 @@
 [
   {
+    "path": ".dockerignore",
+    "sha256": "39150d3d516e0476fc2dca5f0c1ebf77d1e58f434bc7130e210af1878dec8aec"
+  },
+  {
     "path": "bun.lock",
     "sha256": "87cfaf4e12092fb0e67eaba18985efadcc501a6c2112798fae217608f475048c"
   },
@@ -881,7 +885,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-origin-policy.ts",
-    "sha256": "bbfa6d9377d9b519d3cd566c78c23f6874774bc3757cd435d92e3e4c01d59762"
+    "sha256": "ab8431f58bff01d4d3f17b0fa2e539ac0d50deef5166cc21985966823c10f23e"
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-originals.ts",
@@ -1056,6 +1060,10 @@
     "sha256": "54893d88005607c3f1b421a742e5b93f48dd971f78e6878098c271aa7b314969"
   },
   {
+    "path": "scripts/prepare-package-manifest.cjs",
+    "sha256": "e96742e42dffe81814613c33468c256d03144ac82872a5537df8fa53d69e1550"
+  },
+  {
     "path": "scripts/project-afs-product-input.ts",
     "sha256": "718d79fc450e1f50887064d9e16ed61a77881245ef94929bad7107ab9ab59789"
   },
@@ -1118,6 +1126,10 @@
   {
     "path": "scripts/workspace-package-payload.cjs",
     "sha256": "228454b5953de73d1045f8d4a9cb57c66f7639125363ee90344fc643472dffef"
+  },
+  {
+    "path": "scripts/workspace-runtime-materials.cjs",
+    "sha256": "1d1e5e6c454e77acf1dbbf5e225f11fc98d99c3ab928bdc96d914f076ac6e3e6"
   },
   {
     "path": "src/runtime/configure-drizzle-solid.ts",
