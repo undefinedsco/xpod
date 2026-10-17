@@ -12,6 +12,9 @@ ENV DEBIAN_FRONTEND=noninteractive \
     XPOD_QLEVER_CMAKE_C_COMPILER=gcc-12 \
     XPOD_QLEVER_CMAKE_CXX_COMPILER=g++-12
 
+# Enable source indexes from the same pinned base repository configuration.
+RUN sed -i 's/^Types: deb$/Types: deb deb-src/' /etc/apt/sources.list.d/debian.sources
+
 RUN apt-get -o Acquire::AllowInsecureRepositories=false -o Acquire::AllowDowngradeToInsecureRepositories=false update \
  && apt-get -o APT::Get::AllowUnauthenticated=false install -y --no-install-recommends \
     ca-certificates debian-archive-keyring gpgv gcc-12 g++-12 binutils cmake git make python3 \

@@ -1,3 +1,4 @@
+import { productTarget } from '../../module-product-targets';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
@@ -20,8 +21,8 @@ export const moduleSourcePhasePolicy = Object.freeze({
 /** Complete reviewed CSS parent/producer versions. Origin event/head/job
  * authority remains exclusively in the private GitHub observer. */
 export const CSS_SOURCE_PARENT_VERSIONS = Object.freeze([
-  Object.freeze({workflowSha256: '8312031501f9f0d640e100ddec75e0fe1150d0ee93812b3f8c6785b032319c0f', producerSha256: '431d033a41f01ab317124e1e5488543ea1ac82fa59c2ef3845ddd43ab4e61f4c'}),
-  Object.freeze({workflowSha256: '601aa8fe01ee1367be4e97dc6e868d7bc3e79ed1fea5e8f9531aa759e78d7d51', producerSha256: moduleSourcePhasePolicy.css}),
+  Object.freeze({workflowSha256: '8312031501f9f0d640e100ddec75e0fe1150d0ee93812b3f8c6785b032319c0f', producerSha256: '431d033a41f01ab317124e1e5488543ea1ac82fa59c2ef3845ddd43ab4e61f4c', targets: 'darwin-arm64-only' as const}),
+  Object.freeze({workflowSha256: '601aa8fe01ee1367be4e97dc6e868d7bc3e79ed1fea5e8f9531aa759e78d7d51', producerSha256: moduleSourcePhasePolicy.css, targets: 'canonical-catalog' as const}),
 ]);
 export function reviewedModuleProducerSource(module: 'api' | 'css' | 'afs', sha256: string): boolean {
   return module === 'css' ? CSS_SOURCE_PARENT_VERSIONS.some(row => row.producerSha256 === sha256) : sha256 === moduleSourcePhasePolicy[module];
@@ -81,12 +82,18 @@ export function verifyClosedModulePhaseReceipts(plan: readonly { name: string; c
 /** Narrow route policy only; callers still need the real private origin and
  * immutable artifact/source capabilities below. */
 export function reviewedModuleSourceWorkflow(module: 'api' | 'css' | 'afs', input: {
-  workflowPath: string; workflowSourceSha256: string; producerSourceSha256?: string; target?: string; jobName: string; producerWorkflowPath?: string;
+  workflowPath: string; workflowSourceSha256: string; producerSourceSha256?: string; target?: string; producerMachine?: string; producerMacOSVersion?: string; jobRunnerLabels?: readonly string[]; jobName: string; producerWorkflowPath?: string;
 }): boolean {
   if (input.producerWorkflowPath !== input.workflowPath) return false;
   if (module === 'css' && input.workflowPath === '.github/workflows/css-native-products.yml') {
-    return CSS_SOURCE_PARENT_VERSIONS.some(row => row.workflowSha256 === input.workflowSourceSha256 && row.producerSha256 === input.producerSourceSha256)
-      && input.target === 'darwin-arm64' && input.jobName === 'targets (darwin-arm64) / products';
+    const version = CSS_SOURCE_PARENT_VERSIONS.find(row => row.workflowSha256 === input.workflowSourceSha256 && row.producerSha256 === input.producerSourceSha256);
+    if (!version || !input.target || version.targets === 'darwin-arm64-only' && input.target !== 'darwin-arm64') return false;
+    let target: ReturnType<typeof productTarget>;
+    try { target = productTarget('css', input.target); } catch { return false; }
+    const machine = target.arch === 'x64' ? 'x86_64' : target.platform === 'darwin' ? 'arm64' : 'aarch64';
+    return input.jobName === `targets (${target.target}) / products` && input.producerMachine === machine
+      && (target.platform === 'darwin' ? typeof input.producerMacOSVersion === 'string' && /^15(?:\.|$)/u.test(input.producerMacOSVersion) : input.producerMacOSVersion === '')
+      && Array.isArray(input.jobRunnerLabels) && input.jobRunnerLabels.includes(target.runner) && !input.jobRunnerLabels.includes('self-hosted');
   }
   return input.workflowPath === (module === 'afs' ? '.github/workflows/agentfs-module-mounted-acceptance.yml'
     : `.github/workflows/${module}-module-product.yml`);
@@ -102,7 +109,7 @@ export function inspectModuleSourcePhases(input: { artifact: unknown; source: un
   const job = jobsOriginal && JSON.parse(jobsOriginal.data.toString()).jobs.find((row: any) => row.id === origin.producerJobId);
   if (!job) return fail('observed producer job original missing');
   if (!module || !artifact.identity.target || source.sourceSha !== artifact.identity.sourceSha || origin.sourceSha !== source.sourceSha
-    || origin.target !== artifact.identity.target || !reviewedModuleSourceWorkflow(module, { ...origin, jobName: job.name, producerWorkflowPath: producer.context?.workflowPath, producerSourceSha256: hash(source.readTracked(`scripts/${module}-module-producer.py`)) })
+    || origin.target !== artifact.identity.target || !reviewedModuleSourceWorkflow(module, { ...origin, jobName: job.name, producerWorkflowPath: producer.context?.workflowPath, producerSourceSha256: hash(source.readTracked(`scripts/${module}-module-producer.py`)), producerMachine: producer.context?.actualMachine, producerMacOSVersion: producer.context?.actualMacOSVersion, jobRunnerLabels: job.labels })
     || producer.context?.actualCheckoutSha !== source.sourceSha || producer.context?.target !== artifact.identity.target
     || producer.context?.runId !== origin.runId || producer.context?.runAttempt !== origin.runAttempt
     || producer.context?.runHeadSha !== origin.runHeadSha || producer.context?.version !== artifact.identity.version
