@@ -270,10 +270,12 @@ esac
   });
 
   it.each([
-    ['1', '2', '0.4.30-rc.288'],
-    ['2', '2', '0.4.30-rc.288.2'],
-  ])('keeps metadata attempt %s authoritative when version jobs run in attempt %s', async (metadataAttempt, currentAttempt, expectedVersion) => {
+    ['1', '2', '-rc.288'],
+    ['2', '2', '-rc.288.2'],
+  ])('keeps metadata attempt %s authoritative when version jobs run in attempt %s', async (metadataAttempt, currentAttempt, expectedSuffix) => {
     const workflow = await loadWorkflow();
+    const targetVersion = JSON.parse(await readFile(path.join(repoRoot, 'package.json'), 'utf8')).version;
+    const expectedVersion = `${targetVersion}${expectedSuffix}`;
     const parent = path.join(repoRoot, '.test-data', 'candidate-version-retry');
     await mkdir(parent, { recursive: true });
     const directory = await mkdtemp(path.join(parent, 'case-'));
@@ -299,8 +301,8 @@ esac
       ]) {
         const manifests = path.join(directory, jobName);
         await mkdir(path.join(manifests, 'desktop'), { recursive: true });
-        await writeFile(path.join(manifests, 'package.json'), JSON.stringify({ name: '@undefineds.co/xpod', version: '0.4.30' }));
-        await writeFile(path.join(manifests, 'desktop/package.json'), JSON.stringify({ name: '@undefineds.co/xpod-desktop', version: '0.4.30' }));
+        await writeFile(path.join(manifests, 'package.json'), JSON.stringify({ name: '@undefineds.co/xpod', version: targetVersion }));
+        await writeFile(path.join(manifests, 'desktop/package.json'), JSON.stringify({ name: '@undefineds.co/xpod-desktop', version: targetVersion }));
         const step = workflow.jobs[jobName].steps.find((candidate: any) => candidate.name === stepName);
         const run = step.run.replace(/\$\{\{\s*([^}]+)\s*\}\}/g, (_match: string, expression: string) => {
           const value = context[expression.trim()];

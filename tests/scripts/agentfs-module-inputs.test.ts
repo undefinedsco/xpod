@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
+import { installedConsumerWatchdogMs, runOwnedInstalledConsumer } from '../../scripts/agentfs-native-ci/mounted/owned-installed-consumer';
 import { collectModule, exportSafe, nativeFacts, projectReceipt, projectRecoveryDiagnostic, INSTALLED_CONSUMER_STAGES, verifyInstalledConsumerReceipts, recordInstalledConsumerFailure, assertInstalledConsumerProducer, persistInstalledConsumerReceipt } from '../../scripts/agentfs-native-ci/mounted/prepare-module-inputs';
 import { verifyModuleClientMaterials, moduleClientPath, hashBytes, verifyCliRuntimeTree, writeBootstrapEvidence } from '../../scripts/agentfs-native-ci/mounted/module-admission';
 
@@ -214,7 +215,7 @@ describe('module mounted input preparation', () => {
     for (const stage of INSTALLED_CONSUMER_STAGES) {
       for (const stream of ['stdout', 'stderr']) writeFileSync(path.join(root, `${stage}.${stream}`), 'private-marker');
       writeFileSync(path.join(root, stage + '.safe.json'), JSON.stringify({ stage, pid: 123, actualExit: stage === 'node-startup-cancel' ? 143 : stage.endsWith('-cli-tampered-list') ? 1 : 0, actualSignal: null,
-        actualWait: true, rawClosed: true, groupAbsent: true, stdoutSHA256: hashBytes('private-marker'), stderrSHA256: hashBytes('private-marker'), unknown: { credentials: 'private-marker' } }));
+        actualWait: true, rawClosed: true, groupAbsent: true, observation: { timeoutMs: installedConsumerWatchdogMs(stage), elapsedMs: 1, timeoutObserved: false, closeObserved: true, groupClosed: true }, stdoutSHA256: hashBytes('private-marker'), stderrSHA256: hashBytes('private-marker'), unknown: { credentials: 'private-marker' } }));
     }
     const proxy = path.join(root, 'proxy-cancel.safe.json'); writeFileSync(proxy, JSON.stringify({ pid: 321, groupAbsent: true, tokenFixtureObserved: true, nativeMountStarted: false, clientSecret: 'private-marker' }));
     const install = 'node-cli-install'; const stderr = JSON.stringify({ kind: 'module-install-phase', phase: 'archive-extract', state: 'started', elapsedMs: 1 }) + '\n'
@@ -223,6 +224,13 @@ describe('module mounted input preparation', () => {
     const installReceipt = path.join(root, install + '.safe.json'); writeFileSync(installReceipt, JSON.stringify({ ...JSON.parse(readFileSync(installReceipt, 'utf8')), stderrSHA256: hashBytes(stderr) }));
     const facts = verifyInstalledConsumerReceipts(root); expect(facts.stages).toHaveLength(21); expect(JSON.stringify(facts)).not.toContain('private-marker');
     expect((facts.stages.find((row: any) => row.stage === install) as any).installPhases).toEqual(stderr.trim().split('\n').map(line => JSON.parse(line)));
+    for (const [stage, timeoutMs] of [['node-cli-before-list', 15_000], ['bun-cli-installed-list', 10_001], ['node-cli-install', 15_001], ['bun-cli-install', 15_001]] as const) {
+      const file = path.join(root, stage + '.safe.json'); const original = readFileSync(file, 'utf8'); const changed = JSON.parse(original);
+      changed.observation.timeoutMs = timeoutMs; writeFileSync(file, JSON.stringify(changed));
+      expect(() => verifyInstalledConsumerReceipts(root)).toThrow('stage incomplete');
+      expect(() => projectReceipt('installed-consumer.safe.json', { stages: [changed] })).toThrow('invalid installed phase diagnostic');
+      writeFileSync(file, original);
+    }
     const negative = path.join(root, 'node-cli-tampered-list.safe.json');
     const rejected = readFileSync(negative, 'utf8');
     writeFileSync(negative, JSON.stringify({ ...JSON.parse(rejected), actualExit: 0 }));
@@ -454,15 +462,34 @@ describe('owned installed consumer diagnostics', () => {
       expect(() => assertInstalledConsumerProducer({ state: 'closed', code: 1, signal: null, groupAbsent: true, nodeVersion: 'v22.21.1', bunVersion: '1.4.2', passed: 0, failed: 1, skipped: 0, sourceUnchanged: true })).toThrow('producer incomplete');
     }));
   }
-  it('keeps the production watchdog and helper source in the producer identity', () => {
+  it('keeps phase budgets and helper source in the producer identity', () => {
     const testSource = readFileSync('packages/xpod-afs/tests/installed-module.test.ts', 'utf8');
-    expect(testSource).toContain('runOwnedInstalledConsumer(runtime, args, env, root, 10_000)');
+    expect(testSource).toContain('runOwnedInstalledConsumer(runtime, args, env, root, installedConsumerWatchdogMs(stage), stage)');
+    expect(testSource).toContain('}, 60_000)');
+    expect(testSource).toContain('`${label}-cli-${phaseLabel}`');
     expect(testSource.match(/artifactTest\.skipIf/g)).toHaveLength(1);
     expect(testSource.match(/import \{ runOwnedInstalledConsumer/g)).toHaveLength(1);
     const producer = readFileSync('scripts/agentfs-native-ci/mounted/prepare-module-inputs.ts', 'utf8');
     expect(producer).toContain('hashFile(sourceHelper) === sourceHelperSHA256');
     expect(producer).toContain('sourceTestSHA256, sourceHelperSHA256, lifecycle:');
+    expect(producer).toContain('lifecycle.wait(180_000)');
   });
+  it('admits only full archive install at 15s and rejects other over-budget commands before spawning', () => asyncFixture(async root => {
+    for (const stage of INSTALLED_CONSUMER_STAGES) expect(installedConsumerWatchdogMs(stage)).toBe(
+      stage === 'node-cli-install' || stage === 'bun-cli-install' ? 15_000 : 10_000);
+    const marker = path.join(root, 'unexpected-child');
+    const args = ['-e', `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'spawned')`];
+    for (const [stage, timeout] of [['node-cli-before-list', 10_001], ['bun-cli-install', 15_001], ['command', 15_000]] as const) {
+      await expect(runOwnedInstalledConsumer(process.execPath, args, process.env, root, timeout, stage)).rejects.toThrow('Invalid owned consumer watchdog');
+    }
+    expect(existsSync(marker)).toBe(false);
+    const normal = await runOwnedInstalledConsumer(process.execPath, ['-e', 'process.exit(0)'], process.env, root, 15_000, 'node-cli-install');
+    expect(normal.status).toBe(0); expect(normal.error).toBeUndefined();
+    expect(normal.observation).toMatchObject({ timeoutMs: 15_000, timeoutObserved: false, closeObserved: true, groupClosed: true });
+    const stuck = await runOwnedInstalledConsumer(process.execPath, ['-e', 'setInterval(()=>{},1000)'], process.env, root, 50, 'bun-cli-install');
+    expect(stuck.error?.message).toBe('Owned consumer timeout'); expect(stuck.signal).toBe('SIGTERM');
+    expect(stuck.observation).toMatchObject({ timeoutMs: 50, timeoutObserved: true, closeObserved: true, groupClosed: true });
+  }));
   it('does not classify EPERM group observation as closure', () => asyncFixture(async root => {
     const { runOwnedInstalledConsumer } = await import('../../scripts/agentfs-native-ci/mounted/owned-installed-consumer');
     const original = process.kill.bind(process);
