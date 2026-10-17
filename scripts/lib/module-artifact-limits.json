@@ -1,0 +1,18 @@
+{
+  "packedBytes": 805306368,
+  "expandedBytes": 5368709120,
+  "members": 50000,
+  "sourceMaterialBytes": 4294967296,
+  "sourceBytes": 536870912,
+  "dependencyBytes": 3221225472,
+  "toolchainBytes": 536870912,
+  "shardBytes": 536870912,
+  "metadataBytes": 4194304,
+  "sourceMaterialFiles": 512,
+  "freeFloorBytes": 2147483648,
+  "queueReserveBytes": 1048576,
+  "timeoutMs": 120000,
+  "rangeBytes": 65536,
+  "sourceMembers": 250000,
+  "captureTimeoutMs": 900000
+}

@@ -14,7 +14,7 @@ const cases = [
     name: 'runtime SDK image',
     file: '.github/workflows/publish-qlever-runtime-sdk.yml',
     imageEnv: 'SDK_IMAGE',
-    publishedImage: '${{ env.SDK_IMAGE }}@${{ steps.push.outputs.digest }}',
+    publishedImage: '${{ env.SDK_IMAGE }}@${{ steps.module_push.outputs.digest || steps.push.outputs.digest }}',
     dockerfile: '${{ steps.resolve.outputs.dockerfile }}',
     // The immutable commit tag plus the alias named for the QLever build inputs; the
     // local build and the registry push must carry the same names, because they must be
@@ -27,7 +27,7 @@ const cases = [
     // is not repeated per step (and no longer halves the runner's four CPUs).
     args: [ 'XPOD_QLEVER_BUILD_JOBS=${{ env.XPOD_QLEVER_BUILD_JOBS }}', 'XPOD_QLEVER_PRIOR_SDK_IMAGE=${{ steps.resolve.outputs.prior_image }}' ],
     gates: [ 'Smoke the exact SDK image before publishing' ],
-    condition: "steps.resolve.outputs.build == 'true'",
+    condition: "steps.resolve.outputs.build == 'true' && needs.resolve_target.outputs.sdk_profile == 'service-trixie'",
     reuseInspect: 'docker buildx imagetools inspect "${tag}"',
   },
   {
@@ -77,6 +77,7 @@ it('module SDK orchestration rejects a different source before checkout and chai
   const workflow = await load('.github/workflows/publish-qlever-runtime-sdk.yml');
   const source = byId(workflow, 'source');
   const temporary = mkdtempSync(path.join(repoRoot, '.test-data/sdk-source-guard-'));
+  writeFileSync(path.join(temporary, 'event.json'), '{}');
   try {
     for (const [profile, requested, expected] of [
       ['module-bookworm-gcc12', 'a'.repeat(40), 0],
@@ -85,7 +86,8 @@ it('module SDK orchestration rejects a different source before checkout and chai
     ] as const) {
       const result = spawnSync('/bin/bash', ['-c', source.run], { encoding: 'utf8', env: {
         ...process.env, GITHUB_SHA: 'a'.repeat(40), REQUESTED_SOURCE_COMMIT: requested,
-        SDK_PROFILE: profile, GITHUB_OUTPUT: path.join(temporary, 'output'),
+        SDK_PROFILE: profile, SDK_TARGET: 'linux-x64', GITHUB_EVENT_PATH: path.join(temporary, 'event.json'),
+        GITHUB_RUN_ID: '1', GITHUB_RUN_ATTEMPT: '1', GITHUB_OUTPUT: path.join(temporary, 'output'),
       } });
       expect(result.status, result.stderr).toBe(expected);
     }
@@ -94,7 +96,11 @@ it('module SDK orchestration rejects a different source before checkout and chai
     expect(materials.if).toBe("${{ needs.resolve_target.outputs.sdk_profile == 'module-bookworm-gcc12' }}");
     expect(materials.uses).toBe('./.github/workflows/build-qlever-linux-runtime.yml');
     expect(materials.with).toEqual({ target: '${{ needs.resolve_target.outputs.target }}',
-      module_sdk_image: '${{ needs.publish.outputs.image }}' });
+      module_sdk_image: '${{ needs.publish.outputs.image }}',
+      sdk_artifact_id: '${{ needs.publish.outputs.sdk_artifact_id }}',
+      sdk_artifact_digest: '${{ needs.publish.outputs.sdk_artifact_digest }}',
+      sdk_master_sha256: '${{ needs.publish.outputs.sdk_master_sha256 }}',
+      sdk_master_bytes: '${{ needs.publish.outputs.sdk_master_bytes }}' });
   } finally { rmSync(temporary, { recursive: true, force: true }); }
 });
 
@@ -231,7 +237,7 @@ describe.each(cases)('$name publish workflow image identity gate', (workflowCase
     // 分支才 inspect 标签解析 digest。两条链现在形状一致。
     expect(publish.env).toEqual({
       BUILD_IMAGE: '${{ steps.resolve.outputs.build }}',
-      PUSHED_DIGEST: '${{ steps.push.outputs.digest }}',
+      PUSHED_DIGEST: workflowCase.imageEnv === 'SDK_IMAGE' ? '${{ steps.module_push.outputs.digest || steps.push.outputs.digest }}' : '${{ steps.push.outputs.digest }}',
     });
     expect(publish.run).toContain(workflowCase.reuseInspect);
     expect(publish.run).toContain('if [[ "${BUILD_IMAGE}" == \'true\' ]]; then');
@@ -258,7 +264,7 @@ describe.each(cases)('$name publish workflow image identity gate', (workflowCase
 
     expect(guard.shell).toBe('bash');
     expect(guard.env).toEqual({
-      SMOKED_IMAGE_ID: '${{ steps.build.outputs.imageid }}',
+      SMOKED_IMAGE_ID: workflowCase.imageEnv === 'SDK_IMAGE' ? '${{ steps.module_build.outputs.imageid || steps.build.outputs.imageid }}' : '${{ steps.build.outputs.imageid }}',
       PUBLISHED_IMAGE: workflowCase.publishedImage,
     });
     expect(guard.run.trimEnd()).toBe([
@@ -273,5 +279,30 @@ describe.each(cases)('$name publish workflow image identity gate', (workflowCase
     for (const id of [ 'build', 'push', 'image_identity' ]) {
       expect(byId(workflow, id).if).toBe(workflowCase.condition);
     }
+  });
+});
+
+describe('module SDK actual image gate', () => {
+  it('uses the same builder, inputs and deadline and requires originals before upload', async () => {
+    const workflow = await load('.github/workflows/publish-qlever-runtime-sdk.yml');
+    const build = byId(workflow, 'module_build');
+    const push = byId(workflow, 'module_push');
+    for (const step of [build, push, byId(workflow, 'sdk_originals')]) {
+      expect(step.if).toBe("needs.resolve_target.outputs.sdk_profile == 'module-bookworm-gcc12'");
+    }
+    expect(push.env).toEqual(build.env);
+    expect(push.run.replace('py push ', 'py build ')).toBe(build.run);
+    const indexes = ['module_build', 'module_push', 'publish', 'sdk_originals', 'sdk_upload'].map(id => indexOf(workflow, id));
+    expect(indexes).not.toContain(-1);
+    expect(indexes).toEqual([...indexes].sort((a,b) => a-b));
+    const helper = await readFile(path.join(repoRoot, 'qlever/scripts/sdk-image-originals.py'), 'utf8');
+    // The build step cannot return a published image ID before the actual smoke succeeds.
+    expect(helper.indexOf("if mode=='build':smoke_and_copy(config,out,budget)")).toBeLessThan(helper.indexOf("output.write('imageid='"));
+    expect(helper).toContain("config_digest,'/opt/qlever-sdk/build/qlever-server','--help'");
+    expect(helper).toContain("build.get('containerimage.config.digest')!=observed['configDigest']");
+    expect(helper).toContain("raise ValueError('SDK tested build/config identity mismatch')");
+    const cacheGuard = steps(workflow).find(step => step.name === 'Require original SDK custody before module cache reuse');
+    expect(cacheGuard.if).toContain("steps.resolve.outputs.build != 'true'");
+    expect(cacheGuard.run).toContain('exit 64');
   });
 });

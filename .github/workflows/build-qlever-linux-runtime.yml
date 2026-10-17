@@ -9,6 +9,18 @@ on:
         description: Exact native module Bookworm SDK image at immutable digest
         type: string
         required: true
+      sdk_artifact_id:
+        type: string
+        default: ''
+      sdk_artifact_digest:
+        type: string
+        default: ''
+      sdk_master_sha256:
+        type: string
+        default: ''
+      sdk_master_bytes:
+        type: string
+        default: ''
     outputs:
       artifact_name:
         value: ${{ jobs.archive.outputs.artifact_name }}
@@ -80,6 +92,10 @@ jobs:
           TARGET: ${{ needs.resolve.outputs.target }}
           SDK_IMAGE: ${{ inputs.module_sdk_image }}
           RUNTIME_IMAGE: ${{ needs.runtime.outputs.image }}
+          SDK_ORIGINAL_ARTIFACT_ID: ${{ inputs.sdk_artifact_id }}
+          SDK_ORIGINAL_ARTIFACT_DIGEST: ${{ inputs.sdk_artifact_digest }}
+          SDK_ORIGINAL_MASTER_SHA256: ${{ inputs.sdk_master_sha256 }}
+          SDK_ORIGINAL_MASTER_BYTES: ${{ inputs.sdk_master_bytes }}
         run: |
           set -euo pipefail
           python3 qlever/scripts/produce-linux-runtime-archive.py \
@@ -91,6 +107,7 @@ jobs:
         with:
           name: ${{ steps.metadata.outputs.artifact_name }}
           path: ${{ runner.temp }}/qlever-native-materials/
+          include-hidden-files: true
           if-no-files-found: error
           retention-days: 30
       - name: Preserve failed closed stage originals

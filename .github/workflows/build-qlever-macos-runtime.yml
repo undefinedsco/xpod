@@ -217,6 +217,7 @@ jobs:
             ${{ runner.temp }}/xpod-qlever-runtime/qlever-local-runtime-${{ needs.resolve.outputs.target }}.tar.gz
             ${{ runner.temp }}/xpod-qlever-runtime/qlever-local-acceptance.json
             ${{ runner.temp }}/xpod-qlever-runtime/native-materials/
+          include-hidden-files: true
           if-no-files-found: error
           overwrite: true
           retention-days: 30

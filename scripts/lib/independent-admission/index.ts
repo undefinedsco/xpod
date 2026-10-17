@@ -1,13 +1,20 @@
+import {assertLegalOriginalCustody} from './legal-original-custody';
+import {assertCollectedPublicationCustody} from './artifact-collector';
+import {assertDerivedSourceCurrent} from './source-context';
+import {publicationGateMaterials} from './publication-gate-materials';
+import {assertCollectedNativeOriginalCustody} from './native-original-collector';
+import { verifiedAdmissionCache } from './verified-admission-cache';
+import {publicationLegalMaterials} from './publication-legal-materials';
 import { githubOriginFacts } from './github-origin';
 import { collectedArtifactView, publicationMaterialView, readCollectedPortableArchive } from './artifact-collector';
 import { derivedSourceView } from './source-context';
 import { consumerObservationView } from './consumer-context';
-import { verifyRuntimeClosure } from './runtime-closure';
-import { verifyNativeAdmission } from './native-admission';
+import { verifyRuntimeClosure, verifyCollectedRuntimeClosure } from './runtime-closure';
+import { verifyNativeAdmission, verifyCollectedNativeAdmission } from './native-admission';
 import { inspectModuleSourcePhases } from './module-source-phases';
 import { verifyLegalAdmission } from './legal-admission';
 import { verifyCliInputSet } from './source-rules';
-import { verifyCliBuildExecution, type CliExecutionFacts } from './source-execution';
+import { verifyCollectedCliBuildExecution,portableSourceMaterialView,type CliExecutionFacts } from './source-execution';
 import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { isDeepStrictEqual } from 'node:util';
@@ -33,6 +40,9 @@ export interface AdmissionContext {
   consumerObservation?: unknown;
   /** Opaque central material capability, separate from native release approval. */
   nativeMaterials?: unknown;
+  /** Private registry-original and module-source material handles; never approval JSON. */
+  legalOriginals?: readonly unknown[];
+  legalSourceMaterials?: unknown;
 }
 /** Large platform gates receive a real collected archive handle, never a
  * caller-supplied whole tgz Buffer. Existing portable adapter signatures stay compatible. */
@@ -97,11 +107,17 @@ const source: Adapter = {
       || product.archive.integrity !== 'sha512-' + createHash('sha512').update(context.archive).digest('base64')) reject('source/product/archive binding mismatch');
     const inventory = JSON.parse(readOriginal(evidence.inventory).toString());
     if (inventory.schemaVersion !== 1 || !Array.isArray(inventory.files) || !inventory.files.length) reject('missing producer inventory');
-    const originals = new Map<string, Buffer>();
+    const originals = new Map<string, Buffer>(),originalPaths=new Set<string>();
     for (const row of inventory.files) {
       if (!row || typeof row.path !== 'string' || !row.path || row.path.includes('\\')
         || row.path.startsWith('/') || row.path.split('/').some((part: string) => !part || part === '.' || part === '..')
-        || originals.has(row.path) || !Number.isSafeInteger(row.bytes) || row.bytes < 0) reject('invalid producer inventory');
+        || originalPaths.has(row.path) || !Number.isSafeInteger(row.bytes) || row.bytes < 0) reject('invalid producer inventory');
+      originalPaths.add(row.path);
+      if(row.path.startsWith('source-materials/')){
+        const registered=collected?.producerOriginals.find(member=>member.path===row.path);
+        if(!registered||registered.bytes!==row.bytes||registered.sha256!==row.sha256)reject('source original absent from authenticated acquired inventory');
+        continue;
+      }
       const bytes = readOriginal(row);
       if (bytes.length !== row.bytes) reject('producer original size mismatch');
       originals.set(row.path, bytes);
@@ -138,14 +154,8 @@ const source: Adapter = {
       if (view) products.set(role, view);
     }
     const execution: CliExecutionFacts = collected && derived && products.size === 2
-      ? verifyCliBuildExecution({ producer: evidence, readProducerOriginal: collected.readProducerOriginal,
-        readTracked: derived.readTracked, trackedPaths: derived.trackedPaths,
-        archiveMembers: role => products.get(role)!.members.map(row => ({ path: 'package/' + row.path,
-          type: 'file', size: row.bytes, mode: row.mode, sha256: row.sha256 })),
-        readArchiveMember: (role, name, maximum) => {
-          if (!name.startsWith('package/')) return reject('unexpected collected archive member root');
-          return products.get(role)!.readMember(name.slice('package/'.length), maximum);
-        } })
+      ? verifyCollectedCliBuildExecution({artifact:context.collectedArtifact as import('./artifact-contract').CollectedArtifactCapability,
+        source:context.derivedSource,relatedArtifacts:context.relatedArtifacts as readonly import('./artifact-contract').CollectedArtifactCapability[]|undefined})
       : { actualOwnedCommandClosureVerified: false, controlledBuildDerivationVerified: false,
         pending: ['execution-capabilities-missing: controlled CLI/client archives and derived source required'],
         scope: 'controlled approved commands, original inputs/outputs and owned groups; no escaped-session or reproducible-compilation attestation' };
@@ -185,6 +195,12 @@ const source: Adapter = {
       ...(!collected || !derived ? ['source-origin-unverified: collected artifact and derived source capabilities required'] : []),
       ...(rules.pending ? [rules.pending] : []),
       ...execution.pending,
+      ...(collected&&execution.controlledBuildDerivationVerified&&portableSourceMaterialView(context.collectedArtifact)?.dependencySnapshotVerified!==true
+        ? ['portable-source-snapshots-unverified: actual dependency/toolchain/source originals required'] : []),
+      ...(collected&&execution.controlledBuildDerivationVerified
+        ? (portableSourceMaterialView(context.collectedArtifact)?.outputs.length
+          ? portableSourceMaterialView(context.collectedArtifact)!.pending
+          : ['portable-bundle-input-originals-unresolved: actual complete bundle graphs required']) : []),
       ...(!collected ? ['producer-inventory-completeness-unverified: listed originals are bound but exact acquired artifact member set is not observed'] : []),
     ];
     const sourceQualified = originAdmissionVerified && execution.actualOwnedCommandClosureVerified
@@ -201,8 +217,9 @@ const source: Adapter = {
 };
 
 function legalGate(evidence: unknown, context: AdmissionContext | CollectedAdmissionContext): AdmissionResult {
-  const result = verifyLegalAdmission(evidence, context);
-  return { status: result.status, reason: result.reason, pending: result.pending, details: result.facts };
+  const bound=publicationLegalMaterials(context.collectedArtifact,context.derivedSource);
+  const result = verifyLegalAdmission(evidence,{...context,legalOriginals:context.legalOriginals??bound?.originals});
+  return { status: result.status, reason: result.reason, pending: result.pending, details:{...result.facts,coverage:result.coverage} };
 }
 
 
@@ -226,24 +243,62 @@ function consumerGate(_evidence: unknown, context: AdmissionContext | CollectedA
       : { status: 'pending', reason: 'Complete public export consumer profiles remain pending; base import success is a separate observation' };
 }
 
+const collectedSourceReports = new WeakMap<object, WeakMap<object, any>>();
+/** A module's reviewed source observer owns its private materials capability.
+ * Cache only a completed real observation within this live process, allowing
+ * sequential gate evaluation without rereading multi-GiB snapshots per axis. */
+function inspectCollectedModuleSource(context: CollectedAdmissionContext): any {
+  const artifact = collectedArtifactView(context.collectedArtifact), source = derivedSourceView(context.derivedSource);
+  const material = publicationMaterialView(context.collectedArtifact);
+  if (!artifact || !source || !material || typeof context.collectedArtifact !== 'object' || typeof context.derivedSource !== 'object') return {
+    status: 'pending', reason: 'Controlled module producer and immutable Git source required' };
+  const artifactKey = context.collectedArtifact as object, sourceKey = context.derivedSource as object;
+  const cache = collectedSourceReports.get(artifactKey), cached = cache?.get(sourceKey);
+  if (cached) return cached;
+  const require = createRequire(import.meta.url);
+  let adapter: { inspectModuleSourceAdmission(input: { artifact: unknown; source: unknown; origin: unknown }): any };
+  try { adapter = require('./module-source-admission.ts'); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'MODULE_NOT_FOUND') throw error;
+    const phases = inspectModuleSourcePhases({ artifact: context.collectedArtifact, source: context.derivedSource, origin: material.origin });
+    return { status: 'pending', reason: phases.status === 'pending' ? phases.reason : 'Reviewed full module source adapter unavailable', phases };
+  }
+  const report = adapter.inspectModuleSourceAdmission({ artifact: context.collectedArtifact, source: context.derivedSource, origin: material.origin });
+  if (report.status === 'verified' && report.sourceQualified === true && report.materials) {
+    const reports = cache ?? new WeakMap<object, any>(); reports.set(sourceKey, report); collectedSourceReports.set(artifactKey, reports);
+  }
+  return report;
+}
+
+/** Getter only for a completed source observation in this process. No caller
+ * report, JSON receipt or boolean can create a source material capability. */
+export function collectedPublicationSourceMaterials(artifact:unknown,source:unknown):unknown{
+  if(!collectedArtifactView(artifact)||!derivedSourceView(source)||!artifact||typeof artifact!=='object'||!source||typeof source!=='object')return undefined;
+  if(collectedArtifactView(artifact)!.identity.target===undefined)return portableSourceMaterialView(artifact)?artifact:undefined;
+  return collectedSourceReports.get(artifact)?.get(source)?.materials;
+}
+
 /** One gate registry. Product identities remain in the existing module catalog.
  * Unimplemented adapters must stay fail closed; arbitrary approval booleans have
  * no meaning here. No public token constructor or caller transport grants trust. */
 const adapters: Readonly<Record<Gate, Adapter>> = Object.freeze<Record<Gate, Adapter>>({
   source: { ...source, verifyCollected: (_evidence, context) => {
-    const material = publicationMaterialView(context.collectedArtifact);
-    if (!material || !context.derivedSource) return { status: 'pending', reason: 'Controlled module producer and immutable Git source required' };
-    const phases = inspectModuleSourcePhases({ artifact: context.collectedArtifact, source: context.derivedSource, origin: material.origin });
-    return { status: 'pending', reason: phases.status === 'pending' ? phases.reason
-      : 'Module phase originals verified; complete sourcekit/output/toolchain provenance remains required', details: phases };
+    const report = inspectCollectedModuleSource(context);
+    return { status: report.status, reason: report.reason, details: report };
   } },
   'runtime-closure': { verify: (evidence, context) => {
     const result = verifyRuntimeClosure(evidence, context);
     return { status: result.status, reason: result.reason, pending: [...result.pending] };
+  }, verifyCollected: (evidence, context) => {
+    const result = verifyCollectedRuntimeClosure(evidence, context);
+    return { status: result.status, reason: result.reason, pending: [...result.pending], details: result.facts };
   } },
   native: { verify: (evidence, context) => {
     const result = verifyNativeAdmission(evidence, context);
     return { status: result.status, reason: result.reason, pending: [...result.pending] };
+  }, verifyCollected: (evidence, context) => {
+    const result = verifyCollectedNativeAdmission(evidence, context);
+    return { status: result.status, reason: result.reason, pending: [...result.pending], details: result.facts };
   } },
   legal: { verify: legalGate, verifyCollected: legalGate },
   consumer: { verify: consumerGate, verifyCollected: consumerGate },
@@ -273,11 +328,15 @@ export interface CollectedPublicationAdmissionInput {
   consumerObservation?: unknown;
   relatedArtifacts: readonly unknown[];
   nativeMaterials?: unknown;
+  /** Private registry-original and module-source material handles; never approval JSON. */
+  legalOriginals?: readonly unknown[];
+  legalSourceMaterials?: unknown;
 }
 
 /** The publisher supplies opaque handles only. This central entry derives
  * product coordinates and producer evidence; no guessed result.json or fake
  * empty archive is accepted from the publication orchestrator. */
+const publicationReports=verifiedAdmissionCache<AdmissionResult>();
 export function verifyCollectedPublicationAdmission(gate: Gate, input: CollectedPublicationAdmissionInput): AdmissionResult {
   if (!Object.prototype.hasOwnProperty.call(adapters, gate)) throw new Error('Unknown independent admission gate');
   const artifact = collectedArtifactView(input.artifact), material = publicationMaterialView(input.artifact);
@@ -289,6 +348,7 @@ export function verifyCollectedPublicationAdmission(gate: Gate, input: Collected
     package: identity.package, version: identity.version, target: identity.target,
     collectedArtifact: input.artifact, derivedSource: input.derivedSource, relatedArtifacts: input.relatedArtifacts,
     githubOrigin: material.origin, consumerObservation: input.consumerObservation, nativeMaterials: input.nativeMaterials,
+    legalOriginals: input.legalOriginals, legalSourceMaterials: input.legalSourceMaterials,
     trackedPaths: source?.trackedPaths,
     readTracked: name => source ? source.readTracked(name) : reject('Immutable publication source capability required'),
     readOriginal: reference => {
@@ -297,7 +357,28 @@ export function verifyCollectedPublicationAdmission(gate: Gate, input: Collected
       return bytes;
     },
   };
+  if (gate === 'legal' && identity.target !== undefined) {
+    const sourceReport = inspectCollectedModuleSource(context);
+    if (sourceReport.status === 'verified') context.legalSourceMaterials = sourceReport.materials;
+  }
+  const legalBinding=publicationLegalMaterials(input.artifact,input.derivedSource);
+  context.legalOriginals=context.legalOriginals??legalBinding?.originals;
+  const keys=[context.derivedSource,context.consumerObservation,context.nativeMaterials,context.legalSourceMaterials,context.githubOrigin];
+  const gateMaterials=publicationGateMaterials(input.artifact,input.derivedSource);
+  const sets=[context.relatedArtifacts??[],context.legalOriginals??[],gateMaterials?.relatedNativeOriginals??[]];
+  const previous=gateMaterials?publicationReports.get(input.artifact as object,gate,keys,sets,()=>{
+    // Saved facts do not bypass retained ZIP identity, current exact checkout or
+    // native-original custody after reconstructible projections are compacted.
+    for(const artifact of [input.artifact,...input.relatedArtifacts])assertCollectedPublicationCustody(artifact);
+    assertDerivedSourceCurrent(input.derivedSource);
+    for(const original of context.legalOriginals??[])assertLegalOriginalCustody(original);
+    const native=publicationGateMaterials(input.artifact,input.derivedSource)?.nativeOriginals;
+    if(native)assertCollectedNativeOriginalCustody(native);
+    for(const original of gateMaterials?.relatedNativeOriginals??[])assertCollectedNativeOriginalCustody(original);
+  }):undefined;
+  if(previous)return previous;
   const evidence = gate === 'source'
-    ? JSON.parse(material.readOriginal(material.producerReceipt.path, 1024 ** 2).toString()) : undefined;
-  return verifyCollectedAdmission(gate, evidence, context);
+    ? JSON.parse(material.readOriginal(material.producerReceipt.path, 4*1024 ** 2).toString()) : undefined;
+  const result=verifyCollectedAdmission(gate,evidence,context);
+  return gateMaterials?publicationReports.remember(input.artifact as object,gate,keys,sets,result):result;
 }

@@ -8,11 +8,18 @@ const crypto = require('node:crypto');
 const { spawnSync } = require('node:child_process');
 const { copyCliBuildInputs } = require('./cli-build-inputs.cjs');
 const { runPublicationCommand } = require('./lib/afs-publication-command.cjs');
+const { publicationBudget, createPublicationDeadline } = require('./lib/cli-publication-budget.cjs');
 const { inspectTarballBuffer, sha512Integrity } = require('./workspace-package-payload.cjs');
-const TOOLS = ['scripts/prepare-cli-publication.ts', 'scripts/independent-release-plan.ts', 'scripts/workspace-package-payload.cjs', 'scripts/lib/afs-publication-command.cjs'];
+const TOOLS = ['scripts/prepare-cli-publication.ts', 'scripts/independent-release-plan.ts', 'scripts/workspace-package-payload.cjs', 'scripts/lib/afs-publication-command.cjs', 'scripts/lib/module-source-materials.py', 'scripts/lib/module-artifact-limits.json', 'scripts/lib/cli-publication-budget.cjs'];
 const PATCHES = ['patch-jose.js', 'patch-inrupt-authn-refresh.js', 'patch-inrupt-authn-transport.js', 'patch-inrupt-authn-operation-cleanup.js'];
+const PUBLICATION_BUDGET = publicationBudget(PATCHES.length + 6);
 const hash = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
-const fileHash = file => hash(fs.readFileSync(file));
+const fileHash = file => {
+  const digest = crypto.createHash('sha256'), fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW), block = Buffer.alloc(65536);
+  try { for (let count; (count = fs.readSync(fd, block, 0, block.length, null)) > 0;) digest.update(block.subarray(0, count)); }
+  finally { fs.closeSync(fd); }
+  return digest.digest('hex');
+};
 const json = file => JSON.parse(fs.readFileSync(file, 'utf8'));
 function directChildOutcome(result) {
   return { exitCode: result.status ?? null, signal: result.signal ?? null,
@@ -90,18 +97,19 @@ function produce(root, evidence, updateLock = false) {
 }
 async function produceOwned(root, evidence, updateLock) {
   const started = Date.now(), sourceContext = context(root);
+  const deadline = createPublicationDeadline(PUBLICATION_BUDGET);
   const parent = path.join(os.tmpdir(), '.test-data/xpod-cli-publication-builds'); fs.mkdirSync(parent, { recursive: true });
   const source = fs.mkdtempSync(path.join(parent, 'case-'));
   let success = false, resultRecord;
-  const commandOutcomes = [], buildPhases = [];
+  const commandOutcomes = [], buildPhases = [], sourceCaptureCommands = [];
   const free = () => { const stat = fs.statfsSync(root); return stat.bavail * stat.bsize; };
   const phaseLog = path.join(evidence, 'phases.jsonl');
-  const event = value => fs.appendFileSync(phaseLog, JSON.stringify({ time: Date.now(), freeBytes: free(), ...value }) + '\n');
+  const event = value => { deadline.assertRemaining(); fs.appendFileSync(phaseLog, JSON.stringify({ time: Date.now(), freeBytes: free(), ...value }) + '\n'); };
   const execute = async (command, args, cwd) => {
     const phase = command + ' ' + args.join(' '), label = 'phase-' + String(commandOutcomes.length).padStart(3, '0');
-    event({ event: 'start', phase, cwd, commandEvidence: label + '.receipt.json', rawLimitPerStream: 262144, timeoutMs: 180000 });
+    event({ event: 'start', phase, cwd, commandEvidence: label + '.receipt.json', rawLimitPerStream: 262144, timeoutMs: PUBLICATION_BUDGET.coreCommandMs });
     try {
-      const outcome = await runCliPublicationCommand(command, args, { cwd, env: process.env, evidence, label });
+      const outcome = await runCliPublicationCommand(command, args, { cwd, env: process.env, evidence, label, timeoutMs: deadline.commandTimeout('core') });
       const reference = { phase, receipt: { path: label + '.receipt.json', sha256: fileHash(path.join(evidence, label + '.receipt.json')) } };
       commandOutcomes.push({ ...reference, ...outcome });
       event({ event: 'close', phase, ...reference, actualWait: outcome.actualWait, actualClose: outcome.actualClose, groupAbsent: outcome.groupAbsent });
@@ -141,6 +149,20 @@ async function produceOwned(root, evidence, updateLock) {
       if (fs.existsSync(path.join(source, 'node_modules', absent))) throw new Error('publication_server_dependency_present');
     }
     for (const patch of PATCHES) await execute('bun', ['scripts/' + patch], source);
+    const captureSource = async (action, request) => {
+      const label = 'source-capture-' + action, requestFile = path.join(evidence, label + '.request.json');
+      write(requestFile, request);
+      let outcome;
+      try { outcome = await runPublicationCommand('python3', ['-I', '-B', path.join(source, 'scripts/lib/module-source-materials.py'),
+        'portable-' + action, source, evidence, requestFile], { cwd: source, env: process.env, evidence, label,
+        timeoutMs: deadline.commandTimeout('capture'), rawLimit: 262144 });
+        sourceCaptureCommands.push(outcome);
+      } catch (error) { sourceCaptureCommands.push(error.outcome || {}); throw error; }
+      if (!outcome.actualWait || !outcome.actualClose || !outcome.groupAbsent || !outcome.rawComplete) throw new Error('publication_source_capture_unclosed');
+      deadline.assertRemaining();
+      return JSON.parse(fs.readFileSync(path.join(evidence, outcome.raw[0].path), 'utf8'));
+    };
+    await captureSource('before', { sourcePaths: publicationBuildInputInventory(source, copied.files).map(row => row.buildPath) });
     const compile = async (args, cwd, role) => {
       const snapshotInputs = () => publicationBuildInputInventory(source, copied.files);
       const before = snapshotInputs();
@@ -159,6 +181,8 @@ async function produceOwned(root, evidence, updateLock) {
     await compile(['run', 'build:tools'], cli, 'cli-build-tools');
     await compile(['run', 'build'], client, 'client-build');
     await compile(['run', 'build'], cli, 'cli-build');
+    const sourceMaterials = await captureSource('after', { phases: buildPhases, archive: { kind: 'cli-client-dist-inventories' },
+      outputs: ['cli', 'client'].flatMap(role => inventory(path.join(source, 'packages/xpod-' + role, 'dist')).map(row => ({ ...row, path: role + '/dist/' + row.path }))) });
     const materials = path.join(cli, 'dist/producer-materials'), producer = json(path.join(materials, 'index.json'));
     const runtimeClients = producer.runtimeClients.filter(row => row.name === '@undefineds.co/xpod-client');
     if (runtimeClients.length !== 1) throw new Error('publication_runtime_client_ambiguous');
@@ -186,7 +210,7 @@ async function produceOwned(root, evidence, updateLock) {
     const products = Object.fromEntries(['cli', 'client'].map(id => { const ref = input[id], data = fs.readFileSync(path.join(evidence, ref.path));
       const inspected = inspectTarballBuffer(data); return [id, { package: inspected.manifest.name, version: inspected.manifest.version, archive: { ...ref, bytes: data.length } }]; }));
     resultRecord = { schemaVersion: 1, kind: 'cli-publication-preparation-producer', status: 'prepared-not-published',
-      context: sourceContext, products, buildPhases, durationMs: Date.now() - started,
+      context: sourceContext, products, buildPhases, sourceMaterials, durationMs: Date.now() - started,
       sourceInputs: originalRef('source-inputs.json'), producerIndex: originalRef('producer-index.json'), preparation: originalRef('preparation.json'),
       embeddedClientIdentityVerified: true, privateConsumerArtifactsReused: false,
       legalQualified: false, nativeQualified: false, releaseQualified: false, published: false };
@@ -197,17 +221,19 @@ async function produceOwned(root, evidence, updateLock) {
   } finally {
     // Delete the owned build tree only after every observed command/group and
     // inherited output pipe has actually closed. Unknown closure retains it.
-    const ownedClosed = commandOutcomes.every(command => command.actualWait === true && command.actualClose === true
+    const ownedClosed = [...commandOutcomes, ...sourceCaptureCommands].every(command => command.actualWait === true && command.actualClose === true
       && command.groupAbsent === true && command.rawClosed === true && command.rawComplete === true);
     if (ownedClosed) fs.rmSync(source, { recursive: true, force: true });
     event({ event: 'cleanup', sourceAbsent: !fs.existsSync(source) });
     write(path.join(evidence, 'cleanup.json'), { schemaVersion: 1, kind: 'cli-publication-owned-command-cleanup',
       scope: 'owned direct children and inherited process groups/pipes; deliberately escaped sessions are not attested',
-      source, sourceAbsent: !fs.existsSync(source), success, rawLimitPerStream: 262144, timeoutMs: 180000,
+      source, sourceAbsent: !fs.existsSync(source), success, rawLimitPerStream: 262144, timeoutMs: PUBLICATION_BUDGET.coreCommandMs,
       // This compatibility field never grants authority; use original receipts.
       descendantClosureVerified: false, commandOutcomes });
   }
+  deadline.assertRemaining();
   const files = inventory(evidence);
+  deadline.assertRemaining();
   write(path.join(evidence, 'inventory.json'), { schemaVersion: 1, scope: 'all artifact members except this inventory and result.json, avoiding self-reference', files });
   resultRecord.inventory = { path: 'inventory.json', sha256: fileHash(path.join(evidence, 'inventory.json')) };
   write(path.join(evidence, 'result.json'), resultRecord);
@@ -220,4 +246,4 @@ if (require.main === module) {
   if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) throw new Error('publication_evidence_invalid');
   Promise.resolve(produce(root, evidence, args.includes('--update-lock'))).catch(error => { process.stderr.write(String(error) + '\n'); process.exitCode = 1; });
 }
-module.exports = { produce, context, inventory, directChildOutcome, childEvidence, TOOLS, PATCHES, runCliPublicationCommand, publicationBuildInputInventory, retainBuildMetafiles };
+module.exports = { PUBLICATION_BUDGET, produce, context, inventory, directChildOutcome, childEvidence, TOOLS, PATCHES, runCliPublicationCommand, publicationBuildInputInventory, retainBuildMetafiles };

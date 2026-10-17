@@ -1,6 +1,6 @@
 import { spawn, execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdirSync, readFileSync, writeFileSync, chmodSync, existsSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync, chmodSync, existsSync, constants, openSync, readSync, fstatSync, closeSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
@@ -18,7 +18,22 @@ const required = (name: string): string => {
   if (!value) throw new Error(`missing ${name}`);
   return value;
 };
-const sha256File = (file: string): string => createHash('sha256').update(readFileSync(file)).digest('hex');
+const sha256File = (file: string): string => {
+  const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const before = fstatSync(fd);
+    if (!before.isFile()) throw new Error('mounted hash requires an ordinary original');
+    const digest = createHash('sha256'), block = Buffer.alloc(65536);
+    let total = 0;
+    for (let count; (count = readSync(fd, block, 0, block.length, null)) > 0;) {
+      digest.update(block.subarray(0, count)); total += count;
+    }
+    const after = fstatSync(fd);
+    if (total !== before.size || before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size
+      || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs) throw new Error('mounted original changed while hashing');
+    return digest.digest('hex');
+  } finally { closeSync(fd); }
+};
 
 function bunReachableOn(p: string): boolean {
   const out = execFileSync('/bin/sh', [ '-c', 'command -v bun || true' ], { env: { PATH: p }, encoding: 'utf8' }).trim();
@@ -43,19 +58,8 @@ export function classifyProbeError(error: unknown): 'absent' | 'unknown' {
   return (error as NodeJS.ErrnoException)?.code === 'ESRCH' ? 'absent' : 'unknown';
 }
 
-/**
- * The SIX actual cases that MUST be observed PASSED for a mounted success:
- * four from the matrix and two from the original overlay scenario. A summary
- * count alone is insufficient — a real mounted case could silently skip.
- */
-export const REQUIRED_MOUNTED_CASES = [
-  'passes the original mounted harness for the platform backend',
-  'consumes mounted content through ordinary shell, PATH rg and Git with host-local metadata and a mounted worktree',
-  'streams disk-backed 64/512/1024 MiB remote bodies with Range, in-place copy-up and sampled helper RSS',
-  'interrupts a genuinely in-flight remote copy-up, then recovers the same session and GCs the orphan partial',
-  'keeps uncommitted edits local, recovers them across restart, then writes back on commit',
-  'keeps a 412 conflict dirty and preserves the first baseline',
-] as const;
+import { REQUIRED_MOUNTED_CASES } from './required-cases.ts';
+export { REQUIRED_MOUNTED_CASES } from './required-cases.ts';
 
 interface VitestJsonReport {
   numPassedTests?: number;
@@ -195,6 +199,8 @@ function ownedProcessSnapshot(pgid: number | undefined, phase: string): Record<s
   } catch (error) { return { phase, known: false, members: [], reason: String((error as NodeJS.ErrnoException).code ?? 'process-observation-failed') }; }
 }
 
+let exceptionReceiptPersisted = false;
+let failureCategory = 'required-inputs';
 let evidenceDir = ''; let os = ''; let rawPath = ''; const rawChunks: Buffer[] = []; let lastSummary = '';
 // Real lifecycle facts; actualWait/rawClosedBeforeHash are never hard-coded.
 // rawClosed is true ONLY when the producer actually closed AND the raw bytes
@@ -230,7 +236,8 @@ export interface InstalledMountedProduct {
   additionalTests: string[]; additionalRequiredCases: string[];
 }
 
-export async function runMountedPlatformAdmission(product?: InstalledMountedProduct): Promise<number> {
+async function runMountedPlatformAdmissionImpl(product?: InstalledMountedProduct): Promise<number> {
+  failureCategory = 'required-inputs'; evidenceDir = ''; os = ''; rawPath = ''; exceptionReceiptPersisted = false;
   rawChunks.length = 0; lastSummary = ''; started = false; closedFact = false; rawFinished = false;
   exitCode = null; exitSignal = null; groupAbsent = true;
   const archive = required('XPOD_MOUNTED_ARCHIVE');
@@ -249,10 +256,12 @@ export async function runMountedPlatformAdmission(product?: InstalledMountedProd
 
   const runnerSha = sha256File(path.join(workspace, 'scripts/agentfs-native-ci/mounted/platform-admission.ts'));
   if (!existsSync(node)) throw new Error(`XPOD_MOUNTED_NODE not found: ${node}`);
+  failureCategory = 'node-version';
   const nodeVersion = execFileSync(node, [ '--version' ], { encoding: 'utf8' }).trim();
   if (!/^v22\.21\.1$/.test(nodeVersion)) throw new Error(`XPOD_MOUNTED_NODE must be exactly v22.21.1, got ${nodeVersion}`);
   const nodeSha256 = sha256File(node);
 
+  failureCategory = 'archive-integrity';
   if (sha256File(archive) !== archiveSha) throw new Error('product archive digest mismatch');
   // Extract OUTSIDE the uploaded evidence dir so the full 70 MB distribution
   // package is never duplicated into the evidence artifact; only raw/receipts
@@ -269,13 +278,18 @@ export async function runMountedPlatformAdmission(product?: InstalledMountedProd
   if (product && (helperSha !== product.helperSha256 || sha256File(launcher) !== product.launcherSha256
     || sha256File(product.entry) !== product.entrySha256)) throw new Error('installed module handoff digest mismatch');
 
-  const nativeRg = execFileSync('/bin/sh', [ '-c', 'command -v rg' ], { encoding: 'utf8' }).trim();
+  failureCategory = 'native-rg-path';
+  const nativeRgInvokedPath = execFileSync('/bin/sh', [ '-c', 'command -v rg' ], { encoding: 'utf8' }).trim();
+  const nativeRg = realpathSync(nativeRgInvokedPath);
   if (!path.isAbsolute(nativeRg) || !existsSync(nativeRg)) throw new Error('actual native rg is unavailable');
+  failureCategory = 'native-rg-version';
   const nativeRgVersion = execFileSync(nativeRg, [ '--version' ], { encoding: 'utf8' }).trim();
+  failureCategory = 'native-rg-identity';
   const nativeRgSha256 = sha256File(nativeRg);
 
   // Consumer PATH: drop every dir that contains a bun executable, then PROVE
   // bun is unreachable from the consumer environment.
+  failureCategory = 'consumer-runtime-path';
   const filtered = (process.env.PATH ?? '').split(':').filter(Boolean).filter((dir) => {
     try { return !existsSync(path.join(dir, 'bun')) && !existsSync(path.join(dir, 'bun.exe')); } catch { return true; }
   });
@@ -288,6 +302,7 @@ export async function runMountedPlatformAdmission(product?: InstalledMountedProd
     XPOD_AGENTFS_HELPER: helper, XPOD_AGENTFS_TEST_CLI: launcher,
     XPOD_AGENTFS_RUN_OVERLAY: '1', XPOD_MOUNTED_BACKEND: backend, XPOD_MOUNTED_OS: os,
   };
+  failureCategory = 'harness-dependency';
   const vitest = path.join(workspace, 'node_modules', 'vitest', 'vitest.mjs');
   if (!existsSync(vitest)) throw new Error('harness dependency tree is missing (node_modules/vitest)');
   // Spawn in a NEW process group where POSIX supports it, so a timeout/cleanup
@@ -371,7 +386,7 @@ export async function runMountedPlatformAdmission(product?: InstalledMountedProd
     : !requiredCases.satisfied ? 'required-mounted-cases-not-passed'
     : 'failed';
   const persisted = writeReceipt({
-    backend, nodePath: node, nodeVersion, nodeSha256, nativeRg, nativeRgVersion, nativeRgSha256,
+    backend, nodePath: node, nodeVersion, nodeSha256, nativeRg, nativeRgInvokedPath, nativeRgVersion, nativeRgSha256,
     productArchiveSha256: archiveSha, installedHelperSha256: helperSha, installedLauncherPath: launcher,
     ...(product ? { moduleBinding: product.binding } : {}),
     harnessRunnerSha256: runnerSha, consumerBunVisible: bunVisible, passedCases: effectivePassed, minPassedCases: minPassed,
@@ -389,6 +404,19 @@ export async function runMountedPlatformAdmission(product?: InstalledMountedProd
   return ok ? 0 : 1;
 }
 
+/** Imported module/normal bridges also retain preflight failures. A diagnostic
+ * receipt never claims a spawned test, wait, closed raw, or executed mount. */
+export async function runMountedPlatformAdmission(product?: InstalledMountedProduct): Promise<number> {
+  try { return await runMountedPlatformAdmissionImpl(product); }
+  catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    exceptionReceiptPersisted = writeReceipt({ status: 'failed', failureReason: started ? 'mounted-observation-exception' : 'preflight',
+      failureCategory, errorCode: typeof code === 'string' && /^E[A-Z0-9]{1,20}$/u.test(code) ? code : null,
+      diagnosticOnly: true, mountExecuted: started ? null : false });
+    throw error;
+  }
+}
+
 // Execute ONLY when run as the entry point. Cross-runtime ESM guard (works under
 // Bun and Node22 --experimental-strip-types, where `require` is not defined).
 export function isEntryPoint(): boolean {
@@ -400,9 +428,8 @@ export function isEntryPoint(): boolean {
 }
 if (isEntryPoint()) {
   runMountedPlatformAdmission().then(code => { process.exitCode = code; }).catch((error: unknown) => {
-    const persisted = writeReceipt({ status: 'failed', failureReason: 'preflight', message: String((error as Error).message) });
     if (lastSummary) process.stderr.write(`mounted-harness-summary:\n${lastSummary}\n`);
-    process.stderr.write(`${JSON.stringify({ stage: 'platform-admission', errorClass: 'failed', message: String((error as Error).message) })}\n`);
-    process.exit(persisted ? 70 : 72);
+    process.stderr.write(`${JSON.stringify({ stage: 'platform-admission', errorClass: 'failed', failureCategory })}\n`);
+    process.exit(exceptionReceiptPersisted ? 70 : 72);
   });
 }

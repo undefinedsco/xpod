@@ -137,7 +137,8 @@ test('actual YAML keeps standalone triggers, strict matrix, RC-before-production
   const names=['legacy-root-compat','ci','candidate','release'];
   const parsed=names.map(name=>{const result=spawnSync('bun',['-e','console.log(JSON.stringify(Bun.YAML.parse(require("node:fs").readFileSync(process.argv[1],"utf8"))))',path.resolve('.github/workflows/'+name+'.yml')],{encoding:'utf8'});assert.equal(result.status,0,result.stderr);return JSON.parse(result.stdout);});
   const [compat,ci,candidate,release]=parsed;
-  assert.deepEqual(compat.on.push.branches,['main','staging']);assert.deepEqual(compat.on.pull_request.branches,['main','staging']);assert.ok(compat.on.workflow_call);
+  assert.deepEqual(compat.on.push.branches,['main']);assert.deepEqual(compat.on.pull_request.branches,['main','staging']);assert.ok(compat.on.workflow_call);
+  assert.deepEqual(candidate.on.push.branches,['staging']);assert.equal(candidate.jobs.legacy_root_compat.uses,'./.github/workflows/legacy-root-compat.yml');
   assert.equal(compat.jobs.lanes['timeout-minutes'],30);assert.equal(compat.jobs.lanes.strategy['fail-fast'],false);assert.equal(compat.jobs.lanes['continue-on-error'],undefined);
   assert.equal(compat.jobs.lanes.strategy.matrix,'${{ fromJSON(needs.plan.outputs.matrix) }}');assert.equal(ci.jobs['package-smoke'],undefined);assert.equal(ci.jobs['package-smoke-bun'],undefined);
   const depends=(job,target)=>{const needs=candidate.jobs[job].needs;return (Array.isArray(needs)?needs:[needs]).filter(Boolean).some(name=>name===target||depends(name,target));};

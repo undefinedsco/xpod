@@ -45,7 +45,7 @@ try {
   const nativeFiles = assembleCssNativeRuntime(output, target, nativeInput);
   writeFileSync(path.join(output, 'provenance/css-native-runtime.json'), JSON.stringify({
     schemaVersion: 1, kind: 'css-native-runtime-byte-binding', target, sourceSha: nativeInput.sourceSha,
-    originals: { manifest: nativeInput.manifest, archive: nativeInput.archive, zip: nativeInput.originalZip, acceptance: nativeInput.acceptance },
+    originals: { manifest: nativeInput.manifest, archive: nativeInput.archive, zip: nativeInput.originalZip, acceptance: nativeInput.acceptance, producerReceipt: nativeInput.producerReceipt, format: nativeInput.format },
     files: nativeFiles, officialIdentityAuthenticated: false, releaseAccepted: false,
   }, null, 2) + '\n');
 

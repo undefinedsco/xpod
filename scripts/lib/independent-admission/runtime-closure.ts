@@ -1,18 +1,24 @@
 import { createHash } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import { isBuiltin, createRequire } from 'node:module';
 import path from 'node:path';
 import ts from 'typescript';
 import { externalRuntimeLauncher } from '../../../packages/xpod-cli/src/launcher';
-import type { AdmissionContext, OriginalReference } from './index';
+import type { AdmissionContext, CollectedAdmissionContext, OriginalReference } from './index';
 import type { RuntimeClosureFacts as CentralRuntimeClosureFacts, RuntimeClosureResult as CentralRuntimeClosureResult, CollectedArtifactView, DerivedSourceView } from './artifact-contract';
 import { moduleDefinition, modulePackageName, MODULE_TARGETS, MODULE_API_VERSION } from '../../../packages/xpod-cli/src/module-catalog';
 import { safeMaterialPath, sourceFileIndex } from '../../../packages/xpod-cli/src/source-materials';
 import { verifyNativeMaterialTarget } from '../physical-module-native';
+import { collectedArtifactView, publicationMaterialView } from './artifact-collector';
+import { derivedSourceView } from './source-context';
+import * as sourceExecution from './source-execution';
+import { moduleSourceMaterialView } from './module-source-admission';
+import { collectedRuntimeMembers, RuntimeReadPending } from './runtime-member-input';
 
 type Mode = 'import' | 'require';
 type Runtime = 'node' | 'bun';
 class ResolutionPending extends Error {}
-interface Member { path: string; type: string; mode: number; size: number; content: Buffer; sha256: string }
+interface Member { path: string; type: string; mode: number; size: number; content: Buffer; sha256: string; readPrefix?: () => Buffer; readNativeMaterial?: () => Buffer }
 export interface RuntimeEdge {
   from: string; request: string; kind: Mode | 'resource'; resolved?: string; builtin?: string; optionalPeer?: boolean;
 }
@@ -43,8 +49,8 @@ const script = (name: string) => /\.(?:[cm]?js|jsx|ts|tsx)$/u.test(name) && !nam
 /** Pure full-graph inspection, not a capability issuer or admission result.
  * Call after all lazy mounts; the same member/ancestor rules apply regardless
  * of insertion order. Native bytes reuse the existing format verifier. */
-export function inspectRuntimeGraph(members: Iterable<{ path: string; content: Buffer; mode: number }>, target?: string) {
-  const files = new Map<string, { path: string; content: Buffer; mode: number }>();
+export function inspectRuntimeGraph(members: Iterable<{ path: string; content: Buffer; mode: number; readPrefix?: () => Buffer; readNativeMaterial?: () => Buffer }>, target?: string, nativePending?: (reason: string) => void) {
+  const files = new Map<string, { path: string; content: Buffer; mode: number; readPrefix?: () => Buffer; readNativeMaterial?: () => Buffer }>();
   for (const member of members) {
     if (!safeMaterialPath(member.path) || !member.path.startsWith(root + '/') || files.has(member.path)) fail('conflicting or unsafe runtime graph member');
     files.set(member.path, member);
@@ -66,10 +72,13 @@ export function inspectRuntimeGraph(members: Iterable<{ path: string; content: B
         identities.set(key, member.path);
       }
     }
-    if (/\.(?:node|wasm|so|dylib|dll)$/u.test(member.path) || (member.mode & 0o111) && !script(member.path) && member.content.subarray(0, 2).toString() !== '#!') {
+    if (/\.(?:node|wasm|so|dylib|dll)$/u.test(member.path) || (member.mode & 0o111) && !script(member.path) && (member.readPrefix ? member.readPrefix() : member.content.subarray(0, 2)).toString() !== '#!') {
       nativeMembers.push(member.path);
-      if (member.path.endsWith('.wasm')) verifyNativeMaterialTarget(member.content, 'portable-wasm');
-      else if (target) verifyNativeMaterialTarget(member.content, target);
+      try {
+        const bytes = member.readNativeMaterial ? member.readNativeMaterial() : member.content;
+        if (member.path.endsWith('.wasm')) verifyNativeMaterialTarget(bytes, 'portable-wasm');
+        else if (target) verifyNativeMaterialTarget(bytes, target);
+      } catch (error) { if (!(error instanceof RuntimeReadPending) || !nativePending) throw error; nativePending(error.message); }
     }
   }
   return { duplicateIdentities, unknownIdentities, nativeMembers };
@@ -79,6 +88,15 @@ export function inspectRuntimeGraph(members: Iterable<{ path: string; content: B
  * source-derivation, native or legal admission capability. The central registry
  * owns attachment and final admission; missing authority cannot become true here. */
 export function verifyRuntimeClosure(evidence: unknown, context: AdmissionContext): RuntimeClosureResult {
+  return inspectRuntimeClosure(evidence, context);
+}
+interface CollectedRuntimeInput {
+  view: CollectedArtifactView;
+  members: Member[];
+  metafiles: ReadonlyMap<string, { sha256: string; read(): Buffer }>;
+  pending: readonly string[];
+}
+function inspectRuntimeClosure(evidence: unknown, context: Omit<AdmissionContext, 'archive'> & { archive?: Buffer }, bound?: CollectedRuntimeInput): RuntimeClosureResult {
   const pending = new Set<string>();
   const edges: RuntimeEdge[] = [];
   const diagnostics: RuntimeClosureResult['diagnostics'] = [];
@@ -96,21 +114,22 @@ export function verifyRuntimeClosure(evidence: unknown, context: AdmissionContex
   const material = evidence as unknown as Materials;
   if (!['node', 'bun'].includes(material.runtime)) fail('unknown runtime profile');
   const product = material.product;
-  if (!Buffer.isBuffer(context.archive) || !object(product) || !object(product.archive) || product.sourceSha !== context.sourceSha
+  if ((!bound && !Buffer.isBuffer(context.archive)) || !object(product) || !object(product.archive) || product.sourceSha !== context.sourceSha
     || product.runHeadSha !== context.runHeadSha || product.package !== context.package || product.version !== context.version
     || product.target !== context.target || !/^[a-f0-9]{40}$/u.test(context.sourceSha)
-    || !/^[a-f0-9]{40}$/u.test(context.runHeadSha) || product.archive.bytes !== context.archive.length
-    || product.archive.sha256 !== hash(context.archive)
-    || product.archive.integrity !== 'sha512-' + createHash('sha512').update(context.archive).digest('base64')) fail('source/product/archive binding mismatch');
-  const archiveHash = hash(context.archive);
+    || !/^[a-f0-9]{40}$/u.test(context.runHeadSha) || product.archive.bytes !== (bound ? bound.view.identity.archiveBytes : context.archive!.length)
+    || product.archive.sha256 !== (bound ? bound.view.identity.archiveSha256 : hash(context.archive!))
+    || product.archive.integrity !== (bound ? bound.view.identity.integrity : 'sha512-' + createHash('sha512').update(context.archive!).digest('base64'))) fail('source/product/archive binding mismatch');
+  const archiveHash = bound ? bound.view.identity.archiveSha256 : hash(context.archive!);
   facts.archiveBindingVerified = true;
   // Same bounded strict binary reader as existing package verification. A larger
   // artifact requires the central bounded member collector, not an unbounded unzip.
-  if (context.archive.length > 128 * 1024 ** 2) { pending.add('bounded-archive-collector-required'); return finish(); }
+  if (!bound && context.archive!.length > 128 * 1024 ** 2) { pending.add('bounded-archive-collector-required'); return finish(); }
   const require = createRequire(import.meta.url);
   const { inspectTarballBuffer } = require('../../workspace-package-payload.cjs');
   let inspected: { manifest: any; entries: Member[] };
-  try { inspected = inspectTarballBuffer(context.archive, { expandedBytes: 256 * 1024 ** 2, members: 100000, gnuLongNames: true }); }
+  try { inspected = bound ? { manifest: JSON.parse(bound.members.find(row => row.path === 'package/package.json')!.content.toString()), entries: bound.members }
+    : inspectTarballBuffer(context.archive, { expandedBytes: 256 * 1024 ** 2, members: 100000, gnuLongNames: true }); }
   catch (error) {
     if (/Unsupported tar entry type "[xg]"|budget exceeded/u.test(String((error as Error).message))) {
       pending.add('bounded-archive-format-collector-required'); return finish();
@@ -166,19 +185,19 @@ export function verifyRuntimeClosure(evidence: unknown, context: AdmissionContex
     catch (error) { if ((error as NodeJS.ErrnoException).code === 'MODULE_NOT_FOUND') return undefined; throw error; }
     return require(resolved)[getter](value) as T | undefined;
   };
-  const collected = centralView<CollectedArtifactView>('./artifact-collector.ts', 'collectedArtifactView', context.collectedArtifact);
+  const collected = bound?.view ?? centralView<CollectedArtifactView>('./artifact-collector.ts', 'collectedArtifactView', context.collectedArtifact);
   const derived = centralView<DerivedSourceView>('./source-context.ts', 'derivedSourceView', context.derivedSource);
   if (collected) {
     const identity = collected.identity;
     if (identity.sourceSha !== context.sourceSha || identity.package !== context.package || identity.version !== context.version
-      || identity.target !== context.target || identity.archiveSha256 !== archiveHash || identity.archiveBytes !== context.archive.length
+      || identity.target !== context.target || identity.archiveSha256 !== archiveHash || identity.archiveBytes !== (bound ? bound.view.identity.archiveBytes : context.archive!.length)
       || identity.integrity !== product.archive.integrity || collected.members.length !== files.size) fail('collected artifact identity/member mismatch');
     const observed = new Set<string>();
     for (const member of collected.members) {
       const file = files.get(root + '/' + member.path);
       if (!safeMaterialPath(member.path) || observed.has(member.path) || !file || member.sha256 !== file.sha256
         || member.bytes !== file.size || member.mode !== file.mode
-        || !collected.readMember(member.path, file.size).equals(file.content)) fail('collected member differs from runtime archive');
+        || (!bound && !collected.readMember(member.path, file.size).equals(file.content))) fail('collected member differs from runtime archive');
       observed.add(member.path);
     }
     facts.artifactCustodyVerified = true;
@@ -202,6 +221,7 @@ export function verifyRuntimeClosure(evidence: unknown, context: AdmissionContex
       || previous.identity.sourceSha !== identity.sourceSha || previous.identity.integrity !== identity.integrity)) fail('conflicting related artifact identity');
     related.set(identity.package, view);
   }
+  for (const reason of bound?.pending ?? []) pending.add(reason);
   let relatedBytes = 0;
   const mounted = new Set<string>();
   const mountRelated = (name: string, version: string, directory: string): void => {
@@ -414,10 +434,10 @@ export function verifyRuntimeClosure(evidence: unknown, context: AdmissionContex
     const key = JSON.stringify(edge); if (edgeKeys.has(key)) return;
     if (edges.length >= 100000) fail('runtime edge budget exceeded'); edgeKeys.add(key); edges.push(edge);
   };
-  let uncertain = [...pending].some(reason => !['controlled-archive-custody-capability-unavailable', 'source-admission-capability-unavailable'].includes(reason)), parsedBytes = 0;
+  let uncertain = [...pending].some(reason => !bound?.pending.includes(reason) && !['controlled-archive-custody-capability-unavailable', 'source-admission-capability-unavailable'].includes(reason)), parsedBytes = 0;
   const native = new Set<string>();
   const launchers = new Map<string, string>();
-  for (const file of files.values()) for (const payload of ['xpod.mjs', 'lib/xpodcli.mjs'] as const) {
+  for (const file of files.values()) if (file.size <= 16384 && ((file.mode & 0o111) || facts.entrypoints.includes(file.path) || file.path.startsWith('package/bin/'))) for (const payload of ['xpod.mjs', 'lib/xpodcli.mjs'] as const) {
     if (file.content.toString('utf8') === externalRuntimeLauncher({ payload })) {
       const target = boundary(path.posix.join(path.posix.dirname(file.path), '..', payload));
       add(target, 'import'); launchers.set(file.path, target);
@@ -426,15 +446,16 @@ export function verifyRuntimeClosure(evidence: unknown, context: AdmissionContex
   const checkNative = (file: Member) => {
     if (native.has(file.path)) return; native.add(file.path);
     if (!context.target && !file.path.endsWith('.wasm')) { pending.add('native-target-context-unverified'); return; }
-    verifyNativeMaterialTarget(file.content, file.path.endsWith('.wasm') ? 'portable-wasm' : context.target!);
-    facts.nativeTargetsChecked.push(file.path); pending.add('native-source-ABI-origin-admission-unverified');
+    try { verifyNativeMaterialTarget(file.readNativeMaterial ? file.readNativeMaterial() : file.content, file.path.endsWith('.wasm') ? 'portable-wasm' : context.target!); }
+    catch (error) { if (!(error instanceof RuntimeReadPending)) throw error; pending.add(error.message); return; }
+    facts.nativeTargetsChecked.push(file.path); if (!bound) pending.add('native-source-ABI-origin-admission-unverified');
   };
   for (const file of files.values()) {
     if (/^package\/(?:source|provenance)\//u.test(file.path)) continue;
     if (/\.(?:node|wasm|so|dylib|dll)$/u.test(file.path)) checkNative(file);
     else if ((file.mode & 0o111) && !script(file.path)) {
       if (launchers.has(file.path)) continue;
-      if (file.content.subarray(0, 2).toString() === '#!') pending.add('executable-script-interpreter-unverified');
+      if ((file.readPrefix ? file.readPrefix() : file.content.subarray(0, 2)).toString() === '#!') pending.add('executable-script-interpreter-unverified');
       else checkNative(file);
     }
   }
@@ -453,7 +474,7 @@ export function verifyRuntimeClosure(evidence: unknown, context: AdmissionContex
     if ((source as ts.SourceFile & { parseDiagnostics: readonly ts.Diagnostic[] }).parseDiagnostics.length) fail('invalid packed JavaScript syntax');
     facts.inspectedScripts.push(name); parsedScripts.add(name);
     let shadowedRequire = false;
-    const resourceFunctions = new Set(['readFile', 'readFileSync', 'createReadStream', 'readdir', 'readdirSync', 'spawn', 'spawnSync', 'exec', 'execFile', 'fork']);
+    const resourceFunctions = new Set(['readFile', 'readFileSync', 'createReadStream', 'readdir', 'readdirSync', 'spawn', 'spawnSync', 'exec', 'execFile', 'fork', 'dlopen']);
     const aliases = new Map<string, string>();
     const fsBindings = new Set<string>();
     const fsFunctions = new Set<string>();
@@ -595,6 +616,7 @@ export function verifyRuntimeClosure(evidence: unknown, context: AdmissionContex
           if (dataRead && !['spawn', 'spawnSync', 'exec', 'execFile', 'fork'].includes(ts.isPropertyAccessExpression(fn) ? fn.name.text : ts.isIdentifier(fn) ? aliases.get(fn.text) ?? fn.text : '')) {
             const position = source.getLineAndCharacterOfPosition(node.getStart(source));
             if (runtimeDataAccess.length < 10000) runtimeDataAccess.push({from: name, line: position.line + 1, expression: node.getText(source).slice(0, 400)});
+            if (argument && ts.isStringLiteralLike(argument) && /^\.\.?\//u.test(argument.text)) unknown('relative-filesystem-resource-scope-unverified', node);
           } else if (!argument || !ts.isNewExpression(argument) || argument.expression.getText(source) !== 'URL') unknown('resource-or-child-lookup-ownership-unverified', node);
         }
       } else if (ts.isNewExpression(node) && ts.isIdentifier(node.expression)) {
@@ -629,10 +651,10 @@ export function verifyRuntimeClosure(evidence: unknown, context: AdmissionContex
   }
   // Lazy related mounts can add native files and nested package manifests
   // during traversal. Only this final graph can establish inventory facts.
-  const graph = inspectRuntimeGraph(files.values(), context.target);
+  const graph = inspectRuntimeGraph([...files.values()].filter(file => !/^package\/(?:sources?|provenance|licenses)\//u.test(file.path)), context.target, reason => pending.add(reason));
   for (const name of graph.nativeMembers) checkNative(files.get(name)!);
   for (const file of files.values()) {
-    if ((file.mode & 0o111) && !script(file.path) && file.content.subarray(0, 2).toString() === '#!' && !launchers.has(file.path)) pending.add('executable-script-interpreter-unverified');
+    if (!/^package\/(?:sources?|provenance|licenses)\//u.test(file.path) && (file.mode & 0o111) && !script(file.path) && (file.readPrefix ? file.readPrefix() : file.content.subarray(0, 2)).toString() === '#!' && !launchers.has(file.path)) pending.add('executable-script-interpreter-unverified');
   }
   if (graph.unknownIdentities.length) pending.add('packed-dependency-identity-unverified');
   if (graph.duplicateIdentities.length) pending.add('duplicate-physical-package-identity-unverified');
@@ -644,7 +666,7 @@ export function verifyRuntimeClosure(evidence: unknown, context: AdmissionContex
   let materialBytes = 0; const seen = new Set<string>();
   for (const ref of references) {
     if (!ref || !safeMaterialPath(ref.path) || !/^[a-f0-9]{64}$/u.test(ref.sha256) || seen.has(ref.path)) fail('invalid metafile reference');
-    seen.add(ref.path); const bytes = collected ? collected.readProducerOriginal(ref.path, 8 * 1024 ** 2) : context.readOriginal(ref);
+    seen.add(ref.path); const bytes = bound?.metafiles.get(ref.path)?.read() ?? (collected ? collected.readProducerOriginal(ref.path, 8 * 1024 ** 2) : context.readOriginal(ref));
     if (!Buffer.isBuffer(bytes)) fail('metafile original is not bytes');
     if (bytes.length > 8 * 1024 ** 2 || (materialBytes += bytes.length) > 16 * 1024 ** 2) fail('metafile byte budget exceeded');
     if (hash(bytes) !== ref.sha256) fail('metafile original hash mismatch');
@@ -654,12 +676,116 @@ export function verifyRuntimeClosure(evidence: unknown, context: AdmissionContex
     // imports. Only the actual packed output AST above contributes edges.
     facts.originalMetafilesRehashed++;
   }
-  if (hash(context.archive) !== archiveHash) fail('archive changed during observation');
+  if (context.archive && hash(context.archive) !== archiveHash) fail('archive changed during observation');
   facts.literalResolutionVerified = !uncertain && facts.entrypoints.length > 0;
   facts.inspectedScripts = [...new Set(facts.inspectedScripts)].sort(); facts.nativeTargetsChecked.sort();
   facts.runtimeImportsVerified = facts.literalResolutionVerified;
-  facts.dataAndNativeResolutionVerified = ![...pending].some(reason => /resource|native|worker|child|interpreter/u.test(reason));
+  facts.dataAndNativeResolutionVerified = graph.nativeMembers.every(name => facts.nativeTargetsChecked.includes(name))
+    && ![...pending].some(reason => /resource|native|worker|child|interpreter/u.test(reason));
   facts.runtimeClosureVerified = facts.physicalInventoryVerified && facts.runtimeImportsVerified && facts.dataAndNativeResolutionVerified
     && facts.packageIdentityDeduplicated && facts.artifactCustodyVerified && facts.derivedSourceVerified && pending.size === 0;
   return finish();
+}
+
+/** Operational entry: ignores caller material JSON and derives every reference
+ * from real collector/source capabilities. Neither a whole tgz nor an empty
+ * surrogate Buffer is created for a platform product. */
+export function verifyCollectedRuntimeClosure(_evidence: unknown, context: CollectedAdmissionContext): RuntimeClosureResult {
+  const unavailable = (reason: string): RuntimeClosureResult => {
+    const result = inspectRuntimeClosure(undefined, context);
+    return { ...result, reason, pending: [reason] };
+  };
+  const view = collectedArtifactView(context.collectedArtifact), source = derivedSourceView(context.derivedSource);
+  const material = publicationMaterialView(context.collectedArtifact);
+  if (!view || !material) return unavailable('controlled-runtime-publication-materials-required');
+  const identity = view.identity;
+  if (identity.sourceSha !== context.sourceSha || identity.package !== context.package || identity.version !== context.version
+    || identity.target !== context.target || material.producer.runHeadSha !== context.runHeadSha
+    || !isDeepStrictEqual(material.identity, identity)) fail('collected runtime context identity mismatch');
+  if (!source || source.sourceSha !== identity.sourceSha) return unavailable('immutable-runtime-source-capability-required');
+  const producer = material.readOriginal(material.producerReceipt.path, 4 * 1024 ** 2);
+  if (producer.length !== material.producerReceipt.bytes || hash(producer) !== material.producerReceipt.sha256) fail('runtime producer original binding mismatch');
+  const pending: string[] = [];
+  const metafiles = new Map<string, { sha256: string; read(): Buffer }>();
+  const readPortable = (sourceExecution as unknown as { portableSourceMaterialView?: (artifact: unknown) => {
+    identity: { sourceSha: string; package: string; version: string; archiveSha256: string };
+    outputs: readonly { path: string; bytes: number; sha256: string; inputUniverseComplete: boolean;
+      metafile: { path: string; bytes: number; sha256: string }; readMetafile(): Buffer }[];
+    pending: readonly string[];
+  } | undefined }).portableSourceMaterialView;
+  const graph = readPortable?.(context.collectedArtifact);
+  if (identity.target !== undefined) {
+    const central = createRequire(import.meta.url)('./index.ts') as { collectedPublicationSourceMaterials?: (artifact: unknown, source: unknown) => unknown };
+    const moduleSource = moduleSourceMaterialView(central.collectedPublicationSourceMaterials?.(context.collectedArtifact, context.derivedSource));
+    if (!moduleSource) pending.push('private-module-runtime-source-materials-required');
+    else {
+      if (moduleSource.sourceSha !== identity.sourceSha) fail('module runtime source revision mismatch');
+      const outputs = new Map(moduleSource.outputs.map(row => [row.path, row]));
+      if (outputs.size !== view.members.length) fail('module runtime source output inventory mismatch');
+      for (const row of view.members) {
+        const output = outputs.get(row.path);
+        if (!output || output.bytes !== row.bytes || output.sha256 !== row.sha256 || output.mode !== row.mode)
+          fail('module runtime source output differs from collected member');
+      }
+      const mapped = new Set<string>();
+      for (const row of moduleSource.transpiledOutputs) {
+        if (mapped.has(row.path) || !outputs.has(row.path) || !moduleSource.trackedSourcePaths.includes(row.sourcePath))
+          fail('module runtime compiler source/output binding mismatch');
+        source.readTracked(row.sourcePath); mapped.add(row.path);
+      }
+      for (const row of moduleSource.outputs) if (script(row.path) && !/^(?:sources?|provenance|licenses)\//u.test(row.path)
+        && !row.path.startsWith('node_modules/') && !mapped.has(row.path))
+        pending.push('module-runtime-output-source-graph-required:' + row.path);
+    }
+  } else if (!graph) pending.push('private-portable-runtime-source-graph-required');
+  if (graph) {
+    if (graph.identity.sourceSha !== identity.sourceSha || graph.identity.package !== identity.package
+      || graph.identity.version !== identity.version || graph.identity.archiveSha256 !== identity.archiveSha256) fail('runtime source graph identity mismatch');
+    if (!graph.outputs.length || graph.outputs.length > 64) fail('runtime source output graph bound');
+    pending.push(...graph.pending);
+    for (const output of graph.outputs) {
+      const member = view.members.find(row => row.path === output.path);
+      if (!member || member.bytes !== output.bytes || member.sha256 !== output.sha256) fail('runtime metafile output differs from collected member');
+      if (!output.inputUniverseComplete) pending.push('runtime-bundle-input-originals-unresolved:' + output.path);
+      const ref = output.metafile;
+      if (!safeMaterialPath(ref.path) || !/^[a-f0-9]{64}$/u.test(ref.sha256) || ref.bytes > 8 * 1024 ** 2) fail('runtime source metafile bound');
+      const read = () => {
+        const bytes = output.readMetafile();
+        if (!Buffer.isBuffer(bytes) || bytes.length !== ref.bytes || hash(bytes) !== ref.sha256) fail('runtime source metafile original mismatch');
+        const metadata = JSON.parse(bytes.toString());
+        const target = output.path.startsWith('dist/') ? './' + output.path.slice(5) : './' + output.path;
+        if (!object(metadata.inputs) || !object(metadata.outputs) || Object.keys(metadata.outputs).length !== 1
+          || metadata.outputs[target]?.bytes !== output.bytes) fail('runtime metafile compiled output binding mismatch');
+        return bytes;
+      };
+      const previous = metafiles.get(ref.path);
+      if (previous && previous.sha256 !== ref.sha256) fail('runtime metafile original collision');
+      metafiles.set(ref.path, { sha256: ref.sha256, read });
+    }
+  }
+  try {
+    const members = collectedRuntimeMembers(view);
+    const evidence: Materials = { schemaVersion: 1, kind: 'independent-runtime-closure-materials', runtime: 'node',
+      product: { sourceSha: identity.sourceSha, runHeadSha: material.producer.runHeadSha, package: identity.package, version: identity.version,
+        ...(identity.target ? { target: identity.target } : {}), archive: { bytes: identity.archiveBytes, sha256: identity.archiveSha256, integrity: identity.integrity } },
+      metafiles: [...metafiles].map(([path, row]) => ({ path, sha256: row.sha256 })) };
+    const bound = { view, members, metafiles, pending };
+    const node = inspectRuntimeClosure(evidence, context, bound);
+    const bun = inspectRuntimeClosure({ ...evidence, runtime: 'bun' }, context, bound);
+    const gaps = [...new Set([...node.pending.map(reason => 'node:' + reason), ...bun.pending.map(reason => 'bun:' + reason)])].sort();
+    const facts = { ...node.facts };
+    for (const key of ['physicalInventoryVerified', 'runtimeImportsVerified', 'dataAndNativeResolutionVerified', 'packageIdentityDeduplicated',
+      'artifactCustodyVerified', 'runtimeClosureVerified', 'derivedSourceVerified', 'archiveBindingVerified', 'manifestInventoryVerified', 'literalResolutionVerified'] as const)
+      facts[key] = node.facts[key] && bun.facts[key];
+    for (const key of ['entrypoints', 'inspectedScripts', 'nativeTargetsChecked', 'unvisitedScripts'] as const)
+      facts[key] = [...new Set([...node.facts[key], ...bun.facts[key]])].sort();
+    facts.originalMetafilesRehashed += bun.facts.originalMetafilesRehashed;
+    return { status: facts.runtimeClosureVerified ? 'verified' : 'pending', reason: gaps.length ? gaps.join('; ')
+      : 'Actual collected Node and Bun runtime closure inspected; source/native/legal admissions remain separate', pending: gaps,
+      edges: [...new Map([...node.edges, ...bun.edges].map(edge => [JSON.stringify(edge), edge])).values()],
+      diagnostics: [...node.diagnostics, ...bun.diagnostics], runtimeDataAccess: [...node.runtimeDataAccess, ...bun.runtimeDataAccess], facts };
+  } catch (error) {
+    if (!(error instanceof RuntimeReadPending)) throw error;
+    return unavailable(error.message);
+  }
 }

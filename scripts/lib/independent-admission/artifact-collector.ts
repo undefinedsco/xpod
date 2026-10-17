@@ -1,3 +1,6 @@
+import { PUBLICATION_DISK_LIMITS } from './publication-disk-budget';
+import {sharedSourceLifetime} from './shared-source-lifetime';
+import moduleLimits from '../module-artifact-limits.json';
 import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { readFileSync, lstatSync } from 'node:fs';
@@ -5,11 +8,26 @@ import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { verifyAcquiredMetadata } from '../../acquire-independent-product-input';
 import { projectCliPublicationInput } from '../../project-cli-publication-input';
-import { githubOriginFacts, githubOriginOriginals, type GitHubOriginObservation } from './github-origin';
+import { githubOriginFacts, githubOriginOriginals, isRoutedCssProductGitHubOrigin, type GitHubOriginObservation } from './github-origin';
 import type { CollectedArtifactCapability, CollectedArtifactView, CollectedArtifactMember, PublicationMaterialView } from './artifact-contract';
 
+type PortableSourceSnapshot={originals:NonNullable<Awaited<ReturnType<typeof import('./module-source-originals')['collectModuleSourceOriginals']>>>;lifetime:ReturnType<typeof sharedSourceLifetime>};
+const portableSourceSnapshots=new WeakMap<object,PortableSourceSnapshot>();
+const productCompactors=new WeakMap<object,()=>void>();
+export function compactCollectedProductProjection(value:unknown):boolean{
+ if(!value||typeof value!=='object'||!issued.has(value))fail('real collected product capability required');
+ const compact=productCompactors.get(value as object);if(!compact)return false;compact();return true;
+}
+const custodyAssertions=new WeakMap<object,()=>void>();
+export function assertCollectedPublicationCustody(artifact:unknown):void{
+ if(!artifact||typeof artifact!=='object'||!issued.has(artifact))fail('real retained artifact capability required');
+ const check=custodyAssertions.get(artifact as object);
+ if(check)check();
+ else if(publicationBindings.has(artifact as object))fail('retained publication custody assertion missing');
+}
 const issued = new WeakMap<object, CollectedArtifactView>();
 const disposers = new WeakMap<object, () => void>();
+const sourceCompactors = new WeakMap<object, () => void>();
 type PublicationArchiveSource = { kind: 'buffer'; bytes: Buffer } | { kind: 'file'; path: string };
 interface PublicationBinding { origin: GitHubOriginObservation; producerReceiptPath: string; source: PublicationArchiveSource; projectionOutput: string }
 const publicationBindings = new WeakMap<object, { view: PublicationMaterialView; binding: PublicationBinding }>();
@@ -85,11 +103,21 @@ export async function withCollectedArchiveFile<T>(artifact: unknown,
   });
 }
 
+/** Cleanup-only operation. The caller first finishes legal source reads and
+ * compacts the reviewed source-material capability. A retained exact outer ZIP
+ * must still exist before this helper removes its reconstructible projection. */
+export function compactCollectedSourceOriginals(artifact: unknown): boolean {
+  if (!artifact || typeof artifact !== 'object' || !issued.has(artifact)) return fail('real collected artifact required for compaction');
+  const compact = sourceCompactors.get(artifact);
+  if (!compact) return false;
+  compact(); sourceCompactors.delete(artifact); return true;
+}
+
 /** Release disk snapshots once the complete admission/publication operation
  * finishes. Revocation also prevents a released token from issuing new views. */
 export function releaseCollectedArtifact(capability: CollectedArtifactCapability): void {
   const dispose = disposers.get(capability);
-  issued.delete(capability); disposers.delete(capability); publicationBindings.delete(capability); dispose?.();
+  issued.delete(capability); productCompactors.delete(capability); custodyAssertions.delete(capability); disposers.delete(capability); publicationBindings.delete(capability); sourceCompactors.delete(capability); dispose?.();
 }
 
 /** Large-product adapters reuse the normal product projectors and the same
@@ -104,17 +132,17 @@ export async function collectApiModuleAdmissionArtifact(input: {
 const moduleProjectors = {
   api: async () => (await import('../../project-api-product-input')).projectApiProductInput,
   css: async () => (await import('../../project-css-product-input')).projectCssProductInput,
+  afs: async () => (await import('../../project-afs-product-input')).projectAfsProductInput,
 } as const;
 
 export async function collectModuleAdmissionArtifact(input: {
-  module: 'api' | 'css'; githubOrigin: unknown; acquisitionRoot: string; projectionOutput: string;
+  module: 'api' | 'css' | 'afs'; githubOrigin: unknown; acquisitionRoot: string; projectionOutput: string;
 }): Promise<CollectedArtifactCapability> {
   const origin = githubOriginFacts(input.githubOrigin);
   if (!Object.prototype.hasOwnProperty.call(moduleProjectors, input.module) || !origin
-    || origin.workflowPath !== `.github/workflows/${input.module}-module-product.yml` || !origin.target) return fail('controlled module platform origin required');
+    || ![input.module === 'afs' ? '.github/workflows/agentfs-module-mounted-acceptance.yml' : `.github/workflows/${input.module}-module-product.yml`,...(input.module==='css'?['.github/workflows/css-native-products.yml']:[])].includes(origin.workflowPath) || !origin.target) return fail('controlled module platform origin required');
   const { productTarget } = await import('../../module-product-targets');
-  const target = productTarget(input.module, origin.target);
-  if (!target.nativeSourceAvailable) return fail('module native source unavailable');
+  if (input.module !== 'afs' && !productTarget(input.module, origin.target).nativeSourceAvailable && !(input.module==='css'&&isRoutedCssProductGitHubOrigin(input.githubOrigin))) return fail('module native source unavailable');
   const root = path.resolve(input.acquisitionRoot);
   const receiptBytes = readCustodyReceipt(root);
   const custody = JSON.parse(receiptBytes.toString());
@@ -127,15 +155,19 @@ export async function collectModuleAdmissionArtifact(input: {
   await project({ schemaVersion: 1, acquisitionRoot: root,
     custodyReceiptSha256: hash(receiptBytes), members: { producer: 'producer.receipt.json', archive: 'product.tgz', packRaw: 'evidence/pack.raw.log' } }, input.projectionOutput);
   const output = path.resolve(input.projectionOutput);
-  const selections = [ ['producer.receipt.json', 'producer.receipt.json'], ['product.tgz', 'product.tgz'], ['evidence/pack.raw.log', 'pack.raw.log'] ] as const;
+  const selections = input.module === 'afs'
+    ? [ ['producer.receipt.json', 'producer.receipt.json'], ['product.tgz', 'product.tgz'],['module-admission.mjs','module-admission.mjs'] ] as const
+    : [ ['producer.receipt.json', 'producer.receipt.json'], ['product.tgz', 'product.tgz'], ['evidence/pack.raw.log', 'pack.raw.log'] ] as const;
   const originals = selections.map(([name, destination]) => {
     const rows = custody.inventory.members.filter((row: any) => row.path === name && row.kind === 'file');
     if (rows.length !== 1) return fail('unique module original member required');
     return { row: rows[0] as CollectedArtifactMember, destination };
   });
   let phaseOriginals: import('./module-phase-originals').ModulePhaseOriginals | undefined;
+  let sourceOriginals: Awaited<ReturnType<typeof import('./module-source-originals')['collectModuleSourceOriginals']>>;
   const readOriginal = (name: string, maximum: number): Buffer => {
     if (!Number.isSafeInteger(maximum) || maximum < 0) return fail('bounded module original required');
+    if (sourceOriginals && name.startsWith('source-materials/')) return sourceOriginals.readSmall(name, Math.min(maximum, 8 * 1024 ** 2));
     if (phaseOriginals && /^evidence\/[a-z0-9-]+\.receipt\.json$/u.test(name)) return phaseOriginals.readSmallReceipt(name, Math.min(maximum, 1024 ** 2));
     const original = originals.find(item => item.row.path === name);
     if (!original || !Number.isSafeInteger(maximum) || maximum < 0 || original.row.bytes > maximum) return fail('bounded module original required');
@@ -155,20 +187,36 @@ export async function collectModuleAdmissionArtifact(input: {
     const { collectModulePhaseOriginals } = await import('./module-phase-originals');
     phaseOriginals = await collectModulePhaseOriginals({ archivePath: path.join(root, 'artifact.zip'),
       archiveSha256: origin.artifactSha256, inventory: custody.inventory, producer });
+    const { collectModuleSourceOriginals } = await import('./module-source-originals');
+    sourceOriginals = await collectModuleSourceOriginals({ archivePath: path.join(root, 'artifact.zip'),
+      archiveSha256: origin.artifactSha256, inventory: custody.inventory, producer });
     const { MANIFEST_MAX_BYTES } = require('../../workspace-package-payload.cjs');
     const manifest = JSON.parse(disk.readMember('package.json', MANIFEST_MAX_BYTES).toString());
     const { verifyModuleProductInventory } = await import('./module-product-inventory');
     verifyModuleProductInventory({ module: input.module, target: origin.target, version: producer.context.version,
       manifest, members: disk.members });
-    return issueCollectedView(Object.freeze({
+    const capability = issueCollectedView(Object.freeze({
       identity: Object.freeze({ sourceSha: origin.sourceSha, package: manifest.name, version: manifest.version,
         target: origin.target, archiveSha256: disk.archive.sha256, integrity: disk.archive.integrity, archiveBytes: disk.archive.bytes }),
-      members: disk.members, readMember: disk.readMember, readMemberRange: disk.readMemberRange,
+      members: disk.members, readMember: disk.readMember, readMemberRange: disk.readMemberRange, readBoundMemberRange: disk.readBoundMemberRange,
       producerOriginals: phaseOriginals.members,
       readProducerOriginal: readOriginal,
-    }), disk.dispose, { origin: input.githubOrigin as GitHubOriginObservation,
+      readProducerOriginalRange(name: string, offset: number, length: number) {
+        if (!sourceOriginals) return fail('registered source originals unavailable');
+        return sourceOriginals.readRange(name, offset, length);
+      },
+    }), () => { sourceOriginals?.dispose(); disk.dispose(); }, { origin: input.githubOrigin as GitHubOriginObservation,
       projectionOutput: output, producerReceiptPath: 'producer.receipt.json', source: { kind: 'file', path: path.join(output, 'product.tgz') } });
-  } catch (error) { disk.dispose(); throw error; }
+    productCompactors.set(capability,()=>disk.compactProjection());
+    const packedPath=path.join(output,'product.tgz'),packedStat=lstatSync(packedPath,{bigint:true});
+    custodyAssertions.set(capability,()=>{
+      if(!sourceOriginals)fail('retained source original custody missing');sourceOriginals!.assertCustody();
+      const current=lstatSync(packedPath,{bigint:true});
+      if(!current.isFile()||current.isSymbolicLink()||current.nlink!==1n||['dev','ino','size','mtimeNs','ctimeNs','mode'].some(key=>(current as any)[key]!== (packedStat as any)[key]))fail('retained product archive changed');
+    });
+    if (sourceOriginals) sourceCompactors.set(capability, sourceOriginals.compact);
+    return capability;
+  } catch (error) { sourceOriginals?.dispose(); disk.dispose(); throw error; }
 }
 
 /** Collect one exact dependency selected by the immutable publication lock.
@@ -249,14 +297,14 @@ export async function collectAdmissionArtifact(input: {
     || custody.artifactId !== origin.artifactId || custody.workflowPath !== origin.workflowPath
     || custody.archive?.sha256 !== origin.artifactSha256) fail('observed artifact/custody mismatch');
   const producerOriginals = new Map<string, Buffer>();
-  const selected = custody.inventory.members.filter((row: any) => row.kind === 'file');
+  const selected = custody.inventory.members.filter((row: any) => row.kind === 'file'&&!row.path.startsWith('source-materials/'));
   if (selected.length > 1000 || selected.some((row: any) => row.bytes > 8 * 1024 ** 2)
     || selected.reduce((total: number, row: any) => total + row.bytes, 0) > 16 * 1024 ** 2) fail('producer original resource bound exceeded');
   await withOwnedTempRoot('xpod-admission-originals-', async (temporary: string) => {
     const selections = selected.map((row: any) => ({ path: row.path, destination: row.path, bytes: row.bytes, sha256: row.sha256 }));
     const result = inspectArtifact([path.join(import.meta.dir, '../inspect-product-artifact.py'),
-      path.join(root, 'artifact.zip'), origin.artifactSha256, String(8 * 1024 ** 2), String(16 * 1024 ** 2),
-      '1000', JSON.stringify(selections), temporary, 'independent-source-originals'], { timeout: 30_000, maxBuffer: 1024 ** 2 });
+      path.join(root, 'artifact.zip'), origin.artifactSha256, String(PUBLICATION_DISK_LIMITS.outerPackedBytes), String(PUBLICATION_DISK_LIMITS.outerExpandedBytes),
+      String(moduleLimits.members), '--selection-stdin', temporary, 'independent-source-originals'], {timeout:moduleLimits.timeoutMs,maxBuffer:32*1024**2,input:Buffer.from(JSON.stringify(selections))});
     if (result.error || result.status !== 0 || result.signal) fail('producer ZIP member verification failed: '
       + String(result.error?.message ?? result.stderr).slice(0, 1200));
     const checked = JSON.parse(result.stdout);
@@ -279,14 +327,18 @@ export async function collectAdmissionArtifact(input: {
     custodyReceiptSha256: hash(receiptBytes) }, input.projectionOutput);
   const row = projected.products[input.product];
   const archive = readFileSync(path.join(input.projectionOutput, row.archive.path));
+  const producer=JSON.parse(producerOriginals.get('result.json')!.toString());
+  const {collectModuleSourceOriginals}=await import('./module-source-originals');
+  const sourceOriginals=await collectModuleSourceOriginals({archivePath:path.join(root,'artifact.zip'),archiveSha256:origin.artifactSha256,inventory:custody.inventory,producer});
+  const snapshot:PortableSourceSnapshot|undefined=sourceOriginals?{originals:sourceOriginals,lifetime:sharedSourceLifetime(sourceOriginals)}:undefined;
   const producerRows = Object.freeze(selected.map((row: any) => Object.freeze({ path: row.path, sha256: row.sha256, bytes: row.bytes, mode: row.mode ?? 0 })));
-  return issueProductArchive(origin.sourceSha, row, archive, producerRows, (name, maximumBytes) => {
+  try{return issueProductArchive(origin.sourceSha, row, archive, producerRows, (name, maximumBytes) => {
     if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 0) return fail('invalid original byte bound');
     const bytes = producerOriginals.get(name);
     const row = selected.find((item: any) => item.path === name);
     if (!bytes || !row || bytes.length > maximumBytes || hash(bytes) !== row.sha256) return fail('unique bounded producer original required');
     return Buffer.from(bytes);
-  }, input.githubOrigin as GitHubOriginObservation, path.resolve(input.projectionOutput));
+  }, input.githubOrigin as GitHubOriginObservation, path.resolve(input.projectionOutput),snapshot);}catch(error){sourceOriginals?.dispose();throw error;}
 }
 
 /** A sibling archive from the same authenticated producer ZIP needs no second
@@ -299,13 +351,13 @@ export function collectRelatedAdmissionArtifact(parent: CollectedArtifactCapabil
   const row = producer.products?.[product];
   if (producer.context?.checkoutSha !== view.identity.sourceSha || row?.package !== '@undefineds.co/xpod-' + product) fail('related producer identity mismatch');
   const archive = view.readProducerOriginal(row.archive.path, 8 * 1024 ** 2);
-  return issueProductArchive(view.identity.sourceSha, row, archive, view.producerOriginals, view.readProducerOriginal, publicationBindings.get(parent)?.binding.origin, publicationBindings.get(parent)?.binding.projectionOutput);
+  return issueProductArchive(view.identity.sourceSha, row, archive, view.producerOriginals, view.readProducerOriginal, publicationBindings.get(parent)?.binding.origin, publicationBindings.get(parent)?.binding.projectionOutput,portableSourceSnapshots.get(parent));
 }
 
 // Private issuer: only authenticated acquisition or a previously issued parent
 // capability can reach this function. No JSON/hash-to-authority constructor.
 function issueProductArchive(sourceSha: string, row: any, archive: Buffer,
-  producerRows: readonly CollectedArtifactMember[], readProducerOriginal: CollectedArtifactView['readProducerOriginal'], origin?: GitHubOriginObservation, projectionOutput?: string): CollectedArtifactCapability {
+  producerRows: readonly CollectedArtifactMember[], readProducerOriginal: CollectedArtifactView['readProducerOriginal'], origin?: GitHubOriginObservation, projectionOutput?: string,snapshot?:PortableSourceSnapshot): CollectedArtifactCapability {
   if (archive.length !== row.archive.bytes || hash(archive) !== row.archive.sha256
     || 'sha512-' + createHash('sha512').update(archive).digest('base64') !== row.archive.integrity) fail('projected product archive mismatch');
   const { inspectTarballBuffer } = require('../../workspace-package-payload.cjs');
@@ -324,8 +376,9 @@ function issueProductArchive(sourceSha: string, row: any, archive: Buffer,
   const identity = Object.freeze({ sourceSha, package: row.package, version: row.version,
     archiveSha256: row.archive.sha256, integrity: row.archive.integrity, archiveBytes: archive.length });
   const view: CollectedArtifactView = Object.freeze({ identity, members: Object.freeze(members),
-    producerOriginals: producerRows,
-    readProducerOriginal,
+    producerOriginals:Object.freeze([...new Map([...producerRows,...(snapshot?.originals.members??[])].map(row=>[row.path,row])).values()]),
+    readProducerOriginal(name:string,maximum:number){return name.startsWith('source-materials/')&&snapshot?snapshot.originals.readSmall(name,maximum):readProducerOriginal(name,maximum);},
+    ...(snapshot?{readProducerOriginalRange:(name:string,offset:number,length:number)=>snapshot.originals.readRange(name,offset,length)}:{}),
     readMember(name: string, maximumBytes: number): Buffer {
       if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 0) return fail('invalid member byte bound');
       const bytes = originals.get(name);
@@ -333,8 +386,12 @@ function issueProductArchive(sourceSha: string, row: any, archive: Buffer,
       if (hash(bytes) !== memberHashes.get(name)) return fail('collected member digest mismatch');
       return Buffer.from(bytes);
     } });
-  return issueCollectedView(view, undefined, origin && projectionOutput ? { origin, projectionOutput, producerReceiptPath: 'result.json',
-    source: { kind: 'buffer', bytes: Buffer.from(archive) } } : undefined);
+  const release=snapshot?.lifetime.retain();
+  let capability:CollectedArtifactCapability;
+  try{capability=issueCollectedView(view,release, origin && projectionOutput ? { origin, projectionOutput, producerReceiptPath: 'result.json',
+    source: { kind: 'buffer', bytes: Buffer.from(archive) } } : undefined);}catch(error){release?.();throw error;}
+  if(snapshot){portableSourceSnapshots.set(capability,snapshot);sourceCompactors.set(capability,()=>snapshot.lifetime.compact());custodyAssertions.set(capability,()=>snapshot.originals.assertCustody());}
+  return capability;
 }
 
 function issueCollectedView(view: CollectedArtifactView, dispose?: () => void, binding?: PublicationBinding): CollectedArtifactCapability {
@@ -358,4 +415,11 @@ function issueCollectedView(view: CollectedArtifactView, dispose?: () => void, b
   issued.set(capability, view);
   if (dispose) disposers.set(capability, dispose);
   return capability;
+}
+
+export async function preparePublicationGroup(input: Parameters<NonNullable<import('../../run-independent-publication').GroupPreparationDispatcher['preparePublicationGroup']>>[0]) {
+  return (await import('./publication-group')).preparePublicationGroup(input);
+}
+export async function prepareRegistryConsumerProduct(input: import('./publication-group').RegistryConsumerProductPreparationInput) {
+  return (await import('./publication-group')).prepareRegistryConsumerProduct(input);
 }

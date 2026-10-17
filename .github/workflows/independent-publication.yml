@@ -1,4 +1,4 @@
-name: Independent CLI publication
+name: Independent product group publication
 
 on:
   workflow_dispatch:
@@ -8,7 +8,7 @@ on:
         required: true
         type: string
       producer_coordinates:
-        description: 'Exact normal CLI producer acquisition JSON; never an approval receipt'
+        description: 'Complete product-group immutable acquisition selectors; never approval receipts'
         required: true
         type: string
       mode:
@@ -28,7 +28,7 @@ permissions:
 
 jobs:
   publication:
-    if: ${{ github.ref == 'refs/heads/staging' }}
+    if: ${{ inputs.mode == 'prepare' && github.ref == 'refs/heads/staging' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -72,3 +72,233 @@ jobs:
             .test-data/independent-publication/${{ github.run_id }}/${{ github.run_attempt }}/promotion.json
           if-no-files-found: warn
           retention-days: 14
+
+  consumer-matrix:
+    if: ${{ inputs.mode == 'publish' && github.ref == 'refs/heads/staging' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      consumers: ${{ steps.resolve.outputs.consumers }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - name: Install reviewed resolver dependencies
+        timeout-minutes: 10
+        run: bun install --frozen-lockfile
+      - id: resolve
+        name: Resolve complete immutable consumer selector matrix
+        env:
+          INDEPENDENT_PUBLICATION_PHASE: consumer-matrix
+          INDEPENDENT_PUBLICATION_INPUT: ${{ inputs.producer_coordinates }}
+        run: bun scripts/run-independent-publication.ts
+
+  archive:
+    name: pre-${{ matrix.module }}-${{ matrix.target }}
+    needs: consumer-matrix
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix: ${{ fromJSON(needs.consumer-matrix.outputs.consumers) }}
+    uses: ./.github/workflows/independent-archive-consumer.yml
+    with:
+      source_sha: ${{ inputs.source_sha }}
+      producer_selectors: ${{ inputs.producer_coordinates }}
+      module: ${{ matrix.module }}
+      target: ${{ matrix.target }}
+      mode: publish
+
+  wave-01:
+    name: wave-01
+    needs: archive
+    uses: ./.github/workflows/independent-publication-wave.yml
+    with:
+      source_sha: ${{ inputs.source_sha }}
+      producer_selectors: ${{ inputs.producer_coordinates }}
+      wave: '01'
+    secrets:
+      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  wave-02:
+    name: wave-02
+    needs: wave-01
+    uses: ./.github/workflows/independent-publication-wave.yml
+    with:
+      source_sha: ${{ inputs.source_sha }}
+      producer_selectors: ${{ inputs.producer_coordinates }}
+      wave: '02'
+    secrets:
+      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  wave-03:
+    name: wave-03
+    needs: wave-02
+    uses: ./.github/workflows/independent-publication-wave.yml
+    with:
+      source_sha: ${{ inputs.source_sha }}
+      producer_selectors: ${{ inputs.producer_coordinates }}
+      wave: '03'
+    secrets:
+      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  wave-04:
+    name: wave-04
+    needs: wave-03
+    uses: ./.github/workflows/independent-publication-wave.yml
+    with:
+      source_sha: ${{ inputs.source_sha }}
+      producer_selectors: ${{ inputs.producer_coordinates }}
+      wave: '04'
+    secrets:
+      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  wave-05:
+    name: wave-05
+    needs: wave-04
+    uses: ./.github/workflows/independent-publication-wave.yml
+    with:
+      source_sha: ${{ inputs.source_sha }}
+      producer_selectors: ${{ inputs.producer_coordinates }}
+      wave: '05'
+    secrets:
+      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  wave-06:
+    name: wave-06
+    needs: wave-05
+    uses: ./.github/workflows/independent-publication-wave.yml
+    with:
+      source_sha: ${{ inputs.source_sha }}
+      producer_selectors: ${{ inputs.producer_coordinates }}
+      wave: '06'
+    secrets:
+      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  wave-07:
+    name: wave-07
+    needs: wave-06
+    uses: ./.github/workflows/independent-publication-wave.yml
+    with:
+      source_sha: ${{ inputs.source_sha }}
+      producer_selectors: ${{ inputs.producer_coordinates }}
+      wave: '07'
+    secrets:
+      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  wave-08:
+    name: wave-08
+    needs: wave-07
+    uses: ./.github/workflows/independent-publication-wave.yml
+    with:
+      source_sha: ${{ inputs.source_sha }}
+      producer_selectors: ${{ inputs.producer_coordinates }}
+      wave: '08'
+    secrets:
+      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  wave-09:
+    name: wave-09
+    needs: wave-08
+    uses: ./.github/workflows/independent-publication-wave.yml
+    with:
+      source_sha: ${{ inputs.source_sha }}
+      producer_selectors: ${{ inputs.producer_coordinates }}
+      wave: '09'
+    secrets:
+      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  wave-10:
+    name: wave-10
+    needs: wave-09
+    uses: ./.github/workflows/independent-publication-wave.yml
+    with:
+      source_sha: ${{ inputs.source_sha }}
+      producer_selectors: ${{ inputs.producer_coordinates }}
+      wave: '10'
+    secrets:
+      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  wave-11:
+    name: wave-11
+    needs: wave-10
+    uses: ./.github/workflows/independent-publication-wave.yml
+    with:
+      source_sha: ${{ inputs.source_sha }}
+      producer_selectors: ${{ inputs.producer_coordinates }}
+      wave: '11'
+    secrets:
+      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  wave-12:
+    name: wave-12
+    needs: wave-11
+    uses: ./.github/workflows/independent-publication-wave.yml
+    with:
+      source_sha: ${{ inputs.source_sha }}
+      producer_selectors: ${{ inputs.producer_coordinates }}
+      wave: '12'
+    secrets:
+      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  wave-13:
+    name: wave-13
+    needs: wave-12
+    uses: ./.github/workflows/independent-publication-wave.yml
+    with:
+      source_sha: ${{ inputs.source_sha }}
+      producer_selectors: ${{ inputs.producer_coordinates }}
+      wave: '13'
+    secrets:
+      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  wave-14:
+    name: wave-14
+    needs: wave-13
+    uses: ./.github/workflows/independent-publication-wave.yml
+    with:
+      source_sha: ${{ inputs.source_sha }}
+      producer_selectors: ${{ inputs.producer_coordinates }}
+      wave: '14'
+    secrets:
+      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  promotion:
+    needs: wave-14
+    runs-on: ubuntu-24.04
+    timeout-minutes: 135
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.21.1
+      - name: Install reviewed publication toolchain
+        timeout-minutes: 10
+        run: bun install --frozen-lockfile
+      - name: Reobserve complete cohort and authorize single-use promotion
+        timeout-minutes: 115
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          INDEPENDENT_PUBLICATION_PHASE: final-promotion
+          INDEPENDENT_PUBLICATION_INPUT: ${{ inputs.producer_coordinates }}
+        run: bun scripts/run-independent-publication.ts
+      - name: Upload final admission and promotion originals
+        timeout-minutes: 5
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: publication-final-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .test-data/publication-wave/
+          if-no-files-found: warn

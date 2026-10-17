@@ -72,13 +72,16 @@ test('fixed bin probe executes the shell wrapper under isolated Node and Bun pat
       fs.symlinkSync(fs.realpathSync(executable!), path.join(runtimeBin, runtime));
       for (const tool of ['dirname', 'readlink']) fs.symlinkSync(fs.realpathSync('/usr/bin/' + tool), path.join(runtimeBin, tool));
       for (const arg of ['--version', '--help']) {
-        const result = spawnSync(executable!, ['bin-probe.cjs', arg], { cwd: root, env: { PATH: runtimeBin, HOME: root }, encoding: 'utf8', timeout: 2000 });
+        // This checks launcher behavior, not startup latency. Bun starts both
+        // the probe and its child here; cold starts can exceed two seconds.
+        const result = spawnSync(executable!, ['bin-probe.cjs', arg], { cwd: root, env: { PATH: runtimeBin, HOME: root }, encoding: 'utf8', timeout: 5000 });
+        if (result.status !== 0) throw new Error(`${runtime} ${arg}: ${result.error?.message ?? result.signal ?? result.stderr}`);
         expect(result.status).toBe(0);
         expect(result.stdout.trim()).toBe(arg === '--version' ? '1.0.0' : 'Usage: xpod commands');
       }
     }
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
-});
+}, 25_000);
 
 test('actual registry installers reject serialized artifact/readback approval before network', async () => {
   const input = { artifact: { status: 'verified' }, peers: [], stage: 'postpublish' as const,

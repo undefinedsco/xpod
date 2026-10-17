@@ -1,3 +1,5 @@
+import { PUBLICATION_DISK_LIMITS } from './independent-admission/publication-disk-budget';
+import moduleArtifactLimits from './module-artifact-limits.json';
 import { createHash } from 'node:crypto';
 import { lstatSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -8,7 +10,7 @@ import { assertNewAcquisitionOutput, verifyAcquiredMetadata } from '../acquire-i
 const { withOwnedTempRoot } = createRequire(import.meta.url)('./owned-temp-root.cjs');
 const hash = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
 export interface ProductCustodyInput { acquisitionRoot: string; custodyReceiptSha256: string }
-interface ProjectionPolicy { workflowPath: string; materialRole: string; artifactNames(custody: any): string[] }
+interface ProjectionPolicy { workflowPath: string; reviewedWorkflowPaths?:readonly string[]; materialRole: string; artifactNames(custody: any): string[] }
 export interface ProjectionSession {
   root: string; custody: any; metadata: any; temporary: string;
   member(name: string, bound: number, minimum?: 0 | 1): any;
@@ -46,7 +48,7 @@ export async function withProductProjection<T>(input: ProductCustodyInput, outpu
   const root = path.resolve(input.acquisitionRoot);
   const custody = JSON.parse(productOriginal(path.join(root, 'receipt.json'), input.custodyReceiptSha256).toString());
   if (custody.schemaVersion !== 1 || custody.kind !== 'independent-product-artifact-acquisition' || custody.status !== 'blocked'
-    || custody.repository !== 'undefinedsco/xpod' || custody.workflowPath !== policy.workflowPath
+    || custody.repository !== 'undefinedsco/xpod' || ![policy.workflowPath,...(policy.reviewedWorkflowPaths??[])].includes(custody.workflowPath)
     || custody.materialRole !== policy.materialRole || custody.published !== false || custody.releaseQualified !== false
     || custody.archive?.path !== 'artifact.zip' || !/^[a-f0-9]{64}$/u.test(custody.archive.sha256)) fail('Product custody required; test/native artifacts cannot project');
   verifyAcquiredMetadata(root, custody.metadata);
@@ -54,7 +56,7 @@ export async function withProductProjection<T>(input: ProductCustodyInput, outpu
   const { run, workflow, artifact } = metadata;
   if (run.id !== custody.runId || run.run_attempt !== custody.runAttempt || run.head_sha !== custody.runHeadSha
     || run.status !== 'completed' || run.conclusion !== 'success' || workflow.id !== run.workflow_id
-    || workflow.path !== policy.workflowPath || run.path?.split('@')[0] !== policy.workflowPath
+    || workflow.path !== custody.workflowPath || run.path?.split('@')[0] !== custody.workflowPath
     || run.repository?.full_name !== custody.repository || run.head_repository?.full_name !== custody.repository
     || artifact.id !== custody.artifactId || artifact.expired !== false || artifact.workflow_run?.id !== run.id
     || artifact.workflow_run?.head_sha !== custody.runHeadSha || artifact.digest !== 'sha256:' + custody.archive.sha256
@@ -75,7 +77,7 @@ export async function withProductProjection<T>(input: ProductCustodyInput, outpu
     const projected = new Set<string>();
     function project(selections: any[]) {
       const result = spawnSync('python3', [path.join(import.meta.dir, 'inspect-product-artifact.py'), path.join(root, 'artifact.zip'), custody.archive.sha256,
-        String(512 * 1024 ** 2), String(1024 ** 3), '50000', JSON.stringify(selections), temporary], { encoding: 'utf8', timeout: 30_000, maxBuffer: 16 * 1024 * 1024 });
+        String(PUBLICATION_DISK_LIMITS.outerPackedBytes), String(PUBLICATION_DISK_LIMITS.outerExpandedBytes), String(moduleArtifactLimits.members), JSON.stringify(selections), temporary], { encoding: 'utf8', timeout: moduleArtifactLimits.timeoutMs, maxBuffer: 16 * 1024 * 1024 });
       if (result.status !== 0 || result.error) fail('ZIP projection failed');
       const checked = JSON.parse(result.stdout);
       for (const row of selections) projected.add(row.destination);

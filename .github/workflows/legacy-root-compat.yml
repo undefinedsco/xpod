@@ -1,7 +1,9 @@
 name: Legacy root package compatibility
 on:
   push:
-    branches: [main, staging]
+    # Staging pushes run this complete matrix inside candidate.yml, whose
+    # acceptance requires originals from that same RC run.
+    branches: [main]
   pull_request:
     branches: [main, staging]
   workflow_call:
@@ -43,28 +45,34 @@ jobs:
     needs: plan
     name: legacy-root-normal-afs
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 117
     outputs:
       artifact-id: ${{ steps.upload.outputs.artifact-id }}
       artifact-digest: ${{ steps.upload.outputs.artifact-digest }}
     steps:
       - uses: actions/checkout@v4
+        timeout-minutes: 5
         with:
           ref: ${{ needs.plan.outputs.sha }}
           persist-credentials: false
       - uses: oven-sh/setup-bun@v2
+        timeout-minutes: 5
         with:
           bun-version: 1.4.2
       - uses: actions/setup-node@v4
+        timeout-minutes: 5
         with:
           node-version: 22
       - run: bun install --frozen-lockfile
+        timeout-minutes: 3
       - name: Produce original CLI, client and standalone AFS JS distributions
+        timeout-minutes: 68
         env:
           SOURCE_SHA: ${{ needs.plan.outputs.sha }}
           EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: bun scripts/legacy-root-afs-supply.ts produce "$RUNNER_TEMP/legacy-root-normal-afs" "$SOURCE_SHA"
       - uses: actions/upload-artifact@v4
+        timeout-minutes: 10
         id: upload
         with:
           name: legacy-root-normal-afs-${{ needs.plan.outputs.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
@@ -72,14 +80,23 @@ jobs:
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 30
+      - name: Retain full normal CLI sourcekit originals even when supply fails
+        uses: actions/upload-artifact@v4
+        timeout-minutes: 10
+        if: always()
+        with:
+          name: legacy-root-normal-cli-originals-${{ needs.plan.outputs.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .test-data/afs-js-archive-ci-producer/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
       - name: Retain original producer diagnostics even when supply fails
         uses: actions/upload-artifact@v4
+        timeout-minutes: 10
         if: always()
         with:
           name: legacy-root-normal-afs-diagnostics-${{ needs.plan.outputs.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: |
-            ${{ runner.temp }}/legacy-root-normal-afs/
-            .test-data/afs-js-archive-ci-producer/
+          path: ${{ runner.temp }}/legacy-root-normal-afs/
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 30

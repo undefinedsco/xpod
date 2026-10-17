@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const { snapshotWorkspace } = require('../collect-workspace-normal-run.cjs');
 const { runPublicationCommand } = require('./afs-publication-command.cjs');
 const normal = require('../check-afs-js-archive-ci.cjs');
-const tools = ['scripts/check-cli-publication.cjs', 'scripts/check-afs-js-archive-ci.cjs', 'scripts/lib/afs-publication-command.cjs', 'scripts/lib/legacy-afs-supply.cjs', 'scripts/lib/product-artifact-command.cjs', 'scripts/lib/legacy-root-artifact-context.cjs', 'scripts/legacy-root-afs-supply.ts', 'scripts/acquire-independent-product-input.ts', 'scripts/lib/inspect-product-artifact.py', 'packages/xpod-afs/scripts/build-client-publication.ts', 'packages/xpod-afs/scripts/client-publication.cjs', 'packages/xpod-afs/scripts/client-publication-run.cjs'];
+const tools = ['scripts/check-cli-publication.cjs', 'scripts/check-afs-js-archive-ci.cjs', 'scripts/lib/afs-publication-command.cjs', 'scripts/lib/legacy-afs-supply.cjs', 'scripts/lib/legacy-cli-original-projection.cjs', 'scripts/lib/legacy-afs-publication-budget.cjs', 'scripts/lib/cli-publication-budget.cjs', 'scripts/lib/product-artifact-command.cjs', 'scripts/lib/legacy-root-artifact-context.cjs', 'scripts/legacy-root-afs-supply.ts', 'scripts/acquire-independent-product-input.ts', 'scripts/lib/inspect-product-artifact.py', 'scripts/lib/module-artifact-limits.json', 'packages/xpod-afs/scripts/build-client-publication.ts', 'packages/xpod-afs/scripts/client-publication.cjs', 'packages/xpod-afs/scripts/client-publication-run.cjs'];
 const MAX = 8 * 1024 ** 2;
 function io() { return require('./root-registry-supply.cjs'); }
 function json(file) { return JSON.parse(io().readRegular(file)); }
@@ -38,7 +38,7 @@ const NODE_PROBE = "if(process.versions.bun||Number(process.versions.node.split(
 async function runNormalCli(root, control, cliDirectory) {
   const runtime = await runPublicationCommand('node', ['-e', NODE_PROBE], { cwd: root, evidence: control, label: 'normal-node' });
   const qualified = verifyNodeRuntime(runtime, control);
-  const phase = await runPublicationCommand(qualified.execPath, [path.join(root, 'scripts/check-cli-publication.cjs'), '--evidence', cliDirectory], { cwd: root, evidence: control, label: 'normal-cli' });
+  const phase = await runPublicationCommand(qualified.execPath, [path.join(root, 'scripts/check-cli-publication.cjs'), '--evidence', cliDirectory], { cwd: root, evidence: control, label: 'normal-cli-publication-parent', timeoutMs: require('./legacy-afs-publication-budget.cjs').NORMAL_SUPPLY_BUDGET.cliParentMs });
   return { runtime, phase };
 }
 function verifyNodeRuntime(runtime, control) {
@@ -65,11 +65,11 @@ async function produce(root, destination, sourceSha) {
     const cli = normal.extract(originals.cli, path.join(staging, 'cli')), client = normal.extract(originals.client, path.join(staging, 'client'));
     phases.push(await runPublicationCommand('bun', [path.join(root, 'packages/xpod-afs/scripts/build-client-publication.ts'), '--cli-package', cli, '--client-package', client, '--output', path.join(destination, 'afs')], { cwd: root, evidence: control, label: 'normal-afs' }));
   } finally { fs.rmSync(staging, { recursive: true }); }
-  copyTree(cliDirectory, path.join(destination, 'cli'));
+  require('./legacy-cli-original-projection.cjs').createProjection(cliDirectory, path.join(destination, 'cli'), { sourceSha, runId: process.env.GITHUB_RUN_ID, runAttempt: Number(process.env.GITHUB_RUN_ATTEMPT) });
   const after = snapshotWorkspace(root); assert.equal(after.clean, true); assert.equal(after.inputSHA256, before.inputSHA256);
   fs.writeFileSync(path.join(control, 'source-after.original.json'), JSON.stringify(after));
   const index = { kind: 'legacy-root-original-afs-supply', nativeSourceRoot: root, sourceSha, runId: process.env.GITHUB_RUN_ID, runAttempt: Number(process.env.GITHUB_RUN_ATTEMPT), runHeadSha: process.env.EVENT_HEAD_SHA, nodeRuntime: cliRun.runtime,
-    sourceBefore: 'producer/source-before.original.json', sourceAfter: 'producer/source-after.original.json', phases,
+    cliProjection: 'cli/projection.original.json', sourceBefore: 'producer/source-before.original.json', sourceAfter: 'producer/source-after.original.json', phases,
     producerTools: tools.map(file => ({ file, ...io().reference(path.join(root, file)) })), members: inventory(destination), releaseQualified: false };
   fs.writeFileSync(path.join(destination, 'supply-index.original.json'), JSON.stringify(index, null, 2) + '\n', { flag: 'wx' });
   verify(destination, { sourceSha, runId: index.runId, runAttempt: index.runAttempt }, root);
@@ -115,6 +115,10 @@ function verify(directory, context, root) {
   assert.equal(afsPhase.args[0], index.nativeSourceRoot + '/packages/xpod-afs/scripts/build-client-publication.ts');
   assert.equal(afsPhase.args[1], '--cli-package'); assert.equal(afsPhase.args[3], '--client-package'); assert.equal(afsPhase.args[5], '--output');
   for (const offset of [2, 4, 6]) assert.ok(path.posix.isAbsolute(afsPhase.args[offset]));
+  if (index.cliProjection !== undefined) {
+    assert.equal(index.cliProjection, 'cli/projection.original.json');
+    require('./legacy-cli-original-projection.cjs').verifyProjection(path.join(directory, 'cli'), context);
+  }
   const cliResult = json(path.join(directory, 'cli/result.json'));
   assert.equal(String(cliResult.context.runId), String(context.runId)); assert.equal(Number(cliResult.context.runAttempt), Number(context.runAttempt));
   const cli = normal.cliArtifacts(path.join(directory, 'cli'), before);

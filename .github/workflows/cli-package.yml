@@ -9,10 +9,14 @@ on:
       - 'scripts/check-cli-package.cjs'
       - 'scripts/check-cli-publication.cjs'
       - 'scripts/cli-build-inputs.cjs'
+      - 'scripts/lib/module-source-materials.py'
+      - 'scripts/lib/module-artifact-limits.json'
+      - 'scripts/lib/cli-publication-budget.cjs'
       - 'scripts/prepare-cli-publication.ts'
       - 'scripts/independent-release-plan.ts'
       - 'scripts/workspace-package-payload.cjs'
       - 'tests/scripts/cli-publication-producer.node-test.cjs'
+      - 'tests/scripts/cli-publication-budget.node-test.cjs'
       - 'src/**'
       - 'package.json'
       - 'bunfig.toml'
@@ -58,12 +62,44 @@ jobs:
             .test-data/cli-package/xpod-cli.tgz
             .test-data/cli-package/xpod-client.tgz
             .test-data/cli-package/result.json
-
+  # Failure envelopes are projected and tested from cli-publication-budget.cjs.
+  normal-publication:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 86
+    steps:
+      - uses: actions/checkout@v4
+        timeout-minutes: 5
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        timeout-minutes: 5
+        with:
+          bun-version: 1.4.2
+      - uses: actions/setup-node@v4
+        timeout-minutes: 5
+        with:
+          node-version: 22
+      - name: Bind actual checkout
+        timeout-minutes: 1
+        id: source
+        run: |
+          actual_sha="$(git rev-parse HEAD)"
+          test "$actual_sha" = "$GITHUB_SHA"
+          echo "sha=$actual_sha" >> "$GITHUB_OUTPUT"
+      - name: Check publication producer contracts
+        timeout-minutes: 2
+        run: node --test tests/scripts/cli-publication-producer.node-test.cjs tests/scripts/cli-publication-budget.node-test.cjs
       - name: Build normal CLI publication preparation
+        timeout-minutes: 57
         env:
           EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: node scripts/check-cli-publication.cjs
       - name: Upload publication preparation originals
+        timeout-minutes: 10
         uses: actions/upload-artifact@v4
         with:
           name: xpod-cli-publication-preparation-${{ runner.os }}-${{ steps.source.outputs.sha }}-${{ github.run_id }}-${{ github.run_attempt }}

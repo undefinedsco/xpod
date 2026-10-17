@@ -100,13 +100,15 @@ describe('reviewed normal CLI input-set policy', () => {
   const { verifyCliInputSet } = require('../../scripts/lib/independent-admission/source-rules') as typeof import('../../scripts/lib/independent-admission/source-rules');
   const { readFileSync } = require('node:fs') as typeof import('node:fs');
   const { spawnSync } = require('node:child_process') as typeof import('node:child_process');
-  const tracked = spawnSync('git', ['ls-tree', '-r', '--name-only', '-z', 'HEAD'], { encoding: 'utf8' }).stdout.split('\0').filter(Boolean);
+  // Include newly staged verifier inputs in this structural pre-commit fixture.
+  // Operational source capabilities still require an exact clean Git commit.
+  const tracked = spawnSync('git', ['ls-files', '-z'], { encoding: 'utf8' }).stdout.split('\0').filter(Boolean);
   const read = (name: string) => readFileSync(name);
   const prefixes = ['packages/xpod-cli/src', 'packages/xpod-cli/scripts', 'packages/xpod-cli/tests', 'packages/xpod-cli/licenses',
     'packages/xpod-client/src', 'packages/xpod-client/scripts', 'packages/xpod-client/tests', 'packages/xpod-client/licenses', 'types/bun'];
+  const { TOOLS, PATCHES } = require('../../scripts/check-cli-publication.cjs') as { TOOLS: readonly string[]; PATCHES: readonly string[] };
   const exact = ['LICENSE', 'package.json', 'bunfig.toml', '.github/workflows/cli-package.yml', 'scripts/check-cli-publication.cjs',
-    'scripts/cli-build-inputs.cjs', 'scripts/lib/afs-publication-command.cjs', 'scripts/prepare-cli-publication.ts', 'scripts/independent-release-plan.ts', 'scripts/workspace-package-payload.cjs',
-    'scripts/patch-jose.js', 'scripts/patch-inrupt-authn-refresh.js', 'scripts/patch-inrupt-authn-transport.js', 'scripts/patch-inrupt-authn-operation-cleanup.js',
+    'scripts/cli-build-inputs.cjs', ...TOOLS, ...PATCHES.map(name => 'scripts/' + name),
     ...['tsconfig.json', 'tsconfig.core.json', 'tsconfig.client.json', 'tsconfig.build-tools.json', 'package.json', 'README.md', 'LICENSE', 'publication.bun.lock'].map(name => 'packages/xpod-cli/' + name),
     ...['tsconfig.json', 'package.json', 'README.md', 'LICENSE'].map(name => 'packages/xpod-client/' + name),
     ...JSON.parse(read('packages/xpod-cli/scripts/canonical-host-sources.json').toString()).map((name: string) => 'src/' + name)];
@@ -115,7 +117,8 @@ describe('reviewed normal CLI input-set policy', () => {
     devDependencies: { ...JSON.parse(read('packages/xpod-cli/package.json').toString()).devDependencies,
       semver: JSON.parse(read('package.json').toString()).devDependencies.semver } };
   it('matches the complete reviewed tracked input set and generated manifest', () => {
-    expect(files.length).toBe(439);
+    expect(files.map(row => row.path)).toContain('scripts/lib/module-source-materials.py');
+    expect(files.map(row => row.path)).toContain('scripts/lib/module-artifact-limits.json');
     expect(verifyCliInputSet(files, manifest, read, tracked)).toEqual({ sourceInputSetVerified: true, generatedBuildManifestVerified: true, pending: null });
   });
   it('rejects omissions, additions and generated-manifest changes', () => {

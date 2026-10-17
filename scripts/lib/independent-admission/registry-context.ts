@@ -1,3 +1,4 @@
+import {afsConsumerBudget} from '../afs-consumer-budget';
 import { verifyRegistryProduct } from '../../verify-registry-product';
 import { collectedArtifactView } from './artifact-collector';
 import { productDiskInventoryLimits } from './product-disk-inventory';
@@ -33,7 +34,7 @@ export async function observeRegistryArtifactIfPublished(artifact: unknown): Pro
   if (identity.archiveBytes > limits.packedBytes) throw new Error('Registry observation product or budget unsupported');
   const result = await verifyRegistryProduct({ registry: 'https://registry.npmjs.org/', package: identity.package,
     version: identity.version, expected: { sha256: identity.archiveSha256, integrity: identity.integrity, bytes: identity.archiveBytes } },
-  { timeoutMs: platform ? 120_000 : 30_000, limits });
+  { timeoutMs: /^@undefineds\.co\/xpod-afs-(?:linux|darwin)-(?:x64|arm64)$/u.test(identity.package) ? afsConsumerBudget('postpublish').registrySingleflightSeconds*1000 : platform ? 120_000 : 30_000, limits });
   if (result.status === 'not-published-blocked') return undefined;
   const capability = Object.freeze({}) as RegistryArtifactObservation;
   observations.set(capability, Object.freeze({ identity: Object.freeze({ ...identity }), registry: 'https://registry.npmjs.org/',

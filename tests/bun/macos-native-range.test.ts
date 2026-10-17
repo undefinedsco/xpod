@@ -1,5 +1,5 @@
 import {describe, expect, test} from 'bun:test';
-import {observeMacNativeRanges} from '../../scripts/lib/independent-admission/macos-native-range';
+import {observeMacNativeRanges, verifyMacLoaderClosure} from '../../scripts/lib/independent-admission/macos-native-range';
 
 function image() {
   const data = Buffer.alloc(56);
@@ -46,5 +46,26 @@ describe('bounded Mac native observations', () => {
         readRange: (o, n) => data.subarray(o, o + n)}, 'darwin-arm64')).toThrow();
     }
     expect(() => observeMacNativeRanges({sizeBytes: 100, readRange: () => Buffer.alloc(0)}, 'darwin-arm64')).toThrow();
+  });
+});
+
+
+describe('Mac loader bundle policy', () => {
+  const base = () => observeMacNativeRanges({sizeBytes: image().length,
+    readRange: (o, n) => image().subarray(o, o + n)}, 'darwin-arm64');
+  const check = (members: Map<string, ReturnType<typeof base>>) => verifyMacLoaderClosure({
+    executable: 'bin/helper', minimumOS: 0x0f0000, sdk: 0x0f0200, members});
+  test('resolves actual bundle dependency, accepts only system absolute paths', () => {
+    const main = {...base(), rpaths: ['@loader_path/../lib'], dependencies: [
+      {command: 0xc, path: '@rpath/liba.dylib'}, {command: 0xc, path: '/usr/lib/libSystem.B.dylib'}]};
+    expect(check(new Map([['bin/helper', main], ['lib/liba.dylib', base()]] )).members).toBe(2);
+    for (const name of ['/opt/homebrew/lib/liba.dylib', '/usr/lib/../private/liba', '@rpath/missing', '@loader_path/../../escape']) {
+      expect(() => check(new Map([['bin/helper', {...base(), dependencies: [{command: 0xc, path: name}]}]]))).toThrow();
+    }
+  });
+  test('rejects unbound inventory and higher-minOS dependency', () => {
+    expect(() => check(new Map([['bin/helper', base()], ['lib/unreferenced', base()]]))).toThrow();
+    expect(() => check(new Map([['bin/helper', {...base(), dependencies: [{command: 0xc, path: '@loader_path/../lib/new'}]}],
+      ['lib/new', {...base(), minimumOS: 0x100000}]]))).toThrow();
   });
 });

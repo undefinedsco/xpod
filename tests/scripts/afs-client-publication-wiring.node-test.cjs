@@ -139,3 +139,13 @@ test('pipe error cannot later turn into complete raw after real EOF',()=>fixture
  execFileSync(process.execPath,['-e',harness],{stdio:'pipe'});
  const row=JSON.parse(fs.readFileSync(result));assert.equal(row.actualWait,true);assert.equal(row.rawComplete,false);assert.equal(row.raw[0].sha256,undefined);assert.equal(row.raw[0].status,'io-incomplete-unhashed');assert.ok(row.raw[0].errors.some(error=>error.operation==='pipe'));
 }));
+
+
+test('matching-host parent budget accepts the bounded full profile window and rejects overflow before spawn',()=>fixture(async({output})=>{
+ const {MAX_TIMEOUT_MS}=require('../../scripts/lib/afs-publication-command.cjs');
+ assert.equal(MAX_TIMEOUT_MS,25*60*1000);
+ const row=await runPublicationCommand(process.execPath,['-e','process.stdout.write("complete");'],{cwd:output,env:process.env,evidence:output,label:'full-profile-window',timeoutMs:MAX_TIMEOUT_MS});
+ assert.equal(row.code,0);assert.equal(row.actualWait,true);assert.equal(row.actualClose,true);assert.equal(row.groupAbsent,true);
+ await assert.rejects(runPublicationCommand('/must-not-spawn',[],{cwd:output,env:process.env,evidence:output,label:'overflow-window',timeoutMs:MAX_TIMEOUT_MS+1}),/Invalid command evidence budget/);
+ assert.equal(fs.existsSync(path.join(output,'overflow-window.stdout.raw.log')),false);
+}));

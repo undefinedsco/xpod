@@ -1,3 +1,10 @@
+import {observeAfsConsumerVerifierRegistryOriginals} from './afs-consumer-registry-originals';
+import {openAfsConsumerDirectoryOriginals} from './afs-consumer-directory-originals';
+import {observeAfsConsumerRuntimeOriginals} from './afs-consumer-runtime-originals';
+import {assertAfsConsumerDiskReservation,afsConsumerDiskLayers,assertAfsConsumerRemainingFloor} from './afs-consumer-resource';
+import {reserveAfsConsumerEvidenceLayout} from './afs-consumer-public-custody';
+import {finalizeAfsConsumerEvidence} from './afs-consumer-finalization';
+import {afsConsumerBudget} from '../afs-consumer-budget';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -5,7 +12,7 @@ import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { isDeepStrictEqual } from 'node:util';
 import { collectedArtifactView, collectedPublicationProjectionDirectory, preflightCollectedArchiveFiles } from './artifact-collector';
-import { collectedArtifactSourceCheckout } from './source-context';
+import { collectedArtifactSourceCheckout, collectedArtifactDerivedSource } from './source-context';
 import { registryArtifactView, observeRegistryArtifact } from './registry-context';
 import { planClientConsumerProfiles } from './consumer-profiles';
 import { publicationPeerInputPlanView } from './peer-input-plan';
@@ -13,6 +20,7 @@ import type { CollectedArtifactIdentity, CollectedArtifactView } from './artifac
 const { runPublicationCommand } = createRequire(import.meta.url)('../afs-publication-command.cjs');
 const hash = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
 const fail = (message: string): never => { throw new Error('Client consumer observation: ' + message); };
+const moduleCommandClosed=(row:any):boolean=>row?.actualWait===true&&row?.actualClose===true&&row?.groupAbsent===true&&row?.rawComplete===true&&row?.rawClosedBeforeHash===true&&Array.isArray(row?.pipeEOF)&&row.pipeEOF.length===2&&row.pipeEOF.every((value:unknown)=>value===true);
 declare const consumerBrand: unique symbol;
 export interface ClientConsumerObservation { readonly [consumerBrand]: true }
 export interface ClientConsumerView {
@@ -28,9 +36,19 @@ export interface ClientConsumerView {
   readonly profiles: readonly { readonly profile: string; readonly verified: boolean; readonly pending: readonly string[] }[];
   readonly scope: 'local exact-artifact imports/exports smoke; no registry install, authentication, Pod or Chat verification'
     | 'actual registry installation and imports/exports smoke; no authentication, Pod or Chat verification'
+    | 'actual collected archive public CLI module install, Node/Bun service/native probes and removal; no registry, remote Pod or Chat verification'
+    | 'actual matching-host public CLI AFS install, full mounted/authenticated harness and cleanup; no actual Gateway or Chat acceptance'
     | 'actual registry public CLI module install, Node/Bun service/native probes and removal; no remote Pod or Chat verification';
 }
 const issued = new WeakMap<object, ClientConsumerView>();
+const artifactPeerPlans = new WeakMap<object, unknown>();
+export function bindPublicationConsumerPeerPlan(artifact: unknown, plan: unknown): void {
+  const view = collectedArtifactView(artifact), peer = publicationPeerInputPlanView(plan);
+  if (!view || !peer || peer.status !== 'collection-planned' || peer.products.cli.sourceSha !== view.identity.sourceSha) return fail('real immutable artifact and peer plan required');
+  if (view.identity.target === undefined && ![peer.products.cli, peer.products.client].some(identity => isDeepStrictEqual(identity, view.identity))) fail('peer plan product identity mismatch');
+  artifactPeerPlans.set(artifact as object, plan);
+}
+function boundPeerPlan(input: RegistryInstalledProductConsumerMaterials): unknown { return input.peerPlan ?? (input.artifact && typeof input.artifact === 'object' ? artifactPeerPlans.get(input.artifact) : undefined); }
 export function consumerObservationView(value: unknown): ClientConsumerView | undefined {
   return value !== null && typeof value === 'object' ? issued.get(value) : undefined;
 }
@@ -396,7 +414,7 @@ export function verifyInstalledConsumerInventory(cwd: string, artifacts: readonl
 async function executeConsumer(input: ConsumerInput, artifact: CollectedArtifactView, profiles: readonly Profile[], preparation: 'archive' | 'registry' = 'archive'): Promise<ClientConsumerObservation> {
   // Both strategies require the same collected dependency closure. Registry adds
   // real readback/installation; archive only materializes these verified bytes.
-  profiles = consumerProfiles(profiles, input.dependencies, input.peerPlan);
+  profiles = consumerProfiles(profiles, input.dependencies, boundPeerPlan(input));
   const { executionProfiles, runnable, writeEstimate } = executionProfilesAndBudget(profiles, preparation);
   if (preparation === 'registry') {
     // The primary was checked by checkedArtifact. Every additional exact artifact
@@ -673,9 +691,9 @@ function registryProductPlan(input: RegistryInstalledProductConsumerMaterials) {
  * owned cleanup allowance. This read-only plan grants no consumer authority. */
 export function preflightRegistryInstalledProductConsumer(input: RegistryInstalledProductConsumerMaterials): Readonly<{ maximumDurationMs: number }> {
   const artifact = collectedArtifactView(input.artifact);
-  if (artifact?.identity.target !== undefined) { moduleRegistryExecutionPlan(input); return Object.freeze({ maximumDurationMs: 840_000 }); }
+  if (artifact?.identity.target !== undefined) { const plan=moduleRegistryExecutionPlan(input); return Object.freeze({ maximumDurationMs: plan.module==='afs'?afsConsumerBudget('postpublish').maximumDurationSeconds*1000:840_000 }); }
   const { profiles } = registryProductPlan(input);
-  preflightProfiles(profiles, input.dependencies, input.peerPlan);
+  preflightProfiles(profiles, input.dependencies, boundPeerPlan(input));
   return Object.freeze({ maximumDurationMs: 420_000 });
 }
 export async function observeRegistryInstalledProductConsumer(input: RegistryInstalledProductConsumerMaterials & {
@@ -685,10 +703,43 @@ export async function observeRegistryInstalledProductConsumer(input: RegistryIns
   const artifact = checkedArtifact(input);
   if (artifact.identity.target !== undefined) return observeModuleRegistryConsumer(input);
   const { profiles } = registryProductPlan(input);
-  preflightProfiles(profiles, input.dependencies, input.peerPlan);
+  preflightProfiles(profiles, input.dependencies, boundPeerPlan(input));
   return executeConsumer(input, artifact, profiles, 'registry');
 }
 
+
+/** Read-only fixed command expectations for remote original validation. */
+export function portableConsumerOriginalExpectations(input:RegistryInstalledProductConsumerMaterials,stage:'prepublish'|'postpublish'){
+  const {profiles}=registryProductPlan(input);
+  const resolved=consumerProfiles(profiles,input.dependencies,boundPeerPlan(input));
+  const {executionProfiles}=executionProfilesAndBudget(resolved,stage==='postpublish'?'registry':'archive');
+  if(executionProfiles.some(profile=>profile.pending.length))return fail('complete portable original profile closure required');
+  const labels:string[]=[];
+  for(const [index,profile] of executionProfiles.entries()){
+    if(stage==='postpublish')labels.push(`profile-${index}-registry-install`);
+    for(const runtime of profile.runtime?[profile.runtime]:['node','bun']){
+      if(profile.bins?.length)labels.push(`profile-${index}-${runtime}-version`,`profile-${index}-${runtime}-help`);
+      else for(const mode of ['esm','cjs'] as const)if(profile.exportsByMode?.[mode].length)labels.push(`profile-${index}-${runtime}-${mode}`);
+    }
+  }
+  return Object.freeze({labels:Object.freeze(labels),profiles:Object.freeze(profiles.map(profile=>profile.profile)),installations:stage==='postpublish'?executionProfiles.length:0});
+}
+
+/** Matching-host archive preconsumer uses the same fixed lifecycle and issuer.
+ * No registry observation can be inferred from archive transport. */
+export function preflightArchiveInstalledProductConsumer(input:RegistryInstalledProductConsumerMaterials):Readonly<{maximumDurationMs:number}>{
+  const artifact=collectedArtifactView(input.artifact);
+  if(artifact?.identity.target!==undefined){const plan=moduleRegistryExecutionPlan(input);return Object.freeze({maximumDurationMs:plan.module==='afs'?afsConsumerBudget('prepublish').maximumDurationSeconds*1000:630_000});}
+  const {profiles}=registryProductPlan(input);preflightProfiles(profiles,input.dependencies,boundPeerPlan(input));
+  return Object.freeze({maximumDurationMs:210_000});
+}
+export async function observeArchiveInstalledProductConsumer(input:RegistryInstalledProductConsumerMaterials & {stage:'prepublish';evidenceDirectory:string}):Promise<ClientConsumerObservation>{
+  if(input.stage!=='prepublish') return fail('archive consumer requires prepublish stage');
+  const artifact=checkedArtifact(input);
+  if(artifact.identity.target!==undefined)return observeModuleRegistryConsumer(input,'archive');
+  const {profiles}=registryProductPlan(input);preflightProfiles(profiles,input.dependencies,boundPeerPlan(input));
+  return executeConsumer(input,artifact,profiles,'archive');
+}
 
 /** Fixed consumers introduce tool dependencies in addition to package runtime
  * dependencies. Return their real capabilities so publication can derive its
@@ -721,13 +772,13 @@ export function publicationConsumerDependencyArtifacts(input: {
 }
 
 
-function moduleRegistryExecutionPlan(input: RegistryInstalledProductConsumerMaterials) {
+function moduleRegistryExecutionPlan(input: RegistryInstalledProductConsumerMaterials,mode:'local-execution'|'remote-originals'='local-execution') {
   const artifact = collectedArtifactView(input.artifact);
   if (!artifact?.identity.target) return fail('real collected platform artifact required');
-  const { productTargets } = createRequire(import.meta.url)('../../module-product-targets.ts') as typeof import('../../module-product-targets');
-  const module = (['api', 'css'] as const).find(module => productTargets(module).some(row => row.name === artifact.identity.package && row.target === artifact.identity.target));
+  const {MODULE_TARGETS,modulePackageName}=createRequire(import.meta.url)('../../../packages/xpod-cli/src/module-catalog.ts') as typeof import('../../../packages/xpod-cli/src/module-catalog');
+  const module = (['api','css','afs'] as const).find(module=>MODULE_TARGETS.some(row=>modulePackageName(module,row.platform,row.arch)===artifact.identity.package&&`${row.platform}-${row.arch}`===artifact.identity.target));
   if (!module) return fail('registered module registry lifecycle consumer required');
-  if (artifact.identity.target !== `${process.platform}-${process.arch}`) fail('matching native consumer host required before publication');
+  if (mode==='local-execution' && artifact.identity.target !== `${process.platform}-${process.arch}`) fail('matching native consumer host required before publication');
   const tools = publicationConsumerDependencyArtifacts(input);
   const cli = tools.find(value => collectedArtifactView(value)!.identity.package === '@undefineds.co/xpod-cli')!;
   const client = tools.find(value => collectedArtifactView(value)!.identity.package === '@undefineds.co/xpod-client')!;
@@ -739,7 +790,7 @@ function moduleRegistryExecutionPlan(input: RegistryInstalledProductConsumerMate
   const peerCapabilities = [...new Set(input.peers ?? [])];
   const extra = [...new Set(input.dependencies ?? [])].filter(value => !tools.includes(value) && !peerCapabilities.includes(value));
   const fullProfile = cliExecutionPlan({ artifact: cli, client, peers: peerCapabilities }).profiles[1]!;
-  const profiles = consumerProfiles([fullProfile], extra, input.peerPlan);
+  const profiles = consumerProfiles([fullProfile], extra, boundPeerPlan(input));
   const pending = profiles.flatMap(profile => profile.pending);
   if (pending.length) fail('Module registry tool closure gaps: ' + pending.join('; '));
   const toolViews = profiles[0]!.artifacts;
@@ -752,11 +803,12 @@ function moduleRegistryExecutionPlan(input: RegistryInstalledProductConsumerMate
 }
 
 async function observeModuleRegistryConsumer(input: RegistryInstalledProductConsumerMaterials & {
-  stage: 'postpublish'; registryObservation: unknown; evidenceDirectory: string;
-}): Promise<ClientConsumerObservation> {
+  stage: 'prepublish'|'postpublish'; registryObservation?: unknown; evidenceDirectory: string;
+}, preparation:'archive'|'registry'='registry'): Promise<ClientConsumerObservation> {
   const plan = moduleRegistryExecutionPlan(input);
   const candidates = [...new Set([plan.cli, plan.client, ...(input.peers ?? []), ...(input.dependencies ?? [])])];
-  const readbackDeadline = Date.now() + 180_000;
+  const readbackDeadline = Date.now() + (plan.module==='afs'?afsConsumerBudget('postpublish').registryReadbackSeconds*1000:180_000);
+  if(preparation==='registry') {
   for (const view of plan.toolViews) {
     if (Date.now() >= readbackDeadline) fail('module tool registry readback deadline exceeded');
     const capability = candidates.find(value => collectedArtifactView(value) === view);
@@ -764,30 +816,40 @@ async function observeModuleRegistryConsumer(input: RegistryInstalledProductCons
     await observeRegistryArtifact(capability);
   }
   if (Date.now() > readbackDeadline) fail('module tool registry readback deadline exceeded');
-  const evidence = path.resolve(input.evidenceDirectory);
+  }
+  const requestedEvidence = path.resolve(input.evidenceDirectory);
+  const afsLayout=plan.module==='afs'?reserveAfsConsumerEvidenceLayout(requestedEvidence):undefined;
+  const evidence=afsLayout?.privateDirectory??requestedEvidence;
   if (fs.existsSync(evidence)) fail('new module consumer evidence directory required');
+  if(afsLayout) assertAfsConsumerDiskReservation({evidenceParent:path.dirname(evidence),temporaryParent:os.tmpdir(),consumerWriteBytes:plan.estimatedWriteBytes,stage:input.stage});
+  const runtimeOriginals=plan.module==='afs'?await observeAfsConsumerRuntimeOriginals(plan.artifact.identity.target!,input.stage):undefined;
+  // Official ZIP originals remain retained; reserve the live layers again after their download.
+  if(afsLayout) assertAfsConsumerDiskReservation({evidenceParent:path.dirname(evidence),temporaryParent:os.tmpdir(),consumerWriteBytes:plan.estimatedWriteBytes,stage:input.stage});
   fs.mkdirSync(path.dirname(evidence), { recursive: true });
   const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'xpod-registry-module-consumer-')); fs.chmodSync(parent, 0o700);
-  let retain = false;
+  let retain = false, preserveControl=false;
   const reference = (file: string) => {
     const stat = fs.lstatSync(file);
     if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.size > 20 * 1024 ** 2) fail('bounded collector projection original required');
     return { path: file, sha256: hash(fs.readFileSync(file)) };
   };
   const archive = (directory: string, name: string, view: CollectedArtifactView) => ({ path: path.join(directory, name),
-    sha256: view.identity.archiveSha256, integrity: view.identity.integrity });
-  const driver = path.resolve(import.meta.dir, '../../' + plan.module + '-module-consumer.py');
+    sha256: view.identity.archiveSha256, integrity: view.identity.integrity,bytes:view.identity.archiveBytes });
+  const driver = plan.module==='afs'?path.resolve(import.meta.dir,'../afs-module-consumer.py'):path.resolve(import.meta.dir, '../../' + plan.module + '-module-consumer.py');
   const lifecycle = path.resolve(import.meta.dir, '../module-consumer.py');
   const originals = [driver, lifecycle].map(file => ({ path: file, sha256: hash(fs.readFileSync(file)) }));
+  const afsLayers=plan.module==='afs'?afsConsumerDiskLayers(plan.estimatedWriteBytes,input.stage):undefined;
+  const estimatedPeakBytes=afsLayers?Number(afsLayers.originals+afsLayers.live):plan.estimatedWriteBytes;
   const request = { schemaVersion: 1, target: plan.artifact.identity.target, sourceSha: plan.artifact.identity.sourceSha,
     checkout: plan.checkout, sourceRoots: [...new Set([plan.checkout, path.resolve(import.meta.dir, '../../..')])], node: runtimePath('node'), bun: runtimePath('bun'),
-    temporaryParent: parent, output: evidence, transport: 'production-npm-registry', timeoutSeconds: 30,
-    budget: { estimatedPeakBytes: plan.estimatedWriteBytes, remainingFloorBytes: 1024 ** 3, cushionBytes: 128 * 1024 ** 2 },
+    temporaryParent: parent, output: evidence, transport: preparation==='registry'?'production-npm-registry':'collected-product-archives', timeoutSeconds: plan.module==='afs'?afsConsumerBudget(input.stage).ordinaryCommandSeconds:30,
+    budget: { estimatedPeakBytes, remainingFloorBytes: 1024 ** 3, cushionBytes: 128 * 1024 ** 2 },
     [plan.module + 'Receipt']: reference(path.join(plan.productProjection, 'projection.receipt.json')),
     cliReceipt: reference(path.join(plan.cliProjection, 'projection.receipt.json')),
     [plan.module + 'Archive']: archive(plan.productProjection, 'product.tgz', plan.artifact),
     cliArchive: archive(plan.cliProjection, 'cli.tgz', collectedArtifactView(plan.cli)!),
     clientArchive: archive(plan.cliProjection, 'client.tgz', collectedArtifactView(plan.client)!),
+    ...(plan.module==='afs'?{afsPreflightDriver:reference(path.join(plan.productProjection,'module-admission.mjs'))}:{}),
     registryTools: plan.toolViews.map(view => ({ package: view.identity.package, version: view.identity.version, files: view.members })),
   };
   const requestPath = path.join(parent, 'plan.json');
@@ -797,18 +859,40 @@ async function observeModuleRegistryConsumer(input: RegistryInstalledProductCons
     let row: any;
     try { row = await runPublicationCommand(fs.realpathSync('/usr/bin/python3'), [driver, requestPath, '--run'], {
       cwd: parent, env: { PATH: process.env.PATH, LANG: 'C.UTF-8' }, evidence: supervision,
-      label: 'module-registry-consumer', timeoutMs: 600_000, rawLimit: 2 * 1024 ** 2,
-    }); } catch (error) { retain = true; throw error; }
+      label: 'module-registry-consumer', timeoutMs: plan.module==='afs'?afsConsumerBudget(input.stage).consumerRunSeconds*1000:600_000, rawLimit: 2 * 1024 ** 2,
+    }); } catch (error) { const outcome=(error as {outcome?:any}).outcome;retain=!moduleCommandClosed(outcome);preserveControl=plan.module==='afs';throw error; }
     if (row.code !== 0 || !row.actualWait || !row.actualClose || !row.groupAbsent || !row.rawComplete
       || !row.rawClosedBeforeHash || !row.pipeEOF?.every(Boolean)) { retain = true; fail('module consumer supervisor closure unavailable'); }
     const result = JSON.parse(readModuleConsumerOriginal(evidence, 'result.json', 2 * 1024 ** 2).toString('utf8'));
-    if (result.status !== 'passed' || result.transport !== 'production-npm-registry' || result.sourceSha !== plan.artifact.identity.sourceSha
+    if (result.status !== 'passed' || result.transport !== (preparation==='registry'?'production-npm-registry':'collected-product-archives') || result.sourceSha !== plan.artifact.identity.sourceSha
       || result.realConsumerValidated !== true || result.ownedTemporaryRootRemoved !== true || result.forcedCleanup !== false
       || result.signal !== null || result.processGroupsUnknown !== false || result.driverSourcesUnchanged !== true) {
       retain = result.processGroupsUnknown !== false || result.ownedTemporaryRootRemoved !== true;
       fail('module registry lifecycle incomplete');
     }
     for (const original of originals) if (hash(fs.readFileSync(original.path)) !== original.sha256) fail('module consumer driver changed');
+    if(afsLayout){
+      preserveControl=true;
+      const deadline=Date.now()+afsConsumerBudget(input.stage).safeExportSeconds*1000;
+      const safe=path.join(path.dirname(evidence),'safe-evidence','afs-checked-originals');
+      let exported:any;try{exported=await runPublicationCommand(fs.realpathSync('/usr/bin/python3'),[driver,requestPath,'--export-safe-originals',safe],{
+        cwd:parent,env:{PATH:process.env.PATH,LANG:'C.UTF-8'},evidence:supervision,label:'module-afs-safe-export',timeoutMs:Math.max(1,deadline-Date.now()),rawLimit:2*1024**2,
+      });}catch(error){retain=!moduleCommandClosed((error as {outcome?:any}).outcome);throw error;}
+      if(exported.code!==0||!exported.actualWait||!exported.actualClose||!exported.groupAbsent||!exported.rawComplete||!exported.rawClosedBeforeHash||!exported.pipeEOF?.every(Boolean)){retain=true;fail('AFS safe export supervisor closure unavailable');}
+      fs.mkdirSync(path.join(evidence,'safe-evidence'),{mode:0o700});
+      fs.renameSync(safe,path.join(evidence,'safe-evidence','afs-checked-originals'));
+      fs.cpSync(supervision,path.join(evidence,'central-supervision'),{recursive:true,errorOnExist:true,force:false});
+      const registryStarted=Date.now();
+      const registryDeadline=registryStarted+afsConsumerBudget(input.stage).verifierRegistryObservationSeconds*1000;
+      const registryOriginals=openAfsConsumerDirectoryOriginals(evidence,registryDeadline);
+      let verifierRegistryOriginals:readonly unknown[];
+      try{verifierRegistryOriginals=await observeAfsConsumerVerifierRegistryOriginals({runtimeOriginals,source:collectedArtifactDerivedSource(input.artifact),stage:input.stage,sourceSha:plan.artifact.identity.sourceSha,target:plan.artifact.identity.target!,product:plan.artifact.identity,productMembers:plan.artifact.members,tools:plan.tools.map(value=>collectedArtifactView(value)!.identity),originals:registryOriginals.members,readOriginal:registryOriginals.readOriginal,readOriginalRange:registryOriginals.readOriginalRange},registryDeadline);}finally{registryOriginals.close();}
+      assertAfsConsumerRemainingFloor([evidence,parent]);
+      // This separately budgeted observation is not safe-export active I/O.
+      const finalizationDeadline=deadline+(Date.now()-registryStarted);
+      finalizeAfsConsumerEvidence({verifierRegistryOriginals,runtimeOriginals,source:collectedArtifactDerivedSource(input.artifact),layout:afsLayout,deadline:finalizationDeadline,stage:input.stage,product:plan.artifact.identity,productMembers:plan.artifact.members,tools:plan.tools.map(value=>collectedArtifactView(value)!.identity)});
+      preserveControl=false;
+    }else{
     const required = ['runtime-version', 'runtime-target', 'probe', 'normal-cli-install', 'install-' + plan.module,
       'list-' + plan.module, plan.module + '-service', ...(plan.module === 'api' ? ['pglite', 'api-rdf'] : []), 'remove-' + plan.module];
     const labels = ['node', 'bun'].flatMap(runtime => required.map(label => runtime + '-' + label));
@@ -824,21 +908,24 @@ async function observeModuleRegistryConsumer(input: RegistryInstalledProductCons
         if (bytes.length !== raw.bytes || hash(bytes) !== raw.sha256) fail('module registry raw changed');
       }
     }
+    }
     preflightCollectedArchiveFiles([input.artifact, plan.cli, plan.client]);
-    const view: ClientConsumerView = Object.freeze({ identity: plan.artifact.identity, stage: 'postpublish', baseVerified: true,
-      fullVerified: true, allProfilesVerified: true, registryInstallVerified: true,
+    const view: ClientConsumerView = Object.freeze({ identity: plan.artifact.identity, stage: preparation==='registry'?'postpublish':'prepublish', baseVerified: true,
+      fullVerified: true, allProfilesVerified: true, registryInstallVerified: preparation==='registry',
       estimatedWriteBytes: plan.estimatedWriteBytes, maxEstimatedWriteBytes: 2 * 1024 ** 3, writeBudgetScope: 'estimate-not-filesystem-quota',
-      profiles: Object.freeze(['node', 'bun'].map(runtime => Object.freeze({ profile: runtime + '-registry-public-cli-service-native', verified: true, pending: Object.freeze([]) }))),
-      scope: 'actual registry public CLI module install, Node/Bun service/native probes and removal; no remote Pod or Chat verification' });
-    fs.cpSync(supervision, path.join(evidence, 'central-supervision'), { recursive: true, errorOnExist: true, force: false });
-    fs.writeFileSync(path.join(evidence, 'consumer-observation.json'), JSON.stringify(view, null, 2), { flag: 'wx', mode: 0o400 });
+      profiles: Object.freeze(['node', 'bun'].map(runtime => Object.freeze({ profile: runtime + '-'+preparation+'-public-cli-service-native', verified: true, pending: Object.freeze([]) }))),
+      scope: afsLayout?'actual matching-host public CLI AFS install, full mounted/authenticated harness and cleanup; no actual Gateway or Chat acceptance':preparation==='registry'?'actual registry public CLI module install, Node/Bun service/native probes and removal; no remote Pod or Chat verification'
+        :'actual collected archive public CLI module install, Node/Bun service/native probes and removal; no registry, remote Pod or Chat verification' });
+    if(!afsLayout)fs.cpSync(supervision, path.join(evidence, 'central-supervision'), { recursive: true, errorOnExist: true, force: false });
+    fs.writeFileSync(path.join(requestedEvidence, 'consumer-observation.json'), JSON.stringify(view, null, 2), { flag: 'wx', mode: 0o400 });
     fs.rmSync(parent, { recursive: true, force: true });
     const capability = Object.freeze({}) as ClientConsumerObservation; issued.set(capability, view); return capability;
   } catch (error) {
     if (retain) throw Object.assign(new Error('Module registry consumer closure unknown; retained evidence', { cause: error }),
       { retainArchiveSnapshot: true, evidenceDirectory: evidence, retainedConsumerDirectory: parent });
+    if(preserveControl)throw Object.assign(new Error('AFS consumer original evidence retained: '+(error instanceof Error?error.message:'fixed validation failed'),{cause:error}),{evidenceDirectory:(error as {evidenceDirectory?:string}).evidenceDirectory??evidence,retainedConsumerDirectory:parent,retainedPrivateConsumerDirectory:evidence,retainedPublicConsumerDirectory:requestedEvidence});
     throw error;
-  } finally { if (!retain) fs.rmSync(parent, { recursive: true, force: true }); }
+  } finally { if (!retain&&!preserveControl) fs.rmSync(parent, { recursive: true, force: true }); }
 }
 
 
@@ -863,3 +950,53 @@ function readModuleConsumerOriginal(directory: string, name: string, maximumByte
     return bytes;
   } finally { fs.closeSync(fd); }
 }
+
+/** Cross-job originals are re-observed and parsed; only this existing private
+ * issuer can turn their actual fixed execution into a consumer observation. */
+async function observeRemoteProductConsumer(input:import('./registry-consumer-originals').GitHubRegistryInstalledProductConsumerInput & {peerPlan?:unknown},stage:'prepublish'|'postpublish'):Promise<ClientConsumerObservation>{
+  const artifact=collectedArtifactView(input.artifact);if(!artifact)return fail('real collected product capability required');
+  const materials={...input,peers:input.peers?[...input.peers]:undefined,dependencies:input.dependencies?[...input.dependencies]:undefined};
+  const tools=publicationConsumerDependencyArtifacts(materials);
+  const candidates=[...new Set([input.artifact,input.client,...(input.peers??[]),...(input.dependencies??[])].filter(value=>value!==undefined))];
+  let estimatedWriteBytes:number,portableExpectations:ReturnType<typeof portableConsumerOriginalExpectations>|undefined;
+  let installed:readonly CollectedArtifactView[];
+  if(artifact.identity.target!==undefined){
+    const plan=moduleRegistryExecutionPlan(materials,'remote-originals');estimatedWriteBytes=plan.estimatedWriteBytes;installed=[artifact,...plan.toolViews];
+  }else{
+    portableExpectations=portableConsumerOriginalExpectations(materials,stage);
+    const profiles=consumerProfiles(registryProductPlan(materials).profiles,materials.dependencies,boundPeerPlan(materials));
+    const budget=executionProfilesAndBudget(profiles,stage==='postpublish'?'registry':'archive');
+    estimatedWriteBytes=budget.writeEstimate.estimatedWriteBytes;installed=profiles.flatMap(profile=>profile.artifacts);
+  }
+  if(stage==='postpublish'){
+    const afs=/^@undefineds\.co\/xpod-afs-(?:linux|darwin)-(?:x64|arm64)$/u.test(artifact.identity.package);
+    const deadline=Date.now()+(afs?afsConsumerBudget('postpublish').registryReadbackSeconds*1000:180_000);
+    for(const view of new Set(installed)){
+      if(Date.now()>=deadline)return fail('remote consumer current registry readback deadline exceeded');
+      const capability=candidates.find(value=>collectedArtifactView(value)===view);if(!capability)return fail('remote installed tool handle missing');
+      await observeRegistryArtifact(capability);
+    }
+    if(Date.now()>deadline)return fail('remote consumer current registry readback deadline exceeded');
+  }
+  const {MODULE_TARGETS,modulePackageName}=await import('../../../packages/xpod-cli/src/module-catalog');
+  const module=artifact.identity.package==='@undefineds.co/xpod-client'?'client':artifact.identity.package==='@undefineds.co/xpod-cli'?'cli'
+    :(['api','css','afs'] as const).find(name=>MODULE_TARGETS.some(target=>modulePackageName(name,target.platform,target.arch)===artifact.identity.package));
+  if(!module)return fail('registered remote consumer product required');
+  const {inspectRemoteProductConsumerOriginals}=await import('./remote-consumer-originals');
+  const runtimeOriginals=module==='afs'?await observeAfsConsumerRuntimeOriginals(artifact.identity.target!,stage):undefined;
+  const report=await inspectRemoteProductConsumerOriginals({runtimeOriginals,source:collectedArtifactDerivedSource(input.artifact),product:artifact.identity,productMembers:artifact.members,module,
+    tools:tools.map(value=>collectedArtifactView(value)!.identity),consumerRun:input.consumerRun,stage,evidenceDirectory:input.evidenceDirectory,
+    token:input.token,portableExpectations});
+  preflightCollectedArchiveFiles([input.artifact,...tools]);
+  const profiles=portableExpectations?report.result.profiles:['node','bun'].map(runtime=>({profile:runtime+'-'+(stage==='postpublish'?'registry':'archive')+'-public-cli-service-native',verified:true,pending:[]}));
+  const view:ClientConsumerView=Object.freeze({identity:artifact.identity,stage,baseVerified:true,fullVerified:true,allProfilesVerified:true,
+    registryInstallVerified:stage==='postpublish',estimatedWriteBytes,maxEstimatedWriteBytes:2*1024**3,writeBudgetScope:'estimate-not-filesystem-quota',
+    profiles:Object.freeze(profiles.map((row:any)=>Object.freeze({...row,pending:Object.freeze([...row.pending])}))),
+    scope:module==='afs'?'actual matching-host public CLI AFS install, full mounted/authenticated harness and cleanup; no actual Gateway or Chat acceptance':stage==='postpublish'?(artifact.identity.target===undefined?'actual registry installation and imports/exports smoke; no authentication, Pod or Chat verification'
+      :'actual registry public CLI module install, Node/Bun service/native probes and removal; no remote Pod or Chat verification')
+      :(artifact.identity.target===undefined?'local exact-artifact imports/exports smoke; no registry install, authentication, Pod or Chat verification'
+      :'actual collected archive public CLI module install, Node/Bun service/native probes and removal; no registry, remote Pod or Chat verification')});
+  const capability=Object.freeze({}) as ClientConsumerObservation;issued.set(capability,view);return capability;
+}
+export function observeGitHubRegistryInstalledProductConsumer(input:import('./registry-consumer-originals').GitHubRegistryInstalledProductConsumerInput & {peerPlan?:unknown}):Promise<ClientConsumerObservation>{return observeRemoteProductConsumer(input,'postpublish');}
+export function observeGitHubArchiveProductConsumer(input:import('./archive-consumer-originals').GitHubArchiveProductConsumerInput):Promise<ClientConsumerObservation>{return observeRemoteProductConsumer(input,'prepublish');}

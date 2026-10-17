@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+mode=${1:-all}
+[[ $# -le 1 && "$mode" =~ ^(all|prepare-only|build-prepared)$ ]] || { echo 'unsupported private SDK phase' >&2; exit 64; }
+if [[ "$mode" != all && ( ${XPOD_QLEVER_CMAKE_C_COMPILER:-} != gcc-12 || ${XPOD_QLEVER_CMAKE_CXX_COMPILER:-} != g++-12 ) ]]; then
+  echo 'private prepared phases require the module GCC12 profile' >&2; exit 64
+fi
 component_root=${XPOD_RDF_COMPONENT_ROOT:-/components}
 qlever_root="$component_root/qlever"
 source_dir=${XPOD_QLEVER_SOURCE_DIR:-/opt/qlever-sdk/source}
@@ -67,6 +72,20 @@ PY
 )
 toolchain_identity=$(printf '%s' "$build_contract" | python3 -c 'import hashlib, json, sys; print(hashlib.sha256(json.dumps(json.load(sys.stdin), sort_keys=True, separators=(",", ":")).encode()).hexdigest())')
 
+compile_and_commit() {
+  cmake --build "$build_dir" --target qlever-server -- -j"$jobs"
+  printf '%s\n' "$build_contract" >"$build_contract_pending"
+  mv "$source_manifest_pending" "$source_manifest_file"
+  mv "$build_contract_pending" "$build_contract_file"
+  printf '%s' "$build_identity" >"$build_identity_file"
+  printf '%s' "$toolchain_identity" >"$toolchain_identity_file"
+}
+if [[ "$mode" == build-prepared ]]; then
+  python3 "$qlever_root/scripts/sdk-prepared-inputs.py" verify "$qlever_root" "$build_dir" "$build_identity" "$toolchain_identity"
+  compile_and_commit
+  test -f "$build_dir/CMakeFiles/qlever-server.dir/link.txt"
+  exit 0
+fi
 mkdir -p "$build_dir"
 if [[ "$incremental_sdk" == "1" ]]; then
   patched_source_dir=$(mktemp -d)
@@ -128,7 +147,7 @@ fi
 rm -f "$overlay_manifest_current"
 
 adapter_flags="-DXPOD_QLEVER_ADAPTER_ENABLE_QLEVER=1 -I$qlever_root/qlever_adapter/src -I$qlever_root/qlever_adapter/include -I$qlever_root/rdf_protocol/include"
-if [[ ! -f "$build_identity_file" ]] ||
+if [[ "$mode" == prepare-only ]] || [[ ! -f "$build_identity_file" ]] ||
    [[ $(cat "$build_identity_file") != "$build_identity" ]] ||
    [[ ! -f "$toolchain_identity_file" ]] ||
    [[ $(cat "$toolchain_identity_file") != "$toolchain_identity" ]]; then
@@ -144,12 +163,11 @@ if [[ ! -f "$build_identity_file" ]] ||
     -DUSE_PRECOMPILED_HEADERS=OFF \
     -DUSE_IO_URING=OFF \
     -DCMAKE_CXX_FLAGS="$adapter_flags"
-  cmake --build "$build_dir" --target qlever-server -- -j"$jobs"
-  printf '%s\n' "$build_contract" >"$build_contract_pending"
-  mv "$source_manifest_pending" "$source_manifest_file"
-  mv "$build_contract_pending" "$build_contract_file"
-  printf '%s' "$build_identity" >"$build_identity_file"
-  printf '%s' "$toolchain_identity" >"$toolchain_identity_file"
+  if [[ "$mode" == prepare-only ]]; then
+    python3 "$qlever_root/scripts/sdk-prepared-inputs.py" record "$qlever_root" "$build_dir" "$build_identity" "$toolchain_identity"
+    exit 0
+  fi
+  compile_and_commit
 elif [[ "$runtime_overlay_inputs_changed" == "1" ]]; then
   cmake --build "$build_dir" --target qlever-server -- -j"$jobs"
 fi

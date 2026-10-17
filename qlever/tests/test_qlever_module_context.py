@@ -69,6 +69,15 @@ class ModuleContextTests(unittest.TestCase):
             for required, imported in dependencies:
                 self.assertTrue((required or imported).startswith('node:'))
 
+    def test_service_afs_notices_receive_the_original_root_license(self):
+        # RC image build executes the AFS notice collector inside /app.
+        collector = (ROOT / 'packages/xpod-afs/scripts/javascript-materials.ts').read_text()
+        self.assertIn("path.join(options.repoRoot, 'LICENSE')", collector)
+        self.assertIn('!LICENSE', self.rules)
+        self.assertGreater((ROOT / 'LICENSE').stat().st_size, 0)
+        dockerfile = (ROOT / 'Dockerfile').read_text()
+        self.assertLess(dockerfile.index('COPY . .'), dockerfile.index('RUN bun run build:packages'))
+
     def test_host_python_cache_and_test_outputs_remain_excluded_after_all_exceptions(self):
         final_exception = max(index for index, rule in enumerate(self.rules) if rule.startswith('!'))
         for rule in ['**/__pycache__', '**/*.pyc', '**/*.pyo', '**/.pytest_cache', '**/.test-data']:

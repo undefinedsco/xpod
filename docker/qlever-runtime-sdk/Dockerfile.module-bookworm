@@ -18,6 +18,8 @@ RUN apt-get -o Acquire::AllowInsecureRepositories=false -o Acquire::AllowDowngra
     libboost-container1.81-dev libboost-iostreams1.81-dev libboost-program-options1.81-dev libboost-url1.81-dev \
     libbz2-dev libicu-dev liblzma-dev libssl-dev libzstd-dev zlib1g-dev libsqlite3-dev patchelf
 
+COPY .dockerignore /opt/qlever-sdk/profile/.dockerignore
+COPY scripts/agentfs-native-ci/supervise.py /components/scripts/agentfs-native-ci/supervise.py
 COPY qlever/qlever.lock.json /components/qlever/qlever.lock.json
 COPY qlever/patches /components/qlever/patches
 COPY qlever/cmake /components/qlever/cmake
@@ -32,25 +34,28 @@ COPY qlever/rdf_sqlite_backend /components/qlever/rdf_sqlite_backend
 COPY docker/qlever-runtime-sdk/Dockerfile.module-bookworm /opt/qlever-sdk/profile/Dockerfile
 COPY docker/qlever-local-runtime/Dockerfile.module-bookworm /opt/qlever-sdk/profile/runtime.Dockerfile
 
-RUN bash /components/qlever/scripts/build-module-runtime-sdk.sh \
+# This private build deadline is derived once by the owning SDK workflow.
+ARG XPOD_QLEVER_SDK_DEADLINE_UNIX
+ARG XPOD_QLEVER_SDK_IDENTITY
+RUN XPOD_QLEVER_SDK_IDENTITY="${XPOD_QLEVER_SDK_IDENTITY}" XPOD_QLEVER_SDK_DEADLINE_UNIX="${XPOD_QLEVER_SDK_DEADLINE_UNIX}" python3 /components/qlever/scripts/sdk-inner-materials.py build \
  && test -f /opt/qlever-sdk/build/.xpod-build-contract.json \
  && test -f /opt/qlever-sdk/build/CMakeFiles/qlever-server.dir/link.txt \
  && test -f /opt/qlever-sdk/profile/inputs.json \
  && rm -rf /var/lib/apt/lists/*
 
 FROM build AS linked-verification
+ARG XPOD_QLEVER_SDK_DEADLINE_UNIX
+ARG XPOD_QLEVER_SDK_IDENTITY
 RUN apt-get -o Acquire::AllowInsecureRepositories=false update \
  && apt-get -o APT::Get::AllowUnauthenticated=false install -y --no-install-recommends nodejs \
- && node /components/qlever/scripts/check-qlever-real-adapter-build.cjs \
-      --qlever-source /opt/qlever-sdk/source --qlever-build-dir /opt/qlever-sdk/build \
-      --adapter-build-dir /tmp/module-real-adapter --skip-upstream-configure --jobs "${XPOD_QLEVER_BUILD_JOBS}" \
- && node /components/qlever/scripts/check-qlever-real-runtime.cjs \
-      --qlever-source /opt/qlever-sdk/source --qlever-build-dir /opt/qlever-sdk/build \
-      --adapter-build-dir /tmp/module-real-adapter --runtime-build-dir /tmp/module-real-runtime \
-      --skip-prerequisites --jobs "${XPOD_QLEVER_BUILD_JOBS}" \
- && touch /tmp/module-linked-verification.ok
+ && XPOD_QLEVER_SDK_DEADLINE_UNIX="${XPOD_QLEVER_SDK_DEADLINE_UNIX}" python3 /components/qlever/scripts/sdk-inner-materials.py linked
 
 FROM build AS runtime
-COPY --from=linked-verification /tmp/module-linked-verification.ok /tmp/module-linked-verification.ok
-RUN test -f /tmp/module-linked-verification.ok && rm /tmp/module-linked-verification.ok
+# Retain actual test originals, not a synthetic .ok marker or another copy of
+# all source shards. The tested SDK source/build tree is inherited from build.
+COPY --from=linked-verification /opt/qlever-sdk/materials/linked-inner.json /opt/qlever-sdk/materials/linked-inner.json
+COPY --from=linked-verification /opt/qlever-sdk/materials/stages/test-adapter /opt/qlever-sdk/materials/stages/test-adapter
+COPY --from=linked-verification /opt/qlever-sdk/materials/stages/test-runtime /opt/qlever-sdk/materials/stages/test-runtime
+COPY --from=linked-verification /opt/qlever-sdk/materials/stages/test-adapter.raw.log /opt/qlever-sdk/materials/stages/test-adapter.receipt.json /opt/qlever-sdk/materials/stages/test-runtime.raw.log /opt/qlever-sdk/materials/stages/test-runtime.receipt.json /opt/qlever-sdk/materials/stages/
+
 LABEL org.opencontainers.image.title="Xpod module QLever Bookworm GCC12 SDK"

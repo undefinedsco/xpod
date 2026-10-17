@@ -10,6 +10,8 @@ Xpod 发布必须先经过 Release Candidate，再由 stable tag 提升同一个
 
 `legacy-root-compat.yml` 独立承担完整旧服务包的 18 条兼容通道：Node/Bun 消费者 × Linux/macOS/Windows × Node 22/24/25。每条通道执行原七阶段：frozen install、平台包版本检查、完整 build、pack、包校验、消费者安装、消费者 smoke。独立 CLI 与模块 producer 的成功不能代替这些检查，也不能把失败降为可选项。
 
+PR 和 `main` push 直接触发该工作流；`staging` push 由 `candidate.yml` 调用同一完整矩阵，避免同时再运行一份独立矩阵。RC 仍须保留同次 run 的全部 18 条通道及原始证据。
+
 Windows 保留平台默认 shell/PATH。完整 build 产生的 UI 变化由 Vite 与验收器共用 `ui/build-targets.json` 声明输出边界：旧的 tracked 输出删除记录与本次 Rollup/publicDir 产物清单分别验证，保留完整 Git 状态；源码、锁文件和未知静态文件漂移继续阻断。不能通过忽略整个 `static/` 绕过源码检查。
 
 `candidate.yml` 通过 reusable workflow 在 RC 前置检查前要求矩阵成功；finalize 再校验 exact SHA、同次 RC run 的全部通道及原始日志/pack 摘要，并将 `compat.receipt.json` 和原件一并放入 `release-acceptance-${GITHUB_SHA}` 的 `compat/`。`release.yml` 从同一个 accepted artifact 重验 `legacy-root-compat`，不接受另一轮矩阵或手填通过标记。部分重跑按每条通道的最新实际 attempt 判定，不能退回旧的成功 attempt。

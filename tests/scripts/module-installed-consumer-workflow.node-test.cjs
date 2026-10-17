@@ -66,10 +66,10 @@ test('real execution requires the explicit manual boolean after validation', () 
   assert.match(workflow, /requested run does not establish a passing run/);
 });
 
-test('module routing selects only explicit CSS or API drivers from a validated request', () => {
+test('module routing selects only explicit CSS, API or AFS drivers from a validated request', () => {
   assert.match(workflow, /appendFileSync\(process.env.GITHUB_OUTPUT, `module=\$\{request.module\}\\n`\)/);
   assert.match(workflow, /MODULE_CONSUMER_MODULE: \$\{\{ steps.request.outputs.module \}\}/);
-  assert.match(workflow, /case "\$MODULE_CONSUMER_MODULE" in\n            css\) driver=scripts\/css-module-consumer.py ;;\n            api\) driver=scripts\/api-module-consumer.py ;;\n            \*\) echo 'Unsupported module' >&2; exit 1 ;;/);
+  assert.match(workflow, /case "\$MODULE_CONSUMER_MODULE" in\n            css\) driver=scripts\/css-module-consumer.py ;;\n            api\) driver=scripts\/api-module-consumer.py ;;\n            afs\) driver=scripts\/lib\/afs-module-consumer.py ;;\n            \*\) echo 'Unsupported module' >&2; exit 1 ;;/);
   assert.match(workflow, /name: module-consumer-preparation-\$\{\{ steps.request.outputs.module \}\}/);
 });
 
@@ -84,5 +84,14 @@ test('Bun consumer contracts live in the Bun runner directory and are actually d
     assert.match(readFileSync(path.join(root, file), 'utf8'), /from 'bun:test'/);
     assert.ok(workflow.includes("- '" + file + "'"), 'workflow path filter must follow ' + file);
     assert.equal(existsSync(path.join(root, 'tests/scripts/' + name + '.test.ts')), false);
+  }
+});
+
+
+test('PR contract executes the shared-budget workflow checks without installing or running mounted profiles', () => {
+  const contracts = workflow.slice(workflow.indexOf('  contracts:'), workflow.indexOf('  select:'));
+  assert.match(contracts, /bun test tests\/bun\/independent-consumer-workflow-budget.test.ts/);
+  for (const name of ['independent-archive-consumer.yml', 'independent-registry-consumer.yml']) {
+    assert.ok(workflow.includes("- '.github/workflows/" + name + "'"));
   }
 });

@@ -24,6 +24,7 @@ FLOOR_BYTES = 2 * 1024**3
 ARCHIVE_LIMIT = 512 * 1024**2
 REPOSITORY = 'undefinedsco/xpod'
 WORKFLOW = '.github/workflows/css-module-product.yml'
+TARGETS_WORKFLOW = '.github/workflows/css-native-products.yml'
 
 
 def sha_file(file):
@@ -53,7 +54,7 @@ def context(environment, source):
     if len(source['sha']) != 40 or any(c not in '0123456789abcdef' for c in source['sha']):
         raise ValueError('Invalid checkout SHA')
     event_name = environment.get('GITHUB_EVENT_NAME')
-    if event_name not in ('pull_request', 'workflow_dispatch'):
+    if event_name not in ('pull_request', 'workflow_dispatch', 'push'):
         raise ValueError('Unsupported producer event')
     event = json.loads(Path(environment['GITHUB_EVENT_PATH']).read_text())
     head = event.get('pull_request', {}).get('head', {}).get('sha') if event_name == 'pull_request' else source['sha']
@@ -63,12 +64,13 @@ def context(environment, source):
     if run_id < 1 or attempt < 1:
         raise ValueError('Exact run and attempt required')
     workflow_ref = environment.get('GITHUB_WORKFLOW_REF', '')
-    if not workflow_ref.startswith(REPOSITORY + '/' + WORKFLOW + '@'):
+    workflow_path=next((value for value in [WORKFLOW,TARGETS_WORKFLOW] if workflow_ref.startswith(REPOSITORY+'/'+value+'@')),None)
+    if workflow_path is None or (workflow_path==TARGETS_WORKFLOW and event_name not in ('workflow_dispatch', 'push')) or (event_name=='push' and (workflow_path!=TARGETS_WORKFLOW or environment.get('GITHUB_REF')!='refs/heads/staging')):
         raise ValueError('Unexpected producer workflow')
     workflow_sha = environment.get('GITHUB_WORKFLOW_SHA', '')
     if len(workflow_sha) != 40 or any(c not in '0123456789abcdef' for c in workflow_sha):
         raise ValueError('Immutable workflow source missing')
-    return dict(repository=REPOSITORY, workflowPath=WORKFLOW, workflowRef=workflow_ref,
+    return dict(repository=REPOSITORY, workflowPath=workflow_path, workflowRef=workflow_ref,
                 workflowSha=workflow_sha, runId=run_id, runAttempt=attempt,
                 event=event_name, runHeadSha=head, githubSha=environment['GITHUB_SHA'], actualCheckoutSha=source['sha'])
 
@@ -168,7 +170,7 @@ def download(url, destination, token=None, limit=ARCHIVE_LIMIT):
 
 
 def validate_run(identity, run):
-    if run.get('id')!=identity['runId'] or run.get('run_attempt')!=identity['runAttempt'] or run.get('head_sha')!=identity['runHeadSha'] or run.get('path')!=WORKFLOW or run.get('event')!=identity['event'] or run.get('repository',{}).get('full_name')!=REPOSITORY or run.get('head_repository',{}).get('full_name')!=REPOSITORY or run.get('status') not in ('in_progress','completed'):
+    if run.get('id')!=identity['runId'] or run.get('run_attempt')!=identity['runAttempt'] or run.get('head_sha')!=identity['runHeadSha'] or run.get('path')!=identity.get('workflowPath',WORKFLOW) or run.get('event')!=identity['event'] or run.get('repository',{}).get('full_name')!=REPOSITORY or run.get('head_repository',{}).get('full_name')!=REPOSITORY or run.get('status') not in ('in_progress','completed'):
         raise ValueError('Current CSS workflow run identity mismatch')
 
 
@@ -179,10 +181,17 @@ def validate_native_metadata(identity, env, artifact, jobs):
     if not re.fullmatch(r'(?:sha256:)?[a-f0-9]{64}',digest): raise ValueError('Native upload digest missing')
     digest=digest.removeprefix('sha256:')
     run=artifact.get('workflow_run',{})
-    if artifact.get('id')!=aid or artifact.get('expired') is not False or artifact.get('name')!='qlever-local-runtime-'+identity['target']+'-'+identity['actualCheckoutSha'] or run.get('id')!=identity['runId'] or run.get('head_sha')!=identity['runHeadSha'] or artifact.get('digest')!='sha256:'+digest: raise ValueError('Original artifact metadata mismatch')
+    controlled=identity.get('workflowPath')==TARGETS_WORKFLOW
+    artifact_name='qlever-local-runtime-'+identity['target']+'-'+identity['actualCheckoutSha']
+    if identity['target'].startswith('linux-'): artifact_name+='-'+str(identity['runId'])+'-'+str(identity['runAttempt'])
+    if artifact.get('id')!=aid or artifact.get('expired') is not False or artifact.get('name')!=artifact_name or run.get('id')!=identity['runId'] or run.get('head_sha')!=identity['runHeadSha'] or artifact.get('digest')!='sha256:'+digest: raise ValueError('Original artifact metadata mismatch')
     if not isinstance(artifact.get('size_in_bytes'),int) or not 0<artifact['size_in_bytes']<=ARCHIVE_LIMIT: raise ValueError('Artifact size limit')
     if jobs.get('total_count',101)>100: raise ValueError('Job pagination not admissible')
-    native=[j for j in jobs.get('jobs',[]) if j.get('name')=='native / build']
+    expected_job='native / build'
+    if controlled:
+        expected_job='targets ('+identity['target']+') / native / '+('macos / build' if identity['target'].startswith('darwin-') else 'linux / module_runtime_materials / archive')
+    elif identity['target']!='darwin-arm64':raise ValueError('Target requires the controlled native workflow')
+    native=[j for j in jobs.get('jobs',[]) if j.get('name')==expected_job]
     if len(native)!=1: raise ValueError('Unique native job required')
     job=native[0]
     if job.get('run_id')!=identity['runId'] or job.get('run_attempt')!=identity['runAttempt'] or job.get('head_sha')!=identity['runHeadSha'] or job.get('status')!='completed' or job.get('conclusion')!='success': raise ValueError('Current-attempt native completion missing')
@@ -192,7 +201,9 @@ def validate_native_metadata(identity, env, artifact, jobs):
 
 
 def unpack_native(originals, runtime, target):
-    archive_name='qlever-local-runtime-'+target+'.tar.gz';acceptance='qlever-local-acceptance.json'
+    archive_name='qlever-local-runtime-'+target+'.tar.gz'
+    linux=target.startswith('linux-')
+    receipt='native-build-materials.json' if linux else 'qlever-local-acceptance.json'
     sys.path.insert(0,str(Path(__file__).resolve().parent/'lib'))
     from css_native_zip import validate as validate_native_zip
     validate_native_zip(originals/'native.zip',target)
@@ -224,7 +235,14 @@ def unpack_native(originals, runtime, target):
     if material_final.is_file():
         final=json.loads(material_final.read_text())
         if final.get('binary')!=source_ref(runtime/'bin/xpod_qlever_local_runtime',runtime): raise ValueError('Native final/runtime binary hash mismatch')
-    return dict(runtimeRoot=str(runtime),materialsRoot=str(originals),manifest=source_ref(runtime/'manifest.json',runtime),archive=source_ref(originals/archive_name,originals),originalZip=source_ref(originals/'native.zip',originals),acceptance=source_ref(originals/acceptance,originals))
+    if linux:
+        final=json.loads((originals/receipt).read_text())
+        if final.get('runtimeBinarySha256')!=sha_file(runtime/'bin/xpod_qlever_local_runtime') or final.get('physicalManifestSha256')!=sha_file(runtime/'manifest.json'):
+            raise ValueError('Linux final/runtime hash mismatch')
+    return dict(runtimeRoot=str(runtime),materialsRoot=str(originals),manifest=source_ref(runtime/'manifest.json',runtime),
+                archive=source_ref(originals/archive_name,originals),originalZip=source_ref(originals/'native.zip',originals),
+                **(dict(format='linux-native-materials',producerReceipt=source_ref(originals/receipt,originals)) if linux
+                   else dict(format='macos-native-materials',acceptance=source_ref(originals/receipt,originals))))
 
 
 def acquire_native(output, env, identity):
@@ -240,19 +258,19 @@ def acquire_native(output, env, identity):
     if (originals/'native.zip').stat().st_size!=json.loads((originals/'artifact.metadata.raw.json').read_text())['size_in_bytes'] or sha_file(originals/'native.zip')!=digest: raise ValueError('Original upload ZIP digest mismatch')
     inputs=unpack_native(originals,output/'native-runtime',identity['target']);inputs['sourceSha']=identity['actualCheckoutSha']
     (output/'native-input.json').write_text(json.dumps(inputs,indent=2))
-    return dict(nativeJobId=job,artifactId=aid,originals=[reference(originals/name,output) for name in ['run.raw.json','artifact.metadata.raw.json','native-jobs.raw.json','native.zip','qlever-local-runtime-'+identity['target']+'.tar.gz','qlever-local-acceptance.json']],expandedManifest=reference(output/'native-runtime/manifest.json',output),input=reference(output/'native-input.json',output),officialIdentityAuthenticated=False,releaseAccepted=False)
+    return dict(nativeJobId=job,artifactId=aid,originals=[reference(originals/name,output) for name in ['run.raw.json','artifact.metadata.raw.json','native-jobs.raw.json','native.zip','qlever-local-runtime-'+identity['target']+'.tar.gz','native-build-materials.json' if identity['target'].startswith('linux-') else 'qlever-local-acceptance.json']],expandedManifest=reference(output/'native-runtime/manifest.json',output),input=reference(output/'native-input.json',output),officialIdentityAuthenticated=False,releaseAccepted=False)
 
 
 def produce(repo, output, target, environment=None):
     repo, output = Path(repo).resolve(), Path(output).resolve()
     environment = dict(os.environ if environment is None else environment)
     target_info = target_identity(repo, target)
-    if not target_info['nativeSourceAvailable']:
-        raise ValueError('CSS native source is pending for requested target')
     if target_info['platform'] == 'darwin' and platform.mac_ver()[0].split('.')[0] != '15':
         raise ValueError('Current CSS native source requires macOS 15')
     before = source_state(repo)
     identity = context(environment, before)
+    if not target_info['nativeSourceAvailable'] and (identity['workflowPath']!=TARGETS_WORKFLOW or not target_info.get('nativeProducer')):
+        raise ValueError('CSS native source requires the controlled producer route')
     manifest = json.loads((repo / 'packages/xpod-css/package.json').read_text())
     version = manifest.get('version')
     if manifest.get('name') != '@undefineds.co/xpod-css' or not isinstance(version, str):
@@ -273,6 +291,10 @@ def produce(repo, output, target, environment=None):
     spec = importlib.util.spec_from_file_location('api_product_supervise', repo / 'scripts/agentfs-native-ci/supervise.py')
     supervise = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(supervise)
+    source_spec = importlib.util.spec_from_file_location('module_source_materials', repo / 'scripts/lib/module-source-materials.py')
+    source_materials = importlib.util.module_from_spec(source_spec)
+    source_spec.loader.exec_module(source_materials)
+    build_inputs = None
     started = time.monotonic()
     try:
         initial_free = shutil.disk_usage(output).free
@@ -291,6 +313,8 @@ def produce(repo, output, target, environment=None):
             receipt['rss']['cumulativeWaitedChildMaxRSSBytes'] = waited_child_rss()
             if not closed_phase(stage):
                 raise ValueError('CSS phase did not close successfully: ' + name)
+            if name == 'install':
+                build_inputs = source_materials.capture_inputs(repo, output)
         after = source_state(repo)
         if after != before:
             raise ValueError('Tracked source changed during product production')
@@ -302,6 +326,7 @@ def produce(repo, output, target, environment=None):
             if isinstance(value,dict) and 'archive' in value: candidates.append(value)
         if len(candidates)!=1: raise ValueError('Unique normal pack JSON required')
         receipt.update(collect_facts(output, candidates[0], before['sha'], version, target))
+        receipt['sourceMaterials'] = source_materials.capture_outputs(repo, output, build_inputs, receipt['phases'], receipt['archive'])
         receipt.update(status='controlled-preview-materials', sourceAfter=after, packRaw=reference(evidence / 'pack.raw.log', output))
     except BaseException as error:
         receipt['failure'] = type(error).__name__ + ': CSS producer failed; inspect bounded original evidence'

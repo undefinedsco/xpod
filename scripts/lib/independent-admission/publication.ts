@@ -1,9 +1,11 @@
+import { publicationGateMaterials } from './publication-gate-materials';
 import { collectedArtifactView } from './artifact-collector';
 import { derivedSourceView } from './source-context';
 import { registryArtifactView, type RegistryArtifactObservation } from './registry-context';
 import * as centralConsumers from './consumer-context';
 import { consumerObservationView, type ClientConsumerObservation } from './consumer-context';
 import { nativeMaterialView } from './native-context';
+import { publicationPeerInputPlanView, type PublicationPeerInputPlanCapability } from './peer-input-plan';
 import { isDeepStrictEqual } from 'node:util';
 import { verifyAdmission, type AdmissionContext, type Gate, type AdmissionResult } from './index';
 import * as centralAdmission from './index';
@@ -40,6 +42,8 @@ export interface IndependentPublicationInput {
   cliConsumer?: unknown;
   clientRegistryConsumer?: unknown;
   cliRegistryConsumer?: unknown;
+  clientPeerPlan?: PublicationPeerInputPlanCapability;
+  cliPeerPlan?: PublicationPeerInputPlanCapability;
   clientPeers?: readonly CollectedArtifactCapability[];
   cliPeers?: readonly CollectedArtifactCapability[];
   clientDependencies?: readonly CollectedArtifactCapability[];
@@ -65,6 +69,7 @@ export interface PublicationProductBinding {
   readonly nativeMaterials?: NativeMaterialCapability;
   readonly registry?: RegistryArtifactObservation;
   readonly postpublishConsumer?: ClientConsumerObservation;
+  readonly peerPlan?: PublicationPeerInputPlanCapability;
   readonly peers?: readonly CollectedArtifactCapability[];
   readonly dependencies?: readonly CollectedArtifactCapability[];
 }
@@ -169,8 +174,8 @@ export function normalizePublicationInput(input: IndependentPublicationRequest) 
   if (group && (input.schemaVersion !== 2 || !Array.isArray(input.products)
     || Object.keys(input).some(key => !['schemaVersion', 'products', 'registryDependencies'].includes(key)))) fail('invalid product group input');
   const products = group ? input.products : [
-    { artifact: input.client, source: input.clientSource, prepublishConsumer: input.clientConsumer, registry: input.clientRegistry, postpublishConsumer: input.clientRegistryConsumer, peers: input.clientPeers, dependencies: input.clientDependencies },
-    { artifact: input.cli, source: input.cliSource, prepublishConsumer: input.cliConsumer, registry: input.cliRegistry, postpublishConsumer: input.cliRegistryConsumer, peers: input.cliPeers, dependencies: input.cliDependencies },
+    { artifact: input.client, source: input.clientSource, prepublishConsumer: input.clientConsumer, registry: input.clientRegistry, postpublishConsumer: input.clientRegistryConsumer, peerPlan: input.clientPeerPlan, peers: input.clientPeers, dependencies: input.clientDependencies },
+    { artifact: input.cli, source: input.cliSource, prepublishConsumer: input.cliConsumer, registry: input.cliRegistry, postpublishConsumer: input.cliRegistryConsumer, peerPlan: input.cliPeerPlan, peers: input.cliPeers, dependencies: input.cliDependencies },
   ];
   if (products.length < 1 || products.length > 128) return fail('publication cohort size invalid');
   for (const row of products) for (const key of ['peers', 'dependencies'] as const) {
@@ -181,7 +186,7 @@ export function normalizePublicationInput(input: IndependentPublicationRequest) 
     return fail('bounded registry dependency array required');
   const bindings = Object.freeze(products.map(row => Object.freeze({ artifact: row.artifact, source: row.source,
     prepublishConsumer: row.prepublishConsumer, nativeMaterials: 'nativeMaterials' in row ? row.nativeMaterials : undefined,
-    registry: row.registry, postpublishConsumer: row.postpublishConsumer,
+    registry: row.registry, postpublishConsumer: row.postpublishConsumer, peerPlan: row.peerPlan,
     peers: Object.freeze([...('peers' in row ? row.peers ?? [] : [])]),
     dependencies: Object.freeze([...('dependencies' in row ? row.dependencies ?? [] : [])]) })));
   const describe = (artifact: unknown): PublicationProductDescriptor => {
@@ -233,6 +238,17 @@ export function normalizePublicationInput(input: IndependentPublicationRequest) 
     });
     consumerDependencies.set(collectedArtifactView(binding.artifact)!.identity.package, Object.freeze([...new Set(names)]));
   }
+  for (const binding of bindings) if (binding.peerPlan !== undefined) {
+    const plan = publicationPeerInputPlanView(binding.peerPlan);
+    if (!plan) return fail('real immutable nested peer plan capability required');
+    const candidates = [...bindings.map(row => row.artifact), ...registryDependencies.map(row => row.artifact), ...binding.dependencies];
+    const primaryName = collectedArtifactView(binding.artifact)!.identity.package;
+    const requiredNames = new Set([primaryName, ...consumerDependencies.get(primaryName) ?? []]);
+    for (const expected of [plan.products.cli, plan.products.client].filter(row => requiredNames.has(row.package))) {
+      if (!candidates.some(artifact => isDeepStrictEqual(collectedArtifactView(artifact)?.identity, expected)))
+        return fail('nested peer plan CLI/client identity mismatch');
+    }
+  }
   const cohort = validatePublicationCohort(descriptors, registryDependencies.map(row => describe(row.artifact)), consumerDependencies);
   return Object.freeze({ bindings: bindings as readonly PublicationProductBinding[], registryDependencies, cohort, legacy: !group });
 }
@@ -246,15 +262,17 @@ export function planIndependentPublication(request: IndependentPublicationReques
   const normalized = normalizePublicationInput(request);
   if (!normalized.legacy) {
     const dispatch = (centralAdmission as unknown as { verifyCollectedPublicationAdmission?: (gate: Gate, input: {
-      artifact: unknown; derivedSource: unknown; consumerObservation?: unknown; nativeMaterials?: unknown; relatedArtifacts: readonly unknown[];
+      artifact: unknown; derivedSource: unknown; consumerObservation?: unknown; nativeMaterials?: unknown; relatedArtifacts: readonly unknown[]; legalOriginals?:readonly unknown[];legalSourceMaterials?:unknown;
     }) => AdmissionResult }).verifyCollectedPublicationAdmission;
     const products = normalized.bindings.map(binding => {
       const view = collectedArtifactView(binding.artifact)!;
+      const gateMaterials=publicationGateMaterials(binding.artifact,binding.source);
       const gates = (view.identity.target ? ['source', 'runtime-closure', 'native', 'legal', 'consumer'] as const
         : ['source', 'runtime-closure', 'legal', 'consumer'] as const).map(gate => ({ gate,
         result: dispatch ? dispatch(gate, { artifact: binding.artifact, derivedSource: binding.source,
           consumerObservation: binding.prepublishConsumer, nativeMaterials: binding.nativeMaterials,
-          relatedArtifacts: [...new Set([...normalized.bindings.map(row => row.artifact),
+          legalOriginals:gateMaterials?.legalOriginals,legalSourceMaterials:gateMaterials?.legalSourceMaterials,
+          relatedArtifacts: gateMaterials?.relatedArtifacts??[...new Set([...normalized.bindings.map(row => row.artifact),
             ...normalized.registryDependencies.map(row => row.artifact), ...binding.peers ?? [], ...binding.dependencies ?? []])] })
           : { status: 'pending' as const, reason: 'Central collected-product gate dispatcher unavailable: ' + gate } }));
       const registry = registryArtifactView(binding.registry);

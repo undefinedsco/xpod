@@ -1,12 +1,54 @@
 const fs = require('node:fs');
 const path = require('node:path');
+const os = require('node:os');
 const crypto = require('node:crypto');
-const { spawn } = require('node:child_process');
+const { spawn, spawnSync } = require('node:child_process');
 const RAW_LIMIT = 8 * 1024 * 1024;
+// Matching-host publication workers supervise acquisition plus both runtime profiles.
+const MAX_TIMEOUT_MS = 25 * 60 * 1000;
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
+// Extended windows belong only to these repository-owned recipes. Loading the
+// AFS authority lazily keeps ordinary isolated CLI builds independent of AFS.
+function commandBudget(command, args, { cwd, env = {}, label }) {
+  const root = path.resolve(__dirname, '../..');
+  const ordinary = { maximumTimeoutMs: MAX_TIMEOUT_MS };
+  if (!Array.isArray(args) || typeof cwd !== 'string') return ordinary;
+  const exact = (file, tail) => args.length === tail.length + 1 && args[0] === path.join(root, file) && tail.every((value, index) => args[index + 1] === value);
+  if (path.resolve(cwd) === root && label === 'normal-cli-publication-parent' && exact('scripts/check-cli-publication.cjs', ['--evidence', path.join(root, '.test-data/afs-js-archive-ci-producer')])) {
+    if (!path.isAbsolute(command)) throw new Error('Fixed CLI parent requires an absolute Node executable');
+    const executable = fs.realpathSync(command), before = fs.statSync(executable, { bigint: true });
+    if (!before.isFile()) throw new Error('Fixed CLI parent executable is not a regular file');
+    const probe = spawnSync(executable, ['--version'], { encoding: 'utf8', timeout: 10000, maxBuffer: 1024, env });
+    const after = fs.statSync(executable, { bigint: true });
+    if (probe.error || probe.signal || probe.status !== 0 || !/^v22\.\d+\.\d+\n?$/.test(probe.stdout || '') || probe.stderr || ['dev','ino','size','ctimeNs','mtimeNs','mode'].some(key => before[key] !== after[key])) throw new Error('Fixed CLI parent requires an unchanged actual Node 22 executable');
+    const fd = fs.openSync(executable, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW), digest = crypto.createHash('sha256'), block = Buffer.alloc(65536);
+    try { for (let count; (count = fs.readSync(fd, block, 0, block.length, null)) > 0;) digest.update(block.subarray(0, count)); } finally { fs.closeSync(fd); }
+    const hashed = fs.statSync(executable, { bigint: true });
+    if (['dev','ino','size','ctimeNs','mtimeNs','mode'].some(key => after[key] !== hashed[key])) throw new Error('Node executable changed during original hashing');
+    const executableSha256 = digest.digest('hex');
+    const { PUBLICATION_BUDGET } = require('../check-cli-publication.cjs');
+    const maximumTimeoutMs = PUBLICATION_BUDGET.producerWindowMs + PUBLICATION_BUDGET.terminationGraceMs;
+    return { maximumTimeoutMs, runtimeProbe: { executable, executableSha256, argv: ['--version'], stdout: probe.stdout, stderr: probe.stderr, status: probe.status, identity: Object.fromEntries(['dev','ino','size','ctimeNs','mtimeNs','mode'].map(key => [key, String(after[key])])) } };
+  }
+  const python = label === 'module-registry-consumer' && exact('scripts/lib/afs-module-consumer.py', [args[1], '--run'])
+    && path.isAbsolute(command) && fs.realpathSync(command) === fs.realpathSync('/usr/bin/python3');
+  if (python && label === 'module-registry-consumer' && exact('scripts/lib/afs-module-consumer.py', [args[1], '--run']) && args[1] === path.join(cwd, 'plan.json') && fs.realpathSync(path.dirname(cwd)) === fs.realpathSync(os.tmpdir()) && path.basename(cwd).startsWith('xpod-registry-module-consumer-')) {
+    const stat = fs.lstatSync(args[1]);
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.size > 1024 * 1024) throw new Error('Fixed AFS plan original required');
+    const plan = JSON.parse(fs.readFileSync(args[1], 'utf8'));
+    if (plan.checkout !== root || plan.temporaryParent !== cwd || !['production-npm-registry','collected-product-archives'].includes(plan.transport)) throw new Error('Fixed AFS plan scope mismatch');
+    return { maximumTimeoutMs: require('./afs-consumer-budget.cjs').afsConsumerBudget().consumerRunSeconds * 1000 };
+  }
+  if (path.resolve(cwd) === root && command === process.execPath && process.versions.bun && label === 'registry-consumer' && exact('scripts/run-independent-publication.ts', []) && env.REGISTRY_CONSUMER_MODULE === 'afs' && env.INDEPENDENT_PUBLICATION_PHASE === 'registry-consumer-child' && ['prepublish','postpublish'].includes(env.PRODUCT_CONSUMER_STAGE) && ['linux-x64','linux-arm64','darwin-x64','darwin-arm64'].includes(env.REGISTRY_CONSUMER_TARGET)) {
+    return { maximumTimeoutMs: require('./afs-consumer-budget.cjs').afsConsumerBudget(env.PRODUCT_CONSUMER_STAGE).maximumDurationSeconds * 1000 };
+  }
+  return ordinary;
+}
 async function runPublicationCommand(command, args, { cwd, env, evidence, label, timeoutMs = 180000, rawLimit = RAW_LIMIT }) {
-  if (!/^[a-z0-9-]+$/.test(label) || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 600000) throw new Error('Invalid command evidence budget');
+  const budget = timeoutMs > MAX_TIMEOUT_MS ? commandBudget(command, args, { cwd, env, label }) : { maximumTimeoutMs: MAX_TIMEOUT_MS };
+  if (!/^[a-z0-9-]+$/.test(label) || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > budget.maximumTimeoutMs) throw new Error('Invalid command evidence budget');
   if (!Number.isSafeInteger(rawLimit) || rawLimit < 1 || rawLimit > RAW_LIMIT) throw new Error('Invalid command raw budget');
+  if (budget.runtimeProbe) fs.writeFileSync(path.join(evidence, label + '.runtime-probe.original.json'), JSON.stringify(budget.runtimeProbe) + '\n', { flag: 'wx', mode: 0o600 });
   const files = ['stdout','stderr'].map(kind => path.join(evidence, label + '.' + kind + '.raw.log'));
   const handles = [];
   try { for (const file of files) handles.push(fs.openSync(file,'wx',0o600)); }
@@ -108,4 +150,4 @@ async function runPublicationCommand(command, args, { cwd, env, evidence, label,
   if(failure)throw failure;
   return row;
 }
-module.exports={runPublicationCommand,RAW_LIMIT};
+module.exports={runPublicationCommand,commandBudget,RAW_LIMIT,MAX_TIMEOUT_MS};

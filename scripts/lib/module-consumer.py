@@ -149,7 +149,7 @@ def inventory(package_root, installed):
 def consumer_transport(plan):
     """A transport choice describes execution, never an admission capability."""
     mode = plan.get('transport', 'immutable-local-fixture')
-    require(mode in ['immutable-local-fixture', 'production-npm-registry'], 'unregistered consumer transport')
+    require(mode in ['immutable-local-fixture', 'production-npm-registry', 'collected-product-archives'], 'unregistered consumer transport')
     return mode
 
 
@@ -259,16 +259,16 @@ def validate_consumer_plan(plan, profile):
     producer_path = reference({**producer, 'path': str(csspath.parent / producer['path'])})
     original_producer = json.loads(producer_path.read_text())
     require(original_producer.get('schemaVersion') == 1 and original_producer.get('kind') == module_id + '-module-product-production' and original_producer.get('status') == 'controlled-preview-materials', 'CSS producer identity mismatch')
-    require(all(original_producer.get(flag) is False for flag in ['published', 'releaseQualified', 'consumerValidated', 'legalClearance', 'nativeAdmission']), 'CSS producer admission mismatch')
+    require(all(original_producer.get(flag) is False for flag in profile.get('producerFlags', ['published', 'releaseQualified', 'consumerValidated', 'legalClearance', 'nativeAdmission'])), 'CSS producer admission mismatch')
     require(all(original_producer.get(key, {}).get('sha') == sha and original_producer[key].get('status') == '' for key in ['sourceBefore', 'sourceAfter']), 'CSS producer source closure mismatch')
     context = original_producer.get('context', {})
     for name in ['node', 'bun']:
         executable = pathlib.Path(plan[name])
         require(executable.is_absolute() and executable.is_file() and os.access(executable, os.X_OK), 'existing executable required: ' + name)
-    declaration = targets.target(module_id, context.get('target'), plan['bun'])
+    declaration = profile.get('targetResolver', targets.target)(module_id, context.get('target'), plan['bun'])
     require(plan.get('target') == declaration['target'], 'plan/producer target mismatch')
     css = profile['bindProjection'](css, original_producer, declaration)
-    require(context.get('actualCheckoutSha') == sha and context.get('workflowPath') == '.github/workflows/' + module_id + '-module-product.yml' and all(context.get(key) == css.get(key) and css.get(key) is not None for key in ['runHeadSha', 'runId', 'runAttempt']), 'producer/projection context mismatch')
+    require(context.get('actualCheckoutSha') == sha and context.get('workflowPath') == profile.get('workflowPath', '.github/workflows/' + module_id + '-module-product.yml') and all(context.get(key) == css.get(key) and css.get(key) is not None for key in ['runHeadSha', 'runId', 'runAttempt']), 'producer/projection context mismatch')
     require(context.get('target') == css['package']['target'] and context.get('version') == css['package']['version'] and original_producer.get('archive') == css['archive'], 'producer/projection package/archive mismatch')
     materials = original_producer.get('materials', {})
     expected_materials = profile['materials']
@@ -288,13 +288,14 @@ def validate_consumer_plan(plan, profile):
             require(product['package'] == '@undefineds.co/xpod-' + key and isinstance(product.get('version'), str) and product['version'] and product['version'] != 'latest' and publication_input[key]['sha256'] == row['sha256'] and publication_input[key]['integrity'] == row['integrity'], 'CLI product identity mismatch')
         require(all(not inside(path, root) for root in roots), 'archives must be outside denied source roots')
         originals[key] = path
-    if transport == 'production-npm-registry':
+    if transport != 'immutable-local-fixture':
         registry_tool_declarations(plan, cli)
-    consumer = css['consumerInput']
-    require(not pathlib.Path(consumer['path']).is_absolute() and '..' not in pathlib.Path(consumer['path']).parts, 'unsafe consumer input reference')
-    consumer_path = reference({**consumer, 'path': str(csspath.parent / consumer['path'])})
-    consumer_input = json.loads(consumer_path.read_text())
-    require(profile['verifyConsumerInput'](consumer_input, css, sha), 'CSS consumer input binding mismatch')
+    if profile.get('consumerInputRequired', True):
+        consumer = css['consumerInput']
+        require(not pathlib.Path(consumer['path']).is_absolute() and '..' not in pathlib.Path(consumer['path']).parts, 'unsafe consumer input reference')
+        consumer_path = reference({**consumer, 'path': str(csspath.parent / consumer['path'])})
+        consumer_input = json.loads(consumer_path.read_text())
+        require(profile['verifyConsumerInput'](consumer_input, css, sha), 'CSS consumer input binding mismatch')
     package = css['package']
     require(package['name'] == declaration['name'] and package['target'] == declaration['target'] and isinstance(package['version'], str) and package['version'] and package['version'] != 'latest', 'CSS exact package identity required')
     for name in ['node', 'bun']:
@@ -317,17 +318,30 @@ def validate_consumer_plan(plan, profile):
 class ModuleConsumerRunner:
     def __init__(self, plan, checked):
         self.plan, self.checked = plan, checked
-        self.deadline = time.monotonic() + 480 if consumer_transport(plan) == 'production-npm-registry' else None
+        self.deadline = time.monotonic() + self.total_deadline_seconds() if consumer_transport(plan) != 'immutable-local-fixture' else None
         self.output = checked['output']
         self.records = []
         self.child = None
         self.cancelled = None
         self.forced = False
         self.groups_unknown = False
+        self.preserve_owned_root = False
         self.group_members = {}
         self.disk_coverage = dict(completeSamples=0, partialSamples=0, disappearedEntries=0,
                                   lastCompleteBytes=None, peakCompleteBytes=None, lastSampleComplete=None,
                                   capCheckedOnLastSample=False)
+
+    def prepare_owned_root(self, root):
+        pass
+
+    def finish_owned_root(self, root):
+        pass
+
+    def total_deadline_seconds(self):
+        return 480
+
+    def command_timeout_seconds(self, label):
+        return self.plan.get('timeoutSeconds', 180)
 
     def gate(self, initial=False):
         require(self.deadline is None or time.monotonic() < self.deadline, 'total production consumer deadline exceeded')
@@ -484,12 +498,12 @@ class ModuleConsumerRunner:
                     self.close_service(process)
                 else:
                     try:
-                        deadline = time.monotonic() + self.plan.get('timeoutSeconds', 180)
+                        deadline = time.monotonic() + self.command_timeout_seconds(label)
                         while process.poll() is None:
                             self.observe_group(process)
                             self.gate()
                             if time.monotonic() >= deadline:
-                                raise subprocess.TimeoutExpired(argv, self.plan.get('timeoutSeconds', 180))
+                                raise subprocess.TimeoutExpired(argv, self.command_timeout_seconds(label))
                             time.sleep(.2)
                         process.wait(timeout=1)
                     except subprocess.TimeoutExpired:
@@ -548,7 +562,7 @@ class ModuleConsumerRunner:
                 source.rename(destination)
 
     def run(self):
-        declaration = targets.target(self.module_id, self.checked['module']['package']['target'], self.plan['bun'], host=True)
+        declaration = getattr(self, 'target_resolver', targets.target)(self.module_id, self.checked['module']['package']['target'], self.plan['bun'], host=True)
         machine = {'x86_64': 'x64', 'aarch64': 'arm64'}.get(platform.machine(), platform.machine())
         require(platform.system().lower() == declaration['platform'] and machine == declaration['arch'], 'actual Python host/target differs')
         require(declaration['nativeSourceAvailable'], 'target native source is pending; no consumer execution')
@@ -573,6 +587,7 @@ class ModuleConsumerRunner:
         for sig in [signal.SIGTERM, signal.SIGINT]:
             old_handlers[sig] = signal.signal(sig, interrupted)
         try:
+            self.prepare_owned_root(root)
             # Only one runtime is expanded at a time. Originals remain immutable.
             for runtime in ['node', 'bun']:
                 cycle = root / runtime
@@ -587,15 +602,18 @@ class ModuleConsumerRunner:
                 metadata = dict(name=package['name'], version=package['version'], dist=dict(integrity=self.plan[self.module_id + 'Archive']['integrity'], tarball='https://registry.npmjs.org/fixture-module.tgz'))
                 binding = dict(archive=str(original_module), roots=[str(p) for p in self.checked['roots']], metadata=metadata, metadataURL='https://registry.npmjs.org/' + urllib.parse.quote(package['name'], safe='') + '/' + package['version'])
                 (cycle / 'binding.json').write_text(json.dumps(binding))
-                production = consumer_transport(self.plan) == 'production-npm-registry'
-                if not production:
+                production = consumer_transport(self.plan) != 'immutable-local-fixture'
+                registry_transport = consumer_transport(self.plan) == 'production-npm-registry'
+                if not registry_transport:
                     (cycle / 'transport.mjs').write_text(TRANSPORT)
                 (cycle / 'probe.mjs').write_text(PROBE)
                 profile = '(version 1) (allow default)\n' + '\n'.join('(deny file-read* file-write* (subpath ' + json.dumps(str(p)) + '))' for p in self.checked['roots']) + '\n'
                 (cycle / 'deny.sb').write_text(profile)
                 deps = registry_tool_declarations(self.plan, self.checked['cli']) if production else { '@undefineds.co/xpod-' + key: 'file:' + str(self.checked['originals'][key]) for key in ['cli', 'client'] }
+                if consumer_transport(self.plan) == 'collected-product-archives':
+                    deps.update({'@undefineds.co/xpod-' + key: 'file:' + str(self.checked['originals'][key]) for key in ['cli', 'client']})
                 (cycle / 'package.json').write_text(json.dumps(consumer_install_manifest(deps, production)))
-                runtime_wrapper(cycle / 'runtime-bin', runtime, self.plan[runtime], None if production else cycle / 'transport.mjs')
+                runtime_wrapper(cycle / 'runtime-bin', runtime, self.plan[runtime], None if registry_transport else cycle / 'transport.mjs')
                 env = { 'HOME': str(home), 'TMPDIR': str(cycle), 'PATH': str(cycle / 'runtime-bin') + ':/usr/bin:/bin', 'LANG': 'en_US.UTF-8' }
                 sandbox = targets.sandbox(declaration, cycle, self.checked['roots'])
                 self.command(runtime + '-runtime-version', sandbox + [self.plan[runtime], '--version'], env, cycle)
@@ -652,6 +670,7 @@ class ModuleConsumerRunner:
                     require(digest(original) == self.plan[key + 'Archive']['sha256'], 'original archive changed')
                 self.preserve_cycle(cycle, runtime)
                 shutil.rmtree(cycle)
+            self.finish_owned_root(root)
             require(not self.forced and not self.cancelled, 'forced or signalled cleanup cannot pass')
             self.result.update(status='passed', realConsumerValidated=True)
         except BaseException as error:
@@ -681,6 +700,7 @@ class ModuleConsumerRunner:
             # Restrict deletion to the fresh root created by this invocation.
             try:
                 require(not self.groups_unknown, 'process group closure unknown; preserving temporary root for inspection')
+                require(not self.preserve_owned_root, 'verifier harness failed; preserving unique actual install tree')
                 require(root.parent == self.checked['parent'] and root.stat().st_ino == root_inode and not root.is_symlink(), 'cleanup ownership changed')
                 shutil.rmtree(root)
                 self.result['ownedTemporaryRootRemoved'] = True

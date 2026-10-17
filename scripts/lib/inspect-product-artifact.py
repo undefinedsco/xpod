@@ -12,21 +12,26 @@ import re
 import stat
 import sys
 import zipfile
+import shutil
+import time
 from contextlib import nullcontext
+
+MODULE_LIMITS = json.loads((pathlib.Path(__file__).resolve().parent / 'module-artifact-limits.json').read_text())
 
 
 def source_original_path(path):
     return path in {
         'cleanup.json', 'client.tgz', 'cli.tgz', 'input.json', 'inventory.json',
         'phases.jsonl', 'producer-index.json', 'preparation.json', 'result.json',
+        'source-materials-inputs.json',
         'source-inputs.json', 'source-manifests/cli.package.json',
         'source-manifests/client.package.json',
-    } or re.fullmatch(r'phase-[0-9]{3}\.(?:receipt\.json|build\.json|(?:stdout|stderr)\.raw\.log)', path) is not None \
+    } or re.fullmatch(r'source-capture-(?:before|after)\.(?:receipt\.json|request\.json|(?:stdout|stderr)\.raw\.log)', path) is not None or re.fullmatch(r'phase-[0-9]{3}\.(?:receipt\.json|build\.json|(?:stdout|stderr)\.raw\.log)', path) is not None \
         or re.fullmatch(r'phase-[0-9]{3}\.metafiles/[A-Za-z0-9_-]+\.json', path) is not None
 
 
-def inspect(archive, expected, packed_limit, expanded_limit, member_limit, selections=None, destination=None, legacy=False, source_originals=False, module_source_originals=False):
-    if sum((legacy, source_originals, module_source_originals)) > 1:
+def inspect(archive, expected, packed_limit, expanded_limit, member_limit, selections=None, destination=None, legacy=False, source_originals=False, module_source_originals=False, module_material_originals=False, registry_consumer_originals=False, native_material_originals=False):
+    if sum((legacy, source_originals, module_source_originals, module_material_originals, registry_consumer_originals, native_material_originals)) > 1:
         raise ValueError('conflicting projection modes')
     if selections is not None and type(selections) is not list:
         raise ValueError('projection selections must be an array')
@@ -37,8 +42,14 @@ def inspect(archive, expected, packed_limit, expanded_limit, member_limit, selec
             name = row.get('path')
             allowed_destination = (type(name) is str and row.get('destination') == name
                                    and (name == 'producer.receipt.json' or re.fullmatch(r'evidence/[a-z0-9-]+\.receipt\.json', name) is not None))
-        if not source_originals and not module_source_originals and type(row) is dict:
-            allowed_destination = ((row['destination'] == row['path'] and (row['path'] == 'supply-index.original.json' or row['path'].startswith(('cli/', 'afs/', 'producer/')))) if legacy else row['destination'] in ('producer.receipt.json', 'product.tgz', 'pack.raw.log', 'result.json', 'inventory.json', 'source-inputs.json', 'preparation.json', 'producer-index.json', 'input.json', 'cli.tgz', 'client.tgz', 'cli.package.json', 'client.package.json'))
+        if module_material_originals and type(row) is dict:
+            name = row.get('path')
+            allowed_destination = (type(name) is str and row.get('destination') == name and re.fullmatch(r'source-materials/(?:materials\.json|(?:source|dependencies|toolchain)-[0-9]{4}\.tar|(?:source|dependencies|toolchain)-inventory-[0-9]{4}\.json|outputs-[0-9]{4}\.json)', name) is not None)
+        if (registry_consumer_originals or native_material_originals) and type(row) is dict:
+            name = row.get('path')
+            allowed_destination = type(name) is str and row.get('destination') == name and re.fullmatch(r'[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*', name) is not None
+        if not source_originals and not module_source_originals and not module_material_originals and not registry_consumer_originals and not native_material_originals and type(row) is dict:
+            allowed_destination = ((row['destination'] == row['path'] and (row['path'] == 'supply-index.original.json' or row['path'].startswith(('cli/', 'afs/', 'producer/')))) if legacy else row['destination'] in ('producer.receipt.json', 'product.tgz', 'pack.raw.log', 'result.json', 'inventory.json', 'source-inputs.json', 'preparation.json', 'producer-index.json', 'input.json', 'cli.tgz', 'client.tgz', 'cli.package.json', 'client.package.json', 'module-admission.mjs'))
         if (type(row) is not dict or set(row) != {'path', 'destination', 'bytes', 'sha256'} or row['path'] in selected
                 or not allowed_destination
                 or type(row['bytes']) is not int or row['bytes'] < 0
@@ -47,6 +58,13 @@ def inspect(archive, expected, packed_limit, expanded_limit, member_limit, selec
         selected[row['path']] = row
     if module_source_originals and sum(row['bytes'] for row in selected.values()) > 8 * 1024 * 1024:
         raise ValueError('module receipt projection byte bound')
+    if module_material_originals and (len(selected) > MODULE_LIMITS['sourceMaterialFiles'] or sum(row['bytes'] for row in selected.values()) > MODULE_LIMITS['sourceMaterialBytes'] or any(row['bytes'] > (MODULE_LIMITS['shardBytes'] if row['path'].endswith('.tar') else MODULE_LIMITS['metadataBytes']) for row in selected.values())):
+        raise ValueError('module material projection byte bound')
+    if registry_consumer_originals and (len(selected) > 2100 or sum(row['bytes'] for row in selected.values()) > 72 * 1024 ** 2 or any(row['bytes'] > 16 * 1024 ** 2 for row in selected.values())):
+        raise ValueError('registry original projection byte bound')
+    if native_material_originals and (len(selected) > MODULE_LIMITS['members'] or sum(row['bytes'] for row in selected.values()) > MODULE_LIMITS['expandedBytes'] or any(row['bytes'] > MODULE_LIMITS['shardBytes'] for row in selected.values())):
+        raise ValueError('native original projection byte bound')
+    deadline = time.monotonic() + MODULE_LIMITS['timeoutMs'] / 1000 if (module_material_originals or native_material_originals) else None
     if len({row['destination'] for row in selected.values()}) != len(selected):
         raise ValueError('duplicate projection destination')
     named_before = os.lstat(archive)
@@ -88,7 +106,7 @@ def inspect(archive, expected, packed_limit, expanded_limit, member_limit, selec
                 normalized = name[:-1] if entry.is_dir() else name
                 parts = normalized.split('/')
                 mode = entry.external_attr >> 16
-                if (entry.orig_filename != name or not normalized or name.startswith('/') or '\\' in name or ':' in name
+                if (len(name.encode('utf-8')) > 255 or entry.orig_filename != name or not normalized or name.startswith('/') or '\\' in name or ':' in name
                         or any(ord(c) < 32 or ord(c) == 127 for c in name)
                         or any(p in ('', '.', '..') for p in parts)
                         or normalized in names or entry.flag_bits & 1
@@ -114,7 +132,7 @@ def inspect(archive, expected, packed_limit, expanded_limit, member_limit, selec
                 row = selected.get(entry.filename)
                 if row and entry.file_size != row['bytes']:
                     raise ValueError('projection declared size mismatch')
-                if row and (legacy or source_originals or module_source_originals):
+                if row and (legacy or source_originals or module_source_originals or module_material_originals or registry_consumer_originals or native_material_originals):
                     parent = pathlib.Path(destination) / pathlib.PurePosixPath(row['destination']).parent
                     parent.mkdir(parents=True, exist_ok=True)
                     for ancestor in [parent, *parent.parents]:
@@ -125,6 +143,8 @@ def inspect(archive, expected, packed_limit, expanded_limit, member_limit, selec
                 output = open(pathlib.Path(destination) / row['destination'], 'xb') if row else None
                 with (output if output else nullcontext()), archive_zip.open(entry) as member:
                     while chunk := member.read(65536):
+                        if deadline is not None and (time.monotonic() >= deadline or (output and shutil.disk_usage(destination).free < MODULE_LIMITS['freeFloorBytes'] + MODULE_LIMITS['queueReserveBytes'] + len(chunk))):
+                            raise ValueError('module material time/disk floor bound')
                         size += len(chunk)
                         actual_expanded += len(chunk)
                         if size > entry.file_size or actual_expanded > expanded_limit:
@@ -172,7 +192,7 @@ if __name__ == '__main__':
         selections = json.loads(sys.argv[6]) if len(sys.argv) > 6 else None
     destination = sys.argv[7] if len(sys.argv) > 7 else None
     mode = sys.argv[8] if len(sys.argv) > 8 else None
-    if mode not in (None, 'legacy-root-normal-supply', 'independent-source-originals', 'module-source-originals'):
+    if mode not in (None, 'legacy-root-normal-supply', 'independent-source-originals', 'module-source-originals', 'module-material-originals', 'registry-consumer-originals', 'native-material-originals'):
         raise ValueError('unknown projection mode')
     print(json.dumps(inspect(sys.argv[1], sys.argv[2], *map(int, sys.argv[3:6]), selections, destination,
-                             mode == 'legacy-root-normal-supply', mode == 'independent-source-originals', mode == 'module-source-originals')))
+                             mode == 'legacy-root-normal-supply', mode == 'independent-source-originals', mode == 'module-source-originals', mode == 'module-material-originals', mode == 'registry-consumer-originals', mode == 'native-material-originals')))

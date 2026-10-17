@@ -34,7 +34,7 @@ test('real tiny tgz disk index binds archive/member hashes and returns independe
       expect(() => inventory.readMember('bin/run', 4)).toThrow();
       expect(() => inventory.readMember('../bin/run', 5)).toThrow();
       fs.writeFileSync(file, 'replacement does not replace bound snapshot');
-      expect(inventory.readMember('bin/run', 5).toString()).toBe('hello');
+      expect(() => inventory.readMember('bin/run', 5)).toThrow('identity');
     } finally { inventory.dispose(); }
     expect(() => inventory.readMember('bin/run', 5)).toThrow();
   });
@@ -144,7 +144,7 @@ test('range budget counts zero-length calls and rejects invalid input before res
 });
 
 test('disk reservation uses available blocks, fixed floor and prewrite queue headroom', () => {
-  const floor = 1024 ** 3 + 1024 ** 2;
+  const floor = 2 * 1024 ** 3 + 1024 ** 2;
   assertProductDiskBudget({ bavail: BigInt(floor + 65536), bsize: 1n }, 65536);
   expect(() => assertProductDiskBudget({ bavail: BigInt(floor + 65535), bsize: 1n }, 65536)).toThrow('floor');
   expect(() => assertProductDiskBudget({ bavail: 0n, bsize: 4096n }, 0)).toThrow('floor');
@@ -154,4 +154,16 @@ test('disk reservation uses available blocks, fixed floor and prewrite queue hea
   const initial = productDiskInventoryLimits.expandedBytes + 768 * 1024 ** 2;
   expect(() => assertProductDiskBudget({ bavail: BigInt(floor + initial - 1), bsize: 1n }, initial)).toThrow('floor');
   assertProductDiskBudget({ bavail: BigInt(floor + initial), bsize: 1n }, initial);
+});
+
+test('native header ranges retain same fd hash identity beyond sparse rehash call budget', async () => {
+  await fixture(async file => {
+    fs.writeFileSync(file, tgz([{ name: 'package/package.json', text: '{}' }, { name: 'package/native/image', text: 'header and commands' }]));
+    const inventory = await indexProductArchiveOnDisk(file);
+    try {
+      for (let call = 0; call < 512; call++) expect(inventory.readBoundMemberRange('native/image', 0, 6)).toEqual(Buffer.from('header'));
+      expect(() => inventory.readBoundMemberRange('native/image', 0, 65537)).toThrow('range');
+    } finally { inventory.dispose(); }
+    expect(() => inventory.readBoundMemberRange('native/image', 0, 1)).toThrow('range');
+  });
 });

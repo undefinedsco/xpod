@@ -3,6 +3,7 @@
 
 # 构建需要的文件
 !package.json
+!LICENSE
 !bun.lock
 !bunfig.toml
 !patches/
@@ -19,6 +20,7 @@
 !scripts/build-afs-from-producer.ts
 !scripts/run-npm-pack.cjs
 !scripts/check-dependency-state.ts
+!scripts/agentfs-native-ci/supervise.py
 !src/
 !ui/
 !desktop/

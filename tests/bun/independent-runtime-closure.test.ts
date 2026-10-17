@@ -319,3 +319,10 @@ describe('real packed runtime dependency observation, never admission booleans',
     expect(f.verify().pending).toContain('source-admission-capability-unavailable');
   });
 });
+
+
+it('does not classify a relative literal filesystem resource as proven user data', () => {
+  const result = fixture({ 'index.js': "import {readFileSync} from 'node:fs'; export const config=readFileSync('./runtime-config.json');" }).verify();
+  expect(result.pending).toContain('relative-filesystem-resource-scope-unverified');
+  expect(result.facts.dataAndNativeResolutionVerified).toBe(false);
+});
