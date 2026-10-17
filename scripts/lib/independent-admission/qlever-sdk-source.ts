@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import limits from '../module-artifact-limits.json';
 import { inspectSdkInputOwnership } from './qlever-sdk-inputs';
+import { inspectSdkBuildExecution } from './qlever-sdk-execution';
 import { inspectSdkSymlinkOriginals } from './qlever-sdk-symlinks';
 import { qleverSdkOriginalsView } from './qlever-sdk-originals';
 import { captureLegalFileIdentity, assertLegalFileIdentity } from './legal-file-custody';
@@ -47,6 +48,17 @@ export function inspectQleverSdkSourceOriginals(capability: unknown): Readonly<{
     need(Array.isArray(after.shards) && Array.isArray(master.inputs?.shards) && after.shards.length === master.inputs.shards.length
       && after.shards.every((row: any, index: number) => row.path && master.inputs.shards[index].path === 'inner/' + row.path
         && row.bytes === master.inputs.shards[index].bytes && row.sha256 === master.inputs.shards[index].sha256), 'inner/master actual shard references differ');
+    const jobs = sdk.metadataOriginals.filter(row => /^jobs(?:-page-\d+)?\.original\.json$/u.test(row.name)).flatMap(row => {
+      const original = sdk.originFacts.originals.find(value => value.name === row.name);
+      need(original && original.bytes === row.data.length && original.sha256 === hash(row.data), 'actual SDK job API bytes differ');
+      return JSON.parse(row.data.toString()).jobs;
+    }).filter((row: any) => row.id === sdk.originFacts.producerJobId);
+    need(jobs.length === 1, 'unique actual SDK build job required');
+    const execution = inspectSdkBuildExecution({master, members: sdk.members, jobWindow: {start: Date.parse(jobs[0].started_at), end: Date.parse(jobs[0].completed_at)},
+      readOriginal: (name, maximum) => sdk.readOriginal(name, maximum), readRange: (name, offset, length) => sdk.readOriginalRange(name, offset, length), check});
+    need(qleverSdkOriginalsView(capability) === sdk, 'SDK closed build original custody changed');
+    facts.sdkConfigureCompileExecution = execution;
+    facts.sdkConfigureCompileClosedExecutionVerified = execution.verified;
     const ledgerReference = {...after.sourcePackageIdentityRaw, path: 'inner/' + after.sourcePackageIdentityRaw?.path};
     const ledger = parse('--parse-ledger', small(ledgerReference));
     const context = JSON.parse(small(master.sourceContext).toString());

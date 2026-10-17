@@ -86,7 +86,7 @@ export interface ControlledNativeRuntimeView {
   readonly runtimeAbiVerified: boolean;
   readonly sdkSourceFacts?: Readonly<Record<string, unknown>>;
   readonly sourceMaterialsVerified: boolean;
-  readonly nativeSourceClosureVerified: false;
+  readonly nativeSourceClosureVerified: boolean;
   readonly pending: readonly string[];
 }
 const runtimeIssued = new WeakMap<object, { view: ControlledNativeRuntimeView; validate(): void }>();
