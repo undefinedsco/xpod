@@ -123,6 +123,7 @@ jobs:
             --required-check qlever-local \
             --required-check package-consumers \
             --required-check legacy-root-compat \
+            --required-check runtime-mode-matrix \
             --required-check desktop > "$RUNNER_TEMP/acceptance-validation.json"
 
           # Original compat proof is a sibling in this same accepted artifact.
@@ -132,6 +133,36 @@ jobs:
             --archive-dir "$ACCEPTANCE_DIR/compat" \
             --evidence "$ACCEPTANCE_DIR/compat/compat.receipt.json" \
             > "$RUNNER_TEMP/compat-validation.json"
+
+          # Re-observe the actual successful matrix job, including retained successes across partial reruns.
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${CANDIDATE_RUN_ID}" > "$RUNNER_TEMP/accepted-candidate-run.json"
+          ACCEPTED_IMAGE="$(node -e 'process.stdout.write("ghcr.io/undefinedsco/xpod@" + require(process.argv[1]).imageDigest)' "$MANIFEST_PATH")"
+          MODE_SELECTION_FIELDS="$(MODE_SELECTION_FILE="$ACCEPTANCE_DIR/mode-authority/selection.safe.json" ACCEPTED_IMAGE="$ACCEPTED_IMAGE" CANDIDATE_RUN_ID="$CANDIDATE_RUN_ID" node - <<'NODE'
+          const fs = require('node:fs'); const path = require('node:path');
+          const { readCanonicalFile } = require('./scripts/lib/mode-evidence-reader.cjs');
+          const { validateModeSelection } = require('./scripts/lib/mode-artifact-authority.cjs');
+          (async () => {
+            const run = JSON.parse(fs.readFileSync(path.join(process.env.RUNNER_TEMP, 'accepted-candidate-run.json'), 'utf8'));
+            if (String(run.id) !== process.env.CANDIDATE_RUN_ID || run.head_sha !== process.env.TAG_SHA || run.conclusion !== 'success') throw new Error('Candidate run identity mismatch');
+            const file = process.env.MODE_SELECTION_FILE;
+            const selection = JSON.parse((await readCanonicalFile(path.dirname(file), path.basename(file))).toString());
+            validateModeSelection(selection, { sourceSha: process.env.TAG_SHA, image: process.env.ACCEPTED_IMAGE, platform: 'linux/amd64', runId: process.env.CANDIDATE_RUN_ID });
+            process.stdout.write(`${selection.artifactId} ${selection.runAttempt}`);
+          })().catch(() => { process.stderr.write('Accepted matrix selection invalid\n'); process.exitCode = 1; });
+          NODE
+          )"
+          read -r MODE_ARTIFACT_ID MODE_MATRIX_ATTEMPT <<< "$MODE_SELECTION_FIELDS"
+          mkdir -m 700 "$RUNNER_TEMP/current-mode-authority"
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${MODE_ARTIFACT_ID}" > "$RUNNER_TEMP/current-mode-authority/artifact.original.json"
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/runs/${CANDIDATE_RUN_ID}/jobs?filter=all&per_page=100" > "$RUNNER_TEMP/current-mode-authority/jobs.original.json"
+          node scripts/verify-service-image-modes.cjs \
+            --directory "$ACCEPTANCE_DIR/mode-matrix" \
+            --source-sha "$TAG_SHA" --image "$ACCEPTED_IMAGE" --platform linux/amd64 \
+            --run-id "$CANDIDATE_RUN_ID" --run-attempt "$MODE_MATRIX_ATTEMPT" \
+            --selection-file "$ACCEPTANCE_DIR/mode-authority/selection.safe.json" \
+            --artifact-file "$RUNNER_TEMP/current-mode-authority/artifact.original.json" \
+            --jobs-file "$RUNNER_TEMP/current-mode-authority/jobs.original.json" \
+            > "$RUNNER_TEMP/mode-matrix-validation.json"
 
           MANIFEST_PATH="$MANIFEST_PATH" VERSION="$VERSION" CANDIDATE_RUN_ID="$CANDIDATE_RUN_ID" node - <<'NODE'
           const fs = require('node:fs');

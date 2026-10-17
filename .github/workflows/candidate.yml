@@ -1343,6 +1343,92 @@ jobs:
           if-no-files-found: ignore
           retention-days: 30
 
+  runtime_mode_matrix:
+    name: Same image three-mode live and session acceptance
+    needs: [metadata, build_image]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    environment: rc
+    permissions:
+      contents: read
+      packages: read
+    outputs:
+      attempt: ${{ steps.matrix_identity.outputs.attempt }}
+      artifact-name: ${{ steps.matrix_identity.outputs.artifact-name }}
+      artifact-id: ${{ steps.mode_artifact.outputs.artifact-id }}
+      artifact-digest: ${{ steps.mode_artifact.outputs.artifact-digest }}
+    env:
+      XPOD_MATRIX_IMAGE: ghcr.io/undefinedsco/xpod@${{ needs.build_image.outputs.digest }}
+      XPOD_MATRIX_PLATFORM: linux/amd64
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.metadata.outputs.sourceSha }}
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Bind this matrix job's actual attempt
+        id: matrix_identity
+        run: |
+          node - <<'NODE'
+          const fs = require('node:fs');
+          const { artifactName } = require('./scripts/lib/mode-artifact-authority.cjs');
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `attempt=${process.env.GITHUB_RUN_ATTEMPT}\n`);
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `artifact-name=${artifactName(process.env.GITHUB_SHA, process.env.GITHUB_RUN_ID, process.env.GITHUB_RUN_ATTEMPT)}\n`);
+          NODE
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - run: bun install --frozen-lockfile
+      - run: bun run build:packages && bun run --cwd desktop bundle
+      - run: bun x --no-install playwright install --with-deps chromium
+      - name: Prepare owned Linux Electron display and installed runtime
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes xvfb libgtk-3-0t64 libnss3 libxss1 libgbm1 libasound2t64
+          node node_modules/electron/install.js
+          node - <<'NODE'
+          const fs = require('node:fs');
+          const { execFileSync } = require('node:child_process');
+          const executable = require('electron');
+          fs.accessSync(executable, fs.constants.X_OK);
+          if (execFileSync('ldd', [executable], { encoding: 'utf8' }).includes('not found')) {
+            throw new Error('Installed Electron system dependencies are incomplete');
+          }
+          execFileSync('which', ['xvfb-run'], { stdio: 'ignore' });
+          NODE
+      - name: Verify all modes against the same immutable image
+        env:
+          XPOD_LIVE_PROVIDER_API_KEY_CONFIG: ${{ secrets.XPOD_LIVE_PROVIDER_API_KEY_CONFIG }}
+        run: |
+          set -euo pipefail
+          test -n "$XPOD_LIVE_PROVIDER_API_KEY_CONFIG"
+          export XPOD_LIVE_PROVIDER_KEY_FILE="${RUNNER_TEMP}/mode-matrix-provider"
+          trap 'rm -f "$XPOD_LIVE_PROVIDER_KEY_FILE"' EXIT
+          umask 077
+          printf '%s\n' "$XPOD_LIVE_PROVIDER_API_KEY_CONFIG" > "$XPOD_LIVE_PROVIDER_KEY_FILE"
+          bun scripts/accept-service-image-modes.ts run "${RUNNER_TEMP}/service-image-modes"
+          node scripts/verify-service-image-modes.cjs \
+            --directory "${RUNNER_TEMP}/service-image-modes" \
+            --source-sha "$GITHUB_SHA" --image "$XPOD_MATRIX_IMAGE" --platform "$XPOD_MATRIX_PLATFORM" \
+            --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" --producer-check true
+      - name: Preserve safe per-mode originals and matrix receipt
+        id: mode_artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.matrix_identity.outputs.artifact-name }}
+          path: ${{ runner.temp }}/service-image-modes/
+          if-no-files-found: warn
+          retention-days: 30
+
   finalize_acceptance:
     name: Finalize RC acceptance
     needs:
@@ -1351,10 +1437,12 @@ jobs:
       - deploy_and_accept
       - build_desktop_rc
       - legacy_root_compat
+      - runtime_mode_matrix
     runs-on: ubuntu-latest
     environment: rc
     permissions:
       contents: read
+      actions: read
     env:
       CANDIDATE_VERSION: ${{ needs.metadata.outputs.candidate }}
       REF_NAME: ${{ github.ref_name }}
@@ -1368,6 +1456,49 @@ jobs:
           node-version: 22
       - run: bun install --frozen-lockfile
       - run: bun run build:packages
+      - name: Download exact same-image mode acceptance
+        uses: actions/download-artifact@v4
+        with:
+          artifact-ids: ${{ needs.runtime_mode_matrix.outputs.artifact-id }}
+          merge-multiple: true
+          path: ${{ runner.temp }}/service-image-modes
+      - name: Bind retained successful matrix attempt to actual job and artifact observations
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MATRIX_ATTEMPT: ${{ needs.runtime_mode_matrix.outputs.attempt }}
+          MATRIX_ARTIFACT_NAME: ${{ needs.runtime_mode_matrix.outputs.artifact-name }}
+          MATRIX_ARTIFACT_ID: ${{ needs.runtime_mode_matrix.outputs.artifact-id }}
+          MATRIX_ARTIFACT_DIGEST: ${{ needs.runtime_mode_matrix.outputs.artifact-digest }}
+          XPOD_MATRIX_IMAGE: ghcr.io/undefinedsco/xpod@${{ needs.build_image.outputs.digest }}
+        run: |
+          set -euo pipefail
+          mkdir -m 700 "${RUNNER_TEMP}/service-image-mode-authority"
+          node - <<'NODE'
+          const fs = require('node:fs'); const path = require('node:path');
+          const rawDigest = process.env.MATRIX_ARTIFACT_DIGEST;
+          const selection = { schemaVersion: 1, sourceSha: process.env.GITHUB_SHA,
+            image: process.env.XPOD_MATRIX_IMAGE, platform: 'linux/amd64',
+            runId: process.env.GITHUB_RUN_ID, runAttempt: process.env.MATRIX_ATTEMPT,
+            artifactName: process.env.MATRIX_ARTIFACT_NAME, artifactId: Number(process.env.MATRIX_ARTIFACT_ID),
+            artifactDigest: rawDigest.startsWith('sha256:') ? rawDigest : `sha256:${rawDigest}` };
+          fs.writeFileSync(path.join(process.env.RUNNER_TEMP, 'service-image-mode-authority/selection.safe.json'), JSON.stringify(selection), { mode: 0o600, flag: 'wx' });
+          NODE
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${MATRIX_ARTIFACT_ID}" > "${RUNNER_TEMP}/service-image-mode-authority/artifact.original.json"
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs?filter=all&per_page=100" > "${RUNNER_TEMP}/service-image-mode-authority/jobs.original.json"
+      - name: Revalidate same-image mode originals
+        env:
+          XPOD_MATRIX_IMAGE: ghcr.io/undefinedsco/xpod@${{ needs.build_image.outputs.digest }}
+          XPOD_MATRIX_PLATFORM: linux/amd64
+          MATRIX_ATTEMPT: ${{ needs.runtime_mode_matrix.outputs.attempt }}
+        run: |
+          node scripts/verify-service-image-modes.cjs \
+            --directory "${RUNNER_TEMP}/service-image-modes" \
+            --source-sha "$GITHUB_SHA" --image "$XPOD_MATRIX_IMAGE" --platform "$XPOD_MATRIX_PLATFORM" \
+            --run-id "$GITHUB_RUN_ID" --run-attempt "$MATRIX_ATTEMPT" \
+            --selection-file "${RUNNER_TEMP}/service-image-mode-authority/selection.safe.json" \
+            --artifact-file "${RUNNER_TEMP}/service-image-mode-authority/artifact.original.json" \
+            --jobs-file "${RUNNER_TEMP}/service-image-mode-authority/jobs.original.json" \
+            --checks-out "${RUNNER_TEMP}/service-image-modes-check.json"
       - name: Download the exact successful legacy compatibility proof
         uses: actions/download-artifact@v4
         with:
@@ -1466,6 +1597,7 @@ jobs:
           const checks = {
             ...JSON.parse(fs.readFileSync(checksPath, 'utf8')),
             ...JSON.parse(fs.readFileSync(path.join(process.env.RUNNER_TEMP, 'legacy-root-compat-check.json'), 'utf8')),
+            ...JSON.parse(fs.readFileSync(path.join(process.env.RUNNER_TEMP, 'service-image-modes-check.json'), 'utf8')),
             'qlever-local': qleverChecks['qlever-local'],
             'desktop': desktopChecks.desktop,
             'package-consumers': packageConsumerChecks['package-consumers'],
@@ -1484,6 +1616,8 @@ jobs:
           mkdir "${RUNNER_TEMP}/accepted-release"
           cp "${RUNNER_TEMP}/release-acceptance.json" "${RUNNER_TEMP}/accepted-release/release-acceptance.json"
           cp -R "${RUNNER_TEMP}/legacy-root-compat" "${RUNNER_TEMP}/accepted-release/compat"
+          cp -R "${RUNNER_TEMP}/service-image-modes" "${RUNNER_TEMP}/accepted-release/mode-matrix"
+          cp -R "${RUNNER_TEMP}/service-image-mode-authority" "${RUNNER_TEMP}/accepted-release/mode-authority"
       - name: Upload the only stable-promotion evidence
         uses: actions/upload-artifact@v4
         with:
