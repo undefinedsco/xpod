@@ -7,6 +7,34 @@ import type { GitHubOriginObservation } from './github-origin';
 type ReadonlyMaterial<T> = T extends readonly (infer Item)[] ? readonly ReadonlyMaterial<Item>[]
   : T extends object ? { readonly [Key in keyof T]: ReadonlyMaterial<T[Key]> } : T;
 
+/** Custody belongs to the central collector. A copied stage JSON or arbitrary
+ * local raw directory cannot construct any of these in an issued material view. */
+export type NativeOriginalCustody = {
+  readonly original: Readonly<NativeFile>;
+  readonly observation: GitHubOriginObservation;
+} & (
+  { readonly kind: 'artifact-archive' }
+  | { readonly kind: 'artifact-member'; readonly memberPath: string }
+  | { readonly kind: 'job-log'; readonly endpoint: string }
+);
+
+/** References to the actual accept.py final/metadata/stage originals. Loader,
+ * glibc, SDK and runtime semantics are checked from these bytes by the adapter,
+ * never represented as an abiPassed assertion. Missing mac observations remain
+ * missing; an architecture header is not a substitute for this record. */
+export interface NativeRuntimeAbiMaterials {
+  readonly binary: Readonly<NativeFile>;
+  readonly target: string;
+  readonly final: Readonly<NativeFile>;
+  readonly metadata: Readonly<NativeFile>;
+  readonly stages: readonly {
+    readonly name: string;
+    readonly receipt: Readonly<NativeFile>;
+    readonly raw: Readonly<NativeFile>;
+  }[];
+  readonly originalCustody: readonly NativeOriginalCustody[];
+}
+
 /** Existing native schema is authoritative. Native stage source revisions are
  * independent of the containing module product source revision. */
 export interface NativeAdmissionMaterials {
@@ -16,6 +44,7 @@ export interface NativeAdmissionMaterials {
     readonly stage: 'input-observation' | 'build' | 'test';
     readonly observation: GitHubOriginObservation;
   }[];
+  readonly runtimeAbi?: readonly NativeRuntimeAbiMaterials[];
   /** Only index/source-kit registered references may be read. Implementations
    * bound size, reject links/escapes and recheck original hashes on every read. */
   readProductOriginal(reference: Readonly<NativeFile>, maximumBytes: number): Buffer;
@@ -67,6 +96,9 @@ export interface CollectedArtifactView {
   readonly producerOriginals: readonly CollectedArtifactMember[];
   /** Rechecks the member's bound bytes and returns a copy; no path guessing. */
   readMember(path: string, maximumBytes: number): Buffer;
+  /** Bounded random access to the same fully hashed immutable member. This
+   * carries custody only; format and ABI policy remain in their shared adapters. */
+  readMemberRange?(path: string, offset: number, length: number): Buffer;
   /** Original producer evidence selected from the observed outer ZIP. */
   readProducerOriginal(path: string, maximumBytes: number): Buffer;
 }

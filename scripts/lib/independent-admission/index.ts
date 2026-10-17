@@ -3,6 +3,7 @@ import { collectedArtifactView } from './artifact-collector';
 import { derivedSourceView } from './source-context';
 import { consumerObservationView } from './consumer-context';
 import { verifyRuntimeClosure } from './runtime-closure';
+import { verifyNativeAdmission } from './native-admission';
 import { verifyCliInputSet } from './source-rules';
 import { verifyCliBuildExecution, type CliExecutionFacts } from './source-execution';
 import { createHash } from 'node:crypto';
@@ -199,9 +200,10 @@ const adapters: Readonly<Record<Gate, Adapter>> = Object.freeze<Record<Gate, Ada
     const result = verifyRuntimeClosure(evidence, context);
     return { status: result.status, reason: result.reason, pending: [...result.pending] };
   } },
-  native: { verify: evidence => ({ status: 'pending', reason: evidence?.status === 'material-integrity-verified' && evidence.externalAdmission === 'pending'
-    ? 'Native materials are internally bound; external admission remains pending'
-    : 'No authoritative independent release admission verifier exists for this evidence format' }) },
+  native: { verify: (evidence, context) => {
+    const result = verifyNativeAdmission(evidence, context);
+    return { status: result.status, reason: result.reason, pending: [...result.pending] };
+  } },
   legal: { verify: evidence => ({ status: 'pending', reason: evidence?.schemaVersion === 1 && evidence.status === 'original-material-collection' && evidence.legalClearance === false
     ? 'Original terms inventory explicitly does not confer legal clearance'
     : 'No authoritative independent release admission verifier exists for this evidence format' }) },

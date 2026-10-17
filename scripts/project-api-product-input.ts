@@ -3,6 +3,7 @@ import { createReadStream, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { API_PRODUCT_WORKFLOW } from './acquire-independent-product-input';
 import { assertPreviewProductContext, productOriginal, withProductProjection } from './lib/product-artifact-projection';
+import { productTargets } from './module-product-targets';
 import { parseApiPackReceipt } from './collect-api-release-input';
 const hash = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
 const BOUNDS = { archive: 512 * 1024 ** 2, packRaw: 64 * 1024, producer: 1024 * 1024 };
@@ -17,14 +18,18 @@ export async function projectApiProductInput(input: ApiProductProjectionInput, o
   if (input?.schemaVersion !== 1 || !/^[a-f0-9]{64}$/u.test(input.custodyReceiptSha256)
     || input.members?.producer !== 'producer.receipt.json' || input.members.archive !== 'product.tgz'
     || input.members.packRaw !== 'evidence/pack.raw.log') fail('explicit API producer member contract required');
+  const targets = productTargets('api').filter(target => target.nativeSourceAvailable);
+  const artifactName = (target: string, custody: any) => `api-module-products-${target}-${custody.expectedSourceSha}-${custody.runId}-${custody.runAttempt}`;
   return await withProductProjection(input, output, { workflowPath: API_PRODUCT_WORKFLOW, materialRole: 'controlled-preview-materials',
-    artifactNames: custody => [`api-module-products-darwin-arm64-${custody.expectedSourceSha}-${custody.runId}-${custody.runAttempt}`] }, async ({ root, custody, metadata: { run }, temporary, member, project, select, writeOutput }) => {
+    artifactNames: custody => targets.map(target => artifactName(target.target, custody)) }, async ({ root, custody, metadata: { run, artifact }, temporary, member, project, select, writeOutput }) => {
   const producerMember = member(input.members.producer, BOUNDS.producer);
   const archiveMember = member(input.members.archive, BOUNDS.archive);
   const packMember = member(input.members.packRaw, BOUNDS.packRaw);
     project([select(producerMember, 'producer.receipt.json')]);
     const producer = JSON.parse(productOriginal(path.join(temporary, 'producer.receipt.json'), producerMember.sha256).toString());
-    const context = assertPreviewProductContext(producer, custody, run, API_PRODUCT_WORKFLOW, 'api-module-product-production');
+    const matches = targets.filter(target => artifactName(target.target, custody) === artifact.name);
+    if (matches.length !== 1) fail('unique observed artifact target required');
+    const context = assertPreviewProductContext(producer, custody, run, API_PRODUCT_WORKFLOW, 'api-module-product-production', matches[0].target);
     if (producer.archive?.path !== input.members.archive || producer.archive.bytes !== archiveMember.bytes || producer.archive.sha256 !== archiveMember.sha256
       || producer.packRaw?.path !== input.members.packRaw || producer.packRaw.bytes !== packMember.bytes || producer.packRaw.sha256 !== packMember.sha256) fail('producer selected member binding mismatch');
     project([select(archiveMember, 'product.tgz'), select(packMember, 'pack.raw.log')]);

@@ -90,7 +90,7 @@ test('actual registry installers reject serialized artifact/readback approval be
 import { createHash } from 'node:crypto';
 import { createServer, type Server } from 'node:http';
 import { createRequire } from 'node:module';
-import { registryConsumerInstallArguments, verifyInstalledConsumerInventory, estimateConsumerWriteBudget } from '../../scripts/lib/independent-admission/consumer-context';
+import { registryConsumerInstallArguments, verifyInstalledConsumerInventory, estimateConsumerWriteBudget, createConsumerFrozenLock } from '../../scripts/lib/independent-admission/consumer-context';
 test('fixed install flags consume exact loopback registry bytes without running scripts or auto peers', async () => {
   // Test-only loopback substitution is confined here. No production observer,
   // collector or issuer accepts this registry or manufactures a capability.
@@ -197,3 +197,71 @@ test('archive full CLI and dependency closure can fit its separate fixed estimat
   expect(() => estimateConsumerWriteBudget({ preparation: 'archive', payloadBytes: 65 * 1024 ** 2,
     evidenceBytes: 0, capabilityCount: 2, profileCount: 2 })).toThrow('fixed budget');
 });
+
+test('Bun frozen lock subset preserves root and nested versions without overrides', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xpod-frozen-layout-test-'));
+  const require = createRequire(import.meta.url);
+  const payloads = new Map<string, { manifest: any; bytes: Buffer; integrity: string }>();
+  let server: Server | undefined;
+  let port = 0;
+  try {
+    for (const [name, version, dependencies] of [['fixture-parent', '1.0.0', { 'fixture-leaf': '^2.0.0' }],
+      ['fixture-leaf', '1.0.0', {}], ['fixture-leaf', '2.0.0', {}]] as const) {
+      const source = path.join(root, name + version); fs.mkdirSync(path.join(source, 'package'), { recursive: true });
+      const manifest = { name, version, dependencies, ...(name === 'fixture-parent' ? { peerDependencies: { 'fixture-absent-optional': '^1' }, peerDependenciesMeta: { 'fixture-absent-optional': { optional: true } } } : {}) };
+      fs.writeFileSync(path.join(source, 'package', 'package.json'), JSON.stringify(manifest));
+      fs.writeFileSync(path.join(source, 'package', 'index.cjs'), `exports.version = '${version}';`);
+      const packed = path.join(source, 'payload.tgz'); require('tar').c({ gzip: true, sync: true, cwd: source, file: packed }, ['package']);
+      const bytes = fs.readFileSync(packed), integrity = 'sha512-' + createHash('sha512').update(bytes).digest('base64');
+      payloads.set(name + '@' + version, { manifest, bytes, integrity });
+    }
+    server = createServer((request, response) => {
+      const pathname = new URL(request.url!, 'http://127.0.0.1').pathname;
+      for (const value of payloads.values()) if (pathname === `/${value.manifest.name}/-/${value.manifest.name}-${value.manifest.version}.tgz`) { response.end(value.bytes); return; }
+      const name = pathname.slice(1), versions = Object.fromEntries([...payloads.values()].filter(value => value.manifest.name === name).map(value => [value.manifest.version,
+        { ...value.manifest, dist: { integrity: value.integrity, tarball: `http://127.0.0.1:${port}/${name}/-/${name}-${value.manifest.version}.tgz` } }]));
+      if (!Object.keys(versions).length) { response.statusCode = 404; response.end(); return; }
+      response.setHeader('Content-Type', 'application/json'); response.end(JSON.stringify({ name, versions, 'dist-tags': { latest: Object.keys(versions).sort().pop() } }));
+    });
+    await new Promise<void>(resolve => server!.listen(0, '127.0.0.1', resolve)); const address = server.address();
+    if (!address || typeof address === 'string') throw Error('missing loopback port'); port = address.port;
+    const cwd = path.join(root, 'installed'); fs.mkdirSync(cwd); const evidence = path.join(root, 'evidence'); fs.mkdirSync(evidence);
+    const dependencies = { 'fixture-parent': '1.0.0', 'fixture-leaf': '1.0.0' };
+    fs.writeFileSync(path.join(cwd, 'package.json'), JSON.stringify({ name: 'xpod-independent-registry-consumer', version: '0.0.0', private: true, dependencies }));
+    const expectation = (name: string, version: string) => {
+      const payload = payloads.get(name + '@' + version)!;
+      const base = path.join(root, name + version, 'package');
+      const readMember = (file: string) => fs.readFileSync(path.join(base, file));
+      return { identity: { package: name, version, integrity: payload.integrity, sourceSha: 'a'.repeat(40),
+        archiveSha256: createHash('sha256').update(payload.bytes).digest('hex'), archiveBytes: payload.bytes.length }, readMember,
+        members: ['package.json', 'index.cjs'].map(file => { const bytes = readMember(file); return { path: file, bytes: bytes.length,
+          sha256: createHash('sha256').update(bytes).digest('hex'), mode: fs.statSync(path.join(base, file)).mode & 0o777 }; }) };
+    };
+    const placements = [
+      { lockKey: 'fixture-parent', path: 'node_modules/fixture-parent', artifact: expectation('fixture-parent', '1.0.0') },
+      { lockKey: 'fixture-leaf', path: 'node_modules/fixture-leaf', artifact: expectation('fixture-leaf', '1.0.0') },
+      { lockKey: 'fixture-parent/fixture-leaf', path: 'node_modules/fixture-parent/node_modules/fixture-leaf', artifact: expectation('fixture-leaf', '2.0.0') },
+    ];
+    const frozen = createConsumerFrozenLock(placements, dependencies);
+    fs.writeFileSync(path.join(cwd, 'bun.lock'), JSON.stringify(frozen));
+    const args = registryConsumerInstallArguments(path.join(root, 'cache')).map(argument => argument === 'https://registry.npmjs.org/' ? `http://127.0.0.1:${port}/` : argument).concat('--frozen-lockfile');
+    await require('../../scripts/lib/afs-publication-command.cjs').runPublicationCommand(process.execPath, args, { cwd, evidence, label: 'frozen-install', timeoutMs: 5000,
+      rawLimit: 262144, env: { PATH: path.dirname(process.execPath), HOME: root, TMPDIR: root } }).catch((error: Error) => { throw Error(error.message + ': ' + fs.readFileSync(path.join(evidence, 'frozen-install.stderr.raw.log'), 'utf8')); });
+    expect(JSON.parse(fs.readFileSync(path.join(cwd, 'node_modules', 'fixture-leaf', 'package.json'), 'utf8')).version).toBe('1.0.0');
+    expect(JSON.parse(fs.readFileSync(path.join(cwd, 'node_modules', 'fixture-parent', 'node_modules', 'fixture-leaf', 'package.json'), 'utf8')).version).toBe('2.0.0');
+    const inventory = verifyInstalledConsumerInventory(cwd, placements.map(placement => placement.artifact), placements);
+    expect(inventory.inventories).toHaveLength(3);
+    const resolutionProbe = "const {createRequire}=require('node:module'),p=require('node:path'); const own=createRequire(p.resolve('node_modules/fixture-parent/index.cjs'));process.stdout.write(JSON.stringify({root:require('fixture-leaf/index.cjs').version,nested:own('fixture-leaf/index.cjs').version}));";
+    fs.writeFileSync(path.join(cwd, 'resolution.cjs'), resolutionProbe);
+    for (const runtime of ['node', 'bun']) {
+      const executable = (process.env.PATH ?? '').split(path.delimiter).map(directory => path.join(directory, runtime))
+        .find(candidate => { try { fs.accessSync(candidate, fs.constants.X_OK); return true; } catch { return false; } });
+      const result = spawnSync(executable!, ['resolution.cjs'], { cwd, env: {}, encoding: 'utf8', timeout: 2000 });
+      expect(result.status).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual({ root: '1.0.0', nested: '2.0.0' });
+    }
+    fs.writeFileSync(path.join(cwd, 'node_modules/fixture-parent/node_modules/fixture-leaf/index.cjs'), "exports.version='1.0.0';");
+    expect(() => verifyInstalledConsumerInventory(cwd, placements.map(placement => placement.artifact), placements)).toThrow();
+
+  } finally { server?.closeAllConnections(); server?.close(); fs.rmSync(root, { recursive: true, force: true }); }
+}, 10000);

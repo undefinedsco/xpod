@@ -7,6 +7,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { collectedArtifactView } from './artifact-collector';
 import { registryArtifactView, observeRegistryArtifact } from './registry-context';
 import { planClientConsumerProfiles } from './consumer-profiles';
+import { publicationPeerInputPlanView } from './peer-input-plan';
 import type { CollectedArtifactIdentity, CollectedArtifactView } from './artifact-contract';
 const { runPublicationCommand } = createRequire(import.meta.url)('../afs-publication-command.cjs');
 const hash = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
@@ -74,9 +75,10 @@ function runtimePath(name: 'node' | 'bun'): string {
   }
   return fail('required runtime unavailable: ' + name);
 }
-function materialize(root: string, artifact: CollectedArtifactView): void {
+function materialize(root: string, artifact: CollectedArtifactView, placement = 'node_modules/' + artifact.identity.package): void {
   if (!/^(@[a-z0-9_.-]+\/)?[a-z0-9_.-]+$/u.test(artifact.identity.package)) fail('unsafe package name');
-  const target = path.join(root, 'node_modules', artifact.identity.package);
+  if (!placement.startsWith('node_modules/') || placement.includes('\\') || placement.split('/').some(part => !part || part === '.' || part === '..')) fail('unsafe package placement');
+  const target = path.join(root, placement);
   fs.mkdirSync(target, { recursive: true });
   for (const member of artifact.members) {
     if (!member.path || member.path.includes('\\') || path.isAbsolute(member.path)
@@ -90,14 +92,17 @@ function materialize(root: string, artifact: CollectedArtifactView): void {
 }
 
 interface ConsumerInput {
-  artifact: unknown; peers?: unknown[]; dependencies?: unknown[]; stage: 'prepublish' | 'postpublish';
+  artifact: unknown; peers?: unknown[]; dependencies?: unknown[]; peerPlan?: unknown; stage: 'prepublish' | 'postpublish';
   registryObservation?: unknown; evidenceDirectory: string;
 }
+interface Placement { path: string; lockKey: string; artifact: CollectedArtifactView }
 interface Profile {
   profile: string; pending: readonly string[]; artifacts: readonly CollectedArtifactView[];
   exportsByMode?: { esm: readonly string[]; cjs: readonly string[] };
   absentPeers: readonly string[];
   bins?: readonly string[];
+  placements?: readonly Placement[];
+  rootDependencies?: Record<string, string>;
 }
 function checkedArtifact(input: ConsumerInput): CollectedArtifactView {
   const artifact = collectedArtifactView(input.artifact);
@@ -189,6 +194,111 @@ function registryProfiles(profiles: readonly Profile[], dependencies: readonly u
   for (const name of supplied) if (!reached.has(name)) fail('unrelated dependency capability: ' + name);
   return result;
 }
+/** Nested layouts are obtained only from the opaque immutable-lock plan. A
+ * serialized placement table is never accepted as an operational plan. */
+function plannedProfiles(profiles: readonly Profile[], dependencies: readonly unknown[], opaque: unknown): Profile[] {
+  const plan = publicationPeerInputPlanView(opaque);
+  if (!plan || plan.status !== 'collection-planned') return fail('real complete publication peer plan required');
+  const available = new Map<string, CollectedArtifactView>(), supplied = new Set<string>(), used = new Set<string>();
+  for (const profile of profiles) for (const view of profile.artifacts) {
+    const key = view.identity.package + '@' + view.identity.version, previous = available.get(key);
+    if (previous && !isDeepStrictEqual(previous.identity, view.identity)) fail('conflicting exact package capability');
+    available.set(key, view);
+    const expected = view.identity.package === plan.products.cli.package ? plan.products.cli
+      : view.identity.package === plan.products.client.package ? plan.products.client : undefined;
+    if (expected && !isDeepStrictEqual(expected, view.identity)) fail('peer plan product identity mismatch');
+  }
+  if (dependencies.length > 128) fail('dependency capability count exceeds 128');
+  for (const capability of dependencies) {
+    const view = collectedArtifactView(capability);
+    if (!view) return fail('real dependency artifact capability required');
+    const key = view.identity.package + '@' + view.identity.version;
+    if (available.has(key)) fail('duplicate exact dependency capability');
+    available.set(key, view); supplied.add(key);
+  }
+  if (available.size > 128) fail('package capability count exceeds 128');
+  const planned = new Map(plan.placements.map(placement => [placement.lockKey, placement]));
+  const { satisfies } = createRequire(import.meta.url)('semver') as typeof import('semver');
+  const result = profiles.map(profile => {
+    const pending = [...profile.pending], placements = new Map<string, Placement>();
+    const rootDependencies: Record<string, string> = {};
+    const roots = profile.artifacts.filter(view => [plan.products.cli.package, plan.products.client.package].includes(view.identity.package));
+    for (const view of roots) {
+      placements.set(view.identity.package, { path: 'node_modules/' + view.identity.package, lockKey: view.identity.package, artifact: view });
+      rootDependencies[view.identity.package] = view.identity.version;
+    }
+    const roles = roots.some(view => view.identity.package === plan.products.cli.package) ? ['cli', 'client'] : ['client'];
+    const queue: string[] = [];
+    for (const peer of profile.artifacts.filter(view => !roots.includes(view))) {
+      const matches = plan.edges.filter(edge => roles.includes(edge.from) && edge.package === peer.identity.package && edge.version === peer.identity.version);
+      if (!matches.length) fail('selected peer is outside immutable plan');
+      rootDependencies[peer.identity.package] = peer.identity.version;
+      for (const match of matches) if (match.lockKey) queue.push(match.lockKey);
+    }
+    for (const lockKey of queue) {
+      if (placements.has(lockKey)) continue;
+      const placement = planned.get(lockKey);
+      if (!placement) return fail('plan edge has no exact placement');
+      const view = available.get(placement.requestKey);
+      if (!view) { pending.push('Missing collected exact planned artifact: ' + placement.requestKey); continue; }
+      if (view.identity.integrity !== placement.integrity || view.identity.target !== undefined) fail('planned artifact integrity mismatch');
+      placements.set(lockKey, { path: placement.path, lockKey, artifact: view }); used.add(placement.requestKey);
+      for (const edge of plan.edges.filter(edge => edge.from === lockKey)) if (edge.lockKey) queue.push(edge.lockKey);
+    }
+    // Validate actual manifest declarations against Node's nearest installed
+    // ancestor resolution, rather than substituting a globally selected version.
+    const byPath = new Map([...placements.values()].map(placement => [placement.path, placement]));
+    for (const placement of placements.values()) {
+      const manifest = JSON.parse(placement.artifact.readMember('package.json', 1024 * 1024).toString());
+      const requiredPeers = Object.entries(manifest.peerDependencies ?? {}).filter(([name]) => manifest.peerDependenciesMeta?.[name]?.optional !== true);
+      for (const [name, range] of [...Object.entries(manifest.dependencies ?? {}), ...Object.entries(manifest.optionalDependencies ?? {}), ...requiredPeers]) {
+        let current = placement.path, resolved: Placement | undefined;
+        for (;;) {
+          resolved = byPath.get(current + '/node_modules/' + name);
+          if (resolved || !current) break;
+          const boundary = current.lastIndexOf('/node_modules/');
+          current = boundary < 0 ? '' : current.slice(0, boundary);
+        }
+        resolved ??= byPath.get('node_modules/' + name);
+        if (!resolved) { pending.push('Missing installed dependency placement: ' + name + ' from ' + placement.lockKey); continue; }
+        if (typeof range !== 'string' || !satisfies(resolved.artifact.identity.version, range)) fail('planned nearest dependency version conflict');
+      }
+    }
+    for (const name of profile.absentPeers) if (byPath.has('node_modules/' + name)) pending.push('Base excludes planned optional peer: ' + name);
+    for (const [name, version] of Object.entries(rootDependencies)) {
+      const placement = byPath.get('node_modules/' + name);
+      if (!placement || placement.artifact.identity.version !== version) pending.push('Direct peer cannot be pinned at planned root: ' + name);
+    }
+    return { ...profile, pending: [...new Set(pending)], placements: [...placements.values()],
+      artifacts: [...placements.values()].map(placement => placement.artifact), rootDependencies };
+  });
+  for (const key of supplied) if (!used.has(key)) fail('unrelated dependency capability: ' + key);
+  return result;
+}
+function consumerProfiles(profiles: readonly Profile[], dependencies: readonly unknown[] = [], plan?: unknown): Profile[] {
+  return plan === undefined ? registryProfiles(profiles, dependencies) : plannedProfiles(profiles, dependencies, plan);
+}
+function packageLockDescriptor(view: Pick<CollectedArtifactView, 'identity' | 'readMember'>) {
+  const manifest = JSON.parse(view.readMember('package.json', 1024 * 1024).toString());
+  const descriptor: Record<string, unknown> = {};
+  for (const key of ['dependencies', 'optionalDependencies', 'peerDependencies', 'bin', 'os', 'cpu']) if (manifest[key] !== undefined) descriptor[key] = manifest[key];
+  const optionalPeers = Object.keys(manifest.peerDependencies ?? {}).filter(name => manifest.peerDependenciesMeta?.[name]?.optional === true);
+  if (optionalPeers.length) descriptor.optionalPeers = optionalPeers;
+  return descriptor;
+}
+/** Pure frozen-lock serialization, never an issuer or execution permit. */
+export function createConsumerFrozenLock(placements: readonly { lockKey: string; artifact: Pick<CollectedArtifactView, 'identity' | 'readMember'> }[], dependencies: Record<string, string>) {
+  const keys = new Set<string>();
+  for (const placement of placements) {
+    if (!placement.lockKey || placement.lockKey.includes('\\') || placement.lockKey.split('/').some(part => !part || part === '.' || part === '..') || keys.has(placement.lockKey)) fail('invalid frozen lock placement');
+    keys.add(placement.lockKey);
+  }
+  return { lockfileVersion: 2, configVersion: 1,
+    workspaces: { '': { name: 'xpod-independent-registry-consumer', version: '0.0.0', dependencies } },
+    packages: Object.fromEntries(placements.map(placement => [placement.lockKey,
+      [placement.artifact.identity.package + '@' + placement.artifact.identity.version, '', packageLockDescriptor(placement.artifact), placement.artifact.identity.integrity]])),
+  };
+}
 /** Pure arithmetic only; no capabilities, network, writes or admission result.
  * Registry runs require a newly reviewed operational budget before execution. */
 export function estimateConsumerWriteBudget(input: {
@@ -221,72 +331,62 @@ function executionProfilesAndBudget(profiles: readonly Profile[], preparation: '
 }
 /** Pure byte/layout checker, not an issuer. Structural expectations alone cannot
  * issue a production observation; executeConsumer supplies private collector views. */
-export function verifyInstalledConsumerInventory(cwd: string, artifacts: readonly Pick<CollectedArtifactView, 'identity' | 'members' | 'readMember'>[]) {
+export function verifyInstalledConsumerInventory(cwd: string, artifacts: readonly Pick<CollectedArtifactView, 'identity' | 'members' | 'readMember'>[],
+  declaredPlacements?: readonly { path: string; artifact: Pick<CollectedArtifactView, 'identity' | 'members' | 'readMember'> }[]) {
   const modulesPath = path.join(cwd, 'node_modules');
   if (fs.lstatSync(modulesPath).isSymbolicLink()) return fail('installed node_modules symlink');
-  const modules = fs.realpathSync(modulesPath);
-  const names: string[] = [];
-  for (const name of fs.readdirSync(modules)) {
-    if (name === '.bin') continue;
-    const entry = path.join(modules, name);
-    if (fs.lstatSync(entry).isSymbolicLink()) fail('installed package symlink');
-    if (name.startsWith('@')) for (const member of fs.readdirSync(entry)) names.push(name + '/' + member);
-    else names.push(name);
-  }
-  if (!isDeepStrictEqual(names.sort(), artifacts.map(view => view.identity.package).sort())) fail('uncollected installed package');
-  const inventories = artifacts.map(view => {
-    const root = path.join(modules, view.identity.package);
-    const expected = new Map(view.members.map(member => [member.path, member]));
-    const files: { path: string; bytes: number; sha256: string; mode: number }[] = [];
-    function walk(directory: string, prefix: string) {
-      for (const name of fs.readdirSync(directory)) {
-        const relative = prefix + name, absolute = path.join(directory, name), stat = fs.lstatSync(absolute);
-        if (stat.isSymbolicLink()) fail('installed package member symlink');
-        if (stat.isDirectory()) { walk(absolute, relative + '/'); continue; }
-        if (!stat.isFile()) fail('nonregular installed package member');
-        const member = expected.get(relative);
-        if (!member || stat.size !== member.bytes || (stat.mode & 0o777) !== (member.mode & 0o777)) return fail('installed package inventory or mode mismatch');
-        const bytes = fs.readFileSync(absolute);
-        if (hash(bytes) !== member.sha256) fail('installed package bytes mismatch');
-        files.push({ path: relative, bytes: bytes.length, sha256: hash(bytes), mode: stat.mode & 0o777 });
-      }
+  const actualRoot = fs.realpathSync(cwd);
+  const placements = declaredPlacements ?? artifacts.map(artifact => ({ path: 'node_modules/' + artifact.identity.package, artifact }));
+  const expected = new Map<string, { member: CollectedArtifactView['members'][number]; placement: string }>();
+  const binTargets = new Map<string, { target: string; sha256: string }>();
+  const inventories = placements.map(placement => {
+    if (!placement.path.startsWith('node_modules/') || placement.path.includes('\\') || placement.path.split('/').some(part => !part || part === '.' || part === '..')) return fail('unsafe expected installation placement');
+    const manifest = JSON.parse(placement.artifact.readMember('package.json', 1024 * 1024).toString());
+    if (manifest.name !== placement.artifact.identity.package || manifest.version !== placement.artifact.identity.version) fail('expected manifest identity mismatch');
+    for (const member of placement.artifact.members) {
+      if (!member.path || member.path.includes('\\') || path.isAbsolute(member.path) || member.path.split('/').some(part => !part || part === '.' || part === '..')) fail('unsafe expected member');
+      const relative = placement.path + '/' + member.path;
+      if (expected.has(relative)) fail('overlapping expected installation member');
+      expected.set(relative, { member, placement: placement.path });
     }
-    walk(root, '');
-    if (files.length !== expected.size) fail('incomplete installed package inventory');
-    const manifest = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
-    if (manifest.name !== view.identity.package || manifest.version !== view.identity.version) fail('installed manifest identity mismatch');
-    return { identity: view.identity, files: files.sort((a, b) => a.path.localeCompare(b.path)) };
+    const declarations = typeof manifest.bin === 'string' ? { [manifest.name.split('/').pop()!]: manifest.bin } : manifest.bin ?? {};
+    const binDirectory = placement.path.slice(0, placement.path.lastIndexOf('node_modules/')) + 'node_modules/.bin/';
+    for (const [name, target] of Object.entries(declarations)) {
+      if (typeof target !== 'string' || !target || path.isAbsolute(target) || target.includes('\\') || target.split('/').some(part => part === '..')) return fail('unsafe installed bin declaration');
+      const relative = target.startsWith('./') ? target.slice(2) : target;
+      const member = placement.artifact.members.find(member => member.path === relative);
+      if (!member || binTargets.has(binDirectory + name)) return fail('ambiguous installed bin member');
+      binTargets.set(binDirectory + name, { target: path.join(actualRoot, placement.path, relative), sha256: member.sha256 });
+    }
+    return { identity: placement.artifact.identity, placement: placement.path, files: [] as { path: string; bytes: number; sha256: string; mode: number }[] };
   });
-  // Bun generates executable links outside package payloads. Verify each against
-  // a declared, already hash-checked member and retain as installation metadata.
-  const bins = path.join(modules, '.bin');
-  const links: { name: string; text: string; target: string; memberSha256: string }[] = [];
-  if (fs.existsSync(bins)) {
-    if (fs.lstatSync(bins).isSymbolicLink()) fail('installed bin directory symlink');
-    const expected = new Map<string, string>();
-    for (const view of artifacts) {
-      const manifest = JSON.parse(view.readMember('package.json', 1024 * 1024).toString());
-      const declarations = typeof manifest.bin === 'string'
-        ? { [view.identity.package.split('/').pop()!]: manifest.bin } : manifest.bin ?? {};
-      for (const [name, target] of Object.entries(declarations)) {
-        if (typeof target !== 'string' || !target || path.isAbsolute(target) || target.includes('\\')
-          || target.split('/').some(part => part === '..')) return fail('unsafe installed bin declaration');
-        const memberPath = target.startsWith('./') ? target.slice(2) : target;
-        if (!view.members.some(member => member.path === memberPath) || expected.has(name)) fail('ambiguous installed bin member');
-        expected.set(name, fs.realpathSync(path.join(modules, view.identity.package, memberPath)));
+  const links: { name: string; path: string; text: string; target: string; memberSha256: string }[] = [];
+  const visited = new Set<string>();
+  function walk(relativeDirectory: string) {
+    for (const name of fs.readdirSync(path.join(actualRoot, relativeDirectory))) {
+      const relative = relativeDirectory + '/' + name, absolute = path.join(actualRoot, relative), stat = fs.lstatSync(absolute);
+      if (stat.isSymbolicLink()) {
+        const binding = binTargets.get(relative);
+        if (!binding || fs.realpathSync(absolute) !== binding.target) return fail('unbound installed executable link');
+        links.push({ name, path: relative, text: fs.readlinkSync(absolute), target: binding.target, memberSha256: binding.sha256 });
+        continue;
       }
+      if (stat.isDirectory()) {
+        if (!relative.endsWith('/.bin') && ![...expected.keys()].some(key => key.startsWith(relative + '/'))) fail('uncollected installed package directory');
+        walk(relative); continue;
+      }
+      if (!stat.isFile()) fail('nonregular installed package member');
+      const binding = expected.get(relative);
+      if (!binding || stat.size !== binding.member.bytes || (stat.mode & 0o777) !== (binding.member.mode & 0o777)) return fail('installed package inventory or mode mismatch');
+      const bytes = fs.readFileSync(absolute), sha256 = hash(bytes);
+      if (sha256 !== binding.member.sha256) fail('installed package bytes mismatch');
+      visited.add(relative);
+      inventories.find(row => row.placement === binding.placement)!.files.push({ path: relative.slice(binding.placement.length + 1), bytes: bytes.length, sha256, mode: stat.mode & 0o777 });
     }
-    for (const name of fs.readdirSync(bins)) {
-      const entry = path.join(bins, name), target = expected.get(name);
-      if (!fs.lstatSync(entry).isSymbolicLink() || !target || fs.realpathSync(entry) !== target) return fail('unbound installed executable link');
-      const member = inventories.flatMap(row => row.files.map(file => ({ ...file, absolute: path.join(modules, row.identity.package, file.path) })))
-        .find(file => file.absolute === target);
-      if (!member) return fail('installed executable target not inventoried');
-      links.push({ name, text: fs.readlinkSync(entry), target, memberSha256: member.sha256 });
-    }
-
   }
-  return { inventories, generatedBinLinks: links };
+  walk('node_modules');
+  if (visited.size !== expected.size) fail('incomplete installed package inventory');
+  return { inventories: inventories.map(row => ({ ...row, files: row.files.sort((a, b) => a.path.localeCompare(b.path)) })), generatedBinLinks: links };
 }
 
 /** Client and CLI use the same supervisor, temp-root lifecycle, byte budget,
@@ -294,22 +394,22 @@ export function verifyInstalledConsumerInventory(cwd: string, artifacts: readonl
 async function executeConsumer(input: ConsumerInput, artifact: CollectedArtifactView, profiles: readonly Profile[], preparation: 'archive' | 'registry' = 'archive'): Promise<ClientConsumerObservation> {
   // Both strategies require the same collected dependency closure. Registry adds
   // real readback/installation; archive only materializes these verified bytes.
-  profiles = registryProfiles(profiles, input.dependencies);
+  profiles = consumerProfiles(profiles, input.dependencies, input.peerPlan);
   const { executionProfiles, runnable, writeEstimate } = executionProfilesAndBudget(profiles, preparation);
   if (preparation === 'registry') {
     // The primary was checked by checkedArtifact. Every additional exact artifact
     // receives the same fixed central GET-only readback before installation.
     const readbackDeadline = Date.now() + 180_000;
-    const observed = new Set<string>([artifact.identity.package]);
+    const observed = new Set<string>([artifact.identity.package + '@' + artifact.identity.version]);
     for (const profile of runnable) for (const dependency of profile.artifacts) {
-      if (observed.has(dependency.identity.package)) continue;
+      if (observed.has(dependency.identity.package + '@' + dependency.identity.version)) continue;
       const capability = (input as ConsumerInput & { client?: unknown }).client;
       const candidates = [capability, ...(input.peers ?? []), ...(input.dependencies ?? [])];
       const original = candidates.find(value => collectedArtifactView(value) === dependency);
       if (!original) fail('dependency readback capability unavailable');
       if (Date.now() >= readbackDeadline) fail('dependency registry readback total deadline exceeded');
       await observeRegistryArtifact(original);
-      observed.add(dependency.identity.package);
+      observed.add(dependency.identity.package + '@' + dependency.identity.version);
     }
     if (Date.now() > readbackDeadline) fail('dependency registry readback total deadline exceeded');
   }
@@ -325,7 +425,10 @@ async function executeConsumer(input: ConsumerInput, artifact: CollectedArtifact
       if (profile.pending.length) { results.push({ profile: profile.profile, verified: false, pending: profile.pending }); continue; }
       const cwd = path.join(root, 'profile-' + index);
       fs.mkdirSync(cwd); fs.mkdirSync(path.join(cwd, 'home')); fs.mkdirSync(path.join(cwd, 'tmp'));
-      if (preparation === 'archive') for (const view of profile.artifacts) materialize(cwd, view);
+      if (preparation === 'archive') {
+        if (profile.placements) for (const placement of profile.placements) materialize(cwd, placement.artifact, placement.path);
+        else for (const view of profile.artifacts) materialize(cwd, view);
+      }
       const packageRoot = path.join(cwd, 'node_modules', artifact.identity.package);
       // Verify absence before any candidate command, including CLI binaries.
       for (const name of profile.absentPeers) if (fs.existsSync(path.join(cwd, 'node_modules', name))) fail('optional peer materialized in base');
@@ -357,13 +460,14 @@ async function executeConsumer(input: ConsumerInput, artifact: CollectedArtifact
         return fs.readFileSync(path.join(evidence, row.raw[0].path), 'utf8');
       }
       if (preparation === 'registry') {
-        const dependencies = Object.fromEntries(profile.artifacts.map(view => [view.identity.package, view.identity.version]));
-        const generated = { name: 'xpod-independent-registry-consumer', version: '0.0.0', private: true, dependencies, overrides: dependencies };
+        const dependencies = profile.rootDependencies ?? Object.fromEntries(profile.artifacts.map(view => [view.identity.package, view.identity.version]));
+        const generated = { name: 'xpod-independent-registry-consumer', version: '0.0.0', private: true, dependencies, ...(profile.placements ? {} : { overrides: dependencies }) };
         fs.writeFileSync(path.join(cwd, 'package.json'), JSON.stringify(generated), { flag: 'wx' });
         fs.writeFileSync(path.join(cwd, 'bunfig.toml'), '[install]\nregistry = "' + REGISTRY + '"\n', { flag: 'wx' });
         fs.writeFileSync(path.join(evidence, `profile-${index}-generated-package.json`), JSON.stringify(generated, null, 2), { flag: 'wx' });
-        await command('bun', `profile-${index}-registry-install`, registryConsumerInstallArguments(path.join(cwd, 'cache')), true);
-        const inventory = verifyInstalledConsumerInventory(cwd, profile.artifacts);
+        if (profile.placements) fs.writeFileSync(path.join(cwd, 'bun.lock'), JSON.stringify(createConsumerFrozenLock(profile.placements!, dependencies)), { flag: 'wx' });
+        await command('bun', `profile-${index}-registry-install`, registryConsumerInstallArguments(path.join(cwd, 'cache')).concat(profile.placements ? ['--frozen-lockfile'] : []), true);
+        const inventory = verifyInstalledConsumerInventory(cwd, profile.artifacts, profile.placements);
         for (const name of profile.absentPeers) if (fs.existsSync(path.join(cwd, 'node_modules', name))) fail('optional peer installed in base');
         const lock = fs.readFileSync(path.join(cwd, 'bun.lock'));
         if (lock.length > 512 * 1024) fail('installed lock budget exceeded');
@@ -512,20 +616,20 @@ function cliExecutionPlan(input: Pick<ConsumerInput, 'artifact' | 'peers'> & { c
   return { artifact, profiles };
 }
 
-type RegistryMaterials = Pick<ConsumerInput, 'artifact' | 'peers' | 'dependencies'>;
+type RegistryMaterials = Pick<ConsumerInput, 'artifact' | 'peers' | 'dependencies' | 'peerPlan'>;
 /** Read-only material readiness, not a release permit or consumer observation. */
-function preflightProfiles(profiles: readonly Profile[], dependencies?: unknown[]) {
-  const complete = registryProfiles(profiles, dependencies);
+function preflightProfiles(profiles: readonly Profile[], dependencies?: unknown[], peerPlan?: unknown) {
+  const complete = consumerProfiles(profiles, dependencies, peerPlan);
   const pending = complete.flatMap(profile => profile.pending.map(reason => profile.profile + ': ' + reason));
   if (pending.length) fail('Registry consumer material gaps: ' + pending.join('; '));
   const { writeEstimate } = executionProfilesAndBudget(complete, 'registry');
   return Object.freeze({ status: 'materials-ready' as const, consumerVerified: false as const, ...writeEstimate });
 }
 export function preflightRegistryInstalledClientConsumer(input: RegistryMaterials) {
-  return preflightProfiles(clientExecutionPlan(input).profiles, input.dependencies);
+  return preflightProfiles(clientExecutionPlan(input).profiles, input.dependencies, input.peerPlan);
 }
 export function preflightRegistryInstalledCliConsumer(input: RegistryMaterials & { client: unknown }) {
-  return preflightProfiles(cliExecutionPlan(input).profiles, input.dependencies);
+  return preflightProfiles(cliExecutionPlan(input).profiles, input.dependencies, input.peerPlan);
 }
 async function observeClient(input: ConsumerInput, preparation: 'archive' | 'registry') {
   checkedArtifact(input);
