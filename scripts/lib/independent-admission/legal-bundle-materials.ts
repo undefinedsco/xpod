@@ -1,3 +1,5 @@
+import { installedLegalOriginalViews } from './legal-installed-originals';
+import type { DerivedSourceView } from './artifact-contract';
 import path from 'node:path';
 import { inspectBunHelperPrefix } from './legal-bun-helpers';
 import { createHash } from 'node:crypto';
@@ -10,7 +12,8 @@ const safe = (name: unknown): name is string => typeof name === 'string' && Bool
 /** Real bundle notice indices share the existing javascript-notices format.
  * Object retention, prefix bytes and original inputs are checked separately
  * from the producer authority needed to attest graph completeness. */
-export function inspectBundleLegalMaterials(artifact: CollectedArtifactView, originals: readonly unknown[] = []): { pending: string[]; indices: number } {
+export function inspectBundleLegalMaterials(artifact: CollectedArtifactView, originals: readonly unknown[] = [], installed?: { source: DerivedSourceView; materials: unknown; artifactCapability?: unknown }): { pending: string[]; indices: number } {
+  const installedViews = installed ? installedLegalOriginalViews(installed.source, installed.materials, installed.artifactCapability) : [];
   const members = new Map(artifact.members.map(member => [member.path, member]));
   const pending: string[] = []; let indices = 0;
   const resolveObject = (indexPath: string, row: any) => {
@@ -36,11 +39,11 @@ export function inspectBundleLegalMaterials(artifact: CollectedArtifactView, ori
       packages.set(pkg.root, pkg);
       for (const row of pkg.files) resolveObject(member.path, row);
       if (pkg.sourceAuthority) resolveObject(member.path, pkg.sourceAuthority);
-      const original = originals.map(registryLegalOriginalView).find(view => view?.sourceSha === artifact.identity.sourceSha && view.name === pkg.name && view.version === pkg.version);
+      const original = [...installedViews, ...originals.map(registryLegalOriginalView)].find(view => view?.sourceSha === artifact.identity.sourceSha && view.name === pkg.name && view.version === pkg.version && view.members.some(member => member.path === 'package.json' && member.sha256 === pkg.packageJsonSha256));
       if (!original) pending.push('Immutable original issuer required for bundle package: ' + pkg.name + '@' + pkg.version);
       else {
         const manifest = original.members.find(row => row.path === 'package.json');
-        if (manifest?.sha256 !== pkg.packageJsonSha256) pending.push('Bundled package manifest differs from registry original: ' + pkg.name + '@' + pkg.version);
+        if (manifest?.sha256 !== pkg.packageJsonSha256) pending.push('Bundled package manifest differs from observed original: ' + pkg.name + '@' + pkg.version);
         for (const input of index.inputs.filter((row: any) => row.packageRoot === pkg.root)) {
           if (!safe(input.path) || !input.path.startsWith(pkg.root + '/')) fail('bundle input outside owner');
           const upstream = original.members.find(row => row.path === input.path.slice(pkg.root.length + 1));

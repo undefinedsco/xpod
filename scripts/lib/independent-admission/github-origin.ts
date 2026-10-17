@@ -1,9 +1,9 @@
+import { CLI_SOURCE_POLICY } from './source-rules';
 import { registryConsumerArtifactName } from './registry-consumer-originals';
 import { archiveConsumerArtifactName } from './archive-consumer-originals';
 import { CONSUMER_SOURCE_BINDINGS } from './consumer-observer-policy';
 import { createHash } from 'node:crypto';
 import { CLI_PRODUCT_WORKFLOW, cliPublicationArtifactNames, type ArtifactAcquisitionInput } from '../../acquire-independent-product-input';
-import { CLI_SOURCE_POLICY } from './source-rules';
 import { productTarget } from '../../module-product-targets';
 import { MODULE_TARGETS } from '../../../packages/xpod-cli/src/module-catalog';
 
@@ -78,7 +78,9 @@ interface OriginPolicy {
 }
 export async function observeCliGitHubOrigin(input: ArtifactAcquisitionInput, options: { token?: string } = {}): Promise<GitHubOriginObservation> {
   return observeGitHubOrigin(input, options, {
-    workflowPath: CLI_PRODUCT_WORKFLOW, workflowSha256: CLI_SOURCE_POLICY.workflow,
+    workflowPath: CLI_PRODUCT_WORKFLOW, workflowSha256:CLI_SOURCE_POLICY.workflow,
+    reviewedWorkflowVersions:[{workflowSha256:'b9bc591d5248773fae30df574a95e1ee928dffc41ad5965a8fbc8bf90319d860',
+      jobName:name=>`standalone-cli (${name.startsWith('xpod-cli-publication-preparation-macOS-')?'macos-latest':'ubuntu-latest'})`}],
     events: ['workflow_dispatch', 'pull_request'],
     artifactNames: row => cliPublicationArtifactNames({ expectedSourceSha: row.sourceSha, runId: row.runId, runAttempt: row.runAttempt }),
     jobName: name => `standalone-cli (${name.startsWith('xpod-cli-publication-preparation-macOS-') ? 'macos-latest' : 'ubuntu-latest'})`,

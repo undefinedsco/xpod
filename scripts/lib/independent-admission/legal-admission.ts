@@ -1,3 +1,4 @@
+import { readLegalProductManifest } from './legal-product-manifest';
 import path from 'node:path';
 import { inspectExactSourceGrantBinding, type ExactSourceGrantBinding as Binding } from './legal-exact-source';
 import { LegalCoverageLedger, type LegalCoverageReport } from './legal-coverage';
@@ -5,7 +6,6 @@ import { inspectTranspiledLegalMappings } from './legal-source-mappings';
 import { inspectBundleLegalMaterials } from './legal-bundle-materials';
 import { inspectPhysicalLegalMaterials } from './legal-material-inventory';
 import { createHash } from 'node:crypto';
-import { createRequire } from 'node:module';
 import { collectedArtifactView } from './artifact-collector';
 import { derivedSourceView } from './source-context';
 import type { CollectedArtifactMember, DerivedSourceView } from './artifact-contract';
@@ -13,8 +13,9 @@ import type { AdmissionContext } from './index';
 
 // Reuse the existing SPDX MIT standard-template material, not another license
 // catalog. A changed template requires code review rather than candidate policy.
-const { MANIFEST_MAX_BYTES } = createRequire(import.meta.url)('../../workspace-package-payload.cjs');
 const MIT_TEMPLATE = 'packages/xpod-cli/licenses/native/declarations/objects/b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5.txt';
+const ISC_TEMPLATE_SHA = 'b29f8b01452350c20dd1af16ef83b598fea3053578ccc1c7a0ef40e57be2620f';
+const ISC_TEMPLATE = 'packages/xpod-cli/licenses/native/collection/objects/' + ISC_TEMPLATE_SHA + '.txt';
 const APACHE_TEMPLATE = 'packages/xpod-cli/licenses/native/collection/objects/cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30.txt';
 const APACHE_TEMPLATE_SHA = 'cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30';
 const MIT_TEMPLATE_SHA = 'b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5';
@@ -25,6 +26,14 @@ const safe = (value: unknown): value is string => typeof value === 'string' && v
 const notice = (filename: string) => /^(?:licen[cs]e|copying|notice|copyright)(?:[._-].*)?$/iu.test(path.posix.basename(filename));
 const license = (filename: string) => /^(?:licen[cs]e|copying)(?:[._-].*)?$/iu.test(path.posix.basename(filename));
 const normalize = (value: string) => value.replace(/\s+/gu, ' ').trim();
+
+function originalCopyrightLines(lines: string[]): boolean {
+  return lines.length > 0 && !lines.some(line => {
+    if (!/^Copyright\s+/iu.test(line) || /<year>|<copyright holders?>|\[year\]|\[fullname\]|\[copyright holders?\]/iu.test(line)) return true;
+    const holder = line.replace(/^Copyright\s+(?:(?:\(c\)|©)\s*)?/iu, '').replace(/^\[?\d{4}\]?[\d\s,–—-]*/u, '').replace(/^\[|\]$/gu, '').trim();
+    return !/[\p{L}]/u.test(holder) || /^(?:copyright holders?|fullname|name|year|authors?)\.?$/iu.test(holder);
+  });
+}
 
 /** Exact normative MIT terms plus an actual retained copyright notice. This is
  * a text predicate only, never package ownership or a legal admission token. */
@@ -42,12 +51,20 @@ export function verifyMitGrantText(original: Buffer, standardTemplate: Buffer): 
   // restrictions in the heading. Other grant forms require their own adapter.
   const lines = heading.split('\n').map(line => line.trim()).filter(Boolean);
   if (lines[0] === 'MIT License' || lines[0] === 'The MIT License (MIT)') lines.shift();
-  if (!lines.length || lines.some(line => {
-    if (!/^Copyright\s+/iu.test(line) || /<year>|<copyright holders?>|\[year\]|\[fullname\]|\[copyright holders?\]/iu.test(line)) return true;
-    const holder = line.replace(/^Copyright\s+(?:(?:\(c\)|©)\s*)?/iu, '').replace(/^\[?\d{4}\]?[\d\s,–—-]*/u, '').replace(/^\[|\]$/gu, '').trim();
-    return !/[\p{L}]/u.test(holder) || /^(?:copyright holders?|fullname|name|year|authors?)\.?$/iu.test(holder);
-  })) return false;
+  if (!originalCopyrightLines(lines)) return false;
   return normalize(text.slice(offset)) === normalize(template.slice(templateOffset));
+}
+/** Full unchanged ISC grant and an actual original holder, scoped only by an
+ * original manifest that declares ISC. No inference from SPDX labels alone. */
+export function verifyIscGrantText(original: Buffer, standard: Buffer, declaredLicense: unknown): boolean {
+  if (declaredLicense !== 'ISC' || hash(standard) !== ISC_TEMPLATE_SHA) return false;
+  const text = original.toString('utf8').replace(/\r\n/gu, '\n').trim();
+  const marker = 'Permission to use, copy, modify, and/or distribute this software';
+  const offset = text.indexOf(marker), template = standard.toString('utf8');
+  if (offset < 0 || text.indexOf(marker, offset + marker.length) !== -1) return false;
+  const lines = text.slice(0, offset).split('\n').map(line => line.trim()).filter(Boolean);
+  if (lines[0] === 'ISC License' || lines[0] === 'The ISC License') lines.shift();
+  return originalCopyrightLines(lines) && normalize(text.slice(offset)) === normalize(template.slice(template.indexOf(marker)));
 }
 /** The unchanged Apache text alone is a template, not a package grant.
  * Application must additionally come from the registry-original manifest;
@@ -69,7 +86,7 @@ export function verifyApacheGrantText(original: Buffer, standard: Buffer, declar
 /** Only explicit declarations are interpreted. This adapter supports the exact
  * MIT grant, so every other SPDX expression or explicit license override stays
  * pending; it does not guess permissions from ordinary prose/comments. */
-export function explicitLicenseConflicts(bytes: Buffer, allowed: 'MIT' | 'Apache-2.0' = 'MIT'): string[] {
+export function explicitLicenseConflicts(bytes: Buffer, allowed: 'MIT' | 'Apache-2.0' | 'ISC' = 'MIT'): string[] {
   const text = bytes.toString('utf8');
   const declarations: string[] = [];
   for (const match of text.matchAll(/SPDX-License-Identifier:[ \t]*([^\r\n]+)/gu)) {
@@ -82,11 +99,11 @@ export function explicitLicenseConflicts(bytes: Buffer, allowed: 'MIT' | 'Apache
     const declaration = match[1]!.replace(/[ \t]*(?:\*\/|-->)[ \t]*$/u, '').trim();
     if (declaration !== allowed) declarations.push('Explicit license declaration requires another grant adapter: ' + declaration);
   }
-  for (const match of text.matchAll(/^[ \t]*(?:(?:\/\/|#|\*|<!--)[ \t]*)?(?:Licensed under|License:|Licensing:)[ \t]+([^\r\n]+)/gmu)) {
+  for (const match of text.matchAll(/^[ \t]*(?:(?:\/\/|#|\*|<!--)[ \t]*)?(?:Licensed (?:under|on the terms of)|License:|Licensing:)[ \t]+([^\r\n]+)/gmu)) {
     const declaration = match[1]!.replace(/[ \t]*(?:\*\/|-->)[ \t]*$/u, '').trim();
-    if (!(allowed === 'MIT' ? /^(?:the )?MIT(?: License)?\.?$/u.test(declaration) : /^(?:the )?Apache License,? Version 2\.0(?: \(the "License"\))?[.;]?$/u.test(declaration))) declarations.push('Explicit license declaration requires another grant adapter: ' + declaration);
+    if (!(allowed === 'MIT' ? /^(?:the )?MIT(?: License)?\.?$/u.test(declaration) : allowed === 'ISC' ? /^(?:the )?ISC(?: License)?\.?$/u.test(declaration) : /^(?:the )?Apache License,? Version 2\.0(?: \(the "License"\))?[.;]?$/u.test(declaration))) declarations.push('Explicit license declaration requires another grant adapter: ' + declaration);
   }
-  return [...new Set(declarations)].map(message => allowed === 'MIT' ? message : message.replace('another grant adapter', 'a grant outside Apache-2.0 scope'));
+  return [...new Set(declarations)].map(message => allowed === 'MIT' ? message : message.replace('another grant adapter', 'a grant outside ' + allowed + ' scope'));
 }
 interface ExactGrantEvidence { schemaVersion: 1; kind: 'source-exact-license-grants'; files: Binding[] }
 export interface LegalAdmissionFacts {
@@ -151,16 +168,17 @@ export function verifyLegalAdmission(evidence: unknown, context: Pick<AdmissionC
   if (artifact.identity.package !== context.package || artifact.identity.version !== context.version
     || artifact.identity.sourceSha !== context.sourceSha || source.sourceSha !== context.sourceSha
     || artifact.identity.target !== context.target) fail('artifact/source/context identity mismatch');
-  const manifest = JSON.parse(artifact.readMember('package.json', MANIFEST_MAX_BYTES).toString());
+  const manifest = readLegalProductManifest(artifact);
   if (manifest.name !== context.package || manifest.version !== context.version) fail('actual package manifest identity mismatch');
   const ledger = new LegalCoverageLedger(artifact.members);
   const template = source.trackedPaths.includes(MIT_TEMPLATE) ? source.readTracked(MIT_TEMPLATE) : undefined;
   const apacheTemplate = source.trackedPaths.includes(APACHE_TEMPLATE) ? source.readTracked(APACHE_TEMPLATE) : undefined;
+  const iscTemplate = source.trackedPaths.includes(ISC_TEMPLATE) ? source.readTracked(ISC_TEMPLATE) : undefined;
   const physical = inspectPhysicalLegalMaterials(artifact, context.legalOriginals, (bytes, declaredLicense) =>
-    Boolean(template && (declaredLicense === undefined || declaredLicense === 'MIT') && verifyMitGrantText(bytes, template)) || Boolean(apacheTemplate && verifyApacheGrantText(bytes, apacheTemplate, declaredLicense)),
-    (bytes, declaredLicense) => explicitLicenseConflicts(bytes, declaredLicense === 'Apache-2.0' ? 'Apache-2.0' : 'MIT'), { source, materials: context.legalSourceMaterials });
+    Boolean(template && (declaredLicense === undefined || declaredLicense === 'MIT') && verifyMitGrantText(bytes, template)) || Boolean(apacheTemplate && verifyApacheGrantText(bytes, apacheTemplate, declaredLicense)) || Boolean(iscTemplate && verifyIscGrantText(bytes, iscTemplate, declaredLicense)),
+    (bytes, declaredLicense) => explicitLicenseConflicts(bytes, declaredLicense === 'Apache-2.0' ? 'Apache-2.0' : declaredLicense === 'ISC' ? 'ISC' : 'MIT'), { source, materials: context.legalSourceMaterials, artifactCapability: context.collectedArtifact });
   if (physical) { pending.push(...physical.pending); for (const filename of physical.qualifiedPaths) ledger.cover(filename, 'physical-original', 'exact registry or observed-installed-source bytes and applicable scoped grant'); }
-  pending.push(...inspectBundleLegalMaterials(artifact, context.legalOriginals).pending);
+  pending.push(...inspectBundleLegalMaterials(artifact, context.legalOriginals, { source, materials: context.legalSourceMaterials, artifactCapability: context.collectedArtifact }).pending);
   const transpiled = inspectTranspiledLegalMappings(artifact, source, context.legalSourceMaterials, bytes => Boolean(template && verifyMitGrantText(bytes, template)), context.legalOriginals,
     (bytes, declaredLicense) => Boolean(apacheTemplate && verifyApacheGrantText(bytes, apacheTemplate, declaredLicense)), explicitLicenseConflicts);
   pending.push(...transpiled.pending);

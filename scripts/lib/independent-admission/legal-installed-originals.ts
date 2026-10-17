@@ -1,3 +1,5 @@
+import { portableSourceMaterialView } from './source-execution';
+import { collectedArtifactView } from './artifact-collector';
 import type { CollectedArtifactMember, DerivedSourceView } from './artifact-contract';
 import { moduleSourceMaterialView } from './module-source-admission';
 import { registryLegalLockEntries } from './legal-registry-originals';
@@ -7,6 +9,7 @@ import { registryLegalLockEntries } from './legal-registry-originals';
 export interface InstalledLegalOriginalView {
   readonly scope: 'observed-installed-source';
   readonly sourceSha: string;
+  readonly root: string;
   readonly name: string;
   readonly version: string;
   readonly integrity: string;
@@ -17,9 +20,14 @@ export interface InstalledLegalOriginalView {
 
 /** No public issuer or callback: only the operational source issuer's private
  * capability can supply installed bytes, and Git supplies the immutable lock. */
-export function installedLegalOriginalViews(source: DerivedSourceView, capability: unknown): readonly InstalledLegalOriginalView[] {
-  const material = moduleSourceMaterialView(capability);
-  if (!material || material.sourceSha !== source.sourceSha || !source.trackedPaths.includes('bun.lock')) return [];
+export function installedLegalOriginalViews(source: DerivedSourceView, capability: unknown, artifactCapability?: unknown): readonly InstalledLegalOriginalView[] {
+  const module = moduleSourceMaterialView(capability);
+  const artifact = collectedArtifactView(artifactCapability), portable = portableSourceMaterialView(artifactCapability);
+  const boundPortable = artifact && portable && portable.identity.sourceSha === source.sourceSha
+    && portable.identity.archiveSha256 === artifact.identity.archiveSha256
+    && portable.identity.package === artifact.identity.package && portable.identity.version === artifact.identity.version;
+  const material = module?.sourceSha === source.sourceSha ? module : boundPortable ? portable.dependencyOriginals : undefined;
+  if (!material || !source.trackedPaths.includes('bun.lock')) return [];
   const locks = registryLegalLockEntries(source.readTracked('bun.lock'));
   const rows = material.dependencyRows;
   const result: InstalledLegalOriginalView[] = [];
@@ -46,7 +54,7 @@ export function installedLegalOriginalViews(source: DerivedSourceView, capabilit
     }
     const names = new Set(members.map(file => file.path));
     result.push(Object.freeze({ scope: 'observed-installed-source' as const, sourceSha: source.sourceSha,
-      name: manifest.name, version: manifest.version, integrity, members: Object.freeze(members),
+      root, name: manifest.name, version: manifest.version, integrity, members: Object.freeze(members),
       readMember(name: string) { if (!names.has(name)) throw Error('Unknown installed original'); return material.readDependencyOriginal(root + '/' + name, 1024 * 1024); },
       readMemberRange(name: string, offset: number, length: number) { if (!names.has(name)) throw Error('Unknown installed original'); return material.readDependencyOriginalRange(root + '/' + name, offset, length); },
     }));

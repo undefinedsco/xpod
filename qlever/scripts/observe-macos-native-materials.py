@@ -191,6 +191,8 @@ def observe(target, work, archive):
     linker = Path(stage('linker-path', ['xcrun','--find','ld'])).resolve()
     def toolchain(prefix):
         compiler_version = stage(prefix+'-compiler-version', [str(cxx),'--version'])
+        effective_clang = Path(stage(prefix+'-effective-clang-path',['xcrun','--find','clang'])).resolve()
+        builtin_headers = stage(prefix+'-compiler-resource-dir',[str(effective_clang),'-print-resource-dir'])
         linker_version = stage(prefix+'-linker-version', [str(linker),'-v'])
         sdk = stage(prefix+'-sdk-path', ['xcrun','--show-sdk-path'])
         sdk_version = stage(prefix+'-sdk-version', ['xcrun','--show-sdk-version'])
@@ -202,7 +204,8 @@ def observe(target, work, archive):
         formulas = [dict(name=row['full_name'], versions=row['versions'], installed=row['installed'], license=row.get('license')) for row in dependencies['formulae']]
         settings = Path(sdk) / 'SDKSettings.json'
         return dict(compilerPath=str(compiler), compilerSha256=digest(compiler), cxxPath=str(cxx), cxxSha256=digest(cxx),
-                    compilerVersion=compiler_version, linkerPath=str(linker), linkerSha256=digest(linker), linkerVersion=linker_version,
+                    compilerVersion=compiler_version,effectiveClangPath=str(effective_clang),effectiveClangSha256=digest(effective_clang),
+                    compilerBuiltinResourceDirectory=builtin_headers,linkerPath=str(linker), linkerSha256=digest(linker), linkerVersion=linker_version,
                     sdkPath=sdk, sdkVersion=sdk_version, sdkBuild=sdk_build, sdkSettingsSha256=digest(settings),
                     hostVersion=host, minimumOS=cache.get('CMAKE_OSX_DEPLOYMENT_TARGET'), dependencies=formulas)
     before = toolchain('before')
@@ -310,6 +313,17 @@ def observe(target, work, archive):
     # A binding proposal is original metadata, not an issued NativeMaterialIndex.
     # Central packing must bind product-relative paths and observed custody.
     (materials/'binding-proposal.json').write_text(json.dumps(role_binding,sort_keys=True,indent=2)+'\n')
+    dependency_roots=[('workspace',str(ROOT/'qlever')),('engine',str(engine)),('generated-build',str(build)),
+                      ('apple-sdk',before['sdkPath']),('compiler-builtin',before['compilerBuiltinResourceDirectory'])]
+    if deps.exists():dependency_roots += [('fetchcontent-source',str(path)) for path in sorted(deps.iterdir()) if path.is_dir() and path.name.endswith('-src')]
+    dependency_roots += [('homebrew',stage('brew-prefix',['brew','--prefix']))]
+    stage('dependency-inventory',[sys.executable,str(ROOT/'qlever/scripts/macos_dependency_inventory.py'),
+          '--raw',str(stages/'actual-dependency-files.raw.log'),'--roots',json.dumps(dependency_roots),
+          '--out',str(materials/'dependency-inventory.json')],timeout=120)
+    cellar=stage('brew-cellar',['brew','--cellar'])
+    stage('companion-originals',[sys.executable,str(ROOT/'qlever/scripts/macos_companion_originals.py'),
+          '--build-raw',str(stages/'native-build.raw.log'),'--cellar',cellar,'--runtime',str(runtime),
+          '--out',str(materials/'companions')],timeout=300)
     metadata = dict(schemaVersion=1,target=target,record=dict(toolchain=before,sourceSha=source_sha,binary=reference(binary,runtime)),loaderMembers=loader_members,stages=records)
     (materials/'runtime-admission.metadata.json').write_text(json.dumps(metadata,sort_keys=True,indent=2)+'\n')
     final = dict(schemaVersion=1,status='native-build-test-materials',releaseAccepted=False,target=target,sourceSha=source_sha,
@@ -320,6 +334,8 @@ def observe(target, work, archive):
                  inputsAfter=reference(materials/'inputs-after.json',materials),
                  runtimeManifest=reference(runtime/'manifest.json',runtime),
                  nativeReceipt=reference(materials/'native-receipt.json',materials),
+                 companionMaterials=reference(materials/'companions/materials.json',materials),
+                 dependencyInventory=reference(materials/'dependency-inventory.json',materials),
                  bindingProposal=reference(materials/'binding-proposal.json',materials),
                  inputObservation=reference(materials/'input-observation.json',materials),
                  archive=dict(path=archive.name,sha256=digest(archive),sizeBytes=archive.stat().st_size),
@@ -349,6 +365,11 @@ def verify_cache(root):
     if source_kit_inventory(materials/'source-kit')!=kit['files']:
         raise RuntimeError('Cached native source kit inventory changed')
     if 'sourceArchive' in final: check(materials,final['sourceArchive'])
+    if 'dependencyInventory' in final:check(materials,final['dependencyInventory'])
+    if 'companionMaterials' in final:
+        check(materials,final['companionMaterials'])
+        companion=json.loads((materials/final['companionMaterials']['path']).read_text())
+        for ref in companion['files']:check(materials/'companions/originals',ref)
     metadata = json.loads((materials / final['metadata']['path']).read_text())
     for stage in metadata['stages']:
         for key in ['receipt', 'raw']: check(materials, stage[key])

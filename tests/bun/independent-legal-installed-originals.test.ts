@@ -6,5 +6,7 @@ test('caller installed manifests and callbacks cannot acquire original source au
   const source = { sourceSha: 'a'.repeat(40), trackedPaths: ['bun.lock'], readTracked() { throw Error('must not read fake source'); } } as DerivedSourceView;
   const fake = { sourceSha: source.sourceSha, dependencyRows: [{ path: 'node_modules/example/package.json', kind: 'file' }], readDependencyOriginal() { throw Error('must not invoke'); } };
   expect(installedLegalOriginalViews(source, fake)).toEqual([]);
+  const fakeArtifact = { identity: { sourceSha: source.sourceSha, package: 'example', version: '1.0.0', archiveSha256: 'b'.repeat(64) }, dependencyOriginals: fake };
+  expect(installedLegalOriginalViews(source, fake, fakeArtifact)).toEqual([]);
   expect(requiredRegistryLegalOriginalCoordinates({ artifact: {}, source, legalSourceMaterials: fake })).toEqual([]);
 });

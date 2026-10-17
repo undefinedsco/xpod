@@ -119,6 +119,29 @@ class CssNativeZipTest(unittest.TestCase):
                 else:result['stages']['build']['rawSha256']='0'*64
                 entries['native-build-materials.json']=encoded(result)
                 with self.assertRaises(ValueError):module.validate(write(Path(directory),entries),'linux-x64','a'*40)
+    def test_companion_originals_bound_to_actual_bundle_and_copy_stage(self):
+        for mutation in [None,'copy-stage','original','bundle']:
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as directory:
+                entries=fixture();final=json.loads(entries['native-materials/final.json'])
+                metadata=json.loads(entries['native-materials/metadata.json'])
+                metadata['stages'][0]['name']='native-build'
+                member=ref('lib/companion.dylib',b'relocated library')
+                metadata['loaderMembers']=[dict(member=member)]
+                original=ref('kegs/example/1/lib/companion.dylib',b'original library')
+                entries['native-materials/companions/originals/'+original['path']]=b'original library'
+                companion=dict(schemaVersion=1,status='companion-installed-originals',releaseAccepted=False,files=[original],
+                               buildRaw=metadata['stages'][0]['raw'],bindings=[dict(member=member,installedOriginal=original,pending=['source-build-unavailable'])])
+                if mutation=='copy-stage':companion['buildRaw']=dict(companion['buildRaw'],sha256='0'*64)
+                elif mutation=='original':entries['native-materials/companions/originals/'+original['path']]=b'tampered'
+                elif mutation=='bundle':companion['bindings'][0]['member']=dict(member,sha256='0'*64)
+                entries['native-materials/companions/materials.json']=encoded(companion)
+                final['companionMaterials']=ref('companions/materials.json',entries['native-materials/companions/materials.json'])
+                entries['native-materials/metadata.json']=encoded(metadata)
+                final['metadata']=ref('metadata.json',entries['native-materials/metadata.json'])
+                entries['native-materials/final.json']=encoded(final)
+                if mutation is None:module.validate(write(Path(directory),entries),'darwin-arm64','a'*40)
+                else:
+                    with self.assertRaises(ValueError):module.validate(write(Path(directory),entries),'darwin-arm64','a'*40)
     def test_source_tar_link_semantics_checked_even_with_updated_hash(self):
         with tempfile.TemporaryDirectory() as directory:
             entries=fixture();data=entries['native-materials/source-kit.tar'].replace(b'input\x00',b'other\x00')

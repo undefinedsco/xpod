@@ -10,11 +10,11 @@ export function requiredRegistryLegalOriginalCoordinates(input: { artifact: unkn
   const artifact = collectedArtifactView(input.artifact), source = derivedSourceView(input.source);
   if (!artifact || !source || source.sourceSha !== artifact.identity.sourceSha || !source.trackedPaths.includes('bun.lock')) return [];
   const locks = registryLegalLockEntries(source.readTracked('bun.lock'));
-  const installed = installedLegalOriginalViews(source, input.legalSourceMaterials);
+  const installed = installedLegalOriginalViews(source, input.legalSourceMaterials, input.artifact);
   const required = new Map<string, { name: string; version: string }>();
   const add = (name: unknown, version: unknown, physical: boolean, manifestSha?: string) => {
     if (typeof name !== 'string' || typeof version !== 'string' || !locks.has(name + '@' + version)) return;
-    if (physical && installed.some(original => original.name === name && original.version === version && original.members.some(row => row.path === 'package.json' && row.sha256 === manifestSha))) return;
+    if (manifestSha && installed.some(original => original.name === name && original.version === version && original.members.some(row => row.path === 'package.json' && row.sha256 === manifestSha))) return;
     required.set(name + '@' + version, { name, version });
   };
   for (const member of artifact.members) {
@@ -24,7 +24,7 @@ export function requiredRegistryLegalOriginalCoordinates(input: { artifact: unkn
       add(row.name, row.version, true, manifest?.sha256);
     } else if (/(?:^|\/)licenses\/index\.json$/u.test(member.path) && member.bytes <= 1024 * 1024) {
       const index = JSON.parse(artifact.readMember(member.path, 1024 * 1024).toString());
-      for (const row of Array.isArray(index.packages) ? index.packages : []) add(row.name, row.version, false);
+      for (const row of Array.isArray(index.packages) ? index.packages : []) add(row.name, row.version, false, row.packageJsonSha256);
     } else if (member.path === 'provenance/compiler.json' && member.bytes <= 65536) {
       const compiler = JSON.parse(artifact.readMember(member.path, 65536).toString());
       if (compiler.package === 'typescript') add('typescript', compiler.version, false);

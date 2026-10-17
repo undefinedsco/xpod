@@ -31,73 +31,99 @@ export function validatePublicationGroupSelectors(selectors: readonly Publicatio
   }
 }
 
-/** The first implemented family uses the normal CLI producer and the existing
- * private source/peer/consumer issuers. Unsupported material axes remain explicit
- * pending before network acquisition; a report never becomes a capability. */
-export const preparePublicationGroup: NonNullable<GroupPreparationDispatcher['preparePublicationGroup']> = async input => {
-  validatePublicationGroupSelectors(input.selectors);
-  if (!path.isAbsolute(input.checkout) || !path.isAbsolute(input.output) || fs.existsSync(input.output)) fail('canonical checkout and new absolute output required');
-  const checkout = fs.realpathSync(input.checkout), sourceSha = input.selectors[0]!.sourceSha;
-  const git = (args: string[]) => execFileSync('git', args, { cwd: checkout, encoding: 'utf8', maxBuffer: 1024 * 1024 }).trim();
-  if (git(['rev-parse', 'HEAD']) !== sourceSha || git(['status', '--porcelain', '--untracked-files=all'])) fail('clean exact source checkout required');
-  const unsupported = input.selectors.filter(selector => selector.module !== 'client' && selector.module !== 'cli');
-  if (unsupported.length) return { status: 'pending', pending: unsupported.map(selector =>
-    `${selector.module}/${selector.target}: complete controlled normal-product, source, prepublish-consumer and native-material factory binding required`) };
-  const tuple = (selector: PublicationProductSelector): ArtifactAcquisitionInput => ({ schemaVersion: 1,
-    sourceSha: selector.sourceSha, runHeadSha: selector.runHeadSha, runId: selector.runId, runAttempt: selector.runAttempt,
-    artifactId: selector.artifactId, artifactSha256: selector.artifactSha256 });
-  const rows = input.selectors.map(tuple);
-  if (rows.some(row => JSON.stringify(row) !== JSON.stringify(rows[0]))) fail('portable pair must use the same normal producer artifact');
-  fs.mkdirSync(input.output, { mode: 0o700 });
-  // Originals and fixed-consumer roots stay outside denied source checkouts.
-  // Retain this locator for the lifetime of the returned process-local handles.
-  const custody = fs.mkdtempSync(path.join(os.tmpdir(), 'xpod-central-publication-group-')); fs.chmodSync(custody, 0o700);
-  fs.writeFileSync(path.join(input.output, 'custody-locator.json'), JSON.stringify({ directory: custody, sourceSha }) + '\n', { flag: 'wx', mode: 0o600 });
-  const origin = await observeCliGitHubOrigin(rows[0]!, { token: input.token });
-  const acquisitionRoot = path.join(custody, 'acquired'), projectionOutput = path.join(custody, 'projected');
-  await acquireIndependentProductInput(rows[0]!, acquisitionRoot, { token: input.token });
-  const cli = await collectAdmissionArtifact({ githubOrigin: origin, acquisitionRoot, projectionOutput, product: 'cli' });
-  const client = collectRelatedAdmissionArtifact(cli, 'client');
-  const sources = { cli: deriveAdmissionSource(cli, checkout), client: deriveAdmissionSource(client, checkout) };
-  const peerPlan = collectPublicationPeerInputPlan({ cli, client, source: sources.cli });
-  const plan = publicationPeerInputPlanView(peerPlan)!;
-  const requests = new Map<string, CollectedArtifactCapability>();
-  for (const request of plan.requests) requests.set(request.requestKey, await collectRegistryPeerArtifact({ plan: peerPlan, requestKey: request.requestKey }));
-  const peerRequests = new Set(plan.edges.filter(edge => edge.kind === 'peer' && ['cli', 'client'].includes(edge.from))
-    .map(edge => edge.package + '@' + edge.version));
-  const peers = [...requests].filter(([key]) => peerRequests.has(key)).map(([, artifact]) => artifact);
-  const dependencies = [...requests].filter(([key]) => !peerRequests.has(key)).map(([, artifact]) => artifact);
-  const selected = new Set(input.selectors.map(selector => selector.module));
-  const products = [];
-  for (const role of ['client', 'cli'] as const) {
-    if (!selected.has(role)) continue;
-    const artifact = role === 'cli' ? cli : client;
-    const manifest = JSON.parse(collectedArtifactView(artifact)!.readMember('package.json', 1024 * 1024).toString());
-    const chosenPeers = peers.filter(value => role === 'cli' || Object.prototype.hasOwnProperty.call(manifest.peerDependencies ?? {}, collectedArtifactView(value)!.identity.package));
-    const selectedPeerSet = new Set(chosenPeers);
-    const allDependencies = [...dependencies, ...peers.filter(value => !selectedPeerSet.has(value))];
-    const { bindPublicationConsumerPeerPlan } = await import('./consumer-context');
-    bindPublicationConsumerPeerPlan(artifact, peerPlan);
-    const evidenceDirectory = path.join(custody, role + '-prepublish-consumer');
-    const prepublishConsumer = role === 'cli'
-      ? await observeCliConsumer({ artifact, client, peers: chosenPeers, dependencies: allDependencies, peerPlan, stage: 'prepublish', evidenceDirectory })
-      : await observeClientConsumer({ artifact, peers: chosenPeers, dependencies: allDependencies, peerPlan, stage: 'prepublish', evidenceDirectory });
-    products.push(Object.freeze({ artifact, source: sources[role], prepublishConsumer,
-      peerPlan, peers: Object.freeze(chosenPeers), dependencies: Object.freeze(allDependencies) }));
-  }
-  const registryDependencies = [];
-  if (selected.has('cli') && !selected.has('client')) {
-    const registry = await observeRegistryArtifactIfPublished(client);
-    if (!registry) return { status: 'pending', pending: ['Exact collected client dependency must be selected for publication or already present in the fixed registry'] };
-    registryDependencies.push(Object.freeze({ artifact: client, registry }));
-  }
-  for (const artifact of requests.values()) {
-    const registry = await observeRegistryArtifactIfPublished(artifact);
-    if (!registry) return { status: 'pending', pending: ['Exact immutable-lock peer disappeared from registry: ' + collectedArtifactView(artifact)!.identity.package] };
-    registryDependencies.push(Object.freeze({ artifact, registry }));
-  }
-  return Object.freeze({ status: 'material-ready', products: Object.freeze(products), registryDependencies: Object.freeze(registryDependencies) });
+import {validatePublicationConsumerRuns,type PublicationConsumerRunLocator} from './consumer-run-locators';
+import {observeArchiveInstalledProductConsumer,observeGitHubArchiveProductConsumer,observeGitHubRegistryInstalledProductConsumer} from './consumer-context';
+import {verifyCollectedPublicationAdmission,collectedPublicationSourceMaterials} from './index';
+import {collectPublicationLegalMaterials} from './publication-legal-materials';
+import {publicationMaterialView} from './artifact-collector';
+
+export type PublicationGroupPreparationInput=Parameters<NonNullable<GroupPreparationDispatcher['preparePublicationGroup']>>[0]&{
+ readonly consumerRuns?:readonly PublicationConsumerRunLocator[];
 };
+interface PreparationSession {
+ portable?:{cli:CollectedArtifactCapability;client:CollectedArtifactCapability;source:ReturnType<typeof deriveAdmissionSource>};
+ peerPlan?:PublicationPeerInputPlanCapability;
+ requests:Map<string,CollectedArtifactCapability>;
+}
+/** Acquire and qualify one normal product at a time. Missing original axes stop
+ * before another multi-GiB source snapshot is acquired. Consumer locators are
+ * re-observed, never restored as permits from a previous process. */
+export async function preparePublicationGroup(input:PublicationGroupPreparationInput):Promise<import('../../run-independent-publication').GroupPreparationResult>{
+ validatePublicationGroupSelectors(input.selectors);
+ validatePublicationConsumerRuns(input.consumerRuns??[],input.selectors[0]!.sourceSha);
+ if(!path.isAbsolute(input.checkout)||!path.isAbsolute(input.output)||fs.existsSync(input.output))fail('canonical checkout and new absolute output required');
+ fs.mkdirSync(input.output,{mode:0o700});
+ const session:PreparationSession={requests:new Map()},products:import('./publication').ProductGroupPublicationInput['products'][number][]=[],registryDependencies:{artifact:CollectedArtifactCapability;registry:NonNullable<Awaited<ReturnType<typeof observeRegistryArtifactIfPublished>>>}[]=[];
+ const selectedNames=new Set<string>();
+ const pending=(selector:PublicationProductSelector,reasons:readonly string[])=>({status:'pending' as const,pending:reasons.map(reason=>selector.module+'/'+(selector.target??'portable')+': '+reason)});
+ for(const [index,selector] of input.selectors.entries()){
+  const prepared=await prepareRegistryConsumerProductInSession({...input,module:selector.module,target:selector.target,output:path.join(input.output,'product-'+index)},session);
+  if(prepared.status==='pending')return pending(selector,prepared.pending);
+  const artifact=prepared.artifact,source=deriveAdmissionSource(artifact,input.checkout),view=collectedArtifactView(artifact)!;
+  selectedNames.add(view.identity.package);
+  const related=[...new Set([session.portable?.cli,session.portable?.client,prepared.client,...prepared.peers,...prepared.dependencies].filter(value=>value!==undefined&&value!==artifact))];
+  const base={artifact,derivedSource:source,relatedArtifacts:related};
+  const sourceReport=verifyCollectedPublicationAdmission('source',base);
+  if(sourceReport.status!=='verified')return pending(selector,[sourceReport.reason]);
+  const sourceMaterials=collectedPublicationSourceMaterials(artifact,source);
+  const legal=await collectPublicationLegalMaterials({artifact,source,legalSourceMaterials:sourceMaterials});
+  let nativeMaterials:Awaited<ReturnType<typeof prepareNormalProductNativeContext>>|undefined;
+  const nativePending:string[]=[];
+  if(view.identity.target!==undefined){
+   try{nativeMaterials=await prepareNormalProductNativeContext({artifact,source,output:path.join(input.output,'native-'+index),token:input.token});}
+   catch(error){nativePending.push(error instanceof Error?error.message:'native original collection failed');}
+  }
+  const nativeReport=view.identity.target===undefined?undefined:verifyCollectedPublicationAdmission('native',{...base,nativeMaterials});
+  const legalReport=verifyCollectedPublicationAdmission('legal',{...base,legalOriginals:legal.originals,legalSourceMaterials:sourceMaterials});
+  const gaps=[...nativePending,...(!nativeReport||nativeReport.status==='verified'?[]:[nativeReport.reason]),...(legalReport.status==='verified'?[]:[legalReport.reason]),...legal.pending];
+  if(gaps.length)return pending(selector,gaps);
+  const pre=input.consumerRuns?.find(row=>row.module===selector.module&&row.target===selector.target&&row.stage==='prepublish');
+  const materials={artifact,client:prepared.client,peers:[...prepared.peers],dependencies:[...prepared.dependencies],peerPlan:prepared.peerPlan};
+  const evidenceDirectory=path.join(input.output,'pre-consumer-'+index);
+  if(!pre&&view.identity.target!==undefined)return pending(selector,['Matching-host archive consumer immutable original locator required']);
+  const prepublishConsumer=pre?await observeGitHubArchiveProductConsumer({...materials,consumerRun:pre.consumerRun,evidenceDirectory,token:input.token})
+   :await observeArchiveInstalledProductConsumer({...materials,stage:'prepublish',evidenceDirectory});
+  const runtimeReport=verifyCollectedPublicationAdmission('runtime-closure',{...base,consumerObservation:prepublishConsumer});
+  if(runtimeReport.status!=='verified')return pending(selector,[runtimeReport.reason]);
+  const registry=await observeRegistryArtifactIfPublished(artifact);
+  const post=input.consumerRuns?.find(row=>row.module===selector.module&&row.target===selector.target&&row.stage==='postpublish');
+  const postpublishConsumer=post?await observeGitHubRegistryInstalledProductConsumer({...materials,consumerRun:post.consumerRun,
+   evidenceDirectory:path.join(input.output,'post-consumer-'+index),token:input.token}):undefined;
+  products.push(Object.freeze({...materials,source,prepublishConsumer,nativeMaterials,...(registry?{registry}:{}),...(postpublishConsumer?{postpublishConsumer}:{})}));
+ }
+ for(const artifact of session.requests.values()){
+  const view=collectedArtifactView(artifact)!;if(selectedNames.has(view.identity.package))continue;
+  const observation=await observeRegistryArtifactIfPublished(artifact);if(!observation)return {status:'pending',pending:['Exact immutable-lock dependency disappeared from registry: '+view.identity.package]};
+  registryDependencies.push({artifact,registry:observation});
+ }
+ // If CLI/client are tool dependencies outside this selected cohort, bind their
+ // current registry originals as well. They are never fabricated version rows.
+ for(const artifact of session.portable?[session.portable.cli,session.portable.client]:[]){
+  const view=collectedArtifactView(artifact)!;if(selectedNames.has(view.identity.package))continue;
+  const observation=await observeRegistryArtifactIfPublished(artifact);if(!observation)return {status:'pending',pending:['Exact public consumer tool must be selected or already in registry: '+view.identity.package]};registryDependencies.push({artifact,registry:observation});
+ }
+ return Object.freeze({status:'material-ready',products:Object.freeze(products),registryDependencies:Object.freeze(registryDependencies)});
+}
+async function prepareNormalProductNativeContext(input:{artifact:CollectedArtifactCapability;source:ReturnType<typeof deriveAdmissionSource>;output:string;token?:string}){
+ const material=publicationMaterialView(input.artifact)!;
+ const {collectNativeAdmissionContext}=await import('./native-context');
+ let nativeOriginals:unknown;
+ if(material.identity.package.startsWith('@undefineds.co/xpod-css-')){
+  const receipt=JSON.parse(material.readOriginal(material.producerReceipt.path,8*1024**2).toString());
+  const acquisition=receipt.nativeAcquisition,zip=acquisition?.originals?.find((row:any)=>row.path==='originals/native.zip');
+  if(!zip||!Number.isSafeInteger(acquisition.artifactId)||!/^[a-f0-9]{64}$/u.test(zip.sha256))fail('CSS independent native original locator missing');
+  const tuple:ArtifactAcquisitionInput={schemaVersion:1,sourceSha:material.identity.sourceSha,runHeadSha:material.producer.runHeadSha,
+    runId:material.producer.runId,runAttempt:material.producer.runAttempt,artifactId:acquisition.artifactId,artifactSha256:zip.sha256};
+  const {observeQleverNativeGitHubOrigin}=await import('./github-origin');
+  const origin=await observeQleverNativeGitHubOrigin(tuple,material.identity.target!,'css-module',{token:input.token});
+  const {acquireNativeAdmissionOriginals}=await import('../../acquire-independent-product-input');
+  const {collectNativeAdmissionOriginals}=await import('./native-original-collector');
+  fs.mkdirSync(input.output,{mode:0o700});const acquisitionRoot=path.join(input.output,'acquired');
+  await acquireNativeAdmissionOriginals(tuple,acquisitionRoot,{token:input.token});
+  nativeOriginals=await collectNativeAdmissionOriginals({githubOrigin:origin,acquisitionRoot});
+ }
+ return collectNativeAdmissionContext({artifact:input.artifact,source:input.source,nativeOriginals});
+}
 
 export interface RegistryConsumerProductPreparationInput {
   readonly selectors: readonly PublicationProductSelector[];
@@ -118,7 +144,10 @@ export interface RegistryConsumerProductMaterials {
 export type RegistryConsumerProductPreparationResult = RegistryConsumerProductMaterials | { readonly status: 'pending'; readonly pending: readonly string[] };
 /** Material-only bootstrap for a single matching-host registry worker. It does
  * not execute any consumer, native probe, publisher or gate and issues no permit. */
-export async function prepareRegistryConsumerProduct(input: RegistryConsumerProductPreparationInput): Promise<RegistryConsumerProductPreparationResult> {
+export async function prepareRegistryConsumerProduct(input:RegistryConsumerProductPreparationInput):Promise<RegistryConsumerProductPreparationResult>{
+ return prepareRegistryConsumerProductInSession(input,{requests:new Map()});
+}
+async function prepareRegistryConsumerProductInSession(input: RegistryConsumerProductPreparationInput,session:PreparationSession): Promise<RegistryConsumerProductPreparationResult> {
   validatePublicationGroupSelectors(input.selectors);
   const selector = input.selectors.find(row => row.module === input.module && row.target === input.target);
   if (!selector) return { status: 'pending', pending: ['Selected consumer product is absent from immutable group'] };
@@ -133,14 +162,19 @@ export async function prepareRegistryConsumerProduct(input: RegistryConsumerProd
   const portablePair = input.selectors.filter(row => ['cli', 'client'].includes(row.module));
   if (portablePair.some(row => JSON.stringify(tuple(row)) !== JSON.stringify(tuple(portable)))) fail('normal CLI/client selectors must bind one real producer artifact');
   fs.mkdirSync(input.output, { mode: 0o700 });
-  const custody = fs.mkdtempSync(path.join(os.tmpdir(), 'xpod-central-consumer-materials-')); fs.chmodSync(custody, 0o700);
+  const custody = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'xpod-central-consumer-materials-')); fs.chmodSync(custody, 0o700);
   fs.writeFileSync(path.join(input.output, 'custody-locator.json'), JSON.stringify({ directory: custody, sourceSha: selector.sourceSha }) + '\n', { flag: 'wx', mode: 0o600 });
+  let portableMaterials=session.portable;
+  if(!portableMaterials){
   const origin = await observeCliGitHubOrigin(tuple(portable), { token: input.token });
   const acquisitionRoot = path.join(custody, 'portable-acquired'), projectionOutput = path.join(custody, 'portable-projected');
   await acquireIndependentProductInput(tuple(portable), acquisitionRoot, { token: input.token });
   const cli = await collectAdmissionArtifact({ githubOrigin: origin, acquisitionRoot, projectionOutput, product: 'cli' });
   const client = collectRelatedAdmissionArtifact(cli, 'client');
   const source = deriveAdmissionSource(cli, checkout); deriveAdmissionSource(client, checkout);
+    portableMaterials={cli,client,source};session.portable=portableMaterials;
+  }
+  const {cli,client,source}=portableMaterials;
   let artifact = input.module === 'client' ? client : cli;
   if (input.module === 'api' || input.module === 'css' || input.module === 'afs') {
     const { observeModuleProductGitHubOrigin, observeAfsModuleProductGitHubOrigin } = await import('./github-origin');
@@ -154,7 +188,7 @@ export async function prepareRegistryConsumerProduct(input: RegistryConsumerProd
       acquisitionRoot: acquired, projectionOutput: path.join(custody, 'module-projected') });
     deriveAdmissionSource(artifact, checkout);
   }
-  const peerPlan = collectPublicationPeerInputPlan({ cli, client, source }), plan = publicationPeerInputPlanView(peerPlan)!;
+  const peerPlan = session.peerPlan??collectPublicationPeerInputPlan({ cli, client, source }), plan = publicationPeerInputPlanView(peerPlan)!;session.peerPlan=peerPlan;
   const reachable = new Set(input.module === 'client' ? ['client'] : ['cli', 'client']);
   const requestKeys = new Set<string>();
   for (let changed = true; changed;) {
@@ -166,7 +200,7 @@ export async function prepareRegistryConsumerProduct(input: RegistryConsumerProd
   }
   const selectedRequests = plan.requests.filter(request => requestKeys.has(request.requestKey));
   const handles = new Map<string, CollectedArtifactCapability>();
-  for (const request of selectedRequests) handles.set(request.requestKey, await collectRegistryPeerArtifact({ plan: peerPlan, requestKey: request.requestKey }));
+  for (const request of selectedRequests){let artifact=session.requests.get(request.requestKey);if(!artifact){artifact=await collectRegistryPeerArtifact({plan:peerPlan,requestKey:request.requestKey});session.requests.set(request.requestKey,artifact);}handles.set(request.requestKey,artifact);}
   const rootRoles = input.module === 'client' ? ['client'] : ['cli', 'client'];
   const peerKeys = new Set(plan.edges.filter(edge => edge.kind === 'peer' && rootRoles.includes(edge.from))
     .map(edge => edge.package + '@' + edge.version));

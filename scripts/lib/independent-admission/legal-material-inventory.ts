@@ -12,7 +12,7 @@ const isNotice = (name: string) => /^(?:licen[cs]e|copying|notice)(?:[._-]|$)/iu
 
 /** Checks the existing physical-module-notices format against the collected
  * archive. Integrity is deliberately separate from original issuer authority. */
-export function inspectPhysicalLegalMaterials(artifact: CollectedArtifactView, originals: readonly unknown[] = [], verifyGrant?: (bytes: Buffer, declaredLicense?: unknown) => boolean, declarations?: (bytes: Buffer, declaredLicense: unknown) => string[], installed?: { source: DerivedSourceView; materials: unknown }): { pending: string[]; qualifiedPaths: string[]; packages: number; files: number } | undefined {
+export function inspectPhysicalLegalMaterials(artifact: CollectedArtifactView, originals: readonly unknown[] = [], verifyGrant?: (bytes: Buffer, declaredLicense?: unknown) => boolean, declarations?: (bytes: Buffer, declaredLicense: unknown) => string[], installed?: { source: DerivedSourceView; materials: unknown; artifactCapability?: unknown }): { pending: string[]; qualifiedPaths: string[]; packages: number; files: number } | undefined {
   const members = new Map(artifact.members.map(member => [member.path, member]));
   if (!members.has('provenance/terms/index.json') && !artifact.members.some(row => /^provenance\/packages\/[^/]+\.json$/u.test(row.path))) return undefined;
   const read = (name: string) => JSON.parse(artifact.readMember(name, 1024 * 1024).toString('utf8'));
@@ -74,7 +74,7 @@ export function inspectPhysicalLegalMaterials(artifact: CollectedArtifactView, o
   }
   if (index && (seen.size !== records.size || JSON.stringify(index.missingNamedOriginalTerms) !== JSON.stringify(missing))) reject('missing original inventory differs');
   const qualifiedPaths: string[] = [];
-  const installedViews = installed ? installedLegalOriginalViews(installed.source, installed.materials) : [];
+  const installedViews = installed ? installedLegalOriginalViews(installed.source, installed.materials, installed.artifactCapability) : [];
   for (const [key, record] of records) {
     const [name, version] = JSON.parse(key) as [string, string];
     const candidates = [...installedViews, ...originals.map(registryLegalOriginalView)].filter(view => view?.sourceSha === artifact.identity.sourceSha && view.name === name && view.version === version);

@@ -103,15 +103,33 @@ def validate(archive, target, expected_source=None):
         if final['archive']['path']!=archive_name:raise ValueError('Native archive target mismatch')
         check(archive_name,final['archive'])
         allowed={archive_name,'qlever-local-acceptance.json','native-materials/final.json','native-materials/source-snapshot.json'}
-        for field in ['sourceKit','metadata','inputsBefore','inputsAfter','sourceArchive','nativeReceipt','bindingProposal','inputObservation']:
+        for field in ['sourceKit','metadata','inputsBefore','inputsAfter','sourceArchive','nativeReceipt','bindingProposal','inputObservation','companionMaterials','dependencyInventory']:
             ref=final.get(field)
             if ref is None:
-                if field in ['nativeReceipt','bindingProposal','inputObservation']:continue
+                if field in ['nativeReceipt','bindingProposal','inputObservation','companionMaterials','dependencyInventory']:continue
                 raise ValueError('Native original reference missing: '+field)
             if not safe(ref['path']):raise ValueError('Unsafe native final reference')
             name='native-materials/'+ref['path'];check(name,ref);allowed.add(name)
         metadata=record('native-materials/'+final['metadata']['path'])
         if metadata.get('target')!=target or metadata.get('record',{}).get('sourceSha')!=source or metadata.get('record',{}).get('binary')!=final.get('binary'):raise ValueError('Native metadata source/target mismatch')
+        if 'companionMaterials' in final:
+            companion=record('native-materials/'+final['companionMaterials']['path'])
+            refs=companion.get('files',[]);bindings=companion.get('bindings',[])
+            if companion.get('schemaVersion')!=1 or companion.get('status')!='companion-installed-originals' or companion.get('releaseAccepted') is not False or not refs or len(refs)>512:
+                raise ValueError('Invalid companion original inventory')
+            paths=set();total=0
+            for ref in refs:
+                if not safe(ref['path']) or ref['path'] in paths:raise ValueError('Unsafe/duplicate companion original')
+                paths.add(ref['path']);total+=ref['sizeBytes']
+                if total>128*1024**2:raise ValueError('Companion original byte budget')
+                name='native-materials/companions/originals/'+ref['path'];check(name,ref);allowed.add(name)
+            expected={row['member']['path']:row['member'] for row in metadata.get('loaderMembers',[]) if row['member']['path'].startswith('lib/')}
+            if len(bindings)!=len(expected) or len({row['member']['path'] for row in bindings})!=len(bindings):raise ValueError('Companion loader coverage mismatch')
+            for binding in bindings:
+                if expected.get(binding['member']['path'])!=binding['member'] or binding.get('installedOriginal') not in refs or not binding.get('pending'):
+                    raise ValueError('Companion original/bundled member binding mismatch')
+            build=next((row['raw'] for row in metadata.get('stages',[]) if row['name']=='native-build'),None)
+            if companion.get('buildRaw')!=build:raise ValueError('Companion copy observation source mismatch')
         stages=metadata.get('stages',[])
         if not stages or len(stages)>256:raise ValueError('Native stage inventory missing')
         for stage in stages:

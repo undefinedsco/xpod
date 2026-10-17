@@ -1,3 +1,4 @@
+import { observeLinuxBun142Executable } from './legal-bun-runtime';
 import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { mkdir, mkdtemp, writeFile, rm } from 'node:fs/promises';
@@ -27,6 +28,7 @@ interface GeneratedBunMaterial { bunVersion?: string; files?: readonly { sourceP
 interface StatementBinding { sourceOffsetUnit: 'utf16-code-units'; name: string; sourcePath: string; sourceStart: number; sourceEnd: number; original: string; emitted: string }
 interface BunHelperOriginalView {
   readonly commit: string; readonly revision: string; readonly executableSha256: string;
+  readonly runtimeArchive?: Readonly<{ sha256: string; archivePath: string; archiveSha256: string }>;
   readonly bindings: readonly StatementBinding[];
   readOriginal(name: string): Buffer;
   readProbe(): Readonly<{ entry: string; commonjs: string; output: Buffer }>;
@@ -98,10 +100,13 @@ export function observeBun142HelperOriginals(): Promise<object> {
 }
 async function observe(): Promise<object> {
   const bun = verifierBun();
-  if (!bun || bun.version !== '1.4.2' || bun.revision !== COMMIT || process.platform !== 'darwin' || process.arch !== 'arm64') fail('reviewed verifier Bun runtime required');
+  if (!bun || bun.version !== '1.4.2' || bun.revision !== COMMIT) fail('reviewed verifier Bun runtime required');
+  const runtimeArchive = process.platform === 'linux' ? await observeLinuxBun142Executable() : undefined;
+  if (!runtimeArchive && (process.platform !== 'darwin' || process.arch !== 'arm64')) fail('reviewed verifier Bun platform required');
   const executable = createHash('sha256');
   for await (const chunk of createReadStream(process.execPath, { highWaterMark: 65536 })) executable.update(chunk);
-  if (executable.digest('hex') !== EXECUTABLE) fail('verifier compiler executable differs');
+  const executableSha256 = executable.digest('hex');
+  if (executableSha256 !== (runtimeArchive?.sha256 ?? EXECUTABLE)) fail('verifier compiler executable differs');
   const signal = AbortSignal.timeout(30000), originals = new Map<string, Buffer>(); let total = 0;
   for (const [name, digest] of Object.entries(MATERIALS)) {
     const url = 'https://raw.githubusercontent.com/oven-sh/bun/' + COMMIT + '/' + name;
@@ -127,7 +132,7 @@ async function observe(): Promise<object> {
     if (mapBunHelperPrefix(output.subarray(0, marker), bindings).pending.length) fail('fixed compiler probe helper mapping differs');
   } finally { await rm(directory, { recursive: true, force: true }); }
   const capability = Object.freeze({});
-  issued.set(capability, Object.freeze({ commit: COMMIT, revision: REVISION, executableSha256: EXECUTABLE, bindings: Object.freeze(bindings),
+  issued.set(capability, Object.freeze({ commit: COMMIT, revision: REVISION, executableSha256, ...(runtimeArchive ? { runtimeArchive } : {}), bindings: Object.freeze(bindings),
     readOriginal(name: string) { const bytes = originals.get(name); if (!bytes) return fail('original absent'); return Buffer.from(bytes); },
     readProbe() { return { entry, commonjs, output: Buffer.from(output!) }; } }));
   return capability;

@@ -3,12 +3,14 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
-import { verifyCliBuildExecution, portableSourceMaterialView, verifyCollectedCliBuildExecution, type CliExecutionInput, type BuildArchiveMember } from '../../scripts/lib/independent-admission/source-execution';
+import { verifyCliBuildExecution, portableMetafileInputPath, portableSourceMaterialView, verifyCollectedCliBuildExecution, type CliExecutionInput, type BuildArchiveMember } from '../../scripts/lib/independent-admission/source-execution';
 const require = createRequire(import.meta.url);
 const hash = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
-const tracked = spawnSync('git', ['ls-tree', '-r', '--name-only', '-z', 'HEAD'], { encoding: 'utf8' }).stdout.split('\0').filter(Boolean);
+let tracked = spawnSync('git', ['ls-tree', '-r', '--name-only', '-z', 'HEAD'], { encoding: 'utf8' }).stdout.split('\0').filter(Boolean);
 const { CLI_ENTRIES, CLIENT_ENTRIES } = require('../../scripts/cli-build-inputs.cjs');
 const { TOOLS, PATCHES } = require('../../scripts/check-cli-publication.cjs');
+// Tiny structural fixtures include newly added verifier tools before commit.
+tracked = [...new Set([...tracked, ...TOOLS])];
 const prefixes = [...CLI_ENTRIES.map((name: string) => 'packages/xpod-cli/' + name), ...CLIENT_ENTRIES.map((name: string) => 'packages/xpod-client/' + name), 'types/bun', 'LICENSE'];
 const exact = [...TOOLS, ...PATCHES.map((name: string) => 'scripts/' + name), 'scripts/check-cli-publication.cjs', 'scripts/cli-build-inputs.cjs', '.github/workflows/cli-package.yml', 'bunfig.toml', 'package.json', 'packages/xpod-cli/publication.bun.lock',
   ...JSON.parse(readFileSync('packages/xpod-cli/scripts/canonical-host-sources.json', 'utf8')).map((name: string) => 'src/' + name)];
@@ -81,6 +83,13 @@ describe('controlled CLI execution original verifier (synthetic origin-free fixt
     expect(portableSourceMaterialView(facts)).toBeUndefined();
     expect(portableSourceMaterialView(JSON.parse(JSON.stringify(facts)))).toBeUndefined();
     expect(() => verifyCollectedCliBuildExecution({ artifact: {} as any, source: {} })).toThrow('private collected');
+  });
+  it('normalizes observed metafile coordinates without granting path existence', () => {
+    expect(portableMetafileInputPath('cli', '../../node_modules/pkg/index.js')).toBe('node_modules/pkg/index.js');
+    expect(portableMetafileInputPath('cli', './src/entry.ts')).toBe('packages/xpod-cli/src/entry.ts');
+    expect(portableMetafileInputPath('client', '/owned/build/node_modules/pkg/empty.js', '/owned/build')).toBe('node_modules/pkg/empty.js');
+    expect(portableMetafileInputPath('client', '/other/build/node_modules/pkg/empty.js', '/owned/build')).toBeUndefined();
+    expect(portableMetafileInputPath('cli', '../../../secret')).toBeUndefined();
   });
   it('leaves historical missing originals pending', () => {
     const f = fixture(); delete (f.input.producer as any).buildPhases;

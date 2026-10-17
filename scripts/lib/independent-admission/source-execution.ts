@@ -3,6 +3,7 @@ import path from 'node:path';
 import { verifyCliInputSet } from './source-rules';
 import { collectedArtifactView, publicationMaterialView } from './artifact-collector';
 import { derivedSourceView } from './source-context';
+import { verifyModuleSourceOriginals, type ModuleSourceMaterialView } from './module-source-admission';
 import type { CollectedArtifactCapability } from './artifact-contract';
 
 export interface BuildArchiveMember { path: string; type: string; size: number; mode: number; sha256: string }
@@ -223,6 +224,8 @@ export interface PortableBundleGraph {
 export interface PortableSourceMaterialView {
   readonly identity: { readonly sourceSha: string; readonly package: string; readonly version: string; readonly archiveSha256: string };
   readonly outputs: readonly PortableBundleGraph[];
+  readonly dependencySnapshotVerified: boolean;
+  readonly dependencyOriginals?: Pick<ModuleSourceMaterialView, 'dependencyRows' | 'dependencyOriginalIdentity' | 'readDependencyOriginal' | 'readDependencyOriginalRange'>;
   readonly pending: readonly string[];
 }
 const portableIssued = new WeakMap<object, PortableSourceMaterialView>();
@@ -263,10 +266,111 @@ export function verifyCollectedCliBuildExecution(input: {
       return products.get(role)!.view.readMember(name.slice(8), maximum);
     } }, graphs);
   if (!facts.controlledBuildDerivationVerified) return facts;
+  let snapshot: ReturnType<typeof verifyModuleSourceOriginals> | undefined;
+  let observedBuildRoot: string | undefined;
+  const portableSourceFiles = new Map<string, Buffer>();
+  if (producer.sourceMaterials !== undefined) {
+    if (!artifact.readProducerOriginalRange) return fail('portable source materials bounded range reader required');
+    const ref = producer.sourceMaterials;
+    if (ref.path !== 'source-materials/materials.json') return fail('portable source master path');
+    const raw = materials.readOriginal(ref.path, 4 * 1024 ** 2);
+    if (raw.length !== ref.bytes || hash(raw) !== ref.sha256) return fail('portable source master binding');
+    const master = JSON.parse(raw.toString());
+    const sourceInputs = JSON.parse(materials.readOriginal(producer.sourceInputs.path, 4 * 1024 ** 2).toString());
+    const actualSources = new Map<string, { mode: string; bytes: Buffer }>();
+    for (const row of sourceInputs.files) {
+      const name = row.path === 'packages/xpod-cli/publication.bun.lock' ? 'bun.lock' : row.path;
+      const bytes = row.path === 'package.json' ? Buffer.from(JSON.stringify(sourceInputs.generatedBuildManifest, null, 2)) : source.readTracked(row.path);
+      // The source snapshot's Git bytes and generated manifest were verified by
+      // the one execution check above. File mode is observed in its tar row.
+      actualSources.set(name, { mode: '100644', bytes });
+    }
+    // Preserve executable Git mode where supplied by the private derived view.
+    for (const row of sourceInputs.files) if (source.readTrackedGitObject && row.path !== 'package.json') {
+      const name = row.path === 'packages/xpod-cli/publication.bun.lock' ? 'bun.lock' : row.path;
+      const object = source.readTrackedGitObject(row.path);
+      actualSources.set(name, object);
+    }
+    const initial = JSON.parse(materials.readOriginal('source-materials-inputs.json', 4 * 1024 ** 2).toString());
+    for (const domain of ['source', 'dependencies', 'toolchain']) if (canonical(initial[domain]) !== canonical(master[domain])) return fail('portable captured before/after original custody differs');
+    for (const [name, object] of actualSources) portableSourceFiles.set(name, object.bytes);
+    const cleanup = JSON.parse(materials.readOriginal('cleanup.json', 4 * 1024 ** 2).toString());
+    observedBuildRoot = cleanup.source;
+    for (const action of ['before', 'after']) {
+      const label = 'source-capture-' + action;
+      const receipt = JSON.parse(materials.readOriginal(label + '.receipt.json', 65536).toString());
+      const expectedArgs = ['-I', '-B', cleanup.source + '/scripts/lib/module-source-materials.py', 'portable-' + action,
+        cleanup.source, path.posix.dirname(receipt.args?.[6] ?? ''), receipt.args?.[6]];
+      if (receipt.command !== 'python3' || receipt.cwd !== cleanup.source || canonical(receipt.args) !== canonical(expectedArgs)
+        || !expectedArgs[6]?.endsWith('/' + label + '.request.json') || receipt.code !== 0 || receipt.signal !== null
+        || receipt.failure !== null || receipt.spawnError !== null || receipt.actualWait !== true || receipt.actualClose !== true || receipt.groupAbsent !== true
+        || receipt.rawComplete !== true || receipt.rawClosedBeforeHash !== true || receipt.rawClosed !== true
+        || canonical(receipt.pipeEOF) !== '[true,true]' || receipt.raw?.length !== 2) return fail('portable source capture actual closure mismatch');
+      const request = JSON.parse(materials.readOriginal(label + '.request.json', 4 * 1024 ** 2).toString());
+      if (action === 'before' ? canonical(request.sourcePaths.slice().sort()) !== canonical([...actualSources.keys()].sort())
+        : canonical(request.phases) !== canonical(master.phases) || canonical(request.archive) !== canonical(master.archive)) return fail('portable capture request binding');
+      const result = JSON.parse(materials.readOriginal(label + '.stdout.raw.log', 262144).toString());
+      const expectedResult = action === 'after' ? producer.sourceMaterials : artifact.producerOriginals.find(row => row.path === 'source-materials-inputs.json');
+      if (!expectedResult || result.path !== expectedResult.path || result.bytes !== expectedResult.bytes || result.sha256 !== expectedResult.sha256) return fail('portable capture original stdout binding');
+      for (const [stream, ref] of receipt.raw.entries()) {
+        if (ref.path !== label + (stream === 0 ? '.stdout.raw.log' : '.stderr.raw.log')) return fail('portable capture raw coordinate');
+        const bytes = materials.readOriginal(ref.path, 262144);
+        if (bytes.length !== ref.bytes || hash(bytes) !== ref.sha256) return fail('portable capture raw binding');
+      }
+    }
+    snapshot = verifyModuleSourceOriginals({ materials: master, producer: { phases: producer.buildPhases, archive: { kind: 'cli-client-dist-inventories' } },
+      inventory: artifact.producerOriginals, members: [...products].flatMap(([role, row]) => row.view.members.filter(member => member.path.startsWith('dist/')).map(member => ({ ...member, path: role + '/' + member.path }))),
+      trackedPaths: [...actualSources.keys()], readTrackedObject: name => actualSources.get(name) ?? fail('portable copied source absent'),
+      readOriginal: materials.readOriginal, readRange: artifact.readProducerOriginalRange });
+  }
+  const completeGraphs = graphs.map(graph => {
+    const inputs = graph.inputs.map(row => {
+      if (row.sha256 || !snapshot) return row;
+      const resolved = portableMetafileInputPath(graph.product, row.path, observedBuildRoot);
+      if (!resolved || !safe(resolved)) return row;
+      if (!resolved.split('/').includes('node_modules')) {
+        const original = portableSourceFiles.get(resolved);
+        if (!original) return row;
+        if (original.length !== row.bytes) return fail('metafile copied source input byte mismatch');
+        return Object.freeze({ ...row, sourcePath: resolved, sha256: hash(original) });
+      }
+      let original: Readonly<{ bytes: number; sha256: string }>;
+      try { original = snapshot.dependencyOriginalIdentity(resolved); }
+      catch (error) { if (error instanceof Error && error.message.includes('dependency original missing')) return row; throw error; }
+      if (original.bytes !== row.bytes) return fail('metafile dependency input byte mismatch');
+      return Object.freeze({ ...row, sourcePath: resolved, sha256: original.sha256 });
+    });
+    return Object.freeze({ ...graph, inputs: Object.freeze(inputs), inputUniverseComplete: inputs.every(row => row.sha256 !== undefined),
+      readInputOriginalRange(name: string, offset: number, length: number): Buffer {
+        const row = inputs.find(row => row.path === name);
+        if (!row?.sha256 || !row.sourcePath) return fail('bundle input original unresolved');
+        if (row.sourcePath.split('/').includes('node_modules')) return snapshot!.readDependencyOriginalRange(row.sourcePath, offset, length);
+        const original = portableSourceFiles.get(row.sourcePath);
+        if (original) {
+          if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(length) || length < 0 || length > 65536 || offset > row.bytes - length) return fail('bundle input range bound');
+          return Buffer.from(original.subarray(offset, offset + length));
+        }
+        return graph.readInputOriginalRange(name, offset, length);
+      } });
+  });
   for (const [role, product] of products) {
-    const outputs = Object.freeze(graphs.filter(graph => graph.product === role));
-    portableIssued.set(product.cap, Object.freeze({ identity: Object.freeze({ ...product.view.identity }), outputs,
-      pending: Object.freeze(outputs.flatMap(row => row.inputUniverseComplete ? [] : ['bundle-input-originals-unresolved:' + row.path])) }));
+    const outputs = Object.freeze(completeGraphs.filter(graph => graph.product === role));
+    portableIssued.set(product.cap, Object.freeze({ identity: Object.freeze({ ...product.view.identity }), outputs, dependencySnapshotVerified: snapshot !== undefined, dependencyOriginals: snapshot,
+      pending: Object.freeze([...(snapshot ? [] : ['portable-source-capture-originals-missing']), ...outputs.flatMap(row => row.inputUniverseComplete ? [] : ['bundle-input-originals-unresolved:' + row.path])]) }));
   }
   return facts;
+}
+
+
+/** Path interpretation only; this does not assert that an input exists. Every
+ * returned dependency path must still resolve to the verified snapshot bytes. */
+export function portableMetafileInputPath(product: 'cli' | 'client', name: string, observedBuildRoot?: string): string | undefined {
+  if (typeof name !== 'string' || !name || /[\\\u0000-\u001f\u007f]/u.test(name)) return undefined;
+  let relative: string;
+  if (path.posix.isAbsolute(name)) {
+    if (!observedBuildRoot || !name.startsWith(observedBuildRoot + '/')) return undefined;
+    relative = name.slice(observedBuildRoot.length + 1);
+  } else relative = path.posix.join('packages/xpod-' + product, name);
+  const resolved = path.posix.normalize(relative);
+  return safe(resolved) ? resolved : undefined;
 }

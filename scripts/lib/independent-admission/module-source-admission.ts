@@ -24,6 +24,7 @@ export interface ModuleSourceMaterialView {
   readonly scope: 'controlled-recipe-input-universe';
   readonly transpiledOutputs: readonly { readonly path: string; readonly sourcePath: string }[];
   readDependencyOriginal(name: string, maximumBytes: number): Buffer;
+  dependencyOriginalIdentity(name: string): Readonly<{ bytes: number; sha256: string }>;
   readDependencyOriginalRange(name: string, offset: number, length: number): Buffer;
   compactOriginalReaders(): void;
 }
@@ -222,6 +223,10 @@ export function verifyModuleSourceOriginals(input: {
   };
   return Object.freeze({ compactOriginalReaders() { readable = false; locations.clear(); }, dependencyRows: Object.freeze(dependencies), trackedSourcePaths: Object.freeze([...input.trackedPaths]),
     outputs: Object.freeze(outputs.map(row => Object.freeze({ ...row }))), transpiledOutputs: Object.freeze(transpiledOutputs), scope: 'controlled-recipe-input-universe' as const,
+    dependencyOriginalIdentity(name: string) {
+      const { location, row } = resolveDependency(name);
+      return Object.freeze({ bytes: location.bytes, sha256: row.sha256! });
+    },
     readDependencyOriginalRange(name: string, offset: number, length: number): Buffer {
       const { location } = resolveDependency(name);
       return readDependencyRange(location, offset, length);

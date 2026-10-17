@@ -1,13 +1,14 @@
+import {publicationLegalMaterials} from './publication-legal-materials';
 import { githubOriginFacts } from './github-origin';
 import { collectedArtifactView, publicationMaterialView, readCollectedPortableArchive } from './artifact-collector';
 import { derivedSourceView } from './source-context';
 import { consumerObservationView } from './consumer-context';
-import { verifyRuntimeClosure } from './runtime-closure';
+import { verifyRuntimeClosure, verifyCollectedRuntimeClosure } from './runtime-closure';
 import { verifyNativeAdmission, verifyCollectedNativeAdmission } from './native-admission';
 import { inspectModuleSourcePhases } from './module-source-phases';
 import { verifyLegalAdmission } from './legal-admission';
 import { verifyCliInputSet } from './source-rules';
-import { verifyCliBuildExecution, type CliExecutionFacts } from './source-execution';
+import { verifyCollectedCliBuildExecution,portableSourceMaterialView,type CliExecutionFacts } from './source-execution';
 import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { isDeepStrictEqual } from 'node:util';
@@ -100,11 +101,17 @@ const source: Adapter = {
       || product.archive.integrity !== 'sha512-' + createHash('sha512').update(context.archive).digest('base64')) reject('source/product/archive binding mismatch');
     const inventory = JSON.parse(readOriginal(evidence.inventory).toString());
     if (inventory.schemaVersion !== 1 || !Array.isArray(inventory.files) || !inventory.files.length) reject('missing producer inventory');
-    const originals = new Map<string, Buffer>();
+    const originals = new Map<string, Buffer>(),originalPaths=new Set<string>();
     for (const row of inventory.files) {
       if (!row || typeof row.path !== 'string' || !row.path || row.path.includes('\\')
         || row.path.startsWith('/') || row.path.split('/').some((part: string) => !part || part === '.' || part === '..')
-        || originals.has(row.path) || !Number.isSafeInteger(row.bytes) || row.bytes < 0) reject('invalid producer inventory');
+        || originalPaths.has(row.path) || !Number.isSafeInteger(row.bytes) || row.bytes < 0) reject('invalid producer inventory');
+      originalPaths.add(row.path);
+      if(row.path.startsWith('source-materials/')){
+        const registered=collected?.producerOriginals.find(member=>member.path===row.path);
+        if(!registered||registered.bytes!==row.bytes||registered.sha256!==row.sha256)reject('source original absent from authenticated acquired inventory');
+        continue;
+      }
       const bytes = readOriginal(row);
       if (bytes.length !== row.bytes) reject('producer original size mismatch');
       originals.set(row.path, bytes);
@@ -141,14 +148,8 @@ const source: Adapter = {
       if (view) products.set(role, view);
     }
     const execution: CliExecutionFacts = collected && derived && products.size === 2
-      ? verifyCliBuildExecution({ producer: evidence, readProducerOriginal: collected.readProducerOriginal,
-        readTracked: derived.readTracked, trackedPaths: derived.trackedPaths,
-        archiveMembers: role => products.get(role)!.members.map(row => ({ path: 'package/' + row.path,
-          type: 'file', size: row.bytes, mode: row.mode, sha256: row.sha256 })),
-        readArchiveMember: (role, name, maximum) => {
-          if (!name.startsWith('package/')) return reject('unexpected collected archive member root');
-          return products.get(role)!.readMember(name.slice('package/'.length), maximum);
-        } })
+      ? verifyCollectedCliBuildExecution({artifact:context.collectedArtifact as import('./artifact-contract').CollectedArtifactCapability,
+        source:context.derivedSource,relatedArtifacts:context.relatedArtifacts as readonly import('./artifact-contract').CollectedArtifactCapability[]|undefined})
       : { actualOwnedCommandClosureVerified: false, controlledBuildDerivationVerified: false,
         pending: ['execution-capabilities-missing: controlled CLI/client archives and derived source required'],
         scope: 'controlled approved commands, original inputs/outputs and owned groups; no escaped-session or reproducible-compilation attestation' };
@@ -188,6 +189,12 @@ const source: Adapter = {
       ...(!collected || !derived ? ['source-origin-unverified: collected artifact and derived source capabilities required'] : []),
       ...(rules.pending ? [rules.pending] : []),
       ...execution.pending,
+      ...(collected&&execution.controlledBuildDerivationVerified&&portableSourceMaterialView(context.collectedArtifact)?.dependencySnapshotVerified!==true
+        ? ['portable-source-snapshots-unverified: actual dependency/toolchain/source originals required'] : []),
+      ...(collected&&execution.controlledBuildDerivationVerified
+        ? (portableSourceMaterialView(context.collectedArtifact)?.outputs.length
+          ? portableSourceMaterialView(context.collectedArtifact)!.pending
+          : ['portable-bundle-input-originals-unresolved: actual complete bundle graphs required']) : []),
       ...(!collected ? ['producer-inventory-completeness-unverified: listed originals are bound but exact acquired artifact member set is not observed'] : []),
     ];
     const sourceQualified = originAdmissionVerified && execution.actualOwnedCommandClosureVerified
@@ -204,8 +211,9 @@ const source: Adapter = {
 };
 
 function legalGate(evidence: unknown, context: AdmissionContext | CollectedAdmissionContext): AdmissionResult {
-  const result = verifyLegalAdmission(evidence, context);
-  return { status: result.status, reason: result.reason, pending: result.pending, details: result.facts };
+  const bound=publicationLegalMaterials(context.collectedArtifact,context.derivedSource);
+  const result = verifyLegalAdmission(evidence,{...context,legalOriginals:context.legalOriginals??bound?.originals});
+  return { status: result.status, reason: result.reason, pending: result.pending, details:{...result.facts,coverage:result.coverage} };
 }
 
 
@@ -256,6 +264,14 @@ function inspectCollectedModuleSource(context: CollectedAdmissionContext): any {
   return report;
 }
 
+/** Getter only for a completed source observation in this process. No caller
+ * report, JSON receipt or boolean can create a source material capability. */
+export function collectedPublicationSourceMaterials(artifact:unknown,source:unknown):unknown{
+  if(!collectedArtifactView(artifact)||!derivedSourceView(source)||!artifact||typeof artifact!=='object'||!source||typeof source!=='object')return undefined;
+  if(collectedArtifactView(artifact)!.identity.target===undefined)return portableSourceMaterialView(artifact)?artifact:undefined;
+  return collectedSourceReports.get(artifact)?.get(source)?.materials;
+}
+
 /** One gate registry. Product identities remain in the existing module catalog.
  * Unimplemented adapters must stay fail closed; arbitrary approval booleans have
  * no meaning here. No public token constructor or caller transport grants trust. */
@@ -267,6 +283,9 @@ const adapters: Readonly<Record<Gate, Adapter>> = Object.freeze<Record<Gate, Ada
   'runtime-closure': { verify: (evidence, context) => {
     const result = verifyRuntimeClosure(evidence, context);
     return { status: result.status, reason: result.reason, pending: [...result.pending] };
+  }, verifyCollected: (evidence, context) => {
+    const result = verifyCollectedRuntimeClosure(evidence, context);
+    return { status: result.status, reason: result.reason, pending: [...result.pending], details: result.facts };
   } },
   native: { verify: (evidence, context) => {
     const result = verifyNativeAdmission(evidence, context);
@@ -336,6 +355,6 @@ export function verifyCollectedPublicationAdmission(gate: Gate, input: Collected
     if (sourceReport.status === 'verified') context.legalSourceMaterials = sourceReport.materials;
   }
   const evidence = gate === 'source'
-    ? JSON.parse(material.readOriginal(material.producerReceipt.path, 1024 ** 2).toString()) : undefined;
+    ? JSON.parse(material.readOriginal(material.producerReceipt.path, 4*1024 ** 2).toString()) : undefined;
   return verifyCollectedAdmission(gate, evidence, context);
 }

@@ -1,3 +1,5 @@
+import {sharedSourceLifetime} from './shared-source-lifetime';
+import moduleLimits from '../module-artifact-limits.json';
 import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { readFileSync, lstatSync } from 'node:fs';
@@ -8,6 +10,8 @@ import { projectCliPublicationInput } from '../../project-cli-publication-input'
 import { githubOriginFacts, githubOriginOriginals, type GitHubOriginObservation } from './github-origin';
 import type { CollectedArtifactCapability, CollectedArtifactView, CollectedArtifactMember, PublicationMaterialView } from './artifact-contract';
 
+type PortableSourceSnapshot={originals:NonNullable<Awaited<ReturnType<typeof import('./module-source-originals')['collectModuleSourceOriginals']>>>;lifetime:ReturnType<typeof sharedSourceLifetime>};
+const portableSourceSnapshots=new WeakMap<object,PortableSourceSnapshot>();
 const issued = new WeakMap<object, CollectedArtifactView>();
 const disposers = new WeakMap<object, () => void>();
 const sourceCompactors = new WeakMap<object, () => void>();
@@ -273,14 +277,14 @@ export async function collectAdmissionArtifact(input: {
     || custody.artifactId !== origin.artifactId || custody.workflowPath !== origin.workflowPath
     || custody.archive?.sha256 !== origin.artifactSha256) fail('observed artifact/custody mismatch');
   const producerOriginals = new Map<string, Buffer>();
-  const selected = custody.inventory.members.filter((row: any) => row.kind === 'file');
+  const selected = custody.inventory.members.filter((row: any) => row.kind === 'file'&&!row.path.startsWith('source-materials/'));
   if (selected.length > 1000 || selected.some((row: any) => row.bytes > 8 * 1024 ** 2)
     || selected.reduce((total: number, row: any) => total + row.bytes, 0) > 16 * 1024 ** 2) fail('producer original resource bound exceeded');
   await withOwnedTempRoot('xpod-admission-originals-', async (temporary: string) => {
     const selections = selected.map((row: any) => ({ path: row.path, destination: row.path, bytes: row.bytes, sha256: row.sha256 }));
     const result = inspectArtifact([path.join(import.meta.dir, '../inspect-product-artifact.py'),
-      path.join(root, 'artifact.zip'), origin.artifactSha256, String(8 * 1024 ** 2), String(16 * 1024 ** 2),
-      '1000', JSON.stringify(selections), temporary, 'independent-source-originals'], { timeout: 30_000, maxBuffer: 1024 ** 2 });
+      path.join(root, 'artifact.zip'), origin.artifactSha256, String(moduleLimits.packedBytes), String(moduleLimits.expandedBytes),
+      String(moduleLimits.members), '--selection-stdin', temporary, 'independent-source-originals'], {timeout:moduleLimits.timeoutMs,maxBuffer:32*1024**2,input:Buffer.from(JSON.stringify(selections))});
     if (result.error || result.status !== 0 || result.signal) fail('producer ZIP member verification failed: '
       + String(result.error?.message ?? result.stderr).slice(0, 1200));
     const checked = JSON.parse(result.stdout);
@@ -303,14 +307,18 @@ export async function collectAdmissionArtifact(input: {
     custodyReceiptSha256: hash(receiptBytes) }, input.projectionOutput);
   const row = projected.products[input.product];
   const archive = readFileSync(path.join(input.projectionOutput, row.archive.path));
+  const producer=JSON.parse(producerOriginals.get('result.json')!.toString());
+  const {collectModuleSourceOriginals}=await import('./module-source-originals');
+  const sourceOriginals=await collectModuleSourceOriginals({archivePath:path.join(root,'artifact.zip'),archiveSha256:origin.artifactSha256,inventory:custody.inventory,producer});
+  const snapshot:PortableSourceSnapshot|undefined=sourceOriginals?{originals:sourceOriginals,lifetime:sharedSourceLifetime(sourceOriginals)}:undefined;
   const producerRows = Object.freeze(selected.map((row: any) => Object.freeze({ path: row.path, sha256: row.sha256, bytes: row.bytes, mode: row.mode ?? 0 })));
-  return issueProductArchive(origin.sourceSha, row, archive, producerRows, (name, maximumBytes) => {
+  try{return issueProductArchive(origin.sourceSha, row, archive, producerRows, (name, maximumBytes) => {
     if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 0) return fail('invalid original byte bound');
     const bytes = producerOriginals.get(name);
     const row = selected.find((item: any) => item.path === name);
     if (!bytes || !row || bytes.length > maximumBytes || hash(bytes) !== row.sha256) return fail('unique bounded producer original required');
     return Buffer.from(bytes);
-  }, input.githubOrigin as GitHubOriginObservation, path.resolve(input.projectionOutput));
+  }, input.githubOrigin as GitHubOriginObservation, path.resolve(input.projectionOutput),snapshot);}catch(error){sourceOriginals?.dispose();throw error;}
 }
 
 /** A sibling archive from the same authenticated producer ZIP needs no second
@@ -323,13 +331,13 @@ export function collectRelatedAdmissionArtifact(parent: CollectedArtifactCapabil
   const row = producer.products?.[product];
   if (producer.context?.checkoutSha !== view.identity.sourceSha || row?.package !== '@undefineds.co/xpod-' + product) fail('related producer identity mismatch');
   const archive = view.readProducerOriginal(row.archive.path, 8 * 1024 ** 2);
-  return issueProductArchive(view.identity.sourceSha, row, archive, view.producerOriginals, view.readProducerOriginal, publicationBindings.get(parent)?.binding.origin, publicationBindings.get(parent)?.binding.projectionOutput);
+  return issueProductArchive(view.identity.sourceSha, row, archive, view.producerOriginals, view.readProducerOriginal, publicationBindings.get(parent)?.binding.origin, publicationBindings.get(parent)?.binding.projectionOutput,portableSourceSnapshots.get(parent));
 }
 
 // Private issuer: only authenticated acquisition or a previously issued parent
 // capability can reach this function. No JSON/hash-to-authority constructor.
 function issueProductArchive(sourceSha: string, row: any, archive: Buffer,
-  producerRows: readonly CollectedArtifactMember[], readProducerOriginal: CollectedArtifactView['readProducerOriginal'], origin?: GitHubOriginObservation, projectionOutput?: string): CollectedArtifactCapability {
+  producerRows: readonly CollectedArtifactMember[], readProducerOriginal: CollectedArtifactView['readProducerOriginal'], origin?: GitHubOriginObservation, projectionOutput?: string,snapshot?:PortableSourceSnapshot): CollectedArtifactCapability {
   if (archive.length !== row.archive.bytes || hash(archive) !== row.archive.sha256
     || 'sha512-' + createHash('sha512').update(archive).digest('base64') !== row.archive.integrity) fail('projected product archive mismatch');
   const { inspectTarballBuffer } = require('../../workspace-package-payload.cjs');
@@ -348,8 +356,9 @@ function issueProductArchive(sourceSha: string, row: any, archive: Buffer,
   const identity = Object.freeze({ sourceSha, package: row.package, version: row.version,
     archiveSha256: row.archive.sha256, integrity: row.archive.integrity, archiveBytes: archive.length });
   const view: CollectedArtifactView = Object.freeze({ identity, members: Object.freeze(members),
-    producerOriginals: producerRows,
-    readProducerOriginal,
+    producerOriginals:Object.freeze([...new Map([...producerRows,...(snapshot?.originals.members??[])].map(row=>[row.path,row])).values()]),
+    readProducerOriginal(name:string,maximum:number){return name.startsWith('source-materials/')&&snapshot?snapshot.originals.readSmall(name,maximum):readProducerOriginal(name,maximum);},
+    ...(snapshot?{readProducerOriginalRange:(name:string,offset:number,length:number)=>snapshot.originals.readRange(name,offset,length)}:{}),
     readMember(name: string, maximumBytes: number): Buffer {
       if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 0) return fail('invalid member byte bound');
       const bytes = originals.get(name);
@@ -357,8 +366,12 @@ function issueProductArchive(sourceSha: string, row: any, archive: Buffer,
       if (hash(bytes) !== memberHashes.get(name)) return fail('collected member digest mismatch');
       return Buffer.from(bytes);
     } });
-  return issueCollectedView(view, undefined, origin && projectionOutput ? { origin, projectionOutput, producerReceiptPath: 'result.json',
-    source: { kind: 'buffer', bytes: Buffer.from(archive) } } : undefined);
+  const release=snapshot?.lifetime.retain();
+  let capability:CollectedArtifactCapability;
+  try{capability=issueCollectedView(view,release, origin && projectionOutput ? { origin, projectionOutput, producerReceiptPath: 'result.json',
+    source: { kind: 'buffer', bytes: Buffer.from(archive) } } : undefined);}catch(error){release?.();throw error;}
+  if(snapshot){portableSourceSnapshots.set(capability,snapshot);sourceCompactors.set(capability,()=>snapshot.lifetime.compact());}
+  return capability;
 }
 
 function issueCollectedView(view: CollectedArtifactView, dispose?: () => void, binding?: PublicationBinding): CollectedArtifactCapability {

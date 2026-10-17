@@ -23,9 +23,10 @@ def source_original_path(path):
     return path in {
         'cleanup.json', 'client.tgz', 'cli.tgz', 'input.json', 'inventory.json',
         'phases.jsonl', 'producer-index.json', 'preparation.json', 'result.json',
+        'source-materials-inputs.json',
         'source-inputs.json', 'source-manifests/cli.package.json',
         'source-manifests/client.package.json',
-    } or re.fullmatch(r'phase-[0-9]{3}\.(?:receipt\.json|build\.json|(?:stdout|stderr)\.raw\.log)', path) is not None \
+    } or re.fullmatch(r'source-capture-(?:before|after)\.(?:receipt\.json|request\.json|(?:stdout|stderr)\.raw\.log)', path) is not None or re.fullmatch(r'phase-[0-9]{3}\.(?:receipt\.json|build\.json|(?:stdout|stderr)\.raw\.log)', path) is not None \
         or re.fullmatch(r'phase-[0-9]{3}\.metafiles/[A-Za-z0-9_-]+\.json', path) is not None
 
 

@@ -9,6 +9,8 @@ on:
       - 'scripts/check-cli-package.cjs'
       - 'scripts/check-cli-publication.cjs'
       - 'scripts/cli-build-inputs.cjs'
+      - 'scripts/lib/module-source-materials.py'
+      - 'scripts/lib/module-artifact-limits.json'
       - 'scripts/prepare-cli-publication.ts'
       - 'scripts/independent-release-plan.ts'
       - 'scripts/workspace-package-payload.cjs'

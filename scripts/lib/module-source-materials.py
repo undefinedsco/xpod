@@ -188,14 +188,16 @@ def capture_group(root, output, domain, files, repo, tools=None):
     return dict(archives=archives, inventories=inventories)
 
 
-def capture_inputs(repo, output):
+def capture_inputs(repo, output, source_paths=None):
     repo, output = Path(repo), Path(output)
     root = output / 'source-materials'
     global _deadline
     _deadline = time.monotonic() + LIMITS['captureTimeoutMs'] / 1000
     root.mkdir(mode=0o700)
     started = now()
-    paths = subprocess.check_output(['git', 'ls-files', '-z'], cwd=repo, timeout=60).decode().split('\0')[:-1]
+    paths = subprocess.check_output(['git', 'ls-files', '-z'], cwd=repo, timeout=60).decode().split('\0')[:-1] if source_paths is None else source_paths
+    if not isinstance(paths, list) or not paths or len(paths) != len(set(paths)) or any(not isinstance(n, str) or not safe(n) for n in paths):
+        raise ValueError('Explicit actual source input paths invalid')
     installed = dependency_paths(repo)
     if len(paths) + len(installed) > MAX_MEMBERS or not installed:
         raise ValueError('Source/dependency input member bound')
@@ -269,7 +271,7 @@ def revalidate_inputs(repo, output, inputs):
     return result
 
 
-def capture_outputs(repo, output, inputs, phases, archive, stage_root=None):
+def capture_outputs(repo, output, inputs, phases, archive, stage_root=None, output_rows=None):
     repo, output = Path(repo), Path(output)
     global _deadline
     _deadline = time.monotonic() + LIMITS['captureTimeoutMs'] / 1000
@@ -277,21 +279,24 @@ def capture_outputs(repo, output, inputs, phases, archive, stage_root=None):
     value['revalidation'] = revalidate_inputs(repo, output, inputs)
     value['phases'] = phases
     value['archive'] = archive
-    stage_root = output / 'stage' if stage_root is None else Path(stage_root)
-    stage_root.relative_to(output)
-    if stage_root.is_symlink() or not stage_root.is_dir():
-        raise ValueError('Actual ordinary output stage required')
-    rows = []
-    for directory, dirs, files in os.walk(stage_root, followlinks=False):
-        for name in [*dirs, *files]:
-            file = Path(directory) / name
-            if file.is_symlink():
-                raise ValueError('Stage output links forbidden')
-            if file.is_file():
-                check(file)
-                row = ref(file, stage_root)
-                row['mode'] = stat.S_IMODE(file.stat().st_mode)
-                rows.append(row)
+    if output_rows is None:
+        stage_root = output / 'stage' if stage_root is None else Path(stage_root)
+        stage_root.relative_to(output)
+        if stage_root.is_symlink() or not stage_root.is_dir():
+            raise ValueError('Actual ordinary output stage required')
+        rows = []
+        for directory, dirs, files in os.walk(stage_root, followlinks=False):
+            for name in [*dirs, *files]:
+                file = Path(directory) / name
+                if file.is_symlink():
+                    raise ValueError('Stage output links forbidden')
+                if file.is_file():
+                    check(file)
+                    row = ref(file, stage_root)
+                    row['mode'] = stat.S_IMODE(file.stat().st_mode)
+                    rows.append(row)
+    else:
+        rows = output_rows
     output_files = []
     rows.sort(key=lambda row: row['path'])
     for offset in range(0, len(rows), 5000):
@@ -312,3 +317,21 @@ def capture_outputs(repo, output, inputs, phases, archive, stage_root=None):
         destination.write(encoded)
     _deadline = None
     return ref(file, output)
+
+
+if __name__ == '__main__':
+    import sys
+    if len(sys.argv) != 5 or sys.argv[1] not in ('portable-before', 'portable-after'):
+        raise ValueError('Fixed portable action, actual workspace, evidence root and request required')
+    action, repo, output, request_file = sys.argv[1:]
+    repo, output = Path(repo).resolve(strict=True), Path(output).resolve(strict=True)
+    request = json.loads(Path(request_file).read_text())
+    state = output / 'source-materials-inputs.json'
+    if action == 'portable-before':
+        result = capture_inputs(repo, output, request['sourcePaths'])
+        with state.open('x') as destination:
+            json.dump(result, destination)
+        print(json.dumps(ref(state, output)))
+    else:
+        result = capture_outputs(repo, output, json.loads(state.read_text()), request['phases'], request['archive'], output_rows=request['outputs'])
+        print(json.dumps(result))
