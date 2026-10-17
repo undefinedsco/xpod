@@ -5,7 +5,7 @@
   },
   {
     "path": "docker/qlever-runtime-sdk/Dockerfile.module-bookworm",
-    "sha256": "8c187c493821b9e6054de3520d5ac35c6f42377799e874f0584027073a5f301a"
+    "sha256": "ed08139b7096e4c96e2281c217d6de970eb939263b937e54c41e17133eef9ec8"
   },
   {
     "path": "package.json",
@@ -309,11 +309,19 @@
   },
   {
     "path": "qlever/scripts/sdk-image-originals.py",
-    "sha256": "63390487a9541cce91c41d568e0ada7427a0dabdb7e10348dd0c90b2d5ddd78a"
+    "sha256": "f6328787a700297e45412d80d8cf793dd3202f195baa70dad2461fb46deb2119"
   },
   {
     "path": "qlever/scripts/sdk-inner-materials.py",
     "sha256": "75193c6a425515a3008091a78fa3b85fa78b8ede75e5b9f1e053eff3298d9d90"
+  },
+  {
+    "path": "qlever/scripts/sdk-owned-runs.py",
+    "sha256": "90cb23248d1547451e45bd93f7c55678e9bdedb2d0baa7cb6131c92aa864072f"
+  },
+  {
+    "path": "qlever/scripts/sdk-subreaper-guard.py",
+    "sha256": "5a7c1ecf3f570cc83897ccac30843ecd513a5d2b001f250e13e16a636e22fa4a"
   },
   {
     "path": "qlever/scripts/sdk-symlink-originals.py",
@@ -837,7 +845,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-origin-policy.ts",
-    "sha256": "dd0af0f77b7d8f0b34f9013cb4116540bc5f853d681d35b67a0f6ee663573378"
+    "sha256": "a2f824fdfe93feb962a1e660837c002fd904da1b76bf0b29a37af1018e67d8ad"
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-originals.ts",

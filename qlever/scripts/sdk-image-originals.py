@@ -20,6 +20,7 @@ def load(name,file):
     spec=importlib.util.spec_from_file_location(name,HERE/file);module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module);return module
 commands=load('sdk_commands_export','sdk-command-materials.py')
 budgets=load('sdk_budget_export','sdk-execution-budget.py')
+owned_runs=load('sdk_owned_runs_export','sdk-owned-runs.py')
 tar_budget=load('sdk_tar_budget_export','sdk-tar-budget.py')
 
 def write(path,value):Path(path).write_text(json.dumps(value,sort_keys=True,indent=2)+'\n')
@@ -228,6 +229,28 @@ def receiver_generation_collection(out,inner_reference):
     return receiver_inner_collection(out,inner_reference,'qlever-sdk-cmake-generation-originals','generation-collection.json',
         dict(innerMaterials=prefix(inner_reference,'inner')))
 
+def collect_execution_owners(out,deadline):
+    """Original layout/mechanics checks only; these JSON records issue no authority."""
+    out=Path(out);records={}
+    for role,recipe in owned_runs.RUNS.items():
+        path=out/'inner'/recipe.receipt
+        if path.stat().st_size>4*1024**2:raise ValueError('SDK owner metadata bound')
+        original=commands.ref(path,out);record=json.loads(path.read_text())
+        cleanup=record.get('cleanup') or {}
+        if (record.get('kind')!='linux-kernel-owned-subreaper-guard-original' or type(record.get('schemaVersion')) is not int or record.get('schemaVersion')!=1
+            or type(record.get('guardPid')) is not int or record.get('guardPid')!=1 or type(record.get('topCommandPid')) is not int or record['topCommandPid']<=1
+            or not re.fullmatch(r'pid:\[[0-9]+\]',record.get('pidNamespace',''))
+            or record.get('topCommandPidNamespace')!=record['pidNamespace']
+            or record.get('command')!=list(recipe.command)
+            or record.get('globalDeadlineUnix')!=deadline
+            or record.get('topCommandActualWait') is not True or type(record.get('topCommandReturnCode')) is not int or record.get('topCommandReturnCode')!=0
+            or record.get('reason') is not None or record.get('error') is not None or record.get('observedSignals')!=[]
+            or cleanup.get('actualEchild') is not True or cleanup.get('signalledPidfds')!=[]):
+            raise ValueError('SDK actual namespace owner execution differs: '+role)
+        if commands.ref(path,out)!=original:raise ValueError('SDK owner original changed while observed')
+        records[role]=original
+    return records
+
 def collect(image,target,metadata,out,deadline):
     out=Path(out).resolve();budget=budgets.ExecutionBudget(deadline);context=json.loads((out/'context-originals.json').read_text());stages=list(context['stages'])
     for mode in ['build','push']:stages.append(json.loads((out/('image-'+mode+'.stage.json')).read_text()))
@@ -251,7 +274,8 @@ def collect(image,target,metadata,out,deadline):
     for record in [*inner['stages'],*linked['stages']]:
         stages.append(dict(record,**{field:prefix(record[field],'inner') for field in ['receipt','stdout','stderr','supervisionReceipt','supervisionRaw']},
                            inputs=[prefix(ref,'inner') for ref in record['inputs']],outputs=[prefix(ref,'inner') for ref in record['outputs']]))
-    if context['archive']['bytes']+sum(ref['bytes'] for ref in inner['domains'])+inner.get('debianSourceBytes',0)+inner.get('symlinkOriginalBytes',0)+inner.get('upstreamSourceBytes',0)+inner.get('generationMaterialBytes',0)>4*1024**3:raise ValueError('Shared SDK source/context domains exceed 4GiB')
+    execution_owners=collect_execution_owners(out,inner['executionBudget']['deadlineUnix'])
+    if sum(ref['bytes'] for ref in execution_owners.values())+context['archive']['bytes']+sum(ref['bytes'] for ref in inner['domains'])+inner.get('debianSourceBytes',0)+inner.get('symlinkOriginalBytes',0)+inner.get('upstreamSourceBytes',0)+inner.get('generationMaterialBytes',0)>4*1024**3:raise ValueError('Shared SDK source/context domains exceed 4GiB')
     debian_reference=receiver_debian_collection(out,inner['debianSources'])
     upstream_reference=receiver_upstream_collection(out,inner['upstreamSource'])
     generation_reference=receiver_generation_collection(out,inner['generationMaterials'])
@@ -261,7 +285,7 @@ def collect(image,target,metadata,out,deadline):
         if path.is_file():originals.append(commands.ref(path,out))
     generation_refs={key:prefix(ref,'inner') for key,ref in inner.get('generationMetadata',{}).items()}
     symlink_refs={key:prefix(ref,'inner') for key,ref in inner.get('symlinkOriginals',{}).items()}
-    master=dict(schemaVersion=1,kind='qlever-linux-sdk-originals',identity=identity,image=observed,
+    master=dict(schemaVersion=1,kind='qlever-linux-sdk-originals',identity=identity,image=observed,executionOwners=execution_owners,
         buildkit=dict(metadata=commands.ref(out/'buildkit.metadata.original.json',out),record=commands.ref(out/'build.dockerbuild',out)),
         debianSources=debian_reference,upstreamSource=upstream_reference,generationMaterials=generation_reference,
         sourceContext=commands.ref(out/'context-originals.json',out),inputs=dict(before=prefix(inner['inputsBefore'],'inner'),after=prefix(inner['inputsAfter'],'inner'),shards=[prefix(ref,'inner') for ref in inner['domains']],symlinks=symlink_refs,generationMetadata=generation_refs),

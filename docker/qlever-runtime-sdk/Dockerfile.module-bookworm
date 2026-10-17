@@ -40,23 +40,18 @@ COPY docker/qlever-local-runtime/Dockerfile.module-bookworm /opt/qlever-sdk/prof
 # This private build deadline is derived once by the owning SDK workflow.
 ARG XPOD_QLEVER_SDK_DEADLINE_UNIX
 ARG XPOD_QLEVER_SDK_IDENTITY
-RUN XPOD_QLEVER_SDK_IDENTITY="${XPOD_QLEVER_SDK_IDENTITY}" XPOD_QLEVER_SDK_DEADLINE_UNIX="${XPOD_QLEVER_SDK_DEADLINE_UNIX}" python3 /components/qlever/scripts/sdk-inner-materials.py build \
- && test -f /opt/qlever-sdk/build/.xpod-build-contract.json \
- && test -f /opt/qlever-sdk/build/CMakeFiles/qlever-server.dir/link.txt \
- && test -f /opt/qlever-sdk/profile/inputs.json \
- && rm -rf /var/lib/apt/lists/*
+# exec keeps the kernel-owned guard as the entire RUN's namespace PID1.
+RUN XPOD_QLEVER_SDK_IDENTITY="${XPOD_QLEVER_SDK_IDENTITY}" XPOD_QLEVER_SDK_DEADLINE_UNIX="${XPOD_QLEVER_SDK_DEADLINE_UNIX}" exec python3 /components/qlever/scripts/sdk-owned-runs.py build
 
 FROM build AS linked-verification
 ARG XPOD_QLEVER_SDK_DEADLINE_UNIX
 ARG XPOD_QLEVER_SDK_IDENTITY
-RUN apt-get -o Acquire::AllowInsecureRepositories=false update \
- && apt-get -o APT::Get::AllowUnauthenticated=false install -y --no-install-recommends nodejs \
- && XPOD_QLEVER_SDK_DEADLINE_UNIX="${XPOD_QLEVER_SDK_DEADLINE_UNIX}" python3 /components/qlever/scripts/sdk-inner-materials.py linked
+RUN XPOD_QLEVER_SDK_DEADLINE_UNIX="${XPOD_QLEVER_SDK_DEADLINE_UNIX}" exec python3 /components/qlever/scripts/sdk-owned-runs.py linked
 
 FROM build AS runtime
 # Retain actual test originals, not a synthetic .ok marker or another copy of
 # all source shards. The tested SDK source/build tree is inherited from build.
-COPY --from=linked-verification /opt/qlever-sdk/materials/linked-inner.json /opt/qlever-sdk/materials/linked-inner.json
+COPY --from=linked-verification /opt/qlever-sdk/materials/linked-inner.json /opt/qlever-sdk/materials/owner-linked.guard.json /opt/qlever-sdk/materials/
 COPY --from=linked-verification /opt/qlever-sdk/materials/stages/test-adapter /opt/qlever-sdk/materials/stages/test-adapter
 COPY --from=linked-verification /opt/qlever-sdk/materials/stages/test-runtime /opt/qlever-sdk/materials/stages/test-runtime
 COPY --from=linked-verification /opt/qlever-sdk/materials/stages/test-adapter.raw.log /opt/qlever-sdk/materials/stages/test-adapter.receipt.json /opt/qlever-sdk/materials/stages/test-runtime.raw.log /opt/qlever-sdk/materials/stages/test-runtime.receipt.json /opt/qlever-sdk/materials/stages/

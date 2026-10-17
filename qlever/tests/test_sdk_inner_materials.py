@@ -35,7 +35,8 @@ class SdkInnerMaterialsTest(unittest.TestCase):
             self.assertEqual({row['role'] for row in result['files']},{'compile-output','installed-metadata'})
     def test_module_docker_uses_actual_material_driver_and_retains_test_receipts(self):
         recipe=(ROOT/'docker/qlever-runtime-sdk/Dockerfile.module-bookworm').read_text()
-        self.assertIn('sdk-inner-materials.py build',recipe);self.assertIn('sdk-inner-materials.py linked',recipe)
+        self.assertIn('exec python3 /components/qlever/scripts/sdk-owned-runs.py build',recipe)
+        self.assertIn('exec python3 /components/qlever/scripts/sdk-owned-runs.py linked',recipe)
         self.assertNotIn('module-linked-verification.ok',recipe)
         self.assertIn('linked-inner.json',recipe);self.assertIn('test-runtime.receipt.json',recipe)
 if __name__=='__main__':unittest.main()

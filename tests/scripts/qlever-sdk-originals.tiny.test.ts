@@ -64,3 +64,18 @@ test('symlink originals are checked only after their complete Debian recipe sele
   expect(()=>selectGitHubSourceBindingGroup(QLEVER_SDK_EXECUTION_GROUPS,map)).toThrow();
  }
 });
+
+
+test('owned SDK RUNs select the complete PID1 registry/guard and preserve earlier source groups',()=>{
+ const previous=QLEVER_SDK_EXECUTION_GROUPS.at(-2)!,next=QLEVER_SDK_EXECUTION_GROUPS.at(-1)!;
+ for(const path of ['qlever/scripts/sdk-owned-runs.py','qlever/scripts/sdk-subreaper-guard.py']){
+  expect(next.selectors.some(row=>row.path===path)).toBe(false);
+  expect(next.sourceBindings.find(row=>row.path===path)?.sha256).toHaveLength(64);
+  expect(previous.sourceBindings.some(row=>row.path===path)).toBe(false);
+ }
+ for(const path of ['docker/qlever-runtime-sdk/Dockerfile.module-bookworm','qlever/scripts/sdk-image-originals.py']){
+  const mixed=new Map(next.selectors.map(row=>[sourceBindingKey(row),row.sha256]));const before=previous.selectors.find(row=>row.path===path)!;mixed.set(sourceBindingKey(before),before.sha256);
+  expect(()=>selectGitHubSourceBindingGroup(QLEVER_SDK_EXECUTION_GROUPS,mixed)).toThrow();
+ }
+ expect(QLEVER_LINUX_EXECUTION_GROUPS.includes(next)).toBe(true);
+});
