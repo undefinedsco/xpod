@@ -3,6 +3,10 @@ name: Publish QLever runtime SDK image
 on:
   workflow_dispatch:
     inputs:
+      target:
+        description: Native Linux target; the default preserves the existing service image
+        type: string
+        default: linux-x64
       source_commit:
         description: Exact public xpod source commit to build
         required: false
@@ -17,6 +21,10 @@ on:
         type: string
   workflow_call:
     inputs:
+      target:
+        description: Native Linux target; the default preserves the existing service image
+        type: string
+        default: linux-x64
       source_commit:
         description: Exact public xpod source commit to build
         required: false
@@ -45,11 +53,10 @@ permissions:
   packages: write
 
 concurrency:
-  group: qlever-runtime-sdk-${{ inputs.source_commit || github.sha }}
+  group: qlever-runtime-sdk-${{ inputs.target || 'linux-x64' }}-${{ inputs.source_commit || github.sha }}
   cancel-in-progress: false
 
 env:
-  SDK_IMAGE: ghcr.io/${{ github.repository_owner }}/xpod-qlever-sdk
   # The SDK build is C++ and compile-bound. The standard `ubuntu-24.04` runner
   # reports four CPUs - BuildKit logs them at the start of every build - and the
   # Dockerfile's own default is four as well, so overriding it down to two spent
@@ -58,8 +65,16 @@ env:
   XPOD_QLEVER_BUILD_JOBS: '4'
 
 jobs:
+  resolve_target:
+    uses: ./.github/workflows/resolve-qlever-native-target.yml
+    with:
+      target: ${{ inputs.target || 'linux-x64' }}
+      platform: linux
   publish:
-    runs-on: ubuntu-24.04
+    needs: resolve_target
+    env:
+      SDK_IMAGE: ghcr.io/${{ github.repository_owner }}/xpod-qlever-sdk${{ needs.resolve_target.outputs.repository_suffix }}
+    runs-on: ${{ needs.resolve_target.outputs.runner }}
     timeout-minutes: 360
     outputs:
       image: ${{ steps.publish.outputs.image }}
@@ -87,6 +102,11 @@ jobs:
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
           bun-version: 1.4.2
+
+      - name: Verify the actual native producer host
+        env:
+          EXPECTED_ARCH: ${{ needs.resolve_target.outputs.arch }}
+        run: bun -e 'if(process.platform!=="linux" || process.arch!==process.env.EXPECTED_ARCH) throw Error("Native producer host/target mismatch")'
 
       # An SDK image is a pure function of these two trees: the QLever sources and
       # patches, and the SDK Dockerfiles. Naming that identity lets a later run with
@@ -150,10 +170,10 @@ jobs:
           context: .
           file: ${{ steps.resolve.outputs.dockerfile }}
           target: build
-          platforms: linux/amd64
+          platforms: ${{ needs.resolve_target.outputs.docker_platform }}
           outputs: type=cacheonly
-          cache-from: type=gha,scope=qlever-runtime-sdk
-          cache-to: type=gha,mode=max,scope=qlever-runtime-sdk
+          cache-from: type=gha,scope=qlever-runtime-sdk-${{ needs.resolve_target.outputs.target }}
+          cache-to: type=gha,mode=max,scope=qlever-runtime-sdk-${{ needs.resolve_target.outputs.target }}
           build-args: |
             XPOD_QLEVER_BUILD_JOBS=${{ env.XPOD_QLEVER_BUILD_JOBS }}
             XPOD_QLEVER_PRIOR_SDK_IMAGE=${{ steps.resolve.outputs.prior_image }}
@@ -165,7 +185,7 @@ jobs:
         with:
           context: .
           file: ${{ steps.resolve.outputs.dockerfile }}
-          platforms: linux/amd64
+          platforms: ${{ needs.resolve_target.outputs.docker_platform }}
           load: true
           push: false
           tags: |
@@ -174,8 +194,8 @@ jobs:
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ steps.source.outputs.commit }}
-          cache-from: type=gha,scope=qlever-runtime-sdk
-          cache-to: type=gha,mode=max,scope=qlever-runtime-sdk
+          cache-from: type=gha,scope=qlever-runtime-sdk-${{ needs.resolve_target.outputs.target }}
+          cache-to: type=gha,mode=max,scope=qlever-runtime-sdk-${{ needs.resolve_target.outputs.target }}
           build-args: |
             XPOD_QLEVER_BUILD_JOBS=${{ env.XPOD_QLEVER_BUILD_JOBS }}
             XPOD_QLEVER_PRIOR_SDK_IMAGE=${{ steps.resolve.outputs.prior_image }}
@@ -211,7 +231,7 @@ jobs:
         with:
           context: .
           file: ${{ steps.resolve.outputs.dockerfile }}
-          platforms: linux/amd64
+          platforms: ${{ needs.resolve_target.outputs.docker_platform }}
           push: true
           tags: |
             ${{ env.SDK_IMAGE }}:${{ steps.resolve.outputs.tag }}

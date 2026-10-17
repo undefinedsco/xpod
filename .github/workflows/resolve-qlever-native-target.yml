@@ -1,0 +1,57 @@
+name: Resolve QLever native target
+on:
+  workflow_call:
+    inputs:
+      target:
+        type: string
+        required: true
+      platform:
+        type: string
+        required: true
+    outputs:
+      runner:
+        value: ${{ jobs.resolve.outputs.runner }}
+      target:
+        value: ${{ jobs.resolve.outputs.target }}
+      arch:
+        value: ${{ jobs.resolve.outputs.arch }}
+      docker_platform:
+        value: ${{ jobs.resolve.outputs.docker_platform }}
+      repository_suffix:
+        value: ${{ jobs.resolve.outputs.repository_suffix }}
+permissions:
+  contents: read
+jobs:
+  resolve:
+    runs-on: ubuntu-24.04
+    outputs:
+      runner: ${{ steps.target.outputs.runner }}
+      target: ${{ steps.target.outputs.target }}
+      arch: ${{ steps.target.outputs.arch }}
+      docker_platform: ${{ steps.target.outputs.docker_platform }}
+      repository_suffix: ${{ steps.target.outputs.repository_suffix }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version: 1.4.2
+      - name: Resolve native target from the shared catalog
+        id: target
+        env:
+          REQUESTED_TARGET: ${{ inputs.target }}
+          EXPECTED_PLATFORM: ${{ inputs.platform }}
+        run: |
+          set -euo pipefail
+          bun scripts/module-product-targets.ts css "$REQUESTED_TARGET" > "$RUNNER_TEMP/qlever-target.json"
+          python3 - "$RUNNER_TEMP/qlever-target.json" <<'PYTHON'
+          import json, os, sys
+          row = json.load(open(sys.argv[1]))
+          if row['platform'] != os.environ['EXPECTED_PLATFORM']:
+              raise RuntimeError('Native producer platform/target mismatch')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              for key in ['runner', 'target', 'arch']:
+                  output.write(key + '=' + row[key] + '\n')
+              docker_arch = 'amd64' if row['arch'] == 'x64' else row['arch']
+              output.write('docker_platform=' + row['platform'] + '/' + docker_arch + '\n')
+              output.write('repository_suffix=' + ('' if row['arch'] == 'x64' else '-' + row['arch']) + '\n')
+          PYTHON
