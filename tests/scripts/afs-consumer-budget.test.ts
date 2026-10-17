@@ -16,8 +16,8 @@ print(json.dumps(m.projection()))`;
     expect(afsConsumerBudget('postpublish').maximumDurationSeconds - actual.maximumDurationSeconds).toBe(210);
     expect(actual.uploadWindowSeconds).toBe(600);
     expect(actual.officialRuntimeObservationSeconds).toBe(30);
-    expect(actual.maximumDurationSeconds - actual.consumerRunSeconds).toBe(actual.safeExportSeconds + actual.commandOwnedCloseSeconds + actual.officialRuntimeObservationSeconds);
-    expect(afsConsumerBudget('postpublish').hostJobMinutes).toBe(309);
+    expect(actual.maximumDurationSeconds - actual.consumerRunSeconds).toBe(actual.safeExportSeconds + actual.commandOwnedCloseSeconds + actual.officialRuntimeObservationSeconds + actual.verifierRegistryObservationSeconds);
+    expect(afsConsumerBudget('postpublish').hostJobMinutes).toBe(311);
   });
   it('extends only the two full profiles and preserves default runner bounds', () => {
     const code = `import importlib.util,json

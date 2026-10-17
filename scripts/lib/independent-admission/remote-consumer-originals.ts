@@ -1,3 +1,5 @@
+import {assertAfsConsumerRemainingFloor} from './afs-consumer-resource';
+import {observeAfsConsumerVerifierRegistryOriginals} from './afs-consumer-registry-originals';
 import fs from 'node:fs';
 import path from 'node:path';
 import {acquireArchiveConsumerOriginals,acquireRegistryConsumerOriginals,type ArtifactAcquisitionInput} from '../../acquire-independent-product-input';
@@ -43,7 +45,9 @@ export async function inspectRemoteProductConsumerOriginals(input:{
  try{
   const name=input.stage==='prepublish'?'archive-consumer.manifest.json':'registry-consumer.manifest.json';
   const manifest=JSON.parse(read(name,limits.manifestBytes).toString());
-  const checked=verifyRegistryConsumerOriginalBundle({runtimeOriginals:input.runtimeOriginals,source:input.source,manifest,inventory:files.map(({path,bytes,sha256,mode})=>({path,bytes,sha256,mode})),
+  const verifierRegistryOriginals=input.module==='afs'?await observeAfsConsumerVerifierRegistryOriginals({runtimeOriginals:input.runtimeOriginals,source:input.source,stage:input.stage,sourceSha:input.product.sourceSha,target:input.product.target!,product:input.product,productMembers:input.productMembers,tools:input.tools,originals:files,readOriginal:read,readOriginalRange:range}):undefined;
+  if(input.module==='afs')assertAfsConsumerRemainingFloor([output]);
+  const checked=verifyRegistryConsumerOriginalBundle({verifierRegistryOriginals,runtimeOriginals:input.runtimeOriginals,source:input.source,manifest,inventory:files.map(({path,bytes,sha256,mode})=>({path,bytes,sha256,mode})),
     product:input.product,productMembers:input.productMembers,tools:input.tools,consumer:{...input.consumerRun,target:input.product.target},stage:input.stage,
     portableExpectations:input.portableExpectations,readOriginal:read,readOriginalRange:range});
   return Object.freeze({origin,result:checked.result,evidenceDirectory:output});

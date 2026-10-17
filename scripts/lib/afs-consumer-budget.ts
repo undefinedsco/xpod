@@ -1,5 +1,6 @@
 /** Node, Bun, supervisors and Matrix share the CJS projection of reviewed JSON. */
 export interface AfsConsumerBudget {
+  readonly verifierRegistryObservationSeconds: number;
   readonly officialRuntimeObservationSeconds: number;
   readonly freshHarnessLiveBytes: number;
   readonly harnessCommands: readonly Readonly<{label: string; timeoutSeconds: number}>[];

@@ -1,5 +1,5 @@
 import fs from 'node:fs';
-import path from 'node:path';
+import {fileURLToPath} from 'node:url';
 import {createHash} from 'node:crypto';
 import current from './consumer-execution-current.json';
 import type {GitHubSourceBindingGroup} from './github-source-binding-groups';
@@ -23,7 +23,7 @@ export const CONSUMER_SOURCE_BINDINGS = Object.freeze([
 /** Trusted controller module-load originals, never candidate-provided hashes.
  * Runtime comparison avoids writing a policy digest into its own manifest. */
 export const CONTROLLER_POLICY_BINDINGS=Object.freeze(['consumer-observer-policy.ts','consumer-execution-current.json'].map(name=>{
- const file=path.join(import.meta.dir,name),fd=fs.openSync(file,fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW);
+ const file=fileURLToPath(new URL(name,import.meta.url)),fd=fs.openSync(file,fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW);
  try{
   const before=fs.fstatSync(fd,{bigint:true});
   if(!before.isFile()||before.nlink!==1n||before.size>2n*1024n**2n)throw Error('Bounded controller policy original required');

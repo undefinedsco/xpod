@@ -1,5 +1,7 @@
+import {observeAfsConsumerVerifierRegistryOriginals} from './afs-consumer-registry-originals';
+import {openAfsConsumerDirectoryOriginals} from './afs-consumer-directory-originals';
 import {observeAfsConsumerRuntimeOriginals} from './afs-consumer-runtime-originals';
-import {assertAfsConsumerDiskReservation,afsConsumerDiskLayers} from './afs-consumer-resource';
+import {assertAfsConsumerDiskReservation,afsConsumerDiskLayers,assertAfsConsumerRemainingFloor} from './afs-consumer-resource';
 import {reserveAfsConsumerEvidenceLayout} from './afs-consumer-public-custody';
 import {finalizeAfsConsumerEvidence} from './afs-consumer-finalization';
 import {afsConsumerBudget} from '../afs-consumer-budget';
@@ -880,7 +882,15 @@ async function observeModuleRegistryConsumer(input: RegistryInstalledProductCons
       fs.mkdirSync(path.join(evidence,'safe-evidence'),{mode:0o700});
       fs.renameSync(safe,path.join(evidence,'safe-evidence','afs-checked-originals'));
       fs.cpSync(supervision,path.join(evidence,'central-supervision'),{recursive:true,errorOnExist:true,force:false});
-      finalizeAfsConsumerEvidence({runtimeOriginals,source:collectedArtifactDerivedSource(input.artifact),layout:afsLayout,deadline,stage:input.stage,product:plan.artifact.identity,productMembers:plan.artifact.members,tools:plan.tools.map(value=>collectedArtifactView(value)!.identity)});
+      const registryStarted=Date.now();
+      const registryDeadline=registryStarted+afsConsumerBudget(input.stage).verifierRegistryObservationSeconds*1000;
+      const registryOriginals=openAfsConsumerDirectoryOriginals(evidence,registryDeadline);
+      let verifierRegistryOriginals:readonly unknown[];
+      try{verifierRegistryOriginals=await observeAfsConsumerVerifierRegistryOriginals({runtimeOriginals,source:collectedArtifactDerivedSource(input.artifact),stage:input.stage,sourceSha:plan.artifact.identity.sourceSha,target:plan.artifact.identity.target!,product:plan.artifact.identity,productMembers:plan.artifact.members,tools:plan.tools.map(value=>collectedArtifactView(value)!.identity),originals:registryOriginals.members,readOriginal:registryOriginals.readOriginal,readOriginalRange:registryOriginals.readOriginalRange},registryDeadline);}finally{registryOriginals.close();}
+      assertAfsConsumerRemainingFloor([evidence,parent]);
+      // This separately budgeted observation is not safe-export active I/O.
+      const finalizationDeadline=deadline+(Date.now()-registryStarted);
+      finalizeAfsConsumerEvidence({verifierRegistryOriginals,runtimeOriginals,source:collectedArtifactDerivedSource(input.artifact),layout:afsLayout,deadline:finalizationDeadline,stage:input.stage,product:plan.artifact.identity,productMembers:plan.artifact.members,tools:plan.tools.map(value=>collectedArtifactView(value)!.identity)});
       preserveControl=false;
     }else{
     const required = ['runtime-version', 'runtime-target', 'probe', 'normal-cli-install', 'install-' + plan.module,

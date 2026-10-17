@@ -1,6 +1,7 @@
 'use strict';
 const budget = require('./afs-consumer-budget.json');
 const limits = require('./module-artifact-limits.json');
+const registry = require('./registry-legal-original-limits.json');
 function afsConsumerBudget(stage = 'prepublish') {
   if (!['prepublish', 'postpublish'].includes(stage)) throw Error('unknown AFS consumer stage');
   if (budget.schemaVersion !== 1 || budget.kind !== 'fixed-afs-consumer-budget' ||
@@ -12,11 +13,13 @@ function afsConsumerBudget(stage = 'prepublish') {
   const consumerRunSeconds = ordinary * budget.ordinaryCommandSeconds + budget.runtimeCount * (fullMountedCommandSeconds + budget.normalInstallSeconds) +
     (ordinary + 2 * budget.runtimeCount + budget.harnessCommands.length) * budget.commandOwnedCloseSeconds + budget.captureStages * budget.captureStageSeconds +
     budget.sourceObservationCommands * budget.sourceObservationCommandSeconds + budget.runtimeCount * budget.cycleCleanupSeconds + budget.harnessCommands.reduce((sum, row) => sum + row.timeoutSeconds, 0);
-  const maximumDurationSeconds = consumerRunSeconds + budget.officialRuntimeObservationSeconds + budget.safeExportSeconds + budget.commandOwnedCloseSeconds +
+  if (!Number.isSafeInteger(registry.groupTimeoutMs) || registry.groupTimeoutMs <= 0 || registry.groupTimeoutMs % 1000) throw Error('invalid official registry group authority');
+  const verifierRegistryObservationSeconds = registry.groupTimeoutMs / 1000;
+  const maximumDurationSeconds = consumerRunSeconds + verifierRegistryObservationSeconds + budget.officialRuntimeObservationSeconds + budget.safeExportSeconds + budget.commandOwnedCloseSeconds +
     (stage === 'postpublish' ? budget.registryReadbackSeconds + budget.registrySingleflightSeconds : 0);
   const hostSeconds = maximumDurationSeconds + budget.hostSetupSeconds + budget.hostFinalizationSeconds + budget.uploadWindowSeconds;
   if (hostSeconds >= 6 * 3600) throw Error('AFS host projection exceeds six-hour authority');
-  return Object.freeze({stage, officialRuntimeObservationSeconds: budget.officialRuntimeObservationSeconds, freshHarnessLiveBytes: limits.sourceBytes + 2 * limits.dependencyBytes, harnessCommands: Object.freeze(budget.harnessCommands.map(row => Object.freeze({...row}))), hostSetupSeconds: budget.hostSetupSeconds, hostFinalizationSeconds: budget.hostFinalizationSeconds,
+  return Object.freeze({stage, verifierRegistryObservationSeconds, officialRuntimeObservationSeconds: budget.officialRuntimeObservationSeconds, freshHarnessLiveBytes: limits.sourceBytes + 2 * limits.dependencyBytes, harnessCommands: Object.freeze(budget.harnessCommands.map(row => Object.freeze({...row}))), hostSetupSeconds: budget.hostSetupSeconds, hostFinalizationSeconds: budget.hostFinalizationSeconds,
     uploadWindowSeconds: budget.uploadWindowSeconds, registryReadbackSeconds: budget.registryReadbackSeconds,
     registrySingleflightSeconds: budget.registrySingleflightSeconds, safeExportSeconds: budget.safeExportSeconds,
     commandOwnedCloseSeconds: budget.commandOwnedCloseSeconds, fullMountedCommandSeconds,

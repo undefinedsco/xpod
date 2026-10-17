@@ -15,7 +15,7 @@ const safe = (name: unknown): name is string => typeof name === 'string' && name
  * plus real collector/readback handles can issue a consumer capability. */
 export function verifyRegistryConsumerOriginalBundle(input: {
   manifest: RegistryConsumerOriginalManifest|ArchiveProductConsumerOriginalManifest;
-  source?:unknown;runtimeOriginals?:readonly unknown[];
+  source?:unknown;runtimeOriginals?:readonly unknown[];verifierRegistryOriginals?:readonly unknown[];
   stage:'prepublish'|'postpublish';
   portableExpectations?:{labels:readonly string[];profiles:readonly string[];installations:number};
   productMembers:readonly CollectedArtifactMember[];
@@ -109,7 +109,7 @@ export function verifyRegistryConsumerOriginalBundle(input: {
     if(module==='afs'){
       if(!input.readOriginalRange)fail('AFS controlled original range reader required');
       closedCommand('central-supervision','module-afs-safe-export');
-      const checked=inspectAfsConsumerOriginals({runtimeOriginals:input.runtimeOriginals,source:input.source,stage:input.stage,sourceSha:input.product.sourceSha,target:input.product.target,product:input.product,productMembers:input.productMembers,tools:input.tools,originals:[...originals.values()],readOriginal:read,readOriginalRange:input.readOriginalRange!});
+      const checked=inspectAfsConsumerOriginals({verifierRegistryOriginals:input.verifierRegistryOriginals,runtimeOriginals:input.runtimeOriginals,source:input.source,stage:input.stage,sourceSha:input.product.sourceSha,target:input.product.target,product:input.product,productMembers:input.productMembers,tools:input.tools,originals:[...originals.values()],readOriginal:read,readOriginalRange:input.readOriginalRange!});
       if(!checked.verified||checked.pending.length)fail('AFS fixed original gaps: '+checked.pending.join('; '));
     }else{
     const required = ['runtime-version', 'runtime-target', 'probe', 'normal-cli-install', 'install-' + module,

@@ -7,11 +7,13 @@ import { afsConsumerBudget } from '../afs-consumer-budget';
 import { registryLegalLockEntries } from './legal-registry-originals';
 import { derivedSourceView, assertDerivedSourceCurrent } from './source-context';
 import { inspectAfsVerifierRuntimeOriginals } from './afs-verifier-runtime-originals';
+import { AFS_VERIFIER_PATCH_PACKAGES, inspectAfsVerifierPatchedPackages } from './afs-verifier-patch-originals';
 import { REQUIRED_MOUNTED_CASES, MODULE_CHAIN_CASE } from '../../agentfs-native-ci/mounted/required-cases';
 
 export interface AfsConsumerOriginalInput {
   readonly source?: unknown;
   readonly runtimeOriginals?: readonly unknown[];
+  readonly verifierRegistryOriginals?: readonly unknown[];
   readonly stage: 'prepublish' | 'postpublish'; readonly sourceSha: string; readonly target: string;
   readonly product: Readonly<CollectedArtifactIdentity>;
   readonly productMembers: readonly CollectedArtifactMember[];
@@ -143,13 +145,27 @@ export function inspectAfsConsumerOriginals(input: AfsConsumerOriginalInput): Re
     need(value && safe(value.path) && (!prefix || value.path.startsWith(prefix)) && row && row.bytes === value.bytes && row.sha256 === value.sha256, 'afs-original-reference-differs');
     return row;
   };
-  const toolLocations = new Map<string, {archive: string; offset: number; bytes: number}>();
+  const packageManifestOriginals = new Map<string, Buffer>();
+  let packageManifestBytes = 0;
+  const packageManifestBudget = 16 * 1024 ** 2;
   const inspectTar = (archive: CollectedArtifactMember, rows: readonly any[]) => {
     const expected = new Map(rows.filter(row => row.archive === archive.path).map(row => [row.path, row]));
     const seen = new Set<string>();
+    let windowOffset = -1, window = Buffer.alloc(0);
     const read = (offset: number, size: number) => {
       check(); need(Number.isSafeInteger(offset) && Number.isSafeInteger(size) && offset >= 0 && size >= 0 && size <= limits.rangeBytes && offset + size <= archive.bytes, 'afs-tool-tar-range-bound');
-      const bytes = input.readOriginalRange(archive.path, offset, size); need(bytes.length === size, 'afs-tool-tar-truncated'); return bytes;
+      const bytes = Buffer.alloc(size); let used = 0;
+      while (used < size) {
+        const at = offset + used, start = Math.floor(at / limits.rangeBytes) * limits.rangeBytes;
+        if (windowOffset !== start) {
+          check(); const length = Math.min(limits.rangeBytes, archive.bytes - start);
+          window = input.readOriginalRange(archive.path, start, length);
+          need(window.length === length, 'afs-tool-tar-truncated'); windowOffset = start;
+        }
+        const count = Math.min(size - used, window.length - (at - start));
+        need(count > 0, 'afs-tool-tar-window-truncated'); window.copy(bytes, used, at - start, at - start + count); used += count;
+      }
+      return bytes;
     };
     const string = (value: Buffer) => value.subarray(0, value.indexOf(0) < 0 ? value.length : value.indexOf(0)).toString();
     const octal = (value: Buffer) => { const text = string(value).trim(); need(/^[0-7]+$/u.test(text), 'afs-tool-tar-number'); return parseInt(text, 8); };
@@ -175,9 +191,18 @@ export function inspectAfsConsumerOriginals(input: AfsConsumerOriginalInput): Re
         else {
           need((type === '0' || type === '\0') && row.kind === 'file' && row.bytes === size && row.mode === (octal(header.subarray(100, 108)) & 0o777), 'afs-tool-tar-file-metadata-differs');
           const digest = createHash('sha256');
-          for (let at = 0; at < size; at += limits.rangeBytes) digest.update(read(offset + at, Math.min(limits.rangeBytes, size - at)));
+          const isManifest = /(?:^|\/)package\.json$/u.test(name) && size <= limits.rangeBytes;
+          const manifestChunks: Buffer[] = [];
+          for (let at = 0; at < size; at += limits.rangeBytes) {
+            const bytes = read(offset + at, Math.min(limits.rangeBytes, size - at)); digest.update(bytes);
+            if (isManifest) manifestChunks.push(bytes);
+          }
           need(digest.digest('hex') === row.sha256, 'afs-tool-tar-file-bytes-differ');
-          toolLocations.set(archive.path + '\0' + name, {archive: archive.path, offset, bytes: size});
+          if (isManifest) {
+            packageManifestBytes += size;
+            need(packageManifestBytes <= packageManifestBudget, 'afs-tool-package-manifest-cache-16MiB-bound');
+            packageManifestOriginals.set(archive.path + '\0' + name, Buffer.concat(manifestChunks));
+          }
         }
       }
       offset += Math.ceil(size / 512) * 512;
@@ -418,10 +443,9 @@ export function inspectAfsConsumerOriginals(input: AfsConsumerOriginalInput): Re
         for (const item of root.packages) {
           need(safe(item.path) && typeof item.name === 'string' && typeof item.version === 'string', 'afs-fresh-package-coordinate-invalid');
           const row = inventories.get(root.rootId)!.find(row => row.path === item.path + '/package.json');
-          const location = row && toolLocations.get(row.archive + '\0' + row.path);
-          need(location && location.bytes <= 65536, 'afs-fresh-package-manifest-original-missing-or-bound');
-          const bytes = input.readOriginalRange(location.archive, location.offset, location.bytes);
-          need(bytes.length === location.bytes && hash(bytes) === row.sha256, 'afs-fresh-package-manifest-bytes-differ');
+          const bytes = row && packageManifestOriginals.get(row.archive + '\0' + row.path);
+          need(bytes && bytes.length <= 65536, 'afs-fresh-package-manifest-original-missing-or-bound');
+          need(bytes.length === row.bytes && hash(bytes) === row.sha256, 'afs-fresh-package-manifest-bytes-differ');
           const manifest = JSON.parse(bytes.toString());
           need(manifest.name === item.name && manifest.version === item.version, 'afs-fresh-package-manifest-identity-differs');
           const sourceManifest = sourceRows.find((source: any) => source.path === item.path + '/package.json');
@@ -437,8 +461,16 @@ export function inspectAfsConsumerOriginals(input: AfsConsumerOriginalInput): Re
       assertDerivedSourceCurrent(input.source);
       facts.immutableVerifierSourceOriginalsVerified = true;
       facts.controlledFrozenVerifierInstallOriginalsVerified = true;
-      facts.trustedVerifierToolsVerified = false;
-      pending.add('afs-fresh-harness-upstream-patch-byte-authority-not-yet-independent');
+      const dependencyRoots = master.roots.filter((root: any) => root.role === 'harness' && root.domain === 'dependencies');
+      const packages = dependencyRoots.flatMap((root: any) => root.packages);
+      const coordinates = new Map<string, Readonly<{name: string; version: string}>>();
+      for (const item of packages.filter((row: any) => AFS_VERIFIER_PATCH_PACKAGES.includes(row.name))) coordinates.set(item.name + '@' + item.version, Object.freeze({name: item.name, version: item.version}));
+      facts.requiredVerifierRegistryOriginalCoordinates = Object.freeze([...coordinates.values()].sort((a, b) => (a.name + '@' + a.version).localeCompare(b.name + '@' + b.version)));
+      const patched = inspectAfsVerifierPatchedPackages({source: input.source, originals: input.verifierRegistryOriginals, packages,
+        files: dependencyRoots.flatMap((root: any) => inventories.get(root.rootId) ?? [])});
+      Object.assign(facts, patched.facts); for (const reason of patched.pending) pending.add(reason);
+      facts.trustedVerifierToolsVerified = runtime.verified && patched.verified;
+      facts.unmodifiedVerifierDependencyAuthority = 'controlled-frozen-install-and-immutable-lock-SRI; official-tgz-not-observed';
     }
 
     for (const value of master.pending ?? []) if (typeof value === 'string') pending.add('afs-tool-producer-pending:' + value);
@@ -446,4 +478,14 @@ export function inspectAfsConsumerOriginals(input: AfsConsumerOriginalInput): Re
   facts.toolSnapshotEntryBytesVerified = facts.toolSnapshotOriginalReferencesVerified === true;
   const values = Object.freeze([...pending]);
   return Object.freeze({ verified: values.length === 0 && Object.values(facts).every(value => value !== false), pending: values, facts: Object.freeze(facts) });
+}
+
+/** A request plan only. Its coordinates come from fully checked original tar
+ * manifests and immutable private source, and never issue registry authority. */
+export function requiredAfsVerifierRegistryOriginalCoordinates(input: AfsConsumerOriginalInput): Readonly<{coordinates: readonly Readonly<{name: string; version: string}>[]; pending: readonly string[]}> {
+  const report = inspectAfsConsumerOriginals(input);
+  const coordinates = report.facts.requiredVerifierRegistryOriginalCoordinates;
+  if (report.facts.toolSnapshotEntryBytesVerified !== true || report.facts.immutableVerifierSourceOriginalsVerified !== true || !Array.isArray(coordinates))
+    return Object.freeze({coordinates: Object.freeze([]), pending: Object.freeze(['afs-verifier-registry-plan-requires-actual-tool-tar-manifests-and-private-source', ...report.pending])});
+  return Object.freeze({coordinates: Object.freeze(coordinates.map(row => Object.freeze({name: row.name, version: row.version}))), pending: Object.freeze([])});
 }

@@ -27,6 +27,7 @@ SOURCE_SEEDS = (
     'packages/xpod-cli/scripts/build-tools-package.ts', 'packages/xpod-client/scripts/build.ts', 'packages/xpod-client/src/index.ts',
     'scripts/lib/afs-consumer-budget.json', 'scripts/lib/afs-consumer-budget.py', 'scripts/lib/afs-consumer-budget.ts', 'scripts/lib/afs-consumer-budget.cjs',
     'scripts/lib/module-consumer.py', 'scripts/lib/module-consumer-targets.py',
+    'scripts/lib/registry-legal-original-limits.json',
     'scripts/lib/module-artifact-limits.json', 'scripts/module-product-targets.ts',
     'scripts/verify-module-consumer-native.ts', 'scripts/lib/physical-module-native.ts',
     'packages/xpod-cli/src/module-catalog.ts', 'packages/xpod-api/scripts/inngest-input-pins.json',
@@ -37,6 +38,7 @@ SOURCE_SEEDS = (
     'tests/agentfs-pod/nativeMountedPlatformMatrix.test.ts',
     'tests/agentfs-pod/nativeOverlayScenario.test.ts',
     'tests/agentfs-pod/installedModuleMountedChain.test.ts',
+    'scripts/bun-test-discovery.cjs', 'scripts/test-runner-ownership.cjs',
     'vitest.config.ts', 'tests/vitest.setup.ts', 'tsconfig.json', 'tsconfig.vitest.json', 'package.json', 'bun.lock',
 )
 IMPORTS = re.compile(r'''(?:from\s*|import\s*\(|require\s*\(|import\s+)\s*['"]([^'"]+)['"]''')
@@ -123,7 +125,7 @@ def resolve_package(start, name):
 
 def package_closure(repo, seeds):
     pending, seen, paths = [(repo, name) for name in seeds], set(), set()
-    packages, missing_optional = [], []
+    packages, missing_optional, package_rows = [], [], {}
     while pending:
         materials.check(repo)
         start, name = pending.pop()
@@ -134,10 +136,14 @@ def package_closure(repo, seeds):
         if logical.is_symlink():
             paths.add(logical.relative_to(repo).as_posix())
         if actual in seen:
+            alias = logical.relative_to(repo).as_posix()
+            if alias not in package_rows[actual]['logicalPaths']:
+                package_rows[actual]['logicalPaths'].append(alias)
             continue
         seen.add(actual)
         manifest = json_original(actual / 'package.json')
-        packages.append(dict(name=manifest.get('name'), version=manifest.get('version'), path=actual.relative_to(repo).as_posix()))
+        package_rows[actual] = dict(name=manifest.get('name'), version=manifest.get('version'), path=actual.relative_to(repo).as_posix(), logicalPaths=[logical.relative_to(repo).as_posix()])
+        packages.append(package_rows[actual])
         for directory, dirs, files in os.walk(actual, followlinks=False):
             materials.check(directory)
             for entry in dirs + files:

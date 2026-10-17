@@ -6,6 +6,7 @@ existing limits. Each capture stage includes all roots in that stage.
 import json
 from pathlib import Path
 
+REGISTRY = json.loads(Path(__file__).with_name('registry-legal-original-limits.json').read_text())
 LIMITS = json.loads(Path(__file__).with_name('module-artifact-limits.json').read_text())
 BUDGET = json.loads((Path(__file__).with_suffix('.json')).read_text())
 assert BUDGET['schemaVersion'] == 1 and BUDGET['kind'] == 'fixed-afs-consumer-budget'
@@ -22,12 +23,14 @@ def projection(stage='prepublish'):
     run = (ordinary * b['ordinaryCommandSeconds'] + b['runtimeCount'] * (full + b['normalInstallSeconds'])
            + commands * b['commandOwnedCloseSeconds'] + b['captureStages'] * b['captureStageSeconds']
            + b['sourceObservationCommands'] * b['sourceObservationCommandSeconds'] + b['runtimeCount'] * b['cycleCleanupSeconds'] + sum(row['timeoutSeconds'] for row in b['harnessCommands']))
-    maximum = run + b['officialRuntimeObservationSeconds'] + b['safeExportSeconds'] + b['commandOwnedCloseSeconds']
+    assert type(REGISTRY['groupTimeoutMs']) is int and REGISTRY['groupTimeoutMs'] > 0 and REGISTRY['groupTimeoutMs'] % 1000 == 0
+    registry = REGISTRY['groupTimeoutMs'] // 1000
+    maximum = run + registry + b['officialRuntimeObservationSeconds'] + b['safeExportSeconds'] + b['commandOwnedCloseSeconds']
     if stage == 'postpublish':
         maximum += b['registryReadbackSeconds'] + b['registrySingleflightSeconds']
     host = maximum + b['hostSetupSeconds'] + b['hostFinalizationSeconds'] + b['uploadWindowSeconds']
     assert host < 6 * 3600, 'AFS host projection exceeds six-hour authority'
-    return dict(officialRuntimeObservationSeconds=b['officialRuntimeObservationSeconds'], freshHarnessLiveBytes=LIMITS['sourceBytes'] + 2 * LIMITS['dependencyBytes'], harnessCommands=b['harnessCommands'], safeExportSeconds=b['safeExportSeconds'], commandOwnedCloseSeconds=b['commandOwnedCloseSeconds'], stage=stage, hostSetupSeconds=b['hostSetupSeconds'], hostFinalizationSeconds=b['hostFinalizationSeconds'],
+    return dict(verifierRegistryObservationSeconds=registry, officialRuntimeObservationSeconds=b['officialRuntimeObservationSeconds'], freshHarnessLiveBytes=LIMITS['sourceBytes'] + 2 * LIMITS['dependencyBytes'], harnessCommands=b['harnessCommands'], safeExportSeconds=b['safeExportSeconds'], commandOwnedCloseSeconds=b['commandOwnedCloseSeconds'], stage=stage, hostSetupSeconds=b['hostSetupSeconds'], hostFinalizationSeconds=b['hostFinalizationSeconds'],
                 uploadWindowSeconds=b['uploadWindowSeconds'], registryReadbackSeconds=b['registryReadbackSeconds'],
                 registrySingleflightSeconds=b['registrySingleflightSeconds'], fullMountedCommandSeconds=full, normalInstallSeconds=b['normalInstallSeconds'], ordinaryCommandSeconds=b['ordinaryCommandSeconds'],
                 consumerRunSeconds=run, maximumDurationSeconds=maximum,

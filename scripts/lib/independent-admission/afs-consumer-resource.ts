@@ -20,3 +20,9 @@ export function assertAfsConsumerDiskReservation(input:{evidenceParent:string;te
     throw Error('AFS verifier-kit originals plus fresh harness/install/cache, consumer write and floor resource pending');
   }
 }
+
+/** After the driver closes, live installation trees are gone. Retained originals
+ * already occupy disk; check the remaining floor without reserving them twice. */
+export function assertAfsConsumerRemainingFloor(directories:readonly string[]):void {
+ for(const directory of directories){const free=fs.statfsSync(directory,{bigint:true});if(free.bavail*free.bsize<BigInt(limits.freeFloorBytes))throw Error('AFS retained originals remaining disk floor pending');}
+}

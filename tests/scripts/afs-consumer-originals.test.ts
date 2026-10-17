@@ -164,3 +164,43 @@ it('imports original-only validation without any built runtime client dependency
   const code = 'import {mock} from "bun:test"; mock.module("@undefineds.co/xpod-client",()=>{throw new Error("built client must not be loaded")}); await import("./scripts/lib/independent-admission/afs-consumer-originals.ts"); console.log("pure-original-import-ok")';
   expect(execFileSync('bun', ['-e', code], {cwd: path.resolve(__dirname, '../..'), encoding: 'utf8'}).trim()).toBe('pure-original-import-ok');
 });
+
+it('bounds stream-retained package manifests at 16 MiB without enlarging the tar or range limits', () => {
+  const f = fixture(), content = Buffer.alloc(65536, 32); content.write('{"name":"tool","version":"1.0.0"}');
+  const chunks: Buffer[] = [], rows: any[] = [], archivePath = 'verifier-tools/source/source-0000.tar';
+  for (let index = 0; index < 257; index++) {
+    const name = 'packages/' + index + '/package.json', header = Buffer.alloc(512);
+    const octal = (at: number, size: number, value: number) => header.write(value.toString(8).padStart(size - 1, '0') + '\0', at, size, 'ascii');
+    header.write(name); octal(100, 8, 420); octal(108, 8, 0); octal(116, 8, 0); octal(124, 12, content.length); octal(136, 12, 0);
+    header.fill(32, 148, 156); header[156] = 48; header.write([...header].reduce((a, b) => a + b, 0).toString(8).padStart(6, '0') + '\0 ', 148, 8, 'ascii');
+    chunks.push(header, content); rows.push({path: name, archive: archivePath, kind: 'file', bytes: content.length, sha256: hash(content), mode: 420});
+  }
+  chunks.push(Buffer.alloc(1024)); const archive = f.put(archivePath, Buffer.concat(chunks));
+  const inventory = f.put('verifier-tools/source/source-inventory-0000.json', rows);
+  const root = {rootId: 'source', role: 'harness', domain: 'source', archives: [archive], inventories: [inventory]};
+  const master = f.put('verifier-tools/manifest-0000.json', {schemaVersion: 1, kind: 'fixed-afs-consumer-tool-originals', sourceSha: f.input.sourceSha,
+    roots: [root, {...root, rootId: 'a'}, {...root, rootId: 'b'}, {...root, rootId: 'c'}], observations: [], installOriginals: []});
+  f.change('result.json', value => {value.verifierToolOriginals = master;});
+  expect(inspectAfsConsumerOriginals(f.input).pending).toContain('afs-tool-package-manifest-cache-16MiB-bound');
+});
+
+it('uses aligned 64 KiB source reads for many small tar members', () => {
+  const f = fixture(), chunks: Buffer[] = [], rows: any[] = [], archivePath = 'verifier-tools/source/source-0000.tar';
+  for (let index = 0; index < 1024; index++) {
+    const name = 'small/' + index, header = Buffer.alloc(512);
+    const octal = (at: number, size: number, value: number) => header.write(value.toString(8).padStart(size - 1, '0') + '\0', at, size, 'ascii');
+    header.write(name); octal(100, 8, 420); octal(108, 8, 0); octal(116, 8, 0); octal(124, 12, 1); octal(136, 12, 0);
+    header.fill(32, 148, 156); header[156] = 48; header.write([...header].reduce((a, b) => a + b, 0).toString(8).padStart(6, '0') + '\0 ', 148, 8, 'ascii');
+    const body = Buffer.alloc(512); body.write('x'); chunks.push(header, body);
+    rows.push({path: name, archive: archivePath, kind: 'file', bytes: 1, sha256: hash(Buffer.from('x')), mode: 420});
+  }
+  chunks.push(Buffer.alloc(1024)); const archive = f.put(archivePath, Buffer.concat(chunks));
+  const inventory = f.put('verifier-tools/source/source-inventory-0000.json', rows), root = {rootId: 'source', role: 'harness', domain: 'source', archives: [archive], inventories: [inventory]};
+  const master = f.put('verifier-tools/manifest-0000.json', {schemaVersion: 1, kind: 'fixed-afs-consumer-tool-originals', sourceSha: f.input.sourceSha, roots: [root, {...root, rootId: 'a'}, {...root, rootId: 'b'}, {...root, rootId: 'c'}], observations: [], installOriginals: []});
+  f.change('result.json', value => {value.verifierToolOriginals = master;});
+  const requests: number[] = [], read = f.input.readOriginalRange;
+  f.input.readOriginalRange = (name, offset, length) => {if (name === archivePath) {expect(length).toBeLessThanOrEqual(65536); expect(offset % 65536).toBe(0); requests.push(offset);} return read(name, offset, length);};
+  inspectAfsConsumerOriginals(f.input);
+  expect(requests.length).toBe(Math.ceil(archive.bytes / 65536));
+  expect(new Set(requests).size).toBe(requests.length);
+});
