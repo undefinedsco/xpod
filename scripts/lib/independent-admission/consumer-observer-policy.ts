@@ -47,13 +47,14 @@ export const CONSUMER_SOURCE_GROUPS:readonly GitHubSourceBindingGroup[]=Object.f
  Object.freeze({selectors:workflowSelectors('7162065092c1e1377e4a504da9b8138c8a6abe492566154107de2835d3bf8ec5','e0884282db86fd2463e4c95db1ae0498d21480e3c3f05545ee34289e8448f236'),sourceBindings:Object.freeze([...current.map(row=>Object.freeze({...row})),...CONTROLLER_POLICY_BINDINGS])}),
 ]);
 
-/** Registered CI route has one exact caller tree, separate from historical
+/** Registered CI route has exact versioned caller trees, separate from historical
  * standalone dispatch. Helpers are bound only after the whole tree selects. */
 export const CI_PUBLICATION_WORKFLOW_SHA='d16b77e564d2f84795bdea2ef806f6fb36c80aa7a1c1017ac18c4606ad2a1dae';
 export const CALLABLE_PUBLICATION_WORKFLOW_SHA='5b830f4a3375a7f886f19b5617db5694b7cdcab23d21d82661d01899300e9e07';
-export const CI_CONSUMER_SOURCE_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([
+export const STAGING_CHECKED_PUBLICATION_WORKFLOW_SHA='d72284b8dc5b91669f0b41a8dafca787b6e1581a495d891cead38a07d9ab0852';
+export const CI_CONSUMER_SOURCE_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([CALLABLE_PUBLICATION_WORKFLOW_SHA,STAGING_CHECKED_PUBLICATION_WORKFLOW_SHA].map(workflowSha=>
  Object.freeze({selectors:Object.freeze([
-  {path:'.github/workflows/independent-publication.yml',sha256:CALLABLE_PUBLICATION_WORKFLOW_SHA,ref:'run-head' as const},
+  {path:'.github/workflows/independent-publication.yml',sha256:workflowSha,ref:'run-head' as const},
   ...workflowSelectors('7162065092c1e1377e4a504da9b8138c8a6abe492566154107de2835d3bf8ec5','e0884282db86fd2463e4c95db1ae0498d21480e3c3f05545ee34289e8448f236'),
- ]),sourceBindings:Object.freeze([...current.map(row=>Object.freeze({...row})),...CONTROLLER_POLICY_BINDINGS])}),
-]);
+ ]),sourceBindings:Object.freeze([...current.map(row=>Object.freeze({...row})),...CONTROLLER_POLICY_BINDINGS])})
+));
