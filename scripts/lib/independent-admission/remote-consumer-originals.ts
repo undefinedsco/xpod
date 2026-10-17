@@ -1,3 +1,5 @@
+import {inngestRuntimeOriginalNames} from './inngest-runtime-originals';
+import {captureLegalFileIdentity,assertLegalFileIdentity} from './legal-file-custody';
 import {assertAfsConsumerRemainingFloor} from './afs-consumer-resource';
 import {observeAfsConsumerVerifierRegistryOriginals} from './afs-consumer-registry-originals';
 import fs from 'node:fs';
@@ -32,6 +34,7 @@ export async function inspectRemoteProductConsumerOriginals(input:{
  const limits=productConsumerOriginalLimits(input.module);
  if(files.length>limits.members||files.reduce((sum,row)=>sum+row.bytes,0)>limits.expandedBytes||files.some(row=>row.bytes>limits.memberBytes))fail('fixed original projection budget exceeded');
  const projection=path.join(output,'projected');fs.mkdirSync(projection,{mode:0o700});
+ const runtimeArchiveGuard=input.module==='api'?captureLegalFileIdentity(path.join(acquired,'artifact.zip')):undefined;
  const originals=lazyZipOriginals({archivePath:path.join(acquired,'artifact.zip'),archiveSha256:input.consumerRun.artifactSha256,root:projection,members:files});
  const range=(name:string,offset:number,length:number):Buffer=>{
   const row=files.find(item=>item.path===name);
@@ -50,6 +53,8 @@ export async function inspectRemoteProductConsumerOriginals(input:{
   const checked=verifyRegistryConsumerOriginalBundle({verifierRegistryOriginals,runtimeOriginals:input.runtimeOriginals,source:input.source,manifest,inventory:files.map(({path,bytes,sha256,mode})=>({path,bytes,sha256,mode})),
     product:input.product,productMembers:input.productMembers,tools:input.tools,consumer:{...input.consumerRun,target:input.product.target},stage:input.stage,
     portableExpectations:input.portableExpectations,readOriginal:read,readOriginalRange:range});
-  return Object.freeze({origin,result:checked.result,evidenceDirectory:output});
+  const inngestRuntimeOriginals=input.module==='api'?{originals:inngestRuntimeOriginalNames(input.product.target!).map(name=>({path:name,data:read(name,65536)})),assertCurrent(){if(runtimeArchiveGuard)assertLegalFileIdentity(runtimeArchiveGuard);}}:undefined;
+  inngestRuntimeOriginals?.assertCurrent();
+  return Object.freeze({origin,result:checked.result,evidenceDirectory:output,...(inngestRuntimeOriginals?{inngestRuntimeOriginals}: {})});
  }finally{originals.close();}
 }

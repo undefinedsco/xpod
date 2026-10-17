@@ -1,3 +1,6 @@
+import {inspectInngestRuntimeOriginals,inngestRuntimeLabels,inngestRuntimeOriginalNames,inngestRuntimeAdditionalDurationMs} from './inngest-runtime-originals';
+import {captureLegalFileIdentity,assertLegalFileIdentity} from './legal-file-custody';
+import {readSignatureOriginal} from './qlever-signature-original-custody';
 import {observeAfsConsumerVerifierRegistryOriginals} from './afs-consumer-registry-originals';
 import {openAfsConsumerDirectoryOriginals} from './afs-consumer-directory-originals';
 import {observeAfsConsumerRuntimeOriginals} from './afs-consumer-runtime-originals';
@@ -11,8 +14,8 @@ import os from 'node:os';
 import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { isDeepStrictEqual } from 'node:util';
-import { collectedArtifactView, collectedPublicationProjectionDirectory, preflightCollectedArchiveFiles } from './artifact-collector';
-import { collectedArtifactSourceCheckout, collectedArtifactDerivedSource } from './source-context';
+import { collectedArtifactView, assertCollectedPublicationCustody, collectedPublicationProjectionDirectory, preflightCollectedArchiveFiles } from './artifact-collector';
+import { collectedArtifactSourceCheckout, collectedArtifactDerivedSource, assertDerivedSourceCurrent } from './source-context';
 import { registryArtifactView, observeRegistryArtifact } from './registry-context';
 import { planClientConsumerProfiles } from './consumer-profiles';
 import { publicationPeerInputPlanView } from './peer-input-plan';
@@ -41,6 +44,29 @@ export interface ClientConsumerView {
     | 'actual registry public CLI module install, Node/Bun service/native probes and removal; no remote Pod or Chat verification';
 }
 const issued = new WeakMap<object, ClientConsumerView>();
+export interface ApiInngestRuntimeOriginalView {
+ readonly identity:Readonly<CollectedArtifactIdentity>;readonly stage:'prepublish'|'postpublish';readonly result:any;
+ readOriginal(name:string,maximum:number):Buffer;assertCurrent():void;
+}
+const apiRuntimeOriginals=new WeakMap<object,ApiInngestRuntimeOriginalView>();
+export function apiInngestRuntimeOriginalView(capability:unknown):ApiInngestRuntimeOriginalView|undefined{
+ const view=capability&&typeof capability==='object'&&issued.has(capability)?apiRuntimeOriginals.get(capability):undefined;view?.assertCurrent();return view;
+}
+function rememberApiRuntimeOriginals(capability:ClientConsumerObservation,artifact:unknown,result:any,stage:'prepublish'|'postpublish',originals:readonly {path:string;data:Buffer}[],check:()=>void){
+ const product=collectedArtifactView(artifact)??fail('actual API runtime product required'),source=collectedArtifactDerivedSource(artifact)??fail('actual API runtime source required');
+ const rows=new Map(originals.map(row=>[row.path,Buffer.from(row.data)]));
+ const read=(name:string,maximum:number)=>{const bytes=rows.get(name);if(!bytes||bytes.length>maximum)fail('registered API runtime original required');return Buffer.from(bytes!);};
+ const frozen=JSON.parse(JSON.stringify(result));const freeze=(value:any):void=>{if(value&&typeof value==='object'){Object.values(value).forEach(freeze);Object.freeze(value);}};freeze(frozen);
+ inspectInngestRuntimeOriginals({product:product.identity,productMembers:product.members,result:frozen,readOriginal:read});
+ const current=()=>{if(!issued.has(capability)||collectedArtifactView(artifact)!==product)fail('API runtime observation revoked');assertCollectedPublicationCustody(artifact);assertDerivedSourceCurrent(source);check();};
+ apiRuntimeOriginals.set(capability,Object.freeze({identity:product.identity,stage,result:frozen,readOriginal(name:string,maximum:number){current();return read(name,maximum);},assertCurrent:current}));
+}
+function localApiRuntimeOriginals(directory:string,result:any,target:string){
+ const references=new Map<string,{bytes:number;sha256:string}>();
+ for(const runtime of ['node','bun']){const metadata=result.installedVerification?.[runtime]?.inngestRuntimeOriginal;if(metadata)references.set(metadata.path,metadata);for(const label of inngestRuntimeLabels(target)){const row=result.records.find((value:any)=>value.label===runtime+'-'+label);for(const raw of row?.raw??[])references.set(raw.path,raw);}}
+ const guards:ReturnType<typeof captureLegalFileIdentity>[]=[],originals=inngestRuntimeOriginalNames(target).map(name=>{const reference=references.get(name);if(!reference)fail('actual API native execution original missing');const read=readSignatureOriginal(path.join(directory,name),reference!,65536,()=>{});guards.push(read.identity);return {path:name,data:read.bytes};});
+ return {originals,assertCurrent(){for(const guard of guards)assertLegalFileIdentity(guard);}};
+}
 const artifactPeerPlans = new WeakMap<object, unknown>();
 export function bindPublicationConsumerPeerPlan(artifact: unknown, plan: unknown): void {
   const view = collectedArtifactView(artifact), peer = publicationPeerInputPlanView(plan);
@@ -691,7 +717,7 @@ function registryProductPlan(input: RegistryInstalledProductConsumerMaterials) {
  * owned cleanup allowance. This read-only plan grants no consumer authority. */
 export function preflightRegistryInstalledProductConsumer(input: RegistryInstalledProductConsumerMaterials): Readonly<{ maximumDurationMs: number }> {
   const artifact = collectedArtifactView(input.artifact);
-  if (artifact?.identity.target !== undefined) { const plan=moduleRegistryExecutionPlan(input); return Object.freeze({ maximumDurationMs: plan.module==='afs'?afsConsumerBudget('postpublish').maximumDurationSeconds*1000:840_000 }); }
+  if (artifact?.identity.target !== undefined) { const plan=moduleRegistryExecutionPlan(input); return Object.freeze({ maximumDurationMs: plan.module==='afs'?afsConsumerBudget('postpublish').maximumDurationSeconds*1000:840_000+(plan.module==='api'?inngestRuntimeAdditionalDurationMs:0) }); }
   const { profiles } = registryProductPlan(input);
   preflightProfiles(profiles, input.dependencies, boundPeerPlan(input));
   return Object.freeze({ maximumDurationMs: 420_000 });
@@ -729,7 +755,7 @@ export function portableConsumerOriginalExpectations(input:RegistryInstalledProd
  * No registry observation can be inferred from archive transport. */
 export function preflightArchiveInstalledProductConsumer(input:RegistryInstalledProductConsumerMaterials):Readonly<{maximumDurationMs:number}>{
   const artifact=collectedArtifactView(input.artifact);
-  if(artifact?.identity.target!==undefined){const plan=moduleRegistryExecutionPlan(input);return Object.freeze({maximumDurationMs:plan.module==='afs'?afsConsumerBudget('prepublish').maximumDurationSeconds*1000:630_000});}
+  if(artifact?.identity.target!==undefined){const plan=moduleRegistryExecutionPlan(input);return Object.freeze({maximumDurationMs:plan.module==='afs'?afsConsumerBudget('prepublish').maximumDurationSeconds*1000:630_000+(plan.module==='api'?inngestRuntimeAdditionalDurationMs:0)});}
   const {profiles}=registryProductPlan(input);preflightProfiles(profiles,input.dependencies,boundPeerPlan(input));
   return Object.freeze({maximumDurationMs:210_000});
 }
@@ -859,11 +885,13 @@ async function observeModuleRegistryConsumer(input: RegistryInstalledProductCons
     let row: any;
     try { row = await runPublicationCommand(fs.realpathSync('/usr/bin/python3'), [driver, requestPath, '--run'], {
       cwd: parent, env: { PATH: process.env.PATH, LANG: 'C.UTF-8' }, evidence: supervision,
-      label: 'module-registry-consumer', timeoutMs: plan.module==='afs'?afsConsumerBudget(input.stage).consumerRunSeconds*1000:600_000, rawLimit: 2 * 1024 ** 2,
+      label: 'module-registry-consumer', timeoutMs: plan.module==='afs'?afsConsumerBudget(input.stage).consumerRunSeconds*1000:600_000+(plan.module==='api'?inngestRuntimeAdditionalDurationMs:0), rawLimit: 2 * 1024 ** 2,
     }); } catch (error) { const outcome=(error as {outcome?:any}).outcome;retain=!moduleCommandClosed(outcome);preserveControl=plan.module==='afs';throw error; }
     if (row.code !== 0 || !row.actualWait || !row.actualClose || !row.groupAbsent || !row.rawComplete
       || !row.rawClosedBeforeHash || !row.pipeEOF?.every(Boolean)) { retain = true; fail('module consumer supervisor closure unavailable'); }
+    const resultGuard=plan.module==='api'?captureLegalFileIdentity(path.join(evidence,'result.json')):undefined;
     const result = JSON.parse(readModuleConsumerOriginal(evidence, 'result.json', 2 * 1024 ** 2).toString('utf8'));
+    if(resultGuard)assertLegalFileIdentity(resultGuard);
     if (result.status !== 'passed' || result.transport !== (preparation==='registry'?'production-npm-registry':'collected-product-archives') || result.sourceSha !== plan.artifact.identity.sourceSha
       || result.realConsumerValidated !== true || result.ownedTemporaryRootRemoved !== true || result.forcedCleanup !== false
       || result.signal !== null || result.processGroupsUnknown !== false || result.driverSourcesUnchanged !== true) {
@@ -894,7 +922,7 @@ async function observeModuleRegistryConsumer(input: RegistryInstalledProductCons
       preserveControl=false;
     }else{
     const required = ['runtime-version', 'runtime-target', 'probe', 'normal-cli-install', 'install-' + plan.module,
-      'list-' + plan.module, plan.module + '-service', ...(plan.module === 'api' ? ['pglite', 'api-rdf'] : []), 'remove-' + plan.module];
+      'list-' + plan.module, plan.module + '-service', ...(plan.module === 'api' ? [...inngestRuntimeLabels(plan.artifact.identity.target!),'pglite', 'api-rdf'] : []), 'remove-' + plan.module];
     const labels = ['node', 'bun'].flatMap(runtime => required.map(label => runtime + '-' + label));
     if (!Array.isArray(result.records) || result.records.length !== labels.length || labels.some(label => result.records.filter((record: any) => record.label === label).length !== 1)) fail('module registry fixed profile records incomplete');
     for (const record of result.records) {
@@ -919,7 +947,9 @@ async function observeModuleRegistryConsumer(input: RegistryInstalledProductCons
     if(!afsLayout)fs.cpSync(supervision, path.join(evidence, 'central-supervision'), { recursive: true, errorOnExist: true, force: false });
     fs.writeFileSync(path.join(requestedEvidence, 'consumer-observation.json'), JSON.stringify(view, null, 2), { flag: 'wx', mode: 0o400 });
     fs.rmSync(parent, { recursive: true, force: true });
-    const capability = Object.freeze({}) as ClientConsumerObservation; issued.set(capability, view); return capability;
+    const capability = Object.freeze({}) as ClientConsumerObservation; issued.set(capability, view);
+    if(plan.module==='api'){const originals=localApiRuntimeOriginals(evidence,result,plan.artifact.identity.target!);if(resultGuard)assertLegalFileIdentity(resultGuard);rememberApiRuntimeOriginals(capability,input.artifact,result,view.stage,originals.originals,()=>{if(resultGuard)assertLegalFileIdentity(resultGuard);originals.assertCurrent();});}
+    return capability;
   } catch (error) {
     if (retain) throw Object.assign(new Error('Module registry consumer closure unknown; retained evidence', { cause: error }),
       { retainArchiveSnapshot: true, evidenceDirectory: evidence, retainedConsumerDirectory: parent });
@@ -996,7 +1026,9 @@ async function observeRemoteProductConsumer(input:import('./registry-consumer-or
       :'actual registry public CLI module install, Node/Bun service/native probes and removal; no remote Pod or Chat verification')
       :(artifact.identity.target===undefined?'local exact-artifact imports/exports smoke; no registry install, authentication, Pod or Chat verification'
       :'actual collected archive public CLI module install, Node/Bun service/native probes and removal; no registry, remote Pod or Chat verification')});
-  const capability=Object.freeze({}) as ClientConsumerObservation;issued.set(capability,view);return capability;
+  const capability=Object.freeze({}) as ClientConsumerObservation;issued.set(capability,view);
+  if(module==='api'){const originals=report.inngestRuntimeOriginals??fail('remote API runtime original custody missing');rememberApiRuntimeOriginals(capability,input.artifact,report.result,stage,originals.originals,originals.assertCurrent);}
+  return capability;
 }
 export function observeGitHubRegistryInstalledProductConsumer(input:import('./registry-consumer-originals').GitHubRegistryInstalledProductConsumerInput & {peerPlan?:unknown}):Promise<ClientConsumerObservation>{return observeRemoteProductConsumer(input,'postpublish');}
 export function observeGitHubArchiveProductConsumer(input:import('./archive-consumer-originals').GitHubArchiveProductConsumerInput):Promise<ClientConsumerObservation>{return observeRemoteProductConsumer(input,'prepublish');}

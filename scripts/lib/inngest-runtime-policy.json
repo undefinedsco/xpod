@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "versionArguments": [
+    "version"
+  ],
+  "commandSeconds": 30,
+  "profiles": [
+    "node",
+    "bun"
+  ],
+  "maximumAdditionalCommandsPerProfile": 2,
+  "originalHashSeconds": 30,
+  "originalHashPassesPerProfile": 2
+}

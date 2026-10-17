@@ -72,16 +72,9 @@ export async function preparePublicationGroup(input:PublicationGroupPreparationI
   if(sourceReport.status!=='verified')return pending(selector,[sourceReport.reason]);
   const sourceMaterials=collectedPublicationSourceMaterials(artifact,source);
   const legal=await collectPublicationLegalMaterials({artifact,source,legalSourceMaterials:sourceMaterials});
-  let nativeMaterials:Awaited<ReturnType<typeof prepareNormalProductNativeContext>>|undefined;
-  const nativePending:string[]=[];
-  if(view.identity.target!==undefined){
-   try{nativeMaterials=await prepareNormalProductNativeContext({artifact,source,output:path.join(input.output,'native-'+index),token:input.token});}
-   catch(error){nativePending.push(error instanceof Error?error.message:'native original collection failed');}
-  }
-  const nativeReport=view.identity.target===undefined?undefined:verifyCollectedPublicationAdmission('native',{...base,nativeMaterials});
   const legalReport=verifyCollectedPublicationAdmission('legal',{...base,legalOriginals:legal.originals,legalSourceMaterials:sourceMaterials});
-  const gaps=[...nativePending,...(!nativeReport||nativeReport.status==='verified'?[]:[nativeReport.reason]),...(legalReport.status==='verified'?[]:[legalReport.reason]),...legal.pending];
-  if(gaps.length)return pending(selector,gaps);
+  const legalGaps=[...(legalReport.status==='verified'?[]:[legalReport.reason]),...legal.pending];
+  if(legalGaps.length)return pending(selector,legalGaps);
   const pre=input.consumerRuns?.find(row=>row.module===selector.module&&row.target===selector.target&&row.stage==='prepublish');
   const materials={artifact,client:prepared.client,peers:[...prepared.peers],dependencies:[...prepared.dependencies],peerPlan:prepared.peerPlan};
   const evidenceDirectory=path.join(input.output,'pre-consumer-'+index);
@@ -90,6 +83,17 @@ export async function preparePublicationGroup(input:PublicationGroupPreparationI
    :await observeArchiveInstalledProductConsumer({...materials,stage:'prepublish',evidenceDirectory});
   const runtimeReport=verifyCollectedPublicationAdmission('runtime-closure',{...base,consumerObservation:prepublishConsumer});
   if(runtimeReport.status!=='verified')return pending(selector,[runtimeReport.reason]);
+  // Matching-host originals must be observed before native context construction:
+  // the API native leaf joins this exact consumer handle to its official release.
+  let nativeMaterials:Awaited<ReturnType<typeof prepareNormalProductNativeContext>>|undefined;
+  const nativePending:string[]=[];
+  if(view.identity.target!==undefined){
+   try{nativeMaterials=await prepareNormalProductNativeContext({artifact,source,consumerObservation:prepublishConsumer,output:path.join(input.output,'native-'+index),token:input.token});}
+   catch(error){nativePending.push(error instanceof Error?error.message:'native original collection failed');}
+  }
+  const nativeReport=view.identity.target===undefined?undefined:verifyCollectedPublicationAdmission('native',{...base,consumerObservation:prepublishConsumer,nativeMaterials});
+  const nativeGaps=[...nativePending,...(!nativeReport||nativeReport.status==='verified'?[]:[nativeReport.reason])];
+  if(nativeGaps.length)return pending(selector,nativeGaps);
   const registry=await observeRegistryArtifactIfPublished(artifact);
   const post=input.consumerRuns?.find(row=>row.module===selector.module&&row.target===selector.target&&row.stage==='postpublish');
   const postpublishConsumer=post?await observeGitHubRegistryInstalledProductConsumer({...materials,consumerRun:post.consumerRun,
@@ -130,7 +134,7 @@ export async function preparePublicationGroup(input:PublicationGroupPreparationI
 }
 interface NativeOriginalBinding {readonly nativeOriginals:unknown;readonly relatedNativeOriginals:readonly unknown[]}
 const nativeOriginalBindings=new WeakMap<object,NativeOriginalBinding>();
-async function prepareNormalProductNativeContext(input:{artifact:CollectedArtifactCapability;source:ReturnType<typeof deriveAdmissionSource>;output:string;token?:string}){
+async function prepareNormalProductNativeContext(input:{artifact:CollectedArtifactCapability;source:ReturnType<typeof deriveAdmissionSource>;consumerObservation:unknown;output:string;token?:string}){
  const material=publicationMaterialView(input.artifact)!;
  const {collectNativeAdmissionContext}=await import('./native-context');
  let nativeOriginals:unknown,sdkOriginals:unknown;
@@ -179,6 +183,8 @@ async function prepareNormalProductNativeContext(input:{artifact:CollectedArtifa
  if(material.identity.package.startsWith('@undefineds.co/xpod-api-')){
   const {observeOfficialInngestRelease}=await import('./inngest-release-originals');
   nativeOriginals=await observeOfficialInngestRelease({artifact:input.artifact,source:input.source});
+  const {observeInstalledInngestRuntime}=await import('./inngest-runtime-originals');
+  await observeInstalledInngestRuntime({artifact:input.artifact,officialReleaseOriginals:nativeOriginals,consumerObservation:input.consumerObservation});
  }
  const context=await collectNativeAdmissionContext({artifact:input.artifact,source:input.source,nativeOriginals,...(sdkOriginals?{sdkOriginals}:{})});
  if(nativeOriginals)nativeOriginalBindings.set(context as object,Object.freeze({nativeOriginals,relatedNativeOriginals:Object.freeze(sdkOriginals?[sdkOriginals]:[])}));

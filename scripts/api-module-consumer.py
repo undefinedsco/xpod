@@ -22,6 +22,7 @@ def load(name, filename):
 
 lifecycle = load('xpod_module_consumer', 'module-consumer.py')
 probes = load('xpod_api_consumer_probes', 'api-consumer-probes.py')
+inngest = load('xpod_inngest_runtime_probe', 'inngest-runtime-probe.py')
 require = lifecycle.require
 
 
@@ -53,7 +54,14 @@ def validate(plan):
 class Runner(lifecycle.ModuleConsumerRunner):
     module_id = 'api'
     driver_path = __file__
-    additional_drivers = [pathlib.Path(probes.__file__)]
+    additional_drivers = [pathlib.Path(probes.__file__),pathlib.Path(inngest.__file__),pathlib.Path(inngest.__file__).with_name('inngest-runtime-policy.json')]
+
+    def total_deadline_seconds(self):
+        return super().total_deadline_seconds()+inngest.additional_seconds()
+
+    def command_timeout_seconds(self, label):
+        fixed={runtime+'-'+role for runtime in inngest.POLICY['profiles'] for role in ['inngest-version','inngest-loader']}
+        return min(super().command_timeout_seconds(label),inngest.POLICY['commandSeconds']) if label in fixed else super().command_timeout_seconds(label)
 
     def verify_installed(self, runtime, package_root, installed_package):
         require(installed_package['xpodModule']['id'] == 'api', 'installed API module id differs')
@@ -65,6 +73,7 @@ class Runner(lifecycle.ModuleConsumerRunner):
             self.checked['target']['target'], self.plan['bun'], ['node_modules/inngest-cli/bin/inngest'], self.module_id))
 
     def exercise_service(self, runtime, cli, env, cycle, data, package_root, installed_package):
+        inngest.capture(self,runtime,cli,env,cycle,package_root,installed_package)
         with socket.socket() as sock:
             sock.bind(('127.0.0.1', 0))
             port = sock.getsockname()[1]
