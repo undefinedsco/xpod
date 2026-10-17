@@ -1,5 +1,6 @@
 /** Owned CI-only same-image acceptance. Never deploys to Kubernetes or adopts running services. */
 import { createServer } from 'node:net';
+import { randomBytes } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, writeFile, lstat, statfs, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
@@ -22,6 +23,14 @@ async function freePort(): Promise<number> {
   const port = (server.address() as { port: number }).port;
   await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
   need(port !== 60895, 'Reserved port selected'); return port;
+}
+/** Deployment-only material for this owned Cloud; never emitted into safe facts. */
+export function ownedModeSecretCellEnvironment(mode: string, environment: Record<string, string>): Record<string, string> {
+  if (mode !== 'cloud') return environment;
+  const key = randomBytes(32);
+  try {
+    return { ...environment, XPOD_SECRET_CELL_KEY_ID: 'matrix-owned-v1', XPOD_SECRET_CELL_KEY: key.toString('base64') };
+  } finally { key.fill(0); }
 }
 export async function runMatrix(options: { image: string; platform: string; sourceSha: string; runId: string; runAttempt: string; output: string; providerFile: string }): Promise<void> {
   need(process.platform === 'linux', 'Owned host-network matrix requires Linux CI');
@@ -98,6 +107,7 @@ export async function runMatrix(options: { image: string; platform: string; sour
       const service = canonical.services[mode]; service.image = options.image; service.platform = options.platform;
       service.network_mode = 'host'; delete service.networks; delete service.ports;
       service.command = ['bun', '--no-env-file', 'dist/runtime/service-entry.js', 'start', '--mode', mode === 'cloud' ? 'cloud' : 'local', '--port', String(ports[mode]), '--host', '127.0.0.1'];
+      service.environment = ownedModeSecretCellEnvironment(mode, service.environment);
       service.environment.XPOD_RDF_NATIVE_SPARQL_ENABLED = 'false'; service.environment.XPOD_PORT = String(ports[mode]);
       if (mode !== 'local') service.environment.CSS_BASE_URL = urls[mode as 'cloud' | 'standalone'];
       service.environment.SOLID_OIDC_ISSUER = mode === 'local' ? urls.cloud : urls[mode as 'cloud' | 'standalone'];
