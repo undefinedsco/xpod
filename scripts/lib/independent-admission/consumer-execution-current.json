@@ -608,6 +608,14 @@
     "sha256": "c59b1febcf4fd3b2f41ae50b3bae4541537e851a83b823ba91f381c87e84ee78"
   },
   {
+    "path": "scripts/lib/independent-admission/afs-source-originals.py",
+    "sha256": "356ba135b62940236b99fd8c4439aacf0ed41eca54f61df17c6d22cdea4dc6a8"
+  },
+  {
+    "path": "scripts/lib/independent-admission/afs-source-originals.ts",
+    "sha256": "2cf377cbddad306083b13d8f1e04aeb99ad993aa56e35d1948c0886e2fe120f3"
+  },
+  {
     "path": "scripts/lib/independent-admission/afs-verifier-patch-originals.ts",
     "sha256": "6d5d77f328fdcbf911ea0b250e6b62871c50df3717b588ab638840481794fdad"
   },
@@ -769,7 +777,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/native-admission.ts",
-    "sha256": "8770c0fadc1d75f5f28f6babe83c86ea7fe42a2aef68c917379cd34c8f576c9e"
+    "sha256": "adba9fc97266e65e8a3ace6996c41b5a95dd4e8205ac44ace084b99760d8b04e"
   },
   {
     "path": "scripts/lib/independent-admission/native-afs-runtime.py",
@@ -781,7 +789,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/native-context.ts",
-    "sha256": "840dad6374ec2c18e29614ee9ce1a11081a6839ef025d77381985c91f05f4eaf"
+    "sha256": "307b91b3beb62cff47a3ec869598e1a54d88787e8f55d42fed950d0b09fc7908"
   },
   {
     "path": "scripts/lib/independent-admission/native-linux-runtime.ts",
