@@ -1,0 +1,930 @@
+[
+  {
+    "path": "bun.lock",
+    "sha256": "87cfaf4e12092fb0e67eaba18985efadcc501a6c2112798fae217608f475048c"
+  },
+  {
+    "path": "package.json",
+    "sha256": "6e6d692fc61a3cba8f71a7eeb2c088b7b27cd762406190c3781c7a20bb9e08df"
+  },
+  {
+    "path": "packages/ai-connections-runtime/package.json",
+    "sha256": "f9c72637124b3510120a20c3b6b93ff33eebcf7796d314eeee3374e5cbfbfd20"
+  },
+  {
+    "path": "packages/ai-connections/package.json",
+    "sha256": "33bae7d03ba80c0d976ad1b2e66e932baeb71036de2ce15195b8267a192ad4c7"
+  },
+  {
+    "path": "packages/extension-host-contracts/package.json",
+    "sha256": "edefd8df016317d6971312d5437e721a4aea0b7c19acf03bf538ac156d6bf99e"
+  },
+  {
+    "path": "packages/extension-sdk/package.json",
+    "sha256": "bce7c23d881599d5bbd8f7e69e0f08bedb63954fe91ad7a094f47e91c95ed102"
+  },
+  {
+    "path": "packages/pod-collections/package.json",
+    "sha256": "bdf75a9a98f3614ea9e514dc871c58a1d7f6538edf6dc116efc15682643ebfae"
+  },
+  {
+    "path": "packages/pod-settings/package.json",
+    "sha256": "3a5582bd37db2a89a4716bd74b165635b3b15fef64ad9ddb2ae66c99a2a2a1f4"
+  },
+  {
+    "path": "packages/shared-ui/package.json",
+    "sha256": "dbbc70ca1b987018058e6d5946469e24f08c56f2548fb74e08ab26295618b20a"
+  },
+  {
+    "path": "packages/solid-sdk/package.json",
+    "sha256": "2af86bb2b1da2ead8b3311cdc1213c5463db49cd92bbd7c3c100cdc3ec113913"
+  },
+  {
+    "path": "packages/tasks/package.json",
+    "sha256": "3fe14574fcd12ee43a2f3e6ef95129a34405b72a2c576f8ed98b2f4ff7a49a8b"
+  },
+  {
+    "path": "packages/xpod-afs/package.json",
+    "sha256": "5cdd40f78be50b44a45bad7b0b22463b9555ed580f4dc77a365b3d7c3d24aee4"
+  },
+  {
+    "path": "packages/xpod-afs/src/agent-fs/mount.ts",
+    "sha256": "1ec204005cfddb5d14eff3afca34cd33d3cd4f8ce7f496b18ea453edb2e9d42f"
+  },
+  {
+    "path": "packages/xpod-api/package.json",
+    "sha256": "0176c10141dbdd675e2a9741787fd1d56b5e811a5951e0dd3d056ff949e60576"
+  },
+  {
+    "path": "packages/xpod-api/scripts/bun-build-api.ts",
+    "sha256": "260024d8fa42a81cc10ef7601bed0efc1a3657981e28fc20bf25274db1fbb4e8"
+  },
+  {
+    "path": "packages/xpod-api/scripts/bundle-products.ts",
+    "sha256": "3a24864c1e1d542295a997d8a9de7814283de0cf6a6f233d3fab48f1c42fd516"
+  },
+  {
+    "path": "packages/xpod-api/scripts/bundle-runtime.ts",
+    "sha256": "a542b95f7979049a6c2686f79ea80cb05d13251903c71b3d9fe54523e46093e6"
+  },
+  {
+    "path": "packages/xpod-api/scripts/bundle-stage.ts",
+    "sha256": "e571128914a1c6d4db22fab9cb51743fc4af5d061ca7903f84c193a22bf8f505"
+  },
+  {
+    "path": "packages/xpod-api/scripts/closure.ts",
+    "sha256": "a06dce89cf832f574295794f4e830cca2d0abefc2553e5c7ec188614a91f2090"
+  },
+  {
+    "path": "packages/xpod-api/scripts/inngest-input-pins.json",
+    "sha256": "d5d2225c7c8cf1bc1fc27f11d3bfc4f13c5dd597dae3c65701b0f4c6a200e567"
+  },
+  {
+    "path": "packages/xpod-api/scripts/node-builtins.ts",
+    "sha256": "b77b600379f808de205a7817863130f7c83ae83cb135a67109dfe3816d517468"
+  },
+  {
+    "path": "packages/xpod-api/scripts/sourcekit-producer.ts",
+    "sha256": "58a80bfa37f5b7089a410a3d61480c05f01c5188f1d27defb71a84870a48757d"
+  },
+  {
+    "path": "packages/xpod-api/scripts/sourcekit.ts",
+    "sha256": "e3f14b1f299f2095b80f3fe936b2ff919fc9bcd957764ef8eba41a56ea22b928"
+  },
+  {
+    "path": "packages/xpod-api/scripts/static-material.ts",
+    "sha256": "24a95c0368b46198f95f41c61d8d76ce029ea39165b9a31e9e1fcee80f74439c"
+  },
+  {
+    "path": "packages/xpod-cli/package.json",
+    "sha256": "e2db5b5feb6eb3e4ab30508fd8657b68b3fd72ae2e1e618a2f12eb3fa2309c85"
+  },
+  {
+    "path": "packages/xpod-cli/scripts/build-tools-package.ts",
+    "sha256": "e9e6c9eb32137a9bbb5fad26aa49093d0c410f9ca783d3891300e3ed67f85549"
+  },
+  {
+    "path": "packages/xpod-cli/scripts/canonical-host-sources.json",
+    "sha256": "1e7815662fad1dcb1bf66785d538e20d14e466b6dd269d748a2697dceeae19aa"
+  },
+  {
+    "path": "packages/xpod-cli/scripts/public-build-tools.ts",
+    "sha256": "b8a533727abef24c1b40d36ec67b631c4251c001b77448377ea19afe65956bfc"
+  },
+  {
+    "path": "packages/xpod-cli/src/javascript-notices.ts",
+    "sha256": "e2435b75579095c215d928bea3b8422f295695176b6a7b19d3c96dbaaf1d61fd"
+  },
+  {
+    "path": "packages/xpod-cli/src/launcher.ts",
+    "sha256": "fcfaf57b8610d1ad7a3dc99e3ce671591d74388864b58edf19ed7e171eca54b3"
+  },
+  {
+    "path": "packages/xpod-cli/src/lib/output.ts",
+    "sha256": "2fddbe9d903c446ffd359d36f43782dcaebaa8070a63cf399726cd68e932678a"
+  },
+  {
+    "path": "packages/xpod-cli/src/manifest.ts",
+    "sha256": "98540cea09a3cc3a37cd4132d4d42ba515c755255801d42c5827ede6bc2be167"
+  },
+  {
+    "path": "packages/xpod-cli/src/module-catalog.ts",
+    "sha256": "d52e3222f056d68b6c3eae261e25a196a23e5f7c43e9f027c918eedb9b0ce33e"
+  },
+  {
+    "path": "packages/xpod-cli/src/module-install-diagnostics.ts",
+    "sha256": "2c0817c3529975d1d5151c7cfe7ef657efd2d8e35148ed77f43830221563014e"
+  },
+  {
+    "path": "packages/xpod-cli/src/module-inventory-workers.ts",
+    "sha256": "2f314ac1a1784bf33d373dd30a8e35b8b716afdbaa3dcc1bec5d73cdc2ac6ff1"
+  },
+  {
+    "path": "packages/xpod-cli/src/module-owned-lock.ts",
+    "sha256": "74708c4d4e00ce4ca1dabb50e62d0b7f8e7504dccb32623fa34339a77346dc11"
+  },
+  {
+    "path": "packages/xpod-cli/src/module-store.ts",
+    "sha256": "63dc162e77c881cb68d18a742234fc8bceb729314ca79b8a88e41022de9e4c16"
+  },
+  {
+    "path": "packages/xpod-cli/src/native-target.ts",
+    "sha256": "24c607f7e960f7f9e4d1c60d5b9a51d3b520866b439f7f1ec6f54bfd661f3bbb"
+  },
+  {
+    "path": "packages/xpod-cli/src/producer-source.ts",
+    "sha256": "82c19c1566923a85ca4f5d2533170893fb20206b49af14a57012321b7a84fa92"
+  },
+  {
+    "path": "packages/xpod-cli/src/promotion.ts",
+    "sha256": "bd065670af985ab0bb86a1b6fb15e7b5894b573dc405717aa05e1c7041bb6515"
+  },
+  {
+    "path": "packages/xpod-cli/src/source-materials.ts",
+    "sha256": "66919cd2c75c229367538e9b2fea5af9243569572e9a74b5c3a8c80f609904b0"
+  },
+  {
+    "path": "packages/xpod-client/package.json",
+    "sha256": "b6e86fb6f4d72f8b991b3738c03dbbb45fe72518a3930907b3feba80d3dddc32"
+  },
+  {
+    "path": "packages/xpod-client/scripts/build.ts",
+    "sha256": "34a78d3b1dc659d2e12faf1b5268b9d2bf063908660118050b20395e8d07a0ea"
+  },
+  {
+    "path": "packages/xpod-client/src/auth-context.ts",
+    "sha256": "23d7091425e5db581f49a9142903f5ad5319e598c4279edb2cca7df4ec2a5735"
+  },
+  {
+    "path": "packages/xpod-client/src/credentials-store.ts",
+    "sha256": "d08d03e261474a830003b424685197d77313456f93cb2ded26f453c76d1b19fa"
+  },
+  {
+    "path": "packages/xpod-client/src/css-account.ts",
+    "sha256": "ce2f188770c2b069f7649b5d51216299c413cef69c68d32608e3b87a8f05c493"
+  },
+  {
+    "path": "packages/xpod-client/src/errors.ts",
+    "sha256": "b09e062f01da2c4a8a78f20fdc67533e2fa9c649199c132e53706739af47c2a4"
+  },
+  {
+    "path": "packages/xpod-client/src/index.ts",
+    "sha256": "4cdd427b93b4911cef1e0d965740b4b6e733ed242490bd23048950b7a49a4e40"
+  },
+  {
+    "path": "packages/xpod-client/src/oidc-auth.ts",
+    "sha256": "e571ab38904e4e0c2e080d8cfb363429bbc38669469602f9fac8be37b76fea96"
+  },
+  {
+    "path": "packages/xpod-client/src/oidc-session-storage.ts",
+    "sha256": "1a0b5b55133f9bc45a5bf590de3838172c9a2ccfb60be2fa21392ed2d474e929"
+  },
+  {
+    "path": "packages/xpod-client/src/peer.cjs",
+    "sha256": "e2c3baf00174ee4301ee85a2b76bb953b3fcf541b94ad87e5355c95feb689c71"
+  },
+  {
+    "path": "packages/xpod-client/src/resource.ts",
+    "sha256": "e4ac8c2b167d0fd1908518ea8aef8c01d83df08f4d4988fea5f41f9fb254ad9a"
+  },
+  {
+    "path": "packages/xpod-client/src/sdk.ts",
+    "sha256": "e74d1afdf2ab97133f66ea9289a9a5a438263d72c6e6fdf855c7914d42da34bb"
+  },
+  {
+    "path": "packages/xpod-client/src/solid-auth.ts",
+    "sha256": "8cef0d50937cf5a6c5367cae7a27961825c5aad8961fd605edba586d0ceaae2a"
+  },
+  {
+    "path": "packages/xpod-css/package.json",
+    "sha256": "cd7745c176af4b4c2fcab55aa768459c8f44b2f890fe0abc6ad728d292c45028"
+  },
+  {
+    "path": "patches/@solid%2Fcommunity-server@8.0.0-alpha.1.patch",
+    "sha256": "36b8796d16459344b6ee7b83f3cfd98d2325ef4cc144bb33e6a3710b6e234283"
+  },
+  {
+    "path": "patches/@undefineds.co%2Fdrizzle-solid@0.3.25.patch",
+    "sha256": "15917daa88260327bb30d5da25d9db7efb0fd3386c7f0494102fa780ac870789"
+  },
+  {
+    "path": "patches/oidc-provider@9.5.1.patch",
+    "sha256": "ab20339bffd5ddb7041a79f83624da24baabedeabde95ee9f055cf091015b037"
+  },
+  {
+    "path": "qlever/scripts/apply-patches.py",
+    "sha256": "2284782c9132998b59f237753e93a7ab3766fd28e789e22fc6fd131c6049534e"
+  },
+  {
+    "path": "qlever/scripts/macos_companion_originals.py",
+    "sha256": "c5597e1a395229e3043cd8a6ed3178205453cdd535f7b2f0b58149a3bb7f1971"
+  },
+  {
+    "path": "qlever/scripts/macos_dependency_inventory.py",
+    "sha256": "c3ca6c3133667ff2e464cb4a0c4fe49f16a827980f7bc7864737975bf4541c83"
+  },
+  {
+    "path": "qlever/scripts/observe-macos-native-materials.py",
+    "sha256": "4e21596d1c40dbe83d8c11e1c0aeae43a7eeeef70f84a577072ca225490fc693"
+  },
+  {
+    "path": "qlever/scripts/prepare-linux-physical-runtime.py",
+    "sha256": "82bad3c59736f144b1a7e5e176edfb997a90026fc20d6aabd839339cff00504e"
+  },
+  {
+    "path": "qlever/scripts/produce-linux-runtime-archive.py",
+    "sha256": "1401a84252c729647998ecd86885d9a36ca70305c9085e347e8cb2fc0747b34e"
+  },
+  {
+    "path": "qlever/scripts/qlever_compiler_profile.py",
+    "sha256": "3a3bcaf7e20cdee078489d97af51d6cb5e522600fb581430fc52eecd15d284f4"
+  },
+  {
+    "path": "qlever/scripts/runtime-overlay-manifest.py",
+    "sha256": "8a338b8bcaea82d89fd49bfe27647b61bb2c61243d824c01e86a1e4123dfbe81"
+  },
+  {
+    "path": "qlever/scripts/sync-patched-source.py",
+    "sha256": "716b4ab7f19b407ecba454e5cfcf6837ce172896546aa6e667b0959fabcea89f"
+  },
+  {
+    "path": "qlever/scripts/validate-prior-sdk.py",
+    "sha256": "273c4df73370fd6df1d7c2fd28382a7f7f11e9d8ec091c55c8b72e087aa11eb7"
+  },
+  {
+    "path": "qlever/scripts/verify-local-runtime-artifacts.py",
+    "sha256": "b95365f0736f531d772a394a9936911ae9d843b616f6c933030845102bf4efdf"
+  },
+  {
+    "path": "scripts/acquire-independent-product-input.ts",
+    "sha256": "68e420ccd81b1df9f774ea8c1cabe532a0885b8dd60a4a31811272a46513ce0f"
+  },
+  {
+    "path": "scripts/agentfs-native-ci/accept.py",
+    "sha256": "3bcd2a9c254689fc26785556752347625bc6ca4f7ed367584b998562f9e3938b"
+  },
+  {
+    "path": "scripts/agentfs-native-ci/mounted/export-products.ts",
+    "sha256": "a1a8cb5ddf1df5cad92312b386de8fd3a8ddafd4b0f350a192ac818c25ce8c43"
+  },
+  {
+    "path": "scripts/agentfs-native-ci/mounted/module-admission.ts",
+    "sha256": "400ca9ed8729c62bae8e6bfb16d9cab577f175e9a4cbd8c7dbd9dfe935969c0d"
+  },
+  {
+    "path": "scripts/agentfs-native-ci/mounted/native-authority.json",
+    "sha256": "77a54e231c7aa50162dc08d0a0a002692cfe29d7312dc215a441ed7e1c2f4083"
+  },
+  {
+    "path": "scripts/agentfs-native-ci/mounted/owned-installed-consumer.ts",
+    "sha256": "bf1ed5b12a84ced72aaf41a2f577851e637554ffb38b025e4edbf5bf1896b9dd"
+  },
+  {
+    "path": "scripts/agentfs-native-ci/mounted/platform-admission.ts",
+    "sha256": "6b9d269d81d43a6d4930a0fb1a6b7a1cee1e4028b83e8897e645b71c912c5fa0"
+  },
+  {
+    "path": "scripts/agentfs-native-ci/mounted/prepare-module-inputs.ts",
+    "sha256": "88a692aede824bf238211319090503cda3dc8a9bf12580eeda6c879361b555e1"
+  },
+  {
+    "path": "scripts/agentfs-native-ci/mounted/producer-commands.json",
+    "sha256": "9849170bbde384ac3f5050d0b53e5e9629fb3b22acbadb54ce3ec149572d032c"
+  },
+  {
+    "path": "scripts/agentfs-native-ci/mounted/required-cases.ts",
+    "sha256": "abea9dd49b1d54548ceb927224b95c894ec5256c6d313cd656721cac38ee8e40"
+  },
+  {
+    "path": "scripts/agentfs-native-ci/supervise.py",
+    "sha256": "49fd9c7a7a9c9dc1612b1261f0cbc218166f48487df726239437ae9ad98ba407"
+  },
+  {
+    "path": "scripts/api-module-consumer.py",
+    "sha256": "70f85ca6047834575f9d37d851031f1f8f612c274f4506219ac0757279e28695"
+  },
+  {
+    "path": "scripts/api-module-producer.py",
+    "sha256": "eaeddab536d6e606042039cfe5290393d5c5a3e454fb590354cc35e5afe2975f"
+  },
+  {
+    "path": "scripts/bun-test-discovery.cjs",
+    "sha256": "027671d955e8dc843994af587ad74c19f939569c9d6c0b48b64a1d2b351ccd29"
+  },
+  {
+    "path": "scripts/check-cli-publication.cjs",
+    "sha256": "ff0eb13abb628addad1c8fdfd3ee6d615215325e9ad7bc8799139a056e316c75"
+  },
+  {
+    "path": "scripts/check-dependency-state.ts",
+    "sha256": "c0414709481f169c89eb87f8ee222a617d23c937fed44ffb86ff9796174ff5e7"
+  },
+  {
+    "path": "scripts/cli-build-inputs.cjs",
+    "sha256": "c437aa115b5b7905c539386d4df284a43e26782c846d62045d69de5bb762331c"
+  },
+  {
+    "path": "scripts/collect-api-release-input.ts",
+    "sha256": "194ffeefd00244e9da20b0a9bbcb58573d5d1a391f8d00ccdb58343e392dcd2a"
+  },
+  {
+    "path": "scripts/css-module-consumer.py",
+    "sha256": "0c140d6bfdf9b0ed5111a06149169edd48492101e767748f91af730148f0ed05"
+  },
+  {
+    "path": "scripts/css-module-producer.py",
+    "sha256": "431d033a41f01ab317124e1e5488543ea1ac82fa59c2ef3845ddd43ab4e61f4c"
+  },
+  {
+    "path": "scripts/independent-release-plan.ts",
+    "sha256": "170d6fead7a472b6faf6f65e34835033d5ab6e0828c92bdb2e33d19356de55ee"
+  },
+  {
+    "path": "scripts/lib/afs-consumer-budget.cjs",
+    "sha256": "c34c0584c38f9e8142c2e0d2fc2f5c0667131490e664a3b465fe2f3ab66bf2be"
+  },
+  {
+    "path": "scripts/lib/afs-consumer-budget.json",
+    "sha256": "0a33fa2dd766d40b39b923bcd21f18c5fb5ecbe7c23166d97d47a11958f52c13"
+  },
+  {
+    "path": "scripts/lib/afs-consumer-budget.py",
+    "sha256": "9a9315f936d0dd5ae7cf417e9d1bccca62b0799339bedd8d63071875ba62c9c8"
+  },
+  {
+    "path": "scripts/lib/afs-consumer-budget.ts",
+    "sha256": "29cf4efd6d50e0f4b89b85ec75cff7995150787d9b8fdca089c78f8e11066f9e"
+  },
+  {
+    "path": "scripts/lib/afs-consumer-tool-originals.py",
+    "sha256": "cf6f755e58fdf7698f25233e5084f52e774cc1ea198d340945486c10fa1878cb"
+  },
+  {
+    "path": "scripts/lib/afs-module-consumer-bridge.ts",
+    "sha256": "c5985a1adde66e07304d718c2beaee9bba0ef6a404b09800762f49698f433895"
+  },
+  {
+    "path": "scripts/lib/afs-module-consumer.py",
+    "sha256": "32de4cfb6718a4e085303f6687ec3b6dea1505d37c582fefbc314728ffea2fee"
+  },
+  {
+    "path": "scripts/lib/afs-publication-command.cjs",
+    "sha256": "7fb899a72bd50ae36b35649964e502c5984a97587ffd5570f6d830fb31d6bd27"
+  },
+  {
+    "path": "scripts/lib/afs-verifier-harness.py",
+    "sha256": "3a28203b9a2a6b8e0b68e5de7e4ce6d52c6266d9e6b2c3d6fa816b271edb3592"
+  },
+  {
+    "path": "scripts/lib/api-consumer-probes.py",
+    "sha256": "fc71c837089affca5b2f67fe43c8becf1a167a981309dc0b5213fc4ec33e665b"
+  },
+  {
+    "path": "scripts/lib/cli-publication-budget.cjs",
+    "sha256": "de2a337b143edec3c903dd9bb0234755594f34b2cfdf43efad04661296c262d2"
+  },
+  {
+    "path": "scripts/lib/consumer-workflow-budget.cjs",
+    "sha256": "452fdecf04943d8e73cc49c7dfa3e6cdf4df4cccd4a8ffb61fdf1c45eeea2d55"
+  },
+  {
+    "path": "scripts/lib/css_native_zip.py",
+    "sha256": "5ec8942645c050436c3b5f4d518e00098e9da6543d9b1fae0666aab9bf0ef6ec"
+  },
+  {
+    "path": "scripts/lib/extract-bound-zip-member.py",
+    "sha256": "9323932520dbb84bd8f4ec323e9bdcee623159898191bc01f0da96b3769ef760"
+  },
+  {
+    "path": "scripts/lib/independent-admission/afs-consumer-directory-originals.ts",
+    "sha256": "1c8a75f9aa1b956b641a2866a71dfe97ec9252dd0c3f6a5da55caa9066e5284d"
+  },
+  {
+    "path": "scripts/lib/independent-admission/afs-consumer-finalization.ts",
+    "sha256": "f8ed4bbd1e8658a43d20baaa537f9a734f4b31670aa36641ea41e6ad06b83da4"
+  },
+  {
+    "path": "scripts/lib/independent-admission/afs-consumer-originals.ts",
+    "sha256": "9150bee7e57d93626d4f71fd395b0f2f11e8048c7d570d15aede0602325b1c5f"
+  },
+  {
+    "path": "scripts/lib/independent-admission/afs-consumer-public-custody.ts",
+    "sha256": "594557c233d4bd60ca4acb5c3a2b4e054613c22a1143ecdd878a6245a188f208"
+  },
+  {
+    "path": "scripts/lib/independent-admission/afs-consumer-resource.ts",
+    "sha256": "0bda8d563995ac372e08a37035307a96c09e12d3ea2457b3231dd0187e4d4fa4"
+  },
+  {
+    "path": "scripts/lib/independent-admission/afs-consumer-runtime-originals.ts",
+    "sha256": "24a7372d33d79cbff3eecaeeb444202c9b96afd0f9baef395f394e0baa55b222"
+  },
+  {
+    "path": "scripts/lib/independent-admission/afs-consumer-shard-registration.ts",
+    "sha256": "104e3eaef78b3d6dd8b9d060a5cd32dab53a8e59cb6597d25a05d56d5ff4f1fa"
+  },
+  {
+    "path": "scripts/lib/independent-admission/afs-verifier-runtime-originals.ts",
+    "sha256": "bfe2fd49b43c0b039137cc010867fbaf04bfd0b2b16fafd5913d40223be61568"
+  },
+  {
+    "path": "scripts/lib/independent-admission/archive-consumer-originals.ts",
+    "sha256": "5a1f3ec94522931f55714f10e3ea2616dae73c1184d922b2e00d4471cdd185be"
+  },
+  {
+    "path": "scripts/lib/independent-admission/artifact-collector.ts",
+    "sha256": "c6971caadaf951117645c91438f37c950ba2de8fea1109c86c801331d6e258ea"
+  },
+  {
+    "path": "scripts/lib/independent-admission/artifact-contract.ts",
+    "sha256": "4a47c49964be2e5d4f35d31f29bf22400691c731aeb5d0d95ae80f4e918a5753"
+  },
+  {
+    "path": "scripts/lib/independent-admission/bound-original-file.ts",
+    "sha256": "6d256ec4ebbdbb64106d5944a82d09e79aee8aa871b61f7048169045d73d979d"
+  },
+  {
+    "path": "scripts/lib/independent-admission/consumer-context.ts",
+    "sha256": "ca9ce41a3d9996188f233cde211bcc351b5832cd1dfa21c456182e3d22eecee4"
+  },
+  {
+    "path": "scripts/lib/independent-admission/consumer-profiles.ts",
+    "sha256": "d641b4426036d58fabbcf4365136acac8931569fa718498d9073e29ca59db6a6"
+  },
+  {
+    "path": "scripts/lib/independent-admission/consumer-run-locators.ts",
+    "sha256": "8ac468e61b0597606da06ade2b3641d0a1519e5bbc675fbb9c9eb0645f954650"
+  },
+  {
+    "path": "scripts/lib/independent-admission/github-immutable-original-cache.ts",
+    "sha256": "d52cca5b967ccde0e501863cf37b5254af685ecdf80b6b5046e455b97ef558e2"
+  },
+  {
+    "path": "scripts/lib/independent-admission/github-origin.ts",
+    "sha256": "5e2e18759a8d2cc940fd27d49844aefc30c528a721d90a6a0f373aed8436bd23"
+  },
+  {
+    "path": "scripts/lib/independent-admission/github-source-binding-groups.ts",
+    "sha256": "ea643c8ee558f0c2092a8c63601df87550377a76cc475d675fab779ebe07b86a"
+  },
+  {
+    "path": "scripts/lib/independent-admission/index.ts",
+    "sha256": "91cd33c92b6565916062f9fdcccdd3c309f561e3b8f26b2deb01215a8db6961d"
+  },
+  {
+    "path": "scripts/lib/independent-admission/lazy-zip-originals.ts",
+    "sha256": "983b0ad628deb5d16c44ad53916dd32d5baee9b68f840914db22728d8cd9b7ef"
+  },
+  {
+    "path": "scripts/lib/independent-admission/legal-admission.ts",
+    "sha256": "70887cc5fc636e414ef6902b2e2480823203d52c16b91c501a20320c63639c2c"
+  },
+  {
+    "path": "scripts/lib/independent-admission/legal-bun-helpers.ts",
+    "sha256": "32331f5240dc50cc140cedb02f0e094e4edffd6bf5a52ae6231e717c4519cfc4"
+  },
+  {
+    "path": "scripts/lib/independent-admission/legal-bun-runtime.ts",
+    "sha256": "736b8af280baa8ad357f14498a75f5bbc431712d4085cf1f3b0d6397460ba4bc"
+  },
+  {
+    "path": "scripts/lib/independent-admission/legal-bundle-materials.ts",
+    "sha256": "0ca7dd3d47813af0b190e787218d78e8e5e19003128b81b1626aab0ade2b4938"
+  },
+  {
+    "path": "scripts/lib/independent-admission/legal-coverage.ts",
+    "sha256": "d6f293a5e8386422d3de8700b7598babcc6fea610fc504a516858c92d09fe9b0"
+  },
+  {
+    "path": "scripts/lib/independent-admission/legal-exact-source.ts",
+    "sha256": "0ba4a0ddcc0f362a2320057f7053292276e36c48742f057ba3bebe3a8e470632"
+  },
+  {
+    "path": "scripts/lib/independent-admission/legal-file-custody.ts",
+    "sha256": "4d71fdaff3c62e533806af4919c6caac889ed2475a361b15317d5f33503e6d72"
+  },
+  {
+    "path": "scripts/lib/independent-admission/legal-installed-originals.ts",
+    "sha256": "3963944766ef4a96c6925b2680e6384284620595d1e2485dbfe38bba6fcb5e14"
+  },
+  {
+    "path": "scripts/lib/independent-admission/legal-material-inventory.ts",
+    "sha256": "aeca7ad4b9ec2457e3a777950374e60f3a3c402a9c01c6729a3f7425be2a7413"
+  },
+  {
+    "path": "scripts/lib/independent-admission/legal-original-custody.ts",
+    "sha256": "301ca0e02fa06b3d63c1fed465150831b9c3bf434040b44fd8c97607e3f4effb"
+  },
+  {
+    "path": "scripts/lib/independent-admission/legal-original-requests.ts",
+    "sha256": "2c3ac8915a1684b7083aa2a709f727176e749ff0840a334007682d8f27e3de88"
+  },
+  {
+    "path": "scripts/lib/independent-admission/legal-product-manifest.ts",
+    "sha256": "69d2f6e56cf98bd6d27496431e191e4ffd2b80f4f69bd40ab4c17f266143ebb5"
+  },
+  {
+    "path": "scripts/lib/independent-admission/legal-registry-originals.ts",
+    "sha256": "97c8851de5d2bcc996625c0b2883d877ab2eaadee2aa32d406c53dbeee1b1478"
+  },
+  {
+    "path": "scripts/lib/independent-admission/legal-source-mappings.ts",
+    "sha256": "88b3264abb97b7bbadf472c7f6510755368e01c745fde52677072c02b75720bf"
+  },
+  {
+    "path": "scripts/lib/independent-admission/legal-typescript-helpers.ts",
+    "sha256": "6902b08ead3a167bb58faab9f98d7d453ecdc8c219dd92b890a50ddea01a6577"
+  },
+  {
+    "path": "scripts/lib/independent-admission/macos-native-range.ts",
+    "sha256": "59be24415c243c579b8d41e0cf469f6c212c6e7893cf0325922eeb0684e1ba42"
+  },
+  {
+    "path": "scripts/lib/independent-admission/module-phase-originals.ts",
+    "sha256": "dd275b8cbdb44f96bd5bc2cfdb17d7fccc434e72892c2c378eec5cad78f61e8f"
+  },
+  {
+    "path": "scripts/lib/independent-admission/module-product-inventory.ts",
+    "sha256": "8ef2a35e232730a89333d86cb0fb8ac913ba1bd98a2a2ce654c266a2ec5b6d25"
+  },
+  {
+    "path": "scripts/lib/independent-admission/module-source-admission.ts",
+    "sha256": "0727c1fa591cc9ad3bd1c875e328846471780485d235deff33e69a3c342210b7"
+  },
+  {
+    "path": "scripts/lib/independent-admission/module-source-originals.ts",
+    "sha256": "2078d045ff1001ce494df35aba798c313332ba5119b2c87b370c17b33ebb1432"
+  },
+  {
+    "path": "scripts/lib/independent-admission/module-source-phases.ts",
+    "sha256": "b6fae3330e87e66ec712bccdc950129ca87978003f3c8856f85ccaa3fc9cc919"
+  },
+  {
+    "path": "scripts/lib/independent-admission/native-admission.ts",
+    "sha256": "00df6e10d760b3f1f854e802de8a8cef5f9934394345bc1d5f0d14d18b8d8da7"
+  },
+  {
+    "path": "scripts/lib/independent-admission/native-afs-runtime.py",
+    "sha256": "3b5989a1cffb40201bfec7e25f8f032fac6452e618c3e7c6045bc999cffc57e7"
+  },
+  {
+    "path": "scripts/lib/independent-admission/native-context.ts",
+    "sha256": "c888880b8bb8b22be561f98c651cf1533a7ee24572915e8383dee70b28dd6fa8"
+  },
+  {
+    "path": "scripts/lib/independent-admission/native-linux-runtime.ts",
+    "sha256": "c225370ce2968d9e2fa0198ce21644e0770059b5b6f8412330cbb2bb91823ade"
+  },
+  {
+    "path": "scripts/lib/independent-admission/native-macos-runtime.ts",
+    "sha256": "cd05bd487ef214554e33c69c326dd9ee51eda11294a368d3096aa429c0964d8c"
+  },
+  {
+    "path": "scripts/lib/independent-admission/native-module-materials.ts",
+    "sha256": "d686f0e81aaa45f45fdffaedb389827418a4c061dfd8accb74f6702e2d9f44d0"
+  },
+  {
+    "path": "scripts/lib/independent-admission/native-original-collector.ts",
+    "sha256": "7cc2a02db923323ebe29e9aaedc4e951d0eebf8ba199b620b577060f59811a87"
+  },
+  {
+    "path": "scripts/lib/independent-admission/native-original-lifetime.ts",
+    "sha256": "0a7c7622ec37db1f45022409003ed3c31326e51951997e0fd16c0eb500d830bf"
+  },
+  {
+    "path": "scripts/lib/independent-admission/native-original-tar.py",
+    "sha256": "aff77fc120cc03fabf03001878fde37e4a900eec47da0bcd419a2ca7a4126756"
+  },
+  {
+    "path": "scripts/lib/independent-admission/native-originals.ts",
+    "sha256": "35ab354c9a8adefe56545beb990c38d326711b031cbe760b6e60550fb2472ee1"
+  },
+  {
+    "path": "scripts/lib/independent-admission/native-tar-observation.ts",
+    "sha256": "5bad18a20d5ab3fad43de9e7b60b2ae75c119ee061aa8673dbf93169229b3082"
+  },
+  {
+    "path": "scripts/lib/independent-admission/peer-input-plan.ts",
+    "sha256": "c721769cc39635265bf4e4f61178275d2aefc7816c64a9d962c98fde8de6f320"
+  },
+  {
+    "path": "scripts/lib/independent-admission/product-consumer-limits.ts",
+    "sha256": "fbab89c7e326a800179bb2419a8da20c6e50407ec83870aab871c322f0de2e95"
+  },
+  {
+    "path": "scripts/lib/independent-admission/product-consumer-original-inventory.ts",
+    "sha256": "0d9ef070fa2567d5550c909756efdf7271f2f51ce8bd590007614a10192a2221"
+  },
+  {
+    "path": "scripts/lib/independent-admission/product-disk-inventory.ts",
+    "sha256": "2d8fa9eff9d3cfedb41fb915bdf44e19a43cf2c119a39d8a77ba2c4e4f3d41ef"
+  },
+  {
+    "path": "scripts/lib/independent-admission/product-original.ts",
+    "sha256": "b46a96c1b7afd85de11d8bd34b4530dd503e089ecfa26b6230035d25a1bee61c"
+  },
+  {
+    "path": "scripts/lib/independent-admission/product-projection-io-budget.ts",
+    "sha256": "d7eca21b7defb094da008e61ed74c47e03c34b65b964f8f06241a6959cb028c9"
+  },
+  {
+    "path": "scripts/lib/independent-admission/publication-archive-file.ts",
+    "sha256": "3339ce9262343f64deb6c9d0bd3cdeb6347ebe21cbe7ec3e854e7cb9ec9910ce"
+  },
+  {
+    "path": "scripts/lib/independent-admission/publication-disk-budget.ts",
+    "sha256": "d1db6066a9d69f3a92a4ff75925ff9a21d5d4ea07a8b6eb89d561376b2a94272"
+  },
+  {
+    "path": "scripts/lib/independent-admission/publication-executor.ts",
+    "sha256": "dab723fd851ca9c309274247edca39fa285d68efe6fe45605379a19ed1936c16"
+  },
+  {
+    "path": "scripts/lib/independent-admission/publication-gate-materials.ts",
+    "sha256": "b98b2fce27ab03f75b4937999688bb1ed6bda1e52a78a78b47a8d5d1a36e2f93"
+  },
+  {
+    "path": "scripts/lib/independent-admission/publication-group.ts",
+    "sha256": "0083e43d120246bf1cc8fa9a9adc20e90bf635d0352e5183226387355df512c3"
+  },
+  {
+    "path": "scripts/lib/independent-admission/publication-legal-materials.ts",
+    "sha256": "5a7aa9c16993b2fed2979d4697fa7950038b95c1b7e115a4ffad45941ef6c29d"
+  },
+  {
+    "path": "scripts/lib/independent-admission/publication-resource-preflight.ts",
+    "sha256": "aa03bdf15453fb50806251baf94b7bbd8225cd376e5ded344263654bb8ccb2ac"
+  },
+  {
+    "path": "scripts/lib/independent-admission/publication-wave.ts",
+    "sha256": "96dcdb921076b4f3390dafc12e92e4c42631b1d52d94cfccee0f1fa8d82f0581"
+  },
+  {
+    "path": "scripts/lib/independent-admission/publication.ts",
+    "sha256": "616defef08ef0d19662e3ea7bc3cbbc1c7f5c7972f344b79328502922869f8da"
+  },
+  {
+    "path": "scripts/lib/independent-admission/qlever-linux-origin-policy.ts",
+    "sha256": "9a296a7d87218502286156b3c34ac539460c8b3a1ba4bab36b17e27204569811"
+  },
+  {
+    "path": "scripts/lib/independent-admission/qlever-observer-policy.ts",
+    "sha256": "74fd1398a88f4e69dd782062ebbe4ade70dc28c218904776a6af800f0344cf7b"
+  },
+  {
+    "path": "scripts/lib/independent-admission/registry-consumer-bundle.ts",
+    "sha256": "11ca9db50abdf711386654b7175e41b5d3f07f800829e203b2f3e82d992c0249"
+  },
+  {
+    "path": "scripts/lib/independent-admission/registry-consumer-originals.ts",
+    "sha256": "210a3bd091b7492d197861592afb86fee31dd38219598c473c5bbbc38f5bf34b"
+  },
+  {
+    "path": "scripts/lib/independent-admission/registry-context.ts",
+    "sha256": "7fda5d805414a2fec563851f4ce5bfba096b4f678a19a3d22ca333cbf183e920"
+  },
+  {
+    "path": "scripts/lib/independent-admission/remote-consumer-originals.ts",
+    "sha256": "12c5a80abae7cc16ab0b53998c70a280f99f6ca46647558ce3ff216a5b876468"
+  },
+  {
+    "path": "scripts/lib/independent-admission/runtime-closure.ts",
+    "sha256": "1640ed504d0e23855b2f768090dd7c7d8232c272fc6674d907286c9315f3f556"
+  },
+  {
+    "path": "scripts/lib/independent-admission/runtime-member-input.ts",
+    "sha256": "1c408779528c3352fc9e09a64cf95d4e640edeb6350b5e0ae707c7b27037f6d1"
+  },
+  {
+    "path": "scripts/lib/independent-admission/shared-source-lifetime.ts",
+    "sha256": "c8baac13f0a1e844a848b6979aaca512958f3cfe4d897c467af0bd1e73f61c6e"
+  },
+  {
+    "path": "scripts/lib/independent-admission/source-context.ts",
+    "sha256": "001d6b6c0557bcc7ba5c09df771879feb3169f6d0941a55ed21b1e3cda6a77cf"
+  },
+  {
+    "path": "scripts/lib/independent-admission/source-execution.ts",
+    "sha256": "47913f01f329cb4b243fcc10561b5a655e1b3423063d82a8c3df0f257235dd67"
+  },
+  {
+    "path": "scripts/lib/independent-admission/source-rules.ts",
+    "sha256": "bc452bf3fd1d726edd51b71e1e3ac4514b4a9088ff7db312edc62c5ae06d2209"
+  },
+  {
+    "path": "scripts/lib/independent-admission/verified-admission-cache.ts",
+    "sha256": "821b447c510d53760d72a84d20a222062a253b118e4fce3ede059473a04916d4"
+  },
+  {
+    "path": "scripts/lib/inspect-product-artifact.py",
+    "sha256": "5bd3b521d1b4f8f6ee9c953481d478d57d98e331002d391d1317c959f904f64b"
+  },
+  {
+    "path": "scripts/lib/module-artifact-limits.json",
+    "sha256": "c1c529aba719356c682affbe630c215e28cc07163192f8f3b601aab7b0126bd4"
+  },
+  {
+    "path": "scripts/lib/module-consumer-targets.py",
+    "sha256": "910eb681cb4f8032b9a0753988bc9a7063cfe645344073a2fb17dc96b33b1619"
+  },
+  {
+    "path": "scripts/lib/module-consumer.py",
+    "sha256": "22281b563acb6658d3102eea9aa3f782a0791dea4af82f863b2ad235a360ddb4"
+  },
+  {
+    "path": "scripts/lib/module-source-materials.py",
+    "sha256": "4f804fb8af61cfc53c7dc9428a0e8167315b9a430ede4048223c62610ff79b6d"
+  },
+  {
+    "path": "scripts/lib/owned-temp-root.cjs",
+    "sha256": "2b5bae70d8706e35744f6658a591f057ec528c95c35e5f8c3d7fb7efa7f5e5de"
+  },
+  {
+    "path": "scripts/lib/physical-module-native.ts",
+    "sha256": "f169df0b69333b68e8f904f677bc3b3d24611b79923042adc360ca0e3b681bac"
+  },
+  {
+    "path": "scripts/lib/physical-module-stage.ts",
+    "sha256": "a055e17dc9a305ca67943852ed9a0f7db27d00841e98de7e647bac52c3661d92"
+  },
+  {
+    "path": "scripts/lib/physical-pack-receipt.ts",
+    "sha256": "321f998f6d8ca04fd971a547ab0c21536e883078670c7f030c20ab1f3bd0af0e"
+  },
+  {
+    "path": "scripts/lib/product-artifact-command.cjs",
+    "sha256": "97e88af3b52fdb5bd66859449d77574a4920d558442616c39d3b9461979ae5a4"
+  },
+  {
+    "path": "scripts/lib/product-artifact-projection.ts",
+    "sha256": "6e45b58a056c78e2d1cf73bbab5e7bdbbbd9cdb680e685c3656a54b9dc0858ee"
+  },
+  {
+    "path": "scripts/lib/rehydrate-bound-product.py",
+    "sha256": "90e8c5f2d49ba566d28f97349537fbea68e79df03f85e545dd9c3a3d9e83dd20"
+  },
+  {
+    "path": "scripts/module-product-targets.ts",
+    "sha256": "5ef511f448c90a6fc9e767fd8224ef890b5fc04d2b6514f85697a0a529fb3eb4"
+  },
+  {
+    "path": "scripts/patch-inrupt-authn-operation-cleanup.js",
+    "sha256": "2ecdb915eb500f0c61646155ce3a8e19be7fcb40ea6897d7093349871da99487"
+  },
+  {
+    "path": "scripts/patch-inrupt-authn-refresh.js",
+    "sha256": "08a2ad5753a3e0d8862f28c26ebed5e809c71cdb809e0d3e6f644f0ce30a8b1b"
+  },
+  {
+    "path": "scripts/patch-inrupt-authn-transport.js",
+    "sha256": "45ada339a237dcafc714f1c77fce313a97ae1f74d0e8986d7aa38dd10a955f04"
+  },
+  {
+    "path": "scripts/patch-jose.js",
+    "sha256": "7a2956ec29c71f00f5769718c6452d61a810c74c2ec5fab1a6a80c597c2dbd18"
+  },
+  {
+    "path": "scripts/prepare-cli-publication.ts",
+    "sha256": "54893d88005607c3f1b421a742e5b93f48dd971f78e6878098c271aa7b314969"
+  },
+  {
+    "path": "scripts/project-afs-product-input.ts",
+    "sha256": "718d79fc450e1f50887064d9e16ed61a77881245ef94929bad7107ab9ab59789"
+  },
+  {
+    "path": "scripts/project-api-product-input.ts",
+    "sha256": "e80b4a313db5dc5dcc246dec1143720c8307dd48fb0f5248aceba2b2272d7d75"
+  },
+  {
+    "path": "scripts/project-cli-publication-input.ts",
+    "sha256": "e9985d8901bd9c2b8ff80b94a96f0553fc8cbd15aea18ecdcaa45a834aaa1f96"
+  },
+  {
+    "path": "scripts/project-css-product-input.ts",
+    "sha256": "649e3d533f0551f5160c8abd2ab7684845e7047b132a1ad69b71b1302e4e8db5"
+  },
+  {
+    "path": "scripts/run-independent-publication.ts",
+    "sha256": "c51cabb55e3ee51b68d0329af7d35095b15a68a04de07717db3b6bf1270c1f52"
+  },
+  {
+    "path": "scripts/test-file-names.json",
+    "sha256": "74496b179d51e7564e644ab6c655dfce5ebd744a9c3a0af16e27ca110a9278b7"
+  },
+  {
+    "path": "scripts/test-runner-ownership.cjs",
+    "sha256": "e01de6ec66a93029953fdeaf6e862fd53ecedeb163bb32aa3c98296a92df8db6"
+  },
+  {
+    "path": "scripts/test-runner-ownership.json",
+    "sha256": "8ceb6f806285dbf7a6ddfe143d4c260d77b20e7120aa1e268f4cab7f08503b7f"
+  },
+  {
+    "path": "scripts/verify-module-consumer-native.ts",
+    "sha256": "1c18d4b524a7fdc5a856b73a59f384990ec0af84434c51498b7b7844e346e4ec"
+  },
+  {
+    "path": "scripts/verify-registry-product.ts",
+    "sha256": "6036d762247abde8858c1503e7f30ea4a5f31aa01206ad9b11cd0f088a3b6ddc"
+  },
+  {
+    "path": "scripts/workspace-package-payload.cjs",
+    "sha256": "228454b5953de73d1045f8d4a9cb57c66f7639125363ee90344fc643472dffef"
+  },
+  {
+    "path": "src/runtime/configure-drizzle-solid.ts",
+    "sha256": "d737a90133fa6545128f4de4c2ac704a65ca48d1f485209ac889509c18c95339"
+  },
+  {
+    "path": "src/runtime/socket-fetch.ts",
+    "sha256": "db0f71b7353a3e98c0cf7f6b1614fe8d94561df4fcb4c610ba66ef2e0f37aeb9"
+  },
+  {
+    "path": "src/runtime/socket-http.ts",
+    "sha256": "8fe355889abc1f46e296fc20d1d0ca1933338df4f3b603af794ebc52e55555a2"
+  },
+  {
+    "path": "src/runtime/socket-origin-registry.ts",
+    "sha256": "c7c5ef4205d5c423e747a82e6e8217fa341052c57ea0e88edd0c428eac79c3bf"
+  },
+  {
+    "path": "src/runtime/socket-shim.ts",
+    "sha256": "26c4acbe359433a95cc3464e84ee755eca3cbad702297e67b6ddd25c9deb7fff"
+  },
+  {
+    "path": "src/runtime/socket-transport.ts",
+    "sha256": "972af31533b62fddc89e0a902aab892f50ff3d7508932a74b5503b15109fc59b"
+  },
+  {
+    "path": "tests/agentfs-pod/installedModuleMountedChain.test.ts",
+    "sha256": "df4fbfb4379bdd77456e60e92af6ce8d0dec51c661071e47c792eee40cf59bd0"
+  },
+  {
+    "path": "tests/agentfs-pod/nativeMountedPlatformMatrix.test.ts",
+    "sha256": "72086e73399bbaaafdf653cdc3d0e23c68140671324332780e34e2354bd9dd0c"
+  },
+  {
+    "path": "tests/agentfs-pod/nativeOverlayScenario.test.ts",
+    "sha256": "bbba0b30c36e3e83853b26f4e6c36adb20601cc447875ffdb89aec03e6028523"
+  },
+  {
+    "path": "tests/agentfs-pod/support/commandDiagnostic.ts",
+    "sha256": "48629496e324204a9133ec706b15a40bebfd39bffe0292ff4210cea5c1e4c1c0"
+  },
+  {
+    "path": "tests/agentfs-pod/support/commandTiming.ts",
+    "sha256": "7b6690df46075e7071accfb46157303d0f3d09a7c08c8d1054fab574d1d37c8c"
+  },
+  {
+    "path": "tests/agentfs-pod/support/helperDiscovery.ts",
+    "sha256": "d149a5235d48c70269fff10eca89c24a55905aa786380c3591e663a3a998914a"
+  },
+  {
+    "path": "tests/agentfs-pod/support/mountCleanup.ts",
+    "sha256": "211d9162cbfd6a7452483f1afddaea57344d95e3ef2923c88facfb54bccd390b"
+  },
+  {
+    "path": "tests/agentfs-pod/support/mountHarness.ts",
+    "sha256": "76b9883dd2f3fda9d096c26f67ffbfb8534273d875c4893619bbc9a55fa4857d"
+  },
+  {
+    "path": "tests/agentfs-pod/support/podContractServer.ts",
+    "sha256": "0974dfb5d05d0853edc8e11d56f8995d7bd413064fe343e4ce855806582173ba"
+  },
+  {
+    "path": "tests/vitest.setup.ts",
+    "sha256": "7bb07e8034fdb31c826b49c4e8e585abdb53266289511b9cc2774865e46315a5"
+  },
+  {
+    "path": "tsconfig.json",
+    "sha256": "a92e385779f1c89c7a3b3bad58f92b39047de8319b92bdd9f89e3d992a6b6099"
+  },
+  {
+    "path": "tsconfig.vitest.json",
+    "sha256": "d9eaf604476179676a32aa501152c27aeba83edcf37472bd04ad24d148f1dec0"
+  },
+  {
+    "path": "vitest.config.ts",
+    "sha256": "36e52dca34184ac40e9803fb7b31fa6ae1d8ea2c49bbd93a3357eea064cb8926"
+  }
+]

@@ -10,7 +10,7 @@ const fail=(reason:string):never=>{throw Error('Remote product consumer original
 /** Re-observe fixed GitHub originals, then validate bytes against actual central
  * collector identities. This helper never issues a consumer capability. */
 export async function inspectRemoteProductConsumerOriginals(input:{
- source?:unknown;
+ source?:unknown;runtimeOriginals?:readonly unknown[];
  product:Readonly<CollectedArtifactIdentity>;productMembers:readonly CollectedArtifactMember[];
  module:'client'|'cli'|'api'|'css'|'afs';tools:readonly Readonly<CollectedArtifactIdentity>[];
  consumerRun:ArtifactAcquisitionInput;stage:'prepublish'|'postpublish';evidenceDirectory:string;token?:string;
@@ -43,7 +43,7 @@ export async function inspectRemoteProductConsumerOriginals(input:{
  try{
   const name=input.stage==='prepublish'?'archive-consumer.manifest.json':'registry-consumer.manifest.json';
   const manifest=JSON.parse(read(name,limits.manifestBytes).toString());
-  const checked=verifyRegistryConsumerOriginalBundle({source:input.source,manifest,inventory:files.map(({path,bytes,sha256,mode})=>({path,bytes,sha256,mode})),
+  const checked=verifyRegistryConsumerOriginalBundle({runtimeOriginals:input.runtimeOriginals,source:input.source,manifest,inventory:files.map(({path,bytes,sha256,mode})=>({path,bytes,sha256,mode})),
     product:input.product,productMembers:input.productMembers,tools:input.tools,consumer:{...input.consumerRun,target:input.product.target},stage:input.stage,
     portableExpectations:input.portableExpectations,readOriginal:read,readOriginalRange:range});
   return Object.freeze({origin,result:checked.result,evidenceDirectory:output});

@@ -1,10 +1,11 @@
+import {selectGitHubSourceBindingGroup,sourceBindingKey,type GitHubSourceBindingGroup} from './github-source-binding-groups';
 import {immutableGitContentsEndpoint,cachedGitContentsOriginal,retainGitContentsOriginal} from './github-immutable-original-cache';
 import {QLEVER_LINUX_SOURCE_BINDINGS} from './qlever-linux-origin-policy';
 import {QLEVER_OBSERVER_PATH,QLEVER_OBSERVER_V20,QLEVER_OBSERVER_V22,QLEVER_OBSERVER_V23,qleverObserverCompanionBindings} from './qlever-observer-policy';
 import { CLI_SOURCE_POLICY } from './source-rules';
 import { registryConsumerArtifactName } from './registry-consumer-originals';
 import { archiveConsumerArtifactName } from './archive-consumer-originals';
-import { CONSUMER_SOURCE_BINDINGS } from './consumer-observer-policy';
+import { CONSUMER_SOURCE_GROUPS } from './consumer-observer-policy';
 import { createHash } from 'node:crypto';
 import { CLI_PRODUCT_WORKFLOW, cliPublicationArtifactNames, type ArtifactAcquisitionInput } from '../../acquire-independent-product-input';
 import { productTarget } from '../../module-product-targets';
@@ -68,6 +69,7 @@ export function matchesObservedJobName(actual: unknown, expected: string): boole
  * caller workflow allowlist or serialized observation can grant this authority.
  * This does not download a product or attest the builder's actual checkout. */
 interface OriginPolicy {
+  sourceBindingGroups?:readonly GitHubSourceBindingGroup[];
   workflowPath: string;
   workflowSha256: string;
   reviewedWorkflowVersions?: readonly { workflowSha256: string; jobName(artifactName: string): string; sourceBindings?: readonly { path: string; sha256: string; reviewedSha256?: readonly string[]; ref?:'run-head' }[] }[];
@@ -250,12 +252,7 @@ export async function observeProductConsumerGitHubOrigin(input:ArtifactAcquisiti
     artifactNames:()=>[expected],jobName:()=>names[0]!,jobNames:()=>names,
     requiredStep:pre?'Run fixed archive-installed product consumer':'Run fixed registry-installed product consumer',
     requiredSteps:[pre?'Upload archive consumer originals':'Upload registry consumer originals'],
-    sourceBindings:[
-      {path:'.github/workflows/independent-publication-wave.yml',sha256:'d0663ca80b76dd9c9f3dcdba7a0ed472965a23cd87f0080a5a944e76123eff4b',ref:'run-head'},
-      {path:'.github/workflows/independent-archive-consumer.yml',sha256:'abb2f08b7785f3e31434d3bc6f7d0e179fba9f7d7e87e863473abe4960925c2d',ref:'run-head'},
-      {path:'.github/workflows/independent-registry-consumer.yml',sha256:'b0f9b7e6619f76c973152afcf741e0184ebb09a4a3a339c9938705cd09475dbd',ref:'run-head'},
-      ...CONSUMER_SOURCE_BINDINGS,
-    ],
+    sourceBindingGroups:CONSUMER_SOURCE_GROUPS,
   });
 }
 
@@ -332,7 +329,17 @@ async function observeGitHubOrigin(input: ArtifactAcquisitionInput, options: { t
   const reviewedVersion = policy.reviewedWorkflowVersions?.find(row => row.workflowSha256 === workflowSha256);
   if (workflowSha256 !== policy.workflowSha256 && !reviewedVersion) fail('immutable workflow policy not reviewed');
   const expectedJobName = reviewedVersion?.jobName ?? policy.jobName;
-  const sourceBindings=[...(reviewedVersion?.sourceBindings ?? policy.sourceBindings ?? [])];
+  let sourceBindings=[...(reviewedVersion?.sourceBindings ?? policy.sourceBindings ?? [])];
+  if(policy.sourceBindingGroups){
+    const selectors=new Map(policy.sourceBindingGroups.flatMap(group=>group.selectors.map(binding=>[sourceBindingKey(binding),binding] as const)));
+    const observed=new Map<string,string>();
+    await Promise.all([...selectors].map(async ([key,binding])=>{
+      const original=await read('policy-'+binding.path.replace(/[^a-z0-9]/giu,'-')+'.original.json',`contents/${binding.path}?ref=${binding.ref==='run-head'?input.runHeadSha:input.sourceSha}`);
+      if(original.type!=='file'||original.path!==binding.path||original.encoding!=='base64'||typeof original.content!=='string')fail('immutable group selector missing');
+      observed.set(key,sha(Buffer.from(original.content.replace(/\s/gu,''),'base64')));
+    }));
+    sourceBindings=[...selectGitHubSourceBindingGroup(policy.sourceBindingGroups,observed).sourceBindings];
+  }
   for (let offset=0;offset<sourceBindings.length;) {
    const batch=sourceBindings.slice(offset,offset+8);offset+=batch.length;
    await Promise.all(batch.map(async binding=>{

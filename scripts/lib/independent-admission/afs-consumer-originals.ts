@@ -6,10 +6,12 @@ import limits from '../module-artifact-limits.json';
 import { afsConsumerBudget } from '../afs-consumer-budget';
 import { registryLegalLockEntries } from './legal-registry-originals';
 import { derivedSourceView, assertDerivedSourceCurrent } from './source-context';
+import { inspectAfsVerifierRuntimeOriginals } from './afs-verifier-runtime-originals';
 import { REQUIRED_MOUNTED_CASES, MODULE_CHAIN_CASE } from '../../agentfs-native-ci/mounted/required-cases';
 
 export interface AfsConsumerOriginalInput {
   readonly source?: unknown;
+  readonly runtimeOriginals?: readonly unknown[];
   readonly stage: 'prepublish' | 'postpublish'; readonly sourceSha: string; readonly target: string;
   readonly product: Readonly<CollectedArtifactIdentity>;
   readonly productMembers: readonly CollectedArtifactMember[];
@@ -357,6 +359,9 @@ export function inspectAfsConsumerOriginals(input: AfsConsumerOriginalInput): Re
         need(refs.length === 1, 'afs-tool-version-dual-raw-missing:' + role); ref(refs[0]); original(refs[0].path);
       }
     }
+    const bun = master.executables.find((row: any) => row.role === 'bun');
+    const runtime = inspectAfsVerifierRuntimeOriginals({target: input.target, executable: {sha256: bun.sha256, bytes: bun.bytes}, originals: input.runtimeOriginals});
+    Object.assign(facts, runtime.facts); for (const reason of runtime.pending) pending.add(reason);
     facts.toolSnapshotRoots = ids.size;
     // Registry custody and the controlled frozen installation must be verified
     // from their actual process originals, not inferred from installed bytes.
@@ -433,7 +438,7 @@ export function inspectAfsConsumerOriginals(input: AfsConsumerOriginalInput): Re
       facts.immutableVerifierSourceOriginalsVerified = true;
       facts.controlledFrozenVerifierInstallOriginalsVerified = true;
       facts.trustedVerifierToolsVerified = false;
-      pending.add('afs-fresh-harness-target-Bun-runtime-and-upstream-patch-byte-authority-not-yet-independent');
+      pending.add('afs-fresh-harness-upstream-patch-byte-authority-not-yet-independent');
     }
 
     for (const value of master.pending ?? []) if (typeof value === 'string') pending.add('afs-tool-producer-pending:' + value);

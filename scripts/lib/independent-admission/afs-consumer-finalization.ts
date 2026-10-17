@@ -7,12 +7,12 @@ import type {reserveAfsConsumerEvidenceLayout} from './afs-consumer-public-custo
 import type {CollectedArtifactIdentity,CollectedArtifactMember} from './artifact-contract';
 /** One local semantic checker and public selection. No serialized result or
  * selection hint can issue a consumer observation here. */
-export function finalizeAfsConsumerEvidence(input:{source?:unknown;layout:ReturnType<typeof reserveAfsConsumerEvidenceLayout>;deadline:number;stage:'prepublish'|'postpublish';product:Readonly<CollectedArtifactIdentity>;productMembers:readonly CollectedArtifactMember[];tools:readonly Readonly<CollectedArtifactIdentity>[]}):void{
+export function finalizeAfsConsumerEvidence(input:{source?:unknown;runtimeOriginals?:readonly unknown[];layout:ReturnType<typeof reserveAfsConsumerEvidenceLayout>;deadline:number;stage:'prepublish'|'postpublish';product:Readonly<CollectedArtifactIdentity>;productMembers:readonly CollectedArtifactMember[];tools:readonly Readonly<CollectedArtifactIdentity>[]}):void{
  const fail=(reason:string):never=>{throw Object.assign(Error('AFS fixed originals pending: '+reason),{evidenceDirectory:input.layout.privateDirectory,retainedConsumerDirectory:input.layout.privateDirectory});};
  const original=openAfsConsumerDirectoryOriginals(input.layout.privateDirectory,input.deadline);
  let selected:readonly (CollectedArtifactMember&{role:string})[]=[];
  try{
-  const semantics=inspectAfsConsumerOriginals({source:input.source,sourceSha:input.product.sourceSha,target:input.product.target!,stage:input.stage,product:input.product,productMembers:input.productMembers,tools:input.tools,originals:original.members,readOriginal:original.readOriginal,readOriginalRange:original.readOriginalRange});
+  const semantics=inspectAfsConsumerOriginals({runtimeOriginals:input.runtimeOriginals,source:input.source,sourceSha:input.product.sourceSha,target:input.product.target!,stage:input.stage,product:input.product,productMembers:input.productMembers,tools:input.tools,originals:original.members,readOriginal:original.readOriginal,readOriginalRange:original.readOriginalRange});
   const selection=afsConsumerOriginalSelection({target:input.product.target!,originals:original.members,readOriginal:original.readOriginal});
   if(!semantics.verified||semantics.pending.length||selection.pending.length)fail([...semantics.pending,...selection.pending].join('; '));
   const owned:(CollectedArtifactMember&{role:string})[]=[];

@@ -43,6 +43,11 @@ function findJosePackages(root) {
   return results;
 }
 
+function patchPackageManifest(content) {
+  return content.replace(/"bun": "\.\/dist\/(?:browser|node\/esm)\/([^"\n]+)"/g,
+    (_match, entry) => `"bun": { "import": "./dist/node/esm/${entry}", "require": "./dist/node/cjs/${entry}" }`);
+}
+
 function patchInstalledPackages(repositoryRoot = path.join(__dirname, '..')) {
   const nodeModulesPath = path.join(repositoryRoot, 'node_modules');
   if (!fs.existsSync(nodeModulesPath)) throw new Error('node_modules not found');
@@ -63,8 +68,7 @@ function patchInstalledPackages(repositoryRoot = path.join(__dirname, '..')) {
 
     // Preserve Node crypto while letting synchronous Solid dependencies require
     // CJS. Pointing both loaders at ESM can fail while its import graph is loading.
-    content = content.replace(/"bun": "\.\/dist\/(?:browser|node\/esm)\/([^"\n]+)"/g,
-      (_match, entry) => `"bun": { "import": "./dist/node/esm/${entry}", "require": "./dist/node/cjs/${entry}" }`);
+    content = patchPackageManifest(content);
 
     if (content !== original) {
       fs.writeFileSync(josePkgPath, content);
@@ -78,7 +82,7 @@ function patchInstalledPackages(repositoryRoot = path.join(__dirname, '..')) {
   return { patched, alreadyPatched, skipped };
 }
 
-module.exports = { patchInstalledPackages };
+module.exports = { patchPackageManifest, patchInstalledPackages };
 if (require.main === module) {
   try {
     if (!fs.existsSync(path.join(__dirname, '..', 'node_modules'))) {
