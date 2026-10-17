@@ -28,6 +28,8 @@ export interface AdmissionContext {
   derivedSource?: unknown;
   /** Issued only by the fixed, owned-process consumer observer. */
   consumerObservation?: unknown;
+  /** Opaque central material capability, separate from native release approval. */
+  nativeMaterials?: unknown;
 }
 export interface SourceMaterialFacts {
   listedTrackedSourceBytesVerified: boolean;

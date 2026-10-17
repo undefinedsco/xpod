@@ -1,6 +1,28 @@
 /** Shared contract for the central collector and capability-axis verifiers.
  * These types cannot issue authority. The collector must own the runtime
  * capability store; serialized manifests and caller assertions are not issuers. */
+import type { NativeFile, NativeMaterialIndex } from '../physical-module-native';
+import type { GitHubOriginObservation } from './github-origin';
+
+type ReadonlyMaterial<T> = T extends readonly (infer Item)[] ? readonly ReadonlyMaterial<Item>[]
+  : T extends object ? { readonly [Key in keyof T]: ReadonlyMaterial<T[Key]> } : T;
+
+/** Existing native schema is authoritative. Native stage source revisions are
+ * independent of the containing module product source revision. */
+export interface NativeAdmissionMaterials {
+  readonly index: ReadonlyMaterial<NativeMaterialIndex>;
+  readonly officialOrigins: readonly {
+    readonly binary: Readonly<NativeFile>;
+    readonly stage: 'input-observation' | 'build' | 'test';
+    readonly observation: GitHubOriginObservation;
+  }[];
+  /** Only index/source-kit registered references may be read. Implementations
+   * bound size, reject links/escapes and recheck original hashes on every read. */
+  readProductOriginal(reference: Readonly<NativeFile>, maximumBytes: number): Buffer;
+  readStageOriginal(reference: Readonly<NativeFile>, maximumBytes: number): Buffer;
+  readSourceOriginal(sourceRoot: string, reference: Readonly<NativeFile>, maximumBytes: number): Buffer;
+}
+
 declare const collectedArtifactBrand: unique symbol;
 export interface CollectedArtifactCapability { readonly [collectedArtifactBrand]: true }
 declare const derivedSourceBrand: unique symbol;
@@ -20,6 +42,9 @@ export interface NativeMaterialView {
   readonly indexSha256: string;
   readonly status: 'material-integrity-verified';
   readonly externalAdmission: 'pending';
+  /** Absent until the central collector binds registered original readers and
+   * independently observed native producer capabilities. Never from JSON. */
+  readonly admissionMaterials?: NativeAdmissionMaterials;
 }
 export interface CollectedArtifactIdentity {
   readonly sourceSha: string;
