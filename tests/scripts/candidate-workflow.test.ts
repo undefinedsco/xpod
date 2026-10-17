@@ -38,6 +38,24 @@ function allRuns(workflow: Workflow): string[] {
 }
 
 describe('release candidate workflow', () => {
+  it('requires the independent same-image mode verifier before final acceptance', async () => {
+    const workflow = await loadWorkflow();
+    expect(workflow.jobs.runtime_mode_matrix.needs).toEqual(['metadata', 'build_image']);
+    expect(workflow.jobs.finalize_acceptance.needs).toContain('runtime_mode_matrix');
+    const finalize = JSON.stringify(workflow.jobs.finalize_acceptance);
+    const download = workflow.jobs.finalize_acceptance.steps.find((step: any) => step.name === 'Download exact same-image mode acceptance');
+    expect(download.with).toEqual({
+      'artifact-ids': '${{ needs.runtime_mode_matrix.outputs.artifact-id }}',
+      'merge-multiple': true,
+      path: '${{ runner.temp }}/service-image-modes',
+    });
+    expect(finalize).toContain('${{ needs.runtime_mode_matrix.outputs.attempt }}');
+    expect(finalize).toContain('verify-service-image-modes.cjs');
+    expect(finalize).toContain("'service-image-modes-check.json'");
+    const release = await readFile(path.join(repoRoot, '.github/workflows/release.yml'), 'utf8');
+    expect(release).toContain('--required-check runtime-mode-matrix');
+  });
+
   it('proves diagnostic container absence and removes private files even when cleanup fails', async () => {
     const workflow = await loadWorkflow();
     const steps = workflow.jobs.task_runtime_diagnostic.steps;
@@ -191,7 +209,7 @@ esac
       'publish_qlever_local_runtime',
     ]);
     for (const [ jobName, job ] of Object.entries(workflow.jobs)) {
-      if (jobName === 'task_runtime_diagnostic') {
+      if (jobName === 'task_runtime_diagnostic' || jobName === 'runtime_mode_matrix') {
         expect((job as { permissions?: Record<string, string> }).permissions, jobName).toEqual({
           contents: 'read',
           packages: 'read',
@@ -920,6 +938,7 @@ esac
       'deploy_and_accept',
       'build_desktop_rc',
       'legacy_root_compat',
+      'runtime_mode_matrix',
     ]);
     expect(finalizeText).toContain('node scripts/release-acceptance-manifest.cjs create');
     for (const check of [

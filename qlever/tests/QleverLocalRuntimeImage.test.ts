@@ -348,12 +348,84 @@ describe('QLever local runtime image contract', () => {
     expect(verifier).toContain('"physicalBackendAbiVersion": physical_backend_abi');
     expect(verifier).toContain('lock["commit"]');
     expect(verifier).toContain('lock["patchSeriesSha256"]');
-    expect(verifier).toContain('"source": "focused-prior-runtime-sdk"');
-    expect(verifier).toContain('"priorSdkImage": args.prior_sdk_image');
-    expect(verifier).toContain('"entrypoint": "qlever/scripts/run-focused-native-build.sh"');
-    expect(verifier).toContain('"source": "native-platform-build"');
-    expect(verifier).toContain('"platform": args.build_source');
-    expect(verifier).toContain('"entrypoint": "qlever/scripts/build-macos-local-runtime.sh"');
+    // Execute the real parser and provenance expression without calling native
+    // smoke/build code. Formatting or a conditional entrypoint is not a contract.
+    const provenance = spawnSync('python3', ['-c', `
+import argparse, ast, contextlib, io, json, sys
+from pathlib import Path
+module = ast.parse(Path(sys.argv[1]).read_text())
+main = next(node for node in module.body if isinstance(node, ast.FunctionDef) and node.name == 'main')
+def assigns(node, name):
+    return isinstance(node, ast.Assign) and any(isinstance(target, ast.Name) and target.id == name for target in node.targets)
+args_index = next(index for index, node in enumerate(main.body) if assigns(node, 'args'))
+parser_body = main.body[:args_index + 1]
+# Only the argument parser setup is executable in this fixture, never prefix IO
+# or run_runtime_smoke. Fail closed if production inserts a different action.
+allowed_calls = {'argparse.ArgumentParser', 'parser.add_argument', 'parser.add_mutually_exclusive_group', 'provenance.add_argument', 'parser.parse_args'}
+for node in ast.walk(ast.Module(body=parser_body, type_ignores=[])):
+    if isinstance(node, ast.Call):
+        assert ast.unparse(node.func) in allowed_calls
+parser_code = compile(ast.fix_missing_locations(ast.Module(body=parser_body, type_ignores=[])), '<actual-parser>', 'exec')
+builds = [node for node in ast.walk(main) if assigns(node, 'build')]
+assert len(builds) == 1
+# These are the only intentionally unexecuted native smoke/IO statements.
+# Any added provenance validation/mutation between parse and build must fail
+# this structure guard and be reviewed, not silently omitted by AST selection.
+expected_native = ast.parse('''
+prefix = args.prefix
+runtime_path = prefix / "bin/xpod_qlever_local_runtime"
+if args.smoke_database.exists():
+    args.smoke_database.unlink()
+create_smoke_database(args.smoke_database)
+adapter_abi, physical_backend_abi = run_runtime_smoke(runtime_path, args.smoke_database)
+lock = json.loads(args.lock.read_text(encoding="utf-8"))
+''').body
+build_index = main.body.index(builds[0])
+def native_structure_matches(statements):
+    return ast.dump(ast.Module(body=statements, type_ignores=[])) == ast.dump(ast.Module(body=expected_native, type_ignores=[]))
+skipped = main.body[args_index + 1:build_index]
+assert native_structure_matches(skipped), 'unreviewed skipped provenance logic'
+assert not native_structure_matches([*skipped, *ast.parse("args.build_source = 'linux-x64'").body])
+assert all(isinstance(node, (ast.Assign, ast.Expr)) for node in parser_body)
+manifest = [node for node in main.body if assigns(node, 'manifest')]
+assert len(manifest) == 1 and isinstance(manifest[0].value, ast.Dict)
+manifest_build = [value for key, value in zip(manifest[0].value.keys, manifest[0].value.values) if isinstance(key, ast.Constant) and key.value == 'build']
+assert len(manifest_build) == 1 and isinstance(manifest_build[0], ast.Name) and manifest_build[0].id == 'build'
+build_code = compile(ast.fix_missing_locations(ast.Expression(builds[0].value)), '<actual-provenance>', 'eval')
+def observe(arguments):
+    sys.argv = ['verifier', '--prefix', 'unused-prefix', '--lock', 'unused-lock', '--smoke-database', 'unused-database', *arguments]
+    scope = {'argparse': argparse, 'Path': Path}
+    exec(parser_code, scope)
+    return eval(build_code, scope)
+values = {target: observe(['--build-source', target]) for target in ['macos-arm64', 'macos-x64', 'linux-arm64', 'linux-x64']}
+image = 'ghcr.io/undefinedsco/qlever-runtime-sdk@sha256:' + 'a' * 64
+values['focused'] = observe(['--prior-sdk-image', image])
+for arguments in [[], ['--prior-sdk-image', image, '--build-source', 'linux-arm64'], ['--build-source', 'linux-unknown']]:
+    with contextlib.redirect_stderr(io.StringIO()):
+        try:
+            observe(arguments)
+        except SystemExit as failure:
+            assert failure.code == 2
+        else:
+            raise AssertionError('invalid provenance accepted')
+print(json.dumps(values))
+`, verifierPath], { encoding: 'utf8' });
+    expect(provenance.status).toBe(0);
+    expect(provenance.stderr).toBe('');
+    const actual = JSON.parse(provenance.stdout);
+    for (const platform of ['macos-arm64', 'macos-x64', 'linux-arm64', 'linux-x64']) {
+      expect(actual[platform]).toEqual({
+        source: 'native-platform-build', platform,
+        entrypoint: platform.startsWith('linux-')
+          ? 'qlever/scripts/prepare-linux-physical-runtime.py'
+          : 'qlever/scripts/build-macos-local-runtime.sh',
+      });
+    }
+    expect(actual.focused).toEqual({
+      source: 'focused-prior-runtime-sdk',
+      priorSdkImage: 'ghcr.io/undefinedsco/qlever-runtime-sdk@sha256:' + 'a'.repeat(64),
+      entrypoint: 'qlever/scripts/run-focused-native-build.sh',
+    });
     expect(verifier).toContain('runtime_artifacts(prefix, runtime_path)');
     expect(verifier).toContain('library_root.rglob("*")');
     expect(verifier).toContain('hashlib.file_digest');
