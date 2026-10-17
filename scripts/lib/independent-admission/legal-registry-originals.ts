@@ -22,6 +22,11 @@ const issued = new WeakMap<object, RegistryLegalOriginalView>();
 export function registryLegalOriginalView(capability: unknown): RegistryLegalOriginalView | undefined {
   return capability && typeof capability === 'object' ? issued.get(capability) : undefined;
 }
+export function assertRegistryLegalOriginalCustody(value: unknown): void {
+  if (!registryLegalOriginalView(value)) fail('issued registry original capability required');
+  // Metadata, tar and member originals are private retained Buffers. Every
+  // reader returns copies; no caller or mutable disk path owns these bytes.
+}
 /** Parse Bun's JSONC data, never evaluate the immutable candidate lock. */
 export function registryLegalLockEntries(bytes: Buffer): Map<string, string> {
   const text = bytes.toString('utf8');

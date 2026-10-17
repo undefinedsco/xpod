@@ -8,7 +8,7 @@ test('reservation accounts for the actual simultaneously retained layers and flo
   expect(absent.status).toBe('pending');
   expect(absent.requiredBytes).toBe(466158368 + 467908110 + 1024 + 26752739
     + PUBLICATION_DISK_LIMITS.sourceCacheBytes + PUBLICATION_DISK_LIMITS.nativeCacheBytes
-    + PUBLICATION_DISK_LIMITS.metadataCacheBytes + PUBLICATION_DISK_LIMITS.freeFloorBytes);
+    + 2*PUBLICATION_DISK_LIMITS.metadataCacheBytes + PUBLICATION_DISK_LIMITS.freeFloorBytes);
   expect(preflightPublicationDisk({ ...input, freeBytes: absent.requiredBytes }).status).toBe('resource-ready');
   expect(preflightPublicationDisk({ ...input, freeBytes: absent.requiredBytes - 1 }).status).toBe('pending');
   expect(Object.isFrozen(absent.pending)).toBe(true);

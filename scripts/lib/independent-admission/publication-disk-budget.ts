@@ -6,6 +6,8 @@ export const PUBLICATION_DISK_LIMITS = Object.freeze({
   sourceCacheBytes: 512 * 1024 ** 2,
   nativeCacheBytes: 512 * 1024 ** 2,
   metadataCacheBytes: 16 * 1024 ** 2,
+  retainedPortableSourceCacheBytes:512*1024**2,
+  consumerTemporaryBytes:2*1024**3,
   freeFloorBytes: 2 * 1024 ** 3,
 });
 export interface PublicationDiskReservation {
@@ -17,6 +19,8 @@ export interface PublicationDiskReservation {
   activeProductProjectionBytes: number;
   /** Native originals retained independently of the product acquisition. */
   retainedNativeOriginalBytes: readonly number[];
+  retainedSourceCacheBytes?:number;
+  activeConsumerBytes?:number;
   freeBytes: number;
 }
 export function preflightPublicationDisk(input: PublicationDiskReservation): Readonly<{
@@ -31,7 +35,8 @@ export function preflightPublicationDisk(input: PublicationDiskReservation): Rea
   const requiredBytes = checked(sum(input.acquisitionBytes) + sum(input.retainedProductBytes)
     + checked(input.activeProductProjectionBytes) + sum(input.retainedNativeOriginalBytes)
     + PUBLICATION_DISK_LIMITS.sourceCacheBytes + PUBLICATION_DISK_LIMITS.nativeCacheBytes
-    + PUBLICATION_DISK_LIMITS.metadataCacheBytes + PUBLICATION_DISK_LIMITS.freeFloorBytes);
+    + 2*PUBLICATION_DISK_LIMITS.metadataCacheBytes + checked(input.retainedSourceCacheBytes??0)
+    + checked(input.activeConsumerBytes??0) + PUBLICATION_DISK_LIMITS.freeFloorBytes);
   const pending = input.freeBytes < requiredBytes
     ? [`publication-disk-insufficient: free=${input.freeBytes} required=${requiredBytes}`] : [];
   return Object.freeze({ status: pending.length ? 'pending' : 'resource-ready', requiredBytes, pending: Object.freeze(pending) });

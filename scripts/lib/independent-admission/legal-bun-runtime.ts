@@ -1,3 +1,4 @@
+import { captureLegalFileIdentity, assertLegalFileIdentity, type LegalFileIdentity } from './legal-file-custody';
 import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { mkdir, open, stat, chmod } from 'node:fs/promises';
@@ -30,7 +31,7 @@ async function* responseChunks(response: Response): AsyncGenerator<Uint8Array> {
 }
 /** Fixed current-controller target only; no downloaded code is ever executed.
  * ZIP and checksum custody remains on disk, including failed partial downloads. */
-export async function observeLinuxBun142Executable(): Promise<{ sha256: string; archivePath: string; archiveSha256: string }> {
+export async function observeLinuxBun142Executable(): Promise<{ sha256: string; archivePath: string; archiveSha256: string; archiveIdentity: LegalFileIdentity }> {
   if (process.platform !== 'linux' || !(process.arch in TARGETS)) fail('unsupported controller target');
   const target = TARGETS[process.arch as keyof typeof TARGETS];
   const signal = AbortSignal.timeout(30000);
@@ -61,11 +62,16 @@ export async function observeLinuxBun142Executable(): Promise<{ sha256: string; 
     await chmod(temporary, 0o444);
     const { link } = await import('node:fs/promises'); await link(temporary, archivePath);
   }
+  const archiveIdentity = captureLegalFileIdentity(archivePath);
   if ((await stat(archivePath)).size > 64 * 1024 ** 2 - 8192 || await fileHash(archivePath) !== target.sha256) fail('cached ZIP differs');
   if (signal.aborted) fail('asset verification deadline');
   const executableHash = await inspectBunExecutableZip(archivePath, target.root, signal);
+  assertLegalFileIdentity(archiveIdentity);
+  const executableIdentity = captureLegalFileIdentity(process.execPath);
   if (signal.aborted || await fileHash(process.execPath) !== executableHash) fail('official ZIP executable differs from controller');
-  return Object.freeze({ sha256: executableHash, archivePath, archiveSha256: target.sha256 });
+  assertLegalFileIdentity(executableIdentity);
+  assertLegalFileIdentity(archiveIdentity);
+  return Object.freeze({ sha256: executableHash, archivePath, archiveSha256: target.sha256, archiveIdentity });
 }
 
 /** Bounded ZIP parser only, never official custody or an executable issuer. */

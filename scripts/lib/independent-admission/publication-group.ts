@@ -1,3 +1,5 @@
+import { bindPublicationGateMaterials } from './publication-gate-materials';
+import {compactCollectedSourceOriginals} from './artifact-collector';
 import { preflightPublicationResources } from './publication-resource-preflight';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -54,10 +56,10 @@ export async function preparePublicationGroup(input:PublicationGroupPreparationI
  validatePublicationConsumerRuns(input.consumerRuns??[],input.selectors[0]!.sourceSha);
  if(!path.isAbsolute(input.checkout)||!path.isAbsolute(input.output)||fs.existsSync(input.output))fail('canonical checkout and new absolute output required');
  fs.mkdirSync(input.output,{mode:0o700});
- const resources=await preflightPublicationResources({selectors:input.selectors,output:input.output,token:input.token});
+ const resources=await preflightPublicationResources({selectors:input.selectors,output:input.output,token:input.token,reservationDirectory:fs.realpathSync(os.tmpdir())});
  if(resources.status==='pending')return {status:'pending',pending:resources.pending};
  const session:PreparationSession={requests:new Map()},products:import('./publication').ProductGroupPublicationInput['products'][number][]=[],registryDependencies:{artifact:CollectedArtifactCapability;registry:NonNullable<Awaited<ReturnType<typeof observeRegistryArtifactIfPublished>>>}[]=[];
- const selectedNames=new Set<string>();
+ const selectedNames=new Set<string>(),portableReady=new Set<CollectedArtifactCapability>();
  const pending=(selector:PublicationProductSelector,reasons:readonly string[])=>({status:'pending' as const,pending:reasons.map(reason=>selector.module+'/'+(selector.target??'portable')+': '+reason)});
  for(const [index,selector] of input.selectors.entries()){
   const prepared=await prepareRegistryConsumerProductInSession({...input,module:selector.module,target:selector.target,output:path.join(input.output,'product-'+index)},session);
@@ -92,6 +94,25 @@ export async function preparePublicationGroup(input:PublicationGroupPreparationI
   const post=input.consumerRuns?.find(row=>row.module===selector.module&&row.target===selector.target&&row.stage==='postpublish');
   const postpublishConsumer=post?await observeGitHubRegistryInstalledProductConsumer({...materials,consumerRun:post.consumerRun,
    evidenceDirectory:path.join(input.output,'post-consumer-'+index),token:input.token}):undefined;
+  bindPublicationGateMaterials(artifact,source,{relatedArtifacts:related,legalOriginals:legal.originals,legalSourceMaterials:sourceMaterials,nativeOriginals:nativeMaterials?nativeOriginalBindings.get(nativeMaterials as object):undefined});
+  const finalContext={...base,consumerObservation:prepublishConsumer,nativeMaterials,legalOriginals:legal.originals,legalSourceMaterials:sourceMaterials};
+  for(const gate of (view.identity.target===undefined?['source','runtime-closure','legal','consumer']:['source','runtime-closure','native','legal','consumer']) as readonly import('./index').Gate[]){
+   const report=verifyCollectedPublicationAdmission(gate,finalContext);
+   if(report.status!=='verified')return pending(selector,[report.reason]);
+  }
+  if(view.identity.target!==undefined){
+   const {compactModuleSourceMaterials}=await import('./module-source-admission');
+   compactModuleSourceMaterials(sourceMaterials);compactCollectedSourceOriginals(artifact);
+   if(nativeMaterials){const original=nativeOriginalBindings.get(nativeMaterials as object);if(original){const {compactCollectedNativeOriginals}=await import('./native-original-collector');compactCollectedNativeOriginals(original);}}
+  }else{
+   portableReady.add(artifact);
+   if(session.portable&&portableReady.has(session.portable.cli)&&portableReady.has(session.portable.client)){
+    const cleanup=await import('./source-execution') as typeof import('./source-execution')&{compactPortableSourceMaterials?:(artifact:unknown)=>void};
+    if(!cleanup.compactPortableSourceMaterials)fail('Reviewed portable source cleanup adapter required');
+    cleanup.compactPortableSourceMaterials!(session.portable.cli);
+    compactCollectedSourceOriginals(session.portable.cli);compactCollectedSourceOriginals(session.portable.client);
+   }
+  }
   products.push(Object.freeze({...materials,source,prepublishConsumer,nativeMaterials,...(registry?{registry}:{}),...(postpublishConsumer?{postpublishConsumer}:{})}));
  }
  for(const artifact of session.requests.values()){
@@ -107,6 +128,7 @@ export async function preparePublicationGroup(input:PublicationGroupPreparationI
  }
  return Object.freeze({status:'material-ready',products:Object.freeze(products),registryDependencies:Object.freeze(registryDependencies)});
 }
+const nativeOriginalBindings=new WeakMap<object,unknown>();
 async function prepareNormalProductNativeContext(input:{artifact:CollectedArtifactCapability;source:ReturnType<typeof deriveAdmissionSource>;output:string;token?:string}){
  const material=publicationMaterialView(input.artifact)!;
  const {collectNativeAdmissionContext}=await import('./native-context');
@@ -122,10 +144,14 @@ async function prepareNormalProductNativeContext(input:{artifact:CollectedArtifa
   const {acquireNativeAdmissionOriginals}=await import('../../acquire-independent-product-input');
   const {collectNativeAdmissionOriginals}=await import('./native-original-collector');
   fs.mkdirSync(input.output,{mode:0o700});const acquisitionRoot=path.join(input.output,'acquired');
+  const resources=await preflightPublicationResources({selectors:[tuple],output:input.output,token:input.token});
+  if(resources.status==='pending')fail(resources.pending.join('; '));
   await acquireNativeAdmissionOriginals(tuple,acquisitionRoot,{token:input.token});
   nativeOriginals=await collectNativeAdmissionOriginals({githubOrigin:origin,acquisitionRoot});
  }
- return collectNativeAdmissionContext({artifact:input.artifact,source:input.source,nativeOriginals});
+ const context=await collectNativeAdmissionContext({artifact:input.artifact,source:input.source,nativeOriginals});
+ if(nativeOriginals)nativeOriginalBindings.set(context as object,nativeOriginals);
+ return context;
 }
 
 export interface RegistryConsumerProductPreparationInput {
@@ -167,6 +193,8 @@ async function prepareRegistryConsumerProductInSession(input: RegistryConsumerPr
   fs.mkdirSync(input.output, { mode: 0o700 });
   const custody = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'xpod-central-consumer-materials-')); fs.chmodSync(custody, 0o700);
   fs.writeFileSync(path.join(input.output, 'custody-locator.json'), JSON.stringify({ directory: custody, sourceSha: selector.sourceSha }) + '\n', { flag: 'wx', mode: 0o600 });
+  const required=[...(!session.portable?[portable]:[]),...(['api','css','afs'].includes(input.module)?[selector]:[])];
+  if(required.length){const resources=await preflightPublicationResources({selectors:required,output:custody,token:input.token});if(resources.status==='pending')return {status:'pending',pending:resources.pending};}
   let portableMaterials=session.portable;
   if(!portableMaterials){
   const origin = await observeCliGitHubOrigin(tuple(portable), { token: input.token });
@@ -202,8 +230,21 @@ async function prepareRegistryConsumerProductInSession(input: RegistryConsumerPr
     }
   }
   const selectedRequests = plan.requests.filter(request => requestKeys.has(request.requestKey));
+  // Registry peers are retained as private Buffers by the existing collector;
+  // they allocate no acquisition ZIP on disk. Their later installed/materialized
+  // writes are inside the separately reserved fixed 2GiB consumer phase.
+  const peerPending=selectedRequests.filter(request=>!session.requests.has(request.requestKey));
+  const peerDisk=fs.statfsSync(custody,{bigint:true});
+  if(peerDisk.bavail*peerDisk.bsize<BigInt(2*1024**3+2*1024**3))return {status:'pending',pending:['publication-peer-consumer-disk-insufficient: fixed consumer phase plus 2GiB floor required']};
+  fs.writeFileSync(path.join(input.output,'registry-peer-resource-plan.json'),JSON.stringify({kind:'private-registry-buffer-reservation',
+    requests:peerPending.map(row=>({package:row.package,version:row.version,integrity:row.integrity})),
+    maximumPackedResidentBytes:peerPending.length*8*1024**2,acquisitionDiskBytes:0,
+    consumerWriteReservationBytes:2*1024**3,scope:'bounded private Buffer downloads, not observed actual tarball sizes; fixed consumer write phase reserved separately'})+'\n',{flag:'wx',mode:0o400});
   const handles = new Map<string, CollectedArtifactCapability>();
   for (const request of selectedRequests){let artifact=session.requests.get(request.requestKey);if(!artifact){artifact=await collectRegistryPeerArtifact({plan:peerPlan,requestKey:request.requestKey});session.requests.set(request.requestKey,artifact);}handles.set(request.requestKey,artifact);}
+  fs.writeFileSync(path.join(input.output,'registry-peer-resources.actual.json'),JSON.stringify({
+    artifacts:[...handles.values()].map(value=>{const row=collectedArtifactView(value)!;return {package:row.identity.package,version:row.identity.version,archiveBytes:row.identity.archiveBytes,sha256:row.identity.archiveSha256,integrity:row.identity.integrity};}),
+    scope:'actual privately retained registry peer bytes; no additional filesystem acquisition copy'})+'\n',{flag:'wx',mode:0o400});
   const rootRoles = input.module === 'client' ? ['client'] : ['cli', 'client'];
   const peerKeys = new Set(plan.edges.filter(edge => edge.kind === 'peer' && rootRoles.includes(edge.from))
     .map(edge => edge.package + '@' + edge.version));

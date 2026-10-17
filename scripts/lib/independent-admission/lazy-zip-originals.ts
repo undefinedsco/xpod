@@ -82,7 +82,7 @@ export function lazyZipOriginals(input: {
   };
   return Object.freeze({
     readRange(name:string,offset:number,length:number) { return reader(name).readRange(offset,length); },
-    assertRetainedOriginal:assertUnchanged,
+    assertRetainedOriginal(){if(!same(fs.lstatSync(input.archivePath))||(!closed&&!same(fs.fstatSync(fd))))fail('retained archive identity changed');},
     close,
     cacheBytes() { return [...cache.values()].reduce((sum,value)=>sum+value.bytes,0); },
   });

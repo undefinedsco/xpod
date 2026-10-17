@@ -6,7 +6,7 @@ import { preflightPublicationDisk, PUBLICATION_DISK_LIMITS } from './publication
 /** Resource observation only. It deliberately issues no origin or product cap. */
 export async function preflightPublicationResources(input:{
   selectors:readonly Omit<ArtifactAcquisitionInput,'schemaVersion'>[];
-  output:string;token?:string;
+  output:string;token?:string;reservationDirectory?:string;
 }, transport:typeof fetch=fetch) {
   const pending:string[]=[];
   const tuples=new Map<string,Omit<ArtifactAcquisitionInput,'schemaVersion'>>();
@@ -41,19 +41,22 @@ export async function preflightPublicationResources(input:{
       sizes.push(actual.size_in_bytes);observations.push({artifactId:row.artifactId,bytes:actual.size_in_bytes,sha256:createHash('sha256').update(raw).digest('hex')});
     }catch(error){pending.push(`publication-resource-metadata-${row.artifactId}: ${error instanceof Error?error.message:'unavailable'}`);}
   }
-  const disk=fs.statfsSync(input.output,{bigint:true}),free=disk.bavail*disk.bsize;
+  const disk=fs.statfsSync(input.reservationDirectory??input.output,{bigint:true}),free=disk.bavail*disk.bsize;
   if(free>BigInt(Number.MAX_SAFE_INTEGER))throw Error('Free-space count not representable');
   // Before inventories exist, reserve a declared product upper bound per actual
   // selected product. Do not confuse this bound with an observed tgz size. All
   // immutable outer ZIPs remain retained, even though projection is sequential.
   const reservation=preflightPublicationDisk({acquisitionBytes:sizes,
     retainedProductBytes:input.selectors.map(()=>PUBLICATION_DISK_LIMITS.productPackedBytes),
-    activeProductProjectionBytes:2*1024**3,retainedNativeOriginalBytes:[],freeBytes:Number(free)});
+    activeProductProjectionBytes:2*1024**3,retainedNativeOriginalBytes:[],
+    retainedSourceCacheBytes:PUBLICATION_DISK_LIMITS.retainedPortableSourceCacheBytes+PUBLICATION_DISK_LIMITS.metadataCacheBytes,
+    activeConsumerBytes:PUBLICATION_DISK_LIMITS.consumerTemporaryBytes,freeBytes:Number(free)});
   pending.push(...reservation.pending);
   const report=Object.freeze({status:pending.length?'pending' as const:'resource-ready' as const,
     pending:Object.freeze(pending),freeBytes:Number(free),requiredBytes:reservation.requiredBytes,
     immutableArtifacts:Object.freeze(observations),productReservationKind:'declared-upper-bound' as const,
-    scope:'selector ZIPs and product projections only; independently acquired native originals require another preflight' as const});
+    reservationDirectory:fs.realpathSync(input.reservationDirectory??input.output),
+    scope:'selector ZIPs, retained product upper bounds, one product projection, active source/native caches plus one retained portable cache, and one fixed consumer write phase; independently acquired native originals require another preflight' as const});
   fs.writeFileSync(path.join(input.output,'publication-resource-preflight.json'),JSON.stringify(report,null,2)+'\n',{flag:'wx',mode:0o400});
   return report;
 }

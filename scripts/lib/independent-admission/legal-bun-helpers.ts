@@ -1,3 +1,4 @@
+import { captureLegalFileIdentity, assertLegalFileIdentity, type LegalFileIdentity } from './legal-file-custody';
 import { observeLinuxBun142Executable } from './legal-bun-runtime';
 import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
@@ -34,8 +35,16 @@ interface BunHelperOriginalView {
   readProbe(): Readonly<{ entry: string; commonjs: string; output: Buffer }>;
 }
 const issued = new WeakMap<object, BunHelperOriginalView>();
+const custody = new WeakMap<object, readonly LegalFileIdentity[]>();
+export function assertBunHelperOriginalCustody(value: unknown): void {
+  if (!value || typeof value !== 'object' || !issued.has(value)) fail('issued Bun original capability required');
+  const files = custody.get(value); if (!files) fail('Bun original file custody absent');
+  for (const file of files) assertLegalFileIdentity(file);
+}
 export function bunHelperOriginalView(value: unknown): BunHelperOriginalView | undefined {
-  return value && typeof value === 'object' ? issued.get(value) : undefined;
+  const view = value && typeof value === 'object' ? issued.get(value) : undefined;
+  if (view) assertBunHelperOriginalCustody(value);
+  return view;
 }
 function parse(text: string): ts.SourceFile {
   const file = ts.createSourceFile('runtime.js', text, ts.ScriptTarget.ES2021, true, ts.ScriptKind.JS);
@@ -103,9 +112,11 @@ async function observe(): Promise<object> {
   if (!bun || bun.version !== '1.4.2' || bun.revision !== COMMIT) fail('reviewed verifier Bun runtime required');
   const runtimeArchive = process.platform === 'linux' ? await observeLinuxBun142Executable() : undefined;
   if (!runtimeArchive && (process.platform !== 'darwin' || process.arch !== 'arm64')) fail('reviewed verifier Bun platform required');
+  const executableIdentity = captureLegalFileIdentity(process.execPath);
   const executable = createHash('sha256');
   for await (const chunk of createReadStream(process.execPath, { highWaterMark: 65536 })) executable.update(chunk);
   const executableSha256 = executable.digest('hex');
+  assertLegalFileIdentity(executableIdentity);
   if (executableSha256 !== (runtimeArchive?.sha256 ?? EXECUTABLE)) fail('verifier compiler executable differs');
   const signal = AbortSignal.timeout(30000), originals = new Map<string, Buffer>(); let total = 0;
   for (const [name, digest] of Object.entries(MATERIALS)) {
@@ -131,7 +142,10 @@ async function observe(): Promise<object> {
     const marker = output.indexOf('\n// '); if (marker < 0) fail('fixed probe source delimiter absent');
     if (mapBunHelperPrefix(output.subarray(0, marker), bindings).pending.length) fail('fixed compiler probe helper mapping differs');
   } finally { await rm(directory, { recursive: true, force: true }); }
+  assertLegalFileIdentity(executableIdentity);
+  if (runtimeArchive) assertLegalFileIdentity(runtimeArchive.archiveIdentity);
   const capability = Object.freeze({});
+  custody.set(capability, Object.freeze([executableIdentity, ...(runtimeArchive ? [runtimeArchive.archiveIdentity] : [])]));
   issued.set(capability, Object.freeze({ commit: COMMIT, revision: REVISION, executableSha256, ...(runtimeArchive ? { runtimeArchive } : {}), bindings: Object.freeze(bindings),
     readOriginal(name: string) { const bytes = originals.get(name); if (!bytes) return fail('original absent'); return Buffer.from(bytes); },
     readProbe() { return { entry, commonjs, output: Buffer.from(output!) }; } }));

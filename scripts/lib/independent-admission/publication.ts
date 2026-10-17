@@ -1,3 +1,4 @@
+import { publicationGateMaterials } from './publication-gate-materials';
 import { collectedArtifactView } from './artifact-collector';
 import { derivedSourceView } from './source-context';
 import { registryArtifactView, type RegistryArtifactObservation } from './registry-context';
@@ -261,15 +262,17 @@ export function planIndependentPublication(request: IndependentPublicationReques
   const normalized = normalizePublicationInput(request);
   if (!normalized.legacy) {
     const dispatch = (centralAdmission as unknown as { verifyCollectedPublicationAdmission?: (gate: Gate, input: {
-      artifact: unknown; derivedSource: unknown; consumerObservation?: unknown; nativeMaterials?: unknown; relatedArtifacts: readonly unknown[];
+      artifact: unknown; derivedSource: unknown; consumerObservation?: unknown; nativeMaterials?: unknown; relatedArtifacts: readonly unknown[]; legalOriginals?:readonly unknown[];legalSourceMaterials?:unknown;
     }) => AdmissionResult }).verifyCollectedPublicationAdmission;
     const products = normalized.bindings.map(binding => {
       const view = collectedArtifactView(binding.artifact)!;
+      const gateMaterials=publicationGateMaterials(binding.artifact,binding.source);
       const gates = (view.identity.target ? ['source', 'runtime-closure', 'native', 'legal', 'consumer'] as const
         : ['source', 'runtime-closure', 'legal', 'consumer'] as const).map(gate => ({ gate,
         result: dispatch ? dispatch(gate, { artifact: binding.artifact, derivedSource: binding.source,
           consumerObservation: binding.prepublishConsumer, nativeMaterials: binding.nativeMaterials,
-          relatedArtifacts: [...new Set([...normalized.bindings.map(row => row.artifact),
+          legalOriginals:gateMaterials?.legalOriginals,legalSourceMaterials:gateMaterials?.legalSourceMaterials,
+          relatedArtifacts: gateMaterials?.relatedArtifacts??[...new Set([...normalized.bindings.map(row => row.artifact),
             ...normalized.registryDependencies.map(row => row.artifact), ...binding.peers ?? [], ...binding.dependencies ?? []])] })
           : { status: 'pending' as const, reason: 'Central collected-product gate dispatcher unavailable: ' + gate } }));
       const registry = registryArtifactView(binding.registry);

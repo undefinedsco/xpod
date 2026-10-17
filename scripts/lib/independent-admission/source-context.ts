@@ -5,6 +5,10 @@ import { collectedArtifactView } from './artifact-collector';
 import type { CollectedArtifactCapability, DerivedSourceCapability, DerivedSourceView } from './artifact-contract';
 
 const issued = new WeakMap<object, DerivedSourceView>();
+const currentChecks=new WeakMap<object,()=>void>();
+export function assertDerivedSourceCurrent(value:unknown):void{
+ if(!value||typeof value!=='object'||!issued.has(value)||!currentChecks.has(value))throw Error('Issued immutable source required');currentChecks.get(value)!();
+}
 const artifactCheckouts = new WeakMap<object, string>();
 const fail = (message: string): never => { throw new Error('Independent derived source: ' + message); };
 
@@ -53,5 +57,7 @@ export function deriveAdmissionSource(artifact: CollectedArtifactCapability, che
       return readGitObject(name).bytes;
     } });
   const capability = Object.freeze({}) as DerivedSourceCapability;
-  issued.set(capability, view); artifactCheckouts.set(artifact, root); return capability;
+  issued.set(capability, view); currentChecks.set(capability,()=>{
+    if(realpathSync(checkout)!==root||git(['rev-parse','HEAD']).toString().trim()!==sourceSha||git(['status','--porcelain','--untracked-files=all']).length!==0)fail('clean exact source checkout changed');
+  });artifactCheckouts.set(artifact, root); return capability;
 }

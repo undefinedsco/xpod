@@ -50,6 +50,7 @@ export async function collectModuleSourceOriginals(input: {
         for(let offset=0;offset<row.bytes;offset+=limits.rangeBytes) bound.readRange(name,offset,Math.min(limits.rangeBytes,row.bytes-offset)).copy(bytes,offset);
         return bytes;
       },
+      assertCustody(){bound.assertRetainedOriginal();},
       compact() { bound.assertRetainedOriginal(); dispose(); },
       dispose,
     });

@@ -1,3 +1,9 @@
+import {assertLegalOriginalCustody} from './legal-original-custody';
+import {assertCollectedPublicationCustody} from './artifact-collector';
+import {assertDerivedSourceCurrent} from './source-context';
+import {publicationGateMaterials} from './publication-gate-materials';
+import {assertCollectedNativeOriginalCustody} from './native-original-collector';
+import { verifiedAdmissionCache } from './verified-admission-cache';
 import {publicationLegalMaterials} from './publication-legal-materials';
 import { githubOriginFacts } from './github-origin';
 import { collectedArtifactView, publicationMaterialView, readCollectedPortableArchive } from './artifact-collector';
@@ -330,6 +336,7 @@ export interface CollectedPublicationAdmissionInput {
 /** The publisher supplies opaque handles only. This central entry derives
  * product coordinates and producer evidence; no guessed result.json or fake
  * empty archive is accepted from the publication orchestrator. */
+const publicationReports=verifiedAdmissionCache<AdmissionResult>();
 export function verifyCollectedPublicationAdmission(gate: Gate, input: CollectedPublicationAdmissionInput): AdmissionResult {
   if (!Object.prototype.hasOwnProperty.call(adapters, gate)) throw new Error('Unknown independent admission gate');
   const artifact = collectedArtifactView(input.artifact), material = publicationMaterialView(input.artifact);
@@ -354,7 +361,23 @@ export function verifyCollectedPublicationAdmission(gate: Gate, input: Collected
     const sourceReport = inspectCollectedModuleSource(context);
     if (sourceReport.status === 'verified') context.legalSourceMaterials = sourceReport.materials;
   }
+  const legalBinding=publicationLegalMaterials(input.artifact,input.derivedSource);
+  context.legalOriginals=context.legalOriginals??legalBinding?.originals;
+  const keys=[context.derivedSource,context.consumerObservation,context.nativeMaterials,context.legalSourceMaterials,context.githubOrigin];
+  const sets=[context.relatedArtifacts??[],context.legalOriginals??[]];
+  const gateMaterials=publicationGateMaterials(input.artifact,input.derivedSource);
+  const previous=gateMaterials?publicationReports.get(input.artifact as object,gate,keys,sets,()=>{
+    // Saved facts do not bypass retained ZIP identity, current exact checkout or
+    // native-original custody after reconstructible projections are compacted.
+    for(const artifact of [input.artifact,...input.relatedArtifacts])assertCollectedPublicationCustody(artifact);
+    assertDerivedSourceCurrent(input.derivedSource);
+    for(const original of context.legalOriginals??[])assertLegalOriginalCustody(original);
+    const native=publicationGateMaterials(input.artifact,input.derivedSource)?.nativeOriginals;
+    if(native)assertCollectedNativeOriginalCustody(native);
+  }):undefined;
+  if(previous)return previous;
   const evidence = gate === 'source'
     ? JSON.parse(material.readOriginal(material.producerReceipt.path, 4*1024 ** 2).toString()) : undefined;
-  return verifyCollectedAdmission(gate, evidence, context);
+  const result=verifyCollectedAdmission(gate,evidence,context);
+  return gateMaterials?publicationReports.remember(input.artifact as object,gate,keys,sets,result):result;
 }

@@ -12,6 +12,11 @@ import { lazyZipOriginals } from './lazy-zip-originals';
 import type { CollectedArtifactMember } from './artifact-contract';
 import type { CollectedNativeOriginalsCapability, CollectedNativeOriginalsView, NativeAdmissionOriginalCollectionInput } from './native-originals';
 const issued = new WeakMap<object, CollectedNativeOriginalsView>();
+const custodyAssertions=new WeakMap<object,()=>void>();
+export function assertCollectedNativeOriginalCustody(value:unknown):void{
+ if(!value||typeof value!=='object'||!issued.has(value)||!custodyAssertions.has(value))fail('real retained native originals required');
+ custodyAssertions.get(value as object)!();
+}
 const compactors = new WeakMap<object,()=>boolean>();
 export function compactCollectedNativeOriginals(value:unknown):boolean {
   if(value===null || typeof value!=='object' || !compactors.has(value)) return fail('issued native originals capability required');
@@ -55,12 +60,13 @@ export async function collectNativeAdmissionOriginals(input: NativeAdmissionOrig
     verifyRetainedOriginal(){if(!cache) fail('native cache unavailable'); cache!.assertRetainedOriginal();},
   });
   let returnedBytes=0, calls=0;
-  const rangeDeadline=Date.now()+limits.timeoutMs;
+  let rangeIoMilliseconds=0;
   const boundedRange=(name:string,offset:number,length:number)=>{
     lifetime.assertReadable();
-    if(Date.now()>rangeDeadline || ++calls>Math.max(1024,Math.ceil(custody.inventory.expandedBytes/limits.rangeBytes)*8)
+    if(!Number.isSafeInteger(length)||length<0||length>limits.rangeBytes) return fail('fixed 64KiB native range required');
+    if(rangeIoMilliseconds>=limits.timeoutMs || ++calls>Math.max(1024,Math.ceil(custody.inventory.expandedBytes/limits.rangeBytes)*8)
       || (returnedBytes+=length)>custody.inventory.expandedBytes*4+1024*1024) return fail('native aggregate range/time budget exceeded');
-    return readerForRange(name,offset,length);
+    const started=Date.now();try{return readerForRange(name,offset,length);}finally{rangeIoMilliseconds+=Date.now()-started;}
   };
   let readerForRange:(name:string,offset:number,length:number)=>Buffer=()=>fail('native reader not initialized');
   try {
@@ -98,6 +104,6 @@ export async function collectNativeAdmissionOriginals(input: NativeAdmissionOrig
         if(after.error||after.status!==0||!isDeepStrictEqual(JSON.parse(after.stdout).members,rows)) return fail('native archive changed during scan');
         return value;
       }});
-    const cap=Object.freeze({}) as CollectedNativeOriginalsCapability; issued.set(cap,view); compactors.set(cap,()=>lifetime.compact()); return cap;
+    const cap=Object.freeze({}) as CollectedNativeOriginalsCapability; issued.set(cap,view); custodyAssertions.set(cap,()=>bound.assertRetainedOriginal()); compactors.set(cap,()=>lifetime.compact()); return cap;
   } catch(error) { cache?.close(); fs.rmSync(snapshot,{recursive:true,force:true}); throw error; }
 }

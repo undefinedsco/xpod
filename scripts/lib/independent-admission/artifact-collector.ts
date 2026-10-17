@@ -13,6 +13,13 @@ import type { CollectedArtifactCapability, CollectedArtifactView, CollectedArtif
 
 type PortableSourceSnapshot={originals:NonNullable<Awaited<ReturnType<typeof import('./module-source-originals')['collectModuleSourceOriginals']>>>;lifetime:ReturnType<typeof sharedSourceLifetime>};
 const portableSourceSnapshots=new WeakMap<object,PortableSourceSnapshot>();
+const custodyAssertions=new WeakMap<object,()=>void>();
+export function assertCollectedPublicationCustody(artifact:unknown):void{
+ if(!artifact||typeof artifact!=='object'||!issued.has(artifact))fail('real retained artifact capability required');
+ const check=custodyAssertions.get(artifact as object);
+ if(check)check();
+ else if(publicationBindings.has(artifact as object))fail('retained publication custody assertion missing');
+}
 const issued = new WeakMap<object, CollectedArtifactView>();
 const disposers = new WeakMap<object, () => void>();
 const sourceCompactors = new WeakMap<object, () => void>();
@@ -105,7 +112,7 @@ export function compactCollectedSourceOriginals(artifact: unknown): boolean {
  * finishes. Revocation also prevents a released token from issuing new views. */
 export function releaseCollectedArtifact(capability: CollectedArtifactCapability): void {
   const dispose = disposers.get(capability);
-  issued.delete(capability); disposers.delete(capability); publicationBindings.delete(capability); sourceCompactors.delete(capability); dispose?.();
+  issued.delete(capability); custodyAssertions.delete(capability); disposers.delete(capability); publicationBindings.delete(capability); sourceCompactors.delete(capability); dispose?.();
 }
 
 /** Large-product adapters reuse the normal product projectors and the same
@@ -195,6 +202,12 @@ export async function collectModuleAdmissionArtifact(input: {
       },
     }), () => { sourceOriginals?.dispose(); disk.dispose(); }, { origin: input.githubOrigin as GitHubOriginObservation,
       projectionOutput: output, producerReceiptPath: 'producer.receipt.json', source: { kind: 'file', path: path.join(output, 'product.tgz') } });
+    const packedPath=path.join(output,'product.tgz'),packedStat=lstatSync(packedPath);
+    custodyAssertions.set(capability,()=>{
+      if(!sourceOriginals)fail('retained source original custody missing');sourceOriginals!.assertCustody();
+      const current=lstatSync(packedPath);
+      if(!current.isFile()||current.isSymbolicLink()||current.nlink!==1||['dev','ino','size','mtimeMs','ctimeMs','mode'].some(key=>(current as any)[key]!== (packedStat as any)[key]))fail('retained product archive changed');
+    });
     if (sourceOriginals) sourceCompactors.set(capability, sourceOriginals.compact);
     return capability;
   } catch (error) { sourceOriginals?.dispose(); disk.dispose(); throw error; }
@@ -371,7 +384,7 @@ function issueProductArchive(sourceSha: string, row: any, archive: Buffer,
   let capability:CollectedArtifactCapability;
   try{capability=issueCollectedView(view,release, origin && projectionOutput ? { origin, projectionOutput, producerReceiptPath: 'result.json',
     source: { kind: 'buffer', bytes: Buffer.from(archive) } } : undefined);}catch(error){release?.();throw error;}
-  if(snapshot){portableSourceSnapshots.set(capability,snapshot);sourceCompactors.set(capability,()=>snapshot.lifetime.compact());}
+  if(snapshot){portableSourceSnapshots.set(capability,snapshot);sourceCompactors.set(capability,()=>snapshot.lifetime.compact());custodyAssertions.set(capability,()=>snapshot.originals.assertCustody());}
   return capability;
 }
 
