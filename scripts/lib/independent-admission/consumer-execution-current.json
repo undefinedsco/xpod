@@ -1,7 +1,7 @@
 [
   {
     "path": ".dockerignore",
-    "sha256": "5bf29e31d569c0fb7fe2cbdae8bf468b22c27a2bccfeef2ef4dd9aaca82b48c9"
+    "sha256": "4cee6cad6f7086c4577281641dda0e3d57fc5218da9864453d14aa8aee75d73f"
   },
   {
     "path": "bun.lock",
@@ -917,7 +917,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-origin-policy.ts",
-    "sha256": "6860746bcbf0aedf23a4e65dedd00f6503d95408b4218c01592f7f1e57f500cc"
+    "sha256": "4c8beef145d42121c2afccb0eebe8c81b998527eeca5744092ed4c8ac136a6ea"
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-originals.ts",

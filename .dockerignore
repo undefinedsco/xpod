@@ -2,6 +2,7 @@
 *
 
 # 构建需要的文件
+!.dockerignore
 !package.json
 !LICENSE
 !bun.lock
