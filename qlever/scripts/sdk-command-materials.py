@@ -39,8 +39,11 @@ def exec_child(command,directory):
     (directory/'command.receipt.json').write_text(json.dumps(receipt,sort_keys=True,indent=2)+'\n')
     raise SystemExit(code if code>=0 else 128-code)
 
-def capture(name,command,materials,cwd,inputs=(),outputs=(),timeout=3600):
+def capture(name,command,materials,cwd,inputs=(),outputs=(),timeout=3600,resource_profile='build'):
     if not name or any(char not in 'abcdefghijklmnopqrstuvwxyz0123456789-' for char in name):raise ValueError('Unsafe SDK stage name')
+    profiles={'build':(4*1024**3,2*1024**3),'observation':(2304*1024**2,2*1024**3),'cleanup':(256*1024**2,128*1024**2)}
+    if resource_profile not in profiles:raise ValueError('Unknown SDK command resource profile')
+    fresh,stop=profiles[resource_profile]
     materials=Path(materials).resolve();stages=materials/'stages';stages.mkdir(parents=True,exist_ok=True)
     directory=stages/name;directory.mkdir(mode=0o700)
     for expected in inputs:
@@ -52,7 +55,7 @@ def capture(name,command,materials,cwd,inputs=(),outputs=(),timeout=3600):
         return shutil.disk_usage(path)
     env={key:value for key,value in os.environ.items() if key not in ('GH_TOKEN','GITHUB_TOKEN')}
     receipt,_=run_checked_stage(name,[sys.executable,'-B',str(Path(__file__).resolve()),'--exec-child',str(directory),json.dumps(command)],
-        stages,cwd,timeout=timeout,environment=env,free=guarded_free,fresh_bytes=4*1024**3,stop_bytes=2*1024**3,poll_seconds=.1,target=directory)
+        stages,cwd,timeout=timeout,environment=env,free=guarded_free,fresh_bytes=fresh,stop_bytes=stop,poll_seconds=.1,target=directory)
     actual=json.loads((directory/'command.receipt.json').read_text())
     if actual['exit']!=0 or actual['signal'] is not None or actual['pgid']!=receipt['pgid']:
         raise ValueError('SDK actual command execution mismatch')

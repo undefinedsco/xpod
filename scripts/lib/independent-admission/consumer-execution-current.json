@@ -253,7 +253,7 @@
   },
   {
     "path": "qlever/scripts/produce-linux-runtime-archive.py",
-    "sha256": "1401a84252c729647998ecd86885d9a36ca70305c9085e347e8cb2fc0747b34e"
+    "sha256": "6e90b435540e6c37ea1a3dd50720feb139d44b53c8b774a273daf777a17d6847"
   },
   {
     "path": "qlever/scripts/qlever_compiler_profile.py",

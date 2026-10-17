@@ -116,6 +116,8 @@ def configure_inputs(build):
 def build_materials(component,source,build,out,jobs):
     component=Path(component);source=Path(source);build=Path(build);out=Path(out);out.mkdir(parents=True,exist_ok=False)
     budget=initialize_budget(4200);stages=[]
+    identity=json.loads(os.environ['XPOD_QLEVER_SDK_IDENTITY'])
+    if identity.get('sdkProfile')!='module-bookworm-gcc12':raise ValueError('Actual SDK producer identity required')
     def stage(name,command,inputs=(),timeout=30,reserve=4200):
         row=commands.capture(name,command,out,component,inputs,timeout=budget.timeout(timeout,reserve));stages.append(row);return row
     stage('configure',['bash',str(component/'scripts/build-module-runtime-sdk.sh'),'prepare-only'],timeout=1800)
@@ -152,7 +154,7 @@ def build_materials(component,source,build,out,jobs):
     link_tokens=shlex.split((build/'CMakeFiles/qlever-server.dir/link.txt').read_text())
     for token in link_tokens:
         path=Path(token)
-        if path.is_absolute() and path.is_file() and token.endswith(('.a','.so')):candidates.add(path.resolve(strict=True))
+        if path.is_absolute() and path.is_file() and re.search(r'\.(?:a|so(?:\.[A-Za-z0-9_.+-]+)?)$',token):candidates.add(path.resolve(strict=True))
     before={};total=0
     for path in sorted(candidates):
         actual=file_identity(path);total+=actual['bytes']
@@ -166,7 +168,7 @@ def build_materials(component,source,build,out,jobs):
     outputs=set(build.rglob('*.o.d'));selected.update(outputs)
     link=build/'CMakeFiles/qlever-server.dir/link.txt';selected.add(link)
     for token in shlex.split(link.read_text()):
-        if token.endswith(('.o','.a','.so')):
+        if re.search(r'\.(?:o|a|so(?:\.[A-Za-z0-9_.+-]+)?)$',token):
             path=Path(token);path=path if path.is_absolute() else build/path
             if path.is_file():
                 selected.add(path)
@@ -197,7 +199,7 @@ def build_materials(component,source,build,out,jobs):
     inventory['packageOwnershipOriginals']=[str(path) for path in ownership]
     inventory['sourcePackageIdentityRaw']=ledger['stdout']
     dump(out/'inputs-after.json',inventory)
-    dump(out/'build-inner.json',dict(schemaVersion=1,kind='qlever-linux-sdk-inner-originals',stages=stages,
+    dump(out/'build-inner.json',dict(schemaVersion=1,kind='qlever-linux-sdk-inner-originals',identity=identity,stages=stages,
         executionBudget=dict(deadlineUnix=budget.deadline_unix,remainingSeconds=budget.remaining()),inputsBefore=before_ref,inputsAfter=commands.ref(out/'inputs-after.json',out),domains=inventory['shards'],
         grantOriginals=[str(path) for path in grants],
         pending=['official-image-build-artifact-custody-unavailable','exact-Debian-source-archives-unavailable',

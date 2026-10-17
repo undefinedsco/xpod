@@ -161,6 +161,20 @@ def preparation_command(image_id, target, source, output, workspace, cidfile, ma
             '--original-manifest-sha256', manifest_sha]
 
 
+def sdk_artifact_tuple(environment,target,source_sha,sdk_image):
+    names=['SDK_ORIGINAL_ARTIFACT_ID','SDK_ORIGINAL_ARTIFACT_DIGEST','SDK_ORIGINAL_MASTER_SHA256','SDK_ORIGINAL_MASTER_BYTES']
+    values=[environment.get(name,'') for name in names]
+    if not any(values):return None
+    if not all(values):raise RuntimeError('Incomplete SDK original artifact tuple')
+    aid,digest,master_sha,size=values;digest=digest.removeprefix('sha256:')
+    if not aid.isdecimal() or int(aid)<=0 or not re.fullmatch('[a-f0-9]{64}',digest) or not re.fullmatch('[a-f0-9]{64}',master_sha) or not size.isdecimal() or not 0<int(size)<=8*1024**2:
+        raise RuntimeError('Invalid SDK original artifact tuple')
+    return dict(artifactId=int(aid),artifactSha256=digest,runId=int(environment['GITHUB_RUN_ID']),
+                runAttempt=int(environment['GITHUB_RUN_ATTEMPT']),sourceSha=source_sha,target=target,sdkProfile='module-bookworm-gcc12',
+                sdkImageReferenceByDigest=sdk_image,master=dict(path='materials.json',bytes=int(size),sha256=master_sha),
+                scope='Reference only; central collector independently observes the official SDK artifact')
+
+
 def produce(target, sdk_image, runtime_image, output, source_sha):
     immutable_image(sdk_image); immutable_image(runtime_image)
     actual_arch = {'x86_64': 'x64', 'aarch64': 'arm64'}.get(platform.machine())
@@ -262,6 +276,8 @@ def produce(target, sdk_image, runtime_image, output, source_sha):
                   runId=os.environ['GITHUB_RUN_ID'], runAttempt=os.environ['GITHUB_RUN_ATTEMPT'], jobName=os.environ['GITHUB_JOB'],
                   sdkImage=sdk_image, runtimeImage=runtime_image, images=images, archive=dict(path=archive.name, sha256=digest(archive), bytes=archive.stat().st_size),
                   compilerProfile=profile, stages=records, files=files,
+                  sdkArtifact=sdk_artifact_tuple(os.environ,target,source_sha,sdk_image),
+                  sdkSourceAdmission='pending-independent-sdk-artifact-observation',
                   runtimeBinarySha256=digest(runtime / 'bin/xpod_qlever_local_runtime'),
                   originalManifestSha256=digest(output / 'original/manifest.json'),
                   physicalManifestSha256=digest(runtime / 'manifest.json'),
