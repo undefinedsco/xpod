@@ -1,3 +1,4 @@
+import {inspectInngestRuntimeOriginals,inngestRuntimeLabels} from './inngest-runtime-originals';
 import {inspectAfsConsumerOriginals} from './afs-consumer-originals';
 import {afsConsumerRegisteredShards} from './afs-consumer-shard-registration';
 import {productConsumerOriginalLimits} from './product-consumer-limits';
@@ -113,7 +114,7 @@ export function verifyRegistryConsumerOriginalBundle(input: {
       if(!checked.verified||checked.pending.length)fail('AFS fixed original gaps: '+checked.pending.join('; '));
     }else{
     const required = ['runtime-version', 'runtime-target', 'probe', 'normal-cli-install', 'install-' + module,
-      'list-' + module, module + '-service', ...(module === 'api' ? ['pglite', 'api-rdf'] : []), 'remove-' + module];
+      'list-' + module, module + '-service', ...(module === 'api' ? [...inngestRuntimeLabels(input.product.target!),'pglite', 'api-rdf'] : []), 'remove-' + module];
     const labels = ['node', 'bun'].flatMap(runtime => required.map(name => runtime + '-' + name));
     if (!Array.isArray(result.records) || result.records.length !== labels.length || labels.some(label => result.records.filter((row: any) => row.label === label).length !== 1)) fail('complete module profile command originals required');
     const [platform, arch] = input.product.target.split('-');
@@ -138,6 +139,7 @@ export function verifyRegistryConsumerOriginalBundle(input: {
     }
     }
   }
+  if(/^@undefineds\.co\/xpod-api-(?:linux|darwin)-(?:x64|arm64)$/u.test(input.product.package))inspectInngestRuntimeOriginals({product:input.product,productMembers:input.productMembers,result,readOriginal:read});
   return Object.freeze({ status: 'originals-verified' as const, result,
     scope: 'original-byte consistency only; controlled GitHub origin and registry capabilities remain required' as const });
 }
