@@ -12,7 +12,7 @@ export const CLI_SOURCE_POLICY = Object.freeze({
   sourceLimits: 'c1c529aba719356c682affbe630c215e28cc07163192f8f3b601aab7b0126bd4',
   supervisor: '7710a6ee87729f202c67500fc83d0fc71509ac7e1034d1f22276f53a3fcf6781',
   copier: 'c437aa115b5b7905c539386d4df284a43e26782c846d62045d69de5bb762331c',
-  workflow: 'c856baf24a28fe789db1e80c26e7b69b7e4e08bd0923f52ce376840ac885c1eb',
+  workflow: 'ce1e33a5f6a0052aa9d585f1556b6b07624cff0df3222d37ee4a5f9fc5f1046e',
 });
 const hash = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
 // The second reviewed supervisor only raises the command ceiling to 25 minutes;
@@ -37,7 +37,7 @@ export function verifyCliInputSet(
     || hash(readTracked('scripts/lib/module-artifact-limits.json')) !== CLI_SOURCE_POLICY.sourceLimits
     || hash(readTracked('scripts/cli-build-inputs.cjs')) !== CLI_SOURCE_POLICY.copier
     || !REVIEWED_SUPERVISORS.has(hash(readTracked('scripts/lib/afs-publication-command.cjs')))
-    || hash(readTracked('.github/workflows/cli-package.yml')) !== CLI_SOURCE_POLICY.workflow) {
+    || ![CLI_SOURCE_POLICY.workflow, 'c856baf24a28fe789db1e80c26e7b69b7e4e08bd0923f52ce376840ac885c1eb'].includes(hash(readTracked('.github/workflows/cli-package.yml')))) {
     return { sourceInputSetVerified: false, generatedBuildManifestVerified: false,
       pending: 'source-input-policy-unreviewed: immutable producer/copier/supervisor/workflow differs from reviewed policy' };
   }

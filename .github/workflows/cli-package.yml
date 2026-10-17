@@ -1,5 +1,7 @@
 name: CLI package
 on:
+  push:
+    branches: [staging]
   pull_request:
     branches: [staging, main]
     paths:

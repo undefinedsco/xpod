@@ -94,11 +94,13 @@ interface OriginPolicy {
 export async function observeCliGitHubOrigin(input: ArtifactAcquisitionInput, options: { token?: string } = {}): Promise<GitHubOriginObservation> {
   return observeGitHubOrigin(input, options, {
     workflowPath: CLI_PRODUCT_WORKFLOW, workflowSha256:CLI_SOURCE_POLICY.workflow,
-    reviewedWorkflowVersions:[{workflowSha256:'b9bc591d5248773fae30df574a95e1ee928dffc41ad5965a8fbc8bf90319d860',
+    stagingPushWorkflowSha256:CLI_SOURCE_POLICY.workflow,
+    reviewedWorkflowVersions:[{workflowSha256:'c856baf24a28fe789db1e80c26e7b69b7e4e08bd0923f52ce376840ac885c1eb',jobName:name=>`normal-publication (${name.startsWith('xpod-cli-publication-preparation-macOS-')?'macos-latest':'ubuntu-latest'})`},
+      {workflowSha256:'b9bc591d5248773fae30df574a95e1ee928dffc41ad5965a8fbc8bf90319d860',
       jobName:name=>`standalone-cli (${name.startsWith('xpod-cli-publication-preparation-macOS-')?'macos-latest':'ubuntu-latest'})`},
       {workflowSha256:'50576f056ba617e9153afc0d385a06a830696e3703e6ad624d1e8a8ad46af22c',
         jobName:name=>`standalone-cli (${name.startsWith('xpod-cli-publication-preparation-macOS-')?'macos-latest':'ubuntu-latest'})`}],
-    events: ['workflow_dispatch', 'pull_request'],
+    events: ['workflow_dispatch', 'pull_request', 'push'],
     artifactNames: row => cliPublicationArtifactNames({ expectedSourceSha: row.sourceSha, runId: row.runId, runAttempt: row.runAttempt }),
     jobName: name => `normal-publication (${name.startsWith('xpod-cli-publication-preparation-macOS-') ? 'macos-latest' : 'ubuntu-latest'})`,
     requiredStep: 'Build normal CLI publication preparation',
@@ -137,12 +139,13 @@ export async function observeModuleProductGitHubOrigin(input: ArtifactAcquisitio
   } as const;
   const legacy:OriginPolicy={
     ...policies[module], workflowPath: `.github/workflows/${module}-module-product.yml`,
-    events: ['workflow_dispatch', 'pull_request'], target,
+    ...(module==='api'?{stagingPushWorkflowSha256:'c4aa6b7ea6e384adab1e517a903e50d574c8afb2eb92d8c54dc919320652c5b0'}:{}),
+    events: module==='api'?['workflow_dispatch','pull_request','push']:['workflow_dispatch','pull_request'], target,
     sourceBindings: [{ path: 'scripts/module-product-targets.ts', sha256: 'd04fb106ca349179e4b99869c68cbb85b8d9a9f30e8d60b927a5eceab9e2f25f',reviewedSha256:['5ef511f448c90a6fc9e767fd8224ef890b5fc04d2b6514f85697a0a529fb3eb4'] }],
     artifactNames: coordinates => [`${module}-module-products-${target}-${coordinates.sourceSha}-${coordinates.runId}-${coordinates.runAttempt}`],
     jobName: () => `products (${target})`,
     // The old reviewed workflow used GitHub's implicit matrix display name.
-    reviewedWorkflowVersions: [{ workflowSha256: policies[module].previousShortWorkflowSha256, jobName: () => `products (${target})`,
+    reviewedWorkflowVersions: [...(module==='api'?[{workflowSha256:'c4aa6b7ea6e384adab1e517a903e50d574c8afb2eb92d8c54dc919320652c5b0',jobName:()=>`products (${target})`}]:[]), { workflowSha256: policies[module].previousShortWorkflowSha256, jobName: () => `products (${target})`,
       sourceBindings: [{ path: 'scripts/module-product-targets.ts', sha256: '35b8752237d620981b1848d6d8876dfac3c1da14509e77358e7f961ca256cf96' }] },
       { workflowSha256: policies[module].legacyWorkflowSha256, jobName: () => `products (${Object.values(row).join(', ')})`,
         sourceBindings: [{ path: 'scripts/module-product-targets.ts', sha256: '35b8752237d620981b1848d6d8876dfac3c1da14509e77358e7f961ca256cf96' }] }],
