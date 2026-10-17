@@ -31,15 +31,81 @@ def reference(path, root):
     return dict(path=str(path.relative_to(root)), sha256=digest(path), sizeBytes=path.stat().st_size)
 
 
+def source_link(path, root, relative):
+    """Inspect only paths inside root; never open a symlink target's bytes."""
+    import stat
+    root = Path(root)
+    if root.is_symlink() or not root.is_dir() or root.resolve()!=root:
+        raise RuntimeError('Native source root changed: '+relative)
+    pending = list(Path(relative).parts); resolved = []; visited = set()
+    while pending:
+        part = pending.pop(0)
+        if part in ('', '.'): continue
+        if part == '..':
+            if not resolved: raise RuntimeError('Native source link escapes root: '+relative)
+            resolved.pop(); continue
+        candidate = root.joinpath(*resolved, part)
+        try: info = candidate.lstat()
+        except OSError: raise RuntimeError('Native source link broken: '+relative) from None
+        if stat.S_ISLNK(info.st_mode):
+            key = tuple(resolved+[part])
+            if key in visited or len(visited)>=40: raise RuntimeError('Native source link loop: '+relative)
+            visited.add(key); target = os.readlink(candidate)
+            if os.path.isabs(target): raise RuntimeError('Native source link absolute target: '+relative)
+            pending = list(Path(target).parts)+pending
+        else:
+            if not stat.S_ISREG(info.st_mode) and not stat.S_ISDIR(info.st_mode):
+                raise RuntimeError('Native source link nonregular target: '+relative)
+            if pending and not stat.S_ISDIR(info.st_mode): raise RuntimeError('Native source link broken: '+relative)
+            resolved.append(part)
+    info = path.lstat(); target = os.readlink(path); raw = os.fsencode(target)
+    return dict(path=relative,type='symlink',linkTarget=target,mode=stat.S_IMODE(info.st_mode),
+                sha256=hashlib.sha256(raw).hexdigest(),sizeBytes=len(raw))
+
+
+def source_kit_inventory(kit_root):
+    """Inventory original link objects; never recurse through directory links."""
+    kit_root=Path(kit_root).resolve(strict=True)
+    files=[]
+    for member in sorted(kit_root.rglob('*')):
+        relative=member.relative_to(kit_root)
+        if member.is_symlink():
+            parts=relative.parts
+            count=2 if parts[0]=='fetchcontent' else 1
+            if parts[0] not in ('engine','workspace','fetchcontent') or len(parts)<=count:
+                raise RuntimeError('Invalid native source namespace: '+str(relative))
+            namespace_root=kit_root.joinpath(*parts[:count])
+            ref=source_link(member,namespace_root,str(member.relative_to(namespace_root)))
+            ref['path']=str(relative);files.append(ref)
+        elif member.is_file(): files.append(reference(member,kit_root))
+        elif not member.is_dir(): raise RuntimeError('Native source nonregular member: '+str(relative))
+    return files
+
+
 def snapshot_sources(roots, destination, tracked=None):
     """Copy real before-build source bytes, preserving their originating layout."""
+    destination = Path(destination).resolve()
     result = []; total = 0
     for namespace, root in roots:
-        root = Path(root)
+        root = Path(root).resolve(strict=True)
         for source in sorted((root / name for name in tracked) if namespace == 'workspace' and tracked is not None else root.rglob('*')):
             relative = source.relative_to(root)
             if any(part in ['.git', '__pycache__', '.test-data', 'node_modules', 'dist'] for part in relative.parts): continue
-            if source.is_symlink(): raise RuntimeError('Native source link unsupported')
+            if source.is_symlink():
+                link = source_link(source,root,str(relative))
+                total += link['sizeBytes']
+                if total>SOURCE_BYTES or len(result)>=SOURCE_MEMBERS: raise RuntimeError('Native source kit budget exceeded')
+                if shutil.disk_usage(destination.parent).free<2*GIB: raise RuntimeError('Native source free-space floor')
+                target = destination/namespace/relative; target.parent.mkdir(parents=True,exist_ok=True)
+                os.symlink(link['linkTarget'],target)
+                if (target.lstat().st_mode & 0o7777)!=link['mode']:
+                    if not hasattr(os,'lchmod'): raise RuntimeError('Native source link mode unsupported: '+str(relative))
+                    os.lchmod(target,link['mode'])
+                identity = source.lstat()
+                stored = dict(link,path=str(target.relative_to(destination)))
+                result.append(dict(original=str(source),sourceRoot=str(root),sourceRelative=str(relative),
+                                   originalIdentity=dict(device=identity.st_dev,inode=identity.st_ino),reference=stored))
+                continue
             if source.is_dir(): continue
             if not source.is_file(): raise RuntimeError('Native source nonregular member')
             total += source.stat().st_size
@@ -51,6 +117,13 @@ def snapshot_sources(roots, destination, tracked=None):
             row = reference(target, destination)
             if row['sha256'] != before or digest(source) != before: raise RuntimeError('Source changed during snapshot')
             result.append(dict(original=str(source), reference=row))
+    for row in result:
+        if row['reference'].get('type')=='symlink':
+            stored = destination/row['reference']['path']
+            namespace_root = destination/Path(row['reference']['path']).parts[0]
+            # FetchContent namespaces have two path components.
+            if Path(row['reference']['path']).parts[0]=='fetchcontent': namespace_root /= Path(row['reference']['path']).parts[1]
+            source_link(stored,namespace_root,str(stored.relative_to(namespace_root)))
     if not result: raise RuntimeError('Native source kit empty')
     return result
 
@@ -59,6 +132,13 @@ def verify_source_snapshot(rows):
     after = []
     for row in rows:
         source = Path(row['original']); expected = row['reference']
+        if expected.get('type')=='symlink':
+            actual = source_link(source,Path(row['sourceRoot']),row['sourceRelative'])
+            actual['path'] = expected['path']
+            identity = source.lstat()
+            if actual!=expected or dict(device=identity.st_dev,inode=identity.st_ino)!=row['originalIdentity']:
+                raise RuntimeError('Native source link changed: '+row['sourceRelative'])
+            after.append(actual); continue
         if source.is_symlink() or not source.is_file(): raise RuntimeError('Native input disappeared or became link')
         actual = dict(path=expected['path'], sha256=digest(source), sizeBytes=source.stat().st_size)
         if actual != expected: raise RuntimeError('Native source input changed during build')
@@ -123,6 +203,9 @@ def observe(target, work, archive):
         target_file.parent.mkdir(exist_ok=True); shutil.copyfile(original,target_file)
     observation_before = dict(filesBefore=[row['reference'] for row in snapshot], sourceSha=source_sha, engine=lock, toolchain=before)
     (materials/'inputs-before.json').write_text(json.dumps(observation_before,sort_keys=True,indent=2)+'\n')
+    # The canonical source archive preserves links; upload-artifact directory
+    # traversal alone must never substitute dereferenced link targets.
+    stage('source-kit-archive',['tar','-cf',str(materials/'source-kit.tar'),'-C',str(kit_root),'.'],timeout=300)
     stage('native-build', ['bash',str(script),'build-prepared'], timeout=9000)
     # Re-read actual original source paths in an independently owned process.
     snapshot_path = materials / 'source-snapshot.json'
@@ -154,14 +237,14 @@ def observe(target, work, archive):
     (materials/'inputs-after.json').write_text(json.dumps(dict(filesAfter=after_files,toolchain=after),sort_keys=True,indent=2)+'\n')
     source_kit = dict(schemaVersion=1,status='native-source-materials',toolchain=before['compilerVersion'].splitlines()[0],
                       engine=dict(repository=lock['repository'],commit=lock['commit']),
-                      files=[reference(path,kit_root) for path in sorted(kit_root.rglob('*')) if path.is_file()],
+                      files=source_kit_inventory(kit_root),
                       scope='Actual core/FetchContent/workspace sources and observed SDK/compiler/dependency identity; external SDK distribution is not copied')
     (materials/'source-kit.json').write_text(json.dumps(source_kit,sort_keys=True,indent=2)+'\n')
     metadata = dict(schemaVersion=1,target=target,record=dict(toolchain=before,sourceSha=source_sha,binary=reference(binary,runtime)),stages=records)
     (materials/'runtime-admission.metadata.json').write_text(json.dumps(metadata,sort_keys=True,indent=2)+'\n')
     final = dict(schemaVersion=1,status='native-build-test-materials',releaseAccepted=False,target=target,sourceSha=source_sha,
                  runId=os.environ['GITHUB_RUN_ID'],runAttempt=os.environ['GITHUB_RUN_ATTEMPT'],jobName=os.environ['GITHUB_JOB'],
-                 nativeBuildSourceSha=source_sha,sourceKit=reference(materials/'source-kit.json',materials),
+                 nativeBuildSourceSha=source_sha,sourceArchive=reference(materials/'source-kit.tar',materials),sourceKit=reference(materials/'source-kit.json',materials),
                  metadata=reference(materials/'runtime-admission.metadata.json',materials),binary=reference(binary,runtime),
                  inputsBefore=reference(materials/'inputs-before.json',materials),
                  inputsAfter=reference(materials/'inputs-after.json',materials),
@@ -188,7 +271,9 @@ def verify_cache(root):
     check(root, final['archive'])
     for key in ['sourceKit', 'metadata', 'inputsBefore', 'inputsAfter']: check(materials, final[key])
     kit = json.loads((materials / final['sourceKit']['path']).read_text())
-    for ref in kit['files']: check(materials / 'source-kit', ref)
+    if source_kit_inventory(materials/'source-kit')!=kit['files']:
+        raise RuntimeError('Cached native source kit inventory changed')
+    if 'sourceArchive' in final: check(materials,final['sourceArchive'])
     metadata = json.loads((materials / final['metadata']['path']).read_text())
     for stage in metadata['stages']:
         for key in ['receipt', 'raw']: check(materials, stage[key])
