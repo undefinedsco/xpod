@@ -31,7 +31,11 @@ describe('Bun-first service runtime', () => {
       expect(source).not.toContain('XPOD_NODE_BINARY');
     }
     const cli = readFileSync('src/cli/index.ts', 'utf8');
-    expect(cli).toContain('ensureBunUndiciCompat()');
-    expect(cli).toContain('ensureBunCommunitySolidServerJwkCompat(css)');
+    expect(cli).toContain("import('../runtime/service-entry')");
+    const service = readFileSync('src/runtime/service-entry.ts', 'utf8');
+    expect(service).toContain("import('./css-main')");
+    const cssMain = readFileSync('src/runtime/css-main.ts', 'utf8');
+    expect(cssMain).toContain('ensureBunUndiciCompat()');
+    expect(cssMain).toContain('ensureBunCommunitySolidServerJwkCompat(css)');
   });
 });

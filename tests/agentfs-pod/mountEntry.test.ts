@@ -3,7 +3,7 @@ import { mkdirSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 import { discoverAgentFsHelper } from './support/helperDiscovery';
-import { AGENTFS_UPSTREAM } from '../../src/cli/agent-fs/mount';
+import { AGENTFS_UPSTREAM } from '../../packages/xpod-afs/src/agent-fs/mount';
 
 const REPO_ROOT = process.cwd();
 const CLI_ENTRY = path.join(REPO_ROOT, 'src', 'cli', 'index.ts');

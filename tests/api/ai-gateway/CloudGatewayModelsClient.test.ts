@@ -155,6 +155,15 @@ describe('CloudGatewayModelsClient', () => {
     expect(fetchImpl).toHaveBeenCalledOnce();
   });
 
+  it('preserves opaque model ID case and gives the local projection precedence for exact duplicates', () => {
+    const local = { id: 'Model-A', object: 'model' as const, owned_by: 'personal', context_window: 32_000 };
+    expect(unionGatewayModelLists([local], [
+      { id: 'Model-A', object: 'model', owned_by: 'cloud', context_window: 128_000 },
+      { id: 'model-a', object: 'model', owned_by: 'cloud', context_window: 64_000 },
+      { id: 'model-a', object: 'model', owned_by: 'cloud-duplicate' },
+    ])).toEqual([local, { id: 'model-a', object: 'model', owned_by: 'cloud', context_window: 64_000 }]);
+  });
+
   it('keeps local models when Cloud is unreachable', async() => {
     const fetchImpl = vi.fn(async() => {
       throw new Error('ECONNREFUSED');

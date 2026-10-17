@@ -1,0 +1,151 @@
+name: Module installed consumer preparation
+
+# Explicit candidate tuples only. No publication or automatic producer chaining.
+on:
+  pull_request:
+    branches: [staging, main]
+    paths:
+      - '.github/workflows/module-installed-consumer.yml'
+      - 'scripts/prepare-module-consumer-plan.ts'
+      - 'scripts/export-module-consumer-evidence.ts'
+      - 'tests/scripts/module-installed-consumer-workflow.node-test.cjs'
+      - 'tests/bun/prepare-module-consumer-plan.test.ts'
+      - 'tests/bun/export-module-consumer-evidence.test.ts'
+      - 'docs/module-consumer-ci.md'
+  workflow_dispatch:
+    inputs:
+      request_json:
+        description: 'Exact CSS or API + normal CLI acquisition tuples at one actual source SHA; see docs/module-consumer-ci.md'
+        required: true
+        type: string
+      execute_consumer:
+        description: 'Explicitly run the selected public module consumer sequentially for Node and Bun after validation'
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  contracts:
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.21.1'
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.2'
+      - run: node --test tests/scripts/module-installed-consumer-workflow.node-test.cjs
+  prepare:
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: tools
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.21.1'
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.2'
+      - name: Install tool dependencies without building products
+        working-directory: tools
+        run: |
+          set -euo pipefail
+          python3 -c 'import shutil; assert shutil.disk_usage(".").free >= 12 * 1024**3, "insufficient disk for preparation tools"'
+          bun install --frozen-lockfile --ignore-scripts
+      - name: Validate explicit selectors before acquisition
+        id: request
+        working-directory: tools
+        env:
+          MODULE_CONSUMER_REQUEST: ${{ inputs.request_json }}
+        run: |
+          set -euo pipefail
+          bun --eval '
+            import { validateModuleConsumerRequest } from "./scripts/prepare-module-consumer-plan.ts";
+            import { appendFileSync } from "node:fs";
+            const request = JSON.parse(process.env.MODULE_CONSUMER_REQUEST);
+            validateModuleConsumerRequest(request);
+            appendFileSync(process.env.GITHUB_OUTPUT, `source_sha=${request.sourceSha}\n`);
+            appendFileSync(process.env.GITHUB_OUTPUT, `module=${request.module}\n`);
+          '
+      - uses: actions/checkout@v4
+        with:
+          path: product-source
+          ref: ${{ steps.request.outputs.source_sha }}
+          persist-credentials: false
+      - name: Acquire originals and prepare an exact consumer plan
+        id: plan
+        working-directory: tools
+        env:
+          MODULE_CONSUMER_REQUEST: ${{ inputs.request_json }}
+          GH_TOKEN: ${{ github.token }}
+          EXECUTE_CONSUMER: ${{ inputs.execute_consumer }}
+          MODULE_CONSUMER_MODULE: ${{ steps.request.outputs.module }}
+        run: |
+          set -euo pipefail
+          case "$MODULE_CONSUMER_MODULE" in
+            css) driver=scripts/css-module-consumer.py ;;
+            api) driver=scripts/api-module-consumer.py ;;
+            *) echo 'Unsupported module' >&2; exit 1 ;;
+          esac
+          test -f "$driver"
+          root="$(mktemp -d "$RUNNER_TEMP/xpod-module-consumer.XXXXXXXX")"
+          chmod 700 "$root"
+          echo "root=$root" >> "$GITHUB_OUTPUT"
+          export MODULE_CONSUMER_ROOT="$root"
+          export MODULE_CONSUMER_NODE="$(command -v node)"
+          export MODULE_CONSUMER_BUN="$(command -v bun)"
+          bun --eval '
+            import { writeFileSync, statfsSync } from "node:fs";
+            import path from "node:path";
+            const request = JSON.parse(process.env.MODULE_CONSUMER_REQUEST);
+            const root = process.env.MODULE_CONSUMER_ROOT;
+            const disk = statfsSync(root);
+            const needed = request.budget.estimatedPeakBytes + request.budget.remainingFloorBytes + request.budget.cushionBytes + 6 * 1024 ** 3;
+            if (!Number.isSafeInteger(needed) || disk.bavail * disk.bsize < needed) throw new Error("insufficient disk before acquisition");
+            const workspace = path.resolve("..");
+            const input = { ...request, checkout: path.join(workspace,"product-source"), sourceRoots: [path.join(workspace,"tools"),path.join(workspace,"product-source")], node:process.env.MODULE_CONSUMER_NODE, bun:process.env.MODULE_CONSUMER_BUN, temporaryParent:root, output:path.join(root,"consumer-results") };
+            writeFileSync(path.join(root,"request.json"), JSON.stringify(input,null,2)+"\n", {flag:"wx",mode:0o600});
+          '
+          bun scripts/prepare-module-consumer-plan.ts "$root/request.json" "$root/consumer-plan.json"
+          python3 "$driver" "$root/consumer-plan.json" > "$root/validation.json"
+          if [ "$EXECUTE_CONSUMER" = true ]; then
+            python3 "$driver" "$root/consumer-plan.json" --run > "$root/consumer.stdout.json"
+          fi
+      - name: Record execution boundary
+        if: ${{ always() }}
+        env:
+          EXECUTE_CONSUMER: ${{ inputs.execute_consumer }}
+        run: |
+          if [ "$EXECUTE_CONSUMER" = true ]; then
+            echo 'Public consumer execution requested. Inspect actual consumer results and phase closure; a requested run does not establish a passing run or registry/native/legal/release admission.' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'Preparation and driver validation only. The public consumer was not executed. Artifact custody, source binding and validation do not establish registry/native/legal/release admission.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Export bounded closed evidence without product archives or retained data
+        if: ${{ always() && steps.plan.outputs.root != '' }}
+        working-directory: tools
+        env:
+          MODULE_CONSUMER_ROOT: ${{ steps.plan.outputs.root }}
+        run: bun scripts/export-module-consumer-evidence.ts "$MODULE_CONSUMER_ROOT" "$MODULE_CONSUMER_ROOT/safe-evidence"
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() && steps.plan.outputs.root != '' }}
+        with:
+          name: module-consumer-preparation-${{ steps.request.outputs.module }}-${{ steps.request.outputs.source_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ steps.plan.outputs.root }}/safe-evidence/
+          if-no-files-found: error
+          retention-days: 7

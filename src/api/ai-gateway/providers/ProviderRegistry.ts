@@ -6,8 +6,8 @@ import {
   DEFAULT_PROVIDER_OFFERINGS,
   PROVIDER_OFFERINGS,
   PROVIDER_LABELS,
-} from '@undefineds.co/ai-connections/provider-catalog';
-import type { AiConnectionsProvider, AiProviderAuthorizationMethod, AiProviderOffering } from '@undefineds.co/ai-connections/client';
+} from '@undefineds.co/ai-connections-runtime/provider-catalog';
+import type { AiConnectionsProvider, AiProviderAuthorizationMethod, AiProviderOffering } from '@undefineds.co/ai-connections-runtime/client';
 import {
   SUBSCRIPTION_AUTHORIZATION_BINDINGS,
   subscriptionAuthorizationMethods,
@@ -217,6 +217,9 @@ export interface ProviderModelDescriptor {
 }
 
 export interface ProviderDescriptor {
+  /** Trusted operator declaration; never read from a user's Pod. */
+  deploymentManaged?: boolean;
+  runtimeProtocol?: 'openai-compatible';
   id: ProviderId;
   label: string;
   authModes: ProviderAuthMode[];
@@ -348,6 +351,7 @@ export class ProviderRegistry {
     if (!this.providers.has(providerId)) {
       return false;
     }
+    if (this.providers.get(providerId)?.deploymentManaged) return true;
     return this.products.get(providerId)?.offerings.some((offering) => offering.kind !== 'local') === true;
   }
 

@@ -1,4 +1,8 @@
 {
+  "modulePrefix": {
+    "@undefineds.co/xpod": "undefineds",
+    "@undefineds.co/xpod-afs": "undefinedsAfs"
+  },
   "ignoreComponents": [
     "BaseQuintStore"
   ]

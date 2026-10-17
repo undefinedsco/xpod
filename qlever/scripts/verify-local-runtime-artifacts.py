@@ -769,7 +769,7 @@ def main() -> int:
     parser.add_argument("--lock", required=True, type=Path)
     provenance = parser.add_mutually_exclusive_group(required=True)
     provenance.add_argument("--prior-sdk-image")
-    provenance.add_argument("--build-source")
+    provenance.add_argument("--build-source", choices=["macos-arm64", "macos-x64", "linux-arm64", "linux-x64"])
     parser.add_argument("--smoke-database", required=True, type=Path)
     args = parser.parse_args()
 
@@ -795,7 +795,11 @@ def main() -> int:
         else {
             "source": "native-platform-build",
             "platform": args.build_source,
-            "entrypoint": "qlever/scripts/build-macos-local-runtime.sh",
+            "entrypoint": (
+                "qlever/scripts/prepare-linux-physical-runtime.py"
+                if args.build_source.startswith("linux-")
+                else "qlever/scripts/build-macos-local-runtime.sh"
+            ),
         }
     )
     manifest = {

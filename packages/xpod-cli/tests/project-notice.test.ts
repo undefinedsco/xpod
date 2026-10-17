@@ -3,8 +3,9 @@ import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { sha256File, type XpodCliManifest } from '../src/manifest';
+import { sha256File, sha256Hex, type XpodCliManifest } from '../src/manifest';
 import type { ApplicationSourceKit } from '../src/application-sources';
+import { CLIUI_MODIFICATION_NOTICE, GOOGLE_WIN_MINMAX_BSD_NOTICE } from '../src/promotion';
 
 const repo = fileURLToPath(new URL('../../../', import.meta.url));
 
@@ -30,6 +31,10 @@ test('portable package preserves the original project notice in install and appl
     const kit: ApplicationSourceKit = JSON.parse(readFileSync(path.join(install, 'sources/application-source.json'), 'utf8'));
     expect(kit.files.find((file) => file.path === relative)?.sha256).toBe(sha256File(original));
     expect(readFileSync(path.join(work, target, 'application-source', relative))).toEqual(readFileSync(original));
+    const noticeText = readFileSync(path.join(install, 'NOTICES.md'), 'utf8');
+    expect(noticeText).toContain(CLIUI_MODIFICATION_NOTICE);
+    expect(kit.files.find((file) => file.path === 'NOTICES.md')?.sha256).toBe(sha256File(path.join(install, 'NOTICES.md')));
+    expect(readFileSync(path.join(work, target, 'application-source/NOTICES.md'), 'utf8')).toBe(noticeText);
     const notices = JSON.parse(readFileSync(path.join(install, 'licenses/javascript/index.json'), 'utf8'));
     expect(notices.generated.bunVersion).toBe(process.versions.bun);
     const prefixNotice = notices.generated.files.find((file: { sha256: string }) => file.sha256 === notices.generated.prefixSha256);
@@ -50,3 +55,8 @@ test('portable package preserves the original project notice in install and appl
     expect(readFileSync(path.join(install, 'licenses/javascript', fileNotices[1].object), 'utf8')).toContain('The Artistic License 2.0');
   } finally { rmSync(work, { recursive: true, force: true }); }
 }, 90_000);
+
+test('Google supplemental notice preserves the audited original header bytes', () => {
+  expect(sha256Hex(GOOGLE_WIN_MINMAX_BSD_NOTICE)).toBe('4bb1a993a4e9853fe5692573812e24b469a7ec5e2af13116c8baf99716fda44a');
+  expect(GOOGLE_WIN_MINMAX_BSD_NOTICE).not.toContain('\\n');
+});

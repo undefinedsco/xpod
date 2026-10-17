@@ -1,0 +1,89 @@
+--- a/cli/src/fuse.rs
++++ b/cli/src/fuse.rs
+@@ -1178,6 +1178,31 @@
+     opts: FuseMountOptions,
+     runtime: Runtime,
+ ) -> anyhow::Result<()> {
++    mount_with_session_policy(fs, opts, runtime, false, || Ok(()))
++}
++
++/// Owned callers retire via their verified unmount protocol. Automatic Session
++/// Drop performs a path-based unmount and must never run against a replacement.
++pub fn mount_with_ready<F>(fs: Arc<dyn FileSystem>, opts: FuseMountOptions, runtime: Runtime, ready: F) -> anyhow::Result<()>
++where F: FnOnce() -> anyhow::Result<()> {
++    mount_with_session_policy(fs, opts, runtime, true, ready)
++}
++
++fn run_owned_session<S, F, R>(created: std::io::Result<S>, ready: F, run: R) -> anyhow::Result<()>
++where F: FnOnce() -> anyhow::Result<()>, R: FnOnce(&mut S) -> std::io::Result<()> {
++    // Descriptor survives until actual daemon exit; never run a path destructor.
++    let mut session = std::mem::ManuallyDrop::new(created?);
++    let readiness = ready();
++    let completion = run(&mut session);
++    // A readiness rejection still serves the actual session; the caller keeps
++    // its owner/control/lease when binding is unknown rather than faking close.
++    readiness?;
++    completion?;
++    Ok(())
++}
++
++fn mount_with_session_policy<F>(fs: Arc<dyn FileSystem>, opts: FuseMountOptions, runtime: Runtime, owned: bool, ready: F) -> anyhow::Result<()>
++where F: FnOnce() -> anyhow::Result<()> {
+     // Raise fd limit to hard limit to prevent "too many open files" errors
+     // when passthrough filesystems cache O_PATH file descriptors
+     maximize_fd_limit();
+@@ -1210,7 +1235,54 @@
+         mount_opts.push(MountOption::AllowRoot);
+     }
+ 
++    if owned {
++        return run_owned_session(crate::fuser::Session::new(fs, &opts.mountpoint, &mount_opts), ready, |session| session.run());
++    }
+     crate::fuser::mount2(fs, &opts.mountpoint, &mount_opts)?;
+ 
+     Ok(())
+ }
++
++#[cfg(test)]
++mod owned_session_tests {
++    use super::run_owned_session;
++    use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
++    struct DropSpy(Arc<AtomicUsize>);
++    impl Drop for DropSpy { fn drop(&mut self) { self.0.fetch_add(1, Ordering::SeqCst); } }
++    #[test]
++    fn readiness_rejection_still_runs_session_without_path_drop() {
++        let drops = Arc::new(AtomicUsize::new(0)); let runs = Arc::new(AtomicUsize::new(0)); let observed = runs.clone();
++        let result = run_owned_session(Ok(DropSpy(drops.clone())), || anyhow::bail!("foreign binding"), move |_| { observed.fetch_add(1, Ordering::SeqCst); Ok(()) });
++        assert!(result.is_err()); assert_eq!(runs.load(Ordering::SeqCst), 1); assert_eq!(drops.load(Ordering::SeqCst), 0);
++    }
++    #[test]
++    fn failed_actual_creation_never_calls_readiness_or_run() {
++        let callbacks = Arc::new(AtomicUsize::new(0)); let observed = callbacks.clone();
++        let result = run_owned_session::<DropSpy, _, _>(Err(std::io::Error::other("session creation failed")), move || { observed.fetch_add(1, Ordering::SeqCst); Ok(()) }, |_| panic!("no created session"));
++        assert!(result.is_err()); assert_eq!(callbacks.load(Ordering::SeqCst), 0);
++    }
++    #[test]
++    fn actual_process_exit_releases_retained_descriptor() {
++        const CHILD: &str = "AGENTFS_OWNED_SESSION_FD_TEST";
++        if std::env::var_os(CHILD).is_some() {
++            struct OwnedFd(libc::c_int);
++            impl Drop for OwnedFd { fn drop(&mut self) { panic!("owned descriptor must survive to process exit"); } }
++            let fd = unsafe { libc::dup(libc::STDOUT_FILENO) }; assert!(fd >= 0);
++            run_owned_session(Ok(OwnedFd(fd)), || Ok(()), |_| Ok(())).unwrap();
++            assert!(unsafe { libc::fcntl(fd, libc::F_GETFD) } >= 0);
++            std::process::exit(0);
++        }
++        let output = std::process::Command::new(std::env::current_exe().unwrap())
++            .args(["--exact", "fuse::owned_session_tests::actual_process_exit_releases_retained_descriptor", "--nocapture"])
++            .env(CHILD, "1").output().unwrap();
++        assert!(output.status.success()); // actual wait and pipe EOF after FD close
++    }
++    #[test]
++    fn actual_run_failure_and_normal_completion_never_drop_owned_path() {
++        for failed in [false, true] {
++            let drops = Arc::new(AtomicUsize::new(0));
++            let result = run_owned_session(Ok(DropSpy(drops.clone())), || Ok(()), |_| if failed { Err(std::io::Error::other("run failure")) } else { Ok(()) });
++            assert_eq!(result.is_err(), failed); assert_eq!(drops.load(Ordering::SeqCst), 0);
++        }
++    }
++}

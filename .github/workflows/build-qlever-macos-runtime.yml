@@ -6,6 +6,21 @@ on:
       artifact_name:
         description: Accepted macOS ARM64 runtime artifact name
         value: ${{ jobs.build.outputs.artifact_name }}
+      artifact_id:
+        description: Exact uploaded native artifact identity
+        value: ${{ jobs.build.outputs.artifact_id }}
+      artifact_digest:
+        description: Original uploaded ZIP digest
+        value: ${{ jobs.build.outputs.artifact_digest }}
+      source_sha:
+        description: Actual native acceptance source
+        value: ${{ jobs.build.outputs.source_sha }}
+      run_id:
+        description: Producing workflow run
+        value: ${{ jobs.build.outputs.run_id }}
+      run_attempt:
+        description: Producing workflow attempt
+        value: ${{ jobs.build.outputs.run_attempt }}
   # Kept runnable on its own so a toolchain or cache change can be exercised
   # without waiting for a full release candidate.
   workflow_dispatch:
@@ -29,6 +44,11 @@ jobs:
     timeout-minutes: 180
     outputs:
       artifact_name: ${{ steps.metadata.outputs.artifact_name }}
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      artifact_digest: ${{ steps.upload.outputs.artifact-digest }}
+      source_sha: ${{ steps.metadata.outputs.source_sha }}
+      run_id: ${{ github.run_id }}
+      run_attempt: ${{ github.run_attempt }}
     steps:
       - uses: actions/checkout@v4
 
@@ -39,6 +59,9 @@ jobs:
         run: |
           set -euo pipefail
           [[ "$SOURCE_SHA" =~ ^[a-f0-9]{40}$ ]]
+          actual_source=$(git rev-parse HEAD)
+          test "$actual_source" = "$SOURCE_SHA"
+          echo "source_sha=$actual_source" >> "$GITHUB_OUTPUT"
           echo "artifact_name=qlever-local-runtime-darwin-arm64-${SOURCE_SHA}" >> "$GITHUB_OUTPUT"
 
       # Reuse the finished runtime, not just compiler objects. Xpod-only commits
@@ -158,6 +181,7 @@ jobs:
         run: ccache --show-stats --verbose || true
 
       - name: Upload the exact native runtime
+        id: upload
         uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.metadata.outputs.artifact_name }}

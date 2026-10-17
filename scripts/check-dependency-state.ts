@@ -22,8 +22,17 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const root = process.cwd();
+const argumentRoot = process.argv.indexOf('--dependency-root');
+if (argumentRoot >= 0 && (!process.argv[argumentRoot + 1] || process.argv[argumentRoot + 1].startsWith('--'))) {
+  throw new Error('--dependency-root requires a directory');
+}
+const root = argumentRoot >= 0 ? path.resolve(process.argv[argumentRoot + 1]) : process.cwd();
+const runtimeOnly = process.argv.includes('--runtime-only');
+// The installed artifact is checked against this checkout's canonical patch
+// declarations, without copying build tools or patch authorities into it.
+const authorityRoot = runtimeOnly ? path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..') : root;
 const repairRequested = process.argv.includes('--repair');
 const failures: string[] = [];
 
@@ -184,11 +193,11 @@ function packageNameFromDependencyKey(key: string): string {
 }
 
 function checkPatchedDependencies(): void {
-  const patched = readJson(path.join(root, 'package.json')).patchedDependencies ?? {};
+  const patched = readJson(path.join(authorityRoot, 'package.json')).patchedDependencies ?? {};
   for (const [key, patchPath] of Object.entries<string>(patched)) {
     const name = packageNameFromDependencyKey(key);
     const directory = path.join(root, 'node_modules', name);
-    const patchFile = path.join(root, patchPath);
+    const patchFile = path.join(authorityRoot, patchPath);
     if (!existsSync(directory)) {
       failures.push(`${name} is not installed — run: bun install`);
       continue;
@@ -218,7 +227,7 @@ function checkPatchedDependencies(): void {
 // Bun's patchedDependencies and repository postinstall patches are separate.
 // A --ignore-scripts reinstall restores registry bytes for the latter.
 function checkPostinstallPatches(): void {
-  const postinstall = readJson(path.join(root, 'package.json')).scripts?.postinstall ?? '';
+  const postinstall = readJson(path.join(authorityRoot, 'package.json')).scripts?.postinstall ?? '';
   const browser = '@inrupt/solid-client-authn-browser';
   // Check both pinned 3.1.1 branches in context. A remaining occurrence in the
   // other branch must not hide a lost custom authenticated transport.
@@ -273,6 +282,9 @@ function checkPostinstallPatches(): void {
       continue;
     }
     for (const [file, snippets] of check.files) {
+      // Runtime packages may omit upstream source, but every emitted JS and
+      // declaration target still uses the same canonical patch predicates.
+      if (runtimeOnly && file.startsWith('src/')) continue;
       const target = path.join(directory, file);
       const content = existsSync(target) ? readFileSync(target, 'utf8') : '';
       const normalized = content.replace(/\s+/gu, ' ');
@@ -369,7 +381,7 @@ const time = <T>(label: string, run: () => T): T => {
 
 time('patches', () => checkPatchedDependencies());
 time('postinstall', () => checkPostinstallPatches());
-time('workspace', () => ensureWorkspaceBuilds());
+if (!runtimeOnly) time('workspace', () => ensureWorkspaceBuilds());
 
 if (failures.length > 0) {
   console.error('\n[deps] dependency state is not usable:');
@@ -380,4 +392,4 @@ if (failures.length > 0) {
   process.exit(1);
 }
 
-console.log('[deps] patched dependencies and workspace builds are consistent');
+console.log(runtimeOnly ? '[deps] installed runtime patches are consistent' : '[deps] patched dependencies and workspace builds are consistent');

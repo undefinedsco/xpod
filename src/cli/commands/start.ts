@@ -24,7 +24,7 @@ import { DEFAULT_LOCAL_OIDC_ISSUER, isLoopbackIssuer, resolveExternalOidcIssuer 
 import { resolveAuthModeFromEnv } from '../../authorization/AuthMode';
 import { loadConfigFromEnv } from '../../api/container';
 import { autoProvisionFirstRunLocal } from '../../api/runtime';
-import { normalizeDatabaseUrl, resolveDefaultRdfIndexPath } from '../../runtime/database-url';
+import { normalizeDatabaseUrl, resolveRuntimeDatabasePaths } from '../../runtime/database-url';
 import { EdgeNodeAgent } from '../../edge/EdgeNodeAgent';
 import { jsEntrypointArgs, resolveJsRuntime } from '../../runtime/js-runtime';
 
@@ -175,13 +175,6 @@ export const startCommand: CommandModule<object, StartArgs> = {
       explicit: Boolean(configuredBaseUrl),
     });
     const baseUrl = new URL(baseUrlInput).toString();
-    const rdfIndexPath = process.env.CSS_RDF_INDEX_PATH || resolveDefaultRdfIndexPath({
-      sparqlEndpoint: process.env.CSS_SPARQL_ENDPOINT ?? process.env.SPARQL_ENDPOINT,
-      fallbackRoot: runtimeRoot,
-      sqliteRelativeRoot: runtimeRoot,
-    });
-    process.env.CSS_RDF_INDEX_PATH = rdfIndexPath;
-
     const externalOidcIssuer = resolveCliOidcIssuer(process.env, provisionedConfig.oidcIssuer);
     const authMode = resolveAuthModeFromEnv(process.env);
 
@@ -202,6 +195,20 @@ export const startCommand: CommandModule<object, StartArgs> = {
       authMode,
       externalOidcIssuer,
     });
+    const databases = resolveRuntimeDatabasePaths({
+      runtimeRoot,
+      sqliteRelativeRoot: runtimeRoot,
+      rdfIndexRelativeRoot: cssRuntimeConfig.cwd,
+      identityDbUrl,
+      usageDbUrl: process.env.CSS_USAGE_DB_URL,
+      sparqlEndpoint: process.env.CSS_SPARQL_ENDPOINT ?? process.env.SPARQL_ENDPOINT,
+      rdfIndexPath: process.env.CSS_RDF_INDEX_PATH,
+    });
+    const rdfIndexPath = databases.rdfIndexPath;
+    process.env.CSS_SPARQL_ENDPOINT = databases.sparqlEndpoint;
+    process.env.SPARQL_ENDPOINT = databases.sparqlEndpoint;
+    process.env.CSS_USAGE_DB_URL = databases.usageDbUrl;
+    process.env.CSS_RDF_INDEX_PATH = rdfIndexPath;
     const managedEdge = resolveManagedEdgeAgentConfig(provisionedConfig, mainPort, ingressPort, process.env);
     const cssArgs = buildCssArgs({
       cssBinary: '__internal-css',
@@ -225,7 +232,7 @@ export const startCommand: CommandModule<object, StartArgs> = {
       name: 'css',
       command: childRuntime.command,
       args: [
-        ...(isSingleBinaryRuntime ? [] : jsEntrypointArgs(path.resolve(__dirname, '..', isDevMode ? 'index.ts' : 'index.js'), childRuntime.isBun)),
+        ...(isSingleBinaryRuntime ? [] : jsEntrypointArgs(path.resolve(__dirname, '..', '..', 'runtime', isDevMode ? 'service-entry.ts' : 'service-entry.js'), childRuntime.isBun)),
         ...cssArgs,
       ],
       cwd: cssRuntimeConfig.cwd,

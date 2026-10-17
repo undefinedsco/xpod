@@ -1,8 +1,44 @@
+import fs from 'node:fs'
+import buildTargets from './build-targets.json'
 import { defineConfig, type Plugin, type ProxyOptions } from 'vite'
 import react from '@vitejs/plugin-react'
 import path from 'path'
 import desktopClient from '../src/identity/oidc/xpod-desktop-client.json'
 import { productSurfaceRoots } from './src/routes/canonical-routes'
+
+// Opt-in evidence for the legacy full-package lane. Bundle membership comes from
+// Rollup; public files come from Vite's resolved publicDir, never a static glob.
+export function xpodBuildObservationPlugin(target: keyof typeof buildTargets): Plugin {
+  let publicDir: string | false;
+  let outputs: string[] = [];
+  return {
+    name: 'xpod-build-observation',
+    enforce: 'post',
+    apply: 'build',
+    configResolved(config) { publicDir = config.publicDir; },
+    generateBundle(_options, bundle) {
+      if (!process.env.XPOD_UI_BUILD_EVIDENCE_DIR) return;
+      outputs = Object.keys(bundle);
+      const collect = (directory: string, prefix = ''): void => {
+        for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+          const relative = prefix + entry.name;
+          if (entry.isDirectory()) collect(path.join(directory, entry.name), relative + '/');
+          else if (entry.isFile()) outputs.push(relative);
+          else throw new Error('UI public output must be a regular file: ' + relative);
+        }
+      };
+      if (publicDir && fs.existsSync(publicDir)) collect(publicDir);
+    },
+    closeBundle() {
+      const directory = process.env.XPOD_UI_BUILD_EVIDENCE_DIR;
+      if (!directory) return;
+      fs.mkdirSync(directory, { recursive: true });
+      fs.writeFileSync(path.join(directory, target + '.json'), JSON.stringify({
+        target, outDir: buildTargets[target].outDir, files: [...new Set(outputs)].sort(),
+      }), { flag: 'wx' });
+    },
+  };
+}
 
 export function xpodDesktopClientDocumentPlugin(): Plugin {
   const fileName = 'xpod-desktop-client.json';
@@ -181,38 +217,15 @@ export default defineConfig(({ command }) => {
   // 根据环境变量决定构建哪个 app
   const buildTarget = process.env.BUILD_TARGET || 'app';
 
-  const configs = {
-    app: {
-      base: '/app/',
-      outDir: '../static/app',
-      input: {
-        main: 'index.html',
-        'inrupt-smoke': 'inrupt-smoke.html',
-      },
-    },
-    dashboard: {
-      base: '/dashboard/',
-      outDir: '../static/dashboard',
-      input: 'dashboard.html',
-    },
-    settings: {
-      base: '/settings/',
-      outDir: '../static/settings',
-      // The callback entry shares this build: it imports the same session and app chunks, so a
-      // second build would ship a near-identical copy of the whole browser engine.
-      input: {
-        settings: 'settings.html',
-        'auth-callback': 'auth-callback.html',
-      },
-    },
-  };
+  // One declaration owns both Vite output locations and compatibility observations.
+  const configs = buildTargets;
 
   const config = configs[buildTarget as keyof typeof configs] || configs.app;
   const localXpodGateway = resolveLocalXpodGateway();
 
   return {
     base: command === 'serve' ? '/' : config.base,
-    plugins: [xpodDesktopClientDocumentPlugin(), react(), xpodDevelopmentRoutesPlugin(), stripTrailingWhitespacePlugin()],
+    plugins: [xpodBuildObservationPlugin(buildTarget in buildTargets ? buildTarget as keyof typeof buildTargets : 'app'), xpodDesktopClientDocumentPlugin(), react(), xpodDevelopmentRoutesPlugin(), stripTrailingWhitespacePlugin()],
     resolve: {
       alias: [
         { find: '@', replacement: path.resolve(__dirname, './src') },

@@ -1,10 +1,31 @@
 # Xpod CLI 目录 MVP 实现与验收记录
 
-当前状态（2026-10-02）：AgentFS 是 AFS 内部引擎，Xpod 提供 CLI/App 入口及可选 CSS/API/AFS 模块；模块统一启停和远程 Agent 控制仍是后续设计。客户端采用外部 Bun/Node，不内嵌 Bun。
+> 当前状态（2026-10-05）：本段取代以下历史段落中的“当前”状态。
+> - 用户于 2026-10-05 指定切换账号 A 的 `opencode-go/deepseek-v4.1-flash` 接续开发、自测和发布，主负责人独立验收；账号 B 的既有修改和证据保留。只有真实 provider HTTP 429 才切换 GPT-6.1 Sol。
+> - 冻结 native 产品为 `c7e9aadbf87302908e766411f4ea1fea6d0a54bf`。[run 37213350112](https://github.com/undefinedsco/xpod/actions/runs/37213350112) 的 Darwin/Linux ARM64 原生测试、源码材料和安装产物已独立验收；Bookworm Node22 无 Bun 消费端已通过。这些结果不证明 OS 挂载。诊断源码 `3db4d4f326a485c1203aa1f8f61daa907fe6bbec` 的类型检查与轻量专项通过（122 passed / 10 skipped）；修复后和提交前两轮原始 `bun run test:integration` 均退出 0，每轮前置 30、Lite 163 passed / 16 skipped、Full 63 passed，3492 项跟踪源码及 11577 项物理运行材料前后稳定。隔离项目名含大写而失败的一轮继续保留，不计入这两轮。
+> - [挂载 run 37234188908](https://github.com/undefinedsco/xpod/actions/runs/37234188908) 消费上述冻结产物，两平台均未通过。Linux 的前台 helper 真实 stderr 为 `fusermount3: mount failed: Permission denied`，尚不能仅凭文本认定缺少 device、capability 或具体 LSM 限制。macOS 在 beforeAll 的内核挂载观测中得到 `unknown`，清理守卫拒绝继续，五项必需用例 pending；尚未启动实际 NFS 场景，也未证明 NFS 权限失败。Node22 / 无 Bun 与归档、helper 哈希绑定已核验；测试环境及观测诊断仍需修复。
+> - [Private17 run 37223585588](https://github.com/undefinedsco/xpod-pro/actions/runs/37223585588) 在自有 Docker 环境中执行固定已发布镜像的 17 项语义检查，0 failed / 0 skipped，search、ABI 和资源清理通过。主负责人接受的是 installed PG17 component；不是 Public16、已部署 SealOS、Gateway 或 Chat 的验收。
+> - 公开 RC 源码为 `c47283cbc3f4929af6afdb9f83396dd5553f8f1d`，服务镜像为 `ghcr.io/undefinedsco/xpod@sha256:2ef561477b9aa8ecdd9f65e25bb51dce369d0c26204d1cd6c8263044e59541bc`，PG17 镜像为 `ccr.ccs.tencentyun.com/undefineds/xpod-rdf-postgres@sha256:de247beacf40af59a9e209e02cf257b0bdb33d9f47a7f77e4eb379635a2488ba`。镜像已发布。[Public16 观察 run 37230040908](https://github.com/undefinedsco/xpod-pro/actions/runs/37230040908) 的实际 native producer 在 `graph/container-prefix` 返回空行，预期为两个子资源；同一 SQLite 夹具通过。PG 镜像标签绑定私有源码 `c5665e33a80507798a39a4290b97013a9904cfeb`，但其 SDK / public adapter 源码版本未取得，不能用当前 adapter 源码代替实际二进制来源。Private17 不覆盖此案例；Public16 与部署验收仍未通过。
+> - 客户端不内嵌 Bun、Node 或 JSC。远程 clean-body 缓存尚未实现；不声称原生 99% 性能、物理 NAS、x64 或 Windows 已验收。Git/worktree 由外部工具维护，Pod 只保留 Link。
+> - 待完成：最终源码回归、macOS NFS / Linux Bookworm FUSE 挂载、大文件与 SIGKILL 恢复、Public16、实际 Gateway 认证与 Pod 读写、models/chat 分项验收及 preview.2。历史失败和旧产物的证据继续保留，不代替当前产品准入。
 
-发布整合分支 `release/0.4.21` 位于 `/Users/ganlu/.codex/worktrees/directory-release-integration/xpod`，基于已验收 0.4.20 保留既有发布修复，只接入目录相关提交。新 worktree 的 frozen install、工作区构建、源码/测试/客户端类型检查、依赖状态、组件生成和 42 项客户端包装回归均通过。原开发 worktree 的 account B/DeepSeek v4.1 Flash 正完成最终修复及串行集成测试；此处尚无带最终修复的完整回归或新 RC 的真实挂载通过记录。
+> 历史状态（2026-10-04，账号 B / opencode-go/deepseek-v4.1-flash；以下为 HISTORICAL）
+> - 当前源码：`codex/agentfs-current-release` HEAD `5ce81c679cf7ba0aab82b277a44b3ea469bcc72d`；native `codex/agentfs-native-acceptance` HEAD `8d4983c96e9942b8edeb7912659017d5e98762e4`。
+> - 原生 CI [run 37146470600](https://github.com/undefinedsco/xpod/actions/runs/37146470600) darwin+linux 两 ARM runner 串行实际成功；ROOT 19 项独立验收只接受 units/source/install。
+> - 服务候选 [run 37148085189](https://github.com/undefinedsco/xpod/actions/runs/37148085189) 只发布 exact 镜像 `ghcr.io/undefinedsco/xpod@sha256:fd2ee44323e3412c9b43e4ee31d4d9aeb6b512bb2524e9907c6c66cd50fb8428`；deploy 在 registry-authority 预检前失败，无 Public16/Private17/SealOS 证据。
+> - 实际平台准入（kit5 helper）：macOS NFS 失败——真实挂载、dirty 写入与 close 路径可达，但卸载后立即重挂间歇退出 75 `unknown runtime entry retained; daemon retained_pid=… pending actual_wait=null`；64/512/1024 MiB 读取/copy-up/412/重挂 pending 通过，SIGKILL 崩溃恢复阶段失败（writer 未被中断）。
+>   Linux Docker `node:22-bookworm-slim`（Node22，无 Bun）FUSE 失败——kit5 Linux helper 要求 `GLIBC_2.39` 与 `libssl.so.3/libcrypto.so.3`，bookworm glibc 2.36 加载即报错；Ubuntu24 ARM CI 绿色不代表 Debian/NAS 基线通过。
+> - 存储缓存：远程 bounded clean-body 缓存仍 NOT IMPLEMENTED（仅 dirty blob）；不主张缓存或 99% native。
+> - 实现子代理路由：账号 B 是当前唯一实现者；仅 **CONFIRMED HTTP429** 才转 Sol。旧文“当前兼容整合已转为 GPT‑6.1 Sol 开发”等为历史状态。
+> - 未完成：真实 OS 挂载（macOS NFS / Linux bookworm FUSE）、64/512/1024 MiB 与 SIGKILL 恢复/GC、live Gateway、公开 preview.2。
 
-现有 0.4.20 RC 的实际临时账号已验证 Profile canonical storage 绑定、Pod PUT/GET 与 Gateway 客户端认证，但目录 list/search 返回403，服务也缺少目录新 revision 逻辑。因此必须部署新候选再验收，不能将旧 RC 的基础成功当成完整目录通过。公开发行尚未完成。选型理由见 [引擎选型](xpod-cli-engine-selection.md)。以下不同提交、旧内嵌产物和早期测试结果保留为历史证据，不能替代最终 exact candidate 验收。
+历史状态（HISTORICAL，2026-10-03）：当前兼容整合已转为 GPT‑6.1 Sol 开发、负责人独立验收；此前 `ab583de` 基线的 43 项诊断单测及编译门禁通过，保留历史失败后，该基线原始完整集成实际退出 0：Lite 162 通过/16 跳过、Full 62 全通过；8,277 项覆盖路径前后稳定。新 source-bound Mac 安装、四项实际 NFS 功能及64／512／1024MiB功能与采样RSS通过；正文中kill后清理失败，恢复GC尚未执行，真实身份与新原生RC仍待验收。当前选型、未完成准入及开发基线以 [选型记录](xpod-cli-engine-selection.md) 为准；下文为保留来源的阶段证据。
+
+开发基线现已推进到 `9460a7e`。新增本地 runtime 卸载协调尚未通过 Rust 编译、真实挂载或整合后的完整回归；六项 CLI 生命周期夹具通过仅是轻量证据。当前待完成门禁以选型记录为准。
+
+当前受审开发位于 `/Users/ganlu/.codex/worktrees/agentfs-current-release/xpod`。原始 `bun run test:integration` 单次实际退出 0，145953 ms；Matrix 协作整体用例 52248 ms。24 个授权源码/测试路径在运行前后哈希一致，但完整 SDK、运行入口和生成产物的前后快照缺失；专项测试及类型检查还需结合独立代码审查判断，不能用代理自然退出替代验收。
+
+以下为按阶段保留的历史验收、候选和失败记录；旧文中的“未公开”“当前登录不可用”仅描述其所在阶段。最新客户端状态以 [公开发行记录](xpod-cli-preview-release.md) 为准，新服务/native RC 状态以 [RC 验收](acceptance/rc-qlever.md) 为准。选型理由及 rclone 测试资产比较见 [选型记录](xpod-cli-engine-selection.md)。
 
 ## 声明发行材料增量
 
@@ -30,6 +51,8 @@
 ## 验证证据
 
 所有日志位于 ignored `.test-data/agent-directory-workers/`；以下区分已运行和未运行，不将 skip 当作通过。
+
+新安装大文件验收原fixture receipt保持失败，SHA256为 `212187e8a55f7f61236ea8c3c62bebb64adbf232e41548fdb4da05ba6dd1a330`。随后有界NULL／NFS错误回复释放了本任务内核等待，原Node producer实际退出1/null，日志关闭后取hash，19项夹具／安装材料前后稳定。普通卸载等待期间的挂载表暂时缺项，进程退出后旧挂载重新出现，因此没有将早先缺项当成分离证明。负责人校验私密nonce父目录与精确owned挂载后执行一次强制分离，PID38950实际0/null，1.061秒；再次检查挂载表无该项、已知owner均消失。独立闭合回执SHA256为 `4ac6794b58c03f2bc96c6cd4cab95d837b4f852e4af08fa3832dc6cb06d061f5`。这是失败现场的运维收尾，不是崩溃恢复通过；新夹具修正和同session恢复GC／旧dirty／412重验仍需完成。
 
 ### 真实候选协议增量：存储版本与互斥
 
@@ -85,13 +108,13 @@ macOS 原单文件 ENOTEMPTY 的只读审计确认：日志仅保存最终 rmdir
 
 ## 已部署 Gateway 的独立 HTTP 验收入口
 
-`scripts/accept-live-agent-directory.ts` 连接指定的实际 Gateway，复用当前 CLI 登录，不启动服务、创建账号或改写凭据。必须显式提供 canonical Pod storage URL；不从 WebID 推导 Pod，不接受带 userinfo/query/fragment 的目标。当前登录的 Gateway 必须与参数一致，不将已有凭据用于另一部署。
+`scripts/accept-live-agent-directory.ts` 连接指定的实际 Xpod 根（CSS/API/AFS 为其中的可选模块），复用当前 CLI 登录，不启动服务、创建账号或改写凭据。必须显式提供 canonical Pod storage URL；不从 WebID 推导 Pod，不接受带 userinfo/query/fragment 的目标。当前登录的 Xpod 根必须与参数一致，不将已有凭据用于另一部署。
 
 ```sh
 # 只读 preflight：OIDC discovery、CLI 登录、Pod HEAD、目录 API
-bun scripts/accept-live-agent-directory.ts --gateway https://gateway.example/ --pod-root https://pod.example/alice/
+bun scripts/accept-live-agent-directory.ts --base_url https://node.example/ --pod-root https://pod.example/alice/
 # 明确启动写入验收；仅操作随机 xpod-cli-acceptance-UUID/ 子目录
-bun scripts/accept-live-agent-directory.ts --gateway https://gateway.example/ --pod-root https://pod.example/alice/ --write
+bun scripts/accept-live-agent-directory.ts --base_url https://node.example/ --pod-root https://pod.example/alice/ --write
 ```
 
 写入模式检查条件创建/同名冲突、准确 Range 正文及版本、完整目录枚举和 literal search、另一次写入后的旧版本 PUT/DELETE 冲突及新正文保留。清理仅对已确认回执使用 If-Match，删除后 HEAD 确认404；目录使用空枚举之前的版本，避免将旧的空目录观察绑定到后来新增子项的版本。未知写入结果、并发变化、缺 strong ETag 或非空目录保留，并在报告中列出路径及失败状态，不无条件删除或盲重试。报告默认保存在 `.test-data/agent-directory-workers/live-directory/`，记录阶段、固定错误码、目标 URL、遗留路径和 checker 的源码 hash/Git SHA/dirty 状态，不包含 token、正文或服务器错误响应；缺 Git 的源码归档标记身份未知，不伪称 clean commit。
@@ -213,7 +236,17 @@ Linux ARM64 独立源码包包含2,017个文件；在 `--network none` 的 Debia
 
 - Native source kit `5ca743db625f9d3732bbad2decd1441b1953d734b5e1e374c466c028a0940976`（21279文件/340 crates，中立 cwd、无 `--source`）。两平台 copied-source `rebuild-native.ts --test` 各 22 passed / 0 failed / 0 ignored，`testsPassed=true`：macOS helper `2e6fc596a4a360c3a9826548ca98238f4eaf93f6e347f113141c261792033883`，Linux helper `bbee0ac4e87e3bd14a303781377344b5c860aa7482f83afb5b27c0f4ff20c381`。
 - 匹配 receipt 重新打包的预览：macOS archive `f28a4536ed3e704844b2e310c309d98c8314c0cbdc35bea3db4ef6fd0f34588c`（69294060 bytes，`validationState=install-verified`），Linux archive `d915a65c0e000bf35d534e8d2cbfc5237fd8eb4c7b96919f7e51e245c710f46a`（69887449 bytes，跨编译保持 `unverified`）。JS CLI 742979 bytes、launcher 642 bytes；core 约7.38/8.79 MiB，完整 archive 约66.08/66.65 MiB。两者 `publicReleaseReady=false`，未改 public gate。
-- 真实安装/挂载：macOS 安装包内 CLI/helper 真实 NFS 内核挂载、auth 代理、重启、冲突、rg 为 13 passed / 1 skipped（`accept-darwin-final.log`）。该 skip 是 `nativeOverlayScenario.test.ts` 中禁用模式的 informational 断言；`runOverlay` 开启时两项真实挂载场景实际通过，不得把此 skip 说成缺内核挂载。Linux 安装包在明确无 Bun 的 node:22-bookworm-slim 中真实 FUSE 挂载、CLI 生命周期、dirty rg、commit/recover、冲突与卸载 PASS（`accept-linux-final.log`、`agentfs-linux-report.json`，installedCli=true／dirtyRg=true），测试容器已清理。
+- HISTORICAL（旧 helper/旧候选，不适用于 kit5）：真实安装/挂载：macOS 安装包内 CLI/helper 真实 NFS 内核挂载、auth 代理、重启、冲突、rg 为 13 passed / 1 skipped（`accept-darwin-final.log`）。该 skip 是 `nativeOverlayScenario.test.ts` 中禁用模式的 informational 断言；`runOverlay` 开启时两项真实挂载场景实际通过，不得把此 skip 说成缺内核挂载。Linux 安装包在明确无 Bun 的 node:22-bookworm-slim 中真实 FUSE 挂载、CLI 生命周期、dirty rg、commit/recover、冲突与卸载 PASS（`accept-linux-final.log`、`agentfs-linux-report.json`，installedCli=true／dirtyRg=true），测试容器已清理。
 - 包内回归：`packages/xpod-cli` 32 passed / 0 failed / 250 assertions；源码、测试与包类型检查均退出0。完整 `bun run test:integration` 退出0：lite 160 passed / 15 skipped、full 60 passed / 0 skipped，`AgentDirectoryProtocol` local 10项（lite 5 skip）与 cloud 10项均通过；owned Docker 栈/卷/网络已清理。
 
 这些是 HTTP/auth 夹具上的真实 OS 挂载与 source-bound native 测试，**不是**当前已部署 Gateway、实际用户账号/Pod 或物理 NAS 硬件的验收。此前内嵌 Bun/JSC 候选、对应材料清单与日志仍为历史证据，不适用于当前外部运行时产物；公开准入、发布渠道与 clean-commit 安装仍保持未完成。
+
+## 2026-10-04 状态更新（账号 B / deepseek-v4.1-flash）
+
+- 原生 CI [run 37146470600](https://github.com/undefinedsco/xpod/actions/runs/37146470600) 在 `darwin-arm64` 与 `linux-arm64` 两个 ARM runner 串行实际成功（事件 push，HEAD `8d4983c96`）：官方在线导出 → `--verify-only` → `--frozen` 离线重建完整 Rust 60（58 通过 / 2 既有 ignore / 0 filtered）→ 新 kit5 helper/源码绑定打包 → 解压安装 `install-verified`。
+- source-kit `84c5d586…`；helper darwin `2d4a7360…` / linux `88c299dd…`；archive darwin `6cdd9535…` / linux `1408ec6b…`；编译器 nightly-2026-09-30（rustc commit `5c543b0b…`）。
+- 原 `bun run test:integration`（固定 Bun 1.4.2，脱离 shell 生命周期）实际 `Popen.wait` exit 0/null、399.152s，preflight 30、Lite 163+16skip、Full 63；8920 正文与外部 native 五文件前后一致，专属进程/容器/卷已清理。
+- 打包消费端：Node 22.21.1/npm 与 Bun 1.4.2 对同一候选 tar（`669222191c…`）实际通过，`passed:true`，7/7 bundle bytesMatched。
+- kit5 实际平台准入（2026-10-04，本 worktree，source-bound）：macOS NFS 用 kit5 helper（`2d4a7360…`，archive `6cdd9535…`）跑 tracked `tests/agentfs-pod/nativeOverlayScenario.test.ts`（`XPOD_AGENTFS_RUN_OVERLAY=1` + 安装 CLI）；真实挂载/cleanup 可达，但重挂或跨用例新挂间歇失败 `exit 75: agentfs-pod: unknown runtime entry retained; daemon retained_pid=… pending actual_wait=null`（两次运行一次在重挂、一次在下一用例首挂）。同 helper 的 64/512/1024 MiB 读取/copy-up/412/重挂 pending 三项实际 PASS，SIGKILL 崩溃恢复阶段 FAIL（64KiB barrier writer 返回 `write-completed` 而非 `write-interrupted`）。无残留 mount/daemon（清理核验）。
+- kit5 Linux helper（`88c299dd…`，archive `1408ec6b…`）在 Docker `node:22-bookworm-slim`（Node22，明确无 Bun）失败：`/lib/aarch64-linux-gnu/libc.so.6: version 'GLIBC_2.39' not found`，且 `libssl.so.3`/`libcrypto.so.3` 缺失；bookworm 为 glibc 2.36。Ubuntu24 ARM CI 绿色不代表 Debian/NAS 基线通过。已核验 owned 容器/网络清理，无残留。
+- 仍未验收：真实 OS 挂载（macOS NFS / Linux bookworm FUSE）、SIGKILL 恢复/GC、dirty412 负载；live Gateway、公开 preview.2。CCR authority 缺失使 Private17/SealOS 未运行。远程 bounded clean-body 缓存仍 NOT IMPLEMENTED。本段仅为状态记录，历史失败证据保持不变。

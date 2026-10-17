@@ -1,0 +1,19 @@
+# License materials are original bytes, including hash-addressed notices.
+packages/**/licenses/** -text
+
+# Normal AFS producer tools must retain Git blob bytes across OS checkouts.
+/scripts/check-cli-publication.cjs text eol=lf
+/scripts/check-afs-js-archive-ci.cjs text eol=lf
+/scripts/lib/afs-publication-command.cjs text eol=lf
+/scripts/lib/legacy-afs-supply.cjs text eol=lf
+/scripts/lib/product-artifact-command.cjs text eol=lf
+/scripts/lib/legacy-root-artifact-context.cjs text eol=lf
+/scripts/legacy-root-afs-supply.ts text eol=lf
+/scripts/acquire-independent-product-input.ts text eol=lf
+/scripts/lib/inspect-product-artifact.py text eol=lf
+/packages/xpod-afs/scripts/build-client-publication.ts text eol=lf
+/packages/xpod-afs/scripts/client-publication.cjs text eol=lf
+/packages/xpod-afs/scripts/client-publication-run.cjs text eol=lf
+
+# The normal AFS stage binds this private source manifest by original byte hash.
+/packages/xpod-afs/package.json text eol=lf

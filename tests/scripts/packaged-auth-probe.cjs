@@ -71,6 +71,17 @@ async function main() {
     await verifyBunJoseBuilds(path.join(packageRoot, 'package.json'), packageRoot);
     await verifyBunJoseBuilds(load.resolve('openid-client'), packageRoot);
   }
+  for (const scopedLoad of [load, openidLoad]) {
+    const jose = scopedLoad('jose'); // Must be synchronously loadable by its actual callers.
+    const { publicKey, privateKey } = await jose.generateKeyPair('RS256');
+    const publicJwk = await jose.exportJWK(publicKey);
+    const verificationKey = await jose.importJWK(publicJwk, 'RS256');
+    const token = await new jose.SignJWT({ fixture: 'packaged-auth' })
+      .setProtectedHeader({ alg: 'RS256' }).sign(privateKey);
+    const { payload } = await jose.jwtVerify(token, verificationKey, { algorithms: ['RS256'] });
+    assert.equal(payload.fixture, 'packaged-auth');
+    await assert.rejects(jose.jwtVerify(token, verificationKey, { algorithms: ['ES256'] }));
+  }
   const { Session } = load('@inrupt/solid-client-authn-browser');
   const { EVENTS } = load('@inrupt/solid-client-authn-core');
   const session = new Session({ clientAuthentication: {

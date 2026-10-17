@@ -1,11 +1,11 @@
 import { afterEach, expect, it } from 'vitest';
 import { createRequire } from 'node:module';
 import { execFileSync } from 'node:child_process';
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
 const require = createRequire(import.meta.url);
-const { bundleLocalDependenciesIntoTarball, packWithManifestRestoration } = require('../../scripts/run-npm-pack.cjs');
+const { bundleLocalDependenciesIntoTarball, packWithManifestRestoration, summarizeTarball } = require('../../scripts/run-npm-pack.cjs');
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 function json(file: string, value: unknown) {
@@ -49,14 +49,14 @@ it('ships runtime assets and declares external and uninstalled optional dependen
   expect(require(path.join(packaged, 'node_modules/auth/lib/runtime.js'))).toBe(42);
   for (const dir of ['config', 'templates', 'bin']) expect(readFileSync(path.join(packaged, `node_modules/auth/${dir}/runtime.js`), 'utf8')).toContain('42');
 });
-it('declares private bundles as package-local files so publish normalization cannot invent registry edges', () => {
+it('declares exact public versions with standard bundles for normal registry consumers', () => {
   const f = fixture();
-  // npm publication fills missing bundle edges with "*". File edges retain
-  // the bundled copy without asking Bun to resolve an unpublished registry version.
+  // The bundled payload supplies the exact version before npm resolves
+  // dependencies; package-local file edges cannot be read before extraction.
   const dependencies = f.dependencies.map(({ patchedRuntime: _patched, ...entry }) => entry);
   bundleLocalDependenciesIntoTarball(f.tarball, dependencies);
   const manifest = JSON.parse(readFileSync(path.join(unpack(f), 'package.json'), 'utf8'));
-  expect(manifest.dependencies.auth).toBe('file:./node_modules/auth');
+  expect(manifest.dependencies.auth).toBe(JSON.parse(readFileSync(path.join(f.source, 'package.json'), 'utf8')).version);
   expect(manifest.bundledDependencies).toContain('auth');
 });
 it('preserves the root version and nests conflicting pure-JS dependencies without losing their external edges', () => {
@@ -215,4 +215,81 @@ it('does not overwrite a pre-existing manifest recovery backup', () => {
   json(path.join(f.root, '.test-data/package.json.pack.backup'), { preserved: true });
   expect(() => packWithManifestRestoration(f.root, { command: process.execPath, args: [] }, process.env)).toThrow('backup already exists');
   expect(JSON.parse(readFileSync(path.join(f.root, '.test-data/package.json.pack.backup'), 'utf8'))).toEqual({ preserved: true });
+});
+
+it('filters normalized public compat runtime while preserving its manifest, entries and complete service archive', () => {
+  const f = fixture();
+  json(path.join(f.source, 'package.json'), { name: 'auth', version: '1.0.0',
+    main: 'src/index.js', types: 'src/index.d.ts', files: ['src', 'dist'],
+    exports: { '.': { types: './src/index.d.ts', default: './src/index.js' } } });
+  for (const name of ['src/index.js', 'src/helper.js', 'src/index.d.ts',
+    'src/index.js.map', 'src/index.d.ts.map', 'src/ignored.test.js', 'dist/cache.tsbuildinfo']) {
+    mkdirSync(path.dirname(path.join(f.source, name)), { recursive: true });
+    writeFileSync(path.join(f.source, name), name.endsWith('index.js') ? 'module.exports = 42;' : name);
+  }
+  const dependencies = f.dependencies.map(({ patchedRuntime: _patched, ...entry }) => entry);
+  const publicArchive = path.join(f.root, 'public.tgz');
+  execFileSync('bun', ['pm', 'pack', '--ignore-scripts', '--filename', publicArchive], { cwd: f.source, stdio: 'pipe' });
+  const publicManifest = JSON.parse(execFileSync('tar', ['xOf', publicArchive, 'package/package.json']).toString());
+  const members = execFileSync('tar', ['tf', publicArchive]).toString();
+  expect(members).toContain('src/index.js.map');
+  expect(members).toContain('src/ignored.test.js');
+  bundleLocalDependenciesIntoTarball(f.tarball, dependencies);
+  const packaged = unpack(f);
+  expect(JSON.parse(readFileSync(path.join(packaged, 'node_modules/auth/package.json'), 'utf8'))).toEqual(publicManifest);
+  for (const name of ['src/index.js', 'src/helper.js', 'src/index.d.ts']) expect(existsSync(path.join(packaged, 'node_modules/auth', name))).toBe(true);
+  for (const name of ['src/index.js.map', 'src/index.d.ts.map', 'src/ignored.test.js', 'dist/cache.tsbuildinfo']) expect(existsSync(path.join(packaged, 'node_modules/auth', name)), name).toBe(false);
+  const summary = summarizeTarball(f.tarball);
+  json(path.join(f.root, 'pack.json'), summary);
+  expect(() => execFileSync(process.execPath, [path.resolve('scripts/check-pack-json.cjs'), path.join(f.root, 'pack.json')], { stdio: 'pipe' })).not.toThrow();
+  // The service path transports the original standard package, not the filtered runtime copy.
+  const service = fixture();
+  cpSync(f.source, service.source, { recursive: true });
+  mkdirSync(path.join(service.root, 'seed/package/dist/runtime'), { recursive: true });
+  writeFileSync(path.join(service.root, 'seed/package/dist/runtime/service-entry.js'), 'module.exports = {};');
+  execFileSync('tar', ['czf', service.tarball, '-C', path.join(service.root, 'seed'), 'package']);
+  bundleLocalDependenciesIntoTarball(service.tarball, service.dependencies.map(({ patchedRuntime: _patched, ...entry }) => entry), 'service');
+  const servicePackage = unpack(service);
+  const archive = path.join(servicePackage, 'runtime-packages/auth.tgz');
+  const serviceMembers = execFileSync('tar', ['tf', archive]).toString();
+  expect(serviceMembers).toContain('src/index.js.map');
+  expect(serviceMembers).toContain('src/ignored.test.js');
+  expect(JSON.parse(execFileSync('tar', ['xOf', archive, 'package/package.json']).toString())).toEqual(publicManifest);
+  expect(execFileSync('tar', ['xOf', archive, 'package/src/index.js.map']).toString()).toBe('src/index.js.map');
+  expect(existsSync(path.join(servicePackage, 'node_modules/auth'))).toBe(false);
+});
+
+it.each(['success', 'failure'])('removes summary temporary extraction on %s', (outcome) => {
+  const f = fixture();
+  const temporary = path.join(f.root, 'summary-tmp');
+  mkdirSync(temporary);
+  const tarball = outcome === 'success' ? f.tarball : path.join(f.root, 'broken.tgz');
+  if (outcome === 'failure') writeFileSync(tarball, 'not a tar archive');
+  const command = `const {summarizeTarball}=require(process.argv[1]); let failed=false; try {summarizeTarball(process.argv[2]);} catch(e) {failed=true; if(process.argv[3] !== 'failure') throw e;} if(failed !== (process.argv[3] === 'failure')) throw new Error('unexpected summary outcome');`;
+  execFileSync(process.execPath, ['-e', command, path.resolve('scripts/run-npm-pack.cjs'), tarball, outcome], {
+    env: { ...process.env, TMPDIR: temporary, TMP: temporary, TEMP: temporary }, stdio: 'pipe',
+  });
+  expect(readdirSync(temporary).filter(name => name.startsWith('xpod-pack-summary-'))).toEqual([]);
+});
+
+it('reapplies Drizzle ESM runtime repair after standard public compat normalization', () => {
+  const f = fixture();
+  const name = '@undefineds.co/drizzle-solid';
+  json(path.join(f.source, 'package.json'), { name, version: '1.0.0',
+    main: 'dist/index.js', types: 'dist/index.d.ts', files: ['dist'],
+    exports: { '.': { types: './dist/index.d.ts', import: './dist/esm/index.js', require: './dist/index.js' } } });
+  for (const [entry, content] of Object.entries({ 'dist/index.js': 'module.exports = 42;',
+    'dist/index.d.ts': 'export declare const answer: number;',
+    'dist/esm/index.js': "export {answer} from './helper';",
+    'dist/esm/helper.js': 'export const answer = 42;' })) {
+    mkdirSync(path.dirname(path.join(f.source, entry)), { recursive: true });
+    writeFileSync(path.join(f.source, entry), content);
+  }
+  bundleLocalDependenciesIntoTarball(f.tarball, [{ name, sourcePackageRoot: f.source, repoRoot: f.root }]);
+  const packaged = unpack(f);
+  const entry = path.join(packaged, 'node_modules', name, 'dist/esm/index.js');
+  const actual = execFileSync(process.execPath, ['--input-type=module', '-e',
+    `import {pathToFileURL} from 'node:url'; const result=await import(pathToFileURL(process.argv[1])); console.log(result.answer);`, entry], { encoding: 'utf8' });
+  expect(actual.trim()).toBe('42');
+  expect(existsSync(path.join(packaged, 'node_modules', name, 'dist/index.d.ts'))).toBe(true);
 });

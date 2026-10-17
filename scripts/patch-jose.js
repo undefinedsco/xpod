@@ -8,8 +8,6 @@
 const fs = require('fs');
 const path = require('path');
 
-const nodeModulesPath = path.join(__dirname, '..', 'node_modules');
-
 function findJosePackages(root) {
   const results = [];
   const queue = [root];
@@ -45,12 +43,9 @@ function findJosePackages(root) {
   return results;
 }
 
-if (!fs.existsSync(nodeModulesPath)) {
-  console.log('[patch-jose] node_modules not found, skipping');
-  process.exit(0);
-}
-
-try {
+function patchInstalledPackages(repositoryRoot = path.join(__dirname, '..')) {
+  const nodeModulesPath = path.join(repositoryRoot, 'node_modules');
+  if (!fs.existsSync(nodeModulesPath)) throw new Error('node_modules not found');
   let patched = 0;
   let alreadyPatched = 0;
   let skipped = 0;
@@ -80,7 +75,19 @@ try {
   }
 
   console.log(`[patch-jose] Patched ${patched} jose package(s); ${alreadyPatched} already patched; ${skipped} skipped`);
-} catch (err) {
-  console.error('[patch-jose] Failed to patch jose:', err.message);
-  process.exit(1);
+  return { patched, alreadyPatched, skipped };
+}
+
+module.exports = { patchInstalledPackages };
+if (require.main === module) {
+  try {
+    if (!fs.existsSync(path.join(__dirname, '..', 'node_modules'))) {
+      console.log('[patch-jose] node_modules not found, skipping');
+    } else {
+      patchInstalledPackages();
+    }
+  } catch (err) {
+    console.error('[patch-jose] Failed to patch jose:', err.message);
+    process.exit(1);
+  }
 }

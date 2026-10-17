@@ -23,7 +23,7 @@ import { Client } from 'minio';
 export const OBJECT_STORE_IMAGE =
   'ghcr.io/versity/versitygw@sha256:30292fc2eeacc67a36993b01f7a7a5e3361a19cced0e80c1d71cfa2a4b0a2499';
 
-/** Port the S3 API listens on, matching the endpoint the tests connect to. */
+/** Fixed container listener port; Full host publications may use a different port. */
 export const OBJECT_STORE_PORT = 9000;
 export const OBJECT_STORE_ACCESS_KEY = 'minioadmin';
 export const OBJECT_STORE_SECRET_KEY = 'minioadmin';

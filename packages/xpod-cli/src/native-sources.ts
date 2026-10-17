@@ -62,6 +62,9 @@ function engineFromManifest(text: string): NativeSourceKit['engine'] {
   return { repository: cli.git, commit: cli.rev };
 }
 
+export const NATIVE_PATCHES = ['fuse-revalidation.patch', 'nfs-directory-cookie.patch', 'fuse-owned-session-ready.patch'] as const;
+const NATIVE_REBUILD_SCRIPTS = ['rebuild-native.ts', 'collect-native-notices.ts'] as const;
+
 export function nativeWorkingManifest(original: string, engine: NativeSourceKit['engine']): string {
   if (original.includes('[patch.')) { throw new Error('Unexpected original native patch configuration'); }
   return original + `\n[patch."${engine.repository}"]\nagentfs = { path = "../upstream/cli" }\nagentfs-sdk = { path = "../upstream/sdk/rust" }\n`;
@@ -85,8 +88,8 @@ export function validateNativeSourceIndex(value: unknown): NativeSourceKit {
   const files = sourceFileIndex(kit.files);
   for (const name of ['original/helper/Cargo.toml', 'original/helper/Cargo.lock', 'helper/Cargo.toml', 'helper/Cargo.lock',
     'helper/.cargo/config.toml', 'helper/src/main.rs', 'upstream/README.md', 'upstream/sdk/rust/Cargo.toml',
-    'upstream/cli/src/fuse.rs', 'upstream/cli/src/nfs.rs', 'patches/fuse-revalidation.patch', 'patches/nfs-directory-cookie.patch',
-    'original-upstream.tar', 'packages/xpod-cli/scripts/rebuild-native.ts',
+    'upstream/cli/src/fuse.rs', 'upstream/cli/src/nfs.rs', ...NATIVE_PATCHES.map(name => `patches/${name}`),
+    'original-upstream.tar', ...NATIVE_REBUILD_SCRIPTS.map(name => `packages/xpod-cli/scripts/${name}`),
     'packages/xpod-cli/src/native-sources.ts', 'packages/xpod-cli/src/source-materials.ts',
     'packages/xpod-cli/src/manifest.ts', 'packages/xpod-cli/src/native-target.ts',
     'licenses/xpod/LICENSE', 'licenses/native/valuable-0.1.1/LICENSE', 'licenses/native/valuable-0.1.1/provenance.json',
@@ -115,7 +118,7 @@ function verifyNativeWorkingFiles(root: string, kit: NativeSourceKit): void {
   const expected = { source: { 'crates-io': { 'replace-with': 'vendored-sources' }, 'vendored-sources': { directory: '../vendor' } } };
   if (JSON.stringify(config) !== JSON.stringify(expected)) { throw new Error('Native source replacement configuration differs'); }
   const upstream = path.join(root, 'upstream');
-  for (const patch of ['fuse-revalidation.patch', 'nfs-directory-cookie.patch']) {
+  for (const patch of NATIVE_PATCHES) {
     checkNativePatch(upstream, path.join(root, 'patches', patch), true);
   }
   const lock = TOML.parse(read('helper/Cargo.lock')) as { package: { name: string; version: string; source?: string; checksum?: string }[] };
@@ -156,7 +159,7 @@ export function exportNativeSources(options: { repoRoot: string; upstream: strin
   runSourceCommand('git', ['-C', path.resolve(options.upstream), 'archive', '--format=tar', `--output=${archive}`, engine.commit], options.repoRoot);
   runSourceCommand('tar', ['-xf', archive, '-C', path.join(root, 'upstream')], options.repoRoot);
   cpSync(path.join(canonical, 'patches'), path.join(root, 'patches'), { recursive: true });
-  for (const patch of ['fuse-revalidation.patch', 'nfs-directory-cookie.patch']) {
+  for (const patch of NATIVE_PATCHES) {
     const file = path.join(root, 'patches', patch);
     const upstream = path.join(root, 'upstream');
     checkNativePatch(upstream, file, false);
@@ -177,7 +180,9 @@ export function exportNativeSources(options: { repoRoot: string; upstream: strin
     cpSync(path.join(options.repoRoot, 'packages/xpod-cli/src', name), path.join(directory, name));
   }
   mkdirSync(path.join(root, 'packages/xpod-cli/scripts'), { recursive: true });
-  cpSync(path.join(options.repoRoot, 'packages/xpod-cli/scripts/rebuild-native.ts'), path.join(root, 'packages/xpod-cli/scripts/rebuild-native.ts'));
+  for (const name of NATIVE_REBUILD_SCRIPTS) {
+    cpSync(path.join(options.repoRoot, 'packages/xpod-cli/scripts', name), path.join(root, 'packages/xpod-cli/scripts', name));
+  }
   cpSync(path.join(options.repoRoot, 'packages/xpod-cli/NATIVE-SOURCE-README.md'), path.join(root, 'README.md'));
   cpSync(path.join(options.repoRoot, 'package.json'), path.join(root, 'original/xpod-package.json'));
   const files: SourceFile[] = [];

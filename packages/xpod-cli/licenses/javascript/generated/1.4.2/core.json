@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "bunVersion": "1.4.2",
+  "prefixSha256": "a3e72d01f26bcd39142331f3a6d2033a495188dc06ab7b477f728f88afcff0a7",
+  "prefixBytes": 1867,
+  "provenance": {
+    "basePrefixSha256": "a3e72d01f26bcd39142331f3a6d2033a495188dc06ab7b477f728f88afcff0a7",
+    "derivation": "Actual self-contained CLI host ESM prefix matches the existing official Bun base prefix byte-for-byte; admitted SDK host code is bundled normally."
+  },
+  "file": {
+    "sourcePath": "generated-prefix.js",
+    "object": "objects/a3e72d01f26bcd39142331f3a6d2033a495188dc06ab7b477f728f88afcff0a7.txt",
+    "sha256": "a3e72d01f26bcd39142331f3a6d2033a495188dc06ab7b477f728f88afcff0a7",
+    "provenance": {
+      "role": "Actual CLI host prefix, exact byte match with the existing Bun base-prefix object."
+    }
+  }
+}

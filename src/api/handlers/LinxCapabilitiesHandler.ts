@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { ServerResponse } from 'node:http';
 import type { ApiServer } from '../ApiServer';
-import { PACKAGE_ROOT } from '../../runtime';
+import { PACKAGE_ROOT } from '../../runtime/package-root';
 
 const LINX_LOCAL_ONBOARDING_CONTRACT = 'linx-local-onboarding/v1';
 

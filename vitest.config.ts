@@ -1,5 +1,7 @@
 import path from 'node:path';
 import { defineConfig } from 'vitest/config';
+import testRunnerOwnership from './scripts/test-runner-ownership.json';
+import testFileNames from './scripts/test-file-names.json';
 const coverageEnabled = process.env.COVERAGE === 'true';
 
 export default defineConfig({
@@ -28,6 +30,7 @@ export default defineConfig({
     // Exclude PTY integration tests - they crash vitest due to node-pty + V8 threading issues
     // Run them separately with: npx ts-node scripts/test-terminal-pty.ts
     // Exclude external symlinked modules - they have their own test setup
+    include: [`**/*.{${testFileNames.kinds.join(',')}}.{${testFileNames.extensions.join(',')}}`],
     exclude: [
       '**/node_modules/**',
       '**/dist/**',
@@ -38,8 +41,8 @@ export default defineConfig({
       '**/_deprecated_quadstore/**',
       'qlever/**',
       'desktop/test/**',
-      // bun:test suites are run by the standalone CLI test gate in CI.
-      'packages/xpod-cli/tests/**',
+      // One ownership declaration also drives actual independent module gates.
+      ...testRunnerOwnership.map(group => group.file ?? `${group.directory}/**`),
       'scripts/patch-inrupt-authn-refresh.test.js',
       'tests/e2e/**',
       'tests/package/**',

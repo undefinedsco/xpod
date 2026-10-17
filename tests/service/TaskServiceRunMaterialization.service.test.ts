@@ -318,3 +318,121 @@ describe('Task service Run materialization', () => {
     expect(backend.inputs[0].prompt).toBe('summarize deploy\n\nEvent payload:\n{"version":"1.2.3"}');
   });
 });
+
+
+describe('Task first-checkpoint failure diagnostics', () => {
+  const context = { userId: 'u1', auth: { type: 'solid' as const, webId: 'https://pod.test/alice/profile/card#me', clientId: 'client', clientSecret: 'secret' } };
+  async function prepare(store: InMemoryStore<StoreContext>, backend: RunExecutionBackend,
+    contextRetriever?: { retrieve: () => Promise<undefined> }) {
+    const service = new TaskService({ store, executionBackend: backend, contextRetriever });
+    const authBinding = await createTaskAuthBinding(store, context);
+    const { task } = await service.createTask({ prompt: 'private prompt', workspace: workspaceRef,
+      runner: 'pi:codex', triggerKind: TaskTriggerKind.INTERVAL, intervalSeconds: 3600, authBinding }, context);
+    return { service, task };
+  }
+  it('records a deferred retrieval failure without changing queued acknowledgment or local metadata', async () => {
+    const store = new InMemoryStore<StoreContext>();
+    let reject!: (error: Error) => void;
+    const pending = new Promise<undefined>((_resolve, fail) => { reject = fail; });
+    let retrievalStarted = false;
+    const { service, task } = await prepare(store, new RecordingRunBackend(), { retrieve: () => { retrievalStarted = true; return pending; } });
+    const accepted = await service.runNow(task.id, context);
+    expect(accepted.run.status).toBe('queued');
+    await vi.waitFor(() => expect(retrievalStarted).toBe(true));
+    reject(new Error('Bearer private-token https://private.example/prompt'));
+    await vi.waitFor(async () => expect((await store.loadRun(accepted.run.id, context)).status).toBe('failed'));
+    const final = await store.loadRun(accepted.run.id, context);
+    expect(final.metadata?.failureDiagnostic).toEqual({ code: 'TASK_EXECUTION_ERROR', stage: 'retrieve_context', status: 'failed' });
+    expect(final.metadata?.taskId).toBe(task.id);
+    expect(JSON.stringify(final.metadata?.failureDiagnostic)).not.toContain('private');
+  });
+  it('captures failures before the inner execution try at the actual assistant save', async () => {
+    const store = new InMemoryStore<StoreContext>();
+    const original = store.addThreadItem.bind(store);
+    vi.spyOn(store, 'addThreadItem').mockImplementation(async (thread, item, ctx) => {
+      if (item.type === 'assistant_message') throw new Error('private storage body');
+      return original(thread, item, ctx);
+    });
+    const { service, task } = await prepare(store, new RecordingRunBackend());
+    const accepted = await service.runNow(task.id, context);
+    await vi.waitFor(async () => expect((await store.loadRun(accepted.run.id, context)).status).toBe('failed'));
+    expect((await store.loadRun(accepted.run.id, context)).metadata?.failureDiagnostic).toEqual({ code: 'TASK_BACKGROUND_ERROR', stage: 'save_assistant_initial', status: 'failed' });
+  });
+  it('preserves the primary runtime diagnostic when terminal assistant persistence also fails', async () => {
+    const store = new InMemoryStore<StoreContext>();
+    const backend: RunExecutionBackend = { async *start() { yield { type: 'error', message: 'private provider response' }; } };
+    vi.spyOn(store, 'saveItem').mockRejectedValue(new Error('secondary persistence secret'));
+    const { service, task } = await prepare(store, backend);
+    const accepted = await service.runNow(task.id, context);
+    await vi.waitFor(async () => expect((await store.loadRun(accepted.run.id, context)).status).toBe('failed'));
+    expect((await store.loadRun(accepted.run.id, context)).metadata?.failureDiagnostic).toEqual({ code: 'TASK_RUNTIME_ERROR', stage: 'start_backend', status: 'failed' });
+  });
+  it('classifies cancellation monitor read errors without exposing the error text', async () => {
+    const store = new InMemoryStore<StoreContext>();
+    const { service, task } = await prepare(store, new RecordingRunBackend());
+    const load = store.loadRun.bind(store);
+    vi.spyOn(store, 'loadRun').mockImplementation(load).mockRejectedValueOnce(new Error('Bearer monitor-secret'));
+    const accepted = await service.runNow(task.id, context);
+    await vi.waitFor(async () => expect((await load(accepted.run.id, context)).status).toBe('failed'));
+    expect((await load(accepted.run.id, context)).metadata?.failureDiagnostic).toEqual({ code: 'TASK_STATE_READ_ERROR', stage: 'read_current_run', status: 'failed' });
+  });
+  it('records a deferred ONCE terminal Task save at its actual boundary', async () => {
+    const store = new InMemoryStore<StoreContext>();
+    const { service, task } = await prepare(store, new RecordingRunBackend());
+    task.triggerKind = TaskTriggerKind.ONCE;
+    await store.saveTask(task, context);
+    let reject!: (error: Error) => void;
+    let entered = false;
+    const pending = new Promise<void>((_resolve, fail) => { reject = fail; });
+    const saveTask = store.saveTask.bind(store);
+    vi.spyOn(store, 'saveTask').mockImplementation(async (value, ctx) => {
+      if (value.status === TaskStatus.COMPLETED) { entered = true; await pending; }
+      else await saveTask(value, ctx);
+    });
+    const accepted = await service.runNow(task.id, context);
+    await vi.waitFor(() => expect(entered).toBe(true));
+    reject(new Error('private terminal Task persistence'));
+    await vi.waitFor(async () => expect((await store.loadRun(accepted.run.id, context)).status).toBe('failed'));
+    expect((await store.loadRun(accepted.run.id, context)).metadata?.failureDiagnostic).toEqual({ code: 'TASK_BACKGROUND_ERROR', stage: 'save_task_terminal', status: 'failed' });
+  });
+  it('records a deferred cancelled assistant save without changing cancellation', async () => {
+    const store = new InMemoryStore<StoreContext>();
+    const { service, task } = await prepare(store, new RecordingRunBackend());
+    const saveRun = store.saveRun.bind(store);
+    let finalSaved = false;
+    vi.spyOn(store, 'saveRun').mockImplementation(async (value, ctx) => {
+      if (value.status === 'running') { value.status = 'cancelled'; value.cancelRequestedAt = Date.now() / 1000; }
+      await saveRun(value, ctx);
+      if (value.metadata?.failureDiagnostic) finalSaved = true;
+    });
+    let reject!: (error: Error) => void;
+    let entered = false;
+    const pending = new Promise<void>((_resolve, fail) => { reject = fail; });
+    vi.spyOn(store, 'saveItem').mockImplementation(async () => { entered = true; await pending; });
+    const accepted = await service.runNow(task.id, context);
+    await vi.waitFor(() => expect(entered).toBe(true));
+    reject(new Error('private cancelled assistant persistence'));
+    await vi.waitFor(() => expect(finalSaved).toBe(true));
+    const final = await store.loadRun(accepted.run.id, context);
+    expect(final.status).toBe('cancelled');
+    expect(final.metadata?.failureDiagnostic).toEqual({ code: 'TASK_BACKGROUND_ERROR', stage: 'save_terminal_assistant', status: 'failed' });
+  });
+  it('allows concurrent cancellation to win over a deferred failure', async () => {
+    const store = new InMemoryStore<StoreContext>();
+    let reject!: (error: Error) => void;
+    const pending = new Promise<undefined>((_resolve, fail) => { reject = fail; });
+    let retrievalStarted = false;
+    const { service, task } = await prepare(store, new RecordingRunBackend(), { retrieve: () => { retrievalStarted = true; return pending; } });
+    const accepted = await service.runNow(task.id, context);
+    await vi.waitFor(() => expect(retrievalStarted).toBe(true));
+    const save = vi.spyOn(store, 'saveRun');
+    const current = await store.loadRun(accepted.run.id, context);
+    current.cancelRequestedAt = Date.now() / 1000; current.status = 'cancelled';
+    await store.saveRun(current, context);
+    reject(new Error('private failure after cancel'));
+    await vi.waitFor(() => expect(save).toHaveBeenCalledWith(expect.objectContaining({
+      metadata: expect.objectContaining({ failureDiagnostic: expect.objectContaining({ stage: 'retrieve_context' }) }),
+    }), context));
+    expect((await store.loadRun(accepted.run.id, context)).status).toBe('cancelled');
+  });
+});

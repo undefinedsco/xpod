@@ -1,103 +1,51 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { afterEach, describe, expect, it } from 'vitest';
+import { createSqliteRuntime, getSqliteRuntime, resolveDefaultSqliteRuntimeKind } from '@undefineds.co/xpod-afs/sqlite/SqliteRuntime';
+import { getSqliteRuntime as serverRuntime } from '../../src/storage/SqliteRuntime';
 
-const mocked = vi.hoisted(() => ({
-  createBunSqliteRuntimeMock: vi.fn(),
-  createNodeSqliteRuntimeMock: vi.fn(),
-  createSqliteRuntimeMock: vi.fn(),
-}));
+const execFileAsync = promisify(execFile);
 
-vi.mock('../../src/storage/sqlite/backends/BunSqliteRuntime', () => ({
-  createBunSqliteRuntime: mocked.createBunSqliteRuntimeMock,
-}));
-
-vi.mock('../../src/storage/sqlite/backends/NodeSqliteRuntime', () => ({
-  createNodeSqliteRuntime: mocked.createNodeSqliteRuntimeMock,
-}));
-
-vi.mock('../../src/storage/sqlite/factory', async() => {
-  const actual = await vi.importActual<typeof import('../../src/storage/sqlite/factory')>(
-    '../../src/storage/sqlite/factory',
-  );
-  return {
-    ...actual,
-    createSqliteRuntime: mocked.createSqliteRuntimeMock,
-  };
-});
-
-describe('Sqlite runtime selection', () => {
-  const originalBun = (globalThis as any).Bun;
+describe('Sqlite runtime selection through the public package boundary', () => {
   const originalRuntime = process.env.XPOD_SQLITE_RUNTIME;
-
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
   afterEach(() => {
-    if (originalBun === undefined) {
-      delete (globalThis as any).Bun;
-    } else {
-      (globalThis as any).Bun = originalBun;
-    }
-
-    if (originalRuntime === undefined) {
-      delete process.env.XPOD_SQLITE_RUNTIME;
-    } else {
-      process.env.XPOD_SQLITE_RUNTIME = originalRuntime;
-    }
+    if (originalRuntime === undefined) delete process.env.XPOD_SQLITE_RUNTIME;
+    else process.env.XPOD_SQLITE_RUNTIME = originalRuntime;
   });
 
-  it('resolves node runtime kind outside bun', async() => {
-    delete (globalThis as any).Bun;
-    const { resolveDefaultSqliteRuntimeKind, createSqliteRuntime } = await vi.importActual<
-      typeof import('../../src/storage/sqlite/factory')
-    >('../../src/storage/sqlite/factory');
-    const runtime = { kind: 'node-sqlite' } as any;
-    mocked.createNodeSqliteRuntimeMock.mockReturnValue(runtime);
-
+  it('resolves and opens the native Node runtime outside Bun', () => {
+    delete process.env.XPOD_SQLITE_RUNTIME;
     expect(resolveDefaultSqliteRuntimeKind()).toBe('node-sqlite');
-    expect(createSqliteRuntime()).toBe(runtime);
-    expect(mocked.createNodeSqliteRuntimeMock).toHaveBeenCalledTimes(1);
-    expect(mocked.createBunSqliteRuntimeMock).not.toHaveBeenCalled();
+    const runtime = createSqliteRuntime();
+    expect(runtime.kind).toBe('node-sqlite');
+    const db = runtime.openDatabase(':memory:');
+    try {
+      db.exec('CREATE TABLE proof (id INTEGER); INSERT INTO proof VALUES (7)');
+      expect(db.prepare<{ id: number }>('SELECT id FROM proof').get()?.id).toBe(7);
+    } finally { db.close(); }
   });
 
-  it('resolves bun runtime kind inside bun', async() => {
-    (globalThis as any).Bun = {};
-    const { resolveDefaultSqliteRuntimeKind, createSqliteRuntime } = await vi.importActual<
-      typeof import('../../src/storage/sqlite/factory')
-    >('../../src/storage/sqlite/factory');
-    const runtime = { kind: 'bun-sqlite' } as any;
-    mocked.createBunSqliteRuntimeMock.mockReturnValue(runtime);
-
-    expect(resolveDefaultSqliteRuntimeKind()).toBe('bun-sqlite');
-    expect(createSqliteRuntime()).toBe(runtime);
-    expect(mocked.createBunSqliteRuntimeMock).toHaveBeenCalledTimes(1);
-    expect(mocked.createNodeSqliteRuntimeMock).not.toHaveBeenCalled();
+  it('resolves and opens the real Bun runtime through the same public entry', async () => {
+    const { stdout } = await execFileAsync('bun', ['--no-env-file', '-e', [
+      "import { createSqliteRuntime, resolveDefaultSqliteRuntimeKind } from '@undefineds.co/xpod-afs/sqlite/SqliteRuntime';",
+      'delete process.env.XPOD_SQLITE_RUNTIME;',
+      "const runtime = createSqliteRuntime(); const db = runtime.openDatabase(':memory:');",
+      "db.exec('CREATE TABLE proof (id INTEGER); INSERT INTO proof VALUES (7)');",
+      "const id = db.prepare('SELECT id FROM proof').get().id; db.close();",
+      'console.log(JSON.stringify({kind: runtime.kind, selected: resolveDefaultSqliteRuntimeKind(), id}));',
+    ].join('\n')], { env: { ...process.env, NODE_PATH: '' } });
+    expect(JSON.parse(stdout.trim())).toEqual({ kind: 'bun-sqlite', selected: 'bun-sqlite', id: 7 });
   });
 
-  it('resolves node:sqlite runtime when requested via env', async() => {
-    delete (globalThis as any).Bun;
+  it('respects an explicit Node runtime selection', () => {
     process.env.XPOD_SQLITE_RUNTIME = 'node-sqlite';
-    const { resolveDefaultSqliteRuntimeKind, createSqliteRuntime } = await vi.importActual<
-      typeof import('../../src/storage/sqlite/factory')
-    >('../../src/storage/sqlite/factory');
-    const runtime = { kind: 'node-sqlite' } as any;
-    mocked.createNodeSqliteRuntimeMock.mockReturnValue(runtime);
-
     expect(resolveDefaultSqliteRuntimeKind()).toBe('node-sqlite');
-    expect(createSqliteRuntime()).toBe(runtime);
-    expect(mocked.createNodeSqliteRuntimeMock).toHaveBeenCalledTimes(1);
-    expect(mocked.createBunSqliteRuntimeMock).not.toHaveBeenCalled();
+    expect(createSqliteRuntime().kind).toBe('node-sqlite');
   });
 
-  it('caches getSqliteRuntime result', async() => {
-    mocked.createSqliteRuntimeMock.mockReturnValue({ kind: 'node-sqlite' } as any);
-    vi.resetModules();
-    const { getSqliteRuntime } = await import('../../src/storage/SqliteRuntime');
-
-    const first = getSqliteRuntime();
-    const second = getSqliteRuntime();
-
-    expect(first).toBe(second);
-    expect(mocked.createSqliteRuntimeMock).toHaveBeenCalledTimes(1);
+  it('shares its cached runtime across public and server adapter consumers', () => {
+    expect(getSqliteRuntime()).toBe(getSqliteRuntime());
+    expect(getSqliteRuntime).toBe(serverRuntime);
+    expect(getSqliteRuntime()).toBe(serverRuntime());
   });
 });

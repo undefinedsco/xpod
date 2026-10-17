@@ -173,6 +173,21 @@ describe('release acceptance manifest', () => {
       ]));
   });
 
+  it.each(['native-sparql', 'native-public16', 'native-private17', 'native-namespace-pull'])
+  ('rejects promotion when %s is missing or failed', check => {
+    const nativeChecks = ['native-sparql', 'native-public16', 'native-private17', 'native-namespace-pull'];
+    const checks: Record<string, string> = Object.fromEntries([...requiredChecks, ...nativeChecks].map(name => [name, 'passed']));
+    const authority = expected({ requiredChecks: [...requiredChecks, ...nativeChecks] });
+    expect(validateManifest(validManifest({ checks }), authority).valid).toBe(true);
+    for (const value of [undefined, 'failed']) {
+      const incomplete = { ...checks };
+      if (value === undefined) delete incomplete[check]; else incomplete[check] = value;
+      const result = validateManifest(validManifest({ checks: incomplete }), authority);
+      expect(result.valid).toBe(false);
+      expect(result.errors).toEqual(expect.arrayContaining([expect.objectContaining({ path: `checks.${check}` })]));
+    }
+  });
+
   it('requires non-empty expected required checks for pure validation', () => {
     const result = validateManifest(validManifest(), expected({ requiredChecks: [] }));
 

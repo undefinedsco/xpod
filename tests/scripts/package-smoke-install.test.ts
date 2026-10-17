@@ -1,14 +1,15 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createRequire } from 'node:module';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
+import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import type { Server } from 'node:http';
 
 const require = createRequire(import.meta.url);
-const { installLocalTarballViaRegistry } = require('../../scripts/package-smoke-install.cjs');
+const { installLocalTarballViaRegistry, withSmokeTarball, createSmokeTarball } = require('../../scripts/package-smoke-install.cjs');
 const { createRegistry, publishArtifact } = require('../../scripts/check-package-registry-consumer.cjs');
 
 const repoRoot = process.cwd();
@@ -18,6 +19,7 @@ const rootManifest = fs.readFileSync(path.join(repoRoot, 'package.json'));
 const rootLock = fs.existsSync(path.join(repoRoot, 'bun.lock')) ? fs.readFileSync(path.join(repoRoot, 'bun.lock')) : undefined;
 
 afterEach(() => {
+  vi.restoreAllMocks();
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
   expect(fs.readFileSync(path.join(repoRoot, 'package.json')).equals(rootManifest)).toBe(true);
   if (rootLock) expect(fs.readFileSync(path.join(repoRoot, 'bun.lock')).equals(rootLock)).toBe(true);
@@ -252,4 +254,110 @@ describe('loopback registry upstream routing', () => {
       fs.rmSync(evidence, { recursive: true, force: true });
     }
   }, 120_000);
+});
+
+
+describe('temporary material lifetimes', () => {
+  const { withOwnedTempRoot } = require('../../scripts/lib/owned-temp-root.cjs');
+  function tempParent(): string {
+    const parent = scratch();
+    vi.spyOn(os, 'tmpdir').mockReturnValue(parent);
+    return parent;
+  }
+  const digest = (file: string): string => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+
+  it('cleans successful owned material and preserves the returned result', async () => {
+    const parent = tempParent();
+    const value = await withOwnedTempRoot('xpod-bun-single-', async (root: string) => {
+      fs.writeFileSync(path.join(root, 'fixture'), 'small');
+      return 42;
+    });
+    expect(value).toBe(42); expect(fs.readdirSync(parent)).toEqual([]);
+  });
+  it('preserves the original operation error after cleaning', async () => {
+    const parent = tempParent(); const original = new Error('original build failed');
+    await expect(withOwnedTempRoot('xpod-bun-single-', () => { throw original; })).rejects.toBe(original);
+    expect(fs.readdirSync(parent)).toEqual([]);
+  });
+  it('retains operation and cleanup failures together', async () => {
+    const parent = tempParent(), original = new Error('operation failed'), secondary = new Error('cleanup failed');
+    vi.spyOn(fs, 'rmSync').mockImplementation(() => { throw secondary; });
+    let error: any;
+    try { await withOwnedTempRoot('xpod-bun-single-', () => { throw original; }); } catch (caught) { error = caught; }
+    expect(error).toBeInstanceOf(AggregateError); expect(error.errors).toEqual([original, secondary]); expect(error.cause).toBe(original);
+    vi.restoreAllMocks(); expect(fs.readdirSync(parent)).toHaveLength(1);
+  });
+  it('reports cleanup failure after an otherwise successful operation', async () => {
+    tempParent(); const secondary = new Error('cleanup failed');
+    vi.spyOn(fs, 'rmSync').mockImplementation(() => { throw secondary; });
+    await expect(withOwnedTempRoot('xpod-bun-single-', () => 42)).rejects.toBe(secondary);
+  });
+  it('removes a replaced root symlink without traversing its target', async () => {
+    const parent = tempParent(), outside = path.join(parent, 'keep'); fs.mkdirSync(outside); fs.writeFileSync(path.join(outside, 'original'), 'keep');
+    await withOwnedTempRoot('xpod-bun-single-', (root: string) => {
+      fs.rmSync(root, { recursive: true }); fs.symlinkSync(outside, root, 'dir');
+    });
+    expect(fs.readdirSync(parent)).toEqual(['keep']); expect(fs.readFileSync(path.join(outside, 'original'), 'utf8')).toBe('keep');
+  });
+  for (const fail of [false, true]) it(`cleans smoke material after ${fail ? 'failure' : 'success'} without deleting original or consumer`, async () => {
+    const parent = tempParent(), original = fixtureTarball(parent, { optionalDependencies: { unused: '1.0.0' } });
+    const before = digest(original), target = consumerTarget(parent).target, failure = new Error('original probe failed'); let derived = '';
+    const pending = withSmokeTarball(original, async (archive: string) => {
+      derived = archive; expect(fs.existsSync(archive)).toBe(true);
+      const manifest = JSON.parse(execFileSync('tar', ['xOf', archive, 'package/package.json'], { encoding: 'utf8' }));
+      expect(manifest.optionalDependencies).toBeUndefined();
+      fs.writeFileSync(path.join(target, 'installed'), 'preserve consumer');
+      if (fail) throw failure; return 42;
+    });
+    if (fail) await expect(pending).rejects.toBe(failure); else expect(await pending).toBe(42);
+    expect(fs.existsSync(path.dirname(derived))).toBe(false); expect(digest(original)).toBe(before);
+    expect(fs.readFileSync(path.join(target, 'installed'), 'utf8')).toBe('preserve consumer');
+  });
+  it('cleans when tarball preparation fails before the operation begins', async () => {
+    const parent = tempParent(), file = path.join(parent, 'invalid.tgz'); fs.writeFileSync(file, 'not a gzip');
+    const operation = vi.fn(); await expect(withSmokeTarball(file, operation)).rejects.toThrow();
+    expect(operation).not.toHaveBeenCalled(); expect(fs.readdirSync(parent)).toEqual(['invalid.tgz']);
+  });
+  it('retains the legacy path-returning API until its caller cleans up', () => {
+    const parent = tempParent(), file = fixtureTarball(parent), before = digest(file);
+    const derived = createSmokeTarball(file); expect(typeof derived).toBe('string'); expect(fs.existsSync(derived)).toBe(true);
+    fs.rmSync(path.dirname(derived), { recursive: true }); expect(digest(file)).toBe(before);
+  });
+  it('does not create temporary material for a registry specification', async () => {
+    const parent = tempParent(); expect(await withSmokeTarball('@fixture/package@1.0.0', (spec: string) => spec)).toBe('@fixture/package@1.0.0');
+    expect(fs.readdirSync(parent)).toEqual([]);
+  });
+  it.skipIf(process.platform === 'win32')('actual smoke main cleans derived material when the installer cannot start', () => {
+    const parent = tempParent(), file = fixtureTarball(parent), before = digest(file), tmp = path.join(parent, 'temp'); fs.mkdirSync(tmp);
+    let error: any;
+    try { execFileSync(process.execPath, [path.join(repoRoot, 'scripts/package-smoke-install.cjs'), file, path.join(parent, 'consumer'), path.join(parent, 'cache'), 'npm'], {
+      cwd: repoRoot, env: { PATH: '/usr/bin:/bin', TMPDIR: tmp, TEMP: tmp, TMP: tmp }, stdio: 'pipe',
+    }); } catch (caught) { error = caught; }
+    expect(error.status).toBe(1); expect(error.stderr.toString()).toContain('npm'); expect(fs.readdirSync(tmp)).toEqual([]); expect(digest(file)).toBe(before);
+  });
+  // These child commands are controlled lifecycle fixtures, not package or auth acceptance.
+  for (const phase of ['success', 'install-failure', 'probe-failure']) it.skipIf(process.platform === 'win32')(`actual smoke main cleans owned material after ${phase}`, () => {
+    const parent = tempParent(), file = fixtureTarball(parent), before = digest(file), tmp = path.join(parent, 'temp'), bin = path.join(parent, 'bin');
+    fs.mkdirSync(tmp); fs.mkdirSync(bin);
+    fs.writeFileSync(path.join(bin, 'npm'), `#!${process.execPath}\nconst fs=require('node:fs');if(process.argv[2]==='install'){const archive=process.argv.at(-1);if(!fs.existsSync(archive))throw Error('derived archive missing');fs.writeFileSync('derived-path',archive);fs.writeFileSync('installed','keep');if(${JSON.stringify(phase)}==='install-failure'){console.error('expected-install-failure');process.exit(17)}}\n`, { mode: 0o755 });
+    fs.writeFileSync(path.join(bin, 'node'), `#!${process.execPath}\nconst fs=require('node:fs');fs.writeFileSync('probe-ran','yes');if(${JSON.stringify(phase)}==='probe-failure'){console.error('expected-probe-failure');process.exit(19)}\n`, { mode: 0o755 });
+    const target = path.join(parent, 'consumer'); let error: any;
+    try { execFileSync(process.execPath, [path.join(repoRoot, 'scripts/package-smoke-install.cjs'), file, target, path.join(parent, 'cache'), 'npm'], {
+      cwd: repoRoot, env: { PATH: bin + ':/usr/bin:/bin', HOME: parent, TMPDIR: tmp, TEMP: tmp, TMP: tmp }, stdio: 'pipe',
+    }); } catch (caught) { error = caught; }
+    if (phase === 'success') expect(error).toBeUndefined(); else { expect(error.status).toBe(1); expect(error.stderr.toString()).toContain('expected-' + phase); }
+    expect(fs.readdirSync(tmp)).toEqual([]); expect(digest(file)).toBe(before);
+    expect(fs.readFileSync(path.join(target, 'installed'), 'utf8')).toBe('keep');
+    expect(fs.existsSync(path.dirname(fs.readFileSync(path.join(target, 'derived-path'), 'utf8')))).toBe(false);
+    expect(fs.existsSync(path.join(target, 'probe-ran'))).toBe(phase !== 'install-failure');
+  });
+  it('actual single-build failure exits naturally after cleaning its own root', () => {
+    const parent = tempParent(), tmp = path.join(parent, 'temp'); fs.mkdirSync(tmp);
+    const hook = path.join(parent, 'preload.cjs');
+    fs.writeFileSync(hook, `const Module=require('node:module'),fs=require('node:fs'),cp=require('node:child_process');const original=Module._load;Module._load=function(id,...args){if(id==='esbuild')return{build:async()=>{throw Error('expected-single-build-failure')}};if(id.includes('ensureSupportedBun'))return{ensureSupportedBun(){}};return original.call(this,id,...args)};const exists=fs.existsSync;fs.existsSync=f=>/dist[\\/]index.js$|dist[\\/]components[\\/]components.jsonld$|config[\\/]local.json$/.test(String(f))||exists(f);const spawn=cp.spawnSync;cp.spawnSync=(command,args,...rest)=>command==='bun'&&args[0]==='--version'?{status:0,stdout:'1.4.2',stderr:''}:spawn(command,args,...rest);`);
+    let error: any;
+    try { execFileSync(process.execPath, ['--require', hook, path.join(repoRoot, 'scripts/build-bun-single.js')], { cwd: repoRoot,
+      env: { ...process.env, TMPDIR: tmp, TEMP: tmp, TMP: tmp }, stdio: 'pipe' }); } catch (caught) { error = caught; }
+    expect(error.status).toBe(1); expect(error.stderr.toString()).toContain('expected-single-build-failure'); expect(fs.readdirSync(tmp)).toEqual([]);
+  });
 });

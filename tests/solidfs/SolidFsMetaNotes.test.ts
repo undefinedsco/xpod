@@ -1,3 +1,6 @@
+import { UDFS, FILE_METADATA_NOTE_KIND, READER_COVERAGE_NOTE_KIND } from '@undefineds.co/models';
+import { FileMetadataNoteVocab, ReaderCoverageNoteVocab } from '@undefineds.co/models/vocab';
+import { buildFileMetadataNote as publicHelper } from '@undefineds.co/xpod-afs/workcopy/SolidFsMetaNotes';
 import { describe, expect, it } from 'vitest';
 import { Parser } from 'n3';
 import { buildFileMetadataNote, buildReaderCoverageNote } from '../../src/solidfs';
@@ -143,4 +146,30 @@ describe('SolidFS .meta notes', () => {
       status: 'partial',
     })).toThrow(RangeError);
   });
+});
+
+it('keeps the root compatibility export identical to the public AFS helper', () => { expect(buildFileMetadataNote).toBe(publicHelper); });
+
+
+it('uses the shared canonical vocabulary and typed integers for exact note subjects', () => {
+  const subject = 'https://pod.example/notes/file.ttl#metadata';
+  const about = 'https://pod.example/files/report.pdf';
+  const file = new Parser().parse(buildFileMetadataNote({ subject, about, title: 'File', description: 'Metadata', byteSize: 24, materializationClass: 'hydrated-r2' }));
+  const readerSubject = 'https://pod.example/notes/file.ttl#coverage';
+  const reader = new Parser().parse(buildReaderCoverageNote({ subject: readerSubject, about, readerKind: 'pdf', readerVersion: 'v1', coverageUnit: 'page', coveredRange: '1-2', readUnits: 2, totalUnits: 3, status: 'partial' }));
+  for (const [quads, expectedSubject, vocab, kind] of [[file, subject, FileMetadataNoteVocab, FILE_METADATA_NOTE_KIND], [reader, readerSubject, ReaderCoverageNoteVocab, READER_COVERAGE_NOTE_KIND]] as const) {
+    expect(quads.every(quad => quad.subject.value === expectedSubject)).toBe(true);
+    expect(quads.find(quad => quad.predicate.value === vocab.about)?.object.value).toBe(about);
+    expect(quads.find(quad => quad.predicate.value === vocab.noteKind)?.object.value).toBe(kind);
+    expect(quads.find(quad => quad.predicate.value === vocab.type)?.object.value).toBe(vocab.noteType);
+    expect(quads.some(quad => quad.predicate.value.startsWith('https://vocab.undefineds.co/udfs#'))).toBe(false);
+  }
+  expect(reader.find(quad => quad.predicate.value === ReaderCoverageNoteVocab.status)?.object.value).toBe('partial');
+  expect(file.find(quad => quad.predicate.value === FileMetadataNoteVocab.materializationClass)?.object.value).toBe('hydrated-r2');
+  for (const [quads, predicate, value] of [[file, UDFS.byteSize, '24'], [reader, UDFS.readUnits, '2'], [reader, UDFS.totalUnits, '3']] as const) {
+    const object = quads.find(quad => quad.predicate.value === predicate)?.object;
+    expect(object?.value).toBe(value);
+    expect(object?.termType).toBe('Literal');
+    if (object?.termType === 'Literal') expect(object.datatype.value).toBe('http://www.w3.org/2001/XMLSchema#integer');
+  }
 });

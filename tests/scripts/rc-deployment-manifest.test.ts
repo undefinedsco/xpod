@@ -1,5 +1,6 @@
 import { execFile as execFileCallback } from 'node:child_process';
 import path from 'node:path';
+import { readFileSync } from 'node:fs';
 import { promisify } from 'node:util';
 import { parseAllDocuments } from 'yaml';
 import { describe, expect, it } from 'vitest';
@@ -189,5 +190,28 @@ describe('RC Sealos deployment manifest', () => {
     expect(objects.some((object) => object.kind === 'StatefulSet')).toBe(false);
     expect(objects.some((object) => object.kind === 'PersistentVolumeClaim')).toBe(false);
     expect(objects.some((object) => object.metadata?.name?.startsWith('xpod-rc-minio'))).toBe(false);
+  });
+});
+
+
+describe('fresh native pull template', () => {
+  it('uses a digest-pinned PG image and replaceable pull authorization without business volumes', () => {
+    const job = findOne(renderObjects(readFileSync(path.join(rcOverlayPath, 'pull-preflight.yaml'), 'utf8')), 'Job', 'xpod-rc-pg-preflight');
+    const pod = job.spec?.template.spec;
+    const container = pod.containers[0];
+    expect(container.image).toMatch(/^ccr\.ccs\.tencentyun\.com\/undefineds\/xpod-rdf-postgres@sha256:[a-f0-9]{64}$/);
+    expect(container.imagePullPolicy).toBe('Always');
+    expect(pod.imagePullSecrets).toEqual([{ name: 'tcr-creds' }]);
+    expect(pod.volumes).toBeUndefined();
+    expect(container.volumeMounts).toBeUndefined();
+    expect(pod.restartPolicy).toBe('Never');
+    expect(job.spec?.backoffLimit).toBe(0);
+    for (const extension of ['vector', 'xpod_rdf', 'xpod_qlever']) expect(container.args[0]).toContain(`${extension}.control`);
+    expectPodSecurityBaseline(job);
+  });
+
+  it('uses the explicit cloud native override while retaining gateway launch arguments', () => {
+    const deployment = findOne(renderObjects(readFileSync(path.join(rcOverlayPath, 'deployment.yaml'), 'utf8')), 'Deployment', 'xpod-rc');
+    expect(deployment.spec?.template.spec.containers[0].args).toEqual(['node', 'dist/main.js', '-c', 'config/cloud.qlever.json', '-p', '3000']);
   });
 });

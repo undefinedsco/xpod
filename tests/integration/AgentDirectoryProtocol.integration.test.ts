@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { acceptLiveDirectory } from '../../scripts/accept-live-agent-directory';
-import { AgentDirectoryClient } from '../../src/agent-directory/client/AgentDirectoryClient';
+import { AgentDirectoryClient } from '../../packages/xpod-afs/src/directory/client';
 import { XpodTestStack } from '../helpers/XpodTestStack';
 import { loginWithClientCredentials, setupAccount, type AccountSetup, type ClientCredentialsSolidSession } from './helpers/solidAccount';
 
@@ -126,7 +126,7 @@ for (const mode of ['local', 'cloud'] as const) {
 
     it('runs Range, metadata/search and conditional file writes through production components', async () => {
       const report = await acceptLiveDirectory({
-        gateway: baseUrl, podRoot: privateRoot, write: true,
+        baseUrl, podRoot: privateRoot, write: true,
         discover: (url, init) => fetch(url, init),
         authenticate: async () => ({ webId: account.webId, request: (url, init) => session.fetch(url, init) }),
       });

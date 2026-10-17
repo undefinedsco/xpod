@@ -29,6 +29,14 @@ export class ConfigurableLoggerFactory implements LoggerFactory {
   private readonly maxFiles: string;
   private readonly showLocation: boolean;
   private readonly fileTransport: DailyRotateFile;
+  /**
+   * Winston applies the logger-level `format` before any transport filters by
+   * level, so every `debug`/`silly` call on a higher-level logger still formats.
+   * Building `Intl.DateTimeFormat` and calling `Date.toLocaleString` per line
+   * dominated the Matrix helper profile. Resolve the time zone once and reuse a
+   * single formatter; keep emitting the sv-SE local `YYYY-MM-DD HH:mm:ss` shape.
+   */
+  private readonly svSeTimestamp: Intl.DateTimeFormat;
 
   public constructor(level: string, options: ConfigurableLoggerOptions = {}) {
     this.level = level;
@@ -36,6 +44,11 @@ export class ConfigurableLoggerFactory implements LoggerFactory {
     this.maxSize = options.maxSize || '10m';
     this.maxFiles = options.maxFiles || '14d';
     this.showLocation = options.showLocation ?? false;
+    this.svSeTimestamp = new Intl.DateTimeFormat('sv-SE', {
+      timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+    });
     this.fileTransport = new DailyRotateFile({
       filename: this.fileName,
       datePattern: 'YYYY-MM-DD',
@@ -80,7 +93,7 @@ export class ConfigurableLoggerFactory implements LoggerFactory {
       format.timestamp({
         format: () => {
           // 使用 sv-SE 区域设置获得类似 ISO 但为本地时间的格式: YYYY-MM-DD HH:mm:ss
-          return new Date().toLocaleString('sv-SE', { timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone });
+          return this.svSeTimestamp.format(new Date());
         }
       }),
       format((info) => {

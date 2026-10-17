@@ -1,10 +1,17 @@
 import { readBoundedRequestBody } from './readBoundedRequestBody';
 import { resolveMatrixContext } from '../matrix/MatrixPodResolver';
 import { MatrixError } from '../matrix/MatrixError';
+import { PACKAGE_ROOT } from '../../runtime/package-root';
+import { getLoggerFor } from 'global-logger-factory';
+import { randomBytes } from 'node:crypto';
+import { extname, isAbsolute, relative, resolve, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { ServerResponse } from 'node:http';
 import type { ApiServer } from '../ApiServer';
 import type { AuthenticatedRequest } from '../middleware/AuthMiddleware';
 import type { MatrixCreateRoomRequest, MatrixStore, MatrixStoreContext } from '../matrix/types';
+
+const logger = getLoggerFor('MatrixHandler');
 
 export interface MatrixHandlerOptions {
   store: MatrixStore;
@@ -267,22 +274,77 @@ export function registerMatrixRoutes(server: ApiServer, options: MatrixHandlerOp
   }
 }
 
-async function buildContext(request: AuthenticatedRequest, options: MatrixHandlerOptions): Promise<MatrixStoreContext> {
-  if (!options.resolvePodUrl) {
-    throw new MatrixError(503, 'M_UNAVAILABLE', 'Matrix Pod lookup is unavailable');
+/**
+ * A phase slower than this is reported with its monotonic duration. Kept in
+ * line with the store's threshold so a slow handler boundary is visible.
+ */
+const SLOW_HANDLER_PHASE_MS = 3_000;
+
+/**
+ * Call-local handler phase correlation.
+ *
+ * Created per `buildContext`/`readJson` invocation and passed explicitly to
+ * each awaited boundary, so nothing is stored on a shared instance and
+ * concurrent requests cannot overwrite each other's phase.
+ */
+interface HandlerPhaseTrace {
+  readonly operation: string;
+  readonly id: string;
+}
+
+function createHandlerPhaseTrace(operation: string): HandlerPhaseTrace {
+  return { operation, id: randomBytes(4).toString('hex') };
+}
+
+function logHandlerPhase(trace: HandlerPhaseTrace, phase: string, startedAt: number,
+  detail: Record<string, unknown> = {}, force = false): void {
+  const elapsedMs = Math.round(performance.now() - startedAt);
+  if (!force && elapsedMs < SLOW_HANDLER_PHASE_MS) return;
+  logger.warn(`[matrix-phase] ${JSON.stringify({ op: trace.operation, opId: trace.id, phase, elapsedMs, ...detail })}`);
+}
+
+/**
+ * Run one awaited handler boundary, keeping the original exception and HTTP
+ * status behavior exactly. A failed boundary is always logged with its fixed
+ * phase, monotonic elapsed time and only allowlisted, safe numeric counts.
+ */
+async function runHandlerPhase<T>(trace: HandlerPhaseTrace, phase: string, detail: Record<string, unknown>,
+  run: () => Promise<T>): Promise<T> {
+  const startedAt = performance.now();
+  try {
+    const value = await run();
+    logHandlerPhase(trace, phase, startedAt, detail);
+    return value;
+  } catch (error) {
+    logHandlerPhase(trace, `${phase}.failed`, startedAt, { ...handlerErrorDetail(error), ...detail }, true);
+    throw error;
   }
-  return resolveMatrixContext(request, options.resolvePodUrl);
+}
+
+async function buildContext(request: AuthenticatedRequest, options: MatrixHandlerOptions): Promise<MatrixStoreContext> {
+  const trace = createHandlerPhaseTrace('buildContext');
+  return runHandlerPhase(trace, 'handler.buildContext', {}, async () => {
+    const resolvePodUrl = options.resolvePodUrl;
+    if (!resolvePodUrl) {
+      throw new MatrixError(503, 'M_UNAVAILABLE', 'Matrix Pod lookup is unavailable');
+    }
+    return runHandlerPhase(trace, 'handler.resolveMatrixContext', {}, () => resolveMatrixContext(request, resolvePodUrl));
+  });
 }
 
 const MAX_BODY_BYTES = 1024 * 1024;
 
 async function readJson<T>(request: AuthenticatedRequest): Promise<T | undefined> {
-  const chunks = await readBoundedRequestBody(request, MAX_BODY_BYTES, 'Request body exceeds 1 MiB');
-  const raw = Buffer.concat(chunks).toString('utf8').trim();
-  if (!raw) return undefined;
-  const value: unknown = JSON.parse(raw);
-  if (!isObject(value)) throw new MatrixError(400, 'M_BAD_JSON', 'Request body must be an object');
-  return value as T;
+  const trace = createHandlerPhaseTrace('readJson');
+  return runHandlerPhase(trace, 'handler.readJson', {}, async () => {
+    const chunks = await runHandlerPhase(trace, 'handler.readBoundedBody', { limitBytes: MAX_BODY_BYTES }, () =>
+      readBoundedRequestBody(request, MAX_BODY_BYTES, 'Request body exceeds 1 MiB'));
+    const raw = Buffer.concat(chunks).toString('utf8').trim();
+    if (!raw) return undefined;
+    const value: unknown = JSON.parse(raw);
+    if (!isObject(value)) throw new MatrixError(400, 'M_BAD_JSON', 'Request body must be an object');
+    return value as T;
+  });
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -337,12 +399,148 @@ function sendMatrixError(response: ServerResponse, status: number, errcode: stri
   sendJson(response, status, { errcode, error });
 }
 
+// Strict allowlist: only short opaque code/name tokens may ever leave the
+// unknown-error path. Never log messages, stacks, URLs, bodies, tokens, or DSNs.
+const SAFE_ERROR_TOKEN = /^[A-Za-z0-9_]{1,64}$/;
+// `DOMException.code` is a prototype getter returning a number; a string-only
+// filter drops a native timeout entirely. Numeric `23` (TimeoutError) is the
+// only numeric code allowed to leave.
+const DOM_TIMEOUT_CODE = 23;
+
+function safeErrorToken(value: unknown): string | undefined {
+  return typeof value === 'string' && SAFE_ERROR_TOKEN.test(value) ? value : undefined;
+}
+
+function unknownErrorName(error: unknown): string {
+  if (error instanceof Error && SAFE_ERROR_TOKEN.test(error.name)) {
+    return error.name;
+  }
+  return typeof error;
+}
+
+/**
+ * Fixed, allowlisted projection of an unknown error.
+ *
+ * A native `TimeoutError` is a `DOMException` whose `code` is the numeric
+ * prototype getter `23`; the old string-only filter omitted it and made it look
+ * code-less. Only the boolean timeout flag, `typeof code`, the single allowed
+ * numeric code `23`, a signal's presence/aborted state, an allowlisted
+ * `reason.name` and the error name ever leave. Message, stack, URL, query,
+ * body, token, DSN and raw arguments are never read.
+ */
+function handlerErrorDetail(error: unknown): Record<string, unknown> {
+  const detail: Record<string, unknown> = { errorName: unknownErrorName(error) };
+  const name = (error as { name?: unknown } | null | undefined)?.name;
+  if (name === 'TimeoutError') detail.domTimeout = true;
+  const code = (error as { code?: unknown } | null | undefined)?.code;
+  if (typeof code === 'string') {
+    const token = safeErrorToken(code);
+    if (token) detail.code = token;
+  } else if (code !== undefined) {
+    detail.codeType = typeof code;
+    if (typeof code === 'number' && code === DOM_TIMEOUT_CODE) detail.code = DOM_TIMEOUT_CODE;
+  }
+  const causeCode = safeErrorToken((error as { cause?: { code?: unknown } } | null | undefined)?.cause?.code);
+  if (causeCode) detail.causeCode = causeCode;
+  const signal = (error as { signal?: { aborted?: unknown } } | null | undefined)?.signal;
+  if (signal !== null && typeof signal === 'object') {
+    detail.signalPresent = true;
+    detail.signalAborted = (signal as { aborted?: unknown }).aborted === true;
+  }
+  const reason = (error as { reason?: unknown } | null | undefined)?.reason;
+  if (reason instanceof Error && SAFE_ERROR_TOKEN.test(reason.name)) detail.reasonName = reason.name;
+  return detail;
+}
+
+// The repository root is derived from this module's own location, never from
+// the untrusted error, so a stack cannot widen its own trusted boundary.
+const PROJECT_ROOT = resolve(PACKAGE_ROOT);
+const PROJECT_PREFIX = PROJECT_ROOT + sep;
+const MAX_SAFE_FRAMES = 4;
+const FRAME_LOCATION = /^(.*):(\d+):(\d+)$/;
+const REMOTE_LOCATION = /^[A-Za-z][A-Za-z0-9+.-]*:\/\//;
+// A frame location is only a code path. Query strings, fragments and control
+// characters can smuggle credentials or filesystem noise into the log, so they
+// are rejected outright, before parsing and again after any URL decoding.
+const UNSAFE_LOCATION = /[?#\u0000-\u001f\u007f]/;
+// Only first-party code directories may appear in a frame, and only files that
+// actually hold code. Dependency trees (node_modules) are never trusted.
+const TRUSTED_CODE_DIRECTORIES = new Set([ 'src', 'dist', 'scripts', 'tests' ]);
+const CODE_FILE_EXTENSIONS = new Set([ '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs' ]);
+
+function unsafeLocation(location: string): boolean {
+  return UNSAFE_LOCATION.test(location);
+}
+
+function trustedProjectLocation(relativePath: string): boolean {
+  const segments = relativePath.split('/');
+  if (segments.includes('node_modules')) return false;
+  if (!TRUSTED_CODE_DIRECTORIES.has(segments[0])) return false;
+  return CODE_FILE_EXTENSIONS.has(extname(relativePath).toLowerCase());
+}
+
+/**
+ * Project-local frame location from one stack line, or `undefined`.
+ *
+ * Only a genuine `at` frame whose absolute file is verified to live under this
+ * repository root and inside a trusted code directory survives, reduced to a
+ * `path:line:col` location. A remote URL (including its credentials), a bare
+ * message line, a function name, and any query string, fragment or control
+ * character are all rejected, before parsing and again after file-URL decoding.
+ * Compiled `dist` and source `src` frames are both kept; a frame points at
+ * code, it is never a proven cause.
+ */
+function frameLocation(rawLine: string): string | undefined {
+  const line = rawLine.trim();
+  if (!line.startsWith('at ')) return undefined;
+  const open = line.lastIndexOf('(');
+  let location = open !== -1 && line.endsWith(')')
+    ? line.slice(open + 1, -1).trim()
+    : line.slice(3).trim();
+  if (!location || unsafeLocation(location)) return undefined;
+  if (location.startsWith('file://')) {
+    try {
+      location = fileURLToPath(location);
+    } catch {
+      return undefined;
+    }
+    // Percent-encoded query/fragment/control characters become raw after decode.
+    if (unsafeLocation(location)) return undefined;
+  } else if (REMOTE_LOCATION.test(location)) {
+    return undefined;
+  }
+  const match = FRAME_LOCATION.exec(location);
+  if (!match || !isAbsolute(match[1])) return undefined;
+  const absolute = resolve(match[1]);
+  if (absolute !== PROJECT_ROOT && !absolute.startsWith(PROJECT_PREFIX)) return undefined;
+  const relativePath = relative(PROJECT_ROOT, absolute).split(sep).join('/');
+  if (!trustedProjectLocation(relativePath)) return undefined;
+  return `${relativePath}:${match[2]}:${match[3]}`;
+}
+
+function safeLocalErrorFrames(error: unknown): string[] {
+  const stack = error instanceof Error && typeof error.stack === 'string' ? error.stack : '';
+  if (!stack) return [];
+  const frames: string[] = [];
+  for (const rawLine of stack.split('\n')) {
+    const frame = frameLocation(rawLine);
+    if (!frame || frames.includes(frame)) continue;
+    frames.push(frame);
+    if (frames.length >= MAX_SAFE_FRAMES) break;
+  }
+  return frames;
+}
+
 function sendError(response: ServerResponse, error: unknown): void {
   if (error instanceof MatrixError) {
     sendMatrixError(response, error.status, error.errcode, error.message);
   } else if (error instanceof SyntaxError || error instanceof URIError) {
     sendMatrixError(response, 400, 'M_BAD_JSON', 'Malformed JSON or URL encoding');
   } else {
+    const detail = handlerErrorDetail(error);
+    const frames = safeLocalErrorFrames(error);
+    if (frames.length > 0) detail.frames = frames.join(',');
+    logger.error(`Matrix handler failed with an unknown error ${JSON.stringify(detail)}`);
     sendMatrixError(response, 500, 'M_UNKNOWN', 'Internal server error');
   }
 }

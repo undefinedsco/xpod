@@ -1,39 +1,55 @@
 import { describe, expect, it } from 'vitest';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
+import buildTargets from '../../ui/build-targets.json';
 
 const root = path.resolve(import.meta.dirname, '../..');
 
 describe('Xpod web product build contract', () => {
-  it('declares Settings as an independent Vite target', () => {
-    const viteConfig = readFileSync(path.join(root, 'ui/vite.config.ts'), 'utf8');
+  it('declares Settings independently and uses the authoritative targets in Vite', async () => {
+    expect(buildTargets.settings).toEqual({
+      base: '/settings/',
+      outDir: '../static/settings',
+      input: { settings: 'settings.html', 'auth-callback': 'auth-callback.html' },
+    });
+    expect(Object.keys(buildTargets).sort()).toEqual(['app', 'dashboard', 'settings']);
+    expect(new Set(Object.values(buildTargets).map(target => target.outDir)).size).toBe(3);
 
-    expect(viteConfig).toContain("settings: {");
-    expect(viteConfig).toContain("base: '/settings/'");
-    expect(viteConfig).toContain("outDir: '../static/settings'");
-    expect(viteConfig).toContain("settings: 'settings.html'");
+    const { default: createConfig } = await import('../../ui/vite.config');
+    if (typeof createConfig !== 'function') throw new Error('Expected the Vite target config factory');
+    const previous = process.env.BUILD_TARGET;
+    try {
+      for (const [name, target] of Object.entries(buildTargets)) {
+        process.env.BUILD_TARGET = name;
+        const config = await createConfig({ command: 'build', mode: 'production' });
+        const input = typeof target.input === 'string'
+          ? path.resolve(root, 'ui', target.input)
+          : Object.fromEntries(Object.entries(target.input).map(([name, file]) => [name, path.resolve(root, 'ui', file)]));
+        expect(config.base).toBe(target.base);
+        expect(config.build?.outDir).toBe(target.outDir);
+        expect(config.build?.rollupOptions?.input).toEqual(input);
+      }
+    } finally {
+      if (previous === undefined) delete process.env.BUILD_TARGET;
+      else process.env.BUILD_TARGET = previous;
+    }
   });
 
   it('builds the auth callback into the settings target instead of a second copy', () => {
-    const viteConfig = readFileSync(path.join(root, 'ui/vite.config.ts'), 'utf8');
-
     // The callback imports the same session and app chunks as settings; a separate target shipped
     // a near-identical copy of the browser engine.
-    expect(viteConfig).toContain("settings: {");
-    expect(viteConfig).toContain("'auth-callback': 'auth-callback.html'");
-    expect(viteConfig).not.toContain("authCallback: {");
-    expect(viteConfig).not.toContain("outDir: '../static/auth-callback'");
+    expect(buildTargets.settings.input['auth-callback']).toBe('auth-callback.html');
+    expect(buildTargets).not.toHaveProperty('authCallback');
+    expect(Object.values(buildTargets).map(target => target.outDir)).not.toContain('../static/auth-callback');
     expect(existsSync(path.join(root, 'static/auth-callback'))).toBe(false);
   });
 
   it('keeps the Inrupt verifier on the current Xpod instead of exposing a provider chooser', () => {
-    const viteConfig = readFileSync(path.join(root, 'ui/vite.config.ts'), 'utf8');
     const smokeSource = readFileSync(path.join(root, 'ui/src/inrupt-smoke.ts'), 'utf8');
-    const appStart = viteConfig.indexOf('app: {');
-    const dashboardStart = viteConfig.indexOf('dashboard: {');
-    const appTarget = viteConfig.slice(appStart, dashboardStart);
 
-    expect(appTarget).toContain("'inrupt-smoke': 'inrupt-smoke.html'");
+    expect(buildTargets.app.input['inrupt-smoke']).toBe('inrupt-smoke.html');
+    expect(buildTargets.dashboard.input).not.toBe('inrupt-smoke.html');
+    expect(Object.values(buildTargets.settings.input)).not.toContain('inrupt-smoke.html');
     expect(smokeSource).toContain('requireCurrentXpodUrl');
     expect(smokeSource).not.toContain("params.get('issuer') || window.location.origin");
     expect(smokeSource).toContain('Current Xpod OIDC Issuer');

@@ -1,8 +1,22 @@
 # 发布流程
 
+本文的 RC、stable tag 和容器 digest 规则约束 Xpod 服务/桌面发行。`xpod` CLI 独立版本、独立构建与按需模块分发遵守 [模块分发规范](module-distribution.md)，不通过发布 CLI 占用共享服务 RC 或触发生产部署。CLI package workflow 分别交付隔离消费者测试归档和正常 workspace pack 的 publication-preparation 原件；两者都不执行公开 npm 发布。公开发布仍需完成既有分发审核，不把构建 artifact 视为已发布模块。
+
 Xpod 发布必须先经过 Release Candidate，再由 stable tag 提升同一个 commit
 和同一个容器 digest。不要用 stable tag 调试发布问题；修复必须继续提交到
 开发分支，通过 PR 普通 merge 合入 `staging` 后，由新的 RC 重新验收。
+
+## 完整旧包兼容门禁
+
+`legacy-root-compat.yml` 独立承担完整旧服务包的 18 条兼容通道：Node/Bun 消费者 × Linux/macOS/Windows × Node 22/24/25。每条通道执行原七阶段：frozen install、平台包版本检查、完整 build、pack、包校验、消费者安装、消费者 smoke。独立 CLI 与模块 producer 的成功不能代替这些检查，也不能把失败降为可选项。
+
+Windows 保留平台默认 shell/PATH。完整 build 产生的 UI 变化由 Vite 与验收器共用 `ui/build-targets.json` 声明输出边界：旧的 tracked 输出删除记录与本次 Rollup/publicDir 产物清单分别验证，保留完整 Git 状态；源码、锁文件和未知静态文件漂移继续阻断。不能通过忽略整个 `static/` 绕过源码检查。
+
+`candidate.yml` 通过 reusable workflow 在 RC 前置检查前要求矩阵成功；finalize 再校验 exact SHA、同次 RC run 的全部通道及原始日志/pack 摘要，并将 `compat.receipt.json` 和原件一并放入 `release-acceptance-${GITHUB_SHA}` 的 `compat/`。`release.yml` 从同一个 accepted artifact 重验 `legacy-root-compat`，不接受另一轮矩阵或手填通过标记。部分重跑按每条通道的最新实际 attempt 判定，不能退回旧的成功 attempt。
+
+2026-10-15 的 [run 38750639516](https://github.com/undefinedsco/xpod/actions/runs/38750639516) 实际 checkout 为 `0b5aad17fdc2bd17b017d3d2a3119c062689ed90`，事件 head 为 `1ac0526d676e59a240a1bd3f665ea54b275d2fa3`。Node 9/9 成功（包含 Windows 22/24/25），Bun 9/9 失败，verify 阻断。Windows tar listing 和正常 UI 输出误判未再现；原 Bun registry 安装兼容阻塞仍未解决，不能将 wrapper 修复或矩阵拆分视为整体兼容/发布资格通过。具体 GNU tar/PATH 根因仍未由旧失败日志证明。
+
+兼容通道另外保留受限的 `pack.manifests.json` / `install.manifests.json`：从当次 tgz 读取根 manifest 和根包实际声明的 bundle manifests，记录原成员 SHA/字节及 name/version/依赖/bundle 字段；未知 URL 型依赖值只记哈希，不复制凭据。单 manifest 上限 128 KiB，合计及输出上限 1 MiB，采集先有界读取同一 fd 的字节快照，gzip 和平台 tar 均只读该快照（tar 经 stdin，不重新打开路径），防止路径替换/ABA 混绑；再复用平台 tar 的 exact member 模式，兼容其他成员的 GNU/PAX 长名元记录；不抽盘或跟随其他符号链接。压缩输入总计 64 MiB、gzip 展开总计 128 MiB，单次 tar 读 10 秒、每份原件读 30 秒，均仅为诊断预算，不替代 48 MiB 产品门禁。采集失败只记 unavailable 和固定 reason 码，不输出异常正文、不替代原命令退出状态。Bun registry 安装消费原 tgz；npm local smoke 才沿既有规则删除 optionalDependencies，证据分别绑定原包与实际 smoke 包 SHA/字节及 manifest。证据不含完整 tarball，也不证明 resolver 请求来源或提供发布资格。
 
 ## 先合入，再发 RC
 
@@ -75,9 +89,9 @@ policy 为空。上线前必须补齐分支与环境策略；创建/推送 stagi
 9. 只在接受的 exact commit 上创建 stable tag，例如 `v0.4.0`。
 10. `.github/workflows/release.yml` 下载 exact commit 对应的 acceptance
    artifact，校验 stable tag、staging 来源、required
-   checks 和 accepted digest 后，才首次发布该版本的 npm 包：先发布到不可见的
+   checks 和 accepted digest 后，才首次发布该版本的 npm 包：先发布到临时
    `stable-staging` tag，并由 Node/Bun 重新安装验证；然后才移动 npm `latest`、把 accepted digest
-   重新标记为 stable/latest 容器 tag，并调用生产部署。
+   重新标记为 stable/latest 容器 tag，并调用生产部署。`stable-staging` 是公开包的 dist-tag，不是私有或不可获取的发布。
 
 macOS QLever 以原生输入、构建 workflow、验收脚本和 Clang 身份缓存已验证的完整 runtime，
 不以 Xpod 提交 SHA 作为缓存键。精确命中后跳过 C++ 编译和构建工具安装，先校验旧产物的
@@ -564,3 +578,10 @@ bun run test:integration
 ### 本地安装包前置门禁
 
 桌面版本发布前，必须先构建候选 DMG/ZIP，实际安装 DMG，使用安装后的应用完成本地 full 验收；通过后才继续发布。开发启动、仅解压 ZIP、单元或隔离集成测试不能替代安装后的完整登录、Consent、会话复用与业务链路验收。安装隔离、产物一致性和清理规则见 [桌面权限验收](testing/desktop-permission-acceptance.md)。
+
+## 受保护 RC 数据库
+
+候选部署不再重置共享 `xpod_rc`，也不创建或升级扩展。部署前只读检查现有 PG17 数据库、owner 和扩展版本；不满足时保留源数据并停止。真实迁移须独立完成受保护备份、全量恢复核对和产品验收，工具或夹具通过不能代替。详见 [受保护部署边界](testing/protected-rc-deployment.md)。
+
+
+兼容 Bun 通道另存受限 `registry.metadata.json`：从 `createRegistry.publishedMetadata()` 读取真实 PUT 后已经解析、移除 `_attachments` 的记录，保留 exact version 的 name/version/运行依赖/bundle 字段及 dist integrity/shasum，URL 只保哈希。记录哈希来自该解析对象的 JSON 序列化，**不是原始 HTTP body 哈希**；原 wire bytes 未保留。它与原 tgz SHA/字节、`install.manifests.json` 的原件及 selectedInput 绑定，比较字段缺失或变化但不修补 registry 供给。安装失败仍保留这份诊断，未成功发布记录、绑定不符或超过 1 MiB 时记固定 unavailable；不提供安装成功、resolver 父边或发布资格证明。

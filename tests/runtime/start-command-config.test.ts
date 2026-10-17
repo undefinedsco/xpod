@@ -1,5 +1,5 @@
 import { createServer } from 'node:net';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -13,9 +13,50 @@ import {
   resolveMainPort,
   resolveServicePort,
 } from '../../src/cli/commands/start';
-import { resolveDefaultRdfIndexPath } from '../../src/runtime/database-url';
+import { resolveDefaultRdfIndexPath, resolveRuntimeDatabasePaths } from '../../src/runtime/database-url';
+import { createCssChildRuntimeConfig } from '../../src/runtime/css-process';
 
 describe('start command runtime configuration', () => {
+  it.each([undefined, 'https://issuer.example/'])('keeps explicit relative RDF indexes in the actual CSS cwd (issuer %s)', (externalOidcIssuer) => {
+    mkdirSync(path.resolve('.test-data'), { recursive: true });
+    const runtimeRoot = mkdtempSync(path.resolve('.test-data/start-index-cwd-'));
+    try {
+      const configPath = path.join(runtimeRoot, 'input.json');
+      writeFileSync(configPath, JSON.stringify({ '@context': {}, '@graph': [] }));
+      const child = createCssChildRuntimeConfig({ configPath, runtimeRoot, externalOidcIssuer });
+      const databases = resolveRuntimeDatabasePaths({
+        runtimeRoot,
+        rdfIndexPath: 'data/existing-index.sqlite',
+        rdfIndexRelativeRoot: child.cwd,
+      });
+      expect(databases.rdfIndexPath).toBe(path.resolve(child.cwd ?? process.cwd(), 'data/existing-index.sqlite'));
+    } finally {
+      rmSync(runtimeRoot, { recursive: true, force: true });
+    }
+  });
+  it('provides the default RDF endpoint required by the CSS child without deployment configuration', () => {
+    expect(resolveRuntimeDatabasePaths({ runtimeRoot: '/runtime/css' })).toEqual({
+      sparqlEndpoint: 'sqlite:/runtime/css/quadstore.sqlite',
+      identityDbUrl: 'sqlite:/runtime/css/identity.sqlite',
+      usageDbUrl: 'sqlite:/runtime/css/usage.sqlite',
+      rdfIndexPath: '/runtime/css/rdf-index.sqlite',
+    });
+  });
+
+  it('preserves explicit PostgreSQL database authorities and the configured RDF index', () => {
+    expect(resolveRuntimeDatabasePaths({
+      runtimeRoot: '/runtime/css',
+      sparqlEndpoint: 'postgresql://db.example/rdf',
+      identityDbUrl: 'postgres://db.example/identity',
+      usageDbUrl: 'postgres://db.example/usage',
+      rdfIndexPath: '/index/rdf.sqlite',
+    })).toEqual({
+      sparqlEndpoint: 'postgresql://db.example/rdf',
+      identityDbUrl: 'postgres://db.example/identity',
+      usageDbUrl: 'postgres://db.example/usage',
+      rdfIndexPath: '/index/rdf.sqlite',
+    });
+  });
   it('uses one env file to derive the gateway, CSS, and API ports', () => {
     const env = {
       CSS_BASE_URL: 'http://localhost:5739/',

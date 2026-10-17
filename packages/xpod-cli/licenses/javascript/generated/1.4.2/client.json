@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "bunVersion": "1.4.2",
+  "prefixSha256": "e07a7f5f990de5cffd0f1753580be4be40ca826cd0bf899597fdd74189865554",
+  "prefixBytes": 2749,
+  "provenance": {
+    "basePrefixSha256": "a3e72d01f26bcd39142331f3a6d2033a495188dc06ab7b477f728f88afcff0a7",
+    "derivation": "Actual modular CLI CJS prefix: existing client helpers with unused __commonJS removed and __reExport added. Its initializer AST equals stored official Bun src/runtime.js (source SHA256 02644972b775ee7bc4ed4b088808a3ea34ac6922ec52f897b7ea76b9f0ed92c4), ignoring only comments/formatting/redundant parentheses."
+  },
+  "file": {
+    "sourcePath": "generated-prefix.js",
+    "object": "objects/e07a7f5f990de5cffd0f1753580be4be40ca826cd0bf899597fdd74189865554.txt",
+    "sha256": "e07a7f5f990de5cffd0f1753580be4be40ca826cd0bf899597fdd74189865554",
+    "provenance": {
+      "role": "Actual modular CLI CJS prefix; original Bun source and terms retained."
+    }
+  }
+}

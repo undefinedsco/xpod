@@ -8,6 +8,8 @@ const DRIZZLE_SOLID_PACKAGE = '@undefineds.co/drizzle-solid';
 const EXTENSIONS_PACKAGE = '@undefineds.co/extensions';
 const WORKSPACE_PACKAGES = [
   '@undefineds.co/ai-connections',
+  '@undefineds.co/ai-connections-runtime',
+  '@undefineds.co/extension-host-contracts',
   '@undefineds.co/extension-sdk',
   // `ai-connections` and `extension-sdk` depend on this one, so leaving it out
   // leaks their `workspace:*` specifier into the packed manifest - npm cannot
@@ -15,6 +17,12 @@ const WORKSPACE_PACKAGES = [
   '@undefineds.co/pod-collections',
   '@undefineds.co/shared-ui',
   '@undefineds.co/solid-sdk',
+  // Transitional server CLI adapters import the independent client's public API.
+  '@undefineds.co/xpod-cli',
+  '@undefineds.co/xpod-client',
+  // Server workcopy/storage adapters consume the AFS public client boundary.
+  // Bundle its JS library; the optional platform helper remains a separate module.
+  '@undefineds.co/xpod-afs',
 ];
 // These runtime patches must survive installation without repository postinstall hooks.
 const PATCHED_RUNTIME_PACKAGES = [
@@ -41,7 +49,28 @@ function getNpmInvocation(args) {
   };
 }
 
-function getBundledLocalDependencies(repoRoot) {
+function serviceWorkspacePackages(repoRoot) {
+  const rootManifest = JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8'));
+  const requiredPeers = Object.keys(rootManifest.peerDependencies ?? {})
+    .filter(name => !rootManifest.peerDependenciesMeta?.[name]?.optional);
+  const queue = [...Object.keys(rootManifest.dependencies ?? {}),
+    ...Object.keys(rootManifest.optionalDependencies ?? {}), ...requiredPeers]
+    .filter(name => name !== '@undefineds.co/xpod-cli');
+  const selected = new Set();
+  while (queue.length) {
+    const name = queue.shift();
+    if (!WORKSPACE_PACKAGES.includes(name) || selected.has(name)) continue;
+    selected.add(name);
+    const manifest = JSON.parse(fs.readFileSync(path.join(repoRoot, 'packages', name.slice('@undefineds.co/'.length), 'package.json'), 'utf8'));
+    queue.push(...Object.keys(manifest.dependencies ?? {}), ...Object.keys(manifest.optionalDependencies ?? {}));
+    for (const peer of Object.keys(manifest.peerDependencies ?? {})) {
+      if (!manifest.peerDependenciesMeta?.[peer]?.optional) queue.push(peer);
+    }
+  }
+  return WORKSPACE_PACKAGES.filter(name => selected.has(name));
+}
+
+function getBundledLocalDependencies(repoRoot, profile = 'compat') {
   const privatePatchedDependencies = [ DRIZZLE_SOLID_PACKAGE, EXTENSIONS_PACKAGE ].flatMap((name) => {
     const sourcePackageRoot = path.join(repoRoot, 'node_modules', ...name.split('/'));
     if (!fs.existsSync(sourcePackageRoot)) {
@@ -50,7 +79,7 @@ function getBundledLocalDependencies(repoRoot) {
     return [{ name, sourcePackageRoot: fs.realpathSync(sourcePackageRoot) }];
   });
 
-  const workspaceDependencies = WORKSPACE_PACKAGES.map((name) => ({
+  const workspaceDependencies = (profile === 'service' ? serviceWorkspacePackages(repoRoot) : WORKSPACE_PACKAGES).map((name) => ({
     name,
     sourcePackageRoot: path.join(repoRoot, 'packages', name.slice('@undefineds.co/'.length)),
   }));
@@ -124,6 +153,10 @@ function collectDeclaredEntryPaths(manifest) {
     if (!value || typeof value !== 'object') {
       return;
     }
+    if (Array.isArray(value)) {
+      value.forEach(walk);
+      return;
+    }
     for (const [ key, nested ] of Object.entries(value)) {
       // Subpath keys ('.', './mini') are not conditions; every other key is.
       if (!key.startsWith('.') && !PROTECTED_ENTRY_CONDITIONS.has(key)) continue;
@@ -134,6 +167,7 @@ function collectDeclaredEntryPaths(manifest) {
   for (const field of [ 'main', 'module', 'types', 'typings' ]) {
     add(manifest[field]);
   }
+  if (!manifest.main && !manifest.exports) add('index.js');
   if (manifest.bin) {
     // `bin` keys are command names, not conditions.
     if (typeof manifest.bin === 'string') add(manifest.bin);
@@ -212,10 +246,19 @@ function shouldCopyBundledDependency(sourceRoot, sourcePath, patchedRuntime = fa
   const declaredTopLevelEntry = protectedPaths
     ? [ ...protectedPaths ].some((entryPath) => entryPath.split('/')[0] === topLevelEntry)
     : false;
+  const declaredEntries = manifest ? collectDeclaredEntryPaths(manifest) : new Set();
+  const rootRuntimeSibling = declaredEntries.size > 0 &&
+    [...declaredEntries].some((entry) => !entry.includes('/')) &&
+    // A root entry may load a sibling directory (including computed requires).
+    // Keep its published runtime tree; the diagnostic/authoring exclusions above
+    // still apply. Restricting siblings to root files silently loses that graph.
+    !NON_RUNTIME_DIRECTORY_NAMES.has(topLevelEntry);
 
   return (
     (patchedRuntime && [ 'bin', 'config', 'templates', 'lib' ].includes(topLevelEntry)) ||
     declaredTopLevelEntry ||
+    declaredEntries.has(relativePath.split(path.sep).join('/')) ||
+    rootRuntimeSibling ||
     topLevelEntry === 'dist' ||
     topLevelEntry === 'package.json' ||
     topLevelEntry.startsWith('README') ||
@@ -391,7 +434,20 @@ function exposeBundledRuntimeDependencies(packageDir, dependencies) {
   fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + '\n');
 }
 
-function bundleLocalDependenciesIntoTarball(tarballPath, dependencies) {
+// Both installed inputs and normalized public packages use the same runtime
+// materialization rules. Public transport archives retain their original bytes.
+function copyBundledRuntimeDependency(dependency, sourceRoot, destinationDir) {
+  fs.rmSync(destinationDir, { recursive: true, force: true });
+  fs.mkdirSync(path.dirname(destinationDir), { recursive: true });
+  fs.cpSync(sourceRoot, destinationDir, {
+    recursive: true,
+    dereference: true,
+    filter: (sourcePath) => shouldCopyBundledDependency(sourceRoot, sourcePath, dependency.patchedRuntime),
+  });
+  if (dependency.name === DRIZZLE_SOLID_PACKAGE) patchBundledDrizzleSolid(destinationDir);
+}
+
+function bundleLocalDependenciesIntoTarball(tarballPath, dependencies, profile = 'compat') {
   if (dependencies.length === 0) {
     return;
   }
@@ -407,45 +463,104 @@ function bundleLocalDependenciesIntoTarball(tarballPath, dependencies) {
 
     for (const dependency of dependencies) {
       const destinationDir = path.join(packageDir, 'node_modules', ...dependency.name.split('/'));
-      fs.rmSync(destinationDir, { recursive: true, force: true });
-      fs.mkdirSync(path.dirname(destinationDir), { recursive: true });
-      fs.cpSync(dependency.sourcePackageRoot, destinationDir, {
-        recursive: true,
-        dereference: true,
-        filter: (sourcePath) => shouldCopyBundledDependency(dependency.sourcePackageRoot, sourcePath, dependency.patchedRuntime),
-      });
-      if (dependency.name === DRIZZLE_SOLID_PACKAGE) {
-        patchBundledDrizzleSolid(destinationDir);
-      }
-      removeWorkspaceDependencies(destinationDir);
+      copyBundledRuntimeDependency(dependency, dependency.sourcePackageRoot, destinationDir);
       console.log(`[npm-pack] bundled local dependency ${dependency.name}`);
     }
 
     exposeBundledRuntimeDependencies(packageDir, dependencies);
 
-    // Declare every copied package as bundled. Without this installer contract,
-    // npm can prune workspace/private packages or replace them with registry copies.
-    // npm publication inserts "*" for missing bundle edges. Private/workspace
-    // bundles need package-relative file edges so Bun does not query the registry.
-    // Published patched runtime packages retain their existing exact registry edges.
+    // Public compatibility packages use complete standard bundles with real
+    // version edges. Internal service artifacts instead transport public tarballs
+    // for installation after extraction; these are not npm registry package edges.
+    // Patched runtime packages remain standard bundles in both profiles.
     const manifestPath = path.join(packageDir, 'package.json');
     const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    if (profile === 'service') applyServiceProfile(packageDir, manifest);
+    delete manifest.workspaces;
+    const runtimeArchives = [];
     for (const dependency of dependencies) {
       manifest.dependencies ??= {};
       if (dependency.patchedRuntime) {
         const installed = JSON.parse(fs.readFileSync(path.join(dependency.sourcePackageRoot, 'package.json'), 'utf8'));
         manifest.dependencies[dependency.name] = installed.version;
       } else {
-        manifest.dependencies[dependency.name] = `file:./node_modules/${dependency.name}`;
+        // Bun reinstalls file directories and can delete a self-referential
+        // node_modules input. Transport the complete public package as a tarball.
+        const archiveDir = path.join(packageDir, 'runtime-packages');
+        fs.mkdirSync(archiveDir, { recursive: true });
+        const filename = `${dependency.name.replace(/[@/]/g, '-')}.tgz`;
+        const archivePath = path.join(archiveDir, filename);
+        // Standard publication normalizes workspace protocols to actual
+        // package versions; no dependency fields or public exports are removed.
+        execFileSync('bun', ['pm', 'pack', '--ignore-scripts', '--filename', archivePath], {
+          cwd: dependency.sourcePackageRoot, stdio: 'pipe',
+        });
+        const bytes = fs.readFileSync(archivePath);
+        const publicManifest = execFileSync('tar', ['xOf', archivePath, 'package/package.json']);
+        runtimeArchives.push({ name: dependency.name, path: `runtime-packages/${filename}`,
+          bytes: bytes.length, sha256: crypto.createHash('sha256').update(bytes).digest('hex'),
+          integrity: `sha512-${crypto.createHash('sha512').update(bytes).digest('base64')}`,
+          manifestSHA256: crypto.createHash('sha256').update(publicManifest).digest('hex'),
+          sourceManifestSHA256: crypto.createHash('sha256').update(fs.readFileSync(path.join(dependency.sourcePackageRoot, 'package.json'))).digest('hex') });
+        if (profile === 'compat') {
+          // A standard npm consumer resolves dependencies before extracting the
+          // outer package. Relative embedded tarball edges are not a registry
+          // contract. Carry the normalized public manifest and filtered runtime
+          // payload through bundledDependencies with its real version edge.
+          const publicPackageDir = fs.mkdtempSync(path.join(tempRoot, 'public-package-'));
+          execFileSync('tar', ['xf', archivePath, '-C', publicPackageDir]);
+          const destinationDir = path.join(packageDir, 'node_modules', ...dependency.name.split('/'));
+          copyBundledRuntimeDependency(dependency, path.join(publicPackageDir, 'package'), destinationDir);
+          manifest.dependencies[dependency.name] = JSON.parse(publicManifest).version;
+          manifest.bundledDependencies ??= [];
+          if (!manifest.bundledDependencies.includes(dependency.name)) manifest.bundledDependencies.push(dependency.name);
+          fs.rmSync(archivePath);
+          continue;
+        }
+        manifest.dependencies[dependency.name] = `file:./runtime-packages/${filename}`;
+        manifest.overrides ??= {};
+        manifest.overrides[dependency.name] = manifest.dependencies[dependency.name];
+        // This complete tarball is the package input. Do not also transport a
+        // second uncompressed copy or advertise a missing bundled directory.
+        fs.rmSync(path.join(packageDir, 'node_modules', ...dependency.name.split('/')), { recursive: true, force: true });
+        manifest.bundledDependencies = (manifest.bundledDependencies ?? []).filter((name) => name !== dependency.name);
       }
-      manifest.bundledDependencies ??= [];
-      if (!manifest.bundledDependencies.includes(dependency.name)) manifest.bundledDependencies.push(dependency.name);
+      if (dependency.patchedRuntime) {
+        manifest.bundledDependencies ??= [];
+        if (!manifest.bundledDependencies.includes(dependency.name)) manifest.bundledDependencies.push(dependency.name);
+      }
     }
+    if (profile === 'service') fs.writeFileSync(path.join(packageDir, 'runtime-packages', 'inventory.json'), JSON.stringify(runtimeArchives, null, 2) + '\n');
+    else fs.rmSync(path.join(packageDir, 'runtime-packages'), { recursive: true, force: true });
     fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + '\n');
     execFileSync('tar', [ 'czf', tarballPath, '-C', unpackDir, 'package' ]);
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }
+}
+
+function applyServiceProfile(packageDir, manifest) {
+  // This is an internal service artifact, never the complete registry CLI
+  // package. Dependency packages retain all their own public exports and bytes.
+  if (!fs.existsSync(path.join(packageDir, 'dist/runtime/service-entry.js'))) throw new Error('Service entry build is missing');
+  manifest.xpodArtifactProfile = 'service';
+  manifest.bin = { 'xpod-service': './dist/runtime/service-entry.js' };
+  delete manifest.dependencies?.['@undefineds.co/xpod-cli'];
+  delete manifest.devDependencies;
+  delete manifest.workspaces;
+  delete manifest.scripts;
+  manifest.bundledDependencies = (manifest.bundledDependencies ?? []).filter((name) => name !== '@undefineds.co/xpod-cli');
+  const cliRoot = path.join(packageDir, 'dist', 'cli');
+  if (fs.existsSync(cliRoot)) {
+    for (const entry of fs.readdirSync(cliRoot)) {
+      if (entry !== 'commands') fs.rmSync(path.join(cliRoot, entry), { recursive: true, force: true });
+    }
+    const commands = path.join(cliRoot, 'commands');
+    if (fs.existsSync(commands)) for (const entry of fs.readdirSync(commands)) {
+      if (!/^start\.(?:js|d\.ts)$/u.test(entry)) fs.rmSync(path.join(commands, entry), { recursive: true, force: true });
+    }
+  }
+  fs.rmSync(path.join(packageDir, 'bin'), { recursive: true, force: true });
 }
 
 function walkFiles(rootDir, currentDir = rootDir, files = []) {
@@ -474,18 +589,22 @@ function summarizeTarball(tarballPath) {
   const unpackDir = path.join(tempRoot, 'unpack');
   const packageDir = path.join(unpackDir, 'package');
 
-  fs.mkdirSync(unpackDir, { recursive: true });
-  execFileSync('tar', [ 'xf', tarballPath, '-C', unpackDir ]);
+  try {
+    fs.mkdirSync(unpackDir, { recursive: true });
+    execFileSync('tar', [ 'xf', tarballPath, '-C', unpackDir ]);
 
-  const buffer = fs.readFileSync(tarballPath);
-  const files = walkFiles(packageDir);
-  return {
-    size: buffer.length,
-    unpackedSize: files.reduce((sum, file) => sum + file.size, 0),
-    shasum: crypto.createHash('sha1').update(buffer).digest('hex'),
-    integrity: `sha512-${crypto.createHash('sha512').update(buffer).digest('base64')}`,
-    files,
-  };
+    const buffer = fs.readFileSync(tarballPath);
+    const files = walkFiles(packageDir);
+    return {
+      size: buffer.length,
+      unpackedSize: files.reduce((sum, file) => sum + file.size, 0),
+      shasum: crypto.createHash('sha1').update(buffer).digest('hex'),
+      integrity: `sha512-${crypto.createHash('sha512').update(buffer).digest('base64')}`,
+      files,
+    };
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
 }
 
 function packWithManifestRestoration(repoRoot, invocation, env) {
@@ -511,6 +630,8 @@ function main() {
   const repoRoot = process.cwd();
   const packDir = path.resolve(repoRoot, process.argv[2] || '.test-data/npm-pack');
   const cacheDir = path.resolve(repoRoot, process.argv[3] || '.test-data/npm-cache');
+  const profile = process.argv[4] || 'compat';
+  if (!['compat', 'service'].includes(profile)) throw new Error('Unsupported artifact profile');
 
   fs.rmSync(packDir, { recursive: true, force: true });
   fs.mkdirSync(packDir, { recursive: true });
@@ -536,9 +657,9 @@ function main() {
     throw new Error('npm pack did not return a filename');
   }
   const tarballPath = path.join(packDir, pack.filename);
-  const bundledLocalDependencies = getBundledLocalDependencies(repoRoot);
+  const bundledLocalDependencies = getBundledLocalDependencies(repoRoot, profile);
 
-  bundleLocalDependenciesIntoTarball(tarballPath, bundledLocalDependencies);
+  bundleLocalDependenciesIntoTarball(tarballPath, bundledLocalDependencies, profile);
   Object.assign(pack, summarizeTarball(tarballPath));
   fs.writeFileSync(packJsonPath, JSON.stringify(packData, null, 2) + '\n');
 
@@ -546,7 +667,7 @@ function main() {
   console.log(`[npm-pack] tarball ${tarballPath}`);
 }
 
-module.exports = { getBundledLocalDependencies, bundleLocalDependenciesIntoTarball, packWithManifestRestoration };
+module.exports = { getNpmInvocation, summarizeTarball, serviceWorkspacePackages, getBundledLocalDependencies, bundleLocalDependenciesIntoTarball, packWithManifestRestoration, applyServiceProfile, shouldCopyBundledDependency };
 
 if (require.main === module) {
   try {

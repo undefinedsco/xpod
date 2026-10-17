@@ -11,7 +11,7 @@ import { readFileSync } from 'node:fs';
 
 export const MANIFEST_SCHEMA_VERSION = 2;
 export const XPOD_CLI_PACKAGE = '@undefineds.co/xpod-cli';
-export const XPOD_CLI_VERSION = '0.1.0-preview.1';
+export const XPOD_CLI_VERSION = '0.1.0-preview.2';
 
 export type ValidationState = 'unverified' | 'cli-only' | 'install-verified' | 'full-verified';
 export type LicenseStatus = 'verified' | 'pending';

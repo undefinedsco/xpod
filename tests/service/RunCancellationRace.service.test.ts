@@ -39,11 +39,11 @@ describe('Run cancellation versus stale Task transitions', () => {
       sessions.push(session.status); return 'https://pod.test/alice/.data/sessions/one.ttl#session';
     } });
     const materializer = new TaskMaterializer({ store, executeRuns: false }) as unknown as {
-      markRunStarted(run: RunRecordData, context: StoreContext): Promise<boolean>;
+      markRunStarted(run: RunRecordData, context: StoreContext, diagnostic: { stage: 'mark_run_started' }): Promise<boolean>;
       finishRun(run: RunRecordData, status: RunRecordData['status'], context: StoreContext, error?: string): Promise<void>;
     };
     const transition = phase === 'start'
-      ? materializer.markRunStarted(stale, context)
+      ? materializer.markRunStarted(stale, context, { stage: 'mark_run_started' })
       : materializer.finishRun(stale, 'failed', context, 'obsolete failure');
     await reached.promise;
     const stopped = await cancelRun({ store, runId: run.id, context, resourceIri: () => `https://pod.test/alice/.data/${run.id}` });

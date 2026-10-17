@@ -8,12 +8,12 @@ import {
   PodLowerConflictError,
   PodLowerHttpError,
   type PendingOperation,
-} from '../../src/cli/agent-fs/pod-lower';
-import { PodLowerPendingStore } from '../../src/cli/agent-fs/pending-store';
+} from '../../packages/xpod-afs/src/agent-fs/pod-lower';
+import { PodLowerPendingStore } from '../../packages/xpod-afs/src/agent-fs/pending-store';
 import {
   AgentDirectoryClient,
   type AgentDirectoryRequest,
-} from '../../src/agent-directory/client/AgentDirectoryClient';
+} from '../../packages/xpod-afs/src/directory/client';
 import { startPodContractServer, type PodContractServer } from './support/podContractServer';
 
 const TOKEN = 'edge-token';

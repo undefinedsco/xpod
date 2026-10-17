@@ -1,0 +1,8 @@
+[
+  { "name": "cli", "directory": "packages/xpod-cli/tests", "gate": "existing-package" },
+  { "name": "client", "directory": "packages/xpod-client/tests", "gate": "existing-package" },
+  { "name": "afs", "directory": "packages/xpod-afs/tests", "gate": "existing-package" },
+  { "name": "api", "directory": "packages/xpod-api/tests", "gate": "modules" },
+  { "name": "css", "directory": "packages/xpod-css/tests", "gate": "modules" },
+  { "name": "physical", "file": "tests/scripts/physical-module-isolation.test.ts", "gate": "modules" }
+]

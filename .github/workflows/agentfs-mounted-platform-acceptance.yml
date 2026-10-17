@@ -1,0 +1,208 @@
+name: AgentFS mounted platform acceptance
+
+# Actual mounted-platform acceptance for the frozen product archive. This is a
+# separate development branch so a harness-only push never recompiles the frozen
+# admitted product (the native compiler workflow only runs on
+# codex/agentfs-native-acceptance). Product archive/helper pins come from the
+# the single mounted/native-authority.json inventory; the harness SHA is this branch's checkout.
+on:
+  push:
+    branches: ['codex/agentfs-mounted-platform-acceptance']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+  actions: read
+
+env:
+  BOOKWORM_IMAGE: rust@sha256:93ce27a88655056a51dbdd8f5f2d7ddc071c7b0070fb288a37b5a285fc83971e
+
+jobs:
+  linux-fuse:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Load the single native artifact authority
+        run: |
+          python3 - <<'PYTHON'
+          import json,os
+          a=json.load(open('scripts/agentfs-native-ci/mounted/native-authority.json'))
+          values={'PRODUCT_RUN':a['run'],'PRODUCT_SHA':a['source']}
+          for platform in ['linux','darwin']:
+            item=a['artifacts'][platform+'-arm64']; prefix=platform.upper()
+            for key,field in [('ARTIFACT_ID','id'),('ZIP_SHA','zip'),('ARCHIVE_SHA','archive'),('HELPER_SHA','helper')]:
+              values[prefix+'_'+key]=item[field]
+          with open(os.environ['GITHUB_ENV'],'a') as out:
+            for key,value in values.items():out.write(key+'='+value+'\n')
+          PYTHON
+      - name: Reject native inputs that differ from the pinned product
+        run: python3 scripts/agentfs-native-ci/accept.py --verify-native-source
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - name: Record harness and host facts
+        run: |
+          set -euo pipefail
+          umask 077
+          { echo "harness_sha=$(git rev-parse HEAD)"; echo "product_sha=${PRODUCT_SHA}"; uname -a; } | tee "${RUNNER_TEMP}/harness-facts.json"
+      - name: Download and verify the frozen product archive (once)
+        id: product
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          umask 077
+          dir="${RUNNER_TEMP}/product"; mkdir -m 700 "$dir"
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${LINUX_ARTIFACT_ID}/zip" > "$dir/artifact.zip"
+          test "$(shasum -a 256 "$dir/artifact.zip" | cut -d' ' -f1)" = "$LINUX_ZIP_SHA" || { echo "::error::linux artifact zip digest mismatch"; exit 1; }
+          unzip -q "$dir/artifact.zip" -d "$dir/extracted"
+          archive="$(ls "$dir/extracted"/xpod-cli-*-linux-arm64.tar.gz)"
+          test "$(shasum -a 256 "$archive" | cut -d' ' -f1)" = "$LINUX_ARCHIVE_SHA" || { echo "::error::linux archive digest mismatch"; exit 1; }
+          echo "archive=$archive" >> "$GITHUB_OUTPUT"
+      - name: Install harness dependencies
+        run: bun install --frozen-lockfile
+      - name: Probe real FUSE capability on the runner
+        run: |
+          set -euo pipefail
+          if [ -e /dev/fuse ]; then echo "dev_fuse=present"; else echo "::error::/dev/fuse is not present on this runner; actual FUSE mount cannot be proven"; exit 1; fi
+      - name: Build a task-owned prep image (pinned Bookworm digest + fuse3 + Node22 + ripgrep + git)
+        run: |
+          set -euo pipefail
+          umask 077
+          tag="xpod-mount-prep:${{ github.run_id }}-${{ github.run_attempt }}"
+          docker build -t "$tag" - <<DOCKERFILE
+          FROM ${BOOKWORM_IMAGE}
+          RUN apt-get update -o Acquire::Retries=5 \
+            && apt-get install -y --no-install-recommends fuse3 ca-certificates curl ripgrep procps git \
+            && rm -rf /var/lib/apt/lists/*
+          RUN curl -fsSL https://nodejs.org/dist/v22.21.1/node-v22.21.1-linux-arm64.tar.xz -o /tmp/node.tar.xz \
+            && mkdir -p /opt/node22 \
+            && tar -xJf /tmp/node.tar.xz -C /opt/node22 --strip-components=1 \
+            && rm /tmp/node.tar.xz \
+            && /opt/node22/bin/node --version
+          DOCKERFILE
+          image_id="$(docker image inspect "$tag" --format '{{.Id}}')"
+          { echo "XPOD_MOUNT_IMAGE=$tag"; echo "XPOD_MOUNT_IMAGE_ID=$image_id"; } >> "$GITHUB_ENV"
+          echo "prep_image_id=$image_id"
+      - name: Run actual Node22 noBun FUSE acceptance (network none, same owned container)
+        run: |
+          set -euo pipefail
+          umask 077
+          out="${RUNNER_TEMP}/mounted-evidence"; mkdir -m 700 "$out"
+          cidfile="${RUNNER_TEMP}/mounted-container.cid"
+          # ROOT-authorized minimal policy delta: the default Docker AppArmor
+          # profile (docker-default) denies mount (moby v28 template.go L40), which
+          # is the source-backed hypothesis for the prior fusermount3 EPERM. Scope
+          # `--security-opt apparmor=unconfined` to THIS owned network-none Linux
+          # mount acceptance container ONLY; the existing /dev/fuse device and
+          # CAP_SYS_ADMIN are preserved, and the DEFAULT SECCOMP profile is NOT
+          # disabled. No --privileged, no host/daemon/cluster policy change.
+          python3 scripts/agentfs-native-ci/mounted/linux-container-binding.py \
+            "${{ steps.product.outputs.archive }}" "$out" "$cidfile"
+      - name: Normalise owned evidence ownership (task-scoped only)
+        if: always()
+        run: |
+          set -euo pipefail
+          # The container runs as root and creates 0600 evidence; hand it to the
+          # runner UID/GID so the upload can read it. Scoped to this task's dir.
+          docker run --rm --user 0:0 --mount "type=bind,src=${RUNNER_TEMP}/mounted-evidence,dst=/evidence" \
+            "$XPOD_MOUNT_IMAGE" chown -R "$(id -u):$(id -g)" /evidence >/dev/null 2>&1 || true
+      - name: Remove the owned prep image
+        if: always()
+        run: docker image rm -f "${XPOD_MOUNT_IMAGE}" >/dev/null 2>&1 || true
+      - name: Upload mounted evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: agentfs-mounted-linux-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/mounted-evidence
+          if-no-files-found: warn
+          retention-days: 14
+
+  macos-nfs:
+    runs-on: macos-14
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Load the single native artifact authority
+        run: |
+          python3 - <<'PYTHON'
+          import json,os
+          a=json.load(open('scripts/agentfs-native-ci/mounted/native-authority.json'))
+          values={'PRODUCT_RUN':a['run'],'PRODUCT_SHA':a['source']}
+          for platform in ['linux','darwin']:
+            item=a['artifacts'][platform+'-arm64']; prefix=platform.upper()
+            for key,field in [('ARTIFACT_ID','id'),('ZIP_SHA','zip'),('ARCHIVE_SHA','archive'),('HELPER_SHA','helper')]:
+              values[prefix+'_'+key]=item[field]
+          with open(os.environ['GITHUB_ENV'],'a') as out:
+            for key,value in values.items():out.write(key+'='+value+'\n')
+          PYTHON
+      - name: Reject native inputs that differ from the pinned product
+        run: python3 scripts/agentfs-native-ci/accept.py --verify-native-source
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.21.1'
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - name: Record harness and host facts
+        run: |
+          set -euo pipefail
+          umask 077
+          { echo "harness_sha=$(git rev-parse HEAD)"; echo "product_sha=${PRODUCT_SHA}"; uname -a; sw_vers; node --version; } | tee "${RUNNER_TEMP}/harness-facts.json"
+      - name: Download and verify the frozen Darwin product archive (once)
+        id: product
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          umask 077
+          dir="${RUNNER_TEMP}/product"; mkdir -m 700 "$dir"
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${DARWIN_ARTIFACT_ID}/zip" > "$dir/artifact.zip"
+          test "$(shasum -a 256 "$dir/artifact.zip" | cut -d' ' -f1)" = "$DARWIN_ZIP_SHA" || { echo "::error::darwin artifact zip digest mismatch"; exit 1; }
+          unzip -q "$dir/artifact.zip" -d "$dir/extracted"
+          archive="$(ls "$dir/extracted"/xpod-cli-*-darwin-arm64.tar.gz)"
+          test "$(shasum -a 256 "$archive" | cut -d' ' -f1)" = "$DARWIN_ARCHIVE_SHA" || { echo "::error::darwin archive digest mismatch"; exit 1; }
+          echo "archive=$archive" >> "$GITHUB_OUTPUT"
+      - name: Prepare actual Darwin ripgrep consumer tool
+        run: |
+          set -euo pipefail
+          brew install ripgrep
+          command -v rg
+          rg --version
+          command -v git
+          git --version
+      - name: Install frozen harness dependencies
+        run: bun install --frozen-lockfile
+      - name: Run actual macOS system-NFS acceptance (no macFUSE install)
+        env:
+          XPOD_MOUNTED_OS: darwin
+          XPOD_MOUNTED_BACKEND: nfs
+          XPOD_MOUNTED_WORKSPACE: ${{ github.workspace }}
+          XPOD_MOUNTED_ARCHIVE: ${{ steps.product.outputs.archive }}
+          XPOD_MOUNTED_ARCHIVE_SHA: ${{ env.DARWIN_ARCHIVE_SHA }}
+          XPOD_MOUNTED_HELPER_SHA: ${{ env.DARWIN_HELPER_SHA }}
+          XPOD_MOUNTED_REQUIRE_NOBUN: '1'
+          XPOD_MOUNTED_MIN_PASSED: '6'
+        run: |
+          set -euo pipefail
+          umask 077
+          out="${RUNNER_TEMP}/mounted-evidence"; mkdir -m 700 "$out"
+          export XPOD_MOUNTED_EVIDENCE="$out"
+          export XPOD_MOUNTED_NODE="$(command -v node)"
+          node --version
+          node --experimental-strip-types scripts/agentfs-native-ci/mounted/platform-admission.ts
+      - name: Upload mounted evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: agentfs-mounted-darwin-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/mounted-evidence
+          if-no-files-found: warn
+          retention-days: 14

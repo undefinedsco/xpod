@@ -1,0 +1,11 @@
+{
+  "extends": "./tsconfig.client.json",
+  "include": [
+    "src/**/*.ts",
+    "scripts/build-client.ts",
+    "scripts/build-package.ts",
+    "../../types/bun/index.d.ts",
+    "scripts/producer-materials.ts",
+    "scripts/check-producer-materials.ts"
+  ]
+}

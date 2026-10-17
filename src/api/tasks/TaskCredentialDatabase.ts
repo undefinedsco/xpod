@@ -1,10 +1,9 @@
 import path from 'node:path';
 import { drizzle as drizzlePg } from 'drizzle-orm/node-postgres';
-import { getLoggerFor } from 'global-logger-factory';
 import { getSqliteRuntime } from '../../storage/SqliteRuntime';
 import { getSharedPool } from '../../storage/database/PostgresPoolManager';
 import { isSqliteUrl } from '../../identity/drizzle/db';
-import { ensureTaskCredentialTables, taskCredentialSchema } from './TaskCredentialSchema';
+import { taskCredentialSchema } from './TaskCredentialSchema';
 
 /** Which table layout a task-layer database handle uses. */
 export interface TaskCredentialDatabase {
@@ -45,7 +44,13 @@ export function resolveTaskCredentialDatabaseUrl(input: {
   return identity;
 }
 
-/** Opens (once per URL) the task-layer database and makes sure its table exists. */
+/**
+ * Opens (once per URL) the task-layer database handle.
+ *
+ * Schema creation is deliberately absent here: the `TaskCredentialStore` is the single awaited
+ * initialization owner, so a second fire-and-forget ensure on this handle can no longer race it.
+ * The database-open API stays synchronous; callers receive a ready-to-construct handle.
+ */
 export function getTaskCredentialDatabase(url: string): TaskCredentialDatabase {
   const cached = databaseCache.get(url);
   if (cached) {
@@ -63,18 +68,12 @@ export function getTaskCredentialDatabase(url: string): TaskCredentialDatabase {
       sqlite.pragma('synchronous = NORMAL');
     }
     const db = runtime.createDrizzleDatabase(sqlite);
-    void ensureTaskCredentialTables(db).catch((error: unknown) => {
-      getLoggerFor('TaskCredentialDatabase').error(`Task credential table unavailable: ${String(error)}`);
-    });
     const handle: TaskCredentialDatabase = { db, schema: taskCredentialSchema.sqlite };
     databaseCache.set(url, handle);
     return handle;
   }
 
   const db = drizzlePg(getSharedPool({ connectionString: url }));
-  void ensureTaskCredentialTables(db).catch((error: unknown) => {
-    getLoggerFor('TaskCredentialDatabase').error(`Task credential table unavailable: ${String(error)}`);
-  });
   const handle: TaskCredentialDatabase = { db, schema: taskCredentialSchema.pg };
   databaseCache.set(url, handle);
   return handle;

@@ -339,7 +339,7 @@ describe('resolveRuntimeLaunchCommand', () => {
       env: { XPOD_RUNTIME_COMMAND: '/opt/xpod/bin/xpod' },
       resourcesPath: '/Applications/Xpod.app/Contents/Resources',
       pathExists: () => false,
-    })).toEqual({ command: '/opt/xpod/bin/xpod', args: ['start', '--foreground'] });
+    })).toEqual({ command: '/opt/xpod/bin/xpod', args: ['start'] });
   });
 
   it('uses a packaged runtime before falling back to PATH', () => {
@@ -353,7 +353,7 @@ describe('resolveRuntimeLaunchCommand', () => {
       execPath: '/Applications/Xpod.app/Contents/MacOS/Xpod',
     })).toEqual({
       command: '/Applications/Xpod.app/Contents/Resources/runtime/xpod',
-      args: ['start', '--foreground'],
+      args: ['start'],
       env: {
         XPOD_QLEVER_LOCAL_RUNTIME_COMMAND: '/Applications/Xpod.app/Contents/Resources/runtime/qlever/bin/xpod_qlever_local_runtime',
       },
@@ -374,13 +374,13 @@ describe('resolveRuntimeLaunchCommand', () => {
       env: {},
       resourcesPath: '/Applications/Xpod.app/Contents/Resources',
       pathExists: (value) =>
-        value === '/Applications/Xpod.app/Contents/Resources/runtime/bin/xpod.js' ||
+        value === '/Applications/Xpod.app/Contents/Resources/runtime/node_modules/@undefineds.co/xpod-cli/dist/xpod.mjs' ||
         value === '/Applications/Xpod.app/Contents/Resources/runtime/bin/bun',
       execPath: '/Applications/Xpod.app/Contents/MacOS/Xpod',
       resolveBunCommand: () => '/usr/local/bin/bun',
     })).toEqual({
       command: '/Applications/Xpod.app/Contents/Resources/runtime/bin/bun',
-      args: ['/Applications/Xpod.app/Contents/Resources/runtime/bin/xpod.js', 'start', '--foreground'],
+      args: ['/Applications/Xpod.app/Contents/Resources/runtime/node_modules/@undefineds.co/xpod-cli/dist/xpod.mjs', 'start'],
     });
   });
 
@@ -388,27 +388,39 @@ describe('resolveRuntimeLaunchCommand', () => {
     expect(resolveRuntimeLaunchCommand({
       env: {},
       resourcesPath: '/Applications/Xpod.app/Contents/Resources',
-      pathExists: (value) => value === '/Applications/Xpod.app/Contents/Resources/runtime/bin/xpod.js',
+      pathExists: (value) => value === '/Applications/Xpod.app/Contents/Resources/runtime/node_modules/@undefineds.co/xpod-cli/dist/xpod.mjs',
       execPath: '/Applications/Xpod.app/Contents/MacOS/Xpod',
       resolveBunCommand: () => '/usr/local/bin/bun',
     })).toEqual({
       command: '/usr/local/bin/bun',
-      args: ['/Applications/Xpod.app/Contents/Resources/runtime/bin/xpod.js', 'start', '--foreground'],
+      args: ['/Applications/Xpod.app/Contents/Resources/runtime/node_modules/@undefineds.co/xpod-cli/dist/xpod.mjs', 'start'],
     });
   });
 
-  it('keeps Electron-as-Node only as the packaged JS CLI fallback when Bun is absent', () => {
+  it('unpackaged use preserves the normal CLI launcher Node/Bun contract', () => {
+    const root = '/development/runtime/node_modules/@undefineds.co/xpod-cli/dist';
+    expect(resolveRuntimeLaunchCommand({ env: {}, resourcesPath: '/development',
+      pathExists: value => value === `${root}/xpod.mjs` || value === `${root}/bin/xpod`,
+      resolveBunCommand: () => undefined,
+    })).toEqual({ command: `${root}/bin/xpod`, args: ['start'] });
+  });
+
+  it('packaged apps require their own Bun even when a system Bun exists', () => {
+    expect(resolveRuntimeLaunchCommand({ env: {}, packaged: true,
+      resourcesPath: '/Applications/Xpod.app/Contents/Resources',
+      pathExists: value => value.endsWith('/dist/xpod.mjs'),
+      resolveBunCommand: () => '/usr/local/bin/bun',
+    })).toBeUndefined();
+  });
+
+  it('rejects the packaged CLI when Bun is absent instead of using incompatible Electron Node', () => {
     expect(resolveRuntimeLaunchCommand({
       env: {},
       resourcesPath: '/Applications/Xpod.app/Contents/Resources',
-      pathExists: (value) => value === '/Applications/Xpod.app/Contents/Resources/runtime/bin/xpod.js',
+      pathExists: (value) => value === '/Applications/Xpod.app/Contents/Resources/runtime/node_modules/@undefineds.co/xpod-cli/dist/xpod.mjs',
       execPath: '/Applications/Xpod.app/Contents/MacOS/Xpod',
       resolveBunCommand: () => undefined,
-    })).toEqual({
-      command: '/Applications/Xpod.app/Contents/MacOS/Xpod',
-      args: ['/Applications/Xpod.app/Contents/Resources/runtime/bin/xpod.js', 'start', '--foreground'],
-      env: { ELECTRON_RUN_AS_NODE: '1' },
-    });
+    })).toBeUndefined();
   });
 
   it('uses the local desktop runtime for unpackaged development launches before falling back to PATH', () => {
@@ -419,8 +431,15 @@ describe('resolveRuntimeLaunchCommand', () => {
       pathExists: (value) => value === '/Users/ganlu/develop/xpod/desktop/runtime/xpod',
     })).toEqual({
       command: '/Users/ganlu/develop/xpod/desktop/runtime/xpod',
-      args: ['start', '--foreground'],
+      args: ['start'],
     });
+  });
+
+  it('rejects a missing packaged CLI instead of using PATH', () => {
+    expect(resolveRuntimeLaunchCommand({ env: {}, packaged: true,
+      resourcesPath: '/Applications/Xpod.app/Contents/Resources',
+      pathExists: value => value.endsWith('/runtime/xpod'),
+    })).toBeUndefined();
   });
 
   it('keeps PATH fallback only after packaged and local runtimes are unavailable', () => {
@@ -429,7 +448,7 @@ describe('resolveRuntimeLaunchCommand', () => {
       resourcesPath: '/Electron.app/Contents/Resources',
       moduleDir: '/Users/ganlu/develop/xpod/desktop/dist',
       pathExists: () => false,
-    })).toEqual({ command: 'xpod', args: ['start', '--foreground'] });
+    })).toEqual({ command: 'xpod', args: ['start'] });
   });
 });
 

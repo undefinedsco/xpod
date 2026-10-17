@@ -1,0 +1,191 @@
+name: Legacy root package compatibility
+on:
+  push:
+    branches: [main, staging]
+  pull_request:
+    branches: [main, staging]
+  workflow_call:
+    inputs:
+      source-sha:
+        required: true
+        type: string
+    outputs:
+      evidence-artifact:
+        value: ${{ jobs.verify.outputs.artifact }}
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      sha: ${{ steps.plan.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source-sha || github.sha }}
+          persist-credentials: false
+      - name: Derive the mandatory matrix from its single authority
+        id: plan
+        env:
+          EXPECTED_SHA: ${{ inputs.source-sha || github.sha }}
+        run: |
+          set -euo pipefail
+          actual="$(git rev-parse HEAD)"
+          test "$actual" = "$EXPECTED_SHA"
+          echo "sha=$actual" >> "$GITHUB_OUTPUT"
+          node -e 'const fs=require("node:fs");const {rootCompatLanes}=require("./scripts/release-gate-evidence.cjs");fs.appendFileSync(process.env.GITHUB_OUTPUT,"matrix="+JSON.stringify({include:rootCompatLanes()})+"\n")'
+
+  normal_afs:
+    needs: plan
+    name: legacy-root-normal-afs
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
+      artifact-digest: ${{ steps.upload.outputs.artifact-digest }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: bun install --frozen-lockfile
+      - name: Produce original CLI, client and standalone AFS JS distributions
+        env:
+          SOURCE_SHA: ${{ needs.plan.outputs.sha }}
+          EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: bun scripts/legacy-root-afs-supply.ts produce "$RUNNER_TEMP/legacy-root-normal-afs" "$SOURCE_SHA"
+      - uses: actions/upload-artifact@v4
+        id: upload
+        with:
+          name: legacy-root-normal-afs-${{ needs.plan.outputs.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/legacy-root-normal-afs/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
+      - name: Retain original producer diagnostics even when supply fails
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: legacy-root-normal-afs-diagnostics-${{ needs.plan.outputs.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/legacy-root-normal-afs/
+            .test-data/afs-js-archive-ci-producer/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
+
+  lanes:
+    needs: [plan, normal_afs]
+    name: legacy-root-${{ matrix.runtime }} (${{ matrix.os }} / node${{ matrix.node }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    env:
+      XPOD_INSTALL_REGISTRY: ${{ vars.XPOD_INSTALL_REGISTRY }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Acquire exact same-run normal JS originals for Bun
+        if: matrix.runtime == 'bun'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ needs.plan.outputs.sha }}
+          RUN_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          SUPPLY_ARTIFACT_ID: ${{ needs.normal_afs.outputs.artifact-id }}
+          SUPPLY_ARTIFACT_SHA256: ${{ needs.normal_afs.outputs.artifact-digest }}
+        run: bun scripts/legacy-root-afs-supply.ts acquire "${{ runner.temp }}/legacy-root-afs-input"
+      - name: Run complete-package commands with original private supply and retain outcomes
+        env:
+          SOURCE_SHA: ${{ needs.plan.outputs.sha }}
+          LANE_OS: ${{ matrix.os }}
+          LANE_NODE: ${{ matrix.node }}
+          LANE_RUNTIME: ${{ matrix.runtime }}
+          XPOD_LEGACY_AFS_SUPPLY: ${{ runner.temp }}/legacy-root-afs-input
+          CONSUMER_ROOT: ${{ runner.temp }}/xpod-package-smoke${{ matrix.runtime == 'bun' && '-bun' || '' }}
+        # Preserve each runner's original default shell/PATH (PowerShell on
+        # Windows). Node reads native path strings directly from the environment.
+        run: >-
+          node -e "const fs=require('node:fs');const {runRootCompatLane}=require('./scripts/release-gate-evidence.cjs');fs.mkdirSync('.test-data/legacy-root-compat',{recursive:true});runRootCompatLane({sourceSha:process.env.SOURCE_SHA,runId:process.env.GITHUB_RUN_ID,runAttempt:process.env.GITHUB_RUN_ATTEMPT,os:process.env.LANE_OS,nodeMajor:process.env.LANE_NODE,runtime:process.env.LANE_RUNTIME,consumerRoot:process.env.CONSUMER_ROOT,out:'.test-data/legacy-root-compat/lane'});"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: legacy-root-compat-${{ needs.plan.outputs.sha }}-${{ github.run_id }}-${{ matrix.id }}-attempt${{ github.run_attempt }}
+          path: .test-data/legacy-root-compat/lane/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Retain exact Bun acquisition diagnostics
+        uses: actions/upload-artifact@v4
+        if: ${{ always() && matrix.runtime == 'bun' }}
+        with:
+          name: legacy-root-afs-acquisition-diagnostics-${{ needs.plan.outputs.sha }}-${{ github.run_id }}-${{ matrix.id }}-attempt${{ github.run_attempt }}
+          path: ${{ runner.temp }}/legacy-root-afs-input/
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 30
+
+  verify:
+    needs: [plan, lanes]
+    if: ${{ always() && !cancelled() }}
+    runs-on: ubuntu-latest
+    outputs:
+      artifact: ${{ steps.bundle.outputs.name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+          persist-credentials: false
+      - id: verifier_tooling
+        uses: ./.github/actions/setup-legacy-root-verifier
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: legacy-root-compat-${{ needs.plan.outputs.sha }}-${{ github.run_id }}-*-attempt*
+          path: .test-data/legacy-root-compat-proof
+          merge-multiple: false
+      - name: Require every matrix job and verify its original raw evidence
+        env:
+          VERIFIER_NODE_PATH: ${{ steps.verifier_tooling.outputs.node-path }}
+          VERIFIER_NODE_OPTIONS: ${{ steps.verifier_tooling.outputs.node-options }}
+          MATRIX_RESULT: ${{ needs.lanes.result }}
+          SOURCE_SHA: ${{ needs.plan.outputs.sha }}
+        run: |
+          set -euo pipefail
+          test "$MATRIX_RESULT" = success
+          NODE_PATH="$VERIFIER_NODE_PATH" NODE_OPTIONS="$VERIFIER_NODE_OPTIONS" node scripts/release-gate-evidence.cjs verify-root-compat \
+            --source-sha "$SOURCE_SHA" --run-id "$GITHUB_RUN_ID" \
+            --archive-dir .test-data/legacy-root-compat-proof \
+            --out .test-data/legacy-root-compat-proof/compat.receipt.json
+          cp "$VERIFIER_NODE_PATH/../verification.receipt.json" .test-data/legacy-root-compat-proof/verifier-tooling.receipt.json
+      - id: bundle
+        run: echo "name=legacy-root-compat-verified-${{ needs.plan.outputs.sha }}-${{ github.run_id }}-attempt${{ github.run_attempt }}" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.bundle.outputs.name }}
+          path: .test-data/legacy-root-compat-proof/
+          if-no-files-found: error
+          retention-days: 30
+      - name: Keep legacy failures visible
+        if: always()
+        env:
+          MATRIX_RESULT: ${{ needs.lanes.result }}
+        run: echo "Legacy root compatibility result=$MATRIX_RESULT. Independent module checks do not repair or override this result." >> "$GITHUB_STEP_SUMMARY"

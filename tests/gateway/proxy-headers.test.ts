@@ -75,7 +75,8 @@ describe('GatewayProxy response headers', () => {
     proxy = new GatewayProxy(proxyPort, new Supervisor(), '127.0.0.1', {
       internalAdminAuthSecret: INTERNAL_PROXY_SECRET,
     });
-    proxy.setTargets({ css: `http://127.0.0.1:${upstreamPort}` });
+    // The shared framing fixture serves both declared upstream capabilities.
+    proxy.setTargets({ css: `http://127.0.0.1:${upstreamPort}`, api: `http://127.0.0.1:${upstreamPort}` });
     await proxy.start();
   });
 

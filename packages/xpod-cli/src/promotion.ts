@@ -17,6 +17,73 @@
 import path from 'node:path';
 import { sha256Hex, validateManifest, type ArtifactKind, type XpodCliManifest } from './manifest';
 
+// Original header copied byte-for-byte from Google's win_minmax_bsd.c/.h,
+// verified at the hashes recorded in the source-kit distribution notice below.
+// String-array joining preserves the upstream spaces and real newline bytes.
+export const GOOGLE_WIN_MINMAX_BSD_NOTICE = [
+  '/*',
+  ' * Copyright 2017, Google Inc.',
+  ' *',
+  ' * Use of this source code is governed by the following BSD-style license:',
+  ' * ',
+  ' * Redistribution and use in source and binary forms, with or without',
+  ' * modification, are permitted provided that the following conditions are',
+  ' * met:',
+  ' * ',
+  ' *    * Redistributions of source code must retain the above copyright',
+  ' * notice, this list of conditions and the following disclaimer.',
+  ' *    * Redistributions in binary form must reproduce the above',
+  ' * copyright notice, this list of conditions and the following disclaimer',
+  ' * in the documentation and/or other materials provided with the',
+  ' * distribution.',
+  ' * ',
+  ' *    * Neither the name of Google Inc. nor the names of its',
+  ' * contributors may be used to endorse or promote products derived from',
+  ' * this software without specific prior written permission.',
+  ' * ',
+  ' * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS',
+  ' * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT',
+  ' * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR',
+  ' * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT',
+  ' * OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,',
+  ' * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT',
+  ' * LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,',
+  ' * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY',
+  ' * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT',
+  ' * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE',
+  ' * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.',
+  ' */',
+  '',
+].join('\n');
+
+export const SOURCE_KIT_GOOGLE_NOTICE = `## Supplemental source-kit notice: quinn-proto 0.11.19
+The native source kit includes vendor/quinn-proto-0.11.19/src/congestion/bbr/min_max.rs
+(SHA-256 06eb1be36b8700cc4b8a2df07a3d87253f0ef8184cec670928ebd27ecebda935),
+which attributes its MinMax adaptation to Google's BSD source. This source-kit
+inventory does not establish that this crate is linked into a target helper.
+Original source: https://groups.google.com/g/bbr-dev/c/3RTgkzi5ZD8
+Original C: https://groups.google.com/group/bbr-dev/attach/551100fa5f1ca/win_minmax_bsd.c?part=0.2
+C SHA-256: 716fc41ef670545738bbe33697a87e88e934d46a9bc1678b61178769e26691aa
+H SHA-256: 82244db5f9d39036ad90f256f5bea459bbee83cfffc1988fff8f1fbec9114aa4
+The original copyright, conditions and disclaimer follow verbatim:
+` + GOOGLE_WIN_MINMAX_BSD_NOTICE;
+
+export const CLIUI_MODIFICATION_NOTICE = `## Modification notice: cliui 8.0.1 Artistic-2.0 file
+cliui's build/lib/string-utils.js adapts npm/cli's ansi-trim.js from commit
+4c65cd952bc8627811735bea76b9b110cc4fc80e into stripAnsi/wrap helpers for ESM
+and Deno. This distribution uses that adapted file and Bun transforms its
+module syntax and layout when bundling the client as lib/xpodcli.mjs.
+The application source kit preserves the exact input files and build recipe.
+The original npm copyright and file-level notice are preserved at
+licenses/javascript/objects/b3eb9d2e054a43a3064af17332fb1839a7dadb205c5371af4789616afb1a117f.txt;
+the original Artistic License 2.0 text is preserved at
+licenses/javascript/objects/7610d223851f421d315df5e77974f1c68a04b97e02060e5bbbcf13d95e3ca257.txt.
+This modification notice covers the adaptation and distribution's bundling;
+it does not relabel the whole cliui package or the complete client.
+`;
+
+export const SOURCE_DISTRIBUTION_NOTES = [SOURCE_KIT_GOOGLE_NOTICE, CLIUI_MODIFICATION_NOTICE] as const;
+
 export const PROMOTION_EVIDENCE_SCHEMA_VERSION = 1;
 export const ACCEPTANCE_REPORT_SCHEMA_VERSION = 1;
 
@@ -699,6 +766,7 @@ export function derivePromotedManifest(manifest: XpodCliManifest, evidence: Prom
     notes: [
       ...manifest.notes,
       `Promoted from candidate manifest ${evidence.candidate.manifestSha256} via explicit evidence-bound review.`,
+      ...SOURCE_DISTRIBUTION_NOTES,
       ...evidence.notes,
     ],
   };
@@ -755,6 +823,6 @@ export function buildPromotionRecord(input: {
       ...(input.gatewayIdentity ? { gateway: { ...input.gatewayIdentity } } : {}),
     },
     sanitized: true,
-    notes: [ ...evidence.notes ],
+    notes: [ ...SOURCE_DISTRIBUTION_NOTES, ...evidence.notes ],
   };
 }

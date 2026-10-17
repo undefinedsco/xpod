@@ -11,7 +11,7 @@ import fs from 'fs';
 import path from 'path';
 import { createReadStream, statSync } from 'fs';
 import { createInterface } from 'readline';
-import { PACKAGE_ROOT } from '../../runtime';
+import { PACKAGE_ROOT } from '../../runtime/package-root';
 import { resolveCurrentLogFile } from '../../logging/log-file';
 import { normalizeLog, type LogLevel } from '../../logging/normalize-log';
 import { isSecretEnvKey as isAdminSecretEnvKey, redactConfiguredLogSecrets as sanitizeLogMessage } from '../../logging/log-secrets';

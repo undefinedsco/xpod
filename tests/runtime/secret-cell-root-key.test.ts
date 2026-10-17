@@ -1,3 +1,4 @@
+import { assertCompleteDigest, collectChildStdout } from '../helpers/collectChildStdout';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
@@ -39,8 +40,8 @@ describe('Persistent local SecretCell root key', () => {
   it('gives simultaneous first-start processes the same complete key', async () => {
     const { databaseUrl, file } = fixture();
     const digests = await Promise.all([childDigest(databaseUrl), childDigest(databaseUrl)]);
+    digests.forEach(assertCompleteDigest);
     expect(new Set(digests).size).toBe(1);
-    expect(digests[0]).toMatch(/^[0-9a-f]{64}$/u);
     expect(fs.readdirSync(path.dirname(file))).toEqual(['secret-cell-root-key']);
   });
 
@@ -88,16 +89,11 @@ describe('Persistent local SecretCell root key', () => {
 });
 
 function childDigest(databaseUrl: string): Promise<string> {
-  return new Promise((resolve, reject) => {
-    let digest = '';
-    const child = spawn('bun', ['--no-env-file', '-e', `
-      import { createHash } from 'node:crypto';
-      import { resolvePersistentSecretCellRootKey } from './src/runtime/secret-cell-root-key.ts';
-      const provider = resolvePersistentSecretCellRootKey({ databaseUrl: process.env.XPOD_TEST_DATABASE_URL, edition: 'local' });
-      process.stdout.write(createHash('sha256').update(provider.getActiveKey().key).digest('hex'));
-    `], { cwd: process.cwd(), env: { ...process.env, XPOD_TEST_DATABASE_URL: databaseUrl }, stdio: ['ignore', 'pipe', 'ignore'] });
-    child.stdout.on('data', chunk => { digest += chunk.toString(); });
-    child.once('error', reject);
-    child.once('exit', code => code === 0 ? resolve(digest) : reject(new Error(`SecretCell child exited with ${code}`)));
-  });
+  const child = spawn('bun', ['--no-env-file', '-e', `
+    import { createHash } from 'node:crypto';
+    import { resolvePersistentSecretCellRootKey } from './src/runtime/secret-cell-root-key.ts';
+    const provider = resolvePersistentSecretCellRootKey({ databaseUrl: process.env.XPOD_TEST_DATABASE_URL, edition: 'local' });
+    process.stdout.write(createHash('sha256').update(provider.getActiveKey().key).digest('hex'));
+  `], { cwd: process.cwd(), env: { ...process.env, XPOD_TEST_DATABASE_URL: databaseUrl }, stdio: ['ignore', 'pipe', 'ignore'] });
+  return collectChildStdout(child);
 }

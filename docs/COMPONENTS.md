@@ -31,11 +31,15 @@ Xpod 遵循**等位替换原则**：用自定义组件替换 CSS 同层级的默
 | `HandlebarsTemplateEngine` | `RdfHandlebarsTemplateEngine` | 仅在 CSS 内置 Profile、WAC ACL 和 ACP ACR 模板中校验并原样输出完整身份 IRI，避免 HTML 转义改变 WebID；拒绝 Turtle IRIREF 禁字符，保留 EJS、HTML、Markdown 与非受控模板行为 |
 | `PodCreator` | `ProvisionPodCreator` | 同源创建保留 CSS 原生资源；managed Local 核验当前 Account 的 Cloud WebID 和 Local 签名回执，将 canonical storage URL 登记到 Account 和 Cloud card |
 | `WebSocket2023Storer` | `ReclaimingWebSocket2023Storer` | 保留原有 socket 记账与过期清理；某个通道的最后一个 socket 关闭/出错时一并删除通道记录，避免通道在 KV 里留到 `endAt`（CSS 默认 2 周） |
+| `WebSocketServerConfigurator` | `FinalizingWebSocketServerConfigurator` | 保留 CSS upgrade 与 handler 契约；App 停止时移除自身 upgrade 监听、关闭已有 WebSocket，并等待实际连接关闭；超时终止仍报告失败 |
 | Account Pod resource/view | `PodDeletionInteractionHandler` + `PodDeletionInventoryHandler` | 保留 GET/POST owner 管理，新增创建账号授权的 DELETE，并单独声明 `podDeletionControls` 能力 |
 | `BaseHttpHandler` 数据写入边界 | `PodMutationLockingHttpHandler` | 包装原有处理链，让完整写入参与 Pod 删除屏障；避免子资源与删除快照并发提交 |
 | Local `DELETE /provision/pods/:podName` | `LocalPodDeletionHttpHandler` | Gateway 精确转交 CSS，在既有节点认证下执行统一数据/metadata 生命周期，替代 API 只删目录的路径 |
 
 Pod 删除的计划持久化、Cloud/Local 回执、重建代次与验收边界见 [Pod 删除生命周期](pod-deletion-lifecycle.md)。
+
+`FinalizingWebSocketServerConfigurator` 位于 `src/http/FinalizingWebSocketServerConfigurator.ts`；
+配置、正常关闭和超时失败契约见 [CSS WebSocket 生命周期](css-resource-lifecycle.md)。
 
 ### 桌面应用授权记忆
 
@@ -569,3 +573,7 @@ This strategy provides **performance where needed** and **developer experience w
 `RdfHandlebarsTemplateEngine` 仅信任已安装 CSS 的五个精确模板路径：`base/profile/card$.ttl.hbs`、`wac/.acl.hbs`、`wac/README.acl.hbs`、`wac/profile/card.acl.hbs`、`acp/.acr.hbs`。它仅为这些模板内的 `webId`、`oidcIssuer` 和 `mailto:` email 变量提供经校验的 IRI 原文；`name` 等 literal 不参与此处理。任意同后缀文件或字符串模板仍使用原有 HTML 转义。
 
 IRI 必须是绝对 URL，WebID/issuer 限 HTTP(S) 且无用户密码部分；禁止 Turtle IRIREF 禁字符、控制字符及孤立 UTF-16 代理字符。URL 解析仅校验，不使用规范化结果替换身份。查询参数、大小写、显式端口、Unicode 与 percent 编码原文均保留。本修复只影响新生成资源；不会自动改写已存在 Profile 或授权文件。
+
+### SolidFS journal component boundary
+
+`RootedSolidFsSyncJournal` and `SqliteSolidFsSyncJournal` retain their service component IRIs and constructor parameters through thin adapters. Journal behavior and shared interfaces are canonical in `@undefineds.co/xpod-afs`; the canonical service package publishes its declarations and Components metadata. Local configuration imports the AFS context before the service context. Platform AFS CLI modules do not declare service DI metadata.

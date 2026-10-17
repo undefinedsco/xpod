@@ -1,0 +1,100 @@
+name: Independent release contract checks
+
+# Read-only planning. A successful run never authorizes registry mutation.
+on:
+  pull_request:
+    branches: [staging, main]
+    paths:
+      - '.github/workflows/independent-release-prepare.yml'
+      - 'scripts/**'
+      - 'packages/**'
+      - 'src/cli/**'
+      - 'src/runtime/**'
+      - 'tests/scripts/**'
+      - 'tests/bun/**'
+      - 'package.json'
+      - 'bun.lock'
+  push:
+    branches: [staging]
+    paths:
+      - '.github/workflows/independent-release-prepare.yml'
+      - 'scripts/**'
+      - 'packages/**'
+      - 'src/cli/**'
+      - 'src/runtime/**'
+      - 'tests/scripts/**'
+      - 'tests/bun/**'
+      - 'package.json'
+      - 'bun.lock'
+  workflow_dispatch:
+    inputs:
+      registry_readback:
+        description: 'Optional exact registry readback JSON (registry/package/version/expected sha256, integrity, bytes); read-only, no qualification'
+        required: false
+        type: string
+        default: ''
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  contracts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - name: Bind actual checkout separately from event head
+        id: source
+        env:
+          EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          actual_sha="$(git rev-parse HEAD)"
+          test "$actual_sha" = "$GITHUB_SHA"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          echo "sha=$actual_sha" >> "$GITHUB_OUTPUT"
+          mkdir -p .test-data/independent-release-prepare
+          python3 - "$actual_sha" <<'PY'
+          import json,os,pathlib,sys
+          record={'schemaVersion':1,'kind':'independent-release-contract-source','status':'contract-check-only',
+            'candidatePlanGenerated':False,
+            'checkoutSha':sys.argv[1],'eventHeadSha':os.environ['EVENT_HEAD_SHA'],
+            'eventName':os.environ['GITHUB_EVENT_NAME'],'ref':os.environ['GITHUB_REF'],
+            'published':False,'releaseQualified':False}
+          pathlib.Path('.test-data/independent-release-prepare/source.json').write_text(json.dumps(record,indent=2)+'\n')
+          PY
+      - name: Install declared contract dependencies
+        run: bun install --frozen-lockfile
+      - name: Check workflow and planner contracts
+        run: |
+          node --test tests/scripts/independent-release-workflow.node-test.cjs
+          bun test tests/bun/independent-release-plan.test.ts
+      - name: Read back an explicitly requested exact registry product
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.registry_readback != '' }}
+        env:
+          REGISTRY_READBACK_INPUT: ${{ inputs.registry_readback }}
+        run: bun scripts/run-registry-readback-preflight.ts
+      - name: Explain preparation boundary
+        if: ${{ always() }}
+        env:
+          REGISTRY_READBACK_ENABLED: ${{ github.event_name == 'workflow_dispatch' && inputs.registry_readback != '' }}
+        run: |
+          if [ "$REGISTRY_READBACK_ENABLED" = true ]; then
+            echo 'Explicit registry readback requested: inspect registry-readback.json for actual network readback-only, not-published-blocked, or failure. A byte match is not release qualification. Contract checkout is not candidate product source authority; source/native/legal/consumer admission remains blocked.' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'Contract fixtures only: no actual candidate archive or receipt was inspected. Planner success is not release qualification; missing source/native/legal/consumer admission remains blocked.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() && steps.source.outputs.sha != '' }}
+        with:
+          name: independent-release-contracts-${{ steps.source.outputs.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .test-data/independent-release-prepare/
+          if-no-files-found: error
+          retention-days: 30
