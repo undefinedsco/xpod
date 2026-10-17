@@ -5,7 +5,7 @@ import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { runOwnedInstalledConsumer, type OwnedInstalledResult } from '../../../scripts/agentfs-native-ci/mounted/owned-installed-consumer';
+import { runOwnedInstalledConsumer, installedConsumerWatchdogMs, type OwnedInstalledResult } from '../../../scripts/agentfs-native-ci/mounted/owned-installed-consumer';
 
 const owned: string[] = [];
 afterEach(async () => { await Promise.all(owned.splice(0).map(p => rm(p, { recursive: true, force: true }))); });
@@ -74,7 +74,8 @@ artifactTest.skipIf(!archive)('real AFS payload installs through public CLI and 
     await writeFile(path.join(receipts, stage + '.safe.json'), JSON.stringify(row) + '\n', { mode: 0o600, flag: 'wx' });
     process.stdout.write(JSON.stringify(row) + '\n'); expect(absent).toBe(true);
   }
-  const runOwned = (runtime: string, args: string[], env: NodeJS.ProcessEnv) => runOwnedInstalledConsumer(runtime, args, env, root, 10_000);
+  const runOwned = (runtime: string, args: string[], env: NodeJS.ProcessEnv, stage = 'command') =>
+    runOwnedInstalledConsumer(runtime, args, env, root, installedConsumerWatchdogMs(stage), stage);
   // Controlled registry fixture, not registry publication evidence. Only these
   // two exact URLs are served; unexpected requests fail instead of using network.
   const preload = path.join(root, 'registry-fixture.mjs');
@@ -92,7 +93,7 @@ globalThis.fetch=async (input) => {
   async function cliRun(runtime: string, label: string, phaseLabel: string, args: string[]): Promise<SpawnSyncReturns<Buffer>> {
     const row = payloads.get(label)!;
     const result = await runOwned(runtime, [runtime === node ? '--import' : '--preload', preload, cli, ...args, ...(phaseLabel === 'install' ? ['--diagnostics'] : [])],
-      {...process.env, HOME: row.home, NODE_PATH: '', XPOD_TEST_DOWNLOAD_COUNTER: row.counter});
+      {...process.env, HOME: row.home, NODE_PATH: '', XPOD_TEST_DOWNLOAD_COUNTER: row.counter}, `${label}-cli-${phaseLabel}`);
     await receipt(`${label}-cli-${phaseLabel}`, result);
     expect(result.error).toBeUndefined(); expect(result.signal).toBeNull();
     return result;

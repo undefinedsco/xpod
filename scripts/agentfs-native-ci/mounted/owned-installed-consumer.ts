@@ -5,9 +5,14 @@ export interface OwnedInstalledObservation {
   timeoutMs: number; elapsedMs: number; timeoutObserved: boolean; closeObserved: boolean; groupClosed: boolean;
 }
 export type OwnedInstalledResult = SpawnSyncReturns<Buffer> & { observation: OwnedInstalledObservation };
-/** Test harness process ownership; production callers retain the fixed 10-second watchdog. */
-export async function runOwnedInstalledConsumer(runtime: string, args: string[], env: NodeJS.ProcessEnv, cwd: string, timeoutMs: number): Promise<OwnedInstalledResult> {
-  if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 10_000) throw new Error('Invalid owned consumer watchdog');
+/** Fixed test budgets: whole-archive installation differs from a small CLI probe. */
+export function installedConsumerWatchdogMs(stage: string): number {
+  return stage === 'node-cli-install' || stage === 'bun-cli-install' ? 15_000 : 10_000;
+}
+
+/** Own every started child through exit, close and process-group disappearance. */
+export async function runOwnedInstalledConsumer(runtime: string, args: string[], env: NodeJS.ProcessEnv, cwd: string, timeoutMs: number, stage = 'command'): Promise<OwnedInstalledResult> {
+  if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > installedConsumerWatchdogMs(stage)) throw new Error('Invalid owned consumer watchdog');
   const started = performance.now();
   const child = spawn(runtime, args, { cwd, env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
   const stdout: Buffer[] = []; const stderr: Buffer[] = []; let error: Error | undefined; let timedOut = false;

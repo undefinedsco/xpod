@@ -249,7 +249,7 @@
     },
     "packages/solid-sdk": {
       "name": "@undefineds.co/solid-sdk",
-      "version": "0.1.4",
+      "version": "0.1.5",
       "dependencies": {
         "@inrupt/solid-client-authn-browser": "^3.1.1",
         "zustand": "^5.0.13",
@@ -266,7 +266,7 @@
     },
     "packages/tasks": {
       "name": "@undefineds.co/tasks",
-      "version": "0.1.5",
+      "version": "0.1.6",
       "dependencies": {
         "@undefineds.co/extension-sdk": "workspace:*",
         "@undefineds.co/shared-ui": "workspace:*",
