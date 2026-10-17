@@ -58,6 +58,45 @@ def verify_write_bytes(before,buffer,after,before_size,offset,count,maximum,chec
     need(post.take(1)==b'','actual post-write original has extra bytes')
     return expected_size
 
+def write_segments(before,offset,count,buffer,maximum):
+    """Immutable original slices, not full postimage copies. Zero gaps explicit."""
+    need(type(maximum) is int and maximum>=0,'exact write projection maximum required')
+    need(type(offset) is int and offset>=0 and type(count) is int and count>=0,'nonnegative exact write offset/count required')
+    need(all(type(at) is int and at>=0 and type(n) is int and n>=0 and (ref is None or type(ref.get('bytes')) is int and 0<=at<=at+n<=ref['bytes']<=maximum) for ref,at,n in before),'bounded original delta segment required')
+    size=sum(item[2] for item in before);need(size<=maximum and offset+count<=maximum and type(buffer.get('bytes')) is int and 0<=count<=buffer['bytes']<=maximum,'write projection size/range bound');result=[]
+    def subset(start,end):
+        position=0
+        for ref,at,n in before:
+            left=max(start,position);right=min(end,position+n)
+            if right>left:result.append((ref,at+left-position,right-left))
+            position+=n
+    if not count:return list(before)
+    subset(0,min(offset,size))
+    if offset>size:result.append((None,0,offset-size))
+    result.append((buffer,0,count));subset(offset+count,size)
+    need(len(result)<=65536,'write delta segment count unsupported')
+    return result
+
+def segment_blocks(segments,read_blocks,check=lambda:None):
+    for ref,start,length in segments:
+        if ref is None:
+            while length:check();n=min(length,65536);yield bytes(n);length-=n
+            continue
+        position=0
+        for block in read_blocks(ref):
+            check();need(isinstance(block,bytes) and 0<len(block)<=65536,'bounded delta original block')
+            left=max(start,position);right=min(start+length,position+len(block))
+            if right>left:yield block[left-position:right-position]
+            position+=len(block)
+            if position>=start+length:break
+        need(position>=start+length,'short write delta original slice')
+
+def digest_blocks(blocks,maximum,check=lambda:None):
+    count=0;digest=hashlib.sha256()
+    for block in blocks:
+        check();need(isinstance(block,bytes) and len(block)<=65536,'bounded write digest chunk');count+=len(block);need(count<=maximum,'write digest byte bound');digest.update(block)
+    return dict(bytes=count,sha256=digest.hexdigest())
+
 def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,limits=None,capture_observer=None):
     maximum_raw=limits['sourceMaterialBytes'] if limits else 32*1024**2
     maximum_file=limits['shardBytes'] if limits else 1024**2
@@ -67,7 +106,7 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
     live=set();last=0;entries={};exits={};barriers={};caps={};paths={};renames=[];consumers=[];source_reads=[];total=0;capture_total=0;exclusive=None;root_codes={};clone_flags=set();clone_flag_values={}
     alias_close_windows={};alias_close_exits=set()
     mode_windows={};mode_transitions={};namespace_bindings=[]
-    write_windows={};closed_write_windows=set();write_transitions={};write_consumers=[];write_read_exits={}
+    write_projections={};write_windows={};closed_write_windows=set();write_transitions={};write_consumers=[];write_read_exits={}
     empty_windows={};empty_eofs=set()
     prepared={};prepared_consumers=[];prepared_digest=hashlib.sha256();prepared_count=0;prepared_sealed=False;prepared_paths=set()
     def capture_data(ref):
@@ -141,29 +180,45 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
             elif kind=='actual-write-window':
                 entry=entries.get(row['entrySequence']);barrier=barriers.get(row['barrierSequence'])
                 need(entry and barrier and entry['pid']==row['pid'] and row['pid'] in barrier['pids'] and entry['nr']==policy(entry['arch'])['write'] and entry['args'][0]==row['fd'],'actual write entry/barrier differs')
+                need(all(type(row[key]) is int and 0<=row[key]<=maximum_file for key in ['position','offset']) and type(entry['args'][2]) is int and 0<=entry['args'][2]<=maximum_file and row['offset']+entry['args'][2]<=maximum_file,'exact bounded write position/offset/count required')
                 need(row['flags']&3==2 and row['writers']==[dict(pid=row['pid'],fd=row['fd'])] and row['offset']==(row['beforeIdentity'][3] if row['flags']&1024 else row['position']),'actual write has another alias or offset differs')
-                before=capture_data(row['before']);buffer=capture_data(row['buffer']);need(before[0]==row['beforeIdentity'][3] and buffer[0]==entry['args'][2],'write originals differ from actual dimensions')
+                delta=row.get('format')=='bounded-write-delta-v1';need(row.get('format') in [None,'bounded-write-delta-v1'],'unknown write evidence format')
+                before=(row['before']['bytes'],row['before']['sha256']) if delta else capture_data(row['before']);buffer=capture_data(row['buffer']);need(before[0]==row['beforeIdentity'][3] and buffer[0]==entry['args'][2],'write originals differ from actual dimensions')
                 baseline=row['baseline']
                 if baseline=='empty':need(before[0]==0,'nonempty write preimage has no original authority')
                 elif baseline in write_transitions:
-                    prior=write_transitions[baseline];need(prior['afterIdentity']==row['beforeIdentity'] and capture_data(prior['after'])==before,'write preimage differs from previous actual transition')
+                    prior=write_transitions[baseline];need(prior['afterIdentity']==row['beforeIdentity'] and ((prior['after']['bytes'],prior['after']['sha256']) if 'path' not in prior['after'] else capture_data(prior['after']))==before,'write preimage differs from previous actual transition')
                 else:
                     prior=prepared.get(baseline) or caps.get(baseline);need(prior and prior[0]['identity']==row['beforeIdentity'] and prior[1]==before,'write preimage has no retained original')
                     if baseline in caps:
                         previous=exits.get(prior[0]['entrySequence']);need(prior[0]['role']=='producer-close' and previous and not previous['isError'] and previous['result']==0,'write baseline lacks actual producer close')
+                if delta:
+                    key=tuple(row['beforeIdentity'][:2])
+                    if baseline in write_transitions:
+                        projection=write_projections.get(key);need(projection and projection[0]==baseline,'delta preimage is not latest actual transition');segments=projection[1]
+                    else:
+                        initial=row['initialBefore'];need(capture_data(initial)==before,'initial write delta preimage differs');segments=[(initial,0,before[0])] if before[0] else []
+                    write_projections[key]=(row['sequence'],segments)
                 write_windows[row['sequence']]=row;retained_entries.add(row['entrySequence'])
             elif kind=='exclusive-write-resume':
                 window=write_windows.get(row['captureSequence']);need(window and exclusive is None and window['pid']==row['pid'] and window['entrySequence']==row['entrySequence'],'actual write exclusive resume differs');exclusive=(row['pid'],row['entrySequence'])
             elif kind=='actual-write-transition':
                 window=write_windows.get(row['windowSequence']);exit=exits.get(row['entrySequence'])
                 need(window and exclusive==(row['pid'],row['entrySequence']) and window['entrySequence']==row['entrySequence'] and window['pid']==row['pid'] and exit and exit['sequence']==row['exitSequence'],'actual write exit/window differs')
-                need(not exit['isError'] and row['isError'] is False and row['result']==exit['result'] and 0<=row['result']<=window['buffer']['bytes'] and row['afterIdentity'][:3]==window['beforeIdentity'][:3],'actual write result/identity differs')
-                after=capture_data(row['after']);need(after[0]==row['afterIdentity'][3],'actual write after identity/size differs')
+                need(type(row['result']) is int and type(exit['result']) is int and not exit['isError'] and row['isError'] is False and row['result']==exit['result'] and 0<=row['result']<=window['buffer']['bytes'] and row['afterIdentity'][:3]==window['beforeIdentity'][:3],'actual write result/identity differs')
                 def blocks(ref):
                     value=read_original(ref['path'],maximum_file)
-                    if isinstance(value,bytes):return (value[i:i+65536] for i in range(0,len(value),65536))
-                    return value
-                need(verify_write_bytes(blocks(window['before']),blocks(window['buffer']),blocks(row['after']),window['beforeIdentity'][3],window['offset'],row['result'],maximum_file,check)==after[0],'actual write size projection differs')
+                    return (value[i:i+65536] for i in range(0,len(value),65536)) if isinstance(value,bytes) else value
+                if window.get('format')=='bounded-write-delta-v1':
+                    need(set(row['after'])=={'bytes','sha256'},'delta after must be digest only')
+                    key=tuple(window['beforeIdentity'][:2]);prior=write_projections.get(key);need(prior and prior[0]==window['sequence'],'delta window order differs')
+                    segments=write_segments(prior[1],window['offset'],row['result'],window['buffer'],maximum_file)
+                    expected=digest_blocks(segment_blocks(segments,blocks,check),maximum_file,check);need(expected==row['after'],'delta postimage does not reconstruct actual full SHA')
+                    write_projections[key]=(row['sequence'],segments);after=(expected['bytes'],expected['sha256'])
+                else:
+                    after=capture_data(row['after'])
+                    need(verify_write_bytes(blocks(window['before']),blocks(window['buffer']),blocks(row['after']),window['beforeIdentity'][3],window['offset'],row['result'],maximum_file,check)==after[0],'actual write size projection differs')
+                need(after[0]==row['afterIdentity'][3],'actual write after identity/size differs')
                 need(window['sequence'] not in closed_write_windows,'duplicate actual write transition');closed_write_windows.add(window['sequence']);write_transitions[row['sequence']]=row
             elif kind=='actual-write-consumer-binding':write_consumers.append(row)
             elif kind=='actual-write-consumer-exit':
@@ -265,7 +320,7 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
     for binding in write_consumers:
         consumer=successful.get(binding['captureSequence']);transition=write_transitions.get(binding['transitionSequence'])
         if consumer is None:continue
-        need(transition and consumer[0]['role']=='readwrite-consumer' and consumer[0]['identity']==transition['afterIdentity']==binding['identity'] and consumer[1]==capture_data(transition['after']) and consumer[0]['path']==binding['path'],'own-RW read lacks exact actual write byte provenance')
+        need(transition and consumer[0]['role']=='readwrite-consumer' and consumer[0]['identity']==transition['afterIdentity']==binding['identity'] and consumer[1]==((transition['after']['bytes'],transition['after']['sha256']) if 'path' not in transition['after'] else capture_data(transition['after'])) and consumer[0]['path']==binding['path'],'own-RW read lacks exact actual write byte provenance')
         cap,data=consumer;need(binding['readOffset']==write_read_exits[cap['sequence']]['readOffset'],'own-RW read offset binding differs');covered[cap['path']]=dict(path=cap['path'],bytes=data[0],sha256=data[1],writeTransitionSequence=transition['sequence'],consumerCaptureSequence=cap['sequence'],origin='actual-exclusive-write-transition')
     prepared_covered={}
     for binding in prepared_consumers:

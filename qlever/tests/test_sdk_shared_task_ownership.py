@@ -31,7 +31,7 @@ class Tests(unittest.TestCase):
   with tempfile.NamedTemporaryFile(dir=base) as file:
    identity=backend.probe.identity(Path(file.name).stat());observer=backend.Observer('/unused','/unused','/unused',shared_tasks=True);observer.tasks={7:dict(exited=False,fdTable=7),8:dict(exited=False,fdTable=7)};observer.check=lambda:None
    def listing(path):return ['4']
-   with patch.object(backend.os,'listdir',side_effect=listing),patch.object(backend.os,'stat',return_value=Path(file.name).stat()),patch.object(backend,'descriptor_flags',return_value=2):
+   with patch.object(observer,'bounded_fd_slots',return_value=['4']),patch.object(backend.os,'stat',return_value=Path(file.name).stat()),patch.object(backend,'descriptor_flags',return_value=2):
     self.assertEqual(observer.sole_writer(8,4,identity),[dict(pid=8,fd=4)])
     observer.tasks[8]['fdTable']=8
     with self.assertRaisesRegex(AssertionError,'another writable FD'):observer.sole_writer(8,4,identity)

@@ -86,7 +86,7 @@ export async function observeQleverSdkGeneratedInputOriginals(capability:unknown
  return Object.freeze({facts:Object.freeze(facts),pending:Object.freeze([...pending])});
 }
 // Filled only from the fixed, reviewed controller/producer files in this batch.
-const HELPERS:readonly(readonly[string,string])[]=[["sdk-zip-originals.py", "f4e8bf855aad1428550f014222873f9024eff994115a9e7bf67287e5671833f5"], ["sdk-generation-multiprocess-bindings.py", "03835926f9b87ee51f2cf9020e127818b78816f2582fe1d2fbb15bd12dd10f15"], ["sdk-execution-originals-util.py", "b2226db7d6d9955d6bf3745dc5011aa1dbc67ffe90faf9dc88fffa7376343a2d"], ["sdk-generated-source-originals.py", "60cf828b888a64ecf63accbcf2c856772633dbd7e24eae01e2c3bf53c198595a"]];
+const HELPERS:readonly(readonly[string,string])[]=[["sdk-zip-originals.py", "f4e8bf855aad1428550f014222873f9024eff994115a9e7bf67287e5671833f5"], ["sdk-generation-multiprocess-bindings.py", "05c877aeb8ed8d9ea1b36b219724ea8077bd0ebab4e688a1e78d82c061504540"], ["sdk-execution-originals-util.py", "b2226db7d6d9955d6bf3745dc5011aa1dbc67ffe90faf9dc88fffa7376343a2d"], ["sdk-generated-source-originals.py", "60cf828b888a64ecf63accbcf2c856772633dbd7e24eae01e2c3bf53c198595a"]];
 const REVIEWED_OBSERVER_SHA={"qlever/scripts/sdk-ptrace-execution.py": "5d88182382f3bb0bcdf2dea4e3ea58358535038dd3f31aed3867e29cfa16dca0", "qlever/scripts/sdk-ptrace-kernel.py": "08fe6e47e696d1543406751bda83f3aaa89a80973d87a27a5a6423e666b5aff2", "qlever/scripts/sdk-execution-originals-util.py": "b2226db7d6d9955d6bf3745dc5011aa1dbc67ffe90faf9dc88fffa7376343a2d", "qlever/scripts/sdk-blocking-owned-wait.py": "9529b31b027b759e5baa380fa81339b9a962d8d916ac1ea20c9f9503bd697a68", "qlever/scripts/sdk-generation-multiprocess-bindings.py": "18900af6455068d1f86849529d910805a2fe99edb56cb5291ed3c2ec10f8c196"} as const;
 
 const REVIEWED_OBSERVER_GROUPS:readonly Readonly<Record<string,string>>[]=[REVIEWED_OBSERVER_SHA,Object.freeze({...REVIEWED_OBSERVER_SHA,
@@ -95,4 +95,7 @@ const REVIEWED_OBSERVER_GROUPS:readonly Readonly<Record<string,string>>[]=[REVIE
 }),Object.freeze({...REVIEWED_OBSERVER_SHA,
  "qlever/scripts/sdk-ptrace-execution.py":"3b13ffdcdf1a2ca84d5e8f86e6e34539e8c5123673c4a06f709503d078d89d30",
  "qlever/scripts/sdk-generation-multiprocess-bindings.py":"03835926f9b87ee51f2cf9020e127818b78816f2582fe1d2fbb15bd12dd10f15",
+}),Object.freeze({...REVIEWED_OBSERVER_SHA,
+ "qlever/scripts/sdk-ptrace-execution.py":"0ef3e75db2bd1c065183a2ea332e605948d576a490c948f8bd0c04fcf6284ed2",
+ "qlever/scripts/sdk-generation-multiprocess-bindings.py":"05c877aeb8ed8d9ea1b36b219724ea8077bd0ebab4e688a1e78d82c061504540",
 })];

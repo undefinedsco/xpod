@@ -82,7 +82,7 @@ test('owned SDK RUNs select the complete PID1 registry/guard and preserve earlie
 
 test('source-prepared SDK group binds the complete changed recipe without mixing historical selectors',()=>{
  const old=QLEVER_SDK_EXECUTION_GROUPS[6]!,next=QLEVER_SDK_EXECUTION_GROUPS[7]!;
- expect(QLEVER_SDK_EXECUTION_GROUPS).toHaveLength(15);
+ expect(QLEVER_SDK_EXECUTION_GROUPS).toHaveLength(16);
  const selected=new Map([...next.selectors,...(next.secondarySelectors??[])].map(row=>[sourceBindingKey(row),row.sha256]));
  expect(selectGitHubSourceBindingGroup(QLEVER_SDK_EXECUTION_GROUPS,selected)).toBe(next);
  for(const path of ['docker/qlever-runtime-sdk/Dockerfile.module-bookworm','qlever/scripts/sdk-inner-materials.py']){
@@ -175,4 +175,14 @@ test('shared-task observer selects its complete secondary pair and preserves fou
  for(const row of next.secondarySelectors!){const mixed=new Map([...primary,...old.secondarySelectors!.map(row=>[sourceBindingKey(row),row.sha256] as const)]);mixed.set(sourceBindingKey(row),row.sha256);expect(()=>selectGitHubSourceBindingGroup(QLEVER_SDK_EXECUTION_GROUPS,mixed)).toThrow();mixed.set(sourceBindingKey(row),'0'.repeat(64));expect(()=>selectGitHubSourceBindingGroup(QLEVER_SDK_EXECUTION_GROUPS,mixed)).toThrow();}
  expect(next.sourceBindings.find(row=>row.path==='qlever/scripts/sdk-toolchain-materials.py')?.sha256).not.toBe(old.sourceBindings.find(row=>row.path==='qlever/scripts/sdk-toolchain-materials.py')?.sha256);
  for(const group of QLEVER_SDK_EXECUTION_GROUPS.slice(0,14))expect(selectGitHubSourceBindingGroup(QLEVER_SDK_EXECUTION_GROUPS,new Map([...group.selectors,...(group.secondarySelectors??[])].map(row=>[sourceBindingKey(row),row.sha256])))).toBe(group);
+});
+
+test('write-delta observer selects its complete secondary pair and preserves fifteen historical versions',()=>{
+ const old=QLEVER_SDK_EXECUTION_GROUPS[14]!,next=QLEVER_SDK_EXECUTION_GROUPS[15]!;
+ expect(next.selectors).toEqual(old.selectors);
+ const primary=new Map(next.selectors.map(row=>[sourceBindingKey(row),row.sha256]));
+ for(const group of [old,next])expect(selectGitHubSourceBindingGroup(QLEVER_SDK_EXECUTION_GROUPS,new Map([...group.selectors,...group.secondarySelectors!].map(row=>[sourceBindingKey(row),row.sha256])))).toBe(group);
+ for(const row of next.secondarySelectors!){const mixed=new Map([...primary,...old.secondarySelectors!.map(row=>[sourceBindingKey(row),row.sha256] as const)]);mixed.set(sourceBindingKey(row),row.sha256);expect(()=>selectGitHubSourceBindingGroup(QLEVER_SDK_EXECUTION_GROUPS,mixed)).toThrow();mixed.set(sourceBindingKey(row),'0'.repeat(64));expect(()=>selectGitHubSourceBindingGroup(QLEVER_SDK_EXECUTION_GROUPS,mixed)).toThrow();}
+ expect(next.sourceBindings.find(row=>row.path==='qlever/scripts/sdk-toolchain-materials.py')?.sha256).toBe(old.sourceBindings.find(row=>row.path==='qlever/scripts/sdk-toolchain-materials.py')?.sha256);
+ for(const group of QLEVER_SDK_EXECUTION_GROUPS.slice(0,15))expect(selectGitHubSourceBindingGroup(QLEVER_SDK_EXECUTION_GROUPS,new Map([...group.selectors,...(group.secondarySelectors??[])].map(row=>[sourceBindingKey(row),row.sha256])))).toBe(group);
 });

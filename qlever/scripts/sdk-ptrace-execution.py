@@ -93,7 +93,7 @@ class Observer:
         self.prepared_inputs={};self.prepared_sealed=False;self.domain_bytes=0;self.domain_lock=threading.Lock();self.pump_errors=[];self.maximum_stdio_bytes=maximum_stdio_bytes if maximum_stdio_bytes is not None else maximum_file_bytes
         self.require_success=require_success;self.raw_bytes_completed=0;self.maximum_processes=maximum_processes;self.shard_bytes=shard_bytes
         self.deadline_monotonic=deadline_monotonic;self.check_budget=check_budget;self.maximum_bytes=maximum_bytes;self.maximum_file_bytes=maximum_file_bytes;self.selected_names=selected_names
-        self.out=Path(out);self.capture_dir=self.out;self.source=str(source);self.build=str(build);self.tasks={};self.seq=0;self.records=[];self.captures=[];self.retained=set();self.producers={};self.write_states={};self.metadata_states=[];self.rename_records=[];self.consumers=[];self.raw=None;self.deadline=0;self.pausing=False;self.root=None;self.root_code=None;self.failures=[];self.current_phase=None;self.unknown_stops={};self.capture_bytes=0;self.exclusive=None;self.wait_references=[]
+        self.out=Path(out);self.capture_dir=self.out;self.source=str(source);self.build=str(build);self.tasks={};self.seq=0;self.records=[];self.captures=[];self.retained=set();self.producers={};self.write_states={};self.write_projections={};self.budget_context={};self.metadata_states=[];self.rename_records=[];self.consumers=[];self.raw=None;self.deadline=0;self.pausing=False;self.root=None;self.root_code=None;self.failures=[];self.current_phase=None;self.unknown_stops={};self.capture_bytes=0;self.exclusive=None;self.wait_references=[]
     def tighten_remaining(self,remaining_bytes):
         # External source domains supply only their remaining allowance. The
         # existing observer ledger remains private and is clipped under the
@@ -103,15 +103,18 @@ class Observer:
         with self.domain_lock:
             self.maximum_bytes=min(self.maximum_bytes,self.domain_bytes+remaining_bytes)
             return self.maximum_bytes
-    def claim(self,count):
+    def claim(self,count,*,context=None):
         self.check_budget()
         with self.domain_lock:
-            assert count>=0 and self.domain_bytes+count<=self.maximum_bytes,'shared execution original byte bound'
+            if count<0 or self.domain_bytes+count>self.maximum_bytes:
+                diagnostic=dict(kind='execution-byte-bound',chargedBytes=self.domain_bytes,requestedBytes=count,maximumBytes=self.maximum_bytes,projectedBytes=self.domain_bytes+count,**(context or dict(role='other-execution-original')))
+                print('SDK_EXECUTION_BYTE_BOUND '+json.dumps(diagnostic,sort_keys=True),file=sys.stderr,flush=True)
+                raise AssertionError('shared execution original byte bound')
             self.domain_bytes+=count
     def emit(self,row):
         self.check();self.seq+=1;row=dict(row,sequence=self.seq,phase=self.current_phase,observedUnixNs=str(time.time_ns()));data=(json.dumps(row,sort_keys=True)+'\n').encode()
         assert len(data)<=65536,'actual raw record exceeds fixed range bound'
-        self.claim(len(data));self.raw.write(data);self.raw.flush();return row
+        self.claim(len(data),context=dict(role='raw-record',rawKind=row['kind']));self.raw.write(data);self.raw.flush();return row
     def wait_one(self):
         return self.waiter.wait_one()
     def check(self):
@@ -127,22 +130,30 @@ class Observer:
         for pid,row in sorted(live.items()):
             self.check();tgid=self.actual_tgid(pid);assert tgid==row['tgid'],'actual TGID differs from kernel clone binding';groups.setdefault(tgid,[]).append(pid)
             descriptors=[]
-            for value in sorted(os.listdir('/proc/'+str(pid)+'/fd'),key=int):
+            for value in self.bounded_fd_slots(pid):
                 self.check();fd=int(value);item=os.stat('/proc/'+str(pid)+'/fd/'+value);descriptors.append([fd,probe.identity(item),descriptor_flags(pid,fd),descriptor_position(pid,fd)])
             table=row['fdTable'];prior=tables.setdefault(table,descriptors);assert prior==descriptors,'CLONE_FILES table differs between stopped owners'
             ownership.append(dict(tid=pid,tgid=tgid,fdTable=table))
         for tgid,tids in groups.items():assert sorted(int(value) for value in os.listdir('/proc/'+str(tgid)+'/task'))==tids,'unregistered or missing actual TGID task'
         return ownership
+    def bounded_fd_slots(self,pid):
+        values=[]
+        with os.scandir('/proc/'+str(pid)+'/fd') as entries:
+            for entry in entries:
+                self.check();assert len(values)<1024,'actual FD table slots unsupported above 1024'
+                values.append(entry.name)
+        return sorted(values,key=int)
     def writable_aliases(self,identity,target_pid=None,target_fd=None):
         result={}
         for pid,row in sorted(self.tasks.items()):
             if row['exited']:continue
-            for value in sorted(os.listdir('/proc/'+str(pid)+'/fd'),key=int):
+            for value in self.bounded_fd_slots(pid):
                 self.check();fd=int(value);item=os.stat('/proc/'+str(pid)+'/fd/'+value)
                 if (item.st_dev,item.st_ino)!=tuple(identity[:2]):continue
                 flags=descriptor_flags(pid,fd)
                 if flags&os.O_ACCMODE==os.O_RDONLY:continue
                 table=row['fdTable'] if self.shared_tasks else pid;key=(table,fd)
+                assert key in result or len(result)<64,'writable alias keys unsupported above 64'
                 actual=dict(pid=pid,fd=fd,flags=flags,accessMode=flags&os.O_ACCMODE)
                 if pid==target_pid and fd==target_fd:result[key]=actual
                 else:result.setdefault(key,actual)
@@ -234,10 +245,15 @@ class Observer:
         with (self.capture_dir/name).open('xb') as output:
             while count<size:
                 self.check();block=os.pread(reader,min(65536,size-count),offset+count);assert block,'short actual write original'
-                self.claim(len(block));output.write(block);count+=len(block);digest.update(block)
+                self.claim(len(block),context=self.budget_context);output.write(block);count+=len(block);digest.update(block)
             output.flush();os.fsync(output.fileno())
         row=self.emit(dict(kind='write-original',original=dict(path=name,bytes=count,sha256=digest.hexdigest())))
         self.captures.append(row);self.capture_bytes+=count;return row['original']
+    def fd_blocks(self,reader,size):
+        offset=0
+        while offset<size:
+            self.check();block=os.pread(reader,min(65536,size-offset),offset);assert block,'short held write image'
+            offset+=len(block);yield block
     def original_blocks(self,ref):
         with (self.capture_dir/ref['path']).open('rb') as stream:
             while True:
@@ -251,7 +267,11 @@ class Observer:
             writers=self.sole_writer(pid,fd,identity);flags=descriptor_flags(pid,fd);assert flags&os.O_ACCMODE==os.O_RDWR
             position=descriptor_position(pid,fd);offset=identity[3] if flags&os.O_APPEND else position;count=entry['args'][2]
             assert count<=self.maximum_file_bytes and offset+count<=self.maximum_file_bytes,'bounded actual write range'
-            before=self.snapshot_write_original(reader,identity[3]);assert identity==probe.identity(os.fstat(reader))
+            self.budget_context=dict(path=path[:4096],pathTruncated=len(path)>4096,pathSha256=hashlib.sha256(os.fsencode(path)).hexdigest(),role='write-before',pid=pid,fd=fd,identity=identity,writeCount=count,writeOffset=offset)
+            before=bindings.digest_blocks(self.fd_blocks(reader,identity[3]),self.maximum_file_bytes,self.check);assert identity==probe.identity(os.fstat(reader))
+            initial=None
+            if tuple(identity[:2]) not in self.write_states:
+                initial=self.snapshot_write_original(reader,identity[3]);assert identity==probe.identity(os.fstat(reader))
             prior=self.write_states.get(tuple(identity[:2]));baseline='empty'
             if identity[3]:
                 if prior:
@@ -262,9 +282,11 @@ class Observer:
                     assert original,'nonempty writable preimage lacks retained actual original'
                     row,held,data=original;assert probe.identity(os.fstat(held))==identity and data==(before['bytes'],before['sha256']),'write preimage differs from actual retained original';baseline=row['sequence']
             memory=os.open('/proc/'+str(pid)+'/mem',os.O_RDONLY|os.O_CLOEXEC)
-            try:buffer=self.snapshot_write_original(memory,count,offset=entry['args'][1])
+            try:
+                self.budget_context['role']='actual-write-buffer';buffer=self.snapshot_write_original(memory,count,offset=entry['args'][1])
             finally:os.close(memory)
-            row=self.emit(dict(kind='actual-write-window',pid=pid,fd=fd,path=path,entrySequence=entry['sequence'],barrierSequence=barrier['sequence'],beforeIdentity=identity,before=before,buffer=buffer,offset=offset,position=position,flags=flags,writers=writers,baseline=baseline))
+            row=self.emit(dict(kind='actual-write-window',pid=pid,fd=fd,path=path,entrySequence=entry['sequence'],barrierSequence=barrier['sequence'],beforeIdentity=identity,format='bounded-write-delta-v1',initialBefore=initial,before=before,buffer=buffer,offset=offset,position=position,flags=flags,writers=writers,baseline=baseline))
+            self.budget_context={}
             self.tasks[pid]['writeWindow']=(row,reader);self.retained.add(reader);reader=None;return row
         finally:
             if reader is not None:os.close(reader)
@@ -273,8 +295,15 @@ class Observer:
         try:
             assert self.exclusive==(pid,entry['sequence']) and not exit['isError'] and 0<=exit['result']<=entry['args'][2],'actual write failed or returned invalid count'
             identity=probe.identity(os.fstat(held));assert identity==probe.identity(os.stat('/proc/'+str(pid)+'/fd/'+str(row['fd']))) and identity[:3]==row['beforeIdentity'][:3] and descriptor_flags(pid,row['fd'])==row['flags'],'actual writer FD changed'
-            self.sole_writer(pid,row['fd'],identity);after=self.snapshot_write_original(held,identity[3]);assert identity==probe.identity(os.fstat(held))
-            bindings.verify_write_bytes(self.original_blocks(row['before']),self.original_blocks(row['buffer']),self.original_blocks(after),row['beforeIdentity'][3],row['offset'],exit['result'],self.maximum_file_bytes,self.check)
+            self.sole_writer(pid,row['fd'],identity)
+            key=tuple(identity[:2]);segments=self.write_projections.get(key)
+            if row['initialBefore'] is not None:segments=[(row['initialBefore'],0,row['beforeIdentity'][3])] if row['beforeIdentity'][3] else []
+            assert segments is not None,'write delta baseline projection missing'
+            segments=bindings.write_segments(segments,row['offset'],exit['result'],row['buffer'],self.maximum_file_bytes)
+            after=bindings.digest_blocks(self.fd_blocks(held,identity[3]),self.maximum_file_bytes,self.check)
+            expected=bindings.digest_blocks(bindings.segment_blocks(segments,self.original_blocks,self.check),self.maximum_file_bytes,self.check)
+            assert after==expected and identity==probe.identity(os.fstat(held)),'actual post-write bytes differ from syscall buffer projection'
+            self.write_projections[key]=segments
             transition=self.emit(dict(kind='actual-write-transition',pid=pid,entrySequence=entry['sequence'],windowSequence=row['sequence'],exitSequence=exit['sequence'],afterIdentity=identity,after=after,result=exit['result'],isError=exit['isError']))
             self.write_states[tuple(identity[:2])]=transition
         finally:os.close(held);self.retained.remove(held)
