@@ -1,4 +1,4 @@
-import { test } from 'node:test';
+import { test } from 'vitest';
 import { strict as assert } from 'node:assert';
 import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';

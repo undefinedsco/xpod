@@ -1,4 +1,4 @@
-import { test } from 'node:test';
+import { test } from 'vitest';
 import { strict as assert } from 'node:assert';
 import { createRequire } from 'node:module';
 import { mkdirSync, mkdtempSync, existsSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
@@ -25,7 +25,7 @@ test('nested cancellation drains the owned browser group before B exits and pare
   let command: Promise<any> | undefined;
   let cancelledAfterReady = false;
   try {
-    command = helper.runOwnedModeCommand(process.execPath, [childFile], {
+    command = helper.runOwnedModeCommand('bun', [childFile], {
       cwd: process.cwd(), env: process.env, timeoutMs: 7000, outputBytes: 4096,
       signal: cancellation.signal, terminationGraceMs: 10000,
     });

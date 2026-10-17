@@ -1,5 +1,5 @@
 import { strict as assert } from 'node:assert';
-import { test } from 'node:test';
+import { test } from 'vitest';
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { externalRefreshFromEnvironment, readExternalRefreshFixture, verifyExternalRefreshStorage } from './browserExternalRefreshFixture';

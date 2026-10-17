@@ -1,5 +1,5 @@
 import { strict as assert } from 'node:assert';
-import { test } from 'node:test';
+import { test } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { mkdirSync, mkdtempSync, rmSync, statSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
