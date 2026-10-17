@@ -1,4 +1,4 @@
-import { bindPublicationGateMaterials } from './publication-gate-materials';
+import { bindPublicationGateMaterials,assertPublicationNativeOriginalCustody } from './publication-gate-materials';
 import {compactCollectedSourceOriginals,compactCollectedProductProjection} from './artifact-collector';
 import { preflightPublicationResources } from './publication-resource-preflight';
 import fs from 'node:fs';
@@ -103,7 +103,7 @@ export async function preparePublicationGroup(input:PublicationGroupPreparationI
   if(view.identity.target!==undefined){
    const {compactModuleSourceMaterials}=await import('./module-source-admission');
    compactModuleSourceMaterials(sourceMaterials);compactCollectedSourceOriginals(artifact);compactCollectedProductProjection(artifact);
-   if(nativeMaterials){const originals=nativeOriginalBindings.get(nativeMaterials as object);if(originals){const {compactCollectedNativeOriginals}=await import('./native-original-collector');for(const original of new Set([originals.nativeOriginals,...originals.relatedNativeOriginals]))compactCollectedNativeOriginals(original);}}
+   if(nativeMaterials){const originals=nativeOriginalBindings.get(nativeMaterials as object);if(originals){const {compactCollectedNativeOriginals,nativeOriginalsView}=await import('./native-original-collector');for(const original of new Set([originals.nativeOriginals,...originals.relatedNativeOriginals])){assertPublicationNativeOriginalCustody(original);if(nativeOriginalsView(original))compactCollectedNativeOriginals(original);}}}
   }else{
    portableReady.add(artifact);
    if(session.portable&&portableReady.has(session.portable.cli)&&portableReady.has(session.portable.client)){
@@ -159,6 +159,26 @@ async function prepareNormalProductNativeContext(input:{artifact:CollectedArtifa
    if(sdkResources.status==='pending')fail(sdkResources.pending.join('; '));
    sdkOriginals=await collectRelatedQleverSdkOriginals({nativeOriginals:runtime,output:path.join(input.output,'sdk-acquired'),token:input.token});
   }
+ }
+ if(material.identity.package.startsWith('@undefineds.co/xpod-afs-')){
+  const {observeAfsNativeAcquisition}=await import('./afs-native-acquisition');
+  const located=await observeAfsNativeAcquisition({artifact:input.artifact,source:input.source,token:input.token});
+  const {observeAgentFsNativeGitHubOrigin}=await import('./github-origin');
+  const origin=await observeAgentFsNativeGitHubOrigin(located.coordinates,located.target,{token:input.token});
+  const {acquireNativeAdmissionOriginals}=await import('../../acquire-independent-product-input');
+  const {collectNativeAdmissionOriginals}=await import('./native-original-collector');
+  fs.mkdirSync(input.output,{mode:0o700});
+  for(const row of located.metadataOriginals)fs.writeFileSync(path.join(input.output,row.name),row.data,{flag:'wx',mode:0o400});
+  const resourceOutput=path.join(input.output,'native-resources');fs.mkdirSync(resourceOutput,{mode:0o700});
+  const resources=await preflightPublicationResources({selectors:[located.coordinates],output:resourceOutput,reservationDirectory:input.output,token:input.token});
+  if(resources.status==='pending')fail(resources.pending.join('; '));
+  const acquisitionRoot=path.join(input.output,'acquired');
+  await acquireNativeAdmissionOriginals(located.coordinates,acquisitionRoot,{token:input.token});
+  nativeOriginals=await collectNativeAdmissionOriginals({githubOrigin:origin,acquisitionRoot});
+ }
+ if(material.identity.package.startsWith('@undefineds.co/xpod-api-')){
+  const {observeOfficialInngestRelease}=await import('./inngest-release-originals');
+  nativeOriginals=await observeOfficialInngestRelease({artifact:input.artifact,source:input.source});
  }
  const context=await collectNativeAdmissionContext({artifact:input.artifact,source:input.source,nativeOriginals,...(sdkOriginals?{sdkOriginals}:{})});
  if(nativeOriginals)nativeOriginalBindings.set(context as object,Object.freeze({nativeOriginals,relatedNativeOriginals:Object.freeze(sdkOriginals?[sdkOriginals]:[])}));

@@ -1,7 +1,18 @@
+import {officialInngestReleaseView} from './inngest-release-originals';
+import {isDeepStrictEqual} from 'node:util';
 import {nativeOriginalsView,assertCollectedNativeOriginalCustody} from './native-original-collector';
 import { collectedArtifactView } from './artifact-collector';
 import { derivedSourceView } from './source-context';
 interface GateMaterials {readonly relatedArtifacts:readonly unknown[];readonly legalOriginals:readonly unknown[];readonly legalSourceMaterials:unknown;readonly nativeOriginals?:unknown;readonly relatedNativeOriginals?:readonly unknown[]}
+/** The same native gate accepts either an Actions native original or the
+ * separately issued official-release origin facts. Neither branch accepts JSON. */
+export function assertPublicationNativeOriginalCustody(original:unknown):void{
+ const native=nativeOriginalsView(original);
+ if(native){assertCollectedNativeOriginalCustody(original);return;}
+ const official=officialInngestReleaseView(original);
+ if(!official)throw Error('Real retained native original handles required');
+ official.assertCurrent();
+}
 const issued=new WeakMap<object,WeakMap<object,Readonly<GateMaterials>>>();
 /** Context binding only. Registration grants no gate result; all exact handles
  * must independently pass the operational dispatcher before compaction. */
@@ -9,7 +20,9 @@ export function bindPublicationGateMaterials(artifact:object,source:object,input
  const product=collectedArtifactView(artifact),derived=derivedSourceView(source);
  if(!product||!derived||product.identity.sourceSha!==derived.sourceSha||input.relatedArtifacts.some(value=>!collectedArtifactView(value)))throw Error('Real exact product/source/related handles required');
  for(const original of [input.nativeOriginals,...input.relatedNativeOriginals??[]].filter(Boolean)){
-  const view=nativeOriginalsView(original);if(!view)throw Error('Real retained native original handles required');assertCollectedNativeOriginalCustody(original);
+  assertPublicationNativeOriginalCustody(original);
+  const official=officialInngestReleaseView(original);
+  if(official&&!isDeepStrictEqual(official.identity,product.identity))throw Error('Official native original differs from exact publication product');
  }
  const bySource=issued.get(artifact)??new WeakMap<object,Readonly<GateMaterials>>();
  if(bySource.has(source))throw Error('Publication gate material binding already exists');

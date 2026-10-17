@@ -83,6 +83,7 @@ export interface ControlledNativeRuntimeView {
   readonly uncoveredNativeImages: readonly Readonly<import('../physical-module-native').NativeFile>[];
   readonly runtimeAbiVerified: boolean;
   readonly sdkSourceFacts?: Readonly<Record<string, unknown>>;
+  readonly officialReleaseFacts?: Readonly<Record<string, unknown>>;
   readonly sourceMaterialsVerified: boolean;
   readonly nativeSourceClosureVerified: boolean;
   readonly pending: readonly string[];
@@ -383,11 +384,29 @@ export async function collectNativeAdmissionContext(input: {
   if (platform_ === 'darwin') observeMacNativeRanges({ sizeBytes: binary.reference.sizeBytes, readRange: binary.readRange }, product.identity.target);
   else if (platform_ === 'linux') verifyNativeMaterialTarget(binary.readRange(0, 64), product.identity.target);
   else return fail('module native target format profile unavailable');
-  const native = input.nativeOriginals === undefined ? undefined : nativeOriginalsView(input.nativeOriginals);
-  if (input.nativeOriginals !== undefined && !native) return fail('private independent native original capability required');
+  const { officialInngestReleaseView } = await import('./inngest-release-originals');
+  const official = module_ === 'api' ? officialInngestReleaseView(input.nativeOriginals) : undefined;
+  const native = input.nativeOriginals === undefined || official ? undefined : nativeOriginalsView(input.nativeOriginals);
+  if (input.nativeOriginals !== undefined && !native && !official) return fail('private independent native original capability required');
   if (module_ === 'api' && native) return fail('official-release native custody profile required; an Actions native origin is not an Inngest release origin');
   let originVerified = false, stagesVerified = false, runtimeAbi = false;
   const pending = new Set(material.pending);
+  if (module_ === 'api' && official) {
+    if (!isDeepStrictEqual(official.identity, product.identity) || official.target !== product.identity.target
+      || official.sourceCommit !== material.nativeSourceSha || official.officialOriginVerified !== true || official.releaseMembersVerified !== true)
+      return fail('official Inngest origin differs from exact actual product/source');
+    for (const reference of [official.archive, official.sourceArchive, official.binary, official.license]) {
+      const actual = product.members.find(row => row.path === reference.path);
+      if (!actual || actual.bytes !== reference.bytes || actual.sha256 !== reference.sha256) return fail('official Inngest release member differs from exact product');
+    }
+    if (official.binary.path !== material.binary.path || official.binary.sha256 !== material.binary.sha256 || official.binary.bytes !== material.binary.sizeBytes
+      || official.sourceArchive.path !== material.sourceArchive.path || official.sourceArchive.sha256 !== material.sourceArchive.sha256
+      || official.sourceArchive.bytes !== material.sourceArchive.sizeBytes) return fail('official Inngest source/binary scope differs');
+    originVerified = true;
+    pending.delete('inngest-official-release-origin-capability-unavailable');
+    pending.delete('inngest-release-binary-member-correspondence-unverified');
+  }
+
   if (module_ === 'afs' && native) {
     const data = material.data as { kit: any; receipt: any; reuse: any; authority: any };
     const facts = native.originFacts;
@@ -449,16 +468,20 @@ export async function collectNativeAdmissionContext(input: {
   const capability = Object.freeze({}) as NativeMaterialCapability;
   const validate = () => {
     if (collectedArtifactView(input.artifact) !== product || derivedSourceView(input.source) !== source
-      || (native && nativeOriginalsView(input.nativeOriginals) !== native)) return fail('module native custody/source capability revoked');
+      || (native && nativeOriginalsView(input.nativeOriginals) !== native)
+      || (official && officialInngestReleaseView(input.nativeOriginals) !== official)) return fail('module native custody/source capability revoked');
   };
   const { uncoveredNativeImages, inventoryObserved } = await observeOtherProductNativeImages(input.artifact, new Set([material.binary.path]));
   const view: ControlledNativeRuntimeView = Object.freeze({ identity: product.identity, nativeSourceSha: material.nativeSourceSha,
+    ...(official ? {officialReleaseFacts: Object.freeze({repository: 'inngest/inngest', releaseID: official.releaseID, releaseTag: official.releaseTag,
+      target: official.target, sourceCommit: official.sourceCommit, officialOriginVerified: true, releaseMembersVerified: true,
+      sourceArchiveScope: official.sourceArchiveScope})} : {}),
     nativeOriginVerified: originVerified, originalStageBindingsVerified: stagesVerified, binaryFormatsVerified: inventoryObserved && uncoveredNativeImages.length === 0,
     selectedNativeBinaryFormatsVerified: true, agentfsRuntimeAbiVerified: module_ === 'afs' && runtimeAbi, qleverRuntimeAbiVerified: false, runtimeAbiScope: module_ === 'api' ? 'api-inngest-cli' : 'afs-agentfs-helper',
     uncoveredNativeImages, runtimeAbiVerified: runtimeAbi && inventoryObserved && uncoveredNativeImages.length === 0, sourceMaterialsVerified: true, nativeSourceClosureVerified: false,
     pending: Object.freeze([...pending, ...(!inventoryObserved ? ['whole-product-native-image-inventory-budget-exceeded'] : []), ...uncoveredNativeImages.map(row => 'uncovered-product-native-image:' + row.path)]) });
   runtimeIssued.set(capability, { view, validate });
-  issued.set(capability, () => { validate(); return Object.freeze({ identity: product.identity, custodyKind: 'collected-native-originals' as const,
+  issued.set(capability, () => { validate(); return Object.freeze({ identity: product.identity, custodyKind: official ? 'official-release-originals' as const : 'collected-native-originals' as const,
     indexPath: material.index.path, indexSha256: material.index.sha256, status: 'material-integrity-verified' as const, externalAdmission: 'pending' as const }); });
   return capability;
 }
