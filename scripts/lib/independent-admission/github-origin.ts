@@ -6,7 +6,7 @@ import {QLEVER_OBSERVER_PATH,QLEVER_OBSERVER_V20,QLEVER_OBSERVER_V22,QLEVER_OBSE
 import { CLI_SOURCE_POLICY } from './source-rules';
 import { registryConsumerArtifactName } from './registry-consumer-originals';
 import { archiveConsumerArtifactName } from './archive-consumer-originals';
-import { CONSUMER_SOURCE_GROUPS, CI_CONSUMER_SOURCE_GROUPS, CI_PUBLICATION_WORKFLOW_SHA, CALLABLE_PUBLICATION_WORKFLOW_SHA } from './consumer-observer-policy';
+import { CONSUMER_SOURCE_GROUPS, CI_CONSUMER_SOURCE_GROUPS, CI_PUBLICATION_WORKFLOW_SHA, CALLABLE_PUBLICATION_WORKFLOW_SHA, STAGING_CHECKED_PUBLICATION_WORKFLOW_SHA } from './consumer-observer-policy';
 import { createHash } from 'node:crypto';
 import { CLI_PRODUCT_WORKFLOW, cliPublicationArtifactNames, type ArtifactAcquisitionInput } from '../../acquire-independent-product-input';
 import { productTarget } from '../../module-product-targets';
@@ -277,7 +277,7 @@ export async function observeProductConsumerGitHubOrigin(input:ArtifactAcquisiti
   const names=pre?[`pre-${suffix} / archive-consumer-${suffix}`]:Array.from({length:14},(_,i)=>`wave-${String(i+1).padStart(2,'0')} / registry-${suffix} / registry-consumer-${suffix}`);
   const manual:OriginPolicy={
     workflowPath:'.github/workflows/independent-publication.yml',workflowSha256:'63a34359c5afa9cf318e1505f22d5353d832d8b5220ce774675132b5fc75d103',
-    reviewedWorkflowVersions:[{workflowSha256:CALLABLE_PUBLICATION_WORKFLOW_SHA,jobName:()=>names[0]!}],
+    reviewedWorkflowVersions:[CALLABLE_PUBLICATION_WORKFLOW_SHA,STAGING_CHECKED_PUBLICATION_WORKFLOW_SHA].map(workflowSha256=>({workflowSha256,jobName:()=>names[0]!})),
     workflowRef:'run-head',sourceMayDiffer:true,allowRunningRun:true,maximumJobPages:8,
     events:['workflow_dispatch'],...(product.target?{target:product.target}:{}),
     artifactNames:()=>[expected],jobName:()=>names[0]!,jobNames:()=>names,
