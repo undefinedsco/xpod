@@ -15,7 +15,7 @@ function python(code: string) {
 }
 
 test('normal phase plan includes real shared build prerequisites, API-owned UI build and original material gates', () => {
-  const result = JSON.parse(python(`rows=m.phase_plan(repo,base/'out','0.0.0-preview.1');print(json.dumps(rows))`));
+  const result = JSON.parse(python(`rows=m.phase_plan(repo,base/'out','0.0.0-preview.1','darwin-arm64');print(json.dumps(rows))`));
   const names = result.map((row: [string, string[]]) => row[0]);
   expect(names.indexOf('shared-packages') < names.indexOf('api-build')).toBe(true);
   expect(names.indexOf('native-inputs') < names.indexOf('native-material')).toBe(true);
@@ -75,15 +75,25 @@ test('receipt facts reject missing materials, source substitution and native/ter
  records={'package.json':{'name':declaration['name'],'version':version,'private':True,'xpodModule':{'id':'api','platform':'darwin','arch':'arm64','cliApiVersion':1}},'provenance/source-inventory.json':{'sourceAuthority':{'sourceCommit':source,'dirty':False}},'provenance/release-status.json':{'sourceAuthority':{'sourceCommit':source,'dirty':False}},'provenance/publication.json':{'mode':'preview','version':version,'sourceCommit':None},'provenance/terms/index.json':{'status':'original-material-collection','legalClearance':False,'missingNamedOriginalTerms':[{'name':'missing-original','version':'1.0.0'}]},'provenance/native/inngest/index.json':{'platform':'darwin','arch':'arm64','legalClearance':False}}
  for name,value in records.items():
   p=stage/name;p.parent.mkdir(parents=True,exist_ok=True);p.write_text(json.dumps(value))
- value=m.collect_facts(out,packed,source,version,declaration);assert value['missingNamedOriginalTerms']==[{'name':'missing-original','version':'1.0.0'}]
+ value=m.collect_facts(out,packed,source,version,declaration,'darwin-arm64');assert value['missingNamedOriginalTerms']==[{'name':'missing-original','version':'1.0.0'}]
+ for target in ['darwin-arm64','darwin-x64','linux-arm64','linux-x64']:
+  platform,arch=target.split('-');decl=dict(declaration,name='@undefineds.co/xpod-api-'+target)
+  product=dict(records['package.json'],name=decl['name'],xpodModule=dict(records['package.json']['xpodModule'],platform=platform,arch=arch))
+  (stage/'package.json').write_text(json.dumps(product));(stage/'provenance/native/inngest/index.json').write_text(json.dumps({'platform':platform,'arch':arch,'legalClearance':False}))
+  m.collect_facts(out,packed,source,version,decl,target)
+  (stage/'provenance/native/inngest/index.json').write_text(json.dumps({'platform':platform,'arch':'wrong','legalClearance':False}))
+  try:m.collect_facts(out,packed,source,version,decl,target)
+  except ValueError:pass
+  else:raise AssertionError('different native target accepted')
+ for name in ['package.json','provenance/native/inngest/index.json']:(stage/name).write_text(json.dumps(records[name]))
  for name,delta in [('provenance/release-status.json',{'sourceAuthority':{'sourceCommit':'b'*40,'dirty':False}}),('provenance/native/inngest/index.json',{'platform':'linux'}),('provenance/terms/index.json',{'legalClearance':True})]:
   p=stage/name;original=p.read_bytes();p.write_text(json.dumps(dict(records[name],**delta)))
-  try:m.collect_facts(out,packed,source,version,declaration)
+  try:m.collect_facts(out,packed,source,version,declaration,'darwin-arm64')
   except ValueError:pass
   else:raise AssertionError('drift accepted')
   p.write_bytes(original)
  (stage/'provenance/terms/index.json').unlink()
- try:m.collect_facts(out,packed,source,version,declaration)
+ try:m.collect_facts(out,packed,source,version,declaration,'darwin-arm64')
  except (FileNotFoundError,ValueError):pass
  else:raise AssertionError('missing original terms silently replaced')
 `);
@@ -106,11 +116,19 @@ test('workflow keeps pilot preview permissions, triggers and separate failed dia
   expect(pullRequest).not.toContain('paths:');
   expect(pullRequest).not.toContain('paths-ignore:');
   expect(source).toContain('contents: read');
-  expect(source).toContain('runs-on: macos-14');
-  expect(source).toContain('api-module-products-darwin-arm64-');
-  expect(source).toContain('api-module-diagnostics-darwin-arm64-');
+  expect(source).toContain('runs-on: ${{ matrix.runner }}');
+  expect(source).toContain('api-module-products-${{ matrix.target }}-');
+  expect(source).toContain('api-module-diagnostics-${{ matrix.target }}-');
   expect(source).not.toContain('NPM_TOKEN');
   expect(source).not.toContain('cancel-in-progress');
   expect(source).not.toContain('id-token: write');
   expect(source).not.toContain('workflow_call');
+});
+
+test('one API phase plan passes each declared target to the official native input producer', () => {
+  const rows = JSON.parse(python(`targets=['darwin-arm64','darwin-x64','linux-arm64','linux-x64'];print(json.dumps([m.phase_plan(repo,base/'out','0.0.0-preview.1',target) for target in targets]))`));
+  for (const [index, target] of ['darwin-arm64','darwin-x64','linux-arm64','linux-x64'].entries()) {
+    const native = rows[index].find((row: [string, string[]]) => row[0] === 'native-inputs')[1];
+    expect(native[native.indexOf('--target') + 1]).toBe(target);
+  }
 });

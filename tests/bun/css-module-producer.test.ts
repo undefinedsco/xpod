@@ -12,7 +12,7 @@ function python(code: string) {
   return result.stdout.trim();
 }
 test('CSS uses normal minimal dist chain and runtime-only installed patch check', () => {
-  const rows = JSON.parse(python(`print(json.dumps(m.phase_plan(repo,base/'out','0.0.0-preview.1')))`));
+  const rows = JSON.parse(python(`print(json.dumps(m.phase_plan(repo,base/'out','0.0.0-preview.1','darwin-arm64')))`));
   expect(rows.map((r: string[]) => r[0])).toEqual(['install','tools','client','cli','afs-client','dependency-state','pack']);
   expect(rows[5][1]).toContain('--runtime-only');
   expect(rows[6][1]).toContain('packages/xpod-css/scripts/build-package.ts');
@@ -20,7 +20,7 @@ test('CSS uses normal minimal dist chain and runtime-only installed patch check'
   expect(JSON.stringify(rows)).not.toContain('build:packages');
 });
 test('same-run acquisition requires exact completed native job, original upload digest and current attempt', () => {
- python(`identity={'runId':42,'runAttempt':2,'actualCheckoutSha':'a'*40,'runHeadSha':'b'*40}
+ python(`identity={'runId':42,'runAttempt':2,'actualCheckoutSha':'a'*40,'runHeadSha':'b'*40,'target':'darwin-arm64'}
 env={'CSS_NATIVE_ARTIFACT_ID':'7','CSS_NATIVE_ARTIFACT_DIGEST':'c'*64,'CSS_NATIVE_RUN_ID':'42','CSS_NATIVE_RUN_ATTEMPT':'2','CSS_NATIVE_SOURCE_SHA':'a'*40}
 artifact={'id':7,'expired':False,'name':'qlever-local-runtime-darwin-arm64-'+'a'*40,'workflow_run':{'id':42,'head_sha':'b'*40},'digest':'sha256:'+'c'*64,'size_in_bytes':10,'created_at':'2026-10-15T01:01:00Z','updated_at':'2026-10-15T01:01:01Z'}
 job={'id':8,'name':'native / build','run_id':42,'run_attempt':2,'head_sha':'b'*40,'status':'completed','conclusion':'success','started_at':'2026-10-15T01:00:00Z','completed_at':'2026-10-15T01:02:00Z'}
@@ -47,7 +47,7 @@ test('original ZIP layout rejects links and extras before expanding archive', ()
   original=out/str(len(names));original.mkdir()
   with zipfile.ZipFile(original/'native.zip','w') as z:
    for name in names:z.writestr(name,b'tiny')
-  try:m.unpack_native(original,out/'runtime')
+  try:m.unpack_native(original,out/'runtime','darwin-arm64')
   except ValueError:pass
   else:raise AssertionError('bad zip accepted')
 `);
@@ -63,8 +63,8 @@ test('workflow has precise native output bindings and preview-only permissions',
  const parsed = spawnSync('bun', ['-e', "import {readFileSync} from 'node:fs';console.log(JSON.stringify(Bun.YAML.parse(readFileSync(process.argv[1],'utf8'))));", path.join(repo,'.github/workflows/css-module-product.yml')], {encoding:'utf8'});
  expect(parsed.status).toBe(0);
  const workflow = JSON.parse(parsed.stdout);
- expect(workflow.jobs['darwin-arm64-preview']['runs-on']).toBe('macos-15');
- expect(workflow.jobs['darwin-arm64-preview'].permissions).toEqual({contents:'read',actions:'read'});
+ expect(workflow.jobs.products['runs-on']).toBe('${{ matrix.runner }}');
+ expect(workflow.jobs.products.permissions).toEqual({contents:'read',actions:'read'});
  const native = readFileSync(path.join(repo,'.github/workflows/build-qlever-macos-runtime.yml'),'utf8');
  expect(native).toContain('artifact_id:'); expect(native).toContain('steps.upload.outputs.artifact-id');
  const text = JSON.stringify(workflow);
@@ -79,9 +79,18 @@ test('CSS facts bind actual normal compiler/material schema and retain preview a
  for name,value in records.items():
   p=stage/name;p.parent.mkdir(parents=True,exist_ok=True);p.write_text(json.dumps(value))
  packed={'archive':str(archive),'sha256':m.sha_file(archive),'integrity':'sha512-'+base64.b64encode(hashlib.sha512(archive.read_bytes()).digest()).decode(),'members':1}
- facts=m.collect_facts(out,packed,'a'*40,'0.1.0');assert 'compiler' in facts['materials'] and 'sourceAuthority' not in facts
+ facts=m.collect_facts(out,packed,'a'*40,'0.1.0','darwin-arm64');assert 'compiler' in facts['materials'] and 'sourceAuthority' not in facts
+ for target in ['darwin-arm64','darwin-x64','linux-arm64','linux-x64']:
+  platform,arch=target.split('-')
+  product=dict(records['package.json'],name='@undefineds.co/xpod-css-'+target,xpodModule={'id':'css','platform':platform,'arch':arch})
+  (stage/'package.json').write_text(json.dumps(product));(stage/'provenance/css-native-runtime.json').write_text(json.dumps(dict(records['provenance/css-native-runtime.json'],target=target)))
+  m.collect_facts(out,packed,'a'*40,'0.1.0',target)
+  try:m.collect_facts(out,packed,'a'*40,'0.1.0','wrong-x64')
+  except ValueError:pass
+  else:raise AssertionError('different product target accepted')
+ for name in ['package.json','provenance/css-native-runtime.json']:(stage/name).write_text(json.dumps(records[name]))
  (stage/'provenance/css-native-runtime.json').write_text(json.dumps(dict(records['provenance/css-native-runtime.json'],sourceSha='b'*40)))
- try:m.collect_facts(out,packed,'a'*40,'0.1.0')
+ try:m.collect_facts(out,packed,'a'*40,'0.1.0','darwin-arm64')
  except ValueError:pass
  else:raise AssertionError('native substitution accepted')
 `);

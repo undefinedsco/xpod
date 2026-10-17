@@ -1,4 +1,4 @@
-name: API module preview product pilot
+name: API module preview products
 
 on:
   pull_request:
@@ -14,6 +14,9 @@ jobs:
   contract:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.targets.outputs.matrix }}
+      pending: ${{ steps.targets.outputs.pending }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -22,11 +25,20 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.2
-      - run: bun test tests/bun/api-module-producer.test.ts
+      - run: bun test tests/bun/api-module-producer.test.ts tests/bun/module-product-targets.test.ts
+      - id: targets
+        name: Project canonical targets and actual native-source coverage
+        run: |
+          bun scripts/module-product-targets.ts api > targets.json
+          bun -e 'const p=await Bun.file("targets.json").json();for(const [key,available] of [["matrix",true],["pending",false]])console.log(key+"="+JSON.stringify({include:p.include.filter(x=>x.nativeSourceAvailable===available)}));' >> "$GITHUB_OUTPUT"
 
-  darwin-arm64-preview:
+  products:
     needs: contract
-    runs-on: macos-14
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix: ${{ fromJSON(needs.contract.outputs.matrix) }}
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
@@ -46,14 +58,14 @@ jobs:
           set -euo pipefail
           umask 077
           mkdir -p "$GITHUB_WORKSPACE/.test-data"
-          root="$GITHUB_WORKSPACE/.test-data/api-product-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-darwin-arm64"
+          root="$GITHUB_WORKSPACE/.test-data/api-product-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${{ matrix.target }}"
           echo "API_PRODUCT_ROOT=$root" >> "$GITHUB_ENV"
-          python3 scripts/api-module-producer.py --out "$root"
+          python3 scripts/api-module-producer.py --target "${{ matrix.target }}" --out "$root"
       - name: Upload preview product and its original evidence
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: api-module-products-darwin-arm64-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: api-module-products-${{ matrix.target }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             ${{ env.API_PRODUCT_ROOT }}/product.tgz
             ${{ env.API_PRODUCT_ROOT }}/producer.receipt.json
@@ -65,7 +77,7 @@ jobs:
         if: failure() && env.API_PRODUCT_ROOT != ''
         uses: actions/upload-artifact@v4
         with:
-          name: api-module-diagnostics-darwin-arm64-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: api-module-diagnostics-${{ matrix.target }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             ${{ env.API_PRODUCT_ROOT }}/producer.receipt.json
             ${{ env.API_PRODUCT_ROOT }}/evidence/
