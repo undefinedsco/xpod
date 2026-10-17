@@ -7,6 +7,17 @@ on:
     paths:
       - '.github/workflows/module-installed-consumer.yml'
       - 'scripts/prepare-module-consumer-plan.ts'
+      - 'scripts/api-module-consumer.py'
+      - 'scripts/css-module-consumer.py'
+      - 'scripts/lib/module-consumer.py'
+      - 'scripts/lib/module-consumer-targets.py'
+      - 'scripts/verify-module-consumer-native.ts'
+      - 'scripts/module-product-targets.ts'
+      - 'packages/xpod-cli/src/module-catalog.ts'
+      - 'tests/bun/module-consumer-targets.test.ts'
+      - 'tests/bun/api-module-consumer.test.ts'
+      - 'tests/bun/css-module-consumer.test.ts'
+      - 'scripts/lib/physical-module-native.ts'
       - 'scripts/export-module-consumer-evidence.ts'
       - 'tests/scripts/module-installed-consumer-workflow.node-test.cjs'
       - 'tests/bun/prepare-module-consumer-plan.test.ts'
@@ -15,7 +26,7 @@ on:
   workflow_dispatch:
     inputs:
       request_json:
-        description: 'Exact CSS or API + normal CLI acquisition tuples at one actual source SHA; see docs/module-consumer-ci.md'
+        description: 'Explicit target + exact CSS or API and normal CLI acquisition tuples at one actual source SHA; see docs/module-consumer-ci.md'
         required: true
         type: string
       execute_consumer:
@@ -45,9 +56,37 @@ jobs:
         with:
           bun-version: '1.4.2'
       - run: node --test tests/scripts/module-installed-consumer-workflow.node-test.cjs
-  prepare:
+  select:
     if: ${{ github.event_name == 'workflow_dispatch' }}
-    runs-on: macos-15
+    runs-on: ubuntu-24.04
+    outputs:
+      runner: ${{ steps.target.outputs.runner }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.2'
+      - id: target
+        env:
+          MODULE_CONSUMER_REQUEST: ${{ inputs.request_json }}
+        run: |
+          set -euo pipefail
+          bun --eval '
+            import { productTarget } from "./scripts/module-product-targets.ts";
+            import { appendFileSync } from "node:fs";
+            const request = JSON.parse(process.env.MODULE_CONSUMER_REQUEST);
+            if (typeof request.target !== "string") throw Error("Explicit target required");
+            const target = productTarget(request.module, request.target);
+            if (!target.nativeSourceAvailable) throw Error("Target native source is pending");
+            appendFileSync(process.env.GITHUB_OUTPUT, `runner=${target.runner}\n`);
+          '
+  prepare:
+    needs: select
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    runs-on: ${{ needs.select.outputs.runner }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -61,6 +100,13 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: '1.4.2'
+      - name: Prepare and verify Linux source isolation
+        if: ${{ runner.os == 'Linux' }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap
+          bwrap --unshare-user --unshare-pid --ro-bind / / --proc /proc --dev /dev --cap-drop ALL -- /usr/bin/true
       - name: Install tool dependencies without building products
         working-directory: tools
         run: |
@@ -81,6 +127,7 @@ jobs:
             validateModuleConsumerRequest(request);
             appendFileSync(process.env.GITHUB_OUTPUT, `source_sha=${request.sourceSha}\n`);
             appendFileSync(process.env.GITHUB_OUTPUT, `module=${request.module}\n`);
+            appendFileSync(process.env.GITHUB_OUTPUT, `target=${request.target}\n`);
           '
       - uses: actions/checkout@v4
         with:
@@ -145,7 +192,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: ${{ always() && steps.plan.outputs.root != '' }}
         with:
-          name: module-consumer-preparation-${{ steps.request.outputs.module }}-${{ steps.request.outputs.source_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: module-consumer-preparation-${{ steps.request.outputs.module }}-${{ steps.request.outputs.target }}-${{ steps.request.outputs.source_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ steps.plan.outputs.root }}/safe-evidence/
           if-no-files-found: error
           retention-days: 7

@@ -4,6 +4,7 @@ Adapters own protocol validation and service probes. Unknown process closure
 keeps raw ineligible and prevents adapters from deleting retained state.
 """
 import base64
+import importlib.util
 import hashlib
 import json
 import os
@@ -20,6 +21,10 @@ import sys
 import tempfile
 import urllib.parse
 import urllib.request
+
+_targets_spec = importlib.util.spec_from_file_location('xpod_consumer_targets', pathlib.Path(__file__).resolve().parent / 'module-consumer-targets.py')
+targets = importlib.util.module_from_spec(_targets_spec)
+_targets_spec.loader.exec_module(targets)
 
 GIB = 1024 ** 3
 MIB = 1024 ** 2
@@ -170,8 +175,13 @@ def validate_consumer_plan(plan, profile):
     require(original_producer.get('schemaVersion') == 1 and original_producer.get('kind') == module_id + '-module-product-production' and original_producer.get('status') == 'controlled-preview-materials', 'CSS producer identity mismatch')
     require(all(original_producer.get(flag) is False for flag in ['published', 'releaseQualified', 'consumerValidated', 'legalClearance', 'nativeAdmission']), 'CSS producer admission mismatch')
     require(all(original_producer.get(key, {}).get('sha') == sha and original_producer[key].get('status') == '' for key in ['sourceBefore', 'sourceAfter']), 'CSS producer source closure mismatch')
-    css = profile['bindProjection'](css, original_producer)
     context = original_producer.get('context', {})
+    for name in ['node', 'bun']:
+        executable = pathlib.Path(plan[name])
+        require(executable.is_absolute() and executable.is_file() and os.access(executable, os.X_OK), 'existing executable required: ' + name)
+    declaration = targets.target(module_id, context.get('target'), plan['bun'])
+    require(plan.get('target') == declaration['target'], 'plan/producer target mismatch')
+    css = profile['bindProjection'](css, original_producer, declaration)
     require(context.get('actualCheckoutSha') == sha and context.get('workflowPath') == '.github/workflows/' + module_id + '-module-product.yml' and all(context.get(key) == css.get(key) and css.get(key) is not None for key in ['runHeadSha', 'runId', 'runAttempt']), 'producer/projection context mismatch')
     require(context.get('target') == css['package']['target'] and context.get('version') == css['package']['version'] and original_producer.get('archive') == css['archive'], 'producer/projection package/archive mismatch')
     materials = original_producer.get('materials', {})
@@ -198,7 +208,7 @@ def validate_consumer_plan(plan, profile):
     consumer_input = json.loads(consumer_path.read_text())
     require(profile['verifyConsumerInput'](consumer_input, css, sha), 'CSS consumer input binding mismatch')
     package = css['package']
-    require(package['name'] == '@undefineds.co/xpod-' + module_id + '-darwin-arm64' and package['target'] == 'darwin-arm64' and isinstance(package['version'], str) and package['version'] and package['version'] != 'latest', 'CSS exact package identity required')
+    require(package['name'] == declaration['name'] and package['target'] == declaration['target'] and isinstance(package['version'], str) and package['version'] and package['version'] != 'latest', 'CSS exact package identity required')
     for name in ['node', 'bun']:
         executable = pathlib.Path(plan[name])
         require(executable.is_absolute() and executable.is_file() and os.access(executable, os.X_OK), 'existing executable required: ' + name)
@@ -213,7 +223,7 @@ def validate_consumer_plan(plan, profile):
     require(all(type(budget[k]) is int for k in ['estimatedPeakBytes', 'remainingFloorBytes', 'cushionBytes']), 'integer resource budget required')
     require(budget['estimatedPeakBytes'] > 0 and budget['remainingFloorBytes'] >= GIB and budget['cushionBytes'] >= 128 * MIB, 'resource budget below floor')
     require(type(plan.get('timeoutSeconds', 180)) is int and 1 <= plan.get('timeoutSeconds', 180) <= 600, 'timeout out of range')
-    return dict(module=css, **{module_id: css}, cli=cli, producer=original_producer, roots=roots, originals=originals, parent=parent.resolve(), output=output)
+    return dict(target=declaration, module=css, **{module_id: css}, cli=cli, producer=original_producer, roots=roots, originals=originals, parent=parent.resolve(), output=output)
 
 
 class ModuleConsumerRunner:
@@ -297,7 +307,12 @@ class ModuleConsumerRunner:
         # Broadcasting here bypasses that order; group signals belong to failure cleanup.
         deadline = time.monotonic() + timeout
         if process.poll() is None:
-            process.send_signal(signal.SIGTERM)
+            if self.checked.get('target', {}).get('platform') == 'linux':
+                known = self.observe_group(process)
+                service_pid = targets.linux_service_pid(process.pid, known, [self.plan['node'], self.plan['bun']])
+                os.kill(service_pid, signal.SIGTERM)
+            else:
+                process.send_signal(signal.SIGTERM)
         process.wait(timeout=max(0, deadline - time.monotonic()))
         require(process.returncode == 0, 'service did not close gracefully with exit 0')
         while True:
@@ -443,15 +458,18 @@ class ModuleConsumerRunner:
                 source.rename(destination)
 
     def run(self):
-        require(platform.system() == 'Darwin' and platform.machine() == 'arm64', 'real run requires macOS arm64')
-        require(pathlib.Path('/usr/bin/sandbox-exec').is_file(), 'sandbox-exec unavailable')
+        declaration = targets.target(self.module_id, self.checked['module']['package']['target'], self.plan['bun'], host=True)
+        machine = {'x86_64': 'x64', 'aarch64': 'arm64'}.get(platform.machine(), platform.machine())
+        require(platform.system().lower() == declaration['platform'] and machine == declaration['arch'], 'actual Python host/target differs')
+        require(declaration['nativeSourceAvailable'], 'target native source is pending; no consumer execution')
         self.gate(initial=True)
         require(self.output.parent.stat().st_dev == self.checked['parent'].stat().st_dev, 'output/temporaryParent must share filesystem for retained data')
         self.output.mkdir(mode=0o700)
         self.result = dict(schemaVersion=1, kind=self.module_id + '-public-cli-consumer', status='running', sourceSha=self.plan['sourceSha'], transport='immutable-local-fixture', resourceEnforcement='Nominal 200ms disk polling, not a kernel hard limit; disk floor checked independently; allocation cap evaluated only on complete samples', rssEnforced=False, diskAllocationCoverage=self.disk_coverage, releaseQualified=False, realConsumerValidated=False, records=self.records)
         self.result['driver'] = dict(path=str(pathlib.Path(self.driver_path).resolve()), sha256=digest(pathlib.Path(self.driver_path).resolve()), python=sys.version, platform=platform.platform())
         self.result['lifecycle'] = dict(path=str(pathlib.Path(__file__).resolve()), sha256=digest(pathlib.Path(__file__).resolve()))
-        self.result['additionalDrivers'] = [dict(path=str(p.resolve()), sha256=digest(p)) for p in getattr(self, 'additional_drivers', [])]
+        self.result['additionalDrivers'] = [dict(path=str(p.resolve()), sha256=digest(p)) for p in [*getattr(self, 'additional_drivers', []), pathlib.Path(targets.__file__), targets.SCRIPTS / 'module-product-targets.ts', targets.SCRIPTS / 'verify-module-consumer-native.ts', targets.SCRIPTS / 'lib/physical-module-native.ts', targets.SCRIPTS.parent / 'packages/xpod-cli/src/module-catalog.ts', targets.SCRIPTS.parent / 'packages/xpod-api/scripts/inngest-input-pins.json']]
+        self.result['declaredTarget'] = declaration
         self.result['inputs'] = {key: self.plan[key] for key in [self.module_id + 'Receipt', 'cliReceipt', self.module_id + 'Archive', 'cliArchive', 'clientArchive', 'budget']}
         self.save()
         root = pathlib.Path(tempfile.mkdtemp(prefix='xpod-' + self.module_id + '-consumer-', dir=self.checked['parent']))
@@ -487,8 +505,11 @@ class ModuleConsumerRunner:
                 (cycle / 'package.json').write_text(json.dumps(dict(private=True, type='module', dependencies=deps, overrides={'@undefineds.co/xpod-client':deps['@undefineds.co/xpod-client']})))
                 runtime_wrapper(cycle / 'runtime-bin', runtime, self.plan[runtime], cycle / 'transport.mjs')
                 env = { 'HOME': str(home), 'TMPDIR': str(cycle), 'PATH': str(cycle / 'runtime-bin') + ':/usr/bin:/bin', 'LANG': 'en_US.UTF-8' }
-                sandbox = ['/usr/bin/sandbox-exec', '-f', str(cycle / 'deny.sb')]
+                sandbox = targets.sandbox(declaration, cycle, self.checked['roots'])
                 self.command(runtime + '-runtime-version', sandbox + [self.plan[runtime], '--version'], env, cycle)
+                self.command(runtime + '-runtime-target', sandbox + [self.plan[runtime], '-e', 'console.log(JSON.stringify({platform:process.platform,arch:process.arch}))'], env, cycle)
+                observed = json.loads((self.output / (runtime + '-runtime-target.stdout.raw.log')).read_text())
+                require(observed == dict(platform=declaration['platform'], arch=declaration['arch']), 'actual selected runtime/target differs')
                 self.command(runtime + '-probe', sandbox + [self.plan[runtime], str(cycle / 'probe.mjs')], env, cycle)
                 self.command(runtime + '-normal-cli-install', sandbox + [self.plan['bun'], 'install', '--offline', '--ignore-scripts', '--no-progress'], env, cycle)
                 pkgroot = cycle / 'node_modules/@undefineds.co/xpod-cli'
@@ -502,12 +523,13 @@ class ModuleConsumerRunner:
                 cli = sandbox + [str(entry)]
                 self.command(runtime + '-install-' + self.module_id, cli + ['module', 'install', self.module_id, '--version', package['version']], env, cycle)
                 modules = home / '.xpod/modules'
-                pointer = modules / self.module_id / 'darwin-arm64/current.json'
+                pointer = modules / self.module_id / declaration['target'] / 'current.json'
                 require(pointer.is_file(), 'installed module pointer absent')
                 installed = json.loads(pointer.read_text())
                 require(installed['package'] == package['name'] and installed['version'] == package['version'] and installed['integrity'] == self.plan[self.module_id + 'Archive']['integrity'], 'installed pointer differs')
                 package_root = pointer.parent / installed['version'] / 'package'
                 installed_package = inventory(package_root, installed)
+                targets.installed(installed_package, declaration, self.module_id)
                 provenance_output = self.output / (runtime + '-provenance')
                 provenance_output.mkdir(mode=0o700)
                 for material in self.checked['producer']['materials'].values():
@@ -522,7 +544,7 @@ class ModuleConsumerRunner:
                 (self.output / (runtime + '-installed-package.json')).write_bytes((package_root / 'package.json').read_bytes())
                 (self.output / (runtime + '-pointer.json')).write_bytes(pointer.read_bytes())
                 verification = self.verify_installed(runtime, package_root, installed_package)
-                self.result.setdefault('installedVerification', {})[runtime] = dict(fullInventoryVerified=True, files=len(installed_package['xpodModule']['files']), manifestSha256=digest(package_root / 'package.json'), producerProvenanceVerified=True, **verification)
+                self.result.setdefault('installedVerification', {})[runtime] = dict(fullInventoryVerified=True, files=len(installed_package['xpodModule']['files']), manifestSha256=digest(package_root / 'package.json'), producerProvenanceVerified=True, actualRuntimeTarget=observed, **verification)
                 self.save()
                 self.command(runtime + '-list-' + self.module_id, cli + ['module', 'list'], env, cycle)
                 self.exercise_service(runtime, cli, env, cycle, data, package_root, installed_package)

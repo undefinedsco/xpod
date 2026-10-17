@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createReadStream, lstatSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
+import { productTarget } from './module-product-targets';
 import { acquireIndependentProductInput, type ArtifactAcquisitionInput } from './acquire-independent-product-input';
 import { projectApiProductInput } from './project-api-product-input';
 import { projectCssProductInput } from './project-css-product-input';
@@ -9,7 +10,7 @@ import { projectCliPublicationInput } from './project-cli-publication-input';
 
 interface Budget { estimatedPeakBytes: number; remainingFloorBytes: number; cushionBytes: number }
 export interface ModuleConsumerRequest {
-  schemaVersion: 1; module: 'css' | 'api'; sourceSha: string;
+  schemaVersion: 1; module: 'css' | 'api'; target: string; sourceSha: string;
   product: ArtifactAcquisitionInput; cli: ArtifactAcquisitionInput;
   budget: Budget; timeoutSeconds?: number;
 }
@@ -26,8 +27,11 @@ function keys(value: any, required: string[], optional: string[] = []) {
 /** Pure pre-check for untrusted manual JSON. Local paths are added separately by CI. */
 export function validateModuleConsumerRequest(value: unknown): ModuleConsumerRequest {
   const input = value as ModuleConsumerRequest;
-  keys(input, ['schemaVersion', 'module', 'sourceSha', 'product', 'cli', 'budget'], ['timeoutSeconds']);
+  keys(input, ['schemaVersion', 'module', 'target', 'sourceSha', 'product', 'cli', 'budget'], ['timeoutSeconds']);
   requireValue(input.schemaVersion === 1 && ['css', 'api'].includes(input.module) && typeof input.sourceSha === 'string' && /^[a-f0-9]{40}$/u.test(input.sourceSha), 'supported module and source identity required');
+  requireValue(typeof input.target === 'string', 'explicit product target required');
+  const declared = productTarget(input.module, input.target);
+  requireValue(declared.nativeSourceAvailable, 'target native source is pending; no acquisition');
   for (const tuple of [input.product, input.cli]) {
     keys(tuple, ['schemaVersion', 'sourceSha', 'runHeadSha', 'runId', 'runAttempt', 'artifactId', 'artifactSha256']);
     requireValue(tuple.schemaVersion === 1 && tuple.sourceSha === input.sourceSha && typeof tuple.runHeadSha === 'string' && typeof tuple.artifactSha256 === 'string' && /^[a-f0-9]{40}$/u.test(tuple.runHeadSha)
@@ -97,14 +101,15 @@ export async function prepareModuleConsumerPlan(input: ModuleConsumerLocalInput,
     };
     const producer = linked(product.receipt.producerReceipt), collector = linked(product.receipt.collectorInput);
     requireValue(producer.schemaVersion === 1 && producer.kind === 'api-module-product-production'
-      && producer.context?.actualCheckoutSha === request.sourceSha && producer.context?.target === 'darwin-arm64'
+      && producer.context?.actualCheckoutSha === request.sourceSha && producer.context?.target === request.target
       && typeof producer.context?.version === 'string' && producer.context.version.length > 0
       && collector.schemaVersion === 1 && collector.expectedSourceSha === request.sourceSha
       && collector.archive?.path === 'product.tgz' && collector.archive.sha256 === producer.archive?.sha256,
       'API producer/collector source and archive binding mismatch');
     productArchive = producer.archive;
   }
-  const plan = { schemaVersion: 1, sourceSha: request.sourceSha, checkout, sourceRoots, node, bun, temporaryParent: parent, output,
+  if (request.module === 'css') requireValue(product.receipt.package?.target === request.target && product.receipt.package?.name === productTarget(request.module, request.target).name, 'CSS projection target/name mismatch');
+  const plan = { schemaVersion: 1, target: request.target, sourceSha: request.sourceSha, checkout, sourceRoots, node, bun, temporaryParent: parent, output,
     budget: request.budget, timeoutSeconds: request.timeoutSeconds ?? 180,
     [request.module + 'Receipt']: product.ref, cliReceipt: cli.ref,
     [request.module + 'Archive']: await archive(product.directory, productArchive, 'product.tgz'),
