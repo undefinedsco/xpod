@@ -140,6 +140,9 @@ generation=importlib.util.module_from_spec(spec);spec.loader.exec_module(generat
 spec=importlib.util.spec_from_file_location('sdk_toolchain_inner',HERE/'sdk-toolchain-materials.py')
 toolchain=importlib.util.module_from_spec(spec);spec.loader.exec_module(toolchain)
 
+spec=importlib.util.spec_from_file_location('sdk_debian_binary_hook',HERE/'sdk-debian-binary-hook.py')
+binary_hook=importlib.util.module_from_spec(spec);spec.loader.exec_module(binary_hook)
+
 def prepare_materials(component,source,build,out,jobs):
     component=Path(component);source=Path(source);build=Path(build);out=Path(out);out.mkdir(parents=True,exist_ok=False)
     budget=initialize_budget(4200);stages=[]
@@ -310,7 +313,9 @@ def build_materials(component,source,build,out,jobs):
                      'toolchain-original-domain-not-yet-complete',*(['symlink-original-unavailable-before-compile'] if link_pending else []),*(['generated-input-causality-unavailable'] if inventory['pending'] else [])])
         execution_ref,execution_bytes=execution.finalize(inner,upstream_ref,inventory)
         if execution_bytes+debian_bytes+upstream_bytes+generation_bytes+symlink_bytes+sum(row['bytes'] for row in inventory['shards'])>LIMIT-512*1024**2:raise ValueError('Shared source/execution aggregate exceeds reserved source budget')
-        inner.update(toolchainExecution=execution_ref,toolchainExecutionBytes=execution_bytes)
+        binary_ref,binary_bytes,binary_ownership_bytes=binary_hook.acquire(out,inventory['files'],ownership,ledger['stdout'],identity['target'],lambda:toolchain.remaining_source_bytes(out),source_stage,commands.ref,check_budget)
+        toolchain.remaining_source_bytes(out)  # Whole retained domain, not overlapping counter sums.
+        inner.update(toolchainExecution=execution_ref,toolchainExecutionBytes=execution_bytes,debianBinaries=binary_ref,debianBinaryBytes=binary_bytes,debianBinaryOwnershipBytes=binary_ownership_bytes)
         dump(out/'build-inner.json',inner)
     finally:
         execution.abort()

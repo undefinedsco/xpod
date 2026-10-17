@@ -51,3 +51,12 @@ test('old SDK does not fetch future observer selectors; prepared group requires 
   await expect(scenario(undefined,undefined,undefined,helper)).rejects.toThrow('group not reviewed');
  }
 });
+
+test('binary producer imports are required only for the new whole SDK recipe',async()=>{
+ const old=await scenario(undefined,oldSdk.sourceSha);
+ for(const helper of ['qlever/scripts/sdk-debian-binary-hook.py','qlever/scripts/sdk-debian-binary-originals.py']){
+  expect(old.requested).not.toContain(helper);
+  await expect(scenario(undefined,undefined,helper)).rejects.toThrow('metadata request failed');
+  await expect(scenario(undefined,undefined,undefined,helper)).rejects.toThrow('policy not reviewed');
+ }
+});

@@ -221,6 +221,10 @@ def receiver_inner_collection(out,inner_reference,kind,filename,extra=None):
 def receiver_debian_collection(out,inner_reference):
     return receiver_inner_collection(out,inner_reference,'qlever-sdk-exact-debian-source-originals','debian-source-collection.json')
 
+def receiver_binary_collection(out,inner_reference):
+    return receiver_inner_collection(out,inner_reference,'qlever-sdk-exact-debian-binary-originals','debian-binary-collection.json',
+        dict(innerMaterials=prefix(inner_reference,'inner')))
+
 def receiver_upstream_collection(out,inner_reference):
     return receiver_inner_collection(out,inner_reference,'qlever-sdk-upstream-source-originals','upstream-source-collection.json',
         dict(innerMaterials=prefix(inner_reference,'inner')))
@@ -281,8 +285,9 @@ def collect(image,target,metadata,out,deadline):
         if 'rawTraceShards' in record:stage['rawTraceShards']=[prefix(ref,'inner') for ref in record['rawTraceShards']]
         stages.append(stage)
     execution_owners=collect_execution_owners(out,inner['executionBudget']['deadlineUnix'])
-    if sum(ref['bytes'] for ref in execution_owners.values())+context['archive']['bytes']+sum(ref['bytes'] for ref in inner['domains'])+inner.get('debianSourceBytes',0)+inner.get('symlinkOriginalBytes',0)+inner.get('upstreamSourceBytes',0)+inner.get('generationMaterialBytes',0)+inner.get('toolchainExecutionBytes',0)>4*1024**3:raise ValueError('Shared SDK source/context domains exceed 4GiB')
+    if sum(ref['bytes'] for ref in execution_owners.values())+context['archive']['bytes']+sum(ref['bytes'] for ref in inner['domains'])+inner.get('debianSourceBytes',0)+inner.get('symlinkOriginalBytes',0)+inner.get('upstreamSourceBytes',0)+inner.get('generationMaterialBytes',0)+inner.get('toolchainExecutionBytes',0)+inner.get('debianBinaryBytes',0)+inner.get('debianBinaryOwnershipBytes',0)>4*1024**3:raise ValueError('Shared SDK source/context domains exceed 4GiB')
     debian_reference=receiver_debian_collection(out,inner['debianSources'])
+    binary_reference=receiver_binary_collection(out,inner['debianBinaries'])
     upstream_reference=receiver_upstream_collection(out,inner['upstreamSource'])
     generation_reference=receiver_generation_collection(out,inner['generationMaterials'])
     execution_reference=receiver_execution_collection(out,inner['toolchainExecution'])
@@ -294,7 +299,7 @@ def collect(image,target,metadata,out,deadline):
     symlink_refs={key:prefix(ref,'inner') for key,ref in inner.get('symlinkOriginals',{}).items()}
     master=dict(schemaVersion=1,kind='qlever-linux-sdk-originals',identity=identity,image=observed,executionOwners=execution_owners,
         buildkit=dict(metadata=commands.ref(out/'buildkit.metadata.original.json',out),record=commands.ref(out/'build.dockerbuild',out)),
-        debianSources=debian_reference,upstreamSource=upstream_reference,generationMaterials=generation_reference,toolchainExecution=execution_reference,
+        debianSources=debian_reference,debianBinaries=binary_reference,upstreamSource=upstream_reference,generationMaterials=generation_reference,toolchainExecution=execution_reference,
         sourceContext=commands.ref(out/'context-originals.json',out),inputs=dict(before=prefix(inner['inputsBefore'],'inner'),after=prefix(inner['inputsAfter'],'inner'),shards=[prefix(ref,'inner') for ref in inner['domains']],symlinks=symlink_refs,generationMetadata=generation_refs),
         stages=stages,originals=originals,releaseAccepted=False,pending=inner['pending'],
         scope='Actual build/image/input/execution originals; SDK source, origin and legal admission remain external')

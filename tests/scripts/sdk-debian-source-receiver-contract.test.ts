@@ -6,11 +6,16 @@ import {expect,it,vi} from 'vitest';
 
 // Isolate serialization from central issuance, input ownership and build execution.
 // This view is a fixture, never an issued capability or release qualification.
-const fixture = vi.hoisted(() => ({view: undefined as any, source: {sourceSha:'a'.repeat(40)}, proof: undefined as any, calls: [] as number[]}));
+const fixture = vi.hoisted(() => ({view: undefined as any, source: {sourceSha:'a'.repeat(40)}, proof: undefined as any, calls: [] as number[], binary: undefined as undefined | {files: readonly unknown[]; unresolved: readonly unknown[]; scope: string; assertCurrent():void}, binaryCalls: [] as unknown[][]}));
 vi.mock('../../scripts/lib/independent-admission/source-context',()=>({derivedSourceView:()=>fixture.source,assertDerivedSourceCurrent:()=>{}}));
 vi.mock('../../scripts/lib/independent-admission/qlever-sdk-debian-index',()=>({observeQleverSdkDebianIndexOriginals:async(_cap:unknown,remaining:number)=>{fixture.calls.push(remaining);return {facts:{sdkDebianInReleaseSourcesDscChecksumChainVerified:true},pending:['qlever-sdk-official-Debian-keyring-gpgv-and-suite-authority-unverified']};}}));
 vi.mock('../../scripts/lib/independent-admission/qlever-sdk-upstream-source',()=>({observeQleverSdkUpstreamGitOriginals:async(_cap:unknown,_source:unknown,remaining:number)=>{fixture.calls.push(remaining);return {facts:{},pending:['actual-generated-input-closure-unresolved']};}}));
 vi.mock('../../scripts/lib/independent-admission/qlever-sdk-debian-signature',()=>({observeQleverSdkDebianSignatureOriginals:async(_cap:unknown,remaining:number)=>{fixture.calls.push(remaining);return {facts:fixture.proof ?? {sdkDebianOfficialSignatureAndSuiteVerified:true},pending:[]};},qleverSdkDebianSignatureObservation:()=>fixture.proof}));
+// Protocol-only orchestration: no fixture registers a real SDK/binary capability.
+vi.mock('../../scripts/lib/independent-admission/qlever-sdk-debian-binary',()=>({
+  observeQleverSdkDebianBinaryOriginals:async(...args:unknown[])=>{fixture.binaryCalls.push(args);fixture.calls.push(args[2] as number);return {facts:{sdkSelectedDebianBinaryFilesVerified:true,sdkDebianBinaryFiles:fixture.binary?.files,sdkDebianBinaryScope:fixture.binary?.scope},pending:['binary-other-obligation']};},
+  qleverSdkDebianBinaryObservation:()=>fixture.binary,
+}));
 vi.mock('../../scripts/lib/independent-admission/qlever-sdk-originals', () => ({qleverSdkOriginalsView: () => fixture.view}));
 vi.mock('../../scripts/lib/independent-admission/qlever-sdk-inputs', () => ({inspectSdkInputOwnership: () => ({
   requiredSources: [{name:'foo',version:'1.0'}],unresolvedInputs:[],unresolvedSymlinkOriginalTargets:[],
@@ -93,20 +98,36 @@ it('actual acquisition output satisfies receiver source schema; unrooted refs an
     // This isolates orchestration only; mocked views never issue an SDK or signature capability.
     const cap={fixture:true};
     fixture.proof=Object.freeze({sdkDebianOfficialSignatureAndSuiteVerified:true});
-    fixture.calls=[];
-    const signed=await observeQleverSdkSourceAdmission({sdkOriginals:cap,source:{fixture:true},remainingMilliseconds:10000});
+    fixture.calls=[]; fixture.binaryCalls=[];
+    fixture.binary={files:Object.freeze([]),unresolved:Object.freeze([]),scope:'fixture-selected-files',assertCurrent:()=>{}};
+    const sourceCap={fixture:true};
+    const signed=await observeQleverSdkSourceAdmission({sdkOriginals:cap,source:sourceCap,remainingMilliseconds:10000});
     expect(signed.facts.sdkDebianOfficialSignatureAndSuiteVerified).toBe(true);
     expect(signed.pending).not.toContain('qlever-sdk-Debian-signed-Sources-InRelease-keyring-authority-not-yet-verified');
     expect(signed.pending).not.toContain('qlever-sdk-official-Debian-keyring-gpgv-and-suite-authority-unverified');
     expect(signed.pending).toContain('actual-generated-input-closure-unresolved');
     expect(signed.verified).toBe(false);
     expect((signed.facts.sdkSourceRequiredAxes as any).generatedInputIoClosure).toBe(false);
-    expect(fixture.calls).toHaveLength(3);
+    expect(fixture.calls).toHaveLength(4);
+    expect(fixture.binaryCalls[0]!.slice(0,2)).toEqual([cap,sourceCap]);
+    expect(signed.facts.sdkSelectedDebianBinaryFilesVerified).toBe(true);
+    expect(signed.pending).toContain('binary-other-obligation');
+    expect((signed.facts.sdkSourceRequiredAxes as any).toolchainSourceClosure).toBe('verifier-not-implemented');
+    signed.assertCurrent();const savedBinary=fixture.binary;fixture.binary=undefined;
+    expect(()=>signed.assertCurrent()).toThrow('binary observation custody changed');fixture.binary=savedBinary;
     expect(fixture.calls.every((value,index,values)=>value>0 && value<=10000 && (!index || value<=values[index-1]!))).toBe(true);
     signed.assertCurrent(); fixture.proof=undefined;
     expect(()=>signed.assertCurrent()).toThrow('signature observation custody changed');
+    fixture.proof=Object.freeze({sdkDebianOfficialSignatureAndSuiteVerified:true});fixture.binary=undefined;
+    const forgedBinary=await observeQleverSdkSourceAdmission({sdkOriginals:cap,source:sourceCap});
+    expect(forgedBinary.facts.sdkSelectedDebianBinaryFilesVerified).toBe(false);
+    expect(forgedBinary.pending).toContain('qlever-sdk-independent-Debian-binary-private-observation-unavailable');
+    fixture.proof=undefined;
+    fixture.binaryCalls=[];
     const unbound=await observeQleverSdkSourceAdmission({sdkOriginals:cap,source:{fixture:true}});
     expect(unbound.facts.sdkDebianOfficialSignatureAndSuiteVerified).toBe(false);
+    expect(fixture.binaryCalls).toEqual([]);
+    expect(unbound.facts.sdkSelectedDebianBinaryFilesVerified).toBe(false);
     expect(unbound.pending).toContain('qlever-sdk-Debian-signed-Sources-InRelease-keyring-authority-not-yet-verified');
     expect(unbound.pending).toContain('qlever-sdk-independent-Debian-signature-private-observation-unavailable');
     expect(inspectQleverSdkSourceOriginals(cap,0).pending.join()).toContain('mechanical source observation deadline expired');
