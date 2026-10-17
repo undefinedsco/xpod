@@ -129,7 +129,7 @@ export function verifyNativeAdmission(evidence: unknown, context: AdmissionConte
 export function verifyCollectedNativeAdmission(_evidence: unknown, context: Omit<AdmissionContext, 'archive'> & { archive?: Buffer }) {
   const product = collectedArtifactView(context.collectedArtifact), runtime = controlledNativeRuntimeView(context.nativeMaterials);
   const facts = { materialIntegrityVerified: false, binaryFormatsVerified: false, originalStageBindingsVerified: false,
-    nativeProducerOriginsVerified: false, nativeRuntimeAbiVerified: false, qleverRuntimeAbiVerified: false, agentfsRuntimeAbiVerified: false, selectedNativeBinaryFormatsVerified: false, nativeRuntimeAbiScope: undefined as string | undefined, nativeSourceClosureVerified: false, nativeQualified: false, sdkSourceFacts: undefined as Readonly<Record<string, unknown>> | undefined };
+    nativeProducerOriginsVerified: false, nativeRuntimeAbiVerified: false, qleverRuntimeAbiVerified: false, agentfsRuntimeAbiVerified: false, selectedNativeBinaryFormatsVerified: false, nativeRuntimeAbiScope: undefined as string | undefined, nativeSourceClosureVerified: false, nativeQualified: false, sdkSourceFacts: undefined as Readonly<Record<string, unknown>> | undefined, afsSourceFacts: undefined as Readonly<Record<string, unknown>> | undefined };
   if (!product || !runtime) return { status: 'pending' as const, reason: 'controlled-native-runtime-originals-capability-unavailable',
     pending: ['controlled-native-runtime-originals-capability-unavailable'], facts };
   const identity = runtime.identity;
@@ -146,6 +146,7 @@ export function verifyCollectedNativeAdmission(_evidence: unknown, context: Omit
   facts.nativeRuntimeAbiScope = runtime.runtimeAbiScope;
   facts.nativeSourceClosureVerified = runtime.nativeSourceClosureVerified;
   facts.sdkSourceFacts = runtime.sdkSourceFacts;
+  facts.afsSourceFacts = runtime.afsSourceFacts;
   // Only these already privately issued, current-custody views reach the
   // conjunction. Missing leaf axes and pending reasons remain authoritative.
   const requirements = inspectNativeAdmissionRequirements(identity, runtime);
