@@ -24,6 +24,7 @@
 !scripts/platform-binaries.cjs
 !scripts/check-dependency-state.ts
 !scripts/agentfs-native-ci/supervise.py
+!scripts/lib/module-artifact-limits.json
 !src/
 !ui/
 !desktop/

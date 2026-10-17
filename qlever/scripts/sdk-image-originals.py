@@ -112,7 +112,7 @@ def copy_inner(cid,destination):
 def capture_context(out,deadline):
     out=Path(out).resolve();out.mkdir(parents=True,exist_ok=False);budget=budgets.ExecutionBudget(deadline);stages=[]
     for name,argv in [('context-head',['git','rev-parse','HEAD']),('context-clean',['git','status','--porcelain','--untracked-files=all']),
-        ('context-files',['git','ls-files','-z','--','.dockerignore','qlever','docker/qlever-runtime-sdk','docker/qlever-local-runtime','scripts/agentfs-native-ci/supervise.py'])]:
+        ('context-files',['git','ls-files','-z','--','.dockerignore','qlever','docker/qlever-runtime-sdk','docker/qlever-local-runtime','scripts/agentfs-native-ci/supervise.py','scripts/lib/module-artifact-limits.json'])]:
         stages.append(commands.capture(name,argv,out,Path.cwd(),timeout=budget.timeout(30,1200)))
     if (out/stages[0]['stdout']['path']).read_text().strip()!=os.environ['GITHUB_SHA'] or (out/stages[1]['stdout']['path']).read_text().strip():
         raise ValueError('SDK context must be the exact clean workflow source')
@@ -229,6 +229,10 @@ def receiver_generation_collection(out,inner_reference):
     return receiver_inner_collection(out,inner_reference,'qlever-sdk-cmake-generation-originals','generation-collection.json',
         dict(innerMaterials=prefix(inner_reference,'inner')))
 
+def receiver_execution_collection(out,inner_reference):
+    return receiver_inner_collection(out,inner_reference,'qlever-sdk-toolchain-execution-originals','toolchain-execution-collection.json',
+        dict(innerMaterials=prefix(inner_reference,'inner')))
+
 def collect_execution_owners(out,deadline):
     """Original layout/mechanics checks only; these JSON records issue no authority."""
     out=Path(out);records={}
@@ -272,13 +276,16 @@ def collect(image,target,metadata,out,deadline):
     inner=json.loads((out/'inner/build-inner.json').read_text());linked=json.loads((out/'inner/linked-inner.json').read_text())
     if inner.get('identity')!=identity:raise ValueError('SDK original build tuple differs; cached images require their original SDK artifact custody')
     for record in [*inner['stages'],*linked['stages']]:
-        stages.append(dict(record,**{field:prefix(record[field],'inner') for field in ['receipt','stdout','stderr','supervisionReceipt','supervisionRaw']},
-                           inputs=[prefix(ref,'inner') for ref in record['inputs']],outputs=[prefix(ref,'inner') for ref in record['outputs']]))
+        fields=['receipt','stdout','stderr']+(['trackingReceipt'] if record.get('closureKind')=='ptrace-tracked-phase-v1' else ['supervisionReceipt','supervisionRaw'])
+        stage=dict(record,**{field:prefix(record[field],'inner') for field in fields},inputs=[prefix(ref,'inner') for ref in record['inputs']],outputs=[prefix(ref,'inner') for ref in record['outputs']])
+        if 'rawTraceShards' in record:stage['rawTraceShards']=[prefix(ref,'inner') for ref in record['rawTraceShards']]
+        stages.append(stage)
     execution_owners=collect_execution_owners(out,inner['executionBudget']['deadlineUnix'])
-    if sum(ref['bytes'] for ref in execution_owners.values())+context['archive']['bytes']+sum(ref['bytes'] for ref in inner['domains'])+inner.get('debianSourceBytes',0)+inner.get('symlinkOriginalBytes',0)+inner.get('upstreamSourceBytes',0)+inner.get('generationMaterialBytes',0)>4*1024**3:raise ValueError('Shared SDK source/context domains exceed 4GiB')
+    if sum(ref['bytes'] for ref in execution_owners.values())+context['archive']['bytes']+sum(ref['bytes'] for ref in inner['domains'])+inner.get('debianSourceBytes',0)+inner.get('symlinkOriginalBytes',0)+inner.get('upstreamSourceBytes',0)+inner.get('generationMaterialBytes',0)+inner.get('toolchainExecutionBytes',0)>4*1024**3:raise ValueError('Shared SDK source/context domains exceed 4GiB')
     debian_reference=receiver_debian_collection(out,inner['debianSources'])
     upstream_reference=receiver_upstream_collection(out,inner['upstreamSource'])
     generation_reference=receiver_generation_collection(out,inner['generationMaterials'])
+    execution_reference=receiver_execution_collection(out,inner['toolchainExecution'])
     originals=[]
     for path in sorted(out.rglob('*')):
         budget.check(300)
@@ -287,7 +294,7 @@ def collect(image,target,metadata,out,deadline):
     symlink_refs={key:prefix(ref,'inner') for key,ref in inner.get('symlinkOriginals',{}).items()}
     master=dict(schemaVersion=1,kind='qlever-linux-sdk-originals',identity=identity,image=observed,executionOwners=execution_owners,
         buildkit=dict(metadata=commands.ref(out/'buildkit.metadata.original.json',out),record=commands.ref(out/'build.dockerbuild',out)),
-        debianSources=debian_reference,upstreamSource=upstream_reference,generationMaterials=generation_reference,
+        debianSources=debian_reference,upstreamSource=upstream_reference,generationMaterials=generation_reference,toolchainExecution=execution_reference,
         sourceContext=commands.ref(out/'context-originals.json',out),inputs=dict(before=prefix(inner['inputsBefore'],'inner'),after=prefix(inner['inputsAfter'],'inner'),shards=[prefix(ref,'inner') for ref in inner['domains']],symlinks=symlink_refs,generationMetadata=generation_refs),
         stages=stages,originals=originals,releaseAccepted=False,pending=inner['pending'],
         scope='Actual build/image/input/execution originals; SDK source, origin and legal admission remain external')

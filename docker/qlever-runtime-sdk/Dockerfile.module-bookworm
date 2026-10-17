@@ -25,6 +25,7 @@ RUN cmake_version='3.31.6-2~bpo12+1' \
     libbz2-dev libicu-dev liblzma-dev libssl-dev libzstd-dev zlib1g-dev libsqlite3-dev patchelf
 
 COPY .dockerignore /opt/qlever-sdk/profile/.dockerignore
+COPY scripts/lib/module-artifact-limits.json /components/scripts/lib/module-artifact-limits.json
 COPY scripts/agentfs-native-ci/supervise.py /components/scripts/agentfs-native-ci/supervise.py
 COPY qlever/qlever.lock.json /components/qlever/qlever.lock.json
 COPY qlever/patches /components/qlever/patches

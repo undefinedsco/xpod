@@ -82,7 +82,7 @@ test('owned SDK RUNs select the complete PID1 registry/guard and preserve earlie
 
 test('source-prepared SDK group binds the complete changed recipe without mixing historical selectors',()=>{
  const old=QLEVER_SDK_EXECUTION_GROUPS[6]!,next=QLEVER_SDK_EXECUTION_GROUPS[7]!;
- expect(QLEVER_SDK_EXECUTION_GROUPS).toHaveLength(9);
+ expect(QLEVER_SDK_EXECUTION_GROUPS).toHaveLength(10);
  const selected=new Map(next.selectors.map(row=>[sourceBindingKey(row),row.sha256]));
  expect(selectGitHubSourceBindingGroup(QLEVER_SDK_EXECUTION_GROUPS,selected)).toBe(next);
  for(const path of ['docker/qlever-runtime-sdk/Dockerfile.module-bookworm','qlever/scripts/sdk-inner-materials.py']){
@@ -100,4 +100,13 @@ test('service context versions select whole recipes including the exact Docker i
  for(const group of [old,next]){const observed=new Map(group.selectors.map(row=>[sourceBindingKey(row),row.sha256]));expect(selectGitHubSourceBindingGroup(QLEVER_SDK_EXECUTION_GROUPS,observed)).toBe(group);expect(group.selectors.some(row=>row.path==='.dockerignore')).toBe(true);}
  const observed=new Map(next.selectors.map(row=>[sourceBindingKey(row),row.sha256]));const context=next.selectors.find(row=>row.path==='.dockerignore')!;observed.set(sourceBindingKey(context),'0'.repeat(64));expect(()=>selectGitHubSourceBindingGroup(QLEVER_SDK_EXECUTION_GROUPS,observed)).toThrow();
  expect(next.sourceBindings).toEqual(old.sourceBindings);
+});
+
+test('typed tracked SDK execution binds the complete observer import closure after shared selectors',()=>{
+ const previous=QLEVER_SDK_EXECUTION_GROUPS[8]!,next=QLEVER_SDK_EXECUTION_GROUPS[9]!;
+ const observed=new Map(next.selectors.map(row=>[sourceBindingKey(row),row.sha256]));expect(selectGitHubSourceBindingGroup(QLEVER_SDK_EXECUTION_GROUPS,observed)).toBe(next);
+ for(const path of ['qlever/scripts/sdk-toolchain-materials.py','qlever/scripts/sdk-ptrace-execution.py','qlever/scripts/sdk-ptrace-kernel.py','qlever/scripts/sdk-execution-originals-util.py','qlever/scripts/sdk-generation-multiprocess-bindings.py','qlever/scripts/sdk-blocking-owned-wait.py','scripts/lib/module-artifact-limits.json']){
+  expect(next.selectors.some(row=>row.path===path)).toBe(false);expect(next.sourceBindings.find(row=>row.path===path)?.sha256).toHaveLength(64);expect(previous.sourceBindings.some(row=>row.path===path)).toBe(false);
+ }
+ for(const path of ['.dockerignore','docker/qlever-runtime-sdk/Dockerfile.module-bookworm','qlever/scripts/sdk-inner-materials.py','qlever/scripts/sdk-image-originals.py']){const mixed=new Map(observed),old=previous.selectors.find(row=>row.path===path)!;mixed.set(sourceBindingKey(old),old.sha256);expect(()=>selectGitHubSourceBindingGroup(QLEVER_SDK_EXECUTION_GROUPS,mixed)).toThrow();}
 });

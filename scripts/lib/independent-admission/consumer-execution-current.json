@@ -1,7 +1,7 @@
 [
   {
     "path": ".dockerignore",
-    "sha256": "39150d3d516e0476fc2dca5f0c1ebf77d1e58f434bc7130e210af1878dec8aec"
+    "sha256": "5bf29e31d569c0fb7fe2cbdae8bf468b22c27a2bccfeef2ef4dd9aaca82b48c9"
   },
   {
     "path": "bun.lock",
@@ -9,7 +9,7 @@
   },
   {
     "path": "docker/qlever-runtime-sdk/Dockerfile.module-bookworm",
-    "sha256": "21b588f1931b6adc29b8591ef47e82af4452aaf065a78bf1360b6cc3f6274952"
+    "sha256": "896bd118f91682d504819afd0cb77592c6f4ea3e668dda2d97280b709ee95495"
   },
   {
     "path": "package.json",
@@ -292,6 +292,10 @@
     "sha256": "8a338b8bcaea82d89fd49bfe27647b61bb2c61243d824c01e86a1e4123dfbe81"
   },
   {
+    "path": "qlever/scripts/sdk-blocking-owned-wait.py",
+    "sha256": "9529b31b027b759e5baa380fa81339b9a962d8d916ac1ea20c9f9503bd697a68"
+  },
+  {
     "path": "qlever/scripts/sdk-command-materials.py",
     "sha256": "2db81d742b8ea9060ebad2fa0a253555337f457decf09d9ed9a59dd85a598b9a"
   },
@@ -316,8 +320,20 @@
     "sha256": "329194655827de1d03a31db5f311ba1cc59fd0ade7edf2ef48fcc8fae52ebfee"
   },
   {
+    "path": "qlever/scripts/sdk-execution-originals-util.py",
+    "sha256": "b2226db7d6d9955d6bf3745dc5011aa1dbc67ffe90faf9dc88fffa7376343a2d"
+  },
+  {
+    "path": "qlever/scripts/sdk-generated-source-originals.py",
+    "sha256": "60cf828b888a64ecf63accbcf2c856772633dbd7e24eae01e2c3bf53c198595a"
+  },
+  {
     "path": "qlever/scripts/sdk-generation-materials.py",
     "sha256": "216521f3c656a6166b4ff9f35bc3ed95cfb44679f5a9bd78382033ee35e3feb8"
+  },
+  {
+    "path": "qlever/scripts/sdk-generation-multiprocess-bindings.py",
+    "sha256": "43c8937cf3edbdb488efa2bf2a48caa947fdfbd5364f608d10127ef6bd90b62e"
   },
   {
     "path": "qlever/scripts/sdk-git-patch-projection.py",
@@ -333,15 +349,23 @@
   },
   {
     "path": "qlever/scripts/sdk-image-originals.py",
-    "sha256": "f6328787a700297e45412d80d8cf793dd3202f195baa70dad2461fb46deb2119"
+    "sha256": "8932e71ef8d44c9b8c2ee053dfea15fb3baa7ebf27c777981ebde03b02c7d359"
   },
   {
     "path": "qlever/scripts/sdk-inner-materials.py",
-    "sha256": "878072955118a4e22c9e214c74e3e611b46379074de2c31ae50fbeb12412fd32"
+    "sha256": "8178674e08888f76f6d98517a13467c0bb75fcdf5334149e638a7b10c3ca9627"
   },
   {
     "path": "qlever/scripts/sdk-owned-runs.py",
     "sha256": "520241ea81d57d82a33550c44ed3809378fd81d03bc14a8a5985f871b6b64680"
+  },
+  {
+    "path": "qlever/scripts/sdk-ptrace-execution.py",
+    "sha256": "4a6847a810d9286e0f2f36dc76d289c8c71cc677cca2f06d5206a4ab54814c81"
+  },
+  {
+    "path": "qlever/scripts/sdk-ptrace-kernel.py",
+    "sha256": "08fe6e47e696d1543406751bda83f3aaa89a80973d87a27a5a6423e666b5aff2"
   },
   {
     "path": "qlever/scripts/sdk-subreaper-guard.py",
@@ -356,12 +380,16 @@
     "sha256": "e244da8ca8aa2c85cca03d8deebc56a2edca13749c1cc79fffad14872e52f30d"
   },
   {
+    "path": "qlever/scripts/sdk-toolchain-materials.py",
+    "sha256": "4dabc7dad73ba161f21969cce7f753406567b02be93284a21aab2c47bba3e007"
+  },
+  {
     "path": "qlever/scripts/sdk-upstream-source-materials.py",
     "sha256": "dbcc8ad826cf636e41536682c639bb4a214c82dc48b6f6162c94600d46731bad"
   },
   {
     "path": "qlever/scripts/sdk-zip-originals.py",
-    "sha256": "2ca4929f58cfbdfeac43f2bf02564ffc46805de27b529e6e363080710e7c048d"
+    "sha256": "ff57cbe26b9e18f83f41f01051dad2e361da9ae201cb4f905f6cc183f0a62ba6"
   },
   {
     "path": "qlever/scripts/sync-patched-source.py",
@@ -861,7 +889,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-debian-index.ts",
-    "sha256": "25a0121e23fa74269f6b9c0b79067c29a3ab1bbae914ad2d3a282030d1ce9a9b"
+    "sha256": "d1e5f67c448513960f60752f3e7dff2aec910da5e3426c23f424ec0efc446092"
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-debian-signature.ts",
@@ -869,7 +897,11 @@
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-execution.ts",
-    "sha256": "f708bc8bc85892a4b6c0b4fdc375526f62e7e6dc56ae8c1b8f5c6d164a874f9e"
+    "sha256": "ac27b1c612ccfc850665116304fdb8c7b9bcd9b41f3e60f12ecfbf44bad2e059"
+  },
+  {
+    "path": "scripts/lib/independent-admission/qlever-sdk-generation.ts",
+    "sha256": "0b56be1954e7c6ca7510b3ec5b5214ba6575f4bffb6659351e4e0d37d64b9c4c"
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-inputs.ts",
@@ -877,7 +909,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-origin-policy.ts",
-    "sha256": "ab8431f58bff01d4d3f17b0fa2e539ac0d50deef5166cc21985966823c10f23e"
+    "sha256": "6860746bcbf0aedf23a4e65dedd00f6503d95408b4218c01592f7f1e57f500cc"
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-originals.ts",
@@ -885,7 +917,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-source.ts",
-    "sha256": "61e237d2caca78dbd564991803654bec39ab1375bb0679b1faf6a1af20296629"
+    "sha256": "05cb34b105fea014c86873bf4e31fa8aada0753027c972f1b585e2170df393c8"
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-symlinks.ts",
@@ -893,7 +925,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-upstream-source.ts",
-    "sha256": "e44928a1eb5dcce40d9af6e975a03f375c860134b66190e8f666a57c904fc382"
+    "sha256": "c398f0fa8ec3634c5cb570c58e164a6061e123dfcfb2f3611b1e5c7ad63fdc4e"
   },
   {
     "path": "scripts/lib/independent-admission/qlever-signature-original-custody.ts",

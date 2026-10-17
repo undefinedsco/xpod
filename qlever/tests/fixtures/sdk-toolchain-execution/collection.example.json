@@ -1,0 +1,296 @@
+{
+  "schemaVersion": 1,
+  "kind": "qlever-sdk-toolchain-execution-originals",
+  "innerMaterials": {
+    "path": "inner/toolchain-execution/final-materials.json",
+    "bytes": 0,
+    "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "sourceRoot": "/opt/qlever-sdk/source",
+  "buildRoot": "/opt/qlever-sdk/build",
+  "preparedSource": {
+    "beforeInputs": {
+      "path": "inner/inputs-before.json",
+      "bytes": 0,
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "afterInputs": {
+      "path": "inner/inputs-after.json",
+      "bytes": 0,
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "symlinks": {
+      "before": {
+        "path": "inner/symlinks/before.json",
+        "bytes": 0,
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "after": {
+        "path": "inner/symlinks/after.json",
+        "bytes": 0,
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+      }
+    },
+    "generationMetadata": {
+      "before": {
+        "path": "inner/generation/before/inventory.json",
+        "bytes": 0,
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "after": {
+        "path": "inner/generation/after/inventory.json",
+        "bytes": 0,
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+      }
+    },
+    "upstreamInventory": {
+      "path": "inner/upstream-source/postpatch-inventory.json",
+      "bytes": 0,
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    }
+  },
+  "deadlineUnix": 1792264800,
+  "phases": [
+    {
+      "name": "configure",
+      "backend": {
+        "id": "ptrace-all-stop-process-v1",
+        "observerOriginals": [
+          {
+            "sourcePath": "qlever/scripts/sdk-ptrace-execution.py",
+            "file": {
+              "path": "inner/toolchain-execution/observer-originals/sdk-ptrace-execution.py",
+              "bytes": 0,
+              "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+            }
+          },
+          {
+            "sourcePath": "qlever/scripts/sdk-ptrace-kernel.py",
+            "file": {
+              "path": "inner/toolchain-execution/observer-originals/sdk-ptrace-kernel.py",
+              "bytes": 0,
+              "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+            }
+          },
+          {
+            "sourcePath": "qlever/scripts/sdk-execution-originals-util.py",
+            "file": {
+              "path": "inner/toolchain-execution/observer-originals/sdk-execution-originals-util.py",
+              "bytes": 0,
+              "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+            }
+          },
+          {
+            "sourcePath": "qlever/scripts/sdk-blocking-owned-wait.py",
+            "file": {
+              "path": "inner/toolchain-execution/observer-originals/sdk-blocking-owned-wait.py",
+              "bytes": 0,
+              "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+            }
+          },
+          {
+            "sourcePath": "qlever/scripts/sdk-generation-multiprocess-bindings.py",
+            "file": {
+              "path": "inner/toolchain-execution/observer-originals/sdk-generation-multiprocess-bindings.py",
+              "bytes": 0,
+              "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+            }
+          }
+        ],
+        "coverage": {
+          "processModel": "all-observed-descendants-single-thread",
+          "consumerIo": [
+            "read"
+          ],
+          "unsupported": [
+            "CLONE_THREAD",
+            "CLONE_FILES",
+            "async-io",
+            "shared-writable-mmap",
+            "generated-input-mmap"
+          ]
+        }
+      },
+      "phaseBinding": {
+        "name": "configure",
+        "inputs": [],
+        "outputs": [],
+        "receipt": {
+          "path": "inner/stages/configure/command.receipt.json",
+          "bytes": 0,
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+        },
+        "stdout": {
+          "path": "inner/stages/configure/stdout.raw",
+          "bytes": 0,
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+        },
+        "stderr": {
+          "path": "inner/stages/configure/stderr.raw",
+          "bytes": 0,
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+        },
+        "closureKind": "ptrace-tracked-phase-v1",
+        "trackingReceipt": {
+          "path": "inner/toolchain-execution/configure.tracking.receipt.json",
+          "bytes": 0,
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+        },
+        "rawTraceShards": [
+          {
+            "path": "inner/toolchain-execution/configure/trace-0000.jsonl",
+            "bytes": 0,
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+          }
+        ]
+      },
+      "rawTraceShards": [
+        {
+          "path": "inner/toolchain-execution/configure/trace-0000.jsonl",
+          "bytes": 0,
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+        }
+      ],
+      "captures": {
+        "indexes": [
+          {
+            "path": "inner/toolchain-execution/configure/captures-0000.json",
+            "bytes": 0,
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+          }
+        ],
+        "files": 0,
+        "bytes": 0
+      },
+      "selectedInputs": {
+        "path": "inner/toolchain-execution/configure/selected-inputs.json",
+        "bytes": 0,
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+      }
+    },
+    {
+      "name": "compile",
+      "backend": {
+        "id": "ptrace-all-stop-process-v1",
+        "observerOriginals": [
+          {
+            "sourcePath": "qlever/scripts/sdk-ptrace-execution.py",
+            "file": {
+              "path": "inner/toolchain-execution/observer-originals/sdk-ptrace-execution.py",
+              "bytes": 0,
+              "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+            }
+          },
+          {
+            "sourcePath": "qlever/scripts/sdk-ptrace-kernel.py",
+            "file": {
+              "path": "inner/toolchain-execution/observer-originals/sdk-ptrace-kernel.py",
+              "bytes": 0,
+              "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+            }
+          },
+          {
+            "sourcePath": "qlever/scripts/sdk-execution-originals-util.py",
+            "file": {
+              "path": "inner/toolchain-execution/observer-originals/sdk-execution-originals-util.py",
+              "bytes": 0,
+              "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+            }
+          },
+          {
+            "sourcePath": "qlever/scripts/sdk-blocking-owned-wait.py",
+            "file": {
+              "path": "inner/toolchain-execution/observer-originals/sdk-blocking-owned-wait.py",
+              "bytes": 0,
+              "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+            }
+          },
+          {
+            "sourcePath": "qlever/scripts/sdk-generation-multiprocess-bindings.py",
+            "file": {
+              "path": "inner/toolchain-execution/observer-originals/sdk-generation-multiprocess-bindings.py",
+              "bytes": 0,
+              "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+            }
+          }
+        ],
+        "coverage": {
+          "processModel": "all-observed-descendants-single-thread",
+          "consumerIo": [
+            "read"
+          ],
+          "unsupported": [
+            "CLONE_THREAD",
+            "CLONE_FILES",
+            "async-io",
+            "shared-writable-mmap",
+            "generated-input-mmap"
+          ]
+        }
+      },
+      "phaseBinding": {
+        "name": "compile",
+        "inputs": [],
+        "outputs": [],
+        "receipt": {
+          "path": "inner/stages/compile/command.receipt.json",
+          "bytes": 0,
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+        },
+        "stdout": {
+          "path": "inner/stages/compile/stdout.raw",
+          "bytes": 0,
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+        },
+        "stderr": {
+          "path": "inner/stages/compile/stderr.raw",
+          "bytes": 0,
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+        },
+        "closureKind": "ptrace-tracked-phase-v1",
+        "trackingReceipt": {
+          "path": "inner/toolchain-execution/compile.tracking.receipt.json",
+          "bytes": 0,
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+        },
+        "rawTraceShards": [
+          {
+            "path": "inner/toolchain-execution/compile/trace-0000.jsonl",
+            "bytes": 0,
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+          }
+        ]
+      },
+      "rawTraceShards": [
+        {
+          "path": "inner/toolchain-execution/compile/trace-0000.jsonl",
+          "bytes": 0,
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+        }
+      ],
+      "captures": {
+        "indexes": [
+          {
+            "path": "inner/toolchain-execution/compile/captures-0000.json",
+            "bytes": 0,
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+          }
+        ],
+        "files": 0,
+        "bytes": 0
+      },
+      "selectedInputs": {
+        "path": "inner/toolchain-execution/compile/selected-inputs.json",
+        "bytes": 0,
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+      }
+    }
+  ],
+  "sourceProviderOriginals": {
+    "mountinfo": {
+      "path": "inner/toolchain-execution/source-provider.mountinfo.raw",
+      "bytes": 0,
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    }
+  }
+}

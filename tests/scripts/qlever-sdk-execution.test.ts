@@ -1,6 +1,6 @@
 import { expect, it } from 'vitest';
 import { createHash } from 'node:crypto';
-import { inspectSdkBuildExecution } from '../../scripts/lib/independent-admission/qlever-sdk-execution';
+import { inspectSdkBuildExecution, SdkTrackedPhaseOriginalsUnobserved } from '../../scripts/lib/independent-admission/qlever-sdk-execution';
 function fixture(generation = false, prepared = false) {
   const rows = new Map<string, Buffer>(), hash = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
   const put = (path: string, value: object | Buffer) => { const bytes = Buffer.isBuffer(value) ? value : Buffer.from(JSON.stringify(value)); rows.set(path, bytes); return {path, bytes: bytes.length, sha256: hash(bytes)}; };
@@ -35,7 +35,7 @@ function fixture(generation = false, prepared = false) {
   const input = {master: {stages, inputs, identity, executionOwners, ...(generationMaterials ? {generationMaterials} : {})}, members: [...rows].map(([path, bytes]) => ({path, bytes: bytes.length, sha256: hash(bytes)})), jobWindow: {start: 0, end: 40000}, check() {},
     readOriginal(path: string, maximum: number) { const bytes = rows.get(path)!; if (bytes.length > maximum) throw Error('large metadata'); return bytes; },
     readRange(path: string, offset: number, length: number) { expect(length).toBeLessThanOrEqual(65536); return rows.get(path)!.subarray(offset, offset + length); }};
-  const mutate = (path: string, fn: (value: any) => void) => { const value = JSON.parse(rows.get(path)!.toString()); fn(value); const bytes = Buffer.from(JSON.stringify(value)); rows.set(path, bytes); const ref = {path, bytes: bytes.length, sha256: hash(bytes)}; Object.assign(input.members.find(row => row.path === path)!, ref); for (const value of Object.values(executionOwners) as any[]) if (value.path === path) Object.assign(value, ref); if (preparedReference?.path === path) Object.assign(preparedReference, ref); for (const stage of stages) for (const key of ['receipt', 'supervisionReceipt'] as const) if (stage[key].path === path) Object.assign(stage[key], ref); };
+  const mutate = (path: string, fn: (value: any) => void) => { const value = JSON.parse(rows.get(path)!.toString()); fn(value); const bytes = Buffer.from(JSON.stringify(value)); rows.set(path, bytes); const ref = {path, bytes: bytes.length, sha256: hash(bytes)}; Object.assign(input.members.find(row => row.path === path)!, ref); for (const value of Object.values(executionOwners) as any[]) if (value.path === path) Object.assign(value, ref); if (preparedReference?.path === path) Object.assign(preparedReference, ref); for (const stage of stages) for (const key of ['receipt', 'supervisionReceipt'] as const) if (stage[key]?.path === path) Object.assign(stage[key], ref); };
   return {input, rows, mutate};
 }
 it('positively verifies actual SDK configure/compile closed process and exact before inputs', () => {
@@ -85,4 +85,26 @@ it('binds closed sourcePrepare before configure-prepared and retains exact compi
     (x: ReturnType<typeof fixture>) => x.mutate('inner/owner-source-prepare.guard.json', row => {row.completedUnixNs = '12000000000';}),
     (x: ReturnType<typeof fixture>) => x.mutate('inner/stages/source-prepare/command.receipt.json', row => {row.command[2] = 'configure-prepared';}),
   ]) { const x = fixture(true, true); change(x); expect(() => inspectSdkBuildExecution(x.input)).toThrow(); }
+});
+
+function trackedFixture(){
+ const value=fixture(true,true),put=(path:string,row:any)=>{const bytes=Buffer.from(JSON.stringify(row)),ref={path,bytes:bytes.length,sha256:createHash('sha256').update(bytes).digest('hex')};value.rows.set(path,bytes);const existing=value.input.members.find(item=>item.path===path);if(existing)Object.assign(existing,ref);else value.input.members.push(ref);return ref;};
+ for(const stage of value.input.master.stages.filter(row=>row.name!=='source-prepare') as any[]){
+  const actual=JSON.parse(value.rows.get(stage.receipt.path)!.toString());actual.actualExecutable='/usr/bin/bash';actual.startedUnixNs=String(actual.startedUnixNs);actual.completedUnixNs=String(actual.completedUnixNs);stage.receipt=put(stage.receipt.path,actual);
+  stage.closureKind='ptrace-tracked-phase-v1';delete stage.supervisionReceipt;delete stage.supervisionRaw;
+  stage.rawTraceShards=[put('inner/toolchain-execution/'+stage.name+'.trace.jsonl',{schemaFixtureOnly:true})];
+  stage.trackingReceipt=put('inner/stages/'+stage.name+'/tracking.receipt.json',{schemaVersion:1,kind:'sdk-observer-tracked-phase-original',phase:stage.name,command:actual.command,observerPid:40,actualRootPid:actual.pid,actualRootReturnCode:0,actualTrackedWait:true,trackedProcessesClosed:true,deadlineMonotonic:200,startedUnixNs:actual.startedUnixNs,completedUnixNs:actual.completedUnixNs,waitReferences:[{pid:actual.pid,sequence:1,returnCode:0,phase:stage.name}]});
+ }
+ return {value,put};
+}
+it('recognizes only the complete typed envelope as unobserved, never as closed-group approval',()=>{
+ expect(()=>inspectSdkBuildExecution(trackedFixture().value.input)).toThrow(SdkTrackedPhaseOriginalsUnobserved);
+ for(const change of [
+  (x:ReturnType<typeof trackedFixture>)=>{(x.value.input.master.stages[1] as any).closureKind='caller-approved';},
+  (x:ReturnType<typeof trackedFixture>)=>{(x.value.input.master.stages[1] as any).closureKind=undefined;},
+  (x:ReturnType<typeof trackedFixture>)=>x.value.mutate('inner/stages/configure/command.receipt.json',row=>{row.signal=9;}),
+  (x:ReturnType<typeof trackedFixture>)=>{x.value.input.readRange=()=>{throw Error('revoked original reader');};},
+ ]){const x=trackedFixture();change(x);let caught:unknown;try{inspectSdkBuildExecution(x.value.input);}catch(error){caught=error;}expect(caught).toBeInstanceOf(Error);expect(caught).not.toBeInstanceOf(SdkTrackedPhaseOriginalsUnobserved);}
+ const legacy=fixture();legacy.mutate('inner/stages/compile/command.receipt.json',row=>{row.exit=1;});
+ let caught:unknown;try{inspectSdkBuildExecution(legacy.input);}catch(error){caught=error;}expect(caught).toBeInstanceOf(Error);expect(caught).not.toBeInstanceOf(SdkTrackedPhaseOriginalsUnobserved);
 });

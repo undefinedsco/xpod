@@ -249,8 +249,60 @@ const sourcePreparedBindings=Object.freeze(ownedRunsBindings.map(row=>Object.fre
 // The service build-context exception is a complete SDK recipe version.
 // .dockerignore exists in every historical tree and is already pinned in each.
 const serviceContextBindings=Object.freeze(sourcePreparedBindings.map(row=>Object.freeze({...row,sha256:row.path==='.dockerignore'?'39150d3d516e0476fc2dca5f0c1ebf77d1e58f434bc7130e210af1878dec8aec':row.sha256})));
+// Typed tracked execution, its fixed observer import closure and canonical
+// limit COPY are one version; new files are never historical selectors.
+const trackedExecutionRecipe=new Map([
+  [
+    ".dockerignore",
+    "5bf29e31d569c0fb7fe2cbdae8bf468b22c27a2bccfeef2ef4dd9aaca82b48c9"
+  ],
+  [
+    "docker/qlever-runtime-sdk/Dockerfile.module-bookworm",
+    "896bd118f91682d504819afd0cb77592c6f4ea3e668dda2d97280b709ee95495"
+  ],
+  [
+    "qlever/scripts/sdk-inner-materials.py",
+    "8178674e08888f76f6d98517a13467c0bb75fcdf5334149e638a7b10c3ca9627"
+  ],
+  [
+    "qlever/scripts/sdk-image-originals.py",
+    "8932e71ef8d44c9b8c2ee053dfea15fb3baa7ebf27c777981ebde03b02c7d359"
+  ],
+  [
+    "qlever/scripts/sdk-toolchain-materials.py",
+    "4dabc7dad73ba161f21969cce7f753406567b02be93284a21aab2c47bba3e007"
+  ],
+  [
+    "qlever/scripts/sdk-ptrace-execution.py",
+    "4a6847a810d9286e0f2f36dc76d289c8c71cc677cca2f06d5206a4ab54814c81"
+  ],
+  [
+    "qlever/scripts/sdk-ptrace-kernel.py",
+    "08fe6e47e696d1543406751bda83f3aaa89a80973d87a27a5a6423e666b5aff2"
+  ],
+  [
+    "qlever/scripts/sdk-execution-originals-util.py",
+    "b2226db7d6d9955d6bf3745dc5011aa1dbc67ffe90faf9dc88fffa7376343a2d"
+  ],
+  [
+    "qlever/scripts/sdk-generation-multiprocess-bindings.py",
+    "43c8937cf3edbdb488efa2bf2a48caa947fdfbd5364f608d10127ef6bd90b62e"
+  ],
+  [
+    "qlever/scripts/sdk-blocking-owned-wait.py",
+    "9529b31b027b759e5baa380fa81339b9a962d8d916ac1ea20c9f9503bd697a68"
+  ],
+  [
+    "scripts/lib/module-artifact-limits.json",
+    "c1c529aba719356c682affbe630c215e28cc07163192f8f3b601aab7b0126bd4"
+  ]
+]);
+const trackedExecutionBindings=Object.freeze([
+ ...serviceContextBindings.map(row=>Object.freeze({...row,sha256:trackedExecutionRecipe.get(row.path)??row.sha256})),
+ ...[...trackedExecutionRecipe].filter(([path])=>!serviceContextBindings.some(row=>row.path===path)).map(([path,sha256])=>Object.freeze({path,sha256})),
+]);
 export const QLEVER_SDK_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([
- sdkBGroup(QLEVER_SDK_B_SOURCE_BINDINGS),sdkBGroup(tarBindings),sdkBGroup(stagingTarBindings),sdkBGroup(debianV3Bindings),sdkBGroup(symlinkBindings),sdkBGroup(gitCmakeBindings),sdkBGroup(ownedRunsBindings),sdkBGroup(sourcePreparedBindings),sdkBGroup(serviceContextBindings),
+ sdkBGroup(QLEVER_SDK_B_SOURCE_BINDINGS),sdkBGroup(tarBindings),sdkBGroup(stagingTarBindings),sdkBGroup(debianV3Bindings),sdkBGroup(symlinkBindings),sdkBGroup(gitCmakeBindings),sdkBGroup(ownedRunsBindings),sdkBGroup(sourcePreparedBindings),sdkBGroup(serviceContextBindings),sdkBGroup(trackedExecutionBindings),
 ]);
 export const QLEVER_LINUX_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([
  {selectors:sdkSelectors('cbedd3e2478de5e22108b6689c595a658ca891c9bd47552caec830e86f47fea8','a75c7be34b5c5fafff85c0d67d814ba1aaf14bcf5db5404a860fe3b9a11009bd'),sourceBindings:QLEVER_LINUX_SOURCE_BINDINGS.filter(row=>!['.github/workflows/publish-qlever-runtime-sdk.yml','.github/workflows/build-qlever-linux-runtime.yml'].includes(row.path))},

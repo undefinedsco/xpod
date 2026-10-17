@@ -1,0 +1,77 @@
+"""Library contract/budget tests; actual ptrace execution is a queued Linux probe."""
+import importlib.util
+from pathlib import Path
+import tempfile
+import os
+import hashlib
+import time
+import unittest
+ROOT=Path(__file__).resolve().parents[2]
+spec=importlib.util.spec_from_file_location('backend',ROOT/'qlever/scripts/sdk-ptrace-execution.py');module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+class Tests(unittest.TestCase):
+    def test_shards_preserve_exact_bytes_and_order(self):
+        base=ROOT/'.test-data/sdk-ptrace-library';base.mkdir(parents=True,exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=base) as directory:
+            stream=module.ShardedRaw(Path(directory),'compile',8);stream.write(b'first\n');stream.write(b'next\n');self.assertEqual(stream.tell(),11);stream.close()
+            self.assertEqual([path.name for path in stream.paths],['compile.trace-0000.jsonl','compile.trace-0001.jsonl']);self.assertEqual(b''.join(path.read_bytes() for path in stream.paths),b'first\nnext\n')
+    def test_normal_phase_must_use_fixed_argv_and_existing_deadline(self):
+        base=ROOT/'.test-data/sdk-ptrace-library';base.mkdir(parents=True,exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=base) as directory:
+            # Pure argument checks only: no constructor, kernel provider, ptrace or cap is simulated.
+            backend=object.__new__(module.SdkExecutionObserver);backend.sdk_failed=False;backend.sdk_phase_index=0;backend.deadline_monotonic=time.monotonic()+10;backend.retained=set()
+            with self.assertRaisesRegex(AssertionError,'fixed actual SDK phase argv'):
+                backend.phase('configure',['/bin/true'],time.monotonic()+1,cwd='/',env={},stdoutPath='/unused',stderrPath='/unused')
+            with self.assertRaisesRegex(AssertionError,'existing SDK deadline'):
+                backend.phase('configure',['bash','/components/qlever/scripts/build-qlever-runtime-sdk.sh','configure-prepared'],time.monotonic()+100,cwd='/',env={},stdoutPath='/unused',stderrPath='/unused')
+            backend.close()
+    def test_effective_source_ro_includes_superblock_and_rejects_rw(self):
+        for flags,superflags in [('ro','rw'),('rw','ro')]:
+            raw=('1 0 0:1 / / '+flags+' - overlay overlay '+superflags+'\n').encode()
+            self.assertEqual(module.probe.effective_readonly('/opt/qlever-sdk/source',raw)['mount'],'/')
+        with self.assertRaisesRegex(AssertionError,'writable'):
+            module.probe.effective_readonly('/opt/qlever-sdk/source',b'1 0 0:1 / / rw - overlay overlay rw\n')
+    def test_remaining_tightens_private_ledger_without_reset_or_increase(self):
+        observer=module.Observer('/unused','/unused','/unused',maximum_bytes=100)
+        observer.claim(20);self.assertEqual(observer.tighten_remaining(30),50)
+        observer.claim(30);self.assertEqual(observer.domain_bytes,50)
+        with self.assertRaisesRegex(AssertionError,'shared execution'):observer.claim(1)
+        self.assertEqual(observer.tighten_remaining(1000),50)
+        self.assertEqual(observer.tighten_remaining(0),50)
+        for invalid in [-1,True,1.5]:
+            with self.assertRaisesRegex(AssertionError,'remaining source'):observer.tighten_remaining(invalid)
+    def test_canonical_budget_cannot_be_increased(self):
+        with self.assertRaisesRegex(AssertionError,'canonical shared execution'):
+            module.SdkExecutionObserver(Path('/unused'),Path('/opt/qlever-sdk/source'),Path('/opt/qlever-sdk/build'),deadline_monotonic=time.monotonic()+1,check_budget=lambda:None,maximum_bytes=4*1024**3+1,maximum_stdio_bytes=1000)
+
+class ActualStdioTests(unittest.TestCase):
+    def pipe_case(self,maximum_stream,maximum_domain,data):
+        base=ROOT/'.test-data/sdk-ptrace-library';base.mkdir(parents=True,exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=base) as directory:
+            observer=module.Observer(Path(directory),Path(directory),Path(directory),maximum_bytes=maximum_domain)
+            read_fd,write_fd=os.pipe();errors=[];target=Path(directory)/'stdout.raw';pump=module.BoundedPipePump(read_fd,target,maximum_stream,observer.claim,errors)
+            pid=os.fork()
+            if pid==0:
+                try:os.close(read_fd);os.write(write_fd,data);os.close(write_fd);os._exit(0)
+                except BaseException:os._exit(70)
+            os.close(write_fd);pump.start();waited,status=os.waitpid(pid,0);pump.thread.join(2)
+            self.assertFalse(pump.thread.is_alive());self.assertEqual(waited,pid)
+            return target.read_bytes(),errors,pump,observer.domain_bytes
+    def test_actual_pipe_bytes_are_hashed_and_charged(self):
+        content,errors,pump,charged=self.pipe_case(1024,1024,b'actual stdout')
+        self.assertEqual(content,b'actual stdout');self.assertEqual(errors,[]);self.assertEqual(charged,len(content));self.assertEqual(pump.sha256,hashlib.sha256(content).hexdigest())
+    def test_actual_large_write_rejected_before_unbounded_disk_write(self):
+        for stream,domain in [(32,10000),(10000,32)]:
+            content,errors,pump,charged=self.pipe_case(stream,domain,b'x'*4096)
+            self.assertTrue(errors);self.assertLessEqual(len(content),32);self.assertIsNone(pump.sha256);self.assertLessEqual(charged,domain)
+    @unittest.skipUnless(Path('/usr/bin/bash').is_file(),'fixed Debian SDK executable is tested by queued Linux context')
+    def test_actual_fixed_bash_execve_from_directory_without_relative_bash(self):
+        base=ROOT/'.test-data/sdk-ptrace-library';base.mkdir(parents=True,exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=base) as directory:
+            read_fd,write_fd=os.pipe();pid=os.fork()
+            if pid==0:
+                os.close(read_fd);os.chdir(directory);os.dup2(write_fd,1);os.close(write_fd)
+                command=['bash','-c','printf actual-fixed-bash'];os.execve(module.actual_executable(command),command,{'PATH':'/usr/bin:/bin','LANG':'C'})
+            os.close(write_fd);content=os.read(read_fd,1024);os.close(read_fd);waited,status=os.waitpid(pid,0)
+            self.assertEqual(waited,pid);self.assertEqual(os.waitstatus_to_exitcode(status),0);self.assertEqual(content,b'actual-fixed-bash')
+
+if __name__=='__main__':unittest.main()

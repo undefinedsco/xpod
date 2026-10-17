@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
+import tarfile
 import time
 import unittest
 from unittest.mock import patch
@@ -44,7 +45,10 @@ class ImageOriginalsTest(unittest.TestCase):
             root=Path(directory).resolve();repo=root/'repo';repo.mkdir();(repo/'qlever').mkdir();(repo/'qlever/input.h').write_text('actual context source')
             (repo/'.dockerignore').write_text('**/.git')
             def git(*args):return subprocess.check_output(['git','-c','core.hooksPath=/dev/null',*args],cwd=repo,stderr=subprocess.DEVNULL,text=True).strip()
-            git('init');git('add','qlever/input.h','.dockerignore')
+            (repo/'scripts/lib').mkdir(parents=True);limits=b'{"sourceMaterialBytes":4294967296}\n'
+            (repo/'scripts/lib/module-artifact-limits.json').write_bytes(limits)
+            (repo/'scripts/unrelated-secret.txt').write_text('excluded')
+            git('init');git('add','qlever/input.h','.dockerignore','scripts/lib/module-artifact-limits.json','scripts/unrelated-secret.txt')
             git('-c','user.name=SDK fixture','-c','user.email=sdk-fixture@example.invalid','commit','-m','fixture')
             sha=git('rev-parse','HEAD');old=Path.cwd()
             try:
@@ -53,7 +57,10 @@ class ImageOriginalsTest(unittest.TestCase):
                     module.capture_context(root/'originals',str(int(time.time())+12000))
                 context=json.loads((root/'originals/context-originals.json').read_text())
                 self.assertEqual(context['sourceSha'],sha)
-                self.assertEqual(len(context['files']),2)
+                self.assertEqual(len(context['files']),3)
+                with tarfile.open(root/'originals/context.original.tar') as bundle:
+                    self.assertEqual(bundle.extractfile('scripts/lib/module-artifact-limits.json').read(),limits)
+                    self.assertNotIn('scripts/unrelated-secret.txt',bundle.getnames())
                 self.assertTrue((root/'originals/context.original.tar').is_file())
             finally:os.chdir(old)
 if __name__=='__main__':unittest.main()

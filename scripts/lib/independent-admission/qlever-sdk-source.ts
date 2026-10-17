@@ -7,7 +7,7 @@ import { performance } from 'node:perf_hooks';
 import { derivedSourceView, assertDerivedSourceCurrent } from './source-context';
 import limits from '../module-artifact-limits.json';
 import { inspectSdkInputOwnership } from './qlever-sdk-inputs';
-import { inspectSdkBuildExecution } from './qlever-sdk-execution';
+import { inspectSdkBuildExecution, SdkTrackedPhaseOriginalsUnobserved, SDK_TRACKED_PHASE_UNOBSERVED } from './qlever-sdk-execution';
 import { inspectSdkSymlinkOriginals } from './qlever-sdk-symlinks';
 import { qleverSdkOriginalsView } from './qlever-sdk-originals';
 import { captureLegalFileIdentity, assertLegalFileIdentity } from './legal-file-custody';
@@ -70,8 +70,13 @@ export function inspectQleverSdkSourceOriginals(capability: unknown, remainingMi
       return JSON.parse(row.data.toString()).jobs;
     }).filter((row: any) => row.id === sdk.originFacts.producerJobId);
     need(jobs.length === 1, 'unique actual SDK build job required');
-    const execution = inspectSdkBuildExecution({master, members: sdk.members, jobWindow: {start: Date.parse(jobs[0].started_at), end: Date.parse(jobs[0].completed_at)},
+    let execution;
+    try { execution = inspectSdkBuildExecution({master, members: sdk.members, jobWindow: {start: Date.parse(jobs[0].started_at), end: Date.parse(jobs[0].completed_at)},
       readOriginal: (name, maximum) => sdk.readOriginal(name, maximum), readRange: (name, offset, length) => sdk.readOriginalRange(name, offset, length), check});
+    } catch(error) {
+      if(!(error instanceof SdkTrackedPhaseOriginalsUnobserved))throw error;
+      pending.add(SDK_TRACKED_PHASE_UNOBSERVED);execution={verified:false,pending:[SDK_TRACKED_PHASE_UNOBSERVED],generationMetadataReferenceSealVerified:error.generationMetadataOriginals!==undefined};
+    }
     need(qleverSdkOriginalsView(capability) === sdk, 'SDK closed build original custody changed');
     facts.sdkConfigureCompileExecution = execution;
     facts.sdkConfigureCompileClosedExecutionVerified = execution.verified;
@@ -163,8 +168,10 @@ export async function observeQleverSdkSourceAdmission(input: {sdkOriginals: unkn
   const assertCurrent = () => {
     need(qleverSdkOriginalsView(input.sdkOriginals) === sdk && derivedSourceView(input.source) === source, 'SDK/source admission custody changed');
     if (source) assertDerivedSourceCurrent(input.source);
+    generationGuard?.();
     if (signatureObservation) need(signatureGetter?.(input.sdkOriginals) === signatureObservation, 'independent Debian signature observation custody changed');
   };
+  let generationGuard:(()=>void)|undefined;
   let verified = false;
   try {
     need(sdk && source && sdk.originFacts.sourceSha === source.sourceSha, 'same issued SDK and immutable source required');
@@ -179,6 +186,12 @@ export async function observeQleverSdkSourceAdmission(input: {sdkOriginals: unkn
     const {observeQleverSdkDebianIndexOriginals} = await import('./qlever-sdk-debian-index');
     const index = await observeQleverSdkDebianIndexOriginals(input.sdkOriginals, available()); check();
     Object.assign(facts, index.facts); index.pending.forEach(value => pending.add(value));
+    const generationModule=await import('./qlever-sdk-generation');
+    const generation=await generationModule.observeQleverSdkGeneratedInputOriginals(input.sdkOriginals,input.source,available());check();
+    Object.assign(facts,generation.facts);generation.pending.forEach(value=>pending.add(value));
+    if(generation.assertCurrent)generationGuard=generation.assertCurrent;
+    const tracked=generationModule.qleverSdkExecutionOriginalObservation(input.sdkOriginals);
+    if(tracked===generation.facts&&tracked?.sdkActualConfigureCompileTrackedWaitVerified===true){pending.delete(SDK_TRACKED_PHASE_UNOBSERVED);facts.sdkConfigureCompileClosedExecutionVerified=true;}
     const {observeQleverSdkUpstreamGitOriginals} = await import('./qlever-sdk-upstream-source');
     const git = await observeQleverSdkUpstreamGitOriginals(input.sdkOriginals, input.source, available()); check();
     Object.assign(facts, git.facts); git.pending.forEach(value => pending.add(value));
@@ -206,7 +219,7 @@ export async function observeQleverSdkSourceAdmission(input: {sdkOriginals: unkn
       upstreamGitPreimages: facts.sdkUpstreamGitCommitTreePreimageClosureVerified === true,
       reviewedPatchProjection: facts.sdkUpstreamReviewedPatchProjectionVerified === true,
       selectedUpstreamInputOriginals: facts.sdkSelectedUpstreamInputOriginalsVerified === true,
-      generatedInputIoClosure: 'verifier-not-implemented' as const, toolchainSourceClosure: 'verifier-not-implemented' as const});
+      generatedInputIoClosure: facts.sdkGeneratedInputIoClosureVerified===true, toolchainSourceClosure: 'verifier-not-implemented' as const});
     facts.sdkSourceRequiredAxes = axes;
     verified = Object.values(axes).every(value => value === true) && pending.size === 0;
     facts.sdkSourceCompletenessVerified = verified;
