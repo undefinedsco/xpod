@@ -26,8 +26,9 @@ class ModuleContextTests(unittest.TestCase):
 
     def test_every_module_sdk_docker_recipe_copy_has_an_exact_context_exception(self):
         recipe = (ROOT / 'docker/qlever-runtime-sdk/Dockerfile.module-bookworm').read_text()
-        sources = re.findall(r'^COPY (docker/\S+) \S+$', recipe, re.M)
-        self.assertEqual(len(sources), 2)
+        sources = re.findall(r'^COPY ((?:docker/|scripts/|\.dockerignore)\S*) \S+$', recipe, re.M)
+        self.assertGreaterEqual(len(sources), 5)
+        self.assertIn('.dockerignore', sources)
         for source in sources:
             self.assertIn('!' + source, self.rules)
             self.assertTrue((ROOT / source).is_file())

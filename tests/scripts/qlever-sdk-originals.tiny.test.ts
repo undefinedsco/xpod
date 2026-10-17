@@ -82,7 +82,7 @@ test('owned SDK RUNs select the complete PID1 registry/guard and preserve earlie
 
 test('source-prepared SDK group binds the complete changed recipe without mixing historical selectors',()=>{
  const old=QLEVER_SDK_EXECUTION_GROUPS[6]!,next=QLEVER_SDK_EXECUTION_GROUPS[7]!;
- expect(QLEVER_SDK_EXECUTION_GROUPS).toHaveLength(10);
+ expect(QLEVER_SDK_EXECUTION_GROUPS).toHaveLength(11);
  const selected=new Map(next.selectors.map(row=>[sourceBindingKey(row),row.sha256]));
  expect(selectGitHubSourceBindingGroup(QLEVER_SDK_EXECUTION_GROUPS,selected)).toBe(next);
  for(const path of ['docker/qlever-runtime-sdk/Dockerfile.module-bookworm','qlever/scripts/sdk-inner-materials.py']){
@@ -109,4 +109,13 @@ test('typed tracked SDK execution binds the complete observer import closure aft
   expect(next.selectors.some(row=>row.path===path)).toBe(false);expect(next.sourceBindings.find(row=>row.path===path)?.sha256).toHaveLength(64);expect(previous.sourceBindings.some(row=>row.path===path)).toBe(false);
  }
  for(const path of ['.dockerignore','docker/qlever-runtime-sdk/Dockerfile.module-bookworm','qlever/scripts/sdk-inner-materials.py','qlever/scripts/sdk-image-originals.py']){const mixed=new Map(observed),old=previous.selectors.find(row=>row.path===path)!;mixed.set(sourceBindingKey(old),old.sha256);expect(()=>selectGitHubSourceBindingGroup(QLEVER_SDK_EXECUTION_GROUPS,mixed)).toThrow();}
+});
+
+test('self-retained Docker ignore context is a new whole version, preserving tracked execution',()=>{
+ const old=QLEVER_SDK_EXECUTION_GROUPS[9]!,next=QLEVER_SDK_EXECUTION_GROUPS[10]!;
+ for(const group of [old,next])expect(selectGitHubSourceBindingGroup(QLEVER_SDK_EXECUTION_GROUPS,new Map(group.selectors.map(row=>[sourceBindingKey(row),row.sha256])))).toBe(group);
+ expect(next.sourceBindings).toEqual(old.sourceBindings);
+ expect(next.selectors.filter(row=>row.path!=='.dockerignore')).toEqual(old.selectors.filter(row=>row.path!=='.dockerignore'));
+ expect(next.selectors.find(row=>row.path==='.dockerignore')?.sha256).not.toBe(old.selectors.find(row=>row.path==='.dockerignore')?.sha256);
+ const changed=new Map(next.selectors.map(row=>[sourceBindingKey(row),row.sha256]));changed.set(sourceBindingKey(next.selectors.find(row=>row.path==='.dockerignore')!),'0'.repeat(64));expect(()=>selectGitHubSourceBindingGroup(QLEVER_SDK_EXECUTION_GROUPS,changed)).toThrow();
 });
