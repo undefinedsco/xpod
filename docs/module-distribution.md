@@ -80,7 +80,7 @@ CLI 使用独立版本和 `cli-v<version>` release 标识；不得因此改服�
 
 CLI、AFS、API、CSS 独立版本与独立发布，分别使用 `cli-v<version>`、`afs-v<version>`、`api-v<version>`、`css-v<version>`。同一模块的各平台产物共用一个 tag，并绑定各自的不可变摘要。整体服务/桌面发行保留既有 `v<version>` 与服务 RC 规则。需要联合交付时可协调一次触发多个模块发布，但仍分别打 tag，不要求模块版本号一致；兼容关系由模块接口版本与经过验收的依赖约束表达。
 
-上述 tag 是独立发行的命名约定，当前尚未接通这些 tag 的自动发布 workflow。`cli-package.yml` 的 PR/手动入口只交付构建与消费者证据和 publication-preparation 原件；`independent-release-plan.ts` 只生成 `blocked` 计划，不执行发布、tag 提升或服务部署。正式独立发行仍须完成 source/native/legal/consumer 准入、精确依赖的 registry tarball/SRI 读回及发行审核。
+上述 tag 是独立发行的命名约定，当前尚未接通 Git release tag 的自动创建。`cli-package.yml` 的 PR/手动入口交付构建、消费者证据及 publication-preparation 原件；`independent-publication.yml` 提供 staging 上的独立手动入口，默认 `prepare` 只生成计划。入口重新采集官方 producer 原件，在同一进程重建源码与消费者凭据，不从报告 JSON 恢复批准权限。显式 `publish` 也必须通过全部中央准入与实际 registry 安装消费者门禁，缺少执行器或材料时在首次发布前拒绝写入；npm dist-tag 提升与 Git release tag 是独立步骤，不触发服务部署。当前真实安装采集、原生 ABI 及许可材料缺口仍须关闭，不能以工作流存在或本地归档导入通过宣称独立发行完成。
 
 开发任务名称不自动等于分发包。Matrix、Fabric 等业务能力先明确 API 路由、共享服务、CSS adapter 与客户端的职责；只有独立安装/更新需求与接口边界成立后，才在同一目录和宿主接口中登记独立能力包。不得把整个服务换一个包名作为业务模块交付。当前开发任务的落实责任见 [拆包交接清单](module-distribution-handoff.md)。
 
