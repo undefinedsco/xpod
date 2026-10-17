@@ -1,3 +1,4 @@
+import {QLEVER_SDK_WORKFLOW,QLEVER_SDK_WORKFLOW_SHA,QLEVER_SDK_B_SOURCE_BINDINGS,QLEVER_LINUX_EXECUTION_GROUPS} from './qlever-sdk-origin-policy';
 import {selectGitHubSourceBindingGroup,sourceBindingKey,type GitHubSourceBindingGroup} from './github-source-binding-groups';
 import {immutableGitContentsEndpoint,cachedGitContentsOriginal,retainGitContentsOriginal} from './github-immutable-original-cache';
 import {QLEVER_LINUX_SOURCE_BINDINGS} from './qlever-linux-origin-policy';
@@ -31,6 +32,8 @@ export interface GitHubOriginFacts {
 }
 type Original = { name: string; endpoint: string; data: Buffer };
 const nativeOrigins = new WeakSet<object>();
+const sdkOrigins = new WeakSet<object>();
+export function isQleverSdkGitHubOrigin(value:unknown):value is GitHubOriginObservation {return value!==null&&typeof value==='object'&&sdkOrigins.has(value);}
 const normalModuleOrigins = new WeakSet<object>();
 export function isRoutedCssProductGitHubOrigin(value:unknown):value is GitHubOriginObservation {
  const facts=value!==null&&typeof value==='object'?issued.get(value)?.facts:undefined;
@@ -144,7 +147,7 @@ export async function observeModuleProductGitHubOrigin(input: ArtifactAcquisitio
     jobName:()=>`targets (${target}) / products`,requiredStep:'Produce the normal CSS preview',requiredSteps:['Upload original preview and evidence'],
     // Only the actually executed target branch participates. Linux SDK changes
     // do not silently authorize Linux, or block a separately reviewed Mac run.
-    sourceBindings:target.startsWith('linux-')?QLEVER_LINUX_SOURCE_BINDINGS:[...CSS_NATIVE_SOURCE_BINDINGS.filter(binding=>binding.path!=='.github/workflows/publish-qlever-runtime-sdk.yml'),{path:QLEVER_OBSERVER_PATH,sha256:QLEVER_OBSERVER_V20,reviewedSha256:[QLEVER_OBSERVER_V22,QLEVER_OBSERVER_V23]}],
+    ...(target.startsWith('linux-')?{sourceBindingGroups:QLEVER_LINUX_EXECUTION_GROUPS}:{sourceBindings:[...CSS_NATIVE_SOURCE_BINDINGS.filter(binding=>binding.path!=='.github/workflows/publish-qlever-runtime-sdk.yml'),{path:QLEVER_OBSERVER_PATH,sha256:QLEVER_OBSERVER_V20,reviewedSha256:[QLEVER_OBSERVER_V22,QLEVER_OBSERVER_V23]}]}),
     requiredAncestorJobs:target.startsWith('linux-')?[`targets (${target}) / native / linux / publish`,`targets (${target}) / native / linux / module_runtime_materials / runtime / publish`,`targets (${target}) / native / linux / module_runtime_materials / archive`]:[`targets (${target}) / native / macos / build`]};
   const observation=await observeGitHubOrigin(input,options,module==='css'?(row.nativeSourceAvailable?[legacy,current]:current):legacy);
   normalModuleOrigins.add(observation);return observation;
@@ -199,7 +202,7 @@ export async function observeQleverNativeGitHubOrigin(input:ArtifactAcquisitionI
         requiredStep:'Bind fresh native material output identity',
         requiredSteps:['Produce native source and ABI original materials','Upload exact native build and test materials'],
         requiredAncestorJobs:[`targets (${target}) / native / linux / publish`,`targets (${target}) / native / linux / module_runtime_materials / runtime / publish`],
-        sourceBindings:QLEVER_LINUX_SOURCE_BINDINGS,
+        sourceBindingGroups:QLEVER_LINUX_EXECUTION_GROUPS,
       });nativeOrigins.add(observation);return observation;
     }
     if(!['darwin-arm64','darwin-x64'].includes(target))return fail('unsupported CSS native original target');
@@ -234,6 +237,23 @@ export async function observeQleverNativeGitHubOrigin(input:ArtifactAcquisitionI
         reviewedSha256:['a92b227ec186a0f53f85c93a732a0542ee3b712fdb571308395ecf17c07b2d86',QLEVER_OBSERVER_V20,QLEVER_OBSERVER_V22,QLEVER_OBSERVER_V23]}],
   });
   nativeOrigins.add(observation); return observation;
+}
+
+/** SDK byte custody is independently observed, never inferred from a runtime
+ * image reference or a normal CSS product observation. */
+export async function observeQleverSdkGitHubOrigin(input:ArtifactAcquisitionInput,target:string,invocation:'standalone'|'css-native-products',options:{token?:string}={}):Promise<GitHubOriginObservation>{
+ if(!['linux-x64','linux-arm64'].includes(target)||!['standalone','css-native-products'].includes(invocation))return fail('fixed SDK target and invocation required');
+ const nested=invocation==='css-native-products';
+ const observation=await observeGitHubOrigin(input,options,{
+  workflowPath:nested?CSS_NATIVE_PRODUCTS_WORKFLOW:QLEVER_SDK_WORKFLOW,workflowSha256:nested?CSS_NATIVE_PARENT_SHA:QLEVER_SDK_WORKFLOW_SHA,
+  events:['workflow_dispatch'],target,
+  artifactNames:row=>[`qlever-sdk-originals-${target}-${row.sourceSha}-${row.runId}-${row.runAttempt}`],
+  jobName:()=>nested?`targets (${target}) / native / linux / publish`:'publish',
+  requiredStep:'Bind actual SDK image and build originals',
+  requiredSteps:['Verify the actual native producer host','Build actual cold module SDK with owned raw streams','Push exact tested module SDK from the same builder cache','Upload exact SDK original materials'],
+  sourceBindings:QLEVER_SDK_B_SOURCE_BINDINGS,
+ });
+ nativeOrigins.add(observation);sdkOrigins.add(observation);return observation;
 }
 
 /** Consumer-only policy allows a live reviewed controller run to re-observe
