@@ -11,7 +11,7 @@ import { githubOriginFacts, githubOriginOriginals, type GitHubOriginObservation 
 // producer remains the sole phase/command declaration; no parallel phase table.
 export const moduleSourcePhasePolicy = Object.freeze({
   api: '11220d061b4ad3e525f879e3d429ed7a22697293317ba7322a649504c5fc0b8f',
-  css: 'ed54b9482d818bd53c652fe2520fabac81b83eae105504f3e739144f3ea5aa84',
+  css: '255f06c18aeac7647f88ce99e6ff529909af69f855cfe65a92ad97a16cd7802b',
   supervisor: '49fd9c7a7a9c9dc1612b1261f0cbc218166f48487df726239437ae9ad98ba407',
 });
 const hash = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
