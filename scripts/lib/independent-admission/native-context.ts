@@ -83,6 +83,7 @@ export interface ControlledNativeRuntimeView {
   readonly uncoveredNativeImages: readonly Readonly<import('../physical-module-native').NativeFile>[];
   readonly runtimeAbiVerified: boolean;
   readonly sdkSourceFacts?: Readonly<Record<string, unknown>>;
+  readonly afsSourceFacts?: Readonly<Record<string, unknown>>;
   readonly officialReleaseFacts?: Readonly<Record<string, unknown>>;
   readonly sourceMaterialsVerified: boolean;
   readonly nativeSourceClosureVerified: boolean;
@@ -389,8 +390,11 @@ export async function collectNativeAdmissionContext(input: {
   const native = input.nativeOriginals === undefined || official ? undefined : nativeOriginalsView(input.nativeOriginals);
   if (input.nativeOriginals !== undefined && !native && !official) return fail('private independent native original capability required');
   if (module_ === 'api' && native) return fail('official-release native custody profile required; an Actions native origin is not an Inngest release origin');
+  const { officialInngestRuntimeObservation } = await import('./inngest-runtime-originals');
+  const apiRuntime = official ? officialInngestRuntimeObservation(input.nativeOriginals) : undefined;
   let originVerified = false, stagesVerified = false, runtimeAbi = false;
   const pending = new Set(material.pending);
+  let afsSourceFacts: Readonly<Record<string, unknown>> | undefined;
   if (module_ === 'api' && official) {
     if (!isDeepStrictEqual(official.identity, product.identity) || official.target !== product.identity.target
       || official.sourceCommit !== material.nativeSourceSha || official.officialOriginVerified !== true || official.releaseMembersVerified !== true)
@@ -405,6 +409,10 @@ export async function collectNativeAdmissionContext(input: {
     originVerified = true;
     pending.delete('inngest-official-release-origin-capability-unavailable');
     pending.delete('inngest-release-binary-member-correspondence-unverified');
+    if (apiRuntime?.inngestInstalledVersionExecutionVerified === true) {
+      pending.delete('inngest-executed-runtime-ABI-originals-unavailable');
+      pending.add('inngest-full-runtime-ABI-coverage-unverified');
+    }
   }
 
   if (module_ === 'afs' && native) {
@@ -459,6 +467,11 @@ export async function collectNativeAdmissionContext(input: {
         || started < began || closed < started || closed > ended) return fail('AgentFS original stage closure/raw/job window mismatch');
     }
     originVerified = true; stagesVerified = true; pending.delete('agentfs-original-native-producer-custody-unavailable');
+    const { observeAfsSourceOriginals } = await import('./afs-source-originals');
+    const sourceObserved = await observeAfsSourceOriginals({ artifact: input.artifact, source: input.source, nativeOriginals: input.nativeOriginals });
+    afsSourceFacts = sourceObserved.facts;
+    if (sourceObserved.facts.afsSourceArchiveMembershipVerified === true) pending.delete('agentfs-source-archive-membership-unverified');
+    for (const reason of sourceObserved.pending) pending.add(reason);
     if (platform_ === 'linux') {
       const observed = await observeRegisteredAfsLinuxRuntime(native, product.identity.target, binary);
       runtimeAbi = observed.status === 'mechanical-agentfs-linux-runtime-verified';
@@ -469,13 +482,15 @@ export async function collectNativeAdmissionContext(input: {
   const validate = () => {
     if (collectedArtifactView(input.artifact) !== product || derivedSourceView(input.source) !== source
       || (native && nativeOriginalsView(input.nativeOriginals) !== native)
-      || (official && officialInngestReleaseView(input.nativeOriginals) !== official)) return fail('module native custody/source capability revoked');
+      || (official && officialInngestReleaseView(input.nativeOriginals) !== official)
+      || (apiRuntime && officialInngestRuntimeObservation(input.nativeOriginals) !== apiRuntime)) return fail('module native custody/source capability revoked');
   };
   const { uncoveredNativeImages, inventoryObserved } = await observeOtherProductNativeImages(input.artifact, new Set([material.binary.path]));
   const view: ControlledNativeRuntimeView = Object.freeze({ identity: product.identity, nativeSourceSha: material.nativeSourceSha,
     ...(official ? {officialReleaseFacts: Object.freeze({repository: 'inngest/inngest', releaseID: official.releaseID, releaseTag: official.releaseTag,
       target: official.target, sourceCommit: official.sourceCommit, officialOriginVerified: true, releaseMembersVerified: true,
-      sourceArchiveScope: official.sourceArchiveScope})} : {}),
+      sourceArchiveScope: official.sourceArchiveScope, ...(apiRuntime ? {installedRuntimeFacts: apiRuntime} : {})})} : {}),
+    ...(afsSourceFacts ? { afsSourceFacts } : {}),
     nativeOriginVerified: originVerified, originalStageBindingsVerified: stagesVerified, binaryFormatsVerified: inventoryObserved && uncoveredNativeImages.length === 0,
     selectedNativeBinaryFormatsVerified: true, agentfsRuntimeAbiVerified: module_ === 'afs' && runtimeAbi, qleverRuntimeAbiVerified: false, runtimeAbiScope: module_ === 'api' ? 'api-inngest-cli' : 'afs-agentfs-helper',
     uncoveredNativeImages, runtimeAbiVerified: runtimeAbi && inventoryObserved && uncoveredNativeImages.length === 0, sourceMaterialsVerified: true, nativeSourceClosureVerified: false,
