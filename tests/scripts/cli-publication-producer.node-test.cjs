@@ -66,9 +66,9 @@ test('producer runs actual normal workspace builds with independent lock and rep
   for (const tool of TOOLS) assert.ok(fs.existsSync(path.join(root, tool)));
   assert.ok(source.includes("'bunfig.toml'"));
   assert.match(source, /publication\.bun\.lock/);assert.match(source, /--frozen-lockfile/);
-  assert.match(source, /execute\('bun', \['run', 'build:tools'\], cli\)/);
-  assert.match(source, /execute\('bun', \['run', 'build'\], client\)/);
-  assert.match(source, /execute\('bun', \['run', 'build'\], cli\)/);
+  assert.match(source, /await compile\(\['run', 'build:tools'\], cli, 'cli-build-tools'\)/);
+  assert.match(source, /await compile\(\['run', 'build'\], client, 'client-build'\)/);
+  assert.match(source, /await compile\(\['run', 'build'\], cli, 'cli-build'\)/);
   assert.doesNotMatch(source, /npm.*install|file:'?\s*\+|dependencies\[.*\]\s*=/);
   const old = fs.readFileSync(path.join(root, 'scripts/check-cli-package.cjs'), 'utf8');
   assert.ok(old.includes("packedCliManifest.dependencies['@undefineds.co/xpod-client'] = 'file:' + runtimeClientTar"));
