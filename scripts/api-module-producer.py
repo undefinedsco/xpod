@@ -47,9 +47,11 @@ def context(environment, source):
     if len(source['sha']) != 40 or any(c not in '0123456789abcdef' for c in source['sha']):
         raise ValueError('Invalid checkout SHA')
     event_name = environment.get('GITHUB_EVENT_NAME')
-    if event_name not in ('pull_request', 'workflow_dispatch'):
+    if event_name not in ('pull_request', 'workflow_dispatch', 'push'):
         raise ValueError('Unsupported producer event')
     event = json.loads(Path(environment['GITHUB_EVENT_PATH']).read_text())
+    if event_name == 'push' and (environment.get('GITHUB_REF') != 'refs/heads/staging' or event.get('ref') != 'refs/heads/staging' or event.get('after') != source['sha'] or event.get('deleted') is not False):
+        raise ValueError('Exact staging push source required')
     head = event.get('pull_request', {}).get('head', {}).get('sha') if event_name == 'pull_request' else source['sha']
     if not isinstance(head, str) or len(head) != 40 or any(c not in '0123456789abcdef' for c in head):
         raise ValueError('Event head SHA missing')
@@ -62,6 +64,8 @@ def context(environment, source):
     workflow_sha = environment.get('GITHUB_WORKFLOW_SHA', '')
     if len(workflow_sha) != 40 or any(c not in '0123456789abcdef' for c in workflow_sha):
         raise ValueError('Immutable workflow source missing')
+    if event_name == 'push' and (workflow_ref != REPOSITORY + '/' + WORKFLOW + '@refs/heads/staging' or workflow_sha != source['sha']):
+        raise ValueError('Exact staging push workflow required')
     return dict(repository=REPOSITORY, workflowPath=WORKFLOW, workflowRef=workflow_ref,
                 workflowSha=workflow_sha, runId=run_id, runAttempt=attempt,
                 event=event_name, runHeadSha=head, githubSha=environment['GITHUB_SHA'], actualCheckoutSha=source['sha'])

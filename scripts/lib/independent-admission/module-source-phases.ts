@@ -11,7 +11,7 @@ import { githubOriginFacts, githubOriginOriginals, type GitHubOriginObservation 
 // These policies review actual phase-plan and supervisor implementations. The
 // producer remains the sole phase/command declaration; no parallel phase table.
 export const moduleSourcePhasePolicy = Object.freeze({
-  api: 'eaeddab536d6e606042039cfe5290393d5c5a3e454fb590354cc35e5afe2975f',
+  api: '14fbe7416ad1e1f19ca9384614b1b57404e2ed89d2a766172c490b11cc4667e8',
   css: '78e2ec3c272233602083f81d574cfefc5f6c36e9200c1d92e6f7935bd6cac41f',
   afs: 'c44348bd2e28b04c5e427c0070045c0e28c9437b7abadae6bdcc72d405abd508',
   materials: 'cc4592e9649eb9f8e92140d9674beb90b78a769d7563df01f5d2971bfdf13258',
@@ -25,7 +25,8 @@ export const CSS_SOURCE_PARENT_VERSIONS = Object.freeze([
   Object.freeze({workflowSha256: '601aa8fe01ee1367be4e97dc6e868d7bc3e79ed1fea5e8f9531aa759e78d7d51', producerSha256: moduleSourcePhasePolicy.css, targets: 'canonical-catalog' as const}),
 ]);
 export function reviewedModuleProducerSource(module: 'api' | 'css' | 'afs', sha256: string): boolean {
-  return module === 'css' ? CSS_SOURCE_PARENT_VERSIONS.some(row => row.producerSha256 === sha256) : sha256 === moduleSourcePhasePolicy[module];
+  return module === 'css' ? CSS_SOURCE_PARENT_VERSIONS.some(row => row.producerSha256 === sha256)
+    : module === 'api' ? [moduleSourcePhasePolicy.api, 'eaeddab536d6e606042039cfe5290393d5c5a3e454fb590354cc35e5afe2975f'].includes(sha256) : sha256 === moduleSourcePhasePolicy[module];
 }
 const hash = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
 const fail = (message: string): never => { throw new Error('Module source phases: ' + message); };
@@ -119,7 +120,7 @@ export function inspectModuleSourcePhases(input: { artifact: unknown; source: un
     || hash(source.readTracked('scripts/agentfs-native-ci/supervise.py')) !== moduleSourcePhasePolicy.supervisor
     || hash(source.readTracked('scripts/lib/module-source-materials.py')) !== moduleSourcePhasePolicy.materials
     || hash(source.readTracked('scripts/lib/module-artifact-limits.json')) !== moduleSourcePhasePolicy.limits
-    || (module === 'afs' && hash(source.readTracked('scripts/api-module-producer.py')) !== moduleSourcePhasePolicy.api)) {
+    || (module === 'afs' && !reviewedModuleProducerSource('api', hash(source.readTracked('scripts/api-module-producer.py'))))) {
     return { status: 'pending' as const, reason: 'module-source-phase-policy-unreviewed', sourceQualified: false as const };
   }
   // Absolute paths are recovered from the reviewed command's own original
