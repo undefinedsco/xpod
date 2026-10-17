@@ -123,6 +123,9 @@ def configure_inputs(build):
 spec=importlib.util.spec_from_file_location('sdk_debian_acquisition',HERE/'sdk-debian-source-acquisition.py')
 debian_acquisition=importlib.util.module_from_spec(spec);spec.loader.exec_module(debian_acquisition)
 
+spec=importlib.util.spec_from_file_location('sdk_symlinks',HERE/'sdk-symlink-originals.py')
+symlinks=importlib.util.module_from_spec(spec);spec.loader.exec_module(symlinks)
+
 def build_materials(component,source,build,out,jobs):
     component=Path(component);source=Path(source);build=Path(build);out=Path(out);out.mkdir(parents=True,exist_ok=False)
     budget=initialize_budget(4200);stages=[]
@@ -132,6 +135,13 @@ def build_materials(component,source,build,out,jobs):
         row=commands.capture(name,command,out,component,inputs,timeout=budget.timeout(timeout,reserve));stages.append(row);return row
     stage('configure',['bash',str(component/'scripts/build-module-runtime-sdk.sh'),'prepare-only'],timeout=1800)
     # Candidate roots are observations only, not redistributed SDK contents.
+    before_links={};before_bindings={}
+    def candidate(path):
+        symlinks.observe([path],before_links,check_budget)
+        lexical=os.path.abspath(path);resolved=Path(path).resolve(strict=True)
+        if lexical!=str(resolved):
+            before_bindings[lexical]=dict(resolvedTarget=str(resolved),targetIdentity=symlinks.identity(resolved.stat()))
+        return resolved
     candidates=set();compile_commands=json.loads((build/'compile_commands.json').read_text())
     roots={component,source,build,Path('/opt/qlever-sdk/profile')}
     for entry in compile_commands:
@@ -151,20 +161,20 @@ def build_materials(component,source,build,out,jobs):
         for path in root.rglob('*'):
             check_budget()
             if '.git' in path.parts or '__pycache__' in path.parts or not path.is_file():continue
-            candidates.add(path.resolve(strict=True))
+            candidates.add(candidate(path))
             if len(candidates)>100000:raise ValueError('SDK candidate input count budget')
-    candidates.update(path.resolve(strict=True) for path in configure_inputs(build))
+    candidates.update(candidate(path) for path in configure_inputs(build))
     for name,stage_id in SDK_TOOLS:
         tool=shutil.which(name)
         if not tool:raise ValueError('Actual SDK tool missing: '+name)
-        candidates.add(Path(tool).resolve(strict=True))
+        candidates.add(candidate(tool))
         stage(stage_id,[tool,'--version'])
     compiler=stage('compiler-program',['g++-12','-print-prog-name=cc1plus'])
-    cc1plus=Path((out/compiler['stdout']['path']).read_text().strip()).resolve(strict=True);candidates.add(cc1plus)
+    cc1plus=candidate(Path((out/compiler['stdout']['path']).read_text().strip()));candidates.add(cc1plus)
     link_tokens=shlex.split((build/'CMakeFiles/qlever-server.dir/link.txt').read_text())
     for token in link_tokens:
         path=Path(token)
-        if path.is_absolute() and path.is_file() and re.search(r'\.(?:a|so(?:\.[A-Za-z0-9_.+-]+)?)$',token):candidates.add(path.resolve(strict=True))
+        if path.is_absolute() and path.is_file() and re.search(r'\.(?:a|so(?:\.[A-Za-z0-9_.+-]+)?)$',token):candidates.add(candidate(path))
     before={};total=0
     for path in sorted(candidates):
         actual=file_identity(path);total+=actual['bytes']
@@ -172,7 +182,9 @@ def build_materials(component,source,build,out,jobs):
         before[str(path)]=actual
     dump(out/'inputs-before.json',before)
     before_ref=commands.ref(out/'inputs-before.json',out)
-    stage('compile',['bash',str(component/'scripts/build-qlever-runtime-sdk.sh'),'build-prepared'],[before_ref],14400,reserve=4800)
+    symlinks.save(out/'symlinks-before.json',before_links,before_bindings,check_budget)
+    before_links_ref=commands.ref(out/'symlinks-before.json',out)
+    stage('compile',['bash',str(component/'scripts/build-qlever-runtime-sdk.sh'),'build-prepared'],[before_ref,before_links_ref],14400,reserve=4800)
     selected=dependency_paths(build)
     # Preserve original depfiles and actual direct linker inputs as build outputs.
     outputs=set(build.rglob('*.o.d'));selected.update(outputs)
@@ -187,7 +199,7 @@ def build_materials(component,source,build,out,jobs):
     selected.update(path for path in Path('/opt/qlever-sdk/profile').rglob('*') if path.is_file() and not path.is_symlink())
     selected.update(path for path in (component/'scripts').iterdir() if path.is_file() and path.suffix in ['.py','.sh'])
     selected.update([build/'compile_commands.json',build/'CMakeCache.txt',component/'qlever.lock.json'])
-    selected.update(Path(shutil.which(name)).resolve(strict=True) for name,_ in SDK_TOOLS)
+    selected.update(Path(shutil.which(name)) for name,_ in SDK_TOOLS)
     selected.add(cc1plus)
     ownership=[];installed=set();metadata_originals=set()
     for original in Path('/var/lib/dpkg/info').glob('*.list'):
@@ -205,7 +217,25 @@ def build_materials(component,source,build,out,jobs):
         for path in root.rglob('*'):
             if path.is_file() and not path.is_symlink() and path.name.lower().startswith(('license','copying','notice','copyright')):
                 grants.append(path);selected.add(path)
+    after_links=symlinks.observe(selected,{},check_budget)
+    link_pending=symlinks.compare(before_links,after_links,selected)
+    # A new symlink at a previously ordinary input cannot borrow another candidate's bytes.
+    after_bindings={}
+    for path in selected:
+        lexical=os.path.abspath(path)
+        if lexical in before_bindings:
+            actual=dict(resolvedTarget=str(Path(path).resolve(strict=True)),targetIdentity=symlinks.identity(Path(path).stat()))
+            after_bindings[lexical]=actual
+            if actual!=before_bindings[lexical]:raise ValueError('SDK selected aliased input identity changed during compile')
+        if lexical in before and lexical!=str(Path(path).resolve(strict=True)) and path not in outputs:
+            raise ValueError('SDK ordinary input replaced by symlink during compile')
+    symlinks.save(out/'symlinks-after.json',after_links,after_bindings,check_budget)
+    after_links_ref=commands.ref(out/'symlinks-after.json',out)
+    symlink_bytes=before_links_ref['bytes']+after_links_ref['bytes']
     inventory=archive_inputs(selected,out/'domains',before,outputs,metadata_originals)
+    inventory['symlinkBeforeOriginals']=before_links_ref
+    inventory['symlinkAfterOriginals']=after_links_ref
+    inventory['symlinkCausalityPending']=link_pending
     inventory['packageOwnershipOriginals']=[str(path) for path in ownership]
     inventory['sourcePackageIdentityRaw']=ledger['stdout']
     dump(out/'inputs-after.json',inventory)
@@ -214,14 +244,15 @@ def build_materials(component,source,build,out,jobs):
     debian_ref,debian_bytes=debian_acquisition.acquire(out,
         [str(Path(path).resolve(strict=True)) for path in selected],
         {path.name.removesuffix('.list'):path.read_bytes() for path in ownership},
-        ledger['stdout'],LIMIT-512*1024**2-sum(row['bytes'] for row in inventory['shards']),
+        ledger['stdout'],LIMIT-512*1024**2-symlink_bytes-sum(row['bytes'] for row in inventory['shards']),
         source_stage,commands.ref,check_budget)
 
     dump(out/'build-inner.json',dict(schemaVersion=1,kind='qlever-linux-sdk-inner-originals',identity=identity,stages=stages,
         executionBudget=dict(deadlineUnix=budget.deadline_unix,remainingSeconds=budget.remaining()),inputsBefore=before_ref,inputsAfter=commands.ref(out/'inputs-after.json',out),domains=inventory['shards'],
+        symlinkOriginalBytes=symlink_bytes,symlinkOriginals=dict(before=before_links_ref,after=after_links_ref),
         grantOriginals=[str(path) for path in grants],debianSources=debian_ref,debianSourceBytes=debian_bytes,
         pending=['official-image-build-artifact-custody-unavailable','Debian-Sources-to-signed-InRelease-checksum-binding-unverified',
-                 'toolchain-original-domain-not-yet-complete',*(['generated-input-causality-unavailable'] if inventory['pending'] else [])]))
+                 'toolchain-original-domain-not-yet-complete',*(['symlink-original-unavailable-before-compile'] if link_pending else []),*(['generated-input-causality-unavailable'] if inventory['pending'] else [])]))
 
 def linked_materials(component,source,build,out,jobs):
     budget=initialize_budget()

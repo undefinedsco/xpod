@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import limits from '../module-artifact-limits.json';
 import { inspectSdkInputOwnership } from './qlever-sdk-inputs';
+import { inspectSdkSymlinkOriginals } from './qlever-sdk-symlinks';
 import { qleverSdkOriginalsView } from './qlever-sdk-originals';
 import { captureLegalFileIdentity, assertLegalFileIdentity } from './legal-file-custody';
 const hash = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
@@ -49,13 +50,25 @@ export function inspectQleverSdkSourceOriginals(capability: unknown): Readonly<{
     const ledgerReference = {...after.sourcePackageIdentityRaw, path: 'inner/' + after.sourcePackageIdentityRaw?.path};
     const ledger = parse('--parse-ledger', small(ledgerReference));
     const context = JSON.parse(small(master.sourceContext).toString());
-    const total = reference(context.archive).bytes + master.inputs.shards.reduce((sum: number, ref: any) => sum + reference(ref).bytes, 0);
+    const total = reference(context.archive).bytes + master.inputs.shards.reduce((sum: number, ref: any) => sum + reference(ref).bytes, 0)
+      + (master.inputs.symlinks?.before ? reference(master.inputs.symlinks.before).bytes : 0)
+      + (master.inputs.symlinks?.after ? reference(master.inputs.symlinks.after).bytes : 0);
     need(total <= limits.sourceMaterialBytes, 'SDK context/input source domains exceed shared source budget');
     const ownership = inspectSdkInputOwnership({before, after, shards: master.inputs.shards.map(reference), ledger,
       readRange: (name, offset, length) => sdk.readOriginalRange(name, offset, length), check});
     facts.sdkActualInputShardBytesVerified = true;
     facts.sdkInputOwnership = ownership;
-    if (ownership.unresolvedSymlinkOriginalTargets.length) pending.add('qlever-sdk-input-symlink-before-after-causality-unverified');
+    if (master.inputs.symlinks?.before && master.inputs.symlinks?.after) {
+      const refs = master.inputs.symlinks;
+      need(refs.before.path === 'inner/' + after.symlinkBeforeOriginals?.path && refs.after.path === 'inner/' + after.symlinkAfterOriginals?.path
+        && ['bytes', 'sha256'].every(key => refs.before[key] === after.symlinkBeforeOriginals[key] && refs.after[key] === after.symlinkAfterOriginals[key]), 'inner/master readlink references differ');
+      const symlinks = inspectSdkSymlinkOriginals({before: JSON.parse(small(refs.before).toString()), after: JSON.parse(small(refs.after).toString()),
+        inputRows: after.files, legacyLinks: after.symlinkOriginalTargets ?? [], check});
+      need(qleverSdkOriginalsView(capability) === sdk, 'SDK readlink original custody changed');
+      facts.sdkInputSymlinkOriginals = Object.freeze({before: reference(refs.before), after: reference(refs.after), ...symlinks});
+      facts.sdkSelectedInputSymlinkBeforeAfterBytesVerified = symlinks.unresolved.length === 0;
+      if (symlinks.unresolved.length) pending.add('qlever-sdk-input-symlink-before-after-causality-unverified');
+    } else if (ownership.unresolvedSymlinkOriginalTargets.length) pending.add('qlever-sdk-input-symlink-before-after-causality-unverified');
     facts.sdkExactDebianSourceTuplesDerivedFromActualOwnership = ownership.requiredSources;
     if (ownership.unresolvedInputs.some(row => row.role !== 'installed-metadata')) pending.add('qlever-sdk-Git-generated-or-other-non-Debian-input-source-authority-unresolved');
     need(qleverSdkOriginalsView(capability) === sdk, 'SDK input custody changed');
