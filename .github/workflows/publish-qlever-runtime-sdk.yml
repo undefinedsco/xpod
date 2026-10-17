@@ -118,6 +118,7 @@ jobs:
             exit 64
           fi
           echo "commit=${source_commit}" >> "${GITHUB_OUTPUT}"
+          echo "deadline=$(( $(date +%s) + 21000 ))" >> "${GITHUB_OUTPUT}"
 
       - name: Check out the source
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
@@ -195,7 +196,7 @@ jobs:
           bash qlever/scripts/resolve-runtime-sdk-build.sh
 
       - name: Persist the runtime SDK compiler cache
-        if: steps.resolve.outputs.build == 'true'
+        if: steps.resolve.outputs.build == 'true' && needs.resolve_target.outputs.sdk_profile == 'service-trixie'
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
         with:
           context: .
@@ -208,6 +209,7 @@ jobs:
           build-args: |
             XPOD_QLEVER_BUILD_JOBS=${{ env.XPOD_QLEVER_BUILD_JOBS }}
             XPOD_QLEVER_PRIOR_SDK_IMAGE=${{ steps.resolve.outputs.prior_image }}
+            XPOD_QLEVER_SDK_DEADLINE_UNIX=${{ steps.source.outputs.deadline }}
 
       - name: Build the exact runtime SDK image
         id: build
@@ -217,6 +219,7 @@ jobs:
           context: .
           file: ${{ steps.resolve.outputs.dockerfile }}
           platforms: ${{ needs.resolve_target.outputs.docker_platform }}
+          no-cache-filters: ${{ needs.resolve_target.outputs.sdk_profile == 'module-bookworm-gcc12' && 'build,linked-verification' || '' }}
           load: true
           push: false
           tags: |
@@ -230,6 +233,7 @@ jobs:
           build-args: |
             XPOD_QLEVER_BUILD_JOBS=${{ env.XPOD_QLEVER_BUILD_JOBS }}
             XPOD_QLEVER_PRIOR_SDK_IMAGE=${{ steps.resolve.outputs.prior_image }}
+            XPOD_QLEVER_SDK_DEADLINE_UNIX=${{ steps.source.outputs.deadline }}
 
       - name: Smoke the exact SDK image before publishing
         # A reused image is verified exactly like a freshly built one: reuse claims
@@ -273,6 +277,7 @@ jobs:
           build-args: |
             XPOD_QLEVER_BUILD_JOBS=${{ env.XPOD_QLEVER_BUILD_JOBS }}
             XPOD_QLEVER_PRIOR_SDK_IMAGE=${{ steps.resolve.outputs.prior_image }}
+            XPOD_QLEVER_SDK_DEADLINE_UNIX=${{ steps.source.outputs.deadline }}
 
       - name: Require the published image to match the tested image
         id: image_identity

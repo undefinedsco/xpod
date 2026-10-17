@@ -14,40 +14,14 @@
  * Usage: bun scripts/run-bun-tests.ts [--list]
  */
 import { spawn } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import path from 'node:path';
 
 const ROOT = path.resolve(import.meta.dir, '..');
-const BUN_ONLY_PATTERN = /from\s+['"]bun:test['"]/u;
-const TEST_FILE = /\.test\.tsx?$/u;
-
-/** Directories the audit's entry covers; node_modules and build output are never scanned. */
-const SCAN_DIRECTORIES = [ 'tests/bun', 'ui/src', 'src' ];
-const SKIP_DIRECTORIES = new Set([ 'node_modules', 'dist', 'build', '.git' ]);
-
-async function collectBunOnlyTests(): Promise<string[]> {
-  const glob = new Bun.Glob('**/*.test.{ts,tsx}');
-  const found: string[] = [];
-  for (const directory of SCAN_DIRECTORIES) {
-    for await (const relative of glob.scan({ cwd: path.join(ROOT, directory), onlyFiles: true })) {
-      if (relative.split(path.sep).some((segment) => SKIP_DIRECTORIES.has(segment))) {
-        continue;
-      }
-      const absolute = path.join(ROOT, directory, relative);
-      if (!TEST_FILE.test(absolute)) {
-        continue;
-      }
-      // `tests/bun/**` is the declared home for Bun-only tests; outside it, the import decides.
-      if (directory === 'tests/bun' || BUN_ONLY_PATTERN.test(readFileSync(absolute, 'utf8'))) {
-        found.push(absolute);
-      }
-    }
-  }
-  return found.sort();
-}
+const { collectBunOnlyTests } = createRequire(import.meta.url)('./bun-test-discovery.cjs') as { collectBunOnlyTests(root: string): string[] };
 
 async function main(argv: string[]): Promise<number> {
-  const files = await collectBunOnlyTests();
+  const files = collectBunOnlyTests(ROOT);
   if (files.length === 0) {
     console.error('no Bun-only test files found; the entry would silently run nothing');
     return 1;

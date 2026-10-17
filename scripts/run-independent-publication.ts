@@ -13,6 +13,8 @@ import { planIndependentPublication, normalizePublicationInput, type ProductGrou
 import { registryConsumerArtifactName, type RegistryConsumerOriginalManifest } from './lib/independent-admission/registry-consumer-originals';
 import { archiveConsumerArtifactName, type ArchiveProductConsumerOriginalManifest, type ArchiveProductConsumerObservers } from './lib/independent-admission/archive-consumer-originals';
 import { moduleProductRunner } from './module-product-targets';
+import { collectProductConsumerOriginalInventory } from './lib/independent-admission/product-consumer-original-inventory';
+import { afsConsumerBudget } from './lib/afs-consumer-budget';
 import * as centralConsumers from './lib/independent-admission/consumer-context';
 import { observeRegistryArtifact } from './lib/independent-admission/registry-context';
 import type { PublicationPeerInputPlanCapability } from './lib/independent-admission/peer-input-plan';
@@ -313,6 +315,11 @@ export function copyRegistryConsumerProducerOriginals(directories: { output: str
     if (!readFileSync(source).equals(readFileSync(destination))) throw Error('Supervisor original changed during copy');
   }
 }
+export function registryConsumerParentTimeout(module: PublicationProductSelector['module'], stage: 'prepublish' | 'postpublish'): number {
+  if (module === 'afs') return afsConsumerBudget(stage).maximumDurationSeconds * 1000;
+  if (!['client', 'cli', 'api', 'css'].includes(module) || !['prepublish', 'postpublish'].includes(stage)) throw Error('Fixed consumer parent route required');
+  return 25 * 60_000;
+}
 async function runRegistryConsumer(): Promise<void> {
   const { route, sourceSha, output, stage } = registryConsumerContext();
   const directories = reserveRegistryConsumerProducerDirectories(output);
@@ -323,23 +330,14 @@ async function runRegistryConsumer(): Promise<void> {
   for (const [key, value] of Object.entries(process.env)) if (value !== undefined &&
     (['PATH', 'HOME', 'TMPDIR', 'LANG', 'GH_TOKEN', 'REGISTRY_CONSUMER_MODULE', 'REGISTRY_CONSUMER_TARGET', 'INDEPENDENT_PUBLICATION_INPUT', 'PRODUCT_CONSUMER_STAGE'].includes(key) || key.startsWith('GITHUB_'))) env[key] = value;
   env.INDEPENDENT_PUBLICATION_PHASE = 'registry-consumer-child';
+  env.PRODUCT_CONSUMER_STAGE = stage;
   const { runPublicationCommand } = createRequire(import.meta.url)('./lib/afs-publication-command.cjs');
   const outcome = await runPublicationCommand(executable, [path.resolve(import.meta.dir, 'run-independent-publication.ts')], {
-    cwd: path.resolve(import.meta.dir, '..'), env, evidence: supervision, label: 'registry-consumer', timeoutMs: 25 * 60_000, rawLimit: 1024 ** 2 });
+    cwd: path.resolve(import.meta.dir, '..'), env, evidence: supervision, label: 'registry-consumer', timeoutMs: registryConsumerParentTimeout(route.selector.module, stage), rawLimit: 1024 ** 2 });
   copyRegistryConsumerProducerOriginals(directories, outcome);
   const binding = JSON.parse(readFileSync(path.join(output, 'consumer-product-binding.json'), 'utf8')) as { product: CollectedArtifactIdentity; tools: CollectedArtifactIdentity[] };
-  const originals: CollectedArtifactMember[] = []; let bytes = 0;
-  const visit = (directory: string): void => {
-    for (const name of readdirSync(directory).sort()) {
-      const file = path.join(directory, name); const stat = lstatSync(file);
-      if (stat.isSymbolicLink() || (!stat.isDirectory() && !stat.isFile())) throw Error('Registry consumer originals must be regular');
-      if (stat.isDirectory()) { visit(file); continue; }
-      if (name === 'registry-consumer.manifest.json' || name === 'archive-consumer.manifest.json') throw Error('Registry consumer manifest must be fresh');
-      bytes += stat.size; if (bytes > 64 * 1024 ** 2 || originals.length >= 2000) throw Error('Registry consumer originals exceed fixed budget');
-      originals.push({ path: path.relative(output, file).replaceAll(path.sep, '/'), bytes: stat.size, mode: stat.mode & 0o777,
-        sha256: createHash('sha256').update(readFileSync(file)).digest('hex') });
-    }
-  }; visit(output);
+  const inventory = collectProductConsumerOriginalInventory(output, binding.product, stage);
+  const originals = inventory.originals;
   const result = originals.find(row => row.path === 'result.json'); if (!result) throw Error('Original registry consumer result missing');
   const manifest: RegistryConsumerOriginalManifest | ArchiveProductConsumerOriginalManifest = { schemaVersion: 1,
     ...(stage === 'prepublish' ? { kind: 'archive-product-consumer-originals' as const, stage: 'prepublish' as const, transport: 'collected-product-archives' as const }
@@ -347,7 +345,9 @@ async function runRegistryConsumer(): Promise<void> {
     product: binding.product, sourceSha, consumer: { runHeadSha: process.env.GITHUB_SHA!, runId: Number(process.env.GITHUB_RUN_ID),
       runAttempt: Number(process.env.GITHUB_RUN_ATTEMPT), ...(route.selector.target ? { target: route.selector.target } : {}) },
     tools: binding.tools, result, originals };
-  writeFileSync(path.join(output, stage === 'prepublish' ? 'archive-consumer.manifest.json' : 'registry-consumer.manifest.json'), JSON.stringify(manifest, null, 2) + '\n', { flag: 'wx', mode: 0o400 });
+  const manifestBody = JSON.stringify(manifest, null, 2) + '\n';
+  if (Buffer.byteLength(manifestBody) > inventory.manifestBytes) throw Error('Product consumer original manifest exceeds the fixed byte budget');
+  writeFileSync(path.join(output, stage === 'prepublish' ? 'archive-consumer.manifest.json' : 'registry-consumer.manifest.json'), manifestBody, { flag: 'wx', mode: 0o400 });
 }
 async function dispatchPublicationEntry(): Promise<unknown> {
   const phase = process.env.INDEPENDENT_PUBLICATION_PHASE ?? 'publication';

@@ -106,7 +106,8 @@ export async function collectMacNativeRuntimeContext(input: {
   if (!product || !native || !source || source.sourceSha !== product.identity.sourceSha || !product.identity.target
     || !['darwin-arm64', 'darwin-x64'].includes(product.identity.target)
     || native.originFacts.target !== product.identity.target
-    || !['.github/workflows/build-qlever-macos-runtime.yml', '.github/workflows/css-module-product.yml'].includes(native.originFacts.workflowPath)) return fail('independent observed macOS originals and exact product/Git capabilities required');
+    || !['.github/workflows/build-qlever-macos-runtime.yml', '.github/workflows/css-module-product.yml', '.github/workflows/css-native-products.yml'].includes(native.originFacts.workflowPath)
+    || native.originFacts.workflowPath === '.github/workflows/css-native-products.yml' && hash(source.readTracked('.github/workflows/css-native-products.yml')) !== '8312031501f9f0d640e100ddec75e0fe1150d0ee93812b3f8c6785b032319c0f') return fail('independent observed macOS originals and exact product/Git capabilities required');
   const { modulePackageName } = await import('../../../packages/xpod-cli/src/module-catalog');
   const [productPlatform, productArch] = product.identity.target.split('-');
   if (modulePackageName('css', productPlatform, productArch) !== product.identity.package) return fail('fixed CSS native adapter required');
@@ -170,6 +171,7 @@ export async function collectMacNativeRuntimeContext(input: {
   if (!jobsOriginal || !jobReference || jobsOriginal.data.length !== jobReference.bytes || hash(jobsOriginal.data) !== jobReference.sha256) return fail('native producer job API original changed');
   const job = jobsOriginal && JSON.parse(jobsOriginal.data.toString()).jobs.find((row: any) => row.id === native.originFacts.producerJobId);
   if (!job) return fail('independently observed native producer job original required');
+  if (native.originFacts.workflowPath === '.github/workflows/css-native-products.yml' && job.name !== `targets (${product.identity.target}) / native / macos / build`) return fail('reviewed CSS parent macOS native job required');
   const verifierRelative = 'qlever/scripts/verify-local-runtime-artifacts.py';
   const nativeVerifierPath = originalPrefix + 'source-kit/workspace/' + verifierRelative;
   const runtime = verifyMacRuntimeOriginals({ target: product.identity.target, final: finalBytes, metadata: metadataBytes, manifest: manifestBytes,

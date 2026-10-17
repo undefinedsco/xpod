@@ -1,3 +1,4 @@
+import {inspectAfsConsumerOriginals} from './afs-consumer-originals';
 import {afsConsumerRegisteredShards} from './afs-consumer-shard-registration';
 import {productConsumerOriginalLimits} from './product-consumer-limits';
 import { createHash } from 'node:crypto';
@@ -104,6 +105,12 @@ export function verifyRegistryConsumerOriginalBundle(input: {
       || result.realConsumerValidated !== true || result.forcedCleanup !== false || result.signal !== null
       || result.processGroupsUnknown !== false || result.ownedTemporaryRootRemoved !== true || result.driverSourcesUnchanged !== true) fail('matching-host registry module lifecycle incomplete');
     closedCommand('central-supervision', 'module-registry-consumer');
+    if(module==='afs'){
+      if(!input.readOriginalRange)fail('AFS controlled original range reader required');
+      closedCommand('central-supervision','module-afs-safe-export');
+      const checked=inspectAfsConsumerOriginals({stage:input.stage,sourceSha:input.product.sourceSha,target:input.product.target,product:input.product,productMembers:input.productMembers,tools:input.tools,originals:[...originals.values()],readOriginal:read,readOriginalRange:input.readOriginalRange!});
+      if(!checked.verified||checked.pending.length)fail('AFS fixed original gaps: '+checked.pending.join('; '));
+    }else{
     const required = ['runtime-version', 'runtime-target', 'probe', 'normal-cli-install', 'install-' + module,
       'list-' + module, module + '-service', ...(module === 'api' ? ['pglite', 'api-rdf'] : []), 'remove-' + module];
     const labels = ['node', 'bun'].flatMap(runtime => required.map(name => runtime + '-' + name));
@@ -127,6 +134,7 @@ export function verifyRegistryConsumerOriginalBundle(input: {
         const reference = row.raw[index], name = row.label + '.' + stream + '.raw.log', body = read(name);
         if (reference.path !== name || reference.bytes !== body.length || reference.sha256 !== hash(body) || reference.sizeIsFinal !== true) fail('module command raw reference mismatch');
       }
+    }
     }
   }
   return Object.freeze({ status: 'originals-verified' as const, result,

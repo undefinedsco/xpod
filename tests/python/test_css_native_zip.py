@@ -142,6 +142,23 @@ class CssNativeZipTest(unittest.TestCase):
                 if mutation is None:module.validate(write(Path(directory),entries),'darwin-arm64','a'*40)
                 else:
                     with self.assertRaises(ValueError):module.validate(write(Path(directory),entries),'darwin-arm64','a'*40)
+    def test_hidden_formula_recipe_is_required_as_original_not_size_fallback(self):
+        entries=fixture();final=json.loads(entries['native-materials/final.json']);metadata=json.loads(entries['native-materials/metadata.json'])
+        metadata['stages'][0]['name']='native-build';member=ref('lib/companion.dylib',b'output')
+        metadata['loaderMembers']=[dict(member=member)]
+        binary=ref('kegs/example/1/lib/libexample.dylib',b'installed original')
+        recipe=ref('kegs/example/1/.brew/example.rb',b'actual formula recipe')
+        companion=dict(schemaVersion=1,status='companion-installed-originals',releaseAccepted=False,files=[binary,recipe],
+                       buildRaw=metadata['stages'][0]['raw'],bindings=[dict(member=member,installedOriginal=binary,pending=['source-build-unavailable'])])
+        for original,data in [(binary,b'installed original'),(recipe,b'actual formula recipe')]:entries['native-materials/companions/originals/'+original['path']]=data
+        entries['native-materials/companions/materials.json']=encoded(companion)
+        final['companionMaterials']=ref('companions/materials.json',entries['native-materials/companions/materials.json'])
+        entries['native-materials/metadata.json']=encoded(metadata);final['metadata']=ref('metadata.json',entries['native-materials/metadata.json'])
+        entries['native-materials/final.json']=encoded(final)
+        with tempfile.TemporaryDirectory() as directory:module.validate(write(Path(directory),entries),'darwin-arm64','a'*40)
+        del entries['native-materials/companions/originals/'+recipe['path']]
+        with tempfile.TemporaryDirectory() as directory,self.assertRaisesRegex(ValueError,r'\.brew/example\.rb'):
+            module.validate(write(Path(directory),entries),'darwin-arm64','a'*40)
     def test_source_tar_link_semantics_checked_even_with_updated_hash(self):
         with tempfile.TemporaryDirectory() as directory:
             entries=fixture();data=entries['native-materials/source-kit.tar'].replace(b'input\x00',b'other\x00')

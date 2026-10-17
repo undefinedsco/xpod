@@ -1,3 +1,4 @@
+import {QLEVER_LINUX_SOURCE_BINDINGS} from './qlever-linux-origin-policy';
 import {QLEVER_OBSERVER_PATH,QLEVER_OBSERVER_V20,QLEVER_OBSERVER_V22,QLEVER_OBSERVER_V23,qleverObserverCompanionBindings} from './qlever-observer-policy';
 import { CLI_SOURCE_POLICY } from './source-rules';
 import { registryConsumerArtifactName } from './registry-consumer-originals';
@@ -74,6 +75,7 @@ interface OriginPolicy {
   workflowRef?:'run-head';
   requiredStep: string;
   requiredSteps?: readonly string[];
+  requiredAncestorJobs?: readonly string[];
   target?: string;
   sourceBindings?: readonly { path: string; sha256: string; reviewedSha256?: readonly string[]; ref?:'run-head' }[];
 }
@@ -97,7 +99,7 @@ const CSS_NATIVE_SOURCE_BINDINGS=[
  {path:'.github/workflows/css-native-product-target.yml',sha256:'49ee4c223de857cb9d500a7dceb4a54f36ae8759d1d8b3cc9a7b847db3bbf877'},
  {path:'.github/workflows/css-native-source.yml',sha256:'df05d53b957d7b793dd998d46ccbc9a7dea788ac7f341f5e5472e325897a0371'},
  {path:'scripts/module-product-targets.ts',sha256:'5ef511f448c90a6fc9e767fd8224ef890b5fc04d2b6514f85697a0a529fb3eb4'},
- {path:'.github/workflows/build-qlever-macos-runtime.yml',sha256:'76238a58da3384d10d1d1537211540f289531a3c74b43c854c2eb37ec2cb768c'},
+ {path:'.github/workflows/build-qlever-macos-runtime.yml',sha256:'76238a58da3384d10d1d1537211540f289531a3c74b43c854c2eb37ec2cb768c',reviewedSha256:['39609410c84a0913e685bd1fb1e5c9ef4e104fd2f04332c179dd3b4f08d3c830']},
  {path:'.github/workflows/publish-qlever-runtime-sdk.yml',sha256:'cbedd3e2478de5e22108b6689c595a658ca891c9bd47552caec830e86f47fea8'},
 ] as const;
 
@@ -177,7 +179,18 @@ export async function observeAgentFsNativeGitHubOrigin(input: ArtifactAcquisitio
 export async function observeQleverNativeGitHubOrigin(input:ArtifactAcquisitionInput,target:string,
   invocation:'standalone'|'css-module'|'css-native-products',options:{token?:string}={}):Promise<GitHubOriginObservation>{
   if(invocation==='css-native-products'){
-    if(!['darwin-arm64','darwin-x64'].includes(target))return fail('CSS Linux native original policy not yet reviewed');
+    if(['linux-x64','linux-arm64'].includes(target)){
+      const observation=await observeGitHubOrigin(input,options,{
+        workflowPath:CSS_NATIVE_PRODUCTS_WORKFLOW,workflowSha256:CSS_NATIVE_PARENT_SHA,events:['workflow_dispatch'],target,
+        artifactNames:row=>[`qlever-local-runtime-${target}-${row.sourceSha}-${row.runId}-${row.runAttempt}`],
+        jobName:()=>`targets (${target}) / native / linux / module_runtime_materials / archive`,
+        requiredStep:'Bind fresh native material output identity',
+        requiredSteps:['Produce native source and ABI original materials','Upload exact native build and test materials'],
+        requiredAncestorJobs:[`targets (${target}) / native / linux / publish`,`targets (${target}) / native / linux / module_runtime_materials / runtime / publish`],
+        sourceBindings:QLEVER_LINUX_SOURCE_BINDINGS,
+      });nativeOrigins.add(observation);return observation;
+    }
+    if(!['darwin-arm64','darwin-x64'].includes(target))return fail('unsupported CSS native original target');
     const observation=await observeGitHubOrigin(input,options,{
       workflowPath:CSS_NATIVE_PRODUCTS_WORKFLOW,workflowSha256:CSS_NATIVE_PARENT_SHA,events:['workflow_dispatch'],target,
       artifactNames:row=>[`qlever-local-runtime-${target}-${row.sourceSha}`],
@@ -191,19 +204,20 @@ export async function observeQleverNativeGitHubOrigin(input:ArtifactAcquisitionI
   // reusable workflow's darwin-arm64 default. x64 must use its standalone run.
   if(invocation==='css-module' && target!=='darwin-arm64') return fail('reviewed CSS native caller only produces darwin-arm64');
   const nativeWorkflow='.github/workflows/build-qlever-macos-runtime.yml';
-  const nativeHash='76238a58da3384d10d1d1537211540f289531a3c74b43c854c2eb37ec2cb768c';
+  const nativeHash='39609410c84a0913e685bd1fb1e5c9ef4e104fd2f04332c179dd3b4f08d3c830';
+  const previousNativeHash='76238a58da3384d10d1d1537211540f289531a3c74b43c854c2eb37ec2cb768c';
   const observation=await observeGitHubOrigin(input,options,{
     workflowPath:invocation==='standalone'?nativeWorkflow:'.github/workflows/css-module-product.yml',
     workflowSha256:invocation==='standalone'?nativeHash:'9f14303a0736391b250598c21211dc5312565adf5bf30256a4f9c61f13cc8257',
     ...(invocation==='css-module'?{reviewedWorkflowVersions:[{
       workflowSha256:'454baf86f674c2c3b5058ad012c09d968c26e4f7d282d702df745a16978542b3',jobName:()=> 'native / build',
-    }]}:{}),
+    }]}:{reviewedWorkflowVersions:[{workflowSha256:previousNativeHash,jobName:()=> 'build'}]}),
     events:invocation==='standalone'?['push','workflow_dispatch']:['push','workflow_dispatch','pull_request'],target,
     artifactNames:row=>[`qlever-local-runtime-${target}-${row.sourceSha}`],
     jobName:()=>invocation==='standalone'?'build':'native / build',
     requiredStep:'Bind the qlever-local acceptance evidence',
     requiredSteps:['Verify the actual native producer host','Resolve immutable artifact identity','Upload the exact native runtime'],
-    sourceBindings:[...(invocation==='css-module'?[{path:nativeWorkflow,sha256:nativeHash}]:[]),
+    sourceBindings:[...(invocation==='css-module'?[{path:nativeWorkflow,sha256:nativeHash,reviewedSha256:[previousNativeHash]}]:[]),
       {path:'qlever/scripts/observe-macos-native-materials.py',sha256:'79e34893b946458a904544ddb1cce9110a19fe5052503570c865341e7d0ff6d6',
         reviewedSha256:['a92b227ec186a0f53f85c93a732a0542ee3b712fdb571308395ecf17c07b2d86',QLEVER_OBSERVER_V20,QLEVER_OBSERVER_V22,QLEVER_OBSERVER_V23]}],
   });
@@ -243,6 +257,14 @@ export function observedGitHubJobWindowAccepted(job:any,artifact:any,input:Artif
   const created=Date.parse(artifact?.created_at),start=Date.parse(job?.started_at),end=Date.parse(job?.completed_at);
   return positive(job?.id)&&job.run_id===input.runId&&job.run_attempt===input.runAttempt&&job.head_sha===input.runHeadSha
     &&job.status==='completed'&&job.conclusion==='success'&&[created,start,end].every(Number.isFinite)&&start<=end&&created>=start&&created<=end;
+}
+
+/** A native archive can retain facts from only its completed same-attempt
+ * prerequisite jobs. Re-reading a cached image never supplies their originals. */
+export function observedGitHubAncestorJobAccepted(ancestor:any,producer:any,input:ArtifactAcquisitionInput):boolean{
+ const start=Date.parse(ancestor?.started_at),end=Date.parse(ancestor?.completed_at),producerStart=Date.parse(producer?.started_at);
+ return positive(ancestor?.id)&&ancestor.run_id===input.runId&&ancestor.run_attempt===input.runAttempt&&ancestor.head_sha===input.runHeadSha
+  &&ancestor.status==='completed'&&ancestor.conclusion==='success'&&[start,end,producerStart].every(Number.isFinite)&&start<=end&&end<=producerStart;
 }
 
 async function observeGitHubOrigin(input: ArtifactAcquisitionInput, options: { token?: string }, policies: OriginPolicy|readonly OriginPolicy[]): Promise<GitHubOriginObservation> {
@@ -330,6 +352,10 @@ async function observeGitHubOrigin(input: ArtifactAcquisitionInput, options: { t
     || !job.steps?.some((step: any) => step.name === policy.requiredStep
       && step.status === 'completed' && step.conclusion === 'success')
     || !(policy.requiredSteps ?? []).every(name => job.steps?.some((step: any) => step.name === name && step.status === 'completed' && step.conclusion === 'success'))) fail('producer job/attempt window mismatch');
+  for(const name of policy.requiredAncestorJobs??[]){
+    const ancestors=jobs.jobs.filter((candidate:any)=>candidate.name===name);
+    if(ancestors.length!==1||!observedGitHubAncestorJobAccepted(ancestors[0],job,input))fail('exact native ancestor job/attempt closure mismatch');
+  }
   const facts: GitHubOriginFacts = Object.freeze({ repository, workflowPath: policy.workflowPath,
     workflowSourceSha256: sha(workflowBytes), sourceSha: input.sourceSha, runHeadSha: input.runHeadSha,
     runId: input.runId, runAttempt: input.runAttempt, artifactId: input.artifactId,

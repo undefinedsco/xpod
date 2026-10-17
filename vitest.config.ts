@@ -1,7 +1,9 @@
 import path from 'node:path';
+import { createRequire } from 'node:module';
 import { defineConfig } from 'vitest/config';
 import testRunnerOwnership from './scripts/test-runner-ownership.json';
 import testFileNames from './scripts/test-file-names.json';
+const { collectBunOnlyTests } = createRequire(import.meta.url)('./scripts/bun-test-discovery.cjs') as { collectBunOnlyTests(root: string): string[] };
 const coverageEnabled = process.env.COVERAGE === 'true';
 
 export default defineConfig({
@@ -49,7 +51,7 @@ export default defineConfig({
       // Bun-only tests: the vitest pool always runs on Node, so these run through
       // `bun run test:bun` (`scripts/run-bun-tests.ts`), which is wired into CI. Every entry
       // below must be covered by that entry — an exclusion without a runner is how N19 started.
-      'tests/bun/**',
+      ...collectBunOnlyTests(__dirname).map(file => path.relative(__dirname, file).split(path.sep).join('/')),
       'tests/terminal/*.integration.test.ts',
       'ui/src/api/ai-config.test.ts',
       'ui/src/api/network-settings.test.ts',
