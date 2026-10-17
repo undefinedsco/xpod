@@ -96,7 +96,7 @@ class Session:
                 if batch and len(json.dumps(dict(schemaVersion=1,files=[*batch,row]),indent=2).encode())>METADATA-1024:flush();batch=[]
                 batch.append(row)
             if batch:flush()
-            phases.append(dict(name=stage['name'],backend=dict(id='ptrace-all-stop-process-v1',observerOriginals=observer,coverage=dict(processModel='all-observed-descendants-single-thread',consumerIo=['read'],unsupported=['CLONE_THREAD','CLONE_FILES','async-io','shared-writable-mmap','generated-input-mmap'])),phaseBinding=stage,rawTraceShards=result['rawTraceShards'],captures=dict(indexes=indexes,files=len(result['captureFiles']),bytes=sum(row['bytes'] for row in result['captureFiles'])),selectedInputs=commands.ref(selected,self.out)))
+            phases.append(dict(name=stage['name'],backend=dict(id='ptrace-all-stop-process-v1',observerOriginals=observer,coverage=dict(processModel='all-tracked-tids-shared-fd-v1',consumerIo=['read'],unsupported=['nonleader-exec-tid-replacement','async-io','shared-writable-mmap','generated-input-mmap'])),phaseBinding=stage,rawTraceShards=result['rawTraceShards'],captures=dict(indexes=indexes,files=len(result['captureFiles']),bytes=sum(row['bytes'] for row in result['captureFiles'])),selectedInputs=commands.ref(selected,self.out)))
         upstream=json.loads((self.out/upstream_reference['path']).read_text())
         mount=self.observer.source_provider_originals['mountinfo']
         mountref=commands.ref(self.directory/mount['path'],self.out)

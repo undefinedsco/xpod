@@ -16,6 +16,14 @@ def policy(arch):
 
 def need(value,reason):
     if not value:raise ValueError('multi-process generation originals: '+reason)
+def inspect_shared_clone_flags(flags):
+    need(type(flags) is int and flags>=0,'actual clone flags required')
+    allowed=0xff|0x100|0x200|0x400|0x800|0x4000|0x8000|0x10000|0x40000|0x80000|0x100000|0x200000|0x1000000|0x100000000
+    need(flags&~allowed==0,'unknown clone ownership flags')
+    need(not(flags&0x800) or flags&0x100,'CLONE_SIGHAND requires shared VM')
+    need(not(flags&0x10000) or flags&0x100 and flags&0x800 and flags&0xff==0,'thread clone has invalid VM/signal ownership')
+    return dict(sharedFdTable=bool(flags&0x400),sameThreadGroup=bool(flags&0x10000),sharedMemory=bool(flags&0x100))
+
 def verify_write_bytes(before,buffer,after,before_size,offset,count,maximum,check=lambda:None):
     """Bounded sequential pure write(2) reconstruction; no metadata approval."""
     need(type(offset) is int and offset>=0 and type(count) is int and count>=0 and max(before_size,offset+count)<=maximum,'write reconstruction bound')
@@ -55,7 +63,9 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
     maximum_file=limits['shardBytes'] if limits else 1024**2
     maximum_total=limits['sourceMaterialBytes'] if limits else 16*1024**2
     original_cache={};retained_entries=set();phase_tracking=[]
-    live=set();last=0;entries={};exits={};barriers={};caps={};paths={};renames=[];consumers=[];source_reads=[];total=0;capture_total=0;exclusive=None;root_codes={};clone_flags=set()
+    shared_mode=False;owners={};exec_fd_events={}
+    live=set();last=0;entries={};exits={};barriers={};caps={};paths={};renames=[];consumers=[];source_reads=[];total=0;capture_total=0;exclusive=None;root_codes={};clone_flags=set();clone_flag_values={}
+    alias_close_windows={};alias_close_exits=set()
     mode_windows={};mode_transitions={};namespace_bindings=[]
     write_windows={};closed_write_windows=set();write_transitions={};write_consumers=[];write_read_exits={}
     empty_windows={};empty_eofs=set()
@@ -84,10 +94,38 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
             elif kind=='prepared-build-input-seal':
                 need(not live and not roots and not phase_tracking and not prepared_sealed and row['files']==prepared_count and row['inventorySha256']==prepared_digest.hexdigest(),'prepared closed-set byte seal differs');prepared_sealed=True
                 need(all(value[0]['path'].startswith(row['buildRoot'].rstrip('/')+'/') for value in prepared.values()),'prepared original escapes actual build root')
-            elif kind=='owned-root-binding':need(not live and not roots,'unique actual root required');live.add(row['pid']);roots.append(row['pid']);need(row['backend']=='ptrace-all-stop-process-v1','wrong observer backend')
-            elif kind=='actual-child-binding':need(row['parentPid'] in live and row['childPid'] not in live,'unobserved actual child binding');live.add(row['childPid'])
+            elif kind=='owned-root-binding':
+                need(not live and not roots,'unique actual root required');live.add(row['pid']);roots.append(row['pid']);need(row['backend']=='ptrace-all-stop-process-v1','wrong observer backend')
+                need(row.get('taskOwnershipModel') in [None,'all-tracked-tids-shared-fd-v1'],'unknown task ownership model');shared_mode=row.get('taskOwnershipModel') is not None;owners={}
+                if shared_mode:need(row['tgid']==row['fdTable']==row['pid'],'initial root ownership differs');owners[row['pid']]=dict(tgid=row['tgid'],fdTable=row['fdTable'])
+            elif kind=='actual-child-binding':
+                need(row['parentPid'] in live and row['childPid'] not in live,'unobserved actual child binding')
+                if shared_mode:
+                    parent=owners[row['parentPid']];entry=entries.get(row['cloneEntrySequence']);need(entry and entry['pid']==row['parentPid'],'child ownership lacks actual clone entry');rules=policy(entry['arch'])
+                    if entry['nr'] in [rules['clone'],435]:need(entry['sequence'] in clone_flags and clone_flag_values[entry['sequence']]==row['cloneFlags'],'child actual clone flags differ')
+                    else:need(entry['arch']==0xc000003e and entry['nr'] in [57,58] and row['cloneFlags']==17|(0x4100 if entry['nr']==58 else 0),'unknown child fork operation')
+                    ownership=inspect_shared_clone_flags(row['cloneFlags']);need(row['tgid']==(parent['tgid'] if ownership['sameThreadGroup'] else row['childPid']) and row['fdTable']==(parent['fdTable'] if ownership['sharedFdTable'] else row['childPid']),'child TGID/FD table differs from kernel clone flags');owners[row['childPid']]=dict(tgid=row['tgid'],fdTable=row['fdTable'])
+                live.add(row['childPid'])
             elif kind=='actual-wait-exit':need(row['pid'] in live,'wait on unknown process');live.remove(row['pid']);root_codes[row['pid']]=row['returnCode'];waits.append(dict(pid=row['pid'],sequence=row['sequence'],returnCode=row['returnCode'],phase=phase))
-            elif kind=='all-stop-barrier':need(row['pids']==sorted(live) and row['osStates']==['t']*len(live),'potential writer not in actual complete tracing-stop barrier');barriers[row['sequence']]=row
+            elif kind=='all-stop-barrier':
+                need(row['pids']==sorted(live) and row['osStates']==['t']*len(live),'potential writer not in actual complete tracing-stop barrier')
+                if shared_mode:need(row['taskOwnership']==[dict(tid=pid,**owners[pid]) for pid in sorted(live)],'complete actual TID/TGID/shared-table ownership differs')
+                barriers[row['sequence']]=row
+            elif kind=='actual-exec-fd-table-unshare':
+                event=exec_fd_events.get(row['eventSequence']);owner=owners.get(row['pid']);need(shared_mode and owner and event and event['pid']==row['pid'] and owner['tgid']==row['pid']==row['tgid'] and owner['fdTable']==row['priorFdTable'] and row['fdTable']==-event['sequence'],'exec FD-table unshare lacks actual leader exec event');owner['fdTable']=row['fdTable'];exec_fd_events.pop(row['eventSequence'])
+            elif kind=='alias-close-window':
+                entry=entries.get(row['entrySequence']);barrier=barriers.get(row['barrierSequence']);need(entry and barrier and row['pid']==entry['pid'] and entry['nr']==policy(entry['arch'])['close'] and entry['args'][0]==row['fd'],'alias close actual syscall differs')
+                table_owners=sorted(pid for pid in live if owners[pid]['fdTable']==owners[row['pid']]['fdTable']) if shared_mode else [row['pid']]
+                need(row['tableOwners']==table_owners and row['pid'] in barrier['pids'],'alias close table owner set differs');keys=set()
+                for alias in row['aliases']:
+                    need(alias['pid'] in barrier['pids'] and alias['flags']&3 in [1,2] and alias['accessMode']==alias['flags']&3,'alias close has no observed writable slot');keys.add((owners[alias['pid']]['fdTable'] if shared_mode else alias['pid'],alias['fd']))
+                need(len(keys)>1 and (owners[row['pid']]['fdTable'] if shared_mode else row['pid'],row['fd']) in keys,'alias close does not refer to selected multi-alias slot');alias_close_windows[row['sequence']]=row;retained_entries.add(row['entrySequence'])
+            elif kind=='exclusive-alias-close-resume':
+                window=alias_close_windows.get(row['captureSequence']);need(window and exclusive is None and window['pid']==row['pid'] and window['entrySequence']==row['entrySequence'],'alias close exclusive resume differs');exclusive=(row['pid'],row['entrySequence'])
+            elif kind=='alias-close-exit':
+                window=alias_close_windows.get(row['windowSequence']);exit=exits.get(row['entrySequence'])
+                need(window and window['sequence'] not in alias_close_exits and exclusive==(row['pid'],row['entrySequence']) and window['entrySequence']==row['entrySequence'] and window['pid']==row['pid'] and exit and exit['sequence']==row['exitSequence'] and not exit['isError'] and exit['result']==0 and not row['isError'] and row['result']==0,'alias close missing actual successful exit')
+                need(row['retainedIdentity'][:2]==window['identity'][:2] and row['slotAbsences']==[dict(tid=pid,fd=window['fd'],errorCode=2) for pid in window['tableOwners']],'alias close has no actual same-table slot absence');alias_close_exits.add(window['sequence'])
             elif kind=='actual-mode-window':
                 entry=entries.get(row['entrySequence']);barrier=barriers.get(row['barrierSequence']);need(entry and barrier and entry['pid']==row['pid'] and row['pid'] in barrier['pids'],'actual chmod entry/barrier differs')
                 modes={0xc000003e:{90:1,91:1,268:2},0xc00000b7:{52:1,53:2}}[entry['arch']]
@@ -152,8 +190,13 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                 if row['op']=='entry':
                     rules=policy(row['arch']);need(row['nr'] not in rules['forbidden'],'unsupported asynchronous/external writer syscall')
                     if row['nr']==rules['clone']:
-                        flags=row['args'][0];need(not flags&(0x10000|0x400) and flags&~(0xff|0x100|0x4000|0x1000000|0x200000|0x100000000)==0,'unknown shared thread/FD clone')
+                        flags=row['args'][0]
+                        if shared_mode:inspect_shared_clone_flags(flags)
+                        else:need(not flags&(0x10000|0x400) and flags&~(0xff|0x100|0x4000|0x1000000|0x200000|0x100000000)==0,'unknown shared thread/FD clone')
                     if row['nr']==rules['mmap']:need(not(row['args'][2]&2 and row['args'][3]&1),'shared writable mapping')
+                    if shared_mode:
+                        need(not(row['nr']==436 and row['args'][2]&2),'unknown close_range UNSHARE table ownership')
+                        if row['nr'] in ([59,322] if row['arch']==0xc000003e else [221,281]):need(row['pid']==owners[row['pid']]['tgid'],'nonleader exec TID replacement unsupported')
                     entries[row['sequence']]=row
                 elif row['op']=='exit':
                     if 'entrySequence' in row:
@@ -163,7 +206,9 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                         else:entries.pop(row['entrySequence']);clone_flags.discard(row['entrySequence'])
                 else:need(False,'unknown syscall-info operation')
             elif kind=='kernel-clone-flags':
-                entry=entries.get(row['entrySequence']);clone_flags.add(row['entrySequence']);need(entry and entry['pid']==row['pid'] and entry['nr'] in [policy(entry['arch'])['clone'],435],'clone memory flags entry differs');flags=row['flags'];need(not flags&(0x10000|0x400) and flags&~(0xff|0x100|0x4000|0x1000000|0x200000|0x100000000)==0,'unknown shared writer/FD flags')
+                entry=entries.get(row['entrySequence']);clone_flags.add(row['entrySequence']);need(entry and entry['pid']==row['pid'] and entry['nr'] in [policy(entry['arch'])['clone'],435],'clone memory flags entry differs');flags=row['flags'];clone_flag_values[row['entrySequence']]=flags
+                if shared_mode:inspect_shared_clone_flags(flags)
+                else:need(not flags&(0x10000|0x400) and flags&~(0xff|0x100|0x4000|0x1000000|0x200000|0x100000000)==0,'unknown shared writer/FD flags')
             elif kind=='kernel-path-arguments':need(row['entrySequence'] in entries and entries[row['entrySequence']]['pid']==row['pid'],'path original entry differs');paths[row['entrySequence']]=row['renamePaths'];retained_entries.add(row['entrySequence'])
             elif kind=='fd-capture':
                 retained_entries.add(row['entrySequence']);entry=entries.get(row['entrySequence']);barrier=barriers.get(row['barrierSequence']);need(entry and barrier and row['pid']==entry['pid'] and row['pid'] in barrier['pids'],'capture missing actual entry/all-stop relation')
@@ -177,12 +222,17 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                 need(len(row['identity'])==6 and row['identity'][3]==data[0],'actual capture identity/size differs');caps[row['sequence']]=(row,data)
                 if capture_observer:capture_observer(row,data)
                 if row['role']=='source-read':source_reads.append(row)
+            elif kind=='ptrace-event':
+                need(row.get('event') in [1,2,3,4,5,6,128],'unknown actual ptrace event')
+                if shared_mode and row['event']==4:exec_fd_events[row['sequence']]=row
             elif kind=='retained-fd-rename-binding':renames.append(row)
             elif kind=='generated-consumer-binding':consumers.append(row)
             elif kind=='prepared-consumer-binding':prepared_consumers.append(row)
             else:need(kind in ['ptrace-event','signal-delivery','generated-mmap-unverified'],'unknown raw observer event')
         need(len(roots)==1 and not live and root_codes.get(roots[0])==0 and exclusive is None,'actual root/descendant wait closure incomplete')
         phase_tracking.append(dict(phase=phase,actualRootPid=roots[0],actualRootReturnCode=root_codes[roots[0]],waitReferences=waits))
+    need(set(alias_close_windows)==alias_close_exits,'alias close missing actual close/slot closure')
+    need(not exec_fd_events,'actual exec FD table change missing')
     need(len(mode_windows)==len(mode_transitions),'actual chmod window missing actual exit')
     need(len(write_windows)==len(write_transitions),'actual write window missing exit transition')
     need({seq for seq,(row,_) in caps.items() if row['role']=='readwrite-consumer'}==set(write_read_exits),'own-RW read missing actual stable exit')
@@ -234,4 +284,4 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
             if actual is None:pending.append('actual-successful-generated-consumer-missing:'+path)
             else:need(actual['bytes']==expected['bytes'] and actual['sha256']==expected['sha256'],'actual generated consumer differs from selected full-shard input')
     return dict(schemaVersion=1,kind='all-stop-CMake-generated-byte-mechanics',selectedGeneratedConsumerByteCustodyVerified=not pending,outputs=sorted(covered.values(),key=lambda row:row['path']),observedSourceReadCaptures=len(source_reads),pending=pending,overallSdkSourceVerified=False,
-                observedActualModeTransitions=len(mode_transitions),observedNamedRetainedFdBindings=len(namespaces),observedActualWriteTransitions=len(write_transitions),observedEmptyReadEofWindows=len(empty_eofs),preparedInputConsumers=list(prepared_covered.values()),preparedInputConsumerBytesVerified=bool(prepared_covered),phaseTracking=phase_tracking,scope='actual producer-close/rename/consumer bytes only; reviewed observer execution/Git/source/runtime authority independent')
+                observedAliasOnlyCloses=len(alias_close_exits),observedActualModeTransitions=len(mode_transitions),observedNamedRetainedFdBindings=len(namespaces),observedActualWriteTransitions=len(write_transitions),observedEmptyReadEofWindows=len(empty_eofs),preparedInputConsumers=list(prepared_covered.values()),preparedInputConsumerBytesVerified=bool(prepared_covered),phaseTracking=phase_tracking,scope='actual producer-close/rename/consumer bytes only; reviewed observer execution/Git/source/runtime authority independent')

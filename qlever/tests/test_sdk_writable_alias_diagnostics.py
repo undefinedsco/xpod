@@ -15,7 +15,7 @@ class Tests(unittest.TestCase):
         base=ROOT/'.test-data/sdk-writer-diagnostics';base.mkdir(parents=True,exist_ok=True)
         with tempfile.TemporaryDirectory(dir=base) as directory:
             target=Path(directory)/'actual-input';target.write_bytes(b'actual-input-17')
-            item=target.stat();held=os.open(target,os.O_RDONLY);observer=object.__new__(backend.Observer);observer.maximum_file_bytes=512*1024*1024
+            item=target.stat();held=os.open(target,os.O_RDONLY);observer=object.__new__(backend.Observer);observer.maximum_file_bytes=512*1024*1024;observer.shared_tasks=False
             observer.tasks={pid:dict(exited=False,entry={'sequence':13}) for pid,_ in aliases};observer.tasks.setdefault(101,dict(exited=False,entry={'sequence':13}))
             observer.barrier=lambda:{'sequence':17};observer.check=lambda:None;rows=[]
             observer.emit=lambda row:rows.append(dict(row,sequence=19)) or rows[-1]
