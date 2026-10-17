@@ -73,6 +73,31 @@ function indexOf(workflow: Workflow, idOrName: string): number {
   return steps(workflow).findIndex((step) => step.id === idOrName || step.name === idOrName);
 }
 
+it('module SDK orchestration rejects a different source before checkout and chains the exact SDK digest', async () => {
+  const workflow = await load('.github/workflows/publish-qlever-runtime-sdk.yml');
+  const source = byId(workflow, 'source');
+  const temporary = mkdtempSync(path.join(repoRoot, '.test-data/sdk-source-guard-'));
+  try {
+    for (const [profile, requested, expected] of [
+      ['module-bookworm-gcc12', 'a'.repeat(40), 0],
+      ['module-bookworm-gcc12', 'b'.repeat(40), 64],
+      ['service-trixie', 'b'.repeat(40), 0],
+    ] as const) {
+      const result = spawnSync('/bin/bash', ['-c', source.run], { encoding: 'utf8', env: {
+        ...process.env, GITHUB_SHA: 'a'.repeat(40), REQUESTED_SOURCE_COMMIT: requested,
+        SDK_PROFILE: profile, GITHUB_OUTPUT: path.join(temporary, 'output'),
+      } });
+      expect(result.status, result.stderr).toBe(expected);
+    }
+    const materials = workflow.jobs.module_runtime_materials;
+    expect(materials.needs).toEqual(['resolve_target', 'publish']);
+    expect(materials.if).toBe("${{ needs.resolve_target.outputs.sdk_profile == 'module-bookworm-gcc12' }}");
+    expect(materials.uses).toBe('./.github/workflows/build-qlever-linux-runtime.yml');
+    expect(materials.with).toEqual({ target: '${{ needs.resolve_target.outputs.target }}',
+      module_sdk_image: '${{ needs.publish.outputs.image }}' });
+  } finally { rmSync(temporary, { recursive: true, force: true }); }
+});
+
 function sameInputs(step: any): Record<string, unknown> {
   return Object.fromEntries(sameImageKeys.map((key) => [ key, step.with[key] ]));
 }
@@ -163,7 +188,7 @@ describe.each(cases)('$name publish workflow image identity gate', (workflowCase
       context: '.',
       file: workflowCase.dockerfile,
       load: true,
-      platforms: 'linux/amd64',
+      platforms: '${{ needs.resolve_target.outputs.docker_platform }}',
       push: false,
       tags: workflowCase.tags,
     }));

@@ -1,0 +1,34 @@
+# syntax=docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
+ARG XPOD_QLEVER_PRIOR_SDK_IMAGE
+FROM ${XPOD_QLEVER_PRIOR_SDK_IMAGE} AS build
+ARG XPOD_QLEVER_PRIOR_SDK_IMAGE
+ARG XPOD_QLEVER_BUILD_JOBS=2
+ENV XPOD_QLEVER_LOCAL_BUILD_DIR=/opt/module-local/build \
+    XPOD_QLEVER_BUILD_OUTPUT_DIR=/opt/xpod \
+    XPOD_QLEVER_LOCAL_ARTIFACT_DIR=/opt/xpod/qlever \
+    XPOD_QLEVER_WORKSPACE_ROOT=/workspace/xpod
+COPY qlever/cmake /workspace/xpod/qlever/cmake
+COPY qlever/include /workspace/xpod/qlever/include
+COPY qlever/qlever.lock.json /workspace/xpod/qlever/qlever.lock.json
+COPY qlever/patches /workspace/xpod/qlever/patches
+COPY qlever/qlever_adapter /workspace/xpod/qlever/qlever_adapter
+COPY qlever/qlever_local_runtime /workspace/xpod/qlever/qlever_local_runtime
+COPY qlever/rdf_protocol /workspace/xpod/qlever/rdf_protocol
+COPY qlever/rdf_sqlite_backend /workspace/xpod/qlever/rdf_sqlite_backend
+COPY qlever/scripts /workspace/xpod/qlever/scripts
+RUN test "$XPOD_QLEVER_CMAKE_C_COMPILER" = gcc-12 \
+ && test "$XPOD_QLEVER_CMAKE_CXX_COMPILER" = g++-12 \
+ && test -f /opt/qlever-sdk/profile/inputs.json \
+ && bash /workspace/xpod/qlever/scripts/run-focused-native-build.sh
+
+FROM debian:bookworm-slim@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587 AS runtime
+RUN apt-get -o Acquire::AllowInsecureRepositories=false update \
+ && apt-get -o APT::Get::AllowUnauthenticated=false install -y --no-install-recommends \
+    libboost-container1.81.0 libboost-iostreams1.81.0 libboost-program-options1.81.0 libboost-url1.81.0 \
+    libbz2-1.0 libicu72 liblzma5 libsqlite3-0 libssl3 libstdc++6 libzstd1 zlib1g \
+ && rm -rf /var/lib/apt/lists/*
+COPY --from=build /opt/xpod/qlever /opt/xpod/qlever
+RUN ldd /opt/xpod/qlever/bin/xpod_qlever_local_runtime > /tmp/runtime-ldd \
+ && ! grep -q 'not found' /tmp/runtime-ldd \
+ && rm /tmp/runtime-ldd
+LABEL org.opencontainers.image.title="Xpod module QLever Bookworm runtime"

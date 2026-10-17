@@ -25,13 +25,19 @@ def source_original_path(path):
         or re.fullmatch(r'phase-[0-9]{3}\.metafiles/[A-Za-z0-9_-]+\.json', path) is not None
 
 
-def inspect(archive, expected, packed_limit, expanded_limit, member_limit, selections=None, destination=None, legacy=False, source_originals=False):
+def inspect(archive, expected, packed_limit, expanded_limit, member_limit, selections=None, destination=None, legacy=False, source_originals=False, module_source_originals=False):
+    if sum((legacy, source_originals, module_source_originals)) > 1:
+        raise ValueError('conflicting projection modes')
     if selections is not None and type(selections) is not list:
         raise ValueError('projection selections must be an array')
     selected = {}
     for row in selections or []:
         allowed_destination = (row.get('destination') == row.get('path') and source_original_path(row.get('path', ''))) if source_originals and type(row) is dict else None
-        if not source_originals and type(row) is dict:
+        if module_source_originals and type(row) is dict:
+            name = row.get('path')
+            allowed_destination = (type(name) is str and row.get('destination') == name
+                                   and (name == 'producer.receipt.json' or re.fullmatch(r'evidence/[a-z0-9-]+\.receipt\.json', name) is not None))
+        if not source_originals and not module_source_originals and type(row) is dict:
             allowed_destination = ((row['destination'] == row['path'] and (row['path'] == 'supply-index.original.json' or row['path'].startswith(('cli/', 'afs/', 'producer/')))) if legacy else row['destination'] in ('producer.receipt.json', 'product.tgz', 'pack.raw.log', 'result.json', 'inventory.json', 'source-inputs.json', 'preparation.json', 'producer-index.json', 'input.json', 'cli.tgz', 'client.tgz', 'cli.package.json', 'client.package.json'))
         if (type(row) is not dict or set(row) != {'path', 'destination', 'bytes', 'sha256'} or row['path'] in selected
                 or not allowed_destination
@@ -39,6 +45,8 @@ def inspect(archive, expected, packed_limit, expanded_limit, member_limit, selec
                 or len(row['sha256']) != 64):
             raise ValueError('invalid exact projection selection')
         selected[row['path']] = row
+    if module_source_originals and sum(row['bytes'] for row in selected.values()) > 8 * 1024 * 1024:
+        raise ValueError('module receipt projection byte bound')
     if len({row['destination'] for row in selected.values()}) != len(selected):
         raise ValueError('duplicate projection destination')
     named_before = os.lstat(archive)
@@ -106,7 +114,7 @@ def inspect(archive, expected, packed_limit, expanded_limit, member_limit, selec
                 row = selected.get(entry.filename)
                 if row and entry.file_size != row['bytes']:
                     raise ValueError('projection declared size mismatch')
-                if row and (legacy or source_originals):
+                if row and (legacy or source_originals or module_source_originals):
                     parent = pathlib.Path(destination) / pathlib.PurePosixPath(row['destination']).parent
                     parent.mkdir(parents=True, exist_ok=True)
                     for ancestor in [parent, *parent.parents]:
@@ -164,7 +172,7 @@ if __name__ == '__main__':
         selections = json.loads(sys.argv[6]) if len(sys.argv) > 6 else None
     destination = sys.argv[7] if len(sys.argv) > 7 else None
     mode = sys.argv[8] if len(sys.argv) > 8 else None
-    if mode not in (None, 'legacy-root-normal-supply', 'independent-source-originals'):
+    if mode not in (None, 'legacy-root-normal-supply', 'independent-source-originals', 'module-source-originals'):
         raise ValueError('unknown projection mode')
     print(json.dumps(inspect(sys.argv[1], sys.argv[2], *map(int, sys.argv[3:6]), selections, destination,
-                             mode == 'legacy-root-normal-supply', mode == 'independent-source-originals')))
+                             mode == 'legacy-root-normal-supply', mode == 'independent-source-originals', mode == 'module-source-originals')))

@@ -16,18 +16,18 @@ test('candidate preparation is manually gated and read-only', () => {
 
 test('PR bootstrap runs only tiny contracts and never acquires candidates', () => {
   assert.match(workflow, /pull_request:\n    branches: \[staging, main\]/);
-  const contracts = workflow.slice(workflow.indexOf('  contracts:'), workflow.indexOf('  prepare:'));
+  const contracts = workflow.slice(workflow.indexOf('  contracts:'), workflow.indexOf('  select:'));
   assert.match(contracts, /if: \$\{\{ github.event_name == 'pull_request' \}\}/);
   assert.match(contracts, /node --test tests\/scripts\/module-installed-consumer-workflow.node-test.cjs/);
   assert.match(contracts, /uses: oven-sh\/setup-bun@v2\n        with:\n          bun-version: '1\.4\.2'/);
   assert.ok(contracts.indexOf('uses: oven-sh/setup-bun@v2') < contracts.indexOf('node --test'), 'Bun discovery needs its runtime before the contract executes');
   assert.doesNotMatch(contracts, /GH_TOKEN|acquire|bun install|--run|prepare-module-consumer-plan.ts/);
-  assert.match(workflow, /  prepare:\n    if: \$\{\{ github.event_name == 'workflow_dispatch' \}\}/);
+  assert.match(workflow, /  prepare:\n    needs: select\n    if: \$\{\{ github.event_name == 'workflow_dispatch' \}\}/);
 });
 
 test('untrusted request goes through environment and exact validation before checkout', () => {
-  assert.equal(workflow.match(/\$\{\{ inputs.request_json \}\}/g).length, 2);
-  assert.equal(workflow.match(/MODULE_CONSUMER_REQUEST: \$\{\{ inputs.request_json \}\}/g).length, 2);
+  assert.equal(workflow.match(/\$\{\{ inputs.request_json \}\}/g).length, 3);
+  assert.equal(workflow.match(/MODULE_CONSUMER_REQUEST: \$\{\{ inputs.request_json \}\}/g).length, 3);
   const validation = workflow.indexOf('validateModuleConsumerRequest(request)');
   const checkout = workflow.indexOf('ref: ${{ steps.request.outputs.source_sha }}');
   assert.ok(validation > 0 && checkout > validation);
@@ -36,7 +36,11 @@ test('untrusted request goes through environment and exact validation before che
 });
 
 test('separate source roots, private output and validate-only are explicit', () => {
-  assert.match(workflow, /runs-on: macos-15/);
+  assert.match(workflow, /runs-on: \$\{\{ needs.select.outputs.runner \}\}/);
+  assert.match(workflow, /productTarget\(request.module, request.target\)/);
+  assert.match(workflow, /nativeSourceAvailable/);
+  assert.match(workflow, /sudo apt-get install -y bubblewrap/);
+  assert.doesNotMatch(workflow, /sysctl|--privileged/);
   assert.match(workflow, /node-version: '22\.21\.1'/);
   assert.match(workflow, /bun-version: '1\.4\.2'/);
   assert.match(workflow, /chmod 700 "\$root"/);

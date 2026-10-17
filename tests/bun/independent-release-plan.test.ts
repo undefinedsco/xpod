@@ -61,7 +61,7 @@ describe('independent release planning (synthetic contract fixtures)', () => {
       consumer: { status: 'passed', legalAccepted: true, nativeAccepted: true },
     } })]);
     expect(result.products[0].blockers).toHaveLength(5);
-    expect(result.products[0].blockers.find(row => row.gate === 'legal')!.reason).toContain('does not confer');
+    expect(result.products[0].blockers.find(row => row.gate === 'legal')!.reason).toContain('Real collected artifact and immutable Git source capabilities required');
     expect(result.releaseQualified).toBe(false);
   });
   it('uses exact preview versions for future registry acceptance', () => {

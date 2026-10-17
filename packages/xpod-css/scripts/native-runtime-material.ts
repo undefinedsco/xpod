@@ -2,6 +2,7 @@ import path from 'node:path';
 import { copyFileSync, chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
+import { fileURLToPath } from 'node:url';
 import { safeMaterialPath, sourceFileIndex, verifySourceFiles, type SourceFile } from '../../xpod-cli/src/source-materials';
 import { verifyNativeMaterialTarget } from '../../../scripts/lib/physical-module-native';
 import { moduleTarget } from '../../xpod-cli/src/module-catalog';
@@ -56,9 +57,10 @@ export function assembleCssNativeRuntime(productRoot: string, target: string, in
   };
   verifyQleverLocal({ sourceSha: input.sourceSha, evidence: path.join(input.materialsRoot, input.acceptance.path), expectedArchive: path.join(input.materialsRoot, input.archive.path), abiPlatform: target.replace(/^darwin-/, 'macos-') });
   const zip = path.join(input.materialsRoot, input.originalZip.path);
-  const zipListing = spawnSync('unzip', ['-Z1', zip], { encoding: 'utf8', maxBuffer: 1024 * 1024 });
-  const zipNames = zipListing.stdout.trim().split('\n');
-  if (zipListing.status !== 0 || JSON.stringify(zipNames.sort()) !== JSON.stringify([path.basename(input.archive.path), path.basename(input.acceptance.path)].sort())) throw new Error('Original ZIP layout mismatch');
+  const zipCheck = spawnSync('/usr/bin/python3', ['-E','-s','-B',
+    fileURLToPath(new URL('../../../scripts/lib/css_native_zip.py', import.meta.url)),
+    zip, target, '--source', input.sourceSha], {encoding: 'utf8', maxBuffer: 32768, timeout: 30000});
+  if (zipCheck.status !== 0 || zipCheck.error) throw new Error('Original ZIP material inventory mismatch');
   for (const ref of [input.archive, input.acceptance]) {
     const extracted = spawnSync('unzip', ['-p', zip, path.basename(ref.path)], { maxBuffer: ref.sizeBytes + 1024 });
     if (extracted.status !== 0 || !extracted.stdout.equals(readFileSync(path.join(input.materialsRoot, ref.path)))) throw new Error('Original ZIP member byte mismatch');

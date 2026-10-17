@@ -20,7 +20,10 @@ toolchain_identity_file="$build_dir/.xpod-toolchain-identity"
 build_contract_file="$build_dir/.xpod-build-contract.json"
 build_contract_pending="$build_dir/.xpod-build-contract.json.pending"
 
-build_contract=$(python3 - "$source_dir" "$build_dir" <<'PY'
+c_compiler=$(python3 "$qlever_root/scripts/qlever_compiler_profile.py" c)
+cxx_compiler=$(python3 "$qlever_root/scripts/qlever_compiler_profile.py" cxx)
+
+build_contract=$(python3 - "$source_dir" "$build_dir" "$qlever_root/scripts" <<'PY'
 import json
 import os
 import subprocess
@@ -28,6 +31,8 @@ import sys
 from pathlib import Path
 
 source_dir, build_dir = sys.argv[1:3]
+sys.path.insert(0, sys.argv[3])
+from qlever_compiler_profile import compiler_versions
 os_release = Path(os.environ.get("XPOD_QLEVER_OS_RELEASE_FILE", "/etc/os-release"))
 pretty_name = ""
 for line in os_release.read_text().splitlines():
@@ -37,20 +42,13 @@ for line in os_release.read_text().splitlines():
 if not pretty_name:
     raise SystemExit("missing PRETTY_NAME in os-release")
 
-def version(command):
-    return subprocess.check_output(command, text=True).splitlines()[0]
-
 payload = {
     "schemaVersion": 1,
     "component": "qlever-runtime-sdk",
     "base": {
         "osReleasePrettyName": pretty_name,
     },
-    "toolchain": {
-        "clang": version(["clang-19", "--version"]),
-        "clangxx": version(["clang++-19", "--version"]),
-        "cmake": version(["cmake", "--version"]),
-    },
+    "toolchain": compiler_versions(),
     "cmake": {
         "source": source_dir,
         "build": build_dir,
@@ -134,7 +132,7 @@ if [[ ! -f "$build_identity_file" ]] ||
    [[ $(cat "$build_identity_file") != "$build_identity" ]] ||
    [[ ! -f "$toolchain_identity_file" ]] ||
    [[ $(cat "$toolchain_identity_file") != "$toolchain_identity" ]]; then
-  CC=clang-19 CXX=clang++-19 cmake \
+  CC="$c_compiler" CXX="$cxx_compiler" cmake \
     -S "$source_dir" \
     -B "$build_dir" \
     -DCMAKE_BUILD_TYPE=Release \

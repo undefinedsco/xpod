@@ -19,7 +19,6 @@ import tarfile
 import re
 from datetime import datetime
 
-PILOT = 'darwin-arm64'
 FRESH_BYTES = 8 * 1024**3
 FLOOR_BYTES = 2 * 1024**3
 ARCHIVE_LIMIT = 512 * 1024**2
@@ -74,7 +73,11 @@ def context(environment, source):
                 event=event_name, runHeadSha=head, githubSha=environment['GITHUB_SHA'], actualCheckoutSha=source['sha'])
 
 
-def phase_plan(repo, output, version):
+def target_identity(repo, target):
+    return json.loads(subprocess.check_output(['bun', str(Path(repo) / 'scripts/module-product-targets.ts'), 'css', target, '--require-host'], cwd=repo, text=True))
+
+
+def phase_plan(repo, output, version, target):
     repo, output = Path(repo), Path(output)
     return [
         ('install', ['bun', 'install', '--frozen-lockfile'], 600),
@@ -107,7 +110,8 @@ def closed_phase(receipt):
             and receipt.get('resourceStop') is None and receipt.get('supervisorError') is None and not receipt.get('cleanupErrors'))
 
 
-def collect_facts(output, packed, source_sha, version):
+def collect_facts(output, packed, source_sha, version, target):
+    target_platform, target_arch = target.split('-')
     output = Path(output)
     archive = output/'product.tgz'
     ref = reference(archive, output)
@@ -119,14 +123,14 @@ def collect_facts(output, packed, source_sha, version):
         raise ValueError('Normal pack identity/budget mismatch')
     stage=output/'stage'
     manifest=json.loads((stage/'package.json').read_text());module=manifest.get('xpodModule',{})
-    if manifest.get('name') != '@undefineds.co/xpod-css-darwin-arm64' or manifest.get('version') != version or manifest.get('private') is not True or module.get('id') != 'css' or module.get('platform') != 'darwin' or module.get('arch') != 'arm64':
+    if manifest.get('name') != '@undefineds.co/xpod-css-' + target or manifest.get('version') != version or manifest.get('private') is not True or module.get('id') != 'css' or module.get('platform') != target_platform or module.get('arch') != target_arch:
         raise ValueError('CSS preview manifest mismatch')
     materials={};values={}
     for name,relative in [('compiler','provenance/compiler.json'),('scopedComponents','provenance/css-scoped-components.json'),('resourcePlan','provenance/css-resource-plan.json'),('identityDedup','provenance/identity-dedup.json'),('publication','provenance/publication.json'),('native','provenance/css-native-runtime.json')]:
         bound=reference(stage/relative,stage);materials[name]=dict(archiveMember='package/'+relative,bytes=bound['bytes'],sha256=bound['sha256']);values[name]=json.loads((stage/relative).read_text())
     if not isinstance(values['compiler'].get('compiledSources'),list) or not values['compiler']['compiledSources']: raise ValueError('Normal compiler source evidence missing')
     if values['publication'].get('mode') != 'preview' or values['publication'].get('version') != version or values['publication'].get('sourceCommit') is not None: raise ValueError('Preview authority mismatch')
-    if values['native'].get('sourceSha') != source_sha or values['native'].get('target') != PILOT or values['native'].get('releaseAccepted') is not False: raise ValueError('Native source/target mismatch')
+    if values['native'].get('sourceSha') != source_sha or values['native'].get('target') != target or values['native'].get('releaseAccepted') is not False: raise ValueError('Native source/target mismatch')
     return dict(archive=dict(**ref,integrity=integrity,members=packed['members']),materials=materials,checkoutSourceSha=source_sha)
 
 
@@ -175,7 +179,7 @@ def validate_native_metadata(identity, env, artifact, jobs):
     if not re.fullmatch(r'(?:sha256:)?[a-f0-9]{64}',digest): raise ValueError('Native upload digest missing')
     digest=digest.removeprefix('sha256:')
     run=artifact.get('workflow_run',{})
-    if artifact.get('id')!=aid or artifact.get('expired') is not False or artifact.get('name')!='qlever-local-runtime-darwin-arm64-'+identity['actualCheckoutSha'] or run.get('id')!=identity['runId'] or run.get('head_sha')!=identity['runHeadSha'] or artifact.get('digest')!='sha256:'+digest: raise ValueError('Original artifact metadata mismatch')
+    if artifact.get('id')!=aid or artifact.get('expired') is not False or artifact.get('name')!='qlever-local-runtime-'+identity['target']+'-'+identity['actualCheckoutSha'] or run.get('id')!=identity['runId'] or run.get('head_sha')!=identity['runHeadSha'] or artifact.get('digest')!='sha256:'+digest: raise ValueError('Original artifact metadata mismatch')
     if not isinstance(artifact.get('size_in_bytes'),int) or not 0<artifact['size_in_bytes']<=ARCHIVE_LIMIT: raise ValueError('Artifact size limit')
     if jobs.get('total_count',101)>100: raise ValueError('Job pagination not admissible')
     native=[j for j in jobs.get('jobs',[]) if j.get('name')=='native / build']
@@ -187,15 +191,17 @@ def validate_native_metadata(identity, env, artifact, jobs):
     return digest,job['id']
 
 
-def unpack_native(originals, runtime):
-    archive_name='qlever-local-runtime-darwin-arm64.tar.gz';acceptance='qlever-local-acceptance.json'
+def unpack_native(originals, runtime, target):
+    archive_name='qlever-local-runtime-'+target+'.tar.gz';acceptance='qlever-local-acceptance.json'
+    sys.path.insert(0,str(Path(__file__).resolve().parent/'lib'))
+    from css_native_zip import validate as validate_native_zip
+    validate_native_zip(originals/'native.zip',target)
     with zipfile.ZipFile(originals/'native.zip') as archive:
-        entries=archive.infolist()
-        if sorted(e.filename for e in entries)!=sorted([archive_name,acceptance]) or any(e.is_dir() or e.file_size>ARCHIVE_LIMIT or ((e.external_attr>>16)&0o170000) not in (0,0o100000) for e in entries): raise ValueError('Original native ZIP layout')
-        if sum(e.file_size for e in entries)>ARCHIVE_LIMIT: raise ValueError('Native ZIP expanded limit')
+        entries=[entry for entry in archive.infolist() if not entry.is_dir()]
         for entry in entries:
             if shutil.disk_usage(originals).free-entry.file_size<FLOOR_BYTES: raise ValueError('ZIP expansion disk floor')
-            with archive.open(entry) as source,(originals/entry.filename).open('xb') as target: shutil.copyfileobj(source,target,1024*1024)
+            destination=originals/entry.filename;destination.parent.mkdir(parents=True,exist_ok=True)
+            with archive.open(entry) as source,destination.open('xb') as target: shutil.copyfileobj(source,target,1024*1024)
     runtime.mkdir()
     with tarfile.open(originals/archive_name,'r:gz') as archive:
         seen=set();total=0
@@ -214,6 +220,10 @@ def unpack_native(originals, runtime):
             destination.chmod(0o755 if member.mode&0o111 else 0o644)
     def source_ref(file,root):
         ref=reference(file,root);return dict(path=ref['path'],sizeBytes=ref['bytes'],sha256=ref['sha256'])
+    material_final=originals/'native-materials/final.json'
+    if material_final.is_file():
+        final=json.loads(material_final.read_text())
+        if final.get('binary')!=source_ref(runtime/'bin/xpod_qlever_local_runtime',runtime): raise ValueError('Native final/runtime binary hash mismatch')
     return dict(runtimeRoot=str(runtime),materialsRoot=str(originals),manifest=source_ref(runtime/'manifest.json',runtime),archive=source_ref(originals/archive_name,originals),originalZip=source_ref(originals/'native.zip',originals),acceptance=source_ref(originals/acceptance,originals))
 
 
@@ -228,30 +238,33 @@ def acquire_native(output, env, identity):
     digest,job=validate_native_metadata(identity,env,json.loads((originals/'artifact.metadata.raw.json').read_text()),json.loads((originals/'native-jobs.raw.json').read_text()))
     download(api+'artifacts/'+str(aid)+'/zip',originals/'native.zip',token)
     if (originals/'native.zip').stat().st_size!=json.loads((originals/'artifact.metadata.raw.json').read_text())['size_in_bytes'] or sha_file(originals/'native.zip')!=digest: raise ValueError('Original upload ZIP digest mismatch')
-    inputs=unpack_native(originals,output/'native-runtime');inputs['sourceSha']=identity['actualCheckoutSha']
+    inputs=unpack_native(originals,output/'native-runtime',identity['target']);inputs['sourceSha']=identity['actualCheckoutSha']
     (output/'native-input.json').write_text(json.dumps(inputs,indent=2))
-    return dict(nativeJobId=job,artifactId=aid,originals=[reference(originals/name,output) for name in ['run.raw.json','artifact.metadata.raw.json','native-jobs.raw.json','native.zip','qlever-local-runtime-darwin-arm64.tar.gz','qlever-local-acceptance.json']],expandedManifest=reference(output/'native-runtime/manifest.json',output),input=reference(output/'native-input.json',output),officialIdentityAuthenticated=False,releaseAccepted=False)
+    return dict(nativeJobId=job,artifactId=aid,originals=[reference(originals/name,output) for name in ['run.raw.json','artifact.metadata.raw.json','native-jobs.raw.json','native.zip','qlever-local-runtime-'+identity['target']+'.tar.gz','qlever-local-acceptance.json']],expandedManifest=reference(output/'native-runtime/manifest.json',output),input=reference(output/'native-input.json',output),officialIdentityAuthenticated=False,releaseAccepted=False)
 
 
-def produce(repo, output, environment=None):
+def produce(repo, output, target, environment=None):
     repo, output = Path(repo).resolve(), Path(output).resolve()
     environment = dict(os.environ if environment is None else environment)
-    if platform.system() != 'Darwin' or platform.machine() != 'arm64' or platform.mac_ver()[0].split('.')[0] != '15':
-        raise ValueError('CSS product pilot requires native macOS 15 arm64')
+    target_info = target_identity(repo, target)
+    if not target_info['nativeSourceAvailable']:
+        raise ValueError('CSS native source is pending for requested target')
+    if target_info['platform'] == 'darwin' and platform.mac_ver()[0].split('.')[0] != '15':
+        raise ValueError('Current CSS native source requires macOS 15')
     before = source_state(repo)
     identity = context(environment, before)
     manifest = json.loads((repo / 'packages/xpod-css/package.json').read_text())
     version = manifest.get('version')
     if manifest.get('name') != '@undefineds.co/xpod-css' or not isinstance(version, str):
         raise ValueError('CSS producer manifest missing')
-    if output.parent != repo / '.test-data' or output.name != f'css-product-{identity["runId"]}-{identity["runAttempt"]}-{PILOT}':
+    if output.parent != repo / '.test-data' or output.name != f'css-product-{identity["runId"]}-{identity["runAttempt"]}-{target}':
         raise ValueError('Fresh owned CI output path required')
     if output.parent.is_symlink():
         raise ValueError('Owned CI parent must not be a symlink')
     output.mkdir(mode=0o700)
     evidence = output / 'evidence'
     evidence.mkdir(mode=0o700)
-    identity.update(target=PILOT, version=version, actualMacOSVersion=platform.mac_ver()[0], actualMachine=platform.machine())
+    identity.update(target=target, version=version, actualMacOSVersion=platform.mac_ver()[0], actualMachine=platform.machine())
     receipt = dict(schemaVersion=1, kind='css-module-product-production', status='failed', context=identity,
                    sourceBefore=before, sourceAfter=None, phases=[], archive=None, packRaw=None, materials={},
                    rss=dict(enforced=False, observation='POSIX cumulative waited-child maximum; not group aggregate', cumulativeWaitedChildMaxRSSBytes=None),
@@ -267,7 +280,7 @@ def produce(repo, output, environment=None):
         if initial_free < FRESH_BYTES:
             raise ValueError('Fresh CSS producer capacity below 8GiB')
         receipt['nativeAcquisition'] = acquire_native(output, environment, identity)
-        for name, command, timeout in phase_plan(repo, output, version):
+        for name, command, timeout in phase_plan(repo, output, version, target):
             remaining = 50 * 60 - (time.monotonic() - started)
             if remaining <= 0:
                 raise ValueError('CSS product overall deadline')
@@ -288,7 +301,7 @@ def produce(repo, output, environment=None):
             except ValueError: continue
             if isinstance(value,dict) and 'archive' in value: candidates.append(value)
         if len(candidates)!=1: raise ValueError('Unique normal pack JSON required')
-        receipt.update(collect_facts(output, candidates[0], before['sha'], version))
+        receipt.update(collect_facts(output, candidates[0], before['sha'], version, target))
         receipt.update(status='controlled-preview-materials', sourceAfter=after, packRaw=reference(evidence / 'pack.raw.log', output))
     except BaseException as error:
         receipt['failure'] = type(error).__name__ + ': CSS producer failed; inspect bounded original evidence'
@@ -303,6 +316,7 @@ def produce(repo, output, environment=None):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--out', required=True)
+    parser.add_argument('--target', required=True)
     args = parser.parse_args()
-    result = produce(Path(__file__).resolve().parent.parent, Path(args.out))
+    result = produce(Path(__file__).resolve().parent.parent, Path(args.out), args.target)
     print(json.dumps(result))

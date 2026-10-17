@@ -237,6 +237,14 @@ class QleverRuntimeSdkContractTest(unittest.TestCase):
         actions = [line for line in workflow.splitlines() if "uses:" in line]
         self.assertGreater(len(actions), 0)
         for line in actions:
+            reference = line.split("uses:", 1)[1].strip()
+            if reference.startswith("./"):
+                self.assertIn(reference, {
+                    "./.github/workflows/resolve-qlever-native-target.yml",
+                    "./.github/workflows/build-qlever-linux-runtime.yml",
+                })
+                self.assertTrue((ROOT / reference).is_file())
+                continue
             revision = line.split("@", 1)[1].split()[0]
             self.assertRegex(revision, r"^[a-f0-9]{40}$")
 

@@ -1,0 +1,106 @@
+name: Build QLever Linux native runtime materials
+on:
+  workflow_call:
+    inputs:
+      target:
+        type: string
+        required: true
+      module_sdk_image:
+        description: Exact native module Bookworm SDK image at immutable digest
+        type: string
+        required: true
+    outputs:
+      artifact_name:
+        value: ${{ jobs.archive.outputs.artifact_name }}
+      artifact_id:
+        value: ${{ jobs.archive.outputs.artifact_id }}
+      artifact_digest:
+        value: ${{ jobs.archive.outputs.artifact_digest }}
+      source_sha:
+        value: ${{ github.sha }}
+  workflow_dispatch:
+    inputs:
+      target:
+        type: string
+        required: true
+      module_sdk_image:
+        type: string
+        required: true
+permissions:
+  contents: read
+  packages: write
+concurrency:
+  group: qlever-module-native-${{ inputs.target }}-${{ github.sha }}
+  cancel-in-progress: false
+jobs:
+  resolve:
+    uses: ./.github/workflows/resolve-qlever-native-target.yml
+    with:
+      target: ${{ inputs.target }}
+      platform: linux
+      sdk_profile: module-bookworm-gcc12
+  runtime:
+    needs: resolve
+    uses: ./.github/workflows/publish-qlever-local-runtime.yml
+    with:
+      target: ${{ needs.resolve.outputs.target }}
+      sdk_profile: module-bookworm-gcc12
+      prior_sdk_image: ${{ inputs.module_sdk_image }}
+  archive:
+    needs: [resolve, runtime]
+    runs-on: ${{ needs.resolve.outputs.runner }}
+    timeout-minutes: 30
+    outputs:
+      artifact_name: ${{ steps.metadata.outputs.artifact_name }}
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      artifact_digest: ${{ steps.upload.outputs.artifact-digest }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Bind fresh native material output identity
+        id: metadata
+        env:
+          TARGET: ${{ needs.resolve.outputs.target }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          echo "artifact_name=qlever-local-runtime-${TARGET}-${GITHUB_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
+      - name: Produce native source and ABI original materials
+        env:
+          TARGET: ${{ needs.resolve.outputs.target }}
+          SDK_IMAGE: ${{ inputs.module_sdk_image }}
+          RUNTIME_IMAGE: ${{ needs.runtime.outputs.image }}
+        run: |
+          set -euo pipefail
+          python3 qlever/scripts/produce-linux-runtime-archive.py \
+            --target "$TARGET" --sdk-image "$SDK_IMAGE" --runtime-image "$RUNTIME_IMAGE" \
+            --source-sha "$GITHUB_SHA" --out "$RUNNER_TEMP/qlever-native-materials"
+      - name: Upload exact native build and test materials
+        id: upload
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ${{ steps.metadata.outputs.artifact_name }}
+          path: ${{ runner.temp }}/qlever-native-materials/
+          if-no-files-found: error
+          retention-days: 30
+      - name: Preserve failed closed stage originals
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: qlever-native-diagnostics-${{ needs.resolve.outputs.target }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/qlever-native-materials/stages/
+            ${{ runner.temp }}/qlever-native-materials/physical/abi/
+            ${{ runner.temp }}/qlever-native-materials/ownership/
+          if-no-files-found: ignore
+          retention-days: 30

@@ -6,7 +6,7 @@ import http from 'node:http';
 import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 const { runPublicationCommand } = createRequire(import.meta.url)('../../scripts/lib/afs-publication-command.cjs');
-import { executeIndependentPublication, promoteIndependentPublication, normalizeIndependentDistTags } from '../../scripts/lib/independent-admission/publication-executor';
+import { executeIndependentPublication, promoteIndependentPublication, normalizeIndependentDistTags, estimateIndependentPublicationAuditWriteBytes, independentPublisherOwnWriteLimitBytes, independentPublicationUploadTimeoutMs, planIndependentPublicationTimeBudget, markPublicationCommandFailure, publicationRetainedArchiveMetadata, buildPublicationConsumerMaterials } from '../../scripts/lib/independent-admission/publication-executor';
 
 describe('guarded independent publication executor', () => {
   test('JSON passed claims fail before disk writes or network', async () => {
@@ -59,7 +59,11 @@ describe('dist-tag evidence and fixed Bun credential mode', () => {
       const address = server.address(); if (!address || typeof address === 'string') throw Error('loopback fixture unavailable');
       const registry = 'http://127.0.0.1:' + address.port + '/';
       for (const directory of ['package', 'home', 'tmp', 'evidence']) fs.mkdirSync(path.join(root, directory));
-      fs.writeFileSync(path.join(root, 'package', 'package.json'), JSON.stringify({ name: 'xpod-auth-fixture', version: '0.0.0', license: 'MIT' }));
+      const manifest = JSON.stringify({ name: 'xpod-auth-fixture', version: '0.0.0', license: 'MIT' });
+      // Bun initializes the invocation cwd even when publishing an explicit tarball.
+      // Keep the fixture independent of an accidental repository parent manifest.
+      fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ name: 'xpod-publication-work', version: '0.0.0', private: true }));
+      fs.writeFileSync(path.join(root, 'package', 'package.json'), manifest);
       const archive = path.join(root, 'fixture.tgz');
       execFileSync('tar', ['-czf', archive, '-C', root, 'package'], { timeout: 1000, maxBuffer: 4096 });
       const config = path.join(root, '.npmrc'); fs.writeFileSync(config, 'registry=' + registry + '\n', { mode: 0o600 });
@@ -86,4 +90,104 @@ describe('dist-tag evidence and fixed Bun credential mode', () => {
       fs.rmSync(root, { recursive: true, force: true });
     }
   }, 5000);
+});
+
+
+test('publication audit budget accounts for a complete multi-family cohort before any write', () => {
+  expect(estimateIndependentPublicationAuditWriteBytes(14) < independentPublisherOwnWriteLimitBytes).toBe(true);
+  for (const value of [0, -1, 1.5, NaN, Infinity, 128, 129]) expect(() => estimateIndependentPublicationAuditWriteBytes(value)).toThrow();
+});
+
+test('a full-shaped grouped JSON cannot enter archive callbacks or create publisher work', async () => {
+  const before = fs.readdirSync(os.tmpdir()).filter(name => name.startsWith('xpod-independent-publish-')).sort();
+  const rows = ['darwin-arm64', 'darwin-x64', 'linux-arm64', 'linux-x64'].map(target => ({
+    artifact: { identity: { package: '@undefineds.co/xpod-api-' + target, target }, status: 'verified' },
+    source: { status: 'verified' }, prepublishConsumer: { stage: 'prepublish', allProfilesVerified: true },
+  }));
+  await expect(executeIndependentPublication({ schemaVersion: 2, products: rows as any, token: 'never-used' })).rejects.toThrow('real central');
+  expect(fs.readdirSync(os.tmpdir()).filter(name => name.startsWith('xpod-independent-publish-')).sort()).toEqual(before);
+});
+
+
+test('actual collected tgz bytes drive bounded upload time instead of a fixed CLI timeout', () => {
+  expect(independentPublicationUploadTimeoutMs(1)).toBe(31_000);
+  expect(independentPublicationUploadTimeoutMs(400 * 1024 ** 2)).toBe(430_000);
+  expect(independentPublicationUploadTimeoutMs(700 * 1024 ** 2)).toBe(730_000);
+  for (const bytes of [0, -1, NaN, 1.5, 1024 ** 3]) expect(() => independentPublicationUploadTimeoutMs(bytes)).toThrow();
+});
+
+test('the last large target exceeding the serial pipeline budget prevents first publication work', () => {
+  const small = { archiveBytes: 1024 ** 2, targeted: false, consumerMaximumDurationMs: 400_000 };
+  expect(() => planIndependentPublicationTimeBudget([small, small], 20 * 60_000)).toThrow('exceeds reviewed workflow');
+  const portable = planIndependentPublicationTimeBudget([small, small], 40 * 60_000);
+  expect(portable.totalMs <= portable.pipelineLimitMs).toBe(true);
+  const large = { archiveBytes: 400 * 1024 ** 2, targeted: true, consumerMaximumDurationMs: 600_000 };
+  expect(() => planIndependentPublicationTimeBudget([small, large], portable.totalMs)).toThrow('exceeds reviewed workflow');
+  const platform = planIndependentPublicationTimeBudget([large, large, large, large], 3 * 60 * 60_000);
+  expect(platform.members[3].uploadMs).toBe(430_000);
+  expect(platform.members[3].registryConsumerMs).toBe(600_000);
+  expect(() => planIndependentPublicationTimeBudget([{ ...large, consumerMaximumDurationMs: 0 }], 3 * 60 * 60_000)).toThrow('consumer time budget');
+});
+
+
+test('unknown actual process closure retains archive while ordinary closed failure may clean up', () => {
+  const closed = { actualWait: true, actualClose: true, groupAbsent: true };
+  const error = Object.assign(new Error('fixture command failed'), { outcome: closed });
+  expect(markPublicationCommandFailure(error)).toEqual({ error, retainWorkData: false });
+  for (const delta of [{ actualWait: false }, { actualClose: false }, { groupAbsent: false }, { actualWait: 'true' }]) {
+    const result = markPublicationCommandFailure(Object.freeze(Object.assign(new Error('fixture'), { outcome: { ...closed, ...delta } })));
+    expect(result.retainWorkData).toBe(true);
+    expect((result.error as any).retainArchiveSnapshot).toBe(true);
+    expect('releaseQualified' in (result.error as object)).toBe(false);
+  }
+});
+
+test('central snapshot locator survives aggregate custody errors without raw diagnostics or credentials', () => {
+  const directory = path.join(fs.realpathSync(os.tmpdir()), 'xpod-publication-archive-fixture');
+  const retainedArchive = { path: path.join(directory, 'archive.tgz'), identity: { archiveBytes: 1,
+    archiveSha256: 'b'.repeat(64), integrity: 'sha512-' + Buffer.alloc(64).toString('base64') }, reason: 'publisher-process-closure-unconfirmed' };
+  const retained = Object.assign(new Error('fixture-only secret diagnostic must not propagate'), {
+    retainArchiveSnapshot: true, retainedArchiveSnapshotDirectory: directory, retainedArchive, token: 'never-copy-this',
+  });
+  const result = publicationRetainedArchiveMetadata(new AggregateError([retained, new Error('changed custody')]));
+  expect(result).toEqual({ retainArchiveSnapshot: true, retainedArchiveSnapshotDirectory: directory, retainedArchive });
+  expect(JSON.stringify(result).includes('never-copy-this')).toBe(false);
+  expect(JSON.stringify(result).includes('secret diagnostic')).toBe(false);
+  expect(publicationRetainedArchiveMetadata(new Error('ordinary closed failure'))).toEqual({});
+  expect(publicationRetainedArchiveMetadata({ retainArchiveSnapshot: true,
+    retainedArchiveSnapshotDirectory: '/untrusted/../../token' })).toEqual({ retainArchiveSnapshot: true });
+});
+
+
+test('actual executor material builder omits a second client for primary client and resolves external registry client', () => {
+  // These are inert test handles for the exact data builder, not central issuer substitutes.
+  const client = Object.freeze({ fixture: 'registry-client-handle' });
+  const cli = Object.freeze({ fixture: 'cohort-cli-handle' });
+  const api = Object.freeze({ fixture: 'cohort-api-handle' });
+  const registryCandidates = [{ artifact: client, identity: { package: '@undefineds.co/xpod-client' } }];
+  const primary = buildPublicationConsumerMaterials({ artifact: client, package: '@undefineds.co/xpod-client', candidates: registryCandidates });
+  expect(primary.artifact).toBe(client);
+  expect('client' in primary).toBe(false);
+  for (const [artifact, name] of [[cli, '@undefineds.co/xpod-cli'], [api, '@undefineds.co/xpod-api-linux-x64']] as const) {
+    const materials = buildPublicationConsumerMaterials({ artifact, package: name, candidates: registryCandidates,
+      dependencies: [client], peers: [] });
+    expect(materials.client).toBe(client);
+    expect(materials.artifact).toBe(artifact);
+    expect(Object.isFrozen(materials.dependencies)).toBe(true);
+  }
+  expect(() => buildPublicationConsumerMaterials({ artifact: cli, package: '@undefineds.co/xpod-cli', candidates: [] })).toThrow('one exact');
+  expect(() => buildPublicationConsumerMaterials({ artifact: cli, package: '@undefineds.co/xpod-cli', candidates: [...registryCandidates, ...registryCandidates] })).toThrow('one exact');
+});
+
+test('complete14-member upper bound does not fit hosted6h, without skipping any consumers', () => {
+  const modules = Array.from({ length: 12 }, () => ({ archiveBytes: 1, targeted: true, consumerMaximumDurationMs: 840_000 }));
+  const portable = Array.from({ length: 2 }, () => ({ archiveBytes: 1, targeted: false, consumerMaximumDurationMs: 420_000 }));
+  let required = 0;
+  try { planIndependentPublicationTimeBudget([...portable, ...modules], 360 * 60_000); }
+  catch (error) { required = (error as { requiredDurationMs: number }).requiredDurationMs; }
+  expect(required).toBe(23_534_000);
+  const family = planIndependentPublicationTimeBudget([...portable, ...modules.slice(0, 4)], 240 * 60_000);
+  const external = planIndependentPublicationTimeBudget(modules.slice(0, 4), 240 * 60_000, [false, false]);
+  expect(family.totalMs < 240 * 60_000).toBe(true);
+  expect(external.externalRegistryReadbackMs).toBe(120_000);
 });

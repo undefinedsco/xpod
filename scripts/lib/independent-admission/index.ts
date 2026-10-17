@@ -1,8 +1,11 @@
 import { githubOriginFacts } from './github-origin';
-import { collectedArtifactView } from './artifact-collector';
+import { collectedArtifactView, publicationMaterialView, readCollectedPortableArchive } from './artifact-collector';
 import { derivedSourceView } from './source-context';
 import { consumerObservationView } from './consumer-context';
 import { verifyRuntimeClosure } from './runtime-closure';
+import { verifyNativeAdmission } from './native-admission';
+import { inspectModuleSourcePhases } from './module-source-phases';
+import { verifyLegalAdmission } from './legal-admission';
 import { verifyCliInputSet } from './source-rules';
 import { verifyCliBuildExecution, type CliExecutionFacts } from './source-execution';
 import { createHash } from 'node:crypto';
@@ -31,6 +34,10 @@ export interface AdmissionContext {
   /** Opaque central material capability, separate from native release approval. */
   nativeMaterials?: unknown;
 }
+/** Large platform gates receive a real collected archive handle, never a
+ * caller-supplied whole tgz Buffer. Existing portable adapter signatures stay compatible. */
+export type CollectedAdmissionContext = Omit<AdmissionContext, 'archive'> & { collectedArtifact: unknown; archive?: never };
+
 export interface SourceMaterialFacts {
   listedTrackedSourceBytesVerified: boolean;
   sourceInputSetVerified: boolean;
@@ -46,8 +53,11 @@ export interface SourceMaterialFacts {
   descendantClosureVerified: false;
   sourceQualified: boolean;
 }
-export interface AdmissionResult { status: 'pending' | 'verified'; reason: string; pending?: string[]; facts?: SourceMaterialFacts }
-interface Adapter { verify(evidence: any, context: AdmissionContext): AdmissionResult }
+export interface AdmissionResult { status: 'pending' | 'verified'; reason: string; pending?: string[]; facts?: SourceMaterialFacts; details?: unknown }
+interface Adapter {
+  verify(evidence: any, context: AdmissionContext): AdmissionResult;
+  verifyCollected?(evidence: unknown, context: CollectedAdmissionContext): AdmissionResult;
+}
 const digest = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
 const reject = (message: string): never => { throw new Error('Independent source admission: ' + message); };
 
@@ -190,37 +200,104 @@ const source: Adapter = {
   },
 };
 
-/** One gate registry. Product identities remain in the existing module catalog.
- * Unimplemented adapters must stay fail closed; arbitrary approval booleans have
- * no meaning here. No public token constructor or caller transport grants trust. */
-const adapters: Readonly<Record<Gate, Adapter>> = Object.freeze<Record<Gate, Adapter>>({
-  source,
-  'runtime-closure': { verify: (evidence, context) => {
-    const result = verifyRuntimeClosure(evidence, context);
-    return { status: result.status, reason: result.reason, pending: [...result.pending] };
-  } },
-  native: { verify: evidence => ({ status: 'pending', reason: evidence?.status === 'material-integrity-verified' && evidence.externalAdmission === 'pending'
-    ? 'Native materials are internally bound; external admission remains pending'
-    : 'No authoritative independent release admission verifier exists for this evidence format' }) },
-  legal: { verify: evidence => ({ status: 'pending', reason: evidence?.schemaVersion === 1 && evidence.status === 'original-material-collection' && evidence.legalClearance === false
-    ? 'Original terms inventory explicitly does not confer legal clearance'
-    : 'No authoritative independent release admission verifier exists for this evidence format' }) },
-  consumer: { verify: (_evidence, context) => {
+function legalGate(evidence: unknown, context: AdmissionContext | CollectedAdmissionContext): AdmissionResult {
+  const result = verifyLegalAdmission(evidence, context);
+  return { status: result.status, reason: result.reason, pending: result.pending, details: result.facts };
+}
+
+
+function consumerGate(_evidence: unknown, context: AdmissionContext | CollectedAdmissionContext): AdmissionResult {
     const observation = consumerObservationView(context.consumerObservation);
     if (!observation) return { status: 'pending', reason: 'A real fixed consumer observation capability is required' };
     const identity = observation.identity;
+    const collected = collectedArtifactView(context.collectedArtifact);
+    const archiveIdentity = collected?.identity;
+    const actual = Buffer.isBuffer(context.archive) ? { archiveSha256: digest(context.archive), archiveBytes: context.archive.length,
+      integrity: 'sha512-' + createHash('sha512').update(context.archive).digest('base64') } : archiveIdentity;
+    if (!actual) return { status: 'pending', reason: 'Real collected archive identity required' };
     if (identity.sourceSha !== context.sourceSha || identity.package !== context.package
       || identity.version !== context.version || identity.target !== context.target
-      || identity.archiveSha256 !== digest(context.archive)
-      || identity.archiveBytes !== context.archive.length
-      || identity.integrity !== 'sha512-' + createHash('sha512').update(context.archive).digest('base64')) reject('consumer observation product identity mismatch');
+      || identity.archiveSha256 !== actual.archiveSha256
+      || identity.archiveBytes !== actual.archiveBytes
+      || identity.integrity !== actual.integrity) reject('consumer observation product identity mismatch');
     if (observation.stage !== 'prepublish') return { status: 'pending', reason: 'Prepublish consumer observation required for this gate' };
     return observation.allProfilesVerified
       ? { status: 'verified', reason: 'Fixed Node/Bun public export consumer profiles verified; no remote Pod/auth/chat claim' }
       : { status: 'pending', reason: 'Complete public export consumer profiles remain pending; base import success is a separate observation' };
+}
+
+/** One gate registry. Product identities remain in the existing module catalog.
+ * Unimplemented adapters must stay fail closed; arbitrary approval booleans have
+ * no meaning here. No public token constructor or caller transport grants trust. */
+const adapters: Readonly<Record<Gate, Adapter>> = Object.freeze<Record<Gate, Adapter>>({
+  source: { ...source, verifyCollected: (_evidence, context) => {
+    const material = publicationMaterialView(context.collectedArtifact);
+    if (!material || !context.derivedSource) return { status: 'pending', reason: 'Controlled module producer and immutable Git source required' };
+    const phases = inspectModuleSourcePhases({ artifact: context.collectedArtifact, source: context.derivedSource, origin: material.origin });
+    return { status: 'pending', reason: phases.status === 'pending' ? phases.reason
+      : 'Module phase originals verified; complete sourcekit/output/toolchain provenance remains required', details: phases };
   } },
+  'runtime-closure': { verify: (evidence, context) => {
+    const result = verifyRuntimeClosure(evidence, context);
+    return { status: result.status, reason: result.reason, pending: [...result.pending] };
+  } },
+  native: { verify: (evidence, context) => {
+    const result = verifyNativeAdmission(evidence, context);
+    return { status: result.status, reason: result.reason, pending: [...result.pending] };
+  } },
+  legal: { verify: legalGate, verifyCollected: legalGate },
+  consumer: { verify: consumerGate, verifyCollected: consumerGate },
 });
-export function verifyAdmission(gate: Gate, evidence: unknown, context: AdmissionContext): AdmissionResult {
+export function verifyAdmission(gate: Gate, evidence: unknown, context: AdmissionContext | CollectedAdmissionContext): AdmissionResult {
   if (!Object.prototype.hasOwnProperty.call(adapters, gate)) throw new Error('Unknown independent admission gate');
-  return adapters[gate].verify(evidence, context);
+  if (!Buffer.isBuffer(context.archive)) return verifyCollectedAdmission(gate, evidence, context as CollectedAdmissionContext);
+  return adapters[gate].verify(evidence, context as AdmissionContext);
+}
+
+export function verifyCollectedAdmission(gate: Gate, evidence: unknown, context: CollectedAdmissionContext): AdmissionResult {
+  if (!Object.prototype.hasOwnProperty.call(adapters, gate)) throw new Error('Unknown independent admission gate');
+  const collected = collectedArtifactView(context.collectedArtifact);
+  if (!collected) return { status: 'pending', reason: 'Real collected archive capability required for bounded admission' };
+  const identity = collected.identity;
+  if (identity.sourceSha !== context.sourceSha || identity.package !== context.package || identity.version !== context.version
+    || identity.target !== context.target) reject('collected admission product identity mismatch');
+  if (identity.target === undefined) return adapters[gate].verify(evidence, { ...context, archive: readCollectedPortableArchive(context.collectedArtifact) });
+  const adapter = adapters[gate];
+  if (adapter.verifyCollected) return adapter.verifyCollected(evidence, context);
+  return { status: 'pending', reason: `Bounded collected ${gate} adapter required for platform product; portable consumer or archive Buffer is not a substitute` };
+}
+
+export interface CollectedPublicationAdmissionInput {
+  artifact: unknown;
+  derivedSource: unknown;
+  consumerObservation?: unknown;
+  relatedArtifacts: readonly unknown[];
+  nativeMaterials?: unknown;
+}
+
+/** The publisher supplies opaque handles only. This central entry derives
+ * product coordinates and producer evidence; no guessed result.json or fake
+ * empty archive is accepted from the publication orchestrator. */
+export function verifyCollectedPublicationAdmission(gate: Gate, input: CollectedPublicationAdmissionInput): AdmissionResult {
+  if (!Object.prototype.hasOwnProperty.call(adapters, gate)) throw new Error('Unknown independent admission gate');
+  const artifact = collectedArtifactView(input.artifact), material = publicationMaterialView(input.artifact);
+  if (!artifact || !material) return { status: 'pending', reason: 'Controlled publication material capability required' };
+  const source = derivedSourceView(input.derivedSource), identity = artifact.identity;
+  if (source && source.sourceSha !== identity.sourceSha) reject('publication source capability identity mismatch');
+  const context: CollectedAdmissionContext = {
+    sourceSha: identity.sourceSha, runHeadSha: material.producer.runHeadSha,
+    package: identity.package, version: identity.version, target: identity.target,
+    collectedArtifact: input.artifact, derivedSource: input.derivedSource, relatedArtifacts: input.relatedArtifacts,
+    githubOrigin: material.origin, consumerObservation: input.consumerObservation, nativeMaterials: input.nativeMaterials,
+    trackedPaths: source?.trackedPaths,
+    readTracked: name => source ? source.readTracked(name) : reject('Immutable publication source capability required'),
+    readOriginal: reference => {
+      const bytes = material.readOriginal(reference.path, 8 * 1024 ** 2);
+      if (digest(bytes) !== reference.sha256) reject('publication original digest mismatch');
+      return bytes;
+    },
+  };
+  const evidence = gate === 'source'
+    ? JSON.parse(material.readOriginal(material.producerReceipt.path, 1024 ** 2).toString()) : undefined;
+  return verifyCollectedAdmission(gate, evidence, context);
 }

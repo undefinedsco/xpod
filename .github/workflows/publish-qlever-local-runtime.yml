@@ -3,12 +3,28 @@ name: Publish QLever local runtime image
 on:
   workflow_dispatch:
     inputs:
+      sdk_profile:
+        description: Declared SDK and runtime ABI profile
+        type: string
+        default: service-trixie
+      target:
+        description: Native Linux target; the default preserves the existing service image
+        type: string
+        default: linux-x64
       prior_sdk_image:
         description: Immutable QLever runtime SDK image reference
         required: true
         type: string
   workflow_call:
     inputs:
+      sdk_profile:
+        description: Declared SDK and runtime ABI profile
+        type: string
+        default: service-trixie
+      target:
+        description: Native Linux target; the default preserves the existing service image
+        type: string
+        default: linux-x64
       prior_sdk_image:
         description: Immutable QLever runtime SDK image reference
         required: true
@@ -26,15 +42,21 @@ permissions:
   packages: write
 
 concurrency:
-  group: qlever-local-runtime-${{ github.sha }}
+  group: qlever-local-runtime-${{ inputs.sdk_profile || 'service-trixie' }}-${{ inputs.target || 'linux-x64' }}-${{ github.sha }}
   cancel-in-progress: false
 
-env:
-  IMAGE: ghcr.io/${{ github.repository_owner }}/xpod-qlever-local-runtime
-
 jobs:
+  resolve_target:
+    uses: ./.github/workflows/resolve-qlever-native-target.yml
+    with:
+      target: ${{ inputs.target || 'linux-x64' }}
+      platform: linux
+      sdk_profile: ${{ inputs.sdk_profile }}
   publish:
-    runs-on: ubuntu-24.04
+    needs: resolve_target
+    env:
+      IMAGE: ghcr.io/${{ github.repository_owner }}/xpod-qlever-local-runtime${{ needs.resolve_target.outputs.repository_profile_suffix }}${{ needs.resolve_target.outputs.repository_suffix }}
+    runs-on: ${{ needs.resolve_target.outputs.runner }}
     timeout-minutes: 120
     outputs:
       image: ${{ steps.publish.outputs.image }}
@@ -58,7 +80,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          inputs_hash="$({ git rev-parse "${GITHUB_SHA}:qlever"; git rev-parse "${GITHUB_SHA}:docker/qlever-local-runtime"; } | sha256sum | cut -c1-12)"
+          inputs_hash="$({ printf '%s\n' '${{ needs.resolve_target.outputs.sdk_profile }}:${{ needs.resolve_target.outputs.target }}:${{ needs.resolve_target.outputs.sdk_profile_identity }}'; git rev-parse "${GITHUB_SHA}:qlever"; git rev-parse "${GITHUB_SHA}:docker/qlever-local-runtime"; } | sha256sum | cut -c1-12)"
           echo "tag=qlever-inputs-${inputs_hash}" >> "${GITHUB_OUTPUT}"
           echo "QLever local runtime inputs: qlever-inputs-${inputs_hash}" >> "${GITHUB_STEP_SUMMARY}"
 
@@ -66,6 +88,11 @@ jobs:
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
           bun-version: 1.4.2
+
+      - name: Verify the actual native producer host
+        env:
+          EXPECTED_ARCH: ${{ needs.resolve_target.outputs.arch }}
+        run: bun -e 'if(process.platform!=="linux" || process.arch!==process.env.EXPECTED_ARCH) throw Error("Native producer host/target mismatch")'
 
       - name: Install and patch product-gate dependencies
         run: |
@@ -93,9 +120,9 @@ jobs:
         shell: bash
         env:
           RUNTIME_IMAGE: ${{ env.IMAGE }}
-          RUNTIME_DOCKERFILE: ./docker/qlever-local-runtime/Dockerfile
+          RUNTIME_DOCKERFILE: ${{ needs.resolve_target.outputs.runtime_dockerfile }}
           QELEVER_INPUTS_TAG: ${{ steps.inputs.outputs.tag }}
-          REUSE_IDENTICAL_INPUTS: 'true'
+          REUSE_IDENTICAL_INPUTS: ${{ needs.resolve_target.outputs.sdk_profile == 'service-trixie' && 'true' || 'false' }}
         run: bash qlever/scripts/resolve-runtime-sdk-build.sh
 
       - name: Build the exact local runtime image
@@ -106,7 +133,7 @@ jobs:
           context: .
           file: ${{ steps.resolve.outputs.dockerfile }}
           target: runtime
-          platforms: linux/amd64
+          platforms: ${{ needs.resolve_target.outputs.docker_platform }}
           load: true
           push: false
           tags: |
@@ -115,8 +142,8 @@ jobs:
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
-          cache-from: type=gha,scope=qlever-local-runtime
-          cache-to: type=gha,mode=max,scope=qlever-local-runtime
+          cache-from: type=gha,scope=qlever-local-runtime-${{ needs.resolve_target.outputs.sdk_profile }}-${{ needs.resolve_target.outputs.target }}
+          cache-to: type=gha,mode=max,scope=qlever-local-runtime-${{ needs.resolve_target.outputs.sdk_profile }}-${{ needs.resolve_target.outputs.target }}
           build-args: |
             XPOD_QLEVER_BUILD_JOBS=2
             XPOD_QLEVER_PRIOR_SDK_IMAGE=${{ inputs.prior_sdk_image }}
@@ -239,7 +266,7 @@ jobs:
           context: .
           file: ${{ steps.resolve.outputs.dockerfile }}
           target: runtime
-          platforms: linux/amd64
+          platforms: ${{ needs.resolve_target.outputs.docker_platform }}
           push: true
           tags: |
             ${{ env.IMAGE }}:sha-${{ github.sha }}

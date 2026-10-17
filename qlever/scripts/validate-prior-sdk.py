@@ -10,6 +10,9 @@ import tempfile
 from pathlib import Path
 from typing import Optional
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from qlever_compiler_profile import compiler_spec, compiler_versions
+
 
 def fail(message: str) -> None:
     print(message, file=sys.stderr)
@@ -101,7 +104,7 @@ def validate_cache(build_dir: Path, source: Path) -> dict[str, str]:
     if home is not None and Path(home).resolve() != source.resolve():
         fail("prior SDK CMake cache incompatible: source path")
     compiler = cache.get("CMAKE_CXX_COMPILER", "")
-    if "clang++-19" not in compiler:
+    if Path(compiler).name != compiler_spec()["cxx"]:
         fail("prior SDK CMake cache incompatible: compiler")
     return {key: cache.get(key, "") for key in sorted(required)}
 
@@ -125,7 +128,7 @@ def validate_compile_commands(build_dir: Path, source: Path) -> None:
                 command_tokens = shlex.split(entry.get("command", ""))
             except (TypeError, ValueError):
                 fail("prior SDK compile_commands incompatible: compiler")
-        if not command_tokens or Path(command_tokens[0]).name not in {"clang-19", "clang++-19"}:
+        if not command_tokens or Path(command_tokens[0]).name not in {compiler_spec()["c"], compiler_spec()["cxx"]}:
             fail("prior SDK compile_commands incompatible: compiler")
         raw_file = entry.get("file")
         if not isinstance(raw_file, str) or not raw_file:
@@ -178,17 +181,15 @@ def load_or_bootstrap_contract(
         except json.JSONDecodeError:
             fail("prior SDK build contract invalid")
     elif bootstrap:
+        if compiler_spec()["profile"] != "service-trixie":
+            fail("Module SDK profile requires an original build contract; bootstrap forbidden")
         contract = {
             "schemaVersion": 1,
             "component": "qlever-runtime-sdk",
             "base": {
                 "osReleasePrettyName": os_pretty_name(),
             },
-            "toolchain": {
-                "clang": tool_version(["clang-19", "--version"]),
-                "clangxx": tool_version(["clang++-19", "--version"]),
-                "cmake": tool_version(["cmake", "--version"]),
-            },
+            "toolchain": compiler_versions(),
             "cmake": {
                 "source": str(source),
                 "build": str(build_dir),
@@ -208,11 +209,7 @@ def load_or_bootstrap_contract(
     if base.get("osReleasePrettyName") != os_pretty_name():
         fail("prior SDK build contract incompatible: base")
     toolchain = contract.get("toolchain", {})
-    expected_tools = {
-        "clang": tool_version(["clang-19", "--version"]),
-        "clangxx": tool_version(["clang++-19", "--version"]),
-        "cmake": tool_version(["cmake", "--version"]),
-    }
+    expected_tools = compiler_versions()
     if toolchain != expected_tools:
         fail("prior SDK build contract incompatible: toolchain")
     cmake_contract = contract.get("cmake", {})
@@ -308,9 +305,7 @@ def main() -> None:
         "sourceDigest": hashlib.sha256(persisted_manifest.encode()).hexdigest(),
         "sourceManifest": persisted_manifest,
         "toolchain": {
-            "cmake": tool_version(["cmake", "--version"]),
-            "clang": tool_version(["clang-19", "--version"]),
-            "clangxx": tool_version(["clang++-19", "--version"]),
+            **compiler_versions(),
             "cache": cache_metadata,
         },
         "paths": {

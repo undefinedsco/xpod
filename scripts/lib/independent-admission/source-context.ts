@@ -5,10 +5,17 @@ import { collectedArtifactView } from './artifact-collector';
 import type { CollectedArtifactCapability, DerivedSourceCapability, DerivedSourceView } from './artifact-contract';
 
 const issued = new WeakMap<object, DerivedSourceView>();
+const artifactCheckouts = new WeakMap<object, string>();
 const fail = (message: string): never => { throw new Error('Independent derived source: ' + message); };
 
 export function derivedSourceView(value: unknown): DerivedSourceView | undefined {
   return value !== null && typeof value === 'object' ? issued.get(value) : undefined;
+}
+
+/** Available only after this process derived immutable source for the exact
+ * real artifact. Used by the fixed consumer to deny reads of the checkout. */
+export function collectedArtifactSourceCheckout(artifact: unknown): string | undefined {
+  return artifact && typeof artifact === 'object' && collectedArtifactView(artifact) ? artifactCheckouts.get(artifact) : undefined;
 }
 
 /** Derives immutable tracked blobs from a clean exact checkout bound to a real
@@ -41,5 +48,5 @@ export function deriveAdmissionSource(artifact: CollectedArtifactCapability, che
       return bytes;
     } });
   const capability = Object.freeze({}) as DerivedSourceCapability;
-  issued.set(capability, view); return capability;
+  issued.set(capability, view); artifactCheckouts.set(artifact, root); return capability;
 }

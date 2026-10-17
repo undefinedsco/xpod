@@ -1,4 +1,4 @@
-name: CSS module preview product pilot
+name: CSS module preview products
 
 on:
   pull_request:
@@ -12,6 +12,9 @@ jobs:
   contract:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.targets.outputs.matrix }}
+      pending: ${{ steps.targets.outputs.pending }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -20,15 +23,25 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.2
-      - run: bun test tests/bun/css-module-producer.test.ts
+      - run: bun test tests/bun/css-module-producer.test.ts tests/bun/module-product-targets.test.ts
+      - id: targets
+        name: Project canonical targets and actual native-source coverage
+        run: |
+          bun scripts/module-product-targets.ts css > targets.json
+          bun -e 'const p=await Bun.file("targets.json").json();for(const [key,available] of [["matrix",true],["pending",false]])console.log(key+"="+JSON.stringify({include:p.include.filter(x=>x.nativeSourceAvailable===available)}));' >> "$GITHUB_OUTPUT"
 
   native:
     needs: contract
     uses: ./.github/workflows/build-qlever-macos-runtime.yml
 
-  darwin-arm64-preview:
+  products:
+    name: products (${{ matrix.target }})
     needs: [contract, native]
-    runs-on: macos-15
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix: ${{ fromJSON(needs.contract.outputs.matrix) }}
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     permissions:
       contents: read
@@ -56,14 +69,14 @@ jobs:
           set -euo pipefail
           umask 077
           mkdir -p "$GITHUB_WORKSPACE/.test-data"
-          root="$GITHUB_WORKSPACE/.test-data/css-product-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-darwin-arm64"
+          root="$GITHUB_WORKSPACE/.test-data/css-product-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${{ matrix.target }}"
           echo "CSS_PRODUCT_ROOT=$root" >> "$GITHUB_ENV"
-          python3 scripts/css-module-producer.py --out "$root"
+          python3 scripts/css-module-producer.py --target "${{ matrix.target }}" --out "$root"
       - name: Upload original preview and evidence
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: css-module-products-darwin-arm64-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: css-module-products-${{ matrix.target }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             ${{ env.CSS_PRODUCT_ROOT }}/product.tgz
             ${{ env.CSS_PRODUCT_ROOT }}/producer.receipt.json
@@ -75,9 +88,37 @@ jobs:
         if: failure() && env.CSS_PRODUCT_ROOT != ''
         uses: actions/upload-artifact@v4
         with:
-          name: css-module-diagnostics-darwin-arm64-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: css-module-diagnostics-${{ matrix.target }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             ${{ env.CSS_PRODUCT_ROOT }}/producer.receipt.json
             ${{ env.CSS_PRODUCT_ROOT }}/evidence/
           if-no-files-found: warn
+          retention-days: 30
+
+  pending-native-sources:
+    needs: contract
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.contract.outputs.pending) }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - name: Record missing native source without creating a product
+        env:
+          PRODUCT_TARGET: ${{ matrix.target }}
+        run: |
+          mkdir -p .test-data/css-native-pending
+          bun scripts/module-product-targets.ts css "$PRODUCT_TARGET" > ".test-data/css-native-pending/$PRODUCT_TARGET.json"
+          echo "CSS $PRODUCT_TARGET: pending native source; no product or consumer qualification" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: css-native-source-pending-${{ matrix.target }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .test-data/css-native-pending/
+          if-no-files-found: error
           retention-days: 30

@@ -25,11 +25,11 @@ probes = load('xpod_api_consumer_probes', 'api-consumer-probes.py')
 require = lifecycle.require
 
 
-def bind_projection(receipt, producer):
+def bind_projection(receipt, producer, declaration):
     context = producer['context']
-    require(context.get('target') == 'darwin-arm64', 'API target mismatch')
+    require(context.get('target') == declaration['target'], 'API target mismatch')
     return dict(receipt, archive=producer['archive'], consumerInput=receipt['collectorInput'], package=dict(
-        name='@undefineds.co/xpod-api-darwin-arm64', target=context['target'], version=context['version']))
+        name=declaration['name'], target=context['target'], version=context['version']))
 
 
 def validate(plan):
@@ -57,7 +57,12 @@ class Runner(lifecycle.ModuleConsumerRunner):
 
     def verify_installed(self, runtime, package_root, installed_package):
         require(installed_package['xpodModule']['id'] == 'api', 'installed API module id differs')
-        return {}
+        declaration = self.checked['target']
+        native_index = json.loads((package_root / 'provenance/native/inngest/index.json').read_text())
+        require(native_index.get('platform') == declaration['platform'] and native_index.get('arch') == declaration['arch'], 'Inngest provenance target differs')
+        require(native_index.get('binarySHA256') == lifecycle.digest(package_root / 'node_modules/inngest-cli/bin/inngest'), 'Inngest provenance bytes differ')
+        return dict(nativeTargetVerification=lifecycle.targets.native_files(package_root, installed_package,
+            self.checked['target']['target'], self.plan['bun'], ['node_modules/inngest-cli/bin/inngest'], self.module_id))
 
     def exercise_service(self, runtime, cli, env, cycle, data, package_root, installed_package):
         with socket.socket() as sock:

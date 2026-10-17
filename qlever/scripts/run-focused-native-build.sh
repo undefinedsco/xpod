@@ -105,7 +105,11 @@ run_build() {
 
   rm -rf "$artifact_dir"
   mkdir -p "$local_build_dir" "$artifact_dir" "$output_dir/logs"
-  CC=clang-19 CXX=clang++-19 cmake \
+  local c_compiler cxx_compiler linker
+  c_compiler=$(python3 "$workspace_root/qlever/scripts/qlever_compiler_profile.py" c)
+  cxx_compiler=$(python3 "$workspace_root/qlever/scripts/qlever_compiler_profile.py" cxx)
+  linker=$(python3 "$workspace_root/qlever/scripts/qlever_compiler_profile.py" linker)
+  CC="$c_compiler" CXX="$cxx_compiler" cmake \
     -S "$local_runtime_source" \
     -B "$local_build_dir" \
     -DCMAKE_BUILD_TYPE=Release \
@@ -113,8 +117,8 @@ run_build() {
     -DXPOD_QLEVER_SOURCE_DIR="$qlever_source_dir" \
     -DXPOD_QLEVER_BUILD_DIR="$qlever_build_dir" \
     -DXPOD_QLEVER_DEPENDENCY_INCLUDE_DIRS="$dependency_includes" \
-    -DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=lld \
-    -DCMAKE_SHARED_LINKER_FLAGS=-fuse-ld=lld
+    -DCMAKE_EXE_LINKER_FLAGS="-fuse-ld=$linker" \
+    -DCMAKE_SHARED_LINKER_FLAGS="-fuse-ld=$linker"
   cmake --build "$local_build_dir" \
     --target xpod_qlever_local_runtime \
     -- -j"$build_jobs"

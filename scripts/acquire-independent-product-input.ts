@@ -4,6 +4,7 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 import { isDeepStrictEqual } from 'node:util';
 import { MODULE_TARGETS } from '../packages/xpod-cli/src/module-catalog';
+import { productTargets } from './module-product-targets';
 const { withOwnedTempRoot, assertOwnedTempParent } = createRequire(import.meta.url)('./lib/owned-temp-root.cjs');
 
 // Trust is program policy, not a caller-supplied workflow allowlist. Neither the
@@ -165,7 +166,8 @@ async function acquireProductInput(input: ArtifactAcquisitionInput, output: stri
     const allowedNames = legacy ? [`legacy-root-normal-afs-${input.sourceSha}-${input.runId}-${input.runAttempt}`] : workflow.path === CLI_PRODUCT_WORKFLOW
       ? [...['Linux', 'macOS'].map(os => `xpod-cli-${os}-${input.sourceSha}`), ...cliPublicationNames]
       : [API_PRODUCT_WORKFLOW, CSS_PRODUCT_WORKFLOW].includes(workflow.path)
-        ? [`${workflow.path === CSS_PRODUCT_WORKFLOW ? 'css' : 'api'}-module-products-darwin-arm64-${input.sourceSha}-${input.runId}-${input.runAttempt}`]
+        ? productTargets(workflow.path === CSS_PRODUCT_WORKFLOW ? 'css' : 'api').filter(row => row.nativeSourceAvailable)
+          .map(row => `${workflow.path === CSS_PRODUCT_WORKFLOW ? 'css' : 'api'}-module-products-${row.target}-${input.sourceSha}-${input.runId}-${input.runAttempt}`)
       : MODULE_TARGETS.map(target => `afs-module-products-${target.platform}-${target.arch}-${input.sourceSha}-${input.runId}-${input.runAttempt}`);
     const created = Date.parse(artifact.created_at), started = Date.parse(run.run_started_at), completed = Date.parse(legacy ? producerJob.completed_at : run.updated_at);
     if (artifact.id !== input.artifactId || !allowedNames.includes(artifact.name) || artifact.expired !== false || artifact.workflow_run?.id !== run.id

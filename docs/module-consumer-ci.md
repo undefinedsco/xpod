@@ -28,3 +28,7 @@
 现有 CSS driver 在每轮创建独立 HOME 后运行离线安装。独立空缓存的小夹具安装已成功，尚无真实冷 CI 失败证据，不能据此添加依赖预热或认定真实归档已通过。默认 validate-only 成功只表示准备与验证通过；开启执行后也必须检查实际消费者结果、服务与 QLever、进程退出和保留证据。真实 Chat 链路仍是独立验收层级。
 
 API 沿用公共字段契约，将 `cssReceipt` / `cssArchive` 替换为 `apiReceipt` / `apiArchive`。API 的版本、target 和 archive 读取哈希绑定的 producer receipt，并核对 collector input 的源码与归档关系；不伪造 CSS projection。相同获取入口分别调用现有 CSS/API projector，未增加解压器。消费者 driver 只能通过已验证的模块值选择固定路径；artifact 名包含模块名，避免混淆。执行 API 时，工具 checkout 必须包含共享 Runner 和 `scripts/api-module-consumer.py`；缺少文件会失败，不能借用其他源码树补齐。
+
+Consumer target selection uses `scripts/module-product-targets.ts`. Manual request JSON must include `target`; producer context, projection, installed package name/platform/arch, actual Node/Bun architecture and native bytes must agree. Pending CSS native sources are rejected before acquisition. Linux execution requires bubblewrap and actual inherited source-denial probes; unavailable isolation fails without fallback. Native byte/target checks do not grant native, legal or release admission. New platform execution remains unverified until real original archives complete the consumer.
+
+Bubblewrap option semantics: [upstream manual](https://github.com/containers/bubblewrap/blob/main/bwrap.xml). The new Linux backend has not been exercised locally; real namespace and inherited-denial probes remain mandatory.

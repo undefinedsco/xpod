@@ -13,7 +13,6 @@ import subprocess
 import sys
 import time
 
-PILOT = 'darwin-arm64'
 FRESH_BYTES = 8 * 1024**3
 FLOOR_BYTES = 2 * 1024**3
 ARCHIVE_LIMIT = 512 * 1024**2
@@ -68,7 +67,11 @@ def context(environment, source):
                 event=event_name, runHeadSha=head, githubSha=environment['GITHUB_SHA'], actualCheckoutSha=source['sha'])
 
 
-def phase_plan(repo, output, version):
+def target_identity(repo, target):
+    return json.loads(subprocess.check_output(['bun', str(Path(repo) / 'scripts/module-product-targets.ts'), 'api', target, '--require-host'], cwd=repo, text=True))
+
+
+def phase_plan(repo, output, version, target):
     """Commands are the normal producer entrypoints, without replacement writers."""
     repo, output = Path(repo), Path(output)
     api = ['bun', 'run', '--cwd', 'packages/xpod-api']
@@ -79,7 +82,7 @@ def phase_plan(repo, output, version):
         ('shared-packages', ['bun', 'run', 'build:packages'], 600),
         ('dependency-state', ['bun', 'scripts/check-dependency-state.ts'], 120),
         ('api-build', api + ['build'], 600),
-        ('native-inputs', ['bun', str(scripts / 'prepare-inngest-inputs.ts'), '--target', PILOT, '--out', str(output / 'originals')], 300),
+        ('native-inputs', ['bun', str(scripts / 'prepare-inngest-inputs.ts'), '--target', target, '--out', str(output / 'originals')], 300),
         ('stage', api + ['stage', str(output / 'stage'), 'preview', version], 600),
         ('native-material', ['bun', str(scripts / 'native-material.ts'), str(output / 'stage'), str(output / 'originals')], 300),
         ('notices', ['bun', str(scripts / 'notice-material.ts'), str(output / 'stage')], 300),
@@ -107,7 +110,8 @@ def closed_phase(receipt):
             and receipt.get('resourceStop') is None and receipt.get('supervisorError') is None and not receipt.get('cleanupErrors'))
 
 
-def collect_facts(output, packed, source_sha, version, declaration):
+def collect_facts(output, packed, source_sha, version, declaration, target):
+    target_platform, target_arch = target.split('-')
     output = Path(output)
     archive = output / 'product.tgz'
     ref = reference(archive, output)
@@ -123,7 +127,7 @@ def collect_facts(output, packed, source_sha, version, declaration):
     stage = output / 'stage'
     manifest = json.loads((stage / 'package.json').read_text())
     module = manifest.get('xpodModule', {})
-    if manifest.get('name') != declaration['name'] or manifest.get('version') != version or manifest.get('private') is not True or module.get('id') != 'api' or module.get('platform') != 'darwin' or module.get('arch') != 'arm64' or module.get('cliApiVersion') != declaration['cliApiVersion']:
+    if manifest.get('name') != declaration['name'] or manifest.get('version') != version or manifest.get('private') is not True or module.get('id') != 'api' or module.get('platform') != target_platform or module.get('arch') != target_arch or module.get('cliApiVersion') != declaration['cliApiVersion']:
         raise ValueError('Actual preview product manifest mismatch')
     materials = {}
     values = {}
@@ -144,31 +148,32 @@ def collect_facts(output, packed, source_sha, version, declaration):
     if terms.get('status') != 'original-material-collection' or terms.get('legalClearance') is not False or not isinstance(terms.get('missingNamedOriginalTerms'), list):
         raise ValueError('Original terms inventory required')
     native = values['nativeIndex']
-    if native.get('platform') != 'darwin' or native.get('arch') != 'arm64' or native.get('legalClearance') is not False:
+    if native.get('platform') != target_platform or native.get('arch') != target_arch or native.get('legalClearance') is not False:
         raise ValueError('Actual native target/material identity mismatch')
     return dict(archive=dict(**ref, integrity=integrity, members=packed['members']), materials=materials,
                 sourceAuthority=authority, missingNamedOriginalTerms=terms['missingNamedOriginalTerms'])
 
 
-def produce(repo, output, environment=None):
+def produce(repo, output, target, environment=None):
     repo, output = Path(repo).resolve(), Path(output).resolve()
     environment = dict(os.environ if environment is None else environment)
-    if platform.system() != 'Darwin' or platform.machine() != 'arm64':
-        raise ValueError('API product pilot requires native darwin-arm64')
+    target_info = target_identity(repo, target)
+    if not target_info['nativeSourceAvailable']:
+        raise ValueError('API native source is pending for requested target')
     before = source_state(repo)
     identity = context(environment, before)
     manifest = json.loads((repo / 'packages/xpod-api/package.json').read_text())
     version = manifest.get('version')
     if manifest.get('name') != '@undefineds.co/xpod-api' or not isinstance(version, str):
         raise ValueError('API producer manifest missing')
-    if output.parent != repo / '.test-data' or output.name != f'api-product-{identity["runId"]}-{identity["runAttempt"]}-{PILOT}':
+    if output.parent != repo / '.test-data' or output.name != f'api-product-{identity["runId"]}-{identity["runAttempt"]}-{target}':
         raise ValueError('Fresh owned CI output path required')
     if output.parent.is_symlink():
         raise ValueError('Owned CI parent must not be a symlink')
     output.mkdir(mode=0o700)
     evidence = output / 'evidence'
     evidence.mkdir(mode=0o700)
-    identity.update(target=PILOT, version=version)
+    identity.update(target=target, version=version)
     receipt = dict(schemaVersion=1, kind='api-module-product-production', status='failed', context=identity,
                    sourceBefore=before, sourceAfter=None, phases=[], archive=None, packRaw=None, materials={},
                    rss=dict(enforced=False, observation='POSIX cumulative waited-child maximum; not group aggregate', cumulativeWaitedChildMaxRSSBytes=None),
@@ -183,7 +188,7 @@ def produce(repo, output, environment=None):
         receipt['resources'] = dict(freshRequiredBytes=FRESH_BYTES, floorBytes=FLOOR_BYTES, initialFreeBytes=initial_free)
         if initial_free < FRESH_BYTES:
             raise ValueError('Fresh API producer capacity below 8GiB')
-        for name, command, timeout in phase_plan(repo, output, version):
+        for name, command, timeout in phase_plan(repo, output, version, target):
             remaining = 50 * 60 - (time.monotonic() - started)
             if remaining <= 0:
                 raise ValueError('API product overall deadline')
@@ -199,7 +204,9 @@ def produce(repo, output, environment=None):
             raise ValueError('Tracked source changed during product production')
         packed = json.loads((evidence / 'pack-result.raw.log').read_text())
         declaration = json.loads((evidence / 'declarations.raw.log').read_text())
-        receipt.update(collect_facts(output, packed, before['sha'], version, declaration))
+        if declaration.get('name') != target_info['name']:
+            raise ValueError('Canonical target declaration differs from actual host product')
+        receipt.update(collect_facts(output, packed, before['sha'], version, declaration, target))
         receipt.update(status='controlled-preview-materials', sourceAfter=after, packRaw=reference(evidence / 'pack.raw.log', output),
                        nativePreparation=reference(output / 'originals/prepare-inputs.receipt.safe.json', output))
     except BaseException as error:
@@ -215,6 +222,7 @@ def produce(repo, output, environment=None):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--out', required=True)
+    parser.add_argument('--target', required=True)
     args = parser.parse_args()
-    result = produce(Path(__file__).resolve().parent.parent, Path(args.out))
+    result = produce(Path(__file__).resolve().parent.parent, Path(args.out), args.target)
     print(json.dumps(result))

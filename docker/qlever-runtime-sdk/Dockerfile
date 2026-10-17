@@ -47,6 +47,7 @@ COPY qlever/scripts/apply-patches.py /components/qlever/scripts/apply-patches.py
 COPY qlever/scripts/runtime-overlay-manifest.py /components/qlever/scripts/runtime-overlay-manifest.py
 COPY qlever/scripts/sync-patched-source.py /components/qlever/scripts/sync-patched-source.py
 COPY qlever/scripts/validate-prior-sdk.py /components/qlever/scripts/validate-prior-sdk.py
+COPY qlever/scripts/qlever_compiler_profile.py /components/qlever/scripts/qlever_compiler_profile.py
 COPY qlever/scripts/verify-lock.py /components/qlever/scripts/verify-lock.py
 
 RUN bash /components/qlever/scripts/build-qlever-runtime-sdk.sh \

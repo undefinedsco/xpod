@@ -3,6 +3,14 @@ name: Publish QLever runtime SDK image
 on:
   workflow_dispatch:
     inputs:
+      sdk_profile:
+        description: Declared SDK and runtime ABI profile
+        type: string
+        default: service-trixie
+      target:
+        description: Native Linux target; the default preserves the existing service image
+        type: string
+        default: linux-x64
       source_commit:
         description: Exact public xpod source commit to build
         required: false
@@ -17,6 +25,14 @@ on:
         type: string
   workflow_call:
     inputs:
+      sdk_profile:
+        description: Declared SDK and runtime ABI profile
+        type: string
+        default: service-trixie
+      target:
+        description: Native Linux target; the default preserves the existing service image
+        type: string
+        default: linux-x64
       source_commit:
         description: Exact public xpod source commit to build
         required: false
@@ -45,11 +61,10 @@ permissions:
   packages: write
 
 concurrency:
-  group: qlever-runtime-sdk-${{ inputs.source_commit || github.sha }}
+  group: qlever-runtime-sdk-${{ inputs.sdk_profile || 'service-trixie' }}-${{ inputs.target || 'linux-x64' }}-${{ inputs.source_commit || github.sha }}
   cancel-in-progress: false
 
 env:
-  SDK_IMAGE: ghcr.io/${{ github.repository_owner }}/xpod-qlever-sdk
   # The SDK build is C++ and compile-bound. The standard `ubuntu-24.04` runner
   # reports four CPUs - BuildKit logs them at the start of every build - and the
   # Dockerfile's own default is four as well, so overriding it down to two spent
@@ -58,8 +73,17 @@ env:
   XPOD_QLEVER_BUILD_JOBS: '4'
 
 jobs:
+  resolve_target:
+    uses: ./.github/workflows/resolve-qlever-native-target.yml
+    with:
+      target: ${{ inputs.target || 'linux-x64' }}
+      platform: linux
+      sdk_profile: ${{ inputs.sdk_profile }}
   publish:
-    runs-on: ubuntu-24.04
+    needs: resolve_target
+    env:
+      SDK_IMAGE: ghcr.io/${{ github.repository_owner }}/xpod-qlever-sdk${{ needs.resolve_target.outputs.repository_profile_suffix }}${{ needs.resolve_target.outputs.repository_suffix }}
+    runs-on: ${{ needs.resolve_target.outputs.runner }}
     timeout-minutes: 360
     outputs:
       image: ${{ steps.publish.outputs.image }}
@@ -71,11 +95,16 @@ jobs:
         shell: bash
         env:
           REQUESTED_SOURCE_COMMIT: ${{ inputs.source_commit }}
+          SDK_PROFILE: ${{ needs.resolve_target.outputs.sdk_profile }}
         run: |
           set -euo pipefail
           source_commit="${REQUESTED_SOURCE_COMMIT:-${GITHUB_SHA}}"
           [[ "${source_commit}" =~ ^[a-f0-9]{40}$ ]] \
             || { echo 'source_commit must be a 40-character lowercase commit SHA' >&2; exit 64; }
+          if [[ "$SDK_PROFILE" == module-bookworm-gcc12 && "$source_commit" != "$GITHUB_SHA" ]]; then
+            echo 'Module SDK and runtime materials require the same workflow source SHA' >&2
+            exit 64
+          fi
           echo "commit=${source_commit}" >> "${GITHUB_OUTPUT}"
 
       - name: Check out the source
@@ -88,6 +117,11 @@ jobs:
         with:
           bun-version: 1.4.2
 
+      - name: Verify the actual native producer host
+        env:
+          EXPECTED_ARCH: ${{ needs.resolve_target.outputs.arch }}
+        run: bun -e 'if(process.platform!=="linux" || process.arch!==process.env.EXPECTED_ARCH) throw Error("Native producer host/target mismatch")'
+
       # An SDK image is a pure function of these two trees: the QLever sources and
       # patches, and the SDK Dockerfiles. Naming that identity lets a later run with
       # the same inputs reuse the image instead of paying the 36-39 minute cold C++
@@ -99,7 +133,7 @@ jobs:
           SOURCE_COMMIT: ${{ steps.source.outputs.commit }}
         run: |
           set -euo pipefail
-          inputs_hash="$({ git rev-parse "${SOURCE_COMMIT}:qlever"; git rev-parse "${SOURCE_COMMIT}:docker/qlever-runtime-sdk"; } | sha256sum | cut -c1-12)"
+          inputs_hash="$({ printf '%s\n' '${{ needs.resolve_target.outputs.sdk_profile }}:${{ needs.resolve_target.outputs.target }}:${{ needs.resolve_target.outputs.sdk_profile_identity }}'; git rev-parse "${SOURCE_COMMIT}:qlever"; git rev-parse "${SOURCE_COMMIT}:docker/qlever-runtime-sdk"; } | sha256sum | cut -c1-12)"
           echo "tag=qlever-inputs-${inputs_hash}" >> "${GITHUB_OUTPUT}"
           echo "QLever build inputs: qlever-inputs-${inputs_hash}" >> "${GITHUB_STEP_SUMMARY}"
 
@@ -138,10 +172,15 @@ jobs:
           REQUESTED_SDK_TAG: ${{ inputs.runtime_sdk_tag }}
           PRIOR_SDK_DIGEST: ${{ inputs.prior_runtime_sdk_digest }}
           QELEVER_INPUTS_TAG: ${{ steps.sdk_inputs.outputs.tag }}
-          REUSE_IDENTICAL_INPUTS: 'true'
+          REUSE_IDENTICAL_INPUTS: ${{ needs.resolve_target.outputs.sdk_profile == 'service-trixie' && 'true' || 'false' }}
           SDK_IMAGE: ${{ env.SDK_IMAGE }}
+          RUNTIME_DOCKERFILE: ${{ needs.resolve_target.outputs.sdk_dockerfile }}
           XPOD_SOURCE_COMMIT: ${{ steps.source.outputs.commit }}
-        run: bash qlever/scripts/resolve-runtime-sdk-build.sh
+        run: |
+          if [[ '${{ needs.resolve_target.outputs.sdk_profile }}' != service-trixie && -n "$PRIOR_SDK_DIGEST" ]]; then
+            echo 'Module SDK incremental bootstrap is not supported; use its original profile contract' >&2; exit 64
+          fi
+          bash qlever/scripts/resolve-runtime-sdk-build.sh
 
       - name: Persist the runtime SDK compiler cache
         if: steps.resolve.outputs.build == 'true'
@@ -150,10 +189,10 @@ jobs:
           context: .
           file: ${{ steps.resolve.outputs.dockerfile }}
           target: build
-          platforms: linux/amd64
+          platforms: ${{ needs.resolve_target.outputs.docker_platform }}
           outputs: type=cacheonly
-          cache-from: type=gha,scope=qlever-runtime-sdk
-          cache-to: type=gha,mode=max,scope=qlever-runtime-sdk
+          cache-from: type=gha,scope=qlever-runtime-sdk-${{ needs.resolve_target.outputs.sdk_profile }}-${{ needs.resolve_target.outputs.target }}
+          cache-to: type=gha,mode=max,scope=qlever-runtime-sdk-${{ needs.resolve_target.outputs.sdk_profile }}-${{ needs.resolve_target.outputs.target }}
           build-args: |
             XPOD_QLEVER_BUILD_JOBS=${{ env.XPOD_QLEVER_BUILD_JOBS }}
             XPOD_QLEVER_PRIOR_SDK_IMAGE=${{ steps.resolve.outputs.prior_image }}
@@ -165,7 +204,7 @@ jobs:
         with:
           context: .
           file: ${{ steps.resolve.outputs.dockerfile }}
-          platforms: linux/amd64
+          platforms: ${{ needs.resolve_target.outputs.docker_platform }}
           load: true
           push: false
           tags: |
@@ -174,8 +213,8 @@ jobs:
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ steps.source.outputs.commit }}
-          cache-from: type=gha,scope=qlever-runtime-sdk
-          cache-to: type=gha,mode=max,scope=qlever-runtime-sdk
+          cache-from: type=gha,scope=qlever-runtime-sdk-${{ needs.resolve_target.outputs.sdk_profile }}-${{ needs.resolve_target.outputs.target }}
+          cache-to: type=gha,mode=max,scope=qlever-runtime-sdk-${{ needs.resolve_target.outputs.sdk_profile }}-${{ needs.resolve_target.outputs.target }}
           build-args: |
             XPOD_QLEVER_BUILD_JOBS=${{ env.XPOD_QLEVER_BUILD_JOBS }}
             XPOD_QLEVER_PRIOR_SDK_IMAGE=${{ steps.resolve.outputs.prior_image }}
@@ -211,7 +250,7 @@ jobs:
         with:
           context: .
           file: ${{ steps.resolve.outputs.dockerfile }}
-          platforms: linux/amd64
+          platforms: ${{ needs.resolve_target.outputs.docker_platform }}
           push: true
           tags: |
             ${{ env.SDK_IMAGE }}:${{ steps.resolve.outputs.tag }}
@@ -290,3 +329,13 @@ jobs:
             echo "Build inputs alias: \`${{ steps.sdk_inputs.outputs.tag }}\`"
             echo "Alias: \`${{ steps.alias.outputs.created || steps.alias.outputs.kept }}\`"
           } >> "${GITHUB_STEP_SUMMARY}"
+
+  module_runtime_materials:
+    # The registered SDK workflow is the entry point even before the new
+    # reusable archive workflow exists on the repository default branch.
+    if: ${{ needs.resolve_target.outputs.sdk_profile == 'module-bookworm-gcc12' }}
+    needs: [resolve_target, publish]
+    uses: ./.github/workflows/build-qlever-linux-runtime.yml
+    with:
+      target: ${{ needs.resolve_target.outputs.target }}
+      module_sdk_image: ${{ needs.publish.outputs.image }}

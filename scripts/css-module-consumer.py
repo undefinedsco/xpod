@@ -47,7 +47,7 @@ def validate(plan):
                          'published', 'releaseQualified', 'phaseClosureAdmitted', 'consumerValidated',
                          'legalClearance', 'nativeAdmission'],
         materials={'compiler', 'css-scoped-components', 'css-resource-plan', 'identity-dedup', 'publication', 'css-native-runtime'},
-        bindProjection=lambda receipt, producer: receipt,
+        bindProjection=lambda receipt, producer, declaration: receipt,
         verifyConsumerInput=lambda value, receipt, sha: value.get('schemaVersion') == 1
             and value.get('expectedSourceSha') == sha and value.get('archive') == receipt['archive']
             and value.get('package') == receipt['package']))
@@ -59,8 +59,11 @@ class Runner(lifecycle.ModuleConsumerRunner):
 
     def verify_installed(self, runtime, package_root, installed_package):
         native = package_root / 'native/qlever/bin/xpod_qlever_local_runtime'
+        binding = json.loads((package_root / 'provenance/css-native-runtime.json').read_text())
+        require(binding.get('schemaVersion') == 1 and binding.get('kind') == 'css-native-runtime-byte-binding' and binding.get('target') == self.checked['target']['target'], 'CSS native provenance target differs')
         require(native.is_file() and any(row['path'] == 'native/qlever/bin/xpod_qlever_local_runtime' for row in installed_package['xpodModule']['files']), 'native runtime missing from verified inventory')
-        return dict(nativePath=str(native), nativeSha256=digest(native))
+        return dict(nativePath=str(native), nativeSha256=digest(native), nativeTargetVerification=lifecycle.targets.native_files(
+            package_root, installed_package, self.checked['target']['target'], self.plan['bun'], ['native/qlever/bin/xpod_qlever_local_runtime'], self.module_id))
 
     def exercise_service(self, runtime, cli, env, cycle, data, package_root, installed_package):
         native = package_root / 'native/qlever/bin/xpod_qlever_local_runtime'
@@ -91,7 +94,19 @@ class Runner(lifecycle.ModuleConsumerRunner):
                 require(url.scheme == 'http' and url.hostname == 'localhost' and url.port == port, 'OIDC endpoint mismatch: ' + key)
             children = subprocess.check_output(['/bin/ps', '-axo', 'pid=,ppid=,pgid=,comm='], text=True)
             group = [line for line in children.splitlines() if len(line.split(None, 3)) == 4 and line.split(None, 3)[2] == str(process.pid)]
-            qlever = [line for line in group if line.split(None, 3)[3] == str(native)]
+            qlever = []
+            for line in group:
+                parts = line.split(None, 3)
+                if self.checked['target']['platform'] == 'linux':
+                    executable = pathlib.Path('/proc') / parts[0] / 'exe'
+                    try:
+                        matches = executable.resolve(strict=True) == native.resolve()
+                    except FileNotFoundError:
+                        matches = False
+                else:
+                    matches = parts[3] == str(native)
+                if matches:
+                    qlever.append(line)
             pids = {line.split(None, 3)[0] for line in group}
             require(all(line.split(None, 3)[1] in pids for line in qlever), 'native parent outside service group')
             require(qlever, 'real installed QLever process absent in service group')

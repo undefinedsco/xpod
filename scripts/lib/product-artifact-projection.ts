@@ -26,14 +26,14 @@ export function productOriginal(file: string, expected?: string): Buffer {
 }
 
 /** Common producer claims only: transport comparison is not independent admission. */
-export function assertPreviewProductContext(producer: any, custody: any, run: any, workflowPath: string, kind: string): any {
+export function assertPreviewProductContext(producer: any, custody: any, run: any, workflowPath: string, kind: string, expectedTarget = 'darwin-arm64'): any {
   const context = producer?.context;
   if (producer?.schemaVersion !== 1 || producer.kind !== kind || producer.status !== 'controlled-preview-materials'
     || !context || context.repository !== custody.repository || context.workflowPath !== workflowPath
     || typeof context.workflowRef !== 'string' || !context.workflowRef.startsWith(`${custody.repository}/${workflowPath}@`)
     || !/^[a-f0-9]{40}$/u.test(context.workflowSha) || context.runId !== custody.runId || context.runAttempt !== custody.runAttempt
     || context.runHeadSha !== custody.runHeadSha || context.event !== run.event || context.actualCheckoutSha !== custody.expectedSourceSha
-    || context.githubSha !== context.actualCheckoutSha || context.target !== 'darwin-arm64' || !exactVersion(context.version)
+    || context.githubSha !== context.actualCheckoutSha || context.target !== expectedTarget || !exactVersion(context.version)
     || producer.sourceBefore?.sha !== context.actualCheckoutSha || producer.sourceAfter?.sha !== context.actualCheckoutSha
     || producer.sourceBefore.status !== '' || producer.sourceAfter.status !== ''
     || producer.published !== false || producer.releaseQualified !== false || producer.consumerValidated !== false

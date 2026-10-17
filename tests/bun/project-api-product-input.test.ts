@@ -9,7 +9,7 @@ import { projectApiProductInput, type ApiProductProjectionInput } from '../../sc
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 const hash = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
-async function fixture(alter: (producer: any) => void = () => {}, packAlter: (packed: any) => void = () => {}) {
+async function fixture(alter: (producer: any) => void = () => {}, packAlter: (packed: any) => void = () => {}, target = 'darwin-arm64') {
   mkdirSync('.test-data/api-product-projection', { recursive: true });
   const root = mkdtempSync(path.resolve('.test-data/api-product-projection/case-')); roots.push(root);
   const source = 'a'.repeat(40), head = 'b'.repeat(40);
@@ -23,7 +23,7 @@ async function fixture(alter: (producer: any) => void = () => {}, packAlter: (pa
     context: { repository: 'undefinedsco/xpod', workflowPath: API_PRODUCT_WORKFLOW,
       workflowRef: `undefinedsco/xpod/${API_PRODUCT_WORKFLOW}@refs/pull/62/merge`, workflowSha: source,
       runId: 42, runAttempt: 2, event: 'pull_request', runHeadSha: head, githubSha: source,
-      actualCheckoutSha: source, target: 'darwin-arm64', version: '0.0.0-preview.1' },
+      actualCheckoutSha: source, target, version: '0.0.0-preview.1' },
     sourceBefore: { sha: source, status: '' }, sourceAfter: { sha: source, status: '' },
     archive: { path: 'product.tgz', bytes: archive.length, sha256: hash(archive), integrity: 'sha512-' + createHash('sha512').update(archive).digest('base64'), members: 1 },
     packRaw: { path: 'evidence/pack.raw.log', bytes: raw.length, sha256: hash(raw) }, phases: [],
@@ -40,7 +40,7 @@ async function fixture(alter: (producer: any) => void = () => {}, packAlter: (pa
   const run = { id: 42, run_attempt: 2, head_sha: head, repository: { full_name: 'undefinedsco/xpod' }, head_repository: { full_name: 'undefinedsco/xpod' },
     status: 'completed', conclusion: 'success', event: 'pull_request', workflow_id: 7, path: API_PRODUCT_WORKFLOW,
     run_started_at: '2026-10-15T00:00:00Z', updated_at: '2026-10-15T00:02:00Z' };
-  const artifact = { id: 91, name: `api-module-products-darwin-arm64-${source}-42-2`, size_in_bytes: bytes.length,
+  const artifact = { id: 91, name: `api-module-products-${target}-${source}-42-2`, size_in_bytes: bytes.length,
     digest: 'sha256:' + digest, expired: false, workflow_run: { id: 42, head_sha: head }, created_at: '2026-10-15T00:01:00Z' };
   const transport = (async (url: any) => {
     const address = String(url);
@@ -116,3 +116,19 @@ test('rejects custody raw metadata or ZIP mutation and preserves existing destin
   await expect(projectApiProductInput(good.input, good.output)).rejects.toThrow('already exists');
   expect(readFileSync(path.join(good.output, 'original'), 'utf8')).toBe('keep');
 });
+
+for (const target of ['darwin-x64', 'linux-arm64', 'linux-x64']) {
+  test(`projects observed ${target} originals while retaining all blocked admission flags`, async () => {
+    const f = await fixture(() => {}, () => {}, target); const receipt = await projectApiProductInput(f.input, f.output);
+    const producer = JSON.parse(readFileSync(path.join(f.output, 'producer.receipt.json'), 'utf8'));
+    expect(producer.context.target).toBe(target);
+    expect(readFileSync(path.join(f.output, 'product.tgz')).equals(f.archive)).toBe(true);
+    expect(receipt.actualCheckoutVerified).toBe(false); expect(receipt.exactAttemptAdmitted).toBe(false);
+    expect(receipt.collectorExecuted).toBe(false); expect(receipt.published).toBe(false); expect(receipt.releaseQualified).toBe(false);
+  });
+  test(`rejects observed ${target} artifact with a different supported producer target`, async () => {
+    const f = await fixture(producer => { producer.context.target = 'darwin-arm64'; }, () => {}, target);
+    await expect(projectApiProductInput(f.input, f.output)).rejects.toThrow('context/source/preview');
+    expect(existsSync(f.output)).toBe(false);
+  });
+}
