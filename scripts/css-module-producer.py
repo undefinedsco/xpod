@@ -193,13 +193,15 @@ def validate_native_metadata(identity, env, artifact, jobs):
 
 def unpack_native(originals, runtime, target):
     archive_name='qlever-local-runtime-'+target+'.tar.gz';acceptance='qlever-local-acceptance.json'
+    sys.path.insert(0,str(Path(__file__).resolve().parent/'lib'))
+    from css_native_zip import validate as validate_native_zip
+    validate_native_zip(originals/'native.zip',target)
     with zipfile.ZipFile(originals/'native.zip') as archive:
-        entries=archive.infolist()
-        if sorted(e.filename for e in entries)!=sorted([archive_name,acceptance]) or any(e.is_dir() or e.file_size>ARCHIVE_LIMIT or ((e.external_attr>>16)&0o170000) not in (0,0o100000) for e in entries): raise ValueError('Original native ZIP layout')
-        if sum(e.file_size for e in entries)>ARCHIVE_LIMIT: raise ValueError('Native ZIP expanded limit')
+        entries=[entry for entry in archive.infolist() if not entry.is_dir()]
         for entry in entries:
             if shutil.disk_usage(originals).free-entry.file_size<FLOOR_BYTES: raise ValueError('ZIP expansion disk floor')
-            with archive.open(entry) as source,(originals/entry.filename).open('xb') as target: shutil.copyfileobj(source,target,1024*1024)
+            destination=originals/entry.filename;destination.parent.mkdir(parents=True,exist_ok=True)
+            with archive.open(entry) as source,destination.open('xb') as target: shutil.copyfileobj(source,target,1024*1024)
     runtime.mkdir()
     with tarfile.open(originals/archive_name,'r:gz') as archive:
         seen=set();total=0
@@ -218,6 +220,10 @@ def unpack_native(originals, runtime, target):
             destination.chmod(0o755 if member.mode&0o111 else 0o644)
     def source_ref(file,root):
         ref=reference(file,root);return dict(path=ref['path'],sizeBytes=ref['bytes'],sha256=ref['sha256'])
+    material_final=originals/'native-materials/final.json'
+    if material_final.is_file():
+        final=json.loads(material_final.read_text())
+        if final.get('binary')!=source_ref(runtime/'bin/xpod_qlever_local_runtime',runtime): raise ValueError('Native final/runtime binary hash mismatch')
     return dict(runtimeRoot=str(runtime),materialsRoot=str(originals),manifest=source_ref(runtime/'manifest.json',runtime),archive=source_ref(originals/archive_name,originals),originalZip=source_ref(originals/'native.zip',originals),acceptance=source_ref(originals/acceptance,originals))
 
 
