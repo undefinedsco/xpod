@@ -1145,6 +1145,82 @@ class NativeReuseTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, 'x64 requires actual generated notice provenance'):
                     a.verify_reuse_archive(archive, pins, 'darwin', 'x64')
 
+    def notice_archive(self, failure=None):
+        # Tiny real gzip with repeated references to one original notice. The
+        # incompressible prefix makes backward gzip replay visible by bytes read.
+        import random
+        empty = io.BytesIO()
+        with tarfile.open(fileobj=empty, mode='w:gz'):
+            pass
+        entries = {'native-receipt.json': json.dumps(dict(target='darwin-x64', sourceKitSha256='a' * 64, compiler=dict(toolchain=a.TOOLCHAIN))).encode(),
+                   'tiny.tar.gz': empty.getvalue(), 'final.json': '{}', 'toolchain.raw.log': b'closed', 'toolchain.receipt.json': b'{}'}
+        self.add_generated_notices(entries)
+        native = json.loads(entries['native-receipt.json'])
+        with tarfile.open(fileobj=io.BytesIO(entries['tiny.tar.gz']), mode='r:gz') as tar:
+            originals = {member.name: tar.extractfile(member).read() for member in tar.getmembers()}
+        prefix = 'install/licenses/native/collection/'
+        index = json.loads(originals[prefix + 'darwin-x64.json'])
+        files = []
+        for number in range(8):
+            content = random.Random(number).randbytes(2048)
+            digest = hashlib.sha256(content).hexdigest()
+            file = dict(object='objects/' + digest + '.txt', sha256=digest)
+            originals[prefix + file['object']] = content
+            files.append(file)
+        index['packages'][0]['files'] = files[::-1] * 4
+        index_bytes = json.dumps(index).encode()
+        provenance = json.loads(originals[prefix + 'provenance.json']); provenance['indexSHA256'] = hashlib.sha256(index_bytes).hexdigest()
+        provenance_bytes = json.dumps(provenance).encode()
+        native['nativeNotices'].update(indexSHA256=hashlib.sha256(index_bytes).hexdigest(), provenanceSHA256=hashlib.sha256(provenance_bytes).hexdigest())
+        originals[prefix + 'darwin-x64.json'] = index_bytes; originals[prefix + 'provenance.json'] = provenance_bytes
+        object_name = next(name for name in originals if '/objects/' in name)
+        if failure == 'tamper': originals[object_name] = b'tampered original'
+        if failure == 'missing': del originals[object_name]
+        output = io.BytesIO()
+        with tarfile.open(fileobj=output, mode='w:gz') as tar:
+            filler = random.Random(42).randbytes(128 * 1024)
+            member = tarfile.TarInfo('install/filler'); member.size = len(filler); tar.addfile(member, io.BytesIO(filler))
+            for name, content in originals.items():
+                member = tarfile.TarInfo(name); member.size = len(content); tar.addfile(member, io.BytesIO(content))
+                if failure == 'duplicate' and name == object_name: tar.addfile(member, io.BytesIO(content))
+            if failure == 'link':
+                member = tarfile.TarInfo(prefix + 'linked'); member.type = tarfile.SYMTYPE; member.linkname = '/outside'; tar.addfile(member)
+        return output.getvalue(), native
+
+    def test_notice_verification_reads_shared_original_once_in_archive_order(self):
+        archive, native = self.notice_archive()
+        class Counted(io.BytesIO):
+            read_bytes = 0
+            def read(self, count=-1):
+                content = super().read(count); self.read_bytes += len(content); return content
+        stream = Counted(archive)
+        with tarfile.open(fileobj=stream, mode='r:gz') as tar:
+            a.verify_generated_notice_archive(tar, 'darwin-x64', native)
+        self.assertLess(stream.read_bytes, len(archive) * 3)
+
+    def test_notice_scan_rejects_duplicate_missing_changed_and_linked_originals(self):
+        for failure in ['duplicate', 'missing', 'tamper', 'link']:
+            with self.subTest(failure=failure):
+                archive, native = self.notice_archive(failure)
+                with tarfile.open(fileobj=io.BytesIO(archive), mode='r:gz') as tar:
+                    with self.assertRaises(RuntimeError): a.verify_generated_notice_archive(tar, 'darwin-x64', native)
+
+    def test_notice_scan_checks_size_and_total_budgets_before_material_reads(self):
+        archive, native = self.notice_archive()
+        for kind in ['member', 'total', 'count']:
+            with self.subTest(kind=kind), tarfile.open(fileobj=io.BytesIO(archive), mode='r:gz') as tar:
+                selected = [member for member in tar.getmembers() if '/collection/' in member.name]
+                if kind == 'member': selected[0].size = 8 * 1024 * 1024 + 1
+                elif kind == 'total':
+                    for member in selected: member.size = 6 * 1024 * 1024
+                else:
+                    template = selected[0]
+                    tar.members = []
+                    for index in range(4097):
+                        member = copy.copy(template); member.name = 'install/licenses/native/collection/entry-' + str(index); member.size = 0; tar.members.append(member)
+                with self.assertRaisesRegex(RuntimeError, 'budget exceeded'):
+                    a.verify_generated_notice_archive(tar, 'darwin-x64', native)
+
     def test_generated_notices_require_fourteen_closed_stages_and_actual_originals(self):
         for failure in [None, 'missing-docs', 'unclosed-docs', 'missing-binding', 'missing-object']:
             def change(entries):

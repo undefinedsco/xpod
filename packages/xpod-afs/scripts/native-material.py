@@ -3,7 +3,20 @@
 This is an AFS module reuse profile. It does not relax or invoke the preview
 whole-source equivalence gate and does not claim a native rebuild of the module.
 """
-import hashlib, importlib.util, io, json, pathlib, subprocess, sys, tarfile, zipfile
+import hashlib, importlib.util, io, json, pathlib, subprocess, sys, tarfile, zipfile, time
+from contextlib import contextmanager
+
+@contextmanager
+def phase(name):
+    started = time.monotonic()
+    print(json.dumps(dict(kind="afs-native-material-phase", phase=name, event="start")), file=sys.stderr, flush=True)
+    try:
+        yield
+    except BaseException:
+        print(json.dumps(dict(kind="afs-native-material-phase", phase=name, event="failed", elapsedMs=(time.monotonic()-started)*1000)), file=sys.stderr, flush=True)
+        raise
+    else:
+        print(json.dumps(dict(kind="afs-native-material-phase", phase=name, event="end", elapsedMs=(time.monotonic()-started)*1000)), file=sys.stderr, flush=True)
 
 root, archive, pins_path, target, destination = map(pathlib.Path, sys.argv[1:])
 target = str(target)
@@ -18,14 +31,16 @@ spec.loader.exec_module(accept)
 # One authoritative gate verifies binary architecture/ABI, source-kit, suites
 # and closed receipts for the requested native target. Old callers keep arm64
 # via the foundation API default; this module always passes explicit arch.
-facts = accept.verify_reuse_archive(archive, pins, os_name, arch)
+with phase("verify-reuse-archive"):
+    facts = accept.verify_reuse_archive(archive, pins, os_name, arch)
 if facts.get('target') != target or facts.get('arch') != arch or facts.get('productHead') != pins['PRODUCT_SHA']:
     raise RuntimeError('Native target or source authority mismatch')
 
 # One strict module reuse input contract; whole-preview reuse stays separate.
-rows = accept.verify_module_native_sources(root, pins['PRODUCT_SHA'])
+with phase("verify-module-native-sources"):
+    rows = accept.verify_module_native_sources(root, pins['PRODUCT_SHA'])
 
-with zipfile.ZipFile(archive) as zipped:
+with phase("materialize-native-payload"), zipfile.ZipFile(archive) as zipped:
     packages = [n for n in zipped.namelist() if n.endswith('-' + target + '.tar.gz')]
     if len(packages) != 1:
         raise RuntimeError('Expected one exact admitted target archive')

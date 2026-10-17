@@ -753,11 +753,40 @@ def verify_native_stage_inventory(stages, os_name, generated_notices):
 def verify_generated_notice_archive(tar, target, native):
     """Verify actual packaged notice bytes, not just a metadata-only receipt."""
     root = 'install/licenses/native/collection/'
+    # TarFile over gzip implements backward seeks by decompressing again. Read
+    # each original once in physical order, then reuse its bound bytes for every
+    # package reference (shared Rust notices are commonly referenced repeatedly).
+    selected = []
+    names = set()
+    total = 0
+    for member in tar.getmembers():
+        name = member.name.removeprefix('./')
+        if not name.startswith(root):
+            continue
+        relative = name[len(root):]
+        if member.isdir():
+            continue
+        if not relative or any(part in ['', '.', '..'] for part in relative.split('/')) or '\\' in relative \
+                or not member.isfile() or relative in names:
+            raise RuntimeError('Generated native notice material unsafe or duplicate')
+        if member.size < 0 or member.size > 8 * 1024 * 1024 or total + member.size > 16 * 1024 * 1024 or len(selected) >= 4096:
+            raise RuntimeError('Generated native notice material budget exceeded')
+        names.add(relative); total += member.size
+        selected.append((member, relative))
+    materials = {}
+    for member, relative in sorted(selected, key=lambda row: row[0].offset_data):
+        content = tar.extractfile(member).read(member.size + 1)
+        if len(content) != member.size:
+            raise RuntimeError('Generated native notice material truncated')
+        if relative.startswith('objects/'):
+            match = re.fullmatch(r'objects/([a-f0-9]{64})\.txt', relative)
+            if not match or hashlib.sha256(content).hexdigest() != match[1]:
+                raise RuntimeError('Generated native notice original object mismatch')
+        materials[relative] = content
     def material(relative):
-        members = [m for m in tar.getmembers() if m.name.removeprefix('./') == root + relative and m.isfile()]
-        if len(members) != 1:
+        if relative not in materials:
             raise RuntimeError('Generated native notice material missing or duplicate')
-        return tar.extractfile(members[0]).read()
+        return materials[relative]
     binding = native['nativeNotices']
     index_bytes = material(target + '.json'); provenance_bytes = material('provenance.json')
     if hashlib.sha256(index_bytes).hexdigest() != binding.get('indexSHA256') or hashlib.sha256(provenance_bytes).hexdigest() != binding.get('provenanceSHA256'):
