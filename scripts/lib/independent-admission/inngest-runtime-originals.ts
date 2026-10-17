@@ -9,7 +9,7 @@ import type {ApiInngestRuntimeOriginalView} from './consumer-context';
 const hash=(bytes:Buffer)=>createHash('sha256').update(bytes).digest('hex');
 function need(value:unknown,reason:string):asserts value{if(!value)throw Error('Installed Inngest runtime originals: '+reason);}
 export const inngestRuntimeAdditionalDurationMs=policy.profiles.length*(policy.maximumAdditionalCommandsPerProfile*policy.commandSeconds+policy.originalHashPassesPerProfile*policy.originalHashSeconds)*1000;
-export function inngestRuntimeLabels(target:string):readonly string[]{return Object.freeze(['inngest-version',...(target.startsWith('darwin-')?['inngest-loader']:[])]);}
+export function inngestRuntimeLabels(target:string):readonly string[]{return Object.freeze(['inngest-version',...(target.startsWith('darwin-')?['inngest-loader']:['inngest-protocol'])]);}
 export function inngestRuntimeOriginalNames(target:string):readonly string[]{return Object.freeze(policy.profiles.flatMap(runtime=>[runtime+'-inngest-runtime.original.json',...inngestRuntimeLabels(target).flatMap(label=>[`${runtime}-${label}.stdout.raw.log`,`${runtime}-${label}.stderr.raw.log`])]));}
 /** Pure original-byte mechanics only; this function cannot register facts. */
 export function inspectInngestRuntimeOriginals(input:{product:Readonly<CollectedArtifactIdentity>;productMembers:readonly CollectedArtifactMember[];result:any;readOriginal(name:string,maximum:number):Buffer}){
@@ -37,10 +37,23 @@ export function inspectInngestRuntimeOriginals(input:{product:Readonly<Collected
   else{
    need(value.loaderCommandLabel===runtime+'-inngest-loader'&&before.loader?.format==='macho64'&&Array.isArray(before.loader.libraries)&&before.loader.libraries.length>0,'actual Mach-O loader observation required');const loader=command('inngest-loader',['/usr/bin/otool','-L',before.path]);need(loader[1]!.length===0,'loader diagnostic stderr not empty');const lines=loader[0]!.toString().trimEnd().split('\n');need(lines.shift()===before.path+':','actual loader executable path differs');const names=lines.map(line=>{const m=/^\s+(\/[^\s]+) \(compatibility version [0-9.]+, current version [0-9.]+\)$/u.exec(line);need(m,'complete fixed otool library line required');return m[1];});need(isDeepStrictEqual(names,before.loader.libraries)&&names.every(name=>name!.startsWith('/usr/lib/')||name!.startsWith('/System/Library/')),'actual loader dependencies differ from binary commands');
   }
-  observations.push(Object.freeze({runtime,target:input.product.target,binarySha256:binary.sha256,binaryBytes:binary.bytes,version:version[0]!.toString().trim(),loader:before.loader}));
+  let protocolVerified=false;
+  if(platform==='linux'&&value.protocol!==undefined){
+   const p=value.protocol;need(p&&p.commandLabel===runtime+'-inngest-protocol'&&Array.isArray(p.ports)&&p.ports.length===4&&p.ports.every((v:unknown)=>Number.isInteger(v)&&Number(v)>=1024&&Number(v)<=65535&&v!==60895)&&new Set(p.ports).size===4,'fixed distinct loopback protocol ports required');
+   const owner=p.owner;need(owner&&owner.port===p.ports[0]&&Number.isSafeInteger(owner.pid)&&owner.pid>0&&typeof owner.inode==='string'&&/^[1-9][0-9]*$/u.test(owner.inode),'actual owned listener inode required');
+   command('inngest-protocol',[before.path,'dev','--no-discovery','--no-poll','--host','127.0.0.1','--port',String(p.ports[0]),'--connect-gateway-port',String(p.ports[1]),'--connect-gateway-grpc-port',String(p.ports[2]),'--connect-executor-grpc-port',String(p.ports[3])]);
+   const record=input.result.records.find((r:any)=>r.label===p.commandLabel);need(record.observedGroupMembers&&typeof record.observedGroupMembers[String(owner.pid)]==='string','listener must belong to actual observed command group');
+   need(Array.isArray(p.requests)&&p.requests.length===2,'exact health and event protocol originals required');
+   const [health,event]=p.requests;need(health.method==='GET'&&health.path==='/health'&&health.status===200&&typeof health.body==='string'&&Buffer.byteLength(health.body)<=16384&&isDeepStrictEqual(JSON.parse(health.body),{status:200,message:'OK'}),'actual bounded health response differs');
+   need(event.method==='POST'&&event.path==='/e/xpod-module-probe'&&event.status===200&&typeof event.body==='string'&&Buffer.byteLength(event.body)<=16384,'actual bounded event response required');
+   const body=JSON.parse(event.body);need(isDeepStrictEqual(Object.keys(body).sort(),['ids','status'])&&body.status===200&&Array.isArray(body.ids)&&body.ids.length===1&&typeof body.ids[0]==='string'&&body.ids[0].length>0&&body.ids[0].length<=128,'actual event acceptance response differs');
+   need(p.event&&typeof p.event.id==='string'&&/^[a-f0-9]{32}$/u.test(p.event.id)&&isDeepStrictEqual(p.event,{name:'xpod/module-native-probe',id:p.event.id,data:{nonce:p.event.id}}),'fixed non-secret event challenge required');
+   protocolVerified=true;
+  }
+  observations.push(Object.freeze({runtime,target:input.product.target,binarySha256:binary.sha256,binaryBytes:binary.bytes,version:version[0]!.toString().trim(),loader:before.loader,selectedProtocolExecutionVerified:protocolVerified}));
  }
  const freeze=(v:any):void=>{if(v&&typeof v==='object'){Object.values(v).forEach(freeze);Object.freeze(v);}};freeze(observations);
- return Object.freeze({inngestInstalledVersionExecutionVerified:true as const,scope:'matching-host actual installed fixed version command and observed loader metadata only' as const,observations:Object.freeze(observations),toolchainSourceClosureVerified:false as const,fullNativeSourceClosureVerified:false as const});
+ return Object.freeze({inngestInstalledVersionExecutionVerified:true as const,inngestInstalledHttpProtocolExecutionVerified:observations.every(row=>row.selectedProtocolExecutionVerified),protocolPending:Object.freeze(observations.every(row=>row.selectedProtocolExecutionVerified)?[]:[platform==='darwin'?'inngest-macos-selected-protocol-listener-ownership-unverified':'inngest-selected-http-protocol-originals-unavailable']),fullRuntimeAbiVerified:false as const,scope:'matching-host installed version, observed loader metadata, and individually verified selected HTTP protocol' as const,observations:Object.freeze(observations),toolchainSourceClosureVerified:false as const,fullNativeSourceClosureVerified:false as const});
 }
 const saved=new WeakMap<object,{artifact:unknown;consumer:unknown;view:ApiInngestRuntimeOriginalView;assertConsumerCurrent():void;facts:ReturnType<typeof inspectInngestRuntimeOriginals>}>();
 export function officialInngestRuntimeObservation(capability:unknown){const row=capability&&typeof capability==='object'?saved.get(capability):undefined;if(!row)return undefined;need(officialInngestReleaseView(capability),'current official release private facts required');row.assertConsumerCurrent();assertCollectedPublicationCustody(row.artifact);row.view.assertCurrent();return row.facts;}
