@@ -67,7 +67,15 @@ test('portable original verifier preserves native receipt coordinates and reject
   const cliContext = { checkoutSha: context.sourceSha, workingTreeDirty: false, runId: '21', runAttempt: '3' };
   write(path.join(originals, 'cli/result.json'), { kind: 'cli-publication-preparation-producer', context: cliContext, privateConsumerArtifactsReused: false, embeddedClientIdentityVerified: true, published: false, releaseQualified: false,
     products: { cli: { version: '1.0.0', archive: { ...cli, path: 'cli.tgz' } }, client: { version: '1.0.0', archive: { ...client, path: 'client.tgz' } } } });
-  write(path.join(originals, 'cli/source-inputs.json'), { context: cliContext, files: [files[0]] }); write(path.join(originals, 'cli/cleanup.json'), { success: true, sourceAbsent: true, directChildrenWaited: true });
+  write(path.join(originals, 'cli/source-inputs.json'), { context: cliContext, files: [files[0]] });
+  const cliCommands = Array.from({ length: 10 }, (_, index) => {
+    const label = 'phase-' + String(index).padStart(3, '0'), outcome = closed('cli', label);
+    const member = label + '.receipt.json'; write(path.join(originals, 'cli', member), outcome);
+    return { phase: 'synthetic CLI phase ' + index,
+      receipt: { path: member, sha256: helper.reference(path.join(originals, 'cli', member)).sha256 }, ...outcome };
+  });
+  write(path.join(originals, 'cli/cleanup.json'), { schemaVersion: 1, kind: 'cli-publication-owned-command-cleanup',
+    success: true, sourceAbsent: true, commandOutcomes: cliCommands });
   const manifest = { name: '@undefineds.co/xpod-afs', version: '1.0.0', private: false, dependencies: { '@undefineds.co/xpod-client': '1.0.0' } };
   const afs = pack('afs/xpod-afs.tgz', manifest);
   const parsed = helper.artifact({ ...afs, name: manifest.name, version: manifest.version });

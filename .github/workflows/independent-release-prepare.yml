@@ -12,6 +12,7 @@ on:
       - 'src/runtime/**'
       - 'tests/scripts/**'
       - 'tests/bun/**'
+      - 'tests/fixtures/independent-admission/**'
       - 'package.json'
       - 'bun.lock'
   push:
@@ -24,6 +25,7 @@ on:
       - 'src/runtime/**'
       - 'tests/scripts/**'
       - 'tests/bun/**'
+      - 'tests/fixtures/independent-admission/**'
       - 'package.json'
       - 'bun.lock'
   workflow_dispatch:
@@ -74,8 +76,8 @@ jobs:
         run: bun install --frozen-lockfile
       - name: Check workflow and planner contracts
         run: |
-          node --test tests/scripts/independent-release-workflow.node-test.cjs
-          bun test tests/bun/independent-release-plan.test.ts
+          node --test tests/scripts/independent-release-workflow.node-test.cjs tests/scripts/independent-source-projection.node-test.cjs tests/scripts/cli-publication-producer.node-test.cjs tests/scripts/cli-publication-lifecycle.node-test.cjs
+          bun test tests/bun/independent-release-plan.test.ts tests/bun/independent-*.test.ts
       - name: Read back an explicitly requested exact registry product
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.registry_readback != '' }}
         env:

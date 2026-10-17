@@ -143,3 +143,28 @@ test('workflow preserves both exact evidence roots even when the CLI root is hid
   assert.ok(cli); assert.equal(cli.with['include-hidden-files'], true);
   assert.ok(uploads.some(step => step.with.path === '${{ runner.temp }}/afs-js-archive/'));
 });
+
+
+test('CLI cleanup consumes hashed owned-command originals and rejects legacy assertions', () => fixture(root => {
+  const { closedCliOriginals } = require('../../scripts/check-afs-js-archive-ci.cjs');
+  const commandOutcomes = Array.from({ length: 10 }, (_, index) => {
+    const label = 'phase-' + String(index).padStart(3, '0');
+    const raw = ['stdout', 'stderr'].map(channel => {
+      const name = label + '.' + channel + '.raw.log'; fs.writeFileSync(path.join(root, name), channel);
+      return { path: name, bytes: channel.length, sha256: hash(Buffer.from(channel)) };
+    });
+    const outcome = { code: 0, signal: null, actualWait: true, actualClose: true, groupAbsent: true,
+      rawComplete: true, rawClosed: true, rawClosedBeforeHash: true, pipeEOF: [true, true], raw };
+    const name = label + '.receipt.json', bytes = Buffer.from(JSON.stringify(outcome));
+    fs.writeFileSync(path.join(root, name), bytes);
+    return { phase: 'bun phase ' + index, receipt: { path: name, sha256: hash(bytes) }, ...outcome };
+  });
+  const cleanup = { schemaVersion: 1, kind: 'cli-publication-owned-command-cleanup', success: true, sourceAbsent: true, commandOutcomes };
+  closedCliOriginals(cleanup, root);
+  assert.throws(() => closedCliOriginals({ success: true, sourceAbsent: true, directChildrenWaited: true }, root));
+  assert.throws(() => closedCliOriginals({ ...cleanup, commandOutcomes: commandOutcomes.slice(1) }, root));
+  commandOutcomes[0].actualWait = false; assert.throws(() => closedCliOriginals(cleanup, root));
+  commandOutcomes[0].actualWait = true;
+  fs.appendFileSync(path.join(root, commandOutcomes[0].receipt.path), ' ');
+  assert.throws(() => closedCliOriginals(cleanup, root));
+}));

@@ -51,6 +51,23 @@ function extract(archive, destination) {
   verifyInstalledArchive(installed, archive.entries);
   return installed;
 }
+function closedCliOriginals(cleanup, directory) {
+  assert.equal(cleanup.schemaVersion, 1);
+  assert.equal(cleanup.kind, 'cli-publication-owned-command-cleanup');
+  assert.equal(cleanup.success, true); assert.equal(cleanup.sourceAbsent, true);
+  assert.equal(cleanup.commandOutcomes.length, 10);
+  for (const [index, command] of cleanup.commandOutcomes.entries()) {
+    const { phase, receipt, ...outcome } = command;
+    assert.equal(typeof phase, 'string');
+    assert.equal(receipt.path, 'phase-' + String(index).padStart(3, '0') + '.receipt.json');
+    const file = path.join(directory, receipt.path);
+    assert.equal(fs.lstatSync(file).isSymbolicLink(), false);
+    assert.equal(ref(file).sha256, receipt.sha256);
+    const original = json(file);
+    assert.deepEqual(outcome, original);
+    closedOriginal(original, directory);
+  }
+}
 function cliArtifacts(directory, before) {
   const result = json(path.join(directory, 'result.json'));
   assert.equal(result.kind, 'cli-publication-preparation-producer');
@@ -63,7 +80,7 @@ function cliArtifacts(directory, before) {
   assert.ok(source.files.length > 0);
   for (const file of source.files) { const actual = tracked.get(file.path); assert.ok(actual?.matchesGit); assert.equal(actual.bytes, file.bytes); assert.equal(actual.sha256, file.sha256); }
   const cleanup = json(path.join(directory, 'cleanup.json'));
-  assert.equal(cleanup.success, true); assert.equal(cleanup.sourceAbsent, true); assert.equal(cleanup.directChildrenWaited, true);
+  closedCliOriginals(cleanup, directory);
   return Object.fromEntries(['cli', 'client'].map(id => {
     const product = result.products[id], bound = { ...product.archive, path: path.join(directory, product.archive.path) };
     if (!['cli.tgz', 'client.tgz'].includes(product.archive.path)) throw new Error('Unexpected normal archive path');
@@ -189,7 +206,7 @@ async function main(output) {
   }
   if (primary) throw primary;
 }
-module.exports = { normalCliEvidence, artifact, extract, cliArtifacts, closedOriginal, observeRegistryClosure, finalizeRun, failureDetails };
+module.exports = { closedCliOriginals, normalCliEvidence, artifact, extract, cliArtifacts, closedOriginal, observeRegistryClosure, finalizeRun, failureDetails };
 if (require.main === module) (async () => {
   if (process.argv[2] === '--publish' && process.argv.length === 4) {
     const request = json(process.argv[3]);
