@@ -96,3 +96,33 @@ test('audited transformed toESM helper retains the shared base authority indepen
   assert.throws(() => deriveGeneratedIndex(originals, payload, path.join(root, 'changed')), /differs from admitted/);
   assert.equal(fs.existsSync(path.join(root, 'changed')), false);
 }));
+
+// Collector location regression only: this fixture's Bun/build-tools are tiny
+// protocol stubs, never a real compiler, build, legal or source qualification.
+function noGitBundleFixture(root, installed, explicit) {
+  const workspace = path.join(root, 'workspace'), pkg = path.join(workspace, 'packages/fixture');
+  const cli = installed ? path.join(workspace, 'node_modules/@undefineds.co/xpod-cli') : path.join(workspace, 'packages/xpod-cli');
+  for (const directory of [pkg, cli, path.join(workspace, 'scripts'), path.join(workspace, 'bin'), path.join(workspace, 'node_modules')]) fs.mkdirSync(directory, {recursive:true});
+  fs.writeFileSync(path.join(workspace, 'package.json'), JSON.stringify({name:'@undefineds.co/xpod',workspaces:['packages/*']}));
+  for (const [name,bytes] of Object.entries({'package.json':'{}','README.md':'fixture',LICENSE:'fixture','tsconfig.json':'{}','src/index.ts':'export {}'})) {
+    const file=path.join(pkg,name);fs.mkdirSync(path.dirname(file),{recursive:true});fs.writeFileSync(file,bytes);
+  }
+  const tools=path.join(cli,'dist/build-tools/index.cjs');fs.mkdirSync(path.dirname(tools),{recursive:true});
+  fs.writeFileSync(path.join(cli,'package.json'),JSON.stringify({name:'@undefineds.co/xpod-cli',exports:{'./build-tools':'./dist/build-tools/index.cjs'}}));
+  const captured=path.join(workspace,'notices-call.json');
+  fs.writeFileSync(tools,`exports.collectJavascriptNotices=o=>{require('node:fs').writeFileSync(${JSON.stringify(captured)},JSON.stringify(o));require('node:fs').mkdirSync(o.destination,{recursive:true});};`);
+  if (!installed) {const link=path.join(workspace,'node_modules/@undefineds.co/xpod-cli');fs.mkdirSync(path.dirname(link),{recursive:true});fs.symlinkSync(cli,link,'dir');}
+  const generated=explicit?path.join(workspace,'explicit-originals'):path.join(cli,'licenses/javascript/generated/1.4.2');fs.mkdirSync(generated,{recursive:true});
+  fs.writeFileSync(path.join(generated,'index.json'),JSON.stringify({bunVersion:'1.4.2',prefixBytes:4,prefixSha256:hash('head')}));
+  fs.mkdirSync(path.join(pkg,'dist'),{recursive:true});fs.writeFileSync(path.join(pkg,'dist/payload.cjs'),'head\n// fixture.ts\n');fs.writeFileSync(path.join(pkg,'dist/meta.json'),'{}');
+  const helper=path.join(workspace,'scripts/workspace-runtime-materials.cjs');fs.copyFileSync(path.resolve(process.env.XPOD_COLLECTOR_TEST_IMPLEMENTATION??'scripts/workspace-runtime-materials.cjs'),helper);
+  const bun=path.join(workspace,'bin/bun');fs.writeFileSync(bun,`#!/bin/sh\ncase "$1" in --version) printf '1.4.2\\n';; --revision) printf 'fixture-revision\\n';; -e) printf '%s' '${bun}';; *) exit 99;; esac\n`,{mode:0o700});
+  const child=path.join(workspace,'run.cjs');fs.writeFileSync(child,`require(${JSON.stringify(helper)}).collectWorkspaceRuntimeMaterials({packageRoot:process.cwd(),bundles:[{name:'fixture',payload:'dist/payload.cjs',metafile:'dist/meta.json'}],${explicit?'generated:'+JSON.stringify(generated):''}}).then(x=>process.stdout.write(JSON.stringify(x))).catch(e=>{console.error(e.message);process.exitCode=1;});`);
+  const env={...process.env,PATH:path.dirname(bun)+path.delimiter+process.env.PATH,GIT_CEILING_DIRECTORIES:path.dirname(workspace)};
+  const absent=spawnSync('git',['rev-parse','--show-toplevel'],{cwd:pkg,env,encoding:'utf8'});assert.notEqual(absent.status,0,'fixture must really have no enclosing Git authority');
+  const result=spawnSync(process.execPath,[child],{cwd:pkg,env,encoding:'utf8'});assert.equal(result.status,0,result.stderr);
+  const authority=JSON.parse(result.stdout);assert.equal(authority.sourceCommit,null);assert.equal(authority.tracked,false);assert.equal(authority.dirty,null);
+  const notices=JSON.parse(fs.readFileSync(captured,'utf8'));assert.equal(notices.generated,generated);assert.equal(notices.repoRoot,workspace);
+}
+test('no-Git workspace resolves originals and notice dependency root from physical CLI build tools, not package cwd',()=>fixture(async root=>noGitBundleFixture(root,false,false)));
+test('published CLI tool package and explicit generated override remain usable without Git authority',()=>fixture(async root=>{noGitBundleFixture(root,true,true);}));

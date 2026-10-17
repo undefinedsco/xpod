@@ -17,8 +17,11 @@
 !scripts/patch-inrupt-authn-operation-cleanup.js
 !scripts/check-components-runtime-metadata.cjs
 !scripts/fix-dist-js-imports.mjs
+!scripts/workspace-runtime-materials.cjs
 !scripts/build-afs-from-producer.ts
 !scripts/run-npm-pack.cjs
+!scripts/prepare-package-manifest.cjs
+!scripts/platform-binaries.cjs
 !scripts/check-dependency-state.ts
 !scripts/agentfs-native-ci/supervise.py
 !src/

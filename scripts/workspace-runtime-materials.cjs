@@ -120,6 +120,27 @@ function deriveGeneratedIndex(originalDirectory, payload, destination) {
   fs.writeFileSync(path.join(destination, 'index.json'), JSON.stringify({ ...original, prefixBytes: prefix.length, prefixSha256: digest,
     provenance: { ...original.provenance, derivation: { runtimeSHA256: runtime.sha256, algorithmVersion: 'helper-ast-v2', helperAuthorities, profileAuthorities, comparison: 'Actual helper AST equals pinned original runtime or existing audited generated-prefix helper; export modifiers and redundant parentheses excluded, no block/control-flow normalization' } }, files }, null, 2) + '\n', { flag: 'wx' });
 }
+// Physical tool/material roots are independent of Git source authority. Docker
+// and rebuilt published packages have usable originals without a .git directory.
+function buildMaterialRoots(toolPath, packageRoot, gitRoot) {
+  const resolved = fs.realpathSync(toolPath);
+  let cliRoot = null, dependencyRoot = null;
+  for (let current = path.dirname(resolved), depth = 0; depth < 16; depth++) {
+    const manifest = path.join(current, 'package.json');
+    if (!cliRoot && fs.existsSync(manifest) && JSON.parse(regular(manifest)).name === '@undefineds.co/xpod-cli') cliRoot = current;
+    if (!dependencyRoot && path.basename(current) === 'node_modules') dependencyRoot = path.dirname(current);
+    const parent = path.dirname(current); if (parent === current) break; current = parent;
+  }
+  let workspaceRoot = null;
+  if (cliRoot && path.basename(path.dirname(cliRoot)) === 'packages') {
+    const candidate = path.dirname(path.dirname(cliRoot)), manifest = path.join(candidate, 'package.json');
+    if (fs.existsSync(manifest)) {
+      const declaration = JSON.parse(regular(manifest));
+      if (declaration.name === '@undefineds.co/xpod' && Array.isArray(declaration.workspaces) && declaration.workspaces.includes('packages/*')) workspaceRoot = candidate;
+    }
+  }
+  return { cliRoot, noticesRoot: gitRoot ?? workspaceRoot ?? dependencyRoot ?? packageRoot };
+}
 async function collectWorkspaceRuntimeMaterials(options) {
   const root = fs.realpathSync(options.packageRoot);
   const repo = command(root, ['rev-parse', '--show-toplevel']);
@@ -156,6 +177,7 @@ async function collectWorkspaceRuntimeMaterials(options) {
     if (options.bundles?.length) {
       const toolPath = options.buildTools ?? createRequire(path.join(root, 'package.json')).resolve('@undefineds.co/xpod-cli/build-tools');
       const tools = await import(pathToFileURL(toolPath).href);
+      const materialRoots = buildMaterialRoots(toolPath, root, repo);
       const bun = spawnSync('bun', ['--version'], { encoding: 'utf8' });
       if (bun.status !== 0) throw new Error('Actual Bun compiler unavailable');
       const version = bun.stdout.trim();
@@ -163,7 +185,8 @@ async function collectWorkspaceRuntimeMaterials(options) {
       const revision = spawnSync('bun', ['--revision'], { encoding: 'utf8' });
       if (executable.status !== 0 || revision.status !== 0) throw new Error('Actual compiler identity unavailable');
       compiler = { version, revision: revision.stdout.trim(), executableSHA256: hash(regular(executable.stdout)), platform: `${process.platform}-${process.arch}` };
-      const generated = options.generated ?? path.join(repo ?? '', 'packages/xpod-cli/licenses/javascript/generated', version);
+      if (options.generated === undefined && !materialRoots.cliRoot) throw new Error('Actual CLI build-tool package originals unavailable');
+      const generated = options.generated ?? path.join(materialRoots.cliRoot, 'licenses/javascript/generated', version);
       for (const bundle of options.bundles) {
         if (!/^[a-z][a-z0-9-]*$/.test(bundle.name)) throw new Error('Unsafe bundle material name');
         const payload = path.join(root, bundle.payload); const metafile = path.join(root, bundle.metafile);
@@ -174,7 +197,7 @@ async function collectWorkspaceRuntimeMaterials(options) {
           deriveGeneratedIndex(generated, payload, selectedGenerated);
         }
         bundleFacts.push({ name: bundle.name, payload: bundle.payload, payloadSHA256: hash(regular(payload)), metafile: bundle.metafile, metafileSHA256: hash(regular(metafile)), generatedProfile: profile ?? 'index' });
-        tools.collectJavascriptNotices({ stageRoot: root, repoRoot: repo ?? root, metafile,
+        tools.collectJavascriptNotices({ stageRoot: root, repoRoot: materialRoots.noticesRoot, metafile,
           destination: path.join(stage, 'javascript', bundle.name), target: `${process.platform}-${process.arch}`,
           cli: payload, bunVersion: version, generated: selectedGenerated, ...(profile ? { generatedProfile: profile } : {}) });
       }
