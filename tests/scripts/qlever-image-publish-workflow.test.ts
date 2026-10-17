@@ -163,7 +163,7 @@ describe.each(cases)('$name publish workflow image identity gate', (workflowCase
       context: '.',
       file: workflowCase.dockerfile,
       load: true,
-      platforms: 'linux/amd64',
+      platforms: '${{ needs.resolve_target.outputs.docker_platform }}',
       push: false,
       tags: workflowCase.tags,
     }));

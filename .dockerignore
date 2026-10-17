@@ -16,6 +16,9 @@
 !scripts/patch-inrupt-authn-operation-cleanup.js
 !scripts/check-components-runtime-metadata.cjs
 !scripts/fix-dist-js-imports.mjs
+!scripts/build-afs-from-producer.ts
+!scripts/run-npm-pack.cjs
+!scripts/check-dependency-state.ts
 !src/
 !ui/
 !desktop/
@@ -28,9 +31,24 @@ desktop/*
 !types/
 !qlever/
 
+# Native module receipts carry these exact recipe originals, not the docker tree.
+!docker/
+docker/**
+!docker/qlever-runtime-sdk/
+docker/qlever-runtime-sdk/**
+!docker/qlever-runtime-sdk/Dockerfile.module-bookworm
+!docker/qlever-local-runtime/
+docker/qlever-local-runtime/**
+!docker/qlever-local-runtime/Dockerfile.module-bookworm
+
 # Never copy host build/install artifacts into the Linux build context.
 **/node_modules
 **/dist
+**/__pycache__
+**/*.pyc
+**/*.pyo
+**/.pytest_cache
+**/.test-data
 
 # Explicitly excluded (not needed in image)
 .github/
