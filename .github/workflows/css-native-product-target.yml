@@ -75,6 +75,7 @@ jobs:
           name: css-module-products-${{ inputs.target }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             ${{ env.CSS_PRODUCT_ROOT }}/product.tgz
+            ${{ env.CSS_PRODUCT_ROOT }}/source-materials/
             ${{ env.CSS_PRODUCT_ROOT }}/producer.receipt.json
             ${{ env.CSS_PRODUCT_ROOT }}/evidence/
             ${{ env.CSS_PRODUCT_ROOT }}/originals/

@@ -59,3 +59,13 @@ test('Apache canonical original needs both complete normative text and original 
   expect(verifyApacheGrantText(Buffer.from('Apache-2.0'), apache, 'Apache-2.0')).toBe(false);
   expect(verifyApacheGrantText(Buffer.from(apache.toString() + '\nNo commercial use.'), apache, 'Apache-2.0')).toBe(false);
 });
+
+// Existing retained upstream original; framing is presentation, normative grant
+// and original holder remain byte-preserved by the admission caller.
+test('actual retained Inrupt MIT original permits its unmodified framing and holder', () => {
+  const original = readFileSync(new URL('../../packages/xpod-cli/licenses/javascript/objects/844fb3d1fcba1b7b2c04887fa108174167fe4ba40e5a4c6e67490c3b71731b49.txt', import.meta.url));
+  expect(verifyMitGrantText(original, template)).toBe(true);
+  expect(verifyMitGrantText(Buffer.from(original.toString().replace('Copyright Inrupt Inc.', 'Copyright')), template)).toBe(false);
+  expect(verifyMitGrantText(Buffer.from(original.toString().replace('Copyright Inrupt Inc.', 'Copyright [fullname]')), template)).toBe(false);
+  expect(verifyMitGrantText(Buffer.from(original.toString().replace('Permission is hereby granted', 'Permission may be granted')), template)).toBe(false);
+});

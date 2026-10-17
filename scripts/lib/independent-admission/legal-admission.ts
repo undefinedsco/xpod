@@ -30,7 +30,9 @@ const normalize = (value: string) => value.replace(/\s+/gu, ' ').trim();
  * a text predicate only, never package ownership or a legal admission token. */
 export function verifyMitGrantText(original: Buffer, standardTemplate: Buffer): boolean {
   if (hash(standardTemplate) !== MIT_TEMPLATE_SHA) return false;
-  const text = original.toString('utf8').replace(/\r\n/gu, '\n');
+  let text = original.toString('utf8').replace(/\r\n/gu, '\n').trim();
+  if (text.endsWith('End license text.Source Distributions')) text = text.slice(0, -'Source Distributions'.length);
+  if (text.startsWith('Begin license text.\n') && text.endsWith('\nEnd license text.')) text = text.slice('Begin license text.\n'.length, -'\nEnd license text.'.length).trim();
   const template = standardTemplate.toString('utf8');
   const marker = 'Permission is hereby granted';
   const offset = text.indexOf(marker), templateOffset = template.indexOf(marker);
@@ -40,8 +42,11 @@ export function verifyMitGrantText(original: Buffer, standardTemplate: Buffer): 
   // restrictions in the heading. Other grant forms require their own adapter.
   const lines = heading.split('\n').map(line => line.trim()).filter(Boolean);
   if (lines[0] === 'MIT License' || lines[0] === 'The MIT License (MIT)') lines.shift();
-  if (lines.length !== 1 || !/^Copyright\s+(?:\(c\)|©)\s+(?:\[\d{4}\]|\d{4}(?:[-,\s\d]*))\s+\S.+$/iu.test(lines[0]!)
-    || /<year>|<copyright holders>|\[year\]|\[fullname\]/iu.test(lines[0]!)) return false;
+  if (!lines.length || lines.some(line => {
+    if (!/^Copyright\s+/iu.test(line) || /<year>|<copyright holders?>|\[year\]|\[fullname\]|\[copyright holders?\]/iu.test(line)) return true;
+    const holder = line.replace(/^Copyright\s+(?:(?:\(c\)|©)\s*)?/iu, '').replace(/^\[?\d{4}\]?[\d\s,–—-]*/u, '').replace(/^\[|\]$/gu, '').trim();
+    return !/[\p{L}]/u.test(holder) || /^(?:copyright holders?|fullname|name|year|authors?)\.?$/iu.test(holder);
+  })) return false;
   return normalize(text.slice(offset)) === normalize(template.slice(templateOffset));
 }
 /** The unchanged Apache text alone is a template, not a package grant.
@@ -153,8 +158,8 @@ export function verifyLegalAdmission(evidence: unknown, context: Pick<AdmissionC
   const apacheTemplate = source.trackedPaths.includes(APACHE_TEMPLATE) ? source.readTracked(APACHE_TEMPLATE) : undefined;
   const physical = inspectPhysicalLegalMaterials(artifact, context.legalOriginals, (bytes, declaredLicense) =>
     Boolean(template && (declaredLicense === undefined || declaredLicense === 'MIT') && verifyMitGrantText(bytes, template)) || Boolean(apacheTemplate && verifyApacheGrantText(bytes, apacheTemplate, declaredLicense)),
-    (bytes, declaredLicense) => explicitLicenseConflicts(bytes, declaredLicense === 'Apache-2.0' ? 'Apache-2.0' : 'MIT'));
-  if (physical) { pending.push(...physical.pending); for (const filename of physical.qualifiedPaths) ledger.cover(filename, 'physical-original', 'registry original and applicable scoped grant'); }
+    (bytes, declaredLicense) => explicitLicenseConflicts(bytes, declaredLicense === 'Apache-2.0' ? 'Apache-2.0' : 'MIT'), { source, materials: context.legalSourceMaterials });
+  if (physical) { pending.push(...physical.pending); for (const filename of physical.qualifiedPaths) ledger.cover(filename, 'physical-original', 'exact registry or observed-installed-source bytes and applicable scoped grant'); }
   pending.push(...inspectBundleLegalMaterials(artifact, context.legalOriginals).pending);
   const transpiled = inspectTranspiledLegalMappings(artifact, source, context.legalSourceMaterials, bytes => Boolean(template && verifyMitGrantText(bytes, template)), context.legalOriginals,
     (bytes, declaredLicense) => Boolean(apacheTemplate && verifyApacheGrantText(bytes, apacheTemplate, declaredLicense)), explicitLicenseConflicts);

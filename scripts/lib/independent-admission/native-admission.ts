@@ -128,7 +128,7 @@ export function verifyNativeAdmission(evidence: unknown, context: AdmissionConte
 export function verifyCollectedNativeAdmission(_evidence: unknown, context: Omit<AdmissionContext, 'archive'> & { archive?: Buffer }) {
   const product = collectedArtifactView(context.collectedArtifact), runtime = controlledNativeRuntimeView(context.nativeMaterials);
   const facts = { materialIntegrityVerified: false, binaryFormatsVerified: false, originalStageBindingsVerified: false,
-    nativeProducerOriginsVerified: false, nativeRuntimeAbiVerified: false, qleverRuntimeAbiVerified: false, nativeRuntimeAbiScope: 'css-qlever-bundle' as const, nativeSourceClosureVerified: false, nativeQualified: false };
+    nativeProducerOriginsVerified: false, nativeRuntimeAbiVerified: false, qleverRuntimeAbiVerified: false, agentfsRuntimeAbiVerified: false, selectedNativeBinaryFormatsVerified: false, nativeRuntimeAbiScope: undefined as string | undefined, nativeSourceClosureVerified: false, nativeQualified: false };
   if (!product || !runtime) return { status: 'pending' as const, reason: 'controlled-native-runtime-originals-capability-unavailable',
     pending: ['controlled-native-runtime-originals-capability-unavailable'], facts };
   const identity = runtime.identity;
@@ -140,6 +140,9 @@ export function verifyCollectedNativeAdmission(_evidence: unknown, context: Omit
   facts.nativeProducerOriginsVerified = runtime.nativeOriginVerified;
   facts.nativeRuntimeAbiVerified = runtime.runtimeAbiVerified;
   facts.qleverRuntimeAbiVerified = runtime.qleverRuntimeAbiVerified;
+  facts.agentfsRuntimeAbiVerified = runtime.agentfsRuntimeAbiVerified;
+  facts.selectedNativeBinaryFormatsVerified = runtime.selectedNativeBinaryFormatsVerified;
+  facts.nativeRuntimeAbiScope = runtime.runtimeAbiScope;
   facts.nativeSourceClosureVerified = runtime.nativeSourceClosureVerified;
   // The actual observer captures source/SDK identity and a real ABI smoke.
   // Missing compiler dependency inputs and separately sourced bundled dylibs

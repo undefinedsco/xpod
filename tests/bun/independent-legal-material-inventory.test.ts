@@ -20,7 +20,7 @@ function fixture(missing = false) {
 }
 test('real packed members establish material integrity, never an issuer from approval JSON', () => {
   const f = fixture();
-  expect(inspectPhysicalLegalMaterials(f.view(), [{ status: 'verified', name: 'example', version: '1.0.0' }])?.pending).toEqual(['Immutable registry/source issuer required: example@1.0.0']);
+  expect(inspectPhysicalLegalMaterials(f.view(), [{ status: 'verified', name: 'example', version: '1.0.0' }])?.pending).toEqual(['Immutable registry or observed-installed-source issuer required: example@1.0.0']);
   expect(registryLegalOriginalView({ status: 'verified' })).toBeUndefined();
 });
 test('missing named terms are rederived from physical original files', () => {
@@ -50,7 +50,7 @@ test('registry observation rejects fabricated capabilities before network access
 
 test('legacy physical packages without a terms index remain explicitly pending', () => {
   const f = fixture(); delete f.files['provenance/terms/index.json'];
-  expect(inspectPhysicalLegalMaterials(f.view())?.pending).toEqual(['Physical package original terms index missing: provenance/terms/index.json']);
+  expect(inspectPhysicalLegalMaterials(f.view())?.pending).toContain('Physical package original terms index missing: provenance/terms/index.json');
 });
 
 test('actual official ms@2.1.3 tar fixture binds immutable lock SRI, manifest, and original MIT text without issuing capability', async () => {

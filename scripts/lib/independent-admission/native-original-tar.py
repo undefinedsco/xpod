@@ -15,16 +15,22 @@ def safe(name):
 
 
 def scan(zip_path, archive_member, domain):
-    if domain not in ('runtime', 'source') or not safe(archive_member):
+    if domain not in ('runtime', 'source', 'afs-package') or not safe(archive_member):
         raise ValueError('Native tar profile invalid')
     rows, names, total = [], set(), 0
     with zipfile.ZipFile(zip_path) as outer:
         matches = [item for item in outer.infolist() if item.filename == archive_member]
         if len(matches) != 1 or matches[0].is_dir() or matches[0].file_size > 512 * 1024**2:
             raise ValueError('Unique bounded native tar original required')
-        with outer.open(matches[0]) as stream, tarfile.open(fileobj=stream, mode='r|gz' if domain == 'runtime' else 'r|') as archive:
+        with outer.open(matches[0]) as stream, tarfile.open(fileobj=stream, mode='r|gz' if domain in ('runtime', 'afs-package') else 'r|') as archive:
             for item in archive:
                 name = item.name.removeprefix('./').rstrip('/')
+                if domain == 'afs-package':
+                    if name == 'install' and item.isdir():
+                        continue
+                    if not name.startswith('install/'):
+                        raise ValueError('Canonical AgentFS install tar root required')
+                    name = name.removeprefix('install/')
                 if item.isdir() and name in ('', '.'):
                     continue
                 if not safe(name) or name in names or len(names) >= 25000:
@@ -34,7 +40,7 @@ def scan(zip_path, archive_member, domain):
                     continue
                 if item.isfile():
                     total += item.size
-                    if item.size < 0 or total > (1024 if domain == 'runtime' else 512) * 1024**2:
+                    if item.size < 0 or total > (1024 if domain in ('runtime', 'afs-package') else 512) * 1024**2:
                         raise ValueError('Native tar expanded bound')
                     digest, count = hashlib.sha256(), 0
                     with archive.extractfile(item) as original:

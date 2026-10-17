@@ -24,6 +24,7 @@ export interface ModuleSourceMaterialView {
   readonly scope: 'controlled-recipe-input-universe';
   readonly transpiledOutputs: readonly { readonly path: string; readonly sourcePath: string }[];
   readDependencyOriginal(name: string, maximumBytes: number): Buffer;
+  readDependencyOriginalRange(name: string, offset: number, length: number): Buffer;
   compactOriginalReaders(): void;
 }
 const issued = new WeakMap<object, ModuleSourceMaterialView>();
@@ -192,32 +193,48 @@ export function verifyModuleSourceOriginals(input: {
   const dependencies = groups.get('dependencies')!;
   const links = new Map([...sources, ...dependencies].map(row => [row.path, row]));
   let readable = true;
+  const resolveDependency = (name: string) => {
+    if (!readable) return fail('source original readers compacted');
+    if (!safe(name) || !name.split('/').includes('node_modules')) return fail('dependency read bound');
+    let resolved = name;
+    for (let hops = 0; hops < 64; hops++) {
+      const parts = resolved.split('/'); let changed = false;
+      for (let i = 1; i <= parts.length; i++) {
+        const prefix = parts.slice(0, i).join('/'), row = links.get(prefix);
+        if (row?.kind === 'symlink') {
+          resolved = path.posix.normalize(path.posix.join(path.posix.dirname(prefix), row.target!, ...parts.slice(i)));
+          if (!safe(resolved)) return fail('dependency link escape'); changed = true; break;
+        }
+      }
+      if (changed) continue;
+      const location = locations.get(resolved), row = links.get(resolved);
+      if (!location || !row || row.kind !== 'file') return fail('dependency original missing');
+      return { location, row };
+    }
+    return fail('dependency link cycle');
+  };
+  const readDependencyRange = (location: { archive: string; offset: number; bytes: number }, offset: number, length: number) => {
+    if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(length) || length < 0
+      || length > limits.rangeBytes || offset > location.bytes - length) return fail('dependency range bound');
+    const bytes = input.readRange(location.archive, location.offset + offset, length);
+    if (bytes.length !== length) return fail('dependency original truncated');
+    return bytes;
+  };
   return Object.freeze({ compactOriginalReaders() { readable = false; locations.clear(); }, dependencyRows: Object.freeze(dependencies), trackedSourcePaths: Object.freeze([...input.trackedPaths]),
     outputs: Object.freeze(outputs.map(row => Object.freeze({ ...row }))), transpiledOutputs: Object.freeze(transpiledOutputs), scope: 'controlled-recipe-input-universe' as const,
+    readDependencyOriginalRange(name: string, offset: number, length: number): Buffer {
+      const { location } = resolveDependency(name);
+      return readDependencyRange(location, offset, length);
+    },
     readDependencyOriginal(name: string, maximumBytes: number): Buffer {
-      if (!readable) return fail('source original readers compacted');
-      if (!safe(name) || !name.split('/').includes('node_modules') || !Number.isSafeInteger(maximumBytes) || maximumBytes < 0 || maximumBytes > limits.metadataBytes) return fail('dependency read bound');
-      let resolved = name;
-      for (let hops = 0; hops < 64; hops++) {
-        const parts = resolved.split('/'); let changed = false;
-        for (let i = 1; i <= parts.length; i++) {
-          const prefix = parts.slice(0, i).join('/'), row = links.get(prefix);
-          if (row?.kind === 'symlink') {
-            resolved = path.posix.normalize(path.posix.join(path.posix.dirname(prefix), row.target!, ...parts.slice(i)));
-            if (!safe(resolved)) return fail('dependency link escape'); changed = true; break;
-          }
-        }
-        if (changed) continue;
-        const location = locations.get(resolved), row = links.get(resolved);
-        if (!location || !row || row.kind !== 'file' || location.bytes > maximumBytes) return fail('dependency original missing or oversized');
-        const bytes = Buffer.alloc(location.bytes);
-        for (let offset = 0; offset < bytes.length; offset += limits.rangeBytes) {
-          const chunk = input.readRange(location.archive, location.offset + offset, Math.min(limits.rangeBytes, bytes.length - offset));
-          if (chunk.length !== Math.min(limits.rangeBytes, bytes.length - offset)) return fail('dependency original truncated'); chunk.copy(bytes, offset);
-        }
-        if (hash(bytes) !== row.sha256) return fail('dependency original changed'); return bytes;
+      const { location, row } = resolveDependency(name);
+      if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 0 || maximumBytes > limits.metadataBytes
+        || location.bytes > maximumBytes) return fail('dependency read bound');
+      const bytes = Buffer.alloc(location.bytes);
+      for (let offset = 0; offset < bytes.length; offset += limits.rangeBytes) {
+        readDependencyRange(location, offset, Math.min(limits.rangeBytes, bytes.length - offset)).copy(bytes, offset);
       }
-      return fail('dependency link cycle');
+      if (hash(bytes) !== row.sha256) return fail('dependency original changed'); return bytes;
     } });
 }
 

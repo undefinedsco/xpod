@@ -71,15 +71,17 @@ export function collectNativeMaterialContext(artifact: CollectedArtifactCapabili
 export interface ControlledNativeRuntimeView {
   readonly identity: NativeMaterialView['identity'];
   readonly nativeSourceSha: string;
-  readonly nativeIndex: Readonly<import('../physical-module-native').NativeMaterialIndex>;
-  readonly nativeOriginVerified: true;
-  readonly originalStageBindingsVerified: true;
+  readonly nativeIndex?: Readonly<import('../physical-module-native').NativeMaterialIndex>;
+  readonly nativeOriginVerified: boolean;
+  readonly originalStageBindingsVerified: boolean;
   readonly binaryFormatsVerified: boolean;
-  readonly qleverRuntimeAbiVerified: true;
-  readonly runtimeAbiScope: 'css-qlever-bundle';
+  readonly qleverRuntimeAbiVerified: boolean;
+  readonly agentfsRuntimeAbiVerified: boolean;
+  readonly selectedNativeBinaryFormatsVerified: true;
+  readonly runtimeAbiScope: 'css-qlever-bundle' | 'afs-agentfs-helper' | 'api-inngest-cli';
   readonly uncoveredNativeImages: readonly Readonly<import('../physical-module-native').NativeFile>[];
   readonly runtimeAbiVerified: boolean;
-  readonly sourceMaterialsVerified: true;
+  readonly sourceMaterialsVerified: boolean;
   readonly nativeSourceClosureVerified: false;
   readonly pending: readonly string[];
 }
@@ -105,8 +107,9 @@ export async function collectMacNativeRuntimeContext(input: {
     || !['darwin-arm64', 'darwin-x64'].includes(product.identity.target)
     || native.originFacts.target !== product.identity.target
     || !['.github/workflows/build-qlever-macos-runtime.yml', '.github/workflows/css-module-product.yml'].includes(native.originFacts.workflowPath)) return fail('independent observed macOS originals and exact product/Git capabilities required');
-  const packageJson = JSON.parse(product.readMember('package.json', 1024 ** 2).toString());
-  if (packageJson.xpodModule?.id !== 'css') return fail('fixed CSS native adapter required');
+  const { modulePackageName } = await import('../../../packages/xpod-cli/src/module-catalog');
+  const [productPlatform, productArch] = product.identity.target.split('-');
+  if (modulePackageName('css', productPlatform, productArch) !== product.identity.package) return fail('fixed CSS native adapter required');
   const prefix = 'native/qlever/', originalPrefix = 'native-materials/';
   const refs = new Map(native.members.map(row => [row.path, { path: row.path, sha256: row.sha256, sizeBytes: row.bytes }]));
   const read = (relative: string, maximum = 8 * 1024 ** 2): Buffer => {
@@ -225,15 +228,7 @@ export async function collectMacNativeRuntimeContext(input: {
   }
   if (!runtime.executedCanonicalProtocolVerified) return fail('actual runtime ABI protocol observation required');
   const capability = Object.freeze({}) as NativeMaterialCapability;
-  const uncoveredNativeImages: import('../physical-module-native').NativeFile[] = [];
-  const candidates = product.members.filter(row => !row.path.startsWith(prefix) && !row.path.startsWith('source/') && !row.path.startsWith('provenance/') && row.bytes >= 4);
-  const imageMagic = new Set(['7f454c46', '0061736d', 'feedface', 'cefaedfe', 'feedfacf', 'cffaedfe', 'cafebabe', 'bebafeca', 'cafebabf', 'bfbafeca']);
-  const inventoryObserved = candidates.length <= 10000;
-  if (inventoryObserved) for (const row of candidates) {
-    const original = collectedProductOriginal(input.artifact, { path: row.path, sha256: row.sha256, sizeBytes: row.bytes });
-    const bytes = original.readRange(0, 4), magic = bytes.toString('hex');
-    if (imageMagic.has(magic) || bytes.subarray(0, 2).toString() === 'MZ') uncoveredNativeImages.push(Object.freeze({ ...original.reference }));
-  }
+  const { uncoveredNativeImages, inventoryObserved } = await observeOtherProductNativeImages(input.artifact, new Set(actualRuntime.map(row => row.path)));
   const pending = Object.freeze(['native-compiler-input-closure-not-fully-bound',
     ...(manifest.artifacts.length > 1 ? ['bundled-native-library-source-bindings-unavailable'] : []),
     ...(!inventoryObserved ? ['whole-product-native-image-inventory-budget-exceeded'] : []),
@@ -251,10 +246,133 @@ export async function collectMacNativeRuntimeContext(input: {
   freeze(nativeIndex);
   const view = Object.freeze({ identity: product.identity, nativeIndex, nativeSourceSha: native.originFacts.sourceSha,
     nativeOriginVerified: true as const, originalStageBindingsVerified: true as const, binaryFormatsVerified: inventoryObserved && uncoveredNativeImages.length === 0,
-    qleverRuntimeAbiVerified: true as const, runtimeAbiScope: 'css-qlever-bundle' as const, uncoveredNativeImages: Object.freeze(uncoveredNativeImages),
+    qleverRuntimeAbiVerified: true as const, agentfsRuntimeAbiVerified: false, selectedNativeBinaryFormatsVerified: true as const, runtimeAbiScope: 'css-qlever-bundle' as const, uncoveredNativeImages: Object.freeze(uncoveredNativeImages),
     runtimeAbiVerified: inventoryObserved && uncoveredNativeImages.length === 0, sourceMaterialsVerified: true as const, nativeSourceClosureVerified: false as const, pending });
   runtimeIssued.set(capability, { view, validate });
   issued.set(capability, () => { validate(); return Object.freeze({ identity: product.identity, custodyKind: 'collected-native-originals' as const,
     indexPath: proposalName, indexSha256: hash(proposalBytes), status: 'material-integrity-verified' as const, externalAdmission: 'pending' as const }); });
+  return capability;
+}
+
+async function observeOtherProductNativeImages(artifact: CollectedArtifactCapability, covered: ReadonlySet<string>) {
+  const product = collectedArtifactView(artifact);
+  if (!product) return fail('real product custody required for native image inventory');
+  const { collectedProductOriginal } = await import('./product-original');
+  const uncoveredNativeImages: import('../physical-module-native').NativeFile[] = [];
+  const candidates = product.members.filter(row => !covered.has(row.path) && !row.path.startsWith('source/')
+    && !row.path.startsWith('sources/') && !row.path.startsWith('provenance/') && row.bytes >= 4);
+  const magic = new Set(['7f454c46', '0061736d', 'feedface', 'cefaedfe', 'feedfacf', 'cffaedfe', 'cafebabe', 'bebafeca', 'cafebabf', 'bfbafeca']);
+  const inventoryObserved = candidates.length <= 10000;
+  if (inventoryObserved) for (const row of candidates) {
+    const original = collectedProductOriginal(artifact, { path: row.path, sha256: row.sha256, sizeBytes: row.bytes });
+    const bytes = original.readRange(0, 4);
+    if (magic.has(bytes.toString('hex')) || bytes.subarray(0, 2).toString() === 'MZ') uncoveredNativeImages.push(Object.freeze({ ...original.reference }));
+  }
+  return { uncoveredNativeImages: Object.freeze(uncoveredNativeImages), inventoryObserved };
+}
+
+/** One module dispatcher over the same private product/native capability axes.
+ * API and AgentFS cannot inherit QLever's runtime protocol or SDK approval. */
+export async function collectNativeAdmissionContext(input: {
+  artifact: CollectedArtifactCapability; source: unknown; nativeOriginals?: unknown;
+}): Promise<NativeMaterialCapability> {
+  const { derivedSourceView } = await import('./source-context');
+  const { modulePackageName } = await import('../../../packages/xpod-cli/src/module-catalog');
+  const { inspectModuleNativeMaterials } = await import('./native-module-materials');
+  const { collectedProductOriginal, collectedProductOriginalBinding } = await import('./product-original');
+  const { nativeOriginalsView } = await import('./native-original-collector');
+  const { observeMacNativeRanges } = await import('./macos-native-range');
+  const { verifyNativeMaterialTarget } = await import('../physical-module-native');
+  const product = collectedArtifactView(input.artifact), source = derivedSourceView(input.source);
+  if (!product || !source || source.sourceSha !== product.identity.sourceSha || !product.identity.target) return fail('actual platform product and immutable Git source required');
+  const [platform_, arch] = product.identity.target.split('-');
+  const module_ = (['css', 'api', 'afs'] as const).find(id => modulePackageName(id, platform_, arch) === product.identity.package);
+  if (module_ === 'css') return collectMacNativeRuntimeContext({ ...input, nativeOriginals: input.nativeOriginals });
+  if (module_ !== 'api' && module_ !== 'afs') return fail('canonical supported native product identity required');
+  const material = inspectModuleNativeMaterials({ module: module_, target: product.identity.target, members: product.members,
+    readMember: product.readMember, sourcePins: source.readTracked(module_ === 'api' ? 'packages/xpod-api/scripts/inngest-input-pins.json' : 'scripts/agentfs-native-ci/mounted/native-authority.json'),
+    ...(module_ === 'afs' ? { nativePolicySource: source.readTracked('scripts/agentfs-native-ci/accept.py') } : {}) });
+  const binary = collectedProductOriginal(input.artifact, material.binary);
+  if (collectedProductOriginalBinding(binary)?.artifact !== input.artifact) return fail('private actual module binary original required');
+  if (platform_ === 'darwin') observeMacNativeRanges({ sizeBytes: binary.reference.sizeBytes, readRange: binary.readRange }, product.identity.target);
+  else if (platform_ === 'linux') verifyNativeMaterialTarget(binary.readRange(0, 64), product.identity.target);
+  else return fail('module native target format profile unavailable');
+  const native = input.nativeOriginals === undefined ? undefined : nativeOriginalsView(input.nativeOriginals);
+  if (input.nativeOriginals !== undefined && !native) return fail('private independent native original capability required');
+  if (module_ === 'api' && native) return fail('official-release native custody profile required; an Actions native origin is not an Inngest release origin');
+  let originVerified = false, stagesVerified = false, runtimeAbi = false;
+  const pending = new Set(material.pending);
+  if (module_ === 'afs' && native) {
+    const data = material.data as { kit: any; receipt: any; reuse: any; authority: any };
+    const facts = native.originFacts;
+    const authority = JSON.parse(source.readTracked('scripts/agentfs-native-ci/mounted/native-authority.json').toString());
+    if (facts.workflowPath !== '.github/workflows/agentfs-native-acceptance.yml' || facts.target !== product.identity.target
+      || facts.sourceSha !== material.nativeSourceSha || String(facts.runId) !== String(authority.run)
+      || String(facts.artifactId) !== String(data.authority.id) || facts.artifactSha256 !== data.authority.zip) return fail('independent AgentFS origin differs from exact retained native authority');
+    const refs = new Map(native.members.map(row => [row.path, row]));
+    const read = (name: string, maximum = 8 * 1024 ** 2) => {
+      const reference = refs.get(name); if (!reference || reference.bytes > maximum) return fail('registered bounded AgentFS original required');
+      const bytes = native.readOriginal(name, maximum);
+      if (bytes.length !== reference.bytes || hash(bytes) !== reference.sha256) return fail('AgentFS native original changed');
+      return bytes;
+    };
+    if (refs.get('source-kit.json')?.sha256 !== material.index.sha256
+      || refs.get('native-receipt.json')?.sha256 !== product.members.find(row => row.path === 'provenance/native-build.receipt.json')?.sha256) return fail('AgentFS source/build originals differ from actual product copies');
+    const final = JSON.parse(read('final.json').toString());
+    if (final.head !== facts.sourceSha || final.target !== product.identity.target || final.sourceBefore?.head !== facts.sourceSha
+      || final.sourceBefore?.status !== '' || !isDeepStrictEqual(final.sourceBefore, final.sourceAfter)
+      || !isDeepStrictEqual(final.nativeReceipt, data.receipt) || !isDeepStrictEqual(final.sdkBefore, final.sdkAfter)) return fail('actual AgentFS source/SDK before/after differs');
+    const expectedInputs = data.reuse.nativeInputFiles;
+    if (!Array.isArray(expectedInputs) || !expectedInputs.length || expectedInputs.length > 4096) return fail('actual retained native module source inputs required');
+    for (const row of expectedInputs) {
+      const bytes = source.readTracked(row.path);
+      if (hash(bytes) !== row.sha256) return fail('AgentFS helper input differs from current immutable module source');
+    }
+    const packageRows = native.members.filter(row => row.path.endsWith('-' + product.identity.target + '.tar.gz'));
+    if (packageRows.length !== 1 || packageRows[0].sha256 !== data.authority.archive || final.archiveSHA256 !== data.authority.archive) return fail('actual AgentFS native package differs from retained product authority');
+    const { observeRegisteredNativeTar, observeRegisteredAfsLinuxRuntime } = await import('./native-tar-observation');
+    const packageInventory = await observeRegisteredNativeTar(native, packageRows[0].path, 'afs-package');
+    const packaged = new Map(packageInventory.map((row: any) => [row.path, row]));
+    for (const original of [material.binary, material.sourceArchive]) {
+      const actual = packaged.get(original.path);
+      if (!actual || actual.sha256 !== original.sha256 || actual.sizeBytes !== original.sizeBytes) return fail('actual AgentFS helper/source archive differs from native package member');
+    }
+    const jobs = native.metadataOriginals.find(row => row.name === 'jobs.original.json'), expectedJobs = facts.originals.find(row => row.name === 'jobs.original.json');
+    if (!jobs || !expectedJobs || jobs.data.length !== expectedJobs.bytes || hash(jobs.data) !== expectedJobs.sha256) return fail('actual AgentFS job API original unavailable');
+    const job = JSON.parse(jobs.data.toString()).jobs.find((row: any) => row.id === facts.producerJobId);
+    const began = Date.parse(job?.started_at), ended = Date.parse(job?.completed_at);
+    if (!Number.isFinite(began) || !Number.isFinite(ended) || ended < began) return fail('actual AgentFS producer job window unavailable');
+    const receipts = native.members.filter(row => row.path.endsWith('.receipt.json'));
+    if (!receipts.length || receipts.length > 64) return fail('complete bounded AgentFS stage originals required');
+    for (const row of receipts) {
+      const receipt = JSON.parse(read(row.path, 1024 ** 2).toString()), raw = refs.get(row.path.replace(/\.receipt\.json$/u, '.raw.log'));
+      const started = Date.parse(receipt.startedUTC), closed = Date.parse(receipt.closedUTC);
+      if (!raw || receipt.rawSHA256 !== raw.sha256 || receipt.actualWait !== true || receipt.exit !== 0 || receipt.signal !== null
+        || receipt.rawClosedBeforeHash !== true || receipt.ownedGroupAbsentAfterWait !== true || receipt.resourceStop !== null || receipt.supervisorError !== null
+        || !Array.isArray(receipt.cleanupErrors) || receipt.cleanupErrors.length || !Array.isArray(receipt.ownedGroupMembers) || receipt.ownedGroupMembers.length
+        || !Array.isArray(receipt.command) || !receipt.command.length || !Number.isFinite(started) || !Number.isFinite(closed)
+        || started < began || closed < started || closed > ended) return fail('AgentFS original stage closure/raw/job window mismatch');
+    }
+    originVerified = true; stagesVerified = true; pending.delete('agentfs-original-native-producer-custody-unavailable');
+    if (platform_ === 'linux') {
+      const observed = await observeRegisteredAfsLinuxRuntime(native, product.identity.target, binary);
+      runtimeAbi = observed.status === 'mechanical-agentfs-linux-runtime-verified';
+      if (runtimeAbi) pending.delete('agentfs-executed-runtime-ABI-originals-unavailable');
+    } else pending.add('agentfs-macos-executed-loader-sdk-runtime-originals-unavailable');
+  }
+  const capability = Object.freeze({}) as NativeMaterialCapability;
+  const validate = () => {
+    if (collectedArtifactView(input.artifact) !== product || derivedSourceView(input.source) !== source
+      || (native && nativeOriginalsView(input.nativeOriginals) !== native)) return fail('module native custody/source capability revoked');
+  };
+  const { uncoveredNativeImages, inventoryObserved } = await observeOtherProductNativeImages(input.artifact, new Set([material.binary.path]));
+  const view: ControlledNativeRuntimeView = Object.freeze({ identity: product.identity, nativeSourceSha: material.nativeSourceSha,
+    nativeOriginVerified: originVerified, originalStageBindingsVerified: stagesVerified, binaryFormatsVerified: inventoryObserved && uncoveredNativeImages.length === 0,
+    selectedNativeBinaryFormatsVerified: true, agentfsRuntimeAbiVerified: module_ === 'afs' && runtimeAbi, qleverRuntimeAbiVerified: false, runtimeAbiScope: module_ === 'api' ? 'api-inngest-cli' : 'afs-agentfs-helper',
+    uncoveredNativeImages, runtimeAbiVerified: runtimeAbi && inventoryObserved && uncoveredNativeImages.length === 0, sourceMaterialsVerified: true, nativeSourceClosureVerified: false,
+    pending: Object.freeze([...pending, ...(!inventoryObserved ? ['whole-product-native-image-inventory-budget-exceeded'] : []), ...uncoveredNativeImages.map(row => 'uncovered-product-native-image:' + row.path)]) });
+  runtimeIssued.set(capability, { view, validate });
+  issued.set(capability, () => { validate(); return Object.freeze({ identity: product.identity, custodyKind: 'collected-native-originals' as const,
+    indexPath: material.index.path, indexSha256: material.index.sha256, status: 'material-integrity-verified' as const, externalAdmission: 'pending' as const }); });
   return capability;
 }

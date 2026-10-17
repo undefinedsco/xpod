@@ -64,11 +64,15 @@ describe('restorable module source originals', () => {
   it('binds complete Git objects, installed dependency and tool bytes to exact product outputs', () => {
     const result = verifyModuleSourceOriginals(fixture());
     expect(result.readDependencyOriginal('node_modules/alias/index.js', 100).toString()).toBe('module.exports=42;\n');
+    expect(result.readDependencyOriginalRange('node_modules/alias/index.js', 7, 7).toString()).toBe('exports');
+    expect(() => result.readDependencyOriginalRange('node_modules/alias/index.js', 0, 65537)).toThrow('range bound');
+    expect(() => result.readDependencyOriginalRange('node_modules/alias/index.js', 19, 1)).toThrow('range bound');
     expect(result.transpiledOutputs).toEqual([{ path: 'entry.js', sourcePath: 'entry.ts' }]);
     expect(result.scope).toBe('controlled-recipe-input-universe');
     expect(moduleSourceMaterialView(result)).toBeUndefined();
     result.compactOriginalReaders();
     expect(() => result.readDependencyOriginal('node_modules/alias/index.js', 100)).toThrow('compacted');
+    expect(() => result.readDependencyOriginalRange('node_modules/alias/index.js', 0, 1)).toThrow('compacted');
   });
   it('rejects a same-source different product and omitted tracked inputs', () => {
     const different = fixture(); different.members.find((row: any) => row.path === 'entry.js').sha256 = '0'.repeat(64);

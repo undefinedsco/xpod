@@ -1,6 +1,8 @@
 import path from 'node:path';
 import { isNativeLegalMaterial } from './legal-coverage';
 import type { CollectedArtifactView } from './artifact-contract';
+import { installedLegalOriginalViews } from './legal-installed-originals';
+import type { DerivedSourceView } from './artifact-contract';
 import { registryLegalOriginalView } from './legal-registry-originals';
 
 const canonical = (value: unknown): value is string => typeof value === 'string' && value.length > 0
@@ -10,7 +12,7 @@ const isNotice = (name: string) => /^(?:licen[cs]e|copying|notice)(?:[._-]|$)/iu
 
 /** Checks the existing physical-module-notices format against the collected
  * archive. Integrity is deliberately separate from original issuer authority. */
-export function inspectPhysicalLegalMaterials(artifact: CollectedArtifactView, originals: readonly unknown[] = [], verifyGrant?: (bytes: Buffer, declaredLicense?: unknown) => boolean, declarations?: (bytes: Buffer, declaredLicense: unknown) => string[]): { pending: string[]; qualifiedPaths: string[]; packages: number; files: number } | undefined {
+export function inspectPhysicalLegalMaterials(artifact: CollectedArtifactView, originals: readonly unknown[] = [], verifyGrant?: (bytes: Buffer, declaredLicense?: unknown) => boolean, declarations?: (bytes: Buffer, declaredLicense: unknown) => string[], installed?: { source: DerivedSourceView; materials: unknown }): { pending: string[]; qualifiedPaths: string[]; packages: number; files: number } | undefined {
   const members = new Map(artifact.members.map(member => [member.path, member]));
   if (!members.has('provenance/terms/index.json') && !artifact.members.some(row => /^provenance\/packages\/[^/]+\.json$/u.test(row.path))) return undefined;
   const read = (name: string) => JSON.parse(artifact.readMember(name, 1024 * 1024).toString('utf8'));
@@ -45,15 +47,13 @@ export function inspectPhysicalLegalMaterials(artifact: CollectedArtifactView, o
     }
   }
   for (const member of artifact.members) if (member.path.startsWith('node_modules/') && !covered.has(member.path)) reject('uncovered physical dependency: ' + member.path);
-  if (!index) {
-    const pending = ['Physical package original terms index missing: provenance/terms/index.json'];
-    for (const [key, record] of records) if (!record.originals.length) {
-      const [name, version] = JSON.parse(key) as [string, string]; pending.push('Original terms missing: ' + name + '@' + version);
-    }
-    return { pending, qualifiedPaths: [], packages: records.size, files: covered.size };
-  }
   const pending: string[] = [], missing: { name: string; version: string }[] = [], seen = new Set<string>();
-  for (const entry of index.entries) {
+  if (!index) pending.push('Physical package original terms index missing: provenance/terms/index.json');
+  if (!index) for (const [key, record] of records) if (!record.originals.length) {
+    const [name, version] = JSON.parse(key) as [string, string];
+    pending.push('Original terms missing: ' + name + '@' + version);
+  }
+  for (const entry of index?.entries ?? []) {
     const key = JSON.stringify([entry.name, entry.version]), record = records.get(key);
     if (!record || seen.has(key) || JSON.stringify(entry.placements) !== JSON.stringify(record.placements)
       || (!Array.isArray(entry.originals) || entry.originals.length !== record.originals.length || record.originals.some((row, i) => row.path !== entry.originals[i]?.path || row.sha256 !== entry.originals[i]?.sha256 || row.bytes !== entry.originals[i]?.bytes)) || !Array.isArray(entry.supplements)) reject('terms inventory differs from actual packages');
@@ -72,15 +72,18 @@ export function inspectPhysicalLegalMaterials(artifact: CollectedArtifactView, o
       pending.push('Original terms missing: ' + entry.name + '@' + entry.version);
     }
   }
-  if (seen.size !== records.size || JSON.stringify(index.missingNamedOriginalTerms) !== JSON.stringify(missing)) reject('missing original inventory differs');
+  if (index && (seen.size !== records.size || JSON.stringify(index.missingNamedOriginalTerms) !== JSON.stringify(missing))) reject('missing original inventory differs');
   const qualifiedPaths: string[] = [];
+  const installedViews = installed ? installedLegalOriginalViews(installed.source, installed.materials) : [];
   for (const [key, record] of records) {
     const [name, version] = JSON.parse(key) as [string, string];
-    const original = originals.map(registryLegalOriginalView).find(view => view?.sourceSha === artifact.identity.sourceSha && view.name === name && view.version === version);
-    if (!original) { pending.push('Immutable registry/source issuer required: ' + name + '@' + version); continue; }
-    const upstream = new Map(original.members.map(member => [member.path, member]));
-    const declaredLicense = JSON.parse(original.readMember('package.json').toString()).license;
+    const candidates = [...installedViews, ...originals.map(registryLegalOriginalView)].filter(view => view?.sourceSha === artifact.identity.sourceSha && view.name === name && view.version === version);
     for (const placement of record.placements) {
+      const manifest = members.get(placement + '/package.json');
+      const original = candidates.find(view => view?.members.some(row => row.path === 'package.json' && row.sha256 === manifest?.sha256 && row.bytes === manifest?.bytes));
+      if (!original) { pending.push('Immutable registry or observed-installed-source issuer required: ' + name + '@' + version); continue; }
+      const upstream = new Map(original.members.map(member => [member.path, member]));
+      const declaredLicense = JSON.parse(original.readMember('package.json').toString()).license;
       for (const member of artifact.members.filter(row => covered.has(row.path) && row.path.startsWith(placement + '/'))) {
         const before = pending.length;
         const relative = member.path.slice(placement.length + 1);

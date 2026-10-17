@@ -23,3 +23,23 @@ test('four target production is manually controlled and native artifacts stay in
     {cwd:root,encoding:'utf8',timeout:10000});
   if(result.status!==0)throw Error(result.stderr);expect(result.status).toBe(0);
 });
+
+
+function requireSourceMaterialUpload(workflow:any) {
+  const upload=workflow.jobs.products.steps.find((step:any)=>step.name==='Upload original preview and evidence');
+  const paths=String(upload?.with?.path).trim().split('\n').map((line:string)=>line.trim());
+  for(const name of ['product.tgz','source-materials/','producer.receipt.json','evidence/','originals/']) {
+    if(!paths.includes('${{ env.CSS_PRODUCT_ROOT }}/'+name))throw Error('Required original product material omitted: '+name);
+  }
+  if(upload.if!=='success()' || upload.with['if-no-files-found']!=='error')throw Error('Required material upload must fail closed');
+}
+test('success product upload retains source materials and rejects missing or foreign-root replacements',()=>{
+  const current=yaml('css-native-product-target.yml');
+  requireSourceMaterialUpload(current);
+  for(const substitute of ['', '${{ env.OTHER_PRODUCT_ROOT }}/source-materials/']) {
+    const changed=JSON.parse(JSON.stringify(current));
+    const upload=changed.jobs.products.steps.find((step:any)=>step.name==='Upload original preview and evidence');
+    upload.with.path=upload.with.path.replace('${{ env.CSS_PRODUCT_ROOT }}/source-materials/',substitute);
+    expect(()=>requireSourceMaterialUpload(changed)).toThrow('source-materials/');
+  }
+});

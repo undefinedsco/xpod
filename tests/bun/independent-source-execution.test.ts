@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
-import { verifyCliBuildExecution, type CliExecutionInput, type BuildArchiveMember } from '../../scripts/lib/independent-admission/source-execution';
+import { verifyCliBuildExecution, portableSourceMaterialView, verifyCollectedCliBuildExecution, type CliExecutionInput, type BuildArchiveMember } from '../../scripts/lib/independent-admission/source-execution';
 const require = createRequire(import.meta.url);
 const hash = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
 const tracked = spawnSync('git', ['ls-tree', '-r', '--name-only', '-z', 'HEAD'], { encoding: 'utf8' }).stdout.split('\0').filter(Boolean);
@@ -75,6 +75,12 @@ function fixture(mutate?: (state: any) => void) {
 describe('controlled CLI execution original verifier (synthetic origin-free fixtures)', () => {
   it('binds all ten commands, owned closure, three build snapshots and exact archive outputs', () => {
     const result = fixture().verify(); expect(result.actualOwnedCommandClosureVerified).toBe(true); expect(result.controlledBuildDerivationVerified).toBe(true); expect(result.pending).toEqual([]);
+  });
+  it('never issues private graph custody from structural callbacks or serialized facts', () => {
+    const f = fixture(), facts = f.verify();
+    expect(portableSourceMaterialView(facts)).toBeUndefined();
+    expect(portableSourceMaterialView(JSON.parse(JSON.stringify(facts)))).toBeUndefined();
+    expect(() => verifyCollectedCliBuildExecution({ artifact: {} as any, source: {} })).toThrow('private collected');
   });
   it('leaves historical missing originals pending', () => {
     const f = fixture(); delete (f.input.producer as any).buildPhases;

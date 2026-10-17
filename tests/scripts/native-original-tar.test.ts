@@ -29,6 +29,17 @@ for target in ['../../secret','/etc/passwd','config.cmake']:
 try:m.scan(good,'native-materials/source-kit.tar','runtime')
 except (ValueError,tarfile.ReadError):pass
 else:raise AssertionError('source tar treated as runtime')
+def afs(name,member):
+ tar=root/(name+'.tgz')
+ with tarfile.open(tar,'w:gz') as archive:
+  data=b'bound helper';f=tarfile.TarInfo(member);f.size=len(data);archive.addfile(f,io.BytesIO(data))
+ with zipfile.ZipFile(root/(name+'.zip'),'w') as archive:archive.write(tar,'native.tgz')
+ return root/(name+'.zip')
+assert m.scan(afs('afs-good','install/bin/agentfs-pod'),'native.tgz','afs-package')[0]['path']=='bin/agentfs-pod'
+for member in ['bin/agentfs-pod','install/../secret']:
+ try:m.scan(afs('afs-bad',member),'native.tgz','afs-package')
+ except ValueError:pass
+ else:raise AssertionError('invalid AFS canonical package root accepted')
 print(json.dumps({'members':len(rows),'unsafeTargetsRejected':3}))`, path.resolve('scripts/lib/independent-admission/native-original-tar.py'), root], { encoding: 'utf8' });
       expect(JSON.parse(result)).toEqual({ members: 2, unsafeTargetsRejected: 3 });
       // A structural byte view exercises only the fixed observer process. It

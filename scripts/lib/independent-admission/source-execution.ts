@@ -1,6 +1,9 @@
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { verifyCliInputSet } from './source-rules';
+import { collectedArtifactView, publicationMaterialView } from './artifact-collector';
+import { derivedSourceView } from './source-context';
+import type { CollectedArtifactCapability } from './artifact-contract';
 
 export interface BuildArchiveMember { path: string; type: string; size: number; mode: number; sha256: string }
 export interface CliExecutionInput {
@@ -30,6 +33,10 @@ const scope = 'controlled approved commands, original inputs/outputs and owned g
 /** Computes structural execution facts from originals. Only the surrounding
  * controlled acquisition/origin adapter can qualify these as product admission. */
 export function verifyCliBuildExecution(input: CliExecutionInput): CliExecutionFacts {
+  return verifyExecution(input, []);
+}
+
+function verifyExecution(input: CliExecutionInput, graphs: PortableBundleGraph[]): CliExecutionFacts {
   const pending = (reason: string): CliExecutionFacts => ({ actualOwnedCommandClosureVerified: false, controlledBuildDerivationVerified: false, pending: [reason], scope });
   const producer = input.producer;
   if (producer?.schemaVersion !== 1 || producer.kind !== 'cli-publication-preparation-producer') return pending('execution-producer-schema-unreviewed');
@@ -113,6 +120,7 @@ export function verifyCliBuildExecution(input: CliExecutionInput): CliExecutionF
       bytes: bytes.length, sha256: hash(bytes) };
   }).sort((a: any, b: any) => a.path.localeCompare(b.path));
   const generated = Buffer.from(JSON.stringify(source.generatedBuildManifest, null, 2));
+  const copiedInputs = new Set<string>(source.files.map((row: any) => row.path));
   const roles = ['cli-build-tools', 'client-build', 'cli-build'] as const;
   for (const [index, ref] of producer.buildPhases.entries()) {
     const label = 'phase-00' + (index + 5), role = roles[index];
@@ -139,27 +147,43 @@ export function verifyCliBuildExecution(input: CliExecutionInput): CliExecutionF
       const members = input.archiveMembers(product).filter(row => row.type === 'file' && row.path.startsWith('package/dist/'));
       if (members.length !== outputPaths.size || members.some(row => !outputPaths.has(row.path.slice('package/dist/'.length)))) fail('compiled output exact set mismatch');
     }
-    const verifyMetafile = (bytes: Buffer, outputName: string, entryPoint: string, product: 'cli' | 'client') => {
+    const verifyMetafile = (bytes: Buffer, outputName: string, entryPoint: string, product: 'cli' | 'client', originalPath: string) => {
       const metadata = JSON.parse(bytes.toString());
       if (!metadata.inputs || !Object.keys(metadata.inputs).length || !metadata.outputs
         || Object.keys(metadata.outputs).length !== 1) fail('compiled metafile graph absent');
       const output = metadata.outputs['./' + outputName];
       const recorded = snapshot.outputs.find((row: any) => row.path === outputName);
       if (!output || !recorded || output.bytes !== recorded.bytes || output.entryPoint !== entryPoint || !output.inputs) fail('metafile compiled output binding mismatch');
+      const graphInputs: PortableBundleInput[] = [];
       for (const [name, row] of Object.entries(metadata.inputs) as Array<[string, any]>) {
         if (!Number.isSafeInteger(row?.bytes) || row.bytes < 0) fail('invalid metafile input size');
         const trackedName = name.startsWith('src/') ? 'packages/xpod-' + product + '/' + name
           : product === 'cli' && name.startsWith('../../src/') ? name.slice(6) : null;
         if (trackedName && input.readTracked(trackedName).length !== row.bytes) fail('metafile tracked input byte mismatch');
+        const trackedBytes = trackedName && copiedInputs.has(trackedName) ? input.readTracked(trackedName) : undefined;
+        graphInputs.push(Object.freeze({ path: name, bytes: row.bytes, ...(trackedBytes ? { sourcePath: trackedName!, sha256: hash(trackedBytes) } : {}),
+          ...(Object.prototype.hasOwnProperty.call(output.inputs, name) ? { bytesInOutput: output.inputs[name].bytesInOutput } : {}) }));
       }
       for (const [name, row] of Object.entries(output.inputs) as Array<[string, any]>) {
         if (!Object.prototype.hasOwnProperty.call(metadata.inputs, name) || !Number.isSafeInteger(row?.bytesInOutput) || row.bytesInOutput < 0) fail('metafile contributing input missing');
       }
+      graphs.push(Object.freeze({ role, product, path: 'dist/' + outputName, bytes: recorded.bytes, sha256: recorded.sha256,
+        inputs: Object.freeze(graphInputs), inputUniverseComplete: graphInputs.every(row => row.sha256 !== undefined),
+        metafile: Object.freeze({ path: originalPath, bytes: bytes.length, sha256: hash(bytes) }), readMetafile: () => Buffer.from(bytes),
+        readInputOriginalRange(name: string, offset: number, length: number): Buffer {
+          const row = graphInputs.find(row => row.path === name);
+          if (!row?.sourcePath || !row.sha256) return fail('bundle input original unresolved');
+          if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(length) || length < 0
+            || length > 65536 || offset > row.bytes - length) return fail('bundle input range bound');
+          const original = input.readTracked(row.sourcePath);
+          if (original.length !== row.bytes || hash(original) !== row.sha256) return fail('bundle input original changed');
+          return Buffer.from(original.subarray(offset, offset + length));
+        } }));
     };
     if (role === 'client-build') {
       const row = snapshot.outputs.find((row: any) => row.path === 'inputs.json');
       if (!row) fail('runtime client metafile absent from output archive');
-      verifyMetafile(input.readArchiveMember('client', 'package/dist/inputs.json', 4 * 1024 * 1024), 'library.cjs', 'src/index.ts', 'client');
+      verifyMetafile(input.readArchiveMember('client', 'package/dist/inputs.json', 4 * 1024 * 1024), 'library.cjs', 'src/index.ts', 'client', 'dist/inputs.json');
     }
     const expectedMetafiles = role === 'client-build' ? [] : role === 'cli-build-tools'
       ? ['build-tools-cjs-inputs.json', 'build-tools-esm-inputs.json']
@@ -173,11 +197,76 @@ export function verifyCliBuildExecution(input: CliExecutionInput): CliExecutionF
         : name === 'client-inputs.json' ? ['client.cjs', 'src/client.ts']
         : name === 'output-inputs.json' ? ['output.mjs', 'src/lib/output.ts']
         : name === 'build-tools-cjs-inputs.json' ? ['build-tools.cjs', 'src/build-tools.ts'] : ['build-tools.mjs', 'src/build-tools.ts'];
-      verifyMetafile(bytes, output[0], output[1], 'cli');
+      verifyMetafile(bytes, output[0], output[1], 'cli', row.original.path);
     }
   }
   // Preparation JSON must be the actual supervised, hash-closed stdout original.
   const preparation = JSON.parse(bound(producer.preparation).toString());
   if (canonical(JSON.parse(named('phase-009.stdout.raw.log', 262144).toString())) !== canonical(preparation)) fail('preparation differs from command original stdout');
   return { actualOwnedCommandClosureVerified: true, controlledBuildDerivationVerified: true, pending: [], scope };
+}
+
+
+export interface PortableBundleInput {
+  readonly path: string; readonly bytes: number; readonly sha256?: string;
+  readonly sourcePath?: string; readonly bytesInOutput?: number;
+}
+export interface PortableBundleGraph {
+  readonly role: string; readonly product: 'cli' | 'client';
+  readonly path: string; readonly bytes: number; readonly sha256: string;
+  readonly inputs: readonly PortableBundleInput[];
+  readonly inputUniverseComplete: boolean;
+  readonly metafile: { readonly path: string; readonly bytes: number; readonly sha256: string };
+  readMetafile(): Buffer;
+  readInputOriginalRange(name: string, offset: number, length: number): Buffer;
+}
+export interface PortableSourceMaterialView {
+  readonly identity: { readonly sourceSha: string; readonly package: string; readonly version: string; readonly archiveSha256: string };
+  readonly outputs: readonly PortableBundleGraph[];
+  readonly pending: readonly string[];
+}
+const portableIssued = new WeakMap<object, PortableSourceMaterialView>();
+export function portableSourceMaterialView(artifact: unknown): PortableSourceMaterialView | undefined {
+  return artifact !== null && typeof artifact === 'object' && collectedArtifactView(artifact) ? portableIssued.get(artifact) : undefined;
+}
+
+/** Operational issuer: arbitrary structural callbacks and serialized reports can
+ * never register portable source materials. Both archives and immutable Git must
+ * be independently issued capabilities before the one execution verification. */
+export function verifyCollectedCliBuildExecution(input: {
+  artifact: CollectedArtifactCapability; source: unknown; relatedArtifacts?: readonly CollectedArtifactCapability[];
+}): CliExecutionFacts {
+  const artifact = collectedArtifactView(input.artifact), source = derivedSourceView(input.source);
+  if (!artifact || !source || source.sourceSha !== artifact.identity.sourceSha) return fail('private collected archives and exact derived source required');
+  const materials = publicationMaterialView(input.artifact);
+  if (!materials) return fail('private publication producer originals required');
+  const original = materials.readOriginal(materials.producerReceipt.path, 4 * 1024 ** 2);
+  if (original.length !== materials.producerReceipt.bytes || hash(original) !== materials.producerReceipt.sha256) return fail('publication producer original binding mismatch');
+  const producer = JSON.parse(original.toString());
+  const caps = [input.artifact, ...(input.relatedArtifacts ?? [])];
+  const products = new Map<'cli' | 'client', { cap: CollectedArtifactCapability; view: NonNullable<ReturnType<typeof collectedArtifactView>> }>();
+  for (const role of ['cli', 'client'] as const) {
+    const expected = producer.products?.[role];
+    for (const cap of caps) {
+      const view = collectedArtifactView(cap);
+      if (view && expected && view.identity.sourceSha === source.sourceSha && view.identity.package === expected.package
+        && view.identity.version === expected.version && view.identity.archiveSha256 === expected.archive?.sha256) products.set(role, { cap, view });
+    }
+  }
+  if (products.size !== 2) return fail('exact controlled CLI and client archives required');
+  const graphs: PortableBundleGraph[] = [];
+  const facts = verifyExecution({ producer, readProducerOriginal: materials.readOriginal,
+    readTracked: source.readTracked, trackedPaths: source.trackedPaths,
+    archiveMembers: role => products.get(role)!.view.members.map(row => ({ path: 'package/' + row.path, type: 'file', size: row.bytes, mode: row.mode, sha256: row.sha256 })),
+    readArchiveMember: (role, name, maximum) => {
+      if (!name.startsWith('package/')) return fail('unexpected controlled archive root');
+      return products.get(role)!.view.readMember(name.slice(8), maximum);
+    } }, graphs);
+  if (!facts.controlledBuildDerivationVerified) return facts;
+  for (const [role, product] of products) {
+    const outputs = Object.freeze(graphs.filter(graph => graph.product === role));
+    portableIssued.set(product.cap, Object.freeze({ identity: Object.freeze({ ...product.view.identity }), outputs,
+      pending: Object.freeze(outputs.flatMap(row => row.inputUniverseComplete ? [] : ['bundle-input-originals-unresolved:' + row.path])) }));
+  }
+  return facts;
 }
