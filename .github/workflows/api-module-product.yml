@@ -1,6 +1,8 @@
 name: API module preview products
 
 on:
+  push:
+    branches: [staging]
   pull_request:
     branches: [staging, main]
     # No path filter: API source and static closures include evolving shared
