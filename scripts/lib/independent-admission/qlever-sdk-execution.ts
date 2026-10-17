@@ -18,6 +18,24 @@ export function inspectSdkBuildExecution(input: {master: any; members: readonly 
   };
   need(Array.isArray(input.master.stages), 'actual SDK stages unavailable');
   need(Number.isFinite(input.jobWindow.start) && Number.isFinite(input.jobWindow.end) && input.jobWindow.start <= input.jobWindow.end, 'actual SDK job window required');
+  let generationMetadataOriginals: Readonly<{collection: Ref; before: Ref; after: Ref}> | undefined;
+  if (input.master.inputs?.generationMetadata !== undefined) {
+    const pair = input.master.inputs.generationMetadata;
+    need(pair && typeof pair === 'object' && isDeepStrictEqual(Object.keys(pair).sort(), ['after', 'before']), 'exact generation metadata before/after pair required');
+    const innerRef = members.get('inner/build-inner.json'); need(innerRef, 'actual inner build original required for generation seal');
+    const inner = json(innerRef);
+    const rootRef = (value: any) => value && {...value, path: 'inner/' + value.path};
+    need(inner.schemaVersion === 1 && inner.kind === 'qlever-linux-sdk-inner-originals'
+      && isDeepStrictEqual(pair, {before: rootRef(inner.generationMetadata?.before), after: rootRef(inner.generationMetadata?.after)}), 'inner/master generation metadata seal differs');
+    const collectionRef = ref(input.master.generationMaterials);
+    need(collectionRef.path === 'generation-collection.json', 'fixed generation collection original required');
+    const generation = json(collectionRef);
+    need(generation.schemaVersion === 1 && generation.kind === 'qlever-sdk-cmake-generation-originals'
+      && isDeepStrictEqual(pair.before, generation.beforeMetadata) && isDeepStrictEqual(pair.after, generation.afterMetadata), 'generation input/collection metadata seal differs');
+    need(ref(pair.before).path === 'inner/generation/before/inventory.json' && ref(pair.after).path === 'inner/generation/after/inventory.json', 'fixed generation metadata phases required');
+    for (const original of [pair.before, pair.after]) { const metadata = json(original); need(metadata.schemaVersion === 1 && Array.isArray(metadata.files), 'actual generation metadata inventory required'); }
+    generationMetadataOriginals = Object.freeze({collection: collectionRef, before: ref(pair.before), after: ref(pair.after)});
+  }
   const observations = []; let previousEnd = input.jobWindow.start;
   for (const [name, command] of [['configure', ['bash', '/components/qlever/scripts/build-module-runtime-sdk.sh', 'prepare-only']],
     ['compile', ['bash', '/components/qlever/scripts/build-qlever-runtime-sdk.sh', 'build-prepared']]] as const) {
@@ -36,10 +54,10 @@ export function inspectSdkBuildExecution(input: {master: any; members: readonly 
       && supervision.resourceStop === null && supervision.supervisorError === null && Number.isFinite(supervision.elapsedSeconds) && supervision.elapsedSeconds >= 0
       && Array.isArray(supervision.cleanupErrors) && !supervision.cleanupErrors.length && Array.isArray(supervision.ownedGroupMembers) && !supervision.ownedGroupMembers.length
       && [start, end, actualStart, actualEnd].every(Number.isFinite) && previousEnd <= start && start <= actualStart && actualStart <= actualEnd && actualEnd <= end && end <= input.jobWindow.end, 'configure/build supervision/raw/order/window did not close');
-    const expectedInputs = name === 'compile' ? [input.master.inputs?.before, input.master.inputs?.symlinks?.before] : [];
+    const expectedInputs = name === 'compile' ? [input.master.inputs?.before, input.master.inputs?.symlinks?.before, ...(generationMetadataOriginals ? [generationMetadataOriginals.before] : [])] : [];
     need(expectedInputs.every(Boolean) && Array.isArray(stage.inputs) && isDeepStrictEqual(stage.inputs, expectedInputs) && Array.isArray(stage.outputs) && stage.outputs.length === 0, 'compile before-input/source-link binding differs');
     for (const value of expectedInputs) ref(value);
     observations.push(Object.freeze({name, receipt: ref(stage.receipt), stdout: ref(stage.stdout), stderr: ref(stage.stderr), supervisionReceipt: ref(stage.supervisionReceipt), supervisionRaw: original, inputs: Object.freeze(expectedInputs.map(ref)), start, end})); previousEnd = end;
   }
-  input.check(); return Object.freeze({verified: true as const, scope: 'SDK configure/compile actual closed process and retained before-input references' as const, stages: Object.freeze(observations), rawBytes});
+  input.check(); return Object.freeze({verified: true as const, scope: 'SDK configure/compile actual closed process and retained before-input references' as const, stages: Object.freeze(observations), rawBytes, generationMetadataReferenceSealVerified: generationMetadataOriginals !== undefined, generationMetadataOriginals});
 }

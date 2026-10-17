@@ -1,5 +1,3 @@
-import { performance } from 'node:perf_hooks';
-import sdkSourceLimits from '../module-artifact-limits.json';
 import { CSS_SOURCE_PARENT_VERSIONS } from './module-source-phases';
 import { isDeepStrictEqual } from 'node:util';
 import { createHash } from 'node:crypto';
@@ -272,7 +270,7 @@ export async function collectLinuxNativeRuntimeContext(input: {
   const { verifyLinuxQleverRuntimeOriginals, LINUX_QLEVER_REVIEWED_FILES } = await import('./native-linux-runtime');
   const { modulePackageName } = await import('../../../packages/xpod-cli/src/module-catalog');
   const { qleverSdkOriginalsView } = await import('./qlever-sdk-originals');
-  const { inspectQleverSdkSourceOriginals } = await import('./qlever-sdk-source');
+  const { observeQleverSdkSourceAdmission } = await import('./qlever-sdk-source');
   const product = collectedArtifactView(input.artifact), native = nativeOriginalsView(input.nativeOriginals), source = derivedSourceView(input.source);
   if (!product || !native || !source || !product.identity.target || !['linux-x64', 'linux-arm64'].includes(product.identity.target)
     || source.sourceSha !== product.identity.sourceSha || native.originFacts.sourceSha !== product.identity.sourceSha
@@ -323,21 +321,19 @@ export async function collectLinuxNativeRuntimeContext(input: {
   const sdk = qleverSdkOriginalsView(input.sdkOriginals);
   if (input.sdkOriginals !== undefined && (!sdk || sdk.originFacts.sourceSha !== native.originFacts.sourceSha || sdk.originFacts.target !== native.originFacts.target
     || sdk.originFacts.runId !== native.originFacts.runId || sdk.originFacts.runAttempt !== native.originFacts.runAttempt)) return fail('SDK source originals must bind the same actual runtime producer tuple');
-  const sdkSourceDeadline = performance.now() + sdkSourceLimits.timeoutMs;
-  const sdkSource = inspectQleverSdkSourceOriginals(input.sdkOriginals);
-  const { observeQleverSdkDebianIndexOriginals } = await import('./qlever-sdk-debian-index');
-  const sdkIndex = await observeQleverSdkDebianIndexOriginals(input.sdkOriginals, Math.max(0, sdkSourceDeadline - performance.now()));
+  const sdkSource = await observeQleverSdkSourceAdmission({sdkOriginals: input.sdkOriginals, source: input.source});
   const capability = Object.freeze({}) as NativeMaterialCapability;
   const validate = () => {
     if (collectedArtifactView(input.artifact) !== product || derivedSourceView(input.source) !== source || nativeOriginalsView(input.nativeOriginals) !== native
       || (sdk && qleverSdkOriginalsView(input.sdkOriginals) !== sdk)) return fail('Linux native/SDK custody revoked');
+    sdkSource.assertCurrent();
   };
-  const pending = Object.freeze([...observed.pending, ...sdkSource.pending, ...sdkIndex.pending, ...(!inventoryObserved ? ['whole-product-native-image-inventory-budget-exceeded'] : []), ...uncoveredNativeImages.map(row => 'uncovered-product-native-image:' + row.path)]);
+  const pending = Object.freeze([...observed.pending, ...sdkSource.pending, ...(!inventoryObserved ? ['whole-product-native-image-inventory-budget-exceeded'] : []), ...uncoveredNativeImages.map(row => 'uncovered-product-native-image:' + row.path)]);
   const view: ControlledNativeRuntimeView = Object.freeze({ identity: product.identity, nativeSourceSha: native.originFacts.sourceSha,
     nativeOriginVerified: true, originalStageBindingsVerified: true, binaryFormatsVerified: inventoryObserved && uncoveredNativeImages.length === 0,
     qleverRuntimeAbiVerified: true, agentfsRuntimeAbiVerified: false, selectedNativeBinaryFormatsVerified: true,
     runtimeAbiScope: 'css-qlever-bundle', uncoveredNativeImages, runtimeAbiVerified: inventoryObserved && uncoveredNativeImages.length === 0,
-    sdkSourceFacts: Object.freeze({...sdkSource.facts, ...sdkIndex.facts}), sourceMaterialsVerified: false, nativeSourceClosureVerified: false, pending });
+    sdkSourceFacts: sdkSource.facts, sourceMaterialsVerified: sdkSource.verified, nativeSourceClosureVerified: sdkSource.verified, pending });
   runtimeIssued.set(capability, { view, validate });
   issued.set(capability, () => { validate(); return Object.freeze({ identity: product.identity, custodyKind: 'collected-native-originals' as const,
     indexPath: finalPath, indexSha256: hash(finalBytes), status: 'material-integrity-verified' as const, externalAdmission: 'pending' as const }); });

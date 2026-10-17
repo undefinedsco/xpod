@@ -193,27 +193,40 @@ def module_image(mode,out,deadline,builder):
         if raw.strip():raise ValueError('Owned SDK builder remains after command failure')
         raise
 
-def receiver_debian_collection(out,inner_reference):
+def receiver_inner_collection(out,inner_reference,kind,filename,extra=None):
     """Preserve the inner collection and emit only ZIP-root references for receivers."""
     out=Path(out)
     original=out/'inner'/inner_reference['path']
     if commands.ref(original,out/'inner')!=inner_reference:
-        raise ValueError('SDK inner Debian collection reference changed')
+        raise ValueError('SDK inner source collection reference changed')
+    if inner_reference['bytes']>4*1024**2:raise ValueError('SDK source collection metadata bound')
     collection=json.loads(original.read_text())
-    if collection.get('schemaVersion')!=1 or collection.get('kind')!='qlever-sdk-exact-debian-source-originals':
-        raise ValueError('SDK Debian collection schema differs')
+    if collection.get('schemaVersion')!=1 or collection.get('kind')!=kind:
+        raise ValueError('SDK source collection schema differs')
     def rooted(value):
         if isinstance(value,list):return [rooted(row) for row in value]
         if not isinstance(value,dict):return value
         if all(key in value for key in ['path','bytes','sha256']):
             path=value['path']
             if not isinstance(path,str) or path.startswith('/') or any(part in ('','.','..') for part in path.split('/')) or '\\' in path:
-                raise ValueError('SDK Debian inner original reference path')
+                raise ValueError('SDK source inner original reference path')
             return dict(value,path='inner/'+path)
         return {key:rooted(row) for key,row in value.items()}
-    target=out/'debian-source-collection.json'
-    write(target,rooted(collection))
+    target=out/filename
+    value=rooted(collection);value.update(extra or {})
+    write(target,value)
     return commands.ref(target,out)
+
+def receiver_debian_collection(out,inner_reference):
+    return receiver_inner_collection(out,inner_reference,'qlever-sdk-exact-debian-source-originals','debian-source-collection.json')
+
+def receiver_upstream_collection(out,inner_reference):
+    return receiver_inner_collection(out,inner_reference,'qlever-sdk-upstream-source-originals','upstream-source-collection.json',
+        dict(innerMaterials=prefix(inner_reference,'inner')))
+
+def receiver_generation_collection(out,inner_reference):
+    return receiver_inner_collection(out,inner_reference,'qlever-sdk-cmake-generation-originals','generation-collection.json',
+        dict(innerMaterials=prefix(inner_reference,'inner')))
 
 def collect(image,target,metadata,out,deadline):
     out=Path(out).resolve();budget=budgets.ExecutionBudget(deadline);context=json.loads((out/'context-originals.json').read_text());stages=list(context['stages'])
@@ -238,17 +251,20 @@ def collect(image,target,metadata,out,deadline):
     for record in [*inner['stages'],*linked['stages']]:
         stages.append(dict(record,**{field:prefix(record[field],'inner') for field in ['receipt','stdout','stderr','supervisionReceipt','supervisionRaw']},
                            inputs=[prefix(ref,'inner') for ref in record['inputs']],outputs=[prefix(ref,'inner') for ref in record['outputs']]))
-    if context['archive']['bytes']+sum(ref['bytes'] for ref in inner['domains'])+inner.get('debianSourceBytes',0)+inner.get('symlinkOriginalBytes',0)>4*1024**3:raise ValueError('Shared SDK source/context domains exceed 4GiB')
+    if context['archive']['bytes']+sum(ref['bytes'] for ref in inner['domains'])+inner.get('debianSourceBytes',0)+inner.get('symlinkOriginalBytes',0)+inner.get('upstreamSourceBytes',0)+inner.get('generationMaterialBytes',0)>4*1024**3:raise ValueError('Shared SDK source/context domains exceed 4GiB')
     debian_reference=receiver_debian_collection(out,inner['debianSources'])
+    upstream_reference=receiver_upstream_collection(out,inner['upstreamSource'])
+    generation_reference=receiver_generation_collection(out,inner['generationMaterials'])
     originals=[]
     for path in sorted(out.rglob('*')):
         budget.check(300)
         if path.is_file():originals.append(commands.ref(path,out))
+    generation_refs={key:prefix(ref,'inner') for key,ref in inner.get('generationMetadata',{}).items()}
     symlink_refs={key:prefix(ref,'inner') for key,ref in inner.get('symlinkOriginals',{}).items()}
     master=dict(schemaVersion=1,kind='qlever-linux-sdk-originals',identity=identity,image=observed,
         buildkit=dict(metadata=commands.ref(out/'buildkit.metadata.original.json',out),record=commands.ref(out/'build.dockerbuild',out)),
-        debianSources=debian_reference,
-        sourceContext=commands.ref(out/'context-originals.json',out),inputs=dict(before=prefix(inner['inputsBefore'],'inner'),after=prefix(inner['inputsAfter'],'inner'),shards=[prefix(ref,'inner') for ref in inner['domains']],symlinks=symlink_refs),
+        debianSources=debian_reference,upstreamSource=upstream_reference,generationMaterials=generation_reference,
+        sourceContext=commands.ref(out/'context-originals.json',out),inputs=dict(before=prefix(inner['inputsBefore'],'inner'),after=prefix(inner['inputsAfter'],'inner'),shards=[prefix(ref,'inner') for ref in inner['domains']],symlinks=symlink_refs,generationMetadata=generation_refs),
         stages=stages,originals=originals,releaseAccepted=False,pending=inner['pending'],
         scope='Actual build/image/input/execution originals; SDK source, origin and legal admission remain external')
     write(out/'materials.json',master)

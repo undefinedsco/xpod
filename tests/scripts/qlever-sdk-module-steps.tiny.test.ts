@@ -37,7 +37,7 @@ test('real old SDK tree omits future acquisition and unused parser; new tree req
  expect(result.requested).not.toContain('qlever/scripts/sdk-debian-source-acquisition.py');
  expect(result.requested).not.toContain('qlever/scripts/sdk-debian-source-materials.py');
  expect(result.requested).not.toContain('qlever/scripts/sdk-symlink-originals.py');
- for(const helper of ['qlever/scripts/sdk-debian-source-acquisition.py','qlever/scripts/sdk-debian-source-materials.py','qlever/scripts/sdk-symlink-originals.py']){
+ for(const helper of ['qlever/scripts/sdk-debian-source-acquisition.py','qlever/scripts/sdk-debian-source-materials.py','qlever/scripts/sdk-symlink-originals.py','qlever/scripts/sdk-upstream-source-materials.py','qlever/scripts/sdk-generation-materials.py']){
   await expect(scenario(undefined,undefined,helper)).rejects.toThrow();
   await expect(scenario(undefined,undefined,undefined,helper)).rejects.toThrow('policy not reviewed');
  }

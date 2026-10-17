@@ -1,10 +1,17 @@
 import { expect, it } from 'vitest';
 import { createHash } from 'node:crypto';
 import { inspectSdkBuildExecution } from '../../scripts/lib/independent-admission/qlever-sdk-execution';
-function fixture() {
+function fixture(generation = false) {
   const rows = new Map<string, Buffer>(), hash = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
   const put = (path: string, value: object | Buffer) => { const bytes = Buffer.isBuffer(value) ? value : Buffer.from(JSON.stringify(value)); rows.set(path, bytes); return {path, bytes: bytes.length, sha256: hash(bytes)}; };
-  const inputs = {before: put('inner/inputs-before.json', {}), symlinks: {before: put('inner/symlinks-before.json', {})}};
+  const inputs: any = {before: put('inner/inputs-before.json', {}), symlinks: {before: put('inner/symlinks-before.json', {})}};
+  const generationMetadata = generation ? {before: put('inner/generation/before/inventory.json', {schemaVersion: 1, files: []}), after: put('inner/generation/after/inventory.json', {schemaVersion: 1, files: []})} : undefined;
+  const generationMaterials = generationMetadata ? put('generation-collection.json', {schemaVersion: 1, kind: 'qlever-sdk-cmake-generation-originals', beforeMetadata: generationMetadata.before, afterMetadata: generationMetadata.after}) : undefined;
+  if (generationMetadata) {
+    inputs.generationMetadata = generationMetadata;
+    const innerRef = (value: any) => ({...value, path: value.path.slice('inner/'.length)});
+    put('inner/build-inner.json', {schemaVersion: 1, kind: 'qlever-linux-sdk-inner-originals', generationMetadata: {before: innerRef(generationMetadata.before), after: innerRef(generationMetadata.after)}});
+  }
   const stages = ['configure', 'compile'].map((name, index) => {
     const root = 'inner/stages/' + name, command = ['bash', '/components/qlever/scripts/' + (index ? 'build-qlever-runtime-sdk.sh' : 'build-module-runtime-sdk.sh'), index ? 'build-prepared' : 'prepare-only'];
     const stdout = put(root + '/stdout.raw', Buffer.alloc(70000, 65)), stderr = put(root + '/stderr.raw', Buffer.alloc(0)), supervisionRaw = put(root + '.raw.log', Buffer.from('closed'));
@@ -13,9 +20,9 @@ function fixture() {
       stdout: {...stdout, path: 'stdout.raw'}, stderr: {...stderr, path: 'stderr.raw'}});
     const supervisionReceipt = put(root + '.receipt.json', {command: ['/usr/bin/python3', '-B', '/components/qlever/scripts/sdk-command-materials.py', '--exec-child', '/opt/qlever-sdk/materials/stages/' + name, JSON.stringify(command)], pid: 41, pgid: 41, actualWait: true, exit: 0, signal: null, ownedGroupAbsentAfterWait: true, rawClosedBeforeHash: true,
       rawSHA256: supervisionRaw.sha256, resourceStop: null, supervisorError: null, elapsedSeconds: 3, cleanupErrors: [], ownedGroupMembers: [], startedUTC: new Date(start).toISOString(), closedUTC: new Date(start + 3000).toISOString()});
-    return {name, receipt, stdout, stderr, supervisionReceipt, supervisionRaw, inputs: index ? [inputs.before, inputs.symlinks.before] : [], outputs: []};
+    return {name, receipt, stdout, stderr, supervisionReceipt, supervisionRaw, inputs: index ? [inputs.before, inputs.symlinks.before, ...(generationMetadata ? [generationMetadata.before] : [])] : [], outputs: []};
   });
-  const input = {master: {stages, inputs}, members: [...rows].map(([path, bytes]) => ({path, bytes: bytes.length, sha256: hash(bytes)})), jobWindow: {start: 0, end: 40000}, check() {},
+  const input = {master: {stages, inputs, ...(generationMaterials ? {generationMaterials} : {})}, members: [...rows].map(([path, bytes]) => ({path, bytes: bytes.length, sha256: hash(bytes)})), jobWindow: {start: 0, end: 40000}, check() {},
     readOriginal(path: string, maximum: number) { const bytes = rows.get(path)!; if (bytes.length > maximum) throw Error('large metadata'); return bytes; },
     readRange(path: string, offset: number, length: number) { expect(length).toBeLessThanOrEqual(65536); return rows.get(path)!.subarray(offset, offset + length); }};
   const mutate = (path: string, fn: (value: any) => void) => { const value = JSON.parse(rows.get(path)!.toString()); fn(value); const bytes = Buffer.from(JSON.stringify(value)); rows.set(path, bytes); const ref = {path, bytes: bytes.length, sha256: hash(bytes)}; Object.assign(input.members.find(row => row.path === path)!, ref); for (const stage of stages) for (const key of ['receipt', 'supervisionReceipt'] as const) if (stage[key].path === path) Object.assign(stage[key], ref); };
@@ -34,4 +41,22 @@ it('rejects self-consistent failure, false recipe, wrong ordering, missing befor
     (x: ReturnType<typeof fixture>) => {x.rows.set('inner/stages/compile/stdout.raw', Buffer.from('changed'));},
     (x: ReturnType<typeof fixture>) => {x.input.jobWindow.end = 22000;},
   ]) { const value = fixture(); modify(value); expect(() => inspectSdkBuildExecution(value.input)).toThrow(); }
+});
+
+it('seals the new exact third generation input without granting generated IO closure to legacy records', () => {
+  expect(inspectSdkBuildExecution(fixture().input).generationMetadataReferenceSealVerified).toBe(false);
+  const current = inspectSdkBuildExecution(fixture(true).input);
+  expect(current.generationMetadataReferenceSealVerified).toBe(true);
+  expect(current.stages[1]!.inputs).toHaveLength(3);
+  for (const modify of [
+    (x: ReturnType<typeof fixture>) => {x.input.master.stages[1]!.inputs.pop();},
+    (x: ReturnType<typeof fixture>) => {x.input.master.stages[1]!.inputs.push(x.input.master.inputs.before);},
+    (x: ReturnType<typeof fixture>) => {x.input.master.inputs.generationMetadata.after = x.input.master.inputs.generationMetadata.before;},
+    (x: ReturnType<typeof fixture>) => {delete x.input.master.generationMaterials;},
+    (x: ReturnType<typeof fixture>) => {x.input.master.inputs.generationMetadata = null;},
+    (x: ReturnType<typeof fixture>) => {x.input.master.stages[1]!.inputs.reverse();},
+    (x: ReturnType<typeof fixture>) => x.mutate('inner/build-inner.json', value => {value.generationMetadata.after = value.generationMetadata.before;}),
+  ]) { const value = fixture(true); modify(value); expect(() => inspectSdkBuildExecution(value.input)).toThrow(); }
+  const legacyExtra = fixture(); legacyExtra.input.master.stages[1]!.inputs.push(legacyExtra.input.master.inputs.before);
+  expect(() => inspectSdkBuildExecution(legacyExtra.input)).toThrow();
 });
