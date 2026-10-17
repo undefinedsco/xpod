@@ -17,3 +17,9 @@ packages/**/licenses/** -text
 
 # The normal AFS stage binds this private source manifest by original byte hash.
 /packages/xpod-afs/package.json text eol=lf
+
+# Additional byte-bound normal CLI projection and budget inputs.
+/scripts/lib/legacy-cli-original-projection.cjs text eol=lf
+/scripts/lib/legacy-afs-publication-budget.cjs text eol=lf
+/scripts/lib/cli-publication-budget.cjs text eol=lf
+/scripts/lib/module-artifact-limits.json text eol=lf

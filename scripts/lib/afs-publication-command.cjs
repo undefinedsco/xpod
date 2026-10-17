@@ -30,7 +30,8 @@ function commandBudget(command, args, { cwd, env = {}, label }) {
     const maximumTimeoutMs = PUBLICATION_BUDGET.producerWindowMs + PUBLICATION_BUDGET.terminationGraceMs;
     return { maximumTimeoutMs, runtimeProbe: { executable, executableSha256, argv: ['--version'], stdout: probe.stdout, stderr: probe.stderr, status: probe.status, identity: Object.fromEntries(['dev','ino','size','ctimeNs','mtimeNs','mode'].map(key => [key, String(after[key])])) } };
   }
-  const python = path.isAbsolute(command) && fs.realpathSync(command) === fs.realpathSync('/usr/bin/python3');
+  const python = label === 'module-registry-consumer' && exact('scripts/lib/afs-module-consumer.py', [args[1], '--run'])
+    && path.isAbsolute(command) && fs.realpathSync(command) === fs.realpathSync('/usr/bin/python3');
   if (python && label === 'module-registry-consumer' && exact('scripts/lib/afs-module-consumer.py', [args[1], '--run']) && args[1] === path.join(cwd, 'plan.json') && fs.realpathSync(path.dirname(cwd)) === fs.realpathSync(os.tmpdir()) && path.basename(cwd).startsWith('xpod-registry-module-consumer-')) {
     const stat = fs.lstatSync(args[1]);
     if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.size > 1024 * 1024) throw new Error('Fixed AFS plan original required');

@@ -21,3 +21,5 @@ test('AFS Python fixed recipe uses the single budget authority',()=>{
  expect(commandBudget('/usr/bin/python3',[path.join(root,'scripts/lib/api-module-consumer.py'),plan,'--run'],options).maximumTimeoutMs).toBe(MAX_TIMEOUT_MS);
  } finally {fs.rmSync(cwd,{recursive:true,force:true});}
 });
+
+test('ordinary timeout overflow does not touch a missing executable',()=>{expect(commandBudget('/must-not-spawn',[],{cwd:root,label:'overflow-window'}).maximumTimeoutMs).toBe(MAX_TIMEOUT_MS);});

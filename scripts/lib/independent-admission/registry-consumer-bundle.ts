@@ -1,3 +1,5 @@
+import {afsConsumerRegisteredShards} from './afs-consumer-shard-registration';
+import {productConsumerOriginalLimits} from './product-consumer-limits';
 import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import type { ArchiveProductConsumerOriginalManifest } from './archive-consumer-originals';
@@ -20,8 +22,11 @@ export function verifyRegistryConsumerOriginalBundle(input: {
   tools: readonly Readonly<CollectedArtifactIdentity>[];
   consumer: { sourceSha: string; runHeadSha: string; runId: number; runAttempt: number; target?: string };
   readOriginal(path: string, maximumBytes: number): Buffer;
+  readOriginalRange?(path:string,offset:number,length:number):Buffer;
 }) {
   const manifest = input.manifest;
+  const afs=/^@undefineds\.co\/xpod-afs-(?:linux|darwin)-(?:x64|arm64)$/u.test(input.product.package);
+  const limits=productConsumerOriginalLimits(afs?'afs':'api');
   if (manifest?.schemaVersion !== 1 || manifest.kind !== (input.stage==='prepublish'?'archive-product-consumer-originals':'registry-installed-product-consumer-originals')
     || (input.stage==='prepublish'&&(!('stage' in manifest)||manifest.stage!=='prepublish'||manifest.transport!=='collected-product-archives'))
     || !isDeepStrictEqual(manifest.product, input.product) || manifest.sourceSha !== input.product.sourceSha
@@ -29,15 +34,15 @@ export function verifyRegistryConsumerOriginalBundle(input: {
     || manifest.consumer.runId !== input.consumer.runId || manifest.consumer.runAttempt !== input.consumer.runAttempt
     || manifest.consumer.target !== input.product.target || input.consumer.target !== input.product.target
     || !isDeepStrictEqual(manifest.tools, input.tools)) fail('source/product/tool/run identity mismatch');
-  if (!Array.isArray(manifest.originals) || !manifest.originals.length || manifest.originals.length > 2000) fail('bounded original inventory required');
+  if (!Array.isArray(manifest.originals) || !manifest.originals.length || manifest.originals.length > limits.originalMembers) fail('bounded original inventory required');
   const originals = new Map<string, CollectedArtifactMember>(); let total = 0;
   const actual = new Map(input.inventory.map(row => [row.path, row]));
   for (const row of manifest.originals) {
     if (!row || !safe(row.path) || originals.has(row.path) || !Number.isSafeInteger(row.bytes) || row.bytes < 0
-      || row.bytes > 16 * 1024 ** 2 || !/^[a-f0-9]{64}$/u.test(row.sha256) || !actual.has(row.path) || actual.get(row.path)!.bytes!==row.bytes || actual.get(row.path)!.sha256!==row.sha256) fail('exact original member mismatch');
+      || row.bytes > limits.memberBytes || !/^[a-f0-9]{64}$/u.test(row.sha256) || !actual.has(row.path) || actual.get(row.path)!.bytes!==row.bytes || actual.get(row.path)!.sha256!==row.sha256) fail('exact original member mismatch');
     total += row.bytes; originals.set(row.path, row);
   }
-  if (total > 64 * 1024 ** 2 || input.inventory.length !== originals.size + 1
+  if (total > limits.originalBytes || input.inventory.length !== originals.size + 1
     || !actual.has(input.stage==='prepublish'?'archive-consumer.manifest.json':'registry-consumer.manifest.json')) fail('complete bounded original inventory required');
   const read = (name: string, maximum = 16 * 1024 ** 2): Buffer => {
     const row = originals.get(name);
@@ -46,9 +51,16 @@ export function verifyRegistryConsumerOriginalBundle(input: {
     if (bytes.length !== row.bytes || hash(bytes) !== row.sha256) fail('original changed: ' + name);
     return bytes;
   };
+  const toolShards=afs?afsConsumerRegisteredShards({sourceSha:input.product.sourceSha,result:JSON.parse(read('result.json',2*1024**2).toString()),originals,read}):new Set<string>();
   // Hash every retained original, including installer locks/inventories and
   // helper diagnostics that the admission report itself does not parse.
-  for (const row of originals.values()) read(row.path);
+  for (const row of originals.values()) {
+    if(row.bytes<=limits.smallMemberBytes){read(row.path);continue;}
+    if(!afs||!toolShards.has(row.path)||!input.readOriginalRange)fail('large original is outside the fixed verifier-tool archive roles');
+    const digest=createHash('sha256');
+    for(let offset=0;offset<row.bytes;offset+=65536){const length=Math.min(65536,row.bytes-offset),bytes=input.readOriginalRange!(row.path,offset,length);if(bytes.length!==length)fail('short verifier-tool original range');digest.update(bytes);}
+    if(digest.digest('hex')!==row.sha256)fail('verifier-tool original changed');
+  }
   if (manifest.result.path !== 'result.json' || !isDeepStrictEqual(originals.get('result.json'), manifest.result)) fail('exact result reference required');
   const closedCommand = (directory: string, label: string) => {
     const prefix=directory?directory+'/':'';

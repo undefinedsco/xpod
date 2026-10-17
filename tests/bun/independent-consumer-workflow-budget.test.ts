@@ -43,6 +43,8 @@ test('both matching-host workflows project only AFS while preserving ordinary wi
 });
 test('manual installed AFS uses the full driver and splits safe export out of its same command allowance', () => {
   const data = workflow('module-installed-consumer.yml'), job = data.jobs.prepare;
+  expect(data.jobs.select.steps.find((step: any) => step.id === 'budget')?.run).toBe('bun scripts/lib/consumer-workflow-budget.cjs');
+  expect(data.jobs.select.steps.find((step: any) => step.id === 'target')?.run.trimEnd().endsWith("'")).toBe(true);
   expect(job['timeout-minutes']).toBe("${{ needs.select.outputs.module == 'afs' && fromJSON(needs.select.outputs.afs_job_minutes) || 30 }}");
   const command = job.steps.find((step: any) => step.id === 'plan');
   expect(command.run).toContain('afs) driver=scripts/lib/afs-module-consumer.py ;;');
@@ -54,8 +56,10 @@ test('actual Node setup clock spans processes and expires before complete mounte
   const started = execFileSync('node', ['-e', 'console.log(process.hrtime.bigint().toString())'], { encoding: 'utf8' }).trim();
   const code = 'const {checkConsumerWorkflowSetup}=require("./scripts/lib/consumer-workflow-budget.cjs");checkConsumerWorkflowSetup("afs","prepublish",process.argv[1]);';
   expect(() => execFileSync('node', ['-e', code, started], { stdio: 'pipe', timeout: 5000 })).not.toThrow();
-  const expired = execFileSync('node', ['-e', 'const {afsConsumerBudget}=require("./scripts/lib/afs-consumer-budget.cjs");console.log((process.hrtime.bigint()-BigInt(afsConsumerBudget().hostSetupSeconds+1)*1000000000n).toString())'], { encoding: 'utf8' }).trim();
-  expect(() => execFileSync('node', ['-e', code, expired], { stdio: 'pipe', timeout: 5000 })).toThrow('setup exceeded');
+  // Fresh CI hosts can have less uptime than the setup window. Keep the
+  // cross-process positive check real, and control only the expiry boundary.
+  const expiredCode = 'const {afsConsumerBudget}=require("./scripts/lib/afs-consumer-budget.cjs");process.hrtime.bigint=()=>BigInt(afsConsumerBudget().hostSetupSeconds+1)*1000000000n;' + code;
+  expect(() => execFileSync('node', ['-e', expiredCode, '0'], { stdio: 'pipe', timeout: 5000 })).toThrow('setup exceeded');
   expect(() => checkConsumerWorkflowSetup('css', 'prepublish', undefined)).not.toThrow();
   // Bun uses a different hrtime origin. Never accept its clock in the Node check.
   expect(() => checkConsumerWorkflowSetup('afs', 'prepublish', started)).toThrow('Pinned Node required');

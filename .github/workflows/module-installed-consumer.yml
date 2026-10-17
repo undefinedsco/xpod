@@ -98,7 +98,8 @@ jobs:
             if (!target.nativeSourceAvailable) throw Error("Target native source is pending");
             appendFileSync(process.env.GITHUB_OUTPUT, `runner=${target.runner}\n`);
             appendFileSync(process.env.GITHUB_OUTPUT, `module=${request.module}\n`);
-          '      - id: budget
+          '
+      - id: budget
         name: Project the fixed AFS preparation windows
         env:
           CONSUMER_BUDGET_MODULE: ${{ steps.target.outputs.module }}

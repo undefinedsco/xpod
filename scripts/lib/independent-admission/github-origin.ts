@@ -1,4 +1,4 @@
-import {QLEVER_OBSERVER_PATH,QLEVER_OBSERVER_V20,QLEVER_OBSERVER_V22,qleverObserverCompanionBindings} from './qlever-observer-policy';
+import {QLEVER_OBSERVER_PATH,QLEVER_OBSERVER_V20,QLEVER_OBSERVER_V22,QLEVER_OBSERVER_V23,qleverObserverCompanionBindings} from './qlever-observer-policy';
 import { CLI_SOURCE_POLICY } from './source-rules';
 import { registryConsumerArtifactName } from './registry-consumer-originals';
 import { archiveConsumerArtifactName } from './archive-consumer-originals';
@@ -143,7 +143,8 @@ export async function observeAfsModuleProductGitHubOrigin(input: ArtifactAcquisi
   if (!MODULE_TARGETS.some(row => `${row.platform}-${row.arch}` === target)) return fail('unsupported normal AFS target');
   return observeGitHubOrigin(input, options, {
     workflowPath: '.github/workflows/agentfs-module-mounted-acceptance.yml',
-    workflowSha256: 'c6420bc5699a84a8adf98a19841cb09e3df155370622d1b7e982cd08064ca4bf',
+    workflowSha256: '854cc2a40d0e9bd3d41deb339fbc239693a9f7811cf035be1768a9b496cbb043',
+    reviewedWorkflowVersions:[{workflowSha256:'c6420bc5699a84a8adf98a19841cb09e3df155370622d1b7e982cd08064ca4bf',jobName:()=>`mounted-module (${target})`}],
     events: ['push', 'workflow_dispatch', 'pull_request'], target,
     artifactNames: row => [`afs-module-production-${target}-${row.sourceSha}-${row.runId}-${row.runAttempt}`],
     requiredStep: 'Produce controlled normal AFS source and product originals',
@@ -182,7 +183,7 @@ export async function observeQleverNativeGitHubOrigin(input:ArtifactAcquisitionI
       artifactNames:row=>[`qlever-local-runtime-${target}-${row.sourceSha}`],
       jobName:()=>`targets (${target}) / native / macos / build`,requiredStep:'Bind the qlever-local acceptance evidence',
       requiredSteps:['Verify the actual native producer host','Resolve immutable artifact identity','Upload the exact native runtime'],
-      sourceBindings:[...CSS_NATIVE_SOURCE_BINDINGS,{path:QLEVER_OBSERVER_PATH,sha256:QLEVER_OBSERVER_V20,reviewedSha256:[QLEVER_OBSERVER_V22]}],
+      sourceBindings:[...CSS_NATIVE_SOURCE_BINDINGS,{path:QLEVER_OBSERVER_PATH,sha256:QLEVER_OBSERVER_V20,reviewedSha256:[QLEVER_OBSERVER_V22,QLEVER_OBSERVER_V23]}],
     });nativeOrigins.add(observation);return observation;
   }
   if(!['darwin-arm64','darwin-x64'].includes(target) || !['standalone','css-module'].includes(invocation)) return fail('unsupported QLever native invocation');
@@ -204,7 +205,7 @@ export async function observeQleverNativeGitHubOrigin(input:ArtifactAcquisitionI
     requiredSteps:['Verify the actual native producer host','Resolve immutable artifact identity','Upload the exact native runtime'],
     sourceBindings:[...(invocation==='css-module'?[{path:nativeWorkflow,sha256:nativeHash}]:[]),
       {path:'qlever/scripts/observe-macos-native-materials.py',sha256:'79e34893b946458a904544ddb1cce9110a19fe5052503570c865341e7d0ff6d6',
-        reviewedSha256:['a92b227ec186a0f53f85c93a732a0542ee3b712fdb571308395ecf17c07b2d86',QLEVER_OBSERVER_V20,QLEVER_OBSERVER_V22]}],
+        reviewedSha256:['a92b227ec186a0f53f85c93a732a0542ee3b712fdb571308395ecf17c07b2d86',QLEVER_OBSERVER_V20,QLEVER_OBSERVER_V22,QLEVER_OBSERVER_V23]}],
   });
   nativeOrigins.add(observation); return observation;
 }

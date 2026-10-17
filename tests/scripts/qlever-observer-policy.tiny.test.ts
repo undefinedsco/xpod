@@ -1,5 +1,5 @@
 import {test,expect} from 'bun:test';
-import {qleverObserverCompanionBindings,QLEVER_OBSERVER_V20,QLEVER_OBSERVER_V22} from '../../scripts/lib/independent-admission/qlever-observer-policy';
+import {qleverObserverCompanionBindings,QLEVER_OBSERVER_V20,QLEVER_OBSERVER_V22,QLEVER_OBSERVER_V23} from '../../scripts/lib/independent-admission/qlever-observer-policy';
 test('old observer policies stay separate while v20 binds both imported helpers exactly',()=>{
  expect(qleverObserverCompanionBindings('79e34893b946458a904544ddb1cce9110a19fe5052503570c865341e7d0ff6d6')).toHaveLength(0);
  expect(qleverObserverCompanionBindings('a92b227ec186a0f53f85c93a732a0542ee3b712fdb571308395ecf17c07b2d86')).toHaveLength(0);
@@ -10,3 +10,5 @@ test('old observer policies stay separate while v20 binds both imported helpers 
 });
 
 test('v22 retains exact companion originals',()=>{expect(qleverObserverCompanionBindings(QLEVER_OBSERVER_V22)).toEqual(qleverObserverCompanionBindings(QLEVER_OBSERVER_V20));});
+
+test('v23 CXX-only observer retains both exact companion original bindings',()=>{expect(qleverObserverCompanionBindings(QLEVER_OBSERVER_V23)).toEqual(qleverObserverCompanionBindings(QLEVER_OBSERVER_V20));});

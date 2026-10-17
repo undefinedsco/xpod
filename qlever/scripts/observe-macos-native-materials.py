@@ -177,6 +177,19 @@ def observe_input_document(document):
                 filesBefore=[row['reference'] for row in rows],filesAfter=verify_source_snapshot(rows))
 
 
+def verify_local_cpp_toolchain(cache,compiler,cxx,minimum_os):
+    # The local runtime and both adapter projects declare LANGUAGES CXX.
+    # CXX is mandatory. A C compiler, when actually configured, must also match.
+    required=[('CMAKE_CXX_COMPILER',cxx)]
+    if 'CMAKE_C_COMPILER' in cache:required.append(('CMAKE_C_COMPILER',compiler))
+    for key,expected in required:
+        value=cache.get(key)
+        if not isinstance(value,str) or not value or Path(value).resolve(strict=True)!=Path(expected).resolve(strict=True):
+            raise RuntimeError('Local helper compiler differs from observed toolchain: '+key)
+    if cache.get('CMAKE_OSX_DEPLOYMENT_TARGET')!=minimum_os:
+        raise RuntimeError('Local helper deployment target differs from observed configuration')
+
+
 def observe(target, work, archive):
     expected = 'darwin-' + {'arm64':'arm64', 'x86_64':'x64'}.get(platform.machine(), 'unsupported')
     if platform.system() != 'Darwin' or target != expected: raise RuntimeError('Actual same-target macOS worker required')
@@ -273,10 +286,7 @@ def observe(target, work, archive):
         raise RuntimeError('Native engine commit changed during build')
     if stage('source-clean-after', ['git','status','--porcelain','--untracked-files=all','--','qlever','.github/workflows/build-qlever-macos-runtime.yml']): raise RuntimeError('Producer source changed')
     local_cache = cache_reader.parse_cache(work/'local-build/CMakeCache.txt')
-    for key, actual in [('CMAKE_C_COMPILER',compiler),('CMAKE_CXX_COMPILER',cxx)]:
-        if Path(local_cache[key]).resolve() != actual: raise RuntimeError('Local helper compiler differs from observed toolchain')
-    if local_cache.get('CMAKE_OSX_DEPLOYMENT_TARGET') != before['minimumOS']:
-        raise RuntimeError('Local helper deployment target differs from observed configuration')
+    verify_local_cpp_toolchain(local_cache,compiler,cxx,before['minimumOS'])
     runtime = work / 'artifact'; binary = runtime / 'bin/xpod_qlever_local_runtime'
     stage('native-test', [sys.executable,str(ROOT/'qlever/scripts/verify-local-runtime-artifacts.py'),
           '--prefix',str(runtime),'--lock',str(ROOT/'qlever/qlever.lock.json'),
