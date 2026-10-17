@@ -12,6 +12,7 @@ from supervise import run_checked_stage, run_stage
 
 # Deliberately whitelist at Docker's output boundary: never read Config/Env.
 INSPECT = ('{"cid":{{json .Id}},"imageID":{{json .Image}},"running":{{json .State.Running}},'
+           '"status":{{json .State.Status}},"paused":{{json .State.Paused}},"restarting":{{json .State.Restarting}},"dead":{{json .State.Dead}},'
            '"privileged":{{json .HostConfig.Privileged}},"AppArmorProfile":{{json .AppArmorProfile}},'
            '"NetworkMode":{{json .HostConfig.NetworkMode}},"SecurityOpt":{{json .HostConfig.SecurityOpt}},'
            '"Devices":{{json .HostConfig.Devices}},"CapAdd":{{json .HostConfig.CapAdd}},'
@@ -20,19 +21,61 @@ INSPECT = ('{"cid":{{json .Id}},"imageID":{{json .Image}},"running":{{json .Stat
 GATE = 'for i in $(seq 1 90); do [ -f /evidence/linux-binding.release ] && exec bash /mounted/bookworm-fuse-entry.sh; sleep 1; done; exit 70'
 
 
-def validate(binding, cid, image_id, daemon, seccomp, module_profile=False):
+def configuration_failures(binding, cid, image_id, module_profile=False):
     expected = {'/product/archive.tar.gz': False, '/workspace': True, '/mounted': False, '/evidence': True}
     if module_profile:
         expected['/module-product'] = False
     mounts = [item for item in binding['Mounts'] if item is not None]
-    if (binding['cid'] != cid or binding['imageID'] != image_id or binding['running'] is not True
-            or binding['privileged'] is not False or binding['AppArmorProfile'] != 'unconfined'
-            or binding['NetworkMode'] != 'none' or binding['SecurityOpt'] != ['apparmor=unconfined']
-            or binding['Devices'] != [{'PathOnHost': '/dev/fuse', 'PathInContainer': '/dev/fuse', 'CgroupPermissions': 'rwm'}]
-            or binding['CapAdd'] not in (['SYS_ADMIN'], ['CAP_SYS_ADMIN']) or binding['CapDrop'] not in (None, [])
-            or len(mounts) != len(expected) or {item['destination']: item['RW'] for item in mounts} != expected
-            or 'name=seccomp,profile=builtin' not in daemon or seccomp.split() != ['Seccomp:', '2']):
-        raise RuntimeError('same live container security binding failed')
+    checks = dict(cid=binding['cid'] == cid, imageID=binding['imageID'] == image_id,
+                  privileged=binding['privileged'] is False, AppArmorProfile=binding['AppArmorProfile'] == 'unconfined',
+                  NetworkMode=binding['NetworkMode'] == 'none', SecurityOpt=binding['SecurityOpt'] == ['apparmor=unconfined'],
+                  Devices=binding['Devices'] == [{'PathOnHost': '/dev/fuse', 'PathInContainer': '/dev/fuse', 'CgroupPermissions': 'rwm'}],
+                  CapAdd=binding['CapAdd'] in (['SYS_ADMIN'], ['CAP_SYS_ADMIN']), CapDrop=binding['CapDrop'] in (None, []),
+                  Mounts=len(mounts) == len(expected) and {item['destination']: item['RW'] for item in mounts} == expected)
+    return [field for field, passed in checks.items() if not passed]
+
+
+def validation_failures(binding, cid, image_id, daemon, seccomp, module_profile=False):
+    failures = configuration_failures(binding, cid, image_id, module_profile)
+    if (binding['running'] is not True or binding.get('status') != 'running' or binding.get('paused') is not False
+            or binding.get('restarting') is not False or binding.get('dead') is not False):
+        failures.append('container-state')
+    if 'name=seccomp,profile=builtin' not in daemon:
+        failures.append('daemon-seccomp')
+    if seccomp.split() != ['Seccomp:', '2']:
+        failures.append('pid1-seccomp')
+    return failures
+
+
+def validate(binding, cid, image_id, daemon, seccomp, module_profile=False):
+    failures = validation_failures(binding, cid, image_id, daemon, seccomp, module_profile)
+    if failures:
+        raise RuntimeError('same live container security binding failed: ' + ','.join(failures))
+
+
+def wait_same_running_container(inspect, record, cid, image_id, producer, module_profile=False, timeout=10, poll=.1):
+    deadline = time.monotonic() + timeout
+    attempt = 0
+    while True:
+        live = inspect(attempt, max(.01, min(2, deadline - time.monotonic())))
+        failures = configuration_failures(live, cid, image_id, module_profile)
+        record(live, failures, 'readiness')
+        if failures:
+            raise RuntimeError('same live container security binding failed: ' + ','.join(failures))
+        if (live.get('paused') is not False or live.get('restarting') is not False or live.get('dead') is not False
+                or live.get('status') not in ['created', 'running']):
+            record(live, ['container-state'], 'readiness')
+            raise RuntimeError('same owned container entered non-starting state')
+        if live['running'] is True and live['status'] == 'running':
+            return live
+        if live['running'] is not False or live['status'] != 'created':
+            record(live, ['container-state'], 'readiness')
+            raise RuntimeError('inconsistent owned container state')
+        if producer.done() or time.monotonic() >= deadline:
+            record(live, ['readiness-deadline'], 'readiness')
+            raise RuntimeError('same owned container readiness deadline')
+        attempt += 1
+        time.sleep(min(poll, max(0, deadline - time.monotonic())))
 
 
 def consumer_command(archive, evidence, cidfile, workspace, image, module_directory=None):
@@ -90,8 +133,8 @@ def run(archive, evidence, cidfile, workspace, image, image_id, module_directory
     binding = dict(schemaVersion=2, source='host-observer-before-consumer', state='failed', released=False)
     cid = None
 
-    def checked(name, argv):
-        return run_checked_stage(name, argv, evidence, workspace, timeout=30)[1]
+    def checked(name, argv, timeout=30):
+        return run_checked_stage(name, argv, evidence, workspace, timeout=timeout)[1]
 
     with ThreadPoolExecutor(max_workers=1) as pool:
         producer = pool.submit(run_stage, 'linux-consumer', consumer_command(archive, evidence, cidfile, workspace, image, module_directory),
@@ -99,9 +142,20 @@ def run(archive, evidence, cidfile, workspace, image, image_id, module_directory
         try:
             cid = wait_owned_cid(cidfile, producer)
             binding['cid'] = cid
-            live = json.loads(checked('linux-live-inspect', ['docker', 'inspect', '--format', INSPECT, cid]))
+            def record(live, failures, phase):
+                binding.update(container=live, validationFailures=failures, observationPhase=phase)
+                (evidence / 'linux-container-binding.json').write_text(json.dumps(binding, indent=2) + '\n')
+            def inspect(attempt, timeout):
+                label = 'linux-live-inspect' if attempt == 0 else 'linux-readiness-inspect-' + str(attempt)
+                return json.loads(checked(label, ['docker', 'inspect', '--format', INSPECT, cid], timeout=timeout))
+            wait_same_running_container(inspect, record, cid, image_id, producer, module_directory is not None)
             daemon = json.loads(checked('linux-daemon-seccomp', ['docker', 'info', '--format', '{{json .SecurityOptions}}']))
+            binding['daemonSecurityOptions'] = daemon
             seccomp = checked('linux-pid1-seccomp', ['docker', 'exec', cid, 'sh', '-c', "grep '^Seccomp:' /proc/1/status"])
+            seccomp_value = re.fullmatch(r'Seccomp:\s*([0-9]{1,2})\s*', seccomp)
+            binding['pid1Seccomp'] = int(seccomp_value[1]) if seccomp_value else None
+            live = json.loads(checked('linux-final-inspect', ['docker', 'inspect', '--format', INSPECT, cid]))
+            record(live, validation_failures(live, cid, image_id, daemon, seccomp, module_directory is not None), 'final')
             validate(live, cid, image_id, daemon, seccomp, module_directory is not None)
             if cidfile.read_text().strip() != cid:
                 raise RuntimeError('owned cidfile changed before consumer release')

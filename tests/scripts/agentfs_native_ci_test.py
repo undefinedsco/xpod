@@ -59,7 +59,7 @@ def native_patch_git_fixture(directory):
 
 class LinuxContainerBindingTests(unittest.TestCase):
     def fixture(self):
-        return dict(cid='a' * 64, imageID='sha256:' + 'b' * 64, running=True, privileged=False,
+        return dict(cid='a' * 64, imageID='sha256:' + 'b' * 64, running=True, status='running', paused=False, restarting=False, dead=False, privileged=False,
                     AppArmorProfile='unconfined', NetworkMode='none', SecurityOpt=['apparmor=unconfined'],
                     Devices=[dict(PathOnHost='/dev/fuse', PathInContainer='/dev/fuse', CgroupPermissions='rwm')],
                     CapAdd=['SYS_ADMIN'], CapDrop=None, Mounts=[
@@ -90,6 +90,53 @@ class LinuxContainerBindingTests(unittest.TestCase):
             with self.subTest(daemon=daemon, seccomp=seccomp), self.assertRaises(RuntimeError):
                 b.validate(value, value['cid'], value['imageID'], daemon, seccomp)
 
+    def test_created_container_waits_for_same_running_identity_only(self):
+        live = self.fixture(); created = dict(live, running=False, status='created')
+        observations = []; calls = []
+        def inspect(attempt, timeout):
+            calls.append(attempt); return created if attempt == 0 else live
+        result = b.wait_same_running_container(inspect, lambda *row: observations.append(row), live['cid'], live['imageID'], SimpleNamespace(done=lambda: False), poll=0)
+        self.assertEqual(result, live); self.assertEqual(calls, [0, 1]); self.assertEqual(len(observations), 2)
+
+    def test_readiness_identity_permission_and_terminal_states_fail_without_retry(self):
+        live = self.fixture()
+        changes = [dict(cid='c' * 64), dict(imageID='sha256:wrong'), dict(NetworkMode='host'), dict(CapAdd=['NET_ADMIN']),
+                   dict(status='exited', running=False), dict(status='dead', dead=True), dict(paused=True), dict(restarting=True)]
+        for change in changes:
+            with self.subTest(change=change):
+                calls = []; records = []
+                def inspect(attempt, timeout): calls.append(attempt); return dict(live, **change)
+                with self.assertRaises(RuntimeError):
+                    b.wait_same_running_container(inspect, lambda *row: records.append(row), live['cid'], live['imageID'], SimpleNamespace(done=lambda: False), poll=0)
+                self.assertEqual(calls, [0]); self.assertTrue(records[-1][1])
+
+    def test_failed_security_snapshot_is_saved_without_release(self):
+        live = self.fixture(); live['NetworkMode'] = 'host'
+        # Reuse the real owned-child fixture, but substitute only its inspect
+        # bytes. It must be reaped and never observe the release marker.
+        original = self.fixture
+        self.fixture = lambda: live
+        try:
+            # exercise_consumer checks only release/cleanup, while rejection is
+            # caused by actual config validation rather than process exit.
+            self.exercise_consumer(False, validation_reject=True)
+        finally:
+            self.fixture = original
+
+    def test_safe_export_preserves_failure_fields_and_rejects_unbounded_reason_codes(self):
+        code = """import {projectReceipt} from './scripts/agentfs-native-ci/mounted/prepare-module-inputs.ts';
+const input=JSON.parse(await Bun.stdin.text());try{console.log(JSON.stringify({value:projectReceipt('linux-container-binding.json',input)}))}catch{console.log(JSON.stringify({rejected:true}))}"""
+        row = dict(state='failed', released=False, validationFailures=['NetworkMode'], observationPhase='final',
+                   container=dict(self.fixture(), Config=dict(Env=['secret-marker'])), Config=dict(Env=['secret-marker']))
+        def project(value):
+            result = subprocess.run(['bun', '-e', code], cwd=ROOT, input=json.dumps(value), text=True, capture_output=True, timeout=5)
+            self.assertEqual(result.returncode, 0, result.stderr); return json.loads(result.stdout)
+        safe = project(row)['value']
+        self.assertEqual(safe['validationFailures'], ['NetworkMode']); self.assertEqual(safe['container']['status'], 'running')
+        self.assertNotIn('secret-marker', json.dumps(safe)); self.assertNotIn('Config', safe)
+        for reasons in [['free exception secret-marker'], ['NetworkMode'] * 15, ['x' * 1000]]:
+            self.assertTrue(project(dict(row, validationFailures=reasons))['rejected'])
+
     def test_docker_output_boundary_does_not_read_config_or_environment(self):
         self.assertNotIn('.Config', b.INSPECT)
         self.assertNotIn('.Env', b.INSPECT)
@@ -114,7 +161,7 @@ class LinuxContainerBindingTests(unittest.TestCase):
                     b.run('/archive', evidence, evidence / 'container.cid', ROOT, 'prep', 'image-id')
                 producer.assert_not_called()
 
-    def exercise_consumer(self, reject_inspect):
+    def exercise_consumer(self, reject_inspect, validation_reject=False, final_change=None):
         # Real, waited subprocess stands in for Docker attachment. It only starts
         # the consumer after the production release gate; no Docker/FUSE claim.
         with owned_scratch() as directory:
@@ -140,24 +187,27 @@ class LinuxContainerBindingTests(unittest.TestCase):
             def checked(name, argv, ev, cwd, **kwargs):
                 calls.append((name, argv))
                 self.assertFalse(marker.exists() or release.exists()) if name != 'linux-container-absence' else None
-                output = dict({'linux-live-inspect': json.dumps(value), 'linux-daemon-seccomp': json.dumps(['name=seccomp,profile=builtin']),
+                output = dict({'linux-live-inspect': json.dumps(value), 'linux-final-inspect': json.dumps(dict(value, **(final_change or {}))), 'linux-daemon-seccomp': json.dumps(['name=seccomp,profile=builtin']),
                                'linux-pid1-seccomp': 'Seccomp:\t2\n', 'linux-container-absence': ''})[name]
                 code = 7 if reject_inspect and name == 'linux-live-inspect' else 0
                 return m.run_checked_stage(name, [sys.executable, '-c', f'print({output!r}); raise SystemExit({code})'],
                                            ev, cwd, fresh_bytes=0, stop_bytes=0, timeout=5, poll_seconds=.01)
             with patch.object(b, 'run_stage', side_effect=stage), patch.object(b, 'run_checked_stage', side_effect=checked), \
                     patch.dict(os.environ, LINUX_ARCHIVE_SHA='archive-pin', LINUX_HELPER_SHA='helper-pin'):
-                if reject_inspect:
+                if reject_inspect or validation_reject:
                     with self.assertRaises(RuntimeError): b.run('/archive', evidence, cidfile, ROOT, 'prep', value['imageID'])
                 else: b.run('/archive', evidence, cidfile, ROOT, 'prep', value['imageID'])
             binding = json.loads((evidence / 'linux-container-binding.json').read_text())
-            self.assertEqual(binding['released'], not reject_inspect)
-            self.assertEqual(marker.exists(), not reject_inspect)
+            self.assertEqual(binding['released'], not (reject_inspect or validation_reject))
+            self.assertEqual(marker.exists(), not (reject_inspect or validation_reject))
             self.assertTrue(binding['containerAbsent'])
             receipt = binding['consumerReceipt']
             self.assertTrue(receipt['actualWait'] and receipt['rawClosedBeforeHash'] and receipt['ownedGroupAbsentAfterWait'])
             self.assertEqual(receipt['rawSHA256'], m.sha256(evidence / 'linux-consumer.raw.log'))
-            self.assertEqual(receipt['exit'], 70 if reject_inspect else 0)
+            self.assertEqual(receipt['exit'], 70 if reject_inspect or validation_reject else 0)
+            if validation_reject:
+                self.assertEqual(binding['container']['NetworkMode'], 'host')
+                self.assertEqual(binding['validationFailures'], ['NetworkMode'])
             argv = calls[0][1]
             self.assertIn('--init', argv); self.assertIn('--rm', argv); self.assertIn('--network', argv)
             self.assertNotIn('--privileged', argv); self.assertNotIn('seccomp=unconfined', argv)
@@ -165,6 +215,9 @@ class LinuxContainerBindingTests(unittest.TestCase):
 
     def test_actual_consumer_is_only_released_after_same_live_inspection(self):
         self.exercise_consumer(False)
+
+    def test_final_snapshot_after_seccomp_cannot_reuse_earlier_valid_permissions(self):
+        self.exercise_consumer(False, validation_reject=True, final_change=dict(NetworkMode='host'))
 
     def test_inspection_failure_never_releases_actual_consumer_and_waits_for_cleanup(self):
         self.exercise_consumer(True)
