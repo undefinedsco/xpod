@@ -124,7 +124,8 @@ describe('reviewed normal CLI input-set policy', () => {
     expect(() => verifyCliInputSet(files, { ...manifest, scripts: { install: 'untrusted' } }, read, tracked)).toThrow('generated build manifest');
   });
   it('does not silently qualify the old producer under the new owned-command policy', () => {
-    const old = spawnSync('git', ['show', 'HEAD:scripts/check-cli-publication.cjs']).stdout;
+    // Fixed pre-supervisor source; HEAD changes after committing this verifier.
+    const old = read('tests/fixtures/independent-admission/legacy-cli-publication.cjs.txt');
     expect(verifyCliInputSet(files, manifest, name => name === 'scripts/check-cli-publication.cjs' ? old : read(name), tracked).sourceInputSetVerified).toBe(false);
   });
   it('does not trust an unreviewed command collector to assert closure', () => {
