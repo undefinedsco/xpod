@@ -9,6 +9,7 @@ import { collectedArtifactView } from './artifact-collector';
 import { consumerObservationView } from './consumer-context';
 import { observeRegistryArtifact, observeRegistryArtifactIfPublished } from './registry-context';
 const { runPublicationCommand } = createRequire(import.meta.url)('../afs-publication-command.cjs');
+const { valid: validVersion, validRange } = createRequire(import.meta.url)('semver');
 const { assertSafeFixturePublishConfig } = createRequire(import.meta.url)('../../check-package-registry-consumer.cjs');
 const REGISTRY = 'https://registry.npmjs.org/';
 const fail = (message: string): never => { throw new Error('Independent publisher: ' + message); };
@@ -25,6 +26,8 @@ export interface IndependentPublicationExecutionInput extends IndependentPublica
   token: string;
   clientPeers?: readonly unknown[];
   cliPeers?: readonly unknown[];
+  clientDependencies?: readonly unknown[];
+  cliDependencies?: readonly unknown[];
 }
 function preflight(input: IndependentPublicationInput): void {
   const plan = planIndependentPublication(input);
@@ -66,7 +69,18 @@ function archive(artifact: unknown, role: 'client' | 'cli'): Buffer {
  * Fixed registry-install consumers are required; archive import smoke is insufficient.
  * Candidate tags quarantine versions until both complete postpublish profiles pass.
  * A failed later step may leave an immutable candidate version in the registry. */
-export async function executeIndependentPublication(input: IndependentPublicationExecutionInput): Promise<IndependentPromotionPermit> {
+export async function executeIndependentPublication(request: IndependentPublicationExecutionInput): Promise<IndependentPromotionPermit> {
+  // Snapshot capabilities before asynchronous observations. Caller mutation
+  // cannot change the intended archive or postpublish dependency set mid-run.
+  const input: IndependentPublicationExecutionInput = Object.freeze({
+    client: request.client, cli: request.cli, clientSource: request.clientSource, cliSource: request.cliSource,
+    clientConsumer: request.clientConsumer, cliConsumer: request.cliConsumer,
+    clientRegistry: request.clientRegistry, cliRegistry: request.cliRegistry,
+    clientRegistryConsumer: request.clientRegistryConsumer, cliRegistryConsumer: request.cliRegistryConsumer,
+    token: request.token,
+    clientPeers: Object.freeze([...(request.clientPeers ?? [])]), cliPeers: Object.freeze([...(request.cliPeers ?? [])]),
+    clientDependencies: Object.freeze([...(request.clientDependencies ?? [])]), cliDependencies: Object.freeze([...(request.cliDependencies ?? [])]),
+  });
   preflight(input);
   const credential = token(input.token);
   const executable = bunPath();
@@ -74,17 +88,24 @@ export async function executeIndependentPublication(input: IndependentPublicatio
   // blocks execution rather than skipping its profiles.
   const consumerModule = await import('./consumer-context');
   type RegistryInstallRunner = (input: {
-    artifact: unknown; client?: unknown; peers: unknown[]; stage: 'postpublish';
+    artifact: unknown; client?: unknown; peers: unknown[]; dependencies: unknown[]; stage: 'postpublish';
     registryObservation: unknown; evidenceDirectory: string;
   }) => Promise<unknown>;
   const fixed = consumerModule as unknown as {
     observeRegistryInstalledClientConsumer?: RegistryInstallRunner;
     observeRegistryInstalledCliConsumer?: RegistryInstallRunner;
+    preflightRegistryInstalledClientConsumer?: (input: { artifact: unknown; peers: unknown[]; dependencies: unknown[] }) => void;
+    preflightRegistryInstalledCliConsumer?: (input: { artifact: unknown; client: unknown; peers: unknown[]; dependencies: unknown[] }) => void;
   };
   const observeInstalledClient = fixed.observeRegistryInstalledClientConsumer;
   const observeInstalledCli = fixed.observeRegistryInstalledCliConsumer;
-  if (!observeInstalledClient || !observeInstalledCli)
+  const checkClient = fixed.preflightRegistryInstalledClientConsumer;
+  const checkCli = fixed.preflightRegistryInstalledCliConsumer;
+  if (!observeInstalledClient || !observeInstalledCli || !checkClient || !checkCli)
     return fail('fixed actual registry install consumer runners unavailable; local archive smoke cannot authorize publication');
+  const clientMaterials = { artifact: input.client, peers: [...(input.clientPeers ?? [])], dependencies: [...(input.clientDependencies ?? [])] };
+  const cliMaterials = { artifact: input.cli, client: input.client, peers: [...(input.cliPeers ?? [])], dependencies: [...(input.cliDependencies ?? [])] };
+  checkClient(clientMaterials); checkCli(cliMaterials);
   const bytes = { client: archive(input.client, 'client'), cli: archive(input.cli, 'cli') };
   // Include four publish raw streams plus receipts/config under the 16MiB cap.
   if (bytes.client.length + bytes.cli.length > 14 * 1024 ** 2) fail('publication artifact write budget exceeded');
@@ -109,6 +130,7 @@ export async function executeIndependentPublication(input: IndependentPublicatio
     fs.writeFileSync(path.join(root, '.npmrc'), 'registry=' + REGISTRY + '\n', { flag: 'wx', mode: 0o600 });
     for (const role of ['client', 'cli'] as const) {
       preflight(current);
+      checkClient(clientMaterials); checkCli(cliMaterials);
       const view = collectedArtifactView(input[role])!;
       const evidence = path.join(root, role); fs.mkdirSync(evidence);
       if (!existing[role]) {
@@ -134,8 +156,8 @@ export async function executeIndependentPublication(input: IndependentPublicatio
       }
       const registry = await observeRegistryArtifact(input[role]);
       const observation = role === 'client'
-        ? await observeInstalledClient({ artifact: input.client, peers: [...(input.clientPeers ?? [])], stage: 'postpublish', registryObservation: registry, evidenceDirectory: path.join(evidence, 'consumer') })
-        : await observeInstalledCli({ artifact: input.cli, client: input.client, peers: [...(input.cliPeers ?? [])], stage: 'postpublish', registryObservation: registry, evidenceDirectory: path.join(evidence, 'consumer') });
+        ? await observeInstalledClient({ ...clientMaterials, stage: 'postpublish', registryObservation: registry, evidenceDirectory: path.join(evidence, 'consumer') })
+        : await observeInstalledCli({ ...cliMaterials, stage: 'postpublish', registryObservation: registry, evidenceDirectory: path.join(evidence, 'consumer') });
       const consumer = consumerObservationView(observation);
       if (!consumer?.allProfilesVerified || (consumer as typeof consumer & { registryInstallVerified?: boolean }).registryInstallVerified !== true
         || consumer.stage !== 'postpublish'
@@ -160,7 +182,25 @@ export async function executeIndependentPublication(input: IndependentPublicatio
     }
   }
 }
+/** Strict data-only npm tag mapping; never accepts diagnostic/error fields. */
+export function normalizeIndependentDistTags(value: unknown): Readonly<Record<string, string>> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)
+    || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) return fail('invalid dist-tag mapping');
+  const entries = Object.entries(value);
+  if (!entries.length || entries.length > 128) return fail('dist-tag mapping size invalid');
+  const tags: Record<string, string> = Object.create(null);
+  for (const [key, version] of entries.sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)) {
+    // npm dist-tags share the version namespace; valid semver ranges cannot be tags.
+    if (!/^[a-zA-Z][a-zA-Z0-9._-]{0,127}$/u.test(key) || validRange(key)
+      || ['__proto__', 'constructor', 'prototype', 'token', 'authorization', 'password', 'secret', 'auth', 'error', 'message'].includes(key.toLowerCase())
+      || typeof version !== 'string' || validVersion(version) !== version) return fail('unsafe dist-tag mapping entry');
+    tags[key] = version;
+  }
+  return Object.freeze(tags);
+}
 async function tagRequest(name: string, method: 'GET' | 'PUT', credential: string, evidence: string, label: string, version?: string): Promise<unknown> {
+  if (method === 'PUT') fs.writeFileSync(path.join(evidence, label + '-request.json'),
+    JSON.stringify({ package: name, tag: version!.includes('-') ? 'next' : 'latest', version }), { flag: 'wx', mode: 0o600 });
   const url = REGISTRY + '-/package/' + encodeURIComponent(name) + '/dist-tags'
     + (method === 'PUT' ? '/' + (version!.includes('-') ? 'next' : 'latest') : '');
   let response: Response;
@@ -190,7 +230,14 @@ async function tagRequest(name: string, method: 'GET' | 'PUT', credential: strin
   // Retain response identity even for a failed/partial mutation; never retain
   // the registry body, which may contain credential-bearing diagnostic text.
   if (!response.ok) return fail('registry dist-tag request failed: ' + response.status);
-  return length ? JSON.parse(bytes.toString()) : {};
+  if (method === 'PUT') return {};
+  if (response.status !== 200) return fail('dist-tag readback requires status 200');
+  const tags = normalizeIndependentDistTags(JSON.parse(bytes.toString()));
+  const canonical = JSON.stringify(tags);
+  fs.writeFileSync(path.join(evidence, label + '-mapping.json'), JSON.stringify({ package: name,
+    tags, canonicalSha256: digest(Buffer.from(canonical)), rawSha256: digest(bytes), rawBytes: bytes.length }),
+    { flag: 'wx', mode: 0o600 });
+  return tags;
 }
 /** Two tags cannot be promoted atomically by npm. A failure after the client PUT
  * leaves a partial promotion and requires investigation; no automatic rollback. */

@@ -20,8 +20,9 @@ export async function observeRegistryArtifactIfPublished(artifact: unknown): Pro
   const collected = collectedArtifactView(artifact);
   if (!collected) throw new Error('Registry observation requires a collected artifact capability');
   const identity = collected.identity;
-  if (identity.target !== undefined || !['@undefineds.co/xpod-client', '@undefineds.co/xpod-cli'].includes(identity.package)
-    || identity.archiveBytes > 8 * 1024 ** 2) throw new Error('Registry observation product or budget unsupported');
+  // Product identity is owned by the central collector, not a second package
+  // allowlist here. Small collected peer artifacts use the same exact readback.
+  if (identity.archiveBytes > 8 * 1024 ** 2) throw new Error('Registry observation product or budget unsupported');
   const result = await verifyRegistryProduct({ registry: 'https://registry.npmjs.org/', package: identity.package,
     version: identity.version, expected: { sha256: identity.archiveSha256, integrity: identity.integrity, bytes: identity.archiveBytes } },
   { timeoutMs: 30_000, limits: { packedBytes: 8 * 1024 ** 2, expandedBytes: 16 * 1024 ** 2, members: 20000 } });

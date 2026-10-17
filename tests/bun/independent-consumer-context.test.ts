@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import { clientConsumerProbeSource, cliConsumerExportModes, consumerObservationView, observeClientConsumer, observeCliConsumer } from '../../scripts/lib/independent-admission/consumer-context';
+import { clientConsumerProbeSource, cliConsumerExportModes, consumerObservationView, observeClientConsumer, observeCliConsumer, observeRegistryInstalledClientConsumer, observeRegistryInstalledCliConsumer, preflightRegistryInstalledClientConsumer, preflightRegistryInstalledCliConsumer } from '../../scripts/lib/independent-admission/consumer-context';
 test('serialized consumer facts never issue a capability', () => {
   expect(consumerObservationView({ allProfilesVerified: true })).toBeUndefined();
   expect(consumerObservationView(null)).toBeUndefined();
@@ -30,7 +30,10 @@ test('fixed probes resolve both module modes inside their isolated fixture', () 
       fs.writeFileSync(script, clientConsumerProbeSource(mode));
       const result = spawnSync(process.execPath, [script], { cwd: root, env: {}, encoding: 'utf8', timeout: 2000 });
       expect(result.status).toBe(0);
-      expect(JSON.parse(result.stdout)).toEqual({ schemaVersion: 1, name: 'fixture', version: '1.0.0', exports: ['.', './data'] });
+      const { resolutions, ...reported } = JSON.parse(result.stdout);
+      expect(reported).toEqual({ schemaVersion: 1, name: 'fixture', version: '1.0.0', exports: ['.', './data'] });
+      expect(resolutions.length).toBe(2);
+      expect(resolutions.every((row: any) => row.path.startsWith(fs.realpathSync(pkg) + path.sep) && /^[a-f0-9]{64}$/u.test(row.sha256))).toBe(true);
     }
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
@@ -75,4 +78,122 @@ test('fixed bin probe executes the shell wrapper under isolated Node and Bun pat
       }
     }
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('actual registry installers reject serialized artifact/readback approval before network', async () => {
+  const input = { artifact: { status: 'verified' }, peers: [], stage: 'postpublish' as const,
+    registryObservation: { registryInstallVerified: true }, evidenceDirectory: '/unused' };
+  await expect(observeRegistryInstalledClientConsumer(input)).rejects.toThrow('real collected');
+  await expect(observeRegistryInstalledCliConsumer({ ...input, client: {} })).rejects.toThrow('real collected');
+});
+
+import { createHash } from 'node:crypto';
+import { createServer, type Server } from 'node:http';
+import { createRequire } from 'node:module';
+import { registryConsumerInstallArguments, verifyInstalledConsumerInventory, estimateConsumerWriteBudget } from '../../scripts/lib/independent-admission/consumer-context';
+test('fixed install flags consume exact loopback registry bytes without running scripts or auto peers', async () => {
+  // Test-only loopback substitution is confined here. No production observer,
+  // collector or issuer accepts this registry or manufactures a capability.
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xpod-registry-install-test-'));
+  let server: Server | undefined;
+  let port = 0;
+  try {
+    const name = 'xpod-consumer-loopback-fixture';
+    const source = path.join(root, 'source'); fs.mkdirSync(path.join(source, 'package'), { recursive: true });
+    const manifest = { name, version: '1.0.0', exports: './index.cjs', bin: { 'loopback-bin': './bin.cjs' }, peerDependencies: { 'never-fetch-auto-peer': '^1.0.0' }, peerDependenciesMeta: { 'never-fetch-auto-peer': { optional: true } },
+      scripts: { postinstall: "echo forbidden > lifecycle-executed" } };
+    fs.writeFileSync(path.join(source, 'package', 'package.json'), JSON.stringify(manifest));
+    fs.writeFileSync(path.join(source, 'package', 'index.cjs'), 'exports.ok = true;');
+    fs.writeFileSync(path.join(source, 'package', 'bin.cjs'), '#!/usr/bin/env bun\nexports.ok = true;\n', { mode: 0o755 });
+    const require = createRequire(import.meta.url);
+    const archive = path.join(root, 'fixture.tgz');
+    require('tar').c({ gzip: true, sync: true, cwd: source, file: archive }, ['package']);
+    const tarball = fs.readFileSync(archive), integrity = 'sha512-' + createHash('sha512').update(tarball).digest('base64');
+    const requests: string[] = [];
+    server = createServer((request, response) => {
+      const pathname = new URL(request.url!, 'http://127.0.0.1').pathname; requests.push(pathname);
+      if (pathname === '/fixture.tgz') { response.end(tarball); return; }
+      if (pathname !== '/' + name) { response.statusCode = 404; response.end('not found'); return; }
+      const version = { ...manifest, dist: { tarball: `http://127.0.0.1:${port}/fixture.tgz`, integrity } };
+      response.setHeader('Content-Type', 'application/json');
+      response.end(JSON.stringify({ name, 'dist-tags': { latest: '1.0.0' }, versions: { '1.0.0': version } }));
+    });
+    await new Promise<void>(resolve => server!.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    if (!address || typeof address === 'string') throw Error('loopback fixture unavailable');
+    port = address.port;
+    const cwd = path.join(root, 'installed'); fs.mkdirSync(cwd);
+    const evidence = path.join(root, 'evidence'); fs.mkdirSync(evidence);
+    fs.writeFileSync(path.join(cwd, 'package.json'), JSON.stringify({ private: true, dependencies: { [name]: '1.0.0' } }));
+    const fixed = registryConsumerInstallArguments(path.join(root, 'cache'));
+    expect(fixed.includes('https://registry.npmjs.org/')).toBe(true);
+    const loopback = fixed.map(argument => argument === 'https://registry.npmjs.org/' ? `http://127.0.0.1:${port}/` : argument);
+    const { runPublicationCommand } = require('../../scripts/lib/afs-publication-command.cjs');
+    const outcome = await runPublicationCommand(process.execPath, loopback, { cwd, evidence, label: 'loopback-install', timeoutMs: 5000,
+      rawLimit: 262144, env: { PATH: path.dirname(process.execPath), HOME: root, TMPDIR: root } }).catch((error: Error) => { throw new Error(error.message + ': ' + fs.readFileSync(path.join(evidence, 'loopback-install.stderr.raw.log'), 'utf8')); });
+    expect(outcome.actualWait && outcome.actualClose && outcome.groupAbsent && outcome.rawComplete).toBe(true);
+    expect(fs.readFileSync(path.join(cwd, 'node_modules', name, 'index.cjs'), 'utf8')).toBe('exports.ok = true;');
+    expect(fs.existsSync(path.join(cwd, 'node_modules', name, 'lifecycle-executed'))).toBe(false);
+    expect(fs.existsSync(path.join(cwd, 'node_modules', 'never-fetch-auto-peer'))).toBe(false);
+    expect(fs.existsSync(path.join(cwd, 'bun.lock'))).toBe(true);
+    // Synthetic expected payloads exercise only the pure integrity checker;
+    // they cannot enter the private production collector/consumer capability map.
+    const fixtureFiles = ['package.json', 'index.cjs', 'bin.cjs'];
+    const readMember = (name: string) => fs.readFileSync(path.join(source, 'package', name));
+    const expected = { identity: { sourceSha: 'a'.repeat(40), package: name, version: '1.0.0', integrity,
+      archiveSha256: createHash('sha256').update(tarball).digest('hex'), archiveBytes: tarball.length },
+      members: fixtureFiles.map(file => { const bytes = readMember(file); return { path: file, bytes: bytes.length,
+        sha256: createHash('sha256').update(bytes).digest('hex'), mode: fs.statSync(path.join(source, 'package', file)).mode & 0o777 }; }), readMember };
+    const inventory = verifyInstalledConsumerInventory(cwd, [expected]);
+    expect(inventory.inventories[0]!.files.length).toBe(3);
+    expect(inventory.generatedBinLinks[0]!.name).toBe('loopback-bin');
+    expect(inventory.generatedBinLinks[0]!.memberSha256).toBe(expected.members.find(row => row.path === 'bin.cjs')!.sha256);
+    expect(fs.lstatSync(path.join(cwd, 'node_modules', '.bin', 'loopback-bin')).isSymbolicLink()).toBe(true);
+    fs.writeFileSync(path.join(cwd, 'probe-input.json'), JSON.stringify({ name, version: '1.0.0',
+      packageRoot: path.join(cwd, 'node_modules', name), absentPeers: ['never-fetch-auto-peer'], exports: ['.'] }));
+    for (const mode of ['esm', 'cjs'] as const) {
+      const script = 'probe.' + (mode === 'esm' ? 'mjs' : 'cjs');
+      fs.writeFileSync(path.join(cwd, script), clientConsumerProbeSource(mode));
+      for (const runtime of ['node', 'bun']) {
+        const executable = (process.env.PATH ?? '').split(path.delimiter).map(directory => path.join(directory, runtime))
+          .find(candidate => { try { fs.accessSync(candidate, fs.constants.X_OK); return true; } catch { return false; } });
+        expect(Boolean(executable)).toBe(true);
+        const resolved = spawnSync(executable!, [script], { cwd, env: {}, encoding: 'utf8', timeout: 2000 });
+        expect(resolved.status).toBe(0);
+        expect(JSON.parse(resolved.stdout).resolutions[0].sha256).toBe(expected.members.find(row => row.path === 'index.cjs')!.sha256);
+      }
+    }
+    fs.writeFileSync(path.join(cwd, 'node_modules', name, 'index.cjs'), 'altered');
+    expect(() => verifyInstalledConsumerInventory(cwd, [expected])).toThrow('inventory or mode mismatch');
+
+  } finally { server?.closeAllConnections(); server?.close(); fs.rmSync(root, { recursive: true, force: true }); }
+}, 10000);
+
+test('registry material preflight is read-only and rejects fake artifacts', () => {
+  expect(() => preflightRegistryInstalledClientConsumer({ artifact: {} })).toThrow('real collected');
+  expect(() => preflightRegistryInstalledCliConsumer({ artifact: {}, client: {} })).toThrow('real collected');
+});
+
+test('registry estimate supports the actual CLI/client expansion while preserving fixed limits', () => {
+  const actual = estimateConsumerWriteBudget({ preparation: 'registry', payloadBytes: (7942773 + 223723) * 4,
+    evidenceBytes: 4 * 1024 ** 2, capabilityCount: 2, profileCount: 4 });
+  expect(actual.estimatedWriteBytes).toBe(134858240);
+  expect(actual.maxEstimatedWriteBytes).toBe(256 * 1024 ** 2);
+  expect(actual.writeBudgetScope).toBe('estimate-not-filesystem-quota');
+  expect(() => estimateConsumerWriteBudget({ preparation: 'registry', payloadBytes: 256 * 1024 ** 2,
+    evidenceBytes: 0, capabilityCount: 2, profileCount: 4 })).toThrow('fixed budget');
+  expect(() => estimateConsumerWriteBudget({ preparation: 'registry', payloadBytes: 0,
+    evidenceBytes: 0, capabilityCount: 129, profileCount: 4 })).toThrow('fixed limits');
+  expect(estimateConsumerWriteBudget({ preparation: 'archive', payloadBytes: 1, evidenceBytes: 0,
+    capabilityCount: 2, profileCount: 2 }).maxEstimatedWriteBytes).toBe(64 * 1024 ** 2);
+});
+
+test('archive full CLI and dependency closure can fit its separate fixed estimate', () => {
+  const archive = estimateConsumerWriteBudget({ preparation: 'archive', payloadBytes: (7942773 + 223723) * 2,
+    evidenceBytes: 2 * 1024 ** 2, capabilityCount: 2, profileCount: 2 });
+  expect(archive.estimatedWriteBytes).toBe(18430144);
+  expect(archive.maxEstimatedWriteBytes).toBe(64 * 1024 ** 2);
+  expect(archive.writeBudgetScope).toBe('estimate-not-filesystem-quota');
+  expect(() => estimateConsumerWriteBudget({ preparation: 'archive', payloadBytes: 65 * 1024 ** 2,
+    evidenceBytes: 0, capabilityCount: 2, profileCount: 2 })).toThrow('fixed budget');
 });
