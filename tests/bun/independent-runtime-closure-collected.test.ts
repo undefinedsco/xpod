@@ -36,9 +36,12 @@ test('native format scans use real bound header bytes without loading a large ex
   (f.view.members as any[]).push({ path: 'qlever', bytes: 256 * 1024 ** 2, sha256: 'c'.repeat(64), mode: 0o755 });
   const ranges: number[] = [];
   f.view.readBoundMemberRange = (name, offset, length) => { expect(name).toBe('qlever'); expect(offset).toBe(0); ranges.push(length); return header.subarray(0, length); };
-  const result = inspectRuntimeGraph(collectedRuntimeMembers(f.view), 'linux-x64');
+  const members = collectedRuntimeMembers(f.view);
+  const result = inspectRuntimeGraph(members, 'linux-x64');
   expect(result.nativeMembers).toEqual(['package/qlever']);
   expect(f.reads).toEqual(['package.json']); expect(ranges).toEqual([2, 64]);
+  inspectRuntimeGraph(members, 'linux-x64');
+  expect(ranges).toEqual([2, 64]); // Node/Bun share this one immutable observation, not a second header reservation.
   header.writeUInt16LE(183, 18);
   expect(() => inspectRuntimeGraph(collectedRuntimeMembers(f.view), 'linux-x64')).toThrow('format/target mismatch');
 });

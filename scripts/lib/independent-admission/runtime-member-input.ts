@@ -21,7 +21,7 @@ export function collectedRuntimeMembers(view: CollectedArtifactView): RuntimeMem
       || !/^[a-f0-9]{64}$/u.test(row.sha256) || !Number.isInteger(row.mode) || row.mode < 0 || row.mode > 0o777)
       throw Error('Runtime member identity/path invalid');
     names.add(row.path);
-    let cached: Buffer | undefined;
+    let cached: Buffer | undefined, nativeCache: Buffer | undefined, prefixCache: Buffer | undefined;
     const read = (): Buffer => {
       if (cached) return cached;
       const limit = row.path === 'package.json' || row.path.endsWith('/package.json') ? MANIFEST_MAX_BYTES
@@ -40,19 +40,20 @@ export function collectedRuntimeMembers(view: CollectedArtifactView): RuntimeMem
       return bytes;
     };
     return { path: 'package/' + row.path, type: 'file', mode: row.mode, size: row.bytes, sha256: row.sha256,
-      get content() { return read(); }, readPrefix: () => range(2),
+      get content() { return read(); }, readPrefix: () => prefixCache ?? (prefixCache = range(2)),
       readNativeMaterial(): Buffer {
+        if (nativeCache) return nativeCache;
         const header = range(64), magic = header.subarray(0, 4).toString('hex');
-        if (magic === '7f454c46') return header;
+        if (magic === '7f454c46') return nativeCache = header;
         if (['feedface', 'cefaedfe', 'feedfacf', 'cffaedfe'].includes(magic) && header.length >= 28) {
           const little = magic.startsWith('cefa') || magic.startsWith('cffa');
           const commands = little ? header.readUInt32LE(20) : header.readUInt32BE(20);
           const length = (magic === 'feedfacf' || magic === 'cffaedfe' ? 32 : 28) + commands;
           if (length > 16 * 1024 ** 2 || length > row.bytes) throw new RuntimeReadPending('bounded-native-command-table-required:' + row.path);
-          return range(length);
+          return nativeCache = range(length);
         }
         // WASM validation and fat/PE layouts require actual complete bytes.
-        return read();
+        return nativeCache = read();
       } };
   });
   if (!names.has('package.json')) throw Error('Runtime package manifest missing');

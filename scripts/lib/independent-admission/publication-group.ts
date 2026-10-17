@@ -1,5 +1,5 @@
 import { bindPublicationGateMaterials } from './publication-gate-materials';
-import {compactCollectedSourceOriginals} from './artifact-collector';
+import {compactCollectedSourceOriginals,compactCollectedProductProjection} from './artifact-collector';
 import { preflightPublicationResources } from './publication-resource-preflight';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -102,7 +102,7 @@ export async function preparePublicationGroup(input:PublicationGroupPreparationI
   }
   if(view.identity.target!==undefined){
    const {compactModuleSourceMaterials}=await import('./module-source-admission');
-   compactModuleSourceMaterials(sourceMaterials);compactCollectedSourceOriginals(artifact);
+   compactModuleSourceMaterials(sourceMaterials);compactCollectedSourceOriginals(artifact);compactCollectedProductProjection(artifact);
    if(nativeMaterials){const original=nativeOriginalBindings.get(nativeMaterials as object);if(original){const {compactCollectedNativeOriginals}=await import('./native-original-collector');compactCollectedNativeOriginals(original);}}
   }else{
    portableReady.add(artifact);

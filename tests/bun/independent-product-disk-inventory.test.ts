@@ -34,7 +34,7 @@ test('real tiny tgz disk index binds archive/member hashes and returns independe
       expect(() => inventory.readMember('bin/run', 4)).toThrow();
       expect(() => inventory.readMember('../bin/run', 5)).toThrow();
       fs.writeFileSync(file, 'replacement does not replace bound snapshot');
-      expect(inventory.readMember('bin/run', 5).toString()).toBe('hello');
+      expect(() => inventory.readMember('bin/run', 5)).toThrow('identity');
     } finally { inventory.dispose(); }
     expect(() => inventory.readMember('bin/run', 5)).toThrow();
   });
@@ -144,7 +144,7 @@ test('range budget counts zero-length calls and rejects invalid input before res
 });
 
 test('disk reservation uses available blocks, fixed floor and prewrite queue headroom', () => {
-  const floor = 1024 ** 3 + 1024 ** 2;
+  const floor = 2 * 1024 ** 3 + 1024 ** 2;
   assertProductDiskBudget({ bavail: BigInt(floor + 65536), bsize: 1n }, 65536);
   expect(() => assertProductDiskBudget({ bavail: BigInt(floor + 65535), bsize: 1n }, 65536)).toThrow('floor');
   expect(() => assertProductDiskBudget({ bavail: 0n, bsize: 4096n }, 0)).toThrow('floor');

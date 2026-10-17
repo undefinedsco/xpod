@@ -13,6 +13,11 @@ import type { CollectedArtifactCapability, CollectedArtifactView, CollectedArtif
 
 type PortableSourceSnapshot={originals:NonNullable<Awaited<ReturnType<typeof import('./module-source-originals')['collectModuleSourceOriginals']>>>;lifetime:ReturnType<typeof sharedSourceLifetime>};
 const portableSourceSnapshots=new WeakMap<object,PortableSourceSnapshot>();
+const productCompactors=new WeakMap<object,()=>void>();
+export function compactCollectedProductProjection(value:unknown):boolean{
+ if(!value||typeof value!=='object'||!issued.has(value))fail('real collected product capability required');
+ const compact=productCompactors.get(value as object);if(!compact)return false;compact();return true;
+}
 const custodyAssertions=new WeakMap<object,()=>void>();
 export function assertCollectedPublicationCustody(artifact:unknown):void{
  if(!artifact||typeof artifact!=='object'||!issued.has(artifact))fail('real retained artifact capability required');
@@ -112,7 +117,7 @@ export function compactCollectedSourceOriginals(artifact: unknown): boolean {
  * finishes. Revocation also prevents a released token from issuing new views. */
 export function releaseCollectedArtifact(capability: CollectedArtifactCapability): void {
   const dispose = disposers.get(capability);
-  issued.delete(capability); custodyAssertions.delete(capability); disposers.delete(capability); publicationBindings.delete(capability); sourceCompactors.delete(capability); dispose?.();
+  issued.delete(capability); productCompactors.delete(capability); custodyAssertions.delete(capability); disposers.delete(capability); publicationBindings.delete(capability); sourceCompactors.delete(capability); dispose?.();
 }
 
 /** Large-product adapters reuse the normal product projectors and the same
@@ -202,11 +207,12 @@ export async function collectModuleAdmissionArtifact(input: {
       },
     }), () => { sourceOriginals?.dispose(); disk.dispose(); }, { origin: input.githubOrigin as GitHubOriginObservation,
       projectionOutput: output, producerReceiptPath: 'producer.receipt.json', source: { kind: 'file', path: path.join(output, 'product.tgz') } });
-    const packedPath=path.join(output,'product.tgz'),packedStat=lstatSync(packedPath);
+    productCompactors.set(capability,()=>disk.compactProjection());
+    const packedPath=path.join(output,'product.tgz'),packedStat=lstatSync(packedPath,{bigint:true});
     custodyAssertions.set(capability,()=>{
       if(!sourceOriginals)fail('retained source original custody missing');sourceOriginals!.assertCustody();
-      const current=lstatSync(packedPath);
-      if(!current.isFile()||current.isSymbolicLink()||current.nlink!==1||['dev','ino','size','mtimeMs','ctimeMs','mode'].some(key=>(current as any)[key]!== (packedStat as any)[key]))fail('retained product archive changed');
+      const current=lstatSync(packedPath,{bigint:true});
+      if(!current.isFile()||current.isSymbolicLink()||current.nlink!==1n||['dev','ino','size','mtimeNs','ctimeNs','mode'].some(key=>(current as any)[key]!== (packedStat as any)[key]))fail('retained product archive changed');
     });
     if (sourceOriginals) sourceCompactors.set(capability, sourceOriginals.compact);
     return capability;

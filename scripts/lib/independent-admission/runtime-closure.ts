@@ -680,7 +680,8 @@ function inspectRuntimeClosure(evidence: unknown, context: Omit<AdmissionContext
   facts.literalResolutionVerified = !uncertain && facts.entrypoints.length > 0;
   facts.inspectedScripts = [...new Set(facts.inspectedScripts)].sort(); facts.nativeTargetsChecked.sort();
   facts.runtimeImportsVerified = facts.literalResolutionVerified;
-  facts.dataAndNativeResolutionVerified = ![...pending].some(reason => /resource|native|worker|child|interpreter/u.test(reason));
+  facts.dataAndNativeResolutionVerified = graph.nativeMembers.every(name => facts.nativeTargetsChecked.includes(name))
+    && ![...pending].some(reason => /resource|native|worker|child|interpreter/u.test(reason));
   facts.runtimeClosureVerified = facts.physicalInventoryVerified && facts.runtimeImportsVerified && facts.dataAndNativeResolutionVerified
     && facts.packageIdentityDeduplicated && facts.artifactCustodyVerified && facts.derivedSourceVerified && pending.size === 0;
   return finish();

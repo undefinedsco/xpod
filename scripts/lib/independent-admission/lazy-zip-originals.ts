@@ -17,17 +17,18 @@ export function lazyZipOriginals(input: {
     if (current === path.dirname(current)) break;
   }
   const before = fs.lstatSync(input.archivePath);
+  const identity=fs.lstatSync(input.archivePath,{bigint:true});
   if (!before.isFile() || before.nlink !== 1 || before.size > PUBLICATION_DISK_LIMITS.outerPackedBytes
     || !/^[a-f0-9]{64}$/u.test(input.archiveSha256)) fail('bounded ordinary archive required');
-  const same = (row: fs.Stats) => row.dev === before.dev && row.ino === before.ino && row.size === before.size
-    && row.mtimeMs === before.mtimeMs && row.ctimeMs === before.ctimeMs && row.nlink === 1 && row.mode === before.mode;
+  const same = (row: fs.BigIntStats) => row.dev === identity.dev && row.ino === identity.ino && row.size === identity.size
+    && row.mtimeNs === identity.mtimeNs && row.ctimeNs === identity.ctimeNs && row.nlink === identity.nlink && row.mode === identity.mode;
   const fd = fs.openSync(input.archivePath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
   let closed = false, hydrated = 0, projectionMilliseconds = 0;
   const started = Date.now();
   const cache = new Map<string, {file: string; bytes: number; small: boolean; reader: ReturnType<typeof openBoundOriginalFile>}>();
   const rows = new Map(input.members.map(row => [row.path, row]));
   const assertUnchanged = () => {
-    if (closed || !same(fs.fstatSync(fd)) || !same(fs.lstatSync(input.archivePath))) fail('registered archive identity revoked or changed');
+    if (closed || !same(fs.fstatSync(fd,{bigint:true})) || !same(fs.lstatSync(input.archivePath,{bigint:true}))) fail('registered archive identity revoked or changed');
   };
   const close = () => {
     if (closed) return;
@@ -82,7 +83,7 @@ export function lazyZipOriginals(input: {
   };
   return Object.freeze({
     readRange(name:string,offset:number,length:number) { return reader(name).readRange(offset,length); },
-    assertRetainedOriginal(){if(!same(fs.lstatSync(input.archivePath))||(!closed&&!same(fs.fstatSync(fd))))fail('retained archive identity changed');},
+    assertRetainedOriginal(){if(!same(fs.lstatSync(input.archivePath,{bigint:true}))||(!closed&&!same(fs.fstatSync(fd,{bigint:true}))))fail('retained archive identity changed');},
     close,
     cacheBytes() { return [...cache.values()].reduce((sum,value)=>sum+value.bytes,0); },
   });

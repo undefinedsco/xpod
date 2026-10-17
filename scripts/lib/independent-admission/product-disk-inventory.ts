@@ -6,6 +6,7 @@ import { createGunzip } from 'node:zlib';
 import { Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { createRequire } from 'node:module';
+import {spawnSync} from 'node:child_process';
 import type { CollectedArtifactMember } from './artifact-contract';
 const { readOctal } = createRequire(import.meta.url)('../../workspace-package-payload.cjs');
 /** Physical module archives use regular USTAR files (no PAX/GNU extensions).
@@ -13,7 +14,7 @@ const { readOctal } = createRequire(import.meta.url)('../../workspace-package-pa
  * expanded tar, not a second extracted tree. No capability is issued here. */
 export const productDiskInventoryLimits = Object.freeze({ packedBytes: 768 * 1024 ** 2,
   expandedBytes: 2 * 1024 ** 3, memberBytes: 256 * 1024 ** 2, members: 50000, timeoutMs: 30000, rangeCalls: 128, rangeHashBytes: 2 * 1024 ** 3 });
-const DISK_FLOOR_BYTES = 1024 ** 3;
+const DISK_FLOOR_BYTES = 2 * 1024 ** 3;
 // Reserve stream buffers and filesystem bookkeeping before forwarding a chunk.
 const DISK_QUEUE_RESERVE_BYTES = 1024 ** 2;
 /** Pure arithmetic only, not an injectable production filesystem or issuer. */
@@ -37,6 +38,7 @@ export interface ProductDiskInventory {
   /** Same fd/stat as the fully hashed initial inventory, with a separate
    * fixed small-range budget for mechanical native header parsers. */
   readBoundMemberRange(name: string, offset: number, length: number): Buffer;
+  compactProjection():void;
   dispose(): void;
 }
 const fail = (message: string): never => { throw new Error('Product disk inventory: ' + message); };
@@ -68,10 +70,20 @@ function safeName(name: string, directory: boolean): string {
 }
 /** Index a real tgz into a private, hash-bound disk snapshot. The caller must
  * compare returned archive identity with independently authenticated custody. */
-export async function indexProductArchiveOnDisk(file: string): Promise<ProductDiskInventory> {
+const residentProjections=new Map<string,number>();
+export function productDiskProjectionUsage(){return Object.freeze({count:residentProjections.size,bytes:[...residentProjections.values()].reduce((sum,value)=>sum+value,0)});}
+let activeProjection:ProductDiskInventory|undefined;
+let indexing=Promise.resolve(),projectionIndexing=false;
+export async function indexProductArchiveOnDisk(file:string):Promise<ProductDiskInventory>{
+ const previous=indexing;let release!:()=>void;indexing=new Promise<void>(resolve=>{release=resolve;});
+ await previous;
+ try{projectionIndexing=true;activeProjection?.compactProjection();activeProjection=undefined;return await indexOneProductArchive(file);}finally{projectionIndexing=false;release();}
+}
+async function indexOneProductArchive(file: string): Promise<ProductDiskInventory> {
   const limits = productDiskInventoryLimits; const deadline = Date.now() + limits.timeoutMs;
   const checkTime = () => { if (Date.now() > deadline) fail('inventory deadline exceeded'); };
   const before = ordinary(file);
+  const originalIdentity=fs.lstatSync(file,{bigint:true});
   if (before.size > limits.packedBytes) fail('packed byte budget exceeded');
   let input: number | undefined, fd: number | undefined; let root = '';
   try {
@@ -83,14 +95,14 @@ export async function indexProductArchiveOnDisk(file: string): Promise<ProductDi
     // again conservatively for concurrent custody/evidence retention.
     assertProductDiskBudget(fs.statfsSync(root, { bigint: true }), limits.expandedBytes + before.size);
     if (!same(before, fs.fstatSync(input))) fail('archive changed before open');
-    const sha256 = createHash('sha256'), sha512 = createHash('sha512'); let packed = 0, expanded = 0;
+    const sha256 = createHash('sha256'), sha512 = createHash('sha512'),tarDigest=createHash('sha256'); let packed = 0, expanded = 0;
     const source = fs.createReadStream(file, { fd: input, autoClose: false, highWaterMark: 65536 });
     await pipeline(source, new Transform({ transform(chunk, _encoding, callback) {
       packed += chunk.length;
       if (packed > limits.packedBytes) { callback(new Error('packed byte budget exceeded')); return; }
       sha256.update(chunk); sha512.update(chunk); callback(null, chunk);
     } }), createGunzip({ chunkSize: 65536 }), new Transform({ transform(chunk, _encoding, callback) {
-      expanded += chunk.length;
+      expanded += chunk.length;tarDigest.update(chunk);
       if (expanded > limits.expandedBytes) { callback(new Error('expanded byte budget exceeded')); return; }
       try {
         // Check BEFORE this chunk can reach the writable stream. The extra
@@ -101,7 +113,8 @@ export async function indexProductArchiveOnDisk(file: string): Promise<ProductDi
     } }), fs.createWriteStream(snapshot, { flags: 'wx', mode: 0o600, highWaterMark: 65536 }), { signal: AbortSignal.timeout(limits.timeoutMs) });
     if (packed !== before.size || !same(before, fs.fstatSync(input)) || !same(before, ordinary(file))) fail('archive changed during indexing');
     fs.chmodSync(snapshot, 0o400); fd = fs.openSync(snapshot, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
-    const bound = fs.fstatSync(fd); const header = Buffer.alloc(512); const scratch = Buffer.alloc(65536);
+    residentProjections.set(snapshot,expanded);
+    let bound = fs.fstatSync(fd); const header = Buffer.alloc(512); const scratch = Buffer.alloc(65536);
     const rows: CollectedArtifactMember[] = []; const offsets = new Map<string, number>();
     const paths = new Map<string, 'file' | 'directory'>(); const requiredDirectories = new Set<string>(); let offset = 0, ended = false, count = 0;
     const read = (buffer: Buffer, position: number, bytes = buffer.length) => {
@@ -143,10 +156,41 @@ export async function indexProductArchiveOnDisk(file: string): Promise<ProductDi
     if (!offsets.has('package.json')) fail('product manifest missing');
     const byName = new Map(rows.map(row => [row.path, row])); let disposed = false;
     let rangeCalls = 0, rangeHashBytes = 0, originalCalls = 0, originalBytes = 0;
+    const packedSha256=sha256.digest('hex'),integrity='sha512-'+sha512.digest('base64'),tarSha256=tarDigest.digest('hex');
+    const retainedIdentity=originalIdentity;
+    const assertRetained=()=>{
+      ordinary(file);const current=fs.lstatSync(file,{bigint:true});
+      if(!current.isFile()||current.isSymbolicLink()||current.nlink!==1n
+        ||(['dev','ino','size','mtimeNs','ctimeNs','mode'] as const).some(key=>current[key]!==retainedIdentity[key]))fail('retained product identity changed');
+    };
+    assertRetained();
+    let rehydrations=0;
+    const ensureProjection=()=>{
+      if(disposed)fail('product projection disposed; unchanged range unavailable');assertRetained();
+      if(fd!==undefined)return;
+      if(projectionIndexing)fail('product projection indexing in progress');
+      if(++rehydrations>8)fail('product projection rehydration count exceeded');
+      if(activeProjection!==result){activeProjection?.compactProjection();activeProjection=undefined;}
+      assertProductDiskBudget(fs.statfsSync(root,{bigint:true}),expanded);
+      const original=fs.openSync(file,fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW);
+      try{
+        const before=fs.fstatSync(original,{bigint:true});
+        if((['dev','ino','size','mtimeNs','ctimeNs','mode','nlink'] as const).some(key=>before[key]!==retainedIdentity[key]))fail('retained product fd identity changed');
+        const projected=spawnSync(process.platform==='win32'?'python':'python3',[path.resolve(import.meta.dir,'../rehydrate-bound-product.py')],{
+          input:JSON.stringify({packedBytes:packed,packedSha256,expandedBytes:expanded,tarSha256,destination:snapshot,timeoutMs:limits.timeoutMs,freeFloorBytes:2*1024**3}),
+          timeout:limits.timeoutMs,maxBuffer:65536,stdio:['pipe','pipe','pipe',original],
+        });
+        assertRetained();
+        if(projected.error||projected.status!==0||projected.signal)fail('bounded product projection rehydration failed');
+        const actual=JSON.parse(String(projected.stdout));if(actual.bytes!==expanded||actual.sha256!==tarSha256)fail('product projection identity mismatch');
+        fd=fs.openSync(snapshot,fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW);bound=fs.fstatSync(fd);residentProjections.set(snapshot,expanded);activeProjection=result;
+      }catch(error){if(fd!==undefined){fs.closeSync(fd);fd=undefined;}residentProjections.delete(snapshot);fs.rmSync(snapshot,{force:true});throw error;}finally{fs.closeSync(original);}
+    };
     const result: ProductDiskInventory = Object.freeze({
-      archive: Object.freeze({ bytes: packed, sha256: sha256.digest('hex'), integrity: 'sha512-' + sha512.digest('base64') }),
+      archive: Object.freeze({ bytes: packed, sha256: packedSha256, integrity }),
       members: Object.freeze(rows),
       readMember(name: string, maximumBytes: number): Buffer {
+        ensureProjection();
         const row = byName.get(name);
         if (disposed || !row || !Number.isSafeInteger(maximumBytes) || maximumBytes < 0 || row.bytes > maximumBytes
           || !same(bound, fs.fstatSync(fd!))) return fail('unique bounded unchanged member required');
@@ -155,6 +199,7 @@ export async function indexProductArchiveOnDisk(file: string): Promise<ProductDi
         return bytes;
       },
       readMemberRange(name: string, offset: number, length: number): Buffer {
+        ensureProjection();
         const row = byName.get(name);
         if (disposed || !row || !Number.isSafeInteger(offset) || !Number.isSafeInteger(length)
           || offset < 0 || length < 0 || length > 65536 || offset > row.bytes || length > row.bytes - offset
@@ -176,6 +221,7 @@ export async function indexProductArchiveOnDisk(file: string): Promise<ProductDi
         return bytes;
       },
       readBoundMemberRange(name: string, offset: number, length: number): Buffer {
+        ensureProjection();
         const row = byName.get(name);
         if (disposed || !row || !Number.isSafeInteger(offset) || !Number.isSafeInteger(length)
           || offset < 0 || length < 0 || length > 65536 || offset > row.bytes || length > row.bytes - offset
@@ -189,11 +235,17 @@ export async function indexProductArchiveOnDisk(file: string): Promise<ProductDi
         if (!same(bound, fs.fstatSync(fd!))) fail('snapshot changed during original range read');
         return bytes;
       },
-      dispose() { if (!disposed) { disposed = true; fs.closeSync(fd!); fd = undefined; fs.rmSync(root, { recursive: true, force: true }); } },
+      compactProjection(){
+        if(disposed)fail('product projection disposed; unchanged range unavailable');assertRetained();
+        if(fd!==undefined){fs.closeSync(fd);fd=undefined;fs.rmSync(snapshot,{force:true});residentProjections.delete(snapshot);}
+        if(activeProjection===result)activeProjection=undefined;
+      },
+      dispose() { if (!disposed) { disposed = true;if(fd!==undefined)fs.closeSync(fd); fd = undefined;if(activeProjection===result)activeProjection=undefined;residentProjections.delete(snapshot);fs.rmSync(root, { recursive: true, force: true }); } },
     });
-    return result;
+    activeProjection=result;return result;
   } catch (error) {
     if (fd !== undefined) fs.closeSync(fd);
+    if(root)residentProjections.delete(path.join(root,'payload.tar'));
     if (root) fs.rmSync(root, { recursive: true, force: true }); throw error;
   } finally { if (input !== undefined) fs.closeSync(input); }
 }
