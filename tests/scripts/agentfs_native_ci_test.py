@@ -59,7 +59,7 @@ def native_patch_git_fixture(directory):
 
 class LinuxContainerBindingTests(unittest.TestCase):
     def fixture(self):
-        return dict(cid='a' * 64, imageID='sha256:' + 'b' * 64, running=True, privileged=False,
+        return dict(cid='a' * 64, imageID='sha256:' + 'b' * 64, running=True, status='running', paused=False, restarting=False, dead=False, privileged=False,
                     AppArmorProfile='unconfined', NetworkMode='none', SecurityOpt=['apparmor=unconfined'],
                     Devices=[dict(PathOnHost='/dev/fuse', PathInContainer='/dev/fuse', CgroupPermissions='rwm')],
                     CapAdd=['SYS_ADMIN'], CapDrop=None, Mounts=[
@@ -90,6 +90,53 @@ class LinuxContainerBindingTests(unittest.TestCase):
             with self.subTest(daemon=daemon, seccomp=seccomp), self.assertRaises(RuntimeError):
                 b.validate(value, value['cid'], value['imageID'], daemon, seccomp)
 
+    def test_created_container_waits_for_same_running_identity_only(self):
+        live = self.fixture(); created = dict(live, running=False, status='created')
+        observations = []; calls = []
+        def inspect(attempt, timeout):
+            calls.append(attempt); return created if attempt == 0 else live
+        result = b.wait_same_running_container(inspect, lambda *row: observations.append(row), live['cid'], live['imageID'], SimpleNamespace(done=lambda: False), poll=0)
+        self.assertEqual(result, live); self.assertEqual(calls, [0, 1]); self.assertEqual(len(observations), 2)
+
+    def test_readiness_identity_permission_and_terminal_states_fail_without_retry(self):
+        live = self.fixture()
+        changes = [dict(cid='c' * 64), dict(imageID='sha256:wrong'), dict(NetworkMode='host'), dict(CapAdd=['NET_ADMIN']),
+                   dict(status='exited', running=False), dict(status='dead', dead=True), dict(paused=True), dict(restarting=True)]
+        for change in changes:
+            with self.subTest(change=change):
+                calls = []; records = []
+                def inspect(attempt, timeout): calls.append(attempt); return dict(live, **change)
+                with self.assertRaises(RuntimeError):
+                    b.wait_same_running_container(inspect, lambda *row: records.append(row), live['cid'], live['imageID'], SimpleNamespace(done=lambda: False), poll=0)
+                self.assertEqual(calls, [0]); self.assertTrue(records[-1][1])
+
+    def test_failed_security_snapshot_is_saved_without_release(self):
+        live = self.fixture(); live['NetworkMode'] = 'host'
+        # Reuse the real owned-child fixture, but substitute only its inspect
+        # bytes. It must be reaped and never observe the release marker.
+        original = self.fixture
+        self.fixture = lambda: live
+        try:
+            # exercise_consumer checks only release/cleanup, while rejection is
+            # caused by actual config validation rather than process exit.
+            self.exercise_consumer(False, validation_reject=True)
+        finally:
+            self.fixture = original
+
+    def test_safe_export_preserves_failure_fields_and_rejects_unbounded_reason_codes(self):
+        code = """import {projectReceipt} from './scripts/agentfs-native-ci/mounted/prepare-module-inputs.ts';
+const input=JSON.parse(await Bun.stdin.text());try{console.log(JSON.stringify({value:projectReceipt('linux-container-binding.json',input)}))}catch{console.log(JSON.stringify({rejected:true}))}"""
+        row = dict(state='failed', released=False, validationFailures=['NetworkMode'], observationPhase='final',
+                   container=dict(self.fixture(), Config=dict(Env=['secret-marker'])), Config=dict(Env=['secret-marker']))
+        def project(value):
+            result = subprocess.run(['bun', '-e', code], cwd=ROOT, input=json.dumps(value), text=True, capture_output=True, timeout=5)
+            self.assertEqual(result.returncode, 0, result.stderr); return json.loads(result.stdout)
+        safe = project(row)['value']
+        self.assertEqual(safe['validationFailures'], ['NetworkMode']); self.assertEqual(safe['container']['status'], 'running')
+        self.assertNotIn('secret-marker', json.dumps(safe)); self.assertNotIn('Config', safe)
+        for reasons in [['free exception secret-marker'], ['NetworkMode'] * 15, ['x' * 1000]]:
+            self.assertTrue(project(dict(row, validationFailures=reasons))['rejected'])
+
     def test_docker_output_boundary_does_not_read_config_or_environment(self):
         self.assertNotIn('.Config', b.INSPECT)
         self.assertNotIn('.Env', b.INSPECT)
@@ -114,7 +161,7 @@ class LinuxContainerBindingTests(unittest.TestCase):
                     b.run('/archive', evidence, evidence / 'container.cid', ROOT, 'prep', 'image-id')
                 producer.assert_not_called()
 
-    def exercise_consumer(self, reject_inspect):
+    def exercise_consumer(self, reject_inspect, validation_reject=False, final_change=None):
         # Real, waited subprocess stands in for Docker attachment. It only starts
         # the consumer after the production release gate; no Docker/FUSE claim.
         with owned_scratch() as directory:
@@ -140,24 +187,27 @@ class LinuxContainerBindingTests(unittest.TestCase):
             def checked(name, argv, ev, cwd, **kwargs):
                 calls.append((name, argv))
                 self.assertFalse(marker.exists() or release.exists()) if name != 'linux-container-absence' else None
-                output = dict({'linux-live-inspect': json.dumps(value), 'linux-daemon-seccomp': json.dumps(['name=seccomp,profile=builtin']),
+                output = dict({'linux-live-inspect': json.dumps(value), 'linux-final-inspect': json.dumps(dict(value, **(final_change or {}))), 'linux-daemon-seccomp': json.dumps(['name=seccomp,profile=builtin']),
                                'linux-pid1-seccomp': 'Seccomp:\t2\n', 'linux-container-absence': ''})[name]
                 code = 7 if reject_inspect and name == 'linux-live-inspect' else 0
                 return m.run_checked_stage(name, [sys.executable, '-c', f'print({output!r}); raise SystemExit({code})'],
                                            ev, cwd, fresh_bytes=0, stop_bytes=0, timeout=5, poll_seconds=.01)
             with patch.object(b, 'run_stage', side_effect=stage), patch.object(b, 'run_checked_stage', side_effect=checked), \
                     patch.dict(os.environ, LINUX_ARCHIVE_SHA='archive-pin', LINUX_HELPER_SHA='helper-pin'):
-                if reject_inspect:
+                if reject_inspect or validation_reject:
                     with self.assertRaises(RuntimeError): b.run('/archive', evidence, cidfile, ROOT, 'prep', value['imageID'])
                 else: b.run('/archive', evidence, cidfile, ROOT, 'prep', value['imageID'])
             binding = json.loads((evidence / 'linux-container-binding.json').read_text())
-            self.assertEqual(binding['released'], not reject_inspect)
-            self.assertEqual(marker.exists(), not reject_inspect)
+            self.assertEqual(binding['released'], not (reject_inspect or validation_reject))
+            self.assertEqual(marker.exists(), not (reject_inspect or validation_reject))
             self.assertTrue(binding['containerAbsent'])
             receipt = binding['consumerReceipt']
             self.assertTrue(receipt['actualWait'] and receipt['rawClosedBeforeHash'] and receipt['ownedGroupAbsentAfterWait'])
             self.assertEqual(receipt['rawSHA256'], m.sha256(evidence / 'linux-consumer.raw.log'))
-            self.assertEqual(receipt['exit'], 70 if reject_inspect else 0)
+            self.assertEqual(receipt['exit'], 70 if reject_inspect or validation_reject else 0)
+            if validation_reject:
+                self.assertEqual(binding['container']['NetworkMode'], 'host')
+                self.assertEqual(binding['validationFailures'], ['NetworkMode'])
             argv = calls[0][1]
             self.assertIn('--init', argv); self.assertIn('--rm', argv); self.assertIn('--network', argv)
             self.assertNotIn('--privileged', argv); self.assertNotIn('seccomp=unconfined', argv)
@@ -165,6 +215,9 @@ class LinuxContainerBindingTests(unittest.TestCase):
 
     def test_actual_consumer_is_only_released_after_same_live_inspection(self):
         self.exercise_consumer(False)
+
+    def test_final_snapshot_after_seccomp_cannot_reuse_earlier_valid_permissions(self):
+        self.exercise_consumer(False, validation_reject=True, final_change=dict(NetworkMode='host'))
 
     def test_inspection_failure_never_releases_actual_consumer_and_waits_for_cleanup(self):
         self.exercise_consumer(True)
@@ -1144,6 +1197,82 @@ class NativeReuseTests(unittest.TestCase):
                 pins['DARWIN_ZIP_SHA'] = a.sha256(archive)
                 with self.assertRaisesRegex(RuntimeError, 'x64 requires actual generated notice provenance'):
                     a.verify_reuse_archive(archive, pins, 'darwin', 'x64')
+
+    def notice_archive(self, failure=None):
+        # Tiny real gzip with repeated references to one original notice. The
+        # incompressible prefix makes backward gzip replay visible by bytes read.
+        import random
+        empty = io.BytesIO()
+        with tarfile.open(fileobj=empty, mode='w:gz'):
+            pass
+        entries = {'native-receipt.json': json.dumps(dict(target='darwin-x64', sourceKitSha256='a' * 64, compiler=dict(toolchain=a.TOOLCHAIN))).encode(),
+                   'tiny.tar.gz': empty.getvalue(), 'final.json': '{}', 'toolchain.raw.log': b'closed', 'toolchain.receipt.json': b'{}'}
+        self.add_generated_notices(entries)
+        native = json.loads(entries['native-receipt.json'])
+        with tarfile.open(fileobj=io.BytesIO(entries['tiny.tar.gz']), mode='r:gz') as tar:
+            originals = {member.name: tar.extractfile(member).read() for member in tar.getmembers()}
+        prefix = 'install/licenses/native/collection/'
+        index = json.loads(originals[prefix + 'darwin-x64.json'])
+        files = []
+        for number in range(8):
+            content = random.Random(number).randbytes(2048)
+            digest = hashlib.sha256(content).hexdigest()
+            file = dict(object='objects/' + digest + '.txt', sha256=digest)
+            originals[prefix + file['object']] = content
+            files.append(file)
+        index['packages'][0]['files'] = files[::-1] * 4
+        index_bytes = json.dumps(index).encode()
+        provenance = json.loads(originals[prefix + 'provenance.json']); provenance['indexSHA256'] = hashlib.sha256(index_bytes).hexdigest()
+        provenance_bytes = json.dumps(provenance).encode()
+        native['nativeNotices'].update(indexSHA256=hashlib.sha256(index_bytes).hexdigest(), provenanceSHA256=hashlib.sha256(provenance_bytes).hexdigest())
+        originals[prefix + 'darwin-x64.json'] = index_bytes; originals[prefix + 'provenance.json'] = provenance_bytes
+        object_name = next(name for name in originals if '/objects/' in name)
+        if failure == 'tamper': originals[object_name] = b'tampered original'
+        if failure == 'missing': del originals[object_name]
+        output = io.BytesIO()
+        with tarfile.open(fileobj=output, mode='w:gz') as tar:
+            filler = random.Random(42).randbytes(128 * 1024)
+            member = tarfile.TarInfo('install/filler'); member.size = len(filler); tar.addfile(member, io.BytesIO(filler))
+            for name, content in originals.items():
+                member = tarfile.TarInfo(name); member.size = len(content); tar.addfile(member, io.BytesIO(content))
+                if failure == 'duplicate' and name == object_name: tar.addfile(member, io.BytesIO(content))
+            if failure == 'link':
+                member = tarfile.TarInfo(prefix + 'linked'); member.type = tarfile.SYMTYPE; member.linkname = '/outside'; tar.addfile(member)
+        return output.getvalue(), native
+
+    def test_notice_verification_reads_shared_original_once_in_archive_order(self):
+        archive, native = self.notice_archive()
+        class Counted(io.BytesIO):
+            read_bytes = 0
+            def read(self, count=-1):
+                content = super().read(count); self.read_bytes += len(content); return content
+        stream = Counted(archive)
+        with tarfile.open(fileobj=stream, mode='r:gz') as tar:
+            a.verify_generated_notice_archive(tar, 'darwin-x64', native)
+        self.assertLess(stream.read_bytes, len(archive) * 3)
+
+    def test_notice_scan_rejects_duplicate_missing_changed_and_linked_originals(self):
+        for failure in ['duplicate', 'missing', 'tamper', 'link']:
+            with self.subTest(failure=failure):
+                archive, native = self.notice_archive(failure)
+                with tarfile.open(fileobj=io.BytesIO(archive), mode='r:gz') as tar:
+                    with self.assertRaises(RuntimeError): a.verify_generated_notice_archive(tar, 'darwin-x64', native)
+
+    def test_notice_scan_checks_size_and_total_budgets_before_material_reads(self):
+        archive, native = self.notice_archive()
+        for kind in ['member', 'total', 'count']:
+            with self.subTest(kind=kind), tarfile.open(fileobj=io.BytesIO(archive), mode='r:gz') as tar:
+                selected = [member for member in tar.getmembers() if '/collection/' in member.name]
+                if kind == 'member': selected[0].size = 8 * 1024 * 1024 + 1
+                elif kind == 'total':
+                    for member in selected: member.size = 6 * 1024 * 1024
+                else:
+                    template = selected[0]
+                    tar.members = []
+                    for index in range(4097):
+                        member = copy.copy(template); member.name = 'install/licenses/native/collection/entry-' + str(index); member.size = 0; tar.members.append(member)
+                with self.assertRaisesRegex(RuntimeError, 'budget exceeded'):
+                    a.verify_generated_notice_archive(tar, 'darwin-x64', native)
 
     def test_generated_notices_require_fourteen_closed_stages_and_actual_originals(self):
         for failure in [None, 'missing-docs', 'unclosed-docs', 'missing-binding', 'missing-object']:

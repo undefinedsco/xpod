@@ -1,0 +1,74 @@
+name: Independent CLI publication
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: 'Reviewed immutable staging source SHA'
+        required: true
+        type: string
+      producer_coordinates:
+        description: 'Exact normal CLI producer acquisition JSON; never an approval receipt'
+        required: true
+        type: string
+      mode:
+        description: 'Prepare evidence, or publish only after all central gates pass'
+        required: true
+        type: choice
+        options: [prepare, publish]
+        default: prepare
+
+concurrency:
+  group: xpod-independent-publication
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  publication:
+    if: ${{ github.ref == 'refs/heads/staging' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require exact staging ancestry before installing or executing source
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_SHA" =~ ^[a-f0-9]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          git merge-base --is-ancestor "$SOURCE_SHA" origin/staging
+          test -z "$(git status --porcelain --untracked-files=all)"
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: bun install --frozen-lockfile
+      - name: Reobserve originals and execute the central publication gates
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NPM_TOKEN: ${{ inputs.mode == 'publish' && secrets.NPM_TOKEN || '' }}
+          INDEPENDENT_PUBLICATION_INPUT: ${{ inputs.producer_coordinates }}
+          INDEPENDENT_PUBLICATION_MODE: ${{ inputs.mode }}
+        run: |
+          set -euo pipefail
+          mkdir -p ".test-data/independent-publication/$GITHUB_RUN_ID"
+          bun scripts/run-independent-publication.ts
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() }}
+        with:
+          name: independent-publication-report-${{ inputs.source_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            .test-data/independent-publication/${{ github.run_id }}/${{ github.run_attempt }}/plan.json
+            .test-data/independent-publication/${{ github.run_id }}/${{ github.run_attempt }}/promotion.json
+          if-no-files-found: warn
+          retention-days: 14

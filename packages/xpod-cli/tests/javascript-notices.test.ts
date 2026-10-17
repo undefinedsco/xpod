@@ -5,6 +5,7 @@ import { spawnSync } from 'node:child_process';
 import { bunCompileTarget } from '../src/native-target';
 import { collectJavascriptNotices } from '../src/javascript-notices';
 import { sha256File } from '../src/manifest';
+import { CLIUI_MODIFICATION_NOTICE, renderCliuiModificationNotice } from '../src/promotion';
 
 test('canonical source admission permits exact regular files and rejects symlink substitution', () => {
   const parent = path.resolve('.test-data/xpod-cli/canonical-notices'); mkdirSync(parent, { recursive: true });
@@ -267,4 +268,76 @@ test('binds actual public build-tools prefixes including the explicit zero-prefi
       expect(() => collectJavascriptNotices({ ...options, destination: path.join(work, format + '-drift') })).toThrow('prefix differs');
     }
   } finally { rmSync(work, { recursive: true, force: true }); }
+});
+
+test('normal CLI emits a readable cliui modification member bound to actual payload and original terms', () => {
+  const parent = path.resolve('.test-data/xpod-cli/cliui-modifications');
+  mkdirSync(parent, { recursive: true });
+  const work = mkdtempSync(path.join(parent, 'case-'));
+  try {
+    const stage = path.join(work, 'stage'); const repo = path.join(work, 'repo');
+    const dependency = path.join(repo, 'node_modules/cliui');
+    mkdirSync(path.join(dependency, 'build/lib'), { recursive: true });
+    mkdirSync(stage); symlinkSync(path.join(repo, 'node_modules'), path.join(stage, 'node_modules'), 'dir');
+    const supplements = path.resolve(import.meta.dir, '../licenses/javascript');
+    const originalIndex = JSON.parse(readFileSync(path.join(supplements, 'index.json'), 'utf8'));
+    const supplement = originalIndex.entries.find((entry: { name: string }) => entry.name === 'cliui');
+    const source = supplement.files.find((file: { sourcePath: string }) => file.sourcePath.includes('original file-level notice'));
+    const terms = supplement.files.find((file: { sourcePath: string }) => file.sourcePath === 'npm fixed upstream LICENSE');
+    const input = 'node_modules/cliui/build/lib/string-utils.js';
+    cpSync(path.join(supplements, source.object), path.join(dependency, 'build/lib/string-utils.js'));
+    writeFileSync(path.join(dependency, 'package.json'), JSON.stringify({ name: 'cliui', version: '8.0.1', license: 'ISC' }));
+    const cli = path.join(stage, 'dist/xpod.mjs'); mkdirSync(path.dirname(cli), { recursive: true }); writeFileSync(cli, 'actual CLI fixture');
+    const metafile = path.join(work, 'metafile.json');
+    writeFileSync(metafile, JSON.stringify({ inputs: { [input]: { bytes: 1011, imports: [] } },
+      outputs: { 'dist/xpod.mjs': { inputs: { [input]: { bytesInOutput: 534 } } } } }));
+    const destination = path.join(stage, 'dist/licenses/core');
+    const options = { metafile, stageRoot: stage, repoRoot: repo, destination, cli, supplements, target: 'linux-x64', bunVersion: '1.4.2' };
+    const members = collectJavascriptNotices(options);
+    expect(members).toContain('MODIFICATIONS.md');
+    const index = JSON.parse(readFileSync(path.join(destination, 'index.json'), 'utf8'));
+    const [notice] = index.modifications;
+    expect(index.status).toBe('partial-collection');
+    expect(notice.path).toBe('MODIFICATIONS.md');
+    expect(notice.sha256).toBe(sha256File(path.join(destination, notice.path)));
+    expect(notice.cliSha256).toBe(sha256File(cli));
+    expect(notice.coveredSourcePath).toBe(input);
+    expect(notice.coveredSourceSha256).toBe(source.sha256);
+    expect(notice.sourceNotice.sha256).toBe(source.sha256);
+    expect(notice.termsNotice.sha256).toBe(terms.sha256);
+    const text = readFileSync(path.join(destination, notice.path), 'utf8');
+    expect(text).toContain('as ../../xpod.mjs.');
+    expect(text).toContain(`${source.object};`);
+    expect(text).toContain(`${terms.object}.`);
+    expect(text).not.toContain('lib/xpodcli.mjs');
+    expect(text).not.toContain('licenses/javascript/');
+    for (const original of [notice.sourceNotice, notice.termsNotice]) {
+      expect(sha256File(path.resolve(destination, original.object))).toBe(original.sha256);
+    }
+    // Shared object output must retain resolvable links from the readable member.
+    const sharedDestination = path.join(stage, 'dist/licenses/shared');
+    collectJavascriptNotices({ ...options, destination: sharedDestination, sharedObjectRoot: path.join(destination, 'objects') });
+    const shared = readFileSync(path.join(sharedDestination, 'MODIFICATIONS.md'), 'utf8');
+    expect(shared).toContain(`../core/${source.object};`);
+    expect(shared).toContain(`../core/${terms.object}.`);
+    writeFileSync(path.join(dependency, 'build/lib/string-utils.js'), 'changed source');
+    const refused = path.join(stage, 'refused');
+    expect(() => collectJavascriptNotices({ ...options, destination: refused })).toThrow('exact source and original terms');
+    expect(existsSync(refused)).toBe(false);
+    // A bundle without that input does not receive a cliui notice.
+    writeFileSync(path.join(stage, 'main.ts'), 'export {};');
+    writeFileSync(metafile, JSON.stringify({ inputs: { 'main.ts': { bytes: 10, imports: [] } }, outputs: { 'main.js': { inputs: {} } } }));
+    const other = path.join(stage, 'other-notices');
+    expect(collectJavascriptNotices({ ...options, destination: other })).not.toContain('MODIFICATIONS.md');
+    expect(JSON.parse(readFileSync(path.join(other, 'index.json'), 'utf8')).modifications).toBeUndefined();
+  } finally { rmSync(work, { recursive: true, force: true }); }
+});
+
+
+test('source-kit cliui notice retains its default paths through the same template', () => {
+  expect(CLIUI_MODIFICATION_NOTICE).toContain('as lib/xpodcli.mjs.');
+  expect(CLIUI_MODIFICATION_NOTICE).toContain('licenses/javascript/objects/b3eb9d2');
+  expect(CLIUI_MODIFICATION_NOTICE).toContain('licenses/javascript/objects/7610d223');
+  expect(renderCliuiModificationNotice({ payload: 'dist/cli.mjs', sourceNotice: 'source.txt', termsNotice: 'terms.txt' }))
+    .toContain('as dist/cli.mjs.');
 });

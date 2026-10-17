@@ -134,8 +134,8 @@ const receipts: Record<string, Projection> = {
   'installed-consumer-failure.safe.json': { diagnosticOnly: 'boolean', accepted: 'boolean', category: 'string', receiptInventoryState: 'string',
     producerClosed: 'boolean', groupAbsent: 'boolean', rawClosedBeforeHash: 'boolean', producerExit: 'number', producerSignal: 'string',
     parentRawSHA256: 'string', lastObservedStage: 'string', observedStages: [{ ...installedStage, rawHashesBound: 'boolean', summary: { stdout: installedSummary, stderr: installedSummary } }] },
-  'linux-container-binding.json': { ...fields('string', 'state cid'), ...fields('boolean', 'released containerAbsent'), pid1Seccomp: 'number', daemonSecurityOptions: ['string'], consumerReceipt: close, removalReceipt: close,
-    container: { ...fields('string', 'cid imageID AppArmorProfile NetworkMode'), ...fields('boolean', 'running privileged'), SecurityOpt: ['string'], CapAdd: ['string'], CapDrop: ['string'],
+  'linux-container-binding.json': { ...fields('string', 'state cid observationPhase'), validationFailures: ['string'], ...fields('boolean', 'released containerAbsent'), pid1Seccomp: 'number', daemonSecurityOptions: ['string'], consumerReceipt: close, removalReceipt: close,
+    container: { ...fields('string', 'cid imageID AppArmorProfile NetworkMode status'), ...fields('boolean', 'running privileged paused restarting dead'), SecurityOpt: ['string'], CapAdd: ['string'], CapDrop: ['string'],
       Devices: [{ ...fields('string', 'PathOnHost PathInContainer CgroupPermissions') }], Mounts: [{ destination: 'string', RW: 'boolean' }] } },
 };
 for (const mib of [64, 512, 1024]) receipts[`rss-${mib}.json`] = { phaseRead: ['number'], phaseCopyUp: ['number'], ...fields('number', 'readPeakKib copyUpPeakKib limitKib') };
@@ -223,6 +223,17 @@ function summarizeInstalledStream(file: string, allowInstallPhases = false) {
   } finally { closeSync(fd); }
 }
 export function projectReceipt(name: string, original: unknown): unknown {
+  if (name === 'linux-container-binding.json') {
+    const row = original as Record<string, unknown> | null;
+    const codes = ['cid', 'imageID', 'privileged', 'AppArmorProfile', 'NetworkMode', 'SecurityOpt', 'Devices', 'CapAdd', 'CapDrop', 'Mounts', 'container-state', 'daemon-seccomp', 'pid1-seccomp', 'readiness-deadline'];
+    const container = row?.container as Record<string, unknown> | undefined;
+    if (row?.validationFailures !== undefined && (!Array.isArray(row.validationFailures) || row.validationFailures.length > codes.length
+      || row.validationFailures.some(code => typeof code !== 'string' || code.length > 32 || !codes.includes(code)))
+      || row?.observationPhase !== undefined && (typeof row.observationPhase !== 'string' || !['readiness', 'final'].includes(row.observationPhase))
+      || container?.status !== undefined && (typeof container.status !== 'string' || !['created', 'running', 'paused', 'restarting', 'removing', 'exited', 'dead'].includes(container.status))) throw new Error('invalid container binding diagnostic');
+    return projectBySchema(original, receipts[name]);
+  }
+
   if (name === 'cli-bare-bootstrap.safe.json') {
     const row = original as Record<string, any> | null; const schema = receipts[name] as Record<string, Projection>;
     if (!row || Object.keys(row).some(key => !(key in schema)) || !['node', 'bun'].includes(row.runtime)

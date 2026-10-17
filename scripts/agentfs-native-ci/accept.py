@@ -737,14 +737,17 @@ def verify_module_native_sources(root, product):
     return rows
 
 
+LINUX_RUNTIME_STAGES = frozenset(['runtime-extract', 'runtime-readelf', 'runtime-dynamic', 'runtime-launcher-version', 'runtime-helper-version',
+                                  'runtime-status', 'runtime-ldd', 'runtime-node-version'])
+
+
 def verify_native_stage_inventory(stages, os_name, generated_notices):
     required = set(['bun-extract', 'toolchain', 'dependencies', 'workspace-packages', 'upstream',
                     'upstream-checkout', 'export', 'verify-source', 'rebuild', 'sdk-suite', 'cli-suite', 'package', 'verify-install'])
     if generated_notices:
         required.add('toolchain-docs')
     if os_name == 'linux':
-        required.update(['runtime-extract', 'runtime-readelf', 'runtime-dynamic', 'runtime-launcher-version', 'runtime-helper-version',
-                         'runtime-status', 'runtime-ldd', 'runtime-node-version'])
+        required.update(LINUX_RUNTIME_STAGES)
     if set(stages) != required or len(stages) != len(required):
         raise RuntimeError('Native reuse stage inventory mismatch')
     return required
@@ -753,11 +756,40 @@ def verify_native_stage_inventory(stages, os_name, generated_notices):
 def verify_generated_notice_archive(tar, target, native):
     """Verify actual packaged notice bytes, not just a metadata-only receipt."""
     root = 'install/licenses/native/collection/'
+    # TarFile over gzip implements backward seeks by decompressing again. Read
+    # each original once in physical order, then reuse its bound bytes for every
+    # package reference (shared Rust notices are commonly referenced repeatedly).
+    selected = []
+    names = set()
+    total = 0
+    for member in tar.getmembers():
+        name = member.name.removeprefix('./')
+        if not name.startswith(root):
+            continue
+        relative = name[len(root):]
+        if member.isdir():
+            continue
+        if not relative or any(part in ['', '.', '..'] for part in relative.split('/')) or '\\' in relative \
+                or not member.isfile() or relative in names:
+            raise RuntimeError('Generated native notice material unsafe or duplicate')
+        if member.size < 0 or member.size > 8 * 1024 * 1024 or total + member.size > 16 * 1024 * 1024 or len(selected) >= 4096:
+            raise RuntimeError('Generated native notice material budget exceeded')
+        names.add(relative); total += member.size
+        selected.append((member, relative))
+    materials = {}
+    for member, relative in sorted(selected, key=lambda row: row[0].offset_data):
+        content = tar.extractfile(member).read(member.size + 1)
+        if len(content) != member.size:
+            raise RuntimeError('Generated native notice material truncated')
+        if relative.startswith('objects/'):
+            match = re.fullmatch(r'objects/([a-f0-9]{64})\.txt', relative)
+            if not match or hashlib.sha256(content).hexdigest() != match[1]:
+                raise RuntimeError('Generated native notice original object mismatch')
+        materials[relative] = content
     def material(relative):
-        members = [m for m in tar.getmembers() if m.name.removeprefix('./') == root + relative and m.isfile()]
-        if len(members) != 1:
+        if relative not in materials:
             raise RuntimeError('Generated native notice material missing or duplicate')
-        return tar.extractfile(members[0]).read()
+        return materials[relative]
     binding = native['nativeNotices']
     index_bytes = material(target + '.json'); provenance_bytes = material('provenance.json')
     if hashlib.sha256(index_bytes).hexdigest() != binding.get('indexSHA256') or hashlib.sha256(provenance_bytes).hexdigest() != binding.get('provenanceSHA256'):
@@ -787,6 +819,42 @@ def verify_generated_notice_archive(tar, target, native):
             sha = file.get('sha256', '')
             if not re.fullmatch('[a-f0-9]{64}', sha) or file.get('object') != 'objects/' + sha + '.txt' or hashlib.sha256(material(file['object'])).hexdigest() != sha:
                 raise RuntimeError('Generated native notice original object mismatch')
+
+
+def verify_closed_native_stage(receipt, raw, stage):
+    if receipt.get('actualWait') is not True or type(receipt.get('exit')) is not int or receipt.get('exit') != 0 or receipt.get('signal') is not None \
+            or receipt.get('rawClosedBeforeHash') is not True or receipt.get('ownedGroupAbsentAfterWait') is not True \
+            or not receipt.get('closedUTC') or receipt.get('resourceStop') is not None \
+            or receipt.get('supervisorError') is not None or receipt.get('cleanupErrors') \
+            or receipt.get('rawSHA256') != hashlib.sha256(raw).hexdigest():
+        raise RuntimeError(f'Native reuse stage is not successfully closed: {stage}')
+
+
+def verify_linux_runtime_materials(read, final, arch):
+    """One Linux ABI policy shared by archive reuse and bounded original checks."""
+    assert_bookworm_baseline('linux', final['sdkBefore'], arch)
+    runtime = final.get('runtimeAdmission', {})
+    metadata = json.loads(read('runtime-admission.metadata.json'))
+    highest = assert_bookworm_glibc(read('runtime-readelf.raw.log').decode())
+    loaded = read('runtime-ldd.raw.log').decode().strip()
+    sonames = assert_dynamic_dependencies(read('runtime-dynamic.raw.log').decode(), loaded)
+    status = assert_status_ready(read('runtime-status.raw.log').decode(), 'linux',
+                                Path(runtime.get('status', {}).get('helperPath', '')), expected_pending=0)
+    if final.get('bookwormImage') != BOOKWORM_IMAGE or metadata.get('record') != runtime \
+            or runtime.get('nodeVersion') != 'v22.21.1' or read('runtime-node-version.raw.log').decode().strip() != 'v22.21.1' \
+            or runtime.get('bunAbsentFromPath') is not True or runtime.get('runtime') != 'node' \
+            or runtime.get('status') != status or runtime.get('neededSonames') != sonames or runtime.get('ldd') != loaded \
+            or runtime.get('highestGlibcRequirement') != f'{highest[0]}.{highest[1]}':
+        raise RuntimeError('Native reuse Linux loader/ABI admission mismatch')
+    if set(metadata.get('stages', {})) != LINUX_RUNTIME_STAGES - {'runtime-extract'}:
+        raise RuntimeError('Native reuse Linux runtime metadata stage inventory mismatch')
+    for name, stage in metadata['stages'].items():
+        if stage.get('receiptSha256') != hashlib.sha256(read(f'{name}.receipt.json')).hexdigest() \
+                or stage.get('rawSha256') != hashlib.sha256(read(f'{name}.raw.log')).hexdigest():
+            raise RuntimeError('Native reuse Linux runtime metadata is not stage-bound')
+    for name in LINUX_RUNTIME_STAGES - {'runtime-extract'}:
+        verify_closed_native_stage(json.loads(read(name + '.receipt.json')), read(name + '.raw.log'), name)
+    return runtime
 
 
 def verify_reuse_archive(archive, pins, os_name, arch='arm64'):
@@ -830,12 +898,7 @@ def verify_reuse_archive(archive, pins, os_name, arch='arm64'):
         for stage in stages:
             receipt = json.loads(read(f'{stage}.receipt.json'))
             raw = read(f'{stage}.raw.log')
-            if receipt.get('actualWait') is not True or type(receipt.get('exit')) is not int or receipt.get('exit') != 0 or receipt.get('signal') is not None \
-                    or receipt.get('rawClosedBeforeHash') is not True or receipt.get('ownedGroupAbsentAfterWait') is not True \
-                    or not receipt.get('closedUTC') or receipt.get('resourceStop') is not None \
-                    or receipt.get('supervisorError') is not None or receipt.get('cleanupErrors') \
-                    or receipt.get('rawSHA256') != hashlib.sha256(raw).hexdigest():
-                raise RuntimeError(f'Native reuse stage is not successfully closed: {stage}')
+            verify_closed_native_stage(receipt, raw, stage)
         native = json.loads(read('native-receipt.json')); kit_bytes = read('source-kit.json'); kit = json.loads(kit_bytes)
         if native != final.get('nativeReceipt') or native.get('target') != target or native.get('helperSha256') != pins[f'{prefix}_HELPER_SHA'] \
                 or native.get('engine', {}).get('commit') != UPSTREAM or kit.get('engine') != native.get('engine') \
@@ -870,26 +933,7 @@ def verify_reuse_archive(archive, pins, os_name, arch='arm64'):
             if generated_notices is not None:
                 verify_generated_notice_archive(tar, target, native)
         if os_name == 'linux':
-            assert_bookworm_baseline('linux', final['sdkBefore'], arch)
-            runtime = final.get('runtimeAdmission', {})
-            metadata = json.loads(read('runtime-admission.metadata.json'))
-            highest = assert_bookworm_glibc(read('runtime-readelf.raw.log').decode())
-            loaded = read('runtime-ldd.raw.log').decode().strip()
-            sonames = assert_dynamic_dependencies(read('runtime-dynamic.raw.log').decode(), loaded)
-            status = assert_status_ready(read('runtime-status.raw.log').decode(), 'linux',
-                                        Path(runtime.get('status', {}).get('helperPath', '')), expected_pending=0)
-            if final.get('bookwormImage') != BOOKWORM_IMAGE or metadata.get('record') != runtime \
-                    or runtime.get('nodeVersion') != 'v22.21.1' or read('runtime-node-version.raw.log').decode().strip() != 'v22.21.1' \
-                    or runtime.get('bunAbsentFromPath') is not True or runtime.get('runtime') != 'node' \
-                    or runtime.get('status') != status or runtime.get('neededSonames') != sonames or runtime.get('ldd') != loaded \
-                    or runtime.get('highestGlibcRequirement') != f'{highest[0]}.{highest[1]}':
-                raise RuntimeError('Native reuse Linux loader/ABI admission mismatch')
-            if set(metadata.get('stages', {})) != {n for n in required if n.startswith('runtime-') and n != 'runtime-extract'}:
-                raise RuntimeError('Native reuse Linux runtime metadata stage inventory mismatch')
-            for name, stage in metadata['stages'].items():
-                if stage.get('receiptSha256') != hashlib.sha256(read(f'{name}.receipt.json')).hexdigest() \
-                        or stage.get('rawSha256') != hashlib.sha256(read(f'{name}.raw.log')).hexdigest():
-                    raise RuntimeError('Native reuse Linux runtime metadata is not stage-bound')
+            verify_linux_runtime_materials(read, final, arch)
         return dict(target=target, arch=arch, productHead=pins['PRODUCT_SHA'], zipSHA256=pins[f'{prefix}_ZIP_SHA'],
                     archiveSHA256=pins[f'{prefix}_ARCHIVE_SHA'], helperSHA256=pins[f'{prefix}_HELPER_SHA'],
                     sourceKitSHA256=native['sourceKitSha256'], stages=sorted(stages), **inventory)
@@ -938,8 +982,51 @@ def reuse_native_main():
         productHead=pins['PRODUCT_SHA'], productRun=pins['PRODUCT_RUN'], harnessHead=subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(), platforms=facts), indent=2) + '\n')
 
 
+def verify_runtime_abi_originals_main():
+    """Pure original-byte checks; stdin cannot issue official origin authority."""
+    import base64
+    encoded = sys.stdin.buffer.read(12 * 1024 * 1024 + 1)
+    if len(encoded) > 12 * 1024 * 1024:
+        raise RuntimeError('Runtime ABI input budget exceeded')
+    request = json.loads(encoded)
+    if set(request) != {'schemaVersion', 'target', 'binary', 'originals'} or request['schemaVersion'] != 1:
+        raise RuntimeError('Unknown runtime ABI request')
+    target = request['target']
+    if target not in ['linux-arm64', 'linux-x64']:
+        raise RuntimeError('Runtime ABI profile unavailable for target')
+    originals = request['originals']
+    if not isinstance(originals, dict) or len(originals) > 32:
+        raise RuntimeError('Runtime ABI original inventory invalid')
+    binary = base64.b64decode(request['binary'], validate=True)
+    total = len(binary)
+    decoded = {}
+    for name, value in originals.items():
+        if not isinstance(name, str) or not re.fullmatch('[A-Za-z0-9_.-]+', name):
+            raise RuntimeError('Unsafe runtime ABI original name')
+        content = base64.b64decode(value, validate=True); total += len(content)
+        if total > 8 * 1024 * 1024:
+            raise RuntimeError('Runtime ABI original budget exceeded')
+        decoded[name] = content
+    final = json.loads(decoded['final.json'])
+    digest = hashlib.sha256(binary).hexdigest()
+    if final.get('target') != target or final.get('nativeReceipt', {}).get('helperSha256') != digest:
+        raise RuntimeError('Runtime ABI binary/target mismatch')
+    assert_binary_arch(binary, 'linux', target.split('-')[1])
+    runtime = verify_linux_runtime_materials(decoded.__getitem__, final, target.split('-')[1])
+    if final.get('sdkBefore') != final.get('sdkAfter') or not re.fullmatch('[a-f0-9]{64}', final.get('archiveSHA256', '')):
+        raise RuntimeError('Runtime ABI producer SDK/archive binding invalid')
+    helper_version = decoded['runtime-helper-version.raw.log'].decode().strip()
+    launcher_version = decoded['runtime-launcher-version.raw.log'].decode().strip()
+    if not helper_version.startswith('agentfs-pod ') or runtime.get('helperVersion') != helper_version or runtime.get('launcherVersion') != launcher_version:
+        raise RuntimeError('Runtime ABI actual runtime versions mismatch')
+    print(json.dumps(dict(schemaVersion=1, status='runtime-materials-verified', target=target, binarySha256=digest,
+                         scope='mechanical-originals-only')))
+
+
 if __name__ == '__main__':
-    if sys.argv[1:] == ['--verify-native-source']:
+    if sys.argv[1:] == ['--verify-runtime-abi-originals']:
+        verify_runtime_abi_originals_main()
+    elif sys.argv[1:] == ['--verify-native-source']:
         root = Path.cwd()
         verify_reuse_sources(root, mounted_reuse_pins(root)['PRODUCT_SHA'])
     elif sys.argv[1:] == ['--verify-module-native-source']:
