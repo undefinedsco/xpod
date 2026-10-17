@@ -6,6 +6,8 @@ fail() {
   exit 64
 }
 
+mode=${1:-all}
+[[ $# -le 1 && "$mode" =~ ^(all|prepare-only|build-prepared)$ ]] || fail "unsupported build mode"
 [[ "$(uname -s)" == "Darwin" ]] || fail "macOS is required"
 case "$(uname -m)" in
   arm64) native_arch=arm64 ;;
@@ -38,11 +40,14 @@ smoke_database="$work_root/runtime-smoke.sqlite"
 repository=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["repository"])' "$lock_file")
 commit=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["commit"])' "$lock_file")
 
+if [[ "$mode" != build-prepared ]]; then
 rm -rf "$source_dir" "$artifact_dir" "$local_build_dir"
 mkdir -p "$work_root" "$artifact_dir" "$(dirname "$archive_path")"
 git clone --filter=blob:none --no-checkout "$repository" "$source_dir"
 git -C "$source_dir" checkout --detach "$commit"
 python3 "$qlever_root/scripts/apply-patches.py" --source "$source_dir"
+
+fi
 
 brew_bin=$(command -v brew)
 brew_prefix=$(cd "$(dirname "$brew_bin")/.." && pwd -P)
@@ -68,6 +73,7 @@ if command -v ccache >/dev/null 2>&1; then
   ccache_flag_cxx="-DCMAKE_CXX_COMPILER_LAUNCHER=ccache"
 fi
 
+if [[ "$mode" != build-prepared ]]; then
 cmake \
   -S "$source_dir" \
   -B "$qlever_build_dir" \
@@ -86,6 +92,8 @@ cmake \
   -DUSE_PARALLEL=false \
   -DCOMPILER_SUPPORTS_MARCH_NATIVE=FALSE \
   -DCMAKE_CXX_FLAGS="$adapter_flags"
+fi
+
 server_link_file="$qlever_build_dir/CMakeFiles/qlever-server.dir/link.txt"
 server_link_command=$(ninja -C "$qlever_build_dir" -t commands qlever-server | tail -n 1)
 [[ "$server_link_command" == *"CMakeFiles/qlever-server.dir/src/ServerMain.cpp.o"* ]] ||
@@ -93,6 +101,15 @@ server_link_command=$(ninja -C "$qlever_build_dir" -t commands qlever-server | t
 [[ "$server_link_command" == *" -o qlever-server "* ]] ||
   fail "Ninja qlever-server link command has an unexpected output"
 printf '%s\n' "$server_link_command" > "$server_link_file"
+prepared_lock_sha=$(shasum -a 256 "$lock_file" | cut -d ' ' -f 1)
+if [[ "$mode" == prepare-only ]]; then
+  printf '%s\n' "$prepared_lock_sha" > "$qlever_build_dir/.xpod-native-prepared"
+  exit 0
+fi
+if [[ "$mode" == build-prepared ]]; then
+  test -f "$qlever_build_dir/.xpod-native-prepared" || fail "missing real preparation stage"
+  [[ "$(cat "$qlever_build_dir/.xpod-native-prepared")" == "$prepared_lock_sha" ]] || fail "prepared native lock changed"
+fi
 cmake --build "$qlever_build_dir" --target qlever-server -- -j"$build_jobs"
 test -x "$qlever_build_dir/qlever-server"
 
@@ -154,6 +171,9 @@ done < <(find "$artifact_dir/lib" -type f -print)
 if grep -E '/opt/homebrew|/usr/local' "$work_root/otool.log"; then
   fail "bundled runtime still references a Homebrew path"
 fi
+
+# The observer owns a distinct test stage; direct all mode retains its smoke.
+if [[ "$mode" == build-prepared ]]; then exit 0; fi
 
 python3 "$qlever_root/scripts/verify-local-runtime-artifacts.py" \
   --prefix "$artifact_dir" \

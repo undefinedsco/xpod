@@ -30,6 +30,7 @@ jobs:
         run: |
           python3 -m unittest discover -s qlever/tests -p 'test_qlever*'
           python3 -m unittest discover -s qlever/tests -p 'test_resolve_runtime_sdk_build.py'
+          python3 -m unittest discover -s qlever/tests -p 'test_macos_native_materials.py'
 
       - name: Install ripgrep differential oracle
         run: |
