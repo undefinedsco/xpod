@@ -239,7 +239,10 @@ class QleverRuntimeSdkContractTest(unittest.TestCase):
         for line in actions:
             reference = line.split("uses:", 1)[1].strip()
             if reference.startswith("./"):
-                self.assertEqual(reference, "./.github/workflows/resolve-qlever-native-target.yml")
+                self.assertIn(reference, {
+                    "./.github/workflows/resolve-qlever-native-target.yml",
+                    "./.github/workflows/build-qlever-linux-runtime.yml",
+                })
                 self.assertTrue((ROOT / reference).is_file())
                 continue
             revision = line.split("@", 1)[1].split()[0]
