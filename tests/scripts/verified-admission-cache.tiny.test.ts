@@ -36,3 +36,24 @@ test('saved verified facts cannot bypass a real original ZIP changed after proje
   expect(fs.existsSync(archive)).toBe(true);
  }finally{originals?.close();fs.rmSync(root,{recursive:true,force:true});}
 });
+
+test('related SDK handles remain exact memo inputs and retain ZIP guards after compact',()=>{
+ const root=fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()),'sdk-related-custody-')),artifact={},source={},native={},sdk={};
+ let originals:ReturnType<typeof lazyZipOriginals>|undefined;
+ try{
+  const archive=path.join(root,'sdk.original.zip'),projection=path.join(root,'projection');fs.mkdirSync(projection);
+  expect(spawnSync('python3',['-c',"import zipfile,sys;z=zipfile.ZipFile(sys.argv[1],'w');z.writestr('materials.json','{}');z.close()",archive]).status).toBe(0);
+  const digest=(body:Buffer)=>createHash('sha256').update(body).digest('hex');
+  originals=lazyZipOriginals({archivePath:archive,archiveSha256:digest(fs.readFileSync(archive)),root:projection,members:[{path:'materials.json',bytes:2,sha256:digest(Buffer.from('{}'))}]});
+  const cache=verifiedAdmissionCache<{status:string}>(),sets=[[],[],[sdk]];
+  cache.remember(artifact,'native',[source,native],sets,{status:'verified'});
+  originals.close();
+  const guard=originals.assertRetainedOriginal;
+  expect(cache.get(artifact,'native',[source,native],sets,guard)?.status).toBe('verified');
+  expect(cache.get(artifact,'native',[source,native],[[],[],[{}]],guard)).toBeUndefined();
+  expect(cache.get(artifact,'native',[source,native],[[],[],[]],guard)).toBeUndefined();
+  fs.appendFileSync(archive,'changed SDK bytes');
+  expect(()=>cache.get(artifact,'native',[source,native],sets,guard)).toThrow('identity');
+  expect(fs.existsSync(archive)).toBe(true);
+ }finally{originals?.close();fs.rmSync(root,{recursive:true,force:true});}
+});

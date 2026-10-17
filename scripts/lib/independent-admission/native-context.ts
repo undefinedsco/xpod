@@ -81,6 +81,7 @@ export interface ControlledNativeRuntimeView {
   readonly runtimeAbiScope: 'css-qlever-bundle' | 'afs-agentfs-helper' | 'api-inngest-cli';
   readonly uncoveredNativeImages: readonly Readonly<import('../physical-module-native').NativeFile>[];
   readonly runtimeAbiVerified: boolean;
+  readonly sdkSourceFacts?: Readonly<Record<string, unknown>>;
   readonly sourceMaterialsVerified: boolean;
   readonly nativeSourceClosureVerified: false;
   readonly pending: readonly string[];
@@ -259,7 +260,7 @@ export async function collectMacNativeRuntimeContext(input: {
 /** Linux uses the same independently issued original custody as macOS. Only
  * the reviewed CSS parent archive job is supported; SDK/source remains pending. */
 export async function collectLinuxNativeRuntimeContext(input: {
-  artifact: CollectedArtifactCapability; nativeOriginals: unknown; source: unknown;
+  artifact: CollectedArtifactCapability; nativeOriginals: unknown; source: unknown; sdkOriginals?: unknown;
 }): Promise<NativeMaterialCapability> {
   const { nativeOriginalsView } = await import('./native-original-collector');
   const { derivedSourceView } = await import('./source-context');
@@ -267,6 +268,8 @@ export async function collectLinuxNativeRuntimeContext(input: {
   const { observeRegisteredNativeTar } = await import('./native-tar-observation');
   const { verifyLinuxQleverRuntimeOriginals, LINUX_QLEVER_REVIEWED_FILES } = await import('./native-linux-runtime');
   const { modulePackageName } = await import('../../../packages/xpod-cli/src/module-catalog');
+  const { qleverSdkOriginalsView } = await import('./qlever-sdk-originals');
+  const { inspectQleverSdkSourceOriginals } = await import('./qlever-sdk-source');
   const product = collectedArtifactView(input.artifact), native = nativeOriginalsView(input.nativeOriginals), source = derivedSourceView(input.source);
   if (!product || !native || !source || !product.identity.target || !['linux-x64', 'linux-arm64'].includes(product.identity.target)
     || source.sourceSha !== product.identity.sourceSha || native.originFacts.sourceSha !== product.identity.sourceSha
@@ -314,16 +317,21 @@ export async function collectLinuxNativeRuntimeContext(input: {
       return read(ref.path, maximum);
     }, jobWindow: { startedUTC: job.started_at, closedUTC: job.completed_at } });
   const { uncoveredNativeImages, inventoryObserved } = await observeOtherProductNativeImages(input.artifact, new Set(actual.map(row => row.path)));
+  const sdk = qleverSdkOriginalsView(input.sdkOriginals);
+  if (input.sdkOriginals !== undefined && (!sdk || sdk.originFacts.sourceSha !== native.originFacts.sourceSha || sdk.originFacts.target !== native.originFacts.target
+    || sdk.originFacts.runId !== native.originFacts.runId || sdk.originFacts.runAttempt !== native.originFacts.runAttempt)) return fail('SDK source originals must bind the same actual runtime producer tuple');
+  const sdkSource = inspectQleverSdkSourceOriginals(input.sdkOriginals);
   const capability = Object.freeze({}) as NativeMaterialCapability;
   const validate = () => {
-    if (collectedArtifactView(input.artifact) !== product || derivedSourceView(input.source) !== source || nativeOriginalsView(input.nativeOriginals) !== native) return fail('Linux native custody revoked');
+    if (collectedArtifactView(input.artifact) !== product || derivedSourceView(input.source) !== source || nativeOriginalsView(input.nativeOriginals) !== native
+      || (sdk && qleverSdkOriginalsView(input.sdkOriginals) !== sdk)) return fail('Linux native/SDK custody revoked');
   };
-  const pending = Object.freeze([...observed.pending, ...(!inventoryObserved ? ['whole-product-native-image-inventory-budget-exceeded'] : []), ...uncoveredNativeImages.map(row => 'uncovered-product-native-image:' + row.path)]);
+  const pending = Object.freeze([...observed.pending, ...sdkSource.pending, ...(!inventoryObserved ? ['whole-product-native-image-inventory-budget-exceeded'] : []), ...uncoveredNativeImages.map(row => 'uncovered-product-native-image:' + row.path)]);
   const view: ControlledNativeRuntimeView = Object.freeze({ identity: product.identity, nativeSourceSha: native.originFacts.sourceSha,
     nativeOriginVerified: true, originalStageBindingsVerified: true, binaryFormatsVerified: inventoryObserved && uncoveredNativeImages.length === 0,
     qleverRuntimeAbiVerified: true, agentfsRuntimeAbiVerified: false, selectedNativeBinaryFormatsVerified: true,
     runtimeAbiScope: 'css-qlever-bundle', uncoveredNativeImages, runtimeAbiVerified: inventoryObserved && uncoveredNativeImages.length === 0,
-    sourceMaterialsVerified: false, nativeSourceClosureVerified: false, pending });
+    sdkSourceFacts: sdkSource.facts, sourceMaterialsVerified: false, nativeSourceClosureVerified: false, pending });
   runtimeIssued.set(capability, { view, validate });
   issued.set(capability, () => { validate(); return Object.freeze({ identity: product.identity, custodyKind: 'collected-native-originals' as const,
     indexPath: finalPath, indexSha256: hash(finalBytes), status: 'material-integrity-verified' as const, externalAdmission: 'pending' as const }); });
@@ -350,7 +358,7 @@ async function observeOtherProductNativeImages(artifact: CollectedArtifactCapabi
 /** One module dispatcher over the same private product/native capability axes.
  * API and AgentFS cannot inherit QLever's runtime protocol or SDK approval. */
 export async function collectNativeAdmissionContext(input: {
-  artifact: CollectedArtifactCapability; source: unknown; nativeOriginals?: unknown;
+  artifact: CollectedArtifactCapability; source: unknown; nativeOriginals?: unknown; sdkOriginals?: unknown;
 }): Promise<NativeMaterialCapability> {
   const { derivedSourceView } = await import('./source-context');
   const { modulePackageName } = await import('../../../packages/xpod-cli/src/module-catalog');

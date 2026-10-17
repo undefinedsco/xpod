@@ -55,9 +55,14 @@ s=importlib.util.spec_from_file_location('d','qlever/scripts/sdk-debian-source-m
 body='Format: 3.0 (native)\\nSource: example\\nVersion: 1:1.0\\nChecksums-Sha256:\\n '+'a'*64+' 2 example_1.0.tar.xz\\n'
 raw=('-----BEGIN PGP SIGNED MESSAGE-----\\nHash: SHA256\\n\\n'+body+'-----BEGIN PGP SIGNATURE-----\\nnot-a-verified-signature\\n-----END PGP SIGNATURE-----\\n').encode()
 r=d.parse_dsc(raw);assert r['clearSignedOriginalPresent'] and r['pending']
-for value in [body.replace('example_1.0.tar.xz','../escape'),body+'Source: other\\n',body.replace(' 2 example',' 0 example'),body.replace('3.0 (native)','3.0 (quilt)')]:
+for value in [body.replace('example_1.0.tar.xz','../escape'),body+'Source: other\\n',body+'sOuRcE: other\\n',body.replace(' 2 example',' 0 example'),body.replace('3.0 (native)','3.0 (quilt)')]:
  try:d.parse_dsc(value.encode());raise AssertionError('malformed description accepted')
  except ValueError:pass
 print('armor-is-not-authority;malformed-rejected')`;
   expect(execFileSync('python3', ['-c', code], {cwd, encoding: 'utf8'}).trim()).toBe('armor-is-not-authority;malformed-rejected');
+});
+
+it('uses the same bounded parser from the fixed isolated controller CLI', () => {
+  const output = execFileSync('/usr/bin/python3', ['-I', '-S', '-B', 'qlever/scripts/sdk-debian-source-materials.py', '--parse-ledger'], {cwd, input: 'gcc-12\t12.2.0-14\tgcc-12\t12.2.0-14\n', encoding: 'utf8'});
+  expect(JSON.parse(output)['gcc-12'].source).toEqual({name: 'gcc-12', version: '12.2.0-14'});
 });

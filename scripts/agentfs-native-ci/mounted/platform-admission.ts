@@ -58,8 +58,8 @@ export function classifyProbeError(error: unknown): 'absent' | 'unknown' {
   return (error as NodeJS.ErrnoException)?.code === 'ESRCH' ? 'absent' : 'unknown';
 }
 
-import { REQUIRED_MOUNTED_CASES } from './required-cases';
-export { REQUIRED_MOUNTED_CASES } from './required-cases';
+import { REQUIRED_MOUNTED_CASES } from './required-cases.ts';
+export { REQUIRED_MOUNTED_CASES } from './required-cases.ts';
 
 interface VitestJsonReport {
   numPassedTests?: number;

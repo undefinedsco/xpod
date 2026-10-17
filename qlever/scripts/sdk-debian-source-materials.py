@@ -86,18 +86,20 @@ def parse_dsc(data):
         else:
             key, separator, value = line.partition(':')
             require(separator and re.fullmatch(r'[A-Za-z][A-Za-z0-9-]*', key) and key not in fields, 'duplicate or malformed dsc field')
+            key = key.lower()
+            require(key not in fields, 'duplicate case-insensitive dsc field')
             fields[key] = value.strip(); current = key
-    identity = source_identity(fields.get('Source'), fields.get('Version'))
-    format = fields.get('Format'); require(format in ('3.0 (quilt)', '3.0 (native)', '1.0'), 'unreviewed Debian source format')
+    identity = source_identity(fields.get('source'), fields.get('version'))
+    format = fields.get('format'); require(format in ('3.0 (quilt)', '3.0 (native)', '1.0'), 'unreviewed Debian source format')
     files = []
-    for line in fields.get('Checksums-Sha256', '').strip().splitlines():
+    for line in fields.get('checksums-sha256', '').strip().splitlines():
         values = line.split()
         require(len(values) == 3 and re.fullmatch(r'[a-f0-9]{64}', values[0]) and values[1].isdigit()
                 and FILENAME.fullmatch(values[2]), 'canonical complete SHA256 file rows required')
         size = int(values[1]); require(size > 0, 'empty source archive unsupported')
         files.append(dict(name=values[2], bytes=size, sha256=values[0]))
     require(files and len(files) <= 4096 and len({row['name'] for row in files}) == len(files), 'duplicate or absent source archives')
-    for key, length in [('Files', 32), ('Checksums-Sha1', 40)]:
+    for key, length in [('files', 32), ('checksums-sha1', 40)]:
         if key not in fields:
             continue
         rows = [line.split() for line in fields[key].strip().splitlines()]
@@ -118,7 +120,7 @@ def parse_dsc(data):
     else:
         orig = identity['name'] + '_' + upstream + '.orig.tar.gz'; diff = identity['name'] + '_' + version + '.diff.gz'
         native = identity['name'] + '_' + version + '.tar.gz'
-        require(names in ({orig, diff}, {native}), '1.0 source archive closure differs')
+        require(names in ({orig, diff}, {orig, orig + '.asc', diff}, {native}), '1.0 source archive closure differs')
     return dict(schemaVersion=1, kind='mechanical-debian-source-description', **identity, format=format,
                 dscSha256=hashlib.sha256(data).hexdigest(), clearSignedOriginalPresent=armored,
                 files=sorted(files, key=lambda row: row['name']),
@@ -178,7 +180,7 @@ def verify_source_directory(directory, name, version, maximum_bytes, *, check_bu
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(); parser.add_argument('--parse-dsc', action='store_true'); args = parser.parse_args()
-    require(args.parse_dsc, 'fixed parse mode required')
+    parser = argparse.ArgumentParser(); modes = parser.add_mutually_exclusive_group(required=True)
+    modes.add_argument('--parse-dsc', action='store_true'); modes.add_argument('--parse-ledger', action='store_true'); args = parser.parse_args()
     data = sys.stdin.buffer.read(METADATA_BYTES + 1)
-    print(json.dumps(parse_dsc(data), separators=(',', ':')))
+    print(json.dumps((parse_dsc if args.parse_dsc else parse_source_ledger)(data), separators=(',', ':')))

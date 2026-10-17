@@ -364,8 +364,8 @@ export function verifyCollectedPublicationAdmission(gate: Gate, input: Collected
   const legalBinding=publicationLegalMaterials(input.artifact,input.derivedSource);
   context.legalOriginals=context.legalOriginals??legalBinding?.originals;
   const keys=[context.derivedSource,context.consumerObservation,context.nativeMaterials,context.legalSourceMaterials,context.githubOrigin];
-  const sets=[context.relatedArtifacts??[],context.legalOriginals??[]];
   const gateMaterials=publicationGateMaterials(input.artifact,input.derivedSource);
+  const sets=[context.relatedArtifacts??[],context.legalOriginals??[],gateMaterials?.relatedNativeOriginals??[]];
   const previous=gateMaterials?publicationReports.get(input.artifact as object,gate,keys,sets,()=>{
     // Saved facts do not bypass retained ZIP identity, current exact checkout or
     // native-original custody after reconstructible projections are compacted.
@@ -374,6 +374,7 @@ export function verifyCollectedPublicationAdmission(gate: Gate, input: Collected
     for(const original of context.legalOriginals??[])assertLegalOriginalCustody(original);
     const native=publicationGateMaterials(input.artifact,input.derivedSource)?.nativeOriginals;
     if(native)assertCollectedNativeOriginalCustody(native);
+    for(const original of gateMaterials?.relatedNativeOriginals??[])assertCollectedNativeOriginalCustody(original);
   }):undefined;
   if(previous)return previous;
   const evidence = gate === 'source'

@@ -53,15 +53,21 @@ function job(view:CollectedNativeOriginalsView):any {
  const rows=githubOriginOriginals(view.origin).filter(row=>/^jobs(?:-page-\d+)?\.original\.json$/u.test(row.name)).flatMap(row=>JSON.parse(row.data.toString()).jobs??[]);
  const matches=rows.filter((row:any)=>row.id===view.originFacts.producerJobId);if(matches.length!==1)return fail('unique actual producer job original required');return matches[0];
 }
-/** Same native-byte issuer and range transport; this receiver adds SDK/master
- * relationship custody, never Debian source, ABI or legal approval. */
-export async function collectRelatedQleverSdkOriginals(input:{nativeOriginals:CollectedNativeOriginalsCapability;output:string;token?:string}):Promise<CollectedNativeOriginalsCapability>{
- const native=nativeOriginalsView(input.nativeOriginals);if(!native||isQleverSdkGitHubOrigin(native.origin)||native.originFacts.workflowPath!=='.github/workflows/css-native-products.yml')return fail('actual routed native runtime originals required');
- assertCollectedNativeOriginalCustody(input.nativeOriginals);
+export function qleverSdkArtifactAcquisition(nativeOriginals:CollectedNativeOriginalsCapability):Readonly<{reference:QleverSdkArtifactReference;coordinates:ArtifactAcquisitionInput}>{
+ const native=nativeOriginalsView(nativeOriginals);if(!native||isQleverSdkGitHubOrigin(native.origin)||native.originFacts.workflowPath!=='.github/workflows/css-native-products.yml')return fail('actual routed native runtime originals required');
+ assertCollectedNativeOriginalCustody(nativeOriginals);
  const final=JSON.parse(native.readOriginal('native-build-materials.json',8*1024**2).toString());
  if(final.sourceSha!==native.originFacts.sourceSha||Number(final.runId)!==native.originFacts.runId||Number(final.runAttempt)!==native.originFacts.runAttempt||final.target!==native.originFacts.target)return fail('native producer tuple mismatch');
  const reference=inspectQleverSdkArtifactReference(final.sdkArtifact,{...native.originFacts,sdkImage:final.sdkImage});
  const coordinates:ArtifactAcquisitionInput={schemaVersion:1,sourceSha:reference.sourceSha,runHeadSha:native.originFacts.runHeadSha,runId:reference.runId,runAttempt:reference.runAttempt,artifactId:reference.artifactId,artifactSha256:reference.artifactSha256};
+ return Object.freeze({reference,coordinates:Object.freeze(coordinates)});
+}
+
+/** Same native-byte issuer and range transport; this receiver adds SDK/master
+ * relationship custody, never Debian source, ABI or legal approval. */
+export async function collectRelatedQleverSdkOriginals(input:{nativeOriginals:CollectedNativeOriginalsCapability;output:string;token?:string}):Promise<CollectedNativeOriginalsCapability>{
+ const native=nativeOriginalsView(input.nativeOriginals)!;
+ const {reference,coordinates}=qleverSdkArtifactAcquisition(input.nativeOriginals);
  const origin=await observeQleverSdkGitHubOrigin(coordinates,reference.target,'css-native-products',{token:input.token});
  await acquireNativeAdmissionOriginals(coordinates,input.output,{token:input.token});
  const capability=await collectNativeAdmissionOriginals({githubOrigin:origin,acquisitionRoot:input.output});

@@ -268,6 +268,10 @@
     "sha256": "b84e1613e1f0c6fcf7ce9de4bca21e794f06fa9ac4c1049d9a71fd2d8b981ef5"
   },
   {
+    "path": "qlever/scripts/sdk-debian-source-materials.py",
+    "sha256": "dddb499b82df467ff41511dd6dfab5877ed7d63cbcfa88fb772be9e6152aca6c"
+  },
+  {
     "path": "qlever/scripts/sdk-execution-budget.py",
     "sha256": "329194655827de1d03a31db5f311ba1cc59fd0ade7edf2ef48fcc8fae52ebfee"
   },
@@ -317,7 +321,7 @@
   },
   {
     "path": "scripts/agentfs-native-ci/mounted/platform-admission.ts",
-    "sha256": "6b9d269d81d43a6d4930a0fb1a6b7a1cee1e4028b83e8897e645b71c912c5fa0"
+    "sha256": "735e193857b4b51dc87a06f3aab708db4834c62003bc8fc1f2963b4000249004"
   },
   {
     "path": "scripts/agentfs-native-ci/mounted/prepare-module-inputs.ts",
@@ -541,7 +545,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/index.ts",
-    "sha256": "91cd33c92b6565916062f9fdcccdd3c309f561e3b8f26b2deb01215a8db6961d"
+    "sha256": "fd02d42494f49286010c39d6142c6ca06beee4c7cf9299d497d575c6be92db42"
   },
   {
     "path": "scripts/lib/independent-admission/lazy-zip-originals.ts",
@@ -633,7 +637,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/native-admission.ts",
-    "sha256": "00df6e10d760b3f1f854e802de8a8cef5f9934394345bc1d5f0d14d18b8d8da7"
+    "sha256": "b2678e37d7481dd0acf78c45654863aecac08b10f886f140c60598650f83f832"
   },
   {
     "path": "scripts/lib/independent-admission/native-afs-runtime.py",
@@ -641,7 +645,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/native-context.ts",
-    "sha256": "c888880b8bb8b22be561f98c651cf1533a7ee24572915e8383dee70b28dd6fa8"
+    "sha256": "2c68c672ba1b98b8c1d42b6233f15ed0d8205accf67c2d6e6a8afd9ab3705795"
   },
   {
     "path": "scripts/lib/independent-admission/native-linux-runtime.ts",
@@ -713,11 +717,11 @@
   },
   {
     "path": "scripts/lib/independent-admission/publication-gate-materials.ts",
-    "sha256": "b98b2fce27ab03f75b4937999688bb1ed6bda1e52a78a78b47a8d5d1a36e2f93"
+    "sha256": "dcb8715341d6d516cabe91a9b9c54dfb385f03157a903028561417c035df0e34"
   },
   {
     "path": "scripts/lib/independent-admission/publication-group.ts",
-    "sha256": "0083e43d120246bf1cc8fa9a9adc20e90bf635d0352e5183226387355df512c3"
+    "sha256": "38d07a5b6e572a86cd99b5edd84619995add141ce506448e6330ac07b710b009"
   },
   {
     "path": "scripts/lib/independent-admission/publication-legal-materials.ts",
@@ -749,7 +753,11 @@
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-originals.ts",
-    "sha256": "332080369a50c7ebafa63779991c67195825a99012feec4646996c192704ea98"
+    "sha256": "fedce060ffa9d54bc99bcb0beab6a9e0e60719fc26ba8962910b35a9035be382"
+  },
+  {
+    "path": "scripts/lib/independent-admission/qlever-sdk-source.ts",
+    "sha256": "c1779621b9792016b94c474c28399a57645b87fda6a74a194a3737ae42532179"
   },
   {
     "path": "scripts/lib/independent-admission/registry-consumer-bundle.ts",

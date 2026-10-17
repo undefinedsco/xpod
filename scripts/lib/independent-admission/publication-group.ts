@@ -94,7 +94,7 @@ export async function preparePublicationGroup(input:PublicationGroupPreparationI
   const post=input.consumerRuns?.find(row=>row.module===selector.module&&row.target===selector.target&&row.stage==='postpublish');
   const postpublishConsumer=post?await observeGitHubRegistryInstalledProductConsumer({...materials,consumerRun:post.consumerRun,
    evidenceDirectory:path.join(input.output,'post-consumer-'+index),token:input.token}):undefined;
-  bindPublicationGateMaterials(artifact,source,{relatedArtifacts:related,legalOriginals:legal.originals,legalSourceMaterials:sourceMaterials,nativeOriginals:nativeMaterials?nativeOriginalBindings.get(nativeMaterials as object):undefined});
+  bindPublicationGateMaterials(artifact,source,{relatedArtifacts:related,legalOriginals:legal.originals,legalSourceMaterials:sourceMaterials,nativeOriginals:nativeMaterials?nativeOriginalBindings.get(nativeMaterials as object)?.nativeOriginals:undefined,relatedNativeOriginals:nativeMaterials?nativeOriginalBindings.get(nativeMaterials as object)?.relatedNativeOriginals:undefined});
   const finalContext={...base,consumerObservation:prepublishConsumer,nativeMaterials,legalOriginals:legal.originals,legalSourceMaterials:sourceMaterials};
   for(const gate of (view.identity.target===undefined?['source','runtime-closure','legal','consumer']:['source','runtime-closure','native','legal','consumer']) as readonly import('./index').Gate[]){
    const report=verifyCollectedPublicationAdmission(gate,finalContext);
@@ -103,7 +103,7 @@ export async function preparePublicationGroup(input:PublicationGroupPreparationI
   if(view.identity.target!==undefined){
    const {compactModuleSourceMaterials}=await import('./module-source-admission');
    compactModuleSourceMaterials(sourceMaterials);compactCollectedSourceOriginals(artifact);compactCollectedProductProjection(artifact);
-   if(nativeMaterials){const original=nativeOriginalBindings.get(nativeMaterials as object);if(original){const {compactCollectedNativeOriginals}=await import('./native-original-collector');compactCollectedNativeOriginals(original);}}
+   if(nativeMaterials){const originals=nativeOriginalBindings.get(nativeMaterials as object);if(originals){const {compactCollectedNativeOriginals}=await import('./native-original-collector');for(const original of new Set([originals.nativeOriginals,...originals.relatedNativeOriginals]))compactCollectedNativeOriginals(original);}}
   }else{
    portableReady.add(artifact);
    if(session.portable&&portableReady.has(session.portable.cli)&&portableReady.has(session.portable.client)){
@@ -128,11 +128,12 @@ export async function preparePublicationGroup(input:PublicationGroupPreparationI
  }
  return Object.freeze({status:'material-ready',products:Object.freeze(products),registryDependencies:Object.freeze(registryDependencies)});
 }
-const nativeOriginalBindings=new WeakMap<object,unknown>();
+interface NativeOriginalBinding {readonly nativeOriginals:unknown;readonly relatedNativeOriginals:readonly unknown[]}
+const nativeOriginalBindings=new WeakMap<object,NativeOriginalBinding>();
 async function prepareNormalProductNativeContext(input:{artifact:CollectedArtifactCapability;source:ReturnType<typeof deriveAdmissionSource>;output:string;token?:string}){
  const material=publicationMaterialView(input.artifact)!;
  const {collectNativeAdmissionContext}=await import('./native-context');
- let nativeOriginals:unknown;
+ let nativeOriginals:unknown,sdkOriginals:unknown;
  if(material.identity.package.startsWith('@undefineds.co/xpod-css-')){
   const receipt=JSON.parse(material.readOriginal(material.producerReceipt.path,8*1024**2).toString());
   const acquisition=receipt.nativeAcquisition,zip=acquisition?.originals?.find((row:any)=>row.path==='originals/native.zip');
@@ -144,13 +145,23 @@ async function prepareNormalProductNativeContext(input:{artifact:CollectedArtifa
   const {acquireNativeAdmissionOriginals}=await import('../../acquire-independent-product-input');
   const {collectNativeAdmissionOriginals}=await import('./native-original-collector');
   fs.mkdirSync(input.output,{mode:0o700});const acquisitionRoot=path.join(input.output,'acquired');
-  const resources=await preflightPublicationResources({selectors:[tuple],output:input.output,token:input.token});
+  const nativeResourceOutput=path.join(input.output,'native-resources');fs.mkdirSync(nativeResourceOutput,{mode:0o700});
+  const resources=await preflightPublicationResources({selectors:[tuple],output:nativeResourceOutput,reservationDirectory:input.output,token:input.token});
   if(resources.status==='pending')fail(resources.pending.join('; '));
   await acquireNativeAdmissionOriginals(tuple,acquisitionRoot,{token:input.token});
   nativeOriginals=await collectNativeAdmissionOriginals({githubOrigin:origin,acquisitionRoot});
+  if(material.identity.target!.startsWith('linux-')){
+   const {qleverSdkArtifactAcquisition,collectRelatedQleverSdkOriginals}=await import('./qlever-sdk-originals');
+   const runtime=nativeOriginals as import('./native-originals').CollectedNativeOriginalsCapability;
+   const sdk=qleverSdkArtifactAcquisition(runtime);
+   const sdkResourceOutput=path.join(input.output,'sdk-resources');fs.mkdirSync(sdkResourceOutput,{mode:0o700});
+   const sdkResources=await preflightPublicationResources({selectors:[sdk.coordinates],output:sdkResourceOutput,reservationDirectory:input.output,token:input.token});
+   if(sdkResources.status==='pending')fail(sdkResources.pending.join('; '));
+   sdkOriginals=await collectRelatedQleverSdkOriginals({nativeOriginals:runtime,output:path.join(input.output,'sdk-acquired'),token:input.token});
+  }
  }
- const context=await collectNativeAdmissionContext({artifact:input.artifact,source:input.source,nativeOriginals});
- if(nativeOriginals)nativeOriginalBindings.set(context as object,nativeOriginals);
+ const context=await collectNativeAdmissionContext({artifact:input.artifact,source:input.source,nativeOriginals,...(sdkOriginals?{sdkOriginals}:{})});
+ if(nativeOriginals)nativeOriginalBindings.set(context as object,Object.freeze({nativeOriginals,relatedNativeOriginals:Object.freeze(sdkOriginals?[sdkOriginals]:[])}));
  return context;
 }
 
