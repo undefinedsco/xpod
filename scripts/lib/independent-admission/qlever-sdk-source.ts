@@ -3,6 +3,8 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
+import { performance } from 'node:perf_hooks';
+import { derivedSourceView, assertDerivedSourceCurrent } from './source-context';
 import limits from '../module-artifact-limits.json';
 import { inspectSdkInputOwnership } from './qlever-sdk-inputs';
 import { inspectSdkBuildExecution } from './qlever-sdk-execution';
@@ -14,16 +16,30 @@ const SHA = /^[a-f0-9]{64}$/u;
 const HELPER_SHA = 'dddb499b82df467ff41511dd6dfab5877ed7d63cbcfa88fb772be9e6152aca6c';
 const safe = (name: unknown): name is string => typeof name === 'string' && Boolean(name) && !name.startsWith('/') && !/[\\\u0000-\u001f\u007f]/u.test(name) && !name.split('/').some(part => !part || part === '.' || part === '..');
 function need(value: unknown, reason: string): asserts value { if (!value) throw Error('QLever SDK source: ' + reason); }
+const verifiedInputs = new WeakMap<object, Readonly<{sdk: NonNullable<ReturnType<typeof qleverSdkOriginalsView>>; afterReference: Readonly<{path: string; bytes: number; sha256: string}>; rows: readonly Readonly<{originalPath: string; bytes: number; sha256: string; mode: number}>[] }>>();
+/** Reuses the one actual full-shard verification, never caller JSON facts. */
+export function sdkVerifiedInputOriginalView(capability: unknown) {
+  if (!capability || typeof capability !== 'object') return undefined;
+  const value = verifiedInputs.get(capability);
+  if (value && qleverSdkOriginalsView(capability) === value.sdk) {
+    const raw = value.sdk.readOriginal(value.afterReference.path, limits.metadataBytes);
+    need(raw.length === value.afterReference.bytes && hash(raw) === value.afterReference.sha256, 'verified input inventory custody changed');
+    return Object.freeze({afterReference: value.afterReference, rows: value.rows});
+  }
+  return undefined;
+}
 /** SDK byte/source-set facts only. The one central SDK private binding is
  * required; no JSON can reconstruct it, or authorize a native/release gate. */
-export function inspectQleverSdkSourceOriginals(capability: unknown): Readonly<{
+export function inspectQleverSdkSourceOriginals(capability: unknown, remainingMilliseconds = limits.timeoutMs): Readonly<{
   verified: false; pending: readonly string[]; facts: Readonly<Record<string, unknown>>;
 }> {
+  if (capability && typeof capability === 'object') verifiedInputs.delete(capability);
   const pending = new Set<string>(), facts: Record<string, unknown> = {sdkSourceCompletenessVerified: false};
   try {
     const sdk = qleverSdkOriginalsView(capability); need(sdk, 'issued related SDK originals required');
-    const deadline = Date.now() + limits.timeoutMs, members = new Map(sdk.members.map(row => [row.path, row]));
-    const check = () => need(Date.now() < deadline, 'mechanical source observation deadline exceeded');
+    need(Number.isFinite(remainingMilliseconds) && remainingMilliseconds >= 1, 'mechanical source observation deadline expired');
+    const deadline = performance.now() + Math.min(remainingMilliseconds, limits.timeoutMs), members = new Map(sdk.members.map(row => [row.path, row]));
+    const check = () => need(performance.now() < deadline, 'mechanical source observation deadline exceeded');
     const reference = (value: any) => {
       check(); const actual = members.get(value?.path);
       need(value && safe(value.path) && actual && actual.bytes === value.bytes && actual.sha256 === value.sha256 && SHA.test(actual.sha256), 'same SDK ZIP original reference required'); return actual;
@@ -40,7 +56,7 @@ export function inspectQleverSdkSourceOriginals(capability: unknown): Readonly<{
     const parse = (mode: '--parse-dsc' | '--parse-ledger', bytes: Buffer) => {
       check(); assertLegalFileIdentity(helperIdentity); assertLegalFileIdentity(pythonIdentity);
       const output = execFileSync(python, ['-I', '-S', '-B', helper, mode], {input: bytes, maxBuffer: limits.metadataBytes,
-        timeout: Math.max(1, Math.min(15000, deadline - Date.now())), env: {PATH: '/usr/bin:/bin', LANG: 'C.UTF-8'}});
+        timeout: Math.max(1, Math.min(15000, Math.floor(deadline - performance.now()))), env: {PATH: '/usr/bin:/bin', LANG: 'C.UTF-8'}});
       assertLegalFileIdentity(helperIdentity); assertLegalFileIdentity(pythonIdentity); check(); return JSON.parse(output.toString());
     };
     const before = JSON.parse(small(master.inputs?.before).toString());
@@ -59,6 +75,7 @@ export function inspectQleverSdkSourceOriginals(capability: unknown): Readonly<{
     need(qleverSdkOriginalsView(capability) === sdk, 'SDK closed build original custody changed');
     facts.sdkConfigureCompileExecution = execution;
     facts.sdkConfigureCompileClosedExecutionVerified = execution.verified;
+    facts.sdkGenerationMetadataReferenceSealVerified = execution.generationMetadataReferenceSealVerified === true;
     const ledgerReference = {...after.sourcePackageIdentityRaw, path: 'inner/' + after.sourcePackageIdentityRaw?.path};
     const ledger = parse('--parse-ledger', small(ledgerReference));
     const context = JSON.parse(small(master.sourceContext).toString());
@@ -81,6 +98,9 @@ export function inspectQleverSdkSourceOriginals(capability: unknown): Readonly<{
       facts.sdkSelectedInputSymlinkBeforeAfterBytesVerified = symlinks.unresolved.length === 0;
       if (symlinks.unresolved.length) pending.add('qlever-sdk-input-symlink-before-after-causality-unverified');
     } else if (ownership.unresolvedSymlinkOriginalTargets.length) pending.add('qlever-sdk-input-symlink-before-after-causality-unverified');
+    need(qleverSdkOriginalsView(capability) === sdk, 'SDK verified input snapshot custody changed');
+    if (!ownership.unresolvedSymlinkOriginalTargets.length || facts.sdkSelectedInputSymlinkBeforeAfterBytesVerified === true) verifiedInputs.set(capability as object, Object.freeze({sdk, afterReference: Object.freeze({...reference(master.inputs.after)}),
+      rows: Object.freeze(after.files.map((row: any) => Object.freeze({originalPath: row.originalPath, bytes: row.bytes, sha256: row.sha256, mode: row.mode})))}));
     facts.sdkExactDebianSourceTuplesDerivedFromActualOwnership = ownership.requiredSources;
     if (ownership.unresolvedInputs.some(row => row.role !== 'installed-metadata')) pending.add('qlever-sdk-Git-generated-or-other-non-Debian-input-source-authority-unresolved');
     need(qleverSdkOriginalsView(capability) === sdk, 'SDK input custody changed');
@@ -130,4 +150,72 @@ export function inspectQleverSdkSourceOriginals(capability: unknown): Readonly<{
     pending.add('qlever-sdk-generated-input-and-full-toolchain-source-causality-not-yet-verified');
   } catch (error) { pending.add((error as Error).message); }
   return Object.freeze({verified: false, pending: Object.freeze([...pending]), facts: Object.freeze(facts)});
+}
+
+
+/** Operational source-axis orchestration. Inspect above remains the synchronous
+ * byte-mechanics API; only this path consumes independent signature authority. */
+export async function observeQleverSdkSourceAdmission(input: {sdkOriginals: unknown; source: unknown; remainingMilliseconds?: number}) {
+  const sdk = qleverSdkOriginalsView(input.sdkOriginals), source = derivedSourceView(input.source);
+  const pending = new Set<string>(), facts: Record<string, unknown> = {sdkSourceCompletenessVerified: false};
+  let signatureObservation: Readonly<Record<string, unknown>> | undefined;
+  let signatureGetter: typeof import('./qlever-sdk-debian-signature').qleverSdkDebianSignatureObservation | undefined;
+  const assertCurrent = () => {
+    need(qleverSdkOriginalsView(input.sdkOriginals) === sdk && derivedSourceView(input.source) === source, 'SDK/source admission custody changed');
+    if (source) assertDerivedSourceCurrent(input.source);
+    if (signatureObservation) need(signatureGetter?.(input.sdkOriginals) === signatureObservation, 'independent Debian signature observation custody changed');
+  };
+  let verified = false;
+  try {
+    need(sdk && source && sdk.originFacts.sourceSha === source.sourceSha, 'same issued SDK and immutable source required');
+    const remaining = input.remainingMilliseconds ?? limits.timeoutMs;
+    need(Number.isFinite(remaining) && remaining >= 1, 'shared SDK source deadline expired');
+    const deadline = performance.now() + Math.min(remaining, limits.timeoutMs);
+    const check = () => need(performance.now() < deadline, 'shared SDK source deadline expired');
+    const available = () => {check(); return deadline - performance.now();};
+    assertCurrent();
+    const mechanical = inspectQleverSdkSourceOriginals(input.sdkOriginals, available()); check();
+    Object.assign(facts, mechanical.facts); mechanical.pending.forEach(value => pending.add(value));
+    const {observeQleverSdkDebianIndexOriginals} = await import('./qlever-sdk-debian-index');
+    const index = await observeQleverSdkDebianIndexOriginals(input.sdkOriginals, available()); check();
+    Object.assign(facts, index.facts); index.pending.forEach(value => pending.add(value));
+    const {observeQleverSdkUpstreamGitOriginals} = await import('./qlever-sdk-upstream-source');
+    const git = await observeQleverSdkUpstreamGitOriginals(input.sdkOriginals, input.source, available()); check();
+    Object.assign(facts, git.facts); git.pending.forEach(value => pending.add(value));
+    const signatureModule = await import('./qlever-sdk-debian-signature'); signatureGetter = signatureModule.qleverSdkDebianSignatureObservation;
+    const signature = await signatureModule.observeQleverSdkDebianSignatureOriginals(input.sdkOriginals, available()); check();
+    signature.pending.forEach(value => pending.add(value));
+    const currentSignature = signatureGetter(input.sdkOriginals);
+    const signatureVerified = signature.facts.sdkDebianOfficialSignatureAndSuiteVerified === true && signature.pending.length === 0
+      && currentSignature !== undefined && currentSignature === signature.facts;
+    facts.sdkDebianOfficialSignatureAndSuiteVerified = signatureVerified;
+    if (signatureVerified) {
+      signatureObservation = currentSignature; Object.assign(facts, currentSignature);
+      // These two exact obligations are owned by the now independently verified
+      // signature/suite axis. No source/generated/toolchain pending is filtered.
+      pending.delete('qlever-sdk-Debian-signed-Sources-InRelease-keyring-authority-not-yet-verified');
+      pending.delete('qlever-sdk-official-Debian-keyring-gpgv-and-suite-authority-unverified');
+    } else if (signature.facts.sdkDebianOfficialSignatureAndSuiteVerified === true) {
+      pending.add('qlever-sdk-independent-Debian-signature-private-observation-unavailable');
+    }
+    facts.sdkOwnedDebianSourceArchiveAuthorityVerified = facts.debianDscAndAllSourceArchiveBytesVerified === true
+      && facts.sdkOwnedDebianInputSourceArchivesComplete === true && facts.sdkDebianInReleaseSourcesDscChecksumChainVerified === true && signatureVerified;
+    const axes = Object.freeze({inputOriginals: sdkVerifiedInputOriginalView(input.sdkOriginals) !== undefined,
+      configureCompileExecution: facts.sdkConfigureCompileClosedExecutionVerified === true,
+      ownedDebianSourceArchives: facts.sdkOwnedDebianSourceArchiveAuthorityVerified === true,
+      upstreamGitPreimages: facts.sdkUpstreamGitCommitTreePreimageClosureVerified === true,
+      reviewedPatchProjection: facts.sdkUpstreamReviewedPatchProjectionVerified === true,
+      selectedUpstreamInputOriginals: facts.sdkSelectedUpstreamInputOriginalsVerified === true,
+      generatedInputIoClosure: 'verifier-not-implemented' as const, toolchainSourceClosure: 'verifier-not-implemented' as const});
+    facts.sdkSourceRequiredAxes = axes;
+    verified = Object.values(axes).every(value => value === true) && pending.size === 0;
+    facts.sdkSourceCompletenessVerified = verified;
+    check(); assertCurrent();
+  } catch (error) {
+    pending.add((error as Error).message); verified = false; facts.sdkSourceCompletenessVerified = false;
+    if (signatureObservation) { signatureObservation = undefined; facts.sdkDebianOfficialSignatureAndSuiteVerified = false; facts.sdkOwnedDebianSourceArchiveAuthorityVerified = false; }
+  }
+  const freeze = (value: unknown): void => {if (value && typeof value === 'object') {Object.values(value).forEach(freeze); Object.freeze(value);}};
+  freeze(facts);
+  return Object.freeze({verified, facts: Object.freeze(facts), pending: Object.freeze([...pending]), assertCurrent});
 }

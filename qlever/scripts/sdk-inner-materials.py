@@ -41,9 +41,12 @@ def file_identity(path):
     path=Path(path)
     if path.is_symlink() or not path.is_file():raise ValueError('SDK selected original must be regular')
     with path.open('rb') as stream:
-        before=os.fstat(stream.fileno());value=hashlib.sha256()
+        before=os.fstat(stream.fileno());value=hashlib.sha256();observed=0
+        if before.st_size>tar_budget.SHARD_LIMIT:raise ValueError('SDK original exceeds fixed member budget')
         for block in iter(lambda:stream.read(65536),b''):
-            check_budget();value.update(block)
+            check_budget();observed+=len(block)
+            if observed>before.st_size:raise ValueError('SDK original grew beyond observed bound')
+            value.update(block)
         after=os.fstat(stream.fileno())
     identity=lambda row:(row.st_dev,row.st_ino,row.st_size,row.st_mtime_ns,row.st_mode)
     if identity(before)!=identity(after) or identity(path.lstat())!=identity(after):raise ValueError('SDK original changed while observed')
@@ -126,6 +129,12 @@ debian_acquisition=importlib.util.module_from_spec(spec);spec.loader.exec_module
 spec=importlib.util.spec_from_file_location('sdk_symlinks',HERE/'sdk-symlink-originals.py')
 symlinks=importlib.util.module_from_spec(spec);spec.loader.exec_module(symlinks)
 
+spec=importlib.util.spec_from_file_location('sdk_upstream_inner',HERE/'sdk-upstream-source-materials.py')
+upstream=importlib.util.module_from_spec(spec);spec.loader.exec_module(upstream)
+
+spec=importlib.util.spec_from_file_location('sdk_generation_inner',HERE/'sdk-generation-materials.py')
+generation=importlib.util.module_from_spec(spec);spec.loader.exec_module(generation)
+
 def build_materials(component,source,build,out,jobs):
     component=Path(component);source=Path(source);build=Path(build);out=Path(out);out.mkdir(parents=True,exist_ok=False)
     budget=initialize_budget(4200);stages=[]
@@ -133,7 +142,14 @@ def build_materials(component,source,build,out,jobs):
     if identity.get('sdkProfile')!='module-bookworm-gcc12':raise ValueError('Actual SDK producer identity required')
     def stage(name,command,inputs=(),timeout=30,reserve=4200):
         row=commands.capture(name,command,out,component,inputs,timeout=budget.timeout(timeout,reserve));stages.append(row);return row
-    stage('configure',['bash',str(component/'scripts/build-module-runtime-sdk.sh'),'prepare-only'],timeout=1800)
+    private_key='XPOD_QLEVER_UPSTREAM_MATERIALS_DIR'
+    if private_key in os.environ:raise ValueError('Upstream capture directory is owned by the module producer')
+    os.environ[private_key]=str(out/'upstream-source')
+    try:
+        stage('configure',['bash',str(component/'scripts/build-module-runtime-sdk.sh'),'prepare-only'],timeout=1800)
+    finally:
+        del os.environ[private_key]
+    generation_before=generation.snapshot(out,build,'before',archive_inputs,file_identity,check_budget)
     # Candidate roots are observations only, not redistributed SDK contents.
     before_links={};before_bindings={}
     def candidate(path):
@@ -184,7 +200,7 @@ def build_materials(component,source,build,out,jobs):
     before_ref=commands.ref(out/'inputs-before.json',out)
     symlinks.save(out/'symlinks-before.json',before_links,before_bindings,check_budget)
     before_links_ref=commands.ref(out/'symlinks-before.json',out)
-    stage('compile',['bash',str(component/'scripts/build-qlever-runtime-sdk.sh'),'build-prepared'],[before_ref,before_links_ref],14400,reserve=4800)
+    stage('compile',['bash',str(component/'scripts/build-qlever-runtime-sdk.sh'),'build-prepared'],[before_ref,before_links_ref,generation_before],14400,reserve=4800)
     selected=dependency_paths(build)
     # Preserve original depfiles and actual direct linker inputs as build outputs.
     outputs=set(build.rglob('*.o.d'));selected.update(outputs)
@@ -239,16 +255,22 @@ def build_materials(component,source,build,out,jobs):
     inventory['packageOwnershipOriginals']=[str(path) for path in ownership]
     inventory['sourcePackageIdentityRaw']=ledger['stdout']
     dump(out/'inputs-after.json',inventory)
+    generation_after=generation.snapshot(out,build,'after',archive_inputs,file_identity,check_budget)
+    generation_ref,generation_bytes=generation.finalize(out,build,generation_before,generation_after,inventory,before,stages,check_budget)
+    upstream_ref,upstream_bytes=upstream.finalize(out,source,inventory,stages,check_budget)
     def source_stage(name,argv,cwd):
         row=commands.capture(name,argv,out,cwd,timeout=budget.timeout(900,3600));stages.append(row);return row
     debian_ref,debian_bytes=debian_acquisition.acquire(out,
         [str(Path(path).resolve(strict=True)) for path in selected],
         {path.name.removesuffix('.list'):path.read_bytes() for path in ownership},
-        ledger['stdout'],LIMIT-512*1024**2-symlink_bytes-sum(row['bytes'] for row in inventory['shards']),
+        ledger['stdout'],LIMIT-512*1024**2-symlink_bytes-upstream_bytes-generation_bytes-sum(row['bytes'] for row in inventory['shards']),
         source_stage,commands.ref,check_budget)
 
     dump(out/'build-inner.json',dict(schemaVersion=1,kind='qlever-linux-sdk-inner-originals',identity=identity,stages=stages,
         executionBudget=dict(deadlineUnix=budget.deadline_unix,remainingSeconds=budget.remaining()),inputsBefore=before_ref,inputsAfter=commands.ref(out/'inputs-after.json',out),domains=inventory['shards'],
+        generationMaterials=generation_ref,generationMaterialBytes=generation_bytes,
+        generationMetadata=dict(before=generation_before,after=generation_after),
+        upstreamSource=upstream_ref,upstreamSourceBytes=upstream_bytes,
         symlinkOriginalBytes=symlink_bytes,symlinkOriginals=dict(before=before_links_ref,after=after_links_ref),
         grantOriginals=[str(path) for path in grants],debianSources=debian_ref,debianSourceBytes=debian_bytes,
         pending=['official-image-build-artifact-custody-unavailable','Debian-Sources-to-signed-InRelease-checksum-binding-unverified',
