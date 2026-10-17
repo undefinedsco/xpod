@@ -303,8 +303,18 @@ const trackedExecutionBindings=Object.freeze([
 ]);
 // The context must retain its own reviewed ignore original for SDK COPY.
 const selfRetainedContextBindings=Object.freeze(trackedExecutionBindings.map(row=>Object.freeze({...row,sha256:row.path==='.dockerignore'?'4cee6cad6f7086c4577281641dda0e3d57fc5218da9864453d14aa8aee75d73f':row.sha256})));
+// Prepared and build roots are distinct read providers. These helpers exist
+// in both context-self versions, but not in the first nine historical trees.
+const preparedInputRecipe=new Map([
+ ['qlever/scripts/sdk-ptrace-execution.py','5d88182382f3bb0bcdf2dea4e3ea58358535038dd3f31aed3867e29cfa16dca0'],
+ ['qlever/scripts/sdk-generation-multiprocess-bindings.py','18900af6455068d1f86849529d910805a2fe99edb56cb5291ed3c2ec10f8c196'],
+]);
+const preparedInputBindings=Object.freeze(selfRetainedContextBindings.map(row=>Object.freeze({...row,sha256:preparedInputRecipe.get(row.path)??row.sha256})));
+function observerVersionGroup(rows:readonly {path:string;sha256:string}[]):GitHubSourceBindingGroup {
+ return Object.freeze({...sdkBGroup(rows),secondarySelectors:Object.freeze(rows.filter(row=>preparedInputRecipe.has(row.path)))});
+}
 export const QLEVER_SDK_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([
- sdkBGroup(QLEVER_SDK_B_SOURCE_BINDINGS),sdkBGroup(tarBindings),sdkBGroup(stagingTarBindings),sdkBGroup(debianV3Bindings),sdkBGroup(symlinkBindings),sdkBGroup(gitCmakeBindings),sdkBGroup(ownedRunsBindings),sdkBGroup(sourcePreparedBindings),sdkBGroup(serviceContextBindings),sdkBGroup(trackedExecutionBindings),sdkBGroup(selfRetainedContextBindings),
+ sdkBGroup(QLEVER_SDK_B_SOURCE_BINDINGS),sdkBGroup(tarBindings),sdkBGroup(stagingTarBindings),sdkBGroup(debianV3Bindings),sdkBGroup(symlinkBindings),sdkBGroup(gitCmakeBindings),sdkBGroup(ownedRunsBindings),sdkBGroup(sourcePreparedBindings),sdkBGroup(serviceContextBindings),sdkBGroup(trackedExecutionBindings),observerVersionGroup(selfRetainedContextBindings),observerVersionGroup(preparedInputBindings),
 ]);
 export const QLEVER_LINUX_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([
  {selectors:sdkSelectors('cbedd3e2478de5e22108b6689c595a658ca891c9bd47552caec830e86f47fea8','a75c7be34b5c5fafff85c0d67d814ba1aaf14bcf5db5404a860fe3b9a11009bd'),sourceBindings:QLEVER_LINUX_SOURCE_BINDINGS.filter(row=>!['.github/workflows/publish-qlever-runtime-sdk.yml','.github/workflows/build-qlever-linux-runtime.yml'].includes(row.path))},

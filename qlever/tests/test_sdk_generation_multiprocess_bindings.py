@@ -36,6 +36,20 @@ class MultiGenerationTests(unittest.TestCase):
         for mutate in mutations:
             rows,originals=fixture();mutate(rows)
             with self.assertRaises(ValueError):observe(rows,originals)
+    def test_prepared_input_uses_original_byte_chain_but_not_generated_approval(self):
+        rows,originals=fixture();consumer=next(row for row in rows if row['kind']=='fd-capture' and row['role']=='consumer')
+        original=dict(kind='prepared-build-input-original',path=consumer['path'],identity=consumer['identity'],original=dict(consumer['original']),phase='compile',sequence=1)
+        digest=hashlib.sha256((json.dumps({key:original[key] for key in ['path','identity','original']},sort_keys=True)+'\n').encode()).hexdigest()
+        seal=dict(kind='prepared-build-input-seal',buildRoot='/build',files=1,inventorySha256=digest,phase='compile',sequence=2)
+        for row in rows:
+            row['sequence']+=2
+            for key in ['entrySequence','barrierSequence','captureSequence','producerCaptureSequence']:
+                if key in row:row[key]+=2
+        binding=next(row for row in rows if row['kind']=='generated-consumer-binding');binding['kind']='prepared-consumer-binding';binding['producerCaptureSequence']=1
+        rows[:0]=[original,seal]
+        report=observe(rows,originals);self.assertTrue(report['preparedInputConsumerBytesVerified']);self.assertFalse(report['selectedGeneratedConsumerByteCustodyVerified']);self.assertEqual(len(report['outputs']),2)
+        changed=next(row for row in rows if row['kind']=='fd-capture' and row['role']=='consumer');name='capture-9999.original';originals[name]=b'change0';changed['original']=dict(path=name,bytes=7,sha256=hashlib.sha256(originals[name]).hexdigest())
+        with self.assertRaisesRegex(ValueError,'prepared consumer bytes'):observe(rows,originals)
     def test_actual_changed_bytes_rehashed_still_reject(self):
         rows,originals=fixture();cap=next(r for r in rows if r['kind']=='fd-capture' and r['role']=='consumer');name=cap['original']['path'];originals[name]=b'change0';cap['original'].update(bytes=7,sha256=hashlib.sha256(originals[name]).hexdigest());cap['identity'][3]=7
         with self.assertRaises(ValueError):observe(rows,originals)
