@@ -165,10 +165,16 @@ export async function observeQleverSdkSourceAdmission(input: {sdkOriginals: unkn
   const pending = new Set<string>(), facts: Record<string, unknown> = {sdkSourceCompletenessVerified: false};
   let signatureObservation: Readonly<Record<string, unknown>> | undefined;
   let signatureGetter: typeof import('./qlever-sdk-debian-signature').qleverSdkDebianSignatureObservation | undefined;
+  let binaryObservation: ReturnType<typeof import('./qlever-sdk-debian-binary').qleverSdkDebianBinaryObservation>;
+  let binaryGetter: typeof import('./qlever-sdk-debian-binary').qleverSdkDebianBinaryObservation | undefined;
   const assertCurrent = () => {
     need(qleverSdkOriginalsView(input.sdkOriginals) === sdk && derivedSourceView(input.source) === source, 'SDK/source admission custody changed');
     if (source) assertDerivedSourceCurrent(input.source);
     generationGuard?.();
+    if (binaryObservation) {
+      need(binaryGetter?.(input.sdkOriginals) === binaryObservation, 'independent Debian binary observation custody changed');
+      binaryObservation.assertCurrent();
+    }
     if (signatureObservation) need(signatureGetter?.(input.sdkOriginals) === signatureObservation, 'independent Debian signature observation custody changed');
   };
   let generationGuard:(()=>void)|undefined;
@@ -211,6 +217,27 @@ export async function observeQleverSdkSourceAdmission(input: {sdkOriginals: unkn
     } else if (signature.facts.sdkDebianOfficialSignatureAndSuiteVerified === true) {
       pending.add('qlever-sdk-independent-Debian-signature-private-observation-unavailable');
     }
+    // Binary provenance can consume only the independently verified signature
+    // observation on this same SDK, never producer unclassified gpgv metadata.
+    facts.sdkSelectedDebianBinaryFilesVerified = false;
+    if (signatureVerified) {
+      const binaryModule = await import('./qlever-sdk-debian-binary');
+      binaryGetter = binaryModule.qleverSdkDebianBinaryObservation;
+      const binary = await binaryModule.observeQleverSdkDebianBinaryOriginals(input.sdkOriginals, input.source, available()); check();
+      binary.pending.forEach(value => pending.add(value));
+      const currentBinary = binaryGetter(input.sdkOriginals);
+      if (binary.facts.sdkSelectedDebianBinaryFilesVerified === true && currentBinary
+        && binary.facts.sdkDebianBinaryFiles === currentBinary.files && binary.facts.sdkDebianBinaryScope === currentBinary.scope) {
+        binaryObservation = currentBinary; currentBinary.assertCurrent();
+        facts.sdkSelectedDebianBinaryFilesVerified = true;
+        facts.sdkDebianBinaryFiles = currentBinary.files;
+        facts.sdkDebianBinaryScope = currentBinary.scope;
+        facts.sdkDebianBinaryUnresolved = currentBinary.unresolved;
+      } else {
+        if (binary.facts.sdkSelectedDebianBinaryFilesVerified === true) pending.add('qlever-sdk-independent-Debian-binary-private-observation-unavailable');
+        if (binary.facts.sdkDebianBinaryUnresolved !== undefined) facts.sdkDebianBinaryUnresolved = binary.facts.sdkDebianBinaryUnresolved;
+      }
+    } else pending.add('qlever-sdk-Debian-binary-signature-prerequisite-unverified');
     facts.sdkOwnedDebianSourceArchiveAuthorityVerified = facts.debianDscAndAllSourceArchiveBytesVerified === true
       && facts.sdkOwnedDebianInputSourceArchivesComplete === true && facts.sdkDebianInReleaseSourcesDscChecksumChainVerified === true && signatureVerified;
     const axes = Object.freeze({inputOriginals: sdkVerifiedInputOriginalView(input.sdkOriginals) !== undefined,
@@ -226,6 +253,7 @@ export async function observeQleverSdkSourceAdmission(input: {sdkOriginals: unkn
     check(); assertCurrent();
   } catch (error) {
     pending.add((error as Error).message); verified = false; facts.sdkSourceCompletenessVerified = false;
+    if (binaryObservation) { binaryObservation = undefined; facts.sdkSelectedDebianBinaryFilesVerified = false; delete facts.sdkDebianBinaryFiles; delete facts.sdkDebianBinaryScope; }
     if (signatureObservation) { signatureObservation = undefined; facts.sdkDebianOfficialSignatureAndSuiteVerified = false; facts.sdkOwnedDebianSourceArchiveAuthorityVerified = false; }
   }
   const freeze = (value: unknown): void => {if (value && typeof value === 'object') {Object.values(value).forEach(freeze); Object.freeze(value);}};

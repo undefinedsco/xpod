@@ -1,5 +1,5 @@
 import {QLEVER_SDK_WORKFLOW,QLEVER_SDK_WORKFLOW_SHA,QLEVER_SDK_EXECUTION_GROUPS,QLEVER_LINUX_EXECUTION_GROUPS} from './qlever-sdk-origin-policy';
-import {selectGitHubSourceBindingGroup,sourceBindingKey,type GitHubSourceBindingGroup} from './github-source-binding-groups';
+import {selectGitHubSourceBindingGroup,secondaryGitHubSourceBindingSelectors,sourceBindingKey,type GitHubSourceBindingGroup} from './github-source-binding-groups';
 import {immutableGitContentsEndpoint,cachedGitContentsOriginal,retainGitContentsOriginal} from './github-immutable-original-cache';
 import {QLEVER_LINUX_SOURCE_BINDINGS} from './qlever-linux-origin-policy';
 import {QLEVER_OBSERVER_PATH,QLEVER_OBSERVER_V20,QLEVER_OBSERVER_V22,QLEVER_OBSERVER_V23,qleverObserverCompanionBindings} from './qlever-observer-policy';
@@ -378,6 +378,14 @@ async function observeGitHubOrigin(input: ArtifactAcquisitionInput, options: { t
       const original=await read('policy-'+binding.path.replace(/[^a-z0-9]/giu,'-')+'.original.json',`contents/${binding.path}?ref=${binding.ref==='run-head'?input.runHeadSha:input.sourceSha}`);
       if(original.type!=='file'||original.path!==binding.path||original.encoding!=='base64'||typeof original.content!=='string')fail('immutable group selector missing');
       observed.set(key,sha(Buffer.from(original.content.replace(/\s/gu,''),'base64')));
+    }));
+    // New observer versions refine only an already matched historical tuple.
+    // A missing/modified helper remains fatal; no old-tree 404 is swallowed.
+    const secondary=secondaryGitHubSourceBindingSelectors(policy.sourceBindingGroups,observed);
+    await Promise.all(secondary.map(async binding=>{
+      const original=await read('policy-secondary-'+binding.path.replace(/[^a-z0-9]/giu,'-')+'.original.json',`contents/${binding.path}?ref=${binding.ref==='run-head'?input.runHeadSha:input.sourceSha}`);
+      if(original.type!=='file'||original.path!==binding.path||original.encoding!=='base64'||typeof original.content!=='string')fail('immutable secondary group selector missing');
+      observed.set(sourceBindingKey(binding),sha(Buffer.from(original.content.replace(/\s/gu,''),'base64')));
     }));
     sourceBindings=[...selectGitHubSourceBindingGroup(policy.sourceBindingGroups,observed).sourceBindings];
   }

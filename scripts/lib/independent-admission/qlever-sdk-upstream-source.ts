@@ -16,7 +16,7 @@ const HELPERS = [
   ['sdk-git-source-bindings.py', '612063f44d09932b93883db2d186d197bd828e07d39e2df430d9dbe574fd66d0'],
   ['sdk-git-source-observer.py', 'fd578d0fef97c1d3b4b60e5510320c109c6930580d91db9335d67cbacff186f6'],
   ['sdk-git-patch-projection.py', '3e4051b50acf6be11ade6e5d6c05ca23ab8376aa4ff5861975088eab642c8f23'],
-  ['sdk-zip-originals.py', 'ff57cbe26b9e18f83f41f01051dad2e361da9ae201cb4f905f6cc183f0a62ba6'],
+  ['sdk-zip-originals.py', 'f4e8bf855aad1428550f014222873f9024eff994115a9e7bf67287e5671833f5'],
 ] as const;
 export function assertSdkUpstreamCollectionProjection(upstream: any, inner: any): void {
   const normalize = (value: any): any => {

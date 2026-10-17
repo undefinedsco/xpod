@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import oldSdk from '../fixtures/independent-admission/sdk-b-86cd-originals.json';
 import {observeQleverSdkGitHubOrigin,isQleverSdkGitHubOrigin} from '../../scripts/lib/independent-admission/github-origin';
-const root=path.resolve(import.meta.dir,'../..'),source='9'.repeat(40),digest='8'.repeat(64),workflow='.github/workflows/publish-qlever-runtime-sdk.yml';
+const root=process.env.XPOD_ORIGIN_SOURCE_FIXTURE??path.resolve(import.meta.dir,'../..'),source='9'.repeat(40),digest='8'.repeat(64),workflow='.github/workflows/publish-qlever-runtime-sdk.yml';
 let fixtureId=200;
 async function scenario(skip?:string,revision?:string,missing?:string,modified?:string){
  const source=revision??(++fixtureId).toString(16).padStart(40,'0');
@@ -39,6 +39,24 @@ test('real old SDK tree omits future acquisition and unused parser; new tree req
  expect(result.requested).not.toContain('qlever/scripts/sdk-symlink-originals.py');
  for(const helper of ['qlever/scripts/sdk-debian-source-acquisition.py','qlever/scripts/sdk-debian-source-materials.py','qlever/scripts/sdk-symlink-originals.py','qlever/scripts/sdk-upstream-source-materials.py','qlever/scripts/sdk-generation-materials.py','qlever/scripts/sdk-owned-runs.py','qlever/scripts/sdk-subreaper-guard.py']){
   await expect(scenario(undefined,undefined,helper)).rejects.toThrow();
+  await expect(scenario(undefined,undefined,undefined,helper)).rejects.toThrow('policy not reviewed');
+ }
+});
+
+test('old SDK does not fetch future observer selectors; prepared group requires both exact helpers',async()=>{
+ const result=await scenario(undefined,oldSdk.sourceSha);
+ for(const helper of ['qlever/scripts/sdk-ptrace-execution.py','qlever/scripts/sdk-generation-multiprocess-bindings.py']){
+  expect(result.requested).not.toContain(helper);
+  await expect(scenario(undefined,undefined,helper)).rejects.toThrow('metadata request failed');
+  await expect(scenario(undefined,undefined,undefined,helper)).rejects.toThrow('group not reviewed');
+ }
+});
+
+test('binary producer imports are required only for the new whole SDK recipe',async()=>{
+ const old=await scenario(undefined,oldSdk.sourceSha);
+ for(const helper of ['qlever/scripts/sdk-debian-binary-hook.py','qlever/scripts/sdk-debian-binary-originals.py']){
+  expect(old.requested).not.toContain(helper);
+  await expect(scenario(undefined,undefined,helper)).rejects.toThrow('metadata request failed');
   await expect(scenario(undefined,undefined,undefined,helper)).rejects.toThrow('policy not reviewed');
  }
 });

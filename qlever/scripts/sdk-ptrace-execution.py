@@ -86,7 +86,7 @@ class BoundedPipePump:
 
 class Observer:
     def __init__(self,out,source,build,*,deadline_monotonic=None,check_budget=lambda:None,maximum_bytes=32*1024**2,maximum_file_bytes=1024**2,selected_names=SELECTED,maximum_processes=128,shard_bytes=None,require_success=True,maximum_stdio_bytes=None):
-        self.domain_bytes=0;self.domain_lock=threading.Lock();self.pump_errors=[];self.maximum_stdio_bytes=maximum_stdio_bytes if maximum_stdio_bytes is not None else maximum_file_bytes
+        self.prepared_inputs={};self.prepared_sealed=False;self.domain_bytes=0;self.domain_lock=threading.Lock();self.pump_errors=[];self.maximum_stdio_bytes=maximum_stdio_bytes if maximum_stdio_bytes is not None else maximum_file_bytes
         self.require_success=require_success;self.raw_bytes_completed=0;self.maximum_processes=maximum_processes;self.shard_bytes=shard_bytes
         self.deadline_monotonic=deadline_monotonic;self.check_budget=check_budget;self.maximum_bytes=maximum_bytes;self.maximum_file_bytes=maximum_file_bytes;self.selected_names=selected_names
         self.out=Path(out);self.capture_dir=self.out;self.source=str(source);self.build=str(build);self.tasks={};self.seq=0;self.records=[];self.captures=[];self.retained=set();self.producers={};self.rename_records=[];self.consumers=[];self.raw=None;self.deadline=0;self.pausing=False;self.root=None;self.root_code=None;self.failures=[];self.current_phase=None;self.unknown_stops={};self.capture_bytes=0;self.exclusive=None;self.wait_references=[]
@@ -141,6 +141,48 @@ class Observer:
                 except FileNotFoundError:raise ValueError('descriptor changed during all-stop')
         assert writers==[dict(pid=target_pid,fd=target_fd)],'another writable FD aliases selected output inode'
         return writers
+    def seal_prepared_build_inputs(self):
+        # This runs once, before the first tracee is forked. Existing build
+        # inputs have a different origin from a close observed by this tracer.
+        assert not self.tasks and not self.prepared_sealed,'prepared input snapshot must precede the first actual root'
+        root=Path(self.build);assert not self.out.resolve().is_relative_to(root.resolve()),'observer originals must not be inside the input build root'
+        def entries():
+            result=[]
+            if not root.exists():return result
+            for directory,dirs,files in os.walk(root,followlinks=False):
+                self.check()
+                for name in dirs:
+                    assert not Path(directory,name).is_symlink(),'prepared build directory symlink requires separate source binding'
+                for name in files:
+                    path=Path(directory,name);item=path.lstat()
+                    assert stat.S_ISREG(item.st_mode),'prepared build input must be a regular no-follow original: '+str(path)
+                    result.append((str(path.absolute()),probe.identity(item)))
+                    assert len(result)<=self.maximum_processes,'prepared build original member bound'
+            return sorted(result)
+        root_identity=probe.identity(root.lstat()) if root.exists() else None
+        before=entries();inventory=hashlib.sha256()
+        for path,identity in before:
+            self.check();reader=os.open(path,os.O_RDONLY|os.O_NOFOLLOW|os.O_CLOEXEC)
+            try:
+                assert identity==probe.identity(os.fstat(reader)) and identity[3]<=self.maximum_file_bytes,'prepared FD identity/size differs'
+                name='capture-'+str(len(self.captures)).zfill(4)+'.original';offset=0;digest=hashlib.sha256()
+                with (self.capture_dir/name).open('xb') as output:
+                    while True:
+                        self.check();block=os.pread(reader,65536,offset)
+                        if not block:break
+                        offset+=len(block);assert offset<=identity[3] and offset<=self.maximum_file_bytes,'prepared original grew during capture'
+                        self.claim(len(block));output.write(block);digest.update(block)
+                    output.flush();os.fsync(output.fileno())
+                assert offset==identity[3] and identity==probe.identity(os.fstat(reader))==probe.identity(os.stat(path,follow_symlinks=False)),'prepared original changed during capture'
+                original=dict(path=name,bytes=offset,sha256=digest.hexdigest())
+                row=self.emit(dict(kind='prepared-build-input-original',path=path,identity=identity,original=original))
+                inventory.update((json.dumps(dict(path=path,identity=identity,original=original),sort_keys=True)+'\n').encode())
+                self.captures.append(row);self.capture_bytes+=offset;self.retained.add(reader);self.prepared_inputs[path]=(row,reader,(offset,digest.hexdigest()));reader=None
+            finally:
+                if reader is not None:os.close(reader)
+        assert before==entries() and root_identity==(probe.identity(root.lstat()) if root.exists() else None),'prepared build input root/closed set or identity changed during snapshot'
+        self.emit(dict(kind='prepared-build-input-seal',buildRoot=self.build,files=len(before),inventorySha256=inventory.hexdigest(),scope='actual pre-first-root bytes only; source-prepare causality independent'))
+        self.prepared_sealed=True
     def capture(self,pid,fd,role):
         barrier=self.barrier();self.check();target=fdpath(pid,fd);path='/proc/'+str(pid)+'/fd/'+str(fd);before=os.stat(path);reader=os.open(path,os.O_RDONLY|os.O_CLOEXEC)
         try:
@@ -171,7 +213,10 @@ class Observer:
                 if previous:os.close(previous[1]);self.retained.remove(previous[1])
                 self.producers[tuple(ident[:2])]=(row,capture_fd,data)
             if role=='consumer':
-                original=self.producers.get(tuple(ident[:2]));assert original,'generated consumer lacks retained producer FD'
+                original=self.producers.get(tuple(ident[:2]));prepared=False
+                if original is None:
+                    original=self.prepared_inputs.get(target);prepared=original is not None
+                assert original,'build consumer lacks actual producer or sealed prepared FD: '+str(dict(path=target,dev=ident[0],ino=ident[1]))
                 old,held,expected=original;now=probe.identity(os.fstat(held));held_hash=hashlib.sha256();held_bytes=0
                 while True:
                     block=os.pread(held,65536,held_bytes)
@@ -179,7 +224,8 @@ class Observer:
                     held_bytes+=len(block);assert held_bytes<=self.maximum_file_bytes;held_hash.update(block);self.check()
                 held_data=(held_bytes,held_hash.hexdigest())
                 assert now==probe.identity(os.fstat(held))
-                self.consumers.append(self.emit(dict(kind='generated-consumer-binding',captureSequence=row['sequence'],producerCaptureSequence=old['sequence'],path=target,identity=ident,retainedIdentity=now,actualBytesEqual=data==expected==held_data and now==ident)))
+                assert data==expected==held_data and now==ident,'actual prepared/generated bytes changed before consumer: '+str(dict(path=target,dev=ident[0],ino=ident[1]))
+                self.consumers.append(self.emit(dict(kind='prepared-consumer-binding' if prepared else 'generated-consumer-binding',captureSequence=row['sequence'],producerCaptureSequence=old['sequence'],path=target,identity=ident,retainedIdentity=now,actualBytesEqual=True)))
             return row
         finally:
             if reader is not None:os.close(reader)
@@ -272,7 +318,12 @@ class Observer:
             return self.phase_armed(name,command,cwd,env,stdoutPath,stderrPath)
     def phase_armed(self,name,command,cwd,env,stdoutPath,stderrPath):
         capture_start=len(self.captures);started_ns=time.time_ns();stdout_path=Path(stdoutPath) if stdoutPath is not None else self.out/(name+'.stdout.raw');stderr_path=Path(stderrPath) if stderrPath is not None else self.out/(name+'.stderr.raw')
-        self.wait_references=[];self.tasks={};self.unknown_stops={};self.root_code=None;self.current_phase=name;self.raw=ShardedRaw(self.out,name,self.shard_bytes) if self.shard_bytes else open(self.out/(name+'.syscalls.original.jsonl'),'xb');read_fd,write_fd=os.pipe();stdout_read,stdout_write=os.pipe();stderr_read,stderr_write=os.pipe();child=os.fork()
+        self.wait_references=[];self.tasks={};self.unknown_stops={};self.root_code=None;self.current_phase=name;self.raw=ShardedRaw(self.out,name,self.shard_bytes) if self.shard_bytes else open(self.out/(name+'.syscalls.original.jsonl'),'xb')
+        if not self.prepared_sealed:
+            try:self.seal_prepared_build_inputs()
+            except BaseException:
+                self.raw_bytes_completed+=self.raw.tell();self.raw.close();self.close();raise
+        read_fd,write_fd=os.pipe();stdout_read,stdout_write=os.pipe();stderr_read,stderr_write=os.pipe();child=os.fork()
         if child==0:
             try:
                 os.close(write_fd);os.close(stdout_read);os.close(stderr_read);assert os.read(read_fd,1)==b'x';os.close(read_fd)

@@ -39,6 +39,22 @@ class Tests(unittest.TestCase):
         self.assertEqual(observer.tighten_remaining(0),50)
         for invalid in [-1,True,1.5]:
             with self.assertRaisesRegex(AssertionError,'remaining source'):observer.tighten_remaining(invalid)
+    def test_actual_preexisting_build_inputs_are_sealed_once_with_held_FDs(self):
+        base=ROOT/'.test-data/sdk-ptrace-library';base.mkdir(parents=True,exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=base) as directory:
+            root=Path(directory);build=root/'build';build.mkdir();out=root/'originals';out.mkdir()
+            paths=[build/'.xpod-source-prepared',build/'arbitrary-prepared.conf']
+            for path in paths:path.write_bytes(b'prepared-17')
+            backend=module.Observer(out,root/'source',build);backend.deadline=time.monotonic()+5;backend.current_phase='configure';backend.raw=(out/'raw.jsonl').open('xb')
+            try:
+                backend.seal_prepared_build_inputs();self.assertEqual(set(backend.prepared_inputs),set(map(str,paths)))
+                self.assertEqual(len(backend.captures),2)
+                for path in paths:
+                    row,fd,data=backend.prepared_inputs[str(path)];self.assertEqual(os.pread(fd,100,0),b'prepared-17');self.assertEqual(row['original']['sha256'],hashlib.sha256(b'prepared-17').hexdigest())
+                held=backend.prepared_inputs[str(paths[0])][1];before=os.fstat(held).st_ino;paths[0].write_bytes(b'prepared-18')
+                self.assertEqual(os.fstat(held).st_ino,before);self.assertEqual(os.pread(held,100,0),b'prepared-18')
+                with self.assertRaisesRegex(AssertionError,'precede'):backend.seal_prepared_build_inputs()
+            finally:backend.raw.close();backend.close()
     def test_canonical_budget_cannot_be_increased(self):
         with self.assertRaisesRegex(AssertionError,'canonical shared execution'):
             module.SdkExecutionObserver(Path('/unused'),Path('/opt/qlever-sdk/source'),Path('/opt/qlever-sdk/build'),deadline_monotonic=time.monotonic()+1,check_budget=lambda:None,maximum_bytes=4*1024**3+1,maximum_stdio_bytes=1000)

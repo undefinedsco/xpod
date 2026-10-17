@@ -22,11 +22,32 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
     maximum_total=limits['sourceMaterialBytes'] if limits else 16*1024**2
     original_cache={};retained_entries=set();phase_tracking=[]
     live=set();last=0;entries={};exits={};barriers={};caps={};paths={};renames=[];consumers=[];source_reads=[];total=0;capture_total=0;exclusive=None;root_codes={};clone_flags=set()
+    prepared={};prepared_consumers=[];prepared_digest=hashlib.sha256();prepared_count=0;prepared_sealed=False;prepared_paths=set()
+    def capture_data(ref):
+        nonlocal capture_total
+        need(re.fullmatch(r'capture-[0-9]{4,}\.original',ref['path']) and 0<=ref['bytes']<=maximum_file,'fixed capture role/byte bound')
+        key=(ref['path'],ref['bytes'],ref['sha256'])
+        if key not in original_cache:
+            original=read_original(ref['path'],maximum_file);digest=hashlib.sha256();count=0
+            if isinstance(original,bytes):need(len(original)<=1024**2,'legacy tiny byte reader bound')
+            blocks=(original[offset:offset+65536] for offset in range(0,len(original),65536)) if isinstance(original,bytes) else original
+            for block in blocks:
+                check();need(isinstance(block,bytes) and len(block)<=65536,'bounded actual capture block required');count+=len(block);need(count<=ref['bytes'],'capture actual byte bound');digest.update(block)
+            data=(count,digest.hexdigest());capture_total+=count;need(capture_total<=maximum_total and data==(ref['bytes'],ref['sha256']),'capture actual bytes/reference differs');original_cache[key]=data
+        return original_cache[key]
     for phase,lines in phase_lines:
         need(not live,'prior actual process tree has not closed');roots=[];waits=[]
         for raw in lines:
             check();total+=len(raw);need(total<=maximum_raw and len(raw)<=65536,'tiny raw aggregate/record bound');row=json.loads(raw);need(row['sequence']==last+1 and row['phase']==phase,'phase/raw sequence differs');last=row['sequence'];kind=row['kind']
-            if kind=='owned-root-binding':need(not live and not roots,'unique actual root required');live.add(row['pid']);roots.append(row['pid']);need(row['backend']=='ptrace-all-stop-process-v1','wrong observer backend')
+            if kind=='prepared-build-input-original':
+                need(not live and not roots and not phase_tracking and not prepared_sealed,'prepared input must precede first actual process')
+                need(row['path'].startswith('/') and row['path'] not in prepared_paths,'unique absolute prepared original path required')
+                data=capture_data(row['original']);need(len(row['identity'])==6 and row['identity'][3]==data[0],'prepared identity/bytes differ');prepared[row['sequence']]=(row,data);prepared_count+=1;prepared_paths.add(row['path'])
+                prepared_digest.update((json.dumps(dict(path=row['path'],identity=row['identity'],original=row['original']),sort_keys=True)+'\n').encode())
+            elif kind=='prepared-build-input-seal':
+                need(not live and not roots and not phase_tracking and not prepared_sealed and row['files']==prepared_count and row['inventorySha256']==prepared_digest.hexdigest(),'prepared closed-set byte seal differs');prepared_sealed=True
+                need(all(value[0]['path'].startswith(row['buildRoot'].rstrip('/')+'/') for value in prepared.values()),'prepared original escapes actual build root')
+            elif kind=='owned-root-binding':need(not live and not roots,'unique actual root required');live.add(row['pid']);roots.append(row['pid']);need(row['backend']=='ptrace-all-stop-process-v1','wrong observer backend')
             elif kind=='actual-child-binding':need(row['parentPid'] in live and row['childPid'] not in live,'unobserved actual child binding');live.add(row['childPid'])
             elif kind=='actual-wait-exit':need(row['pid'] in live,'wait on unknown process');live.remove(row['pid']);root_codes[row['pid']]=row['returnCode'];waits.append(dict(pid=row['pid'],sequence=row['sequence'],returnCode=row['returnCode'],phase=phase))
             elif kind=='all-stop-barrier':need(row['pids']==sorted(live) and row['osStates']==['t']*len(live),'potential writer not in actual complete tracing-stop barrier');barriers[row['sequence']]=row
@@ -58,21 +79,13 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                 nr=entry['nr'];fd_index=4 if nr==rules['mmap'] else 0;need(row['fd']==entry['args'][fd_index],'capture actual FD differs')
                 if row['role']=='producer-close':need(nr==rules['close'] and row['writers']==[dict(pid=row['pid'],fd=row['fd'])],'producer has another writable alias')
                 else:need(nr==rules['read'] and row['writers']==[],'consumer/source has live writable alias')
-                ref=row['original'];need(re.fullmatch(r'capture-[0-9]{4,}\.original',ref['path']) and 0<=ref['bytes']<=maximum_file,'fixed capture role/byte bound')
-                key=(ref['path'],ref['bytes'],ref['sha256'])
-                if key not in original_cache:
-                    original=read_original(ref['path'],maximum_file);digest=hashlib.sha256();count=0
-                    if isinstance(original,bytes):need(len(original)<=1024**2,'legacy tiny byte reader bound')
-                    blocks=(original[offset:offset+65536] for offset in range(0,len(original),65536)) if isinstance(original,bytes) else original
-                    for block in blocks:
-                        check();need(isinstance(block,bytes) and len(block)<=65536,'bounded actual capture block required');count+=len(block);need(count<=ref['bytes'],'capture actual byte bound');digest.update(block)
-                    data=(count,digest.hexdigest());capture_total+=count;need(capture_total<=maximum_total and data==(ref['bytes'],ref['sha256']),'capture actual bytes/reference differs');original_cache[key]=data
-                data=original_cache[key]
+                data=capture_data(row['original'])
                 need(len(row['identity'])==6 and row['identity'][3]==data[0],'actual capture identity/size differs');caps[row['sequence']]=(row,data)
                 if capture_observer:capture_observer(row,data)
                 if row['role']=='source-read':source_reads.append(row)
             elif kind=='retained-fd-rename-binding':renames.append(row)
             elif kind=='generated-consumer-binding':consumers.append(row)
+            elif kind=='prepared-consumer-binding':prepared_consumers.append(row)
             else:need(kind in ['ptrace-event','signal-delivery','generated-mmap-unverified'],'unknown raw observer event')
         need(len(roots)==1 and not live and root_codes.get(roots[0])==0 and exclusive is None,'actual root/descendant wait closure incomplete')
         phase_tracking.append(dict(phase=phase,actualRootPid=roots[0],actualRootReturnCode=root_codes[roots[0]],waitReferences=waits))
@@ -93,6 +106,14 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
         cap,data=consumer;old,expected=producer;need(cap['identity']==binding['identity']==binding['retainedIdentity'] and cap['identity'][:2]==old['identity'][:2],'consumer retained FD inode differs')
         if cap['path']!=old['path']:need(any(r['producerCaptureSequence']==old['sequence'] and r['toPath']==cap['path'] for r in renames),'consumer lacks actual temporary-to-final rename')
         need(data==expected,'actual generated bytes changed between producer close and consumer read');covered[cap['path']]=dict(path=cap['path'],bytes=data[0],sha256=data[1],producerCaptureSequence=old['sequence'],consumerCaptureSequence=cap['sequence'])
+    prepared_covered={}
+    for binding in prepared_consumers:
+        consumer=successful.get(binding['captureSequence']);original=prepared.get(binding['producerCaptureSequence'])
+        if consumer is None:continue
+        need(prepared_sealed and original and consumer[0]['role']=='consumer','prepared consumer has no actual sealed original')
+        cap,data=consumer;prior,expected=original
+        need(cap['path']==binding['path']==prior['path'] and cap['identity']==binding['identity']==binding['retainedIdentity'] and cap['identity'][:2]==prior['identity'][:2] and data==expected,'actual prepared consumer bytes/FD relation differs')
+        prepared_covered[cap['path']]=dict(path=cap['path'],bytes=data[0],sha256=data[1],preparedCaptureSequence=prior['sequence'],consumerCaptureSequence=cap['sequence'])
     if required_inputs is None:
         for name in ['config.h','generated.h','custom.h']:
             if not any(path.endswith('/'+name) for path in covered):pending.append('actual-successful-generated-consumer-missing:'+name)
@@ -102,4 +123,4 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
             if actual is None:pending.append('actual-successful-generated-consumer-missing:'+path)
             else:need(actual['bytes']==expected['bytes'] and actual['sha256']==expected['sha256'],'actual generated consumer differs from selected full-shard input')
     return dict(schemaVersion=1,kind='all-stop-CMake-generated-byte-mechanics',selectedGeneratedConsumerByteCustodyVerified=not pending,outputs=sorted(covered.values(),key=lambda row:row['path']),observedSourceReadCaptures=len(source_reads),pending=pending,overallSdkSourceVerified=False,
-                phaseTracking=phase_tracking,scope='actual producer-close/rename/consumer bytes only; reviewed observer execution/Git/source/runtime authority independent')
+                preparedInputConsumers=list(prepared_covered.values()),preparedInputConsumerBytesVerified=bool(prepared_covered),phaseTracking=phase_tracking,scope='actual producer-close/rename/consumer bytes only; reviewed observer execution/Git/source/runtime authority independent')

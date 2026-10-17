@@ -13,7 +13,7 @@ def safe(name):
     return isinstance(name,str) and name and not name.startswith('/') and not any(c in name for c in '\\\0\r\n') and all(part not in ('','.','..') for part in name.split('/'))
 @contextlib.contextmanager
 def registered_zip_originals(archive_path,prefix,check):
-    need(prefix in ('inner/debian-source/indexes/','inner/upstream-source/','inner/toolchain-execution/'),'fixed SDK original domain required')
+    need(prefix in ('inner/debian-source/indexes/','inner/upstream-source/','inner/toolchain-execution/','inner/debian-binary/'),'fixed SDK original domain required')
     def identity(value):
         return value.st_dev, value.st_ino, value.st_size, value.st_mode, value.st_mtime_ns, value.st_ctime_ns
     flags = os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0)
