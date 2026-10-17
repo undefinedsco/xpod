@@ -5,6 +5,11 @@ declare const nativeOriginalsBrand: unique symbol;
 /** Central original-byte custody only. This is deliberately not a normal
  * product capability and grants no native, source, ABI or legal approval. */
 export interface CollectedNativeOriginalsCapability { readonly [nativeOriginalsBrand]: true }
+/** Cleanup/observation timing only; this hook cannot issue or restore custody. */
+export interface NativeArchiveObservationBudget {
+  check(): void;
+  remainingMs(): number;
+}
 export interface CollectedNativeOriginalsView {
   readonly origin: GitHubOriginObservation;
   readonly originFacts: GitHubOriginFacts;
@@ -17,7 +22,7 @@ export interface CollectedNativeOriginalsView {
   /** Single range <=64KiB. Source tar readers have an independent fixed
    * <=512MiB/member budget, not the 16MiB Mach-O header observation budget. */
   readOriginalRange(path: string, offset: number, length: number): Buffer;
-  withArchiveFile<T>(operation: (input: { readonly path: string; readonly identity: Readonly<{ bytes: number; sha256: string }> }) => Promise<T>): Promise<T>;
+  withArchiveFile<T>(operation: (input: { readonly path: string; readonly identity: Readonly<{ bytes: number; sha256: string }> }) => Promise<T>, budget?: NativeArchiveObservationBudget): Promise<T>;
 }
 export interface NativeAdmissionOriginalCollectionInput {
   readonly githubOrigin: GitHubOriginObservation;

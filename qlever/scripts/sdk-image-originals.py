@@ -238,16 +238,17 @@ def collect(image,target,metadata,out,deadline):
     for record in [*inner['stages'],*linked['stages']]:
         stages.append(dict(record,**{field:prefix(record[field],'inner') for field in ['receipt','stdout','stderr','supervisionReceipt','supervisionRaw']},
                            inputs=[prefix(ref,'inner') for ref in record['inputs']],outputs=[prefix(ref,'inner') for ref in record['outputs']]))
-    if context['archive']['bytes']+sum(ref['bytes'] for ref in inner['domains'])+inner.get('debianSourceBytes',0)>4*1024**3:raise ValueError('Shared SDK source/context domains exceed 4GiB')
+    if context['archive']['bytes']+sum(ref['bytes'] for ref in inner['domains'])+inner.get('debianSourceBytes',0)+inner.get('symlinkOriginalBytes',0)>4*1024**3:raise ValueError('Shared SDK source/context domains exceed 4GiB')
     debian_reference=receiver_debian_collection(out,inner['debianSources'])
     originals=[]
     for path in sorted(out.rglob('*')):
         budget.check(300)
         if path.is_file():originals.append(commands.ref(path,out))
+    symlink_refs={key:prefix(ref,'inner') for key,ref in inner.get('symlinkOriginals',{}).items()}
     master=dict(schemaVersion=1,kind='qlever-linux-sdk-originals',identity=identity,image=observed,
         buildkit=dict(metadata=commands.ref(out/'buildkit.metadata.original.json',out),record=commands.ref(out/'build.dockerbuild',out)),
         debianSources=debian_reference,
-        sourceContext=commands.ref(out/'context-originals.json',out),inputs=dict(before=prefix(inner['inputsBefore'],'inner'),after=prefix(inner['inputsAfter'],'inner'),shards=[prefix(ref,'inner') for ref in inner['domains']]),
+        sourceContext=commands.ref(out/'context-originals.json',out),inputs=dict(before=prefix(inner['inputsBefore'],'inner'),after=prefix(inner['inputsAfter'],'inner'),shards=[prefix(ref,'inner') for ref in inner['domains']],symlinks=symlink_refs),
         stages=stages,originals=originals,releaseAccepted=False,pending=inner['pending'],
         scope='Actual build/image/input/execution originals; SDK source, origin and legal admission remain external')
     write(out/'materials.json',master)

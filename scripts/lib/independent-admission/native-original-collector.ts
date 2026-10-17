@@ -1,3 +1,4 @@
+import {nativeArchiveInspectionTimeout} from './native-archive-observation-budget';
 import { PUBLICATION_DISK_LIMITS } from './publication-disk-budget';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -10,7 +11,7 @@ import { githubOriginFacts, githubOriginOriginals, isNativeGitHubOrigin } from '
 import { nativeOriginalLifetime } from './native-original-lifetime';
 import { lazyZipOriginals } from './lazy-zip-originals';
 import type { CollectedArtifactMember } from './artifact-contract';
-import type { CollectedNativeOriginalsCapability, CollectedNativeOriginalsView, NativeAdmissionOriginalCollectionInput } from './native-originals';
+import type { CollectedNativeOriginalsCapability, CollectedNativeOriginalsView, NativeAdmissionOriginalCollectionInput, NativeArchiveObservationBudget } from './native-originals';
 const issued = new WeakMap<object, CollectedNativeOriginalsView>();
 const custodyAssertions=new WeakMap<object,()=>void>();
 export function assertCollectedNativeOriginalCustody(value:unknown):void{
@@ -91,16 +92,19 @@ export async function collectNativeAdmissionOriginals(input: NativeAdmissionOrig
           boundedRange(name,offset,Math.min(limits.rangeBytes,row.bytes-offset)).copy(result,offset);
         return result;
       },
-      async withArchiveFile<T>(operation:(input:{readonly path:string;readonly identity:Readonly<{bytes:number;sha256:string}>})=>Promise<T>):Promise<T>{
+      async withArchiveFile<T>(operation:(input:{readonly path:string;readonly identity:Readonly<{bytes:number;sha256:string}>})=>Promise<T>,budget?:NativeArchiveObservationBudget):Promise<T>{
         lifetime.assertReadable();
         // Full archive SHA and inventory are rechecked before and after the controlled
         // scanner. No archive path is recovered from a serialized capability.
         const before=inspectArtifact([path.resolve(import.meta.dir,'../inspect-product-artifact.py'),archivePath,facts.artifactSha256,
-          String(PUBLICATION_DISK_LIMITS.outerPackedBytes),String(PUBLICATION_DISK_LIMITS.outerExpandedBytes),String(limits.members)],{timeout:limits.timeoutMs,maxBuffer:32*1024**2});
+          String(PUBLICATION_DISK_LIMITS.outerPackedBytes),String(PUBLICATION_DISK_LIMITS.outerExpandedBytes),String(limits.members)],{timeout:nativeArchiveInspectionTimeout(budget),maxBuffer:32*1024**2});
+        nativeArchiveInspectionTimeout(budget);
         if(before.error||before.status!==0||!isDeepStrictEqual(JSON.parse(before.stdout).members,rows)) return fail('native archive changed');
         const value=await operation({path:archivePath,identity:Object.freeze({bytes:custody.archive.bytes,sha256:facts.artifactSha256})});
+        nativeArchiveInspectionTimeout(budget);
         const after=inspectArtifact([path.resolve(import.meta.dir,'../inspect-product-artifact.py'),archivePath,facts.artifactSha256,
-          String(PUBLICATION_DISK_LIMITS.outerPackedBytes),String(PUBLICATION_DISK_LIMITS.outerExpandedBytes),String(limits.members)],{timeout:limits.timeoutMs,maxBuffer:32*1024**2});
+          String(PUBLICATION_DISK_LIMITS.outerPackedBytes),String(PUBLICATION_DISK_LIMITS.outerExpandedBytes),String(limits.members)],{timeout:nativeArchiveInspectionTimeout(budget),maxBuffer:32*1024**2});
+        nativeArchiveInspectionTimeout(budget);
         if(after.error||after.status!==0||!isDeepStrictEqual(JSON.parse(after.stdout).members,rows)) return fail('native archive changed during scan');
         return value;
       }});

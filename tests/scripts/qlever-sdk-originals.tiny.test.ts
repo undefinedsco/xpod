@@ -53,3 +53,14 @@ test('Debian v3 SDK execution binds inner/image/Docker/acquisition as one versio
  }
  expect(QLEVER_LINUX_EXECUTION_GROUPS.includes(next)).toBe(true);
 });
+
+test('symlink originals are checked only after their complete Debian recipe selects',()=>{
+ const before=QLEVER_SDK_EXECUTION_GROUPS[3]!,next=QLEVER_SDK_EXECUTION_GROUPS[4]!;
+ expect(next.selectors.some(row=>row.path==='qlever/scripts/sdk-symlink-originals.py')).toBe(false);
+ expect(next.sourceBindings.find(row=>row.path==='qlever/scripts/sdk-symlink-originals.py')?.sha256).toBe('2b315ba5a85d7dfbae12db32e0429d95d31fa28dbc8d44e877517e6e3eb57a40');
+ for(const helper of ['qlever/scripts/sdk-debian-source-acquisition.py','qlever/scripts/sdk-debian-source-materials.py'])expect(next.sourceBindings.find(row=>row.path===helper)).toEqual(before.sourceBindings.find(row=>row.path===helper));
+ for(const name of ['qlever/scripts/sdk-inner-materials.py','qlever/scripts/sdk-image-originals.py']){
+  const map=new Map(next.selectors.map(row=>[sourceBindingKey(row),row.sha256]));const prior=before.selectors.find(row=>row.path===name)!;map.set(sourceBindingKey(prior),prior.sha256);
+  expect(()=>selectGitHubSourceBindingGroup(QLEVER_SDK_EXECUTION_GROUPS,map)).toThrow();
+ }
+});
