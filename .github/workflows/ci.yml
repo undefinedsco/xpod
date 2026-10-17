@@ -26,6 +26,11 @@ jobs:
 
       - run: bun install --frozen-lockfile
 
+      - name: Check native SDK, archive and Docker context contracts before builds
+        run: |
+          python3 -m unittest discover -s qlever/tests -p 'test_qlever*'
+          python3 -m unittest discover -s qlever/tests -p 'test_resolve_runtime_sdk_build.py'
+
       - name: Install ripgrep differential oracle
         run: |
           sudo apt-get update

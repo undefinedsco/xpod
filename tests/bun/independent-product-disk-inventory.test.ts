@@ -4,7 +4,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { gzipSync, gunzipSync } from 'node:zlib';
 import { createHash } from 'node:crypto';
-import { indexProductArchiveOnDisk, productDiskInventoryLimits } from '../../scripts/lib/independent-admission/product-disk-inventory';
+import { indexProductArchiveOnDisk, productDiskInventoryLimits, assertProductDiskBudget } from '../../scripts/lib/independent-admission/product-disk-inventory';
 function tgz(rows: { name: string; text?: string; type?: string; size?: number; mode?: number }[]): Buffer {
   const blocks: Buffer[] = [];
   for (const row of rows) {
@@ -141,4 +141,17 @@ test('range budget counts zero-length calls and rejects invalid input before res
     } finally { inventory.dispose(); }
     expect(() => inventory.readMemberRange('empty', 0, 0)).toThrow('unchanged');
   });
+});
+
+test('disk reservation uses available blocks, fixed floor and prewrite queue headroom', () => {
+  const floor = 1024 ** 3 + 1024 ** 2;
+  assertProductDiskBudget({ bavail: BigInt(floor + 65536), bsize: 1n }, 65536);
+  expect(() => assertProductDiskBudget({ bavail: BigInt(floor + 65535), bsize: 1n }, 65536)).toThrow('floor');
+  expect(() => assertProductDiskBudget({ bavail: 0n, bsize: 4096n }, 0)).toThrow('floor');
+  expect(() => assertProductDiskBudget({ bavail: -1, bsize: 4096 }, 0)).toThrow('capacity');
+  expect(() => assertProductDiskBudget({ bavail: NaN, bsize: 4096 }, 0)).toThrow('capacity');
+  expect(() => assertProductDiskBudget({ bavail: 10n ** 20n, bsize: 4096n }, -1)).toThrow('reservation');
+  const initial = productDiskInventoryLimits.expandedBytes + 768 * 1024 ** 2;
+  expect(() => assertProductDiskBudget({ bavail: BigInt(floor + initial - 1), bsize: 1n }, initial)).toThrow('floor');
+  assertProductDiskBudget({ bavail: BigInt(floor + initial), bsize: 1n }, initial);
 });

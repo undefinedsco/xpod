@@ -95,11 +95,16 @@ jobs:
         shell: bash
         env:
           REQUESTED_SOURCE_COMMIT: ${{ inputs.source_commit }}
+          SDK_PROFILE: ${{ needs.resolve_target.outputs.sdk_profile }}
         run: |
           set -euo pipefail
           source_commit="${REQUESTED_SOURCE_COMMIT:-${GITHUB_SHA}}"
           [[ "${source_commit}" =~ ^[a-f0-9]{40}$ ]] \
             || { echo 'source_commit must be a 40-character lowercase commit SHA' >&2; exit 64; }
+          if [[ "$SDK_PROFILE" == module-bookworm-gcc12 && "$source_commit" != "$GITHUB_SHA" ]]; then
+            echo 'Module SDK and runtime materials require the same workflow source SHA' >&2
+            exit 64
+          fi
           echo "commit=${source_commit}" >> "${GITHUB_OUTPUT}"
 
       - name: Check out the source
@@ -324,3 +329,13 @@ jobs:
             echo "Build inputs alias: \`${{ steps.sdk_inputs.outputs.tag }}\`"
             echo "Alias: \`${{ steps.alias.outputs.created || steps.alias.outputs.kept }}\`"
           } >> "${GITHUB_STEP_SUMMARY}"
+
+  module_runtime_materials:
+    # The registered SDK workflow is the entry point even before the new
+    # reusable archive workflow exists on the repository default branch.
+    if: ${{ needs.resolve_target.outputs.sdk_profile == 'module-bookworm-gcc12' }}
+    needs: [resolve_target, publish]
+    uses: ./.github/workflows/build-qlever-linux-runtime.yml
+    with:
+      target: ${{ needs.resolve_target.outputs.target }}
+      module_sdk_image: ${{ needs.publish.outputs.image }}

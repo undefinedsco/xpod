@@ -3,6 +3,9 @@ import argparse
 import hashlib
 import json
 import os
+import shutil
+import subprocess
+from types import SimpleNamespace
 from pathlib import Path
 import platform
 import re
@@ -12,6 +15,111 @@ import tarfile
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'scripts/agentfs-native-ci'))
 from supervise import run_checked_stage
+
+
+
+GIB = 1024 ** 3
+MIB = 1024 ** 2
+FRESH_FREE_BYTES = 8 * GIB
+STOP_FREE_BYTES = 2 * GIB  # 1 GiB cancellation headroom above the hard floor.
+HARD_FREE_BYTES = GIB
+RUNTIME_BYTES = 384 * MIB
+SDK_METADATA_BYTES = 256 * MIB
+PROFILE_BYTES = 32 * MIB
+ARCHIVE_BYTES = 256 * MIB
+OUTPUT_BYTES = 1536 * MIB  # Same bounded target ceiling as the owned supervisor.
+MAX_MEMBERS = 4096
+SDK_ORIGINALS = ('.xpod-build-contract.json', '.xpod-source-manifest', '.xpod-toolchain-identity', 'compile_commands.json', 'CMakeCache.txt')
+
+
+def measured_free(paths):
+    return SimpleNamespace(free=min(shutil.disk_usage(path).free for path in paths))
+
+
+def tree_bytes(root):
+    total = 0; count = 0
+    for member in Path(root).rglob('*'):
+        if member.is_symlink(): raise RuntimeError('Producer output link rejected')
+        if member.is_file():
+            total += member.stat().st_size; count += 1
+            if count > MAX_MEMBERS or total > OUTPUT_BYTES: raise RuntimeError('Producer output byte/member budget exceeded')
+        elif not member.is_dir(): raise RuntimeError('Producer output nonregular member')
+    return total
+
+
+def bounded_copy_members(tar, destination, expected, limit):
+    """Bound declared bytes before extraction, not after a Docker copy filled disk."""
+    destination = Path(destination); total = 0; seen = set(); members = []
+    for member in tar:
+        parts = Path(member.name).parts
+        if not parts or parts[0] != expected or member.name.startswith('/') or any(part in ['.', '..'] for part in parts) or '\\' in member.name:
+            raise RuntimeError('Unsafe Docker copy member')
+        if member.name in seen or member.issym() or member.islnk() or not (member.isfile() or member.isdir()):
+            raise RuntimeError('Duplicate/link/nonregular Docker copy member')
+        seen.add(member.name)
+        if len(seen) > MAX_MEMBERS or member.size < 0 or member.size > limit or total + member.size > limit:
+            raise RuntimeError('Docker copy byte/member budget exceeded')
+        relative = parts[1:]
+        target = destination.joinpath(*relative)
+        if member.isdir(): target.mkdir(parents=True, exist_ok=True); continue
+        total += member.size
+        target.parent.mkdir(parents=True, exist_ok=True)
+        original = tar.extractfile(member)
+        with target.open('xb') as output:
+            remaining = member.size
+            while remaining:
+                if shutil.disk_usage(destination.parent).free < STOP_FREE_BYTES: raise RuntimeError('Native output free-space floor')
+                block = original.read(min(65536, remaining))
+                if not block: raise RuntimeError('Truncated Docker copy member')
+                output.write(block); remaining -= len(block)
+        target.chmod(member.mode & 0o777)
+        members.append(dict(path=str(target), bytes=member.size))
+    if not seen: raise RuntimeError('Docker copy member inventory empty')
+    return total
+
+
+class BoundedCopyReader:
+    def __init__(self, source, limit): self.source = source; self.limit = limit; self.bytes = 0
+    def read(self, count=-1):
+        remaining = self.limit - self.bytes
+        if count < 0 or count > remaining + 1: count = remaining + 1
+        content = self.source.read(count); self.bytes += len(content)
+        if self.bytes > self.limit: raise RuntimeError('Docker copy transport budget exceeded')
+        return content
+
+
+def bounded_docker_copy(cid, source, destination, limit):
+    allowed = {'/opt/xpod/qlever': RUNTIME_BYTES, '/opt/qlever-sdk/profile': PROFILE_BYTES, **{'/opt/qlever-sdk/build/' + name: SDK_METADATA_BYTES for name in SDK_ORIGINALS}}
+    if not re.fullmatch('[a-f0-9]{64}', cid) or source not in allowed or not 0 < limit <= allowed[source]:
+        raise RuntimeError('Unregistered Docker copy source')
+    child = subprocess.Popen(['docker', 'cp', cid + ':' + source, '-'], stdout=subprocess.PIPE, stderr=sys.stderr)
+    try:
+        transport = BoundedCopyReader(child.stdout, limit + MAX_MEMBERS * 1024 + MIB)
+        with tarfile.open(fileobj=transport, mode='r|') as tar:
+            copied = bounded_copy_members(tar, destination, Path(source).name, limit)
+        # A valid Docker tar has only a bounded zero-padding trailer.
+        trailer = transport.read(MIB + 1)
+        if len(trailer) > MIB or any(trailer): raise RuntimeError('Invalid Docker copy trailer')
+        if child.wait(timeout=15) != 0: raise RuntimeError('Docker copy child failed')
+        print(json.dumps(dict(copiedBytes=copied, limitBytes=limit, source=source, actualWait=True)))
+    finally:
+        if child.poll() is None:
+            child.terminate()
+            try: child.wait(timeout=2)
+            except subprocess.TimeoutExpired: child.kill(); child.wait(timeout=15)
+        child.stdout.close()
+
+
+class BoundedArchiveWriter:
+    def __init__(self, file, directory):
+        self.file = file; self.directory = directory; self.bytes = 0
+        self.limit = min(ARCHIVE_BYTES, OUTPUT_BYTES - tree_bytes(directory))
+    def write(self, value):
+        if self.bytes + len(value) > self.limit: raise RuntimeError('Native archive byte budget exceeded')
+        if shutil.disk_usage(self.directory).free < STOP_FREE_BYTES: raise RuntimeError('Native archive free-space floor')
+        count = self.file.write(value); self.bytes += count; return count
+    def flush(self): self.file.flush()
+    def tell(self): return self.bytes
 
 
 def digest(path):
@@ -65,18 +173,29 @@ def produce(target, sdk_image, runtime_image, output, source_sha):
     output = Path(output).resolve()
     if output.exists(): raise RuntimeError('Fresh producer output required')
     output.mkdir(parents=True, mode=0o700); stages = output / 'stages'; stages.mkdir()
-    records = {}
-    def stage(name, argv, timeout=600):
-        receipt, text = run_checked_stage(name, argv, stages, ROOT, timeout=timeout, fresh_bytes=0, stop_bytes=0)
+    records = {}; disk_paths = [output]
+    def stage(name, argv, timeout=600, cleanup=False):
+        if not cleanup: tree_bytes(output)
+        receipt, text = run_checked_stage(name, argv, stages, ROOT, timeout=timeout, target=None if cleanup else output,
+            fresh_bytes=HARD_FREE_BYTES if cleanup else FRESH_FREE_BYTES,
+            stop_bytes=HARD_FREE_BYTES if cleanup else STOP_FREE_BYTES,
+            free=lambda _: measured_free(disk_paths), poll_seconds=.1)
+        if not cleanup: tree_bytes(output)
         records[name] = dict(receiptSha256=digest(stages / (name + '.receipt.json')), rawSha256=receipt['rawSHA256'])
         return text.strip()
     if stage('source-head', ['git', 'rev-parse', 'HEAD']) != source_sha: raise RuntimeError('Actual source differs')
     tracked = ['qlever', 'docker/qlever-runtime-sdk', 'docker/qlever-local-runtime', 'scripts/module-product-targets.ts',
-               '.github/workflows/build-qlever-linux-runtime.yml']
+               'scripts/agentfs-native-ci', '.dockerignore', '.github/workflows/build-qlever-linux-runtime.yml',
+               '.github/workflows/publish-qlever-runtime-sdk.yml', '.github/workflows/publish-qlever-local-runtime.yml',
+               '.github/workflows/resolve-qlever-native-target.yml']
     if stage('source-clean', ['git', 'status', '--porcelain', '--untracked-files=all', '--', *tracked]): raise RuntimeError('Producer source is dirty')
     stage('cpu-observation', ['lscpu', '--json'])
     source_before = stage('source-trees', ['git', 'ls-tree', 'HEAD', '--', *tracked])
     inspect = '{"id":{{json .Id}},"os":{{json .Os}},"architecture":{{json .Architecture}},"repoDigests":{{json .RepoDigests}}}'
+    docker_root = Path(json.loads(stage('docker-storage-root', ['docker', 'info', '--format', '{{json .DockerRootDir}}'])))
+    if not docker_root.is_absolute() or not docker_root.is_dir(): raise RuntimeError('Actual Docker storage filesystem unavailable')
+    disk_paths.append(docker_root)
+    if measured_free(disk_paths).free < FRESH_FREE_BYTES: raise RuntimeError('Native producer fresh free-space floor')
     images = {}
     for role, reference in [('sdk', sdk_image), ('runtime', runtime_image)]:
         stage(role + '-pull', ['docker', 'pull', '--platform', 'linux/' + ('amd64' if actual_arch == 'x64' else actual_arch), reference])
@@ -89,12 +208,12 @@ def produce(target, sdk_image, runtime_image, output, source_sha):
             if not re.fullmatch('[a-f0-9]{64}', cid): raise RuntimeError('Owned extraction CID invalid')
             owned.append((role, cid))
             if role == 'runtime':
-                stage('runtime-copy', ['docker', 'cp', cid + ':/opt/xpod/qlever', str(output / 'original')])
+                stage('runtime-copy', [sys.executable, str(Path(__file__).resolve()), '--bounded-copy', cid, '/opt/xpod/qlever', str(output / 'original'), str(RUNTIME_BYTES)])
             else:
-                stage('sdk-profile-copy', ['docker', 'cp', cid + ':/opt/qlever-sdk/profile', str(output / 'sdk-profile')])
+                stage('sdk-profile-copy', [sys.executable, str(Path(__file__).resolve()), '--bounded-copy', cid, '/opt/qlever-sdk/profile', str(output / 'sdk-profile'), str(PROFILE_BYTES)])
                 contracts = output / 'sdk-build'; contracts.mkdir()
-                for name in ['.xpod-build-contract.json', '.xpod-source-manifest', '.xpod-toolchain-identity', 'compile_commands.json', 'CMakeCache.txt']:
-                    stage('sdk-copy-' + re.sub('[^a-z0-9-]', '-', name.lower()).strip('-'), ['docker', 'cp', cid + ':/opt/qlever-sdk/build/' + name, str(contracts / name)])
+                for name in SDK_ORIGINALS:
+                    stage('sdk-copy-' + re.sub('[^a-z0-9-]', '-', name.lower()).strip('-'), [sys.executable, str(Path(__file__).resolve()), '--bounded-copy', cid, '/opt/qlever-sdk/build/' + name, str(contracts / name), str(SDK_METADATA_BYTES - tree_bytes(contracts))])
         profile = json.loads((output / 'sdk-profile/inputs.json').read_text())
         if profile.get('profile') != 'module-bookworm-gcc12' or profile.get('glibc') != '2.36' or profile.get('machine') != platform.machine():
             raise RuntimeError('Actual SDK profile/native ABI baseline mismatch')
@@ -118,8 +237,8 @@ def produce(target, sdk_image, runtime_image, output, source_sha):
         primary = sys.exc_info()[1]; cleanup_errors = []
         for role, cid in reversed(owned):
             try:
-                stage(role + '-remove', ['docker', 'rm', '-f', cid])
-                if stage(role + '-absent', ['docker', 'ps', '-aq', '--no-trunc', '--filter', 'id=' + cid]):
+                stage(role + '-remove', ['docker', 'rm', '-f', cid], cleanup=True)
+                if stage(role + '-absent', ['docker', 'ps', '-aq', '--no-trunc', '--filter', 'id=' + cid], cleanup=True):
                     raise RuntimeError('Owned producer container remains')
             except Exception as error:
                 cleanup_errors.append(error)
@@ -131,7 +250,11 @@ def produce(target, sdk_image, runtime_image, output, source_sha):
     if stage('source-clean-after', ['git', 'status', '--porcelain', '--untracked-files=all', '--', *tracked]) \
             or stage('source-trees-after', ['git', 'ls-tree', 'HEAD', '--', *tracked]) != source_before:
         raise RuntimeError('Producer source changed')
-    with tarfile.open(archive, 'w:gz', format=tarfile.GNU_FORMAT) as tar: tar.add(runtime, arcname='.')
+    if tree_bytes(runtime) > RUNTIME_BYTES: raise RuntimeError('Physical runtime byte budget exceeded')
+    with archive.open('xb') as destination:
+        writer = BoundedArchiveWriter(destination, output)
+        with tarfile.open(fileobj=writer, mode='w:gz', format=tarfile.GNU_FORMAT) as tar: tar.add(runtime, arcname='.')
+    tree_bytes(output)
     files = []
     for member in sorted(output.rglob('*')):
         if member.is_file(): files.append(dict(path=str(member.relative_to(output)), bytes=member.stat().st_size, sha256=digest(member)))
@@ -144,9 +267,16 @@ def produce(target, sdk_image, runtime_image, output, source_sha):
                   physicalManifestSha256=digest(runtime / 'manifest.json'),
                   abiReceiptSha256=digest(output / 'physical/abi/physical-runtime.receipt.safe.json'),
                   cpuBaselineClaim='Recorded compile_commands and actual native worker only; no broader CPU compatibility claim',
+                  resourceBudgets=dict(freshFreeBytes=FRESH_FREE_BYTES, stopFreeBytes=STOP_FREE_BYTES, hardFreeBytes=HARD_FREE_BYTES, runtimeBytes=RUNTIME_BYTES, sdkMetadataBytes=SDK_METADATA_BYTES, profileBytes=PROFILE_BYTES, archiveBytes=ARCHIVE_BYTES, outputBytes=OUTPUT_BYTES),
                   scope='Actual native physical build/ABI/smoke originals only; official source/native/service/module release admission remains separate')
     (output / 'native-build-materials.json').write_text(json.dumps(result, sort_keys=True, indent=2) + '\n')
     return result
+
+
+if __name__ == '__main__' and sys.argv[1:2] == ['--bounded-copy']:
+    if len(sys.argv) != 6 or not 0 < int(sys.argv[5]) <= RUNTIME_BYTES: raise RuntimeError('Invalid fixed copy budget')
+    bounded_docker_copy(sys.argv[2], sys.argv[3], sys.argv[4], int(sys.argv[5]))
+    raise SystemExit(0)
 
 
 if __name__ == '__main__':

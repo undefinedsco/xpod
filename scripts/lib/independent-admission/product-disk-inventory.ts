@@ -13,6 +13,20 @@ const { readOctal } = createRequire(import.meta.url)('../../workspace-package-pa
  * expanded tar, not a second extracted tree. No capability is issued here. */
 export const productDiskInventoryLimits = Object.freeze({ packedBytes: 768 * 1024 ** 2,
   expandedBytes: 2 * 1024 ** 3, memberBytes: 256 * 1024 ** 2, members: 50000, timeoutMs: 30000, rangeCalls: 128, rangeHashBytes: 2 * 1024 ** 3 });
+const DISK_FLOOR_BYTES = 1024 ** 3;
+// Reserve stream buffers and filesystem bookkeeping before forwarding a chunk.
+const DISK_QUEUE_RESERVE_BYTES = 1024 ** 2;
+/** Pure arithmetic only, not an injectable production filesystem or issuer. */
+export function assertProductDiskBudget(stat: { bavail: number | bigint; bsize: number | bigint }, additionalBytes: number): void {
+  const integer = (value: number | bigint) => {
+    if (typeof value === 'number' && (!Number.isSafeInteger(value) || value < 0)) return fail('invalid filesystem capacity');
+    const result = BigInt(value); if (result < 0n) return fail('invalid filesystem capacity'); return result;
+  };
+  if (!Number.isSafeInteger(additionalBytes) || additionalBytes < 0) return fail('invalid disk reservation');
+  const available = integer(stat.bavail) * integer(stat.bsize);
+  if (available < BigInt(additionalBytes) + BigInt(DISK_FLOOR_BYTES + DISK_QUEUE_RESERVE_BYTES))
+    fail('snapshot filesystem free-space floor insufficient');
+}
 export interface ProductDiskInventory {
   readonly archive: Readonly<{ bytes: number; sha256: string; integrity: string }>;
   readonly members: readonly CollectedArtifactMember[];
@@ -61,6 +75,10 @@ export async function indexProductArchiveOnDisk(file: string): Promise<ProductDi
     input = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
     root = fs.mkdtempSync(path.join(os.tmpdir(), 'xpod-product-inventory-'));
     const snapshot = path.join(root, 'payload.tar');
+    // Fresh statfs on the actual snapshot filesystem. Peak new payload is at
+    // most expandedBytes; packed source already exists, but reserve its size
+    // again conservatively for concurrent custody/evidence retention.
+    assertProductDiskBudget(fs.statfsSync(root, { bigint: true }), limits.expandedBytes + before.size);
     if (!same(before, fs.fstatSync(input))) fail('archive changed before open');
     const sha256 = createHash('sha256'), sha512 = createHash('sha512'); let packed = 0, expanded = 0;
     const source = fs.createReadStream(file, { fd: input, autoClose: false, highWaterMark: 65536 });
@@ -68,10 +86,16 @@ export async function indexProductArchiveOnDisk(file: string): Promise<ProductDi
       packed += chunk.length;
       if (packed > limits.packedBytes) { callback(new Error('packed byte budget exceeded')); return; }
       sha256.update(chunk); sha512.update(chunk); callback(null, chunk);
-    } }), createGunzip(), new Transform({ transform(chunk, _encoding, callback) {
+    } }), createGunzip({ chunkSize: 65536 }), new Transform({ transform(chunk, _encoding, callback) {
       expanded += chunk.length;
-      callback(expanded > limits.expandedBytes ? new Error('expanded byte budget exceeded') : null, chunk);
-    } }), fs.createWriteStream(snapshot, { flags: 'wx', mode: 0o600 }), { signal: AbortSignal.timeout(limits.timeoutMs) });
+      if (expanded > limits.expandedBytes) { callback(new Error('expanded byte budget exceeded')); return; }
+      try {
+        // Check BEFORE this chunk can reach the writable stream. The extra
+        // queue reserve covers pending bounded stream writes not yet in statfs.
+        assertProductDiskBudget(fs.statfsSync(root, { bigint: true }), chunk.length);
+        callback(null, chunk);
+      } catch (error) { callback(error as Error); }
+    } }), fs.createWriteStream(snapshot, { flags: 'wx', mode: 0o600, highWaterMark: 65536 }), { signal: AbortSignal.timeout(limits.timeoutMs) });
     if (packed !== before.size || !same(before, fs.fstatSync(input)) || !same(before, ordinary(file))) fail('archive changed during indexing');
     fs.chmodSync(snapshot, 0o400); fd = fs.openSync(snapshot, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
     const bound = fs.fstatSync(fd); const header = Buffer.alloc(512); const scratch = Buffer.alloc(65536);
