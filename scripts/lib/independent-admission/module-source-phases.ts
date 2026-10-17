@@ -11,12 +11,21 @@ import { githubOriginFacts, githubOriginOriginals, type GitHubOriginObservation 
 // producer remains the sole phase/command declaration; no parallel phase table.
 export const moduleSourcePhasePolicy = Object.freeze({
   api: 'eaeddab536d6e606042039cfe5290393d5c5a3e454fb590354cc35e5afe2975f',
-  css: '431d033a41f01ab317124e1e5488543ea1ac82fa59c2ef3845ddd43ab4e61f4c',
+  css: '78e2ec3c272233602083f81d574cfefc5f6c36e9200c1d92e6f7935bd6cac41f',
   afs: 'c44348bd2e28b04c5e427c0070045c0e28c9437b7abadae6bdcc72d405abd508',
-  materials: '4f804fb8af61cfc53c7dc9428a0e8167315b9a430ede4048223c62610ff79b6d',
+  materials: 'cc4592e9649eb9f8e92140d9674beb90b78a769d7563df01f5d2971bfdf13258',
   limits: 'c1c529aba719356c682affbe630c215e28cc07163192f8f3b601aab7b0126bd4',
   supervisor: '49fd9c7a7a9c9dc1612b1261f0cbc218166f48487df726239437ae9ad98ba407',
 });
+/** Complete reviewed CSS parent/producer versions. Origin event/head/job
+ * authority remains exclusively in the private GitHub observer. */
+export const CSS_SOURCE_PARENT_VERSIONS = Object.freeze([
+  Object.freeze({workflowSha256: '8312031501f9f0d640e100ddec75e0fe1150d0ee93812b3f8c6785b032319c0f', producerSha256: '431d033a41f01ab317124e1e5488543ea1ac82fa59c2ef3845ddd43ab4e61f4c'}),
+  Object.freeze({workflowSha256: '601aa8fe01ee1367be4e97dc6e868d7bc3e79ed1fea5e8f9531aa759e78d7d51', producerSha256: moduleSourcePhasePolicy.css}),
+]);
+export function reviewedModuleProducerSource(module: 'api' | 'css' | 'afs', sha256: string): boolean {
+  return module === 'css' ? CSS_SOURCE_PARENT_VERSIONS.some(row => row.producerSha256 === sha256) : sha256 === moduleSourcePhasePolicy[module];
+}
 const hash = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
 const fail = (message: string): never => { throw new Error('Module source phases: ' + message); };
 
@@ -27,7 +36,7 @@ export function reviewedModulePhasePlan(module: 'api' | 'css' | 'afs', repositor
   if (!Object.prototype.hasOwnProperty.call(moduleSourcePhasePolicy, module) || !['api', 'css', 'afs'].includes(module)) return fail('unsupported producer');
   const file = fileURLToPath(new URL(`../../${module}-module-producer.py`, import.meta.url));
   const before = readFileSync(file);
-  if (hash(before) !== moduleSourcePhasePolicy[module]) return fail('verifier producer policy drift');
+  if (!reviewedModuleProducerSource(module, hash(before))) return fail('verifier producer policy drift');
   const wrapper = "import json,sys; p={'__name__':'reviewed_phase_policy','__file__':sys.argv[1]}; exec(compile(sys.stdin.buffer.read(),sys.argv[1],'exec'),p); a=json.loads(sys.argv[2]); print(json.dumps([{'name':n,'command':c,'timeoutSeconds':t} for n,c,t in p['phase_plan'](*a)]))";
   const result = spawnSync('/usr/bin/python3', ['-I', '-B', '-c', wrapper, file,
     JSON.stringify([repositoryRoot, outputRoot, version, target])], { timeout: 2500, maxBuffer: 65536,
@@ -72,11 +81,11 @@ export function verifyClosedModulePhaseReceipts(plan: readonly { name: string; c
 /** Narrow route policy only; callers still need the real private origin and
  * immutable artifact/source capabilities below. */
 export function reviewedModuleSourceWorkflow(module: 'api' | 'css' | 'afs', input: {
-  workflowPath: string; workflowSourceSha256: string; target?: string; jobName: string; producerWorkflowPath?: string;
+  workflowPath: string; workflowSourceSha256: string; producerSourceSha256?: string; target?: string; jobName: string; producerWorkflowPath?: string;
 }): boolean {
   if (input.producerWorkflowPath !== input.workflowPath) return false;
   if (module === 'css' && input.workflowPath === '.github/workflows/css-native-products.yml') {
-    return input.workflowSourceSha256 === '8312031501f9f0d640e100ddec75e0fe1150d0ee93812b3f8c6785b032319c0f'
+    return CSS_SOURCE_PARENT_VERSIONS.some(row => row.workflowSha256 === input.workflowSourceSha256 && row.producerSha256 === input.producerSourceSha256)
       && input.target === 'darwin-arm64' && input.jobName === 'targets (darwin-arm64) / products';
   }
   return input.workflowPath === (module === 'afs' ? '.github/workflows/agentfs-module-mounted-acceptance.yml'
@@ -93,13 +102,13 @@ export function inspectModuleSourcePhases(input: { artifact: unknown; source: un
   const job = jobsOriginal && JSON.parse(jobsOriginal.data.toString()).jobs.find((row: any) => row.id === origin.producerJobId);
   if (!job) return fail('observed producer job original missing');
   if (!module || !artifact.identity.target || source.sourceSha !== artifact.identity.sourceSha || origin.sourceSha !== source.sourceSha
-    || origin.target !== artifact.identity.target || !reviewedModuleSourceWorkflow(module, { ...origin, jobName: job.name, producerWorkflowPath: producer.context?.workflowPath })
+    || origin.target !== artifact.identity.target || !reviewedModuleSourceWorkflow(module, { ...origin, jobName: job.name, producerWorkflowPath: producer.context?.workflowPath, producerSourceSha256: hash(source.readTracked(`scripts/${module}-module-producer.py`)) })
     || producer.context?.actualCheckoutSha !== source.sourceSha || producer.context?.target !== artifact.identity.target
     || producer.context?.runId !== origin.runId || producer.context?.runAttempt !== origin.runAttempt
     || producer.context?.runHeadSha !== origin.runHeadSha || producer.context?.version !== artifact.identity.version
     || producer.sourceBefore?.sha !== source.sourceSha || producer.sourceAfter?.sha !== source.sourceSha
     || producer.sourceBefore?.status !== '' || producer.sourceAfter?.status !== '') return fail('module source/origin identity mismatch');
-  if (hash(source.readTracked(`scripts/${module}-module-producer.py`)) !== moduleSourcePhasePolicy[module]
+  if (!reviewedModuleProducerSource(module, hash(source.readTracked(`scripts/${module}-module-producer.py`)))
     || hash(source.readTracked('scripts/agentfs-native-ci/supervise.py')) !== moduleSourcePhasePolicy.supervisor
     || hash(source.readTracked('scripts/lib/module-source-materials.py')) !== moduleSourcePhasePolicy.materials
     || hash(source.readTracked('scripts/lib/module-artifact-limits.json')) !== moduleSourcePhasePolicy.limits

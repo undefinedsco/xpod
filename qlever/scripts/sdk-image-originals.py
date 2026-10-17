@@ -20,6 +20,7 @@ def load(name,file):
     spec=importlib.util.spec_from_file_location(name,HERE/file);module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module);return module
 commands=load('sdk_commands_export','sdk-command-materials.py')
 budgets=load('sdk_budget_export','sdk-execution-budget.py')
+tar_budget=load('sdk_tar_budget_export','sdk-tar-budget.py')
 
 def write(path,value):Path(path).write_text(json.dumps(value,sort_keys=True,indent=2)+'\n')
 def digest(data):return hashlib.sha256(data).hexdigest()
@@ -120,15 +121,16 @@ def capture_context(out,deadline):
             budget.check(1200)
             if name.startswith('/') or '..' in Path(name).parts:raise ValueError('Unsafe SDK context original')
             path=Path(name);info=archive.gettarinfo(str(path),arcname=name)
+            total+=tar_budget.member_bytes(info)
+            tar_budget.require_fit(total)
             if info.isfile():
-                total+=info.size
-                if total>512*1024**2:raise ValueError('SDK context original byte budget')
                 before=commands.ref(path,Path.cwd())
                 with path.open('rb') as stream:archive.addfile(info,stream)
                 if commands.ref(path,Path.cwd())!=before:raise ValueError('SDK context changed while archiving')
                 rows.append(dict(file=before,mode=info.mode))
             elif info.issym():archive.addfile(info);rows.append(dict(path=name,linkTarget=info.linkname,mode=info.mode))
             else:raise ValueError('SDK context unsupported input type')
+    if (out/'context.original.tar').stat().st_size>tar_budget.SHARD_LIMIT:raise ValueError('SDK encoded context exceeds shard byte budget')
     write(out/'context-originals.json',dict(schemaVersion=1,sourceSha=os.environ['GITHUB_SHA'],files=rows,stages=stages,
                                           archive=commands.ref(out/'context.original.tar',out)))
 

@@ -1,4 +1,4 @@
-import {QLEVER_SDK_WORKFLOW,QLEVER_SDK_WORKFLOW_SHA,QLEVER_SDK_B_SOURCE_BINDINGS,QLEVER_LINUX_EXECUTION_GROUPS} from './qlever-sdk-origin-policy';
+import {QLEVER_SDK_WORKFLOW,QLEVER_SDK_WORKFLOW_SHA,QLEVER_SDK_EXECUTION_GROUPS,QLEVER_LINUX_EXECUTION_GROUPS} from './qlever-sdk-origin-policy';
 import {selectGitHubSourceBindingGroup,sourceBindingKey,type GitHubSourceBindingGroup} from './github-source-binding-groups';
 import {immutableGitContentsEndpoint,cachedGitContentsOriginal,retainGitContentsOriginal} from './github-immutable-original-cache';
 import {QLEVER_LINUX_SOURCE_BINDINGS} from './qlever-linux-origin-policy';
@@ -37,7 +37,7 @@ export function isQleverSdkGitHubOrigin(value:unknown):value is GitHubOriginObse
 const normalModuleOrigins = new WeakSet<object>();
 export function isRoutedCssProductGitHubOrigin(value:unknown):value is GitHubOriginObservation {
  const facts=value!==null&&typeof value==='object'?issued.get(value)?.facts:undefined;
- return Boolean(facts&&normalModuleOrigins.has(value as object)&&facts.workflowPath===CSS_NATIVE_PRODUCTS_WORKFLOW&&facts.workflowSourceSha256===CSS_NATIVE_PARENT_SHA);
+ return Boolean(facts&&normalModuleOrigins.has(value as object)&&facts.workflowPath===CSS_NATIVE_PRODUCTS_WORKFLOW&&[CSS_NATIVE_PARENT_SHA,CSS_STAGING_PARENT_SHA].includes(facts.workflowSourceSha256));
 }
 /** Issuer purpose is private; matching a workflow string cannot turn a normal
  * CSS product observation into an independently observed native artifact. */
@@ -77,6 +77,7 @@ interface OriginPolicy {
   workflowSha256: string;
   reviewedWorkflowVersions?: readonly { workflowSha256: string; jobName(artifactName: string): string; sourceBindings?: readonly { path: string; sha256: string; reviewedSha256?: readonly string[]; ref?:'run-head' }[] }[];
   events: readonly string[];
+  stagingPushWorkflowSha256?: string;
   artifactNames(input: ArtifactAcquisitionInput): readonly string[];
   jobName(artifactName: string): string;
   jobNames?(artifactName:string):readonly string[];
@@ -106,6 +107,10 @@ export async function observeCliGitHubOrigin(input: ArtifactAcquisitionInput, op
 
 export const CSS_NATIVE_PRODUCTS_WORKFLOW='.github/workflows/css-native-products.yml';
 const CSS_NATIVE_PARENT_SHA='8312031501f9f0d640e100ddec75e0fe1150d0ee93812b3f8c6785b032319c0f';
+const CSS_STAGING_PARENT_SHA='601aa8fe01ee1367be4e97dc6e868d7bc3e79ed1fea5e8f9531aa759e78d7d51';
+function cssStagingParentPolicy(jobName: string): Pick<OriginPolicy,'reviewedWorkflowVersions'|'stagingPushWorkflowSha256'> {
+ return {reviewedWorkflowVersions:[{workflowSha256:CSS_STAGING_PARENT_SHA,jobName:()=>jobName}],stagingPushWorkflowSha256:CSS_STAGING_PARENT_SHA};
+}
 const CSS_NATIVE_SOURCE_BINDINGS=[
  {path:'.github/workflows/css-native-product-target.yml',sha256:'49ee4c223de857cb9d500a7dceb4a54f36ae8759d1d8b3cc9a7b847db3bbf877'},
  {path:'.github/workflows/css-native-source.yml',sha256:'df05d53b957d7b793dd998d46ccbc9a7dea788ac7f341f5e5472e325897a0371'},
@@ -143,7 +148,7 @@ export async function observeModuleProductGitHubOrigin(input: ArtifactAcquisitio
         sourceBindings: [{ path: 'scripts/module-product-targets.ts', sha256: '35b8752237d620981b1848d6d8876dfac3c1da14509e77358e7f961ca256cf96' }] }],
   };
   const current:OriginPolicy={workflowPath:CSS_NATIVE_PRODUCTS_WORKFLOW,workflowSha256:CSS_NATIVE_PARENT_SHA,
-    events:['workflow_dispatch'],target,artifactNames:coordinates=>[`css-module-products-${target}-${coordinates.sourceSha}-${coordinates.runId}-${coordinates.runAttempt}`],
+    ...cssStagingParentPolicy(`targets (${target}) / products`),events:['workflow_dispatch','push'],target,artifactNames:coordinates=>[`css-module-products-${target}-${coordinates.sourceSha}-${coordinates.runId}-${coordinates.runAttempt}`],
     jobName:()=>`targets (${target}) / products`,requiredStep:'Produce the normal CSS preview',requiredSteps:['Upload original preview and evidence'],
     // Only the actually executed target branch participates. Linux SDK changes
     // do not silently authorize Linux, or block a separately reviewed Mac run.
@@ -196,7 +201,7 @@ export async function observeQleverNativeGitHubOrigin(input:ArtifactAcquisitionI
   if(invocation==='css-native-products'){
     if(['linux-x64','linux-arm64'].includes(target)){
       const observation=await observeGitHubOrigin(input,options,{
-        workflowPath:CSS_NATIVE_PRODUCTS_WORKFLOW,workflowSha256:CSS_NATIVE_PARENT_SHA,events:['workflow_dispatch'],target,
+        workflowPath:CSS_NATIVE_PRODUCTS_WORKFLOW,workflowSha256:CSS_NATIVE_PARENT_SHA,...cssStagingParentPolicy(`targets (${target}) / native / linux / module_runtime_materials / archive`),events:['workflow_dispatch','push'],target,
         artifactNames:row=>[`qlever-local-runtime-${target}-${row.sourceSha}-${row.runId}-${row.runAttempt}`],
         jobName:()=>`targets (${target}) / native / linux / module_runtime_materials / archive`,
         requiredStep:'Bind fresh native material output identity',
@@ -207,7 +212,7 @@ export async function observeQleverNativeGitHubOrigin(input:ArtifactAcquisitionI
     }
     if(!['darwin-arm64','darwin-x64'].includes(target))return fail('unsupported CSS native original target');
     const observation=await observeGitHubOrigin(input,options,{
-      workflowPath:CSS_NATIVE_PRODUCTS_WORKFLOW,workflowSha256:CSS_NATIVE_PARENT_SHA,events:['workflow_dispatch'],target,
+      workflowPath:CSS_NATIVE_PRODUCTS_WORKFLOW,workflowSha256:CSS_NATIVE_PARENT_SHA,...cssStagingParentPolicy(`targets (${target}) / native / macos / build`),events:['workflow_dispatch','push'],target,
       artifactNames:row=>[`qlever-local-runtime-${target}-${row.sourceSha}`],
       jobName:()=>`targets (${target}) / native / macos / build`,requiredStep:'Bind the qlever-local acceptance evidence',
       requiredSteps:['Verify the actual native producer host','Resolve immutable artifact identity','Upload the exact native runtime'],
@@ -246,12 +251,13 @@ export async function observeQleverSdkGitHubOrigin(input:ArtifactAcquisitionInpu
  const nested=invocation==='css-native-products';
  const observation=await observeGitHubOrigin(input,options,{
   workflowPath:nested?CSS_NATIVE_PRODUCTS_WORKFLOW:QLEVER_SDK_WORKFLOW,workflowSha256:nested?CSS_NATIVE_PARENT_SHA:QLEVER_SDK_WORKFLOW_SHA,
-  events:['workflow_dispatch'],target,
+  ...(nested?cssStagingParentPolicy(`targets (${target}) / native / linux / publish`):{}),
+  events:nested?['workflow_dispatch','push']:['workflow_dispatch'],target,
   artifactNames:row=>[`qlever-sdk-originals-${target}-${row.sourceSha}-${row.runId}-${row.runAttempt}`],
   jobName:()=>nested?`targets (${target}) / native / linux / publish`:'publish',
   requiredStep:'Bind actual SDK image and build originals',
   requiredSteps:['Verify the actual native producer host','Build actual cold module SDK with owned raw streams','Push exact tested module SDK from the same builder cache','Upload exact SDK original materials'],
-  sourceBindings:QLEVER_SDK_B_SOURCE_BINDINGS,
+  sourceBindingGroups:QLEVER_SDK_EXECUTION_GROUPS,
  });
  nativeOrigins.add(observation);sdkOrigins.add(observation);return observation;
 }
@@ -348,6 +354,7 @@ async function observeGitHubOrigin(input: ArtifactAcquisitionInput, options: { t
   const workflowSha256 = sha(workflowBytes);
   const reviewedVersion = policy.reviewedWorkflowVersions?.find(row => row.workflowSha256 === workflowSha256);
   if (workflowSha256 !== policy.workflowSha256 && !reviewedVersion) fail('immutable workflow policy not reviewed');
+  if(policy.stagingPushWorkflowSha256 && run.event==='push' && (workflowSha256!==policy.stagingPushWorkflowSha256 || run.head_branch!=='staging' || input.sourceSha!==input.runHeadSha))fail('CSS push requires reviewed staging parent and exact source');
   const expectedJobName = reviewedVersion?.jobName ?? policy.jobName;
   let sourceBindings=[...(reviewedVersion?.sourceBindings ?? policy.sourceBindings ?? [])];
   if(policy.sourceBindingGroups){

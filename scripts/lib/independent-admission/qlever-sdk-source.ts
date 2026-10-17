@@ -4,6 +4,7 @@ import { readFileSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import limits from '../module-artifact-limits.json';
+import { inspectSdkInputOwnership } from './qlever-sdk-inputs';
 import { qleverSdkOriginalsView } from './qlever-sdk-originals';
 import { captureLegalFileIdentity, assertLegalFileIdentity } from './legal-file-custody';
 const hash = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
@@ -31,12 +32,6 @@ export function inspectQleverSdkSourceOriginals(capability: unknown): Readonly<{
     };
     const master = JSON.parse(small(sdk.masterReference, 8 * 1024 ** 2).toString());
     need(master.identity.sourceSha === sdk.originFacts.sourceSha && master.identity.target === sdk.originFacts.target && master.kind === 'qlever-linux-sdk-originals', 'SDK master/source binding differs');
-    if (!master.debianSources) {
-      pending.add('qlever-sdk-exact-Debian-dsc-and-all-orig-debian-originals-unavailable');
-      return Object.freeze({verified: false, pending: Object.freeze([...pending]), facts: Object.freeze(facts)});
-    }
-    const sources = JSON.parse(small(master.debianSources).toString());
-    need(sources.schemaVersion === 1 && sources.kind === 'qlever-sdk-exact-debian-source-originals' && Array.isArray(sources.packages) && sources.packages.length > 0 && sources.packages.length <= 4096, 'SDK Debian source collection schema differs');
     const helper = fileURLToPath(new URL('../../../qlever/scripts/sdk-debian-source-materials.py', import.meta.url));
     const helperIdentity = captureLegalFileIdentity(helper); need(helperIdentity.size <= BigInt(limits.metadataBytes) && hash(readFileSync(helper)) === HELPER_SHA, 'reviewed controller source parser differs');
     const python = realpathSync('/usr/bin/python3'), pythonIdentity = captureLegalFileIdentity(python);
@@ -46,13 +41,32 @@ export function inspectQleverSdkSourceOriginals(capability: unknown): Readonly<{
         timeout: Math.max(1, Math.min(15000, deadline - Date.now())), env: {PATH: '/usr/bin:/bin', LANG: 'C.UTF-8'}});
       assertLegalFileIdentity(helperIdentity); assertLegalFileIdentity(pythonIdentity); check(); return JSON.parse(output.toString());
     };
-    const ledger = parse('--parse-ledger', small(sources.sourceIdentities));
-    const identities = new Set(Object.values(ledger).map((row: any) => row.source.name + '\0' + row.source.version));
+    const before = JSON.parse(small(master.inputs?.before).toString());
+    const after = JSON.parse(small(master.inputs?.after).toString());
+    need(Array.isArray(after.shards) && Array.isArray(master.inputs?.shards) && after.shards.length === master.inputs.shards.length
+      && after.shards.every((row: any, index: number) => row.path && master.inputs.shards[index].path === 'inner/' + row.path
+        && row.bytes === master.inputs.shards[index].bytes && row.sha256 === master.inputs.shards[index].sha256), 'inner/master actual shard references differ');
+    const ledgerReference = {...after.sourcePackageIdentityRaw, path: 'inner/' + after.sourcePackageIdentityRaw?.path};
+    const ledger = parse('--parse-ledger', small(ledgerReference));
     const context = JSON.parse(small(master.sourceContext).toString());
-    let total = reference(context.archive).bytes;
-    need(Array.isArray(master.inputs?.shards), 'actual SDK input shard references unavailable');
-    for (const ref of master.inputs.shards) total += reference(ref).bytes;
-    need(total <= limits.sourceMaterialBytes, 'SDK context/input source domains already exceed shared source budget');
+    const total = reference(context.archive).bytes + master.inputs.shards.reduce((sum: number, ref: any) => sum + reference(ref).bytes, 0);
+    need(total <= limits.sourceMaterialBytes, 'SDK context/input source domains exceed shared source budget');
+    const ownership = inspectSdkInputOwnership({before, after, shards: master.inputs.shards.map(reference), ledger,
+      readRange: (name, offset, length) => sdk.readOriginalRange(name, offset, length), check});
+    facts.sdkActualInputShardBytesVerified = true;
+    facts.sdkInputOwnership = ownership;
+    if (ownership.unresolvedSymlinkOriginalTargets.length) pending.add('qlever-sdk-input-symlink-before-after-causality-unverified');
+    facts.sdkExactDebianSourceTuplesDerivedFromActualOwnership = ownership.requiredSources;
+    if (ownership.unresolvedInputs.some(row => row.role !== 'installed-metadata')) pending.add('qlever-sdk-Git-generated-or-other-non-Debian-input-source-authority-unresolved');
+    need(qleverSdkOriginalsView(capability) === sdk, 'SDK input custody changed');
+    if (!master.debianSources) {
+      pending.add('qlever-sdk-exact-Debian-dsc-and-all-orig-debian-originals-unavailable');
+      return Object.freeze({verified: false, pending: Object.freeze([...pending]), facts: Object.freeze(facts)});
+    }
+    const sources = JSON.parse(small(master.debianSources).toString());
+    need(sources.schemaVersion === 1 && sources.kind === 'qlever-sdk-exact-debian-source-originals' && Array.isArray(sources.packages) && sources.packages.length > 0 && sources.packages.length <= 4096, 'SDK Debian source collection schema differs');
+    need(reference(sources.sourceIdentities).path === ledgerReference.path, 'source acquisition ledger differs from actual SDK build ledger');
+    const identities = new Set(Object.values(ledger).map((row: any) => row.source.name + '\0' + row.source.version));
     const seen = new Set<string>(); let sourceBytes = 0;
     for (const item of sources.packages) {
       const coordinate = item.name + '\0' + item.version;
@@ -84,7 +98,10 @@ export function inspectQleverSdkSourceOriginals(capability: unknown): Readonly<{
     facts.sdkRelatedOriginalCustodyVerified = true; facts.debianDscAndAllSourceArchiveBytesVerified = true;
     facts.debianSourcePackageInstances = seen.size; facts.debianSourceOriginalBytes = sourceBytes;
     pending.add('qlever-sdk-Debian-signed-Sources-InRelease-keyring-authority-not-yet-verified');
-    pending.add('qlever-sdk-dpkg-ownership-to-actual-input-source-coverage-not-yet-verified');
+    const absent = ownership.requiredSources.filter(row => !seen.has(row.name + '\0' + row.version));
+    facts.sdkDebianSourceArchiveMissingCoordinates = Object.freeze(absent);
+    facts.sdkOwnedDebianInputSourceArchivesComplete = absent.length === 0;
+    if (absent.length) pending.add('qlever-sdk-exact-owned-Debian-input-source-archives-incomplete');
     pending.add('qlever-sdk-generated-input-and-full-toolchain-source-causality-not-yet-verified');
   } catch (error) { pending.add((error as Error).message); }
   return Object.freeze({verified: false, pending: Object.freeze([...pending]), facts: Object.freeze(facts)});

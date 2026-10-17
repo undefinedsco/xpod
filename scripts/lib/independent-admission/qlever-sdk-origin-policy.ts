@@ -130,8 +130,20 @@ const sdkSelectors=(sdk:string,runtime:string)=>Object.freeze([
  {path:'.github/workflows/publish-qlever-runtime-sdk.yml',sha256:sdk},
  {path:'.github/workflows/build-qlever-linux-runtime.yml',sha256:runtime},
 ]);
-const withoutSelectors=(rows:readonly {path:string;sha256:string}[])=>rows.filter(row=>!['.github/workflows/publish-qlever-runtime-sdk.yml','.github/workflows/build-qlever-linux-runtime.yml'].includes(row.path));
+const sdkBSelectorPaths=new Set(['.github/workflows/publish-qlever-runtime-sdk.yml','.github/workflows/build-qlever-linux-runtime.yml','qlever/scripts/sdk-inner-materials.py','qlever/scripts/sdk-image-originals.py','scripts/css-module-producer.py']);
+function sdkBGroup(rows:readonly {path:string;sha256:string}[]):GitHubSourceBindingGroup {
+ return Object.freeze({selectors:Object.freeze(rows.filter(row=>sdkBSelectorPaths.has(row.path))),sourceBindings:Object.freeze(rows.filter(row=>!sdkBSelectorPaths.has(row.path)))});
+}
+// Reviewed tar recipe and its budget move together. Neither a partial tar
+// upgrade nor a new staging producer attached to old tar code is authorized.
+const tarBindings=Object.freeze([...QLEVER_SDK_B_SOURCE_BINDINGS.map(row=>Object.freeze({...row,
+ sha256:row.path==='qlever/scripts/sdk-inner-materials.py'?'b316f48faf3ae233b0e467ba4aa440c1f865f3e8b2b7f49d1a493fb96b16ccad':row.path==='qlever/scripts/sdk-image-originals.py'?'8a1acb11c921ad7aa766f7914ee40911d9ddde9d21161854a7767af31ae4d8d2':row.sha256})),
+ Object.freeze({path:'qlever/scripts/sdk-tar-budget.py',sha256:'e244da8ca8aa2c85cca03d8deebc56a2edca13749c1cc79fffad14872e52f30d'})]);
+const stagingTarBindings=Object.freeze(tarBindings.map(row=>Object.freeze({...row,sha256:row.path==='scripts/css-module-producer.py'?'78e2ec3c272233602083f81d574cfefc5f6c36e9200c1d92e6f7935bd6cac41f':row.sha256})));
+export const QLEVER_SDK_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([
+ sdkBGroup(QLEVER_SDK_B_SOURCE_BINDINGS),sdkBGroup(tarBindings),sdkBGroup(stagingTarBindings),
+]);
 export const QLEVER_LINUX_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([
- {selectors:sdkSelectors('cbedd3e2478de5e22108b6689c595a658ca891c9bd47552caec830e86f47fea8','a75c7be34b5c5fafff85c0d67d814ba1aaf14bcf5db5404a860fe3b9a11009bd'),sourceBindings:withoutSelectors(QLEVER_LINUX_SOURCE_BINDINGS)},
- {selectors:sdkSelectors(QLEVER_SDK_WORKFLOW_SHA,'fa5b8202a4bdf5032870c3155f1ac0b9b369ad414147006a3567dc53725566b7'),sourceBindings:withoutSelectors(QLEVER_SDK_B_SOURCE_BINDINGS)},
+ {selectors:sdkSelectors('cbedd3e2478de5e22108b6689c595a658ca891c9bd47552caec830e86f47fea8','a75c7be34b5c5fafff85c0d67d814ba1aaf14bcf5db5404a860fe3b9a11009bd'),sourceBindings:QLEVER_LINUX_SOURCE_BINDINGS.filter(row=>!['.github/workflows/publish-qlever-runtime-sdk.yml','.github/workflows/build-qlever-linux-runtime.yml'].includes(row.path))},
+ ...QLEVER_SDK_EXECUTION_GROUPS,
 ]);

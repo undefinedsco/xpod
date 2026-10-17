@@ -1,5 +1,7 @@
 name: Controlled CSS native target products
 on:
+  push:
+    branches: [staging]
   workflow_dispatch:
     inputs:
       target:
@@ -29,7 +31,7 @@ jobs:
           bun-version: 1.4.2
       - id: targets
         env:
-          TARGET: ${{ inputs.target }}
+          TARGET: ${{ github.event_name == 'push' && 'all' || inputs.target }}
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"

@@ -220,6 +220,50 @@ def capture_inputs(repo, output, source_paths=None):
     return value
 
 
+def dependency_set_delta(output, expected, observed, inventories):
+    """Failure-only path metadata; never copy dependency content or environment.
+
+    Hash the COMPLETE sets, but bound the diagnostic samples to 128 paths and
+    64KiB combined UTF-8 JSON. Original before inventories remain untouched.
+    """
+    before, after = set(expected), set(observed)
+    added, removed = sorted(after - before), sorted(before - after)
+    def set_hash(names):
+        value = hashlib.sha256()
+        for name in sorted(names):
+            value.update((json.dumps(name, ensure_ascii=True, separators=(',', ':')) + '\n').encode())
+        return value.hexdigest()
+    remaining_count, remaining_bytes = 128, 64 * 1024
+    def sample(names):
+        nonlocal remaining_count, remaining_bytes
+        result = []
+        for name in names:
+            encoded = json.dumps(name, ensure_ascii=True).encode()
+            if remaining_count and len(encoded) <= min(4096, remaining_bytes):
+                result.append(name)
+                remaining_count -= 1
+                remaining_bytes -= len(encoded)
+        return dict(count=len(names), paths=result, truncated=len(result) != len(names), sha256=set_hash(names))
+    value = dict(schemaVersion=1, kind='source-dependency-set-delta',
+                 hashEncoding='sorted ensure_ascii JSON string plus LF per path',
+                 before=dict(count=len(before), sha256=set_hash(before), inventories=inventories),
+                 after=dict(count=len(after), sha256=set_hash(after)),
+                 sampleLimits=dict(paths=128, totalEncodedPathBytes=64 * 1024, singleEncodedPathBytes=4096),
+                 added=sample(added), removed=sample(removed))
+    evidence = output / 'evidence'
+    evidence.mkdir(mode=0o700, exist_ok=True)
+    if evidence.is_symlink() or not evidence.is_dir():
+        raise ValueError('Ordinary source diagnostic directory required')
+    file = evidence / 'source-dependency-set-delta.json'
+    encoded = (json.dumps(value, sort_keys=True, indent=2) + '\n').encode()
+    if len(encoded) > LIMITS['metadataBytes']:
+        raise ValueError('Source dependency diagnostic metadata bound')
+    check(file, len(encoded))
+    with file.open('xb') as destination:
+        destination.write(encoded)
+    return ref(file, output)
+
+
 def revalidate_inputs(repo, output, inputs):
     started = now()
     result = {}
@@ -231,8 +275,12 @@ def revalidate_inputs(repo, output, inputs):
             if digest(original) != reference['sha256']:
                 raise ValueError('Captured input inventory changed')
             expected.extend(json.loads(original.read_text()))
-        if domain == 'dependencies' and dependency_paths(repo) != sorted(row['path'] for row in expected):
-            raise ValueError('Installed dependency input set changed during build')
+        if domain == 'dependencies':
+            observed_paths = dependency_paths(repo)
+            expected_paths = sorted(row['path'] for row in expected)
+            if observed_paths != expected_paths:
+                delta = dependency_set_delta(output, expected_paths, observed_paths, group['inventories'])
+                raise ValueError('Installed dependency input set changed during build; diagnostic=' + json.dumps(delta, sort_keys=True))
         observed = []
         for row in expected:
             file = Path(row['executable']) if domain == 'toolchain' else repo / row['path']

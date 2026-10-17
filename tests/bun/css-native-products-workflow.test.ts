@@ -8,9 +8,12 @@ function yaml(name:string):any {
     {input:readFileSync(new URL(`../../.github/workflows/${name}`,import.meta.url),'utf8'),encoding:'utf8'});
   expect(result.status).toBe(0);return JSON.parse(result.stdout);
 }
-test('four target production is manually controlled and native artifacts stay in each invocation',()=>{
+test('four target production accepts staging pushes and manual dispatch with native artifacts in each invocation',()=>{
   const parent=yaml('css-native-products.yml'),child=yaml('css-native-product-target.yml');
-  expect(Object.keys(parent.on)).toEqual(['workflow_dispatch']);
+  expect(Object.keys(parent.on).sort()).toEqual(['push','workflow_dispatch']);
+  expect(parent.on.push).toEqual({branches:['staging']});
+  expect(parent.jobs.contract.steps.find((step:any)=>step.id==='targets').env.TARGET)
+    .toBe("${{ github.event_name == 'push' && 'all' || inputs.target }}");
   expect(parent.jobs.targets.strategy['max-parallel']).toBe(1);
   expect(parent.jobs.targets.name).toBe('targets (${{ matrix.target }})');
   expect(parent.jobs.targets.uses).toBe('./.github/workflows/css-native-product-target.yml');

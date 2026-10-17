@@ -1,3 +1,4 @@
+import { CSS_SOURCE_PARENT_VERSIONS } from './module-source-phases';
 import { isDeepStrictEqual } from 'node:util';
 import { createHash } from 'node:crypto';
 import { lstatSync, readFileSync, readdirSync, realpathSync, openSync, readSync, closeSync } from 'node:fs';
@@ -108,7 +109,7 @@ export async function collectMacNativeRuntimeContext(input: {
     || !['darwin-arm64', 'darwin-x64'].includes(product.identity.target)
     || native.originFacts.target !== product.identity.target
     || !['.github/workflows/build-qlever-macos-runtime.yml', '.github/workflows/css-module-product.yml', '.github/workflows/css-native-products.yml'].includes(native.originFacts.workflowPath)
-    || native.originFacts.workflowPath === '.github/workflows/css-native-products.yml' && hash(source.readTracked('.github/workflows/css-native-products.yml')) !== '8312031501f9f0d640e100ddec75e0fe1150d0ee93812b3f8c6785b032319c0f') return fail('independent observed macOS originals and exact product/Git capabilities required');
+    || native.originFacts.workflowPath === '.github/workflows/css-native-products.yml' && !CSS_SOURCE_PARENT_VERSIONS.some(row => row.workflowSha256 === hash(source.readTracked('.github/workflows/css-native-products.yml')))) return fail('independent observed macOS originals and exact product/Git capabilities required');
   const { modulePackageName } = await import('../../../packages/xpod-cli/src/module-catalog');
   const [productPlatform, productArch] = product.identity.target.split('-');
   if (modulePackageName('css', productPlatform, productArch) !== product.identity.package) return fail('fixed CSS native adapter required');
@@ -274,7 +275,7 @@ export async function collectLinuxNativeRuntimeContext(input: {
   if (!product || !native || !source || !product.identity.target || !['linux-x64', 'linux-arm64'].includes(product.identity.target)
     || source.sourceSha !== product.identity.sourceSha || native.originFacts.sourceSha !== product.identity.sourceSha
     || native.originFacts.target !== product.identity.target || native.originFacts.workflowPath !== '.github/workflows/css-native-products.yml'
-    || hash(source.readTracked('.github/workflows/css-native-products.yml')) !== '8312031501f9f0d640e100ddec75e0fe1150d0ee93812b3f8c6785b032319c0f'
+    || !CSS_SOURCE_PARENT_VERSIONS.some(row => row.workflowSha256 === hash(source.readTracked('.github/workflows/css-native-products.yml')))
     || modulePackageName('css', ...product.identity.target.split('-') as [string, string]) !== product.identity.package) return fail('independent reviewed Linux CSS parent/product/Git custody required');
   const refs = new Map(native.members.map(row => [row.path, { path: row.path, sha256: row.sha256, sizeBytes: row.bytes }]));
   const read = (name: string, maximum = 8 * 1024 ** 2): Buffer => {

@@ -16,6 +16,8 @@ commands=importlib.util.module_from_spec(spec);spec.loader.exec_module(commands)
 SDK_TOOLS=(('gcc-12','tool-gcc-12'),('g++-12','tool-gxx-12'),('ld.bfd','tool-ld-bfd'),
            ('ar','tool-ar'),('ranlib','tool-ranlib'),('cmake','tool-cmake'),('make','tool-make'),
            ('python3','tool-python3'),('git','tool-git'))
+spec=importlib.util.spec_from_file_location('sdk_tar_budget',HERE/'sdk-tar-budget.py')
+tar_budget=importlib.util.module_from_spec(spec);spec.loader.exec_module(tar_budget)
 LIMIT=4*1024**3
 spec=importlib.util.spec_from_file_location('sdk_budget',HERE/'sdk-execution-budget.py')
 budget_module=importlib.util.module_from_spec(spec);spec.loader.exec_module(budget_module)
@@ -70,6 +72,9 @@ def archive_inputs(files,out,before,compile_outputs=(),metadata_originals=()):
                               role='compile-output' if str(path) in compile_outputs else 'installed-metadata' if str(path) in metadata_originals else 'observed-input',**actual))
     # A bounded source shard can be independently retained and rehashed.
     shards=[];batch=[];size=0
+    def tar_info(row):
+        info=tarfile.TarInfo(row['archivePath']);info.size=row['bytes'];info.mode=row['mode']
+        return info
     def write_batch():
         if not batch:return
         target=out/('inputs-'+str(len(shards))+'.tar')
@@ -79,14 +84,16 @@ def archive_inputs(files,out,before,compile_outputs=(),metadata_originals=()):
                 if shutil.disk_usage(out).free-row['bytes']<2*1024**3:raise ValueError('SDK input archive disk floor')
                 source=Path(row['originalPath'])
                 if file_identity(source)!={key:row[key] for key in ['bytes','sha256','mode']}:raise ValueError('SDK input changed before archive')
-                info=tarfile.TarInfo(row['archivePath']);info.size=row['bytes'];info.mode=row['mode']
+                info=tar_info(row)
                 with source.open('rb') as stream:bundle.addfile(info,stream)
                 if file_identity(source)!={key:row[key] for key in ['bytes','sha256','mode']}:raise ValueError('SDK input changed while archiving')
+        if target.stat().st_size>tar_budget.SHARD_LIMIT:raise ValueError('SDK encoded tar exceeds shard byte budget')
         shards.append(commands.ref(target,out.parent))
     for row in inventory:
-        if row['bytes']>1024**3:raise ValueError('SDK single input exceeds 1GiB')
-        if batch and size+row['bytes']>512*1024**2:write_batch();batch=[];size=0
-        batch.append(row);size+=row['bytes']
+        encoded=tar_budget.member_bytes(tar_info(row))
+        tar_budget.require_fit(encoded)
+        if batch and tar_budget.archive_bytes(size+encoded)>tar_budget.SHARD_LIMIT:write_batch();batch=[];size=0
+        batch.append(row);size+=encoded
     write_batch()
     return dict(schemaVersion=1,files=inventory,shards=shards,totalBytes=total,symlinkOriginalTargets=list(links.values()),pending=pending)
 

@@ -1,6 +1,6 @@
 import {test,expect} from 'bun:test';
 import {inspectQleverSdkArtifactReference,inspectQleverSdkMasterBinding,qleverSdkOriginalsView,collectRelatedQleverSdkOriginals} from '../../scripts/lib/independent-admission/qlever-sdk-originals';
-import {QLEVER_LINUX_EXECUTION_GROUPS,QLEVER_SDK_B_SOURCE_BINDINGS} from '../../scripts/lib/independent-admission/qlever-sdk-origin-policy';
+import {QLEVER_LINUX_EXECUTION_GROUPS,QLEVER_SDK_B_SOURCE_BINDINGS,QLEVER_SDK_EXECUTION_GROUPS} from '../../scripts/lib/independent-admission/qlever-sdk-origin-policy';
 import {selectGitHubSourceBindingGroup,sourceBindingKey} from '../../scripts/lib/independent-admission/github-source-binding-groups';
 const sourceSha='a'.repeat(40),runHeadSha='b'.repeat(40),sdkImage='ghcr.io/undefinedsco/xpod-qlever-runtime-sdk@sha256:'+'c'.repeat(64);
 function fixture(){
@@ -25,4 +25,16 @@ test('SDK origin source recipes remain whole versioned groups',()=>{
 test('serialized runtime materials cannot initiate an SDK network acquisition',async()=>{
  const previous=globalThis.fetch;let calls=0;globalThis.fetch=(async()=>{calls++;throw Error('must not fetch');}) as typeof fetch;
  try{await expect(collectRelatedQleverSdkOriginals({nativeOriginals:{sdkArtifact:fixture().reference} as any,output:'/must-not-create'})).rejects.toThrow('actual routed native');expect(calls).toBe(0);}finally{globalThis.fetch=previous;}
+});
+
+test('SDK tar recipes and staging producer select whole groups, never individual reviewed hashes',()=>{
+ const old=QLEVER_SDK_EXECUTION_GROUPS[0]!,tar=QLEVER_SDK_EXECUTION_GROUPS[1]!,staging=QLEVER_SDK_EXECUTION_GROUPS[2]!;
+ for(const next of [tar,staging]){
+  const map=new Map(old.selectors.map(row=>[sourceBindingKey(row),row.sha256]));
+  const inner=next.selectors.find(row=>row.path==='qlever/scripts/sdk-inner-materials.py')!;map.set(sourceBindingKey(inner),inner.sha256);
+  expect(()=>selectGitHubSourceBindingGroup(QLEVER_SDK_EXECUTION_GROUPS,map)).toThrow();
+  expect(next.sourceBindings.find(row=>row.path==='qlever/scripts/sdk-tar-budget.py')?.sha256).toBe('e244da8ca8aa2c85cca03d8deebc56a2edca13749c1cc79fffad14872e52f30d');
+ }
+ const map=new Map(old.selectors.map(row=>[sourceBindingKey(row),row.sha256]));const producer=staging.selectors.find(row=>row.path==='scripts/css-module-producer.py')!;map.set(sourceBindingKey(producer),producer.sha256);
+ expect(()=>selectGitHubSourceBindingGroup(QLEVER_SDK_EXECUTION_GROUPS,map)).toThrow();
 });

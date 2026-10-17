@@ -54,7 +54,7 @@ def context(environment, source):
     if len(source['sha']) != 40 or any(c not in '0123456789abcdef' for c in source['sha']):
         raise ValueError('Invalid checkout SHA')
     event_name = environment.get('GITHUB_EVENT_NAME')
-    if event_name not in ('pull_request', 'workflow_dispatch'):
+    if event_name not in ('pull_request', 'workflow_dispatch', 'push'):
         raise ValueError('Unsupported producer event')
     event = json.loads(Path(environment['GITHUB_EVENT_PATH']).read_text())
     head = event.get('pull_request', {}).get('head', {}).get('sha') if event_name == 'pull_request' else source['sha']
@@ -65,7 +65,7 @@ def context(environment, source):
         raise ValueError('Exact run and attempt required')
     workflow_ref = environment.get('GITHUB_WORKFLOW_REF', '')
     workflow_path=next((value for value in [WORKFLOW,TARGETS_WORKFLOW] if workflow_ref.startswith(REPOSITORY+'/'+value+'@')),None)
-    if workflow_path is None or workflow_path==TARGETS_WORKFLOW and event_name!='workflow_dispatch':
+    if workflow_path is None or (workflow_path==TARGETS_WORKFLOW and event_name not in ('workflow_dispatch', 'push')) or (event_name=='push' and (workflow_path!=TARGETS_WORKFLOW or environment.get('GITHUB_REF')!='refs/heads/staging')):
         raise ValueError('Unexpected producer workflow')
     workflow_sha = environment.get('GITHUB_WORKFLOW_SHA', '')
     if len(workflow_sha) != 40 or any(c not in '0123456789abcdef' for c in workflow_sha):

@@ -8,7 +8,7 @@ import { readFileSync } from 'node:fs';
 export const CLI_SOURCE_POLICY = Object.freeze({
   producer: 'ff0eb13abb628addad1c8fdfd3ee6d615215325e9ad7bc8799139a056e316c75',
   publicationBudget: 'de2a337b143edec3c903dd9bb0234755594f34b2cfdf43efad04661296c262d2',
-  sourceHelper: '4f804fb8af61cfc53c7dc9428a0e8167315b9a430ede4048223c62610ff79b6d',
+  sourceHelper: 'cc4592e9649eb9f8e92140d9674beb90b78a769d7563df01f5d2971bfdf13258',
   sourceLimits: 'c1c529aba719356c682affbe630c215e28cc07163192f8f3b601aab7b0126bd4',
   supervisor: '7710a6ee87729f202c67500fc83d0fc71509ac7e1034d1f22276f53a3fcf6781',
   copier: 'c437aa115b5b7905c539386d4df284a43e26782c846d62045d69de5bb762331c',
