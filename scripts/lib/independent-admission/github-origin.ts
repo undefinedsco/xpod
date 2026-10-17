@@ -6,7 +6,7 @@ import {QLEVER_OBSERVER_PATH,QLEVER_OBSERVER_V20,QLEVER_OBSERVER_V22,QLEVER_OBSE
 import { CLI_SOURCE_POLICY } from './source-rules';
 import { registryConsumerArtifactName } from './registry-consumer-originals';
 import { archiveConsumerArtifactName } from './archive-consumer-originals';
-import { CONSUMER_SOURCE_GROUPS } from './consumer-observer-policy';
+import { CONSUMER_SOURCE_GROUPS, CI_CONSUMER_SOURCE_GROUPS, CI_PUBLICATION_WORKFLOW_SHA, CALLABLE_PUBLICATION_WORKFLOW_SHA, STAGING_CHECKED_PUBLICATION_WORKFLOW_SHA } from './consumer-observer-policy';
 import { createHash } from 'node:crypto';
 import { CLI_PRODUCT_WORKFLOW, cliPublicationArtifactNames, type ArtifactAcquisitionInput } from '../../acquire-independent-product-input';
 import { productTarget } from '../../module-product-targets';
@@ -83,6 +83,7 @@ interface OriginPolicy {
   jobNames?(artifactName:string):readonly string[];
   maximumJobPages?:number;
   allowRunningRun?:true;
+  requiredBranch?: string;
   sourceMayDiffer?:true;
   workflowRef?:'run-head';
   requiredStep: string;
@@ -274,15 +275,24 @@ export async function observeProductConsumerGitHubOrigin(input:ArtifactAcquisiti
   if(!['prepublish','postpublish'].includes(product.stage))return fail('fixed consumer stage required');
   const suffix=product.module+'-'+(product.target??'portable'),pre=product.stage==='prepublish';
   const names=pre?[`pre-${suffix} / archive-consumer-${suffix}`]:Array.from({length:14},(_,i)=>`wave-${String(i+1).padStart(2,'0')} / registry-${suffix} / registry-consumer-${suffix}`);
-  return observeGitHubOrigin(input,options,{
+  const manual:OriginPolicy={
     workflowPath:'.github/workflows/independent-publication.yml',workflowSha256:'63a34359c5afa9cf318e1505f22d5353d832d8b5220ce774675132b5fc75d103',
+    reviewedWorkflowVersions:[CALLABLE_PUBLICATION_WORKFLOW_SHA,STAGING_CHECKED_PUBLICATION_WORKFLOW_SHA].map(workflowSha256=>({workflowSha256,jobName:()=>names[0]!})),
     workflowRef:'run-head',sourceMayDiffer:true,allowRunningRun:true,maximumJobPages:8,
     events:['workflow_dispatch'],...(product.target?{target:product.target}:{}),
     artifactNames:()=>[expected],jobName:()=>names[0]!,jobNames:()=>names,
     requiredStep:pre?'Run fixed archive-installed product consumer':'Run fixed registry-installed product consumer',
     requiredSteps:[pre?'Upload archive consumer originals':'Upload registry consumer originals'],
     sourceBindingGroups:CONSUMER_SOURCE_GROUPS,
-  });
+  };
+  const callerNames=names.map(name=>'independent-publication / '+name);
+  const registered:OriginPolicy={...manual,
+    workflowPath:'.github/workflows/ci.yml',workflowSha256:CI_PUBLICATION_WORKFLOW_SHA,
+    reviewedWorkflowVersions:[],requiredBranch:'staging',
+    jobName:()=>callerNames[0]!,jobNames:()=>callerNames,
+    sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS,
+  };
+  return observeGitHubOrigin(input,options,[manual,registered]);
 }
 
 /** Metadata checks alone grant no observation capability. */
@@ -346,6 +356,7 @@ async function observeGitHubOrigin(input: ArtifactAcquisitionInput, options: { t
     || run.repository?.full_name !== repository || run.head_repository?.full_name !== repository
     || !observedGitHubRunStateAccepted(run.status,run.conclusion,policy.allowRunningRun===true?'live-consumer':'closed-producer') || !positive(run.workflow_id)
     || !policy.events.includes(run.event)
+    || (policy.requiredBranch!==undefined && run.head_branch!==policy.requiredBranch)
     || (run.event !== 'pull_request' && input.sourceSha !== input.runHeadSha && policy.sourceMayDiffer!==true)
     || run.path?.split('@')[0] !== policy.workflowPath) fail('untrusted run coordinate');
   const workflow = await read('workflow.original.json', `actions/workflows/${run.workflow_id}`);

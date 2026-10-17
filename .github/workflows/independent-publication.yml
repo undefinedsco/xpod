@@ -1,6 +1,20 @@
 name: Independent product group publication
 
 on:
+  workflow_call:
+    inputs:
+      source_sha:
+        required: true
+        type: string
+      producer_coordinates:
+        required: true
+        type: string
+      mode:
+        required: true
+        type: string
+    secrets:
+      NPM_TOKEN:
+        required: false
   workflow_dispatch:
     inputs:
       source_sha:
@@ -27,7 +41,28 @@ permissions:
   actions: read
 
 jobs:
+  control:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Validate immutable publication invocation
+        env:
+          CONTROL_EVENT: ${{ github.event_name }}
+          CONTROL_REF: ${{ github.ref }}
+          CONTROL_OPERATION: independent-publication
+          CONTROL_SOURCE_SHA: ${{ inputs.source_sha }}
+          CONTROL_MODE: ${{ inputs.mode }}
+          CONTROL_COORDINATES: ${{ inputs.producer_coordinates }}
+        run: node scripts/lib/publication-control-input.cjs
+
   publication:
+    needs: control
     if: ${{ inputs.mode == 'prepare' && github.ref == 'refs/heads/staging' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -74,6 +109,7 @@ jobs:
           retention-days: 14
 
   consumer-matrix:
+    needs: control
     if: ${{ inputs.mode == 'publish' && github.ref == 'refs/heads/staging' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -85,6 +121,15 @@ jobs:
           ref: ${{ inputs.source_sha }}
           fetch-depth: 0
           persist-credentials: false
+      - name: Require exact staging ancestry before installing or executing source
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_SHA" =~ ^[a-f0-9]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          git merge-base --is-ancestor "$SOURCE_SHA" origin/staging
+          test -z "$(git status --porcelain --untracked-files=all)"
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.2
