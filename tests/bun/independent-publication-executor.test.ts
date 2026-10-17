@@ -59,7 +59,11 @@ describe('dist-tag evidence and fixed Bun credential mode', () => {
       const address = server.address(); if (!address || typeof address === 'string') throw Error('loopback fixture unavailable');
       const registry = 'http://127.0.0.1:' + address.port + '/';
       for (const directory of ['package', 'home', 'tmp', 'evidence']) fs.mkdirSync(path.join(root, directory));
-      fs.writeFileSync(path.join(root, 'package', 'package.json'), JSON.stringify({ name: 'xpod-auth-fixture', version: '0.0.0', license: 'MIT' }));
+      const manifest = JSON.stringify({ name: 'xpod-auth-fixture', version: '0.0.0', license: 'MIT' });
+      // Bun initializes the invocation cwd even when publishing an explicit tarball.
+      // Keep the fixture independent of an accidental repository parent manifest.
+      fs.writeFileSync(path.join(root, 'package.json'), manifest);
+      fs.writeFileSync(path.join(root, 'package', 'package.json'), manifest);
       const archive = path.join(root, 'fixture.tgz');
       execFileSync('tar', ['-czf', archive, '-C', root, 'package'], { timeout: 1000, maxBuffer: 4096 });
       const config = path.join(root, '.npmrc'); fs.writeFileSync(config, 'registry=' + registry + '\n', { mode: 0o600 });

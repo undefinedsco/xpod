@@ -76,7 +76,10 @@ export async function collectModuleAdmissionArtifact(input: {
     if (rows.length !== 1) return fail('unique module original member required');
     return { row: rows[0] as CollectedArtifactMember, destination };
   });
+  let phaseOriginals: import('./module-phase-originals').ModulePhaseOriginals | undefined;
   const readOriginal = (name: string, maximum: number): Buffer => {
+    if (!Number.isSafeInteger(maximum) || maximum < 0) return fail('bounded module original required');
+    if (phaseOriginals && /^evidence\/[a-z0-9-]+\.receipt\.json$/u.test(name)) return phaseOriginals.readSmallReceipt(name, Math.min(maximum, 1024 ** 2));
     const original = originals.find(item => item.row.path === name);
     if (!original || !Number.isSafeInteger(maximum) || maximum < 0 || original.row.bytes > maximum) return fail('bounded module original required');
     const file = path.join(output, original.destination), stat = lstatSync(file);
@@ -92,6 +95,9 @@ export async function collectModuleAdmissionArtifact(input: {
     if (producer.context?.target !== origin.target || producer.context?.actualCheckoutSha !== origin.sourceSha
       || producer.archive?.sha256 !== disk.archive.sha256 || producer.archive?.integrity !== disk.archive.integrity
       || producer.archive?.bytes !== disk.archive.bytes) return fail('module disk archive/producer mismatch');
+    const { collectModulePhaseOriginals } = await import('./module-phase-originals');
+    phaseOriginals = await collectModulePhaseOriginals({ archivePath: path.join(root, 'artifact.zip'),
+      archiveSha256: origin.artifactSha256, inventory: custody.inventory, producer });
     const { MANIFEST_MAX_BYTES } = require('../../workspace-package-payload.cjs');
     const manifest = JSON.parse(disk.readMember('package.json', MANIFEST_MAX_BYTES).toString());
     const { verifyModuleProductInventory } = await import('./module-product-inventory');
@@ -101,7 +107,7 @@ export async function collectModuleAdmissionArtifact(input: {
       identity: Object.freeze({ sourceSha: origin.sourceSha, package: manifest.name, version: manifest.version,
         target: origin.target, archiveSha256: disk.archive.sha256, integrity: disk.archive.integrity, archiveBytes: disk.archive.bytes }),
       members: disk.members, readMember: disk.readMember, readMemberRange: disk.readMemberRange,
-      producerOriginals: Object.freeze(originals.map(item => Object.freeze({ ...item.row }))),
+      producerOriginals: phaseOriginals.members,
       readProducerOriginal: readOriginal,
     }), disk.dispose);
   } catch (error) { disk.dispose(); throw error; }
