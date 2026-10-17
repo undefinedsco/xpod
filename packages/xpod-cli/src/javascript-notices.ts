@@ -2,6 +2,7 @@ import { cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, re
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { sha256File } from './manifest';
+import { renderCliuiModificationNotice } from './promotion';
 
 interface BuildMetafile {
   inputs: Record<string, { bytes: number; imports: { path: string; external?: boolean }[] }>;
@@ -258,6 +259,20 @@ export function collectJavascriptNotices(options: {
     if (options.requireVendoredOriginals && entry.noticeStatus === 'missing-original') { throw new Error('Vendored JavaScript original notice missing'); }
   }
   const cliSha256 = sha256File(options.cli);
+  // The file-level exception must bind an actual input and its retained original terms.
+  const cliui = [...packages.values()].find(entry => entry.name === 'cliui' && entry.version === '8.0.1');
+  const covered = cliui && inputs.find(input => input.packageRoot === cliui.root
+    && input.path === `${cliui.root}/build/lib/string-utils.js`);
+  const modification = covered && (() => {
+    const sourceNotice = cliui!.files.find(file => file.sha256 === covered.sha256);
+    const termsNotice = cliui!.files.find(file => {
+      const provenance = file.provenance as { coveredSourcePath?: string; coveredSourceSha256?: string; fileDeclaredLicense?: string } | undefined;
+      return file.sourcePath === 'npm fixed upstream LICENSE' && provenance?.fileDeclaredLicense === 'Artistic-2.0'
+        && provenance.coveredSourcePath === 'build/lib/string-utils.js' && provenance.coveredSourceSha256 === covered.sha256;
+    });
+    if (!sourceNotice || !termsNotice) { throw new Error('cliui modification notice requires exact source and original terms'); }
+    return { sourceNotice, termsNotice, covered };
+  })();
   // Inspect every input before writing. Preserve original bytes, including CRLF;
   // no package license declaration is converted into distribution clearance.
   const objectRoot = options.sharedObjectRoot ?? path.join(options.destination, 'objects');
@@ -284,14 +299,29 @@ export function collectJavascriptNotices(options: {
   function withOutputReferences<T>(value: T): T {
     return JSON.parse(JSON.stringify(value, (key, entry) => key === 'object' && outputReferences.has(entry) ? outputReferences.get(entry) : entry));
   }
+  const modifications = [];
+  if (modification) {
+    const { sourceNotice, termsNotice, covered } = modification;
+    const text = renderCliuiModificationNotice({
+      payload: slash(path.relative(options.destination, options.cli)),
+      sourceNotice: outputReferences.get(sourceNotice.object)!,
+      termsNotice: outputReferences.get(termsNotice.object)!,
+    });
+    const member = 'MODIFICATIONS.md';
+    writeFileSync(path.join(options.destination, member), text);
+    modifications.push({ path: member, sha256: createHash('sha256').update(text).digest('hex'), cliSha256,
+      coveredSourcePath: covered.path, coveredSourceSha256: covered.sha256,
+      sourceNotice: withOutputReferences(sourceNotice), termsNotice: withOutputReferences(termsNotice) });
+  }
   writeFileSync(path.join(options.destination, 'index.json'), JSON.stringify({
     schemaVersion: 1, status: 'partial-collection', target: options.target, bunVersion: options.bunVersion,
     cliSha256,
+    ...(modifications.length ? { modifications } : {}),
     ...(generated ? { generated: withOutputReferences(generated) } : {}),
     scope: 'All inputs of this portable JS bundle invocation, including zero output contributions; no Bun/Node runtime is shipped. This is not a complete file-level license audit.',
     packages: withOutputReferences([...packages.values()]).sort((a, b) => a.root.localeCompare(b.root)),
     inputs: inputs.sort((a, b) => a.path.localeCompare(b.path)),
     externalImports: [...externalImports].sort(),
   }, null, 2) + '\n');
-  return ['index.json', ...outputReferences.values()];
+  return ['index.json', ...outputReferences.values(), ...modifications.map(entry => entry.path)];
 }

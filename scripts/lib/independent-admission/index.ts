@@ -1,13 +1,15 @@
 import { githubOriginFacts } from './github-origin';
 import { collectedArtifactView } from './artifact-collector';
 import { derivedSourceView } from './source-context';
+import { consumerObservationView } from './consumer-context';
+import { verifyRuntimeClosure } from './runtime-closure';
 import { verifyCliInputSet } from './source-rules';
 import { verifyCliBuildExecution, type CliExecutionFacts } from './source-execution';
 import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { isDeepStrictEqual } from 'node:util';
 
-export type Gate = 'source' | 'native' | 'legal' | 'consumer';
+export type Gate = 'source' | 'native' | 'legal' | 'consumer' | 'runtime-closure';
 export interface OriginalReference { path: string; sha256: string }
 export interface AdmissionContext {
   sourceSha: string;
@@ -24,6 +26,8 @@ export interface AdmissionContext {
   collectedArtifact?: unknown;
   relatedArtifacts?: readonly unknown[];
   derivedSource?: unknown;
+  /** Issued only by the fixed, owned-process consumer observer. */
+  consumerObservation?: unknown;
 }
 export interface SourceMaterialFacts {
   listedTrackedSourceBytesVerified: boolean;
@@ -189,13 +193,30 @@ const source: Adapter = {
  * no meaning here. No public token constructor or caller transport grants trust. */
 const adapters: Readonly<Record<Gate, Adapter>> = Object.freeze<Record<Gate, Adapter>>({
   source,
+  'runtime-closure': { verify: (evidence, context) => {
+    const result = verifyRuntimeClosure(evidence, context);
+    return { status: result.status, reason: result.reason, pending: [...result.pending] };
+  } },
   native: { verify: evidence => ({ status: 'pending', reason: evidence?.status === 'material-integrity-verified' && evidence.externalAdmission === 'pending'
     ? 'Native materials are internally bound; external admission remains pending'
     : 'No authoritative independent release admission verifier exists for this evidence format' }) },
   legal: { verify: evidence => ({ status: 'pending', reason: evidence?.schemaVersion === 1 && evidence.status === 'original-material-collection' && evidence.legalClearance === false
     ? 'Original terms inventory explicitly does not confer legal clearance'
     : 'No authoritative independent release admission verifier exists for this evidence format' }) },
-  consumer: { verify: () => ({ status: 'pending', reason: 'No authoritative independent release admission verifier exists for this evidence format' }) },
+  consumer: { verify: (_evidence, context) => {
+    const observation = consumerObservationView(context.consumerObservation);
+    if (!observation) return { status: 'pending', reason: 'A real fixed consumer observation capability is required' };
+    const identity = observation.identity;
+    if (identity.sourceSha !== context.sourceSha || identity.package !== context.package
+      || identity.version !== context.version || identity.target !== context.target
+      || identity.archiveSha256 !== digest(context.archive)
+      || identity.archiveBytes !== context.archive.length
+      || identity.integrity !== 'sha512-' + createHash('sha512').update(context.archive).digest('base64')) reject('consumer observation product identity mismatch');
+    if (observation.stage !== 'prepublish') return { status: 'pending', reason: 'Prepublish consumer observation required for this gate' };
+    return observation.allProfilesVerified
+      ? { status: 'verified', reason: 'Fixed Node/Bun public export consumer profiles verified; no remote Pod/auth/chat claim' }
+      : { status: 'pending', reason: 'Complete public export consumer profiles remain pending; base import success is a separate observation' };
+  } },
 });
 export function verifyAdmission(gate: Gate, evidence: unknown, context: AdmissionContext): AdmissionResult {
   if (!Object.prototype.hasOwnProperty.call(adapters, gate)) throw new Error('Unknown independent admission gate');

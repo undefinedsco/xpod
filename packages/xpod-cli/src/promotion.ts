@@ -68,19 +68,31 @@ H SHA-256: 82244db5f9d39036ad90f256f5bea459bbee83cfffc1988fff8f1fbec9114aa4
 The original copyright, conditions and disclaimer follow verbatim:
 ` + GOOGLE_WIN_MINMAX_BSD_NOTICE;
 
-export const CLIUI_MODIFICATION_NOTICE = `## Modification notice: cliui 8.0.1 Artistic-2.0 file
+/** One notice template for source kits and the normal portable CLI distribution. */
+export function renderCliuiModificationNotice(locations: {
+  payload: string; sourceNotice: string; termsNotice: string;
+}): string {
+  return `## Modification notice: cliui 8.0.1 Artistic-2.0 file
 cliui's build/lib/string-utils.js adapts npm/cli's ansi-trim.js from commit
 4c65cd952bc8627811735bea76b9b110cc4fc80e into stripAnsi/wrap helpers for ESM
 and Deno. This distribution uses that adapted file and Bun transforms its
-module syntax and layout when bundling the client as lib/xpodcli.mjs.
+module syntax and layout when bundling the client as ${locations.payload}.
 The application source kit preserves the exact input files and build recipe.
 The original npm copyright and file-level notice are preserved at
-licenses/javascript/objects/b3eb9d2e054a43a3064af17332fb1839a7dadb205c5371af4789616afb1a117f.txt;
+${locations.sourceNotice};
 the original Artistic License 2.0 text is preserved at
-licenses/javascript/objects/7610d223851f421d315df5e77974f1c68a04b97e02060e5bbbcf13d95e3ca257.txt.
+${locations.termsNotice}.
 This modification notice covers the adaptation and distribution's bundling;
 it does not relabel the whole cliui package or the complete client.
 `;
+
+}
+
+export const CLIUI_MODIFICATION_NOTICE = renderCliuiModificationNotice({
+  payload: 'lib/xpodcli.mjs',
+  sourceNotice: 'licenses/javascript/objects/b3eb9d2e054a43a3064af17332fb1839a7dadb205c5371af4789616afb1a117f.txt',
+  termsNotice: 'licenses/javascript/objects/7610d223851f421d315df5e77974f1c68a04b97e02060e5bbbcf13d95e3ca257.txt',
+});
 
 export const SOURCE_DISTRIBUTION_NOTES = [SOURCE_KIT_GOOGLE_NOTICE, CLIUI_MODIFICATION_NOTICE] as const;
 
