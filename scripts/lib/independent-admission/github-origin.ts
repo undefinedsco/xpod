@@ -91,6 +91,16 @@ export async function observeCliGitHubOrigin(input: ArtifactAcquisitionInput, op
   });
 }
 
+export const CSS_NATIVE_PRODUCTS_WORKFLOW='.github/workflows/css-native-products.yml';
+const CSS_NATIVE_PARENT_SHA='8312031501f9f0d640e100ddec75e0fe1150d0ee93812b3f8c6785b032319c0f';
+const CSS_NATIVE_SOURCE_BINDINGS=[
+ {path:'.github/workflows/css-native-product-target.yml',sha256:'49ee4c223de857cb9d500a7dceb4a54f36ae8759d1d8b3cc9a7b847db3bbf877'},
+ {path:'.github/workflows/css-native-source.yml',sha256:'df05d53b957d7b793dd998d46ccbc9a7dea788ac7f341f5e5472e325897a0371'},
+ {path:'scripts/module-product-targets.ts',sha256:'5ef511f448c90a6fc9e767fd8224ef890b5fc04d2b6514f85697a0a529fb3eb4'},
+ {path:'.github/workflows/build-qlever-macos-runtime.yml',sha256:'76238a58da3384d10d1d1537211540f289531a3c74b43c854c2eb37ec2cb768c'},
+ {path:'.github/workflows/publish-qlever-runtime-sdk.yml',sha256:'cbedd3e2478de5e22108b6689c595a658ca891c9bd47552caec830e86f47fea8'},
+] as const;
+
 /** Product origin uses the canonical target/native-source declaration. A
  * declared target is still unverified until its exact successful run is seen. */
 export async function observeModuleProductGitHubOrigin(input: ArtifactAcquisitionInput, module: 'api' | 'css',
@@ -107,7 +117,7 @@ export async function observeModuleProductGitHubOrigin(input: ArtifactAcquisitio
       legacyWorkflowSha256: 'ba79405debc84174b23efc2dbf5fd41b54b1f0fd02f1349e4a7e9efe8c0eaddf',
       requiredStep: 'Produce the normal CSS preview' },
   } as const;
-  return observeGitHubOrigin(input, options, {
+  const legacy:OriginPolicy={
     ...policies[module], workflowPath: `.github/workflows/${module}-module-product.yml`,
     events: ['workflow_dispatch', 'pull_request'], target,
     sourceBindings: [{ path: 'scripts/module-product-targets.ts', sha256: 'd04fb106ca349179e4b99869c68cbb85b8d9a9f30e8d60b927a5eceab9e2f25f' }],
@@ -118,7 +128,12 @@ export async function observeModuleProductGitHubOrigin(input: ArtifactAcquisitio
       sourceBindings: [{ path: 'scripts/module-product-targets.ts', sha256: '35b8752237d620981b1848d6d8876dfac3c1da14509e77358e7f961ca256cf96' }] },
       { workflowSha256: policies[module].legacyWorkflowSha256, jobName: () => `products (${Object.values(row).join(', ')})`,
         sourceBindings: [{ path: 'scripts/module-product-targets.ts', sha256: '35b8752237d620981b1848d6d8876dfac3c1da14509e77358e7f961ca256cf96' }] }],
-  });
+  };
+  const current:OriginPolicy={workflowPath:CSS_NATIVE_PRODUCTS_WORKFLOW,workflowSha256:CSS_NATIVE_PARENT_SHA,
+    events:['workflow_dispatch'],target,artifactNames:coordinates=>[`css-module-products-${target}-${coordinates.sourceSha}-${coordinates.runId}-${coordinates.runAttempt}`],
+    jobName:()=>`targets (${target}) / products`,requiredStep:'Produce the normal CSS preview',requiredSteps:['Upload original preview and evidence'],
+    sourceBindings:CSS_NATIVE_SOURCE_BINDINGS};
+  return observeGitHubOrigin(input,options,module==='css'?[legacy,current]:legacy);
 }
 
 /** Normal AFS products come from the mounted-module workflow, independently
@@ -159,7 +174,17 @@ export async function observeAgentFsNativeGitHubOrigin(input: ArtifactAcquisitio
 /** QLever native artifacts have their own producer identity. A reusable job
  * belongs to its caller's run; it is never a normal CSS product observation. */
 export async function observeQleverNativeGitHubOrigin(input:ArtifactAcquisitionInput,target:string,
-  invocation:'standalone'|'css-module',options:{token?:string}={}):Promise<GitHubOriginObservation>{
+  invocation:'standalone'|'css-module'|'css-native-products',options:{token?:string}={}):Promise<GitHubOriginObservation>{
+  if(invocation==='css-native-products'){
+    if(!['darwin-arm64','darwin-x64'].includes(target))return fail('CSS Linux native original policy not yet reviewed');
+    const observation=await observeGitHubOrigin(input,options,{
+      workflowPath:CSS_NATIVE_PRODUCTS_WORKFLOW,workflowSha256:CSS_NATIVE_PARENT_SHA,events:['workflow_dispatch'],target,
+      artifactNames:row=>[`qlever-local-runtime-${target}-${row.sourceSha}`],
+      jobName:()=>`targets (${target}) / native / macos / build`,requiredStep:'Bind the qlever-local acceptance evidence',
+      requiredSteps:['Verify the actual native producer host','Resolve immutable artifact identity','Upload the exact native runtime'],
+      sourceBindings:[...CSS_NATIVE_SOURCE_BINDINGS,{path:QLEVER_OBSERVER_PATH,sha256:QLEVER_OBSERVER_V20}],
+    });nativeOrigins.add(observation);return observation;
+  }
   if(!['darwin-arm64','darwin-x64'].includes(target) || !['standalone','css-module'].includes(invocation)) return fail('unsupported QLever native invocation');
   // The reviewed CSS caller supplies no target and therefore invokes the
   // reusable workflow's darwin-arm64 default. x64 must use its standalone run.
@@ -219,7 +244,7 @@ export function observedGitHubJobWindowAccepted(job:any,artifact:any,input:Artif
     &&job.status==='completed'&&job.conclusion==='success'&&[created,start,end].every(Number.isFinite)&&start<=end&&created>=start&&created<=end;
 }
 
-async function observeGitHubOrigin(input: ArtifactAcquisitionInput, options: { token?: string }, policy: OriginPolicy): Promise<GitHubOriginObservation> {
+async function observeGitHubOrigin(input: ArtifactAcquisitionInput, options: { token?: string }, policies: OriginPolicy|readonly OriginPolicy[]): Promise<GitHubOriginObservation> {
   if (!input || input.schemaVersion !== 1 || !/^[a-f0-9]{40}$/u.test(input.sourceSha)
     || !/^[a-f0-9]{40}$/u.test(input.runHeadSha) || !/^[a-f0-9]{64}$/u.test(input.artifactSha256)
     || ![input.runId, input.runAttempt, input.artifactId].every(positive)) fail('exact coordinates required');
@@ -252,6 +277,9 @@ async function observeGitHubOrigin(input: ArtifactAcquisitionInput, options: { t
     return JSON.parse(data.toString('utf8'));
   }
   const run = await read('run.original.json', `actions/runs/${input.runId}/attempts/${input.runAttempt}`);
+  const choices=(Array.isArray(policies)?policies:[policies]) as readonly OriginPolicy[];
+  const policy=choices.find(row=>run.path?.split('@')[0]===row.workflowPath);
+  if(!policy) return fail('unreviewed producer workflow path');
   if (run.id !== input.runId || run.run_attempt !== input.runAttempt || run.head_sha !== input.runHeadSha
     || run.repository?.full_name !== repository || run.head_repository?.full_name !== repository
     || !observedGitHubRunStateAccepted(run.status,run.conclusion,policy.allowRunningRun===true?'live-consumer':'closed-producer') || !positive(run.workflow_id)

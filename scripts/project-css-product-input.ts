@@ -33,7 +33,7 @@ export async function projectCssProductInput(input: CssProductProjectionInput, o
   if (input?.schemaVersion !== 1 || !/^[a-f0-9]{64}$/u.test(input.custodyReceiptSha256)
     || input.members?.producer !== 'producer.receipt.json' || input.members.archive !== 'product.tgz'
     || input.members.packRaw !== 'evidence/pack.raw.log') fail('explicit CSS producer member contract required');
-  return await withProductProjection(input, output, { workflowPath: CSS_PRODUCT_WORKFLOW, materialRole: 'controlled-preview-materials',
+  return await withProductProjection(input, output, { workflowPath: CSS_PRODUCT_WORKFLOW, reviewedWorkflowPaths:['.github/workflows/css-native-products.yml'], materialRole: 'controlled-preview-materials',
     artifactNames: custody => [`css-module-products-darwin-arm64-${custody.expectedSourceSha}-${custody.runId}-${custody.runAttempt}`] }, async session => {
     const { root, custody, metadata: { run }, temporary, member, select, project, writeOutput } = session;
     const producerMember = member(input.members.producer, 1024 * 1024);
@@ -41,7 +41,7 @@ export async function projectCssProductInput(input: CssProductProjectionInput, o
     const packMember = member(input.members.packRaw, 64 * 1024);
     project([select(producerMember, 'producer.receipt.json')]);
     const producer = JSON.parse(productOriginal(path.join(temporary, 'producer.receipt.json'), producerMember.sha256).toString());
-    const context = assertPreviewProductContext(producer, custody, run, CSS_PRODUCT_WORKFLOW, 'css-module-product-production');
+    const context = assertPreviewProductContext(producer, custody, run, custody.workflowPath, 'css-module-product-production');
     if (typeof context.actualMacOSVersion !== 'string' || context.actualMacOSVersion.split('.')[0] !== '15'
       || context.actualMachine !== 'arm64') fail('native macOS15 producer claim required');
     const bind = (reference: any, expected: string, bound: number, minimum: 0 | 1 = 1) => {

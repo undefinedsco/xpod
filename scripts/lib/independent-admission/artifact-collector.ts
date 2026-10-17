@@ -135,7 +135,7 @@ export async function collectModuleAdmissionArtifact(input: {
 }): Promise<CollectedArtifactCapability> {
   const origin = githubOriginFacts(input.githubOrigin);
   if (!Object.prototype.hasOwnProperty.call(moduleProjectors, input.module) || !origin
-    || origin.workflowPath !== (input.module === 'afs' ? '.github/workflows/agentfs-module-mounted-acceptance.yml' : `.github/workflows/${input.module}-module-product.yml`) || !origin.target) return fail('controlled module platform origin required');
+    || ![input.module === 'afs' ? '.github/workflows/agentfs-module-mounted-acceptance.yml' : `.github/workflows/${input.module}-module-product.yml`,...(input.module==='css'?['.github/workflows/css-native-products.yml']:[])].includes(origin.workflowPath) || !origin.target) return fail('controlled module platform origin required');
   const { productTarget } = await import('../../module-product-targets');
   if (input.module !== 'afs' && !productTarget(input.module, origin.target).nativeSourceAvailable) return fail('module native source unavailable');
   const root = path.resolve(input.acquisitionRoot);

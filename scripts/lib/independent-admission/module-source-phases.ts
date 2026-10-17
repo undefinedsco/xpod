@@ -69,14 +69,31 @@ export function verifyClosedModulePhaseReceipts(plan: readonly { name: string; c
   return { phases: plan.length, rawBytes: totalRawBytes };
 }
 
+/** Narrow route policy only; callers still need the real private origin and
+ * immutable artifact/source capabilities below. */
+export function reviewedModuleSourceWorkflow(module: 'api' | 'css' | 'afs', input: {
+  workflowPath: string; workflowSourceSha256: string; target?: string; jobName: string; producerWorkflowPath?: string;
+}): boolean {
+  if (input.producerWorkflowPath !== input.workflowPath) return false;
+  if (module === 'css' && input.workflowPath === '.github/workflows/css-native-products.yml') {
+    return input.workflowSourceSha256 === '8312031501f9f0d640e100ddec75e0fe1150d0ee93812b3f8c6785b032319c0f'
+      && input.target === 'darwin-arm64' && input.jobName === 'targets (darwin-arm64) / products';
+  }
+  return input.workflowPath === (module === 'afs' ? '.github/workflows/agentfs-module-mounted-acceptance.yml'
+    : `.github/workflows/${module}-module-product.yml`);
+}
+
 export function inspectModuleSourcePhases(input: { artifact: unknown; source: unknown; origin: unknown }) {
   const artifact = collectedArtifactView(input.artifact), source = derivedSourceView(input.source), origin = githubOriginFacts(input.origin);
   if (!artifact || !source || !origin) return fail('real artifact, immutable Git source and origin capabilities required');
   const producer = JSON.parse(artifact.readProducerOriginal('producer.receipt.json', 1024 ** 2).toString());
   const module = producer.kind === 'api-module-product-production' ? 'api'
     : producer.kind === 'css-module-product-production' ? 'css' : producer.kind === 'afs-module-product-production' ? 'afs' : undefined;
+  const jobsOriginal = githubOriginOriginals(input.origin as GitHubOriginObservation).find(row => row.name === 'jobs.original.json');
+  const job = jobsOriginal && JSON.parse(jobsOriginal.data.toString()).jobs.find((row: any) => row.id === origin.producerJobId);
+  if (!job) return fail('observed producer job original missing');
   if (!module || !artifact.identity.target || source.sourceSha !== artifact.identity.sourceSha || origin.sourceSha !== source.sourceSha
-    || origin.target !== artifact.identity.target || origin.workflowPath !== (module === 'afs' ? '.github/workflows/agentfs-module-mounted-acceptance.yml' : `.github/workflows/${module}-module-product.yml`)
+    || origin.target !== artifact.identity.target || !reviewedModuleSourceWorkflow(module, { ...origin, jobName: job.name, producerWorkflowPath: producer.context?.workflowPath })
     || producer.context?.actualCheckoutSha !== source.sourceSha || producer.context?.target !== artifact.identity.target
     || producer.context?.runId !== origin.runId || producer.context?.runAttempt !== origin.runAttempt
     || producer.context?.runHeadSha !== origin.runHeadSha || producer.context?.version !== artifact.identity.version
@@ -111,9 +128,6 @@ export function inspectModuleSourcePhases(input: { artifact: unknown; source: un
     || !originalOutput.startsWith('/') || !repositoryRoot.startsWith('/')) return fail('producer output binding missing');
   outputRoot = originalOutput.slice(0, -suffix.length);
   const plan = reviewedModulePhasePlan(module, repositoryRoot, outputRoot, artifact.identity.version, artifact.identity.target);
-  const jobsOriginal = githubOriginOriginals(input.origin as GitHubOriginObservation).find(row => row.name === 'jobs.original.json');
-  const job = jobsOriginal && JSON.parse(jobsOriginal.data.toString()).jobs.find((row: any) => row.id === origin.producerJobId);
-  if (!job) return fail('observed producer job original missing');
   const closure = verifyClosedModulePhaseReceipts(plan, producer, artifact.producerOriginals, artifact.readProducerOriginal,
     { started: job.started_at, closed: job.completed_at });
   return { status: 'observed' as const, sourceQualified: false as const, sourceSha: source.sourceSha,

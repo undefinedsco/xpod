@@ -140,7 +140,7 @@ async function prepareNormalProductNativeContext(input:{artifact:CollectedArtifa
   const tuple:ArtifactAcquisitionInput={schemaVersion:1,sourceSha:material.identity.sourceSha,runHeadSha:material.producer.runHeadSha,
     runId:material.producer.runId,runAttempt:material.producer.runAttempt,artifactId:acquisition.artifactId,artifactSha256:zip.sha256};
   const {observeQleverNativeGitHubOrigin}=await import('./github-origin');
-  const origin=await observeQleverNativeGitHubOrigin(tuple,material.identity.target!,'css-module',{token:input.token});
+  const origin=await observeQleverNativeGitHubOrigin(tuple,material.identity.target!,material.producer.workflowPath==='.github/workflows/css-native-products.yml'?'css-native-products':'css-module',{token:input.token});
   const {acquireNativeAdmissionOriginals}=await import('../../acquire-independent-product-input');
   const {collectNativeAdmissionOriginals}=await import('./native-original-collector');
   fs.mkdirSync(input.output,{mode:0o700});const acquisitionRoot=path.join(input.output,'acquired');

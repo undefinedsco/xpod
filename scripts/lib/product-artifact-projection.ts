@@ -10,7 +10,7 @@ import { assertNewAcquisitionOutput, verifyAcquiredMetadata } from '../acquire-i
 const { withOwnedTempRoot } = createRequire(import.meta.url)('./owned-temp-root.cjs');
 const hash = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
 export interface ProductCustodyInput { acquisitionRoot: string; custodyReceiptSha256: string }
-interface ProjectionPolicy { workflowPath: string; materialRole: string; artifactNames(custody: any): string[] }
+interface ProjectionPolicy { workflowPath: string; reviewedWorkflowPaths?:readonly string[]; materialRole: string; artifactNames(custody: any): string[] }
 export interface ProjectionSession {
   root: string; custody: any; metadata: any; temporary: string;
   member(name: string, bound: number, minimum?: 0 | 1): any;
@@ -48,7 +48,7 @@ export async function withProductProjection<T>(input: ProductCustodyInput, outpu
   const root = path.resolve(input.acquisitionRoot);
   const custody = JSON.parse(productOriginal(path.join(root, 'receipt.json'), input.custodyReceiptSha256).toString());
   if (custody.schemaVersion !== 1 || custody.kind !== 'independent-product-artifact-acquisition' || custody.status !== 'blocked'
-    || custody.repository !== 'undefinedsco/xpod' || custody.workflowPath !== policy.workflowPath
+    || custody.repository !== 'undefinedsco/xpod' || ![policy.workflowPath,...(policy.reviewedWorkflowPaths??[])].includes(custody.workflowPath)
     || custody.materialRole !== policy.materialRole || custody.published !== false || custody.releaseQualified !== false
     || custody.archive?.path !== 'artifact.zip' || !/^[a-f0-9]{64}$/u.test(custody.archive.sha256)) fail('Product custody required; test/native artifacts cannot project');
   verifyAcquiredMetadata(root, custody.metadata);
@@ -56,7 +56,7 @@ export async function withProductProjection<T>(input: ProductCustodyInput, outpu
   const { run, workflow, artifact } = metadata;
   if (run.id !== custody.runId || run.run_attempt !== custody.runAttempt || run.head_sha !== custody.runHeadSha
     || run.status !== 'completed' || run.conclusion !== 'success' || workflow.id !== run.workflow_id
-    || workflow.path !== policy.workflowPath || run.path?.split('@')[0] !== policy.workflowPath
+    || workflow.path !== custody.workflowPath || run.path?.split('@')[0] !== custody.workflowPath
     || run.repository?.full_name !== custody.repository || run.head_repository?.full_name !== custody.repository
     || artifact.id !== custody.artifactId || artifact.expired !== false || artifact.workflow_run?.id !== run.id
     || artifact.workflow_run?.head_sha !== custody.runHeadSha || artifact.digest !== 'sha256:' + custody.archive.sha256
