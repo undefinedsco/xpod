@@ -9,9 +9,9 @@ import { MODULE_TARGETS, modulePackageName } from '../../packages/xpod-cli/src/m
 import authority from '../agentfs-native-ci/mounted/native-authority.json';
 import limits from './module-artifact-limits.json';
 import { verifyNativeMaterialTarget } from './physical-module-native';
-import { runMountedPlatformAdmission, REQUIRED_MOUNTED_CASES } from '../agentfs-native-ci/mounted/platform-admission';
+import { runMountedPlatformAdmission } from '../agentfs-native-ci/mounted/platform-admission';
 import { defaultBackend } from '../../packages/xpod-afs/src/agent-fs/mount';
-import { MODULE_CHAIN_CASE } from '../agentfs-native-ci/mounted/module-admission';
+import { REQUIRED_MOUNTED_CASES, MODULE_CHAIN_CASE } from '../agentfs-native-ci/mounted/required-cases';
 
 export function afsConsumerTarget(target: string, host?: { platform: string; arch: string }) {
   const row = MODULE_TARGETS.find(row => `${row.platform}-${row.arch}` === target);

@@ -3,10 +3,13 @@ import { isDeepStrictEqual } from 'node:util';
 import path from 'node:path';
 import type { CollectedArtifactIdentity, CollectedArtifactMember } from './artifact-contract';
 import limits from '../module-artifact-limits.json';
-import { REQUIRED_MOUNTED_CASES } from '../../agentfs-native-ci/mounted/platform-admission';
-import { MODULE_CHAIN_CASE } from '../../agentfs-native-ci/mounted/module-admission';
+import { afsConsumerBudget } from '../afs-consumer-budget';
+import { registryLegalLockEntries } from './legal-registry-originals';
+import { derivedSourceView, assertDerivedSourceCurrent } from './source-context';
+import { REQUIRED_MOUNTED_CASES, MODULE_CHAIN_CASE } from '../../agentfs-native-ci/mounted/required-cases';
 
 export interface AfsConsumerOriginalInput {
+  readonly source?: unknown;
   readonly stage: 'prepublish' | 'postpublish'; readonly sourceSha: string; readonly target: string;
   readonly product: Readonly<CollectedArtifactIdentity>;
   readonly productMembers: readonly CollectedArtifactMember[];
@@ -19,6 +22,7 @@ const hash = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex')
 const safe = (name: unknown): name is string => typeof name === 'string' && Boolean(name) && !name.startsWith('/') &&
   !/[\\\u0000-\u001f\u007f]/u.test(name) && !name.split('/').some(part => !part || part === '.' || part === '..');
 const SHA = /^[a-f0-9]{64}$/u;
+const harnessLabels = new Set(afsConsumerBudget().harnessCommands.map(row => row.label));
 const requiredCases = Object.freeze([...REQUIRED_MOUNTED_CASES, MODULE_CHAIN_CASE]);
 function need(value: unknown, code: string): asserts value { if (!value) throw Error(code); }
 function safeChainRaw(bytes: Buffer, index: number, stream: string, mountpoint: string): boolean {
@@ -79,7 +83,7 @@ export function afsConsumerOriginalSelection(input: AfsConsumerOriginalSelection
     const result = json('result.json');
     need(Array.isArray(result.records) && result.records.length <= 64, 'afs-transport-command-record-bound');
     for (const record of result.records) {
-      need(/^(?:(?:node|bun)-(?:runtime-version|runtime-target|probe|normal-cli-install|install-afs|list-afs|afs-help|afs-native-version|afs-full-mounted-profile|remove-afs)|verifier-(?:node|bun|python|git|rg|mount|fusermount)-version)$/u.test(record.label), 'afs-transport-command-label-invalid');
+      need(harnessLabels.has(record.label) || /^(?:(?:node|bun)-(?:runtime-version|runtime-target|probe|normal-cli-install|install-afs|list-afs|afs-help|afs-native-version|afs-full-mounted-profile|remove-afs)|verifier-(?:node|bun|python|git|rg|mount|fusermount)-version)$/u.test(record.label), 'afs-transport-command-label-invalid');
       for (const stream of ['stdout', 'stderr']) {
         const name = record.label + '.' + stream + '.raw.log';
         need(Array.isArray(record.raw) && record.raw.filter((row: any) => row.path === name && row.sha256 === members.get(name)?.sha256 && row.bytes === members.get(name)?.bytes).length === 1, 'afs-transport-command-raw-ref-differs:' + name);
@@ -103,6 +107,12 @@ export function afsConsumerOriginalSelection(input: AfsConsumerOriginalSelection
         need(Array.isArray(rows) && rows.every(row => safe(row.path) && !row.path.toLowerCase().split('/').some((part: string) => ['.env', '.env.local', '.env.cloud', '.env.server', 'credentials.json', '.npmrc', '.netrc', '.ssh', '.git', '.test-data'].includes(part))), 'afs-transport-sensitive-tool-input');
       }
       for (const ref of root.archives ?? []) toolRef(ref, new RegExp('^' + prefix + '-[0-9]{4}\\.tar$', 'u'), 'verifier-tool-archive');
+    }
+    for (const value of master.installOriginals ?? []) {
+      const name = value?.path;
+      need(typeof name === 'string' && (/^verifier-tools\/install\/(?:prepared|complete|verifier-harness-(?:checkout|install|build-tools|client|patch-check|remove))\.json$/u.test(name) ||
+        /^verifier-tools\/install\/inputs\/(?:package\.json|bun\.lock|bunfig\.toml|patches\/(?:[A-Za-z0-9@_.+/-]|%2[Ff])+\.patch|scripts\/(?:check-dependency-state\.ts|patch-(?:jose|inrupt-authn-refresh|inrupt-authn-transport|inrupt-authn-operation-cleanup)\.js)|packages\/xpod-(?:cli\/scripts\/build-tools-package|client\/scripts\/build)\.ts)$/u.test(name)), 'afs-transport-install-original-role-invalid');
+      need(safe(name), 'afs-transport-install-original-path-invalid'); toolRef(value, /^verifier-tools\/install\//u, 'verifier-install-original');
     }
     for (const observation of master.observations) for (const root of observation.roots ?? []) for (const ref of root.inventories ?? []) toolRef(ref, /^verifier-tools\/(?:node|bun)-(?:before|after)-mounted-[a-z0-9-]+-[0-9]{4}\.json$/u, 'verifier-tool-observation');
   });
@@ -131,6 +141,7 @@ export function inspectAfsConsumerOriginals(input: AfsConsumerOriginalInput): Re
     need(value && safe(value.path) && (!prefix || value.path.startsWith(prefix)) && row && row.bytes === value.bytes && row.sha256 === value.sha256, 'afs-original-reference-differs');
     return row;
   };
+  const toolLocations = new Map<string, {archive: string; offset: number; bytes: number}>();
   const inspectTar = (archive: CollectedArtifactMember, rows: readonly any[]) => {
     const expected = new Map(rows.filter(row => row.archive === archive.path).map(row => [row.path, row]));
     const seen = new Set<string>();
@@ -164,6 +175,7 @@ export function inspectAfsConsumerOriginals(input: AfsConsumerOriginalInput): Re
           const digest = createHash('sha256');
           for (let at = 0; at < size; at += limits.rangeBytes) digest.update(read(offset + at, Math.min(limits.rangeBytes, size - at)));
           need(digest.digest('hex') === row.sha256, 'afs-tool-tar-file-bytes-differ');
+          toolLocations.set(archive.path + '\0' + name, {archive: archive.path, offset, bytes: size});
         }
       }
       offset += Math.ceil(size / 512) * 512;
@@ -194,7 +206,7 @@ export function inspectAfsConsumerOriginals(input: AfsConsumerOriginalInput): Re
     need(Array.isArray(result.records) && result.records.length <= 64, 'afs-consumer-record-set-invalid');
     const labels = new Set<string>();
     for (const record of result.records) {
-      need(typeof record.label === 'string' && !labels.has(record.label) && (ordinary.some(suffix => record.label === 'node-' + suffix || record.label === 'bun-' + suffix) || /^verifier-(?:node|bun|python|git|rg|mount|fusermount)-version$/u.test(record.label)), 'afs-command-label-invalid');
+      need(typeof record.label === 'string' && !labels.has(record.label) && (ordinary.some(suffix => record.label === 'node-' + suffix || record.label === 'bun-' + suffix) || /^verifier-(?:node|bun|python|git|rg|mount|fusermount)-version$/u.test(record.label) || harnessLabels.has(record.label)), 'afs-command-label-invalid');
       labels.add(record.label);
       need(record.status === 'passed' && record.returncode === 0 && record.waitStatus === 'known' && record.rawHandlesClosed === true && record.rawClosed === true && record.rawClosedBeforeHash === true && record.rawEligible === true && record.ownedGroupAbsent === true && Number.isSafeInteger(record.pid) && record.pid > 0 && Array.isArray(record.argv) && record.argv.length > 0, 'afs-command-not-closed:' + record.label);
       need(Array.isArray(record.raw) && record.raw.length === 2, 'afs-command-dual-raw-missing:' + record.label);
@@ -350,10 +362,81 @@ export function inspectAfsConsumerOriginals(input: AfsConsumerOriginalInput): Re
     // from their actual process originals, not inferred from installed bytes.
     need(Array.isArray(master.installOriginals), 'afs-tool-install-original-list-missing');
     for (const value of master.installOriginals) ref(value, 'verifier-tools/');
-    pending.add(master.installOriginals.length ? 'afs-harness-install-recipe-original-contract-unreviewed' : 'afs-harness-frozen-install-process-originals-unavailable');
-    pending.add('afs-harness-registry-lock-patch-authority-not-established');
+    if (!master.installOriginals.length) {
+      pending.add('afs-harness-frozen-install-process-originals-unavailable');
+      pending.add('afs-harness-registry-lock-patch-authority-not-established');
+      facts.trustedVerifierToolsVerified = false;
+    } else {
+      const prepared = json('verifier-tools/install/prepared.json'), complete = json('verifier-tools/install/complete.json');
+      const workspace = result.ownedTemporaryRoot + '/verifier-harness';
+      need(prepared.schemaVersion === 1 && prepared.kind === 'controlled-frozen-afs-verifier-install' && complete.schemaVersion === 1 && complete.kind === 'controlled-frozen-afs-verifier-install-complete' &&
+        prepared.workspace === workspace && complete.workspace === workspace && prepared.sourceSha === input.sourceSha && complete.sourceSha === input.sourceSha &&
+        isDeepStrictEqual(prepared.sourceBefore, { sha: input.sourceSha, status: '' }) && isDeepStrictEqual(prepared.sourceAfter, prepared.sourceBefore) && isDeepStrictEqual(complete.sourceBefore, prepared.sourceBefore) && isDeepStrictEqual(complete.sourceAfter, prepared.sourceBefore), 'afs-fresh-harness-source-differs');
+      ref(complete.prepared, 'verifier-tools/install/');
+      need(complete.prepared.path === 'verifier-tools/install/prepared.json' && Array.isArray(complete.commands) && complete.commands.length === harnessLabels.size, 'afs-fresh-harness-command-set-incomplete');
+      const expectedGit = master.executables.find((row: any) => row.role === 'git')?.executable, expectedBun = master.executables.find((row: any) => row.role === 'bun')?.invokedPath;
+      need(expectedGit && expectedBun && prepared.registry === 'https://registry.npmjs.org/', 'afs-fresh-harness-registry-or-tools-unbound');
+      for (const [index, budget] of afsConsumerBudget().harnessCommands.entries()) {
+        const recordRef = complete.commands[index]; ref(recordRef, 'verifier-tools/install/'); const record = json(recordRef.path), actual = result.records.find((row: any) => row.label === budget.label);
+        need(record.label === budget.label && isDeepStrictEqual(record, actual), 'afs-fresh-harness-command-original-differs:' + budget.label);
+        if (budget.label === 'verifier-harness-install') need(isDeepStrictEqual(record.argv, [expectedBun, 'install', '--frozen-lockfile', '--no-cache', '--registry', 'https://registry.npmjs.org/', '--backend=copyfile', '--linker=hoisted', '--cache-dir=' + result.ownedTemporaryRoot + '/verifier-cache']), 'afs-fresh-frozen-install-command-differs');
+        if (budget.label === 'verifier-harness-build-tools') need(isDeepStrictEqual(record.argv, [expectedBun, 'run', '--filter', '@undefineds.co/xpod-cli', 'build:tools']), 'afs-fresh-build-tools-command-differs');
+        if (budget.label === 'verifier-harness-client') need(isDeepStrictEqual(record.argv, [expectedBun, 'run', '--filter', '@undefineds.co/xpod-client', 'build']), 'afs-fresh-client-command-differs');
+        if (budget.label === 'verifier-harness-patch-check') need(isDeepStrictEqual(record.argv, [expectedBun, 'scripts/check-dependency-state.ts', '--runtime-only']), 'afs-fresh-patch-check-command-differs');
+        if (budget.label === 'verifier-harness-checkout') need(record.argv[0] === expectedGit && isDeepStrictEqual(record.argv.slice(1, 4), ['-c', 'core.hooksPath=/dev/null', '-C']) && typeof record.argv[4] === 'string' && isDeepStrictEqual(record.argv.slice(5), ['worktree', 'add', '--detach', workspace, input.sourceSha]), 'afs-fresh-checkout-command-differs');
+        if (budget.label === 'verifier-harness-remove') need(record.argv[0] === expectedGit && isDeepStrictEqual(record.argv.slice(1, 4), ['-c', 'core.hooksPath=/dev/null', '-C']) && isDeepStrictEqual(record.argv.slice(5), ['worktree', 'remove', '--force', workspace]), 'afs-fresh-remove-command-differs');
+      }
+      need(Array.isArray(prepared.inputs) && prepared.inputs.length >= 9, 'afs-fresh-install-source-originals-missing');
+      const sourceRows = master.roots.filter((root: any) => root.domain === 'source').flatMap((root: any) => inventories.get(root.rootId) ?? []);
+      const source = derivedSourceView(input.source);
+      need(source && source.sourceSha === input.sourceSha && source.readTrackedGitObject, 'afs-fresh-harness-immutable-private-source-missing');
+      assertDerivedSourceCurrent(input.source);
+      for (const row of sourceRows) {
+        const actual = source.readTrackedGitObject(row.path);
+        need(row.kind === 'file' && ['100644', '100755'].includes(actual.mode) && actual.bytes.length === row.bytes && hash(actual.bytes) === row.sha256 &&
+          row.mode === (actual.mode === '100755' ? 0o755 : 0o644), 'afs-fresh-harness-immutable-Git-source-differs:' + row.path);
+      }
+      for (const value of prepared.inputs) { const physical = sourceRows.find((row: any) => row.path === value.sourcePath); const actual = ref(value.original, 'verifier-tools/install/inputs/');
+        need(physical?.kind === 'file' && physical.sha256 === actual.sha256 && physical.bytes === actual.bytes, 'afs-fresh-install-input-original-differs'); original(actual.path);
+      }
+      const packageInput = prepared.inputs.find((row: any) => row.sourcePath === 'package.json'), lock = prepared.inputs.find((row: any) => row.sourcePath === 'bun.lock');
+      need(packageInput && lock, 'afs-fresh-package-lock-originals-missing');
+      const pkg = json(packageInput.original.path);
+      const postinstall = 'bun scripts/patch-jose.js && bun scripts/patch-inrupt-authn-refresh.js && bun scripts/patch-inrupt-authn-transport.js && bun scripts/patch-inrupt-authn-operation-cleanup.js';
+      need(pkg.scripts?.postinstall === postinstall && prepared.postinstall === postinstall && Object.values(pkg.patchedDependencies ?? {}).every(name => prepared.inputs.some((row: any) => row.sourcePath === name)), 'afs-fresh-exact-patch-inputs-missing');
+      const lockBytes = original(lock.original.path);
+      const locked = registryLegalLockEntries(lockBytes);
+      need(locked.size > 0, 'afs-fresh-immutable-integrity-lock-missing');
+      let packageCount = 0;
+      for (const root of master.roots.filter((root: any) => root.role === 'harness' && root.domain === 'dependencies')) {
+        need(Array.isArray(root.packages) && root.packages.length > 0, 'afs-fresh-harness-package-identities-missing');
+        for (const item of root.packages) {
+          need(safe(item.path) && typeof item.name === 'string' && typeof item.version === 'string', 'afs-fresh-package-coordinate-invalid');
+          const row = inventories.get(root.rootId)!.find(row => row.path === item.path + '/package.json');
+          const location = row && toolLocations.get(row.archive + '\0' + row.path);
+          need(location && location.bytes <= 65536, 'afs-fresh-package-manifest-original-missing-or-bound');
+          const bytes = input.readOriginalRange(location.archive, location.offset, location.bytes);
+          need(bytes.length === location.bytes && hash(bytes) === row.sha256, 'afs-fresh-package-manifest-bytes-differ');
+          const manifest = JSON.parse(bytes.toString());
+          need(manifest.name === item.name && manifest.version === item.version, 'afs-fresh-package-manifest-identity-differs');
+          const sourceManifest = sourceRows.find((source: any) => source.path === item.path + '/package.json');
+          if (!item.path.startsWith('node_modules/')) {
+            // A workspace is an immutable Git input, never a registry package.
+            need(sourceManifest?.sha256 === row.sha256, 'afs-fresh-workspace-manifest-source-unbound');
+          } else need(locked.has(item.name + '@' + item.version), 'afs-fresh-package-lock-SRI-missing:' + item.name + '@' + item.version);
+          packageCount++;
+        }
+      }
+      facts.freshHarnessPackageManifestLockSriBindings = packageCount;
+      for (const runtime of ['node', 'bun']) need(json('safe-evidence/afs-checked-originals/' + runtime + '/handoff.json').workspace === workspace, 'afs-fresh-harness-not-used:' + runtime);
+      assertDerivedSourceCurrent(input.source);
+      facts.immutableVerifierSourceOriginalsVerified = true;
+      facts.controlledFrozenVerifierInstallOriginalsVerified = true;
+      facts.trustedVerifierToolsVerified = false;
+      pending.add('afs-fresh-harness-target-Bun-runtime-and-upstream-patch-byte-authority-not-yet-independent');
+    }
+
     for (const value of master.pending ?? []) if (typeof value === 'string') pending.add('afs-tool-producer-pending:' + value);
-    facts.trustedVerifierToolsVerified = false;
   });
   facts.toolSnapshotEntryBytesVerified = facts.toolSnapshotOriginalReferencesVerified === true;
   const values = Object.freeze([...pending]);

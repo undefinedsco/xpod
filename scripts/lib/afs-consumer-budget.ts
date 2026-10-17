@@ -1,5 +1,8 @@
 /** Node, Bun, supervisors and Matrix share the CJS projection of reviewed JSON. */
 export interface AfsConsumerBudget {
+  readonly officialRuntimeObservationSeconds: number;
+  readonly freshHarnessLiveBytes: number;
+  readonly harnessCommands: readonly Readonly<{label: string; timeoutSeconds: number}>[];
   readonly stage: 'prepublish' | 'postpublish';
   readonly hostSetupSeconds: number;
   readonly hostFinalizationSeconds: number;
@@ -9,7 +12,7 @@ export interface AfsConsumerBudget {
   readonly safeExportSeconds: number;
   readonly commandOwnedCloseSeconds: number;
   readonly fullMountedCommandSeconds: number;
-  readonly ordinaryCommandSeconds: number;
+  readonly normalInstallSeconds: number; readonly ordinaryCommandSeconds: number;
   readonly consumerRunSeconds: number;
   readonly maximumDurationSeconds: number;
   readonly hostJobMinutes: number;

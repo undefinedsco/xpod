@@ -1,3 +1,4 @@
+import {assertAfsConsumerDiskReservation,afsConsumerDiskLayers} from './afs-consumer-resource';
 import {reserveAfsConsumerEvidenceLayout} from './afs-consumer-public-custody';
 import {finalizeAfsConsumerEvidence} from './afs-consumer-finalization';
 import {afsConsumerBudget} from '../afs-consumer-budget';
@@ -8,7 +9,7 @@ import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { isDeepStrictEqual } from 'node:util';
 import { collectedArtifactView, collectedPublicationProjectionDirectory, preflightCollectedArchiveFiles } from './artifact-collector';
-import { collectedArtifactSourceCheckout } from './source-context';
+import { collectedArtifactSourceCheckout, collectedArtifactDerivedSource } from './source-context';
 import { registryArtifactView, observeRegistryArtifact } from './registry-context';
 import { planClientConsumerProfiles } from './consumer-profiles';
 import { publicationPeerInputPlanView } from './peer-input-plan';
@@ -817,7 +818,7 @@ async function observeModuleRegistryConsumer(input: RegistryInstalledProductCons
   const afsLayout=plan.module==='afs'?reserveAfsConsumerEvidenceLayout(requestedEvidence):undefined;
   const evidence=afsLayout?.privateDirectory??requestedEvidence;
   if (fs.existsSync(evidence)) fail('new module consumer evidence directory required');
-  if(afsLayout){const free=fs.statfsSync(path.dirname(evidence),{bigint:true});if(free.bavail*free.bsize<BigInt(4*1024**3+plan.estimatedWriteBytes+2*1024**3))fail('AFS verifier-kit originals plus consumer write/floor resource pending');}
+  if(afsLayout) assertAfsConsumerDiskReservation({evidenceParent:path.dirname(evidence),temporaryParent:os.tmpdir(),consumerWriteBytes:plan.estimatedWriteBytes,stage:input.stage});
   fs.mkdirSync(path.dirname(evidence), { recursive: true });
   const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'xpod-registry-module-consumer-')); fs.chmodSync(parent, 0o700);
   let retain = false, preserveControl=false;
@@ -831,10 +832,12 @@ async function observeModuleRegistryConsumer(input: RegistryInstalledProductCons
   const driver = plan.module==='afs'?path.resolve(import.meta.dir,'../afs-module-consumer.py'):path.resolve(import.meta.dir, '../../' + plan.module + '-module-consumer.py');
   const lifecycle = path.resolve(import.meta.dir, '../module-consumer.py');
   const originals = [driver, lifecycle].map(file => ({ path: file, sha256: hash(fs.readFileSync(file)) }));
+  const afsLayers=plan.module==='afs'?afsConsumerDiskLayers(plan.estimatedWriteBytes,input.stage):undefined;
+  const estimatedPeakBytes=afsLayers?Number(afsLayers.originals+afsLayers.live):plan.estimatedWriteBytes;
   const request = { schemaVersion: 1, target: plan.artifact.identity.target, sourceSha: plan.artifact.identity.sourceSha,
     checkout: plan.checkout, sourceRoots: [...new Set([plan.checkout, path.resolve(import.meta.dir, '../../..')])], node: runtimePath('node'), bun: runtimePath('bun'),
     temporaryParent: parent, output: evidence, transport: preparation==='registry'?'production-npm-registry':'collected-product-archives', timeoutSeconds: plan.module==='afs'?afsConsumerBudget(input.stage).ordinaryCommandSeconds:30,
-    budget: { estimatedPeakBytes: plan.estimatedWriteBytes, remainingFloorBytes: 1024 ** 3, cushionBytes: 128 * 1024 ** 2 },
+    budget: { estimatedPeakBytes, remainingFloorBytes: 1024 ** 3, cushionBytes: 128 * 1024 ** 2 },
     [plan.module + 'Receipt']: reference(path.join(plan.productProjection, 'projection.receipt.json')),
     cliReceipt: reference(path.join(plan.cliProjection, 'projection.receipt.json')),
     [plan.module + 'Archive']: archive(plan.productProjection, 'product.tgz', plan.artifact),
@@ -873,7 +876,7 @@ async function observeModuleRegistryConsumer(input: RegistryInstalledProductCons
       fs.mkdirSync(path.join(evidence,'safe-evidence'),{mode:0o700});
       fs.renameSync(safe,path.join(evidence,'safe-evidence','afs-checked-originals'));
       fs.cpSync(supervision,path.join(evidence,'central-supervision'),{recursive:true,errorOnExist:true,force:false});
-      finalizeAfsConsumerEvidence({layout:afsLayout,deadline,stage:input.stage,product:plan.artifact.identity,productMembers:plan.artifact.members,tools:plan.tools.map(value=>collectedArtifactView(value)!.identity)});
+      finalizeAfsConsumerEvidence({source:collectedArtifactDerivedSource(input.artifact),layout:afsLayout,deadline,stage:input.stage,product:plan.artifact.identity,productMembers:plan.artifact.members,tools:plan.tools.map(value=>collectedArtifactView(value)!.identity)});
       preserveControl=false;
     }else{
     const required = ['runtime-version', 'runtime-target', 'probe', 'normal-cli-install', 'install-' + plan.module,
@@ -966,7 +969,7 @@ async function observeRemoteProductConsumer(input:import('./registry-consumer-or
     :(['api','css','afs'] as const).find(name=>MODULE_TARGETS.some(target=>modulePackageName(name,target.platform,target.arch)===artifact.identity.package));
   if(!module)return fail('registered remote consumer product required');
   const {inspectRemoteProductConsumerOriginals}=await import('./remote-consumer-originals');
-  const report=await inspectRemoteProductConsumerOriginals({product:artifact.identity,productMembers:artifact.members,module,
+  const report=await inspectRemoteProductConsumerOriginals({source:collectedArtifactDerivedSource(input.artifact),product:artifact.identity,productMembers:artifact.members,module,
     tools:tools.map(value=>collectedArtifactView(value)!.identity),consumerRun:input.consumerRun,stage,evidenceDirectory:input.evidenceDirectory,
     token:input.token,portableExpectations});
   preflightCollectedArchiveFiles([input.artifact,...tools]);

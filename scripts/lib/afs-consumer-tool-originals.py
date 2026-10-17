@@ -22,12 +22,16 @@ LIMITS = materials.LIMITS
 SOURCE_SEEDS = (
     'scripts/lib/afs-module-consumer.py', 'scripts/lib/afs-module-consumer-bridge.ts',
     'scripts/lib/afs-consumer-tool-originals.py', 'scripts/lib/module-source-materials.py',
+    'scripts/lib/afs-verifier-harness.py', 'scripts/check-dependency-state.ts',
+    'packages/xpod-cli/package.json', 'packages/xpod-client/package.json',
+    'packages/xpod-cli/scripts/build-tools-package.ts', 'packages/xpod-client/scripts/build.ts', 'packages/xpod-client/src/index.ts',
     'scripts/lib/afs-consumer-budget.json', 'scripts/lib/afs-consumer-budget.py', 'scripts/lib/afs-consumer-budget.ts', 'scripts/lib/afs-consumer-budget.cjs',
     'scripts/lib/module-consumer.py', 'scripts/lib/module-consumer-targets.py',
     'scripts/lib/module-artifact-limits.json', 'scripts/module-product-targets.ts',
     'scripts/verify-module-consumer-native.ts', 'scripts/lib/physical-module-native.ts',
     'packages/xpod-cli/src/module-catalog.ts', 'packages/xpod-api/scripts/inngest-input-pins.json',
     'scripts/agentfs-native-ci/mounted/native-authority.json',
+    'scripts/agentfs-native-ci/mounted/required-cases.ts',
     'scripts/agentfs-native-ci/mounted/platform-admission.ts',
     'scripts/agentfs-native-ci/mounted/module-admission.ts',
     'tests/agentfs-pod/nativeMountedPlatformMatrix.test.ts',
@@ -67,6 +71,11 @@ def json_original(file):
 
 def literal_source_closure(repo):
     pending = list(SOURCE_SEEDS)
+    package = json_original(repo / 'package.json')
+    pending += list(package.get('patchedDependencies', {}).values())
+    pending += ['scripts/patch-jose.js', 'scripts/patch-inrupt-authn-refresh.js', 'scripts/patch-inrupt-authn-transport.js', 'scripts/patch-inrupt-authn-operation-cleanup.js']
+    if (repo / 'bunfig.toml').exists():
+        pending.append('bunfig.toml')
     seen, external = set(), set()
     while pending:
         materials.check(repo)
@@ -92,6 +101,14 @@ def literal_source_closure(repo):
             elif not ref.startswith('node:'):
                 parts = ref.split('/')
                 external.add('/'.join(parts[:2]) if ref.startswith('@') else parts[0])
+    # Workspace package identities are immutable source inputs, not registry SRIs.
+    # Derive this set from the same actual installed dependency closure on every observation.
+    _, packages, _ = package_closure(repo, sorted(external))
+    for package in packages:
+        if not package['path'].startswith('node_modules/'):
+            name = package['path'] + '/package.json'
+            require(materials.safe(name), 'unsafe workspace manifest path')
+            seen.add(name)
     return sorted(seen), sorted(external)
 
 
@@ -166,7 +183,9 @@ class ToolOriginals:
     def __init__(self, output, source_sha):
         self.output = Path(output)
         self.root = self.output / 'verifier-tools'
-        self.root.mkdir(mode=0o700)
+        self.root.mkdir(mode=0o700, exist_ok=True)
+        require(self.root.is_dir() and not self.root.is_symlink() and self.root.stat().st_uid == os.geteuid() and self.root.stat().st_mode & 0o077 == 0, 'owned private tool originals root required')
+        self.revision = 0
         self.source_sha = source_sha
         self.components, self.executables, self.observations = [], [], []
         self.domain_bytes = dict(source=0, dependencies=0, toolchain=0)
@@ -270,7 +289,8 @@ class ToolOriginals:
                       roots=self.components, executables=self.executables, observations=self.observations,
                       installOriginals=self.install_originals, pending=sorted(set(self.pending)))
         # Each revision is an original, never a mutable passed flag.
-        file = self.root / ('manifest-' + str(len(self.observations)).zfill(4) + '.json')
+        self.revision += 1
+        file = self.root / ('manifest-' + str(self.revision).zfill(4) + '.json')
         data = json.dumps(master, separators=(',', ':')).encode()
         require(len(data) <= LIMITS['metadataBytes'], 'small tool master bound')
         with file.open('xb') as stream:

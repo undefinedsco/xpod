@@ -13,6 +13,9 @@ import tarfile
 HERE=Path(__file__).resolve().parent
 spec=importlib.util.spec_from_file_location('sdk_commands',HERE/'sdk-command-materials.py')
 commands=importlib.util.module_from_spec(spec);spec.loader.exec_module(commands)
+SDK_TOOLS=(('gcc-12','tool-gcc-12'),('g++-12','tool-gxx-12'),('ld.bfd','tool-ld-bfd'),
+           ('ar','tool-ar'),('ranlib','tool-ranlib'),('cmake','tool-cmake'),('make','tool-make'),
+           ('python3','tool-python3'),('git','tool-git'))
 LIMIT=4*1024**3
 spec=importlib.util.spec_from_file_location('sdk_budget',HERE/'sdk-execution-budget.py')
 budget_module=importlib.util.module_from_spec(spec);spec.loader.exec_module(budget_module)
@@ -139,11 +142,11 @@ def build_materials(component,source,build,out,jobs):
             candidates.add(path.resolve(strict=True))
             if len(candidates)>100000:raise ValueError('SDK candidate input count budget')
     candidates.update(path.resolve(strict=True) for path in configure_inputs(build))
-    for name in ['gcc-12','g++-12','ld.bfd','ar','ranlib','cmake','make','python3','git']:
+    for name,stage_id in SDK_TOOLS:
         tool=shutil.which(name)
         if not tool:raise ValueError('Actual SDK tool missing: '+name)
         candidates.add(Path(tool).resolve(strict=True))
-        stage('tool-'+name.replace('.','-'),[tool,'--version'])
+        stage(stage_id,[tool,'--version'])
     compiler=stage('compiler-program',['g++-12','-print-prog-name=cc1plus'])
     cc1plus=Path((out/compiler['stdout']['path']).read_text().strip()).resolve(strict=True);candidates.add(cc1plus)
     link_tokens=shlex.split((build/'CMakeFiles/qlever-server.dir/link.txt').read_text())
@@ -172,7 +175,7 @@ def build_materials(component,source,build,out,jobs):
     selected.update(path for path in Path('/opt/qlever-sdk/profile').rglob('*') if path.is_file() and not path.is_symlink())
     selected.update(path for path in (component/'scripts').iterdir() if path.is_file() and path.suffix in ['.py','.sh'])
     selected.update([build/'compile_commands.json',build/'CMakeCache.txt',component/'qlever.lock.json'])
-    selected.update(Path(shutil.which(name)).resolve(strict=True) for name in ['gcc-12','g++-12','ld.bfd','ar','ranlib','cmake','make','python3','git'])
+    selected.update(Path(shutil.which(name)).resolve(strict=True) for name,_ in SDK_TOOLS)
     selected.add(cc1plus)
     ownership=[];installed=set();metadata_originals=set()
     for original in Path('/var/lib/dpkg/info').glob('*.list'):

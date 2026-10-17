@@ -325,10 +325,17 @@ class ModuleConsumerRunner:
         self.cancelled = None
         self.forced = False
         self.groups_unknown = False
+        self.preserve_owned_root = False
         self.group_members = {}
         self.disk_coverage = dict(completeSamples=0, partialSamples=0, disappearedEntries=0,
                                   lastCompleteBytes=None, peakCompleteBytes=None, lastSampleComplete=None,
                                   capCheckedOnLastSample=False)
+
+    def prepare_owned_root(self, root):
+        pass
+
+    def finish_owned_root(self, root):
+        pass
 
     def total_deadline_seconds(self):
         return 480
@@ -580,6 +587,7 @@ class ModuleConsumerRunner:
         for sig in [signal.SIGTERM, signal.SIGINT]:
             old_handlers[sig] = signal.signal(sig, interrupted)
         try:
+            self.prepare_owned_root(root)
             # Only one runtime is expanded at a time. Originals remain immutable.
             for runtime in ['node', 'bun']:
                 cycle = root / runtime
@@ -662,6 +670,7 @@ class ModuleConsumerRunner:
                     require(digest(original) == self.plan[key + 'Archive']['sha256'], 'original archive changed')
                 self.preserve_cycle(cycle, runtime)
                 shutil.rmtree(cycle)
+            self.finish_owned_root(root)
             require(not self.forced and not self.cancelled, 'forced or signalled cleanup cannot pass')
             self.result.update(status='passed', realConsumerValidated=True)
         except BaseException as error:
@@ -691,6 +700,7 @@ class ModuleConsumerRunner:
             # Restrict deletion to the fresh root created by this invocation.
             try:
                 require(not self.groups_unknown, 'process group closure unknown; preserving temporary root for inspection')
+                require(not self.preserve_owned_root, 'verifier harness failed; preserving unique actual install tree')
                 require(root.parent == self.checked['parent'] and root.stat().st_ino == root_inode and not root.is_symlink(), 'cleanup ownership changed')
                 shutil.rmtree(root)
                 self.result['ownedTemporaryRootRemoved'] = True

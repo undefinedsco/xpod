@@ -22,7 +22,9 @@ describe('controlled GitHub origin capability', () => {
   it('module observations use canonical coverage before transport', async () => {
     const tuple = { schemaVersion: 1 as const, sourceSha: 'a'.repeat(40), runHeadSha: 'a'.repeat(40),
       runId: 1, runAttempt: 1, artifactId: 1, artifactSha256: 'b'.repeat(64) };
-    await expect(observeModuleProductGitHubOrigin(tuple, 'css', 'linux-x64')).rejects.toThrow('no declared native source');
+    // Routed normal bytes may be observed while native release admission remains pending.
+    await expect(observeModuleProductGitHubOrigin(tuple, 'css', 'linux-x64', { fetch: () => {} } as any)).rejects.toThrow('invalid transport options');
+    await expect(observeModuleProductGitHubOrigin(tuple, 'css', 'linux-riscv64')).rejects.toThrow('Unsupported product target');
     await expect(observeModuleProductGitHubOrigin(tuple, 'api', 'linux-riscv64')).rejects.toThrow('Unsupported product target');
     await expect(observeModuleProductGitHubOrigin(tuple, 'api', 'linux-x64', { fetch: () => {} } as any)).rejects.toThrow('invalid transport options');
   });

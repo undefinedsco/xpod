@@ -28,6 +28,9 @@ budget_spec.loader.exec_module(budget)
 tool_spec = importlib.util.spec_from_file_location('afs_tool_originals', HERE / 'afs-consumer-tool-originals.py')
 tool_originals = importlib.util.module_from_spec(tool_spec)
 tool_spec.loader.exec_module(tool_originals)
+harness_spec = importlib.util.spec_from_file_location('afs_fresh_harness', HERE / 'afs-verifier-harness.py')
+harness = importlib.util.module_from_spec(harness_spec)
+harness_spec.loader.exec_module(harness)
 require = lifecycle.require
 BRIDGE = HERE / 'afs-module-consumer-bridge.ts'
 WORKFLOW = '.github/workflows/agentfs-module-mounted-acceptance.yml'
@@ -151,10 +154,36 @@ def validate(plan):
 
 
 class Runner(lifecycle.ModuleConsumerRunner):
+    tool_originals = tool_originals
+    small_original = staticmethod(small_original)
+    budget = budget
+
+    def prepare_owned_root(self, root):
+        self.fresh_harness = harness.VerifierHarness(self)
+        self.preserve_owned_root = True
+        try:
+            self.fresh_harness.prepare(root)
+        except BaseException:
+            self.preserve_owned_root = True
+            raise
+
+    def finish_owned_root(self, root):
+        try:
+            self.fresh_harness.finish()
+            self.preserve_owned_root = False
+        except BaseException:
+            self.preserve_owned_root = True
+            raise
+
     def total_deadline_seconds(self):
         return budget.projection()['consumerRunSeconds']
 
     def command_timeout_seconds(self, label):
+        for row in budget.projection()['harnessCommands']:
+            if label == row['label']:
+                return row['timeoutSeconds']
+        if label in ('node-normal-cli-install', 'bun-normal-cli-install'):
+            return budget.projection()['normalInstallSeconds']
         if label in ('node-afs-full-mounted-profile', 'bun-afs-full-mounted-profile'):
             return budget.projection()['fullMountedCommandSeconds']
         return min(super().command_timeout_seconds(label), budget.projection()['ordinaryCommandSeconds'])
@@ -162,7 +191,7 @@ class Runner(lifecycle.ModuleConsumerRunner):
     module_id = 'afs'
     driver_path = __file__
     target_resolver = staticmethod(target)
-    additional_drivers = [BRIDGE, HERE.parent / 'agentfs-native-ci/mounted/platform-admission.ts',
+    additional_drivers = [BRIDGE, HERE.parent / 'agentfs-native-ci/mounted/required-cases.ts', HERE.parent / 'agentfs-native-ci/mounted/platform-admission.ts',
                           HERE.parent / 'agentfs-native-ci/mounted/module-admission.ts',
                           HERE.parent.parent / 'tests/agentfs-pod/nativeMountedPlatformMatrix.test.ts',
                           HERE.parent.parent / 'tests/agentfs-pod/nativeOverlayScenario.test.ts',
@@ -183,7 +212,7 @@ class Runner(lifecycle.ModuleConsumerRunner):
             self.tool_capture = tool_originals.ToolOriginals(self.output, self.plan['sourceSha'])
             capture = self.tool_capture
             capture.start_stage()
-            roots = sorted({HERE.parent.parent.resolve(), pathlib.Path(self.plan['checkout']).resolve()})
+            roots = [self.verifier_harness]
             for index, repo in enumerate(roots):
                 source_paths, seeds = tool_originals.literal_source_closure(repo)
                 capture.capture('source-' + str(index), 'harness', repo, 'source', source_paths,
@@ -260,7 +289,7 @@ class Runner(lifecycle.ModuleConsumerRunner):
         evidence = self.output / (runtime + '-mounted')
         evidence.mkdir(mode=0o700)
         bound = lambda file: dict(path=str(file), sha256=lifecycle.digest(file))
-        handoff = dict(schemaVersion=1, sourceSha=self.plan['sourceSha'], target=self.plan['target'], workspace=self.plan['checkout'],
+        handoff = dict(schemaVersion=1, sourceSha=self.plan['sourceSha'], target=self.plan['target'], workspace=str(self.verifier_harness),
                        evidence=str(evidence), home=str(cycle / 'home'), packageRoot=str(package_root), packageManifest=bound(package_root / 'package.json'),
                        storeRoot=str(cycle / 'home/.xpod/modules'), runtime=runtime,
                        archive=bound(self.checked['originals']['afs']), helper=bound(helper), entry=bound(package_root / 'dist/entry.mjs'),
@@ -276,7 +305,7 @@ class Runner(lifecycle.ModuleConsumerRunner):
         # No source-denial wrapper around trusted Vitest/tooling. Every installed
         # CLI invocation in its authenticated mounted chain uses the launcher.
         try:
-            self.command(runtime + '-afs-full-mounted-profile', [self.plan['bun'], str(BRIDGE), str(input_file), handoff_original['sha256']], private_env, cycle)
+            self.command(runtime + '-afs-full-mounted-profile', [self.plan['bun'], str(self.verifier_harness / 'scripts/lib/afs-module-consumer-bridge.ts'), str(input_file), handoff_original['sha256']], private_env, cycle)
         except BaseException:
             # The existing mounted harness owns detached test/helper groups and
             # kernel mounts. Outer bridge closure alone cannot prove them absent.
@@ -348,7 +377,7 @@ def export_safe_originals(plan, destination):
         handoff = json.loads(source_bytes['handoff'])
         require(isinstance(handoff, dict) and set(handoff) == expected_keys, 'unknown AFS handoff fields: keep credential originals private')
         package_root = cycle / 'home/.xpod/modules/afs' / plan['target'] / version / 'package'
-        expected = dict(schemaVersion=1, sourceSha=plan['sourceSha'], target=plan['target'], workspace=plan['checkout'], evidence=str(output / (runtime + '-mounted')),
+        expected = dict(schemaVersion=1, sourceSha=plan['sourceSha'], target=plan['target'], workspace=str(owned / 'verifier-harness'), evidence=str(output / (runtime + '-mounted')),
                         home=str(cycle / 'home'), packageRoot=str(package_root), storeRoot=str(cycle / 'home/.xpod/modules'), runtime=runtime)
         require(all(handoff.get(key) == value for key, value in expected.items()), 'AFS handoff generated coordinate differs')
         package = bounded_json(output / (runtime + '-installed-package.json'))
@@ -375,7 +404,7 @@ def export_safe_originals(plan, destination):
         bound(handoff['preflightDriver'], plan['afsPreflightDriver']['path'], plan['afsPreflightDriver']['sha256'])
         env = launcher_environment(dict(HOME=str(cycle / 'home'), TMPDIR=str(cycle), PATH=str(cycle / 'runtime-bin') + ':/usr/bin:/bin', LANG='en_US.UTF-8'), cycle)
         declaration = dict(platform=plan['target'].split('-')[0])
-        sandbox = lifecycle.targets.sandbox(declaration, cycle, [pathlib.Path(p).resolve(strict=True) for p in plan['sourceRoots']])
+        sandbox = lifecycle.targets.sandbox(declaration, cycle, [pathlib.Path(p).resolve(strict=True) for p in plan['sourceRoots']] + [owned / 'verifier-harness'])
         cli = sandbox + [str(cycle / 'node_modules/@undefineds.co/xpod-cli/dist/bin/xpod')]
         require(source_bytes['launcher'] == launcher_bytes(env, cli), 'AFS launcher has unknown env/command: keep original private')
         for role, name in [('handoff', 'handoff.json'), ('launcher', 'launcher')]:

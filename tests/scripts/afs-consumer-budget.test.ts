@@ -15,7 +15,9 @@ print(json.dumps(m.projection()))`;
     expect(actual.hostJobMinutes).toBeLessThan(360);
     expect(afsConsumerBudget('postpublish').maximumDurationSeconds - actual.maximumDurationSeconds).toBe(210);
     expect(actual.uploadWindowSeconds).toBe(600);
-    expect(afsConsumerBudget('postpublish').hostJobMinutes).toBe(335);
+    expect(actual.officialRuntimeObservationSeconds).toBe(30);
+    expect(actual.maximumDurationSeconds - actual.consumerRunSeconds).toBe(actual.safeExportSeconds + actual.commandOwnedCloseSeconds + actual.officialRuntimeObservationSeconds);
+    expect(afsConsumerBudget('postpublish').hostJobMinutes).toBe(309);
   });
   it('extends only the two full profiles and preserves default runner bounds', () => {
     const code = `import importlib.util,json
@@ -24,6 +26,6 @@ a=importlib.util.module_from_spec(s);s.loader.exec_module(a)
 r=a.Runner.__new__(a.Runner);r.plan={'timeoutSeconds':30}
 base=a.lifecycle.ModuleConsumerRunner.__new__(a.lifecycle.ModuleConsumerRunner);base.plan=r.plan
 print(json.dumps([r.command_timeout_seconds(x) for x in ['node-afs-full-mounted-profile','bun-afs-full-mounted-profile','node-normal-cli-install','node-afs-full-mounted-profile-extra']]+[base.total_deadline_seconds(),base.command_timeout_seconds('node-afs-full-mounted-profile')]))`;
-    expect(JSON.parse(execFileSync('python3', [ '-c', code ], { cwd: path.resolve(__dirname, '../..'), encoding: 'utf8' }))).toEqual([ 3660, 3660, 30, 30, 480, 30 ]);
+    expect(JSON.parse(execFileSync('python3', [ '-c', code ], { cwd: path.resolve(__dirname, '../..'), encoding: 'utf8' }))).toEqual([ 3660, 3660, 180, 30, 480, 30 ]);
   });
 });

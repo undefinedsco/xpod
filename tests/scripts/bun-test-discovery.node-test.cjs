@@ -12,6 +12,8 @@ test('both runners share discovery for Bun tests in scripts, tests, UI and sourc
     for (const file of selected) put(file, "import {test} from'bun:test';");
     put('tests/bun/declared.test.ts', 'export {};');
     put('tests/scripts/node.test.ts', "import {test} from 'vitest';");
+    put('tests/scripts/program-fixture.test.ts', `import {test} from 'vitest'; const fixture = \"import {test} from 'bun:test';\";`);
+    put('tests/scripts/comment.test.ts', `// import {test} from 'bun:test';\nimport {test} from 'vitest';`);
     put('scripts/lib/dist/ignored.test.ts', "import {test} from 'bun:test';");
     put('tests/.test-data/ignored.test.ts', "import {test} from 'bun:test';");
     put('packages/xpod-cli/tests/separate-owner.test.ts', "import {test} from 'bun:test';");

@@ -8,7 +8,8 @@ import { fileURLToPath } from 'node:url';
 import { ModuleStore } from '../../../packages/xpod-cli/src/module-store';
 import { observeChildLifecycle, reapOwnedGroup, runMountedPlatformAdmission, type InstalledMountedProduct } from './platform-admission';
 
-export const MODULE_CHAIN_CASE = 'mounts through the installed core and AFS module with public-client authentication, then closes its proxy and kernel mount';
+import { MODULE_CHAIN_CASE } from './required-cases';
+export { MODULE_CHAIN_CASE } from './required-cases';
 export interface BoundFile { path: string; sha256: string }
 export interface CliRuntimeArtifacts {
   archive: BoundFile;

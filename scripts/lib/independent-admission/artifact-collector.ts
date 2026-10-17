@@ -8,7 +8,7 @@ import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { verifyAcquiredMetadata } from '../../acquire-independent-product-input';
 import { projectCliPublicationInput } from '../../project-cli-publication-input';
-import { githubOriginFacts, githubOriginOriginals, type GitHubOriginObservation } from './github-origin';
+import { githubOriginFacts, githubOriginOriginals, isRoutedCssProductGitHubOrigin, type GitHubOriginObservation } from './github-origin';
 import type { CollectedArtifactCapability, CollectedArtifactView, CollectedArtifactMember, PublicationMaterialView } from './artifact-contract';
 
 type PortableSourceSnapshot={originals:NonNullable<Awaited<ReturnType<typeof import('./module-source-originals')['collectModuleSourceOriginals']>>>;lifetime:ReturnType<typeof sharedSourceLifetime>};
@@ -142,7 +142,7 @@ export async function collectModuleAdmissionArtifact(input: {
   if (!Object.prototype.hasOwnProperty.call(moduleProjectors, input.module) || !origin
     || ![input.module === 'afs' ? '.github/workflows/agentfs-module-mounted-acceptance.yml' : `.github/workflows/${input.module}-module-product.yml`,...(input.module==='css'?['.github/workflows/css-native-products.yml']:[])].includes(origin.workflowPath) || !origin.target) return fail('controlled module platform origin required');
   const { productTarget } = await import('../../module-product-targets');
-  if (input.module !== 'afs' && !productTarget(input.module, origin.target).nativeSourceAvailable) return fail('module native source unavailable');
+  if (input.module !== 'afs' && !productTarget(input.module, origin.target).nativeSourceAvailable && !(input.module==='css'&&isRoutedCssProductGitHubOrigin(input.githubOrigin))) return fail('module native source unavailable');
   const root = path.resolve(input.acquisitionRoot);
   const receiptBytes = readCustodyReceipt(root);
   const custody = JSON.parse(receiptBytes.toString());
@@ -417,8 +417,9 @@ function issueCollectedView(view: CollectedArtifactView, dispose?: () => void, b
   return capability;
 }
 
-// Load the Bun-only publication execution graph only when an operation is requested.
-export const preparePublicationGroup: typeof import('./publication-group').preparePublicationGroup = async input =>
-  (await import('./publication-group')).preparePublicationGroup(input);
-export const prepareRegistryConsumerProduct: typeof import('./publication-group').prepareRegistryConsumerProduct = async input =>
-  (await import('./publication-group')).prepareRegistryConsumerProduct(input);
+export async function preparePublicationGroup(input: Parameters<NonNullable<import('../../run-independent-publication').GroupPreparationDispatcher['preparePublicationGroup']>>[0]) {
+  return (await import('./publication-group')).preparePublicationGroup(input);
+}
+export async function prepareRegistryConsumerProduct(input: import('./publication-group').RegistryConsumerProductPreparationInput) {
+  return (await import('./publication-group')).prepareRegistryConsumerProduct(input);
+}

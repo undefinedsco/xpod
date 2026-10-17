@@ -1,8 +1,9 @@
 import { createHash } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { afsConsumerOriginalSelection, inspectAfsConsumerOriginals } from '../../scripts/lib/independent-admission/afs-consumer-originals';
-import { REQUIRED_MOUNTED_CASES } from '../../scripts/agentfs-native-ci/mounted/platform-admission';
-import { MODULE_CHAIN_CASE } from '../../scripts/agentfs-native-ci/mounted/module-admission';
+import { REQUIRED_MOUNTED_CASES, MODULE_CHAIN_CASE } from '../../scripts/agentfs-native-ci/mounted/required-cases';
 const hash = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
 const cases = [...REQUIRED_MOUNTED_CASES, MODULE_CHAIN_CASE];
 const bytes = (value: unknown) => Buffer.isBuffer(value) ? value : Buffer.from(typeof value === 'string' ? value : JSON.stringify(value));
@@ -123,4 +124,43 @@ describe('AFS original semantics (origin-free fixtures never issue authority)', 
     const g = fixture(); g.change('result.json', value => { value.records.find((row: any) => row.label === 'node-normal-cli-install').argv.push('--ignore-scripts'); });
     expect(inspectAfsConsumerOriginals(g.input).pending.some(value => value.includes('normal-installed-tools-command-differs'))).toBe(true);
   });
+});
+
+it('streams complete tool tar entries and rejects bytes even when outer references are rebound', () => {
+  const f = fixture();
+  const tar = (content: Buffer) => {
+    const h = Buffer.alloc(512), octal = (at: number, size: number, n: number) => h.write(n.toString(8).padStart(size - 1, '0') + '\0', at, size, 'ascii');
+    h.write('input'); octal(100, 8, 420); octal(108, 8, 0); octal(116, 8, 0); octal(124, 12, content.length); octal(136, 12, 0);
+    h.fill(32, 148, 156); h[156] = 48; const sum = [...h].reduce((a, b) => a + b, 0); h.write(sum.toString(8).padStart(6, '0') + '\0 ', 148, 8, 'ascii');
+    return Buffer.concat([h, content, Buffer.alloc((512 - content.length % 512) % 512), Buffer.alloc(1024)]);
+  };
+  const roots = [['source', 'harness', 'source'], ['harness', 'harness', 'dependencies'], ['executables', 'executables', 'toolchain'], ['node-registry-tools', 'registry-tools', 'dependencies'], ['bun-registry-tools', 'registry-tools', 'dependencies']].map(([rootId, role, domain]) => {
+    const archive = f.put('verifier-tools/' + rootId + '/original.tar', tar(Buffer.from('actual')));
+    const inventory = f.put('verifier-tools/' + rootId + '/inventory.json', [{path: 'input', archive: archive.path, kind: 'file', bytes: 6, sha256: hash(Buffer.from('actual')), mode: 420}]);
+    return {rootId, role, domain, archives: [archive], inventories: [inventory]};
+  });
+  const save = () => { const master = f.put('verifier-tools/master.json', {schemaVersion: 1, kind: 'fixed-afs-consumer-tool-originals', sourceSha: f.input.sourceSha, roots, observations: [], installOriginals: []}); f.change('result.json', value => {value.verifierToolOriginals = master;}); };
+  save();
+  expect(inspectAfsConsumerOriginals(f.input).pending).toContain('afs-tool-before-after-observation-missing:node-before-mounted');
+  roots[0]!.archives[0] = f.put(roots[0]!.archives[0]!.path, tar(Buffer.from('forged'))); save();
+  expect(inspectAfsConsumerOriginals(f.input).pending).toContain('afs-tool-tar-file-bytes-differ');
+});
+
+it('exports actual encoded scoped patch filenames and rejects credential-shaped install inputs', () => {
+  const f = fixture(), patch = f.put('verifier-tools/install/inputs/patches/@solid%2Fcommunity-server@8.0.0-alpha.1.patch', 'fixed patch');
+  const select = (row: typeof patch) => {
+    const master = f.put('verifier-tools/manifest-0000.json', {roots: [], observations: [], installOriginals: [row]});
+    f.change('result.json', value => {value.verifierToolOriginals = master;});
+    return afsConsumerOriginalSelection(f.input);
+  };
+  expect(select(patch).files.some(row => row.path === patch.path)).toBe(true);
+  const secret = f.put('verifier-tools/install/inputs/.npmrc', 'token=secret-marker');
+  const actual = select(secret);
+  expect(actual.files.some(row => row.path === secret.path)).toBe(false);
+  expect(actual.pending).toContain('afs-transport-install-original-role-invalid');
+});
+
+it('imports original-only validation without any built runtime client dependency', () => {
+  const code = 'import {mock} from "bun:test"; mock.module("@undefineds.co/xpod-client",()=>{throw new Error("built client must not be loaded")}); await import("./scripts/lib/independent-admission/afs-consumer-originals.ts"); console.log("pure-original-import-ok")';
+  expect(execFileSync('bun', ['-e', code], {cwd: path.resolve(__dirname, '../..'), encoding: 'utf8'}).trim()).toBe('pure-original-import-ok');
 });

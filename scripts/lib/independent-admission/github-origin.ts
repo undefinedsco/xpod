@@ -1,3 +1,4 @@
+import {immutableGitContentsEndpoint,cachedGitContentsOriginal,retainGitContentsOriginal} from './github-immutable-original-cache';
 import {QLEVER_LINUX_SOURCE_BINDINGS} from './qlever-linux-origin-policy';
 import {QLEVER_OBSERVER_PATH,QLEVER_OBSERVER_V20,QLEVER_OBSERVER_V22,QLEVER_OBSERVER_V23,qleverObserverCompanionBindings} from './qlever-observer-policy';
 import { CLI_SOURCE_POLICY } from './source-rules';
@@ -29,6 +30,11 @@ export interface GitHubOriginFacts {
 }
 type Original = { name: string; endpoint: string; data: Buffer };
 const nativeOrigins = new WeakSet<object>();
+const normalModuleOrigins = new WeakSet<object>();
+export function isRoutedCssProductGitHubOrigin(value:unknown):value is GitHubOriginObservation {
+ const facts=value!==null&&typeof value==='object'?issued.get(value)?.facts:undefined;
+ return Boolean(facts&&normalModuleOrigins.has(value as object)&&facts.workflowPath===CSS_NATIVE_PRODUCTS_WORKFLOW&&facts.workflowSourceSha256===CSS_NATIVE_PARENT_SHA);
+}
 /** Issuer purpose is private; matching a workflow string cannot turn a normal
  * CSS product observation into an independently observed native artifact. */
 export function isNativeGitHubOrigin(value:unknown):value is GitHubOriginObservation {
@@ -108,7 +114,7 @@ const CSS_NATIVE_SOURCE_BINDINGS=[
 export async function observeModuleProductGitHubOrigin(input: ArtifactAcquisitionInput, module: 'api' | 'css',
   target: string, options: { token?: string } = {}): Promise<GitHubOriginObservation> {
   const row = productTarget(module, target);
-  if (!row.nativeSourceAvailable) return fail('module target has no declared native source');
+  if (!row.nativeSourceAvailable&&module!=='css') return fail('module target has no declared native source');
   const policies = {
     api: { workflowSha256: 'e9326b1254fbcf933cbbe09c41f5dcf492bfa70ff265d2ea1cd0589c11d4da98',
       previousShortWorkflowSha256: '2c1c1414496c82f54162a4933933f83f1743f4a4dc5122c969424b7ca38e4f56',
@@ -122,7 +128,7 @@ export async function observeModuleProductGitHubOrigin(input: ArtifactAcquisitio
   const legacy:OriginPolicy={
     ...policies[module], workflowPath: `.github/workflows/${module}-module-product.yml`,
     events: ['workflow_dispatch', 'pull_request'], target,
-    sourceBindings: [{ path: 'scripts/module-product-targets.ts', sha256: 'd04fb106ca349179e4b99869c68cbb85b8d9a9f30e8d60b927a5eceab9e2f25f' }],
+    sourceBindings: [{ path: 'scripts/module-product-targets.ts', sha256: 'd04fb106ca349179e4b99869c68cbb85b8d9a9f30e8d60b927a5eceab9e2f25f',reviewedSha256:['5ef511f448c90a6fc9e767fd8224ef890b5fc04d2b6514f85697a0a529fb3eb4'] }],
     artifactNames: coordinates => [`${module}-module-products-${target}-${coordinates.sourceSha}-${coordinates.runId}-${coordinates.runAttempt}`],
     jobName: () => `products (${target})`,
     // The old reviewed workflow used GitHub's implicit matrix display name.
@@ -134,8 +140,12 @@ export async function observeModuleProductGitHubOrigin(input: ArtifactAcquisitio
   const current:OriginPolicy={workflowPath:CSS_NATIVE_PRODUCTS_WORKFLOW,workflowSha256:CSS_NATIVE_PARENT_SHA,
     events:['workflow_dispatch'],target,artifactNames:coordinates=>[`css-module-products-${target}-${coordinates.sourceSha}-${coordinates.runId}-${coordinates.runAttempt}`],
     jobName:()=>`targets (${target}) / products`,requiredStep:'Produce the normal CSS preview',requiredSteps:['Upload original preview and evidence'],
-    sourceBindings:CSS_NATIVE_SOURCE_BINDINGS};
-  return observeGitHubOrigin(input,options,module==='css'?[legacy,current]:legacy);
+    // Only the actually executed target branch participates. Linux SDK changes
+    // do not silently authorize Linux, or block a separately reviewed Mac run.
+    sourceBindings:target.startsWith('linux-')?QLEVER_LINUX_SOURCE_BINDINGS:[...CSS_NATIVE_SOURCE_BINDINGS.filter(binding=>binding.path!=='.github/workflows/publish-qlever-runtime-sdk.yml'),{path:QLEVER_OBSERVER_PATH,sha256:QLEVER_OBSERVER_V20,reviewedSha256:[QLEVER_OBSERVER_V22,QLEVER_OBSERVER_V23]}],
+    requiredAncestorJobs:target.startsWith('linux-')?[`targets (${target}) / native / linux / publish`,`targets (${target}) / native / linux / module_runtime_materials / runtime / publish`,`targets (${target}) / native / linux / module_runtime_materials / archive`]:[`targets (${target}) / native / macos / build`]};
+  const observation=await observeGitHubOrigin(input,options,module==='css'?(row.nativeSourceAvailable?[legacy,current]:current):legacy);
+  normalModuleOrigins.add(observation);return observation;
 }
 
 /** Normal AFS products come from the mounted-module workflow, independently
@@ -196,7 +206,7 @@ export async function observeQleverNativeGitHubOrigin(input:ArtifactAcquisitionI
       artifactNames:row=>[`qlever-local-runtime-${target}-${row.sourceSha}`],
       jobName:()=>`targets (${target}) / native / macos / build`,requiredStep:'Bind the qlever-local acceptance evidence',
       requiredSteps:['Verify the actual native producer host','Resolve immutable artifact identity','Upload the exact native runtime'],
-      sourceBindings:[...CSS_NATIVE_SOURCE_BINDINGS,{path:QLEVER_OBSERVER_PATH,sha256:QLEVER_OBSERVER_V20,reviewedSha256:[QLEVER_OBSERVER_V22,QLEVER_OBSERVER_V23]}],
+      sourceBindings:[...CSS_NATIVE_SOURCE_BINDINGS.filter(binding=>binding.path!=='.github/workflows/publish-qlever-runtime-sdk.yml'),{path:QLEVER_OBSERVER_PATH,sha256:QLEVER_OBSERVER_V20,reviewedSha256:[QLEVER_OBSERVER_V22,QLEVER_OBSERVER_V23]}],
     });nativeOrigins.add(observation);return observation;
   }
   if(!['darwin-arm64','darwin-x64'].includes(target) || !['standalone','css-module'].includes(invocation)) return fail('unsupported QLever native invocation');
@@ -278,13 +288,16 @@ async function observeGitHubOrigin(input: ArtifactAcquisitionInput, options: { t
   const signal = AbortSignal.timeout(30_000);
   async function read(name: string, relative: string): Promise<any> {
     const endpoint = api + relative;
+    const cached=cachedGitContentsOriginal(endpoint);
+    if(cached){originals.push({name,endpoint,data:cached});return JSON.parse(cached.toString('utf8'));}
+    const maximumBytes=immutableGitContentsEndpoint(endpoint)?2*1024**2:1024**2;
     const response = await fetch(endpoint, { method: 'GET', redirect: 'error', signal,
       headers: { Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28',
         ...(options.token ? { Authorization: 'Bearer ' + options.token } : {}) } });
     if (response.status !== 200 || response.redirected || !response.body) fail('metadata request failed');
     const body = response.body!;
     const length = response.headers.get('content-length');
-    if (length !== null && (!/^\d+$/u.test(length) || Number(length) > 1024 ** 2)) {
+    if (length !== null && (!/^\d+$/u.test(length) || Number(length) > maximumBytes)) {
       await body.cancel(); return fail('metadata exceeds byte bound');
     }
     const reader = body.getReader(); const chunks: Buffer[] = []; let bytes = 0;
@@ -292,12 +305,12 @@ async function observeGitHubOrigin(input: ArtifactAcquisitionInput, options: { t
       while (true) {
         const row = await reader.read(); if (row.done) break;
         bytes += row.value.byteLength;
-        if (bytes > 1024 ** 2) fail('metadata exceeds byte bound');
+        if (bytes > maximumBytes) fail('metadata exceeds byte bound');
         chunks.push(Buffer.from(row.value));
       }
     } finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
     const data = Buffer.concat(chunks, bytes); originals.push({ name, endpoint, data });
-    return JSON.parse(data.toString('utf8'));
+    const parsed=JSON.parse(data.toString('utf8'));retainGitContentsOriginal(endpoint,data);return parsed;
   }
   const run = await read('run.original.json', `actions/runs/${input.runId}/attempts/${input.runAttempt}`);
   const choices=(Array.isArray(policies)?policies:[policies]) as readonly OriginPolicy[];
@@ -320,7 +333,9 @@ async function observeGitHubOrigin(input: ArtifactAcquisitionInput, options: { t
   if (workflowSha256 !== policy.workflowSha256 && !reviewedVersion) fail('immutable workflow policy not reviewed');
   const expectedJobName = reviewedVersion?.jobName ?? policy.jobName;
   const sourceBindings=[...(reviewedVersion?.sourceBindings ?? policy.sourceBindings ?? [])];
-  for (const binding of sourceBindings) {
+  for (let offset=0;offset<sourceBindings.length;) {
+   const batch=sourceBindings.slice(offset,offset+8);offset+=batch.length;
+   await Promise.all(batch.map(async binding=>{
     const original = await read('policy-' + binding.path.replace(/[^a-z0-9]/giu, '-') + '.original.json', `contents/${binding.path}?ref=${binding.ref==='run-head'?input.runHeadSha:input.sourceSha}`);
     if (original.type !== 'file' || original.path !== binding.path || original.encoding !== 'base64'
       || typeof original.content !== 'string')fail('immutable target declaration source missing');
@@ -329,6 +344,7 @@ async function observeGitHubOrigin(input: ArtifactAcquisitionInput, options: { t
     // Companion helpers are versioned with the actual reviewed observer bytes.
     // Old runs do not gain the v20 companion-originals scope or new executable TCB.
     if(binding.path===QLEVER_OBSERVER_PATH)sourceBindings.push(...qleverObserverCompanionBindings(actualSha));
+   }));
   }
   const artifact = await read('artifact.original.json', `actions/artifacts/${input.artifactId}`);
   if (artifact.id !== input.artifactId || artifact.expired !== false || artifact.workflow_run?.id !== input.runId

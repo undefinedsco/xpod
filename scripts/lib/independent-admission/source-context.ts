@@ -9,7 +9,7 @@ const currentChecks=new WeakMap<object,()=>void>();
 export function assertDerivedSourceCurrent(value:unknown):void{
  if(!value||typeof value!=='object'||!issued.has(value)||!currentChecks.has(value))throw Error('Issued immutable source required');currentChecks.get(value)!();
 }
-const artifactCheckouts = new WeakMap<object, string>();
+const artifactCheckouts = new WeakMap<object, Readonly<{root:string;source:DerivedSourceCapability}>>();
 const fail = (message: string): never => { throw new Error('Independent derived source: ' + message); };
 
 export function derivedSourceView(value: unknown): DerivedSourceView | undefined {
@@ -19,7 +19,15 @@ export function derivedSourceView(value: unknown): DerivedSourceView | undefined
 /** Available only after this process derived immutable source for the exact
  * real artifact. Used by the fixed consumer to deny reads of the checkout. */
 export function collectedArtifactSourceCheckout(artifact: unknown): string | undefined {
-  return artifact && typeof artifact === 'object' && collectedArtifactView(artifact) ? artifactCheckouts.get(artifact) : undefined;
+  return artifact && typeof artifact === 'object' && collectedArtifactView(artifact) ? artifactCheckouts.get(artifact)?.root : undefined;
+}
+
+/** Returns only this process's source handle bound to the exact real artifact. */
+export function collectedArtifactDerivedSource(artifact: unknown): DerivedSourceCapability | undefined {
+  if (!artifact || typeof artifact !== 'object' || !collectedArtifactView(artifact)) return undefined;
+  const source = artifactCheckouts.get(artifact)?.source;
+  if (source) assertDerivedSourceCurrent(source);
+  return source;
 }
 
 /** Derives immutable tracked blobs from a clean exact checkout bound to a real
@@ -59,5 +67,5 @@ export function deriveAdmissionSource(artifact: CollectedArtifactCapability, che
   const capability = Object.freeze({}) as DerivedSourceCapability;
   issued.set(capability, view); currentChecks.set(capability,()=>{
     if(realpathSync(checkout)!==root||git(['rev-parse','HEAD']).toString().trim()!==sourceSha||git(['status','--porcelain','--untracked-files=all']).length!==0)fail('clean exact source checkout changed');
-  });artifactCheckouts.set(artifact, root); return capability;
+  });artifactCheckouts.set(artifact, Object.freeze({root,source:capability})); return capability;
 }
