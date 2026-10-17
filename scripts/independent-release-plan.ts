@@ -4,6 +4,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { valid as validSemver } from 'semver';
+import type { Gate, SourceMaterialFacts } from './lib/independent-admission';
 const { inspectTarballBuffer, sha512Integrity } = createRequire(import.meta.url)('./workspace-package-payload.cjs');
 import { MODULE_API_VERSION, MODULE_CATALOG, MODULE_TARGETS } from '../packages/xpod-cli/src/module-catalog';
 
@@ -74,10 +75,19 @@ export function assertPublicationDependencies(manifest: Record<string, any>): vo
   }
 }
 /** A local admission planner. It validates bound receipts, never grants legal clearance or publishes. */
-export function planIndependentRelease(input: ReleaseInput, root = process.cwd()) {
+export function planIndependentRelease(input: ReleaseInput, root = process.cwd(), operationalContext: {
+  githubOrigin?: unknown; collectedArtifacts?: readonly unknown[]; derivedSource?: unknown;
+} = {}) {
   if (input?.schemaVersion !== 1 || !shaPattern.test(input.sourceSha) || !shaPattern.test(input.runHeadSha) || input.checkoutSha !== input.sourceSha || !Array.isArray(input.products) || !input.products.length) fail('exact source and products required');
   const actual = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: path.resolve(import.meta.dir, '..'), encoding: 'utf8' });
   if (actual.status !== 0 || actual.stdout.trim() !== input.checkoutSha) fail('actual checkout source mismatch');
+  // Loaded only for planning: normal publication preparation copies the small
+  // manifest helpers without the admission implementation.
+  const { verifyAdmission } = createRequire(import.meta.url)('./lib/independent-admission/index.ts') as typeof import('./lib/independent-admission');
+  const { collectedArtifactView } = createRequire(import.meta.url)('./lib/independent-admission/artifact-collector.ts') as typeof import('./lib/independent-admission/artifact-collector');
+  const tree = spawnSync('git', ['ls-tree', '-r', '--name-only', '-z', input.sourceSha], { cwd: path.resolve(import.meta.dir, '..'), maxBuffer: 4 * 1024 * 1024 });
+  if (tree.status !== 0 || tree.error) fail('exact tracked source tree unavailable');
+  const trackedPaths = tree.stdout.toString().split('\0').filter(Boolean);
   const seen = new Set<string>();
   const accepted = input.products.map(item => {
     const module = MODULE_CATALOG.find(row => row.id === item.product);
@@ -112,7 +122,7 @@ export function planIndependentRelease(input: ReleaseInput, root = process.cwd()
     if (receipt.schemaVersion !== 1 || receipt.kind !== 'independent-product-input' || receipt.sourceSha !== input.sourceSha
       || receipt.package !== name || receipt.version !== item.version || receipt.target !== item.target
       || receipt.archiveSHA256 !== item.archive.sha256 || receipt.integrity !== integrity) fail('receipt identity mismatch');
-    const gates = module ? ['source', 'native', 'legal', 'consumer'] : ['source', 'legal', 'consumer'];
+    const gates: Gate[] = module ? ['source', 'native', 'legal', 'consumer'] : ['source', 'legal', 'consumer'];
     const blockers: Array<{ gate: string; reason: string }> = [];
     const runtimeClosureMaterials = inspected.entries.filter((entry: any) => entry.type === 'file'
       && (entry.path === 'package/provenance/identity-dedup.json'
@@ -120,25 +130,29 @@ export function planIndependentRelease(input: ReleaseInput, root = process.cwd()
         || /^package\/provenance\/(?:cli-producer-materials|module-source-kit)\.json$/u.test(entry.path)))
       .map((entry: any) => ({ path: entry.path, sha256: entry.sha256 }));
     if (module) blockers.push({ gate: 'runtime-closure', reason: 'physical-runtime-closure-unverified: inventory binds original bytes; a standalone producer dependency-graph/runtime-resolution admission verifier is still required' });
-    const evidenceFiles: Array<{ gate: string; reference: Reference; schemaVersion: unknown; kind: unknown; status: unknown }> = [];
+    const evidenceFiles: Array<{ gate: string; reference: Reference; schemaVersion: unknown; kind: unknown; status: unknown; facts?: SourceMaterialFacts }> = [];
     for (const gate of gates) {
       const reference = receipt.gates?.[gate];
       if (!reference) { blockers.push({ gate, reason: 'Required product admission evidence is missing' }); continue; }
       const evidence = json(bytes(reference, root));
       evidenceFiles.push({ gate, reference, schemaVersion: evidence.schemaVersion, kind: evidence.kind, status: evidence.status });
-      // These are existing producer material formats, not release approvals. Never
-      // interpret arbitrary passed/legalAccepted/nativeAccepted booleans as authority.
-      if (gate === 'source' && evidence.sourceAuthority) {
-        if (evidence.sourceAuthority.sourceCommit !== input.sourceSha || evidence.sourceAuthority.dirty !== false) fail('source authority mismatch');
-      }
-      if (gate === 'legal' && evidence.schemaVersion === 1 && evidence.status === 'original-material-collection'
-        && evidence.legalClearance === false) {
-        blockers.push({ gate, reason: 'Original terms inventory explicitly does not confer legal clearance' });
-      } else if (gate === 'native' && evidence.status === 'material-integrity-verified' && evidence.externalAdmission === 'pending') {
-        blockers.push({ gate, reason: 'Native materials are internally bound; external admission remains pending' });
-      } else {
-        blockers.push({ gate, reason: 'No authoritative independent release admission verifier exists for this evidence format' });
-      }
+      const admission = verifyAdmission(gate, evidence, {
+        sourceSha: input.sourceSha, runHeadSha: input.runHeadSha, package: name, trackedPaths, githubOrigin: operationalContext.githubOrigin,
+        collectedArtifact: operationalContext.collectedArtifacts?.find(value => {
+          const view = collectedArtifactView(value);
+          return view?.identity.package === name && view.identity.archiveSha256 === item.archive.sha256;
+        }),
+        relatedArtifacts: operationalContext.collectedArtifacts, derivedSource: operationalContext.derivedSource,
+        version: item.version, target: item.target, archive: archiveBytes,
+        readOriginal: reference => bytes(reference, root),
+        readTracked: file => {
+          const result = spawnSync('git', ['show', input.sourceSha + ':' + file], { cwd: path.resolve(import.meta.dir, '..'), maxBuffer: 4 * 1024 * 1024 });
+          if (result.status !== 0 || result.error) fail('source input not tracked at exact revision');
+          return result.stdout;
+        },
+      });
+      if (admission.facts) evidenceFiles[evidenceFiles.length - 1].facts = admission.facts;
+      if (admission.status !== 'verified') blockers.push({ gate, reason: admission.reason });
     }
     return { key, name, item, manifest, receipt, blockers, evidenceFiles, integrity, runtimeClosureMaterials };
   });
@@ -151,9 +165,12 @@ export function planIndependentRelease(input: ReleaseInput, root = process.cwd()
     if (existing.status !== 'passed' || existing.package !== '@undefineds.co/xpod-client' || existing.version !== cli.manifest.dependencies['@undefineds.co/xpod-client']
       || existing.transport !== 'registry' || !/^sha512-[A-Za-z0-9+/]{86}==$/u.test(existing.integrity ?? '')) fail('existing registry client evidence required');
   }
+  const eligible = accepted.every(row => row.blockers.length === 0);
   return {
     schemaVersion: 1, kind: 'independent-release-plan', sourceSha: input.sourceSha, checkoutSha: input.checkoutSha, runHeadSha: input.runHeadSha,
-    status: 'blocked', published: false, releaseQualified: false,
+    status: eligible ? 'eligible-for-publication' : 'blocked', published: false, releaseQualified: false,
+    prepublish: { status: eligible ? 'eligible' : 'blocked', eligible },
+    postpublish: { registryConsumer: 'pending', tagPromotion: 'pending' },
     buildDag: [
       { id: 'cli-build-tools', needs: [] },
       { id: 'client-build', needs: ['cli-build-tools'] },
@@ -166,7 +183,7 @@ export function planIndependentRelease(input: ReleaseInput, root = process.cwd()
     // Build artifacts can feed module producers before any registry mutation.
     products: accepted.map(row => ({ id: row.key, package: row.name, version: row.item.version,
       target: row.item.target, archive: row.item.archive, integrity: row.integrity, receipt: row.item.receipt,
-      status: 'blocked', blockers: row.blockers, evidence: row.evidenceFiles, runtimeClosureMaterials: row.runtimeClosureMaterials,
+      status: row.blockers.length === 0 ? 'eligible-for-publication' : 'blocked', blockers: row.blockers, evidence: row.evidenceFiles, runtimeClosureMaterials: row.runtimeClosureMaterials,
       needs: row.key === 'cli' && client ? ['client'] : [],
       acceptance: { transport: 'registry', version: row.item.version },
       stages: ['publish-immutable-version', 'verify-registry-integrity', 'verify-exact-consumer', 'promote-product-tag'],

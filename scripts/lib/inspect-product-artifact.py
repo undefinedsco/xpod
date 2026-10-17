@@ -8,19 +8,33 @@ import hashlib
 import json
 import os
 import pathlib
+import re
 import stat
 import sys
 import zipfile
 from contextlib import nullcontext
 
 
-def inspect(archive, expected, packed_limit, expanded_limit, member_limit, selections=None, destination=None, legacy=False):
+def source_original_path(path):
+    return path in {
+        'cleanup.json', 'client.tgz', 'cli.tgz', 'input.json', 'inventory.json',
+        'phases.jsonl', 'producer-index.json', 'preparation.json', 'result.json',
+        'source-inputs.json', 'source-manifests/cli.package.json',
+        'source-manifests/client.package.json',
+    } or re.fullmatch(r'phase-[0-9]{3}\.(?:receipt\.json|build\.json|(?:stdout|stderr)\.raw\.log)', path) is not None \
+        or re.fullmatch(r'phase-[0-9]{3}\.metafiles/[A-Za-z0-9_-]+\.json', path) is not None
+
+
+def inspect(archive, expected, packed_limit, expanded_limit, member_limit, selections=None, destination=None, legacy=False, source_originals=False):
     if selections is not None and type(selections) is not list:
         raise ValueError('projection selections must be an array')
     selected = {}
     for row in selections or []:
+        allowed_destination = (row.get('destination') == row.get('path') and source_original_path(row.get('path', ''))) if source_originals and type(row) is dict else None
+        if not source_originals and type(row) is dict:
+            allowed_destination = ((row['destination'] == row['path'] and (row['path'] == 'supply-index.original.json' or row['path'].startswith(('cli/', 'afs/', 'producer/')))) if legacy else row['destination'] in ('producer.receipt.json', 'product.tgz', 'pack.raw.log', 'result.json', 'inventory.json', 'source-inputs.json', 'preparation.json', 'producer-index.json', 'input.json', 'cli.tgz', 'client.tgz', 'cli.package.json', 'client.package.json'))
         if (type(row) is not dict or set(row) != {'path', 'destination', 'bytes', 'sha256'} or row['path'] in selected
-                or not ((row['destination'] == row['path'] and (row['path'] == 'supply-index.original.json' or row['path'].startswith(('cli/', 'afs/', 'producer/')))) if legacy else row['destination'] in ('producer.receipt.json', 'product.tgz', 'pack.raw.log', 'result.json', 'inventory.json', 'source-inputs.json', 'preparation.json', 'producer-index.json', 'input.json', 'cli.tgz', 'client.tgz', 'cli.package.json', 'client.package.json'))
+                or not allowed_destination
                 or type(row['bytes']) is not int or row['bytes'] < 0
                 or len(row['sha256']) != 64):
             raise ValueError('invalid exact projection selection')
@@ -92,7 +106,7 @@ def inspect(archive, expected, packed_limit, expanded_limit, member_limit, selec
                 row = selected.get(entry.filename)
                 if row and entry.file_size != row['bytes']:
                     raise ValueError('projection declared size mismatch')
-                if row and legacy:
+                if row and (legacy or source_originals):
                     parent = pathlib.Path(destination) / pathlib.PurePosixPath(row['destination']).parent
                     parent.mkdir(parents=True, exist_ok=True)
                     for ancestor in [parent, *parent.parents]:
@@ -149,4 +163,8 @@ if __name__ == '__main__':
     else:
         selections = json.loads(sys.argv[6]) if len(sys.argv) > 6 else None
     destination = sys.argv[7] if len(sys.argv) > 7 else None
-    print(json.dumps(inspect(sys.argv[1], sys.argv[2], *map(int, sys.argv[3:6]), selections, destination, len(sys.argv) > 8 and sys.argv[8] == 'legacy-root-normal-supply')))
+    mode = sys.argv[8] if len(sys.argv) > 8 else None
+    if mode not in (None, 'legacy-root-normal-supply', 'independent-source-originals'):
+        raise ValueError('unknown projection mode')
+    print(json.dumps(inspect(sys.argv[1], sys.argv[2], *map(int, sys.argv[3:6]), selections, destination,
+                             mode == 'legacy-root-normal-supply', mode == 'independent-source-originals')))
