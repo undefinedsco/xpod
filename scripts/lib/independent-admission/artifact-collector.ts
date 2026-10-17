@@ -5,11 +5,14 @@ import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { verifyAcquiredMetadata } from '../../acquire-independent-product-input';
 import { projectCliPublicationInput } from '../../project-cli-publication-input';
-import { githubOriginFacts } from './github-origin';
-import type { CollectedArtifactCapability, CollectedArtifactView, CollectedArtifactMember } from './artifact-contract';
+import { githubOriginFacts, githubOriginOriginals, type GitHubOriginObservation } from './github-origin';
+import type { CollectedArtifactCapability, CollectedArtifactView, CollectedArtifactMember, PublicationMaterialView } from './artifact-contract';
 
 const issued = new WeakMap<object, CollectedArtifactView>();
 const disposers = new WeakMap<object, () => void>();
+type PublicationArchiveSource = { kind: 'buffer'; bytes: Buffer } | { kind: 'file'; path: string };
+interface PublicationBinding { origin: GitHubOriginObservation; producerReceiptPath: string; source: PublicationArchiveSource; projectionOutput: string }
+const publicationBindings = new WeakMap<object, { view: PublicationMaterialView; binding: PublicationBinding }>();
 const require = createRequire(import.meta.url);
 const { withOwnedTempRoot } = require('../owned-temp-root.cjs');
 const { inspectArtifact } = require('../product-artifact-command.cjs');
@@ -28,11 +31,65 @@ export function collectedArtifactView(value: unknown): CollectedArtifactView | u
   return value !== null && typeof value === 'object' ? issued.get(value) : undefined;
 }
 
+export function publicationMaterialView(value: unknown): PublicationMaterialView | undefined {
+  return value !== null && typeof value === 'object' && issued.has(value) ? publicationBindings.get(value)?.view : undefined;
+}
+
+/** Collector-owned projection locator for the fixed module lifecycle driver.
+ * A path is not authority; callers must retain the real collected capability and
+ * recheck its exact archives/originals before and after execution. */
+export function collectedPublicationProjectionDirectory(artifact: unknown): string | undefined {
+  return artifact && typeof artifact === 'object' && issued.has(artifact)
+    ? publicationBindings.get(artifact)?.binding.projectionOutput : undefined;
+}
+
+/** Compatibility bridge for existing portable adapters only. Platform tgz
+ * archives always use the bounded file/range contract, even when compressed small. */
+export function readCollectedPortableArchive(artifact: unknown): Buffer {
+  if (!artifact || typeof artifact !== 'object' || !issued.has(artifact)) return fail('real collected publication artifact required');
+  const material = publicationBindings.get(artifact);
+  if (!material || material.view.identity.target !== undefined || material.binding.source.kind !== 'buffer'
+    || material.binding.source.bytes.length > 8 * 1024 ** 2) return fail('bounded portable archive binding required');
+  const bytes = material.binding.source.bytes, identity = material.view.identity;
+  if (bytes.length !== identity.archiveBytes || hash(bytes) !== identity.archiveSha256
+    || 'sha512-' + createHash('sha512').update(bytes).digest('base64') !== identity.integrity) return fail('portable archive digest mismatch');
+  return Buffer.from(bytes);
+}
+
+/** Whole-group read-only validation runs before any archive snapshot or
+ * publication write; the shared archive helper owns every resource constant. */
+export function preflightCollectedArchiveFiles(artifacts: readonly unknown[]): void {
+  if (!Array.isArray(artifacts) || artifacts.length < 1 || artifacts.length > 64) return fail('bounded publication artifact group required');
+  const rows = artifacts.map(artifact => {
+    if (!artifact || typeof artifact !== 'object' || !issued.has(artifact)) return fail('real collected publication artifact required');
+    const material = publicationBindings.get(artifact);
+    if (!material) return fail('controlled publication archive binding required');
+    return { source: material.binding.source, identity: material.view.identity };
+  });
+  const { preflightBoundPublicationArchiveFiles } = require('./publication-archive-file.ts') as typeof import('./publication-archive-file');
+  preflightBoundPublicationArchiveFiles(rows);
+}
+
+/** The publisher consumes an exact, temporary read-only tgz instead of
+ * guessing producer JSON paths or increasing a whole-archive Buffer limit. */
+export async function withCollectedArchiveFile<T>(artifact: unknown,
+  operation: (input: { readonly path: string; readonly identity: PublicationMaterialView['identity'] }) => Promise<T>): Promise<T> {
+  if (!artifact || typeof artifact !== 'object' || !issued.has(artifact)) return fail('real collected publication artifact required');
+  const material = publicationBindings.get(artifact);
+  if (!material || typeof operation !== 'function') return fail('controlled publication archive binding required');
+  const { withBoundPublicationArchiveFile } = await import('./publication-archive-file');
+  const identity = material.view.identity;
+  return withBoundPublicationArchiveFile(material.binding.source, identity, async ({ path }) => {
+    if (!issued.has(artifact)) return fail('publication artifact revoked');
+    return operation(Object.freeze({ path, identity }));
+  });
+}
+
 /** Release disk snapshots once the complete admission/publication operation
  * finishes. Revocation also prevents a released token from issuing new views. */
 export function releaseCollectedArtifact(capability: CollectedArtifactCapability): void {
   const dispose = disposers.get(capability);
-  issued.delete(capability); disposers.delete(capability); dispose?.();
+  issued.delete(capability); disposers.delete(capability); publicationBindings.delete(capability); dispose?.();
 }
 
 /** Large-product adapters reuse the normal product projectors and the same
@@ -109,7 +166,8 @@ export async function collectModuleAdmissionArtifact(input: {
       members: disk.members, readMember: disk.readMember, readMemberRange: disk.readMemberRange,
       producerOriginals: phaseOriginals.members,
       readProducerOriginal: readOriginal,
-    }), disk.dispose);
+    }), disk.dispose, { origin: input.githubOrigin as GitHubOriginObservation,
+      projectionOutput: output, producerReceiptPath: 'producer.receipt.json', source: { kind: 'file', path: path.join(output, 'product.tgz') } });
   } catch (error) { disk.dispose(); throw error; }
 }
 
@@ -228,7 +286,7 @@ export async function collectAdmissionArtifact(input: {
     const row = selected.find((item: any) => item.path === name);
     if (!bytes || !row || bytes.length > maximumBytes || hash(bytes) !== row.sha256) return fail('unique bounded producer original required');
     return Buffer.from(bytes);
-  });
+  }, input.githubOrigin as GitHubOriginObservation, path.resolve(input.projectionOutput));
 }
 
 /** A sibling archive from the same authenticated producer ZIP needs no second
@@ -241,13 +299,13 @@ export function collectRelatedAdmissionArtifact(parent: CollectedArtifactCapabil
   const row = producer.products?.[product];
   if (producer.context?.checkoutSha !== view.identity.sourceSha || row?.package !== '@undefineds.co/xpod-' + product) fail('related producer identity mismatch');
   const archive = view.readProducerOriginal(row.archive.path, 8 * 1024 ** 2);
-  return issueProductArchive(view.identity.sourceSha, row, archive, view.producerOriginals, view.readProducerOriginal);
+  return issueProductArchive(view.identity.sourceSha, row, archive, view.producerOriginals, view.readProducerOriginal, publicationBindings.get(parent)?.binding.origin, publicationBindings.get(parent)?.binding.projectionOutput);
 }
 
 // Private issuer: only authenticated acquisition or a previously issued parent
 // capability can reach this function. No JSON/hash-to-authority constructor.
 function issueProductArchive(sourceSha: string, row: any, archive: Buffer,
-  producerRows: readonly CollectedArtifactMember[], readProducerOriginal: CollectedArtifactView['readProducerOriginal']): CollectedArtifactCapability {
+  producerRows: readonly CollectedArtifactMember[], readProducerOriginal: CollectedArtifactView['readProducerOriginal'], origin?: GitHubOriginObservation, projectionOutput?: string): CollectedArtifactCapability {
   if (archive.length !== row.archive.bytes || hash(archive) !== row.archive.sha256
     || 'sha512-' + createHash('sha512').update(archive).digest('base64') !== row.archive.integrity) fail('projected product archive mismatch');
   const { inspectTarballBuffer } = require('../../workspace-package-payload.cjs');
@@ -275,11 +333,28 @@ function issueProductArchive(sourceSha: string, row: any, archive: Buffer,
       if (hash(bytes) !== memberHashes.get(name)) return fail('collected member digest mismatch');
       return Buffer.from(bytes);
     } });
-  return issueCollectedView(view);
+  return issueCollectedView(view, undefined, origin && projectionOutput ? { origin, projectionOutput, producerReceiptPath: 'result.json',
+    source: { kind: 'buffer', bytes: Buffer.from(archive) } } : undefined);
 }
 
-function issueCollectedView(view: CollectedArtifactView, dispose?: () => void): CollectedArtifactCapability {
+function issueCollectedView(view: CollectedArtifactView, dispose?: () => void, binding?: PublicationBinding): CollectedArtifactCapability {
   const capability = Object.freeze({}) as CollectedArtifactCapability;
+  if (binding) {
+    const origin = githubOriginFacts(binding.origin);
+    const runOriginal = githubOriginOriginals(binding.origin).find(row => row.name === 'run.original.json');
+    const run = runOriginal && JSON.parse(runOriginal.data.toString());
+    const receipt = view.producerOriginals.find(row => row.path === binding.producerReceiptPath);
+    if (!origin || origin.sourceSha !== view.identity.sourceSha || origin.target !== view.identity.target
+      || !run || typeof run.event !== 'string' || typeof run.head_branch !== 'string' || !receipt) return fail('publication producer origin/material binding mismatch');
+    publicationBindings.set(capability, { binding, view: Object.freeze({ origin: binding.origin, identity: view.identity,
+      producer: Object.freeze({ sourceSha: origin.sourceSha, runHeadSha: origin.runHeadSha, event: run.event, headBranch: run.head_branch,
+        workflowPath: origin.workflowPath, workflowSourceSha256: origin.workflowSourceSha256, runId: origin.runId,
+        runAttempt: origin.runAttempt, artifactId: origin.artifactId, artifactSha256: origin.artifactSha256, jobId: origin.producerJobId }),
+      producerReceipt: receipt, originals: view.producerOriginals,
+      archive: Object.freeze({ bytes: view.identity.archiveBytes, sha256: view.identity.archiveSha256, integrity: view.identity.integrity }),
+      readOriginal: view.readProducerOriginal,
+    }) });
+  }
   issued.set(capability, view);
   if (dispose) disposers.set(capability, dispose);
   return capability;

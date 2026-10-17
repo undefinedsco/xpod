@@ -109,7 +109,7 @@ def runtime_wrapper(directory, runtime, executable, preload):
     directory.mkdir(mode=0o700)
     wrapper = directory / runtime
     flag = '--import' if runtime == 'node' else '--preload'
-    wrapper.write_text('#!/bin/sh\nexec ' + shlex.quote(executable) + ' ' + flag + ' ' + shlex.quote(str(preload)) + ' "$@"\n')
+    wrapper.write_text('#!/bin/sh\nexec ' + shlex.quote(executable) + ((' ' + flag + ' ' + shlex.quote(str(preload))) if preload is not None else '') + ' "$@"\n')
     wrapper.chmod(0o700)
     require(not (directory / ('bun' if runtime == 'node' else 'node')).exists(), 'other runtime exposed')
     return wrapper
@@ -146,8 +146,94 @@ def inventory(package_root, installed):
     return package
 
 
+def consumer_transport(plan):
+    """A transport choice describes execution, never an admission capability."""
+    mode = plan.get('transport', 'immutable-local-fixture')
+    require(mode in ['immutable-local-fixture', 'production-npm-registry'], 'unregistered consumer transport')
+    return mode
+
+
+def registry_tool_declarations(plan, cli):
+    rows = plan.get('registryTools')
+    require(isinstance(rows, list) and 2 <= len(rows) <= 128, 'bounded central registry tool inventory required')
+    versions = {}
+    for row in rows:
+        require(isinstance(row, dict) and isinstance(row.get('package'), str) and row['package'] not in versions,
+                'unique registry tool identity required')
+        require(isinstance(row.get('version'), str) and row['version'] and not any(c in row['version'] for c in '/: \t\n'), 'exact registry tool version required')
+        require(isinstance(row.get('files'), list) and row['files'], 'registry tool inventory required')
+        versions[row['package']] = row['version']
+    for name in ['cli', 'client']:
+        product = cli['products'][name]
+        require(versions.get(product['package']) == product['version'], 'registry tool differs from collected public CLI/client')
+    return versions
+
+
+def consumer_install_manifest(deps, production):
+    if production:
+        return dict(private=True, type='module', dependencies=deps, overrides=deps,
+                    trustedDependencies=sorted(deps))
+    return dict(private=True, type='module', dependencies=deps,
+                overrides={'@undefineds.co/xpod-client': deps['@undefineds.co/xpod-client']})
+
+
+def consumer_install_arguments(cycle, production):
+    args = ['install', '--no-progress']
+    if production:
+        return args + ['--no-cache', '--registry', 'https://registry.npmjs.org/', '--backend=copyfile',
+                       '--linker=hoisted', '--cache-dir=' + str(cycle / 'cache')]
+    return args + ['--offline', '--ignore-scripts']
+
+
+def verify_registry_tools(cycle, rows):
+    """Inventory checks are observations. Only the central opaque issuer can
+    bind this fixed driver's actual execution to collected artifacts."""
+    expected_files, expected_links = {}, {}
+    for row in rows:
+        prefix = 'node_modules/' + row['package']
+        for member in row['files']:
+            relative = pathlib.PurePosixPath(member['path'])
+            require(not relative.is_absolute() and relative.parts and '..' not in relative.parts and '.' not in relative.parts,
+                    'unsafe registry tool member')
+            name = prefix + '/' + str(relative)
+            require(name not in expected_files, 'duplicate registry tool member')
+            expected_files[name] = member
+        package_path = cycle / prefix / 'package.json'
+        expected_manifest = expected_files.get(prefix + '/package.json')
+        require(expected_manifest is not None and package_path.stat().st_size == expected_manifest['bytes'] and package_path.stat().st_size <= 10 * MIB and digest(package_path) == expected_manifest['sha256'], 'registry tool manifest differs before parsing')
+        package = json.loads(package_path.read_text())
+        require(package['name'] == row['package'] and package['version'] == row['version'], 'installed registry tool identity differs')
+        bins = package.get('bin', {})
+        if isinstance(bins, str):
+            bins = {row['package'].split('/')[-1]: bins}
+        require(isinstance(bins, dict), 'tool bin declaration invalid')
+        for name, target in bins.items():
+            require(isinstance(name, str) and '/' not in name and name not in ['', '.', '..'] and isinstance(target, str), 'unsafe tool bin')
+            destination = (cycle / prefix / target).resolve(strict=True)
+            require(inside(destination, (cycle / prefix).resolve()), 'tool bin escaped package')
+            expected_links['node_modules/.bin/' + name] = destination
+    seen_files, seen_links = set(), set()
+    for directory, directories, files in os.walk(cycle / 'node_modules', followlinks=False):
+        for name in directories + files:
+            file = pathlib.Path(directory) / name
+            relative = str(file.relative_to(cycle))
+            info = file.lstat()
+            if stat.S_ISLNK(info.st_mode):
+                require(relative in expected_links and file.resolve(strict=True) == expected_links[relative], 'unbound installed registry tool link')
+                seen_links.add(relative)
+            elif stat.S_ISREG(info.st_mode):
+                member = expected_files.get(relative)
+                require(member is not None and info.st_size == member['bytes'] and info.st_mode & 0o7777 == member['mode'] and digest(file) == member['sha256'], 'installed registry tool bytes/mode differ')
+                seen_files.add(relative)
+            else:
+                require(stat.S_ISDIR(info.st_mode), 'installed registry tool special file')
+    require(seen_files == set(expected_files) and seen_links == set(expected_links), 'incomplete registry tool inventory')
+    return dict(files=len(seen_files), binLinks=len(seen_links), complete=True)
+
+
 def validate_consumer_plan(plan, profile):
     module_id = profile['id']
+    transport = consumer_transport(plan)
     require(plan.get('schemaVersion') == 1, 'schemaVersion must be 1')
     sha = plan['sourceSha']
     require(isinstance(sha, str) and len(sha) == 40 and all(c in '0123456789abcdef' for c in sha), 'sourceSha invalid')
@@ -202,6 +288,8 @@ def validate_consumer_plan(plan, profile):
             require(product['package'] == '@undefineds.co/xpod-' + key and isinstance(product.get('version'), str) and product['version'] and product['version'] != 'latest' and publication_input[key]['sha256'] == row['sha256'] and publication_input[key]['integrity'] == row['integrity'], 'CLI product identity mismatch')
         require(all(not inside(path, root) for root in roots), 'archives must be outside denied source roots')
         originals[key] = path
+    if transport == 'production-npm-registry':
+        registry_tool_declarations(plan, cli)
     consumer = css['consumerInput']
     require(not pathlib.Path(consumer['path']).is_absolute() and '..' not in pathlib.Path(consumer['path']).parts, 'unsafe consumer input reference')
     consumer_path = reference({**consumer, 'path': str(csspath.parent / consumer['path'])})
@@ -229,6 +317,7 @@ def validate_consumer_plan(plan, profile):
 class ModuleConsumerRunner:
     def __init__(self, plan, checked):
         self.plan, self.checked = plan, checked
+        self.deadline = time.monotonic() + 480 if consumer_transport(plan) == 'production-npm-registry' else None
         self.output = checked['output']
         self.records = []
         self.child = None
@@ -241,6 +330,7 @@ class ModuleConsumerRunner:
                                   capCheckedOnLastSample=False)
 
     def gate(self, initial=False):
+        require(self.deadline is None or time.monotonic() < self.deadline, 'total production consumer deadline exceeded')
         b = self.plan['budget']
         needed = b['remainingFloorBytes'] + b['cushionBytes'] + (b['estimatedPeakBytes'] if initial else 0)
         require(shutil.disk_usage(self.checked['parent']).free >= needed, 'insufficient disk for resource floor/cushion')
@@ -465,7 +555,7 @@ class ModuleConsumerRunner:
         self.gate(initial=True)
         require(self.output.parent.stat().st_dev == self.checked['parent'].stat().st_dev, 'output/temporaryParent must share filesystem for retained data')
         self.output.mkdir(mode=0o700)
-        self.result = dict(schemaVersion=1, kind=self.module_id + '-public-cli-consumer', status='running', sourceSha=self.plan['sourceSha'], transport='immutable-local-fixture', resourceEnforcement='Nominal 200ms disk polling, not a kernel hard limit; disk floor checked independently; allocation cap evaluated only on complete samples', rssEnforced=False, diskAllocationCoverage=self.disk_coverage, releaseQualified=False, realConsumerValidated=False, records=self.records)
+        self.result = dict(schemaVersion=1, kind=self.module_id + '-public-cli-consumer', status='running', sourceSha=self.plan['sourceSha'], transport=consumer_transport(self.plan), resourceEnforcement='Nominal 200ms disk polling, not a kernel hard limit; disk floor checked independently; allocation cap evaluated only on complete samples', rssEnforced=False, diskAllocationCoverage=self.disk_coverage, releaseQualified=False, realConsumerValidated=False, records=self.records)
         self.result['driver'] = dict(path=str(pathlib.Path(self.driver_path).resolve()), sha256=digest(pathlib.Path(self.driver_path).resolve()), python=sys.version, platform=platform.platform())
         self.result['lifecycle'] = dict(path=str(pathlib.Path(__file__).resolve()), sha256=digest(pathlib.Path(__file__).resolve()))
         self.result['additionalDrivers'] = [dict(path=str(p.resolve()), sha256=digest(p)) for p in [*getattr(self, 'additional_drivers', []), pathlib.Path(targets.__file__), targets.SCRIPTS / 'module-product-targets.ts', targets.SCRIPTS / 'verify-module-consumer-native.ts', targets.SCRIPTS / 'lib/physical-module-native.ts', targets.SCRIPTS.parent / 'packages/xpod-cli/src/module-catalog.ts', targets.SCRIPTS.parent / 'packages/xpod-api/scripts/inngest-input-pins.json']]
@@ -497,13 +587,15 @@ class ModuleConsumerRunner:
                 metadata = dict(name=package['name'], version=package['version'], dist=dict(integrity=self.plan[self.module_id + 'Archive']['integrity'], tarball='https://registry.npmjs.org/fixture-module.tgz'))
                 binding = dict(archive=str(original_module), roots=[str(p) for p in self.checked['roots']], metadata=metadata, metadataURL='https://registry.npmjs.org/' + urllib.parse.quote(package['name'], safe='') + '/' + package['version'])
                 (cycle / 'binding.json').write_text(json.dumps(binding))
-                (cycle / 'transport.mjs').write_text(TRANSPORT)
+                production = consumer_transport(self.plan) == 'production-npm-registry'
+                if not production:
+                    (cycle / 'transport.mjs').write_text(TRANSPORT)
                 (cycle / 'probe.mjs').write_text(PROBE)
                 profile = '(version 1) (allow default)\n' + '\n'.join('(deny file-read* file-write* (subpath ' + json.dumps(str(p)) + '))' for p in self.checked['roots']) + '\n'
                 (cycle / 'deny.sb').write_text(profile)
-                deps = { '@undefineds.co/xpod-' + key: 'file:' + str(self.checked['originals'][key]) for key in ['cli', 'client'] }
-                (cycle / 'package.json').write_text(json.dumps(dict(private=True, type='module', dependencies=deps, overrides={'@undefineds.co/xpod-client':deps['@undefineds.co/xpod-client']})))
-                runtime_wrapper(cycle / 'runtime-bin', runtime, self.plan[runtime], cycle / 'transport.mjs')
+                deps = registry_tool_declarations(self.plan, self.checked['cli']) if production else { '@undefineds.co/xpod-' + key: 'file:' + str(self.checked['originals'][key]) for key in ['cli', 'client'] }
+                (cycle / 'package.json').write_text(json.dumps(consumer_install_manifest(deps, production)))
+                runtime_wrapper(cycle / 'runtime-bin', runtime, self.plan[runtime], None if production else cycle / 'transport.mjs')
                 env = { 'HOME': str(home), 'TMPDIR': str(cycle), 'PATH': str(cycle / 'runtime-bin') + ':/usr/bin:/bin', 'LANG': 'en_US.UTF-8' }
                 sandbox = targets.sandbox(declaration, cycle, self.checked['roots'])
                 self.command(runtime + '-runtime-version', sandbox + [self.plan[runtime], '--version'], env, cycle)
@@ -511,7 +603,13 @@ class ModuleConsumerRunner:
                 observed = json.loads((self.output / (runtime + '-runtime-target.stdout.raw.log')).read_text())
                 require(observed == dict(platform=declaration['platform'], arch=declaration['arch']), 'actual selected runtime/target differs')
                 self.command(runtime + '-probe', sandbox + [self.plan[runtime], str(cycle / 'probe.mjs')], env, cycle)
-                self.command(runtime + '-normal-cli-install', sandbox + [self.plan['bun'], 'install', '--offline', '--ignore-scripts', '--no-progress'], env, cycle)
+                install = consumer_install_arguments(cycle, production)
+                self.command(runtime + '-normal-cli-install', sandbox + [self.plan['bun']] + install, env, cycle)
+                if production:
+                    checked_tools = verify_registry_tools(cycle, self.plan['registryTools'])
+                    (self.output / (runtime + '-registry-tools.json')).write_text(json.dumps(checked_tools))
+                    shutil.copyfile(cycle / 'package.json', self.output / (runtime + '-registry-package.json'))
+                    shutil.copyfile(cycle / 'bun.lock', self.output / (runtime + '-registry-bun.lock'))
                 pkgroot = cycle / 'node_modules/@undefineds.co/xpod-cli'
                 manifest = json.loads((pkgroot / 'package.json').read_text())
                 require(manifest['name'] == '@undefineds.co/xpod-cli' and manifest['version'] == self.checked['cli']['products']['cli']['version'], 'installed CLI identity differs')

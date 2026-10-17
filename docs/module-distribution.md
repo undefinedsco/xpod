@@ -92,7 +92,11 @@ CLI、AFS、API、CSS 独立版本与独立发布，分别使用 `cli-v<version>
 
 完整旧服务包的 Node/Bun 兼容矩阵已移至 `legacy-root-compat.yml`，继续作为服务 RC/stable 的必需门禁；独立 CLI/模块检查不能覆盖其失败，证据职责见 [服务发布流程](RELEASE.md#完整旧包兼容门禁)。
 
-`api-module-product.yml` 仅执行原生 `darwin-arm64` controlled-preview pilot，按正常 build/stage/material/pack 命令生成产品及证据。其他平台不据此获得资格。成功产品和失败诊断使用不同 artifact 名称，源码实际 checkout、事件 head、run/attempt、原 pack 日志及归档摘要分别绑定；native、legal、consumer 和 release 状态保持各自边界。
+`api-module-product.yml` 从 `module-product-targets.ts` 投影共享目录中的四个平台，在匹配的原生 runner 上串行执行正常 build/stage/material/pack。声明具备输入来源不代表已通过该平台构建与验收。`css-module-product.yml` 使用同一投影入口，目前只为已有原生生产来源的平台生成产品；其余平台保留 `pending-native-source` 诊断，诊断 job 成功不代表产品存在。成功产品和失败诊断使用不同 artifact 名称，源码实际 checkout、事件 head、run/attempt、原 pack 日志及归档摘要分别绑定；native、legal、consumer 和 release 状态保持各自边界。
+
+Linux 模块原生构建使用隔离的 Bookworm/GCC12 SDK profile，保留默认 Trixie/Clang19 服务 profile。既有 SDK workflow 在模块 profile 下依次交付 exact SDK digest、runtime 与原生归档材料；模块源码必须与 workflow checkout 一致。归档复制、压缩与中央产品快照均有字节预算和实际文件系统余量检查。新的 profile、工作流或格式检查不能替代实际冷构建、完整 ABI/源码材料和最终 staging SHA 的消费验收。
+
+发布组从实际 manifest 与共享平台目录校验完整目标集合、组内版本/源码一致性及精确依赖顺序。结构检查不签发发布权限；中央构建阶段观察只核对真实原件的顺序、命令、日志摘要和关闭状态，也不单独授予完整源码资格。共享包注册、完整源码/原生/许可准入和真实 registry 安装消费者仍须分别接通并通过。
 
 `acquire-independent-product-input.ts` 保存 GitHub 元数据原字节与 ZIP 摘要链；`project-api-product-input.ts` 仅复制约定的 producer receipt、原 tgz 和 pack raw 成员，再生成 `collect-api-release-input.ts` 的输入。投影不展开内部 tgz，也不替代 collector 的库存和源码材料检查。`project-cli-publication-input.ts` 复用同一 custody/ZIP 校验，核对正常 CLI 的 result、inventory、source-inputs、preparation、producer index 与两份原 tgz，并再次运行发布准备校验。未知的 producer source 字段保持原值；registry 消费仍单独验收。producer 的 checkout/attempt/阶段关闭声明尚未被独立准入验证时仍为 blocked，旧 CLI 测试归档不能改名充当发布候选。
 

@@ -69,7 +69,7 @@ test('metadata success never accepts JSON as central product/source/registry cap
   const fake: any = portable('@undefineds.co/xpod-client');
   expect(validatePublicationCohort([fake]).mutationAllowed).toBe(false);
   expect(() => normalizePublicationInput({ schemaVersion: 2, products: [{ artifact: fake, source: fake }] })).toThrow('real central');
-  expect(() => planIndependentPublication({ schemaVersion: 2, products: [{ artifact: fake, source: fake, prepublishConsumer: { passed: true } }] })).toThrow('real central');
+  expect(() => planIndependentPublication({ schemaVersion: 2, products: [{ artifact: fake, source: fake, prepublishConsumer: { passed: true } as any }] })).toThrow('real central');
   expect(() => normalizePublicationInput({ schemaVersion: 2, products: [] })).toThrow('cohort size');
 });
 
@@ -96,4 +96,25 @@ test('CSS-sized real inventory manifest uses the central archive reader limit wi
   expect(manifest.name).toBe('@undefineds.co/xpod-css-linux-x64');
   expect(() => readPublicationManifest({ readMember: () => Buffer.from('[]') })).toThrow('manifest object');
   expect(() => normalizePublicationInput({ schemaVersion: 2, products: [{ artifact: manifest as any, source: manifest as any }] })).toThrow('real central');
+});
+
+
+test('fixed public CLI consumer prerequisites precede platform products even without manifest CLI dependencies', () => {
+  const client = portable('@undefineds.co/xpod-client');
+  const cli = portable('@undefineds.co/xpod-cli', '1.0.0', 'a'.repeat(40), { '@undefineds.co/xpod-client': '1.0.0' });
+  const platforms = family('afs');
+  const edges = new Map(platforms.map(row => [row.identity.package, [cli.identity.package, client.identity.package]]));
+  const cohort = validatePublicationCohort([...platforms, cli, client], [], edges);
+  expect(cohort.order.slice(0, 2)).toEqual([client.identity.package, cli.identity.package]);
+  for (const row of platforms) expect(cohort.dependencies[row.identity.package]).toEqual([client.identity.package, cli.identity.package].sort());
+  edges.clear();
+  expect(cohort.dependencies[platforms[0].identity.package]).toHaveLength(2);
+  expect(Object.isFrozen(cohort.dependencies[platforms[0].identity.package])).toBe(true);
+  const cycle = { ...client, manifest: { ...client.manifest, dependencies: { [platforms[0].identity.package]: platforms[0].identity.version } } };
+  expect(() => validatePublicationCohort([...platforms, cli, cycle], [], new Map(platforms.map(row => [row.identity.package, [cli.identity.package]]))))
+    .toThrow('dependency cycle');
+  expect(() => validatePublicationCohort(platforms, [], new Map(platforms.map(row => [row.identity.package, [cli.identity.package]]))))
+    .toThrow('not in cohort or admitted registry');
+  expect(validatePublicationCohort(platforms, [client, cli], new Map(platforms.map(row => [row.identity.package, [cli.identity.package, client.identity.package]]))).order)
+    .toHaveLength(4);
 });

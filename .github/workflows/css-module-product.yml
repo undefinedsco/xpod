@@ -35,6 +35,7 @@ jobs:
     uses: ./.github/workflows/build-qlever-macos-runtime.yml
 
   products:
+    name: products (${{ matrix.target }})
     needs: [contract, native]
     strategy:
       fail-fast: false

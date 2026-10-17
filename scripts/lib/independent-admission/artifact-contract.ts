@@ -102,6 +102,22 @@ export interface CollectedArtifactView {
   /** Original producer evidence selected from the observed outer ZIP. */
   readProducerOriginal(path: string, maximumBytes: number): Buffer;
 }
+/** Metadata for the exact archive issued by the central collector. Persisting
+ * this view does not persist its private publication/material authority. */
+export interface PublicationMaterialView {
+  readonly origin: GitHubOriginObservation;
+  readonly identity: CollectedArtifactIdentity;
+  readonly producer: Readonly<{
+    sourceSha: string; runHeadSha: string; event: string; headBranch: string;
+    workflowPath: string; workflowSourceSha256: string;
+    runId: number; runAttempt: number; artifactId: number; artifactSha256: string; jobId: number;
+  }>;
+  readonly producerReceipt: CollectedArtifactMember;
+  readonly originals: readonly CollectedArtifactMember[];
+  readonly archive: Readonly<{ bytes: number; sha256: string; integrity: string }>;
+  readOriginal(path: string, maximumBytes: number): Buffer;
+}
+
 export interface RuntimeClosureFacts {
   readonly physicalInventoryVerified: boolean;
   readonly runtimeImportsVerified: boolean;

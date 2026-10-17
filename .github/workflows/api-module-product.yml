@@ -33,6 +33,7 @@ jobs:
           bun -e 'const p=await Bun.file("targets.json").json();for(const [key,available] of [["matrix",true],["pending",false]])console.log(key+"="+JSON.stringify({include:p.include.filter(x=>x.nativeSourceAvailable===available)}));' >> "$GITHUB_OUTPUT"
 
   products:
+    name: products (${{ matrix.target }})
     needs: contract
     strategy:
       fail-fast: false

@@ -40,12 +40,20 @@ export function githubOriginOriginals(value: GitHubOriginObservation): Original[
   return entry.originals.map(row => ({ ...row, data: Buffer.from(row.data) }));
 }
 
+/** GitHub API truncates implicit matrix job display names to 100 characters.
+ * Only the exact reviewed name or its exact observed representation matches;
+ * arbitrary prefixes and caller-selected names are never policy. */
+export function matchesObservedJobName(actual: unknown, expected: string): boolean {
+  return actual === expected || (expected.length > 100 && actual === expected.slice(0, 97) + '...');
+}
+
 /** Fixed HTTPS transport and code-reviewed workflow policy. No transport callback,
  * caller workflow allowlist or serialized observation can grant this authority.
  * This does not download a product or attest the builder's actual checkout. */
 interface OriginPolicy {
   workflowPath: string;
   workflowSha256: string;
+  reviewedWorkflowVersions?: readonly { workflowSha256: string; jobName(artifactName: string): string }[];
   events: readonly string[];
   artifactNames(input: ArtifactAcquisitionInput): readonly string[];
   jobName(artifactName: string): string;
@@ -70,9 +78,11 @@ export async function observeModuleProductGitHubOrigin(input: ArtifactAcquisitio
   const row = productTarget(module, target);
   if (!row.nativeSourceAvailable) return fail('module target has no declared native source');
   const policies = {
-    api: { workflowSha256: '01b77f7efb14942ec3c50f58d871fecd0059f230f7648b830c8820a1e8c56373',
+    api: { workflowSha256: '2c1c1414496c82f54162a4933933f83f1743f4a4dc5122c969424b7ca38e4f56',
+      legacyWorkflowSha256: '01b77f7efb14942ec3c50f58d871fecd0059f230f7648b830c8820a1e8c56373',
       requiredStep: 'Produce the actual API preview once' },
-    css: { workflowSha256: 'ba79405debc84174b23efc2dbf5fd41b54b1f0fd02f1349e4a7e9efe8c0eaddf',
+    css: { workflowSha256: '454baf86f674c2c3b5058ad012c09d968c26e4f7d282d702df745a16978542b3',
+      legacyWorkflowSha256: 'ba79405debc84174b23efc2dbf5fd41b54b1f0fd02f1349e4a7e9efe8c0eaddf',
       requiredStep: 'Produce the normal CSS preview' },
   } as const;
   return observeGitHubOrigin(input, options, {
@@ -80,8 +90,10 @@ export async function observeModuleProductGitHubOrigin(input: ArtifactAcquisitio
     events: ['workflow_dispatch', 'pull_request'], target,
     sourceBindings: [{ path: 'scripts/module-product-targets.ts', sha256: '35b8752237d620981b1848d6d8876dfac3c1da14509e77358e7f961ca256cf96' }],
     artifactNames: coordinates => [`${module}-module-products-${target}-${coordinates.sourceSha}-${coordinates.runId}-${coordinates.runAttempt}`],
-    // GitHub's implicit matrix job name contains each canonical row value.
-    jobName: () => `products (${Object.values(row).join(', ')})`,
+    jobName: () => `products (${target})`,
+    // The old reviewed workflow used GitHub's implicit matrix display name.
+    reviewedWorkflowVersions: [{ workflowSha256: policies[module].legacyWorkflowSha256,
+      jobName: () => `products (${Object.values(row).join(', ')})` }],
   });
 }
 
@@ -148,7 +160,10 @@ async function observeGitHubOrigin(input: ArtifactAcquisitionInput, options: { t
   if (content.type !== 'file' || content.path !== policy.workflowPath || content.encoding !== 'base64'
     || typeof content.content !== 'string') fail('workflow source missing');
   const workflowBytes = Buffer.from(content.content.replace(/\s/gu, ''), 'base64');
-  if (sha(workflowBytes) !== policy.workflowSha256) fail('immutable workflow policy not reviewed');
+  const workflowSha256 = sha(workflowBytes);
+  const reviewedVersion = policy.reviewedWorkflowVersions?.find(row => row.workflowSha256 === workflowSha256);
+  if (workflowSha256 !== policy.workflowSha256 && !reviewedVersion) fail('immutable workflow policy not reviewed');
+  const expectedJobName = reviewedVersion?.jobName ?? policy.jobName;
   for (const binding of policy.sourceBindings ?? []) {
     const original = await read('policy-' + binding.path.replace(/[^a-z0-9]/giu, '-') + '.original.json', `contents/${binding.path}?ref=${input.sourceSha}`);
     if (original.type !== 'file' || original.path !== binding.path || original.encoding !== 'base64'
@@ -160,7 +175,7 @@ async function observeGitHubOrigin(input: ArtifactAcquisitionInput, options: { t
     || !positive(artifact.size_in_bytes) || !policy.artifactNames(input).includes(artifact.name)) fail('artifact binding mismatch');
   const jobs = await read('jobs.original.json', `actions/runs/${input.runId}/attempts/${input.runAttempt}/jobs?per_page=100`);
   if (!Array.isArray(jobs.jobs) || jobs.total_count !== jobs.jobs.length || jobs.jobs.length > 100) fail('incomplete job observation');
-  const matching = jobs.jobs.filter((job: any) => job.name === policy.jobName(artifact.name));
+  const matching = jobs.jobs.filter((job: any) => (reviewedVersion ? matchesObservedJobName(job.name, expectedJobName(artifact.name)) : job.name === expectedJobName(artifact.name)));
   if (matching.length !== 1) fail('unique producer job required');
   const job = matching[0];
   const created = Date.parse(artifact.created_at), start = Date.parse(job.started_at), end = Date.parse(job.completed_at);

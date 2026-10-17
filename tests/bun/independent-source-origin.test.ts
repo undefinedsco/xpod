@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { githubOriginFacts, githubOriginOriginals, observeAgentFsNativeGitHubOrigin, observeModuleProductGitHubOrigin, observeCliGitHubOrigin } from '../../scripts/lib/independent-admission/github-origin';
+import { githubOriginFacts, githubOriginOriginals, matchesObservedJobName, observeAgentFsNativeGitHubOrigin, observeModuleProductGitHubOrigin, observeCliGitHubOrigin } from '../../scripts/lib/independent-admission/github-origin';
 
 describe('controlled GitHub origin capability', () => {
   it('does not grant origin authority to offline JSON, hashes or cloned tokens', () => {
@@ -32,4 +32,15 @@ describe('controlled GitHub origin capability', () => {
     await expect(observeCliGitHubOrigin(tuple, { fetch: () => {} } as any)).rejects.toThrow('invalid transport options');
     await expect(observeCliGitHubOrigin(tuple, { token: 'bad\ntoken' })).rejects.toThrow('invalid transport options');
   });
+});
+
+ it('only exact GitHub matrix truncation matches the reviewed producer name', () => {
+  const full = 'products (darwin-arm64, darwin, arm64, macos-15, @undefineds.co/xpod-css-darwin-arm64, true, production-declared-unverified)';
+  const actual = 'products (darwin-arm64, darwin, arm64, macos-15, @undefineds.co/xpod-css-darwin-arm64, true, prod...';
+  expect(matchesObservedJobName(actual, full)).toBe(true);
+  expect(matchesObservedJobName(full, full)).toBe(true);
+  for (const wrong of [actual.slice(0, -1), actual + '.', actual.replace('darwin-arm64', 'linux-arm64'), full.slice(0, 97), 'products (darwin-arm64...']) {
+    expect(matchesObservedJobName(wrong, full)).toBe(false);
+  }
+  expect(matchesObservedJobName('native (darwin-arm64)...', 'native (darwin-arm64)')).toBe(false);
 });
