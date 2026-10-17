@@ -1,6 +1,6 @@
 import { spawn, execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdirSync, readFileSync, writeFileSync, chmodSync, existsSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync, chmodSync, existsSync, constants, openSync, readSync, fstatSync, closeSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
@@ -18,7 +18,22 @@ const required = (name: string): string => {
   if (!value) throw new Error(`missing ${name}`);
   return value;
 };
-const sha256File = (file: string): string => createHash('sha256').update(readFileSync(file)).digest('hex');
+const sha256File = (file: string): string => {
+  const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const before = fstatSync(fd);
+    if (!before.isFile()) throw new Error('mounted hash requires an ordinary original');
+    const digest = createHash('sha256'), block = Buffer.alloc(65536);
+    let total = 0;
+    for (let count; (count = readSync(fd, block, 0, block.length, null)) > 0;) {
+      digest.update(block.subarray(0, count)); total += count;
+    }
+    const after = fstatSync(fd);
+    if (total !== before.size || before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size
+      || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs) throw new Error('mounted original changed while hashing');
+    return digest.digest('hex');
+  } finally { closeSync(fd); }
+};
 
 function bunReachableOn(p: string): boolean {
   const out = execFileSync('/bin/sh', [ '-c', 'command -v bun || true' ], { env: { PATH: p }, encoding: 'utf8' }).trim();

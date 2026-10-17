@@ -229,6 +229,15 @@ export interface PortableSourceMaterialView {
   readonly pending: readonly string[];
 }
 const portableIssued = new WeakMap<object, PortableSourceMaterialView>();
+const portableReaderGroups = new WeakMap<object, { readable: boolean; compact(): void }>();
+/** The coordinator calls this only after both related products finish all gates.
+ * One shared lease revokes both products' original readers, preserving facts. */
+export function compactPortableSourceMaterials(artifact: unknown): void {
+  if (!portableSourceMaterialView(artifact)) return fail('issued portable source materials capability required');
+  const group = portableReaderGroups.get(artifact as object);
+  if (!group) return fail('portable original reader group absent');
+  if (group.readable) { group.readable = false; group.compact(); }
+}
 export function portableSourceMaterialView(artifact: unknown): PortableSourceMaterialView | undefined {
   return artifact !== null && typeof artifact === 'object' && collectedArtifactView(artifact) ? portableIssued.get(artifact) : undefined;
 }
@@ -353,8 +362,14 @@ export function verifyCollectedCliBuildExecution(input: {
         return graph.readInputOriginalRange(name, offset, length);
       } });
   });
+  const group = { readable: true, compact() { snapshot?.compactOriginalReaders(); portableSourceFiles.clear(); } };
+  const assertReadable = () => { if (!group.readable) return fail('portable source original readers compacted'); };
   for (const [role, product] of products) {
-    const outputs = Object.freeze(completeGraphs.filter(graph => graph.product === role));
+    portableReaderGroups.set(product.cap, group);
+    const outputs = Object.freeze(completeGraphs.filter(graph => graph.product === role).map(graph => Object.freeze({ ...graph,
+      readMetafile() { assertReadable(); return graph.readMetafile(); },
+      readInputOriginalRange(name: string, offset: number, length: number) { assertReadable(); return graph.readInputOriginalRange(name, offset, length); },
+    })));
     portableIssued.set(product.cap, Object.freeze({ identity: Object.freeze({ ...product.view.identity }), outputs, dependencySnapshotVerified: snapshot !== undefined, dependencyOriginals: snapshot,
       pending: Object.freeze([...(snapshot ? [] : ['portable-source-capture-originals-missing']), ...outputs.flatMap(row => row.inputUniverseComplete ? [] : ['bundle-input-originals-unresolved:' + row.path])]) }));
   }

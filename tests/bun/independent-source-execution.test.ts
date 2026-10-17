@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
-import { verifyCliBuildExecution, portableMetafileInputPath, portableSourceMaterialView, verifyCollectedCliBuildExecution, type CliExecutionInput, type BuildArchiveMember } from '../../scripts/lib/independent-admission/source-execution';
+import { verifyCliBuildExecution, compactPortableSourceMaterials, portableMetafileInputPath, portableSourceMaterialView, verifyCollectedCliBuildExecution, type CliExecutionInput, type BuildArchiveMember } from '../../scripts/lib/independent-admission/source-execution';
 const require = createRequire(import.meta.url);
 const hash = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
 let tracked = spawnSync('git', ['ls-tree', '-r', '--name-only', '-z', 'HEAD'], { encoding: 'utf8' }).stdout.split('\0').filter(Boolean);
@@ -82,6 +82,7 @@ describe('controlled CLI execution original verifier (synthetic origin-free fixt
     const f = fixture(), facts = f.verify();
     expect(portableSourceMaterialView(facts)).toBeUndefined();
     expect(portableSourceMaterialView(JSON.parse(JSON.stringify(facts)))).toBeUndefined();
+    expect(() => compactPortableSourceMaterials(facts)).toThrow('issued portable');
     expect(() => verifyCollectedCliBuildExecution({ artifact: {} as any, source: {} })).toThrow('private collected');
   });
   it('normalizes observed metafile coordinates without granting path existence', () => {

@@ -1,3 +1,4 @@
+import {QLEVER_OBSERVER_PATH,QLEVER_OBSERVER_V20,qleverObserverCompanionBindings} from './qlever-observer-policy';
 import { CLI_SOURCE_POLICY } from './source-rules';
 import { registryConsumerArtifactName } from './registry-consumer-originals';
 import { archiveConsumerArtifactName } from './archive-consumer-originals';
@@ -178,7 +179,7 @@ export async function observeQleverNativeGitHubOrigin(input:ArtifactAcquisitionI
     requiredSteps:['Verify the actual native producer host','Resolve immutable artifact identity','Upload the exact native runtime'],
     sourceBindings:[...(invocation==='css-module'?[{path:nativeWorkflow,sha256:nativeHash}]:[]),
       {path:'qlever/scripts/observe-macos-native-materials.py',sha256:'79e34893b946458a904544ddb1cce9110a19fe5052503570c865341e7d0ff6d6',
-        reviewedSha256:['a92b227ec186a0f53f85c93a732a0542ee3b712fdb571308395ecf17c07b2d86']}],
+        reviewedSha256:['a92b227ec186a0f53f85c93a732a0542ee3b712fdb571308395ecf17c07b2d86',QLEVER_OBSERVER_V20]}],
   });
   nativeOrigins.add(observation); return observation;
 }
@@ -267,10 +268,16 @@ async function observeGitHubOrigin(input: ArtifactAcquisitionInput, options: { t
   const reviewedVersion = policy.reviewedWorkflowVersions?.find(row => row.workflowSha256 === workflowSha256);
   if (workflowSha256 !== policy.workflowSha256 && !reviewedVersion) fail('immutable workflow policy not reviewed');
   const expectedJobName = reviewedVersion?.jobName ?? policy.jobName;
-  for (const binding of reviewedVersion?.sourceBindings ?? policy.sourceBindings ?? []) {
+  const sourceBindings=[...(reviewedVersion?.sourceBindings ?? policy.sourceBindings ?? [])];
+  for (const binding of sourceBindings) {
     const original = await read('policy-' + binding.path.replace(/[^a-z0-9]/giu, '-') + '.original.json', `contents/${binding.path}?ref=${binding.ref==='run-head'?input.runHeadSha:input.sourceSha}`);
     if (original.type !== 'file' || original.path !== binding.path || original.encoding !== 'base64'
-      || typeof original.content !== 'string' || ![binding.sha256,...(binding.reviewedSha256 ?? [])].includes(sha(Buffer.from(original.content.replace(/\s/gu, ''), 'base64')))) fail('immutable target declaration policy not reviewed');
+      || typeof original.content !== 'string')fail('immutable target declaration source missing');
+    const actualSha=sha(Buffer.from(original.content.replace(/\s/gu,''),'base64'));
+    if(![binding.sha256,...(binding.reviewedSha256 ?? [])].includes(actualSha))fail('immutable target declaration policy not reviewed');
+    // Companion helpers are versioned with the actual reviewed observer bytes.
+    // Old runs do not gain the v20 companion-originals scope or new executable TCB.
+    if(binding.path===QLEVER_OBSERVER_PATH)sourceBindings.push(...qleverObserverCompanionBindings(actualSha));
   }
   const artifact = await read('artifact.original.json', `actions/artifacts/${input.artifactId}`);
   if (artifact.id !== input.artifactId || artifact.expired !== false || artifact.workflow_run?.id !== input.runId

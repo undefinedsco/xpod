@@ -259,16 +259,16 @@ def validate_consumer_plan(plan, profile):
     producer_path = reference({**producer, 'path': str(csspath.parent / producer['path'])})
     original_producer = json.loads(producer_path.read_text())
     require(original_producer.get('schemaVersion') == 1 and original_producer.get('kind') == module_id + '-module-product-production' and original_producer.get('status') == 'controlled-preview-materials', 'CSS producer identity mismatch')
-    require(all(original_producer.get(flag) is False for flag in ['published', 'releaseQualified', 'consumerValidated', 'legalClearance', 'nativeAdmission']), 'CSS producer admission mismatch')
+    require(all(original_producer.get(flag) is False for flag in profile.get('producerFlags', ['published', 'releaseQualified', 'consumerValidated', 'legalClearance', 'nativeAdmission'])), 'CSS producer admission mismatch')
     require(all(original_producer.get(key, {}).get('sha') == sha and original_producer[key].get('status') == '' for key in ['sourceBefore', 'sourceAfter']), 'CSS producer source closure mismatch')
     context = original_producer.get('context', {})
     for name in ['node', 'bun']:
         executable = pathlib.Path(plan[name])
         require(executable.is_absolute() and executable.is_file() and os.access(executable, os.X_OK), 'existing executable required: ' + name)
-    declaration = targets.target(module_id, context.get('target'), plan['bun'])
+    declaration = profile.get('targetResolver', targets.target)(module_id, context.get('target'), plan['bun'])
     require(plan.get('target') == declaration['target'], 'plan/producer target mismatch')
     css = profile['bindProjection'](css, original_producer, declaration)
-    require(context.get('actualCheckoutSha') == sha and context.get('workflowPath') == '.github/workflows/' + module_id + '-module-product.yml' and all(context.get(key) == css.get(key) and css.get(key) is not None for key in ['runHeadSha', 'runId', 'runAttempt']), 'producer/projection context mismatch')
+    require(context.get('actualCheckoutSha') == sha and context.get('workflowPath') == profile.get('workflowPath', '.github/workflows/' + module_id + '-module-product.yml') and all(context.get(key) == css.get(key) and css.get(key) is not None for key in ['runHeadSha', 'runId', 'runAttempt']), 'producer/projection context mismatch')
     require(context.get('target') == css['package']['target'] and context.get('version') == css['package']['version'] and original_producer.get('archive') == css['archive'], 'producer/projection package/archive mismatch')
     materials = original_producer.get('materials', {})
     expected_materials = profile['materials']
@@ -290,11 +290,12 @@ def validate_consumer_plan(plan, profile):
         originals[key] = path
     if transport != 'immutable-local-fixture':
         registry_tool_declarations(plan, cli)
-    consumer = css['consumerInput']
-    require(not pathlib.Path(consumer['path']).is_absolute() and '..' not in pathlib.Path(consumer['path']).parts, 'unsafe consumer input reference')
-    consumer_path = reference({**consumer, 'path': str(csspath.parent / consumer['path'])})
-    consumer_input = json.loads(consumer_path.read_text())
-    require(profile['verifyConsumerInput'](consumer_input, css, sha), 'CSS consumer input binding mismatch')
+    if profile.get('consumerInputRequired', True):
+        consumer = css['consumerInput']
+        require(not pathlib.Path(consumer['path']).is_absolute() and '..' not in pathlib.Path(consumer['path']).parts, 'unsafe consumer input reference')
+        consumer_path = reference({**consumer, 'path': str(csspath.parent / consumer['path'])})
+        consumer_input = json.loads(consumer_path.read_text())
+        require(profile['verifyConsumerInput'](consumer_input, css, sha), 'CSS consumer input binding mismatch')
     package = css['package']
     require(package['name'] == declaration['name'] and package['target'] == declaration['target'] and isinstance(package['version'], str) and package['version'] and package['version'] != 'latest', 'CSS exact package identity required')
     for name in ['node', 'bun']:
@@ -548,7 +549,7 @@ class ModuleConsumerRunner:
                 source.rename(destination)
 
     def run(self):
-        declaration = targets.target(self.module_id, self.checked['module']['package']['target'], self.plan['bun'], host=True)
+        declaration = getattr(self, 'target_resolver', targets.target)(self.module_id, self.checked['module']['package']['target'], self.plan['bun'], host=True)
         machine = {'x86_64': 'x64', 'aarch64': 'arm64'}.get(platform.machine(), platform.machine())
         require(platform.system().lower() == declaration['platform'] and machine == declaration['arch'], 'actual Python host/target differs')
         require(declaration['nativeSourceAvailable'], 'target native source is pending; no consumer execution')
