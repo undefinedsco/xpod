@@ -100,7 +100,9 @@ describe('reviewed normal CLI input-set policy', () => {
   const { verifyCliInputSet } = require('../../scripts/lib/independent-admission/source-rules') as typeof import('../../scripts/lib/independent-admission/source-rules');
   const { readFileSync } = require('node:fs') as typeof import('node:fs');
   const { spawnSync } = require('node:child_process') as typeof import('node:child_process');
-  const tracked = spawnSync('git', ['ls-tree', '-r', '--name-only', '-z', 'HEAD'], { encoding: 'utf8' }).stdout.split('\0').filter(Boolean);
+  // Include newly staged verifier inputs in this structural pre-commit fixture.
+  // Operational source capabilities still require an exact clean Git commit.
+  const tracked = spawnSync('git', ['ls-files', '-z'], { encoding: 'utf8' }).stdout.split('\0').filter(Boolean);
   const read = (name: string) => readFileSync(name);
   const prefixes = ['packages/xpod-cli/src', 'packages/xpod-cli/scripts', 'packages/xpod-cli/tests', 'packages/xpod-cli/licenses',
     'packages/xpod-client/src', 'packages/xpod-client/scripts', 'packages/xpod-client/tests', 'packages/xpod-client/licenses', 'types/bun'];

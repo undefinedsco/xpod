@@ -1,3 +1,4 @@
+import { PUBLICATION_DISK_LIMITS } from './lib/independent-admission/publication-disk-budget';
 import { archiveConsumerArtifactName } from './lib/independent-admission/archive-consumer-originals';
 import { registryConsumerArtifactName } from './lib/independent-admission/registry-consumer-originals';
 import { createHash } from 'node:crypto';
@@ -21,7 +22,7 @@ export const API_PRODUCT_WORKFLOW = '.github/workflows/api-module-product.yml';
 export const CSS_PRODUCT_WORKFLOW = '.github/workflows/css-module-product.yml';
 const PRODUCERS = new Set([CLI_PRODUCT_WORKFLOW, '.github/workflows/agentfs-module-mounted-acceptance.yml', API_PRODUCT_WORKFLOW, CSS_PRODUCT_WORKFLOW]);
 import moduleArtifactLimits from './lib/module-artifact-limits.json';
-const LIMITS = { packedBytes: moduleArtifactLimits.packedBytes, expandedBytes: moduleArtifactLimits.expandedBytes, members: moduleArtifactLimits.members };
+const LIMITS = { packedBytes: PUBLICATION_DISK_LIMITS.outerPackedBytes, expandedBytes: PUBLICATION_DISK_LIMITS.outerExpandedBytes, members: moduleArtifactLimits.members };
 const METADATA_NAMES = ['run', 'workflow', 'artifact'] as const;
 type FileBinding = { path: string; bytes: number; sha256: string };
 interface MetadataBinding { originals: Record<string, FileBinding & { endpoint: string }>; projection: FileBinding }
@@ -219,7 +220,7 @@ async function acquireProductInput(input: ArtifactAcquisitionInput, output: stri
     const downloaded = await stream(response, archive, limits.packedBytes);
     if (downloaded.sha256 !== input.artifactSha256 || downloaded.bytes !== artifact.size_in_bytes) fail('downloaded artifact digest/size mismatch');
     const inspected = createRequire(import.meta.url)('./lib/product-artifact-command.cjs').inspectArtifact([path.join(import.meta.dir, 'lib/inspect-product-artifact.py'), archive, input.artifactSha256,
-      String(limits.packedBytes), String(limits.expandedBytes), String(limits.members)], { evidence: dependencies.diagnostics, label: 'zip-inspection', timeout: 30_000, maxBuffer: 16 * 1024 * 1024 });
+      String(limits.packedBytes), String(limits.expandedBytes), String(limits.members)], { evidence: dependencies.diagnostics, label: 'zip-inspection', timeout: moduleArtifactLimits.timeoutMs, maxBuffer: 16 * 1024 * 1024 });
     if (inspected.status !== 0 || inspected.error) fail('artifact ZIP inspection failed');
     const inventory = JSON.parse(inspected.stdout);
     const projection = Buffer.from(JSON.stringify(metadata, null, 2) + '\n');

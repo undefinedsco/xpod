@@ -1,3 +1,4 @@
+import { PUBLICATION_DISK_LIMITS } from './publication-disk-budget';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -7,7 +8,7 @@ import { verifyAcquiredMetadata } from '../../acquire-independent-product-input'
 import limits from '../module-artifact-limits.json';
 import { githubOriginFacts, githubOriginOriginals, isNativeGitHubOrigin } from './github-origin';
 import { nativeOriginalLifetime } from './native-original-lifetime';
-import { openBoundOriginalFile } from './bound-original-file';
+import { lazyZipOriginals } from './lazy-zip-originals';
 import type { CollectedArtifactMember } from './artifact-contract';
 import type { CollectedNativeOriginalsCapability, CollectedNativeOriginalsView, NativeAdmissionOriginalCollectionInput } from './native-originals';
 const issued = new WeakMap<object, CollectedNativeOriginalsView>();
@@ -36,27 +37,22 @@ export async function collectNativeAdmissionOriginals(input: NativeAdmissionOrig
   if (custody.expectedSourceSha !== facts.sourceSha || custody.runHeadSha !== facts.runHeadSha
     || custody.runId !== facts.runId || custody.runAttempt !== facts.runAttempt || custody.artifactId !== facts.artifactId
     || custody.workflowPath !== facts.workflowPath || custody.archive?.path !== 'artifact.zip'
-    || custody.archive.sha256 !== facts.artifactSha256 || custody.archive.bytes > limits.packedBytes) fail('origin/acquisition mismatch');
+    || custody.archive.sha256 !== facts.artifactSha256 || custody.archive.bytes > PUBLICATION_DISK_LIMITS.outerPackedBytes) fail('origin/acquisition mismatch');
   const rows: (CollectedArtifactMember & {kind: string})[] = custody.inventory?.members;
   if (!Array.isArray(rows) || rows.length > limits.members || !Number.isSafeInteger(custody.inventory.expandedBytes)
-    || custody.inventory.expandedBytes > limits.expandedBytes) fail('bounded native inventory required');
+    || custody.inventory.expandedBytes > PUBLICATION_DISK_LIMITS.outerExpandedBytes) fail('bounded native inventory required');
   const files = rows.filter(row => row.kind === 'file');
   if (!files.length || files.some(row => !/^[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)*$/u.test(row.path)
     || row.path.split('/').some(part => part === '.' || part === '..')
     || !Number.isSafeInteger(row.bytes) || row.bytes < 0 || row.bytes > limits.shardBytes
     || !/^[a-f0-9]{64}$/u.test(row.sha256))) fail('bounded exact native member inventory required');
-  const parent = fs.realpathSync(os.tmpdir()), free = fs.statfsSync(parent, {bigint:true});
-  if (free.bavail * free.bsize < BigInt(custody.inventory.expandedBytes + limits.freeFloorBytes + limits.queueReserveBytes)) fail('native projection free-space floor insufficient');
-  const snapshot = fs.mkdtempSync(path.join(parent, 'xpod-native-originals-'));
-  const readers = new Map<string, ReturnType<typeof openBoundOriginalFile>>();
-  const archivePath = path.join(root, 'artifact.zip');
+  const parent=fs.realpathSync(os.tmpdir());
+  const snapshot=fs.mkdtempSync(path.join(parent,'xpod-native-originals-'));
+  const archivePath=path.join(root,'artifact.zip');
+  let cache:ReturnType<typeof lazyZipOriginals>|undefined;
   const lifetime=nativeOriginalLifetime({snapshot,
-    closeReaders(){for(const reader of readers.values()) reader.close();readers.clear();},
-    verifyRetainedOriginal(){
-      const result=inspectArtifact([path.resolve(import.meta.dir,'../inspect-product-artifact.py'),archivePath,facts.artifactSha256,
-        String(limits.packedBytes),String(limits.expandedBytes),String(limits.members)],{timeout:limits.timeoutMs,maxBuffer:32*1024**2});
-      if(result.error||result.status!==0||!isDeepStrictEqual(JSON.parse(result.stdout).members,rows)) fail('retained native ZIP required before compaction');
-    },
+    closeReaders(){cache?.close();},
+    verifyRetainedOriginal(){if(!cache) fail('native cache unavailable'); cache!.assertRetainedOriginal();},
   });
   let returnedBytes=0, calls=0;
   const rangeDeadline=Date.now()+limits.timeoutMs;
@@ -68,26 +64,15 @@ export async function collectNativeAdmissionOriginals(input: NativeAdmissionOrig
   };
   let readerForRange:(name:string,offset:number,length:number)=>Buffer=()=>fail('native reader not initialized');
   try {
-    const projected = inspectArtifact([path.resolve(import.meta.dir, '../inspect-product-artifact.py'), archivePath,
-      facts.artifactSha256, String(limits.packedBytes), String(limits.expandedBytes), String(limits.members),
-      '--selection-stdin', snapshot, 'native-material-originals'], {timeout:limits.timeoutMs,maxBuffer:32*1024**2,
-      input:Buffer.from(JSON.stringify(files.map(row => ({path:row.path,destination:row.path,bytes:row.bytes,sha256:row.sha256}))))});
-    if (projected.error || projected.status !== 0 || projected.signal) fail('native original ZIP projection failed');
-    const actual = JSON.parse(projected.stdout);
-    if (!isDeepStrictEqual(actual.members, rows) || actual.expandedBytes !== custody.inventory.expandedBytes
-      || actual.selectedMembersProjected !== files.length || actual.innerArchiveExpanded !== false) fail('complete native ZIP inventory changed');
-    for (const row of files) fs.chmodSync(path.join(snapshot,row.path),0o400);
-    const reader = (name:string) => {
-      const row = files.find(item => item.path === name); if (!row) return fail('registered native original required');
-      let found=readers.get(name);
-      if (!found) {
-        // Bound descriptors without making large source archives into Buffers.
-        if (readers.size >= 32) { const first=readers.keys().next().value!; readers.get(first)!.close(); readers.delete(first); }
-        found=openBoundOriginalFile(path.join(snapshot,name),row); readers.set(name,found);
-      }
-      return found;
-    };
-    readerForRange=(name,offset,length)=>reader(name).readRange(offset,length);
+    const inspected=inspectArtifact([path.resolve(import.meta.dir,'../inspect-product-artifact.py'),archivePath,facts.artifactSha256,
+      String(PUBLICATION_DISK_LIMITS.outerPackedBytes),String(PUBLICATION_DISK_LIMITS.outerExpandedBytes),String(limits.members)],
+      {timeout:limits.timeoutMs,maxBuffer:32*1024**2});
+    if(inspected.error||inspected.status!==0||inspected.signal) fail('complete native ZIP inventory verification failed');
+    const actual=JSON.parse(inspected.stdout);
+    if(!isDeepStrictEqual(actual.members,rows)||actual.expandedBytes!==custody.inventory.expandedBytes) fail('complete native ZIP inventory changed');
+    cache=lazyZipOriginals({archivePath,archiveSha256:facts.artifactSha256,root:snapshot,members:files});
+    const bound=cache;
+    readerForRange=(name,offset,length)=>bound.readRange(name,offset,length);
     const view:CollectedNativeOriginalsView=Object.freeze({origin:input.githubOrigin,originFacts:facts,
       members:Object.freeze(files.map(({path,bytes,sha256,mode})=>Object.freeze({path,bytes,sha256,mode}))),
       archive:Object.freeze({bytes:custody.archive.bytes,sha256:facts.artifactSha256}),
@@ -105,14 +90,14 @@ export async function collectNativeAdmissionOriginals(input: NativeAdmissionOrig
         // Full archive SHA and inventory are rechecked before and after the controlled
         // scanner. No archive path is recovered from a serialized capability.
         const before=inspectArtifact([path.resolve(import.meta.dir,'../inspect-product-artifact.py'),archivePath,facts.artifactSha256,
-          String(limits.packedBytes),String(limits.expandedBytes),String(limits.members)],{timeout:limits.timeoutMs,maxBuffer:32*1024**2});
+          String(PUBLICATION_DISK_LIMITS.outerPackedBytes),String(PUBLICATION_DISK_LIMITS.outerExpandedBytes),String(limits.members)],{timeout:limits.timeoutMs,maxBuffer:32*1024**2});
         if(before.error||before.status!==0||!isDeepStrictEqual(JSON.parse(before.stdout).members,rows)) return fail('native archive changed');
         const value=await operation({path:archivePath,identity:Object.freeze({bytes:custody.archive.bytes,sha256:facts.artifactSha256})});
         const after=inspectArtifact([path.resolve(import.meta.dir,'../inspect-product-artifact.py'),archivePath,facts.artifactSha256,
-          String(limits.packedBytes),String(limits.expandedBytes),String(limits.members)],{timeout:limits.timeoutMs,maxBuffer:32*1024**2});
+          String(PUBLICATION_DISK_LIMITS.outerPackedBytes),String(PUBLICATION_DISK_LIMITS.outerExpandedBytes),String(limits.members)],{timeout:limits.timeoutMs,maxBuffer:32*1024**2});
         if(after.error||after.status!==0||!isDeepStrictEqual(JSON.parse(after.stdout).members,rows)) return fail('native archive changed during scan');
         return value;
       }});
     const cap=Object.freeze({}) as CollectedNativeOriginalsCapability; issued.set(cap,view); compactors.set(cap,()=>lifetime.compact()); return cap;
-  } catch(error) { for(const reader of readers.values()) reader.close(); fs.rmSync(snapshot,{recursive:true,force:true}); throw error; }
+  } catch(error) { cache?.close(); fs.rmSync(snapshot,{recursive:true,force:true}); throw error; }
 }

@@ -106,7 +106,7 @@ def inspect(archive, expected, packed_limit, expanded_limit, member_limit, selec
                 normalized = name[:-1] if entry.is_dir() else name
                 parts = normalized.split('/')
                 mode = entry.external_attr >> 16
-                if (entry.orig_filename != name or not normalized or name.startswith('/') or '\\' in name or ':' in name
+                if (len(name.encode('utf-8')) > 255 or entry.orig_filename != name or not normalized or name.startswith('/') or '\\' in name or ':' in name
                         or any(ord(c) < 32 or ord(c) == 127 for c in name)
                         or any(p in ('', '.', '..') for p in parts)
                         or normalized in names or entry.flag_bits & 1

@@ -1,3 +1,4 @@
+import { PUBLICATION_DISK_LIMITS } from './publication-disk-budget';
 import {sharedSourceLifetime} from './shared-source-lifetime';
 import moduleLimits from '../module-artifact-limits.json';
 import { createHash } from 'node:crypto';
@@ -283,7 +284,7 @@ export async function collectAdmissionArtifact(input: {
   await withOwnedTempRoot('xpod-admission-originals-', async (temporary: string) => {
     const selections = selected.map((row: any) => ({ path: row.path, destination: row.path, bytes: row.bytes, sha256: row.sha256 }));
     const result = inspectArtifact([path.join(import.meta.dir, '../inspect-product-artifact.py'),
-      path.join(root, 'artifact.zip'), origin.artifactSha256, String(moduleLimits.packedBytes), String(moduleLimits.expandedBytes),
+      path.join(root, 'artifact.zip'), origin.artifactSha256, String(PUBLICATION_DISK_LIMITS.outerPackedBytes), String(PUBLICATION_DISK_LIMITS.outerExpandedBytes),
       String(moduleLimits.members), '--selection-stdin', temporary, 'independent-source-originals'], {timeout:moduleLimits.timeoutMs,maxBuffer:32*1024**2,input:Buffer.from(JSON.stringify(selections))});
     if (result.error || result.status !== 0 || result.signal) fail('producer ZIP member verification failed: '
       + String(result.error?.message ?? result.stderr).slice(0, 1200));

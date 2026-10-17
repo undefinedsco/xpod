@@ -31,7 +31,7 @@ print(json.dumps(dict(archiveSha256=hashlib.sha256(archive.read_bytes()).hexdige
     const retained = (await collectModuleSourceOriginals({ ...input, archivePath: path.join(root, 'artifact.zip') }))!;
     fs.writeFileSync(path.join(root, 'artifact.zip'), 'not the retained immutable ZIP');
     expect(() => retained.compact()).toThrow('identity');
-    expect(retained.readRange('source-materials/source-0000.tar', 0, 6)).toEqual(Buffer.from('actual'));
+    expect(() => retained.readRange('source-materials/source-0000.tar', 0, 6)).toThrow('identity');
     retained.dispose();
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });

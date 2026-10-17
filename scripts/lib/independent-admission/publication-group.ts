@@ -1,3 +1,4 @@
+import { preflightPublicationResources } from './publication-resource-preflight';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -53,6 +54,8 @@ export async function preparePublicationGroup(input:PublicationGroupPreparationI
  validatePublicationConsumerRuns(input.consumerRuns??[],input.selectors[0]!.sourceSha);
  if(!path.isAbsolute(input.checkout)||!path.isAbsolute(input.output)||fs.existsSync(input.output))fail('canonical checkout and new absolute output required');
  fs.mkdirSync(input.output,{mode:0o700});
+ const resources=await preflightPublicationResources({selectors:input.selectors,output:input.output,token:input.token});
+ if(resources.status==='pending')return {status:'pending',pending:resources.pending};
  const session:PreparationSession={requests:new Map()},products:import('./publication').ProductGroupPublicationInput['products'][number][]=[],registryDependencies:{artifact:CollectedArtifactCapability;registry:NonNullable<Awaited<ReturnType<typeof observeRegistryArtifactIfPublished>>>}[]=[];
  const selectedNames=new Set<string>();
  const pending=(selector:PublicationProductSelector,reasons:readonly string[])=>({status:'pending' as const,pending:reasons.map(reason=>selector.module+'/'+(selector.target??'portable')+': '+reason)});

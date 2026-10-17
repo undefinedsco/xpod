@@ -48,9 +48,10 @@ test('workflow keeps old private artifact separate from normal producer and bind
   const workflow = JSON.parse(parsed.stdout);assert.deepEqual(workflow.permissions, { contents: 'read' });
   const steps = workflow.jobs['standalone-cli'].steps;
   assert.ok(steps.some(step => step.run === 'node scripts/check-cli-package.cjs'));
-  assert.ok(steps.some(step => step.run === 'node scripts/check-cli-publication.cjs'));
+  const publicationSteps = workflow.jobs['normal-publication'].steps;
+  assert.ok(publicationSteps.some(step => step.run === 'node scripts/check-cli-publication.cjs'));
   assert.ok(steps.some(step => step.with?.name === 'xpod-cli-${{ runner.os }}-${{ github.sha }}'));
-  const upload = steps.find(step => step.name === 'Upload publication preparation originals');
+  const upload = publicationSteps.find(step => step.name === 'Upload publication preparation originals');
   assert.match(upload.with.name, /publication-preparation.*steps.source.outputs.sha.*github.run_id.*github.run_attempt/);
   assert.equal(upload.with.path, '.test-data/cli-publication-preparation/');
   assert.equal(upload.with['if-no-files-found'], 'error');

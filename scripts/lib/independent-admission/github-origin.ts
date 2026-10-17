@@ -80,10 +80,12 @@ export async function observeCliGitHubOrigin(input: ArtifactAcquisitionInput, op
   return observeGitHubOrigin(input, options, {
     workflowPath: CLI_PRODUCT_WORKFLOW, workflowSha256:CLI_SOURCE_POLICY.workflow,
     reviewedWorkflowVersions:[{workflowSha256:'b9bc591d5248773fae30df574a95e1ee928dffc41ad5965a8fbc8bf90319d860',
-      jobName:name=>`standalone-cli (${name.startsWith('xpod-cli-publication-preparation-macOS-')?'macos-latest':'ubuntu-latest'})`}],
+      jobName:name=>`standalone-cli (${name.startsWith('xpod-cli-publication-preparation-macOS-')?'macos-latest':'ubuntu-latest'})`},
+      {workflowSha256:'50576f056ba617e9153afc0d385a06a830696e3703e6ad624d1e8a8ad46af22c',
+        jobName:name=>`standalone-cli (${name.startsWith('xpod-cli-publication-preparation-macOS-')?'macos-latest':'ubuntu-latest'})`}],
     events: ['workflow_dispatch', 'pull_request'],
     artifactNames: row => cliPublicationArtifactNames({ expectedSourceSha: row.sourceSha, runId: row.runId, runAttempt: row.runAttempt }),
-    jobName: name => `standalone-cli (${name.startsWith('xpod-cli-publication-preparation-macOS-') ? 'macos-latest' : 'ubuntu-latest'})`,
+    jobName: name => `normal-publication (${name.startsWith('xpod-cli-publication-preparation-macOS-') ? 'macos-latest' : 'ubuntu-latest'})`,
     requiredStep: 'Build normal CLI publication preparation',
   });
 }

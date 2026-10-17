@@ -6,12 +6,13 @@ import { readFileSync } from 'node:fs';
 // retain S309 policy. These are policy
 // digests, not product/source qualifications. Changes require a new review.
 export const CLI_SOURCE_POLICY = Object.freeze({
-  producer: 'ea3b402dc1ae1b9f4f2a36dbde0035ffd03fb259a87c1e10c43fe63d5c22bff3',
+  producer: 'ff0eb13abb628addad1c8fdfd3ee6d615215325e9ad7bc8799139a056e316c75',
+  publicationBudget: 'de2a337b143edec3c903dd9bb0234755594f34b2cfdf43efad04661296c262d2',
   sourceHelper: '4f804fb8af61cfc53c7dc9428a0e8167315b9a430ede4048223c62610ff79b6d',
   sourceLimits: 'c1c529aba719356c682affbe630c215e28cc07163192f8f3b601aab7b0126bd4',
   supervisor: '7710a6ee87729f202c67500fc83d0fc71509ac7e1034d1f22276f53a3fcf6781',
   copier: 'c437aa115b5b7905c539386d4df284a43e26782c846d62045d69de5bb762331c',
-  workflow: '50576f056ba617e9153afc0d385a06a830696e3703e6ad624d1e8a8ad46af22c',
+  workflow: 'c856baf24a28fe789db1e80c26e7b69b7e4e08bd0923f52ce376840ac885c1eb',
 });
 const hash = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
 // The second reviewed supervisor only raises the command ceiling to 25 minutes;
@@ -28,6 +29,7 @@ export function verifyCliInputSet(
 ) {
   const producer = readTracked('scripts/check-cli-publication.cjs');
   if (hash(producer) !== CLI_SOURCE_POLICY.producer
+    || hash(readTracked('scripts/lib/cli-publication-budget.cjs')) !== CLI_SOURCE_POLICY.publicationBudget
     || hash(readTracked('scripts/lib/module-source-materials.py')) !== CLI_SOURCE_POLICY.sourceHelper
     || hash(readTracked('scripts/lib/module-artifact-limits.json')) !== CLI_SOURCE_POLICY.sourceLimits
     || hash(readTracked('scripts/cli-build-inputs.cjs')) !== CLI_SOURCE_POLICY.copier

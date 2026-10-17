@@ -1,3 +1,4 @@
+import { PUBLICATION_DISK_LIMITS } from './independent-admission/publication-disk-budget';
 import moduleArtifactLimits from './module-artifact-limits.json';
 import { createHash } from 'node:crypto';
 import { lstatSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
@@ -76,7 +77,7 @@ export async function withProductProjection<T>(input: ProductCustodyInput, outpu
     const projected = new Set<string>();
     function project(selections: any[]) {
       const result = spawnSync('python3', [path.join(import.meta.dir, 'inspect-product-artifact.py'), path.join(root, 'artifact.zip'), custody.archive.sha256,
-        String(moduleArtifactLimits.packedBytes), String(moduleArtifactLimits.expandedBytes), String(moduleArtifactLimits.members), JSON.stringify(selections), temporary], { encoding: 'utf8', timeout: moduleArtifactLimits.timeoutMs, maxBuffer: 16 * 1024 * 1024 });
+        String(PUBLICATION_DISK_LIMITS.outerPackedBytes), String(PUBLICATION_DISK_LIMITS.outerExpandedBytes), String(moduleArtifactLimits.members), JSON.stringify(selections), temporary], { encoding: 'utf8', timeout: moduleArtifactLimits.timeoutMs, maxBuffer: 16 * 1024 * 1024 });
       if (result.status !== 0 || result.error) fail('ZIP projection failed');
       const checked = JSON.parse(result.stdout);
       for (const row of selections) projected.add(row.destination);

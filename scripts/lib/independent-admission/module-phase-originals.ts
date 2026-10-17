@@ -1,3 +1,4 @@
+import { PUBLICATION_DISK_LIMITS } from './publication-disk-budget';
 import moduleArtifactLimits from '../module-artifact-limits.json';
 import { createHash } from 'node:crypto';
 import { lstatSync, readFileSync } from 'node:fs';
@@ -48,7 +49,7 @@ export async function collectModulePhaseOriginals(input: PhaseOriginalInput): Pr
   if (selected.some(row => row.bytes > 1024 ** 2) || selected.reduce((sum, row) => sum + row.bytes, 0) > 8 * 1024 ** 2) return fail('small receipt projection bound');
   return withOwnedTempRoot('xpod-module-phase-originals-', async (temporary: string) => {
     const result = inspectArtifact([path.resolve(import.meta.dir, '../inspect-product-artifact.py'), input.archivePath, input.archiveSha256,
-      String(moduleArtifactLimits.packedBytes), String(moduleArtifactLimits.expandedBytes), String(moduleArtifactLimits.members), '--selection-stdin', temporary, 'module-source-originals'],
+      String(PUBLICATION_DISK_LIMITS.outerPackedBytes), String(PUBLICATION_DISK_LIMITS.outerExpandedBytes), String(moduleArtifactLimits.members), '--selection-stdin', temporary, 'module-source-originals'],
     { timeout: moduleArtifactLimits.timeoutMs, maxBuffer: 16 * 1024 ** 2, input: Buffer.from(JSON.stringify(selected.map(row => ({ path: row.path,
       destination: row.path, bytes: row.bytes, sha256: row.sha256 })))) });
     if (result.error || result.status !== 0 || result.signal) return fail('complete artifact inspection failed');
