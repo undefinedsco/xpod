@@ -68,7 +68,7 @@ export interface NativeMaterialView {
   readonly identity: CollectedArtifactIdentity;
   /** Legacy disk projections expose roots; collected original custody does not
    * invent filesystem locations for archive members. */
-  readonly custodyKind?: 'disk-projection' | 'collected-native-originals';
+  readonly custodyKind?: 'disk-projection' | 'collected-native-originals' | 'official-release-originals';
   readonly productRoot?: string;
   readonly materialsRoot?: string;
   readonly indexPath: string;

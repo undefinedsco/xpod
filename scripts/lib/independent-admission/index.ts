@@ -1,8 +1,7 @@
 import {assertLegalOriginalCustody} from './legal-original-custody';
 import {assertCollectedPublicationCustody} from './artifact-collector';
 import {assertDerivedSourceCurrent} from './source-context';
-import {publicationGateMaterials} from './publication-gate-materials';
-import {assertCollectedNativeOriginalCustody} from './native-original-collector';
+import {publicationGateMaterials,assertPublicationNativeOriginalCustody} from './publication-gate-materials';
 import { verifiedAdmissionCache } from './verified-admission-cache';
 import {publicationLegalMaterials} from './publication-legal-materials';
 import { githubOriginFacts } from './github-origin';
@@ -373,8 +372,8 @@ export function verifyCollectedPublicationAdmission(gate: Gate, input: Collected
     assertDerivedSourceCurrent(input.derivedSource);
     for(const original of context.legalOriginals??[])assertLegalOriginalCustody(original);
     const native=publicationGateMaterials(input.artifact,input.derivedSource)?.nativeOriginals;
-    if(native)assertCollectedNativeOriginalCustody(native);
-    for(const original of gateMaterials?.relatedNativeOriginals??[])assertCollectedNativeOriginalCustody(original);
+    if(native)assertPublicationNativeOriginalCustody(native);
+    for(const original of gateMaterials?.relatedNativeOriginals??[])assertPublicationNativeOriginalCustody(original);
   }):undefined;
   if(previous)return previous;
   const evidence = gate === 'source'

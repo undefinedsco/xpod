@@ -544,6 +544,10 @@
     "sha256": "104e3eaef78b3d6dd8b9d060a5cd32dab53a8e59cb6597d25a05d56d5ff4f1fa"
   },
   {
+    "path": "scripts/lib/independent-admission/afs-native-acquisition.ts",
+    "sha256": "c59b1febcf4fd3b2f41ae50b3bae4541537e851a83b823ba91f381c87e84ee78"
+  },
+  {
     "path": "scripts/lib/independent-admission/afs-verifier-patch-originals.ts",
     "sha256": "6d5d77f328fdcbf911ea0b250e6b62871c50df3717b588ab638840481794fdad"
   },
@@ -561,7 +565,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/artifact-contract.ts",
-    "sha256": "4a47c49964be2e5d4f35d31f29bf22400691c731aeb5d0d95ae80f4e918a5753"
+    "sha256": "24633a3ec6a6547fb8fb1449b45534d21b2498475131887b675cf2e5f3a5e7a6"
   },
   {
     "path": "scripts/lib/independent-admission/bound-original-file.ts",
@@ -593,7 +597,15 @@
   },
   {
     "path": "scripts/lib/independent-admission/index.ts",
-    "sha256": "fd02d42494f49286010c39d6142c6ca06beee4c7cf9299d497d575c6be92db42"
+    "sha256": "6694c504cededacdff0c17fb49d221231a6d7b11483d609ac8ea784964570d51"
+  },
+  {
+    "path": "scripts/lib/independent-admission/inngest-release-originals.ts",
+    "sha256": "fde3c31199ed2e9adbdd2a45de0d88c7ac95eb5b47a78c5faa3acb080eb86b07"
+  },
+  {
+    "path": "scripts/lib/independent-admission/inngest-release-tar.ts",
+    "sha256": "f45005245560d343efeff64ace3a6897f1c314170f500a906973b70f55385f50"
   },
   {
     "path": "scripts/lib/independent-admission/lazy-zip-originals.ts",
@@ -701,7 +713,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/native-context.ts",
-    "sha256": "a9d2488c52dfe3bb0fdc6e60133ca8ccdc154430bf25f5438a334fff25ac1f69"
+    "sha256": "840dad6374ec2c18e29614ee9ce1a11081a6839ef025d77381985c91f05f4eaf"
   },
   {
     "path": "scripts/lib/independent-admission/native-linux-runtime.ts",
@@ -773,11 +785,11 @@
   },
   {
     "path": "scripts/lib/independent-admission/publication-gate-materials.ts",
-    "sha256": "dcb8715341d6d516cabe91a9b9c54dfb385f03157a903028561417c035df0e34"
+    "sha256": "4ae31c28881383642bc44d8444b7195fecff38a7caaf146ccf517ff82c80e7ec"
   },
   {
     "path": "scripts/lib/independent-admission/publication-group.ts",
-    "sha256": "38d07a5b6e572a86cd99b5edd84619995add141ce506448e6330ac07b710b009"
+    "sha256": "8ab2f98d08c168afda9eab08c0de247c60019082cc6536b166cf30fec840480b"
   },
   {
     "path": "scripts/lib/independent-admission/publication-legal-materials.ts",
