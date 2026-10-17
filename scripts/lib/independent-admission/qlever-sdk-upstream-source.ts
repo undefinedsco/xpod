@@ -1,3 +1,4 @@
+import { inspectSdkBuildExecution } from './qlever-sdk-execution';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { readFileSync, realpathSync } from 'node:fs';
@@ -48,15 +49,30 @@ export async function observeQleverSdkUpstreamGitOriginals(capability: unknown, 
     need(upstream.schemaVersion === 1 && upstream.kind === 'qlever-sdk-upstream-source-originals' && upstream.objectFormat === 'sha1'
       && upstream.objectIdsFormat === 'ascii-sorted-unique-sha1-lf' && upstream.sourceRoot === '/opt/qlever-sdk/source'
       && upstream.repository === lock.repository && upstream.commit === lock.commit, 'immutable lock repository/commit/object format differs');
-    need(upstream.phaseBindings && ['configure', 'compile'].every(name => { const matches = master.stages.filter((stage: any) => stage.name === name); return matches.length === 1 && isDeepStrictEqual(upstream.phaseBindings[name], matches[0]); }), 'actual SDK configure/compile phase bindings differ');
+    const preparedMode = master.executionOwners?.sourcePrepare !== undefined || master.stages.some((stage: any) => stage.name === 'source-prepare') || upstream.phaseBindings?.sourcePrepare !== undefined;
+    need(upstream.phaseBindings && (preparedMode ? ['sourcePrepare', 'configure', 'compile'] : ['configure', 'compile']).every(name => { const matches = master.stages.filter((stage: any) => stage.name === (name === 'sourcePrepare' ? 'source-prepare' : name)); return matches.length === 1 && isDeepStrictEqual(upstream.phaseBindings[name], matches[0]); }), 'actual SDK configure/compile phase bindings differ');
     need(ref(upstream.innerMaterials).path === 'inner/upstream-source/final-materials.json', 'registered original inner upstream collection required');
     const inner = json(upstream.innerMaterials);
     assertSdkUpstreamCollectionProjection(upstream, inner);
     const configureReceipt = json(upstream.phaseBindings.configure.receipt), compileReceipt = json(upstream.phaseBindings.compile.receipt);
+    let hookReceipt = configureReceipt;
+    if (preparedMode) {
+      const jobs = sdk.metadataOriginals.filter(row => /^jobs(?:-page-\d+)?\.original\.json$/u.test(row.name)).flatMap(row => {
+        const expected = sdk.originFacts.originals.find(item => item.name === row.name);
+        need(expected && row.data.length === expected.bytes && hash(row.data) === expected.sha256, 'SDK job API original differs');
+        return JSON.parse(row.data.toString()).jobs;
+      }).filter((row: any) => row.id === sdk.originFacts.producerJobId);
+      need(jobs.length === 1, 'unique actual SDK producer job required');
+      const execution = inspectSdkBuildExecution({master, members: sdk.members, jobWindow: {start: Date.parse(jobs[0].started_at), end: Date.parse(jobs[0].completed_at)},
+        readOriginal: (path, maximum) => sdk.readOriginal(path, maximum), readRange: (path, offset, length) => sdk.readOriginalRange(path, offset, length), check});
+      need(execution.stages[0]?.name === 'source-prepare', 'actual sourcePrepare execution required');
+      hookReceipt = json(upstream.phaseBindings.sourcePrepare.receipt);
+      need(BigInt(hookReceipt.completedUnixNs) <= BigInt(configureReceipt.startedUnixNs), 'sourcePrepare must close before configure');
+    }
     const windows = upstream.hookWindows;
     need(windows && ['beforeEndedUnixNs', 'afterEndedUnixNs'].every(key => typeof windows[key] === 'string' && /^[0-9]+$/u.test(windows[key])), 'actual upstream hook windows required');
     const beforeHook = BigInt(windows.beforeEndedUnixNs), afterHook = BigInt(windows.afterEndedUnixNs);
-    need(BigInt(configureReceipt.startedUnixNs) <= beforeHook && beforeHook <= afterHook && afterHook <= BigInt(configureReceipt.completedUnixNs)
+    need(BigInt(hookReceipt.startedUnixNs) <= beforeHook && beforeHook <= afterHook && afterHook <= BigInt(hookReceipt.completedUnixNs)
       && BigInt(configureReceipt.completedUnixNs) <= BigInt(compileReceipt.startedUnixNs), 'actual Git source hooks must occur inside configure before compile');
     const verifiedInputs = sdkVerifiedInputOriginalView(capability);
     need(verifiedInputs && isDeepStrictEqual(ref(upstream.actualInputInventory), verifiedInputs.afterReference), 'actual full-shard input verification required');

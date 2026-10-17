@@ -135,7 +135,7 @@ upstream=importlib.util.module_from_spec(spec);spec.loader.exec_module(upstream)
 spec=importlib.util.spec_from_file_location('sdk_generation_inner',HERE/'sdk-generation-materials.py')
 generation=importlib.util.module_from_spec(spec);spec.loader.exec_module(generation)
 
-def build_materials(component,source,build,out,jobs):
+def prepare_materials(component,source,build,out,jobs):
     component=Path(component);source=Path(source);build=Path(build);out=Path(out);out.mkdir(parents=True,exist_ok=False)
     budget=initialize_budget(4200);stages=[]
     identity=json.loads(os.environ['XPOD_QLEVER_SDK_IDENTITY'])
@@ -146,7 +146,25 @@ def build_materials(component,source,build,out,jobs):
     if private_key in os.environ:raise ValueError('Upstream capture directory is owned by the module producer')
     os.environ[private_key]=str(out/'upstream-source')
     try:
-        stage('configure',['bash',str(component/'scripts/build-module-runtime-sdk.sh'),'prepare-only'],timeout=1800)
+        stage('source-prepare',['bash',str(component/'scripts/build-module-runtime-sdk.sh'),'source-only'],timeout=1800)
+    finally:
+        del os.environ[private_key]
+    dump(out/'source-prepared.json',dict(schemaVersion=1,identity=identity,deadlineUnix=budget.deadline_unix,stages=stages))
+
+def build_materials(component,source,build,out,jobs):
+    component=Path(component);source=Path(source);build=Path(build);out=Path(out)
+    budget=initialize_budget(4200)
+    prepared=json.loads((out/'source-prepared.json').read_text())
+    identity=json.loads(os.environ['XPOD_QLEVER_SDK_IDENTITY'])
+    if prepared['identity']!=identity or prepared['deadlineUnix']!=budget.deadline_unix:raise ValueError('Prepared SDK identity/deadline differs')
+    stages=list(prepared['stages'])
+    def stage(name,command,inputs=(),timeout=30,reserve=4200):
+        row=commands.capture(name,command,out,component,inputs,timeout=budget.timeout(timeout,reserve));stages.append(row);return row
+    private_key='XPOD_QLEVER_UPSTREAM_MATERIALS_DIR'
+    if private_key in os.environ:raise ValueError('Upstream capture directory is owned by the module producer')
+    os.environ[private_key]=str(out/'upstream-source')
+    try:
+        stage('configure',['bash',str(component/'scripts/build-qlever-runtime-sdk.sh'),'configure-prepared'],[commands.ref(out/'source-prepared.json',out)],timeout=1800)
     finally:
         del os.environ[private_key]
     generation_before=generation.snapshot(out,build,'before',archive_inputs,file_identity,check_budget)
@@ -259,7 +277,11 @@ def build_materials(component,source,build,out,jobs):
     generation_ref,generation_bytes=generation.finalize(out,build,generation_before,generation_after,inventory,before,stages,check_budget)
     upstream_ref,upstream_bytes=upstream.finalize(out,source,inventory,stages,check_budget)
     def source_stage(name,argv,cwd):
-        row=commands.capture(name,argv,out,cwd,timeout=budget.timeout(900,3600));stages.append(row);return row
+        if argv[:4]==['gpgv','--status-fd','1','--keyring'] and len(argv)==6:
+            row=commands.capture_gpgv(name,argv[4],argv[5],out,cwd,timeout=budget.timeout(30,3600))
+        else:
+            row=commands.capture(name,argv,out,cwd,timeout=budget.timeout(900,3600))
+        stages.append(row);return row
     debian_ref,debian_bytes=debian_acquisition.acquire(out,
         [str(Path(path).resolve(strict=True)) for path in selected],
         {path.name.removesuffix('.list'):path.read_bytes() for path in ownership},
@@ -287,6 +309,6 @@ def linked_materials(component,source,build,out,jobs):
     dump(out/'linked-inner.json',dict(schemaVersion=1,kind='qlever-linux-sdk-linked-originals',executionBudget=dict(deadlineUnix=budget.deadline_unix,remainingSeconds=budget.remaining()),build=original,stages=stages,releaseAccepted=False))
 
 if __name__=='__main__':
-    parser=argparse.ArgumentParser();parser.add_argument('phase',choices=['build','linked']);args=parser.parse_args()
+    parser=argparse.ArgumentParser();parser.add_argument('phase',choices=['prepare','build','linked']);args=parser.parse_args()
     values=dict(component='/components/qlever',source='/opt/qlever-sdk/source',build='/opt/qlever-sdk/build',out='/opt/qlever-sdk/materials',jobs=os.environ.get('XPOD_QLEVER_BUILD_JOBS','2'))
-    (build_materials if args.phase=='build' else linked_materials)(**values)
+    {'prepare':prepare_materials,'build':build_materials,'linked':linked_materials}[args.phase](**values)

@@ -1,0 +1,22 @@
+[
+  {
+    "path": "InRelease.original",
+    "bytes": 59432,
+    "sha256": "7679697a629b67228959fedddf285d46ae884904f0de53212ea3b64a010f66b4"
+  },
+  {
+    "path": "body.original",
+    "bytes": 57782,
+    "sha256": "33145fc87bdd650d0614abcafb880e609852046255fc6e0f261856d58d46fe6f"
+  },
+  {
+    "path": "exit.original.json",
+    "bytes": 90,
+    "sha256": "3281dfafd1158a6e20ec4b65f7801cd990edec8135a707de5757cb904bf00e50"
+  },
+  {
+    "path": "status.original.raw",
+    "bytes": 630,
+    "sha256": "ea6f14e7064b90ae7f75bccac785da9a559cceef98c3e9ff04716d52362ec647"
+  }
+]

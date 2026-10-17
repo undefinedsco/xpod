@@ -10,7 +10,7 @@ import time
 
 ROOT=Path(__file__).resolve().parents[2]
 sys.path.insert(0,str(ROOT/'scripts/agentfs-native-ci'))
-from supervise import run_checked_stage
+from supervise import run_checked_stage, run_stage
 
 RAW_LIMIT=256*1024**2
 
@@ -40,6 +40,15 @@ def exec_child(command,directory):
     raise SystemExit(code if code>=0 else 128-code)
 
 def capture(name,command,materials,cwd,inputs=(),outputs=(),timeout=3600,resource_profile='build'):
+    return _capture(name,command,materials,cwd,inputs,outputs,timeout,resource_profile,False)
+
+def capture_gpgv(name,keyring,inrelease,materials,cwd,timeout=30):
+    # Only this fixed command may retain exit 2. Classification belongs to the
+    # outer controller's unique Debian signature policy, never this producer.
+    command=['gpgv','--status-fd','1','--keyring',str(keyring),str(inrelease)]
+    return _capture(name,command,materials,cwd,(),(),timeout,'observation',True)
+
+def _capture(name,command,materials,cwd,inputs,outputs,timeout,resource_profile,unclassified_gpgv):
     if not name or any(char not in 'abcdefghijklmnopqrstuvwxyz0123456789-' for char in name):raise ValueError('Unsafe SDK stage name')
     profiles={'build':(4*1024**3,2*1024**3),'observation':(2304*1024**2,2*1024**3),'cleanup':(256*1024**2,128*1024**2)}
     if resource_profile not in profiles:raise ValueError('Unknown SDK command resource profile')
@@ -54,16 +63,23 @@ def capture(name,command,materials,cwd,inputs=(),outputs=(),timeout=3600,resourc
             if stream.exists() and stream.stat().st_size>RAW_LIMIT:raise RuntimeError('SDK original stream budget exceeded')
         return shutil.disk_usage(path)
     env={key:value for key,value in os.environ.items() if key not in ('GH_TOKEN','GITHUB_TOKEN')}
-    receipt,_=run_checked_stage(name,[sys.executable,'-B',str(Path(__file__).resolve()),'--exec-child',str(directory),json.dumps(command)],
+    supervise=run_stage if unclassified_gpgv else run_checked_stage
+    receipt,raw=supervise(name,[sys.executable,'-B',str(Path(__file__).resolve()),'--exec-child',str(directory),json.dumps(command)],
         stages,cwd,timeout=timeout,environment=env,free=guarded_free,fresh_bytes=fresh,stop_bytes=stop,poll_seconds=.1,target=directory)
     actual=json.loads((directory/'command.receipt.json').read_text())
-    if actual['exit']!=0 or actual['signal'] is not None or actual['pgid']!=receipt['pgid']:
+    allowed=(0,2) if unclassified_gpgv else (0,)
+    if (receipt['exit'] not in allowed or receipt['signal'] is not None or receipt['resourceStop']
+            or receipt.get('supervisorError') or receipt.get('cleanupErrors')
+            or receipt.get('actualWait') is not True or receipt.get('rawClosedBeforeHash') is not True
+            or receipt.get('ownedGroupAbsentAfterWait') is not True or raw is None):
+        raise ValueError('SDK supervised command did not close with permitted actual status')
+    if actual['exit']!=receipt['exit'] or actual['exit'] not in allowed or actual['actualWait'] is not True or actual['signal'] is not None or actual['pgid']!=receipt['pgid']:
         raise ValueError('SDK actual command execution mismatch')
     for stream in ['stdout','stderr']:
         if ref(directory/actual[stream]['path'],directory)!=actual[stream]:raise ValueError('SDK closed raw original changed')
     for expected in inputs:
         if ref(materials/expected['path'],materials)!=expected:raise ValueError('SDK stage input mutated')
-    return dict(name=name,receipt=ref(directory/'command.receipt.json',materials),stdout=ref(directory/'stdout.raw',materials),
+    return dict(**({'classification':'unclassified-producer-gpgv-originals'} if unclassified_gpgv else {}),name=name,receipt=ref(directory/'command.receipt.json',materials),stdout=ref(directory/'stdout.raw',materials),
                 stderr=ref(directory/'stderr.raw',materials),supervisionReceipt=ref(stages/(name+'.receipt.json'),materials),
                 supervisionRaw=ref(stages/(name+'.raw.log'),materials),inputs=list(inputs),outputs=[ref(path,materials) for path in outputs])
 

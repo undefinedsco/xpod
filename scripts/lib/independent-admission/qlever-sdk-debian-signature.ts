@@ -6,8 +6,9 @@ import {createRequire} from 'node:module';
 import {isDeepStrictEqual} from 'node:util';
 import {qleverSdkOriginalsView} from './qlever-sdk-originals';
 import {assertLegalFileIdentity, type LegalFileIdentity} from './legal-file-custody';
+import {inspectRetainedDebianGpgvExit,inspectDebianSignaturePolicyOriginals} from './debian-signature-policy-bridge';
 import {hashSignatureControllerFile, readSignatureOriginal, assertSignatureOriginalSet} from './qlever-signature-original-custody';
-import {DEBIAN_BOOKWORM_KEYS, inspectDebianPublicKeyOriginal, inspectDebianReleaseSuite, inspectDebianGpgvStatus, extractDebianSignedRelease} from './qlever-debian-signature-policy';
+import {DEBIAN_BOOKWORM_KEYS, inspectDebianPublicKeyOriginal, extractDebianSignedRelease} from './qlever-debian-signature-policy';
 
 type Ref = {path: string; bytes: number; sha256: string};
 type Stage = {name: string; receipt: Ref; supervisionReceipt: Ref};
@@ -113,7 +114,7 @@ export async function observeQleverSdkDebianSignatureOriginals(capability: unkno
       const stage = entry.verificationStage; need(master.stages.filter(row => isDeepStrictEqual(row, stage)).length === 1 && /^debian-index-[0-9]+$/u.test(stage.name), 'actual acquisition stage differs');
       const receipt = JSON.parse(read(stage.receipt).toString()) as Record<string, unknown>, supervision = JSON.parse(read(stage.supervisionReceipt).toString()) as Record<string, unknown>;
       const acquisition = Date.parse(String(supervision.startedUTC)), closed = Date.parse(String(supervision.closedUTC));
-      need(jobStart <= acquisition && acquisition <= closed && closed <= jobEnd && receipt.actualWait === true && receipt.exit === 0 && receipt.signal === null && supervision.actualWait === true && supervision.exit === 0 && supervision.signal === null && supervision.ownedGroupAbsentAfterWait === true, 'actual acquisition outside closed SDK job');
+      need(jobStart <= acquisition && acquisition <= closed && closed <= jobEnd && receipt.actualWait === true && inspectRetainedDebianGpgvExit(receipt.exit, supervision.exit) === receipt.exit && receipt.signal === null && supervision.actualWait === true && supervision.signal === null && supervision.ownedGroupAbsentAfterWait === true, 'actual acquisition outside closed SDK job');
       const original = read(entry.inRelease); releaseBytes += original.length; need(releaseBytes <= 8 * 1024 ** 2, 'retained Release aggregate bound');
       const freeNow = fs.statfsSync(retainedDirectory, {bigint: true}); need(freeNow.bavail * freeNow.bsize >= 1024n ** 3n + BigInt(original.length) * 2n + 512n * 1024n, 'controller signature remaining floor');
       const source = path.join(retainedDirectory, 'inrelease-' + index + '.original'); fs.writeFileSync(source, original, {flag: 'wx', mode: 0o400});
@@ -123,9 +124,8 @@ export async function observeQleverSdkDebianSignatureOriginals(capability: unkno
       const indexPaths = checksumRows.filter(row => row.inReleaseSha256 === entry.inRelease.sha256).flatMap(row => row.observation.signedIndexMatches.map(match => match.path));
       const signedBody = extractDebianSignedRelease(original);
       const body = readSignatureOriginal(bodyPath, {bytes: signedBody.length, sha256: hash(signedBody)}, 4 * 1024 ** 2, check); originalGuards.push(body.identity);
-      const fields = inspectDebianReleaseSuite(signedBody, acquisition, indexPaths);
-      const signature = inspectDebianGpgvStatus(status, fields.role, acquisition, exit, true);
-      observations.push(Object.freeze({inRelease: entry.inRelease, acquisitionUTC: acquisition, ...fields, ...signature, verifiedBodySha256: hash(signedBody)}));
+      const classified = inspectDebianSignaturePolicyOriginals({inRelease: original, status, plaintext: body.bytes, acquisitionUTC: acquisition, indexPaths, exit});
+      observations.push(Object.freeze({inRelease: entry.inRelease, acquisitionUTC: acquisition, ...classified}));
     }
     check(); need(qleverSdkDebianIndexObservation(capability) === checksumRows && qleverSdkOriginalsView(capability) === sdk && hashSignatureControllerFile(executable, check).sha256 === tool.sha256, 'SDK/controller custody changed');
     facts.sdkDebianSignatureOriginals = Object.freeze({scope: 'controller-OS-gpgv-reviewed-Bookworm-keys-and-actual-job-suite', executable, executableSha256: tool.sha256,

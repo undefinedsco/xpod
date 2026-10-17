@@ -49,7 +49,7 @@ def acquire(out,selected,ownership,ledger,remaining,stage,ref,check_budget,
         release=matches[0]
         if release.name not in verified:
             verified[release.name]=stage('debian-index-'+str(len(verified)),
-                ['gpgv','--keyring',str(indexes/keyring.name),str(indexes/release.name)],out)
+                ['gpgv','--status-fd','1','--keyring',str(indexes/keyring.name),str(indexes/release.name)],out)
         index_rows.append(dict(inRelease=retained[release.name],sources=retained[source.name],
                                keyring=retained[keyring.name],verificationStage=verified[release.name]))
     packages=[]

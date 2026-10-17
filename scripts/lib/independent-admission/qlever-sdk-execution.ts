@@ -36,9 +36,43 @@ export function inspectSdkBuildExecution(input: {master: any; members: readonly 
     for (const original of [pair.before, pair.after]) { const metadata = json(original); need(metadata.schemaVersion === 1 && Array.isArray(metadata.files), 'actual generation metadata inventory required'); }
     generationMetadataOriginals = Object.freeze({collection: collectionRef, before: ref(pair.before), after: ref(pair.after)});
   }
+  const preparedMode = input.master.executionOwners?.sourcePrepare !== undefined || input.master.stages.some((stage: any) => stage.name === 'source-prepare');
+  let preparedReference: Ref | undefined;
+  if (preparedMode) {
+    const ownerReference = ref(input.master.executionOwners?.sourcePrepare);
+    need(ownerReference.path === 'inner/owner-source-prepare.guard.json', 'fixed sourcePrepare owner role required');
+    const owner = json(ownerReference), cleanup = owner.cleanup;
+    need(owner.schemaVersion === 1 && owner.kind === 'linux-kernel-owned-subreaper-guard-original'
+      && isDeepStrictEqual(owner.command, ['python3', '/components/qlever/scripts/sdk-inner-materials.py', 'prepare'])
+      && owner.guardPid === 1 && Number.isSafeInteger(owner.topCommandPid) && owner.topCommandPid > 1
+      && /^pid:\[[0-9]+\]$/u.test(owner.pidNamespace) && owner.topCommandPidNamespace === owner.pidNamespace
+      && owner.topCommandActualWait === true && owner.topCommandReturnCode === 0 && owner.reason === null && owner.error === null
+      && isDeepStrictEqual(owner.observedSignals, []) && cleanup?.actualEchild === true && isDeepStrictEqual(cleanup.signalledPidfds, []), 'actual sourcePrepare owner closure differs');
+    preparedReference = ref(members.get('inner/source-prepared.json'));
+    const prepared = json(preparedReference), sourceStages = input.master.stages.filter((stage: any) => stage.name === 'source-prepare');
+    const rootStage = (stage: any) => ({...stage, ...Object.fromEntries(['receipt', 'stdout', 'stderr', 'supervisionReceipt', 'supervisionRaw'].map(key => [key, stage[key] && {...stage[key], path: 'inner/' + stage[key].path}])),
+      inputs: stage.inputs?.map((row: any) => ({...row, path: 'inner/' + row.path})), outputs: stage.outputs?.map((row: any) => ({...row, path: 'inner/' + row.path}))});
+    need(prepared.schemaVersion === 1 && isDeepStrictEqual(prepared.identity, input.master.identity) && prepared.deadlineUnix === owner.globalDeadlineUnix
+      && Number.isFinite(prepared.deadlineUnix) && sourceStages.length === 1 && Array.isArray(prepared.stages) && isDeepStrictEqual(prepared.stages.map(rootStage), sourceStages), 'same prepared source stage/identity/deadline seal differs');
+    const receipt = json(sourceStages[0].receipt), supervision = json(sourceStages[0].supervisionReceipt);
+    need(typeof owner.startedUnixNs === 'string' && /^[0-9]+$/u.test(owner.startedUnixNs)
+      && typeof owner.completedUnixNs === 'string' && /^[0-9]+$/u.test(owner.completedUnixNs), 'actual sourcePrepare owner nanosecond window required');
+    const ownerStart = BigInt(owner.startedUnixNs), ownerEnd = BigInt(owner.completedUnixNs);
+    const rawStart = Date.parse(supervision.startedUTC), rawEnd = Date.parse(supervision.closedUTC);
+    need([rawStart, rawEnd].every(Number.isFinite)
+      && BigInt(Math.ceil(input.jobWindow.start * 1e6)) <= ownerStart && ownerStart <= ownerEnd
+      && ownerEnd <= BigInt(Math.floor(input.jobWindow.end * 1e6))
+      && ownerStart <= BigInt(Math.floor(rawStart * 1e6)) && BigInt(Math.ceil(rawEnd * 1e6)) <= ownerEnd
+      && ownerStart <= BigInt(receipt.startedUnixNs) && BigInt(receipt.completedUnixNs) <= ownerEnd
+      && ownerEnd <= BigInt(Math.floor(prepared.deadlineUnix * 1e9)), 'sourcePrepare owner/job/raw window differs');
+  }
+  const recipes: [string, string[]][] = [
+    ...(preparedMode ? [['source-prepare', ['bash', '/components/qlever/scripts/build-module-runtime-sdk.sh', 'source-only']]] as [string, string[]][] : []),
+    ['configure', preparedMode ? ['bash', '/components/qlever/scripts/build-qlever-runtime-sdk.sh', 'configure-prepared'] : ['bash', '/components/qlever/scripts/build-module-runtime-sdk.sh', 'prepare-only']],
+    ['compile', ['bash', '/components/qlever/scripts/build-qlever-runtime-sdk.sh', 'build-prepared']],
+  ];
   const observations = []; let previousEnd = input.jobWindow.start;
-  for (const [name, command] of [['configure', ['bash', '/components/qlever/scripts/build-module-runtime-sdk.sh', 'prepare-only']],
-    ['compile', ['bash', '/components/qlever/scripts/build-qlever-runtime-sdk.sh', 'build-prepared']]] as const) {
+  for (const [name, command] of recipes) {
     const candidates = input.master.stages.filter((row: any) => row.name === name); need(candidates.length === 1, 'unique actual ' + name + ' stage required');
     const stage = candidates[0], root = 'inner/stages/' + name;
     for (const [key, suffix] of [['receipt', '/command.receipt.json'], ['stdout', '/stdout.raw'], ['stderr', '/stderr.raw'], ['supervisionReceipt', '.receipt.json'], ['supervisionRaw', '.raw.log']]) need(stage[key!]?.path === root + suffix, 'fixed ' + name + ' original role differs');
@@ -54,7 +88,7 @@ export function inspectSdkBuildExecution(input: {master: any; members: readonly 
       && supervision.resourceStop === null && supervision.supervisorError === null && Number.isFinite(supervision.elapsedSeconds) && supervision.elapsedSeconds >= 0
       && Array.isArray(supervision.cleanupErrors) && !supervision.cleanupErrors.length && Array.isArray(supervision.ownedGroupMembers) && !supervision.ownedGroupMembers.length
       && [start, end, actualStart, actualEnd].every(Number.isFinite) && previousEnd <= start && start <= actualStart && actualStart <= actualEnd && actualEnd <= end && end <= input.jobWindow.end, 'configure/build supervision/raw/order/window did not close');
-    const expectedInputs = name === 'compile' ? [input.master.inputs?.before, input.master.inputs?.symlinks?.before, ...(generationMetadataOriginals ? [generationMetadataOriginals.before] : [])] : [];
+    const expectedInputs = name === 'compile' ? [input.master.inputs?.before, input.master.inputs?.symlinks?.before, ...(generationMetadataOriginals ? [generationMetadataOriginals.before] : [])] : name === 'configure' && preparedReference ? [preparedReference] : [];
     need(expectedInputs.every(Boolean) && Array.isArray(stage.inputs) && isDeepStrictEqual(stage.inputs, expectedInputs) && Array.isArray(stage.outputs) && stage.outputs.length === 0, 'compile before-input/source-link binding differs');
     for (const value of expectedInputs) ref(value);
     observations.push(Object.freeze({name, receipt: ref(stage.receipt), stdout: ref(stage.stdout), stderr: ref(stage.stderr), supervisionReceipt: ref(stage.supervisionReceipt), supervisionRaw: original, inputs: Object.freeze(expectedInputs.map(ref)), start, end})); previousEnd = end;

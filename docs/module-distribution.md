@@ -96,6 +96,10 @@ CLI、AFS、API、CSS 独立版本与独立发布，分别使用 `cli-v<version>
 
 Linux 模块原生构建使用隔离的 Bookworm/GCC12 SDK profile，保留默认 Trixie/Clang19 服务 profile。既有 SDK workflow 在模块 profile 下依次交付 exact SDK digest、runtime 与原生归档材料；模块源码必须与 workflow checkout 一致。归档复制、压缩与中央产品快照均有字节预算和实际文件系统余量检查。新的 profile、工作流或格式检查不能替代实际冷构建、完整 ABI/源码材料和最终 staging SHA 的消费验收。
 
+模块 SDK 将源码准备与编译分开：`sourcePrepare` 独立拥有 clone、补丁和源码规范化的实际进程及原件；后续 configure/compile 继承同一源码树，并以只读挂载保护主源码、组件、已安装工具和 loader/package 元数据。Git 原件的时间窗绑定源码准备阶段，不能归到后续 configure。FetchContent 在构建目录中取得的第三方源码仍须另行证明来源和读写闭包，主源码只读不能替代该证明。
+
+Bookworm profile 从明确的 backports 索引精确安装同版本 `cmake` 与 `cmake-data`，不整体切换发行套件。生产端的固定 `gpgv` 采集可以保留实际退出码 2 的完整、已结束原件，但它只表示未分类材料；签名资格仍由外层独立执行验证并调用唯一 Debian suite/key/status 策略取得，不把退出码改成 0，也不在 Python 维护第二份信任规则。
+
 发布组从实际 manifest 与共享平台目录校验完整目标集合、组内版本/源码一致性及精确依赖顺序。结构检查不签发发布权限；中央构建阶段观察只核对真实原件的顺序、命令、日志摘要和关闭状态，也不单独授予完整源码资格。共享包注册、完整源码/原生/许可准入和真实 registry 安装消费者仍须分别接通并通过。
 
 `acquire-independent-product-input.ts` 保存 GitHub 元数据原字节与 ZIP 摘要链；`project-api-product-input.ts` 仅复制约定的 producer receipt、原 tgz 和 pack raw 成员，再生成 `collect-api-release-input.ts` 的输入。投影不展开内部 tgz，也不替代 collector 的库存和源码材料检查。`project-cli-publication-input.ts` 复用同一 custody/ZIP 校验，核对正常 CLI 的 result、inventory、source-inputs、preparation、producer index 与两份原 tgz，并再次运行发布准备校验。未知的 producer source 字段保持原值；registry 消费仍单独验收。producer 的 checkout/attempt/阶段关闭声明尚未被独立准入验证时仍为 blocked，旧 CLI 测试归档不能改名充当发布候选。

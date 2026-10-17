@@ -209,8 +209,45 @@ const ownedRunsBindings=Object.freeze([
  ...gitCmakeBindings.map(row=>Object.freeze({...row,sha256:ownedRunsRecipe.get(row.path)??row.sha256})),
  ...[...ownedRunsRecipe].filter(([path])=>!gitCmakeBindings.some(row=>row.path===path)).map(([path,sha256])=>Object.freeze({path,sha256})),
 ]);
+// Source preparation, read-only configure inputs, fixed gpgv retention and
+// the exact CMake/data pair are one recipe; no historical row is overwritten.
+const sourcePreparedRecipe=new Map([
+  [
+    "docker/qlever-runtime-sdk/Dockerfile.module-bookworm",
+    "21b588f1931b6adc29b8591ef47e82af4452aaf065a78bf1360b6cc3f6274952"
+  ],
+  [
+    "qlever/scripts/build-module-runtime-sdk.sh",
+    "554147491bb7b703ad3af92358e23519fd1af686c626bc38cf96cffd19cfc673"
+  ],
+  [
+    "qlever/scripts/build-qlever-runtime-sdk.sh",
+    "d47f0115c1d07600fb189dc8fa5076da75d644daba31a3d7b294424674abfde0"
+  ],
+  [
+    "qlever/scripts/sdk-command-materials.py",
+    "2db81d742b8ea9060ebad2fa0a253555337f457decf09d9ed9a59dd85a598b9a"
+  ],
+  [
+    "qlever/scripts/sdk-debian-source-acquisition.py",
+    "8f7033930f8b0513fe6889845fc4c09e98dfaab0f81a5bd961c443dcd1c41a9e"
+  ],
+  [
+    "qlever/scripts/sdk-inner-materials.py",
+    "878072955118a4e22c9e214c74e3e611b46379074de2c31ae50fbeb12412fd32"
+  ],
+  [
+    "qlever/scripts/sdk-owned-runs.py",
+    "520241ea81d57d82a33550c44ed3809378fd81d03bc14a8a5985f871b6b64680"
+  ],
+  [
+    "qlever/scripts/sdk-upstream-source-materials.py",
+    "dbcc8ad826cf636e41536682c639bb4a214c82dc48b6f6162c94600d46731bad"
+  ]
+]);
+const sourcePreparedBindings=Object.freeze(ownedRunsBindings.map(row=>Object.freeze({...row,sha256:sourcePreparedRecipe.get(row.path)??row.sha256})));
 export const QLEVER_SDK_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([
- sdkBGroup(QLEVER_SDK_B_SOURCE_BINDINGS),sdkBGroup(tarBindings),sdkBGroup(stagingTarBindings),sdkBGroup(debianV3Bindings),sdkBGroup(symlinkBindings),sdkBGroup(gitCmakeBindings),sdkBGroup(ownedRunsBindings),
+ sdkBGroup(QLEVER_SDK_B_SOURCE_BINDINGS),sdkBGroup(tarBindings),sdkBGroup(stagingTarBindings),sdkBGroup(debianV3Bindings),sdkBGroup(symlinkBindings),sdkBGroup(gitCmakeBindings),sdkBGroup(ownedRunsBindings),sdkBGroup(sourcePreparedBindings),
 ]);
 export const QLEVER_LINUX_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([
  {selectors:sdkSelectors('cbedd3e2478de5e22108b6689c595a658ca891c9bd47552caec830e86f47fea8','a75c7be34b5c5fafff85c0d67d814ba1aaf14bcf5db5404a860fe3b9a11009bd'),sourceBindings:QLEVER_LINUX_SOURCE_BINDINGS.filter(row=>!['.github/workflows/publish-qlever-runtime-sdk.yml','.github/workflows/build-qlever-linux-runtime.yml'].includes(row.path))},

@@ -67,7 +67,7 @@ test('symlink originals are checked only after their complete Debian recipe sele
 
 
 test('owned SDK RUNs select the complete PID1 registry/guard and preserve earlier source groups',()=>{
- const previous=QLEVER_SDK_EXECUTION_GROUPS.at(-2)!,next=QLEVER_SDK_EXECUTION_GROUPS.at(-1)!;
+ const previous=QLEVER_SDK_EXECUTION_GROUPS[5]!,next=QLEVER_SDK_EXECUTION_GROUPS[6]!;
  for(const path of ['qlever/scripts/sdk-owned-runs.py','qlever/scripts/sdk-subreaper-guard.py']){
   expect(next.selectors.some(row=>row.path===path)).toBe(false);
   expect(next.sourceBindings.find(row=>row.path===path)?.sha256).toHaveLength(64);
@@ -76,6 +76,21 @@ test('owned SDK RUNs select the complete PID1 registry/guard and preserve earlie
  for(const path of ['docker/qlever-runtime-sdk/Dockerfile.module-bookworm','qlever/scripts/sdk-image-originals.py']){
   const mixed=new Map(next.selectors.map(row=>[sourceBindingKey(row),row.sha256]));const before=previous.selectors.find(row=>row.path===path)!;mixed.set(sourceBindingKey(before),before.sha256);
   expect(()=>selectGitHubSourceBindingGroup(QLEVER_SDK_EXECUTION_GROUPS,mixed)).toThrow();
+ }
+ expect(QLEVER_LINUX_EXECUTION_GROUPS.includes(next)).toBe(true);
+});
+
+test('source-prepared SDK group binds the complete changed recipe without mixing historical selectors',()=>{
+ const old=QLEVER_SDK_EXECUTION_GROUPS[6]!,next=QLEVER_SDK_EXECUTION_GROUPS[7]!;
+ expect(QLEVER_SDK_EXECUTION_GROUPS).toHaveLength(8);
+ const selected=new Map(next.selectors.map(row=>[sourceBindingKey(row),row.sha256]));
+ expect(selectGitHubSourceBindingGroup(QLEVER_SDK_EXECUTION_GROUPS,selected)).toBe(next);
+ for(const path of ['docker/qlever-runtime-sdk/Dockerfile.module-bookworm','qlever/scripts/sdk-inner-materials.py']){
+  const mixed=new Map(selected),before=old.selectors.find(row=>row.path===path)!;mixed.set(sourceBindingKey(before),before.sha256);
+  expect(()=>selectGitHubSourceBindingGroup(QLEVER_SDK_EXECUTION_GROUPS,mixed)).toThrow();
+ }
+ for(const path of ['qlever/scripts/build-module-runtime-sdk.sh','qlever/scripts/build-qlever-runtime-sdk.sh','qlever/scripts/sdk-command-materials.py','qlever/scripts/sdk-debian-source-acquisition.py','qlever/scripts/sdk-owned-runs.py','qlever/scripts/sdk-upstream-source-materials.py']){
+  expect(next.sourceBindings.find(row=>row.path===path)?.sha256).not.toBe(old.sourceBindings.find(row=>row.path===path)?.sha256);
  }
  expect(QLEVER_LINUX_EXECUTION_GROUPS.includes(next)).toBe(true);
 });

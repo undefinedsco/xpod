@@ -89,11 +89,11 @@ class Collector:
         receipt=dict(schemaVersion=1,argv=argv,pid=child.pid,pgid=pgid,parentPgid=os.getpgrp(),
             actualWait=True,exit=code if code is not None and code>=0 else None,signal=-code if code is not None and code<0 else None,
             startedUnixNs=str(started),endedUnixNs=str(time.time_ns()),durationSeconds=time.monotonic()-started_mono,
-            scope='inherited-configure-process-group; parent closed-process receipt required')
+            scope='inherited-source-prepare-process-group; parent closed-process receipt required')
         write(directory/'receipt.json',receipt,self.check)
         row=dict(name=name,receipt=self.reference(directory/'receipt.json'),stdout=self.reference(directory/'stdout.original'),stderr=self.reference(directory/'stderr.original'))
         self.stages.append(row)
-        if code!=0 or pgid!=os.getpgrp():raise ValueError('Upstream child failed or left configure process group')
+        if code!=0 or pgid!=os.getpgrp():raise ValueError('Upstream child failed or left source-prepare process group')
         return row
     def copy(self,path,name):
         self.check();path=Path(path);original=ref(path,path.parent,self.check)
@@ -241,9 +241,9 @@ def finalize(out,source,inventory,stages,check):
         selected.append(dict(originalPath=row['originalPath'],sourceRelativePath=relative,postpatchEntry=expected))
     write(directory/'selected-inputs.json',dict(schemaVersion=1,files=selected,unresolvedInputs=unresolved),check)
     collection['selectedInputs']=ref(directory/'selected-inputs.json',out,check)
-    bindings=[stage for stage in stages if stage['name'] in ('configure','compile')]
-    if sorted(stage['name'] for stage in bindings)!=['compile','configure']:raise ValueError('Actual configure/compile phase bindings required')
-    collection['phaseBindings']={stage['name']:stage for stage in bindings}
+    bindings=[stage for stage in stages if stage['name'] in ('source-prepare','configure','compile')]
+    if sorted(stage['name'] for stage in bindings)!=['compile','configure','source-prepare']:raise ValueError('Actual source-prepare/configure/compile phase bindings required')
+    collection['phaseBindings']={('sourcePrepare' if stage['name']=='source-prepare' else stage['name']):stage for stage in bindings}
     collection['actualInputInventory']=ref(out/'inputs-after.json',out,check)
     collection['pending']+=['selected-source-input-generated-after-patch-snapshot'] if unresolved else []
     # Preserve hook originals. The final inner collection adds actual compile input mapping.
