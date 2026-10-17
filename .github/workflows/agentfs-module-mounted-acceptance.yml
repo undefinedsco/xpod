@@ -15,6 +15,7 @@ permissions:
 
 jobs:
   mounted-module:
+    name: mounted-module (${{ matrix.target }})
     strategy:
       fail-fast: false
       matrix:
@@ -90,34 +91,33 @@ jobs:
           chmod 700 "$root/tools/node/node" "$root/tools/bun/bun"
           test "$("$root/tools/node/node" --version)" = v22.21.1
           test "$("$root/tools/bun/bun" --version)" = 1.4.2
-      - name: Build module and core once for this platform
+      - name: Produce controlled normal AFS source and product originals
         env:
           TARGET: ${{ matrix.target }}
         run: |
           set -euo pipefail
+          umask 077
           node --test tests/scripts/service-runtime-boundary.node-test.cjs
           bun test ./packages/xpod-client/tests
-          bun scripts/build-afs-from-producer.ts --mode module --cli-package "$GITHUB_WORKSPACE/packages/xpod-cli" --target "$TARGET" --out "$MODULE_RUN_ROOT/build" --native-evidence "$MODULE_RUN_ROOT/native/native.zip" --native-pins "$MODULE_RUN_ROOT/native/native-pins.json"
-          bun build scripts/agentfs-native-ci/mounted/module-admission.ts --target=node --format=esm --metafile="$MODULE_RUN_ROOT/driver-inputs.json" --outfile "$MODULE_RUN_ROOT/module-admission.mjs"
-          test -z "$(git status --porcelain --untracked-files=all)"
-          python3 - "$MODULE_RUN_ROOT" <<'PY'
-          import hashlib,json,os,pathlib,subprocess,sys
-          root=pathlib.Path(sys.argv[1]); workspace=pathlib.Path(os.environ['GITHUB_WORKSPACE'])
-          digest=lambda p:hashlib.file_digest(open(p,'rb'),'sha256').hexdigest()
-          metadata=[workspace/'packages/xpod-cli/.test-data/build/npm-entry-inputs.json',root/'driver-inputs.json']
-          records=[]
-          for p in metadata:
-            inputs=json.load(open(p))['inputs']; base=workspace/'packages/xpod-cli' if p==metadata[0] else workspace
-            members=[]
-            for n in sorted(inputs):
-              file=(base/n).resolve()
-              assert file.is_file(), 'compiler input is not a physical file'
-              members.append({'path':str(file),'sha256':digest(file)})
-            records.append({'path':str(p),'sha256':digest(p),'inputs':members})
-          assert subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()==os.environ['GITHUB_SHA']
-          assert not subprocess.check_output(['git','status','--porcelain','--untracked-files=all'],text=True).strip()
-          with open(root/'build.safe.json','x') as f:json.dump({'sourceSHA':os.environ['GITHUB_SHA'],'sourceClean':True,'exit':0,'commands':json.load(open(workspace/'scripts/agentfs-native-ci/mounted/producer-commands.json'))['commands'],'coreSHA256':digest(workspace/'packages/xpod-cli/dist/xpod.mjs'),'driverSHA256':digest(root/'module-admission.mjs'),'metafiles':records},f)
-          PY
+          product="$GITHUB_WORKSPACE/.test-data/afs-product-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-$TARGET"
+          echo "AFS_PRODUCT_ROOT=$product" >> "$GITHUB_ENV"
+          python3 scripts/afs-module-producer.py --target "$TARGET" --out "$product" --native-evidence "$MODULE_RUN_ROOT/native/native.zip" --native-pins "$MODULE_RUN_ROOT/native/native-pins.json"
+          mkdir -m 700 "$MODULE_RUN_ROOT/build"
+          cp "$product/product.tgz" "$MODULE_RUN_ROOT/build/afs.tgz"
+          for file in cli.tgz client.tgz module-admission.mjs driver-inputs.json build.safe.json; do
+            cp "$product/$file" "$MODULE_RUN_ROOT/$file"
+          done
+      - name: Upload controlled normal AFS product originals
+        uses: actions/upload-artifact@v4
+        with:
+          name: afs-module-production-${{ matrix.target }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ env.AFS_PRODUCT_ROOT }}/product.tgz
+            ${{ env.AFS_PRODUCT_ROOT }}/producer.receipt.json
+            ${{ env.AFS_PRODUCT_ROOT }}/evidence/
+            ${{ env.AFS_PRODUCT_ROOT }}/source-materials/
+          if-no-files-found: error
+          retention-days: 30
       - name: Verify client cleanup followed by fresh module packaging
         id: lifetime
         env:
@@ -132,8 +132,6 @@ jobs:
         run: |
           set -euo pipefail
           umask 077
-          (cd packages/xpod-cli && bun pm pack --filename "$MODULE_RUN_ROOT/cli.tgz" --ignore-scripts)
-          (cd packages/xpod-client && bun pm pack --filename "$MODULE_RUN_ROOT/client.tgz" --ignore-scripts)
           module=$(find "$MODULE_RUN_ROOT/build" -maxdepth 1 -name '*.tgz' -type f)
           test -n "$module"; test "$(printf '%s\n' "$module" | wc -l | tr -d ' ')" = 1
           bun scripts/agentfs-native-ci/mounted/export-products.ts --workspace "$GITHUB_WORKSPACE" --module "$module" --cli "$MODULE_RUN_ROOT/cli.tgz" --client "$MODULE_RUN_ROOT/client.tgz" --native-archive "$MODULE_RUN_ROOT/native/native.zip" --target "$TARGET" --source-sha "$GITHUB_SHA" --build-receipt "$MODULE_RUN_ROOT/build.safe.json" --out "$MODULE_RUN_ROOT/product-export"

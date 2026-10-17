@@ -4,10 +4,18 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
+import { reviewedModulePhasePlan } from '../../scripts/lib/independent-admission/module-source-phases';
 import canonicalHostSources from '../../packages/xpod-cli/scripts/canonical-host-sources.json';
 import { commands } from '../../scripts/agentfs-native-ci/mounted/producer-commands.json';
 import { scanProduct, validateCliProduct, projectProductBuild, projectProductEvent, exportProducts, validateClientProduct } from '../../scripts/agentfs-native-ci/mounted/export-products';
 
+const normalProducerRoot = '/reviewed-repository', normalOutput = '/owned-output';
+const normalPlan = reviewedModulePhasePlan('afs', normalProducerRoot, normalOutput, '0.0.1', 'darwin-arm64');
+const normalCommand = (name: string) => {
+  const rows = normalPlan.filter(phase => phase.name === name);
+  if (rows.length !== 1) throw Error('Actual normal producer phase missing or duplicated: ' + name);
+  return rows[0]!.command;
+};
 const source = 'a'.repeat(40);
 const hash = (value: string) => createHash('sha256').update(value).digest('hex');
 const manifest = { name: '@undefineds.co/xpod-cli', version: '1', bin: { xpod: './dist/bin/xpod' }, exports: {
@@ -105,7 +113,13 @@ describe('exact product export', () => {
     expect(workflow).toContain("if: steps.products.outcome == 'success'");
     expect(workflow).toContain('afs-module-products-${{ matrix.target }}-${{ github.sha }}');
     expect(workflow).toContain('/product-export/'); expect(workflow).toContain('/export/');
-    expect(workflow).toContain('bun pm pack --filename "$MODULE_RUN_ROOT/cli.tgz" --ignore-scripts');
+    expect(normalCommand('cli-pack')).toEqual(['bun', '--cwd', normalProducerRoot + '/packages/xpod-cli', 'pm', 'pack', '--filename', normalOutput + '/cli.tgz', '--ignore-scripts']);
+    const parsed = parse(workflow), uploads = parsed.jobs['mounted-module'].steps.filter((step: any) => step.uses === 'actions/upload-artifact@v4');
+    const production = uploads.find((step: any) => step.with.name.startsWith('afs-module-production-'));
+    expect(production.if ?? 'success()').toBe('success()');
+    expect(production.with.path).toContain('${{ env.AFS_PRODUCT_ROOT }}/source-materials/');
+    expect(production.with.path).toContain('${{ env.AFS_PRODUCT_ROOT }}/producer.receipt.json');
+    expect(production.with.path).not.toContain('/export/');
   });
 });
 
@@ -149,7 +163,7 @@ with tarfile.open(sys.argv[1],'w:gz') as t:
     expect(readFileSync('.github/workflows/ci.yml', 'utf8')).toContain('bun test ./packages/xpod-client/tests');
     expect(readFileSync('.github/workflows/cli-package.yml', 'utf8')).toContain("'packages/xpod-client/**'");
     expect(readFileSync('scripts/check-cli-package.cjs', 'utf8')).toContain("run('bun', ['run', 'test'], runtimeClientRoot)");
-    expect(workflow).toContain('cd packages/xpod-client && bun pm pack');
+    expect(normalCommand('client-pack')).toEqual(['bun', '--cwd', normalProducerRoot + '/packages/xpod-client', 'pm', 'pack', '--filename', normalOutput + '/client.tgz', '--ignore-scripts']);
     const tools = workflow.indexOf('bun run --filter @undefineds.co/xpod-cli build:tools');
     const client = workflow.indexOf('bun run --filter @undefineds.co/xpod-client build');
     const cli = workflow.indexOf('bun run --filter @undefineds.co/xpod-cli build\n');
@@ -158,7 +172,8 @@ with tarfile.open(sys.argv[1],'w:gz') as t:
     expect(cli).toBeGreaterThan(client);
     expect(cli).toBeLessThan(workflow.indexOf('prepare-module-inputs.ts native-info'));
     expect(workflow).not.toContain('bun run build:packages');
-    expect(workflow).toContain('bun scripts/build-afs-from-producer.ts --mode module --cli-package');
+    expect(normalCommand('afs-build')).toEqual(['bun', 'scripts/build-afs-from-producer.ts', '--mode', 'module', '--cli-package', normalProducerRoot + '/packages/xpod-cli', '--target', 'darwin-arm64', '--out', normalOutput + '/build', '--native-evidence', normalOutput + '/originals/native.zip', '--native-pins', normalOutput + '/originals/native-pins.json']);
+    expect(workflow).toContain('--native-evidence "$MODULE_RUN_ROOT/native/native.zip" --native-pins "$MODULE_RUN_ROOT/native/native-pins.json"');
     expect(workflow).toContain('XPOD_AFS_LIFETIME_NATIVE_EVIDENCE: ${{ env.MODULE_RUN_ROOT }}/native/native.zip');
     expect(workflow).toContain('XPOD_AFS_LIFETIME_NATIVE_PINS: ${{ env.MODULE_RUN_ROOT }}/native/native-pins.json');
     expect(workflow).toContain('XPOD_AFS_LIFETIME_TARGET: ${{ matrix.target }}');
@@ -199,6 +214,7 @@ describe('AgentFS mounted development workflow entry contract', () => {
     expect(body).toContain('noPromotion');
     const uploads = job.steps.filter((step: any) => step.uses === 'actions/upload-artifact@v4');
     expect(uploads.map((step: any) => step.with.name)).toEqual([
+      'afs-module-production-${{ matrix.target }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}',
       'afs-module-products-${{ matrix.target }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}',
       'afs-module-mounted-${{ matrix.target }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}',
     ]);
@@ -206,35 +222,33 @@ describe('AgentFS mounted development workflow entry contract', () => {
 });
 
 
-it('binds the canonical five receipt commands to actual workflow run steps in order', () => {
+it('binds the canonical receipt manifest to the actual supervised producer recipe in order', () => {
   const workflow = parse(readFileSync('.github/workflows/agentfs-module-mounted-acceptance.yml', 'utf8'));
   const steps = workflow.jobs['mounted-module'].steps;
-  const actualCommands = (sourceSteps: any[]) => sourceSteps.flatMap((step: any) => typeof step.run === 'string' ? step.run.split('\n') : [])
-    .map((line: string) => line.trim())
-    .filter((line: string) => /^bun (?:run |build |scripts\/build-afs-from-producer\.ts )/.test(line));
+  const producerSteps = steps.filter((step: any) => typeof step.run === 'string' && step.run.includes('python3 scripts/afs-module-producer.py '));
+  expect(producerSteps).toHaveLength(1);
+  expect(producerSteps[0].run).toContain('python3 scripts/afs-module-producer.py --target "$TARGET" --out "$product" --native-evidence "$MODULE_RUN_ROOT/native/native.zip" --native-pins "$MODULE_RUN_ROOT/native/native-pins.json"');
+  expect(normalPlan.map(phase => phase.name)).toEqual(['install', 'tools', 'client', 'cli', 'afs-build', 'driver', 'cli-pack', 'client-pack']);
   expect(commands).toHaveLength(5);
-  // Only deployment paths/outputs are expanded; no command tokens are discarded.
-  const expanded = commands.map((command, index) => {
-    if (index === 3) return command.replace('--cli-package packages/xpod-cli', '--cli-package "$GITHUB_WORKSPACE/packages/xpod-cli"')
-      + ' --target "$TARGET" --out "$MODULE_RUN_ROOT/build" --native-evidence "$MODULE_RUN_ROOT/native/native.zip" --native-pins "$MODULE_RUN_ROOT/native/native-pins.json"';
-    if (index === 4) return command.replace('module-admission.ts', 'scripts/agentfs-native-ci/mounted/module-admission.ts')
-      + ' --metafile="$MODULE_RUN_ROOT/driver-inputs.json" --outfile "$MODULE_RUN_ROOT/module-admission.mjs"';
-    return command;
+  const roles = ['tools', 'client', 'cli', 'afs-build', 'driver'];
+  const expected = commands.map((command, index) => {
+    const tokens = command.split(' ');
+    if (index === 3) return tokens.map(token => token === 'packages/xpod-cli' ? normalProducerRoot + '/' + token : token)
+      .concat(['--target', 'darwin-arm64', '--out', normalOutput + '/build', '--native-evidence', normalOutput + '/originals/native.zip', '--native-pins', normalOutput + '/originals/native-pins.json']);
+    if (index === 4) return tokens.map(token => token === 'module-admission.ts' ? 'scripts/agentfs-native-ci/mounted/module-admission.ts' : token)
+      .concat(['--metafile=' + normalOutput + '/driver-inputs.json', '--outfile', normalOutput + '/module-admission.mjs']);
+    return tokens;
   });
-  expect(actualCommands(steps)).toEqual(expanded);
-  // Counterexamples use the actual run bodies, not just fabricated receipts.
-  for (const mutate of [
-    (run: string) => run.replace(commands[0], 'bun run build:packages'),
-    (run: string) => run.replace(commands[0], ''),
-    (run: string) => run.replace(commands[0], commands[2]).replace(commands[1], commands[0]),
-    (run: string) => run.replace('--native-pins "$MODULE_RUN_ROOT/native/native-pins.json"', ''),
-    (run: string) => run.replace(commands[0], commands[0] + ' --unexpected'),
-  ]) {
-    const changed = steps.map((step: any) => ({ ...step, run: typeof step.run === 'string' ? mutate(step.run) : step.run }));
-    expect(actualCommands(changed)).not.toEqual(expanded);
+  const actual = roles.map(normalCommand);
+  expect(actual).toEqual(expected);
+  for (const changed of [actual.slice(1), [actual[1], actual[0], ...actual.slice(2)],
+    actual.map((command, index) => index === 3 ? command.filter(token => token !== '--native-pins') : command),
+    actual.map((command, index) => index === 0 ? [...command, '--unexpected'] : command)]) {
+    expect(changed).not.toEqual(expected);
   }
-  const receiptStep = steps.find((step: any) => step.name === 'Build module and core once for this platform').run;
-  expect(receiptStep).toContain("'commands':json.load(open(workspace/'scripts/agentfs-native-ci/mounted/producer-commands.json'))['commands']");
+  const producerSource = readFileSync('scripts/afs-module-producer.py', 'utf8');
+  expect(producerSource).toContain("commands=json.loads((repo / 'scripts/agentfs-native-ci/mounted/producer-commands.json').read_text())['commands']");
+  expect(producerSource).toContain('supervise.run_stage(name, command, evidence, repo,');
 });
 
 
@@ -307,7 +321,14 @@ describe('AFS producer event identity', () => {
     for (const parents of [[], [base], [base, head, merge]]) {
       // Real commit objects, with parent-looking message text deliberately ignored.
       const raw = `tree ${tree}\n${parents.map(parent => `parent ${parent}\n`).join('')}author Fixture <fixture@example.invalid> 1 +0000\ncommitter Fixture <fixture@example.invalid> 1 +0000\n\nparent ${head}\nparent ${base}\n`;
-      const source = execFileSync('git', ['hash-object', '-t', 'commit', '-w', '--stdin'], { cwd: workspace, input: raw, encoding: 'utf8' }).trim();
+      const normalProducerRoot = '/reviewed-repository', normalOutput = '/owned-output';
+const normalPlan = reviewedModulePhasePlan('afs', normalProducerRoot, normalOutput, '0.0.1', 'darwin-arm64');
+const normalCommand = (name: string) => {
+  const rows = normalPlan.filter(phase => phase.name === name);
+  if (rows.length !== 1) throw Error('Actual normal producer phase missing or duplicated: ' + name);
+  return rows[0]!.command;
+};
+const source = execFileSync('git', ['hash-object', '-t', 'commit', '-w', '--stdin'], { cwd: workspace, input: raw, encoding: 'utf8' }).trim();
       git('checkout', '--quiet', '--detach', source);
       expect(() => projectProductEvent(source, environment(source), pr(source, head, base), workspace)).toThrow('merge-');
     }

@@ -182,6 +182,10 @@ def produce(repo, output, target, environment=None):
     spec = importlib.util.spec_from_file_location('api_product_supervise', repo / 'scripts/agentfs-native-ci/supervise.py')
     supervise = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(supervise)
+    source_spec = importlib.util.spec_from_file_location('module_source_materials', repo / 'scripts/lib/module-source-materials.py')
+    source_materials = importlib.util.module_from_spec(source_spec)
+    source_spec.loader.exec_module(source_materials)
+    build_inputs = None
     started = time.monotonic()
     try:
         initial_free = shutil.disk_usage(output).free
@@ -199,6 +203,8 @@ def produce(repo, output, target, environment=None):
             receipt['rss']['cumulativeWaitedChildMaxRSSBytes'] = waited_child_rss()
             if not closed_phase(stage):
                 raise ValueError('API phase did not close successfully: ' + name)
+            if name == 'install':
+                build_inputs = source_materials.capture_inputs(repo, output)
         after = source_state(repo)
         if after != before:
             raise ValueError('Tracked source changed during product production')
@@ -207,6 +213,7 @@ def produce(repo, output, target, environment=None):
         if declaration.get('name') != target_info['name']:
             raise ValueError('Canonical target declaration differs from actual host product')
         receipt.update(collect_facts(output, packed, before['sha'], version, declaration, target))
+        receipt['sourceMaterials'] = source_materials.capture_outputs(repo, output, build_inputs, receipt['phases'], receipt['archive'])
         receipt.update(status='controlled-preview-materials', sourceAfter=after, packRaw=reference(evidence / 'pack.raw.log', output),
                        nativePreparation=reference(output / 'originals/prepare-inputs.receipt.safe.json', output))
     except BaseException as error:

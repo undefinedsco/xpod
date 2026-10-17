@@ -55,6 +55,18 @@ on:
       tag:
         description: Immutable sha-* tag used for the SDK
         value: ${{ jobs.publish.outputs.tag }}
+      native_artifact_name:
+        description: Exact module native material archive name (module profile only)
+        value: ${{ jobs.module_runtime_materials.outputs.artifact_name }}
+      native_artifact_id:
+        description: Exact module native material artifact ID
+        value: ${{ jobs.module_runtime_materials.outputs.artifact_id }}
+      native_artifact_digest:
+        description: Original module native material ZIP digest
+        value: ${{ jobs.module_runtime_materials.outputs.artifact_digest }}
+      native_source_sha:
+        description: Actual native material producing source revision
+        value: ${{ jobs.module_runtime_materials.outputs.source_sha }}
 
 permissions:
   contents: read

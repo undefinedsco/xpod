@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
+import { reviewedModulePhasePlan } from '../../scripts/lib/independent-admission/module-source-phases';
 import { installedConsumerWatchdogMs, runOwnedInstalledConsumer } from '../../scripts/agentfs-native-ci/mounted/owned-installed-consumer';
 import { collectModule, exportSafe, nativeFacts, projectReceipt, projectRecoveryDiagnostic, INSTALLED_CONSUMER_STAGES, verifyInstalledConsumerReceipts, recordInstalledConsumerFailure, assertInstalledConsumerProducer, persistInstalledConsumerReceipt } from '../../scripts/agentfs-native-ci/mounted/prepare-module-inputs';
 import { verifyModuleClientMaterials, moduleClientPath, hashBytes, verifyCliRuntimeTree, writeBootstrapEvidence } from '../../scripts/agentfs-native-ci/mounted/module-admission';
@@ -242,12 +243,15 @@ describe('module mounted input preparation', () => {
     writeFileSync(proxy, JSON.stringify({ pid: 321, groupAbsent: false, tokenFixtureObserved: true, nativeMountStarted: false })); expect(() => verifyInstalledConsumerReceipts(root)).toThrow('proxy cleanup incomplete');
     rmSync(path.join(root, INSTALLED_CONSUMER_STAGES[0] + '.safe.json')); expect(() => verifyInstalledConsumerReceipts(root)).toThrow('receipt inventory');
   }));
-  it('actual workflow Bun command compiles the real driver and produces physical input metadata', () => fixture(root => {
+  it('actual workflow producer command compiles the real driver and produces physical input metadata', () => fixture(root => {
     const workflow = readFileSync(path.resolve('.github/workflows/agentfs-module-mounted-acceptance.yml'), 'utf8');
-    const commands = workflow.split('\n').filter(line => line.trimStart().startsWith('bun build scripts/agentfs-native-ci/mounted/module-admission.ts '));
+    expect(workflow).toContain('python3 scripts/afs-module-producer.py --target "$TARGET" --out "$product"');
+    const plan = reviewedModulePhasePlan('afs', process.cwd(), root, '0.0.1', 'darwin-arm64');
+    const commands = plan.filter(phase => phase.name === 'driver');
     expect(commands).toHaveLength(1);
-    const result = spawnSync('bash', ['-c', `set -euo pipefail\n${commands[0].trim()}`], {
-      cwd: process.cwd(), env: { PATH: process.env.PATH, MODULE_RUN_ROOT: root }, encoding: 'utf8',
+    const [executable, ...args] = commands[0]!.command;
+    const result = spawnSync(executable!, args, {
+      cwd: process.cwd(), env: { PATH: process.env.PATH }, encoding: 'utf8',
     });
     expect(result.status).toBe(0); expect(result.signal).toBeNull();
     const driver = path.join(root, 'module-admission.mjs'); const metadata = path.join(root, 'driver-inputs.json');
@@ -256,7 +260,7 @@ describe('module mounted input preparation', () => {
     expect(inputs.map(input => path.resolve(input))).toContain(path.resolve('scripts/agentfs-native-ci/mounted/module-admission.ts'));
     expect(inputs.length).toBeGreaterThan(1);
     for (const input of inputs) expect(statSync(path.resolve(input)).isFile()).toBe(true);
-    // This test compiles the real entry, but deliberately never executes it.
+    // Compile the actual producer-selected entry and graph without executing the driver.
   }));
   it('actual workflow directory setup creates a private cold parent and fresh leaf, writes GitHub env, and refuses leaf reuse', () => fixture(root => {
     const workflow = readFileSync(path.resolve('.github/workflows/agentfs-module-mounted-acceptance.yml'), 'utf8');

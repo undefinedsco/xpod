@@ -8,15 +8,19 @@ import { verifyNativeMaterialTarget } from '../../../scripts/lib/physical-module
 import { moduleTarget } from '../../xpod-cli/src/module-catalog';
 
 /** Byte/layout integrity only. Official identity and release authority remain external admission. */
-export interface CssNativeRuntimeInput {
+interface CssNativeRuntimeCommon {
   runtimeRoot: string;
   materialsRoot: string;
   manifest: SourceFile;
   archive: SourceFile;
   originalZip: SourceFile;
-  acceptance: SourceFile;
   sourceSha: string;
 }
+
+export type CssNativeRuntimeInput = CssNativeRuntimeCommon & (
+  {format?: 'macos-native-materials'; acceptance: SourceFile; producerReceipt?: never}
+  | {format: 'linux-native-materials'; producerReceipt: SourceFile; acceptance?: never}
+);
 
 function regularTree(root: string): string[] {
   let ancestor = path.resolve(root);
@@ -48,20 +52,22 @@ export function assembleCssNativeRuntime(productRoot: string, target: string, in
   const product = realpathSync(productRoot), material = realpathSync(input.materialsRoot);
   const contains = (a: string, b: string): boolean => b === a || b.startsWith(a + path.sep);
   if (contains(product, material) || contains(material, product)) throw new Error('Native materials must remain external');
-  const refs = [input.archive, input.originalZip, input.acceptance];
+  const receipt = input.format === 'linux-native-materials' ? input.producerReceipt : input.acceptance;
+  if ((input.format === 'linux-native-materials') !== target.startsWith('linux-')) throw new Error('Native input format/target mismatch');
+  const refs = [input.archive, input.originalZip, receipt];
   sourceFileIndex(refs); verifySourceFiles(input.materialsRoot, refs);
   const require = createRequire(import.meta.url);
   const { verifyQleverLocal, loadQleverSourceConformance } = require('../../../scripts/release-gate-evidence.cjs') as {
     verifyQleverLocal: (args: { sourceSha: string; evidence: string; expectedArchive: string; abiPlatform: string }) => void;
     loadQleverSourceConformance: () => { adapterAbiVersion: number; physicalBackendAbiVersion: number };
   };
-  verifyQleverLocal({ sourceSha: input.sourceSha, evidence: path.join(input.materialsRoot, input.acceptance.path), expectedArchive: path.join(input.materialsRoot, input.archive.path), abiPlatform: target.replace(/^darwin-/, 'macos-') });
+  if (input.format !== 'linux-native-materials') verifyQleverLocal({ sourceSha: input.sourceSha, evidence: path.join(input.materialsRoot, input.acceptance.path), expectedArchive: path.join(input.materialsRoot, input.archive.path), abiPlatform: target.replace(/^darwin-/, 'macos-') });
   const zip = path.join(input.materialsRoot, input.originalZip.path);
   const zipCheck = spawnSync('/usr/bin/python3', ['-E','-s','-B',
     fileURLToPath(new URL('../../../scripts/lib/css_native_zip.py', import.meta.url)),
     zip, target, '--source', input.sourceSha], {encoding: 'utf8', maxBuffer: 32768, timeout: 30000});
   if (zipCheck.status !== 0 || zipCheck.error) throw new Error('Original ZIP material inventory mismatch');
-  for (const ref of [input.archive, input.acceptance]) {
+  for (const ref of [input.archive, receipt]) {
     const extracted = spawnSync('unzip', ['-p', zip, path.basename(ref.path)], { maxBuffer: ref.sizeBytes + 1024 });
     if (extracted.status !== 0 || !extracted.stdout.equals(readFileSync(path.join(input.materialsRoot, ref.path)))) throw new Error('Original ZIP member byte mismatch');
   }

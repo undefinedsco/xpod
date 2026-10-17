@@ -60,13 +60,17 @@ export interface DerivedSourceView {
   readonly sourceSha: string;
   readonly trackedPaths: readonly string[];
   readTracked(path: string): Buffer;
+  readTrackedGitObject?(path: string): Readonly<{ mode: string; bytes: Buffer }>;
 }
 declare const nativeMaterialBrand: unique symbol;
 export interface NativeMaterialCapability { readonly [nativeMaterialBrand]: true }
 export interface NativeMaterialView {
   readonly identity: CollectedArtifactIdentity;
-  readonly productRoot: string;
-  readonly materialsRoot: string;
+  /** Legacy disk projections expose roots; collected original custody does not
+   * invent filesystem locations for archive members. */
+  readonly custodyKind?: 'disk-projection' | 'collected-native-originals';
+  readonly productRoot?: string;
+  readonly materialsRoot?: string;
   readonly indexPath: string;
   readonly indexSha256: string;
   readonly status: 'material-integrity-verified';
@@ -99,8 +103,11 @@ export interface CollectedArtifactView {
   /** Bounded random access to the same fully hashed immutable member. This
    * carries custody only; format and ABI policy remain in their shared adapters. */
   readMemberRange?(path: string, offset: number, length: number): Buffer;
+  readBoundMemberRange?(path: string, offset: number, length: number): Buffer;
   /** Original producer evidence selected from the observed outer ZIP. */
   readProducerOriginal(path: string, maximumBytes: number): Buffer;
+  /** Registered same-ZIP source originals, bounded to 64KiB per range. */
+  readProducerOriginalRange?(path: string, offset: number, length: number): Buffer;
 }
 /** Metadata for the exact archive issued by the central collector. Persisting
  * this view does not persist its private publication/material authority. */

@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 
 /** Bounded view of one exact registered product member. It owns no native,
  * source, or release admission authority. Every range is bound to the central
- * collector's same open snapshot fd and a full-member SHA check. */
+ * collector's same open snapshot fd and fully hashed member inventory. */
 export interface ProductOriginalView {
   readonly reference: Readonly<NativeFile>;
   readRange(offset: number, length: number): Buffer;
@@ -22,13 +22,14 @@ export function collectedProductOriginal(artifact: unknown, reference: Readonly<
     if (collectedArtifactView(artifact) !== view) return fail('artifact revoked');
     if (!Number.isSafeInteger(offset) || !Number.isSafeInteger(length) || offset < 0 || length < 0
       || length > 65536 || offset > bound.sizeBytes || length > bound.sizeBytes - offset) return fail('fixed 64KiB bounded range required');
+    if (view.readBoundMemberRange) return view.readBoundMemberRange(bound.path, offset, length);
     if (view.readMemberRange) return view.readMemberRange(bound.path, offset, length);
     if (bound.sizeBytes > 8 * 1024 ** 2) return fail('bounded disk range collector required');
     const bytes = view.readMember(bound.path, 8 * 1024 ** 2);
     if (bytes.length !== bound.sizeBytes || createHash('sha256').update(bytes).digest('hex') !== bound.sha256) fail('member changed');
     return Buffer.from(bytes.subarray(offset, offset + length));
   };
-  // A zero-length request still performs the full-member hash before issuance.
+  // A zero-length request still validates the full-hash-bound snapshot's stat.
   readRange(0, 0);
   const result = Object.freeze({ reference: bound, readRange });
   issued.set(result, { artifact, reference: bound }); return result;

@@ -1,3 +1,4 @@
+import moduleArtifactLimits from './module-artifact-limits.json';
 import { createHash } from 'node:crypto';
 import { lstatSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -75,7 +76,7 @@ export async function withProductProjection<T>(input: ProductCustodyInput, outpu
     const projected = new Set<string>();
     function project(selections: any[]) {
       const result = spawnSync('python3', [path.join(import.meta.dir, 'inspect-product-artifact.py'), path.join(root, 'artifact.zip'), custody.archive.sha256,
-        String(512 * 1024 ** 2), String(1024 ** 3), '50000', JSON.stringify(selections), temporary], { encoding: 'utf8', timeout: 30_000, maxBuffer: 16 * 1024 * 1024 });
+        String(moduleArtifactLimits.packedBytes), String(moduleArtifactLimits.expandedBytes), String(moduleArtifactLimits.members), JSON.stringify(selections), temporary], { encoding: 'utf8', timeout: moduleArtifactLimits.timeoutMs, maxBuffer: 16 * 1024 * 1024 });
       if (result.status !== 0 || result.error) fail('ZIP projection failed');
       const checked = JSON.parse(result.stdout);
       for (const row of selections) projected.add(row.destination);

@@ -65,3 +65,67 @@ export function observeMacNativeRanges(input: MacNativeRanges, target: string) {
     minimumOS: versions[0].minimumOS, sdk: versions[0].sdk, dependencies, rpaths,
     scope: 'macho-load-command-observations-only' as const};
 }
+
+/** Check the complete supplied bundle graph. Inventory/custody and official
+ * native execution remain central responsibilities, never inferred here. */
+export function verifyMacLoaderClosure(input: {
+  readonly executable: string;
+  readonly minimumOS: number;
+  readonly sdk: number;
+  readonly members: ReadonlyMap<string, ReturnType<typeof observeMacNativeRanges>>;
+}) {
+  const fail = (): never => { throw new Error('Invalid macOS bundled loader closure'); };
+  const clean = (name: string) => name.length > 0 && !name.startsWith('/')
+    && !name.split('/').some(part => !part || part === '.' || part === '..' || /[\\\x00-\x1f\x7f]/u.test(part));
+  if (!clean(input.executable) || input.members.size < 1 || input.members.size > 1024
+    || !Number.isSafeInteger(input.minimumOS) || !Number.isSafeInteger(input.sdk)
+    || input.minimumOS <= 0 || input.sdk < input.minimumOS) fail();
+  const executable = input.members.get(input.executable);
+  if (!executable || executable.minimumOS !== input.minimumOS || executable.sdk !== input.sdk) fail();
+  const normalize = (value: string): string | undefined => {
+    const parts: string[] = [];
+    for (const part of value.split('/')) {
+      if (!part || part === '.') continue;
+      if (part === '..') { if (!parts.length) return undefined; parts.pop(); }
+      else parts.push(part);
+    }
+    return parts.join('/');
+  };
+  const directory = (member: string) => member.split('/').slice(0, -1).join('/');
+  const expand = (name: string, member: string): string | undefined => {
+    if (name.startsWith('@loader_path/')) return normalize(directory(member) + '/' + name.slice(13));
+    if (name.startsWith('@executable_path/')) return normalize(directory(input.executable) + '/' + name.slice(17));
+    return undefined;
+  };
+  const system = (name: string) => (name.startsWith('/usr/lib/') || name.startsWith('/System/Library/'))
+    && !name.split('/').some(part => part === '.' || part === '..') && !/[\\\x00-\x1f\x7f]/u.test(name);
+  const reached = new Set<string>();
+  const visit = (member: string, inheritedRpaths: readonly string[]): void => {
+    if (reached.has(member)) return;
+    reached.add(member);
+    const observation = input.members.get(member);
+    if (!observation || observation.target !== executable!.target || observation.minimumOS > input.minimumOS) fail();
+    const localRpaths = observation!.rpaths.map(name => {
+      const resolved = expand(name, member);
+      if (!resolved || !clean(resolved)) return fail();
+      return resolved;
+    });
+    const search = [...localRpaths, ...inheritedRpaths];
+    for (const dependency of observation!.dependencies) {
+      if ((dependency.command & 0x7fffffff) === 0xd) continue; // LC_ID_DYLIB describes this image.
+      const name = dependency.path;
+      if (system(name)) continue;
+      const direct = expand(name, member);
+      const candidates = direct ? [direct] : name.startsWith('@rpath/')
+        ? search.map(base => normalize(base + '/' + name.slice(7))).filter((value): value is string => value !== undefined) : [];
+      const resolved = candidates.find(candidate => clean(candidate) && input.members.has(candidate));
+      if (!resolved) fail();
+      visit(resolved!, search);
+    }
+  };
+  for (const name of input.members.keys()) if (!clean(name)) fail();
+  visit(input.executable, []);
+  if (reached.size !== input.members.size) fail();
+  return {status: 'mechanical-loader-closure-verified' as const, members: reached.size,
+    scope: 'supplied-inventory-only' as const};
+}

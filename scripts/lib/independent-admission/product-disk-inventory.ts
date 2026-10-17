@@ -34,6 +34,9 @@ export interface ProductDiskInventory {
   /** Fixed <=64KiB range. Full-member SHA is rechecked with bounded scratch
    * on every call; no caller assertion substitutes for immutable byte binding. */
   readMemberRange(name: string, offset: number, length: number): Buffer;
+  /** Same fd/stat as the fully hashed initial inventory, with a separate
+   * fixed small-range budget for mechanical native header parsers. */
+  readBoundMemberRange(name: string, offset: number, length: number): Buffer;
   dispose(): void;
 }
 const fail = (message: string): never => { throw new Error('Product disk inventory: ' + message); };
@@ -139,7 +142,7 @@ export async function indexProductArchiveOnDisk(file: string): Promise<ProductDi
     for (; offset < expanded;) { checkTime(); const size = Math.min(scratch.length, expanded - offset); read(scratch, offset, size); if (scratch.subarray(0, size).some(byte => byte !== 0)) fail('nonzero trailing tar data'); offset += size; }
     if (!offsets.has('package.json')) fail('product manifest missing');
     const byName = new Map(rows.map(row => [row.path, row])); let disposed = false;
-    let rangeCalls = 0, rangeHashBytes = 0;
+    let rangeCalls = 0, rangeHashBytes = 0, originalCalls = 0, originalBytes = 0;
     const result: ProductDiskInventory = Object.freeze({
       archive: Object.freeze({ bytes: packed, sha256: sha256.digest('hex'), integrity: 'sha512-' + sha512.digest('base64') }),
       members: Object.freeze(rows),
@@ -170,6 +173,20 @@ export async function indexProductArchiveOnDisk(file: string): Promise<ProductDi
         if (hash.digest('hex') !== row.sha256 || !same(bound, fs.fstatSync(fd!))) fail('snapshot member changed');
         const bytes = Buffer.alloc(length); read(bytes, offsets.get(name)! + offset);
         if (!same(bound, fs.fstatSync(fd!))) fail('snapshot changed during range read');
+        return bytes;
+      },
+      readBoundMemberRange(name: string, offset: number, length: number): Buffer {
+        const row = byName.get(name);
+        if (disposed || !row || !Number.isSafeInteger(offset) || !Number.isSafeInteger(length)
+          || offset < 0 || length < 0 || length > 65536 || offset > row.bytes || length > row.bytes - offset
+          || !same(bound, fs.fstatSync(fd!))) return fail('bounded unchanged original range required');
+        // Each member was fully hashed while building this same snapshot fd's
+        // inventory. ctime/mtime/size/inode/nlink changes invalidate every range.
+        // Rehashing a 33MiB image for each 8-byte load command would consume the
+        // ordinary sparse-read hash budget before a real Mach-O can be parsed.
+        if (++originalCalls > 32768 || (originalBytes += length) > 16 * 1024 ** 2) fail('native header original range budget exceeded');
+        const bytes = Buffer.alloc(length); read(bytes, offsets.get(name)! + offset);
+        if (!same(bound, fs.fstatSync(fd!))) fail('snapshot changed during original range read');
         return bytes;
       },
       dispose() { if (!disposed) { disposed = true; fs.closeSync(fd!); fd = undefined; fs.rmSync(root, { recursive: true, force: true }); } },

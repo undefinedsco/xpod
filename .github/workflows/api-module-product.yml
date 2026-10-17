@@ -69,6 +69,7 @@ jobs:
           name: api-module-products-${{ matrix.target }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             ${{ env.API_PRODUCT_ROOT }}/product.tgz
+            ${{ env.API_PRODUCT_ROOT }}/source-materials/
             ${{ env.API_PRODUCT_ROOT }}/producer.receipt.json
             ${{ env.API_PRODUCT_ROOT }}/evidence/
             ${{ env.API_PRODUCT_ROOT }}/originals/prepare-inputs.receipt.safe.json

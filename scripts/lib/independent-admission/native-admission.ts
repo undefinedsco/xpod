@@ -6,6 +6,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { safeMaterialPath } from '../../../packages/xpod-cli/src/source-materials';
 import { verifyNativeMaterialTarget, type NativeStage, type NativeFile } from '../physical-module-native';
+import { collectedArtifactView } from './artifact-collector';
+import { controlledNativeRuntimeView } from './native-context';
 import type { AdmissionContext } from './index';
 import type { NativeMaterialView } from './artifact-contract';
 import type { GitHubOriginFacts } from './github-origin';
@@ -111,6 +113,7 @@ function verifyWithinBudget(_evidence: unknown, context: AdmissionContext) {
 }
 
 export function verifyNativeAdmission(evidence: unknown, context: AdmissionContext) {
+  if (controlledNativeRuntimeView(context.nativeMaterials)) return verifyCollectedNativeAdmission(evidence, context);
   try { return verifyWithinBudget(evidence, context); }
   catch (error) {
     if (!(error instanceof NativeBudgetPending)) throw error;
@@ -118,6 +121,30 @@ export function verifyNativeAdmission(evidence: unknown, context: AdmissionConte
       facts: {materialIntegrityVerified: false, binaryFormatsVerified: false, originalStageBindingsVerified: false,
         nativeProducerOriginsVerified: false, nativeRuntimeAbiVerified: false, nativeQualified: false}};
   }
+}
+
+/** Platform admission consumes the same actual private product/native snapshots
+ * without materializing a native executable or product tarball in a Buffer. */
+export function verifyCollectedNativeAdmission(_evidence: unknown, context: Omit<AdmissionContext, 'archive'> & { archive?: Buffer }) {
+  const product = collectedArtifactView(context.collectedArtifact), runtime = controlledNativeRuntimeView(context.nativeMaterials);
+  const facts = { materialIntegrityVerified: false, binaryFormatsVerified: false, originalStageBindingsVerified: false,
+    nativeProducerOriginsVerified: false, nativeRuntimeAbiVerified: false, qleverRuntimeAbiVerified: false, nativeRuntimeAbiScope: 'css-qlever-bundle' as const, nativeSourceClosureVerified: false, nativeQualified: false };
+  if (!product || !runtime) return { status: 'pending' as const, reason: 'controlled-native-runtime-originals-capability-unavailable',
+    pending: ['controlled-native-runtime-originals-capability-unavailable'], facts };
+  const identity = runtime.identity;
+  if (!same(identity, product.identity) || identity.sourceSha !== context.sourceSha || identity.package !== context.package
+    || identity.version !== context.version || identity.target !== context.target) return fail('private native runtime/product identity mismatch');
+  facts.materialIntegrityVerified = runtime.sourceMaterialsVerified;
+  facts.binaryFormatsVerified = runtime.binaryFormatsVerified;
+  facts.originalStageBindingsVerified = runtime.originalStageBindingsVerified;
+  facts.nativeProducerOriginsVerified = runtime.nativeOriginVerified;
+  facts.nativeRuntimeAbiVerified = runtime.runtimeAbiVerified;
+  facts.qleverRuntimeAbiVerified = runtime.qleverRuntimeAbiVerified;
+  facts.nativeSourceClosureVerified = runtime.nativeSourceClosureVerified;
+  // The actual observer captures source/SDK identity and a real ABI smoke.
+  // Missing compiler dependency inputs and separately sourced bundled dylibs
+  // remain explicit native-source obligations, never inferred from loader success.
+  return { status: 'pending' as const, reason: runtime.pending.join('; '), pending: [...runtime.pending], facts };
 }
 
 /** Fixed owned process reuses the one Python policy. Its result is mechanical

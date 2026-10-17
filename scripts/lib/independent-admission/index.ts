@@ -3,7 +3,7 @@ import { collectedArtifactView, publicationMaterialView, readCollectedPortableAr
 import { derivedSourceView } from './source-context';
 import { consumerObservationView } from './consumer-context';
 import { verifyRuntimeClosure } from './runtime-closure';
-import { verifyNativeAdmission } from './native-admission';
+import { verifyNativeAdmission, verifyCollectedNativeAdmission } from './native-admission';
 import { inspectModuleSourcePhases } from './module-source-phases';
 import { verifyLegalAdmission } from './legal-admission';
 import { verifyCliInputSet } from './source-rules';
@@ -33,6 +33,9 @@ export interface AdmissionContext {
   consumerObservation?: unknown;
   /** Opaque central material capability, separate from native release approval. */
   nativeMaterials?: unknown;
+  /** Private registry-original and module-source material handles; never approval JSON. */
+  legalOriginals?: readonly unknown[];
+  legalSourceMaterials?: unknown;
 }
 /** Large platform gates receive a real collected archive handle, never a
  * caller-supplied whole tgz Buffer. Existing portable adapter signatures stay compatible. */
@@ -226,16 +229,40 @@ function consumerGate(_evidence: unknown, context: AdmissionContext | CollectedA
       : { status: 'pending', reason: 'Complete public export consumer profiles remain pending; base import success is a separate observation' };
 }
 
+const collectedSourceReports = new WeakMap<object, WeakMap<object, any>>();
+/** A module's reviewed source observer owns its private materials capability.
+ * Cache only a completed real observation within this live process, allowing
+ * sequential gate evaluation without rereading multi-GiB snapshots per axis. */
+function inspectCollectedModuleSource(context: CollectedAdmissionContext): any {
+  const artifact = collectedArtifactView(context.collectedArtifact), source = derivedSourceView(context.derivedSource);
+  const material = publicationMaterialView(context.collectedArtifact);
+  if (!artifact || !source || !material || typeof context.collectedArtifact !== 'object' || typeof context.derivedSource !== 'object') return {
+    status: 'pending', reason: 'Controlled module producer and immutable Git source required' };
+  const artifactKey = context.collectedArtifact as object, sourceKey = context.derivedSource as object;
+  const cache = collectedSourceReports.get(artifactKey), cached = cache?.get(sourceKey);
+  if (cached) return cached;
+  const require = createRequire(import.meta.url);
+  let adapter: { inspectModuleSourceAdmission(input: { artifact: unknown; source: unknown; origin: unknown }): any };
+  try { adapter = require('./module-source-admission.ts'); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'MODULE_NOT_FOUND') throw error;
+    const phases = inspectModuleSourcePhases({ artifact: context.collectedArtifact, source: context.derivedSource, origin: material.origin });
+    return { status: 'pending', reason: phases.status === 'pending' ? phases.reason : 'Reviewed full module source adapter unavailable', phases };
+  }
+  const report = adapter.inspectModuleSourceAdmission({ artifact: context.collectedArtifact, source: context.derivedSource, origin: material.origin });
+  if (report.status === 'verified' && report.sourceQualified === true && report.materials) {
+    const reports = cache ?? new WeakMap<object, any>(); reports.set(sourceKey, report); collectedSourceReports.set(artifactKey, reports);
+  }
+  return report;
+}
+
 /** One gate registry. Product identities remain in the existing module catalog.
  * Unimplemented adapters must stay fail closed; arbitrary approval booleans have
  * no meaning here. No public token constructor or caller transport grants trust. */
 const adapters: Readonly<Record<Gate, Adapter>> = Object.freeze<Record<Gate, Adapter>>({
   source: { ...source, verifyCollected: (_evidence, context) => {
-    const material = publicationMaterialView(context.collectedArtifact);
-    if (!material || !context.derivedSource) return { status: 'pending', reason: 'Controlled module producer and immutable Git source required' };
-    const phases = inspectModuleSourcePhases({ artifact: context.collectedArtifact, source: context.derivedSource, origin: material.origin });
-    return { status: 'pending', reason: phases.status === 'pending' ? phases.reason
-      : 'Module phase originals verified; complete sourcekit/output/toolchain provenance remains required', details: phases };
+    const report = inspectCollectedModuleSource(context);
+    return { status: report.status, reason: report.reason, details: report };
   } },
   'runtime-closure': { verify: (evidence, context) => {
     const result = verifyRuntimeClosure(evidence, context);
@@ -244,6 +271,9 @@ const adapters: Readonly<Record<Gate, Adapter>> = Object.freeze<Record<Gate, Ada
   native: { verify: (evidence, context) => {
     const result = verifyNativeAdmission(evidence, context);
     return { status: result.status, reason: result.reason, pending: [...result.pending] };
+  }, verifyCollected: (evidence, context) => {
+    const result = verifyCollectedNativeAdmission(evidence, context);
+    return { status: result.status, reason: result.reason, pending: [...result.pending], details: result.facts };
   } },
   legal: { verify: legalGate, verifyCollected: legalGate },
   consumer: { verify: consumerGate, verifyCollected: consumerGate },
@@ -273,6 +303,9 @@ export interface CollectedPublicationAdmissionInput {
   consumerObservation?: unknown;
   relatedArtifacts: readonly unknown[];
   nativeMaterials?: unknown;
+  /** Private registry-original and module-source material handles; never approval JSON. */
+  legalOriginals?: readonly unknown[];
+  legalSourceMaterials?: unknown;
 }
 
 /** The publisher supplies opaque handles only. This central entry derives
@@ -289,6 +322,7 @@ export function verifyCollectedPublicationAdmission(gate: Gate, input: Collected
     package: identity.package, version: identity.version, target: identity.target,
     collectedArtifact: input.artifact, derivedSource: input.derivedSource, relatedArtifacts: input.relatedArtifacts,
     githubOrigin: material.origin, consumerObservation: input.consumerObservation, nativeMaterials: input.nativeMaterials,
+    legalOriginals: input.legalOriginals, legalSourceMaterials: input.legalSourceMaterials,
     trackedPaths: source?.trackedPaths,
     readTracked: name => source ? source.readTracked(name) : reject('Immutable publication source capability required'),
     readOriginal: reference => {
@@ -297,6 +331,10 @@ export function verifyCollectedPublicationAdmission(gate: Gate, input: Collected
       return bytes;
     },
   };
+  if (gate === 'legal' && identity.target !== undefined) {
+    const sourceReport = inspectCollectedModuleSource(context);
+    if (sourceReport.status === 'verified') context.legalSourceMaterials = sourceReport.materials;
+  }
   const evidence = gate === 'source'
     ? JSON.parse(material.readOriginal(material.producerReceipt.path, 1024 ** 2).toString()) : undefined;
   return verifyCollectedAdmission(gate, evidence, context);

@@ -12,6 +12,10 @@ export const CLI_SOURCE_POLICY = Object.freeze({
   workflow: 'b9bc591d5248773fae30df574a95e1ee928dffc41ad5965a8fbc8bf90319d860',
 });
 const hash = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
+// The second reviewed supervisor only raises the command ceiling to 25 minutes;
+// command closure, raw limits and receipt semantics remain identical.
+const REVIEWED_SUPERVISORS = new Set([CLI_SOURCE_POLICY.supervisor,
+  'e00e81eac425ece4ab9fa76701591af835fb41634bd366907e88a91cedde7513']);
 const fail = (message: string): never => { throw new Error('Independent source rules: ' + message); };
 const canonicalJson = (value: any): string => JSON.stringify(value && typeof value === 'object'
   ? Array.isArray(value) ? value.map(item => JSON.parse(canonicalJson(item)))
@@ -23,7 +27,7 @@ export function verifyCliInputSet(
   const producer = readTracked('scripts/check-cli-publication.cjs');
   if (hash(producer) !== CLI_SOURCE_POLICY.producer
     || hash(readTracked('scripts/cli-build-inputs.cjs')) !== CLI_SOURCE_POLICY.copier
-    || hash(readTracked('scripts/lib/afs-publication-command.cjs')) !== CLI_SOURCE_POLICY.supervisor
+    || !REVIEWED_SUPERVISORS.has(hash(readTracked('scripts/lib/afs-publication-command.cjs')))
     || hash(readTracked('.github/workflows/cli-package.yml')) !== CLI_SOURCE_POLICY.workflow) {
     return { sourceInputSetVerified: false, generatedBuildManifestVerified: false,
       pending: 'source-input-policy-unreviewed: immutable producer/copier/supervisor/workflow differs from reviewed policy' };

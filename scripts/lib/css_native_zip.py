@@ -1,4 +1,4 @@
-"""Bounded mechanical inventory checks for original Mac runtime material ZIPs."""
+"""Bounded mechanical inventory checks for original native runtime material ZIPs."""
 import hashlib
 import json
 import zipfile
@@ -10,8 +10,14 @@ MEMBERS=40000
 def safe(name):
     return bool(name) and not name.startswith('/') and '\\' not in name and not any(ord(char)<32 or ord(char)==127 for char in name) and all(part not in ('','.','..') for part in name.split('/'))
 
+def closed_receipt(receipt,raw_sha):
+    return (receipt.get('actualWait') is True and receipt.get('exit')==0 and receipt.get('signal') is None
+            and receipt.get('resourceStop') is None and receipt.get('rawClosedBeforeHash') is True
+            and receipt.get('ownedGroupAbsentAfterWait') is True and receipt.get('rawSHA256')==raw_sha
+            and receipt.get('supervisorError') is None and receipt.get('cleanupErrors',[])==[])
+
 def validate(archive, target, expected_source=None):
-    if target not in ('darwin-arm64','darwin-x64'): raise ValueError('Mac native ZIP target required')
+    if target not in ('darwin-arm64','darwin-x64','linux-arm64','linux-x64'): raise ValueError('Native ZIP target required')
     with zipfile.ZipFile(archive) as bundle:
         index={};total=0
         for entry in bundle.infolist():
@@ -34,6 +40,55 @@ def validate(archive, target, expected_source=None):
                 for block in iter(lambda:stream.read(65536),b''):digest.update(block)
             if digest.hexdigest()!=ref['sha256']:raise ValueError('Native original hash mismatch: '+name)
         archive_name='qlever-local-runtime-'+target+'.tar.gz'
+        if target.startswith('linux-'):
+            result=record('native-build-materials.json')
+            if result.get('schemaVersion')!=1 or result.get('status')!='native-build-test-materials' or result.get('releaseAccepted') is not False or result.get('target')!=target:
+                raise ValueError('Linux native result target/status mismatch')
+            source=result.get('sourceSha','')
+            if len(source)!=40 or any(char not in '0123456789abcdef' for char in source) or expected_source is not None and source!=expected_source:
+                raise ValueError('Linux native source mismatch')
+            refs=result.get('files',[])
+            if not refs or len(refs)>MEMBERS:raise ValueError('Linux native original inventory missing')
+            allowed={'native-build-materials.json'}
+            for ref in refs:
+                name=ref['path']
+                if not safe(name) or name in allowed:raise ValueError('Linux native duplicate/unsafe original')
+                check(name,ref);allowed.add(name)
+            files={name for name,entry in index.items() if not entry.is_dir()}
+            if files!=allowed:raise ValueError('Linux native ZIP inventory mismatch')
+            stages=result.get('stages',{})
+            if not isinstance(stages,dict) or not stages or len(stages)>256:raise ValueError('Linux native stages missing')
+            for name,stage in stages.items():
+                if not safe(name) or '/' in name:raise ValueError('Unsafe Linux stage name')
+                receipt_path='stages/'+name+'.receipt.json';raw_path='stages/'+name+'.raw.log'
+                receipt_ref=next((ref for ref in refs if ref['path']==receipt_path),None)
+                raw_ref=next((ref for ref in refs if ref['path']==raw_path),None)
+                if not receipt_ref or not raw_ref or receipt_ref['sha256']!=stage['receiptSha256'] or raw_ref['sha256']!=stage['rawSha256']:
+                    raise ValueError('Linux stage original reference mismatch')
+                if not closed_receipt(record(receipt_path),raw_ref['sha256']):raise ValueError('Linux stage closure mismatch')
+            if result['archive']['path']!=archive_name:raise ValueError('Linux native archive target mismatch')
+            check(archive_name,result['archive'])
+            profile=result.get('compilerProfile',{})
+            if profile!=record('sdk-profile/inputs.json') or profile.get('profile')!='module-bookworm-gcc12' or profile.get('glibc')!='2.36' or profile.get('machine')!=('aarch64' if target=='linux-arm64' else 'x86_64'):
+                raise ValueError('Linux SDK target/profile mismatch')
+            physical=record('physical/abi/physical-runtime.receipt.safe.json')
+            if physical.get('target')!=target or physical.get('ok') is not True or physical.get('failure') is not None or physical.get('releaseAccepted') is not False:
+                raise ValueError('Linux physical receipt mismatch')
+            for name,field in [('physical/runtime/bin/xpod_qlever_local_runtime','runtimeBinarySha256'),
+                               ('original/manifest.json','originalManifestSha256'),('physical/runtime/manifest.json','physicalManifestSha256'),
+                               ('physical/abi/physical-runtime.receipt.safe.json','abiReceiptSha256')]:
+                ref=next((row for row in refs if row['path']==name),None)
+                if ref is None or ref['sha256']!=result.get(field):raise ValueError('Linux runtime/receipt relationship mismatch')
+            if physical.get('originalManifestSHA256')!=result['originalManifestSha256']:raise ValueError('Linux original manifest relationship mismatch')
+            physical_files=physical.get('files',[])
+            if not physical_files:raise ValueError('Linux loader inventory missing')
+            expected_runtime={'physical/runtime/'+ref['path'] for ref in physical_files}
+            if {name for name in files if name.startswith('physical/runtime/')}!=expected_runtime:raise ValueError('Linux loader inventory incomplete')
+            for ref in physical_files:check('physical/runtime/'+ref['path'],ref)
+            for role in ['sdkImage','runtimeImage']:
+                value=result.get(role,'')
+                if '@sha256:' not in value or len(value.rsplit('@sha256:',1)[1])!=64 or any(char not in '0123456789abcdef' for char in value.rsplit('@sha256:',1)[1]):raise ValueError('Linux immutable image missing')
+            return sorted(files)
         acceptance=record('qlever-local-acceptance.json')
         if expected_source is not None and acceptance.get('sourceSha')!=expected_source:raise ValueError('Native acceptance source mismatch')
         # Legacy original format remains valid, with no arbitrary extra members.
@@ -65,7 +120,7 @@ def validate(archive, target, expected_source=None):
                 if not safe(ref['path']) or not ref['path'].startswith('stages/'):raise ValueError('Unsafe native stage reference')
                 name='native-materials/'+ref['path'];check(name,ref);allowed.add(name)
             receipt=record('native-materials/'+stage['receipt']['path'])
-            if receipt.get('actualWait') is not True or receipt.get('exit')!=0 or receipt.get('signal') is not None or receipt.get('resourceStop') is not None or receipt.get('rawClosedBeforeHash') is not True or receipt.get('ownedGroupAbsentAfterWait') is not True or receipt.get('rawSHA256')!=stage['raw']['sha256'] or receipt.get('supervisorError') is not None or receipt.get('cleanupErrors',[])!=[]:
+            if not closed_receipt(receipt,stage['raw']['sha256']):
                 raise ValueError('Native stage closure mismatch')
         kit=record('native-materials/'+final['sourceKit']['path'])
         refs=kit.get('files',[])

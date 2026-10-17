@@ -38,14 +38,19 @@ export function deriveAdmissionSource(artifact: CollectedArtifactCapability, che
     if (entries.has(match[3])) fail('duplicate tracked path');
     entries.set(match[3], { mode: match[1], oid: match[2] });
   }
-  const view: DerivedSourceView = Object.freeze({ sourceSha, trackedPaths: Object.freeze([...entries.keys()].sort()),
+  const readGitObject = (name: string) => {
+    const entry = entries.get(name);
+    if (!entry || !['100644', '100755', '120000'].includes(entry.mode)) return fail('tracked ordinary/symlink Git blob required');
+    const bytes = git(['cat-file', 'blob', entry.oid]);
+    const oid = createHash('sha1').update(Buffer.from(`blob ${bytes.length}\0`)).update(bytes).digest('hex');
+    if (oid !== entry.oid) return fail('tracked Git blob identity mismatch');
+    return Object.freeze({ mode: entry.mode, bytes });
+  };
+  const view: DerivedSourceView = Object.freeze({ sourceSha, trackedPaths: Object.freeze([...entries.keys()].sort()), readTrackedGitObject: readGitObject,
     readTracked(name: string): Buffer {
       const entry = entries.get(name);
       if (!entry || !['100644', '100755'].includes(entry.mode)) return fail('ordinary tracked source blob required');
-      const bytes = git(['cat-file', 'blob', entry.oid]);
-      const oid = createHash('sha1').update(Buffer.from(`blob ${bytes.length}\0`)).update(bytes).digest('hex');
-      if (oid !== entry.oid) return fail('tracked blob object identity mismatch');
-      return bytes;
+      return readGitObject(name).bytes;
     } });
   const capability = Object.freeze({}) as DerivedSourceCapability;
   issued.set(capability, view); artifactCheckouts.set(artifact, root); return capability;

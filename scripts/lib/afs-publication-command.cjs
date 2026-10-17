@@ -3,9 +3,11 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { spawn } = require('node:child_process');
 const RAW_LIMIT = 8 * 1024 * 1024;
+// Matching-host publication workers supervise acquisition plus both runtime profiles.
+const MAX_TIMEOUT_MS = 25 * 60 * 1000;
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function runPublicationCommand(command, args, { cwd, env, evidence, label, timeoutMs = 180000, rawLimit = RAW_LIMIT }) {
-  if (!/^[a-z0-9-]+$/.test(label) || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 600000) throw new Error('Invalid command evidence budget');
+  if (!/^[a-z0-9-]+$/.test(label) || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > MAX_TIMEOUT_MS) throw new Error('Invalid command evidence budget');
   if (!Number.isSafeInteger(rawLimit) || rawLimit < 1 || rawLimit > RAW_LIMIT) throw new Error('Invalid command raw budget');
   const files = ['stdout','stderr'].map(kind => path.join(evidence, label + '.' + kind + '.raw.log'));
   const handles = [];
@@ -108,4 +110,4 @@ async function runPublicationCommand(command, args, { cwd, env, evidence, label,
   if(failure)throw failure;
   return row;
 }
-module.exports={runPublicationCommand,RAW_LIMIT};
+module.exports={runPublicationCommand,RAW_LIMIT,MAX_TIMEOUT_MS};

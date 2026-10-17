@@ -10,6 +10,7 @@ import type { CollectedArtifactCapability, CollectedArtifactView, CollectedArtif
 
 const issued = new WeakMap<object, CollectedArtifactView>();
 const disposers = new WeakMap<object, () => void>();
+const sourceCompactors = new WeakMap<object, () => void>();
 type PublicationArchiveSource = { kind: 'buffer'; bytes: Buffer } | { kind: 'file'; path: string };
 interface PublicationBinding { origin: GitHubOriginObservation; producerReceiptPath: string; source: PublicationArchiveSource; projectionOutput: string }
 const publicationBindings = new WeakMap<object, { view: PublicationMaterialView; binding: PublicationBinding }>();
@@ -85,11 +86,21 @@ export async function withCollectedArchiveFile<T>(artifact: unknown,
   });
 }
 
+/** Cleanup-only operation. The caller first finishes legal source reads and
+ * compacts the reviewed source-material capability. A retained exact outer ZIP
+ * must still exist before this helper removes its reconstructible projection. */
+export function compactCollectedSourceOriginals(artifact: unknown): boolean {
+  if (!artifact || typeof artifact !== 'object' || !issued.has(artifact)) return fail('real collected artifact required for compaction');
+  const compact = sourceCompactors.get(artifact);
+  if (!compact) return false;
+  compact(); sourceCompactors.delete(artifact); return true;
+}
+
 /** Release disk snapshots once the complete admission/publication operation
  * finishes. Revocation also prevents a released token from issuing new views. */
 export function releaseCollectedArtifact(capability: CollectedArtifactCapability): void {
   const dispose = disposers.get(capability);
-  issued.delete(capability); disposers.delete(capability); publicationBindings.delete(capability); dispose?.();
+  issued.delete(capability); disposers.delete(capability); publicationBindings.delete(capability); sourceCompactors.delete(capability); dispose?.();
 }
 
 /** Large-product adapters reuse the normal product projectors and the same
@@ -104,17 +115,17 @@ export async function collectApiModuleAdmissionArtifact(input: {
 const moduleProjectors = {
   api: async () => (await import('../../project-api-product-input')).projectApiProductInput,
   css: async () => (await import('../../project-css-product-input')).projectCssProductInput,
+  afs: async () => (await import('../../project-afs-product-input')).projectAfsProductInput,
 } as const;
 
 export async function collectModuleAdmissionArtifact(input: {
-  module: 'api' | 'css'; githubOrigin: unknown; acquisitionRoot: string; projectionOutput: string;
+  module: 'api' | 'css' | 'afs'; githubOrigin: unknown; acquisitionRoot: string; projectionOutput: string;
 }): Promise<CollectedArtifactCapability> {
   const origin = githubOriginFacts(input.githubOrigin);
   if (!Object.prototype.hasOwnProperty.call(moduleProjectors, input.module) || !origin
-    || origin.workflowPath !== `.github/workflows/${input.module}-module-product.yml` || !origin.target) return fail('controlled module platform origin required');
+    || origin.workflowPath !== (input.module === 'afs' ? '.github/workflows/agentfs-module-mounted-acceptance.yml' : `.github/workflows/${input.module}-module-product.yml`) || !origin.target) return fail('controlled module platform origin required');
   const { productTarget } = await import('../../module-product-targets');
-  const target = productTarget(input.module, origin.target);
-  if (!target.nativeSourceAvailable) return fail('module native source unavailable');
+  if (input.module !== 'afs' && !productTarget(input.module, origin.target).nativeSourceAvailable) return fail('module native source unavailable');
   const root = path.resolve(input.acquisitionRoot);
   const receiptBytes = readCustodyReceipt(root);
   const custody = JSON.parse(receiptBytes.toString());
@@ -127,15 +138,19 @@ export async function collectModuleAdmissionArtifact(input: {
   await project({ schemaVersion: 1, acquisitionRoot: root,
     custodyReceiptSha256: hash(receiptBytes), members: { producer: 'producer.receipt.json', archive: 'product.tgz', packRaw: 'evidence/pack.raw.log' } }, input.projectionOutput);
   const output = path.resolve(input.projectionOutput);
-  const selections = [ ['producer.receipt.json', 'producer.receipt.json'], ['product.tgz', 'product.tgz'], ['evidence/pack.raw.log', 'pack.raw.log'] ] as const;
+  const selections = input.module === 'afs'
+    ? [ ['producer.receipt.json', 'producer.receipt.json'], ['product.tgz', 'product.tgz'] ] as const
+    : [ ['producer.receipt.json', 'producer.receipt.json'], ['product.tgz', 'product.tgz'], ['evidence/pack.raw.log', 'pack.raw.log'] ] as const;
   const originals = selections.map(([name, destination]) => {
     const rows = custody.inventory.members.filter((row: any) => row.path === name && row.kind === 'file');
     if (rows.length !== 1) return fail('unique module original member required');
     return { row: rows[0] as CollectedArtifactMember, destination };
   });
   let phaseOriginals: import('./module-phase-originals').ModulePhaseOriginals | undefined;
+  let sourceOriginals: Awaited<ReturnType<typeof import('./module-source-originals')['collectModuleSourceOriginals']>>;
   const readOriginal = (name: string, maximum: number): Buffer => {
     if (!Number.isSafeInteger(maximum) || maximum < 0) return fail('bounded module original required');
+    if (sourceOriginals && name.startsWith('source-materials/')) return sourceOriginals.readSmall(name, Math.min(maximum, 8 * 1024 ** 2));
     if (phaseOriginals && /^evidence\/[a-z0-9-]+\.receipt\.json$/u.test(name)) return phaseOriginals.readSmallReceipt(name, Math.min(maximum, 1024 ** 2));
     const original = originals.find(item => item.row.path === name);
     if (!original || !Number.isSafeInteger(maximum) || maximum < 0 || original.row.bytes > maximum) return fail('bounded module original required');
@@ -155,20 +170,29 @@ export async function collectModuleAdmissionArtifact(input: {
     const { collectModulePhaseOriginals } = await import('./module-phase-originals');
     phaseOriginals = await collectModulePhaseOriginals({ archivePath: path.join(root, 'artifact.zip'),
       archiveSha256: origin.artifactSha256, inventory: custody.inventory, producer });
+    const { collectModuleSourceOriginals } = await import('./module-source-originals');
+    sourceOriginals = await collectModuleSourceOriginals({ archivePath: path.join(root, 'artifact.zip'),
+      archiveSha256: origin.artifactSha256, inventory: custody.inventory, producer });
     const { MANIFEST_MAX_BYTES } = require('../../workspace-package-payload.cjs');
     const manifest = JSON.parse(disk.readMember('package.json', MANIFEST_MAX_BYTES).toString());
     const { verifyModuleProductInventory } = await import('./module-product-inventory');
     verifyModuleProductInventory({ module: input.module, target: origin.target, version: producer.context.version,
       manifest, members: disk.members });
-    return issueCollectedView(Object.freeze({
+    const capability = issueCollectedView(Object.freeze({
       identity: Object.freeze({ sourceSha: origin.sourceSha, package: manifest.name, version: manifest.version,
         target: origin.target, archiveSha256: disk.archive.sha256, integrity: disk.archive.integrity, archiveBytes: disk.archive.bytes }),
-      members: disk.members, readMember: disk.readMember, readMemberRange: disk.readMemberRange,
+      members: disk.members, readMember: disk.readMember, readMemberRange: disk.readMemberRange, readBoundMemberRange: disk.readBoundMemberRange,
       producerOriginals: phaseOriginals.members,
       readProducerOriginal: readOriginal,
-    }), disk.dispose, { origin: input.githubOrigin as GitHubOriginObservation,
+      readProducerOriginalRange(name: string, offset: number, length: number) {
+        if (!sourceOriginals) return fail('registered source originals unavailable');
+        return sourceOriginals.readRange(name, offset, length);
+      },
+    }), () => { sourceOriginals?.dispose(); disk.dispose(); }, { origin: input.githubOrigin as GitHubOriginObservation,
       projectionOutput: output, producerReceiptPath: 'producer.receipt.json', source: { kind: 'file', path: path.join(output, 'product.tgz') } });
-  } catch (error) { disk.dispose(); throw error; }
+    if (sourceOriginals) sourceCompactors.set(capability, sourceOriginals.compact);
+    return capability;
+  } catch (error) { sourceOriginals?.dispose(); disk.dispose(); throw error; }
 }
 
 /** Collect one exact dependency selected by the immutable publication lock.
@@ -359,3 +383,9 @@ function issueCollectedView(view: CollectedArtifactView, dispose?: () => void, b
   if (dispose) disposers.set(capability, dispose);
   return capability;
 }
+
+// Load the Bun-only publication execution graph only when an operation is requested.
+export const preparePublicationGroup: typeof import('./publication-group').preparePublicationGroup = async input =>
+  (await import('./publication-group')).preparePublicationGroup(input);
+export const prepareRegistryConsumerProduct: typeof import('./publication-group').prepareRegistryConsumerProduct = async input =>
+  (await import('./publication-group')).prepareRegistryConsumerProduct(input);

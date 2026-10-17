@@ -10,8 +10,11 @@ import { githubOriginFacts, githubOriginOriginals, type GitHubOriginObservation 
 // These policies review actual phase-plan and supervisor implementations. The
 // producer remains the sole phase/command declaration; no parallel phase table.
 export const moduleSourcePhasePolicy = Object.freeze({
-  api: '11220d061b4ad3e525f879e3d429ed7a22697293317ba7322a649504c5fc0b8f',
-  css: '255f06c18aeac7647f88ce99e6ff529909af69f855cfe65a92ad97a16cd7802b',
+  api: 'eaeddab536d6e606042039cfe5290393d5c5a3e454fb590354cc35e5afe2975f',
+  css: '431d033a41f01ab317124e1e5488543ea1ac82fa59c2ef3845ddd43ab4e61f4c',
+  afs: '47fa36ae04f843fc41b40e4b703815f18ceaeed4e089e2285305885c8b8f009b',
+  materials: 'e05da6ed21392d60a84d1731993551375cdc7dadd6544a0ff813045e0b120ddc',
+  limits: 'c1c529aba719356c682affbe630c215e28cc07163192f8f3b601aab7b0126bd4',
   supervisor: '49fd9c7a7a9c9dc1612b1261f0cbc218166f48487df726239437ae9ad98ba407',
 });
 const hash = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
@@ -19,9 +22,9 @@ const fail = (message: string): never => { throw new Error('Module source phases
 
 /** Pure policy projection from the one reviewed producer's phase_plan. This
  * executes verifier-owned, hash-checked code, never candidate source code. */
-export function reviewedModulePhasePlan(module: 'api' | 'css', repositoryRoot: string, outputRoot: string,
+export function reviewedModulePhasePlan(module: 'api' | 'css' | 'afs', repositoryRoot: string, outputRoot: string,
   version: string, target: string): readonly { name: string; command: string[]; timeoutSeconds: number }[] {
-  if (!Object.prototype.hasOwnProperty.call(moduleSourcePhasePolicy, module) || module === ('supervisor' as string)) return fail('unsupported producer');
+  if (!Object.prototype.hasOwnProperty.call(moduleSourcePhasePolicy, module) || !['api', 'css', 'afs'].includes(module)) return fail('unsupported producer');
   const file = fileURLToPath(new URL(`../../${module}-module-producer.py`, import.meta.url));
   const before = readFileSync(file);
   if (hash(before) !== moduleSourcePhasePolicy[module]) return fail('verifier producer policy drift');
@@ -71,22 +74,25 @@ export function inspectModuleSourcePhases(input: { artifact: unknown; source: un
   if (!artifact || !source || !origin) return fail('real artifact, immutable Git source and origin capabilities required');
   const producer = JSON.parse(artifact.readProducerOriginal('producer.receipt.json', 1024 ** 2).toString());
   const module = producer.kind === 'api-module-product-production' ? 'api'
-    : producer.kind === 'css-module-product-production' ? 'css' : undefined;
+    : producer.kind === 'css-module-product-production' ? 'css' : producer.kind === 'afs-module-product-production' ? 'afs' : undefined;
   if (!module || !artifact.identity.target || source.sourceSha !== artifact.identity.sourceSha || origin.sourceSha !== source.sourceSha
-    || origin.target !== artifact.identity.target || origin.workflowPath !== `.github/workflows/${module}-module-product.yml`
+    || origin.target !== artifact.identity.target || origin.workflowPath !== (module === 'afs' ? '.github/workflows/agentfs-module-mounted-acceptance.yml' : `.github/workflows/${module}-module-product.yml`)
     || producer.context?.actualCheckoutSha !== source.sourceSha || producer.context?.target !== artifact.identity.target
     || producer.context?.runId !== origin.runId || producer.context?.runAttempt !== origin.runAttempt
     || producer.context?.runHeadSha !== origin.runHeadSha || producer.context?.version !== artifact.identity.version
     || producer.sourceBefore?.sha !== source.sourceSha || producer.sourceAfter?.sha !== source.sourceSha
     || producer.sourceBefore?.status !== '' || producer.sourceAfter?.status !== '') return fail('module source/origin identity mismatch');
   if (hash(source.readTracked(`scripts/${module}-module-producer.py`)) !== moduleSourcePhasePolicy[module]
-    || hash(source.readTracked('scripts/agentfs-native-ci/supervise.py')) !== moduleSourcePhasePolicy.supervisor) {
+    || hash(source.readTracked('scripts/agentfs-native-ci/supervise.py')) !== moduleSourcePhasePolicy.supervisor
+    || hash(source.readTracked('scripts/lib/module-source-materials.py')) !== moduleSourcePhasePolicy.materials
+    || hash(source.readTracked('scripts/lib/module-artifact-limits.json')) !== moduleSourcePhasePolicy.limits
+    || (module === 'afs' && hash(source.readTracked('scripts/api-module-producer.py')) !== moduleSourcePhasePolicy.api)) {
     return { status: 'pending' as const, reason: 'module-source-phase-policy-unreviewed', sourceQualified: false as const };
   }
   // Absolute paths are recovered from the reviewed command's own original
   // receipt; candidate input cannot supply alternate command policy paths.
   let repositoryRoot = '/reviewed-repository', outputRoot: string;
-  const phase = producer.phases.find((row: any) => row.name === (module === 'api' ? 'native-inputs' : 'pack'));
+  const phase = producer.phases.find((row: any) => row.name === (module === 'api' ? 'native-inputs' : module === 'afs' ? 'afs-build' : 'pack'));
   const receipt = JSON.parse(artifact.readProducerOriginal(phase?.receipt?.path, 1024 ** 2).toString());
   if (!Array.isArray(receipt.command)) return fail('phase command missing');
   if (module === 'api') {
@@ -94,8 +100,13 @@ export function inspectModuleSourcePhases(input: { artifact: unknown; source: un
     if (typeof receipt.command[1] !== 'string' || !receipt.command[1].endsWith(suffix)) return fail('producer repository binding missing');
     repositoryRoot = receipt.command[1].slice(0, -suffix.length);
   }
+  if (module === 'afs') {
+    const index = receipt.command.indexOf('--cli-package'), original = receipt.command[index + 1], suffix = '/packages/xpod-cli';
+    if (index < 0 || typeof original !== 'string' || !original.endsWith(suffix)) return fail('AFS producer repository binding missing');
+    repositoryRoot = original.slice(0, -suffix.length);
+  }
   const out = receipt.command.indexOf('--out'), originalOutput = receipt.command[out + 1];
-  const suffix = module === 'api' ? '/originals' : '/stage';
+  const suffix = module === 'api' ? '/originals' : module === 'afs' ? '/build' : '/stage';
   if (out < 0 || typeof originalOutput !== 'string' || !originalOutput.endsWith(suffix)
     || !originalOutput.startsWith('/') || !repositoryRoot.startsWith('/')) return fail('producer output binding missing');
   outputRoot = originalOutput.slice(0, -suffix.length);

@@ -155,3 +155,15 @@ test('disk reservation uses available blocks, fixed floor and prewrite queue hea
   expect(() => assertProductDiskBudget({ bavail: BigInt(floor + initial - 1), bsize: 1n }, initial)).toThrow('floor');
   assertProductDiskBudget({ bavail: BigInt(floor + initial), bsize: 1n }, initial);
 });
+
+test('native header ranges retain same fd hash identity beyond sparse rehash call budget', async () => {
+  await fixture(async file => {
+    fs.writeFileSync(file, tgz([{ name: 'package/package.json', text: '{}' }, { name: 'package/native/image', text: 'header and commands' }]));
+    const inventory = await indexProductArchiveOnDisk(file);
+    try {
+      for (let call = 0; call < 512; call++) expect(inventory.readBoundMemberRange('native/image', 0, 6)).toEqual(Buffer.from('header'));
+      expect(() => inventory.readBoundMemberRange('native/image', 0, 65537)).toThrow('range');
+    } finally { inventory.dispose(); }
+    expect(() => inventory.readBoundMemberRange('native/image', 0, 1)).toThrow('range');
+  });
+});

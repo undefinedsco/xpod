@@ -46,7 +46,11 @@ class MacMaterialsTest(unittest.TestCase):
             root = Path(directory); source = root / 'source'; source.mkdir()
             (source / 'input').write_text('before')
             rows = module.snapshot_sources([('engine', source)], root / 'kit')
-            record = root / 'snapshot.json'; record.write_text(json.dumps(rows))
+            kit = root/'source-kit.json'; kit.write_text(json.dumps(dict(files=[row['reference'] for row in rows])))
+            helper = root/'helper'; helper.write_bytes(b'helper test fixture')
+            record = root/'snapshot.json'
+            record.write_text(json.dumps(dict(files=rows,target='darwin-arm64',sourceKitPath=str(kit),
+                                             sourceKitSha256=module.digest(kit),helperPath=str(helper))))
             command = [sys.executable, '-B', str(SCRIPT), '--verify-inputs', str(record)]
             result = subprocess.run(command, capture_output=True, text=True, timeout=5,
                                     env=dict(os.environ, PYTHONDONTWRITEBYTECODE='1'))
@@ -66,6 +70,23 @@ class MacMaterialsTest(unittest.TestCase):
         shell = (SCRIPT.parent / 'build-macos-local-runtime.sh').read_text()
         self.assertLess(shell.index('if [[ "$mode" == build-prepared ]]; then exit 0; fi'),
                         shell.index('python3 "$qlever_root/scripts/verify-local-runtime-artifacts.py"'))
+
+    def test_sourcekit_helper_and_same_input_inventory_bound(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); source = root/'source'; source.mkdir()
+            (source/'input.cpp').write_text('actual source')
+            rows = module.snapshot_sources([('engine', source)],root/'kit')
+            kit = root/'source-kit.json'; kit.write_text(json.dumps(dict(files=[row['reference'] for row in rows])))
+            helper = root/'helper'; helper.write_bytes(b'actual-helper-test-fixture')
+            document = dict(files=rows,target='darwin-arm64',sourceKitPath=str(kit),
+                            sourceKitSha256=module.digest(kit),helperPath=str(helper))
+            actual = module.observe_input_document(document)
+            self.assertEqual(actual['filesBefore'], json.loads(kit.read_text())['files'])
+            self.assertEqual(actual['filesAfter'], actual['filesBefore'])
+            self.assertEqual(actual['helperSha256'], module.digest(helper))
+            self.assertEqual(actual['sourceKitSha256'], module.digest(kit))
+            kit.write_text('{}')
+            with self.assertRaisesRegex(RuntimeError, 'kit changed'): module.observe_input_document(document)
 
     def test_old_archive_only_cache_refused(self):
         with tempfile.TemporaryDirectory() as directory:

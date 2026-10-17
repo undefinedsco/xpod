@@ -6,7 +6,7 @@ import http from 'node:http';
 import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 const { runPublicationCommand } = createRequire(import.meta.url)('../../scripts/lib/afs-publication-command.cjs');
-import { executeIndependentPublication, promoteIndependentPublication, normalizeIndependentDistTags, estimateIndependentPublicationAuditWriteBytes, independentPublisherOwnWriteLimitBytes, independentPublicationUploadTimeoutMs, planIndependentPublicationTimeBudget, markPublicationCommandFailure, publicationRetainedArchiveMetadata, buildPublicationConsumerMaterials } from '../../scripts/lib/independent-admission/publication-executor';
+import { executeIndependentPublication, promoteIndependentPublication, normalizeIndependentDistTags, estimateIndependentPublicationAuditWriteBytes, independentPublisherOwnWriteLimitBytes, independentPublicationUploadTimeoutMs, planIndependentPublicationTimeBudget, markPublicationCommandFailure, publicationRetainedArchiveMetadata, buildPublicationConsumerMaterials, publicationFrontierMetadata, planIndependentPublicationFrontier, authorizeIndependentPromotion, stageIndependentPublication, planPublicationStageTimeBudget, planPublicationStageBatch, planPublicationPromotionTimeBudget, publicationPhaseTimePolicy, assertReviewedPublicationPhaseTimeWindow, assertPublicationCommandTimeRemaining } from '../../scripts/lib/independent-admission/publication-executor';
 
 describe('guarded independent publication executor', () => {
   test('JSON passed claims fail before disk writes or network', async () => {
@@ -14,6 +14,14 @@ describe('guarded independent publication executor', () => {
     const fake = { status: 'verified', allProfilesVerified: true, stage: 'prepublish' };
     await expect(executeIndependentPublication({ client: fake, cli: fake, clientSource: fake,
       cliSource: fake, clientConsumer: fake, cliConsumer: fake, token: 'never-used' })).rejects.toThrow('real central');
+    expect(fs.readdirSync(os.tmpdir()).filter(name => name.startsWith('xpod-independent-publish-')).sort()).toEqual(before);
+  });
+  test('final job cannot restore promotion authority from serialized prior-wave success', async () => {
+    const before = fs.readdirSync(os.tmpdir()).filter(name => name.startsWith('xpod-independent-publish-')).sort();
+    await expect(authorizeIndependentPromotion({ schemaVersion: 2, products: [{
+      artifact: { verified: true }, source: { verified: true }, prepublishConsumer: { allProfilesVerified: true },
+      registry: { verified: true }, postpublishConsumer: { stage: 'postpublish', allProfilesVerified: true, registryInstallVerified: true },
+    }] } as never)).rejects.toThrow('real central');
     expect(fs.readdirSync(os.tmpdir()).filter(name => name.startsWith('xpod-independent-publish-')).sort()).toEqual(before);
   });
   test('serialized or absent permits cannot promote tags', async () => {
@@ -164,14 +172,16 @@ test('actual executor material builder omits a second client for primary client 
   const client = Object.freeze({ fixture: 'registry-client-handle' });
   const cli = Object.freeze({ fixture: 'cohort-cli-handle' });
   const api = Object.freeze({ fixture: 'cohort-api-handle' });
+  const peerPlan: any = Object.freeze({ fixture: 'opaque-nested-peer-plan' });
   const registryCandidates = [{ artifact: client, identity: { package: '@undefineds.co/xpod-client' } }];
   const primary = buildPublicationConsumerMaterials({ artifact: client, package: '@undefineds.co/xpod-client', candidates: registryCandidates });
   expect(primary.artifact).toBe(client);
   expect('client' in primary).toBe(false);
   for (const [artifact, name] of [[cli, '@undefineds.co/xpod-cli'], [api, '@undefineds.co/xpod-api-linux-x64']] as const) {
     const materials = buildPublicationConsumerMaterials({ artifact, package: name, candidates: registryCandidates,
-      dependencies: [client], peers: [] });
+      peerPlan, dependencies: [client], peers: [] });
     expect(materials.client).toBe(client);
+    expect(materials.peerPlan).toBe(peerPlan);
     expect(materials.artifact).toBe(artifact);
     expect(Object.isFrozen(materials.dependencies)).toBe(true);
   }
@@ -190,4 +200,113 @@ test('complete14-member upper bound does not fit hosted6h, without skipping any 
   const external = planIndependentPublicationTimeBudget(modules.slice(0, 4), 240 * 60_000, [false, false]);
   expect(family.totalMs < 240 * 60_000).toBe(true);
   expect(external.externalRegistryReadbackMs).toBe(120_000);
+});
+
+
+describe('combined publication prerequisite frontiers', () => {
+  const cohort = { order: ['client', 'cli', 'css', 'api', 'afs'], dependencies: {
+    client: [], cli: ['client'], css: ['cli'], api: ['cli', 'css'], afs: ['api'],
+  } };
+  test('remote consumer prerequisites control each subsequent wave', () => {
+    const done = new Set<string>();
+    for (const expected of ['client', 'cli', 'css', 'api', 'afs']) {
+      const wave = publicationFrontierMetadata(cohort, done);
+      expect(wave.frontier).toEqual([expected]); expect(wave.mutationAllowed).toBe(false);
+      done.add(expected);
+    }
+    expect(publicationFrontierMetadata(cohort, done)).toMatchObject({ complete: true, frontier: [], remaining: [] });
+    expect(() => publicationFrontierMetadata(cohort, new Set(['api']))).toThrow('unverified prerequisites');
+    expect(() => publicationFrontierMetadata(cohort, new Set(['unknown']))).toThrow('invalid complete cohort');
+  });
+  test('independent ready branches share a wave and malformed DAGs are refused', () => {
+    expect(publicationFrontierMetadata({ order: ['client', 'api', 'css'], dependencies: {
+      client: [], api: ['client'], css: ['client'],
+    } }, new Set(['client'])).frontier).toEqual(['api', 'css']);
+    expect(() => publicationFrontierMetadata({ order: ['api', 'css'], dependencies: {
+      api: ['css'], css: ['api'],
+    } }, new Set())).toThrow('normalized combined prerequisite DAG');
+  });
+  test('JSON success claims cannot enter operational frontier planning', () => {
+    expect(() => planIndependentPublicationFrontier({ schemaVersion: 2, products: [{
+      artifact: { verified: true }, source: { verified: true }, registry: { verified: true },
+      postpublishConsumer: { allProfilesVerified: true, registryInstallVerified: true, stage: 'postpublish' },
+    }] } as never)).toThrow('real central');
+  });
+});
+
+
+describe('bounded family candidate stages', () => {
+  test('stage refuses serialized material before filesystem or registry mutation', async () => {
+    const before = fs.readdirSync(os.tmpdir()).filter(name => name.startsWith('xpod-independent-publish-')).sort();
+    await expect(stageIndependentPublication({ schemaVersion: 2, products: [{
+      artifact: { verified: true }, source: { verified: true }, prepublishConsumer: { stage: 'prepublish', allProfilesVerified: true },
+    }], token: 'never-used' } as never, 'api')).rejects.toThrow('real central');
+    expect(fs.readdirSync(os.tmpdir()).filter(name => name.startsWith('xpod-independent-publish-')).sort()).toEqual(before);
+  });
+  test('family budget includes full cohort conflicts, external dependencies and every large archive', () => {
+    const cohort = [{}, {}, ...Array.from({ length: 12 }, () => ({ target: 'linux-x64' }))];
+    const staged = Array.from({ length: 4 }, () => ({ target: 'linux-x64', archiveBytes: 256 * 1024 ** 2 }));
+    const result = planPublicationStageTimeBudget(cohort, staged, [{}, {}]);
+    expect(result.registryReadbackMs).toBe(34 * 60_000);
+    expect(result.archiveMs).toBe(4 * (360_000 + 286_000));
+    expect(result.totalMs < result.pipelineLimitMs).toBe(true);
+    expect(() => planPublicationStageTimeBudget(cohort, staged.map(row => ({ ...row, archiveBytes: 768 * 1024 ** 2 })), [{}, {}])).toThrow('complete stage exceeds');
+    expect(() => planPublicationStageTimeBudget(cohort, [...staged, staged[0]])).toThrow('bounded complete stage');
+    expect(() => planPublicationStageTimeBudget(Array.from({ length: 128 }, () => ({ target: 'linux-x64' })), staged))
+      .toThrow('complete stage exceeds');
+  });
+});
+
+
+test('large family frontier splits without changing whole-cohort coverage or skipping malformed deferred archive', () => {
+  const cohort = [{}, {}, ...Array.from({ length: 12 }, () => ({ target: 'linux-x64' }))];
+  const ready = Array.from({ length: 4 }, () => ({ target: 'linux-x64', archiveBytes: 768 * 1024 ** 2 }));
+  const batch = planPublicationStageBatch(cohort, ready, [{}, {}]);
+  expect(batch).toMatchObject({ mutationAllowed: false, count: 2, deferredCount: 2 });
+  expect(batch.timeBudget.totalMs <= batch.timeBudget.pipelineLimitMs).toBe(true);
+  expect(ready.length).toBe(4); expect(cohort.length).toBe(14);
+  expect(() => planPublicationStageBatch(cohort, [...ready.slice(0, 3), { archiveBytes: -1 }])).toThrow('invalid collected archive');
+});
+
+
+test('final promotion budgets all3 fresh registry rounds and both tag operations per member', () => {
+  const products = [{}, {}, ...Array.from({ length: 12 }, () => ({ target: 'linux-x64' }))];
+  const budget = planPublicationPromotionTimeBudget(products, [{}, {}]);
+  expect(budget.registryReadbackMs).toBe(77 * 60_000);
+  expect(budget.tagsMs).toBe(14 * 60_000);
+  expect(budget.totalMs).toBe(111 * 60_000);
+  expect(() => planPublicationPromotionTimeBudget(Array.from({ length: 24 }, () => ({ target: 'linux-x64' }))))
+    .toThrow('complete promotion exceeds');
+});
+
+
+test('phase planners refuse work outside the real command windows instead of approving job-timeout slack', () => {
+  const cohort = [{}, {}, ...Array.from({ length: 12 }, () => ({ target: 'linux-x64' }))];
+  // This106.7min stage fit the old120min policy but exceeds the real100min command.
+  const ready = Array.from({ length: 4 }, () => ({ target: 'linux-x64', archiveBytes: 400 * 1024 ** 2 }));
+  expect(() => planPublicationStageTimeBudget(cohort, ready, [{}, {}])).toThrow('complete stage exceeds');
+  const batch = planPublicationStageBatch(cohort, ready, [{}, {}]);
+  expect(batch.count).toBe(3);
+  expect(batch.timeBudget.pipelineLimitMs).toBe(100 * 60_000);
+  expect(batch.timeBudget.totalMs <= 100 * 60_000).toBe(true);
+  // Fourteen targets plus2portable peers require121min, fitting135min job but
+  // not its115min command. Reject before the first tag mutation.
+  expect(() => planPublicationPromotionTimeBudget(Array.from({ length: 14 }, () => ({ target: 'linux-x64' })), [{}, {}]))
+    .toThrow('complete promotion exceeds');
+  for (const policy of Object.values(publicationPhaseTimePolicy)) {
+    expect(policy.executionMinutes + policy.installationMinutes + policy.uploadMinutes + policy.setupReserveMinutes).toBe(policy.jobMinutes);
+  }
+});
+
+
+test('actual runtime workflow-window guard reads both reviewed literal command limits', () => {
+  for (const phase of ['stage', 'promotion'] as const)
+    expect(() => assertReviewedPublicationPhaseTimeWindow(process.execPath, phase)).not.toThrow();
+});
+
+
+test('actual preparation time consumes the command window and cannot use the enclosing job slack', () => {
+  expect(() => assertPublicationCommandTimeRemaining(20 * 60_000, 80 * 60_000, 100 * 60_000)).not.toThrow();
+  expect(() => assertPublicationCommandTimeRemaining(21 * 60_000, 80 * 60_000, 100 * 60_000)).toThrow('actual command time remaining');
+  expect(() => assertPublicationCommandTimeRemaining(30 * 60_000, 90 * 60_000, 115 * 60_000)).toThrow('actual command time remaining');
 });

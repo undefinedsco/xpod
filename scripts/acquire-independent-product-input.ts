@@ -1,5 +1,7 @@
+import { archiveConsumerArtifactName } from './lib/independent-admission/archive-consumer-originals';
+import { registryConsumerArtifactName } from './lib/independent-admission/registry-consumer-originals';
 import { createHash } from 'node:crypto';
-import { chmodSync, closeSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync, writeSync } from 'node:fs';
+import { chmodSync, closeSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, statfsSync, writeFileSync, writeSync } from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { isDeepStrictEqual } from 'node:util';
@@ -18,7 +20,8 @@ export function cliPublicationArtifactNames(input: { expectedSourceSha: string; 
 export const API_PRODUCT_WORKFLOW = '.github/workflows/api-module-product.yml';
 export const CSS_PRODUCT_WORKFLOW = '.github/workflows/css-module-product.yml';
 const PRODUCERS = new Set([CLI_PRODUCT_WORKFLOW, '.github/workflows/agentfs-module-mounted-acceptance.yml', API_PRODUCT_WORKFLOW, CSS_PRODUCT_WORKFLOW]);
-const LIMITS = { packedBytes: 512 * 1024 ** 2, expandedBytes: 1024 ** 3, members: 50_000 };
+import moduleArtifactLimits from './lib/module-artifact-limits.json';
+const LIMITS = { packedBytes: moduleArtifactLimits.packedBytes, expandedBytes: moduleArtifactLimits.expandedBytes, members: moduleArtifactLimits.members };
 const METADATA_NAMES = ['run', 'workflow', 'artifact'] as const;
 type FileBinding = { path: string; bytes: number; sha256: string };
 interface MetadataBinding { originals: Record<string, FileBinding & { endpoint: string }>; projection: FileBinding }
@@ -98,6 +101,8 @@ async function stream(response: Response, destination: string, bound: number) {
       if (chunk.done) break;
       bytes += chunk.value.length;
       if (bytes > bound) fail('download actual size exceeds bound');
+      const free=statfsSync(path.dirname(destination),{bigint:true});
+      if(free.bavail*free.bsize<BigInt(moduleArtifactLimits.freeFloorBytes+moduleArtifactLimits.queueReserveBytes+chunk.value.length))fail('download fixed free-space floor insufficient');
       hash.update(chunk.value);
       let offset = 0;
       while (offset < chunk.value.length) offset += writeSync(fd, chunk.value, offset);
@@ -113,13 +118,32 @@ async function stream(response: Response, destination: string, bound: number) {
 export async function acquireIndependentProductInput(input: ArtifactAcquisitionInput, output: string, dependencies: Dependencies = {}) {
   return acquireProductInput(input, output, dependencies, false);
 }
+/** Fixed GET-only registry-consumer original transport. It grants no origin
+ * or consumer authority; the reviewed GitHub observer independently binds it. */
+export async function acquireRegistryConsumerOriginals(input: ArtifactAcquisitionInput, output: string, options: { token?: string } = {}) {
+  if (Object.keys(options).some(key => key !== 'token')) fail('unknown registry original transport option');
+  return acquireProductInput(input, output, { token: options.token,
+    limits: { packedBytes: 96 * 1024 ** 2, expandedBytes: 72 * 1024 ** 2, members: 2100 } }, false, true);
+}
+
+/** Exact prepublish originals remain a separate artifact family and role. */
+export async function acquireArchiveConsumerOriginals(input:ArtifactAcquisitionInput,output:string,options:{token?:string}={}){
+  if(Object.keys(options).some(key=>key!=='token'))fail('unknown archive original transport option');
+  return acquireProductInput(input,output,{token:options.token,limits:{packedBytes:96*1024**2,expandedBytes:72*1024**2,members:2100}},false,true,false,true);
+}
+/** Native original transport only. Independent origin observation is required
+ * again by the central native collector; this does not issue admission. */
+export async function acquireNativeAdmissionOriginals(input: ArtifactAcquisitionInput, output: string, options: { token?: string } = {}) {
+  if (Object.keys(options).some(key => key !== 'token')) fail('unknown native original transport option');
+  return acquireProductInput(input, output, { token: options.token }, false, false, true);
+}
 /** Same-run legacy transport; never admits a still-running independent producer run. */
 export async function acquireLegacyRootSupply(input: ArtifactAcquisitionInput, output: string, dependencies: Dependencies = {}) {
   if (process.env.GITHUB_ACTIONS !== 'true' || process.env.GITHUB_REPOSITORY !== REPOSITORY
     || String(input.runId) !== process.env.GITHUB_RUN_ID || String(input.runAttempt) !== process.env.GITHUB_RUN_ATTEMPT) fail('same-run runtime binding required');
   return acquireProductInput(input, output, { ...dependencies, limits: { packedBytes: 16 * 1024 ** 2, expandedBytes: 40 * 1024 ** 2, members: 4096 } }, true);
 }
-async function acquireProductInput(input: ArtifactAcquisitionInput, output: string, dependencies: Dependencies, legacy: boolean) {
+async function acquireProductInput(input: ArtifactAcquisitionInput, output: string, dependencies: Dependencies, legacy: boolean, registryConsumer = false, nativeOriginals = false, archiveConsumer = false) {
   if (input?.schemaVersion !== 1 || !/^[a-f0-9]{40}$/u.test(input.sourceSha) || !/^[a-f0-9]{40}$/u.test(input.runHeadSha)
     || !/^[a-f0-9]{64}$/u.test(input.artifactSha256) || ![input.runId, input.runAttempt, input.artifactId].every(positive)) fail('exact source/run/attempt/artifact binding required');
   if (Object.keys(input).some(key => !['schemaVersion', 'sourceSha', 'runHeadSha', 'runId', 'runAttempt', 'artifactId', 'artifactSha256'].includes(key))) fail('unknown acquisition selector');
@@ -147,12 +171,12 @@ async function acquireProductInput(input: ArtifactAcquisitionInput, output: stri
       return value;
     }
     const run = await json('run', `actions/runs/${input.runId}/attempts/${input.runAttempt}`);
-    if (run.id !== input.runId || run.run_attempt !== input.runAttempt || (!legacy && (run.status !== 'completed' || run.conclusion !== 'success')) || (legacy && !['queued', 'in_progress', 'completed'].includes(run.status))
+    if (run.id !== input.runId || run.run_attempt !== input.runAttempt || (!legacy && !(run.status==='completed'?run.conclusion==='success':registryConsumer&&run.status==='in_progress'&&run.conclusion===null)) || (legacy && !['queued', 'in_progress', 'completed'].includes(run.status))
       || run.repository?.full_name !== REPOSITORY || run.head_repository?.full_name !== REPOSITORY || run.head_sha !== input.runHeadSha
       || !['push', 'pull_request', 'workflow_dispatch'].includes(run.event) || !positive(run.workflow_id)) fail('untrusted producer run');
-    if (run.event !== 'pull_request' && input.sourceSha !== input.runHeadSha) fail('non-PR build source differs from run head');
+    if (!registryConsumer && run.event !== 'pull_request' && input.sourceSha !== input.runHeadSha) fail('non-PR build source differs from run head');
     const workflow = await json('workflow', `actions/workflows/${run.workflow_id}`);
-    if (workflow.id !== run.workflow_id || !(legacy ? ['.github/workflows/legacy-root-compat.yml', '.github/workflows/candidate.yml'].includes(workflow.path) : PRODUCERS.has(workflow.path)) || run.path?.split('@')[0] !== workflow.path) fail('untrusted producer workflow');
+    if (workflow.id !== run.workflow_id || !(legacy ? ['.github/workflows/legacy-root-compat.yml', '.github/workflows/candidate.yml'].includes(workflow.path) : nativeOriginals ? ['.github/workflows/agentfs-native-acceptance.yml','.github/workflows/build-qlever-macos-runtime.yml',CSS_PRODUCT_WORKFLOW].includes(workflow.path) : registryConsumer ? workflow.path === '.github/workflows/independent-publication.yml' : PRODUCERS.has(workflow.path)) || run.path?.split('@')[0] !== workflow.path) fail('untrusted producer workflow');
     let producerJob: any, legacyJobs: any;
     if (legacy) {
       const jobs = await json('jobs', `actions/runs/${input.runId}/attempts/${input.runAttempt}/jobs?per_page=100`);
@@ -163,13 +187,16 @@ async function acquireProductInput(input: ArtifactAcquisitionInput, output: stri
     }
     const artifact = await json('artifact', `actions/artifacts/${input.artifactId}`);
     const cliPublicationNames = cliPublicationArtifactNames({ expectedSourceSha: input.sourceSha, runId: input.runId, runAttempt: input.runAttempt });
-    const allowedNames = legacy ? [`legacy-root-normal-afs-${input.sourceSha}-${input.runId}-${input.runAttempt}`] : workflow.path === CLI_PRODUCT_WORKFLOW
+    const consumerName=archiveConsumer?archiveConsumerArtifactName:registryConsumerArtifactName;
+    const consumerNames = (['client', 'cli'] as const).map(module => consumerName({ module, sourceSha: input.sourceSha, runId: input.runId, runAttempt: input.runAttempt }))
+      .concat((['api', 'css', 'afs'] as const).flatMap(module => MODULE_TARGETS.map(target => consumerName({ module, target: `${target.platform}-${target.arch}`, sourceSha: input.sourceSha, runId: input.runId, runAttempt: input.runAttempt }))));
+    const allowedNames = nativeOriginals ? workflow.path === '.github/workflows/agentfs-native-acceptance.yml' ? MODULE_TARGETS.map(target => `agentfs-native-${target.platform}-${target.arch}-${input.sourceSha}`) : (workflow.path === CSS_PRODUCT_WORKFLOW ? ['darwin-arm64'] : ['darwin-arm64','darwin-x64']).map(target => `qlever-local-runtime-${target}-${input.sourceSha}`) : registryConsumer ? consumerNames : legacy ? [`legacy-root-normal-afs-${input.sourceSha}-${input.runId}-${input.runAttempt}`] : workflow.path === CLI_PRODUCT_WORKFLOW
       ? [...['Linux', 'macOS'].map(os => `xpod-cli-${os}-${input.sourceSha}`), ...cliPublicationNames]
       : [API_PRODUCT_WORKFLOW, CSS_PRODUCT_WORKFLOW].includes(workflow.path)
         ? productTargets(workflow.path === CSS_PRODUCT_WORKFLOW ? 'css' : 'api').filter(row => row.nativeSourceAvailable)
           .map(row => `${workflow.path === CSS_PRODUCT_WORKFLOW ? 'css' : 'api'}-module-products-${row.target}-${input.sourceSha}-${input.runId}-${input.runAttempt}`)
-      : MODULE_TARGETS.map(target => `afs-module-products-${target.platform}-${target.arch}-${input.sourceSha}-${input.runId}-${input.runAttempt}`);
-    const created = Date.parse(artifact.created_at), started = Date.parse(run.run_started_at), completed = Date.parse(legacy ? producerJob.completed_at : run.updated_at);
+      : MODULE_TARGETS.flatMap(target => [`afs-module-products-${target.platform}-${target.arch}-${input.sourceSha}-${input.runId}-${input.runAttempt}`, `afs-module-production-${target.platform}-${target.arch}-${input.sourceSha}-${input.runId}-${input.runAttempt}`]);
+    const created = Date.parse(artifact.created_at), started = Date.parse(run.run_started_at), completed = registryConsumer && run.status==='in_progress' ? Date.now() : Date.parse(legacy ? producerJob.completed_at : run.updated_at);
     if (artifact.id !== input.artifactId || !allowedNames.includes(artifact.name) || artifact.expired !== false || artifact.workflow_run?.id !== run.id
       || artifact.workflow_run?.head_sha !== input.runHeadSha || artifact.digest !== 'sha256:' + input.artifactSha256
       || !positive(artifact.size_in_bytes) || artifact.size_in_bytes > limits.packedBytes
@@ -204,7 +231,7 @@ async function acquireProductInput(input: ArtifactAcquisitionInput, output: stri
     const cliTestMaterial = workflow.path === CLI_PRODUCT_WORKFLOW && !cliPublication;
     const receipt = { schemaVersion: 1, kind: legacy ? 'legacy-root-same-run-acquisition' : 'independent-product-artifact-acquisition', status: 'blocked',
       ...(legacy ? { producerJob: { ...jobsOriginal, path: 'metadata/jobs.original.json' } } : {}),
-      materialRole: legacy ? 'legacy-root-normal-js-originals' : cliPublication ? CLI_PUBLICATION_MATERIAL_ROLE : cliTestMaterial ? 'test-materials' : [API_PRODUCT_WORKFLOW, CSS_PRODUCT_WORKFLOW].includes(workflow.path) ? 'controlled-preview-materials' : 'module-product-materials',
+      materialRole: nativeOriginals ? 'native-admission-originals' : registryConsumer ? archiveConsumer?'archive-consumer-originals':'registry-consumer-originals' : legacy ? 'legacy-root-normal-js-originals' : cliPublication ? CLI_PUBLICATION_MATERIAL_ROLE : cliTestMaterial ? 'test-materials' : ([API_PRODUCT_WORKFLOW, CSS_PRODUCT_WORKFLOW].includes(workflow.path) || (workflow.path === '.github/workflows/agentfs-module-mounted-acceptance.yml' && artifact.name.startsWith('afs-module-production-'))) ? 'controlled-preview-materials' : 'module-product-materials',
       repository: REPOSITORY, expectedSourceSha: input.sourceSha, runHeadSha: input.runHeadSha,
       runId: input.runId, runAttempt: input.runAttempt, artifactId: input.artifactId, workflowPath: workflow.path,
       archive: { path: 'artifact.zip', ...downloaded }, inventory,

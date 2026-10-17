@@ -1,6 +1,6 @@
 import { expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
-import { verifyLegalAdmission, verifyMitGrantText, explicitLicenseConflicts } from '../../scripts/lib/independent-admission/legal-admission';
+import { verifyLegalAdmission, verifyMitGrantText, verifyApacheGrantText, explicitLicenseConflicts } from '../../scripts/lib/independent-admission/legal-admission';
 import type { AdmissionContext } from '../../scripts/lib/independent-admission';
 const template = readFileSync(new URL('../../packages/xpod-cli/licenses/native/declarations/objects/b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5.txt', import.meta.url));
 const normative = template.toString().slice(template.toString().indexOf('Permission is hereby granted'));
@@ -49,4 +49,13 @@ test('central exact source bindings are derived from canonical layout and genuin
   expect(derived.evidence?.files).toEqual([{ path: 'index.js', sourcePath: 'packages/xpod-client/index.js', grantSourcePath: 'LICENSE' },
     { path: 'LICENSE', sourcePath: 'LICENSE', grantSourcePath: 'LICENSE' }]);
   expect(deriveExactSourceGrantDeclaration([{ ...members[0]!, sha256: 'a'.repeat(64) }], source, 'packages/xpod-client').evidence).toBeUndefined();
+});
+
+
+test('Apache canonical original needs both complete normative text and original manifest application', () => {
+  const apache = readFileSync(new URL('../../packages/xpod-cli/licenses/native/collection/objects/cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30.txt', import.meta.url));
+  expect(verifyApacheGrantText(apache, apache, 'Apache-2.0')).toBe(true);
+  expect(verifyApacheGrantText(apache, apache, undefined)).toBe(false);
+  expect(verifyApacheGrantText(Buffer.from('Apache-2.0'), apache, 'Apache-2.0')).toBe(false);
+  expect(verifyApacheGrantText(Buffer.from(apache.toString() + '\nNo commercial use.'), apache, 'Apache-2.0')).toBe(false);
 });

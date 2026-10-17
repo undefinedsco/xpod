@@ -1,0 +1,111 @@
+name: Independent matching-host registry consumer
+
+on:
+  workflow_call:
+    inputs:
+      source_sha:
+        type: string
+        required: true
+      producer_selectors:
+        type: string
+        required: true
+      module:
+        type: string
+        required: true
+      target:
+        type: string
+        required: true
+      mode:
+        type: string
+        default: prepare
+        required: false
+    outputs:
+      artifact_id:
+        value: ${{ jobs.consume.outputs.artifact_id }}
+      artifact_digest:
+        value: ${{ jobs.consume.outputs.artifact_digest }}
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  resolve:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      runner: ${{ steps.resolve.outputs.runner }}
+      artifact_name: ${{ steps.resolve.outputs.artifact_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_sha }}
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - name: Install reviewed resolver dependencies
+        timeout-minutes: 10
+        run: bun install --frozen-lockfile
+      - id: resolve
+        name: Resolve fixed registry consumer host and artifact
+        env:
+          INDEPENDENT_PUBLICATION_PHASE: registry-consumer-resolve
+          INDEPENDENT_PUBLICATION_INPUT: ${{ inputs.producer_selectors }}
+          REGISTRY_CONSUMER_MODULE: ${{ inputs.module }}
+          REGISTRY_CONSUMER_TARGET: ${{ inputs.target }}
+        run: bun scripts/run-independent-publication.ts
+
+  consume:
+    needs: resolve
+    if: ${{ inputs.mode == 'publish' && github.ref == 'refs/heads/staging' }}
+    name: registry-consumer-${{ inputs.module }}-${{ inputs.target }}
+    runs-on: ${{ needs.resolve.outputs.runner }}
+    timeout-minutes: 45
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      artifact_digest: ${{ steps.upload.outputs.artifact-digest }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.21.1
+      - name: Install the reviewed consumer toolchain
+        timeout-minutes: 10
+        run: bun install --frozen-lockfile
+      - name: Run fixed registry-installed product consumer
+        timeout-minutes: 27
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INDEPENDENT_PUBLICATION_PHASE: registry-consumer
+          INDEPENDENT_PUBLICATION_INPUT: ${{ inputs.producer_selectors }}
+          REGISTRY_CONSUMER_MODULE: ${{ inputs.module }}
+          REGISTRY_CONSUMER_TARGET: ${{ inputs.target }}
+        run: bun scripts/run-independent-publication.ts
+      - id: upload
+        name: Upload registry consumer originals
+        timeout-minutes: 5
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ needs.resolve.outputs.artifact_name }}
+          path: .test-data/independent-registry-consumer/
+          if-no-files-found: error
+          retention-days: 30
+      - name: Upload registry consumer failure diagnostics
+        if: failure()
+        timeout-minutes: 5
+        uses: actions/upload-artifact@v4
+        with:
+          name: xpod-registry-consumer-diagnostics-${{ inputs.module }}-${{ inputs.target }}-${{ inputs.source_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            .test-data/independent-registry-consumer/
+            .test-data/independent-registry-consumer-producer/
+          if-no-files-found: warn
+          retention-days: 30

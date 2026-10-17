@@ -149,7 +149,7 @@ def inventory(package_root, installed):
 def consumer_transport(plan):
     """A transport choice describes execution, never an admission capability."""
     mode = plan.get('transport', 'immutable-local-fixture')
-    require(mode in ['immutable-local-fixture', 'production-npm-registry'], 'unregistered consumer transport')
+    require(mode in ['immutable-local-fixture', 'production-npm-registry', 'collected-product-archives'], 'unregistered consumer transport')
     return mode
 
 
@@ -288,7 +288,7 @@ def validate_consumer_plan(plan, profile):
             require(product['package'] == '@undefineds.co/xpod-' + key and isinstance(product.get('version'), str) and product['version'] and product['version'] != 'latest' and publication_input[key]['sha256'] == row['sha256'] and publication_input[key]['integrity'] == row['integrity'], 'CLI product identity mismatch')
         require(all(not inside(path, root) for root in roots), 'archives must be outside denied source roots')
         originals[key] = path
-    if transport == 'production-npm-registry':
+    if transport != 'immutable-local-fixture':
         registry_tool_declarations(plan, cli)
     consumer = css['consumerInput']
     require(not pathlib.Path(consumer['path']).is_absolute() and '..' not in pathlib.Path(consumer['path']).parts, 'unsafe consumer input reference')
@@ -317,7 +317,7 @@ def validate_consumer_plan(plan, profile):
 class ModuleConsumerRunner:
     def __init__(self, plan, checked):
         self.plan, self.checked = plan, checked
-        self.deadline = time.monotonic() + 480 if consumer_transport(plan) == 'production-npm-registry' else None
+        self.deadline = time.monotonic() + 480 if consumer_transport(plan) != 'immutable-local-fixture' else None
         self.output = checked['output']
         self.records = []
         self.child = None
@@ -587,15 +587,18 @@ class ModuleConsumerRunner:
                 metadata = dict(name=package['name'], version=package['version'], dist=dict(integrity=self.plan[self.module_id + 'Archive']['integrity'], tarball='https://registry.npmjs.org/fixture-module.tgz'))
                 binding = dict(archive=str(original_module), roots=[str(p) for p in self.checked['roots']], metadata=metadata, metadataURL='https://registry.npmjs.org/' + urllib.parse.quote(package['name'], safe='') + '/' + package['version'])
                 (cycle / 'binding.json').write_text(json.dumps(binding))
-                production = consumer_transport(self.plan) == 'production-npm-registry'
-                if not production:
+                production = consumer_transport(self.plan) != 'immutable-local-fixture'
+                registry_transport = consumer_transport(self.plan) == 'production-npm-registry'
+                if not registry_transport:
                     (cycle / 'transport.mjs').write_text(TRANSPORT)
                 (cycle / 'probe.mjs').write_text(PROBE)
                 profile = '(version 1) (allow default)\n' + '\n'.join('(deny file-read* file-write* (subpath ' + json.dumps(str(p)) + '))' for p in self.checked['roots']) + '\n'
                 (cycle / 'deny.sb').write_text(profile)
                 deps = registry_tool_declarations(self.plan, self.checked['cli']) if production else { '@undefineds.co/xpod-' + key: 'file:' + str(self.checked['originals'][key]) for key in ['cli', 'client'] }
+                if consumer_transport(self.plan) == 'collected-product-archives':
+                    deps.update({'@undefineds.co/xpod-' + key: 'file:' + str(self.checked['originals'][key]) for key in ['cli', 'client']})
                 (cycle / 'package.json').write_text(json.dumps(consumer_install_manifest(deps, production)))
-                runtime_wrapper(cycle / 'runtime-bin', runtime, self.plan[runtime], None if production else cycle / 'transport.mjs')
+                runtime_wrapper(cycle / 'runtime-bin', runtime, self.plan[runtime], None if registry_transport else cycle / 'transport.mjs')
                 env = { 'HOME': str(home), 'TMPDIR': str(cycle), 'PATH': str(cycle / 'runtime-bin') + ':/usr/bin:/bin', 'LANG': 'en_US.UTF-8' }
                 sandbox = targets.sandbox(declaration, cycle, self.checked['roots'])
                 self.command(runtime + '-runtime-version', sandbox + [self.plan[runtime], '--version'], env, cycle)
