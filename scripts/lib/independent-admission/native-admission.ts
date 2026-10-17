@@ -1,3 +1,4 @@
+import {inspectNativeAdmissionRequirements} from './native-admission-requirements';
 import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { isDeepStrictEqual } from 'node:util';
@@ -145,10 +146,13 @@ export function verifyCollectedNativeAdmission(_evidence: unknown, context: Omit
   facts.nativeRuntimeAbiScope = runtime.runtimeAbiScope;
   facts.nativeSourceClosureVerified = runtime.nativeSourceClosureVerified;
   facts.sdkSourceFacts = runtime.sdkSourceFacts;
-  // The actual observer captures source/SDK identity and a real ABI smoke.
-  // Missing compiler dependency inputs and separately sourced bundled dylibs
-  // remain explicit native-source obligations, never inferred from loader success.
-  return { status: 'pending' as const, reason: runtime.pending.join('; '), pending: [...runtime.pending], facts };
+  // Only these already privately issued, current-custody views reach the
+  // conjunction. Missing leaf axes and pending reasons remain authoritative.
+  const requirements = inspectNativeAdmissionRequirements(identity, runtime);
+  facts.nativeQualified = requirements.nativeQualified;
+  return { status: facts.nativeQualified ? 'verified' as const : 'pending' as const,
+    reason: requirements.pending.join('; ') || 'controlled-native-source-and-runtime-originals-verified',
+    pending: [...requirements.pending], facts };
 }
 
 /** Fixed owned process reuses the one Python policy. Its result is mechanical
