@@ -41,20 +41,20 @@ def bounded_original(path,maximum,check):
 
 class LocalDaemon:
     """Authenticate the fixed local peer and keep its process identity alive."""
-    def __init__(self,check):
+    def __init__(self,check,diagnose=None):
         if any(key in os.environ for key in ['DOCKER_HOST','DOCKER_CONTEXT','DOCKER_TLS_VERIFY','DOCKER_CERT_PATH']):raise RuntimeError('Remote/context Docker environment forbidden')
         self.socket=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM);self.socket.settimeout(1);self.pidfd=None;self.exe=None
         try:
             check();self.socket.connect('/var/run/docker.sock');pid,uid,gid=struct.unpack('3i',self.socket.getsockopt(socket.SOL_SOCKET,socket.SO_PEERCRED,12));binding.need(uid==0 and pid>0,'actual root local daemon peer required');self.pid=pid;self.uid=uid
             self.pidfd=os.pidfd_open(pid,0);self.exe=os.open('/proc/'+str(pid)+'/exe',os.O_RDONLY|os.O_CLOEXEC)
-            self.first=self.sample(check)
+            self.first=self.sample(check,diagnose)
         except BaseException:self.close();raise
     def close(self):
         self.socket.close()
         for fd in [self.pidfd,self.exe]:
             if fd is not None:os.close(fd)
         self.pidfd=self.exe=None
-    def sample(self,check):
+    def sample(self,check,diagnose=None):
         check();poll=select.poll();poll.register(self.pidfd,select.POLLIN);binding.need(not poll.poll(0),'actual Docker daemon process exited')
         def ident(value):return [value.st_dev,value.st_ino,value.st_mode,value.st_size,value.st_mtime_ns,value.st_ctime_ns]
         def nspid(path):
@@ -64,7 +64,13 @@ class LocalDaemon:
         nspid('/proc/self/status');nspid('/proc/'+str(self.pid)+'/status')
         pidns=os.readlink('/proc/self/ns/pid');daemonns=os.readlink('/proc/'+str(self.pid)+'/ns/pid');hostns=os.readlink('/proc/1/ns/pid');binding.need(pidns==daemonns==hostns,'Docker peer and observed proc kernel host differ')
         root=ident(os.stat('/proc/self/root'));peerroot=ident(os.stat('/proc/'+str(self.pid)+'/root'));binding.need(root==peerroot==ident(os.stat('/proc/1/root')),'host controller/daemon root differs')
-        executable=os.readlink('/proc/'+str(self.pid)+'/exe');binding.need(executable=='/usr/bin/dockerd','unreviewed/proxy Docker peer executable')
+        executable=os.readlink('/proc/'+str(self.pid)+'/exe')
+        binding.need(len(executable.encode('utf-8'))<=4096,'bounded actual Docker peer executable path')
+        # This is a failure diagnostic, never an authority enrollment. Preserve
+        # actual peer identity before the exact reviewed executable check.
+        if diagnose is not None and executable!='/usr/bin/dockerd':
+            diagnose(dict(schemaVersion=1,kind='actual-local-docker-peer-diagnostic',pid=self.pid,uid=self.uid,executablePath=executable,heldExecutableIdentity=ident(os.fstat(self.exe)),namedExecutableIdentity=ident(os.stat('/proc/'+str(self.pid)+'/exe')),controllerPidNamespace=pidns,daemonPidNamespace=daemonns,hostPidNamespace=hostns,controllerRootIdentity=root,daemonRootIdentity=peerroot,authorityVerified=False))
+        binding.need(executable=='/usr/bin/dockerd','unreviewed/proxy Docker peer executable')
         first=os.fstat(self.exe);os.lseek(self.exe,0,0);digest=hashlib.sha256();count=0;binding.need(first.st_size<=512*1024**2,'daemon executable size bound')
         while True:
             check();chunk=os.read(self.exe,65536)
@@ -130,7 +136,7 @@ def execute(prepared_image,identity,deadline,out,network='bridge'):
         return bounded_original(out/result['stdout']['path'],binding.META,lambda:budget.check(0 if cleanup else 30))
     def inspect(role,kind,reference,template):return save(role,json.loads(stage(role,['docker',kind,'inspect','--format',template,reference])))
     try:
-        daemon=LocalDaemon(check);save('daemonBefore',daemon.first)
+        daemon=LocalDaemon(check,lambda value:save('daemonPeerDiagnostic',value));save('daemonBefore',daemon.first)
         image=inspect('image','image',prepared_image,IMAGE_TEMPLATE);binding.need(image['Id']==prepared_image,'actual immutable prepared config ID differs')
         # Fresh dedicated volumes only. Never delete/reuse an existing volume.
         existing=stage('existing-volumes',['docker','volume','ls','--format','{{.Name}}']).decode().splitlines();binding.need(not set(volumes.values())&set(existing),'owned source/build output volume already exists')

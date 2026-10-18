@@ -12,10 +12,17 @@ const hash=(value:string|Buffer)=>createHash('sha256').update(value).digest('hex
 const observed=(group:GitHubSourceBindingGroup)=>new Map([...group.selectors,...(group.secondarySelectors??[])].map(row=>[sourceBindingKey(row),row.sha256]));
 test('all a101 historical SDK and controller groups preserve their complete own original binding sets',()=>{
  for(const [groups,old] of [[SDK,historical.sdk],[CONSUMER,historical.consumer],[CI,historical.ci]] as const){
-  expect(groups.length).toBe(old.length+(groups===SDK?2:groups===CI?22:11));
+  expect(groups.length).toBe(old.length+(groups===SDK?3:groups===CI?24:12));
   for(const previous of old){
-   const group=selectGitHubSourceBindingGroup(groups,new Map([...previous.selectors,...previous.secondarySelectors].map(row=>[sourceBindingKey(row),row.sha256])));
-   expect(group.selectors).toEqual(previous.selectors);expect(group.secondarySelectors??[]).toEqual(previous.secondarySelectors);
+   const matches=groups.filter(group=>JSON.stringify(group.selectors)===JSON.stringify(previous.selectors)&&hash(JSON.stringify(group.sourceBindings))===previous.sourceBindingsSha256);expect(matches).toHaveLength(1);const group=matches[0]!;
+   expect(group.selectors).toEqual(previous.selectors);
+   for(const role of previous.secondarySelectors)expect(group.secondarySelectors?.find(row=>sourceBindingKey(row)===sourceBindingKey(role))).toEqual(role);
+   for(const role of group.secondarySelectors??[])if(!previous.secondarySelectors.some(row=>sourceBindingKey(row)===sourceBindingKey(role)))expect(group.sourceBindings.find(row=>sourceBindingKey(row)===sourceBindingKey(role))).toEqual(role);
+   const tuple=new Map([...previous.selectors,...previous.secondarySelectors].map(row=>[sourceBindingKey(row),row.sha256]));
+   // A refined discriminator may only request an original this exact old tree
+   // already required, and must use that tree's own bytes rather than current.
+   for(const role of secondaryGitHubSourceBindingSelectors(groups,tuple)){const original=[...group.selectors,...group.secondarySelectors??[],...group.sourceBindings].find(row=>sourceBindingKey(row)===sourceBindingKey(role));expect(original).toBeDefined();tuple.set(sourceBindingKey(role),original!.sha256);}
+   expect(selectGitHubSourceBindingGroup(groups,tuple)).toBe(group);
    expect(hash(JSON.stringify(group.sourceBindings))).toBe(previous.sourceBindingsSha256);
   }
  }
@@ -31,7 +38,7 @@ test('actual primary then existing shared secondary resolution selects every com
  }
 });
 test('new SDK20 pairs only the three actual kernel-reviewed authority files while preserving SDK19 and all controller bytes',()=>{
- const latest=SDK.at(-2)!,previous=SDK.at(-3)!;
+ const latest=SDK[19]!,previous=SDK[18]!;
  const changed=latest.sourceBindings.filter(row=>previous.sourceBindings.find(old=>old.path===row.path)?.sha256!==row.sha256);
  expect(changed.map(row=>row.path).sort()).toEqual(['qlever/scripts/sdk-generation-multiprocess-bindings.py','qlever/scripts/sdk-ptrace-execution.py','qlever/scripts/sdk-tool-provider-originals.py']);
  for(const row of current)expect(hash(fs.readFileSync(path.join(root,row.path)))).toBe(row.sha256);

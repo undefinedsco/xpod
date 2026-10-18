@@ -39,7 +39,7 @@ def run(identity,deadline,out,context_originals):
     binding.need(outer.platform.system()=='Linux' and os.geteuid()==0,'normal outer route requires actual Linux host root')
     out=Path(out).resolve();binding.need(not out.exists() and out.parent.resolve()==Path(os.environ['RUNNER_TEMP']).resolve() and out.name=='qlever-sdk-outer','fixed host-only output root parent');out.mkdir(mode=0o700)
     stages=[];builder=binding.ownership(identity)+'-builder';platform={'linux-x64':'linux/amd64','linux-arm64':'linux/arm64'}[identity['target']]
-    daemon=outer.LocalDaemon(check)
+    daemon=None
     def stage(name,argv,cap=30,reserve=60):
         record=outer.commands.capture(name,argv,out,Path.cwd(),timeout=budget.timeout(cap,reserve),resource_profile='build' if cap>120 else 'observation');stages.append(record);return outer.bounded_original(out/record['stdout']['path'],binding.META,check)
     def metadata(path):return json.loads(outer.bounded_original(path,binding.META,check))
@@ -49,6 +49,7 @@ def run(identity,deadline,out,context_originals):
         return dict(path=name,bytes=len(data),sha256=outer.hashlib.sha256(data).hexdigest())
     prepared=None;linked=None;created_builder=False
     try:
+        daemon=outer.LocalDaemon(check,lambda value:save('daemon-peer-diagnostic.original.json',value))
         # A fresh GitHub-hosted job has no services or other candidate writer.
         # Foreign active containers cause refusal; never stop another job.
         binding.need(not stage('require-exclusive-daemon',binding.local_docker(['docker','ps','-q'])).strip(),'exclusive runner daemon required')
@@ -71,7 +72,7 @@ def run(identity,deadline,out,context_originals):
         save('linked.plan.json',plan);stage('compose-linked-image',['/usr/bin/python3','-I','-S','-B',str(HERE/'sdk-readonly-result-context.py'),'build','--plan',str(out/'linked.plan.json')],1200)
         linked=metadata(out/'linked-buildkit.original.json')['containerimage.config.digest'];binding.need(binding.digest(linked),'actual linked image config');after=daemon.sample(check);binding.need(before==after,'same held daemon throughout normal route')
     finally:
-        daemon.close()
+        if daemon is not None:daemon.close()
         if created_builder:
             primary=sys.exc_info()[1]
             try:
