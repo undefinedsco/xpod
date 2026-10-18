@@ -549,7 +549,7 @@
   },
   {
     "path": "scripts/api-module-producer.py",
-    "sha256": "0169bfbf726dce149e5a0fa995fd06bbe618236f1829d0575ccb0bafeea8b450"
+    "sha256": "bd668dc98e481496f8b2cf6a1ba97541caafc70f39acf8d8757226e4cedca588"
   },
   {
     "path": "scripts/api-producer-dependencies.cjs",
@@ -789,7 +789,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/github-origin.ts",
-    "sha256": "a41dd72726a65dfd8c3a0ad5d13e5fb033547adb5b8991d151d79c8250ee2d9e"
+    "sha256": "84932d4ab6bde5f01a411c214065e02c77065d2dc972e9f71752a0b76b778f60"
   },
   {
     "path": "scripts/lib/independent-admission/github-source-binding-groups.ts",
@@ -885,7 +885,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/module-native-build-originals.ts",
-    "sha256": "2059cf91679f62e4118868edc400b518193b1cd26c0a221d66e1e4151d047dbe"
+    "sha256": "9855248ff36ca99d8a0c2c5f95234b0c563c0fcbc7e95ee33ffbd244aeba0eac"
   },
   {
     "path": "scripts/lib/independent-admission/module-phase-originals.ts",
@@ -905,7 +905,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/module-source-phases.ts",
-    "sha256": "4e0876400c734c53216e5e846c32fb3eecdf76031ac57248d21ba7ec5b55497e"
+    "sha256": "8e9e3f4d58cd842661da82ccd94a016d147d0ab474f288ff5c63e3bd352b65f5"
   },
   {
     "path": "scripts/lib/independent-admission/native-admission-requirements.ts",
@@ -1137,11 +1137,11 @@
   },
   {
     "path": "scripts/lib/independent-admission/source-original-tar.ts",
-    "sha256": "20fbeaf398ad5e72b42fe9d6f51dccf7a51a6de7678363ec134b29ba70d0f677"
+    "sha256": "f5ae3e5250fe0fc5ff8da197953f033d0465d415cf6571322ab516e5b8f316ca"
   },
   {
     "path": "scripts/lib/independent-admission/source-rules.ts",
-    "sha256": "fd1882152fd0c894a1746192f36e588220870580c4fd6756d4d4945a5ac7ec91"
+    "sha256": "f137895f7556fbe0f98fbffe8f9cb864d64f7f26671ef33a68896ed60aca4410"
   },
   {
     "path": "scripts/lib/independent-admission/verified-admission-cache.ts",
@@ -1149,7 +1149,7 @@
   },
   {
     "path": "scripts/lib/inngest-controlled-build.py",
-    "sha256": "44995b48418f3b0af1bdd3608c8b3c1307ad3cbc4c927d03a92fbf37b5a60404"
+    "sha256": "d81fdd239578edd17635f26bad8d5dda2e6de7fed701057ef1f65ce52c0097fc"
   },
   {
     "path": "scripts/lib/inngest-controlled-materials.ts",
@@ -1197,7 +1197,7 @@
   },
   {
     "path": "scripts/lib/module-source-materials.py",
-    "sha256": "1871c59b9f0bfb4c0ce824123ce9cdc5f472aba11245b5e0eb45c62c4fca42e2"
+    "sha256": "b582490cdbbd2b857fa6ce20d0b5d85a73605c90b96063a3c17bf7b38be93601"
   },
   {
     "path": "scripts/lib/owned-temp-root.cjs",

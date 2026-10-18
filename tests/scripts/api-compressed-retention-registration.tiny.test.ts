@@ -1,0 +1,10 @@
+import {test,expect}from'bun:test';import{readFileSync}from'node:fs';import{createHash}from'node:crypto';import path from'node:path';
+import{API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS as groups,API_COMPRESSED_INPUT_SOURCE_BINDINGS as old,API_COMPRESSED_RETENTION_SOURCE_BINDINGS as current}from'../../scripts/lib/independent-admission/github-origin';
+import{controlledApiSourceRecipe,reviewedModuleProducerSource}from'../../scripts/lib/independent-admission/module-source-phases';
+const oldProducer='0169bfbf726dce149e5a0fa995fd06bbe618236f1829d0575ccb0bafeea8b450',newProducer='bd668dc98e481496f8b2cf6a1ba97541caafc70f39acf8d8757226e4cedca588';
+const read=(p:string)=>readFileSync(path.resolve(import.meta.dir,'../..',p));
+test('retention uses a new exact producer primary and preserves the prior compressed source tuple',()=>{
+ const before=groups.find(row=>row.name==='root-minimal-controlled-compressed-inputs')!,after=groups.find(row=>row.name==='root-minimal-compressed-original-retention')!;expect(before.sourceBindings).toBe(old);expect(after.sourceBindings).toBe(current);expect(before.selectors[0]!.sha256).toBe(oldProducer);expect(after.selectors[0]!.sha256).toBe(newProducer);
+ expect(current.filter(row=>old.find(before=>before.path===row.path)?.sha256!==row.sha256).map(row=>row.path)).toEqual(['scripts/api-module-producer.py']);expect(createHash('sha256').update(read('scripts/api-module-producer.py')).digest('hex')).toBe(newProducer);
+ expect(reviewedModuleProducerSource('api',oldProducer)).toBe(true);expect(reviewedModuleProducerSource('api',newProducer)).toBe(true);expect(controlledApiSourceRecipe(read,newProducer,'linux-arm64').rows).toBe(current);expect(()=>controlledApiSourceRecipe(read,oldProducer,'linux-arm64')).toThrow('source recipe mismatch');expect(()=>controlledApiSourceRecipe(read,'0'.repeat(64),'linux-arm64')).toThrow();
+});

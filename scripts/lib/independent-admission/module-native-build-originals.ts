@@ -5,7 +5,7 @@ import {performance} from 'node:perf_hooks';
 import limits from '../module-artifact-limits.json';
 import controllerPolicy from '../../../packages/xpod-api/scripts/inngest-controlled-build-policy.json';
 import type {CollectedArtifactIdentity,OriginalReadBudget} from './artifact-contract';
-import {inspectSourceOriginalTar,type SourceTarRow} from './source-original-tar';
+import {inspectSourceOriginalTar,inspectGzipBlockSourceOriginalTar,type SourceTarRow} from './source-original-tar';
 export const MODULE_NATIVE_BUILD_PREFIX='source-materials/native-builds/inngest/';
 type Ref=Readonly<{path:string;bytes:number;sha256:string}>;
 export interface ModuleNativeBuildOriginalView {
@@ -41,7 +41,7 @@ export function isModuleNativeBuildOriginalName(name:string):boolean{
  const relative=name.slice(MODULE_NATIVE_BUILD_PREFIX.length);
  if(relative.startsWith('originals/'))return canonicalOriginalFiles.has(relative.slice('originals/'.length));
  if(relative.endsWith('.http.original.json'))return canonicalOriginalFiles.has(relative.slice(0,-'.http.original.json'.length));
- return /^(?:controlled-build-materials\.json|preparation\.original\.json|inputs\.original\.json|products\/inngest|source\/LICENSE\.md|materials\/(?:before-source\/source|before-dependencies\/dependencies|before-toolchain\/toolchain|generated\/source)(?:-[0-9]{4}\.tar|-inventory-[0-9]{4}\.json)|materials\/removed-[0-9]{4}\.json)$/u.test(relative);
+ return /^(?:controlled-build-materials\.json|preparation\.original\.json|inputs\.original\.json|products\/inngest|source\/LICENSE\.md|materials\/(?:before-source\/source|before-dependencies\/dependencies|before-toolchain\/toolchain|generated\/source)(?:-[0-9]{4}\.tar(?:\.gz(?:\.index\.json)?)?|-inventory-[0-9]{4}\.json)|materials\/removed-[0-9]{4}\.json)$/u.test(relative);
 }
 /** Structural original-byte checking only. Only the existing operational
  * module source issuer stores this view in its private capability map. */
@@ -75,15 +75,18 @@ export function inspectModuleNativeBuildOriginals(input:{
  for(const domain of ['source','dependencies','toolchain'])groups.push({domain,group:collection.originals?.[domain],required:true});
  groups.push({domain:'source',group:collection.generated?.originals,required:false});let members=0,generatedRows=0;
  for(const {domain,group,required} of groups){need(group&&Array.isArray(group.archives)&&Array.isArray(group.inventories)&&group.archives.length<=32&&group.inventories.length<=64&&(!required||group.archives.length>0&&group.inventories.length>0),'complete native input group');
-  const archives=new Map<string,Ref>();let domainBytes=0;
-  for(const value of group.archives){const original=ref(value);need(!archives.has(value.path)&&original.path.endsWith('.tar'),'unique native input tar');archives.set(value.path,original);domainBytes+=original.bytes;}
+  const archives=new Map<string,Ref>(),encodedArchives=new Map<string,{archive:Ref;index:any}>();let domainBytes=0;
+  for(const value of group.archives){const original=ref(value);need(!archives.has(value.path),'unique native input tar');archives.set(value.path,original);
+   if(value.encoding===undefined){need(value.index===undefined&&original.path.endsWith('.tar'),'raw native archive encoding');domainBytes+=original.bytes;}
+   else{need(value.encoding==='gzip-blocks-v1'&&original.path.endsWith('.tar.gz')&&value.index?.path===value.path+'.index.json','explicit native gzip encoding');const index=json(value.index);need(index.expanded&&Number.isSafeInteger(index.expanded.bytes)&&index.expanded.bytes>0&&index.expanded.bytes<=limits.shardBytes,'native gzip expanded shard bound');domainBytes+=index.expanded.bytes;encodedArchives.set(original.path,{archive:{path:value.path,bytes:original.bytes,sha256:original.sha256},index});}
+  }
   need(domainBytes<=limits[domain==='source'?'sourceBytes':domain==='dependencies'?'dependencyBytes':'toolchainBytes'],'native input domain byte bound');
   const rows=new Map<string,SourceTarRow>();
   for(const value of group.inventories){const list=json(value);need(Array.isArray(list),'actual input inventory');for(const row of list){check();need(++members<=limits.sourceMembers&&safe(row.path)&&!rows.has(row.path)&&archives.has(row.archive)&&['file','symlink'].includes(row.kind),'native input member universe');
    if(row.kind==='file')need(Number.isSafeInteger(row.bytes)&&row.bytes>=0&&row.bytes<=limits.shardBytes&&/^[a-f0-9]{64}$/u.test(row.sha256)&&Number.isInteger(row.mode)&&row.mode>=0&&row.mode<=0o777,'native input regular identity');
    else need(typeof row.target==='string'&&Boolean(row.target)&&!path.posix.isAbsolute(row.target)&&safe(path.posix.normalize(path.posix.join(path.posix.dirname(row.path),row.target))),'native input link escape');
    rows.set(row.path,{...row,archive:prefix+row.archive});}}
-  const seen=new Set<string>();for(const archive of archives.values()){const actual=inspectSourceOriginalTar({archive,rows,readRange:(name,offset,length)=>input.readRange(name,offset,length,{remainingMilliseconds:()=>deadline-performance.now()}),check});for(const name of actual.seen){need(!seen.has(name),'duplicate native tar original');seen.add(name);}scanned.add(archive.path);}
+  const seen=new Set<string>();for(const archive of archives.values()){const encoded=encodedArchives.get(archive.path);const actual=encoded?inspectGzipBlockSourceOriginalTar({archive:encoded.archive,index:encoded.index,rows:new Map([...rows].map(([name,row])=>[name,{...row,archive:row.archive.slice(prefix.length)}])),readRange:(name,offset,length)=>input.readRange(prefix+name,offset,length,{remainingMilliseconds:()=>deadline-performance.now()}),check}):inspectSourceOriginalTar({archive,rows,readRange:(name,offset,length)=>input.readRange(name,offset,length,{remainingMilliseconds:()=>deadline-performance.now()}),check});for(const name of actual.seen){need(!seen.has(name),'duplicate native tar original');seen.add(name);}scanned.add(archive.path);}
   need(seen.size===rows.size,'native input tar closed set');if(!required)generatedRows=rows.size;
  }
  need(collection.generated&&Number.isSafeInteger(collection.generated.changedCount)&&collection.generated.changedCount>=0&&Number.isSafeInteger(collection.generated.removedCount)&&collection.generated.removedCount>=0&&Array.isArray(collection.generated.removedOriginals),'actual generated metadata');

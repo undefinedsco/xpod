@@ -214,7 +214,7 @@ def capture_domain(work,name,domain,rows,base,budget):
     spec=importlib.util.spec_from_file_location('controlled_source_capture',ROOT/'scripts/lib/module-source-materials.py');capture=importlib.util.module_from_spec(spec);spec.loader.exec_module(capture)
     root=work/'materials'/name;root.mkdir(mode=0o700,parents=True)
     try:
-        result=capture.capture_group(root,work,domain,[(p,base/p) for p in sorted(rows)],base,reserve_bytes=budget.reserve,public_source_inputs=public_source_classification(work,domain,rows))
+        result=capture.capture_group(root,work,domain,[(p,base/p) for p in sorted(rows)],base,reserve_bytes=budget.reserve,public_source_inputs=public_source_classification(work,domain,rows),archive_encoding='gzip-blocks-v1')
     except ValueError as error:
         if 'shared retained material total' in str(error):
             raise ValueError(str(error)+' domain='+domain+' phase='+name+' memberCount='+str(len(rows))+' declaredRegularBytes='+str(sum(row.get('bytes',0) for row in rows.values()))) from None

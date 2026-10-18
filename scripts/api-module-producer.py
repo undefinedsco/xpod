@@ -197,7 +197,22 @@ def retain_controlled_originals(output, reserve):
     preparation = json.loads((work/collection['preparation']['path']).read_text())
     refs = [dict(path='controlled-build-materials.json', **{k:v for k,v in reference(work/'controlled-build-materials.json',work).items() if k!='path'}), collection['preparation'],collection['inputs'],collection['binary'],collection['license'],collection['sourceArchive'],*preparation['originals'],*preparation.get('acquisitionOriginals',[])]
     for group in [*collection['originals'].values(),collection['generated']['originals']]:
-        refs.extend(group['archives']);refs.extend(group['inventories'])
+        for archive in group['archives']:
+            if 'encoding' not in archive:
+                refs.append(archive)
+                continue
+            if archive.get('encoding') != 'gzip-blocks-v1' or set(archive) != {'path', 'bytes', 'sha256', 'encoding', 'index'}:
+                raise ValueError('Controlled original archive encoding differs')
+            index = archive['index']
+            if (not isinstance(index, dict) or set(index) != {'path', 'bytes', 'sha256'}
+                    or not isinstance(archive['path'], str) or not archive['path'].endswith('.tar.gz')
+                    or index['path'] != archive['path'] + '.index.json'):
+                raise ValueError('Controlled original gzip index differs')
+            # Encoding metadata stays in the collection. Both actual files are
+            # independently verified and reserved before either tree moves.
+            refs.append({key: archive[key] for key in ('path', 'bytes', 'sha256')})
+            refs.append(index)
+        refs.extend(group['inventories'])
     refs.extend(collection['generated']['removedOriginals'])
     unique={}
     for ref in refs:
