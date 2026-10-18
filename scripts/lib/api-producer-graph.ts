@@ -3,7 +3,7 @@ import {createRequire} from 'node:module';
 import {posix} from 'node:path';
 import ts from 'typescript';
 const require=createRequire(import.meta.url);
-const {JSONC}=require('bun') as {JSONC:{parse(text:string):any}};
+const {readApiWorkspaceDeclarations,installFilterArguments,deriveApiInstallSelection,resolveLock:resolveLockShared}=require('./api-install-selection.cjs') as {readApiWorkspaceDeclarations(input:{read(name:string):Buffer;trackedPaths:readonly string[]}):{root:Manifest;lock:any;workspaces:Map<string,{path:string;manifest:Manifest}>;api:{path:string;manifest:Manifest};ui:{path:string;manifest:Manifest}};installFilterArguments(workspaces:Map<string,{path:string;manifest:Manifest}>,selected:Iterable<string>,mode:string,rootName:string):string[];deriveApiInstallSelection(input:ApiGraphInput):{install:readonly string[];[key:string]:unknown};resolveLock(packages:Record<string,any>,owner:string,name:string):string|undefined};
 const {satisfies}=require('semver') as typeof import('semver');
 const {resolveCatalogManifest}=require('../prepare-package-manifest.cjs') as {resolveCatalogManifest(manifest:any,root:any):any};
 const hash=(bytes:Buffer)=>createHash('sha256').update(bytes).digest('hex');
@@ -19,18 +19,8 @@ export interface ApiGraphInput {
  target:'linux-arm64'|'linux-x64'|'darwin-arm64'|'darwin-x64';
  workspaceMode?:'conservative-all-v1'|'api-ui-v1'|'api-ui-root-minimal-v2';
 }
-function scopeNames(key:string):string[]{
- if(!key)return [];
- const names=key.match(/(?:@[^/]+\/)?[^/]+/gu)??[];
- if(names.join('/')!==key||names.some(name=>!/^(@[a-z0-9_.-]+\/)?[a-z0-9_.-]+$/iu.test(name)))return fail('invalid lock scope');
- return names;
-}
-/** Exact lock ancestry, preserving aliases and nested versions; no latest lookup. */
-export function resolveLock(packages:Record<string,any>,owner:string,name:string):string|undefined {
- const ancestors=scopeNames(owner);
- for(let count=ancestors.length;count>=0;count--){const key=[...ancestors.slice(0,count),name].join('/');if(Object.prototype.hasOwnProperty.call(packages,key))return key;}
- return undefined;
-}
+/** Exact shared lock ancestry; no second preinstall resolver. */
+export const resolveLock=resolveLockShared;
 /** Parse the existing root recipe, never a second list of workspace names.
  * Sequential edges are actual `&&` ordering; outputs remain declarations until
  * the normal build supplies its physical bundle/export inventories.
@@ -75,27 +65,9 @@ export function deriveApiProducerGraph(input:ApiGraphInput){
  if(!/^[a-f0-9]{40}$/u.test(input.sourceSha)||!['linux-arm64','linux-x64','darwin-arm64','darwin-x64'].includes(input.target))return fail('immutable source/target required');
  const originals=new Map<string,{path:string;bytes:number;sha256:string}>(),pending=new Set<string>();
  const read=(name:string)=>{if(!safe(name))return fail('unsafe Git path');const row=input.readGitObject(name);if(row.mode!=='100644'&&row.mode!=='100755'||row.bytes.length>4*1024**2)return fail('ordinary bounded Git original required');originals.set(name,{path:name,bytes:row.bytes.length,sha256:hash(row.bytes)});return row.bytes;};
- const root=JSON.parse(read('package.json').toString()) as Manifest;
- const lock=JSONC.parse(read('bun.lock').toString());
- if(lock.lockfileVersion!==1||lock.configVersion!==1||!lock.workspaces||!lock.packages)return fail('immutable Bun lock v1 required');
- const sorted=(value:Record<string,unknown>)=>JSON.stringify(Object.entries(value).sort());
- if(sorted(lock.overrides??{})!==sorted({...root.resolutions,...root.overrides}))return fail('immutable root override/lock drift');
+ const {root,lock,workspaces,api,ui}=readApiWorkspaceDeclarations({read,trackedPaths:input.trackedPaths});
  for(const file of Object.values(root.patchedDependencies??{}) as string[])read(file);
  for(const command of (root.scripts?.postinstall??'').split(' && ').filter(Boolean)){const match=/^bun (scripts\/[a-zA-Z0-9._/-]+)$/u.exec(command);if(!match)return fail('unreviewed root postinstall recipe');read(match[1]!);}
- const declared=root.workspaces?.packages??root.workspaces;
- if(!Array.isArray(declared)||declared.some((pattern:unknown)=>typeof pattern!=='string'||!safe(pattern as string)))return fail('explicit workspace patterns required');
- const matchesWorkspace=(directory:string)=>declared.some((pattern:string)=>pattern.endsWith('/*')?directory.startsWith(pattern.slice(0,-1))&&!directory.slice(pattern.length-1).includes('/'):directory===pattern);
- for(const path of input.trackedPaths)if(path.endsWith('/package.json')){const directory=path.slice(0,-13);if(matchesWorkspace(directory)&&!Object.prototype.hasOwnProperty.call(lock.workspaces,directory))return fail('source workspace absent from lock');}
- const workspaces=new Map<string,{path:string;manifest:Manifest}>();
- for(const [directory,binding] of Object.entries(lock.workspaces) as [string,any][]){
-  if(directory&&!matchesWorkspace(directory))return fail('lock workspace not declared by source');
-  const manifest=directory?JSON.parse(read(directory+'/package.json').toString()) as Manifest:root;
-  if(!manifest.name||manifest.name!==binding.name||workspaces.has(manifest.name))return fail('workspace identity differs');
-  for(const kind of groups)if(JSON.stringify(Object.entries(manifest[kind]??{}).sort())!==JSON.stringify(Object.entries(binding[kind]??{}).sort()))return fail('workspace/lock declaration drift');
-  workspaces.set(manifest.name,{path:directory,manifest});
- }
- const api=workspaces.get('@undefineds.co/xpod-api'),ui=workspaces.get('ui');
- if(api?.path!=='packages/xpod-api'||ui?.path!=='ui')return fail('canonical API/static roots required');
  const mode=input.workspaceMode??'conservative-all-v1';if(!['conservative-all-v1','api-ui-v1','api-ui-root-minimal-v2'].includes(mode))return fail('workspace recipe mode requires review');
  if(mode==='api-ui-root-minimal-v2'&&(!root.catalogs?.['api-producer']||!api.manifest.devDependencies?.semver))return fail('package-owned API build declarations and catalog required before root-minimal recipe');
  const callWorkspaces=new Set<string>();const callVisit=(name:string)=>{if(callWorkspaces.has(name))return;const row=workspaces.get(name);if(!row)return fail('API/UI declared workspace missing');callWorkspaces.add(name);for(const kind of groups)for(const [dependency,range] of Object.entries(row.manifest[kind]??{}) as [string,string][])if(range.startsWith('workspace:'))callVisit(dependency);};callVisit(api.manifest.name);callVisit(ui.manifest.name);
@@ -148,13 +120,16 @@ export function deriveApiProducerGraph(input:ApiGraphInput){
  const selectedRoles=roleGraph.roles.filter(role=>mode==='conservative-all-v1'||(role.workspace?callWorkspaces.has(role.workspace):!roleOwners(role).length||roleOwners(role).some(name=>callWorkspaces.has(name))));
  const omittedRoles=roleGraph.roles.filter(role=>!selectedRoles.includes(role)).map(role=>({id:role.id,command:role.command,sourceWorkspaceOwners:role.workspace?[role.workspace]:roleOwners(role),reason:'no-declared-API-or-static-UI-workspace-call-edge'}));
  const filteredRoles=selectedRoles.map((role,index)=>({...role,after:index?[selectedRoles[index-1]!.id]:[]}));
- const filters=[...selected.keys()].filter(name=>mode!=='api-ui-root-minimal-v2'||name!==root.name).sort().map(name=>'--filter='+name);
- if(mode!=='conservative-all-v1')for(const name of [...workspaces.keys()].filter(name=>!selected.has(name)||mode==='api-ui-root-minimal-v2'&&name===root.name).sort())filters.push('--filter=!'+name);
+ const filters=installFilterArguments(workspaces,selected.keys(),mode,root.name);
+ const installSelection=mode==='api-ui-root-minimal-v2'?deriveApiInstallSelection(input):undefined;
+ if(installSelection&&JSON.stringify(installSelection.install)!==JSON.stringify(['bun','install','--frozen-lockfile',...filters]))return fail('postinstall full graph differs from preinstall selection');
+
 
  for(const reason of ['isolated-filter-root-and-workspace-install-not-observed','actual-installed-symlink-optional-peer-and-platform-inventory-unobserved','root-build-tools-and-runtime-import-partition-unverified','scoped-dependency-state-check-not-implemented','isolated-normal-api-rebuild-and-whole-tree-revalidation-unobserved','installer-lifecycle-trust-and-patches-replay-unobserved'])pending.add(reason);
  return Object.freeze({schemaVersion:1,kind:'api-producer-declaration-graph-draft',sourceSha:input.sourceSha,target:input.target,workspaceMode:mode,rootName:root.name,rootDeclarationsInstalled:mode!=='api-ui-root-minimal-v2',catalogLockEncodingObserved:false,
   originals:Object.freeze([...originals.values()].sort((a,b)=>a.path.localeCompare(b.path))),
   rootBuildRoles:roleGraph.roles,selectedBuildRoles:Object.freeze(filteredRoles),omittedBuildRoles:Object.freeze(omittedRoles),apiBuild:{workspace:api.manifest.name,path:api.path,scriptCommand:apiBuildScript,argv:['bun','run','--cwd',api.path,'build']},staticBuilds,workspaces:Object.freeze([...selected].map(([name,row])=>({name,path:row.path,script:row.manifest.scripts?.build??null}))),registry:Object.freeze([...registry.values()]),edges:Object.freeze(edges),workspaceBuilds:Object.freeze([...pending].some(reason=>reason.startsWith('workspace-build-cycle:'))?[]:commands),workspaceBuildCandidates:Object.freeze(commands),
+  ...(installSelection?{installSelection}:{}),
   isolatedPostinstall:Object.freeze({command:root.scripts?.postinstall??'',argv:mode==='api-ui-root-minimal-v2'&&root.scripts?.postinstall?['bun','run','postinstall']:[],execution:mode==='api-ui-root-minimal-v2'?'explicit-after-filtered-install':'installer-owned'}),
   isolatedInstall:Object.freeze({argv:['bun','install','--frozen-lockfile',...filters],sameImmutableLockRequired:true,capture:'all actual physical installed members before/after; no selected file exclusion'}),
   retainedByteCeiling:4294967296,executable:false,sourceVerified:false,toolchainVerified:false,pending:Object.freeze([...pending].sort())});
