@@ -1,8 +1,17 @@
 name: Publish QLever runtime SDK image
 
 on:
+  pull_request:
+    paths:
+      - '.github/workflows/publish-qlever-runtime-sdk.yml'
+      - '.github/workflows/qlever-readonly-executor.yml'
+      - 'qlever/scripts/sdk-readonly-*.py'
   workflow_dispatch:
     inputs:
+      readonly_executor:
+        description: Use the separately reviewed module readonly executor route
+        type: boolean
+        default: false
       sdk_profile:
         description: Declared SDK and runtime ABI profile
         type: string
@@ -25,6 +34,10 @@ on:
         type: string
   workflow_call:
     inputs:
+      readonly_executor:
+        description: Use the separately reviewed module readonly executor route
+        type: boolean
+        default: false
       sdk_profile:
         description: Declared SDK and runtime ABI profile
         type: string
@@ -48,13 +61,13 @@ on:
     outputs:
       image:
         description: Runtime SDK image reference pinned by digest
-        value: ${{ jobs.publish.outputs.image }}
+        value: ${{ jobs.readonly_publish.outputs.image || jobs.publish.outputs.image }}
       digest:
         description: Published OCI manifest digest
-        value: ${{ jobs.publish.outputs.digest }}
+        value: ${{ jobs.readonly_publish.outputs.digest || jobs.publish.outputs.digest }}
       tag:
         description: Immutable sha-* tag used for the SDK
-        value: ${{ jobs.publish.outputs.tag }}
+        value: ${{ jobs.readonly_publish.outputs.tag || jobs.publish.outputs.tag }}
       native_artifact_name:
         description: Exact module native material archive name (module profile only)
         value: ${{ jobs.module_runtime_materials.outputs.artifact_name }}
@@ -68,13 +81,13 @@ on:
         description: Actual native material producing source revision
         value: ${{ jobs.module_runtime_materials.outputs.source_sha }}
       sdk_artifact_id:
-        value: ${{ jobs.publish.outputs.sdk_artifact_id }}
+        value: ${{ jobs.readonly_publish.outputs.sdk_artifact_id || jobs.publish.outputs.sdk_artifact_id }}
       sdk_artifact_digest:
-        value: ${{ jobs.publish.outputs.sdk_artifact_digest }}
+        value: ${{ jobs.readonly_publish.outputs.sdk_artifact_digest || jobs.publish.outputs.sdk_artifact_digest }}
       sdk_master_sha256:
-        value: ${{ jobs.publish.outputs.sdk_master_sha256 }}
+        value: ${{ jobs.readonly_publish.outputs.sdk_master_sha256 || jobs.publish.outputs.sdk_master_sha256 }}
       sdk_master_bytes:
-        value: ${{ jobs.publish.outputs.sdk_master_bytes }}
+        value: ${{ jobs.readonly_publish.outputs.sdk_master_bytes || jobs.publish.outputs.sdk_master_bytes }}
 
 permissions:
   contents: read
@@ -93,13 +106,38 @@ env:
   XPOD_QLEVER_BUILD_JOBS: '4'
 
 jobs:
+  route_contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    permissions:
+      contents: read
+    steps:
+      - name: Validate explicit readonly route contract
+        shell: bash
+        env:
+          READONLY_ROUTE: ${{ github.event_name == 'pull_request' || inputs.readonly_executor }}
+          SDK_PROFILE: ${{ inputs.sdk_profile || 'service-trixie' }}
+          EVENT_NAME: ${{ github.event_name }}
+          REQUESTED_SOURCE: ${{ inputs.source_commit || github.sha }}
+          REQUESTED_TAG: ${{ inputs.runtime_sdk_tag }}
+          REQUESTED_PRIOR_DIGEST: ${{ inputs.prior_runtime_sdk_digest }}
+        run: |
+          set -euo pipefail
+          if [[ "$READONLY_ROUTE" == true ]]; then
+            [[ "$EVENT_NAME" == pull_request || "$SDK_PROFILE" == module-bookworm-gcc12 ]] \
+              || { echo 'Readonly executor requires its explicit module profile' >&2; exit 64; }
+            [[ "$REQUESTED_SOURCE" == "$GITHUB_SHA" && -z "$REQUESTED_TAG" && -z "$REQUESTED_PRIOR_DIGEST" ]] \
+              || { echo 'Readonly executor requires same-run source and a fresh build; reuse is forbidden' >&2; exit 64; }
+          fi
   resolve_target:
+    needs: route_contract
     uses: ./.github/workflows/resolve-qlever-native-target.yml
     with:
       target: ${{ inputs.target || 'linux-x64' }}
       platform: linux
-      sdk_profile: ${{ inputs.sdk_profile }}
+      sdk_profile: ${{ github.event_name == 'pull_request' && 'module-bookworm-gcc12' || inputs.sdk_profile }}
   publish:
+    if: ${{ github.event_name != 'pull_request' && !inputs.readonly_executor }}
     needs: resolve_target
     env:
       SDK_IMAGE: ghcr.io/${{ github.repository_owner }}/xpod-qlever-sdk${{ needs.resolve_target.outputs.repository_profile_suffix }}${{ needs.resolve_target.outputs.repository_suffix }}
@@ -435,16 +473,28 @@ jobs:
             echo "Alias: \`${{ steps.alias.outputs.created || steps.alias.outputs.kept }}\`"
           } >> "${GITHUB_STEP_SUMMARY}"
 
+  # The reusable route owns the sole reviewed controller closure bootstrap.
+  # It executes before candidate host code; only its publisher role receives
+  # registry credentials. Pull requests collect originals without pushing.
+  readonly_publish:
+    if: ${{ github.event_name == 'pull_request' || inputs.readonly_executor }}
+    needs: resolve_target
+    uses: ./.github/workflows/qlever-readonly-executor.yml
+    with:
+      target: ${{ needs.resolve_target.outputs.target }}
+      source_commit: ${{ inputs.source_commit || github.sha }}
+      publish: ${{ github.event_name != 'pull_request' }}
+
   module_runtime_materials:
     # The registered SDK workflow is the entry point even before the new
     # reusable archive workflow exists on the repository default branch.
-    if: ${{ needs.resolve_target.outputs.sdk_profile == 'module-bookworm-gcc12' }}
-    needs: [resolve_target, publish]
+    if: ${{ !cancelled() && github.event_name != 'pull_request' && needs.resolve_target.outputs.sdk_profile == 'module-bookworm-gcc12' && (needs.publish.result == 'success' || needs.readonly_publish.result == 'success') }}
+    needs: [resolve_target, publish, readonly_publish]
     uses: ./.github/workflows/build-qlever-linux-runtime.yml
     with:
       target: ${{ needs.resolve_target.outputs.target }}
-      module_sdk_image: ${{ needs.publish.outputs.image }}
-      sdk_artifact_id: ${{ needs.publish.outputs.sdk_artifact_id }}
-      sdk_artifact_digest: ${{ needs.publish.outputs.sdk_artifact_digest }}
-      sdk_master_sha256: ${{ needs.publish.outputs.sdk_master_sha256 }}
-      sdk_master_bytes: ${{ needs.publish.outputs.sdk_master_bytes }}
+      module_sdk_image: ${{ needs.readonly_publish.outputs.image || needs.publish.outputs.image }}
+      sdk_artifact_id: ${{ needs.readonly_publish.outputs.sdk_artifact_id || needs.publish.outputs.sdk_artifact_id }}
+      sdk_artifact_digest: ${{ needs.readonly_publish.outputs.sdk_artifact_digest || needs.publish.outputs.sdk_artifact_digest }}
+      sdk_master_sha256: ${{ needs.readonly_publish.outputs.sdk_master_sha256 || needs.publish.outputs.sdk_master_sha256 }}
+      sdk_master_bytes: ${{ needs.readonly_publish.outputs.sdk_master_bytes || needs.publish.outputs.sdk_master_bytes }}

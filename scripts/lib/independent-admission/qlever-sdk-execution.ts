@@ -1,3 +1,4 @@
+import {inspectSdkReadOnlyBuildOwner} from './qlever-sdk-readonly-build-owner';
 import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import limits from '../module-artifact-limits.json';
@@ -7,7 +8,7 @@ export const SDK_TRACKED_PHASE_UNOBSERVED='qlever-sdk-ptrace-tracked-phase-proce
 /** Only the owned verifier throws this after hashing/checking both exact typed
  * phase envelopes. It is not used for malformed legacy receipts or custody. */
 export class SdkTrackedPhaseOriginalsUnobserved extends Error {
- constructor(readonly generationMetadataOriginals:Readonly<{collection:Ref;before:Ref;after:Ref}>|undefined){super(SDK_TRACKED_PHASE_UNOBSERVED);}
+ constructor(readonly generationMetadataOriginals:Readonly<{collection:Ref;before:Ref;after:Ref}>|undefined,readonly readOnlyBuildOwnerReferenceSeal:ReturnType<typeof inspectSdkReadOnlyBuildOwner>=undefined){super(SDK_TRACKED_PHASE_UNOBSERVED);}
 }
 /** Actual configure/build process mechanics. No compiler, source or signature
  * authority is inferred from a successful process. Readers are private SDK ZIP readers. */
@@ -121,6 +122,7 @@ export function inspectSdkBuildExecution(input: {master: any; members: readonly 
     observations.push(Object.freeze({name, receipt: ref(stage.receipt), stdout: ref(stage.stdout), stderr: ref(stage.stderr), supervisionReceipt: ref(stage.supervisionReceipt), supervisionRaw: original, inputs: Object.freeze(expectedInputs.map(ref)), start, end})); previousEnd = end;
   }
   need(trackedCount===0||trackedCount===2,'mixed typed/closed-group configure/compile envelope');
-  if(trackedCount===2)throw new SdkTrackedPhaseOriginalsUnobserved(generationMetadataOriginals);
-  input.check(); return Object.freeze({verified: true as const, scope: 'SDK configure/compile actual closed process and retained before-input references' as const, stages: Object.freeze(observations), rawBytes, generationMetadataReferenceSealVerified: generationMetadataOriginals !== undefined, generationMetadataOriginals});
+  const readOnlyBuildOwnerReferenceSeal=inspectSdkReadOnlyBuildOwner({master:input.master,jobWindow:input.jobWindow,json,reference:ref,check:input.check});
+  if(trackedCount===2)throw new SdkTrackedPhaseOriginalsUnobserved(generationMetadataOriginals,readOnlyBuildOwnerReferenceSeal);
+  input.check(); return Object.freeze({verified: true as const, scope: 'SDK configure/compile actual closed process and retained before-input references' as const, stages: Object.freeze(observations), rawBytes, readOnlyBuildOwnerReferenceSeal, generationMetadataReferenceSealVerified: generationMetadataOriginals !== undefined, generationMetadataOriginals});
 }

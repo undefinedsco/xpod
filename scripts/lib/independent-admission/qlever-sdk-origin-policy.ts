@@ -625,8 +625,273 @@ const authorityIntervalRecipe=new Map([
   ]
 ]);
 const authorityIntervalBindings=Object.freeze(fetchContentReceiverBindings.map(row=>Object.freeze({...row,sha256:authorityIntervalRecipe.get(row.path)??row.sha256})));
+// SDK21 binds the outside controller, normal route and full inner collection
+// as one source recipe. No historical group requests these new helper paths.
+export const QLEVER_READONLY_SDK_WORKFLOW_SHA='dc60310eca6006ab7d62263fb409a7d8654c2ed05cddf05b0eba0489bb48dd8a';
+export const QLEVER_READONLY_CSS_WORKFLOW_SHA='601aa8fe01ee1367be4e97dc6e868d7bc3e79ed1fea5e8f9531aa759e78d7d51';
+const readOnlyNormalBindings=Object.freeze([
+  {
+    "path": ".dockerignore",
+    "sha256": "4cee6cad6f7086c4577281641dda0e3d57fc5218da9864453d14aa8aee75d73f"
+  },
+  {
+    "path": ".github/workflows/build-qlever-linux-runtime.yml",
+    "sha256": "fa5b8202a4bdf5032870c3155f1ac0b9b369ad414147006a3567dc53725566b7"
+  },
+  {
+    "path": ".github/workflows/publish-qlever-runtime-sdk.yml",
+    "sha256": "dc60310eca6006ab7d62263fb409a7d8654c2ed05cddf05b0eba0489bb48dd8a"
+  },
+  {
+    "path": "docker/qlever-runtime-sdk/Dockerfile.module-bookworm",
+    "sha256": "f5a25db22bf285bb65b296f1e4eb65e7dc41d7f6211a19f8351d42f98b6feadb"
+  },
+  {
+    "path": "qlever/scripts/sdk-image-originals.py",
+    "sha256": "b3543e5454b1a96b59605e0e979595c80be17f2b5d4cebe47a640b7cc687e91e"
+  },
+  {
+    "path": "qlever/scripts/sdk-inner-materials.py",
+    "sha256": "b916ac48a4d1421de9ef1582baeddd38f6d1e8baaddbd26705c0f05ab5571dcf"
+  },
+  {
+    "path": "scripts/css-module-producer.py",
+    "sha256": "78e2ec3c272233602083f81d574cfefc5f6c36e9200c1d92e6f7935bd6cac41f"
+  },
+  {
+    "path": ".github/workflows/css-native-product-target.yml",
+    "sha256": "49ee4c223de857cb9d500a7dceb4a54f36ae8759d1d8b3cc9a7b847db3bbf877"
+  },
+  {
+    "path": ".github/workflows/publish-qlever-local-runtime.yml",
+    "sha256": "9e53821c04e165879b617bbdaf59a0d9c3e0eb193783766b78feed35fec125e1"
+  },
+  {
+    "path": ".github/workflows/resolve-qlever-native-target.yml",
+    "sha256": "965f8d9939369d1065843be8118a1c3a64feeb1442e964d61db8d09076a25633"
+  },
+  {
+    "path": "docker/qlever-local-runtime/Dockerfile.module-bookworm",
+    "sha256": "d4c6308caf494272abe933d288ce154e3f7d34b9a4c5b36af579af893ec86d1a"
+  },
+  {
+    "path": "qlever/qlever.lock.json",
+    "sha256": "b866d64c5559b976ffc70183f11e1a4a8fd04ea585dfc3c14a439f08df776a18"
+  },
+  {
+    "path": "qlever/scripts/apply-patches.py",
+    "sha256": "3b52d8a61b110483978d4278c353bdad4d4735ca9498f3c73278e5aadaeb4273"
+  },
+  {
+    "path": "qlever/scripts/build-module-runtime-sdk.sh",
+    "sha256": "554147491bb7b703ad3af92358e23519fd1af686c626bc38cf96cffd19cfc673"
+  },
+  {
+    "path": "qlever/scripts/build-qlever-runtime-sdk.sh",
+    "sha256": "97dbc567781e541d2fffc3746fb93deb4ae2fc338f8cf0596c810b0f8baf0d68"
+  },
+  {
+    "path": "qlever/scripts/prepare-linux-physical-runtime.py",
+    "sha256": "82bad3c59736f144b1a7e5e176edfb997a90026fc20d6aabd839339cff00504e"
+  },
+  {
+    "path": "qlever/scripts/produce-linux-runtime-archive.py",
+    "sha256": "6e90b435540e6c37ea1a3dd50720feb139d44b53c8b774a273daf777a17d6847"
+  },
+  {
+    "path": "qlever/scripts/qlever_compiler_profile.py",
+    "sha256": "3a3bcaf7e20cdee078489d97af51d6cb5e522600fb581430fc52eecd15d284f4"
+  },
+  {
+    "path": "qlever/scripts/resolve-runtime-sdk-build.sh",
+    "sha256": "3f059fcb159c344a1efd4f5cae669b1c0454dec45e506a9b6822af7076e23ce9"
+  },
+  {
+    "path": "qlever/scripts/run-focused-native-build.sh",
+    "sha256": "e7f153d2b3adc7bb489576b48b113a36114454520848d3e094b20c1e6dd495e4"
+  },
+  {
+    "path": "qlever/scripts/runtime-overlay-manifest.py",
+    "sha256": "8a338b8bcaea82d89fd49bfe27647b61bb2c61243d824c01e86a1e4123dfbe81"
+  },
+  {
+    "path": "qlever/scripts/sdk-command-materials.py",
+    "sha256": "2db81d742b8ea9060ebad2fa0a253555337f457decf09d9ed9a59dd85a598b9a"
+  },
+  {
+    "path": "qlever/scripts/sdk-execution-budget.py",
+    "sha256": "329194655827de1d03a31db5f311ba1cc59fd0ade7edf2ef48fcc8fae52ebfee"
+  },
+  {
+    "path": "qlever/scripts/sync-patched-source.py",
+    "sha256": "716b4ab7f19b407ecba454e5cfcf6837ce172896546aa6e667b0959fabcea89f"
+  },
+  {
+    "path": "qlever/scripts/validate-prior-sdk.py",
+    "sha256": "273c4df73370fd6df1d7c2fd28382a7f7f11e9d8ec091c55c8b72e087aa11eb7"
+  },
+  {
+    "path": "qlever/scripts/verify-local-runtime-artifacts.py",
+    "sha256": "b95365f0736f531d772a394a9936911ae9d843b616f6c933030845102bf4efdf"
+  },
+  {
+    "path": "scripts/agentfs-native-ci/supervise.py",
+    "sha256": "49fd9c7a7a9c9dc1612b1261f0cbc218166f48487df726239437ae9ad98ba407"
+  },
+  {
+    "path": "scripts/lib/css_native_zip.py",
+    "sha256": "5ec8942645c050436c3b5f4d518e00098e9da6543d9b1fae0666aab9bf0ef6ec"
+  },
+  {
+    "path": "scripts/module-product-targets.ts",
+    "sha256": "5ef511f448c90a6fc9e767fd8224ef890b5fc04d2b6514f85697a0a529fb3eb4"
+  },
+  {
+    "path": "qlever/scripts/sdk-tar-budget.py",
+    "sha256": "e244da8ca8aa2c85cca03d8deebc56a2edca13749c1cc79fffad14872e52f30d"
+  },
+  {
+    "path": "qlever/scripts/sdk-debian-source-acquisition.py",
+    "sha256": "8f7033930f8b0513fe6889845fc4c09e98dfaab0f81a5bd961c443dcd1c41a9e"
+  },
+  {
+    "path": "qlever/scripts/sdk-debian-source-materials.py",
+    "sha256": "dddb499b82df467ff41511dd6dfab5877ed7d63cbcfa88fb772be9e6152aca6c"
+  },
+  {
+    "path": "qlever/scripts/sdk-symlink-originals.py",
+    "sha256": "2b315ba5a85d7dfbae12db32e0429d95d31fa28dbc8d44e877517e6e3eb57a40"
+  },
+  {
+    "path": "qlever/scripts/sdk-upstream-source-materials.py",
+    "sha256": "c35e60ff7e983f0238872cbfdec29b9e57de0aa32d7d2122e5ccb7113eb03c0b"
+  },
+  {
+    "path": "qlever/scripts/sdk-generation-materials.py",
+    "sha256": "216521f3c656a6166b4ff9f35bc3ed95cfb44679f5a9bd78382033ee35e3feb8"
+  },
+  {
+    "path": "qlever/scripts/sdk-owned-runs.py",
+    "sha256": "520241ea81d57d82a33550c44ed3809378fd81d03bc14a8a5985f871b6b64680"
+  },
+  {
+    "path": "qlever/scripts/sdk-subreaper-guard.py",
+    "sha256": "5a7c1ecf3f570cc83897ccac30843ecd513a5d2b001f250e13e16a636e22fa4a"
+  },
+  {
+    "path": "qlever/scripts/sdk-toolchain-materials.py",
+    "sha256": "7e0e9d9038e8793aaee36fdfd575681df4258f1b5ec8de95f26ada9bfbdab49c"
+  },
+  {
+    "path": "qlever/scripts/sdk-ptrace-execution.py",
+    "sha256": "98aa889ef96b492e7d7be5c4c4e6c6bb91506be4ddf2a7bfe365b1715dbfc9fa"
+  },
+  {
+    "path": "qlever/scripts/sdk-ptrace-kernel.py",
+    "sha256": "08fe6e47e696d1543406751bda83f3aaa89a80973d87a27a5a6423e666b5aff2"
+  },
+  {
+    "path": "qlever/scripts/sdk-execution-originals-util.py",
+    "sha256": "b2226db7d6d9955d6bf3745dc5011aa1dbc67ffe90faf9dc88fffa7376343a2d"
+  },
+  {
+    "path": "qlever/scripts/sdk-generation-multiprocess-bindings.py",
+    "sha256": "d12e02ab8c638d20d43e0c8e5373b8d19a794f1fe189909af3d8131aee26cb80"
+  },
+  {
+    "path": "qlever/scripts/sdk-blocking-owned-wait.py",
+    "sha256": "9529b31b027b759e5baa380fa81339b9a962d8d916ac1ea20c9f9503bd697a68"
+  },
+  {
+    "path": "scripts/lib/module-artifact-limits.json",
+    "sha256": "c1c529aba719356c682affbe630c215e28cc07163192f8f3b601aab7b0126bd4"
+  },
+  {
+    "path": "qlever/scripts/sdk-debian-binary-hook.py",
+    "sha256": "3a9c3ab713c84a3bb274b7ed5fdd1d57d68d6b316bc77de6d99023ba458b4b2e"
+  },
+  {
+    "path": "qlever/scripts/sdk-debian-binary-originals.py",
+    "sha256": "099959565f355566b9a1f6f20870e2de20a5ef20ff37fc0042a9943238a4e86f"
+  },
+  {
+    "path": "qlever/scripts/sdk-debian-index-bindings.py",
+    "sha256": "ad87a17bdb781f34a6a78a5e970d1f9c69d0750a1fcc4ba3f711db317bd75e13"
+  },
+  {
+    "path": "qlever/scripts/sdk-zip-originals.py",
+    "sha256": "86cca59ac6a30eb719fe10dbaf6939c4e7c50328e757f22d3d4d34ea90fe6c10"
+  },
+  {
+    "path": "qlever/scripts/sdk-fetchcontent-materials.py",
+    "sha256": "8ec24a7e0e68197bb2bfe127733a18f5db64477e2b3f549feb95af05e4f4097f"
+  },
+  {
+    "path": "qlever/scripts/sdk-fetchcontent-source-observer.py",
+    "sha256": "535fa858b9ded0f8cf37e680f3ccc14cb053520f077f5bc361a9301dfe602cb1"
+  },
+  {
+    "path": "qlever/scripts/sdk-fetchcontent-source-bindings.py",
+    "sha256": "58c673c1506cbf321736e8693fa5364bddbfc7dec5e1e456bdda7151bb54535c"
+  },
+  {
+    "path": "qlever/scripts/sdk-tool-provider-originals.py",
+    "sha256": "2a29a27a270c528b05f029210bd36aa728b26dbfaf1c1e21dc61f7847eaa1cad"
+  },
+  {
+    "path": "qlever/scripts/sdk-readonly-normal-route.py",
+    "sha256": "9d94ee2c5f02f66b9c90cdf206aab81a6c5dd65f040319e8fe8826deae4888fa"
+  },
+  {
+    "path": "qlever/scripts/sdk-readonly-result-context.py",
+    "sha256": "d18899b9134178e2e1d09d88a9c80008fd3ec013162e2ddd5d7df696f11de5f9"
+  },
+  {
+    "path": "qlever/scripts/sdk-readonly-executor.py",
+    "sha256": "d07860212e87a3806f382fbde407d658d468b53cd35cd4256ed5beea9e2f32cd"
+  },
+  {
+    "path": "qlever/scripts/sdk-readonly-executor-bindings.py",
+    "sha256": "1a47575d5ca72f93afc0190d4b8d7676ed44edb95433f49f97f08d79fe6f34e6"
+  },
+  {
+    "path": "qlever/scripts/sdk-readonly-executor-entry.py",
+    "sha256": "54f6d66c420965aea80a67e915009dc681424df44577c933b6b8c5fbd36443a9"
+  },
+  {
+    "path": "qlever/scripts/sdk-readonly-collection.py",
+    "sha256": "6f23b15488983f4672fda044b3c54a6e96d4502b5572ab6d8429a48d579a1292"
+  },
+  {
+    "path": ".github/workflows/qlever-readonly-executor.yml",
+    "sha256": "7041a66b3e60f7c922ae9068f0bdd06e3ee1ddc9fdee92f79209c03d28778939"
+  },
+  {
+    "path": ".github/workflows/qlever-readonly-normal-job.yml",
+    "sha256": "7c2d48434e8b034d087ae12f11749ebf5db9bfffc55d1c94dcf919db52bba372"
+  },
+  {
+    "path": ".github/workflows/css-native-products.yml",
+    "sha256": "601aa8fe01ee1367be4e97dc6e868d7bc3e79ed1fea5e8f9531aa759e78d7d51"
+  },
+  {
+    "path": ".github/workflows/css-native-source.yml",
+    "sha256": "24b994047fac340931a7f43e1e44d7d0d5876a8023acb8e54495f754d0f44b53"
+  }
+].map(row=>Object.freeze(row)));
+const readOnlyNormalGroup:GitHubSourceBindingGroup=Object.freeze({
+ ...dependencyVersionGroup(readOnlyNormalBindings),
+ outerExecutor:Object.freeze({schemaVersion:1,model:'reviewed-run-outer-controller-v1',
+  workflowPath:QLEVER_SDK_WORKFLOW,workflowSha256:QLEVER_READONLY_SDK_WORKFLOW_SHA,
+  additionalWorkflows:Object.freeze([{path:'.github/workflows/css-native-products.yml',sha256:QLEVER_READONLY_CSS_WORKFLOW_SHA}]),
+  collector:Object.freeze({path:'qlever/scripts/sdk-readonly-executor.py',sha256:'d07860212e87a3806f382fbde407d658d468b53cd35cd4256ed5beea9e2f32cd'}),
+  uploadDomain:'RUNNER_TEMP/qlever-sdk-outer',
+  ownedSteps:Object.freeze(['Verify controller closure','Build readonly SDK and linked image','Bind actual readonly SDK image and build originals','Upload exact SDK original materials'] as const),
+  allowedBeforeController:Object.freeze(['Set up job','Check out immutable candidate']),
+ }),
+});
 export const QLEVER_SDK_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([
- sdkBGroup(QLEVER_SDK_B_SOURCE_BINDINGS),sdkBGroup(tarBindings),sdkBGroup(stagingTarBindings),sdkBGroup(debianV3Bindings),sdkBGroup(symlinkBindings),sdkBGroup(gitCmakeBindings),sdkBGroup(ownedRunsBindings),sdkBGroup(sourcePreparedBindings),sdkBGroup(serviceContextBindings),sdkBGroup(trackedExecutionBindings),observerVersionGroup(selfRetainedContextBindings),observerVersionGroup(preparedInputBindings),observerVersionGroup(debianBinaryBindings),observerVersionGroup(writeReadBindings),observerVersionGroup(sharedTaskBindings),observerVersionGroup(writeDeltaBindings),observerVersionGroup(combinedToolAppendBindings),dependencyVersionGroup(preparedDependencyBindings),dependencyVersionGroup(fetchContentReceiverBindings),dependencyVersionGroup(authorityIntervalBindings),
+ sdkBGroup(QLEVER_SDK_B_SOURCE_BINDINGS),sdkBGroup(tarBindings),sdkBGroup(stagingTarBindings),sdkBGroup(debianV3Bindings),sdkBGroup(symlinkBindings),sdkBGroup(gitCmakeBindings),sdkBGroup(ownedRunsBindings),sdkBGroup(sourcePreparedBindings),sdkBGroup(serviceContextBindings),sdkBGroup(trackedExecutionBindings),observerVersionGroup(selfRetainedContextBindings),observerVersionGroup(preparedInputBindings),observerVersionGroup(debianBinaryBindings),observerVersionGroup(writeReadBindings),observerVersionGroup(sharedTaskBindings),observerVersionGroup(writeDeltaBindings),observerVersionGroup(combinedToolAppendBindings),dependencyVersionGroup(preparedDependencyBindings),dependencyVersionGroup(fetchContentReceiverBindings),dependencyVersionGroup(authorityIntervalBindings),readOnlyNormalGroup,
 ]);
 export const QLEVER_LINUX_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([
  {selectors:sdkSelectors('cbedd3e2478de5e22108b6689c595a658ca891c9bd47552caec830e86f47fea8','a75c7be34b5c5fafff85c0d67d814ba1aaf14bcf5db5404a860fe3b9a11009bd'),sourceBindings:QLEVER_LINUX_SOURCE_BINDINGS.filter(row=>!['.github/workflows/publish-qlever-runtime-sdk.yml','.github/workflows/build-qlever-linux-runtime.yml'].includes(row.path))},

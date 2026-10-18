@@ -1,0 +1,63 @@
+name: Isolated readonly QLever SDK entry
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/qlever-readonly-*.yml'
+      - 'qlever/scripts/sdk-readonly-*.py'
+      - 'qlever/tests/test_sdk_readonly*.py'
+  workflow_call:
+    inputs:
+      target:
+        type: string
+        default: ''
+      source_commit:
+        type: string
+        default: ''
+      publish:
+        type: boolean
+        default: false
+    outputs:
+      image:
+        value: ${{ jobs.published_sdk.outputs.image }}
+      digest:
+        value: ${{ jobs.published_sdk.outputs.digest }}
+      tag:
+        value: ${{ jobs.published_sdk.outputs.tag }}
+      sdk_artifact_id:
+        value: ${{ jobs.published_sdk.outputs.sdk_artifact_id }}
+      sdk_artifact_digest:
+        value: ${{ jobs.published_sdk.outputs.sdk_artifact_digest }}
+      sdk_master_sha256:
+        value: ${{ jobs.published_sdk.outputs.sdk_master_sha256 }}
+      sdk_master_bytes:
+        value: ${{ jobs.published_sdk.outputs.sdk_master_bytes }}
+permissions:
+  contents: read
+concurrency:
+  group: readonly-sdk-validation-${{ github.event.pull_request.number || github.run_id }}-${{ inputs.target || 'all' }}-${{ github.sha }}
+  cancel-in-progress: false
+jobs:
+  validation:
+    if: ${{ !inputs.publish || github.event_name == 'pull_request' }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        target: ${{ fromJSON(inputs.target == 'linux-x64' && '["linux-x64"]' || inputs.target == 'linux-arm64' && '["linux-arm64"]' || '["linux-x64","linux-arm64"]') }}
+    uses: ./.github/workflows/qlever-readonly-normal-job.yml
+    with:
+      target: ${{ matrix.target }}
+      source_commit: ${{ inputs.source_commit || github.sha }}
+      publish: false
+  published_sdk:
+    if: ${{ inputs.publish && github.event_name != 'pull_request' }}
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/qlever-readonly-normal-job.yml
+    with:
+      target: ${{ inputs.target }}
+      source_commit: ${{ inputs.source_commit || github.sha }}
+      publish: true

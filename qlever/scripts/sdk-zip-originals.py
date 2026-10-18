@@ -2,6 +2,7 @@
 import contextlib
 import json
 import os
+import re
 from pathlib import Path
 import stat
 import struct
@@ -12,8 +13,10 @@ def need(value,reason):
 def safe(name):
     return isinstance(name,str) and name and not name.startswith('/') and not any(c in name for c in '\\\0\r\n') and all(part not in ('','.','..') for part in name.split('/'))
 @contextlib.contextmanager
-def registered_zip_originals(archive_path,prefix,check):
-    need(prefix in ('inner/debian-source/indexes/','inner/upstream-source/','inner/toolchain-execution/','inner/debian-binary/','inner/fetchcontent/'),'fixed SDK original domain required')
+def registered_zip_originals(archive_path,prefix,check,*,master_reference=None):
+    old_prefixes=('inner/debian-source/indexes/','inner/upstream-source/','inner/toolchain-execution/','inner/debian-binary/','inner/fetchcontent/')
+    new_mode=prefix=='readonly-executor/' and isinstance(master_reference,dict) and set(master_reference)=={'path','bytes','sha256'} and master_reference.get('path')=='materials.json' and type(master_reference.get('bytes')) is int and 0<master_reference['bytes']<=LIMITS['metadataBytes'] and isinstance(master_reference.get('sha256'),str) and re.fullmatch('[a-f0-9]{64}',master_reference['sha256']) is not None
+    need((prefix in old_prefixes and master_reference is None) or new_mode,'fixed SDK original domain/master reference required')
     def identity(value):
         return value.st_dev, value.st_ino, value.st_size, value.st_mode, value.st_mtime_ns, value.st_ctime_ns
     flags = os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0)
@@ -51,7 +54,7 @@ def registered_zip_originals(archive_path,prefix,check):
             need(len(infos) <= LIMITS['members'], 'bounded SDK ZIP member count')
             def member(reference):
                 check(); name = reference['path']
-                need(safe(name) and name.startswith(prefix), 'registered index original prefix required')
+                need(safe(name) and (name.startswith(prefix) or (new_mode and name=='materials.json' and reference==master_reference)), 'registered index original prefix required')
                 rows = [info for info in infos if info.filename == name]
                 need(len(rows) == 1 and rows[0].file_size == reference['bytes'] and 0 <= reference['bytes'] <= LIMITS['shardBytes'], 'exact ZIP index member required')
                 need(not rows[0].is_dir() and stat.S_IFMT(rows[0].external_attr >> 16) in (0, stat.S_IFREG), 'regular ZIP index original required')

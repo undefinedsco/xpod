@@ -12,7 +12,7 @@ const hash=(value:string|Buffer)=>createHash('sha256').update(value).digest('hex
 const observed=(group:GitHubSourceBindingGroup)=>new Map([...group.selectors,...(group.secondarySelectors??[])].map(row=>[sourceBindingKey(row),row.sha256]));
 test('all a101 historical SDK and controller groups preserve their complete own original binding sets',()=>{
  for(const [groups,old] of [[SDK,historical.sdk],[CONSUMER,historical.consumer],[CI,historical.ci]] as const){
-  expect(groups.length).toBe(old.length+(groups===SDK?1:groups===CI?18:9));
+  expect(groups.length).toBe(old.length+(groups===SDK?2:groups===CI?22:11));
   for(const previous of old){
    const group=selectGitHubSourceBindingGroup(groups,new Map([...previous.selectors,...previous.secondarySelectors].map(row=>[sourceBindingKey(row),row.sha256])));
    expect(group.selectors).toEqual(previous.selectors);expect(group.secondarySelectors??[]).toEqual(previous.secondarySelectors);
@@ -31,12 +31,12 @@ test('actual primary then existing shared secondary resolution selects every com
  }
 });
 test('new SDK20 pairs only the three actual kernel-reviewed authority files while preserving SDK19 and all controller bytes',()=>{
- const latest=SDK.at(-1)!,previous=SDK.at(-2)!;
+ const latest=SDK.at(-2)!,previous=SDK.at(-3)!;
  const changed=latest.sourceBindings.filter(row=>previous.sourceBindings.find(old=>old.path===row.path)?.sha256!==row.sha256);
  expect(changed.map(row=>row.path).sort()).toEqual(['qlever/scripts/sdk-generation-multiprocess-bindings.py','qlever/scripts/sdk-ptrace-execution.py','qlever/scripts/sdk-tool-provider-originals.py']);
- for(const row of [...latest.selectors,...latest.sourceBindings,...current])expect(hash(fs.readFileSync(path.join(root,row.path)))).toBe(row.sha256);
+ for(const row of current)expect(hash(fs.readFileSync(path.join(root,row.path)))).toBe(row.sha256);
  for(const role of latest.secondarySelectors??[]){const old=previous.secondarySelectors!.find(row=>row.path===role.path)!;if(old.sha256!==role.sha256){const mixed=observed(latest);mixed.set(sourceBindingKey(role),old.sha256);expect(()=>selectGitHubSourceBindingGroup(SDK,mixed)).toThrow();}}
- expect(current).toHaveLength(362);
+ expect(current).toHaveLength(371);
  const controller=CONSUMER[1]!;
  for(const row of current)expect(controller.sourceBindings.find(binding=>binding.path===row.path)?.sha256).toBe(row.sha256);
 });
