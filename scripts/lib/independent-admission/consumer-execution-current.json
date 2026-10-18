@@ -573,7 +573,7 @@
   },
   {
     "path": "scripts/check-api-producer-dependency-state.ts",
-    "sha256": "1c91afdb24cc995195a996032d6c032f52e281fb6437af47e255925c85a6238a"
+    "sha256": "292f53eeec444d110bea009957754bf6f332a83f4cb0f209de30362908afa0ad"
   },
   {
     "path": "scripts/check-cli-package.cjs",
@@ -673,7 +673,7 @@
   },
   {
     "path": "scripts/lib/api-scoped-dependency-state.ts",
-    "sha256": "0de4c1e9484de9b558eb8cf39c8790d6f824d718d97d29e1800cd8adb91bd64f"
+    "sha256": "2ff62ebe42a0bdbb936b6f3f1eaebc413893d20cbd84fc2fb70bce57d4d2a459"
   },
   {
     "path": "scripts/lib/cli-publication-budget.cjs",
@@ -789,7 +789,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/github-origin.ts",
-    "sha256": "0982f3e09cc3136826aecf869f8f66e246a093d277235ba94874691be3c5b854"
+    "sha256": "b6599e1c97d6d9f5ad2aae582748022bab1e691ef6a025df7ba04f9bdd9e947e"
   },
   {
     "path": "scripts/lib/independent-admission/github-source-binding-groups.ts",
@@ -905,7 +905,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/module-source-phases.ts",
-    "sha256": "9eb05b6e68f64e92b92e84e178e4670c1726ad2c98fa719e7b1775a24e9a8896"
+    "sha256": "3bd328b517dcefb86b5d939089efe437630d856934bdb8186a81cc1d9f84cd9a"
   },
   {
     "path": "scripts/lib/independent-admission/native-admission-requirements.ts",

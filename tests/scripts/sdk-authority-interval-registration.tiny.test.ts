@@ -12,7 +12,7 @@ const hash=(value:string|Buffer)=>createHash('sha256').update(value).digest('hex
 const observed=(group:GitHubSourceBindingGroup)=>new Map([...group.selectors,...(group.secondarySelectors??[])].map(row=>[sourceBindingKey(row),row.sha256]));
 test('all a101 historical SDK and controller groups preserve their complete own original binding sets',()=>{
  for(const [groups,old] of [[SDK,historical.sdk],[CONSUMER,historical.consumer],[CI,historical.ci]] as const){
-  expect(groups.length).toBe(old.length+(groups===SDK?1:groups===CI?6:3));
+  expect(groups.length).toBe(old.length+(groups===SDK?1:groups===CI?8:4));
   for(const previous of old){
    const group=selectGitHubSourceBindingGroup(groups,new Map([...previous.selectors,...previous.secondarySelectors].map(row=>[sourceBindingKey(row),row.sha256])));
    expect(group.selectors).toEqual(previous.selectors);expect(group.secondarySelectors??[]).toEqual(previous.secondarySelectors);

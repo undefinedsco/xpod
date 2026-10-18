@@ -5,13 +5,19 @@ import path from 'node:path';
 import {isDeepStrictEqual as equal} from 'node:util';
 import limits from './module-artifact-limits.json';
 import {exactVersion} from '../independent-release-plan';
+import {satisfies} from 'semver';
+import {createHash} from 'node:crypto';
 const identityFailurePrefix='API scoped dependencies: actual installed package differs from exact lock identity: ';
+export interface ApiPeerProviderObservation {
+ readonly owner:string;readonly name:string;readonly range:string;readonly declaredLockKey:string;readonly providerLockKeys:readonly string[];readonly providerIntegrity:string;readonly physicalDirectory:string;
+}
 export interface ApiDependencyScope {
  workspacePackages:readonly {name:string;directory:string}[];
  patchedDirectories(name:string,version:string):readonly string[];
  postinstallDirectories(name:string):readonly string[];
  installed:readonly {directory:string;name:string;version:string;lockKey?:string}[];
  optionalAbsences:readonly {owner:string;name:string}[];
+ peerProviders:readonly ApiPeerProviderObservation[];
 }
 function need(condition:unknown,reason:string):asserts condition{if(!condition)throw Error('API scoped dependencies: '+reason);}
 export function inspectApiInstalledGraph(input:{root:string;graph:any;readWorkspaceManifest(relative:string):any}):ApiDependencyScope {
@@ -44,26 +50,65 @@ export function inspectApiInstalledGraph(input:{root:string;graph:any;readWorksp
   return undefined;
  };
  const record=(directory:string,value:any,lockKey?:string)=>{need(typeof value.name==='string'&&typeof value.version==='string','actual package identity required');installed.set(directory,{directory,name:value.name,version:value.version,...(lockKey?{lockKey}:{})});need(installed.size<=limits.sourceMembers,'installed graph member bound');};
- const visit=(owner:string,directory:string)=>{
+ // Peer providers are observed only after every selected ordinary dependency
+ // has bound its exact physical package to the immutable graph. A compatible
+ // lock row elsewhere in the graph is never sufficient on its own.
+ const peerQueue:{owner:string;directory:string;edge:any}[]=[],peerProviders:ApiPeerProviderObservation[]=[];
+ let peerProjectionBytes=256;
+ const boundRegistry=new Map<string,Map<string,{integrity:string;manifestProjectionSha256:string}>>();
+ const bindRegistry=(directory:string,value:any,node:any,lockKey:string)=>{
+  const projection=createHash('sha256').update(JSON.stringify(value)).digest('hex');
+  let bindings=boundRegistry.get(directory);if(!bindings){bindings=new Map();boundRegistry.set(directory,bindings);}
+  for(const before of bindings.values())need(before.integrity===node.integrity&&before.manifestProjectionSha256===projection,'one physical package has incompatible immutable lock integrity or changed manifest');
+  bindings.set(lockKey,{integrity:node.integrity,manifestProjectionSha256:projection});
+  need(bindings.size<=limits.sourceMembers,'physical registry context bound');record(directory,value,lockKey);
+ };
+ const visit=(owner:string,directory:string):void=>{
   const key=owner+'\0'+directory;if(visited.has(key))return;visited.add(key);need(visited.size<=limits.sourceMembers,'installed graph context bound');
   for(const edge of graph.edges.filter((row:any)=>row.from===owner&&row.selected!==false)){
-   const binding=locate(directory,edge.name);
-   const actual=binding?.directory;
-   if(!actual){if(edge.optional===true){optionalAbsences.push({owner,name:edge.name});continue;}throw Error('API scoped dependencies: required installed edge absent: '+owner+' -> '+edge.name);}
-   const value=manifest(actual),workspace=workspaces.get(edge.name),node=edge.lockKey?registry.get(edge.lockKey):undefined;
-   if(workspace&&(edge.range.startsWith('workspace:')||!node)){
-    need(actual===inside(realpathSync(path.join(root,workspace.path)))&&equal(value,input.readWorkspaceManifest(workspace.path)),'actual workspace manifest/path differs');record(actual,value);visit(edge.name,actual);
-   }else{
-    need(node&&typeof node.identity==='string'&&typeof node.integrity==='string'&&/^sha512-[A-Za-z0-9+/]{86}==$/u.test(node.integrity),'required registry edge lacks immutable lock identity');const at=node.identity.lastIndexOf('@');if(!(at>0&&value.name===node.identity.slice(0,at)&&value.version===node.identity.slice(at+1)))throw Error(identityFailurePrefix+identityFailureContext(owner,edge,node.identity,value,directory,actual,binding!.named));record(actual,value,edge.lockKey);visit(edge.lockKey,actual);
-   }
+   if(edge.kind==='peerDependencies'){need(peerQueue.length<limits.sourceMembers,'actual peer observation bound');peerQueue.push({owner,directory,edge});}
+   else processEdge(owner,directory,edge,false);
   }
+ };
+ const processEdge=(owner:string,directory:string,edge:any,peer:boolean,finalPeer=false):boolean=>{
+  const binding=locate(directory,edge.name),actual=binding?.directory;
+  if(!actual){if(edge.optional===true){optionalAbsences.push({owner,name:edge.name});return true;}throw Error('API scoped dependencies: required installed edge absent: '+owner+' -> '+edge.name);}
+  const value=manifest(actual),workspace=workspaces.get(edge.name),node=edge.lockKey?registry.get(edge.lockKey):undefined;
+  if(workspace&&(edge.range.startsWith('workspace:')||!node)){
+   need(actual===inside(realpathSync(path.join(root,workspace.path)))&&equal(value,input.readWorkspaceManifest(workspace.path)),'actual workspace manifest/path differs');record(actual,value);visit(edge.name,actual);return true;
+  }
+  need(node&&typeof node.identity==='string'&&typeof node.integrity==='string'&&/^sha512-[A-Za-z0-9+/]{86}==$/u.test(node.integrity),'required registry edge lacks immutable lock identity');
+  if(peer)need(typeof edge.range==='string'&&typeof value.version==='string'&&satisfies(value.version,edge.range),'actual peer provider does not satisfy immutable declared range');
+  const at=node.identity.lastIndexOf('@'),exact=at>0&&value.name===node.identity.slice(0,at)&&value.version===node.identity.slice(at+1);
+  if(exact){bindRegistry(actual,value,node,edge.lockKey);visit(edge.lockKey,actual);return true;}
+  if(peer&&!finalPeer)return false;
+  const proven=peer?boundRegistry.get(actual):undefined;
+  if(proven?.size){
+   need(at>0&&value.name===node.identity.slice(0,at),'actual peer provider package name differs from immutable declared identity');
+   const projection=createHash('sha256').update(JSON.stringify(value)).digest('hex'),providerKeys:string[]=[];let integrity:string|undefined,keyBytes=0;
+   for(const [key,before]of proven){
+    const provider=registry.get(key);need(provider?.identity===value.name+'@'+value.version&&before.manifestProjectionSha256===projection,'actual peer provider differs from selected physical binding');
+    need(integrity===undefined||integrity===before.integrity,'actual peer provider has ambiguous immutable integrity');integrity=before.integrity;
+    keyBytes+=Buffer.byteLength(key)+4;need(keyBytes<=limits.metadataBytes,'actual peer context metadata bound');providerKeys.push(key);
+   }
+   const observation=Object.freeze({owner,name:edge.name,range:edge.range,declaredLockKey:edge.lockKey,providerLockKeys:Object.freeze(providerKeys.sort()),providerIntegrity:integrity!,physicalDirectory:path.relative(root,actual)});
+   peerProjectionBytes+=Buffer.byteLength(JSON.stringify(observation))+1;need(peerProjectionBytes<=limits.metadataBytes,'actual peer observation metadata bound');peerProviders.push(observation);
+   // Every provider's own ordinary closure was already traversed under its
+   // selected lock key. Its deferred peers remain in this same queue.
+   return true;
+  }
+  throw Error(identityFailurePrefix+identityFailureContext(owner,edge,node.identity,value,directory,actual,binding!.named));
  };
  for(const row of workspaces.values()){
   if(!row.path)continue;const directory=inside(realpathSync(path.join(root,row.path))),actual=manifest(directory);need(equal(actual,input.readWorkspaceManifest(row.path)),'source workspace manifest changed');workspacePackages.push({name:row.name,directory});visit(row.name,directory);
  }
+ const deferredPeers:typeof peerQueue=[];
+ for(let index=0;index<peerQueue.length;index++){const row=peerQueue[index]!;if(!processEdge(row.owner,row.directory,row.edge,true))deferredPeers.push(row);}
+ const closedPeerCount=peerQueue.length;
+ for(const row of deferredPeers){processEdge(row.owner,row.directory,row.edge,true,true);need(peerQueue.length===closedPeerCount,'deferred peer changed selected closure');}
  const byName=(name:string)=>{
   const result=new Set([...installed.values()].filter(row=>row.name===name).map(row=>row.directory));const direct=path.join(root,'node_modules',name);
   if(existsSync(path.join(direct,'package.json'))){const directory=inside(realpathSync(direct));need(manifest(directory).name===name,'direct package name differs');result.add(directory);}return [...result];
  };
- return Object.freeze({workspacePackages:Object.freeze(workspacePackages),installed:Object.freeze([...installed.values()].map(row=>Object.freeze(row))),optionalAbsences:Object.freeze(optionalAbsences.map(row=>Object.freeze(row))),patchedDirectories:(name:string,version:string)=>Object.freeze(byName(name).filter(directory=>manifest(directory).version===version)),postinstallDirectories:(name:string)=>Object.freeze(byName(name))});
+ return Object.freeze({workspacePackages:Object.freeze(workspacePackages),installed:Object.freeze([...installed.values()].map(row=>Object.freeze(row))),optionalAbsences:Object.freeze(optionalAbsences.map(row=>Object.freeze(row))),peerProviders:Object.freeze(peerProviders),patchedDirectories:(name:string,version:string)=>Object.freeze(byName(name).filter(directory=>manifest(directory).version===version)),postinstallDirectories:(name:string)=>Object.freeze(byName(name))});
 }
