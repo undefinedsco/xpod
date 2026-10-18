@@ -1,3 +1,4 @@
+import {SDK_OBSERVED_TOOL_PENDING_REASONS} from './qlever-sdk-inputs';
 import {createHash} from 'node:crypto';
 import {execFileSync} from 'node:child_process';
 import {readFileSync,realpathSync} from 'node:fs';
@@ -39,7 +40,7 @@ export function inspectSdkExecutionOriginalPlan(input:{master:any;collection:any
   need(same(phase.rawTraceShards,phase.phaseBinding.rawTraceShards)&&phase.phaseBinding.closureKind==='ptrace-tracked-phase-v1','typed phase/raw shard references differ');
   need(Array.isArray(phase.rawTraceShards)&&phase.rawTraceShards.length>0&&phase.captures&&Array.isArray(phase.captures.indexes),'actual raw shards/capture indexes required');
   const selection=input.selections[phaseIndex];need(selection?.schemaVersion===1&&Array.isArray(selection.files)&&Array.isArray(selection.unresolvedInputs),'actual selected input original required');
-  for(const row of selection.unresolvedInputs){need(actual.has(row.path)&&row.reason==='generated-or-unobserved-before-compile','actual unresolved selected input required');unresolved.push({path:row.path,reason:row.reason});}
+  for(const row of selection.unresolvedInputs){need((actual.has(row.path)||row.reason===SDK_OBSERVED_TOOL_PENDING_REASONS[0]&&typeof row.path==='string'&&row.path.startsWith('/')&&safe(row.path.slice(1)))&&(row.reason==='generated-or-unobserved-before-compile'||SDK_OBSERVED_TOOL_PENDING_REASONS.some(reason=>reason===row.reason)),'actual unresolved selected input required');unresolved.push({path:row.path,reason:row.reason});}
   for(const row of selection.files){const observed=actual.get(row.originalPath);need(observed&&same(observed,row.actualInput),'selected input differs from full-shard original');selected.add(row.originalPath);}
  }
  for(const [path,row] of actual){input.check();need(['compile-output','installed-metadata','observed-input'].includes(row.role),'unknown actual input role');
@@ -86,7 +87,7 @@ export async function observeQleverSdkGeneratedInputOriginals(capability:unknown
  return Object.freeze({facts:Object.freeze(facts),pending:Object.freeze([...pending])});
 }
 // Filled only from the fixed, reviewed controller/producer files in this batch.
-const HELPERS:readonly(readonly[string,string])[]=[["sdk-zip-originals.py", "f4e8bf855aad1428550f014222873f9024eff994115a9e7bf67287e5671833f5"], ["sdk-generation-multiprocess-bindings.py", "05c877aeb8ed8d9ea1b36b219724ea8077bd0ebab4e688a1e78d82c061504540"], ["sdk-execution-originals-util.py", "b2226db7d6d9955d6bf3745dc5011aa1dbc67ffe90faf9dc88fffa7376343a2d"], ["sdk-generated-source-originals.py", "60cf828b888a64ecf63accbcf2c856772633dbd7e24eae01e2c3bf53c198595a"]];
+const HELPERS:readonly(readonly[string,string])[]=[["sdk-zip-originals.py", "f4e8bf855aad1428550f014222873f9024eff994115a9e7bf67287e5671833f5"], ["sdk-generation-multiprocess-bindings.py", "984f2743381198dd5c13d3ee9a98fa2663a54e5ce15eee6f9c7c86487a3ea190"], ["sdk-execution-originals-util.py", "b2226db7d6d9955d6bf3745dc5011aa1dbc67ffe90faf9dc88fffa7376343a2d"], ["sdk-generated-source-originals.py", "60cf828b888a64ecf63accbcf2c856772633dbd7e24eae01e2c3bf53c198595a"]];
 const REVIEWED_OBSERVER_SHA={"qlever/scripts/sdk-ptrace-execution.py": "5d88182382f3bb0bcdf2dea4e3ea58358535038dd3f31aed3867e29cfa16dca0", "qlever/scripts/sdk-ptrace-kernel.py": "08fe6e47e696d1543406751bda83f3aaa89a80973d87a27a5a6423e666b5aff2", "qlever/scripts/sdk-execution-originals-util.py": "b2226db7d6d9955d6bf3745dc5011aa1dbc67ffe90faf9dc88fffa7376343a2d", "qlever/scripts/sdk-blocking-owned-wait.py": "9529b31b027b759e5baa380fa81339b9a962d8d916ac1ea20c9f9503bd697a68", "qlever/scripts/sdk-generation-multiprocess-bindings.py": "18900af6455068d1f86849529d910805a2fe99edb56cb5291ed3c2ec10f8c196"} as const;
 
 const REVIEWED_OBSERVER_GROUPS:readonly Readonly<Record<string,string>>[]=[REVIEWED_OBSERVER_SHA,Object.freeze({...REVIEWED_OBSERVER_SHA,
@@ -98,4 +99,7 @@ const REVIEWED_OBSERVER_GROUPS:readonly Readonly<Record<string,string>>[]=[REVIE
 }),Object.freeze({...REVIEWED_OBSERVER_SHA,
  "qlever/scripts/sdk-ptrace-execution.py":"0ef3e75db2bd1c065183a2ea332e605948d576a490c948f8bd0c04fcf6284ed2",
  "qlever/scripts/sdk-generation-multiprocess-bindings.py":"05c877aeb8ed8d9ea1b36b219724ea8077bd0ebab4e688a1e78d82c061504540",
+}),Object.freeze({...REVIEWED_OBSERVER_SHA,
+ "qlever/scripts/sdk-ptrace-execution.py":"03b1eb1a145be4534857cd42da44d27e3e5539160e5e75db502c76b497cfb4f0",
+ "qlever/scripts/sdk-generation-multiprocess-bindings.py":"984f2743381198dd5c13d3ee9a98fa2663a54e5ce15eee6f9c7c86487a3ea190",
 })];

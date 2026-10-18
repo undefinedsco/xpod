@@ -82,7 +82,7 @@ test('owned SDK RUNs select the complete PID1 registry/guard and preserve earlie
 
 test('source-prepared SDK group binds the complete changed recipe without mixing historical selectors',()=>{
  const old=QLEVER_SDK_EXECUTION_GROUPS[6]!,next=QLEVER_SDK_EXECUTION_GROUPS[7]!;
- expect(QLEVER_SDK_EXECUTION_GROUPS).toHaveLength(16);
+ expect(QLEVER_SDK_EXECUTION_GROUPS).toHaveLength(17);
  const selected=new Map([...next.selectors,...(next.secondarySelectors??[])].map(row=>[sourceBindingKey(row),row.sha256]));
  expect(selectGitHubSourceBindingGroup(QLEVER_SDK_EXECUTION_GROUPS,selected)).toBe(next);
  for(const path of ['docker/qlever-runtime-sdk/Dockerfile.module-bookworm','qlever/scripts/sdk-inner-materials.py']){
@@ -186,3 +186,5 @@ test('write-delta observer selects its complete secondary pair and preserves fif
  expect(next.sourceBindings.find(row=>row.path==='qlever/scripts/sdk-toolchain-materials.py')?.sha256).toBe(old.sourceBindings.find(row=>row.path==='qlever/scripts/sdk-toolchain-materials.py')?.sha256);
  for(const group of QLEVER_SDK_EXECUTION_GROUPS.slice(0,15))expect(selectGitHubSourceBindingGroup(QLEVER_SDK_EXECUTION_GROUPS,new Map([...group.selectors,...(group.secondarySelectors??[])].map(row=>[sourceBindingKey(row),row.sha256])))).toBe(group);
 });
+
+test('combined single observer version preserves old pair and rejects mixed producer/parser',()=>{const old=QLEVER_SDK_EXECUTION_GROUPS[15]!,next=QLEVER_SDK_EXECUTION_GROUPS[16]!;for(const group of [old,next]){const map=new Map([...group.selectors,...group.secondarySelectors!].map(row=>[sourceBindingKey(row),row.sha256]));expect(selectGitHubSourceBindingGroup(QLEVER_SDK_EXECUTION_GROUPS,map)).toBe(group);}for(const role of next.secondarySelectors!){const map=new Map([...next.selectors,...next.secondarySelectors!].map(row=>[sourceBindingKey(row),row.sha256]));map.set(sourceBindingKey(role),old.secondarySelectors!.find(row=>row.path===role.path)!.sha256);expect(()=>selectGitHubSourceBindingGroup(QLEVER_SDK_EXECUTION_GROUPS,map)).toThrow();}});

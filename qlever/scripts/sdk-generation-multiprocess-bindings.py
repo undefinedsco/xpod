@@ -6,9 +6,10 @@ runtime/toolchain authority remain independent of this mechanical axis.
 import hashlib
 import json
 import re
+import struct
 POLICIES={
- 0xc00000b7:dict(read=63,write=64,close=57,mmap=222,clone=220,clone3=435,spawn={220,435},renameat=38,renameat2=276,renameOps={38,276},exits={93,94},forbidden={0,1,2,3,4,292,425,426,427,271,117,97,268}),
- 0xc000003e:dict(read=0,write=1,close=3,mmap=9,clone=56,clone3=435,spawn={56,57,58,435},rename=82,renameat=264,renameat2=316,renameOps={82,264,316},exits={60,231},forbidden={206,207,208,209,210,333,425,426,427,311,101,272,308}),
+ 0xc00000b7:dict(exec={221,281},execveat=281,protect={226,288},read=63,write=64,close=57,mmap=222,clone=220,clone3=435,spawn={220,435},renameat=38,renameat2=276,renameOps={38,276},exits={93,94},forbidden={0,1,2,3,4,292,425,426,427,271,117,97,268}),
+ 0xc000003e:dict(exec={59,322},execveat=322,protect={10,329},read=0,write=1,close=3,mmap=9,clone=56,clone3=435,spawn={56,57,58,435},rename=82,renameat=264,renameat2=316,renameOps={82,264,316},exits={60,231},forbidden={206,207,208,209,210,333,425,426,427,311,101,272,308}),
 }
 def policy(arch):
     if arch not in POLICIES:raise ValueError('unsupported actual kernel architecture')
@@ -16,6 +17,24 @@ def policy(arch):
 
 def need(value,reason):
     if not value:raise ValueError('multi-process generation originals: '+reason)
+def append_boundary_syscall(arch,nr,args=None):
+    rules=policy(arch)
+    # open/openat allocate a descriptor; they do not consume file contents.
+    # Only a fully decoded, non-truncating flags word may defer checkpoint to
+    # the actual later read/mmap/exec/close. Unknown inputs stay fail-closed.
+    flag_index={0xc000003e:{2:1,257:2},0xc00000b7:{56:2}}[arch].get(nr)
+    if flag_index is not None:
+        if not isinstance(args,(list,tuple)) or len(args)!=6 or not all(type(value) is int and 0<=value<(1<<64) for value in args):return True
+        flags=args[flag_index]
+        if type(flags) is not int or not 0<=flags<(1<<64):return True
+        return bool(flags&0x200) # Linux O_TRUNC, on both reviewed ABIs.
+    # Before exec, mapping, namespace/mode/size or descriptor replacement can
+    # change what a retained append image denotes. Socket reads are not file
+    # consumers and do not trigger a full checkpoint per network packet.
+    extra={0xc000003e:{2,3,9,11,59,76,77,85,86,87,90,91,257,263,265,268,292,322,436,32,33,72},
+           0xc00000b7:{23,24,25,35,36,45,46,49,52,53,56,57,215,221,222,281,436}}[arch]
+    return nr in extra or nr in rules['renameOps']
+
 def inspect_shared_clone_flags(flags):
     need(type(flags) is int and flags>=0,'actual clone flags required')
     allowed=0xff|0x100|0x200|0x400|0x800|0x4000|0x8000|0x10000|0x40000|0x80000|0x100000|0x200000|0x1000000|0x100000000
@@ -57,6 +76,45 @@ def verify_write_bytes(before,buffer,after,before_size,offset,count,maximum,chec
         need(post.take(size)==bytes(expected),'actual post-write bytes differ from syscall buffer projection');position+=size
     need(post.take(1)==b'','actual post-write original has extra bytes')
     return expected_size
+def parse_proc_maps(raw):
+    need(isinstance(raw,bytes) and len(raw)<=4*1024**2,'bounded maps original required')
+    result=[];previous=0
+    for number,line in enumerate(raw.splitlines(),1):
+        need(len(line)<=65536,'maps line bound')
+        match=re.fullmatch(rb'([0-9a-f]+)-([0-9a-f]+) ([r-][w-][x-][ps]) ([0-9a-f]+) ([0-9a-f]+):([0-9a-f]+) ([0-9]+)(?: +(.*))?',line)
+        need(match is not None,'actual proc maps syntax required')
+        start,end=int(match[1],16),int(match[2],16);need(previous<=start<end,'ordered nonoverlapping actual VMA required');previous=end
+        path=(match[8] or b'').decode('utf-8','strict')
+        result.append(dict(startHex=format(start,'x'),endHex=format(end,'x'),permissions=match[3].decode(),fileOffset=int(match[4],16),deviceMajor=int(match[5],16),deviceMinor=int(match[6],16),inode=int(match[7]),path=path,mapsLineIndex=number))
+    return result
+
+def verify_vma_range(mappings,begin,length,protection):
+    need(type(begin) is int and type(length) is int and 0<=begin<begin+length<=1<<64,'actual mapping range overflow')
+    end=begin+length;cursor=begin;selected=[]
+    for mapping in mappings:
+        start,stop=int(mapping['startHex'],16),int(mapping['endHex'],16)
+        if start>=end or stop<=begin:continue
+        need(start<=cursor<stop,'actual mapping VMA range has a hole')
+        need(all(not(protection&bit) or letter in mapping['permissions'] for bit,letter in [(1,'r'),(2,'w'),(4,'x')]),'actual VMA permissions differ from successful syscall')
+        cursor=min(stop,end);selected.append(mapping)
+    need(cursor==end,'actual mapping VMA does not cover successful returned range');return selected
+
+def elf_interpreter(read,size):
+    # Fixed supported SDK targets use little-endian ELF64. This function reads
+    # the retained FD/capture bytes, never executes or follows PT_INTERP.
+    header=read(0,min(size,64));need(len(header)>=64 and header[:6]==b'\x7fELF\x02\x01','supported actual ELF64 required')
+    machine=struct.unpack_from('<H',header,18)[0];need(header[6]==1 and struct.unpack_from('<H',header,16)[0] in [2,3] and struct.unpack_from('<I',header,20)[0]==1 and struct.unpack_from('<H',header,52)[0]==64 and machine in [62,183],'supported ELF machine/header required')
+    offset=struct.unpack_from('<Q',header,32)[0];stride,count=struct.unpack_from('<HH',header,54)
+    need(stride==56 and 0<count<=4096 and offset+count*stride<=size,'bounded ELF program headers required')
+    interpreter=None
+    for index in range(count):
+        row=read(offset+index*stride,stride);need(len(row)==stride,'truncated ELF program header')
+        if struct.unpack_from('<I',row)[0]!=3:continue
+        begin,length=struct.unpack_from('<Q',row,8)[0],struct.unpack_from('<Q',row,32)[0]
+        need(interpreter is None and 1<length<=4096 and begin+length<=size,'unique bounded ELF PT_INTERP required')
+        raw=read(begin,length);need(len(raw)==length and raw[-1:]==b'\0' and b'\0' not in raw[:-1],'actual interpreter encoding required')
+        interpreter=raw[:-1].decode('utf-8','strict');need(interpreter.startswith('/') and '\n' not in interpreter,'absolute actual interpreter path required')
+    return dict(machine=machine,interpreter=interpreter)
 
 def write_segments(before,offset,count,buffer,maximum):
     """Immutable original slices, not full postimage copies. Zero gaps explicit."""
@@ -102,11 +160,11 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
     maximum_file=limits['shardBytes'] if limits else 1024**2
     maximum_total=limits['sourceMaterialBytes'] if limits else 16*1024**2
     original_cache={};retained_entries=set();phase_tracking=[]
-    shared_mode=False;owners={};exec_fd_events={}
+    shared_mode=False;owners={};exec_fd_events={};vfork_events={};vfork_holds={};child_bindings={};wait_rows={}
     live=set();last=0;entries={};exits={};barriers={};caps={};paths={};renames=[];consumers=[];source_reads=[];total=0;capture_total=0;exclusive=None;root_codes={};clone_flags=set();clone_flag_values={}
     alias_close_windows={};alias_close_exits=set()
     mode_windows={};mode_transitions={};namespace_bindings=[]
-    write_projections={};write_windows={};closed_write_windows=set();write_transitions={};write_consumers=[];write_read_exits={}
+    append_obligations={};append_completed={};append_dirty={};append_checkpoints={};append_hashes={};write_projections={};write_windows={};closed_write_windows=set();write_transitions={};write_consumers=[];write_read_exits={}
     empty_windows={};empty_eofs=set()
     prepared={};prepared_consumers=[];prepared_digest=hashlib.sha256();prepared_count=0;prepared_sealed=False;prepared_paths=set()
     def capture_data(ref):
@@ -121,6 +179,30 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                 check();need(isinstance(block,bytes) and len(block)<=65536,'bounded actual capture block required');count+=len(block);need(count<=ref['bytes'],'capture actual byte bound');digest.update(block)
             data=(count,digest.hexdigest());capture_total+=count;need(capture_total<=maximum_total and data==(ref['bytes'],ref['sha256']),'capture actual bytes/reference differs');original_cache[key]=data
         return original_cache[key]
+    tool_originals={};tool_files={};tool_pending=set();tool_execs=0;tool_mappings=0;tool_core=None;exec_events={};tool_exec_paths={};tool_protect_before={};tool_digest=hashlib.sha256()
+    def tool_ref(reference,kind=None):
+        value=tool_originals.get(reference['path']);need(value and value['original']==reference and (kind is None or value['captureKind']==kind),'toolchain reference lacks actual complete original')
+        return value
+    def tool_maps(reference):
+        tool_ref(reference,'maps');need(reference['bytes']<=4*1024**2,'bounded maps original')
+        original=read_original(reference['path'],maximum_file);blocks=[original] if isinstance(original,bytes) else original;parts=[];count=0;digest=hashlib.sha256()
+        for block in blocks:
+            check();need(isinstance(block,bytes) and len(block)<=65536,'bounded maps block');count+=len(block);need(count<=reference['bytes'],'maps byte bound');digest.update(block);parts.append(block)
+        need((count,digest.hexdigest())==(reference['bytes'],reference['sha256']),'maps original changed')
+        return parse_proc_maps(b''.join(parts))
+    def tool_barrier(row):
+        value=barriers.get(row['barrierSequence']);need(value and value['pids']==sorted(live) and row['pid'] in live,'tool snapshot lacks complete actual stop barrier')
+    def tool_elf(reference):
+        original=read_original(reference['path'],maximum_file);iterator=iter([original] if isinstance(original,bytes) else original);prefix=bytearray()
+        def read(offset,size):
+            need(0<=offset and size<=65536 and offset+size<=min(reference['bytes'],4*1024**2),'ELF metadata window bound')
+            while len(prefix)<offset+size:
+                check();block=next(iterator,b'');need(block and isinstance(block,bytes) and len(block)<=65536,'truncated ELF original');prefix.extend(block);need(len(prefix)<=4*1024**2,'ELF metadata prefix bound')
+            return bytes(prefix[offset:offset+size])
+        try:return elf_interpreter(read,reference['bytes'])
+        except ValueError as error:return dict(unresolved='actual-ELF-interpreter-unclassified:'+str(error)[:256])
+        finally:
+            if hasattr(original,'close'):original.close()
     for phase,lines in phase_lines:
         need(not live,'prior actual process tree has not closed');roots=[];waits=[]
         for raw in lines:
@@ -138,6 +220,7 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                 need(row.get('taskOwnershipModel') in [None,'all-tracked-tids-shared-fd-v1'],'unknown task ownership model');shared_mode=row.get('taskOwnershipModel') is not None;owners={}
                 if shared_mode:need(row['tgid']==row['fdTable']==row['pid'],'initial root ownership differs');owners[row['pid']]=dict(tgid=row['tgid'],fdTable=row['fdTable'])
             elif kind=='actual-child-binding':
+                child_bindings[row['childPid']]=row
                 need(row['parentPid'] in live and row['childPid'] not in live,'unobserved actual child binding')
                 if shared_mode:
                     parent=owners[row['parentPid']];entry=entries.get(row['cloneEntrySequence']);need(entry and entry['pid']==row['parentPid'],'child ownership lacks actual clone entry');rules=policy(entry['arch'])
@@ -145,7 +228,9 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                     else:need(entry['arch']==0xc000003e and entry['nr'] in [57,58] and row['cloneFlags']==17|(0x4100 if entry['nr']==58 else 0),'unknown child fork operation')
                     ownership=inspect_shared_clone_flags(row['cloneFlags']);need(row['tgid']==(parent['tgid'] if ownership['sameThreadGroup'] else row['childPid']) and row['fdTable']==(parent['fdTable'] if ownership['sharedFdTable'] else row['childPid']),'child TGID/FD table differs from kernel clone flags');owners[row['childPid']]=dict(tgid=row['tgid'],fdTable=row['fdTable'])
                 live.add(row['childPid'])
-            elif kind=='actual-wait-exit':need(row['pid'] in live,'wait on unknown process');live.remove(row['pid']);root_codes[row['pid']]=row['returnCode'];waits.append(dict(pid=row['pid'],sequence=row['sequence'],returnCode=row['returnCode'],phase=phase))
+            elif kind=='actual-wait-exit':
+                need(row['pid'] not in vfork_holds,'held vfork parent ended without child release');wait_rows[row['sequence']]=row
+                need(row['pid'] in live,'wait on unknown process');live.remove(row['pid']);root_codes[row['pid']]=row['returnCode'];waits.append(dict(pid=row['pid'],sequence=row['sequence'],returnCode=row['returnCode'],phase=phase))
             elif kind=='all-stop-barrier':
                 need(row['pids']==sorted(live) and row['osStates']==['t']*len(live),'potential writer not in actual complete tracing-stop barrier')
                 if shared_mode:need(row['taskOwnership']==[dict(tid=pid,**owners[pid]) for pid in sorted(live)],'complete actual TID/TGID/shared-table ownership differs')
@@ -182,7 +267,7 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                 need(entry and barrier and entry['pid']==row['pid'] and row['pid'] in barrier['pids'] and entry['nr']==policy(entry['arch'])['write'] and entry['args'][0]==row['fd'],'actual write entry/barrier differs')
                 need(all(type(row[key]) is int and 0<=row[key]<=maximum_file for key in ['position','offset']) and type(entry['args'][2]) is int and 0<=entry['args'][2]<=maximum_file and row['offset']+entry['args'][2]<=maximum_file,'exact bounded write position/offset/count required')
                 need(row['flags']&3==2 and row['writers']==[dict(pid=row['pid'],fd=row['fd'])] and row['offset']==(row['beforeIdentity'][3] if row['flags']&1024 else row['position']),'actual write has another alias or offset differs')
-                delta=row.get('format')=='bounded-write-delta-v1';need(row.get('format') in [None,'bounded-write-delta-v1'],'unknown write evidence format')
+                delta=row.get('format') in ['bounded-write-delta-v1','bounded-append-effect-v1'];need(row.get('format') in [None,'bounded-write-delta-v1','bounded-append-effect-v1'],'unknown write evidence format')
                 before=(row['before']['bytes'],row['before']['sha256']) if delta else capture_data(row['before']);buffer=capture_data(row['buffer']);need(before[0]==row['beforeIdentity'][3] and buffer[0]==entry['args'][2],'write originals differ from actual dimensions')
                 baseline=row['baseline']
                 if baseline=='empty':need(before[0]==0,'nonempty write preimage has no original authority')
@@ -198,6 +283,17 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                         projection=write_projections.get(key);need(projection and projection[0]==baseline,'delta preimage is not latest actual transition');segments=projection[1]
                     else:
                         initial=row['initialBefore'];need(capture_data(initial)==before,'initial write delta preimage differs');segments=[(initial,0,before[0])] if before[0] else []
+                    if row.get('format')=='bounded-append-effect-v1':
+                        need(row['offset']==before[0],'append must begin at actual EOF')
+                        if key not in append_hashes:
+                            digest=hashlib.sha256()
+                            # Use original reader streaming; never load a whole original.
+                            def initial_blocks(ref):
+                                value=read_original(ref['path'],maximum_file)
+                                return (value[i:i+65536] for i in range(0,len(value),65536)) if isinstance(value,bytes) else value
+                            for block in segment_blocks(segments,initial_blocks,check):digest.update(block)
+                            need(digest.hexdigest()==before[1],'append baseline full digest differs');append_hashes[key]=digest
+                    else:need(key not in append_dirty,'nonappend write before append full checkpoint')
                     write_projections[key]=(row['sequence'],segments)
                 write_windows[row['sequence']]=row;retained_entries.add(row['entrySequence'])
             elif kind=='exclusive-write-resume':
@@ -209,17 +305,38 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                 def blocks(ref):
                     value=read_original(ref['path'],maximum_file)
                     return (value[i:i+65536] for i in range(0,len(value),65536)) if isinstance(value,bytes) else value
-                if window.get('format')=='bounded-write-delta-v1':
+                if window.get('format') in ['bounded-write-delta-v1','bounded-append-effect-v1']:
                     need(set(row['after'])=={'bytes','sha256'},'delta after must be digest only')
                     key=tuple(window['beforeIdentity'][:2]);prior=write_projections.get(key);need(prior and prior[0]==window['sequence'],'delta window order differs')
-                    segments=write_segments(prior[1],window['offset'],row['result'],window['buffer'],maximum_file)
-                    expected=digest_blocks(segment_blocks(segments,blocks,check),maximum_file,check);need(expected==row['after'],'delta postimage does not reconstruct actual full SHA')
+                    if window.get('format')=='bounded-append-effect-v1':
+                        need(row.get('afterObservation')=='uncheckpointed-append-projection','append effect is not an actual full snapshot')
+                        segments=prior[1];digest=append_hashes[key];effect=hashlib.sha256();position=0
+                        for block in blocks(window['buffer']):
+                            check();chunk=block[:max(0,min(len(block),row['result']-position))]
+                            if chunk:effect.update(chunk);digest.update(chunk);position+=len(chunk)
+                            if position==row['result']:break
+                        need(position==row['result'] and row.get('actualAppendEffect')==dict(bytes=position,sha256=effect.hexdigest()),'actual append range evidence differs')
+                        if position:segments.append((window['buffer'],0,position))
+                        expected=dict(bytes=window['beforeIdentity'][3]+position,sha256=digest.hexdigest())
+                        need(expected==row['after'],'append projection digest differs');append_dirty[key]=row['sequence']
+                    else:
+                        segments=write_segments(prior[1],window['offset'],row['result'],window['buffer'],maximum_file)
+                        expected=digest_blocks(segment_blocks(segments,blocks,check),maximum_file,check);need(expected==row['after'],'delta postimage does not reconstruct actual full SHA')
                     write_projections[key]=(row['sequence'],segments);after=(expected['bytes'],expected['sha256'])
                 else:
                     after=capture_data(row['after'])
                     need(verify_write_bytes(blocks(window['before']),blocks(window['buffer']),blocks(row['after']),window['beforeIdentity'][3],window['offset'],row['result'],maximum_file,check)==after[0],'actual write size projection differs')
                 need(after[0]==row['afterIdentity'][3],'actual write after identity/size differs')
                 need(window['sequence'] not in closed_write_windows,'duplicate actual write transition');closed_write_windows.add(window['sequence']);write_transitions[row['sequence']]=row
+            elif kind=='append-full-checkpoint':
+                barrier=barriers.get(row['barrierSequence'])
+                need((row['closedTrackedWaits'] is True and not live and row['barrierSequence'] is None) or (row['closedTrackedWaits'] is False and barrier and set(barrier['pids'])==live),'append checkpoint lacks actual all-stop/wait closure')
+                transition=write_transitions.get(row['transitionSequence']);key=tuple(row['identity'][:2])
+                need(transition and append_dirty.get(key)==transition['sequence'] and transition['afterIdentity']==row['identity'],'append checkpoint latest transition/identity differs')
+                need(capture_data(row['original'])==(transition['after']['bytes'],transition['after']['sha256']),'append prefix/full checkpoint bytes differ')
+                need(row['reason'] in ['nonappend-write','captured-access','syscall-boundary','toolchain-access','phase-final'],'unknown append checkpoint boundary')
+                if row['entrySequence'] is not None:need(row['entrySequence'] in entries and row['entrySequence']<row['sequence'],'append checkpoint entry differs')
+                append_checkpoints[transition['sequence']]=row;append_completed[key]=transition['sequence'];del append_dirty[key];del append_hashes[key]
             elif kind=='actual-write-consumer-binding':write_consumers.append(row)
             elif kind=='actual-write-consumer-exit':
                 cap=caps.get(row['captureSequence']);exit=exits.get(row['entrySequence'])
@@ -241,8 +358,10 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
             elif kind=='exclusive-captured-syscall-exit':
                 need(exclusive==(row['pid'],row['entrySequence']) and row['entrySequence'] in exits,'exclusive read/close stop boundary differs');exclusive=None
             elif kind=='kernel-syscall':
+                need(row['pid'] not in vfork_holds,'vfork parent resumed before actual child exec/terminal wait')
                 need(row['pid'] in live and row['arch'] in POLICIES,'unknown syscall process/architecture');need(exclusive is None or exclusive[0]==row['pid'],'another potential writer ran during captured syscall')
                 if row['op']=='entry':
+                    if append_boundary_syscall(row['arch'],row['nr'],row['args']):append_obligations[row['sequence']]=dict(append_dirty)
                     rules=policy(row['arch']);need(row['nr'] not in rules['forbidden'],'unsupported asynchronous/external writer syscall')
                     if row['nr']==rules['clone']:
                         flags=row['args'][0]
@@ -253,19 +372,79 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                         need(not(row['nr']==436 and row['args'][2]&2),'unknown close_range UNSHARE table ownership')
                         if row['nr'] in ([59,322] if row['arch']==0xc000003e else [221,281]):need(row['pid']==owners[row['pid']]['tgid'],'nonleader exec TID replacement unsupported')
                     entries[row['sequence']]=row
+                    if row['nr'] in rules['exec'] or row['nr'] in rules['protect'] and row['args'][2]&4 or row['nr']==rules['mmap'] and (not(row['args'][3]&0x20) or row['args'][2]&4):retained_entries.add(row['sequence'])
                 elif row['op']=='exit':
                     if 'entrySequence' in row:
+                        need(all(append_completed.get(key,0)>=sequence for key,sequence in append_obligations.pop(row['entrySequence'],{}).items()),'append checkpoint missing before actual syscall exit')
                         entry=entries.get(row['entrySequence']);need(entry and entry['pid']==row['pid'] and row['entrySequence'] not in exits,'syscall exit binding differs')
                         if entry['nr']==435:need(row['entrySequence'] in clone_flags,'clone3 lacks actual flags original')
+                        if row['isError'] and (entry['nr'] in policy(entry['arch'])['exec'] or entry['nr'] in policy(entry['arch'])['protect'] or entry['nr']==policy(entry['arch'])['mmap']):retained_entries.discard(row['entrySequence']);tool_protect_before.pop(row['entrySequence'],None)
                         if row['entrySequence'] in retained_entries:exits[row['entrySequence']]=row
                         else:entries.pop(row['entrySequence']);clone_flags.discard(row['entrySequence'])
                 else:need(False,'unknown syscall-info operation')
+            elif kind=='toolchain-original':
+                need(not append_dirty,'tool/source output before mandatory append full checkpoint')
+                need(bool(live) and row['captureKind'] in ['file','maps'],'actual tool original must be observed with live stopped tracees')
+                data=capture_data(row['original']);need(row['original']['path'] not in tool_originals,'duplicate tool original')
+                if row['captureKind']=='file':
+                    need(len(row['identity'])==6 and row['identity'][3]==data[0],'tool FD identity/bytes differ');tool_files[row['original']['path']]=dict(observedPath=row['observedPath'],identity=row['identity'],original=row['original'])
+                else:need(data[0]<=4*1024**2,'bounded maps metadata original')
+                tool_originals[row['original']['path']]=row
+            elif kind=='toolchain-exec-path-entry':
+                tool_barrier(row);entry=entries.get(row['entrySequence']);need(entry and entry['pid']==row['pid'] and entry['nr']==row['syscall'] and entry['nr'] in policy(entry['arch'])['exec'] and isinstance(row['entryPath'],str) and len(row['entryPath'].encode())<=4096,'actual exec path entry differs');tool_exec_paths[row['sequence']]=row
+            elif kind=='toolchain-exec-image-capture':
+                tool_barrier(row);entry=entries.get(row['execEntrySequence']);event=exec_events.get(row['execEventSequence']);need(entry and event and entry['pid']==row['pid']==event['pid'] and entry['nr'] in policy(entry['arch'])['exec'],'actual exec entry/event relation differs');retained_entries.add(entry['sequence'])
+                path_entry=tool_exec_paths.pop(row.get('execPathEntrySequence'),None)
+                if path_entry:need(path_entry['entrySequence']==entry['sequence'] and path_entry['pid']==row['pid'] and path_entry['lexicalPath']==row['exe']['lexicalPath'],'actual exec path/executable snapshot differs')
+                else:tool_pending.add('toolchain-exec-path-entry-original-unavailable')
+                original=tool_ref(row['exe']['original'],'file');need(row['exe']['identity']==original['identity'] and row['elf']==tool_elf(original['original']),'actual exe FD/ELF bytes differ')
+                tool_core=dict(sequence=row['sequence'],pid=row['pid'],maps=tool_maps(row['mapsOriginal']));tool_execs+=1;tool_digest.update((json.dumps(row,sort_keys=True)+'\n').encode())
+                retained_entries.discard(entry['sequence']);exec_events.pop(row['execEventSequence'])
+                if 'machine' in row['elf']:need(row['elf']['machine']=={0xc000003e:62,0xc00000b7:183}[entry['arch']],'actual executable ELF/kernel architecture differs')
+                if 'unresolved' in row['elf']:tool_pending.add('toolchain-exec-ELF-interpreter-unclassified')
+            elif kind=='toolchain-executable-protection-before':
+                tool_barrier(row);entry=entries.get(row['entrySequence']);need(entry and entry['pid']==row['pid'] and entry['nr'] in policy(entry['arch'])['protect'] and entry['args'][2]&4,'actual executable protection entry differs');retained_entries.add(entry['sequence']);tool_maps(row['mapsOriginal']);tool_protect_before[row['entrySequence']]=row['mapsOriginal']
+            elif kind in ['toolchain-file-mapping-capture','toolchain-executable-protection-capture']:
+                tool_barrier(row);entry=entries.get(row['entrySequence']);actual=exits.get(row['entrySequence']);need(entry and actual and actual['sequence']==row['exitSequence'] and entry['pid']==row['pid'] and not actual['isError'],'actual mapping/protection syscall result differs')
+                args=entry['args']
+                if kind=='toolchain-file-mapping-capture':
+                    need(entry['nr']==policy(entry['arch'])['mmap'] and actual['result']>=0 and row['actualReturnedAddressHex']==format(actual['result'],'x') and row['requestedLength']==args[1] and row['fileOffset']==args[5] and row['flags']==args[3] and row['protection']==args[2],'actual mmap dimensions differ')
+                    descriptor=row.get('actualFd')
+                    if descriptor and 'original' in descriptor:need(descriptor['fd']==args[4] and tool_ref(descriptor['original'],'file')['identity']==descriptor['identity'],'actual mmap FD original differs')
+                    maps=tool_maps(row['mapsOriginal']);selected=verify_vma_range(maps,actual['result'],args[1],args[2])
+                    anonymous=bool(args[3]&0x20)
+                    if anonymous:tool_pending.add('anonymous-or-JIT-mapping-source-unresolved');need(descriptor is None,'MAP_ANONYMOUS must not claim file descriptor authority')
+                    tool_core=dict(sequence=row['sequence'],pid=row['pid'],maps=maps,mappingKind='mmap',begin=actual['result'],length=args[1],offset=args[5],anonymous=anonymous,descriptor=descriptor)
+                else:
+                    need(entry['nr'] in policy(entry['arch'])['protect'] and args[2]&4 and actual['result']==0 and row['actualSyscall']==entry['nr'] and row['requestedStartHex']==format(args[0],'x') and row['requestedLength']==args[1] and row['protection']==args[2] and row['beforeMapsOriginal']==tool_protect_before.get(entry['sequence']),'actual executable protection before/after relation differs')
+                    if entry['nr'] in [329,288]:tool_pending.add('toolchain-protection-key-access-state-unverified')
+                    maps=tool_maps(row['afterMapsOriginal']);actual_mappings=verify_vma_range(maps,args[0],args[1],args[2])
+                    if any(mapping['inode']==0 or not mapping['path'].startswith('/') for mapping in actual_mappings):tool_pending.add('anonymous-or-JIT-mapping-source-unresolved')
+                    tool_core=dict(sequence=row['sequence'],pid=row['pid'],maps=maps,mappingKind='protect',begin=args[0],length=args[1])
+                entries.pop(entry['sequence']);exits.pop(entry['sequence']);retained_entries.discard(entry['sequence']);tool_protect_before.pop(entry['sequence'],None)
+                tool_digest.update((json.dumps(row,sort_keys=True)+'\n').encode())
+            elif kind=='toolchain-mapping-original':
+                tool_barrier(row);need(tool_core and row['parentCaptureSequence']==tool_core['sequence'] and row['pid']==tool_core['pid'] and row['mapping'] in tool_core['maps'],'actual VMA snapshot relation differs')
+                mapping=row['mapping'];need(mapping['inode']>0 and mapping['path'].startswith('/'),'anonymous/kernel VMA cannot claim file original authority');identity=row['identity'];need(len(identity)==6 and identity==tool_ref(row['original'],'file')['identity'],'mapped original FD/bytes differ')
+                import os
+                need((os.major(identity[0]),os.minor(identity[0]),identity[1])==(mapping['deviceMajor'],mapping['deviceMinor'],mapping['inode']),'actual VMA inode/device differs from mapped FD')
+                descriptor=row.get('actualFd')
+                if tool_core.get('mappingKind')=='mmap':
+                    need(not tool_core['anonymous'] and descriptor==tool_core['descriptor'] and descriptor is not None,'anonymous or different FD cannot claim mapped file original')
+                    begin,end=tool_core['begin'],tool_core['begin']+tool_core['length'];start,stop=int(mapping['startHex'],16),int(mapping['endHex'],16)
+                    need(start<end and stop>begin and mapping['fileOffset']+max(begin-start,0)==tool_core['offset']+max(start-begin,0),'actual mapped file offset/range differs')
+                elif tool_core.get('mappingKind')=='protect':need(int(mapping['startHex'],16)<tool_core['begin']+tool_core['length'] and int(mapping['endHex'],16)>tool_core['begin'],'executable protection mapping outside actual requested range')
+                if descriptor:need(descriptor['identity']==identity,'actual mapping process FD differs')
+                tool_mappings+=1;tool_digest.update((json.dumps(row,sort_keys=True)+'\n').encode())
+            elif kind=='toolchain-unresolved':tool_pending.add(row['reason'])
             elif kind=='kernel-clone-flags':
                 entry=entries.get(row['entrySequence']);clone_flags.add(row['entrySequence']);need(entry and entry['pid']==row['pid'] and entry['nr'] in [policy(entry['arch'])['clone'],435],'clone memory flags entry differs');flags=row['flags'];clone_flag_values[row['entrySequence']]=flags
                 if shared_mode:inspect_shared_clone_flags(flags)
                 else:need(not flags&(0x10000|0x400) and flags&~(0xff|0x100|0x4000|0x1000000|0x200000|0x100000000)==0,'unknown shared writer/FD flags')
+                if flags&0x100:tool_pending.add('toolchain-shared-address-space-clone-unverified')
             elif kind=='kernel-path-arguments':need(row['entrySequence'] in entries and entries[row['entrySequence']]['pid']==row['pid'],'path original entry differs');paths[row['entrySequence']]=row['renamePaths'];retained_entries.add(row['entrySequence'])
             elif kind=='fd-capture':
+                need(not append_dirty,'file capture before full append checkpoint')
                 retained_entries.add(row['entrySequence']);entry=entries.get(row['entrySequence']);barrier=barriers.get(row['barrierSequence']);need(entry and barrier and row['pid']==entry['pid'] and row['pid'] in barrier['pids'],'capture missing actual entry/all-stop relation')
                 rules=POLICIES[entry['arch']];need(row['role'] in ['producer-close','consumer','source-read','readwrite-consumer'],'unknown capture role')
                 nr=entry['nr'];fd_index=4 if nr==rules['mmap'] else 0;need(row['fd']==entry['args'][fd_index],'capture actual FD differs')
@@ -277,13 +456,26 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                 need(len(row['identity'])==6 and row['identity'][3]==data[0],'actual capture identity/size differs');caps[row['sequence']]=(row,data)
                 if capture_observer:capture_observer(row,data)
                 if row['role']=='source-read':source_reads.append(row)
+            elif kind=='vfork-parent-held':
+                parent=row['parentPid'];child=row['childPid'];event=vfork_events.get(row['eventSequence']);binding=child_bindings.get(child)
+                need(parent in live and child in live and parent not in vfork_holds and event and event['pid']==parent and event['event']==2 and binding and binding['event']==2 and binding['parentPid']==parent,'VFORK hold lacks actual event/child binding')
+                need(row['actualParentState']=='t' and row['entrySequence'] in entries and binding.get('cloneEntrySequence',row['entrySequence'])==row['entrySequence'],'VFORK hold lacks actual parent entry/stop')
+                entry=entries[row['entrySequence']];need(entry['pid']==parent and (clone_flag_values.get(entry['sequence'],0)&0x4000 or entry['arch']==0xc000003e and entry['nr']==58),'VFORK hold actual flags differ');vfork_holds[parent]=row
+            elif kind=='vfork-parent-release':
+                parent=row['parentPid'];hold=vfork_holds.get(parent);event=vfork_events.get(row['releaseSequence']);wait=wait_rows.get(row['releaseSequence']);child=row['childPid']
+                need(hold and parent in live and hold['childPid']==child and row['holdSequence']==hold['sequence'] and row['actualParentState']=='t','VFORK release wrong parent/child/stop')
+                need((row['releaseKind']=='actual-exec' and child in live and event and event['pid']==child and event['event']==4) or (row['releaseKind']=='actual-terminal-wait' and child not in live and wait and wait['pid']==child),'VFORK release lacks actual child exec/terminal wait');del vfork_holds[parent]
             elif kind=='ptrace-event':
                 need(row.get('event') in [1,2,3,4,5,6,128],'unknown actual ptrace event')
+                if row['event'] in [2,4]:vfork_events[row['sequence']]=row
                 if shared_mode and row['event']==4:exec_fd_events[row['sequence']]=row
+                if row['event']==4:exec_events[row['sequence']]=row
             elif kind=='retained-fd-rename-binding':renames.append(row)
             elif kind=='generated-consumer-binding':consumers.append(row)
             elif kind=='prepared-consumer-binding':prepared_consumers.append(row)
             else:need(kind in ['ptrace-event','signal-delivery','generated-mmap-unverified'],'unknown raw observer event')
+        need(not vfork_holds,'phase ended without vfork child release')
+        need(not append_dirty,'phase ended without mandatory append full checkpoint')
         need(len(roots)==1 and not live and root_codes.get(roots[0])==0 and exclusive is None,'actual root/descendant wait closure incomplete')
         phase_tracking.append(dict(phase=phase,actualRootPid=roots[0],actualRootReturnCode=root_codes[roots[0]],waitReferences=waits))
     need(set(alias_close_windows)==alias_close_exits,'alias close missing actual close/slot closure')
@@ -292,6 +484,7 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
     need(len(write_windows)==len(write_transitions),'actual write window missing exit transition')
     need({seq for seq,(row,_) in caps.items() if row['role']=='readwrite-consumer'}==set(write_read_exits),'own-RW read missing actual stable exit')
     need(set(empty_windows)==empty_eofs,'empty read missing actual EOF closure')
+    if exec_events:tool_pending.add('toolchain-actual-exec-image-original-unavailable')
     need(all(seq in clone_flags for seq,entry in entries.items() if entry['nr']==435),'clone3 lacks actual flags original')
     successful={}
     for seq,(cap,data) in caps.items():
@@ -339,4 +532,4 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
             if actual is None:pending.append('actual-successful-generated-consumer-missing:'+path)
             else:need(actual['bytes']==expected['bytes'] and actual['sha256']==expected['sha256'],'actual generated consumer differs from selected full-shard input')
     return dict(schemaVersion=1,kind='all-stop-CMake-generated-byte-mechanics',selectedGeneratedConsumerByteCustodyVerified=not pending,outputs=sorted(covered.values(),key=lambda row:row['path']),observedSourceReadCaptures=len(source_reads),pending=pending,overallSdkSourceVerified=False,
-                observedAliasOnlyCloses=len(alias_close_exits),observedActualModeTransitions=len(mode_transitions),observedNamedRetainedFdBindings=len(namespaces),observedActualWriteTransitions=len(write_transitions),observedEmptyReadEofWindows=len(empty_eofs),preparedInputConsumers=list(prepared_covered.values()),preparedInputConsumerBytesVerified=bool(prepared_covered),phaseTracking=phase_tracking,scope='actual producer-close/rename/consumer bytes only; reviewed observer execution/Git/source/runtime authority independent')
+                observedAliasOnlyCloses=len(alias_close_exits),observedActualModeTransitions=len(mode_transitions),observedNamedRetainedFdBindings=len(namespaces),observedActualWriteTransitions=len(write_transitions),observedEmptyReadEofWindows=len(empty_eofs),toolchainFileSnapshots=list(tool_files.values()),toolchainActualExecImages=tool_execs,toolchainActualFileMappings=tool_mappings,toolchainObservationSha256=tool_digest.hexdigest(),toolchainPending=sorted(tool_pending|({'toolchain-executed-byte-immutability-and-full-source-authority-unverified'} if tool_execs else set())),toolchainSourceClosureVerified=False,preparedInputConsumers=list(prepared_covered.values()),preparedInputConsumerBytesVerified=bool(prepared_covered),phaseTracking=phase_tracking,scope='actual producer-close/rename/consumer bytes only; reviewed observer execution/Git/source/runtime authority independent')

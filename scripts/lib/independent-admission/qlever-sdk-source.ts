@@ -171,6 +171,7 @@ export async function observeQleverSdkSourceAdmission(input: {sdkOriginals: unkn
     need(qleverSdkOriginalsView(input.sdkOriginals) === sdk && derivedSourceView(input.source) === source, 'SDK/source admission custody changed');
     if (source) assertDerivedSourceCurrent(input.source);
     generationGuard?.();
+    observedToolGuard?.();
     if (binaryObservation) {
       need(binaryGetter?.(input.sdkOriginals) === binaryObservation, 'independent Debian binary observation custody changed');
       binaryObservation.assertCurrent();
@@ -178,6 +179,7 @@ export async function observeQleverSdkSourceAdmission(input: {sdkOriginals: unkn
     if (signatureObservation) need(signatureGetter?.(input.sdkOriginals) === signatureObservation, 'independent Debian signature observation custody changed');
   };
   let generationGuard:(()=>void)|undefined;
+  let observedToolGuard:(()=>void)|undefined;
   let verified = false;
   try {
     need(sdk && source && sdk.originFacts.sourceSha === source.sourceSha, 'same issued SDK and immutable source required');
@@ -240,6 +242,34 @@ export async function observeQleverSdkSourceAdmission(input: {sdkOriginals: unkn
     } else pending.add('qlever-sdk-Debian-binary-signature-prerequisite-unverified');
     facts.sdkOwnedDebianSourceArchiveAuthorityVerified = facts.debianDscAndAllSourceArchiveBytesVerified === true
       && facts.sdkOwnedDebianInputSourceArchivesComplete === true && facts.sdkDebianInReleaseSourcesDscChecksumChainVerified === true && signatureVerified;
+    // This reader consumes the existing same-SDK full-shard, execution and
+    // binary observations. Its after-only files never populate the before map.
+    const {observeQleverSdkObservedToolOriginals} = await import('./qlever-sdk-observed-tools');
+    const tools = await observeQleverSdkObservedToolOriginals(input.sdkOriginals,input.source,available()); check();
+    Object.assign(facts,tools.facts);tools.pending.forEach(value=>pending.add(value));
+    if((tools.facts.sdkObservedToolAfterShardBytesVerified===true||tools.facts.sdkObservedToolsSignedDebianBinaryBytesVerified===true)&&!tools.assertCurrent)throw Error('observed tool private custody guard unavailable');
+    if(tools.assertCurrent){observedToolGuard=tools.assertCurrent;observedToolGuard();}
+    const unresolved=(facts.sdkInputOwnership as {unresolvedInputs?:readonly {path:string;role:string;reason:string}[]}|undefined)?.unresolvedInputs;
+    const toolFiles=tools.facts.sdkObservedToolAfterShardFiles;
+    const inputRows=sdkVerifiedInputOriginalView(input.sdkOriginals)?.rows;
+    const signedFiles=binaryObservation?.files;
+    // The pending is global: discharge it only if every contributing unresolved
+    // row has its own exact same-private binary and verified after-shard join.
+    if(observedToolGuard && tracked===generation.facts && tracked?.sdkActualConfigureCompileTrackedWaitVerified===true && facts.sdkOwnedDebianSourceArchiveAuthorityVerified===true
+      && tools.facts.sdkObservedToolAfterShardBytesVerified===true && tools.facts.sdkObservedToolsSignedDebianBinaryBytesVerified===true
+      && Array.isArray(unresolved) && unresolved.some(row=>row.role!=='installed-metadata') && Array.isArray(toolFiles) && inputRows && signedFiles
+      && unresolved.filter(row=>row.role!=='installed-metadata').every(row=>{
+        if(row.role!=='observed-input'||row.reason!=='generated-or-unobserved-before-compile')return false;
+        const selected=inputRows.filter(value=>value.originalPath===row.path);
+        const observed=toolFiles.filter((value:any)=>value.path===row.path&&value.observedBeforeCompile===false);
+        if(selected.length!==1||observed.length!==1)return false;
+        const actual=selected[0]!,tool=observed[0];
+        if(tool.bytes!==actual.bytes||tool.sha256!==actual.sha256||tool.mode!==actual.mode)return false;
+        const binaries=signedFiles.filter(value=>value.installedPath===row.path&&value.bytes===actual.bytes&&value.sha256===actual.sha256&&value.mode===actual.mode);
+        return binaries.length===1&&tool.signedDebianBinary===binaries[0]!.binary&&tool.declaredSource===binaries[0]!.source;
+      })) {
+      assertCurrent();pending.delete('qlever-sdk-Git-generated-or-other-non-Debian-input-source-authority-unresolved');
+    }
     const axes = Object.freeze({inputOriginals: sdkVerifiedInputOriginalView(input.sdkOriginals) !== undefined,
       configureCompileExecution: facts.sdkConfigureCompileClosedExecutionVerified === true,
       ownedDebianSourceArchives: facts.sdkOwnedDebianSourceArchiveAuthorityVerified === true,
@@ -253,6 +283,7 @@ export async function observeQleverSdkSourceAdmission(input: {sdkOriginals: unkn
     check(); assertCurrent();
   } catch (error) {
     pending.add((error as Error).message); verified = false; facts.sdkSourceCompletenessVerified = false;
+    if ('sdkObservedToolAfterShardBytesVerified' in facts) { observedToolGuard=undefined; facts.sdkObservedToolAfterShardBytesVerified=false; facts.sdkObservedToolsSignedDebianBinaryBytesVerified=false; delete facts.sdkObservedToolAfterShardFiles; }
     if (binaryObservation) { binaryObservation = undefined; facts.sdkSelectedDebianBinaryFilesVerified = false; delete facts.sdkDebianBinaryFiles; delete facts.sdkDebianBinaryScope; }
     if (signatureObservation) { signatureObservation = undefined; facts.sdkDebianOfficialSignatureAndSuiteVerified = false; facts.sdkOwnedDebianSourceArchiveAuthorityVerified = false; }
   }

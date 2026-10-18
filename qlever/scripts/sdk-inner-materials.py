@@ -52,9 +52,14 @@ def file_identity(path):
     if identity(before)!=identity(after) or identity(path.lstat())!=identity(after):raise ValueError('SDK original changed while observed')
     return dict(bytes=after.st_size,sha256=value.hexdigest(),mode=after.st_mode&0o7777)
 
-def archive_inputs(files,out,before,compile_outputs=(),metadata_originals=(),remaining_bytes=None):
+def archive_inputs(files,out,before,compile_outputs=(),metadata_originals=(),remaining_bytes=None,observed_after=None):
     """Only actual compiler-reported inputs are retained; candidate hashes are not copies."""
-    files=tuple(files)
+    files=tuple(files);observed_after=observed_after or {}
+    def verify_after(path):
+        row=observed_after.get(str(path))
+        if row is not None:
+            item=path.lstat();identity=[item.st_dev,item.st_ino,item.st_mode,item.st_size,item.st_mtime_ns,item.st_ctime_ns]
+            if identity!=row['identity']:raise ValueError('Observed tool full identity changed before archive')
     out=Path(out);out.mkdir(parents=True,exist_ok=False);inventory=[];total=0;pending=[]
     compile_outputs={str(Path(path).resolve(strict=True)) for path in compile_outputs}
     metadata_originals={str(Path(path).resolve(strict=True)) for path in metadata_originals}
@@ -66,10 +71,12 @@ def archive_inputs(files,out,before,compile_outputs=(),metadata_originals=(),rem
                 links[str(path)]=dict(originalPath=str(path),linkTarget=target,bytes=len(raw),sha256=hashlib.sha256(raw).hexdigest())
     for path in sorted(set(Path(value).resolve(strict=True) for value in files)):
         check_budget()
+        verify_after(path)
         actual=file_identity(path);total+=actual['bytes']
+        if str(path) in observed_after and actual!={key:observed_after[str(path)][key] for key in ['bytes','sha256','mode']}:raise ValueError('Observed tool bytes differ from stop original')
         if total>LIMIT:raise ValueError('SDK source domains exceed shared 4GiB budget')
         expected=before.get(str(path))
-        if expected is None and str(path) not in compile_outputs and str(path) not in metadata_originals:pending.append(dict(path=str(path),reason='generated-or-unobserved-before-compile'))
+        if expected is None and str(path) not in compile_outputs and str(path) not in metadata_originals and str(path) not in observed_after:pending.append(dict(path=str(path),reason='generated-or-unobserved-before-compile'))
         elif expected is not None and expected!=actual:raise ValueError('SDK compiler input differs from before observation')
         inventory.append(dict(originalPath=str(path),archivePath=str(path).lstrip('/'),
                               role='compile-output' if str(path) in compile_outputs else 'installed-metadata' if str(path) in metadata_originals else 'observed-input',**actual))
@@ -87,10 +94,19 @@ def archive_inputs(files,out,before,compile_outputs=(),metadata_originals=(),rem
             for row in batch:
                 check_budget()
                 if shutil.disk_usage(out).free-row['bytes']<2*1024**3:raise ValueError('SDK input archive disk floor')
-                source=Path(row['originalPath'])
+                source=Path(row['originalPath']);verify_after(source)
                 if file_identity(source)!={key:row[key] for key in ['bytes','sha256','mode']}:raise ValueError('SDK input changed before archive')
                 info=tar_info(row)
-                with source.open('rb') as stream:bundle.addfile(info,stream)
+                with source.open('rb') as stream:
+                    observed=observed_after.get(str(source))
+                    if observed is not None:
+                        item=os.fstat(stream.fileno());identity=[item.st_dev,item.st_ino,item.st_mode,item.st_size,item.st_mtime_ns,item.st_ctime_ns]
+                        if identity!=observed['identity']:raise ValueError('Observed tool archive FD differs from stop original')
+                    bundle.addfile(info,stream)
+                    if observed is not None:
+                        item=os.fstat(stream.fileno());identity=[item.st_dev,item.st_ino,item.st_mode,item.st_size,item.st_mtime_ns,item.st_ctime_ns]
+                        if identity!=observed['identity']:raise ValueError('Observed tool archive FD changed during copy')
+                verify_after(source)
                 if file_identity(source)!={key:row[key] for key in ['bytes','sha256','mode']}:raise ValueError('SDK input changed while archiving')
         if target.stat().st_size>tar_budget.SHARD_LIMIT:raise ValueError('SDK encoded tar exceeds shard byte budget')
         shards.append(commands.ref(target,out.parent))
@@ -168,8 +184,8 @@ def build_materials(component,source,build,out,jobs):
     stages=list(prepared['stages'])
     def stage(name,command,inputs=(),timeout=30,reserve=4200):
         row=commands.capture(name,command,out,component,inputs,timeout=budget.timeout(timeout,reserve));stages.append(row);return row
-    def archive(files,destination,before,compile_outputs=(),metadata_originals=()):
-        return archive_inputs(files,destination,before,compile_outputs,metadata_originals,remaining_bytes=lambda:toolchain.remaining_source_bytes(out))
+    def archive(files,destination,before,compile_outputs=(),metadata_originals=(),observed_after=None):
+        return archive_inputs(files,destination,before,compile_outputs,metadata_originals,remaining_bytes=lambda:toolchain.remaining_source_bytes(out),observed_after=observed_after)
     execution=toolchain.Session(out,source,build,budget,check_budget,toolchain.remaining_source_bytes(out))
     try:
         private_key='XPOD_QLEVER_UPSTREAM_MATERIALS_DIR'
@@ -249,6 +265,8 @@ def build_materials(component,source,build,out,jobs):
         selected.update([build/'compile_commands.json',build/'CMakeCache.txt',component/'qlever.lock.json',component.parent/'scripts/lib/module-artifact-limits.json'])
         selected.update(Path(shutil.which(name)) for name,_ in SDK_TOOLS)
         selected.add(cc1plus)
+        observed_tools,observed_tool_pending=execution.after_tool_inputs(file_identity)
+        selected.update(Path(path) for path in observed_tools)
         ownership=[];installed=set();metadata_originals=set()
         for original in Path('/var/lib/dpkg/info').glob('*.list'):
             if original.stat().st_size>16*1024**2:raise ValueError('Package ownership original budget')
@@ -280,12 +298,14 @@ def build_materials(component,source,build,out,jobs):
         symlinks.save(out/'symlinks-after.json',after_links,after_bindings,check_budget)
         after_links_ref=commands.ref(out/'symlinks-after.json',out)
         symlink_bytes=before_links_ref['bytes']+after_links_ref['bytes']
-        inventory=archive(selected,out/'domains',before,outputs,metadata_originals)
+        inventory=archive(selected,out/'domains',before,outputs,metadata_originals,observed_after=observed_tools)
         inventory['symlinkBeforeOriginals']=before_links_ref
         inventory['symlinkAfterOriginals']=after_links_ref
         inventory['symlinkCausalityPending']=link_pending
         inventory['packageOwnershipOriginals']=[str(path) for path in ownership]
         inventory['sourcePackageIdentityRaw']=ledger['stdout']
+        inventory['pending'].extend(observed_tool_pending)
+        inventory['pending'].extend(execution.tool_input_pending(inventory))
         dump(out/'inputs-after.json',inventory)
         generation_after=generation.snapshot(out,build,'after',archive,file_identity,check_budget)
         generation_ref,generation_bytes=generation.finalize(out,build,generation_before,generation_after,inventory,before,stages,check_budget)
