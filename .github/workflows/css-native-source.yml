@@ -68,4 +68,5 @@ jobs:
     with:
       target: ${{ needs.resolve.outputs.target }}
       sdk_profile: module-bookworm-gcc12
+      readonly_executor: true
       source_commit: ${{ github.sha }}

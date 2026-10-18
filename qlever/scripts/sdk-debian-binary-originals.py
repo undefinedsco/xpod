@@ -182,7 +182,9 @@ class TarHeaderGuard:
     EXTENDED = (tarfile.GNUTYPE_LONGNAME, tarfile.GNUTYPE_LONGLINK,
                 tarfile.XHDTYPE, tarfile.XGLTYPE)
 
-    def __init__(self, stream, ledger, check):
+    def __init__(self, stream, ledger, check, *, metadata_members=128):
+        need(type(metadata_members) is int and 0 < metadata_members <= LIMITS['sourceMembers'], 'declared tar metadata member bound')
+        self.metadata_members = metadata_members
         self.stream, self.ledger, self.check = stream, ledger, check
         self.header = bytearray()
         self.payload = self.padding = 0
@@ -254,7 +256,7 @@ class TarHeaderGuard:
                 need(self.pending_size is None, 'PAX size followed by nested extended metadata')
                 self.ledger['members'] += 1
                 self.ledger['bytes'] += padded
-                need(0 < padded <= META and self.ledger['bytes'] <= META and self.ledger['members'] <= 128,
+                need(0 < padded <= META and self.ledger['bytes'] <= META and self.ledger['members'] <= self.metadata_members,
                      'GNU/PAX metadata single/aggregate byte/member bound')
             else:
                 need(item.type in (tarfile.REGTYPE, tarfile.AREGTYPE, tarfile.DIRTYPE, tarfile.SYMTYPE, tarfile.LNKTYPE), 'unsupported guarded tar semantics')

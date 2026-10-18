@@ -35,7 +35,7 @@ test('same-source workflow dispatches one native family and preserves exact immu
       .toBe(`\${{ jobs.module_runtime_materials.outputs.artifact_${field} }}`);
   }
   expect(sdk.jobs.module_runtime_materials.uses).toBe('./.github/workflows/build-qlever-linux-runtime.yml');
-  expect(sdk.jobs.module_runtime_materials.with.module_sdk_image).toBe('${{ needs.publish.outputs.image }}');
+  expect(sdk.jobs.module_runtime_materials.with.module_sdk_image).toBe('${{ needs.readonly_publish.outputs.image || needs.publish.outputs.image }}');
   const linux=workflow('build-qlever-linux-runtime.yml');
   expect(linux.jobs.runtime.with.prior_sdk_image).toBe('${{ inputs.module_sdk_image }}');
   expect(linux.jobs.archive.needs).toEqual(['resolve','runtime']);

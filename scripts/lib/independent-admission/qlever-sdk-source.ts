@@ -83,10 +83,12 @@ export function inspectQleverSdkSourceOriginals(capability: unknown, remainingMi
       readOriginal: (name, maximum) => sdk.readOriginal(name, maximum), readRange: (name, offset, length) => sdk.readOriginalRange(name, offset, length), check});
     } catch(error) {
       if(!(error instanceof SdkTrackedPhaseOriginalsUnobserved))throw error;
-      pending.add(SDK_TRACKED_PHASE_UNOBSERVED);execution={verified:false,pending:[SDK_TRACKED_PHASE_UNOBSERVED],generationMetadataReferenceSealVerified:error.generationMetadataOriginals!==undefined};
+      pending.add(SDK_TRACKED_PHASE_UNOBSERVED);execution={verified:false,pending:[SDK_TRACKED_PHASE_UNOBSERVED],generationMetadataReferenceSealVerified:error.generationMetadataOriginals!==undefined,readOnlyBuildOwnerReferenceSeal:error.readOnlyBuildOwnerReferenceSeal};
     }
     need(qleverSdkOriginalsView(capability) === sdk, 'SDK closed build original custody changed');
     facts.sdkConfigureCompileExecution = execution;
+    facts.sdkReadOnlyBuildOwnerReferenceSeal=execution.readOnlyBuildOwnerReferenceSeal;
+    facts.sdkReadOnlyExecutorRequired=master.buildExecutionModel==='controller-readonly-v1';
     facts.sdkConfigureCompileClosedExecutionVerified = execution.verified;
     facts.sdkGenerationMetadataReferenceSealVerified = execution.generationMetadataReferenceSealVerified === true;
     const ledgerReference = {...after.sourcePackageIdentityRaw, path: 'inner/' + after.sourcePackageIdentityRaw?.path};
@@ -229,6 +231,12 @@ export async function observeQleverSdkSourceAdmission(input: {sdkOriginals: unkn
     if(generation.assertCurrent)generationGuard=generation.assertCurrent;
     const tracked=generationModule.qleverSdkExecutionOriginalObservation(input.sdkOriginals);
     if(tracked===generation.facts&&tracked?.sdkActualConfigureCompileTrackedWaitVerified===true){pending.delete(SDK_TRACKED_PHASE_UNOBSERVED);facts.sdkConfigureCompileClosedExecutionVerified=true;}
+    if(facts.sdkReadOnlyExecutorRequired===true){
+      const {observeQleverSdkReadOnlyExecutor}=await import('./qlever-sdk-readonly-executor');
+      const readonly=await observeQleverSdkReadOnlyExecutor({sdkOriginals:input.sdkOriginals,source:input.source,remainingMilliseconds:available()});check();
+      Object.assign(facts,readonly.facts);readonly.pending.forEach(value=>pending.add(value));
+      if(readonly.assertCurrent){const previous=generationGuard;generationGuard=()=>{previous?.();readonly.assertCurrent?.();};}
+    }
     const {observeQleverSdkUpstreamGitOriginals} = await import('./qlever-sdk-upstream-source');
     const git = await observeQleverSdkUpstreamGitOriginals(input.sdkOriginals, input.source, available()); check();
     Object.assign(facts, git.facts); git.pending.forEach(value => pending.add(value));

@@ -1,7 +1,7 @@
 import {createHash} from 'node:crypto';
 import {isDeepStrictEqual} from 'node:util';
 import {acquireNativeAdmissionOriginals,type ArtifactAcquisitionInput} from '../../acquire-independent-product-input';
-import {observeQleverSdkGitHubOrigin,isQleverSdkGitHubOrigin,githubOriginOriginals,observedGitHubAncestorJobAccepted} from './github-origin';
+import {observeQleverSdkGitHubOrigin,isQleverSdkGitHubOrigin,githubOriginFacts,githubOriginOriginals,observedGitHubAncestorJobAccepted} from './github-origin';
 import {collectNativeAdmissionOriginals,nativeOriginalsView,assertCollectedNativeOriginalCustody,compactCollectedNativeOriginals} from './native-original-collector';
 import type {CollectedNativeOriginalsCapability,CollectedNativeOriginalsView} from './native-originals';
 import type {CollectedArtifactMember} from './artifact-contract';
@@ -49,6 +49,15 @@ const bindings=new WeakMap<object,QleverSdkOriginalsView>();
 export function qleverSdkOriginalsView(value:unknown):QleverSdkOriginalsView|undefined {
  if(!value||typeof value!=='object')return undefined;const view=bindings.get(value);if(view)assertCollectedNativeOriginalCustody(value);return view;
 }
+/** Same existing SDK map and same private GitHub issuer. An old SDK origin
+ * cannot acquire RUN-outside authority by adding a JSON field to its archive. */
+export function qleverSdkOuterExecutorOriginAuthority(capability:unknown){
+ const sdk=qleverSdkOriginalsView(capability);if(!sdk)return undefined;
+ const facts=githubOriginFacts(sdk.origin),authority=facts?.sdkOuterExecutorAuthority;
+ if(!isQleverSdkGitHubOrigin(sdk.origin)||!facts||!authority)return undefined;
+ if(authority.sourceSha!==facts.sourceSha||authority.runHeadSha!==facts.runHeadSha||authority.runId!==facts.runId||authority.runAttempt!==facts.runAttempt||authority.target!==facts.target||authority.producerJobId!==facts.producerJobId||authority.artifactId!==facts.artifactId||authority.artifactSha256!==facts.artifactSha256)return fail('outer authority changed from same private SDK origin');
+ return authority;
+}
 function job(view:CollectedNativeOriginalsView):any {
  const rows=githubOriginOriginals(view.origin).filter(row=>/^jobs(?:-page-\d+)?\.original\.json$/u.test(row.name)).flatMap(row=>JSON.parse(row.data.toString()).jobs??[]);
  const matches=rows.filter((row:any)=>row.id===view.originFacts.producerJobId);if(matches.length!==1)return fail('unique actual producer job original required');return matches[0];
@@ -79,6 +88,12 @@ export async function collectRelatedQleverSdkOriginals(input:{nativeOriginals:Co
   const master=JSON.parse(bytes.toString());
   inspectQleverSdkMasterBinding(master,reference,coordinates.runHeadSha,view.members);
   inspectImageOriginals(master,reference,view);
+  if(master.buildExecutionModel!==undefined||master.readonlyExecutor!==undefined){
+   const authority=githubOriginFacts(view.origin)?.sdkOuterExecutorAuthority;
+   if(master.buildExecutionModel!=='controller-readonly-v1'||!authority||master.buildkit?.recordKind!=='controller-owned-readonly-normal-route-original-v1'||master.buildkit?.record?.path!=='normal-route.original.json'||master.readonlyExecutor?.path!=='readonly-executor/collection.json')fail('new readonly SDK requires actual reviewed outer issuer provenance');
+   const normal=JSON.parse(view.readOriginal(master.buildkit.record.path,4*1024**2).toString());
+   if(normal.kind!=='qlever-readonly-normal-route-originals'||!isDeepStrictEqual(normal.identity,master.identity)||normal.linkedImageConfig!==master.image.configDigest)fail('readonly normal record/final registry config cross-seal differs');
+  }
   assertCollectedNativeOriginalCustody(input.nativeOriginals);assertCollectedNativeOriginalCustody(capability);
   bindings.set(capability,Object.freeze({...view,masterReference:reference.master}));return capability;
  }catch(error){try{compactCollectedNativeOriginals(capability);}catch{/* Keep unique ZIP and failed projection when custody is unknown. */}

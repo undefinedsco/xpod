@@ -1,3 +1,4 @@
+import {selectSdkControllerHelperGroup} from './sdk-controller-helper-groups';
 import { inspectRetainedDebianGpgvExit } from './debian-signature-policy-bridge';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
@@ -77,10 +78,12 @@ export async function observeQleverSdkDebianIndexOriginals(capability: unknown, 
     need(jobs.length === 1, 'unique actual SDK producer job required');
     const jobStart = Date.parse(jobs[0].started_at), jobEnd = Date.parse(jobs[0].completed_at);
     need(Number.isFinite(jobStart) && Number.isFinite(jobEnd) && jobStart <= jobEnd, 'actual SDK job window required');
-    const helpers = LOCAL_HELPERS.map(([name, sha]) => {
+    const helperDigests=new Map<string,string>();
+    const helpers = LOCAL_HELPERS.map(([name]) => {
       const file = fileURLToPath(new URL('../../../qlever/scripts/' + name, import.meta.url));
-      const identity = captureLegalFileIdentity(file); need(identity.size <= BigInt(limits.metadataBytes) && hash(readFileSync(file)) === sha, 'reviewed fixed controller helper differs'); return identity;
+      const identity = captureLegalFileIdentity(file); need(identity.size <= BigInt(limits.metadataBytes), 'reviewed fixed controller helper differs'); helperDigests.set(name,hash(readFileSync(file)));return identity;
     });
+    selectSdkControllerHelperGroup(REVIEWED_HELPER_GROUPS,helperDigests);helpers.forEach(assertLegalFileIdentity);
     const { moduleSourcePhasePolicy } = await import('./module-source-phases');
     const limitsFile = fileURLToPath(new URL('../module-artifact-limits.json', import.meta.url));
     const limitsIdentity = captureLegalFileIdentity(limitsFile);
@@ -166,3 +169,5 @@ export async function observeQleverSdkDebianIndexOriginals(capability: unknown, 
   } catch (error) { pending.add((error as Error).message); }
   return Object.freeze({facts: Object.freeze(facts), pending: Object.freeze([...pending])});
 }
+
+const REVIEWED_HELPER_GROUPS=Object.freeze([LOCAL_HELPERS,Object.freeze(LOCAL_HELPERS.map(([name,sha])=>Object.freeze([name,name==='sdk-zip-originals.py'?'86cca59ac6a30eb719fe10dbaf6939c4e7c50328e757f22d3d4d34ea90fe6c10':sha] as const))),Object.freeze(LOCAL_HELPERS.map(([name,sha])=>Object.freeze([name,name==='sdk-zip-originals.py'?'cf30b662bfec174a61d229811272241a945318259e9b181e8219330acf0555e6':sha] as const)))])

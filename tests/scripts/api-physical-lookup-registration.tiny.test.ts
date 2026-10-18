@@ -13,7 +13,7 @@ const historicalKey=(row:{path:string;sha256:string;ref?:string})=>{if(row.ref!=
 const observed=(g:any)=>new Map([...g.selectors,...g.secondarySelectors??[]].map((row:any)=>[sourceBindingKey(row),row.sha256]));
 test('all complete SDK20 controller/API source sets survive with only their own already-required discriminator',()=>{
  for(const[groups,old]of[[CONSUMER,historical.consumer],[CI,historical.ci],[API,historical.api]]as const){
-  expect(groups.length).toBe(old.length+(groups===CI?22:groups===CONSUMER?11:10));
+  expect(groups.length).toBe(old.length+(groups===CI?36:groups===CONSUMER?18:10));
   for(const previous of old){
    const before=new Map(previous.selectors.map(row=>[historicalKey(row),row.sha256]));
    const matches=groups.filter(group=>JSON.stringify(group.selectors)===JSON.stringify(previous.selectors)&&hash(JSON.stringify(group.sourceBindings))===previous.sourceBindingsSha256);expect(matches).toHaveLength(1);const group=matches[0]!;
@@ -29,6 +29,6 @@ test('only minimal same-primary candidates fetch physical helper; all old global
  const [old,next]=API_WORKSPACE_SOURCE_GROUPS;expect(old!.sourceBindings.find(row=>row.path===role)?.sha256).not.toBe(next!.sourceBindings.find(row=>row.path===role)?.sha256);
  for(const group of API_WORKSPACE_SOURCE_GROUPS){const facts=observed(group);expect(selectGitHubSourceBindingGroup(API,facts)).toBe(group);facts.delete('source:'+role);expect(()=>selectGitHubSourceBindingGroup(API,facts)).toThrow();facts.set('source:'+role,'0'.repeat(64));expect(()=>selectGitHubSourceBindingGroup(API,facts)).toThrow();}
 });
-test('unified 362 original controller tree and selected API closure match every actual file byte',()=>{
- expect(current).toHaveLength(362);for(const row of [...current,...API_WEBSITE_SOURCE_BINDINGS])expect(hash(fs.readFileSync(path.resolve(import.meta.dir,'../..',row.path)))).toBe(row.sha256);
+test('unified 371 original controller tree and selected API closure match every actual file byte',()=>{
+ expect(current).toHaveLength(373);for(const row of [...current,...API_WEBSITE_SOURCE_BINDINGS])expect(hash(fs.readFileSync(path.resolve(import.meta.dir,'../..',row.path)))).toBe(row.sha256);
 });
