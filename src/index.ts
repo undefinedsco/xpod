@@ -1,4 +1,8 @@
 import './runtime/configure-drizzle-solid';
+export { EnvExtractor } from './init/EnvExtractor';
+export { ExternalLoginService } from './identity/external/ExternalLoginService';
+export { ExternalLoginRequestGuard } from './identity/external/ExternalLoginRequestGuard';
+export { ExternalLoginHandler, ExternalLoginControls } from './identity/external/ExternalLoginHandler';
 export { LocalPodDeletionHttpHandler } from './http/LocalPodDeletionHttpHandler';
 import { RepresentationPartialConvertingStore } from './storage/RepresentationPartialConvertingStore';
 import { MinioDataAccessor } from './storage/accessors/MinioDataAccessor';

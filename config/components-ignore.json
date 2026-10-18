@@ -1,4 +1,9 @@
 [
+  "LogtoLoginProvider",
+  "ExternalLoginRepository",
+  "createWechatLoginProvider",
+  "externalLoginDigest",
+  "protectExternalLoginMetadata",
   "ActivityEmitter",
   "assertPublicProbeTarget",
   "base64ByteLength",

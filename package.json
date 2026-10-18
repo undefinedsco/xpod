@@ -221,6 +221,7 @@
     "@types/semver": "catalog:api-producer"
   },
   "dependencies": {
+    "@logto/connector-wechat-web": "1.6.6",
     "@comunica/actor-query-result-serialize-sparql-json": "catalog:api-producer",
     "@comunica/actor-query-result-serialize-stats": "catalog:api-producer",
     "@agentclientprotocol/sdk": "^0.14.1",

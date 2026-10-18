@@ -1,8 +1,16 @@
 import { readableToString } from '@solid/community-server';
 import { describe, expect, it } from 'vitest';
+import { DataFactory } from 'n3';
 import { ReactAppViewHandler } from '../../src/identity/ReactAppViewHandler';
 
 describe('ReactAppViewHandler auth bootstrap context', () => {
+  it('protects OAuth callback documents from caching and referrer leakage', async () => {
+    const handler = new ReactAppViewHandler({ getPath: () => '/.account/' } as never, './ui/public/auth.html');
+    const representation = await handler.handle({ operation: { target: { path: '/.account/login/wechat/callback/' } } } as never);
+    expect(representation.metadata.get(DataFactory.namedNode('urn:xpod:external-login:cache-control'))?.value).toBe('no-store');
+    expect(representation.metadata.get(DataFactory.namedNode('urn:xpod:external-login:referrer-policy'))?.value).toBe('no-referrer');
+    expect(await readableToString(representation.data)).toContain('name="referrer" content="no-referrer"');
+  });
   it('safely embeds the active OIDC provisionCode for the React auth app', async () => {
     const handler = new ReactAppViewHandler(
       { getPath: () => '/.account/' } as never,

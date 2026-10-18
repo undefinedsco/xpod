@@ -447,6 +447,18 @@ async function startFullRuntimesReserved(ports: RuntimeStartPorts, qleverRuntime
 
   if (externalInfra) Object.assign(commonCloudEnv, fullIntegrationInfraEnv(externalInfra));
   const runtimeCloudDb = externalInfra?.XPOD_FULL_PG_URL ?? cloudDb;
+  const commonLocalEnv = {
+    ...TEST_GATEWAY_ENV,
+    [RESERVED_PORTS_ENV]: process.env[RESERVED_PORTS_ENV],
+    // Local fixtures own SQLite state, not the developer's ambient Redis service.
+    // Empty canonical keys also prevent the API's REDIS_URL fallback.
+    CSS_REDIS_CLIENT: '',
+    CSS_REDIS_USERNAME: '',
+    CSS_REDIS_PASSWORD: '',
+    XPOD_QLEVER_LOCAL_RUNTIME_COMMAND: qleverRuntimeCommand,
+    CSS_ALLOWED_HOSTS: 'localhost,host.docker.internal',
+    CSS_SEED_CONFIG: path.resolve('config/seed.dev.json'),
+  };
 
   try {
     runtimes.push(await startXpodRuntime({
@@ -464,7 +476,8 @@ async function startFullRuntimesReserved(ports: RuntimeStartPorts, qleverRuntime
       rootFilePath: path.join(runtimeRoot, 'cloud', 'data'),
       sparqlEndpoint: runtimeCloudDb,
       identityDbUrl: runtimeCloudDb,
-      env: { ...commonCloudEnv, XPOD_NODE_ID: 'cloud-a' },
+      // Each Cloud is its own Account issuer, regardless of the developer environment.
+      env: { ...commonCloudEnv, SOLID_OIDC_ISSUER: `http://localhost:${ports.cloud.gateway}/`, XPOD_NODE_ID: 'cloud-a' },
     }));
 
     runtimes.push(await startXpodRuntime({
@@ -482,7 +495,7 @@ async function startFullRuntimesReserved(ports: RuntimeStartPorts, qleverRuntime
       rootFilePath: path.join(runtimeRoot, 'cloud_b', 'data'),
       sparqlEndpoint: runtimeCloudDb,
       identityDbUrl: runtimeCloudDb,
-      env: { ...commonCloudEnv, XPOD_NODE_ID: 'cloud-b' },
+      env: { ...commonCloudEnv, SOLID_OIDC_ISSUER: `http://localhost:${ports.cloudB.gateway}/`, XPOD_NODE_ID: 'cloud-b' },
     }));
 
     runtimes.push(await startXpodRuntime({
@@ -501,14 +514,10 @@ async function startFullRuntimesReserved(ports: RuntimeStartPorts, qleverRuntime
       sparqlEndpoint: path.join(runtimeRoot, 'local', 'local-managed.sqlite'),
       identityDbUrl: path.join(runtimeRoot, 'local', 'local-managed-identity.sqlite'),
       env: {
-        ...TEST_GATEWAY_ENV,
-        [RESERVED_PORTS_ENV]: process.env[RESERVED_PORTS_ENV],
-        SOLID_OIDC_ISSUER: `http://localhost:${ports.cloud.gateway}`,
+        ...commonLocalEnv,
+        SOLID_OIDC_ISSUER: `http://localhost:${ports.cloud.gateway}/`,
         XPOD_NODE_ID: 'local-managed-node',
         XPOD_SERVICE_TOKEN: 'svc-testservicetokenforintegration',
-        XPOD_QLEVER_LOCAL_RUNTIME_COMMAND: qleverRuntimeCommand,
-        CSS_ALLOWED_HOSTS: 'localhost,host.docker.internal',
-        CSS_SEED_CONFIG: path.resolve('config/seed.dev.json'),
       },
     }));
 
@@ -528,15 +537,11 @@ async function startFullRuntimesReserved(ports: RuntimeStartPorts, qleverRuntime
       sparqlEndpoint: path.join(runtimeRoot, 'standalone', 'local-standalone.sqlite'),
       identityDbUrl: path.join(runtimeRoot, 'standalone', 'local-standalone-identity.sqlite'),
       env: {
-        ...TEST_GATEWAY_ENV,
-        [RESERVED_PORTS_ENV]: process.env[RESERVED_PORTS_ENV],
+        ...commonLocalEnv,
         // Standalone 节点自身就是 IdP：显式把 issuer 指向自身 baseUrl，
         // 退出 XpodRuntime 对 local 模式的默认官方云接管（DEFAULT_LOCAL_OIDC_ISSUER），
         // 否则测试运行会向真实 id.undefineds.co 注册节点并把 Pod 建到不可解析的 nodes.undefineds.co 域。
         SOLID_OIDC_ISSUER: `http://localhost:${ports.standalone.gateway}/`,
-        XPOD_QLEVER_LOCAL_RUNTIME_COMMAND: qleverRuntimeCommand,
-        CSS_ALLOWED_HOSTS: 'localhost,host.docker.internal',
-        CSS_SEED_CONFIG: path.resolve('config/seed.dev.json'),
       },
     }));
 

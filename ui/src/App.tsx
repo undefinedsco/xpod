@@ -16,11 +16,13 @@ import { ConsentPage } from './pages/ConsentPage';
 import { ForgotPasswordPage } from './pages/ForgotPasswordPage';
 import { ResetPasswordPage } from './pages/ResetPasswordPage';
 import { LoginSelectPage } from './pages/LoginSelectPage';
+import { ExternalLoginCallbackPage } from './pages/ExternalLoginCallbackPage';
 
 /** Exported so route-level admission (About vs. the Account gate) stays testable. */
 export function AppRoutes() {
   return (
     <Routes>
+      <Route path="/.account/login/:providerId/callback/" element={<ExternalLoginCallbackPage />} />
       {/* About Xpod is static product information: it owns no Account data, so it
           must render while the Account bootstrap is still resolving or has
           failed, and it must never be redirected into a login flow. */}

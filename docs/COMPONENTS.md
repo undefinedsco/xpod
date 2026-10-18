@@ -2,6 +2,19 @@
 
 This document provides a comprehensive overview of all custom components developed for Xpod, extending the Community Solid Server (CSS) framework.
 
+## 外部账号登录组件
+
+`config/external-login.json` 在 CSS interaction 链上增加 `ExternalLoginHandler`，继承
+`ResolveLoginHandler` 复用 cookie、remember 设置和原 OIDC interaction 的完成逻辑。
+`ExternalLoginControls` 通过同一 provider 注册表公布登录入口及绑定状态；未配置时不公布入口。
+`ExternalLoginService` 负责浏览器事务和账号绑定，微信协议由 Logto 网站连接器实现。
+`EnvExtractor` 从唯一规范 ENV 键读取部署方凭据，不把 AppSecret 暴露成 CLI 参数。
+`ExternalLoginRequestGuard` 只对已注册外部登录路由的浏览器修改请求检查 Origin/Fetch Metadata，
+拒绝跨来源请求（含同站兄弟子域），不拦截微信返回的 GET 页面或改写原密码登录。
+这些组件是账号交互链的新增实现，不替换密码登录，也不建立第二套会话系统。
+
+接口、秘密配置、本地联调准备及当前测试限制见 [微信登录方案](wechat-login-design.md)。
+
 ## 等位替换对照表
 
 Xpod 遵循**等位替换原则**：用自定义组件替换 CSS 同层级的默认组件，保持接口兼容，不破坏 CSS 调用链。

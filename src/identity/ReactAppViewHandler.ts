@@ -16,6 +16,7 @@ import type {
 import * as fs from 'fs';
 import * as path from 'path';
 import { PACKAGE_ROOT } from '../runtime/package-root';
+import { protectExternalLoginMetadata } from './external/ExternalLoginMetadata';
 
 /**
  * Entry for a single HTML view template.
@@ -121,6 +122,8 @@ export class ReactAppViewHandler extends InteractionHandler {
       .replace(/\{\{IDP_INDEX\}\}/g, () => this.idpIndex)
       .replace(/\{\{AUTHENTICATING\}\}/g, () => String(Boolean(oidcInteraction)));
 
-    return new BasicRepresentation(html, operation.target, TEXT_HTML);
+    const representation = new BasicRepresentation(html, operation.target, TEXT_HTML);
+    if (/\/login\/[^/]+\/callback\/$/u.test(operation.target.path)) protectExternalLoginMetadata(representation.metadata);
+    return representation;
   }
 }

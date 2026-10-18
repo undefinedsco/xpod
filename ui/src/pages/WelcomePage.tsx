@@ -20,6 +20,7 @@ import { rememberPendingXpodAccountEmail } from '../auth/xpod-remembered-login';
 import { storeAccountSessionToken, storedAccountTokenHeaders } from '../utils/account-session';
 import { resolveHostedAccountControlUrl } from '../utils/account-control-url';
 import { XpodBlockingAccountCredentialsSurface } from '../auth/XpodAuthSurface';
+import { ExternalLoginButtons } from '../auth/ExternalLoginButtons';
 import {
   safeXpodAuthorizationCancelMessage,
   safeXpodLoginMessage,
@@ -252,11 +253,14 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
       copy={xpodAccountCredentialsCopy}
       onRegister={() => toggleMode('register')}
       onForgot={() => navigate({ pathname: scopeAccountUrl('/.account/login/password/forgot/'), search: location.search })}
-      footer={!isRegister && hasOidcPending && controls?.oidc?.cancel ? (
+      footer={<>
+        <ExternalLoginButtons intent={isRegister ? 'register' : 'login'} remember={rememberAccount} disabled={isSubmitting || isCancelling} />
+        {!isRegister && hasOidcPending && controls?.oidc?.cancel ? (
         <Button type="button" variant="outline" className="h-11 w-full rounded-lg" disabled={isSubmitting || isCancelling} onClick={handleCancel}>
           {isCancelling ? xpodAccountPageCopy.cancellingAuthorization : xpodAccountPageCopy.cancelAuthorization}
         </Button>
-      ) : undefined}
+        ) : null}
+      </>}
     />
   );
 }

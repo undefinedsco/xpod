@@ -59,7 +59,8 @@
   "import": [
     "./cli.json",
     "./resolver.json",
-    "./notifications.json"
+    "./notifications.json",
+    "./external-login.json"
   ],
   "@graph": [
     {

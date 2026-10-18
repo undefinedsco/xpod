@@ -16,6 +16,7 @@ import {
 } from './xpod-remembered-login';
 import { safeXpodLoginMessage, xpodAccountPageCopy, xpodAccountCredentialsCopy } from './xpod-account-copy';
 import { XpodBlockingAccountCredentialsSurface } from './XpodAuthSurface';
+import { ExternalLoginButtons } from './ExternalLoginButtons';
 
 export interface XpodAccountCredentialsProps {
   surface: 'page' | 'embedded';
@@ -104,6 +105,7 @@ export function XpodAccountCredentials({
     registerHref: surface === 'embedded' ? undefined : accountEntryUrl('register'),
     forgotHref: surface === 'embedded' ? undefined : accountEntryUrl('forgot'),
     mode: 'login' as const,
+    footer: <ExternalLoginButtons remember={rememberAccount} disabled={pending || isInitializing} />,
     values,
     onChange: updateValues,
     onSubmit: handleSubmit,
@@ -113,14 +115,15 @@ export function XpodAccountCredentials({
     errors: formError ? { form: formError } : undefined,
   } satisfies ComponentProps<typeof XpodBlockingAccountCredentialsSurface>;
 
-  return surface === 'embedded' ? (
+  return surface === 'embedded' ? (<>
     <AccountCredentialsView
       {...surfaceProps}
       presentation="compact"
       frame="bare"
       showHeader={false}
     />
-  ) : (
+    <ExternalLoginButtons remember={rememberAccount} disabled={pending || isInitializing} />
+  </>) : (
     <XpodBlockingAccountCredentialsSurface key={credentialScope ?? 'bootstrap'} {...surfaceProps} />
   );
 }

@@ -10,6 +10,7 @@ export type AccountAuthState =
   | { status: 'error'; mode: AccountAuthMode; message: string }
 
 export interface Controls {
+  externalLogins?: Record<string, { name: string; login: string; linked?: boolean }>;
   password?: { login?: string; create?: string; forgot?: string; reset?: string };
   account?: {
     id?: string;

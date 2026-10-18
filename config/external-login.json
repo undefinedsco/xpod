@@ -1,0 +1,98 @@
+{
+  "@context": [
+    "https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^8.0.0/components/context.jsonld",
+    "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/components/context.jsonld",
+    "https://linkedsoftwaredependencies.org/bundles/npm/asynchronous-handlers/^1.0.0/components/context.jsonld",
+    {
+      "externalAccounts": "ExternalLoginService:_options_accountStorage",
+      "externalAccountStore": "ExternalLoginService:_options_accountStore",
+      "externalLocker": "ExternalLoginService:_options_locker",
+      "externalDatabase": "ExternalLoginService:_options_identityDbUrl",
+      "externalBase": "ExternalLoginService:_options_baseUrl",
+      "externalIssuer": "ExternalLoginService:_options_oidcIssuer",
+      "wechatAppId": "ExternalLoginService:_options_wechatAppId",
+      "wechatAppSecret": "ExternalLoginService:_options_wechatAppSecret",
+      "externalHandlerService": "ExternalLoginHandler:_service",
+      "externalHandlerRoute": "ExternalLoginHandler:_route",
+      "externalHandlerAccounts": "ExternalLoginHandler:_accountStore",
+      "externalHandlerCookies": "ExternalLoginHandler:_cookieStore",
+      "externalControlsService": "ExternalLoginControls:_service",
+      "externalControlsRoute": "ExternalLoginControls:_route",
+      "externalGuardService": "ExternalLoginRequestGuard:_service",
+      "environmentKey": "EnvExtractor:_key"
+    }
+  ],
+  "@graph": [
+    {
+      "@id": "urn:solid-server:default:MetadataParser",
+      "@type": "ParallelHandler",
+      "handlers": [{
+        "@type": "ExternalLoginRequestGuard",
+        "externalGuardService": { "@id": "urn:undefineds:xpod:ExternalLoginService" }
+      }]
+    },
+    {
+      "@id": "urn:solid-server:default:MetadataWriter_Mapped",
+      "@type": "MappedMetadataWriter",
+      "headerMap": [
+        { "MappedMetadataWriter:_headerMap_key": "urn:xpod:external-login:cache-control", "MappedMetadataWriter:_headerMap_value": "Cache-Control" },
+        { "MappedMetadataWriter:_headerMap_key": "urn:xpod:external-login:referrer-policy", "MappedMetadataWriter:_headerMap_value": "Referrer-Policy" }
+      ]
+    },
+    {
+      "@id": "urn:solid-server-app-setup:default:ShorthandResolver",
+      "@type": "CombinedShorthandResolver",
+      "resolvers": [
+        {
+          "CombinedShorthandResolver:_resolvers_key": "urn:undefineds:xpod:variable:wechatAppId",
+          "CombinedShorthandResolver:_resolvers_value": { "@type": "EnvExtractor", "environmentKey": "XPOD_WECHAT_APP_ID" }
+        },
+        {
+          "CombinedShorthandResolver:_resolvers_key": "urn:undefineds:xpod:variable:wechatAppSecret",
+          "CombinedShorthandResolver:_resolvers_value": { "@type": "EnvExtractor", "environmentKey": "XPOD_WECHAT_APP_SECRET" }
+        }
+      ]
+    },
+    {
+      "@id": "urn:undefineds:xpod:ExternalLoginService",
+      "@type": "ExternalLoginService",
+      "externalAccounts": { "@id": "urn:solid-server:default:AccountStorage" },
+      "externalAccountStore": { "@id": "urn:solid-server:default:AccountStore" },
+      "externalLocker": { "@id": "urn:solid-server:default:ResourceLocker" },
+      "externalDatabase": { "@id": "urn:solid-server:default:variable:identityDbUrl" },
+      "externalBase": { "@id": "urn:solid-server:default:variable:baseUrl" },
+      "externalIssuer": { "@id": "urn:solid-server:default:variable:oidcIssuer" },
+      "wechatAppId": { "@id": "urn:undefineds:xpod:variable:wechatAppId", "@type": "Variable" },
+      "wechatAppSecret": { "@id": "urn:undefineds:xpod:variable:wechatAppSecret", "@type": "Variable" }
+    },
+    {
+      "@id": "urn:undefineds:xpod:ExternalLoginRoute",
+      "@type": "IdInteractionRoute",
+      "base": { "@id": "urn:solid-server:default:LoginRoute" },
+      "idName": "providerId"
+    },
+    {
+      "@id": "urn:solid-server:default:InteractionRouteHandler",
+      "@type": "StatusWaterfallHandler",
+      "handlers": [{
+        "@type": "ExternalLoginHandler",
+        "externalHandlerService": { "@id": "urn:undefineds:xpod:ExternalLoginService" },
+        "externalHandlerRoute": { "@id": "urn:undefineds:xpod:ExternalLoginRoute" },
+        "externalHandlerAccounts": { "@id": "urn:solid-server:default:AccountStore" },
+        "externalHandlerCookies": { "@id": "urn:solid-server:default:CookieStore" }
+      }]
+    },
+    {
+      "@id": "urn:solid-server:default:ControlHandler",
+      "@type": "ControlHandler",
+      "controls": [{
+        "ControlHandler:_controls_key": "externalLogins",
+        "ControlHandler:_controls_value": {
+          "@type": "ExternalLoginControls",
+          "externalControlsService": { "@id": "urn:undefineds:xpod:ExternalLoginService" },
+          "externalControlsRoute": { "@id": "urn:undefineds:xpod:ExternalLoginRoute" }
+        }
+      }]
+    }
+  ]
+}

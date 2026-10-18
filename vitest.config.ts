@@ -16,6 +16,9 @@ export default defineConfig({
     jsx: 'automatic',
   },
   test: {
+    // Transform this ESM connector so its HTTP transport can be replaced by
+    // hermetic protocol fixtures; otherwise Node imports bypass vi.mock.
+    server: { deps: { inline: ['@logto/connector-wechat-web'] } },
     // Always load `.env.local` when present. For integration runs we also allow it to
     // override ambient env vars to keep tests deterministic across machines.
     setupFiles: [ 'tests/vitest.setup.ts' ],

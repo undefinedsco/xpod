@@ -118,6 +118,17 @@ Cloud 模式以及非文件型 SQLite 部署仍需显式配置稳定根密钥，
 
 ### 3.3 ENV参数（用EnvExtractor，不进cli.json）
 
+#### 微信网站应用登录
+
+账号 authority 可选配置 `XPOD_WECHAT_APP_ID` 与 `XPOD_WECHAT_APP_SECRET`，由
+`config/external-login.json` 的 `EnvExtractor` 直接读取。两者都为空时隐藏微信登录，
+只配置其中一个时启动失败；配置值是微信开放平台颁发的部署者凭据，无法从已有输入推导。
+回调地址从现有 `baseUrl` 推导为 `/.account/login/wechat/callback/`，不新增回调 URL 配置键。
+Managed Local 使用现有 `oidcIssuer` 判断外部账号 authority，不在用户设备上启用中央微信凭据。
+应用 Secret 只放账号服务的本地秘密环境文件或部署秘密存储，不进入前端、桌面包或用户 Pod。
+
+具体接口和验收限制见 [微信登录方案](wechat-login-design.md)。
+
 #### CSS_ 前缀（数据层、外部服务）
 
 | 内部变量名 | ENV变量 | 说明 | 必需场景 |

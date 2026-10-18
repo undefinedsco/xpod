@@ -1,4 +1,5 @@
 import { scopeAccountUrl } from '../utils/account-interaction-url';
+import { ExternalLoginButtons } from '../auth/ExternalLoginButtons';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import type { StorageBinding } from '@undefineds.co/solid-sdk';
@@ -744,6 +745,7 @@ export function AccountPage({ locale }: { locale?: string } = {}) {
         locale={accountLocale}
       />
       <main className="mx-auto flex w-full max-w-[880px] flex-1 flex-col gap-6 px-4 py-8">
+        <ExternalLoginButtons intent="link" disabled={isLoading} />
         <div className="flex items-center justify-between gap-4">
           <h1 className="text-xl font-semibold text-foreground">{copy.dashboardTitle}</h1>
           <div className="flex items-center gap-1">
