@@ -2,4 +2,4 @@
 export { collectJavascriptNotices } from './javascript-notices';
 export { verifyProducerSourceArchive } from './producer-source';
 
-export { buildDependencyLayout } from './build-dependency-layout';
+export { buildDependencyLayout, buildDependencyRootArgument } from './build-dependency-layout';

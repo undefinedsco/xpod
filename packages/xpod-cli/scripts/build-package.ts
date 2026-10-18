@@ -1,5 +1,5 @@
 import canonicalHostSources from './canonical-host-sources.json';
-import { cliBuildDependencyLayout } from '../src/build-dependency-layout';
+import { cliBuildDependencyLayout, buildDependencyRootArgument } from '../src/build-dependency-layout';
 import { buildPublicTools } from './public-build-tools';
 import { exportProducerMaterials } from './producer-materials';
 import ts from 'typescript';
@@ -13,7 +13,7 @@ import { bunBundleEnvironment } from '../src/native-target';
 import { externalRuntimeLauncher } from '../src/launcher';
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const { repoRoot, dependencyRoots } = cliBuildDependencyLayout(packageRoot);
+const { repoRoot, dependencyRoots } = cliBuildDependencyLayout(packageRoot, buildDependencyRootArgument(process.argv.slice(2)));
 const output = path.join(packageRoot, 'dist');
 // Canonical host source closure. Capability implementations never enter this allowlist.
 const hostSources = new Set(canonicalHostSources.map(file => path.resolve(packageRoot, '../../src', file)));

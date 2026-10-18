@@ -7,7 +7,7 @@ import { bunBundleEnvironment } from '../src/native-target';
 
 /** One producer implementation for bootstrap tooling and the full CLI artifact. */
 export function buildPublicTools(packageRoot: string, repoRoot: string, sharedObjectRoot?: string): void {
-const layout = cliBuildDependencyLayout(packageRoot);
+const layout = cliBuildDependencyLayout(packageRoot, repoRoot);
 if (layout.repoRoot !== repoRoot) throw new Error('CLI build workspace root mismatch');
 const output = path.join(packageRoot, 'dist');
 mkdirSync(path.join(packageRoot, '.test-data/build'), { recursive: true });

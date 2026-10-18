@@ -149,7 +149,7 @@
   },
   {
     "path": "packages/xpod-cli/scripts/build-tools-package.ts",
-    "sha256": "0260bb9efd2746b13c5951ad5a0e910ba5f488c4899eacba02ec39942cdeed84"
+    "sha256": "d41d3988923761f85eb14b7c59a43fd4447fd679ebd7f16e3636611b631e1d30"
   },
   {
     "path": "packages/xpod-cli/scripts/canonical-host-sources.json",
@@ -157,15 +157,15 @@
   },
   {
     "path": "packages/xpod-cli/scripts/public-build-tools.ts",
-    "sha256": "7e04a4b21585bdeb977299a10154443722a59d0be6f356cbffccb35d54e9fb73"
+    "sha256": "199fb474df3a52cc88bb9b9ab01b80d1ce6c4c9e6142ef1f927f8baf573ed92d"
   },
   {
     "path": "packages/xpod-cli/src/build-dependency-layout.ts",
-    "sha256": "968ab673190011281b4f6566584b87a78ec6316e8920dcebe99d988209df7bfd"
+    "sha256": "e10e8a54c80b4f2f1d4ee2f29a69819cb0a0ac792c62977c46aedd77b40a0bb2"
   },
   {
     "path": "packages/xpod-cli/src/build-tools.ts",
-    "sha256": "dde9d23355ebfc9e6270dd528ae67411a9260952a69f17b720cfe0e677b5265e"
+    "sha256": "207b828f703f0c2c9ef30b53dd91ecdba448e74b6f6284b7227bc2799f72f786"
   },
   {
     "path": "packages/xpod-cli/src/javascript-notices.ts",
@@ -225,7 +225,7 @@
   },
   {
     "path": "packages/xpod-client/scripts/build.ts",
-    "sha256": "8ddad3457132bb94be58d613c860b81009abf8462485d41c144fc4ecb269069e"
+    "sha256": "491521ac3d42a4b4cab0b5becbc48cb755431b6a3b3667688f0f21dab9ed2659"
   },
   {
     "path": "packages/xpod-client/src/auth-context.ts",
@@ -530,6 +530,10 @@
   {
     "path": "scripts/check-afs-js-archive-ci.cjs",
     "sha256": "f1a642a32f78185d115c8ae60e003ce1311f2b8f1b1db01ec87a10e32eb7015d"
+  },
+  {
+    "path": "scripts/check-cli-package.cjs",
+    "sha256": "2dca8d5e7703715c07c4fbb11a4c669f4bb6094599f2307784d547c39aa59b30"
   },
   {
     "path": "scripts/check-cli-publication.cjs",
