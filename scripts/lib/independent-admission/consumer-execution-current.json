@@ -461,7 +461,7 @@
   },
   {
     "path": "scripts/api-module-producer.py",
-    "sha256": "eaeddab536d6e606042039cfe5290393d5c5a3e454fb590354cc35e5afe2975f"
+    "sha256": "14fbe7416ad1e1f19ca9384614b1b57404e2ed89d2a766172c490b11cc4667e8"
   },
   {
     "path": "scripts/bun-test-discovery.cjs",
@@ -777,7 +777,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/module-source-phases.ts",
-    "sha256": "3e0027b8e485653c7a9f81f0e61d1936b90a3e7adf197354ba63a48eda45af67"
+    "sha256": "d2c1d1c698d3ac692f9d852a287d49d2252649fae9c0229e749537bda84fc469"
   },
   {
     "path": "scripts/lib/independent-admission/native-admission-requirements.ts",
