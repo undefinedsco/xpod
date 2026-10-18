@@ -199,10 +199,21 @@ class MaterialBudget:
         need(shutil.disk_usage(self.work).free-count>=LIMITS['freeFloorBytes'],'disk floor before write')
         self.charged+=count
 
+def public_source_classification(work,domain,paths=None):
+    if domain!='source':return None
+    need((work/'source').is_dir() and not (work/'source').is_symlink(),'canonical owned public source root required')
+    value=POLICY.get('publicSourceInputs');need(value and value['kind']=='fixed-public-upstream-source-inputs' and value['repository']==POLICY['repository']=='inngest/inngest' and value['sourceCommit']==POLICY['sourceCommit'] and value['sourceArchive']==POLICY['source'],'fixed public source origin differs')
+    if paths is not None and not set(paths).intersection(row['path'] for row in value['files']):return None
+    verify_original(work/'originals'/POLICY['source']['file'],POLICY['source'])
+    rows=value['files'];need(len(rows)==6 and len({row['path'] for row in rows})==6,'six exact public source roles required')
+    for row in rows:
+        name=row['path'];need(isinstance(name,str) and not name.startswith('/') and all(part not in ('','.','..') for part in name.split('/')) and 0<=row['bytes']<=LIMITS['metadataBytes'] and len(row['sha256'])==64,'bounded declared public source original')
+    return {row['path']:row for row in rows}
+
 def capture_domain(work,name,domain,rows,base,budget):
     spec=importlib.util.spec_from_file_location('controlled_source_capture',ROOT/'scripts/lib/module-source-materials.py');capture=importlib.util.module_from_spec(spec);spec.loader.exec_module(capture)
     root=work/'materials'/name;root.mkdir(mode=0o700,parents=True)
-    result=capture.capture_group(root,work,domain,[(p,base/p) for p in sorted(rows)],base,reserve_bytes=budget.reserve);total_check(work);return result
+    result=capture.capture_group(root,work,domain,[(p,base/p) for p in sorted(rows)],base,reserve_bytes=budget.reserve,public_source_inputs=public_source_classification(work,domain,rows));total_check(work);return result
 
 def loaded_rows(work,group):
     rows={}

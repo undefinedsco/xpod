@@ -4,6 +4,7 @@ Stdlib Python is used by the existing Python producer. Large files are streamed;
 these archives are evidence, never executed by the admission verifier.
 """
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -88,10 +89,33 @@ def safe(name):
     return name
 
 
-def add_original(archive, file, name, root):
+def diagnostic_path(name):
+    return name.encode('utf-8',errors='backslashreplace')[:4096].decode('utf-8',errors='ignore')
+
+
+def add_original(archive, file, name, root, public_source_inputs=None):
     safe(name)
     if sensitive(name) and not (name == '.github/tooling/legacy-root-verifier/.npmrc' and file.read_bytes() == b'registry=https://registry.npmjs.org\n'):
-        raise ValueError('Sensitive source material forbidden')
+        declared=(public_source_inputs or {}).get(name)
+        if declared is None:raise ValueError('Sensitive source material forbidden: '+diagnostic_path(name))
+        if root.is_symlink() or file.parent.resolve(strict=True)/file.name != root.resolve()/name or file.is_symlink():raise ValueError('Public source input root differs: '+diagnostic_path(name))
+        fd=os.open(file,os.O_RDONLY|os.O_NOFOLLOW)
+        try:
+            before=os.fstat(fd);identity=lambda row:(row.st_dev,row.st_ino,row.st_mode,row.st_size,row.st_nlink,row.st_mtime_ns,row.st_ctime_ns)
+            if not stat.S_ISREG(before.st_mode) or before.st_nlink!=1 or before.st_size!=declared['bytes'] or not 0<=before.st_size<=LIMITS['metadataBytes']:raise ValueError('Public source input identity differs: '+diagnostic_path(name))
+            data=bytearray()
+            while True:
+                check(file);block=os.read(fd,65536)
+                if not block:break
+                if len(data)+len(block)>before.st_size:raise ValueError('Public source input grew: '+diagnostic_path(name))
+                data.extend(block)
+            if len(data)!=before.st_size or hashlib.sha256(data).hexdigest()!=declared['sha256'] or identity(before)!=identity(os.fstat(fd)) or identity(before)!=identity(file.lstat()):raise ValueError('Public source input bytes differ: '+diagnostic_path(name))
+            info=tarfile.TarInfo(name);info.size=len(data);info.mode=stat.S_IMODE(before.st_mode);info.mtime=0
+            # Write only the already pinned buffer, never reopen a changed config.
+            archive.addfile(info,io.BytesIO(data))
+            if identity(before)!=identity(file.lstat()):raise ValueError('Public source input changed: '+diagnostic_path(name))
+            return dict(path=name,kind='file',bytes=len(data),sha256=declared['sha256'],mode=info.mode)
+        finally:os.close(fd)
     check(file)
     before = file.lstat()
     info = tarfile.TarInfo(name)
@@ -135,7 +159,8 @@ def dependency_paths(repo):
     return sorted(result)
 
 
-def capture_group(root, output, domain, files, repo, tools=None, reserve_bytes=None):
+def capture_group(root, output, domain, files, repo, tools=None, reserve_bytes=None, public_source_inputs=None):
+    if public_source_inputs is not None and domain!='source':raise ValueError('Public source input classification is source-domain only')
     from contextlib import ExitStack
     archives, inventories, rows = [], [], []
     total, number, estimate = 0, 0, 0
@@ -171,7 +196,7 @@ def capture_group(root, output, domain, files, repo, tools=None, reserve_bytes=N
                 number += 1
                 archive = stack.enter_context(originals_tar(archive_file, reserve_bytes))
                 estimate = 0
-            row = add_original(archive, file, name, repo)
+            row = add_original(archive, file, name, repo, public_source_inputs)
             row['archive'] = archive_file.relative_to(output).as_posix()
             if tools and name in tools:
                 row.update(tools[name])

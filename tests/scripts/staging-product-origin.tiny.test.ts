@@ -27,4 +27,10 @@ for(const module of ['api','cli'] as const)test(`${module} exact staging push or
  await expect(scenario(module,'staging',true)).rejects.toThrow();
 });
 
-test('controlled API whole native source tuple rejects producer/helper/placement drift',async()=>{for(const name of ['scripts/api-module-producer.py','scripts/lib/inngest-controlled-build.py','scripts/lib/physical-module-native-placement.ts'])await expect(scenario('api','staging',false,false,name)).rejects.toThrow('policy not reviewed');});
+test('controlled API whole native source tuple rejects producer/helper/placement drift',async()=>{for(const name of ['scripts/api-module-producer.py','scripts/lib/inngest-controlled-build.py','scripts/lib/physical-module-native-placement.ts'])await expect(scenario('api','staging',false,false,name)).rejects.toThrow('not reviewed');});
+
+test('public source and pre-public API origin groups remain complete and cannot mix',async()=>{
+ const {API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS:groups}=await import('../../scripts/lib/independent-admission/github-origin');
+ const {selectGitHubSourceBindingGroup,sourceBindingKey}=await import('../../scripts/lib/independent-admission/github-source-binding-groups');
+ for(const group of groups){const rows=[...group.selectors,...group.secondarySelectors];const observed=new Map(rows.map(row=>[sourceBindingKey(row),row.sha256]));expect(selectGitHubSourceBindingGroup(groups,observed)).toBe(group);for(const row of group.secondarySelectors){const other=groups.find(value=>value!==group)!;const alternate=other.secondarySelectors.find(value=>value.path===row.path)!;const mixed=new Map(observed);mixed.set(sourceBindingKey(row),alternate.sha256);expect(()=>selectGitHubSourceBindingGroup(groups,mixed)).toThrow();}}
+});

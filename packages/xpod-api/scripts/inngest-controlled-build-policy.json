@@ -156,5 +156,55 @@
         }
       }
     }
+  },
+  "publicSourceInputs": {
+    "kind": "fixed-public-upstream-source-inputs",
+    "repository": "inngest/inngest",
+    "sourceCommit": "0d75b0b305010b5e90a627703e9d1df4464b1e39",
+    "sourceArchive": {
+      "file": "inngest-source.tar.gz",
+      "bytes": 78012509,
+      "sha256": "dd6c84ec9e2660ae5fb0ee0ff3d16d9dcce9ca96d93c8e886b2adcd401541906",
+      "url": "https://codeload.github.com/inngest/inngest/legacy.tar.gz/0d75b0b305010b5e90a627703e9d1df4464b1e39"
+    },
+    "files": [
+      {
+        "path": "docs/api-docs/.npmrc",
+        "bytes": 77,
+        "sha256": "f63c15d5736cf95c90ed80cb1e9b9ec3c621ddc60e2684298dc8eab42d2ce48d",
+        "gitBlobOid": "2ed784e74ba48c0ddb89097118a1405b2695ae65"
+      },
+      {
+        "path": "npm/.npmrc",
+        "bytes": 106,
+        "sha256": "56d2b2cba4f9f183f34863fea1edd39237451f8d44d69b7d7082b71d0bca4448",
+        "gitBlobOid": "ababd7a28eb42d0cb06d7341c618f8fc51f4e229"
+      },
+      {
+        "path": "tests/js/.npmrc",
+        "bytes": 55,
+        "sha256": "cc5f13498eb89cc5758e8522a0daa9779201803b7d7f9cafe57e9f71b19e3b07",
+        "gitBlobOid": "64be37970319d53e40f67ce266e2294522b740f1"
+      },
+      {
+        "path": "ui/.npmrc",
+        "bytes": 77,
+        "sha256": "f63c15d5736cf95c90ed80cb1e9b9ec3c621ddc60e2684298dc8eab42d2ce48d",
+        "gitBlobOid": "2ed784e74ba48c0ddb89097118a1405b2695ae65"
+      },
+      {
+        "path": "ui/apps/dev-server-ui/.npmrc",
+        "bytes": 22,
+        "sha256": "e1f1f4fe1c60abe3e26b3b5af37ea981d3df1b476e2169321299a6ed669b4364",
+        "gitBlobOid": "32f5979c17446b247759ba8c7b73923992355134"
+      },
+      {
+        "path": "vendor/github.com/subosito/gotenv/.env",
+        "bytes": 12,
+        "sha256": "7ab5d8d685b68c3c9e2a73beda1e487333f77d50d4f92864625ff28447e4e6ce",
+        "gitBlobOid": "6405eca71f73103f735c967f0e679ec103d70ed9"
+      }
+    ],
+    "scope": "Exact public upstream config/test bytes only, kept under original paths; no environment expansion or credential admission"
   }
 }

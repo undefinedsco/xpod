@@ -27,6 +27,7 @@ const REVIEWED_SUPERVISORS = new Set([CLI_SOURCE_POLICY.supervisor,
 export const CLI_SOURCE_VERSION_GROUPS=Object.freeze([
  Object.freeze({...CLI_SOURCE_POLICY,supervisors:Object.freeze([...REVIEWED_SUPERVISORS]),workflows:Object.freeze([CLI_SOURCE_POLICY.workflow,'c856baf24a28fe789db1e80c26e7b69b7e4e08bd0923f52ce376840ac885c1eb'])}),
  Object.freeze({...CLI_SOURCE_POLICY,sourceHelper:'c28f194ca9767f2aeddd9cff6f633dac2280ae9c4e5d716d3273706afce81850',supervisors:Object.freeze(['7fb899a72bd50ae36b35649964e502c5984a97587ffd5570f6d830fb31d6bd27']),workflows:Object.freeze([CLI_SOURCE_POLICY.workflow])}),
+ Object.freeze({...CLI_SOURCE_POLICY,sourceHelper:'07dbfc5531b7b3b812fe6f532141c964255b90f46ed30a05c86f6e42ef2e0ee5',supervisors:Object.freeze(['7fb899a72bd50ae36b35649964e502c5984a97587ffd5570f6d830fb31d6bd27']),workflows:Object.freeze([CLI_SOURCE_POLICY.workflow])}),
 ]);
 export function reviewedCliSourceVersion(observed:Readonly<Record<keyof typeof CLI_SOURCE_POLICY,string>>):boolean{
  return CLI_SOURCE_VERSION_GROUPS.some(group=>

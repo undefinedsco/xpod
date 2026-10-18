@@ -75,7 +75,7 @@ interface OriginPolicy {
   sourceBindingGroups?:readonly GitHubSourceBindingGroup[];
   workflowPath: string;
   workflowSha256: string;
-  reviewedWorkflowVersions?: readonly { workflowSha256: string; jobName(artifactName: string): string; sourceBindings?: readonly { path: string; sha256: string; reviewedSha256?: readonly string[]; ref?:'run-head' }[] }[];
+  reviewedWorkflowVersions?: readonly { workflowSha256: string; jobName(artifactName: string): string; sourceBindingGroups?:readonly GitHubSourceBindingGroup[]; sourceBindings?: readonly { path: string; sha256: string; reviewedSha256?: readonly string[]; ref?:'run-head' }[] }[];
   events: readonly string[];
   stagingPushWorkflowSha256?: string;
   stagingPushWorkflowSha256s?: readonly string[];
@@ -375,6 +375,141 @@ export const API_CONTROLLED_DESCRIPTOR_SOURCE_BINDINGS=Object.freeze([
     "sha256": "5ef511f448c90a6fc9e767fd8224ef890b5fc04d2b6514f85697a0a529fb3eb4"
   }
 ]);
+export const API_PUBLIC_SOURCE_BINDINGS=Object.freeze([
+  {
+    "path": "packages/xpod-api/package.json",
+    "sha256": "0176c10141dbdd675e2a9741787fd1d56b5e811a5951e0dd3d056ff949e60576"
+  },
+  {
+    "path": "packages/xpod-api/scripts/bun-build-api.ts",
+    "sha256": "260024d8fa42a81cc10ef7601bed0efc1a3657981e28fc20bf25274db1fbb4e8"
+  },
+  {
+    "path": "packages/xpod-api/scripts/bundle-products.ts",
+    "sha256": "3a24864c1e1d542295a997d8a9de7814283de0cf6a6f233d3fab48f1c42fd516"
+  },
+  {
+    "path": "packages/xpod-api/scripts/bundle-runtime.ts",
+    "sha256": "a542b95f7979049a6c2686f79ea80cb05d13251903c71b3d9fe54523e46093e6"
+  },
+  {
+    "path": "packages/xpod-api/scripts/bundle-stage.ts",
+    "sha256": "e571128914a1c6d4db22fab9cb51743fc4af5d061ca7903f84c193a22bf8f505"
+  },
+  {
+    "path": "packages/xpod-api/scripts/closure.ts",
+    "sha256": "a06dce89cf832f574295794f4e830cca2d0abefc2553e5c7ec188614a91f2090"
+  },
+  {
+    "path": "packages/xpod-api/scripts/controlled-native-material.ts",
+    "sha256": "d1530cba12de2f599b6aaf2e3b38d17abd68b6c58ee7f8e0002f0262c14b0ef4"
+  },
+  {
+    "path": "packages/xpod-api/scripts/inngest-controlled-build-policy.json",
+    "sha256": "fab9a0628c0e6424f7a99bf2ca249c53b9ed2a1498d94d8d90ce226e01a7e284"
+  },
+  {
+    "path": "packages/xpod-api/scripts/inngest-controlled-materials-contract.json",
+    "sha256": "9ca5ffb4e8d7d62bceb10a90a7a424b1b028d271fb0faba1f9e810b28f4f4d90"
+  },
+  {
+    "path": "packages/xpod-api/scripts/inngest-input-pins.json",
+    "sha256": "d5d2225c7c8cf1bc1fc27f11d3bfc4f13c5dd597dae3c65701b0f4c6a200e567"
+  },
+  {
+    "path": "packages/xpod-api/scripts/node-builtins.ts",
+    "sha256": "b77b600379f808de205a7817863130f7c83ae83cb135a67109dfe3816d517468"
+  },
+  {
+    "path": "packages/xpod-api/scripts/pack.ts",
+    "sha256": "896f3ec37b743b9f9716c5672266363403c845893b370254203563197c831c40"
+  },
+  {
+    "path": "packages/xpod-api/scripts/sourcekit-producer.ts",
+    "sha256": "58a80bfa37f5b7089a410a3d61480c05f01c5188f1d27defb71a84870a48757d"
+  },
+  {
+    "path": "packages/xpod-api/scripts/sourcekit.ts",
+    "sha256": "e3f14b1f299f2095b80f3fe936b2ff919fc9bcd957764ef8eba41a56ea22b928"
+  },
+  {
+    "path": "packages/xpod-api/scripts/stage.ts",
+    "sha256": "b8d357f4a8bf062718404fd15fa5a89433e23d8cf4166289a7afc094b521270b"
+  },
+  {
+    "path": "packages/xpod-api/scripts/static-material.ts",
+    "sha256": "24a95c0368b46198f95f41c61d8d76ce029ea39165b9a31e9e1fcee80f74439c"
+  },
+  {
+    "path": "packages/xpod-cli/src/manifest.ts",
+    "sha256": "98540cea09a3cc3a37cd4132d4d42ba515c755255801d42c5827ede6bc2be167"
+  },
+  {
+    "path": "packages/xpod-cli/src/module-catalog.ts",
+    "sha256": "d52e3222f056d68b6c3eae261e25a196a23e5f7c43e9f027c918eedb9b0ce33e"
+  },
+  {
+    "path": "packages/xpod-cli/src/source-materials.ts",
+    "sha256": "66919cd2c75c229367538e9b2fea5af9243569572e9a74b5c3a8c80f609904b0"
+  },
+  {
+    "path": "scripts/agentfs-native-ci/supervise.py",
+    "sha256": "49fd9c7a7a9c9dc1612b1261f0cbc218166f48487df726239437ae9ad98ba407"
+  },
+  {
+    "path": "scripts/api-module-producer.py",
+    "sha256": "8cfb86a4fa5de62e2938e51e459ae9c5c3bbe95cf0aaad88d59de9a9b900e920"
+  },
+  {
+    "path": "scripts/lib/inngest-controlled-build.py",
+    "sha256": "6f82f617c67e70d75b2023993df3846b2caccef34c4a937cd58299cb7bcec99e"
+  },
+  {
+    "path": "scripts/lib/inngest-controlled-materials.ts",
+    "sha256": "c47ddb2bd3b1443cefbf5c4a41f6881c975bafd574bfe70079b73564da7b9ba6"
+  },
+  {
+    "path": "scripts/lib/module-artifact-limits.json",
+    "sha256": "c1c529aba719356c682affbe630c215e28cc07163192f8f3b601aab7b0126bd4"
+  },
+  {
+    "path": "scripts/lib/module-source-materials.py",
+    "sha256": "07dbfc5531b7b3b812fe6f532141c964255b90f46ed30a05c86f6e42ef2e0ee5"
+  },
+  {
+    "path": "scripts/lib/physical-module-archive.ts",
+    "sha256": "04e5dd55b3c63190ba119ec2f01e30ab607d28507646e1d7419768b730e1896a"
+  },
+  {
+    "path": "scripts/lib/physical-module-bins.ts",
+    "sha256": "f75c4292b3323c76afd48db82480b69b8b6c60d15576bad004b88cba46a92d01"
+  },
+  {
+    "path": "scripts/lib/physical-module-native-placement.ts",
+    "sha256": "556fcb7c2fa475c802d21a0158c6ea33ba614434352b009ea8005944863be173"
+  },
+  {
+    "path": "scripts/lib/physical-module-native.ts",
+    "sha256": "f169df0b69333b68e8f904f677bc3b3d24611b79923042adc360ca0e3b681bac"
+  },
+  {
+    "path": "scripts/lib/physical-module-notices.ts",
+    "sha256": "d3b71ab69fc59bdbbc8d4bd3cf2e2dab92d39a3b08673337aa9ea494a4b807cc"
+  },
+  {
+    "path": "scripts/lib/physical-module-stage.ts",
+    "sha256": "41bbf5387ab913625aa29663c0f2758b3b783de28f48c201d375369a7268c750"
+  },
+  {
+    "path": "scripts/module-product-targets.ts",
+    "sha256": "5ef511f448c90a6fc9e767fd8224ef890b5fc04d2b6514f85697a0a529fb3eb4"
+  }
+]);
+export const API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS=Object.freeze([
+ {name:"historical-descriptor",selectors:[{"path": "scripts/api-module-producer.py", "sha256": "8cfb86a4fa5de62e2938e51e459ae9c5c3bbe95cf0aaad88d59de9a9b900e920"}],secondarySelectors:[{"path": "packages/xpod-api/scripts/inngest-controlled-build-policy.json", "sha256": "03fe62750b08a55b763c028367e3eb6d25d17128088191cf4edf3c76c0d507d6"}, {"path": "scripts/lib/inngest-controlled-build.py", "sha256": "a8746e8bed74dec2a6726a36e5aed623173d6666dfed925b2d8848fa3358aec2"}, {"path": "scripts/lib/module-source-materials.py", "sha256": "c28f194ca9767f2aeddd9cff6f633dac2280ae9c4e5d716d3273706afce81850"}],sourceBindings:API_CONTROLLED_DESCRIPTOR_SOURCE_BINDINGS},
+ {name:"public-source-inputs",selectors:[{"path": "scripts/api-module-producer.py", "sha256": "8cfb86a4fa5de62e2938e51e459ae9c5c3bbe95cf0aaad88d59de9a9b900e920"}],secondarySelectors:[{"path": "packages/xpod-api/scripts/inngest-controlled-build-policy.json", "sha256": "fab9a0628c0e6424f7a99bf2ca249c53b9ed2a1498d94d8d90ce226e01a7e284"}, {"path": "scripts/lib/inngest-controlled-build.py", "sha256": "6f82f617c67e70d75b2023993df3846b2caccef34c4a937cd58299cb7bcec99e"}, {"path": "scripts/lib/module-source-materials.py", "sha256": "07dbfc5531b7b3b812fe6f532141c964255b90f46ed30a05c86f6e42ef2e0ee5"}],sourceBindings:API_PUBLIC_SOURCE_BINDINGS},
+]);
+
 
 
 function cssStagingParentPolicy(jobName: string): Pick<OriginPolicy,'reviewedWorkflowVersions'|'stagingPushWorkflowSha256'> {
@@ -412,7 +547,7 @@ export async function observeModuleProductGitHubOrigin(input: ArtifactAcquisitio
     artifactNames: coordinates => [`${module}-module-products-${target}-${coordinates.sourceSha}-${coordinates.runId}-${coordinates.runAttempt}`],
     jobName: () => `products (${target})`,
     // The old reviewed workflow used GitHub's implicit matrix display name.
-    reviewedWorkflowVersions: [...(module==='api'?[{workflowSha256:'04f75d2913e3b6b504cf547d8ba17d1c0011a0a563f42ff708f4ba3f10978153',jobName:()=>`products (${target})`,sourceBindings:API_CONTROLLED_DESCRIPTOR_SOURCE_BINDINGS},{workflowSha256:'b7a91e8c0b61f8a80a3de2c6c93e78f1d2f9637a741bff7ac2592882ba0c831e',jobName:()=>`products (${target})`,sourceBindings:API_CONTROLLED_SOURCE_BINDINGS},{workflowSha256:'c4aa6b7ea6e384adab1e517a903e50d574c8afb2eb92d8c54dc919320652c5b0',jobName:()=>`products (${target})`}]:[]), { workflowSha256: policies[module].previousShortWorkflowSha256, jobName: () => `products (${target})`,
+    reviewedWorkflowVersions: [...(module==='api'?[{workflowSha256:'04f75d2913e3b6b504cf547d8ba17d1c0011a0a563f42ff708f4ba3f10978153',jobName:()=>`products (${target})`,sourceBindingGroups:API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS},{workflowSha256:'b7a91e8c0b61f8a80a3de2c6c93e78f1d2f9637a741bff7ac2592882ba0c831e',jobName:()=>`products (${target})`,sourceBindings:API_CONTROLLED_SOURCE_BINDINGS},{workflowSha256:'c4aa6b7ea6e384adab1e517a903e50d574c8afb2eb92d8c54dc919320652c5b0',jobName:()=>`products (${target})`}]:[]), { workflowSha256: policies[module].previousShortWorkflowSha256, jobName: () => `products (${target})`,
       sourceBindings: [{ path: 'scripts/module-product-targets.ts', sha256: '35b8752237d620981b1848d6d8876dfac3c1da14509e77358e7f961ca256cf96' }] },
       { workflowSha256: policies[module].legacyWorkflowSha256, jobName: () => `products (${Object.values(row).join(', ')})`,
         sourceBindings: [{ path: 'scripts/module-product-targets.ts', sha256: '35b8752237d620981b1848d6d8876dfac3c1da14509e77358e7f961ca256cf96' }] }],
@@ -637,8 +772,9 @@ async function observeGitHubOrigin(input: ArtifactAcquisitionInput, options: { t
   if((policy.stagingPushWorkflowSha256||policy.stagingPushWorkflowSha256s) && run.event==='push' && (!(policy.stagingPushWorkflowSha256s??[policy.stagingPushWorkflowSha256!]).includes(workflowSha256) || run.head_branch!=='staging' || input.sourceSha!==input.runHeadSha))fail('CSS push requires reviewed staging parent and exact source');
   const expectedJobName = reviewedVersion?.jobName ?? policy.jobName;
   let sourceBindings=[...(reviewedVersion?.sourceBindings ?? policy.sourceBindings ?? [])];
-  if(policy.sourceBindingGroups){
-    const selectors=new Map(policy.sourceBindingGroups.flatMap(group=>group.selectors.map(binding=>[sourceBindingKey(binding),binding] as const)));
+  const sourceBindingGroups=reviewedVersion?.sourceBindingGroups??policy.sourceBindingGroups;
+  if(sourceBindingGroups){
+    const selectors=new Map(sourceBindingGroups.flatMap(group=>group.selectors.map(binding=>[sourceBindingKey(binding),binding] as const)));
     const observed=new Map<string,string>();
     await Promise.all([...selectors].map(async ([key,binding])=>{
       const original=await read('policy-'+binding.path.replace(/[^a-z0-9]/giu,'-')+'.original.json',`contents/${binding.path}?ref=${binding.ref==='run-head'?input.runHeadSha:input.sourceSha}`);
@@ -647,13 +783,13 @@ async function observeGitHubOrigin(input: ArtifactAcquisitionInput, options: { t
     }));
     // New observer versions refine only an already matched historical tuple.
     // A missing/modified helper remains fatal; no old-tree 404 is swallowed.
-    const secondary=secondaryGitHubSourceBindingSelectors(policy.sourceBindingGroups,observed);
+    const secondary=secondaryGitHubSourceBindingSelectors(sourceBindingGroups,observed);
     await Promise.all(secondary.map(async binding=>{
       const original=await read('policy-secondary-'+binding.path.replace(/[^a-z0-9]/giu,'-')+'.original.json',`contents/${binding.path}?ref=${binding.ref==='run-head'?input.runHeadSha:input.sourceSha}`);
       if(original.type!=='file'||original.path!==binding.path||original.encoding!=='base64'||typeof original.content!=='string')fail('immutable secondary group selector missing');
       observed.set(sourceBindingKey(binding),sha(Buffer.from(original.content.replace(/\s/gu,''),'base64')));
     }));
-    sourceBindings=[...selectGitHubSourceBindingGroup(policy.sourceBindingGroups,observed).sourceBindings];
+    sourceBindings=[...selectGitHubSourceBindingGroup(sourceBindingGroups,observed).sourceBindings];
   }
   for (let offset=0;offset<sourceBindings.length;) {
    const batch=sourceBindings.slice(offset,offset+8);offset+=batch.length;
