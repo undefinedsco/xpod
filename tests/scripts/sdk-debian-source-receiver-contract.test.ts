@@ -41,7 +41,7 @@ vi.mock('../../scripts/lib/independent-admission/qlever-sdk-execution', async ()
   verified:false,pending:['schema-fixture-build-execution-not-observed'],
 }))}));
 import {inspectSdkBuildExecution,SdkTrackedPhaseOriginalsUnobserved,SDK_TRACKED_PHASE_UNOBSERVED} from '../../scripts/lib/independent-admission/qlever-sdk-execution';
-import {inspectQleverSdkSourceOriginals,observeQleverSdkSourceAdmission,sdkVerifiedInputOriginalView} from '../../scripts/lib/independent-admission/qlever-sdk-source';
+import {inspectQleverSdkSourceOriginals,observeQleverSdkSourceAdmission,sdkVerifiedInputOriginalView,sdkVerifiedSourceArchiveOriginalView} from '../../scripts/lib/independent-admission/qlever-sdk-source';
 const root=path.resolve(__dirname,'../..');
 const sha=(data:Buffer)=>createHash('sha256').update(data).digest('hex');
 
@@ -72,7 +72,7 @@ it('actual acquisition output satisfies receiver source schema; unrooted refs an
     after.files ??= [];
     originals.set(afterName,Buffer.from(JSON.stringify(after)));
     initialMaster.inputs.after=reference(afterName);
-    const originalCap={fixture:true};
+    const originalCap=Object.freeze(Object.create(null));
     function observe(collection:any) {
       const collectionName=fixtureInfo.receiverCollection.path;
       originals.set(collectionName,Buffer.from(JSON.stringify(collection)));
@@ -104,6 +104,17 @@ it('actual acquisition output satisfies receiver source schema; unrooted refs an
     }));
     expect(positive.pending).toContain('qlever-sdk-Debian-signed-Sources-InRelease-keyring-authority-not-yet-verified');
     expect(sdkVerifiedInputOriginalView(originalCap)).toBeDefined();
+    // The real map under test stores this protocol-only opaque handle; no caller JSON can reconstruct it.
+    const sourceArchiveView=sdkVerifiedSourceArchiveOriginalView(originalCap)!;
+    expect(sourceArchiveView).toBe(sdkVerifiedSourceArchiveOriginalView(originalCap));
+    expect(sourceArchiveView.sourceSha).toBe('a'.repeat(40));expect(sourceArchiveView.officialAuthorityVerified).toBe(false);
+    expect(sourceArchiveView.coordinates.map(row=>({name:row.name,version:row.version}))).toEqual(initialCollection.packages.map((row:any)=>({name:row.name,version:row.version})));
+    expect(sourceArchiveView.collection.path).toBe(fixtureInfo.receiverCollection.path);expect(sourceArchiveView.ownedCoordinatesComplete).toBe(true);sourceArchiveView.assertCurrent();
+    expect(sdkVerifiedSourceArchiveOriginalView(JSON.parse(JSON.stringify(sourceArchiveView)))).toBeUndefined();
+    const retainedReader=fixture.view.readOriginal;fixture.view.readOriginal=(name:string,...args:any[])=>name===sourceArchiveView.collection.path?Buffer.from('changed'):retainedReader(name,...args);
+    expect(()=>sdkVerifiedSourceArchiveOriginalView(originalCap)).toThrow('collection/ledger custody changed');fixture.view.readOriginal=retainedReader;
+    const archiveName=initialCollection.packages[0].files[0].path,archiveBytes=originals.get(archiveName)!;
+    originals.set(archiveName,Buffer.concat([archiveBytes,Buffer.from('changed')]));expect(observe(initialCollection).facts.debianDscAndAllSourceArchiveBytesVerified).not.toBe(true);expect(sdkVerifiedSourceArchiveOriginalView(originalCap)).toBeUndefined();expect(()=>sourceArchiveView.assertCurrent()).toThrow('observation revoked');originals.set(archiveName,archiveBytes);observe(initialCollection);
     vi.mocked(inspectSdkBuildExecution).mockImplementationOnce(()=>{throw Error('malformed old receipt');});
     expect(observe(initialCollection).pending).toContain('malformed old receipt');expect(sdkVerifiedInputOriginalView(originalCap)).toBeUndefined();
     vi.mocked(inspectSdkBuildExecution).mockImplementationOnce(()=>{throw new SdkTrackedPhaseOriginalsUnobserved(undefined);});

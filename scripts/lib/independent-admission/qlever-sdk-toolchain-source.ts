@@ -1,11 +1,14 @@
+import {createHash} from 'node:crypto';
 import {performance} from 'node:perf_hooks';
 import {isDeepStrictEqual} from 'node:util';
 import limits from '../module-artifact-limits.json';
 import {qleverSdkOriginalsView} from './qlever-sdk-originals';
 import {derivedSourceView,assertDerivedSourceCurrent} from './source-context';
-import {sdkVerifiedInputOriginalView} from './qlever-sdk-source';
+import {sdkVerifiedInputOriginalView,sdkVerifiedSourceArchiveOriginalView} from './qlever-sdk-source';
 import {qleverSdkExecutionOriginalObservation} from './qlever-sdk-generation';
 import {qleverSdkDebianBinaryObservation,type DebianInstalledBinaryFile} from './qlever-sdk-debian-binary';
+import {qleverSdkDebianIndexObservation} from './qlever-sdk-debian-index';
+import {qleverSdkDebianSignatureObservation} from './qlever-sdk-debian-signature';
 import {observeQleverSdkObservedToolOriginals} from './qlever-sdk-observed-tools';
 
 function need(value:unknown,reason:string):asserts value {if(!value)throw Error('SDK toolchain coverage: '+reason);}
@@ -71,15 +74,55 @@ export function inspectSdkToolchainOperationFileCoverage(input:{coverage:unknown
 }
 
 /** No map/issuer: this leaf consumes only the existing same-SDK private maps. */
+const ARCHIVE_GAP='qlever-sdk-toolchain-exact-source-archive-coverage-private-join-unavailable';
+type OriginalRef=Readonly<{path:string;bytes:number;sha256:string}>;
+const sourceRef=(value:any):value is OriginalRef=>value&&typeof value.path==='string'&&value.path.startsWith('inner/')&&!/[\\\x00-\x1f\x7f]/u.test(value.path)&&value.path.split('/').every((part:string)=>part&&part!=='.'&&part!=='..')&&Number.isSafeInteger(value.bytes)&&value.bytes>=0&&value.bytes<=limits.shardBytes&&sha(value.sha256);
+const sameRef=(left:any,right:any)=>sourceRef(left)&&sourceRef(right)&&left.path===right.path&&left.bytes===right.bytes&&left.sha256===right.sha256;
+/** Diagnostic byte/coordinate relation only. Only the wrapper below supplies
+ * existing same-SDK private signature, checksum, binary and source views. */
+export function inspectSdkToolchainSourceArchiveJoin(input:{files:readonly any[];coordinates:readonly any[];collection:any;checksums:readonly any[];signedReleases:readonly any[]},check:()=>void=()=>{}) {
+ check();need(input.files.length>0&&input.files.length<=limits.sourceMembers&&input.coordinates.length>0&&input.coordinates.length<=4096,'bounded nonempty tool/source universe required');
+ const collection=input.collection;need(collection?.schemaVersion===1&&collection.kind==='qlever-sdk-exact-debian-source-originals'&&Array.isArray(collection.packages)&&collection.packages.length===input.coordinates.length&&Array.isArray(collection.indexOriginals)&&collection.indexOriginals.length>0&&collection.indexOriginals.length<=32,'same actual source collection required');
+ need(input.checksums.length===collection.indexOriginals.length,'complete private checksum index set required');
+ // The signature adapter observes each actual InRelease path once, even when
+ // several component Sources indexes share those exact signed bytes.
+ const releases=new Map<string,OriginalRef>();
+ for(const index of collection.indexOriginals){check();need(sourceRef(index.inRelease),'actual signed release reference required');const previous=releases.get(index.inRelease.path);need(!previous||sameRef(previous,index.inRelease),'same InRelease path has conflicting original bytes');releases.set(index.inRelease.path,index.inRelease);}
+ need(input.signedReleases.length===releases.size,'complete distinct private signature release set required');
+ for(const release of releases.values()){check();const matches=input.signedReleases.filter(row=>sameRef(row.inRelease,release));need(matches.length===1&&Array.isArray(matches[0].signers)&&matches[0].signers.length>0,'same InRelease independently signed authority required');}
+ const indexes=new Set<string>();
+ for(const index of collection.indexOriginals){check();need(sourceRef(index.inRelease)&&sourceRef(index.sources)&&!indexes.has(index.sources.path),'unique actual source index required');indexes.add(index.sources.path);
+  const matches=input.checksums.filter(row=>row.inReleaseSha256===index.inRelease.sha256&&sameRef(row.sourceOriginal,index.sources));need(matches.length===1&&Array.isArray(matches[0].observation?.signedIndexMatches)&&matches[0].observation.signedIndexMatches.length>0,'actual Sources checksum/private index binding required');
+ }
+ const coordinates=new Map<string,any>();
+ for(const row of input.coordinates){check();need(typeof row.name==='string'&&row.name.length<=256&&typeof row.version==='string'&&row.version.length<=4096&&sourceRef(row.dsc)&&Array.isArray(row.archives)&&row.archives.length>0&&row.archives.length<=4096,'complete source coordinate and archive refs required');const key=row.name+'\0'+row.version;need(!coordinates.has(key),'duplicate private source coordinate');
+  const packages=collection.packages.filter((item:any)=>item.name===row.name&&item.version===row.version);need(packages.length===1&&sameRef(packages[0].dsc,row.dsc)&&Array.isArray(packages[0].files)&&packages[0].files.length===row.archives.length,'actual source collection coordinate differs');
+  const paths=new Set<string>();for(const ref of row.archives){check();need(sourceRef(ref)&&!paths.has(ref.path)&&packages[0].files.filter((item:any)=>sameRef(item,ref)).length===1,'all actual archive refs must match the private verified collection');paths.add(ref.path);}coordinates.set(key,row);
+ }
+ const selected=new Map<string,any>();
+ for(const file of input.files){check();need(file?.source&&typeof file.source.name==='string'&&typeof file.source.version==='string','every actual signed tool requires a source tuple');const key=file.source.name+'\0'+file.source.version,row=coordinates.get(key);need(row,'exact tool source tuple has no verified complete source archives');selected.set(key,row);}
+ return Object.freeze({sdkToolchainExactSourceArchiveCoverageVerified:true,sdkToolchainSourceArchiveCoordinates:Object.freeze([...selected.values()]),sdkToolchainSourceArchiveScope:'same-SDK signed Sources to complete DSC/archive byte sets for actual signed tool files only'});
+}
 export async function observeQleverSdkToolchainSourceOriginals(capability:unknown,sourceCapability:unknown,remainingMilliseconds=limits.timeoutMs):Promise<Readonly<{facts:Readonly<Record<string,unknown>>;pending:readonly string[];assertCurrent?:()=>void}>>{
-  const facts:Record<string,unknown>={sdkToolchainOperationCoverageVerified:false,sdkToolchainObservedAfterFileBindingsVerified:false,sdkToolchainSignedDebianBinaryFileBindingsVerified:false,sdkToolchainStopReadOnlyProviderCoverageVerified:false,sdkToolchainSourceClosureVerified:false};
+  const facts:Record<string,unknown>={sdkToolchainOperationCoverageVerified:false,sdkToolchainObservedAfterFileBindingsVerified:false,sdkToolchainSignedDebianBinaryFileBindingsVerified:false,sdkToolchainStopReadOnlyProviderCoverageVerified:false,sdkToolchainExactSourceArchiveCoverageVerified:false,sdkToolchainSourceClosureVerified:false};
   try{
     need(Number.isFinite(remainingMilliseconds)&&remainingMilliseconds>=1,'remaining observation budget required');const end=performance.now()+Math.min(remainingMilliseconds,limits.timeoutMs);const check=()=>need(performance.now()<end,'shared toolchain observation deadline exhausted');check();
     const sdk=qleverSdkOriginalsView(capability),source=derivedSourceView(sourceCapability),inputs=sdkVerifiedInputOriginalView(capability),execution=qleverSdkExecutionOriginalObservation(capability),binary=qleverSdkDebianBinaryObservation(capability);
     need(sdk&&source&&inputs&&execution?.sdkActualConfigureCompileTrackedWaitVerified===true&&source.sourceSha===sdk.originFacts.sourceSha,'same private SDK/source/input/execution views required');
     need(execution.sdkToolchainOperationCoverage,'verified per-operation file coverage unavailable');
+    const archives=sdkVerifiedSourceArchiveOriginalView(capability),checksumRows=qleverSdkDebianIndexObservation(capability),signature=qleverSdkDebianSignatureObservation(capability);
     const tools=await observeQleverSdkObservedToolOriginals(capability,sourceCapability,end-performance.now());check();need(tools.assertCurrent,'same private observed-tool custody unavailable');
-    const assertCurrent=()=>{need(qleverSdkOriginalsView(capability)===sdk&&derivedSourceView(sourceCapability)===source&&qleverSdkExecutionOriginalObservation(capability)===execution&&qleverSdkDebianBinaryObservation(capability)===binary,'private toolchain observation custody changed');const current=sdkVerifiedInputOriginalView(capability);need(current?.rows===inputs.rows&&current.afterReference===inputs.afterReference,'private full-shard input custody changed');assertDerivedSourceCurrent(sourceCapability);binary?.assertCurrent();tools.assertCurrent!();};
-    assertCurrent();const result=inspectSdkToolchainOperationFileCoverage({coverage:execution.sdkToolchainOperationCoverage,observedFiles:(tools.facts.sdkObservedToolAfterShardFiles as readonly any[]|undefined)??[],afterRows:inputs.rows,binaryFiles:binary?.files??[]},check);assertCurrent();return Object.freeze({...result,pending:Object.freeze([...new Set([...result.pending,...tools.pending])]),assertCurrent});
+    const assertCurrent=()=>{need(qleverSdkOriginalsView(capability)===sdk&&derivedSourceView(sourceCapability)===source&&qleverSdkExecutionOriginalObservation(capability)===execution&&qleverSdkDebianBinaryObservation(capability)===binary,'private toolchain observation custody changed');const current=sdkVerifiedInputOriginalView(capability);need(current?.rows===inputs.rows&&current.afterReference===inputs.afterReference,'private full-shard input custody changed');assertDerivedSourceCurrent(sourceCapability);binary?.assertCurrent();tools.assertCurrent!();need(sdkVerifiedSourceArchiveOriginalView(capability)===archives&&qleverSdkDebianIndexObservation(capability)===checksumRows&&qleverSdkDebianSignatureObservation(capability)===signature,'private source archive/signature/checksum observation custody changed');archives?.assertCurrent();};
+    assertCurrent();const result=inspectSdkToolchainOperationFileCoverage({coverage:execution.sdkToolchainOperationCoverage,observedFiles:(tools.facts.sdkObservedToolAfterShardFiles as readonly any[]|undefined)??[],afterRows:inputs.rows,binaryFiles:binary?.files??[]},check);assertCurrent();const joinedFacts:Record<string,unknown>={...result.facts,sdkToolchainExactSourceArchiveCoverageVerified:false};const pending=new Set([...result.pending,...tools.pending]);
+    if(archives&&checksumRows&&signature?.sdkDebianOfficialSignatureAndSuiteVerified===true&&binary&&result.facts.sdkToolchainSignedDebianBinaryFileBindingsVerified===true){
+      try{
+        need(archives.sourceSha===source.sourceSha&&archives.target===sdk.originFacts.target&&archives.officialAuthorityVerified===false,'same SDK mechanical source projection required');
+        const readJson=(ref:OriginalRef,maximum=limits.metadataBytes)=>{check();need(ref&&typeof ref.path==='string'&&!ref.path.startsWith('/')&&!/[\\\x00-\x1f\x7f]/u.test(ref.path)&&ref.path.split('/').every(part=>part&&part!=='.'&&part!=='..')&&Number.isSafeInteger(ref.bytes)&&ref.bytes>=0&&ref.bytes<=maximum&&sha(ref.sha256),'bounded same SDK source metadata required');const bytes=sdk.readOriginal(ref.path,maximum);check();need(bytes.length===ref.bytes&&createHash('sha256').update(bytes).digest('hex')===ref.sha256,'actual source metadata bytes differ');return JSON.parse(bytes.toString());};
+        const master=readJson(sdk.masterReference,8*1024**2);need(sameRef(master.debianSources,archives.collection),'private source collection differs from same SDK master');const collection=readJson(archives.collection);
+        const signed=(signature.sdkDebianSignatureOriginals as {observations?:readonly unknown[]}|undefined)?.observations;need(Array.isArray(signed),'independent signature originals unavailable');
+        const joined=inspectSdkToolchainSourceArchiveJoin({files:result.facts.sdkToolchainSignedFileCoordinates,coordinates:archives.coordinates,collection,checksums:checksumRows,signedReleases:signed},check);check();assertCurrent();Object.assign(joinedFacts,joined);pending.delete(ARCHIVE_GAP);
+      }catch(error){pending.add('qlever-sdk-toolchain-source-archive-join-unverified: '+String(error instanceof Error?error.message:error).slice(0,1024));}
+    }
+    check();assertCurrent();return Object.freeze({facts:Object.freeze(joinedFacts),pending:Object.freeze([...pending]),assertCurrent});
   }catch(error){return Object.freeze({facts:Object.freeze(facts),pending:Object.freeze(['qlever-sdk-toolchain-private-coverage-unverified: '+String(error instanceof Error?error.message:error).slice(0,1024)])});}
 }

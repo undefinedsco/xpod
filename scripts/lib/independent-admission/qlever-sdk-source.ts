@@ -16,7 +16,9 @@ const SHA = /^[a-f0-9]{64}$/u;
 const HELPER_SHA = 'dddb499b82df467ff41511dd6dfab5877ed7d63cbcfa88fb772be9e6152aca6c';
 const safe = (name: unknown): name is string => typeof name === 'string' && Boolean(name) && !name.startsWith('/') && !/[\\\u0000-\u001f\u007f]/u.test(name) && !name.split('/').some(part => !part || part === '.' || part === '..');
 function need(value: unknown, reason: string): asserts value { if (!value) throw Error('QLever SDK source: ' + reason); }
-const verifiedInputs = new WeakMap<object, Readonly<{sdk: NonNullable<ReturnType<typeof qleverSdkOriginalsView>>; afterReference: Readonly<{path: string; bytes: number; sha256: string}>; rows: readonly Readonly<{originalPath: string; bytes: number; sha256: string; mode: number}>[] }>>();
+type SourceOriginalReference=Readonly<{path:string;bytes:number;sha256:string}>;
+type SourceArchiveOriginalView=Readonly<{sourceSha:string;target:string;collection:SourceOriginalReference;ledger:SourceOriginalReference;coordinates:readonly Readonly<{name:string;version:string;dsc:SourceOriginalReference;archives:readonly SourceOriginalReference[]}>[];requiredCoordinates:readonly Readonly<{name:string;version:string}>[];absentOwnedCoordinates:readonly Readonly<{name:string;version:string}>[];ownedCoordinatesComplete:boolean;scope:'actual DSC and complete archive checksum mechanics only';officialAuthorityVerified:false;assertCurrent():void}>;
+const verifiedInputs = new WeakMap<object, Readonly<{sourceArchiveView?:SourceArchiveOriginalView;sdk: NonNullable<ReturnType<typeof qleverSdkOriginalsView>>; afterReference: Readonly<{path: string; bytes: number; sha256: string}>; rows: readonly Readonly<{originalPath: string; bytes: number; sha256: string; mode: number}>[] }>>();
 /** Reuses the one actual full-shard verification, never caller JSON facts. */
 export function sdkVerifiedInputOriginalView(capability: unknown) {
   if (!capability || typeof capability !== 'object') return undefined;
@@ -27,6 +29,11 @@ export function sdkVerifiedInputOriginalView(capability: unknown) {
     return Object.freeze({afterReference: value.afterReference, rows: value.rows});
   }
   return undefined;
+}
+/** Same existing verified-input map; no JSON or separate registration can issue this view. */
+export function sdkVerifiedSourceArchiveOriginalView(capability:unknown):SourceArchiveOriginalView|undefined {
+  if(!capability||typeof capability!=='object')return undefined;
+  const view=verifiedInputs.get(capability)?.sourceArchiveView;view?.assertCurrent();return view;
 }
 /** SDK byte/source-set facts only. The one central SDK private binding is
  * required; no JSON can reconstruct it, or authorize a native/release gate. */
@@ -118,7 +125,8 @@ export function inspectQleverSdkSourceOriginals(capability: unknown, remainingMi
     need(sources.schemaVersion === 1 && sources.kind === 'qlever-sdk-exact-debian-source-originals' && Array.isArray(sources.packages) && sources.packages.length > 0 && sources.packages.length <= 4096, 'SDK Debian source collection schema differs');
     need(reference(sources.sourceIdentities).path === ledgerReference.path, 'source acquisition ledger differs from actual SDK build ledger');
     const identities = new Set(Object.values(ledger).map((row: any) => row.source.name + '\0' + row.source.version));
-    const seen = new Set<string>(); let sourceBytes = 0;
+    const seen = new Set<string>(),archiveCoordinates: {name:string;version:string;dsc:SourceOriginalReference;archives:readonly SourceOriginalReference[]}[]=[]; let sourceBytes = 0;
+    const originalReference=(value:any):SourceOriginalReference=>{const ref=reference(value);return Object.freeze({path:ref.path,bytes:ref.bytes,sha256:ref.sha256});};
     for (const item of sources.packages) {
       const coordinate = item.name + '\0' + item.version;
       need(!seen.has(coordinate) && identities.has(coordinate), 'exact Debian source identity absent or repeated in actual dpkg ledger'); seen.add(coordinate);
@@ -127,7 +135,7 @@ export function inspectQleverSdkSourceOriginals(capability: unknown, remainingMi
       const parent = path.posix.dirname(dscRef.path);
       need(/^inner\/debian-source\/package-[0-9]{4}$/u.test(parent) && Array.isArray(item.files) && item.files.length === dsc.files.length, 'Debian original group/reference set differs');
       const expected = new Map<string, any>(dsc.files.map((row: any) => [row.name, row]));
-      const names = new Set<string>([dscRef.path]); sourceBytes += dscRef.bytes;
+      const names = new Set<string>([dscRef.path]),archives:SourceOriginalReference[]=[]; sourceBytes += dscRef.bytes;
       for (const value of item.files) {
         const ref = reference(value), relative = ref.path.slice(parent.length + 1), declared = expected.get(relative);
         need(ref.path.startsWith(parent + '/') && !names.has(ref.path) && declared && ref.bytes === declared.bytes && ref.sha256 === declared.sha256, 'all orig/debian archive bytes must match dsc SHA256 universe'); names.add(ref.path);
@@ -139,10 +147,10 @@ export function inspectQleverSdkSourceOriginals(capability: unknown, remainingMi
           check(); const length = Math.min(limits.rangeBytes, ref.bytes - offset), bytes = sdk.readOriginalRange(ref.path, offset, length);
           need(bytes.length === length, 'Debian source original truncated'); digest.update(bytes);
         }
-        need(digest.digest('hex') === declared.sha256, 'actual complete Debian source original hash differs');
+        need(digest.digest('hex') === declared.sha256, 'actual complete Debian source original hash differs');archives.push(originalReference(ref));
       }
       const actual = sdk.members.filter(row => row.path.startsWith(parent + '/'));
-      need(actual.length === names.size && actual.every(row => names.has(row.path)), 'unregistered extra Debian source original member');
+      need(actual.length === names.size && actual.every(row => names.has(row.path)), 'unregistered extra Debian source original member');archiveCoordinates.push(Object.freeze({name:dsc.name,version:dsc.version,dsc:originalReference(dscRef),archives:Object.freeze(archives)}));
       need(total + sourceBytes <= limits.sourceMaterialBytes, 'SDK context/input/Debian domains exceed shared source budget');
     }
     need(qleverSdkOriginalsView(capability) === sdk, 'SDK source custody changed');
@@ -153,6 +161,22 @@ export function inspectQleverSdkSourceOriginals(capability: unknown, remainingMi
     facts.sdkDebianSourceArchiveMissingCoordinates = Object.freeze(absent);
     facts.sdkOwnedDebianInputSourceArchivesComplete = absent.length === 0;
     if (absent.length) pending.add('qlever-sdk-exact-owned-Debian-input-source-archives-incomplete');
+    const inputSnapshot=verifiedInputs.get(capability as object);
+    if(inputSnapshot){
+      const target=sdk.originFacts.target;need(target==='linux-x64'||target==='linux-arm64','verified source archive requires actual Linux target');
+      const collection=originalReference(master.debianSources),ledgerOriginal=originalReference(ledgerReference);
+      const assertCurrent=()=>{
+        need(verifiedInputs.get(capability as object)===retained,'verified source archive observation revoked');
+        need(qleverSdkOriginalsView(capability)===sdk,'verified source archive SDK custody changed');
+        need(sdkVerifiedInputOriginalView(capability)?.rows===inputSnapshot.rows,'verified source archive input custody changed');
+        for(const ref of [collection,ledgerOriginal]){const raw=sdk.readOriginal(ref.path,limits.metadataBytes);need(raw.length===ref.bytes&&hash(raw)===ref.sha256,'verified source collection/ledger custody changed');}
+        assertLegalFileIdentity(helperIdentity);assertLegalFileIdentity(pythonIdentity);
+      };
+      const coordinates=Object.freeze(archiveCoordinates),requiredCoordinates=Object.freeze(ownership.requiredSources.map(row=>Object.freeze({name:row.name,version:row.version}))),absentOwnedCoordinates=Object.freeze(absent.map(row=>Object.freeze({name:row.name,version:row.version})));
+      const sourceArchiveView:SourceArchiveOriginalView=Object.freeze({sourceSha:sdk.originFacts.sourceSha,target,collection,ledger:ledgerOriginal,coordinates,requiredCoordinates,absentOwnedCoordinates,ownedCoordinatesComplete:absent.length===0,scope:'actual DSC and complete archive checksum mechanics only',officialAuthorityVerified:false,assertCurrent});
+      const retained=Object.freeze({...inputSnapshot,sourceArchiveView});verifiedInputs.set(capability as object,retained);assertCurrent();
+    }
+
     pending.add('qlever-sdk-generated-input-and-full-toolchain-source-causality-not-yet-verified');
   } catch (error) { pending.add((error as Error).message); }
   return Object.freeze({verified: false, pending: Object.freeze([...pending]), facts: Object.freeze(facts)});
@@ -306,7 +330,7 @@ export async function observeQleverSdkSourceAdmission(input: {sdkOriginals: unkn
     facts.sdkSourceCompletenessVerified = verified;
     check(); assertCurrent();
   } catch (error) {
-    toolchainGuard=undefined;facts.sdkToolchainOperationCoverageVerified=false;facts.sdkToolchainObservedAfterFileBindingsVerified=false;facts.sdkToolchainSignedDebianBinaryFileBindingsVerified=false;facts.sdkToolchainStopReadOnlyProviderCoverageVerified=false;facts.sdkToolchainSourceClosureVerified=false;delete facts.sdkToolchainSignedFileCoordinates;
+    toolchainGuard=undefined;facts.sdkToolchainExactSourceArchiveCoverageVerified=false;delete facts.sdkToolchainSourceArchiveCoordinates;delete facts.sdkToolchainSourceArchiveScope;facts.sdkToolchainOperationCoverageVerified=false;facts.sdkToolchainObservedAfterFileBindingsVerified=false;facts.sdkToolchainSignedDebianBinaryFileBindingsVerified=false;facts.sdkToolchainStopReadOnlyProviderCoverageVerified=false;facts.sdkToolchainSourceClosureVerified=false;delete facts.sdkToolchainSignedFileCoordinates;
     if(fetchContentGuard){fetchContentGuard=undefined;facts.sdkPreparedDependencySourceOriginalsVerified=false;facts.sdkGeneratedInputIoClosureVerified=false;facts.sdkFetchContentDependencyReadOriginsVerified=false;facts.sdkFetchContentDeclaredSourceByteClosureVerified=false;facts.sdkFetchContentPreparationStageOriginalsVerified=false;delete facts.sdkFetchContentSourceOriginals;}
     pending.add((error as Error).message); verified = false; facts.sdkSourceCompletenessVerified = false;
     if ('sdkObservedToolAfterShardBytesVerified' in facts) { observedToolGuard=undefined; facts.sdkObservedToolAfterShardBytesVerified=false; facts.sdkObservedToolsSignedDebianBinaryBytesVerified=false; delete facts.sdkObservedToolAfterShardFiles; }

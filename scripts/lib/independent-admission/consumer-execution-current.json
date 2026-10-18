@@ -1029,7 +1029,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-source.ts",
-    "sha256": "c166b068eb6e726d0763a4ee86cf1ecba6331501d6cd01a3c1e4a40517f97e99"
+    "sha256": "81b9d05ab6194b4d5f3b54d9d1f1b2b7045f01b0c4f307d972b07459d2eb5a59"
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-symlinks.ts",
@@ -1041,7 +1041,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-toolchain-source.ts",
-    "sha256": "3dad48dcd5fbb6060d9a7653d9585662ffa166d036a4a5c4f65218d3c1ad863e"
+    "sha256": "980955e3fe32542bc13a8a00fc1159e3ed72dce1d692e771c74342641c94fdfb"
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-upstream-source.ts",

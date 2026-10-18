@@ -24,7 +24,8 @@ test('pre-provider 342 closure and new provider closure retain distinct whole co
  expect(old).toBeDefined();expect(old.sourceBindings.some(row=>row.path.endsWith('qlever-sdk-toolchain-source.ts'))).toBe(false);
  const current=CONSUMER_SOURCE_GROUPS[1]!;expect(current.sourceBindings.some(row=>row.path.endsWith('qlever-sdk-toolchain-source.ts'))).toBe(true);
  const mixed=tuple(current);const row=old.secondarySelectors!.find(row=>row.path.endsWith('qlever-sdk-generation.ts'))!;mixed.set(sourceBindingKey(row),row.sha256);
- expect(selectGitHubSourceBindingGroup(CONSUMER_SOURCE_GROUPS,mixed)).toBe(old);
+ expect(()=>selectGitHubSourceBindingGroup(CONSUMER_SOURCE_GROUPS,mixed)).toThrow();
+ for(const original of old.secondarySelectors??[])mixed.set(sourceBindingKey(original),original.sha256);expect(selectGitHubSourceBindingGroup(CONSUMER_SOURCE_GROUPS,mixed)).toBe(old);
 });
 
 test('actual pre-selection resolver has a shared existing-path secondary role set on every primary candidate',()=>{
