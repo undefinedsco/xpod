@@ -22,7 +22,7 @@ test('a compatible same-graph row alone is never a provider proof and ordinary d
  graph.edges.push(actual);const peer=graph.edges.find((row:any)=>row.from==='@google/genai');peer.kind='dependencies';expect(state).toThrow('exact lock identity');
 }));
 test('peer ranges, selected exact lock integrity, full ordinary dependencies and physical versions remain mandatory',()=>fixture(({root,graph,state,put})=>{
- const peer=graph.edges.find((row:any)=>row.from==='@google/genai');peer.range='^2.0.0';expect(state).toThrow('declared range');peer.range='^1.25.2';
+ const peer=graph.edges.find((row:any)=>row.from==='@google/genai');peer.range='^2.0.0';try{state();throw Error('expected range failure');}catch(error){const message=String((error as Error).message);expect(message).toContain('declared range: {');expect(message).toContain('\"owner\":\"@google/genai\"');expect(message).toContain('\"version\":\"1.26.0\"');expect(Buffer.byteLength(message)<=4096).toBe(true);}peer.range='^1.25.2';
  const provider=graph.registry.find((row:any)=>row.identity==='@modelcontextprotocol/sdk@1.26.0');const previous=provider.integrity;delete provider.integrity;expect(state).toThrow('immutable lock identity');provider.integrity=previous;
  fs.rmSync(path.join(root,'node_modules/sdk-helper'),{recursive:true});expect(state).toThrow('required installed edge absent');put('node_modules/sdk-helper/package.json',{name:'sdk-helper',version:'1.0.0'});
  put('node_modules/@modelcontextprotocol/sdk/package.json',{name:'@modelcontextprotocol/sdk',version:'1.27.0'});expect(state).toThrow('exact lock identity');
@@ -39,4 +39,19 @@ test('optional absence stays explicit without selecting another provider',()=>fi
  const provider=graph.edges.find((row:any)=>row.from==='@zed-industries/claude-code-acp');graph.edges=graph.edges.filter((row:any)=>row!==provider);
  const peer=graph.edges.find((row:any)=>row.from==='@google/genai');peer.name='__xpod_absent_optional_peer_fixture__';
  expect(state().optionalAbsences).toEqual([{owner:'@google/genai',name:'__xpod_absent_optional_peer_fixture__'}]);
+}));
+test('range rejection context redacts unsafe physical versions and never includes unbounded range bytes',()=>fixture(({graph,state,put})=>{
+ graph.edges=graph.edges.filter((row:any)=>row.from!=='@zed-industries/claude-code-acp');
+ put('node_modules/@modelcontextprotocol/sdk/package.json',{name:'@modelcontextprotocol/sdk',version:'PRIVATE_MARKER_TOKEN_ONLY'});
+ const peer=graph.edges.find((row:any)=>row.from==='@google/genai');peer.range='PRIVATE_RANGE_MARKER_'+ 'x'.repeat(5000);
+ try{state();throw Error('expected range failure');}catch(error){const message=String((error as Error).message);expect(message).toContain('declared range: {');expect(message).toContain('[invalid-or-out-of-bound]');expect(message).not.toContain('PRIVATE_MARKER');expect(message).not.toContain('PRIVATE_RANGE');expect(Buffer.byteLength(message)<=4096).toBe(true);}
+}));
+
+test('an exact locked peer retains its installed identity contract without claiming peer-range verification',()=>fixture(({graph,state})=>{
+ const peer=graph.edges.find((row:any)=>row.from==='@google/genai');peer.range='^2.0.0';
+ const providerKey='@zed-industries/claude-code-acp/@modelcontextprotocol/sdk';peer.lockKey=providerKey;
+ graph.pending=['installed-peer-range-and-resolution-unverified:@google/genai -> @modelcontextprotocol/sdk'];
+ const scope=state();expect(scope.peerProviders).toEqual([]);expect(scope.installed.some(row=>row.name==='sdk-helper')).toBe(true);
+ expect(graph.pending).toEqual(['installed-peer-range-and-resolution-unverified:@google/genai -> @modelcontextprotocol/sdk']);
+ peer.lockKey='@modelcontextprotocol/sdk';expect(state).toThrow('does not satisfy immutable declared range');
 }));

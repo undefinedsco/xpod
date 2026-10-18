@@ -8,6 +8,7 @@ import {exactVersion} from '../independent-release-plan';
 import {satisfies} from 'semver';
 import {createHash} from 'node:crypto';
 const identityFailurePrefix='API scoped dependencies: actual installed package differs from exact lock identity: ';
+const peerRangeFailurePrefix='API scoped dependencies: actual peer provider does not satisfy immutable declared range: ';
 export interface ApiPeerProviderObservation {
  readonly owner:string;readonly name:string;readonly range:string;readonly declaredLockKey:string;readonly providerLockKeys:readonly string[];readonly providerIntegrity:string;readonly physicalDirectory:string;
 }
@@ -25,7 +26,7 @@ export function inspectApiInstalledGraph(input:{root:string;graph:any;readWorksp
  need(graph?.kind==='api-producer-declaration-graph-draft'&&Array.isArray(graph.workspaces)&&Array.isArray(graph.registry)&&Array.isArray(graph.edges)&&graph.workspaces.length<=limits.sourceMaterialFiles&&graph.registry.length<=limits.sourceMembers&&graph.edges.length<=limits.sourceMembers&&graph.workspaceMode==='api-ui-root-minimal-v2'&&graph.installSelection?.requiresPostInstallGraphComparison===true&&equal(graph.installSelection.install,graph.isolatedInstall?.argv),'postinstall full graph with exact preselection required');
  const inside=(value:string)=>{const relative=path.relative(root,value);need(relative===''||!path.isAbsolute(relative)&&relative!=='..'&&!relative.startsWith('..'+path.sep),'ambient dependency escape forbidden');return value;};
  const manifest=(directory:string)=>readBoundedJsonOriginal(path.join(directory,'package.json'));
- const identityFailureContext=(owner:string,edge:any,expected:string,value:any,ownerDirectory:string,actualDirectory:string,namedDirectory:string)=>{
+ const identityFailureContext=(owner:string,edge:any,expected:string,value:any,ownerDirectory:string,actualDirectory:string,namedDirectory:string,prefix=identityFailurePrefix)=>{
   // Failure diagnostics retain only canonical identities and repository-relative
   // physical lookup paths. No source bodies, env values or absolute paths.
   const label=(value:unknown,maximum:number,pattern:RegExp)=>typeof value==='string'&&value.length<=maximum&&pattern.test(value)&&value.split('/').every(part=>part!=='.'&&part!=='..')?value:'[invalid-or-out-of-bound]';
@@ -34,7 +35,7 @@ export function inspectApiInstalledGraph(input:{root:string;graph:any;readWorksp
   const relative=(value:string)=>{const result=path.relative(root,value);return !path.isAbsolute(result)&&!result.startsWith('..'+path.sep)&&result!=='..'?label(result,2048,/^[A-Za-z0-9@._+ /-]+$/u):'[outside-owned-root]';};
   const at=expected.lastIndexOf('@');
   const context={owner:label(owner,1024,/^[A-Za-z0-9@._+/-]+$/u),edgeName:name(edge.name),edgeKind:label(edge.kind,32,/^[A-Za-z]+$/u),lockKey:label(edge.lockKey,1024,/^[A-Za-z0-9@._+/-]+$/u),expected:{name:name(expected.slice(0,at)),version:version(expected.slice(at+1))},actual:{name:name(value.name),version:version(value.version)},ownerDirectory:relative(ownerDirectory),physicalDirectory:relative(actualDirectory),lookupDirectory:relative(namedDirectory)};
-  const encoded=JSON.stringify(context);return Buffer.byteLength(identityFailurePrefix)+Buffer.byteLength(encoded)<=4096?encoded:'[identity-context-exceeds-4096-bytes]';
+  const encoded=JSON.stringify(context);return Buffer.byteLength(prefix)+Buffer.byteLength(encoded)<=4096?encoded:'[identity-context-exceeds-4096-bytes]';
  };
  const workspaces=new Map<string,any>(graph.workspaces.map((row:any)=>[row.name,row]));
  const registry=new Map<string,any>(graph.registry.map((row:any)=>[row.lockKey,row]));
@@ -78,9 +79,12 @@ export function inspectApiInstalledGraph(input:{root:string;graph:any;readWorksp
    need(actual===inside(realpathSync(path.join(root,workspace.path)))&&equal(value,input.readWorkspaceManifest(workspace.path)),'actual workspace manifest/path differs');record(actual,value);visit(edge.name,actual);return true;
   }
   need(node&&typeof node.identity==='string'&&typeof node.integrity==='string'&&/^sha512-[A-Za-z0-9+/]{86}==$/u.test(node.integrity),'required registry edge lacks immutable lock identity');
-  if(peer)need(typeof edge.range==='string'&&typeof value.version==='string'&&satisfies(value.version,edge.range),'actual peer provider does not satisfy immutable declared range');
   const at=node.identity.lastIndexOf('@'),exact=at>0&&value.name===node.identity.slice(0,at)&&value.version===node.identity.slice(at+1);
   if(exact){bindRegistry(actual,value,node,edge.lockKey);visit(edge.lockKey,actual);return true;}
+  // Exact locked peers retain the existing installed-identity contract. The
+  // immutable graph separately retains unresolved peer-range obligations. Only
+  // selecting a different actual provider adds this range admission condition.
+  if(peer&&!(typeof edge.range==='string'&&typeof value.version==='string'&&satisfies(value.version,edge.range)))throw Error(peerRangeFailurePrefix+identityFailureContext(owner,edge,node.identity,value,directory,actual,binding!.named,peerRangeFailurePrefix));
   if(peer&&!finalPeer)return false;
   const proven=peer?boundRegistry.get(actual):undefined;
   if(proven?.size){
