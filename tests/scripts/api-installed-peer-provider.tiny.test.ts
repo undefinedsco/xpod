@@ -1,6 +1,8 @@
 import {test,expect} from 'bun:test';
 import fs from 'node:fs';
 import path from 'node:path';
+import {createRequire} from 'node:module';
+import limits from '../../scripts/lib/module-artifact-limits.json';
 import {inspectApiInstalledGraph} from '../../scripts/lib/api-scoped-dependency-state';
 const sri='sha512-'+Buffer.alloc(64).toString('base64'),otherSri='sha512-'+Buffer.alloc(64,1).toString('base64');
 function fixture(run:(value:{root:string;graph:any;state:()=>ReturnType<typeof inspectApiInstalledGraph>;put:(file:string,value:any)=>void})=>void){
@@ -31,9 +33,9 @@ test('conflicting SRI contexts cannot claim the same physical provider',()=>fixt
  graph.registry.push({lockKey:'another-sdk',identity:'@modelcontextprotocol/sdk@1.26.0',integrity:otherSri});graph.edges.push({from:'@undefineds.co/xpod-api',name:'@modelcontextprotocol/sdk',range:'1.26.0',kind:'dependencies',optional:false,lockKey:'another-sdk'});expect(state).toThrow('incompatible immutable lock integrity');
 }));
 
-test('a proven nested provider cannot authorize a different physical peer directory',()=>fixture(({root,state,put})=>{
+test('a proven nested provider cannot authorize a different physical peer payload',()=>fixture(({root,state,put})=>{
  put('node_modules/@zed-industries/claude-code-acp/node_modules/@modelcontextprotocol/sdk/package.json',{name:'@modelcontextprotocol/sdk',version:'1.26.0'});
- expect(state).toThrow('exact lock identity');
+ put('node_modules/@modelcontextprotocol/sdk/extra-payload.json',{extra:true});expect(state).toThrow('package payload differs');
 }));
 test('optional absence stays explicit without selecting another provider',()=>fixture(({root,graph,state})=>{
  const provider=graph.edges.find((row:any)=>row.from==='@zed-industries/claude-code-acp');graph.edges=graph.edges.filter((row:any)=>row!==provider);
@@ -54,4 +56,42 @@ test('an exact locked peer retains its installed identity contract without claim
  const scope=state();expect(scope.peerProviders).toEqual([]);expect(scope.installed.some(row=>row.name==='sdk-helper')).toBe(true);
  expect(graph.pending).toEqual(['installed-peer-range-and-resolution-unverified:@google/genai -> @modelcontextprotocol/sdk']);
  peer.lockKey='@modelcontextprotocol/sdk';expect(state).toThrow('does not satisfy immutable declared range');
+}));
+function physicalCopy(run:(value:{root:string;graph:any;state:()=>ReturnType<typeof inspectApiInstalledGraph>;put:(file:string,value:any)=>void;anchor:string;copy:string})=>void){fixture(value=>{
+ const anchor='node_modules/@zed-industries/claude-code-acp/node_modules/@modelcontextprotocol/sdk',copy='node_modules/@modelcontextprotocol/sdk';
+ value.put(anchor+'/package.json',{name:'@modelcontextprotocol/sdk',version:'1.26.0'});
+ for(const prefix of [anchor,copy]){value.put(prefix+'/.hidden',{bytes:'same'});value.put(prefix+'/lib/node_modules/retained-payload.json',{nested:true});}
+ run({...value,anchor,copy});
+});}
+test('a complete equal physical copy uses proven lock contexts but resolves its own dependencies',()=>physicalCopy(({graph,state,put,anchor,copy})=>{
+ const scope=state(),observation=scope.peerProviders[0]!;expect(observation.payloadCopy?.providerDirectories).toEqual([anchor]);expect(observation.payloadCopy?.files).toBe(3);expect(observation.physicalDirectory).toBe(copy);
+ put(copy+'/node_modules/sdk-helper/package.json',{name:'sdk-helper',version:'2.0.0'});expect(state).toThrow('exact lock identity');
+}));
+test('payload hidden members, nested directories, file bytes and executable bits are all required',()=>physicalCopy(({root,state,put,copy})=>{
+ put(copy+'/.hidden',{bytes:'different'});expect(state).toThrow('payload differs');put(copy+'/.hidden',{bytes:'same'});
+ fs.chmodSync(path.join(root,copy,'.hidden'),0o755);expect(state).toThrow('payload differs');fs.chmodSync(path.join(root,copy,'.hidden'),0o644);
+ fs.rmSync(path.join(root,copy,'lib/node_modules/retained-payload.json'));expect(state).toThrow('payload differs');
+}));
+test('root node_modules is separate but symlinks anywhere in package payload are rejected',()=>physicalCopy(({root,state,copy})=>{
+ fs.symlinkSync('../package.json',path.join(root,copy,'lib/alias'));expect(state).toThrow('symlink forbidden');
+}));
+test('stable hard-linked regular package files are compared by actual bytes without claiming lifetime immutability',()=>physicalCopy(({root,state,anchor,copy})=>{
+ fs.unlinkSync(path.join(root,copy,'.hidden'));fs.linkSync(path.join(root,anchor,'.hidden'),path.join(root,copy,'.hidden'));
+ expect(fs.statSync(path.join(root,copy,'.hidden')).nlink).toBe(2);expect(state().peerProviders[0]!.payloadCopy?.files).toBe(3);
+}));
+test('copy contexts enqueue new peers and do not silently discard a nested unsatisfied edge',()=>physicalCopy(({graph,state,put,copy})=>{
+ graph.registry.push({lockKey:'peer-child',identity:'peer-child@1.0.0',integrity:sri});graph.edges.push({from:'@zed-industries/claude-code-acp/@modelcontextprotocol/sdk',name:'peer-child',range:'1.0.0',kind:'peerDependencies',optional:false,lockKey:'peer-child'});
+ put('node_modules/peer-child/package.json',{name:'peer-child',version:'1.0.0'});expect(state().installed.some(row=>row.name==='peer-child')).toBe(true);
+ put(copy+'/node_modules/peer-child/package.json',{name:'peer-child',version:'2.0.0'});expect(state).toThrow('does not satisfy immutable declared range');
+}));
+
+test('a real changed payload after copy comparison is rejected by the retained final guard',()=>physicalCopy(({root,state,put,copy})=>{
+ put(copy+'/node_modules/sdk-helper/package.json',{name:'sdk-helper',version:'1.0.0'});
+ const module=createRequire(import.meta.url)('../../scripts/api-producer-dependencies.cjs'),original=module.readBoundedJsonOriginal;let changed=false;
+ try{module.readBoundedJsonOriginal=(file:string)=>{const result=original(file);if(file===path.join(root,copy,'node_modules/sdk-helper/package.json')&&!changed){changed=true;fs.writeFileSync(path.join(root,copy,'.hidden'),'changed same physical file');}return result;};expect(state).toThrow('retained identity changed');expect(changed).toBe(true);}
+ finally{module.readBoundedJsonOriginal=original;}
+}));
+test('both payload roots share a single byte ledger instead of resetting for each snapshot',()=>physicalCopy(({root,state,copy})=>{
+ const previous=limits.dependencyBytes;const one=fs.statSync(path.join(root,copy,'package.json')).size+fs.statSync(path.join(root,copy,'.hidden')).size+fs.statSync(path.join(root,copy,'lib/node_modules/retained-payload.json')).size;
+ try{limits.dependencyBytes=one+1;expect(state).toThrow('shared byte bound');}finally{limits.dependencyBytes=previous;}
 }));

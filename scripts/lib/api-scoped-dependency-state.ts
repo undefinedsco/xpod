@@ -1,6 +1,6 @@
 /** Actual installed-state checks from the one immutable API graph, never admission. */
 import {createRequire} from 'node:module';
-import {existsSync,realpathSync} from 'node:fs';
+import {existsSync,realpathSync,constants,openSync,closeSync,fstatSync,lstatSync,readSync,opendirSync} from 'node:fs';
 import path from 'node:path';
 import {isDeepStrictEqual as equal} from 'node:util';
 import limits from './module-artifact-limits.json';
@@ -10,7 +10,7 @@ import {createHash} from 'node:crypto';
 const identityFailurePrefix='API scoped dependencies: actual installed package differs from exact lock identity: ';
 const peerRangeFailurePrefix='API scoped dependencies: actual peer provider does not satisfy immutable declared range: ';
 export interface ApiPeerProviderObservation {
- readonly owner:string;readonly name:string;readonly range:string;readonly declaredLockKey:string;readonly providerLockKeys:readonly string[];readonly providerIntegrity:string;readonly physicalDirectory:string;
+ readonly owner:string;readonly name:string;readonly range:string;readonly declaredLockKey:string;readonly providerLockKeys:readonly string[];readonly providerIntegrity:string;readonly physicalDirectory:string;readonly payloadCopy?:Readonly<{providerDirectories:readonly string[];sha256:string;files:number;bytes:number}>;
 }
 export interface ApiDependencyScope {
  workspacePackages:readonly {name:string;directory:string}[];
@@ -56,12 +56,54 @@ export function inspectApiInstalledGraph(input:{root:string;graph:any;readWorksp
  // lock row elsewhere in the graph is never sufficient on its own.
  const peerQueue:{owner:string;directory:string;edge:any}[]=[],peerProviders:ApiPeerProviderObservation[]=[];
  let peerProjectionBytes=256;
- const boundRegistry=new Map<string,Map<string,{integrity:string;manifestProjectionSha256:string}>>();
- const bindRegistry=(directory:string,value:any,node:any,lockKey:string)=>{
+ const boundRegistry=new Map<string,Map<string,{integrity:string;manifestProjectionSha256:string}>>(),anchorRegistry=new Map<string,Map<string,{integrity:string;manifestProjectionSha256:string}>>();
+ // One inspection-wide ledger. Only the package root's direct node_modules is
+ // a separate dependency domain, re-resolved by visit() from the actual copy.
+ const payloadDeadline=performance.now()+limits.timeoutMs;let payloadMembers=0,payloadBytes=0,payloadMetadata=0;
+ type Payload={sha256:string;files:number;bytes:number;guard():void};const payloads=new Map<string,Payload>();
+ const checkPayload=()=>need(performance.now()<payloadDeadline,'package payload shared deadline exhausted');
+ const directoryNames=(file:string,recheck=false)=>{checkPayload();const names:string[]=[];let bytes=0;const directory=opendirSync(file);try{for(let row;(row=directory.readSync())!==null;){checkPayload();bytes+=Buffer.byteLength(row.name)+4;need(names.length<limits.sourceMembers&&bytes<=(recheck?limits.metadataBytes:limits.metadataBytes-payloadMetadata),'package payload directory metadata bound');names.push(row.name);}}finally{directory.closeSync();}return names.sort();};
+ const statIdentity=(value:any)=>[value.dev,value.ino,value.mode,value.size,value.mtimeNs,value.ctimeNs,value.nlink].map(String);
+ const payload=(directory:string):Payload=>{
+  const prior=payloads.get(directory);if(prior){prior.guard();return prior;}checkPayload();
+  need(inside(realpathSync(directory))===directory,'canonical package payload root required');
+  const identities:{file:string;identity:string[]}[]=[],directories:{file:string;names:string[]}[]=[],rows:{path:string;kind:string;executable:number;bytes?:number;sha256?:string}[]=[];
+  let files=0,bytes=0;const rootFd=openSync(directory,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_DIRECTORY),rootIdentity=statIdentity(fstatSync(rootFd,{bigint:true}));
+  const stable=(file:string)=>{checkPayload();const value=lstatSync(file,{bigint:true});need(!value.isSymbolicLink(),'package payload symlink forbidden');return value;};
+  const member=(file:string,relative:string,depth:number):void=>{
+   checkPayload();need(depth<=128,'package payload depth bound');need(++payloadMembers<=limits.sourceMembers,'package payload shared member bound');
+   const before=stable(file),identity=statIdentity(before);identities.push({file,identity});payloadMetadata+=Buffer.byteLength(file)+Buffer.byteLength(relative)+512;need(payloadMetadata<=limits.metadataBytes,'package payload shared metadata bound');
+   if(before.isDirectory()){
+    const names=directoryNames(file);payloadMetadata+=names.reduce((sum,name)=>sum+Buffer.byteLength(name)+64,0);need(payloadMetadata<=limits.metadataBytes,'package payload shared metadata bound');need(names.length<=limits.sourceMembers-payloadMembers,'package payload directory member bound');directories.push({file,names});rows.push({path:relative,kind:'directory',executable:Number(before.mode&0o111n)});
+    for(const name of names){need(name.length>0&&name!=='.'&&name!=='..'&&!/[\\\0\r\n]/u.test(name),'package payload member name');
+     if(relative===''&&name==='node_modules'){need(stable(path.join(file,name)).isDirectory(),'package dependency root must be a directory');continue;}
+     member(path.join(file,name),relative?relative+'/'+name:name,depth+1);
+    }
+   }else{
+    // A package manager may hard-link its cache. Include nlink in all stability
+    // checks; this proves current bytes, never lifetime/global immutability.
+    need(before.isFile()&&before.nlink>=1n&&before.size<=BigInt(limits.shardBytes),'package payload regular file bound');payloadBytes+=Number(before.size);need(payloadBytes<=limits.dependencyBytes,'package payload shared byte bound');
+    const fd=openSync(file,constants.O_RDONLY|constants.O_NOFOLLOW),hash=createHash('sha256');let count=0;
+    try{need(equal(statIdentity(fstatSync(fd,{bigint:true})),identity),'package payload opened identity differs');const block=Buffer.alloc(limits.rangeBytes);
+     while(count<Number(before.size)){checkPayload();const size=readSync(fd,block,0,Math.min(block.length,Number(before.size)-count),null);need(size>0,'package payload truncated');hash.update(block.subarray(0,size));count+=size;}
+     need(readSync(fd,block,0,1,null)===0&&equal(statIdentity(fstatSync(fd,{bigint:true})),identity),'package payload bytes changed');
+    }finally{closeSync(fd);}
+    need(equal(statIdentity(stable(file)),identity),'package payload path changed');files++;bytes+=count;rows.push({path:relative,kind:'file',executable:Number(before.mode&0o111n),bytes:count,sha256:hash.digest('hex')});
+   }
+   need(equal(statIdentity(stable(file)),identity),'package payload member changed');
+  };
+  const guard=()=>{checkPayload();need(equal(statIdentity(lstatSync(directory,{bigint:true})),rootIdentity),'package payload root changed');
+   for(const row of identities)need(equal(statIdentity(stable(row.file)),row.identity),'package payload retained identity changed');for(const row of directories)need(equal(directoryNames(row.file,true),row.names),'package payload closed member set changed');};
+  try{member(directory,'',0);guard();need(equal(statIdentity(fstatSync(rootFd,{bigint:true})),rootIdentity),'package payload held root changed');}finally{closeSync(rootFd);}
+  const result=Object.freeze({sha256:createHash('sha256').update(JSON.stringify(rows)).digest('hex'),files,bytes,guard});payloads.set(directory,result);return result;
+ };
+
+ const bindRegistry=(directory:string,value:any,node:any,lockKey:string,canAnchor=true)=>{
   const projection=createHash('sha256').update(JSON.stringify(value)).digest('hex');
   let bindings=boundRegistry.get(directory);if(!bindings){bindings=new Map();boundRegistry.set(directory,bindings);}
   for(const before of bindings.values())need(before.integrity===node.integrity&&before.manifestProjectionSha256===projection,'one physical package has incompatible immutable lock integrity or changed manifest');
-  bindings.set(lockKey,{integrity:node.integrity,manifestProjectionSha256:projection});
+  const binding={integrity:node.integrity,manifestProjectionSha256:projection};bindings.set(lockKey,binding);
+  if(canAnchor){let anchors=anchorRegistry.get(directory);if(!anchors){anchors=new Map();anchorRegistry.set(directory,anchors);}anchors.set(lockKey,binding);}
   need(bindings.size<=limits.sourceMembers,'physical registry context bound');record(directory,value,lockKey);
  };
  const visit=(owner:string,directory:string):void=>{
@@ -71,7 +113,7 @@ export function inspectApiInstalledGraph(input:{root:string;graph:any;readWorksp
    else processEdge(owner,directory,edge,false);
   }
  };
- const processEdge=(owner:string,directory:string,edge:any,peer:boolean,finalPeer=false):boolean=>{
+ const processEdge=(owner:string,directory:string,edge:any,peer:boolean,finalPeer=false,requireProof=false):boolean=>{
   const binding=locate(directory,edge.name),actual=binding?.directory;
   if(!actual){if(edge.optional===true){optionalAbsences.push({owner,name:edge.name});return true;}throw Error('API scoped dependencies: required installed edge absent: '+owner+' -> '+edge.name);}
   const value=manifest(actual),workspace=workspaces.get(edge.name),node=edge.lockKey?registry.get(edge.lockKey):undefined;
@@ -86,7 +128,21 @@ export function inspectApiInstalledGraph(input:{root:string;graph:any;readWorksp
   // selecting a different actual provider adds this range admission condition.
   if(peer&&!(typeof edge.range==='string'&&typeof value.version==='string'&&satisfies(value.version,edge.range)))throw Error(peerRangeFailurePrefix+identityFailureContext(owner,edge,node.identity,value,directory,actual,binding!.named,peerRangeFailurePrefix));
   if(peer&&!finalPeer)return false;
-  const proven=peer?boundRegistry.get(actual):undefined;
+  let proven=peer?boundRegistry.get(actual):undefined;let payloadCopy:ApiPeerProviderObservation['payloadCopy'];
+  if(peer&&!proven){
+   const anchors:[string,Map<string,{integrity:string;manifestProjectionSha256:string}>][]=[];let anchorBytes=0;
+   for(const[directory,bindings]of anchorRegistry){checkPayload();if(directory===actual||![...bindings].some(([key])=>registry.get(key)?.identity===value.name+'@'+value.version))continue;anchorBytes+=Buffer.byteLength(directory)+128;for(const key of bindings.keys())anchorBytes+=Buffer.byteLength(key)+128;need(anchorBytes<=limits.metadataBytes,'copy provider metadata bound');anchors.push([directory,bindings]);}
+   if(anchors.length){
+    const integrities=new Set(anchors.flatMap(([,bindings])=>[...bindings].map(([key,row])=>{need(registry.get(key)?.identity===value.name+'@'+value.version,'physical provider context identity differs');return row.integrity;})));need(integrities.size===1,'copy provider has conflicting immutable integrity');
+    const actualPayload=payload(actual),providerDirectories:string[]=[];const matched=new Map<string,{integrity:string;manifestProjectionSha256:string}>();
+    for(const[directory,bindings]of anchors){const originalPayload=payload(directory);need(actualPayload.sha256===originalPayload.sha256&&actualPayload.files===originalPayload.files&&actualPayload.bytes===originalPayload.bytes,'actual peer package payload differs from proven provider');providerDirectories.push(path.relative(root,directory));for(const[key,row]of bindings)matched.set(key,row);}
+    actualPayload.guard();for(const[directory]of anchors)payload(directory).guard();
+    // Equal package bytes do not transfer dependency locations. Each context's
+    // ordinary closure and peer queue must be resolved from the actual copy.
+    for(const key of matched.keys()){bindRegistry(actual,value,registry.get(key),key,false);visit(key,actual);}
+    proven=boundRegistry.get(actual);payloadCopy=Object.freeze({providerDirectories:Object.freeze(providerDirectories.sort()),sha256:actualPayload.sha256,files:actualPayload.files,bytes:actualPayload.bytes});
+   }
+  }
   if(proven?.size){
    need(at>0&&value.name===node.identity.slice(0,at),'actual peer provider package name differs from immutable declared identity');
    const projection=createHash('sha256').update(JSON.stringify(value)).digest('hex'),providerKeys:string[]=[];let integrity:string|undefined,keyBytes=0;
@@ -95,12 +151,13 @@ export function inspectApiInstalledGraph(input:{root:string;graph:any;readWorksp
     need(integrity===undefined||integrity===before.integrity,'actual peer provider has ambiguous immutable integrity');integrity=before.integrity;
     keyBytes+=Buffer.byteLength(key)+4;need(keyBytes<=limits.metadataBytes,'actual peer context metadata bound');providerKeys.push(key);
    }
-   const observation=Object.freeze({owner,name:edge.name,range:edge.range,declaredLockKey:edge.lockKey,providerLockKeys:Object.freeze(providerKeys.sort()),providerIntegrity:integrity!,physicalDirectory:path.relative(root,actual)});
+   const observation=Object.freeze({owner,name:edge.name,range:edge.range,declaredLockKey:edge.lockKey,providerLockKeys:Object.freeze(providerKeys.sort()),providerIntegrity:integrity!,physicalDirectory:path.relative(root,actual),...(payloadCopy?{payloadCopy}:{})});
    peerProjectionBytes+=Buffer.byteLength(JSON.stringify(observation))+1;need(peerProjectionBytes<=limits.metadataBytes,'actual peer observation metadata bound');peerProviders.push(observation);
    // Every provider's own ordinary closure was already traversed under its
    // selected lock key. Its deferred peers remain in this same queue.
    return true;
   }
+  if(peer&&!requireProof)return false;
   throw Error(identityFailurePrefix+identityFailureContext(owner,edge,node.identity,value,directory,actual,binding!.named));
  };
  for(const row of workspaces.values()){
@@ -108,8 +165,14 @@ export function inspectApiInstalledGraph(input:{root:string;graph:any;readWorksp
  }
  const deferredPeers:typeof peerQueue=[];
  for(let index=0;index<peerQueue.length;index++){const row=peerQueue[index]!;if(!processEdge(row.owner,row.directory,row.edge,true))deferredPeers.push(row);}
- const closedPeerCount=peerQueue.length;
- for(const row of deferredPeers){processEdge(row.owner,row.directory,row.edge,true,true);need(peerQueue.length===closedPeerCount,'deferred peer changed selected closure');}
+ let pendingPeers=deferredPeers,scannedPeers=peerQueue.length;
+ while(pendingPeers.length){let progress=false;const unresolved:typeof peerQueue=[];
+  for(const row of pendingPeers){checkPayload();if(processEdge(row.owner,row.directory,row.edge,true,true))progress=true;else unresolved.push(row);}
+  while(scannedPeers<peerQueue.length){const row=peerQueue[scannedPeers++]!;if(!processEdge(row.owner,row.directory,row.edge,true))unresolved.push(row);else progress=true;}
+  if(!progress){const row=unresolved[0]!;processEdge(row.owner,row.directory,row.edge,true,true,true);throw Error('API scoped dependencies: unresolved physical peer closure');}
+  pendingPeers=unresolved;
+ }
+ for(const original of payloads.values())original.guard();
  const byName=(name:string)=>{
   const result=new Set([...installed.values()].filter(row=>row.name===name).map(row=>row.directory));const direct=path.join(root,'node_modules',name);
   if(existsSync(path.join(direct,'package.json'))){const directory=inside(realpathSync(direct));need(manifest(directory).name===name,'direct package name differs');result.add(directory);}return [...result];
