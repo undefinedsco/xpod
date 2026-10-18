@@ -481,7 +481,7 @@
   },
   {
     "path": "scripts/api-module-producer.py",
-    "sha256": "8cfb86a4fa5de62e2938e51e459ae9c5c3bbe95cf0aaad88d59de9a9b900e920"
+    "sha256": "68ecfb5c66dd0f1882ef707e86a4c74df7d0406bb9bb68eb011bb20872ef23bf"
   },
   {
     "path": "scripts/bun-test-discovery.cjs",
@@ -689,7 +689,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/github-origin.ts",
-    "sha256": "43fcf64a3191f33a4e314fd934696937a266f6d423ef9acdb36383611bd67d0d"
+    "sha256": "f58e72eaef54e05bbd18cc7171ba6d6a58b9691cf9eda2af2808611bd20da02c"
   },
   {
     "path": "scripts/lib/independent-admission/github-source-binding-groups.ts",
@@ -805,7 +805,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/module-source-phases.ts",
-    "sha256": "fb7a477320fd73af568f250370333cab0160b8cca5bae16fb14695dd3f319438"
+    "sha256": "842409559034a709b6340c4358fdb9bb0a82204fa5fb5d096e6627c0496c61f0"
   },
   {
     "path": "scripts/lib/independent-admission/native-admission-requirements.ts",
@@ -1021,7 +1021,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/source-rules.ts",
-    "sha256": "9cc1a724d22ad8e39bc7345605ea2b78a2a5a1f41cd6ca3597fd603d6dd374b1"
+    "sha256": "d47945d5fe18f3ef9277f080a37b42723f6e74a8e457c778542ba405f8c1ca05"
   },
   {
     "path": "scripts/lib/independent-admission/verified-admission-cache.ts",
@@ -1029,7 +1029,7 @@
   },
   {
     "path": "scripts/lib/inngest-controlled-build.py",
-    "sha256": "6f82f617c67e70d75b2023993df3846b2caccef34c4a937cd58299cb7bcec99e"
+    "sha256": "44995b48418f3b0af1bdd3608c8b3c1307ad3cbc4c927d03a92fbf37b5a60404"
   },
   {
     "path": "scripts/lib/inngest-controlled-materials.ts",
@@ -1077,7 +1077,7 @@
   },
   {
     "path": "scripts/lib/module-source-materials.py",
-    "sha256": "07dbfc5531b7b3b812fe6f532141c964255b90f46ed30a05c86f6e42ef2e0ee5"
+    "sha256": "1871c59b9f0bfb4c0ce824123ce9cdc5f472aba11245b5e0eb45c62c4fca42e2"
   },
   {
     "path": "scripts/lib/owned-temp-root.cjs",

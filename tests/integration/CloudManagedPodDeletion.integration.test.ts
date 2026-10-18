@@ -122,20 +122,26 @@ it.runIf(process.env.XPOD_RUN_INTEGRATION_TESTS === 'true')('deletes Cloud and m
         CSS_ALLOWED_HOSTS: 'localhost,127.0.0.1', XPOD_EDGE_NODES_ENABLED: 'false',
       },
     });
-    const localPort = await getFreePortForWildcard(38601);
     const localStatePath = path.join(root, 'local-state.json');
     await local.start('local', {
-      transport: 'port', baseUrl: `http://localhost:${localPort}/`, gatewayPort: localPort,
+      // Derive the explicit managed callback URL from each locked listener plan.
+      transport: 'port',
       open: false, apiOpen: false,
       runtimeRoot: path.join(root, 'local'), logLevel: 'warn',
       env: {
         XPOD_NODE_ID: `pod-delete-local-${process.pid}`, SOLID_OIDC_ISSUER: cloud.baseUrl,
-        XPOD_PUBLIC_URL: `http://localhost:${localPort}/`, XPOD_LOCAL_SETUP_PATH: localStatePath,
+        XPOD_LOCAL_SETUP_PATH: localStatePath,
         ...(process.env.XPOD_QLEVER_LOCAL_RUNTIME_COMMAND ? { XPOD_QLEVER_LOCAL_RUNTIME_COMMAND: process.env.XPOD_QLEVER_LOCAL_RUNTIME_COMMAND } : {}),
       },
+    }, (plan) => {
+      if (!plan.baseUrl) throw new Error('Managed Local requires the planned public gateway URL');
+      // A failed listener attempt may already have persisted registration credentials.
+      // Keep those credentials, but refresh the same node against this plan's URL.
+      return { XPOD_PUBLIC_URL: plan.baseUrl, XPOD_PROVISION_CODE: '' };
     });
-    const status = await local.runtimeFetch('provision/status').then((r) => r.json()) as { provisionCode: string; managed: boolean };
+    const status = await local.runtimeFetch('provision/status').then((r) => r.json()) as { provisionCode: string; managed: boolean; publicUrl: string };
     expect(status.managed).toBe(true);
+    expect(status.publicUrl).toBe(local.baseUrl);
     const localStates = JSON.parse(await readFile(localStatePath, 'utf8')) as Record<string, { serviceToken: string }>;
     const serviceToken = Object.values(localStates).find((state) => state.serviceToken)?.serviceToken;
     expect(serviceToken).toBeTruthy();

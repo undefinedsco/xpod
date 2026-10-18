@@ -195,7 +195,7 @@ class MaterialBudget:
     def __init__(self,work):self.work,self.charged=work,total_check(work)
     def reserve(self,count):
         need(isinstance(count,int) and count>=0,'positive material reservation')
-        need(self.charged+count<=min(_retained_byte_ceiling,LIMITS['sourceMaterialBytes']),'shared retained material total')
+        need(self.charged+count<=min(_retained_byte_ceiling,LIMITS['sourceMaterialBytes']),'shared retained material total '+json.dumps(dict(chargedBytes=self.charged,requestedBytes=count,retainedByteCeiling=min(_retained_byte_ceiling,LIMITS['sourceMaterialBytes'])),separators=(',',':')))
         need(shutil.disk_usage(self.work).free-count>=LIMITS['freeFloorBytes'],'disk floor before write')
         self.charged+=count
 
@@ -213,7 +213,13 @@ def public_source_classification(work,domain,paths=None):
 def capture_domain(work,name,domain,rows,base,budget):
     spec=importlib.util.spec_from_file_location('controlled_source_capture',ROOT/'scripts/lib/module-source-materials.py');capture=importlib.util.module_from_spec(spec);spec.loader.exec_module(capture)
     root=work/'materials'/name;root.mkdir(mode=0o700,parents=True)
-    result=capture.capture_group(root,work,domain,[(p,base/p) for p in sorted(rows)],base,reserve_bytes=budget.reserve,public_source_inputs=public_source_classification(work,domain,rows));total_check(work);return result
+    try:
+        result=capture.capture_group(root,work,domain,[(p,base/p) for p in sorted(rows)],base,reserve_bytes=budget.reserve,public_source_inputs=public_source_classification(work,domain,rows))
+    except ValueError as error:
+        if 'shared retained material total' in str(error):
+            raise ValueError(str(error)+' domain='+domain+' phase='+name+' memberCount='+str(len(rows))+' declaredRegularBytes='+str(sum(row.get('bytes',0) for row in rows.values()))) from None
+        raise
+    total_check(work);return result
 
 def loaded_rows(work,group):
     rows={}

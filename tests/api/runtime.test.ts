@@ -7,6 +7,10 @@ const mocked = vi.hoisted(() => ({
   createApiContainerMock: vi.fn(),
   registerRoutesMock: vi.fn(),
   getLoggerForMock: vi.fn(() => ({
+    log: vi.fn(),
+    verbose: vi.fn(),
+    debug: vi.fn(),
+    silly: vi.fn(),
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
@@ -31,7 +35,7 @@ vi.mock('../../src/logging/ConfigurableLoggerFactory', () => ({
   ConfigurableLoggerFactory: vi.fn(),
 }));
 
-import { resolveTunnelIngressPort, startApiService } from '../../src/api/runtime';
+import { autoProvisionFirstRunLocal, resolveTunnelIngressPort, startApiService } from '../../src/api/runtime';
 
 describe('startApiService background services', () => {
   const savedEnv: Record<string, string | undefined> = {};
@@ -46,6 +50,7 @@ describe('startApiService background services', () => {
     'XPOD_NODE_TOKEN',
     'XPOD_SERVICE_TOKEN',
     'XPOD_PROVISION_CODE',
+    'XPOD_PUBLIC_URL',
     'XPOD_PROVISION_URL',
     'XPOD_SP_DOMAIN',
     'XPOD_LOCAL_AUTO_PROVISION_TIMEOUT_MS',
@@ -360,6 +365,35 @@ describe('startApiService background services', () => {
     await handle.stop();
   });
 
+
+  it('refreshes the same authenticated node at the retry plan public URL when its code is cleared', async() => {
+    const publicUrl = 'http://localhost:38611/';
+    process.env.XPOD_PUBLIC_URL = publicUrl;
+    const freshCode = makeManagedProvisionCode();
+    const fetchMock = vi.fn(async() => new Response(JSON.stringify({
+      nodeId: 'local-device-id', nodeToken: 'node-token-existing', serviceToken: 'svc-existing',
+      provisionCode: freshCode, publicUrl,
+    }), { status: 200 }));
+    globalThis.fetch = fetchMock;
+    const refreshed = await autoProvisionFirstRunLocal({
+      ...config, nodeId: 'local-device-id', nodeToken: 'node-token-existing',
+      serviceToken: 'svc-existing', provisionCode: '',
+      oidcIssuer: 'https://id.undefineds.co/', cloudApiEndpoint: 'https://api.undefineds.co',
+      publicUrl: 'http://localhost:38601/',
+    }, mocked.getLoggerForMock());
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledWith('https://api.undefineds.co/provision/nodes', expect.objectContaining({
+      body: expect.any(String),
+    }));
+    const init = (fetchMock.mock.calls[0] as unknown as [string, RequestInit])[1];
+    expect(JSON.parse(String(init.body))).toMatchObject({
+      nodeId: 'local-device-id', nodeToken: 'node-token-existing', serviceToken: 'svc-existing',
+      domainMode: 'self-managed', publicUrl,
+    });
+    expect(refreshed.publicUrl).toBe(publicUrl);
+    expect(refreshed.provisionCode).toBe(freshCode);
+    expect(JSON.parse(fs.readFileSync(setupPath, 'utf8')).local).toMatchObject({ publicUrl });
+  });
 
   it('continues startup when first-run Local Cloud registration times out', async() => {
     process.env.XPOD_LOCAL_AUTO_PROVISION_TIMEOUT_MS = '1';

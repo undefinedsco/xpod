@@ -353,12 +353,13 @@ def revalidate_inputs(repo, output, inputs, reserve_bytes=None):
     return result
 
 
-def capture_outputs(repo, output, inputs, phases, archive, stage_root=None, output_rows=None, reserve_bytes=None):
+def capture_outputs(repo, output, inputs, phases, archive, stage_root=None, output_rows=None, reserve_bytes=None, output_member_limit=None):
     repo, output = Path(repo), Path(output)
     global _deadline
     _deadline = time.monotonic() + LIMITS['captureTimeoutMs'] / 1000
     value = dict(inputs)
-    value['revalidation'] = revalidate_inputs(repo, output, inputs, reserve_bytes=reserve_bytes)
+    if output_member_limit is None:
+        value['revalidation'] = revalidate_inputs(repo, output, inputs, reserve_bytes=reserve_bytes)
     value['phases'] = phases
     value['archive'] = archive
     if output_rows is None:
@@ -379,6 +380,10 @@ def capture_outputs(repo, output, inputs, phases, archive, stage_root=None, outp
                     rows.append(row)
     else:
         rows = output_rows
+    if output_member_limit is not None and (type(output_member_limit) is not int or output_member_limit < 0 or len(rows) > output_member_limit):
+        raise ValueError('Explicit product output member bound')
+    if output_member_limit is not None:
+        value['revalidation'] = revalidate_inputs(repo, output, inputs, reserve_bytes=reserve_bytes)
     output_files = []
     rows.sort(key=lambda row: row['path'])
     for offset in range(0, len(rows), 5000):

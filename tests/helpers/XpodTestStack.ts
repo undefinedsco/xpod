@@ -7,6 +7,11 @@ import { resolveTestRuntimeTransport } from './runtimeTransport';
 import { isPortConflict, withRuntimeStartLock } from './testRuntime';
 import { FAKE_QLEVER_LOCAL_RUNTIME_COMMAND } from './qleverRuntime';
 
+/** Derive test environment from this attempt's locked, immutable listener plan. */
+export type TestPortPlanEnvFactory = (
+  plan: Readonly<Pick<XpodRuntimeOptions, 'bindHost' | 'baseUrl' | 'gatewayPort' | 'cssPort' | 'apiPort'>>,
+) => NonNullable<XpodRuntimeOptions['env']>;
+
 export class XpodTestStack {
   public port = 0;
   public baseUrl = '';
@@ -32,7 +37,10 @@ export class XpodTestStack {
     return this.runtimeGatewayAdminProxyAuthSecret;
   }
 
-  async start(mode = 'local', options: Partial<XpodRuntimeOptions> = {}): Promise<void> {
+  /** Derived environment overrides the same keys in options.env, once per plan.
+   * The factory cannot replace ports or disable the explicit-port retry policy.
+   */
+  async start(mode = 'local', options: Partial<XpodRuntimeOptions> = {}, envForPortPlan?: TestPortPlanEnvFactory): Promise<void> {
     const transport = resolveTestRuntimeTransport(options.transport);
     const runtimeRoot = options.runtimeRoot
       ?? path.resolve('.test-data', 'xpod-test-stack', randomUUID());
@@ -52,7 +60,10 @@ export class XpodTestStack {
       for (let attempt = 1; ; attempt += 1) {
         const portOptions = transport === 'port' ? await this.resolvePortOptions(options) : {};
         try {
-          await this.startOnce(mode, options, transport, runtimeRoot, rootFilePath, portOptions);
+          const attemptOptions = envForPortPlan
+            ? { ...options, env: { ...options.env, ...envForPortPlan(Object.freeze({ ...portOptions })) } }
+            : options;
+          await this.startOnce(mode, attemptOptions, transport, runtimeRoot, rootFilePath, portOptions);
           return;
         } catch (error) {
           if (attempt >= attempts || !isPortConflict(error)) {

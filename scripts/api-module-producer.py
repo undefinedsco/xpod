@@ -276,6 +276,26 @@ def collect_facts(output, packed, source_sha, version, declaration, target):
                 sourceAuthority=authority, missingNamedOriginalTerms=terms['missingNamedOriginalTerms'])
 
 
+def controlled_retained_plan(inputs, retained, limits):
+    """Reserve exact unchanged revalidation plus bounded product output metadata.
+
+    The controlled output collector enforces the same explicit member ceiling;
+    this does not assume every source/dependency member becomes an output.
+    """
+    groups = {name:dict(archiveBytes=sum(row['bytes'] for row in inputs[name]['archives']),
+                        inventoryBytes=sum(row['bytes'] for row in inputs[name]['inventories']))
+              for name in ('source','dependencies','toolchain')}
+    inventory_bytes = sum(row['inventoryBytes'] for row in groups.values())
+    maximum_outputs = limits['members']
+    output_shards = (maximum_outputs + 4999)//5000
+    future = inventory_bytes + (output_shards + 1)*limits['metadataBytes']
+    return dict(parentDomains=groups,parentRetainedBytes=retained,
+                revalidationBytes=inventory_bytes,maximumOutputMembers=maximum_outputs,
+                maximumOutputInventoryShards=output_shards,finalMetadataBytes=limits['metadataBytes'],
+                futureReservedBytes=future,nativeRetainedByteCeiling=limits['sourceMaterialBytes']-retained-future,
+                totalRetainedByteCeiling=limits['sourceMaterialBytes'])
+
+
 def produce(repo, output, target, environment=None, source_kind=None):
     repo, output = Path(repo).resolve(), Path(output).resolve()
     environment = dict(os.environ if environment is None else environment)
@@ -335,9 +355,9 @@ def produce(repo, output, target, environment=None, source_kind=None):
             if controlled is not None and name == 'native-inputs':
                 # Future normal output metadata and full revalidation are retained
                 # in the same ledger; native compilation cannot borrow this space.
-                inventory_bytes = sum(row['bytes'] for domain in ('source','dependencies','toolchain') for row in build_inputs[domain]['inventories'])
-                future = inventory_bytes + ((limits['sourceMembers'] + 4999)//5000 + 2)*limits['metadataBytes']
-                ceiling = limits['sourceMaterialBytes'] - retained - future
+                resource_plan = controlled_retained_plan(build_inputs, retained, limits)
+                receipt['controlledRetainedPlan'] = resource_plan
+                ceiling = resource_plan['nativeRetainedByteCeiling']
                 if ceiling <= 192*1024**2 + limits['metadataBytes']:
                     raise ValueError('Controlled native materials resource pending: no shared retained capacity')
                 work = output / 'controlled-inngest-work'
@@ -383,7 +403,7 @@ def produce(repo, output, target, environment=None, source_kind=None):
             if declaration.get('name') != target_info['name']:
                 raise ValueError('Canonical target declaration differs from actual host product')
             receipt.update(collect_facts(output, packed, before['sha'], version, declaration, target))
-            receipt['sourceMaterials'] = source_materials.capture_outputs(repo, output, build_inputs, receipt['phases'], receipt['archive'], reserve_bytes=reserve if controlled else None)
+            receipt['sourceMaterials'] = source_materials.capture_outputs(repo, output, build_inputs, receipt['phases'], receipt['archive'], reserve_bytes=reserve if controlled else None, output_member_limit=limits['members'] if controlled else None)
             receipt.update(status='controlled-preview-materials', sourceAfter=after, packRaw=reference(evidence / 'pack.raw.log', output),
                            **({} if controlled else dict(nativePreparation=reference(output / 'originals/prepare-inputs.receipt.safe.json', output))))
     except BaseException as error:
