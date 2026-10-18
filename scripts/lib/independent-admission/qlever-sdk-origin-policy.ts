@@ -607,8 +607,26 @@ const fetchContentReceiverBindings=Object.freeze([
  Object.freeze({"path": "qlever/scripts/sdk-fetchcontent-source-bindings.py", "sha256": "58c673c1506cbf321736e8693fa5364bddbfc7dec5e1e456bdda7151bb54535c"}),
  Object.freeze({"path": "qlever/scripts/sdk-tool-provider-originals.py", "sha256": "d5bc8db6c6457d95e67c3ea6138d75f9cfe055e47b22d361ebb1d220f7cbcfd0"}),
 ]);
+// The namespace-pinned authority interval is one exact producer/helper recipe.
+// Existing observer/bindings secondary roles already select it without fetching
+// any newer file from historical SDK1–19 trees.
+const authorityIntervalRecipe=new Map([
+  [
+    "qlever/scripts/sdk-ptrace-execution.py",
+    "98aa889ef96b492e7d7be5c4c4e6c6bb91506be4ddf2a7bfe365b1715dbfc9fa"
+  ],
+  [
+    "qlever/scripts/sdk-generation-multiprocess-bindings.py",
+    "d12e02ab8c638d20d43e0c8e5373b8d19a794f1fe189909af3d8131aee26cb80"
+  ],
+  [
+    "qlever/scripts/sdk-tool-provider-originals.py",
+    "2a29a27a270c528b05f029210bd36aa728b26dbfaf1c1e21dc61f7847eaa1cad"
+  ]
+]);
+const authorityIntervalBindings=Object.freeze(fetchContentReceiverBindings.map(row=>Object.freeze({...row,sha256:authorityIntervalRecipe.get(row.path)??row.sha256})));
 export const QLEVER_SDK_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([
- sdkBGroup(QLEVER_SDK_B_SOURCE_BINDINGS),sdkBGroup(tarBindings),sdkBGroup(stagingTarBindings),sdkBGroup(debianV3Bindings),sdkBGroup(symlinkBindings),sdkBGroup(gitCmakeBindings),sdkBGroup(ownedRunsBindings),sdkBGroup(sourcePreparedBindings),sdkBGroup(serviceContextBindings),sdkBGroup(trackedExecutionBindings),observerVersionGroup(selfRetainedContextBindings),observerVersionGroup(preparedInputBindings),observerVersionGroup(debianBinaryBindings),observerVersionGroup(writeReadBindings),observerVersionGroup(sharedTaskBindings),observerVersionGroup(writeDeltaBindings),observerVersionGroup(combinedToolAppendBindings),dependencyVersionGroup(preparedDependencyBindings),dependencyVersionGroup(fetchContentReceiverBindings),
+ sdkBGroup(QLEVER_SDK_B_SOURCE_BINDINGS),sdkBGroup(tarBindings),sdkBGroup(stagingTarBindings),sdkBGroup(debianV3Bindings),sdkBGroup(symlinkBindings),sdkBGroup(gitCmakeBindings),sdkBGroup(ownedRunsBindings),sdkBGroup(sourcePreparedBindings),sdkBGroup(serviceContextBindings),sdkBGroup(trackedExecutionBindings),observerVersionGroup(selfRetainedContextBindings),observerVersionGroup(preparedInputBindings),observerVersionGroup(debianBinaryBindings),observerVersionGroup(writeReadBindings),observerVersionGroup(sharedTaskBindings),observerVersionGroup(writeDeltaBindings),observerVersionGroup(combinedToolAppendBindings),dependencyVersionGroup(preparedDependencyBindings),dependencyVersionGroup(fetchContentReceiverBindings),dependencyVersionGroup(authorityIntervalBindings),
 ]);
 export const QLEVER_LINUX_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([
  {selectors:sdkSelectors('cbedd3e2478de5e22108b6689c595a658ca891c9bd47552caec830e86f47fea8','a75c7be34b5c5fafff85c0d67d814ba1aaf14bcf5db5404a860fe3b9a11009bd'),sourceBindings:QLEVER_LINUX_SOURCE_BINDINGS.filter(row=>!['.github/workflows/publish-qlever-runtime-sdk.yml','.github/workflows/build-qlever-linux-runtime.yml'].includes(row.path))},

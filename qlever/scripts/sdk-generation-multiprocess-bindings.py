@@ -318,6 +318,14 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
     def dependency_json(ref):return json.loads(dependency_bytes(ref))
     tool_coverage=ToolchainOperationCoverage(limits.get('metadataBytes',4*1024**2) if limits else 4*1024**2,limits.get('sourceMembers',50000) if limits else 50000,check)
     tool_originals={};tool_files={};tool_pending=set();tool_execs=0;tool_mappings=0;tool_core=None;exec_events={};tool_exec_paths={};tool_protect_before={};tool_providers={};tool_provider_pending=set();provider_verifier=None;tool_digest=hashlib.sha256()
+    process_interval=None;process_intervals=[]
+    def provider_module():
+        nonlocal provider_verifier
+        if provider_verifier is None:
+            import importlib.util
+            from pathlib import Path
+            spec=importlib.util.spec_from_file_location('verified_tool_provider',Path(__file__).with_name('sdk-tool-provider-originals.py'));provider_verifier=importlib.util.module_from_spec(spec);spec.loader.exec_module(provider_verifier)
+        return provider_verifier
     def tool_ref(reference,kind=None):
         value=tool_originals.get(reference['path']);need(value and value['original']==reference and (kind is None or value['captureKind']==kind),'toolchain reference lacks actual complete original')
         return value
@@ -388,6 +396,7 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
             elif kind=='owned-root-binding':
                 need(dependency_expected_names is None or set(dependency_roots)==dependency_expected_names,'prepared dependency root universe is not completely registered');need(not live and not roots,'unique actual root required');live.add(row['pid']);roots.append(row['pid']);need(row['backend']=='ptrace-all-stop-process-v1','wrong observer backend')
                 need(row.get('taskOwnershipModel') in [None,'all-tracked-tids-shared-fd-v1'],'unknown task ownership model');shared_mode=row.get('taskOwnershipModel') is not None;owners={}
+                model=row.get('processAuthorityModel');need(model is None or model==provider_module().AUTHORITY_MODEL,'unknown process authority model');process_interval=provider_module().ProcessAuthorityInterval(row['pid']) if model is not None else None
                 if shared_mode:need(row['tgid']==row['fdTable']==row['pid'],'initial root ownership differs');owners[row['pid']]=dict(tgid=row['tgid'],fdTable=row['fdTable'])
             elif kind=='actual-child-binding':
                 child_bindings[row['childPid']]=row
@@ -397,9 +406,11 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                     if entry['nr'] in [rules['clone'],435]:need(entry['sequence'] in clone_flags and clone_flag_values[entry['sequence']]==row['cloneFlags'],'child actual clone flags differ')
                     else:need(entry['arch']==0xc000003e and entry['nr'] in [57,58] and row['cloneFlags']==17|(0x4100 if entry['nr']==58 else 0),'unknown child fork operation')
                     ownership=inspect_shared_clone_flags(row['cloneFlags']);need(row['tgid']==(parent['tgid'] if ownership['sameThreadGroup'] else row['childPid']) and row['fdTable']==(parent['fdTable'] if ownership['sharedFdTable'] else row['childPid']),'child TGID/FD table differs from kernel clone flags');owners[row['childPid']]=dict(tgid=row['tgid'],fdTable=row['fdTable'])
+                if process_interval is not None:process_interval.child(row['parentPid'],row['childPid'])
                 live.add(row['childPid'])
             elif kind=='actual-wait-exit':
                 need(row['pid'] not in vfork_holds,'held vfork parent ended without child release');wait_rows[row['sequence']]=row
+                if process_interval is not None:process_interval.wait(row['pid'])
                 need(row['pid'] in live,'wait on unknown process');live.remove(row['pid']);root_codes[row['pid']]=row['returnCode'];waits.append(dict(pid=row['pid'],sequence=row['sequence'],returnCode=row['returnCode'],phase=phase))
             elif kind=='all-stop-barrier':
                 need(row['pids']==sorted(live) and row['osStates']==['t']*len(live),'potential writer not in actual complete tracing-stop barrier')
@@ -533,6 +544,7 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                 if row['op']=='entry':
                     if append_boundary_syscall(row['arch'],row['nr'],row['args']):append_obligations[row['sequence']]=dict(append_dirty)
                     rules=policy(row['arch']);need(row['nr'] not in rules['forbidden'],'unsupported asynchronous/external writer syscall')
+                    if process_interval is not None:process_interval.syscall(row)
                     if row['nr']==rules['clone']:
                         flags=row['args'][0]
                         if shared_mode:inspect_shared_clone_flags(flags)
@@ -560,13 +572,11 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                     need(len(row['identity'])==6 and row['identity'][3]==data[0],'tool FD identity/bytes differ');tool_files[row['original']['path']]=dict(observedPath=row['observedPath'],identity=row['identity'],original=row['original'])
                 else:need(data[0]<=4*1024**2 and type(row.get('observedPid')) is int and row['observedPid'] in live,'bounded live tracee metadata original')
                 tool_originals[row['original']['path']]=row
+            elif kind=='toolchain-process-authority':
+                need(process_interval is not None,'process authority original lacks declared root contract');tool_barrier(row);mount_original=tool_ref(row['observation']['mountinfoOriginal'],'mountinfo');process_interval.sample(row,dependency_bytes(mount_original['original']))
             elif kind=='toolchain-provider-original':
                 tool_barrier(row);file_original=tool_ref(row['fileOriginal'],'file');observation=row['observation'];mount_original=tool_ref(observation['mountinfoOriginal'],'mountinfo');mount_data=dependency_bytes(mount_original['original'])
-                if provider_verifier is None:
-                    import importlib.util
-                    from pathlib import Path
-                    spec=importlib.util.spec_from_file_location('verified_tool_provider',Path(__file__).with_name('sdk-tool-provider-originals.py'));provider_verifier=importlib.util.module_from_spec(spec);spec.loader.exec_module(provider_verifier)
-                verified=provider_verifier.verify_provider_originals(observation,mount_data,pid=row['pid'],actual_path=observation['actualPath'],file_identity=file_original['identity'])
+                verified=provider_module().verify_provider_originals(observation,mount_data,pid=row['pid'],actual_path=observation['actualPath'],file_identity=file_original['identity'])
                 need(row['sequence'] not in tool_providers,'duplicate actual tool provider sequence');tool_providers[row['sequence']]=dict(row,verified=verified,used=False)
             elif kind=='toolchain-exec-path-entry':
                 tool_barrier(row);entry=entries.get(row['entrySequence']);need(entry and entry['pid']==row['pid'] and entry['nr']==row['syscall'] and entry['nr'] in policy(entry['arch'])['exec'] and isinstance(row['entryPath'],str) and len(row['entryPath'].encode())<=4096,'actual exec path entry differs');tool_exec_paths[row['sequence']]=row
@@ -661,6 +671,7 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                 need((row['releaseKind']=='actual-exec' and child in live and event and event['pid']==child and event['event']==4) or (row['releaseKind']=='actual-terminal-wait' and child not in live and wait and wait['pid']==child),'VFORK release lacks actual child exec/terminal wait');del vfork_holds[parent]
             elif kind=='ptrace-event':
                 need(row.get('event') in [1,2,3,4,5,6,128],'unknown actual ptrace event')
+                if process_interval is not None:process_interval.event(row['pid'],row['event'],row['sequence'])
                 if row['event'] in [2,4]:vfork_events[row['sequence']]=row
                 if shared_mode and row['event']==4:exec_fd_events[row['sequence']]=row
                 if row['event']==4:exec_events[row['sequence']]=row
@@ -671,6 +682,7 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
         need(not vfork_holds,'phase ended without vfork child release')
         need(not append_dirty,'phase ended without mandatory append full checkpoint')
         need(len(roots)==1 and not live and root_codes.get(roots[0])==0 and exclusive is None,'actual root/descendant wait closure incomplete')
+        process_intervals.append(dict(phase=phase,**process_interval.finish()) if process_interval is not None else dict(phase=phase,model=None,scope='missing actual tracked authority interval contract'))
         phase_tracking.append(dict(phase=phase,actualRootPid=roots[0],actualRootReturnCode=root_codes[roots[0]],waitReferences=waits))
     need(set(alias_close_windows)==alias_close_exits,'alias close missing actual close/slot closure')
     need(not exec_fd_events,'actual exec FD table change missing')
@@ -729,4 +741,4 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
             if actual is None:pending.append('actual-successful-generated-consumer-missing:'+path)
             else:need(actual['bytes']==expected['bytes'] and actual['sha256']==expected['sha256'],'actual generated consumer differs from selected full-shard input')
     return dict(schemaVersion=1,kind='all-stop-CMake-generated-byte-mechanics',selectedGeneratedConsumerByteCustodyVerified=not pending,outputs=sorted(covered.values(),key=lambda row:row['path']),observedSourceReadCaptures=len(source_reads),observedPreparedDependencyReadCaptures=dependency_reads,preparedDependencySourceAuthorityVerified=False,preparedDependencyPending=(['independent-FetchContent-dependency-stage-and-Git-or-URL-source-authority-unverified'] if dependency_roots else []),pending=pending,overallSdkSourceVerified=False,
-                observedAliasOnlyCloses=len(alias_close_exits),observedActualModeTransitions=len(mode_transitions),observedNamedRetainedFdBindings=len(namespaces),observedActualWriteTransitions=len(write_transitions),observedEmptyReadEofWindows=len(empty_eofs),toolchainFileSnapshots=list(tool_files.values()),toolchainOperationCoverage=tool_coverage.finish(sorted(tool_pending),sorted(tool_provider_pending)),toolchainActualExecImages=tool_execs,toolchainActualFileMappings=tool_mappings,toolchainObservationSha256=tool_digest.hexdigest(),toolchainStopProviderPending=sorted(tool_provider_pending),toolchainPending=sorted(tool_pending|tool_provider_pending|({'toolchain-executed-byte-immutability-and-full-source-authority-unverified'} if tool_execs else set())),toolchainSourceClosureVerified=False,preparedInputConsumers=list(prepared_covered.values()),preparedInputConsumerBytesVerified=bool(prepared_covered),phaseTracking=phase_tracking,scope='actual producer-close/rename/consumer bytes only; reviewed observer execution/Git/source/runtime authority independent')
+                observedAliasOnlyCloses=len(alias_close_exits),observedActualModeTransitions=len(mode_transitions),observedNamedRetainedFdBindings=len(namespaces),observedActualWriteTransitions=len(write_transitions),observedEmptyReadEofWindows=len(empty_eofs),toolchainProcessAuthorityIntervals=process_intervals,toolchainProcessAuthorityIntervalVerified=bool(process_intervals) and all(row.get('model') is not None for row in process_intervals),toolchainProcessAuthorityPending=['toolchain-provider-namespace-external-writer-and-backing-snapshot-authority-unverified']+([] if process_intervals and all(row.get('model') is not None for row in process_intervals) else ['toolchain-owned-process-authority-interval-originals-unavailable']),toolchainFileSnapshots=list(tool_files.values()),toolchainOperationCoverage=tool_coverage.finish(sorted(tool_pending),sorted(tool_provider_pending)),toolchainActualExecImages=tool_execs,toolchainActualFileMappings=tool_mappings,toolchainObservationSha256=tool_digest.hexdigest(),toolchainStopProviderPending=sorted(tool_provider_pending),toolchainPending=sorted(tool_pending|tool_provider_pending|({'toolchain-executed-byte-immutability-and-full-source-authority-unverified'} if tool_execs else set())),toolchainSourceClosureVerified=False,preparedInputConsumers=list(prepared_covered.values()),preparedInputConsumerBytesVerified=bool(prepared_covered),phaseTracking=phase_tracking,scope='actual producer-close/rename/consumer bytes only; reviewed observer execution/Git/source/runtime authority independent')

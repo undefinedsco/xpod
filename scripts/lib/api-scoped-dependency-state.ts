@@ -22,7 +22,11 @@ export function inspectApiInstalledGraph(input:{root:string;graph:any;readWorksp
  need(workspaces.size===graph.workspaces.length&&registry.size===graph.registry.length,'duplicate graph identity');
  const installed=new Map<string,{directory:string;name:string;version:string;lockKey?:string}>(),optionalAbsences:{owner:string;name:string}[]=[],visited=new Set<string>(),workspacePackages:{name:string;directory:string}[]=[];
  const locate=(directory:string,name:string)=>{
-  const paths=createRequire(path.join(directory,'__fixed_api_resolution__.cjs')).resolve.paths(name)??[];
+  // Bun may classify a package name (for example undici) as builtin. Resolve
+  // physical lookup directories with one fixed nonbuiltin probe, then require
+  // the actual edge's package.json and immutable lock identity below.
+  const paths=createRequire(path.join(directory,'__fixed_api_resolution__.cjs')).resolve.paths('__xpod_fixed_physical_package_lookup__');
+  need(Array.isArray(paths),'standard physical package lookup paths required');
   for(const candidate of paths){const physical=path.join(candidate,name);if(!existsSync(path.join(physical,'package.json')))continue;const resolved=inside(realpathSync(physical));return resolved;}
   return undefined;
  };

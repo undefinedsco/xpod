@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
 import { collectedArtifactView } from './artifact-collector';
 import { derivedSourceView } from './source-context';
-import { githubOriginFacts, githubOriginOriginals, API_WORKSPACE_SOURCE_BINDINGS, type GitHubOriginObservation } from './github-origin';
+import { githubOriginFacts, githubOriginOriginals, API_PHYSICAL_LOOKUP_SOURCE_BINDINGS, API_WORKSPACE_SOURCE_GROUPS, type GitHubOriginObservation } from './github-origin';
 
 // These policies review actual phase-plan and supervisor implementations. The
 // producer remains the sole phase/command declaration; no parallel phase table.
@@ -263,8 +263,8 @@ export function controlledApiSourceRecipe(readTracked:(name:string)=>Buffer,prod
  const historical=producerSha==='6999603e280c8df1be5fe068eff34cf4c357dc99e9052914040ab6db330ce058';
  if(!historical&&![moduleSourcePhasePolicy.api,'0169bfbf726dce149e5a0fa995fd06bbe618236f1829d0575ccb0bafeea8b450','8cfb86a4fa5de62e2938e51e459ae9c5c3bbe95cf0aaad88d59de9a9b900e920'].includes(producerSha)||historical&&target!=='linux-arm64')return fail('controlled producer/target recipe not reviewed');
  if(!historical){const policy=JSON.parse(readTracked('packages/xpod-api/scripts/inngest-controlled-build-policy.json').toString());if(!Object.prototype.hasOwnProperty.call(policy.targetDescriptors??{},target))return fail('controlled descriptor target not reviewed');}
- const candidates=producerSha==='0169bfbf726dce149e5a0fa995fd06bbe618236f1829d0575ccb0bafeea8b450'?[API_WORKSPACE_SOURCE_BINDINGS]:historical?[HISTORICAL_CONTROLLED_API_RECIPE]:producerSha===moduleSourcePhasePolicy.api?[PRE_CATALOG_API_SOURCE_RECIPE,CONTROLLED_API_SOURCE_RECIPE]:[PRE_PUBLIC_DESCRIPTOR_API_RECIPE,PRE_BUDGET_API_SOURCE_RECIPE];
- const matches=candidates.filter(rows=>rows.filter(row=>["scripts/lib/inngest-controlled-build.py", "packages/xpod-api/scripts/inngest-controlled-build-policy.json", "scripts/lib/module-source-materials.py", "scripts/lib/physical-module-stage.ts"].includes(row.path)).every(row=>hash(readTracked(row.path))===row.sha256));
+ const candidates=producerSha==='0169bfbf726dce149e5a0fa995fd06bbe618236f1829d0575ccb0bafeea8b450'?API_WORKSPACE_SOURCE_GROUPS.map(group=>group.sourceBindings):historical?[HISTORICAL_CONTROLLED_API_RECIPE]:producerSha===moduleSourcePhasePolicy.api?[PRE_CATALOG_API_SOURCE_RECIPE,CONTROLLED_API_SOURCE_RECIPE]:[PRE_PUBLIC_DESCRIPTOR_API_RECIPE,PRE_BUDGET_API_SOURCE_RECIPE];
+ const matches=candidates.filter(rows=>rows.filter(row=>["scripts/lib/inngest-controlled-build.py", "packages/xpod-api/scripts/inngest-controlled-build-policy.json", "scripts/lib/module-source-materials.py", "scripts/lib/physical-module-stage.ts", "scripts/lib/api-scoped-dependency-state.ts"].includes(row.path)).every(row=>hash(readTracked(row.path))===row.sha256));
  if(matches.length!==1)return fail('controlled native complete source recipe not reviewed');
  const rows=matches[0];
  for(const row of rows)if(hash(readTracked(row.path))!==row.sha256)return fail('controlled native complete source recipe mismatch');
@@ -282,7 +282,7 @@ export function reviewedModulePhasePlan(module: 'api' | 'css' | 'afs', repositor
   const file = fileURLToPath(new URL(`../../${module}-module-producer.py`, import.meta.url));
   const before = readFileSync(file);
   if (!reviewedModuleProducerSource(module, hash(before))) return fail('verifier producer policy drift');
-  const checkControlledController=()=>{if(controlled||workspace)for(const row of workspace?API_WORKSPACE_SOURCE_BINDINGS:CONTROLLED_API_SOURCE_RECIPE)if(hash(readFileSync(new URL('../../../'+row.path,import.meta.url)))!==row.sha256)return fail('controlled verifier source recipe drift');};
+  const checkControlledController=()=>{if(controlled||workspace)for(const row of workspace?API_PHYSICAL_LOOKUP_SOURCE_BINDINGS:CONTROLLED_API_SOURCE_RECIPE)if(hash(readFileSync(new URL('../../../'+row.path,import.meta.url)))!==row.sha256)return fail('controlled verifier source recipe drift');};
   checkControlledController();
   const wrapper = "import json,sys; p={'__name__':'reviewed_phase_policy','__file__':sys.argv[1]}; exec(compile(sys.stdin.buffer.read(),sys.argv[1],'exec'),p); a=json.loads(sys.argv[2]); print(json.dumps([{'name':n,'command':c,'timeoutSeconds':t} for n,c,t in p['phase_plan'](*a)]))";
   const result = spawnSync('/usr/bin/python3', ['-I', '-B', '-c', wrapper, file,
