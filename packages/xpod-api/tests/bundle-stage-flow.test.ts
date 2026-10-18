@@ -1,5 +1,5 @@
-import { apiTestRepoRoot, API_BUILD_INTEGRATION_TIMEOUT_MS } from './repo-root';
-import { buildWithBun } from '../scripts/bun-build-api';
+import { API_BUILD_INTEGRATION_TIMEOUT_MS } from './repo-root';
+import { writeApiPackFixture } from './pack-tool-fixture';
 import { test } from 'bun:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -27,7 +27,7 @@ test('normal API bundle stage and archive callbacks require strict receipts, sta
     put('src/storage/ObservableResourceStore.ts',"import {PassthroughStore} from '@solid/community-server';export class ObservableResourceStore extends PassthroughStore{}");
     for(const file of ['packages/xpod-cli/src/module-catalog.ts','packages/xpod-cli/src/manifest.ts','packages/xpod-cli/src/source-materials.ts','scripts/lib/helper.ts','scripts/agentfs-native-ci/supervise.py','docs/testing/api-bundle-materials.md','docs/testing/physical-module-native-materials.md'])put(file,'fixture');
     for(const target of ['dashboard','settings'])put('static/'+target+'/index.html',target);
-    const packTool=await buildWithBun({entrypoints:[path.join(apiTestRepoRoot,'packages/xpod-api/scripts/pack.ts')],target:'node',format:'esm'});assert(packTool.success,String(packTool.logs));put('packages/xpod-api/scripts/pack.mjs',await packTool.outputs[0].text());
+    const packTool = await writeApiPackFixture(root);
     for(const args of [['init','-q'],['add','.'],['-c','user.name=Fixture','-c','user.email=fixture@example.invalid','commit','-qm','fixture']])assert.equal(spawnSync('git',args,{cwd:root}).status,0);
     fs.mkdirSync(build,{recursive:true});
     await buildApiBundleProducts(root,build,[]);
@@ -50,7 +50,7 @@ test('normal API bundle stage and archive callbacks require strict receipts, sta
     const publicationPath=stage+'/provenance/publication.json',publicationBytes=fs.readFileSync(publicationPath),publication=JSON.parse(publicationBytes.toString());publication.mode='release';fs.writeFileSync(publicationPath,JSON.stringify(publication));
     // A valid strict bundle must still stop at the independent native-material argument gate.
     verifyApiStageMaterials(root,build,stage);
-    const nativeDenied=spawnSync('bun',[root+'/packages/xpod-api/scripts/pack.mjs',stage,base+'/native-denied.tgz'],{cwd:root,encoding:'utf8'});
+    const nativeDenied=spawnSync('bun',[packTool,stage,base+'/native-denied.tgz'],{cwd:root,encoding:'utf8'});
     assert.equal(nativeDenied.status,1,nativeDenied.stderr);assert.match(nativeDenied.stderr,/requires explicit external native materials root/);assert.equal(fs.existsSync(base+'/native-denied.tgz'),false);assert.equal(fs.existsSync(stage+'/provenance/source-inventory.json'),false);
     fs.writeFileSync(publicationPath,publicationBytes);
     let finalCallback=0;

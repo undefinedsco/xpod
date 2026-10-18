@@ -23,3 +23,14 @@ test('catalog and retained historical implementation select complete existing-pa
  for(const row of next.secondarySelectors??[]){const mixed=tuple(next);mixed.set(sourceBindingKey(row),'f'.repeat(64));expect(()=>selectGitHubSourceBindingGroup(CONSUMER_SOURCE_GROUPS,mixed)).toThrow();}
  for(const path of ['package.json','bun.lock','scripts/lib/physical-module-stage.ts','scripts/prepare-package-manifest.cjs'])expect(old.sourceBindings.find(row=>row.path===path)?.sha256).not.toBe(next.sourceBindings.find(row=>row.path===path)?.sha256);
 });
+
+test('hoisted build-tools use a distinct whole closure and old versions never require the new module',()=>{
+ const next=CONSUMER_SOURCE_GROUPS[1]!;
+ const old=CONSUMER_SOURCE_GROUPS.find(group=>group!==next&&group.sourceBindings.some(row=>row.path==='qlever/scripts/sdk-fetchcontent-materials.py')&&!group.sourceBindings.some(row=>row.path==='packages/xpod-cli/src/build-dependency-layout.ts'))!;
+ expect(old).toBeDefined();
+ const path='packages/xpod-cli/scripts/build-tools-package.ts';
+ expect(next.secondarySelectors?.find(row=>row.path===path)?.sha256).not.toBe(old.secondarySelectors?.find(row=>row.path===path)?.sha256);
+ expect(next.sourceBindings.some(row=>row.path==='packages/xpod-cli/src/build-dependency-layout.ts')).toBe(true);
+ expect(old.sourceBindings.some(row=>row.path==='packages/xpod-cli/src/build-dependency-layout.ts')).toBe(false);
+ for(const group of [old,next]){const observed=new Map([...group.selectors,...(group.secondarySelectors??[])].map(row=>[sourceBindingKey(row),row.sha256]));expect(selectGitHubSourceBindingGroup(CONSUMER_SOURCE_GROUPS,observed)).toBe(group);observed.set('source:'+path,'e'.repeat(64));expect(()=>selectGitHubSourceBindingGroup(CONSUMER_SOURCE_GROUPS,observed)).toThrow();}
+});

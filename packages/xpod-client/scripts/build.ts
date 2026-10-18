@@ -1,3 +1,4 @@
+import type { buildDependencyLayout } from '../../xpod-cli/src/build-dependency-layout';
 import ts from 'typescript';
 import { spawnSync } from 'node:child_process';
 import { copyFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
@@ -28,14 +29,9 @@ writeFileSync(path.join(root, 'dist/index.mjs'), "import client from './library.
 
 const toolsArg = process.argv.indexOf('--build-tools');
 const tools = toolsArg >= 0 ? path.resolve(process.argv[toolsArg + 1]) : createRequire(path.join(root, 'package.json')).resolve('@undefineds.co/xpod-cli/build-tools');
-const tooling = await import(pathToFileURL(tools).href) as { collectJavascriptNotices: typeof collectJavascriptNotices };
-let dependencyRoot = root;
-while (!existsSync(path.join(dependencyRoot, 'node_modules'))) {
-  const parent = path.dirname(dependencyRoot);
-  if (parent === dependencyRoot) throw new Error('Declared build dependencies missing');
-  dependencyRoot = parent;
-}
-tooling.collectJavascriptNotices({ metafile: path.join(root, 'dist/inputs.json'), stageRoot: root, repoRoot: dependencyRoot,
+const tooling = await import(pathToFileURL(tools).href) as { collectJavascriptNotices: typeof collectJavascriptNotices; buildDependencyLayout: typeof buildDependencyLayout };
+const layout = tooling.buildDependencyLayout(root, { name: '@undefineds.co/xpod-client', workspacePath: 'packages/xpod-client' });
+tooling.collectJavascriptNotices({ metafile: path.join(root, 'dist/inputs.json'), stageRoot: root, ...layout,
   destination: path.join(root, 'dist/licenses'), target: `${process.platform}-${process.arch}`,
   cli: path.join(root, 'dist/library.cjs'), bunVersion: process.versions.bun ?? 'unknown',
   generated: path.join(root, 'licenses/javascript/generated', process.versions.bun ?? 'unknown'), generatedProfile: 'client' });

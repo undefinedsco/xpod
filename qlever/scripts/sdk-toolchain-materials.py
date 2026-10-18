@@ -94,11 +94,20 @@ def failure_diagnostic(result,out,directory,check):
     return value
 
 class Session:
-    def __init__(self,out,source,build,budget,check,maximum_bytes):
+    def __init__(self,out,source,build,budget,check,maximum_bytes,prepared_dependencies=None):
         self.out=Path(out);self.directory=self.out/'toolchain-execution';self.directory.mkdir()
         self.budget=budget;self.phases=[];self.results=[];self.closed=False;self.tool_files=[];self.tool_captures=set()
         backend=load('execution_backend','sdk-ptrace-execution.py')
-        self.observer=backend.SdkExecutionObserver(self.directory,source,build,deadline_monotonic=budget.end,check_budget=check,maximum_bytes=maximum_bytes,maximum_stdio_bytes=commands.RAW_LIMIT)
+        dependency_options={}
+        if prepared_dependencies is not None:
+            collection=self.out/prepared_dependencies['path']
+            if collection!=self.out/'fetchcontent/materials.json' or commands.ref(collection,self.out)!=prepared_dependencies:raise ValueError('Actual fixed dependency collection differs')
+            with Path('/proc/self/mountinfo').open('rb') as stream:mounts=stream.read(METADATA+1)
+            if len(mounts)>min(METADATA,remaining_source_bytes(self.out)):raise ValueError('Dependency provider mountinfo bound')
+            mount_path=self.directory/'dependency-provider.mountinfo.raw'
+            with mount_path.open('xb') as stream:stream.write(mounts)
+            dependency_options['prepared_dependencies']=dict(collection=dict(prepared_dependencies,path=str(collection)),mountinfo=dict(commands.ref(mount_path,self.out),path=str(mount_path)))
+        self.observer=backend.SdkExecutionObserver(self.directory,source,build,deadline_monotonic=budget.end,check_budget=check,maximum_bytes=maximum_bytes,maximum_stdio_bytes=commands.RAW_LIMIT,**dependency_options)
     def original_bytes(self):
         # Stage originals live outside the execution directory. Count the unique
         # canonical set, not one directory or repeated collection references.

@@ -56,6 +56,16 @@ class Collector:
         if (self.component/'qlever.lock.json').stat().st_size>METADATA:raise ValueError('Upstream lock metadata bound')
         self.lock=json.loads((self.component/'qlever.lock.json').read_text())
         if not OID.fullmatch(self.lock['commit']):raise ValueError('Locked SHA1 Git commit required')
+    @classmethod
+    def for_source(cls,source,out,budget,repository=None,commit=None):
+        value=cls.__new__(cls);value.source=Path(source).resolve(strict=True)
+        value.out=Path(out);value.out.mkdir(parents=True,exist_ok=False)
+        value.budget=budget;value.stages=[];value.patch_steps=[];value.lock=dict(repository=repository,commit=commit)
+        return value
+    @classmethod
+    def for_git_source(cls,source,out,budget,repository,commit):
+        if not OID.fullmatch(commit):raise ValueError('Exact Git commit required')
+        return cls.for_source(source,out,budget,repository,commit)
     def check(self):self.budget.check(4200)
     def reference(self,path):return ref(path,self.out,self.check)
     def command(self,name,argv,maximum=METADATA,stdin=None):
@@ -134,7 +144,7 @@ class Collector:
             import base64
             result['readlinkBase64']=base64.b64encode(data).decode('ascii')
         return result
-    def before(self):
+    def git_snapshot(self):
         head=self.command('git-head',['git','rev-parse','--verify','HEAD'])
         if (self.out/head['stdout']['path']).read_text().strip()!=self.lock['commit']:raise ValueError('Upstream actual HEAD differs from lock')
         commit=self.command('git-commit',['git','cat-file','commit',self.lock['commit']])
@@ -147,6 +157,7 @@ class Collector:
         for record in (self.out/listing['stdout']['path']).read_bytes().split(b'\0'):
             if not record:continue
             header,name=record.split(b'\t',1);mode,kind,oid=header.decode('ascii').split();name=safe(name.decode('utf-8'))
+            if kind=='commit' and mode=='160000':raise ValueError('Unprepared Gitlink source: '+name+'@'+oid)
             if not OID.fullmatch(oid) or kind not in ('tree','blob'):raise ValueError('Unsupported Git source object kind')
             objects.add(oid)
             if kind=='tree':continue
@@ -172,6 +183,9 @@ class Collector:
         status=self.command('git-clean',['git','status','--porcelain','--untracked-files=all'])
         if (self.out/status['stdout']['path']).stat().st_size:raise ValueError('Upstream prepatch checkout is not clean')
         write(self.out/'prepatch-inventory.json',dict(schemaVersion=1,files=files),self.check)
+        return dict(rootTree=root_tree,objectIdsFormat='ascii-sorted-unique-sha1-lf',objectFormat='sha1',repository=self.lock['repository'],commit=self.lock['commit'],sourceRoot=str(self.source),commitOriginal=commit['stdout'],treeListing=listing['stdout'],objectIds=self.reference(ids),objectPack=pack['stdout'],prepatchInventory=self.reference(self.out/'prepatch-inventory.json'))
+    def before(self):
+        git=self.git_snapshot()
         if (self.component/'patches/series').stat().st_size>METADATA:raise ValueError('Upstream patch series metadata bound')
         self.patch_series=self.copy(self.component/'patches/series','patches/series');self.patches=[]
         names=[line.strip() for line in (self.component/'patches/series').read_text().splitlines() if line.strip()]
@@ -185,9 +199,10 @@ class Collector:
             self.patches.append(dict(name=name,sourcePath='qlever/patches/'+name,file=original))
         if digest.hexdigest()!=self.lock['patchSeriesSha256']:raise ValueError('Upstream original patch series differs from lock')
         self.before_ended=time.time_ns()
-        self.base=dict(rootTree=root_tree,objectIdsFormat='ascii-sorted-unique-sha1-lf',schemaVersion=1,kind='qlever-sdk-upstream-source-originals',repository=self.lock['repository'],commit=self.lock['commit'],objectFormat='sha1',sourceRoot=str(self.source),
-            lock=self.copy(self.component/'qlever.lock.json','qlever.lock.json'),commitOriginal=commit['stdout'],treeListing=listing['stdout'],objectIds=self.reference(ids),objectPack=pack['stdout'],
-            prepatchInventory=self.reference(self.out/'prepatch-inventory.json'),patchSeriesSourcePath='qlever/patches/series',patchSeries=self.patch_series,patches=self.patches)
+        self.base=dict(git,schemaVersion=1,kind='qlever-sdk-upstream-source-originals',
+            lock=self.copy(self.component/'qlever.lock.json','qlever.lock.json'),
+            patchSeriesSourcePath='qlever/patches/series',patchSeries=self.patch_series,patches=self.patches)
+
     def patch(self,index,argv):
         item=self.patches[index];actual=self.component/'patches'/item['name']
         check='--check' in argv
