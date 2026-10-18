@@ -120,14 +120,21 @@ test('bounded original reader rejects symlinks, hardlinks and actual FIFOs witho
   if (process.platform !== 'win32') { const fifo = path.join(evidence, 'fifo'); execFileSync('mkfifo', [fifo], { timeout: 1000 }); assert.throws(() => helper.readRegular(fifo), /Invalid supply original/); }
 }));
 test('partial PUT on the reused exact registry fails bounded closure without admitting publication', async () => {
-  const http = require('node:http'), bytes = Buffer.from('synthetic root'), artifact = { bytes, integrity: sri(bytes), manifest: { name: '@undefineds.co/xpod', version: '1.0.0' } };
+  const { once } = require('node:events'), bytes = Buffer.from('synthetic root'), artifact = { bytes, integrity: sri(bytes), manifest: { name: '@undefineds.co/xpod', version: '1.0.0' } };
   const server = createRegistry(artifact, 'test-token'), observed = observeRegistryClosure(server, { drainMs: 20, forceMs: 100 });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-  const request = http.request({ host: '127.0.0.1', port: server.address().port, path: '/@undefineds.co%2fxpod', method: 'PUT', headers: { authorization: 'Bearer test-token', 'content-length': 1000 } });
-  request.on('error', () => {}); request.write('{');
-  await new Promise(resolve => setTimeout(resolve, 20));
-  const closure = await observed.close(); request.destroy();
-  assert.equal(server.publishedMetadata(), undefined); assert.equal(closure.state, 'forced-closed'); assert.equal(closure.remainingSockets, 0);
+  const requested = once(server, 'request', { signal: AbortSignal.timeout(1000) });
+  const socket = require('node:net').connect(server.address().port, '127.0.0.1'); socket.on('error', () => {});
+  try {
+    socket.write('PUT /@undefineds.co%2fxpod HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer test-token\r\nContent-Length: 1000\r\n\r\n{');
+    // Observe the server's actual active partial request before starting its
+    // drain budget. A client write plus a delay does not establish this fact.
+    const [request] = await requested;
+    assert.equal(request.method, 'PUT'); assert.equal(request.complete, false); assert.equal(request.socket.destroyed, false);
+    const closure = await observed.close();
+    assert.equal(server.publishedMetadata(), undefined); assert.equal(closure.state, 'forced-closed'); assert.equal(closure.forceAttempted, true);
+    assert.equal(closure.serverCloseObserved, true); assert.equal(closure.closeCallbackObserved, true); assert.equal(closure.remainingSockets, 0);
+  } finally { socket.destroy(); await observed.close(); }
 });
 test('tiny real npm pack and npm PUT preserve original dependencies, aliases and tar bytes', { skip: !realNpm }, async () => {
   const { publishArtifact } = require('../../scripts/check-package-registry-consumer.cjs');
