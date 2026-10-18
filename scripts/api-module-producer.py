@@ -121,7 +121,7 @@ def target_identity(repo, target):
     return json.loads(subprocess.check_output(['bun', str(Path(repo) / 'scripts/module-product-targets.ts'), 'api', target, '--require-host'], cwd=repo, text=True))
 
 
-def phase_plan(repo, output, version, target, source_kind=None, retained_byte_ceiling=None):
+def phase_plan(repo, output, version, target, source_kind=None, retained_byte_ceiling=None, controlled_plan_version='current'):
     """Commands are the normal producer entrypoints, without replacement writers."""
     repo, output = Path(repo), Path(output)
     api = ['bun', 'run', '--cwd', 'packages/xpod-api']
@@ -144,6 +144,12 @@ def phase_plan(repo, output, version, target, source_kind=None, retained_byte_ce
     helper = load_controlled_helper(Path(__file__).resolve().parent.parent)
     work = output / 'controlled-inngest-work'
     native = controlled_phase_rows(helper, repo, work, target, source_kind, retained_byte_ceiling)
+    if controlled_plan_version not in ('current','linux-arm64-v1') or controlled_plan_version=='linux-arm64-v1' and target!='linux-arm64':
+        raise ValueError('Exact reviewed controlled phase plan version required')
+    if controlled_plan_version=='linux-arm64-v1':
+        for _,argv,_,_ in native:
+            if str(repo/'scripts/lib/inngest-controlled-build.py') in argv:
+                at=argv.index('--target');del argv[at:at+2]
     flags = ['--native-source-kind', source_kind, '--native-build-originals', str(work)]
     result = []
     for name, command, timeout in rows:
@@ -262,7 +268,7 @@ def collect_facts(output, packed, source_sha, version, declaration, target):
         raise ValueError('Original terms inventory required')
     native = values['nativeIndex']
     if native.get('schemaVersion') == 2:
-        if native.get('sourceKind') != 'xpod-controlled-inngest-build-v1' or native.get('target') != target or target != 'linux-arm64':
+        if native.get('sourceKind') != 'xpod-controlled-inngest-build-v1' or native.get('target') != target or target not in load_controlled_helper(Path(__file__).resolve().parent.parent).POLICY['targetDescriptors']:
             raise ValueError('Actual controlled native target/material identity mismatch')
     elif native.get('platform') != target_platform or native.get('arch') != target_arch or native.get('legalClearance') is not False:
         raise ValueError('Actual native target/material identity mismatch')
@@ -313,7 +319,7 @@ def produce(repo, output, target, environment=None, source_kind=None):
     controlled = load_controlled_helper(repo) if source_kind is not None else None
     if controlled is not None and any(manifest.get('scripts',{}).get(name) != command for name,command in [('stage','bun scripts/stage.ts'),('pack','bun scripts/pack.ts')]):
         raise ValueError('Controlled native stage/pack entry recipe differs')
-    if controlled is not None and (source_kind != controlled.POLICY['sourceKind'] or target not in controlled.POLICY['targets']):
+    if controlled is not None and (source_kind != controlled.POLICY['sourceKind'] or target not in controlled.POLICY['targetDescriptors']):
         raise ValueError('Unsupported explicit controlled native source route')
     native_rows = {}
     native_end = None
@@ -353,7 +359,7 @@ def produce(repo, output, target, environment=None, source_kind=None):
                 if remaining <= 0:
                     raise ValueError('Controlled native absolute parent window')
                 cwd = native_rows[name][1]
-                scoped = controlled.environment(output / 'controlled-inngest-work')
+                scoped = controlled.environment(output / 'controlled-inngest-work', target)
                 if name == 'inngest-controlled-go-build':
                     if controlled.total_check(output / 'controlled-inngest-work') + 192*1024**2 + limits['metadataBytes'] > ceiling:
                         raise ValueError('Compiled binary reservation exceeds shared retained capacity')

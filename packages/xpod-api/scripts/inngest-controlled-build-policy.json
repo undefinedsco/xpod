@@ -1,9 +1,6 @@
 {
   "schemaVersion": 1,
   "sourceKind": "xpod-controlled-inngest-build-v1",
-  "targets": [
-    "linux-arm64"
-  ],
   "repository": "inngest/inngest",
   "sourceCommit": "0d75b0b305010b5e90a627703e9d1df4464b1e39",
   "version": "1.40.0",
@@ -15,22 +12,6 @@
     "url": "https://codeload.github.com/inngest/inngest/legacy.tar.gz/0d75b0b305010b5e90a627703e9d1df4464b1e39"
   },
   "tools": {
-    "go": {
-      "file": "go1.26.4.linux-arm64.tar.gz",
-      "bytes": 63740285,
-      "sha256": "ef758ae7c6cf9267c9c0ef080b8965f453d89ab2d25d9eb22de4405925238768",
-      "prefix": "go",
-      "version": "go1.26.4",
-      "url": "https://dl.google.com/go/go1.26.4.linux-arm64.tar.gz"
-    },
-    "node": {
-      "file": "node-v20.19.6-linux-arm64.tar.xz",
-      "maximumBytes": 67108864,
-      "sha256": "e24741779ae4c2f3c79b362fa5c0c8bbcdca1a6240eb5906c58dc762dcb62e0e",
-      "prefix": "node-v20.19.6-linux-arm64",
-      "version": "v20.19.6",
-      "url": "https://nodejs.org/dist/v20.19.6/node-v20.19.6-linux-arm64.tar.xz"
-    },
     "pnpm": {
       "file": "pnpm-10.18.2.tgz",
       "maximumBytes": 33554432,
@@ -49,5 +30,131 @@
     "-s -w -X github.com/inngest/inngest/pkg/inngest/version.Version=1.40.0 -X github.com/inngest/inngest/pkg/inngest/version.Hash=0d75b0b30"
   ],
   "scope": "Explicit Xpod-controlled compile from fixed source. Not an official release asset, not a reproduction claim, and not admission by producer metadata.",
-  "acquisitionWindowSeconds": 120
+  "acquisitionWindowSeconds": 120,
+  "targetDescriptors": {
+    "linux-arm64": {
+      "platform": "linux",
+      "arch": "arm64",
+      "goos": "linux",
+      "goarch": "arm64",
+      "architectureEnvironment": {
+        "GOARM64": "v8.0"
+      },
+      "binaryFormat": {
+        "format": "elf64-le",
+        "machine": 183
+      },
+      "tools": {
+        "go": {
+          "file": "go1.26.4.linux-arm64.tar.gz",
+          "bytes": 63740285,
+          "sha256": "ef758ae7c6cf9267c9c0ef080b8965f453d89ab2d25d9eb22de4405925238768",
+          "prefix": "go",
+          "version": "go1.26.4",
+          "url": "https://dl.google.com/go/go1.26.4.linux-arm64.tar.gz"
+        },
+        "node": {
+          "file": "node-v20.19.6-linux-arm64.tar.xz",
+          "maximumBytes": 67108864,
+          "sha256": "e24741779ae4c2f3c79b362fa5c0c8bbcdca1a6240eb5906c58dc762dcb62e0e",
+          "prefix": "node-v20.19.6-linux-arm64",
+          "version": "v20.19.6",
+          "url": "https://nodejs.org/dist/v20.19.6/node-v20.19.6-linux-arm64.tar.xz"
+        }
+      }
+    },
+    "linux-x64": {
+      "platform": "linux",
+      "arch": "x64",
+      "goos": "linux",
+      "goarch": "amd64",
+      "architectureEnvironment": {
+        "GOAMD64": "v1"
+      },
+      "binaryFormat": {
+        "format": "elf64-le",
+        "machine": 62
+      },
+      "tools": {
+        "go": {
+          "file": "go1.26.4.linux-amd64.tar.gz",
+          "bytes": 66861266,
+          "sha256": "1153d3d50e0ac764b447adfe05c2bcf08e889d42a02e0fe0259bd47f6733ad7f",
+          "url": "https://dl.google.com/go/go1.26.4.linux-amd64.tar.gz",
+          "prefix": "go",
+          "version": "go1.26.4"
+        },
+        "node": {
+          "file": "node-v20.19.6-linux-x64.tar.xz",
+          "bytes": 25896608,
+          "sha256": "c514127107ebf6e3885f793b06674574d71fe22e3df91a78c52c5a6f84b3b5b0",
+          "url": "https://nodejs.org/dist/v20.19.6/node-v20.19.6-linux-x64.tar.xz",
+          "prefix": "node-v20.19.6-linux-x64",
+          "version": "v20.19.6"
+        }
+      }
+    },
+    "darwin-x64": {
+      "platform": "darwin",
+      "arch": "x64",
+      "goos": "darwin",
+      "goarch": "amd64",
+      "architectureEnvironment": {
+        "GOAMD64": "v1"
+      },
+      "binaryFormat": {
+        "format": "macho64-le",
+        "cpuType": 16777223
+      },
+      "tools": {
+        "go": {
+          "file": "go1.26.4.darwin-amd64.tar.gz",
+          "bytes": 67816160,
+          "sha256": "05dc9b5f9997744520aaebb3d5deaa7c755371aebbfb7f97c2511a9f3367538d",
+          "url": "https://dl.google.com/go/go1.26.4.darwin-amd64.tar.gz",
+          "prefix": "go",
+          "version": "go1.26.4"
+        },
+        "node": {
+          "file": "node-v20.19.6-darwin-x64.tar.gz",
+          "bytes": 42595477,
+          "sha256": "3f8c96205b22374d8dc54531586f164afe546e722aa8f9c813f17dcf30fb978b",
+          "url": "https://nodejs.org/dist/v20.19.6/node-v20.19.6-darwin-x64.tar.gz",
+          "prefix": "node-v20.19.6-darwin-x64",
+          "version": "v20.19.6"
+        }
+      }
+    },
+    "darwin-arm64": {
+      "platform": "darwin",
+      "arch": "arm64",
+      "goos": "darwin",
+      "goarch": "arm64",
+      "architectureEnvironment": {
+        "GOARM64": "v8.0"
+      },
+      "binaryFormat": {
+        "format": "macho64-le",
+        "cpuType": 16777228
+      },
+      "tools": {
+        "go": {
+          "file": "go1.26.4.darwin-arm64.tar.gz",
+          "bytes": 64723756,
+          "sha256": "b62ad2b6d7d2464f12a5bcad7ff47f19d08325773b5efd21610e445a05a9bf53",
+          "url": "https://dl.google.com/go/go1.26.4.darwin-arm64.tar.gz",
+          "prefix": "go",
+          "version": "go1.26.4"
+        },
+        "node": {
+          "file": "node-v20.19.6-darwin-arm64.tar.gz",
+          "bytes": 41329148,
+          "sha256": "53dc59c40870460d5f72b279d06ef2c0ae70cdc154317003f853545f2f4e7747",
+          "url": "https://nodejs.org/dist/v20.19.6/node-v20.19.6-darwin-arm64.tar.gz",
+          "prefix": "node-v20.19.6-darwin-arm64",
+          "version": "v20.19.6"
+        }
+      }
+    }
+  }
 }

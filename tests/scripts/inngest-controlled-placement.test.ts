@@ -5,7 +5,7 @@ import {mkdtempSync,mkdirSync,writeFileSync,chmodSync,rmSync,copyFileSync} from 
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 const source=Buffer.from('tiny synthetic source archive');
-vi.mock('../../packages/xpod-api/scripts/inngest-controlled-build-policy.json',()=>({default:{sourceKind:'xpod-controlled-inngest-build-v1',targets:['linux-arm64'],sourceCommit:'0d75b0b305010b5e90a627703e9d1df4464b1e39',source:{file:'inngest-source.tar.gz',bytes:29,sha256:'filler',url:'https://fixture.invalid/source'},tools:{}}}));
+vi.mock('../../packages/xpod-api/scripts/inngest-controlled-build-policy.json',()=>({default:{sourceKind:'xpod-controlled-inngest-build-v1',targetDescriptors:{'linux-arm64':{platform:'linux',arch:'arm64',binaryFormat:{format:'elf64-le',machine:183},tools:{}}},sourceCommit:'0d75b0b305010b5e90a627703e9d1df4464b1e39',source:{file:'inngest-source.tar.gz',bytes:29,sha256:'filler',url:'https://fixture.invalid/source'},tools:{}}}));
 // Import actual policy mock object to install the fixture digest explicitly.
 import policy from '../../packages/xpod-api/scripts/inngest-controlled-build-policy.json';
 import {assertControlledInngestStage,prepareControlledInngestPlacement} from '../../packages/xpod-api/scripts/controlled-native-material';

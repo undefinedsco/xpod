@@ -7,12 +7,12 @@ import policy from './inngest-controlled-build-policy.json';
 import {isDeepStrictEqual} from 'node:util';
 import limits from '../../../scripts/lib/module-artifact-limits.json';
 import contract from './inngest-controlled-materials-contract.json';
-import {controlledMaterialRecord as record,controlledMaterialReference as reference,selectControlledInngestCollection,type ControlledMaterialReference as Reference} from '../../../scripts/lib/inngest-controlled-materials';
+import {controlledMaterialRecord as record,controlledMaterialReference as reference,selectControlledInngestCollection,controlledInngestTarget,controlledInngestTools,controlledTargetBinding,assertControlledInngestBinaryHeader,type ControlledMaterialReference as Reference} from '../../../scripts/lib/inngest-controlled-materials';
 type Identity = Stats;
 const identity = (s:Identity):string => [s.dev,s.ino,s.size,s.mode,s.nlink,s.mtimeMs,s.ctimeMs].join(':');
 function need(value:unknown, reason:string):asserts value { if(!value) throw new Error('Controlled Inngest: '+reason); }
 export function prepareControlledInngestPlacement(materialsRoot:string,target:string) {
- need(target==='linux-arm64' && policy.targets.includes(target),'explicit controlled target');
+ controlledInngestTarget(target);
  const root=realpathSync(materialsRoot);need(path.resolve(materialsRoot)===root && lstatSync(root).isDirectory(),'canonical materials root');
  const rootIdentity=identity(lstatSync(root));
  const guards=new Map<string,string>();const refs=new Map<string,Reference>();let total=0;
@@ -37,10 +37,10 @@ export function prepareControlledInngestPlacement(materialsRoot:string,target:st
  const {binary,license,sourceArchive,inputs,preparation}=selectControlledInngestCollection(collection,target);
  verify(binary,192*1024**2);
  const binaryFile=path.join(root,binary.path);need((lstatSync(binaryFile).mode&0o111)!==0,'executable product mode');
- const header=Buffer.alloc(64);const binaryFd=openSync(binaryFile,'r');try{need(readSync(binaryFd,header,0,64,0)===64 && header.subarray(0,4).equals(Buffer.from([0x7f,0x45,0x4c,0x46])) && header[4]===2 && header[5]===1 && header.readUInt16LE(18)===183,'Linux arm64 ELF product');}finally{closeSync(binaryFd);}
+ const header=Buffer.alloc(64);const binaryFd=openSync(binaryFile,'r');try{need(readSync(binaryFd,header,0,64,0)===64,'actual binary header');assertControlledInngestBinaryHeader(header,target);}finally{closeSync(binaryFd);}
  verify(license,limits.metadataBytes);verify(sourceArchive);verify(inputs,limits.metadataBytes);const prep=record(JSON.parse(verify(preparation,limits.metadataBytes)!.toString('utf8')));
- need(prep.sourceKind===policy.sourceKind&&prep.sourceCommit===policy.sourceCommit&&Array.isArray(prep.originals)&&Array.isArray(prep.acquisitionOriginals),'preparation references');
- const originalRefs=(prep.originals as unknown[]).map(reference),httpRefs=(prep.acquisitionOriginals as unknown[]).map(reference),pins=[policy.source,...Object.values(policy.tools)];
+ need(prep.sourceKind===policy.sourceKind&&prep.sourceCommit===policy.sourceCommit&&controlledTargetBinding(prep.target,target)&&Array.isArray(prep.originals)&&Array.isArray(prep.acquisitionOriginals),'preparation references');
+ const originalRefs=(prep.originals as unknown[]).map(reference),httpRefs=(prep.acquisitionOriginals as unknown[]).map(reference),pins=[policy.source,...Object.values(controlledInngestTools(target))];
  need(originalRefs.length===pins.length&&httpRefs.length===pins.length&&new Set(originalRefs.map(r=>r.path)).size===pins.length&&new Set(httpRefs.map(r=>r.path)).size===pins.length,'fixed acquisition original sets');
  for(const pin of pins){const original=originalRefs.find(r=>r.path==='originals/'+pin.file),http=httpRefs.find(r=>r.path===pin.file+'.http.original.json');need(original&&http,'fixed acquired original');if('bytes' in pin)need(original.bytes===pin.bytes,'fixed acquired size');if('sha256' in pin)need(original.sha256===pin.sha256,'fixed acquired SHA256');verify(original,'maximumBytes' in pin?pin.maximumBytes:pin.bytes,'integrity' in pin?pin.integrity:undefined);const transport=record(JSON.parse(verify(http,limits.metadataBytes)!.toString('utf8')));need(transport.url===pin.url&&transport.status===200&&transport.bytes===original.bytes&&transport.sha256===original.sha256,'actual fixed acquisition transport');}
  const all=record(collection.originals),generated=record(collection.generated);

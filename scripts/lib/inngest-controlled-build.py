@@ -33,19 +33,30 @@ def sha(file):
     after=Path(file).lstat();identity=lambda value:(value.st_dev,value.st_ino,value.st_mode,value.st_size,value.st_nlink,value.st_mtime_ns,value.st_ctime_ns);need(identity(before)==identity(after) and count==before.st_size,'original changed');return value.hexdigest()
 def reference(file,output):
     p=Path(file);return dict(path=p.relative_to(output).as_posix(),bytes=p.stat().st_size,sha256=sha(p))
-def environment(work):
-    work=Path(work).resolve();home=work/'home';tools=work/'tools'
-    return dict(HOME=str(home),TMPDIR=str(work/'tmp'),PATH=str(tools/'node/bin')+':/usr/bin:/bin',LANG='C.UTF-8',LC_ALL='C.UTF-8',CI='1',NEXT_TELEMETRY_DISABLED='1',DO_NOT_TRACK='1',COREPACK_ENABLE_DOWNLOAD_PROMPT='0',GOPROXY='off',GOSUMDB='off',GOENV='off',GOTOOLCHAIN='local',GOWORK='off',CGO_ENABLED='0',GOOS='linux',GOARCH='arm64',GOARM64='v8.0',GOCACHE=str(work/'go-cache'),GOMODCACHE=str(work/'go-mod-cache'))
+def target_descriptor(target):
+    value=POLICY['targetDescriptors'].get(target);need(value is not None and target==value['platform']+'-'+value['arch'],'explicit reviewed target descriptor required');return value
+def target_tools(target):return dict(POLICY['tools'],**target_descriptor(target)['tools'])
+def require_host(target):
+    value=target_descriptor(target);machine=os.uname().machine
+    need(sys.platform==value['platform'] and machine in ({'arm64','aarch64'} if value['arch']=='arm64' else {'x86_64','amd64'}),'matching native build host required')
+    # A translated Darwin process would execute the wrong compiler architecture.
+    if sys.platform=='darwin':
+        import ctypes
+        libc=ctypes.CDLL('/usr/lib/libSystem.B.dylib',use_errno=True);translated=ctypes.c_int();size=ctypes.c_size_t(ctypes.sizeof(translated));rc=libc.sysctlbyname(b'sysctl.proc_translated',ctypes.byref(translated),ctypes.byref(size),None,0)
+        need(rc==0 and translated.value==0 or rc==-1 and ctypes.get_errno()==2,'translated or unclassified Darwin build host refused')
+def environment(work,target='linux-arm64'):
+    descriptor=target_descriptor(target);work=Path(work).resolve();home=work/'home';tools=work/'tools'
+    return dict(HOME=str(home),TMPDIR=str(work/'tmp'),PATH=str(tools/'node/bin')+':/usr/bin:/bin',LANG='C.UTF-8',LC_ALL='C.UTF-8',CI='1',NEXT_TELEMETRY_DISABLED='1',DO_NOT_TRACK='1',COREPACK_ENABLE_DOWNLOAD_PROMPT='0',GOPROXY='off',GOSUMDB='off',GOENV='off',GOTOOLCHAIN='local',GOWORK='off',CGO_ENABLED='0',GOOS=descriptor['goos'],GOARCH=descriptor['goarch'],**descriptor['architectureEnvironment'],GOCACHE=str(work/'go-cache'),GOMODCACHE=str(work/'go-mod-cache'))
 def native_deadline(parent_deadline, now):
     need(isinstance(parent_deadline,(int,float)) and isinstance(now,(int,float)) and now < parent_deadline,'remaining parent deadline required')
     return min(parent_deadline, now + POLICY['nativeWindowSeconds'])
 
 def phase_plan(repo,work,target,source_kind,retainedByteCeiling=LIMITS['sourceMaterialBytes']):
     """Pure plan; target/route must be explicit, never inferred from failure."""
-    repo,work=Path(repo).resolve(),Path(work).resolve();need(target in POLICY['targets'] and source_kind==POLICY['sourceKind'],'unsupported explicit source kind/target')
+    repo,work=Path(repo).resolve(),Path(work).resolve();target_descriptor(target);need(source_kind==POLICY['sourceKind'],'unsupported explicit source kind/target')
     need(type(retainedByteCeiling) is int and 0<=retainedByteCeiling<=LIMITS['sourceMaterialBytes'],'retained byte ceiling may only tighten')
     helper=repo/'scripts/lib/inngest-controlled-build.py';source=work/'source';node=work/'tools/node/bin/node';pnpm=work/'tools/pnpm/bin/pnpm.cjs';go=work/'tools/go/bin/go'
-    def own(action):return [sys.executable,'-I','-S','-B',str(helper),action,str(work),'--retained-byte-ceiling',str(retainedByteCeiling)]
+    def own(action):return [sys.executable,'-I','-S','-B',str(helper),action,str(work),'--target',target,'--retained-byte-ceiling',str(retainedByteCeiling)]
     return [
       ('inngest-controlled-acquire',own('acquire'),repo,POLICY['acquisitionWindowSeconds']),
       ('inngest-controlled-prepare',own('prepare'),repo,300),
@@ -97,7 +108,7 @@ def unpack_fixed(file,destination,prefix):
         need(not os.path.isabs(link) and '\x00' not in link,'relative source link');resolved=(target.parent/link).resolve();need(resolved.is_relative_to(destination.resolve()),'source link escapes');target.symlink_to(link)
     return total
 
-def acquire(work):
+def acquire(work,target='linux-arm64'):
     """Fixed public originals, no token/candidate URL or redirects; parent supervises."""
     originals=work/'originals';originals.mkdir(mode=0o700)
     class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -109,7 +120,7 @@ def acquire(work):
     signal.signal(signal.SIGALRM,expired);signal.setitimer(signal.ITIMER_REAL,POLICY['acquisitionWindowSeconds'])
     budget=MaterialBudget(work)
     try:
-        for pin in [POLICY['source'],*POLICY['tools'].values()]:
+        for pin in [POLICY['source'],*target_tools(target).values()]:
             partial=originals/(pin['file']+'.partial');count=0
             request=urllib.request.Request(pin['url'],headers={'User-Agent':'xpod-controlled-inngest-originals','Accept-Encoding':'identity'})
             with opener.open(request,timeout=30) as response:
@@ -125,20 +136,20 @@ def acquire(work):
     finally:
         signal.setitimer(signal.ITIMER_REAL,0);signal.signal(signal.SIGALRM,previous)
 
-def prepare(work):
-    need(sys.platform=='linux' and os.uname().machine in ['aarch64','arm64'],'matching Linux arm64 build host required')
+def prepare(work,target='linux-arm64'):
+    require_host(target)
     originals=work/'originals';need(originals.is_dir() and not (work/'source').exists(),'supplied originals and fresh workspace required')
     for folder in ['tools','products','home','tmp','go-cache','go-mod-cache']:(work/folder).mkdir(mode=0o700)
     verify_original(originals/POLICY['source']['file'],POLICY['source']);unpack_fixed(originals/POLICY['source']['file'],work/'source','inngest-inngest-'+POLICY['sourceCommit'][:7])
-    for name,pin in POLICY['tools'].items():verify_original(originals/pin['file'],pin);unpack_fixed(originals/pin['file'],work/'tools'/name,pin['prefix'])
-    expected={pin['file'] for pin in [POLICY['source'],*POLICY['tools'].values()]};need({p.name for p in originals.iterdir()}==expected,'fixed original file set')
+    for name,pin in target_tools(target).items():verify_original(originals/pin['file'],pin);unpack_fixed(originals/pin['file'],work/'tools'/name,pin['prefix'])
+    expected={pin['file'] for pin in [POLICY['source'],*target_tools(target).values()]};need({p.name for p in originals.iterdir()}==expected,'fixed original file set')
     acquisition=[]
-    for pin in [POLICY['source'],*POLICY['tools'].values()]:
+    for pin in [POLICY['source'],*target_tools(target).values()]:
         file=work/(pin['file']+'.http.original.json');need(file.stat().st_size<=LIMITS['metadataBytes'],'HTTP original metadata bound');value=json.loads(file.read_text());original=reference(originals/pin['file'],work)
         need(value.get('url')==pin['url'] and value.get('status')==200 and value.get('bytes')==original['bytes'] and value.get('sha256')==original['sha256'],'actual fixed acquisition reference');acquisition.append(reference(file,work))
-    write_metadata(work/'preparation.original.json',dict(sourceKind=POLICY['sourceKind'],sourceCommit=POLICY['sourceCommit'],originals=[reference(p,work) for p in sorted(originals.iterdir())],acquisitionOriginals=acquisition,scope='producer extraction only; no authority issued'),MaterialBudget(work))
+    write_metadata(work/'preparation.original.json',dict(sourceKind=POLICY['sourceKind'],sourceCommit=POLICY['sourceCommit'],target=target,originals=[reference(p,work) for p in sorted(originals.iterdir())],acquisitionOriginals=acquisition,scope='producer extraction only; no authority issued'),MaterialBudget(work))
 
-def materialize_ui(work):
+def materialize_ui(work,target='linux-arm64'):
     """The upstream Makefile copies the built dist into Go's embedded static tree."""
     source=work/'source/ui/apps/dev-server-ui/dist';target=work/'source/pkg/devserver/static'
     need(source.is_dir() and not source.is_symlink() and target.is_dir() and not target.is_symlink(),'actual UI dist and static roots')
@@ -207,25 +218,34 @@ def write_metadata(file,value,budget):
     budget.reserve(len(encoded))
     with file.open('xb') as out:out.write(encoded)
 
-def capture_inputs(work):
+def capture_inputs(work,target='linux-arm64'):
     need(not (work/'inputs.original.json').exists(),'fresh input snapshot required');before=domains(work);need(sum(map(len,before.values()))<=LIMITS['sourceMembers'],'combined source input member bound');records={};budget=MaterialBudget(work)
     for name,rows in before.items():records[name]=capture_domain(work,'before-'+name,name,rows,work/('tools' if name=='toolchain' else 'source'),budget)
     after=domains(work);need(after==before,'build inputs changed during capture')
-    write_metadata(work/'inputs.original.json',dict(sourceKind=POLICY['sourceKind'],originals=records),budget);total_check(work)
+    write_metadata(work/'inputs.original.json',dict(sourceKind=POLICY['sourceKind'],target=target,originals=records),budget);total_check(work)
 
-def finalize(work):
-    budget=MaterialBudget(work);value=json.loads((work/'inputs.original.json').read_text());after=domains(work);before={name:loaded_rows(work,group) for name,group in value['originals'].items()};need(after['dependencies']==before['dependencies'] and after['toolchain']==before['toolchain'],'dependencies/tool originals changed during compilation')
+def verify_binary_target(file,target):
+    descriptor=target_descriptor(target)['binaryFormat']
+    with Path(file).open('rb') as stream:header=stream.read(64)
+    need(len(header)==64,'complete executable header required')
+    if descriptor['format']=='elf64-le':need(header[:6]==b'\x7fELF\x02\x01' and int.from_bytes(header[18:20],'little')==descriptor['machine'],'matching ELF64 target required')
+    else:need(descriptor['format']=='macho64-le' and int.from_bytes(header[:4],'little')==0xfeedfacf and int.from_bytes(header[4:8],'little')==descriptor['cpuType'],'matching Mach-O64 target required')
+
+def finalize(work,target='linux-arm64'):
+    budget=MaterialBudget(work);value=json.loads((work/'inputs.original.json').read_text());need(value.get('sourceKind')==POLICY['sourceKind'] and (value.get('target')==target or value.get('target') is None and target=='linux-arm64'),'same target input snapshot required');after=domains(work);before={name:loaded_rows(work,group) for name,group in value['originals'].items()};need(after['dependencies']==before['dependencies'] and after['toolchain']==before['toolchain'],'dependencies/tool originals changed during compilation')
     changed={p:v for p,v in after['source'].items() if before['source'].get(p)!=v};removed=sorted(set(before['source'])-set(after['source']));generated=capture_domain(work,'generated','source',changed,work/'source',budget);removed_refs=[]
     for at in range(0,len(removed),1000):
         file=work/'materials'/('removed-'+str(at//1000).zfill(4)+'.json');write_metadata(file,removed[at:at+1000],budget);removed_refs.append(reference(file,work))
-    binary=work/'products/inngest';need(binary.is_file() and 0<binary.stat().st_size<=192*1024**2 and binary.stat().st_mode&0o111,'actual compiled executable required')
-    for name,pin in [('source',POLICY['source']),*POLICY['tools'].items()]:verify_original(work/'originals'/pin['file'],pin)
-    result=dict(schemaVersion=1,sourceKind=POLICY['sourceKind'],sourceCommit=POLICY['sourceCommit'],target='linux-arm64',preparation=reference(work/'preparation.original.json',work),inputs=reference(work/'inputs.original.json',work),originals=value['originals'],generated=dict(changedCount=len(changed),removedCount=len(removed),removedOriginals=removed_refs,originals=generated),binary=reference(binary,work),license=reference(work/'source/LICENSE.md',work),sourceArchive=reference(work/'originals'/POLICY['source']['file'],work),scope='normal producer original materials only; no official release asset or source qualification')
+    binary=work/'products/inngest';need(binary.is_file() and 0<binary.stat().st_size<=192*1024**2 and binary.stat().st_mode&0o111,'actual compiled executable required');verify_binary_target(binary,target)
+    for name,pin in [('source',POLICY['source']),*target_tools(target).items()]:verify_original(work/'originals'/pin['file'],pin)
+    result=dict(schemaVersion=1,sourceKind=POLICY['sourceKind'],sourceCommit=POLICY['sourceCommit'],target=target,preparation=reference(work/'preparation.original.json',work),inputs=reference(work/'inputs.original.json',work),originals=value['originals'],generated=dict(changedCount=len(changed),removedCount=len(removed),removedOriginals=removed_refs,originals=generated),binary=reference(binary,work),license=reference(work/'source/LICENSE.md',work),sourceArchive=reference(work/'originals'/POLICY['source']['file'],work),scope='normal producer original materials only; no official release asset or source qualification')
     write_metadata(work/'controlled-build-materials.json',result,budget);total_check(work)
 
 def main():
     global _retained_byte_ceiling
-    if len(sys.argv)==5:
-        need(sys.argv[3]=='--retained-byte-ceiling' and str(int(sys.argv[4]))==sys.argv[4],'canonical explicit retained ceiling');_retained_byte_ceiling=int(sys.argv[4]);need(0<=_retained_byte_ceiling<=LIMITS['sourceMaterialBytes'],'retained ceiling may only tighten')
-    need(len(sys.argv) in [3,5] and sys.argv[1] in ['acquire','prepare','capture-inputs','materialize-ui','finalize'],'fixed phase and owned work directory required');work=Path(sys.argv[2]);need(work.is_absolute() and work.is_dir() and not work.is_symlink(),'canonical existing private work directory');{'acquire':acquire,'prepare':prepare,'capture-inputs':capture_inputs,'materialize-ui':materialize_ui,'finalize':finalize}[sys.argv[1]](work)
+    import argparse
+    parser=argparse.ArgumentParser();parser.add_argument('action',choices=['acquire','prepare','capture-inputs','materialize-ui','finalize']);parser.add_argument('work');parser.add_argument('--target',default='linux-arm64');parser.add_argument('--retained-byte-ceiling',type=int,default=LIMITS['sourceMaterialBytes']);args=parser.parse_args()
+    target_descriptor(args.target);_retained_byte_ceiling=args.retained_byte_ceiling;need(0<=_retained_byte_ceiling<=LIMITS['sourceMaterialBytes'],'retained ceiling may only tighten')
+    work=Path(args.work);need(work.is_absolute() and work.is_dir() and not work.is_symlink(),'canonical existing private work directory');require_host(args.target)
+    {'acquire':acquire,'prepare':prepare,'capture-inputs':capture_inputs,'materialize-ui':materialize_ui,'finalize':finalize}[args.action](work,args.target)
 if __name__=='__main__':main()

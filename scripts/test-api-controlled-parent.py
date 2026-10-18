@@ -26,7 +26,7 @@ class Contract(unittest.TestCase):
   for n,c,_ in new:
    if n in ('stage','pack'):self.assertEqual(c[-4:],['--native-source-kind','xpod-controlled-inngest-build-v1','--native-build-originals','/owned/out/controlled-inngest-work'])
    if n=='inngest-controlled-prepare':self.assertEqual(c[0],'/usr/bin/python3');self.assertEqual(c[-2:],['--retained-byte-ceiling','1000000000'])
-  with self.assertRaises(ValueError):api.phase_plan(ROOT,'/owned/out','1.2.3','darwin-arm64','xpod-controlled-inngest-build-v1',1000)
+  with self.assertRaises(ValueError):api.phase_plan(ROOT,'/owned/out','1.2.3','windows-x64','xpod-controlled-inngest-build-v1',1000)
  def test_exact_staging_context(self):
   with tempfile.TemporaryDirectory(dir=ROOT/'.test-data') as temp:
    event=Path(temp)/'event.json';sha='a'*40

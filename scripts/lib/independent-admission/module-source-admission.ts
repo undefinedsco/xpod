@@ -9,7 +9,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { collectedArtifactView,assertCollectedPublicationCustody } from './artifact-collector';
 import { derivedSourceView,assertDerivedSourceCurrent } from './source-context';
 import { githubOriginFacts, githubOriginOriginals, type GitHubOriginObservation } from './github-origin';
-import { inspectModuleSourcePhases } from './module-source-phases';
+import { inspectModuleSourcePhases,controlledApiSourceRecipe } from './module-source-phases';
 
 const MiB = 1024 ** 2;
 const limits = JSON.parse(readFileSync(new URL('../module-artifact-limits.json', import.meta.url), 'utf8'));
@@ -251,7 +251,7 @@ export function inspectModuleSourceAdmission(input: { artifact: unknown; source:
   if(producer.nativeBuildOriginals!==undefined){
     if(phases.module!=='api'||!artifact.readMemberRange)return fail('controlled native product range capability required');
     const declarations=['packages/xpod-api/scripts/inngest-controlled-build-policy.json','packages/xpod-api/scripts/inngest-controlled-materials-contract.json','scripts/lib/inngest-controlled-build.py','packages/xpod-api/scripts/controlled-native-material.ts'];
-    for(const name of declarations)if(!source.readTracked(name).equals(readFileSync(new URL('../../../'+name,import.meta.url))))return fail('controlled native declaration differs from reviewed controller bytes');
+    controlledApiSourceRecipe(source.readTracked,hash(source.readTracked('scripts/api-module-producer.py')),artifact.identity.target!);
     const policy=JSON.parse(source.readTracked(declarations[0]!).toString()),contract=JSON.parse(source.readTracked(declarations[1]!).toString());
     native=inspectModuleNativeBuildOriginals({remainingMilliseconds:limits.timeoutMs-(performance.now()-startedAt),producer,inventory:artifact.producerOriginals,productMembers:artifact.members,identity:artifact.identity,policy,contract,
       jobWindow:{start:Date.parse(job.started_at),end:Date.parse(job.completed_at)},readOriginal:artifact.readProducerOriginal,readRange:ranged.readProducerOriginalRange,

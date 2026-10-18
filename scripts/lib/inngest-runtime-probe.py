@@ -186,7 +186,7 @@ def installed_binary_expectation(index,target):
         expected=index.get('binarySHA256');size=None
     elif index.get('schemaVersion')==2:
         controlled=bounded_json(controlled_policy_file())
-        need(index.get('sourceKind')==controlled['sourceKind'] and target in controlled['targets'] and index.get('target')==target and index.get('sourceCommit')==controlled['sourceCommit'],'controlled index selector differs')
+        need(index.get('sourceKind')==controlled['sourceKind'] and target in controlled['targetDescriptors'] and index.get('target')==target and index.get('sourceCommit')==controlled['sourceCommit'],'controlled index selector differs')
         binary=index.get('binary');need(isinstance(binary,dict) and binary.get('path')=='node_modules/inngest-cli/bin/inngest','fixed controlled installed path')
         expected=binary.get('sha256');size=binary.get('bytes');need(type(size) is int and 0<size<=MAXIMUM,'bounded controlled binary size')
     else:raise ValueError('Installed Inngest runtime: unsupported native index schema')

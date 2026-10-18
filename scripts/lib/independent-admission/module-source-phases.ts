@@ -11,7 +11,7 @@ import { githubOriginFacts, githubOriginOriginals, type GitHubOriginObservation 
 // These policies review actual phase-plan and supervisor implementations. The
 // producer remains the sole phase/command declaration; no parallel phase table.
 export const moduleSourcePhasePolicy = Object.freeze({
-  api: '6999603e280c8df1be5fe068eff34cf4c357dc99e9052914040ab6db330ce058',
+  api: '8cfb86a4fa5de62e2938e51e459ae9c5c3bbe95cf0aaad88d59de9a9b900e920',
   css: '78e2ec3c272233602083f81d574cfefc5f6c36e9200c1d92e6f7935bd6cac41f',
   afs: 'c44348bd2e28b04c5e427c0070045c0e28c9437b7abadae6bdcc72d405abd508',
   materials: 'c28f194ca9767f2aeddd9cff6f633dac2280ae9c4e5d716d3273706afce81850',
@@ -26,9 +26,51 @@ export const CSS_SOURCE_PARENT_VERSIONS = Object.freeze([
 ]);
 export function reviewedModuleProducerSource(module: 'api' | 'css' | 'afs', sha256: string): boolean {
   return module === 'css' ? CSS_SOURCE_PARENT_VERSIONS.some(row => row.producerSha256 === sha256)
-    : module === 'api' ? [moduleSourcePhasePolicy.api, '14fbe7416ad1e1f19ca9384614b1b57404e2ed89d2a766172c490b11cc4667e8', 'eaeddab536d6e606042039cfe5290393d5c5a3e454fb590354cc35e5afe2975f'].includes(sha256) : sha256 === moduleSourcePhasePolicy[module];
+    : module === 'api' ? [moduleSourcePhasePolicy.api, '6999603e280c8df1be5fe068eff34cf4c357dc99e9052914040ab6db330ce058', '14fbe7416ad1e1f19ca9384614b1b57404e2ed89d2a766172c490b11cc4667e8', 'eaeddab536d6e606042039cfe5290393d5c5a3e454fb590354cc35e5afe2975f'].includes(sha256) : sha256 === moduleSourcePhasePolicy[module];
 }
 export const CONTROLLED_API_SOURCE_RECIPE = Object.freeze([
+  {
+    "path": "scripts/lib/inngest-controlled-build.py",
+    "sha256": "a8746e8bed74dec2a6726a36e5aed623173d6666dfed925b2d8848fa3358aec2"
+  },
+  {
+    "path": "packages/xpod-api/scripts/inngest-controlled-build-policy.json",
+    "sha256": "03fe62750b08a55b763c028367e3eb6d25d17128088191cf4edf3c76c0d507d6"
+  },
+  {
+    "path": "packages/xpod-api/scripts/inngest-controlled-materials-contract.json",
+    "sha256": "9ca5ffb4e8d7d62bceb10a90a7a424b1b028d271fb0faba1f9e810b28f4f4d90"
+  },
+  {
+    "path": "packages/xpod-api/scripts/controlled-native-material.ts",
+    "sha256": "d1530cba12de2f599b6aaf2e3b38d17abd68b6c58ee7f8e0002f0262c14b0ef4"
+  },
+  {
+    "path": "scripts/lib/inngest-controlled-materials.ts",
+    "sha256": "c47ddb2bd3b1443cefbf5c4a41f6881c975bafd574bfe70079b73564da7b9ba6"
+  },
+  {
+    "path": "scripts/lib/module-source-materials.py",
+    "sha256": "c28f194ca9767f2aeddd9cff6f633dac2280ae9c4e5d716d3273706afce81850"
+  },
+  {
+    "path": "packages/xpod-api/scripts/stage.ts",
+    "sha256": "b8d357f4a8bf062718404fd15fa5a89433e23d8cf4166289a7afc094b521270b"
+  },
+  {
+    "path": "packages/xpod-api/scripts/pack.ts",
+    "sha256": "896f3ec37b743b9f9716c5672266363403c845893b370254203563197c831c40"
+  },
+  {
+    "path": "scripts/lib/physical-module-stage.ts",
+    "sha256": "41bbf5387ab913625aa29663c0f2758b3b783de28f48c201d375369a7268c750"
+  },
+  {
+    "path": "scripts/lib/physical-module-native-placement.ts",
+    "sha256": "556fcb7c2fa475c802d21a0158c6ea33ba614434352b009ea8005944863be173"
+  }
+]);
+const HISTORICAL_CONTROLLED_API_RECIPE = Object.freeze([
   {
     "path": "scripts/lib/inngest-controlled-build.py",
     "sha256": "4f8dd31f989c311fece36fa3f3998be5aa7fa56e6e28c2a926d599973fd132fe"
@@ -70,13 +112,23 @@ export const CONTROLLED_API_SOURCE_RECIPE = Object.freeze([
     "sha256": "556fcb7c2fa475c802d21a0158c6ea33ba614434352b009ea8005944863be173"
   }
 ]);
+/** Producer hash selects one whole recipe before any recipe file is read. */
+export function controlledApiSourceRecipe(readTracked:(name:string)=>Buffer,producerSha:string,target:string){
+ const historical=producerSha==='6999603e280c8df1be5fe068eff34cf4c357dc99e9052914040ab6db330ce058';
+ if(!historical&&producerSha!==moduleSourcePhasePolicy.api||historical&&target!=='linux-arm64')return fail('controlled producer/target recipe not reviewed');
+ if(!historical){const policy=JSON.parse(readTracked('packages/xpod-api/scripts/inngest-controlled-build-policy.json').toString());if(!Object.prototype.hasOwnProperty.call(policy.targetDescriptors??{},target))return fail('controlled descriptor target not reviewed');}
+ const rows=historical?HISTORICAL_CONTROLLED_API_RECIPE:CONTROLLED_API_SOURCE_RECIPE;
+ for(const row of rows)if(hash(readTracked(row.path))!==row.sha256)return fail('controlled native complete source recipe mismatch');
+ return Object.freeze({planVersion:historical?'linux-arm64-v1' as const:'current' as const,rows});
+}
+
 const hash = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
 const fail = (message: string): never => { throw new Error('Module source phases: ' + message); };
 
 /** Pure policy projection from the one reviewed producer's phase_plan. This
  * executes verifier-owned, hash-checked code, never candidate source code. */
 export function reviewedModulePhasePlan(module: 'api' | 'css' | 'afs', repositoryRoot: string, outputRoot: string,
-  version: string, target: string, controlled?:Readonly<{sourceKind:string;retainedByteCeiling:number}>): readonly { name: string; command: string[]; timeoutSeconds: number }[] {
+  version: string, target: string, controlled?:Readonly<{sourceKind:string;retainedByteCeiling:number;planVersion?:'current'|'linux-arm64-v1'}>): readonly { name: string; command: string[]; timeoutSeconds: number }[] {
   if (!Object.prototype.hasOwnProperty.call(moduleSourcePhasePolicy, module) || !['api', 'css', 'afs'].includes(module)) return fail('unsupported producer');
   const file = fileURLToPath(new URL(`../../${module}-module-producer.py`, import.meta.url));
   const before = readFileSync(file);
@@ -85,7 +137,7 @@ export function reviewedModulePhasePlan(module: 'api' | 'css' | 'afs', repositor
   checkControlledController();
   const wrapper = "import json,sys; p={'__name__':'reviewed_phase_policy','__file__':sys.argv[1]}; exec(compile(sys.stdin.buffer.read(),sys.argv[1],'exec'),p); a=json.loads(sys.argv[2]); print(json.dumps([{'name':n,'command':c,'timeoutSeconds':t} for n,c,t in p['phase_plan'](*a)]))";
   const result = spawnSync('/usr/bin/python3', ['-I', '-B', '-c', wrapper, file,
-    JSON.stringify([repositoryRoot, outputRoot, version, target,...(controlled?[controlled.sourceKind,controlled.retainedByteCeiling]:[])])], { timeout: 2500, maxBuffer: 65536,
+    JSON.stringify([repositoryRoot, outputRoot, version, target,...(controlled?[controlled.sourceKind,controlled.retainedByteCeiling,controlled.planVersion??'current']:[])])], { timeout: 2500, maxBuffer: 65536,
     env: { PATH: '/usr/bin:/bin', LANG: 'C.UTF-8' }, input: before, encoding: 'utf8' });
   if (result.status !== 0 || result.signal || result.error || hash(readFileSync(file)) !== hash(before)) return fail('reviewed phase projection failed');
   checkControlledController();
@@ -172,11 +224,12 @@ export function inspectModuleSourcePhases(input: { artifact: unknown; source: un
   // receipt; candidate input cannot supply alternate command policy paths.
   let repositoryRoot = '/reviewed-repository', outputRoot = '';
   const controlled=module==='api'&&producer.nativeSourceKind!==undefined;
+  let controlledRecipe:ReturnType<typeof controlledApiSourceRecipe>|undefined;
   if(controlled){
-    if(producer.nativeSourceKind!=='xpod-controlled-inngest-build-v1'||artifact.identity.target!=='linux-arm64'||hash(source.readTracked('scripts/api-module-producer.py'))!==moduleSourcePhasePolicy.api||!Number.isSafeInteger(producer.nativeRetainedByteCeiling)||producer.nativeRetainedByteCeiling<=0||producer.nativeRetainedByteCeiling>4294967296)return fail('controlled native phase identity/budget');
+    if(producer.nativeSourceKind!=='xpod-controlled-inngest-build-v1'||!Number.isSafeInteger(producer.nativeRetainedByteCeiling)||producer.nativeRetainedByteCeiling<=0||producer.nativeRetainedByteCeiling>4294967296)return fail('controlled native phase identity/budget');
     const packageScripts=JSON.parse(source.readTracked('packages/xpod-api/package.json').toString()).scripts;
     if(packageScripts?.stage!=='bun scripts/stage.ts'||packageScripts?.pack!=='bun scripts/pack.ts')return fail('controlled native package command recipe mismatch');
-    for(const row of CONTROLLED_API_SOURCE_RECIPE)if(hash(source.readTracked(row.path))!==row.sha256)return fail('controlled native complete source recipe mismatch');
+    controlledRecipe=controlledApiSourceRecipe(source.readTracked,hash(source.readTracked('scripts/api-module-producer.py')),artifact.identity.target!);
   }
   const phase = producer.phases.find((row: any) => row.name === (module === 'api' ? controlled?'inngest-controlled-acquire':'native-inputs' : module === 'afs' ? 'afs-build' : 'pack'));
   const receipt = JSON.parse(artifact.readProducerOriginal(phase?.receipt?.path, 1024 ** 2).toString());
@@ -202,7 +255,7 @@ export function inspectModuleSourcePhases(input: { artifact: unknown; source: un
     || !originalOutput.startsWith('/') || !repositoryRoot.startsWith('/'))) return fail('producer output binding missing');
   if(!controlled)outputRoot = originalOutput.slice(0, -suffix.length);
   if(!repositoryRoot.startsWith('/')||!outputRoot!.startsWith('/'))return fail('absolute producer roots required');
-  const plan = reviewedModulePhasePlan(module, repositoryRoot, outputRoot, artifact.identity.version, artifact.identity.target,controlled?{sourceKind:producer.nativeSourceKind,retainedByteCeiling:producer.nativeRetainedByteCeiling}:undefined);
+  const plan = reviewedModulePhasePlan(module, repositoryRoot, outputRoot, artifact.identity.version, artifact.identity.target,controlled?{sourceKind:producer.nativeSourceKind,retainedByteCeiling:producer.nativeRetainedByteCeiling,planVersion:controlledRecipe!.planVersion}:undefined);
   const closure = verifyClosedModulePhaseReceipts(plan, producer, artifact.producerOriginals, artifact.readProducerOriginal,
     { started: job.started_at, closed: job.completed_at });
   return { status: 'observed' as const, sourceQualified: false as const, sourceSha: source.sourceSha,

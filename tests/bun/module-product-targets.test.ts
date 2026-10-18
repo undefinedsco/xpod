@@ -44,12 +44,13 @@ test('both workflows consume actual helper projections and keep target-specific 
     const text = readFileSync(new URL(`../../.github/workflows/${module}-module-product.yml`, import.meta.url), 'utf8');
     const yaml = parseWorkflow(text);
     expect(yaml.jobs.products.strategy.matrix).toBe('${{ fromJSON(needs.contract.outputs.matrix) }}');
-    expect(yaml.jobs.products.strategy['max-parallel']).toBe(1);
+    expect(yaml.jobs.products.strategy['max-parallel']).toBe(module === 'api' ? 4 : 1);
     expect(yaml.jobs.products['runs-on']).toBe('${{ matrix.runner }}');
     expect(text).toContain(`bun scripts/module-product-targets.ts ${module}`);
     expect(text).toContain('--target "${{ matrix.target }}"');
     expect(text).toContain(`${module}-module-products-\${{ matrix.target }}-`);
     expect(yaml.permissions).toEqual({ contents: 'read' });
+    if (module === 'api') expect(text).toContain('api-product-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${{ matrix.target }}');
   }
   const css = parseWorkflow(readFileSync(new URL('../../.github/workflows/css-module-product.yml', import.meta.url), 'utf8'));
   const pending = css.jobs['pending-native-sources'];

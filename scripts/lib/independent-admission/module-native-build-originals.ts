@@ -3,6 +3,7 @@ import {isDeepStrictEqual as same} from 'node:util';
 import path from 'node:path';
 import {performance} from 'node:perf_hooks';
 import limits from '../module-artifact-limits.json';
+import controllerPolicy from '../../../packages/xpod-api/scripts/inngest-controlled-build-policy.json';
 import type {CollectedArtifactIdentity,OriginalReadBudget} from './artifact-contract';
 import {inspectSourceOriginalTar,type SourceTarRow} from './source-original-tar';
 export const MODULE_NATIVE_BUILD_PREFIX='source-materials/native-builds/inngest/';
@@ -18,10 +19,29 @@ export interface ModuleNativeBuildOriginalView {
 const hash=(b:Buffer)=>createHash('sha256').update(b).digest('hex');
 const safe=(name:unknown):name is string=>typeof name==='string'&&Boolean(name)&&!name.startsWith('/')&&!/[\\\u0000-\u001f\u007f]/u.test(name)&&name.split('/').every(part=>part&&part!=='.'&&part!=='..');
 function need(value:unknown,why:string):asserts value{if(!value)throw Error('Module native originals: '+why);}
-/** Closed transport layout only. A matching name never authorizes a build. */
+/** Select file roles from a reviewed policy object; this pure projection issues no authority. */
+export function moduleNativeTargetOriginalFiles(policy:any,target:string):readonly string[]{
+ let tools:any;
+ if(policy.targetDescriptors!==undefined){
+  need(policy.targets===undefined,'mixed historical/current target policy');
+  const descriptor=Object.prototype.hasOwnProperty.call(policy.targetDescriptors,target)?policy.targetDescriptors[target]:undefined;
+  need(descriptor&&target===descriptor.platform+'-'+descriptor.arch,'exact controlled descriptor target');
+  need(Object.keys(policy.tools??{}).join(',')==='pnpm'&&Object.keys(descriptor.tools??{}).sort().join(',')==='go,node','canonical target tool roles');
+  tools={...policy.tools,...descriptor.tools};
+ }else{need(target==='linux-arm64'&&Array.isArray(policy.targets)&&policy.targets.length===1&&policy.targets[0]===target,'historical Linux arm64 target only');tools=policy.tools;}
+ need(Object.keys(tools??{}).sort().join(',')==='go,node,pnpm','four fixed original roles');
+ const names=[policy.source?.file,tools.go.file,tools.node.file,tools.pnpm.file];
+ need(names.every(name=>typeof name==='string'&&safe(name)&&!name.includes('/'))&&new Set(names).size===4,'four exact archive basenames');
+ return Object.freeze(names);
+}
+const canonicalOriginalFiles=new Set(Object.keys(controllerPolicy.targetDescriptors).flatMap(target=>moduleNativeTargetOriginalFiles(controllerPolicy,target)));
+/** Closed transport layout only. A matching exact canonical name never authorizes a build. */
 export function isModuleNativeBuildOriginalName(name:string):boolean{
  if(!name.startsWith(MODULE_NATIVE_BUILD_PREFIX))return false;
- return /^(?:(?:inngest-source\.tar\.gz|go[0-9.]+\.linux-arm64\.tar\.gz|node-v[0-9.]+-linux-arm64\.tar\.xz|pnpm-[0-9.]+\.tgz)\.http\.original\.json|controlled-build-materials\.json|preparation\.original\.json|inputs\.original\.json|products\/inngest|source\/LICENSE\.md|originals\/(?:inngest-source\.tar\.gz|go[0-9.]+\.linux-arm64\.tar\.gz|node-v[0-9.]+-linux-arm64\.tar\.xz|pnpm-[0-9.]+\.tgz)|materials\/(?:before-source\/source|before-dependencies\/dependencies|before-toolchain\/toolchain|generated\/source)(?:-[0-9]{4}\.tar|-inventory-[0-9]{4}\.json)|materials\/removed-[0-9]{4}\.json)$/u.test(name.slice(MODULE_NATIVE_BUILD_PREFIX.length));
+ const relative=name.slice(MODULE_NATIVE_BUILD_PREFIX.length);
+ if(relative.startsWith('originals/'))return canonicalOriginalFiles.has(relative.slice('originals/'.length));
+ if(relative.endsWith('.http.original.json'))return canonicalOriginalFiles.has(relative.slice(0,-'.http.original.json'.length));
+ return /^(?:controlled-build-materials\.json|preparation\.original\.json|inputs\.original\.json|products\/inngest|source\/LICENSE\.md|materials\/(?:before-source\/source|before-dependencies\/dependencies|before-toolchain\/toolchain|generated\/source)(?:-[0-9]{4}\.tar|-inventory-[0-9]{4}\.json)|materials\/removed-[0-9]{4}\.json)$/u.test(relative);
 }
 /** Structural original-byte checking only. Only the existing operational
  * module source issuer stores this view in its private capability map. */
@@ -37,7 +57,7 @@ export function inspectModuleNativeBuildOriginals(input:{
  const remaining=input.remainingMilliseconds??limits.timeoutMs;need(Number.isFinite(remaining)&&remaining>0,'native original verification remaining deadline');const deadline=performance.now()+Math.min(remaining,limits.timeoutMs),check=()=>{need(performance.now()<deadline,'one native original verification deadline');};
  input.assertCurrent();const prefix=MODULE_NATIVE_BUILD_PREFIX,all=new Map(input.inventory.map(row=>[row.path,row]));
  need(declaration.path===prefix+'controlled-build-materials.json'&&input.contract.sourceKind==='xpod-controlled-inngest-build-v1'&&input.contract.sidecarPrefix===prefix&&input.policy.sourceKind===input.contract.sourceKind,'registered controlled sidecar role');
- need(input.identity.target==='linux-arm64'&&input.policy.targets.includes(input.identity.target),'controlled native target');
+ const selectedOriginalFiles=moduleNativeTargetOriginalFiles(input.policy,input.identity.target!);
  const bound=new Map<string,Ref>();let total=input.inventory.filter(row=>row.path.startsWith('source-materials/')&&!row.path.startsWith(prefix)).reduce((sum,row)=>sum+row.bytes,0);
  const ref=(value:any):Ref=>{check();need(value&&safe(value.path),'relative native original');const full=prefix+value.path,row=all.get(full);need(isModuleNativeBuildOriginalName(full)&&row&&Number.isSafeInteger(value.bytes)&&value.bytes>=0&&value.bytes<=limits.shardBytes&&/^[a-f0-9]{64}$/u.test(value.sha256)&&row.bytes===value.bytes&&row.sha256===value.sha256,'same outer ZIP native original ref');const prior=bound.get(value.path);need(!prior||same(prior,{path:full,bytes:row.bytes,sha256:row.sha256}),'conflicting native original ref');if(!prior){total+=row.bytes;need(total<=limits.sourceMaterialBytes&&bound.size<limits.sourceMaterialFiles,'one shared source/native original budget');bound.set(value.path,Object.freeze({path:full,bytes:row.bytes,sha256:row.sha256}));}return bound.get(value.path)!;};
  const json=(value:any)=>{const r=ref(value);need(r.bytes<=limits.metadataBytes,'native metadata bound');const bytes=input.readOriginal(r.path,limits.metadataBytes,{remainingMilliseconds:()=>deadline-performance.now()});need(bytes.length===r.bytes&&hash(bytes)===r.sha256,'native metadata full bytes');return JSON.parse(bytes.toString());};
@@ -45,8 +65,10 @@ export function inspectModuleNativeBuildOriginals(input:{
  need(collection.schemaVersion===1&&collection.sourceKind===input.contract.sourceKind&&collection.target===input.identity.target&&collection.sourceCommit===input.policy.sourceCommit,'controlled collection identity');
  const preparation=json(collection.preparation),inputs=json(collection.inputs);
  need(preparation.sourceKind===collection.sourceKind&&preparation.sourceCommit===collection.sourceCommit&&Array.isArray(preparation.originals),'same preparation source');
+ need(preparation.originals.length===4&&new Set(preparation.originals.map((row:any)=>row.path)).size===4&&preparation.originals.every((row:any)=>selectedOriginalFiles.some(name=>row.path==='originals/'+name)),'exact selected-target preparation originals');
  for(const value of preparation.originals)ref(value);
  need(Array.isArray(preparation.acquisitionOriginals)&&preparation.acquisitionOriginals.length===4&&new Set(preparation.acquisitionOriginals.map((row:any)=>row.path)).size===4,'four fixed acquisition originals required');
+ need(preparation.acquisitionOriginals.every((row:any)=>selectedOriginalFiles.some(name=>row.path===name+'.http.original.json')),'exact selected-target HTTP original roles');
  for(const value of preparation.acquisitionOriginals)json(value);
  need(inputs.sourceKind===collection.sourceKind&&same(inputs.originals,collection.originals),'same actual before-domain collection');
  const scanned=new Set<string>(),groups:any[]=[];
