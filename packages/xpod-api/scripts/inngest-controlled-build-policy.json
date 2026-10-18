@@ -206,5 +206,18 @@
       }
     ],
     "scope": "Exact public upstream config/test bytes only, kept under original paths; no environment expansion or credential admission"
+  },
+  "publicToolchainInputs": {
+    "kind": "fixed-public-toolchain-archive-inputs",
+    "tool": "node",
+    "files": [
+      {
+        "path": "node/lib/node_modules/npm/.npmrc",
+        "archiveMember": "lib/node_modules/npm/.npmrc",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "mode": 420
+      }
+    ]
   }
 }

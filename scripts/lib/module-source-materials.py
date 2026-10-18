@@ -3,6 +3,7 @@
 Stdlib Python is used by the existing Python producer. Large files are streamed;
 these archives are evidence, never executed by the admission verifier.
 """
+import gzip
 import hashlib
 import io
 import json
@@ -52,12 +53,48 @@ class GuardedWriter:
         return self.file.tell()
 
 
-def originals_tar(file, reserve_bytes=None):
-    # Caller closes both wrappers. GNU long names are parsed with bounded headers.
+class GzipBlockWriter:
+    """Standard concatenated gzip, one bounded raw tar window per member."""
+    def __init__(self, writer):
+        self.writer, self.pending, self.blocks = writer, bytearray(), []
+        self.expanded_bytes, self.expanded_sha, self.flushed_bytes = 0, hashlib.sha256(), 0
+    def write(self, data):
+        if self.expanded_bytes + len(data) > ARCHIVE_LIMIT:
+            raise ValueError('Source original expanded archive bound')
+        self.expanded_sha.update(data); self.expanded_bytes += len(data)
+        at = 0
+        while at < len(data):
+            amount = min(LIMITS['rangeBytes'] - len(self.pending), len(data) - at)
+            self.pending.extend(data[at:at + amount]); at += amount
+            if len(self.pending) == LIMITS['rangeBytes']: self.flush_block()
+        return len(data)
+    def flush_block(self):
+        if not self.pending: return
+        if len(self.blocks) >= (ARCHIVE_LIMIT + LIMITS['rangeBytes'] - 1) // LIMITS['rangeBytes']:
+            raise ValueError('Source gzip block count bound')
+        packed = gzip.compress(bytes(self.pending), compresslevel=6, mtime=0)
+        if len(packed) > LIMITS['rangeBytes'] + 1024:
+            raise ValueError('Source gzip encoded block bound')
+        row = dict(offset=self.writer.count, bytes=len(packed), expandedOffset=self.flushed_bytes, expandedBytes=len(self.pending))
+        if self.writer.write(packed) != len(packed): raise ValueError('Source gzip short encoded write')
+        self.blocks.append(row); self.flushed_bytes += len(self.pending); self.pending.clear()
+    def tell(self): return self.expanded_bytes
+    def finish(self): self.flush_block()
+
+
+def originals_tar(file, reserve_bytes=None, archive_encoding='raw', encoding_state=None):
+    if archive_encoding not in ('raw', 'gzip-blocks-v1'):
+        raise ValueError('Unknown source archive encoding')
     stream = Path(file).open('xb')
     try:
-        with tarfile.open(fileobj=GuardedWriter(stream, ARCHIVE_LIMIT, reserve_bytes), mode='w', format=tarfile.GNU_FORMAT) as archive:
+        writer = GuardedWriter(stream, ARCHIVE_LIMIT, reserve_bytes)
+        encoded = GzipBlockWriter(writer) if archive_encoding == 'gzip-blocks-v1' else None
+        with tarfile.open(fileobj=encoded or writer, mode='w', format=tarfile.GNU_FORMAT) as archive:
             yield archive
+        if encoded:
+            encoded.finish()
+            if encoding_state is not None:
+                encoding_state.update(expanded=dict(bytes=encoded.expanded_bytes, sha256=encoded.expanded_sha.hexdigest()), blocks=encoded.blocks)
     finally:
         stream.close()
 
@@ -102,7 +139,7 @@ def add_original(archive, file, name, root, public_source_inputs=None):
         fd=os.open(file,os.O_RDONLY|os.O_NOFOLLOW)
         try:
             before=os.fstat(fd);identity=lambda row:(row.st_dev,row.st_ino,row.st_mode,row.st_size,row.st_nlink,row.st_mtime_ns,row.st_ctime_ns)
-            if not stat.S_ISREG(before.st_mode) or before.st_nlink!=1 or before.st_size!=declared['bytes'] or not 0<=before.st_size<=LIMITS['metadataBytes']:raise ValueError('Public source input identity differs: '+diagnostic_path(name))
+            if not stat.S_ISREG(before.st_mode) or before.st_nlink!=1 or before.st_size!=declared['bytes'] or not 0<=before.st_size<=LIMITS['metadataBytes'] or ('mode' in declared and stat.S_IMODE(before.st_mode)!=declared['mode']):raise ValueError('Public source input identity differs: '+diagnostic_path(name))
             data=bytearray()
             while True:
                 check(file);block=os.read(fd,65536)
@@ -159,13 +196,29 @@ def dependency_paths(repo):
     return sorted(result)
 
 
-def capture_group(root, output, domain, files, repo, tools=None, reserve_bytes=None, public_source_inputs=None):
+def capture_group(root, output, domain, files, repo, tools=None, reserve_bytes=None, public_source_inputs=None, archive_encoding='raw', public_toolchain_inputs=None):
+    if archive_encoding not in ('raw', 'gzip-blocks-v1'):raise ValueError('Unknown source archive encoding')
     if public_source_inputs is not None and domain!='source':raise ValueError('Public source input classification is source-domain only')
+    if public_toolchain_inputs is not None and domain!='toolchain':raise ValueError('Public tool input classification is toolchain-domain only')
+    if public_source_inputs is not None and public_toolchain_inputs is not None:raise ValueError('Public input classifications cannot mix domains')
     from contextlib import ExitStack
     archives, inventories, rows = [], [], []
     total, number, estimate = 0, 0, 0
     stack = ExitStack()
     archive = None
+    encoding_state = {}
+    def finish_archive():
+        stack.close()
+        original = ref(archive_file, output)
+        if archive_encoding == 'gzip-blocks-v1':
+            index_file = Path(str(archive_file) + '.index.json')
+            encoded = json.dumps(dict(schemaVersion=1, kind='source-tar-gzip-block-index', archive=original, **encoding_state), separators=(',', ':')).encode()
+            if len(encoded) > LIMITS['metadataBytes']: raise ValueError('Source gzip index metadata bound')
+            check(index_file, len(encoded))
+            if reserve_bytes is not None: reserve_bytes(len(encoded))
+            with index_file.open('xb') as destination: destination.write(encoded)
+            original.update(encoding=archive_encoding, index=ref(index_file, output))
+        archives.append(original)
     def flush_rows():
         if not rows:
             return
@@ -190,13 +243,13 @@ def capture_group(root, output, domain, files, repo, tools=None, reserve_bytes=N
                 raise ValueError('Individual source input shard bound')
             if archive is None or estimate + cost + 10240 > ARCHIVE_LIMIT:
                 if archive is not None:
-                    stack.close()
-                    archives.append(ref(archive_file, output))
-                archive_file = root / (domain + '-' + str(number).zfill(4) + '.tar')
+                    finish_archive()
+                archive_file = root / (domain + '-' + str(number).zfill(4) + ('.tar.gz' if archive_encoding == 'gzip-blocks-v1' else '.tar'))
                 number += 1
-                archive = stack.enter_context(originals_tar(archive_file, reserve_bytes))
+                encoding_state = {}
+                archive = stack.enter_context(originals_tar(archive_file, reserve_bytes, archive_encoding, encoding_state))
                 estimate = 0
-            row = add_original(archive, file, name, repo, public_source_inputs)
+            row = add_original(archive, file, name, repo, public_source_inputs if domain=='source' else public_toolchain_inputs)
             row['archive'] = archive_file.relative_to(output).as_posix()
             if tools and name in tools:
                 row.update(tools[name])
@@ -208,12 +261,11 @@ def capture_group(root, output, domain, files, repo, tools=None, reserve_bytes=N
             if len(rows) == 5000:
                 flush_rows()
         if archive is not None:
-            stack.close()
-            archives.append(ref(archive_file, output))
+            finish_archive()
         flush_rows()
     finally:
         stack.close()
-    if len(archives) + len(inventories) > LIMITS['sourceMaterialFiles']:
+    if len(archives) * (2 if archive_encoding == 'gzip-blocks-v1' else 1) + len(inventories) > LIMITS['sourceMaterialFiles']:
         raise ValueError('Source archive file count bound')
     return dict(archives=archives, inventories=inventories)
 
