@@ -57,9 +57,28 @@ test('same-group inherited writer is drained naturally before successful closure
  assert.equal(result.groupAbsent,true);assert.equal(result.actualWait,true);assert.deepEqual(result.pipeEOF,[true,true]);
 }));
 test('deadline kills stubborn same-group process and rechecks actual closure',()=>fixture(async({output})=>{
- await assert.rejects(runPublicationCommand(process.execPath,['-e',"process.on('SIGTERM',()=>{});setInterval(()=>{},50);"],{cwd:output,env:process.env,evidence:output,label:'forced-stop',timeoutMs:60}),error=>{
-  assert.equal(error.outcome.signal,'SIGKILL');assert.equal(error.outcome.actualWait,true);assert.equal(error.outcome.groupAbsent,true);assert.equal(error.outcome.rawClosedBeforeHash,true);return true;
- });
+ const ready=path.join(output,'stubborn.ready'),terminated=path.join(output,'stubborn.term');
+ // Startup is part of the one real command deadline. Observe readiness instead
+ // of assuming a cold Node has installed its handler in the first 60ms.
+ const timeoutMs=1500,started=Date.now(),readyDeadline=started+1000;
+ const source="const fs=require('node:fs');process.on('SIGTERM',()=>fs.appendFileSync("+JSON.stringify(terminated)+",'TERM\\n'));fs.writeFileSync("+JSON.stringify(ready)+",String(process.pid),{flag:'wx'});setInterval(()=>{},50);";
+ const outcome=runPublicationCommand(process.execPath,['-e',source],{cwd:output,env:process.env,evidence:output,label:'forced-stop',timeoutMs})
+  .then(()=>({unexpectedSuccess:true}),error=>({error}));
+ try{
+  while(!fs.existsSync(ready)&&Date.now()<readyDeadline)await new Promise(resolve=>setTimeout(resolve,10));
+  assert.ok(fs.existsSync(ready),'stubborn fixture did not register its TERM handler inside the startup window');
+  const pid=Number(fs.readFileSync(ready,'utf8'));assert.ok(Number.isSafeInteger(pid)&&pid>0);process.kill(pid,0);
+  const {error,unexpectedSuccess}=await outcome;assert.equal(unexpectedSuccess,undefined);assert.ok(error);
+  assert.match(error.message,/deadline/);assert.equal(error.outcome.signal,'SIGKILL');
+  assert.equal(error.outcome.actualWait,true);assert.equal(error.outcome.actualClose,true);
+  assert.equal(error.outcome.groupAbsent,true);assert.deepEqual(error.outcome.pipeEOF,[true,true]);assert.equal(error.outcome.rawClosedBeforeHash,true);
+  assert.equal(fs.readFileSync(terminated,'utf8'),'TERM\n');
+  assert.ok(Date.now()-started>=timeoutMs,'real command deadline must expire before termination');
+ }finally{
+  // Even a failed readiness assertion must await the supervisor's bounded
+  // TERM/KILL cleanup before fixture() removes the owned files.
+  await outcome;
+ }
 }));
 test('unclosed detached pipe fails bounded, retains partial raw without hashes',()=>fixture(async({output})=>{
  const pidfile=path.join(output,'detached.pid');let pid;
