@@ -50,7 +50,7 @@ test('actual standalone runner canonicalizes freshly owned source/consumer under
  const ts=(await import('typescript')).default;const {runInNewContext}=await import('node:vm');const fs=await import('node:fs');const os=await import('node:os');
  const raw=os.tmpdir();const parent=path.join(raw,'.test-data/xpod-cli-canonical-root-test');mkdirSync(parent,{recursive:true});
  const syntax=ts.createSourceFile('runner.cjs',readFileSync(path.resolve('scripts/check-cli-package.cjs'),'utf8'),ts.ScriptTarget.Latest,true,ts.ScriptKind.JS);const expressions=new Map<string,string>();
- const visit=(node:any)=>{if(ts.isVariableDeclaration(node)&&['source','consumer'].includes(node.name.getText(syntax)))expressions.set(node.name.getText(syntax),node.initializer.getText(syntax));ts.forEachChild(node,visit);};visit(syntax);
+ const visit=(node:any)=>{if(ts.isVariableDeclaration(node)&&['source','consumer'].includes(node.name.getText(syntax))){const initializer=node.initializer;if(!initializer)throw new Error('Owned temporary root initializer missing');expressions.set(node.name.getText(syntax),initializer.getText(syntax));}ts.forEachChild(node,visit);};visit(syntax);
  const made:string[]=[];
  try{for(const role of ['source','consumer']){const value=runInNewContext(expressions.get(role)!,{fs,path,buildParent:parent,consumerParent:parent});made.push(value);expect(value).toBe(fs.realpathSync(value));expect(path.dirname(value)).toBe(fs.realpathSync(parent));}
   // /var is an actual macOS alias; elsewhere the same invariant still executes
