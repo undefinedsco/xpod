@@ -1,25 +1,33 @@
 /** Synthetic payloads test staging byte checks; they never issue a private cap. */
 import {afterEach,describe,expect,it,vi} from 'vitest';
 import {createHash} from 'node:crypto';
-import {mkdtempSync,mkdirSync,writeFileSync,chmodSync,rmSync,copyFileSync} from 'node:fs';
+import {mkdtempSync,mkdirSync,writeFileSync,chmodSync,rmSync,copyFileSync,readFileSync} from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 const source=Buffer.from('tiny synthetic source archive');
-vi.mock('../../packages/xpod-api/scripts/inngest-controlled-build-policy.json',()=>({default:{sourceKind:'xpod-controlled-inngest-build-v1',targetDescriptors:{'linux-arm64':{platform:'linux',arch:'arm64',binaryFormat:{format:'elf64-le',machine:183},tools:{}}},sourceCommit:'0d75b0b305010b5e90a627703e9d1df4464b1e39',source:{file:'inngest-source.tar.gz',bytes:29,sha256:'filler',url:'https://fixture.invalid/source'},tools:{}}}));
+vi.mock('../../packages/xpod-api/scripts/inngest-controlled-build-policy.json',()=>({default:{sourceKind:'xpod-controlled-inngest-build-v1',targetDescriptors:{'linux-arm64':{platform:'linux',arch:'arm64',binaryFormat:{format:'elf64-le',machine:183},tools:{go:{file:'fixture-go.tar',bytes:1,sha256:'filler',url:'https://fixture.invalid/go'},node:{file:'fixture-node.tar',bytes:1,sha256:'filler',url:'https://fixture.invalid/node'}}}},repository:'inngest/inngest',sourceDependencies:[] as any[],sourceCommit:'0d75b0b305010b5e90a627703e9d1df4464b1e39',source:{file:'inngest-source.tar.gz',bytes:29,sha256:'filler',url:'https://fixture.invalid/source'},tools:{pnpm:{file:'fixture-pnpm.tar',bytes:1,sha256:'filler',url:'https://fixture.invalid/pnpm'}}}}));
 // Import actual policy mock object to install the fixture digest explicitly.
 import policy from '../../packages/xpod-api/scripts/inngest-controlled-build-policy.json';
 import {assertControlledInngestStage,prepareControlledInngestPlacement} from '../../packages/xpod-api/scripts/controlled-native-material';
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../..');const dirs:string[]=[];
 const digest=(b:Buffer)=>createHash('sha256').update(b).digest('hex');
-function fixture(){
- const dir=mkdtempSync(path.join(root,'.test-data/controlled-placement-'));dirs.push(dir);
- const ref=(name:string,b:Buffer)=>{mkdirSync(path.dirname(path.join(dir,name)),{recursive:true});writeFileSync(path.join(dir,name),b,{flag:'wx'});return {path:name,bytes:b.length,sha256:digest(b)};};
+function fixture(website=false,compressed=false){
+ const dir=mkdtempSync(path.join(root,'.test-data/controlled-placement-'));dirs.push(dir);const pinPolicy=policy as any;pinPolicy.sourceDependencies=[];
+ const put=(name:string,b:Buffer)=>{mkdirSync(path.dirname(path.join(dir,name)),{recursive:true});writeFileSync(path.join(dir,name),b);return {path:name,bytes:b.length,sha256:digest(b)};};
  policy.source.bytes=source.length;policy.source.sha256=digest(source);
  const elf=Buffer.alloc(64);Buffer.from([0x7f,0x45,0x4c,0x46,2,1]).copy(elf);elf.writeUInt16LE(183,18);
- const binary=ref('products/inngest',elf);chmodSync(path.join(dir,binary.path),0o755);
- const license=ref('source/LICENSE.md',Buffer.from('synthetic terms'));const archive=ref('originals/inngest-source.tar.gz',source);const inputs=ref('inputs.original.json',Buffer.from('{}'));const http=ref('inngest-source.tar.gz.http.original.json',Buffer.from(JSON.stringify({url:policy.source.url,status:200,bytes:archive.bytes,sha256:archive.sha256})));const preparation=ref('preparation.original.json',Buffer.from(JSON.stringify({sourceKind:policy.sourceKind,sourceCommit:policy.sourceCommit,originals:[archive],acquisitionOriginals:[http]})));
- const group=()=>({archives:[],inventories:[]});const collection={schemaVersion:1,sourceKind:policy.sourceKind,target:'linux-arm64',sourceCommit:policy.sourceCommit,binary,license,sourceArchive:archive,preparation,inputs,originals:{source:group(),dependencies:group(),toolchain:group()},generated:{originals:group(),removedOriginals:[],changedCount:0,removedCount:0}};
- ref('controlled-build-materials.json',Buffer.from(JSON.stringify(collection)));return {dir,collection};
+ const binary=put('products/inngest',elf);chmodSync(path.join(dir,binary.path),0o755);
+ const license=put('source/LICENSE.md',Buffer.from('synthetic terms')),archive=put('originals/inngest-source.tar.gz',source),inputs=put('inputs.original.json',Buffer.from('{}'));
+ const originals=[archive],acquisitionOriginals=[put('inngest-source.tar.gz.http.original.json',Buffer.from(JSON.stringify({url:policy.source.url,status:200,bytes:archive.bytes,sha256:archive.sha256})))];
+ for(const pin of [pinPolicy.tools.pnpm,...Object.values(pinPolicy.targetDescriptors['linux-arm64'].tools) as any[]]){const bytes=Buffer.from(pin.file);Object.assign(pin,{bytes:bytes.length,sha256:digest(bytes)});const original=put('originals/'+pin.file,bytes);originals.push(original);acquisitionOriginals.push(put(pin.file+'.http.original.json',Buffer.from(JSON.stringify({url:pin.url,status:200,bytes:original.bytes,sha256:original.sha256}))));}
+ if(website){
+  const dep=JSON.parse(readFileSync(path.join(root,'packages/xpod-api/scripts/inngest-controlled-build-policy.json'),'utf8')).sourceDependencies[0],bytes=Buffer.from('tiny complete website archive fixture');Object.assign(dep.source,{bytes:bytes.length,sha256:digest(bytes)});pinPolicy.sourceDependencies=[dep];const original=put('originals/'+dep.source.file,bytes);originals.push(original);
+  const actual=Buffer.from(JSON.stringify({type:'submodule',path:dep.destination,sha:dep.commit,submodule_git_url:'git@github.com:'+dep.repository+'.git'}));acquisitionOriginals.push(put(dep.source.file+'.http.original.json',Buffer.from(JSON.stringify({url:dep.source.url,status:200,bytes:original.bytes,sha256:original.sha256,gitlinkOriginal:{url:'https://api.github.com/repos/'+pinPolicy.repository+'/contents/'+dep.destination+'?ref='+pinPolicy.sourceCommit,status:200,bytes:actual.length,sha256:digest(actual),encoding:'base64',content:actual.toString('base64')}}))));
+ }
+ const prep={sourceKind:policy.sourceKind,sourceCommit:policy.sourceCommit,originals,acquisitionOriginals};const preparation=put('preparation.original.json',Buffer.from(JSON.stringify(prep)));
+ const group=()=>({archives:[] as any[],inventories:[] as any[]});const collection={schemaVersion:1,sourceKind:policy.sourceKind,target:'linux-arm64',sourceCommit:policy.sourceCommit,binary,license,sourceArchive:archive,preparation,inputs,originals:{source:group(),dependencies:group(),toolchain:group()},generated:{originals:group(),removedOriginals:[],changedCount:0,removedCount:0}};
+ if(compressed){const name='materials/before-source/source-0000.tar.gz',archive=put(name,Buffer.from('encoded archive protocol fixture')),index=put(name+'.index.json',Buffer.from('{}'));collection.originals.source.archives.push({...archive,encoding:'gzip-blocks-v1',index});}
+ const seal=()=>{collection.preparation=put('preparation.original.json',Buffer.from(JSON.stringify(prep)));put('controlled-build-materials.json',Buffer.from(JSON.stringify(collection)));};seal();return {dir,collection,prep,put,seal};
 }
 afterEach(()=>{for(const d of dirs.splice(0))rmSync(d,{recursive:true,force:true});});
 describe('controlled Inngest producer placement',()=>{
@@ -27,4 +35,10 @@ describe('controlled Inngest producer placement',()=>{
  it('checks the same pre-bin placements at pack without adopting replacement bytes',()=>{const f=fixture();const p=prepareControlledInngestPlacement(f.dir,'linux-arm64');const stage=mkdtempSync(path.join(root,'.test-data/controlled-stage-'));dirs.push(stage);for(const placement of p.placements){const file=path.join(stage,placement.destination);mkdirSync(path.dirname(file),{recursive:true});copyFileSync(placement.source,file);chmodSync(file,placement.mode);}const index=path.join(stage,p.indexDestination);mkdirSync(path.dirname(index),{recursive:true});writeFileSync(index,JSON.stringify(p.index));assertControlledInngestStage(p,stage);writeFileSync(path.join(stage,p.placements[0].destination),Buffer.alloc(64));expect(()=>assertControlledInngestStage(p,stage)).toThrow();});
  it('rejects changed retained binary and continued custody mutation',()=>{const f=fixture();const p=prepareControlledInngestPlacement(f.dir,'linux-arm64');writeFileSync(path.join(f.dir,'products/inngest'),Buffer.alloc(64));expect(()=>p.assertCurrent()).toThrow();expect(()=>prepareControlledInngestPlacement(f.dir,'linux-arm64')).toThrow();});
  it('rejects historical official identity and wrong target rather than fallback',()=>{const f=fixture();expect(()=>prepareControlledInngestPlacement(f.dir,'linux-x64')).toThrow();f.collection.sourceKind='official-release';writeFileSync(path.join(f.dir,'controlled-build-materials.json'),JSON.stringify(f.collection));expect(()=>prepareControlledInngestPlacement(f.dir,'linux-arm64')).toThrow();});
+});
+
+describe('website fifth original and compressed index custody (synthetic byte protocol only)',()=>{
+ it('accepts the same policy-derived fifth archive and keeps both index and Gitlink originals guarded',()=>{const f=fixture(true,true),p=prepareControlledInngestPlacement(f.dir,'linux-arm64');p.assertCurrent();writeFileSync(path.join(f.dir,f.collection.originals.source.archives[0].index.path),'changed index');expect(()=>p.assertCurrent()).toThrow('custody');});
+ it('rejects missing or wrong Gitlink and fifth archive with self-consistent preparation refs',()=>{for(const mutation of ['missing','gitlink','archive']){const f=fixture(true);if(mutation==='missing')f.prep.originals.pop();else if(mutation==='archive')f.prep.originals.at(-1)!.sha256='0'.repeat(64);else {const ref=f.prep.acquisitionOriginals.at(-1)!,http=JSON.parse(readFileSync(path.join(f.dir,ref.path),'utf8'));http.gitlinkOriginal.content=Buffer.from('{}').toString('base64');f.prep.acquisitionOriginals[f.prep.acquisitionOriginals.length-1]=f.put(ref.path,Buffer.from(JSON.stringify(http)));}f.seal();expect(()=>prepareControlledInngestPlacement(f.dir,'linux-arm64')).toThrow();}});
+ it('rejects missing index, changed index hash, unknown encoding and raw-index ambiguity',()=>{for(const mutation of ['missing','hash','encoding','raw']){const f=fixture(true,true),archive=f.collection.originals.source.archives[0];if(mutation==='missing')delete archive.index;else if(mutation==='hash')archive.index.sha256='0'.repeat(64);else if(mutation==='encoding')archive.encoding='unknown';else delete archive.encoding;f.seal();expect(()=>prepareControlledInngestPlacement(f.dir,'linux-arm64')).toThrow();}});
 });
