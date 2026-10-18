@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
 import { collectedArtifactView } from './artifact-collector';
 import { derivedSourceView } from './source-context';
-import { githubOriginFacts, githubOriginOriginals, type GitHubOriginObservation } from './github-origin';
+import { githubOriginFacts, githubOriginOriginals, API_WORKSPACE_SOURCE_BINDINGS, type GitHubOriginObservation } from './github-origin';
 
 // These policies review actual phase-plan and supervisor implementations. The
 // producer remains the sole phase/command declaration; no parallel phase table.
@@ -26,7 +26,7 @@ export const CSS_SOURCE_PARENT_VERSIONS = Object.freeze([
 ]);
 export function reviewedModuleProducerSource(module: 'api' | 'css' | 'afs', sha256: string): boolean {
   return module === 'css' ? CSS_SOURCE_PARENT_VERSIONS.some(row => row.producerSha256 === sha256)
-    : module === 'api' ? [moduleSourcePhasePolicy.api, '8cfb86a4fa5de62e2938e51e459ae9c5c3bbe95cf0aaad88d59de9a9b900e920', '6999603e280c8df1be5fe068eff34cf4c357dc99e9052914040ab6db330ce058', '14fbe7416ad1e1f19ca9384614b1b57404e2ed89d2a766172c490b11cc4667e8', 'eaeddab536d6e606042039cfe5290393d5c5a3e454fb590354cc35e5afe2975f'].includes(sha256) : sha256 === moduleSourcePhasePolicy[module];
+    : module === 'api' ? [moduleSourcePhasePolicy.api, '0169bfbf726dce149e5a0fa995fd06bbe618236f1829d0575ccb0bafeea8b450', '8cfb86a4fa5de62e2938e51e459ae9c5c3bbe95cf0aaad88d59de9a9b900e920', '6999603e280c8df1be5fe068eff34cf4c357dc99e9052914040ab6db330ce058', '14fbe7416ad1e1f19ca9384614b1b57404e2ed89d2a766172c490b11cc4667e8', 'eaeddab536d6e606042039cfe5290393d5c5a3e454fb590354cc35e5afe2975f'].includes(sha256) : sha256 === moduleSourcePhasePolicy[module];
 }
 const PRE_PUBLIC_DESCRIPTOR_API_RECIPE = Object.freeze([
   {
@@ -261,9 +261,9 @@ const HISTORICAL_CONTROLLED_API_RECIPE = Object.freeze([
 /** Producer hash selects one whole recipe before any recipe file is read. */
 export function controlledApiSourceRecipe(readTracked:(name:string)=>Buffer,producerSha:string,target:string){
  const historical=producerSha==='6999603e280c8df1be5fe068eff34cf4c357dc99e9052914040ab6db330ce058';
- if(!historical&&![moduleSourcePhasePolicy.api,'8cfb86a4fa5de62e2938e51e459ae9c5c3bbe95cf0aaad88d59de9a9b900e920'].includes(producerSha)||historical&&target!=='linux-arm64')return fail('controlled producer/target recipe not reviewed');
+ if(!historical&&![moduleSourcePhasePolicy.api,'0169bfbf726dce149e5a0fa995fd06bbe618236f1829d0575ccb0bafeea8b450','8cfb86a4fa5de62e2938e51e459ae9c5c3bbe95cf0aaad88d59de9a9b900e920'].includes(producerSha)||historical&&target!=='linux-arm64')return fail('controlled producer/target recipe not reviewed');
  if(!historical){const policy=JSON.parse(readTracked('packages/xpod-api/scripts/inngest-controlled-build-policy.json').toString());if(!Object.prototype.hasOwnProperty.call(policy.targetDescriptors??{},target))return fail('controlled descriptor target not reviewed');}
- const candidates=historical?[HISTORICAL_CONTROLLED_API_RECIPE]:producerSha===moduleSourcePhasePolicy.api?[PRE_CATALOG_API_SOURCE_RECIPE,CONTROLLED_API_SOURCE_RECIPE]:[PRE_PUBLIC_DESCRIPTOR_API_RECIPE,PRE_BUDGET_API_SOURCE_RECIPE];
+ const candidates=producerSha==='0169bfbf726dce149e5a0fa995fd06bbe618236f1829d0575ccb0bafeea8b450'?[API_WORKSPACE_SOURCE_BINDINGS]:historical?[HISTORICAL_CONTROLLED_API_RECIPE]:producerSha===moduleSourcePhasePolicy.api?[PRE_CATALOG_API_SOURCE_RECIPE,CONTROLLED_API_SOURCE_RECIPE]:[PRE_PUBLIC_DESCRIPTOR_API_RECIPE,PRE_BUDGET_API_SOURCE_RECIPE];
  const matches=candidates.filter(rows=>rows.filter(row=>["scripts/lib/inngest-controlled-build.py", "packages/xpod-api/scripts/inngest-controlled-build-policy.json", "scripts/lib/module-source-materials.py", "scripts/lib/physical-module-stage.ts"].includes(row.path)).every(row=>hash(readTracked(row.path))===row.sha256));
  if(matches.length!==1)return fail('controlled native complete source recipe not reviewed');
  const rows=matches[0];
@@ -277,16 +277,16 @@ const fail = (message: string): never => { throw new Error('Module source phases
 /** Pure policy projection from the one reviewed producer's phase_plan. This
  * executes verifier-owned, hash-checked code, never candidate source code. */
 export function reviewedModulePhasePlan(module: 'api' | 'css' | 'afs', repositoryRoot: string, outputRoot: string,
-  version: string, target: string, controlled?:Readonly<{sourceKind:string;retainedByteCeiling:number;planVersion?:'current'|'linux-arm64-v1'}>): readonly { name: string; command: string[]; timeoutSeconds: number }[] {
+  version: string, target: string, controlled?:Readonly<{sourceKind:string;retainedByteCeiling:number;planVersion?:'current'|'linux-arm64-v1'}>,workspace?:Readonly<{recipe:'api-ui-root-minimal-v2';sourceSha:string}>): readonly { name: string; command: string[]; timeoutSeconds: number }[] {
   if (!Object.prototype.hasOwnProperty.call(moduleSourcePhasePolicy, module) || !['api', 'css', 'afs'].includes(module)) return fail('unsupported producer');
   const file = fileURLToPath(new URL(`../../${module}-module-producer.py`, import.meta.url));
   const before = readFileSync(file);
   if (!reviewedModuleProducerSource(module, hash(before))) return fail('verifier producer policy drift');
-  const checkControlledController=()=>{if(controlled)for(const row of CONTROLLED_API_SOURCE_RECIPE)if(hash(readFileSync(new URL('../../../'+row.path,import.meta.url)))!==row.sha256)return fail('controlled verifier source recipe drift');};
+  const checkControlledController=()=>{if(controlled||workspace)for(const row of workspace?API_WORKSPACE_SOURCE_BINDINGS:CONTROLLED_API_SOURCE_RECIPE)if(hash(readFileSync(new URL('../../../'+row.path,import.meta.url)))!==row.sha256)return fail('controlled verifier source recipe drift');};
   checkControlledController();
   const wrapper = "import json,sys; p={'__name__':'reviewed_phase_policy','__file__':sys.argv[1]}; exec(compile(sys.stdin.buffer.read(),sys.argv[1],'exec'),p); a=json.loads(sys.argv[2]); print(json.dumps([{'name':n,'command':c,'timeoutSeconds':t} for n,c,t in p['phase_plan'](*a)]))";
   const result = spawnSync('/usr/bin/python3', ['-I', '-B', '-c', wrapper, file,
-    JSON.stringify([repositoryRoot, outputRoot, version, target,...(controlled?[controlled.sourceKind,controlled.retainedByteCeiling,controlled.planVersion??'current']:[])])], { timeout: 2500, maxBuffer: 65536,
+    JSON.stringify([repositoryRoot, outputRoot, version, target,...(workspace?[controlled?.sourceKind??null,controlled?.retainedByteCeiling??null,controlled?.planVersion??'current',workspace.recipe,workspace.sourceSha]:controlled?[controlled.sourceKind,controlled.retainedByteCeiling,controlled.planVersion??'current']:[])])], { timeout: 2500, maxBuffer: 65536,
     env: { PATH: '/usr/bin:/bin', LANG: 'C.UTF-8' }, input: before, encoding: 'utf8' });
   if (result.status !== 0 || result.signal || result.error || hash(readFileSync(file)) !== hash(before)) return fail('reviewed phase projection failed');
   checkControlledController();
@@ -404,9 +404,18 @@ export function inspectModuleSourcePhases(input: { artifact: unknown; source: un
     || !originalOutput.startsWith('/') || !repositoryRoot.startsWith('/'))) return fail('producer output binding missing');
   if(!controlled)outputRoot = originalOutput.slice(0, -suffix.length);
   if(!repositoryRoot.startsWith('/')||!outputRoot!.startsWith('/'))return fail('absolute producer roots required');
-  const plan = reviewedModulePhasePlan(module, repositoryRoot, outputRoot, artifact.identity.version, artifact.identity.target,controlled?{sourceKind:producer.nativeSourceKind,retainedByteCeiling:producer.nativeRetainedByteCeiling,planVersion:controlledRecipe!.planVersion}:undefined);
+  if(producer.workspaceRecipe!==undefined&&(module!=='api'||producer.workspaceRecipe!=='api-ui-root-minimal-v2'))return fail('unsupported exact workspace recipe');
+  const workspace=producer.workspaceRecipe===undefined?undefined:{recipe:'api-ui-root-minimal-v2' as const,sourceSha:source.sourceSha};
+  const plan = reviewedModulePhasePlan(module, repositoryRoot, outputRoot, artifact.identity.version, artifact.identity.target,controlled?{sourceKind:producer.nativeSourceKind,retainedByteCeiling:producer.nativeRetainedByteCeiling,planVersion:controlledRecipe!.planVersion}:undefined,workspace);
   const closure = verifyClosedModulePhaseReceipts(plan, producer, artifact.producerOriginals, artifact.readProducerOriginal,
     { started: job.started_at, closed: job.completed_at });
   return { status: 'observed' as const, sourceQualified: false as const, sourceSha: source.sourceSha,
     module, target: artifact.identity.target, ...closure, scope: 'actual-owned-phase-originals-only' as const };
+}
+
+/** Capture boundaries from the exact reviewed recipe, never caller-supplied indices. */
+export function moduleSourceInputCaptureBoundary(producer:any):Readonly<{after:number;before:number}>{
+ if(producer.workspaceRecipe===undefined)return Object.freeze({after:0,before:1});
+ if(producer.kind!=='api-module-product-production'||producer.workspaceRecipe!=='api-ui-root-minimal-v2'||!Array.isArray(producer.phases)||!['install-selection','install','postinstall','declarations','install-graph'].every((name,index)=>producer.phases[index]?.name===name))throw Error('Exact API install/postinstall capture lifecycle required');
+ return Object.freeze({after:2,before:3});
 }

@@ -782,11 +782,306 @@ const API_CATALOG_SOURCE_BINDINGS = Object.freeze([
     "sha256": "8e191efdefc855b72cea0f8cbc3e3ad2f5c3f47c4466553f7d23bd04fccc3d0d"
   }
 ]);
+export const API_WORKSPACE_SOURCE_BINDINGS=Object.freeze([
+  {
+    "path": "bun.lock",
+    "sha256": "8e191efdefc855b72cea0f8cbc3e3ad2f5c3f47c4466553f7d23bd04fccc3d0d"
+  },
+  {
+    "path": "desktop/package.json",
+    "sha256": "b29ecdd63bd7b0c7fc9e3eff53866432831fad4acc4d637c769cb03977810e85"
+  },
+  {
+    "path": "package.json",
+    "sha256": "9b6916d878ab959bc4825382df29c0ca279e2d88e7bfc19cb61552e857f6a3f2"
+  },
+  {
+    "path": "packages/ai-connections-runtime/package.json",
+    "sha256": "f9c72637124b3510120a20c3b6b93ff33eebcf7796d314eeee3374e5cbfbfd20"
+  },
+  {
+    "path": "packages/ai-connections/package.json",
+    "sha256": "33bae7d03ba80c0d976ad1b2e66e932baeb71036de2ce15195b8267a192ad4c7"
+  },
+  {
+    "path": "packages/extension-host-contracts/package.json",
+    "sha256": "edefd8df016317d6971312d5437e721a4aea0b7c19acf03bf538ac156d6bf99e"
+  },
+  {
+    "path": "packages/extension-sdk/package.json",
+    "sha256": "bce7c23d881599d5bbd8f7e69e0f08bedb63954fe91ad7a094f47e91c95ed102"
+  },
+  {
+    "path": "packages/pod-collections/package.json",
+    "sha256": "bdf75a9a98f3614ea9e514dc871c58a1d7f6538edf6dc116efc15682643ebfae"
+  },
+  {
+    "path": "packages/pod-settings/package.json",
+    "sha256": "3a5582bd37db2a89a4716bd74b165635b3b15fef64ad9ddb2ae66c99a2a2a1f4"
+  },
+  {
+    "path": "packages/shared-ui/package.json",
+    "sha256": "dbbc70ca1b987018058e6d5946469e24f08c56f2548fb74e08ab26295618b20a"
+  },
+  {
+    "path": "packages/solid-sdk/package.json",
+    "sha256": "2af86bb2b1da2ead8b3311cdc1213c5463db49cd92bbd7c3c100cdc3ec113913"
+  },
+  {
+    "path": "packages/solid-sdk/scripts/build-bun-entries.cjs",
+    "sha256": "801e88cdb5c33ff04082cb8fa9e2bfddaedc8aa0456ed25b9229c07478306dcf"
+  },
+  {
+    "path": "packages/tasks/package.json",
+    "sha256": "3fe14574fcd12ee43a2f3e6ef95129a34405b72a2c576f8ed98b2f4ff7a49a8b"
+  },
+  {
+    "path": "packages/xpod-afs/package.json",
+    "sha256": "5cdd40f78be50b44a45bad7b0b22463b9555ed580f4dc77a365b3d7c3d24aee4"
+  },
+  {
+    "path": "packages/xpod-api/package.json",
+    "sha256": "ce111f505757cbb813e70237d7fec59ae496eb1b7f6661d57be1203cd4709a60"
+  },
+  {
+    "path": "packages/xpod-api/scripts/build.ts",
+    "sha256": "8b38e569b284448bc5e34064efc8a4bb6022283d1fd025e007dc904ac92b7a52"
+  },
+  {
+    "path": "packages/xpod-api/scripts/bun-build-api.ts",
+    "sha256": "260024d8fa42a81cc10ef7601bed0efc1a3657981e28fc20bf25274db1fbb4e8"
+  },
+  {
+    "path": "packages/xpod-api/scripts/bundle-products.ts",
+    "sha256": "3a24864c1e1d542295a997d8a9de7814283de0cf6a6f233d3fab48f1c42fd516"
+  },
+  {
+    "path": "packages/xpod-api/scripts/bundle-runtime.ts",
+    "sha256": "a542b95f7979049a6c2686f79ea80cb05d13251903c71b3d9fe54523e46093e6"
+  },
+  {
+    "path": "packages/xpod-api/scripts/bundle-stage.ts",
+    "sha256": "e571128914a1c6d4db22fab9cb51743fc4af5d061ca7903f84c193a22bf8f505"
+  },
+  {
+    "path": "packages/xpod-api/scripts/closure.ts",
+    "sha256": "a06dce89cf832f574295794f4e830cca2d0abefc2553e5c7ec188614a91f2090"
+  },
+  {
+    "path": "packages/xpod-api/scripts/controlled-native-material.ts",
+    "sha256": "d1530cba12de2f599b6aaf2e3b38d17abd68b6c58ee7f8e0002f0262c14b0ef4"
+  },
+  {
+    "path": "packages/xpod-api/scripts/inngest-controlled-build-policy.json",
+    "sha256": "fab9a0628c0e6424f7a99bf2ca249c53b9ed2a1498d94d8d90ce226e01a7e284"
+  },
+  {
+    "path": "packages/xpod-api/scripts/inngest-controlled-materials-contract.json",
+    "sha256": "9ca5ffb4e8d7d62bceb10a90a7a424b1b028d271fb0faba1f9e810b28f4f4d90"
+  },
+  {
+    "path": "packages/xpod-api/scripts/inngest-input-pins.json",
+    "sha256": "d5d2225c7c8cf1bc1fc27f11d3bfc4f13c5dd597dae3c65701b0f4c6a200e567"
+  },
+  {
+    "path": "packages/xpod-api/scripts/node-builtins.ts",
+    "sha256": "b77b600379f808de205a7817863130f7c83ae83cb135a67109dfe3816d517468"
+  },
+  {
+    "path": "packages/xpod-api/scripts/pack.ts",
+    "sha256": "896f3ec37b743b9f9716c5672266363403c845893b370254203563197c831c40"
+  },
+  {
+    "path": "packages/xpod-api/scripts/sourcekit-producer.ts",
+    "sha256": "58a80bfa37f5b7089a410a3d61480c05f01c5188f1d27defb71a84870a48757d"
+  },
+  {
+    "path": "packages/xpod-api/scripts/sourcekit.ts",
+    "sha256": "e3f14b1f299f2095b80f3fe936b2ff919fc9bcd957764ef8eba41a56ea22b928"
+  },
+  {
+    "path": "packages/xpod-api/scripts/stage.ts",
+    "sha256": "b8d357f4a8bf062718404fd15fa5a89433e23d8cf4166289a7afc094b521270b"
+  },
+  {
+    "path": "packages/xpod-api/scripts/static-material.ts",
+    "sha256": "24a95c0368b46198f95f41c61d8d76ce029ea39165b9a31e9e1fcee80f74439c"
+  },
+  {
+    "path": "packages/xpod-cli/package.json",
+    "sha256": "e2db5b5feb6eb3e4ab30508fd8657b68b3fd72ae2e1e618a2f12eb3fa2309c85"
+  },
+  {
+    "path": "packages/xpod-cli/scripts/build-package.ts",
+    "sha256": "298519827f405b3991059d75044a72ab7f76153e0a90d1a25826eb7f0c9ffae0"
+  },
+  {
+    "path": "packages/xpod-cli/scripts/build-tools-package.ts",
+    "sha256": "d41d3988923761f85eb14b7c59a43fd4447fd679ebd7f16e3636611b631e1d30"
+  },
+  {
+    "path": "packages/xpod-cli/src/manifest.ts",
+    "sha256": "98540cea09a3cc3a37cd4132d4d42ba515c755255801d42c5827ede6bc2be167"
+  },
+  {
+    "path": "packages/xpod-cli/src/module-catalog.ts",
+    "sha256": "d52e3222f056d68b6c3eae261e25a196a23e5f7c43e9f027c918eedb9b0ce33e"
+  },
+  {
+    "path": "packages/xpod-cli/src/source-materials.ts",
+    "sha256": "66919cd2c75c229367538e9b2fea5af9243569572e9a74b5c3a8c80f609904b0"
+  },
+  {
+    "path": "packages/xpod-client/package.json",
+    "sha256": "b6e86fb6f4d72f8b991b3738c03dbbb45fe72518a3930907b3feba80d3dddc32"
+  },
+  {
+    "path": "packages/xpod-client/scripts/build.ts",
+    "sha256": "491521ac3d42a4b4cab0b5becbc48cb755431b6a3b3667688f0f21dab9ed2659"
+  },
+  {
+    "path": "packages/xpod-css/package.json",
+    "sha256": "cd7745c176af4b4c2fcab55aa768459c8f44b2f890fe0abc6ad728d292c45028"
+  },
+  {
+    "path": "patches/@solid%2Fcommunity-server@8.0.0-alpha.1.patch",
+    "sha256": "36b8796d16459344b6ee7b83f3cfd98d2325ef4cc144bb33e6a3710b6e234283"
+  },
+  {
+    "path": "patches/@undefineds.co%2Fdrizzle-solid@0.3.25.patch",
+    "sha256": "15917daa88260327bb30d5da25d9db7efb0fd3386c7f0494102fa780ac870789"
+  },
+  {
+    "path": "patches/oidc-provider@9.5.1.patch",
+    "sha256": "ab20339bffd5ddb7041a79f83624da24baabedeabde95ee9f055cf091015b037"
+  },
+  {
+    "path": "scripts/agentfs-native-ci/supervise.py",
+    "sha256": "49fd9c7a7a9c9dc1612b1261f0cbc218166f48487df726239437ae9ad98ba407"
+  },
+  {
+    "path": "scripts/api-module-producer.py",
+    "sha256": "0169bfbf726dce149e5a0fa995fd06bbe618236f1829d0575ccb0bafeea8b450"
+  },
+  {
+    "path": "scripts/api-producer-dependencies.cjs",
+    "sha256": "f6e9deb9a758523e57afa8fa5c7253ecec679d1c6d2c929ae7c22ea9c649685e"
+  },
+  {
+    "path": "scripts/build-afs-from-producer.ts",
+    "sha256": "95c556979f97400210a0e1826c505f06c1e258951aacf7f519b6482fb50bd85f"
+  },
+  {
+    "path": "scripts/check-api-producer-dependency-state.ts",
+    "sha256": "1c91afdb24cc995195a996032d6c032f52e281fb6437af47e255925c85a6238a"
+  },
+  {
+    "path": "scripts/check-dependency-state.ts",
+    "sha256": "1cabdc527ed712e0f3521bc773fec06ff698eb2eb61ac98a6853454041433509"
+  },
+  {
+    "path": "scripts/fix-dist-js-imports.mjs",
+    "sha256": "fad80671a261bfad30bfc7db21abc3f140f6208027e7d97769fca9220400148a"
+  },
+  {
+    "path": "scripts/lib/api-install-selection.cjs",
+    "sha256": "a5f13ad0d9e3b017ee78012e3bb0a121870462f24ccdbbf54f40700b34a1ff48"
+  },
+  {
+    "path": "scripts/lib/api-producer-graph.ts",
+    "sha256": "8edda5b02b81fac1ba492caed1b0761d9af7d5df8c975d9639188cd270819192"
+  },
+  {
+    "path": "scripts/lib/api-scoped-dependency-state.ts",
+    "sha256": "97ad91dbd3e01c1e3c0b5d8f503ed0203b00c750090c9e4c743347713dc502a6"
+  },
+  {
+    "path": "scripts/lib/inngest-controlled-build.py",
+    "sha256": "44995b48418f3b0af1bdd3608c8b3c1307ad3cbc4c927d03a92fbf37b5a60404"
+  },
+  {
+    "path": "scripts/lib/inngest-controlled-materials.ts",
+    "sha256": "c47ddb2bd3b1443cefbf5c4a41f6881c975bafd574bfe70079b73564da7b9ba6"
+  },
+  {
+    "path": "scripts/lib/module-artifact-limits.json",
+    "sha256": "c1c529aba719356c682affbe630c215e28cc07163192f8f3b601aab7b0126bd4"
+  },
+  {
+    "path": "scripts/lib/module-source-materials.py",
+    "sha256": "1871c59b9f0bfb4c0ce824123ce9cdc5f472aba11245b5e0eb45c62c4fca42e2"
+  },
+  {
+    "path": "scripts/lib/physical-module-archive.ts",
+    "sha256": "04e5dd55b3c63190ba119ec2f01e30ab607d28507646e1d7419768b730e1896a"
+  },
+  {
+    "path": "scripts/lib/physical-module-bins.ts",
+    "sha256": "f75c4292b3323c76afd48db82480b69b8b6c60d15576bad004b88cba46a92d01"
+  },
+  {
+    "path": "scripts/lib/physical-module-native-placement.ts",
+    "sha256": "556fcb7c2fa475c802d21a0158c6ea33ba614434352b009ea8005944863be173"
+  },
+  {
+    "path": "scripts/lib/physical-module-native.ts",
+    "sha256": "f169df0b69333b68e8f904f677bc3b3d24611b79923042adc360ca0e3b681bac"
+  },
+  {
+    "path": "scripts/lib/physical-module-notices.ts",
+    "sha256": "d3b71ab69fc59bdbbc8d4bd3cf2e2dab92d39a3b08673337aa9ea494a4b807cc"
+  },
+  {
+    "path": "scripts/lib/physical-module-stage.ts",
+    "sha256": "d9dc03f66ca040637a6d1d2d3a405252cdd6ba71d69aad95361a53f7d94c200f"
+  },
+  {
+    "path": "scripts/module-product-targets.ts",
+    "sha256": "5ef511f448c90a6fc9e767fd8224ef890b5fc04d2b6514f85697a0a529fb3eb4"
+  },
+  {
+    "path": "scripts/patch-inrupt-authn-operation-cleanup.js",
+    "sha256": "2ecdb915eb500f0c61646155ce3a8e19be7fcb40ea6897d7093349871da99487"
+  },
+  {
+    "path": "scripts/patch-inrupt-authn-refresh.js",
+    "sha256": "08a2ad5753a3e0d8862f28c26ebed5e809c71cdb809e0d3e6f644f0ce30a8b1b"
+  },
+  {
+    "path": "scripts/patch-inrupt-authn-transport.js",
+    "sha256": "45ada339a237dcafc714f1c77fce313a97ae1f74d0e8986d7aa38dd10a955f04"
+  },
+  {
+    "path": "scripts/patch-jose.js",
+    "sha256": "7a2956ec29c71f00f5769718c6452d61a810c74c2ec5fab1a6a80c597c2dbd18"
+  },
+  {
+    "path": "scripts/plan-api-install-selection.cjs",
+    "sha256": "164d5930864cefb2efdcaccc34fcf046aa61bc248542d1e70f11975d6159c324"
+  },
+  {
+    "path": "scripts/platform-binaries.cjs",
+    "sha256": "95dc2afc4501a87418c4858faa4f77bf0b1930061c649c3d771d607d3d8ecc7f"
+  },
+  {
+    "path": "scripts/prepare-package-manifest.cjs",
+    "sha256": "47c24e7547f03493161baea3abdf7686db7c21a791d4871535e66d0a3dac2a02"
+  },
+  {
+    "path": "scripts/workspace-runtime-materials.cjs",
+    "sha256": "1d1e5e6c454e77acf1dbbf5e225f11fc98d99c3ab928bdc96d914f076ac6e3e6"
+  },
+  {
+    "path": "ui/package.json",
+    "sha256": "e1d4d6935fb87798f5cb9964b468b9a75adac722ecb014af2011fc347ae3a611"
+  }
+]);
 export const API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS=Object.freeze([
  {name:"historical-descriptor",selectors:[{"path": "scripts/api-module-producer.py", "sha256": "8cfb86a4fa5de62e2938e51e459ae9c5c3bbe95cf0aaad88d59de9a9b900e920"}],secondarySelectors:[{"path": "packages/xpod-api/scripts/inngest-controlled-build-policy.json", "sha256": "03fe62750b08a55b763c028367e3eb6d25d17128088191cf4edf3c76c0d507d6"}, {"path": "scripts/lib/inngest-controlled-build.py", "sha256": "a8746e8bed74dec2a6726a36e5aed623173d6666dfed925b2d8848fa3358aec2"}, {"path": "scripts/lib/module-source-materials.py", "sha256": "c28f194ca9767f2aeddd9cff6f633dac2280ae9c4e5d716d3273706afce81850"}],sourceBindings:API_CONTROLLED_DESCRIPTOR_SOURCE_BINDINGS},
  {name:"public-source-inputs",selectors:[{"path": "scripts/api-module-producer.py", "sha256": "8cfb86a4fa5de62e2938e51e459ae9c5c3bbe95cf0aaad88d59de9a9b900e920"}],secondarySelectors:[{"path": "packages/xpod-api/scripts/inngest-controlled-build-policy.json", "sha256": "fab9a0628c0e6424f7a99bf2ca249c53b9ed2a1498d94d8d90ce226e01a7e284"}, {"path": "scripts/lib/inngest-controlled-build.py", "sha256": "6f82f617c67e70d75b2023993df3846b2caccef34c4a937cd58299cb7bcec99e"}, {"path": "scripts/lib/module-source-materials.py", "sha256": "07dbfc5531b7b3b812fe6f532141c964255b90f46ed30a05c86f6e42ef2e0ee5"}],sourceBindings:API_PUBLIC_SOURCE_BINDINGS},
  {selectors:[{"path": "scripts/api-module-producer.py", "sha256": "68ecfb5c66dd0f1882ef707e86a4c74df7d0406bb9bb68eb011bb20872ef23bf"}],secondarySelectors:[{"path": "packages/xpod-api/scripts/inngest-controlled-build-policy.json", "sha256": "fab9a0628c0e6424f7a99bf2ca249c53b9ed2a1498d94d8d90ce226e01a7e284"}, {"path": "scripts/lib/inngest-controlled-build.py", "sha256": "44995b48418f3b0af1bdd3608c8b3c1307ad3cbc4c927d03a92fbf37b5a60404"}, {"path": "scripts/lib/module-source-materials.py", "sha256": "1871c59b9f0bfb4c0ce824123ce9cdc5f472aba11245b5e0eb45c62c4fca42e2"},{"path": "scripts/lib/physical-module-stage.ts", "sha256": "41bbf5387ab913625aa29663c0f2758b3b783de28f48c201d375369a7268c750"}],sourceBindings:API_RETAINED_BUDGET_SOURCE_BINDINGS},
  {selectors:[{"path": "scripts/api-module-producer.py", "sha256": "68ecfb5c66dd0f1882ef707e86a4c74df7d0406bb9bb68eb011bb20872ef23bf"}],secondarySelectors:[{"path": "packages/xpod-api/scripts/inngest-controlled-build-policy.json", "sha256": "fab9a0628c0e6424f7a99bf2ca249c53b9ed2a1498d94d8d90ce226e01a7e284"}, {"path": "scripts/lib/inngest-controlled-build.py", "sha256": "44995b48418f3b0af1bdd3608c8b3c1307ad3cbc4c927d03a92fbf37b5a60404"}, {"path": "scripts/lib/module-source-materials.py", "sha256": "1871c59b9f0bfb4c0ce824123ce9cdc5f472aba11245b5e0eb45c62c4fca42e2"},{"path": "scripts/lib/physical-module-stage.ts", "sha256": "d9dc03f66ca040637a6d1d2d3a405252cdd6ba71d69aad95361a53f7d94c200f"}],sourceBindings:API_CATALOG_SOURCE_BINDINGS},
+ {name:"root-minimal-normal-lifecycle",selectors:[{path:"scripts/api-module-producer.py",sha256:"0169bfbf726dce149e5a0fa995fd06bbe618236f1829d0575ccb0bafeea8b450"}],secondarySelectors:[{"path": "packages/xpod-api/scripts/inngest-controlled-build-policy.json", "sha256": "fab9a0628c0e6424f7a99bf2ca249c53b9ed2a1498d94d8d90ce226e01a7e284"}, {"path": "scripts/lib/inngest-controlled-build.py", "sha256": "44995b48418f3b0af1bdd3608c8b3c1307ad3cbc4c927d03a92fbf37b5a60404"}, {"path": "scripts/lib/module-source-materials.py", "sha256": "1871c59b9f0bfb4c0ce824123ce9cdc5f472aba11245b5e0eb45c62c4fca42e2"}, {"path": "scripts/lib/physical-module-stage.ts", "sha256": "d9dc03f66ca040637a6d1d2d3a405252cdd6ba71d69aad95361a53f7d94c200f"}],sourceBindings:API_WORKSPACE_SOURCE_BINDINGS}
 ]);
 
 
@@ -820,13 +1115,13 @@ export async function observeModuleProductGitHubOrigin(input: ArtifactAcquisitio
   } as const;
   const legacy:OriginPolicy={
     ...policies[module], workflowPath: `.github/workflows/${module}-module-product.yml`,
-    ...(module==='api'?{stagingPushWorkflowSha256s:['c4aa6b7ea6e384adab1e517a903e50d574c8afb2eb92d8c54dc919320652c5b0','b7a91e8c0b61f8a80a3de2c6c93e78f1d2f9637a741bff7ac2592882ba0c831e','04f75d2913e3b6b504cf547d8ba17d1c0011a0a563f42ff708f4ba3f10978153']}:{}),
+    ...(module==='api'?{stagingPushWorkflowSha256s:['db6ca21afa33d572f24a92e96c88f425d1bf46a86d966a55be4c10de4d812263','c4aa6b7ea6e384adab1e517a903e50d574c8afb2eb92d8c54dc919320652c5b0','b7a91e8c0b61f8a80a3de2c6c93e78f1d2f9637a741bff7ac2592882ba0c831e','04f75d2913e3b6b504cf547d8ba17d1c0011a0a563f42ff708f4ba3f10978153']}:{}),
     events: module==='api'?['workflow_dispatch','pull_request','push']:['workflow_dispatch','pull_request'], target,
     sourceBindings: [{ path: 'scripts/module-product-targets.ts', sha256: 'd04fb106ca349179e4b99869c68cbb85b8d9a9f30e8d60b927a5eceab9e2f25f',reviewedSha256:['5ef511f448c90a6fc9e767fd8224ef890b5fc04d2b6514f85697a0a529fb3eb4'] }],
     artifactNames: coordinates => [`${module}-module-products-${target}-${coordinates.sourceSha}-${coordinates.runId}-${coordinates.runAttempt}`],
     jobName: () => `products (${target})`,
     // The old reviewed workflow used GitHub's implicit matrix display name.
-    reviewedWorkflowVersions: [...(module==='api'?[{workflowSha256:'04f75d2913e3b6b504cf547d8ba17d1c0011a0a563f42ff708f4ba3f10978153',jobName:()=>`products (${target})`,sourceBindingGroups:API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS},{workflowSha256:'b7a91e8c0b61f8a80a3de2c6c93e78f1d2f9637a741bff7ac2592882ba0c831e',jobName:()=>`products (${target})`,sourceBindings:API_CONTROLLED_SOURCE_BINDINGS},{workflowSha256:'c4aa6b7ea6e384adab1e517a903e50d574c8afb2eb92d8c54dc919320652c5b0',jobName:()=>`products (${target})`}]:[]), { workflowSha256: policies[module].previousShortWorkflowSha256, jobName: () => `products (${target})`,
+    reviewedWorkflowVersions: [...(module==='api'?[{workflowSha256:'db6ca21afa33d572f24a92e96c88f425d1bf46a86d966a55be4c10de4d812263',jobName:()=>`products (${target})`,sourceBindingGroups:[API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS[API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS.length-1]!]},{workflowSha256:'04f75d2913e3b6b504cf547d8ba17d1c0011a0a563f42ff708f4ba3f10978153',jobName:()=>`products (${target})`,sourceBindingGroups:API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS},{workflowSha256:'b7a91e8c0b61f8a80a3de2c6c93e78f1d2f9637a741bff7ac2592882ba0c831e',jobName:()=>`products (${target})`,sourceBindings:API_CONTROLLED_SOURCE_BINDINGS},{workflowSha256:'c4aa6b7ea6e384adab1e517a903e50d574c8afb2eb92d8c54dc919320652c5b0',jobName:()=>`products (${target})`}]:[]), { workflowSha256: policies[module].previousShortWorkflowSha256, jobName: () => `products (${target})`,
       sourceBindings: [{ path: 'scripts/module-product-targets.ts', sha256: '35b8752237d620981b1848d6d8876dfac3c1da14509e77358e7f961ca256cf96' }] },
       { workflowSha256: policies[module].legacyWorkflowSha256, jobName: () => `products (${Object.values(row).join(', ')})`,
         sourceBindings: [{ path: 'scripts/module-product-targets.ts', sha256: '35b8752237d620981b1848d6d8876dfac3c1da14509e77358e7f961ca256cf96' }] }],

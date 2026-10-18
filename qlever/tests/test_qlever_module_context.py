@@ -7,6 +7,23 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def runtime_dependency_specifiers(text):
+    """Fixed helper declarations: whole `import type` is erased, not a runtime edge.
+
+    A default runtime binding literally named `type` remains a runtime import.
+    Only the reviewed complete type-only clause grammar is erased; unknown
+    or commented clauses fail closed as runtime. Side-effect imports and
+    require calls remain subject to the builtin gate.
+    """
+    result = re.findall(r"require\(['\"]([^'\"]+)['\"]\)", text)
+    for clause, name in re.findall(r"^import\s+(.+?)\s+from\s+['\"]([^'\"]+)['\"]", text, re.M):
+        type_only = re.fullmatch(r'type\s+(?:[A-Za-z_$][\w$]*|\*\s+as\s+[A-Za-z_$][\w$]*|\{[\w$\s,]*\})', clause)
+        if type_only is None:
+            result.append(name)
+    result.extend(re.findall(r"^import\s+['\"]([^'\"]+)['\"]", text, re.M))
+    return result
+
+
 class ModuleContextTests(unittest.TestCase):
     def setUp(self):
         self.rules = [line.strip() for line in (ROOT / '.dockerignore').read_text().splitlines()
@@ -65,10 +82,30 @@ class ModuleContextTests(unittest.TestCase):
         self.assertIn('ENV NODE_ENV=development', (ROOT / 'Dockerfile').read_text())
         for name in ['scripts/run-npm-pack.cjs', 'scripts/check-dependency-state.ts']:
             text = (ROOT / name).read_text()
-            dependencies = re.findall(r"(?:require\(['\"]([^'\"]+)['\"]\)|^import .* from ['\"]([^'\"]+)['\"])", text, re.M)
+            dependencies = runtime_dependency_specifiers(text)
             self.assertTrue(dependencies)
-            for required, imported in dependencies:
-                self.assertTrue((required or imported).startswith('node:'))
+            for name in dependencies:
+                self.assertTrue(name.startswith('node:'))
+
+    def test_builtin_gate_erases_only_type_imports_and_keeps_runtime_nonbuiltin_edges(self):
+        source = "\n".join([
+            "import type {Scope} from './erased-scope';",
+            "import type Scope from './erased-default';",
+            "import type /* runtime binding */, {x} from './runtime-comment-comma';",
+            "import type, {x} from './runtime-default-comma';",
+            "import type from './runtime-default-named-type';",
+            "import {Scope} from './runtime-scope';",
+            "import './runtime-side-effect';",
+            "const helper = require('./runtime-required');",
+            "import {readFileSync} from 'node:fs';",
+        ])
+        actual = runtime_dependency_specifiers(source)
+        self.assertNotIn('./erased-scope', actual)
+        self.assertNotIn('./erased-default', actual)
+        for name in ['./runtime-comment-comma', './runtime-default-comma', './runtime-default-named-type', './runtime-scope', './runtime-side-effect', './runtime-required']:
+            self.assertIn(name, actual)
+            self.assertFalse(name.startswith('node:'))
+        self.assertIn('node:fs', actual)
 
     def test_service_afs_notices_receive_the_original_root_license(self):
         # RC image build executes the AFS notice collector inside /app.

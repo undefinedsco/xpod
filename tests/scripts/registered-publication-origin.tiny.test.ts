@@ -1,10 +1,11 @@
 import {test,expect} from 'bun:test';
 import fs from 'node:fs';
 import path from 'node:path';
+import {createHash} from 'node:crypto';
 import {observeProductConsumerGitHubOrigin,githubOriginFacts} from '../../scripts/lib/independent-admission/github-origin';
 import {archiveConsumerArtifactName} from '../../scripts/lib/independent-admission/archive-consumer-originals';
 import {registryConsumerArtifactName} from '../../scripts/lib/independent-admission/registry-consumer-originals';
-import {CI_CONSUMER_SOURCE_GROUPS,CONSUMER_SOURCE_GROUPS} from '../../scripts/lib/independent-admission/consumer-observer-policy';
+import {CI_CONSUMER_SOURCE_GROUPS,CONSUMER_SOURCE_GROUPS,CALLABLE_PUBLICATION_WORKFLOW_SHA,STAGING_CHECKED_PUBLICATION_WORKFLOW_SHA} from '../../scripts/lib/independent-admission/consumer-observer-policy';
 import {selectGitHubSourceBindingGroup,sourceBindingKey} from '../../scripts/lib/independent-admission/github-source-binding-groups';
 const root=path.resolve(import.meta.dir,'../..');
 // Current repository originals are source API fixtures, never a real GitHub run.
@@ -53,10 +54,12 @@ test('caller/reusable/child/helper originals are exact, no mixed whole group',as
 });
 
 test('fixed preinstall reusable workflow selects a separate exact group and retains old metadata scope',async()=>{
- expect(CI_CONSUMER_SOURCE_GROUPS).toHaveLength(16);
+ expect(CI_CONSUMER_SOURCE_GROUPS).toHaveLength(20);
  expect(githubOriginFacts(await scenario('prepublish'))?.workflowPath).toBe('.github/workflows/ci.yml');
  expect(githubOriginFacts(await scenario('prepublish',{legacyWorkflow:true}))?.workflowPath).toBe('.github/workflows/ci.yml');
- const old=CI_CONSUMER_SOURCE_GROUPS[0],fixed=CI_CONSUMER_SOURCE_GROUPS[6];const tuple=new Map([...fixed!.selectors,...(fixed!.secondarySelectors??[])].map(row=>[sourceBindingKey(row),row.sha256]));
+ const actualOrigin=createHash('sha256').update(fs.readFileSync(path.join(root,'scripts/lib/independent-admission/github-origin.ts'))).digest('hex');
+ const currentGroup=(workflow:string)=>CI_CONSUMER_SOURCE_GROUPS.find(group=>group.selectors.some(row=>row.path==='.github/workflows/independent-publication.yml'&&row.sha256===workflow)&&group.sourceBindings.some(row=>row.path==='scripts/lib/independent-admission/github-origin.ts'&&row.sha256===actualOrigin))!;
+ const old=currentGroup(CALLABLE_PUBLICATION_WORKFLOW_SHA),fixed=currentGroup(STAGING_CHECKED_PUBLICATION_WORKFLOW_SHA);const tuple=new Map([...fixed!.selectors,...(fixed!.secondarySelectors??[])].map(row=>[sourceBindingKey(row),row.sha256]));
  expect(selectGitHubSourceBindingGroup(CI_CONSUMER_SOURCE_GROUPS,tuple)).toBe(fixed!);
  tuple.set(sourceBindingKey(old!.selectors[0]!), 'f'.repeat(64));expect(()=>selectGitHubSourceBindingGroup(CI_CONSUMER_SOURCE_GROUPS,tuple)).toThrow();
 });

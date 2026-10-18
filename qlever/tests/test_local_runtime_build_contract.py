@@ -1,3 +1,6 @@
+import ast
+import subprocess
+from types import SimpleNamespace
 import importlib.util
 import json
 import re
@@ -165,7 +168,15 @@ class QleverLocalRuntimeBuildContractTest(unittest.TestCase):
         self.assertIn('"priorSdkImage": args.prior_sdk_image', verifier)
         self.assertIn('"entrypoint": "qlever/scripts/run-focused-native-build.sh"', verifier)
         self.assertIn('"source": "native-platform-build"', verifier)
-        self.assertIn('"entrypoint": "qlever/scripts/build-macos-local-runtime.sh"', verifier)
+        module = ast.parse(verifier)
+        main = next(node for node in module.body if isinstance(node, ast.FunctionDef) and node.name == "main")
+        build_expression = next(node.value for node in main.body if isinstance(node, ast.Assign) and any(isinstance(target, ast.Name) and target.id == "build" for target in node.targets))
+        for platform in ["linux-arm64", "linux-x64", "macos-arm64", "macos-x64"]:
+            with self.subTest(platform=platform):
+                build = eval(compile(ast.Expression(build_expression), str(VERIFIER), "eval"), {"args": SimpleNamespace(prior_sdk_image=None, build_source=platform)})
+                self.assertEqual(build, {"source": "native-platform-build", "platform": platform, "entrypoint": "qlever/scripts/prepare-linux-physical-runtime.py" if platform.startswith("linux-") else "qlever/scripts/build-macos-local-runtime.sh"})
+        build = eval(compile(ast.Expression(build_expression), str(VERIFIER), "eval"), {"args": SimpleNamespace(prior_sdk_image="registry/sdk@sha256:" + "a" * 64, build_source=None)})
+        self.assertEqual(build, {"source": "focused-prior-runtime-sdk", "priorSdkImage": "registry/sdk@sha256:" + "a" * 64, "entrypoint": "qlever/scripts/run-focused-native-build.sh"})
         self.assertIn("runtime_artifacts(prefix, runtime_path)", verifier)
         self.assertIn('library_root.rglob("*")', verifier)
         self.assertNotIn("artifact(prefix, adapter_path)", verifier)
@@ -178,7 +189,14 @@ class QleverLocalRuntimeBuildContractTest(unittest.TestCase):
         script = MACOS_BUILD.read_text(encoding="utf-8")
 
         self.assertIn('[[ "$(uname -s)" == "Darwin" ]]', script)
-        self.assertIn('[[ "$(uname -m)" == "arm64" ]]', script)
+        architecture_case = re.search(r'case "\$\(uname -m\)" in\n.*?\nesac', script, re.S)
+        self.assertIsNotNone(architecture_case)
+        for machine, expected in [("arm64", "arm64"), ("x86_64", "x64"), ("unknown", None)]:
+            with self.subTest(machine=machine):
+                command = 'uname() { printf "%s" "$1"; }; fail() { exit 23; };\n' + architecture_case.group(0).replace("$(uname -m)", machine) + '\nprintf "%s" "$native_arch"'
+                result = subprocess.run(["bash", "-c", command], capture_output=True, text=True, timeout=2)
+                self.assertEqual(result.returncode, 0 if expected else 23)
+                self.assertEqual(result.stdout, expected or "")
         self.assertNotIn("brew --prefix", script)
         self.assertIn('brew_bin=$(command -v brew)', script)
         self.assertIn('icu_prefix="$brew_prefix/opt/icu4c"', script)
@@ -215,7 +233,7 @@ class QleverLocalRuntimeBuildContractTest(unittest.TestCase):
         )
         self.assertIn("dylibbundler -od -b", script)
         self.assertIn("codesign --force --sign -", script)
-        self.assertIn("--build-source macos-arm64", script)
+        self.assertIn('--build-source "macos-$native_arch"', script)
         self.assertIn("tar -czf \"$archive_path\"", script)
 
     def test_image_smoke_requires_owner_text_and_vector_schema_and_real_queries(self):

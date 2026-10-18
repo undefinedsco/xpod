@@ -24,8 +24,16 @@
     "sha256": "0080c9b59b0db1bff4bbe0fc4da96133e85fff02ebd8bd14abdf28584c362434"
   },
   {
+    "path": ".github/workflows/api-module-product.yml",
+    "sha256": "db6ca21afa33d572f24a92e96c88f425d1bf46a86d966a55be4c10de4d812263"
+  },
+  {
     "path": "bun.lock",
     "sha256": "8e191efdefc855b72cea0f8cbc3e3ad2f5c3f47c4466553f7d23bd04fccc3d0d"
+  },
+  {
+    "path": "desktop/package.json",
+    "sha256": "b29ecdd63bd7b0c7fc9e3eff53866432831fad4acc4d637c769cb03977810e85"
   },
   {
     "path": "docker/qlever-runtime-sdk/Dockerfile.module-bookworm",
@@ -68,6 +76,10 @@
     "sha256": "2af86bb2b1da2ead8b3311cdc1213c5463db49cd92bbd7c3c100cdc3ec113913"
   },
   {
+    "path": "packages/solid-sdk/scripts/build-bun-entries.cjs",
+    "sha256": "801e88cdb5c33ff04082cb8fa9e2bfddaedc8aa0456ed25b9229c07478306dcf"
+  },
+  {
     "path": "packages/tasks/package.json",
     "sha256": "3fe14574fcd12ee43a2f3e6ef95129a34405b72a2c576f8ed98b2f4ff7a49a8b"
   },
@@ -82,6 +94,10 @@
   {
     "path": "packages/xpod-api/package.json",
     "sha256": "ce111f505757cbb813e70237d7fec59ae496eb1b7f6661d57be1203cd4709a60"
+  },
+  {
+    "path": "packages/xpod-api/scripts/build.ts",
+    "sha256": "8b38e569b284448bc5e34064efc8a4bb6022283d1fd025e007dc904ac92b7a52"
   },
   {
     "path": "packages/xpod-api/scripts/bun-build-api.ts",
@@ -146,6 +162,10 @@
   {
     "path": "packages/xpod-cli/package.json",
     "sha256": "e2db5b5feb6eb3e4ab30508fd8657b68b3fd72ae2e1e618a2f12eb3fa2309c85"
+  },
+  {
+    "path": "packages/xpod-cli/scripts/build-package.ts",
+    "sha256": "298519827f405b3991059d75044a72ab7f76153e0a90d1a25826eb7f0c9ffae0"
   },
   {
     "path": "packages/xpod-cli/scripts/build-tools-package.ts",
@@ -529,7 +549,15 @@
   },
   {
     "path": "scripts/api-module-producer.py",
-    "sha256": "68ecfb5c66dd0f1882ef707e86a4c74df7d0406bb9bb68eb011bb20872ef23bf"
+    "sha256": "0169bfbf726dce149e5a0fa995fd06bbe618236f1829d0575ccb0bafeea8b450"
+  },
+  {
+    "path": "scripts/api-producer-dependencies.cjs",
+    "sha256": "f6e9deb9a758523e57afa8fa5c7253ecec679d1c6d2c929ae7c22ea9c649685e"
+  },
+  {
+    "path": "scripts/build-afs-from-producer.ts",
+    "sha256": "95c556979f97400210a0e1826c505f06c1e258951aacf7f519b6482fb50bd85f"
   },
   {
     "path": "scripts/bun-test-discovery.cjs",
@@ -544,6 +572,10 @@
     "sha256": "f1a642a32f78185d115c8ae60e003ce1311f2b8f1b1db01ec87a10e32eb7015d"
   },
   {
+    "path": "scripts/check-api-producer-dependency-state.ts",
+    "sha256": "1c91afdb24cc995195a996032d6c032f52e281fb6437af47e255925c85a6238a"
+  },
+  {
     "path": "scripts/check-cli-package.cjs",
     "sha256": "2dca8d5e7703715c07c4fbb11a4c669f4bb6094599f2307784d547c39aa59b30"
   },
@@ -553,7 +585,7 @@
   },
   {
     "path": "scripts/check-dependency-state.ts",
-    "sha256": "c0414709481f169c89eb87f8ee222a617d23c937fed44ffb86ff9796174ff5e7"
+    "sha256": "1cabdc527ed712e0f3521bc773fec06ff698eb2eb61ac98a6853454041433509"
   },
   {
     "path": "scripts/check-package-registry-consumer.cjs",
@@ -578,6 +610,10 @@
   {
     "path": "scripts/css-module-producer.py",
     "sha256": "78e2ec3c272233602083f81d574cfefc5f6c36e9200c1d92e6f7935bd6cac41f"
+  },
+  {
+    "path": "scripts/fix-dist-js-imports.mjs",
+    "sha256": "fad80671a261bfad30bfc7db21abc3f140f6208027e7d97769fca9220400148a"
   },
   {
     "path": "scripts/independent-release-plan.ts",
@@ -626,6 +662,18 @@
   {
     "path": "scripts/lib/api-consumer-probes.py",
     "sha256": "fc71c837089affca5b2f67fe43c8becf1a167a981309dc0b5213fc4ec33e665b"
+  },
+  {
+    "path": "scripts/lib/api-install-selection.cjs",
+    "sha256": "a5f13ad0d9e3b017ee78012e3bb0a121870462f24ccdbbf54f40700b34a1ff48"
+  },
+  {
+    "path": "scripts/lib/api-producer-graph.ts",
+    "sha256": "8edda5b02b81fac1ba492caed1b0761d9af7d5df8c975d9639188cd270819192"
+  },
+  {
+    "path": "scripts/lib/api-scoped-dependency-state.ts",
+    "sha256": "97ad91dbd3e01c1e3c0b5d8f503ed0203b00c750090c9e4c743347713dc502a6"
   },
   {
     "path": "scripts/lib/cli-publication-budget.cjs",
@@ -741,7 +789,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/github-origin.ts",
-    "sha256": "d86bd4f6e2e3372f7731c2667fb0bfc795ae8c2ab198d3d41f6cd86f05d27238"
+    "sha256": "148bbf620c493f436d2346b709b24fc8274afbb3a3dabc0737a204d494ac1906"
   },
   {
     "path": "scripts/lib/independent-admission/github-source-binding-groups.ts",
@@ -849,7 +897,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/module-source-admission.ts",
-    "sha256": "89d2baeb5611182e3204aaf464329abc7687e3c162fff0ee88978a2b9bb67931"
+    "sha256": "60c683817e7f7ee976a2e6cb8eac81701eb82bfefb55e6318c74d0da84b82d78"
   },
   {
     "path": "scripts/lib/independent-admission/module-source-originals.ts",
@@ -857,7 +905,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/module-source-phases.ts",
-    "sha256": "5a1f74aebb5a7c46e57ff15d6ecace01389746b2e2cd27cfb245a50f75a4011b"
+    "sha256": "b62d90e1f1ee868413273bb8d4583c3649563146f8857b1bf608a5d787f0b500"
   },
   {
     "path": "scripts/lib/independent-admission/native-admission-requirements.ts",
@@ -1228,6 +1276,10 @@
     "sha256": "7a2956ec29c71f00f5769718c6452d61a810c74c2ec5fab1a6a80c597c2dbd18"
   },
   {
+    "path": "scripts/plan-api-install-selection.cjs",
+    "sha256": "164d5930864cefb2efdcaccc34fcf046aa61bc248542d1e70f11975d6159c324"
+  },
+  {
     "path": "scripts/platform-binaries.cjs",
     "sha256": "95dc2afc4501a87418c4858faa4f77bf0b1930061c649c3d771d607d3d8ecc7f"
   },
@@ -1386,6 +1438,10 @@
   {
     "path": "ui/build-targets.json",
     "sha256": "379418a373514096c523933ed108c44082cb0ceee904f742209995df434233ec"
+  },
+  {
+    "path": "ui/package.json",
+    "sha256": "e1d4d6935fb87798f5cb9964b468b9a75adac722ecb014af2011fc347ae3a611"
   },
   {
     "path": "vitest.config.ts",

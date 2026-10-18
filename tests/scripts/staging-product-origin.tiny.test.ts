@@ -21,8 +21,11 @@ async function scenario(module:'cli'|'api',branch='staging',old=false,mixed=fals
  try{return module==='cli'?await observeCliGitHubOrigin(tuple):await observeModuleProductGitHubOrigin(tuple,'api',target);}finally{globalThis.fetch=previous;}
 }
 for(const module of ['api','cli'] as const)test(`${module} exact staging push origin only`,async()=>{
- expect(githubOriginFacts(await scenario(module))?.sourceSha).toHaveLength(40);
+ const actual=githubOriginFacts(await scenario(module));
+ expect(actual?.sourceSha).toHaveLength(40);
+ if(module==='api'){expect(actual?.workflowSourceSha256).toBe('db6ca21afa33d572f24a92e96c88f425d1bf46a86d966a55be4c10de4d812263');expect(actual?.sourceSha).toBe(actual?.runHeadSha);}
  await expect(scenario(module,'main')).rejects.toThrow();
+ await expect(scenario(module,'refs/tags/v0.0.0')).rejects.toThrow();
  await expect(scenario(module,'staging',false,true)).rejects.toThrow();
  await expect(scenario(module,'staging',true)).rejects.toThrow();
 });
