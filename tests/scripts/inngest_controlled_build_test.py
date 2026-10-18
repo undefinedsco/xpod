@@ -68,7 +68,8 @@ class Controlled(unittest.TestCase):
         for payload,url,accepted in [(b'abc',None,True),(b'abc','https://example.invalid/redirected',False),(b'abcd',None,False)]:
             with tempfile.TemporaryDirectory(dir=ROOT/'.test-data') as temporary:
                 work=Path(temporary)
-                with patch.dict(build.POLICY,{'source':pin}),patch.object(build,'target_tools',return_value={}),patch.object(build.urllib.request,'build_opener',return_value=Opener(payload,url)):
+                # Historical transport fixture intentionally predates source dependencies.
+                with patch.dict(build.POLICY,{'source':pin,'sourceDependencies':[]}),patch.object(build,'target_tools',return_value={}),patch.object(build.urllib.request,'build_opener',return_value=Opener(payload,url)):
                     if accepted:
                         build.acquire(work);self.assertEqual((work/'originals/fixed.tar').read_bytes(),b'abc')
                         self.assertEqual(json.loads((work/'fixed.tar.http.original.json').read_text())['bytes'],3)
@@ -85,7 +86,8 @@ class Controlled(unittest.TestCase):
                     data=b'actual tiny source or tool original';info=tarfile.TarInfo(prefix+'/'+member);info.size=len(data);archive.addfile(info,io.BytesIO(data))
                 pin={'file':filename,'bytes':file.stat().st_size,'sha256':build.sha(file),'prefix':prefix,'url':'https://fixture.invalid/'+filename};pins.append(pin)
                 (work/(filename+'.http.original.json')).write_text(json.dumps({'url':pin['url'],'status':200,'bytes':pin['bytes'],'sha256':pin['sha256']}))
-            with patch.dict(build.POLICY,{'source':pins[0]}),patch.object(build,'target_tools',return_value={'go':pins[1]}),patch.object(build.sys,'platform','linux'),patch.object(build.os,'uname',return_value=types.SimpleNamespace(machine='aarch64')):
+            # This tiny legacy prepare fixture exercises only its declared two pins.
+            with patch.dict(build.POLICY,{'source':pins[0],'sourceDependencies':[]}),patch.object(build,'target_tools',return_value={'go':pins[1]}),patch.object(build.sys,'platform','linux'),patch.object(build.os,'uname',return_value=types.SimpleNamespace(machine='aarch64')):
                 build.prepare(work)
             preparation=json.loads((work/'preparation.original.json').read_text());self.assertEqual(len(preparation['acquisitionOriginals']),2)
             for reference in preparation['acquisitionOriginals']:self.assertEqual(build.sha(work/reference['path']),reference['sha256'])

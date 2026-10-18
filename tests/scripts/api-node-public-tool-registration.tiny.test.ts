@@ -2,7 +2,7 @@ import {test,expect} from 'bun:test';
 import {readFileSync} from 'node:fs';
 import path from 'node:path';
 import {createHash} from 'node:crypto';
-import {API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS as groups,API_COMPRESSED_RETENTION_SOURCE_BINDINGS as old,API_NODE_PUBLIC_TOOL_SOURCE_BINDINGS as current} from '../../scripts/lib/independent-admission/github-origin';
+import {API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS as groups,API_COMPRESSED_RETENTION_SOURCE_BINDINGS as old,API_NODE_PUBLIC_TOOL_SOURCE_BINDINGS as prior,API_WEBSITE_SOURCE_BINDINGS as current} from '../../scripts/lib/independent-admission/github-origin';
 import {CONSUMER_SOURCE_GROUPS as consumers,CI_CONSUMER_SOURCE_GROUPS as ci} from '../../scripts/lib/independent-admission/consumer-observer-policy';
 import {selectGitHubSourceBindingGroup as select,sourceBindingKey as key} from '../../scripts/lib/independent-admission/github-source-binding-groups';
 import {controlledApiSourceRecipe} from '../../scripts/lib/independent-admission/module-source-phases';
@@ -10,8 +10,8 @@ import tcb from '../../scripts/lib/independent-admission/consumer-execution-curr
 const read=(name:string)=>readFileSync(path.resolve(import.meta.dir,'../..',name));
 const sha=(bytes:Buffer)=>createHash('sha256').update(bytes).digest('hex');
 test('Node public tool input adds one complete exact tuple and preserves compressed retention history',()=>{
- expect(groups).toHaveLength(14);expect(consumers).toHaveLength(22);expect(ci).toHaveLength(42);expect(tcb).toHaveLength(362);
- expect(groups.find(g=>g.name==='root-minimal-compressed-original-retention')!.sourceBindings).toBe(old);
+ expect(groups).toHaveLength(15);expect(consumers).toHaveLength(23);expect(ci).toHaveLength(44);expect(tcb).toHaveLength(362);
+ expect(groups.find(g=>g.name==='root-minimal-compressed-original-retention')!.sourceBindings).toBe(old);expect(groups.find(g=>g.name==='root-minimal-node-public-tool-input')!.sourceBindings).toBe(prior);
  expect(current.filter(row=>old.find(previous=>previous.path===row.path)?.sha256!==row.sha256).map(row=>row.path).sort()).toEqual(['packages/xpod-api/scripts/inngest-controlled-build-policy.json','scripts/lib/inngest-controlled-build.py','scripts/lib/module-source-materials.py']);
  for(const row of [...current,...tcb])expect(sha(read(row.path))).toBe(row.sha256);
  const actual=groups.find(g=>g.name==='root-minimal-node-public-tool-input')!;
