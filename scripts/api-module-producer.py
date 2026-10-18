@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import platform
 import resource
+import re
 import stat
 import shutil
 import subprocess
@@ -121,7 +122,7 @@ def target_identity(repo, target):
     return json.loads(subprocess.check_output(['bun', str(Path(repo) / 'scripts/module-product-targets.ts'), 'api', target, '--require-host'], cwd=repo, text=True))
 
 
-def phase_plan(repo, output, version, target, source_kind=None, retained_byte_ceiling=None, controlled_plan_version='current'):
+def phase_plan(repo, output, version, target, source_kind=None, retained_byte_ceiling=None, controlled_plan_version='current', workspace_recipe='global-v1', workspace_source_sha=None):
     """Commands are the normal producer entrypoints, without replacement writers."""
     repo, output = Path(repo), Path(output)
     api = ['bun', 'run', '--cwd', 'packages/xpod-api']
@@ -139,6 +140,22 @@ def phase_plan(repo, output, version, target, source_kind=None, retained_byte_ce
         ('pack', api + ['pack', str(output / 'stage'), str(output / 'product.tgz')], 600),
         ('pack-result', ['bun', '-e', "import {readFileSync} from 'node:fs';import {parseApiPackReceipt} from './scripts/collect-api-release-input';console.log(JSON.stringify(parseApiPackReceipt(readFileSync(process.argv[1]))));", str(output / 'evidence/pack.raw.log')], 60),
     ]
+    if workspace_recipe not in ('global-v1','api-ui-root-minimal-v2'):
+        raise ValueError('Exact API workspace recipe required')
+    if workspace_recipe == 'api-ui-root-minimal-v2':
+        if not isinstance(workspace_source_sha,str) or not re.fullmatch(r'[0-9a-f]{40}',workspace_source_sha):
+            raise ValueError('Immutable workspace recipe source required')
+        selection = str(output/'evidence/install-selection.raw.log')
+        dependency_recipe = str(repo/'scripts/api-producer-dependencies.cjs')
+        prefix = [('install-selection',['bun','--no-install',str(repo/'scripts/plan-api-install-selection.cjs'),workspace_source_sha,target],60),
+                  ('install',['bun','--no-install',dependency_recipe,'install',workspace_source_sha,target,selection],600),
+                  ('postinstall',['bun','run','postinstall'],600)]
+        updated=[]
+        for name,command,timeout in rows[1:]:
+            if name=='dependency-state':command=['bun',str(repo/'scripts/check-api-producer-dependency-state.ts'),workspace_source_sha,target,selection]
+            updated.append((name,command,timeout))
+            if name=='declarations':updated.append(('install-graph',['bun','--no-install',dependency_recipe,'verify',workspace_source_sha,target,selection],120))
+        rows=prefix+updated
     if source_kind is None:
         return rows
     helper = load_controlled_helper(Path(__file__).resolve().parent.parent)
@@ -296,7 +313,8 @@ def controlled_retained_plan(inputs, retained, limits):
                 totalRetainedByteCeiling=limits['sourceMaterialBytes'])
 
 
-def produce(repo, output, target, environment=None, source_kind=None):
+def produce(repo, output, target, environment=None, source_kind=None, workspace_recipe='global-v1'):
+    if workspace_recipe not in ('global-v1','api-ui-root-minimal-v2'):raise ValueError('Exact API workspace recipe required')
     repo, output = Path(repo).resolve(), Path(output).resolve()
     environment = dict(os.environ if environment is None else environment)
     target_info = target_identity(repo, target)
@@ -321,6 +339,7 @@ def produce(repo, output, target, environment=None, source_kind=None):
                    rss=dict(enforced=False, observation='POSIX cumulative waited-child maximum; not group aggregate', cumulativeWaitedChildMaxRSSBytes=None),
                    published=False, releaseQualified=False, consumerValidated=False, legalClearance=False, nativeAdmission=False,
                    blockers=['controlled-preview-only', 'source-native-legal-consumer-release-admission-unverified', 'other-platform-products-unverified'])
+    if workspace_recipe!='global-v1':receipt['workspaceRecipe']=workspace_recipe
     spec = importlib.util.spec_from_file_location('api_product_supervise', repo / 'scripts/agentfs-native-ci/supervise.py')
     supervise = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(supervise)
@@ -349,7 +368,7 @@ def produce(repo, output, target, environment=None, source_kind=None):
         receipt['resources'] = dict(freshRequiredBytes=FRESH_BYTES, floorBytes=FLOOR_BYTES, initialFreeBytes=initial_free)
         if initial_free < FRESH_BYTES:
             raise ValueError('Fresh API producer capacity below 8GiB')
-        queue = list(phase_plan(repo, output, version, target))
+        queue = list(phase_plan(repo, output, version, target, workspace_recipe=workspace_recipe, workspace_source_sha=before['sha']))
         while queue:
             name, command, timeout = queue.pop(0)
             if controlled is not None and name == 'native-inputs':
@@ -390,7 +409,7 @@ def produce(repo, output, target, environment=None, source_kind=None):
             receipt['rss']['cumulativeWaitedChildMaxRSSBytes'] = waited_child_rss()
             if not closed_phase(stage):
                 raise ValueError('API phase did not close successfully: ' + name)
-            if name == 'install':
+            if name == ('postinstall' if workspace_recipe=='api-ui-root-minimal-v2' else 'install'):
                 build_inputs = source_materials.capture_inputs(repo, output, reserve_bytes=reserve if controlled else None)
         with parent_finalization_deadline(started+50*60):
             if controlled is not None:
@@ -421,6 +440,7 @@ if __name__ == '__main__':
     parser.add_argument('--out', required=True)
     parser.add_argument('--target', required=True)
     parser.add_argument('--native-source-kind', choices=['xpod-controlled-inngest-build-v1'])
+    parser.add_argument('--workspace-recipe',choices=['global-v1','api-ui-root-minimal-v2'],default='global-v1')
     args = parser.parse_args()
-    result = produce(Path(__file__).resolve().parent.parent, Path(args.out), args.target, source_kind=args.native_source_kind)
+    result = produce(Path(__file__).resolve().parent.parent, Path(args.out), args.target, source_kind=args.native_source_kind, workspace_recipe=args.workspace_recipe)
     print(json.dumps(result))

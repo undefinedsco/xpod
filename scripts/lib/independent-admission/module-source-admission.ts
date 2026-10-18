@@ -9,7 +9,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { collectedArtifactView,assertCollectedPublicationCustody } from './artifact-collector';
 import { derivedSourceView,assertDerivedSourceCurrent } from './source-context';
 import { githubOriginFacts, githubOriginOriginals, type GitHubOriginObservation } from './github-origin';
-import { inspectModuleSourcePhases,controlledApiSourceRecipe } from './module-source-phases';
+import { inspectModuleSourcePhases,controlledApiSourceRecipe,moduleSourceInputCaptureBoundary } from './module-source-phases';
 
 const MiB = 1024 ** 2;
 const limits = JSON.parse(readFileSync(new URL('../module-artifact-limits.json', import.meta.url), 'utf8'));
@@ -234,11 +234,12 @@ export function inspectModuleSourceAdmission(input: { artifact: unknown; source:
   const job = jobs && JSON.parse(jobs.data.toString()).jobs.find((row: any) => row.id === origin.producerJobId);
   if (!job) return fail('observed source producer job missing');
   const receipts = producer.phases.map((phase: any) => JSON.parse(artifact.readProducerOriginal(phase.receipt.path, MiB).toString()));
+  const captureBoundary=moduleSourceInputCaptureBoundary(producer);
   const revalidatedStart = Date.parse(materials.revalidation?.startedUTC), revalidatedClosed = Date.parse(materials.revalidation?.closedUTC);
   const started = Date.parse(materials.capturedInputsStartedUTC), closed = Date.parse(materials.capturedInputsClosedUTC), outputs = Date.parse(materials.capturedOutputsClosedUTC);
-  if (![started, closed, outputs, revalidatedStart, revalidatedClosed].every(Number.isFinite) || started < Date.parse(receipts[0].closedUTC)
+  if (![started, closed, outputs, revalidatedStart, revalidatedClosed].every(Number.isFinite) || started < Date.parse(receipts[captureBoundary.after].closedUTC)
     || revalidatedStart < Date.parse(receipts[receipts.length - 1].closedUTC) || revalidatedClosed < revalidatedStart || outputs < revalidatedClosed
-    || closed < started || closed > Date.parse(receipts[1].startedUTC) || outputs < Date.parse(receipts[receipts.length - 1].closedUTC) || outputs > Date.parse(job.completed_at)) return fail('actual build input/output capture window');
+    || closed < started || closed > Date.parse(receipts[captureBoundary.before].startedUTC) || outputs < Date.parse(receipts[receipts.length - 1].closedUTC) || outputs > Date.parse(job.completed_at)) return fail('actual build input/output capture window');
   const ranged = artifact as typeof artifact & { readProducerOriginalRange?: (name: string, offset: number, length: number,budget?:OriginalReadBudget) => Buffer };
   const git = source as typeof source & { readTrackedGitObject?: (name: string) => { mode: string; bytes: Buffer } };
   if (!ranged.readProducerOriginalRange || !git.readTrackedGitObject) return { status: 'pending' as const, sourceQualified: false as const, reason: 'original-range-and-Git-object-capabilities-required' };
