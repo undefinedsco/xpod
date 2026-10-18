@@ -88,11 +88,12 @@ class BoundedPipePump:
         check();assert self.sha256 is not None,'actual stdio pipe did not close'
 
 class Observer:
-    def __init__(self,out,source,build,*,deadline_monotonic=None,check_budget=lambda:None,maximum_bytes=32*1024**2,maximum_file_bytes=1024**2,selected_names=SELECTED,maximum_processes=128,shard_bytes=None,require_success=True,maximum_stdio_bytes=None):
+    def __init__(self,out,source,build,*,deadline_monotonic=None,check_budget=lambda:None,maximum_bytes=32*1024**2,maximum_file_bytes=1024**2,selected_names=SELECTED,maximum_processes=128,shard_bytes=None,require_success=True,maximum_stdio_bytes=None,shared_tasks=False):
+        self.shared_tasks=shared_tasks
         self.prepared_inputs={};self.prepared_sealed=False;self.domain_bytes=0;self.domain_lock=threading.Lock();self.pump_errors=[];self.maximum_stdio_bytes=maximum_stdio_bytes if maximum_stdio_bytes is not None else maximum_file_bytes
         self.require_success=require_success;self.raw_bytes_completed=0;self.maximum_processes=maximum_processes;self.shard_bytes=shard_bytes
         self.deadline_monotonic=deadline_monotonic;self.check_budget=check_budget;self.maximum_bytes=maximum_bytes;self.maximum_file_bytes=maximum_file_bytes;self.selected_names=selected_names
-        self.out=Path(out);self.capture_dir=self.out;self.source=str(source);self.build=str(build);self.tasks={};self.seq=0;self.records=[];self.captures=[];self.retained=set();self.producers={};self.write_states={};self.metadata_states=[];self.rename_records=[];self.consumers=[];self.raw=None;self.deadline=0;self.pausing=False;self.root=None;self.root_code=None;self.failures=[];self.current_phase=None;self.unknown_stops={};self.capture_bytes=0;self.exclusive=None;self.wait_references=[]
+        self.out=Path(out);self.capture_dir=self.out;self.source=str(source);self.build=str(build);self.tasks={};self.seq=0;self.records=[];self.captures=[];self.retained=set();self.producers={};self.write_states={};self.write_projections={};self.budget_context={};self.metadata_states=[];self.rename_records=[];self.consumers=[];self.raw=None;self.deadline=0;self.pausing=False;self.root=None;self.root_code=None;self.failures=[];self.current_phase=None;self.unknown_stops={};self.capture_bytes=0;self.exclusive=None;self.wait_references=[]
     def tighten_remaining(self,remaining_bytes):
         # External source domains supply only their remaining allowance. The
         # existing observer ledger remains private and is clipped under the
@@ -102,18 +103,61 @@ class Observer:
         with self.domain_lock:
             self.maximum_bytes=min(self.maximum_bytes,self.domain_bytes+remaining_bytes)
             return self.maximum_bytes
-    def claim(self,count):
+    def claim(self,count,*,context=None):
         self.check_budget()
         with self.domain_lock:
-            assert count>=0 and self.domain_bytes+count<=self.maximum_bytes,'shared execution original byte bound'
+            if count<0 or self.domain_bytes+count>self.maximum_bytes:
+                diagnostic=dict(kind='execution-byte-bound',chargedBytes=self.domain_bytes,requestedBytes=count,maximumBytes=self.maximum_bytes,projectedBytes=self.domain_bytes+count,**(context or dict(role='other-execution-original')))
+                print('SDK_EXECUTION_BYTE_BOUND '+json.dumps(diagnostic,sort_keys=True),file=sys.stderr,flush=True)
+                raise AssertionError('shared execution original byte bound')
             self.domain_bytes+=count
     def emit(self,row):
         self.check();self.seq+=1;row=dict(row,sequence=self.seq,phase=self.current_phase,observedUnixNs=str(time.time_ns()));data=(json.dumps(row,sort_keys=True)+'\n').encode()
-        self.claim(len(data));self.raw.write(data);self.raw.flush();return row
+        assert len(data)<=65536,'actual raw record exceeds fixed range bound'
+        self.claim(len(data),context=dict(role='raw-record',rawKind=row['kind']));self.raw.write(data);self.raw.flush();return row
     def wait_one(self):
         return self.waiter.wait_one()
     def check(self):
         self.check_budget();assert not self.pump_errors,'actual bounded stdio failed: '+str(self.pump_errors);assert time.monotonic()<self.deadline,'all-stop observer deadline'
+    def actual_tgid(self,pid):
+        with open('/proc/'+str(pid)+'/status','rb') as source:data=source.read(65537)
+        assert len(data)<=65536,'bounded actual task status'
+        values={line.split(b':',1)[0]:line.split(b':',1)[1].strip() for line in data.splitlines() if b':' in line}
+        assert int(values[b'Pid'])==pid and int(values[b'TracerPid'])==os.getpid(),'task is not actually owned by observer'
+        return int(values[b'Tgid'])
+    def verify_task_ownership(self):
+        live={pid:row for pid,row in self.tasks.items() if not row['exited']};groups={};tables={};ownership=[]
+        for pid,row in sorted(live.items()):
+            self.check();tgid=self.actual_tgid(pid);assert tgid==row['tgid'],'actual TGID differs from kernel clone binding';groups.setdefault(tgid,[]).append(pid)
+            descriptors=[]
+            for value in self.bounded_fd_slots(pid):
+                self.check();fd=int(value);item=os.stat('/proc/'+str(pid)+'/fd/'+value);descriptors.append([fd,probe.identity(item),descriptor_flags(pid,fd),descriptor_position(pid,fd)])
+            table=row['fdTable'];prior=tables.setdefault(table,descriptors);assert prior==descriptors,'CLONE_FILES table differs between stopped owners'
+            ownership.append(dict(tid=pid,tgid=tgid,fdTable=table))
+        for tgid,tids in groups.items():assert sorted(int(value) for value in os.listdir('/proc/'+str(tgid)+'/task'))==tids,'unregistered or missing actual TGID task'
+        return ownership
+    def bounded_fd_slots(self,pid):
+        values=[]
+        with os.scandir('/proc/'+str(pid)+'/fd') as entries:
+            for entry in entries:
+                self.check();assert len(values)<1024,'actual FD table slots unsupported above 1024'
+                values.append(entry.name)
+        return sorted(values,key=int)
+    def writable_aliases(self,identity,target_pid=None,target_fd=None):
+        result={}
+        for pid,row in sorted(self.tasks.items()):
+            if row['exited']:continue
+            for value in self.bounded_fd_slots(pid):
+                self.check();fd=int(value);item=os.stat('/proc/'+str(pid)+'/fd/'+value)
+                if (item.st_dev,item.st_ino)!=tuple(identity[:2]):continue
+                flags=descriptor_flags(pid,fd)
+                if flags&os.O_ACCMODE==os.O_RDONLY:continue
+                table=row['fdTable'] if self.shared_tasks else pid;key=(table,fd)
+                assert key in result or len(result)<64,'writable alias keys unsupported above 64'
+                actual=dict(pid=pid,fd=fd,flags=flags,accessMode=flags&os.O_ACCMODE)
+                if pid==target_pid and fd==target_fd:result[key]=actual
+                else:result.setdefault(key,actual)
+        return list(result.values())
     def barrier(self):
         self.pausing=True
         try:
@@ -128,22 +172,14 @@ class Observer:
             for pid,row in self.tasks.items():
                 if row['exited']:continue
                 assert row['stopped'] and state(pid)=='t','potential writer not in OS tracing-stop'
-                assert os.listdir('/proc/'+str(pid)+'/task')==[str(pid)],'unknown shared writer thread'
+                if not self.shared_tasks:assert os.listdir('/proc/'+str(pid)+'/task')==[str(pid)],'unknown shared writer thread'
                 known.append(pid)
-            return self.emit(dict(kind='all-stop-barrier',pids=sorted(known),osStates=['t']*len(known)))
+            return self.emit(dict(kind='all-stop-barrier',pids=sorted(known),osStates=['t']*len(known),**({'taskOwnership':self.verify_task_ownership()} if self.shared_tasks else {})))
         finally:self.pausing=False
     def sole_writer(self,target_pid,target_fd,identity):
-        writers=[]
-        for pid,row in self.tasks.items():
-            if row['exited']:continue
-            for value in os.listdir('/proc/'+str(pid)+'/fd'):
-                fd=int(value)
-                try:
-                    item=os.stat('/proc/'+str(pid)+'/fd/'+value)
-                    if (item.st_dev,item.st_ino)==tuple(identity[:2]) and descriptor_flags(pid,fd)&os.O_ACCMODE in [os.O_WRONLY,os.O_RDWR]:writers.append(dict(pid=pid,fd=fd))
-                except FileNotFoundError:raise ValueError('descriptor changed during all-stop')
-        assert writers==[dict(pid=target_pid,fd=target_fd)],'another writable FD aliases selected output inode'
-        return writers
+        aliases=self.writable_aliases(identity,target_pid,target_fd)
+        assert len(aliases)==1 and aliases[0]['pid']==target_pid and aliases[0]['fd']==target_fd,'another writable FD aliases selected output inode'
+        return [dict(pid=target_pid,fd=target_fd)]
     def seal_prepared_build_inputs(self):
         # This runs once, before the first tracee is forked. Existing build
         # inputs have a different origin from a close observed by this tracer.
@@ -209,10 +245,15 @@ class Observer:
         with (self.capture_dir/name).open('xb') as output:
             while count<size:
                 self.check();block=os.pread(reader,min(65536,size-count),offset+count);assert block,'short actual write original'
-                self.claim(len(block));output.write(block);count+=len(block);digest.update(block)
+                self.claim(len(block),context=self.budget_context);output.write(block);count+=len(block);digest.update(block)
             output.flush();os.fsync(output.fileno())
         row=self.emit(dict(kind='write-original',original=dict(path=name,bytes=count,sha256=digest.hexdigest())))
         self.captures.append(row);self.capture_bytes+=count;return row['original']
+    def fd_blocks(self,reader,size):
+        offset=0
+        while offset<size:
+            self.check();block=os.pread(reader,min(65536,size-offset),offset);assert block,'short held write image'
+            offset+=len(block);yield block
     def original_blocks(self,ref):
         with (self.capture_dir/ref['path']).open('rb') as stream:
             while True:
@@ -226,7 +267,11 @@ class Observer:
             writers=self.sole_writer(pid,fd,identity);flags=descriptor_flags(pid,fd);assert flags&os.O_ACCMODE==os.O_RDWR
             position=descriptor_position(pid,fd);offset=identity[3] if flags&os.O_APPEND else position;count=entry['args'][2]
             assert count<=self.maximum_file_bytes and offset+count<=self.maximum_file_bytes,'bounded actual write range'
-            before=self.snapshot_write_original(reader,identity[3]);assert identity==probe.identity(os.fstat(reader))
+            self.budget_context=dict(path=path[:4096],pathTruncated=len(path)>4096,pathSha256=hashlib.sha256(os.fsencode(path)).hexdigest(),role='write-before',pid=pid,fd=fd,identity=identity,writeCount=count,writeOffset=offset)
+            before=bindings.digest_blocks(self.fd_blocks(reader,identity[3]),self.maximum_file_bytes,self.check);assert identity==probe.identity(os.fstat(reader))
+            initial=None
+            if tuple(identity[:2]) not in self.write_states:
+                initial=self.snapshot_write_original(reader,identity[3]);assert identity==probe.identity(os.fstat(reader))
             prior=self.write_states.get(tuple(identity[:2]));baseline='empty'
             if identity[3]:
                 if prior:
@@ -237,9 +282,11 @@ class Observer:
                     assert original,'nonempty writable preimage lacks retained actual original'
                     row,held,data=original;assert probe.identity(os.fstat(held))==identity and data==(before['bytes'],before['sha256']),'write preimage differs from actual retained original';baseline=row['sequence']
             memory=os.open('/proc/'+str(pid)+'/mem',os.O_RDONLY|os.O_CLOEXEC)
-            try:buffer=self.snapshot_write_original(memory,count,offset=entry['args'][1])
+            try:
+                self.budget_context['role']='actual-write-buffer';buffer=self.snapshot_write_original(memory,count,offset=entry['args'][1])
             finally:os.close(memory)
-            row=self.emit(dict(kind='actual-write-window',pid=pid,fd=fd,path=path,entrySequence=entry['sequence'],barrierSequence=barrier['sequence'],beforeIdentity=identity,before=before,buffer=buffer,offset=offset,position=position,flags=flags,writers=writers,baseline=baseline))
+            row=self.emit(dict(kind='actual-write-window',pid=pid,fd=fd,path=path,entrySequence=entry['sequence'],barrierSequence=barrier['sequence'],beforeIdentity=identity,format='bounded-write-delta-v1',initialBefore=initial,before=before,buffer=buffer,offset=offset,position=position,flags=flags,writers=writers,baseline=baseline))
+            self.budget_context={}
             self.tasks[pid]['writeWindow']=(row,reader);self.retained.add(reader);reader=None;return row
         finally:
             if reader is not None:os.close(reader)
@@ -248,8 +295,15 @@ class Observer:
         try:
             assert self.exclusive==(pid,entry['sequence']) and not exit['isError'] and 0<=exit['result']<=entry['args'][2],'actual write failed or returned invalid count'
             identity=probe.identity(os.fstat(held));assert identity==probe.identity(os.stat('/proc/'+str(pid)+'/fd/'+str(row['fd']))) and identity[:3]==row['beforeIdentity'][:3] and descriptor_flags(pid,row['fd'])==row['flags'],'actual writer FD changed'
-            self.sole_writer(pid,row['fd'],identity);after=self.snapshot_write_original(held,identity[3]);assert identity==probe.identity(os.fstat(held))
-            bindings.verify_write_bytes(self.original_blocks(row['before']),self.original_blocks(row['buffer']),self.original_blocks(after),row['beforeIdentity'][3],row['offset'],exit['result'],self.maximum_file_bytes,self.check)
+            self.sole_writer(pid,row['fd'],identity)
+            key=tuple(identity[:2]);segments=self.write_projections.get(key)
+            if row['initialBefore'] is not None:segments=[(row['initialBefore'],0,row['beforeIdentity'][3])] if row['beforeIdentity'][3] else []
+            assert segments is not None,'write delta baseline projection missing'
+            segments=bindings.write_segments(segments,row['offset'],exit['result'],row['buffer'],self.maximum_file_bytes)
+            after=bindings.digest_blocks(self.fd_blocks(held,identity[3]),self.maximum_file_bytes,self.check)
+            expected=bindings.digest_blocks(bindings.segment_blocks(segments,self.original_blocks,self.check),self.maximum_file_bytes,self.check)
+            assert after==expected and identity==probe.identity(os.fstat(held)),'actual post-write bytes differ from syscall buffer projection'
+            self.write_projections[key]=segments
             transition=self.emit(dict(kind='actual-write-transition',pid=pid,entrySequence=entry['sequence'],windowSequence=row['sequence'],exitSequence=exit['sequence'],afterIdentity=identity,after=after,result=exit['result'],isError=exit['isError']))
             self.write_states[tuple(identity[:2])]=transition
         finally:os.close(held);self.retained.remove(held)
@@ -257,20 +311,20 @@ class Observer:
         barrier=self.barrier();self.check();target=fdpath(pid,fd);path='/proc/'+str(pid)+'/fd/'+str(fd);before=os.stat(path);reader=os.open(path,os.O_RDONLY|os.O_CLOEXEC)
         try:
             ident=probe.identity(os.fstat(reader));assert ident==probe.identity(before) and stat.S_ISREG(ident[2]) and ident[3]<=self.maximum_file_bytes,'bounded regular capture required'
+            if role=='producer-close':
+                aliases=self.writable_aliases(ident,pid,fd)
+                if len(aliases)!=1 or aliases[0]['pid']!=pid or aliases[0]['fd']!=fd:
+                    assert len(aliases)>1 and any(alias['pid']==pid and alias['fd']==fd for alias in aliases),'selected close FD changed before exclusive window'
+                    table_owners=sorted(other for other,task in self.tasks.items() if not task['exited'] and (task['fdTable']==self.tasks[pid]['fdTable'] if self.shared_tasks else other==pid))
+                    row=self.emit(dict(kind='alias-close-window',pid=pid,fd=fd,path=target,entrySequence=self.tasks[pid]['entry']['sequence'],barrierSequence=barrier['sequence'],identity=ident,aliases=aliases,tableOwners=table_owners,scope='descriptor close only; no producer or input byte authority'))
+                    self.tasks[pid]['aliasCloseWindow']=(row,reader);self.retained.add(reader);reader=None;return row
             writers=self.sole_writer(pid,fd,ident) if role=='producer-close' else [];rw_read=False
             # A stopped writer is still a writer: diagnose, never silently accept it.
             if role!='producer-close':
                 aliases=[];alias_count=0;alias_digest=hashlib.sha256()
-                for other,task in sorted(self.tasks.items()):
-                    if task['exited']:continue
-                    for value in sorted(os.listdir('/proc/'+str(other)+'/fd'),key=int):
-                        self.check();item=os.stat('/proc/'+str(other)+'/fd/'+value)
-                        if (item.st_dev,item.st_ino)!=tuple(ident[:2]):continue
-                        flags=descriptor_flags(other,int(value))
-                        if flags&os.O_ACCMODE==os.O_RDONLY:continue
-                        alias=dict(pid=other,fd=int(value),flags=flags,accessMode=flags&os.O_ACCMODE)
-                        alias_count+=1;alias_digest.update((json.dumps(alias,sort_keys=True)+'\n').encode())
-                        if len(aliases)<32:aliases.append(alias)
+                for alias in self.writable_aliases(ident,pid,fd):
+                    alias_count+=1;alias_digest.update((json.dumps(alias,sort_keys=True)+'\n').encode())
+                    if len(aliases)<32:aliases.append(alias)
                 if alias_count==1 and aliases==[dict(pid=pid,fd=fd,flags=descriptor_flags(pid,fd),accessMode=os.O_RDWR)] and role=='consumer' and ident[3]==0:
                     entry=self.tasks[pid]['entry'];rules=profile(entry['arch'])
                     assert entry['nr']==rules['read'] and entry['args'][0]==fd and entry['args'][2]>0,'empty window requires actual read entry'
@@ -351,7 +405,31 @@ class Observer:
         while True:
             candidate=next(((pid,r) for pid,r in self.tasks.items() if r.get('capture') and not r['exited']),None)
             if not candidate:break
-            pid,task=candidate;fd,role=task.pop('capture');capture=self.capture_metadata(pid) if role=='metadata-before' else (self.capture_write(pid,fd) if role=='writer-before' else self.capture(pid,fd,role));task['entry']['captureSequence']=capture['sequence'];self.exclusive=(pid,task['entry']['sequence']);self.emit(dict(kind={'actual-write-window':'exclusive-write-resume','actual-mode-window':'exclusive-mode-resume','empty-read-window':'exclusive-empty-read-resume'}.get(capture['kind'],'exclusive-captured-syscall-resume'),pid=pid,entrySequence=task['entry']['sequence'],captureSequence=capture['sequence']));break
+            pid,task=candidate;fd,role=task.pop('capture');capture=self.capture_metadata(pid) if role=='metadata-before' else (self.capture_write(pid,fd) if role=='writer-before' else self.capture(pid,fd,role));task['entry']['captureSequence']=capture['sequence'];self.exclusive=(pid,task['entry']['sequence']);self.emit(dict(kind={'actual-write-window':'exclusive-write-resume','actual-mode-window':'exclusive-mode-resume','empty-read-window':'exclusive-empty-read-resume','alias-close-window':'exclusive-alias-close-resume'}.get(capture['kind'],'exclusive-captured-syscall-resume'),pid=pid,entrySequence=task['entry']['sequence'],captureSequence=capture['sequence']));break
+    def reject_shared_clone(self,pid,entry,flags):
+        # Failure diagnostics only. No FD-table/TGID ownership or closure is
+        # inferred from flags, a pathname, or this bounded /proc snapshot.
+        with open('/proc/'+str(pid)+'/status','rb') as source:status=source.read(65537)
+        assert len(status)<=65536,'bounded clone status original required'
+        fields={}
+        for line in status.splitlines():
+            if b':' in line:
+                key,value=line.split(b':',1)
+                if key in [b'Pid',b'Tgid',b'PPid',b'TracerPid',b'Threads']:fields[key.decode('ascii')]=int(value.strip())
+        assert fields.get('Pid')==pid,'actual clone PID status differs'
+        tids=sorted(int(value) for value in os.listdir('/proc/'+str(pid)+'/task'));tracked=sorted(key for key,row in self.tasks.items() if not row['exited'])
+        executable=os.readlink('/proc/'+str(pid)+'/exe');identity=probe.identity(os.stat('/proc/'+str(pid)+'/exe'))
+        def summary(values):
+            digest=hashlib.sha256()
+            for value in values:self.check();digest.update((str(value)+'\n').encode())
+            return dict(count=len(values),sample=values[:32],truncated=len(values)>32,sha256=digest.hexdigest())
+        diagnostic=dict(kind='unsupported-shared-clone-before-resume',pid=pid,entrySequence=entry['sequence'],arch=entry['arch'],syscall=entry['nr'],actualFlags=flags,
+            selectedTaskOsState=state(pid),status=fields,taskTids=summary(tids),registeredLivePids=summary(tracked),observerPid=os.getpid(),registeredRootPid=self.root,
+            actualProcessGroup=os.getpgid(pid),executablePath=executable[:4096],executablePathTruncated=len(executable)>4096,executablePathSha256=hashlib.sha256(os.fsencode(executable)).hexdigest(),executableIdentity=identity,
+            sharedMemory=bool(flags&0x100),sharedFdTable=bool(flags&0x400),sameThreadGroup=bool(flags&0x10000),scope='unsupported clone rejected before syscall resume; diagnostics only, no shared ownership or source authority')
+        encoded=json.dumps(diagnostic,sort_keys=True);assert len(encoded.encode())<=16384,'bounded shared clone diagnostic'
+        row=self.emit(diagnostic);print('SDK_UNSUPPORTED_SHARED_CLONE '+encoded,file=sys.stderr,flush=True)
+        raise AssertionError('shared thread/FD-table clone refused before resume; diagnostic sequence '+str(row['sequence']))
     def event(self,pid,status,allow_capture=True):
         if pid not in self.tasks:
             assert os.WIFSTOPPED(status) and status>>16==128,'unregistered non-child tracee event'
@@ -366,10 +444,20 @@ class Observer:
             return
         assert os.WIFSTOPPED(status);task['stopped']=True;event=status>>16;sig=os.WSTOPSIG(status)
         if event:
-            self.emit(dict(kind='ptrace-event',pid=pid,event=event))
+            observed_event=self.emit(dict(kind='ptrace-event',pid=pid,event=event))
+            if event==4 and self.shared_tasks:
+                prior=task['fdTable'];task['fdTable']=-observed_event['sequence'];self.emit(dict(kind='actual-exec-fd-table-unshare',pid=pid,eventSequence=observed_event['sequence'],priorFdTable=prior,fdTable=task['fdTable'],tgid=task['tgid']))
             if event in [1,2,3]:
                 child=ctypes.c_ulong();single.trace(GETEVENTMSG,pid,0,ctypes.byref(child));new=int(child.value);assert new not in self.tasks and len(self.tasks)<self.maximum_processes,'actual child/PID bound'
-                self.tasks[new]=dict(stopped=False,exited=False,entry=None,initial=True);self.emit(dict(kind='actual-child-binding',parentPid=pid,childPid=new,event=event))
+                fields={}
+                if self.shared_tasks:
+                    entry=task['entry'];assert entry is not None,'actual child lacks syscall entry'
+                    if entry['nr'] in [profile(entry['arch'])['clone'],profile(entry['arch'])['clone3']]:flags=task['cloneFlags']
+                    else:
+                        assert entry['arch']==0xc000003e and entry['nr'] in [57,58],'unknown actual fork operation';flags=17|(0x4100 if entry['nr']==58 else 0)
+                    ownership=bindings.inspect_shared_clone_flags(flags);tgid=task['tgid'] if ownership['sameThreadGroup'] else new;table=task['fdTable'] if ownership['sharedFdTable'] else new
+                    assert self.actual_tgid(new)==tgid,'kernel child TGID differs from clone flags';fields=dict(tgid=tgid,fdTable=table)
+                self.tasks[new]=dict(stopped=False,exited=False,entry=None,initial=True,**fields);self.emit(dict(kind='actual-child-binding',parentPid=pid,childPid=new,event=event,**(dict(cloneEntrySequence=task['entry']['sequence'],cloneFlags=flags,**fields) if self.shared_tasks else {})))
                 if new in self.unknown_stops:self.event(new,self.unknown_stops.pop(new),False)
             elif event not in [4,5,6,128]:raise ValueError('unsupported ptrace event')
             return
@@ -385,9 +473,14 @@ class Observer:
             assert nr not in policy['forbidden'],'unsupported asynchronous/external writer syscall'
             if nr in [policy['clone'],policy['clone3']]:
                 flags=args[0] if nr==policy['clone'] else single.trace(2,pid,args[0])&((1<<64)-1)
-                assert not flags&(0x10000|0x400),'shared thread/FD-table clone refused before resume'
-                assert flags&~(0xff|0x100|0x4000|0x1000000|0x200000|0x100000000)==0,'unknown clone flags refused'
+                if self.shared_tasks:bindings.inspect_shared_clone_flags(flags);task['cloneFlags']=flags
+                elif flags&(0x10000|0x400):self.reject_shared_clone(pid,record,flags)
+                if not self.shared_tasks:assert flags&~(0xff|0x100|0x4000|0x1000000|0x200000|0x100000000)==0,'unknown clone flags refused'
                 self.emit(dict(kind='kernel-clone-flags',pid=pid,entrySequence=record['sequence'],flags=flags))
+            if self.shared_tasks:
+                assert not(nr==436 and args[2]&2),'close_range UNSHARE FD ownership unsupported'
+                execs=[59,322] if kernel['arch']==0xc000003e else [221,281]
+                if nr in execs:assert pid==task['tgid'],'nonleader exec TID replacement unsupported before resume'
             if nr==policy['mmap']:assert not (args[2]&2 and args[3]&1),'shared writable mapping refused before resume'
             selected=None;fd=None
             if nr in [policy['read'],policy['write'],policy['close']]:fd=args[0];selected=fdpath(pid,fd)
@@ -419,6 +512,19 @@ class Observer:
             old=task['entry']
             if old is None:assert task['initial'],'orphan syscall exit';task['initial']=False;return
             record['entrySequence']=old['sequence'];task['entry']=None
+            alias_close=task.pop('aliasCloseWindow',None)
+            if alias_close is not None:
+                window,held=alias_close
+                try:
+                    assert self.exclusive==(pid,old['sequence']) and not record['isError'] and record['result']==0,'alias close did not actually complete'
+                    identity=probe.identity(os.fstat(held));assert identity[:2]==window['identity'][:2],'alias close retained a different inode'
+                    absent=[]
+                    for owner in window['tableOwners']:
+                        try:os.stat('/proc/'+str(owner)+'/fd/'+str(window['fd']))
+                        except FileNotFoundError:absent.append(dict(tid=owner,fd=window['fd'],errorCode=errno.ENOENT))
+                        else:raise AssertionError('closed descriptor slot still exists in shared table')
+                    self.emit(dict(kind='alias-close-exit',pid=pid,entrySequence=old['sequence'],windowSequence=window['sequence'],exitSequence=record['sequence'],retainedIdentity=identity,slotAbsences=absent,result=record['result'],isError=record['isError']))
+                finally:os.close(held);self.retained.remove(held)
             if task.get('metadataWindow'):self.complete_metadata(pid,old,record)
             if task.get('writeWindow'):self.complete_write(pid,old,record)
             rw_read=task.pop('rwReadWindow',None)
@@ -475,11 +581,11 @@ class Observer:
             except BaseException:os._exit(70)
         os.close(stdout_write);os.close(stderr_write);self.pump_errors=[]
         pumps=[BoundedPipePump(stdout_read,stdout_path,self.maximum_stdio_bytes,self.claim,self.pump_errors),BoundedPipePump(stderr_read,stderr_path,self.maximum_stdio_bytes,self.claim,self.pump_errors)]
-        root_pgid=os.getpgid(child);self.root=child;self.tasks[child]=dict(stopped=False,exited=False,entry=None,initial=True)
+        root_pgid=os.getpgid(child);self.root=child;self.tasks[child]=dict(stopped=False,exited=False,entry=None,initial=True,**(dict(tgid=child,fdTable=child) if self.shared_tasks else {}))
         try:
             os.close(read_fd)
             for pump in pumps:pump.start()
-            self.emit(dict(kind='owned-root-binding',pid=child,command=command,backend='ptrace-all-stop-process-v1'));single.trace(SEIZE,child,0,OPTIONS);single.trace(INTERRUPT,child);pid,status=self.wait_one();self.event(pid,status,False);os.write(write_fd,b'x');os.close(write_fd);write_fd=None;self.resume()
+            self.emit(dict(kind='owned-root-binding',pid=child,command=command,backend='ptrace-all-stop-process-v1',**(dict(taskOwnershipModel='all-tracked-tids-shared-fd-v1',tgid=child,fdTable=child) if self.shared_tasks else {})));single.trace(SEIZE,child,0,OPTIONS);single.trace(INTERRUPT,child);pid,status=self.wait_one();self.event(pid,status,False);os.write(write_fd,b'x');os.close(write_fd);write_fd=None;self.resume()
             while any(not r['exited'] for r in self.tasks.values()):
                 pid,status=self.wait_one();self.event(pid,status);self.pending_captures();self.resume()
             for pump in pumps:pump.finish(self.check)
@@ -542,7 +648,7 @@ class SdkExecutionObserver(Observer):
         assert Path(source)==Path('/opt/qlever-sdk/source') and Path(build)==Path('/opt/qlever-sdk/build'),'fixed SDK source/build roots required'
         assert isinstance(deadline_monotonic,(float,int)) and math.isfinite(deadline_monotonic) and time.monotonic()<deadline_monotonic,'existing live SDK deadline required'
         super().__init__(out,source,build,deadline_monotonic=deadline_monotonic,check_budget=check_budget,maximum_bytes=maximum_bytes,
-            maximum_file_bytes=limits['shardBytes'],selected_names=None,maximum_processes=limits['sourceMembers'],shard_bytes=limits['shardBytes'],require_success=False,maximum_stdio_bytes=maximum_stdio_bytes)
+            maximum_file_bytes=limits['shardBytes'],selected_names=None,maximum_processes=limits['sourceMembers'],shard_bytes=limits['shardBytes'],require_success=False,maximum_stdio_bytes=maximum_stdio_bytes,shared_tasks=True)
         self.capture_dir=self.out/'captures';self.capture_dir.mkdir(exist_ok=False);self.sdk_phase_index=0;self.sdk_failed=False
         mounts=Path('/proc/self/mountinfo').read_bytes();assert len(mounts)<=limits['metadataBytes'],'source provider metadata bound'
         self.source_provider=probe.effective_readonly(source,mounts);self.source_provider_originals=dict(mountinfo=probe.put(self.out/'source-provider.mountinfo.raw',mounts));self.claim(len(mounts))

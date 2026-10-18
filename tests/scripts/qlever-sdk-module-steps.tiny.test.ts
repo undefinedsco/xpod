@@ -60,3 +60,10 @@ test('binary producer imports are required only for the new whole SDK recipe',as
   await expect(scenario(undefined,undefined,undefined,helper)).rejects.toThrow('policy not reviewed');
  }
 });
+
+
+test('shared-task coverage adapter is checked after the exact observer pair, never on old trees',async()=>{
+ const old=await scenario(undefined,oldSdk.sourceSha);expect(old.requested).not.toContain('qlever/scripts/sdk-toolchain-materials.py');
+ await expect(scenario(undefined,undefined,'qlever/scripts/sdk-toolchain-materials.py')).rejects.toThrow('metadata request failed');
+ await expect(scenario(undefined,undefined,undefined,'qlever/scripts/sdk-toolchain-materials.py')).rejects.toThrow('policy not reviewed');
+});
