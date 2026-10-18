@@ -7,6 +7,8 @@ import base64
 import hashlib
 import importlib.util
 import json
+import configparser
+import re
 import os
 from pathlib import Path
 import shutil
@@ -36,6 +38,41 @@ def reference(file,output):
 def target_descriptor(target):
     value=POLICY['targetDescriptors'].get(target);need(value is not None and target==value['platform']+'-'+value['arch'],'explicit reviewed target descriptor required');return value
 def target_tools(target):return dict(POLICY['tools'],**target_descriptor(target)['tools'])
+
+def relative_source_path(value):
+    return isinstance(value,str) and bool(value) and not value.startswith('/') and '\\' not in value and all(part not in ('','.','..') for part in value.split('/')) and not any(ord(c)<32 for c in value)
+
+def source_dependencies():
+    rows=POLICY.get('sourceDependencies',[]);need(isinstance(rows,list) and len(rows)<=1,'reviewed finite source dependency declarations')
+    for row in rows:
+        need(isinstance(row,dict) and set(row)=={'name','repository','commit','destination','source','projection'} and relative_source_path(row['name']) and '/' not in row['name'] and re.fullmatch('[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+',row['repository']) and re.fullmatch('[a-f0-9]{40}',row['commit']) and relative_source_path(row['destination']),'fixed source dependency identity')
+        pin=row['source'];projection=row['projection']
+        need(set(pin)=={'file','bytes','sha256','prefix','url'} and relative_source_path(pin['file']) and '/' not in pin['file'] and type(pin['bytes']) is int and 0<pin['bytes']<=LIMITS['shardBytes'] and re.fullmatch('[a-f0-9]{64}',pin['sha256']) and relative_source_path(pin['prefix']) and '/' not in pin['prefix'] and pin['url']=='https://codeload.github.com/'+row['repository']+'/legacy.tar.gz/'+row['commit'],'fixed complete source dependency archive')
+        need(set(projection)=={'kind','declaringFile','gitmodules','pattern','root'} and projection['kind']=='fixed-go-embed-tree-v1' and relative_source_path(projection['root']),'fixed source projection kind/root')
+        for ref in [projection['declaringFile'],projection['gitmodules']]:need(set(ref)=={'path','bytes','sha256'} and relative_source_path(ref['path']) and type(ref['bytes']) is int and 0<ref['bytes']<=LIMITS['metadataBytes'] and re.fullmatch('[a-f0-9]{64}',ref['sha256']),'fixed source projection declaration bytes')
+        parent=Path(projection['declaringFile']['path']).parent
+        need(Path(row['destination']).is_relative_to(parent) and projection['pattern']==Path(row['destination']).relative_to(parent).as_posix()+'/'+projection['root']+'/*','only the declared complete recursive Go embed tree')
+    return rows
+
+def original_pins(target):
+    pins=[POLICY['source'],*target_tools(target).values(),*[row['source'] for row in source_dependencies()]]
+    need(len({pin['file'] for pin in pins})==len(pins),'unique fixed original filenames');return pins
+
+def gitlink_url(row):return 'https://api.github.com/repos/'+POLICY['repository']+'/contents/'+row['destination']+'?ref='+POLICY['sourceCommit']
+
+def verify_gitlink_original(row,value):
+    need(isinstance(value,dict) and value.get('url')==gitlink_url(row) and value.get('status')==200 and value.get('encoding')=='base64' and type(value.get('bytes')) is int and 0<value['bytes']<=65536 and isinstance(value.get('content'),str) and len(value['content'])<=4*((65536+2)//3),'bounded exact Gitlink API original')
+    raw=base64.b64decode(value['content'],validate=True);need(len(raw)==value['bytes'] and hashlib.sha256(raw).hexdigest()==value.get('sha256'),'complete Gitlink API original digest');actual=json.loads(raw)
+    need(actual.get('type')=='submodule' and actual.get('path')==row['destination'] and actual.get('sha')==row['commit'] and actual.get('submodule_git_url') in ['git@github.com:'+row['repository']+'.git','https://github.com/'+row['repository']+'.git'],'actual parent commit Gitlink/source repository differs');return actual
+
+def verify_projection_declarations(work,row):
+    root=work/'source';projection=row['projection']
+    for ref in [projection['declaringFile'],projection['gitmodules']]:
+        path=root/ref['path'];need(not root.is_symlink() and path.resolve(strict=True)==root.resolve(strict=True)/ref['path'] and reference(path,root)==ref,'actual fixed main-source projection declaration differs')
+    data=(root/projection['declaringFile']['path']).read_text();need([line.strip() for line in data.splitlines() if line.strip().startswith('//go:embed')]==['//go:embed '+projection['pattern']],'unknown or changed Go embed pattern')
+    config=configparser.RawConfigParser();config.read_string((root/projection['gitmodules']['path']).read_text());section='submodule "'+row['destination']+'"'
+    need(config.has_section(section) and config.get(section,'path')==row['destination'] and config.get(section,'url') in ['git@github.com:'+row['repository']+'.git','https://github.com/'+row['repository']+'.git'],'main source submodule repository/path differs')
+
 def require_host(target):
     value=target_descriptor(target);machine=os.uname().machine
     need(sys.platform==value['platform'] and machine in ({'arm64','aarch64'} if value['arch']=='arm64' else {'x86_64','amd64'}),'matching native build host required')
@@ -81,20 +118,28 @@ def verify_original(file,pin):
         after=file.lstat();need(count==size and (before.st_dev,before.st_ino,before.st_mode,before.st_size,before.st_mtime_ns,before.st_ctime_ns)==(after.st_dev,after.st_ino,after.st_mode,after.st_size,after.st_mtime_ns,after.st_ctime_ns),'original changed during SRI')
         need('sha512-'+base64.b64encode(h.digest()).decode()==pin['integrity'],'fixed original SRI')
     return reference(file,file.parent)
-def unpack_fixed(file,destination,prefix):
+def unpack_fixed(file,destination,prefix,projection=None,expanded_limit=None):
     """Called only AFTER full pinned digest verification; no arbitrary tar API."""
-    need(not destination.exists(),'fresh extracted directory required');destination.mkdir(mode=0o700)
-    total=0;members=set();links=[]
+    if projection is None:need(not destination.exists(),'fresh extracted directory required')
+    else:need(not destination.is_symlink() and (not destination.exists() or destination.is_dir() and not any(destination.iterdir())),'fresh empty source projection root required')
+    destination.mkdir(mode=0o700,exist_ok=projection is not None)
+    maximum=LIMITS['sourceMaterialBytes'] if expanded_limit is None else expanded_limit
+    need(type(maximum) is int and 0<=maximum<=LIMITS['sourceMaterialBytes'],'bounded actual extraction remainder')
+    total=0;members=set();links=[];selected=0;projection_directories=[]
     with tarfile.open(file,'r:*') as archive:
         for member in archive:
             parts=Path(member.name).parts;need(parts and parts[0]==prefix and not member.name.startswith('/') and all(p not in ('..','') for p in parts),'fixed source archive path')
             name='/'.join(parts[1:]);
+            if projection is not None and name!=projection and not name.startswith(projection+'/'):continue
             if not name:need(member.isdir(),'archive root directory');continue
             need(name not in members and len(members)<LIMITS['sourceMembers'],'duplicate/member bound');members.add(name);target=destination/name
             need(all(not p.is_symlink() for p in target.parents if p!=destination.parent),'linked extraction ancestor');target.parent.mkdir(mode=0o700,parents=True,exist_ok=True)
-            if member.isdir():target.mkdir(mode=0o700,exist_ok=True)
+            if member.isdir():
+                target.mkdir(mode=0o700,exist_ok=True)
+                if projection is not None:projection_directories.append((target,member.mode&0o777))
             elif member.isfile():
-                total+=member.size;need(member.size<=LIMITS['shardBytes'] and total<=LIMITS['sourceMaterialBytes'],'expanded archive bound')
+                selected+=1
+                total+=member.size;need(member.size<=LIMITS['shardBytes'] and total<=maximum,'expanded archive bound')
                 source=archive.extractfile(member);count=0
                 with target.open('xb') as output:
                     while True:
@@ -102,8 +147,12 @@ def unpack_fixed(file,destination,prefix):
                         if not data:break
                         count+=len(data);need(count<=member.size,'member growth');need(shutil.disk_usage(destination).free-len(data)>=LIMITS['freeFloorBytes'],'extraction disk floor');output.write(data)
                 need(count==member.size,'truncated member');target.chmod(member.mode&0o777)
-            elif member.issym():links.append((target,member.linkname))
+            elif member.issym():
+                need(projection is None,'source projection requires regular files/directories, not symlinks');links.append((target,member.linkname))
             else:need(False,'unsupported archive entry')
+    if projection is not None:
+        need(selected>0,'declared Go embed source tree absent')
+        for directory,mode in reversed(projection_directories):directory.chmod(mode)
     for target,link in links:
         need(not os.path.isabs(link) and '\x00' not in link,'relative source link');resolved=(target.parent/link).resolve();need(resolved.is_relative_to(destination.resolve()),'source link escapes');target.symlink_to(link)
     return total
@@ -120,7 +169,17 @@ def acquire(work,target='linux-arm64'):
     signal.signal(signal.SIGALRM,expired);signal.setitimer(signal.ITIMER_REAL,POLICY['acquisitionWindowSeconds'])
     budget=MaterialBudget(work)
     try:
-        for pin in [POLICY['source'],*target_tools(target).values()]:
+        for pin in original_pins(target):
+            dependency=next((row for row in source_dependencies() if row['source']['file']==pin['file']),None);gitlink=None
+            if dependency is not None:
+                api=gitlink_url(dependency)
+                with opener.open(urllib.request.Request(api,headers={'User-Agent':'xpod-controlled-inngest-originals','Accept-Encoding':'identity'}),timeout=30) as response:
+                    need(response.status==200 and response.geturl()==api and response.headers.get('Content-Encoding','identity')=='identity','fixed Gitlink API transport');data=bytearray()
+                    while True:
+                        part=response.read1(min(LIMITS['rangeBytes'],65537-len(data)))
+                        if not part:break
+                        data.extend(part);need(len(data)<=65536,'Gitlink API metadata bound')
+                gitlink=dict(url=api,status=200,bytes=len(data),sha256=hashlib.sha256(data).hexdigest(),encoding='base64',content=base64.b64encode(data).decode());verify_gitlink_original(dependency,gitlink)
             partial=originals/(pin['file']+'.partial');count=0
             request=urllib.request.Request(pin['url'],headers={'User-Agent':'xpod-controlled-inngest-originals','Accept-Encoding':'identity'})
             with opener.open(request,timeout=30) as response:
@@ -132,7 +191,7 @@ def acquire(work,target='linux-arm64'):
                         count+=len(data);need(count<=pin.get('maximumBytes',pin.get('bytes',0)),'download byte bound');budget.reserve(len(data));out.write(data)
                 verify_original(partial,pin)
                 destination=originals/pin['file'];need(not destination.exists(),'fresh original destination');partial.rename(destination)
-                write_metadata(work/(pin['file']+'.http.original.json'),dict(url=pin['url'],status=response.status,bytes=count,sha256=sha(destination),headers={k:response.headers[k] for k in ['Content-Length','Content-Type','ETag'] if k in response.headers}),budget)
+                write_metadata(work/(pin['file']+'.http.original.json'),dict(url=pin['url'],status=response.status,bytes=count,sha256=sha(destination),headers={k:response.headers[k] for k in ['Content-Length','Content-Type','ETag'] if k in response.headers},**({'gitlinkOriginal':gitlink} if gitlink is not None else {})),budget)
     finally:
         signal.setitimer(signal.ITIMER_REAL,0);signal.signal(signal.SIGALRM,previous)
 
@@ -142,9 +201,16 @@ def prepare(work,target='linux-arm64'):
     for folder in ['tools','products','home','tmp','go-cache','go-mod-cache']:(work/folder).mkdir(mode=0o700)
     verify_original(originals/POLICY['source']['file'],POLICY['source']);unpack_fixed(originals/POLICY['source']['file'],work/'source','inngest-inngest-'+POLICY['sourceCommit'][:7])
     for name,pin in target_tools(target).items():verify_original(originals/pin['file'],pin);unpack_fixed(originals/pin['file'],work/'tools'/name,pin['prefix'])
-    expected={pin['file'] for pin in [POLICY['source'],*target_tools(target).values()]};need({p.name for p in originals.iterdir()}==expected,'fixed original file set')
+    for dependency in source_dependencies():
+        verify_projection_declarations(work,dependency);pin=dependency['source'];verify_original(originals/pin['file'],pin)
+        http=work/(pin['file']+'.http.original.json');need(http.stat().st_size<=LIMITS['metadataBytes'],'source dependency HTTP metadata bound');verify_gitlink_original(dependency,json.loads(http.read_text()).get('gitlinkOriginal'))
+        target_path=work/'source'/dependency['destination'];need(target_path.parent.resolve(strict=True)==(work/'source').resolve(strict=True)/Path(dependency['destination']).parent,'source projection ancestor differs')
+        used=sum(row['bytes'] for row in inventory(work/'source').values() if row['kind']=='file');remaining=LIMITS['sourceBytes']-used
+        need(remaining>0,'main source leaves no projection byte budget')
+        unpack_fixed(originals/pin['file'],target_path,pin['prefix'],dependency['projection']['root'],remaining)
+    expected={pin['file'] for pin in original_pins(target)};need({p.name for p in originals.iterdir()}==expected,'fixed original file set')
     acquisition=[]
-    for pin in [POLICY['source'],*target_tools(target).values()]:
+    for pin in original_pins(target):
         file=work/(pin['file']+'.http.original.json');need(file.stat().st_size<=LIMITS['metadataBytes'],'HTTP original metadata bound');value=json.loads(file.read_text());original=reference(originals/pin['file'],work)
         need(value.get('url')==pin['url'] and value.get('status')==200 and value.get('bytes')==original['bytes'] and value.get('sha256')==original['sha256'],'actual fixed acquisition reference');acquisition.append(reference(file,work))
     write_metadata(work/'preparation.original.json',dict(sourceKind=POLICY['sourceKind'],sourceCommit=POLICY['sourceCommit'],target=target,originals=[reference(p,work) for p in sorted(originals.iterdir())],acquisitionOriginals=acquisition,scope='producer extraction only; no authority issued'),MaterialBudget(work))
@@ -270,7 +336,7 @@ def finalize(work,target='linux-arm64'):
     for at in range(0,len(removed),1000):
         file=work/'materials'/('removed-'+str(at//1000).zfill(4)+'.json');write_metadata(file,removed[at:at+1000],budget);removed_refs.append(reference(file,work))
     binary=work/'products/inngest';need(binary.is_file() and 0<binary.stat().st_size<=192*1024**2 and binary.stat().st_mode&0o111,'actual compiled executable required');verify_binary_target(binary,target)
-    for name,pin in [('source',POLICY['source']),*target_tools(target).items()]:verify_original(work/'originals'/pin['file'],pin)
+    for pin in original_pins(target):verify_original(work/'originals'/pin['file'],pin)
     result=dict(schemaVersion=1,sourceKind=POLICY['sourceKind'],sourceCommit=POLICY['sourceCommit'],target=target,preparation=reference(work/'preparation.original.json',work),inputs=reference(work/'inputs.original.json',work),originals=value['originals'],generated=dict(changedCount=len(changed),removedCount=len(removed),removedOriginals=removed_refs,originals=generated),binary=reference(binary,work),license=reference(work/'source/LICENSE.md',work),sourceArchive=reference(work/'originals'/POLICY['source']['file'],work),scope='normal producer original materials only; no official release asset or source qualification')
     write_metadata(work/'controlled-build-materials.json',result,budget);total_check(work)
 
