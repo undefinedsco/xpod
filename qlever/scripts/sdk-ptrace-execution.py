@@ -88,12 +88,13 @@ class BoundedPipePump:
         check();assert self.sha256 is not None,'actual stdio pipe did not close'
 
 class Observer:
-    def __init__(self,out,source,build,*,deadline_monotonic=None,check_budget=lambda:None,maximum_bytes=32*1024**2,maximum_file_bytes=1024**2,selected_names=SELECTED,maximum_processes=128,shard_bytes=None,require_success=True,maximum_stdio_bytes=None,shared_tasks=False):
+    def __init__(self,out,source,build,*,deadline_monotonic=None,check_budget=lambda:None,maximum_bytes=32*1024**2,maximum_file_bytes=1024**2,selected_names=SELECTED,maximum_processes=128,shard_bytes=None,require_success=True,maximum_stdio_bytes=None,shared_tasks=False,capture_toolchain=False):
         self.shared_tasks=shared_tasks
+        self.capture_toolchain=capture_toolchain;self.tool_original_cache={};self.tool_metadata_bytes=json.loads((ROOT/'scripts/lib/module-artifact-limits.json').read_text())['metadataBytes']
         self.prepared_inputs={};self.prepared_sealed=False;self.domain_bytes=0;self.domain_lock=threading.Lock();self.pump_errors=[];self.maximum_stdio_bytes=maximum_stdio_bytes if maximum_stdio_bytes is not None else maximum_file_bytes
         self.require_success=require_success;self.raw_bytes_completed=0;self.maximum_processes=maximum_processes;self.shard_bytes=shard_bytes
         self.deadline_monotonic=deadline_monotonic;self.check_budget=check_budget;self.maximum_bytes=maximum_bytes;self.maximum_file_bytes=maximum_file_bytes;self.selected_names=selected_names
-        self.out=Path(out);self.capture_dir=self.out;self.source=str(source);self.build=str(build);self.tasks={};self.seq=0;self.records=[];self.captures=[];self.retained=set();self.producers={};self.write_states={};self.write_projections={};self.budget_context={};self.metadata_states=[];self.rename_records=[];self.consumers=[];self.raw=None;self.deadline=0;self.pausing=False;self.root=None;self.root_code=None;self.failures=[];self.current_phase=None;self.unknown_stops={};self.capture_bytes=0;self.exclusive=None;self.wait_references=[]
+        self.out=Path(out);self.capture_dir=self.out;self.source=str(source);self.build=str(build);self.tasks={};self.seq=0;self.records=[];self.captures=[];self.retained=set();self.producers={};self.write_states={};self.write_projections={};self.append_chains={};self.budget_context={};self.metadata_states=[];self.rename_records=[];self.consumers=[];self.raw=None;self.deadline=0;self.pausing=False;self.root=None;self.root_code=None;self.failures=[];self.current_phase=None;self.unknown_stops={};self.capture_bytes=0;self.exclusive=None;self.wait_references=[]
     def tighten_remaining(self,remaining_bytes):
         # External source domains supply only their remaining allowance. The
         # existing observer ledger remains private and is clipped under the
@@ -268,7 +269,14 @@ class Observer:
             position=descriptor_position(pid,fd);offset=identity[3] if flags&os.O_APPEND else position;count=entry['args'][2]
             assert count<=self.maximum_file_bytes and offset+count<=self.maximum_file_bytes,'bounded actual write range'
             self.budget_context=dict(path=path[:4096],pathTruncated=len(path)>4096,pathSha256=hashlib.sha256(os.fsencode(path)).hexdigest(),role='write-before',pid=pid,fd=fd,identity=identity,writeCount=count,writeOffset=offset)
-            before=bindings.digest_blocks(self.fd_blocks(reader,identity[3]),self.maximum_file_bytes,self.check);assert identity==probe.identity(os.fstat(reader))
+            key=tuple(identity[:2]);chain=self.append_chains.get(key)
+            append=offset==identity[3]
+            if chain and not append:self.checkpoint_appends('nonappend-write',entry['sequence']);chain=None
+            if chain:
+                assert chain['identity']==identity,'append FD preimage identity changed'
+                before=dict(bytes=identity[3],sha256=chain['digest'].hexdigest())
+            else:
+                before=bindings.digest_blocks(self.fd_blocks(reader,identity[3]),self.maximum_file_bytes,self.check);assert identity==probe.identity(os.fstat(reader))
             initial=None
             if tuple(identity[:2]) not in self.write_states:
                 initial=self.snapshot_write_original(reader,identity[3]);assert identity==probe.identity(os.fstat(reader))
@@ -285,8 +293,15 @@ class Observer:
             try:
                 self.budget_context['role']='actual-write-buffer';buffer=self.snapshot_write_original(memory,count,offset=entry['args'][1])
             finally:os.close(memory)
-            row=self.emit(dict(kind='actual-write-window',pid=pid,fd=fd,path=path,entrySequence=entry['sequence'],barrierSequence=barrier['sequence'],beforeIdentity=identity,format='bounded-write-delta-v1',initialBefore=initial,before=before,buffer=buffer,offset=offset,position=position,flags=flags,writers=writers,baseline=baseline))
+            row=self.emit(dict(kind='actual-write-window',pid=pid,fd=fd,path=path,entrySequence=entry['sequence'],barrierSequence=barrier['sequence'],beforeIdentity=identity,format='bounded-append-effect-v1' if append else 'bounded-write-delta-v1',initialBefore=initial,before=before,buffer=buffer,offset=offset,position=position,flags=flags,writers=writers,baseline=baseline))
             self.budget_context={}
+            if append and chain is None:
+                digest=hashlib.sha256()
+                for block in self.fd_blocks(reader,identity[3]):digest.update(block)
+                assert digest.hexdigest()==before['sha256'] and identity==probe.identity(os.fstat(reader))
+                retained=os.dup(reader);self.retained.add(retained)
+                chain=dict(identity=identity,digest=digest,held=retained,dirty=False,transition=None)
+                self.append_chains[key]=chain
             self.tasks[pid]['writeWindow']=(row,reader);self.retained.add(reader);reader=None;return row
         finally:
             if reader is not None:os.close(reader)
@@ -299,14 +314,51 @@ class Observer:
             key=tuple(identity[:2]);segments=self.write_projections.get(key)
             if row['initialBefore'] is not None:segments=[(row['initialBefore'],0,row['beforeIdentity'][3])] if row['beforeIdentity'][3] else []
             assert segments is not None,'write delta baseline projection missing'
-            segments=bindings.write_segments(segments,row['offset'],exit['result'],row['buffer'],self.maximum_file_bytes)
-            after=bindings.digest_blocks(self.fd_blocks(held,identity[3]),self.maximum_file_bytes,self.check)
-            expected=bindings.digest_blocks(bindings.segment_blocks(segments,self.original_blocks,self.check),self.maximum_file_bytes,self.check)
-            assert after==expected and identity==probe.identity(os.fstat(held)),'actual post-write bytes differ from syscall buffer projection'
+            if row['format']=='bounded-append-effect-v1':
+                chain=self.append_chains[key];assert chain['identity']==row['beforeIdentity'] and row['offset']==row['beforeIdentity'][3]
+                assert identity[3]==row['offset']+exit['result'] if exit['result'] else identity[3]==row['beforeIdentity'][3]
+                effect=hashlib.sha256();position=0
+                for block in self.original_blocks(row['buffer']):
+                    chunk=block[:max(0,min(len(block),exit['result']-position))]
+                    if chunk:
+                        actual=os.pread(held,len(chunk),row['offset']+position);assert actual==chunk,'actual append range differs from returned syscall buffer'
+                        effect.update(actual);chain['digest'].update(actual);position+=len(actual)
+                    if position==exit['result']:break
+                assert position==exit['result'] and identity==probe.identity(os.fstat(held))
+                # O(1) metadata append; the prefix is NOT re-read or certified here.
+                if exit['result']:segments.append((row['buffer'],0,exit['result']))
+                after=dict(bytes=identity[3],sha256=chain['digest'].hexdigest())
+                extra=dict(afterObservation='uncheckpointed-append-projection',actualAppendEffect=dict(bytes=position,sha256=effect.hexdigest()))
+                chain.update(identity=identity,dirty=True)
+            else:
+                segments=bindings.write_segments(segments,row['offset'],exit['result'],row['buffer'],self.maximum_file_bytes)
+                after=bindings.digest_blocks(self.fd_blocks(held,identity[3]),self.maximum_file_bytes,self.check)
+                expected=bindings.digest_blocks(bindings.segment_blocks(segments,self.original_blocks,self.check),self.maximum_file_bytes,self.check)
+                assert after==expected and identity==probe.identity(os.fstat(held)),'actual post-write bytes differ from syscall buffer projection';extra={}
             self.write_projections[key]=segments
-            transition=self.emit(dict(kind='actual-write-transition',pid=pid,entrySequence=entry['sequence'],windowSequence=row['sequence'],exitSequence=exit['sequence'],afterIdentity=identity,after=after,result=exit['result'],isError=exit['isError']))
+            transition=self.emit(dict(kind='actual-write-transition',pid=pid,entrySequence=entry['sequence'],windowSequence=row['sequence'],exitSequence=exit['sequence'],afterIdentity=identity,after=after,result=exit['result'],isError=exit['isError'],**extra))
+            if row['format']=='bounded-append-effect-v1':chain['transition']=transition
             self.write_states[tuple(identity[:2])]=transition
         finally:os.close(held);self.retained.remove(held)
+    def checkpoint_appends(self,reason,entry_sequence=None):
+        # Called only while every registered live task is stopped, or after all
+        # actual waits. A held FD survives close/rename; no pathname re-open.
+        assert all(row['stopped'] or row['exited'] for row in self.tasks.values()),'append checkpoint requires all-task stop'
+        if not self.append_chains:return []
+        barrier=self.barrier() if any(not row['exited'] for row in self.tasks.values()) else None
+        checked=[]
+        for key,chain in list(self.append_chains.items()):
+            held=chain['held'];identity=probe.identity(os.fstat(held))
+            assert identity==chain['identity'],'append checkpoint FD identity changed'
+            if chain['dirty']:
+                self.budget_context=dict(role='append-full-checkpoint',identity=identity,reason=reason)
+                original=self.snapshot_write_original(held,identity[3])
+                assert identity==probe.identity(os.fstat(held)) and (original['bytes'],original['sha256'])==(identity[3],chain['digest'].hexdigest()),'append prefix changed before full checkpoint'
+                row=self.emit(dict(kind='append-full-checkpoint',transitionSequence=chain['transition']['sequence'],identity=identity,original=original,reason=reason,entrySequence=entry_sequence,barrierSequence=barrier['sequence'] if barrier else None,closedTrackedWaits=barrier is None))
+                checked.append(row['sequence']);chain['dirty']=False
+            os.close(held);self.retained.remove(held);del self.append_chains[key]
+        self.budget_context={}
+        return checked
     def capture(self,pid,fd,role):
         barrier=self.barrier();self.check();target=fdpath(pid,fd);path='/proc/'+str(pid)+'/fd/'+str(fd);before=os.stat(path);reader=os.open(path,os.O_RDONLY|os.O_CLOEXEC)
         try:
@@ -393,19 +445,164 @@ class Observer:
             return row
         finally:
             if reader is not None:os.close(reader)
+    def tool_unresolved(self,pid,reason,**fields):
+        return self.emit(dict(kind='toolchain-unresolved',pid=pid,reason=reason,**fields))
+    def tool_original(self,reader,observed_path):
+        before=probe.identity(os.fstat(reader));assert stat.S_ISREG(before[2]) and before[3]<=self.maximum_file_bytes,'bounded regular tool FD required'
+        cached=self.tool_original_cache.get(tuple(before))
+        if cached:return cached
+        name='capture-'+str(len(self.captures)).zfill(4)+'.original';offset=0;digest=hashlib.sha256()
+        with (self.capture_dir/name).open('xb') as output:
+            while True:
+                self.check();block=os.pread(reader,65536,offset)
+                if not block:break
+                offset+=len(block);assert offset<=before[3] and offset<=self.maximum_file_bytes,'tool FD grew during bounded capture'
+                self.claim(len(block));output.write(block);digest.update(block)
+            output.flush();os.fsync(output.fileno())
+        assert offset==before[3] and before==probe.identity(os.fstat(reader)),'tool FD changed during capture'
+        original=dict(path=name,bytes=offset,sha256=digest.hexdigest())
+        row=self.emit(dict(kind='toolchain-original',captureKind='file',observedPath=observed_path,identity=before,original=original))
+        self.captures.append(row);self.capture_bytes+=offset;self.tool_original_cache[tuple(before)]=row
+        return row
+    def tool_maps(self,pid):
+        # Read only while all registered potential writers are at OS stops.
+        name='capture-'+str(len(self.captures)).zfill(4)+'.original';data=bytearray();digest=hashlib.sha256()
+        with open('/proc/'+str(pid)+'/maps','rb') as source,(self.capture_dir/name).open('xb') as output:
+            while True:
+                self.check();block=source.read(65536)
+                if not block:break
+                assert len(data)+len(block)<=self.tool_metadata_bytes,'bounded actual maps required'
+                self.claim(len(block));output.write(block);data.extend(block);digest.update(block)
+            output.flush();os.fsync(output.fileno())
+        original=dict(path=name,bytes=len(data),sha256=digest.hexdigest())
+        row=self.emit(dict(kind='toolchain-original',captureKind='maps',observedPid=pid,original=original));self.captures.append(row);self.capture_bytes+=len(data)
+        return row,bindings.parse_proc_maps(bytes(data))
+    def tool_mapping(self,pid,mapping,parent,barrier,actual_fd=None):
+        common=dict(pid=pid,parentCaptureSequence=parent,barrierSequence=barrier,mapping=mapping,actualFd=actual_fd)
+        if mapping['inode']==0 or not mapping['path'].startswith('/'):
+            return self.tool_unresolved(pid,'anonymous-or-kernel-mapping-original-unavailable',**{key:value for key,value in common.items() if key!='pid'})
+        path='/proc/'+str(pid)+'/map_files/'+mapping['startHex']+'-'+mapping['endHex']
+        try:
+            reader=os.open(path,os.O_RDONLY|os.O_CLOEXEC)
+        except OSError as error:
+            if error.errno not in [errno.EPERM,errno.EACCES,errno.ENOENT,errno.ESRCH]:raise
+            return self.tool_unresolved(pid,'actual-map-files-FD-unavailable',errorCode=error.errno,**{key:value for key,value in common.items() if key!='pid'})
+        try:
+            identity=probe.identity(os.fstat(reader));assert (os.major(identity[0]),os.minor(identity[0]),identity[1])==(mapping['deviceMajor'],mapping['deviceMinor'],mapping['inode']),'actual map_files FD differs from VMA'
+            original=self.tool_original(reader,mapping['path'])
+            if actual_fd is not None:
+                if actual_fd['identity']!=identity:return self.tool_unresolved(pid,'entry-FD-to-actual-mapped-file-identity-differs',**{key:value for key,value in common.items() if key!='pid'})
+            assert identity==probe.identity(os.fstat(reader))==probe.identity(os.stat(path)),'actual mapped FD identity changed'
+            return self.emit(dict(kind='toolchain-mapping-original',**common,identity=identity,original=original['original']))
+        finally:os.close(reader)
+    def observe_tool_stop(self,pid,job):
+        barrier=self.barrier();self.check();kind,entry,event=job
+        if kind=='exec-before':
+            self.tasks[pid].pop('toolExecPath',None)
+            args=entry['args'];at=1 if entry['nr']==profile(entry['arch'])['execveat'] else 0
+            try:
+                raw_path=single.cstring(pid,args[at]);cwd=os.readlink('/proc/'+str(pid)+'/cwd');base=cwd if at==0 or args[0] in [0xffffffffffffff9c,0xffffff9c,-100] else fdpath(pid,args[0])
+                lexical=os.path.normpath(raw_path if raw_path.startswith('/') else base+'/'+raw_path) if raw_path and base else None
+                captured=self.emit(dict(kind='toolchain-exec-path-entry',pid=pid,barrierSequence=barrier['sequence'],entrySequence=entry['sequence'],syscall=entry['nr'],entryPath=raw_path,lexicalPath=lexical,scope='actual entry-stop string only; actual executable FD is independently captured'))
+                self.tasks[pid]['toolExecPath']=captured
+            except OSError as error:
+                if error.errno not in [errno.EIO,errno.EFAULT,errno.EPERM,errno.EACCES,errno.ENOENT]:raise
+                self.tool_unresolved(pid,'exec-entry-path-original-unavailable',entrySequence=entry['sequence'],errorCode=error.errno)
+            except UnicodeError:self.tool_unresolved(pid,'exec-entry-path-non-UTF8',entrySequence=entry['sequence'])
+            except ValueError as error:
+                if str(error)!='tracee path bound':raise
+                self.tool_unresolved(pid,'exec-entry-path-bound',entrySequence=entry['sequence'])
+        elif kind=='exec':
+            expected=profile(entry['arch'])['exec'] if entry is not None else []
+            if entry is None or entry['nr'] not in expected:
+                self.tool_unresolved(pid,'exec-stop-actual-syscall-entry-unavailable',execEventSequence=event['sequence']);return
+            path='/proc/'+str(pid)+'/exe'
+            try:reader=os.open(path,os.O_RDONLY|os.O_CLOEXEC)
+            except OSError as error:
+                if error.errno not in [errno.EPERM,errno.EACCES,errno.ENOENT,errno.ESRCH]:raise
+                self.tool_unresolved(pid,'exec-stop-executable-FD-unavailable',execEntrySequence=entry['sequence'],execEventSequence=event['sequence'],errorCode=error.errno);return
+            try:
+                identity=probe.identity(os.fstat(reader));resolved=os.readlink(path);original=self.tool_original(reader,resolved)
+                try:elf=bindings.elf_interpreter(lambda offset,size:os.pread(reader,size,offset),identity[3])
+                except ValueError as error:elf=dict(unresolved='actual-ELF-interpreter-unclassified:'+str(error)[:256])
+                assert identity==probe.identity(os.fstat(reader))==probe.identity(os.stat(path)),'actual exe FD changed'
+                maps,mappings=self.tool_maps(pid)
+                captured=self.emit(dict(kind='toolchain-exec-image-capture',pid=pid,barrierSequence=barrier['sequence'],execEntrySequence=entry['sequence'],execEventSequence=event['sequence'],execPathEntrySequence=self.tasks[pid].get('toolExecPath',{}).get('sequence'),exe=dict(lexicalPath=self.tasks[pid].get('toolExecPath',{}).get('lexicalPath'),resolvedPath=resolved,identity=identity,original=original['original']),elf=elf,mapsOriginal=maps['original']))
+                for mapping in mappings:
+                    if mapping['inode'] or 'x' in mapping['permissions']:self.tool_mapping(pid,mapping,captured['sequence'],barrier['sequence'])
+            finally:os.close(reader)
+        elif kind=='protect-before':
+            maps,_=self.tool_maps(pid);self.tasks[pid]['toolProtectBefore']=maps['original']
+            self.emit(dict(kind='toolchain-executable-protection-before',pid=pid,barrierSequence=barrier['sequence'],entrySequence=entry['sequence'],mapsOriginal=maps['original']))
+        else:
+            maps,mappings=self.tool_maps(pid);args=entry['args']
+            if kind=='mmap':
+                begin=event['result'];end=begin+args[1];assert 0<=begin<end<=1<<64,'actual mmap returned range overflow';anonymous=bool(args[3]&0x20);fd=self.tasks[pid].pop('toolMmapFd',None)
+                if fd is not None:
+                    try:
+                        reader=os.open('/proc/'+str(pid)+'/fd/'+str(fd['fd']),os.O_RDONLY|os.O_CLOEXEC)
+                        try:
+                            current=probe.identity(os.fstat(reader))
+                            if current==fd['identity'] and stat.S_ISREG(current[2]):fd['original']=self.tool_original(reader,fdpath(pid,fd['fd']))['original']
+                            else:self.tool_unresolved(pid,'actual-mmap-FD-changed-or-nonregular',entrySequence=entry['sequence'])
+                        finally:os.close(reader)
+                    except OSError as error:
+                        if error.errno not in [errno.EPERM,errno.EACCES,errno.ENOENT,errno.ESRCH]:raise
+                        self.tool_unresolved(pid,'actual-mmap-FD-original-unavailable',entrySequence=entry['sequence'],errorCode=error.errno)
+                captured=self.emit(dict(kind='toolchain-file-mapping-capture',pid=pid,barrierSequence=barrier['sequence'],entrySequence=entry['sequence'],exitSequence=event['sequence'],actualReturnedAddressHex=format(begin,'x'),actualFd=fd,requestedLength=args[1],fileOffset=args[5],flags=args[3],protection=args[2],mapsOriginal=maps['original']))
+                selected=[row for row in mappings if int(row['startHex'],16)<end and int(row['endHex'],16)>begin]
+                bindings.verify_vma_range(mappings,begin,args[1],args[2])
+                if anonymous:self.tool_unresolved(pid,'anonymous-or-JIT-mapping-source-unresolved',parentCaptureSequence=captured['sequence'])
+                elif fd is None:self.tool_unresolved(pid,'actual-mapping-entry-FD-unavailable',parentCaptureSequence=captured['sequence'])
+                else:
+                    assert selected,'successful mmap has no actual VMA'
+                    for mapping in selected:
+                        if mapping['fileOffset']+max(begin-int(mapping['startHex'],16),0)!=args[5]+max(int(mapping['startHex'],16)-begin,0):
+                            self.tool_unresolved(pid,'actual-mmap-VMA-offset-differs',parentCaptureSequence=captured['sequence']);continue
+                        self.tool_mapping(pid,mapping,captured['sequence'],barrier['sequence'],fd)
+            else:
+                begin,end=args[0],args[0]+args[1];before=self.tasks[pid].pop('toolProtectBefore',None)
+                captured=self.emit(dict(kind='toolchain-executable-protection-capture',pid=pid,barrierSequence=barrier['sequence'],entrySequence=entry['sequence'],exitSequence=event['sequence'],actualSyscall=entry['nr'],requestedStartHex=format(begin,'x'),requestedLength=args[1],protection=args[2],beforeMapsOriginal=before,afterMapsOriginal=maps['original']))
+                if entry['nr'] in [329,288]:self.tool_unresolved(pid,'toolchain-protection-key-access-state-unverified',parentCaptureSequence=captured['sequence'])
+                if before is None:self.tool_unresolved(pid,'executable-protection-before-VMA-unavailable',parentCaptureSequence=captured['sequence'])
+                actual_mappings=bindings.verify_vma_range(mappings,begin,args[1],args[2])
+                if any(mapping['inode']==0 or not mapping['path'].startswith('/') for mapping in actual_mappings):self.tool_unresolved(pid,'anonymous-or-JIT-mapping-source-unresolved',parentCaptureSequence=captured['sequence'])
+                for mapping in mappings:
+                    if int(mapping['startHex'],16)<end and int(mapping['endHex'],16)>begin:self.tool_mapping(pid,mapping,captured['sequence'],barrier['sequence'])
     def resume(self):
         for pid,row in list(self.tasks.items()):
             if self.exclusive and pid!=self.exclusive[0]:continue
+            if row.get('vforkHeldChild') is not None:continue
             if row['stopped'] and not row['exited']:
                 single.trace(SYSCALL,pid,0,row.pop('signal',0));row['stopped']=False
     def pending_captures(self):
         if self.exclusive:return
+        if any(task.get('appendBoundary') for task in self.tasks.values()):
+            self.barrier()
+            for task in self.tasks.values():
+                if task.pop('appendBoundary',False):self.checkpoint_appends('syscall-boundary',task['entry']['sequence'])
+        while self.capture_toolchain:
+            selected=next(((pid,row) for pid,row in self.tasks.items() if row.get('toolPending') and not row['exited']),None)
+            if selected is None:break
+            pid,task=selected
+            self.barrier();self.checkpoint_appends('toolchain-access',task['entry']['sequence'] if task.get('entry') else None)
+            self.observe_tool_stop(pid,task['toolPending'].pop(0))
         # All candidate entries encountered while stopping peers are preserved;
         # process each before resuming any potential writer.
         while True:
             candidate=next(((pid,r) for pid,r in self.tasks.items() if r.get('capture') and not r['exited']),None)
             if not candidate:break
-            pid,task=candidate;fd,role=task.pop('capture');capture=self.capture_metadata(pid) if role=='metadata-before' else (self.capture_write(pid,fd) if role=='writer-before' else self.capture(pid,fd,role));task['entry']['captureSequence']=capture['sequence'];self.exclusive=(pid,task['entry']['sequence']);self.emit(dict(kind={'actual-write-window':'exclusive-write-resume','actual-mode-window':'exclusive-mode-resume','empty-read-window':'exclusive-empty-read-resume','alias-close-window':'exclusive-alias-close-resume'}.get(capture['kind'],'exclusive-captured-syscall-resume'),pid=pid,entrySequence=task['entry']['sequence'],captureSequence=capture['sequence']));break
+            pid,task=candidate;fd,role=task.pop('capture');
+            if role!='writer-before':
+                self.barrier();self.checkpoint_appends('captured-access',task['entry']['sequence'])
+            capture=self.capture_metadata(pid) if role=='metadata-before' else (self.capture_write(pid,fd) if role=='writer-before' else self.capture(pid,fd,role));task['entry']['captureSequence']=capture['sequence'];self.exclusive=(pid,task['entry']['sequence']);self.emit(dict(kind={'actual-write-window':'exclusive-write-resume','actual-mode-window':'exclusive-mode-resume','empty-read-window':'exclusive-empty-read-resume','alias-close-window':'exclusive-alias-close-resume'}.get(capture['kind'],'exclusive-captured-syscall-resume'),pid=pid,entrySequence=task['entry']['sequence'],captureSequence=capture['sequence']));break
+    def release_vfork_parent(self,child,event,reason):
+        task=self.tasks[child];parent_pid=task.pop('vforkParent',None)
+        if parent_pid is None:return
+        parent=self.tasks[parent_pid]
+        assert parent.get('vforkHeldChild')==child and parent['stopped'] and not parent['exited'] and state(parent_pid)=='t','actual vfork parent ptrace-stop lost'
+        hold=parent.pop('vforkHoldSequence');del parent['vforkHeldChild']
+        self.emit(dict(kind='vfork-parent-release',parentPid=parent_pid,childPid=child,holdSequence=hold,releaseSequence=event['sequence'],releaseKind=reason,actualParentState='t'))
     def reject_shared_clone(self,pid,entry,flags):
         # Failure diagnostics only. No FD-table/TGID ownership or closure is
         # inferred from flags, a pathname, or this bounded /proc snapshot.
@@ -439,14 +636,20 @@ class Observer:
         task=self.tasks[pid]
         if os.WIFEXITED(status) or os.WIFSIGNALED(status):
             task.update(exited=True,stopped=False);code=os.WEXITSTATUS(status) if os.WIFEXITED(status) else -os.WTERMSIG(status)
-            wait=self.emit(dict(kind='actual-wait-exit',pid=pid,returnCode=code));self.wait_references.append(dict(pid=pid,sequence=wait['sequence'],returnCode=code,phase=self.current_phase))
+            wait=self.emit(dict(kind='actual-wait-exit',pid=pid,returnCode=code,**({'actualExecImage':task['diagnosticExec']} if 'diagnosticExec' in task else {})));self.wait_references.append(dict(pid=pid,sequence=wait['sequence'],returnCode=code,phase=self.current_phase))
+            self.release_vfork_parent(pid,wait,'actual-terminal-wait')
             if pid==self.root:self.root_code=code
             return
         assert os.WIFSTOPPED(status);task['stopped']=True;event=status>>16;sig=os.WSTOPSIG(status)
         if event:
             observed_event=self.emit(dict(kind='ptrace-event',pid=pid,event=event))
+            if event==4:
+                actual_exe=os.readlink('/proc/'+str(pid)+'/exe');actual_identity=probe.identity(os.stat('/proc/'+str(pid)+'/exe'))
+                task['diagnosticExec']=dict(path=actual_exe[:4096],pathTruncated=len(actual_exe)>4096,pathSha256=hashlib.sha256(os.fsencode(actual_exe)).hexdigest(),identity=actual_identity,eventSequence=observed_event['sequence'],entrySequence=task.get('entry',{}).get('sequence'),scope='actual exec-stop image only; argv/environment not collected')
             if event==4 and self.shared_tasks:
                 prior=task['fdTable'];task['fdTable']=-observed_event['sequence'];self.emit(dict(kind='actual-exec-fd-table-unshare',pid=pid,eventSequence=observed_event['sequence'],priorFdTable=prior,fdTable=task['fdTable'],tgid=task['tgid']))
+            if event==4:self.release_vfork_parent(pid,observed_event,'actual-exec')
+            if event==4 and self.capture_toolchain:task.setdefault('toolPending',[]).append(('exec',task.get('entry'),observed_event))
             if event in [1,2,3]:
                 child=ctypes.c_ulong();single.trace(GETEVENTMSG,pid,0,ctypes.byref(child));new=int(child.value);assert new not in self.tasks and len(self.tasks)<self.maximum_processes,'actual child/PID bound'
                 fields={}
@@ -458,6 +661,12 @@ class Observer:
                     ownership=bindings.inspect_shared_clone_flags(flags);tgid=task['tgid'] if ownership['sameThreadGroup'] else new;table=task['fdTable'] if ownership['sharedFdTable'] else new
                     assert self.actual_tgid(new)==tgid,'kernel child TGID differs from clone flags';fields=dict(tgid=tgid,fdTable=table)
                 self.tasks[new]=dict(stopped=False,exited=False,entry=None,initial=True,**fields);self.emit(dict(kind='actual-child-binding',parentPid=pid,childPid=new,event=event,**(dict(cloneEntrySequence=task['entry']['sequence'],cloneFlags=flags,**fields) if self.shared_tasks else {})))
+                if event==2:
+                    if not self.shared_tasks:
+                        entry=task['entry'];flags=task['observedCloneFlags'] if entry['nr'] in [profile(entry['arch'])['clone'],profile(entry['arch'])['clone3']] else 0x4111
+                    assert flags&0x4000 and task.get('vforkHeldChild') is None and task['stopped'] and state(pid)=='t','actual VFORK event/parent stop required'
+                    hold=self.emit(dict(kind='vfork-parent-held',parentPid=pid,childPid=new,eventSequence=observed_event['sequence'],entrySequence=task['entry']['sequence'],actualParentState='t'))
+                    task.update(vforkHeldChild=new,vforkHoldSequence=hold['sequence']);self.tasks[new]['vforkParent']=pid
                 if new in self.unknown_stops:self.event(new,self.unknown_stops.pop(new),False)
             elif event not in [4,5,6,128]:raise ValueError('unsupported ptrace event')
             return
@@ -473,6 +682,7 @@ class Observer:
             assert nr not in policy['forbidden'],'unsupported asynchronous/external writer syscall'
             if nr in [policy['clone'],policy['clone3']]:
                 flags=args[0] if nr==policy['clone'] else single.trace(2,pid,args[0])&((1<<64)-1)
+                task['observedCloneFlags']=flags
                 if self.shared_tasks:bindings.inspect_shared_clone_flags(flags);task['cloneFlags']=flags
                 elif flags&(0x10000|0x400):self.reject_shared_clone(pid,record,flags)
                 if not self.shared_tasks:assert flags&~(0xff|0x100|0x4000|0x1000000|0x200000|0x100000000)==0,'unknown clone flags refused'
@@ -481,7 +691,18 @@ class Observer:
                 assert not(nr==436 and args[2]&2),'close_range UNSHARE FD ownership unsupported'
                 execs=[59,322] if kernel['arch']==0xc000003e else [221,281]
                 if nr in execs:assert pid==task['tgid'],'nonleader exec TID replacement unsupported before resume'
+            if self.append_chains and bindings.append_boundary_syscall(kernel['arch'],nr,args):task['appendBoundary']=True
+            if nr==policy['read']:
+                try:read_identity=probe.identity(os.stat('/proc/'+str(pid)+'/fd/'+str(args[0])))
+                except FileNotFoundError:read_identity=None
+                if read_identity and tuple(read_identity[:2]) in self.append_chains:task['appendBoundary']=True
             if nr==policy['mmap']:assert not (args[2]&2 and args[3]&1),'shared writable mapping refused before resume'
+            if self.capture_toolchain and nr in policy['exec']:task.setdefault('toolPending',[]).append(('exec-before',record,None))
+            if self.capture_toolchain and nr in policy['protect'] and args[2]&4:task.setdefault('toolPending',[]).append(('protect-before',record,None))
+            if self.capture_toolchain and nr==policy['mmap']:task.pop('toolMmapFd',None)
+            if self.capture_toolchain and nr==policy['mmap'] and not(args[3]&0x20) and args[4]<(1<<31):
+                try:task['toolMmapFd']=dict(fd=args[4],identity=probe.identity(os.stat('/proc/'+str(pid)+'/fd/'+str(args[4]))))
+                except FileNotFoundError:task['toolMmapFd']=None
             selected=None;fd=None
             if nr in [policy['read'],policy['write'],policy['close']]:fd=args[0];selected=fdpath(pid,fd)
             if nr==policy['mmap'] and args[4]<(1<<31):fd=args[4];selected=fdpath(pid,fd)
@@ -547,6 +768,14 @@ class Observer:
                     assert current==selected==window['identity'] and current[3]==0 and descriptor_flags(pid,window['fd'])==window['flags'],'empty read FD identity/flags changed'
                     self.emit(dict(kind='empty-read-eof',pid=pid,entrySequence=old['sequence'],windowSequence=window['sequence'],exitSequence=record['sequence'],identity=current,result=record['result'],isError=record['isError']))
                 finally:os.close(held);self.retained.remove(held)
+            if self.capture_toolchain:
+                rules=profile(old['arch'])
+                if record['isError']:
+                    if old['nr']==rules['mmap']:task.pop('toolMmapFd',None)
+                    if old['nr'] in rules['protect']:task.pop('toolProtectBefore',None)
+                    if old['nr'] in rules['exec']:task.pop('toolExecPath',None)
+                if not record['isError'] and record['result']>=0 and old['nr']==rules['mmap'] and (not(old['args'][3]&0x20) or old['args'][2]&4):task.setdefault('toolPending',[]).append(('mmap',old,record))
+                if not record['isError'] and record['result']==0 and old['nr'] in rules['protect'] and old['args'][2]&4:task.setdefault('toolPending',[]).append(('protect-after',old,record))
             if self.exclusive==(pid,old['sequence']):self.emit(dict(kind='exclusive-captured-syscall-exit',pid=pid,entrySequence=old['sequence'],result=record['result'],isError=record['isError']));self.exclusive=None
             release_fd=task.pop('releaseCaptureFd',None)
             if release_fd is not None:os.close(release_fd);self.retained.remove(release_fd)
@@ -588,6 +817,8 @@ class Observer:
             self.emit(dict(kind='owned-root-binding',pid=child,command=command,backend='ptrace-all-stop-process-v1',**(dict(taskOwnershipModel='all-tracked-tids-shared-fd-v1',tgid=child,fdTable=child) if self.shared_tasks else {})));single.trace(SEIZE,child,0,OPTIONS);single.trace(INTERRUPT,child);pid,status=self.wait_one();self.event(pid,status,False);os.write(write_fd,b'x');os.close(write_fd);write_fd=None;self.resume()
             while any(not r['exited'] for r in self.tasks.values()):
                 pid,status=self.wait_one();self.event(pid,status);self.pending_captures();self.resume()
+            assert not any(task.get('vforkHeldChild') is not None for task in self.tasks.values()),'vfork child release/wait closure missing'
+            self.checkpoint_appends('phase-final')
             for pump in pumps:pump.finish(self.check)
             if self.require_success:assert self.root_code==0,'actual observed root did not exit successfully'
             completed_ns=time.time_ns()
@@ -612,7 +843,8 @@ class Observer:
             return dict(commandReceipt=dict(schemaVersion=1,command=command,actualExecutable=actual_executable(command),pid=child,pgid=root_pgid,actualWait=True,exit=self.root_code if self.root_code>=0 else None,signal=-self.root_code if self.root_code<0 else None,startedUnixNs=str(started_ns),completedUnixNs=str(completed_ns),rawClosedBeforeHash=True,stdout=dict(original(stdout_path),path=stdout_path.name),stderr=dict(original(stderr_path),path=stderr_path.name)),
                 trackingReceipt=dict(schemaVersion=1,kind='sdk-observer-tracked-phase-original',phase=name,observerPid=os.getpid(),command=command,actualRootPid=child,actualRootReturnCode=self.root_code,actualTrackedWait=True,trackedProcessesClosed=all(row['exited'] for row in self.tasks.values()),deadlineMonotonic=self.deadline,startedUnixNs=str(started_ns),completedUnixNs=str(completed_ns),waitReferences=self.wait_references),
                 rawTraceShards=[original(path) for path in self.raw.paths] if isinstance(self.raw,ShardedRaw) else [original(Path(self.raw.name))],
-                captureFiles=[dict(row['original'],path=str(self.capture_dir/row['original']['path'])) for row in self.captures[capture_start:]])
+                captureFiles=[dict(row['original'],path=str(self.capture_dir/row['original']['path'])) for row in self.captures[capture_start:]],
+                observedToolFiles=self.observed_tool_files(capture_start,name))
         finally:
             if write_fd is not None:os.close(write_fd)
             for pid,row in self.tasks.items():
@@ -620,6 +852,10 @@ class Observer:
                     try:os.kill(pid,signal.SIGKILL)
                     except ProcessLookupError:pass
             self.raw_bytes_completed+=self.raw.tell();self.raw.close()
+    def observed_tool_files(self,capture_start,name):
+        rows=[dict(actualOriginalPath=row['observedPath'],identity=row['identity'],actualMode=row['identity'][2],sourceKind='actual-tool-file-fd-snapshot',role='observed-tool-file',phase=row['phase'],rawEventKind='toolchain-original',captureSequence=row['sequence'],original=dict(row['original'],path=str(self.capture_dir/row['original']['path']))) for row in self.captures[capture_start:] if row.get('kind')=='toolchain-original' and row.get('captureKind')=='file']
+        assert all(row['phase']==name for row in rows),'tool original belongs to another phase'
+        return rows
     def close(self):
         for fd in list(self.retained):os.close(fd);self.retained.remove(fd)
     def abort(self):
@@ -648,7 +884,7 @@ class SdkExecutionObserver(Observer):
         assert Path(source)==Path('/opt/qlever-sdk/source') and Path(build)==Path('/opt/qlever-sdk/build'),'fixed SDK source/build roots required'
         assert isinstance(deadline_monotonic,(float,int)) and math.isfinite(deadline_monotonic) and time.monotonic()<deadline_monotonic,'existing live SDK deadline required'
         super().__init__(out,source,build,deadline_monotonic=deadline_monotonic,check_budget=check_budget,maximum_bytes=maximum_bytes,
-            maximum_file_bytes=limits['shardBytes'],selected_names=None,maximum_processes=limits['sourceMembers'],shard_bytes=limits['shardBytes'],require_success=False,maximum_stdio_bytes=maximum_stdio_bytes,shared_tasks=True)
+            maximum_file_bytes=limits['shardBytes'],selected_names=None,maximum_processes=limits['sourceMembers'],shard_bytes=limits['shardBytes'],require_success=False,maximum_stdio_bytes=maximum_stdio_bytes,shared_tasks=True,capture_toolchain=True)
         self.capture_dir=self.out/'captures';self.capture_dir.mkdir(exist_ok=False);self.sdk_phase_index=0;self.sdk_failed=False
         mounts=Path('/proc/self/mountinfo').read_bytes();assert len(mounts)<=limits['metadataBytes'],'source provider metadata bound'
         self.source_provider=probe.effective_readonly(source,mounts);self.source_provider_originals=dict(mountinfo=probe.put(self.out/'source-provider.mountinfo.raw',mounts));self.claim(len(mounts))

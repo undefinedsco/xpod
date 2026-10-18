@@ -28,3 +28,14 @@ it('does not accept serialized SDK/source approvals',async()=>{
  const result=await observeQleverSdkGeneratedInputOriginals({verified:true},{sourceSha:'a'.repeat(40)});
  expect(result.facts.sdkGeneratedInputIoClosureVerified).not.toBe(true);expect(result.pending.length).toBeGreaterThan(0);
 });
+it('retains the two explicit observed-tool diagnostics without treating them as proof',()=>{
+ for(const reason of ['observed-tool-file-missing-from-after-full-shard','observed-tool-file-differs-from-after-full-shard']){
+  const value=fixture(),path=reason.includes('missing')?'/usr/bin/not-in-after':'/opt/qlever-sdk/build/generated.h';
+  (value.selections[0]!.unresolvedInputs as any[]).push({path,reason});
+  expect(inspectSdkExecutionOriginalPlan(value).unresolved).toContainEqual({path,reason});
+ }
+ for(const reason of ['observed-tool-file-passed','toolchain-complete']){
+  const value=fixture();(value.selections[0]!.unresolvedInputs as any[]).push({path:'/usr/bin/tool',reason});
+  expect(()=>inspectSdkExecutionOriginalPlan(value)).toThrow();
+ }
+});

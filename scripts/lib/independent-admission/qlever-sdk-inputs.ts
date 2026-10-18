@@ -119,3 +119,34 @@ export function inspectSdkInputOwnership(input: {
   });
   return Object.freeze({unresolvedSymlinkOriginalTargets: Object.freeze(unresolvedSymlinkOriginalTargets), inputRows: Object.freeze(coverage), requiredSources: Object.freeze([...required.values()]), unresolvedInputs: Object.freeze(unresolved), inputShardBytes: total});
 }
+
+/** Exact producer diagnostics accepted by the execution planner. They remain
+ * unresolved until the independent same-SDK raw/full-shard join proves bytes. */
+export const SDK_OBSERVED_TOOL_PENDING_REASONS = Object.freeze([
+  'observed-tool-file-missing-from-after-full-shard',
+  'observed-tool-file-differs-from-after-full-shard',
+] as const);
+
+/** Pure projection only; no before observation or source capability is issued. */
+export function inspectSdkObservedToolAfterFiles(input: {
+  files: readonly any[];
+  verifiedRows: readonly Readonly<{originalPath:string;bytes:number;sha256:string;mode:number}>[];
+  binaryFiles: readonly Readonly<{installedPath:string;bytes:number;sha256:string;mode:number;binary:unknown;source:unknown}>[];
+}) {
+  const rows=new Map(input.verifiedRows.map(row=>[row.originalPath,row]));
+  need(rows.size===input.verifiedRows.length && input.files.length<=limits.sourceMembers,'bounded unique verified after rows');
+  const seen=new Set<string>(), files=[], pending=[];
+  for(const row of input.files){
+    need(absolute(row.path) && ['configure','compile'].includes(row.phase) && Number.isSafeInteger(row.captureSequence) && row.captureSequence>0
+      && Number.isSafeInteger(row.bytes) && row.bytes>=0 && row.bytes<=limits.shardBytes && sha.test(row.sha256)
+      && Number.isInteger(row.mode) && row.mode>=0 && row.mode<=0o7777 && row.observedBeforeCompile===false
+      && Array.isArray(row.identityDecimal) && row.identityDecimal.length===6 && row.identityDecimal.every((v:unknown)=>typeof v==='string' && /^[0-9]+$/u.test(v)), 'actual observed-after tool row required');
+    const key=row.phase+':'+row.captureSequence;need(!seen.has(key),'duplicate tool capture');seen.add(key);
+    const actual=rows.get(row.path);need(actual && actual.bytes===row.bytes && actual.sha256===row.sha256 && actual.mode===row.mode,'tool differs from same verified after-shard row');
+    const official=input.binaryFiles.filter(value=>value.installedPath===row.path && value.bytes===row.bytes && value.sha256===row.sha256 && value.mode===row.mode);
+    need(official.length<=1,'ambiguous private Debian binary file');
+    if(!official.length)pending.push(Object.freeze({path:row.path,reason:'observed-tool-official-Debian-binary-original-unavailable'}));
+    files.push(Object.freeze({...row,identityDecimal:Object.freeze([...row.identityDecimal]),signedDebianBinary:official[0]?.binary,declaredSource:official[0]?.source}));
+  }
+  return Object.freeze({files:Object.freeze(files),pending:Object.freeze(pending)});
+}
