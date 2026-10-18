@@ -219,5 +219,35 @@
         "mode": 420
       }
     ]
-  }
+  },
+  "sourceDependencies": [
+    {
+      "name": "website",
+      "repository": "inngest/website",
+      "commit": "159c0ac611e85ec85ffe0a8c8bf2c4a0330bdb38",
+      "destination": "internal/embeddocs/website",
+      "source": {
+        "file": "inngest-website-source.tar.gz",
+        "bytes": 381541078,
+        "sha256": "e58721073c0e8599b486b717895df3fa5302e37537f9fb09a79012b995c8da58",
+        "prefix": "inngest-website-159c0ac",
+        "url": "https://codeload.github.com/inngest/website/legacy.tar.gz/159c0ac611e85ec85ffe0a8c8bf2c4a0330bdb38"
+      },
+      "projection": {
+        "kind": "fixed-go-embed-tree-v1",
+        "declaringFile": {
+          "path": "internal/embeddocs/docs.go",
+          "bytes": 245,
+          "sha256": "05762b455213703ca68e88c3d2c2c789d994235608c87f65c7ed4439b3de3ed3"
+        },
+        "gitmodules": {
+          "path": ".gitmodules",
+          "bytes": 133,
+          "sha256": "e0315f7128cdac8cfb36a45f0568beefebc2593fb212f27e3d48be57dd2e70d4"
+        },
+        "pattern": "website/pages/docs/*",
+        "root": "pages/docs"
+      }
+    }
+  ]
 }
