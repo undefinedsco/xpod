@@ -24,6 +24,14 @@ describe('API producer graph draft',()=>{
   expect(['builder','apicompiler','vite','native-linux','native-darwin'].every(key=>p.registry.some(row=>row.lockKey===key))).toBe(true);expect(p.registry.some(row=>row.lockKey==='electron')).toBe(false);
   expect(p.pending.some(row=>row.includes('optional-lock-edge-absence'))).toBe(true);expect(p.executable).toBe(false);expect(p.sourceVerified).toBe(false);expect(p.workspaceBuilds.map(row=>row.workspace)).toEqual(['lib']);expect(p.isolatedInstall.argv).toContain('--frozen-lockfile');expect(p.retainedByteCeiling).toBe(4294967296);
  });
+ it('declares root lifecycle from the same immutable script only when root is filtered out',()=>{
+  const f=fixture();f.manifests['package.json'].scripts={postinstall:'bun scripts/first.js && bun scripts/second.js'};
+  f.files.set('package.json',Buffer.from(JSON.stringify(f.manifests['package.json'])));f.files.set('scripts/first.js',Buffer.from('// first'));f.files.set('scripts/second.js',Buffer.from('// second'));
+  const standard=f.plan('api-ui-v1');expect(standard.isolatedPostinstall.argv).toEqual([]);expect(standard.isolatedPostinstall.execution).toBe('installer-owned');
+  const root=f.manifests['package.json'];root.catalogs={'api-producer':{semver:'1.0.0'}};f.manifests['packages/xpod-api/package.json'].devDependencies.semver='catalog:api-producer';f.lock.packages.semver=['semver@1.0.0','',{},integrity];
+  for(const name of ['package.json','packages/xpod-api/package.json'])f.files.set(name,Buffer.from(JSON.stringify(f.manifests[name])));
+  const minimal=f.plan('api-ui-root-minimal-v2');expect(minimal.isolatedPostinstall.command).toBe(root.scripts.postinstall);expect(minimal.isolatedPostinstall.argv).toEqual(['bun','run','postinstall']);expect(minimal.isolatedPostinstall.execution).toBe('explicit-after-filtered-install');expect(minimal.originals.some(row=>row.path==='scripts/first.js')).toBe(true);
+ });
  it('requires immutable manifest/lock identity and every required resolved range',()=>{
   const f=fixture();f.lock.workspaces['ui']={...f.lock.workspaces['ui'],dependencies:{lib:'workspace:^'}};expect(f.plan).toThrow('declaration drift');
   const wrong=fixture();wrong.lock.packages.runtime[0]='runtime@2.0.0';expect(wrong.plan).toThrow('lock range differs');

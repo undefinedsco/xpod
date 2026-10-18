@@ -3,7 +3,7 @@
 Keep the immutable manifests/lock unchanged and retain the whole installed tree.
 The scoped recipe is a new diagnostic; global dependency checks are not replaced.
 """
-import argparse,hashlib,importlib.util,json,os,platform,shutil,stat,subprocess,sys,time
+import argparse,hashlib,importlib.util,json,os,platform,re,shutil,stat,subprocess,sys,time
 from pathlib import Path
 ROOT=Path(__file__).resolve().parent.parent
 
@@ -20,7 +20,22 @@ def validate_plan(plan,source_sha,target,mode='api-ui-v1'):
   previous=row['id']
  install=plan['isolatedInstall']['argv']
  if install[:3]!=['bun','install','--frozen-lockfile'] or any(not arg.startswith('--filter=') for arg in install[3:]):raise ValueError('Exact frozen isolated installation required')
- return [('isolated-install',install,'',600)]+[(row['id'],row['argv'],'',600) for row in rows]+[('api-build',plan['apiBuild']['argv'],'',600)]
+ post=plan.get('isolatedPostinstall');explicit=[]
+ if mode=='api-ui-root-minimal-v2':
+  if not isinstance(post,dict) or post.get('execution')!='explicit-after-filtered-install' or not isinstance(post.get('command'),str):raise ValueError('Explicit immutable root postinstall required')
+  commands=post['command'].split(' && ') if post['command'] else []
+  if any(not re.fullmatch(r'bun scripts/[a-zA-Z0-9._/-]+',command) or any(part in ['', '.', '..'] for part in command[4:].split('/')) for command in commands):raise ValueError('Exact ordered root postinstall recipe required')
+  expected=['bun','run','postinstall'] if commands else []
+  if post.get('argv')!=expected or plan.get('rootDeclarationsInstalled') is not False or '--filter=!'+plan.get('rootName','') not in install:raise ValueError('Filtered root postinstall declaration differs')
+  if commands:explicit=[('isolated-postinstall',expected,'',600)]
+ elif post is not None and (post.get('execution')!='installer-owned' or post.get('argv')!=[]):raise ValueError('Installed root lifecycle must not execute twice')
+ return [('isolated-install',install,'',600)]+explicit+[(row['id'],row['argv'],'',600) for row in rows]+[('api-build',plan['apiBuild']['argv'],'',600)]
+
+def validate_postinstall_source(plan,source):
+ declaration=plan.get('isolatedPostinstall')
+ if declaration is not None:
+  actual=json.loads((source/'package.json').read_text()).get('scripts',{}).get('postinstall','')
+  if actual!=declaration.get('command'):raise ValueError('Actual immutable root postinstall differs from graph')
 
 def inventory(source,output,end):
  """Hash every physical installed member; preserve optional/link observations."""
@@ -78,6 +93,7 @@ def main():
  holder.mkdir(parents=True,mode=0o700);output.mkdir(mode=0o700);evidence=output/'evidence';evidence.mkdir(mode=0o700)
  subprocess.run(['git','worktree','add','--detach',str(source),args.source_sha],cwd=ROOT,check=True,timeout=30)
  if subprocess.check_output(['git','rev-parse','HEAD'],cwd=source).decode().strip()!=args.source_sha:raise ValueError('Immutable checkout differs')
+ validate_postinstall_source(plan,source)
  (output/'graph.original.json').write_text(json.dumps(plan,indent=2));supervisor=load('isolated_supervisor','scripts/agentfs-native-ci/supervise.py');parent=load('isolated_api_parent','scripts/api-module-producer.py')
  home=output/'home';home.mkdir();tmp=output/'tmp';tmp.mkdir();env=transport_environment(os.environ,home,tmp,output/'bun-cache')
  node=shutil.which('node')
@@ -92,7 +108,7 @@ def main():
    argv=([bun,*argv[1:]] if argv[0]=='bun' else argv);receipt,_=supervisor.run_stage(label,argv,evidence,source/cwd,timeout=min(cap,remaining),environment=env,fresh_bytes=2*1024**3,stop_bytes=2*1024**3)
    result['steps'].append(dict(label=label,closed=parent.closed_phase(receipt)))
    if not parent.closed_phase(receipt):raise ValueError('Isolated producer phase failed: '+label)
-   if label=='isolated-install':result['before']=inventory(source,output/'installed-before.original.json',end)
+   if label==('isolated-postinstall' if any(row[0]=='isolated-postinstall' for row in rows) else 'isolated-install'):result['before']=inventory(source,output/'installed-before.original.json',end)
   result['after']=inventory(source,output/'installed-after.original.json',end);result['completed']=True
  finally:
   (output/'result.original.json').write_text(json.dumps(result,indent=2))
