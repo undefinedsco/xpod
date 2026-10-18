@@ -1057,11 +1057,11 @@
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-debian-binary.ts",
-    "sha256": "0160afa87953288faf411a32d7e2612c5e8ef7d9e3031d1a040a89380b2263a9"
+    "sha256": "06f27e0196ecdb14381c51c4cfac6015dbd8a9d2f6fd417a5ed9899eac5dc46e"
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-debian-index.ts",
-    "sha256": "157a3008676bafc8aada2babad905cc22ff0177ecf36e901e8778683e15a0103"
+    "sha256": "9f7b22b043632ab8dcb13ee407ad29acc06897083f0963e5fdcb00bb36026e01"
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-debian-signature.ts",
@@ -1077,7 +1077,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-fetchcontent.ts",
-    "sha256": "2c33fcda311acfc602829f75ea8cf2f71cd785cc0fb57e921e8274b132ab120f"
+    "sha256": "39f3d6959549c0927eeb81223ecb17333851ecc7188b54a245fd2a1c606d6b90"
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-generation.ts",
@@ -1158,6 +1158,10 @@
   {
     "path": "scripts/lib/independent-admission/runtime-member-input.ts",
     "sha256": "1c408779528c3352fc9e09a64cf95d4e640edeb6350b5e0ae707c7b27037f6d1"
+  },
+  {
+    "path": "scripts/lib/independent-admission/sdk-controller-helper-groups.ts",
+    "sha256": "2419b2202f4e2e492132cd343c751443ea3aea0a9bd925b328725cf89ab0db31"
   },
   {
     "path": "scripts/lib/independent-admission/shared-source-lifetime.ts",

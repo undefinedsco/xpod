@@ -1,3 +1,4 @@
+import {selectSdkControllerHelperGroup} from './sdk-controller-helper-groups';
 import {createHash} from 'node:crypto';
 import {execFileSync} from 'node:child_process';
 import {realpathSync} from 'node:fs';
@@ -94,10 +95,12 @@ export async function observeQleverSdkDebianBinaryOriginals(capability: unknown,
     need(signatureRows.length > 0 && array(collection.indexOriginals).every(value => {const row = reference(record(value).inRelease); return signatureRows.some(signed => signed.bytes === row.bytes && signed.sha256 === row.sha256);}), 'binary InRelease not in the same private signature observation');
     // Fix all controller bytes before reading any candidate ZIP. No public
     // callback or caller-selected executable/helper can issue this fact.
-    const helpers = HELPERS.map(([name, sha256]) => {
+    const helperDigests=new Map<string,string>();
+    const helpers = HELPERS.map(([name]) => {
       const file = fileURLToPath(new URL('../../../qlever/scripts/' + name, import.meta.url)), observed = hashSignatureControllerFile(file, check);
-      need(observed.sha256 === sha256, 'reviewed binary controller helper differs'); return observed.identity;
+      helperDigests.set(name,observed.sha256);return observed.identity;
     });
+    selectSdkControllerHelperGroup(REVIEWED_HELPER_GROUPS,helperDigests);helpers.forEach(assertLegalFileIdentity);
     const python = realpathSync('/usr/bin/python3'), pythonOriginal = hashSignatureControllerFile(python, check);
     const limitsOriginal = hashSignatureControllerFile(fileURLToPath(new URL('../module-artifact-limits.json', import.meta.url)), check);
     need(limitsOriginal.sha256 === moduleSourcePhasePolicy.limits, 'reviewed shared limit authority differs');
@@ -146,3 +149,5 @@ export async function observeQleverSdkDebianBinaryOriginals(capability: unknown,
 
 // Frozen only after the final helper and shared ZIP-domain delta are reviewed.
 const HELPERS: readonly (readonly [string, string])[] = [["sdk-debian-binary-originals.py", "6db9772344afe812f3a58fc04296b63c13bbd4be1d46ae2ad7fcff181111c63c"], ["sdk-debian-index-bindings.py", "ad87a17bdb781f34a6a78a5e970d1f9c69d0750a1fcc4ba3f711db317bd75e13"], ["sdk-zip-originals.py", "304a8d26c8a124af31f2b240f1b2af52312520982cd6e1f4cba70fde2602bcb8"]];
+
+const REVIEWED_HELPER_GROUPS=Object.freeze([HELPERS,Object.freeze(HELPERS.map(([name,sha])=>Object.freeze([name,name==='sdk-zip-originals.py'?'86cca59ac6a30eb719fe10dbaf6939c4e7c50328e757f22d3d4d34ea90fe6c10':name==='sdk-debian-binary-originals.py'?'099959565f355566b9a1f6f20870e2de20a5ef20ff37fc0042a9943238a4e86f':sha] as const)))])

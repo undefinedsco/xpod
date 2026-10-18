@@ -92,15 +92,15 @@ it('module SDK orchestration rejects a different source before checkout and chai
       expect(result.status, result.stderr).toBe(expected);
     }
     const materials = workflow.jobs.module_runtime_materials;
-    expect(materials.needs).toEqual(['resolve_target', 'publish']);
-    expect(materials.if).toBe("${{ needs.resolve_target.outputs.sdk_profile == 'module-bookworm-gcc12' }}");
+    expect(materials.needs).toEqual(['resolve_target', 'publish', 'readonly_publish']);
+    expect(materials.if).toBe("${{ !cancelled() && github.event_name != 'pull_request' && needs.resolve_target.outputs.sdk_profile == 'module-bookworm-gcc12' && (needs.publish.result == 'success' || needs.readonly_publish.result == 'success') }}");
     expect(materials.uses).toBe('./.github/workflows/build-qlever-linux-runtime.yml');
     expect(materials.with).toEqual({ target: '${{ needs.resolve_target.outputs.target }}',
-      module_sdk_image: '${{ needs.publish.outputs.image }}',
-      sdk_artifact_id: '${{ needs.publish.outputs.sdk_artifact_id }}',
-      sdk_artifact_digest: '${{ needs.publish.outputs.sdk_artifact_digest }}',
-      sdk_master_sha256: '${{ needs.publish.outputs.sdk_master_sha256 }}',
-      sdk_master_bytes: '${{ needs.publish.outputs.sdk_master_bytes }}' });
+      module_sdk_image: '${{ needs.readonly_publish.outputs.image || needs.publish.outputs.image }}',
+      sdk_artifact_id: '${{ needs.readonly_publish.outputs.sdk_artifact_id || needs.publish.outputs.sdk_artifact_id }}',
+      sdk_artifact_digest: '${{ needs.readonly_publish.outputs.sdk_artifact_digest || needs.publish.outputs.sdk_artifact_digest }}',
+      sdk_master_sha256: '${{ needs.readonly_publish.outputs.sdk_master_sha256 || needs.publish.outputs.sdk_master_sha256 }}',
+      sdk_master_bytes: '${{ needs.readonly_publish.outputs.sdk_master_bytes || needs.publish.outputs.sdk_master_bytes }}' });
   } finally { rmSync(temporary, { recursive: true, force: true }); }
 });
 
