@@ -444,6 +444,10 @@
     "sha256": "b916ac48a4d1421de9ef1582baeddd38f6d1e8baaddbd26705c0f05ab5571dcf"
   },
   {
+    "path": "qlever/scripts/sdk-local-daemon-originals.py",
+    "sha256": "9c5541b959d86d690f1d1806e123ce046008d8e82ab5127685e51d31c8e5dcd5"
+  },
+  {
     "path": "qlever/scripts/sdk-observed-tool-originals.py",
     "sha256": "bd3528847b176e5d8bf1a34c03ffe05e0e27173c10c6ab43f211278dc7a0d403"
   },
@@ -461,11 +465,11 @@
   },
   {
     "path": "qlever/scripts/sdk-readonly-collection.py",
-    "sha256": "6f23b15488983f4672fda044b3c54a6e96d4502b5572ab6d8429a48d579a1292"
+    "sha256": "a7ed0ef9ae26a695ae7f7bba2e5d1d0cfb12cacfeca3522e113af72fbc584642"
   },
   {
     "path": "qlever/scripts/sdk-readonly-executor-bindings.py",
-    "sha256": "1a47575d5ca72f93afc0190d4b8d7676ed44edb95433f49f97f08d79fe6f34e6"
+    "sha256": "b6c89d28bc7f24934ff9950ca56ddd1476a172133c5881f1d7ab9839521427e0"
   },
   {
     "path": "qlever/scripts/sdk-readonly-executor-entry.py",
@@ -473,11 +477,11 @@
   },
   {
     "path": "qlever/scripts/sdk-readonly-executor.py",
-    "sha256": "a434391e7784044dfb140f77e8bc3236972d72253762de3abdb8a7c8efa946c3"
+    "sha256": "cdd151c67f228485ff1e4aed735c550853ee9d38b3f996a9be4af9eb3fcc2f15"
   },
   {
     "path": "qlever/scripts/sdk-readonly-normal-route.py",
-    "sha256": "febe49aefa8619907836cfc591acf97e007ffca0fd2f1add805b0abe605ab189"
+    "sha256": "13779b6e29f65884126299420b432d2b3e862e5d9712aa5c37140df3e85af27d"
   },
   {
     "path": "qlever/scripts/sdk-readonly-result-context.py",
@@ -509,7 +513,7 @@
   },
   {
     "path": "qlever/scripts/sdk-zip-originals.py",
-    "sha256": "86cca59ac6a30eb719fe10dbaf6939c4e7c50328e757f22d3d4d34ea90fe6c10"
+    "sha256": "cf30b662bfec174a61d229811272241a945318259e9b181e8219330acf0555e6"
   },
   {
     "path": "qlever/scripts/sync-patched-source.py",
@@ -1057,11 +1061,11 @@
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-debian-binary.ts",
-    "sha256": "06f27e0196ecdb14381c51c4cfac6015dbd8a9d2f6fd417a5ed9899eac5dc46e"
+    "sha256": "f0800f85b6e83954c379a8219ea8f700864f32da96643c992c48cb0073704349"
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-debian-index.ts",
-    "sha256": "9f7b22b043632ab8dcb13ee407ad29acc06897083f0963e5fdcb00bb36026e01"
+    "sha256": "5d08b84f1f150e1747ed38b67ff808454a86d8a7bb9ebbd307f1cc311c0e3098"
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-debian-signature.ts",
@@ -1077,7 +1081,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-fetchcontent.ts",
-    "sha256": "39f3d6959549c0927eeb81223ecb17333851ecc7188b54a245fd2a1c606d6b90"
+    "sha256": "3efc1dac0fa4199f76e768f2845e60fdc909c550b246d6dbd03e24fb8a2cdb60"
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-generation.ts",
@@ -1093,7 +1097,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-origin-policy.ts",
-    "sha256": "38a945fe7095df3ee2933ed752dfd78a95186ee14d35f9a5a9f66438b3551749"
+    "sha256": "487b3d50287b84c260e47bf35acc75690a32224b7e7363948954db8a2c40706b"
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-originals.ts",
@@ -1109,7 +1113,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-readonly-executor.ts",
-    "sha256": "83a096b73721d6175089a7d87bff2ca21423406fe24e6748894c512904668864"
+    "sha256": "4ccd6ac468f35e003a5680621a64a20a7664d8d92102054bbd86f538f75ed84c"
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-source.ts",

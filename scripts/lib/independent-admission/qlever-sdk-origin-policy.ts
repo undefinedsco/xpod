@@ -892,8 +892,36 @@ const readOnlyNormalGroup:GitHubSourceBindingGroup=Object.freeze({
 });
 const daemonDiagnosticBindings=Object.freeze(readOnlyNormalBindings.map(row=>Object.freeze({...row,sha256:row.path==='qlever/scripts/sdk-readonly-executor.py'?'a434391e7784044dfb140f77e8bc3236972d72253762de3abdb8a7c8efa946c3':row.path==='.github/workflows/qlever-readonly-normal-job.yml'?'5fec732c60b90a44d5e601cd0fb56f1e20346ece4e3d65168892cf7fbed5a3f4':row.path==='qlever/scripts/sdk-readonly-normal-route.py'?'febe49aefa8619907836cfc591acf97e007ffca0fd2f1add805b0abe605ab189':row.sha256})));
 const daemonDiagnosticGroup:GitHubSourceBindingGroup=Object.freeze({...dependencyVersionGroup(daemonDiagnosticBindings),outerExecutor:Object.freeze({...readOnlyNormalGroup.outerExecutor!,collector:Object.freeze({path:'qlever/scripts/sdk-readonly-executor.py',sha256:'a434391e7784044dfb140f77e8bc3236972d72253762de3abdb8a7c8efa946c3'})})});
+const activatedDaemonRecipe=new Map([
+  [
+    "qlever/scripts/sdk-readonly-executor.py",
+    "cdd151c67f228485ff1e4aed735c550853ee9d38b3f996a9be4af9eb3fcc2f15"
+  ],
+  [
+    "qlever/scripts/sdk-readonly-normal-route.py",
+    "13779b6e29f65884126299420b432d2b3e862e5d9712aa5c37140df3e85af27d"
+  ],
+  [
+    "qlever/scripts/sdk-readonly-executor-bindings.py",
+    "b6c89d28bc7f24934ff9950ca56ddd1476a172133c5881f1d7ab9839521427e0"
+  ],
+  [
+    "qlever/scripts/sdk-readonly-collection.py",
+    "a7ed0ef9ae26a695ae7f7bba2e5d1d0cfb12cacfeca3522e113af72fbc584642"
+  ],
+  [
+    "qlever/scripts/sdk-zip-originals.py",
+    "cf30b662bfec174a61d229811272241a945318259e9b181e8219330acf0555e6"
+  ],
+  [
+    ".github/workflows/qlever-readonly-normal-job.yml",
+    "c665c76d3c98c4afb0aabe8dec8018401c25fb43a0300b3f86466e2e4ada5ea3"
+  ]
+]);
+const activatedDaemonBindings=Object.freeze([...daemonDiagnosticBindings.map(row=>Object.freeze({...row,sha256:activatedDaemonRecipe.get(row.path)??row.sha256})),Object.freeze({path:'qlever/scripts/sdk-local-daemon-originals.py',sha256:'9c5541b959d86d690f1d1806e123ce046008d8e82ab5127685e51d31c8e5dcd5'})]);
+const activatedDaemonGroup:GitHubSourceBindingGroup=Object.freeze({...dependencyVersionGroup(activatedDaemonBindings),outerExecutor:Object.freeze({...daemonDiagnosticGroup.outerExecutor!,collector:Object.freeze({path:'qlever/scripts/sdk-readonly-executor.py',sha256:'cdd151c67f228485ff1e4aed735c550853ee9d38b3f996a9be4af9eb3fcc2f15'})})});
 export const QLEVER_SDK_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([
- sdkBGroup(QLEVER_SDK_B_SOURCE_BINDINGS),sdkBGroup(tarBindings),sdkBGroup(stagingTarBindings),sdkBGroup(debianV3Bindings),sdkBGroup(symlinkBindings),sdkBGroup(gitCmakeBindings),sdkBGroup(ownedRunsBindings),sdkBGroup(sourcePreparedBindings),sdkBGroup(serviceContextBindings),sdkBGroup(trackedExecutionBindings),observerVersionGroup(selfRetainedContextBindings),observerVersionGroup(preparedInputBindings),observerVersionGroup(debianBinaryBindings),observerVersionGroup(writeReadBindings),observerVersionGroup(sharedTaskBindings),observerVersionGroup(writeDeltaBindings),observerVersionGroup(combinedToolAppendBindings),dependencyVersionGroup(preparedDependencyBindings),dependencyVersionGroup(fetchContentReceiverBindings),dependencyVersionGroup(authorityIntervalBindings),readOnlyNormalGroup,daemonDiagnosticGroup,
+ sdkBGroup(QLEVER_SDK_B_SOURCE_BINDINGS),sdkBGroup(tarBindings),sdkBGroup(stagingTarBindings),sdkBGroup(debianV3Bindings),sdkBGroup(symlinkBindings),sdkBGroup(gitCmakeBindings),sdkBGroup(ownedRunsBindings),sdkBGroup(sourcePreparedBindings),sdkBGroup(serviceContextBindings),sdkBGroup(trackedExecutionBindings),observerVersionGroup(selfRetainedContextBindings),observerVersionGroup(preparedInputBindings),observerVersionGroup(debianBinaryBindings),observerVersionGroup(writeReadBindings),observerVersionGroup(sharedTaskBindings),observerVersionGroup(writeDeltaBindings),observerVersionGroup(combinedToolAppendBindings),dependencyVersionGroup(preparedDependencyBindings),dependencyVersionGroup(fetchContentReceiverBindings),dependencyVersionGroup(authorityIntervalBindings),readOnlyNormalGroup,daemonDiagnosticGroup,activatedDaemonGroup,
 ].map(group=>{const owned=group.sourceBindings.find(row=>row.path==='qlever/scripts/sdk-readonly-executor.py');return owned?Object.freeze({...group,secondarySelectors:Object.freeze([...(group.secondarySelectors??[]),owned])}):group;}));
 export const QLEVER_LINUX_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([
  {selectors:sdkSelectors('cbedd3e2478de5e22108b6689c595a658ca891c9bd47552caec830e86f47fea8','a75c7be34b5c5fafff85c0d67d814ba1aaf14bcf5db5404a860fe3b9a11009bd'),sourceBindings:QLEVER_LINUX_SOURCE_BINDINGS.filter(row=>!['.github/workflows/publish-qlever-runtime-sdk.yml','.github/workflows/build-qlever-linux-runtime.yml'].includes(row.path))},

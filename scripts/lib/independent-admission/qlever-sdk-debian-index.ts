@@ -170,4 +170,4 @@ export async function observeQleverSdkDebianIndexOriginals(capability: unknown, 
   return Object.freeze({facts: Object.freeze(facts), pending: Object.freeze([...pending])});
 }
 
-const REVIEWED_HELPER_GROUPS=Object.freeze([LOCAL_HELPERS,Object.freeze(LOCAL_HELPERS.map(([name,sha])=>Object.freeze([name,name==='sdk-zip-originals.py'?'86cca59ac6a30eb719fe10dbaf6939c4e7c50328e757f22d3d4d34ea90fe6c10':sha] as const)))])
+const REVIEWED_HELPER_GROUPS=Object.freeze([LOCAL_HELPERS,Object.freeze(LOCAL_HELPERS.map(([name,sha])=>Object.freeze([name,name==='sdk-zip-originals.py'?'86cca59ac6a30eb719fe10dbaf6939c4e7c50328e757f22d3d4d34ea90fe6c10':sha] as const))),Object.freeze(LOCAL_HELPERS.map(([name,sha])=>Object.freeze([name,name==='sdk-zip-originals.py'?'cf30b662bfec174a61d229811272241a945318259e9b181e8219330acf0555e6':sha] as const)))])

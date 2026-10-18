@@ -26,6 +26,11 @@ def ownership(identity):
     key=hashlib.sha256(json.dumps(identity,sort_keys=True).encode()).hexdigest()[:24]
     return 'xpod-sdk-ro-'+key
 
+def prepared_argv(builder,platform,identity,deadline,metadata):
+    same_tuple(identity,identity);need(re.fullmatch('[A-Za-z0-9_-]{1,100}',builder) is not None,'owned builder name')
+    need(platform=={'linux-x64':'linux/amd64','linux-arm64':'linux/arm64'}[identity['target']],'native target/platform exact pair')
+    return local_docker(['docker','buildx','build','--builder',builder,'--file','docker/qlever-runtime-sdk/Dockerfile.module-bookworm','--target','source-prepared','--platform',platform,'--progress','rawjson','--load','--no-cache-filter','source-prepared','--metadata-file',str(metadata),'--build-arg','XPOD_QLEVER_BUILD_JOBS=2','--build-arg','XPOD_QLEVER_SDK_DEADLINE_UNIX='+str(deadline),'--build-arg','XPOD_QLEVER_SDK_IDENTITY='+json.dumps(identity,sort_keys=True,separators=(',',':')),'.'])
+
 def create_argv(image,identity,deadline,network,nonce):
     need(digest(image) and network in ['none','bridge'] and re.fullmatch('[a-f0-9]{64}',nonce) is not None,'fixed config image/network/nonce')
     name=ownership(identity);volumes={destination:name+'-'+role for destination,role in [('/opt/qlever-sdk/build','build'),('/opt/qlever-sdk/materials','materials')]}
@@ -81,6 +86,20 @@ def verify(record,originals,expected):
     image=read('image');need(image['Id']==record['preparedImageConfig'] and digest(image['Id']) and image['Os']=='linux' and image['Architecture']==('amd64' if expected['target']=='linux-x64' else 'arm64'),'prepared image actual platform/config')
     need(image['Volumes'] in [None,{}] and image['OnBuild'] in [None,[]] and image['RootFS']['Type']=='layers' and image['RootFS']['Layers'] and all(digest(v) for v in image['RootFS']['Layers']),'immutable image layer/input contract')
     daemon=read('daemonBefore');need(daemon==read('daemonAfter') and daemon['uid']==0 and daemon['pid']>0 and daemon['socket']=='unix:///var/run/docker.sock' and daemon['executablePath']=='/usr/bin/dockerd' and re.fullmatch('[a-f0-9]{64}',daemon['executableSha256']) and daemon['controllerPidNamespace']==daemon['daemonPidNamespace']==daemon['hostPidNamespace'] and daemon['controllerRootIdentity']==daemon['daemonRootIdentity'],'same actual local host/root Docker daemon required')
+    if daemon.get('associationModel') is not None:
+        need(daemon['associationModel']=='systemd-listener-v1','unknown actual daemon association model')
+        import importlib.util
+        from pathlib import Path
+        spec=importlib.util.spec_from_file_location('activation_receiver',Path(__file__).with_name('sdk-local-daemon-originals.py'));activation=importlib.util.module_from_spec(spec);spec.loader.exec_module(activation)
+        collection=read('daemonActivation');prefix=record['originals']['daemonActivation']['path'].rsplit('/',1)[0]+'/'
+        registered={ref['path']:ref for ref in record['originals'].values()}
+        def activated_original(ref):
+            rooted=dict(ref,path=prefix+ref['path']);need(registered.get(rooted['path'])==rooted,'actual activation raw is not same registered executor original');return originals[rooted['path']]
+        proof=activation.verify_collection(collection,activated_original)
+        for field,left in [('mainPid','pid'),('daemonExecutableIdentity','executableIdentity'),('daemonExecutableSha256','executableSha256'),('controllerPidNamespace','controllerPidNamespace'),('daemonPidNamespace','daemonPidNamespace'),('hostPidNamespace','hostPidNamespace'),('controllerRootIdentity','controllerRootIdentity'),('daemonRootIdentity','daemonRootIdentity'),('listenerIdentity','listenerIdentity'),('service','activationService')]:need(proof[field]==daemon[left],'same held actual activated daemon cross-seal')
+        stage_by_name={row['name']:row for row in record['stages']}
+        created=json.loads(originals[stage_by_name['create-executor']['receipt']['path']]);waited=json.loads(originals[stage_by_name['wait-executor']['receipt']['path']])
+        need(proof['serviceWindows'][0]['completedUnixNs']<=created['startedUnixNs'] and proof['serviceWindows'][-1]['startedUnixNs']>=waited['completedUnixNs'],'actual daemon association must enclose complete owned executor interval')
     before=read('containerBefore');after=read('containerAfter');cid=verify_container(before,image['Id'],record['volumes']);need(verify_container(after,image['Id'],record['volumes'])==cid,'container swapped')
     need(before['State']['Running'] is True and before['State']['Pid']>0 and after['State']['Running'] is False and after['State']['ExitCode']==0 and after['State']['OOMKilled'] is False,'actual container start/zero terminal wait')
     wait=read('wait');need(wait=={'containerId':cid,'exitCode':0,'actualDockerWait':True},'actual wait result')
@@ -131,7 +150,41 @@ def scan_archive(archive_path,plan):
         refs=[*record['originals'].values(),*[row[field] for row in record['stages'] for field in ['receipt','stdout','stderr','supervisionReceipt','supervisionRaw']]]
         originals={}
         for ref in refs:need(registered.get(ref['path'])==ref,'outer executor original not same master member');originals[ref['path']]=read(ref)
-        proof=verify(record,originals,plan['identity']);providers=plan['providers'];need(isinstance(providers,list) and 0<len(providers)<=50000,'same private execution selected providers required')
+        proof=verify(record,originals,plan['identity'])
+        actual_daemon=json.loads(originals[record['originals']['daemonBefore']['path']])
+        if actual_daemon.get('associationModel') is not None:
+            normal_ref=master.get('buildkit',{}).get('record');need(isinstance(normal_ref,dict) and normal_ref.get('path')=='normal-route.original.json' and registered.get(normal_ref['path'])==normal_ref,'same master normal daemon route original')
+            normal=json.loads(read(normal_ref));same_tuple(normal['identity'],plan['identity']);need(normal['readonlyExecutor']==record and normal['sourcePreparedConfig']==record['preparedImageConfig'],'same normal/executor actual interval')
+            refs=normal.get('daemonActivationOriginals');need(isinstance(refs,dict) and 0<len(refs)<=33 and 'daemonActivation' in refs,'normal held daemon proof required')
+            for value in refs.values():need(registered.get(value['path'])==value and value['path'].startswith('daemon-activation/'),'same master normal activation ref');read(value)
+            import importlib.util
+            from pathlib import Path
+            spec=importlib.util.spec_from_file_location('normal_activation_receiver',Path(__file__).with_name('sdk-local-daemon-originals.py'));activation=importlib.util.module_from_spec(spec);spec.loader.exec_module(activation)
+            collection=json.loads(read(refs['daemonActivation']));by_path={value['path']:value for value in refs.values()}
+            def normal_original(value):
+                rooted=dict(value,path='daemon-activation/'+value['path']);need(by_path.get(rooted['path'])==rooted,'complete normal activation raw graph');return read(rooted)
+            normal_proof=activation.verify_collection(collection,normal_original)
+            for key,field in [('mainPid','pid'),('service','activationService'),('daemonExecutableIdentity','executableIdentity'),('daemonExecutableSha256','executableSha256'),('listenerIdentity','listenerIdentity'),('controllerPidNamespace','controllerPidNamespace'),('daemonPidNamespace','daemonPidNamespace'),('hostPidNamespace','hostPidNamespace'),('controllerRootIdentity','controllerRootIdentity'),('daemonRootIdentity','daemonRootIdentity')]:need(normal_proof[key]==actual_daemon[field],'normal/SDK executor must bind same actual daemon/listener')
+            stages={row['name']:row for row in normal['stages']}
+            def stage_receipt(name):
+                stage=stages[name]
+                fixed={'receipt':'stages/'+name+'/command.receipt.json','supervisionReceipt':'stages/'+name+'.receipt.json','supervisionRaw':'stages/'+name+'.raw.log'}
+                for role,path in fixed.items():need(stage[role]['path']==path and registered.get(path)==stage[role],'same master fixed normal phase raw')
+                actual=json.loads(read(stage['receipt']));supervisor=json.loads(read(stage['supervisionReceipt']));raw=read(stage['supervisionRaw'])
+                need(actual['exit']==0 and actual['signal'] is None and actual['actualWait'] is True and actual['rawClosedBeforeHash'] is True,'normal phase actual wait')
+                need(supervisor['exit']==0 and supervisor['signal'] is None and supervisor['actualWait'] is True and supervisor['ownedGroupAbsentAfterWait'] is True and supervisor['rawClosedBeforeHash'] is True and not supervisor.get('resourceStop') and not supervisor.get('supervisorError') and not supervisor.get('cleanupErrors') and actual['pgid']==supervisor['pgid'],'normal phase supervised closure')
+                need(hashlib.sha256(raw).hexdigest()==supervisor['rawSHA256'],'normal phase supervision raw hash')
+                for role in ['stdout','stderr']:
+                    expected=dict(actual[role],path='stages/'+name+'/'+actual[role]['path']);need(stage[role]==expected and registered.get(expected['path'])==expected,'normal phase actual member raw binding')
+                need(type(actual['startedUnixNs']) is int and type(actual['completedUnixNs']) is int and 0<actual['startedUnixNs']<=actual['completedUnixNs']<=int(normal['deadlineUnix']*1e9),'normal phase same deadline')
+                root=record['outputRoot'].rsplit('/',1)[0]
+                controller=json.loads(normal_original(collection['frames'][0]['serviceStage']['receipt']))['command'][4].rsplit('/',1)[0]
+                command=prepared_argv(ownership(plan['identity'])+'-builder',{'linux-x64':'linux/amd64','linux-arm64':'linux/arm64'}[plan['identity']['target']],plan['identity'],normal['deadlineUnix'],root+'/prepared-buildkit.original.json') if name=='prepare-source-image' else ['/usr/bin/python3','-I','-S','-B',controller+'/sdk-readonly-result-context.py','build','--plan',root+'/linked.plan.json']
+                need(actual['command']==command,'normal actual fixed command')
+                return actual
+            prepared=stage_receipt('prepare-source-image');linked=stage_receipt('compose-linked-image')
+            need(normal_proof['serviceWindows'][0]['completedUnixNs']<=prepared['startedUnixNs'] and normal_proof['serviceWindows'][-1]['startedUnixNs']>=linked['completedUnixNs'],'normal held daemon interval must enclose prepare through linked composition')
+        providers=plan['providers'];need(isinstance(providers,list) and 0<len(providers)<=50000,'same private execution selected providers required')
         for provider in providers:check();join_provider(proof,provider)
         check();return dict(schemaVersion=1,sdkReadOnlyExecutorProtocolOriginalsVerified=True,selectedProvidersBoundToImageRoot=len(providers),preparedImageConfig=proof['preparedImageConfig'],scope=proof['scope'],globalHostWriterAbsenceVerified=False,toolchainLifetimeImmutabilityVerified=False,wholeSdkSourceVerified=False)
 

@@ -21,6 +21,7 @@ HERE=Path(__file__).resolve().parent
 def load(name):
     spec=importlib.util.spec_from_file_location(name,HERE/(name+'.py'));value=importlib.util.module_from_spec(spec);spec.loader.exec_module(value);return value
 commands=load('sdk-command-materials');budgets=load('sdk-execution-budget');binding=load('sdk-readonly-executor-bindings')
+daemon_originals=load('sdk-local-daemon-originals')
 IMAGE_TEMPLATE=binding.IMAGE_TEMPLATE
 CONTAINER_TEMPLATE=binding.CONTAINER_TEMPLATE
 ownership=binding.ownership
@@ -41,8 +42,9 @@ def bounded_original(path,maximum,check):
 
 class LocalDaemon:
     """Authenticate the fixed local peer and keep its process identity alive."""
-    def __init__(self,check,diagnose=None):
+    def __init__(self,check,diagnose=None,activation_root=None,remaining_seconds=None):
         if any(key in os.environ for key in ['DOCKER_HOST','DOCKER_CONTEXT','DOCKER_TLS_VERIFY','DOCKER_CERT_PATH']):raise RuntimeError('Remote/context Docker environment forbidden')
+        self.activation=None;self.activation_root=activation_root;self.remaining_seconds=remaining_seconds
         self.socket=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM);self.socket.settimeout(1);self.pidfd=None;self.exe=None
         try:
             check();self.socket.connect('/var/run/docker.sock');pid,uid,gid=struct.unpack('3i',self.socket.getsockopt(socket.SOL_SOCKET,socket.SO_PEERCRED,12));binding.need(uid==0 and pid>0,'actual root local daemon peer required');self.pid=pid;self.uid=uid
@@ -50,11 +52,21 @@ class LocalDaemon:
             self.first=self.sample(check,diagnose)
         except BaseException:self.close();raise
     def close(self):
+        if self.activation is not None:self.activation.close()
         self.socket.close()
         for fd in [self.pidfd,self.exe]:
             if fd is not None:os.close(fd)
         self.pidfd=self.exe=None
+    def _activation_value(self,value):
+        return dict(socket='unix:///var/run/docker.sock',pid=value['mainPid'],uid=0,executablePath='/usr/bin/dockerd',executableIdentity=value['daemonExecutableIdentity'],executableSha256=value['daemonExecutableSha256'],controllerPidNamespace=value['controllerPidNamespace'],daemonPidNamespace=value['daemonPidNamespace'],hostPidNamespace=value['hostPidNamespace'],controllerRootIdentity=value['controllerRootIdentity'],daemonRootIdentity=value['daemonRootIdentity'],associationModel='systemd-listener-v1',activationService=value['service'],listenerIdentity=value['listenerIdentity'])
+    def seal_originals(self):
+        return self.activation.seal() if self.activation is not None else {}
     def sample(self,check,diagnose=None):
+        if getattr(self,'activation',None) is not None:
+            check();before=os.fstat(self.exe);named=os.stat('/proc/1/exe')
+            ident=lambda value:[value.st_dev,value.st_ino,value.st_mode,value.st_size,value.st_mtime_ns,value.st_ctime_ns]
+            binding.need(os.readlink('/proc/1/exe')=='/usr/lib/systemd/systemd' and ident(before)==ident(named)==self.activation.creator['executableIdentity'],'actual held systemd creator changed')
+            value=self._activation_value(self.activation.sample());binding.need(value==self.first,'actual activated daemon changed');return value
         check();poll=select.poll();poll.register(self.pidfd,select.POLLIN);binding.need(not poll.poll(0),'actual Docker daemon process exited')
         def ident(value):return [value.st_dev,value.st_ino,value.st_mode,value.st_size,value.st_mtime_ns,value.st_ctime_ns]
         def nspid(path):
@@ -68,8 +80,13 @@ class LocalDaemon:
         binding.need(len(executable.encode('utf-8'))<=4096,'bounded actual Docker peer executable path')
         # This is a failure diagnostic, never an authority enrollment. Preserve
         # actual peer identity before the exact reviewed executable check.
-        if diagnose is not None and executable!='/usr/bin/dockerd':
+        if diagnose is not None and executable!='/usr/bin/dockerd' and not (executable=='/usr/lib/systemd/systemd' and self.pid==1 and getattr(self,'activation_root',None) is not None):
             diagnose(dict(schemaVersion=1,kind='actual-local-docker-peer-diagnostic',pid=self.pid,uid=self.uid,executablePath=executable,heldExecutableIdentity=ident(os.fstat(self.exe)),namedExecutableIdentity=ident(os.stat('/proc/'+str(self.pid)+'/exe')),controllerPidNamespace=pidns,daemonPidNamespace=daemonns,hostPidNamespace=hostns,controllerRootIdentity=root,daemonRootIdentity=peerroot,authorityVerified=False))
+        if executable=='/usr/lib/systemd/systemd' and self.pid==1 and getattr(self,'activation_root',None) is not None:
+            binding.need(callable(self.remaining_seconds) and ident(os.fstat(self.exe))==ident(os.stat('/proc/1/exe')),'same held actual systemd creator and parent budget required')
+            creator=dict(pid=self.pid,uid=self.uid,executablePath=executable,executableIdentity=ident(os.fstat(self.exe)))
+            self.activation=daemon_originals.HeldActivatedDaemon(creator,self.activation_root,check,self.remaining_seconds,bounded_original)
+            return self._activation_value(self.activation.first)
         binding.need(executable=='/usr/bin/dockerd','unreviewed/proxy Docker peer executable')
         first=os.fstat(self.exe);os.lseek(self.exe,0,0);digest=hashlib.sha256();count=0;binding.need(first.st_size<=512*1024**2,'daemon executable size bound')
         while True:
@@ -136,7 +153,7 @@ def execute(prepared_image,identity,deadline,out,network='bridge'):
         return bounded_original(out/result['stdout']['path'],binding.META,lambda:budget.check(0 if cleanup else 30))
     def inspect(role,kind,reference,template):return save(role,json.loads(stage(role,['docker',kind,'inspect','--format',template,reference])))
     try:
-        daemon=LocalDaemon(check,lambda value:save('daemonPeerDiagnostic',value));save('daemonBefore',daemon.first)
+        daemon=LocalDaemon(check,lambda value:save('daemonPeerDiagnostic',value),out/'daemon-activation',lambda:budget.timeout(5,60));save('daemonBefore',daemon.first)
         image=inspect('image','image',prepared_image,IMAGE_TEMPLATE);binding.need(image['Id']==prepared_image,'actual immutable prepared config ID differs')
         # Fresh dedicated volumes only. Never delete/reuse an existing volume.
         existing=stage('existing-volumes',['docker','volume','ls','--format','{{.Name}}']).decode().splitlines();binding.need(not set(volumes.values())&set(existing),'owned source/build output volume already exists')
@@ -150,7 +167,7 @@ def execute(prepared_image,identity,deadline,out,network='bridge'):
         code=stage('wait-executor',['docker','wait',cid],19800).decode().strip();binding.need(code=='0','actual readonly SDK executor nonzero');save('wait',dict(containerId=cid,exitCode=int(code),actualDockerWait=True))
         stage('executor-logs',['docker','logs',cid],30);inspect('containerAfter','container',cid,CONTAINER_TEMPLATE)
         diff=stage('root-diff-after',['docker','diff',cid]).decode();binding.need(not diff.strip(),'readonly image root changed');save('rootDiffAfter',[])
-        save('daemonAfter',daemon.sample(check))
+        save('daemonAfter',daemon.sample(check));originals.update(daemon.seal_originals())
         record=dict(schemaVersion=1,model=binding.MODEL,identity=identity,preparedImageConfig=prepared_image,deadlineUnix=deadline,network=network,nonce=nonce,outputRoot=str(out),volumes=volumes,originals=dict(originals),stages=[] ,scope='Runner Docker daemon/kernel TCB; no malicious host-root resistance or inner JSON authority')
     finally:
         if held is not None:held.close()

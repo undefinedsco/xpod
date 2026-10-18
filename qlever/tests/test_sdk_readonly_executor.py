@@ -50,6 +50,7 @@ def run_mock_outer(directory,oversized=False):
  class Daemon:
   def __init__(self,*args):self.first=daemon
   def sample(self,*args):return daemon
+  def seal_originals(self):return {}
   def close(self):pass
  class Held:
   def __init__(self,*args):pass

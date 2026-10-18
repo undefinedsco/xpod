@@ -29,10 +29,7 @@ def linked_dockerfile(prepared):
         'COPY --from=linked-verification /opt/qlever-sdk/materials/stages/test-runtime /opt/qlever-sdk/materials/stages/test-runtime\n'
         'COPY --from=linked-verification /opt/qlever-sdk/materials/stages/test-adapter.raw.log /opt/qlever-sdk/materials/stages/test-adapter.receipt.json /opt/qlever-sdk/materials/stages/test-runtime.raw.log /opt/qlever-sdk/materials/stages/test-runtime.receipt.json /opt/qlever-sdk/materials/stages/\n')
 
-def prepared_argv(builder,platform,identity,deadline,metadata):
-    binding.same_tuple(identity,identity);binding.need(re.fullmatch('[A-Za-z0-9_-]{1,100}',builder) is not None,'owned builder name')
-    binding.need(platform=={'linux-x64':'linux/amd64','linux-arm64':'linux/arm64'}[identity['target']],'native target/platform exact pair')
-    return binding.local_docker(['docker','buildx','build','--builder',builder,'--file','docker/qlever-runtime-sdk/Dockerfile.module-bookworm','--target','source-prepared','--platform',platform,'--progress','rawjson','--load','--no-cache-filter','source-prepared','--metadata-file',str(metadata),'--build-arg','XPOD_QLEVER_BUILD_JOBS=2','--build-arg','XPOD_QLEVER_SDK_DEADLINE_UNIX='+str(deadline),'--build-arg','XPOD_QLEVER_SDK_IDENTITY='+json.dumps(identity,sort_keys=True,separators=(',',':')),'.'])
+prepared_argv=binding.prepared_argv
 
 def run(identity,deadline,out,context_originals):
     binding.same_tuple(identity,identity);budget=outer.budgets.ExecutionBudget(deadline);check=lambda:budget.check(60)
@@ -49,7 +46,7 @@ def run(identity,deadline,out,context_originals):
         return dict(path=name,bytes=len(data),sha256=outer.hashlib.sha256(data).hexdigest())
     prepared=None;linked=None;created_builder=False
     try:
-        daemon=outer.LocalDaemon(check,lambda value:save('daemon-peer-diagnostic.original.json',value))
+        daemon=outer.LocalDaemon(check,lambda value:save('daemon-peer-diagnostic.original.json',value),out/'daemon-activation',lambda:budget.timeout(5,60))
         # A fresh GitHub-hosted job has no services or other candidate writer.
         # Foreign active containers cause refusal; never stop another job.
         binding.need(not stage('require-exclusive-daemon',binding.local_docker(['docker','ps','-q'])).strip(),'exclusive runner daemon required')
@@ -70,7 +67,7 @@ def run(identity,deadline,out,context_originals):
         save('export.plan.json',plan);stage('export-stopped-outputs',['/usr/bin/python3','-I','-S','-B',str(HERE/'sdk-readonly-result-context.py'),'export','--plan',str(out/'export.plan.json')],600)
         exported=metadata(context_path/'result-context.json');plan.update(export=exported,builder=builder,platform=platform,metadata=str(out/'linked-buildkit.original.json'),identity=identity)
         save('linked.plan.json',plan);stage('compose-linked-image',['/usr/bin/python3','-I','-S','-B',str(HERE/'sdk-readonly-result-context.py'),'build','--plan',str(out/'linked.plan.json')],1200)
-        linked=metadata(out/'linked-buildkit.original.json')['containerimage.config.digest'];binding.need(binding.digest(linked),'actual linked image config');after=daemon.sample(check);binding.need(before==after,'same held daemon throughout normal route')
+        linked=metadata(out/'linked-buildkit.original.json')['containerimage.config.digest'];binding.need(binding.digest(linked),'actual linked image config');after=daemon.sample(check);binding.need(before==after,'same held daemon throughout normal route');activation_originals=daemon.seal_originals()
     finally:
         if daemon is not None:daemon.close()
         if created_builder:
@@ -83,7 +80,7 @@ def run(identity,deadline,out,context_originals):
                 if hasattr(primary,'add_note'):primary.add_note('Owned builder cleanup failed: '+type(cleanup_error).__name__)
                 # Preserve the original stage exception and its closed raw. No
                 # success record is sealed when cleanup could not complete.
-    final=dict(schemaVersion=1,kind='qlever-readonly-normal-route-originals',identity=identity,deadlineUnix=deadline,sourcePreparedConfig=prepared,linkedImageConfig=linked,stages=stages,readonlyExecutor=outer.rooted_collection(record),resultContext=exported,resultContextDomain='temporary-runtime-build-work-not-source-artifact',releaseAccepted=False,pending=['qlever-sdk-readonly-normal-route-registry-and-master-origin-not-yet-registered','qlever-sdk-source-and-lifetime-admission-unverified'])
+    final=dict(schemaVersion=1,kind='qlever-readonly-normal-route-originals',identity=identity,deadlineUnix=deadline,sourcePreparedConfig=prepared,linkedImageConfig=linked,stages=stages,readonlyExecutor=outer.rooted_collection(record),resultContext=exported,resultContextDomain='temporary-runtime-build-work-not-source-artifact',daemonActivationOriginals=activation_originals,releaseAccepted=False,pending=['qlever-sdk-readonly-normal-route-registry-and-master-origin-not-yet-registered','qlever-sdk-source-and-lifetime-admission-unverified'])
     save('normal-route.original.json',final);return final
 
 def remaining_ledger(out,context_originals,check):

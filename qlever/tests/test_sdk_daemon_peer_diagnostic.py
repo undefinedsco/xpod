@@ -35,7 +35,7 @@ class ActualRouteDiagnostic(unittest.TestCase):
         identity=dict(sourceSha='a'*40,runHeadSha='a'*40,runId=12,runAttempt=1,target='linux-arm64',sdkProfile='module-bookworm-gcc12')
         root=SOURCE.parents[2]/'.test-data/sdk-peer-route';root.mkdir(parents=True,exist_ok=True)
         calls=[]
-        def refused(check,diagnose):
+        def refused(check,diagnose,*activation_contract):
             check();calls.append('first-daemon');diagnose({'authorityVerified':False,'executablePath':'/unreviewed/peer'})
             raise ValueError('unreviewed/proxy Docker peer executable')
         with tempfile.TemporaryDirectory(dir=root) as directory:

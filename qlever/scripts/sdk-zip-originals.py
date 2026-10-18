@@ -54,7 +54,7 @@ def registered_zip_originals(archive_path,prefix,check,*,master_reference=None):
             need(len(infos) <= LIMITS['members'], 'bounded SDK ZIP member count')
             def member(reference):
                 check(); name = reference['path']
-                need(safe(name) and (name.startswith(prefix) or (new_mode and name=='materials.json' and reference==master_reference)), 'registered index original prefix required')
+                need(safe(name) and (name.startswith(prefix) or (new_mode and ((name=='materials.json' and reference==master_reference) or name=='normal-route.original.json' or name.startswith('daemon-activation/') or name in {('stages/'+stage+suffix) for stage in ['prepare-source-image','compose-linked-image'] for suffix in ['/command.receipt.json','.receipt.json','.raw.log']}))), 'registered index original prefix required')
                 rows = [info for info in infos if info.filename == name]
                 need(len(rows) == 1 and rows[0].file_size == reference['bytes'] and 0 <= reference['bytes'] <= LIMITS['shardBytes'], 'exact ZIP index member required')
                 need(not rows[0].is_dir() and stat.S_IFMT(rows[0].external_attr >> 16) in (0, stat.S_IFREG), 'regular ZIP index original required')

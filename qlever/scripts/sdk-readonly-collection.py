@@ -115,6 +115,12 @@ def _collect(image,target,route_root,context_root,out,deadline,budget,local_vali
             stages.append(row)
     host_copy(route_root,'normal-route.original.json');linked_metadata_ref=host_copy(route_root,'linked-buildkit.original.json');host_copy(route_root,'prepared-buildkit.original.json')
     linked_metadata=ledger.json(out,linked_metadata_ref);need(linked_metadata['containerimage.config.digest']==normal['linkedImageConfig'],'actual final linked BuildKit config differs')
+    # The normal route owns a distinct held daemon interval, enclosing source
+    # preparation and linked composition. Retain its exact finite raw graph.
+    route_activation=normal.get('daemonActivationOriginals',{})
+    need(isinstance(route_activation,dict) and len(route_activation)<=33,'fixed normal daemon original graph')
+    for ref in route_activation.values():
+        need(ref['path'].startswith('daemon-activation/'),'normal daemon fixed source prefix');ledger.copy(route_root,ref)
     executor=normal['readonlyExecutor'];need(executor['preparedImageConfig']==normal['sourcePreparedConfig'],'prepared config/outer root cross-seal');refs=[*executor['originals'].values(),*[row[key] for row in executor['stages'] for key in ['receipt','stdout','stderr','supervisionReceipt','supervisionRaw']]]
     originals={}
     for ref in refs:ledger.copy(route_root,ref);originals[ref['path']]=outer.bounded_original(out/ref['path'],limits['metadataBytes'],ledger.check)
