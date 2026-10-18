@@ -210,11 +210,27 @@ def public_source_classification(work,domain,paths=None):
         name=row['path'];need(isinstance(name,str) and not name.startswith('/') and all(part not in ('','.','..') for part in name.split('/')) and 0<=row['bytes']<=LIMITS['metadataBytes'] and len(row['sha256'])==64,'bounded declared public source original')
     return {row['path']:row for row in rows}
 
-def capture_domain(work,name,domain,rows,base,budget):
+def public_toolchain_classification(work,domain,paths,target):
+    if domain!='toolchain':return None
+    value=POLICY.get('publicToolchainInputs')
+    need(value and value['kind']=='fixed-public-toolchain-archive-inputs' and value['tool']=='node','fixed toolchain public input declaration required')
+    rows=value['files'];need(len(rows)==1,'one exact public Node distribution input required')
+    row=rows[0]
+    member=row.get('archiveMember');need(set(row)=={'path','archiveMember','bytes','sha256','mode'} and type(row.get('bytes')) is int and type(row.get('mode')) is int and isinstance(member,str) and member and not member.startswith('/') and all(part not in ('','.','..') for part in member.split('/')) and '\\' not in member and row.get('path')=='node/'+member and row.get('bytes')==0 and row.get('sha256')==hashlib.sha256(b'').hexdigest() and row.get('mode')==0o644,'fixed empty Node configuration declaration differs')
+    if row['path'] not in paths:return None
+    tools=work/'tools';need(tools.is_dir() and not tools.is_symlink(),'canonical owned toolchain root required')
+    node=target_tools(target)['node']
+    # The sole policy descriptor owns this complete archive pin. No downloaded
+    # candidate metadata or basename can classify a different tool's config.
+    verify_original(work/'originals'/node['file'],node)
+    return {row['path']:{key:row[key] for key in ['path','bytes','sha256','mode']}}
+
+
+def capture_domain(work,name,domain,rows,base,budget,target='linux-arm64'):
     spec=importlib.util.spec_from_file_location('controlled_source_capture',ROOT/'scripts/lib/module-source-materials.py');capture=importlib.util.module_from_spec(spec);spec.loader.exec_module(capture)
     root=work/'materials'/name;root.mkdir(mode=0o700,parents=True)
     try:
-        result=capture.capture_group(root,work,domain,[(p,base/p) for p in sorted(rows)],base,reserve_bytes=budget.reserve,public_source_inputs=public_source_classification(work,domain,rows),archive_encoding='gzip-blocks-v1')
+        result=capture.capture_group(root,work,domain,[(p,base/p) for p in sorted(rows)],base,reserve_bytes=budget.reserve,public_source_inputs=public_source_classification(work,domain,rows),archive_encoding='gzip-blocks-v1',public_toolchain_inputs=public_toolchain_classification(work,domain,rows,target))
     except ValueError as error:
         if 'shared retained material total' in str(error):
             raise ValueError(str(error)+' domain='+domain+' phase='+name+' memberCount='+str(len(rows))+' declaredRegularBytes='+str(sum(row.get('bytes',0) for row in rows.values()))) from None
@@ -237,7 +253,7 @@ def write_metadata(file,value,budget):
 
 def capture_inputs(work,target='linux-arm64'):
     need(not (work/'inputs.original.json').exists(),'fresh input snapshot required');before=domains(work);need(sum(map(len,before.values()))<=LIMITS['sourceMembers'],'combined source input member bound');records={};budget=MaterialBudget(work)
-    for name,rows in before.items():records[name]=capture_domain(work,'before-'+name,name,rows,work/('tools' if name=='toolchain' else 'source'),budget)
+    for name,rows in before.items():records[name]=capture_domain(work,'before-'+name,name,rows,work/('tools' if name=='toolchain' else 'source'),budget,target)
     after=domains(work);need(after==before,'build inputs changed during capture')
     write_metadata(work/'inputs.original.json',dict(sourceKind=POLICY['sourceKind'],target=target,originals=records),budget);total_check(work)
 

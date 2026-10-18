@@ -139,7 +139,7 @@ def add_original(archive, file, name, root, public_source_inputs=None):
         fd=os.open(file,os.O_RDONLY|os.O_NOFOLLOW)
         try:
             before=os.fstat(fd);identity=lambda row:(row.st_dev,row.st_ino,row.st_mode,row.st_size,row.st_nlink,row.st_mtime_ns,row.st_ctime_ns)
-            if not stat.S_ISREG(before.st_mode) or before.st_nlink!=1 or before.st_size!=declared['bytes'] or not 0<=before.st_size<=LIMITS['metadataBytes']:raise ValueError('Public source input identity differs: '+diagnostic_path(name))
+            if not stat.S_ISREG(before.st_mode) or before.st_nlink!=1 or before.st_size!=declared['bytes'] or not 0<=before.st_size<=LIMITS['metadataBytes'] or ('mode' in declared and stat.S_IMODE(before.st_mode)!=declared['mode']):raise ValueError('Public source input identity differs: '+diagnostic_path(name))
             data=bytearray()
             while True:
                 check(file);block=os.read(fd,65536)
@@ -196,9 +196,11 @@ def dependency_paths(repo):
     return sorted(result)
 
 
-def capture_group(root, output, domain, files, repo, tools=None, reserve_bytes=None, public_source_inputs=None, archive_encoding='raw'):
+def capture_group(root, output, domain, files, repo, tools=None, reserve_bytes=None, public_source_inputs=None, archive_encoding='raw', public_toolchain_inputs=None):
     if archive_encoding not in ('raw', 'gzip-blocks-v1'):raise ValueError('Unknown source archive encoding')
     if public_source_inputs is not None and domain!='source':raise ValueError('Public source input classification is source-domain only')
+    if public_toolchain_inputs is not None and domain!='toolchain':raise ValueError('Public tool input classification is toolchain-domain only')
+    if public_source_inputs is not None and public_toolchain_inputs is not None:raise ValueError('Public input classifications cannot mix domains')
     from contextlib import ExitStack
     archives, inventories, rows = [], [], []
     total, number, estimate = 0, 0, 0
@@ -247,7 +249,7 @@ def capture_group(root, output, domain, files, repo, tools=None, reserve_bytes=N
                 encoding_state = {}
                 archive = stack.enter_context(originals_tar(archive_file, reserve_bytes, archive_encoding, encoding_state))
                 estimate = 0
-            row = add_original(archive, file, name, repo, public_source_inputs)
+            row = add_original(archive, file, name, repo, public_source_inputs if domain=='source' else public_toolchain_inputs)
             row['archive'] = archive_file.relative_to(output).as_posix()
             if tools and name in tools:
                 row.update(tools[name])
