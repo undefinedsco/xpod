@@ -110,6 +110,8 @@ export function collectJavascriptNotices(options: {
   metafile: string;
   stageRoot: string;
   repoRoot: string;
+  /** Exact canonical installed roots declared by the build layout. */
+  dependencyRoots?: readonly string[];
   destination: string;
   target: string;
   cli: string;
@@ -130,7 +132,14 @@ export function collectJavascriptNotices(options: {
     throw new Error('Invalid JavaScript build target metadata');
   }
   const stageRoot = realpathSync(options.stageRoot);
-  const dependencyRoot = realpathSync(path.join(options.repoRoot, 'node_modules'));
+  const repoRoot = realpathSync(options.repoRoot);
+  const dependencyRoots = options.dependencyRoots === undefined ? [realpathSync(path.join(repoRoot, 'node_modules'))] : options.dependencyRoots.map(root => {
+    if (path.basename(root) !== 'node_modules' || !within(repoRoot, root) || realpathSync(root) !== root) throw new Error('Invalid canonical dependency root');
+    return root;
+  });
+  if (!dependencyRoots.length || new Set(dependencyRoots).size !== dependencyRoots.length) throw new Error('Invalid dependency root declaration');
+  const dependencyPath = (root: string, file: string) => options.dependencyRoots === undefined
+    ? `node_modules/${slash(path.relative(root, file))}` : slash(path.relative(repoRoot, file));
   const metadata = JSON.parse(readFileSync(options.metafile, 'utf8')) as BuildMetafile;
   if (!metadata.inputs || !metadata.outputs || Object.keys(metadata.inputs).length === 0 || Object.keys(metadata.outputs).length === 0) {
     throw new Error('Invalid JavaScript build metafile');
@@ -214,16 +223,18 @@ export function collectJavascriptNotices(options: {
       && realpathSync(options.canonicalSources.root) === options.canonicalSources.root
       && within(options.canonicalSources.root, candidate)
       && /^[a-f0-9]{64}$/.test(binding.sha256);
-    if (!canonical && !within(dependencyRoot, candidate) && !within(stageRoot, candidate)) { throw new Error(`Unexpected bundler input outside staging/dependencies: ${raw}`); }
+    if (!canonical && !dependencyRoots.some(root => within(root, candidate)) && !within(stageRoot, candidate)) { throw new Error(`Unexpected bundler input outside staging/dependencies: ${raw}`); }
     const filename = realpathSync(candidate);
-    const dependency = within(dependencyRoot, filename);
+    const dependencyRoot = dependencyRoots.find(root => within(root, filename));
+    const dependency = dependencyRoot !== undefined;
+    if (dependencyRoots.some(root => within(root, candidate)) && !dependency) throw new Error(`Unexpected bundler input outside staging/dependencies: ${raw}`);
     if (!dependency && !within(stageRoot, filename) && !(canonical && filename === candidate)) { throw new Error(`Unexpected bundler input outside staging/dependencies: ${raw}`); }
     if (canonical && sha256File(filename) !== binding!.sha256) throw new Error('Canonical source hash changed');
     if (!Number.isFinite(input.bytes) || input.bytes < 0 || !Array.isArray(input.imports)) { throw new Error(`Invalid bundler input: ${raw}`); }
     let packageRoot: string | undefined;
     if (dependency) {
-      const owner = packageOwner(filename, dependencyRoot);
-      packageRoot = `node_modules/${slash(path.relative(dependencyRoot, owner.root))}`;
+      const owner = packageOwner(filename, dependencyRoot!);
+      packageRoot = dependencyPath(dependencyRoot!, owner.root);
       const entry = registerPackage(owner.root, owner.info, packageRoot);
       entry.inputCount += 1;
     }
@@ -234,7 +245,7 @@ export function collectJavascriptNotices(options: {
       bytesInOutput += contribution;
     }
     inputs.push({
-      path: dependency ? `node_modules/${slash(path.relative(dependencyRoot, filename))}` : slash(path.relative(stageRoot, filename)),
+      path: dependency ? dependencyPath(dependencyRoot!, filename) : slash(path.relative(stageRoot, filename)),
       sha256: sha256File(filename), bytes: input.bytes, bytesInOutput,
       ...(packageRoot ? { packageRoot } : {}),
     });
@@ -242,7 +253,8 @@ export function collectJavascriptNotices(options: {
       if (!imported.external) { continue; }
       let name = imported.path;
       if (path.isAbsolute(name)) {
-        if (within(dependencyRoot, name)) { name = `node_modules/${slash(path.relative(dependencyRoot, name))}`; }
+        const importedRoot = dependencyRoots.find(root => within(root, name));
+        if (importedRoot) { name = dependencyPath(importedRoot, name); }
         else if (within(stageRoot, name)) { name = slash(path.relative(stageRoot, name)); }
         else { throw new Error('Unexpected absolute external import outside staging/dependencies'); }
       }

@@ -82,7 +82,7 @@ test('owned SDK RUNs select the complete PID1 registry/guard and preserve earlie
 
 test('source-prepared SDK group binds the complete changed recipe without mixing historical selectors',()=>{
  const old=QLEVER_SDK_EXECUTION_GROUPS[6]!,next=QLEVER_SDK_EXECUTION_GROUPS[7]!;
- expect(QLEVER_SDK_EXECUTION_GROUPS).toHaveLength(18);
+ expect(QLEVER_SDK_EXECUTION_GROUPS).toHaveLength(20);
  const selected=new Map([...next.selectors,...(next.secondarySelectors??[])].map(row=>[sourceBindingKey(row),row.sha256]));
  expect(selectGitHubSourceBindingGroup(QLEVER_SDK_EXECUTION_GROUPS,selected)).toBe(next);
  for(const path of ['docker/qlever-runtime-sdk/Dockerfile.module-bookworm','qlever/scripts/sdk-inner-materials.py']){
@@ -191,9 +191,16 @@ test('combined single observer version preserves old pair and rejects mixed prod
 
 test('prepared dependency recipe is one exact complete SDK18 group',()=>{
  const next=QLEVER_SDK_EXECUTION_GROUPS[17]!,previous=QLEVER_SDK_EXECUTION_GROUPS[16]!;
- expect(QLEVER_SDK_EXECUTION_GROUPS).toHaveLength(18);
+ expect(QLEVER_SDK_EXECUTION_GROUPS).toHaveLength(20);
  for(const group of QLEVER_SDK_EXECUTION_GROUPS){const map=new Map([...group.selectors,...(group.secondarySelectors??[])].map(row=>[sourceBindingKey(row),row.sha256]));expect(selectGitHubSourceBindingGroup(QLEVER_SDK_EXECUTION_GROUPS,map)).toBe(group);}
  expect(next.sourceBindings.find(row=>row.path==='qlever/scripts/sdk-fetchcontent-materials.py')?.sha256).toBe('8ec24a7e0e68197bb2bfe127733a18f5db64477e2b3f549feb95af05e4f4097f');
  for(const role of [...next.selectors,...next.secondarySelectors!]){const map=new Map([...next.selectors,...next.secondarySelectors!].map(row=>[sourceBindingKey(row),row.sha256]));map.set(sourceBindingKey(role),'0'.repeat(64));expect(()=>selectGitHubSourceBindingGroup(QLEVER_SDK_EXECUTION_GROUPS,map)).toThrow();}
- for(const role of next.secondarySelectors!){const map=new Map([...next.selectors,...next.secondarySelectors!].map(row=>[sourceBindingKey(row),row.sha256]));map.set(sourceBindingKey(role),previous.secondarySelectors!.find(row=>row.path===role.path)!.sha256);expect(()=>selectGitHubSourceBindingGroup(QLEVER_SDK_EXECUTION_GROUPS,map)).toThrow();}
+ for(const role of next.secondarySelectors!){
+  const historical=previous.secondarySelectors?.find(row=>row.path===role.path)??previous.sourceBindings.find(row=>row.path===role.path);
+  if(!historical)throw new Error('Historical mandatory source binding missing');
+  // Promoting an unchanged mandatory binding to a selector is not version drift.
+  if(historical.sha256===role.sha256)continue;
+  const map=new Map([...next.selectors,...next.secondarySelectors!].map(row=>[sourceBindingKey(row),row.sha256]));
+  map.set(sourceBindingKey(role),historical.sha256);expect(()=>selectGitHubSourceBindingGroup(QLEVER_SDK_EXECUTION_GROUPS,map)).toThrow();
+ }
 });

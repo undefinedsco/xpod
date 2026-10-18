@@ -1,0 +1,55 @@
+import {createHash} from 'node:crypto';
+import {execFileSync} from 'node:child_process';
+import {readFileSync,realpathSync} from 'node:fs';
+import {fileURLToPath} from 'node:url';
+import {captureLegalFileIdentity,assertLegalFileIdentity} from './legal-file-custody';
+import {qleverSdkExecutionOriginalObservation} from './qlever-sdk-generation';
+import {qleverSdkUpstreamGitObservation} from './qlever-sdk-upstream-source';
+import {sdkVerifiedInputOriginalView} from './qlever-sdk-source';
+import {performance} from 'node:perf_hooks';
+import limits from '../module-artifact-limits.json';
+import {qleverSdkOriginalsView} from './qlever-sdk-originals';
+import {derivedSourceView,assertDerivedSourceCurrent} from './source-context';
+import {inspectSdkDependencyStage} from './qlever-sdk-dependency-stage';
+const observations=new WeakMap<object,Readonly<{facts:Readonly<Record<string,unknown>>;assertCurrent():void}>>();
+const hash=(bytes:Buffer)=>createHash('sha256').update(bytes).digest('hex');
+function need(value:unknown,reason:string):asserts value{if(!value)throw Error('SDK FetchContent originals: '+reason);}
+export function qleverSdkFetchContentObservation(capability:unknown){if(!capability||typeof capability!=='object')return undefined;const view=observations.get(capability);view?.assertCurrent();return view;}
+/** Only actual existing SDK and source private handles can retain this narrow observation. */
+export async function observeQleverSdkFetchContentOriginals(capability:unknown,sourceCapability:unknown,remainingMilliseconds=limits.timeoutMs){
+ const facts:Record<string,unknown>={},pending=new Set<string>();
+ try{
+  const sdk=qleverSdkOriginalsView(capability),source=derivedSourceView(sourceCapability);need(sdk&&source&&source.sourceSha===sdk.originFacts.sourceSha,'same issued SDK/source required');assertDerivedSourceCurrent(sourceCapability);
+  need(Number.isFinite(remainingMilliseconds)&&remainingMilliseconds>0,'remaining window required');const deadline=performance.now()+Math.min(remainingMilliseconds,limits.timeoutMs),check=()=>need(performance.now()<deadline,'shared observation deadline exhausted');
+  const bytes=sdk.readOriginal(sdk.masterReference.path,8*1024**2);need(bytes.length===sdk.masterReference.bytes&&hash(bytes)===sdk.masterReference.sha256,'actual master bytes differ');const master=JSON.parse(bytes.toString());need(master.identity?.sourceSha===source.sourceSha&&master.identity?.target===sdk.originFacts.target,'actual master identity differs');
+  const jobs=sdk.metadataOriginals.filter(row=>/^jobs(?:-page-\d+)?\.original\.json$/u.test(row.name)).flatMap(row=>{check();const ref=sdk.originFacts.originals.find(item=>item.name===row.name);need(ref&&ref.bytes===row.data.length&&ref.sha256===hash(row.data),'actual jobs API original differs');return JSON.parse(row.data.toString()).jobs;}).filter((row:any)=>row.id===sdk.originFacts.producerJobId);need(jobs.length===1,'one actual SDK producer job required');
+  const report=inspectSdkDependencyStage({master,members:sdk.members,jobWindow:{start:Date.parse(jobs[0].started_at),end:Date.parse(jobs[0].completed_at)},readOriginal:(path,maximum)=>sdk.readOriginal(path,maximum),readRange:(path,offset,length)=>sdk.readOriginalRange(path,offset,length),check});
+  const assertCurrent=()=>{need(qleverSdkOriginalsView(capability)===sdk,'SDK custody changed');assertDerivedSourceCurrent(sourceCapability);};assertCurrent();check();
+  facts.sdkFetchContentPreparationStageOriginalsVerified=report.dependencyStageOriginalsVerified;facts.sdkFetchContentPreparationScope=report.scope;
+  const inputs=sdkVerifiedInputOriginalView(capability);need(inputs,'actual full-shard input observation required');const declarationRows=inputs.rows.filter(row=>row.originalPath==='/opt/qlever-sdk/source/CMakeLists.txt');need(declarationRows.length===1,'one actual source declaration input required');const upstream=qleverSdkUpstreamGitObservation(capability);need(upstream&&upstream.cmakeDeclaration.bytes===declarationRows[0]!.bytes&&upstream.cmakeDeclaration.sha256===declarationRows[0]!.sha256,'actual reviewed Git/patch CMake declaration observation required');
+  const identities=HELPERS.map(([name,expected])=>{const path=fileURLToPath(new URL('../../../qlever/scripts/'+name,import.meta.url)),identity=captureLegalFileIdentity(path);need(identity.size<=BigInt(limits.metadataBytes)&&hash(readFileSync(path))===expected,'reviewed controller helper differs');return identity;});
+  const python=realpathSync('/usr/bin/python3'),pythonIdentity=captureLegalFileIdentity(python);identities.push(pythonIdentity);identities.forEach(assertLegalFileIdentity);
+  const execution=qleverSdkExecutionOriginalObservation(capability),executionOriginals=execution?.sdkGeneratedInputOriginals as any;
+  need(execution?.sdkActualConfigureCompileTrackedWaitVerified===true&&Array.isArray(executionOriginals?.dependencySourceReadCaptures),'actual private dependency FD observation required');
+  const records=new Map<string,{path:string;bytes:number;sha256:string;mode:number;selected:boolean;captures:number}>();
+  for(const row of inputs.rows.filter(row=>row.originalPath.startsWith('/opt/qlever-sdk/dependencies/')))records.set(row.originalPath,{path:row.originalPath,bytes:row.bytes,sha256:row.sha256,mode:row.mode,selected:true,captures:0});
+  for(const row of executionOriginals.dependencySourceReadCaptures){
+   need(typeof row.path==='string'&&row.path.startsWith('/opt/qlever-sdk/dependencies/')&&Number.isSafeInteger(row.captures)&&row.captures>0,'bounded actual dependency read capture required');
+   const previous=records.get(row.path);if(previous){need(previous.bytes===row.bytes&&previous.sha256===row.sha256&&previous.mode===row.mode,'actual selected/captured dependency bytes differ');previous.captures=row.captures;}
+   else records.set(row.path,{path:row.path,bytes:row.bytes,sha256:row.sha256,mode:row.mode,selected:false,captures:row.captures});
+   need(records.size<=limits.sourceMembers,'dependency actual input record count bound');
+  }
+  const result=await sdk.withArchiveFile(async archive=>{check();need(archive.identity.bytes===sdk.archive.bytes&&archive.identity.sha256===sdk.archive.sha256,'same retained SDK ZIP required');
+   const plan=Buffer.from(JSON.stringify({collection:report.innerCollectionReference,inputRecords:[...records.values()],sourceReferenceSeal:report.sourceReferenceSeal,dependencySourceReadOriginals:executionOriginals.dependencySourceReadOriginals,declarationSha256:declarationRows[0]!.sha256,remainingMilliseconds:Math.floor(deadline-performance.now())}));
+   need(plan.length<=limits.metadataBytes,'bounded selected-input plan required');const bytes=execFileSync(python,['-I','-S','-B',identities[0]!.path,archive.path],{input:plan,maxBuffer:limits.metadataBytes,timeout:Math.max(1,Math.floor(deadline-performance.now())),env:{PATH:'/usr/bin:/bin',LANG:'C.UTF-8'},stdio:['pipe','pipe','pipe']});return JSON.parse(bytes.toString());
+  },{check,remainingMs:()=>deadline-performance.now()});
+  identities.forEach(assertLegalFileIdentity);assertCurrent();check();need(sdkVerifiedInputOriginalView(capability)?.rows===inputs.rows&&result.kind==='qlever-sdk-FetchContent-source-byte-mechanics'&&result.declaredSourceByteClosureVerified===true&&result.overallSourceAuthorityVerified===false&&Array.isArray(result.dependencies)&&Array.isArray(result.pending),'actual source byte observation differs');
+  const freeze=(value:any):void=>{if(value&&typeof value==='object'){Object.values(value).forEach(freeze);Object.freeze(value);}};freeze(result);facts.sdkFetchContentDeclaredSourceByteClosureVerified=true;facts.sdkFetchContentDependencyReadOriginsVerified=result.dependencySourceReadOriginsVerified===true;facts.sdkFetchContentSourceOriginals=result;
+  for(const row of result.pending)pending.add(String(row));
+  const stageAssert=assertCurrent;const retainedAssert=()=>{stageAssert();identities.forEach(assertLegalFileIdentity);need(sdkVerifiedInputOriginalView(capability)?.rows===inputs.rows&&qleverSdkUpstreamGitObservation(capability)===upstream&&qleverSdkExecutionOriginalObservation(capability)===execution,'actual input/upstream observation revoked');};
+  const snapshot=Object.freeze(facts);observations.set(capability as object,Object.freeze({facts:snapshot,assertCurrent:retainedAssert}));return Object.freeze({facts:snapshot,pending:Object.freeze([...pending]),assertCurrent:retainedAssert});
+ }catch(error){pending.add('qlever-sdk-FetchContent-originals-unverified: '+String(error instanceof Error?error.message:error).slice(0,1024));}
+ return Object.freeze({facts:Object.freeze(facts),pending:Object.freeze([...pending])});
+}
+
+const HELPERS:readonly(readonly[string,string])[]=[["sdk-fetchcontent-source-observer.py", "535fa858b9ded0f8cf37e680f3ccc14cb053520f077f5bc361a9301dfe602cb1"], ["sdk-fetchcontent-source-bindings.py", "58c673c1506cbf321736e8693fa5364bddbfc7dec5e1e456bdda7151bb54535c"], ["sdk-zip-originals.py", "304a8d26c8a124af31f2b240f1b2af52312520982cd6e1f4cba70fde2602bcb8"], ["sdk-git-source-bindings.py", "612063f44d09932b93883db2d186d197bd828e07d39e2df430d9dbe574fd66d0"], ["sdk-debian-binary-originals.py", "6db9772344afe812f3a58fc04296b63c13bbd4be1d46ae2ad7fcff181111c63c"], ["sdk-debian-index-bindings.py", "ad87a17bdb781f34a6a78a5e970d1f9c69d0750a1fcc4ba3f711db317bd75e13"], ["sdk-generation-multiprocess-bindings.py", "2b58b91ad5054f6c6b74be4315faf74ff29f18f8f272138717403400f8ade281"], ["sdk-execution-originals-util.py", "b2226db7d6d9955d6bf3745dc5011aa1dbc67ffe90faf9dc88fffa7376343a2d"], ["sdk-tool-provider-originals.py", "d5bc8db6c6457d95e67c3ea6138d75f9cfe055e47b22d361ebb1d220f7cbcfd0"]];

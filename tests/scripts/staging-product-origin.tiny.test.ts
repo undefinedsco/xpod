@@ -21,8 +21,11 @@ async function scenario(module:'cli'|'api',branch='staging',old=false,mixed=fals
  try{return module==='cli'?await observeCliGitHubOrigin(tuple):await observeModuleProductGitHubOrigin(tuple,'api',target);}finally{globalThis.fetch=previous;}
 }
 for(const module of ['api','cli'] as const)test(`${module} exact staging push origin only`,async()=>{
- expect(githubOriginFacts(await scenario(module))?.sourceSha).toHaveLength(40);
+ const actual=githubOriginFacts(await scenario(module));
+ expect(actual?.sourceSha).toHaveLength(40);
+ if(module==='api'){expect(actual?.workflowSourceSha256).toBe('db6ca21afa33d572f24a92e96c88f425d1bf46a86d966a55be4c10de4d812263');expect(actual?.sourceSha).toBe(actual?.runHeadSha);}
  await expect(scenario(module,'main')).rejects.toThrow();
+ await expect(scenario(module,'refs/tags/v0.0.0')).rejects.toThrow();
  await expect(scenario(module,'staging',false,true)).rejects.toThrow();
  await expect(scenario(module,'staging',true)).rejects.toThrow();
 });
@@ -32,5 +35,6 @@ test('controlled API whole native source tuple rejects producer/helper/placement
 test('public source and pre-public API origin groups remain complete and cannot mix',async()=>{
  const {API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS:groups}=await import('../../scripts/lib/independent-admission/github-origin');
  const {selectGitHubSourceBindingGroup,sourceBindingKey}=await import('../../scripts/lib/independent-admission/github-source-binding-groups');
- for(const group of groups){const rows=[...group.selectors,...group.secondarySelectors];const observed=new Map(rows.map(row=>[sourceBindingKey(row),row.sha256]));expect(selectGitHubSourceBindingGroup(groups,observed)).toBe(group);for(const row of group.secondarySelectors){const other=groups.find(value=>value!==group)!;const alternate=other.secondarySelectors.find(value=>value.path===row.path)!;const mixed=new Map(observed);mixed.set(sourceBindingKey(row),alternate.sha256);expect(()=>selectGitHubSourceBindingGroup(groups,mixed)).toThrow();}}
+ for(const group of groups){const rows=[...group.selectors,...group.secondarySelectors];const observed=new Map(rows.map(row=>[sourceBindingKey(row),row.sha256]));expect(selectGitHubSourceBindingGroup(groups,observed)).toBe(group);for(const row of group.secondarySelectors){const mixed=new Map(observed);mixed.set(sourceBindingKey(row),'f'.repeat(64));expect(()=>selectGitHubSourceBindingGroup(groups,mixed)).toThrow();}}
+ for(const path of ['scripts/prepare-package-manifest.cjs','scripts/platform-binaries.cjs','package.json','bun.lock','packages/xpod-api/package.json'])await expect(scenario('api','staging',false,false,path)).rejects.toThrow();
 });

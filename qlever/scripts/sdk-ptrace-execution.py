@@ -10,6 +10,7 @@ import hashlib
 import importlib.util
 import json
 import math
+import select
 import os
 from pathlib import Path
 import signal
@@ -24,6 +25,7 @@ probe=load('sdk_execution_originals_util',ROOT/'qlever/scripts/sdk-execution-ori
 bindings=load('multi_bindings',ROOT/'qlever/scripts/sdk-generation-multiprocess-bindings.py')
 single=load('sdk_ptrace_kernel',ROOT/'qlever/scripts/sdk-ptrace-kernel.py')
 owned_wait=load('owned_wait',ROOT/'qlever/scripts/sdk-blocking-owned-wait.py')
+tool_providers=load('tool_providers',ROOT/'qlever/scripts/sdk-tool-provider-originals.py')
 SEIZE=0x4206;INTERRUPT=0x4207;GETEVENTMSG=0x4201;SYSCALL=24;WALL=0x40000000
 OPTIONS=1|2|4|8|16|32|64|0x00100000
 MAX=16*1024**2
@@ -91,7 +93,7 @@ class Observer:
     def __init__(self,out,source,build,*,deadline_monotonic=None,check_budget=lambda:None,maximum_bytes=32*1024**2,maximum_file_bytes=1024**2,selected_names=SELECTED,maximum_processes=128,shard_bytes=None,require_success=True,maximum_stdio_bytes=None,shared_tasks=False,capture_toolchain=False):
         self.prepared_dependency_plan=None;self.dependency_roots={};self.dependency_cache=None
         self.shared_tasks=shared_tasks
-        self.capture_toolchain=capture_toolchain;self.tool_original_cache={};self.tool_metadata_bytes=json.loads((ROOT/'scripts/lib/module-artifact-limits.json').read_text())['metadataBytes']
+        self.capture_toolchain=capture_toolchain;self.process_authority=bool(capture_toolchain);self.authority_handles=tool_providers.ProcessAuthorityHandles();self.tool_original_cache={};self.tool_provider_cache={};self.tool_metadata_bytes=json.loads((ROOT/'scripts/lib/module-artifact-limits.json').read_text())['metadataBytes']
         self.prepared_inputs={};self.prepared_sealed=False;self.domain_bytes=0;self.domain_lock=threading.Lock();self.pump_errors=[];self.maximum_stdio_bytes=maximum_stdio_bytes if maximum_stdio_bytes is not None else maximum_file_bytes
         self.require_success=require_success;self.raw_bytes_completed=0;self.maximum_processes=maximum_processes;self.shard_bytes=shard_bytes
         self.deadline_monotonic=deadline_monotonic;self.check_budget=check_budget;self.maximum_bytes=maximum_bytes;self.maximum_file_bytes=maximum_file_bytes;self.selected_names=selected_names
@@ -555,6 +557,29 @@ class Observer:
         row=self.emit(dict(kind='toolchain-original',captureKind='file',observedPath=observed_path,identity=before,original=original))
         self.captures.append(row);self.capture_bytes+=offset;self.tool_original_cache[tuple(before)]=row
         return row
+    def tool_mountinfo_original(self,pid,namespace_identity,data):
+        digest=hashlib.sha256(data).hexdigest();key=(tuple(namespace_identity),digest)
+        reference=self.tool_provider_cache.get(key)
+        if reference is None:
+            assert len(self.tool_provider_cache)<self.maximum_processes,'actual tool provider original count bound'
+            name='capture-'+str(len(self.captures)).zfill(4)+'.original'
+            with (self.capture_dir/name).open('xb') as output:
+                for at in range(0,len(data),65536):self.check();block=data[at:at+65536];self.claim(len(block));output.write(block)
+                output.flush();os.fsync(output.fileno())
+            reference=dict(path=name,bytes=len(data),sha256=digest)
+            capture=self.emit(dict(kind='toolchain-original',captureKind='mountinfo',observedPid=pid,original=reference));self.captures.append(capture);self.capture_bytes+=len(data);self.tool_provider_cache[key]=reference
+        return reference
+    def capture_process_authority(self,pid,role,event_sequence=None):
+        barrier=self.barrier();mounts,observation=tool_providers.capture_process_authority(pid,self.check,self.tool_metadata_bytes,self.authority_handles)
+        observation['mountinfoOriginal']=self.tool_mountinfo_original(pid,observation['namespaces']['mnt']['identity'],mounts)
+        self.emit(dict(kind='toolchain-process-authority',pid=pid,role=role,eventSequence=event_sequence,barrierSequence=barrier['sequence'],observation=observation))
+    def tool_provider(self,pid,reader,actual_path,identity,original,barrier):
+        try:data,observation=tool_providers.capture_provider(pid,reader,actual_path,identity,self.check,self.tool_metadata_bytes)
+        except tool_providers.ProviderUnavailable as error:
+            self.tool_unresolved(pid,'toolchain-effective-readonly-provider-unverified',actualPath=actual_path,barrierSequence=barrier,detail=str(error)[:512]);return None
+        reference=self.tool_mountinfo_original(pid,observation['mountNamespaceIdentity'],data)
+        observation['mountinfoOriginal']=reference
+        return self.emit(dict(kind='toolchain-provider-original',pid=pid,barrierSequence=barrier,fileOriginal=original,observation=observation))['sequence']
     def tool_maps(self,pid):
         # Read only while all registered potential writers are at OS stops.
         name='capture-'+str(len(self.captures)).zfill(4)+'.original';data=bytearray();digest=hashlib.sha256()
@@ -584,7 +609,8 @@ class Observer:
             if actual_fd is not None:
                 if actual_fd['identity']!=identity:return self.tool_unresolved(pid,'entry-FD-to-actual-mapped-file-identity-differs',**{key:value for key,value in common.items() if key!='pid'})
             assert identity==probe.identity(os.fstat(reader))==probe.identity(os.stat(path)),'actual mapped FD identity changed'
-            return self.emit(dict(kind='toolchain-mapping-original',**common,identity=identity,original=original['original']))
+            provider=self.tool_provider(pid,reader,mapping['path'],identity,original['original'],barrier)
+            return self.emit(dict(kind='toolchain-mapping-original',**common,identity=identity,original=original['original'],providerSequence=provider))
         finally:os.close(reader)
     def observe_tool_stop(self,pid,job):
         barrier=self.barrier();self.check();kind,entry,event=job
@@ -617,8 +643,9 @@ class Observer:
                 try:elf=bindings.elf_interpreter(lambda offset,size:os.pread(reader,size,offset),identity[3])
                 except ValueError as error:elf=dict(unresolved='actual-ELF-interpreter-unclassified:'+str(error)[:256])
                 assert identity==probe.identity(os.fstat(reader))==probe.identity(os.stat(path)),'actual exe FD changed'
+                provider=self.tool_provider(pid,reader,resolved,identity,original['original'],barrier['sequence'])
                 maps,mappings=self.tool_maps(pid)
-                captured=self.emit(dict(kind='toolchain-exec-image-capture',pid=pid,barrierSequence=barrier['sequence'],execEntrySequence=entry['sequence'],execEventSequence=event['sequence'],execPathEntrySequence=self.tasks[pid].get('toolExecPath',{}).get('sequence'),exe=dict(lexicalPath=self.tasks[pid].get('toolExecPath',{}).get('lexicalPath'),resolvedPath=resolved,identity=identity,original=original['original']),elf=elf,mapsOriginal=maps['original']))
+                captured=self.emit(dict(kind='toolchain-exec-image-capture',pid=pid,barrierSequence=barrier['sequence'],execEntrySequence=entry['sequence'],execEventSequence=event['sequence'],execPathEntrySequence=self.tasks[pid].get('toolExecPath',{}).get('sequence'),exe=dict(lexicalPath=self.tasks[pid].get('toolExecPath',{}).get('lexicalPath'),resolvedPath=resolved,identity=identity,original=original['original'],providerSequence=provider),elf=elf,mapsOriginal=maps['original']))
                 for mapping in mappings:
                     if mapping['inode'] or 'x' in mapping['permissions']:self.tool_mapping(pid,mapping,captured['sequence'],barrier['sequence'])
             finally:os.close(reader)
@@ -668,6 +695,10 @@ class Observer:
                 single.trace(SYSCALL,pid,0,row.pop('signal',0));row['stopped']=False
     def pending_captures(self):
         if self.exclusive:return
+        while self.process_authority:
+            selected=next(((pid,row) for pid,row in self.tasks.items() if row.get('authorityPending') and not row['exited']),None)
+            if selected is None:break
+            pid,task=selected;role,event_sequence=task['authorityPending'].pop(0);self.capture_process_authority(pid,role,event_sequence)
         if any(task.get('appendBoundary') for task in self.tasks.values()):
             self.barrier()
             for task in self.tasks.values():
@@ -734,6 +765,7 @@ class Observer:
         assert os.WIFSTOPPED(status);task['stopped']=True;event=status>>16;sig=os.WSTOPSIG(status)
         if event:
             observed_event=self.emit(dict(kind='ptrace-event',pid=pid,event=event))
+            if self.process_authority and event in [4,6]:task.setdefault('authorityPending',[]).append(('exec-stop' if event==4 else 'exit-stop',observed_event['sequence']))
             if event==4:
                 actual_exe=os.readlink('/proc/'+str(pid)+'/exe');actual_identity=probe.identity(os.stat('/proc/'+str(pid)+'/exe'))
                 task['diagnosticExec']=dict(path=actual_exe[:4096],pathTruncated=len(actual_exe)>4096,pathSha256=hashlib.sha256(os.fsencode(actual_exe)).hexdigest(),identity=actual_identity,eventSequence=observed_event['sequence'],entrySequence=task.get('entry',{}).get('sequence'),scope='actual exec-stop image only; argv/environment not collected')
@@ -751,7 +783,7 @@ class Observer:
                         assert entry['arch']==0xc000003e and entry['nr'] in [57,58],'unknown actual fork operation';flags=17|(0x4100 if entry['nr']==58 else 0)
                     ownership=bindings.inspect_shared_clone_flags(flags);tgid=task['tgid'] if ownership['sameThreadGroup'] else new;table=task['fdTable'] if ownership['sharedFdTable'] else new
                     assert self.actual_tgid(new)==tgid,'kernel child TGID differs from clone flags';fields=dict(tgid=tgid,fdTable=table)
-                self.tasks[new]=dict(stopped=False,exited=False,entry=None,initial=True,**fields);self.emit(dict(kind='actual-child-binding',parentPid=pid,childPid=new,event=event,**(dict(cloneEntrySequence=task['entry']['sequence'],cloneFlags=flags,**fields) if self.shared_tasks else {})))
+                self.tasks[new]=dict(stopped=False,exited=False,entry=None,initial=True,**(dict(authorityPending=[('initial-child',None)]) if self.process_authority else {}),**fields);self.emit(dict(kind='actual-child-binding',parentPid=pid,childPid=new,event=event,**(dict(cloneEntrySequence=task['entry']['sequence'],cloneFlags=flags,**fields) if self.shared_tasks else {})))
                 if event==2:
                     if not self.shared_tasks:
                         entry=task['entry'];flags=task['observedCloneFlags'] if entry['nr'] in [profile(entry['arch'])['clone'],profile(entry['arch'])['clone3']] else 0x4111
@@ -771,6 +803,7 @@ class Observer:
         if record['op']=='entry':
             assert task['entry'] is None,'syscall entry missing prior exit';task['initial']=False;task['entry']=record;nr=record['nr'];args=record['args']
             assert nr not in policy['forbidden'],'unsupported asynchronous/external writer syscall'
+            if self.process_authority:tool_providers.verify_authority_syscall(kernel['arch'],nr,args)
             if nr in [policy['clone'],policy['clone3']]:
                 flags=args[0] if nr==policy['clone'] else single.trace(2,pid,args[0])&((1<<64)-1)
                 task['observedCloneFlags']=flags
@@ -894,20 +927,26 @@ class Observer:
                 self.seal_prepared_build_inputs()
             except BaseException:
                 self.raw_bytes_completed+=self.raw.tell();self.raw.close();self.close();raise
+        ready_read,ready_write=os.pipe() if self.process_authority else (None,None)
         read_fd,write_fd=os.pipe();stdout_read,stdout_write=os.pipe();stderr_read,stderr_write=os.pipe();child=os.fork()
         if child==0:
             try:
-                os.close(write_fd);os.close(stdout_read);os.close(stderr_read);assert os.read(read_fd,1)==b'x';os.close(read_fd)
+                os.close(write_fd);os.close(stdout_read);os.close(stderr_read)
+                if self.process_authority:
+                    os.close(ready_read);tool_providers.restrict_child_authority();os.write(ready_write,b'R');os.close(ready_write)
+                assert os.read(read_fd,1)==b'x';os.close(read_fd)
                 os.dup2(stdout_write,1);os.dup2(stderr_write,2);os.close(stdout_write);os.close(stderr_write)
                 os.chdir(cwd if cwd is not None else self.source);os.execve(actual_executable(command),command,env if env is not None else {'PATH':'/usr/bin:/bin','LANG':'C','LC_ALL':'C','HOME':str(self.out),'TMPDIR':str(self.out)})
             except BaseException:os._exit(70)
         os.close(stdout_write);os.close(stderr_write);self.pump_errors=[]
         pumps=[BoundedPipePump(stdout_read,stdout_path,self.maximum_stdio_bytes,self.claim,self.pump_errors),BoundedPipePump(stderr_read,stderr_path,self.maximum_stdio_bytes,self.claim,self.pump_errors)]
-        root_pgid=os.getpgid(child);self.root=child;self.tasks[child]=dict(stopped=False,exited=False,entry=None,initial=True,**(dict(tgid=child,fdTable=child) if self.shared_tasks else {}))
+        root_pgid=os.getpgid(child);self.root=child;self.tasks[child]=dict(stopped=False,exited=False,entry=None,initial=True,**(dict(authorityPending=[('initial-root',None)]) if self.process_authority else {}),**(dict(tgid=child,fdTable=child) if self.shared_tasks else {}))
         try:
             os.close(read_fd)
             for pump in pumps:pump.start()
-            self.emit(dict(kind='owned-root-binding',pid=child,command=command,backend='ptrace-all-stop-process-v1',**(dict(taskOwnershipModel='all-tracked-tids-shared-fd-v1',tgid=child,fdTable=child) if self.shared_tasks else {})));single.trace(SEIZE,child,0,OPTIONS);single.trace(INTERRUPT,child);pid,status=self.wait_one();self.event(pid,status,False);os.write(write_fd,b'x');os.close(write_fd);write_fd=None;self.resume()
+            if self.process_authority:
+                os.close(ready_write);ready_write=None;self.check();remaining=max(0,self.deadline-time.monotonic());readable,_,_=select.select([ready_read],[],[],remaining);self.check();assert readable and os.read(ready_read,1)==b'R','child authority setup did not complete before release';os.close(ready_read);ready_read=None
+            self.emit(dict(kind='owned-root-binding',pid=child,command=command,backend='ptrace-all-stop-process-v1',**(dict(processAuthorityModel=tool_providers.AUTHORITY_MODEL) if self.process_authority else {}),**(dict(taskOwnershipModel='all-tracked-tids-shared-fd-v1',tgid=child,fdTable=child) if self.shared_tasks else {})));single.trace(SEIZE,child,0,OPTIONS);single.trace(INTERRUPT,child);pid,status=self.wait_one();self.event(pid,status,False);self.pending_captures();os.write(write_fd,b'x');os.close(write_fd);write_fd=None;self.resume()
             while any(not r['exited'] for r in self.tasks.values()):
                 pid,status=self.wait_one();self.event(pid,status);self.pending_captures();self.resume()
             assert not any(task.get('vforkHeldChild') is not None for task in self.tasks.values()),'vfork child release/wait closure missing'
@@ -939,6 +978,8 @@ class Observer:
                 captureFiles=[dict(row['original'],path=str(self.capture_dir/row['original']['path'])) for row in self.captures[capture_start:]],
                 observedToolFiles=self.observed_tool_files(capture_start,name))
         finally:
+            for control_fd in [ready_read,ready_write]:
+                if control_fd is not None:os.close(control_fd)
             if write_fd is not None:os.close(write_fd)
             for pid,row in self.tasks.items():
                 if not row['exited']:
@@ -950,6 +991,7 @@ class Observer:
         assert all(row['phase']==name for row in rows),'tool original belongs to another phase'
         return rows
     def close(self):
+        if hasattr(self,'authority_handles'):self.authority_handles.close()
         for fd in list(self.retained):os.close(fd);self.retained.remove(fd)
     def abort(self):
         # Never claim whole-kernel ownership from this traced PID registry. The

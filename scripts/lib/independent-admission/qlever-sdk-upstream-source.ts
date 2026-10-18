@@ -12,11 +12,13 @@ import { isDeepStrictEqual } from 'node:util';
 import { captureLegalFileIdentity, assertLegalFileIdentity } from './legal-file-custody';
 const hash = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
 function need(value: unknown, reason: string): asserts value { if (!value) throw Error('SDK upstream source: ' + reason); }
+const upstreamObservations=new WeakMap<object,Readonly<{cmakeDeclaration:Readonly<{bytes:number;sha256:string}>;assertCurrent():void}>>();
+export function qleverSdkUpstreamGitObservation(capability:unknown){if(!capability||typeof capability!=='object')return undefined;const observation=upstreamObservations.get(capability);observation?.assertCurrent();return observation;}
 const HELPERS = [
   ['sdk-git-source-bindings.py', '612063f44d09932b93883db2d186d197bd828e07d39e2df430d9dbe574fd66d0'],
   ['sdk-git-source-observer.py', 'fd578d0fef97c1d3b4b60e5510320c109c6930580d91db9335d67cbacff186f6'],
   ['sdk-git-patch-projection.py', '3e4051b50acf6be11ade6e5d6c05ca23ab8376aa4ff5861975088eab642c8f23'],
-  ['sdk-zip-originals.py', 'f4e8bf855aad1428550f014222873f9024eff994115a9e7bf67287e5671833f5'],
+  ['sdk-zip-originals.py', '304a8d26c8a124af31f2b240f1b2af52312520982cd6e1f4cba70fde2602bcb8'],
 ] as const;
 export function assertSdkUpstreamCollectionProjection(upstream: any, inner: any): void {
   const normalize = (value: any): any => {
@@ -135,6 +137,11 @@ export async function observeQleverSdkUpstreamGitOriginals(capability: unknown, 
     facts.sdkSelectedUpstreamInputCount = selected.files.length;
     facts.sdkSelectedUpstreamInputBytes = selected.files.reduce((sum: number, row: any) => sum + actualRows.get(row.originalPath)!.bytes, 0);
     if (selected.unresolvedInputs.length) pending.add('qlever-sdk-selected-upstream-inputs-generated-after-patch-snapshot');
+    const cmake=postRows.get('CMakeLists.txt'),actualCmake=actualRows.get(upstream.sourceRoot+'/CMakeLists.txt');
+    if(cmake&&actualCmake&&cmake.bytes===actualCmake.bytes&&cmake.sha256===actualCmake.sha256&&parseInt(cmake.mode,8)%0o10000===actualCmake.mode){
+      const assertCurrent=()=>{identities.forEach(assertLegalFileIdentity);assertDerivedSourceCurrent(sourceCapability);need(qleverSdkOriginalsView(capability)===sdk&&sdkVerifiedInputOriginalView(capability)?.rows===verifiedInputs.rows,'upstream source/input custody changed');};assertCurrent();
+      upstreamObservations.set(capability as object,Object.freeze({cmakeDeclaration:Object.freeze({bytes:cmake.bytes,sha256:cmake.sha256}),assertCurrent}));
+    }
   } catch (error) { pending.add((error as Error).message); }
   return Object.freeze({facts: Object.freeze(facts), pending: Object.freeze([...pending])});
 }

@@ -14,6 +14,7 @@ export const CLI_SOURCE_POLICY = Object.freeze({
   copier: 'c437aa115b5b7905c539386d4df284a43e26782c846d62045d69de5bb762331c',
   workflow: 'ce1e33a5f6a0052aa9d585f1556b6b07624cff0df3222d37ee4a5f9fc5f1046e',
 });
+const { resolveCatalogManifest } = createRequire(import.meta.url)('../../prepare-package-manifest.cjs') as { resolveCatalogManifest(manifest: any): any };
 const hash = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
 // The second reviewed supervisor only raises the command ceiling to 25 minutes;
 // command closure, raw limits and receipt semantics remain identical.
@@ -24,17 +25,22 @@ const REVIEWED_SUPERVISORS = new Set([CLI_SOURCE_POLICY.supervisor,
   '7fb899a72bd50ae36b35649964e502c5984a97587ffd5570f6d830fb31d6bd27']);
 /** The original reviewed combinations remain historical. The callback helper
  * is admitted only with its one actually reviewed current execution tuple. */
-export const CLI_SOURCE_VERSION_GROUPS=Object.freeze([
+type CliSourceVersionGroup=Readonly<Record<keyof typeof CLI_SOURCE_POLICY,string>>&Readonly<{supervisors:readonly string[];workflows:readonly string[];sourceBindings?:readonly Readonly<{path:string;sha256:string}>[]}>;
+export const CLI_SOURCE_VERSION_GROUPS:readonly CliSourceVersionGroup[]=Object.freeze([
  Object.freeze({...CLI_SOURCE_POLICY,supervisors:Object.freeze([...REVIEWED_SUPERVISORS]),workflows:Object.freeze([CLI_SOURCE_POLICY.workflow,'c856baf24a28fe789db1e80c26e7b69b7e4e08bd0923f52ce376840ac885c1eb'])}),
  Object.freeze({...CLI_SOURCE_POLICY,sourceHelper:'c28f194ca9767f2aeddd9cff6f633dac2280ae9c4e5d716d3273706afce81850',supervisors:Object.freeze(['7fb899a72bd50ae36b35649964e502c5984a97587ffd5570f6d830fb31d6bd27']),workflows:Object.freeze([CLI_SOURCE_POLICY.workflow])}),
  Object.freeze({...CLI_SOURCE_POLICY,sourceHelper:'07dbfc5531b7b3b812fe6f532141c964255b90f46ed30a05c86f6e42ef2e0ee5',supervisors:Object.freeze(['7fb899a72bd50ae36b35649964e502c5984a97587ffd5570f6d830fb31d6bd27']),workflows:Object.freeze([CLI_SOURCE_POLICY.workflow])}),
  Object.freeze({...CLI_SOURCE_POLICY,sourceHelper:'1871c59b9f0bfb4c0ce824123ce9cdc5f472aba11245b5e0eb45c62c4fca42e2',supervisors:Object.freeze(['7fb899a72bd50ae36b35649964e502c5984a97587ffd5570f6d830fb31d6bd27']),workflows:Object.freeze([CLI_SOURCE_POLICY.workflow])}),
+ Object.freeze({...CLI_SOURCE_POLICY,...{"producer":"099ce70c1565bed8802e1b6276f9216ab78cc4ebeb12df60592eb426252db110","sourceHelper":"1871c59b9f0bfb4c0ce824123ce9cdc5f472aba11245b5e0eb45c62c4fca42e2","supervisors":["7fb899a72bd50ae36b35649964e502c5984a97587ffd5570f6d830fb31d6bd27"],"workflows":["ce1e33a5f6a0052aa9d585f1556b6b07624cff0df3222d37ee4a5f9fc5f1046e"],"sourceBindings":[{"path":"scripts/prepare-package-manifest.cjs","sha256":"47c24e7547f03493161baea3abdf7686db7c21a791d4871535e66d0a3dac2a02"},{"path":"scripts/platform-binaries.cjs","sha256":"95dc2afc4501a87418c4858faa4f77bf0b1930061c649c3d771d607d3d8ecc7f"},{"path":"package.json","sha256":"9b6916d878ab959bc4825382df29c0ca279e2d88e7bfc19cb61552e857f6a3f2"},{"path":"bun.lock","sha256":"8e191efdefc855b72cea0f8cbc3e3ad2f5c3f47c4466553f7d23bd04fccc3d0d"}]}}),
 ]);
-export function reviewedCliSourceVersion(observed:Readonly<Record<keyof typeof CLI_SOURCE_POLICY,string>>):boolean{
- return CLI_SOURCE_VERSION_GROUPS.some(group=>
+function reviewedCliSourceGroup(observed:Readonly<Record<keyof typeof CLI_SOURCE_POLICY,string>>):CliSourceVersionGroup|undefined{
+ const matches=CLI_SOURCE_VERSION_GROUPS.filter(group=>
   (['producer','publicationBudget','sourceHelper','sourceLimits','copier'] as const).every(key=>observed[key]===group[key])
   &&group.supervisors.some(value=>value===observed.supervisor)&&group.workflows.some(value=>value===observed.workflow));
+ return matches.length===1?matches[0]:undefined;
 }
+export function reviewedCliSourceVersion(observed:Readonly<Record<keyof typeof CLI_SOURCE_POLICY,string>>):boolean{return reviewedCliSourceGroup(observed)!==undefined;}
+
 const fail = (message: string): never => { throw new Error('Independent source rules: ' + message); };
 const canonicalJson = (value: any): string => JSON.stringify(value && typeof value === 'object'
   ? Array.isArray(value) ? value.map(item => JSON.parse(canonicalJson(item)))
@@ -44,16 +50,18 @@ export function verifyCliInputSet(
   readTracked: (name: string) => Buffer, trackedPaths: readonly string[],
 ) {
   const producer = readTracked('scripts/check-cli-publication.cjs');
-  if (!reviewedCliSourceVersion({producer:hash(producer),
+  const reviewedGroup=reviewedCliSourceGroup({producer:hash(producer),
     publicationBudget:hash(readTracked('scripts/lib/cli-publication-budget.cjs')),
     sourceHelper:hash(readTracked('scripts/lib/module-source-materials.py')),
     sourceLimits:hash(readTracked('scripts/lib/module-artifact-limits.json')),
     copier:hash(readTracked('scripts/cli-build-inputs.cjs')),
     supervisor:hash(readTracked('scripts/lib/afs-publication-command.cjs')),
-    workflow:hash(readTracked('.github/workflows/cli-package.yml'))})) {
+    workflow:hash(readTracked('.github/workflows/cli-package.yml'))});
+  if (!reviewedGroup) {
     return { sourceInputSetVerified: false, generatedBuildManifestVerified: false,
       pending: 'source-input-policy-unreviewed: immutable producer/copier/supervisor/workflow differs from reviewed policy' };
   }
+  for(const binding of reviewedGroup.sourceBindings??[])if(hash(readTracked(binding.path))!==binding.sha256)fail('catalog CLI complete source binding mismatch: '+binding.path);
   // The copier is the sole owner of these declarations. Do not execute the
   // candidate source: the module below belongs to this reviewed verifier checkout.
   const require = createRequire(import.meta.url);
@@ -96,7 +104,7 @@ export function verifyCliInputSet(
   const listed = new Set(files.map(row => row.path));
   if (listed.size !== files.length || listed.size !== expected.size || [...expected].some(name => !listed.has(name))) fail('complete build input set mismatch');
   const cli = JSON.parse(readTracked('packages/xpod-cli/package.json').toString());
-  const root = JSON.parse(readTracked('package.json').toString());
+  const root = resolveCatalogManifest(JSON.parse(readTracked('package.json').toString()));
   if (typeof root.devDependencies?.semver !== 'string') fail('root semver declaration missing');
   const expectedManifest = { name: 'xpod-cli-publication-build', private: true,
     workspaces: ['packages/xpod-cli', 'packages/xpod-client'],

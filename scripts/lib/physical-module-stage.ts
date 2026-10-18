@@ -7,6 +7,8 @@ import path from 'node:path';
 import ts from 'typescript';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
+const { resolveCatalogManifest } = createRequire(import.meta.url)('../prepare-package-manifest.cjs') as { resolveCatalogManifest(manifest: any, authority: any): any };
+const sourceManifest = (repoRoot: string, bytes: Buffer) => resolveCatalogManifest(JSON.parse(bytes.toString('utf8')), JSON.parse(readFileSync(path.join(repoRoot, 'package.json'), 'utf8')));
 const hash = (b: Buffer) => createHash('sha256').update(b).digest('hex');
 export function packageRoot(file: string): string {
   let current = path.dirname(file);
@@ -56,7 +58,7 @@ export function resolvePhysicalRuntimeImport(repoRoot: string, from: string, spe
   const ownerManifest = path.join(packageRoot(path.join(repoRoot, from)), 'package.json');
   const ownerPath = path.relative(repoRoot, ownerManifest).replaceAll('\\', '/');
   assertCanonicalPath(repoRoot, ownerPath);
-  const ownerBytes = readFileSync(ownerManifest), owner = JSON.parse(ownerBytes.toString('utf8'));
+  const ownerBytes = readFileSync(ownerManifest), owner = sourceManifest(repoRoot, ownerBytes);
   const requirement = { ...owner.dependencies, ...owner.optionalDependencies, ...owner.peerDependencies }[specifier];
   if (typeof requirement !== 'string') throw new Error('Runtime external not declared by its actual owner');
   const root = installedPackageRoot(path.join(repoRoot, from), specifier);
@@ -178,7 +180,7 @@ export function stagePhysicalService(repoRoot: string, output: string, inputs: s
     let root=path.join(repoRoot,'node_modules',name);
     if (options.runtimePackageManifest) {
       assertCanonicalPath(repoRoot, options.runtimePackageManifest);
-      const owner = path.join(repoRoot, options.runtimePackageManifest), manifest = JSON.parse(readFileSync(owner, 'utf8'));
+      const owner = path.join(repoRoot, options.runtimePackageManifest), manifest = sourceManifest(repoRoot, readFileSync(owner));
       const range = manifest.dependencies?.[name];
       if (typeof range !== 'string') throw new Error('Runtime package is not declared by its capability manifest');
       root = installedPackageRoot(owner, name);

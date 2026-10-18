@@ -16,7 +16,7 @@ const ROOT = '/opt/qlever-sdk/materials';
 const LOCAL_HELPERS = [
   ['sdk-debian-index-bindings.py', 'ad87a17bdb781f34a6a78a5e970d1f9c69d0750a1fcc4ba3f711db317bd75e13'],
   ['sdk-debian-index-observer.py', 'e5c632f9357c59be5401dcfd5e7d7daec2d9cf9fc54dae22f400bac21d8f5074'],
-  ['sdk-zip-originals.py', 'f4e8bf855aad1428550f014222873f9024eff994115a9e7bf67287e5671833f5'],
+  ['sdk-zip-originals.py', '304a8d26c8a124af31f2b240f1b2af52312520982cd6e1f4cba70fde2602bcb8'],
 ] as const;
 
 export type QleverSdkDebianIndexObservation = Readonly<{inReleaseSha256: string;

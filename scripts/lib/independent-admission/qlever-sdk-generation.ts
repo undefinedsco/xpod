@@ -77,7 +77,7 @@ export async function observeQleverSdkGeneratedInputOriginals(capability:unknown
   const assertCurrent=()=>{need(qleverSdkOriginalsView(capability)===sdk,'SDK execution originals custody changed');assertDerivedSourceCurrent(sourceCapability);for(const identity of [...helpers,pythonIdentity,limitsIdentity])assertLegalFileIdentity(identity);};assertCurrent();check();
   need(result.kind==='all-stop-CMake-generated-byte-mechanics'&&Array.isArray(result.pending)&&Array.isArray(result.outputs),'fixed execution observation shape differs');
   const unresolved=plan.unresolved.filter(row=>!(row.path in plan.requiredInputs&&result.outputs.some((output:any)=>output.path===row.path&&same({bytes:output.bytes,sha256:output.sha256},plan.requiredInputs[row.path]))));
-  facts.sdkPreparedBuildInputConsumerByteCustodyVerified=result.preparedInputConsumerBytesVerified===true;if(result.preparedInputConsumers?.length)pending.add('qlever-sdk-prepared-build-input-source-prepare-causality-unverified');facts.sdkSelectedGeneratedConsumerByteCustodyVerified=result.selectedGeneratedConsumerByteCustodyVerified===true;facts.sdkGeneratedInputIoClosureVerified=result.generatedInputIoClosureVerified===true&&unresolved.length===0;facts.sdkActualConfigureCompileTrackedWaitVerified=result.actualConfigureCompileTrackedWaitVerified===true;const freeze=(value:any):void=>{if(value&&typeof value==='object'){Object.values(value).forEach(freeze);Object.freeze(value);}};freeze(result);facts.sdkGeneratedInputOriginals=result;
+  facts.sdkPreparedBuildInputConsumerByteCustodyVerified=result.preparedInputConsumerBytesVerified===true;if(result.preparedInputConsumers?.length)pending.add('qlever-sdk-prepared-build-input-source-prepare-causality-unverified');facts.sdkSelectedGeneratedConsumerByteCustodyVerified=result.selectedGeneratedConsumerByteCustodyVerified===true;facts.sdkGeneratedInputIoClosureVerified=result.generatedInputIoClosureVerified===true&&unresolved.length===0;facts.sdkGeneratedInputIoClosureExceptDependencyOriginVerified=result.generatedInputIoClosureExceptDependencyOriginVerified===true&&unresolved.length===0;if(result.dependencySourceReadCaptures?.length)pending.add('qlever-sdk-dependency-source-read-origin-unverified');facts.sdkActualConfigureCompileTrackedWaitVerified=result.actualConfigureCompileTrackedWaitVerified===true;const freeze=(value:any):void=>{if(value&&typeof value==='object'){Object.values(value).forEach(freeze);Object.freeze(value);}};freeze(result);facts.sdkGeneratedInputOriginals=result;facts.sdkToolchainOperationCoverage=result.toolchainOperationCoverage;
   for(const row of unresolved)pending.add('qlever-sdk-selected-input-unresolved:'+row.path+':'+row.reason);
   for(const row of result.preparedDependencyPending??[])pending.add(String(row));for(const row of result.pending)pending.add(String(row));for(const row of result.unresolvedSourceReadPaths??[])pending.add('qlever-sdk-unbound-source-read:'+row);for(const row of result.uncoveredOperations??[])pending.add('qlever-sdk-uncovered-generated-operation:'+row);
   const snapshot=Object.freeze(facts);
@@ -87,7 +87,7 @@ export async function observeQleverSdkGeneratedInputOriginals(capability:unknown
  return Object.freeze({facts:Object.freeze(facts),pending:Object.freeze([...pending])});
 }
 // Filled only from the fixed, reviewed controller/producer files in this batch.
-const HELPERS:readonly(readonly[string,string])[]=[["sdk-zip-originals.py", "f4e8bf855aad1428550f014222873f9024eff994115a9e7bf67287e5671833f5"], ["sdk-generation-multiprocess-bindings.py", "af95b5d4280655a60a22d17a4b94e458c1ca460f477ac1a7d4a0ad7539e4085d"], ["sdk-execution-originals-util.py", "b2226db7d6d9955d6bf3745dc5011aa1dbc67ffe90faf9dc88fffa7376343a2d"], ["sdk-generated-source-originals.py", "60cf828b888a64ecf63accbcf2c856772633dbd7e24eae01e2c3bf53c198595a"]];
+const HELPERS:readonly(readonly[string,string])[]=[["sdk-zip-originals.py", "304a8d26c8a124af31f2b240f1b2af52312520982cd6e1f4cba70fde2602bcb8"], ["sdk-generation-multiprocess-bindings.py", "d12e02ab8c638d20d43e0c8e5373b8d19a794f1fe189909af3d8131aee26cb80"], ["sdk-execution-originals-util.py", "b2226db7d6d9955d6bf3745dc5011aa1dbc67ffe90faf9dc88fffa7376343a2d"], ["sdk-generated-source-originals.py", "56304adae2a0f7d1f6db2a573a00b875fb0a0ae5b4dfe0a13bc6bd2c10d660a7"], ["sdk-tool-provider-originals.py", "2a29a27a270c528b05f029210bd36aa728b26dbfaf1c1e21dc61f7847eaa1cad"]];
 const REVIEWED_OBSERVER_SHA={"qlever/scripts/sdk-ptrace-execution.py": "5d88182382f3bb0bcdf2dea4e3ea58358535038dd3f31aed3867e29cfa16dca0", "qlever/scripts/sdk-ptrace-kernel.py": "08fe6e47e696d1543406751bda83f3aaa89a80973d87a27a5a6423e666b5aff2", "qlever/scripts/sdk-execution-originals-util.py": "b2226db7d6d9955d6bf3745dc5011aa1dbc67ffe90faf9dc88fffa7376343a2d", "qlever/scripts/sdk-blocking-owned-wait.py": "9529b31b027b759e5baa380fa81339b9a962d8d916ac1ea20c9f9503bd697a68", "qlever/scripts/sdk-generation-multiprocess-bindings.py": "18900af6455068d1f86849529d910805a2fe99edb56cb5291ed3c2ec10f8c196"} as const;
 
 const REVIEWED_OBSERVER_GROUPS:readonly Readonly<Record<string,string>>[]=[REVIEWED_OBSERVER_SHA,Object.freeze({...REVIEWED_OBSERVER_SHA,
@@ -108,4 +108,18 @@ const REVIEWED_OBSERVER_GROUPS:readonly Readonly<Record<string,string>>[]=[REVIE
   "qlever/scripts/sdk-execution-originals-util.py": "b2226db7d6d9955d6bf3745dc5011aa1dbc67ffe90faf9dc88fffa7376343a2d",
   "qlever/scripts/sdk-blocking-owned-wait.py": "9529b31b027b759e5baa380fa81339b9a962d8d916ac1ea20c9f9503bd697a68",
   "qlever/scripts/sdk-generation-multiprocess-bindings.py": "af95b5d4280655a60a22d17a4b94e458c1ca460f477ac1a7d4a0ad7539e4085d"
+}),Object.freeze({
+  "qlever/scripts/sdk-ptrace-execution.py": "4afb15816012071e7865384cb0555cb8ccce6afecddac09bd290c0de013ceb68",
+  "qlever/scripts/sdk-ptrace-kernel.py": "08fe6e47e696d1543406751bda83f3aaa89a80973d87a27a5a6423e666b5aff2",
+  "qlever/scripts/sdk-execution-originals-util.py": "b2226db7d6d9955d6bf3745dc5011aa1dbc67ffe90faf9dc88fffa7376343a2d",
+  "qlever/scripts/sdk-blocking-owned-wait.py": "9529b31b027b759e5baa380fa81339b9a962d8d916ac1ea20c9f9503bd697a68",
+  "qlever/scripts/sdk-generation-multiprocess-bindings.py": "2b58b91ad5054f6c6b74be4315faf74ff29f18f8f272138717403400f8ade281",
+  "qlever/scripts/sdk-tool-provider-originals.py": "d5bc8db6c6457d95e67c3ea6138d75f9cfe055e47b22d361ebb1d220f7cbcfd0"
+}),Object.freeze({
+  "qlever/scripts/sdk-ptrace-execution.py": "98aa889ef96b492e7d7be5c4c4e6c6bb91506be4ddf2a7bfe365b1715dbfc9fa",
+  "qlever/scripts/sdk-ptrace-kernel.py": "08fe6e47e696d1543406751bda83f3aaa89a80973d87a27a5a6423e666b5aff2",
+  "qlever/scripts/sdk-execution-originals-util.py": "b2226db7d6d9955d6bf3745dc5011aa1dbc67ffe90faf9dc88fffa7376343a2d",
+  "qlever/scripts/sdk-blocking-owned-wait.py": "9529b31b027b759e5baa380fa81339b9a962d8d916ac1ea20c9f9503bd697a68",
+  "qlever/scripts/sdk-generation-multiprocess-bindings.py": "d12e02ab8c638d20d43e0c8e5373b8d19a794f1fe189909af3d8131aee26cb80",
+  "qlever/scripts/sdk-tool-provider-originals.py": "2a29a27a270c528b05f029210bd36aa728b26dbfaf1c1e21dc61f7847eaa1cad"
 })];

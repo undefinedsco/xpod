@@ -1,4 +1,5 @@
 import canonicalHostSources from './canonical-host-sources.json';
+import { cliBuildDependencyLayout, buildDependencyRootArgument } from '../src/build-dependency-layout';
 import { buildPublicTools } from './public-build-tools';
 import { exportProducerMaterials } from './producer-materials';
 import ts from 'typescript';
@@ -12,7 +13,7 @@ import { bunBundleEnvironment } from '../src/native-target';
 import { externalRuntimeLauncher } from '../src/launcher';
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const repoRoot = existsSync(path.join(packageRoot, 'node_modules')) ? packageRoot : path.resolve(packageRoot, '../..');
+const { repoRoot, dependencyRoots } = cliBuildDependencyLayout(packageRoot, buildDependencyRootArgument(process.argv.slice(2)));
 const output = path.join(packageRoot, 'dist');
 // Canonical host source closure. Capability implementations never enter this allowlist.
 const hostSources = new Set(canonicalHostSources.map(file => path.resolve(packageRoot, '../../src', file)));
@@ -39,7 +40,7 @@ for (const [entryName, filename, format, profile] of [['npm-entry', 'xpod.mjs', 
   }) || inputs.some(file => /node_modules\/(?:@solid\/community-server|inngest(?:-cli)?\/|@undefineds.co\/xpod)/.test(file))) {
     throw new Error('Public CLI unexpectedly depends on server, UI or native module sources');
   }
-  collectJavascriptNotices({ metafile: metadata, stageRoot: packageRoot, repoRoot,
+  collectJavascriptNotices({ dependencyRoots, metafile: metadata, stageRoot: packageRoot, repoRoot,
     canonicalSources: hostBindings,
     destination: path.join(output, 'licenses', profile), target: `${process.platform}-${process.arch}`, cli: payload,
     bunVersion: process.versions.bun ?? 'unknown', supplements: path.join(packageRoot, 'licenses/javascript'),
@@ -52,7 +53,7 @@ const outputBuild = spawnSync('bun', ['build', '--target=node', '--format=esm', 
   `--metafile=${outputMetadata}`, '--outfile', path.join(output, 'output.mjs'), path.join(packageRoot, 'src/lib/output.ts')],
   { cwd: packageRoot, stdio: 'inherit', env: bunBundleEnvironment(process.env) });
 if (outputBuild.error || outputBuild.status !== 0) throw new Error('Public output build failed');
-collectJavascriptNotices({ metafile: outputMetadata, stageRoot: packageRoot, repoRoot,
+collectJavascriptNotices({ dependencyRoots, metafile: outputMetadata, stageRoot: packageRoot, repoRoot,
   destination: path.join(output, 'licenses/output'), sharedObjectRoot: path.join(output, 'licenses/core/objects'),
   target: `${process.platform}-${process.arch}`, cli: path.join(output, 'output.mjs'), bunVersion: process.versions.bun ?? 'unknown',
   generated: path.join(packageRoot, 'licenses/javascript/generated', process.versions.bun ?? 'unknown'), generatedProfile: 'output-esm' });

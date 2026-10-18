@@ -17,11 +17,11 @@ if (!evidenceRelative || evidenceRelative.startsWith('..') || path.isAbsolute(ev
 // imports from repository ancestors. Build outside that ancestor chain.
 const buildParent = path.join(os.tmpdir(), '.test-data/xpod-cli-builds');
 fs.mkdirSync(buildParent, { recursive: true });
-const source = fs.mkdtempSync(path.join(buildParent, 'case-'));
+const source = fs.realpathSync(fs.mkdtempSync(path.join(buildParent, 'case-')));
 const packageRoot = path.join(source, 'packages/xpod-cli');
 const consumerParent = path.join(os.tmpdir(), '.test-data/xpod-cli-consumers');
 fs.mkdirSync(consumerParent, { recursive: true });
-const consumer = fs.mkdtempSync(path.join(consumerParent, 'case-'));
+const consumer = fs.realpathSync(fs.mkdtempSync(path.join(consumerParent, 'case-')));
 process.on('exit', (actualExit) => {
   fs.rmSync(consumer, { recursive: true, force: true });
   fs.rmSync(source, { recursive: true, force: true });
@@ -57,9 +57,9 @@ for (const absent of ['@solid/community-server', '@undefineds.co/models', 'innge
   if (fs.existsSync(path.join(source, 'node_modules', absent))) throw new Error('cli_server_dependency_present');
 }
 // The standalone public tooling producer is also used by the full CLI build.
-run('bun', ['run', 'build:tools'], packageRoot);
+run('bun', ['run', 'build:tools', '--dependency-root', source], packageRoot);
 const buildToolsPayload = path.join(packageRoot, 'dist/build-tools.mjs');
-run('bun', ['scripts/build.ts', '--build-tools', buildToolsPayload], runtimeClientRoot);
+run('bun', ['scripts/build.ts', '--build-tools', buildToolsPayload, '--dependency-root', source], runtimeClientRoot);
 run('bun', ['run', 'typecheck'], runtimeClientRoot);
 run('bun', ['run', 'test'], runtimeClientRoot);
 const runtimeClientManifestPath = path.join(runtimeClientRoot, 'package.json');
@@ -71,7 +71,7 @@ run('bun', ['pm', 'pack', '--filename', runtimeClientTar, '--ignore-scripts'], r
 run('bun', ['add', '--ignore-scripts', runtimeClientTar], source);
 run('bun', ['run', 'typecheck'], packageRoot);
 run('bun', ['run', 'test'], packageRoot);
-run('bun', ['run', 'build'], packageRoot);
+run('bun', ['run', 'build', '--dependency-root', source], packageRoot);
 fs.writeFileSync(path.join(consumer, 'package.json'), JSON.stringify({ name: 'xpod-cli-consumer', private: true }));
 run('bun', ['add', '--ignore-scripts', runtimeClientTar], consumer);
 // Only the private test manifest binds the unpublished client to its actual local tarball.
