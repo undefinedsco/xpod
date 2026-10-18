@@ -39,5 +39,14 @@ class TestSnapshot(unittest.TestCase):
         self.assertEqual(runner.command_timeout_seconds('node-inngest-version'),30)
         self.assertEqual(runner.command_timeout_seconds('bun-inngest-loader'),30)
         self.assertEqual(runner.command_timeout_seconds('node-api-service'),600)
+    def test_explicit_schema2_selector_uses_the_single_policy_without_granting_authority(self):
+        import json
+        policy=json.loads(probe.controlled_policy_file().read_text());sha='a'*64
+        old={'schemaVersion':1,'platform':'linux','arch':'arm64','binarySHA256':sha}
+        self.assertEqual(probe.installed_binary_expectation(old,'linux-arm64'),(sha,None))
+        current={'schemaVersion':2,'sourceKind':policy['sourceKind'],'target':'linux-arm64','sourceCommit':policy['sourceCommit'],'binary':{'path':'node_modules/inngest-cli/bin/inngest','bytes':128,'sha256':sha}}
+        self.assertEqual(probe.installed_binary_expectation(current,'linux-arm64'),(sha,128))
+        for changed in [{**current,'sourceKind':'official-release'},{**current,'target':'linux-x64'},{**current,'sourceCommit':'b'*40},{**current,'binary':{**current['binary'],'path':'elsewhere'}},{**current,'binary':{**current['binary'],'bytes':True}},{**current,'schemaVersion':3}]:
+            with self.assertRaises(ValueError):probe.installed_binary_expectation(changed,'linux-arm64')
     def test_single_budget_authority_includes_hash_passes(self):self.assertEqual(probe.additional_seconds(),240)
 if __name__=='__main__':(ROOT/'.test-data').mkdir(exist_ok=True);unittest.main()

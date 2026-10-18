@@ -68,7 +68,7 @@ export interface NativeMaterialView {
   readonly identity: CollectedArtifactIdentity;
   /** Legacy disk projections expose roots; collected original custody does not
    * invent filesystem locations for archive members. */
-  readonly custodyKind?: 'disk-projection' | 'collected-native-originals' | 'official-release-originals';
+  readonly custodyKind?: 'disk-projection' | 'collected-native-originals' | 'official-release-originals' | 'controlled-build-originals';
   readonly productRoot?: string;
   readonly materialsRoot?: string;
   readonly indexPath: string;
@@ -94,6 +94,8 @@ export interface CollectedArtifactMember {
   readonly bytes: number;
   readonly mode: number;
 }
+/** A caller may only tighten an existing original-read I/O window. */
+export interface OriginalReadBudget {readonly remainingMilliseconds:()=>number}
 export interface CollectedArtifactView {
   readonly identity: CollectedArtifactIdentity;
   readonly members: readonly CollectedArtifactMember[];
@@ -105,9 +107,9 @@ export interface CollectedArtifactView {
   readMemberRange?(path: string, offset: number, length: number): Buffer;
   readBoundMemberRange?(path: string, offset: number, length: number): Buffer;
   /** Original producer evidence selected from the observed outer ZIP. */
-  readProducerOriginal(path: string, maximumBytes: number): Buffer;
+  readProducerOriginal(path: string, maximumBytes: number, budget?:OriginalReadBudget): Buffer;
   /** Registered same-ZIP source originals, bounded to 64KiB per range. */
-  readProducerOriginalRange?(path: string, offset: number, length: number): Buffer;
+  readProducerOriginalRange?(path: string, offset: number, length: number, budget?:OriginalReadBudget): Buffer;
 }
 /** Metadata for the exact archive issued by the central collector. Persisting
  * this view does not persist its private publication/material authority. */

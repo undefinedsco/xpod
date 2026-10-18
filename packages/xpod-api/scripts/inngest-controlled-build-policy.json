@@ -1,0 +1,53 @@
+{
+  "schemaVersion": 1,
+  "sourceKind": "xpod-controlled-inngest-build-v1",
+  "targets": [
+    "linux-arm64"
+  ],
+  "repository": "inngest/inngest",
+  "sourceCommit": "0d75b0b305010b5e90a627703e9d1df4464b1e39",
+  "version": "1.40.0",
+  "nativeWindowSeconds": 1800,
+  "source": {
+    "file": "inngest-source.tar.gz",
+    "bytes": 78012509,
+    "sha256": "dd6c84ec9e2660ae5fb0ee0ff3d16d9dcce9ca96d93c8e886b2adcd401541906",
+    "url": "https://codeload.github.com/inngest/inngest/legacy.tar.gz/0d75b0b305010b5e90a627703e9d1df4464b1e39"
+  },
+  "tools": {
+    "go": {
+      "file": "go1.26.4.linux-arm64.tar.gz",
+      "bytes": 63740285,
+      "sha256": "ef758ae7c6cf9267c9c0ef080b8965f453d89ab2d25d9eb22de4405925238768",
+      "prefix": "go",
+      "version": "go1.26.4",
+      "url": "https://dl.google.com/go/go1.26.4.linux-arm64.tar.gz"
+    },
+    "node": {
+      "file": "node-v20.19.6-linux-arm64.tar.xz",
+      "maximumBytes": 67108864,
+      "sha256": "e24741779ae4c2f3c79b362fa5c0c8bbcdca1a6240eb5906c58dc762dcb62e0e",
+      "prefix": "node-v20.19.6-linux-arm64",
+      "version": "v20.19.6",
+      "url": "https://nodejs.org/dist/v20.19.6/node-v20.19.6-linux-arm64.tar.xz"
+    },
+    "pnpm": {
+      "file": "pnpm-10.18.2.tgz",
+      "maximumBytes": 33554432,
+      "integrity": "sha512-n7lp+nSbOt5gNeDxCfC4pgtdCKGof99y4zfakNzJMzbiKAyk5E8jWKZJuDwXlZ6Zk+d3wggIefOAHm8NmZrT3Q==",
+      "prefix": "package",
+      "version": "10.18.2",
+      "url": "https://registry.npmjs.org/pnpm/-/pnpm-10.18.2.tgz"
+    }
+  },
+  "goArguments": [
+    "build",
+    "-mod=vendor",
+    "-trimpath",
+    "-buildvcs=false",
+    "-ldflags",
+    "-s -w -X github.com/inngest/inngest/pkg/inngest/version.Version=1.40.0 -X github.com/inngest/inngest/pkg/inngest/version.Hash=0d75b0b30"
+  ],
+  "scope": "Explicit Xpod-controlled compile from fixed source. Not an official release asset, not a reproduction claim, and not admission by producer metadata.",
+  "acquisitionWindowSeconds": 120
+}

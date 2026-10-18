@@ -1,5 +1,8 @@
 """Normal API preview production. No publication or release admission."""
 import argparse
+from contextlib import contextmanager
+import signal
+import threading
 import base64
 import hashlib
 import importlib.util
@@ -8,6 +11,7 @@ import os
 from pathlib import Path
 import platform
 import resource
+import stat
 import shutil
 import subprocess
 import sys
@@ -20,12 +24,54 @@ REPOSITORY = 'undefinedsco/xpod'
 WORKFLOW = '.github/workflows/api-module-product.yml'
 
 
+_original_deadline = None
+
+def check_parent_deadline():
+    if _original_deadline is not None and time.monotonic() >= _original_deadline:
+        raise TimeoutError('API product overall deadline')
+
+@contextmanager
+def parent_finalization_deadline(end):
+    """Bound blocking tail I/O too; never interrupt a supervised child cleanup."""
+    global _original_deadline
+    remaining = end-time.monotonic()
+    if remaining <= 0:raise TimeoutError('API product overall deadline')
+    if threading.current_thread() is not threading.main_thread() or signal.getitimer(signal.ITIMER_REAL) != (0.0,0.0):
+        raise ValueError('Exclusive main-thread parent finalization timer required')
+    previous=signal.getsignal(signal.SIGALRM);old_end=_original_deadline
+    def expired(_signal,_frame):raise TimeoutError('API product overall deadline')
+    signal.signal(signal.SIGALRM,expired);_original_deadline=end
+    try:
+        signal.setitimer(signal.ITIMER_REAL,remaining)
+        check_parent_deadline()
+        yield
+        check_parent_deadline()
+    finally:
+        signal.setitimer(signal.ITIMER_REAL,0)
+        signal.signal(signal.SIGALRM,previous);_original_deadline=old_end
+
+
 def sha_file(file):
     digest = hashlib.sha256()
-    with open(file, 'rb') as source:
-        for chunk in iter(lambda: source.read(1024 * 1024), b''):
+    descriptor = os.open(file, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
+            raise ValueError('Single regular original required')
+        count = 0
+        while True:
+            check_parent_deadline()
+            chunk = os.read(descriptor, 65536)
+            if not chunk:break
+            count += len(chunk)
+            if count > before.st_size:raise ValueError('Original grew during hashing')
             digest.update(chunk)
-    return digest.hexdigest()
+        identity = lambda row:(row.st_dev,row.st_ino,row.st_mode,row.st_size,row.st_nlink,row.st_ctime_ns,row.st_mtime_ns)
+        if count != before.st_size or identity(before)!=identity(os.fstat(descriptor)) or identity(before)!=identity(os.stat(file,follow_symlinks=False)):
+            raise ValueError('Original changed during hashing')
+        return digest.hexdigest()
+    finally:
+        os.close(descriptor)
 
 
 def reference(file, output):
@@ -75,12 +121,12 @@ def target_identity(repo, target):
     return json.loads(subprocess.check_output(['bun', str(Path(repo) / 'scripts/module-product-targets.ts'), 'api', target, '--require-host'], cwd=repo, text=True))
 
 
-def phase_plan(repo, output, version, target):
+def phase_plan(repo, output, version, target, source_kind=None, retained_byte_ceiling=None):
     """Commands are the normal producer entrypoints, without replacement writers."""
     repo, output = Path(repo), Path(output)
     api = ['bun', 'run', '--cwd', 'packages/xpod-api']
     scripts = repo / 'packages/xpod-api/scripts'
-    return [
+    rows = [
         ('install', ['bun', 'install', '--frozen-lockfile'], 600),
         ('declarations', ['bun', '-e', "import {exactVersion} from './scripts/independent-release-plan';import{modulePackageName,MODULE_API_VERSION}from './packages/xpod-cli/src/module-catalog';const name=modulePackageName('api',process.platform,process.arch);if(!exactVersion(process.argv[1])||!name)throw Error('Invalid API version/target');console.log(JSON.stringify({name,cliApiVersion:MODULE_API_VERSION}));", version], 60),
         ('shared-packages', ['bun', 'run', 'build:packages'], 600),
@@ -93,6 +139,69 @@ def phase_plan(repo, output, version, target):
         ('pack', api + ['pack', str(output / 'stage'), str(output / 'product.tgz')], 600),
         ('pack-result', ['bun', '-e', "import {readFileSync} from 'node:fs';import {parseApiPackReceipt} from './scripts/collect-api-release-input';console.log(JSON.stringify(parseApiPackReceipt(readFileSync(process.argv[1]))));", str(output / 'evidence/pack.raw.log')], 60),
     ]
+    if source_kind is None:
+        return rows
+    helper = load_controlled_helper(Path(__file__).resolve().parent.parent)
+    work = output / 'controlled-inngest-work'
+    native = controlled_phase_rows(helper, repo, work, target, source_kind, retained_byte_ceiling)
+    flags = ['--native-source-kind', source_kind, '--native-build-originals', str(work)]
+    result = []
+    for name, command, timeout in rows:
+        if name == 'native-inputs':
+            result.extend((label, argv, cap) for label, argv, cwd, cap in native)
+        elif name != 'native-material':
+            result.append((name, command + flags if name in ('stage', 'pack') else command, timeout))
+    return result
+
+
+def controlled_phase_rows(helper, repo, work, target, source_kind, ceiling):
+    rows=helper.phase_plan(repo,work,target,source_kind,ceiling)
+    own=str(Path(repo)/'scripts/lib/inngest-controlled-build.py')
+    return [(name,['/usr/bin/python3',*argv[1:]] if own in argv else argv,cwd,cap) for name,argv,cwd,cap in rows]
+
+
+def load_controlled_helper(repo):
+    file = Path(repo) / 'scripts/lib/inngest-controlled-build.py'
+    spec = importlib.util.spec_from_file_location('normal_controlled_inngest', file)
+    helper = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(helper)
+    return helper
+
+
+def retain_controlled_originals(output, reserve):
+    work = output / 'controlled-inngest-work'
+    collection = json.loads((work/'controlled-build-materials.json').read_text())
+    preparation = json.loads((work/collection['preparation']['path']).read_text())
+    refs = [dict(path='controlled-build-materials.json', **{k:v for k,v in reference(work/'controlled-build-materials.json',work).items() if k!='path'}), collection['preparation'],collection['inputs'],collection['binary'],collection['license'],collection['sourceArchive'],*preparation['originals'],*preparation.get('acquisitionOriginals',[])]
+    for group in [*collection['originals'].values(),collection['generated']['originals']]:
+        refs.extend(group['archives']);refs.extend(group['inventories'])
+    refs.extend(collection['generated']['removedOriginals'])
+    unique={}
+    for ref in refs:
+        name=ref['path']
+        if not isinstance(name,str) or name.startswith('/') or any(part in ('','.','..') for part in name.split('/')) or '\\' in name:
+            raise ValueError('Controlled original path')
+        if name in unique and unique[name]!=ref:
+            raise ValueError('Conflicting controlled original reference')
+        unique[name]=ref
+    destination=output/'source-materials/native-builds/inngest'
+    if destination.exists():raise ValueError('Fresh controlled public material destination required')
+    # Validate and reserve the complete move before mutating either tree.
+    identities={}
+    identity=lambda row:(row.st_dev,row.st_ino,row.st_mode,row.st_size,row.st_nlink,row.st_mtime_ns)
+    for name,ref in unique.items():
+        file=work/name
+        if any(parent.is_symlink() for parent in file.parents if parent!=work.parent) or reference(file,work)!=ref:
+            raise ValueError('Controlled original retained identity differs')
+        identities[name]=identity(file.lstat())
+    reserve(sum(ref['bytes'] for ref in unique.values()))
+    destination.mkdir(mode=0o700,parents=True)
+    for name,ref in sorted(unique.items()):
+        check_parent_deadline()
+        target=destination/name;target.parent.mkdir(mode=0o700,parents=True,exist_ok=True)
+        (work/name).rename(target)
+        if identity(target.lstat())!=identities[name] or reference(target,destination)!=ref:raise ValueError('Controlled original move custody differs')
+    return reference(destination/'controlled-build-materials.json',output)
 
 
 def waited_child_rss():
@@ -152,13 +261,16 @@ def collect_facts(output, packed, source_sha, version, declaration, target):
     if terms.get('status') != 'original-material-collection' or terms.get('legalClearance') is not False or not isinstance(terms.get('missingNamedOriginalTerms'), list):
         raise ValueError('Original terms inventory required')
     native = values['nativeIndex']
-    if native.get('platform') != target_platform or native.get('arch') != target_arch or native.get('legalClearance') is not False:
+    if native.get('schemaVersion') == 2:
+        if native.get('sourceKind') != 'xpod-controlled-inngest-build-v1' or native.get('target') != target or target != 'linux-arm64':
+            raise ValueError('Actual controlled native target/material identity mismatch')
+    elif native.get('platform') != target_platform or native.get('arch') != target_arch or native.get('legalClearance') is not False:
         raise ValueError('Actual native target/material identity mismatch')
     return dict(archive=dict(**ref, integrity=integrity, members=packed['members']), materials=materials,
                 sourceAuthority=authority, missingNamedOriginalTerms=terms['missingNamedOriginalTerms'])
 
 
-def produce(repo, output, target, environment=None):
+def produce(repo, output, target, environment=None, source_kind=None):
     repo, output = Path(repo).resolve(), Path(output).resolve()
     environment = dict(os.environ if environment is None else environment)
     target_info = target_identity(repo, target)
@@ -190,36 +302,84 @@ def produce(repo, output, target, environment=None):
     source_materials = importlib.util.module_from_spec(source_spec)
     source_spec.loader.exec_module(source_materials)
     build_inputs = None
+    limits = json.loads((repo / 'scripts/lib/module-artifact-limits.json').read_text())
+    retained = 0
+    def reserve(count):
+        nonlocal retained
+        check_parent_deadline()
+        if type(count) is not int or count < 0 or retained + count > limits['sourceMaterialBytes']:
+            raise ValueError('Unified API/source/native retained byte budget')
+        retained += count
+    controlled = load_controlled_helper(repo) if source_kind is not None else None
+    if controlled is not None and any(manifest.get('scripts',{}).get(name) != command for name,command in [('stage','bun scripts/stage.ts'),('pack','bun scripts/pack.ts')]):
+        raise ValueError('Controlled native stage/pack entry recipe differs')
+    if controlled is not None and (source_kind != controlled.POLICY['sourceKind'] or target not in controlled.POLICY['targets']):
+        raise ValueError('Unsupported explicit controlled native source route')
+    native_rows = {}
+    native_end = None
     started = time.monotonic()
     try:
         initial_free = shutil.disk_usage(output).free
         receipt['resources'] = dict(freshRequiredBytes=FRESH_BYTES, floorBytes=FLOOR_BYTES, initialFreeBytes=initial_free)
         if initial_free < FRESH_BYTES:
             raise ValueError('Fresh API producer capacity below 8GiB')
-        for name, command, timeout in phase_plan(repo, output, version, target):
+        queue = list(phase_plan(repo, output, version, target))
+        while queue:
+            name, command, timeout = queue.pop(0)
+            if controlled is not None and name == 'native-inputs':
+                # Future normal output metadata and full revalidation are retained
+                # in the same ledger; native compilation cannot borrow this space.
+                inventory_bytes = sum(row['bytes'] for domain in ('source','dependencies','toolchain') for row in build_inputs[domain]['inventories'])
+                future = inventory_bytes + ((limits['sourceMembers'] + 4999)//5000 + 2)*limits['metadataBytes']
+                ceiling = limits['sourceMaterialBytes'] - retained - future
+                if ceiling <= 192*1024**2 + limits['metadataBytes']:
+                    raise ValueError('Controlled native materials resource pending: no shared retained capacity')
+                work = output / 'controlled-inngest-work'
+                work.mkdir(mode=0o700)
+                rows = controlled_phase_rows(controlled, repo, work, target, source_kind, ceiling)
+                native_rows = {label:(argv,cwd,cap) for label,argv,cwd,cap in rows}
+                native_end = controlled.native_deadline(started+50*60, time.monotonic())
+                receipt['nativeSourceKind'] = source_kind
+                receipt['nativeRetainedByteCeiling'] = ceiling
+                flags = ['--native-source-kind',source_kind,'--native-build-originals',str(work)]
+                queue = [(label,argv,cap) for label,argv,cwd,cap in rows] + [(n,c+flags if n in ('stage','pack') else c,t) for n,c,t in queue if n!='native-material']
+                continue
             remaining = 50 * 60 - (time.monotonic() - started)
             if remaining <= 0:
                 raise ValueError('API product overall deadline')
-            stage, _ = supervise.run_stage(name, command, evidence, repo, fresh_bytes=FLOOR_BYTES,
-                                          stop_bytes=FLOOR_BYTES, timeout=min(timeout, remaining), environment=phase_environment(environment, name))
+            cwd, scoped = repo, phase_environment(environment, name)
+            if name in native_rows:
+                remaining = min(remaining, native_end-time.monotonic())
+                if remaining <= 0:
+                    raise ValueError('Controlled native absolute parent window')
+                cwd = native_rows[name][1]
+                scoped = controlled.environment(output / 'controlled-inngest-work')
+                if name == 'inngest-controlled-go-build':
+                    if controlled.total_check(output / 'controlled-inngest-work') + 192*1024**2 + limits['metadataBytes'] > ceiling:
+                        raise ValueError('Compiled binary reservation exceeds shared retained capacity')
+            stage, _ = supervise.run_stage(name, command, evidence, cwd, fresh_bytes=FLOOR_BYTES,
+                                          stop_bytes=FLOOR_BYTES, timeout=min(timeout, remaining), environment=scoped)
             receipt['phases'].append(dict(name=name, receipt=reference(evidence / f'{name}.receipt.json', output),
                                           raw=reference(evidence / f'{name}.raw.log', output) if stage.get('rawClosedBeforeHash') is True else None))
             receipt['rss']['cumulativeWaitedChildMaxRSSBytes'] = waited_child_rss()
             if not closed_phase(stage):
                 raise ValueError('API phase did not close successfully: ' + name)
             if name == 'install':
-                build_inputs = source_materials.capture_inputs(repo, output)
-        after = source_state(repo)
-        if after != before:
-            raise ValueError('Tracked source changed during product production')
-        packed = json.loads((evidence / 'pack-result.raw.log').read_text())
-        declaration = json.loads((evidence / 'declarations.raw.log').read_text())
-        if declaration.get('name') != target_info['name']:
-            raise ValueError('Canonical target declaration differs from actual host product')
-        receipt.update(collect_facts(output, packed, before['sha'], version, declaration, target))
-        receipt['sourceMaterials'] = source_materials.capture_outputs(repo, output, build_inputs, receipt['phases'], receipt['archive'])
-        receipt.update(status='controlled-preview-materials', sourceAfter=after, packRaw=reference(evidence / 'pack.raw.log', output),
-                       nativePreparation=reference(output / 'originals/prepare-inputs.receipt.safe.json', output))
+                build_inputs = source_materials.capture_inputs(repo, output, reserve_bytes=reserve if controlled else None)
+        with parent_finalization_deadline(started+50*60):
+            if controlled is not None:
+                receipt['nativeBuildOriginals'] = retain_controlled_originals(output, reserve)
+            after = source_state(repo)
+            if after != before:
+                raise ValueError('Tracked source changed during product production')
+            packed = json.loads((evidence / 'pack-result.raw.log').read_text())
+            declaration = json.loads((evidence / 'declarations.raw.log').read_text())
+            if declaration.get('name') != target_info['name']:
+                raise ValueError('Canonical target declaration differs from actual host product')
+            receipt.update(collect_facts(output, packed, before['sha'], version, declaration, target))
+            receipt['sourceMaterials'] = source_materials.capture_outputs(repo, output, build_inputs, receipt['phases'], receipt['archive'], reserve_bytes=reserve if controlled else None)
+            receipt.update(status='controlled-preview-materials', sourceAfter=after, packRaw=reference(evidence / 'pack.raw.log', output),
+                           **({} if controlled else dict(nativePreparation=reference(output / 'originals/prepare-inputs.receipt.safe.json', output))))
     except BaseException as error:
         receipt['failure'] = f'{type(error).__name__}: {error}'
         raise
@@ -234,6 +394,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--out', required=True)
     parser.add_argument('--target', required=True)
+    parser.add_argument('--native-source-kind', choices=['xpod-controlled-inngest-build-v1'])
     args = parser.parse_args()
-    result = produce(Path(__file__).resolve().parent.parent, Path(args.out), args.target)
+    result = produce(Path(__file__).resolve().parent.parent, Path(args.out), args.target, source_kind=args.native_source_kind)
     print(json.dumps(result))

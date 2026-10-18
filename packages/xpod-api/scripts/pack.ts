@@ -1,3 +1,5 @@
+import {assertControlledInngestStage,prepareControlledInngestPlacement} from './controlled-native-material';
+import controlledPolicy from './inngest-controlled-build-policy.json';
 import {apiProducerSourcePaths,verifyApiStageMaterials} from './bundle-stage';
 import {verifyPhysicalNativeMaterials} from '../../../scripts/lib/physical-module-native';
 import {verifyPhysicalNotices} from '../../../scripts/lib/physical-module-notices';
@@ -19,9 +21,13 @@ const publicationPath=path.join(stage,'provenance/publication.json');
 const publication=existsSync(publicationPath)?JSON.parse(readFileSync(publicationPath,'utf8')):{mode:'preview'};
 if(publication.mode==='release'&&!process.argv[4])throw new Error('Formal API pack requires explicit external native materials root');
 verifyPhysicalNotices(stage,publication.mode==='release');
-const materialsRoot=process.argv[4]?path.resolve(process.argv[4]):undefined;
+const controlledArgs=process.argv.slice(4);
+const controlled=controlledArgs[0]==='--native-source-kind'?(()=>{if(controlledArgs.length!==4||controlledArgs[1]!==controlledPolicy.sourceKind||controlledArgs[2]!=='--native-build-originals'||!controlledArgs[3])throw new Error('Explicit controlled pack materials required');return prepareControlledInngestPlacement(controlledArgs[3],`${process.platform}-${process.arch}`);})():undefined;
+if(controlled&&publication.mode==='release')throw new Error('Controlled native formal release requires separately reviewed full native qualification');
+const materialsRoot=!controlled&&process.argv[4]?path.resolve(process.argv[4]):undefined;
 if(publication.mode!=='release'&&materialsRoot)throw new Error('External materials root belongs to explicit release mode');
-if(publication.mode!=='release'){
+if(controlled)assertControlledInngestStage(controlled,stage);
+if(publication.mode!=='release'&&!controlled){
 const nativeRoot=path.join(stage,'provenance/native/inngest');
 const native=JSON.parse(readFileSync(path.join(nativeRoot,'index.json'),'utf8'));
 for(const [file,expected] of [['release.tar.gz',native.officialArchiveSHA256],['source.tar.gz',native.sourceArchiveSHA256]] as const)if(!/^[a-f0-9]{64}$/u.test(expected)||hash(readFileSync(path.join(nativeRoot,file)))!==expected)throw new Error('Native original material drift');
@@ -43,7 +49,7 @@ function verifyReleaseMaterials():void {
 if(publication.mode==='release')verifyReleaseMaterials();
 const releaseStatus=publication.mode==='release'
  ? {schemaVersion:1,status:'candidate',declaredSourceClean:true,sourceAuthority:authority,materials:{source:'verified',native:'internally-bound',notices:'originals-verified'},externalGateStatus:'pending'}
- : {schemaVersion:1,publishReady:false,nativeAuthority:'official-release-byte-bound',noticeAudit:'pending',sourceAuthority:authority,limitations:['Controlled local platform archive only','Complete third-party obligations audit pending']};
+ : {schemaVersion:1,publishReady:false,nativeAuthority:controlled?'controlled-compile-materials-byte-bound':'official-release-byte-bound',noticeAudit:'pending',sourceAuthority:authority,limitations:['Controlled local platform archive only','Complete third-party obligations audit pending']};
 writeFileSync(path.join(stage,'provenance','release-status.json'),JSON.stringify(releaseStatus,null,2)+'\n');
-const packed=packPhysicalModule(stage,output,{moduleId:'api',entry:'entry.mjs',sourceRoot:repo,verifyReleaseMaterials,verifyArchiveMaterials:()=>verifyApiStageMaterials(repo,path.join(repo,'packages/xpod-api/dist'),stage)});
+const packed=packPhysicalModule(stage,output,{moduleId:'api',entry:'entry.mjs',sourceRoot:repo,verifyReleaseMaterials,verifyArchiveMaterials:()=>{verifyApiStageMaterials(repo,path.join(repo,'packages/xpod-api/dist'),stage);if(controlled)assertControlledInngestStage(controlled,stage);}});
 console.log(JSON.stringify({...packed,...(publication.mode==='release'?{status:'candidate',externalGateStatus:'pending'}:{publishReady:false})}));

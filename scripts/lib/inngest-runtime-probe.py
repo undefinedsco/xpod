@@ -163,17 +163,47 @@ def protocol(runner,runtime,prefix,binary,env,cycle):
     runner.command(runtime+'-inngest-protocol',prefix+argv,env,cycle,exercise)
     return proof
 
+def bounded_json(file,maximum=65536):
+    file=Path(file);before=file.lstat();need(stat.S_ISREG(before.st_mode) and before.st_nlink==1 and 0<before.st_size<=maximum,'bounded regular JSON original');fd=os.open(file,os.O_RDONLY|os.O_NOFOLLOW)
+    try:
+        need(identity(os.fstat(fd))==identity(before),'JSON original descriptor changed');parts=[];count=0
+        while True:
+            chunk=os.read(fd,min(65536,before.st_size-count+1))
+            if not chunk:break
+            count+=len(chunk);need(count<=before.st_size,'JSON original grew');parts.append(chunk)
+        need(count==before.st_size and identity(os.fstat(fd))==identity(before) and identity(file.lstat())==identity(before),'JSON original changed')
+        return json.loads(b''.join(parts))
+    finally:os.close(fd)
+
+def controlled_policy_file():
+    return Path(__file__).resolve().parents[2]/'packages/xpod-api/scripts/inngest-controlled-build-policy.json'
+
+def installed_binary_expectation(index,target):
+    """Strict byte selector only; installed files and private issuer decide trust."""
+    need(isinstance(index,dict),'native index object required')
+    if index.get('schemaVersion')==1:
+        need(target==str(index.get('platform'))+'-'+str(index.get('arch')),'official index target differs')
+        expected=index.get('binarySHA256');size=None
+    elif index.get('schemaVersion')==2:
+        controlled=bounded_json(controlled_policy_file())
+        need(index.get('sourceKind')==controlled['sourceKind'] and target in controlled['targets'] and index.get('target')==target and index.get('sourceCommit')==controlled['sourceCommit'],'controlled index selector differs')
+        binary=index.get('binary');need(isinstance(binary,dict) and binary.get('path')=='node_modules/inngest-cli/bin/inngest','fixed controlled installed path')
+        expected=binary.get('sha256');size=binary.get('bytes');need(type(size) is int and 0<size<=MAXIMUM,'bounded controlled binary size')
+    else:raise ValueError('Installed Inngest runtime: unsupported native index schema')
+    need(isinstance(expected,str) and len(expected)==64 and all(c in '0123456789abcdef' for c in expected),'fixed native binary SHA required')
+    return expected,size
+
 def capture(runner,runtime,cli,env,cycle,package_root,installed_package):
     target=runner.checked['target']['target'];os_name,arch=target.split('-');machine={'x86_64':'x64','amd64':'x64','aarch64':'arm64','arm64':'arm64'}.get(platform.machine().lower())
     need(platform.system().lower()==os_name and machine==arch,'actual Python host does not match native target')
-    binary=package_root/'node_modules/inngest-cli/bin/inngest';index=json.loads((package_root/'provenance/native/inngest/index.json').read_text());expected=index['binarySHA256']
+    binary=package_root/'node_modules/inngest-cli/bin/inngest';index=bounded_json(package_root/'provenance/native/inngest/index.json');expected,expected_size=installed_binary_expectation(index,target)
     last_gate=[0.0]
     def checked_hash():
         deadline=time.monotonic()+POLICY['originalHashSeconds']
         def check():
             now=time.monotonic();need(now<deadline and (runner.deadline is None or now<runner.deadline),'actual executable hash deadline expired')
             if now-last_gate[0]>=.2:runner.gate();last_gate[0]=now
-        return snapshot(binary,expected,target,check)
+        value=snapshot(binary,expected,target,check);need(expected_size is None or value['bytes']==expected_size,'controlled installed size differs');return value
     before=checked_hash();native_env=dict(env,DO_NOT_TRACK='1');prefix=cli[:-1]
     runner.command(runtime+'-inngest-version',prefix+[str(binary),*POLICY['versionArguments']],native_env,cycle)
     loader_label=None;protocol_original=None

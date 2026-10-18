@@ -1,0 +1,72 @@
+{
+  "schemaVersion": 1,
+  "sourceKind": "xpod-controlled-inngest-build-v1",
+  "target": "linux-arm64",
+  "collection": "controlled-build-materials.json",
+  "reference": {
+    "path": "owned-work-relative POSIX path",
+    "bytes": "actual integer size",
+    "sha256": "actual full lowercase SHA256"
+  },
+  "requiredFields": [
+    "schemaVersion",
+    "sourceKind",
+    "sourceCommit",
+    "target",
+    "preparation",
+    "inputs",
+    "originals",
+    "generated",
+    "binary",
+    "license",
+    "sourceArchive"
+  ],
+  "inputDomains": [
+    "source",
+    "dependencies",
+    "toolchain"
+  ],
+  "domainFields": [
+    "archives",
+    "inventories"
+  ],
+  "generatedFields": [
+    "changedCount",
+    "removedCount",
+    "removedOriginals",
+    "originals"
+  ],
+  "placement": {
+    "binary": "node_modules/inngest-cli/bin/inngest",
+    "license": "node_modules/inngest-cli/bin/LICENSE.md",
+    "index": "provenance/native/inngest/index.json",
+    "indexSchemaVersion": 2,
+    "sourceKind": "xpod-controlled-inngest-build-v1"
+  },
+  "phaseLabels": [
+    "inngest-controlled-acquire",
+    "inngest-controlled-prepare",
+    "inngest-controlled-go-version",
+    "inngest-controlled-node-version",
+    "inngest-controlled-pnpm-version",
+    "inngest-controlled-ui-install",
+    "inngest-controlled-inputs",
+    "inngest-controlled-ui-build",
+    "inngest-controlled-ui-materialize",
+    "inngest-controlled-go-build",
+    "inngest-controlled-finalize"
+  ],
+  "execution": "existing NORMAL parent run_stage, one absolute native window clipped to its existing overall deadline; no nested sessions",
+  "custody": "sidecar originals retained separately; same actual source/product/private material view verifies full references and actual phase receipts/raw; JSON alone never issues a capability",
+  "qualification": "producer materials only; no official asset identity, no reproduction claim, no whole source/toolchain/ABI qualification",
+  "sidecarPrefix": "source-materials/native-builds/inngest/",
+  "outerReceiptField": "nativeBuildOriginals",
+  "phaseReceiptBinding": "all actual parent.phases retained verbatim; existing NORMAL source private issuer checks same source/job/product with these controlled phase labels",
+  "preparationFields": [
+    "sourceKind",
+    "sourceCommit",
+    "originals",
+    "acquisitionOriginals"
+  ],
+  "acquisitionOriginals": "Exactly one <pin.file>.http.original.json reference per fixed source/tool pin; root-relative, retained verbatim with archive bytes."
+}

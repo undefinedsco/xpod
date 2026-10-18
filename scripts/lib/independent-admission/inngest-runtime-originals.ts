@@ -1,3 +1,8 @@
+import {selectControlledInngestCollection} from '../inngest-controlled-materials';
+import {performance} from 'node:perf_hooks';
+import {moduleNativeBuildOriginals} from './module-source-admission';
+import controlledPolicy from '../../../packages/xpod-api/scripts/inngest-controlled-build-policy.json';
+import controlledContract from '../../../packages/xpod-api/scripts/inngest-controlled-materials-contract.json';
 import {createHash} from 'node:crypto';
 import {isDeepStrictEqual} from 'node:util';
 import policy from '../inngest-runtime-policy.json';
@@ -55,15 +60,33 @@ export function inspectInngestRuntimeOriginals(input:{product:Readonly<Collected
  const freeze=(v:any):void=>{if(v&&typeof v==='object'){Object.values(v).forEach(freeze);Object.freeze(v);}};freeze(observations);
  return Object.freeze({inngestInstalledVersionExecutionVerified:true as const,inngestInstalledHttpProtocolExecutionVerified:observations.every(row=>row.selectedProtocolExecutionVerified),protocolPending:Object.freeze(observations.every(row=>row.selectedProtocolExecutionVerified)?[]:[platform==='darwin'?'inngest-macos-selected-protocol-listener-ownership-unverified':'inngest-selected-http-protocol-originals-unavailable']),fullRuntimeAbiVerified:false as const,scope:'matching-host installed version, observed loader metadata, and individually verified selected HTTP protocol' as const,observations:Object.freeze(observations),toolchainSourceClosureVerified:false as const,fullNativeSourceClosureVerified:false as const});
 }
-const saved=new WeakMap<object,{artifact:unknown;consumer:unknown;view:ApiInngestRuntimeOriginalView;assertConsumerCurrent():void;facts:ReturnType<typeof inspectInngestRuntimeOriginals>}>();
-export function officialInngestRuntimeObservation(capability:unknown){const row=capability&&typeof capability==='object'?saved.get(capability):undefined;if(!row)return undefined;need(officialInngestReleaseView(capability),'current official release private facts required');row.assertConsumerCurrent();assertCollectedPublicationCustody(row.artifact);row.view.assertCurrent();return row.facts;}
-/** No caller JSON/read callback can issue a runtime fact. Only an actual existing
- * consumer private capability plus its exact official product can be joined. */
-export async function observeInstalledInngestRuntime(input:{artifact:unknown;officialReleaseOriginals:unknown;consumerObservation:unknown}){
- const product=collectedArtifactView(input.artifact),official=officialInngestReleaseView(input.officialReleaseOriginals);need(product&&official,'same issued product/official/consumer originals required');
- const prior=saved.get(input.officialReleaseOriginals as object);if(prior){need(prior.artifact===input.artifact&&prior.consumer===input.consumerObservation,'same exact observed runtime handles required');return officialInngestRuntimeObservation(input.officialReleaseOriginals)!;}
- const {apiInngestRuntimeOriginalView}=await import('./consumer-context');const consumer=apiInngestRuntimeOriginalView(input.consumerObservation);need(consumer&&isDeepStrictEqual(official.identity,product.identity)&&isDeepStrictEqual(consumer.identity,product.identity),'same issued product/official/consumer originals required');
- consumer.assertCurrent();const facts=inspectInngestRuntimeOriginals({product:product.identity,productMembers:product.members,result:consumer.result,readOriginal:consumer.readOriginal});
- need(official.binary.sha256===facts.observations[0]!.binarySha256&&official.binary.bytes===facts.observations[0]!.binaryBytes,'actual official binary/runtime differs');assertCollectedPublicationCustody(input.artifact);official.assertCurrent();consumer.assertCurrent();
- saved.set(input.officialReleaseOriginals as object,{artifact:input.artifact,consumer:input.consumerObservation,view:consumer,assertConsumerCurrent(){need(apiInngestRuntimeOriginalView(input.consumerObservation)===consumer,'current consumer original custody required');},facts});return facts;
+export type InngestRuntimeAuthority = {officialReleaseOriginals:unknown;controlledBuildMaterials?:never}|{controlledBuildMaterials:unknown;officialReleaseOriginals?:never};
+function authority(input:InngestRuntimeAuthority,artifact:unknown,budget:{remainingMilliseconds():number},verifyBinary=false){
+ const official='officialReleaseOriginals' in input,controlled='controlledBuildMaterials' in input;need(official!==controlled,'one explicit runtime authority required');
+ const key=official?input.officialReleaseOriginals:input.controlledBuildMaterials;need(key&&typeof key==='object','issued runtime authority required');
+ if(official){const view=officialInngestReleaseView(key);need(view,'same issued product/official/consumer originals required');return {key,kind:'official-release' as const,identity:view.identity,binary:view.binary,assertCurrent:()=>{need(officialInngestReleaseView(key)===view,'same official private originals');view.assertCurrent();}};}
+ const view=moduleNativeBuildOriginals(key,artifact);need(view&&view.sourceKind===controlledPolicy.sourceKind&&view.target==='linux-arm64'&&view.collection.path===controlledContract.sidecarPrefix+controlledContract.collection,'same issued product/controlled-source/consumer originals required');view.assertCurrent();
+ const bytes=view.readOriginal(controlledContract.collection,4*1024**2,budget);need(bytes.length===view.collection.bytes&&hash(bytes)===view.collection.sha256,'controlled collection full bytes');const collection=JSON.parse(bytes.toString('utf8'));
+ need(view.productIdentity.target===view.target&&view.productIdentity.sourceSha===view.sourceSha,'controlled source/product identity');
+ const {binary}=selectControlledInngestCollection(collection,view.target);
+ if(verifyBinary){const digest=createHash('sha256');for(let offset=0;offset<binary.bytes;){need(Number.isFinite(budget.remainingMilliseconds())&&budget.remainingMilliseconds()>0,'runtime original hash deadline');const length=Math.min(65536,binary.bytes-offset),part=view.readOriginalRange(binary.path,offset,length,budget);need(part.length===length,'controlled binary original range');digest.update(part);offset+=length;}need(budget.remainingMilliseconds()>0&&digest.digest('hex')===binary.sha256,'controlled compiled binary full SHA');}
+ return {key,kind:'controlled-source' as const,identity:view.productIdentity,binary,assertCurrent:()=>{need(moduleNativeBuildOriginals(key,artifact)===view,'same controlled private source originals');view.assertCurrent();}};
+}
+const saved=new WeakMap<object,{artifact:unknown;consumer:unknown;kind:'official-release'|'controlled-source';view:ApiInngestRuntimeOriginalView;assertAuthorityCurrent():void;assertConsumerCurrent():void;facts:ReturnType<typeof inspectInngestRuntimeOriginals>}>();
+export function installedInngestRuntimeObservation(input:InngestRuntimeAuthority){
+ const official='officialReleaseOriginals' in input,controlled='controlledBuildMaterials' in input;need(official!==controlled,'one explicit runtime authority required');const key=official?input.officialReleaseOriginals:input.controlledBuildMaterials;
+ const row=key&&typeof key==='object'?saved.get(key):undefined;if(!row)return undefined;need(row.kind===(official?'official-release':'controlled-source'),'same runtime authority kind required');row.assertAuthorityCurrent();row.assertConsumerCurrent();assertCollectedPublicationCustody(row.artifact);row.view.assertCurrent();return row.facts;
+}
+/** Historical official getter delegates to the single map and authority resolver. */
+export function officialInngestRuntimeObservation(capability:unknown){return installedInngestRuntimeObservation({officialReleaseOriginals:capability});}
+/** Only actual existing consumer and origin/source private capabilities join. */
+export async function observeInstalledInngestRuntime(input:{artifact:unknown;consumerObservation:unknown;remainingMilliseconds?:number}&InngestRuntimeAuthority){
+ const official='officialReleaseOriginals' in input,controlled='controlledBuildMaterials' in input;need(official!==controlled,'one explicit runtime authority required');const requested:InngestRuntimeAuthority=official?{officialReleaseOriginals:input.officialReleaseOriginals}:{controlledBuildMaterials:input.controlledBuildMaterials};const artifact=input.artifact,consumerObservation=input.consumerObservation;
+ const available=input.remainingMilliseconds??policy.originalHashSeconds*1000;need(Number.isFinite(available)&&available>=1,'remaining runtime original deadline');const end=performance.now()+Math.min(available,policy.originalHashSeconds*1000),check=()=>need(performance.now()<end,'same runtime observer deadline');check();const budget={remainingMilliseconds:()=>end-performance.now()};
+ const product=collectedArtifactView(artifact);need(product,'same issued product/official/consumer originals required');
+ const resolved=authority(requested,artifact,budget),prior=saved.get(resolved.key);if(prior){need(prior.artifact===artifact&&prior.consumer===consumerObservation&&prior.kind===resolved.kind,'same exact observed runtime handles required');const facts=installedInngestRuntimeObservation(requested)!;check();return facts;}
+ const {apiInngestRuntimeOriginalView}=await import('./consumer-context');const consumer=apiInngestRuntimeOriginalView(consumerObservation);need(consumer&&isDeepStrictEqual(resolved.identity,product.identity)&&isDeepStrictEqual(consumer.identity,product.identity),'same issued product/authority/consumer originals required');
+ consumer.assertCurrent();check();const verified=authority(requested,artifact,budget,true),facts=inspectInngestRuntimeOriginals({product:product.identity,productMembers:product.members,result:consumer.result,readOriginal:consumer.readOriginal});
+ need(verified.binary.sha256===facts.observations[0]!.binarySha256&&verified.binary.bytes===facts.observations[0]!.binaryBytes,'actual authority binary/runtime differs');assertCollectedPublicationCustody(artifact);verified.assertCurrent();consumer.assertCurrent();
+ check();saved.set(verified.key,{artifact,consumer:consumerObservation,kind:verified.kind,view:consumer,assertAuthorityCurrent:verified.assertCurrent,assertConsumerCurrent(){need(apiInngestRuntimeOriginalView(consumerObservation)===consumer,'current consumer original custody required');},facts});return facts;
 }

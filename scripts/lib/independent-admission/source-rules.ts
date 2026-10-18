@@ -22,6 +22,17 @@ const REVIEWED_SUPERVISORS = new Set([CLI_SOURCE_POLICY.supervisor,
   // Exact fixed CLI parent / AFS-only lazy budget projection; no caller ceiling override.
   '57e1e940ab3022c655c155b0e14be86106fe1dd729212be379a3573ae199ca85',
   '7fb899a72bd50ae36b35649964e502c5984a97587ffd5570f6d830fb31d6bd27']);
+/** The original reviewed combinations remain historical. The callback helper
+ * is admitted only with its one actually reviewed current execution tuple. */
+export const CLI_SOURCE_VERSION_GROUPS=Object.freeze([
+ Object.freeze({...CLI_SOURCE_POLICY,supervisors:Object.freeze([...REVIEWED_SUPERVISORS]),workflows:Object.freeze([CLI_SOURCE_POLICY.workflow,'c856baf24a28fe789db1e80c26e7b69b7e4e08bd0923f52ce376840ac885c1eb'])}),
+ Object.freeze({...CLI_SOURCE_POLICY,sourceHelper:'c28f194ca9767f2aeddd9cff6f633dac2280ae9c4e5d716d3273706afce81850',supervisors:Object.freeze(['7fb899a72bd50ae36b35649964e502c5984a97587ffd5570f6d830fb31d6bd27']),workflows:Object.freeze([CLI_SOURCE_POLICY.workflow])}),
+]);
+export function reviewedCliSourceVersion(observed:Readonly<Record<keyof typeof CLI_SOURCE_POLICY,string>>):boolean{
+ return CLI_SOURCE_VERSION_GROUPS.some(group=>
+  (['producer','publicationBudget','sourceHelper','sourceLimits','copier'] as const).every(key=>observed[key]===group[key])
+  &&group.supervisors.some(value=>value===observed.supervisor)&&group.workflows.some(value=>value===observed.workflow));
+}
 const fail = (message: string): never => { throw new Error('Independent source rules: ' + message); };
 const canonicalJson = (value: any): string => JSON.stringify(value && typeof value === 'object'
   ? Array.isArray(value) ? value.map(item => JSON.parse(canonicalJson(item)))
@@ -31,13 +42,13 @@ export function verifyCliInputSet(
   readTracked: (name: string) => Buffer, trackedPaths: readonly string[],
 ) {
   const producer = readTracked('scripts/check-cli-publication.cjs');
-  if (hash(producer) !== CLI_SOURCE_POLICY.producer
-    || hash(readTracked('scripts/lib/cli-publication-budget.cjs')) !== CLI_SOURCE_POLICY.publicationBudget
-    || hash(readTracked('scripts/lib/module-source-materials.py')) !== CLI_SOURCE_POLICY.sourceHelper
-    || hash(readTracked('scripts/lib/module-artifact-limits.json')) !== CLI_SOURCE_POLICY.sourceLimits
-    || hash(readTracked('scripts/cli-build-inputs.cjs')) !== CLI_SOURCE_POLICY.copier
-    || !REVIEWED_SUPERVISORS.has(hash(readTracked('scripts/lib/afs-publication-command.cjs')))
-    || ![CLI_SOURCE_POLICY.workflow, 'c856baf24a28fe789db1e80c26e7b69b7e4e08bd0923f52ce376840ac885c1eb'].includes(hash(readTracked('.github/workflows/cli-package.yml')))) {
+  if (!reviewedCliSourceVersion({producer:hash(producer),
+    publicationBudget:hash(readTracked('scripts/lib/cli-publication-budget.cjs')),
+    sourceHelper:hash(readTracked('scripts/lib/module-source-materials.py')),
+    sourceLimits:hash(readTracked('scripts/lib/module-artifact-limits.json')),
+    copier:hash(readTracked('scripts/cli-build-inputs.cjs')),
+    supervisor:hash(readTracked('scripts/lib/afs-publication-command.cjs')),
+    workflow:hash(readTracked('.github/workflows/cli-package.yml'))})) {
     return { sourceInputSetVerified: false, generatedBuildManifestVerified: false,
       pending: 'source-input-policy-unreviewed: immutable producer/copier/supervisor/workflow differs from reviewed policy' };
   }

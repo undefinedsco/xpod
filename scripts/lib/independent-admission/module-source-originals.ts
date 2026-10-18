@@ -1,3 +1,5 @@
+import {isModuleNativeBuildOriginalName,MODULE_NATIVE_BUILD_PREFIX} from './module-native-build-originals';
+import type {OriginalReadBudget} from './artifact-contract';
 import { createRequire } from 'node:module';
 import { isDeepStrictEqual } from 'node:util';
 import { PUBLICATION_DISK_LIMITS } from './publication-disk-budget';
@@ -15,11 +17,12 @@ export async function collectModuleSourceOriginals(input: {
   producer: any;
 }) {
   const reference = input.producer?.sourceMaterials;
-  if (!reference) return undefined;
+  if (!reference) {if(input.producer?.nativeBuildOriginals)fail('native sidecar requires the normal source master');return undefined;}
   if (reference.path !== 'source-materials/materials.json' || reference.bytes > limits.metadataBytes) fail('registered bounded source master required');
   const rows = input.inventory.members.filter(row => row.kind === 'file' && row.path.startsWith('source-materials/'));
-  if (!rows.length || rows.length > limits.sourceMaterialFiles || rows.some(row => !/^source-materials\/(?:materials\.json|(?:source|dependencies|toolchain)-\d{4}\.tar|(?:source|dependencies|toolchain)-inventory-\d{4}\.json|outputs-\d{4}\.json)$/u.test(row.path)
-    || !Number.isSafeInteger(row.bytes) || row.bytes < 0 || row.bytes > (row.path.endsWith('.tar') ? limits.shardBytes : limits.metadataBytes))) fail('registered source original layout/budget required');
+  if(rows.some(row=>row.path.startsWith(MODULE_NATIVE_BUILD_PREFIX)) && input.producer?.nativeBuildOriginals?.path!==MODULE_NATIVE_BUILD_PREFIX+'controlled-build-materials.json')fail('orphan controlled native sidecar');
+  if (!rows.length || rows.length > limits.sourceMaterialFiles || rows.some(row => !isModuleNativeBuildOriginalName(row.path) && !/^source-materials\/(?:materials\.json|(?:source|dependencies|toolchain)-\d{4}\.tar|(?:source|dependencies|toolchain)-inventory-\d{4}\.json|outputs-\d{4}\.json)$/u.test(row.path)
+    || !Number.isSafeInteger(row.bytes) || row.bytes < 0 || row.bytes > (isModuleNativeBuildOriginalName(row.path)&&!row.path.endsWith('.json')||row.path.endsWith('.tar') ? limits.shardBytes : limits.metadataBytes))) fail('registered source original layout/budget required');
   const total = rows.reduce((sum, row) => sum + row.bytes, 0);
   if (total > limits.sourceMaterialBytes || input.inventory.expandedBytes > PUBLICATION_DISK_LIMITS.outerExpandedBytes) fail('unified source/archive aggregate budget exceeded');
   for (const [domain, maximum] of [['source', limits.sourceBytes], ['dependencies', limits.dependencyBytes], ['toolchain', limits.toolchainBytes]] as const) {
@@ -42,8 +45,8 @@ export async function collectModuleSourceOriginals(input: {
     cache = lazyZipOriginals({archivePath:input.archivePath,archiveSha256:input.archiveSha256,root,members:rows});
     const bound = cache;
     return Object.freeze({ members: Object.freeze(rows.map(({ path, bytes, sha256, mode }) => Object.freeze({ path, bytes, sha256, mode }))),
-      readRange(name:string,offset:number,length:number) { return bound.readRange(name,offset,length); },
-      readSmall(name:string,maximum:number) {
+      readRange(name:string,offset:number,length:number,budget?:OriginalReadBudget) { return bound.readRange(name,offset,length,budget); },
+      readSmall(name:string,maximum:number,budget?:OriginalReadBudget) {
         const row=rows.find(value=>value.path===name);
         if (!row || !Number.isSafeInteger(maximum) || maximum<0 || maximum>8*MiB || row.bytes>maximum) return fail('bounded source manifest/inventory required');
         const bytes=Buffer.alloc(row.bytes);

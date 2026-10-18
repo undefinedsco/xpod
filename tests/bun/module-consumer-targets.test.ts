@@ -122,7 +122,7 @@ with tempfile.TemporaryDirectory(dir=${JSON.stringify(root)}) as temp:
  index=package/'provenance/native/inngest/index.json';index.parent.mkdir(parents=True)
  manifest=dict(name=row['name'],xpodModule=dict(id='api',platform=row['platform'],arch=row['arch'],files=[dict(path='node_modules/inngest-cli/bin/inngest',mode=493,size=len(data),sha256=digest)]))
  runner=types.SimpleNamespace(checked={'target':row},plan={'bun':${JSON.stringify(process.execPath)}},module_id='api')
- native=dict(platform='wrong',arch=row['arch'],binarySHA256=digest)
+ native=dict(schemaVersion=1,platform='wrong',arch=row['arch'],binarySHA256=digest)
  index.write_text(json.dumps(native))
  try:a.Runner.verify_installed(runner,'bun',package,manifest)
  except ValueError:pass

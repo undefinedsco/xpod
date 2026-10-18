@@ -63,7 +63,11 @@ jobs:
           mkdir -p "$GITHUB_WORKSPACE/.test-data"
           root="$GITHUB_WORKSPACE/.test-data/api-product-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${{ matrix.target }}"
           echo "API_PRODUCT_ROOT=$root" >> "$GITHUB_ENV"
-          python3 scripts/api-module-producer.py --target "${{ matrix.target }}" --out "$root"
+          producer_args=(--target "${{ matrix.target }}" --out "$root")
+          if [ "${{ matrix.target }}" = "linux-arm64" ]; then
+            producer_args+=(--native-source-kind xpod-controlled-inngest-build-v1)
+          fi
+          python3 scripts/api-module-producer.py "${producer_args[@]}"
       - name: Upload preview product and its original evidence
         if: success()
         uses: actions/upload-artifact@v4

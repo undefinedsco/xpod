@@ -36,23 +36,26 @@ def sensitive(name):
 
 
 class GuardedWriter:
-    def __init__(self, file, limit):
+    def __init__(self, file, limit, reserve_bytes=None):
         self.file, self.limit, self.count = file, limit, 0
+        self.reserve_bytes = reserve_bytes
     def write(self, data):
         self.count += len(data)
         if self.count > self.limit:
             raise ValueError('Source original archive bound')
         check(self.file.name, len(data))
+        if self.reserve_bytes is not None:
+            self.reserve_bytes(len(data))
         return self.file.write(data)
     def tell(self):
         return self.file.tell()
 
 
-def originals_tar(file):
+def originals_tar(file, reserve_bytes=None):
     # Caller closes both wrappers. GNU long names are parsed with bounded headers.
     stream = Path(file).open('xb')
     try:
-        with tarfile.open(fileobj=GuardedWriter(stream, ARCHIVE_LIMIT), mode='w', format=tarfile.GNU_FORMAT) as archive:
+        with tarfile.open(fileobj=GuardedWriter(stream, ARCHIVE_LIMIT, reserve_bytes), mode='w', format=tarfile.GNU_FORMAT) as archive:
             yield archive
     finally:
         stream.close()
@@ -132,7 +135,7 @@ def dependency_paths(repo):
     return sorted(result)
 
 
-def capture_group(root, output, domain, files, repo, tools=None):
+def capture_group(root, output, domain, files, repo, tools=None, reserve_bytes=None):
     from contextlib import ExitStack
     archives, inventories, rows = [], [], []
     total, number, estimate = 0, 0, 0
@@ -145,6 +148,8 @@ def capture_group(root, output, domain, files, repo, tools=None):
         encoded = json.dumps(rows, separators=(',', ':')).encode()
         if len(encoded) > LIMITS['metadataBytes']:
             raise ValueError('Source inventory shard bound')
+        if reserve_bytes is not None:
+            reserve_bytes(len(encoded))
         with file.open('xb') as destination:
             destination.write(encoded)
         inventories.append(ref(file, output))
@@ -164,7 +169,7 @@ def capture_group(root, output, domain, files, repo, tools=None):
                     archives.append(ref(archive_file, output))
                 archive_file = root / (domain + '-' + str(number).zfill(4) + '.tar')
                 number += 1
-                archive = stack.enter_context(originals_tar(archive_file))
+                archive = stack.enter_context(originals_tar(archive_file, reserve_bytes))
                 estimate = 0
             row = add_original(archive, file, name, repo)
             row['archive'] = archive_file.relative_to(output).as_posix()
@@ -188,7 +193,7 @@ def capture_group(root, output, domain, files, repo, tools=None):
     return dict(archives=archives, inventories=inventories)
 
 
-def capture_inputs(repo, output, source_paths=None):
+def capture_inputs(repo, output, source_paths=None, reserve_bytes=None):
     repo, output = Path(repo), Path(output)
     root = output / 'source-materials'
     global _deadline
@@ -201,8 +206,8 @@ def capture_inputs(repo, output, source_paths=None):
     installed = dependency_paths(repo)
     if len(paths) + len(installed) > MAX_MEMBERS or not installed:
         raise ValueError('Source/dependency input member bound')
-    source = capture_group(root, output, 'source', [(n, repo / n) for n in sorted(paths)], repo)
-    dependencies = capture_group(root, output, 'dependencies', [(n, repo / n) for n in installed], repo)
+    source = capture_group(root, output, 'source', [(n, repo / n) for n in sorted(paths)], repo, reserve_bytes=reserve_bytes)
+    dependencies = capture_group(root, output, 'dependencies', [(n, repo / n) for n in installed], repo, reserve_bytes=reserve_bytes)
     tools, files = {}, []
     for name in ('bun', 'node', 'python3', 'git'):
         located = shutil.which(name)
@@ -211,7 +216,7 @@ def capture_inputs(repo, output, source_paths=None):
         executable = Path(located).resolve(strict=True)
         tools[name] = dict(executable=str(executable), version=subprocess.check_output([str(executable), '--version'], timeout=10).decode().strip())
         files.append((name, executable))
-    toolchain = capture_group(root, output, 'toolchain', files, Path('/'), tools)
+    toolchain = capture_group(root, output, 'toolchain', files, Path('/'), tools, reserve_bytes=reserve_bytes)
     value = dict(schemaVersion=1, kind='module-source-build-originals', capturedInputsStartedUTC=started,
                  capturedInputsClosedUTC=now(), source=source, dependencies=dependencies, toolchain=toolchain)
     if sum(file.stat().st_size for file in root.iterdir()) > TOTAL_LIMIT:
@@ -220,7 +225,7 @@ def capture_inputs(repo, output, source_paths=None):
     return value
 
 
-def dependency_set_delta(output, expected, observed, inventories):
+def dependency_set_delta(output, expected, observed, inventories, reserve_bytes=None):
     """Failure-only path metadata; never copy dependency content or environment.
 
     Hash the COMPLETE sets, but bound the diagnostic samples to 128 paths and
@@ -259,12 +264,14 @@ def dependency_set_delta(output, expected, observed, inventories):
     if len(encoded) > LIMITS['metadataBytes']:
         raise ValueError('Source dependency diagnostic metadata bound')
     check(file, len(encoded))
+    if reserve_bytes is not None:
+        reserve_bytes(len(encoded))
     with file.open('xb') as destination:
         destination.write(encoded)
     return ref(file, output)
 
 
-def revalidate_inputs(repo, output, inputs):
+def revalidate_inputs(repo, output, inputs, reserve_bytes=None):
     started = now()
     result = {}
     for domain in ('source', 'dependencies', 'toolchain'):
@@ -279,7 +286,7 @@ def revalidate_inputs(repo, output, inputs):
             observed_paths = dependency_paths(repo)
             expected_paths = sorted(row['path'] for row in expected)
             if observed_paths != expected_paths:
-                delta = dependency_set_delta(output, expected_paths, observed_paths, group['inventories'])
+                delta = dependency_set_delta(output, expected_paths, observed_paths, group['inventories'], reserve_bytes=reserve_bytes)
                 raise ValueError('Installed dependency input set changed during build; diagnostic=' + json.dumps(delta, sort_keys=True))
         observed = []
         for row in expected:
@@ -311,6 +318,8 @@ def revalidate_inputs(repo, output, inputs):
             if len(encoded) > LIMITS['metadataBytes']:
                 raise ValueError('Revalidated inventory shard bound')
             check(file, len(encoded))
+            if reserve_bytes is not None:
+                reserve_bytes(len(encoded))
             with file.open('xb') as destination:
                 destination.write(encoded)
             references.append(ref(file, output))
@@ -319,12 +328,12 @@ def revalidate_inputs(repo, output, inputs):
     return result
 
 
-def capture_outputs(repo, output, inputs, phases, archive, stage_root=None, output_rows=None):
+def capture_outputs(repo, output, inputs, phases, archive, stage_root=None, output_rows=None, reserve_bytes=None):
     repo, output = Path(repo), Path(output)
     global _deadline
     _deadline = time.monotonic() + LIMITS['captureTimeoutMs'] / 1000
     value = dict(inputs)
-    value['revalidation'] = revalidate_inputs(repo, output, inputs)
+    value['revalidation'] = revalidate_inputs(repo, output, inputs, reserve_bytes=reserve_bytes)
     value['phases'] = phases
     value['archive'] = archive
     if output_rows is None:
@@ -352,6 +361,8 @@ def capture_outputs(repo, output, inputs, phases, archive, stage_root=None, outp
         encoded = json.dumps(rows[offset:offset + 5000], separators=(',', ':')).encode()
         if len(encoded) > LIMITS['metadataBytes']:
             raise ValueError('Output inventory shard bound')
+        if reserve_bytes is not None:
+            reserve_bytes(len(encoded))
         with file.open('xb') as destination:
             destination.write(encoded)
         output_files.append(ref(file, output))
@@ -361,6 +372,8 @@ def capture_outputs(repo, output, inputs, phases, archive, stage_root=None, outp
     if len(encoded.encode()) > LIMITS['metadataBytes']:
         raise ValueError('Source metadata bound')
     file = output / 'source-materials/materials.json'
+    if reserve_bytes is not None:
+        reserve_bytes(len(encoded.encode()))
     with file.open('x') as destination:
         destination.write(encoded)
     _deadline = None
