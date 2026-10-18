@@ -1,5 +1,5 @@
 import {test,expect} from 'bun:test';import {createHash} from 'node:crypto';import fs from 'node:fs';import path from 'node:path';
-import {API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS as groups,API_PEER_PAYLOAD_COPY_SOURCE_BINDINGS as before,API_COMPRESSED_INPUT_SOURCE_BINDINGS as next,API_COMPRESSED_RETENTION_SOURCE_BINDINGS as actual} from '../../scripts/lib/independent-admission/github-origin';
+import {API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS as groups,API_PEER_PAYLOAD_COPY_SOURCE_BINDINGS as before,API_COMPRESSED_INPUT_SOURCE_BINDINGS as next,API_NODE_PUBLIC_TOOL_SOURCE_BINDINGS as actual} from '../../scripts/lib/independent-admission/github-origin';
 import current from '../../scripts/lib/independent-admission/consumer-execution-current.json';
 import {controlledApiSourceRecipe} from '../../scripts/lib/independent-admission/module-source-phases';
 const hash=(b:Buffer)=>createHash('sha256').update(b).digest('hex'),read=(p:string)=>fs.readFileSync(path.resolve(import.meta.dir,'../..',p));
