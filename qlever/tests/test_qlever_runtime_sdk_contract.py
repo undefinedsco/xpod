@@ -234,6 +234,14 @@ class QleverRuntimeSdkContractTest(unittest.TestCase):
             cache_prime_step,
         )
 
+        self.assertIn("readonly_executor:", workflow)
+        self.assertIn("readonly_publish:", workflow)
+        self.assertIn("uses: ./.github/workflows/qlever-readonly-executor.yml", workflow)
+        self.assertIn("inputs.readonly_executor", workflow)
+        callee = (ROOT / ".github/workflows/qlever-readonly-executor.yml").read_text(encoding="utf-8")
+        self.assertIn("workflow_call:", callee)
+        self.assertIn("publish:", callee)
+        self.assertIn("qlever-readonly-normal-job.yml", callee)
         actions = [line for line in workflow.splitlines() if "uses:" in line]
         self.assertGreater(len(actions), 0)
         for line in actions:
@@ -242,6 +250,7 @@ class QleverRuntimeSdkContractTest(unittest.TestCase):
                 self.assertIn(reference, {
                     "./.github/workflows/resolve-qlever-native-target.yml",
                     "./.github/workflows/build-qlever-linux-runtime.yml",
+                    "./.github/workflows/qlever-readonly-executor.yml",
                 })
                 self.assertTrue((ROOT / reference).is_file())
                 continue

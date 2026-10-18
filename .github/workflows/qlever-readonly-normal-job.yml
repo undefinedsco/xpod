@@ -1,0 +1,166 @@
+name: Readonly QLever SDK normal job
+on:
+  workflow_call:
+    inputs:
+      target:
+        type: string
+        required: true
+      source_commit:
+        type: string
+        default: ''
+      publish:
+        type: boolean
+        default: false
+    outputs:
+      image:
+        value: ${{ jobs.sdk.outputs.image }}
+      digest:
+        value: ${{ jobs.sdk.outputs.digest }}
+      tag:
+        value: ${{ jobs.sdk.outputs.tag }}
+      sdk_artifact_id:
+        value: ${{ jobs.sdk.outputs.sdk_artifact_id }}
+      sdk_artifact_digest:
+        value: ${{ jobs.sdk.outputs.sdk_artifact_digest }}
+      sdk_master_sha256:
+        value: ${{ jobs.sdk.outputs.sdk_master_sha256 }}
+      sdk_master_bytes:
+        value: ${{ jobs.sdk.outputs.sdk_master_bytes }}
+jobs:
+  sdk:
+    runs-on: ${{ inputs.target == 'linux-x64' && 'ubuntu-24.04' || 'ubuntu-24.04-arm' }}
+    timeout-minutes: 360
+    outputs:
+      image: ${{ steps.publish.outputs.image }}
+      digest: ${{ steps.publish.outputs.digest }}
+      tag: ${{ steps.publish.outputs.tag }}
+      sdk_artifact_id: ${{ steps.sdk_upload.outputs.artifact-id }}
+      sdk_artifact_digest: ${{ steps.sdk_upload.outputs.artifact-digest }}
+      sdk_master_sha256: ${{ steps.master.outputs.master_sha256 }}
+      sdk_master_bytes: ${{ steps.master.outputs.master_bytes }}
+    steps:
+      - name: Check out immutable candidate
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      # Before this fixed shell, no checkout script/package/install/test runs on
+      # the host. Candidate build code runs only in BuildKit or the RO guest.
+      - name: Verify controller closure
+        id: controller
+        env:
+          TARGET: ${{ inputs.target }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo /usr/bin/env -i PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin SOURCE="$GITHUB_WORKSPACE" DEST="$RUNNER_TEMP/qlever-sdk-controller" TARGET="$TARGET" SOURCE_SHA="$GITHUB_SHA" REQUESTED_SHA="${{ inputs.source_commit }}" EVENT="$GITHUB_EVENT_PATH" RUN_ID="$GITHUB_RUN_ID" ATTEMPT="$GITHUB_RUN_ATTEMPT" OUTPUT="$GITHUB_OUTPUT" /usr/bin/python3 -I -S - <<'PYCODE'
+          import hashlib,json,os,pathlib,stat,time
+          pins={"qlever/scripts/sdk-readonly-normal-route.py":"13779b6e29f65884126299420b432d2b3e862e5d9712aa5c37140df3e85af27d","qlever/scripts/sdk-readonly-result-context.py":"d18899b9134178e2e1d09d88a9c80008fd3ec013162e2ddd5d7df696f11de5f9","qlever/scripts/sdk-readonly-executor.py":"cdd151c67f228485ff1e4aed735c550853ee9d38b3f996a9be4af9eb3fcc2f15","qlever/scripts/sdk-readonly-executor-bindings.py":"b6c89d28bc7f24934ff9950ca56ddd1476a172133c5881f1d7ab9839521427e0","qlever/scripts/sdk-readonly-executor-entry.py":"54f6d66c420965aea80a67e915009dc681424df44577c933b6b8c5fbd36443a9","qlever/scripts/sdk-image-originals.py":"b3543e5454b1a96b59605e0e979595c80be17f2b5d4cebe47a640b7cc687e91e","qlever/scripts/sdk-command-materials.py":"2db81d742b8ea9060ebad2fa0a253555337f457decf09d9ed9a59dd85a598b9a","qlever/scripts/sdk-execution-budget.py":"329194655827de1d03a31db5f311ba1cc59fd0ade7edf2ef48fcc8fae52ebfee","qlever/scripts/sdk-owned-runs.py":"520241ea81d57d82a33550c44ed3809378fd81d03bc14a8a5985f871b6b64680","qlever/scripts/sdk-subreaper-guard.py":"5a7c1ecf3f570cc83897ccac30843ecd513a5d2b001f250e13e16a636e22fa4a","qlever/scripts/sdk-tar-budget.py":"e244da8ca8aa2c85cca03d8deebc56a2edca13749c1cc79fffad14872e52f30d","qlever/scripts/sdk-debian-binary-originals.py":"099959565f355566b9a1f6f20870e2de20a5ef20ff37fc0042a9943238a4e86f","qlever/scripts/sdk-debian-index-bindings.py":"ad87a17bdb781f34a6a78a5e970d1f9c69d0750a1fcc4ba3f711db317bd75e13","scripts/agentfs-native-ci/supervise.py":"49fd9c7a7a9c9dc1612b1261f0cbc218166f48487df726239437ae9ad98ba407","scripts/lib/module-artifact-limits.json":"c1c529aba719356c682affbe630c215e28cc07163192f8f3b601aab7b0126bd4","qlever/scripts/sdk-readonly-collection.py":"a7ed0ef9ae26a695ae7f7bba2e5d1d0cfb12cacfeca3522e113af72fbc584642","qlever/scripts/qlever_compiler_profile.py":"3a3bcaf7e20cdee078489d97af51d6cb5e522600fb581430fc52eecd15d284f4","qlever/scripts/sdk-local-daemon-originals.py":"9c5541b959d86d690f1d1806e123ce046008d8e82ab5127685e51d31c8e5dcd5"}
+          source=pathlib.Path(os.environ['SOURCE']).resolve(strict=True);dest=pathlib.Path(os.environ['DEST']);dest.mkdir(mode=0o700)
+          for name,sha in pins.items():
+              path=source/name;fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW|os.O_CLOEXEC)
+              try:
+                  first=os.fstat(fd)
+                  if not stat.S_ISREG(first.st_mode) or first.st_nlink!=1 or first.st_size>4194304:raise RuntimeError('bounded controller original required')
+                  data=bytearray()
+                  while True:
+                      part=os.read(fd,min(65536,first.st_size+1-len(data)))
+                      if not part:break
+                      data.extend(part)
+                      if len(data)>first.st_size:raise RuntimeError('controller grew')
+                  ident=lambda v:(v.st_dev,v.st_ino,v.st_mode,v.st_size,v.st_mtime_ns,v.st_ctime_ns)
+                  if ident(first)!=ident(os.fstat(fd)) or ident(first)!=ident(path.lstat()) or len(data)!=first.st_size or hashlib.sha256(data).hexdigest()!=sha:raise RuntimeError('unreviewed controller closure')
+                  target=dest/name;target.parent.mkdir(parents=True,exist_ok=True);target.write_bytes(data);target.chmod(0o444)
+              finally:os.close(fd)
+          event=json.loads(pathlib.Path(os.environ['EVENT']).read_text());sha=os.environ['SOURCE_SHA']
+          if len(sha)!=40 or any(c not in 'abcdef0123456789' for c in sha):raise RuntimeError('immutable source SHA required')
+          if os.environ['REQUESTED_SHA'] and os.environ['REQUESTED_SHA']!=sha:raise RuntimeError('source_commit must equal immutable caller SHA')
+          if os.environ['TARGET'] not in ['linux-x64','linux-arm64']:raise RuntimeError('fixed native target required')
+          identity=dict(sourceSha=sha,runHeadSha=event.get('pull_request',{}).get('head',{}).get('sha',sha),runId=int(os.environ['RUN_ID']),runAttempt=int(os.environ['ATTEMPT']),target=os.environ['TARGET'],sdkProfile='module-bookworm-gcc12')
+          with open(os.environ['OUTPUT'],'a') as out:out.write('deadline='+str(int(time.time())+21000)+'\nidentity='+json.dumps(identity,separators=(',',':'))+'\n')
+          PYCODE
+      - name: Capture immutable source context
+        env:
+          DEADLINE: ${{ steps.controller.outputs.deadline }}
+        run: |
+          set -euo pipefail
+          sudo git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          sudo /usr/bin/env -i PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin GITHUB_SHA="$GITHUB_SHA" /usr/bin/python3 -I -S -B "$RUNNER_TEMP/qlever-sdk-controller/qlever/scripts/sdk-image-originals.py" context --out "$RUNNER_TEMP/qlever-sdk-context" --deadline "$DEADLINE"
+      - name: Build readonly SDK and linked image
+        env:
+          DEADLINE: ${{ steps.controller.outputs.deadline }}
+          IDENTITY: ${{ steps.controller.outputs.identity }}
+        run: |
+          set -euo pipefail
+          sudo /usr/bin/env -i PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin RUNNER_TEMP="$RUNNER_TEMP" /usr/bin/python3 -I -S -B "$RUNNER_TEMP/qlever-sdk-controller/qlever/scripts/sdk-readonly-normal-route.py" --identity "$IDENTITY" --deadline "$DEADLINE" --out "$RUNNER_TEMP/qlever-sdk-outer" --context-originals "$RUNNER_TEMP/qlever-sdk-context/context-originals.json"
+      - name: Log in to GHCR for the normal publisher
+        if: inputs.publish && github.event_name != 'pull_request'
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Publish the actual linked readonly SDK
+        id: publish
+        if: inputs.publish && github.event_name != 'pull_request'
+        env:
+          DEADLINE: ${{ steps.controller.outputs.deadline }}
+          TARGET: ${{ inputs.target }}
+        run: |
+          set -euo pipefail
+          credentials="$(realpath -e "${DOCKER_CONFIG:-$HOME/.docker}")"
+          sudo /usr/bin/env -i PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin GITHUB_SHA="$GITHUB_SHA" GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" GITHUB_OUTPUT="$GITHUB_OUTPUT" /usr/bin/python3 -I -S -B "$RUNNER_TEMP/qlever-sdk-controller/qlever/scripts/sdk-readonly-collection.py" --mode publish --route-root "$RUNNER_TEMP/qlever-sdk-outer" --target "$TARGET" --credentials "$credentials" --out "$RUNNER_TEMP/qlever-sdk-publisher" --deadline "$DEADLINE"
+      - name: Bind actual readonly SDK image and build originals
+        id: master
+        if: inputs.publish && github.event_name != 'pull_request'
+        env:
+          DEADLINE: ${{ steps.controller.outputs.deadline }}
+          IMAGE: ${{ steps.publish.outputs.image }}
+          TARGET: ${{ inputs.target }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          sudo /usr/bin/env -i PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin GITHUB_SHA="$GITHUB_SHA" GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" GITHUB_ACTOR="$GITHUB_ACTOR" GH_TOKEN="$GH_TOKEN" GITHUB_OUTPUT="$GITHUB_OUTPUT" /usr/bin/python3 -I -S -B "$RUNNER_TEMP/qlever-sdk-controller/qlever/scripts/sdk-readonly-collection.py" --mode collect --image "$IMAGE" --target "$TARGET" --route-root "$RUNNER_TEMP/qlever-sdk-outer" --context-root "$RUNNER_TEMP/qlever-sdk-context" --out "$RUNNER_TEMP/sdk-originals" --deadline "$DEADLINE"
+      - name: Collect local validation originals without registry authority
+        if: ${{ !inputs.publish || github.event_name == 'pull_request' }}
+        env:
+          DEADLINE: ${{ steps.controller.outputs.deadline }}
+          TARGET: ${{ inputs.target }}
+        run: |
+          set -euo pipefail
+          sudo /usr/bin/env -i PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin GITHUB_SHA="$GITHUB_SHA" GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" GITHUB_OUTPUT="$GITHUB_OUTPUT" /usr/bin/python3 -I -S -B "$RUNNER_TEMP/qlever-sdk-controller/qlever/scripts/sdk-readonly-collection.py" --mode validate --target "$TARGET" --route-root "$RUNNER_TEMP/qlever-sdk-outer" --context-root "$RUNNER_TEMP/qlever-sdk-context" --out "$RUNNER_TEMP/sdk-originals" --deadline "$DEADLINE"
+      - name: Seal controller originals for upload
+        if: always()
+        run: |
+          for path in "$RUNNER_TEMP/qlever-sdk-outer" "$RUNNER_TEMP/qlever-sdk-context" "$RUNNER_TEMP/sdk-originals"; do
+            if sudo test -d "$path"; then sudo chmod -R a+rX "$path"; fi
+          done
+      - name: Retain no-push normal route originals
+        if: success() && (!inputs.publish || github.event_name == 'pull_request')
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: readonly-sdk-normal-route-${{ inputs.target }}-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/sdk-originals/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload exact SDK original materials
+        id: sdk_upload
+        if: inputs.publish && github.event_name != 'pull_request'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: qlever-sdk-originals-${{ inputs.target }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/sdk-originals/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
+      - name: Retain failed readonly driver originals
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: readonly-sdk-driver-failure-${{ inputs.target }}-${{ github.sha }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/qlever-sdk-outer/
+            ${{ runner.temp }}/qlever-sdk-context/
+          if-no-files-found: ignore
+          retention-days: 14

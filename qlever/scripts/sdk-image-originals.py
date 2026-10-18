@@ -194,11 +194,13 @@ def module_image(mode,out,deadline,builder):
         if raw.strip():raise ValueError('Owned SDK builder remains after command failure')
         raise
 
-def receiver_inner_collection(out,inner_reference,kind,filename,extra=None):
+def receiver_inner_collection(out,inner_reference,kind,filename,extra=None,*,write_original=None,reference_original=None):
     """Preserve the inner collection and emit only ZIP-root references for receivers."""
     out=Path(out)
     original=out/'inner'/inner_reference['path']
-    if commands.ref(original,out/'inner')!=inner_reference:
+    reference=reference_original or commands.ref
+    writer=write_original or write
+    if reference(original,out/'inner')!=inner_reference:
         raise ValueError('SDK inner source collection reference changed')
     if inner_reference['bytes']>4*1024**2:raise ValueError('SDK source collection metadata bound')
     collection=json.loads(original.read_text())
@@ -215,51 +217,56 @@ def receiver_inner_collection(out,inner_reference,kind,filename,extra=None):
         return {key:rooted(row) for key,row in value.items()}
     target=out/filename
     value=rooted(collection);value.update(extra or {})
-    write(target,value)
-    return commands.ref(target,out)
+    writer(target,value)
+    return reference(target,out)
 
-def receiver_debian_collection(out,inner_reference):
-    return receiver_inner_collection(out,inner_reference,'qlever-sdk-exact-debian-source-originals','debian-source-collection.json')
+def receiver_debian_collection(out,inner_reference,**original_hooks):
+    return receiver_inner_collection(out,inner_reference,'qlever-sdk-exact-debian-source-originals','debian-source-collection.json',**original_hooks)
 
-def receiver_dependency_collection(out,inner_reference):
+def receiver_dependency_collection(out,inner_reference,**original_hooks):
     return receiver_inner_collection(out,inner_reference,'qlever-sdk-fetchcontent-prepared-originals','fetchcontent-source-collection.json',
-        dict(innerMaterials=prefix(inner_reference,'inner')))
+        dict(innerMaterials=prefix(inner_reference,'inner')),**original_hooks)
 
-def receiver_binary_collection(out,inner_reference):
+def receiver_binary_collection(out,inner_reference,**original_hooks):
     return receiver_inner_collection(out,inner_reference,'qlever-sdk-exact-debian-binary-originals','debian-binary-collection.json',
-        dict(innerMaterials=prefix(inner_reference,'inner')))
+        dict(innerMaterials=prefix(inner_reference,'inner')),**original_hooks)
 
-def receiver_upstream_collection(out,inner_reference):
+def receiver_upstream_collection(out,inner_reference,**original_hooks):
     return receiver_inner_collection(out,inner_reference,'qlever-sdk-upstream-source-originals','upstream-source-collection.json',
-        dict(innerMaterials=prefix(inner_reference,'inner')))
+        dict(innerMaterials=prefix(inner_reference,'inner')),**original_hooks)
 
-def receiver_generation_collection(out,inner_reference):
+def receiver_generation_collection(out,inner_reference,**original_hooks):
     return receiver_inner_collection(out,inner_reference,'qlever-sdk-cmake-generation-originals','generation-collection.json',
-        dict(innerMaterials=prefix(inner_reference,'inner')))
+        dict(innerMaterials=prefix(inner_reference,'inner')),**original_hooks)
 
-def receiver_execution_collection(out,inner_reference):
+def receiver_execution_collection(out,inner_reference,**original_hooks):
     return receiver_inner_collection(out,inner_reference,'qlever-sdk-toolchain-execution-originals','toolchain-execution-collection.json',
-        dict(innerMaterials=prefix(inner_reference,'inner')))
+        dict(innerMaterials=prefix(inner_reference,'inner')),**original_hooks)
 
-def collect_execution_owners(out,deadline):
+def collect_execution_owners(out,deadline,*,readonly_executor=None,readonly_originals=None,identity=None,reference_original=None):
     """Original layout/mechanics checks only; these JSON records issue no authority."""
-    out=Path(out);records={}
+    out=Path(out);records={};reference=reference_original or commands.ref
+    direct=None
+    if readonly_executor is not None:
+        bindings=load('readonly_owner_bindings','sdk-readonly-executor-bindings.py')
+        bindings.verify(readonly_executor,readonly_originals,identity)
+        direct=['/usr/bin/python3','-B','/components/qlever/scripts/sdk-inner-materials.py','build']
     for role,recipe in owned_runs.RUNS.items():
         path=out/'inner'/recipe.receipt
         if path.stat().st_size>4*1024**2:raise ValueError('SDK owner metadata bound')
-        original=commands.ref(path,out);record=json.loads(path.read_text())
+        original=reference(path,out);record=json.loads(path.read_text())
         cleanup=record.get('cleanup') or {}
         if (record.get('kind')!='linux-kernel-owned-subreaper-guard-original' or type(record.get('schemaVersion')) is not int or record.get('schemaVersion')!=1
             or type(record.get('guardPid')) is not int or record.get('guardPid')!=1 or type(record.get('topCommandPid')) is not int or record['topCommandPid']<=1
             or not re.fullmatch(r'pid:\[[0-9]+\]',record.get('pidNamespace',''))
             or record.get('topCommandPidNamespace')!=record['pidNamespace']
-            or record.get('command')!=list(recipe.command)
+            or record.get('command')!=(direct if direct is not None and role=='build' else list(recipe.command))
             or record.get('globalDeadlineUnix')!=deadline
             or record.get('topCommandActualWait') is not True or type(record.get('topCommandReturnCode')) is not int or record.get('topCommandReturnCode')!=0
             or record.get('reason') is not None or record.get('error') is not None or record.get('observedSignals')!=[]
             or cleanup.get('actualEchild') is not True or cleanup.get('signalledPidfds')!=[]):
             raise ValueError('SDK actual namespace owner execution differs: '+role)
-        if commands.ref(path,out)!=original:raise ValueError('SDK owner original changed while observed')
+        if reference(path,out)!=original:raise ValueError('SDK owner original changed while observed')
         records[role]=original
     return records
 

@@ -1,3 +1,4 @@
+import {selectSdkControllerHelperGroup} from './sdk-controller-helper-groups';
 import {createHash} from 'node:crypto';
 import {execFileSync} from 'node:child_process';
 import {readFileSync,realpathSync} from 'node:fs';
@@ -27,7 +28,9 @@ export async function observeQleverSdkFetchContentOriginals(capability:unknown,s
   const assertCurrent=()=>{need(qleverSdkOriginalsView(capability)===sdk,'SDK custody changed');assertDerivedSourceCurrent(sourceCapability);};assertCurrent();check();
   facts.sdkFetchContentPreparationStageOriginalsVerified=report.dependencyStageOriginalsVerified;facts.sdkFetchContentPreparationScope=report.scope;
   const inputs=sdkVerifiedInputOriginalView(capability);need(inputs,'actual full-shard input observation required');const declarationRows=inputs.rows.filter(row=>row.originalPath==='/opt/qlever-sdk/source/CMakeLists.txt');need(declarationRows.length===1,'one actual source declaration input required');const upstream=qleverSdkUpstreamGitObservation(capability);need(upstream&&upstream.cmakeDeclaration.bytes===declarationRows[0]!.bytes&&upstream.cmakeDeclaration.sha256===declarationRows[0]!.sha256,'actual reviewed Git/patch CMake declaration observation required');
-  const identities=HELPERS.map(([name,expected])=>{const path=fileURLToPath(new URL('../../../qlever/scripts/'+name,import.meta.url)),identity=captureLegalFileIdentity(path);need(identity.size<=BigInt(limits.metadataBytes)&&hash(readFileSync(path))===expected,'reviewed controller helper differs');return identity;});
+  const helperDigests=new Map<string,string>();
+  const identities=HELPERS.map(([name])=>{const path=fileURLToPath(new URL('../../../qlever/scripts/'+name,import.meta.url)),identity=captureLegalFileIdentity(path);need(identity.size<=BigInt(limits.metadataBytes),'reviewed controller helper differs');helperDigests.set(name,hash(readFileSync(path)));return identity;});
+  selectSdkControllerHelperGroup(REVIEWED_HELPER_GROUPS,helperDigests);identities.forEach(assertLegalFileIdentity);
   const python=realpathSync('/usr/bin/python3'),pythonIdentity=captureLegalFileIdentity(python);identities.push(pythonIdentity);identities.forEach(assertLegalFileIdentity);
   const execution=qleverSdkExecutionOriginalObservation(capability),executionOriginals=execution?.sdkGeneratedInputOriginals as any;
   need(execution?.sdkActualConfigureCompileTrackedWaitVerified===true&&Array.isArray(executionOriginals?.dependencySourceReadCaptures),'actual private dependency FD observation required');
@@ -53,3 +56,5 @@ export async function observeQleverSdkFetchContentOriginals(capability:unknown,s
 }
 
 const HELPERS:readonly(readonly[string,string])[]=[["sdk-fetchcontent-source-observer.py", "535fa858b9ded0f8cf37e680f3ccc14cb053520f077f5bc361a9301dfe602cb1"], ["sdk-fetchcontent-source-bindings.py", "58c673c1506cbf321736e8693fa5364bddbfc7dec5e1e456bdda7151bb54535c"], ["sdk-zip-originals.py", "304a8d26c8a124af31f2b240f1b2af52312520982cd6e1f4cba70fde2602bcb8"], ["sdk-git-source-bindings.py", "612063f44d09932b93883db2d186d197bd828e07d39e2df430d9dbe574fd66d0"], ["sdk-debian-binary-originals.py", "6db9772344afe812f3a58fc04296b63c13bbd4be1d46ae2ad7fcff181111c63c"], ["sdk-debian-index-bindings.py", "ad87a17bdb781f34a6a78a5e970d1f9c69d0750a1fcc4ba3f711db317bd75e13"], ["sdk-generation-multiprocess-bindings.py", "2b58b91ad5054f6c6b74be4315faf74ff29f18f8f272138717403400f8ade281"], ["sdk-execution-originals-util.py", "b2226db7d6d9955d6bf3745dc5011aa1dbc67ffe90faf9dc88fffa7376343a2d"], ["sdk-tool-provider-originals.py", "d5bc8db6c6457d95e67c3ea6138d75f9cfe055e47b22d361ebb1d220f7cbcfd0"]];
+
+const REVIEWED_HELPER_GROUPS=Object.freeze([HELPERS,Object.freeze(HELPERS.map(([name,sha])=>Object.freeze([name,name==='sdk-zip-originals.py'?'86cca59ac6a30eb719fe10dbaf6939c4e7c50328e757f22d3d4d34ea90fe6c10':name==='sdk-debian-binary-originals.py'?'099959565f355566b9a1f6f20870e2de20a5ef20ff37fc0042a9943238a4e86f':sha] as const))),Object.freeze(HELPERS.map(([name,sha])=>Object.freeze([name,name==='sdk-zip-originals.py'?'cf30b662bfec174a61d229811272241a945318259e9b181e8219330acf0555e6':name==='sdk-debian-binary-originals.py'?'099959565f355566b9a1f6f20870e2de20a5ef20ff37fc0042a9943238a4e86f':sha] as const)))])

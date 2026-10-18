@@ -1,4 +1,5 @@
-import {QLEVER_SDK_WORKFLOW,QLEVER_SDK_WORKFLOW_SHA,QLEVER_SDK_EXECUTION_GROUPS,QLEVER_LINUX_EXECUTION_GROUPS} from './qlever-sdk-origin-policy';
+import {inspectReviewedSdkOuterExecutorOrigin,type QleverSdkOuterExecutorOriginAuthority} from './qlever-sdk-outer-authority';
+import {QLEVER_SDK_WORKFLOW,QLEVER_SDK_WORKFLOW_SHA,QLEVER_SDK_EXECUTION_GROUPS,QLEVER_LINUX_EXECUTION_GROUPS,QLEVER_READONLY_SDK_WORKFLOW_SHA} from './qlever-sdk-origin-policy';
 import {selectGitHubSourceBindingGroup,secondaryGitHubSourceBindingSelectors,sourceBindingKey,type GitHubSourceBindingGroup} from './github-source-binding-groups';
 import {immutableGitContentsEndpoint,cachedGitContentsOriginal,retainGitContentsOriginal} from './github-immutable-original-cache';
 import {QLEVER_LINUX_SOURCE_BINDINGS} from './qlever-linux-origin-policy';
@@ -16,6 +17,7 @@ declare const originBrand: unique symbol;
 /** Only the controlled observers below can issue this in-process capability. */
 export interface GitHubOriginObservation { readonly [originBrand]: true }
 export interface GitHubOriginFacts {
+  readonly sdkOuterExecutorAuthority?:QleverSdkOuterExecutorOriginAuthority;
   readonly repository: 'undefinedsco/xpod';
   readonly workflowPath: string;
   readonly workflowSourceSha256: string;
@@ -82,6 +84,7 @@ interface OriginPolicy {
   artifactNames(input: ArtifactAcquisitionInput): readonly string[];
   jobName(artifactName: string): string;
   jobNames?(artifactName:string):readonly string[];
+  sourceGroupJobContract?(group:GitHubSourceBindingGroup|undefined):Readonly<{name:string;requiredStep:string;requiredSteps:readonly string[]}>;
   maximumJobPages?:number;
   allowRunningRun?:true;
   requiredBranch?: string;
@@ -90,6 +93,8 @@ interface OriginPolicy {
   requiredStep: string;
   requiredSteps?: readonly string[];
   requiredAncestorJobs?: readonly string[];
+  sourceGroupAncestorJobs?(group:GitHubSourceBindingGroup|undefined):readonly string[];
+  issueSdkOuterAuthority?:true;
   target?: string;
   sourceBindings?: readonly { path: string; sha256: string; reviewedSha256?: readonly string[]; ref?:'run-head' }[];
 }
@@ -1126,6 +1131,17 @@ const CSS_NATIVE_SOURCE_BINDINGS=[
  {path:'.github/workflows/publish-qlever-runtime-sdk.yml',sha256:'cbedd3e2478de5e22108b6689c595a658ca891c9bd47552caec830e86f47fea8'},
 ] as const;
 
+const CSS_MAC_SOURCE_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([
+ ...[CSS_NATIVE_SOURCE_BINDINGS.find(row=>row.path==='.github/workflows/css-native-source.yml')!.sha256,'24b994047fac340931a7f43e1e44d7d0d5876a8023acb8e54495f754d0f44b53'].map(cssSha=>Object.freeze({
+  selectors:Object.freeze([{path:'.github/workflows/css-native-source.yml',sha256:cssSha}]),
+  sourceBindings:Object.freeze([...CSS_NATIVE_SOURCE_BINDINGS.filter(row=>!['.github/workflows/css-native-source.yml','.github/workflows/publish-qlever-runtime-sdk.yml'].includes(row.path)),{path:'.github/workflows/css-native-source.yml',sha256:cssSha},{path:QLEVER_OBSERVER_PATH,sha256:QLEVER_OBSERVER_V20,reviewedSha256:[QLEVER_OBSERVER_V22,QLEVER_OBSERVER_V23]}]),
+ })),
+]);
+function cssLinuxAncestors(group:GitHubSourceBindingGroup|undefined,target:string,product:boolean):readonly string[]{
+ const prefix=`targets (${target}) / native / linux / `;
+ return [prefix+(group?.outerExecutor?'readonly_publish / published_sdk / sdk':'publish'),prefix+'module_runtime_materials / runtime / publish',...(product?[prefix+'module_runtime_materials / archive']:[])];
+}
+
 /** Product origin uses the canonical target/native-source declaration. A
  * declared target is still unverified until its exact successful run is seen. */
 export async function observeModuleProductGitHubOrigin(input: ArtifactAcquisitionInput, module: 'api' | 'css',
@@ -1160,8 +1176,8 @@ export async function observeModuleProductGitHubOrigin(input: ArtifactAcquisitio
     jobName:()=>`targets (${target}) / products`,requiredStep:'Produce the normal CSS preview',requiredSteps:['Upload original preview and evidence'],
     // Only the actually executed target branch participates. Linux SDK changes
     // do not silently authorize Linux, or block a separately reviewed Mac run.
-    ...(target.startsWith('linux-')?{sourceBindingGroups:QLEVER_LINUX_EXECUTION_GROUPS}:{sourceBindings:[...CSS_NATIVE_SOURCE_BINDINGS.filter(binding=>binding.path!=='.github/workflows/publish-qlever-runtime-sdk.yml'),{path:QLEVER_OBSERVER_PATH,sha256:QLEVER_OBSERVER_V20,reviewedSha256:[QLEVER_OBSERVER_V22,QLEVER_OBSERVER_V23]}]}),
-    requiredAncestorJobs:target.startsWith('linux-')?[`targets (${target}) / native / linux / publish`,`targets (${target}) / native / linux / module_runtime_materials / runtime / publish`,`targets (${target}) / native / linux / module_runtime_materials / archive`]:[`targets (${target}) / native / macos / build`]};
+    ...(target.startsWith('linux-')?{sourceBindingGroups:QLEVER_LINUX_EXECUTION_GROUPS}:{sourceBindingGroups:CSS_MAC_SOURCE_GROUPS}),
+    ...(target.startsWith('linux-')?{sourceGroupAncestorJobs:(group:GitHubSourceBindingGroup|undefined)=>cssLinuxAncestors(group,target,true)}:{requiredAncestorJobs:[`targets (${target}) / native / macos / build`]})};
   const observation=await observeGitHubOrigin(input,options,module==='css'?(row.nativeSourceAvailable?[legacy,current]:current):legacy);
   normalModuleOrigins.add(observation);return observation;
 }
@@ -1214,7 +1230,7 @@ export async function observeQleverNativeGitHubOrigin(input:ArtifactAcquisitionI
         jobName:()=>`targets (${target}) / native / linux / module_runtime_materials / archive`,
         requiredStep:'Bind fresh native material output identity',
         requiredSteps:['Produce native source and ABI original materials','Upload exact native build and test materials'],
-        requiredAncestorJobs:[`targets (${target}) / native / linux / publish`,`targets (${target}) / native / linux / module_runtime_materials / runtime / publish`],
+        sourceGroupAncestorJobs:group=>cssLinuxAncestors(group,target,false),
         sourceBindingGroups:QLEVER_LINUX_EXECUTION_GROUPS,
       });nativeOrigins.add(observation);return observation;
     }
@@ -1224,7 +1240,7 @@ export async function observeQleverNativeGitHubOrigin(input:ArtifactAcquisitionI
       artifactNames:row=>[`qlever-local-runtime-${target}-${row.sourceSha}`],
       jobName:()=>`targets (${target}) / native / macos / build`,requiredStep:'Bind the qlever-local acceptance evidence',
       requiredSteps:['Verify the actual native producer host','Resolve immutable artifact identity','Upload the exact native runtime'],
-      sourceBindings:[...CSS_NATIVE_SOURCE_BINDINGS.filter(binding=>binding.path!=='.github/workflows/publish-qlever-runtime-sdk.yml'),{path:QLEVER_OBSERVER_PATH,sha256:QLEVER_OBSERVER_V20,reviewedSha256:[QLEVER_OBSERVER_V22,QLEVER_OBSERVER_V23]}],
+      sourceBindingGroups:CSS_MAC_SOURCE_GROUPS,
     });nativeOrigins.add(observation);return observation;
   }
   if(!['darwin-arm64','darwin-x64'].includes(target) || !['standalone','css-module'].includes(invocation)) return fail('unsupported QLever native invocation');
@@ -1257,15 +1273,18 @@ export async function observeQleverNativeGitHubOrigin(input:ArtifactAcquisitionI
 export async function observeQleverSdkGitHubOrigin(input:ArtifactAcquisitionInput,target:string,invocation:'standalone'|'css-native-products',options:{token?:string}={}):Promise<GitHubOriginObservation>{
  if(!['linux-x64','linux-arm64'].includes(target)||!['standalone','css-native-products'].includes(invocation))return fail('fixed SDK target and invocation required');
  const nested=invocation==='css-native-products';
+ const readonlyName=nested?`targets (${target}) / native / linux / readonly_publish / published_sdk / sdk`:'readonly_publish / published_sdk / sdk';
+ const legacyName=nested?`targets (${target}) / native / linux / publish`:'publish';
+ const legacySteps=['Verify the actual native producer host','Build actual cold module SDK with owned raw streams','Push exact tested module SDK from the same builder cache','Upload exact SDK original materials'];
+ const readonlySteps=['Verify controller closure','Capture immutable source context','Build readonly SDK and linked image','Publish the actual linked readonly SDK','Seal controller originals for upload','Upload exact SDK original materials'];
  const observation=await observeGitHubOrigin(input,options,{
   workflowPath:nested?CSS_NATIVE_PRODUCTS_WORKFLOW:QLEVER_SDK_WORKFLOW,workflowSha256:nested?CSS_NATIVE_PARENT_SHA:QLEVER_SDK_WORKFLOW_SHA,
-  ...(nested?cssStagingParentPolicy(`targets (${target}) / native / linux / publish`):{}),
+  ...(nested?cssStagingParentPolicy(legacyName):{reviewedWorkflowVersions:[{workflowSha256:QLEVER_READONLY_SDK_WORKFLOW_SHA,jobName:()=>readonlyName}]}),
   events:nested?['workflow_dispatch','push']:['workflow_dispatch'],target,
   artifactNames:row=>[`qlever-sdk-originals-${target}-${row.sourceSha}-${row.runId}-${row.runAttempt}`],
-  jobName:()=>nested?`targets (${target}) / native / linux / publish`:'publish',
-  requiredStep:'Bind actual SDK image and build originals',
-  requiredSteps:['Verify the actual native producer host','Build actual cold module SDK with owned raw streams','Push exact tested module SDK from the same builder cache','Upload exact SDK original materials'],
-  sourceBindingGroups:QLEVER_SDK_EXECUTION_GROUPS,
+  jobName:()=>legacyName,requiredStep:'Bind actual SDK image and build originals',requiredSteps:legacySteps,
+  sourceGroupJobContract:group=>group?.outerExecutor?{name:readonlyName,requiredStep:'Bind actual readonly SDK image and build originals',requiredSteps:readonlySteps}:{name:legacyName,requiredStep:'Bind actual SDK image and build originals',requiredSteps:legacySteps},
+  sourceBindingGroups:QLEVER_SDK_EXECUTION_GROUPS,issueSdkOuterAuthority:true,
  });
  nativeOrigins.add(observation);sdkOrigins.add(observation);return observation;
 }
@@ -1376,6 +1395,7 @@ async function observeGitHubOrigin(input: ArtifactAcquisitionInput, options: { t
   const expectedJobName = reviewedVersion?.jobName ?? policy.jobName;
   let sourceBindings=[...(reviewedVersion?.sourceBindings ?? policy.sourceBindings ?? [])];
   const sourceBindingGroups=reviewedVersion?.sourceBindingGroups??policy.sourceBindingGroups;
+  let selectedSourceGroup:GitHubSourceBindingGroup|undefined;
   if(sourceBindingGroups){
     const selectors=new Map(sourceBindingGroups.flatMap(group=>group.selectors.map(binding=>[sourceBindingKey(binding),binding] as const)));
     const observed=new Map<string,string>();
@@ -1392,7 +1412,7 @@ async function observeGitHubOrigin(input: ArtifactAcquisitionInput, options: { t
       if(original.type!=='file'||original.path!==binding.path||original.encoding!=='base64'||typeof original.content!=='string')fail('immutable secondary group selector missing');
       observed.set(sourceBindingKey(binding),sha(Buffer.from(original.content.replace(/\s/gu,''),'base64')));
     }));
-    sourceBindings=[...selectGitHubSourceBindingGroup(sourceBindingGroups,observed).sourceBindings];
+    selectedSourceGroup=selectGitHubSourceBindingGroup(sourceBindingGroups,observed);sourceBindings=[...selectedSourceGroup.sourceBindings];
   }
   for (let offset=0;offset<sourceBindings.length;) {
    const batch=sourceBindings.slice(offset,offset+8);offset+=batch.length;
@@ -1420,20 +1440,22 @@ async function observeGitHubOrigin(input: ArtifactAcquisitionInput, options: { t
     jobs.jobs.push(...next.jobs);
   }
   if(jobs.jobs.length!==jobs.total_count||new Set(jobs.jobs.map((row:any)=>row.id)).size!==jobs.jobs.length)fail('incomplete or duplicate job observation');
-  const expectedNames=policy.jobNames?.(artifact.name) ?? [expectedJobName(artifact.name)];
+  const selectedJobContract=policy.sourceGroupJobContract?.(selectedSourceGroup);
+  const expectedNames=selectedJobContract?[selectedJobContract.name]:policy.jobNames?.(artifact.name) ?? [expectedJobName(artifact.name)];
   const matching = jobs.jobs.filter((job:any)=>expectedNames.some(name=>reviewedVersion?matchesObservedJobName(job.name,name):job.name===name));
   if (matching.length !== 1) fail('unique producer job required');
   const job = matching[0];
   const created = Date.parse(artifact.created_at), start = Date.parse(job.started_at), end = Date.parse(job.completed_at);
   if (!observedGitHubJobWindowAccepted(job,artifact,input)
-    || !job.steps?.some((step: any) => step.name === policy.requiredStep
+    || !job.steps?.some((step: any) => step.name === (selectedJobContract?.requiredStep??policy.requiredStep)
       && step.status === 'completed' && step.conclusion === 'success')
-    || !(policy.requiredSteps ?? []).every(name => job.steps?.some((step: any) => step.name === name && step.status === 'completed' && step.conclusion === 'success'))) fail('producer job/attempt window mismatch');
-  for(const name of policy.requiredAncestorJobs??[]){
+    || !(selectedJobContract?.requiredSteps??policy.requiredSteps ?? []).every(name => job.steps?.some((step: any) => step.name === name && step.status === 'completed' && step.conclusion === 'success'))) fail('producer job/attempt window mismatch');
+  for(const name of policy.sourceGroupAncestorJobs?.(selectedSourceGroup)??policy.requiredAncestorJobs??[]){
     const ancestors=jobs.jobs.filter((candidate:any)=>candidate.name===name);
     if(ancestors.length!==1||!observedGitHubAncestorJobAccepted(ancestors[0],job,input))fail('exact native ancestor job/attempt closure mismatch');
   }
-  const facts: GitHubOriginFacts = Object.freeze({ repository, workflowPath: policy.workflowPath,
+  const sdkOuterExecutorAuthority=policy.issueSdkOuterAuthority?inspectReviewedSdkOuterExecutorOrigin({group:selectedSourceGroup,workflowPath:policy.workflowPath,workflowSha256,job,artifactCreatedAt:artifact.created_at,identity:{...input,...(policy.target?{target:policy.target}:{})}}):undefined;
+  const facts: GitHubOriginFacts = Object.freeze({...(sdkOuterExecutorAuthority?{sdkOuterExecutorAuthority}:{}), repository, workflowPath: policy.workflowPath,
     workflowSourceSha256: sha(workflowBytes), sourceSha: input.sourceSha, runHeadSha: input.runHeadSha,
     runId: input.runId, runAttempt: input.runAttempt, artifactId: input.artifactId,
     artifactSha256: input.artifactSha256, producerJobId: job.id,

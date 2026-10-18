@@ -1,0 +1,71 @@
+name: CSS same-source native material producer
+on:
+  workflow_call:
+    inputs:
+      target:
+        description: Exact canonical CSS target; no emulation
+        required: true
+        type: string
+    outputs:
+      artifact_name:
+        value: ${{ jobs.macos.outputs.artifact_name || jobs.linux.outputs.native_artifact_name }}
+      artifact_id:
+        value: ${{ jobs.macos.outputs.artifact_id || jobs.linux.outputs.native_artifact_id }}
+      artifact_digest:
+        value: ${{ jobs.macos.outputs.artifact_digest || jobs.linux.outputs.native_artifact_digest }}
+      source_sha:
+        value: ${{ jobs.macos.outputs.source_sha || jobs.linux.outputs.native_source_sha }}
+      run_id:
+        value: ${{ github.run_id }}
+      run_attempt:
+        value: ${{ github.run_attempt }}
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Exact canonical CSS target
+        required: true
+        type: string
+permissions:
+  contents: read
+  packages: write
+concurrency:
+  group: css-native-source-${{ inputs.target }}-${{ github.sha }}
+  cancel-in-progress: false
+jobs:
+  resolve:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      platform: ${{ steps.target.outputs.platform }}
+      target: ${{ steps.target.outputs.target }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version: 1.4.2
+      - id: target
+        env:
+          TARGET: ${{ inputs.target }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          bun -e 'import {appendFileSync} from "node:fs";import {cssNativeProducer} from "./scripts/module-product-targets.ts";const row=cssNativeProducer(process.env.TARGET!);appendFileSync(process.env.GITHUB_OUTPUT!,`platform=${row.platform}\ntarget=${row.target}\n`);'
+  macos:
+    needs: resolve
+    if: ${{ needs.resolve.outputs.platform == 'darwin' }}
+    uses: ./.github/workflows/build-qlever-macos-runtime.yml
+    with:
+      target: ${{ needs.resolve.outputs.target }}
+  linux:
+    needs: resolve
+    if: ${{ needs.resolve.outputs.platform == 'linux' }}
+    # This registered SDK workflow already produces runtime + ABI materials in
+    # its module_runtime_materials post-job. Do not start a duplicate producer.
+    uses: ./.github/workflows/publish-qlever-runtime-sdk.yml
+    with:
+      target: ${{ needs.resolve.outputs.target }}
+      sdk_profile: module-bookworm-gcc12
+      source_commit: ${{ github.sha }}

@@ -16,8 +16,8 @@ test('SDK first-cold code owns build/raw/source context and passes an immutable 
   expect(steps[build].run).toContain('sdk-image-originals.py build');
   expect(steps[push].run).toContain('sdk-image-originals.py push');
   expect(steps.find((step:any)=>step.id==='sdk_upload').with['include-hidden-files']).toBe(true);
-  expect(sdk.jobs.module_runtime_materials.with.sdk_artifact_id).toBe('${{ needs.publish.outputs.sdk_artifact_id }}');
-  expect(sdk.jobs.module_runtime_materials.with.sdk_master_bytes).toBe('${{ needs.publish.outputs.sdk_master_bytes }}');
+  expect(sdk.jobs.module_runtime_materials.with.sdk_artifact_id).toBe('${{ needs.readonly_publish.outputs.sdk_artifact_id || needs.publish.outputs.sdk_artifact_id }}');
+  expect(sdk.jobs.module_runtime_materials.with.sdk_master_bytes).toBe('${{ needs.readonly_publish.outputs.sdk_master_bytes || needs.publish.outputs.sdk_master_bytes }}');
   const native=yaml('build-qlever-linux-runtime.yml');
   const produce=native.jobs.archive.steps.find((step:any)=>step.name==='Produce native source and ABI original materials');
   expect(produce.env.SDK_ORIGINAL_ARTIFACT_ID).toBe('${{ inputs.sdk_artifact_id }}');
