@@ -174,6 +174,10 @@ if [[ "$mode" == prepare-only || "$mode" == configure-prepared ]] || [[ ! -f "$b
     -DUSE_PRECOMPILED_HEADERS=OFF \
     -DUSE_IO_URING=OFF \
     -DCMAKE_CXX_FLAGS="$adapter_flags")
+  if [[ "$mode" == configure-prepared ]]; then
+    test -f /opt/qlever-sdk/dependencies/sources.cmake
+    cmake_command+=(-C /opt/qlever-sdk/dependencies/sources.cmake)
+  fi
   if [[ ( "$mode" == prepare-only || "$mode" == configure-prepared ) && -n ${XPOD_QLEVER_UPSTREAM_MATERIALS_DIR:-} ]]; then
     generation_materials="${XPOD_QLEVER_UPSTREAM_MATERIALS_DIR%/upstream-source}/generation"
     CC="$c_compiler" CXX="$cxx_compiler" python3 "$qlever_root/scripts/sdk-generation-materials.py" configure \

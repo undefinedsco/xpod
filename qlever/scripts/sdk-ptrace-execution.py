@@ -89,12 +89,100 @@ class BoundedPipePump:
 
 class Observer:
     def __init__(self,out,source,build,*,deadline_monotonic=None,check_budget=lambda:None,maximum_bytes=32*1024**2,maximum_file_bytes=1024**2,selected_names=SELECTED,maximum_processes=128,shard_bytes=None,require_success=True,maximum_stdio_bytes=None,shared_tasks=False,capture_toolchain=False):
+        self.prepared_dependency_plan=None;self.dependency_roots={};self.dependency_cache=None
         self.shared_tasks=shared_tasks
         self.capture_toolchain=capture_toolchain;self.tool_original_cache={};self.tool_metadata_bytes=json.loads((ROOT/'scripts/lib/module-artifact-limits.json').read_text())['metadataBytes']
         self.prepared_inputs={};self.prepared_sealed=False;self.domain_bytes=0;self.domain_lock=threading.Lock();self.pump_errors=[];self.maximum_stdio_bytes=maximum_stdio_bytes if maximum_stdio_bytes is not None else maximum_file_bytes
         self.require_success=require_success;self.raw_bytes_completed=0;self.maximum_processes=maximum_processes;self.shard_bytes=shard_bytes
         self.deadline_monotonic=deadline_monotonic;self.check_budget=check_budget;self.maximum_bytes=maximum_bytes;self.maximum_file_bytes=maximum_file_bytes;self.selected_names=selected_names
         self.out=Path(out);self.capture_dir=self.out;self.source=str(source);self.build=str(build);self.tasks={};self.seq=0;self.records=[];self.captures=[];self.retained=set();self.producers={};self.write_states={};self.write_projections={};self.append_chains={};self.budget_context={};self.metadata_states=[];self.rename_records=[];self.consumers=[];self.raw=None;self.deadline=0;self.pausing=False;self.root=None;self.root_code=None;self.failures=[];self.current_phase=None;self.unknown_stops={};self.capture_bytes=0;self.exclusive=None;self.wait_references=[]
+    def dependency_mountinfo(self):
+        with open('/proc/self/mountinfo','rb') as stream:data=stream.read(self.tool_metadata_bytes+1)
+        assert len(data)<=self.tool_metadata_bytes,'dependency actual mountinfo byte bound';return data
+    def load_prepared_dependencies(self,argument):
+        assert not self.tasks and self.prepared_dependency_plan is None,'dependency source binding must precede actual child'
+        assert isinstance(argument,dict) and set(argument)=={'collection','mountinfo'},'fixed prepared dependency originals required'
+        material_root=self.out.parent.resolve(strict=True)
+        def read(path,reference=None,actual_source=False):
+            path=Path(path);assert path.is_absolute() and not path.is_symlink() and (path.resolve(strict=True).is_relative_to(material_root) or actual_source and str(path) in [self.source+'/CMakeLists.txt','/opt/qlever-sdk/dependencies/sources.cmake'] and path.resolve(strict=True)==path),'dependency original escapes actual materials'
+            fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW)
+            try:
+                identity=probe.identity(os.fstat(fd));assert stat.S_ISREG(identity[2]) and identity[3]<=self.tool_metadata_bytes,'dependency metadata byte bound'
+                data=bytearray()
+                while True:
+                    self.check();block=os.read(fd,65536)
+                    if not block:break
+                    data.extend(block);assert len(data)<=self.tool_metadata_bytes,'dependency metadata grew'
+                assert identity==probe.identity(os.fstat(fd))==probe.identity(os.stat(path,follow_symlinks=False)),'dependency metadata identity changed'
+                ref=dict(path=str(path),bytes=len(data),sha256=hashlib.sha256(data).hexdigest())
+                if reference is not None:assert ref==reference,'dependency metadata original reference differs'
+                return bytes(data),ref
+            finally:os.close(fd)
+        collection_path=material_root/'fetchcontent/materials.json';assert argument['collection']['path']==str(collection_path),'fixed dependency collection path required'
+        data,collection_ref=read(collection_path,argument['collection']);collection=json.loads(data)
+        prepared_data,prepared_ref=read(material_root/'source-prepared.json');prepared=json.loads(prepared_data)
+        declared=bindings.dependency_collection_contract(prepared,collection)
+        assert prepared['dependencyCollection']==dict(path='fetchcontent/materials.json',bytes=collection_ref['bytes'],sha256=collection_ref['sha256']),'same source-prepared collection bytes required'
+        mounts,mount_ref=read(argument['mountinfo']['path'],argument['mountinfo']);assert mounts==self.dependency_mountinfo(),'dependency raw mountinfo differs from actual kernel'
+        def member(ref):
+            name=ref['path'];assert isinstance(name,str) and name.startswith('fetchcontent/') and not name.startswith('/') and all(part not in ['', '.', '..'] for part in name.split('/')) and '\\' not in name,'canonical dependency materials reference required'
+            raw,actual=read(material_root/name);assert (actual['bytes'],actual['sha256'])==(ref['bytes'],ref['sha256']),'dependency materials member differs';return raw,actual
+        declaration=collection.get('declarationSource',{});assert declaration.get('sourcePath')==self.source+'/CMakeLists.txt','fixed actual CMake declaration source required'
+        declaration_data,declaration_ref=member(declaration['file']);actual_declaration,unused=read(Path(self.source)/'CMakeLists.txt',actual_source=True)
+        assert actual_declaration==declaration_data,'prepared declaration differs from current source bytes'
+        expected_cache=bindings.dependency_declaration_projection(collection,declaration_data)
+        cache_data,cache_ref=member(collection['cmakeCache']);assert collection.get('cmakeCachePath')=='/opt/qlever-sdk/dependencies/sources.cmake' and cache_data==expected_cache,'fixed dependency cache projection differs'
+        actual_cache=Path(collection['cmakeCachePath']);assert not actual_cache.is_symlink() and read(actual_cache,actual_source=True)[0]==cache_data and stat.S_IMODE(actual_cache.stat().st_mode)==0o644,'actual readonly dependency cache bytes differ';probe.effective_readonly(actual_cache,mounts)
+        roots=[]
+        for name,row in declared.items():
+            assert sum(len(item['files']) for item in roots)<=self.maximum_processes,'dependency aggregate member bound'
+            root=Path(row['sourceRoot']);assert not root.is_symlink() and str(root.resolve(strict=True))==str(root),'dependency root alias forbidden'
+            provider=probe.effective_readonly(root,mounts);index_data,index_ref=member(row['sourceInventory']);index=json.loads(index_data)
+            shard_data=[member(ref) for ref in index['shards']];files=bindings.dependency_inventory_rows(index,[json.loads(raw) for raw,_ in shard_data],json.loads((ROOT/'scripts/lib/module-artifact-limits.json').read_text())['sourceMembers'],self.check)
+            assert sum(len(item['files']) for item in roots)+len(files)<=self.maximum_processes,'dependency aggregate member bound'
+            actual=set()
+            def fail_walk(error):raise error
+            for directory,dirs,names in os.walk(root,followlinks=False,onerror=fail_walk):
+                self.check()
+                for child in list(dirs)+names:
+                    path=Path(directory)/child;relative=str(path.relative_to(root));item=os.lstat(path)
+                    if stat.S_ISDIR(item.st_mode):continue
+                    assert len(actual)<250000 and relative not in actual,'dependency actual closed-set member bound';actual.add(relative);expected=files.get(relative);assert expected,'unregistered dependency physical member'
+                    assert stat.S_IMODE(item.st_mode)==expected['mode'],'dependency prepared mode differs'
+                    if stat.S_ISLNK(item.st_mode):
+                        target=os.readlink(path);assert expected['kind']=='symlink' and target==expected['target'] and str(path.resolve(strict=True)).startswith(str(root)+'/'),'dependency symlink target differs or escapes'
+                    else:assert stat.S_ISREG(item.st_mode) and expected['kind']=='file' and item.st_size==expected['bytes'],'dependency physical member shape differs'
+            assert actual==set(files),'dependency physical closed set differs'
+            roots.append(dict(name=name,sourceRoot=str(root),provider=provider,files=files,indexRef=index_ref,indexReference=row['sourceInventory'],shardData=shard_data,shardReferences=index['shards']))
+        self.prepared_dependency_plan=dict(preparedRef=prepared_ref,collectionRef=collection_ref,mountRef=mount_ref,mounts=mounts,roots=roots,declarationRef=declaration_ref,declarationReference=declaration['file'],cacheRef=cache_ref,cacheReference=collection['cmakeCache'])
+    def seal_prepared_dependency_sources(self):
+        plan=self.prepared_dependency_plan
+        if plan is None or self.dependency_roots:return
+        assert not self.tasks,'dependency source registration must precede first actual root'
+        assert plan['mounts']==self.dependency_mountinfo(),'dependency mount provider changed before first actual child'
+        originals={}
+        def snapshot(ref):
+            if ref['path'] in originals:return originals[ref['path']]
+            fd=os.open(ref['path'],os.O_RDONLY|os.O_NOFOLLOW)
+            try:
+                before=probe.identity(os.fstat(fd));actual=self.snapshot_write_original(fd,ref['bytes']);assert before==probe.identity(os.fstat(fd)) and (actual['bytes'],actual['sha256'])==(ref['bytes'],ref['sha256']),'dependency metadata changed before actual source registration';originals[ref['path']]=actual;return actual
+            finally:os.close(fd)
+        for root in plan['roots']:
+            row=self.emit(dict(kind='prepared-dependency-source-root',name=root['name'],sourceRoot=root['sourceRoot'],provider=root['provider'],declarationOriginal=snapshot(plan['declarationRef']),declarationReference=plan['declarationReference'],cmakeCacheOriginal=snapshot(plan['cacheRef']),cmakeCacheReference=plan['cacheReference'],sourcePreparedOriginal=snapshot(plan['preparedRef']),collectionOriginal=snapshot(plan['collectionRef']),mountinfoOriginal=snapshot(plan['mountRef']),inventoryIndexOriginal=snapshot(root['indexRef']),inventoryReference=root['indexReference'],inventoryShardReferences=root['shardReferences'],inventoryShardOriginals=[snapshot(ref) for _,ref in root['shardData']]))
+            if self.dependency_cache is None:self.dependency_cache=dict(path='/opt/qlever-sdk/dependencies/sources.cmake',registrationSequence=row['sequence'],original=plan['cacheRef'])
+            self.dependency_roots[root['name']]=dict(root,registrationSequence=row['sequence'],mounts=plan['mounts'])
+    def dependency_source(self,path):
+        if self.dependency_cache and path==self.dependency_cache['path']:
+            assert self.prepared_dependency_plan['mounts']==self.dependency_mountinfo(),'dependency cache provider changed';probe.effective_readonly(path,self.prepared_dependency_plan['mounts'])
+            ref=self.dependency_cache['original'];return dict(name='@cmake-cache',relativePath='sources.cmake',registrationSequence=self.dependency_cache['registrationSequence']),dict(bytes=ref['bytes'],sha256=ref['sha256'],mode=0o644)
+        for name,root in self.dependency_roots.items():
+            if path.startswith(root['sourceRoot']+'/'):
+                relative=path[len(root['sourceRoot'])+1:];entry=root['files'].get(relative);assert entry and entry['kind']=='file','dependency actual read lacks prepared physical original'
+                assert root['mounts']==self.dependency_mountinfo(),'dependency mount provider changed during actual execution'
+                probe.effective_readonly(path,root['mounts'])
+                return dict(name=name,relativePath=relative,registrationSequence=root['registrationSequence']),entry
+        assert not path.startswith('/opt/qlever-sdk/dependencies/'),'unregistered dependency source read'
+        return None
     def tighten_remaining(self,remaining_bytes):
         # External source domains supply only their remaining allowance. The
         # existing observer ledger remains private and is clipped under the
@@ -409,7 +497,10 @@ class Observer:
                 output.flush();os.fsync(output.fileno())
             assert ident==probe.identity(os.fstat(reader))==probe.identity(os.stat(path))
             data=(offset,digest.hexdigest());self.capture_bytes+=offset;ref=dict(path=name,bytes=offset,sha256=data[1])
-            row=self.emit(dict(kind='fd-capture',role='readwrite-consumer' if rw_read else role,pid=pid,fd=fd,entrySequence=self.tasks[pid]['entry']['sequence'],path=target,identity=ident,original=ref,barrierSequence=barrier['sequence'],writers=writers))
+            dependency=self.dependency_source(target) if role=='source-read' and target.startswith('/opt/qlever-sdk/dependencies/') else None
+            if dependency:
+                binding,expected=dependency;assert expected['mode']==stat.S_IMODE(ident[2]) and (expected['bytes'],expected['sha256'])==data,'dependency actual held FD bytes differ from prepared snapshot'
+            row=self.emit(dict(**({'dependency':dependency[0]} if dependency else {}),kind='fd-capture',role='readwrite-consumer' if rw_read else role,pid=pid,fd=fd,entrySequence=self.tasks[pid]['entry']['sequence'],path=target,identity=ident,original=ref,barrierSequence=barrier['sequence'],writers=writers))
             self.captures.append(row);capture_fd=reader;self.retained.add(reader);reader=None
             if role!='producer-close':self.tasks[pid]['releaseCaptureFd']=capture_fd
             if role=='producer-close':
@@ -714,7 +805,7 @@ class Observer:
                     elif nr==policy['close'] and selected.startswith(self.build+'/') and descriptor_flags(pid,fd)&os.O_ACCMODE in [os.O_WRONLY,os.O_RDWR]:task['capture']=(fd,'producer-close')
                     elif nr==policy['read'] and selected.startswith(self.build+'/') and (self.selected_names is None or Path(selected).name in self.selected_names):task['capture']=(fd,'consumer')
                     elif nr==policy['mmap'] and selected.startswith(self.build+'/') and (self.selected_names is None or Path(selected).name in self.selected_names):self.emit(dict(kind='generated-mmap-unverified',pid=pid,path=selected,entrySequence=record['sequence']))
-                    elif nr==policy['read'] and selected.startswith(self.source+'/'):task['capture']=(fd,'source-read')
+                    elif nr==policy['read'] and (selected.startswith(self.source+'/') or selected.startswith('/opt/qlever-sdk/dependencies/')):task['capture']=(fd,'source-read')
             mode_ops={0xc000003e:{90:'path',91:'fd',268:'at'},0xc00000b7:{52:'fd',53:'at'}}[kernel['arch']]
             if nr in mode_ops:
                 form=mode_ops[nr]
@@ -798,7 +889,9 @@ class Observer:
         capture_start=len(self.captures);started_ns=time.time_ns();stdout_path=Path(stdoutPath) if stdoutPath is not None else self.out/(name+'.stdout.raw');stderr_path=Path(stderrPath) if stderrPath is not None else self.out/(name+'.stderr.raw')
         self.wait_references=[];self.tasks={};self.unknown_stops={};self.root_code=None;self.current_phase=name;self.raw=ShardedRaw(self.out,name,self.shard_bytes) if self.shard_bytes else open(self.out/(name+'.syscalls.original.jsonl'),'xb')
         if not self.prepared_sealed:
-            try:self.seal_prepared_build_inputs()
+            try:
+                self.seal_prepared_dependency_sources()
+                self.seal_prepared_build_inputs()
             except BaseException:
                 self.raw_bytes_completed+=self.raw.tell();self.raw.close();self.close();raise
         read_fd,write_fd=os.pipe();stdout_read,stdout_write=os.pipe();stderr_read,stderr_write=os.pipe();child=os.fork()
@@ -877,7 +970,7 @@ class SdkExecutionObserver(Observer):
     .phase returns real command/tracked receipts; it does not claim a closed
     process group while this long-lived observer still retains descriptors.
     """
-    def __init__(self,out,source,build,*,deadline_monotonic,check_budget,maximum_bytes,maximum_stdio_bytes):
+    def __init__(self,out,source,build,*,deadline_monotonic,check_budget,maximum_bytes,maximum_stdio_bytes,prepared_dependencies=None):
         limits=json.loads((ROOT/'scripts/lib/module-artifact-limits.json').read_text())
         assert isinstance(maximum_bytes,int) and 0<maximum_bytes<=limits['sourceMaterialBytes'],'canonical shared execution byte bound required'
         assert isinstance(maximum_stdio_bytes,int) and 0<maximum_stdio_bytes<=min(maximum_bytes,limits['shardBytes']),'existing bounded command raw limit required'
@@ -888,6 +981,9 @@ class SdkExecutionObserver(Observer):
         self.capture_dir=self.out/'captures';self.capture_dir.mkdir(exist_ok=False);self.sdk_phase_index=0;self.sdk_failed=False
         mounts=Path('/proc/self/mountinfo').read_bytes();assert len(mounts)<=limits['metadataBytes'],'source provider metadata bound'
         self.source_provider=probe.effective_readonly(source,mounts);self.source_provider_originals=dict(mountinfo=probe.put(self.out/'source-provider.mountinfo.raw',mounts));self.claim(len(mounts))
+        if prepared_dependencies is not None:
+            self.deadline=self.deadline_monotonic
+            self.load_prepared_dependencies(prepared_dependencies)
     def phase(self,name,command,deadline_monotonic,*,cwd,env,stdoutPath,stderrPath):
         assert not self.sdk_failed and self.sdk_phase_index<2 and name==['configure','compile'][self.sdk_phase_index] and deadline_monotonic<=self.deadline_monotonic,'fixed phase within existing SDK deadline required'
         expected=['bash','/components/qlever/scripts/build-qlever-runtime-sdk.sh','configure-prepared' if name=='configure' else 'build-prepared']

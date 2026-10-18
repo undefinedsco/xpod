@@ -173,7 +173,11 @@ def prepare_materials(component,source,build,out,jobs):
         stage('source-prepare',['bash',str(component/'scripts/build-module-runtime-sdk.sh'),'source-only'],timeout=1800)
     finally:
         del os.environ[private_key]
-    dump(out/'source-prepared.json',dict(schemaVersion=1,identity=identity,deadlineUnix=budget.deadline_unix,stages=stages))
+    stage('fetchcontent-prepare',['python3',str(component/'scripts/sdk-fetchcontent-materials.py'),'prepare'],timeout=3600)
+    dependency_collection=commands.ref(out/'fetchcontent/materials.json',out)
+    dependency_bytes=sum(path.stat().st_size for path in (out/'fetchcontent').rglob('*') if path.is_file())
+    dependency_bytes+=sum(stages[-1][key]['bytes'] for key in ['receipt','stdout','stderr','supervisionReceipt','supervisionRaw'])
+    dump(out/'source-prepared.json',dict(schemaVersion=1,identity=identity,deadlineUnix=budget.deadline_unix,stages=stages[:1],dependencyStage=stages[1],dependencyCollection=dependency_collection,dependencyMaterialBytes=dependency_bytes))
 
 def build_materials(component,source,build,out,jobs):
     component=Path(component);source=Path(source);build=Path(build);out=Path(out)
@@ -181,12 +185,12 @@ def build_materials(component,source,build,out,jobs):
     prepared=json.loads((out/'source-prepared.json').read_text())
     identity=json.loads(os.environ['XPOD_QLEVER_SDK_IDENTITY'])
     if prepared['identity']!=identity or prepared['deadlineUnix']!=budget.deadline_unix:raise ValueError('Prepared SDK identity/deadline differs')
-    stages=list(prepared['stages'])
+    stages=[*prepared['stages'],prepared['dependencyStage']]
     def stage(name,command,inputs=(),timeout=30,reserve=4200):
         row=commands.capture(name,command,out,component,inputs,timeout=budget.timeout(timeout,reserve));stages.append(row);return row
     def archive(files,destination,before,compile_outputs=(),metadata_originals=(),observed_after=None):
         return archive_inputs(files,destination,before,compile_outputs,metadata_originals,remaining_bytes=lambda:toolchain.remaining_source_bytes(out),observed_after=observed_after)
-    execution=toolchain.Session(out,source,build,budget,check_budget,toolchain.remaining_source_bytes(out))
+    execution=toolchain.Session(out,source,build,budget,check_budget,toolchain.remaining_source_bytes(out),prepared_dependencies=prepared['dependencyCollection'])
     try:
         private_key='XPOD_QLEVER_UPSTREAM_MATERIALS_DIR'
         if private_key in os.environ:raise ValueError('Upstream capture directory is owned by the module producer')
@@ -335,7 +339,7 @@ def build_materials(component,source,build,out,jobs):
         if execution_bytes+debian_bytes+upstream_bytes+generation_bytes+symlink_bytes+sum(row['bytes'] for row in inventory['shards'])>LIMIT-512*1024**2:raise ValueError('Shared source/execution aggregate exceeds reserved source budget')
         binary_ref,binary_bytes,binary_ownership_bytes=binary_hook.acquire(out,inventory['files'],ownership,ledger['stdout'],identity['target'],lambda:toolchain.remaining_source_bytes(out),source_stage,commands.ref,check_budget)
         toolchain.remaining_source_bytes(out)  # Whole retained domain, not overlapping counter sums.
-        inner.update(toolchainExecution=execution_ref,toolchainExecutionBytes=execution_bytes,debianBinaries=binary_ref,debianBinaryBytes=binary_bytes,debianBinaryOwnershipBytes=binary_ownership_bytes)
+        inner.update(dependencyCollection=prepared['dependencyCollection'],dependencyMaterialBytes=prepared['dependencyMaterialBytes'],toolchainExecution=execution_ref,toolchainExecutionBytes=execution_bytes,debianBinaries=binary_ref,debianBinaryBytes=binary_bytes,debianBinaryOwnershipBytes=binary_ownership_bytes)
         dump(out/'build-inner.json',inner)
     finally:
         execution.abort()

@@ -50,9 +50,10 @@ RUN XPOD_QLEVER_SDK_IDENTITY="${XPOD_QLEVER_SDK_IDENTITY}" XPOD_QLEVER_SDK_DEADL
 FROM source-prepared AS build
 ARG XPOD_QLEVER_SDK_DEADLINE_UNIX
 ARG XPOD_QLEVER_SDK_IDENTITY
-# FetchContent's build/_deps sources remain writable and explicitly unqualified.
+# Prepared dependency sources are RO; dependency binary outputs stay in build.
 # exec keeps the kernel-owned guard as the entire RUN's namespace PID1.
 RUN --mount=type=bind,from=source-prepared,source=/opt/qlever-sdk/source,target=/opt/qlever-sdk/source,ro \
+    --mount=type=bind,from=source-prepared,source=/opt/qlever-sdk/dependencies,target=/opt/qlever-sdk/dependencies,ro \
     --mount=type=bind,from=source-prepared,source=/components,target=/components,ro \
     --mount=type=bind,from=source-prepared,source=/usr,target=/usr,ro \
     --mount=type=bind,from=source-prepared,source=/etc/alternatives,target=/etc/alternatives,ro \

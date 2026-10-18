@@ -7,6 +7,7 @@ import hashlib
 import json
 import re
 import struct
+import shlex
 POLICIES={
  0xc00000b7:dict(exec={221,281},execveat=281,protect={226,288},read=63,write=64,close=57,mmap=222,clone=220,clone3=435,spawn={220,435},renameat=38,renameat2=276,renameOps={38,276},exits={93,94},forbidden={0,1,2,3,4,292,425,426,427,271,117,97,268}),
  0xc000003e:dict(exec={59,322},execveat=322,protect={10,329},read=0,write=1,close=3,mmap=9,clone=56,clone3=435,spawn={56,57,58,435},rename=82,renameat=264,renameat2=316,renameOps={82,264,316},exits={60,231},forbidden={206,207,208,209,210,333,425,426,427,311,101,272,308}),
@@ -155,6 +156,96 @@ def digest_blocks(blocks,maximum,check=lambda:None):
         check();need(isinstance(block,bytes) and len(block)<=65536,'bounded write digest chunk');count+=len(block);need(count<=maximum,'write digest byte bound');digest.update(block)
     return dict(bytes=count,sha256=digest.hexdigest())
 
+def parse_fetchcontent_declarations(text):
+    # Intentionally bounded literal subset of the pinned CMake declarations.
+    # Changed/dynamic/custom download semantics require a new reviewed adapter.
+    VALUES={'GIT_REPOSITORY','GIT_TAG','GIT_SHALLOW','URL','URL_HASH','SOURCE_SUBDIR'};FLAGS={'SYSTEM','EXCLUDE_FROM_ALL','OVERRIDE_FIND_PACKAGE'};NAME=re.compile(r'[a-z][a-z0-9_-]*\Z')
+    clean=re.sub(r'#[^\n]*','',text)
+    declarations=[];names=set()
+    for match in re.finditer(r'(?im)^\s*FetchContent_Declare\s*\(([^)]*)\)',clean):
+        tokens=shlex.split(match[1]);name=tokens[0].lower() if tokens else ''
+        if not NAME.fullmatch(name) or name in names:raise ValueError('Unique literal FetchContent name required')
+        names.add(name);options={};i=1
+        while i<len(tokens):
+            key=tokens[i].upper();i+=1
+            if key in options or key not in VALUES|FLAGS:raise ValueError('Unsupported FetchContent declaration option: '+key)
+            if key in FLAGS:options[key]=True;continue
+            if i==len(tokens) or any(c in tokens[i] for c in '$;[]\\'):raise ValueError('Literal FetchContent option required')
+            options[key]=tokens[i];i+=1
+        row=dict(name=name,options=tokens[1:])
+        if 'SOURCE_SUBDIR' in options:
+            need(not options['SOURCE_SUBDIR'].startswith('/') and all(v not in ['', '.', '..', '.git'] for v in options['SOURCE_SUBDIR'].split('/')),'canonical dependency source subdir');row['sourceSubdir']=options['SOURCE_SUBDIR']
+        if 'GIT_REPOSITORY' in options:
+            if 'URL' in options or not re.fullmatch(r'https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+',options['GIT_REPOSITORY']) or not re.fullmatch('[0-9a-f]{40}',options.get('GIT_TAG','')):raise ValueError('Exact HTTPS Git repository/commit required')
+            if options.get('GIT_SHALLOW','FALSE').upper() not in ('TRUE','FALSE'):raise ValueError('Literal shallow declaration required')
+            row.update(method='git',repository=options['GIT_REPOSITORY'],commit=options['GIT_TAG'])
+        else:
+            if set(options)&{'GIT_TAG','GIT_SHALLOW'} or not options.get('URL','').startswith('https://github.com/'):raise ValueError('Pinned HTTPS archive required')
+            digest=options.get('URL_HASH','')
+            if not re.fullmatch(r'SHA3_224=[a-f0-9]{56}',digest):raise ValueError('Exact declared archive hash required')
+            row.update(method='url',url=options['URL'],algorithm='sha3_224',digest=digest.split('=',1)[1])
+        declarations.append(row)
+    calls=re.findall(r'(?im)^\s*FetchContent_MakeAvailable\s*\(([^)]*)\)',clean)
+    if len(calls)!=1 or len(shlex.split(calls[0]))!=len(names) or set(shlex.split(calls[0]))!=names:raise ValueError('Exact closed literal FetchContent availability set required')
+    if not declarations:raise ValueError('Actual FetchContent declarations required')
+    return declarations
+
+def fetchcontent_source_bindings(rows):
+    cache='set(FETCHCONTENT_FULLY_DISCONNECTED ON CACHE BOOL "" FORCE)\n';names=set()
+    for row in rows:
+        name=row['name']
+        if not isinstance(name,str) or not re.fullmatch('[a-z][a-z0-9_-]*',name) or name in names or row['sourceRoot']!='/opt/qlever-sdk/dependencies/'+name:raise ValueError('Fixed literal CMake prepared source binding required')
+        names.add(name);cache+='set(FETCHCONTENT_SOURCE_DIR_'+name.upper()+' "'+row['sourceRoot']+'" CACHE PATH "" FORCE)\n'
+    return cache
+
+def fetchcontent_cache_bytes(declarations):
+    return fetchcontent_source_bindings([dict(name=row['name'],sourceRoot='/opt/qlever-sdk/dependencies/'+row['name']) for row in declarations]).encode('utf-8')
+
+def dependency_declaration_projection(collection,original):
+    need(collection.get('declarationSource',{}).get('sourcePath')=='/opt/qlever-sdk/source/CMakeLists.txt','fixed actual dependency declaration source required')
+    declarations=parse_fetchcontent_declarations(original.decode('utf-8','strict'))
+    need([row['declaration'] for row in collection['dependencies']]==declarations,'dependency declaration universe differs from actual CMake original')
+    return fetchcontent_cache_bytes(declarations)
+
+def probe_mount_readonly(path,data):
+    matches=[]
+    for line in data.decode('utf-8','strict').splitlines():
+        fields=line.split();separator=fields.index('-');need(separator>=6 and len(fields)>separator+3,'dependency kernel mount layout')
+        mount=fields[4].replace('\\040',' ').replace('\\011','\t').replace('\\012','\n').replace('\\134','\\')
+        if path==mount or path.startswith(mount.rstrip('/')+'/'):matches.append((len(mount),mount,fields[5].split(','),fields[separator+3].split(',')))
+    need(bool(matches),'dependency source mount missing');_,mount,options,superoptions=max(matches);need('ro' in options or 'ro' in superoptions,'dependency source provider is writable')
+    return dict(mount=mount,mountOptions=options,superblockOptions=superoptions)
+
+def dependency_inventory_rows(index,shards,maximum_members,check=lambda:None):
+    need(index.get('schemaVersion')==1 and type(index.get('files')) is int and 0<=index['files']<=maximum_members and type(index.get('bytes')) is int and index['bytes']>=0,'dependency physical inventory index shape')
+    need(len(index['shards'])==len(shards),'dependency inventory shard count differs');rows={};total=0
+    for shard in shards:
+        need(shard.get('schemaVersion')==1 and isinstance(shard.get('files'),list),'dependency inventory shard shape')
+        for row in shard['files']:
+            check();path=row.get('path');need(isinstance(path,str) and path and not path.startswith('/') and '\\' not in path and '\0' not in path and all(v not in ['', '.', '..'] for v in path.split('/')) and len(path.encode())<=4096,'canonical dependency member path required')
+            need(path not in rows and len(rows)<maximum_members,'dependency physical inventory duplicate/member bound')
+            need(row.get('kind') in ['file','symlink'] and type(row.get('mode')) is int and 0<=row['mode']<=0o7777 and type(row.get('bytes')) is int and row['bytes']>=0 and re.fullmatch('[0-9a-f]{64}',row.get('sha256','')),'dependency physical member shape')
+            if row['kind']=='symlink':
+                target=row.get('target');need(isinstance(target,str) and target and not target.startswith('/') and '\0' not in target,'dependency internal symlink target required')
+                parts=path.split('/')[:-1]
+                for part in target.split('/'):
+                    if part=='..':need(bool(parts),'dependency symlink escapes root');parts.pop()
+                    elif part not in ['', '.']:parts.append(part)
+                raw=target.encode();need(len(raw)==row['bytes'] and hashlib.sha256(raw).hexdigest()==row['sha256'],'dependency symlink original differs')
+            rows[path]=row;total+=row['bytes']
+    need(len(rows)==index['files'] and total==index['bytes'],'dependency physical inventory aggregate differs');return rows
+
+def dependency_collection_contract(prepared,collection):
+    need(collection.get('schemaVersion')==1 and collection.get('kind')=='qlever-sdk-fetchcontent-prepared-originals' and collection.get('sourceRoot')=='/opt/qlever-sdk/source' and collection.get('dependenciesRoot')=='/opt/qlever-sdk/dependencies','fixed prepared dependency collection required')
+    need(isinstance(prepared.get('dependencyCollection'),dict) and prepared['dependencyCollection']['path']=='fetchcontent/materials.json','source-prepared dependency collection binding required')
+    dependencies=collection.get('dependencies');need(isinstance(dependencies,list) and len(dependencies)<=128,'dependency declaration count bound');result={}
+    for row in dependencies:
+        name=row.get('name');need(isinstance(name,str) and re.fullmatch('[A-Za-z][A-Za-z0-9_-]*',name) and name not in result,'unique canonical declared dependency name required')
+        need(row.get('sourceRoot')=='/opt/qlever-sdk/dependencies/'+name and row.get('sourceOriginals',{}).get('kind') in ['git','url'] and isinstance(row['sourceOriginals'].get('file'),dict),'dependency root/source-originals binding differs')
+        need(row.get('declaration',{}).get('name')==name,'dependency declaration name differs from registered root')
+        need(isinstance(row.get('sourceInventory'),dict) and row.get('declaration',{}).get('method')==row['sourceOriginals']['kind'],'dependency inventory/source kind reference required');result[name]=row
+    return result
+
 def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,limits=None,capture_observer=None):
     maximum_raw=limits['sourceMaterialBytes'] if limits else 32*1024**2
     maximum_file=limits['shardBytes'] if limits else 1024**2
@@ -165,7 +256,7 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
     alias_close_windows={};alias_close_exits=set()
     mode_windows={};mode_transitions={};namespace_bindings=[]
     append_obligations={};append_completed={};append_dirty={};append_checkpoints={};append_hashes={};write_projections={};write_windows={};closed_write_windows=set();write_transitions={};write_consumers=[];write_read_exits={}
-    empty_windows={};empty_eofs=set()
+    empty_windows={};empty_eofs=set();dependency_roots={};dependency_reads=0;dependency_cache=None;dependency_expected_names=None;dependency_collection_identity=None
     prepared={};prepared_consumers=[];prepared_digest=hashlib.sha256();prepared_count=0;prepared_sealed=False;prepared_paths=set()
     def capture_data(ref):
         nonlocal capture_total
@@ -179,6 +270,12 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                 check();need(isinstance(block,bytes) and len(block)<=65536,'bounded actual capture block required');count+=len(block);need(count<=ref['bytes'],'capture actual byte bound');digest.update(block)
             data=(count,digest.hexdigest());capture_total+=count;need(capture_total<=maximum_total and data==(ref['bytes'],ref['sha256']),'capture actual bytes/reference differs');original_cache[key]=data
         return original_cache[key]
+    def dependency_bytes(ref):
+        capture_data(ref);need(ref['bytes']<=4*1024**2,'dependency metadata byte bound')
+        value=read_original(ref['path'],maximum_file);blocks=[value] if isinstance(value,bytes) else value;data=bytearray()
+        for block in blocks:check();need(isinstance(block,bytes) and len(block)<=65536,'dependency metadata range bound');data.extend(block);need(len(data)<=ref['bytes'],'dependency metadata grew')
+        need((len(data),hashlib.sha256(data).hexdigest())==(ref['bytes'],ref['sha256']),'dependency metadata original changed');return bytes(data)
+    def dependency_json(ref):return json.loads(dependency_bytes(ref))
     tool_originals={};tool_files={};tool_pending=set();tool_execs=0;tool_mappings=0;tool_core=None;exec_events={};tool_exec_paths={};tool_protect_before={};tool_digest=hashlib.sha256()
     def tool_ref(reference,kind=None):
         value=tool_originals.get(reference['path']);need(value and value['original']==reference and (kind is None or value['captureKind']==kind),'toolchain reference lacks actual complete original')
@@ -207,7 +304,31 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
         need(not live,'prior actual process tree has not closed');roots=[];waits=[]
         for raw in lines:
             check();total+=len(raw);need(total<=maximum_raw and len(raw)<=65536,'tiny raw aggregate/record bound');row=json.loads(raw);need(row['sequence']==last+1 and row['phase']==phase,'phase/raw sequence differs');last=row['sequence'];kind=row['kind']
-            if kind=='prepared-build-input-original':
+            if kind=='prepared-dependency-source-root':
+                need(not live and not roots and not phase_tracking,'dependency roots must precede first actual root')
+                dependency_prepared=dependency_json(row['sourcePreparedOriginal']);collection=dependency_json(row['collectionOriginal']);declared=dependency_collection_contract(dependency_prepared,collection)
+                declaration=collection.get('declarationSource',{});need(declaration.get('sourcePath')=='/opt/qlever-sdk/source/CMakeLists.txt','fixed actual dependency declaration source required')
+                expected_cache=dependency_declaration_projection(collection,dependency_bytes(row['declarationOriginal']))
+                identity=tuple((row[key]['bytes'],row[key]['sha256']) for key in ['sourcePreparedOriginal','collectionOriginal','mountinfoOriginal','declarationOriginal','cmakeCacheOriginal'])
+                need(dependency_collection_identity is None or dependency_collection_identity==identity,'dependency root registration mixes original collections');dependency_collection_identity=identity;dependency_expected_names=set(declared)
+                need(row['declarationReference']==declaration['file'] and (declaration['file']['bytes'],declaration['file']['sha256'])==(row['declarationOriginal']['bytes'],row['declarationOriginal']['sha256']),'dependency declaration original reference differs')
+                need(collection.get('cmakeCachePath')=='/opt/qlever-sdk/dependencies/sources.cmake' and row['cmakeCacheReference']==collection['cmakeCache'] and dependency_bytes(row['cmakeCacheOriginal'])==expected_cache,'dependency actual CMake cache bytes differ')
+                need((collection['cmakeCache']['bytes'],collection['cmakeCache']['sha256'])==(row['cmakeCacheOriginal']['bytes'],row['cmakeCacheOriginal']['sha256']),'dependency cache original reference differs')
+                expected=dependency_prepared['dependencyCollection'];need((expected['bytes'],expected['sha256'])==(row['collectionOriginal']['bytes'],row['collectionOriginal']['sha256']),'dependency collection differs from actual source-prepared')
+                name=row['name'];need(name in declared and name not in dependency_roots and row['sourceRoot']==declared[name]['sourceRoot'],'dependency raw root differs from registered declaration')
+                index=dependency_json(row['inventoryIndexOriginal']);need(row['inventoryReference']==declared[name]['sourceInventory'] and row['inventoryShardReferences']==index['shards'],'dependency original relative references differ')
+                need((declared[name]['sourceInventory']['bytes'],declared[name]['sourceInventory']['sha256'])==(row['inventoryIndexOriginal']['bytes'],row['inventoryIndexOriginal']['sha256']),'dependency inventory registration differs')
+                need(len(index['shards'])==len(row['inventoryShardOriginals']),'dependency raw shard references differ')
+                for expected,actual in zip(index['shards'],row['inventoryShardOriginals']):need((expected['bytes'],expected['sha256'])==(actual['bytes'],actual['sha256']),'dependency shard registration differs')
+                files=dependency_inventory_rows(index,[dependency_json(ref) for ref in row['inventoryShardOriginals']],250000,check);need(sum(len(item['files']) for item in dependency_roots.values())+len(files)<=250000,'dependency aggregate member bound')
+                capture_data(row['mountinfoOriginal']);mountvalue=read_original(row['mountinfoOriginal']['path'],maximum_file);mountparts=[mountvalue] if isinstance(mountvalue,bytes) else mountvalue;mountbytes=bytearray()
+                for block in mountparts:
+                    check();need(isinstance(block,bytes) and len(block)<=65536 and len(mountbytes)+len(block)<=row['mountinfoOriginal']['bytes']<=4*1024**2,'dependency mountinfo byte bound');mountbytes.extend(block)
+                mountbytes=bytes(mountbytes);need((len(mountbytes),hashlib.sha256(mountbytes).hexdigest())==(row['mountinfoOriginal']['bytes'],row['mountinfoOriginal']['sha256']),'dependency mountinfo changed')
+                need(probe_mount_readonly(row['sourceRoot'],mountbytes)==row['provider'],'dependency source provider original differs')
+                if dependency_cache is None:dependency_cache=dict(path=collection['cmakeCachePath'],original=row['cmakeCacheOriginal'],registrationSequence=row['sequence'],mounts=mountbytes)
+                dependency_roots[name]=dict(root=row['sourceRoot'],files=files,registrationSequence=row['sequence'],mounts=mountbytes)
+            elif kind=='prepared-build-input-original':
                 need(not live and not roots and not phase_tracking and not prepared_sealed,'prepared input must precede first actual process')
                 need(row['path'].startswith('/') and row['path'] not in prepared_paths,'unique absolute prepared original path required')
                 data=capture_data(row['original']);need(len(row['identity'])==6 and row['identity'][3]==data[0],'prepared identity/bytes differ');prepared[row['sequence']]=(row,data);prepared_count+=1;prepared_paths.add(row['path'])
@@ -216,7 +337,7 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                 need(not live and not roots and not phase_tracking and not prepared_sealed and row['files']==prepared_count and row['inventorySha256']==prepared_digest.hexdigest(),'prepared closed-set byte seal differs');prepared_sealed=True
                 need(all(value[0]['path'].startswith(row['buildRoot'].rstrip('/')+'/') for value in prepared.values()),'prepared original escapes actual build root')
             elif kind=='owned-root-binding':
-                need(not live and not roots,'unique actual root required');live.add(row['pid']);roots.append(row['pid']);need(row['backend']=='ptrace-all-stop-process-v1','wrong observer backend')
+                need(dependency_expected_names is None or set(dependency_roots)==dependency_expected_names,'prepared dependency root universe is not completely registered');need(not live and not roots,'unique actual root required');live.add(row['pid']);roots.append(row['pid']);need(row['backend']=='ptrace-all-stop-process-v1','wrong observer backend')
                 need(row.get('taskOwnershipModel') in [None,'all-tracked-tids-shared-fd-v1'],'unknown task ownership model');shared_mode=row.get('taskOwnershipModel') is not None;owners={}
                 if shared_mode:need(row['tgid']==row['fdTable']==row['pid'],'initial root ownership differs');owners[row['pid']]=dict(tgid=row['tgid'],fdTable=row['fdTable'])
             elif kind=='actual-child-binding':
@@ -455,7 +576,19 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                 data=capture_data(row['original'])
                 need(len(row['identity'])==6 and row['identity'][3]==data[0],'actual capture identity/size differs');caps[row['sequence']]=(row,data)
                 if capture_observer:capture_observer(row,data)
-                if row['role']=='source-read':source_reads.append(row)
+                if row['role']=='source-read':
+                    source_reads.append(row)
+                    if row['path'].startswith('/opt/qlever-sdk/dependencies/'):
+                        need('dependency' in row,'dependency actual read lacks registration binding')
+                        binding=row['dependency']
+                        if binding['name']=='@cmake-cache':
+                            need(dependency_cache and row['path']==dependency_cache['path'] and binding['relativePath']=='sources.cmake' and binding['registrationSequence']==dependency_cache['registrationSequence'],'dependency cache read registration differs')
+                            need(data==(dependency_cache['original']['bytes'],dependency_cache['original']['sha256']) and row['identity'][2]&0o7777==0o644,'dependency actual cache FD bytes/mode differ');probe_mount_readonly(row['path'],dependency_cache['mounts']);dependency_reads+=1
+                            continue
+                        registered=dependency_roots.get(binding['name']);need(registered and binding['registrationSequence']==registered['registrationSequence'],'dependency read has no actual registered source')
+                        root=registered['root'];need(row['path'].startswith(root+'/') and binding['relativePath']==row['path'][len(root)+1:],'dependency read escapes registered root')
+                        expected=registered['files'].get(binding['relativePath']);need(expected and expected['kind']=='file' and (expected['bytes'],expected['sha256'])==data and expected['mode']==row['identity'][2]&0o7777,'dependency actual FD bytes/mode differ from prepared physical snapshot')
+                        probe_mount_readonly(row['path'],registered['mounts']);dependency_reads+=1
             elif kind=='vfork-parent-held':
                 parent=row['parentPid'];child=row['childPid'];event=vfork_events.get(row['eventSequence']);binding=child_bindings.get(child)
                 need(parent in live and child in live and parent not in vfork_holds and event and event['pid']==parent and event['event']==2 and binding and binding['event']==2 and binding['parentPid']==parent,'VFORK hold lacks actual event/child binding')
@@ -531,5 +664,5 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
             actual=covered.get(path)
             if actual is None:pending.append('actual-successful-generated-consumer-missing:'+path)
             else:need(actual['bytes']==expected['bytes'] and actual['sha256']==expected['sha256'],'actual generated consumer differs from selected full-shard input')
-    return dict(schemaVersion=1,kind='all-stop-CMake-generated-byte-mechanics',selectedGeneratedConsumerByteCustodyVerified=not pending,outputs=sorted(covered.values(),key=lambda row:row['path']),observedSourceReadCaptures=len(source_reads),pending=pending,overallSdkSourceVerified=False,
+    return dict(schemaVersion=1,kind='all-stop-CMake-generated-byte-mechanics',selectedGeneratedConsumerByteCustodyVerified=not pending,outputs=sorted(covered.values(),key=lambda row:row['path']),observedSourceReadCaptures=len(source_reads),observedPreparedDependencyReadCaptures=dependency_reads,preparedDependencySourceAuthorityVerified=False,preparedDependencyPending=(['independent-FetchContent-dependency-stage-and-Git-or-URL-source-authority-unverified'] if dependency_roots else []),pending=pending,overallSdkSourceVerified=False,
                 observedAliasOnlyCloses=len(alias_close_exits),observedActualModeTransitions=len(mode_transitions),observedNamedRetainedFdBindings=len(namespaces),observedActualWriteTransitions=len(write_transitions),observedEmptyReadEofWindows=len(empty_eofs),toolchainFileSnapshots=list(tool_files.values()),toolchainActualExecImages=tool_execs,toolchainActualFileMappings=tool_mappings,toolchainObservationSha256=tool_digest.hexdigest(),toolchainPending=sorted(tool_pending|({'toolchain-executed-byte-immutability-and-full-source-authority-unverified'} if tool_execs else set())),toolchainSourceClosureVerified=False,preparedInputConsumers=list(prepared_covered.values()),preparedInputConsumerBytesVerified=bool(prepared_covered),phaseTracking=phase_tracking,scope='actual producer-close/rename/consumer bytes only; reviewed observer execution/Git/source/runtime authority independent')
