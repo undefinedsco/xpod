@@ -7,7 +7,8 @@ const inside = (root, value) => value === root || value.startsWith(root + path.s
 function prepare(parent) {
   if (process.versions.bun || process.versions.node.split('.')[0] !== '22') throw new Error('Verifier tooling requires actual Node 22');
   const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json')));
-  const rootManifest = JSON.parse(fs.readFileSync(path.join(repository, 'package.json')));
+  const { resolveCatalogManifest } = require('../../../scripts/prepare-package-manifest.cjs');
+  const rootManifest = resolveCatalogManifest(JSON.parse(fs.readFileSync(path.join(repository, 'package.json'))));
   if (manifest.dependencies.semver !== rootManifest.devDependencies.semver || manifest.packageManager !== rootManifest.packageManager) throw new Error('Verifier tooling pin differs from repository authority');
   const base = fs.realpathSync(parent);
   if (inside(fs.realpathSync(repository), base) || /[\x00-\x1f\x7f]/u.test(base)) throw new Error('Verifier tooling must be outside the checkout');

@@ -115,7 +115,7 @@ describe('reviewed normal CLI input-set policy', () => {
   const files = tracked.filter(name => exact.includes(name) || prefixes.some(prefix => name.startsWith(prefix + '/'))).map(path => ({ path }));
   const manifest = { name: 'xpod-cli-publication-build', private: true, workspaces: ['packages/xpod-cli', 'packages/xpod-client'],
     devDependencies: { ...JSON.parse(read('packages/xpod-cli/package.json').toString()).devDependencies,
-      semver: JSON.parse(read('package.json').toString()).devDependencies.semver } };
+      semver: require('../../scripts/prepare-package-manifest.cjs').resolveCatalogManifest(JSON.parse(read('package.json').toString())).devDependencies.semver } };
   it('matches the complete reviewed tracked input set and generated manifest', () => {
     expect(files.map(row => row.path)).toContain('scripts/lib/module-source-materials.py');
     expect(files.map(row => row.path)).toContain('scripts/lib/module-artifact-limits.json');

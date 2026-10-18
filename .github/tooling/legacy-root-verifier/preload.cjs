@@ -14,7 +14,8 @@ try {
   if (modules !== path.resolve(supplied) || path.basename(modules) !== 'node_modules' || inside(repository, tooling)) throw new Error('Verifier dependency scope is not isolated');
   for (const file of ['package.json', 'bun.lock', '.npmrc']) if (!fs.readFileSync(path.join(tooling, file)).equals(fs.readFileSync(path.join(__dirname, file)))) throw new Error('Verifier tooling source/lock mismatch');
   const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json')));
-  const rootManifest = JSON.parse(fs.readFileSync(path.join(repository, 'package.json')));
+  const { resolveCatalogManifest } = require('../../../scripts/prepare-package-manifest.cjs');
+  const rootManifest = resolveCatalogManifest(JSON.parse(fs.readFileSync(path.join(repository, 'package.json'))));
   if (Object.keys(manifest.dependencies).join(',') !== 'semver' || manifest.dependencies.semver !== rootManifest.devDependencies.semver) throw new Error('Verifier dependency contract mismatch');
   const validatorRequire = Module.createRequire(path.join(repository, 'scripts/lib/root-registry-supply.cjs'));
   const entry = validatorRequire.resolve('semver'), packageFile = validatorRequire.resolve('semver/package.json');

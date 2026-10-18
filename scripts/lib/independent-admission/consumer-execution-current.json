@@ -4,8 +4,28 @@
     "sha256": "4cee6cad6f7086c4577281641dda0e3d57fc5218da9864453d14aa8aee75d73f"
   },
   {
+    "path": ".github/tooling/legacy-root-verifier/.npmrc",
+    "sha256": "60376c82177672b6c6ad2f23106bff70962d8525b2bbd0dd5184d0915397bf96"
+  },
+  {
+    "path": ".github/tooling/legacy-root-verifier/bun.lock",
+    "sha256": "e25dc4eca760456169226ebd1f2be64af3d95f201bd8d42957727e215ce30845"
+  },
+  {
+    "path": ".github/tooling/legacy-root-verifier/package.json",
+    "sha256": "7be571f3dc7c3a5842135a8b90d1b646520f38150159ad75c6096aa78f3ac53c"
+  },
+  {
+    "path": ".github/tooling/legacy-root-verifier/preload.cjs",
+    "sha256": "110af40f7810546c407710b66c07ec61a3469a5ccd353a6cd648b4083d4b7d30"
+  },
+  {
+    "path": ".github/tooling/legacy-root-verifier/prepare.cjs",
+    "sha256": "0080c9b59b0db1bff4bbe0fc4da96133e85fff02ebd8bd14abdf28584c362434"
+  },
+  {
     "path": "bun.lock",
-    "sha256": "87cfaf4e12092fb0e67eaba18985efadcc501a6c2112798fae217608f475048c"
+    "sha256": "8e191efdefc855b72cea0f8cbc3e3ad2f5c3f47c4466553f7d23bd04fccc3d0d"
   },
   {
     "path": "docker/qlever-runtime-sdk/Dockerfile.module-bookworm",
@@ -13,7 +33,7 @@
   },
   {
     "path": "package.json",
-    "sha256": "6e6d692fc61a3cba8f71a7eeb2c088b7b27cd762406190c3781c7a20bb9e08df"
+    "sha256": "9b6916d878ab959bc4825382df29c0ca279e2d88e7bfc19cb61552e857f6a3f2"
   },
   {
     "path": "packages/ai-connections-runtime/package.json",
@@ -61,7 +81,7 @@
   },
   {
     "path": "packages/xpod-api/package.json",
-    "sha256": "0176c10141dbdd675e2a9741787fd1d56b5e811a5951e0dd3d056ff949e60576"
+    "sha256": "ce111f505757cbb813e70237d7fec59ae496eb1b7f6661d57be1203cd4709a60"
   },
   {
     "path": "packages/xpod-api/scripts/bun-build-api.ts",
@@ -501,7 +521,7 @@
   },
   {
     "path": "scripts/check-cli-publication.cjs",
-    "sha256": "ff0eb13abb628addad1c8fdfd3ee6d615215325e9ad7bc8799139a056e316c75"
+    "sha256": "099ce70c1565bed8802e1b6276f9216ab78cc4ebeb12df60592eb426252db110"
   },
   {
     "path": "scripts/check-dependency-state.ts",
@@ -693,7 +713,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/github-origin.ts",
-    "sha256": "f58e72eaef54e05bbd18cc7171ba6d6a58b9691cf9eda2af2808611bd20da02c"
+    "sha256": "d86bd4f6e2e3372f7731c2667fb0bfc795ae8c2ab198d3d41f6cd86f05d27238"
   },
   {
     "path": "scripts/lib/independent-admission/github-source-binding-groups.ts",
@@ -809,7 +829,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/module-source-phases.ts",
-    "sha256": "842409559034a709b6340c4358fdb9bb0a82204fa5fb5d096e6627c0496c61f0"
+    "sha256": "5a1f74aebb5a7c46e57ff15d6ecace01389746b2e2cd27cfb245a50f75a4011b"
   },
   {
     "path": "scripts/lib/independent-admission/native-admission-requirements.ts",
@@ -1033,7 +1053,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/source-rules.ts",
-    "sha256": "d47945d5fe18f3ef9277f080a37b42723f6e74a8e457c778542ba405f8c1ca05"
+    "sha256": "fd1882152fd0c894a1746192f36e588220870580c4fd6756d4d4945a5ac7ec91"
   },
   {
     "path": "scripts/lib/independent-admission/verified-admission-cache.ts",
@@ -1117,7 +1137,7 @@
   },
   {
     "path": "scripts/lib/physical-module-stage.ts",
-    "sha256": "41bbf5387ab913625aa29663c0f2758b3b783de28f48c201d375369a7268c750"
+    "sha256": "d9dc03f66ca040637a6d1d2d3a405252cdd6ba71d69aad95361a53f7d94c200f"
   },
   {
     "path": "scripts/lib/physical-pack-receipt.ts",
@@ -1177,7 +1197,7 @@
   },
   {
     "path": "scripts/prepare-package-manifest.cjs",
-    "sha256": "e96742e42dffe81814613c33468c256d03144ac82872a5537df8fa53d69e1550"
+    "sha256": "47c24e7547f03493161baea3abdf7686db7c21a791d4871535e66d0a3dac2a02"
   },
   {
     "path": "scripts/project-afs-product-input.ts",

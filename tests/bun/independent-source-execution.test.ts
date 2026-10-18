@@ -16,7 +16,7 @@ const exact = [...TOOLS, ...PATCHES.map((name: string) => 'scripts/' + name), 's
   ...JSON.parse(readFileSync('packages/xpod-cli/scripts/canonical-host-sources.json', 'utf8')).map((name: string) => 'src/' + name)];
 const names = tracked.filter(name => exact.includes(name) || prefixes.some(prefix => name === prefix || name.startsWith(prefix + '/')));
 const sourceBytes = new Map(names.map(name => [name, readFileSync(name)]));
-const readTracked = (name: string) => { const bytes = sourceBytes.get(name); if (!bytes) throw Error('untracked fixture input'); return bytes; };
+const readTracked = (name: string) => { const bytes = name === 'bun.lock' ? readFileSync(name) : sourceBytes.get(name); if (!bytes) throw Error('untracked fixture input'); return bytes; };
 
 // Real policy and tracked first-party input bytes; synthetic command/output
 // originals never grant origin authority or qualify a product for publication.
@@ -24,7 +24,7 @@ function fixture(mutate?: (state: any) => void) {
   const files = new Map<string, Buffer>();
   const put = (name: string, value: any) => { const bytes = Buffer.isBuffer(value) ? value : Buffer.from(JSON.stringify(value)); files.set(name, bytes); return { path: name, sha256: hash(bytes) }; };
   const manifest = { name: 'xpod-cli-publication-build', private: true, workspaces: ['packages/xpod-cli', 'packages/xpod-client'],
-    devDependencies: { ...JSON.parse(readTracked('packages/xpod-cli/package.json').toString()).devDependencies, semver: JSON.parse(readTracked('package.json').toString()).devDependencies.semver } };
+    devDependencies: { ...JSON.parse(readTracked('packages/xpod-cli/package.json').toString()).devDependencies, semver: require('../../scripts/prepare-package-manifest.cjs').resolveCatalogManifest(JSON.parse(readTracked('package.json').toString())).devDependencies.semver } };
   const context = { checkoutSha: 'a'.repeat(40) };
   const source = { schemaVersion: 1, context, generatedBuildManifest: manifest, files: names.map(path => ({ path, bytes: readTracked(path).length, sha256: hash(readTracked(path)) })) };
   const inputRows = source.files.map(row => { const bytes = row.path === 'package.json' ? Buffer.from(JSON.stringify(manifest, null, 2)) : readTracked(row.path); return { path: row.path,

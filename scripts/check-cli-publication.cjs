@@ -10,7 +10,8 @@ const { copyCliBuildInputs } = require('./cli-build-inputs.cjs');
 const { runPublicationCommand } = require('./lib/afs-publication-command.cjs');
 const { publicationBudget, createPublicationDeadline } = require('./lib/cli-publication-budget.cjs');
 const { inspectTarballBuffer, sha512Integrity } = require('./workspace-package-payload.cjs');
-const TOOLS = ['scripts/prepare-cli-publication.ts', 'scripts/independent-release-plan.ts', 'scripts/workspace-package-payload.cjs', 'scripts/lib/afs-publication-command.cjs', 'scripts/lib/module-source-materials.py', 'scripts/lib/module-artifact-limits.json', 'scripts/lib/cli-publication-budget.cjs'];
+const { resolveCatalogManifest } = require('./prepare-package-manifest.cjs');
+const TOOLS = ['scripts/prepare-cli-publication.ts', 'scripts/prepare-package-manifest.cjs', 'scripts/platform-binaries.cjs', 'scripts/independent-release-plan.ts', 'scripts/workspace-package-payload.cjs', 'scripts/lib/afs-publication-command.cjs', 'scripts/lib/module-source-materials.py', 'scripts/lib/module-artifact-limits.json', 'scripts/lib/cli-publication-budget.cjs'];
 const PATCHES = ['patch-jose.js', 'patch-inrupt-authn-refresh.js', 'patch-inrupt-authn-transport.js', 'patch-inrupt-authn-operation-cleanup.js'];
 const PUBLICATION_BUDGET = publicationBudget(PATCHES.length + 6);
 const hash = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
@@ -124,7 +125,7 @@ async function produceOwned(root, evidence, updateLock) {
   try {
     const copied = copyCliBuildInputs(root, source);
     const cli = path.join(source, 'packages/xpod-cli'), client = path.join(source, 'packages/xpod-client');
-    const information = json(path.join(cli, 'package.json')), rootManifest = json(path.join(root, 'package.json'));
+    const information = json(path.join(cli, 'package.json')), rootManifest = resolveCatalogManifest(json(path.join(root, 'package.json')));
     if (typeof rootManifest.devDependencies?.semver !== 'string') throw new Error('publication_semver_declaration_missing');
     const buildManifest = { name: 'xpod-cli-publication-build', private: true,
       workspaces: ['packages/xpod-cli', 'packages/xpod-client'],

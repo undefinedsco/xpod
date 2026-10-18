@@ -48,15 +48,15 @@ test('registered caller observes only exact closed pre/post consumer jobs',async
 });
 test('caller/reusable/child/helper originals are exact, no mixed whole group',async()=>{
  for(const mutate of ['.github/workflows/ci.yml','.github/workflows/independent-publication.yml','.github/workflows/independent-archive-consumer.yml','scripts/lib/publication-control-input.cjs'])await expect(scenario('prepublish',{mutate})).rejects.toThrow();
- const next=CI_CONSUMER_SOURCE_GROUPS[0]!;const observed=new Map(next.selectors.map(row=>[sourceBindingKey(row),row.sha256]));expect(selectGitHubSourceBindingGroup(CI_CONSUMER_SOURCE_GROUPS,observed)).toBe(next);
+ const next=CI_CONSUMER_SOURCE_GROUPS[0]!;const observed=new Map([...next.selectors,...(next.secondarySelectors??[])].map(row=>[sourceBindingKey(row),row.sha256]));expect(selectGitHubSourceBindingGroup(CI_CONSUMER_SOURCE_GROUPS,observed)).toBe(next);
  const legacy=CONSUMER_SOURCE_GROUPS[0]!.selectors.find(row=>row.path.includes('archive-consumer'))!;observed.set(sourceBindingKey(legacy),legacy.sha256);expect(()=>selectGitHubSourceBindingGroup(CI_CONSUMER_SOURCE_GROUPS,observed)).toThrow();
 });
 
 test('fixed preinstall reusable workflow selects a separate exact group and retains old metadata scope',async()=>{
- expect(CI_CONSUMER_SOURCE_GROUPS).toHaveLength(2);
+ expect(CI_CONSUMER_SOURCE_GROUPS).toHaveLength(6);
  expect(githubOriginFacts(await scenario('prepublish'))?.workflowPath).toBe('.github/workflows/ci.yml');
  expect(githubOriginFacts(await scenario('prepublish',{legacyWorkflow:true}))?.workflowPath).toBe('.github/workflows/ci.yml');
- const [old,fixed]=CI_CONSUMER_SOURCE_GROUPS;const tuple=new Map(fixed!.selectors.map(row=>[sourceBindingKey(row),row.sha256]));
+ const old=CI_CONSUMER_SOURCE_GROUPS[0],fixed=CI_CONSUMER_SOURCE_GROUPS[3];const tuple=new Map([...fixed!.selectors,...(fixed!.secondarySelectors??[])].map(row=>[sourceBindingKey(row),row.sha256]));
  expect(selectGitHubSourceBindingGroup(CI_CONSUMER_SOURCE_GROUPS,tuple)).toBe(fixed!);
  tuple.set(sourceBindingKey(old!.selectors[0]!), 'f'.repeat(64));expect(()=>selectGitHubSourceBindingGroup(CI_CONSUMER_SOURCE_GROUPS,tuple)).toThrow();
 });

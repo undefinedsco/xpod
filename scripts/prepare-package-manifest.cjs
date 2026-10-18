@@ -7,8 +7,42 @@ const repoRoot = process.cwd();
 const packageJsonPath = path.join(repoRoot, 'package.json');
 const backupPath = path.join(repoRoot, '.test-data', 'package.json.pack.backup');
 
+// One declaration resolver for source-owned catalogs and Node distribution.
+// This is a pure transformation; callers still bind the original source bytes.
+function resolveCatalogManifest(pkg, root = pkg) {
+  const result = { ...pkg };
+  const dictionary = value => value !== null && typeof value === 'object' && !Array.isArray(value) && [Object.prototype, null].includes(Object.getPrototypeOf(value));
+  const workspaces = root.workspaces && !Array.isArray(root.workspaces) ? root.workspaces : {};
+  if (root.catalog && workspaces.catalog || root.catalogs && workspaces.catalogs) throw new Error('Ambiguous package catalog authority');
+  const unnamed = root.catalog || workspaces.catalog || {};
+  const named = root.catalogs || workspaces.catalogs || {};
+  for (const field of ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies']) {
+    if (!pkg[field]) continue;
+    result[field] = { ...pkg[field] };
+    for (const [name, range] of Object.entries(pkg[field])) {
+      if (typeof range !== 'string') throw new Error('Dependency range must be a string');
+      if (!range.startsWith('catalog:')) continue;
+      const catalogName = range.slice('catalog:'.length);
+      if (!dictionary(named) || !dictionary(unnamed)) throw new Error('Package catalog map must be an object');
+      if (catalogName && !Object.prototype.hasOwnProperty.call(named, catalogName)) throw new Error('Unknown own package catalog: ' + catalogName);
+      const catalog = catalogName ? named[catalogName] : unnamed;
+      if (!dictionary(catalog)) throw new Error('Selected package catalog must be an object');
+      const resolved = catalog && Object.prototype.hasOwnProperty.call(catalog, name) ? catalog[name] : undefined;
+      if (typeof resolved !== 'string' || !resolved || resolved.startsWith('catalog:')) throw new Error('Exact nonrecursive package catalog declaration required: ' + name);
+      result[field][name] = resolved;
+    }
+  }
+  return result;
+}
+
 function sanitizeManifest(pkg) {
-  const nextPkg = { ...pkg };
+  const nextPkg = resolveCatalogManifest(pkg);
+  delete nextPkg.catalog;
+  delete nextPkg.catalogs;
+  if (nextPkg.workspaces && !Array.isArray(nextPkg.workspaces)) {
+    nextPkg.workspaces = { ...nextPkg.workspaces };
+    delete nextPkg.workspaces.catalog; delete nextPkg.workspaces.catalogs;
+  }
   if (nextPkg.scripts) {
     const nextScripts = { ...nextPkg.scripts };
     delete nextScripts.postinstall;
@@ -70,7 +104,9 @@ function main() {
   fs.rmSync(backupPath, { force: true });
 }
 
-try {
+module.exports = { resolveCatalogManifest, sanitizeManifest };
+
+if (require.main === module) try {
   main();
 } catch (error) {
   console.error(error);
