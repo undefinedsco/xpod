@@ -1,3 +1,4 @@
+import type {OriginalReadBudget} from './artifact-contract';
 import limits from '../module-artifact-limits.json';
 import fs from 'node:fs';
 import { createHash } from 'node:crypto';
@@ -5,8 +6,10 @@ import path from 'node:path';
 export interface BoundOriginalReference { readonly path: string; readonly bytes: number; readonly sha256: string }
 /** Byte custody helper only. The central collector supplies a registered,
  * owned readonly projection. This helper cannot issue admission capabilities. */
-export function openBoundOriginalFile(file: string, reference: BoundOriginalReference) {
+export function openBoundOriginalFile(file: string, reference: BoundOriginalReference,budget?:OriginalReadBudget) {
   const fail = (reason: string): never => { throw Error('Bound original file: ' + reason); };
+  const checkBudget=()=>{const value=budget?.remainingMilliseconds();if(value!==undefined&&(!Number.isFinite(value)||value<=0))fail('observer original deadline');};
+  checkBudget();
   if (!Number.isSafeInteger(reference.bytes) || reference.bytes < 0 || reference.bytes > limits.shardBytes
     || !/^[a-f0-9]{64}$/u.test(reference.sha256)) fail('fixed original identity required');
   for (let current = path.resolve(file); ; current = path.dirname(current)) {
@@ -23,10 +26,12 @@ export function openBoundOriginalFile(file: string, reference: BoundOriginalRefe
     if (!same(fs.fstatSync(fd))) fail('original changed before full hash');
     const scratch = Buffer.alloc(limits.rangeBytes), hash = createHash('sha256'), deadline = Date.now() + limits.timeoutMs;
     for (let offset = 0; offset < before.size;) {
+      checkBudget();
       if (Date.now() >= deadline) fail('full original hash deadline exceeded');
       const count = fs.readSync(fd, scratch, 0, Math.min(scratch.length, before.size - offset), offset);
       if (!count) fail('original truncated'); hash.update(scratch.subarray(0, count)); offset += count;
     }
+    checkBudget();
     if (hash.digest('hex') !== reference.sha256 || !same(fs.fstatSync(fd)) || !same(fs.lstatSync(file))) fail('full original identity changed');
   } catch (error) { fs.closeSync(fd); throw error; }
   const check = () => { if (closed || !same(fs.fstatSync(fd)) || !same(fs.lstatSync(file))) fail('original revoked or changed'); };

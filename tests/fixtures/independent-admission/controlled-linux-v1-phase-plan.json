@@ -1,0 +1,250 @@
+{
+  "producerSha256": "6999603e280c8df1be5fe068eff34cf4c357dc99e9052914040ab6db330ce058",
+  "helperSha256": "4f8dd31f989c311fece36fa3f3998be5aa7fa56e6e28c2a926d599973fd132fe",
+  "plan": [
+    {
+      "name": "install",
+      "command": [
+        "bun",
+        "install",
+        "--frozen-lockfile"
+      ],
+      "timeoutSeconds": 600
+    },
+    {
+      "name": "declarations",
+      "command": [
+        "bun",
+        "-e",
+        "import {exactVersion} from './scripts/independent-release-plan';import{modulePackageName,MODULE_API_VERSION}from './packages/xpod-cli/src/module-catalog';const name=modulePackageName('api',process.platform,process.arch);if(!exactVersion(process.argv[1])||!name)throw Error('Invalid API version/target');console.log(JSON.stringify({name,cliApiVersion:MODULE_API_VERSION}));",
+        "1.2.3"
+      ],
+      "timeoutSeconds": 60
+    },
+    {
+      "name": "shared-packages",
+      "command": [
+        "bun",
+        "run",
+        "build:packages"
+      ],
+      "timeoutSeconds": 600
+    },
+    {
+      "name": "dependency-state",
+      "command": [
+        "bun",
+        "scripts/check-dependency-state.ts"
+      ],
+      "timeoutSeconds": 120
+    },
+    {
+      "name": "api-build",
+      "command": [
+        "bun",
+        "run",
+        "--cwd",
+        "packages/xpod-api",
+        "build"
+      ],
+      "timeoutSeconds": 600
+    },
+    {
+      "name": "inngest-controlled-acquire",
+      "command": [
+        "/usr/bin/python3",
+        "-I",
+        "-S",
+        "-B",
+        "/nonexistent/candidate/scripts/lib/inngest-controlled-build.py",
+        "acquire",
+        "/nonexistent/output/controlled-inngest-work",
+        "--retained-byte-ceiling",
+        "1000000000"
+      ],
+      "timeoutSeconds": 120
+    },
+    {
+      "name": "inngest-controlled-prepare",
+      "command": [
+        "/usr/bin/python3",
+        "-I",
+        "-S",
+        "-B",
+        "/nonexistent/candidate/scripts/lib/inngest-controlled-build.py",
+        "prepare",
+        "/nonexistent/output/controlled-inngest-work",
+        "--retained-byte-ceiling",
+        "1000000000"
+      ],
+      "timeoutSeconds": 300
+    },
+    {
+      "name": "inngest-controlled-go-version",
+      "command": [
+        "/nonexistent/output/controlled-inngest-work/tools/go/bin/go",
+        "version"
+      ],
+      "timeoutSeconds": 10
+    },
+    {
+      "name": "inngest-controlled-node-version",
+      "command": [
+        "/nonexistent/output/controlled-inngest-work/tools/node/bin/node",
+        "--version"
+      ],
+      "timeoutSeconds": 10
+    },
+    {
+      "name": "inngest-controlled-pnpm-version",
+      "command": [
+        "/nonexistent/output/controlled-inngest-work/tools/node/bin/node",
+        "/nonexistent/output/controlled-inngest-work/tools/pnpm/bin/pnpm.cjs",
+        "--version"
+      ],
+      "timeoutSeconds": 10
+    },
+    {
+      "name": "inngest-controlled-ui-install",
+      "command": [
+        "/nonexistent/output/controlled-inngest-work/tools/node/bin/node",
+        "/nonexistent/output/controlled-inngest-work/tools/pnpm/bin/pnpm.cjs",
+        "--dir",
+        "/nonexistent/output/controlled-inngest-work/source/ui/apps/dev-server-ui",
+        "install",
+        "--frozen-lockfile",
+        "--ignore-scripts",
+        "--package-import-method=copy",
+        "--store-dir",
+        "/nonexistent/output/controlled-inngest-work/pnpm-store"
+      ],
+      "timeoutSeconds": 600
+    },
+    {
+      "name": "inngest-controlled-inputs",
+      "command": [
+        "/usr/bin/python3",
+        "-I",
+        "-S",
+        "-B",
+        "/nonexistent/candidate/scripts/lib/inngest-controlled-build.py",
+        "capture-inputs",
+        "/nonexistent/output/controlled-inngest-work",
+        "--retained-byte-ceiling",
+        "1000000000"
+      ],
+      "timeoutSeconds": 900.0
+    },
+    {
+      "name": "inngest-controlled-ui-build",
+      "command": [
+        "/nonexistent/output/controlled-inngest-work/tools/node/bin/node",
+        "/nonexistent/output/controlled-inngest-work/tools/pnpm/bin/pnpm.cjs",
+        "--dir",
+        "/nonexistent/output/controlled-inngest-work/source/ui/apps/dev-server-ui",
+        "build"
+      ],
+      "timeoutSeconds": 600
+    },
+    {
+      "name": "inngest-controlled-ui-materialize",
+      "command": [
+        "/usr/bin/python3",
+        "-I",
+        "-S",
+        "-B",
+        "/nonexistent/candidate/scripts/lib/inngest-controlled-build.py",
+        "materialize-ui",
+        "/nonexistent/output/controlled-inngest-work",
+        "--retained-byte-ceiling",
+        "1000000000"
+      ],
+      "timeoutSeconds": 120
+    },
+    {
+      "name": "inngest-controlled-go-build",
+      "command": [
+        "/nonexistent/output/controlled-inngest-work/tools/go/bin/go",
+        "build",
+        "-mod=vendor",
+        "-trimpath",
+        "-buildvcs=false",
+        "-ldflags",
+        "-s -w -X github.com/inngest/inngest/pkg/inngest/version.Version=1.40.0 -X github.com/inngest/inngest/pkg/inngest/version.Hash=0d75b0b30",
+        "-o",
+        "/nonexistent/output/controlled-inngest-work/products/inngest",
+        "./cmd"
+      ],
+      "timeoutSeconds": 600
+    },
+    {
+      "name": "inngest-controlled-finalize",
+      "command": [
+        "/usr/bin/python3",
+        "-I",
+        "-S",
+        "-B",
+        "/nonexistent/candidate/scripts/lib/inngest-controlled-build.py",
+        "finalize",
+        "/nonexistent/output/controlled-inngest-work",
+        "--retained-byte-ceiling",
+        "1000000000"
+      ],
+      "timeoutSeconds": 900.0
+    },
+    {
+      "name": "stage",
+      "command": [
+        "bun",
+        "run",
+        "--cwd",
+        "packages/xpod-api",
+        "stage",
+        "/nonexistent/output/stage",
+        "preview",
+        "1.2.3",
+        "--native-source-kind",
+        "xpod-controlled-inngest-build-v1",
+        "--native-build-originals",
+        "/nonexistent/output/controlled-inngest-work"
+      ],
+      "timeoutSeconds": 600
+    },
+    {
+      "name": "notices",
+      "command": [
+        "bun",
+        "/nonexistent/candidate/packages/xpod-api/scripts/notice-material.ts",
+        "/nonexistent/output/stage"
+      ],
+      "timeoutSeconds": 300
+    },
+    {
+      "name": "pack",
+      "command": [
+        "bun",
+        "run",
+        "--cwd",
+        "packages/xpod-api",
+        "pack",
+        "/nonexistent/output/stage",
+        "/nonexistent/output/product.tgz",
+        "--native-source-kind",
+        "xpod-controlled-inngest-build-v1",
+        "--native-build-originals",
+        "/nonexistent/output/controlled-inngest-work"
+      ],
+      "timeoutSeconds": 600
+    },
+    {
+      "name": "pack-result",
+      "command": [
+        "bun",
+        "-e",
+        "import {readFileSync} from 'node:fs';import {parseApiPackReceipt} from './scripts/collect-api-release-input';console.log(JSON.stringify(parseApiPackReceipt(readFileSync(process.argv[1]))));",
+        "/nonexistent/output/evidence/pack.raw.log"
+      ],
+      "timeoutSeconds": 60
+    }
+  ]
+}

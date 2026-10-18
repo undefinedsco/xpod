@@ -85,6 +85,7 @@ export interface ControlledNativeRuntimeView {
   readonly sdkSourceFacts?: Readonly<Record<string, unknown>>;
   readonly afsSourceFacts?: Readonly<Record<string, unknown>>;
   readonly officialReleaseFacts?: Readonly<Record<string, unknown>>;
+  readonly controlledBuildFacts?: Readonly<Record<string, unknown>>;
   readonly sourceMaterialsVerified: boolean;
   readonly nativeSourceClosureVerified: boolean;
   readonly pending: readonly string[];
@@ -362,7 +363,7 @@ async function observeOtherProductNativeImages(artifact: CollectedArtifactCapabi
 /** One module dispatcher over the same private product/native capability axes.
  * API and AgentFS cannot inherit QLever's runtime protocol or SDK approval. */
 export async function collectNativeAdmissionContext(input: {
-  artifact: CollectedArtifactCapability; source: unknown; nativeOriginals?: unknown; sdkOriginals?: unknown;
+  artifact: CollectedArtifactCapability; source: unknown; nativeOriginals?: unknown; sdkOriginals?: unknown; controlledBuildMaterials?:unknown;
 }): Promise<NativeMaterialCapability> {
   const { derivedSourceView } = await import('./source-context');
   const { modulePackageName } = await import('../../../packages/xpod-cli/src/module-catalog');
@@ -377,6 +378,36 @@ export async function collectNativeAdmissionContext(input: {
   const module_ = (['css', 'api', 'afs'] as const).find(id => modulePackageName(id, platform_, arch) === product.identity.package);
   if (module_ === 'css') return (platform_ === 'linux' ? collectLinuxNativeRuntimeContext : collectMacNativeRuntimeContext)({ ...input, nativeOriginals: input.nativeOriginals });
   if (module_ !== 'api' && module_ !== 'afs') return fail('canonical supported native product identity required');
+  if(module_==='api'&&input.controlledBuildMaterials!==undefined){
+    if(input.nativeOriginals!==undefined)return fail('controlled build cannot borrow official or Actions native custody');
+    const {moduleNativeBuildOriginals}=await import('./module-source-admission');
+    const {inspectControlledInngestSource}=await import('./inngest-controlled-source');
+    const {installedInngestRuntimeObservation}=await import('./inngest-runtime-originals');
+    const controlled=moduleNativeBuildOriginals(input.controlledBuildMaterials,input.artifact);
+    if(!controlled||controlled.sourceSha!==source.sourceSha||controlled.target!==product.identity.target)return fail('same controlled source/product capability required');
+    const inspected=inspectControlledInngestSource({materials:input.controlledBuildMaterials,artifact:input.artifact,remainingMilliseconds:JSON.parse(readFileSync(new URL('../module-artifact-limits.json',import.meta.url),'utf8')).timeoutMs});
+    const runtime=installedInngestRuntimeObservation({controlledBuildMaterials:input.controlledBuildMaterials});
+    const index=product.members.find(row=>row.path==='provenance/native/inngest/index.json');
+    const binary=product.members.find(row=>row.path==='node_modules/inngest-cli/bin/inngest');
+    if(!index||!binary||!product.readMemberRange||product.identity.target!=='linux-arm64')return fail('controlled actual product binary/index unavailable');
+    verifyNativeMaterialTarget(product.readMemberRange(binary.path,0,64),product.identity.target);
+    const validate=()=>{
+      if(collectedArtifactView(input.artifact)!==product||derivedSourceView(input.source)!==source||moduleNativeBuildOriginals(input.controlledBuildMaterials,input.artifact)!==controlled||installedInngestRuntimeObservation({controlledBuildMaterials:input.controlledBuildMaterials})!==runtime)return fail('controlled native source/product/runtime custody revoked');
+      inspected.assertCurrent();controlled.assertCurrent();
+    };
+    validate();
+    const capability=Object.freeze({}) as NativeMaterialCapability;
+    const pending=inspected.pending.filter(reason=>!runtime?.inngestInstalledVersionExecutionVerified||reason!=='Controlled Inngest matching-host installed runtime ABI remains unverified');
+    const view:ControlledNativeRuntimeView=Object.freeze({identity:product.identity,nativeSourceSha:inspected.facts.upstreamSourceCommit,
+      controlledBuildFacts:Object.freeze({...inspected.facts,...(runtime?{installedRuntimeFacts:runtime}:{})}),
+      nativeOriginVerified:true,originalStageBindingsVerified:false,binaryFormatsVerified:false,selectedNativeBinaryFormatsVerified:true,
+      qleverRuntimeAbiVerified:false,agentfsRuntimeAbiVerified:false,runtimeAbiScope:'api-inngest-cli',uncoveredNativeImages:Object.freeze([]),runtimeAbiVerified:false,
+      sourceMaterialsVerified:true,nativeSourceClosureVerified:false,
+      pending:Object.freeze([...pending,'controlled-inngest-compiler-execution-byte-custody-unverified','controlled-inngest-whole-product-native-image-inventory-unverified','inngest-full-runtime-ABI-coverage-unverified','controlled-inngest-complete-source-and-toolchain-closure-unverified'])});
+    runtimeIssued.set(capability,{view,validate});
+    issued.set(capability,()=>{validate();return Object.freeze({identity:product.identity,custodyKind:'controlled-build-originals' as const,indexPath:index.path,indexSha256:index.sha256,status:'material-integrity-verified' as const,externalAdmission:'pending' as const});});
+    return capability;
+  }
   const material = inspectModuleNativeMaterials({ module: module_, target: product.identity.target, members: product.members,
     readMember: product.readMember, sourcePins: source.readTracked(module_ === 'api' ? 'packages/xpod-api/scripts/inngest-input-pins.json' : 'scripts/agentfs-native-ci/mounted/native-authority.json'),
     ...(module_ === 'afs' ? { nativePolicySource: source.readTracked('scripts/agentfs-native-ci/accept.py') } : {}) });

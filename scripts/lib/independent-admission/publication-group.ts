@@ -88,7 +88,7 @@ export async function preparePublicationGroup(input:PublicationGroupPreparationI
   let nativeMaterials:Awaited<ReturnType<typeof prepareNormalProductNativeContext>>|undefined;
   const nativePending:string[]=[];
   if(view.identity.target!==undefined){
-   try{nativeMaterials=await prepareNormalProductNativeContext({artifact,source,consumerObservation:prepublishConsumer,output:path.join(input.output,'native-'+index),token:input.token});}
+   try{nativeMaterials=await prepareNormalProductNativeContext({artifact,source,sourceMaterials,consumerObservation:prepublishConsumer,output:path.join(input.output,'native-'+index),token:input.token});}
    catch(error){nativePending.push(error instanceof Error?error.message:'native original collection failed');}
   }
   const nativeReport=view.identity.target===undefined?undefined:verifyCollectedPublicationAdmission('native',{...base,consumerObservation:prepublishConsumer,nativeMaterials});
@@ -134,10 +134,10 @@ export async function preparePublicationGroup(input:PublicationGroupPreparationI
 }
 interface NativeOriginalBinding {readonly nativeOriginals:unknown;readonly relatedNativeOriginals:readonly unknown[]}
 const nativeOriginalBindings=new WeakMap<object,NativeOriginalBinding>();
-async function prepareNormalProductNativeContext(input:{artifact:CollectedArtifactCapability;source:ReturnType<typeof deriveAdmissionSource>;consumerObservation:unknown;output:string;token?:string}){
+async function prepareNormalProductNativeContext(input:{artifact:CollectedArtifactCapability;source:ReturnType<typeof deriveAdmissionSource>;sourceMaterials?:unknown;consumerObservation:unknown;output:string;token?:string}){
  const material=publicationMaterialView(input.artifact)!;
  const {collectNativeAdmissionContext}=await import('./native-context');
- let nativeOriginals:unknown,sdkOriginals:unknown;
+ let nativeOriginals:unknown,sdkOriginals:unknown,controlledBuildMaterials:unknown;
  if(material.identity.package.startsWith('@undefineds.co/xpod-css-')){
   const receipt=JSON.parse(material.readOriginal(material.producerReceipt.path,8*1024**2).toString());
   const acquisition=receipt.nativeAcquisition,zip=acquisition?.originals?.find((row:any)=>row.path==='originals/native.zip');
@@ -181,12 +181,27 @@ async function prepareNormalProductNativeContext(input:{artifact:CollectedArtifa
   nativeOriginals=await collectNativeAdmissionOriginals({githubOrigin:origin,acquisitionRoot});
  }
  if(material.identity.package.startsWith('@undefineds.co/xpod-api-')){
-  const {observeOfficialInngestRelease}=await import('./inngest-release-originals');
-  nativeOriginals=await observeOfficialInngestRelease({artifact:input.artifact,source:input.source});
-  const {observeInstalledInngestRuntime}=await import('./inngest-runtime-originals');
-  await observeInstalledInngestRuntime({artifact:input.artifact,officialReleaseOriginals:nativeOriginals,consumerObservation:input.consumerObservation});
+  // The actual index is a selector only. A controlled build must be joined to
+  // the already-issued source-material handle; it can never borrow an asset cap.
+  const artifactView=collectedArtifactView(input.artifact)!;
+  const index=JSON.parse(artifactView.readMember('provenance/native/inngest/index.json',4*1024**2).toString());
+  if(index.schemaVersion===2){
+   const {moduleNativeBuildOriginals}=await import('./module-source-admission');
+   const controlled=moduleNativeBuildOriginals(input.sourceMaterials,input.artifact);
+   if(!controlled)return fail('Controlled Inngest same-source original capability unavailable');
+   if(index.sourceKind!==controlled.sourceKind||index.target!==controlled.target)return fail('Controlled Inngest actual index differs from private materials');
+   controlled.assertCurrent();
+   const {observeInstalledInngestRuntime}=await import('./inngest-runtime-originals');
+   await observeInstalledInngestRuntime({artifact:input.artifact,controlledBuildMaterials:input.sourceMaterials,consumerObservation:input.consumerObservation});
+   controlledBuildMaterials=input.sourceMaterials;
+  }else{
+   const {observeOfficialInngestRelease}=await import('./inngest-release-originals');
+   nativeOriginals=await observeOfficialInngestRelease({artifact:input.artifact,source:input.source});
+   const {observeInstalledInngestRuntime}=await import('./inngest-runtime-originals');
+   await observeInstalledInngestRuntime({artifact:input.artifact,officialReleaseOriginals:nativeOriginals,consumerObservation:input.consumerObservation});
+  }
  }
- const context=await collectNativeAdmissionContext({artifact:input.artifact,source:input.source,nativeOriginals,...(sdkOriginals?{sdkOriginals}:{})});
+ const context=await collectNativeAdmissionContext({artifact:input.artifact,source:input.source,nativeOriginals,...(controlledBuildMaterials?{controlledBuildMaterials}:{}),...(sdkOriginals?{sdkOriginals}:{})});
  if(nativeOriginals)nativeOriginalBindings.set(context as object,Object.freeze({nativeOriginals,relatedNativeOriginals:Object.freeze(sdkOriginals?[sdkOriginals]:[])}));
  return context;
 }

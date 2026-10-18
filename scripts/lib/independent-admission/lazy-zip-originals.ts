@@ -1,5 +1,7 @@
+import type {OriginalReadBudget} from './artifact-contract';
 import fs from 'node:fs';
 import path from 'node:path';
+import {fileURLToPath} from 'node:url';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import limits from '../module-artifact-limits.json';
@@ -50,7 +52,9 @@ export function lazyZipOriginals(input: {
     const root = fs.lstatSync(input.root);
     if (!root.isDirectory() || root.isSymbolicLink() || fs.realpathSync(input.root) !== input.root) fail('owned canonical cache root required');
   } catch(error) { close(); throw error; }
-  const reader = (name: string) => {
+  const reader = (name: string,budget?:OriginalReadBudget) => {
+    const available=()=>{const caller=budget?.remainingMilliseconds();if(caller!==undefined&&(!Number.isFinite(caller)||caller<=0))return fail('observer original deadline');return Math.min(limits.timeoutMs-projectionMilliseconds,caller??Infinity);};
+    available();
     assertUnchanged();
     const row = rows.get(name); if (!row) return fail('registered original required');
     const found = cache.get(name);
@@ -61,28 +65,28 @@ export function lazyZipOriginals(input: {
       const value=cache.get(key)!;value.reader.close();fs.rmSync(value.file,{force:true});cache.delete(key);
     }
     if ((hydrated += row.bytes) > input.members.reduce((sum,value)=>sum+value.bytes,0)*4 + 1024**2) fail('aggregate rehydration budget exceeded');
-    const remaining = limits.timeoutMs - projectionMilliseconds;
+    const remaining = Math.floor(available());
     if (remaining <= 0) fail('projection aggregate deadline');
     const free = fs.statfsSync(input.root,{bigint:true});
     if (free.bavail*free.bsize < BigInt(row.bytes + limits.freeFloorBytes + limits.queueReserveBytes)) fail('cache free-space floor insufficient');
     const file = path.join(input.root, createHash('sha256').update(name).digest('hex'));
     const projectionStarted=Date.now();
-    const result = spawnSync(process.platform==='win32'?'python':'python3', [path.resolve(import.meta.dir,'../extract-bound-zip-member.py')], {
+    const result = spawnSync(process.platform==='win32'?'python':'python3', [fileURLToPath(new URL('../extract-bound-zip-member.py',import.meta.url))], {
       input:JSON.stringify({archiveBytes:before.size,member:row,destination:file,timeoutMs:remaining,freeFloorBytes:limits.freeFloorBytes}),
       timeout:remaining,maxBuffer:65536,stdio:['pipe','pipe','pipe',fd],
     });
     projectionMilliseconds+=Date.now()-projectionStarted;
     try {
-      assertUnchanged();
+      assertUnchanged();available();
       if (result.error || result.status !== 0 || result.signal) fail('bounded member projection failed: '+String(result.stderr).slice(0,512));
       const actual = JSON.parse(String(result.stdout));
       if (actual.bytes !== row.bytes || actual.sha256 !== row.sha256) fail('member projection identity mismatch');
-      const bound = openBoundOriginalFile(file,row);
+      const bound = openBoundOriginalFile(file,row,budget);
       cache.set(name,{file,bytes:row.bytes,small,reader:bound}); return bound;
     } catch(error) { fs.rmSync(file,{force:true}); throw error; }
   };
   return Object.freeze({
-    readRange(name:string,offset:number,length:number) { return reader(name).readRange(offset,length); },
+    readRange(name:string,offset:number,length:number,budget?:OriginalReadBudget) { const row=rows.get(name);if(!row||!Number.isSafeInteger(offset)||offset<0||!Number.isSafeInteger(length)||length<0||length>limits.rangeBytes||offset>row.bytes-length)return fail('registered original 64KiB range required');const result=reader(name,budget).readRange(offset,length);const remaining=budget?.remainingMilliseconds();if(remaining!==undefined&&(!Number.isFinite(remaining)||remaining<=0))fail('observer original deadline');return result; },
     assertRetainedOriginal(){if(!same(fs.lstatSync(input.archivePath,{bigint:true}))||(!closed&&!same(fs.fstatSync(fd,{bigint:true}))))fail('retained archive identity changed');},
     close,
     cacheBytes() { return [...cache.values()].reduce((sum,value)=>sum+value.bytes,0); },

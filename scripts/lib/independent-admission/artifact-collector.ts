@@ -1,3 +1,4 @@
+import type {OriginalReadBudget} from './artifact-contract';
 import { PUBLICATION_DISK_LIMITS } from './publication-disk-budget';
 import {sharedSourceLifetime} from './shared-source-lifetime';
 import moduleLimits from '../module-artifact-limits.json';
@@ -165,9 +166,9 @@ export async function collectModuleAdmissionArtifact(input: {
   });
   let phaseOriginals: import('./module-phase-originals').ModulePhaseOriginals | undefined;
   let sourceOriginals: Awaited<ReturnType<typeof import('./module-source-originals')['collectModuleSourceOriginals']>>;
-  const readOriginal = (name: string, maximum: number): Buffer => {
+  const readOriginal = (name: string, maximum: number,budget?:OriginalReadBudget): Buffer => {
     if (!Number.isSafeInteger(maximum) || maximum < 0) return fail('bounded module original required');
-    if (sourceOriginals && name.startsWith('source-materials/')) return sourceOriginals.readSmall(name, Math.min(maximum, 8 * 1024 ** 2));
+    if (sourceOriginals && name.startsWith('source-materials/')) return sourceOriginals.readSmall(name, Math.min(maximum, 8 * 1024 ** 2),budget);
     if (phaseOriginals && /^evidence\/[a-z0-9-]+\.receipt\.json$/u.test(name)) return phaseOriginals.readSmallReceipt(name, Math.min(maximum, 1024 ** 2));
     const original = originals.find(item => item.row.path === name);
     if (!original || !Number.isSafeInteger(maximum) || maximum < 0 || original.row.bytes > maximum) return fail('bounded module original required');
@@ -201,9 +202,9 @@ export async function collectModuleAdmissionArtifact(input: {
       members: disk.members, readMember: disk.readMember, readMemberRange: disk.readMemberRange, readBoundMemberRange: disk.readBoundMemberRange,
       producerOriginals: phaseOriginals.members,
       readProducerOriginal: readOriginal,
-      readProducerOriginalRange(name: string, offset: number, length: number) {
+      readProducerOriginalRange(name: string, offset: number, length: number,budget?:OriginalReadBudget) {
         if (!sourceOriginals) return fail('registered source originals unavailable');
-        return sourceOriginals.readRange(name, offset, length);
+        return sourceOriginals.readRange(name, offset, length,budget);
       },
     }), () => { sourceOriginals?.dispose(); disk.dispose(); }, { origin: input.githubOrigin as GitHubOriginObservation,
       projectionOutput: output, producerReceiptPath: 'producer.receipt.json', source: { kind: 'file', path: path.join(output, 'product.tgz') } });
@@ -377,8 +378,8 @@ function issueProductArchive(sourceSha: string, row: any, archive: Buffer,
     archiveSha256: row.archive.sha256, integrity: row.archive.integrity, archiveBytes: archive.length });
   const view: CollectedArtifactView = Object.freeze({ identity, members: Object.freeze(members),
     producerOriginals:Object.freeze([...new Map([...producerRows,...(snapshot?.originals.members??[])].map(row=>[row.path,row])).values()]),
-    readProducerOriginal(name:string,maximum:number){return name.startsWith('source-materials/')&&snapshot?snapshot.originals.readSmall(name,maximum):readProducerOriginal(name,maximum);},
-    ...(snapshot?{readProducerOriginalRange:(name:string,offset:number,length:number)=>snapshot.originals.readRange(name,offset,length)}:{}),
+    readProducerOriginal(name:string,maximum:number,budget?:OriginalReadBudget){return name.startsWith('source-materials/')&&snapshot?snapshot.originals.readSmall(name,maximum,budget):readProducerOriginal(name,maximum);},
+    ...(snapshot?{readProducerOriginalRange:(name:string,offset:number,length:number,budget?:OriginalReadBudget)=>snapshot.originals.readRange(name,offset,length,budget)}:{}),
     readMember(name: string, maximumBytes: number): Buffer {
       if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 0) return fail('invalid member byte bound');
       const bytes = originals.get(name);

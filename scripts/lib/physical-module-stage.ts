@@ -1,3 +1,4 @@
+import {preparePhysicalNativePlacements,type PhysicalNativePlacement} from './physical-module-native-placement';
 import { moduleDefinition, modulePackageName } from '../../packages/xpod-cli/src/module-catalog';
 import { valid as validSemVer, satisfies } from 'semver';
 import { chmodSync, copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
@@ -92,7 +93,7 @@ export function collectPhysicalDependencies(seeds: Iterable<string>): Map<string
   return packages;
 }
 
-export function stagePhysicalService(repoRoot: string, output: string, inputs: string[], options: { entry: string; moduleId: string; publication?: { mode: 'preview' | 'release'; version: string }; resources?: string[]; sourceResources?: string[]; extraSourceRoots?: string[]; runtimePackages?: string[]; runtimePackageManifest?: string; runtimePackageImports?: PhysicalRuntimeImport[]; bundle?: PhysicalServiceBundle; materializeResources?: (stage: string) => void; manifestFields?: Record<string,unknown>; validateInputs: (inputs: string[]) => void }): { packages: Array<{name:string;version:string;files:number}>, sourceFiles: number } {
+export function stagePhysicalService(repoRoot: string, output: string, inputs: string[], options: { entry: string; moduleId: string; publication?: { mode: 'preview' | 'release'; version: string }; resources?: string[]; sourceResources?: string[]; extraSourceRoots?: string[]; runtimePackages?: string[]; runtimePackageManifest?: string; runtimePackageImports?: PhysicalRuntimeImport[]; bundle?: PhysicalServiceBundle; materializeResources?: (stage: string) => void; manifestFields?: Record<string,unknown>; nativePlacements?: readonly PhysicalNativePlacement[]; validateInputs: (inputs: string[]) => void }): { packages: Array<{name:string;version:string;files:number}>, sourceFiles: number } {
   if (existsSync(output)) throw new Error('Physical stage output already exists');
   if(!/^[a-z][a-z0-9-]*$/u.test(options.moduleId)) throw new Error('Invalid service module identity');
   const definition = moduleDefinition(options.moduleId);
@@ -238,13 +239,15 @@ export function stagePhysicalService(repoRoot: string, output: string, inputs: s
     }
     const copy = path.join(output,'source',relative); mkdirSync(path.dirname(copy),{recursive:true});copyFileSync(absolute,copy);
   }
+  const nativePlacements=preparePhysicalNativePlacements(output,options.nativePlacements);
   const facts: Array<{name:string;version:string;files:number;path:string}>=[];
   const copyPackage = (root: string, destination: string, ancestors: Map<string,string>) => {
     const {manifest,dependencies}=packages.get(root)!;
     const inventory=[];
     for (const f of files(root)) {
-      const relative=path.relative(root,f), b=readFileSync(f), to=path.join(destination,relative);
-      mkdirSync(path.dirname(to),{recursive:true});copyFileSync(f,to);chmodSync(to,lstatSync(f).mode & 0o777);inventory.push({path:relative,bytes:b.length,sha256:hash(b),mode:lstatSync(f).mode&0o777});
+      const relative=path.relative(root,f),to=path.join(destination,relative),replacement=nativePlacements.copy(path.relative(output,to).replaceAll('\\','/'),to);
+      if(replacement)inventory.push({path:relative,...replacement});
+      else {const b=readFileSync(f);mkdirSync(path.dirname(to),{recursive:true});copyFileSync(f,to);chmodSync(to,lstatSync(f).mode & 0o777);inventory.push({path:relative,bytes:b.length,sha256:hash(b),mode:lstatSync(f).mode&0o777});}
     }
     const location=path.relative(output,destination).replaceAll('\\','/');
     facts.push({name:manifest.name,version:manifest.version,files:inventory.length,path:location});
@@ -298,6 +301,7 @@ export function stagePhysicalService(repoRoot: string, output: string, inputs: s
       mkdirSync(path.dirname(target), { recursive: true }); copyFileSync(original, target);
     }
   } else writeFileSync(path.join(output,'entry.mjs'),"import {createRequire} from 'node:module';\ncreateRequire(import.meta.url)("+JSON.stringify('./'+options.entry.replace(/\.[cm]?tsx?$/u,'.js'))+");\n");
+  nativePlacements.finalize();
   copyFileSync(path.join(repoRoot,'LICENSE'),path.join(output,'LICENSE'));
   writeFileSync(path.join(output,'package.json'),JSON.stringify({name:packageName,version:publication.version,type:'commonjs',private:publication.mode==='preview',license:'MIT',engines:JSON.parse(readFileSync(path.join(repoRoot,'package.json'),'utf8')).engines,...options.manifestFields},null,2)+'\n');
   mkdirSync(path.join(output, 'provenance'), { recursive: true });

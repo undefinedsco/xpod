@@ -84,11 +84,12 @@ describe('restorable module source originals', () => {
     const changed = fixture(), read = changed.readRange;
     changed.readRange = (name, offset, length) => {
       const bytes = Buffer.from(read(name, offset, length));
-      if (name.includes('dependencies-0000.tar') && offset === 1024 && bytes.length) bytes[0] = bytes[0]! ^ 1;
+      if (name.includes('dependencies-0000.tar') && offset <= 1024 && offset + bytes.length > 1024) bytes[1024 - offset] = bytes[1024 - offset]! ^ 1;
       return bytes;
     };
     expect(() => verifyModuleSourceOriginals(changed)).toThrow('tar original digest');
     const phase = fixture(); phase.materials.phases = [{ name: 'pretend' }];
     expect(() => verifyModuleSourceOriginals(phase)).toThrow('build/archive receipt binding');
   });
+  it('scopes initial verification budget to verification, preserving later original-reader leases',()=>{let remaining=120000;const result=verifyModuleSourceOriginals({...fixture(),budget:{remainingMilliseconds:()=>remaining}});remaining=0;expect(result.readDependencyOriginal('node_modules/alias/index.js',100).toString()).toBe('module.exports=42;\n');expect(()=>verifyModuleSourceOriginals({...fixture(),budget:{remainingMilliseconds:()=>0}})).toThrow('verification deadline');});
 });

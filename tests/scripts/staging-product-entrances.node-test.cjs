@@ -17,7 +17,10 @@ test('normal product entrances build staging exact SHA without publishing',()=>{
  }
  assert.match(origin,/run.head_branch!=='staging'/);
  assert.match(origin,/input.sourceSha!==input.runHeadSha/);
- assert.match(origin,/workflowSha256!==policy.stagingPushWorkflowSha256/);
+ // Both the historical single workflow and the reviewed API version array
+ // must use exact full-hash membership; branch/source equality stays mandatory.
+ assert.match(origin,/!\(policy\.stagingPushWorkflowSha256s\?\?\[policy\.stagingPushWorkflowSha256!\]\)\.includes\(workflowSha256\)/);
+ assert.match(origin,/policy\.stagingPushWorkflowSha256\|\|policy\.stagingPushWorkflowSha256s/);
  assert.ok(origin.includes('c856baf24a28fe789db1e80c26e7b69b7e4e08bd0923f52ce376840ac885c1eb'));
  assert.ok(origin.includes('e9326b1254fbcf933cbbe09c41f5dcf492bfa70ff265d2ea1cd0589c11d4da98'));
 });

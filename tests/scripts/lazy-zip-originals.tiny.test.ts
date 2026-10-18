@@ -57,3 +57,16 @@ test('idle wall time does not spend the bounded projection I/O budget',()=>{
   expect(reader.readRange('a',0,5)).toEqual(Buffer.from('hello'));
  }finally{Date.now=clock;reader?.close();fs.rmSync(root,{recursive:true,force:true});}
 });
+test('observer remaining budget rejects expired cold/warm reads and clamps a near deadline before hydration',()=>{
+ const root=fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()),'lazy-observer-deadline-'));
+ try{
+  const archive=path.join(root,'original.zip'),cache=path.join(root,'cache');fs.mkdirSync(cache);
+  expect(spawnSync('python3',['-c',"import zipfile,sys; z=zipfile.ZipFile(sys.argv[1],'w');z.writestr('a','hello');z.close()",archive]).status).toBe(0);
+  const reader=lazyZipOriginals({archivePath:archive,archiveSha256:sha(fs.readFileSync(archive)),root:cache,members:[{path:'a',bytes:5,sha256:sha(Buffer.from('hello'))}]});
+  for(const remaining of [0,-1,NaN,Infinity,0.4]){expect(()=>reader.readRange('a',0,1,{remainingMilliseconds:()=>remaining})).toThrow();expect(reader.cacheBytes()).toBe(0);expect(fs.readdirSync(cache)).toHaveLength(0);}
+  expect(()=>reader.readRange('a',-1,1)).toThrow();expect(reader.cacheBytes()).toBe(0);
+  expect(reader.readRange('a',0,5,{remainingMilliseconds:()=>30000}).toString()).toBe('hello');
+  expect(()=>reader.readRange('a',0,1,{remainingMilliseconds:()=>0})).toThrow();expect(reader.cacheBytes()).toBe(5);
+  reader.close();expect(fs.existsSync(archive)).toBe(true);
+ }finally{fs.rmSync(root,{recursive:true,force:true});}
+});

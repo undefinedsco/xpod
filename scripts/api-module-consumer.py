@@ -54,7 +54,7 @@ def validate(plan):
 class Runner(lifecycle.ModuleConsumerRunner):
     module_id = 'api'
     driver_path = __file__
-    additional_drivers = [pathlib.Path(probes.__file__),pathlib.Path(inngest.__file__),pathlib.Path(inngest.__file__).with_name('inngest-runtime-policy.json')]
+    additional_drivers = [pathlib.Path(probes.__file__),pathlib.Path(inngest.__file__),pathlib.Path(inngest.__file__).with_name('inngest-runtime-policy.json'),inngest.controlled_policy_file()]
 
     def total_deadline_seconds(self):
         return super().total_deadline_seconds()+inngest.additional_seconds()
@@ -66,9 +66,10 @@ class Runner(lifecycle.ModuleConsumerRunner):
     def verify_installed(self, runtime, package_root, installed_package):
         require(installed_package['xpodModule']['id'] == 'api', 'installed API module id differs')
         declaration = self.checked['target']
-        native_index = json.loads((package_root / 'provenance/native/inngest/index.json').read_text())
-        require(native_index.get('platform') == declaration['platform'] and native_index.get('arch') == declaration['arch'], 'Inngest provenance target differs')
-        require(native_index.get('binarySHA256') == lifecycle.digest(package_root / 'node_modules/inngest-cli/bin/inngest'), 'Inngest provenance bytes differ')
+        native_index = inngest.bounded_json(package_root / 'provenance/native/inngest/index.json')
+        expected, expected_size = inngest.installed_binary_expectation(native_index, declaration['target'])
+        actual = package_root / 'node_modules/inngest-cli/bin/inngest'
+        require(expected == lifecycle.digest(actual) and (expected_size is None or expected_size == actual.stat().st_size), 'Inngest actual installed bytes differ')
         return dict(nativeTargetVerification=lifecycle.targets.native_files(package_root, installed_package,
             self.checked['target']['target'], self.plan['bun'], ['node_modules/inngest-cli/bin/inngest'], self.module_id))
 

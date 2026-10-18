@@ -1,11 +1,15 @@
+import type {OriginalReadBudget} from './artifact-contract';
+import {inspectModuleNativeBuildOriginals,type ModuleNativeBuildOriginalView} from './module-native-build-originals';
+import {inspectSourceOriginalTar} from './source-original-tar';
+import { performance } from 'node:perf_hooks';
 import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
-import { collectedArtifactView } from './artifact-collector';
-import { derivedSourceView } from './source-context';
+import { collectedArtifactView,assertCollectedPublicationCustody } from './artifact-collector';
+import { derivedSourceView,assertDerivedSourceCurrent } from './source-context';
 import { githubOriginFacts, githubOriginOriginals, type GitHubOriginObservation } from './github-origin';
-import { inspectModuleSourcePhases } from './module-source-phases';
+import { inspectModuleSourcePhases,controlledApiSourceRecipe } from './module-source-phases';
 
 const MiB = 1024 ** 2;
 const limits = JSON.parse(readFileSync(new URL('../module-artifact-limits.json', import.meta.url), 'utf8'));
@@ -18,6 +22,7 @@ type Row = { path: string; archive: string; kind: 'file' | 'symlink'; bytes?: nu
 type Reference = { path: string; bytes: number; sha256: string };
 export interface ModuleSourceMaterialView {
   readonly sourceSha: string;
+  readonly nativeBuildOriginals?: ModuleNativeBuildOriginalView;
   readonly dependencyRows: readonly Readonly<Row>[];
   readonly trackedSourcePaths: readonly string[];
   readonly outputs: readonly Readonly<Reference & { mode: number }>[];
@@ -38,6 +43,11 @@ export function moduleSourceMaterialView(value: unknown): ModuleSourceMaterialVi
   return value !== null && typeof value === 'object' ? issued.get(value) : undefined;
 }
 
+/** Same existing source material capability; optional product means exact handle. */
+export function moduleNativeBuildOriginals(value:unknown,product?:unknown):ModuleNativeBuildOriginalView|undefined {
+ const native=moduleSourceMaterialView(value)?.nativeBuildOriginals;if(native){native.assertCurrent();if(product!==undefined)native.assertProduct(product);}return native;
+}
+
 /** Structural byte checker; callbacks confer no custody. Only the operational
  * wrapper below issues a view after immutable source/origin/phase validation. */
 export function verifyModuleSourceOriginals(input: {
@@ -45,12 +55,14 @@ export function verifyModuleSourceOriginals(input: {
   members: readonly (Reference & { mode: number })[];
   trackedPaths: readonly string[];
   readTrackedObject(name: string): { mode: string; bytes: Buffer };
-  readOriginal(name: string, maximumBytes: number): Buffer;
-  readRange(name: string, offset: number, length: number): Buffer;
+  readOriginal(name: string, maximumBytes: number,budget?:OriginalReadBudget): Buffer;
+  readRange(name: string, offset: number, length: number,budget?:OriginalReadBudget): Buffer;
+  budget?:OriginalReadBudget;
   compilerOriginal?: Buffer;
 }): Omit<ModuleSourceMaterialView, 'sourceSha'> {
   const deadline = Date.now() + limits.timeoutMs;
-  const checkDeadline = () => { if (Date.now() > deadline) return fail('verification deadline'); };
+  const verificationBudget:OriginalReadBudget={remainingMilliseconds:()=>Math.min(deadline-Date.now(),input.budget?.remainingMilliseconds()??Infinity)};
+  const checkDeadline = () => { const remaining=verificationBudget.remainingMilliseconds();if (!Number.isFinite(remaining)||remaining<=0) return fail('verification deadline'); };
   const m = input.materials, producer = input.producer;
   if (m?.schemaVersion !== 1 || m.kind !== 'module-source-build-originals'
     || !isDeepStrictEqual(m.phases, producer.phases) || !isDeepStrictEqual(m.archive, producer.archive)) return fail('build/archive receipt binding');
@@ -65,7 +77,7 @@ export function verifyModuleSourceOriginals(input: {
     if (total > limits.sourceMaterialBytes) return fail('original total byte bound');
   };
   const json = (ref: Reference) => {
-    const bytes = input.readOriginal(ref.path, limits.metadataBytes);
+    const bytes = input.readOriginal(ref.path, limits.metadataBytes,verificationBudget);
     if (bytes.length !== ref.bytes || hash(bytes) !== ref.sha256) return fail('metadata digest');
     return JSON.parse(bytes.toString());
   };
@@ -100,49 +112,9 @@ export function verifyModuleSourceOriginals(input: {
     }
     const seen = new Set<string>();
     for (const [name, ref] of archives) {
-      const read = (offset: number, length: number) => {
-        checkDeadline();
-        if (!Number.isSafeInteger(offset) || offset < 0 || length < 0 || length > limits.rangeBytes || offset + length > ref.bytes) return fail('tar range bound');
-        const bytes = input.readRange(name, offset, length);
-        if (bytes.length !== length) return fail('tar range truncated');
-        return bytes;
-      };
-      let offset = 0, longName: string | undefined, longLink: string | undefined, end = false;
-      const string = (bytes: Buffer) => bytes.subarray(0, bytes.indexOf(0) < 0 ? bytes.length : bytes.indexOf(0)).toString('utf8');
-      const octal = (bytes: Buffer) => { const s = string(bytes).trim(); if (!/^[0-7]+$/u.test(s)) return fail('tar numeric encoding'); return parseInt(s, 8); };
-      while (offset + 512 <= ref.bytes) {
-        const header = read(offset, 512); offset += 512;
-        if (header.every(byte => byte === 0)) { end = true; break; }
-        const checksum = octal(header.subarray(148, 156));
-        let sum = 0; for (let i = 0; i < 512; i++) sum += i >= 148 && i < 156 ? 32 : header[i]!;
-        if (sum !== checksum) return fail('tar header checksum');
-        const bytes = octal(header.subarray(124, 136)), type = String.fromCharCode(header[156]!);
-        if (bytes > limits.shardBytes || offset + Math.ceil(bytes / 512) * 512 > ref.bytes) return fail('tar member byte bound');
-        if (type === 'L' || type === 'K') {
-          if (bytes > 4096 || (type === 'L' ? longName : longLink) !== undefined) return fail('tar long name bound');
-          const value = string(read(offset, bytes));
-          if (type === 'L') longName = value; else longLink = value;
-        } else {
-          const member = longName ?? string(header.subarray(0, 100));
-          const target = longLink ?? string(header.subarray(157, 257));
-          longName = undefined; longLink = undefined;
-          const row = rows.get(member);
-          if (!row || seen.has(member) || row.archive !== name || !['0', '\0', '2'].includes(type)) return fail('tar original member set');
-          seen.add(member);
-          if (type === '2') {
-            if (row.kind !== 'symlink' || bytes !== 0 || row.target !== target) return fail('tar link identity');
-          } else {
-            if (row.kind !== 'file' || row.bytes !== bytes || row.mode !== octal(header.subarray(100, 108))) return fail('tar file identity');
-            const digest = createHash('sha256');
-            for (let cursor = 0; cursor < bytes; cursor += limits.rangeBytes) digest.update(read(offset + cursor, Math.min(limits.rangeBytes, bytes - cursor)));
-            if (digest.digest('hex') !== row.sha256) return fail('tar original digest');
-            locations.set(member, { archive: name, offset, bytes });
-          }
-        }
-        offset += Math.ceil(bytes / 512) * 512;
-      }
-      if (!end || longName !== undefined || longLink !== undefined) return fail('tar original closure');
-      for (; offset < ref.bytes; offset += limits.rangeBytes) if (read(offset, Math.min(limits.rangeBytes, ref.bytes - offset)).some(byte => byte !== 0)) return fail('tar trailing payload');
+      const observed=inspectSourceOriginalTar({archive:ref,rows,readRange:(name,offset,length)=>input.readRange(name,offset,length,verificationBudget),check:checkDeadline});
+      for(const member of observed.seen){if(seen.has(member))return fail('duplicate tar original');seen.add(member);}
+      for(const [member,location] of observed.locations)locations.set(member,location);
     }
     if (seen.size !== rows.size) return fail('missing tar original');
     groups.set(domain, [...rows.values()]);
@@ -244,6 +216,8 @@ export function verifyModuleSourceOriginals(input: {
 }
 
 export function inspectModuleSourceAdmission(input: { artifact: unknown; source: unknown; origin: unknown }) {
+  const startedAt=performance.now();
+  const operationBudget:OriginalReadBudget={remainingMilliseconds:()=>limits.timeoutMs-(performance.now()-startedAt)};
   const phases = inspectModuleSourcePhases(input);
   if (phases.status !== 'observed') return phases;
   const artifact = collectedArtifactView(input.artifact)!, source = derivedSourceView(input.source)!;
@@ -252,7 +226,7 @@ export function inspectModuleSourceAdmission(input: { artifact: unknown; source:
   const ref = producer.sourceMaterials;
   if (ref === undefined) return { status: 'pending' as const, sourceQualified: false as const, reason: 'restorable-module-build-originals-missing' };
   if (ref?.path !== 'source-materials/materials.json' || !Number.isSafeInteger(ref.bytes) || ref.bytes < 0 || ref.bytes > limits.metadataBytes) return fail('master original reference');
-  const bytes = artifact.readProducerOriginal(ref.path, limits.metadataBytes);
+  const bytes = artifact.readProducerOriginal(ref.path, limits.metadataBytes,operationBudget);
   if (bytes.length !== ref.bytes || hash(bytes) !== ref.sha256) return fail('master original digest');
   const materials = JSON.parse(bytes.toString());
   const origin = githubOriginFacts(input.origin)!;
@@ -265,15 +239,30 @@ export function inspectModuleSourceAdmission(input: { artifact: unknown; source:
   if (![started, closed, outputs, revalidatedStart, revalidatedClosed].every(Number.isFinite) || started < Date.parse(receipts[0].closedUTC)
     || revalidatedStart < Date.parse(receipts[receipts.length - 1].closedUTC) || revalidatedClosed < revalidatedStart || outputs < revalidatedClosed
     || closed < started || closed > Date.parse(receipts[1].startedUTC) || outputs < Date.parse(receipts[receipts.length - 1].closedUTC) || outputs > Date.parse(job.completed_at)) return fail('actual build input/output capture window');
-  const ranged = artifact as typeof artifact & { readProducerOriginalRange?: (name: string, offset: number, length: number) => Buffer };
+  const ranged = artifact as typeof artifact & { readProducerOriginalRange?: (name: string, offset: number, length: number,budget?:OriginalReadBudget) => Buffer };
   const git = source as typeof source & { readTrackedGitObject?: (name: string) => { mode: string; bytes: Buffer } };
   if (!ranged.readProducerOriginalRange || !git.readTrackedGitObject) return { status: 'pending' as const, sourceQualified: false as const, reason: 'original-range-and-Git-object-capabilities-required' };
   const checked = verifyModuleSourceOriginals({ materials, producer, inventory: artifact.producerOriginals,
     members: artifact.members, trackedPaths: source.trackedPaths, readTrackedObject: git.readTrackedGitObject,
-    readOriginal: artifact.readProducerOriginal, readRange: ranged.readProducerOriginalRange,
+    readOriginal:artifact.readProducerOriginal,readRange:ranged.readProducerOriginalRange,budget:operationBudget,
     ...(artifact.members.some(row => row.path === 'provenance/compiler.json')
       ? { compilerOriginal: artifact.readMember('provenance/compiler.json', limits.metadataBytes) } : {}) });
-  const capability = Object.freeze({}); issued.set(capability, Object.freeze({ ...checked, sourceSha: source.sourceSha }));
+  let native:ReturnType<typeof inspectModuleNativeBuildOriginals>;
+  if(producer.nativeBuildOriginals!==undefined){
+    if(phases.module!=='api'||!artifact.readMemberRange)return fail('controlled native product range capability required');
+    const declarations=['packages/xpod-api/scripts/inngest-controlled-build-policy.json','packages/xpod-api/scripts/inngest-controlled-materials-contract.json','scripts/lib/inngest-controlled-build.py','packages/xpod-api/scripts/controlled-native-material.ts'];
+    controlledApiSourceRecipe(source.readTracked,hash(source.readTracked('scripts/api-module-producer.py')),artifact.identity.target!);
+    const policy=JSON.parse(source.readTracked(declarations[0]!).toString()),contract=JSON.parse(source.readTracked(declarations[1]!).toString());
+    native=inspectModuleNativeBuildOriginals({remainingMilliseconds:limits.timeoutMs-(performance.now()-startedAt),producer,inventory:artifact.producerOriginals,productMembers:artifact.members,identity:artifact.identity,policy,contract,
+      jobWindow:{start:Date.parse(job.started_at),end:Date.parse(job.completed_at)},readOriginal:artifact.readProducerOriginal,readRange:ranged.readProducerOriginalRange,
+      readProduct:artifact.readMember,readProductRange:artifact.readMemberRange,
+      assertCurrent(){if(collectedArtifactView(input.artifact)!==artifact||derivedSourceView(input.source)!==source)return fail('retained native source/product handles revoked');assertCollectedPublicationCustody(input.artifact);assertDerivedSourceCurrent(input.source);},
+      assertProduct(value){if(value!==input.artifact)return fail('exact original controlled product handle required');},
+    });
+  }
+  const capability = Object.freeze({}); issued.set(capability, Object.freeze({ ...checked, sourceSha: source.sourceSha,...(native?{nativeBuildOriginals:native.view}:{}),
+    compactOriginalReaders(){checked.compactOriginalReaders();native?.compact();},
+  }));
   return { status: 'verified' as const, sourceQualified: true as const, reason: 'controlled-module-source-and-build-originals-verified',
     module: phases.module, target: phases.target, sourceSha: source.sourceSha, materials: capability,
     nativeSourceVerified: false as const,
