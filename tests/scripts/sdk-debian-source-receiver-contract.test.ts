@@ -6,7 +6,7 @@ import {expect,it,vi} from 'vitest';
 
 // Isolate serialization from central issuance, input ownership and build execution.
 // This view is a fixture, never an issued capability or release qualification.
-const fixture = vi.hoisted(() => ({view: undefined as any, source: {sourceSha:'a'.repeat(40)}, proof: undefined as any, calls: [] as number[], binary: undefined as undefined | {files: readonly unknown[]; unresolved: readonly unknown[]; scope: string; assertCurrent():void}, binaryCalls: [] as unknown[][], unresolved: [] as any[], tools: undefined as any, toolCalls: [] as unknown[][], tracked: undefined as any}));
+const fixture = vi.hoisted(() => ({view: undefined as any, source: {sourceSha:'a'.repeat(40)}, proof: undefined as any, calls: [] as number[], binary: undefined as undefined | {files: readonly unknown[]; unresolved: readonly unknown[]; scope: string; assertCurrent():void}, binaryCalls: [] as unknown[][], unresolved: [] as any[], tools: undefined as any, toolCalls: [] as unknown[][], tracked: undefined as any, dependencyRequired:false, dependencyViews:new WeakMap<object,any>(), dependencyReport:undefined as any}));
 vi.mock('../../scripts/lib/independent-admission/source-context',()=>({derivedSourceView:()=>fixture.source,assertDerivedSourceCurrent:()=>{}}));
 vi.mock('../../scripts/lib/independent-admission/qlever-sdk-debian-index',()=>({observeQleverSdkDebianIndexOriginals:async(_cap:unknown,remaining:number)=>{fixture.calls.push(remaining);return {facts:{sdkDebianInReleaseSourcesDscChecksumChainVerified:true},pending:['qlever-sdk-official-Debian-keyring-gpgv-and-suite-authority-unverified']};}}));
 vi.mock('../../scripts/lib/independent-admission/qlever-sdk-upstream-source',()=>({observeQleverSdkUpstreamGitOriginals:async(_cap:unknown,_source:unknown,remaining:number)=>{fixture.calls.push(remaining);return {facts:{},pending:['actual-generated-input-closure-unresolved']};}}));
@@ -17,7 +17,7 @@ vi.mock('../../scripts/lib/independent-admission/qlever-sdk-debian-binary',()=>(
   qleverSdkDebianBinaryObservation:()=>fixture.binary,
 }));
 vi.mock('../../scripts/lib/independent-admission/qlever-sdk-generation',()=>({
-  observeQleverSdkGeneratedInputOriginals:async()=>({facts:fixture.tracked??{sdkGeneratedInputIoClosureVerified:false},pending:[]}),
+  observeQleverSdkGeneratedInputOriginals:async()=>({facts:fixture.tracked??{sdkGeneratedInputIoClosureVerified:false},pending:fixture.dependencyRequired?['independent-FetchContent-dependency-stage-and-Git-or-URL-source-authority-unverified','qlever-sdk-dependency-source-read-origin-unverified','unclassified-kernel-operation:fixture']:[]}),
   qleverSdkExecutionOriginalObservation:()=>fixture.tracked,
 }));
 vi.mock('../../scripts/lib/independent-admission/qlever-sdk-observed-tools',()=>({
@@ -26,6 +26,11 @@ vi.mock('../../scripts/lib/independent-admission/qlever-sdk-observed-tools',()=>
     return current?{facts:current,pending:['observed-tool-other-obligation'],assertCurrent:()=>{if(fixture.tools!==current)throw Error('tool observation custody changed');}}:
       {facts:{sdkObservedToolAfterShardBytesVerified:false,sdkObservedToolsSignedDebianBinaryBytesVerified:false,sdkWholeToolchainVerified:false,sdkSourceClosureVerified:false},pending:[]};
   },
+}));
+// Opaque protocol handles in a test-local private map; no real issuer is mocked into production registration.
+vi.mock('../../scripts/lib/independent-admission/qlever-sdk-fetchcontent',()=>({
+ observeQleverSdkFetchContentOriginals:async(cap:object,_source:unknown,remaining:number)=>{fixture.calls.push(remaining);return {facts:fixture.dependencyReport??fixture.dependencyViews.get(cap)?.facts??{},pending:['specific-dependency-other-obligation']};},
+ qleverSdkFetchContentObservation:(cap:object)=>{const current=fixture.dependencyViews.get(cap);current?.assertCurrent();return current;},
 }));
 vi.mock('../../scripts/lib/independent-admission/qlever-sdk-originals', () => ({qleverSdkOriginalsView: () => fixture.view}));
 vi.mock('../../scripts/lib/independent-admission/qlever-sdk-inputs', () => ({inspectSdkInputOwnership: () => ({
@@ -133,6 +138,20 @@ it('actual acquisition output satisfies receiver source schema; unrooted refs an
     const forgedBinary=await observeQleverSdkSourceAdmission({sdkOriginals:cap,source:sourceCap});
     expect(forgedBinary.facts.sdkSelectedDebianBinaryFilesVerified).toBe(false);
     expect(forgedBinary.pending).toContain('qlever-sdk-independent-Debian-binary-private-observation-unavailable');
+    // Exercise orchestration using opaque identity, never JSON-based SDK issuance.
+    fixture.dependencyRequired=true;initialMaster.fetchContentSources=reference(fixtureInfo.receiverCollection.path);observe(initialCollection);
+    fixture.tracked=Object.freeze({sdkActualConfigureCompileTrackedWaitVerified:true,sdkGeneratedInputIoClosureVerified:false,sdkGeneratedInputIoClosureExceptDependencyOriginVerified:true});
+    const dependencyCap=Object.freeze(Object.create(null)),dependencyFacts=Object.freeze({sdkFetchContentPreparationStageOriginalsVerified:true,sdkFetchContentDeclaredSourceByteClosureVerified:true,sdkFetchContentDependencyReadOriginsVerified:true});let dependencyActive=true;
+    const privateDependency=Object.freeze({facts:dependencyFacts,assertCurrent:()=>{if(!dependencyActive)throw Error('dependency original revoked');}});fixture.dependencyViews.set(dependencyCap,privateDependency);
+    const dependency=await observeQleverSdkSourceAdmission({sdkOriginals:dependencyCap,source:sourceCap,remainingMilliseconds:10000});
+    expect(dependency.facts.sdkPreparedDependencySourceOriginalsVerified).toBe(true);expect(dependency.pending).not.toContain('independent-FetchContent-dependency-stage-and-Git-or-URL-source-authority-unverified');expect(dependency.pending).toContain('specific-dependency-other-obligation');expect(dependency.pending).toContain('actual-generated-input-closure-unresolved');expect(dependency.verified).toBe(false);
+    expect(dependency.facts.sdkGeneratedInputIoClosureVerified).toBe(true);expect(dependency.pending).not.toContain('qlever-sdk-dependency-source-read-origin-unverified');expect(dependency.pending).toContain('unclassified-kernel-operation:fixture');
+    const originalTracked=fixture.tracked;fixture.tracked=Object.freeze({...fixture.tracked,sdkGeneratedInputIoClosureExceptDependencyOriginVerified:false});const unknownIo=await observeQleverSdkSourceAdmission({sdkOriginals:dependencyCap,source:sourceCap});expect(unknownIo.facts.sdkGeneratedInputIoClosureVerified).toBe(false);expect(unknownIo.pending).toContain('unclassified-kernel-operation:fixture');fixture.tracked=originalTracked;
+    dependency.assertCurrent();dependencyActive=false;expect(()=>dependency.assertCurrent()).toThrow('dependency original revoked');dependencyActive=true;
+    fixture.dependencyReport={...dependencyFacts};const cloned=await observeQleverSdkSourceAdmission({sdkOriginals:dependencyCap,source:sourceCap});expect(cloned.facts.sdkPreparedDependencySourceOriginalsVerified).toBe(false);expect(cloned.pending).toContain('independent-FetchContent-dependency-stage-and-Git-or-URL-source-authority-unverified');fixture.dependencyReport=undefined;
+    const other=await observeQleverSdkSourceAdmission({sdkOriginals:Object.freeze(Object.create(null)),source:sourceCap});expect(other.facts.sdkPreparedDependencySourceOriginalsVerified).toBe(false);
+    fixture.dependencyViews.delete(dependencyCap);expect(()=>dependency.assertCurrent()).toThrow('FetchContent observation custody changed');
+    fixture.dependencyRequired=false;fixture.tracked=undefined;delete initialMaster.fetchContentSources;observe(initialCollection);
     // These are protocol-only private-view mocks, never real SDK/kernel issuance.
     const toolPath='/usr/bin/new-tool',toolRow={originalPath:toolPath,bytes:3,sha256:'c'.repeat(64),mode:0o755};
     const binaryFile={installedPath:toolPath,bytes:toolRow.bytes,sha256:toolRow.sha256,mode:toolRow.mode,binary:Object.freeze({name:'foo',version:'1.0',architecture:'amd64'}),source:Object.freeze({name:'foo',version:'1.0'})};

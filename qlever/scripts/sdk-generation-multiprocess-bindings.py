@@ -246,6 +246,46 @@ def dependency_collection_contract(prepared,collection):
         need(isinstance(row.get('sourceInventory'),dict) and row.get('declaration',{}).get('method')==row['sourceOriginals']['kind'],'dependency inventory/source kind reference required');result[name]=row
     return result
 
+class ToolchainOperationCoverage:
+    """Projection of branches already verified by observe; never an authority.
+
+    Keep each actual operation's file-backed VMA universe, instead of using
+    global counts or a set of observed paths as a substitute for coverage.
+    """
+    def __init__(self,maximum_bytes=4*1024**2,maximum_members=50000,check=lambda:None):
+        self.operations=[];self.by_capture={};self.maximum_bytes=maximum_bytes;self.maximum_members=maximum_members;self.check=check;self.charged=0
+    def claim(self,value):
+        self.check();self.charged+=len(json.dumps(value,separators=(',',':')).encode());need(self.charged<=self.maximum_bytes,'tool operation projection metadata bound')
+    @staticmethod
+    def mapping_key(mapping):return json.dumps(mapping,sort_keys=True,separators=(',',':'))
+    def start(self,kind,row,entry,mappings,primary=None):
+        self.check();need(len(self.operations)<self.maximum_members,'tool operation member bound')
+        need(kind in ['exec','mmap','protect'] and row['sequence'] not in self.by_capture,'duplicate tool operation capture')
+        expected={self.mapping_key(mapping):mapping for mapping in mappings if mapping['inode']>0 and mapping['path'].startswith('/')}
+        need(len(expected)==sum(1 for mapping in mappings if mapping['inode']>0 and mapping['path'].startswith('/')),'duplicate actual tool VMA')
+        value=dict(kind=kind,phase=row['phase'],pid=row['pid'],entrySequence=entry['sequence'],captureSequence=row['sequence'],mapOriginals=[],expectedFileMappingCount=len(expected),unresolved=[])
+        if kind=='exec':value['execEventSequence']=row['execEventSequence'];value['elf']=row['elf'];value['primaryFile']={**primary,'identityDecimal':[str(number) for number in primary['identity']]};del value['primaryFile']['identity']
+        else:value['exitSequence']=row['exitSequence']
+        self.claim(value)
+        for key in expected:self.claim(key)
+        self.operations.append(value);self.by_capture[row['sequence']]=dict(value=value,expected=expected,seen=set())
+    def mapped(self,parent,row,original_sequence,provider=None):
+        need(parent in self.by_capture,'tool VMA has no verified operation')
+        state=self.by_capture[parent];key=self.mapping_key(row['mapping'])
+        need(key in state['expected'] and key not in state['seen'],'duplicate or unrelated tool VMA original')
+        state['seen'].add(key)
+        value=dict(observedPath=row['mapping']['path'],identityDecimal=[str(number) for number in row['identity']],original=row['original'],mapping=row['mapping'],captureSequence=row['sequence'],originalCaptureSequence=original_sequence,stopReadonlyProvider=provider)
+        self.claim(value);state['value']['mapOriginals'].append(value)
+    def finish(self,unresolved=(),stop_provider_pending=()):
+        pending=list(unresolved)
+        for state in self.by_capture.values():
+            self.check();state['value']['unresolved']=[]
+            for key in sorted(set(state['expected'])-state['seen']):
+                mapping=state['expected'][key];reason='toolchain-operation-file-mapping-original-unavailable:'+str(state['value']['captureSequence'])+':'+mapping['path']+':'+mapping['startHex']+'-'+mapping['endHex']+':'+str(mapping['fileOffset'])
+                state['value']['unresolved'].append(reason);pending.append(reason)
+        result=dict(schemaVersion=1,scope='verified raw operation/file associations; effective-RO and source authority independent',operations=self.operations,pending=pending,stopProviderPending=list(stop_provider_pending))
+        need(len(json.dumps(result,separators=(',',':')).encode())<=self.maximum_bytes,'tool operation final metadata bound');return result
+
 def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,limits=None,capture_observer=None):
     maximum_raw=limits['sourceMaterialBytes'] if limits else 32*1024**2
     maximum_file=limits['shardBytes'] if limits else 1024**2
@@ -276,7 +316,8 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
         for block in blocks:check();need(isinstance(block,bytes) and len(block)<=65536,'dependency metadata range bound');data.extend(block);need(len(data)<=ref['bytes'],'dependency metadata grew')
         need((len(data),hashlib.sha256(data).hexdigest())==(ref['bytes'],ref['sha256']),'dependency metadata original changed');return bytes(data)
     def dependency_json(ref):return json.loads(dependency_bytes(ref))
-    tool_originals={};tool_files={};tool_pending=set();tool_execs=0;tool_mappings=0;tool_core=None;exec_events={};tool_exec_paths={};tool_protect_before={};tool_digest=hashlib.sha256()
+    tool_coverage=ToolchainOperationCoverage(limits.get('metadataBytes',4*1024**2) if limits else 4*1024**2,limits.get('sourceMembers',50000) if limits else 50000,check)
+    tool_originals={};tool_files={};tool_pending=set();tool_execs=0;tool_mappings=0;tool_core=None;exec_events={};tool_exec_paths={};tool_protect_before={};tool_providers={};tool_provider_pending=set();provider_verifier=None;tool_digest=hashlib.sha256()
     def tool_ref(reference,kind=None):
         value=tool_originals.get(reference['path']);need(value and value['original']==reference and (kind is None or value['captureKind']==kind),'toolchain reference lacks actual complete original')
         return value
@@ -289,6 +330,14 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
         return parse_proc_maps(b''.join(parts))
     def tool_barrier(row):
         value=barriers.get(row['barrierSequence']);need(value and value['pids']==sorted(live) and row['pid'] in live,'tool snapshot lacks complete actual stop barrier')
+    def tool_provider(sequence,consumer,file_original,actual_path):
+        if sequence is None:
+            tool_provider_pending.add('toolchain-stop-readonly-provider-original-unavailable:'+str(consumer['sequence'])+':'+str(actual_path));return None
+        need(type(sequence) is int and sequence<consumer['sequence'] and sequence in tool_providers,'actual tool provider original sequence missing')
+        record=tool_providers[sequence]
+        need(not record['used'],'tool provider original already consumed by another role')
+        need(record['pid']==consumer['pid'] and record['phase']==consumer['phase'] and record['barrierSequence']==consumer['barrierSequence'] and record['fileOriginal']==file_original['original'] and record['observation']['actualPath']==actual_path and record['observation']['identity']==file_original['identity'],'tool provider original operation/FD/path/barrier differs')
+        record['used']=True;return record['verified']
     def tool_elf(reference):
         original=read_original(reference['path'],maximum_file);iterator=iter([original] if isinstance(original,bytes) else original);prefix=bytearray()
         def read(offset,size):
@@ -505,12 +554,20 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                 else:need(False,'unknown syscall-info operation')
             elif kind=='toolchain-original':
                 need(not append_dirty,'tool/source output before mandatory append full checkpoint')
-                need(bool(live) and row['captureKind'] in ['file','maps'],'actual tool original must be observed with live stopped tracees')
+                need(bool(live) and row['captureKind'] in ['file','maps','mountinfo'],'actual tool original must be observed with live stopped tracees')
                 data=capture_data(row['original']);need(row['original']['path'] not in tool_originals,'duplicate tool original')
                 if row['captureKind']=='file':
                     need(len(row['identity'])==6 and row['identity'][3]==data[0],'tool FD identity/bytes differ');tool_files[row['original']['path']]=dict(observedPath=row['observedPath'],identity=row['identity'],original=row['original'])
-                else:need(data[0]<=4*1024**2,'bounded maps metadata original')
+                else:need(data[0]<=4*1024**2 and type(row.get('observedPid')) is int and row['observedPid'] in live,'bounded live tracee metadata original')
                 tool_originals[row['original']['path']]=row
+            elif kind=='toolchain-provider-original':
+                tool_barrier(row);file_original=tool_ref(row['fileOriginal'],'file');observation=row['observation'];mount_original=tool_ref(observation['mountinfoOriginal'],'mountinfo');mount_data=dependency_bytes(mount_original['original'])
+                if provider_verifier is None:
+                    import importlib.util
+                    from pathlib import Path
+                    spec=importlib.util.spec_from_file_location('verified_tool_provider',Path(__file__).with_name('sdk-tool-provider-originals.py'));provider_verifier=importlib.util.module_from_spec(spec);spec.loader.exec_module(provider_verifier)
+                verified=provider_verifier.verify_provider_originals(observation,mount_data,pid=row['pid'],actual_path=observation['actualPath'],file_identity=file_original['identity'])
+                need(row['sequence'] not in tool_providers,'duplicate actual tool provider sequence');tool_providers[row['sequence']]=dict(row,verified=verified,used=False)
             elif kind=='toolchain-exec-path-entry':
                 tool_barrier(row);entry=entries.get(row['entrySequence']);need(entry and entry['pid']==row['pid'] and entry['nr']==row['syscall'] and entry['nr'] in policy(entry['arch'])['exec'] and isinstance(row['entryPath'],str) and len(row['entryPath'].encode())<=4096,'actual exec path entry differs');tool_exec_paths[row['sequence']]=row
             elif kind=='toolchain-exec-image-capture':
@@ -519,7 +576,7 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                 if path_entry:need(path_entry['entrySequence']==entry['sequence'] and path_entry['pid']==row['pid'] and path_entry['lexicalPath']==row['exe']['lexicalPath'],'actual exec path/executable snapshot differs')
                 else:tool_pending.add('toolchain-exec-path-entry-original-unavailable')
                 original=tool_ref(row['exe']['original'],'file');need(row['exe']['identity']==original['identity'] and row['elf']==tool_elf(original['original']),'actual exe FD/ELF bytes differ')
-                tool_core=dict(sequence=row['sequence'],pid=row['pid'],maps=tool_maps(row['mapsOriginal']));tool_execs+=1;tool_digest.update((json.dumps(row,sort_keys=True)+'\n').encode())
+                tool_core=dict(sequence=row['sequence'],pid=row['pid'],maps=tool_maps(row['mapsOriginal']));tool_coverage.start('exec',row,entry,tool_core['maps'],dict(observedPath=original['observedPath'],identity=original['identity'],original=original['original'],originalCaptureSequence=original['sequence'],stopReadonlyProvider=tool_provider(row['exe'].get('providerSequence'),row,original,row['exe'].get('resolvedPath'))));tool_execs+=1;tool_digest.update((json.dumps(row,sort_keys=True)+'\n').encode())
                 retained_entries.discard(entry['sequence']);exec_events.pop(row['execEventSequence'])
                 if 'machine' in row['elf']:need(row['elf']['machine']=={0xc000003e:62,0xc00000b7:183}[entry['arch']],'actual executable ELF/kernel architecture differs')
                 if 'unresolved' in row['elf']:tool_pending.add('toolchain-exec-ELF-interpreter-unclassified')
@@ -535,12 +592,14 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                     maps=tool_maps(row['mapsOriginal']);selected=verify_vma_range(maps,actual['result'],args[1],args[2])
                     anonymous=bool(args[3]&0x20)
                     if anonymous:tool_pending.add('anonymous-or-JIT-mapping-source-unresolved');need(descriptor is None,'MAP_ANONYMOUS must not claim file descriptor authority')
+                    tool_coverage.start('mmap',row,entry,selected)
                     tool_core=dict(sequence=row['sequence'],pid=row['pid'],maps=maps,mappingKind='mmap',begin=actual['result'],length=args[1],offset=args[5],anonymous=anonymous,descriptor=descriptor)
                 else:
                     need(entry['nr'] in policy(entry['arch'])['protect'] and args[2]&4 and actual['result']==0 and row['actualSyscall']==entry['nr'] and row['requestedStartHex']==format(args[0],'x') and row['requestedLength']==args[1] and row['protection']==args[2] and row['beforeMapsOriginal']==tool_protect_before.get(entry['sequence']),'actual executable protection before/after relation differs')
                     if entry['nr'] in [329,288]:tool_pending.add('toolchain-protection-key-access-state-unverified')
                     maps=tool_maps(row['afterMapsOriginal']);actual_mappings=verify_vma_range(maps,args[0],args[1],args[2])
                     if any(mapping['inode']==0 or not mapping['path'].startswith('/') for mapping in actual_mappings):tool_pending.add('anonymous-or-JIT-mapping-source-unresolved')
+                    tool_coverage.start('protect',row,entry,actual_mappings)
                     tool_core=dict(sequence=row['sequence'],pid=row['pid'],maps=maps,mappingKind='protect',begin=args[0],length=args[1])
                 entries.pop(entry['sequence']);exits.pop(entry['sequence']);retained_entries.discard(entry['sequence']);tool_protect_before.pop(entry['sequence'],None)
                 tool_digest.update((json.dumps(row,sort_keys=True)+'\n').encode())
@@ -556,6 +615,8 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                     need(start<end and stop>begin and mapping['fileOffset']+max(begin-start,0)==tool_core['offset']+max(start-begin,0),'actual mapped file offset/range differs')
                 elif tool_core.get('mappingKind')=='protect':need(int(mapping['startHex'],16)<tool_core['begin']+tool_core['length'] and int(mapping['endHex'],16)>tool_core['begin'],'executable protection mapping outside actual requested range')
                 if descriptor:need(descriptor['identity']==identity,'actual mapping process FD differs')
+                provider=tool_provider(row.get('providerSequence'),row,tool_ref(row['original'],'file'),mapping['path'])
+                tool_coverage.mapped(tool_core['sequence'],row,tool_ref(row['original'],'file')['sequence'],provider)
                 tool_mappings+=1;tool_digest.update((json.dumps(row,sort_keys=True)+'\n').encode())
             elif kind=='toolchain-unresolved':tool_pending.add(row['reason'])
             elif kind=='kernel-clone-flags':
@@ -617,6 +678,9 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
     need(len(write_windows)==len(write_transitions),'actual write window missing exit transition')
     need({seq for seq,(row,_) in caps.items() if row['role']=='readwrite-consumer'}==set(write_read_exits),'own-RW read missing actual stable exit')
     need(set(empty_windows)==empty_eofs,'empty read missing actual EOF closure')
+    for sequence,record in tool_providers.items():
+        check()
+        if not record['used']:tool_provider_pending.add('toolchain-stop-provider-original-unreferenced:'+str(sequence))
     if exec_events:tool_pending.add('toolchain-actual-exec-image-original-unavailable')
     need(all(seq in clone_flags for seq,entry in entries.items() if entry['nr']==435),'clone3 lacks actual flags original')
     successful={}
@@ -665,4 +729,4 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
             if actual is None:pending.append('actual-successful-generated-consumer-missing:'+path)
             else:need(actual['bytes']==expected['bytes'] and actual['sha256']==expected['sha256'],'actual generated consumer differs from selected full-shard input')
     return dict(schemaVersion=1,kind='all-stop-CMake-generated-byte-mechanics',selectedGeneratedConsumerByteCustodyVerified=not pending,outputs=sorted(covered.values(),key=lambda row:row['path']),observedSourceReadCaptures=len(source_reads),observedPreparedDependencyReadCaptures=dependency_reads,preparedDependencySourceAuthorityVerified=False,preparedDependencyPending=(['independent-FetchContent-dependency-stage-and-Git-or-URL-source-authority-unverified'] if dependency_roots else []),pending=pending,overallSdkSourceVerified=False,
-                observedAliasOnlyCloses=len(alias_close_exits),observedActualModeTransitions=len(mode_transitions),observedNamedRetainedFdBindings=len(namespaces),observedActualWriteTransitions=len(write_transitions),observedEmptyReadEofWindows=len(empty_eofs),toolchainFileSnapshots=list(tool_files.values()),toolchainActualExecImages=tool_execs,toolchainActualFileMappings=tool_mappings,toolchainObservationSha256=tool_digest.hexdigest(),toolchainPending=sorted(tool_pending|({'toolchain-executed-byte-immutability-and-full-source-authority-unverified'} if tool_execs else set())),toolchainSourceClosureVerified=False,preparedInputConsumers=list(prepared_covered.values()),preparedInputConsumerBytesVerified=bool(prepared_covered),phaseTracking=phase_tracking,scope='actual producer-close/rename/consumer bytes only; reviewed observer execution/Git/source/runtime authority independent')
+                observedAliasOnlyCloses=len(alias_close_exits),observedActualModeTransitions=len(mode_transitions),observedNamedRetainedFdBindings=len(namespaces),observedActualWriteTransitions=len(write_transitions),observedEmptyReadEofWindows=len(empty_eofs),toolchainFileSnapshots=list(tool_files.values()),toolchainOperationCoverage=tool_coverage.finish(sorted(tool_pending),sorted(tool_provider_pending)),toolchainActualExecImages=tool_execs,toolchainActualFileMappings=tool_mappings,toolchainObservationSha256=tool_digest.hexdigest(),toolchainStopProviderPending=sorted(tool_provider_pending),toolchainPending=sorted(tool_pending|tool_provider_pending|({'toolchain-executed-byte-immutability-and-full-source-authority-unverified'} if tool_execs else set())),toolchainSourceClosureVerified=False,preparedInputConsumers=list(prepared_covered.values()),preparedInputConsumerBytesVerified=bool(prepared_covered),phaseTracking=phase_tracking,scope='actual producer-close/rename/consumer bytes only; reviewed observer execution/Git/source/runtime authority independent')

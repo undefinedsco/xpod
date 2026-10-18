@@ -576,8 +576,39 @@ const preparedDependencyBindings=Object.freeze([
     "sha256": "8ec24a7e0e68197bb2bfe127733a18f5db64477e2b3f549feb95af05e4f4097f"
   }
 ].map(row=>Object.freeze(row)));
+// The ZIP parser was already mandatory in SDK18 sourceBindings. Include it in
+// the shared secondary selector set to select old/new source bytes atomically.
+function dependencyVersionGroup(rows:readonly {path:string;sha256:string}[]):GitHubSourceBindingGroup {
+ const group=observerVersionGroup(rows),zip=rows.find(row=>row.path==='qlever/scripts/sdk-zip-originals.py');
+ if(!zip)throw Error('Complete SDK dependency ZIP source binding required');
+ return Object.freeze({...group,secondarySelectors:Object.freeze([...group.secondarySelectors!,zip])});
+}
+const fetchContentReceiverRecipe=new Map([
+  [
+    "qlever/scripts/sdk-zip-originals.py",
+    "304a8d26c8a124af31f2b240f1b2af52312520982cd6e1f4cba70fde2602bcb8"
+  ],
+  [
+    "qlever/scripts/sdk-ptrace-execution.py",
+    "4afb15816012071e7865384cb0555cb8ccce6afecddac09bd290c0de013ceb68"
+  ],
+  [
+    "qlever/scripts/sdk-generation-multiprocess-bindings.py",
+    "2b58b91ad5054f6c6b74be4315faf74ff29f18f8f272138717403400f8ade281"
+  ],
+  [
+    "qlever/scripts/sdk-toolchain-materials.py",
+    "7e0e9d9038e8793aaee36fdfd575681df4258f1b5ec8de95f26ada9bfbdab49c"
+  ]
+]);
+const fetchContentReceiverBindings=Object.freeze([
+ ...preparedDependencyBindings.map(row=>Object.freeze({...row,sha256:fetchContentReceiverRecipe.get(row.path)??row.sha256})),
+ Object.freeze({"path": "qlever/scripts/sdk-fetchcontent-source-observer.py", "sha256": "535fa858b9ded0f8cf37e680f3ccc14cb053520f077f5bc361a9301dfe602cb1"}),
+ Object.freeze({"path": "qlever/scripts/sdk-fetchcontent-source-bindings.py", "sha256": "58c673c1506cbf321736e8693fa5364bddbfc7dec5e1e456bdda7151bb54535c"}),
+ Object.freeze({"path": "qlever/scripts/sdk-tool-provider-originals.py", "sha256": "d5bc8db6c6457d95e67c3ea6138d75f9cfe055e47b22d361ebb1d220f7cbcfd0"}),
+]);
 export const QLEVER_SDK_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([
- sdkBGroup(QLEVER_SDK_B_SOURCE_BINDINGS),sdkBGroup(tarBindings),sdkBGroup(stagingTarBindings),sdkBGroup(debianV3Bindings),sdkBGroup(symlinkBindings),sdkBGroup(gitCmakeBindings),sdkBGroup(ownedRunsBindings),sdkBGroup(sourcePreparedBindings),sdkBGroup(serviceContextBindings),sdkBGroup(trackedExecutionBindings),observerVersionGroup(selfRetainedContextBindings),observerVersionGroup(preparedInputBindings),observerVersionGroup(debianBinaryBindings),observerVersionGroup(writeReadBindings),observerVersionGroup(sharedTaskBindings),observerVersionGroup(writeDeltaBindings),observerVersionGroup(combinedToolAppendBindings),observerVersionGroup(preparedDependencyBindings),
+ sdkBGroup(QLEVER_SDK_B_SOURCE_BINDINGS),sdkBGroup(tarBindings),sdkBGroup(stagingTarBindings),sdkBGroup(debianV3Bindings),sdkBGroup(symlinkBindings),sdkBGroup(gitCmakeBindings),sdkBGroup(ownedRunsBindings),sdkBGroup(sourcePreparedBindings),sdkBGroup(serviceContextBindings),sdkBGroup(trackedExecutionBindings),observerVersionGroup(selfRetainedContextBindings),observerVersionGroup(preparedInputBindings),observerVersionGroup(debianBinaryBindings),observerVersionGroup(writeReadBindings),observerVersionGroup(sharedTaskBindings),observerVersionGroup(writeDeltaBindings),observerVersionGroup(combinedToolAppendBindings),dependencyVersionGroup(preparedDependencyBindings),dependencyVersionGroup(fetchContentReceiverBindings),
 ]);
 export const QLEVER_LINUX_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([
  {selectors:sdkSelectors('cbedd3e2478de5e22108b6689c595a658ca891c9bd47552caec830e86f47fea8','a75c7be34b5c5fafff85c0d67d814ba1aaf14bcf5db5404a860fe3b9a11009bd'),sourceBindings:QLEVER_LINUX_SOURCE_BINDINGS.filter(row=>!['.github/workflows/publish-qlever-runtime-sdk.yml','.github/workflows/build-qlever-linux-runtime.yml'].includes(row.path))},

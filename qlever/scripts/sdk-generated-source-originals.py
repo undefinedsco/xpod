@@ -10,6 +10,21 @@ def load(name):
     spec=importlib.util.spec_from_file_location(name,Path(__file__).with_name(name+'.py'));module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module);return module
 zip_originals=load('sdk-zip-originals');bindings=load('sdk-generation-multiprocess-bindings');originals_util=load('sdk-execution-originals-util');LIMITS=zip_originals.LIMITS
 
+def retain_dependency_read_capture(row,digest,registrations,paths,originals):
+    """Projection only; caller must complete observe() full raw/FD validation."""
+    binding=row.get('dependency');bindings.need(isinstance(binding,dict),'dependency FD capture registration required')
+    registration=registrations.get(binding.get('registrationSequence'));bindings.need(registration,'dependency read actual raw registration unavailable')
+    if binding.get('name')=='@cmake-cache':bindings.need(row['path']=='/opt/qlever-sdk/dependencies/sources.cmake' and binding.get('relativePath')=='sources.cmake','fixed dependency cache capture role')
+    else:bindings.need(binding.get('name')==registration.get('name') and isinstance(binding.get('relativePath'),str) and not binding['relativePath'].startswith('/') and all(part not in ('','.', '..') for part in binding['relativePath'].split('/')) and '\\' not in binding['relativePath'] and row['path']==registration['sourceRoot']+'/'+binding['relativePath'],'dependency capture actual root/path differs')
+    current={key:dict(bytes=registration[field]['bytes'],sha256=registration[field]['sha256']) for key,field in [('prepared','sourcePreparedOriginal'),('collection','collectionOriginal'),('declaration','declarationOriginal'),('cache','cmakeCacheOriginal')]}
+    bindings.need(originals is None or originals==current,'dependency FD captures mix origin originals')
+    value=dict(path=row['path'],bytes=digest[0],sha256=digest[1],mode=row['identity'][2]&0o7777)
+    previous=paths.get(row['path'])
+    if previous:bindings.need(all(previous[key]==item for key,item in value.items()),'dependency captured path bytes/mode changed');previous['captures']+=1
+    else:value['captures']=1;paths[row['path']]=value
+    bindings.need(len(paths)<=LIMITS['sourceMembers'],'dependency captured path projection bound')
+    return current
+
 def observe(archive_path,plan):
     remaining=plan['remainingMilliseconds'];bindings.need(isinstance(remaining,(int,float)) and 0<remaining<=LIMITS['timeoutMs'],'shared remaining deadline required')
     deadline=time.monotonic()+remaining/1000
@@ -27,7 +42,7 @@ def observe(archive_path,plan):
             bindings.need(ref['bytes']<=LIMITS['metadataBytes'],'metadata original bound');return json.loads(b''.join(stream(ref)))
         provider=plan['sourceProviderOriginals']['mountinfo'];bindings.need(provider['path']=='inner/toolchain-execution/source-provider.mountinfo.raw' and provider['bytes']<=LIMITS['metadataBytes'],'fixed bounded source provider original required')
         originals_util.effective_readonly(plan['sourceRoot'],b''.join(stream(provider)),resolve_local=False)
-        phase_rows=[];all_refs={};source_matches=set();unresolved_sources=set();uncovered=set();used_originals=set()
+        phase_rows=[];all_refs={};source_matches=set();unresolved_sources=set();uncovered=set();used_originals=set();dependency_registrations={};dependency_reads={};dependency_originals=None
         for phase in plan['phases']:
             local={}
             for ref in phase['captures']['indexes']:
@@ -58,6 +73,8 @@ def observe(archive_path,plan):
                         if row.get('kind')=='kernel-syscall' and row.get('op')=='entry':
                             policy=bindings.policy(row['arch']);classified={policy[key] for key in ['read','write','close','mmap','clone','clone3']}|policy['renameOps']|policy['exits']
                             if row['nr'] not in classified:uncovered.add('unclassified-kernel-operation:'+hex(row['arch'])+':'+str(row['nr']))
+                        if row.get('kind')=='prepared-dependency-source-root':
+                            bindings.need(row['sequence'] not in dependency_registrations,'duplicate dependency raw registration sequence');dependency_registrations[row['sequence']]=row
                         if row.get('kind')=='generated-mmap-unverified':uncovered.add('generated-input-mmap:'+row['path'])
                         yield line
                     bindings.need(len(pending)<=LIMITS['rangeBytes'],'unfinished raw record bound')
@@ -65,7 +82,10 @@ def observe(archive_path,plan):
         bindings.need({name for name in member.names if name.startswith('inner/toolchain-execution/captures/')}=={ref['path'] for ref in all_refs.values()},'capture original ZIP closed set differs')
         source_files=plan['sourceFiles']
         def capture_observer(row,digest):
-            if row['role']=='source-read':
+            nonlocal dependency_originals
+            if row['role']=='source-read' and row['path'].startswith('/opt/qlever-sdk/dependencies/'):
+                dependency_originals=retain_dependency_read_capture(row,digest,dependency_registrations,dependency_reads,dependency_originals)
+            elif row['role']=='source-read':
                 expected=source_files.get(row['path'])
                 if expected is None:unresolved_sources.add(row['path'])
                 else:
@@ -80,7 +100,10 @@ def observe(archive_path,plan):
                 bindings.need(all(declared.get(key)==actual[key] for key in ['actualRootPid','actualRootReturnCode','waitReferences']),'actual kernel wait references differ from typed receipt')
         check();result['actualConfigureCompileTrackedWaitVerified']=len(plan['phases'])==2 and [phase['name'] for phase in plan['phases']]==['configure','compile'] and all('trackingReceipt' in phase for phase in plan['phases'])
         result['postpatchSourceReadSnapshotsMatched']=len(source_matches);result['unresolvedSourceReadPaths']=sorted(unresolved_sources);result['uncoveredOperations']=sorted(uncovered)
-        result['generatedInputIoClosureVerified']=result['selectedGeneratedConsumerByteCustodyVerified'] and not unresolved_sources and not uncovered
+        result['dependencySourceReadOriginals']=dependency_originals
+        result['dependencySourceReadCaptures']=sorted(dependency_reads.values(),key=lambda row:row['path'])
+        result['generatedInputIoClosureExceptDependencyOriginVerified']=result['selectedGeneratedConsumerByteCustodyVerified'] and not unresolved_sources and not uncovered
+        result['generatedInputIoClosureVerified']=result['generatedInputIoClosureExceptDependencyOriginVerified'] and not dependency_reads
         return result
 if __name__=='__main__':
     raw=sys.stdin.buffer.read(LIMITS['metadataBytes']+1);bindings.need(len(raw)<=LIMITS['metadataBytes'] and len(sys.argv)==2,'bounded fixed observer plan required')

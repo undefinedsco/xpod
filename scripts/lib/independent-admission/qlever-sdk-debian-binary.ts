@@ -145,4 +145,4 @@ export async function observeQleverSdkDebianBinaryOriginals(capability: unknown,
 }
 
 // Frozen only after the final helper and shared ZIP-domain delta are reviewed.
-const HELPERS: readonly (readonly [string, string])[] = [["sdk-debian-binary-originals.py", "6db9772344afe812f3a58fc04296b63c13bbd4be1d46ae2ad7fcff181111c63c"], ["sdk-debian-index-bindings.py", "ad87a17bdb781f34a6a78a5e970d1f9c69d0750a1fcc4ba3f711db317bd75e13"], ["sdk-zip-originals.py", "f4e8bf855aad1428550f014222873f9024eff994115a9e7bf67287e5671833f5"]];
+const HELPERS: readonly (readonly [string, string])[] = [["sdk-debian-binary-originals.py", "6db9772344afe812f3a58fc04296b63c13bbd4be1d46ae2ad7fcff181111c63c"], ["sdk-debian-index-bindings.py", "ad87a17bdb781f34a6a78a5e970d1f9c69d0750a1fcc4ba3f711db317bd75e13"], ["sdk-zip-originals.py", "304a8d26c8a124af31f2b240f1b2af52312520982cd6e1f4cba70fde2602bcb8"]];

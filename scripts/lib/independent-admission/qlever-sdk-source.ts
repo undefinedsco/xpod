@@ -49,6 +49,7 @@ export function inspectQleverSdkSourceOriginals(capability: unknown, remainingMi
       const bytes = sdk.readOriginal(ref.path, maximum); need(bytes.length === ref.bytes && hash(bytes) === ref.sha256, 'SDK source metadata bytes differ'); return bytes;
     };
     const master = JSON.parse(small(sdk.masterReference, 8 * 1024 ** 2).toString());
+    facts.sdkFetchContentOriginalsRequired=master.fetchContentSources!==undefined;
     need(master.identity.sourceSha === sdk.originFacts.sourceSha && master.identity.target === sdk.originFacts.target && master.kind === 'qlever-linux-sdk-originals', 'SDK master/source binding differs');
     const helper = fileURLToPath(new URL('../../../qlever/scripts/sdk-debian-source-materials.py', import.meta.url));
     const helperIdentity = captureLegalFileIdentity(helper); need(helperIdentity.size <= BigInt(limits.metadataBytes) && hash(readFileSync(helper)) === HELPER_SHA, 'reviewed controller source parser differs');
@@ -172,6 +173,8 @@ export async function observeQleverSdkSourceAdmission(input: {sdkOriginals: unkn
     if (source) assertDerivedSourceCurrent(input.source);
     generationGuard?.();
     observedToolGuard?.();
+    toolchainGuard?.();
+    fetchContentGuard?.();
     if (binaryObservation) {
       need(binaryGetter?.(input.sdkOriginals) === binaryObservation, 'independent Debian binary observation custody changed');
       binaryObservation.assertCurrent();
@@ -180,6 +183,8 @@ export async function observeQleverSdkSourceAdmission(input: {sdkOriginals: unkn
   };
   let generationGuard:(()=>void)|undefined;
   let observedToolGuard:(()=>void)|undefined;
+  let toolchainGuard:(()=>void)|undefined;
+  let fetchContentGuard:(()=>void)|undefined;
   let verified = false;
   try {
     need(sdk && source && sdk.originFacts.sourceSha === source.sourceSha, 'same issued SDK and immutable source required');
@@ -203,6 +208,20 @@ export async function observeQleverSdkSourceAdmission(input: {sdkOriginals: unkn
     const {observeQleverSdkUpstreamGitOriginals} = await import('./qlever-sdk-upstream-source');
     const git = await observeQleverSdkUpstreamGitOriginals(input.sdkOriginals, input.source, available()); check();
     Object.assign(facts, git.facts); git.pending.forEach(value => pending.add(value));
+    facts.sdkPreparedDependencySourceOriginalsVerified=false;
+    if(facts.sdkFetchContentOriginalsRequired===true){
+      const dependencyModule=await import('./qlever-sdk-fetchcontent');
+      const dependency=await dependencyModule.observeQleverSdkFetchContentOriginals(input.sdkOriginals,input.source,available());check();
+      Object.assign(facts,dependency.facts);dependency.pending.forEach(value=>pending.add(value));
+      const retained=dependencyModule.qleverSdkFetchContentObservation(input.sdkOriginals);
+      if(retained&&retained.facts===dependency.facts&&retained.facts.sdkFetchContentPreparationStageOriginalsVerified===true&&retained.facts.sdkFetchContentDeclaredSourceByteClosureVerified===true){
+        retained.assertCurrent();fetchContentGuard=()=>{need(dependencyModule.qleverSdkFetchContentObservation(input.sdkOriginals)===retained,'FetchContent observation custody changed');retained.assertCurrent();};fetchContentGuard();
+        facts.sdkPreparedDependencySourceOriginalsVerified=true;
+        pending.delete('independent-FetchContent-dependency-stage-and-Git-or-URL-source-authority-unverified');
+        if(retained.facts.sdkFetchContentDependencyReadOriginsVerified===true&&tracked===generation.facts&&tracked?.sdkActualConfigureCompileTrackedWaitVerified===true){pending.delete('qlever-sdk-dependency-source-read-origin-unverified');if(generation.facts.sdkGeneratedInputIoClosureExceptDependencyOriginVerified===true)facts.sdkGeneratedInputIoClosureVerified=true;}
+      }else pending.add('qlever-sdk-independent-FetchContent-private-observation-unavailable');
+    }
+
     const signatureModule = await import('./qlever-sdk-debian-signature'); signatureGetter = signatureModule.qleverSdkDebianSignatureObservation;
     const signature = await signatureModule.observeQleverSdkDebianSignatureOriginals(input.sdkOriginals, available()); check();
     signature.pending.forEach(value => pending.add(value));
@@ -249,6 +268,10 @@ export async function observeQleverSdkSourceAdmission(input: {sdkOriginals: unkn
     Object.assign(facts,tools.facts);tools.pending.forEach(value=>pending.add(value));
     if((tools.facts.sdkObservedToolAfterShardBytesVerified===true||tools.facts.sdkObservedToolsSignedDebianBinaryBytesVerified===true)&&!tools.assertCurrent)throw Error('observed tool private custody guard unavailable');
     if(tools.assertCurrent){observedToolGuard=tools.assertCurrent;observedToolGuard();}
+    const {observeQleverSdkToolchainSourceOriginals}=await import('./qlever-sdk-toolchain-source');
+    const toolchain=await observeQleverSdkToolchainSourceOriginals(input.sdkOriginals,input.source,available());check();
+    Object.assign(facts,toolchain.facts);toolchain.pending.forEach(value=>pending.add(value));
+    if(toolchain.assertCurrent){toolchainGuard=toolchain.assertCurrent;toolchainGuard();}
     const unresolved=(facts.sdkInputOwnership as {unresolvedInputs?:readonly {path:string;role:string;reason:string}[]}|undefined)?.unresolvedInputs;
     const toolFiles=tools.facts.sdkObservedToolAfterShardFiles;
     const inputRows=sdkVerifiedInputOriginalView(input.sdkOriginals)?.rows;
@@ -271,6 +294,7 @@ export async function observeQleverSdkSourceAdmission(input: {sdkOriginals: unkn
       assertCurrent();pending.delete('qlever-sdk-Git-generated-or-other-non-Debian-input-source-authority-unresolved');
     }
     const axes = Object.freeze({inputOriginals: sdkVerifiedInputOriginalView(input.sdkOriginals) !== undefined,
+      preparedDependencySources: facts.sdkFetchContentOriginalsRequired!==true||facts.sdkPreparedDependencySourceOriginalsVerified===true,
       configureCompileExecution: facts.sdkConfigureCompileClosedExecutionVerified === true,
       ownedDebianSourceArchives: facts.sdkOwnedDebianSourceArchiveAuthorityVerified === true,
       upstreamGitPreimages: facts.sdkUpstreamGitCommitTreePreimageClosureVerified === true,
@@ -282,6 +306,8 @@ export async function observeQleverSdkSourceAdmission(input: {sdkOriginals: unkn
     facts.sdkSourceCompletenessVerified = verified;
     check(); assertCurrent();
   } catch (error) {
+    toolchainGuard=undefined;facts.sdkToolchainOperationCoverageVerified=false;facts.sdkToolchainObservedAfterFileBindingsVerified=false;facts.sdkToolchainSignedDebianBinaryFileBindingsVerified=false;facts.sdkToolchainStopReadOnlyProviderCoverageVerified=false;facts.sdkToolchainSourceClosureVerified=false;delete facts.sdkToolchainSignedFileCoordinates;
+    if(fetchContentGuard){fetchContentGuard=undefined;facts.sdkPreparedDependencySourceOriginalsVerified=false;facts.sdkGeneratedInputIoClosureVerified=false;facts.sdkFetchContentDependencyReadOriginsVerified=false;facts.sdkFetchContentDeclaredSourceByteClosureVerified=false;facts.sdkFetchContentPreparationStageOriginalsVerified=false;delete facts.sdkFetchContentSourceOriginals;}
     pending.add((error as Error).message); verified = false; facts.sdkSourceCompletenessVerified = false;
     if ('sdkObservedToolAfterShardBytesVerified' in facts) { observedToolGuard=undefined; facts.sdkObservedToolAfterShardBytesVerified=false; facts.sdkObservedToolsSignedDebianBinaryBytesVerified=false; delete facts.sdkObservedToolAfterShardFiles; }
     if (binaryObservation) { binaryObservation = undefined; facts.sdkSelectedDebianBinaryFilesVerified = false; delete facts.sdkDebianBinaryFiles; delete facts.sdkDebianBinaryScope; }

@@ -17,7 +17,7 @@ test('new group pins actual dynamic execution helpers without self hash recursio
 });
 
 test('catalog and retained historical implementation select complete existing-path source tuples',()=>{
- const next=CONSUMER_SOURCE_GROUPS[1]!,old=CONSUMER_SOURCE_GROUPS[2]!;expect(old.sourceBindings).toHaveLength(335);expect(next.secondarySelectors?.map(row=>row.path)).toEqual(old.secondarySelectors?.map(row=>row.path));
+ const next=CONSUMER_SOURCE_GROUPS[1]!,old=CONSUMER_SOURCE_GROUPS.find(group=>group.sourceBindings.length===335)!;expect(old).toBeDefined();expect(next.secondarySelectors?.map(row=>row.path)).toEqual(old.secondarySelectors?.map(row=>row.path));
  const tuple=(group:typeof next)=>new Map([...group.selectors,...(group.secondarySelectors??[])].map(row=>[sourceBindingKey(row),row.sha256]));
  expect(selectGitHubSourceBindingGroup(CONSUMER_SOURCE_GROUPS,tuple(old))).toBe(old);
  for(const row of next.secondarySelectors??[]){const mixed=tuple(next);mixed.set(sourceBindingKey(row),'f'.repeat(64));expect(()=>selectGitHubSourceBindingGroup(CONSUMER_SOURCE_GROUPS,mixed)).toThrow();}

@@ -24,6 +24,7 @@ probe=load('sdk_execution_originals_util',ROOT/'qlever/scripts/sdk-execution-ori
 bindings=load('multi_bindings',ROOT/'qlever/scripts/sdk-generation-multiprocess-bindings.py')
 single=load('sdk_ptrace_kernel',ROOT/'qlever/scripts/sdk-ptrace-kernel.py')
 owned_wait=load('owned_wait',ROOT/'qlever/scripts/sdk-blocking-owned-wait.py')
+tool_providers=load('tool_providers',ROOT/'qlever/scripts/sdk-tool-provider-originals.py')
 SEIZE=0x4206;INTERRUPT=0x4207;GETEVENTMSG=0x4201;SYSCALL=24;WALL=0x40000000
 OPTIONS=1|2|4|8|16|32|64|0x00100000
 MAX=16*1024**2
@@ -91,7 +92,7 @@ class Observer:
     def __init__(self,out,source,build,*,deadline_monotonic=None,check_budget=lambda:None,maximum_bytes=32*1024**2,maximum_file_bytes=1024**2,selected_names=SELECTED,maximum_processes=128,shard_bytes=None,require_success=True,maximum_stdio_bytes=None,shared_tasks=False,capture_toolchain=False):
         self.prepared_dependency_plan=None;self.dependency_roots={};self.dependency_cache=None
         self.shared_tasks=shared_tasks
-        self.capture_toolchain=capture_toolchain;self.tool_original_cache={};self.tool_metadata_bytes=json.loads((ROOT/'scripts/lib/module-artifact-limits.json').read_text())['metadataBytes']
+        self.capture_toolchain=capture_toolchain;self.tool_original_cache={};self.tool_provider_cache={};self.tool_metadata_bytes=json.loads((ROOT/'scripts/lib/module-artifact-limits.json').read_text())['metadataBytes']
         self.prepared_inputs={};self.prepared_sealed=False;self.domain_bytes=0;self.domain_lock=threading.Lock();self.pump_errors=[];self.maximum_stdio_bytes=maximum_stdio_bytes if maximum_stdio_bytes is not None else maximum_file_bytes
         self.require_success=require_success;self.raw_bytes_completed=0;self.maximum_processes=maximum_processes;self.shard_bytes=shard_bytes
         self.deadline_monotonic=deadline_monotonic;self.check_budget=check_budget;self.maximum_bytes=maximum_bytes;self.maximum_file_bytes=maximum_file_bytes;self.selected_names=selected_names
@@ -555,6 +556,22 @@ class Observer:
         row=self.emit(dict(kind='toolchain-original',captureKind='file',observedPath=observed_path,identity=before,original=original))
         self.captures.append(row);self.capture_bytes+=offset;self.tool_original_cache[tuple(before)]=row
         return row
+    def tool_provider(self,pid,reader,actual_path,identity,original,barrier):
+        try:data,observation=tool_providers.capture_provider(pid,reader,actual_path,identity,self.check,self.tool_metadata_bytes)
+        except tool_providers.ProviderUnavailable as error:
+            self.tool_unresolved(pid,'toolchain-effective-readonly-provider-unverified',actualPath=actual_path,barrierSequence=barrier,detail=str(error)[:512]);return None
+        digest=hashlib.sha256(data).hexdigest();key=(tuple(observation['mountNamespaceIdentity']),digest)
+        reference=self.tool_provider_cache.get(key)
+        if reference is None:
+            assert len(self.tool_provider_cache)<self.maximum_processes,'actual tool provider original count bound'
+            name='capture-'+str(len(self.captures)).zfill(4)+'.original'
+            with (self.capture_dir/name).open('xb') as output:
+                for at in range(0,len(data),65536):self.check();block=data[at:at+65536];self.claim(len(block));output.write(block)
+                output.flush();os.fsync(output.fileno())
+            reference=dict(path=name,bytes=len(data),sha256=digest)
+            capture=self.emit(dict(kind='toolchain-original',captureKind='mountinfo',observedPid=pid,original=reference));self.captures.append(capture);self.capture_bytes+=len(data);self.tool_provider_cache[key]=reference
+        observation['mountinfoOriginal']=reference
+        return self.emit(dict(kind='toolchain-provider-original',pid=pid,barrierSequence=barrier,fileOriginal=original,observation=observation))['sequence']
     def tool_maps(self,pid):
         # Read only while all registered potential writers are at OS stops.
         name='capture-'+str(len(self.captures)).zfill(4)+'.original';data=bytearray();digest=hashlib.sha256()
@@ -584,7 +601,8 @@ class Observer:
             if actual_fd is not None:
                 if actual_fd['identity']!=identity:return self.tool_unresolved(pid,'entry-FD-to-actual-mapped-file-identity-differs',**{key:value for key,value in common.items() if key!='pid'})
             assert identity==probe.identity(os.fstat(reader))==probe.identity(os.stat(path)),'actual mapped FD identity changed'
-            return self.emit(dict(kind='toolchain-mapping-original',**common,identity=identity,original=original['original']))
+            provider=self.tool_provider(pid,reader,mapping['path'],identity,original['original'],barrier)
+            return self.emit(dict(kind='toolchain-mapping-original',**common,identity=identity,original=original['original'],providerSequence=provider))
         finally:os.close(reader)
     def observe_tool_stop(self,pid,job):
         barrier=self.barrier();self.check();kind,entry,event=job
@@ -617,8 +635,9 @@ class Observer:
                 try:elf=bindings.elf_interpreter(lambda offset,size:os.pread(reader,size,offset),identity[3])
                 except ValueError as error:elf=dict(unresolved='actual-ELF-interpreter-unclassified:'+str(error)[:256])
                 assert identity==probe.identity(os.fstat(reader))==probe.identity(os.stat(path)),'actual exe FD changed'
+                provider=self.tool_provider(pid,reader,resolved,identity,original['original'],barrier['sequence'])
                 maps,mappings=self.tool_maps(pid)
-                captured=self.emit(dict(kind='toolchain-exec-image-capture',pid=pid,barrierSequence=barrier['sequence'],execEntrySequence=entry['sequence'],execEventSequence=event['sequence'],execPathEntrySequence=self.tasks[pid].get('toolExecPath',{}).get('sequence'),exe=dict(lexicalPath=self.tasks[pid].get('toolExecPath',{}).get('lexicalPath'),resolvedPath=resolved,identity=identity,original=original['original']),elf=elf,mapsOriginal=maps['original']))
+                captured=self.emit(dict(kind='toolchain-exec-image-capture',pid=pid,barrierSequence=barrier['sequence'],execEntrySequence=entry['sequence'],execEventSequence=event['sequence'],execPathEntrySequence=self.tasks[pid].get('toolExecPath',{}).get('sequence'),exe=dict(lexicalPath=self.tasks[pid].get('toolExecPath',{}).get('lexicalPath'),resolvedPath=resolved,identity=identity,original=original['original'],providerSequence=provider),elf=elf,mapsOriginal=maps['original']))
                 for mapping in mappings:
                     if mapping['inode'] or 'x' in mapping['permissions']:self.tool_mapping(pid,mapping,captured['sequence'],barrier['sequence'])
             finally:os.close(reader)
