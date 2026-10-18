@@ -34,7 +34,7 @@ test('same identified-package interface supports a declared client and standalon
 
 test('actual standalone runner declares its non-workspace owned root to all three build callers',async()=>{
  const ts=(await import('typescript')).default;const {runInNewContext}=await import('node:vm');const {buildDependencyLayout,buildDependencyRootArgument}=await import('../src/build-dependency-layout');
- const runner=readFileSync(path.resolve('scripts/check-cli-package.cjs'),'utf8');const syntax=ts.createSourceFile('runner.cjs',runner,ts.ScriptTarget.Latest,true,ts.ScriptKind.JS);const calls:any[]=[];
+ const runner=readFileSync(new URL('../../../scripts/check-cli-package.cjs',import.meta.url),'utf8');const syntax=ts.createSourceFile('runner.cjs',runner,ts.ScriptTarget.Latest,true,ts.ScriptKind.JS);const calls:any[]=[];
  const visit=(node:any)=>{if(ts.isCallExpression(node)&&node.expression.getText(syntax)==='run'&&node.arguments[1]&&ts.isArrayLiteralExpression(node.arguments[1]))calls.push(node);ts.forEachChild(node,visit);};visit(syntax);
  const source='/owned/source';const arrays=calls.filter(node=>{const elements=node.arguments[1].elements;return elements[1]?.text==='build:tools'||elements[0]?.text==='scripts/build.ts'||elements[0]?.text==='run'&&elements[1]?.text==='build';}).map(node=>runInNewContext(node.arguments[1].getText(syntax),{source,buildToolsPayload:'/owned/source/packages/xpod-cli/dist/build-tools.mjs',runtimeClientTar:'/owned/client.tgz',evidence:'/owned/evidence',path,consumer:'/owned/consumer',packageRoot:'/owned/source/packages/xpod-cli'})).filter(argv=>argv[1]==='build:tools'||argv[0]==='scripts/build.ts'||argv[1]==='build'&&argv[0]==='run');
  expect(arrays).toHaveLength(3);for(const argv of arrays)expect(buildDependencyRootArgument(argv)).toBe(source);
@@ -49,7 +49,7 @@ test('actual standalone runner declares its non-workspace owned root to all thre
 test('actual standalone runner canonicalizes freshly owned source/consumer under the real host tmpdir',async()=>{
  const ts=(await import('typescript')).default;const {runInNewContext}=await import('node:vm');const fs=await import('node:fs');const os=await import('node:os');
  const raw=os.tmpdir();const parent=path.join(raw,'.test-data/xpod-cli-canonical-root-test');mkdirSync(parent,{recursive:true});
- const syntax=ts.createSourceFile('runner.cjs',readFileSync(path.resolve('scripts/check-cli-package.cjs'),'utf8'),ts.ScriptTarget.Latest,true,ts.ScriptKind.JS);const expressions=new Map<string,string>();
+ const syntax=ts.createSourceFile('runner.cjs',readFileSync(new URL('../../../scripts/check-cli-package.cjs',import.meta.url),'utf8'),ts.ScriptTarget.Latest,true,ts.ScriptKind.JS);const expressions=new Map<string,string>();
  const visit=(node:any)=>{if(ts.isVariableDeclaration(node)&&['source','consumer'].includes(node.name.getText(syntax))){const initializer=node.initializer;if(!initializer)throw new Error('Owned temporary root initializer missing');expressions.set(node.name.getText(syntax),initializer.getText(syntax));}ts.forEachChild(node,visit);};visit(syntax);
  const made:string[]=[];
  try{for(const role of ['source','consumer']){const value=runInNewContext(expressions.get(role)!,{fs,path,buildParent:parent,consumerParent:parent});made.push(value);expect(value).toBe(fs.realpathSync(value));expect(path.dirname(value)).toBe(fs.realpathSync(parent));}
