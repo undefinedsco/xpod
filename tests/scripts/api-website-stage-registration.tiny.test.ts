@@ -11,7 +11,7 @@ const role='scripts/lib/inngest-controlled-materials.ts',stage='packages/xpod-ap
 const legacyRead=(p:string)=>{const row=legacy.files.find(row=>row.path===p);if(!row)return read(p);const raw=Buffer.from(row.base64,'base64');expect(raw.length).toBe(row.bytes);expect(sha(raw)).toBe(row.sha256);return raw;};
 const old=(p:string)=>p===role?read('tests/fixtures/independent-admission/controlled-pre-stage-0.original.txt'):p===stage?read('tests/fixtures/independent-admission/controlled-pre-stage-1.original.txt'):legacyRead(p);
 test('stage fifth original and index guards add an atomic source tree while all old source trees remain exact',()=>{
- expect(groups).toHaveLength(18);expect(c).toHaveLength(46);expect(ci).toHaveLength(90);expect(tcb).toHaveLength(382);expect(current).toHaveLength(75);
+ expect(groups).toHaveLength(18);expect(c).toHaveLength(47);expect(ci).toHaveLength(92);expect(tcb).toHaveLength(382);expect(current).toHaveLength(75);
  expect(current.filter(row=>previous.find(old=>old.path===row.path)?.sha256!==row.sha256).map(row=>row.path).sort()).toEqual([stage,role].sort());
  for(const row of [...API_ATTESTED_NOTICE_SOURCE_BINDINGS,...tcb])expect(sha(read(row.path))).toBe(row.sha256);
  expect(groups.find(g=>'name' in g&&g.name==='root-minimal-website-source-projection')!.sourceBindings).toBe(previous);

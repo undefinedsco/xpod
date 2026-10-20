@@ -29,6 +29,26 @@ tool_providers=load('tool_providers',ROOT/'qlever/scripts/sdk-tool-provider-orig
 SEIZE=0x4206;INTERRUPT=0x4207;GETEVENTMSG=0x4201;SYSCALL=24;WALL=0x40000000
 OPTIONS=1|2|4|8|16|32|64|0x00100000
 MAX=16*1024**2
+def retained_mode_difference_diagnostic(pid,fd,path,producer,current,actual,mode_refs,metadata_states):
+    """Explain an existing rejection using already captured identities only."""
+    try:
+        candidates=[]
+        for window,change in metadata_states[-64:]:
+            before=window['beforeIdentity'];after=change['afterIdentity']
+            if before[:2]==actual[:2] or after[:2]==actual[:2]:
+                candidates.append(dict(windowSequence=window['sequence'],transitionSequence=change['sequence'],beforeIdentity=before,afterIdentity=after))
+        value=dict(kind='retained-producer-mode-difference',pid=pid,fd=fd,
+                   path=path[:128],pathTruncated=len(path)>128,pathSha256=hashlib.sha256(os.fsencode(path)).hexdigest(),
+                   producerCaptureSequence=producer['sequence'],producerIdentity=producer['identity'],
+                   observedChainIdentity=current,actualRetainedIdentity=actual,
+                   modeTransitionSequences=mode_refs[-8:],modeTransitionCount=len(mode_refs),
+                   recentModeCandidates=candidates[-4:],candidateCountInLast64=len(candidates),
+                   candidateScanTruncated=len(metadata_states)>64 or len(candidates)>4,
+                   authorityVerified=False,scope='rejection diagnostic only; held producer bytes already checked; no inferred chmod or source authority')
+        line='SDK_RETAINED_PRODUCER_MODE_CHANGED '+json.dumps(value,sort_keys=True,separators=(',',':'))+'\n'
+        if len(line.encode())<=4096:sys.stderr.write(line)
+    except BaseException:
+        pass  # Never replace the existing mode-chain rejection.
 SELECTED={'config.h','generated.h','custom.h'}
 def profile(arch):return bindings.policy(arch)
 def fdpath(pid,fd):
@@ -276,7 +296,9 @@ class Observer:
                 assert row['stopped'] and state(pid)=='t','potential writer not in OS tracing-stop'
                 if not self.shared_tasks:assert os.listdir('/proc/'+str(pid)+'/task')==[str(pid)],'unknown shared writer thread'
                 known.append(pid)
-            return self.emit(dict(kind='all-stop-barrier',pids=sorted(known),osStates=['t']*len(known),**({'taskOwnership':self.verify_task_ownership()} if self.shared_tasks else {})))
+            barrier=self.emit(dict(kind='all-stop-barrier',pids=sorted(known),osStates=['t']*len(known),**({'taskOwnership':self.verify_task_ownership()} if self.shared_tasks else {})))
+            self.close_terminal_authorities(barrier)
+            return barrier
         finally:self.pausing=False
     def sole_writer(self,target_pid,target_fd,identity):
         aliases=self.writable_aliases(identity,target_pid,target_fd)
@@ -543,6 +565,8 @@ class Observer:
                     for mode_window,change in self.metadata_states:
                         if mode_window['beforeIdentity']==current and change['sequence']>old['sequence']:
                             mode_refs.append(change['sequence']);current=change['afterIdentity']
+                    if current[2]!=ident[2]:
+                        retained_mode_difference_diagnostic(pid,fd,target,old,current,ident,mode_refs,self.metadata_states)
                     assert current[2]==ident[2],'retained producer mode changed without observed chmod'
                     self.emit(dict(kind='retained-fd-namespace-binding',producerCaptureSequence=old['sequence'],consumerCaptureSequence=row['sequence'],path=target,namedIdentity=named_identity,retainedIdentity=now,modeTransitions=mode_refs))
                 self.consumers.append(self.emit(dict(kind='prepared-consumer-binding' if prepared else 'generated-consumer-binding',captureSequence=row['sequence'],producerCaptureSequence=old['sequence'],path=target,identity=ident,retainedIdentity=now,actualBytesEqual=True)))
@@ -735,16 +759,18 @@ class Observer:
                     self.emit(dict(kind='actual-terminal-exit-resume',pid=pid,originalSequence=terminal['original']['sequence'],closeSequence=terminal['closedRow']['sequence'],request='PTRACE_SYSCALL',signal=0))
                 else:
                     single.trace(SYSCALL,pid,0,row.pop('signal',0));row['stopped']=False
+    def close_terminal_authorities(self,barrier):
+        if not getattr(self,'terminal_exit_evidence',False):return
+        for pid,task in list(self.tasks.items()):
+            terminal=task.get('terminalAuthority')
+            if terminal and not terminal['closed']:
+                terminal['closedRow']=self.emit(dict(kind='toolchain-terminal-authority-closed',pid=pid,eventSequence=terminal['event']['sequence'],originalSequence=terminal['original']['sequence'],barrierSequence=barrier['sequence'],actualWaitSequence=task.get('actualWaitSequence')))
+                terminal['closed']=True
+                if task['exited']:terminal['lease'].close()
     def pending_captures(self):
         if self.exclusive:return
         if getattr(self,'terminal_exit_evidence',False) and any(t.get('terminalAuthority') and not t['terminalAuthority']['closed'] for t in self.tasks.values()):
-            barrier=self.barrier()
-            for pid,task in list(self.tasks.items()):
-                terminal=task.get('terminalAuthority')
-                if terminal and not terminal['closed']:
-                    terminal['closedRow']=self.emit(dict(kind='toolchain-terminal-authority-closed',pid=pid,eventSequence=terminal['event']['sequence'],originalSequence=terminal['original']['sequence'],barrierSequence=barrier['sequence'],actualWaitSequence=task.get('actualWaitSequence')))
-                    terminal['closed']=True
-                    if task['exited']:terminal['lease'].close()
+            self.close_terminal_authorities(self.barrier())
         while self.process_authority:
             selected=next(((pid,row) for pid,row in self.tasks.items() if row.get('authorityPending') and not row['exited']),None)
             if selected is None:break

@@ -20,6 +20,35 @@ class ProviderUnavailable(ValueError):pass
 
 def need(condition,reason):
     if not condition:raise ValueError('tool provider originals: '+reason)
+
+def stopped_authority_difference_diagnostic(pid,statuses,stats):
+    """Bounded rejection facts only; never accept or serialize task contents."""
+    try:
+        def status_fields(raw):
+            fields={}
+            for line in raw.splitlines():
+                key,separator,value=line.partition(':')
+                if separator and re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]{0,47}',key):
+                    fields.setdefault(key,[]).append(value)
+            return fields
+        first,second=[status_fields(row['data']) for row in statuses]
+        changed=sorted(key for key in set(first)|set(second) if first.get(key)!=second.get(key))
+        words=[row['data'][row['data'].rfind(')')+2:].split() for row in stats]
+        positions=[index+3 for index in range(max(map(len,words))) if
+                   (words[0][index] if index<len(words[0]) else None)!=
+                   (words[1][index] if index<len(words[1]) else None)]
+        value=dict(kind='stopped-authority-snapshot-difference',pid=pid,
+                   authorityVerified=False,statusChangedKeys=changed[:32],
+                   statusChangedKeyCount=len(changed),statChangedFields=positions[:32],
+                   statChangedFieldCount=len(positions),differenceListTruncated=len(changed)>32 or len(positions)>32,
+                   statusOriginals=[dict(bytes=row['bytes'],sha256=row['sha256']) for row in statuses],
+                   statOriginals=[dict(bytes=row['bytes'],sha256=row['sha256']) for row in stats],
+                   scope='same stopped task rejection diagnostic; raw values not printed; no authority or source qualification')
+        line='SDK_STOPPED_AUTHORITY_SNAPSHOT_CHANGED '+json.dumps(value,sort_keys=True,separators=(',',':'))+'\n'
+        if len(line.encode())<=4096:
+            sys.stderr.write(line)
+    except BaseException:
+        pass  # The original stopped-authority rejection must survive diagnostics.
 def canonical(path):return isinstance(path,str) and path.startswith('/') and os.path.normpath(path)==path and not path.endswith(' (deleted)') and '\x00' not in path
 
 def identity(value):
@@ -229,6 +258,8 @@ class StoppedIdentityNoopTransition:
             need(row['link']==os.readlink(path) and row['identity']==util.identity(os.fstat(self.fds[key]))==util.identity(os.stat(path)),'actual authority namespace changed')
         need(self.process_identity==util.identity(os.fstat(self.fds['process']))==util.identity(os.stat('/proc/'+str(self.pid),follow_symlinks=False)),'actual process directory identity changed')
         statuses.append(self._read('status',16384));stats.append(self._read('stat',4096))
+        if statuses[0]['data']!=statuses[1]['data'] or stats[0]['data']!=stats[1]['data']:
+            stopped_authority_difference_diagnostic(self.pid,statuses,stats)
         need(statuses[0]['data']==statuses[1]['data'] and stats[0]['data']==stats[1]['data'],'actual stopped authority changed during capture')
         need(first==status_authority(statuses[1]['data'],pid=self.pid,tracer=os.getpid()),'actual stopped authority differs')
         self.check();uname=os.uname();values=dict(zip(['sysname','nodename','release','version','machine'],uname))

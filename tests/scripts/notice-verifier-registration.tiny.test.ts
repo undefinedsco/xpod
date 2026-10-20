@@ -11,7 +11,7 @@ import {CONSUMER_SOURCE_GROUPS as consumer,CI_CONSUMER_SOURCE_GROUPS as ci} from
 import {sourceBindingKey as key,secondaryGitHubSourceBindingSelectors as secondary,selectGitHubSourceBindingGroup as select} from '../../scripts/lib/independent-admission/github-source-binding-groups';
 const sha=(bytes:string|Buffer)=>createHash('sha256').update(bytes).digest('hex');
 test('API18 preserves all SDK31 complete historical groups and binds actual runtime closure',()=>{
- const groups={api,sdk,consumer,ci};expect([api.length,sdk.length,consumer.length,ci.length]).toEqual([18,34,46,90]);
+ const groups={api,sdk,consumer,ci};expect([api.length,sdk.length,consumer.length,ci.length]).toEqual([18,35,47,92]);
  for(const name of Object.keys(groups) as (keyof typeof groups)[])for(let i=0;i<historical.groups[name].length;i++)expect(sha(JSON.stringify(groups[name][i]))).toBe(historical.groups[name][i]!);
  const root=fileURLToPath(new URL('../../',import.meta.url));expect(current.length).toBe(382);expect(API_ATTESTED_NOTICE_SOURCE_BINDINGS.length).toBe(80);
  for(const row of [...current,...API_ATTESTED_NOTICE_SOURCE_BINDINGS])expect(sha(readFileSync(join(root,row.path)))).toBe(row.sha256);

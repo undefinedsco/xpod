@@ -8,7 +8,7 @@ import {controlledApiSourceRecipe} from '../../scripts/lib/independent-admission
 import tcb from '../../scripts/lib/independent-admission/consumer-execution-current.json';
 const read=(p:string)=>fs.readFileSync(path.resolve(import.meta.dir,'../..',p));const sha=(b:Buffer)=>createHash('sha256').update(b).digest('hex');
 test('website projection is a separate exact source group while every Node and earlier source tree remains selectable',()=>{
- expect(groups).toHaveLength(18);expect(consumers).toHaveLength(46);expect(ci).toHaveLength(90);expect(tcb).toHaveLength(382);
+ expect(groups).toHaveLength(18);expect(consumers).toHaveLength(47);expect(ci).toHaveLength(92);expect(tcb).toHaveLength(382);
  expect(groups.find(g=>'name' in g&&g.name==='root-minimal-node-public-tool-input')!.sourceBindings).toBe(previous);
  expect(website.filter(row=>previous.find(old=>old.path===row.path)?.sha256!==row.sha256).map(row=>row.path).sort()).toEqual(['packages/xpod-api/scripts/inngest-controlled-build-policy.json','scripts/lib/inngest-controlled-build.py']);
  expect(current).toHaveLength(75);for(const row of [...API_ATTESTED_NOTICE_SOURCE_BINDINGS,...tcb])expect(sha(read(row.path))).toBe(row.sha256);

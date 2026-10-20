@@ -74,6 +74,26 @@ class Tests(unittest.TestCase):
   with patch.object(backend.os,'waitpid',return_value=(10,0)):o.pending_captures()
   self.assertEqual(calls,['strict-own-exit-stop','peer-barrier','same-held-task-before-reap']);self.assertTrue(o.tasks[10]['exited']);self.assertTrue(o.tasks[10]['terminalAuthority']['lease'].closed)
   self.assertEqual([r['kind'] for r in o.rows],['ptrace-event','toolchain-terminal-authority','actual-wait-exit','all-stop-barrier','toolchain-terminal-authority-closed'])
+ def test_late_exit_during_authority_barrier_closes_before_the_actual_resume(self):
+  o=object.__new__(backend.Observer);o.tasks={1:dict(stopped=True,exited=False,entry=None,initial=False,authorityPending=[('initial',None)]),2:dict(stopped=False,exited=False,entry=None,initial=False)}
+  o.unknown_stops={};o.process_authority=True;o.terminal_exit_evidence=True;o.capture_toolchain=False;o.shared_tasks=False;o.exclusive=None;o.root=1;o.current_phase='configure';o.rows=[];o.check=lambda:None;o.tool_metadata_bytes=4194304;o.authority_handles=object();o.wait_references=[]
+  def emit(row):
+   value=dict(row,sequence=len(o.rows)+1,phase='configure');o.rows.append(value);return value
+  o.emit=emit;o.wait_one=lambda:(2,STOP);o.tool_mountinfo_original=lambda *args:dict(path='mountinfo',bytes=0,sha256='0'*64)
+  observation=copy.deepcopy(self.fixture()[5]['observation'])
+  class Lease:
+   def __init__(self,*args):self.observation=observation;self.mounts=f.MOUNTS
+   def close(self):pass
+  def trace(request,pid,*args):
+   if request==backend.GETEVENTMSG:ctypes.cast(args[1],ctypes.POINTER(ctypes.c_ulong))[0]=0
+   if request==backend.SYSCALL and pid==2:
+    self.assertTrue(o.tasks[2]['terminalAuthority']['closed']);self.assertEqual(args,(0,0));self.assertTrue(any(r['kind']=='all-stop-barrier' for r in o.rows))
+  authority=dict(namespaces=dict(mnt=dict(identity=[1,2,3,4,5,6])))
+  with patch.object(backend.single,'trace',trace),patch.object(m,'ExitStopAuthorityLease',Lease),patch.object(m,'capture_process_authority',return_value=(f.MOUNTS,authority)),patch.object(backend,'state',return_value='t'),patch.object(backend.os,'listdir',side_effect=lambda path:[path.split('/')[2]]):
+   o.pending_captures();o.resume()
+  kinds=[r['kind']for r in o.rows];self.assertEqual(kinds,['ptrace-event','toolchain-terminal-authority','all-stop-barrier','toolchain-terminal-authority-closed','toolchain-process-authority','actual-terminal-exit-resume']);self.assertFalse(o.tasks[2]['stopped']);self.assertFalse(o.tasks[2]['exited'])
+  self.assertEqual(o.rows[3]['barrierSequence'],o.rows[2]['sequence']);self.assertEqual(o.rows[-1]['closeSequence'],o.rows[3]['sequence'])
+
  def test_z_without_prior_event_never_becomes_a_live_provider_or_fake_wait(self):
   o=object.__new__(backend.Observer);o.tasks={10:dict(stopped=True,exited=False)}
   with self.assertRaises(AssertionError),patch.object(backend.os,'waitpid',side_effect=AssertionError('no owned prior event')):o.reap_terminal_task(10)
