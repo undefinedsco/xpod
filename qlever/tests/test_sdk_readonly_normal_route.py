@@ -9,6 +9,42 @@ def load(name):
     spec=importlib.util.spec_from_file_location(name,HERE/(name+'.py'));value=importlib.util.module_from_spec(spec);spec.loader.exec_module(value);return value
 route=load('sdk-readonly-normal-route');result=route.result_context
 class RouteTest(unittest.TestCase):
+    def test_kernel_diagnostic_never_runs_sdk_or_seals_sdk_success_and_always_cleans_builder(self):
+        import json,os,types
+        from unittest.mock import patch,Mock
+        identity=dict(sourceSha='a'*40,runHeadSha='a'*40,runId=12,runAttempt=1,target='linux-arm64',sdkProfile='service-trixie')
+        root=HERE.parents[1]/'.test-data/sdk-readonly-normal-route';root.mkdir(parents=True,exist_ok=True)
+        class Budget:
+            def check(self,*args):pass
+            def timeout(self,cap,*args):return cap
+        class Daemon:
+            def __init__(self,*args):pass
+            def sample(self,*args):return {'testPeer':1}
+            def seal_originals(self):return {'testPeerOriginal':1}
+            def close(self):pass
+        for mode in ['diagnostic','failed-diagnostic','default-sdk']:
+            with self.subTest(mode=mode),tempfile.TemporaryDirectory(dir=root) as directory:
+                directory=Path(directory).resolve();source=directory/'source.json';source.write_text(json.dumps({'sourceSha':identity['sourceSha']}));out=directory/'qlever-sdk-outer';calls=[]
+                failure=ValueError('actual diagnostic failure');probe=Mock(return_value={'kind':'test-diagnostic-only'})
+                if mode=='failed-diagnostic':probe.side_effect=failure
+                def capture(name,argv,*args,**kwargs):
+                    calls.append(name)
+                    if name=='prepare-source-image':(out/'prepared-buildkit.original.json').write_text(json.dumps({'containerimage.config.digest':'sha256:'+'b'*64}))
+                    path=out/(name+'.raw');path.write_bytes(b'');return {'stdout':{'path':path.name}}
+                with patch.dict(os.environ,{'RUNNER_TEMP':str(directory)}),patch.object(route.outer.platform,'system',return_value='Linux'),patch.object(route.os,'geteuid',return_value=0),patch.object(route.outer,'LocalDaemon',Daemon),patch.object(route.outer.budgets,'ExecutionBudget',return_value=Budget()),patch.object(route.outer.commands,'capture',side_effect=capture),patch.object(route,'load',return_value=types.SimpleNamespace(run=probe)) as load,patch.object(route,'remaining_ledger',return_value=12345),patch.object(route.time,'time',return_value=1000),patch.object(route.outer,'execute',side_effect=RuntimeError('default SDK route reached')) as execute:
+                    if mode=='diagnostic':
+                        result=route.run(identity,1100,out,source,True)
+                        self.assertFalse(result['sdkQualified']);self.assertFalse(result['releaseAccepted']);self.assertEqual(result['sourcePreparedConfig'],'sha256:'+'b'*64)
+                        probe.assert_called_once_with('sha256:'+'b'*64,identity,1100,out/'kernel-probe',12345);execute.assert_not_called()
+                    elif mode=='failed-diagnostic':
+                        with self.assertRaises(ValueError) as raised:route.run(identity,1100,out,source,True)
+                        self.assertIs(raised.exception,failure);execute.assert_not_called()
+                        self.assertFalse((out/'kernel-probe-route.original.json').exists())
+                    else:
+                        with self.assertRaisesRegex(RuntimeError,'default SDK route reached'):route.run(identity,1100,out,source)
+                        execute.assert_called_once();load.assert_not_called();probe.assert_not_called()
+                self.assertIn('remove-owned-builder',calls)
+                self.assertFalse((out/'normal-route.original.json').exists())
     def test_prepared_argv_is_native_exact_and_cold(self):
         identity=dict(sourceSha='a'*40,runHeadSha='a'*40,runId=12,runAttempt=1,target='linux-arm64',sdkProfile='module-bookworm-gcc12')
         argv=route.prepared_argv('owned','linux/arm64',identity,100,'metadata.json')
@@ -94,7 +130,7 @@ class RouteTest(unittest.TestCase):
         entry=(HERE.parents[1]/'.github/workflows/qlever-readonly-executor.yml').read_text()
         workflow=(HERE.parents[1]/'.github/workflows/qlever-readonly-normal-job.yml').read_text()
         pins=json.loads(re.search(r'          pins=(.*)',workflow).group(1))
-        required={'sdk-readonly-normal-route','sdk-readonly-result-context','sdk-readonly-executor','sdk-readonly-executor-bindings','sdk-readonly-executor-entry','sdk-image-originals','sdk-command-materials','sdk-execution-budget','sdk-owned-runs','sdk-subreaper-guard','sdk-tar-budget','sdk-debian-binary-originals','sdk-debian-index-bindings','sdk-readonly-collection','qlever_compiler_profile','sdk-local-daemon-originals','sdk-service-profile-materials'}
+        required={'sdk-readonly-normal-route','sdk-readonly-result-context','sdk-readonly-executor','sdk-readonly-executor-bindings','sdk-readonly-executor-entry','sdk-image-originals','sdk-command-materials','sdk-execution-budget','sdk-owned-runs','sdk-subreaper-guard','sdk-tar-budget','sdk-debian-binary-originals','sdk-debian-index-bindings','sdk-readonly-collection','qlever_compiler_profile','sdk-local-daemon-originals','sdk-service-profile-materials','sdk-kernel-probe-controller','sdk-kernel-policy-probe'}
         self.assertEqual({Path(p).stem for p in pins if p.startswith('qlever/scripts/')},required)
         for path,sha in pins.items():self.assertEqual(hashlib.sha256((HERE.parents[1]/path).read_bytes()).hexdigest(),sha)
         self.assertIn('  pull_request:',entry);self.assertIn('  workflow_call:',entry);self.assertIn('  workflow_call:',workflow)

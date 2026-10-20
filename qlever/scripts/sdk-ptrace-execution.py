@@ -90,9 +90,13 @@ class BoundedPipePump:
         check();assert self.sha256 is not None,'actual stdio pipe did not close'
 
 class Observer:
-    def __init__(self,out,source,build,*,deadline_monotonic=None,check_budget=lambda:None,maximum_bytes=32*1024**2,maximum_file_bytes=1024**2,selected_names=SELECTED,maximum_processes=128,shard_bytes=None,require_success=True,maximum_stdio_bytes=None,shared_tasks=False,capture_toolchain=False):
+    def __init__(self,out,source,build,*,deadline_monotonic=None,check_budget=lambda:None,maximum_bytes=32*1024**2,maximum_file_bytes=1024**2,selected_names=SELECTED,maximum_processes=128,shard_bytes=None,require_success=True,maximum_stdio_bytes=None,shared_tasks=False,capture_toolchain=False,deny_optional_io_uring=False,verified_setresuid_noop=False):
         self.prepared_dependency_plan=None;self.dependency_roots={};self.dependency_cache=None
         self.shared_tasks=shared_tasks
+        assert type(deny_optional_io_uring) is bool
+        self.deny_optional_io_uring=deny_optional_io_uring
+        assert type(verified_setresuid_noop) is bool
+        self.verified_setresuid_noop=verified_setresuid_noop
         self.capture_toolchain=capture_toolchain;self.process_authority=bool(capture_toolchain);self.authority_handles=tool_providers.ProcessAuthorityHandles();self.tool_original_cache={};self.tool_provider_cache={};self.tool_metadata_bytes=json.loads((ROOT/'scripts/lib/module-artifact-limits.json').read_text())['metadataBytes']
         self.prepared_inputs={};self.prepared_sealed=False;self.domain_bytes=0;self.domain_lock=threading.Lock();self.pump_errors=[];self.maximum_stdio_bytes=maximum_stdio_bytes if maximum_stdio_bytes is not None else maximum_file_bytes
         self.require_success=require_success;self.raw_bytes_completed=0;self.maximum_processes=maximum_processes;self.shard_bytes=shard_bytes
@@ -757,6 +761,31 @@ class Observer:
         encoded=json.dumps(diagnostic,sort_keys=True);assert len(encoded.encode())<=16384,'bounded shared clone diagnostic'
         row=self.emit(diagnostic);print('SDK_UNSUPPORTED_SHARED_CLONE '+encoded,file=sys.stderr,flush=True)
         raise AssertionError('shared thread/FD-table clone refused before resume; diagnostic sequence '+str(row['sequence']))
+    def stopped_executable_diagnostic(self,pid,status):
+        # A held executable FD and process starttime bind this selected stopped
+        # task independently of its inherited historical exec-event cache.
+        assert os.WIFSTOPPED(status) and self.tasks[pid]['stopped'] and not self.tasks[pid]['exited'],'actual stopped selected task required'
+        self.check();directory=os.open('/proc/'+str(pid),os.O_RDONLY|os.O_DIRECTORY|os.O_CLOEXEC)
+        executable=None
+        try:
+            def starttime():
+                self.check();fd=os.open('stat',os.O_RDONLY|os.O_CLOEXEC,dir_fd=directory)
+                try:
+                    raw=os.read(fd,4097);assert len(raw)<=4096,'bounded process stat'
+                    assert os.read(fd,1)==b'','complete process stat'
+                finally:os.close(fd)
+                tail=raw[raw.rfind(b')')+2:].split();assert len(tail)>=20 and tail[0] in [b't',b'T'],'selected task no longer stopped'
+                return int(tail[19])
+            before=starttime();path=os.readlink('exe',dir_fd=directory)
+            executable=os.open('exe',os.O_RDONLY|os.O_CLOEXEC,dir_fd=directory)
+            identity=probe.identity(os.fstat(executable));assert stat.S_ISREG(identity[2]),'selected executable regular file required'
+            self.check();assert identity==probe.identity(os.stat('exe',dir_fd=directory))==probe.identity(os.fstat(executable)),'held executable identity changed'
+            assert path==os.readlink('exe',dir_fd=directory) and before==starttime(),'selected task executable/starttime changed'
+            assert probe.identity(os.fstat(directory))==probe.identity(os.stat('/proc/'+str(pid))),'selected process directory replaced'
+            return dict(path=path[:512],pathTruncated=len(path)>512,pathSha256=hashlib.sha256(os.fsencode(path)).hexdigest(),identity=identity,processStarttime=before,scope='same stopped task held executable FD identity; diagnostic only, no source authority')
+        finally:
+            if executable is not None:os.close(executable)
+            os.close(directory)
     def syscall_rejection_diagnostic(self,pid,status,entry,*,authority=False):
         # Numeric kernel-entry arguments only: never dereference user pointers,
         # collect argv/environment, or resume a forbidden operation for diagnosis.
@@ -767,6 +796,8 @@ class Observer:
             actual=dict(task['diagnosticExec']);path=actual['path'];actual.update(path=path[:512],pathTruncated=actual.get('pathTruncated',False) or len(path)>512)
             diagnostic['actualExecImage']=actual
         else:diagnostic['actualExecImagePending']='selected-exec-stop-original-unavailable'
+        try:diagnostic['selectedStoppedExecutable']=self.stopped_executable_diagnostic(pid,status)
+        except BaseException as error:diagnostic['selectedStoppedExecutablePending']=type(error).__name__[:128]
         encoded=json.dumps(diagnostic,sort_keys=True);assert len(encoded.encode())<=4096,'bounded forbidden syscall diagnostic'
         print(('SDK_PROCESS_AUTHORITY_SYSCALL_REJECTED ' if authority else 'SDK_UNSUPPORTED_WRITER_SYSCALL ')+encoded,file=sys.stderr,flush=True)
         return self.emit(diagnostic)
@@ -780,6 +811,10 @@ class Observer:
             assert tracer==[str(os.getpid())] and pid not in self.unknown_stops,'unknown observer-owned stop identity'
             self.unknown_stops[pid]=status;return
         task=self.tasks[pid]
+        if task.get('setresuidTransition'):
+            assert os.WIFSTOPPED(status) and status>>16==0 and os.WSTOPSIG(status)==(signal.SIGTRAP|0x80),'setresuid transition lost its actual syscall exit stop'
+        if task.get('deniedIoUring'):
+            assert os.WIFSTOPPED(status) and status>>16==0 and os.WSTOPSIG(status)==(signal.SIGTRAP|0x80),'explicitly denied syscall lost its actual exit stop'
         if os.WIFEXITED(status) or os.WIFSIGNALED(status):
             task.update(exited=True,stopped=False);code=os.WEXITSTATUS(status) if os.WIFEXITED(status) else -os.WTERMSIG(status)
             wait=self.emit(dict(kind='actual-wait-exit',pid=pid,returnCode=code,**({'actualExecImage':task['diagnosticExec']} if 'diagnosticExec' in task else {})));self.wait_references.append(dict(pid=pid,sequence=wait['sequence'],returnCode=code,phase=self.current_phase))
@@ -808,6 +843,14 @@ class Observer:
                     ownership=bindings.inspect_shared_clone_flags(flags);tgid=task['tgid'] if ownership['sameThreadGroup'] else new;table=task['fdTable'] if ownership['sharedFdTable'] else new
                     assert self.actual_tgid(new)==tgid,'kernel child TGID differs from clone flags';fields=dict(tgid=tgid,fdTable=table)
                 self.tasks[new]=dict(stopped=False,exited=False,entry=None,initial=True,**(dict(authorityPending=[('initial-child',None)]) if self.process_authority else {}),**fields);self.emit(dict(kind='actual-child-binding',parentPid=pid,childPid=new,event=event,**(dict(cloneEntrySequence=task['entry']['sequence'],cloneFlags=flags,**fields) if self.shared_tasks else {})))
+                # The kernel child event establishes inherited executable memory;
+                # it is not a new exec-stop or a current named-file observation.
+                # Keep only the immediate inheritance edge, so clone depth cannot
+                # enlarge a bounded failure diagnostic indefinitely.
+                if task.get('diagnosticExec'):
+                    inherited=dict(task['diagnosticExec'])
+                    inherited.update(inheritedFromPid=pid,inheritanceEventSequence=observed_event['sequence'],inheritanceEvent=event,scope='kernel child-event inherited prior exec-stop image; not current executable-file verification; argv/environment not collected')
+                    self.tasks[new]['diagnosticExec']=inherited
                 if event==2:
                     if not self.shared_tasks:
                         entry=task['entry'];flags=task['observedCloneFlags'] if entry['nr'] in [profile(entry['arch'])['clone'],profile(entry['arch'])['clone3']] else 0x4111
@@ -823,9 +866,25 @@ class Observer:
             assert sig==signal.SIGCHLD,'unexpected tracee signal';task['signal']=sig;self.emit(dict(kind='signal-delivery',pid=pid,signal=sig));return
         kernel,_=single.syscall(pid);policy=profile(kernel['arch'])
         if kernel['op']=='exit' and task['entry'] is not None:kernel['entrySequence']=task['entry']['sequence']
-        record=self.emit(dict(kind='kernel-syscall',pid=pid,**kernel))
+        record=self.emit(dict(kind='kernel-syscall',pid=pid,**kernel,**(dict(waitStatus=status) if getattr(self,'verified_setresuid_noop',False) else {})))
         if record['op']=='entry':
             assert task['entry'] is None,'syscall entry missing prior exit';task['initial']=False;task['entry']=record;nr=record['nr'];args=record['args']
+            if getattr(self,'verified_setresuid_noop',False) and self.process_authority and nr=={0xc000003e:117,0xc00000b7:147}.get(kernel['arch']):
+                assert self.exclusive is None and not self.pausing and not task.get('authorityPending'),'setresuid requires initialized exclusive authority boundary'
+                barrier=self.barrier()
+                transition=tool_providers.StoppedSetresuidTransition(pid,kernel['arch'],nr,args,self.check,entry_sequence=record['sequence'],barrier_sequence=barrier['sequence'],stopped_wait_status=status)
+                task['setresuidTransition']=transition
+                try:
+                    self.emit(dict(kind='setresuid-noop-entry-original',pid=pid,entrySequence=record['sequence'],barrierSequence=barrier['sequence'],observation=transition.observation))
+                    self.exclusive=(pid,record['sequence'])
+                except BaseException:transition.close();task.pop('setresuidTransition',None);raise
+                return
+            if nr==425 and getattr(self,'deny_optional_io_uring',False):
+                executable=self.stopped_executable_diagnostic(pid,status)
+                registers=single.deny_io_uring_setup(pid,kernel['arch'],nr)
+                denied=self.emit(dict(kind='explicit-io-uring-setup-denied',pid=pid,entrySequence=record['sequence'],arch=kernel['arch'],args=args,waitStatus=status,executable=executable,**registers))
+                task['deniedIoUring']=denied
+                return
             if nr in policy['forbidden']:self.reject_forbidden_syscall(pid,status,record)
             if self.process_authority:
                 try:tool_providers.verify_authority_syscall(kernel['arch'],nr,args)
@@ -890,6 +949,23 @@ class Observer:
             old=task['entry']
             if old is None:assert task['initial'],'orphan syscall exit';task['initial']=False;return
             record['entrySequence']=old['sequence'];task['entry']=None
+            transition=task.pop('setresuidTransition',None)
+            if transition is not None:
+                try:
+                    assert self.exclusive==(pid,old['sequence']) and record['isError'] is False and type(record['result']) is int and record['result']==0,'setresuid requires actual exclusive successful syscall exit'
+                    barrier=self.barrier()
+                    observation=transition.finish(exit_sequence=record['sequence'],barrier_sequence=barrier['sequence'],stopped_wait_status=status,result=record['result'])
+                    self.emit(dict(kind='setresuid-noop-exit-original',pid=pid,entrySequence=old['sequence'],exitSequence=record['sequence'],barrierSequence=barrier['sequence'],observation=observation))
+                    self.exclusive=None
+                finally:transition.close()
+                return
+            denied=task.pop('deniedIoUring',None)
+            if denied is not None:
+                assert old['nr']==425 and record['arch']==old['arch'] and record['isError'] is True and record['result']==-bindings.DENIED_IO_URING_ERRNO,'explicit denial lacks actual kernel ENOSYS exit'
+                current=self.stopped_executable_diagnostic(pid,status)
+                assert current==denied['executable'],'explicit denial task/executable changed'
+                self.emit(dict(kind='explicit-io-uring-setup-denied-exit',pid=pid,entrySequence=old['sequence'],denialSequence=denied['sequence'],exitSequence=record['sequence'],result=record['result'],isError=record['isError'],executable=current))
+                return
             alias_close=task.pop('aliasCloseWindow',None)
             if alias_close is not None:
                 window,held=alias_close
@@ -979,7 +1055,7 @@ class Observer:
             for pump in pumps:pump.start()
             if self.process_authority:
                 os.close(ready_write);ready_write=None;self.check();remaining=max(0,self.deadline-time.monotonic());readable,_,_=select.select([ready_read],[],[],remaining);self.check();assert readable and os.read(ready_read,1)==b'R','child authority setup did not complete before release';os.close(ready_read);ready_read=None
-            self.emit(dict(kind='owned-root-binding',pid=child,command=command,backend='ptrace-all-stop-process-v1',**(dict(processAuthorityModel=tool_providers.AUTHORITY_MODEL) if self.process_authority else {}),**(dict(taskOwnershipModel='all-tracked-tids-shared-fd-v1',tgid=child,fdTable=child) if self.shared_tasks else {})));single.trace(SEIZE,child,0,OPTIONS);single.trace(INTERRUPT,child);pid,status=self.wait_one();self.event(pid,status,False);self.pending_captures();os.write(write_fd,b'x');os.close(write_fd);write_fd=None;self.resume()
+            self.emit(dict(kind='owned-root-binding',pid=child,command=command,backend='ptrace-all-stop-process-v1',**(dict(optionalIoUringModel='explicit-kernel-enosys-denial-v1') if self.deny_optional_io_uring else {}),**(dict(setresuidNoopModel='actual-stopped-setresuid-noop-v1') if self.verified_setresuid_noop else {}),**(dict(processAuthorityModel=tool_providers.AUTHORITY_MODEL) if self.process_authority else {}),**(dict(taskOwnershipModel='all-tracked-tids-shared-fd-v1',tgid=child,fdTable=child) if self.shared_tasks else {})));single.trace(SEIZE,child,0,OPTIONS);single.trace(INTERRUPT,child);pid,status=self.wait_one();self.event(pid,status,False);self.pending_captures();os.write(write_fd,b'x');os.close(write_fd);write_fd=None;self.resume()
             while any(not r['exited'] for r in self.tasks.values()):
                 pid,status=self.wait_one();self.event(pid,status);self.pending_captures();self.resume()
             assert not any(task.get('vforkHeldChild') is not None for task in self.tasks.values()),'vfork child release/wait closure missing'
@@ -1024,6 +1100,9 @@ class Observer:
         assert all(row['phase']==name for row in rows),'tool original belongs to another phase'
         return rows
     def close(self):
+        for task in getattr(self,'tasks',{}).values():
+            transition=task.pop('setresuidTransition',None)
+            if transition is not None:transition.close()
         if hasattr(self,'authority_handles'):self.authority_handles.close()
         for fd in list(self.retained):os.close(fd);self.retained.remove(fd)
     def abort(self):

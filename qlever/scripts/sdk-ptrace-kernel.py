@@ -31,3 +31,21 @@ def cstring(pid,address):
         if b'\0' in chunk:return (data+chunk.split(b'\0',1)[0]).decode('utf-8','strict')
         data.extend(chunk)
     raise ValueError('tracee path bound')
+
+class RegisterVector(ctypes.Structure):
+    _fields_=[('base',ctypes.c_void_p),('length',ctypes.c_size_t)]
+def deny_io_uring_setup(pid,arch,nr):
+    """Change only the syscall number at its held entry stop; never resume."""
+    regset,size,offset,width=bindings.denied_io_uring_register_layout(arch)
+    assert nr==425,'only reviewed setup denial supported'
+    def read():
+        buffer=ctypes.create_string_buffer(size);vector=RegisterVector(ctypes.cast(buffer,ctypes.c_void_p),size)
+        trace(0x4204,pid,regset,ctypes.byref(vector))
+        assert vector.length==size,'kernel returned a different register layout'
+        return bytes(buffer.raw)
+    before=read();after=before[:offset]+b'\xff'*width+before[offset+width:]
+    bindings.verify_denied_io_uring_registers(arch,nr,before,after)
+    buffer=ctypes.create_string_buffer(after,size);vector=RegisterVector(ctypes.cast(buffer,ctypes.c_void_p),size)
+    trace(0x4205,pid,regset,ctypes.byref(vector))
+    actual=read();description=bindings.verify_denied_io_uring_registers(arch,nr,before,actual)
+    return dict(**description,beforeRegistersHex=before.hex(),afterRegistersHex=actual.hex())

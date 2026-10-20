@@ -8,8 +8,8 @@ import {controlledApiSourceRecipe,reviewedModulePhasePlan,verifiedNoticeSuppleme
 import {sourceBindingKey as key,secondaryGitHubSourceBindingSelectors as secondary,selectGitHubSourceBindingGroup as select} from '../../scripts/lib/independent-admission/github-source-binding-groups';
 const root=path.resolve(import.meta.dir,'../..'),read=(name:string)=>fs.readFileSync(path.join(root,name)),sha=(raw:Buffer|string)=>createHash('sha256').update(raw).digest('hex');
 test('Notice API17 closes its executed wrapper/imports and preserves every SDK29 and earlier API/controller whole tree',()=>{
- for(const[name,groups]of Object.entries({api,sdk,consumer,ci})){const prior=before[name as keyof typeof before];expect(groups).toHaveLength(prior.length+(name==='sdk'?1:name==='ci'?6:name==='api'?1:3));for(let i=0;i<prior.length;i++)expect(sha(JSON.stringify(groups[i]))).toBe(prior[i]);}
- expect(current).toHaveLength(378);for(const row of current)expect(sha(read(row.path))).toBe(row.sha256);
+ for(const[name,groups]of Object.entries({api,sdk,consumer,ci})){const prior=before[name as keyof typeof before];expect(groups).toHaveLength(prior.length+(name==='sdk'?2:name==='ci'?8:name==='api'?1:4));for(let i=0;i<prior.length;i++)expect(sha(JSON.stringify(groups[i]))).toBe(prior[i]);}
+ expect(current).toHaveLength(380);for(const row of current)expect(sha(read(row.path))).toBe(row.sha256);
  expect(API_NOTICE_SOURCE_BINDINGS).toHaveLength(78);for(const row of API_NOTICE_SOURCE_BINDINGS)expect(sha(read(row.path))).toBe(row.sha256);
  for(const role of ['packages/xpod-api/scripts/notice-material.ts','scripts/lib/physical-module-notices.ts','scripts/lib/independent-admission/legal-registry-originals.ts','scripts/lib/registry-legal-original-limits.json','scripts/workspace-package-payload.cjs'])expect(API_NOTICE_SOURCE_BINDINGS.some(row=>row.path===role)).toBe(true);
  expect(controlledApiSourceRecipe(read,sha(read('scripts/api-module-producer.py')),'linux-arm64').rows).toBe(API_NOTICE_SOURCE_BINDINGS);

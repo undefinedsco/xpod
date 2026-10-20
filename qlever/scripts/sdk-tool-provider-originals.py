@@ -134,6 +134,153 @@ def status_authority(raw,*,pid,tracer=None):
         words=values[key].split();need((key=='Groups' or len(words)==4) and len(words)<=256 and all(word.isdigit() and int(word)<1<<32 for word in words),'actual UID/GID/group role differs');result[key]=[int(word) for word in words]
     return dict(result,noNewPrivs=1,capabilities={key:0 for key in _CAPS})
 
+# Pure candidate checks only. The existing syscall gate remains strict until
+# the backend binds both actual stopped samples and receipts to one transition.
+_SETRESUID_NR={0xc000003e:117,0xc00000b7:147}
+def setresuid_noop_entry(arch,nr,args,raw,*,pid,tracer):
+    need(type(arch) is int and arch in _SETRESUID_NR and type(nr) is int and nr==_SETRESUID_NR[arch],'exact setresuid ABI required')
+    need(isinstance(args,list) and len(args)==6 and all(type(word) is int and 0<=word<1<<64 for word in args),'setresuid uint64 argument words required')
+    authority=status_authority(raw,pid=pid,tracer=tracer)
+    ruid,euid,suid=(word&0xffffffff for word in args[:3])
+    old=authority['Uid'];sentinel=0xffffffff
+    # Linux __sys_setresuid's no-op predicate includes fsuid, not only euid.
+    need((ruid==sentinel or ruid==old[0]) and
+         (euid==sentinel or euid==old[1]==old[3]) and
+         (suid==sentinel or suid==old[2]),'setresuid is not an exact authority no-op')
+    return authority
+
+def verify_setresuid_noop_transition(arch,nr,args,before_raw,after_raw,*,pid,tracer,result):
+    before=setresuid_noop_entry(arch,nr,args,before_raw,pid=pid,tracer=tracer)
+    need(type(result) is int and result==0,'actual setresuid no-op successful exit required')
+    after=status_authority(after_raw,pid=pid,tracer=tracer)
+    need(before==after,'actual authority changed across setresuid no-op')
+    return before
+
+class StoppedSetresuidTransition:
+    """Owned FD lease, not a JSON issuer. Core supplies its actual all-stop rows.
+
+    The strict default syscall gate is unchanged. Both records must be emitted
+    by the existing backend and independently joined to its entry/exit/barrier.
+    """
+    def __init__(self,pid,arch,nr,args,check,*,entry_sequence,barrier_sequence,stopped_wait_status):
+        self.fds={};self.closed=False;self.check=check;self.pid=pid
+        need(isinstance(args,list) and len(args)==6 and all(type(x) is int and 0<=x<1<<64 for x in args),'actual setresuid arguments required')
+        self.arch=arch;self.nr=nr;self.args=list(args);self.entry_sequence=entry_sequence
+        need(type(pid) is int and pid>0,'actual setresuid task required')
+        need(type(entry_sequence) is int and type(barrier_sequence) is int and 0<entry_sequence<barrier_sequence,'actual entry/all-stop sequence required')
+        try:
+            check();self.fds['process']=os.open('/proc/'+str(pid),os.O_RDONLY|os.O_DIRECTORY|os.O_CLOEXEC|os.O_NOFOLLOW)
+            self.process_identity=util.identity(os.fstat(self.fds['process']))
+            for role in ['status','stat']:
+                self.fds[role]=os.open(role,os.O_RDONLY|os.O_CLOEXEC|os.O_NOFOLLOW,dir_fd=self.fds['process'])
+            self.namespaces={}
+            for owner,base in [('tracee','/proc/'+str(pid)),('observer','/proc/self')]:
+                for role in ['user','pid','mnt']:
+                    key=owner+':'+role;path=base+'/ns/'+role;check()
+                    fd=os.open(path,os.O_RDONLY|os.O_CLOEXEC);self.fds[key]=fd
+                    row=dict(link=os.readlink(path),identity=util.identity(os.fstat(fd)))
+                    need(re.fullmatch(role+r':\[([0-9]+)\]',row['link']) is not None and int(row['link'].split('[')[1][:-1])==row['identity'][1],'actual namespace identity required')
+                    self.namespaces[key]=row
+            need(self.namespaces['tracee:user']==self.namespaces['observer:user'],'setresuid UID namespace differs from observer')
+            self.before=self._sample(stopped_wait_status)
+            self.authority=setresuid_noop_entry(arch,nr,self.args,self.before['statusOriginals'][0]['data'],pid=pid,tracer=os.getpid())
+            self.observation=self._record('entry',entry_sequence,barrier_sequence,stopped_wait_status,self.before)
+        except BaseException:
+            self.close();raise
+    def _read(self,role,maximum):
+        self.check();fd=self.fds[role];before=util.identity(os.fstat(fd))
+        need(before==util.identity(os.stat(role,dir_fd=self.fds['process'],follow_symlinks=False)),'actual authority named descriptor differs')
+        os.lseek(fd,0,os.SEEK_SET);chunks=[];size=0
+        while True:
+            self.check();data=os.read(fd,min(4096,maximum+1-size))
+            if not data:break
+            size+=len(data);need(size<=maximum,'actual authority raw original bound');chunks.append(data)
+        need(before==util.identity(os.fstat(fd))==util.identity(os.stat(role,dir_fd=self.fds['process'],follow_symlinks=False)),'actual authority descriptor changed during read')
+        raw=b''.join(chunks);return dict(bytes=len(raw),sha256=hashlib.sha256(raw).hexdigest(),data=raw.decode('utf-8','strict'),identity=before)
+    def _sample(self,wait_status):
+        need(not self.closed and type(wait_status) is int and os.WIFSTOPPED(wait_status),'actual stopped wait required')
+        statuses=[self._read('status',16384)];stats=[self._read('stat',4096)]
+        first=status_authority(statuses[0]['data'],pid=self.pid,tracer=os.getpid())
+        fields={}
+        for line in statuses[0]['data'].splitlines():
+            key,sep,value=line.partition(':')
+            if sep and key in ['State','Tgid','Pid','TracerPid']:
+                need(key not in fields,'duplicate actual stopped task field');fields[key]=value.strip()
+        need(fields.get('State','').split(' ')[0] in ['t','T'],'actual task is not stopped')
+        need(fields.get('Tgid','').isdigit(),'actual task group required')
+        start=self._starttime(stats[0]['data'])
+        for key,row in self.namespaces.items():
+            self.check();owner,role=key.split(':');base='/proc/'+str(self.pid) if owner=='tracee' else '/proc/self';path=base+'/ns/'+role
+            need(row['link']==os.readlink(path) and row['identity']==util.identity(os.fstat(self.fds[key]))==util.identity(os.stat(path)),'actual authority namespace changed')
+        need(self.process_identity==util.identity(os.fstat(self.fds['process']))==util.identity(os.stat('/proc/'+str(self.pid),follow_symlinks=False)),'actual process directory identity changed')
+        statuses.append(self._read('status',16384));stats.append(self._read('stat',4096))
+        need(statuses[0]['data']==statuses[1]['data'] and stats[0]['data']==stats[1]['data'],'actual stopped authority changed during capture')
+        need(first==status_authority(statuses[1]['data'],pid=self.pid,tracer=os.getpid()),'actual stopped authority differs')
+        self.check();uname=os.uname();values=dict(zip(['sysname','nodename','release','version','machine'],uname))
+        need(all(isinstance(v,str) and len(v.encode())<=1024 for v in values.values()),'actual uname bound')
+        value=dict(statusOriginals=statuses,statOriginals=stats,processStarttime=start,processIdentity=self.process_identity,taskGroup=int(fields['Tgid']),namespaces=self.namespaces,uname=values)
+        need(sum(x['bytes'] for x in statuses+stats)<=40960,'actual authority combined raw bound')
+        return value
+    def _starttime(self,raw):
+        need(raw.startswith(str(self.pid)+' ('),'actual stat PID differs');end=raw.rfind(')');words=raw[end+2:].split()
+        need(end>0 and len(words)>=20 and words[19].isdigit(),'actual stat starttime missing');return words[19]
+    def _record(self,role,sequence,barrier,wait_status,sample):
+        value=dict(schemaVersion=1,kind='actual-stopped-setresuid-'+role,pid=self.pid,observerPid=os.getpid(),observerNativeTid=threading.get_native_id(),arch=self.arch,nr=self.nr,args=self.args,entrySequence=self.entry_sequence,sequence=sequence,barrierSequence=barrier,stoppedWaitStatus=wait_status,observation=sample)
+        encoded=json.dumps(value,sort_keys=True,separators=(',',':')).encode();need(len(encoded)<=65500,'actual setresuid record bound');return json.loads(encoded)
+    def finish(self,*,exit_sequence,barrier_sequence,stopped_wait_status,result):
+        try:
+            need(type(exit_sequence) is int and type(barrier_sequence) is int and self.entry_sequence<exit_sequence<barrier_sequence,'actual setresuid exit/all-stop sequence required')
+            after=self._sample(stopped_wait_status)
+            need(after['processStarttime']==self.before['processStarttime'] and after['taskGroup']==self.before['taskGroup'] and after['uname']==self.before['uname'],'actual setresuid task identity switched')
+            verify_setresuid_noop_transition(self.arch,self.nr,self.args,self.before['statusOriginals'][0]['data'],after['statusOriginals'][0]['data'],pid=self.pid,tracer=os.getpid(),result=result)
+            value=self._record('exit',exit_sequence,barrier_sequence,stopped_wait_status,after);value['result']=result;return value
+        finally:self.close()
+    def close(self):
+        if not self.closed:
+            for fd in self.fds.values():os.close(fd)
+            self.fds.clear();self.closed=True
+
+def verify_stopped_setresuid_original(row,role):
+    need(isinstance(row,dict) and row.get('schemaVersion')==1 and row.get('kind')=='actual-stopped-setresuid-'+role,'actual setresuid original role differs')
+    need(len(json.dumps(row,sort_keys=True,separators=(',',':')).encode())<=65536,'actual setresuid original encoded bound')
+    for key in ['pid','observerPid','observerNativeTid','entrySequence','sequence','barrierSequence']:
+        need(type(row.get(key)) is int and row[key]>0,'actual setresuid sequence/identity required')
+    wait=row.get('stoppedWaitStatus');need(type(wait) is int and os.WIFSTOPPED(wait),'actual setresuid stopped wait missing')
+    value=row.get('observation');need(isinstance(value,dict),'actual setresuid observation required')
+    raws={}
+    for key,maximum in [('statusOriginals',16384),('statOriginals',4096)]:
+        rows=value.get(key);need(isinstance(rows,list) and len(rows)==2,'dual actual setresuid raw originals required');out=[]
+        for original in rows:
+            need(isinstance(original,dict) and isinstance(original.get('data'),str),'actual setresuid raw text required')
+            data=original['data'].encode();need(type(original.get('bytes')) is int and len(data)==original['bytes']<=maximum and hashlib.sha256(data).hexdigest()==original.get('sha256'),'actual setresuid raw identity differs');identity(original.get('identity'));out.append(original['data'])
+        need(out[0]==out[1] and rows[0]['identity']==rows[1]['identity'],'actual setresuid dual originals differ');raws[key]=out[0]
+    authority=status_authority(raws['statusOriginals'],pid=row['pid'],tracer=row['observerPid'])
+    fields={}
+    for line in raws['statusOriginals'].splitlines():
+        key,sep,val=line.partition(':')
+        if sep and key in ['State','Tgid']:
+            need(key not in fields,'duplicate setresuid task identity');fields[key]=val.strip()
+    need(fields.get('State','').split(' ')[0] in ['t','T'] and fields.get('Tgid','').isdigit() and type(value.get('taskGroup')) is int and value['taskGroup']==int(fields['Tgid']),'actual setresuid stopped task differs')
+    statraw=raws['statOriginals'];end=statraw.rfind(')');words=statraw[end+2:].split()
+    need(statraw.startswith(str(row['pid'])+' (') and end>0 and len(words)>=20 and words[19].isdigit() and words[19]==value.get('processStarttime'),'actual setresuid stat starttime differs');identity(value.get('processIdentity'))
+    namespaces=value.get('namespaces');need(isinstance(namespaces,dict) and set(namespaces)=={owner+':'+role for owner in ['tracee','observer'] for role in ['user','pid','mnt']},'actual setresuid namespace set differs')
+    for key,ns in namespaces.items():
+        role=key.split(':')[1];values=identity(ns.get('identity'));need(ns.get('link')==role+':['+str(values[1])+']','actual setresuid namespace inode differs')
+    need(namespaces['tracee:user']==namespaces['observer:user'],'actual setresuid UID namespace mismatch')
+    uname=value.get('uname');need(isinstance(uname,dict) and set(uname)=={'sysname','nodename','release','version','machine'} and all(isinstance(x,str) and len(x.encode())<=1024 for x in uname.values()),'actual setresuid uname required')
+    return value,raws,authority
+
+def verify_setresuid_original_pair(entry,exit):
+    """Pure replay of registered originals; core must also join real raw events."""
+    before,braw,ba=verify_stopped_setresuid_original(entry,'entry');after,araw,aa=verify_stopped_setresuid_original(exit,'exit')
+    for key in ['pid','observerPid','observerNativeTid','arch','nr','args','entrySequence']:
+        need(entry.get(key)==exit.get(key),'actual setresuid transition identity differs')
+    need(entry['entrySequence']==entry['sequence']<entry['barrierSequence']<exit['sequence']<exit['barrierSequence'],'actual setresuid transition order differs')
+    for key in ['processStarttime','processIdentity','taskGroup','namespaces','uname']:
+        need(before[key]==after[key],'actual setresuid process/namespace identity switched')
+    verify_setresuid_noop_transition(entry['arch'],entry['nr'],entry['args'],braw['statusOriginals'],araw['statusOriginals'],pid=entry['pid'],tracer=entry['observerPid'],result=exit.get('result'))
+    return dict(kind='verified-setresuid-noop-original-pair',pid=entry['pid'],entrySequence=entry['sequence'],exitSequence=exit['sequence'],authority=ba)
+
 def authority_status_diagnostic(raw,*,pid,tracer,check):
     """Bounded original failure context only; never relax the tracer assertion.
 
@@ -249,14 +396,16 @@ def verify_process_authority(record,mountinfo,*,pid):
 class ProcessAuthorityInterval:
     """Pure replay state. It never grants immutable backing/source authority."""
     def __init__(self,root_pid):
-        self.root=root_pid;self.parents={root_pid:None};self.samples={};self.exec_pending={};self.exit_pending={};self.waited=set();self.closed=set();self.baseline=None;self.count=0
+        self.root=root_pid;self.parents={root_pid:None};self.samples={};self.exec_pending={};self.exit_pending={};self.waited=set();self.closed=set();self.baseline=None;self.count=0;self.setresuid_pending={};self.setresuid_count=0
     def child(self,parent,child):
+        need(not self.setresuid_pending,'child event during exclusive setresuid transition')
         need(parent in self.samples and child not in self.parents,'authority child lacks initialized parent');self.parents[child]=parent
     def event(self,pid,event,sequence):
-        need(pid in self.parents,'authority event for unknown process')
+        need(pid in self.parents and not self.setresuid_pending,'authority event for unknown process or unclosed setresuid transition')
         if event==4:need(pid in self.samples and pid not in self.exec_pending,'authority exec interval missing');self.exec_pending[pid]=sequence
         if event==6:need(pid in self.samples and pid not in self.exit_pending,'authority terminal interval missing');self.exit_pending[pid]=sequence
     def sample(self,row,mountinfo):
+        need(not self.setresuid_pending,'authority boundary sample during exclusive setresuid transition')
         pid=row['pid'];need(pid in self.parents and pid not in self.waited,'authority sample outside owned live interval')
         role=row.get('role');need(role in ['initial-root','initial-child','exec-stop','exit-stop'],'unknown authority observation role')
         if role.startswith('initial-'):
@@ -268,11 +417,47 @@ class ProcessAuthorityInterval:
         if self.baseline is None:need(pid==self.root and role=='initial-root','root authority original must be first');self.baseline=value
         need(value==self.baseline,'owned process authority/root/namespace/mounts changed during interval');self.samples[pid]=value;self.count+=1
     def syscall(self,row):
+        need(not self.setresuid_pending,'another syscall before setresuid transition consumed')
         need(row['pid'] in self.samples and row['pid'] not in self.exec_pending and row['pid'] not in self.exit_pending,'syscall resumed without authority boundary capture')
         verify_authority_syscall(row['arch'],row['nr'],row['args'])
+    def _setresuid_raw_join(self,observation,raw,barrier,op):
+        need(isinstance(raw,dict) and isinstance(barrier,dict),'actual setresuid kernel/barrier rows required')
+        need(len(json.dumps(raw,separators=(',',':')).encode())<=65536 and len(json.dumps(barrier,separators=(',',':')).encode())<=65536,'actual setresuid raw row bound')
+        need(all(type(raw.get(key)) is int and raw[key]>0 for key in ['pid','sequence','arch']),'actual setresuid kernel integer identities required')
+        need(raw.get('kind')=='kernel-syscall' and raw.get('op')==op and raw.get('pid')==observation['pid'] and raw.get('sequence')==observation['sequence'] and raw.get('arch')==observation['arch'],'actual setresuid kernel event differs')
+        phase=raw.get('phase');need(phase in ['configure','compile'],'actual setresuid phase required')
+        wait=raw.get('waitStatus');need(type(wait) is int and wait==observation['stoppedWaitStatus'] and os.WIFSTOPPED(wait) and os.WSTOPSIG(wait)==133,'actual setresuid syscall wait differs')
+        need(barrier.get('kind')=='all-stop-barrier' and barrier.get('phase')==phase and barrier.get('sequence')==observation['barrierSequence'],'actual setresuid all-stop event differs')
+        live=sorted(set(self.parents)-self.waited)
+        need(barrier.get('pids')==live and barrier.get('osStates')==['t']*len(live) and observation['pid'] in live,'actual setresuid all-owned-task stop incomplete')
+        if op=='entry':need(type(raw.get('nr')) is int and raw['nr']==observation['nr'] and isinstance(raw.get('args'),list) and all(type(word) is int and 0<=word<1<<64 for word in raw['args']) and raw['args']==observation['args'],'actual setresuid kernel argument words differ')
+        else:need(type(raw.get('entrySequence')) is int and raw['entrySequence']==observation['entrySequence'] and type(raw.get('result')) is int and raw['result']==0 and raw.get('isError') is False and observation.get('result')==0,'actual setresuid kernel successful exit differs')
+        return phase
+    def begin_setresuid_original(self,entry,actual_entry,entry_barrier):
+        value,raws,authority=verify_stopped_setresuid_original(entry,'entry');pid=entry['pid']
+        need(pid in self.samples and pid not in self.exec_pending and pid not in self.exit_pending and pid not in self.waited and pid not in self.closed and not self.setresuid_pending,'setresuid outside initialized live authority interval')
+        need(entry['entrySequence']==entry['sequence']<entry['barrierSequence'],'setresuid entry/barrier order differs')
+        phase=self._setresuid_raw_join(entry,actual_entry,entry_barrier,'entry')
+        setresuid_noop_entry(entry['arch'],entry['nr'],entry['args'],raws['statusOriginals'],pid=pid,tracer=entry['observerPid'])
+        need(self.baseline is not None and entry['observerPid']==self.baseline['observerPid'],'setresuid lacks same observer authority baseline')
+        for key in ['Uid','Gid','Groups','noNewPrivs','capabilities']:need(authority[key]==self.baseline[key],'setresuid entry differs from actual authority baseline')
+        for role in ['user','pid','mnt']:
+            need(value['namespaces']['tracee:'+role]['identity']==self.baseline['namespaces'][role]['identity'] and value['namespaces']['tracee:'+role]['link']==self.baseline['namespaces'][role]['link'],'setresuid entry namespace differs from interval')
+        need(len(self.setresuid_pending)<1024,'setresuid pending transition bound')
+        self.setresuid_pending[pid]=dict(entry=json.loads(json.dumps(entry)),phase=phase)
+    def consume_verified_setresuid_pair(self,entry,exit,actual_exit,exit_barrier):
+        pid=entry.get('pid');pending=self.setresuid_pending.get(pid)
+        need(pending is not None and pending['entry']==entry,'setresuid lacks identical registered entry original')
+        need(pid in self.samples and pid not in self.exec_pending and pid not in self.exit_pending and pid not in self.waited and pid not in self.closed,'setresuid exit outside live authority interval')
+        verify_setresuid_original_pair(pending['entry'],exit)
+        need(self._setresuid_raw_join(exit,actual_exit,exit_barrier,'exit')==pending['phase'],'setresuid phase changed')
+        self.setresuid_pending.pop(pid);self.setresuid_count+=1
+        return dict(kind='consumed-setresuid-noop-original-pair',pid=pid,entrySequence=entry['sequence'],exitSequence=exit['sequence'])
     def wait(self,pid):
+        need(not self.setresuid_pending,'wait before setresuid transition consumed')
         need(pid in self.closed and pid in self.samples and pid not in self.exec_pending and pid not in self.exit_pending and pid not in self.waited,'authority interval lacks captured terminal boundary')
         self.waited.add(pid)
     def finish(self):
+        need(not self.setresuid_pending,'authority interval has unclosed setresuid transition')
         need(set(self.parents)==self.waited and not self.exec_pending and not self.exit_pending,'authority interval tracked waits incomplete')
         return dict(schemaVersion=1,model=AUTHORITY_MODEL,scope=AUTHORITY_SCOPE,trackedProcesses=len(self.parents),actualAuthorityCaptures=self.count,namespaceExternalWriterAuthorityVerified=False,toolchainLifetimeImmutabilityVerified=False)

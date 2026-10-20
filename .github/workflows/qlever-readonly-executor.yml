@@ -40,6 +40,22 @@ concurrency:
   group: readonly-sdk-validation-${{ github.event.pull_request.number || github.run_id }}-${{ inputs.sdk_profile || 'all' }}-${{ inputs.target || 'all' }}-${{ github.sha }}
   cancel-in-progress: false
 jobs:
+  kernel_probe:
+    if: ${{ github.event_name == 'pull_request' && github.workflow == 'Isolated readonly QLever SDK entry' }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        target: [linux-x64, linux-arm64]
+    uses: ./.github/workflows/qlever-readonly-normal-job.yml
+    with:
+      target: ${{ matrix.target }}
+      sdk_profile: service-trixie
+      source_commit: ${{ github.sha }}
+      publish: false
+      kernel_probe_only: true
   validation:
     if: ${{ !inputs.publish || github.event_name == 'pull_request' }}
     permissions:

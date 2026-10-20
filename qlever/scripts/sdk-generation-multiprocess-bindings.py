@@ -18,6 +18,19 @@ def policy(arch):
 
 def need(value,reason):
     if not value:raise ValueError('multi-process generation originals: '+reason)
+DENIED_IO_URING_ERRNO=38 # Linux ENOSYS, for both explicitly supported audit architectures.
+def denied_io_uring_register_layout(arch):
+    policy(arch)
+    # Linux x86_64 user_regs_struct.orig_rax and arm64 NT_ARM_SYSTEM_CALL.
+    return {0xc000003e:(1,216,120,8),0xc00000b7:(0x404,4,0,4)}[arch]
+def verify_denied_io_uring_registers(arch,nr,before,after):
+    need(type(nr) is int and nr==425,'only io_uring_setup may be explicitly denied')
+    regset,size,offset,width=denied_io_uring_register_layout(arch)
+    need(type(before) is bytes and type(after) is bytes and len(before)==len(after)==size,'exact denial register set required')
+    need(int.from_bytes(before[offset:offset+width],'little')==nr,'actual entry register syscall differs')
+    expected=before[:offset]+b'\xff'*width+before[offset+width:]
+    need(after==expected,'denial changed other registers or failed to set invalid syscall')
+    return dict(registerSet=regset,registerBytes=size,syscallOffset=offset,syscallBytes=width,originalSyscall=nr,substitutedSyscall=-1)
 def append_boundary_syscall(arch,nr,args=None):
     rules=policy(arch)
     # open/openat allocate a descriptor; they do not consume file contents.
@@ -291,6 +304,7 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
     maximum_file=limits['shardBytes'] if limits else 1024**2
     maximum_total=limits['sourceMaterialBytes'] if limits else 16*1024**2
     original_cache={};retained_entries=set();phase_tracking=[]
+    denial_mode=False;denied_operations={};setresuid_mode=False;setresuid_operations={}
     shared_mode=False;owners={};exec_fd_events={};vfork_events={};vfork_holds={};child_bindings={};wait_rows={}
     live=set();last=0;entries={};exits={};barriers={};caps={};paths={};renames=[];consumers=[];source_reads=[];total=0;capture_total=0;exclusive=None;root_codes={};clone_flags=set();clone_flag_values={}
     alias_close_windows={};alias_close_exits=set()
@@ -361,6 +375,14 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
         need(not live,'prior actual process tree has not closed');roots=[];waits=[]
         for raw in lines:
             check();total+=len(raw);need(total<=maximum_raw and len(raw)<=65536,'tiny raw aggregate/record bound');row=json.loads(raw);need(row['sequence']==last+1 and row['phase']==phase,'phase/raw sequence differs');last=row['sequence'];kind=row['kind']
+            active_denial=denied_operations.get(row.get('pid'))
+            for pending_uid in setresuid_operations.values():
+                if pending_uid['state']=='begun':need(kind=='kernel-syscall' and row.get('pid')==pending_uid['entry']['pid'] and row.get('op')=='exit','event during exclusive setresuid transition')
+                elif pending_uid['state']=='exited':need(kind in ['all-stop-barrier','setresuid-noop-exit-original'],'setresuid exit missing immediate all-stop originals')
+            if active_denial is not None:
+                expected_kind={'entry':'explicit-io-uring-setup-denied','substituted':'kernel-syscall','exited':'explicit-io-uring-setup-denied-exit'}[active_denial['state']]
+                need(kind==expected_kind,'unexpected event during explicit denied syscall')
+                if kind=='kernel-syscall':need(row.get('op')=='exit','explicit denial resumed another entry')
             if kind=='prepared-dependency-source-root':
                 need(not live and not roots and not phase_tracking,'dependency roots must precede first actual root')
                 dependency_prepared=dependency_json(row['sourcePreparedOriginal']);collection=dependency_json(row['collectionOriginal']);declared=dependency_collection_contract(dependency_prepared,collection)
@@ -396,7 +418,9 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
             elif kind=='owned-root-binding':
                 need(dependency_expected_names is None or set(dependency_roots)==dependency_expected_names,'prepared dependency root universe is not completely registered');need(not live and not roots,'unique actual root required');live.add(row['pid']);roots.append(row['pid']);need(row['backend']=='ptrace-all-stop-process-v1','wrong observer backend')
                 need(row.get('taskOwnershipModel') in [None,'all-tracked-tids-shared-fd-v1'],'unknown task ownership model');shared_mode=row.get('taskOwnershipModel') is not None;owners={}
+                need(not denied_operations,'unclosed explicit syscall denial at new root');denial=row.get('optionalIoUringModel');need(denial in [None,'explicit-kernel-enosys-denial-v1'],'unknown optional syscall denial model');denial_mode=denial is not None
                 model=row.get('processAuthorityModel');need(model is None or model==provider_module().AUTHORITY_MODEL,'unknown process authority model');process_interval=provider_module().ProcessAuthorityInterval(row['pid']) if model is not None else None
+                need(not setresuid_operations,'unclosed setresuid transition at new root');uid_model=row.get('setresuidNoopModel');need(uid_model in [None,'actual-stopped-setresuid-noop-v1'],'unknown setresuid operation model');setresuid_mode=uid_model is not None;need(not setresuid_mode or process_interval is not None,'setresuid model requires actual process authority interval')
                 if shared_mode:need(row['tgid']==row['fdTable']==row['pid'],'initial root ownership differs');owners[row['pid']]=dict(tgid=row['tgid'],fdTable=row['fdTable'])
             elif kind=='actual-child-binding':
                 child_bindings[row['childPid']]=row
@@ -409,6 +433,7 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                 if process_interval is not None:process_interval.child(row['parentPid'],row['childPid'])
                 live.add(row['childPid'])
             elif kind=='actual-wait-exit':
+                need(row['pid'] not in denied_operations,'explicit denial lacks actual kernel exit before task wait')
                 need(row['pid'] not in vfork_holds,'held vfork parent ended without child release');wait_rows[row['sequence']]=row
                 if process_interval is not None:process_interval.wait(row['pid'])
                 need(row['pid'] in live,'wait on unknown process');live.remove(row['pid']);root_codes[row['pid']]=row['returnCode'];waits.append(dict(pid=row['pid'],sequence=row['sequence'],returnCode=row['returnCode'],phase=phase))
@@ -538,13 +563,46 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                 need(exclusive is None and row['captureSequence'] in caps and caps[row['captureSequence']][0]['entrySequence']==row['entrySequence'],'exclusive capture resume differs');exclusive=(row['pid'],row['entrySequence'])
             elif kind=='exclusive-captured-syscall-exit':
                 need(exclusive==(row['pid'],row['entrySequence']) and row['entrySequence'] in exits,'exclusive read/close stop boundary differs');exclusive=None
+            elif kind=='setresuid-noop-entry-original':
+                pending=setresuid_operations.get(row.get('pid'));entry=entries.get(row.get('entrySequence'));barrier=barriers.get(row.get('barrierSequence'))
+                need(setresuid_mode and process_interval is not None and pending and pending['state']=='entry' and entry==pending['entry'] and exclusive is None,'setresuid original outside pending actual entry')
+                observation=row.get('observation');need(isinstance(observation,dict) and observation.get('pid')==row['pid'] and observation.get('entrySequence')==entry['sequence'],'setresuid entry observation differs')
+                process_interval.begin_setresuid_original(observation,entry,barrier)
+                pending.update(state='begun',observation=observation);exclusive=(row['pid'],entry['sequence'])
+            elif kind=='setresuid-noop-exit-original':
+                pending=setresuid_operations.get(row.get('pid'));barrier=barriers.get(row.get('barrierSequence'))
+                need(pending and pending['state']=='exited' and exclusive==(row['pid'],pending['entry']['sequence']) and row.get('entrySequence')==pending['entry']['sequence'] and row.get('exitSequence')==pending['exit']['sequence'],'setresuid exit original outside pending actual exit')
+                observation=row.get('observation');need(isinstance(observation,dict) and observation.get('pid')==row['pid'],'setresuid exit observation differs')
+                process_interval.consume_verified_setresuid_pair(pending['observation'],observation,pending['exit'],barrier)
+                del setresuid_operations[row['pid']];exclusive=None
+            elif kind=='explicit-io-uring-setup-denied':
+                entry=entries.get(row.get('entrySequence'));pending=denied_operations.get(row.get('pid'))
+                need(denial_mode and pending and pending['state']=='entry' and entry==pending['entry'],'unbound or duplicate explicit denial')
+                need(row['arch']==entry['arch'] and row['args']==entry['args'],'explicit denial entry words differ')
+                wait=row.get('waitStatus');need(type(wait) is int and wait==(((5|0x80)<<8)|127),'explicit denial syscall stop differs')
+                before=bytes.fromhex(row['beforeRegistersHex']);after=bytes.fromhex(row['afterRegistersHex']);description=verify_denied_io_uring_registers(entry['arch'],entry['nr'],before,after)
+                need(all(row.get(key)==value for key,value in description.items()),'explicit denial register description differs')
+                executable=row.get('executable');need(isinstance(executable,dict) and len(executable.get('identity',[]))==6 and type(executable.get('processStarttime')) is int,'explicit denial stopped executable identity required')
+                pending.update(state='substituted',denial=row)
+            elif kind=='explicit-io-uring-setup-denied-exit':
+                pending=denied_operations.get(row.get('pid'));need(pending and pending['state']=='exited','explicit denial exit lacks actual kernel exit')
+                actual=pending['exit'];denied=pending['denial']
+                need(row['entrySequence']==pending['entry']['sequence'] and row['denialSequence']==denied['sequence'] and row['exitSequence']==actual['sequence'] and row['result']==-DENIED_IO_URING_ERRNO and row['isError'] is True and row['executable']==denied['executable'],'explicit denial exit causal chain differs')
+                del denied_operations[row['pid']]
             elif kind=='kernel-syscall':
                 need(row['pid'] not in vfork_holds,'vfork parent resumed before actual child exec/terminal wait')
                 need(row['pid'] in live and row['arch'] in POLICIES,'unknown syscall process/architecture');need(exclusive is None or exclusive[0]==row['pid'],'another potential writer ran during captured syscall')
                 if row['op']=='entry':
                     if append_boundary_syscall(row['arch'],row['nr'],row['args']):append_obligations[row['sequence']]=dict(append_dirty)
-                    rules=policy(row['arch']);need(row['nr'] not in rules['forbidden'],'unsupported asynchronous/external writer syscall')
-                    if process_interval is not None:process_interval.syscall(row)
+                    rules=policy(row['arch'])
+                    need(row['pid'] not in denied_operations,'another syscall before explicit denial completion')
+                    if row['nr']==425 and denial_mode:
+                        denied_operations[row['pid']]=dict(state='entry',entry=row);retained_entries.add(row['sequence'])
+                    else:need(row['nr'] not in rules['forbidden'],'unsupported asynchronous/external writer syscall')
+                    if setresuid_mode and row['nr']=={0xc000003e:117,0xc00000b7:147}.get(row['arch']):
+                        need(not setresuid_operations and exclusive is None,'overlapping setresuid operation')
+                        setresuid_operations[row['pid']]=dict(state='entry',entry=row);retained_entries.add(row['sequence'])
+                    elif process_interval is not None:process_interval.syscall(row)
                     if row['nr']==rules['clone']:
                         flags=row['args'][0]
                         if shared_mode:inspect_shared_clone_flags(flags)
@@ -559,6 +617,10 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                     if 'entrySequence' in row:
                         need(all(append_completed.get(key,0)>=sequence for key,sequence in append_obligations.pop(row['entrySequence'],{}).items()),'append checkpoint missing before actual syscall exit')
                         entry=entries.get(row['entrySequence']);need(entry and entry['pid']==row['pid'] and row['entrySequence'] not in exits,'syscall exit binding differs')
+                        if row['pid'] in denied_operations:
+                            pending=denied_operations[row['pid']];need(pending['state']=='substituted' and pending['entry']==entry and row['arch']==entry['arch'] and row['result']==-DENIED_IO_URING_ERRNO and row['isError'] is True,'explicit denial requires actual same-entry kernel ENOSYS');pending.update(state='exited',exit=row)
+                        if row['pid'] in setresuid_operations:
+                            pending=setresuid_operations[row['pid']];need(pending['state']=='begun' and pending['entry']==entry and row['result']==0 and row['isError'] is False and row['arch']==entry['arch'],'setresuid lacks actual same-entry successful exit');pending.update(state='exited',exit=row)
                         if entry['nr']==435:need(row['entrySequence'] in clone_flags,'clone3 lacks actual flags original')
                         if row['isError'] and (entry['nr'] in policy(entry['arch'])['exec'] or entry['nr'] in policy(entry['arch'])['protect'] or entry['nr']==policy(entry['arch'])['mmap']):retained_entries.discard(row['entrySequence']);tool_protect_before.pop(row['entrySequence'],None)
                         if row['entrySequence'] in retained_entries:exits[row['entrySequence']]=row
@@ -678,7 +740,9 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
             elif kind=='retained-fd-rename-binding':renames.append(row)
             elif kind=='generated-consumer-binding':consumers.append(row)
             elif kind=='prepared-consumer-binding':prepared_consumers.append(row)
-            else:need(kind in ['ptrace-event','signal-delivery','generated-mmap-unverified'],'unknown raw observer event')
+            else:
+                need(row.get('pid') not in denied_operations,'signal or ptrace event interrupted explicit denial')
+                need(kind in ['ptrace-event','signal-delivery','generated-mmap-unverified'],'unknown raw observer event')
         need(not vfork_holds,'phase ended without vfork child release')
         need(not append_dirty,'phase ended without mandatory append full checkpoint')
         need(len(roots)==1 and not live and root_codes.get(roots[0])==0 and exclusive is None,'actual root/descendant wait closure incomplete')
@@ -732,6 +796,8 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
         cap,data=consumer;prior,expected=original
         need(cap['path']==binding['path']==prior['path'] and cap['identity']==binding['identity']==binding['retainedIdentity'] and cap['identity'][:2]==prior['identity'][:2] and data==expected,'actual prepared consumer bytes/FD relation differs')
         prepared_covered[cap['path']]=dict(path=cap['path'],bytes=data[0],sha256=data[1],preparedCaptureSequence=prior['sequence'],consumerCaptureSequence=cap['sequence'])
+    need(not setresuid_operations,'setresuid transition lacks final causal closure')
+    need(not denied_operations,'explicit denial missing final causal closure')
     if required_inputs is None:
         for name in ['config.h','generated.h','custom.h']:
             if not any(path.endswith('/'+name) for path in covered):pending.append('actual-successful-generated-consumer-missing:'+name)
