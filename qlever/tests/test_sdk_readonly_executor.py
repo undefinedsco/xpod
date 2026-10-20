@@ -133,6 +133,24 @@ func main(){var input struct{Template string;Value map[string]interface{}};if er
   for change in [lambda v:v['provider'].update(mount='/usr'),lambda v:v['provider'].update(mountId=100),lambda v:v['provider'].update(mountOptions=['rw']),lambda v:v.update(mountNamespace='mnt:[1]'),lambda v:v['rootIdentityDecimal'].__setitem__(1,'99')]:
    value=copy.deepcopy(provider);change(value)
    with self.assertRaises(ValueError):b.join_provider(proof,value)
+ def test_new_held_root_object_keeps_raw_times_but_legacy_requires_full_metadata(self):
+  record,raw,values=fixture()
+  changed(record,raw,values,'hostBeforeRelease',lambda v:v['rootIdentity'].__setitem__(4,200))
+  with self.assertRaises(ValueError):b.verify(record,raw,ID)
+  # Current producer emits the object key under its held O_PATH interval. Both
+  # originals keep their independent full-six metadata, including timestamps.
+  for role in ['hostBefore','hostBeforeRelease']:changed(record,raw,values,role,lambda v:v.update(rootObjectIdentity=v['rootIdentity'][:4]))
+  proof=b.verify(record,raw,ID);self.assertNotEqual(values['hostBefore']['rootIdentity'],values['hostBeforeRelease']['rootIdentity'])
+  h=proof['hostNamespaceOriginal'];provider=dict(mountNamespaceIdentityDecimal=[str(v) for v in h['namespaces']['mnt']['identity']],mountNamespace=h['namespaces']['mnt']['link'],rootIdentityDecimal=[str(v) for v in h['rootIdentity'][:4]+[900,901]],provider=dict(mount='/',mountId=99,mountOptions=['ro']))
+  self.assertTrue(b.join_provider(proof,provider)['providerBoundToOwnedImageRoot']);self.assertFalse(proof['globalHostWriterAbsenceVerified']);self.assertFalse(proof['toolchainLifetimeImmutabilityVerified'])
+  for index in range(4):
+   bad=copy.deepcopy(provider);bad['rootIdentityDecimal'][index]=str(int(bad['rootIdentityDecimal'][index])+1)
+   with self.assertRaises(ValueError):b.join_provider(proof,bad)
+  for change in [lambda v:v['rootObjectIdentity'].__setitem__(1,999),lambda v:v['rootIdentity'].__setitem__(0,999),lambda v:v['rootObjectIdentity'].pop(),lambda v:v['rootIdentity'].pop(),lambda v:v['namespaces']['mnt']['identity'].__setitem__(5,999),lambda v:v['rootMount'].update(mountId=100),lambda v:v.update(rootPidStarttime='999'),lambda v:v['ready'].update(nonce='f'*64)]:
+   r,o,v=fixture()
+   for role in ['hostBefore','hostBeforeRelease']:changed(r,o,v,role,lambda frame:frame.update(rootObjectIdentity=frame['rootIdentity'][:4]))
+   changed(r,o,v,'hostBeforeRelease',change)
+   with self.assertRaises(ValueError):b.verify(r,o,ID)
  def test_rehashed_stage_receipt_cannot_run_unknown_command_or_fake_closure(self):
   for mutate in [lambda v:v['command'].append('--privileged'),lambda v:v.update(actualWait=False),lambda v:v.update(exit=1),lambda v:v.update(completedUnixNs=2100000000000000000)]:
    record,raw,values=fixture();ref=record['stages'][4]['receipt'];value=json.loads(raw[ref['path']]);mutate(value);data=json.dumps(value).encode();raw[ref['path']]=data;ref.update(bytes=len(data),sha256=hashlib.sha256(data).hexdigest())

@@ -2,6 +2,7 @@
 import hashlib
 import json
 import re
+import stat
 import importlib.util
 from pathlib import Path
 _profile_spec=importlib.util.spec_from_file_location("readonly_profiles",Path(__file__).with_name("qlever_compiler_profile.py"))
@@ -110,7 +111,7 @@ def verify(record,originals,expected):
     prepared=read('sourcePrepared');need(read('sourcePreparedCopied')==prepared,'actual cp original differs from semantic prepared metadata');same_tuple(prepared['identity'],expected)
     need(prepared['deadlineUnix']==record['deadlineUnix'],'one prepared/build deadline')
     host=read('hostBefore');need(host['containerPid']==before['State']['Pid'] and host['rootPidStarttime'].isdigit() and host['namespacePids']==[host['containerPid'],1] and host['ready']==dict(pid=1,nonce=record['nonce'],identity=expected,deadlineUnix=record['deadlineUnix']) and host['command']==['/usr/bin/python3','-I','-S','-B','/components/qlever/scripts/sdk-readonly-executor-entry.py'],'actual daemon PID1/starttime/release handshake')
-    host_after=read('hostBeforeRelease');need(host_after==host,'held provider/task identity changed before release')
+    host_after=read('hostBeforeRelease');need(host_object_frame(host_after)==host_object_frame(host),'held provider/task identity changed before release')
     for role in ['mnt','pid','user']:
         row=host['namespaces'][role];identity(row['identity']);need(re.fullmatch(role+r':\[([0-9]+)\]',row['link']) is not None,'actual host namespace role');need(int(row['link'].split('[')[1][:-1])==row['identity'][1],'held namespace inode')
     identity(host['rootIdentity']);need(host['children']==[],'source RUN began before outer initial ownership observation');root_mount=host['rootMount'];need(type(root_mount['mountId']) is int and root_mount['mountId']>0 and root_mount['mount']=='/' and 'ro' in root_mount['options'] and root_mount['propagation']==[],'actual private readonly root mount')
@@ -119,10 +120,21 @@ def verify(record,originals,expected):
     need(read('rootDiffBefore')==[] and read('rootDiffAfter')==[],'prepared image root unexpectedly changed')
     return dict(schemaVersion=1,model=MODEL,containerId=cid,preparedImageConfig=image['Id'],rootfsDiffIds=image['RootFS']['Layers'],hostNamespaceOriginal=host,scope='Owned Docker daemon/kernel is trusted; actual read-only image-backed root and isolated writable build/materials only',daemonManagedReadOnlyExecutorVerified=True,globalHostWriterAbsenceVerified=False,toolchainLifetimeImmutabilityVerified=False,wholeSdkSourceVerified=False)
 
+def host_object_frame(host):
+    """Canonical live held-root object coordinates, not a metadata-time or
+    global backing-immutability assertion. Legacy frames stay exact/full."""
+    if 'rootObjectIdentity' not in host:return host
+    raw=host.get('rootIdentity');identity(raw)
+    root=host['rootObjectIdentity'];need(isinstance(root,list) and len(root)==4 and root==raw[:4] and stat.S_ISDIR(root[2]),'held root object coordinates differ from full raw metadata')
+    return {**host,'rootIdentity':root}
+
 def join_provider(proof,provider):
     """Consumes already independently verified same-SDK stopped-FD provider facts."""
     need(proof['daemonManagedReadOnlyExecutorVerified'] is True,'outer actual executor absent')
-    host=proof['hostNamespaceOriginal'];need(provider['mountNamespaceIdentityDecimal']==[str(v) for v in host['namespaces']['mnt']['identity']] and provider['rootIdentityDecimal']==[str(v) for v in host['rootIdentity']],'actual provider outside owned image namespace/root')
+    host=proof['hostNamespaceOriginal'];frame=host_object_frame(host)
+    root=provider.get('rootIdentityDecimal');need(isinstance(root,list) and len(root)==6 and all(isinstance(v,str) and re.fullmatch(r'0|[1-9][0-9]*',v) for v in root),'actual provider full root metadata decimal original')
+    expected=[str(v) for v in frame['rootIdentity']]
+    need(provider['mountNamespaceIdentityDecimal']==[str(v) for v in host['namespaces']['mnt']['identity']] and (root[:4]==expected if 'rootObjectIdentity' in host else root==expected),'actual provider outside owned image namespace/root')
     p=provider['provider'];need(p['mount']=='/' and 'ro' in p['mountOptions'] and p['mountId']==host['rootMount']['mountId'],'selected tool must use same read-only image root, not output/tmp/provider alias')
     need(provider['mountNamespace']==host['namespaces']['mnt']['link'],'provider namespace link differs')
     return dict(providerBoundToOwnedImageRoot=True,preparedImageConfig=proof['preparedImageConfig'],scope=proof['scope'],globalHostWriterAbsenceVerified=False)

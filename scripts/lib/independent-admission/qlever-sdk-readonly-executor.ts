@@ -15,6 +15,7 @@ const HELPERS:readonly(readonly[string,string])[]=[["qlever/scripts/sdk-readonly
 const REVIEWED_READONLY_HELPER_GROUPS=Object.freeze([HELPERS,
  Object.freeze(HELPERS.map(([name,hash])=>Object.freeze([name,name==='qlever/scripts/sdk-readonly-executor-bindings.py'?'0ec406a339e22b1c088c52ab2d25f73d34b3088387ec2b4139e18cb3366a1b1c':hash] as const))),
  Object.freeze(HELPERS.map(([name,hash])=>Object.freeze([name,name==='qlever/scripts/sdk-readonly-executor-bindings.py'?'0ec406a339e22b1c088c52ab2d25f73d34b3088387ec2b4139e18cb3366a1b1c':name==='qlever/scripts/sdk-readonly-executor.py'?'97a7abc306e46d885a0d2814276e018109860938dc3fc978d20af97b45d3eef6':hash] as const))),
+ Object.freeze(HELPERS.map(([name,hash])=>Object.freeze([name,name==='qlever/scripts/sdk-readonly-executor-bindings.py'?'b953f52c5c74622dd76f925c78656266b924f4c45cc6d43a9deb7c5c2a81e82b':name==='qlever/scripts/sdk-readonly-executor.py'?'70fe276f4e696145e9befb6b24822a6ee9f03fedb9a931ce0c02ff5215580d86':hash] as const))),
 ]);
 /** No issuer, public registration or caller-provided observations. Reads only
  * the same private SDK and its existing independently verified execution view.

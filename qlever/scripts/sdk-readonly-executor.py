@@ -104,6 +104,7 @@ class HeldContainer:
         try:
             for role in ['mnt','pid','user']:self.fds[role]=os.open('/proc/'+str(pid)+'/ns/'+role,os.O_RDONLY|os.O_CLOEXEC)
             self.fds['root']=os.open('/proc/'+str(pid)+'/root',os.O_PATH|os.O_DIRECTORY|os.O_CLOEXEC)
+            root=os.fstat(self.fds['root']);self.root_object=[root.st_dev,root.st_ino,root.st_mode,root.st_size]
         except BaseException:self.close();raise
     def close(self):
         for fd in self.fds.values():os.close(fd)
@@ -127,7 +128,7 @@ class HeldContainer:
         base='/proc/'+str(self.pid);namespaces={}
         for role in ['mnt','pid','user']:
             check();path=base+'/ns/'+role;held=ident(os.fstat(self.fds[role]));binding.need(held==ident(os.stat(path)),'outside actual namespace changed');namespaces[role]=dict(link=os.readlink(path),identity=held)
-        root=ident(os.fstat(self.fds['root']));binding.need(root==ident(os.stat(base+'/root')),'outside actual root changed')
+        root=ident(os.fstat(self.fds['root']));binding.need(root==ident(os.stat(base+'/root')),'outside actual root changed');binding.need(root[:4]==self.root_object,'held root object changed')
         children=read(base+'/task/'+str(self.pid)+'/children',65536).decode().split();binding.need(not children,'actual PID1 already has candidate child before release')
         mounts=read(base+'/mountinfo',binding.META).decode('utf-8','strict');roots=[]
         for line in mounts.splitlines():
@@ -136,9 +137,10 @@ class HeldContainer:
         binding.need(len(roots)==1 and 'ro' in roots[0]['options'] and not roots[0]['propagation'],'actual root must be readonly/private mount')
         status=read(base+'/status',16384).decode();nsrows=[line.split()[1:] for line in status.splitlines() if line.startswith('NSpid:')];binding.need(len(nsrows)==1 and [int(v) for v in nsrows[0]]==[self.pid,1],'actual container namespace PID1 required')
         command=read(base+'/cmdline',16384).rstrip(b'\0').split(b'\0');binding.need(command==[v.encode() for v in ['/usr/bin/python3','-I','-S','-B','/components/qlever/scripts/sdk-readonly-executor-entry.py']],'actual PID1 fixed entry image command differs')
-        value=dict(containerPid=self.pid,namespacePids=[int(v) for v in nsrows[0]],ready=handshake,command=[v.decode() for v in command],rootPidStarttime=read(base+'/stat',16384).decode().rsplit(')',1)[1].split()[19],namespaces=namespaces,rootIdentity=root,children=[],rootMount=roots[0],mountinfo=mounts)
+        value=dict(containerPid=self.pid,namespacePids=[int(v) for v in nsrows[0]],ready=handshake,command=[v.decode() for v in command],rootPidStarttime=read(base+'/stat',16384).decode().rsplit(')',1)[1].split()[19],namespaces=namespaces,rootIdentity=root,rootObjectIdentity=list(self.root_object),children=[],rootMount=roots[0],mountinfo=mounts)
+        binding.need(root==ident(os.fstat(self.fds['root']))==ident(os.stat(base+'/root')),'full root metadata changed inside one sample')
         if self.first is None:self.first=value
-        elif value!=self.first:
+        elif binding.host_object_frame(value)!=binding.host_object_frame(self.first):
             if diagnose is not None:
                 changed=[]
                 def difference(left,right,path=''):
