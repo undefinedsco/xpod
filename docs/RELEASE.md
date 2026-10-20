@@ -66,6 +66,16 @@ Windows 保留平台默认 shell/PATH。完整 build 产生的 UI 变化由 Vite
 限制为 `staging`，并对 `staging`/`main` 启用 PR 审查与必需检查；这些服务端设置需另行核对，
 不能仅凭本文或 workflow 文件宣称已配置。
 
+`release.yml` 的 `build_desktop_macos` 也使用 `rc` Environment 读取真实 AI
+验收 secrets，因此仅允许 `staging` 的策略会阻止 stable tag 的桌面 job。
+准备提升时，先核对 exact accepted staging SHA、版本和 acceptance，再为这一个
+确定的 stable tag 添加精确 tag policy；保留 staging branch policy，不开放通配符
+或其他开发分支。必须在触发 stable workflow 前完成并读取服务端策略确认，避免
+npm/生产提升已执行后才发现桌面 job 无权进入环境。该发布及其必要重跑结束后，
+核实没有关联活动 job，再删除本次 tag policy 并读取确认。policy 控制 GitHub job
+的环境进入许可，不代表取得共享 RC 所有权；删除 policy 也不是取消任务或回收
+部署的操作，不应假定它对已排队 job 的行为。
+
 首次启用时，由发布负责人选定并审查集成基线，一次性创建长期 `staging` 分支，再通过
 普通 merge 纳入本变更；不要直接将任意开发分支重命名为 staging。2026-10-07 的
 只读核对未发现远端 staging 分支，且 GitHub rc Environment 的 deployment branch
