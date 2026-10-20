@@ -8,7 +8,7 @@ const read=(p:string)=>fs.readFileSync(path.resolve(import.meta.dir,'../..',p)),
 const role='scripts/lib/inngest-controlled-materials.ts',stage='packages/xpod-api/scripts/controlled-native-material.ts',producer='bd668dc98e481496f8b2cf6a1ba97541caafc70f39acf8d8757226e4cedca588';
 const old=(p:string)=>p===role?read('tests/fixtures/independent-admission/controlled-pre-stage-0.original.txt'):p===stage?read('tests/fixtures/independent-admission/controlled-pre-stage-1.original.txt'):read(p);
 test('stage fifth original and index guards add an atomic source tree while all old source trees remain exact',()=>{
- expect(groups).toHaveLength(16);expect(c).toHaveLength(39);expect(ci).toHaveLength(76);expect(tcb).toHaveLength(377);expect(current).toHaveLength(75);
+ expect(groups).toHaveLength(16);expect(c).toHaveLength(40);expect(ci).toHaveLength(78);expect(tcb).toHaveLength(377);expect(current).toHaveLength(75);
  expect(current.filter(row=>previous.find(old=>old.path===row.path)?.sha256!==row.sha256).map(row=>row.path).sort()).toEqual([stage,role].sort());
  for(const row of [...current,...tcb])expect(sha(read(row.path))).toBe(row.sha256);
  expect(groups.find(g=>'name' in g&&g.name==='root-minimal-website-source-projection')!.sourceBindings).toBe(previous);

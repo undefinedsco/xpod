@@ -757,15 +757,21 @@ class Observer:
         encoded=json.dumps(diagnostic,sort_keys=True);assert len(encoded.encode())<=16384,'bounded shared clone diagnostic'
         row=self.emit(diagnostic);print('SDK_UNSUPPORTED_SHARED_CLONE '+encoded,file=sys.stderr,flush=True)
         raise AssertionError('shared thread/FD-table clone refused before resume; diagnostic sequence '+str(row['sequence']))
-    def reject_forbidden_syscall(self,pid,status,entry):
+    def syscall_rejection_diagnostic(self,pid,status,entry,*,authority=False):
         # Numeric kernel-entry arguments only: never dereference user pointers,
         # collect argv/environment, or resume a forbidden operation for diagnosis.
         args=entry['args'];assert isinstance(args,list) and len(args)==6 and all(type(value) is int and 0<=value<(1<<64) for value in args),'bounded actual syscall argument words required'
         task=self.tasks[pid]
-        diagnostic=dict(kind='unsupported-asynchronous-external-writer-before-resume',pid=pid,tid=pid,tgid=task.get('tgid'),arch=entry['arch'],syscall=entry['nr'],args=args,entrySequence=entry['sequence'],phase=self.current_phase,waitStatus=status,stopSignal=os.WSTOPSIG(status),ptraceEvent=status>>16,registeredStopped=task['stopped'],registeredExited=task['exited'],registeredRootPid=self.root,observerPid=os.getpid(),authorityVerified=False,pending='unsupported-asynchronous-external-writer-syscall',scope='actual kernel syscall-entry numeric words only; refused before resume; no source or process authority')
+        diagnostic=dict(kind='process-authority-syscall-before-resume' if authority else 'unsupported-asynchronous-external-writer-before-resume',pid=pid,tid=pid,tgid=task.get('tgid'),arch=entry['arch'],syscall=entry['nr'],args=args,entrySequence=entry['sequence'],phase=self.current_phase,waitStatus=status,stopSignal=os.WSTOPSIG(status),ptraceEvent=status>>16,registeredStopped=task['stopped'],registeredExited=task['exited'],registeredRootPid=self.root,observerPid=os.getpid(),authorityVerified=False,pending='process-authority-syscall-refused' if authority else 'unsupported-asynchronous-external-writer-syscall',scope='actual kernel syscall-entry numeric words only; refused before resume; no source or process authority')
+        if task.get('diagnosticExec'):
+            actual=dict(task['diagnosticExec']);path=actual['path'];actual.update(path=path[:512],pathTruncated=actual.get('pathTruncated',False) or len(path)>512)
+            diagnostic['actualExecImage']=actual
+        else:diagnostic['actualExecImagePending']='selected-exec-stop-original-unavailable'
         encoded=json.dumps(diagnostic,sort_keys=True);assert len(encoded.encode())<=4096,'bounded forbidden syscall diagnostic'
-        print('SDK_UNSUPPORTED_WRITER_SYSCALL '+encoded,file=sys.stderr,flush=True)
-        row=self.emit(diagnostic)
+        print(('SDK_PROCESS_AUTHORITY_SYSCALL_REJECTED ' if authority else 'SDK_UNSUPPORTED_WRITER_SYSCALL ')+encoded,file=sys.stderr,flush=True)
+        return self.emit(diagnostic)
+    def reject_forbidden_syscall(self,pid,status,entry):
+        row=self.syscall_rejection_diagnostic(pid,status,entry)
         raise AssertionError('unsupported asynchronous/external writer syscall; diagnostic sequence '+str(row['sequence']))
     def event(self,pid,status,allow_capture=True):
         if pid not in self.tasks:
@@ -821,7 +827,16 @@ class Observer:
         if record['op']=='entry':
             assert task['entry'] is None,'syscall entry missing prior exit';task['initial']=False;task['entry']=record;nr=record['nr'];args=record['args']
             if nr in policy['forbidden']:self.reject_forbidden_syscall(pid,status,record)
-            if self.process_authority:tool_providers.verify_authority_syscall(kernel['arch'],nr,args)
+            if self.process_authority:
+                try:tool_providers.verify_authority_syscall(kernel['arch'],nr,args)
+                except BaseException:
+                    try:self.syscall_rejection_diagnostic(pid,status,record,authority=True)
+                    except BaseException as diagnostic_error:
+                        # Preserve the original policy rejection even if the
+                        # existing raw ledger/deadline refuses a diagnostic row.
+                        try:print('SDK_PROCESS_AUTHORITY_SYSCALL_DIAGNOSTIC_UNAVAILABLE '+type(diagnostic_error).__name__[:128],file=sys.stderr,flush=True)
+                        except BaseException:pass
+                    raise
             if nr in [policy['clone'],policy['clone3']]:
                 flags=args[0] if nr==policy['clone'] else single.trace(2,pid,args[0])&((1<<64)-1)
                 task['observedCloneFlags']=flags
