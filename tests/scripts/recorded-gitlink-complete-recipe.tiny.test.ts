@@ -1,0 +1,16 @@
+import {test,expect} from 'bun:test';
+import fs from 'node:fs';import path from 'node:path';import{createHash}from'node:crypto';
+import before from '../fixtures/independent-admission/pre-recorded-gitlink-source.original.json';
+import{API_PACK_SUPERVISION_SOURCE_BINDINGS as oldRows,API_RECORDED_GITLINK_SOURCE_BINDINGS as newRows}from'../../scripts/lib/independent-admission/github-origin';
+import{controlledApiSourceRecipe}from'../../scripts/lib/independent-admission/module-source-phases';
+const root=path.resolve(import.meta.dirname,'../..'),fixed='packages/xpod-api/scripts/inngest-website-gitlink.original.json',actual=(name:string)=>fs.readFileSync(path.join(root,name)),hash=(raw:Buffer)=>createHash('sha256').update(raw).digest('hex');
+test('actual historical HTTP and reviewed recorded Gitlink source recipes select as complete immutable trees',()=>{
+ const requested:string[]=[],old=(name:string)=>{requested.push(name);if(name===fixed)throw Error('old recipe must never read a future original');const row=before.files.find(row=>row.path===name);if(!row)return actual(name);const raw=Buffer.from(row.base64,'base64');expect(raw.length).toBe(row.bytes);expect(hash(raw)).toBe(row.sha256);return raw;};
+ const producer=hash(actual('scripts/api-module-producer.py'));
+ expect(controlledApiSourceRecipe(old,producer,'linux-arm64').rows).toBe(oldRows);expect(requested).not.toContain(fixed);expect(oldRows.some(row=>row.path===fixed)).toBe(false);
+ for(const target of['linux-arm64','linux-x64','darwin-arm64','darwin-x64'])expect(controlledApiSourceRecipe(actual,producer,target).rows).toBe(newRows);
+ expect(newRows).toHaveLength(81);expect(newRows.find(row=>row.path===fixed)?.sha256).toBe('99a5f5b1739ce3d02ed3f15d51e297f060c60bbd5b82d1850f7ad1abcbf5c74d');
+ for(const row of before.files)expect(()=>controlledApiSourceRecipe(name=>name===row.path?old(name):actual(name),producer,'linux-arm64')).toThrow();
+ expect(()=>controlledApiSourceRecipe(name=>name===fixed?Buffer.from('{}'):actual(name),producer,'linux-arm64')).toThrow('source recipe mismatch');
+ expect(()=>controlledApiSourceRecipe(name=>{if(name===fixed)throw Error('missing recorded original');return actual(name);},producer,'linux-arm64')).toThrow('missing recorded original');
+});

@@ -12,6 +12,29 @@ POLICIES={
  0xc00000b7:dict(exec={221,281},execveat=281,protect={226,288},read=63,write=64,close=57,mmap=222,clone=220,clone3=435,spawn={220,435},renameat=38,renameat2=276,renameOps={38,276},exits={93,94},forbidden={0,1,2,3,4,292,425,426,427,271,117,97,268}),
  0xc000003e:dict(exec={59,322},execveat=322,protect={10,329},read=0,write=1,close=3,mmap=9,clone=56,clone3=435,spawn={56,57,58,435},rename=82,renameat=264,renameat2=316,renameOps={82,264,316},exits={60,231},forbidden={206,207,208,209,210,333,425,426,427,311,101,272,308}),
 }
+def retained_metadata_chain(producer,consumer,states):
+    """Join only independently verified operation endpoints; never infer a gap.
+
+    Callers must validate each window/exit/lease/original first. This helper
+    only composes their exact endpoints and grants no authority by itself.
+    """
+    current=producer['identity'];path=producer['path'];references=[];previous=producer['sequence']
+    need(len(current)==6 and producer['sequence']<consumer['sequence'],'retained metadata chain endpoints/order')
+    for window,change in states:
+        sequence=change['sequence']
+        if not (producer['sequence']<sequence<consumer['sequence']):continue
+        before=window['beforeIdentity'];after=change['afterIdentity']
+        if before[:2]!=producer['identity'][:2]:continue
+        need(previous<sequence and len(before)==len(after)==6 and before==current,'retained metadata chain gap/order')
+        if window['kind']=='actual-rename-window':
+            need(window['producerCaptureSequence']==producer['sequence'] and window['fromPath']==path and after[:5]==before[:5],'retained rename chain producer/path/bytes metadata differs')
+            path=window['toPath']
+        else:
+            need(window['kind']=='actual-mode-window' and after[:2]==before[:2] and after[3:5]==before[3:5],'retained metadata chain unknown operation/changed bytes')
+        current=after;previous=sequence;references.append(sequence)
+    need(current==consumer['identity'] and path==consumer['path'],'retained metadata chain final full identity/path differs')
+    return references
+
 def policy(arch):
     if arch not in POLICIES:raise ValueError('unsupported actual kernel architecture')
     return POLICIES[arch]
@@ -308,7 +331,7 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
     shared_mode=False;owners={};exec_fd_events={};vfork_events={};vfork_holds={};child_bindings={};wait_rows={}
     live=set();last=0;entries={};exits={};barriers={};caps={};paths={};renames=[];consumers=[];source_reads=[];total=0;capture_total=0;exclusive=None;root_codes={};clone_flags=set();clone_flag_values={}
     alias_close_windows={};alias_close_exits=set()
-    mode_windows={};mode_transitions={};namespace_bindings=[]
+    mode_windows={};mode_transitions={};rename_windows={};rename_transitions={};active_rename=None;pending_rename_window=None;latest_execution_sequence=0;write_original_sequences={};namespace_bindings=[]
     append_obligations={};append_completed={};append_dirty={};append_checkpoints={};append_hashes={};write_projections={};write_windows={};closed_write_windows=set();write_transitions={};write_consumers=[];write_read_exits={}
     empty_windows={};empty_eofs=set();dependency_roots={};dependency_reads=0;dependency_cache=None;dependency_expected_names=None;dependency_collection_identity=None
     prepared={};prepared_consumers=[];prepared_digest=hashlib.sha256();prepared_count=0;prepared_sealed=False;prepared_paths=set()
@@ -375,6 +398,14 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
         need(not live,'prior actual process tree has not closed');roots=[];waits=[]
         for raw in lines:
             check();total+=len(raw);need(total<=maximum_raw and len(raw)<=65536,'tiny raw aggregate/record bound');row=json.loads(raw);need(row['sequence']==last+1 and row['phase']==phase,'phase/raw sequence differs');last=row['sequence'];kind=row['kind']
+            if pending_rename_window is not None:need(kind=='exclusive-rename-resume' and row.get('captureSequence')==pending_rename_window,'retained rename window not immediately exclusively resumed')
+            if kind in ['kernel-syscall','actual-child-binding']:latest_execution_sequence=row['sequence']
+            if active_rename is not None:
+                if active_rename['state']=='resumed':
+                    need(kind=='kernel-syscall' and row.get('pid')==active_rename['pid'] and row.get('op')=='exit' and row.get('entrySequence')==active_rename['entrySequence'],'event during exclusive retained rename')
+                    active_rename['state']='exited'
+                elif active_rename['state']=='exited':need(kind in ['write-original','actual-rename-transition'],'event before retained rename postimage closure')
+                else:need(kind=='exclusive-captured-syscall-exit','event after retained rename transition before exclusive close')
             active_denial=denied_operations.get(row.get('pid'))
             for pending_uid in setresuid_operations.values():
                 if pending_uid['state']=='begun':need(kind=='kernel-syscall' and row.get('pid')==pending_uid['entry']['pid'] and row.get('op')=='exit','event during exclusive setresuid transition')
@@ -467,6 +498,24 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                 window=alias_close_windows.get(row['windowSequence']);exit=exits.get(row['entrySequence'])
                 need(window and window['sequence'] not in alias_close_exits and exclusive==(row['pid'],row['entrySequence']) and window['entrySequence']==row['entrySequence'] and window['pid']==row['pid'] and exit and exit['sequence']==row['exitSequence'] and not exit['isError'] and exit['result']==0 and not row['isError'] and row['result']==0,'alias close missing actual successful exit')
                 need(row['retainedIdentity'][:2]==window['identity'][:2] and row['slotAbsences']==[dict(tid=pid,fd=window['fd'],errorCode=2) for pid in window['tableOwners']],'alias close has no actual same-table slot absence');alias_close_exits.add(window['sequence'])
+            elif kind=='actual-rename-window':
+                entry=entries.get(row['entrySequence']);barrier=barriers.get(row['barrierSequence']);producer=caps.get(row['producerCaptureSequence'])
+                need(entry and barrier and producer and row['pid']==entry['pid'] and exclusive is None and row['pid'] in barrier['pids'] and entry['sequence']<barrier['sequence'] and latest_execution_sequence<=barrier['sequence'] and entry['nr'] in policy(entry['arch'])['renameOps'],'retained rename entry/barrier/producer missing')
+                need(entry['nr']!=policy(entry['arch']).get('renameat2') or entry['args'][4]==0,'retained renameat2 flags unsupported')
+                need(paths.get(row['entrySequence'])==[row['fromPath'],row['toPath']] and row['fromPath']!=row['toPath'] and row['sequence'] not in rename_windows and row['leaseSequence']==row['sequence'],'retained rename paths/window/lease differs')
+                old,data=producer;close=exits.get(old['entrySequence']);before=row['beforeIdentity']
+                need(old['role']=='producer-close' and close and close['result']==0 and close['isError'] is False and len(before)==6 and before[:2]==old['identity'][:2] and before[3]==data[0] and row['namedIdentity']==before and row['destinationAbsenceErrno']==2 and type(row['destinationAbsenceErrno']) is int and capture_data(row['beforeOriginal'])==data,'retained rename preimage original differs')
+                need(row['barrierSequence']+1==write_original_sequences.get(tuple(row['beforeOriginal'][key] for key in ['path','bytes','sha256']),0)==row['sequence']-1,'retained rename preimage snapshot ordering differs')
+                retained_metadata_chain(old,dict(sequence=row['sequence'],path=row['fromPath'],identity=before),sorted([*mode_transitions.values(),*rename_transitions.values()],key=lambda pair:pair[1]['sequence']))
+                rename_windows[row['sequence']]=row;pending_rename_window=row['sequence'];retained_entries.add(row['entrySequence'])
+            elif kind=='exclusive-rename-resume':
+                window=rename_windows.get(row['captureSequence']);need(window and exclusive is None and window['pid']==row['pid'] and window['entrySequence']==row['entrySequence'],'retained rename exclusive resume differs');exclusive=(row['pid'],row['entrySequence']);active_rename=dict(pid=row['pid'],entrySequence=row['entrySequence'],state='resumed');pending_rename_window=None
+            elif kind=='actual-rename-transition':
+                window=rename_windows.get(row['windowSequence']);exit=exits.get(row['entrySequence'])
+                need(window and window['sequence'] not in rename_transitions and exclusive==(row['pid'],row['entrySequence']) and window['pid']==row['pid'] and window['entrySequence']==row['entrySequence'] and window['leaseSequence']==row['leaseSequence'] and exit and exit['sequence']==row['exitSequence'] and exit['result']==row['result']==0 and exit['isError'] is row['isError'] is False,'retained rename actual exit/lease differs')
+                before=window['beforeIdentity'];after=row['afterIdentity'];need(len(after)==6 and after[:5]==before[:5] and row['namedIdentity']==after and row['afterOriginal']['path']!=window['beforeOriginal']['path'] and row['oldPathAbsent'] is True and row['oldPathAbsenceErrno']==2 and type(row['oldPathAbsenceErrno']) is int and capture_data(row['afterOriginal'])==capture_data(window['beforeOriginal']),'retained rename changed bytes/identity/namespace')
+                need(row['exitSequence']<write_original_sequences.get(tuple(row['afterOriginal'][key] for key in ['path','bytes','sha256']),0)<row['sequence'],'retained rename postimage snapshot ordering differs')
+                rename_transitions[window['sequence']]=(window,row);active_rename['state']='completed'
             elif kind=='actual-mode-window':
                 entry=entries.get(row['entrySequence']);barrier=barriers.get(row['barrierSequence']);need(entry and barrier and entry['pid']==row['pid'] and row['pid'] in barrier['pids'],'actual chmod entry/barrier differs')
                 modes={0xc000003e:{90:1,91:1,268:2},0xc00000b7:{52:1,53:2}}[entry['arch']]
@@ -478,7 +527,8 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                 need(window and exclusive==(row['pid'],row['entrySequence']) and window['entrySequence']==row['entrySequence'] and window['pid']==row['pid'] and exit and exit['sequence']==row['exitSequence'] and not exit['isError'] and exit['result']==0 and not row['isError'] and row['result']==0,'actual chmod exit differs')
                 before=window['beforeIdentity'];after=row['afterIdentity'];need(len(after)==6 and after[:2]==before[:2] and after[3:5]==before[3:5] and after[2]&0o170000==before[2]&0o170000 and after[2]&0o7777==window['requestedMode']&0o7777,'actual chmod changed byte identity or wrong mode');mode_transitions[row['sequence']]=(window,row)
             elif kind=='retained-fd-namespace-binding':namespace_bindings.append(row)
-            elif kind=='write-original':capture_data(row['original'])
+            elif kind=='write-original':
+                capture_data(row['original']);write_original_sequences[tuple(row['original'][key] for key in ['path','bytes','sha256'])]=row['sequence']
             elif kind=='actual-write-window':
                 entry=entries.get(row['entrySequence']);barrier=barriers.get(row['barrierSequence'])
                 need(entry and barrier and entry['pid']==row['pid'] and row['pid'] in barrier['pids'] and entry['nr']==policy(entry['arch'])['write'] and entry['args'][0]==row['fd'],'actual write entry/barrier differs')
@@ -574,6 +624,7 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                 need(exclusive is None and row['captureSequence'] in caps and caps[row['captureSequence']][0]['entrySequence']==row['entrySequence'],'exclusive capture resume differs');exclusive=(row['pid'],row['entrySequence'])
             elif kind=='exclusive-captured-syscall-exit':
                 need(exclusive==(row['pid'],row['entrySequence']) and row['entrySequence'] in exits,'exclusive read/close stop boundary differs');exclusive=None
+                if active_rename is not None:need(active_rename['state']=='completed','retained rename closed before verified transition');active_rename=None
             elif kind in ['setresuid-noop-entry-original','identity-noop-entry-original']:
                 pending=setresuid_operations.get(row.get('pid'));entry=entries.get(row.get('entrySequence'));barrier=barriers.get(row.get('barrierSequence'))
                 need(setresuid_mode and process_interval is not None and pending and pending['state']=='entry' and entry==pending['entry'] and exclusive is None,'setresuid original outside pending actual entry')
@@ -773,6 +824,7 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
     need(set(alias_close_windows)==alias_close_exits,'alias close missing actual close/slot closure')
     need(not exec_fd_events,'actual exec FD table change missing')
     need(len(mode_windows)==len(mode_transitions),'actual chmod window missing actual exit')
+    need(active_rename is None and pending_rename_window is None and len(rename_windows)==len(rename_transitions),'retained rename window missing actual exit')
     need(len(write_windows)==len(write_transitions),'actual write window missing exit transition')
     need({seq for seq,(row,_) in caps.items() if row['role']=='readwrite-consumer'}==set(write_read_exits),'own-RW read missing actual stable exit')
     need(set(empty_windows)==empty_eofs,'empty read missing actual EOF closure')
@@ -794,8 +846,15 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
         producer=successful.get(relation['producerCaptureSequence']);consumer=caps.get(relation['consumerCaptureSequence'])
         need(producer and consumer and producer[0]['role']=='producer-close' and consumer[0]['role']=='consumer' and producer[0]['sequence']<consumer[0]['sequence']<relation['sequence'],'namespace binding lacks prior retained producer/current consumer')
         before=producer[0]['identity'];current=before
-        for reference in relation['modeTransitions']:
-            pair=mode_transitions.get(reference);need(pair and producer[0]['sequence']<reference<consumer[0]['sequence'] and pair[0]['beforeIdentity']==current,'namespace mode change has no actual chmod chain');current=pair[1]['afterIdentity']
+        if relation.get('metadataChainModel')=='actual-rename-mode-chain-v1':
+            verified=sorted([*mode_transitions.values(),*rename_transitions.values()],key=lambda pair:pair[1]['sequence'])
+            references=retained_metadata_chain(producer[0],consumer[0],verified)
+            need(references==relation['modeTransitions'],'retained metadata chain references differ');current=consumer[0]['identity']
+        else:
+            need(not any(window['producerCaptureSequence']==producer[0]['sequence'] and producer[0]['sequence']<change['sequence']<consumer[0]['sequence'] for window,change in rename_transitions.values()),'typed retained rename cannot use historical post-only chain')
+            need('metadataChainModel' not in relation,'unknown retained metadata chain model')
+            for reference in relation['modeTransitions']:
+                pair=mode_transitions.get(reference);need(pair and producer[0]['sequence']<reference<consumer[0]['sequence'] and pair[0]['beforeIdentity']==current,'namespace mode change has no actual chmod chain');current=pair[1]['afterIdentity']
         identity=consumer[0]['identity'];need(current[2]==identity[2] and identity[:2]==before[:2] and relation['path']==consumer[0]['path'] and relation['namedIdentity']==relation['retainedIdentity']==identity and producer[1]==consumer[1],'actual named path/retained FD byte identity differs');namespaces.add((producer[0]['sequence'],consumer[0]['sequence']))
     covered={};pending=[]
     for binding in consumers:
@@ -803,6 +862,7 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
         if consumer is None:continue # Interrupted read/mmap does not prove consumption.
         need(producer and producer[0]['role']=='producer-close' and consumer[0]['role']=='consumer','consumer actual producer close missing')
         cap,data=consumer;old,expected=producer;need(cap['identity']==binding['identity']==binding['retainedIdentity'] and cap['identity'][:2]==old['identity'][:2],'consumer retained FD inode differs')
+        if any(window['producerCaptureSequence']==old['sequence'] and old['sequence']<change['sequence']<cap['sequence'] for window,change in rename_transitions.values()):need((old['sequence'],cap['sequence']) in namespaces,'typed retained rename consumer lacks complete metadata chain')
         if cap['path']!=old['path']:need((old['sequence'],cap['sequence']) in namespaces or any(r['producerCaptureSequence']==old['sequence'] and r['toPath']==cap['path'] for r in renames),'consumer lacks actual temporary-to-final rename or named FD identity')
         need(data==expected,'actual generated bytes changed between producer close and consumer read');covered[cap['path']]=dict(path=cap['path'],bytes=data[0],sha256=data[1],producerCaptureSequence=old['sequence'],consumerCaptureSequence=cap['sequence'])
     for binding in write_consumers:

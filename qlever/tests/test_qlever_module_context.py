@@ -53,7 +53,7 @@ class ModuleContextTests(unittest.TestCase):
 
     def test_every_direct_service_docker_script_reference_has_an_exact_context_exception(self):
         dockerfile = (ROOT / 'Dockerfile').read_text()
-        scripts = set(re.findall(r'(?:/app/)?(scripts/[A-Za-z0-9_./-]+\.(?:cjs|mjs|ts|js))', dockerfile))
+        scripts = set(re.findall(r'(?:/app/)?(scripts/[A-Za-z0-9_./-]+\.(?:cjs|mjs|ts|js|py))', dockerfile))
         self.assertTrue(scripts)
         for source in scripts:
             with self.subTest(source=source):
@@ -81,12 +81,25 @@ class ModuleContextTests(unittest.TestCase):
         cli = json.loads((ROOT / 'packages/xpod-cli/package.json').read_text())
         self.assertEqual(externals, ['tar']); self.assertIn('tar', cli['devDependencies'])
         self.assertIn('ENV NODE_ENV=development', (ROOT / 'Dockerfile').read_text())
-        for name in ['scripts/run-npm-pack.cjs', 'scripts/check-dependency-state.ts']:
-            text = (ROOT / name).read_text()
+        runtime_edges = {
+            'scripts/run-npm-pack.cjs': {'./service-pack-phase.cjs', './service-pack-originals.cjs'},
+            'scripts/service-pack-phase.cjs': {'./lib/module-artifact-limits.json'},
+            'scripts/service-pack-originals.cjs': {'./lib/module-artifact-limits.json'},
+            'scripts/check-dependency-state.ts': set(),
+        }
+        for source, expected in runtime_edges.items():
+            text = (ROOT / source).read_text()
             dependencies = runtime_dependency_specifiers(text)
             self.assertTrue(dependencies)
-            for name in dependencies:
-                self.assertTrue(name.startswith('node:'))
+            self.assertEqual({name for name in dependencies if not name.startswith('node:')}, expected)
+            for name in expected:
+                target = (ROOT / source).parent / name
+                self.assertTrue(target.resolve().is_relative_to(ROOT / 'scripts'))
+                relative = target.resolve().relative_to(ROOT).as_posix()
+                self.assertIn('!' + relative, self.rules)
+                self.assertTrue(target.is_file())
+        self.assertIn('!scripts/service-pack-parent.py', self.rules)
+        self.assertIn('!scripts/agentfs-native-ci/supervise.py', self.rules)
 
     def test_builtin_gate_erases_only_type_imports_and_keeps_runtime_nonbuiltin_edges(self):
         source = "\n".join([

@@ -21,6 +21,9 @@
 !scripts/workspace-runtime-materials.cjs
 !scripts/build-afs-from-producer.ts
 !scripts/run-npm-pack.cjs
+!scripts/service-pack-parent.py
+!scripts/service-pack-phase.cjs
+!scripts/service-pack-originals.cjs
 !scripts/prepare-package-manifest.cjs
 !scripts/platform-binaries.cjs
 !scripts/check-dependency-state.ts

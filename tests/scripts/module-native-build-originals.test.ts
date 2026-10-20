@@ -1,3 +1,4 @@
+import {readFileSync} from 'node:fs';
 import {createHash} from 'node:crypto';
 import {gzipSync} from 'node:zlib';
 import {describe,it,expect} from 'vitest';
@@ -26,8 +27,8 @@ function withWebsite(){
  const f=fixture(),put=(name:string,value:unknown)=>{const bytes=Buffer.isBuffer(value)?value:Buffer.from(JSON.stringify(value));f.originals.set(prefix+name,bytes);return {path:name,bytes:bytes.length,sha256:sha(bytes)};};
  const collection=JSON.parse(f.originals.get(prefix+'controlled-build-materials.json')!.toString()),preparation=JSON.parse(f.originals.get(prefix+collection.preparation.path)!.toString());
  const dependency=structuredClone(policy.sourceDependencies[0]!);const archive=put('originals/'+dependency.source.file,Buffer.from('complete tiny website archive protocol original'));dependency.source.bytes=archive.bytes;dependency.source.sha256=archive.sha256;
- const actual=Buffer.from(JSON.stringify({type:'submodule',path:dependency.destination,sha:dependency.commit,submodule_git_url:'git@github.com:'+dependency.repository+'.git'}));
- const gitlinkOriginal={url:'https://api.github.com/repos/'+policy.repository+'/contents/'+dependency.destination+'?ref='+policy.sourceCommit,status:200,bytes:actual.length,sha256:sha(actual),encoding:'base64',content:actual.toString('base64')};
+ const actual=readFileSync(new URL('../../'+dependency.gitlinkEvidence.original.path,import.meta.url));
+ const gitlinkOriginal={kind:dependency.gitlinkEvidence.kind,trackedOriginal:dependency.gitlinkEvidence.original,url:'https://api.github.com/repos/'+policy.repository+'/contents/'+dependency.destination+'?ref='+policy.sourceCommit,bytes:actual.length,sha256:sha(actual),encoding:'base64',content:actual.toString('base64')};
  preparation.originals.push(archive);preparation.acquisitionOriginals.push(put(dependency.source.file+'.http.original.json',{url:dependency.source.url,status:200,bytes:archive.bytes,sha256:archive.sha256,gitlinkOriginal}));
  f.input.policy={...f.input.policy,repository:policy.repository,sourceCommit:policy.sourceCommit,sourceDependencies:[dependency]};collection.sourceCommit=preparation.sourceCommit=policy.sourceCommit;
  const seal=()=>{collection.preparation=put('preparation.original.json',preparation);const ref=put('controlled-build-materials.json',collection);f.input.producer.nativeBuildOriginals={...ref,path:prefix+ref.path};const indexPath='provenance/native/inngest/index.json',index=JSON.parse(f.products.get(indexPath)!.toString());index.materials=f.input.producer.nativeBuildOriginals;index.sourceCommit=collection.sourceCommit;f.products.set(indexPath,Buffer.from(JSON.stringify(index)));f.input.inventory=[...f.originals].map(([path,bytes])=>({path,bytes:bytes.length,sha256:sha(bytes)}));f.input.productMembers=[...f.products].map(([path,bytes])=>({path,bytes:bytes.length,sha256:sha(bytes)}));};seal();

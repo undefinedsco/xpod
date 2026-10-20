@@ -45,11 +45,12 @@ def relative_source_path(value):
 def source_dependencies():
     rows=POLICY.get('sourceDependencies',[]);need(isinstance(rows,list) and len(rows)<=1,'reviewed finite source dependency declarations')
     for row in rows:
-        need(isinstance(row,dict) and set(row)=={'name','repository','commit','destination','source','projection'} and relative_source_path(row['name']) and '/' not in row['name'] and re.fullmatch('[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+',row['repository']) and re.fullmatch('[a-f0-9]{40}',row['commit']) and relative_source_path(row['destination']),'fixed source dependency identity')
+        need(isinstance(row,dict) and set(row) in ({'name','repository','commit','destination','source','projection'},{'name','repository','commit','destination','source','projection','gitlinkEvidence'}) and relative_source_path(row['name']) and '/' not in row['name'] and re.fullmatch('[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+',row['repository']) and re.fullmatch('[a-f0-9]{40}',row['commit']) and relative_source_path(row['destination']),'fixed source dependency identity')
         pin=row['source'];projection=row['projection']
         need(set(pin)=={'file','bytes','sha256','prefix','url'} and relative_source_path(pin['file']) and '/' not in pin['file'] and type(pin['bytes']) is int and 0<pin['bytes']<=LIMITS['shardBytes'] and re.fullmatch('[a-f0-9]{64}',pin['sha256']) and relative_source_path(pin['prefix']) and '/' not in pin['prefix'] and pin['url']=='https://codeload.github.com/'+row['repository']+'/legacy.tar.gz/'+row['commit'],'fixed complete source dependency archive')
         need(set(projection)=={'kind','declaringFile','gitmodules','pattern','root'} and projection['kind']=='fixed-go-embed-tree-v1' and relative_source_path(projection['root']),'fixed source projection kind/root')
         for ref in [projection['declaringFile'],projection['gitmodules']]:need(set(ref)=={'path','bytes','sha256'} and relative_source_path(ref['path']) and type(ref['bytes']) is int and 0<ref['bytes']<=LIMITS['metadataBytes'] and re.fullmatch('[a-f0-9]{64}',ref['sha256']),'fixed source projection declaration bytes')
+        gitlink_evidence(row)
         parent=Path(projection['declaringFile']['path']).parent
         need(Path(row['destination']).is_relative_to(parent) and projection['pattern']==Path(row['destination']).relative_to(parent).as_posix()+'/'+projection['root']+'/*','only the declared complete recursive Go embed tree')
     return rows
@@ -60,10 +61,51 @@ def original_pins(target):
 
 def gitlink_url(row):return 'https://api.github.com/repos/'+POLICY['repository']+'/contents/'+row['destination']+'?ref='+POLICY['sourceCommit']
 
+def gitlink_evidence(row):
+    if 'gitlinkEvidence' not in row:return None
+    need(relative_source_path(row.get('name')) and '/' not in row['name'],'fixed reviewed Gitlink role')
+    value=row['gitlinkEvidence'];ref=value.get('original') if isinstance(value,dict) else None
+    need(isinstance(value,dict) and set(value)=={'kind','original'} and value['kind']=='reviewed-github-contents-original-v1' and isinstance(ref,dict) and set(ref)=={'path','bytes','sha256'} and ref['path']=='packages/xpod-api/scripts/inngest-'+row['name']+'-gitlink.original.json' and type(ref['bytes']) is int and 0<ref['bytes']<=65536 and isinstance(ref['sha256'],str) and re.fullmatch('[a-f0-9]{64}',ref['sha256']),'fixed reviewed Gitlink original declaration')
+    return ref
+
 def verify_gitlink_original(row,value):
-    need(isinstance(value,dict) and value.get('url')==gitlink_url(row) and value.get('status')==200 and value.get('encoding')=='base64' and type(value.get('bytes')) is int and 0<value['bytes']<=65536 and isinstance(value.get('content'),str) and len(value['content'])<=4*((65536+2)//3),'bounded exact Gitlink API original')
+    recorded=gitlink_evidence(row)
+    if recorded is None:
+        need(isinstance(value,dict) and 'kind' not in value and 'trackedOriginal' not in value and value.get('status')==200,'bounded exact Gitlink API original')
+    else:
+        need(isinstance(value,dict) and set(value)=={'kind','trackedOriginal','url','bytes','sha256','encoding','content'} and value['kind']=='reviewed-github-contents-original-v1' and value['trackedOriginal']==recorded and value['bytes']==recorded['bytes'] and value['sha256']==recorded['sha256'],'reviewed historical Gitlink original binding')
+    need(isinstance(value,dict) and value.get('url')==gitlink_url(row) and value.get('encoding')=='base64' and type(value.get('bytes')) is int and 0<value['bytes']<=65536 and isinstance(value.get('content'),str) and len(value['content'])<=4*((65536+2)//3),'bounded exact Gitlink API original')
     raw=base64.b64decode(value['content'],validate=True);need(len(raw)==value['bytes'] and hashlib.sha256(raw).hexdigest()==value.get('sha256'),'complete Gitlink API original digest');actual=json.loads(raw)
-    need(actual.get('type')=='submodule' and actual.get('path')==row['destination'] and actual.get('sha')==row['commit'] and actual.get('submodule_git_url') in ['git@github.com:'+row['repository']+'.git','https://github.com/'+row['repository']+'.git'],'actual parent commit Gitlink/source repository differs');return actual
+    need(actual.get('type')=='submodule' and actual.get('path')==row['destination'] and actual.get('sha')==row['commit'] and actual.get('submodule_git_url') in ['git@github.com:'+row['repository']+'.git','https://github.com/'+row['repository']+'.git'],'actual parent commit Gitlink/source repository differs')
+    if recorded is not None:need(actual.get('url')==gitlink_url(row),'reviewed Gitlink parent request URL differs')
+    return actual
+
+def recorded_gitlink_original(row):
+    """Read reviewed historical response bytes, never claim this run made HTTP.
+
+    This route exists only when the immutable policy explicitly selects it.
+    Every parent is held/no-follow; no caller path, token or cache fallback.
+    """
+    ref=gitlink_evidence(row);need(ref is not None,'reviewed Gitlink recipe required')
+    identity=lambda s:(s.st_dev,s.st_ino,s.st_mode,s.st_size,s.st_nlink,s.st_mtime_ns,s.st_ctime_ns)
+    directory=os.open(ROOT,os.O_RDONLY|os.O_DIRECTORY|os.O_CLOEXEC|os.O_NOFOLLOW);held=[directory];parents=[];root_identity=identity(os.fstat(directory))
+    try:
+        parts=ref['path'].split('/')
+        for part in parts[:-1]:
+            parent=held[-1];fd=os.open(part,os.O_RDONLY|os.O_DIRECTORY|os.O_CLOEXEC|os.O_NOFOLLOW,dir_fd=parent);held.append(fd);parents.append((parent,part,fd,identity(os.fstat(fd))))
+        fd=os.open(parts[-1],os.O_RDONLY|os.O_CLOEXEC|os.O_NOFOLLOW,dir_fd=held[-1]);held.append(fd);before=identity(os.fstat(fd))
+        need(stat.S_ISREG(before[2]) and before[3]==ref['bytes'] and before==identity(os.stat(parts[-1],dir_fd=held[-2],follow_symlinks=False)),'fixed reviewed Gitlink regular original')
+        raw=bytearray()
+        while len(raw)<ref['bytes']:
+            block=os.read(fd,min(LIMITS['rangeBytes'],ref['bytes']-len(raw)));need(block,'reviewed Gitlink original truncated');raw.extend(block)
+        need(os.read(fd,1)==b'' and before==identity(os.fstat(fd))==identity(os.stat(parts[-1],dir_fd=held[-2],follow_symlinks=False)),'reviewed Gitlink original changed')
+        for parent,name,child,first in parents:need(first==identity(os.fstat(child))==identity(os.stat(name,dir_fd=parent,follow_symlinks=False)),'reviewed Gitlink parent changed')
+        need(root_identity==identity(os.fstat(directory))==identity(os.stat(ROOT,follow_symlinks=False)),'reviewed Gitlink root changed')
+        need(hashlib.sha256(raw).hexdigest()==ref['sha256'],'reviewed Gitlink original SHA differs')
+        value=dict(kind='reviewed-github-contents-original-v1',trackedOriginal=dict(ref),url=gitlink_url(row),bytes=len(raw),sha256=ref['sha256'],encoding='base64',content=base64.b64encode(raw).decode())
+        verify_gitlink_original(row,value);return value
+    finally:
+        for fd in reversed(held):os.close(fd)
 
 def verify_projection_declarations(work,row):
     root=work/'source';projection=row['projection']
@@ -169,9 +211,12 @@ def acquire(work,target='linux-arm64'):
     signal.signal(signal.SIGALRM,expired);signal.setitimer(signal.ITIMER_REAL,POLICY['acquisitionWindowSeconds'])
     budget=MaterialBudget(work)
     try:
-        for pin in original_pins(target):
+        pins=original_pins(target)
+        recorded={row['source']['file']:recorded_gitlink_original(row) for row in source_dependencies() if gitlink_evidence(row) is not None}
+        for pin in pins:
             dependency=next((row for row in source_dependencies() if row['source']['file']==pin['file']),None);gitlink=None
-            if dependency is not None:
+            if dependency is not None and pin['file'] in recorded:gitlink=recorded[pin['file']]
+            elif dependency is not None:
                 api=gitlink_url(dependency)
                 with opener.open(urllib.request.Request(api,headers={'User-Agent':'xpod-controlled-inngest-originals','Accept-Encoding':'identity'}),timeout=30) as response:
                     need(response.status==200 and response.geturl()==api and response.headers.get('Content-Encoding','identity')=='identity','fixed Gitlink API transport');data=bytearray()
@@ -203,7 +248,8 @@ def prepare(work,target='linux-arm64'):
     for name,pin in target_tools(target).items():verify_original(originals/pin['file'],pin);unpack_fixed(originals/pin['file'],work/'tools'/name,pin['prefix'])
     for dependency in source_dependencies():
         verify_projection_declarations(work,dependency);pin=dependency['source'];verify_original(originals/pin['file'],pin)
-        http=work/(pin['file']+'.http.original.json');need(http.stat().st_size<=LIMITS['metadataBytes'],'source dependency HTTP metadata bound');verify_gitlink_original(dependency,json.loads(http.read_text()).get('gitlinkOriginal'))
+        http=work/(pin['file']+'.http.original.json');need(http.stat().st_size<=LIMITS['metadataBytes'],'source dependency HTTP metadata bound');gitlink=json.loads(http.read_text()).get('gitlinkOriginal');verify_gitlink_original(dependency,gitlink)
+        if gitlink_evidence(dependency) is not None:need(gitlink==recorded_gitlink_original(dependency),'reviewed Gitlink changed before projection')
         target_path=work/'source'/dependency['destination'];need(target_path.parent.resolve(strict=True)==(work/'source').resolve(strict=True)/Path(dependency['destination']).parent,'source projection ancestor differs')
         used=sum(row['bytes'] for row in inventory(work/'source').values() if row['kind']=='file');remaining=LIMITS['sourceBytes']-used
         need(remaining>0,'main source leaves no projection byte budget')
