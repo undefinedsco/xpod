@@ -786,12 +786,14 @@ class Observer:
         finally:
             if executable is not None:os.close(executable)
             os.close(directory)
-    def syscall_rejection_diagnostic(self,pid,status,entry,*,authority=False):
+    def syscall_rejection_diagnostic(self,pid,status,entry,*,authority=False,shared_mapping=False):
         # Numeric kernel-entry arguments only: never dereference user pointers,
         # collect argv/environment, or resume a forbidden operation for diagnosis.
         args=entry['args'];assert isinstance(args,list) and len(args)==6 and all(type(value) is int and 0<=value<(1<<64) for value in args),'bounded actual syscall argument words required'
+        assert type(shared_mapping) is bool and not(authority and shared_mapping),'one fixed syscall rejection category required'
+        kind,pending,prefix=('process-authority-syscall-before-resume','process-authority-syscall-refused','SDK_PROCESS_AUTHORITY_SYSCALL_REJECTED ') if authority else ('shared-writable-mapping-before-resume','shared-writable-mapping-refused','SDK_SHARED_WRITABLE_MAPPING_REJECTED ') if shared_mapping else ('unsupported-asynchronous-external-writer-before-resume','unsupported-asynchronous-external-writer-syscall','SDK_UNSUPPORTED_WRITER_SYSCALL ')
         task=self.tasks[pid]
-        diagnostic=dict(kind='process-authority-syscall-before-resume' if authority else 'unsupported-asynchronous-external-writer-before-resume',pid=pid,tid=pid,tgid=task.get('tgid'),arch=entry['arch'],syscall=entry['nr'],args=args,entrySequence=entry['sequence'],phase=self.current_phase,waitStatus=status,stopSignal=os.WSTOPSIG(status),ptraceEvent=status>>16,registeredStopped=task['stopped'],registeredExited=task['exited'],registeredRootPid=self.root,observerPid=os.getpid(),authorityVerified=False,pending='process-authority-syscall-refused' if authority else 'unsupported-asynchronous-external-writer-syscall',scope='actual kernel syscall-entry numeric words only; refused before resume; no source or process authority')
+        diagnostic=dict(kind=kind,pid=pid,tid=pid,tgid=task.get('tgid'),arch=entry['arch'],syscall=entry['nr'],args=args,entrySequence=entry['sequence'],phase=self.current_phase,waitStatus=status,stopSignal=os.WSTOPSIG(status),ptraceEvent=status>>16,registeredStopped=task['stopped'],registeredExited=task['exited'],registeredRootPid=self.root,observerPid=os.getpid(),authorityVerified=False,pending=pending,scope='actual kernel syscall-entry numeric words only; refused before resume; no source or process authority')
         if task.get('diagnosticExec'):
             actual=dict(task['diagnosticExec']);path=actual['path'];actual.update(path=path[:512],pathTruncated=actual.get('pathTruncated',False) or len(path)>512)
             diagnostic['actualExecImage']=actual
@@ -799,7 +801,7 @@ class Observer:
         try:diagnostic['selectedStoppedExecutable']=self.stopped_executable_diagnostic(pid,status)
         except BaseException as error:diagnostic['selectedStoppedExecutablePending']=type(error).__name__[:128]
         encoded=json.dumps(diagnostic,sort_keys=True);assert len(encoded.encode())<=4096,'bounded forbidden syscall diagnostic'
-        print(('SDK_PROCESS_AUTHORITY_SYSCALL_REJECTED ' if authority else 'SDK_UNSUPPORTED_WRITER_SYSCALL ')+encoded,file=sys.stderr,flush=True)
+        print(prefix+encoded,file=sys.stderr,flush=True)
         return self.emit(diagnostic)
     def reject_forbidden_syscall(self,pid,status,entry):
         row=self.syscall_rejection_diagnostic(pid,status,entry)
@@ -912,7 +914,10 @@ class Observer:
                 try:read_identity=probe.identity(os.stat('/proc/'+str(pid)+'/fd/'+str(args[0])))
                 except FileNotFoundError:read_identity=None
                 if read_identity and tuple(read_identity[:2]) in self.append_chains:task['appendBoundary']=True
-            if nr==policy['mmap']:assert not (args[2]&2 and args[3]&1),'shared writable mapping refused before resume'
+            if nr==policy['mmap'] and args[2]&2 and args[3]&1:
+                try:self.syscall_rejection_diagnostic(pid,status,record,shared_mapping=True)
+                except BaseException:pass
+                raise AssertionError('shared writable mapping refused before resume')
             if self.capture_toolchain and nr in policy['exec']:task.setdefault('toolPending',[]).append(('exec-before',record,None))
             if self.capture_toolchain and nr in policy['protect'] and args[2]&4:task.setdefault('toolPending',[]).append(('protect-before',record,None))
             if self.capture_toolchain and nr==policy['mmap']:task.pop('toolMmapFd',None)

@@ -106,12 +106,24 @@ class DriverTests(unittest.TestCase):
   self.assertEqual(hashlib.sha256(fixture).hexdigest(),'35cd8ab8e4565ebbfe497a38bbbec0f95ef4d0d3d0f3a2c30a8c986470f836fe');compile(fixture,'fixed-self-uid','exec');self.assertIn(b'os.getresuid()==(uid,uid,uid)',fixture);self.assertNotIn(b'argv',fixture)
  def test_uid_diagnostic_actual_entry_barrier_exit_closure(self):
   completion=self.extracted('uid_completion',{})
-  rows=[dict(kind='kernel-syscall',sequence=1,op='entry'),dict(kind='all-stop-barrier',sequence=2,pids=[7]),dict(kind='setresuid-noop-entry-original',sequence=3,entrySequence=1,barrierSequence=2,pid=7),dict(kind='kernel-syscall',sequence=4,op='exit',entrySequence=1,result=0,isError=False),dict(kind='all-stop-barrier',sequence=5,pids=[7]),dict(kind='setresuid-noop-exit-original',sequence=6,entrySequence=1,exitSequence=4,barrierSequence=5,pid=7)]
-  self.assertEqual(completion(rows),dict(actualUidTransitions=1,uidEntrySequence=1,uidExitSequence=4))
+  rows=[dict(kind='kernel-syscall',sequence=1,op='entry',arch=3221225655),dict(kind='all-stop-barrier',sequence=2,pids=[7]),dict(kind='setresuid-noop-entry-original',sequence=3,entrySequence=1,barrierSequence=2,pid=7),dict(kind='kernel-syscall',sequence=4,op='exit',entrySequence=1,result=0,isError=False),dict(kind='all-stop-barrier',sequence=5,pids=[7]),dict(kind='setresuid-noop-exit-original',sequence=6,entrySequence=1,exitSequence=4,barrierSequence=5,pid=7)]
+  self.assertEqual(completion(rows),dict(actualUidTransitions=1,uidEntrySequence=1,uidExitSequence=4,architecture=3221225655))
+  # Typed observations intentionally carry no top-level arch; only the
+  # actual linked kernel entry determines the diagnostic architecture.
+  self.assertNotIn('arch',rows[2]);rows[2]['arch']=0
+  self.assertEqual(completion(rows)['architecture'],3221225655)
+  rows[0]['arch']=3221225534;self.assertEqual(completion(rows)['architecture'],3221225534)
   import copy
   for mutate in [lambda r:r.pop(1),lambda r:r[3].update(result=1),lambda r:r[3].update(isError=True),lambda r:r[5].update(entrySequence=99),lambda r:r[4].update(pids=[]),lambda r:r.append(dict(r[5]))]:
    wrong=copy.deepcopy(rows);mutate(wrong)
    with self.assertRaises((AssertionError,KeyError)):completion(wrong)
+ def test_uid_actual_ci_raw_arch_is_linked_kernel_entry_not_typed_or_host(self):
+  completion=self.extracted('uid_completion',{})
+  expected={'arm64':(3221225655,1455,1458),'x64':(3221225534,1502,1505)}
+  for arch,(audit_arch,entry,exit) in expected.items():
+   fixture=Path(__file__).parent/'fixtures/sdk-kernel-uid-arch'/(arch+'.original.jsonl');rows=[json.loads(line) for line in fixture.read_bytes().splitlines()]
+   self.assertTrue(all('arch' not in row for row in rows if row['kind'].startswith('setresuid-noop-')))
+   self.assertEqual(completion(rows),dict(actualUidTransitions=1,uidEntrySequence=entry,uidExitSequence=exit,architecture=audit_arch))
  def test_cleanup_reaps_even_when_shared_log_budget_rejects(self):
   waits=[(7,(6<<16)|(5<<8)|127),(7,9)];calls=[]
   class Wait:

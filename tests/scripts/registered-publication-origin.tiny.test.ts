@@ -12,7 +12,7 @@ const root=path.resolve(import.meta.dir,'../..');
 const integration=process.env.XPOD_ORIGIN_SOURCE_FIXTURE??root;
 const overrides=new Set(['.github/workflows/ci.yml','.github/workflows/independent-publication.yml','scripts/lib/independent-admission/github-origin.ts','scripts/lib/independent-admission/consumer-observer-policy.ts','scripts/lib/independent-admission/consumer-execution-current.json','scripts/lib/publication-control-input.cjs']);
 let serial=6000;
-async function scenario(stage:'prepublish'|'postpublish',change:{event?:string;branch?:string;job?:string;mutate?:string;status?:string;conclusion?:string|null;jobConclusion?:string;artifactTime?:string;legacyWorkflow?:boolean}={}){
+async function scenario(stage:'prepublish'|'postpublish',change:{event?:string;branch?:string;job?:string;mutate?:string;status?:string;conclusion?:string|null;jobConclusion?:string;artifactTime?:string;legacyWorkflow?:boolean;nonePolicy?:boolean}={}){
  const source=(++serial).toString(16).padStart(40,'0'),digest='b'.repeat(64),product={module:'client' as const,stage};
  const coordinates={...product,sourceSha:source,runId:5,runAttempt:1};
  const tuple={schemaVersion:1 as const,sourceSha:source,runHeadSha:source,runId:5,runAttempt:1,artifactId:8,artifactSha256:digest};
@@ -34,7 +34,7 @@ async function scenario(stage:'prepublish'|'postpublish',change:{event?:string;b
           test -z "$(git status --porcelain --untracked-files=all)"
 `;
     const text=data.toString(),offset=text.lastIndexOf(block);if(offset<0)throw Error('Fixed ancestry fixture block missing');data=Buffer.from(text.slice(0,offset)+text.slice(offset+block.length));
-   }if(name===change.mutate)data=Buffer.concat([data,Buffer.from('\n# unreviewed mutation\n')]);body={type:'file',path:name,encoding:'base64',content:data.toString('base64')};}
+   }if(name===change.mutate)data=Buffer.concat([data,Buffer.from('\n# unreviewed mutation\n')]);body={type:'file',path:name,encoding:'base64',content:(data.toString('base64').match(/.{1,60}/gu)??[]).join('\n')+'\n'};if(change.nonePolicy&&name==='scripts/lib/independent-admission/consumer-observer-policy.ts')body=JSON.parse(fs.readFileSync(path.join(root,'tests/fixtures/independent-admission/sdk32-policy-contents-none.original.json'),'utf8'));}
   else if(endpoint==='actions/artifacts/8')body={id:8,expired:false,workflow_run:{id:5,head_sha:source},digest:'sha256:'+digest,size_in_bytes:100,name:stage==='prepublish'?archiveConsumerArtifactName(coordinates):registryConsumerArtifactName(coordinates),created_at:change.artifactTime??'2026-10-17T00:01:00Z'};
   else if(endpoint==='actions/runs/5/attempts/1/jobs')body={total_count:1,jobs:[{id:10,run_id:5,run_attempt:1,head_sha:source,name:change.job??job,status:'completed',conclusion:change.jobConclusion??'success',started_at:'2026-10-17T00:00:00Z',completed_at:'2026-10-17T00:02:00Z',steps:[stage==='prepublish'?'Run fixed archive-installed product consumer':'Run fixed registry-installed product consumer',stage==='prepublish'?'Upload archive consumer originals':'Upload registry consumer originals'].map(name=>({name,status:'completed',conclusion:'success'}))}]};
   else throw Error('Unexpected fixture request '+endpoint);
@@ -54,7 +54,7 @@ test('caller/reusable/child/helper originals are exact, no mixed whole group',as
 });
 
 test('fixed preinstall reusable workflow selects a separate exact group and retains old metadata scope',async()=>{
- expect(CI_CONSUMER_SOURCE_GROUPS).toHaveLength(86);
+ expect(CI_CONSUMER_SOURCE_GROUPS).toHaveLength(88);
  expect(githubOriginFacts(await scenario('prepublish'))?.workflowPath).toBe('.github/workflows/ci.yml');
  expect(githubOriginFacts(await scenario('prepublish',{legacyWorkflow:true}))?.workflowPath).toBe('.github/workflows/ci.yml');
  const actualOrigin=createHash('sha256').update(fs.readFileSync(path.join(root,'scripts/lib/independent-admission/github-origin.ts'))).digest('hex');
@@ -62,4 +62,8 @@ test('fixed preinstall reusable workflow selects a separate exact group and reta
  const old=currentGroup(CALLABLE_PUBLICATION_WORKFLOW_SHA),fixed=currentGroup(STAGING_CHECKED_PUBLICATION_WORKFLOW_SHA);const tuple=new Map([...fixed!.selectors,...(fixed!.secondarySelectors??[])].map(row=>[sourceBindingKey(row),row.sha256]));
  expect(selectGitHubSourceBindingGroup(CI_CONSUMER_SOURCE_GROUPS,tuple)).toBe(fixed!);
  tuple.set(sourceBindingKey(old!.selectors[0]!), 'f'.repeat(64));expect(()=>selectGitHubSourceBindingGroup(CI_CONSUMER_SOURCE_GROUPS,tuple)).toThrow();
+});
+
+test('actual GitHub Contents none response never substitutes for complete source bytes',async()=>{
+ const original=fs.readFileSync(path.join(root,'tests/fixtures/independent-admission/sdk32-policy-contents-none.original.json'));expect(createHash('sha256').update(original).digest('hex')).toBe('95255eade9c680d9af1ad81d05747eb1249973c05681737990f29a73596e6bc0');const response=JSON.parse(original.toString());expect(response.encoding).toBe('none');expect(response.content).toBe('');expect(response.size>1024**2).toBe(true);await expect(scenario('prepublish',{nonePolicy:true})).rejects.toThrow();
 });

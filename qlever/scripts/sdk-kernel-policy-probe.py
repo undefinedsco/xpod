@@ -63,7 +63,7 @@ def uid_completion(rows):
  assert entry['entrySequence']<entry['barrierSequence']<entry['sequence']<exit['exitSequence']<exit['barrierSequence']<exit['sequence']
  for row in [entry,exit]:
   barrier=indexed[row['barrierSequence']];assert barrier['kind']=='all-stop-barrier' and row['pid'] in barrier['pids']
- return dict(actualUidTransitions=1,uidEntrySequence=entry['entrySequence'],uidExitSequence=exit['exitSequence'])
+ return dict(actualUidTransitions=1,uidEntrySequence=entry['entrySequence'],uidExitSequence=exit['exitSequence'],architecture=raw_entry['arch'])
 def run(destination,identity,deadline,remaining_retained_bytes):
  now=time.time();assert type(deadline) in [int,float] and math.isfinite(deadline) and 0<deadline-now<=120.5
  end=time.monotonic()+min(deadline-now,120);phase_end=end-5
@@ -122,7 +122,7 @@ def run(destination,identity,deadline,remaining_retained_bytes):
      assert count==before.st_size and identity(before)==identity(os.fstat(fd))==identity(path.lstat()),'actual capture changed'
     finally:os.close(fd)
    proof=backend.bindings.observe([('configure',[(json.dumps(r)+'\n').encode() for r in rows])],actual_capture,{},limits={'sourceMaterialBytes':available,'shardBytes':parameters['maximum_file_bytes']})
-   if name=='uid-noop':specific=uid_completion(rows);architecture=next(r['arch'] for r in rows if r['kind']=='setresuid-noop-entry-original')
+   if name=='uid-noop':specific=uid_completion(rows);architecture=specific.pop('architecture')
    else:
     assert denials and len(denials)==len(completions),'probe did not exercise explicit denial'
     specific=dict(actualDenials=len(denials));architecture=denials[0]['arch']

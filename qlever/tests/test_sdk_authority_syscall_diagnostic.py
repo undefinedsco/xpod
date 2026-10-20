@@ -16,6 +16,28 @@ class Tests(unittest.TestCase):
   def emit(row):
    row=dict(row,sequence=len(o.rows)+1);o.rows.append(row);return row
   o.emit=emit;return o
+ def test_shared_writable_mapping_keeps_numeric_entry_and_refuses_before_resume(self):
+  status=((signal.SIGTRAP|0x80)<<8)|127
+  for arch in [0xc000003e,0xc00000b7]:
+   for flags,fd in [(1,3),(0x21,(1<<64)-1)]:
+    with self.subTest(arch=arch,flags=flags):
+     o=self.observer();o.shared_tasks=False;o.append_chains={};o.capture_toolchain=False
+     words=[0,65536,3,flags,fd,0];stderr=io.StringIO()
+     with patch.object(m.single,'syscall',return_value=(dict(op='entry',arch=arch,nr=m.profile(arch)['mmap'],args=words),None)),patch.object(m.single,'trace',side_effect=AssertionError('must not resume or read pointer')),contextlib.redirect_stderr(stderr),self.assertRaisesRegex(AssertionError,'shared writable mapping refused before resume'):
+      o.event(81,status)
+     row=o.rows[-1];self.assertEqual(row['kind'],'shared-writable-mapping-before-resume');self.assertEqual(row['args'],words);self.assertEqual(row['arch'],arch);self.assertEqual(row['entrySequence'],1);self.assertFalse(row['authorityVerified']);self.assertIn('SDK_SHARED_WRITABLE_MAPPING_REJECTED ',stderr.getvalue());self.assertLess(len(stderr.getvalue().encode()),4160)
+ def test_shared_mapping_refusal_survives_diagnostic_ledger_or_stderr_failure(self):
+  for fail_ledger in [True,False]:
+   o=self.observer();o.shared_tasks=False;o.append_chains={};o.capture_toolchain=False;emit=o.emit
+   def record(row):
+    if row['kind']!='kernel-syscall' and fail_ledger:raise TimeoutError('existing ledger exhausted')
+    return emit(row)
+   class Stream:
+    def write(self,_):raise OSError('stderr unavailable')
+    def flush(self):raise OSError('stderr unavailable')
+   o.emit=record
+   with patch.object(m.single,'syscall',return_value=(dict(op='entry',arch=0xc000003e,nr=9,args=[0,65536,3,1,3,0]),None)),patch.object(m.single,'trace',side_effect=AssertionError('must not resume')),contextlib.redirect_stderr(io.StringIO() if fail_ledger else Stream()),self.assertRaisesRegex(AssertionError,'shared writable mapping refused before resume'):
+    o.event(81,((signal.SIGTRAP|0x80)<<8)|127)
  def test_actual_policy_rejections_both_architectures_have_same_bounded_entry_and_never_resume(self):
   status=((signal.SIGTRAP|0x80)<<8)|127
   for arch,rules in m.tool_providers._AUTHORITY_SYSCALLS.items():
