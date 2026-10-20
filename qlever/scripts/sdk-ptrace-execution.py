@@ -570,7 +570,15 @@ class Observer:
             capture=self.emit(dict(kind='toolchain-original',captureKind='mountinfo',observedPid=pid,original=reference));self.captures.append(capture);self.capture_bytes+=len(data);self.tool_provider_cache[key]=reference
         return reference
     def capture_process_authority(self,pid,role,event_sequence=None):
-        barrier=self.barrier();mounts,observation=tool_providers.capture_process_authority(pid,self.check,self.tool_metadata_bytes,self.authority_handles)
+        barrier=self.barrier()
+        try:mounts,observation=tool_providers.capture_process_authority(pid,self.check,self.tool_metadata_bytes,self.authority_handles)
+        except BaseException as error:
+            # Parent-visible context only; the sole provider owns actual status
+            # originals. Preserve its original failure and never resume here.
+            context=dict(kind='process-authority-capture-rejected',pid=pid,role=role,eventSequence=event_sequence,barrierSequence=barrier['sequence'],phase=self.current_phase,exceptionClass=type(error).__name__,authorityVerified=False)
+            encoded=json.dumps(context,sort_keys=True);assert len(encoded.encode())<=2048,'authority failure context bound'
+            print('SDK_PROCESS_AUTHORITY_REJECTED '+encoded,file=sys.stderr,flush=True)
+            raise
         observation['mountinfoOriginal']=self.tool_mountinfo_original(pid,observation['namespaces']['mnt']['identity'],mounts)
         self.emit(dict(kind='toolchain-process-authority',pid=pid,role=role,eventSequence=event_sequence,barrierSequence=barrier['sequence'],observation=observation))
     def tool_provider(self,pid,reader,actual_path,identity,original,barrier):
@@ -749,6 +757,16 @@ class Observer:
         encoded=json.dumps(diagnostic,sort_keys=True);assert len(encoded.encode())<=16384,'bounded shared clone diagnostic'
         row=self.emit(diagnostic);print('SDK_UNSUPPORTED_SHARED_CLONE '+encoded,file=sys.stderr,flush=True)
         raise AssertionError('shared thread/FD-table clone refused before resume; diagnostic sequence '+str(row['sequence']))
+    def reject_forbidden_syscall(self,pid,status,entry):
+        # Numeric kernel-entry arguments only: never dereference user pointers,
+        # collect argv/environment, or resume a forbidden operation for diagnosis.
+        args=entry['args'];assert isinstance(args,list) and len(args)==6 and all(type(value) is int and 0<=value<(1<<64) for value in args),'bounded actual syscall argument words required'
+        task=self.tasks[pid]
+        diagnostic=dict(kind='unsupported-asynchronous-external-writer-before-resume',pid=pid,tid=pid,tgid=task.get('tgid'),arch=entry['arch'],syscall=entry['nr'],args=args,entrySequence=entry['sequence'],phase=self.current_phase,waitStatus=status,stopSignal=os.WSTOPSIG(status),ptraceEvent=status>>16,registeredStopped=task['stopped'],registeredExited=task['exited'],registeredRootPid=self.root,observerPid=os.getpid(),authorityVerified=False,pending='unsupported-asynchronous-external-writer-syscall',scope='actual kernel syscall-entry numeric words only; refused before resume; no source or process authority')
+        encoded=json.dumps(diagnostic,sort_keys=True);assert len(encoded.encode())<=4096,'bounded forbidden syscall diagnostic'
+        print('SDK_UNSUPPORTED_WRITER_SYSCALL '+encoded,file=sys.stderr,flush=True)
+        row=self.emit(diagnostic)
+        raise AssertionError('unsupported asynchronous/external writer syscall; diagnostic sequence '+str(row['sequence']))
     def event(self,pid,status,allow_capture=True):
         if pid not in self.tasks:
             assert os.WIFSTOPPED(status) and status>>16==128,'unregistered non-child tracee event'
@@ -802,7 +820,7 @@ class Observer:
         record=self.emit(dict(kind='kernel-syscall',pid=pid,**kernel))
         if record['op']=='entry':
             assert task['entry'] is None,'syscall entry missing prior exit';task['initial']=False;task['entry']=record;nr=record['nr'];args=record['args']
-            assert nr not in policy['forbidden'],'unsupported asynchronous/external writer syscall'
+            if nr in policy['forbidden']:self.reject_forbidden_syscall(pid,status,record)
             if self.process_authority:tool_providers.verify_authority_syscall(kernel['arch'],nr,args)
             if nr in [policy['clone'],policy['clone3']]:
                 flags=args[0] if nr==policy['clone'] else single.trace(2,pid,args[0])&((1<<64)-1)

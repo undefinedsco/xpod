@@ -5,6 +5,10 @@ A read-only provider is a fact at this stop, not proof against future remounts o
 an assertion of immutable tool source/complete loader coverage.
 """
 import hashlib
+import base64
+import json
+import sys
+import threading
 import importlib.util
 import os
 from pathlib import Path
@@ -130,6 +134,44 @@ def status_authority(raw,*,pid,tracer=None):
         words=values[key].split();need((key=='Groups' or len(words)==4) and len(words)<=256 and all(word.isdigit() and int(word)<1<<32 for word in words),'actual UID/GID/group role differs');result[key]=[int(word) for word in words]
     return dict(result,noNewPrivs=1,capabilities={key:0 for key in _CAPS})
 
+def authority_status_diagnostic(raw,*,pid,tracer,check):
+    """Bounded original failure context only; never relax the tracer assertion.
+
+    /proc's TracerPid is namespace-relative and identifies the tracing task.
+    Preserve the actual values before choosing any future mapping contract.
+    """
+    need(isinstance(raw,str) and len(raw.encode('utf-8'))<=16384,'diagnostic status bound')
+    encoded=raw.encode('utf-8');value=dict(schemaVersion=1,kind='actual-process-authority-status-failure',traceePid=pid,observerPid=tracer,observerNativeTid=threading.get_native_id(),traceeStatus=dict(bytes=len(encoded),sha256=hashlib.sha256(encoded).hexdigest(),encoding='base64',data=base64.b64encode(encoded).decode('ascii')),processes={},namespaceLinks={},authorityVerified=False)
+    for role,base in [('observer','/proc/self'),('observerThread','/proc/thread-self'),('tracee','/proc/'+str(pid))]:
+        check()
+        with open(base+'/status','rb') as source:data=source.read(16385)
+        need(len(data)<=16384,'diagnostic process status bound');fields={}
+        for line in data.decode('utf-8','strict').splitlines():
+            key,separator,word=line.partition(':')
+            if separator and key in ['Name','State','Tgid','Pid','PPid','TracerPid','NStgid','NSpid','Threads']:
+                need(key not in fields and len(word.encode())<=512,'diagnostic process field bound');fields[key]=word.strip()
+        value['processes'][role]=dict(fields=fields,statusBytes=len(data),statusSha256=hashlib.sha256(data).hexdigest())
+        links={}
+        for namespace in ['pid','pid_for_children','mnt','user']:
+            check();link=os.readlink(base+'/ns/'+namespace);need(len(link.encode())<=128,'diagnostic namespace link bound');links[namespace]=link
+        value['namespaceLinks'][role]=links
+    check();output=json.dumps(value,sort_keys=True,separators=(',',':'));need(len(output.encode())<=65500,'diagnostic encoded bound');return output
+
+def checked_tracer_authority(raw,*,pid,check):
+    tracer=os.getpid()
+    try:return status_authority(raw,pid=pid,tracer=tracer)
+    except ValueError:
+        try:diagnostic=authority_status_diagnostic(raw,pid=pid,tracer=tracer,check=check)
+        except BaseException as error:
+            unavailable=dict(schemaVersion=1,kind='actual-process-authority-status-diagnostic-unavailable',traceePid=pid,observerPid=tracer,errorType=type(error).__name__,authorityVerified=False)
+            if isinstance(raw,str) and len(raw)<=16384:
+                encoded=raw.encode('utf-8')
+                if len(encoded)<=16384:unavailable['traceeStatus']=dict(bytes=len(encoded),sha256=hashlib.sha256(encoded).hexdigest(),encoding='base64',data=base64.b64encode(encoded).decode('ascii'))
+            diagnostic=json.dumps(unavailable,sort_keys=True)
+        try:sys.stderr.write('SDK_PROCESS_AUTHORITY_DIAGNOSTIC '+diagnostic+'\n');sys.stderr.flush()
+        except BaseException:pass
+        raise
+
 def restrict_child_authority():
     """Only in the new child, before its release handshake and candidate exec."""
     import ctypes
@@ -181,11 +223,11 @@ def capture_process_authority(pid,check,maximum_metadata,handles):
         with open('/proc/'+str(pid)+'/status','rb') as source:data=source.read(16385)
         need(len(data)<=16384,'actual process status bound');return data.decode('utf-8','strict')
     try:
-        before=status();first=status_authority(before,pid=pid,tracer=os.getpid());namespaces={}
+        before=status();first=checked_tracer_authority(before,pid=pid,check=check);namespaces={}
         for role in ['mnt','pid','user']:
             check();path='/proc/'+str(pid)+'/ns/'+role;fd=os.open(path,os.O_RDONLY|os.O_CLOEXEC);fds[role]=fd;anchor=handles.bind(role,fd);namespaces[role]=dict(link=os.readlink(path),identity=util.identity(os.fstat(fd)),held=anchor)
         root=os.open('/proc/'+str(pid)+'/root',os.O_PATH|os.O_DIRECTORY|os.O_CLOEXEC);fds['root']=root;root_identity=util.identity(os.fstat(root));root_held=handles.bind('root',root);mounts=bounded_mountinfo(pid,check,maximum_metadata)
-        after=status();need(first==status_authority(after,pid=pid,tracer=os.getpid()) and mounts==bounded_mountinfo(pid,check,maximum_metadata),'process authority/mounts changed during all-stop capture')
+        after=status();need(first==checked_tracer_authority(after,pid=pid,check=check) and mounts==bounded_mountinfo(pid,check,maximum_metadata),'process authority/mounts changed during all-stop capture')
         for role in ['mnt','pid','user']:
             path='/proc/'+str(pid)+'/ns/'+role;need(os.readlink(path)==namespaces[role]['link'] and util.identity(os.stat(path))==namespaces[role]['identity']==util.identity(os.fstat(fds[role]))==handles.bind(role,fds[role])['identity'],'actual process namespace changed during capture')
         need(util.identity(os.stat('/proc/'+str(pid)+'/root'))==root_identity==util.identity(os.fstat(root))==handles.bind('root',root)['identity'],'actual process root changed during capture');check()

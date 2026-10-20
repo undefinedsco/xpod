@@ -123,6 +123,13 @@ const REVIEWED_OBSERVER_GROUPS:readonly Readonly<Record<string,string>>[]=[REVIE
   "qlever/scripts/sdk-blocking-owned-wait.py": "9529b31b027b759e5baa380fa81339b9a962d8d916ac1ea20c9f9503bd697a68",
   "qlever/scripts/sdk-generation-multiprocess-bindings.py": "d12e02ab8c638d20d43e0c8e5373b8d19a794f1fe189909af3d8131aee26cb80",
   "qlever/scripts/sdk-tool-provider-originals.py": "2a29a27a270c528b05f029210bd36aa728b26dbfaf1c1e21dc61f7847eaa1cad"
+}),Object.freeze({
+  "qlever/scripts/sdk-ptrace-execution.py": "98086926e6d4273026b1beeed18172ff097d1c8ea123b2acc5734b106462dcfa",
+  "qlever/scripts/sdk-ptrace-kernel.py": "08fe6e47e696d1543406751bda83f3aaa89a80973d87a27a5a6423e666b5aff2",
+  "qlever/scripts/sdk-execution-originals-util.py": "b2226db7d6d9955d6bf3745dc5011aa1dbc67ffe90faf9dc88fffa7376343a2d",
+  "qlever/scripts/sdk-blocking-owned-wait.py": "9529b31b027b759e5baa380fa81339b9a962d8d916ac1ea20c9f9503bd697a68",
+  "qlever/scripts/sdk-generation-multiprocess-bindings.py": "d12e02ab8c638d20d43e0c8e5373b8d19a794f1fe189909af3d8131aee26cb80",
+  "qlever/scripts/sdk-tool-provider-originals.py": "3476130862522249378ad27e97942cfafadf76ce0a4535c6ce89cc2630e3dff0"
 })];
 
-const REVIEWED_CONTROLLER_HELPER_GROUPS=Object.freeze([HELPERS,Object.freeze(HELPERS.map(([name,sha])=>Object.freeze([name,name==='sdk-zip-originals.py'?'cf30b662bfec174a61d229811272241a945318259e9b181e8219330acf0555e6':sha] as const)))])
+const REVIEWED_CONTROLLER_HELPER_GROUPS=Object.freeze([HELPERS,Object.freeze(HELPERS.map(([name,sha])=>Object.freeze([name,name==='sdk-zip-originals.py'?'cf30b662bfec174a61d229811272241a945318259e9b181e8219330acf0555e6':sha] as const))),Object.freeze(HELPERS.map(([name,sha])=>Object.freeze([name,name==='sdk-zip-originals.py'?'cf30b662bfec174a61d229811272241a945318259e9b181e8219330acf0555e6':name==='sdk-tool-provider-originals.py'?'3476130862522249378ad27e97942cfafadf76ce0a4535c6ce89cc2630e3dff0':sha] as const)))])
