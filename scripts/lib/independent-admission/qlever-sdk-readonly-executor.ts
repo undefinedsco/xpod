@@ -1,3 +1,4 @@
+import {selectSdkControllerHelperGroup} from './sdk-controller-helper-groups';
 import {createHash} from 'node:crypto';
 import {execFileSync} from 'node:child_process';
 import {readFileSync,realpathSync} from 'node:fs';
@@ -11,6 +12,10 @@ import {captureLegalFileIdentity,assertLegalFileIdentity} from './legal-file-cus
 function need(value:unknown,why:string):asserts value {if(!value)throw Error('SDK readonly executor: '+why);}
 const sha=(bytes:Buffer)=>createHash('sha256').update(bytes).digest('hex');
 const HELPERS:readonly(readonly[string,string])[]=[["qlever/scripts/sdk-readonly-executor-bindings.py","67c51e555bf85e09b45215fbf2a1b84485f0e49c52a37391ef1fb3646b488012"],["qlever/scripts/sdk-zip-originals.py","cf30b662bfec174a61d229811272241a945318259e9b181e8219330acf0555e6"],["qlever/scripts/sdk-readonly-executor.py","cdd151c67f228485ff1e4aed735c550853ee9d38b3f996a9be4af9eb3fcc2f15"],["qlever/scripts/sdk-readonly-executor-entry.py","54f6d66c420965aea80a67e915009dc681424df44577c933b6b8c5fbd36443a9"],["qlever/scripts/sdk-command-materials.py","353ccadc3b80596fbfc12a7f40770aff9b799e9ace10dbc31140350068aab4e8"],["qlever/scripts/sdk-execution-budget.py","329194655827de1d03a31db5f311ba1cc59fd0ade7edf2ef48fcc8fae52ebfee"],["scripts/agentfs-native-ci/supervise.py","49fd9c7a7a9c9dc1612b1261f0cbc218166f48487df726239437ae9ad98ba407"],["scripts/lib/module-artifact-limits.json","c1c529aba719356c682affbe630c215e28cc07163192f8f3b601aab7b0126bd4"],["qlever/scripts/sdk-local-daemon-originals.py","9c5541b959d86d690f1d1806e123ce046008d8e82ab5127685e51d31c8e5dcd5"],["qlever/scripts/qlever_compiler_profile.py","c61d01533194652f9e6fff03da72749bb3926e753653334db5cb5692335613be"]];
+const REVIEWED_READONLY_HELPER_GROUPS=Object.freeze([HELPERS,
+ Object.freeze(HELPERS.map(([name,hash])=>Object.freeze([name,name==='qlever/scripts/sdk-readonly-executor-bindings.py'?'0ec406a339e22b1c088c52ab2d25f73d34b3088387ec2b4139e18cb3366a1b1c':hash] as const))),
+ Object.freeze(HELPERS.map(([name,hash])=>Object.freeze([name,name==='qlever/scripts/sdk-readonly-executor-bindings.py'?'0ec406a339e22b1c088c52ab2d25f73d34b3088387ec2b4139e18cb3366a1b1c':name==='qlever/scripts/sdk-readonly-executor.py'?'97a7abc306e46d885a0d2814276e018109860938dc3fc978d20af97b45d3eef6':hash] as const))),
+]);
 /** No issuer, public registration or caller-provided observations. Reads only
  * the same private SDK and its existing independently verified execution view.
  * This observation alone cannot clear whole/lifetime/source obligations. */
@@ -27,7 +32,8 @@ export async function observeQleverSdkReadOnlyExecutor(input:{sdkOriginals:unkno
  try{
   need(source.sourceSha===sdk.originFacts.sourceSha,'same immutable source SHA');
   const guard=()=>{need(qleverSdkOriginalsView(input.sdkOriginals)===sdk&&qleverSdkExecutionOriginalObservation(input.sdkOriginals)===execution,'same private SDK/execution handle changed');assertDerivedSourceCurrent(input.source);};check();guard();
-  const helpers=HELPERS.map(([name,hash])=>{need(source.trackedPaths.includes(name),'historical source does not implement readonly executor');const path=fileURLToPath(new URL('../../../'+name,import.meta.url));const identity=captureLegalFileIdentity(path);need(identity.size<=BigInt(limits.metadataBytes),'bounded controller source');const bytes=readFileSync(path);need(sha(bytes)===hash&&bytes.equals(source.readTracked(name)),'whole immutable controller/producer helper differs');assertLegalFileIdentity(identity);return identity;});
+  const helperDigests=new Map<string,string>();const helpers=HELPERS.map(([name])=>{need(source.trackedPaths.includes(name),'historical source does not implement readonly executor');const path=fileURLToPath(new URL('../../../'+name,import.meta.url));const identity=captureLegalFileIdentity(path);need(identity.size<=BigInt(limits.metadataBytes),'bounded controller source');const bytes=readFileSync(path);need(bytes.equals(source.readTracked(name)),'whole immutable controller/producer helper differs');helperDigests.set(name,sha(bytes));assertLegalFileIdentity(identity);return identity;});
+  const reviewedHelpers=selectSdkControllerHelperGroup(REVIEWED_READONLY_HELPER_GROUPS,helperDigests);
   const observed=execution.sdkGeneratedInputOriginals as any,coverage=execution.sdkToolchainOperationCoverage as any;
   need(execution.sdkActualConfigureCompileTrackedWaitVerified===true&&observed?.toolchainProcessAuthorityIntervalVerified===true&&Array.isArray(coverage?.operations)&&coverage.operations.length>0&&coverage.operations.length<=limits.sourceMembers,'actual closed authority/operation universe required');
   const providers:any[]=[];
@@ -40,7 +46,7 @@ export async function observeQleverSdkReadOnlyExecutor(input:{sdkOriginals:unkno
   need(result.sdkReadOnlyExecutorProtocolOriginalsVerified===true&&result.selectedProvidersBoundToImageRoot===providers.length&&result.wholeSdkSourceVerified===false&&result.toolchainLifetimeImmutabilityVerified===false&&result.globalHostWriterAbsenceVerified===false,'fixed narrow readonly observer scope differs');
   const authority=qleverSdkOuterExecutorOriginAuthority(input.sdkOriginals);
   if(!authority)return Object.freeze({facts:Object.freeze({...result,sdkReadOnlyExecutorOuterAuthorityVerified:false,sdkReadOnlyExecutorOriginalsVerified:false}),pending:Object.freeze([...pending,'qlever-sdk-readonly-executor-reviewed-outer-origin-unavailable']),assertCurrent(){guard();for(const file of [...helpers,pythonIdentity])assertLegalFileIdentity(file);}});
-  need(authority.collectorSha256===HELPERS.find(row=>row[0]==='qlever/scripts/sdk-readonly-executor.py')![1],'same reviewed outer collector implementation');
+  need(authority.collectorSha256===reviewedHelpers.find(row=>row[0]==='qlever/scripts/sdk-readonly-executor.py')![1],'same reviewed outer collector implementation');
   const facts=Object.freeze({...result,sdkReadOnlyExecutorOuterAuthorityVerified:true,sdkReadOnlyExecutorOriginalsVerified:true});
   return Object.freeze({facts,pending:Object.freeze([...pending]),assertCurrent(){guard();need(qleverSdkOuterExecutorOriginAuthority(input.sdkOriginals)===authority,'same private outer authority revoked');for(const file of [...helpers,pythonIdentity])assertLegalFileIdentity(file);}});
  }catch(error){return unavailable('qlever-sdk-readonly-executor-originals-unverified: '+String(error instanceof Error?error.message:error).slice(0,1024));}
