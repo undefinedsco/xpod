@@ -38,11 +38,12 @@ class ModuleContextTests(unittest.TestCase):
             self.assertTrue((ROOT / file).is_file())
         exceptions = [rule for rule in self.rules if rule.startswith('!docker/')]
         self.assertEqual(set(exceptions), {'!docker/', '!docker/qlever-runtime-sdk/', '!docker/qlever-local-runtime/',
-            '!docker/qlever-runtime-sdk/Dockerfile.module-bookworm', '!docker/qlever-local-runtime/Dockerfile.module-bookworm'})
+            '!docker/qlever-runtime-sdk/Dockerfile.module-bookworm', '!docker/qlever-local-runtime/Dockerfile.module-bookworm',
+            '!docker/qlever-runtime-sdk/Dockerfile', '!docker/qlever-local-runtime/Dockerfile'})
         self.assertNotIn('!docker/**', self.rules)
 
     def test_every_module_sdk_docker_recipe_copy_has_an_exact_context_exception(self):
-        recipe = (ROOT / 'docker/qlever-runtime-sdk/Dockerfile.module-bookworm').read_text()
+        recipe = '\n'.join((ROOT / file).read_text() for file in ['docker/qlever-runtime-sdk/Dockerfile.module-bookworm','docker/qlever-runtime-sdk/Dockerfile'])
         sources = re.findall(r'^COPY ((?:docker/|scripts/|\.dockerignore)\S*) \S+$', recipe, re.M)
         self.assertGreaterEqual(len(sources), 5)
         self.assertIn('.dockerignore', sources)

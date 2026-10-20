@@ -23,8 +23,9 @@ profiles=load('qlever_compiler_profile')
 def linked_dockerfile(prepared):
     binding.need(binding.digest(prepared),'immutable actual prepared image config')
     return ('FROM '+prepared+' AS build\nCOPY build/ /opt/qlever-sdk/build/\nCOPY materials/ /opt/qlever-sdk/materials/\n'
-        'FROM build AS linked-verification\nARG XPOD_QLEVER_SDK_DEADLINE_UNIX\nARG XPOD_QLEVER_SDK_IDENTITY\n'
+        'FROM build AS linked-verification\n'+''.join('COPY verification/'+name+' /components/qlever/scripts/'+name+'\n' for name in result_context.VERIFICATION_SCRIPTS)+'ARG XPOD_QLEVER_SDK_DEADLINE_UNIX\nARG XPOD_QLEVER_SDK_IDENTITY\n'
         'RUN XPOD_QLEVER_SDK_DEADLINE_UNIX="${XPOD_QLEVER_SDK_DEADLINE_UNIX}" XPOD_QLEVER_SDK_IDENTITY="${XPOD_QLEVER_SDK_IDENTITY}" exec python3 /components/qlever/scripts/sdk-owned-runs.py linked\n'
+        'RUN node --version\n'
         'FROM build AS runtime\nCOPY --from=linked-verification /opt/qlever-sdk/materials/linked-inner.json /opt/qlever-sdk/materials/owner-linked.guard.json /opt/qlever-sdk/materials/\n'
         'COPY --from=linked-verification /opt/qlever-sdk/materials/stages/test-adapter /opt/qlever-sdk/materials/stages/test-adapter\n'
         'COPY --from=linked-verification /opt/qlever-sdk/materials/stages/test-runtime /opt/qlever-sdk/materials/stages/test-runtime\n'
@@ -64,7 +65,7 @@ def run(identity,deadline,out,context_originals):
         binding.need({row['Name'] for row in users if row.get('Type')=='volume'}==set(record['volumes'].values()),'same exact owned output volumes')
         for index,volume in enumerate(record['volumes'].values()):
             active=stage('reject-output-volume-writer-'+str(index),binding.local_docker(['docker','ps','-q','--filter','volume='+volume])).decode().splitlines();binding.need(not active,'foreign active output volume writer')
-        context_path=Path(os.environ['RUNNER_TEMP']).resolve()/'qlever-sdk-build-work';plan=dict(containerId=cid,context=str(context_path),deadlineUnix=deadline,dockerfile=linked_dockerfile(prepared),remainingRetainedBytes=remaining_ledger(out,context_originals,check))
+        context_path=Path(os.environ['RUNNER_TEMP']).resolve()/'qlever-sdk-build-work';plan=dict(containerId=cid,context=str(context_path),deadlineUnix=deadline,dockerfile=linked_dockerfile(prepared),sourceContextOriginals=str(Path(context_originals).resolve()),sourceSha=identity['sourceSha'],remainingRetainedBytes=remaining_ledger(out,context_originals,check))
         save('export.plan.json',plan);stage('export-stopped-outputs',['/usr/bin/python3','-I','-S','-B',str(HERE/'sdk-readonly-result-context.py'),'export','--plan',str(out/'export.plan.json')],600)
         exported=metadata(context_path/'result-context.json');plan.update(export=exported,builder=builder,platform=platform,metadata=str(out/'linked-buildkit.original.json'),identity=identity)
         save('linked.plan.json',plan);stage('compose-linked-image',['/usr/bin/python3','-I','-S','-B',str(HERE/'sdk-readonly-result-context.py'),'build','--plan',str(out/'linked.plan.json')],1200)

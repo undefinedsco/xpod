@@ -1,3 +1,4 @@
+import {selectSdkControllerHelperGroup} from './sdk-controller-helper-groups';
 import { inspectSdkBuildExecution } from './qlever-sdk-execution';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
@@ -114,7 +115,9 @@ export async function observeQleverSdkUpstreamGitOriginals(capability: unknown, 
     need(seriesDigest.digest('hex') === lock.patchSeriesSha256, 'immutable reviewed patch series digest differs from lock');
     const lockRef = ref(upstream.lock); need(lockRef.path.startsWith('inner/upstream-source/') && sdk.readOriginal(lockRef.path, limits.metadataBytes).equals(source.readTracked('qlever/qlever.lock.json')), 'actual upstream lock bytes differ from immutable Git');
     for (const field of ['commitOriginal', 'treeListing', 'objectIds', 'prepatchInventory', 'objectPack']) need(ref(upstream[field]).path.startsWith('inner/upstream-source/'), 'fixed upstream original prefix required');
-    const helpers = HELPERS.map(([name, expected]) => { const file = fileURLToPath(new URL('../../../qlever/scripts/' + name, import.meta.url)), identity = captureLegalFileIdentity(file); need(identity.size <= BigInt(limits.metadataBytes) && hash(readFileSync(file)) === expected, 'reviewed controller Git helper differs'); return identity; });
+    const helperDigests=new Map<string,string>();
+    const helpers = HELPERS.map(([name]) => { const file = fileURLToPath(new URL('../../../qlever/scripts/' + name, import.meta.url)), identity = captureLegalFileIdentity(file); need(identity.size <= BigInt(limits.metadataBytes), 'bounded reviewed controller Git helper');helperDigests.set(name,hash(readFileSync(file)));assertLegalFileIdentity(identity); return identity; });
+    selectSdkControllerHelperGroup(REVIEWED_HELPER_GROUPS,helperDigests);helpers.forEach(assertLegalFileIdentity);
     const python = realpathSync('/usr/bin/python3'), pythonIdentity = captureLegalFileIdentity(python), git = realpathSync('/usr/bin/git'), gitIdentity = captureLegalFileIdentity(git);
     const limitsPath = fileURLToPath(new URL('../module-artifact-limits.json', import.meta.url)), limitsIdentity = captureLegalFileIdentity(limitsPath);
     const { moduleSourcePhasePolicy } = await import('./module-source-phases'); need(hash(readFileSync(limitsPath)) === moduleSourcePhasePolicy.limits, 'reviewed source budget differs');
@@ -145,3 +148,5 @@ export async function observeQleverSdkUpstreamGitOriginals(capability: unknown, 
   } catch (error) { pending.add((error as Error).message); }
   return Object.freeze({facts: Object.freeze(facts), pending: Object.freeze([...pending])});
 }
+
+const REVIEWED_HELPER_GROUPS:readonly(readonly(readonly[string,string])[])[]=Object.freeze([HELPERS,Object.freeze([["sdk-git-source-bindings.py","612063f44d09932b93883db2d186d197bd828e07d39e2df430d9dbe574fd66d0"],["sdk-git-source-observer.py","fd578d0fef97c1d3b4b60e5510320c109c6930580d91db9335d67cbacff186f6"],["sdk-git-patch-projection.py","3e4051b50acf6be11ade6e5d6c05ca23ab8376aa4ff5861975088eab642c8f23"],["sdk-zip-originals.py","86cca59ac6a30eb719fe10dbaf6939c4e7c50328e757f22d3d4d34ea90fe6c10"]] as const),Object.freeze([["sdk-git-source-bindings.py","612063f44d09932b93883db2d186d197bd828e07d39e2df430d9dbe574fd66d0"],["sdk-git-source-observer.py","fd578d0fef97c1d3b4b60e5510320c109c6930580d91db9335d67cbacff186f6"],["sdk-git-patch-projection.py","3e4051b50acf6be11ade6e5d6c05ca23ab8376aa4ff5861975088eab642c8f23"],["sdk-zip-originals.py","cf30b662bfec174a61d229811272241a945318259e9b181e8219330acf0555e6"]] as const),Object.freeze([["sdk-git-source-bindings.py","0fec964b836bd14a197de3df0c536bd1f8353db70f91e31debb93497808101e5"],["sdk-git-source-observer.py","fd578d0fef97c1d3b4b60e5510320c109c6930580d91db9335d67cbacff186f6"],["sdk-git-patch-projection.py","3e4051b50acf6be11ade6e5d6c05ca23ab8376aa4ff5861975088eab642c8f23"],["sdk-zip-originals.py","cf30b662bfec174a61d229811272241a945318259e9b181e8219330acf0555e6"]] as const)]);

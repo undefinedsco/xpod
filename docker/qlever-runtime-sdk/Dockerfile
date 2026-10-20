@@ -53,7 +53,7 @@ COPY qlever/include /components/qlever/include
 COPY qlever/rdf_protocol /components/qlever/rdf_protocol
 COPY qlever/backend_contract /components/qlever/backend_contract
 COPY qlever/candidate_contract /components/qlever/candidate_contract
-COPY qlever/scripts /components/qlever/scripts
+COPY qlever/scripts/*.py qlever/scripts/*.sh /components/qlever/scripts/
 COPY qlever/qlever_local_runtime /components/qlever/qlever_local_runtime
 COPY qlever/rdf_sqlite_backend /components/qlever/rdf_sqlite_backend
 COPY docker/qlever-runtime-sdk/Dockerfile /opt/qlever-sdk/profile/Dockerfile
@@ -82,9 +82,15 @@ RUN --mount=type=bind,from=source-prepared,source=/opt/qlever-sdk/source,target=
     XPOD_QLEVER_SDK_IDENTITY="${XPOD_QLEVER_SDK_IDENTITY}" XPOD_QLEVER_SDK_DEADLINE_UNIX="${XPOD_QLEVER_SDK_DEADLINE_UNIX}" exec python3 /components/qlever/scripts/sdk-owned-runs.py build
 
 FROM build AS linked-verification
+# Verification scripts enter only after the compiler cache boundary.
+COPY qlever/scripts/check-qlever-real-adapter-build.cjs /components/qlever/scripts/check-qlever-real-adapter-build.cjs
+COPY qlever/scripts/check-qlever-real-runtime.cjs /components/qlever/scripts/check-qlever-real-runtime.cjs
+COPY qlever/scripts/check-qlever-upstream-patches.cjs /components/qlever/scripts/check-qlever-upstream-patches.cjs
 ARG XPOD_QLEVER_SDK_DEADLINE_UNIX
 ARG XPOD_QLEVER_SDK_IDENTITY
 RUN XPOD_QLEVER_SDK_DEADLINE_UNIX="${XPOD_QLEVER_SDK_DEADLINE_UNIX}" exec python3 /components/qlever/scripts/sdk-owned-runs.py linked
+# The owned linked RUN installs Node once; retain its actual version in BuildKit raw.
+RUN node --version
 
 FROM build AS runtime
 # Retain actual test originals, not a synthetic .ok marker or another copy of

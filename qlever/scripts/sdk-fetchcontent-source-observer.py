@@ -65,8 +65,10 @@ def observe(path,plan):
                     if row['declaration']['method']=='git' and (relative=='.git' or relative.startswith('.git/')):
                         unresolved.append('qlever-sdk-FetchContent-selected-Git-metadata-source-unresolved:'+item['path'])
                         if item['captures']:origin_unresolved.add(item['path'])
-            if row['declaration']['method']=='git':result=sources.verify_git(original,row['declaration'],physical,small,member,check)
+            if row['declaration']['method']=='git':result=sources.verify_git(original,row['declaration'],physical,small,member,check,index.get('emptyDirectories'))
             else:result=sources.verify_url(original,row['declaration'],physical,member,check)
+            for link in result.get('unmaterializedGitlinks',[]):
+                unresolved.append('qlever-sdk-FetchContent-unmaterialized-Gitlink-source-unresolved:'+row['sourceRoot']+'/'+link['path']+'@'+link['commitOid'])
             results.append(dict(name=row['name'],method=row['declaration']['method'],**result))
     sources.need(joined==selected_paths,'actual selected dependency universe incomplete');check();return dict(selectedInputs=sum(item['selected'] for item in records),selectedGeneratedCacheInputs=cache_selected,observedDependencyReadCaptures=read_captures,dependencySourceReadOriginsVerified=not origin_unresolved,kind='qlever-sdk-FetchContent-source-byte-mechanics',dependencies=results,declaredSourceByteClosureVerified=True,overallSourceAuthorityVerified=False,pending=unresolved)
 

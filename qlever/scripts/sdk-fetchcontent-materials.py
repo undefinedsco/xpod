@@ -38,12 +38,21 @@ def rooted(value,prefix):
         return {key:rooted(item,prefix) for key,item in value.items()}
     return value
 def physical_inventory(source,out,materials,budget):
-    source=Path(source);rows=[];shards=[];count=0;total=0
+    source=Path(source);rows=[];shards=[];count=0;total=0;empty=[];empty_bytes=2
     def flush():
         path=out/('inventory-'+str(len(shards)).zfill(4)+'.json');value=dict(schemaVersion=1,files=rows)
         if len(json.dumps(value,sort_keys=True).encode())>remaining(materials):raise ValueError('Dependency inventory remaining budget')
         dump(path,value,budget.check);shards.append(git.ref(path,materials,budget.check))
     for directory,dirs,files in os.walk(source,followlinks=False):
+        budget.check(4200)
+        if not dirs and not files and Path(directory)!=source:
+            path=Path(directory);before=path.lstat()
+            if not stat.S_ISDIR(before.st_mode) or any(path.iterdir()):raise ValueError('Empty dependency directory changed')
+            after=path.lstat();identity=lambda row:[str(value) for value in (row.st_dev,row.st_ino,row.st_mode,row.st_size,row.st_mtime_ns,row.st_ctime_ns)]
+            if identity(before)!=identity(after):raise ValueError('Empty dependency directory identity changed')
+            entry=dict(path=path.relative_to(source).as_posix(),identityDecimal=identity(after));empty_bytes+=len(json.dumps(entry).encode())+(2 if empty else 0)
+            if len(empty)>=LIMITS['sourceMembers'] or empty_bytes>META:raise ValueError('Empty dependency directory metadata bound')
+            empty.append(entry)
         linked=[name for name in dirs if (Path(directory)/name).is_symlink()];dirs[:]=sorted(name for name in dirs if name not in linked)
         for name in sorted([*files,*linked]):
             budget.check(4200);path=Path(directory)/name;before=path.lstat();relative=path.relative_to(source).as_posix()
@@ -60,7 +69,7 @@ def physical_inventory(source,out,materials,budget):
             rows.append(row);count+=1;total+=row['bytes']
             if count>LIMITS['sourceMembers'] or total>LIMITS['sourceMaterialBytes']:raise ValueError('Dependency physical source inventory bound')
     if rows:flush()
-    path=out/'source-inventory.json';dump(path,dict(schemaVersion=1,files=count,bytes=total,shards=shards),budget.check)
+    path=out/'source-inventory.json';dump(path,dict(schemaVersion=1,files=count,bytes=total,shards=shards,emptyDirectories=empty),budget.check)
     return git.ref(path,materials,budget.check)
 
 class PreparedCollector(git.Collector):
@@ -79,7 +88,7 @@ def prepare_git(declaration,source,out,materials,budget):
     if (collector.out/shallow['stdout']['path']).read_text().strip()!='false':raise ValueError('Complete Git acquisition required')
     config=collector.command('complete-config',['git','config','--local','--list'])
     if re.search(r'(?im)^(?:extensions\.partialclone|remote\..*\.(?:promisor|partialclonefilter))=',(collector.out/config['stdout']['path']).read_text()):raise ValueError('Partial Git acquisition refused')
-    snapshot=collector.git_snapshot()
+    snapshot=collector.git_snapshot(allow_unmaterialized_gitlinks=True)
     path=out/'git-materials.json';dump(path,dict(schemaVersion=1,kind='qlever-sdk-dependency-git-originals',**rooted(snapshot,out.relative_to(materials).as_posix()),stages=rooted(collector.stages,out.relative_to(materials).as_posix())),budget.check)
     return git.ref(path,materials,budget.check)
 

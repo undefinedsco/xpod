@@ -24,12 +24,23 @@ def physical_rows(index,shards):
             rows[name]=row;total+=row['bytes'];need(len(rows)<=LIMITS['sourceMembers'] and total<=LIMITS['sourceMaterialBytes'],'physical aggregate bound')
     need(len(rows)==index['files'] and total==index['bytes'],'physical inventory totals differ');return rows
 
-def verify_git(original,declaration,rows,small,member,check):
+def verify_git(original,declaration,rows,small,member,check,empty_directories=None):
     need(original.get('schemaVersion')==1 and original.get('kind')=='qlever-sdk-dependency-git-originals' and original.get('repository')==declaration.get('repository') and original.get('commit')==declaration.get('commit') and original.get('objectFormat')=='sha1' and original.get('objectIdsFormat')=='ascii-sorted-unique-sha1-lf','declared Git originals differ')
     inventory=json.loads(small(original['prepatchInventory']));need(inventory.get('schemaVersion')==1 and isinstance(inventory.get('files'),list),'Git preimage schema')
+    links=inventory.get('gitlinks')
+    if links is not None:
+        need(isinstance(links,list) and len(links)<=LIMITS['sourceMembers'],'bounded Gitlink collection')
+        need(isinstance(empty_directories,list) and len(empty_directories)<=LIMITS['sourceMembers'],'actual empty directory inventory required')
+        empty={}
+        for item in empty_directories:
+            identity=item.get('identityDecimal');need(bindings.canonical(item.get('path')) and item['path'] not in empty and isinstance(identity,list) and len(identity)==6 and all(isinstance(value,str) and value.isdecimal() for value in identity),'canonical unique empty directory identity')
+            empty[item['path']]=identity
+        for link in links:
+            path=link.get('path');need(bindings.canonical(path) and link.get('state')=='unmaterialized-empty-directory' and empty.get(path)==link.get('identityDecimal'),'Gitlink actual empty checkout identity differs')
+            need(not any(name==path or name.startswith(path+'/') for name in rows),'Gitlink source materialized without child source originals')
     ids_raw=small(original['objectIds']);ids=ids_raw.decode('ascii').splitlines();need(ids_raw==('\n'.join(sorted(set(ids)))+'\n').encode(),'exact sorted object IDs')
     commit=small(original['commitOriginal']);need(hashlib.sha1(('commit '+str(len(commit))+'\0').encode()+commit).hexdigest()==declaration['commit'],'declared commit original differs')
-    with member(original['objectPack']) as stream:result=bindings.verify_git_originals(stream,declaration['commit'],small(original['treeListing']),ids,inventory['files'],check)
+    with member(original['objectPack']) as stream:result=bindings.verify_git_originals(stream,declaration['commit'],small(original['treeListing']),ids,inventory['files'],check,gitlinks=links)
     need(result['rootTreeOid']==original.get('rootTree') and result['commitSha256']==hashlib.sha256(commit).hexdigest() and result['packBytes']==original['objectPack']['bytes'] and result['packSha256']==original['objectPack']['sha256'],'registered Git root/pack differs')
     actual={path:row for path,row in rows.items() if path!='.git' and not path.startswith('.git/')};expected={row['path']:row for row in inventory['files']}
     need(set(actual)==set(expected),'physical non-Git-metadata universe differs from commit tree')
@@ -37,7 +48,7 @@ def verify_git(original,declaration,rows,small,member,check):
         check();physical=actual[path];mode=row['mode'];kind='symlink' if mode=='120000' else 'file';permissions=0o777 if kind=='symlink' else (0o755 if mode=='100755' else 0o644)
         need(physical['kind']==kind and physical['mode']==permissions and physical['bytes']==row['bytes'] and physical['sha256']==row['sha256'],'physical Git blob bytes/mode differ: '+path)
         if kind=='symlink':need(base64.b64decode(row['readlinkBase64'],validate=True)==physical.get('target','').encode(),'physical Git readlink differs')
-    return dict(files=len(actual),gitMetadataFiles=len(rows)-len(actual),scope='declared Git commit/tree/blob bytes to non-.git physical files; independent repository authority and mutable .git metadata excluded')
+    return dict(files=len(actual),gitMetadataFiles=len(rows)-len(actual),unmaterializedGitlinks=result.get('gitlinks',[]),scope='declared Git commit/tree/blob bytes to non-.git physical files; independent repository authority and mutable .git metadata excluded')
 
 def verify_url(original,declaration,rows,member,check):
     need(original.get('schemaVersion')==1 and original.get('kind')=='qlever-sdk-dependency-archive-originals' and all(original.get(key)==declaration.get(key) for key in ('url','algorithm','digest')) and declaration.get('algorithm')=='sha3_224','declared URL hash originals differ')

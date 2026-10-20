@@ -10,7 +10,7 @@ import tcb from '../../scripts/lib/independent-admission/consumer-execution-curr
 const read=(name:string)=>readFileSync(path.resolve(import.meta.dir,'../..',name));
 const sha=(bytes:Buffer)=>createHash('sha256').update(bytes).digest('hex');
 test('Node public tool input adds one complete exact tuple and preserves compressed retention history',()=>{
- expect(groups).toHaveLength(16);expect(consumers).toHaveLength(34);expect(ci).toHaveLength(66);expect(tcb).toHaveLength(377);
+ expect(groups).toHaveLength(16);expect(consumers).toHaveLength(35);expect(ci).toHaveLength(68);expect(tcb).toHaveLength(377);
  expect(groups.find(g=>'name' in g&&g.name==='root-minimal-compressed-original-retention')!.sourceBindings).toBe(old);expect(groups.find(g=>'name' in g&&g.name==='root-minimal-node-public-tool-input')!.sourceBindings).toBe(prior);
  expect(prior.filter(row=>old.find(previous=>previous.path===row.path)?.sha256!==row.sha256).map(row=>row.path).sort()).toEqual(['packages/xpod-api/scripts/inngest-controlled-build-policy.json','scripts/lib/inngest-controlled-build.py','scripts/lib/module-source-materials.py']);
  for(const row of [...current,...tcb])expect(sha(read(row.path))).toBe(row.sha256);
