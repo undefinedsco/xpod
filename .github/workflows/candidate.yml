@@ -155,6 +155,8 @@ jobs:
       packages: write
     with:
       source_commit: ${{ needs.metadata.outputs.sourceSha }}
+      sdk_profile: service-trixie
+      readonly_executor: true
 
   publish_qlever_local_runtime:
     needs: publish_qlever_runtime_sdk
@@ -172,13 +174,17 @@ jobs:
       contents: read
 
   build_image:
-    needs: [metadata, rc_prerequisites, publish_qlever_local_runtime]
+    needs: [metadata, rc_prerequisites, publish_qlever_local_runtime, publish_qlever_runtime_sdk]
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
     outputs:
       digest: ${{ steps.build.outputs.digest }}
+      service_artifact_id: ${{ steps.service_originals_upload.outputs.artifact-id }}
+      service_artifact_digest: ${{ steps.service_originals_upload.outputs.artifact-digest }}
+      service_master_sha256: ${{ steps.service_originals.outputs.master_sha256 }}
+      service_master_bytes: ${{ steps.service_originals.outputs.master_bytes }}
     env:
       REF_NAME: ${{ github.ref_name }}
     steps:
@@ -196,12 +202,39 @@ jobs:
 
       - name: Apply candidate root version
         run: |
+          set -euo pipefail
+          snapshot_manifests() {
+            python3 -I -S -B - "$1" <<'PY_SNAPSHOT'
+          import os,pathlib,stat,sys
+          destination=pathlib.Path(os.environ['RUNNER_TEMP'])/'service-source-manifests'/sys.argv[1]
+          destination.mkdir(parents=True,exist_ok=False)
+          identity=lambda s:(s.st_dev,s.st_ino,s.st_mode,s.st_size,s.st_nlink,s.st_mtime_ns,s.st_ctime_ns)
+          for name in ['package.json','desktop/package.json']:
+              source=pathlib.Path(os.environ['GITHUB_WORKSPACE'])/name
+              fd=os.open(source,os.O_RDONLY|os.O_NOFOLLOW)
+              try:
+                  before=os.fstat(fd)
+                  assert stat.S_ISREG(before.st_mode) and 0<before.st_size<=128*1024
+                  body=bytearray()
+                  while True:
+                      block=os.read(fd,65536)
+                      if not block: break
+                      body.extend(block)
+                      assert len(body)<=before.st_size
+                  assert len(body)==before.st_size and identity(before)==identity(os.fstat(fd))==identity(source.lstat())
+                  target=destination/name;target.parent.mkdir(parents=True,exist_ok=True)
+                  with target.open('xb') as stream: stream.write(body)
+              finally: os.close(fd)
+          PY_SNAPSHOT
+          }
+          snapshot_manifests before
           node scripts/release-candidate.cjs \
             --branch "$REF_NAME" \
             --run-number "${{ github.run_number }}" \
             --run-attempt "${{ needs.metadata.outputs.runAttempt }}" \
             --sha "${{ github.sha }}" \
             --apply-root-version
+          snapshot_manifests after
 
       - name: Build and push RC image
         id: build
@@ -219,6 +252,94 @@ jobs:
           cache-to: type=gha,mode=max,scope=xpod-server
           build-args: |
             XPOD_QLEVER_LOCAL_RUNTIME_IMAGE=${{ needs.publish_qlever_local_runtime.outputs.image }}
+
+
+      - name: Retain candidate service image/SDK originals
+        id: service_originals
+        env:
+          BUILD_DIGEST: ${{ steps.build.outputs.digest }}
+          BUILD_METADATA: ${{ steps.build.outputs.metadata }}
+          LOCAL_RUNTIME_IMAGE: ${{ needs.publish_qlever_local_runtime.outputs.image }}
+          SDK_IMAGE: ${{ needs.publish_qlever_runtime_sdk.outputs.image }}
+          SDK_ARTIFACT_ID: ${{ needs.publish_qlever_runtime_sdk.outputs.sdk_artifact_id }}
+          SDK_ARTIFACT_DIGEST: ${{ needs.publish_qlever_runtime_sdk.outputs.sdk_artifact_digest }}
+          SDK_MASTER_BYTES: ${{ needs.publish_qlever_runtime_sdk.outputs.sdk_master_bytes }}
+          SDK_MASTER_SHA256: ${{ needs.publish_qlever_runtime_sdk.outputs.sdk_master_sha256 }}
+        run: |
+          set -euo pipefail
+          metadata="$RUNNER_TEMP/service-build-metadata.original.json"
+          python3 -I -S -B -c 'import os,pathlib; b=os.environ["BUILD_METADATA"].encode(); assert 0<len(b)<=4*1024**2; pathlib.Path(os.environ["RUNNER_TEMP"],"service-build-metadata.original.json").write_bytes(b)'
+          python3 -I -S -B qlever/scripts/sdk-service-image-originals.py \
+            --out "$RUNNER_TEMP/service-image-originals" \
+            --source "$GITHUB_WORKSPACE" --source-sha "$GITHUB_SHA" \
+            --service-image "ghcr.io/undefinedsco/xpod@${BUILD_DIGEST}" \
+            --local-runtime-image "$LOCAL_RUNTIME_IMAGE" --sdk-image "$SDK_IMAGE" \
+            --sdk-artifact-id "$SDK_ARTIFACT_ID" --sdk-artifact-digest "$SDK_ARTIFACT_DIGEST" \
+            --sdk-master-bytes "$SDK_MASTER_BYTES" --sdk-master-sha256 "$SDK_MASTER_SHA256" \
+            --root-manifest-before "$RUNNER_TEMP/service-source-manifests/before/package.json" \
+            --root-manifest-after "$RUNNER_TEMP/service-source-manifests/after/package.json" \
+            --build-metadata "$metadata" --deadline "$(( $(date +%s) + 120 ))"
+
+      - name: Upload candidate service image originals
+        id: service_originals_upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-service-image-originals-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/service-image-originals
+          include-hidden-files: true
+          if-no-files-found: error
+
+
+  observe_service_sdk_source:
+    needs: [metadata, build_image, publish_qlever_local_runtime, publish_qlever_runtime_sdk]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
+      packages: read
+    steps:
+      - name: Check out the exact candidate source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.metadata.outputs.sourceSha }}
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - name: Verify pristine candidate checkout before installation
+        env:
+          SOURCE_SHA: ${{ needs.metadata.outputs.sourceSha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$(git rev-parse HEAD)" == "$SOURCE_SHA" ]]
+          [[ -z "$(git status --porcelain --untracked-files=all)" ]]
+      - name: Install source observer dependencies
+        run: bun install --frozen-lockfile
+      - name: Observe service SDK source originals
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SOURCE_SHA: ${{ needs.metadata.outputs.sourceSha }}
+          SERVICE_ARTIFACT_ID: ${{ needs.build_image.outputs.service_artifact_id }}
+          SERVICE_ARTIFACT_DIGEST: ${{ needs.build_image.outputs.service_artifact_digest }}
+          SERVICE_MASTER_BYTES: ${{ needs.build_image.outputs.service_master_bytes }}
+          SERVICE_MASTER_SHA256: ${{ needs.build_image.outputs.service_master_sha256 }}
+        run: |
+          set -euo pipefail
+          bun scripts/check-candidate-service-sdk-source.ts \
+            --source-sha "$SOURCE_SHA" --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --service-artifact-id "$SERVICE_ARTIFACT_ID" --service-artifact-digest "$SERVICE_ARTIFACT_DIGEST" \
+            --service-master-bytes "$SERVICE_MASTER_BYTES" --service-master-sha256 "$SERVICE_MASTER_SHA256" \
+            --checkout "$GITHUB_WORKSPACE" --output "$RUNNER_TEMP/service-sdk-source-observation" --require-qualification
+      - name: Upload service SDK source observation
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-service-sdk-source-observation-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/service-sdk-source-observation/service-source-observation.json
+          if-no-files-found: error
 
   deploy_and_accept:
     needs: [metadata, build_image]
@@ -1438,6 +1559,7 @@ jobs:
       - build_desktop_rc
       - legacy_root_compat
       - runtime_mode_matrix
+      - observe_service_sdk_source
     runs-on: ubuntu-latest
     environment: rc
     permissions:

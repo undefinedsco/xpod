@@ -94,7 +94,7 @@ class RouteTest(unittest.TestCase):
         entry=(HERE.parents[1]/'.github/workflows/qlever-readonly-executor.yml').read_text()
         workflow=(HERE.parents[1]/'.github/workflows/qlever-readonly-normal-job.yml').read_text()
         pins=json.loads(re.search(r'          pins=(.*)',workflow).group(1))
-        required={'sdk-readonly-normal-route','sdk-readonly-result-context','sdk-readonly-executor','sdk-readonly-executor-bindings','sdk-readonly-executor-entry','sdk-image-originals','sdk-command-materials','sdk-execution-budget','sdk-owned-runs','sdk-subreaper-guard','sdk-tar-budget','sdk-debian-binary-originals','sdk-debian-index-bindings','sdk-readonly-collection','qlever_compiler_profile','sdk-local-daemon-originals'}
+        required={'sdk-readonly-normal-route','sdk-readonly-result-context','sdk-readonly-executor','sdk-readonly-executor-bindings','sdk-readonly-executor-entry','sdk-image-originals','sdk-command-materials','sdk-execution-budget','sdk-owned-runs','sdk-subreaper-guard','sdk-tar-budget','sdk-debian-binary-originals','sdk-debian-index-bindings','sdk-readonly-collection','qlever_compiler_profile','sdk-local-daemon-originals','sdk-service-profile-materials'}
         self.assertEqual({Path(p).stem for p in pins if p.startswith('qlever/scripts/')},required)
         for path,sha in pins.items():self.assertEqual(hashlib.sha256((HERE.parents[1]/path).read_bytes()).hexdigest(),sha)
         self.assertIn('  pull_request:',entry);self.assertIn('  workflow_call:',entry);self.assertIn('  workflow_call:',workflow)

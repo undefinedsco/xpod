@@ -124,8 +124,8 @@ jobs:
         run: |
           set -euo pipefail
           if [[ "$READONLY_ROUTE" == true ]]; then
-            [[ "$EVENT_NAME" == pull_request || "$SDK_PROFILE" == module-bookworm-gcc12 ]] \
-              || { echo 'Readonly executor requires its explicit module profile' >&2; exit 64; }
+            [[ "$EVENT_NAME" == pull_request || "$SDK_PROFILE" == module-bookworm-gcc12 || "$SDK_PROFILE" == service-trixie ]] \
+              || { echo 'Readonly executor requires an explicit reviewed SDK profile' >&2; exit 64; }
             [[ "$REQUESTED_SOURCE" == "$GITHUB_SHA" && -z "$REQUESTED_TAG" && -z "$REQUESTED_PRIOR_DIGEST" ]] \
               || { echo 'Readonly executor requires same-run source and a fresh build; reuse is forbidden' >&2; exit 64; }
           fi
@@ -482,6 +482,7 @@ jobs:
     uses: ./.github/workflows/qlever-readonly-executor.yml
     with:
       target: ${{ needs.resolve_target.outputs.target }}
+      sdk_profile: ${{ needs.resolve_target.outputs.sdk_profile }}
       source_commit: ${{ inputs.source_commit || github.sha }}
       publish: ${{ github.event_name != 'pull_request' }}
 

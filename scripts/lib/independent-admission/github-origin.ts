@@ -1,5 +1,5 @@
 import {inspectReviewedSdkOuterExecutorOrigin,type QleverSdkOuterExecutorOriginAuthority} from './qlever-sdk-outer-authority';
-import {QLEVER_SDK_WORKFLOW,QLEVER_SDK_WORKFLOW_SHA,QLEVER_SDK_EXECUTION_GROUPS,QLEVER_LINUX_EXECUTION_GROUPS,QLEVER_READONLY_SDK_WORKFLOW_SHA} from './qlever-sdk-origin-policy';
+import {QLEVER_SDK_WORKFLOW,QLEVER_SDK_WORKFLOW_SHA,QLEVER_SDK_EXECUTION_GROUPS,QLEVER_LINUX_EXECUTION_GROUPS,QLEVER_READONLY_SDK_WORKFLOW_SHA,QLEVER_SERVICE_SDK_WORKFLOW_SHA} from './qlever-sdk-origin-policy';
 import {selectGitHubSourceBindingGroup,secondaryGitHubSourceBindingSelectors,sourceBindingKey,type GitHubSourceBindingGroup} from './github-source-binding-groups';
 import {immutableGitContentsEndpoint,cachedGitContentsOriginal,retainGitContentsOriginal} from './github-immutable-original-cache';
 import {QLEVER_LINUX_SOURCE_BINDINGS} from './qlever-linux-origin-policy';
@@ -35,6 +35,8 @@ export interface GitHubOriginFacts {
 type Original = { name: string; endpoint: string; data: Buffer };
 const nativeOrigins = new WeakSet<object>();
 const sdkOrigins = new WeakSet<object>();
+const candidateServiceOrigins = new WeakSet<object>();
+export function isCandidateServiceImageGitHubOrigin(value:unknown):value is GitHubOriginObservation {return value!==null&&typeof value==='object'&&candidateServiceOrigins.has(value);}
 export function isQleverSdkGitHubOrigin(value:unknown):value is GitHubOriginObservation {return value!==null&&typeof value==='object'&&sdkOrigins.has(value);}
 const normalModuleOrigins = new WeakSet<object>();
 export function isRoutedCssProductGitHubOrigin(value:unknown):value is GitHubOriginObservation {
@@ -97,6 +99,22 @@ interface OriginPolicy {
   issueSdkOuterAuthority?:true;
   target?: string;
   sourceBindings?: readonly { path: string; sha256: string; reviewedSha256?: readonly string[]; ref?:'run-head' }[];
+}
+/** Same issuer, independently authenticated candidate image-artifact role.
+ * A producer JSON selector cannot enroll a source tree in this role. */
+export async function observeCandidateServiceImageGitHubOrigin(input:ArtifactAcquisitionInput,options:{token?:string}={}):Promise<GitHubOriginObservation> {
+ const groups=QLEVER_SDK_EXECUTION_GROUPS.filter(group=>group.candidateServiceRelationship!==undefined);
+ if(!groups.length)throw Error('Independent GitHub origin: candidate service source recipe not reviewed');
+ const versions=[...new Set(groups.map(group=>group.candidateServiceRelationship!.workflowSha256))];
+ const artifactNames=(value:ArtifactAcquisitionInput)=>['candidate-service-image-originals-'+value.sourceSha+'-'+value.runId+'-'+value.runAttempt];
+ const result=await observeGitHubOrigin(input,options,{
+  workflowPath:'.github/workflows/candidate.yml',workflowSha256:versions[0]!,reviewedWorkflowVersions:versions.map(workflowSha256=>({workflowSha256,jobName:()=> 'build_image',sourceBindingGroups:groups})),
+  events:['push','workflow_dispatch'],requiredBranch:'staging',stagingPushWorkflowSha256s:versions,allowRunningRun:true,workflowRef:'run-head',sourceBindingGroups:groups,target:'linux-x64',
+  artifactNames,jobName:()=> 'build_image',requiredStep:'Retain candidate service image/SDK originals',requiredSteps:['Apply candidate root version','Build and push RC image','Retain candidate service image/SDK originals','Upload candidate service image originals'],
+  sourceGroupJobContract(group){const contract=group?.candidateServiceRelationship;if(!contract||contract.schemaVersion!==1||contract.workflowPath!=='.github/workflows/candidate.yml'||!versions.includes(contract.workflowSha256))throw Error('Independent GitHub origin: exact candidate service contract missing');return {name:contract.serviceJob,requiredStep:'Retain candidate service image/SDK originals',requiredSteps:['Apply candidate root version','Build and push RC image','Retain candidate service image/SDK originals','Upload candidate service image originals']};},
+  sourceGroupAncestorJobs(group){const contract=group?.candidateServiceRelationship;if(!contract)throw Error('Independent GitHub origin: candidate service ancestor contract missing');return [contract.sdkJob,contract.localRuntimeJob];},
+ });
+ nativeOrigins.add(result);candidateServiceOrigins.add(result);return result;
 }
 export async function observeCliGitHubOrigin(input: ArtifactAcquisitionInput, options: { token?: string } = {}): Promise<GitHubOriginObservation> {
   return observeGitHubOrigin(input, options, {
@@ -1270,7 +1288,15 @@ export async function observeQleverNativeGitHubOrigin(input:ArtifactAcquisitionI
 
 /** SDK byte custody is independently observed, never inferred from a runtime
  * image reference or a normal CSS product observation. */
-export async function observeQleverSdkGitHubOrigin(input:ArtifactAcquisitionInput,target:string,invocation:'standalone'|'css-native-products',options:{token?:string}={}):Promise<GitHubOriginObservation>{
+export async function observeQleverSdkGitHubOrigin(input:ArtifactAcquisitionInput,target:string,invocation:'standalone'|'css-native-products'|'candidate-service',options:{token?:string}={}):Promise<GitHubOriginObservation>{
+ if(invocation==='candidate-service'){
+  if(target!=='linux-x64')return fail('candidate service SDK target differs');
+  const groups=QLEVER_SDK_EXECUTION_GROUPS.filter(group=>group.candidateServiceRelationship!==undefined);
+  if(!groups.length)return fail('candidate service SDK whole source not reviewed');
+  const versions=[...new Set(groups.map(group=>group.candidateServiceRelationship!.workflowSha256))];
+  const observation=await observeGitHubOrigin(input,options,{workflowPath:'.github/workflows/candidate.yml',workflowSha256:versions[0]!,reviewedWorkflowVersions:versions.map(workflowSha256=>({workflowSha256,jobName:()=> 'publish_qlever_runtime_sdk / readonly_publish / published_sdk / sdk',sourceBindingGroups:groups})),events:['push','workflow_dispatch'],requiredBranch:'staging',stagingPushWorkflowSha256s:versions,workflowRef:'run-head',allowRunningRun:true,target,artifactNames:row=>[`qlever-sdk-originals-service-trixie-${target}-${row.sourceSha}-${row.runId}-${row.runAttempt}`],jobName:()=> 'publish_qlever_runtime_sdk / readonly_publish / published_sdk / sdk',requiredStep:'Bind actual readonly SDK image and build originals',requiredSteps:['Verify controller closure','Capture immutable source context','Build readonly SDK and linked image','Publish the actual linked readonly SDK','Seal controller originals for upload','Upload exact SDK original materials'],sourceBindingGroups:groups,issueSdkOuterAuthority:true});
+  nativeOrigins.add(observation);sdkOrigins.add(observation);return observation;
+ }
  if(!['linux-x64','linux-arm64'].includes(target)||!['standalone','css-native-products'].includes(invocation))return fail('fixed SDK target and invocation required');
  const nested=invocation==='css-native-products';
  const readonlyName=nested?`targets (${target}) / native / linux / readonly_publish / published_sdk / sdk`:'readonly_publish / published_sdk / sdk';
@@ -1279,7 +1305,7 @@ export async function observeQleverSdkGitHubOrigin(input:ArtifactAcquisitionInpu
  const readonlySteps=['Verify controller closure','Capture immutable source context','Build readonly SDK and linked image','Publish the actual linked readonly SDK','Seal controller originals for upload','Upload exact SDK original materials'];
  const observation=await observeGitHubOrigin(input,options,{
   workflowPath:nested?CSS_NATIVE_PRODUCTS_WORKFLOW:QLEVER_SDK_WORKFLOW,workflowSha256:nested?CSS_NATIVE_PARENT_SHA:QLEVER_SDK_WORKFLOW_SHA,
-  ...(nested?cssStagingParentPolicy(legacyName):{reviewedWorkflowVersions:[{workflowSha256:QLEVER_READONLY_SDK_WORKFLOW_SHA,jobName:()=>readonlyName}]}),
+  ...(nested?cssStagingParentPolicy(legacyName):{reviewedWorkflowVersions:[{workflowSha256:QLEVER_READONLY_SDK_WORKFLOW_SHA,jobName:()=>readonlyName},{workflowSha256:QLEVER_SERVICE_SDK_WORKFLOW_SHA,jobName:()=>readonlyName}]}),
   events:nested?['workflow_dispatch','push']:['workflow_dispatch'],target,
   artifactNames:row=>[`qlever-sdk-originals-${target}-${row.sourceSha}-${row.runId}-${row.runAttempt}`],
   jobName:()=>legacyName,requiredStep:'Bind actual SDK image and build originals',requiredSteps:legacySteps,

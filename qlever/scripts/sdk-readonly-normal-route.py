@@ -16,6 +16,7 @@ HERE=Path(__file__).resolve().parent
 def load(name):
     spec=importlib.util.spec_from_file_location(name,HERE/(name+'.py'));value=importlib.util.module_from_spec(spec);spec.loader.exec_module(value);return value
 outer=load('sdk-readonly-executor');result_context=load('sdk-readonly-result-context');binding=outer.binding
+profiles=load('qlever_compiler_profile')
 
 # This is the existing runtime assembly contract, with its compiled build and
 # originals coming from stopped output volumes rather than an omitted commit.

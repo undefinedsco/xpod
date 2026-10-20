@@ -8,11 +8,18 @@ import subprocess
 from pathlib import Path
 
 PROFILES = (
-    dict(name='service-trixie', c='clang-19', cxx='clang++-19', c_key='clang', cxx_key='clangxx', linker='lld',
+    dict(name='service-trixie', distribution='trixie', compiler_major=19, compiler_program='clang', linker_program='ld.lld-19', c='clang-19', cxx='clang++-19', c_key='clang', cxx_key='clangxx', linker='lld',
          dockerfile='docker/qlever-runtime-sdk/Dockerfile', runtime_dockerfile='docker/qlever-local-runtime/Dockerfile', repository_suffix=''),
-    dict(name='module-bookworm-gcc12', c='gcc-12', cxx='g++-12', c_key='gcc', cxx_key='gxx', linker='bfd',
+    dict(name='module-bookworm-gcc12', distribution='bookworm', compiler_major=12, compiler_program='cc1plus', linker_program='ld.bfd', c='gcc-12', cxx='g++-12', c_key='gcc', cxx_key='gxx', linker='bfd',
          dockerfile='docker/qlever-runtime-sdk/Dockerfile.module-bookworm', runtime_dockerfile='docker/qlever-local-runtime/Dockerfile.module-bookworm', repository_suffix='-module-bookworm'),
 )
+
+
+def declared_profile(name):
+    """Only the existing canonical compiler/profile table selects a recipe."""
+    for row in PROFILES:
+        if row['name']==name:return dict(row)
+    raise RuntimeError('Unsupported SDK profile')
 
 
 def sdk_profile(name):
@@ -30,7 +37,7 @@ def compiler_spec():
     cxx = os.environ.get('XPOD_QLEVER_CMAKE_CXX_COMPILER', 'clang++-19')
     for row in PROFILES:
         if row['c'] == c and row['cxx'] == cxx:
-            return dict(c=c, cxx=cxx, profile=row['name'], c_key=row['c_key'], cxx_key=row['cxx_key'], linker=row['linker'])
+            return dict(c=c, cxx=cxx, profile=row['name'], c_key=row['c_key'], cxx_key=row['cxx_key'], linker=row['linker'], linker_program=row['linker_program'])
     raise RuntimeError('Unsupported declared QLever compiler pair; no fallback')
 
 
@@ -54,7 +61,7 @@ if __name__ == '__main__':
     import sys
     if len(sys.argv) == 3 and sys.argv[1] == 'sdk-profile':
         print(json.dumps(sdk_profile(sys.argv[2]), sort_keys=True))
-    elif sys.argv[1:] in [['c'], ['cxx'], ['linker']]:
+    elif sys.argv[1:] in [['c'], ['cxx'], ['linker'], ['profile'], ['linker_program']]:
         print(compiler_spec()[sys.argv[1]])
     else:
         raise RuntimeError('Expected compiler role or declared SDK profile')

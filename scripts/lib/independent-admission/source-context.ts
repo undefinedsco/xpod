@@ -1,3 +1,5 @@
+import {isCandidateServiceImageGitHubOrigin} from './github-origin';
+import {nativeOriginalsView,assertCollectedNativeOriginalCustody} from './native-original-collector';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { realpathSync } from 'node:fs';
@@ -35,10 +37,20 @@ export function collectedArtifactDerivedSource(artifact: unknown): DerivedSource
 export function deriveAdmissionSource(artifact: CollectedArtifactCapability, checkout: string): DerivedSourceCapability {
   const collected = collectedArtifactView(artifact);
   if (!collected) return fail('collected artifact capability required');
-  const root = realpathSync(checkout);
+  const result=deriveExactAdmissionSource(collected.identity.sourceSha,checkout,()=>{if(collectedArtifactView(artifact)!==collected)fail('original collected artifact custody changed');});
+  artifactCheckouts.set(artifact,Object.freeze(result));return result.source;
+}
+/** Same source issuer and exact Git implementation, restricted to the genuine
+ * candidate-image role; this grants immutable source custody, never service ABI. */
+export function deriveCandidateServiceSource(originals:unknown,checkout:string):DerivedSourceCapability {
+ const view=nativeOriginalsView(originals);if(!view||!isCandidateServiceImageGitHubOrigin(view.origin))return fail('issued candidate service image originals required');
+ const guard=()=>{if(nativeOriginalsView(originals)!==view||!isCandidateServiceImageGitHubOrigin(view.origin))fail('candidate service original handle changed');assertCollectedNativeOriginalCustody(originals);};
+ guard();return deriveExactAdmissionSource(view.originFacts.sourceSha,checkout,guard).source;
+}
+function deriveExactAdmissionSource(sourceSha:string,checkout:string,assertAuthority:()=>void):Readonly<{root:string;source:DerivedSourceCapability}> {
+  assertAuthority();const root = realpathSync(checkout);
   const git = (args: string[], maxBuffer = 4 * 1024 ** 2) => execFileSync('git', args,
     { cwd: root, maxBuffer, stdio: ['ignore', 'pipe', 'pipe'] });
-  const sourceSha = collected.identity.sourceSha;
   if (git(['rev-parse', 'HEAD']).toString().trim() !== sourceSha
     || git(['status', '--porcelain', '--untracked-files=all']).length !== 0) fail('clean exact source checkout required');
   const tree = git(['ls-tree', '-rz', '--full-tree', sourceSha], 16 * 1024 ** 2).toString('utf8');
@@ -66,6 +78,6 @@ export function deriveAdmissionSource(artifact: CollectedArtifactCapability, che
     } });
   const capability = Object.freeze({}) as DerivedSourceCapability;
   issued.set(capability, view); currentChecks.set(capability,()=>{
-    if(realpathSync(checkout)!==root||git(['rev-parse','HEAD']).toString().trim()!==sourceSha||git(['status','--porcelain','--untracked-files=all']).length!==0)fail('clean exact source checkout changed');
-  });artifactCheckouts.set(artifact, Object.freeze({root,source:capability})); return capability;
+    assertAuthority();if(realpathSync(checkout)!==root||git(['rev-parse','HEAD']).toString().trim()!==sourceSha||git(['status','--porcelain','--untracked-files=all']).length!==0)fail('clean exact source checkout changed');
+  });assertAuthority();return Object.freeze({root,source:capability});
 }

@@ -8,12 +8,12 @@ import {qleverSdkOriginalsView} from './qlever-sdk-originals';
 import {assertLegalFileIdentity, type LegalFileIdentity} from './legal-file-custody';
 import {inspectRetainedDebianGpgvExit,inspectDebianSignaturePolicyOriginals} from './debian-signature-policy-bridge';
 import {hashSignatureControllerFile, readSignatureOriginal, assertSignatureOriginalSet} from './qlever-signature-original-custody';
-import {DEBIAN_BOOKWORM_KEYS, inspectDebianPublicKeyOriginal, extractDebianSignedRelease} from './qlever-debian-signature-policy';
+import {debianReleaseKeyPolicies,debianSignatureFamilyForSdkProfile,type DebianReleaseFamily, inspectDebianPublicKeyOriginal, extractDebianSignedRelease} from './qlever-debian-signature-policy';
 
 type Ref = {path: string; bytes: number; sha256: string};
 type Stage = {name: string; receipt: Ref; supervisionReceipt: Ref};
 type Collection = {schemaVersion: number; kind: string; indexOriginals: {inRelease: Ref; sources: Ref; verificationStage: Stage}[]};
-type Master = {kind: string; debianSources?: Ref; stages: Stage[]};
+type Master = {identity?:{sdkProfile?:unknown};kind: string; debianSources?: Ref; stages: Stage[]};
 type CommandOutcome = {code: number; signal: unknown; actualWait: boolean; actualClose: boolean; groupAbsent: boolean; rawComplete: boolean; rawClosedBeforeHash: boolean; pipeEOF: boolean[]; failure: unknown; spawnError: unknown; raw: Ref[]};
 const {runPublicationCommand} = createRequire(import.meta.url)('../afs-publication-command.cjs') as {
   runPublicationCommand(command: string, args: string[], options: {cwd: string; env: Record<string, string>; evidence: string; label: string; timeoutMs: number; rawLimit: number}): Promise<CommandOutcome>;
@@ -30,9 +30,9 @@ const hash = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex')
 function need(value: unknown, why: string): asserts value {if (!value) throw Error('SDK Debian signature: ' + why);}
 /** One fixed official acquisition, with no caller URL/transport or trust callback.
  * Buffers remain local to this observation. No public registration mints facts. */
-async function officialKeys(deadline: number, directory: string, check: () => void) {
+async function officialKeys(deadline: number, directory: string, check: () => void, family:DebianReleaseFamily) {
   const originals: Ref[] = [], packets: Buffer[] = [], guards: LegalFileIdentity[] = []; let total = 0;
-  for (const policy of DEBIAN_BOOKWORM_KEYS) {
+  for (const policy of debianReleaseKeyPolicies(family)) {
     check(); const url = 'https://ftp-master.debian.org/keys/' + policy.file;
     const response = await fetch(url, {redirect: 'error', signal: AbortSignal.timeout(Math.max(1, Math.min(15000, Math.floor(deadline - performance.now()))))});
     need(response.status === 200 && !response.redirected && response.body && response.url === url, 'fixed official key response unavailable');
@@ -72,6 +72,8 @@ export async function observeQleverSdkDebianSignatureOriginals(capability: unkno
       const bytes = sdk.readOriginal(actual.path, maximum); need(bytes.length === actual.bytes && hash(bytes) === actual.sha256, 'SDK original bytes differ'); return bytes;};
     const master = JSON.parse(read(sdk.masterReference, 8 * 1024 ** 2).toString()) as Master;
     need(master.kind === 'qlever-linux-sdk-originals' && master.debianSources && Array.isArray(master.stages), 'actual Debian collection unavailable');
+    const family=debianSignatureFamilyForSdkProfile(master.identity?.sdkProfile);
+    const declared=(sdk as SdkView&{sdkProfile?:unknown}).sdkProfile;need(declared===undefined?family==='bookworm':debianSignatureFamilyForSdkProfile(declared)===family,'private SDK/master profile differs');
     const collection = JSON.parse(read(master.debianSources).toString()) as Collection;
     need(collection.schemaVersion === 1 && collection.kind === 'qlever-sdk-exact-debian-source-originals' && Array.isArray(collection.indexOriginals) && collection.indexOriginals.length > 0 && collection.indexOriginals.length <= 32, 'bounded actual index set required');
     const jobs = sdk.metadataOriginals.filter(row => /^jobs(?:-page-\d+)?\.original\.json$/u.test(row.name)).flatMap(row => {
@@ -87,7 +89,7 @@ export async function observeQleverSdkDebianSignatureOriginals(capability: unkno
     const {qleverSdkDebianIndexObservation} = await import('./qlever-sdk-debian-index');
     const checksumRows = qleverSdkDebianIndexObservation(capability); need(checksumRows?.length, 'prior private Debian index checksum observation required');
     need(collection.indexOriginals.every(entry => checksumRows.some(row => row.inReleaseSha256 === entry.inRelease.sha256 && row.sourceOriginal.path === entry.sources.path && row.sourceOriginal.bytes === entry.sources.bytes && row.sourceOriginal.sha256 === entry.sources.sha256)), 'private checksum index originals differ');
-    const keys = await officialKeys(deadline, retainedDirectory, check), keyring = path.join(retainedDirectory, 'reviewed-keys.gpg');
+    const keys = await officialKeys(deadline, retainedDirectory, check,family), keyring = path.join(retainedDirectory, 'reviewed-keys.gpg');
     const keyIdentity = keys.keyIdentity, originalGuards = [...keys.guards];
     const env = {PATH: '/usr/bin:/bin', LANG: 'C.UTF-8', GNUPGHOME: path.join(retainedDirectory, 'empty-home')};
     const command = async (label: string, args: string[], permitUnknownCosignature = false) => {check(); assertLegalFileIdentity(tool.identity); assertLegalFileIdentity(keyIdentity);
@@ -124,11 +126,11 @@ export async function observeQleverSdkDebianSignatureOriginals(capability: unkno
       const indexPaths = checksumRows.filter(row => row.inReleaseSha256 === entry.inRelease.sha256).flatMap(row => row.observation.signedIndexMatches.map(match => match.path));
       const signedBody = extractDebianSignedRelease(original);
       const body = readSignatureOriginal(bodyPath, {bytes: signedBody.length, sha256: hash(signedBody)}, 4 * 1024 ** 2, check); originalGuards.push(body.identity);
-      const classified = inspectDebianSignaturePolicyOriginals({inRelease: original, status, plaintext: body.bytes, acquisitionUTC: acquisition, indexPaths, exit});
+      const classified = inspectDebianSignaturePolicyOriginals({inRelease: original, status, plaintext: body.bytes, acquisitionUTC: acquisition, indexPaths, exit,family});
       observations.push(Object.freeze({inRelease: entry.inRelease, acquisitionUTC: acquisition, ...classified}));
     }
     check(); need(qleverSdkDebianIndexObservation(capability) === checksumRows && qleverSdkOriginalsView(capability) === sdk && hashSignatureControllerFile(executable, check).sha256 === tool.sha256, 'SDK/controller custody changed');
-    facts.sdkDebianSignatureOriginals = Object.freeze({scope: 'controller-OS-gpgv-reviewed-Bookworm-keys-and-actual-job-suite', executable, executableSha256: tool.sha256,
+    facts.sdkDebianSignatureOriginals = Object.freeze({scope: 'controller-OS-gpgv-reviewed-'+family+'-keys-and-actual-job-suite',family, executable, executableSha256: tool.sha256,
       version: version.toString(), keys: Object.freeze(keys.originals), keyringSha256: keys.keyringSha256, keyLifecycleScope: 'fixed-reviewed-key-snapshot-and-expiration-policy; not independent current revocation proof', observations: Object.freeze(observations), retainedDirectory});
     const guards = [tool.identity, ...originalGuards];
     check(); assertSignatureOriginalSet(retainedDirectory, originalGuards); for (const guard of guards) assertLegalFileIdentity(guard); check(); facts.sdkDebianOfficialSignatureAndSuiteVerified = true;

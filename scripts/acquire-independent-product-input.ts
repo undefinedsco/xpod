@@ -140,13 +140,23 @@ export async function acquireNativeAdmissionOriginals(input: ArtifactAcquisition
   if (Object.keys(options).some(key => key !== 'token')) fail('unknown native original transport option');
   return acquireProductInput(input, output, { token: options.token }, false, false, true);
 }
+/** The existing native transport may observe a live candidate run only after
+ * the existing private issuer closed the exact service or SDK producer job. */
+export async function acquireCandidateServiceOriginals(input:ArtifactAcquisitionInput,output:string,origin:unknown,options:{token?:string}={}) {
+ if(Object.keys(options).some(key=>key!=='token'))fail('unknown candidate original transport option');
+ const issuer=await import('./lib/independent-admission/github-origin');
+ const facts=issuer.githubOriginFacts(origin);
+ const role=issuer.isCandidateServiceImageGitHubOrigin(origin)?'service':issuer.isQleverSdkGitHubOrigin(origin)?'sdk':undefined;
+ if(!facts||!role||facts.workflowPath!=='.github/workflows/candidate.yml'||facts.sourceSha!==input.sourceSha||facts.runHeadSha!==input.runHeadSha||facts.runId!==input.runId||facts.runAttempt!==input.runAttempt||facts.artifactId!==input.artifactId||facts.artifactSha256!==input.artifactSha256)fail('issued exact candidate original role required');
+ return acquireProductInput(input,output,{token:options.token},false,false,true,false,undefined,role);
+}
 /** Same-run legacy transport; never admits a still-running independent producer run. */
 export async function acquireLegacyRootSupply(input: ArtifactAcquisitionInput, output: string, dependencies: Dependencies = {}) {
   if (process.env.GITHUB_ACTIONS !== 'true' || process.env.GITHUB_REPOSITORY !== REPOSITORY
     || String(input.runId) !== process.env.GITHUB_RUN_ID || String(input.runAttempt) !== process.env.GITHUB_RUN_ATTEMPT) fail('same-run runtime binding required');
   return acquireProductInput(input, output, { ...dependencies, limits: { packedBytes: 16 * 1024 ** 2, expandedBytes: 40 * 1024 ** 2, members: 4096 } }, true);
 }
-async function acquireProductInput(input: ArtifactAcquisitionInput, output: string, dependencies: Dependencies, legacy: boolean, registryConsumer = false, nativeOriginals = false, archiveConsumer = false,consumerModule?:'afs') {
+async function acquireProductInput(input: ArtifactAcquisitionInput, output: string, dependencies: Dependencies, legacy: boolean, registryConsumer = false, nativeOriginals = false, archiveConsumer = false,consumerModule?:'afs',candidateRole?:'service'|'sdk') {
   if (input?.schemaVersion !== 1 || !/^[a-f0-9]{40}$/u.test(input.sourceSha) || !/^[a-f0-9]{40}$/u.test(input.runHeadSha)
     || !/^[a-f0-9]{64}$/u.test(input.artifactSha256) || ![input.runId, input.runAttempt, input.artifactId].every(positive)) fail('exact source/run/attempt/artifact binding required');
   if (Object.keys(input).some(key => !['schemaVersion', 'sourceSha', 'runHeadSha', 'runId', 'runAttempt', 'artifactId', 'artifactSha256'].includes(key))) fail('unknown acquisition selector');
@@ -174,12 +184,12 @@ async function acquireProductInput(input: ArtifactAcquisitionInput, output: stri
       return value;
     }
     const run = await json('run', `actions/runs/${input.runId}/attempts/${input.runAttempt}`);
-    if (run.id !== input.runId || run.run_attempt !== input.runAttempt || (!legacy && !(run.status==='completed'?run.conclusion==='success':registryConsumer&&run.status==='in_progress'&&run.conclusion===null)) || (legacy && !['queued', 'in_progress', 'completed'].includes(run.status))
+    if (run.id !== input.runId || run.run_attempt !== input.runAttempt || (!legacy && !(run.status==='completed'?run.conclusion==='success':(registryConsumer||candidateRole!==undefined)&&run.status==='in_progress'&&run.conclusion===null)) || (legacy && !['queued', 'in_progress', 'completed'].includes(run.status))
       || run.repository?.full_name !== REPOSITORY || run.head_repository?.full_name !== REPOSITORY || run.head_sha !== input.runHeadSha
       || !['push', 'pull_request', 'workflow_dispatch'].includes(run.event) || !positive(run.workflow_id)) fail('untrusted producer run');
     if (!registryConsumer && run.event !== 'pull_request' && input.sourceSha !== input.runHeadSha) fail('non-PR build source differs from run head');
     const workflow = await json('workflow', `actions/workflows/${run.workflow_id}`);
-    if (workflow.id !== run.workflow_id || !(legacy ? ['.github/workflows/legacy-root-compat.yml', '.github/workflows/candidate.yml'].includes(workflow.path) : nativeOriginals ? ['.github/workflows/agentfs-native-acceptance.yml','.github/workflows/build-qlever-macos-runtime.yml','.github/workflows/publish-qlever-runtime-sdk.yml',CSS_PRODUCT_WORKFLOW,CSS_ROUTED_PRODUCT_WORKFLOW].includes(workflow.path) : registryConsumer ? workflow.path === '.github/workflows/independent-publication.yml' : PRODUCERS.has(workflow.path)) || run.path?.split('@')[0] !== workflow.path) fail('untrusted producer workflow');
+    if (workflow.id !== run.workflow_id || !(legacy ? ['.github/workflows/legacy-root-compat.yml', '.github/workflows/candidate.yml'].includes(workflow.path) : nativeOriginals ? [...(candidateRole?['.github/workflows/candidate.yml']:[]),'.github/workflows/agentfs-native-acceptance.yml','.github/workflows/build-qlever-macos-runtime.yml','.github/workflows/publish-qlever-runtime-sdk.yml',CSS_PRODUCT_WORKFLOW,CSS_ROUTED_PRODUCT_WORKFLOW].includes(workflow.path) : registryConsumer ? workflow.path === '.github/workflows/independent-publication.yml' : PRODUCERS.has(workflow.path)) || run.path?.split('@')[0] !== workflow.path) fail('untrusted producer workflow');
     let producerJob: any, legacyJobs: any;
     if (legacy) {
       const jobs = await json('jobs', `actions/runs/${input.runId}/attempts/${input.runAttempt}/jobs?per_page=100`);
@@ -193,13 +203,13 @@ async function acquireProductInput(input: ArtifactAcquisitionInput, output: stri
     const consumerName=archiveConsumer?archiveConsumerArtifactName:registryConsumerArtifactName;
     const consumerNames = (['client', 'cli'] as const).map(module => consumerName({ module, sourceSha: input.sourceSha, runId: input.runId, runAttempt: input.runAttempt }))
       .concat((['api', 'css', 'afs'] as const).flatMap(module => MODULE_TARGETS.map(target => consumerName({ module, target: `${target.platform}-${target.arch}`, sourceSha: input.sourceSha, runId: input.runId, runAttempt: input.runAttempt }))));
-    const allowedNames = nativeOriginals && workflow.path === '.github/workflows/publish-qlever-runtime-sdk.yml' ? ['linux-x64','linux-arm64'].map(target=>`qlever-sdk-originals-${target}-${input.sourceSha}-${input.runId}-${input.runAttempt}`) : nativeOriginals ? workflow.path === '.github/workflows/agentfs-native-acceptance.yml' ? MODULE_TARGETS.map(target => `agentfs-native-${target.platform}-${target.arch}-${input.sourceSha}`) : (workflow.path === CSS_PRODUCT_WORKFLOW ? ['darwin-arm64'] : ['darwin-arm64','darwin-x64']).map(target => `qlever-local-runtime-${target}-${input.sourceSha}`).concat(workflow.path===CSS_ROUTED_PRODUCT_WORKFLOW?['linux-x64','linux-arm64'].map(target=>`qlever-local-runtime-${target}-${input.sourceSha}-${input.runId}-${input.runAttempt}`):[]).concat(workflow.path===CSS_ROUTED_PRODUCT_WORKFLOW?['linux-x64','linux-arm64'].map(target=>`qlever-sdk-originals-${target}-${input.sourceSha}-${input.runId}-${input.runAttempt}`):[]) : registryConsumer ? consumerNames.filter(name=>consumerModule!=='afs'||name.startsWith(archiveConsumer?'xpod-archive-consumer-afs-':'xpod-registry-consumer-afs-')) : legacy ? [`legacy-root-normal-afs-${input.sourceSha}-${input.runId}-${input.runAttempt}`] : workflow.path === CLI_PRODUCT_WORKFLOW
+    const allowedNames = candidateRole ? [candidateRole==='service'?`candidate-service-image-originals-${input.sourceSha}-${input.runId}-${input.runAttempt}`:`qlever-sdk-originals-service-trixie-linux-x64-${input.sourceSha}-${input.runId}-${input.runAttempt}`] : nativeOriginals && workflow.path === '.github/workflows/publish-qlever-runtime-sdk.yml' ? ['linux-x64','linux-arm64'].map(target=>`qlever-sdk-originals-${target}-${input.sourceSha}-${input.runId}-${input.runAttempt}`) : nativeOriginals ? workflow.path === '.github/workflows/agentfs-native-acceptance.yml' ? MODULE_TARGETS.map(target => `agentfs-native-${target.platform}-${target.arch}-${input.sourceSha}`) : (workflow.path === CSS_PRODUCT_WORKFLOW ? ['darwin-arm64'] : ['darwin-arm64','darwin-x64']).map(target => `qlever-local-runtime-${target}-${input.sourceSha}`).concat(workflow.path===CSS_ROUTED_PRODUCT_WORKFLOW?['linux-x64','linux-arm64'].map(target=>`qlever-local-runtime-${target}-${input.sourceSha}-${input.runId}-${input.runAttempt}`):[]).concat(workflow.path===CSS_ROUTED_PRODUCT_WORKFLOW?['linux-x64','linux-arm64'].map(target=>`qlever-sdk-originals-${target}-${input.sourceSha}-${input.runId}-${input.runAttempt}`):[]) : registryConsumer ? consumerNames.filter(name=>consumerModule!=='afs'||name.startsWith(archiveConsumer?'xpod-archive-consumer-afs-':'xpod-registry-consumer-afs-')) : legacy ? [`legacy-root-normal-afs-${input.sourceSha}-${input.runId}-${input.runAttempt}`] : workflow.path === CLI_PRODUCT_WORKFLOW
       ? [...['Linux', 'macOS'].map(os => `xpod-cli-${os}-${input.sourceSha}`), ...cliPublicationNames]
       : [API_PRODUCT_WORKFLOW, CSS_PRODUCT_WORKFLOW,CSS_ROUTED_PRODUCT_WORKFLOW].includes(workflow.path)
         ? productTargets(workflow.path !== API_PRODUCT_WORKFLOW ? 'css' : 'api').filter(row => row.nativeSourceAvailable||workflow.path===CSS_ROUTED_PRODUCT_WORKFLOW)
           .map(row => `${workflow.path !== API_PRODUCT_WORKFLOW ? 'css' : 'api'}-module-products-${row.target}-${input.sourceSha}-${input.runId}-${input.runAttempt}`)
       : MODULE_TARGETS.flatMap(target => [`afs-module-products-${target.platform}-${target.arch}-${input.sourceSha}-${input.runId}-${input.runAttempt}`, `afs-module-production-${target.platform}-${target.arch}-${input.sourceSha}-${input.runId}-${input.runAttempt}`]);
-    const created = Date.parse(artifact.created_at), started = Date.parse(run.run_started_at), completed = registryConsumer && run.status==='in_progress' ? Date.now() : Date.parse(legacy ? producerJob.completed_at : run.updated_at);
+    const created = Date.parse(artifact.created_at), started = Date.parse(run.run_started_at), completed = (registryConsumer||candidateRole!==undefined) && run.status==='in_progress' ? Date.now() : Date.parse(legacy ? producerJob.completed_at : run.updated_at);
     if (artifact.id !== input.artifactId || !allowedNames.includes(artifact.name) || artifact.expired !== false || artifact.workflow_run?.id !== run.id
       || artifact.workflow_run?.head_sha !== input.runHeadSha || artifact.digest !== 'sha256:' + input.artifactSha256
       || !positive(artifact.size_in_bytes) || artifact.size_in_bytes > limits.packedBytes

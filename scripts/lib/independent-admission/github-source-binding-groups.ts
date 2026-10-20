@@ -1,6 +1,7 @@
+import type {CandidateServiceRelationshipContract} from './qlever-sdk-service-relationship';
 import type {QleverSdkOuterExecutorContract} from './qlever-sdk-outer-authority';
 export interface GitHubSourceBinding {readonly path:string;readonly sha256:string;readonly ref?:'run-head';readonly reviewedSha256?:readonly string[]}
-export interface GitHubSourceBindingGroup {readonly outerExecutor?:QleverSdkOuterExecutorContract;readonly selectors:readonly GitHubSourceBinding[];readonly secondarySelectors?:readonly GitHubSourceBinding[];readonly sourceBindings:readonly GitHubSourceBinding[]}
+export interface GitHubSourceBindingGroup {readonly candidateServiceRelationship?:CandidateServiceRelationshipContract;readonly outerExecutor?:QleverSdkOuterExecutorContract;readonly selectors:readonly GitHubSourceBinding[];readonly secondarySelectors?:readonly GitHubSourceBinding[];readonly sourceBindings:readonly GitHubSourceBinding[]}
 export const sourceBindingKey=(binding:GitHubSourceBinding):string=>(binding.ref??'source')+':'+binding.path;
 /** Secondary originals are requested only after the complete historical shared
  * tuple matches. Every remaining candidate must possess these exact roles;

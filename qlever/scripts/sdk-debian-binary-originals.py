@@ -438,7 +438,7 @@ def download_exact(url, destination, size, digest):
 
 
 def acquire(out, selected_rows, ownership_originals, ledger_ref, target, remaining_bytes, stage, ref, check_budget,
-            *, lists=Path('/var/lib/apt/lists')):
+            *, lists=Path('/var/lib/apt/lists'),security_suite='bookworm-security'):
     """Producer mechanical collection, never official binary authority.
 
     ownership_originals=[{originalPath:'/var/lib/dpkg/info/<name>.list',
@@ -565,7 +565,8 @@ def acquire(out, selected_rows, ownership_originals, ledger_ref, target, remaini
         directory.mkdir()
         need(re.fullmatch(r'pool/[A-Za-z0-9+._~/-]+\.deb', coordinate['filename']), 'canonical exact pool Filename')
         release_name = Path(index_row['inRelease']['path']).name
-        security = '_bookworm-security_' in release_name
+        need(re.fullmatch(r'[a-z0-9]+-security',security_suite) is not None,'declared canonical security suite')
+        security = ('_dists_'+security_suite+'_') in release_name
         base = 'https://security.debian.org/debian-security/' if security else 'https://deb.debian.org/debian/'
         url = base + quote(coordinate['filename'], safe='/+~._-')
         budget()

@@ -1,3 +1,4 @@
+import {selectSdkControllerHelperGroup} from './sdk-controller-helper-groups';
 import {SDK_OBSERVED_TOOL_PENDING_REASONS} from './qlever-sdk-inputs';
 import {createHash} from 'node:crypto';
 import {execFileSync} from 'node:child_process';
@@ -67,7 +68,7 @@ export async function observeQleverSdkGeneratedInputOriginals(capability:unknown
   need(same(master.inputs.after,verified.afterReference),'same verified after input inventory required');
   const buildInner=json(ref(members.get('inner/build-inner.json')));need(collection.deadlineUnix===buildInner.executionBudget?.deadlineUnix,'same existing SDK execution deadline required');
   const plan=inspectSdkExecutionOriginalPlan({master,collection,inner,after:json(master.inputs.after),postpatch:json(upstream.postpatchInventory),selections:collection.phases.map((phase:any)=>json(phase.selectedInputs)),verifiedRows:verified.rows,check});
-  const helpers=HELPERS.map(([name,sha])=>{const path=fileURLToPath(new URL('../../../qlever/scripts/'+name,import.meta.url)),identity=captureLegalFileIdentity(path);need(identity.size<=BigInt(limits.metadataBytes)&&hash(readFileSync(path))===sha,'reviewed controller helper differs');return identity;});
+  const helperDigests=new Map<string,string>();const helpers=HELPERS.map(([name])=>{const path=fileURLToPath(new URL('../../../qlever/scripts/'+name,import.meta.url)),identity=captureLegalFileIdentity(path);need(identity.size<=BigInt(limits.metadataBytes),'bounded reviewed controller helper');helperDigests.set(name,hash(readFileSync(path)));assertLegalFileIdentity(identity);return identity;});selectSdkControllerHelperGroup(REVIEWED_CONTROLLER_HELPER_GROUPS,helperDigests);
   const python=realpathSync('/usr/bin/python3'),pythonIdentity=captureLegalFileIdentity(python);
   const limitsFile=fileURLToPath(new URL('../module-artifact-limits.json',import.meta.url)),limitsIdentity=captureLegalFileIdentity(limitsFile);need(hash(readFileSync(limitsFile))===moduleSourcePhasePolicy.limits,'reviewed shared limit authority differs');
   for(const phase of collection.phases){const producerGroup=REVIEWED_OBSERVER_GROUPS.find(group=>phase.backend.observerOriginals.length===Object.keys(group).length&&phase.backend.observerOriginals.every((row:any)=>typeof row.sourcePath==='string'&&row.file?.sha256===group[row.sourcePath]));need(producerGroup,'complete reviewed observer version group required');const producerPaths=new Set<string>();for(const row of phase.backend.observerOriginals){need(!producerPaths.has(row.sourcePath),'duplicate observer original source role');need(Object.prototype.hasOwnProperty.call(producerGroup,row.sourcePath),'unreviewed producer observer source role');const original=ref(row.file),bytes=sdk.readOriginal(original.path,limits.metadataBytes);need(bytes.length===original.bytes&&hash(bytes)===original.sha256&&bytes.equals(source.readTracked(row.sourcePath))&&hash(bytes)===producerGroup[row.sourcePath],'producer observer immutable Git bytes differ');producerPaths.add(row.sourcePath);}
@@ -123,3 +124,5 @@ const REVIEWED_OBSERVER_GROUPS:readonly Readonly<Record<string,string>>[]=[REVIE
   "qlever/scripts/sdk-generation-multiprocess-bindings.py": "d12e02ab8c638d20d43e0c8e5373b8d19a794f1fe189909af3d8131aee26cb80",
   "qlever/scripts/sdk-tool-provider-originals.py": "2a29a27a270c528b05f029210bd36aa728b26dbfaf1c1e21dc61f7847eaa1cad"
 })];
+
+const REVIEWED_CONTROLLER_HELPER_GROUPS=Object.freeze([HELPERS,Object.freeze(HELPERS.map(([name,sha])=>Object.freeze([name,name==='sdk-zip-originals.py'?'cf30b662bfec174a61d229811272241a945318259e9b181e8219330acf0555e6':sha] as const)))])

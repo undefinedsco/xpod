@@ -2,6 +2,10 @@
 import hashlib
 import json
 import re
+import importlib.util
+from pathlib import Path
+_profile_spec=importlib.util.spec_from_file_location("readonly_profiles",Path(__file__).with_name("qlever_compiler_profile.py"))
+profiles=importlib.util.module_from_spec(_profile_spec);_profile_spec.loader.exec_module(profiles)
 MODEL='controller-owned-daemon-readonly-image-v1'
 WRITABLE={'/opt/qlever-sdk/build','/opt/qlever-sdk/materials'}
 META=4*1024**2
@@ -13,7 +17,7 @@ def identity(value):
     need(isinstance(value,list) and len(value)==6 and all(type(v) is int and 0<=v<1<<64 for v in value),'full actual identity');return value
 def same_tuple(value,expected):
     need(value==expected and isinstance(value,dict),'exact source/job/target tuple')
-    need(re.fullmatch('[a-f0-9]{40}',value.get('sourceSha','')) and type(value.get('runId')) is int and value['runId']>0 and type(value.get('runAttempt')) is int and value['runAttempt']>0 and value.get('target') in ['linux-x64','linux-arm64'] and value.get('sdkProfile')=='module-bookworm-gcc12','supported SDK source tuple')
+    need(re.fullmatch('[a-f0-9]{40}',value.get('sourceSha','')) and type(value.get('runId')) is int and value['runId']>0 and type(value.get('runAttempt')) is int and value['runAttempt']>0 and value.get('target') in ['linux-x64','linux-arm64'] and value.get('sdkProfile') in ['module-bookworm-gcc12','service-trixie'],'supported SDK source tuple')
 IMAGE_TEMPLATE='{"Id":{{json .Id}},"Os":{{json .Os}},"Architecture":{{json .Architecture}},"RootFS":{{json .RootFS}},"Volumes":{{json .Config.Volumes}},"OnBuild":{{json .Config.OnBuild}}}'
 CONTAINER_TEMPLATE='{"Id":{{json .Id}},"Image":{{json .Image}},"Path":{{json .Path}},"Args":{{json .Args}},"HostConfig":{"ReadonlyRootfs":{{json .HostConfig.ReadonlyRootfs}},"Privileged":{{json .HostConfig.Privileged}},"CapAdd":{{json .HostConfig.CapAdd}},"CapDrop":{{json .HostConfig.CapDrop}},"PidMode":{{json .HostConfig.PidMode}},"IpcMode":{{json .HostConfig.IpcMode}},"CgroupnsMode":{{json .HostConfig.CgroupnsMode}},"VolumesFrom":{{json .HostConfig.VolumesFrom}},"Binds":{{json .HostConfig.Binds}},"Devices":{{json .HostConfig.Devices}},"DeviceRequests":{{json .HostConfig.DeviceRequests}},"SecurityOpt":{{json .HostConfig.SecurityOpt}},"RestartPolicy":{{json .HostConfig.RestartPolicy}},"Tmpfs":{{json .HostConfig.Tmpfs}},"NetworkMode":{{json .HostConfig.NetworkMode}}},"Mounts":{{json .Mounts}},"Healthcheck":{{json .Config.Healthcheck}},"State":{"Running":{{json .State.Running}},"Pid":{{json .State.Pid}},"ExitCode":{{json .State.ExitCode}},"OOMKilled":{{json .State.OOMKilled}}}'
 
@@ -29,7 +33,7 @@ def ownership(identity):
 def prepared_argv(builder,platform,identity,deadline,metadata):
     same_tuple(identity,identity);need(re.fullmatch('[A-Za-z0-9_-]{1,100}',builder) is not None,'owned builder name')
     need(platform=={'linux-x64':'linux/amd64','linux-arm64':'linux/arm64'}[identity['target']],'native target/platform exact pair')
-    return local_docker(['docker','buildx','build','--builder',builder,'--file','docker/qlever-runtime-sdk/Dockerfile.module-bookworm','--target','source-prepared','--platform',platform,'--progress','rawjson','--load','--no-cache-filter','source-prepared','--metadata-file',str(metadata),'--build-arg','XPOD_QLEVER_BUILD_JOBS=2','--build-arg','XPOD_QLEVER_SDK_DEADLINE_UNIX='+str(deadline),'--build-arg','XPOD_QLEVER_SDK_IDENTITY='+json.dumps(identity,sort_keys=True,separators=(',',':')),'.'])
+    return local_docker(['docker','buildx','build','--builder',builder,'--file',profiles.declared_profile(identity['sdkProfile'])['dockerfile'],'--target','source-prepared','--platform',platform,'--progress','rawjson','--load','--no-cache-filter','source-prepared','--metadata-file',str(metadata),'--build-arg','XPOD_QLEVER_BUILD_JOBS=2','--build-arg','XPOD_QLEVER_SDK_DEADLINE_UNIX='+str(deadline),'--build-arg','XPOD_QLEVER_SDK_IDENTITY='+json.dumps(identity,sort_keys=True,separators=(',',':')),'.'])
 
 def create_argv(image,identity,deadline,network,nonce):
     need(digest(image) and network in ['none','bridge'] and re.fullmatch('[a-f0-9]{64}',nonce) is not None,'fixed config image/network/nonce')
