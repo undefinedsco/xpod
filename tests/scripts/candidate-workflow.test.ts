@@ -209,7 +209,9 @@ esac
       'publish_qlever_local_runtime',
     ]);
     for (const [ jobName, job ] of Object.entries(workflow.jobs)) {
-      if (jobName === 'task_runtime_diagnostic' || jobName === 'runtime_mode_matrix') {
+      if (jobName === 'observe_service_sdk_source') {
+        expect((job as any).permissions, jobName).toEqual({ contents: 'read', actions: 'read', packages: 'read' });
+      } else if (jobName === 'task_runtime_diagnostic' || jobName === 'runtime_mode_matrix') {
         expect((job as { permissions?: Record<string, string> }).permissions, jobName).toEqual({
           contents: 'read',
           packages: 'read',
@@ -318,6 +320,7 @@ esac
         ['build_desktop_rc', 'Apply and verify the candidate version'],
       ]) {
         const manifests = path.join(directory, jobName);
+        const runnerTemp = await mkdtemp(path.join(directory, `${jobName}-runner-`));
         await mkdir(path.join(manifests, 'desktop'), { recursive: true });
         await writeFile(path.join(manifests, 'package.json'), JSON.stringify({ name: '@undefineds.co/xpod', version: targetVersion }));
         await writeFile(path.join(manifests, 'desktop/package.json'), JSON.stringify({ name: '@undefineds.co/xpod-desktop', version: targetVersion }));
@@ -327,11 +330,19 @@ esac
           if (!value) throw new Error(`Unresolved workflow input: ${expression}`);
           return value;
         }).replace('node scripts/release-candidate.cjs', 'node "$RELEASE_CANDIDATE_SCRIPT" --repo-root "$MANIFEST_ROOT"');
-        execFileSync('bash', ['-euo', 'pipefail', '-c', run], {
-          cwd: manifests, stdio: 'pipe', env: { ...process.env, REF_NAME: 'staging',
+        const runVersionSync = () => execFileSync('bash', ['-euo', 'pipefail', '-c', run], {
+          cwd: manifests, stdio: 'pipe', env: { ...process.env, RUNNER_TEMP: runnerTemp, GITHUB_WORKSPACE: manifests, REF_NAME: 'staging',
             CANDIDATE_VERSION: metadata.candidate, MANIFEST_ROOT: manifests,
             RELEASE_CANDIDATE_SCRIPT: path.join(repoRoot, 'scripts/release-candidate.cjs') },
         });
+        runVersionSync();
+        if (jobName === 'build_image') {
+          for (const file of ['package.json', 'desktop/package.json']) {
+            expect(JSON.parse(await readFile(path.join(runnerTemp, 'service-source-manifests/before', file), 'utf8')).version).toBe(targetVersion);
+            expect(JSON.parse(await readFile(path.join(runnerTemp, 'service-source-manifests/after', file), 'utf8')).version).toBe(expectedVersion);
+          }
+          expect(runVersionSync).toThrow(/File exists/);
+        }
         for (const file of ['package.json', 'desktop/package.json']) {
           expect(JSON.parse(await readFile(path.join(manifests, file), 'utf8')).version, `${jobName}/${file}`).toBe(expectedVersion);
         }
@@ -459,11 +470,12 @@ esac
 
   it('builds exactly one GHCR image with immutable sha and candidate tags and exposes the canonical digest', async () => {
     const workflow = await loadWorkflow();
+    expect(workflow.jobs.observe_service_sdk_source.needs).toEqual(['metadata', 'build_image', 'publish_qlever_local_runtime', 'publish_qlever_runtime_sdk']);
     const build = workflow.jobs.build_image;
     const runText = jobRunText(workflow, 'build_image');
     const actionStep = build.steps.find((step: any) => step.uses === 'docker/build-push-action@v6');
 
-    expect(build.needs).toEqual([ 'metadata', 'rc_prerequisites', 'publish_qlever_local_runtime' ]);
+    expect(build.needs).toEqual([ 'metadata', 'rc_prerequisites', 'publish_qlever_local_runtime', 'publish_qlever_runtime_sdk' ]);
     expect(build.outputs.digest).toContain('digest');
     expect(actionStep.with.push).toBe(true);
     expect(actionStep.with.tags).toContain('sha-${{ needs.metadata.outputs.sourceSha }}');
@@ -939,6 +951,7 @@ esac
       'build_desktop_rc',
       'legacy_root_compat',
       'runtime_mode_matrix',
+      'observe_service_sdk_source',
     ]);
     expect(finalizeText).toContain('node scripts/release-acceptance-manifest.cjs create');
     for (const check of [

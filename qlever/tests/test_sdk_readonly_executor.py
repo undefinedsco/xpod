@@ -3,6 +3,9 @@ import copy
 import hashlib
 import importlib.util
 import json
+import re
+import shutil
+import subprocess
 from pathlib import Path
 import unittest
 import tempfile
@@ -14,6 +17,18 @@ def load(name):
 b=load('sdk-readonly-executor-bindings.py');e=load('sdk-readonly-executor.py')
 ID=dict(sourceSha='a'*40,runId=1,runAttempt=1,target='linux-arm64',sdkProfile='module-bookworm-gcc12')
 IMAGE='sha256:'+'b'*64;CID='c'*64
+
+def render_inspect(template,value):
+ # Test-only Docker json action fixture. Preserve every literal template byte;
+ # do not build an independent inspect JSON object that hides broken braces.
+ def render(match):
+  current=value
+  for part in match.group(1).split('.'):
+   current=current[part]
+  return json.dumps(current,separators=(',',':'))
+ result=re.sub(r'\{\{json \.([A-Za-z0-9_.]+)\}\}',render,template)
+ if '{{' in result:raise AssertionError('unmodeled Docker template action')
+ return (result+'\n').encode()
 
 def fixture():
  argv,volumes=e.create_argv(IMAGE,ID,2000000000.0,'none','e'*64);root=[1,20,0o40755,4096,0,0]
@@ -32,7 +47,7 @@ def fixture():
  def ref(name,data):
   originals[name]=data;return dict(path=name,bytes=len(data),sha256=hashlib.sha256(data).hexdigest())
  for index,(name,command) in enumerate(expected):
-  output=json.dumps(values['image' if name=='image' else 'containerBefore' if name=='container-before' else 'containerAfter']).encode() if name in ['image','container-before','container-after'] else (CID+'\n').encode() if name in ['create-executor','start-executor'] else b'0\n' if name=='wait-executor' else b'false\n' if name=='confirm-stopped' else b''
+  output=render_inspect(b.IMAGE_TEMPLATE if name=='image' else b.CONTAINER_TEMPLATE, {**values['image' if name=='image' else 'containerBefore' if name=='container-before' else 'containerAfter'], 'Config':dict(Volumes=None,OnBuild=None,Healthcheck={'Test':['NONE']})}) if name in ['image','container-before','container-after'] else (CID+'\n').encode() if name in ['create-executor','start-executor'] else b'0\n' if name=='wait-executor' else b'false\n' if name=='confirm-stopped' else b''
   prefix='stages/'+name+'/';stdout=ref(prefix+'stdout.raw',output);stderr=ref(prefix+'stderr.raw',b'')
   actual=dict(command=b.local_docker(command),exit=0,signal=None,actualWait=True,rawClosedBeforeHash=True,pgid=index+100,startedUnixNs=index*10+1,completedUnixNs=index*10+2,stdout=dict(stdout,path='stdout.raw'),stderr=dict(stderr,path='stderr.raw'))
   supervisor=dict(exit=0,signal=None,actualWait=True,rawClosedBeforeHash=True,pgid=index+100,ownedGroupAbsentAfterWait=True,resourceStop=None,supervisorError=None,cleanupErrors=[])
@@ -73,6 +88,30 @@ def run_mock_outer(directory,oversized=False):
  return result,output,count
 
 class Tests(unittest.TestCase):
+ def test_actual_template_literals_close_both_state_and_root(self):
+  _,_,values=fixture()
+  for role in ['containerBefore','containerAfter']:
+   value={**values[role],'Config':{'Healthcheck':values[role]['Healthcheck']}}
+   self.assertEqual(json.loads(render_inspect(b.CONTAINER_TEMPLATE,value)),values[role])
+   with self.assertRaises(json.JSONDecodeError):json.loads(render_inspect(b.CONTAINER_TEMPLATE[:-1],value))
+  with tempfile.TemporaryDirectory(dir=TESTDATA) as directory:
+   result,_,names=run_mock_outer(directory)
+   self.assertIn('container-before',names);self.assertIn('container-after',names)
+   self.assertTrue(result['stages'])
+
+ @unittest.skipUnless(shutil.which('go'),'actual Go template engine unavailable; Linux CI must execute this test')
+ def test_real_go_template_engine_renders_unmodified_container_template(self):
+  _,_,values=fixture()
+  program='''package main
+import("encoding/json";"os";"text/template")
+func main(){var input struct{Template string;Value map[string]interface{}};if err:=json.NewDecoder(os.Stdin).Decode(&input);err!=nil{panic(err)};t,err:=template.New("inspect").Funcs(template.FuncMap{"json":func(v interface{})(string,error){b,e:=json.Marshal(v);return string(b),e}}).Parse(input.Template);if err!=nil{panic(err)};if err=t.Execute(os.Stdout,input.Value);err!=nil{panic(err)}}
+'''
+  with tempfile.TemporaryDirectory(dir=TESTDATA) as directory:
+   source=Path(directory)/'render.go';source.write_text(program)
+   for role in ['containerBefore','containerAfter']:
+    value={**values[role],'Config':{'Healthcheck':values[role]['Healthcheck']}}
+    result=subprocess.run([shutil.which('go'),'run',str(source)],input=json.dumps(dict(Template=b.CONTAINER_TEMPLATE,Value=value)),text=True,capture_output=True,timeout=30)
+    self.assertEqual(result.returncode,0,result.stderr);self.assertEqual(json.loads(result.stdout),values[role])
  def test_fixed_create_does_not_expose_hostsocket_or_candidate_entry(self):
   args,volumes=e.create_argv(IMAGE,ID,2000000000.0,'none','e'*64)
   self.assertEqual(args[:3],['docker','create','--name']);self.assertEqual(len(volumes),2)
