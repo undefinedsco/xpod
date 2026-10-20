@@ -5,7 +5,7 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, 
 import path from 'node:path';
 
 const require = createRequire(import.meta.url);
-const { bundleLocalDependenciesIntoTarball, packWithManifestRestoration, summarizeTarball } = require('../../scripts/run-npm-pack.cjs');
+const { bundleLocalDependenciesIntoTarball, packWithManifestRestoration, summarizeTarball, projectServicePackManifest } = require('../../scripts/run-npm-pack.cjs');
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 function json(file: string, value: unknown) {
@@ -257,6 +257,12 @@ it('filters normalized public compat runtime while preserving its manifest, entr
   expect(JSON.parse(execFileSync('tar', ['xOf', archive, 'package/package.json']).toString())).toEqual(publicManifest);
   expect(execFileSync('tar', ['xOf', archive, 'package/src/index.js.map']).toString()).toBe('src/index.js.map');
   expect(existsSync(path.join(servicePackage, 'node_modules/auth'))).toBe(false);
+  // Replay from the actual seed/dependency originals, never image fields.
+  const seed = JSON.parse(readFileSync(path.join(service.root, 'seed/package/package.json'), 'utf8'));
+  const installed = JSON.parse(readFileSync(path.join(service.source, 'package.json'), 'utf8'));
+  const edges = Object.entries({ ...installed.dependencies, ...installed.optionalDependencies }).map(([name, range]) => ({ name, range, optional: Object.prototype.hasOwnProperty.call(installed.optionalDependencies ?? {}, name), bundled: false, newRoot: true }));
+  expect(JSON.parse(readFileSync(path.join(servicePackage, 'package.json'), 'utf8'))).toEqual(projectServicePackManifest(seed, edges, [{ name: installed.name, patchedRuntime: false }]));
+
 });
 
 it.each(['success', 'failure'])('removes summary temporary extraction on %s', (outcome) => {

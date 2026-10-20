@@ -1,3 +1,4 @@
+const completeObserved=(groups:any,group:any)=>{const facts=new Map<string,string>(group.selectors.map((row:any)=>[sourceBindingKey(row),row.sha256]));for(const role of secondaryGitHubSourceBindingSelectors(groups,facts)){const row=[...group.selectors,...group.secondarySelectors??[],...group.sourceBindings].find((row:any)=>sourceBindingKey(row)===sourceBindingKey(role));facts.set(sourceBindingKey(role),row.sha256);}return facts;};
 import {test,expect} from 'bun:test';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -8,8 +9,8 @@ import {selectGitHubSourceBindingGroup,secondaryGitHubSourceBindingSelectors,sou
 const root=path.resolve(import.meta.dir,'../..');
 const tuple=(group:(typeof QLEVER_SDK_EXECUTION_GROUPS)[number])=>new Map([...group.selectors,...(group.secondarySelectors??[])].map(row=>[sourceBindingKey(row),row.sha256]));
 test('all twenty-two SDK whole recipes select uniquely and current runtime imports match actual bytes',()=>{
- expect(QLEVER_SDK_EXECUTION_GROUPS).toHaveLength(35);
- for(const group of QLEVER_SDK_EXECUTION_GROUPS)expect(selectGitHubSourceBindingGroup(QLEVER_SDK_EXECUTION_GROUPS,tuple(group))).toBe(group);
+ expect(QLEVER_SDK_EXECUTION_GROUPS).toHaveLength(36);
+ for(const group of QLEVER_SDK_EXECUTION_GROUPS)expect(selectGitHubSourceBindingGroup(QLEVER_SDK_EXECUTION_GROUPS,completeObserved(QLEVER_SDK_EXECUTION_GROUPS,group))).toBe(group);
  const current=QLEVER_SDK_EXECUTION_GROUPS.at(-1)!;
  for(const row of [...current.selectors,...current.sourceBindings])expect(createHash('sha256').update(fs.readFileSync(path.join(root,row.path))).digest('hex')).toBe(row.sha256);
  expect(current.sourceBindings.some(row=>row.path==='qlever/scripts/sdk-tool-provider-originals.py')).toBe(true);

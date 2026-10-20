@@ -48,12 +48,23 @@ RUN NODE_TLS_REJECT_UNAUTHORIZED=0 bun install --frozen-lockfile
 
 COPY . .
 RUN bun run build:packages && bun run build:ts && bun run build:components && bun scripts/check-components-runtime-metadata.cjs && bun run build:ui
-RUN node scripts/run-npm-pack.cjs .test-data/service-pack .test-data/service-pack-cache service \
+ARG XPOD_SOURCE_SHA
+# Explicit provenance builds use the bounded parent. Local builds keep the
+# existing pack recipe and do not claim retained pack provenance.
+RUN if [ -n "${XPOD_SOURCE_SHA}" ]; then \
+      python3 scripts/service-pack-parent.py --source-sha "${XPOD_SOURCE_SHA}"; \
+    else \
+      node scripts/run-npm-pack.cjs .test-data/service-pack .test-data/service-pack-cache service; \
+    fi \
  && mkdir /service \
  && tar -xzf .test-data/service-pack/*.tgz -C /service --strip-components=1 \
  && cd /service && bun install --production --ignore-scripts \
  && node -e "for (const name of ['refresh','transport','operation-cleanup']) require('/app/scripts/patch-inrupt-authn-' + name + '.js').patchInstalledPackage('/service', {runtimeOnly:true}); require('/app/scripts/patch-jose.js').patchInstalledPackages('/service')" \
  && bun /app/scripts/check-dependency-state.ts --dependency-root /service --runtime-only \
+ && if [ -n "${XPOD_SOURCE_SHA}" ]; then \
+      mkdir -p /service/provenance \
+      && cp -a /app/.test-data/service-pack-originals /app/.test-data/service-pack-bodies /app/.test-data/service-pack-phase /service/provenance/; \
+    fi \
  && rm -rf /service/runtime-packages
 
 FROM node:22-bookworm-slim AS node-runtime

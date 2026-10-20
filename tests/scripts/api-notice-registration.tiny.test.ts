@@ -1,6 +1,6 @@
 import {test,expect} from 'bun:test';import fs from 'node:fs';import path from 'node:path';import {createHash} from 'node:crypto';
 import before from '../fixtures/independent-admission/notice-api17-prior-source-groups.original.json';
-import {API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS as api,API_ATTESTED_NOTICE_SOURCE_BINDINGS} from '../../scripts/lib/independent-admission/github-origin';
+import {API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS as api,API_PACK_SUPERVISION_SOURCE_BINDINGS} from '../../scripts/lib/independent-admission/github-origin';
 import {QLEVER_SDK_EXECUTION_GROUPS as sdk} from '../../scripts/lib/independent-admission/qlever-sdk-origin-policy';
 import {CONSUMER_SOURCE_GROUPS as consumer,CI_CONSUMER_SOURCE_GROUPS as ci} from '../../scripts/lib/independent-admission/consumer-observer-policy';
 import current from '../../scripts/lib/independent-admission/consumer-execution-current.json';
@@ -8,11 +8,11 @@ import {controlledApiSourceRecipe,reviewedModulePhasePlan,verifiedNoticeSuppleme
 import {sourceBindingKey as key,secondaryGitHubSourceBindingSelectors as secondary,selectGitHubSourceBindingGroup as select} from '../../scripts/lib/independent-admission/github-source-binding-groups';
 const root=path.resolve(import.meta.dir,'../..'),read=(name:string)=>fs.readFileSync(path.join(root,name)),sha=(raw:Buffer|string)=>createHash('sha256').update(raw).digest('hex');
 test('Notice API17 closes its executed wrapper/imports and preserves every SDK29 and earlier API/controller whole tree',()=>{
- for(const[name,groups]of Object.entries({api,sdk,consumer,ci})){const prior=before[name as keyof typeof before];expect(groups).toHaveLength(prior.length+(name==='sdk'?6:name==='ci'?16:name==='api'?2:8));for(let i=0;i<prior.length;i++)expect(sha(JSON.stringify(groups[i]))).toBe(prior[i]);}
- expect(current).toHaveLength(382);for(const row of current)expect(sha(read(row.path))).toBe(row.sha256);
- expect(API_ATTESTED_NOTICE_SOURCE_BINDINGS).toHaveLength(80);for(const row of API_ATTESTED_NOTICE_SOURCE_BINDINGS)expect(sha(read(row.path))).toBe(row.sha256);
- for(const role of ['packages/xpod-api/scripts/notice-material.ts','scripts/lib/physical-module-notices.ts','scripts/lib/independent-admission/legal-registry-originals.ts','scripts/lib/registry-legal-original-limits.json','scripts/workspace-package-payload.cjs'])expect(API_ATTESTED_NOTICE_SOURCE_BINDINGS.some(row=>row.path===role)).toBe(true);
- expect(controlledApiSourceRecipe(read,sha(read('scripts/api-module-producer.py')),'linux-arm64').rows).toBe(API_ATTESTED_NOTICE_SOURCE_BINDINGS);
+ for(const[name,groups]of Object.entries({api,sdk,consumer,ci})){const prior=before[name as keyof typeof before];expect(groups).toHaveLength(prior.length+(name==='sdk'?7:name==='ci'?18:name==='api'?3:9));for(let i=0;i<prior.length;i++)expect(sha(JSON.stringify(groups[i]))).toBe(prior[i]);}
+ expect(current).toHaveLength(386);for(const row of current)expect(sha(read(row.path))).toBe(row.sha256);
+ expect(API_PACK_SUPERVISION_SOURCE_BINDINGS).toHaveLength(80);for(const row of API_PACK_SUPERVISION_SOURCE_BINDINGS)expect(sha(read(row.path))).toBe(row.sha256);
+ for(const role of ['packages/xpod-api/scripts/notice-material.ts','scripts/lib/physical-module-notices.ts','scripts/lib/independent-admission/legal-registry-originals.ts','scripts/lib/registry-legal-original-limits.json','scripts/workspace-package-payload.cjs'])expect(API_PACK_SUPERVISION_SOURCE_BINDINGS.some(row=>row.path===role)).toBe(true);
+ expect(controlledApiSourceRecipe(read,sha(read('scripts/api-module-producer.py')),'linux-arm64').rows).toBe(API_PACK_SUPERVISION_SOURCE_BINDINGS);
  expect(verifiedNoticeSupplementDirectories({trackedPaths:[],readTracked(){throw Error('unused');}},undefined)).toEqual([]);
 });
 test('real staged original primary/secondary resolver closes each old/current tuple and rejects every missing role',()=>{

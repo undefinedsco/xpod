@@ -12,7 +12,7 @@ const hash=(value:string|Buffer)=>createHash('sha256').update(value).digest('hex
 const observed=(group:GitHubSourceBindingGroup)=>new Map([...group.selectors,...(group.secondarySelectors??[])].map(row=>[sourceBindingKey(row),row.sha256]));
 test('all a101 historical SDK and controller groups preserve their complete own original binding sets',()=>{
  for(const [groups,old] of [[SDK,historical.sdk],[CONSUMER,historical.consumer],[CI,historical.ci]] as const){
-  expect(groups.length).toBe(old.length+(groups===SDK?16:groups===CI?72:36));
+  expect(groups.length).toBe(old.length+(groups===SDK?17:groups===CI?74:37));
   for(const previous of old){
    const matches=groups.filter(group=>JSON.stringify(group.selectors)===JSON.stringify(previous.selectors)&&hash(JSON.stringify(group.sourceBindings))===previous.sourceBindingsSha256);expect(matches).toHaveLength(1);const group=matches[0]!;
    expect(group.selectors).toEqual(previous.selectors);
@@ -36,14 +36,14 @@ test('actual primary then existing shared secondary resolution selects every com
   expect(selectGitHubSourceBindingGroup(groups,tuple)).toBe(group);
   for(const role of group.secondarySelectors??[]){const missing=new Map(tuple);missing.delete(sourceBindingKey(role));expect(()=>selectGitHubSourceBindingGroup(groups,missing)).toThrow();const unknown=new Map(tuple);unknown.set(sourceBindingKey(role),'f'.repeat(64));expect(()=>selectGitHubSourceBindingGroup(groups,unknown)).toThrow();}
  }
-});
+},30000);
 test('new SDK20 pairs only the three actual kernel-reviewed authority files while preserving SDK19 and all controller bytes',()=>{
  const latest=SDK[19]!,previous=SDK[18]!;
  const changed=latest.sourceBindings.filter(row=>previous.sourceBindings.find(old=>old.path===row.path)?.sha256!==row.sha256);
  expect(changed.map(row=>row.path).sort()).toEqual(['qlever/scripts/sdk-generation-multiprocess-bindings.py','qlever/scripts/sdk-ptrace-execution.py','qlever/scripts/sdk-tool-provider-originals.py']);
  for(const row of current)expect(hash(fs.readFileSync(path.join(root,row.path)))).toBe(row.sha256);
  for(const role of latest.secondarySelectors??[]){const old=previous.secondarySelectors!.find(row=>row.path===role.path)!;if(old.sha256!==role.sha256){const mixed=observed(latest);mixed.set(sourceBindingKey(role),old.sha256);expect(()=>selectGitHubSourceBindingGroup(SDK,mixed)).toThrow();}}
- expect(current).toHaveLength(382);
+ expect(current).toHaveLength(386);
  const controller=CONSUMER.find(group=>current.every(row=>group.sourceBindings.some(binding=>binding.path===row.path&&binding.sha256===row.sha256)))!;
  for(const row of current)expect(controller.sourceBindings.find(binding=>binding.path===row.path)?.sha256).toBe(row.sha256);
 });

@@ -252,6 +252,7 @@ jobs:
           cache-to: type=gha,mode=max,scope=xpod-server
           build-args: |
             XPOD_QLEVER_LOCAL_RUNTIME_IMAGE=${{ needs.publish_qlever_local_runtime.outputs.image }}
+            XPOD_SOURCE_SHA=${{ needs.metadata.outputs.sourceSha }}
 
 
       - name: Retain candidate service image/SDK originals
@@ -278,10 +279,12 @@ jobs:
             --sdk-master-bytes "$SDK_MASTER_BYTES" --sdk-master-sha256 "$SDK_MASTER_SHA256" \
             --root-manifest-before "$RUNNER_TEMP/service-source-manifests/before/package.json" \
             --root-manifest-after "$RUNNER_TEMP/service-source-manifests/after/package.json" \
+            --capture-service-pack-originals \
             --build-metadata "$metadata" --deadline "$(( $(date +%s) + 120 ))"
 
       - name: Upload candidate service image originals
         id: service_originals_upload
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: candidate-service-image-originals-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
@@ -1828,6 +1831,7 @@ jobs:
           cache-from: type=gha,scope=xpod-server
           build-args: |
             XPOD_QLEVER_LOCAL_RUNTIME_IMAGE=${{ steps.native.outputs.image }}
+            XPOD_SOURCE_SHA=${{ github.sha }}
 
       - name: Bind the locally built diagnostic runtime and native input
         env:

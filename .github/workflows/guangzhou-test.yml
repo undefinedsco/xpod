@@ -84,6 +84,7 @@ jobs:
           cache-to: type=gha,mode=max,scope=xpod-guangzhou-test
           build-args: |
             XPOD_QLEVER_LOCAL_RUNTIME_IMAGE=${{ env.QLEVER_LOCAL_RUNTIME_IMAGE }}
+            XPOD_SOURCE_SHA=${{ github.sha }}
 
   deploy:
     needs: validate-build-publish

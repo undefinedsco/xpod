@@ -11,6 +11,29 @@ export interface CandidateServiceRelationshipContract {
 }
 function need(value:unknown,why:string):asserts value {if(!value)throw Error('Service SDK relationship: '+why);}
 const digest=(raw:Buffer)=>createHash('sha256').update(raw).digest('hex');
+/** Byte custody only. Typed pack paths select a streaming read bound; they do
+ * not establish pack input resolution, transformation, source or legal facts. */
+export function inspectCandidateServiceOriginalUniverse(view:CollectedNativeOriginalsView,master:any):void {
+ const metadataLimit=4*1024**2,totalLimit=32*metadataLimit,rangeLimit=65536;
+ const members=new Map(view.members.map(row=>[row.path,row]));
+ need(members.size===view.members.length&&Array.isArray(master.originals)&&master.originals.length===members.size-1,'complete closed service original universe');
+ const refs=new Map<string,any>();let total=0;
+ for(const row of view.members){need(Number.isSafeInteger(row.bytes)&&row.bytes>=0&&/^[a-f0-9]{64}$/u.test(row.sha256),'actual bounded service member');total+=row.bytes;need(total<=totalLimit,'actual service retained byte ceiling');}
+ for(const row of master.originals){need(row&&Object.keys(row).sort().join(',')==='bytes,path,sha256'&&typeof row.path==='string'&&!refs.has(row.path),'unique plain service original');const actual=members.get(row.path);need(actual&&actual.bytes===row.bytes&&actual.sha256===row.sha256&&row.path!=='service-image-materials.json','exact service original reference');refs.set(row.path,row);}
+ const streamed=new Set<string>();
+ const permit=(ref:any,pattern:RegExp)=>{need(ref&&pattern.test(ref.path)&&refs.has(ref.path)&&isDeepStrictEqual(ref,refs.get(ref.path))&&!streamed.has(ref.path),'exact typed pack stream reference');streamed.add(ref.path);};
+ const pack=master.packInputObservation;
+ if(pack!==undefined){
+  need(pack?.schemaVersion===1&&pack.kind==='actual-stopped-service-image-pack-inputs'&&Array.isArray(pack.bodies)&&pack.bodies.length<=512,'typed pack stream layout');
+  permit(pack.phase?.stage?.stdout,/^stages\/service-output-copy-pack-phase\/stdout\.raw$/u);
+  for(const row of pack.bodies){permit(row.original,/^output\/service-pack-bodies\/objects\/[0-9]{4}-[a-f0-9]{64}\.original$/u);permit(row.rawTarOriginal,/^stages\/service-output-copy-pack-body-[0-9]{4}\/stdout\.raw$/u);need(isDeepStrictEqual(row.rawTarOriginal,row.stage?.stdout),'same actual body stage stdout');}
+ }
+ for(const row of refs.values()){
+  need(row.bytes<=metadataLimit||streamed.has(row.path),'large service original requires exact typed pack stream');
+  const hash=createHash('sha256');for(let offset=0;offset<row.bytes;offset+=rangeLimit){const length=Math.min(rangeLimit,row.bytes-offset),raw=view.readOriginalRange(row.path,offset,length);need(raw.length===length,'complete actual service original range');hash.update(raw);}
+  need(hash.digest('hex')===row.sha256,'actual streamed service original SHA differs');
+ }
+}
 /** Exact job-row mechanics. Inputs here must be the existing private GitHub
  * acquisition originals, never a producer-provided job summary. */
 export function inspectCandidateServiceJobChain(input:{jobs:readonly any[];contract:CandidateServiceRelationshipContract;sourceSha:string;runId:number;runAttempt:number;producerJobId:number}):Readonly<{sdkJobId:number;localRuntimeJobId:number;serviceJobId:number}> {
@@ -35,8 +58,7 @@ export function inspectCandidateServiceRelationship(view:CollectedNativeOriginal
  const masterMember=members.get('service-image-materials.json');need(masterMember&&masterMember.bytes<=4*1024**2,'actual service relationship master');
  const master=JSON.parse(bytes(masterMember).toString());const origin=view.originFacts;
  need(master.schemaVersion===1&&master.kind==='xpod-candidate-service-image-originals'&&master.releaseAccepted===false&&master.sourceSha===origin.sourceSha&&master.runHeadSha===origin.runHeadSha&&master.runId===origin.runId&&master.runAttempt===origin.runAttempt&&master.target==='linux-x64'&&master.sdkProfile==='service-trixie','same exact service source/job/profile tuple');
- need(Array.isArray(master.originals)&&master.originals.length===members.size-1&&new Set(master.originals.map((row:any)=>row.path)).size===master.originals.length,'complete closed service original universe');
- for(const row of master.originals)bytes(row);
+ inspectCandidateServiceOriginalUniverse(view,master);
  function image(role:'service'|'localRuntime'|'sdk',repository:string,expected:string):any {
   const record=master.images?.[role];need(record?.referenceByDigest===expected&&new RegExp('^ghcr\\.io/undefinedsco/'+repository+'@sha256:[a-f0-9]{64}$','u').test(expected),'exact fixed image repository/digest');
   let manifest=JSON.parse(bytes(record.manifestOriginal).toString());need('sha256:'+record.manifestOriginal.sha256===expected.split('@')[1],'actual OCI root manifest digest');
