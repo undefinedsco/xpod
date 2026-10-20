@@ -93,6 +93,25 @@ class DriverTests(unittest.TestCase):
   gen=reader(file.name,1000000);next(gen)
   with file.open('r+b') as raw:raw.write(b'X')
   with self.assertRaises(AssertionError):list(gen)
+ def test_uid_parameters_cap_to_actual_shared_remaining(self):
+  parameters=self.extracted('case_parameters',{})
+  for name in ['numeric','cmake-synchronous']:
+   value=parameters(name,32*1024**2);self.assertFalse(value['verified_setresuid_noop']);self.assertFalse(value['capture_toolchain']);self.assertTrue(value['deny_optional_io_uring']);self.assertEqual(value['maximum_file_bytes'],1024**2)
+  uid=parameters('uid-noop',32*1024**2);self.assertTrue(uid['shared_tasks']);self.assertTrue(uid['capture_toolchain']);self.assertTrue(uid['verified_setresuid_noop']);self.assertFalse(uid['deny_optional_io_uring']);self.assertEqual(uid['maximum_file_bytes'],8*1024**2)
+  self.assertEqual(parameters('uid-noop',12345)['maximum_file_bytes'],12345)
+  for name,amount in [('caller-case',1),('uid-noop',0),('uid-noop',True)]:
+   with self.assertRaises(AssertionError):parameters(name,amount)
+ def test_uid_fixture_same_original_self_uid_source(self):
+  node=next(n for n in self.tree.body if isinstance(n,ast.Assign) and any(isinstance(t,ast.Name) and t.id=='UID' for t in n.targets));fixture=ast.literal_eval(node.value)
+  self.assertEqual(hashlib.sha256(fixture).hexdigest(),'35cd8ab8e4565ebbfe497a38bbbec0f95ef4d0d3d0f3a2c30a8c986470f836fe');compile(fixture,'fixed-self-uid','exec');self.assertIn(b'os.getresuid()==(uid,uid,uid)',fixture);self.assertNotIn(b'argv',fixture)
+ def test_uid_diagnostic_actual_entry_barrier_exit_closure(self):
+  completion=self.extracted('uid_completion',{})
+  rows=[dict(kind='kernel-syscall',sequence=1,op='entry'),dict(kind='all-stop-barrier',sequence=2,pids=[7]),dict(kind='setresuid-noop-entry-original',sequence=3,entrySequence=1,barrierSequence=2,pid=7),dict(kind='kernel-syscall',sequence=4,op='exit',entrySequence=1,result=0,isError=False),dict(kind='all-stop-barrier',sequence=5,pids=[7]),dict(kind='setresuid-noop-exit-original',sequence=6,entrySequence=1,exitSequence=4,barrierSequence=5,pid=7)]
+  self.assertEqual(completion(rows),dict(actualUidTransitions=1,uidEntrySequence=1,uidExitSequence=4))
+  import copy
+  for mutate in [lambda r:r.pop(1),lambda r:r[3].update(result=1),lambda r:r[3].update(isError=True),lambda r:r[5].update(entrySequence=99),lambda r:r[4].update(pids=[]),lambda r:r.append(dict(r[5]))]:
+   wrong=copy.deepcopy(rows);mutate(wrong)
+   with self.assertRaises((AssertionError,KeyError)):completion(wrong)
  def test_cleanup_reaps_even_when_shared_log_budget_rejects(self):
   waits=[(7,(6<<16)|(5<<8)|127),(7,9)];calls=[]
   class Wait:

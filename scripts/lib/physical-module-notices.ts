@@ -1,5 +1,6 @@
+import {verifyNoticeSourceAttestation,reviewedNoticeVerifierPlan,noticeVerifierReceiptOriginals,verifyNoticeVerifierHttpOriginals} from './notice-source-attestation';
 import type {BigIntStats} from 'node:fs';
-import {openSync,closeSync,readSync,fstatSync,constants,existsSync,lstatSync,mkdirSync,readFileSync,readdirSync,writeFileSync} from 'node:fs';
+import {openSync,closeSync,readSync,fstatSync,constants,existsSync,lstatSync,mkdirSync,readFileSync,readdirSync,writeFileSync,realpathSync} from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {verifyMitGrantText,verifyIscGrantText,explicitLicenseConflicts} from './independent-admission/legal-admission';
@@ -15,11 +16,12 @@ function safeFile(root:string,relative:string):string {
  let current=root;for(const part of relative.split('/')){current=path.join(current,part);if(lstatSync(current).isSymbolicLink())throw new Error('Notice material symlink rejected');}
  if(!lstatSync(current).isFile())throw new Error('Notice material is not regular');return current;
 }
-function boundedOriginal(root:string,name:string,maximum:number):Buffer {
+function boundedOriginal(root:string,name:string,maximum:number,check:()=>void=()=>{}):Buffer {
+ check();
  const filename=safeFile(root,name),fd=openSync(filename,constants.O_RDONLY|constants.O_NOFOLLOW);
  const identity=(st:BigIntStats)=>[st.dev,st.ino,st.mode,st.size,st.mtimeNs,st.ctimeNs,st.nlink].join(':');
  try{const before=fstatSync(fd,{bigint:true});if(!before.isFile()||before.size>BigInt(maximum))throw new Error('Notice original byte budget');const parts:Buffer[]=[];let size=0;
-  for(;;){const block=Buffer.alloc(Math.min(65536,maximum-size+1));const count=readSync(fd,block,0,block.length,null);if(!count)break;size+=count;if(size>maximum)throw new Error('Notice original grew');parts.push(block.subarray(0,count));}
+  for(;;){check();const block=Buffer.alloc(Math.min(65536,maximum-size+1));const count=readSync(fd,block,0,block.length,null);if(!count)break;size+=count;if(size>maximum)throw new Error('Notice original grew');parts.push(block.subarray(0,count));}
   if(BigInt(size)!==before.size||identity(before)!==identity(fstatSync(fd,{bigint:true}))||identity(before)!==identity(lstatSync(safeFile(root,name),{bigint:true})))throw new Error('Notice original identity drift');return Buffer.concat(parts,size);
  }finally{closeSync(fd);}
 }
@@ -40,7 +42,41 @@ function sourceIdentity(input:any,metadata:Buffer){
  const prefix=input.archivePrefix??match[1]!.slice(match[1]!.indexOf('/')+1)+'-'+original.gitHead+'/';
  if(typeof prefix!=='string'||!new RegExp('^[A-Za-z0-9_.-]+-'+original.gitHead+'/$','u').test(prefix))throw new Error('Notice source archive prefix differs');return {scope,prefix};
 }
-type NoticeBudget={packed:number;expanded:number;attempts:number;sources:Map<string,{members:Map<string,Buffer>;expandedBytes:number}>};
+type NoticeBudget={packed:number;expanded:number;attempts:number;end:number;verifier?:{path:string;root:Buffer;assertCurrent:()=>void};sources:Map<string,{members:Map<string,Buffer>;expandedBytes:number}>};
+function normalNoticeVerifier(stage:string,budget:NoticeBudget){
+ if(budget.verifier){budget.verifier.assertCurrent();return budget.verifier;}
+ const root=path.resolve(stage,'..','notice-tools'),plan=reviewedNoticeVerifierPlan();
+ const rootStat=lstatSync(root,{bigint:true});if(!rootStat.isDirectory()||rootStat.isSymbolicLink()||realpathSync(root)!==root)throw new Error('Notice verifier canonical owned directory required');
+ const rootIdentity=[rootStat.dev,rootStat.ino,rootStat.mode].join(':');
+ const check=()=>{if(Date.now()>=budget.end)throw new Error('Notice verifier shared deadline');};
+ const receiptRaw=boundedOriginal(root,'acquisition.original.json',4*1024**2,check),receipt=JSON.parse(receiptRaw.toString('utf8'));
+ const {originals}=noticeVerifierReceiptOriginals(receipt),checked=['acquisition.original.json'];
+ const read=(name:string,maximum:number)=>boundedOriginal(root,name,maximum,check);
+ for(const ref of originals){const raw=read(ref.path,ref.bytes);if(raw.length!==ref.bytes||hash(raw)!==ref.sha256)throw new Error('Notice verifier original bytes differ');checked.push(ref.path);}
+ verifyNoticeVerifierHttpOriginals(receipt,read);
+ const trust=read(plan.trustedRoot.path,plan.trustedRoot.bytes);
+ const identity=(name:string)=>{const st=lstatSync(safeFile(root,name),{bigint:true});return [st.dev,st.ino,st.mode,st.size,st.mtimeNs,st.ctimeNs,st.nlink].join(':');};
+ const retainedIdentities=checked.map(name=>[name,identity(name)] as const);
+ const assertCurrent=()=>{const current=lstatSync(root,{bigint:true});if(!current.isDirectory()||current.isSymbolicLink()||realpathSync(root)!==root||[current.dev,current.ino,current.mode].join(':')!==rootIdentity)throw new Error('Notice verifier owned directory changed');if(Date.now()>=budget.end)throw new Error('Notice verifier shared deadline');for(const [name,before]of retainedIdentities)if(identity(name)!==before)throw new Error('Notice verifier retained original changed');};
+ budget.verifier={path:path.join(root,plan.executable.path),root:trust,assertCurrent};assertCurrent();return budget.verifier;
+}
+function signedSourceMetadata(input:any,metadata:Buffer,archive:Buffer,integrity:string,read:(ref:any,max:number)=>Buffer,budget:NoticeBudget,workRoot:string){
+ if(!input?.attestation)return {metadata};
+ const original=JSON.parse(metadata.toString()),policy=input.attestation.policy;
+ // The signed repository must also be the registry artifact's declared repo.
+ // Source archive selection remains the same exact sourceIdentity projection.
+ const projected=Buffer.from(JSON.stringify({...original,gitHead:input.commit}));sourceIdentity(input,projected);
+ if(original.gitHead!==undefined&&original.gitHead!==input.commit)throw new Error('Attested metadata source conflict');
+ if(policy?.packageName!==original.name||policy?.packageVersion!==original.version)throw new Error('Attestation package declaration differs');
+ if(policy?.repository!==(input.repository??'').replace(/^https:\/\/github\.com\//u,'')||policy?.commit!==input.commit)throw new Error('Attestation policy source differs');
+ const response=read(input.attestation.response,512*1024),trustedRoot=read(input.attestation.trustedRoot,512*1024);
+ const tools=normalNoticeVerifier(workRoot,budget);if(!tools.root.equals(trustedRoot))throw new Error('Notice verifier trusted root original differs');
+ if(input.attestation.verificationOriginal)read(input.attestation.verificationOriginal,1024*1024);
+ const verified=verifyNoticeSourceAttestation({policy,artifact:archive,integrity,response,trustedRoot,verifierPath:tools.path,workRoot,remainingMilliseconds:()=>budget.end-Date.now()});
+ tools.assertCurrent();
+ if(verified.commit!==input.commit)throw new Error('Verified source commit differs');
+ return {metadata:projected,attestation:{policy,response,trustedRoot,verificationOriginal:verified.verificationOriginal}};
+}
 function sourceProof(input:any,metadata:Buffer,read:(ref:any,max:number)=>Buffer,budget:NoticeBudget){
  const identity=sourceIdentity(input,metadata),archive=read(input.archive,SOURCE_ARCHIVE_PACKED_BYTES),key=input.repository+'@'+input.commit+':'+identity.prefix+':'+hash(archive);
  let proof=budget.sources.get(key);
@@ -121,7 +157,7 @@ function collectOriginalPackages(stage:string) {
 export function attachPhysicalNotices(stage:string,supplementDirectories:string[],registryLock?:Buffer):void {
  const output=path.join(stage,'provenance/terms');if(existsSync(output))throw new Error('Notice material output exists');
  const records=collectOriginalPackages(stage);
- const lock=registryLock?registryLegalLockEntries(registryLock):undefined;const budget:NoticeBudget={packed:0,expanded:0,attempts:0,sources:new Map()};
+ const lock=registryLock?registryLegalLockEntries(registryLock):undefined;const budget:NoticeBudget={packed:0,expanded:0,attempts:0,end:Date.now()+120000,sources:new Map()};
  const objects=new Map<string,Buffer>();
  const retain=(bytes:Buffer)=>{const sha256=hash(bytes);objects.set(sha256,bytes);return {object:'objects/'+sha256+'.txt',bytes:bytes.length,sha256};};
  const registryLockOriginal=registryLock?retain(registryLock):undefined;const inputs:{indexSHA256:string;entries:number}[]=[];
@@ -141,9 +177,11 @@ export function attachPhysicalNotices(stage:string,supplementDirectories:string[
     const readRef=(ref:any,maximum:number)=>{if(!ref||!Number.isSafeInteger(ref.bytes)||ref.bytes<1||ref.bytes>maximum||!/^[a-f0-9]{64}$/u.test(ref.sha256))throw new Error('Notice archive reference invalid');const bytes=boundedOriginal(directory,ref.path,maximum);if(bytes.length!==ref.bytes||hash(bytes)!==ref.sha256)throw new Error('Notice archive reference drift');return bytes;};
     const archive=readRef(entry.registryOriginals?.archive,REGISTRY_LEGAL_ORIGINAL_LIMITS.packagePackedBytes),metadata=readRef(entry.registryOriginals?.metadata,REGISTRY_LEGAL_ORIGINAL_LIMITS.metadataBytes);
     budget.packed+=archive.length;if(budget.packed>REGISTRY_LEGAL_ORIGINAL_LIMITS.groupPackedBytes)throw new Error('Notice aggregate archive byte budget');
-    const inspected=registryMembers(entry.name,entry.version,provenance,metadata,archive,integrity,Math.min(REGISTRY_LEGAL_ORIGINAL_LIMITS.packageExpandedBytes,REGISTRY_LEGAL_ORIGINAL_LIMITS.groupExpandedBytes-budget.expanded));
+    const signed=signedSourceMetadata(entry.sourceOriginals,metadata,archive,integrity,readRef,budget,stage);
+    const inspected=registryMembers(entry.name,entry.version,provenance,signed.metadata,archive,integrity,Math.min(REGISTRY_LEGAL_ORIGINAL_LIMITS.packageExpandedBytes,REGISTRY_LEGAL_ORIGINAL_LIMITS.groupExpandedBytes-budget.expanded));
+    if(signed.attestation)sourceIdentity(entry.sourceOriginals,Buffer.from(JSON.stringify({...inspected.manifest,gitHead:entry.sourceOriginals.commit})));
     budget.expanded+=inspected.expandedBytes;registryOriginals={archive:retain(archive),metadata:retain(metadata)};archiveLicense=inspected.manifest.license;native=nativePayload(inspected);
-    if(entry.sourceOriginals){source=sourceProof(entry.sourceOriginals,metadata,readRef,budget);sourceOriginals={repository:entry.sourceOriginals.repository,commit:entry.sourceOriginals.commit,url:entry.sourceOriginals.url,packageDirectory:entry.sourceOriginals.packageDirectory,...(entry.sourceOriginals.archivePrefix?{archivePrefix:entry.sourceOriginals.archivePrefix}:{}),archive:retain(source.archive)};}
+    if(entry.sourceOriginals){source=sourceProof(entry.sourceOriginals,signed.metadata,readRef,budget);sourceOriginals={repository:entry.sourceOriginals.repository,commit:entry.sourceOriginals.commit,url:entry.sourceOriginals.url,packageDirectory:entry.sourceOriginals.packageDirectory,...(entry.sourceOriginals.archivePrefix?{archivePrefix:entry.sourceOriginals.archivePrefix}:{}),archive:retain(source.archive),...(signed.attestation?{attestation:{policy:signed.attestation.policy,response:retain(signed.attestation.response),trustedRoot:retain(signed.attestation.trustedRoot),verificationOriginal:retain(signed.attestation.verificationOriginal)}}:{})};}
     archiveMembers=new Map();for(const row of inspected.entries){if(row.type!=='file')continue;archiveMembers.set(row.path.slice(8),Buffer.from(row.content));}
    }
    const files=entry.files.map((file:{sourcePath:string;object:string;sha256:string;sourceOrigin?:string})=>{if(typeof file.sourcePath!=='string'||!file.sourcePath||typeof file.sha256!=='string'||!/^[a-f0-9]{64}$/u.test(file.sha256)||file.object!=='objects/'+file.sha256+'.txt')throw new Error('Invalid notice original object binding');const bytes=lock?boundedOriginal(directory,file.object,4*1024**2):readFileSync(safeFile(directory,file.object));if(hash(bytes)!==file.sha256||!bytes.length)throw new Error('Notice original hash mismatch');if(archiveMembers){const member=originalMember(file,archiveMembers,source);if(!member||!member.equals(bytes))throw new Error('Notice archive member differs');}objects.set(file.sha256,bytes);return {sourcePath:file.sourcePath,object:file.object,sha256:file.sha256,bytes:bytes.length,...(file.sourceOrigin?{sourceOrigin:file.sourceOrigin}:{})};});
@@ -163,7 +201,7 @@ export function verifyPhysicalNotices(stage:string, requireComplete=false):void 
  const index=JSON.parse(readFileSync(safeFile(stage,'provenance/terms/index.json'),'utf8'));
  if(index.schemaVersion!==1||index.status!=='original-material-collection'||index.legalClearance!==false||!Array.isArray(index.entries))throw new Error('Invalid original notice material index');
  const readRetained=(ref:any,max:number)=>{if(!ref||!Number.isSafeInteger(ref.bytes)||ref.bytes<1||ref.bytes>max||!/^[a-f0-9]{64}$/u.test(ref.sha256)||ref.object!=='objects/'+ref.sha256+'.txt')throw new Error('Invalid registry notice retained reference');const bytes=boundedOriginal(stage,'provenance/terms/'+ref.object,max);if(bytes.length!==ref.bytes||hash(bytes)!==ref.sha256)throw new Error('Registry notice retained drift');return bytes;};
- const lock=index.registryLockOriginal?registryLegalLockEntries(readRetained(index.registryLockOriginal,4*1024**2)):undefined;const budget:NoticeBudget={packed:0,expanded:0,attempts:0,sources:new Map()};
+ const lock=index.registryLockOriginal?registryLegalLockEntries(readRetained(index.registryLockOriginal,4*1024**2)):undefined;const budget:NoticeBudget={packed:0,expanded:0,attempts:0,end:Date.now()+120000,sources:new Map()};
  const actual=collectOriginalPackages(stage);const seen=new Set<string>();const missing:{name:string;version:string}[]=[];
  for(const entry of index.entries){
   const key=entry.name+'@'+entry.version,record=actual.get(key);
@@ -175,7 +213,7 @@ export function verifyPhysicalNotices(stage:string, requireComplete=false):void 
    const url=new URL(provenance.noticeUrl);if(url.protocol!=='https:'||url.username||url.password)throw new Error('Unsafe original notice URL');
    if(requireComplete&&!lock)throw new Error('Strict notice completeness requires retained registry originals');
    let members:Map<string,Buffer>|undefined;let archiveLicense:unknown;let source:ReturnType<typeof sourceProof>|undefined;let native=false;
-   if(lock){if(++budget.attempts>REGISTRY_LEGAL_ORIGINAL_LIMITS.groupAttempts)throw new Error('Notice archive attempt budget');const integrity=lock.get(key);if(!integrity)throw new Error('Notice archive lock identity missing');const archive=readRetained(supplement.registryOriginals?.archive,REGISTRY_LEGAL_ORIGINAL_LIMITS.packagePackedBytes),metadata=readRetained(supplement.registryOriginals?.metadata,REGISTRY_LEGAL_ORIGINAL_LIMITS.metadataBytes);budget.packed+=archive.length;if(budget.packed>REGISTRY_LEGAL_ORIGINAL_LIMITS.groupPackedBytes)throw new Error('Notice aggregate archive byte budget');const inspected=registryMembers(entry.name,entry.version,provenance,metadata,archive,integrity,Math.min(REGISTRY_LEGAL_ORIGINAL_LIMITS.packageExpandedBytes,REGISTRY_LEGAL_ORIGINAL_LIMITS.groupExpandedBytes-budget.expanded));archiveLicense=inspected.manifest.license;native=nativePayload(inspected);budget.expanded+=inspected.expandedBytes;if(supplement.sourceOriginals)source=sourceProof(supplement.sourceOriginals,metadata,readRetained,budget);members=new Map();for(const row of inspected.entries){if(row.type!=='file')continue;members.set(row.path.slice(8),Buffer.from(row.content));}}
+   if(lock){if(++budget.attempts>REGISTRY_LEGAL_ORIGINAL_LIMITS.groupAttempts)throw new Error('Notice archive attempt budget');const integrity=lock.get(key);if(!integrity)throw new Error('Notice archive lock identity missing');const archive=readRetained(supplement.registryOriginals?.archive,REGISTRY_LEGAL_ORIGINAL_LIMITS.packagePackedBytes),metadata=readRetained(supplement.registryOriginals?.metadata,REGISTRY_LEGAL_ORIGINAL_LIMITS.metadataBytes);budget.packed+=archive.length;if(budget.packed>REGISTRY_LEGAL_ORIGINAL_LIMITS.groupPackedBytes)throw new Error('Notice aggregate archive byte budget');const signed=signedSourceMetadata(supplement.sourceOriginals,metadata,archive,integrity,readRetained,budget,stage);const inspected=registryMembers(entry.name,entry.version,provenance,signed.metadata,archive,integrity,Math.min(REGISTRY_LEGAL_ORIGINAL_LIMITS.packageExpandedBytes,REGISTRY_LEGAL_ORIGINAL_LIMITS.groupExpandedBytes-budget.expanded));if(signed.attestation)sourceIdentity(supplement.sourceOriginals,Buffer.from(JSON.stringify({...inspected.manifest,gitHead:supplement.sourceOriginals.commit})));archiveLicense=inspected.manifest.license;native=nativePayload(inspected);budget.expanded+=inspected.expandedBytes;if(supplement.sourceOriginals)source=sourceProof(supplement.sourceOriginals,signed.metadata,readRetained,budget);members=new Map();for(const row of inspected.entries){if(row.type!=='file')continue;members.set(row.path.slice(8),Buffer.from(row.content));}}
    if(members){const located=supplementTerms(supplement.files,members,archiveLicense,source,native);if(supplement.originalTermsLocated!==located||Boolean(supplement.nativeContentsTermsPending)!==!located)throw new Error('Notice original terms coverage scope differs');}
    for(const row of supplement.files){if(!/^[a-f0-9]{64}$/u.test(row.sha256)||row.object!=='objects/'+row.sha256+'.txt'||typeof row.sourcePath!=='string'||!row.sourcePath)throw new Error('Invalid original notice object');const bytes=lock||requireComplete?boundedOriginal(stage,'provenance/terms/'+row.object,4*1024**2):readFileSync(safeFile(stage,'provenance/terms/'+row.object));if(!bytes.length||bytes.length!==row.bytes||hash(bytes)!==row.sha256)throw new Error('Actual original notice object drift');if(members&&!originalMember(row,members,source)?.equals(bytes))throw new Error('Notice archive member differs');}
   }

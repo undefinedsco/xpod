@@ -48,6 +48,22 @@ def close_actual(observer,path,end,reserve_bytes):
 
 NUMERIC=b'import ctypes,errno\nlibc=ctypes.CDLL(None,use_errno=True);libc.syscall.restype=ctypes.c_long\nctypes.set_errno(0);result=libc.syscall(425,256,0,0,0,0,0)\nassert result==-1 and ctypes.get_errno()==errno.ENOSYS\n'
 CMAKE=b'cmake_minimum_required(VERSION 3.20)\nproject(ExplicitDenial NONE)\nexecute_process(COMMAND /usr/bin/true COMMAND_ERROR_IS_FATAL ANY)\n'
+UID=b"import os,ctypes,platform\nuid=os.geteuid();assert os.getresuid()==(uid,uid,uid)\nnr=147 if platform.machine()=='aarch64' else 117\nlibc=ctypes.CDLL(None,use_errno=True);libc.syscall.restype=ctypes.c_long\nassert libc.syscall(ctypes.c_long(nr),ctypes.c_ulong(-1),ctypes.c_ulong(uid),ctypes.c_ulong(-1))==0\n"
+def case_parameters(name,available):
+ assert name in ['numeric','cmake-synchronous','uid-noop'] and type(available) is int and available>0,'fixed diagnostic case/shared remaining required'
+ uid=name=='uid-noop'
+ return dict(maximum_file_bytes=min(8*1024**2 if uid else 1024**2,available),shared_tasks=uid,capture_toolchain=uid,verified_setresuid_noop=uid,deny_optional_io_uring=not uid)
+def uid_completion(rows):
+ entries=[r for r in rows if r['kind']=='setresuid-noop-entry-original'];exits=[r for r in rows if r['kind']=='setresuid-noop-exit-original']
+ assert len(entries)==len(exits)==1,'actual unique UID operation required'
+ entry,exit=entries[0],exits[0];indexed={r['sequence']:r for r in rows}
+ raw_entry=indexed[entry['entrySequence']];raw_exit=indexed[exit['exitSequence']]
+ assert raw_entry['kind']==raw_exit['kind']=='kernel-syscall' and raw_entry['op']=='entry' and raw_exit['op']=='exit'
+ assert raw_exit['entrySequence']==entry['entrySequence']==exit['entrySequence'] and raw_exit['result']==0 and raw_exit['isError'] is False
+ assert entry['entrySequence']<entry['barrierSequence']<entry['sequence']<exit['exitSequence']<exit['barrierSequence']<exit['sequence']
+ for row in [entry,exit]:
+  barrier=indexed[row['barrierSequence']];assert barrier['kind']=='all-stop-barrier' and row['pid'] in barrier['pids']
+ return dict(actualUidTransitions=1,uidEntrySequence=entry['entrySequence'],uidExitSequence=exit['exitSequence'])
 def run(destination,identity,deadline,remaining_retained_bytes):
  now=time.time();assert type(deadline) in [int,float] and math.isfinite(deadline) and 0<deadline-now<=120.5
  end=time.monotonic()+min(deadline-now,120);phase_end=end-5
@@ -79,12 +95,13 @@ def run(destination,identity,deadline,remaining_retained_bytes):
  finally:os.close(fd)
  prepared_data=bytes(data);assert json.loads(prepared_data)['identity']==identity,'same actual prepared source tuple required'
  save(out/'source-prepared.original.json',prepared_data);savejson(out/'diagnostic-scope.original.json',dict(identity=identity,deadlineUnix=deadline,remainingRetainedBytes=remaining_retained_bytes,normalModeEnabled=False,releaseAccepted=False))
- save(source/'numeric.py',NUMERIC);save(source/'CMakeLists.txt',CMAKE)
- cases=[('numeric',['/usr/bin/python3',str(source/'numeric.py')]),('cmake-synchronous',['/usr/bin/cmake','-S',str(source),'-B',str(out/'cmake-build')])]
+ save(source/'numeric.py',NUMERIC);save(source/'CMakeLists.txt',CMAKE);save(source/'own_uid.py',UID)
+ cases=[('numeric',['/usr/bin/python3',str(source/'numeric.py')]),('cmake-synchronous',['/usr/bin/cmake','-S',str(source),'-B',str(out/'cmake-build')]),('uid-noop',['/usr/bin/python3',str(source/'own_uid.py')])]
  for name,command in cases:
   case=out/name;case.mkdir();originals=case/'originals';originals.mkdir();build=case/'build';build.mkdir();result={}
   available=min(32*1024**2,remaining_retained_bytes-used()-4*1024**2);assert available>0,'same shared probe remaining budget'
-  observer=backend.Observer(originals,source,build,deadline_monotonic=phase_end,maximum_bytes=available,maximum_file_bytes=1024**2,maximum_stdio_bytes=1024**2,maximum_processes=64,selected_names=None,deny_optional_io_uring=True)
+  parameters=case_parameters(name,available)
+  observer=backend.Observer(originals,source,build,deadline_monotonic=phase_end,maximum_bytes=available,maximum_stdio_bytes=1024**2,maximum_processes=64,selected_names=None,**parameters)
   try:
    phase=observer.phase('configure',command,cwd=str(source),env={'PATH':'/usr/bin:/bin','LANG':'C','LC_ALL':'C'})
    rows=[json.loads(line) for path in sorted(originals.glob('configure*jsonl')) for line in path.open('rb')]
@@ -104,10 +121,13 @@ def run(destination,identity,deadline,remaining_retained_bytes):
       yield block
      assert count==before.st_size and identity(before)==identity(os.fstat(fd))==identity(path.lstat()),'actual capture changed'
     finally:os.close(fd)
-   proof=backend.bindings.observe([('configure',[(json.dumps(r)+'\n').encode() for r in rows])],actual_capture,{},limits={'sourceMaterialBytes':available,'shardBytes':1024**2})
-   assert denials and len(denials)==len(completions),'probe did not exercise explicit denial'
+   proof=backend.bindings.observe([('configure',[(json.dumps(r)+'\n').encode() for r in rows])],actual_capture,{},limits={'sourceMaterialBytes':available,'shardBytes':parameters['maximum_file_bytes']})
+   if name=='uid-noop':specific=uid_completion(rows);architecture=next(r['arch'] for r in rows if r['kind']=='setresuid-noop-entry-original')
+   else:
+    assert denials and len(denials)==len(completions),'probe did not exercise explicit denial'
+    specific=dict(actualDenials=len(denials));architecture=denials[0]['arch']
    assert phase['trackingReceipt']['actualRootReturnCode']==0 and phase['trackingReceipt']['trackedProcessesClosed']
-   result=dict(actualPhase=phase,actualDenials=len(denials),architecture=denials[0]['arch'],kernel=dict(zip(['sysname','nodename','release','version','machine'],os.uname())),proof=proof,normalModeEnabled=False,overallSdkSourceVerified=False)
+   result=dict(actualPhase=phase,**specific,architecture=architecture,kernel=dict(zip(['sysname','nodename','release','version','machine'],os.uname())),proof=proof,normalModeEnabled=False,overallSdkSourceVerified=False)
   finally:
    try:savejson(case/'before-cleanup.observation.json',result)
    finally:result['cleanup']=close_actual(observer,case/'cleanup.actual.jsonl',end,reserve)

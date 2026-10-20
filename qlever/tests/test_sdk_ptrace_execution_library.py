@@ -6,9 +6,31 @@ import os
 import hashlib
 import time
 import unittest
+from unittest.mock import patch
 ROOT=Path(__file__).resolve().parents[2]
 spec=importlib.util.spec_from_file_location('backend',ROOT/'qlever/scripts/sdk-ptrace-execution.py');module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
 class Tests(unittest.TestCase):
+    def test_sdk_policy_modes_keep_the_same_parent_budget_and_strict_generic_default(self):
+        base=ROOT/'.test-data/sdk-ptrace-library';base.mkdir(parents=True,exist_ok=True)
+        mounts=b'1 0 0:1 / / ro - overlay overlay rw\n'
+        original_read=Path.read_bytes
+        def read(path):
+            return mounts if path==Path('/proc/self/mountinfo') else original_read(path)
+        with tempfile.TemporaryDirectory(dir=base) as directory:
+            end=time.monotonic()+10;check=lambda:None
+            # Mount input is a fixture; no child or kernel execution is claimed.
+            with patch.object(Path,'read_bytes',read):
+                observer=module.SdkExecutionObserver(Path(directory),Path('/opt/qlever-sdk/source'),Path('/opt/qlever-sdk/build'),deadline_monotonic=end,check_budget=check,maximum_bytes=4096,maximum_stdio_bytes=1024)
+            try:
+                self.assertTrue(observer.deny_optional_io_uring and observer.verified_setresuid_noop)
+                self.assertTrue(observer.shared_tasks and observer.capture_toolchain)
+                self.assertEqual(observer.deadline_monotonic,end);self.assertIs(observer.check_budget,check)
+                self.assertEqual((observer.maximum_bytes,observer.maximum_stdio_bytes),(4096,1024))
+                self.assertEqual(observer.domain_bytes,len(mounts))
+            finally:observer.close()
+            generic=module.Observer(directory,directory,directory)
+            try:self.assertFalse(generic.deny_optional_io_uring or generic.verified_setresuid_noop)
+            finally:generic.close()
     def test_shards_preserve_exact_bytes_and_order(self):
         base=ROOT/'.test-data/sdk-ptrace-library';base.mkdir(parents=True,exist_ok=True)
         with tempfile.TemporaryDirectory(dir=base) as directory:

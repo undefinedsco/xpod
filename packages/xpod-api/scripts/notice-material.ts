@@ -1,6 +1,8 @@
+import {reviewedNoticeVerifierPlan} from '../../../scripts/lib/notice-source-attestation';
 import {readFileSync} from 'node:fs';
 import {attachPhysicalNotices} from '../../../scripts/lib/physical-module-notices';
 const [stage,...supplements]=process.argv.slice(2);
+if(stage==='--verifier-plan'){if(supplements.length)throw new Error('No caller verifier plan override');console.log(JSON.stringify(reviewedNoticeVerifierPlan()));process.exit(0);}
 if(!stage)throw new Error('Explicit physical stage required');
 const registry=supplements[0]==='--registry-lock';
 if(registry&&supplements.length<3)throw new Error('Registry notice lock and supplements required');

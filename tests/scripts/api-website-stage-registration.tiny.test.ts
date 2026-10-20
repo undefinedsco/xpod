@@ -1,5 +1,5 @@
 import legacy from '../fixtures/independent-admission/notice-pre-api17-source.original.json';
-import {API_NOTICE_SOURCE_BINDINGS} from '../../scripts/lib/independent-admission/github-origin';
+import {API_ATTESTED_NOTICE_SOURCE_BINDINGS} from '../../scripts/lib/independent-admission/github-origin';
 import {test,expect} from 'bun:test';import fs from 'node:fs';import path from 'node:path';import {createHash} from 'node:crypto';
 import {API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS as groups,API_WEBSITE_SOURCE_BINDINGS as previous,API_WEBSITE_STAGE_SOURCE_BINDINGS as current} from '../../scripts/lib/independent-admission/github-origin';
 import {CONSUMER_SOURCE_GROUPS as c,CI_CONSUMER_SOURCE_GROUPS as ci} from '../../scripts/lib/independent-admission/consumer-observer-policy';
@@ -11,9 +11,9 @@ const role='scripts/lib/inngest-controlled-materials.ts',stage='packages/xpod-ap
 const legacyRead=(p:string)=>{const row=legacy.files.find(row=>row.path===p);if(!row)return read(p);const raw=Buffer.from(row.base64,'base64');expect(raw.length).toBe(row.bytes);expect(sha(raw)).toBe(row.sha256);return raw;};
 const old=(p:string)=>p===role?read('tests/fixtures/independent-admission/controlled-pre-stage-0.original.txt'):p===stage?read('tests/fixtures/independent-admission/controlled-pre-stage-1.original.txt'):legacyRead(p);
 test('stage fifth original and index guards add an atomic source tree while all old source trees remain exact',()=>{
- expect(groups).toHaveLength(17);expect(c).toHaveLength(43);expect(ci).toHaveLength(84);expect(tcb).toHaveLength(380);expect(current).toHaveLength(75);
+ expect(groups).toHaveLength(18);expect(c).toHaveLength(44);expect(ci).toHaveLength(86);expect(tcb).toHaveLength(382);expect(current).toHaveLength(75);
  expect(current.filter(row=>previous.find(old=>old.path===row.path)?.sha256!==row.sha256).map(row=>row.path).sort()).toEqual([stage,role].sort());
- for(const row of [...API_NOTICE_SOURCE_BINDINGS,...tcb])expect(sha(read(row.path))).toBe(row.sha256);
+ for(const row of [...API_ATTESTED_NOTICE_SOURCE_BINDINGS,...tcb])expect(sha(read(row.path))).toBe(row.sha256);
  expect(groups.find(g=>'name' in g&&g.name==='root-minimal-website-source-projection')!.sourceBindings).toBe(previous);
  for(const group of groups){const primary=new Map(group.selectors.map(row=>[key(row),row.sha256]));const roles=secondary(groups,primary);expect(roles.some(row=>row.path===role)).toBe(group.selectors.some(row=>row.path==='scripts/api-module-producer.py'&&row.sha256===producer));for(const binding of roles){const original=group.sourceBindings.find(row=>key(row)===key(binding));expect(original).toBeDefined();primary.set(key(binding),original!.sha256);}expect(select(groups,primary)).toBe(group);}
  expect(controlledApiSourceRecipe(legacyRead,producer,'linux-arm64').rows).toBe(current);expect(controlledApiSourceRecipe(old,producer,'linux-arm64').rows).toBe(previous);
