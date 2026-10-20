@@ -35,6 +35,6 @@ test('controlled API whole native source tuple rejects producer/helper/placement
 test('public source and pre-public API origin groups remain complete and cannot mix',async()=>{
  const {API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS:groups}=await import('../../scripts/lib/independent-admission/github-origin');
  const {selectGitHubSourceBindingGroup,sourceBindingKey}=await import('../../scripts/lib/independent-admission/github-source-binding-groups');
- for(const group of groups){const rows=[...group.selectors,...group.secondarySelectors];const observed=new Map(rows.map(row=>[sourceBindingKey(row),row.sha256]));expect(selectGitHubSourceBindingGroup(groups,observed)).toBe(group);for(const row of group.secondarySelectors){const mixed=new Map(observed);mixed.set(sourceBindingKey(row),'f'.repeat(64));expect(()=>selectGitHubSourceBindingGroup(groups,mixed)).toThrow();}}
+ for(const group of groups){const secondary=group.secondarySelectors??[];const rows=[...group.selectors,...secondary];const observed=new Map(rows.map(row=>[sourceBindingKey(row),row.sha256]));expect(selectGitHubSourceBindingGroup(groups,observed)).toBe(group);for(const row of secondary){const mixed=new Map(observed);mixed.set(sourceBindingKey(row),'f'.repeat(64));expect(()=>selectGitHubSourceBindingGroup(groups,mixed)).toThrow();}}
  for(const path of ['scripts/prepare-package-manifest.cjs','scripts/platform-binaries.cjs','package.json','bun.lock','packages/xpod-api/package.json'])await expect(scenario('api','staging',false,false,path)).rejects.toThrow();
 });

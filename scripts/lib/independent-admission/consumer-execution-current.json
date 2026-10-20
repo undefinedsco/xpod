@@ -121,7 +121,7 @@
   },
   {
     "path": "packages/xpod-api/scripts/controlled-native-material.ts",
-    "sha256": "d1530cba12de2f599b6aaf2e3b38d17abd68b6c58ee7f8e0002f0262c14b0ef4"
+    "sha256": "19d6d57591bedb8ff5c0b62231f4cf2a1d7966683b76b1e4d8699d914b974bbe"
   },
   {
     "path": "packages/xpod-api/scripts/inngest-controlled-build-policy.json",
@@ -817,7 +817,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/github-origin.ts",
-    "sha256": "2ea920ae0da41cbc2856682c7e906f608c2acbb22122c0a9b96ddedc99617fd8"
+    "sha256": "33c3a7768a6406378be68974514a87c6396a6d91c9af328c98f360fc884f03ba"
   },
   {
     "path": "scripts/lib/independent-admission/github-source-binding-groups.ts",
@@ -913,7 +913,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/module-native-build-originals.ts",
-    "sha256": "681d9401401a48aa5779a6454169013c86869c910053a91ec279b1718730093f"
+    "sha256": "fdb483899162c9bbf3a8e673bfd6e0736081c3cd788596d1b610cb80f726485b"
   },
   {
     "path": "scripts/lib/independent-admission/module-phase-originals.ts",
@@ -933,7 +933,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/module-source-phases.ts",
-    "sha256": "c37571a68e16fd78d3243497d06d2c14f24e4555fd40b3dbb24684a12020d5bd"
+    "sha256": "b35fca01487877cf2e9e5c1018bb566af8edca472cf7d017819aa8150a1d3eac"
   },
   {
     "path": "scripts/lib/independent-admission/native-admission-requirements.ts",
@@ -1197,7 +1197,7 @@
   },
   {
     "path": "scripts/lib/inngest-controlled-materials.ts",
-    "sha256": "c47ddb2bd3b1443cefbf5c4a41f6881c975bafd574bfe70079b73564da7b9ba6"
+    "sha256": "46f9f01ef6817718afff3690447dff59ad3e4093605e7f68ba146643fc52f15d"
   },
   {
     "path": "scripts/lib/inngest-runtime-policy.json",

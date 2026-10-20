@@ -1,3 +1,4 @@
+import {controlledInngestOriginalPins,controlledInngestSourceDependencies,assertControlledInngestGitlinkOriginal} from '../inngest-controlled-materials';
 import {createHash} from 'node:crypto';
 import {isDeepStrictEqual as same} from 'node:util';
 import path from 'node:path';
@@ -19,33 +20,7 @@ export interface ModuleNativeBuildOriginalView {
 const hash=(b:Buffer)=>createHash('sha256').update(b).digest('hex');
 const safe=(name:unknown):name is string=>typeof name==='string'&&Boolean(name)&&!name.startsWith('/')&&!/[\\\u0000-\u001f\u007f]/u.test(name)&&name.split('/').every(part=>part&&part!=='.'&&part!=='..');
 function need(value:unknown,why:string):asserts value{if(!value)throw Error('Module native originals: '+why);}
-function sourceDependencies(policy:any):readonly any[]{
- const rows=policy.sourceDependencies??[];need(Array.isArray(rows)&&rows.length<=1,'finite reviewed source dependencies');
- for(const row of rows){const pin=row?.source;need(row&&typeof row.repository==='string'&&/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u.test(row.repository)&&/^[a-f0-9]{40}$/u.test(row.commit)&&safe(row.destination)&&pin&&safe(pin.file)&&!pin.file.includes('/')&&Number.isSafeInteger(pin.bytes)&&pin.bytes>0&&pin.bytes<=limits.shardBytes&&/^[a-f0-9]{64}$/u.test(pin.sha256)&&pin.url==='https://codeload.github.com/'+row.repository+'/legacy.tar.gz/'+row.commit,'exact source dependency archive declaration');}
- return rows;
-}
-function verifyGitlinkOriginal(policy:any,dependency:any,http:any):void{
- const pin=dependency.source,value=http.gitlinkOriginal;
- need(http.url===pin.url&&http.status===200&&http.bytes===pin.bytes&&http.sha256===pin.sha256,'source dependency HTTP/archive binding');
- need(value&&value.url==='https://api.github.com/repos/'+policy.repository+'/contents/'+dependency.destination+'?ref='+policy.sourceCommit&&value.status===200&&value.encoding==='base64'&&Number.isSafeInteger(value.bytes)&&value.bytes>0&&value.bytes<=65536&&typeof value.content==='string'&&value.content.length<=4*Math.ceil(65536/3)&&/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(value.content),'bounded exact Gitlink API original');
- const bytes=Buffer.from(value.content,'base64');need(bytes.length===value.bytes&&hash(bytes)===value.sha256,'actual Gitlink full bytes');const actual=JSON.parse(bytes.toString());
- need(actual.type==='submodule'&&actual.path===dependency.destination&&actual.sha===dependency.commit&&['git@github.com:'+dependency.repository+'.git','https://github.com/'+dependency.repository+'.git'].includes(actual.submodule_git_url),'actual parent Gitlink source identity');
-}
-/** Select file roles from a reviewed policy object; this pure projection issues no authority. */
-export function moduleNativeTargetOriginalFiles(policy:any,target:string):readonly string[]{
- let tools:any;
- if(policy.targetDescriptors!==undefined){
-  need(policy.targets===undefined,'mixed historical/current target policy');
-  const descriptor=Object.prototype.hasOwnProperty.call(policy.targetDescriptors,target)?policy.targetDescriptors[target]:undefined;
-  need(descriptor&&target===descriptor.platform+'-'+descriptor.arch,'exact controlled descriptor target');
-  need(Object.keys(policy.tools??{}).join(',')==='pnpm'&&Object.keys(descriptor.tools??{}).sort().join(',')==='go,node','canonical target tool roles');
-  tools={...policy.tools,...descriptor.tools};
- }else{need(target==='linux-arm64'&&Array.isArray(policy.targets)&&policy.targets.length===1&&policy.targets[0]===target,'historical Linux arm64 target only');tools=policy.tools;}
- need(Object.keys(tools??{}).sort().join(',')==='go,node,pnpm','four fixed original roles');
- const names=[policy.source?.file,tools.go.file,tools.node.file,tools.pnpm.file,...sourceDependencies(policy).map(row=>row.source.file)];
- need(names.every(name=>typeof name==='string'&&safe(name)&&!name.includes('/'))&&new Set(names).size===names.length,'unique exact archive basenames');
- return Object.freeze(names);
-}
+export function moduleNativeTargetOriginalFiles(policy:any,target:string):readonly string[]{return Object.freeze(controlledInngestOriginalPins(policy,target).map(pin=>pin.file));}
 const canonicalOriginalFiles=new Set(Object.keys(controllerPolicy.targetDescriptors).flatMap(target=>moduleNativeTargetOriginalFiles(controllerPolicy,target)));
 /** Closed transport layout only. A matching exact canonical name never authorizes a build. */
 export function isModuleNativeBuildOriginalName(name:string):boolean{
@@ -81,7 +56,7 @@ export function inspectModuleNativeBuildOriginals(input:{
  for(const value of preparation.originals)ref(value);
  need(Array.isArray(preparation.acquisitionOriginals)&&preparation.acquisitionOriginals.length===selectedOriginalFiles.length&&new Set(preparation.acquisitionOriginals.map((row:any)=>row.path)).size===selectedOriginalFiles.length,'exact selected acquisition original count');
  need(preparation.acquisitionOriginals.every((row:any)=>selectedOriginalFiles.some(name=>row.path===name+'.http.original.json')),'exact selected-target HTTP original roles');
- for(const value of preparation.acquisitionOriginals){const http=json(value),dependency=sourceDependencies(input.policy).find(row=>value.path===row.source.file+'.http.original.json');if(dependency){const pin=dependency.source,archive=preparation.originals.find((row:any)=>row.path==='originals/'+pin.file);need(archive?.bytes===pin.bytes&&archive?.sha256===pin.sha256,'source dependency complete archive pin');verifyGitlinkOriginal(input.policy,dependency,http);}}
+ for(const value of preparation.acquisitionOriginals){const http=json(value),dependency=controlledInngestSourceDependencies(input.policy).find(row=>value.path===row.source.file+'.http.original.json');if(dependency){const pin=dependency.source,archive=preparation.originals.find((row:any)=>row.path==='originals/'+pin.file);need(archive?.bytes===pin.bytes&&archive?.sha256===pin.sha256,'source dependency complete archive pin');assertControlledInngestGitlinkOriginal(input.policy,dependency,http);}}
  need(inputs.sourceKind===collection.sourceKind&&same(inputs.originals,collection.originals),'same actual before-domain collection');
  const scanned=new Set<string>(),groups:any[]=[];
  for(const domain of ['source','dependencies','toolchain'])groups.push({domain,group:collection.originals?.[domain],required:true});
