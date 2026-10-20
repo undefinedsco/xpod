@@ -73,7 +73,7 @@ function assertSafePath(name) {
   }
 }
 
-function validateHeader(block, seen, { gnuLongNames = false, longName } = {}) {
+function validateHeader(block, seen, { gnuLongNames = false, longName, gitArchiveCommit } = {}) {
   const storedChecksum = readOctal(block, 148, 8);
   const checksumBlock = Buffer.from(block);
   checksumBlock.fill(0x20, 148, 156);
@@ -86,6 +86,10 @@ function validateHeader(block, seen, { gnuLongNames = false, longName } = {}) {
   const typeflag = String.fromCharCode(block[156]);
   const mode = readOctal(block, 100, 8) & 0o7777;
   const size = readOctal(block, 124, 12);
+  if (gitArchiveCommit !== undefined && typeflag === 'g') {
+    if (prefix || fullName !== 'pax_global_header' || size !== 52 || longName !== undefined) throw new Error('Invalid Git global PAX metadata');
+    return { path: fullName, type: 'git-global', mode, size };
+  }
   if (gnuLongNames && typeflag === 'L') {
     if (longName !== undefined) throw new Error('Repeated GNU long name metadata');
     if (prefix || fullName !== '././@LongLink' || size < 2 || size > 4096) throw new Error('Invalid GNU long name metadata');
@@ -109,7 +113,8 @@ function validateHeader(block, seen, { gnuLongNames = false, longName } = {}) {
 // any nonzero byte after the end-of-archive marker.
 function parseTar(buffer, limits) {
   if (limits && (!Number.isSafeInteger(limits.members) || limits.members < 1 || limits.members > 100000
-    || limits.gnuLongNames !== undefined && typeof limits.gnuLongNames !== 'boolean')) throw new Error('Invalid tar member budget');
+    || limits.gnuLongNames !== undefined && typeof limits.gnuLongNames !== 'boolean'
+    || limits.gitArchiveCommit !== undefined && (typeof limits.gitArchiveCommit !== 'string' || !/^[a-f0-9]{40}$/u.test(limits.gitArchiveCommit)))) throw new Error('Invalid tar member budget');
   const entries = [];
   const seen = new Set();
   let offset = 0;
@@ -122,11 +127,21 @@ function parseTar(buffer, limits) {
       break;
     }
     if (limits && ++headers > limits.members) throw new Error('Tar member budget exceeded');
-    const { path: fullName, type, mode, size } = validateHeader(block, seen, { gnuLongNames: limits?.gnuLongNames, longName });
+    const { path: fullName, type, mode, size } = validateHeader(block, seen, { gnuLongNames: limits?.gnuLongNames, longName, gitArchiveCommit: limits?.gitArchiveCommit });
     offset += BLOCK;
     const content = buffer.subarray(offset, offset + size);
     if (content.length < size) throw new Error(`Corrupted tar entry content: ${fullName}`);
-    offset += Math.ceil(size / BLOCK) * BLOCK;
+    const paddingEnd = offset + Math.ceil(size / BLOCK) * BLOCK;
+    if (paddingEnd > buffer.length) throw new Error('Corrupted tar entry padding');
+    if (type === 'git-global') {
+      // Git archives use one non-overriding comment record. No path, size or
+      // link overrides, unknown records, alternate encodings or late globals.
+      if (offset !== BLOCK || !content.equals(Buffer.from('52 comment=' + limits.gitArchiveCommit + '\n'))
+        || !isZeroBlock(buffer.subarray(offset + size, paddingEnd))) throw new Error('Git global PAX exact commit/position/padding differs');
+      offset = paddingEnd;
+      continue;
+    }
+    offset = paddingEnd;
     if (type === 'long-name') {
       if (content[content.length - 1] !== 0 || content.indexOf(0) !== content.length - 1) throw new Error('Invalid GNU long name terminator');
       longName = decodeName(content.subarray(0, -1));

@@ -122,7 +122,7 @@ def target_identity(repo, target):
     return json.loads(subprocess.check_output(['bun', str(Path(repo) / 'scripts/module-product-targets.ts'), 'api', target, '--require-host'], cwd=repo, text=True))
 
 
-def phase_plan(repo, output, version, target, source_kind=None, retained_byte_ceiling=None, controlled_plan_version='current', workspace_recipe='global-v1', workspace_source_sha=None):
+def phase_plan(repo, output, version, target, source_kind=None, retained_byte_ceiling=None, controlled_plan_version='current', workspace_recipe='global-v1', workspace_source_sha=None, notice_supplements=()):
     """Commands are the normal producer entrypoints, without replacement writers."""
     repo, output = Path(repo), Path(output)
     api = ['bun', 'run', '--cwd', 'packages/xpod-api']
@@ -140,6 +140,9 @@ def phase_plan(repo, output, version, target, source_kind=None, retained_byte_ce
         ('pack', api + ['pack', str(output / 'stage'), str(output / 'product.tgz')], 600),
         ('pack-result', ['bun', '-e', "import {readFileSync} from 'node:fs';import {parseApiPackReceipt} from './scripts/collect-api-release-input';console.log(JSON.stringify(parseApiPackReceipt(readFileSync(process.argv[1]))));", str(output / 'evidence/pack.raw.log')], 60),
     ]
+    if notice_supplements:
+        for row in rows:
+            if row[0]=='notices':row[1].extend(['--registry-lock',str(repo/'bun.lock'),*map(str,notice_supplements)])
     if workspace_recipe not in ('global-v1','api-ui-root-minimal-v2'):
         raise ValueError('Exact API workspace recipe required')
     if workspace_recipe == 'api-ui-root-minimal-v2':
@@ -328,9 +331,18 @@ def controlled_retained_plan(inputs, retained, limits):
                 totalRetainedByteCeiling=limits['sourceMaterialBytes'])
 
 
-def produce(repo, output, target, environment=None, source_kind=None, workspace_recipe='global-v1'):
+def produce(repo, output, target, environment=None, source_kind=None, workspace_recipe='global-v1', notice_supplements=()):
     if workspace_recipe not in ('global-v1','api-ui-root-minimal-v2'):raise ValueError('Exact API workspace recipe required')
     repo, output = Path(repo).resolve(), Path(output).resolve()
+    checked_supplements=[]
+    if len(notice_supplements)>1 or any(relative!='packages/xpod-api/notice-supplements' for relative in notice_supplements):raise ValueError('Exact tracked notice supplement API directory required')
+    for relative in notice_supplements:
+        candidate=repo/relative
+        if not relative or Path(relative).is_absolute() or any(part in ('','..','.') for part in relative.split('/')) or candidate.resolve()!=candidate or not candidate.is_dir():raise ValueError('Canonical tracked notice supplement directory required')
+        actual={str(path.relative_to(repo)) for path in candidate.rglob('*') if path.is_file()}
+        tracked=set(subprocess.check_output(['git','ls-files','--',relative],cwd=repo,text=True).splitlines())
+        if len(actual)>512 or not actual or actual!=tracked or any(path.is_symlink() for path in candidate.rglob('*')):raise ValueError('Closed tracked notice supplement inputs required')
+        checked_supplements.append(candidate)
     environment = dict(os.environ if environment is None else environment)
     target_info = target_identity(repo, target)
     if not target_info['nativeSourceAvailable']:
@@ -354,6 +366,8 @@ def produce(repo, output, target, environment=None, source_kind=None, workspace_
                    rss=dict(enforced=False, observation='POSIX cumulative waited-child maximum; not group aggregate', cumulativeWaitedChildMaxRSSBytes=None),
                    published=False, releaseQualified=False, consumerValidated=False, legalClearance=False, nativeAdmission=False,
                    blockers=['controlled-preview-only', 'source-native-legal-consumer-release-admission-unverified', 'other-platform-products-unverified'])
+    if checked_supplements:
+        receipt['noticeSupplementInputs']=[dict(directory=str(directory.relative_to(repo)),files=[str(path.relative_to(repo)) for path in sorted(directory.rglob('*')) if path.is_file()]) for directory in checked_supplements]
     if workspace_recipe!='global-v1':receipt['workspaceRecipe']=workspace_recipe
     spec = importlib.util.spec_from_file_location('api_product_supervise', repo / 'scripts/agentfs-native-ci/supervise.py')
     supervise = importlib.util.module_from_spec(spec)
@@ -383,7 +397,7 @@ def produce(repo, output, target, environment=None, source_kind=None, workspace_
         receipt['resources'] = dict(freshRequiredBytes=FRESH_BYTES, floorBytes=FLOOR_BYTES, initialFreeBytes=initial_free)
         if initial_free < FRESH_BYTES:
             raise ValueError('Fresh API producer capacity below 8GiB')
-        queue = list(phase_plan(repo, output, version, target, workspace_recipe=workspace_recipe, workspace_source_sha=before['sha']))
+        queue = list(phase_plan(repo, output, version, target, workspace_recipe=workspace_recipe, workspace_source_sha=before['sha'],notice_supplements=checked_supplements))
         while queue:
             name, command, timeout = queue.pop(0)
             if controlled is not None and name == 'native-inputs':
@@ -456,6 +470,7 @@ if __name__ == '__main__':
     parser.add_argument('--target', required=True)
     parser.add_argument('--native-source-kind', choices=['xpod-controlled-inngest-build-v1'])
     parser.add_argument('--workspace-recipe',choices=['global-v1','api-ui-root-minimal-v2'],default='global-v1')
+    parser.add_argument('--notice-supplement',action='append',default=[])
     args = parser.parse_args()
-    result = produce(Path(__file__).resolve().parent.parent, Path(args.out), args.target, source_kind=args.native_source_kind, workspace_recipe=args.workspace_recipe)
+    result = produce(Path(__file__).resolve().parent.parent, Path(args.out), args.target, source_kind=args.native_source_kind, workspace_recipe=args.workspace_recipe,notice_supplements=args.notice_supplement)
     print(json.dumps(result))

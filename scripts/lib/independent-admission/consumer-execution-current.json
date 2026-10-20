@@ -140,6 +140,10 @@
     "sha256": "b77b600379f808de205a7817863130f7c83ae83cb135a67109dfe3816d517468"
   },
   {
+    "path": "packages/xpod-api/scripts/notice-material.ts",
+    "sha256": "a09f42ba1c00bdfe958181fb2170fd19aeda9fc4b9be0477e13cdf99acf0dcb1"
+  },
+  {
     "path": "packages/xpod-api/scripts/pack.ts",
     "sha256": "896f3ec37b743b9f9716c5672266363403c845893b370254203563197c831c40"
   },
@@ -585,7 +589,7 @@
   },
   {
     "path": "scripts/api-module-producer.py",
-    "sha256": "bd668dc98e481496f8b2cf6a1ba97541caafc70f39acf8d8757226e4cedca588"
+    "sha256": "988a1aaae9c786fefa4e0901f3a2de207401ea08f23c9154d941a640a6c70870"
   },
   {
     "path": "scripts/api-producer-dependencies.cjs",
@@ -829,7 +833,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/github-origin.ts",
-    "sha256": "21a3e375f47667c9ec587658691e922daab1fabc6ac3e28ccaf3a931256a6ff8"
+    "sha256": "601f77f8e7f66cabb1f0e084eb0b00f196e4f4baf04e6379f7db7dfe15cfc22e"
   },
   {
     "path": "scripts/lib/independent-admission/github-source-binding-groups.ts",
@@ -945,7 +949,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/module-source-phases.ts",
-    "sha256": "b35fca01487877cf2e9e5c1018bb566af8edca472cf7d017819aa8150a1d3eac"
+    "sha256": "5e37412c3d06fb90a3c575f2e241977b001d410afcf70ed9d261bf8c402507e0"
   },
   {
     "path": "scripts/lib/independent-admission/native-admission-requirements.ts",
@@ -1281,7 +1285,7 @@
   },
   {
     "path": "scripts/lib/physical-module-notices.ts",
-    "sha256": "d3b71ab69fc59bdbbc8d4bd3cf2e2dab92d39a3b08673337aa9ea494a4b807cc"
+    "sha256": "b2acc236bce0635174eb345703ea1c93c4366eff85fd802ed0183d36265bee88"
   },
   {
     "path": "scripts/lib/physical-module-stage.ts",
@@ -1413,7 +1417,7 @@
   },
   {
     "path": "scripts/workspace-package-payload.cjs",
-    "sha256": "228454b5953de73d1045f8d4a9cb57c66f7639125363ee90344fc643472dffef"
+    "sha256": "022f6e1f3aa68af10dce711b067876f100d0b51a7d005222d564f4e4b8149df7"
   },
   {
     "path": "scripts/workspace-runtime-materials.cjs",
