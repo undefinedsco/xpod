@@ -54,7 +54,7 @@ export function verifyModuleSourceOriginals(input: {
   materials: any; producer: any; inventory: readonly Reference[];
   members: readonly (Reference & { mode: number })[];
   trackedPaths: readonly string[];
-  readTrackedObject(name: string): { mode: string; bytes: Buffer };
+  readTrackedObject(name: string, exactBytes?: number): { mode: string; bytes: Buffer };
   readOriginal(name: string, maximumBytes: number,budget?:OriginalReadBudget): Buffer;
   readRange(name: string, offset: number, length: number,budget?:OriginalReadBudget): Buffer;
   budget?:OriginalReadBudget;
@@ -132,7 +132,10 @@ export function verifyModuleSourceOriginals(input: {
   const sources = groups.get('source')!;
   if (!isDeepStrictEqual(sources.map(row => row.path).sort(), [...input.trackedPaths].sort())) return fail('complete immutable Git tree required');
   for (const row of sources) {
-    const object = input.readTrackedObject(row.path);
+    checkDeadline();
+    const expectedBytes = row.kind === 'symlink' ? Buffer.byteLength(row.target!) : row.bytes!;
+    const object = input.readTrackedObject(row.path, expectedBytes);
+    checkDeadline();
     if (row.kind === 'symlink' ? object.mode !== '120000' || object.bytes.toString() !== row.target
       : !['100644', '100755'].includes(object.mode) || object.bytes.length !== row.bytes || hash(object.bytes) !== row.sha256
         || row.mode !== (object.mode === '100755' ? 0o755 : 0o644)) return fail('input differs from immutable Git object');
@@ -241,7 +244,7 @@ export function inspectModuleSourceAdmission(input: { artifact: unknown; source:
     || revalidatedStart < Date.parse(receipts[receipts.length - 1].closedUTC) || revalidatedClosed < revalidatedStart || outputs < revalidatedClosed
     || closed < started || closed > Date.parse(receipts[captureBoundary.before].startedUTC) || outputs < Date.parse(receipts[receipts.length - 1].closedUTC) || outputs > Date.parse(job.completed_at)) return fail('actual build input/output capture window');
   const ranged = artifact as typeof artifact & { readProducerOriginalRange?: (name: string, offset: number, length: number,budget?:OriginalReadBudget) => Buffer };
-  const git = source as typeof source & { readTrackedGitObject?: (name: string) => { mode: string; bytes: Buffer } };
+  const git = source as typeof source & { readTrackedGitObject?: (name: string, exactBytes?: number) => { mode: string; bytes: Buffer } };
   if (!ranged.readProducerOriginalRange || !git.readTrackedGitObject) return { status: 'pending' as const, sourceQualified: false as const, reason: 'original-range-and-Git-object-capabilities-required' };
   const checked = verifyModuleSourceOriginals({ materials, producer, inventory: artifact.producerOriginals,
     members: artifact.members, trackedPaths: source.trackedPaths, readTrackedObject: git.readTrackedGitObject,

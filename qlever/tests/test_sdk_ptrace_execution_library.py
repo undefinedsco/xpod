@@ -22,14 +22,15 @@ class Tests(unittest.TestCase):
             with patch.object(Path,'read_bytes',read):
                 observer=module.SdkExecutionObserver(Path(directory),Path('/opt/qlever-sdk/source'),Path('/opt/qlever-sdk/build'),deadline_monotonic=end,check_budget=check,maximum_bytes=4096,maximum_stdio_bytes=1024)
             try:
-                self.assertTrue(observer.deny_optional_io_uring and observer.verified_setresuid_noop)
+                self.assertTrue(observer.deny_optional_io_uring and observer.verified_identity_noop and observer.terminal_exit_evidence)
+                self.assertFalse(observer.verified_setresuid_noop)
                 self.assertTrue(observer.shared_tasks and observer.capture_toolchain)
                 self.assertEqual(observer.deadline_monotonic,end);self.assertIs(observer.check_budget,check)
                 self.assertEqual((observer.maximum_bytes,observer.maximum_stdio_bytes),(4096,1024))
                 self.assertEqual(observer.domain_bytes,len(mounts))
             finally:observer.close()
             generic=module.Observer(directory,directory,directory)
-            try:self.assertFalse(generic.deny_optional_io_uring or generic.verified_setresuid_noop)
+            try:self.assertFalse(generic.deny_optional_io_uring or generic.verified_setresuid_noop or generic.verified_identity_noop or generic.terminal_exit_evidence)
             finally:generic.close()
     def test_shards_preserve_exact_bytes_and_order(self):
         base=ROOT/'.test-data/sdk-ptrace-library';base.mkdir(parents=True,exist_ok=True)

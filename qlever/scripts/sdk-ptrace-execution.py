@@ -90,13 +90,17 @@ class BoundedPipePump:
         check();assert self.sha256 is not None,'actual stdio pipe did not close'
 
 class Observer:
-    def __init__(self,out,source,build,*,deadline_monotonic=None,check_budget=lambda:None,maximum_bytes=32*1024**2,maximum_file_bytes=1024**2,selected_names=SELECTED,maximum_processes=128,shard_bytes=None,require_success=True,maximum_stdio_bytes=None,shared_tasks=False,capture_toolchain=False,deny_optional_io_uring=False,verified_setresuid_noop=False):
+    def __init__(self,out,source,build,*,deadline_monotonic=None,check_budget=lambda:None,maximum_bytes=32*1024**2,maximum_file_bytes=1024**2,selected_names=SELECTED,maximum_processes=128,shard_bytes=None,require_success=True,maximum_stdio_bytes=None,shared_tasks=False,capture_toolchain=False,deny_optional_io_uring=False,verified_setresuid_noop=False,verified_identity_noop=False,terminal_exit_evidence=False):
         self.prepared_dependency_plan=None;self.dependency_roots={};self.dependency_cache=None
         self.shared_tasks=shared_tasks
         assert type(deny_optional_io_uring) is bool
         self.deny_optional_io_uring=deny_optional_io_uring
         assert type(verified_setresuid_noop) is bool
+        assert type(verified_identity_noop) is bool and not (verified_identity_noop and verified_setresuid_noop),'one explicit identity transition model required'
         self.verified_setresuid_noop=verified_setresuid_noop
+        self.verified_identity_noop=verified_identity_noop
+        assert type(terminal_exit_evidence) is bool
+        self.terminal_exit_evidence=terminal_exit_evidence
         self.capture_toolchain=capture_toolchain;self.process_authority=bool(capture_toolchain);self.authority_handles=tool_providers.ProcessAuthorityHandles();self.tool_original_cache={};self.tool_provider_cache={};self.tool_metadata_bytes=json.loads((ROOT/'scripts/lib/module-artifact-limits.json').read_text())['metadataBytes']
         self.prepared_inputs={};self.prepared_sealed=False;self.domain_bytes=0;self.domain_lock=threading.Lock();self.pump_errors=[];self.maximum_stdio_bytes=maximum_stdio_bytes if maximum_stdio_bytes is not None else maximum_file_bytes
         self.require_success=require_success;self.raw_bytes_completed=0;self.maximum_processes=maximum_processes;self.shard_bytes=shard_bytes
@@ -263,6 +267,9 @@ class Observer:
                         if error.errno not in [errno.EIO,errno.ESRCH]:raise
             while self.unknown_stops or any(not r['stopped'] and not r['exited'] for r in self.tasks.values()):
                 pid,status=self.wait_one();self.event(pid,status,False)
+            for pid,row in list(self.tasks.items()):
+                terminal=row.get('terminalAuthority')
+                if not row['exited'] and terminal and state(pid)=='Z':self.reap_terminal_task(pid)
             known=[]
             for pid,row in self.tasks.items():
                 if row['exited']:continue
@@ -585,6 +592,21 @@ class Observer:
             raise
         observation['mountinfoOriginal']=self.tool_mountinfo_original(pid,observation['namespaces']['mnt']['identity'],mounts)
         self.emit(dict(kind='toolchain-process-authority',pid=pid,role=role,eventSequence=event_sequence,barrierSequence=barrier['sequence'],observation=observation))
+    def capture_exit_authority_at_stop(self,pid,status,event):
+        lease=tool_providers.ExitStopAuthorityLease(pid,status,event['exitStatus'],self.check,self.tool_metadata_bytes,self.authority_handles)
+        try:
+            observation=lease.observation
+            observation['authority']['mountinfoOriginal']=self.tool_mountinfo_original(pid,observation['authority']['namespaces']['mnt']['identity'],lease.mounts)
+            original=self.emit(dict(kind='toolchain-terminal-authority',pid=pid,eventSequence=event['sequence'],observation=observation))
+            self.tasks[pid]['terminalAuthority']=dict(lease=lease,event=event,original=original,closed=False)
+        except BaseException:lease.close();raise
+    def reap_terminal_task(self,pid):
+        task=self.tasks[pid];terminal=task.get('terminalAuthority')
+        assert terminal and terminal['lease'].assert_task_before_wait()=='Z','actual held EXIT task required before terminal wait'
+        self.check();assert self.waiter.active,'existing owned wait deadline must be armed';self.waiter.check()
+        observed,status=os.waitpid(pid,WALL|os.WNOHANG);self.waiter.check();self.check()
+        assert observed==pid and (os.WIFEXITED(status) or os.WIFSIGNALED(status)) and status==terminal['event']['exitStatus'],'EXIT message lacks matching actual terminal wait'
+        self.event(pid,status,False)
     def tool_provider(self,pid,reader,actual_path,identity,original,barrier):
         try:data,observation=tool_providers.capture_provider(pid,reader,actual_path,identity,self.check,self.tool_metadata_bytes)
         except tool_providers.ProviderUnavailable as error:
@@ -704,9 +726,25 @@ class Observer:
             if self.exclusive and pid!=self.exclusive[0]:continue
             if row.get('vforkHeldChild') is not None:continue
             if row['stopped'] and not row['exited']:
-                single.trace(SYSCALL,pid,0,row.pop('signal',0));row['stopped']=False
+                terminal=row.get('terminalAuthority')
+                if terminal:
+                    assert terminal['closed'],'EXIT task resumed before terminal/peer closure'
+                    if state(pid)=='Z':self.reap_terminal_task(pid);continue
+                    signal_value=row.pop('signal',0);assert signal_value==0,'EXIT resume may not inject a signal'
+                    single.trace(SYSCALL,pid,0,0);row['stopped']=False
+                    self.emit(dict(kind='actual-terminal-exit-resume',pid=pid,originalSequence=terminal['original']['sequence'],closeSequence=terminal['closedRow']['sequence'],request='PTRACE_SYSCALL',signal=0))
+                else:
+                    single.trace(SYSCALL,pid,0,row.pop('signal',0));row['stopped']=False
     def pending_captures(self):
         if self.exclusive:return
+        if getattr(self,'terminal_exit_evidence',False) and any(t.get('terminalAuthority') and not t['terminalAuthority']['closed'] for t in self.tasks.values()):
+            barrier=self.barrier()
+            for pid,task in list(self.tasks.items()):
+                terminal=task.get('terminalAuthority')
+                if terminal and not terminal['closed']:
+                    terminal['closedRow']=self.emit(dict(kind='toolchain-terminal-authority-closed',pid=pid,eventSequence=terminal['event']['sequence'],originalSequence=terminal['original']['sequence'],barrierSequence=barrier['sequence'],actualWaitSequence=task.get('actualWaitSequence')))
+                    terminal['closed']=True
+                    if task['exited']:terminal['lease'].close()
         while self.process_authority:
             selected=next(((pid,row) for pid,row in self.tasks.items() if row.get('authorityPending') and not row['exited']),None)
             if selected is None:break
@@ -761,10 +799,12 @@ class Observer:
         encoded=json.dumps(diagnostic,sort_keys=True);assert len(encoded.encode())<=16384,'bounded shared clone diagnostic'
         row=self.emit(diagnostic);print('SDK_UNSUPPORTED_SHARED_CLONE '+encoded,file=sys.stderr,flush=True)
         raise AssertionError('shared thread/FD-table clone refused before resume; diagnostic sequence '+str(row['sequence']))
-    def stopped_executable_diagnostic(self,pid,status):
+    def stopped_executable_diagnostic(self,pid,status,*,descriptor=None):
         # A held executable FD and process starttime bind this selected stopped
         # task independently of its inherited historical exec-event cache.
         assert os.WIFSTOPPED(status) and self.tasks[pid]['stopped'] and not self.tasks[pid]['exited'],'actual stopped selected task required'
+        assert descriptor is None or type(descriptor) is int and 0<=descriptor<(1<<31),'bounded selected descriptor required'
+        selected='exe' if descriptor is None else 'fd/'+str(descriptor)
         self.check();directory=os.open('/proc/'+str(pid),os.O_RDONLY|os.O_DIRECTORY|os.O_CLOEXEC)
         executable=None
         try:
@@ -776,13 +816,36 @@ class Observer:
                 finally:os.close(fd)
                 tail=raw[raw.rfind(b')')+2:].split();assert len(tail)>=20 and tail[0] in [b't',b'T'],'selected task no longer stopped'
                 return int(tail[19])
-            before=starttime();path=os.readlink('exe',dir_fd=directory)
-            executable=os.open('exe',os.O_RDONLY|os.O_CLOEXEC,dir_fd=directory)
+            def fdinfo():
+                self.check();fd=os.open('fdinfo/'+str(descriptor),os.O_RDONLY|os.O_CLOEXEC|os.O_NOFOLLOW,dir_fd=directory)
+                try:
+                    raw=os.read(fd,4097);assert len(raw)<=4096 and os.read(fd,1)==b'','bounded complete selected fdinfo'
+                finally:os.close(fd)
+                fields={}
+                for name,base in [('flags',8),('pos',10),('mnt_id',10),('ino',10)]:
+                    values=[line.split(b':',1)[1].strip() for line in raw.splitlines() if line.startswith(name.encode()+b':')]
+                    assert len(values)==1 and values[0] and all(c in (b'01234567' if base==8 else b'0123456789') for c in values[0]),'unique numeric selected fdinfo required'
+                    fields[name]=int(values[0],base)
+                return raw,fields
+            before=starttime();path=os.readlink(selected,dir_fd=directory)
+            info,fields=fdinfo() if descriptor is not None else (None,None)
+            executable=os.open(selected,(os.O_RDONLY if descriptor is None else os.O_PATH)|os.O_CLOEXEC,dir_fd=directory)
             identity=probe.identity(os.fstat(executable));assert stat.S_ISREG(identity[2]),'selected executable regular file required'
-            self.check();assert identity==probe.identity(os.stat('exe',dir_fd=directory))==probe.identity(os.fstat(executable)),'held executable identity changed'
-            assert path==os.readlink('exe',dir_fd=directory) and before==starttime(),'selected task executable/starttime changed'
+            self.check();assert identity==probe.identity(os.stat(selected,dir_fd=directory))==probe.identity(os.fstat(executable)),'held executable identity changed'
+            assert path==os.readlink(selected,dir_fd=directory) and before==starttime(),'selected task executable/starttime changed'
             assert probe.identity(os.fstat(directory))==probe.identity(os.stat('/proc/'+str(pid))),'selected process directory replaced'
-            return dict(path=path[:512],pathTruncated=len(path)>512,pathSha256=hashlib.sha256(os.fsencode(path)).hexdigest(),identity=identity,processStarttime=before,scope='same stopped task held executable FD identity; diagnostic only, no source authority')
+            result=dict(path=path[:512],pathTruncated=len(path)>512,pathSha256=hashlib.sha256(os.fsencode(path)).hexdigest(),identity=identity,processStarttime=before,scope='same stopped task held executable FD identity; diagnostic only, no source authority')
+            if descriptor is not None:
+                assert (info,fields)==fdinfo(),'selected fdinfo changed during held sample'
+                assert fields['ino']==identity[1],'selected fdinfo inode differs'
+                assert identity==probe.identity(os.fstat(executable))==probe.identity(os.stat(selected,dir_fd=directory)) and path==os.readlink(selected,dir_fd=directory) and before==starttime(),'selected descriptor or process identity changed after fdinfo'
+                result.update(fd=descriptor,flags=fields['flags'],position=fields['pos'],mountId=fields['mnt_id'],fdinfoRaw=info.decode('ascii'),fdinfoSHA256=hashlib.sha256(info).hexdigest(),scope='same selected ptrace-stop held descriptor numeric metadata only; no body read or output/source authority')
+                producer=self.producers.get(tuple(identity[:2]))
+                if producer and probe.identity(os.fstat(producer[1]))==identity and producer[0].get('identity')==identity:
+                    result['trackedProducerAssociation']=dict(captureSequence=producer[0]['sequence'],identity=identity,scope='existing retained producer FD identity match only; not mapping allowance')
+                else:result['trackedProducerAssociationPending']='no-exact-current-retained-producer-identity'
+                if path.startswith(self.build+'/') and not path.endswith(' (deleted)'):result['buildRelativePath']=os.path.relpath(path,self.build)
+            return result
         finally:
             if executable is not None:os.close(executable)
             os.close(directory)
@@ -800,7 +863,13 @@ class Observer:
         else:diagnostic['actualExecImagePending']='selected-exec-stop-original-unavailable'
         try:diagnostic['selectedStoppedExecutable']=self.stopped_executable_diagnostic(pid,status)
         except BaseException as error:diagnostic['selectedStoppedExecutablePending']=type(error).__name__[:128]
-        encoded=json.dumps(diagnostic,sort_keys=True);assert len(encoded.encode())<=4096,'bounded forbidden syscall diagnostic'
+        if shared_mapping:
+            if args[3]&0x20:diagnostic['selectedMappingFdPending']='actual-MAP_ANONYMOUS-flag-no-file-descriptor-sample'
+            elif args[4]>=(1<<31):diagnostic['selectedMappingFdPending']='actual-fd-word-outside-nonnegative-int-range'
+            else:
+                try:diagnostic['selectedMappingFd']=self.stopped_executable_diagnostic(pid,status,descriptor=args[4])
+                except BaseException as error:diagnostic['selectedMappingFdPending']=type(error).__name__[:128]
+        encoded=json.dumps(diagnostic,sort_keys=True);assert len(encoded.encode())<=(12288 if shared_mapping else 4096),'bounded forbidden syscall diagnostic'
         print(prefix+encoded,file=sys.stderr,flush=True)
         return self.emit(diagnostic)
     def reject_forbidden_syscall(self,pid,status,entry):
@@ -819,14 +888,21 @@ class Observer:
             assert os.WIFSTOPPED(status) and status>>16==0 and os.WSTOPSIG(status)==(signal.SIGTRAP|0x80),'explicitly denied syscall lost its actual exit stop'
         if os.WIFEXITED(status) or os.WIFSIGNALED(status):
             task.update(exited=True,stopped=False);code=os.WEXITSTATUS(status) if os.WIFEXITED(status) else -os.WTERMSIG(status)
-            wait=self.emit(dict(kind='actual-wait-exit',pid=pid,returnCode=code,**({'actualExecImage':task['diagnosticExec']} if 'diagnosticExec' in task else {})));self.wait_references.append(dict(pid=pid,sequence=wait['sequence'],returnCode=code,phase=self.current_phase))
+            wait=self.emit(dict(kind='actual-wait-exit',pid=pid,returnCode=code,**(dict(waitStatus=status) if getattr(self,'terminal_exit_evidence',False) else {}),**({'actualExecImage':task['diagnosticExec']} if 'diagnosticExec' in task else {})));self.wait_references.append(dict(pid=pid,sequence=wait['sequence'],returnCode=code,phase=self.current_phase))
+            task['actualWaitSequence']=wait['sequence']
+            terminal=task.get('terminalAuthority')
+            if terminal and terminal['closed']:terminal['lease'].close()
             self.release_vfork_parent(pid,wait,'actual-terminal-wait')
             if pid==self.root:self.root_code=code
             return
         assert os.WIFSTOPPED(status);task['stopped']=True;event=status>>16;sig=os.WSTOPSIG(status)
         if event:
-            observed_event=self.emit(dict(kind='ptrace-event',pid=pid,event=event))
-            if self.process_authority and event in [4,6]:task.setdefault('authorityPending',[]).append(('exec-stop' if event==4 else 'exit-stop',observed_event['sequence']))
+            extra={}
+            if self.process_authority and event==6 and getattr(self,'terminal_exit_evidence',False):
+                message=ctypes.c_ulong();single.trace(GETEVENTMSG,pid,0,ctypes.byref(message));extra=dict(waitStatus=status,exitStatus=int(message.value))
+            observed_event=self.emit(dict(kind='ptrace-event',pid=pid,event=event,**extra))
+            if extra:self.capture_exit_authority_at_stop(pid,status,observed_event)
+            if self.process_authority and event in [4,6] and not extra:task.setdefault('authorityPending',[]).append(('exec-stop' if event==4 else 'exit-stop',observed_event['sequence']))
             if event==4:
                 actual_exe=os.readlink('/proc/'+str(pid)+'/exe');actual_identity=probe.identity(os.stat('/proc/'+str(pid)+'/exe'))
                 task['diagnosticExec']=dict(path=actual_exe[:4096],pathTruncated=len(actual_exe)>4096,pathSha256=hashlib.sha256(os.fsencode(actual_exe)).hexdigest(),identity=actual_identity,eventSequence=observed_event['sequence'],entrySequence=task.get('entry',{}).get('sequence'),scope='actual exec-stop image only; argv/environment not collected')
@@ -868,16 +944,18 @@ class Observer:
             assert sig==signal.SIGCHLD,'unexpected tracee signal';task['signal']=sig;self.emit(dict(kind='signal-delivery',pid=pid,signal=sig));return
         kernel,_=single.syscall(pid);policy=profile(kernel['arch'])
         if kernel['op']=='exit' and task['entry'] is not None:kernel['entrySequence']=task['entry']['sequence']
-        record=self.emit(dict(kind='kernel-syscall',pid=pid,**kernel,**(dict(waitStatus=status) if getattr(self,'verified_setresuid_noop',False) else {})))
+        record=self.emit(dict(kind='kernel-syscall',pid=pid,**kernel,**(dict(waitStatus=status) if getattr(self,'verified_setresuid_noop',False) or getattr(self,'verified_identity_noop',False) else {})))
         if record['op']=='entry':
             assert task['entry'] is None,'syscall entry missing prior exit';task['initial']=False;task['entry']=record;nr=record['nr'];args=record['args']
-            if getattr(self,'verified_setresuid_noop',False) and self.process_authority and nr=={0xc000003e:117,0xc00000b7:147}.get(kernel['arch']):
+            identity_axis=tool_providers.identity_noop_axis(kernel['arch'],nr)
+            if self.process_authority and ((getattr(self,'verified_identity_noop',False) and identity_axis is not None) or (getattr(self,'verified_setresuid_noop',False) and identity_axis=='Uid')):
                 assert self.exclusive is None and not self.pausing and not task.get('authorityPending'),'setresuid requires initialized exclusive authority boundary'
                 barrier=self.barrier()
-                transition=tool_providers.StoppedSetresuidTransition(pid,kernel['arch'],nr,args,self.check,entry_sequence=record['sequence'],barrier_sequence=barrier['sequence'],stopped_wait_status=status)
+                transition_type=tool_providers.StoppedIdentityNoopTransition if getattr(self,'verified_identity_noop',False) else tool_providers.StoppedSetresuidTransition
+                transition=transition_type(pid,kernel['arch'],nr,args,self.check,entry_sequence=record['sequence'],barrier_sequence=barrier['sequence'],stopped_wait_status=status)
                 task['setresuidTransition']=transition
                 try:
-                    self.emit(dict(kind='setresuid-noop-entry-original',pid=pid,entrySequence=record['sequence'],barrierSequence=barrier['sequence'],observation=transition.observation))
+                    self.emit(dict(kind='identity-noop-entry-original' if getattr(self,'verified_identity_noop',False) else 'setresuid-noop-entry-original',**(dict(identityAxis=identity_axis) if getattr(self,'verified_identity_noop',False) else {}),pid=pid,entrySequence=record['sequence'],barrierSequence=barrier['sequence'],observation=transition.observation))
                     self.exclusive=(pid,record['sequence'])
                 except BaseException:transition.close();task.pop('setresuidTransition',None);raise
                 return
@@ -960,7 +1038,7 @@ class Observer:
                     assert self.exclusive==(pid,old['sequence']) and record['isError'] is False and type(record['result']) is int and record['result']==0,'setresuid requires actual exclusive successful syscall exit'
                     barrier=self.barrier()
                     observation=transition.finish(exit_sequence=record['sequence'],barrier_sequence=barrier['sequence'],stopped_wait_status=status,result=record['result'])
-                    self.emit(dict(kind='setresuid-noop-exit-original',pid=pid,entrySequence=old['sequence'],exitSequence=record['sequence'],barrierSequence=barrier['sequence'],observation=observation))
+                    self.emit(dict(kind='identity-noop-exit-original' if getattr(self,'verified_identity_noop',False) else 'setresuid-noop-exit-original',**(dict(identityAxis=transition.axis) if getattr(self,'verified_identity_noop',False) else {}),pid=pid,entrySequence=old['sequence'],exitSequence=record['sequence'],barrierSequence=barrier['sequence'],observation=observation))
                     self.exclusive=None
                 finally:transition.close()
                 return
@@ -1060,7 +1138,7 @@ class Observer:
             for pump in pumps:pump.start()
             if self.process_authority:
                 os.close(ready_write);ready_write=None;self.check();remaining=max(0,self.deadline-time.monotonic());readable,_,_=select.select([ready_read],[],[],remaining);self.check();assert readable and os.read(ready_read,1)==b'R','child authority setup did not complete before release';os.close(ready_read);ready_read=None
-            self.emit(dict(kind='owned-root-binding',pid=child,command=command,backend='ptrace-all-stop-process-v1',**(dict(optionalIoUringModel='explicit-kernel-enosys-denial-v1') if self.deny_optional_io_uring else {}),**(dict(setresuidNoopModel='actual-stopped-setresuid-noop-v1') if self.verified_setresuid_noop else {}),**(dict(processAuthorityModel=tool_providers.AUTHORITY_MODEL) if self.process_authority else {}),**(dict(taskOwnershipModel='all-tracked-tids-shared-fd-v1',tgid=child,fdTable=child) if self.shared_tasks else {})));single.trace(SEIZE,child,0,OPTIONS);single.trace(INTERRUPT,child);pid,status=self.wait_one();self.event(pid,status,False);self.pending_captures();os.write(write_fd,b'x');os.close(write_fd);write_fd=None;self.resume()
+            self.emit(dict(kind='owned-root-binding',pid=child,command=command,backend='ptrace-all-stop-process-v1',**(dict(optionalIoUringModel='explicit-kernel-enosys-denial-v1') if self.deny_optional_io_uring else {}),**(dict(setresuidNoopModel='actual-stopped-setresuid-noop-v1') if self.verified_setresuid_noop else {}),**(dict(setresIdentityNoopModel='actual-stopped-setres-identity-noop-v1') if getattr(self,'verified_identity_noop',False) else {}),**(dict(processAuthorityModel=tool_providers.AUTHORITY_MODEL) if self.process_authority else {}),**(dict(exitAuthorityModel='actual-selected-exit-stop-before-peer-barrier-v1') if getattr(self,'terminal_exit_evidence',False) else {}),**(dict(taskOwnershipModel='all-tracked-tids-shared-fd-v1',tgid=child,fdTable=child) if self.shared_tasks else {})));single.trace(SEIZE,child,0,OPTIONS);single.trace(INTERRUPT,child);pid,status=self.wait_one();self.event(pid,status,False);self.pending_captures();os.write(write_fd,b'x');os.close(write_fd);write_fd=None;self.resume()
             while any(not r['exited'] for r in self.tasks.values()):
                 pid,status=self.wait_one();self.event(pid,status);self.pending_captures();self.resume()
             assert not any(task.get('vforkHeldChild') is not None for task in self.tasks.values()),'vfork child release/wait closure missing'
@@ -1108,6 +1186,8 @@ class Observer:
         for task in getattr(self,'tasks',{}).values():
             transition=task.pop('setresuidTransition',None)
             if transition is not None:transition.close()
+            terminal=task.get('terminalAuthority')
+            if terminal:terminal['lease'].close()
         if hasattr(self,'authority_handles'):self.authority_handles.close()
         for fd in list(self.retained):os.close(fd);self.retained.remove(fd)
     def abort(self):
@@ -1136,7 +1216,7 @@ class SdkExecutionObserver(Observer):
         assert Path(source)==Path('/opt/qlever-sdk/source') and Path(build)==Path('/opt/qlever-sdk/build'),'fixed SDK source/build roots required'
         assert isinstance(deadline_monotonic,(float,int)) and math.isfinite(deadline_monotonic) and time.monotonic()<deadline_monotonic,'existing live SDK deadline required'
         super().__init__(out,source,build,deadline_monotonic=deadline_monotonic,check_budget=check_budget,maximum_bytes=maximum_bytes,
-            maximum_file_bytes=limits['shardBytes'],selected_names=None,maximum_processes=limits['sourceMembers'],shard_bytes=limits['shardBytes'],require_success=False,maximum_stdio_bytes=maximum_stdio_bytes,shared_tasks=True,capture_toolchain=True,deny_optional_io_uring=True,verified_setresuid_noop=True)
+            maximum_file_bytes=limits['shardBytes'],selected_names=None,maximum_processes=limits['sourceMembers'],shard_bytes=limits['shardBytes'],require_success=False,maximum_stdio_bytes=maximum_stdio_bytes,shared_tasks=True,capture_toolchain=True,deny_optional_io_uring=True,verified_identity_noop=True,terminal_exit_evidence=True)
         self.capture_dir=self.out/'captures';self.capture_dir.mkdir(exist_ok=False);self.sdk_phase_index=0;self.sdk_failed=False
         mounts=Path('/proc/self/mountinfo').read_bytes();assert len(mounts)<=limits['metadataBytes'],'source provider metadata bound'
         self.source_provider=probe.effective_readonly(source,mounts);self.source_provider_originals=dict(mountinfo=probe.put(self.out/'source-provider.mountinfo.raw',mounts));self.claim(len(mounts))

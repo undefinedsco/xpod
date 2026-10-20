@@ -136,27 +136,40 @@ def status_authority(raw,*,pid,tracer=None):
 
 # Pure candidate checks only. The existing syscall gate remains strict until
 # the backend binds both actual stopped samples and receipts to one transition.
-_SETRESUID_NR={0xc000003e:117,0xc00000b7:147}
-def setresuid_noop_entry(arch,nr,args,raw,*,pid,tracer):
-    need(type(arch) is int and arch in _SETRESUID_NR and type(nr) is int and nr==_SETRESUID_NR[arch],'exact setresuid ABI required')
-    need(isinstance(args,list) and len(args)==6 and all(type(word) is int and 0<=word<1<<64 for word in args),'setresuid uint64 argument words required')
+# Single reviewed ABI/identity-axis authority shared by producer and replay.
+_IDENTITY_NOOP_ABI={0xc000003e:{117:'Uid',119:'Gid'},0xc00000b7:{147:'Uid',149:'Gid'}}
+def identity_noop_axis(arch,nr):
+    return _IDENTITY_NOOP_ABI.get(arch,{}).get(nr) if type(arch) is int and type(nr) is int else None
+
+def identity_noop_entry(arch,nr,args,raw,*,pid,tracer):
+    axis=identity_noop_axis(arch,nr)
+    need(axis in ['Uid','Gid'],'exact setres identity ABI required')
+    need(isinstance(args,list) and len(args)==6 and all(type(word) is int and 0<=word<1<<64 for word in args),'setres identity uint64 argument words required')
     authority=status_authority(raw,pid=pid,tracer=tracer)
-    ruid,euid,suid=(word&0xffffffff for word in args[:3])
-    old=authority['Uid'];sentinel=0xffffffff
-    # Linux __sys_setresuid's no-op predicate includes fsuid, not only euid.
-    need((ruid==sentinel or ruid==old[0]) and
-         (euid==sentinel or euid==old[1]==old[3]) and
-         (suid==sentinel or suid==old[2]),'setresuid is not an exact authority no-op')
+    real,effective,saved=(word&0xffffffff for word in args[:3]);old=authority[axis];sentinel=0xffffffff
+    # Linux __sys_setresuid/__sys_setresgid both return before changing creds
+    # only when effective also equals filesystem identity in this userns.
+    need((real==sentinel or real==old[0]) and
+         (effective==sentinel or effective==old[1]==old[3]) and
+         (saved==sentinel or saved==old[2]),'setres identity is not an exact authority no-op')
     return authority
 
-def verify_setresuid_noop_transition(arch,nr,args,before_raw,after_raw,*,pid,tracer,result):
-    before=setresuid_noop_entry(arch,nr,args,before_raw,pid=pid,tracer=tracer)
-    need(type(result) is int and result==0,'actual setresuid no-op successful exit required')
+def verify_identity_noop_transition(arch,nr,args,before_raw,after_raw,*,pid,tracer,result):
+    before=identity_noop_entry(arch,nr,args,before_raw,pid=pid,tracer=tracer)
+    need(type(result) is int and result==0,'actual identity no-op successful exit required')
     after=status_authority(after_raw,pid=pid,tracer=tracer)
-    need(before==after,'actual authority changed across setresuid no-op')
+    need(before==after,'actual authority changed across identity no-op')
     return before
 
-class StoppedSetresuidTransition:
+def setresuid_noop_entry(arch,nr,args,raw,*,pid,tracer):
+    need(identity_noop_axis(arch,nr)=='Uid','exact setresuid ABI required')
+    return identity_noop_entry(arch,nr,args,raw,pid=pid,tracer=tracer)
+
+def verify_setresuid_noop_transition(arch,nr,args,before_raw,after_raw,*,pid,tracer,result):
+    need(identity_noop_axis(arch,nr)=='Uid','exact setresuid ABI required')
+    return verify_identity_noop_transition(arch,nr,args,before_raw,after_raw,pid=pid,tracer=tracer,result=result)
+
+class StoppedIdentityNoopTransition:
     """Owned FD lease, not a JSON issuer. Core supplies its actual all-stop rows.
 
     The strict default syscall gate is unchanged. Both records must be emitted
@@ -165,6 +178,8 @@ class StoppedSetresuidTransition:
     def __init__(self,pid,arch,nr,args,check,*,entry_sequence,barrier_sequence,stopped_wait_status):
         self.fds={};self.closed=False;self.check=check;self.pid=pid
         need(isinstance(args,list) and len(args)==6 and all(type(x) is int and 0<=x<1<<64 for x in args),'actual setresuid arguments required')
+        self.axis=identity_noop_axis(arch,nr);need(self.axis in ['Uid','Gid'],'exact identity no-op ABI required')
+        self.operation='setresuid' if self.axis=='Uid' else 'setresgid'
         self.arch=arch;self.nr=nr;self.args=list(args);self.entry_sequence=entry_sequence
         need(type(pid) is int and pid>0,'actual setresuid task required')
         need(type(entry_sequence) is int and type(barrier_sequence) is int and 0<entry_sequence<barrier_sequence,'actual entry/all-stop sequence required')
@@ -183,7 +198,7 @@ class StoppedSetresuidTransition:
                     self.namespaces[key]=row
             need(self.namespaces['tracee:user']==self.namespaces['observer:user'],'setresuid UID namespace differs from observer')
             self.before=self._sample(stopped_wait_status)
-            self.authority=setresuid_noop_entry(arch,nr,self.args,self.before['statusOriginals'][0]['data'],pid=pid,tracer=os.getpid())
+            self.authority=identity_noop_entry(arch,nr,self.args,self.before['statusOriginals'][0]['data'],pid=pid,tracer=os.getpid())
             self.observation=self._record('entry',entry_sequence,barrier_sequence,stopped_wait_status,self.before)
         except BaseException:
             self.close();raise
@@ -225,14 +240,15 @@ class StoppedSetresuidTransition:
         need(raw.startswith(str(self.pid)+' ('),'actual stat PID differs');end=raw.rfind(')');words=raw[end+2:].split()
         need(end>0 and len(words)>=20 and words[19].isdigit(),'actual stat starttime missing');return words[19]
     def _record(self,role,sequence,barrier,wait_status,sample):
-        value=dict(schemaVersion=1,kind='actual-stopped-setresuid-'+role,pid=self.pid,observerPid=os.getpid(),observerNativeTid=threading.get_native_id(),arch=self.arch,nr=self.nr,args=self.args,entrySequence=self.entry_sequence,sequence=sequence,barrierSequence=barrier,stoppedWaitStatus=wait_status,observation=sample)
+        value=dict(schemaVersion=1,kind='actual-stopped-'+self.operation+'-'+role,pid=self.pid,observerPid=os.getpid(),observerNativeTid=threading.get_native_id(),arch=self.arch,nr=self.nr,args=self.args,entrySequence=self.entry_sequence,sequence=sequence,barrierSequence=barrier,stoppedWaitStatus=wait_status,observation=sample)
+        if not getattr(self,'legacy_uid_originals',False):value['identityAxis']=self.axis
         encoded=json.dumps(value,sort_keys=True,separators=(',',':')).encode();need(len(encoded)<=65500,'actual setresuid record bound');return json.loads(encoded)
     def finish(self,*,exit_sequence,barrier_sequence,stopped_wait_status,result):
         try:
             need(type(exit_sequence) is int and type(barrier_sequence) is int and self.entry_sequence<exit_sequence<barrier_sequence,'actual setresuid exit/all-stop sequence required')
             after=self._sample(stopped_wait_status)
             need(after['processStarttime']==self.before['processStarttime'] and after['taskGroup']==self.before['taskGroup'] and after['uname']==self.before['uname'],'actual setresuid task identity switched')
-            verify_setresuid_noop_transition(self.arch,self.nr,self.args,self.before['statusOriginals'][0]['data'],after['statusOriginals'][0]['data'],pid=self.pid,tracer=os.getpid(),result=result)
+            verify_identity_noop_transition(self.arch,self.nr,self.args,self.before['statusOriginals'][0]['data'],after['statusOriginals'][0]['data'],pid=self.pid,tracer=os.getpid(),result=result)
             value=self._record('exit',exit_sequence,barrier_sequence,stopped_wait_status,after);value['result']=result;return value
         finally:self.close()
     def close(self):
@@ -240,8 +256,18 @@ class StoppedSetresuidTransition:
             for fd in self.fds.values():os.close(fd)
             self.fds.clear();self.closed=True
 
-def verify_stopped_setresuid_original(row,role):
-    need(isinstance(row,dict) and row.get('schemaVersion')==1 and row.get('kind')=='actual-stopped-setresuid-'+role,'actual setresuid original role differs')
+class StoppedSetresuidTransition(StoppedIdentityNoopTransition):
+    # Existing UID-only caller and serialized originals keep their old contract.
+    def __init__(self,pid,arch,nr,args,check,**kwargs):
+        need(identity_noop_axis(arch,nr)=='Uid','exact setresuid ABI required')
+        self.legacy_uid_originals=True
+        super().__init__(pid,arch,nr,args,check,**kwargs)
+
+def verify_stopped_identity_noop_original(row,role):
+    need(isinstance(row,dict),'actual identity original required')
+    axis=identity_noop_axis(row.get('arch'),row.get('nr'));operation='setresuid' if axis=='Uid' else 'setresgid'
+    need(axis in ['Uid','Gid'] and row.get('schemaVersion')==1 and row.get('kind')=='actual-stopped-'+operation+'-'+role,'actual identity original role differs')
+    need((axis=='Uid' and 'identityAxis' not in row) or row.get('identityAxis')==axis,'actual identity axis differs')
     need(len(json.dumps(row,sort_keys=True,separators=(',',':')).encode())<=65536,'actual setresuid original encoded bound')
     for key in ['pid','observerPid','observerNativeTid','entrySequence','sequence','barrierSequence']:
         need(type(row.get(key)) is int and row[key]>0,'actual setresuid sequence/identity required')
@@ -270,16 +296,25 @@ def verify_stopped_setresuid_original(row,role):
     uname=value.get('uname');need(isinstance(uname,dict) and set(uname)=={'sysname','nodename','release','version','machine'} and all(isinstance(x,str) and len(x.encode())<=1024 for x in uname.values()),'actual setresuid uname required')
     return value,raws,authority
 
-def verify_setresuid_original_pair(entry,exit):
+def verify_identity_noop_original_pair(entry,exit):
     """Pure replay of registered originals; core must also join real raw events."""
-    before,braw,ba=verify_stopped_setresuid_original(entry,'entry');after,araw,aa=verify_stopped_setresuid_original(exit,'exit')
+    before,braw,ba=verify_stopped_identity_noop_original(entry,'entry');after,araw,aa=verify_stopped_identity_noop_original(exit,'exit')
     for key in ['pid','observerPid','observerNativeTid','arch','nr','args','entrySequence']:
         need(entry.get(key)==exit.get(key),'actual setresuid transition identity differs')
     need(entry['entrySequence']==entry['sequence']<entry['barrierSequence']<exit['sequence']<exit['barrierSequence'],'actual setresuid transition order differs')
     for key in ['processStarttime','processIdentity','taskGroup','namespaces','uname']:
         need(before[key]==after[key],'actual setresuid process/namespace identity switched')
-    verify_setresuid_noop_transition(entry['arch'],entry['nr'],entry['args'],braw['statusOriginals'],araw['statusOriginals'],pid=entry['pid'],tracer=entry['observerPid'],result=exit.get('result'))
-    return dict(kind='verified-setresuid-noop-original-pair',pid=entry['pid'],entrySequence=entry['sequence'],exitSequence=exit['sequence'],authority=ba)
+    verify_identity_noop_transition(entry['arch'],entry['nr'],entry['args'],braw['statusOriginals'],araw['statusOriginals'],pid=entry['pid'],tracer=entry['observerPid'],result=exit.get('result'))
+    operation='setresuid' if identity_noop_axis(entry['arch'],entry['nr'])=='Uid' else 'setresgid'
+    return dict(kind='verified-'+operation+'-noop-original-pair',pid=entry['pid'],entrySequence=entry['sequence'],exitSequence=exit['sequence'],authority=ba)
+
+def verify_stopped_setresuid_original(row,role):
+    need(isinstance(row,dict) and identity_noop_axis(row.get('arch'),row.get('nr'))=='Uid','exact setresuid ABI required')
+    return verify_stopped_identity_noop_original(row,role)
+
+def verify_setresuid_original_pair(entry,exit):
+    need(isinstance(entry,dict) and identity_noop_axis(entry.get('arch'),entry.get('nr'))=='Uid','exact setresuid ABI required')
+    return verify_identity_noop_original_pair(entry,exit)
 
 def authority_status_diagnostic(raw,*,pid,tracer,check):
     """Bounded original failure context only; never relax the tracer assertion.
@@ -393,15 +428,78 @@ def verify_process_authority(record,mountinfo,*,pid):
     ref=record['mountinfoOriginal'];need(type(ref.get('bytes')) is int and len(mountinfo)==ref['bytes'] and hashlib.sha256(mountinfo).hexdigest()==ref.get('sha256'),'actual authority mountinfo original differs')
     return dict(first,namespaces=namespaces,rootIdentity=root,rootHeld=root_held,mountinfoSha256=ref['sha256'],observerPid=record['observerPid'])
 
+def actual_exit_event_wait(status):
+    # Linux ptrace event bits are not interpreted with the host Darwin macros.
+    return type(status) is int and 0<=status<1<<32 and status>>16==6 and status&0xffff==((5<<8)|127)
+
+def terminal_live_status_state(raw):
+    fields={}
+    for line in raw.splitlines():
+        key,sep,value=line.partition(':')
+        if sep and key=='State':need(key not in fields,'duplicate EXIT authority state');fields[key]=value.strip()
+    need(fields.get('State','').split(' ')[0] in ['t','T'],'EXIT authority was not captured in its own live tracing stop')
+
+class ExitStopAuthorityLease:
+    """Capture the last strict live authority before stopping peer tasks.
+
+    The traced task is held at its actual PTRACE_EVENT_EXIT. Nothing here
+    accepts TracerPid=0 or a zombie as a live authority/FD provider.
+    """
+    def __init__(self,pid,wait_status,exit_status,check,maximum_metadata,handles):
+        need(actual_exit_event_wait(wait_status),'actual selected EXIT event stop required')
+        need(type(exit_status) is int and 0<=exit_status<1<<32 and (os.WIFEXITED(exit_status) or os.WIFSIGNALED(exit_status)),'actual EXIT event message required')
+        self.fds={};self.closed=False;self.pid=pid;self.check=check;self.exit_status=exit_status
+        try:
+            check();self.fds['process']=os.open('/proc/'+str(pid),os.O_RDONLY|os.O_DIRECTORY|os.O_CLOEXEC|os.O_NOFOLLOW)
+            self.process_identity=util.identity(os.fstat(self.fds['process']))
+            self.fds['stat']=os.open('stat',os.O_RDONLY|os.O_CLOEXEC|os.O_NOFOLLOW,dir_fd=self.fds['process'])
+            before=self._read('stat',4096);start=self._starttime(before['data'])
+            need(before['data'][before['data'].rfind(')')+2:].split()[0] in ['t','T'],'selected EXIT event task is no longer in a live tracing stop')
+            mounts,authority=capture_process_authority(pid,check,maximum_metadata,handles)
+            for status_raw in authority['statusOriginals']:terminal_live_status_state(status_raw)
+            after=self._read('stat',4096)
+            need(before['data']==after['data'] and before['identity']==after['identity'],'EXIT event task changed during strict authority capture')
+            need(self.process_identity==util.identity(os.stat('/proc/'+str(pid),follow_symlinks=False)),'held EXIT task differs')
+            self.observation=dict(schemaVersion=1,kind='actual-exit-stop-authority-before-peer-barrier',pid=pid,waitStatus=wait_status,exitStatus=exit_status,processStarttime=start,processIdentity=self.process_identity,statOriginals=[before,after],authority=authority)
+            need(len(json.dumps(self.observation,separators=(',',':')).encode())<=65500,'EXIT authority original encoded bound')
+            self.mounts=mounts;self.starttime=start
+        except BaseException:self.close();raise
+    _read=StoppedIdentityNoopTransition._read
+    _starttime=StoppedIdentityNoopTransition._starttime
+    def assert_task_before_wait(self):
+        need(not self.closed,'EXIT task lease closed before actual wait');self.check()
+        need(self.process_identity==util.identity(os.fstat(self.fds['process']))==util.identity(os.stat('/proc/'+str(self.pid),follow_symlinks=False)),'EXIT task held directory differs before wait')
+        value=self._read('stat',4096);need(self._starttime(value['data'])==self.starttime,'EXIT task reused before actual wait')
+        return value['data'][value['data'].rfind(')')+2:].split()[0]
+    close=StoppedIdentityNoopTransition.close
+
+def verify_exit_stop_authority_original(record,mountinfo,actual_event,*,pid):
+    need(isinstance(record,dict) and record.get('schemaVersion')==1 and record.get('kind')=='actual-exit-stop-authority-before-peer-barrier' and record.get('pid')==pid,'EXIT authority original role differs')
+    need(len(json.dumps(record,separators=(',',':')).encode())<=65536,'EXIT authority original encoded bound')
+    need(actual_event.get('kind')=='ptrace-event' and actual_event.get('pid')==pid and actual_event.get('event')==6 and actual_event.get('waitStatus')==record.get('waitStatus') and actual_event.get('exitStatus')==record.get('exitStatus'),'EXIT authority lacks exact actual event/message')
+    wait=record.get('waitStatus');message=record.get('exitStatus')
+    need(actual_exit_event_wait(wait),'EXIT original lacks actual ptrace stop')
+    need(type(message) is int and 0<=message<1<<32 and (os.WIFEXITED(message) or os.WIFSIGNALED(message)),'EXIT original lacks terminal message')
+    rows=record.get('statOriginals');need(isinstance(rows,list) and len(rows)==2 and rows[0]==rows[1],'EXIT task dual stat originals differ')
+    for row in rows:
+        need(isinstance(row,dict) and isinstance(row.get('data'),str),'EXIT stat original missing');data=row['data'].encode()
+        need(type(row.get('bytes')) is int and len(data)==row['bytes']<=4096 and hashlib.sha256(data).hexdigest()==row.get('sha256'),'EXIT stat original hash differs');identity(row.get('identity'))
+    raw=rows[0]['data'];end=raw.rfind(')');words=raw[end+2:].split()
+    need(raw.startswith(str(pid)+' (') and end>0 and len(words)>=20 and words[0] in ['t','T'] and words[19].isdigit() and words[19]==record.get('processStarttime'),'EXIT original was not sampled at its own live stop')
+    identity(record.get('processIdentity'))
+    authority=record.get('authority',{})
+    for raw in authority.get('statusOriginals',[]):terminal_live_status_state(raw)
+    return verify_process_authority(authority,mountinfo,pid=pid)
+
 class ProcessAuthorityInterval:
     """Pure replay state. It never grants immutable backing/source authority."""
     def __init__(self,root_pid):
-        self.root=root_pid;self.parents={root_pid:None};self.samples={};self.exec_pending={};self.exit_pending={};self.waited=set();self.closed=set();self.baseline=None;self.count=0;self.setresuid_pending={};self.setresuid_count=0
+        self.root=root_pid;self.parents={root_pid:None};self.samples={};self.exec_pending={};self.exit_pending={};self.waited=set();self.closed=set();self.baseline=None;self.count=0;self.setresuid_pending={};self.setresuid_count=0;self.terminal_samples={};self.terminal_waits={};self.terminal_messages={};self.terminal_closed_rows={};self.terminal_resumed=set()
     def child(self,parent,child):
         need(not self.setresuid_pending,'child event during exclusive setresuid transition')
-        need(parent in self.samples and child not in self.parents,'authority child lacks initialized parent');self.parents[child]=parent
+        need(parent in self.samples and parent not in self.closed and parent not in self.waited and parent not in self.exit_pending and parent not in self.terminal_messages and child not in self.parents,'authority child lacks initialized live parent');self.parents[child]=parent
     def event(self,pid,event,sequence):
-        need(pid in self.parents and not self.setresuid_pending,'authority event for unknown process or unclosed setresuid transition')
+        need(pid in self.parents and pid not in self.closed and pid not in self.waited and pid not in self.terminal_messages and not self.setresuid_pending,'authority event for unknown/terminal process or unclosed setresuid transition')
         if event==4:need(pid in self.samples and pid not in self.exec_pending,'authority exec interval missing');self.exec_pending[pid]=sequence
         if event==6:need(pid in self.samples and pid not in self.exit_pending,'authority terminal interval missing');self.exit_pending[pid]=sequence
     def sample(self,row,mountinfo):
@@ -416,9 +514,33 @@ class ProcessAuthorityInterval:
         value=verify_process_authority(row['observation'],mountinfo,pid=pid)
         if self.baseline is None:need(pid==self.root and role=='initial-root','root authority original must be first');self.baseline=value
         need(value==self.baseline,'owned process authority/root/namespace/mounts changed during interval');self.samples[pid]=value;self.count+=1
+    def terminal_sample(self,row,mountinfo,actual_event):
+        pid=row['pid'];need(not self.setresuid_pending and pid in self.samples and pid not in self.waited and pid not in self.terminal_samples,'terminal sample outside initialized owned interval')
+        need(self.exit_pending.get(pid)==row.get('eventSequence')==actual_event.get('sequence'),'terminal sample lacks pending actual EXIT event')
+        need(actual_event.get('phase')==row.get('phase') and type(row.get('sequence')) is int and actual_event['sequence']<row['sequence'],'terminal early original event/phase order differs')
+        value=verify_exit_stop_authority_original(row['observation'],mountinfo,actual_event,pid=pid)
+        need(value==self.baseline,'strict EXIT authority differs from owned baseline')
+        self.terminal_samples[pid]=dict(row=json.loads(json.dumps(row)),event=actual_event)
+        self.terminal_messages[pid]=row['observation']['exitStatus'];self.count+=1
+    def terminal_close(self,row,barrier):
+        pid=row['pid'];sample=self.terminal_samples.get(pid)
+        need(sample is not None and row.get('originalSequence')==sample['row']['sequence'] and row.get('eventSequence')==sample['event']['sequence'],'terminal close lacks identical early observation')
+        need(barrier.get('kind')=='all-stop-barrier' and barrier.get('sequence')==row.get('barrierSequence') and barrier.get('phase')==row.get('phase')==sample['row'].get('phase'),'terminal close lacks same-phase peer barrier')
+        need(type(row.get('sequence')) is int and sample['row']['sequence']<barrier['sequence']<row['sequence'],'terminal peer barrier must follow the early own-stop snapshot')
+        live=sorted(set(self.parents)-self.waited-set(self.terminal_waits))
+        need(barrier.get('pids')==live and barrier.get('osStates')==['t']*len(live),'terminal close peer stop universe incomplete')
+        wait=self.terminal_waits.get(pid)
+        need(row.get('actualWaitSequence')==(wait['sequence'] if wait else None),'terminal close actual wait reference differs')
+        need(self.exit_pending.pop(pid,None)==sample['event']['sequence'],'terminal close EXIT event changed');self.closed.add(pid);self.terminal_samples.pop(pid);self.terminal_closed_rows[pid]=dict(row)
+        if wait is not None:self.terminal_waits.pop(pid);self.waited.add(pid)
+    def terminal_resume(self,row):
+        pid=row['pid'];closed=self.terminal_closed_rows.get(pid)
+        need(closed is not None and pid in self.closed and pid not in self.waited and pid not in self.terminal_resumed,'terminal resume outside its owned closed boundary')
+        need(row.get('request')=='PTRACE_SYSCALL' and type(row.get('signal')) is int and row['signal']==0 and row.get('originalSequence')==closed['originalSequence'] and row.get('closeSequence')==closed['sequence']<row['sequence'],'terminal resume lacks exact signal-zero primitive/causality')
+        self.terminal_resumed.add(pid)
     def syscall(self,row):
         need(not self.setresuid_pending,'another syscall before setresuid transition consumed')
-        need(row['pid'] in self.samples and row['pid'] not in self.exec_pending and row['pid'] not in self.exit_pending,'syscall resumed without authority boundary capture')
+        need(row['pid'] in self.samples and row['pid'] not in self.closed and row['pid'] not in self.waited and row['pid'] not in self.terminal_messages and row['pid'] not in self.exec_pending and row['pid'] not in self.exit_pending,'syscall resumed outside live authority boundary')
         verify_authority_syscall(row['arch'],row['nr'],row['args'])
     def _setresuid_raw_join(self,observation,raw,barrier,op):
         need(isinstance(raw,dict) and isinstance(barrier,dict),'actual setresuid kernel/barrier rows required')
@@ -433,31 +555,42 @@ class ProcessAuthorityInterval:
         if op=='entry':need(type(raw.get('nr')) is int and raw['nr']==observation['nr'] and isinstance(raw.get('args'),list) and all(type(word) is int and 0<=word<1<<64 for word in raw['args']) and raw['args']==observation['args'],'actual setresuid kernel argument words differ')
         else:need(type(raw.get('entrySequence')) is int and raw['entrySequence']==observation['entrySequence'] and type(raw.get('result')) is int and raw['result']==0 and raw.get('isError') is False and observation.get('result')==0,'actual setresuid kernel successful exit differs')
         return phase
-    def begin_setresuid_original(self,entry,actual_entry,entry_barrier):
-        value,raws,authority=verify_stopped_setresuid_original(entry,'entry');pid=entry['pid']
+    def begin_identity_noop_original(self,entry,actual_entry,entry_barrier):
+        value,raws,authority=verify_stopped_identity_noop_original(entry,'entry');pid=entry['pid']
         need(pid in self.samples and pid not in self.exec_pending and pid not in self.exit_pending and pid not in self.waited and pid not in self.closed and not self.setresuid_pending,'setresuid outside initialized live authority interval')
         need(entry['entrySequence']==entry['sequence']<entry['barrierSequence'],'setresuid entry/barrier order differs')
         phase=self._setresuid_raw_join(entry,actual_entry,entry_barrier,'entry')
-        setresuid_noop_entry(entry['arch'],entry['nr'],entry['args'],raws['statusOriginals'],pid=pid,tracer=entry['observerPid'])
+        identity_noop_entry(entry['arch'],entry['nr'],entry['args'],raws['statusOriginals'],pid=pid,tracer=entry['observerPid'])
         need(self.baseline is not None and entry['observerPid']==self.baseline['observerPid'],'setresuid lacks same observer authority baseline')
         for key in ['Uid','Gid','Groups','noNewPrivs','capabilities']:need(authority[key]==self.baseline[key],'setresuid entry differs from actual authority baseline')
         for role in ['user','pid','mnt']:
             need(value['namespaces']['tracee:'+role]['identity']==self.baseline['namespaces'][role]['identity'] and value['namespaces']['tracee:'+role]['link']==self.baseline['namespaces'][role]['link'],'setresuid entry namespace differs from interval')
         need(len(self.setresuid_pending)<1024,'setresuid pending transition bound')
         self.setresuid_pending[pid]=dict(entry=json.loads(json.dumps(entry)),phase=phase)
-    def consume_verified_setresuid_pair(self,entry,exit,actual_exit,exit_barrier):
+    def consume_verified_identity_noop_pair(self,entry,exit,actual_exit,exit_barrier):
         pid=entry.get('pid');pending=self.setresuid_pending.get(pid)
         need(pending is not None and pending['entry']==entry,'setresuid lacks identical registered entry original')
         need(pid in self.samples and pid not in self.exec_pending and pid not in self.exit_pending and pid not in self.waited and pid not in self.closed,'setresuid exit outside live authority interval')
-        verify_setresuid_original_pair(pending['entry'],exit)
+        verify_identity_noop_original_pair(pending['entry'],exit)
         need(self._setresuid_raw_join(exit,actual_exit,exit_barrier,'exit')==pending['phase'],'setresuid phase changed')
         self.setresuid_pending.pop(pid);self.setresuid_count+=1
         return dict(kind='consumed-setresuid-noop-original-pair',pid=pid,entrySequence=entry['sequence'],exitSequence=exit['sequence'])
-    def wait(self,pid):
+    def begin_setresuid_original(self,entry,actual_entry,entry_barrier):
+        need(identity_noop_axis(entry.get('arch'),entry.get('nr'))=='Uid','exact setresuid ABI required')
+        return self.begin_identity_noop_original(entry,actual_entry,entry_barrier)
+    def consume_verified_setresuid_pair(self,entry,exit,actual_exit,exit_barrier):
+        need(identity_noop_axis(entry.get('arch'),entry.get('nr'))=='Uid','exact setresuid ABI required')
+        return self.consume_verified_identity_noop_pair(entry,exit,actual_exit,exit_barrier)
+    def wait(self,pid,actual_wait=None):
+        if pid in self.terminal_messages:
+            need(isinstance(actual_wait,dict) and type(actual_wait.get('waitStatus')) is int and actual_wait['waitStatus']==self.terminal_messages[pid] and type(actual_wait.get('returnCode')) is int and actual_wait['returnCode']==os.waitstatus_to_exitcode(actual_wait['waitStatus']),'actual terminal wait differs from EXIT message')
+            if pid in self.terminal_samples:
+                need(pid not in self.terminal_waits,'duplicate deferred terminal wait');self.terminal_waits[pid]=actual_wait;return
         need(not self.setresuid_pending,'wait before setresuid transition consumed')
         need(pid in self.closed and pid in self.samples and pid not in self.exec_pending and pid not in self.exit_pending and pid not in self.waited,'authority interval lacks captured terminal boundary')
         self.waited.add(pid)
     def finish(self):
+        need(not self.terminal_samples and not self.terminal_waits,'authority interval has unclosed terminal original')
         need(not self.setresuid_pending,'authority interval has unclosed setresuid transition')
         need(set(self.parents)==self.waited and not self.exec_pending and not self.exit_pending,'authority interval tracked waits incomplete')
         return dict(schemaVersion=1,model=AUTHORITY_MODEL,scope=AUTHORITY_SCOPE,trackedProcesses=len(self.parents),actualAuthorityCaptures=self.count,namespaceExternalWriterAuthorityVerified=False,toolchainLifetimeImmutabilityVerified=False)

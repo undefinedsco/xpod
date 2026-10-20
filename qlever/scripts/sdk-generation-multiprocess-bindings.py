@@ -304,7 +304,7 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
     maximum_file=limits['shardBytes'] if limits else 1024**2
     maximum_total=limits['sourceMaterialBytes'] if limits else 16*1024**2
     original_cache={};retained_entries=set();phase_tracking=[]
-    denial_mode=False;denied_operations={};setresuid_mode=False;setresuid_operations={}
+    denial_mode=False;denied_operations={};setresuid_mode=False;identity_mode=False;terminal_mode=False;setresuid_operations={}
     shared_mode=False;owners={};exec_fd_events={};vfork_events={};vfork_holds={};child_bindings={};wait_rows={}
     live=set();last=0;entries={};exits={};barriers={};caps={};paths={};renames=[];consumers=[];source_reads=[];total=0;capture_total=0;exclusive=None;root_codes={};clone_flags=set();clone_flag_values={}
     alias_close_windows={};alias_close_exits=set()
@@ -331,7 +331,7 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
         need((len(data),hashlib.sha256(data).hexdigest())==(ref['bytes'],ref['sha256']),'dependency metadata original changed');return bytes(data)
     def dependency_json(ref):return json.loads(dependency_bytes(ref))
     tool_coverage=ToolchainOperationCoverage(limits.get('metadataBytes',4*1024**2) if limits else 4*1024**2,limits.get('sourceMembers',50000) if limits else 50000,check)
-    tool_originals={};tool_files={};tool_pending=set();tool_execs=0;tool_mappings=0;tool_core=None;exec_events={};tool_exec_paths={};tool_protect_before={};tool_providers={};tool_provider_pending=set();provider_verifier=None;tool_digest=hashlib.sha256()
+    tool_originals={};tool_files={};tool_pending=set();tool_execs=0;tool_mappings=0;tool_core=None;exec_events={};terminal_events={};tool_exec_paths={};tool_protect_before={};tool_providers={};tool_provider_pending=set();provider_verifier=None;tool_digest=hashlib.sha256()
     process_interval=None;process_intervals=[]
     def provider_module():
         nonlocal provider_verifier
@@ -378,7 +378,7 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
             active_denial=denied_operations.get(row.get('pid'))
             for pending_uid in setresuid_operations.values():
                 if pending_uid['state']=='begun':need(kind=='kernel-syscall' and row.get('pid')==pending_uid['entry']['pid'] and row.get('op')=='exit','event during exclusive setresuid transition')
-                elif pending_uid['state']=='exited':need(kind in ['all-stop-barrier','setresuid-noop-exit-original'],'setresuid exit missing immediate all-stop originals')
+                elif pending_uid['state']=='exited':need(kind in ['all-stop-barrier','setresuid-noop-exit-original','identity-noop-exit-original'],'setresuid exit missing immediate all-stop originals')
             if active_denial is not None:
                 expected_kind={'entry':'explicit-io-uring-setup-denied','substituted':'kernel-syscall','exited':'explicit-io-uring-setup-denied-exit'}[active_denial['state']]
                 need(kind==expected_kind,'unexpected event during explicit denied syscall')
@@ -420,7 +420,8 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                 need(row.get('taskOwnershipModel') in [None,'all-tracked-tids-shared-fd-v1'],'unknown task ownership model');shared_mode=row.get('taskOwnershipModel') is not None;owners={}
                 need(not denied_operations,'unclosed explicit syscall denial at new root');denial=row.get('optionalIoUringModel');need(denial in [None,'explicit-kernel-enosys-denial-v1'],'unknown optional syscall denial model');denial_mode=denial is not None
                 model=row.get('processAuthorityModel');need(model is None or model==provider_module().AUTHORITY_MODEL,'unknown process authority model');process_interval=provider_module().ProcessAuthorityInterval(row['pid']) if model is not None else None
-                need(not setresuid_operations,'unclosed setresuid transition at new root');uid_model=row.get('setresuidNoopModel');need(uid_model in [None,'actual-stopped-setresuid-noop-v1'],'unknown setresuid operation model');setresuid_mode=uid_model is not None;need(not setresuid_mode or process_interval is not None,'setresuid model requires actual process authority interval')
+                need(not setresuid_operations,'unclosed setresuid transition at new root');uid_model=row.get('setresuidNoopModel');need(uid_model in [None,'actual-stopped-setresuid-noop-v1'],'unknown setresuid operation model');identity_model=row.get('setresIdentityNoopModel');need(identity_model in [None,'actual-stopped-setres-identity-noop-v1'] and not (identity_model and uid_model),'unknown or mixed identity operation model');identity_mode=identity_model is not None;setresuid_mode=uid_model is not None or identity_mode;need(not setresuid_mode or process_interval is not None,'setresuid model requires actual process authority interval')
+                terminal_model=row.get('exitAuthorityModel');need(terminal_model in [None,'actual-selected-exit-stop-before-peer-barrier-v1'],'unknown terminal authority model');terminal_mode=terminal_model is not None;need(not terminal_mode or process_interval is not None,'terminal model requires actual authority interval')
                 if shared_mode:need(row['tgid']==row['fdTable']==row['pid'],'initial root ownership differs');owners[row['pid']]=dict(tgid=row['tgid'],fdTable=row['fdTable'])
             elif kind=='actual-child-binding':
                 child_bindings[row['childPid']]=row
@@ -432,10 +433,20 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                     ownership=inspect_shared_clone_flags(row['cloneFlags']);need(row['tgid']==(parent['tgid'] if ownership['sameThreadGroup'] else row['childPid']) and row['fdTable']==(parent['fdTable'] if ownership['sharedFdTable'] else row['childPid']),'child TGID/FD table differs from kernel clone flags');owners[row['childPid']]=dict(tgid=row['tgid'],fdTable=row['fdTable'])
                 if process_interval is not None:process_interval.child(row['parentPid'],row['childPid'])
                 live.add(row['childPid'])
+            elif kind=='toolchain-terminal-authority':
+                need(terminal_mode and process_interval is not None,'terminal original requires explicit model');event=terminal_events.get(row.get('eventSequence'))
+                need(event and event.get('pid')==row['pid'] and event.get('event')==6,'terminal original lacks actual EXIT event')
+                observation=row.get('observation');need(isinstance(observation,dict),'terminal authority observation required');mount=observation.get('authority',{}).get('mountinfoOriginal');need(isinstance(mount,dict),'terminal mount original required')
+                tool_ref(mount,'mountinfo');data=dependency_bytes(mount)
+                process_interval.terminal_sample(row,data,event)
+            elif kind=='toolchain-terminal-authority-closed':
+                need(terminal_mode and process_interval is not None,'terminal close requires explicit model');barrier=barriers.get(row.get('barrierSequence'));need(barrier is not None,'terminal close requires actual peer barrier');process_interval.terminal_close(row,barrier)
+            elif kind=='actual-terminal-exit-resume':
+                need(terminal_mode and process_interval is not None and row['pid'] in live,'terminal resume requires actual owned interval');process_interval.terminal_resume(row)
             elif kind=='actual-wait-exit':
                 need(row['pid'] not in denied_operations,'explicit denial lacks actual kernel exit before task wait')
                 need(row['pid'] not in vfork_holds,'held vfork parent ended without child release');wait_rows[row['sequence']]=row
-                if process_interval is not None:process_interval.wait(row['pid'])
+                if process_interval is not None:process_interval.wait(row['pid'],row if terminal_mode else None)
                 need(row['pid'] in live,'wait on unknown process');live.remove(row['pid']);root_codes[row['pid']]=row['returnCode'];waits.append(dict(pid=row['pid'],sequence=row['sequence'],returnCode=row['returnCode'],phase=phase))
             elif kind=='all-stop-barrier':
                 need(row['pids']==sorted(live) and row['osStates']==['t']*len(live),'potential writer not in actual complete tracing-stop barrier')
@@ -563,17 +574,27 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                 need(exclusive is None and row['captureSequence'] in caps and caps[row['captureSequence']][0]['entrySequence']==row['entrySequence'],'exclusive capture resume differs');exclusive=(row['pid'],row['entrySequence'])
             elif kind=='exclusive-captured-syscall-exit':
                 need(exclusive==(row['pid'],row['entrySequence']) and row['entrySequence'] in exits,'exclusive read/close stop boundary differs');exclusive=None
-            elif kind=='setresuid-noop-entry-original':
+            elif kind in ['setresuid-noop-entry-original','identity-noop-entry-original']:
                 pending=setresuid_operations.get(row.get('pid'));entry=entries.get(row.get('entrySequence'));barrier=barriers.get(row.get('barrierSequence'))
                 need(setresuid_mode and process_interval is not None and pending and pending['state']=='entry' and entry==pending['entry'] and exclusive is None,'setresuid original outside pending actual entry')
                 observation=row.get('observation');need(isinstance(observation,dict) and observation.get('pid')==row['pid'] and observation.get('entrySequence')==entry['sequence'],'setresuid entry observation differs')
-                process_interval.begin_setresuid_original(observation,entry,barrier)
+                if identity_mode:
+                    need(kind=='identity-noop-entry-original' and row.get('identityAxis')==provider_module().identity_noop_axis(entry['arch'],entry['nr'])==observation.get('identityAxis'),'typed identity entry axis differs')
+                    process_interval.begin_identity_noop_original(observation,entry,barrier)
+                else:
+                    need(kind=='setresuid-noop-entry-original','identity original requires explicit model')
+                    process_interval.begin_setresuid_original(observation,entry,barrier)
                 pending.update(state='begun',observation=observation);exclusive=(row['pid'],entry['sequence'])
-            elif kind=='setresuid-noop-exit-original':
+            elif kind in ['setresuid-noop-exit-original','identity-noop-exit-original']:
                 pending=setresuid_operations.get(row.get('pid'));barrier=barriers.get(row.get('barrierSequence'))
                 need(pending and pending['state']=='exited' and exclusive==(row['pid'],pending['entry']['sequence']) and row.get('entrySequence')==pending['entry']['sequence'] and row.get('exitSequence')==pending['exit']['sequence'],'setresuid exit original outside pending actual exit')
                 observation=row.get('observation');need(isinstance(observation,dict) and observation.get('pid')==row['pid'],'setresuid exit observation differs')
-                process_interval.consume_verified_setresuid_pair(pending['observation'],observation,pending['exit'],barrier)
+                if identity_mode:
+                    need(kind=='identity-noop-exit-original' and row.get('identityAxis')==provider_module().identity_noop_axis(pending['entry']['arch'],pending['entry']['nr'])==observation.get('identityAxis'),'typed identity exit axis differs')
+                    process_interval.consume_verified_identity_noop_pair(pending['observation'],observation,pending['exit'],barrier)
+                else:
+                    need(kind=='setresuid-noop-exit-original','identity original requires explicit model')
+                    process_interval.consume_verified_setresuid_pair(pending['observation'],observation,pending['exit'],barrier)
                 del setresuid_operations[row['pid']];exclusive=None
             elif kind=='explicit-io-uring-setup-denied':
                 entry=entries.get(row.get('entrySequence'));pending=denied_operations.get(row.get('pid'))
@@ -599,7 +620,7 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                     if row['nr']==425 and denial_mode:
                         denied_operations[row['pid']]=dict(state='entry',entry=row);retained_entries.add(row['sequence'])
                     else:need(row['nr'] not in rules['forbidden'],'unsupported asynchronous/external writer syscall')
-                    if setresuid_mode and row['nr']=={0xc000003e:117,0xc00000b7:147}.get(row['arch']):
+                    if setresuid_mode and (provider_module().identity_noop_axis(row['arch'],row['nr']) in ['Uid','Gid'] if identity_mode else provider_module().identity_noop_axis(row['arch'],row['nr'])=='Uid'):
                         need(not setresuid_operations and exclusive is None,'overlapping setresuid operation')
                         setresuid_operations[row['pid']]=dict(state='entry',entry=row);retained_entries.add(row['sequence'])
                     elif process_interval is not None:process_interval.syscall(row)
@@ -635,7 +656,7 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                 else:need(data[0]<=4*1024**2 and type(row.get('observedPid')) is int and row['observedPid'] in live,'bounded live tracee metadata original')
                 tool_originals[row['original']['path']]=row
             elif kind=='toolchain-process-authority':
-                need(process_interval is not None,'process authority original lacks declared root contract');tool_barrier(row);mount_original=tool_ref(row['observation']['mountinfoOriginal'],'mountinfo');process_interval.sample(row,dependency_bytes(mount_original['original']))
+                need(process_interval is not None,'process authority original lacks declared root contract');need(not terminal_mode or row.get('role')!='exit-stop','new terminal model requires early EXIT originals, not legacy delayed sample');tool_barrier(row);mount_original=tool_ref(row['observation']['mountinfoOriginal'],'mountinfo');process_interval.sample(row,dependency_bytes(mount_original['original']))
             elif kind=='toolchain-provider-original':
                 tool_barrier(row);file_original=tool_ref(row['fileOriginal'],'file');observation=row['observation'];mount_original=tool_ref(observation['mountinfoOriginal'],'mountinfo');mount_data=dependency_bytes(mount_original['original'])
                 verified=provider_module().verify_provider_originals(observation,mount_data,pid=row['pid'],actual_path=observation['actualPath'],file_identity=file_original['identity'])
@@ -737,6 +758,7 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                 if row['event'] in [2,4]:vfork_events[row['sequence']]=row
                 if shared_mode and row['event']==4:exec_fd_events[row['sequence']]=row
                 if row['event']==4:exec_events[row['sequence']]=row
+                if row['event']==6 and terminal_mode:terminal_events[row['sequence']]=row
             elif kind=='retained-fd-rename-binding':renames.append(row)
             elif kind=='generated-consumer-binding':consumers.append(row)
             elif kind=='prepared-consumer-binding':prepared_consumers.append(row)

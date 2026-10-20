@@ -2,10 +2,11 @@ import {isCandidateServiceImageGitHubOrigin} from './github-origin';
 import {nativeOriginalsView,assertCollectedNativeOriginalCustody} from './native-original-collector';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { realpathSync } from 'node:fs';
+import { realpathSync, readFileSync } from 'node:fs';
 import { collectedArtifactView } from './artifact-collector';
 import type { CollectedArtifactCapability, DerivedSourceCapability, DerivedSourceView } from './artifact-contract';
 
+const sourceLimits = JSON.parse(readFileSync(new URL('../module-artifact-limits.json', import.meta.url), 'utf8'));
 const issued = new WeakMap<object, DerivedSourceView>();
 const currentChecks=new WeakMap<object,()=>void>();
 export function assertDerivedSourceCurrent(value:unknown):void{
@@ -62,10 +63,18 @@ function deriveExactAdmissionSource(sourceSha:string,checkout:string,assertAutho
     if (entries.has(match[3])) fail('duplicate tracked path');
     entries.set(match[3], { mode: match[1], oid: match[2] });
   }
-  const readGitObject = (name: string) => {
+  const readGitObject = (name: string, exactBytes?: number) => {
     const entry = entries.get(name);
     if (!entry || !['100644', '100755', '120000'].includes(entry.mode)) return fail('tracked ordinary/symlink Git blob required');
-    const bytes = git(['cat-file', 'blob', entry.oid]);
+    // Only the complete-source verifier supplies this already charged row size.
+    // Ordinary callers retain the historical 4 MiB bound.
+    if (exactBytes !== undefined && (!Number.isSafeInteger(exactBytes) || exactBytes < 0 || exactBytes > sourceLimits.shardBytes)) return fail('tracked Git exact byte bound');
+    const sizeText = git(['cat-file', '-s', entry.oid], 128).toString('ascii').trim();
+    if (!/^(0|[1-9][0-9]*)$/u.test(sizeText)) return fail('tracked Git object size');
+    const size = Number(sizeText), maximum = exactBytes ?? 4 * 1024 ** 2;
+    if (!Number.isSafeInteger(size) || size > maximum || (exactBytes !== undefined && size !== exactBytes)) return fail('tracked Git object exceeds exact byte bound');
+    const bytes = git(['cat-file', 'blob', entry.oid], Math.max(1, size));
+    if (bytes.length !== size) return fail('tracked Git object size changed');
     const oid = createHash('sha1').update(Buffer.from(`blob ${bytes.length}\0`)).update(bytes).digest('hex');
     if (oid !== entry.oid) return fail('tracked Git blob identity mismatch');
     return Object.freeze({ mode: entry.mode, bytes });

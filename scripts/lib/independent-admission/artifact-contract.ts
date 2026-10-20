@@ -60,7 +60,7 @@ export interface DerivedSourceView {
   readonly sourceSha: string;
   readonly trackedPaths: readonly string[];
   readTracked(path: string): Buffer;
-  readTrackedGitObject?(path: string): Readonly<{ mode: string; bytes: Buffer }>;
+  readTrackedGitObject?(path: string, exactBytes?: number): Readonly<{ mode: string; bytes: Buffer }>;
 }
 declare const nativeMaterialBrand: unique symbol;
 export interface NativeMaterialCapability { readonly [nativeMaterialBrand]: true }
