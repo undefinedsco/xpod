@@ -11,7 +11,7 @@ function groupsFor(file:string,groupName:string){
  const declarations=ast.statements.filter(node=>ts.isVariableStatement(node)&&node.declarationList.declarations.some(row=>ts.isIdentifier(row.name)&&names.has(row.name.text))).map(node=>node.getText(ast)).join('\n');
  const compiled=ts.transpileModule(declarations+'\nresult='+groupName+';', {compilerOptions:{target:ts.ScriptTarget.ES2021,module:ts.ModuleKind.None}}).outputText,scope:{result?:readonly (readonly (readonly[string,string])[])[]}={};runInNewContext(compiled,scope,{timeout:100});return {root,groups:scope.result!};
 }
-for(const [file,name,count]of[['qlever-sdk-generation.ts','REVIEWED_CONTROLLER_HELPER_GROUPS',13],['qlever-sdk-upstream-source.ts','REVIEWED_HELPER_GROUPS',6],['qlever-sdk-fetchcontent.ts','REVIEWED_HELPER_GROUPS',17],['qlever-sdk-readonly-executor.ts','REVIEWED_READONLY_HELPER_GROUPS',5]]as const)it(file+' selects whole historical/current actual controller import tuples, never independent file unions',()=>{
+for(const [file,name,count]of[['qlever-sdk-generation.ts','REVIEWED_CONTROLLER_HELPER_GROUPS',14],['qlever-sdk-upstream-source.ts','REVIEWED_HELPER_GROUPS',6],['qlever-sdk-fetchcontent.ts','REVIEWED_HELPER_GROUPS',18],['qlever-sdk-readonly-executor.ts','REVIEWED_READONLY_HELPER_GROUPS',5]]as const)it(file+' selects whole historical/current actual controller import tuples, never independent file unions',()=>{
  const{root,groups}=groupsFor(file,name);expect(groups).toHaveLength(count);
  for(const group of groups)expect(select(groups,new Map(group))).toBe(group);
  const latest=groups[groups.length-1]!,actual=new Map(latest.map(([name])=>[name,createHash('sha256').update(fs.readFileSync(path.join(root,name.startsWith('qlever/')||name.startsWith('scripts/')?name:'qlever/scripts/'+name))).digest('hex')]));expect(select(groups,actual)).toBe(latest);
@@ -23,8 +23,8 @@ for(const [file,name,count]of[['qlever-sdk-generation.ts','REVIEWED_CONTROLLER_H
 });
 
 it('bounds the seventeen reviewed whole tuples without accepting an eighteenth or ambiguous tuple',()=>{
- const groups=Array.from({length:17},(_,i)=>Object.freeze([Object.freeze(['helper',String(i)] as const)]));
+ const groups=Array.from({length:18},(_,i)=>Object.freeze([Object.freeze(['helper',String(i)] as const)]));
  expect(select(groups,new Map(groups[13]!))).toBe(groups[13]);
- expect(()=>select([...groups,[['helper','17']]],new Map([['helper','17']]))).toThrow();
+ expect(()=>select([...groups,[['helper','18']]],new Map([['helper','18']]))).toThrow();
  expect(()=>select([...groups.slice(0,13),groups[0]!],new Map(groups[0]!))).toThrow();
 });

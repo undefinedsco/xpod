@@ -180,6 +180,25 @@ def memory_domain_rejection_diagnostic(pid,entry,mm,check):
     data=b'SDK_GENERATED_MEMORY_DOMAIN_REJECTION '+json.dumps(row,separators=(',',':'),sort_keys=True).encode()+b'\n'
     need(len(data)<=4096,'bounded memory domain diagnostic required');check();os.write(2,data)
 
+def dirty_syscall_rejection_diagnostic(entry,active,owner):
+    """Failure-only projection of already emitted entry and held epoch metadata."""
+    def number(value):return value if type(value) is int and 0<=value<1<<64 else 'unavailable'
+    def words(value):return [number(v) for v in value] if isinstance(value,(list,tuple)) and len(value)==6 else 'unavailable'
+    def reference(value):
+        if not isinstance(value,dict):return 'unavailable'
+        name=value.get('path');digest=value.get('sha256');size=value.get('bytes')
+        if not isinstance(name,str) or not 0<len(name)<=256 or not all(32<=ord(c)<127 for c in name) or not isinstance(digest,str) or len(digest)!=64 or any(c not in '0123456789abcdef' for c in digest) or type(size) is not int or not 0<=size<1<<64:return 'unavailable'
+        return dict(path=name,bytes=size,sha256=digest)
+    origin=active.get('origin',{});members=active.get('memoryDomainMembers',[])
+    cohort=[number(v) for v in members] if isinstance(members,(list,tuple)) and len(members)<=128 else []
+    domain=active.get('memoryDomain');domain=domain if type(domain) is int and -(1<<64)<domain<1<<64 else 'unavailable'
+    row=dict(schemaVersion=1,kind='actual-generated-dirty-syscall-rejected',authorityVerified=False,
+        pid=number(entry.get('pid')),arch=number(entry.get('arch')),nr=number(entry.get('nr')),args=words(entry.get('args')),entrySequence=number(entry.get('sequence')),
+        owner=number(owner),mappingSequence=number(active.get('sequence')),address=number(active.get('address')),length=number(active.get('length')),span=number(active.get('span')),page=number(active.get('page')),
+        memoryDomain=domain,memoryDomainMemberCount=len(cohort),memoryDomainMemberPrefix=cohort[:8],memoryDomainMembersSHA256=hashlib.sha256(json.dumps(cohort,separators=(',',':')).encode()).hexdigest(),originSequence=number(origin.get('sequence')),originPid=number(origin.get('pid')),originFd=number(origin.get('fd')),originIdentity=words(origin.get('identity')),original=reference(origin.get('original')))
+    data='SDK_GENERATED_DIRTY_SYSCALL_REJECTED '+json.dumps(row,separators=(',',':'),sort_keys=True)+'\n'
+    if len(data.encode('utf-8'))<=4096:sys.stderr.write(data);sys.stderr.flush()
+
 class MemoryDomains:
     """Derived solely from already observed actual root/clone/exec/wait rows."""
     def __init__(self):self.domains={};self.provenance={}
@@ -230,7 +249,12 @@ class Runtime:
             if kind in ['actual-child-binding','ptrace-event','signal-delivery','actual-wait-exit']:raise ValueError('generated VMA: unsupported event while finite mapping dirty')
             if kind=='kernel-syscall':
                 need(row['pid']==self.owner,'peer executed while generated mapping active')
-                if row['op']=='entry':need(operation(row) in ['close','unmap'],'unsupported syscall while finite mapping dirty')
+                if row['op']=='entry':
+                    allowed=operation(row) in ['close','unmap']
+                    if not allowed:
+                        try:dirty_syscall_rejection_diagnostic(row,self.active,self.owner)
+                        except BaseException:pass
+                    need(allowed,'unsupported syscall while finite mapping dirty')
     def write_baseline(self,pid,fd,current,before_size,offset):
         origin=self.lookup_fd(pid,fd)
         if origin is None:return None
