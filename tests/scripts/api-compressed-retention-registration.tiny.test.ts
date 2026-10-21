@@ -1,5 +1,5 @@
 import {test,expect}from'bun:test';import{readFileSync}from'node:fs';import{createHash}from'node:crypto';import path from'node:path';
-import{API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS as groups,API_COMPRESSED_INPUT_SOURCE_BINDINGS as old,API_COMPRESSED_RETENTION_SOURCE_BINDINGS as current,API_RECORDED_GITLINK_SOURCE_BINDINGS as actual}from'../../scripts/lib/independent-admission/github-origin';
+import{API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS as groups,API_COMPRESSED_INPUT_SOURCE_BINDINGS as old,API_COMPRESSED_RETENTION_SOURCE_BINDINGS as current,API_COMPRESSED_ARCHIVE_SOURCE_BINDINGS as actual}from'../../scripts/lib/independent-admission/github-origin';
 import{controlledApiSourceRecipe,reviewedModuleProducerSource}from'../../scripts/lib/independent-admission/module-source-phases';
 const oldProducer='0169bfbf726dce149e5a0fa995fd06bbe618236f1829d0575ccb0bafeea8b450',newProducer='bd668dc98e481496f8b2cf6a1ba97541caafc70f39acf8d8757226e4cedca588';
 const read=(p:string)=>readFileSync(path.resolve(import.meta.dir,'../..',p));

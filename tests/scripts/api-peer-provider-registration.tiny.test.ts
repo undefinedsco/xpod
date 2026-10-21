@@ -3,7 +3,7 @@ import {createHash} from 'node:crypto';
 import {readFileSync} from 'node:fs';
 import path from 'node:path';
 import current from '../../scripts/lib/independent-admission/consumer-execution-current.json';
-import {API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS as groups,API_IDENTITY_DIAGNOSTIC_SOURCE_BINDINGS as before,API_PEER_PROVIDER_SOURCE_BINDINGS as next,API_RECORDED_GITLINK_SOURCE_BINDINGS as actual} from '../../scripts/lib/independent-admission/github-origin';
+import {API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS as groups,API_IDENTITY_DIAGNOSTIC_SOURCE_BINDINGS as before,API_PEER_PROVIDER_SOURCE_BINDINGS as next,API_COMPRESSED_ARCHIVE_SOURCE_BINDINGS as actual} from '../../scripts/lib/independent-admission/github-origin';
 import {secondaryGitHubSourceBindingSelectors,selectGitHubSourceBindingGroup,sourceBindingKey} from '../../scripts/lib/independent-admission/github-source-binding-groups';
 const hash=(bytes:Buffer)=>createHash('sha256').update(bytes).digest('hex');
 test('peer registration preserves the diagnostic tuple and binds only the two actual new execution files',()=>{

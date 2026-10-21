@@ -10,7 +10,7 @@ export function writePhysicalModuleArchive(stage:string,output:string):void {
 p=pathlib.Path(sys.argv[1]);out=pathlib.Path(sys.argv[2]);names=sorted(p.rglob('*'))
 assert all(not f.is_symlink() and (f.is_file() or f.is_dir()) for f in names)
 files=[f for f in names if f.is_file()];assert len(files)<=50000
-with tarfile.open(out,'w:gz',format=tarfile.USTAR_FORMAT) as t:
+with tarfile.open(out,'w:gz',format=tarfile.USTAR_FORMAT,compresslevel=6) as t:
  for f in files:
   info=t.gettarinfo(str(f),arcname='package/'+f.relative_to(p).as_posix());info.mode=0o755 if f.stat().st_mode & 0o111 else 0o644;info.uid=0;info.gid=0;info.uname='';info.gname='';info.mtime=0
   with f.open('rb') as data:t.addfile(info,data)

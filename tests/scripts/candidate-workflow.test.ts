@@ -484,13 +484,16 @@ esac
     expect(runText).not.toContain(':latest');
   });
 
-  it('deploys after the image build, uses rc environment secrets, and deploys by digest', async () => {
+  it('deploys only after qualified service observation, uses rc secrets, and deploys by digest', async () => {
     const workflow = await loadWorkflow();
     const deploy = workflow.jobs.deploy_and_accept;
     const runText = jobRunText(workflow, 'deploy_and_accept');
 
     expect(deploy.environment).toBe('rc');
-    expect(deploy.needs).toEqual([ 'metadata', 'build_image' ]);
+    expect(deploy.needs).toEqual([ 'metadata', 'build_image', 'observe_service_sdk_source' ]);
+    expect(deploy.if).toBeUndefined();
+    expect(workflow.jobs.observe_service_sdk_source['continue-on-error']).not.toBe(true);
+    expect(jobRunText(workflow, 'observe_service_sdk_source')).toContain('--require-qualification');
     expect(deploy.env.KUBE_CONFIG_DATA).toBe('${{ secrets.KUBE_CONFIG_DATA }}');
     expect(deploy.env.APP_ENV_FILE).toBe('${{ secrets.APP_ENV_FILE }}');
     expect(deploy.env.SEALOS_NAMESPACE).toBe('${{ vars.SEALOS_NAMESPACE }}');
@@ -1310,10 +1313,10 @@ describe('source-bound private17 Release mutation guard', () => {
 
 
 describe('public Release transport contract', () => {
-  it('keeps original build needs, existing read-only identity and no private fixture acquisition', async () => {
+  it('keeps build and qualification needs, read-only identity and no private fixture acquisition', async () => {
     const workflow = await loadWorkflow(); const job = workflow.jobs.deploy_and_accept;
     const gate = job.steps.find((entry: any) => entry.name === 'Require independent exact-pair Private17 admission before RC mutation');
-    expect(job.needs).toEqual(['metadata', 'build_image']); expect(job.permissions.contents).toBe('read');
+    expect(job.needs).toEqual(['metadata', 'build_image', 'observe_service_sdk_source']); expect(job.permissions.contents).toBe('read');
     expect(gate.env.GH_TOKEN).toBe('${{ github.token }}');
     expect(gate.env.PRIVATE17_ADMISSION_SHA256).toBe('${{ vars.XPOD_PRIVATE17_ADMISSION_SHA256 }}');
     expect(gate.run).toContain('--acquire-private17-admission'); expect(gate.run).toContain('mktemp -d');

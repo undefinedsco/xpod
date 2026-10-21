@@ -28,9 +28,9 @@ class Tests(unittest.TestCase):
    def init(name):
     repo=root/name;repo.mkdir();run(repo,'init');run(repo,'config','user.name','Fixture');run(repo,'config','user.email','fixture@example.invalid');return repo
    grand=init('grand');(grand/'leaf.h').write_text('// immutable grandchild\n');run(grand,'add','.');run(grand,'commit','-m','grandchild');grand_oid=run(grand,'rev-parse','HEAD').decode().strip()
-   child=init('child');(child/'.gitmodules').write_text('[submodule "nested"]\n path = nested\n url = https://example.invalid/grand.git\n');run(child,'update-index','--add','--cacheinfo','160000,'+grand_oid+',nested');(child/'nested').mkdir()
+   child=init('child');(child/'.gitmodules').write_text('[submodule "nested"]\n path = nested\n url = https://example.invalid/grand.git\n branch = branch-that-is-not-the-selected-commit\n');run(child,'update-index','--add','--cacheinfo','160000,'+grand_oid+',nested');(child/'nested').mkdir()
    (child/'CMakeLists.txt').write_text('add_library(util INTERFACE)\n');run(child,'add','.');run(child,'commit','-m','child');oid=run(child,'rev-parse','HEAD').decode().strip()
-   parent=init('parent');(parent/'.gitmodules').write_text('[submodule "src/util"]\n path = src/util\n url = https://example.invalid/util.git\n');run(parent,'add','.gitmodules');run(parent,'update-index','--add','--cacheinfo','160000,'+oid+',src/util');run(parent,'commit','-m','parent');(parent/'src/util').mkdir(parents=True)
+   parent=init('parent');(parent/'.gitmodules').write_text('[submodule "src/util"]\n path = src/util\n url = https://example.invalid/util.git\n branch = gh-pages\n');run(parent,'add','.gitmodules');run(parent,'update-index','--add','--cacheinfo','160000,'+oid+',src/util');run(parent,'commit','-m','parent');(parent/'src/util').mkdir(parents=True)
    def snapshot(repo,name):
     commit=run(repo,'rev-parse','HEAD').decode().strip();collector=git.Collector.for_git_source(repo,materials/name,Budget(),'https://example.invalid/'+name+'.git',commit)
     value=collector.git_snapshot(allow_unmaterialized_gitlinks=True)
@@ -92,6 +92,26 @@ class Tests(unittest.TestCase):
     self.assertEqual(read.call_count,0)
    path.unlink();target=source/'other';target.write_bytes(raw);path.symlink_to(target)
    with self.assertRaises(ValueError):producer.gitmodules_original(source,row,lambda:None)
+ def test_all_declared_pinned_gitmodules_syntax_fixtures(self):
+  import base64
+  fixture=json.loads((ROOT/'qlever/tests/fixtures/fetchcontent-gitmodules/declared-commits.original.json').read_text())
+  self.assertEqual(len(fixture['dependencies']),10)
+  self.assertEqual({row['name'] for row in fixture['dependencies']},{'googletest','antlr','range-v3','spatialjoin','ctre','abseil','s2','fsst','re2','uriparser'})
+  for row in fixture['dependencies']:
+   if row['status']==404:continue # Historical HTTP fact only, no absence qualification.
+   self.assertEqual(row['status'],200);raw=base64.b64decode(row['rawBase64'],validate=True)
+   self.assertEqual(len(raw),row['bytes']);self.assertEqual(hashlib.sha256(raw).hexdigest(),row['sha256'])
+   self.assertEqual(hashlib.sha1(b'blob '+str(len(raw)).encode()+b'\0'+raw).hexdigest(),row['blobOid'])
+   repositories=sources.bindings.gitlink_repositories(raw,row['gitlinks'])
+   self.assertEqual(set(repositories),{item['path'] for item in row['gitlinks']})
+   if row['name']=='range-v3':self.assertEqual(repositories,{'doc/gh-pages':'https://github.com/ericniebler/range-v3.git'})
+ def test_optional_branch_is_inert_and_unknown_options_refuse(self):
+  links=[dict(path='doc/gh-pages')]
+  raw=b'[submodule "doc/gh-pages"]\npath=doc/gh-pages\nurl=https://example.invalid/repo.git\n'
+  for branch in ['gh-pages','different-valid-branch','.']:
+   self.assertEqual(sources.bindings.gitlink_repositories(raw+('branch='+branch+'\n').encode(),links),{'doc/gh-pages':'https://example.invalid/repo.git'})
+  for tail in ['update=!touch /tmp/never','unknown=true','branch=-bad','branch=a..b','branch=foo.lock','branch=bad ref']:
+   with self.assertRaises(ValueError):sources.bindings.gitlink_repositories(raw+(tail+'\n').encode(),links)
  def test_gitmodules_rejects_unsafe_or_incomplete(self):
   links=[dict(path='src/util')]
   for url in ['file:///tmp/repo','https://user@example.invalid/x','https://example.invalid/x?key=a','../util']:

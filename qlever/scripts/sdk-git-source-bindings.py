@@ -33,7 +33,12 @@ def gitlink_repositories(raw, links):
     result={}
     for section in parser.sections():
         need(section.startswith('submodule "') and section.endswith('"') and len(section)>12 and not any(c in section[11:-1] for c in ('"', chr(92), chr(10), chr(13))),'Gitmodules section')
-        row=dict(parser[section]);need(set(row)=={'path','url'},'Gitmodules exact path/URL fields')
+        row=dict(parser[section]);need({'path','url'}<=set(row)<= {'path','url','branch'},'Gitmodules declared path/URL/branch fields')
+        # Git's optional tracking branch is metadata only. Acquisition always
+        # checks out the parent tree's exact child OID; never run submodule update.
+        if 'branch' in row:
+            branch=row['branch']
+            need(branch=='.' or (0<len(branch)<=1024 and not branch.startswith(('-', '/', '.')) and not branch.endswith(('/', '.')) and not any(value in branch for value in ('..','@{','//')) and all(not part.endswith('.lock') and part for part in branch.split('/')) and not any(ord(c)<=32 or ord(c)==127 or c in '~^:?*['+chr(92) for c in branch)), 'Gitmodules literal tracking branch metadata')
         path=row['path'];url=row['url'];parsed=urlsplit(url)
         need(canonical(path) and '.git' not in path.split('/') and path not in result,'Gitmodules canonical unique path')
         need(parsed.scheme=='https' and parsed.hostname and not parsed.username and not parsed.password and not parsed.port and not parsed.query and not parsed.fragment and parsed.netloc==parsed.hostname and parsed.path.startswith('/') and canonical(parsed.path[1:]) and all(ord(c)>32 for c in url),'Gitmodules credential-free absolute HTTPS repository')

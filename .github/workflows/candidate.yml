@@ -345,7 +345,7 @@ jobs:
           if-no-files-found: error
 
   deploy_and_accept:
-    needs: [metadata, build_image]
+    needs: [metadata, build_image, observe_service_sdk_source]
     runs-on: ubuntu-latest
     environment: rc
     concurrency:

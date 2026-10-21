@@ -201,7 +201,7 @@ try:
    return self.stream.write(data)
   def flush(self):return self.stream.flush()
  with open(archive,'xb') as raw:
-  with gzip.GzipFile(filename='',mode='wb',fileobj=BoundWriter(raw),mtime=0) as compressed:
+  with gzip.GzipFile(filename='',mode='wb',fileobj=BoundWriter(raw),mtime=0,compresslevel=6) as compressed:
    with tarfile.open(fileobj=compressed,mode='w|',format=tarfile.USTAR_FORMAT) as tar:
     import io
     info=tarfile.TarInfo('source/source-kit.json');info.size=len(index);info.mode=0o644;tar.addfile(info,io.BytesIO(index))
