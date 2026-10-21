@@ -11,6 +11,8 @@ test('SDK30 authority entry diagnostics preserve every complete SDK29/API/contro
  const last=sdk[sdk.length-1]!;for(const row of [...last.selectors,...last.sourceBindings])expect(createHash('sha256').update(fs.readFileSync(path.resolve(import.meta.dir,'../..',row.path))).digest('hex')).toBe(row.sha256);
 });
 
-test('actual primary then existing-role secondary resolver preserves each complete historical tuple and rejects missing roles',()=>{
- for(const groups of [sdk,consumer,ci])for(const group of groups){const tuple=new Map(group.selectors.map(row=>[key(row),row.sha256]));for(const role of secondary(groups,tuple)){const actual=[...group.selectors,...group.sourceBindings,...group.secondarySelectors??[]].find(row=>key(row)===key(role));expect(actual).toBeDefined();tuple.set(key(role),actual!.sha256);}expect(select(groups,tuple)).toBe(group);for(const role of group.secondarySelectors??[]){const missing=new Map(tuple);missing.delete(key(role));expect(()=>select(groups,missing)).toThrow();}}
+// Keep every historical tuple and missing-role assertion in its own bounded test.
+for(const [name,groups] of Object.entries({sdk,consumer,ci}))for(const [index,group] of groups.entries())
+test(`actual primary then existing-role secondary resolver preserves each complete historical tuple and rejects missing roles (${name}/${index})`,()=>{
+ const tuple=new Map(group.selectors.map(row=>[key(row),row.sha256]));for(const role of secondary(groups,tuple)){const actual=[...group.selectors,...group.sourceBindings,...group.secondarySelectors??[]].find(row=>key(row)===key(role));expect(actual).toBeDefined();tuple.set(key(role),actual!.sha256);}expect(select(groups,tuple)).toBe(group);for(const role of group.secondarySelectors??[]){const missing=new Map(tuple);missing.delete(key(role));expect(()=>select(groups,missing)).toThrow();}
 });

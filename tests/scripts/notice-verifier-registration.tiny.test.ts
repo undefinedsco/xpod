@@ -16,6 +16,8 @@ test('API18 preserves all SDK31 complete historical groups and binds actual runt
  const root=fileURLToPath(new URL('../../',import.meta.url));expect(current.length).toBe(388);expect(API_RECORDED_GITLINK_SOURCE_BINDINGS.length).toBe(81);
  for(const row of [...current,...API_RECORDED_GITLINK_SOURCE_BINDINGS])expect(sha(readFileSync(join(root,row.path)))).toBe(row.sha256);
 });
-test('real secondary resolver gets only mandatory historical originals and rejects missing roles',()=>{
- for(const groups of [api,sdk,consumer,ci])for(const group of groups){const values=new Map(group.selectors.map(row=>[key(row),row.sha256]));const required=secondary(groups,values);for(const role of required){const own=[...group.selectors,...group.sourceBindings,...group.secondarySelectors??[]].find(row=>key(row)===key(role));expect(own!==undefined).toBe(true);values.set(key(role),own!.sha256);}expect(select(groups,values)).toBe(group);for(const role of required){const missing=new Map(values);missing.delete(key(role));expect(()=>select(groups,missing)).toThrow();}}
+// Keep every historical tuple and missing-role assertion in its own bounded test.
+for(const [name,groups] of Object.entries({api,sdk,consumer,ci}))for(const [index,group] of groups.entries())
+test(`real secondary resolver gets only mandatory historical originals and rejects missing roles (${name}/${index})`,()=>{
+ const values=new Map(group.selectors.map(row=>[key(row),row.sha256]));const required=secondary(groups,values);for(const role of required){const own=[...group.selectors,...group.sourceBindings,...group.secondarySelectors??[]].find(row=>key(row)===key(role));expect(own!==undefined).toBe(true);values.set(key(role),own!.sha256);}expect(select(groups,values)).toBe(group);for(const role of required){const missing=new Map(values);missing.delete(key(role));expect(()=>select(groups,missing)).toThrow();}
 });

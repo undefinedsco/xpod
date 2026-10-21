@@ -15,8 +15,10 @@ test('Notice API17 closes its executed wrapper/imports and preserves every SDK29
  expect(controlledApiSourceRecipe(read,sha(read('scripts/api-module-producer.py')),'linux-arm64').rows).toBe(API_RECORDED_GITLINK_SOURCE_BINDINGS);
  expect(verifiedNoticeSupplementDirectories({trackedPaths:[],readTracked(){throw Error('unused');}},undefined)).toEqual([]);
 });
-test('real staged original primary/secondary resolver closes each old/current tuple and rejects every missing role',()=>{
- for(const groups of [api,sdk,consumer,ci])for(const group of groups){const tuple=new Map(group.selectors.map(row=>[key(row),row.sha256]));for(const role of secondary(groups,tuple)){const actual=[...group.selectors,...group.sourceBindings,...group.secondarySelectors??[]].find(row=>key(row)===key(role));expect(actual).toBeDefined();tuple.set(key(role),actual!.sha256);}expect(select(groups,tuple)).toBe(group);for(const role of group.secondarySelectors??[]){const missing=new Map(tuple);missing.delete(key(role));expect(()=>select(groups,missing)).toThrow();}}
+// Keep every historical tuple and missing-role assertion in its own bounded test.
+for(const [name,groups] of Object.entries({api,sdk,consumer,ci}))for(const [index,group] of groups.entries())
+test(`real staged original primary/secondary resolver closes each old/current tuple and rejects every missing role (${name}/${index})`,()=>{
+ const tuple=new Map(group.selectors.map(row=>[key(row),row.sha256]));for(const role of secondary(groups,tuple)){const actual=[...group.selectors,...group.sourceBindings,...group.secondarySelectors??[]].find(row=>key(row)===key(role));expect(actual).toBeDefined();tuple.set(key(role),actual!.sha256);}expect(select(groups,tuple)).toBe(group);for(const role of group.secondarySelectors??[]){const missing=new Map(tuple);missing.delete(key(role));expect(()=>select(groups,missing)).toThrow();}
 });
 test('actual verifier-owned Python phase_plan preserves every old command and appends only tracked notice argv',()=>{
  const output=path.join(root,'.test-data/notice-plan-projection'),directory='packages/xpod-api/notice-supplements';
