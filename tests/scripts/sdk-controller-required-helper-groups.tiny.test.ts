@@ -8,6 +8,6 @@ test('missing mixed unknown roles and ambiguous common tuple refuse before any a
  for(const values of [new Map([old[0]]),new Map([old[0],['shared.py','x']]),new Map([old[0],old[1],['extra.py','z']])])expect(()=>plan([old,newer],names,values)).toThrow();
  expect(()=>plan([old,[...old,['new.py','d']]],names,new Map(old))).toThrow();expect(()=>plan([[...old,old[0]]],names,new Map(old))).toThrow();
 });
-test('fourteen declared complete groups only; observed original bound remains thirty two',()=>{
- const groups=Array.from({length:14},(_,i)=>[['model.py',String(i)],['shared.py','b']]as const);expect(select(groups,new Map(groups[13]!))).toBe(groups[13]);expect(()=>select([...groups,groups[13]!],new Map(groups[13]!))).toThrow();expect(()=>plan([...groups,groups[13]!],names,new Map(groups[13]!))).toThrow();expect(()=>select([old],new Map(Array.from({length:33},(_,i)=>[String(i),'a'])))).toThrow();
+test('fifteen declared complete groups only; observed original bound remains thirty two',()=>{
+ const groups=Array.from({length:15},(_,i)=>[['model.py',String(i)],['shared.py','b']]as const);expect(select(groups,new Map(groups[14]!))).toBe(groups[14]);expect(()=>select([...groups,groups[14]!],new Map(groups[14]!))).toThrow();expect(()=>plan([...groups,groups[14]!],names,new Map(groups[14]!))).toThrow();expect(()=>select([old],new Map(Array.from({length:33},(_,i)=>[String(i),'a'])))).toThrow();
 });

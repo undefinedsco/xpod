@@ -1,6 +1,8 @@
 import {createHash} from 'node:crypto';
 import {isDeepStrictEqual} from 'node:util';
 import type {CollectedNativeOriginalsView} from './native-originals';
+import {nativeOriginalsView,assertCollectedNativeOriginalCustody} from './native-original-collector';
+import {isCandidateServiceImageGitHubOrigin} from './github-origin';
 export interface CandidateServiceRelationshipContract {
  readonly schemaVersion:1;
  readonly workflowPath:'.github/workflows/candidate.yml';
@@ -81,8 +83,42 @@ export function inspectCandidateServiceRelationship(view:CollectedNativeOriginal
   const parent=stage.receipt.path.slice(0,stage.receipt.path.lastIndexOf('/')+1);
   for(const role of ['stdout','stderr'])need(receipt[role]?.path===role+'.raw'&&stage[role]?.path===parent+receipt[role].path&&receipt[role].bytes===stage[role].bytes&&receipt[role].sha256===stage[role].sha256,'same actual closed command raw references');
   need(Number.isSafeInteger(receipt.pgid)&&receipt.pgid>0&&Number.isInteger(receipt.startedUnixNs)&&Number.isInteger(receipt.completedUnixNs)&&completed<=receipt.startedUnixNs&&receipt.completedUnixNs>=receipt.startedUnixNs&&receipt.completedUnixNs<=jobEnd,'actual command PID group and window');
-  need(receipt.exit===0&&receipt.signal===null&&receipt.actualWait===true&&receipt.rawClosedBeforeHash===true&&supervision.exit===0&&supervision.signal===null&&supervision.actualWait===true&&supervision.rawClosedBeforeHash===true&&supervision.ownedGroupAbsentAfterWait===true&&receipt.pgid===supervision.pgid&&!supervision.resourceStop&&!supervision.supervisorError&&!supervision.cleanupErrors?.length&&supervision.rawSHA256===digest(supervisorRaw),'closed actual checkout supervision');completed=receipt.completedUnixNs;return bytes(stage.stdout);};
+  need(receipt.exit===0&&receipt.signal===null&&receipt.actualWait===true&&receipt.rawClosedBeforeHash===true&&supervision.exit===0&&supervision.signal===null&&supervision.actualWait===true&&supervision.rawClosedBeforeHash===true&&supervision.ownedGroupAbsentAfterWait===true&&receipt.pgid===supervision.pgid&&supervision.resourceStop===null&&supervision.supervisorError===null&&Array.isArray(supervision.cleanupErrors)&&supervision.cleanupErrors.length===0&&supervision.rawSHA256===digest(supervisorRaw),'closed actual checkout supervision');completed=receipt.completedUnixNs;return bytes(stage.stdout);};
  need(named('service-source-head').toString().trim()===origin.sourceSha&&named('service-source-manifest').equals(before),'actual Git HEAD and before manifest');named('service-source-status');
  need(JSON.parse(before.toString()).name==='@undefineds.co/xpod'&&JSON.parse(after.toString()).name==='@undefineds.co/xpod','actual root manifest identity');
  return Object.freeze({sdkArtifact:master.sdkArtifact,sourceSha:origin.sourceSha,runId:origin.runId,runAttempt:origin.runAttempt,target:'linux-x64',sdkImage:master.sdkArtifact.sdkImageReferenceByDigest,master});
+}
+
+
+// Only a real issued view can key this cache. Ordinary mechanics remain uncached.
+type ServiceRelationship = ReturnType<typeof inspectCandidateServiceRelationship>;
+const relationshipCache = new WeakMap<CollectedNativeOriginalsView, {seal:string;relationship:ServiceRelationship}>();
+function freezeRelationship(value:ServiceRelationship):ServiceRelationship {
+ const pending:object[]=[value],seen=new WeakSet<object>();
+ while(pending.length){const item=pending.pop()!;if(seen.has(item))continue;seen.add(item);for(const child of Object.values(item))if(child!==null&&typeof child==='object')pending.push(child);Object.freeze(item);}
+ return value;
+}
+/** Reuse a validated relationship across observers without re-reading the
+ * entire retained universe. Every call checks live private custody, the exact
+ * master identity and current API originals; compacted readers remain unusable. */
+export function readCandidateServiceRelationship(originals:unknown):ServiceRelationship {
+ const view=nativeOriginalsView(originals);
+ need(view&&isCandidateServiceImageGitHubOrigin(view.origin),'issued candidate service originals required');
+ function currentSeal():string {
+  assertCollectedNativeOriginalCustody(originals);
+  const member=view!.members.find(row=>row.path==='service-image-materials.json');
+  need(member&&member.bytes<=4*1024**2,'bounded service relationship master');
+  // This checks the private lifetime as well as the held projection identity.
+  view!.readOriginalRange(member.path,0,0);
+  // First pure inspection fully hashes this same held projection. The zero
+  // range above rechecks all held/named identity fields without charging the
+  // unchanged body again on every nested getter.
+  const metadata=view!.metadataOriginals.map(row=>({name:row.name,endpoint:row.endpoint,bytes:row.data.length,sha256:digest(row.data)}));
+  return JSON.stringify({origin:view!.originFacts,archive:view!.archive,metadata,master:{bytes:member.bytes,sha256:member.sha256}});
+ }
+ const seal=currentSeal(),cached=relationshipCache.get(view!);
+ if(cached){need(cached.seal===seal,'current relationship origin or API originals differ');return cached.relationship;}
+ const relationship=freezeRelationship(inspectCandidateServiceRelationship(view!));
+ need(currentSeal()===seal,'relationship changed during initial validation');
+ relationshipCache.set(view!,{seal,relationship});return relationship;
 }

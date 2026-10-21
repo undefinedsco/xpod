@@ -5,8 +5,10 @@ export type SourceTarReference=Readonly<{path:string;bytes:number;sha256:string}
 export type SourceTarRow=Readonly<{path:string;archive:string;kind:'file'|'symlink';bytes?:number;sha256?:string;mode?:number;target?:string}>;
 /** One sequential 64KiB window verifies both the exact complete tar digest and
  * its indexed member universe. It never extracts or resolves a symlink. */
-export function inspectSourceOriginalTar(input:{archive:SourceTarReference;rows:ReadonlyMap<string,SourceTarRow>;readRange(name:string,offset:number,length:number):Buffer;check():void}){
+export function inspectSourceOriginalTar(input:{archive:SourceTarReference;rows:ReadonlyMap<string,SourceTarRow>;readRange(name:string,offset:number,length:number):Buffer;check():void;ordinarySingleFile?:true}){
  const fail=(why:string):never=>{throw Error('Source tar originals: '+why);};
+ if(input.ordinarySingleFile!==undefined&&input.ordinarySingleFile!==true)return fail('explicit ordinary single-file mode');
+ if(input.ordinarySingleFile&&(input.rows.size!==1||[...input.rows.values()].some(row=>row.kind!=='file'||!/^[A-Za-z0-9._-]{1,99}$/u.test(row.path))))return fail('single ordinary file row required');
  const ref=input.archive,seen=new Set<string>(),locations=new Map<string,{archive:string;offset:number;bytes:number}>();let windowAt=-1,window=Buffer.alloc(0);const whole=createHash('sha256');
  const read=(offset:number,length:number)=>{
   input.check();if(!Number.isSafeInteger(offset)||offset<0||!Number.isSafeInteger(length)||length<0||length>limits.rangeBytes||offset+length>ref.bytes)return fail('tar range bound');
@@ -22,6 +24,7 @@ export function inspectSourceOriginalTar(input:{archive:SourceTarReference;rows:
  while(offset+512<=ref.bytes){const header=read(offset,512);offset+=512;if(header.every(byte=>byte===0)){end=true;break;}
   const sum=[...header].reduce((s,value,index)=>s+(index>=148&&index<156?32:value),0);if(sum!==octal(header.subarray(148,156)))return fail('tar header checksum');
   const bytes=octal(header.subarray(124,136)),type=String.fromCharCode(header[156]!);if(bytes>limits.shardBytes||offset+Math.ceil(bytes/512)*512>ref.bytes)return fail('tar member byte bound');
+  if(input.ordinarySingleFile&&(!['0','\0'].includes(type)||header.subarray(157,257).some(byte=>byte!==0)||header.subarray(345,500).some(byte=>byte!==0)))return fail('single regular header without extensions required');
   if(type==='L'||type==='K'){if(bytes>4096||(type==='L'?longName:longLink)!==undefined)return fail('tar long name bound');const value=string(read(offset,bytes));if(type==='L')longName=value;else longLink=value;}
   else{const name=longName??string(header.subarray(0,100)),target=longLink??string(header.subarray(157,257));longName=undefined;longLink=undefined;const row=input.rows.get(name);
    if(!row||seen.has(name)||row.archive!==ref.path||!['0','\0','2'].includes(type))return fail('tar original member set');seen.add(name);
@@ -31,7 +34,7 @@ export function inspectSourceOriginalTar(input:{archive:SourceTarReference;rows:
   const padded=Math.ceil(bytes/512)*512;for(let at=bytes;at<padded;at+=limits.rangeBytes)read(offset+at,Math.min(limits.rangeBytes,padded-at));offset+=padded;
  }
  if(!end||offset+512>ref.bytes||longName!==undefined||longLink!==undefined)return fail('tar original closure');for(;offset<ref.bytes;offset+=limits.rangeBytes)if(read(offset,Math.min(limits.rangeBytes,ref.bytes-offset)).some(byte=>byte!==0))return fail('tar trailing payload');
- if(whole.digest('hex')!==ref.sha256)return fail('complete tar original digest');return {seen,locations};
+ if(whole.digest('hex')!==ref.sha256)return fail('complete tar original digest');if(input.ordinarySingleFile&&(seen.size!==1||[...input.rows.keys()].some(name=>!seen.has(name))))return fail('single ordinary file closure');return {seen,locations};
 }
 
 export type SourceGzipBlockIndex=Readonly<{schemaVersion:1;kind:'source-tar-gzip-block-index';archive:SourceTarReference;expanded:Readonly<{bytes:number;sha256:string}>;blocks:readonly Readonly<{offset:number;bytes:number;expandedOffset:number;expandedBytes:number}>[]}>;

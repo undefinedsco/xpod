@@ -187,13 +187,23 @@ function inspectTarballBuffer(compressed, limits) {
   return { entries, manifest };
 }
 
-// Single gunzip pass, bounded header/name set and manifest only; never materializes payloads.
-async function inspectTarballFile(file, limits, signal) {
+function validateTarInspectionLimits(limits) {
   for (const [key, maximum] of Object.entries({ expandedBytes: 4 * 1024 ** 3, members: 100000, manifestBytes: MANIFEST_MAX_BYTES })) {
     if (!limits || !Number.isSafeInteger(limits[key]) || limits[key] < 1 || limits[key] > maximum) throw new Error('Invalid tar inspection budget');
   }
+}
+// The same parser accepts a file stream or private-custody range stream. No
+// extracted body or second archive parser is created by a transport adapter.
+async function inspectTarballFile(file, limits, signal) {
+  validateTarInspectionLimits(limits);
   signal?.throwIfAborted();
-  const source = require('node:fs').createReadStream(file, { highWaterMark: 65536 });
+  return inspectTarballStream(require('node:fs').createReadStream(file, { highWaterMark: 65536 }), limits, signal);
+}
+// Single gunzip pass, bounded header/name set and manifest only; never materializes payloads.
+async function inspectTarballStream(source, limits, signal) {
+  validateTarInspectionLimits(limits);
+  signal?.throwIfAborted();
+  if (!source || typeof source.pipe !== 'function' || typeof source.destroy !== 'function' || typeof source.on !== 'function') throw new Error('Readable actual tarball stream required');
   const gunzip = zlib.createGunzip({ chunkSize: 65536 });
   source.on('error', error => gunzip.destroy(error));
   const abort = () => gunzip.destroy(signal.reason);
@@ -239,8 +249,9 @@ async function inspectTarballFile(file, limits, signal) {
     }
     if (!ended || remaining || padding || used || expanded % BLOCK) throw new Error('Corrupted tar payload: truncated or missing end-of-archive marker');
     if (!members || !seen.has(MANIFEST_PATH)) throw new Error(`Corrupted tar payload: missing ${MANIFEST_PATH}`);
-    const manifest = JSON.parse(Buffer.concat(manifestParts, manifestBytes).toString('utf8'));
-    return { manifest, members, expandedBytes: expanded };
+    const manifestOriginal = Buffer.concat(manifestParts, manifestBytes);
+    const manifest = JSON.parse(manifestOriginal.toString('utf8'));
+    return { manifest, manifestOriginal, members, expandedBytes: expanded };
   } finally { signal?.removeEventListener('abort', abort); source.destroy(); gunzip.destroy(); }
 }
 
@@ -315,5 +326,6 @@ module.exports = {
   parseTar,
   inspectTarballBuffer,
   inspectTarballFile,
+  inspectTarballStream,
   comparePackagePayloads,
 };

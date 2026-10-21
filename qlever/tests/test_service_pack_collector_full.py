@@ -43,6 +43,17 @@ class Tests(unittest.TestCase):
   with patch.object(m.secrets,'token_hex',return_value=self.nonce),patch.object(m.outer.commands,'capture',side_effect=self.capture):return m.observe_output_image(self.image,self.config,self.ret,self.out,self.sha,capture_pack_inputs=True)
  def test_full_closed_metadata_phase_bodies_keep_image_six_stages(self):
   self.fixture();root,result=self.run_observe();pack=result['packInputObservation'];self.assertTrue(pack['mechanicsVerified']);self.assertFalse(pack['packManifestTransformationVerified']);self.assertEqual(len(result['stages']),6);self.assertEqual(len(pack['bodies']),2);self.assertNotEqual(pack['bodies'][0]['original']['path'],pack['bodies'][1]['original']['path']);self.assertEqual(self.calls,['pull','create','inspect','copy','copy-pack-inputs','copy-pack-phase','copy-pack-body','copy-pack-body','remove','confirm-absent'])
+ def test_shared_worker_plans_equal_actual_collector_commands(self):
+  self.fixture();commands={};actual_capture=self.capture
+  def capture(label,argv,*args,**kwargs):
+   commands[label]=argv;return actual_capture(label,argv,*args,**kwargs)
+  with patch.object(m.secrets,'token_hex',return_value=self.nonce),patch.object(m.outer.commands,'capture',side_effect=capture):
+   _,observed=m.observe_output_image(self.image,self.config,self.ret,self.out,self.sha,capture_pack_inputs=True)
+  record=observed['packInputObservation'];context=dict(source=str(self.out),sourceSha=self.sha,image=self.image,name='xpod-service-output-'+self.nonce,nonce=self.nonce,cid=self.cid)
+  plans=m.pack_bindings.service_pack_worker_plans(context,record,[body['reference'] for body in record['bodies']])
+  for plan in plans:self.assertEqual(plan['command'],commands[plan['name']])
+  self.assertNotIn('--copy-byte-bound',plans[0]['command'])
+  self.assertIn('--copy-byte-bound',plans[1]['command'])
  def test_bad_parent_receipt_still_cleans_owned_container(self):
   self.fixture(lambda c,r:r.update(snapshotOriginalRetained=False))
   with self.assertRaisesRegex(ValueError,'supervision'):self.run_observe()

@@ -74,13 +74,17 @@ function serviceWorkspacePackages(repoRoot, originals) {
   return WORKSPACE_PACKAGES.filter(name => selected.has(name));
 }
 
-function getBundledLocalDependencies(repoRoot, profile = 'compat', originals) {
+function getBundledLocalDependencies(repoRoot, profile = 'compat', originals, resolveRoot) {
+  resolveRoot ??= (name, optional) => {
+    const lexical = path.join(repoRoot, 'node_modules', ...name.split('/'));
+    const exists = !optional || fs.existsSync(lexical);
+    const canonical = exists ? fs.realpathSync(lexical) : undefined;
+    if (originals) originals.event({ role: 'actual-bundled-root-probe', name, optional, path: lexical, exists, canonicalPath: canonical ?? null });
+    return canonical;
+  };
   const privatePatchedDependencies = [ DRIZZLE_SOLID_PACKAGE, EXTENSIONS_PACKAGE ].flatMap((name) => {
-    const sourcePackageRoot = path.join(repoRoot, 'node_modules', ...name.split('/'));
-    if (!fs.existsSync(sourcePackageRoot)) {
-      return [];
-    }
-    return [{ name, sourcePackageRoot: fs.realpathSync(sourcePackageRoot) }];
+    const sourcePackageRoot = resolveRoot(name, true);
+    return sourcePackageRoot ? [{ name, sourcePackageRoot }] : [];
   });
 
   const workspaceDependencies = (profile === 'service' ? serviceWorkspacePackages(repoRoot, originals) : WORKSPACE_PACKAGES).map((name) => ({
@@ -90,7 +94,7 @@ function getBundledLocalDependencies(repoRoot, profile = 'compat', originals) {
 
   const patchedRuntimeDependencies = PATCHED_RUNTIME_PACKAGES.map((name) => ({
     name,
-    sourcePackageRoot: fs.realpathSync(path.join(repoRoot, 'node_modules', ...name.split('/'))),
+    sourcePackageRoot: resolveRoot(name, false),
     patchedRuntime: true,
   }));
   return [ ...privatePatchedDependencies, ...workspaceDependencies, ...patchedRuntimeDependencies ].map((entry) => ({ ...entry, repoRoot }));
@@ -385,21 +389,12 @@ function projectExposedRuntimeDependency(input, edge) {
   return manifest;
 }
 
-function exposeBundledRuntimeDependencies(packageDir, dependencies, originals) {
-  const { createRequire } = require('node:module');
-  const manifestPath = path.join(packageDir, 'package.json');
-  let manifest = readPackManifest(manifestPath, 'root-after-workspace-removal', originals);
+// The actual packer and retained-input replay share this one selection/queue
+// implementation. Callbacks supply actual reads/resolution; it issues no fact.
+function planExposedRuntimeDependencies({ packageDir, dependencies, manifest: input, readManifest, resolveInstalled, onExposure = () => {}, onNestedConflict = () => {} }) {
+  let manifest = JSON.parse(JSON.stringify(input));
   manifest.dependencies ??= {};
-  const resolveInstalled = (source, name) => {
-    const resolver = createRequire(path.join(source, 'package.json'));
-    const probes = [];
-    const resolved = resolver.resolve.paths('__xpod_runtime_dependency__')
-      .map((root) => path.join(root, ...name.split('/')))
-      .find((root) => { const exists = fs.existsSync(path.join(root, 'package.json')); probes.push({ path: root, exists }); return exists; });
-    const canonical = resolved && fs.realpathSync(resolved);
-    if (originals) originals.event({ role: 'actual-node-resolution', source, name, probes, resolvedRoot: canonical ?? null });
-    return canonical;
-  };
+  const edges = [];
   const bundledNames = new Set(dependencies.map((entry) => entry.name));
   const roots = new Map(dependencies.map((entry) => [entry.name, entry.sourcePackageRoot]));
   for (const name of Object.keys({ ...manifest.dependencies, ...manifest.optionalDependencies })) {
@@ -414,7 +409,7 @@ function exposeBundledRuntimeDependencies(packageDir, dependencies, originals) {
     const { source, destination } = queue.shift();
     if (visited.has(destination)) continue;
     visited.add(destination);
-    const childManifest = readPackManifest(path.join(source, 'package.json'), 'actual-resolution-parent-manifest', originals);
+    const childManifest = readManifest(path.join(source, 'package.json'), 'actual-resolution-parent-manifest');
     const optional = childManifest.optionalDependencies || {};
     for (const [name, range] of Object.entries({ ...childManifest.dependencies, ...optional })) {
       const childSource = resolveInstalled(source, name);
@@ -424,18 +419,44 @@ function exposeBundledRuntimeDependencies(packageDir, dependencies, originals) {
       }
       if (!roots.has(name) || existing === childSource) {
         const edge = { name, range, optional: Object.hasOwn(optional, name), bundled: bundledNames.has(name), newRoot: !roots.has(name) };
-        if (originals) originals.event({ role: 'actual-manifest-exposure', source, resolvedRoot: childSource ?? null, priorRoot: existing ?? null, edge });
+        onExposure({ role: 'actual-manifest-exposure', source, resolvedRoot: childSource ?? null, priorRoot: existing ?? null, edge });
+        edges.push(edge);
         manifest = projectExposedRuntimeDependency(manifest, edge);
         if (!roots.has(name)) roots.set(name, childSource);
         continue;
       }
       if (!childSource) throw new Error(`Unresolved optional dependency conflict: ${name}`);
-      const nestedManifest = readPackManifest(path.join(childSource, 'package.json'), 'nested-conflict-manifest', originals);
+      const nestedManifest = readManifest(path.join(childSource, 'package.json'), 'nested-conflict-manifest');
       if (nestedManifest.os || nestedManifest.cpu || nestedManifest.libc ||
           nestedManifest.scripts?.install || nestedManifest.scripts?.postinstall) {
         throw new Error(`Cannot bundle platform-specific dependency conflict: ${name}`);
       }
       const childDestination = path.join(destination, 'node_modules', ...name.split('/'));
+      onNestedConflict(childSource, childDestination, nestedManifest);
+      queue.push({ source: childSource, destination: childDestination });
+    }
+  }
+  return { manifest, edges };
+}
+
+function exposeBundledRuntimeDependencies(packageDir, dependencies, originals) {
+  const { createRequire } = require('node:module');
+  const manifestPath = path.join(packageDir, 'package.json');
+  const manifest = readPackManifest(manifestPath, 'root-after-workspace-removal', originals);
+  const resolveInstalled = (source, name) => {
+    const resolver = createRequire(path.join(source, 'package.json'));
+    const probes = [];
+    const resolved = resolver.resolve.paths('__xpod_runtime_dependency__')
+      .map((root) => path.join(root, ...name.split('/')))
+      .find((root) => { const exists = fs.existsSync(path.join(root, 'package.json')); probes.push({ path: root, exists }); return exists; });
+    const canonical = resolved && fs.realpathSync(resolved);
+    if (originals) originals.event({ role: 'actual-node-resolution', source, name, probes, resolvedRoot: canonical ?? null });
+    return canonical;
+  };
+  const planned = planExposedRuntimeDependencies({ packageDir, dependencies, manifest,
+    readManifest: (file, role) => readPackManifest(file, role, originals), resolveInstalled,
+    onExposure: row => { if (originals) originals.event(row); },
+    onNestedConflict: (childSource, childDestination, nestedManifest) => {
       const childProtectedPaths = collectProtectedDirectoryPaths(childSource, nestedManifest);
       fs.mkdirSync(path.dirname(childDestination), { recursive: true });
       fs.cpSync(childSource, childDestination, {
@@ -449,10 +470,9 @@ function exposeBundledRuntimeDependencies(packageDir, dependencies, originals) {
           return true;
         },
       });
-      queue.push({ source: childSource, destination: childDestination });
-    }
-  }
-  fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + '\n');
+    },
+  });
+  fs.writeFileSync(manifestPath, JSON.stringify(planned.manifest, null, 2) + '\n');
 }
 
 // Both installed inputs and normalized public packages use the same runtime
@@ -718,10 +738,12 @@ function main() {
     packDir,
   ]);
 
-  const stdout = packWithManifestRestoration(repoRoot, npmInvocation, {
-    ...process.env,
-    npm_config_cache: cacheDir,
-  }, originals);
+  const packEnvironment = { ...process.env, npm_config_cache: cacheDir };
+  if (originals) {
+    originals.readOriginal(path.join(repoRoot, 'package.json'), 'actual-prepack-root-input');
+    originals.event({ role: 'actual-prepack-policy', includePlatformPackages: packEnvironment.XPOD_INCLUDE_PLATFORM_PACKAGES === 'true' });
+  }
+  const stdout = packWithManifestRestoration(repoRoot, npmInvocation, packEnvironment, originals);
 
   const packJsonPath = path.join(packDir, 'pack.json');
   const packData = JSON.parse(stdout);
@@ -744,7 +766,7 @@ function main() {
   } finally { if (restoreStdio) restoreStdio(); }
 }
 
-module.exports = { removeWorkspaceDependenciesManifest, projectExposedRuntimeDependency, projectServicePackManifest, projectPackedManifest, getNpmInvocation, summarizeTarball, serviceWorkspacePackages, getBundledLocalDependencies, bundleLocalDependenciesIntoTarball, packWithManifestRestoration, applyServiceProfile, shouldCopyBundledDependency };
+module.exports = { removeWorkspaceDependenciesManifest, projectExposedRuntimeDependency, projectServicePackManifest, projectPackedManifest, planExposedRuntimeDependencies, getNpmInvocation, summarizeTarball, serviceWorkspacePackages, getBundledLocalDependencies, bundleLocalDependenciesIntoTarball, packWithManifestRestoration, applyServiceProfile, shouldCopyBundledDependency };
 
 if (require.main === module) {
   try {

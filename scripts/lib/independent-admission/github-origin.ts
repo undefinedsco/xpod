@@ -1149,7 +1149,13 @@ const PRE_COMPRESSED_API_SOURCE_GROUPS=Object.freeze([
 const compressedApiSourceHashes:Readonly<Record<string,string>>=Object.freeze({"packages/xpod-api/scripts/sourcekit-producer.ts":"393f3a9b1eccd47b8b7d20954e02a267e69afd79135afab6bf2305f53644119a","scripts/lib/physical-module-archive.ts":"042ae8317b1d43d83c8bbc25038b063874f1e5e11bb0e8b25adeb954ab741635"});
 export const API_COMPRESSED_ARCHIVE_SOURCE_BINDINGS=Object.freeze(API_RECORDED_GITLINK_SOURCE_BINDINGS.map(row=>Object.freeze({...row,sha256:compressedApiSourceHashes[row.path]??row.sha256})));
 const preCompressedApiGroup=PRE_COMPRESSED_API_SOURCE_GROUPS[PRE_COMPRESSED_API_SOURCE_GROUPS.length-1]!;
-export const API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS:readonly (GitHubSourceBindingGroup&{readonly name?:string})[]=Object.freeze([...PRE_COMPRESSED_API_SOURCE_GROUPS,Object.freeze({...preCompressedApiGroup,name:"compressed-api-archives-normal-module",secondarySelectors:Object.freeze([...(preCompressedApiGroup.secondarySelectors??[]),...API_COMPRESSED_ARCHIVE_SOURCE_BINDINGS.filter(row=>row.path==="packages/xpod-api/scripts/sourcekit-producer.ts")]),sourceBindings:API_COMPRESSED_ARCHIVE_SOURCE_BINDINGS})]);
+const PRE_SERVICE_PACK_API_SOURCE_GROUPS:readonly (GitHubSourceBindingGroup&{readonly name?:string})[]=Object.freeze([...PRE_COMPRESSED_API_SOURCE_GROUPS,Object.freeze({...preCompressedApiGroup,name:"compressed-api-archives-normal-module",secondarySelectors:Object.freeze([...(preCompressedApiGroup.secondarySelectors??[]),...API_COMPRESSED_ARCHIVE_SOURCE_BINDINGS.filter(row=>row.path==="packages/xpod-api/scripts/sourcekit-producer.ts")]),sourceBindings:API_COMPRESSED_ARCHIVE_SOURCE_BINDINGS})]);
+
+const servicePackApiHashes:Readonly<Record<string,string>>=Object.freeze({"scripts/prepare-package-manifest.cjs":"c85d5f092821c53d7b7893417512a26be3c6165f835a8f03507fe0d09228ebf2","scripts/workspace-package-payload.cjs":"edfdb44999a87551b744533019f5921e6098c65de7ccf63250e12858b9bcf48f"});
+export const API_SERVICE_PACK_SOURCE_BINDINGS=Object.freeze(API_COMPRESSED_ARCHIVE_SOURCE_BINDINGS.map(row=>Object.freeze({...row,sha256:servicePackApiHashes[row.path]??row.sha256})));
+const preServicePackApiGroup=PRE_SERVICE_PACK_API_SOURCE_GROUPS[PRE_SERVICE_PACK_API_SOURCE_GROUPS.length-1]!;
+export const API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS:readonly (GitHubSourceBindingGroup&{readonly name?:string})[]=Object.freeze([...PRE_SERVICE_PACK_API_SOURCE_GROUPS,Object.freeze({...preServicePackApiGroup,name:"service-pack-projection-normal-module",secondarySelectors:Object.freeze([...(preServicePackApiGroup.secondarySelectors??[]),...API_SERVICE_PACK_SOURCE_BINDINGS.filter(row=>row.path==="scripts/workspace-package-payload.cjs")]),sourceBindings:API_SERVICE_PACK_SOURCE_BINDINGS})]);
+
 export const API_WORKSPACE_SOURCE_GROUPS=Object.freeze(API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS.filter(group=>group.sourceBindings.some(row=>row.path==='scripts/lib/api-scoped-dependency-state.ts')));
 
 

@@ -280,7 +280,11 @@ class Runtime:
                 need(selected_identity==current==identity(os.stat('/proc/'+str(pid)+'/fd/'+str(pending['fd']))) and (selected_ref['bytes'],selected_ref['sha256'])==origin['data'] and flags&3==2 and path==origin['path'],'selected mmap FD preimage differs')
                 lease=ProcLease(self,pid);pending.update(procLease=lease,selectedFlags=flags)
                 common.update(selectedIdentity=selected_identity,selectedOriginal=selected_ref,selectedFlags=flags,procLease=lease.first)
-                self.mm.unique(pid);aliases=b.writable_aliases(current,pid,pending['fd']);need(len(aliases)==1 and aliases[0]['pid']==pid and aliases[0]['fd']==pending['fd'],'mapped output has another writable FD alias')
+                # Only mmap opens an independently mutable address-space window.
+                # Resize keeps every peer stopped and proves the whole file projection;
+                # its selected FD and all-peer no-existing-map guards below still apply.
+                if op=='map':self.mm.unique(pid)
+                aliases=b.writable_aliases(current,pid,pending['fd']);need(len(aliases)==1 and aliases[0]['pid']==pid and aliases[0]['fd']==pending['fd'],'mapped output has another writable FD alias')
                 maps,values=self.maps(pid);need(not matching_maps(values,current),'backing file already has VMA aliases')
                 for peer,task in b.tasks.items():
                     if task['exited'] or peer==pid:continue

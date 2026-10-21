@@ -21,6 +21,7 @@ HERE=Path(__file__).resolve().parent
 def load(name):
     spec=importlib.util.spec_from_file_location(name,HERE/(name+'.py'));value=importlib.util.module_from_spec(spec);spec.loader.exec_module(value);return value
 images=load('sdk-image-originals');outer=load('sdk-readonly-executor');collection=load('sdk-readonly-collection');META=outer.binding.META;need=outer.binding.need
+pack_bindings=load('sdk-service-pack-bindings');need(pack_bindings.META==META,'same canonical service pack metadata bound');pack_body_references=pack_bindings.pack_body_references;verify_pack_parent=pack_bindings.verify_pack_parent
 
 def exact_image(value,repository):
     need(isinstance(value,str) and re.fullmatch(re.escape('ghcr.io/undefinedsco/'+repository)+r'@sha256:[a-f0-9]{64}',value),'fixed actual service image repository/digest');return value
@@ -143,9 +144,9 @@ OUTPUT_LABEL='xpod.service-output-owner'
 OUTPUT_TAR_LIMIT=256*1024
 OUTPUT_MANIFEST_LIMIT=128*1024
 OUTPUT_ROLES=('pull','create','inspect','copy','remove','confirm-absent')
-OUTPUT_PACK_ROLE='copy-pack-inputs'
-OUTPUT_PACK_PHASE_ROLE='copy-pack-phase'
-OUTPUT_PACK_BODY_ROLE='copy-pack-body'
+OUTPUT_PACK_ROLE=pack_bindings.OUTPUT_PACK_ROLE
+OUTPUT_PACK_PHASE_ROLE=pack_bindings.OUTPUT_PACK_PHASE_ROLE
+OUTPUT_PACK_BODY_ROLE=pack_bindings.OUTPUT_PACK_BODY_ROLE
 
 def output_image_command(mode,image,name,nonce,cid=None,body_path=None):
     exact_image(image,'xpod')
@@ -249,34 +250,6 @@ def service_pack_sidecar_tar(path,check,*,phase=False):
     need(registered==set(originals),'pack sidecar has unregistered originals');check()
     return dict(collection=collection,collectionOriginal=index_original,originals=originals,metadataCaptureOnly=True,packManifestTransformationVerified=False,pending=['same-call-pack-writer-and-export-not-integrated','pack-tar-originals-and-resolution-input-closure-unverified'])
 
-def pack_body_references(collection):
-    refs=collection.get('bodyOriginals');records=collection.get('records')
-    need(isinstance(refs,list) and 0<len(refs)<=4095 and isinstance(records,list) and len(records)<=4096,'bounded actual body/reference records')
-    seen=set();actual=[r for r in records if isinstance(r,dict) and r.get('kind')=='actual-pack-body'];need(len(actual)==len(refs),'exact body operation count')
-    roles=[]
-    for index,ref in enumerate(refs,1):
-        need(isinstance(ref,dict) and set(ref)=={'path','bytes','sha256'} and type(ref['bytes']) is int and 0<ref['bytes']<=32*META and isinstance(ref['sha256'],str) and re.fullmatch('[a-f0-9]{64}',ref['sha256']),'bounded plain actual body reference')
-        need(ref['path']=='service-pack-bodies/objects/'+str(index).zfill(4)+'-'+ref['sha256']+'.original' and ref['path'] not in seen,'exact unique body ordinal path');seen.add(ref['path'])
-        matching=[r for r in actual if r.get('reference')==ref];need(len(matching)==1,'unique actual body record')
-        row=matching[0];need(row.get('role') in ['seed-npm-pack','public-package-tar','final-service-pack'],'fixed body role')
-        need((isinstance(row.get('name'),str) and 0<len(row['name'])<=256) if row['role']=='public-package-tar' else row.get('name') is None,'fixed public body name')
-        at=records.index(row);stats=[r for r in records[:at] if isinstance(r,dict) and r.get('kind')=='actual-pack-body-stat' and all(r.get(key)==row.get(key) for key in ['role','name','path','canonicalPath','identity']) and r.get('bytes')==ref['bytes']]
-        need(len(stats)==1,'actual body stat/read origin must match');roles.append(row['role'])
-    need(roles.count('seed-npm-pack')==roles.count('final-service-pack')==1,'exact seed and final body required')
-    return refs
-
-def verify_pack_parent(collection,parent,phase_originals,captured):
-    need(parent.get('sourceSha')==collection.get('sourceSha') and parent.get('authorityVerified') is False and parent.get('retainedCeilingBytes')==32*META,'same source/upstream pack budget')
-    rows=parent.get('originals');need(isinstance(rows,list) and len(rows)==len(captured) and all(isinstance(r,dict) and set(r)=={'path','bytes','sha256'} for r in rows),'closed actual pack parent index')
-    indexed={r['path']:r for r in rows};need(len(indexed)==len(rows) and indexed==captured,'parent metadata/body full retained closed set differs')
-    need(type(parent.get('chargedOriginalBytes')) is int and parent['chargedOriginalBytes']==sum(r['bytes'] for r in rows)<=32*META,'actual parent charged byte inventory')
-    receipt=json.loads(phase_originals['pack.receipt.json']);raw=phase_originals['pack.raw.log'];budget=collection.get('details',{}).get('budget',{})
-    deadline=parent.get('deadlineUnixMs');need(type(deadline) is int and budget.get('deadlineUnixMs')==deadline and budget.get('retainedCeilingBytes')==30*META,'same actual pack worker deadline/allocation')
-    need(receipt.get('command')==['node','/app/scripts/run-npm-pack.cjs','.test-data/service-pack','.test-data/service-pack-cache','service','--retain-service-originals',parent['sourceSha'],str(deadline),str(30*META)],'exact upstream pack command')
-    need(receipt.get('exit')==0 and type(receipt.get('exit')) is int and receipt.get('signal') is None and receipt.get('resourceStop') is None and receipt.get('supervisorError') is None and isinstance(receipt.get('cleanupErrors'),list) and len(receipt['cleanupErrors'])==0 and all(key in receipt for key in ['signal','resourceStop','supervisorError']) and receipt.get('actualWait') is True and receipt.get('ownedGroupAbsentAfterWait') is True and receipt.get('rawClosedBeforeHash') is True,'pack actual successful wait/closure required')
-    need(receipt.get('snapshotOriginalRetained') is not False and not receipt.get('receiptSnapshotOverflow') and receipt.get('rawOverflow') is False and receipt.get('actualRawPipeEof') is True and receipt.get('retainedRawBytes')==len(raw) and receipt.get('rawSHA256')==hashlib.sha256(raw).hexdigest() and receipt.get('rawByteLimit')==META,'complete upstream supervision raw/receipt required')
-    need(collection.get('details',{}).get('completion')=='actual-pack-returned' and collection.get('authorityVerified') is False,'actual pack sealed observation only')
-    return dict(parentRawClosureVerified=True,packManifestTransformationVerified=False,pending=['same-private-source-and-pack-input-resolution-closure-unverified'])
 
 def observe_output_image(image,config,retained,source,source_sha,*,capture_pack_inputs=False):
     budget=retained.budget;nonce=secrets.token_hex(16);name='xpod-service-output-'+nonce;cid=None;owned=False;removed=False;stages=[];failures=[];cleanup_errors=[]
@@ -284,10 +257,7 @@ def observe_output_image(image,config,retained,source,source_sha,*,capture_pack_
         label='service-output-'+role+('-'+Path(body_ref['path']).name[:4] if body_ref else '')
         if copy_bound is not None:need(type(copy_bound) is int and 0<copy_bound<=32*META,'exact cp stdout bound')
         held=retained.reserve((2*copy_bound+3*META) if copy_bound is not None else 5*META)
-        argv=['/usr/bin/python3','-I','-S','-B',str(Path(__file__).resolve()),'--source',str(source),'--source-sha',source_sha,'--image-worker',role,'--service-image',image,'--container-name',name,'--owner-nonce',nonce]
-        if cid is not None:argv+=['--container-id',cid]
-        if body_ref is not None:argv+=['--body-path',body_ref['path']]
-        if copy_bound is not None:argv+=['--copy-byte-bound',str(copy_bound)]
+        argv=pack_bindings.service_output_worker_argv(str(source),source_sha,role,image,name,nonce,cid,body_ref['path'] if body_ref else None,copy_bound)
         # Construct the same fixed argv here before any command executes.
         output_image_command(role,image,name,nonce,cid,body_ref['path'] if body_ref else None)
         try:row=outer.commands.capture(label,argv,retained.out,source,timeout=budget.timeout(cap,0 if cleanup else 10),resource_profile='cleanup' if cleanup else 'observation')
@@ -330,7 +300,7 @@ def observe_output_image(image,config,retained,source,source_sha,*,capture_pack_
             for relative,ref in phase_refs.items():captured['service-pack-phase/'+relative]=dict(ref,path='service-pack-phase/'+relative)
             body_observations=[]
             for ref in body_refs:
-                tar_bound=((ref['bytes']+511)//512)*512+10240+512
+                tar_bound=pack_bindings.body_copy_bound(ref)
                 # Existing two cleanup stages and final master retain their
                 # own worst-case allocations; no body can consume their slot.
                 need(retained.total+2*tar_bound+3*META+ref['bytes']+11*META<=32*META,'pending service-pack-body-exceeds-actual-retained-remaining')

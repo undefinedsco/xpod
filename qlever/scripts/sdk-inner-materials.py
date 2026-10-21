@@ -137,10 +137,11 @@ def dependency_paths(build):
 def configure_inputs(build):
     file=Path(build)/'CMakeFiles/Makefile.cmake'
     if not file.is_file():raise ValueError('Actual CMake configure dependency originals missing')
-    match=re.search(r'set\(CMAKE_MAKEFILE_DEPENDS\s+(.*?)\n\)',file.read_text(),re.S)
-    if not match:raise ValueError('Actual CMake configure dependency layout unsupported')
+    if file.stat().st_size>8*1024**2:raise ValueError('SDK configure dependency record budget')
+    matches=re.findall(r'^set\(CMAKE_MAKEFILE_DEPENDS[ \t]*\r?\n(.*?)^[ \t]*\)[ \t]*(?:\r?\n|$)',file.read_text(),re.M|re.S)
+    if len(matches)!=1:raise ValueError('Actual CMake configure dependency layout unsupported')
     result={file}
-    for name in shlex.split(match.group(1)):
+    for name in shlex.split(matches[0]):
         path=Path(name);path=path if path.is_absolute() else Path(build)/path
         if not path.is_file():raise ValueError('Recorded CMake input original missing')
         result.add(path)

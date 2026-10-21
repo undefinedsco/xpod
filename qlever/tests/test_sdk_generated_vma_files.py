@@ -24,8 +24,11 @@ class Tests(unittest.TestCase):
  def test_actual_create_retains_same_held_empty_fd(self):
   path,fd,row=self.create();origin=next(iter(self.r.origins.values()));self.assertEqual(origin['identity'],m.identity(os.fstat(fd)));self.assertEqual(self.b.originals[row['original']['path']],b'');self.assertIsNone(self.r.pending.get(10))
 
- def resize_control(self,arch,sizes,mutation=None):
+ def resize_control(self,arch,sizes,mutation=None,shared_memory=False):
   path,fd,created=self.create();origin=next(iter(self.r.origins.values()));self.r.mm.domains={10:1};self.b.tool_metadata_bytes=4*1024**2;self.b.reserve_generated_bytes=lambda count:None;self.b.generated_fd_path=lambda *args:str(path);self.b.writable_aliases=lambda *args:[dict(pid=10,fd=fd,accessMode=2,flags=2)];self.b.tool_maps=lambda pid:(dict(original=dict(path='maps',bytes=0,sha256=hashlib.sha256(b'').hexdigest())),[])
+  if shared_memory:
+   self.r.mm.record(dict(kind='actual-child-binding',parentPid=10,childPid=11,cloneFlags=0x100,sequence=12));self.b.tasks[11]={'entry':None,'exited':False}
+   self.b.barrier=lambda:self.b.emit(dict(kind='all-stop-barrier',pids=[10,11],osStates={'10':'t','11':'t'},taskOwnership=[dict(tid=10,fdTable=10),dict(tid=11,fdTable=11)]))
   proc=self.root/'resize-proc';proc.mkdir();(proc/'stat').write_bytes(b'10 (fixture) t '+b' '.join([b'0']*18+[b'123'])+b'\n');opened=m.os.open;statted=m.os.stat
   def redirect(value):return proc if str(value)=='/proc/10' else path if str(value).startswith('/proc/10/fd/') else value
   with patch.object(m.os,'open',side_effect=lambda value,*a,**kw:opened(redirect(value),*a,**kw)),patch.object(m.os,'stat',side_effect=lambda value,*a,**kw:statted(redirect(value),*a,**kw)):
@@ -38,6 +41,21 @@ class Tests(unittest.TestCase):
   parent=self.root
   for arch in m.ABI:
    self.root=parent/str(arch);self.root.mkdir();self.b=Backend(self.root);self.r=m.Runtime(self.b);self.addCleanup(self.r.close);self.resize_control(arch,[0,1,4096,65537,1024,1024,0,7])
+ def test_shared_memory_peer_resize_retains_all_stop_and_complete_bytes_but_map_still_refuses(self):
+  parent=self.root
+  for arch in m.ABI:
+   self.root=parent/str(arch);self.root.mkdir();self.b=Backend(self.root);self.r=m.Runtime(self.b);self.addCleanup(self.r.close);origin=self.resize_control(arch,[0,1,4097,3],shared_memory=True)
+   self.assertEqual(self.r.mm.domains,{10:1,11:1});entry=dict(sequence=500,arch=arch,nr=m.ABI[arch]['map'],args=[0,origin['identity'][3],m.PROTECTION,m.FLAGS,origin['fd'],0]);self.b.tasks[10]['entry']=entry
+   with patch.object(self.r,'lookup_fd',return_value=origin):
+    with self.assertRaisesRegex(ValueError,'sole actual memory-domain'):self.r.classify(10,entry,None)
+ def test_shared_memory_resize_still_refuses_existing_peer_mapping(self):
+  capture=self.r.capture
+  def guarded(pid):
+   if self.r.pending[pid]['op']=='resize':
+    origin=self.r.pending[pid]['origin'];dev,ino=origin['identity'][:2];self.b.tool_maps=lambda observed:(dict(original=dict(path='maps',bytes=0,sha256=hashlib.sha256(b'').hexdigest())),[dict(deviceMajor=os.major(dev),deviceMinor=os.minor(dev),inode=ino)] if observed==11 else [])
+   return capture(pid)
+  with patch.object(self.r,'capture',side_effect=guarded):
+   with self.assertRaisesRegex(ValueError,'peer already maps'):self.resize_control(0xc00000b7,[4097],shared_memory=True)
  def test_resize_reservation_failure_happens_before_preimage_body_allocation(self):
   actual=self.b.snapshot_write_original;calls=[]
   self.b.snapshot_write_original=lambda *a,**kw:(calls.append(a[1]),actual(*a,**kw))[1]
