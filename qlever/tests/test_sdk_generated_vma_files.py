@@ -129,10 +129,12 @@ class Tests(unittest.TestCase):
   mm=m.MemoryDomains();mm.record(dict(kind='owned-root-binding',pid=10,sequence=1));mm.record(dict(kind='actual-child-binding',parentPid=10,childPid=11,cloneFlags=0x100,sequence=2))
   with self.assertRaises(ValueError):mm.unique(10)
   mm.record(dict(kind='actual-wait-exit',pid=11,sequence=3));self.assertEqual(mm.unique(10),1)
- def mapping_control(self,arch,epochs,rebind=False,mutation=None):
+ def mapping_control(self,arch,epochs,rebind=False,mutation=None,shared_mm=False):
   # Real retained regular FD/bytes; maps/ptrace stops are explicitly simulated.
   path,fd,created=self.create();origin=next(iter(self.r.origins.values()));os.ftruncate(fd,1);origin.update(identity=m.identity(os.fstat(fd)),data=(1,hashlib.sha256(b'\0').hexdigest()))
   self.r.mm.domains={10:1};self.b.tool_metadata_bytes=4*1024**2;self.b.deadline=m.time.monotonic()+100;self.b.check=lambda:None;self.b.writable_aliases=lambda *args:[dict(pid=10,fd=fd,accessMode=2,flags=2)];reserved=[];self.b.reserve_generated_bytes=lambda count:reserved.append(count)
+  if shared_mm:
+   self.r.model=m.COHORT_MODEL;self.r.mm.domains[11]=1;self.b.tasks[11]={'entry':None,'exited':False};self.b.barrier=lambda:self.b.emit(dict(kind='all-stop-barrier',pids=[10,11],osStates=['t','t'],taskOwnership=[dict(tid=10,tgid=10,fdTable=10),dict(tid=11,tgid=10,fdTable=10)]))
   class Wait:
    parent_deadline=self.b.deadline
    def clamp(inner,end):inner.end=end;inner.token=object();return inner.token
@@ -166,11 +168,46 @@ class Tests(unittest.TestCase):
     start=20+index*100;data=[b'X',b'Y'][index];entry=dict(sequence=start,arch=arch,nr=m.ABI[arch]['map'],args=[0,1,3,0x4001,selected,0]);self.b.tasks[10]['entry']=entry;self.b.seq=start;self.assertTrue(self.r.classify(10,entry,None));self.r.capture(10);self.b.exclusive=(10,start);state['mapped']=True
     if mutation=='body':os.pwrite(fd,b'Z',0)
     if mutation=='flags':self.b.generated_fd_flags=lambda *args:0
-    self.b.seq+=1;self.r.finish(10,entry,dict(sequence=self.b.seq,result=4096,isError=False));self.assertEqual(self.r.owner,10);self.assertEqual(reserved,[m.reservation_bytes(0,4*1024**2,1,rebind and i>0) for i in range(index+1)])
-    os.pwrite(fd,data,0);entry=dict(sequence=start+10,arch=arch,nr=m.ABI[arch]['unmap'],args=[4096,1,0,0,0,0]);self.b.tasks[10]['entry']=entry;self.b.seq=start+10;self.assertTrue(self.r.classify(10,entry,None));self.r.capture(10);self.b.exclusive=(10,start+10);state['mapped']=False;checkpoint=self.r.finish(10,entry,dict(sequence=start+15,result=0,isError=False));self.assertIsNone(self.r.owner);self.assertTrue(self.b.waiter.restored);self.assertEqual(self.b.originals[checkpoint['original']['path']],data);self.r.complete_phase()
+    self.b.seq+=1;self.r.finish(10,entry,dict(sequence=self.b.seq,result=4096,isError=False));self.assertEqual(self.r.owner,10);self.assertEqual(reserved,[(m.cohort_reservation_bytes(1,1,4*1024**2,1,rebind and i>0) if shared_mm else m.reservation_bytes(0,4*1024**2,1,rebind and i>0)) for i in range(index+1)])
+    os.pwrite(fd,data,0);entry=dict(sequence=start+10,arch=arch,nr=m.ABI[arch]['unmap'],args=[4096,1,0,0,0,0]);self.b.tasks[10]['entry']=entry;self.b.seq=start+10;self.assertTrue(self.r.classify(10,entry,None));self.r.capture(10);self.b.exclusive=(10,start+10);state['mapped']=False
+    if shared_mm:self.b.seq=start+15
+    checkpoint=self.r.finish(10,entry,dict(sequence=start+15,result=0,isError=False));self.assertIsNone(self.r.owner);self.assertTrue(self.b.waiter.restored);self.assertEqual(self.b.originals[checkpoint['original']['path']],data);self.r.complete_phase()
     self.assertTrue(self.r.consumer(dict(sequence=start+20,path=str(path)),(1,hashlib.sha256(data).hexdigest()),m.identity(os.fstat(fd))))
    os.pwrite(fd,b'Z',0)
    with self.assertRaises(ValueError):self.r.consumer(dict(sequence=start+21,path=str(path)),(1,hashlib.sha256(data).hexdigest()),m.identity(os.fstat(fd)))
+ def test_cohort_insufficient_reserve_reads_no_new_maps_or_body(self):
+  snapshots=[];maps=[];actual=self.b.snapshot_write_original;capture=self.r.capture
+  self.b.snapshot_write_original=lambda *args,**kwargs:(snapshots.append(args[1]),actual(*args,**kwargs))[1]
+  def guarded(pid):
+   if self.r.pending[pid]['op']=='map':
+    self.b.reserve_generated_bytes=lambda count:(_ for _ in ()).throw(ValueError('remaining original ledger exhausted'))
+    self.b.tool_maps=lambda pid:maps.append(pid)
+   return capture(pid)
+  with patch.object(self.r,'capture',side_effect=guarded):
+   with self.assertRaisesRegex(ValueError,'remaining original ledger'):self.mapping_control(0xc000003e,1,shared_mm=True)
+  self.assertEqual(snapshots,[0]);self.assertEqual(maps,[])
+ def test_cohort_wrong_peer_backing_and_distinct_writable_alias_refused(self):
+  original_root=self.root
+  for mutation in ['peer-backing','other-table']:
+   self.root=original_root/mutation;self.root.mkdir();self.b=Backend(self.root);self.r=m.Runtime(self.b);self.addCleanup(self.r.close);capture=self.r.capture
+   def guarded(pid):
+    if self.r.pending[pid]['op']=='map':
+     if mutation=='other-table':self.b.writable_aliases=lambda *args:[dict(pid=10,fd=self.r.pending[pid]['fd'],accessMode=2,flags=2),dict(pid=11,fd=99,accessMode=2,flags=2)]
+     else:
+      current=self.b.tool_maps
+      def wrong(peer):
+       row,items=current(peer)
+       if peer==11 and items:items=[dict(item,inode=item['inode']+1) for item in items]
+       return row,items
+      self.b.tool_maps=wrong
+    return capture(pid)
+   with patch.object(self.r,'capture',side_effect=guarded):
+    with self.assertRaises(ValueError):self.mapping_control(0xc000003e,1,shared_mm=True)
+   self.r.close();self.assertEqual(self.b.retained,set())
+ def test_stopped_mm_cohort_real_fd_two_epochs_both_abis(self):
+  original_root=self.root
+  for arch in m.ABI:
+   self.root=original_root/str(arch);self.root.mkdir();self.b=Backend(self.root);self.r=m.Runtime(self.b);self.addCleanup(self.r.close);self.mapping_control(arch,2,rebind=True,shared_mm=True)
  def test_actual_fd_simulated_poststop_changes_reject_and_owned_cleanup(self):
   original_root=self.root
   for mutation in ['link','proc','body','flags']:

@@ -429,7 +429,7 @@
   },
   {
     "path": "qlever/scripts/sdk-generated-vma-originals.py",
-    "sha256": "8c0297f266d2079fa715dd9a6a4964bec41b36459de9fbf1e9d4993c34bc3267"
+    "sha256": "161f31d32674c68a0f3ea6dced9aba2bcabd27c7b67c05ece06346477b957def"
   },
   {
     "path": "qlever/scripts/sdk-generation-materials.py",
@@ -437,7 +437,7 @@
   },
   {
     "path": "qlever/scripts/sdk-generation-multiprocess-bindings.py",
-    "sha256": "896ffe63167e74c5ba543f1e19407085f693c50d3bceaebd3b0c13c548c57e1f"
+    "sha256": "5d2727953d089168f141e4d9c10d8708472d6ec4dccc6de3d0c27137600b4924"
   },
   {
     "path": "qlever/scripts/sdk-git-patch-projection.py",
@@ -481,7 +481,7 @@
   },
   {
     "path": "qlever/scripts/sdk-ptrace-execution.py",
-    "sha256": "cccf3abdb28b58cb807e774c093f8487d6cb489b3ff20fa8ba27b87cac60c5f1"
+    "sha256": "d6d808983514bcfe39db1dbbd356e6ed894f69c5e7310d3f9c95b39039789050"
   },
   {
     "path": "qlever/scripts/sdk-ptrace-kernel.py",
@@ -1141,11 +1141,11 @@
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-fetchcontent.ts",
-    "sha256": "1197417cf83b9edcaacca847921a64c0741f67bd46304d79518fc66f3fb6ed6c"
+    "sha256": "6122a99c44eced43be0ae4429718c8360e8a2843a16f621fa75614f06943faf4"
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-generation.ts",
-    "sha256": "96f8d78da899da07b9967350f1eca91ee02a86aade22a8ef7cf1eefa9580b956"
+    "sha256": "7320d8c5eff242eb02f3423ccfa539c3c315a28bd81810696b9712a6d8b4fe55"
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-inputs.ts",
@@ -1157,7 +1157,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-origin-policy.ts",
-    "sha256": "2dbd1d2e97d3d479516a23c0b17c98f7faf2872d110ec35f944e4ec6f618e5fd"
+    "sha256": "74fe46fb86387fcb0fe4b7062ee8a7d356d5007e1a38f629f726c7ef1945e16c"
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-originals.ts",
@@ -1229,7 +1229,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/sdk-controller-helper-groups.ts",
-    "sha256": "933c2eff7e24e390dd7126d8411de3c8cbac9c5e47dd2001ec04f42d1a11c3c7"
+    "sha256": "dfc2fc5d5dffcadee60c7dfba44012cda8b658d9ec3a52c9b9d07790dc2bf875"
   },
   {
     "path": "scripts/lib/independent-admission/service-pack-manifest-replay.ts",

@@ -19,6 +19,7 @@ import sys
 LEGACY_MODEL='actual-generated-shared-vma-single-owner-v1'
 KERNEL_LINK_MODEL='actual-generated-shared-vma-single-owner-v2'
 MODEL='actual-generated-file-vma-single-owner-v3'
+COHORT_MODEL='actual-generated-file-vma-stopped-mm-cohort-v4'
 CANONICAL_FILE_MAXIMUM=json.loads((Path(__file__).resolve().parents[2]/'scripts/lib/module-artifact-limits.json').read_bytes())['shardBytes']
 MAPPING_KIND='actual-exclusive-mmap-selected-file-v1'
 BUILD_ROOT='/opt/qlever-sdk/build'
@@ -69,6 +70,25 @@ def reservation_bytes(peer_count,metadata_maximum,file_bytes=1,selected_rebindin
     need(type(file_bytes) is int and 0<file_bytes<=CANONICAL_FILE_MAXIMUM,'bounded proven mapping file size required')
     need(type(selected_rebinding) is bool,'exact selected rebinding dimension required')
     return (5+2*peer_count)*metadata_maximum+(44+2*peer_count)*65536+(7 if selected_rebinding else 6)*file_bytes
+
+def cohort_reservation_bytes(peer_count,cohort_peers,metadata_maximum,file_bytes,selected_rebinding=False):
+    need(type(cohort_peers) is int and 0<=cohort_peers<=peer_count,'complete bounded same-MM peer count required')
+    return reservation_bytes(peer_count,metadata_maximum,file_bytes,selected_rebinding)+2*cohort_peers*(metadata_maximum+65536)+65536
+
+def numeric_mapping_geometry(mappings,check=lambda:None):
+    keys=('startHex','endHex','permissions','fileOffset','deviceMajor','deviceMinor','inode');result=[]
+    for row in mappings:
+        check();need(all(key in row for key in keys),'complete parsed numeric VMA required');result.append(tuple(row[key] for key in keys))
+    return result
+
+def complete_memory_cohort(mm,pid,barrier=None):
+    need(pid in mm.domains and 0<len(mm.domains)<=128,'bounded actual memory domain required')
+    domain=mm.domains[pid];members=sorted(p for p,value in mm.domains.items() if value==domain)
+    need(members and pid in members,'selected actual memory cohort required')
+    if barrier is not None:
+        need(barrier['pids']==sorted(mm.domains) and barrier['osStates']==['t']*len(mm.domains),'complete actual stopped memory-domain universe required')
+        need([row['tid'] for row in barrier['taskOwnership']]==barrier['pids'],'complete actual FD-table ownership required')
+    return domain,members
 
 def kernel_link_reservation_bytes(peer_count,metadata_maximum):return (5+2*peer_count)*metadata_maximum+(44+2*peer_count)*65536+6
 
@@ -180,7 +200,7 @@ class MemoryDomains:
 
 class Runtime:
     def __init__(self,backend):
-        self.b=backend;self.mm=MemoryDomains();self.origins={};self.pending={};self.active=None;self.checkpoints={};self.reserved=0;self.metadata_bytes=0;self.spending_thread=None;self.cleanup_errors=[]
+        self.b=backend;self.model=COHORT_MODEL if getattr(backend,'generated_vma_shared_mm',False) else MODEL;self.mm=MemoryDomains();self.origins={};self.pending={};self.active=None;self.checkpoints={};self.reserved=0;self.metadata_bytes=0;self.spending_thread=None;self.cleanup_errors=[]
     def cleanup_fds(self,fds):
         errors=[]
         for fd in dict.fromkeys(fd for fd in fds if fd is not None and fd in self.b.retained):
@@ -189,6 +209,8 @@ class Runtime:
             else:self.b.retained.discard(fd)
         self.cleanup_errors.extend(errors)
         return errors
+    def mapping_domain(self,pid,barrier=None):
+        return complete_memory_cohort(self.mm,pid,barrier) if self.model==COHORT_MODEL else (self.mm.unique(pid),[pid])
     @property
     def owner(self):return self.active['pid'] if self.active is not None else None
     def record(self,row):
@@ -204,6 +226,7 @@ class Runtime:
                     os.close(origin['held']);self.b.retained.remove(origin['held']);del self.origins[key]
         if self.active is not None:
             self.b.check();kind=row['kind']
+            if self.model==COHORT_MODEL:need(self.mapping_domain(self.owner)==(self.active['memoryDomain'],self.active['memoryDomainMembers']),'dirty mapping cohort changed')
             if kind in ['actual-child-binding','ptrace-event','signal-delivery','actual-wait-exit']:raise ValueError('generated VMA: unsupported event while finite mapping dirty')
             if kind=='kernel-syscall':
                 need(row['pid']==self.owner,'peer executed while generated mapping active')
@@ -257,7 +280,7 @@ class Runtime:
             self.pending[pid]=dict(op=op,origin=origin,fd=args[0])
         elif op=='map' and not(args[3]&0x20) and args[2]&2 and args[3]&1:
             origin=self.lookup_fd(pid,args[4]);need(origin is not None,'mapped output lacks actual create/resize origin');map_dimensions(entry,args[4],origin['identity'][3]);need(origin['pid']==pid and 0<origin['identity'][3]<=b.maximum_file_bytes<=CANONICAL_FILE_MAXIMUM,'selected own bounded nonempty origin required')
-            try:self.mm.unique(pid)
+            try:self.mapping_domain(pid)
             except ValueError:
                 try:memory_domain_rejection_diagnostic(pid,entry,self.mm,b.check)
                 except BaseException:pass
@@ -282,7 +305,7 @@ class Runtime:
             origin=pending['origin'];need(not origin.get('writePending'),'unverified write invalidated generated origin');held=origin['held'];current=identity(os.fstat(held));need(same_object(current,origin['identity']),'retained generated backing object changed')
             common.update(originSequence=origin['sequence'],path=origin['path'],identity=current,fd=pending['fd'])
             if op in ['resize','map']:
-                reserved=resize_reservation_bytes(current[3],entry['args'][1],len(barrier['pids'])-1,b.tool_metadata_bytes) if op=='resize' else reservation_bytes(len(barrier['pids'])-1,b.tool_metadata_bytes,current[3],pending['fd']!=origin['fd']);b.reserve_generated_bytes(reserved);self.spending_thread=threading.get_ident();common.update(reservationBytes=reserved,metadataMaximumBytes=b.tool_metadata_bytes)
+                reserved=resize_reservation_bytes(current[3],entry['args'][1],len(barrier['pids'])-1,b.tool_metadata_bytes) if op=='resize' else (cohort_reservation_bytes(len(barrier['pids'])-1,len(self.mapping_domain(pid,barrier)[1])-1,b.tool_metadata_bytes,current[3],pending['fd']!=origin['fd']) if self.model==COHORT_MODEL else reservation_bytes(len(barrier['pids'])-1,b.tool_metadata_bytes,current[3],pending['fd']!=origin['fd']));b.reserve_generated_bytes(reserved);self.spending_thread=threading.get_ident();common.update(reservationBytes=reserved,metadataMaximumBytes=b.tool_metadata_bytes)
             if op in ['resize','map']:
                 need(current==origin['identity'] and current==identity(os.stat('/proc/'+str(pid)+'/fd/'+str(pending['fd']))),'generated preimage FD identity differs')
                 _,ref=self.snapshot(held);need((ref['bytes'],ref['sha256'])==origin['data'],'generated preimage bytes differ');common['beforeOriginal']=ref
@@ -304,19 +327,28 @@ class Runtime:
                 # Only mmap opens an independently mutable address-space window.
                 # Resize keeps every peer stopped and proves the whole file projection;
                 # its selected FD and all-peer no-existing-map guards below still apply.
-                if op=='map':self.mm.unique(pid)
+                if op=='map':
+                    domain,cohort=self.mapping_domain(pid,barrier);pending.update(memoryDomain=domain,memoryDomainMembers=cohort)
+                    if self.model==COHORT_MODEL:common['memoryDomainMembers']=cohort
                 aliases=b.writable_aliases(current,pid,pending['fd']);need(len(aliases)==1 and aliases[0]['pid']==pid and aliases[0]['fd']==pending['fd'],'mapped output has another writable FD alias')
                 maps,values=self.maps(pid);need(not matching_maps(values,current),'backing file already has VMA aliases')
-                for peer,task in b.tasks.items():
+                for peer,task in (sorted(b.tasks.items()) if self.model==COHORT_MODEL else b.tasks.items()):
                     if task['exited'] or peer==pid:continue
                     other,items=self.maps(peer);need(not matching_maps(items,current),'peer already maps output backing')
+                    if op=='map' and self.model==COHORT_MODEL and peer in cohort:need(numeric_mapping_geometry(items,b.check)==numeric_mapping_geometry(values,b.check),'same-MM pre-map numeric geometry differs')
                     common.setdefault('peerMaps',[]).append(dict(pid=peer,original=other['original']))
                 common.update(beforeMapsOriginal=maps['original'],aliases=aliases)
                 if op=='map':
                     page=os.sysconf('SC_PAGE_SIZE');rounded_span(0,current[3],page);end=min(b.deadline,time.monotonic()+WINDOW_SECONDS);pending.update(alarmToken=b.waiter.clamp(end),windowEnd=end)
-                    common.update(pageBytes=page,memoryDomain=self.mm.unique(pid),windowDeadlineMonotonicNs=str(int(end*1e9)),parentDeadlineMonotonicNs=str(int(b.waiter.parent_deadline*1e9)))
+                    common.update(pageBytes=page,memoryDomain=domain,windowDeadlineMonotonicNs=str(int(end*1e9)),parentDeadlineMonotonicNs=str(int(b.waiter.parent_deadline*1e9)))
             if op=='unmap':
-                current,ref=self.snapshot(held);maps,values=self.maps(pid);verify_established(values,self.active['address'],self.active['page'],current,self.active['length']);common.update(beforeOriginal=ref,beforeMapsOriginal=maps['original'],epochSequence=self.active['sequence'])
+                current,ref=self.snapshot(held);maps,values=self.maps(pid);mapping=verify_established(values,self.active['address'],self.active['page'],current,self.active['length']);common.update(beforeOriginal=ref,beforeMapsOriginal=maps['original'],epochSequence=self.active['sequence'])
+                if self.model==COHORT_MODEL:
+                    domain,cohort=self.mapping_domain(pid,barrier);need((domain,cohort)==(self.active['memoryDomain'],self.active['memoryDomainMembers']),'active mmap cohort changed before unmap');same=[]
+                    for peer in cohort:
+                        if peer==pid:continue
+                        other,items=self.maps(peer);need(numeric_mapping_geometry(items,b.check)==numeric_mapping_geometry(values,b.check) and verify_established(items,self.active['address'],self.active['page'],current,self.active['length'])==mapping,'same-MM pre-unmap VMA differs');same.append(dict(pid=peer,original=other['original']))
+                    common.update(memoryDomainMembers=cohort,sameMemoryDomainMaps=same)
         row=b.emit(common);pending.update(window=row,preBarrier=barrier);return row
     def finish(self,pid,entry,exit):
         b=self.b;pending=self.pending[pid];window=pending['window'];op=pending['op'];need(b.exclusive==(pid,entry['sequence']) and exit['result']>=0 and exit['isError'] is False,'actual exclusive successful operation exit required')
@@ -357,20 +389,33 @@ class Runtime:
             last_link=raw_record(os.fsencode(os.readlink(link_path)));need(first_link==last_link,'kernel VMA link changed');last_body=selected_sample();proc_last=pending['procLease'].sample();last_link_row=b.emit(dict(kind='generated-vma-kernel-link-original',pid=pid,entrySequence=entry['sequence'],postBarrierSequence=barrier['sequence'],mapsOriginal=confirmation['original'],range=[mapping['startHex'],mapping['endHex']],link=last_link,procLease=proc_last))
             evidence=dict(kind=MAPPING_KIND,linkBeforeSequence=first_link_row['sequence'],linkAfterSequence=last_link_row['sequence'],postBarrierSequence=barrier['sequence'],selectedFd=pending['fd'],selectedIdentity=current,retainedIdentity=identity(os.fstat(origin['held'])),namedIdentity=identity(os.stat(selected_path)),selectedFlags=pending['selectedFlags'],beforeOriginal=window['selectedOriginal'],postOriginal=first_body,confirmationOriginal=last_body,mapsConfirmationOriginal=confirmation['original'],linkBefore=first_link,linkAfter=last_link,procBefore=proc_first,procAfter=proc_last)
             end=pending['windowEnd'];token=pending['alarmToken']
-            row=b.emit(dict(common,identity=current,kernelMappingEvidence=evidence,mapsOriginal=maps['original'],mapping=mapping,memoryDomain=self.mm.unique(pid),windowDeadlineMonotonicNs=str(int(end*1e9)),parentDeadlineMonotonicNs=str(int(b.waiter.parent_deadline*1e9))))
+            extra={}
+            if self.model==COHORT_MODEL:
+                domain,cohort=self.mapping_domain(pid,barrier);need((domain,cohort)==(pending['memoryDomain'],pending['memoryDomainMembers']),'actual mmap post-stop cohort differs');same=[]
+                for peer in cohort:
+                    if peer==pid:continue
+                    other,items=self.maps(peer);need(numeric_mapping_geometry(items,b.check)==numeric_mapping_geometry(confirmed,b.check) and verify_established(items,exit['result'],window['pageBytes'],current,current[3])==mapping,'same-MM post-map VMA differs');same.append(dict(pid=peer,original=other['original']))
+                extra=dict(memoryDomainMembers=cohort,postMapPeerMaps=same)
+            row=b.emit(dict(common,identity=current,kernelMappingEvidence=evidence,mapsOriginal=maps['original'],mapping=mapping,memoryDomain=self.mapping_domain(pid)[0],windowDeadlineMonotonicNs=str(int(end*1e9)),parentDeadlineMonotonicNs=str(int(b.waiter.parent_deadline*1e9)),**extra))
             primary=sys.exc_info()[1];errors=pending['procLease'].close()+self.cleanup_fds([pending['selectedHeld']]);need(not errors,'mmap lease cleanup failed');pending.pop('procLease');pending.pop('selectedHeld')
             origin['fd']=pending['fd'];self.active=dict(pid=pid,origin=origin,address=exit['result'],page=window['pageBytes'],length=current[3],span=rounded_span(exit['result'],current[3],window['pageBytes']),sequence=row['sequence'],token=token)
+            if self.model==COHORT_MODEL:self.active.update(memoryDomain=pending['memoryDomain'],memoryDomainMembers=pending['memoryDomainMembers'])
         elif op=='close':
             origin=pending['origin'];need(exit['result']==0 and absent('/proc/'+str(pid)+'/fd/'+str(pending['fd'])) and identity(os.fstat(origin['held']))==window['identity'],'actual FD close differs; mapping remains live')
             b.emit(dict(common,originSequence=origin['sequence'],fd=pending['fd'],fdAbsenceErrno=errno.ENOENT,identity=window['identity'],epochSequence=self.active['sequence']))
         elif op=='unmap':
-            origin=pending['origin'];need(exit['result']==0,'actual whole unmap success required');maps,values=self.maps(pid);need(not matching_maps(values,origin['identity']),'writable backing VMA alias remains')
+            origin=pending['origin'];need(exit['result']==0,'actual whole unmap success required');post_extra={}
+            if self.model==COHORT_MODEL:
+                barrier=self.fresh_barrier();need(barrier['sequence']==exit['sequence']+1 and barrier['pids']==pending['preBarrier']['pids'] and barrier['taskOwnership']==pending['preBarrier']['taskOwnership'],'actual full-unmap fresh post-stop differs');domain,cohort=self.mapping_domain(pid,barrier);need((domain,cohort)==(self.active['memoryDomain'],self.active['memoryDomainMembers']),'actual full-unmap cohort changed');post_extra=dict(postBarrierSequence=barrier['sequence'],memoryDomainMembers=cohort)
+            maps,values=self.maps(pid);need(not matching_maps(values,origin['identity']),'writable backing VMA alias remains')
             current,ref=self.snapshot(origin['held']);need(same_object(current,origin['identity']) and (ref['bytes'],ref['sha256'])==(window['beforeOriginal']['bytes'],window['beforeOriginal']['sha256']),'unmap changed backing object/bytes')
             peers=[]
-            for peer,task in b.tasks.items():
+            for peer,task in (sorted(b.tasks.items()) if self.model==COHORT_MODEL else b.tasks.items()):
                 if task['exited'] or peer==pid:continue
-                other,items=self.maps(peer);need(not matching_maps(items,current),'peer backing alias remained at checkpoint');peers.append(dict(pid=peer,original=other['original']))
-            row=b.emit(dict(common,path=origin['path'],identity=current,retainedIdentity=current,original=ref,afterMapsOriginal=maps['original'],afterPeerMaps=peers,epochSequence=self.active['sequence'],originSequence=origin['sequence']))
+                other,items=self.maps(peer);need(not matching_maps(items,current),'peer backing alias remained at checkpoint')
+                if self.model==COHORT_MODEL and peer in cohort:need(numeric_mapping_geometry(items,b.check)==numeric_mapping_geometry(values,b.check),'same-MM final VMA geometry differs')
+                peers.append(dict(pid=peer,original=other['original']))
+            row=b.emit(dict(common,path=origin['path'],identity=current,retainedIdentity=current,original=ref,afterMapsOriginal=maps['original'],afterPeerMaps=peers,epochSequence=self.active['sequence'],originSequence=origin['sequence'],**post_extra))
             token=self.active['token'];self.active=None;b.waiter.restore(token);self.reserved=0;self.spending_thread=None;origin.update(identity=current,data=(ref['bytes'],ref['sha256']),original=ref,checkpointed=True);self.checkpoints[tuple(current[:2])]=row
         self.pending.pop(pid);return row if op!='close' else None
     def consumer(self,row,data,identity_value):
@@ -392,15 +437,24 @@ class Runtime:
 class Verifier:
     """Independent bounded raw/original replay; no caller Boolean approval."""
     def __init__(self,capture_data,maps_data,metadata_maximum=4*1024**2,model=LEGACY_MODEL,read_blocks=None,maximum_file=1024**2):
-        need(model in [LEGACY_MODEL,KERNEL_LINK_MODEL,MODEL],'unknown mapping evidence model');self.model=model;self.read_blocks=read_blocks;self.maximum_file=maximum_file
+        need(model in [LEGACY_MODEL,KERNEL_LINK_MODEL,MODEL,COHORT_MODEL],'unknown mapping evidence model');self.model=model;self.read_blocks=read_blocks;self.maximum_file=maximum_file
         self.capture_data=capture_data;self.maps_data=maps_data;self.metadata_maximum=metadata_maximum;self.mm=MemoryDomains();self.windows={};self.origins={};self.original_sequences={};self.map_sequences={};self.map_owners={};self.pending_window=None;self.transaction=None;self.active=None;self.events={};self.checkpoints={};self.consumers=[];self.metadata_bytes=0;self.pending_mapping_entries=set();self.create_paths={};self.last_observed_ns=None;self.parent_deadline_ns=None;self.fd_bindings={}
     def original(self,reference):return self.capture_data(reference)
+    def mapping_domain(self,pid,barrier=None):
+        return complete_memory_cohort(self.mm,pid,barrier) if self.model==COHORT_MODEL else (self.mm.unique(pid),[pid])
+    def verify_cohort_maps(self,rows,pid,members,owner_maps,barrier,sequence,identity=None,address=None,page=None,length=None):
+        need(isinstance(rows,list) and [item['pid'] for item in rows]==[member for member in members if member!=pid],'exact ordered same-MM maps originals required')
+        geometry=numeric_mapping_geometry(owner_maps,lambda:None)
+        for item in rows:
+            need(set(item)=={'pid','original'} and self.map_owners.get(self.key(item['original']))==item['pid'] and barrier['sequence']<self.map_sequences.get(self.key(item['original']),0)<sequence,'same-MM maps actual PID/order differs')
+            maps=self.maps_data(item['original']);need(numeric_mapping_geometry(maps,lambda:None)==geometry,'same-MM numeric VMA geometry differs')
+            if identity is not None:verify_established(maps,address,page,identity,length)
     def write_baseline(self,row,before):
-        need(self.model==MODEL and self.active is None,'generated write baseline model differs')
+        need(self.model in [MODEL,COHORT_MODEL] and self.active is None,'generated write baseline model differs')
         origin=self.origins.get(row['baseline']);need(origin and origin['pid']==row['pid'] and origin['fd']==row['fd'] and origin['identity']==row['beforeIdentity'] and origin['data']==before and origin['path']==row['path'] and origin.get('writePending'),'generated write exact origin baseline missing')
         return origin
     def consume_write_bridge(self,row,window,transition):
-        need(self.model==MODEL and transition and window and transition['sequence']==row['transitionSequence'] and transition['windowSequence']==window['sequence']==row['windowSequence'] and row['pid']==window['pid'],'generated write bridge lacks verified sole write transition')
+        need(self.model in [MODEL,COHORT_MODEL] and transition and window and transition['sequence']==row['transitionSequence'] and transition['windowSequence']==window['sequence']==row['windowSequence'] and row['pid']==window['pid'],'generated write bridge lacks verified sole write transition')
         origin=self.write_baseline(window,(window['before']['bytes'],window['before']['sha256']));need(transition['sequence']<self.original_sequences.get(self.key(row['original']),0)<row['sequence'] and row['originSequence']==window['baseline'] and row['identity']==transition['afterIdentity'] and self.original(row['original'])==(transition['after']['bytes'],transition['after']['sha256']) and transition.get('afterObservation') is None,'generated write bridge full checkpoint differs')
         self.origins[row['sequence']]=dict(origin,identity=row['identity'],data=self.original(row['original']),writePending=False,checkpointed=False);del self.origins[row['originSequence']]
     @staticmethod
@@ -423,14 +477,14 @@ class Verifier:
         for peer in peers:need(self.map_owners.get(self.key(peer['original']))==peer['pid'] and barrier['sequence']<self.map_sequences.get(self.key(peer['original']),0)<seq and not matching_maps(self.maps_data(peer['original']),origin['identity']),'resize has unobserved/aliased peer maps')
         aliases=row['aliases'];need(len(aliases)==1 and aliases[0]['pid']==row['pid'] and aliases[0]['fd']==row['fd'] and aliases[0]['accessMode']==2 and aliases[0]['flags']&3==2,'sole resize writable selected FD required')
     def allow_mapping_entry(self,row):
-        need(operation(row)=='map','actual mapping entry required');length=row['args'][1] if self.model==MODEL else 1
+        need(operation(row)=='map','actual mapping entry required');length=row['args'][1] if self.model in [MODEL,COHORT_MODEL] else 1
         candidates=[value for value in self.origins.values() if value['pid']==row['pid'] and value['identity'][3]==length and length>0 and not value.get('writePending')]
         need(candidates,'actual created/resized selected mapping origin missing');map_dimensions(row,row['args'][4],length)
         # This only defers the raw entry. The later exclusive window must join
         # its explicit originSequence and actual FD, with the complete typed
         # selected-FD binding when the descriptor was reopened. No arbitrary
         # first origin is chosen here, and no entry itself grants byte custody.
-        self.mm.unique(row['pid']);self.pending_mapping_entries.add(row['sequence']);return True
+        self.mapping_domain(row['pid'])[0];self.pending_mapping_entries.add(row['sequence']);return True
     def record(self,row,entries,exits,barriers,caps):
         kind=row['kind'];seq=row['sequence'];clock=row.get('observedMonotonicNs');need(isinstance(clock,str) and clock.isdecimal(),'actual monotonic raw observation required');now=int(clock);need(self.last_observed_ns is None or now>=self.last_observed_ns,'raw monotonic observation moved backwards');self.last_observed_ns=now;need(seq not in self.events,'duplicate generated raw sequence');self.events[seq]=row
         while len(self.events)>256:self.events.pop(next(iter(self.events)))
@@ -443,7 +497,7 @@ class Verifier:
         if self.active is None and kind=='kernel-syscall' and row['op']=='entry' and operation(row) in ['close','write']:
             for key,origin in list(self.origins.items()):
                 if origin['pid']==row['pid'] and origin['fd']==row['args'][0]:
-                    if self.model==MODEL and operation(row)=='write':
+                    if self.model in [MODEL,COHORT_MODEL] and operation(row)=='write':
                         origin['writePending']=True
                         for checkpoint,value in list(self.checkpoints.items()):
                             if value['identity'][:2]==origin['identity'][:2]:del self.checkpoints[checkpoint]
@@ -462,10 +516,11 @@ class Verifier:
             elif state=='exited':
                 allowed=['write-original','toolchain-original','generated-vma-operation-exit']
                 if self.model!=LEGACY_MODEL:allowed.append('generated-vma-kernel-link-original')
-                if self.model!=LEGACY_MODEL and (self.transaction['window']['operation']=='map' or self.model==MODEL and self.transaction['window']['operation']=='resize') and seq==exits[self.transaction['entrySequence']]['sequence']+1:allowed=['all-stop-barrier']
+                if self.model!=LEGACY_MODEL and (self.transaction['window']['operation']=='map' or self.model in [MODEL,COHORT_MODEL] and self.transaction['window']['operation']=='resize' or self.model==COHORT_MODEL and self.transaction['window']['operation']=='unmap') and seq==exits[self.transaction['entrySequence']]['sequence']+1:allowed=['all-stop-barrier']
                 need(kind in allowed,'event before generated postimage closure')
             else:need(kind=='exclusive-captured-syscall-exit','generated operation close missing')
         if self.active is not None:
+            if self.model==COHORT_MODEL:need(self.mapping_domain(self.active['pid'])==(self.active['memoryDomain'],self.active['memoryDomainMembers']),'active mapping cohort membership changed')
             if kind in ['actual-child-binding','ptrace-event','signal-delivery','actual-wait-exit']:raise ValueError('generated VMA: event while dirty mapping active')
             if kind=='kernel-syscall':
                 need(row['pid']==self.active['pid'],'peer ran while mapped output dirty')
@@ -494,21 +549,24 @@ class Verifier:
                     need(row['identity']==origin['identity'] and self.original(row['beforeOriginal'])==origin['data'],'generated operation exact byte preimage differs')
                     if op=='resize':
                         need(args[0]==row['fd']==origin['fd'],'actual resize descriptor differs')
-                        if self.model==MODEL:
+                        if self.model in [MODEL,COHORT_MODEL]:
                             need(type(args[1]) is int and 0<=args[1]<=self.maximum_file<=CANONICAL_FILE_MAXIMUM and row['reservationBytes']==resize_reservation_bytes(origin['identity'][3],args[1],len(barrier['pids'])-1,self.metadata_maximum),'bounded complete resize reservation differs')
                             self.verify_selected_window(row,origin,barrier,seq)
                         else:need(args[1]==1 and origin['identity'][3]==0,'only empty-to-one-byte extension required')
                 if op=='map':
                     need(entry['sequence'] in self.pending_mapping_entries,'mapping window has no admitted actual entry');self.pending_mapping_entries.remove(entry['sequence'])
-                    map_dimensions(entry,row['fd'],origin['identity'][3] if self.model==MODEL else 1)
+                    map_dimensions(entry,row['fd'],origin['identity'][3] if self.model in [MODEL,COHORT_MODEL] else 1)
                     if row['fd']!=origin['fd']:
                         selected=self.fd_bindings.pop(row.get('selectedFdBindingSequence'),None);ownership=[item for item in barrier.get('taskOwnership',[]) if item['tid']==row['pid']]
                         need(selected and len(ownership)==1 and selected['pid']==row['pid'] and selected['entrySequence']==entry['sequence'] and selected['barrierSequence']==barrier['sequence'] and selected['originSequence']==row['originSequence'] and selected['selectedFd']==entry['args'][4]==row['fd'] and selected['previousFd']==origin['fd'] and selected['fdTable']==ownership[0]['fdTable'] and selected['identity']==selected['retainedIdentity']==selected['namedIdentity']==origin['identity'] and selected['path']==origin['path'] and selected['flags']&3==2 and self.original(selected['original'])==origin['data'] and barrier['sequence']<self.original_sequences.get(self.key(selected['original']),0)<selected['sequence']<seq,'actual selected descriptor lacks full retained-origin binding')
                     else:need('selectedFdBindingSequence' not in row,'unexpected selected descriptor rebinding')
-                    need((0<origin['identity'][3]<=self.maximum_file if self.model==MODEL else origin['identity'][3]==1) and self.mm.unique(row['pid'])==row['memoryDomain'],'unique actual one-byte mapping domain required');rounded_span(0,1,row['pageBytes']);need(not matching_maps(self.maps_data(row['beforeMapsOriginal']),origin['identity']),'existing own VMA alias')
-                    peers=row.get('peerMaps',[]);need(row.get('metadataMaximumBytes')==self.metadata_maximum and row.get('reservationBytes')==(reservation_bytes(len(barrier['pids'])-1,self.metadata_maximum,origin['identity'][3],row['fd']!=origin['fd']) if self.model==MODEL else (kernel_link_reservation_bytes if self.model==KERNEL_LINK_MODEL else legacy_reservation_bytes)(len(barrier['pids'])-1,self.metadata_maximum)),'checkpoint reservation does not match canonical complete peer maps/raw bound');need(sorted(r['pid'] for r in peers)==sorted(p for p in barrier['pids'] if p!=row['pid']),'complete stopped peer maps required')
+                    need((0<origin['identity'][3]<=self.maximum_file if self.model in [MODEL,COHORT_MODEL] else origin['identity'][3]==1) and self.mapping_domain(row['pid'])[0]==row['memoryDomain'],'unique actual one-byte mapping domain required');rounded_span(0,1,row['pageBytes']);need(not matching_maps(self.maps_data(row['beforeMapsOriginal']),origin['identity']),'existing own VMA alias')
+                    domain,members=self.mapping_domain(row['pid'],barrier)
+                    if self.model==COHORT_MODEL:need(row.get('memoryDomainMembers')==members,'map preimage cohort differs')
+                    peers=row.get('peerMaps',[]);need(row.get('metadataMaximumBytes')==self.metadata_maximum and row.get('reservationBytes')==(cohort_reservation_bytes(len(barrier['pids'])-1,len(members)-1,self.metadata_maximum,origin['identity'][3],row['fd']!=origin['fd']) if self.model==COHORT_MODEL else reservation_bytes(len(barrier['pids'])-1,self.metadata_maximum,origin['identity'][3],row['fd']!=origin['fd']) if self.model==MODEL else (kernel_link_reservation_bytes if self.model==KERNEL_LINK_MODEL else legacy_reservation_bytes)(len(barrier['pids'])-1,self.metadata_maximum)),'checkpoint reservation does not match canonical complete peer maps/raw bound');need(sorted(r['pid'] for r in peers)==sorted(p for p in barrier['pids'] if p!=row['pid']),'complete stopped peer maps required')
                     for peer in peers:
                         need(self.map_owners.get(self.key(peer['original']))==peer['pid'] and barrier['sequence']<self.map_sequences.get(self.key(peer['original']),0)<seq and not matching_maps(self.maps_data(peer['original']),origin['identity']),'existing/unobserved peer backing map')
+                    if self.model==COHORT_MODEL:self.verify_cohort_maps([peer for peer in peers if peer['pid'] in members],row['pid'],members,self.maps_data(row['beforeMapsOriginal']),barrier,seq)
                     if self.model!=LEGACY_MODEL:
                         need(row['selectedIdentity']==origin['identity'] and row['selectedFlags']&3==2 and self.original(row['selectedOriginal'])==origin['data'] and barrier['sequence']<self.original_sequences.get(self.key(row['selectedOriginal']),0)<seq,'selected actual mmap FD original absent')
                         lease=row['procLease'];need(proc_identity(raw_bytes(lease['statOriginal']),row['pid'])==int(lease['starttime']) and len(lease['directoryIdentity'])==len(lease['statIdentity'])==6 and stat.S_ISDIR(lease['directoryIdentity'][2]) and stat.S_ISREG(lease['statIdentity'][2]),'entry proc lease malformed')
@@ -518,6 +576,8 @@ class Verifier:
                     if op=='close':need(row['fd']==args[0],'actual selected close FD differs')
                     else:
                         need(args[0]==self.active['address'] and rounded_span(args[0],args[1],self.active['page'])==self.active['span'],'partial/foreign munmap unsupported');verify_established(self.maps_data(row['beforeMapsOriginal']),self.active['address'],self.active['page'],row['identity'],self.active['length']);need(self.original(row['beforeOriginal'])[0]==self.active['length'],'actual complete unmap preimage required')
+                        if self.model==COHORT_MODEL:
+                            domain,members=self.mapping_domain(row['pid'],barrier);need(domain==self.active['memoryDomain'] and members==self.active['memoryDomainMembers'] and row.get('memoryDomainMembers')==members,'pre-unmap cohort changed');self.verify_cohort_maps(row.get('sameMemoryDomainMaps'),row['pid'],members,self.maps_data(row['beforeMapsOriginal']),barrier,seq,row['identity'],self.active['address'],self.active['page'],self.active['length'])
             self.windows[seq]=row;self.pending_window=seq
         elif kind=='exclusive-generated-vma-resume':
             window=self.windows.get(row['captureSequence']);need(window and row['pid']==window['pid'] and row['entrySequence']==window['entrySequence'],'generated exclusive resume differs');self.pending_window=None;self.transaction=dict(pid=row['pid'],entrySequence=row['entrySequence'],window=window,state='resumed')
@@ -529,7 +589,7 @@ class Verifier:
                 self.origins[seq]=dict(pid=row['pid'],identity=current,path=row['path'],data=self.original(row['original']),fd=row['fd'])
             elif op=='resize':
                 origin=self.origins[window['originSequence']];current=row['identity'];need(row['result']==0 and row['originSequence']==window['originSequence'] and current[:3]==origin['identity'][:3],'actual resize object/exit differs')
-                if self.model==MODEL:
+                if self.model in [MODEL,COHORT_MODEL]:
                     actual_size=entry['args'][1];need(current[3]==actual_size and self.read_blocks is not None,'actual complete resize length/reader required');post=barriers.get(row['postBarrierSequence']);pre=barriers[window['barrierSequence']]
                     need(post and post['sequence']==actual['sequence']+1 and post['pids']==pre['pids'] and post.get('taskOwnership')==pre.get('taskOwnership') and row['selectedFlags']==window['selectedFlags'],'actual resize post-stop differs')
                     before=window['procLease'];sample=row['procAfter'];need(sample['directoryIdentity']==before['directoryIdentity'] and sample['statIdentity']==before['statIdentity'] and sample['starttime']==before['starttime'] and proc_identity(raw_bytes(sample['statOriginal']),row['pid'])==int(before['starttime']),'resize held proc lifetime differs')
@@ -538,7 +598,7 @@ class Verifier:
                 else:need(origin['identity'][3]==0 and current[3]==1 and self.original(row['original'])==(1,hashlib.sha256(b'\0').hexdigest()),'actual zero-extension bytes differ')
                 self.origins[seq]=dict(origin,identity=current,data=self.original(row['original']));del self.origins[window['originSequence']]
             elif op=='map':
-                origin=self.origins[window['originSequence']];mapping=verify_established(self.maps_data(row['mapsOriginal']),actual['result'],window['pageBytes'],origin['identity'],origin['identity'][3] if self.model==MODEL else 1);need(row['mapping']==mapping and row['identity']==origin['identity'] and row['memoryDomain']==self.mm.unique(row['pid']),'actual mmap backing/domain differs')
+                origin=self.origins[window['originSequence']];mapping=verify_established(self.maps_data(row['mapsOriginal']),actual['result'],window['pageBytes'],origin['identity'],origin['identity'][3] if self.model in [MODEL,COHORT_MODEL] else 1);need(row['mapping']==mapping and row['identity']==origin['identity'] and row['memoryDomain']==self.mapping_domain(row['pid'])[0],'actual mmap backing/domain differs')
                 if self.model==LEGACY_MODEL:need('kernelMappingEvidence' not in row and row['mapFilesIdentity']==origin['identity'],'legacy actual map-files fstat required')
                 else:
                     need('mapFilesIdentity' not in row,'legacy fstat cannot masquerade as kernel mapping evidence');proof=row['kernelMappingEvidence'];post=barriers.get(proof['postBarrierSequence']);pre=barriers[window['barrierSequence']]
@@ -555,12 +615,17 @@ class Verifier:
                         need(sample['kind']=='generated-vma-kernel-link-original' and sample['pid']==row['pid'] and sample['entrySequence']==entry['sequence'] and sample['postBarrierSequence']==post['sequence'] and sample['mapsOriginal']==ref and sample['range']==[mapping['startHex'],mapping['endHex']] and sample['link']==link and sample['procLease']==proc,'kernel link raw sample differs')
                     for sample in [proof['procBefore'],proof['procAfter']]:
                         before=window['procLease'];need(sample['directoryIdentity']==before['directoryIdentity'] and sample['statIdentity']==before['statIdentity'] and sample['starttime']==before['starttime'] and proc_identity(raw_bytes(sample['statOriginal']),row['pid'])==int(before['starttime']),'actual held proc lifetime differs')
+                if self.model==COHORT_MODEL:
+                    domain,members=self.mapping_domain(row['pid'],post);need(row.get('memoryDomainMembers')==window['memoryDomainMembers']==members and domain==window['memoryDomain'],'post-map cohort changed');self.verify_cohort_maps(row.get('postMapPeerMaps'),row['pid'],members,self.maps_data(row['mapsOriginal']),post,seq,origin['identity'],actual['result'],window['pageBytes'],origin['identity'][3])
                 start=int(window['observedMonotonicNs']);deadline=int(window['windowDeadlineMonotonicNs']);parent=int(window['parentDeadlineMonotonicNs']);need(row['windowDeadlineMonotonicNs']==window['windowDeadlineMonotonicNs'] and row['parentDeadlineMonotonicNs']==window['parentDeadlineMonotonicNs'] and start<int(row['observedMonotonicNs'])<deadline<=parent==self.parent_deadline_ns and deadline-start<=int(WINDOW_SECONDS*1e9),'bounded single parent-owned mapping window required')
-                origin['fd']=window['fd'];self.active=dict(pid=row['pid'],originSequence=window['originSequence'],address=actual['result'],page=window['pageBytes'],length=origin['identity'][3] if self.model==MODEL else 1,span=rounded_span(actual['result'],origin['identity'][3] if self.model==MODEL else 1,window['pageBytes']),deadline=deadline,start=start,sequence=seq)
+                origin['fd']=window['fd'];self.active=dict(pid=row['pid'],originSequence=window['originSequence'],address=actual['result'],page=window['pageBytes'],length=origin['identity'][3] if self.model in [MODEL,COHORT_MODEL] else 1,span=rounded_span(actual['result'],origin['identity'][3] if self.model in [MODEL,COHORT_MODEL] else 1,window['pageBytes']),deadline=deadline,start=start,sequence=seq)
+                if self.model==COHORT_MODEL:self.active.update(memoryDomain=window['memoryDomain'],memoryDomainMembers=window['memoryDomainMembers'])
             elif op=='close':
                 need(row['result']==0 and row['fd']==window['fd'] and row['fdAbsenceErrno']==errno.ENOENT and row['identity']==window['identity'] and row['epochSequence']==self.active['sequence'],'actual FD close did not retain mapped object')
             elif op=='unmap':
                 origin=self.origins[window['originSequence']];need(row['result']==0 and row['originSequence']==window['originSequence'] and row['epochSequence']==self.active['sequence'] and not matching_maps(self.maps_data(row['afterMapsOriginal']),origin['identity']) and same_object(row['identity'],origin['identity']) and self.original(row['original'])==self.original(window['beforeOriginal']),'actual full-unmap/final snapshot differs');peers=row['afterPeerMaps'];barrier=barriers[window['barrierSequence']];need(sorted(p['pid'] for p in peers)==sorted(p for p in barrier['pids'] if p!=row['pid']),'complete final peer maps required')
+                if self.model==COHORT_MODEL:
+                    post=barriers.get(row.get('postBarrierSequence'));need(post and post['sequence']==actual['sequence']+1 and post['pids']==barrier['pids'] and post.get('taskOwnership')==barrier.get('taskOwnership'),'fresh full-unmap post barrier missing');domain,members=self.mapping_domain(row['pid'],post);need(row.get('memoryDomainMembers')==members==window['memoryDomainMembers'] and domain==self.active['memoryDomain'],'full-unmap cohort changed');need(post['sequence']<self.map_sequences.get(self.key(row['afterMapsOriginal']),0)<seq,'final owner maps predate fresh barrier');self.verify_cohort_maps([peer for peer in peers if peer['pid'] in members],row['pid'],members,self.maps_data(row['afterMapsOriginal']),post,seq)
                 for peer in peers:need(self.map_owners.get(self.key(peer['original']))==peer['pid'] and row['exitSequence']<self.map_sequences.get(self.key(peer['original']),0)<seq and not matching_maps(self.maps_data(peer['original']),origin['identity']),'final peer backing alias remains/unobserved')
                 self.checkpoints[seq]=dict(row,data=self.original(row['original']));origin.update(identity=row['identity'],data=self.original(row['original']),checkpointed=True);self.active=None
             if 'original' in row:

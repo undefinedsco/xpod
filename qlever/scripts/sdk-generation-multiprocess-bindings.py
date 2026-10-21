@@ -459,7 +459,7 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                         import importlib.util
                         from pathlib import Path
                         generated_spec=importlib.util.spec_from_file_location('generated_vma_replay',Path(__file__).with_name('sdk-generated-vma-originals.py'));generated_module=importlib.util.module_from_spec(generated_spec);generated_spec.loader.exec_module(generated_module)
-                    need(generated_model in [generated_module.LEGACY_MODEL,generated_module.KERNEL_LINK_MODEL,generated_module.MODEL] and row.get('generatedVmaBuildRoot')==generated_module.BUILD_ROOT and shared_mode,'unknown/unowned generated VMA model')
+                    need(generated_model in [generated_module.LEGACY_MODEL,generated_module.KERNEL_LINK_MODEL,generated_module.MODEL,generated_module.COHORT_MODEL] and row.get('generatedVmaBuildRoot')==generated_module.BUILD_ROOT and shared_mode,'unknown/unowned generated VMA model')
                     if generated_verifier is not None:need(generated_verifier.model==generated_model,'generated VMA evidence model changed across roots')
                     if generated_verifier is None:generated_verifier=generated_module.Verifier(capture_data,tool_maps,limits.get('metadataBytes',4*1024**2) if limits else 4*1024**2,model=generated_model,read_blocks=lambda ref:original_blocks(ref),maximum_file=maximum_file)
                 else:need(generated_verifier is None,'generated VMA model changed across actual roots')

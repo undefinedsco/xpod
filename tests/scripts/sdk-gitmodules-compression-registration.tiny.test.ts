@@ -6,7 +6,7 @@ import{sourceBindingKey as key,secondaryGitHubSourceBindingSelectors as secondar
 const sha=(value:Buffer|string)=>createHash('sha256').update(value).digest('hex'),groups={api,sdk,consumer,ci};
 test('SDK41 preserves all 214 actual prior whole recipes and binds exact inert branch metadata and gzip6 complete archive source bytes',()=>{
  for(const[name,values]of Object.entries(groups)){const old=before.hashes[name as keyof typeof before.hashes];for(let i=0;i<old.length;i++)expect(sha(JSON.stringify(values[i]))).toBe(old[i]!);}
- expect([api.length,sdk.length,consumer.length,ci.length,current.length]).toEqual([23,43,55,108,394]);
+ expect([api.length,sdk.length,consumer.length,ci.length,current.length]).toEqual([23,44,56,110,394]);
  for(const row of [...current,...sdk.at(-1)!.selectors,...sdk.at(-1)!.sourceBindings])expect(sha(fs.readFileSync(row.path))).toBe(row.sha256);
  expect(sdk[40]!.sourceBindings.find(row=>row.path==='qlever/scripts/sdk-git-source-bindings.py')!.sha256).toBe('4c95c935a5789e1e0669ab1bf7eba67c05f91f013a51c9b6fe968fc288b222ba');
  expect(api[20]!.sourceBindings.find(row=>row.path==='packages/xpod-api/scripts/sourcekit-producer.ts')!.sha256).toBe('393f3a9b1eccd47b8b7d20954e02a267e69afd79135afab6bf2305f53644119a');
