@@ -144,20 +144,36 @@ def verify_resize_bytes(before,after,before_size,after_size,maximum,check=lambda
     if count!=after_size or actual.digest()!=expected.digest():raise ValueError('complete resize projection differs')
     return dict(before=dict(bytes=before_size,sha256=prior.hexdigest()),after=dict(bytes=after_size,sha256=actual.hexdigest()))
 
+def memory_domain_rejection_diagnostic(pid,entry,mm,check):
+    """Bounded observed-domain context only; never admits an operation."""
+    check();domain=mm.domains.get(pid);count=0;members=[];digest=hashlib.sha256()
+    for task,value in mm.domains.items():
+        check();row=dict(pid=task,memoryDomain=value,source=mm.provenance.get(task))
+        raw=json.dumps(row,separators=(',',':'),sort_keys=True).encode();digest.update(raw+b'\n')
+        if value==domain:
+            count+=1
+            if len(members)<8:members.append(row)
+    row=dict(schemaVersion=1,kind='actual-generated-memory-domain-rejection',authorityVerified=False,
+        pid=pid,entrySequence=entry['sequence'],arch=entry['arch'],nr=entry['nr'],args=entry['args'],
+        memoryDomain=domain,ownedTaskCount=len(mm.domains),sameMemoryDomainCount=count,
+        observedDomainRowsSHA256=digest.hexdigest(),memberPrefix=members,memberPrefixTruncated=count>len(members))
+    data=b'SDK_GENERATED_MEMORY_DOMAIN_REJECTION '+json.dumps(row,separators=(',',':'),sort_keys=True).encode()+b'\n'
+    need(len(data)<=4096,'bounded memory domain diagnostic required');check();os.write(2,data)
+
 class MemoryDomains:
     """Derived solely from already observed actual root/clone/exec/wait rows."""
-    def __init__(self):self.domains={}
+    def __init__(self):self.domains={};self.provenance={}
     def record(self,row):
         kind=row['kind']
         if kind=='owned-root-binding':
-            need(not self.domains,'prior memory domain remains');self.domains[row['pid']]=row['sequence']
+            need(not self.domains,'prior memory domain remains');self.domains[row['pid']]=row['sequence'];self.provenance[row['pid']]=dict(kind=kind,sequence=row['sequence'])
         elif kind=='actual-child-binding':
             need(row['parentPid'] in self.domains and row['childPid'] not in self.domains and type(row.get('cloneFlags')) is int,'actual clone flags/parent memory domain required')
-            self.domains[row['childPid']]=self.domains[row['parentPid']] if row['cloneFlags']&0x100 else row['sequence']
+            self.domains[row['childPid']]=self.domains[row['parentPid']] if row['cloneFlags']&0x100 else row['sequence'];self.provenance[row['childPid']]=dict(kind=kind,sequence=row['sequence'],parentPid=row['parentPid'],cloneFlags=row['cloneFlags'])
         elif kind=='ptrace-event' and row['event']==4:
-            need(row['pid'] in self.domains,'actual exec memory domain missing');self.domains[row['pid']]=-row['sequence']
+            need(row['pid'] in self.domains,'actual exec memory domain missing');self.domains[row['pid']]=-row['sequence'];self.provenance[row['pid']]=dict(kind=kind,sequence=row['sequence'],event=4)
         elif kind=='actual-wait-exit':
-            need(row['pid'] in self.domains,'actual terminal memory domain missing');del self.domains[row['pid']]
+            need(row['pid'] in self.domains,'actual terminal memory domain missing');del self.domains[row['pid']];self.provenance.pop(row['pid'],None)
     def unique(self,pid):
         need(pid in self.domains and [p for p,v in self.domains.items() if v==self.domains[pid]]==[pid],'mapping owner is not the sole actual memory-domain member')
         return self.domains[pid]
@@ -240,7 +256,12 @@ class Runtime:
                 raise
             self.pending[pid]=dict(op=op,origin=origin,fd=args[0])
         elif op=='map' and not(args[3]&0x20) and args[2]&2 and args[3]&1:
-            origin=self.lookup_fd(pid,args[4]);need(origin is not None,'mapped output lacks actual create/resize origin');map_dimensions(entry,args[4],origin['identity'][3]);need(origin['pid']==pid and 0<origin['identity'][3]<=b.maximum_file_bytes<=CANONICAL_FILE_MAXIMUM,'selected own bounded nonempty origin required');self.mm.unique(pid)
+            origin=self.lookup_fd(pid,args[4]);need(origin is not None,'mapped output lacks actual create/resize origin');map_dimensions(entry,args[4],origin['identity'][3]);need(origin['pid']==pid and 0<origin['identity'][3]<=b.maximum_file_bytes<=CANONICAL_FILE_MAXIMUM,'selected own bounded nonempty origin required')
+            try:self.mm.unique(pid)
+            except ValueError:
+                try:memory_domain_rejection_diagnostic(pid,entry,self.mm,b.check)
+                except BaseException:pass
+                raise
             self.pending[pid]=dict(op=op,origin=origin,fd=args[4])
         else:return False
         b.tasks[pid]['capture']=(None,'generated-vma-before');return True

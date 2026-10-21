@@ -30,6 +30,16 @@ generated_vma_module=load('generated_vma_originals',ROOT/'qlever/scripts/sdk-gen
 SEIZE=0x4206;INTERRUPT=0x4207;GETEVENTMSG=0x4201;SYSCALL=24;WALL=0x40000000
 OPTIONS=1|2|4|8|16|32|64|0x00100000
 MAX=16*1024**2
+def close_child_observer_retained(descriptors):
+    """Drop observer-only fork copies before the initial authority barrier.
+
+    These private read leases remain held by the parent. CLOEXEC would close
+    them only after exec, which is later than the initial stopped-root census.
+    """
+    values=tuple(descriptors)
+    assert all(type(fd) is int and fd>2 and not os.get_inheritable(fd) for fd in values),'private close-on-exec observer descriptors required'
+    for fd in values:os.close(fd)
+
 def retained_mode_difference_diagnostic(pid,fd,path,producer,current,actual,mode_refs,metadata_states):
     """Explain an existing rejection using already captured identities only."""
     try:
@@ -1253,6 +1263,7 @@ class Observer:
         if child==0:
             try:
                 os.close(write_fd);os.close(stdout_read);os.close(stderr_read)
+                close_child_observer_retained(self.retained)
                 if self.process_authority:
                     os.close(ready_read);tool_providers.restrict_child_authority();os.write(ready_write,b'R');os.close(ready_write)
                 assert os.read(read_fd,1)==b'x';os.close(read_fd)

@@ -44,16 +44,25 @@ class Retained:
             maximum=maximum_by_path.get(ref['path'],META)
             need(type(maximum) is int and 0<=maximum<=32*META and type(ref['bytes']) is int and 0<=ref['bytes']<=maximum and ref['path'] not in self.refs,'unique bounded actual service original')
             path=self.out/ref['path'];need(path.resolve(strict=True)==path and not path.is_symlink(),'canonical actual retained stage original')
-            fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW|os.O_CLOEXEC);sha=hashlib.sha256();count=0
+            self.budget.check(0)
+            named=path.lstat();need(stat.S_ISREG(named.st_mode) and named.st_nlink==1 and named.st_size==ref['bytes'],'bounded single-link regular stage original before open')
+            fd=os.open(path,os.O_RDONLY|os.O_NONBLOCK|os.O_NOFOLLOW|os.O_CLOEXEC);sha=hashlib.sha256();count=0
             identity=lambda v:(v.st_dev,v.st_ino,v.st_mode,v.st_size,v.st_mtime_ns,v.st_ctime_ns,v.st_nlink)
+            primary=None
             try:
-                before=identity(os.fstat(fd));need(stat.S_ISREG(before[2]) and before[3]==ref['bytes'],'actual stage file size before read')
+                before=identity(os.fstat(fd));need(before==identity(named),'actual stage original replaced before read')
                 while True:
                     self.budget.check(0);block=os.read(fd,min(65536,ref['bytes']+1-count))
                     if not block:break
                     count+=len(block);need(count<=ref['bytes'],'stage original grew');sha.update(block)
                 need(count==ref['bytes'] and sha.hexdigest()==ref['sha256'] and before==identity(os.fstat(fd))==identity(path.lstat()),'actual closed service original differs')
-            finally:os.close(fd)
+            except BaseException as error:
+                primary=error
+                raise
+            finally:
+                try:os.close(fd)
+                except BaseException:
+                    if primary is None:raise
             self.refs[ref['path']]=ref;actual+=count
         need(actual<=reserved,'actual fixed original exceeded reservation');self.total-=reserved-actual
     def save(self,name,data):

@@ -48,10 +48,11 @@ export function packPhysicalModule(stage:string,output:string,adapter:{moduleId:
 with tarfile.open(sys.argv[1]) as t:
  members=t.getmembers();names=[m.name for m in members]
  assert len(names)==len(set(names)) and len(names)<=50000 and all(m.isfile() and m.name.startswith('package/') and '..' not in m.name.split('/') for m in members)
- manifest=json.load(t.extractfile('package/package.json'));rows=manifest['xpodModule']['files']
+ by_name={m.name:m for m in members}
+ manifest=json.load(t.extractfile(by_name['package/package.json']));rows=manifest['xpodModule']['files']
  assert set(names)-{'package/package.json'}=={'package/'+r['path'] for r in rows}
  for row in rows:
-  member=t.getmember('package/'+row['path']);body=t.extractfile(member).read()
+  member=by_name['package/'+row['path']];body=t.extractfile(member).read()
   assert len(body)==row['size'] and hashlib.sha256(body).hexdigest()==row['sha256'] and member.mode==row['mode']
 `,path.resolve(output)],{stdio:'inherit'});
  if(readback.error||readback.status!==0)throw new Error('Actual module archive inventory readback failed');

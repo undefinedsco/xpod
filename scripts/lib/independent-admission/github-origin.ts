@@ -1154,7 +1154,13 @@ const PRE_SERVICE_PACK_API_SOURCE_GROUPS:readonly (GitHubSourceBindingGroup&{rea
 const servicePackApiHashes:Readonly<Record<string,string>>=Object.freeze({"scripts/prepare-package-manifest.cjs":"c85d5f092821c53d7b7893417512a26be3c6165f835a8f03507fe0d09228ebf2","scripts/workspace-package-payload.cjs":"edfdb44999a87551b744533019f5921e6098c65de7ccf63250e12858b9bcf48f"});
 export const API_SERVICE_PACK_SOURCE_BINDINGS=Object.freeze(API_COMPRESSED_ARCHIVE_SOURCE_BINDINGS.map(row=>Object.freeze({...row,sha256:servicePackApiHashes[row.path]??row.sha256})));
 const preServicePackApiGroup=PRE_SERVICE_PACK_API_SOURCE_GROUPS[PRE_SERVICE_PACK_API_SOURCE_GROUPS.length-1]!;
-export const API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS:readonly (GitHubSourceBindingGroup&{readonly name?:string})[]=Object.freeze([...PRE_SERVICE_PACK_API_SOURCE_GROUPS,Object.freeze({...preServicePackApiGroup,name:"service-pack-projection-normal-module",secondarySelectors:Object.freeze([...(preServicePackApiGroup.secondarySelectors??[]),...API_SERVICE_PACK_SOURCE_BINDINGS.filter(row=>row.path==="scripts/workspace-package-payload.cjs")]),sourceBindings:API_SERVICE_PACK_SOURCE_BINDINGS})]);
+const PRE_INDEXED_ARCHIVE_API_SOURCE_GROUPS:readonly (GitHubSourceBindingGroup&{readonly name?:string})[]=Object.freeze([...PRE_SERVICE_PACK_API_SOURCE_GROUPS,Object.freeze({...preServicePackApiGroup,name:"service-pack-projection-normal-module",secondarySelectors:Object.freeze([...(preServicePackApiGroup.secondarySelectors??[]),...API_SERVICE_PACK_SOURCE_BINDINGS.filter(row=>row.path==="scripts/workspace-package-payload.cjs")]),sourceBindings:API_SERVICE_PACK_SOURCE_BINDINGS})]);
+
+
+const indexedArchiveHashes:Readonly<Record<string,string>>=Object.freeze({"scripts/lib/physical-module-archive.ts":"76ab9f1e461c1d61f18b625cc624e7c1774e27807127a7b6295a2114f7bbb1cc"});
+export const API_INDEXED_ARCHIVE_SOURCE_BINDINGS=Object.freeze(API_SERVICE_PACK_SOURCE_BINDINGS.map(row=>Object.freeze({...row,sha256:indexedArchiveHashes[row.path]??row.sha256})));
+const indexedArchiveParent=PRE_INDEXED_ARCHIVE_API_SOURCE_GROUPS[PRE_INDEXED_ARCHIVE_API_SOURCE_GROUPS.length-1]!;
+export const API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS:readonly (GitHubSourceBindingGroup&{readonly name?:string})[]=Object.freeze([...PRE_INDEXED_ARCHIVE_API_SOURCE_GROUPS,Object.freeze({...indexedArchiveParent,name:"indexed-physical-archive-readback",secondarySelectors:Object.freeze([...(indexedArchiveParent.secondarySelectors??[]),...API_INDEXED_ARCHIVE_SOURCE_BINDINGS.filter(row=>row.path==="scripts/lib/physical-module-archive.ts")]),sourceBindings:API_INDEXED_ARCHIVE_SOURCE_BINDINGS})]);
 
 export const API_WORKSPACE_SOURCE_GROUPS=Object.freeze(API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS.filter(group=>group.sourceBindings.some(row=>row.path==='scripts/lib/api-scoped-dependency-state.ts')));
 

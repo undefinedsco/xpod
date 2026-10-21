@@ -3,7 +3,7 @@ import {test,expect} from 'bun:test';
 import fs from 'node:fs';import path from 'node:path';import{createHash}from'node:crypto';
 import preCompression from '../fixtures/independent-admission/pre-compression-api-originals.json';
 import before from '../fixtures/independent-admission/pre-recorded-gitlink-source.original.json';
-import{API_PACK_SUPERVISION_SOURCE_BINDINGS as oldRows,API_RECORDED_GITLINK_SOURCE_BINDINGS as newRows,API_SERVICE_PACK_SOURCE_BINDINGS as currentRows}from'../../scripts/lib/independent-admission/github-origin';
+import{API_PACK_SUPERVISION_SOURCE_BINDINGS as oldRows,API_RECORDED_GITLINK_SOURCE_BINDINGS as newRows,API_INDEXED_ARCHIVE_SOURCE_BINDINGS as currentRows}from'../../scripts/lib/independent-admission/github-origin';
 import{controlledApiSourceRecipe}from'../../scripts/lib/independent-admission/module-source-phases';
 const root=path.resolve(import.meta.dirname,'../..'),fixed='packages/xpod-api/scripts/inngest-website-gitlink.original.json',actual=(name:string)=>fs.readFileSync(path.join(root,name)),hash=(raw:Buffer)=>createHash('sha256').update(raw).digest('hex');
 test('actual historical HTTP and reviewed recorded Gitlink source recipes select as complete immutable trees',()=>{

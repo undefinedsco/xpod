@@ -1,17 +1,19 @@
 import { afterEach, expect, test } from 'bun:test';
+import { performance } from 'node:perf_hooks';
 import { createHash } from 'node:crypto';
 import { spawn, spawnSync, type SpawnSyncReturns } from 'node:child_process';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { runOwnedInstalledConsumer, installedConsumerWatchdogMs, type OwnedInstalledResult } from '../../../scripts/agentfs-native-ci/mounted/owned-installed-consumer';
+import { runOwnedInstalledConsumer, installedConsumerWatchdogMs, INSTALLED_CONSUMER_PARENT_MS, type OwnedInstalledResult } from '../../../scripts/agentfs-native-ci/mounted/owned-installed-consumer';
 
 const owned: string[] = [];
 afterEach(async () => { await Promise.all(owned.splice(0).map(p => rm(p, { recursive: true, force: true }))); });
 const archive = process.env.XPOD_AFS_TEST_ARCHIVE;
 const artifactTest = test as typeof test & { skipIf(condition: boolean): typeof test };
 artifactTest.skipIf(!archive)('real AFS payload installs through public CLI and runs without workspace dependencies under Node22 and Bun', async () => {
+  const parentDeadlineMonotonicMs = performance.now() + INSTALLED_CONSUMER_PARENT_MS;
   // Outside every workspace ancestor: NODE_PATH alone does not isolate Node.
   const root = await mkdtemp(path.join(tmpdir(), 'xpod-afs-installed-')); owned.push(root);
   const bytes = await readFile(archive!); const integrity = `sha512-${createHash('sha512').update(bytes).digest('base64')}`;
@@ -75,18 +77,19 @@ artifactTest.skipIf(!archive)('real AFS payload installs through public CLI and 
     process.stdout.write(JSON.stringify(row) + '\n'); expect(absent).toBe(true);
   }
   const runOwned = (runtime: string, args: string[], env: NodeJS.ProcessEnv, stage = 'command') =>
-    runOwnedInstalledConsumer(runtime, args, env, root, installedConsumerWatchdogMs(stage), stage);
+    runOwnedInstalledConsumer(runtime, args, env, root, installedConsumerWatchdogMs(stage, INSTALLED_CONSUMER_PARENT_MS), stage, parentDeadlineMonotonicMs);
   // Controlled registry fixture, not registry publication evidence. Only these
   // two exact URLs are served; unexpected requests fail instead of using network.
   const preload = path.join(root, 'registry-fixture.mjs');
   await writeFile(preload, `
-import {readFileSync,appendFileSync} from 'node:fs';
+import {createReadStream,appendFileSync} from 'node:fs';
+import {Readable} from 'node:stream';
 const metadataURL=${JSON.stringify('https://registry.npmjs.org/' + encodeURIComponent(name) + '/' + version)};
 const tarball='https://registry.npmjs.org/actual-afs.tgz';
 globalThis.fetch=async (input) => {
   const url=typeof input==='string'?input:input instanceof URL?input.href:input.url;
   if(url===metadataURL) return Response.json(${JSON.stringify({name,version,dist:{integrity,tarball:'https://registry.npmjs.org/actual-afs.tgz'}})});
-  if(url===tarball) {appendFileSync(process.env.XPOD_TEST_DOWNLOAD_COUNTER,'download\\n'); return new Response(readFileSync(${JSON.stringify(path.resolve(archive!))}));}
+  if(url===tarball) {appendFileSync(process.env.XPOD_TEST_DOWNLOAD_COUNTER,'download\\n'); return new Response(Readable.toWeb(createReadStream(${JSON.stringify(path.resolve(archive!))},{highWaterMark:64*1024})));}
   throw new Error('Unexpected controlled registry request');
 };
 `);
