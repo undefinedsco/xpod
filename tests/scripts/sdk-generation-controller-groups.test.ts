@@ -11,7 +11,7 @@ function groupsFor(file:string,groupName:string){
  const declarations=ast.statements.filter(node=>ts.isVariableStatement(node)&&node.declarationList.declarations.some(row=>ts.isIdentifier(row.name)&&names.has(row.name.text))).map(node=>node.getText(ast)).join('\n');
  const compiled=ts.transpileModule(declarations+'\nresult='+groupName+';', {compilerOptions:{target:ts.ScriptTarget.ES2021,module:ts.ModuleKind.None}}).outputText,scope:{result?:readonly (readonly (readonly[string,string])[])[]}={};runInNewContext(compiled,scope,{timeout:100});return {root,groups:scope.result!};
 }
-for(const [file,name,count]of[['qlever-sdk-generation.ts','REVIEWED_CONTROLLER_HELPER_GROUPS',9],['qlever-sdk-upstream-source.ts','REVIEWED_HELPER_GROUPS',4],['qlever-sdk-fetchcontent.ts','REVIEWED_HELPER_GROUPS',12],['qlever-sdk-readonly-executor.ts','REVIEWED_READONLY_HELPER_GROUPS',5]]as const)it(file+' selects whole historical/current actual controller import tuples, never independent file unions',()=>{
+for(const [file,name,count]of[['qlever-sdk-generation.ts','REVIEWED_CONTROLLER_HELPER_GROUPS',10],['qlever-sdk-upstream-source.ts','REVIEWED_HELPER_GROUPS',5],['qlever-sdk-fetchcontent.ts','REVIEWED_HELPER_GROUPS',13],['qlever-sdk-readonly-executor.ts','REVIEWED_READONLY_HELPER_GROUPS',5]]as const)it(file+' selects whole historical/current actual controller import tuples, never independent file unions',()=>{
  const{root,groups}=groupsFor(file,name);expect(groups).toHaveLength(count);
  for(const group of groups)expect(select(groups,new Map(group))).toBe(group);
  const latest=groups[groups.length-1]!,actual=new Map(latest.map(([name])=>[name,createHash('sha256').update(fs.readFileSync(path.join(root,name.startsWith('qlever/')||name.startsWith('scripts/')?name:'qlever/scripts/'+name))).digest('hex')]));expect(select(groups,actual)).toBe(latest);
@@ -22,9 +22,9 @@ for(const [file,name,count]of[['qlever-sdk-generation.ts','REVIEWED_CONTROLLER_H
  for(const historical of groups)for(const [name,sha]of historical){const mixed=new Map(latest);mixed.set(name,sha);const matches=groups.filter(group=>group.length===mixed.size&&group.every(([key,value])=>mixed.get(key)===value));if(matches.length===1)expect(select(groups,mixed)).toBe(matches[0]);else expect(()=>select(groups,mixed)).toThrow();}
 });
 
-it('bounds the twelve reviewed whole tuples without accepting a thirteenth or ambiguous tuple',()=>{
- const groups=Array.from({length:12},(_,i)=>Object.freeze([Object.freeze(['helper',String(i)] as const)]));
- expect(select(groups,new Map(groups[11]!))).toBe(groups[11]);
- expect(()=>select([...groups,[['helper','12']]],new Map([['helper','12']]))).toThrow();
- expect(()=>select([...groups.slice(0,11),groups[0]!],new Map(groups[0]!))).toThrow();
+it('bounds the thirteen reviewed whole tuples without accepting a fourteenth or ambiguous tuple',()=>{
+ const groups=Array.from({length:13},(_,i)=>Object.freeze([Object.freeze(['helper',String(i)] as const)]));
+ expect(select(groups,new Map(groups[12]!))).toBe(groups[12]);
+ expect(()=>select([...groups,[['helper','13']]],new Map([['helper','13']]))).toThrow();
+ expect(()=>select([...groups.slice(0,12),groups[0]!],new Map(groups[0]!))).toThrow();
 });

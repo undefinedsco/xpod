@@ -62,10 +62,12 @@ def observe(path,plan):
                 prefix=row['sourceRoot']+'/'
                 if item['path'].startswith(prefix):
                     relative=item['path'][len(prefix):];expected=physical.get(relative);sources.need(expected and expected['kind']=='file' and all(item.get(key)==expected[key] for key in ('bytes','sha256','mode')),'actual selected shard file differs from prepared source');joined.add(item['path'])
-                    if row['declaration']['method']=='git' and (relative=='.git' or relative.startswith('.git/')):
+                    if row['declaration']['method']=='git' and '.git' in relative.split('/'):
                         unresolved.append('qlever-sdk-FetchContent-selected-Git-metadata-source-unresolved:'+item['path'])
                         if item['captures']:origin_unresolved.add(item['path'])
-            if row['declaration']['method']=='git':result=sources.verify_git(original,row['declaration'],physical,small,member,check,index.get('emptyDirectories'))
+            if row['declaration']['method']=='git':
+                sources.need(original.get('sourceRoot')==row['sourceRoot'],'actual Git source root differs')
+                result=sources.verify_git(original,row['declaration'],physical,small,member,check,index.get('emptyDirectories'))
             else:result=sources.verify_url(original,row['declaration'],physical,member,check)
             for link in result.get('unmaterializedGitlinks',[]):
                 unresolved.append('qlever-sdk-FetchContent-unmaterialized-Gitlink-source-unresolved:'+row['sourceRoot']+'/'+link['path']+'@'+link['commitOid'])

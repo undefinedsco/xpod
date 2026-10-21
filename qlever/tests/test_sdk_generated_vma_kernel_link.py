@@ -6,7 +6,7 @@ spec=importlib.util.spec_from_file_location('kernel_link_leaf',Path(__file__).re
 def stat_raw(pid=10,start=123):return str(pid).encode()+b' (fixed task) t '+b' '.join([b'0']*18+[str(start).encode()])+b'\n'
 def lease():return dict(directoryIdentity=[1,100,0o40500,0,1,1],statIdentity=[1,101,0o100444,0,1,1],statOriginal=m.raw_record(stat_raw()),starttime='123')
 def upgrade(rows,originals):
- rows=copy.deepcopy(rows);originals=copy.deepcopy(originals);root=next(r for r in rows if r['kind']=='owned-root-binding');root['generatedVmaModel']=m.MODEL
+ rows=copy.deepcopy(rows);originals=copy.deepcopy(originals);root=next(r for r in rows if r['kind']=='owned-root-binding');root['generatedVmaModel']=m.KERNEL_LINK_MODEL
  serial=20000
  def row(kind,template,**fields):
   nonlocal serial

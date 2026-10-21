@@ -14,7 +14,7 @@ const historicalKey=(row:{path:string;sha256:string;ref?:string})=>{if(row.ref!=
 const observed=(g:any)=>new Map([...g.selectors,...g.secondarySelectors??[]].map((row:any)=>[sourceBindingKey(row),row.sha256]));
 test('all complete SDK20 controller/API source sets survive with only their own already-required discriminator',()=>{
  for(const[groups,old]of[[CONSUMER,historical.consumer],[CI,historical.ci],[API,historical.api]]as const){
-  expect(groups.length).toBe(old.length+(groups===CI?78:groups===CONSUMER?39:15));
+  expect(groups.length).toBe(old.length+(groups===CI?80:groups===CONSUMER?40:15));
   for(const previous of old){
    const before=new Map(previous.selectors.map(row=>[historicalKey(row),row.sha256]));
    const matches=groups.filter(group=>JSON.stringify(group.selectors)===JSON.stringify(previous.selectors)&&hash(JSON.stringify(group.sourceBindings))===previous.sourceBindingsSha256);expect(matches).toHaveLength(1);const group=matches[0]!;

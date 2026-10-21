@@ -363,6 +363,9 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
             from pathlib import Path
             spec=importlib.util.spec_from_file_location('verified_tool_provider',Path(__file__).with_name('sdk-tool-provider-originals.py'));provider_verifier=importlib.util.module_from_spec(spec);spec.loader.exec_module(provider_verifier)
         return provider_verifier
+    def original_blocks(reference):
+        capture_data(reference);value=read_original(reference['path'],maximum_file)
+        return (value[i:i+65536] for i in range(0,len(value),65536)) if isinstance(value,bytes) else value
     def tool_ref(reference,kind=None):
         value=tool_originals.get(reference['path']);need(value and value['original']==reference and (kind is None or value['captureKind']==kind),'toolchain reference lacks actual complete original')
         return value
@@ -456,9 +459,9 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                         import importlib.util
                         from pathlib import Path
                         generated_spec=importlib.util.spec_from_file_location('generated_vma_replay',Path(__file__).with_name('sdk-generated-vma-originals.py'));generated_module=importlib.util.module_from_spec(generated_spec);generated_spec.loader.exec_module(generated_module)
-                    need(generated_model in [generated_module.LEGACY_MODEL,generated_module.MODEL] and row.get('generatedVmaBuildRoot')==generated_module.BUILD_ROOT and shared_mode,'unknown/unowned generated VMA model')
+                    need(generated_model in [generated_module.LEGACY_MODEL,generated_module.KERNEL_LINK_MODEL,generated_module.MODEL] and row.get('generatedVmaBuildRoot')==generated_module.BUILD_ROOT and shared_mode,'unknown/unowned generated VMA model')
                     if generated_verifier is not None:need(generated_verifier.model==generated_model,'generated VMA evidence model changed across roots')
-                    if generated_verifier is None:generated_verifier=generated_module.Verifier(capture_data,tool_maps,limits.get('metadataBytes',4*1024**2) if limits else 4*1024**2,model=generated_model)
+                    if generated_verifier is None:generated_verifier=generated_module.Verifier(capture_data,tool_maps,limits.get('metadataBytes',4*1024**2) if limits else 4*1024**2,model=generated_model,read_blocks=lambda ref:original_blocks(ref),maximum_file=maximum_file)
                 else:need(generated_verifier is None,'generated VMA model changed across actual roots')
                 model=row.get('processAuthorityModel');need(model is None or model==provider_module().AUTHORITY_MODEL,'unknown process authority model');process_interval=provider_module().ProcessAuthorityInterval(row['pid']) if model is not None else None
                 need(not setresuid_operations,'unclosed setresuid transition at new root');uid_model=row.get('setresuidNoopModel');need(uid_model in [None,'actual-stopped-setresuid-noop-v1'],'unknown setresuid operation model');identity_model=row.get('setresIdentityNoopModel');need(identity_model in [None,'actual-stopped-setres-identity-noop-v1'] and not (identity_model and uid_model),'unknown or mixed identity operation model');identity_mode=identity_model is not None;setresuid_mode=uid_model is not None or identity_mode;need(not setresuid_mode or process_interval is not None,'setresuid model requires actual process authority interval')
@@ -572,6 +575,8 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                 if baseline=='empty':need(before[0]==0,'nonempty write preimage has no original authority')
                 elif baseline in write_transitions:
                     prior=write_transitions[baseline];need(prior['afterIdentity']==row['beforeIdentity'] and ((prior['after']['bytes'],prior['after']['sha256']) if 'path' not in prior['after'] else capture_data(prior['after']))==before,'write preimage differs from previous actual transition')
+                elif generated_verifier is not None and generated_verifier.model==generated_module.MODEL and baseline in generated_verifier.origins:
+                    generated_verifier.write_baseline(row,before)
                 else:
                     prior=prepared.get(baseline) or caps.get(baseline);need(prior and prior[0]['identity']==row['beforeIdentity'] and prior[1]==before,'write preimage has no retained original')
                     if baseline in caps:
@@ -627,6 +632,8 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                     need(verify_write_bytes(blocks(window['before']),blocks(window['buffer']),blocks(row['after']),window['beforeIdentity'][3],window['offset'],row['result'],maximum_file,check)==after[0],'actual write size projection differs')
                 need(after[0]==row['afterIdentity'][3],'actual write after identity/size differs')
                 need(window['sequence'] not in closed_write_windows,'duplicate actual write transition');closed_write_windows.add(window['sequence']);write_transitions[row['sequence']]=row
+            elif kind=='generated-vma-write-origin-transition':
+                need(generated_verifier is not None,'generated write bridge model absent');generated_verifier.consume_write_bridge(row,write_windows.get(row['windowSequence']),write_transitions.get(row['transitionSequence']))
             elif kind=='append-full-checkpoint':
                 barrier=barriers.get(row['barrierSequence'])
                 need((row['closedTrackedWaits'] is True and not live and row['barrierSequence'] is None) or (row['closedTrackedWaits'] is False and barrier and set(barrier['pids'])==live),'append checkpoint lacks actual all-stop/wait closure')

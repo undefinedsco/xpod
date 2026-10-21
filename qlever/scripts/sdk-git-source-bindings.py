@@ -21,6 +21,26 @@ def need(value,reason):
 def canonical(path):
     return isinstance(path,str) and path and not path.startswith('/') and not any(ord(c)<32 or ord(c)==127 or c=='\\' for c in path) and all(part not in ('','.','..') for part in path.split('/'))
 
+def gitlink_repositories(raw, links):
+    """One strict .gitmodules interpretation shared by acquisition and replay."""
+    import configparser
+    from urllib.parse import urlsplit
+    need(isinstance(raw,bytes) and len(raw)<=MAX_METADATA,'bounded Gitmodules original')
+    parser=configparser.ConfigParser(interpolation=None,strict=True)
+    parser.optionxform=str
+    parser.read_string(raw.decode('utf-8',errors='strict'))
+    need(not parser.defaults(),'Gitmodules defaults refused')
+    result={}
+    for section in parser.sections():
+        need(section.startswith('submodule "') and section.endswith('"') and len(section)>12 and not any(c in section[11:-1] for c in ('"', chr(92), chr(10), chr(13))),'Gitmodules section')
+        row=dict(parser[section]);need(set(row)=={'path','url'},'Gitmodules exact path/URL fields')
+        path=row['path'];url=row['url'];parsed=urlsplit(url)
+        need(canonical(path) and '.git' not in path.split('/') and path not in result,'Gitmodules canonical unique path')
+        need(parsed.scheme=='https' and parsed.hostname and not parsed.username and not parsed.password and not parsed.port and not parsed.query and not parsed.fragment and parsed.netloc==parsed.hostname and parsed.path.startswith('/') and canonical(parsed.path[1:]) and all(ord(c)>32 for c in url),'Gitmodules credential-free absolute HTTPS repository')
+        result[path]=url
+    need(set(result)=={row['path'] for row in links},'Gitmodules/tree exact Gitlink universe')
+    return result
+
 def verify_git_originals(stream,commit,tree_listing,object_ids,inventory,check,retain_paths=(),gitlinks=None):
     need(isinstance(commit,str) and re.fullmatch('[a-f0-9]{40}',commit),'locked SHA1 commit required')
     need(isinstance(tree_listing,bytes) and len(tree_listing)<=MAX_METADATA,'bounded raw tree listing required')

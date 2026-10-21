@@ -471,20 +471,22 @@ class Observer:
             writers=self.sole_writer(pid,fd,identity);flags=descriptor_flags(pid,fd);assert flags&os.O_ACCMODE==os.O_RDWR
             position=descriptor_position(pid,fd);offset=identity[3] if flags&os.O_APPEND else position;count=entry['args'][2]
             assert count<=self.maximum_file_bytes and offset+count<=self.maximum_file_bytes,'bounded actual write range'
+            generated_origin=self.generated_vma.write_baseline(pid,fd,identity,identity[3],offset) if self.generated_vma else None
             self.budget_context=dict(path=path[:4096],pathTruncated=len(path)>4096,pathSha256=hashlib.sha256(os.fsencode(path)).hexdigest(),role='write-before',pid=pid,fd=fd,identity=identity,writeCount=count,writeOffset=offset)
             key=tuple(identity[:2]);chain=self.append_chains.get(key)
-            append=offset==identity[3]
+            append=offset==identity[3] and generated_origin is None
             if chain and not append:self.checkpoint_appends('nonappend-write',entry['sequence']);chain=None
             if chain:
                 assert chain['identity']==identity,'append FD preimage identity changed'
                 before=dict(bytes=identity[3],sha256=chain['digest'].hexdigest())
             else:
                 before=bindings.digest_blocks(self.fd_blocks(reader,identity[3]),self.maximum_file_bytes,self.check);assert identity==probe.identity(os.fstat(reader))
+            if generated_origin is not None:assert generated_origin['data']==(before['bytes'],before['sha256']),'generated write entire before bytes differ from retained origin'
             initial=None
-            if tuple(identity[:2]) not in self.write_states:
+            if generated_origin is not None or tuple(identity[:2]) not in self.write_states:
                 initial=self.snapshot_write_original(reader,identity[3]);assert identity==probe.identity(os.fstat(reader))
-            prior=self.write_states.get(tuple(identity[:2]));baseline='empty'
-            if identity[3]:
+            prior=None if generated_origin is not None else self.write_states.get(tuple(identity[:2]));baseline=generated_origin['sequence'] if generated_origin is not None else 'empty'
+            if identity[3] and generated_origin is None:
                 if prior:
                     assert prior['afterIdentity']==identity and (prior['after']['bytes'],prior['after']['sha256'])==(before['bytes'],before['sha256']),'write preimage differs from previous actual write'
                     baseline=prior['sequence']
@@ -498,6 +500,7 @@ class Observer:
             finally:os.close(memory)
             row=self.emit(dict(kind='actual-write-window',pid=pid,fd=fd,path=path,entrySequence=entry['sequence'],barrierSequence=barrier['sequence'],beforeIdentity=identity,format='bounded-append-effect-v1' if append else 'bounded-write-delta-v1',initialBefore=initial,before=before,buffer=buffer,offset=offset,position=position,flags=flags,writers=writers,baseline=baseline))
             self.budget_context={}
+            if generated_origin is not None:self.tasks[pid]['generatedWriteOrigin']=generated_origin
             if append and chain is None:
                 digest=hashlib.sha256()
                 for block in self.fd_blocks(reader,identity[3]):digest.update(block)
@@ -542,7 +545,15 @@ class Observer:
             transition=self.emit(dict(kind='actual-write-transition',pid=pid,entrySequence=entry['sequence'],windowSequence=row['sequence'],exitSequence=exit['sequence'],afterIdentity=identity,after=after,result=exit['result'],isError=exit['isError'],**extra))
             if row['format']=='bounded-append-effect-v1':chain['transition']=transition
             self.write_states[tuple(identity[:2])]=transition
-        finally:os.close(held);self.retained.remove(held)
+            generated_origin=self.tasks[pid].pop('generatedWriteOrigin',None)
+            if generated_origin is not None:self.generated_vma.complete_write_bridge(generated_origin,row,transition,held)
+        finally:
+            primary=sys.exc_info()[1]
+            try:os.close(held)
+            except BaseException as cleanup:
+                if self.generated_vma:self.generated_vma.cleanup_errors.append(cleanup)
+                if primary is None:raise
+            else:self.retained.remove(held)
     def checkpoint_appends(self,reason,entry_sequence=None):
         # Called only while every registered live task is stopped, or after all
         # actual waits. A held FD survives close/rename; no pathname re-open.

@@ -17,7 +17,9 @@ import threading
 import sys
 
 LEGACY_MODEL='actual-generated-shared-vma-single-owner-v1'
-MODEL='actual-generated-shared-vma-single-owner-v2'
+KERNEL_LINK_MODEL='actual-generated-shared-vma-single-owner-v2'
+MODEL='actual-generated-file-vma-single-owner-v3'
+CANONICAL_FILE_MAXIMUM=json.loads((Path(__file__).resolve().parents[2]/'scripts/lib/module-artifact-limits.json').read_bytes())['shardBytes']
 MAPPING_KIND='actual-exclusive-mmap-selected-file-v1'
 BUILD_ROOT='/opt/qlever-sdk/build'
 FLAGS=0x4001  # Linux v6.12 UAPI: MAP_SHARED | MAP_NORESERVE; exact word only.
@@ -44,8 +46,8 @@ def create_dimensions(entry):
     flags=args[1] if op=='open' else args[2]
     need(flags&3==2 and flags&CREATE_REQUIRED==CREATE_REQUIRED and flags&~CREATE_ALLOWED==0,'reviewed exclusive RW creation flags required')
     return (-100,args[0]) if op=='open' else (args[0],args[1])
-def map_dimensions(entry,fd):
-    need(operation(entry)=='map' and entry['args']==[0,1,PROTECTION,FLAGS,fd,0],'fixed one-byte non-executable shared mapping required')
+def map_dimensions(entry,fd,length=1):
+    need(operation(entry)=='map' and type(length) is int and length>0 and entry['args']==[0,length,PROTECTION,FLAGS,fd,0],'fixed one-byte non-executable shared mapping required')
 def rounded_span(address,length,page):
     need(type(page) is int and 4096<=page<=65536 and page&(page-1)==0,'actual bounded power-of-two page geometry required')
     need(type(address) is int and address>=0 and address%page==0 and type(length) is int and length>0 and address+length<=1<<64,'aligned bounded actual VMA range required')
@@ -54,17 +56,25 @@ def rounded_span(address,length,page):
 def matching_maps(mappings,file_identity):
     dev,ino=file_identity[:2]
     return [row for row in mappings if (row['deviceMajor'],row['deviceMinor'],row['inode'])==(os.major(dev),os.minor(dev),ino)]
-def verify_established(mappings,address,page,file_identity):
-    size=rounded_span(address,1,page);rows=matching_maps(mappings,file_identity)
+def verify_established(mappings,address,page,file_identity,length=1):
+    size=rounded_span(address,length,page);rows=matching_maps(mappings,file_identity)
     need(len(rows)==1,'exact sole backing VMA required');row=rows[0]
     need(row['startHex']==format(address,'x') and row['endHex']==format(address+size,'x') and row['permissions']=='rw-s' and row['fileOffset']==0,'actual whole shared RW VMA geometry differs')
     return row
 
-def reservation_bytes(peer_count,metadata_maximum):
+def reservation_bytes(peer_count,metadata_maximum,file_bytes=1,selected_rebinding=False):
     need(type(peer_count) is int and 0<=peer_count<128 and type(metadata_maximum) is int and 0<metadata_maximum<=4*1024**2,'canonical bounded checkpoint reservation required')
     # Four own maps plus before/after maps for every stopped peer; raw records
     # have the existing 64KiB maximum. Unused reserved bytes are never charged.
-    return (5+2*peer_count)*metadata_maximum+(44+2*peer_count)*65536+6
+    need(type(file_bytes) is int and 0<file_bytes<=CANONICAL_FILE_MAXIMUM,'bounded proven mapping file size required')
+    need(type(selected_rebinding) is bool,'exact selected rebinding dimension required')
+    return (5+2*peer_count)*metadata_maximum+(44+2*peer_count)*65536+(7 if selected_rebinding else 6)*file_bytes
+
+def kernel_link_reservation_bytes(peer_count,metadata_maximum):return (5+2*peer_count)*metadata_maximum+(44+2*peer_count)*65536+6
+
+def resize_reservation_bytes(before_size,after_size,peer_count,metadata_maximum):
+    need(all(type(v) is int and 0<=v<=CANONICAL_FILE_MAXIMUM for v in [before_size,after_size]) and type(peer_count) is int and 0<=peer_count<128,'bounded resize pre/post/peer requirements')
+    return 2*before_size+after_size+(1+peer_count)*metadata_maximum+10*65536
 
 def legacy_reservation_bytes(peer_count,metadata_maximum):return (4+2*peer_count)*metadata_maximum+(40+2*peer_count)*65536+3
 
@@ -101,6 +111,38 @@ class ProcLease:
         if hasattr(self,'first'):need(result['directoryIdentity']==self.first['directoryIdentity'] and result['statIdentity']==self.first['statIdentity'] and result['starttime']==self.first['starttime'],'proc lifetime changed across actual syscall')
         return result
     def close(self):return self.r.cleanup_fds([self.stat,self.directory])
+
+def resize_rejection_diagnostic(pid,entry,origin):
+    """Only already-held stop/origin metadata; never source bytes or authority."""
+    def number(value):return value if type(value) is int and 0<=value<1<<64 else 'unavailable'
+    def six(value):return [number(v) for v in value] if isinstance(value,(list,tuple)) and len(value)==6 else 'unavailable'
+    current='unavailable'
+    try:current=six(identity(os.fstat(origin['held'])))
+    except BaseException:pass
+    reference=origin.get('original');original='unavailable'
+    if isinstance(reference,dict):
+        name=reference.get('path');digest=reference.get('sha256');size=reference.get('bytes')
+        if isinstance(name,str) and 0<len(name)<=256 and all(32<=ord(c)<127 for c in name) and isinstance(digest,str) and len(digest)==64 and all(c in '0123456789abcdef' for c in digest):original=dict(path=name,bytes=number(size),sha256=digest)
+    row=dict(schemaVersion=1,kind='actual-stopped-generated-resize-rejected',pid=number(pid),entrySequence=number(entry.get('sequence')),arch=number(entry.get('arch')),nr=number(entry.get('nr')),args=six(entry.get('args')),originPid=number(origin.get('pid')),originFd=number(origin.get('fd')),originSequence=number(origin.get('sequence')),originIdentity=six(origin.get('identity')),currentHeldIdentity=current,original=original,authorityVerified=False)
+    raw='SDK_GENERATED_RESIZE_REJECTED '+json.dumps(row,separators=(',',':'))
+    if len(raw.encode('utf-8'))<=4096:print(raw,file=sys.stderr,flush=True)
+
+def verify_resize_bytes(before,after,before_size,after_size,maximum,check=lambda:None):
+    if type(maximum) is not int or maximum<0 or not all(type(v) is int and 0<=v<=maximum for v in [before_size,after_size]):raise ValueError('bounded resize sizes')
+    prior=hashlib.sha256();expected=hashlib.sha256();count=0
+    for block in before:
+        check()
+        if not isinstance(block,bytes) or not 0<len(block)<=65536 or count+len(block)>before_size:raise ValueError('bounded complete before blocks')
+        prior.update(block);keep=min(len(block),max(0,after_size-count));expected.update(block[:keep]);count+=len(block)
+    if count!=before_size:raise ValueError('short before')
+    for offset in range(before_size,after_size,65536):check();expected.update(bytes(min(65536,after_size-offset)))
+    actual=hashlib.sha256();count=0
+    for block in after:
+        check()
+        if not isinstance(block,bytes) or not 0<len(block)<=65536 or count+len(block)>after_size:raise ValueError('bounded complete after blocks')
+        actual.update(block);count+=len(block)
+    if count!=after_size or actual.digest()!=expected.digest():raise ValueError('complete resize projection differs')
+    return dict(before=dict(bytes=before_size,sha256=prior.hexdigest()),after=dict(bytes=after_size,sha256=actual.hexdigest()))
 
 class MemoryDomains:
     """Derived solely from already observed actual root/clone/exec/wait rows."""
@@ -140,9 +182,9 @@ class Runtime:
         if self.active is None and kind=='kernel-syscall' and row['op']=='entry' and operation(row) in ['close','write']:
             for key,origin in list(self.origins.items()):
                 if origin['pid']==row['pid'] and origin.get('fd')==row['args'][0] and self.lookup_fd(row['pid'],row['args'][0]) is origin:
-                    if origin.get('checkpointed'):
-                        if operation(row)=='write':self.checkpoints.pop(key,None)
-                        continue
+                    if operation(row)=='write':
+                        origin['writePending']=True;self.checkpoints.pop(key,None);continue
+                    if origin.get('checkpointed'):continue
                     os.close(origin['held']);self.b.retained.remove(origin['held']);del self.origins[key]
         if self.active is not None:
             self.b.check();kind=row['kind']
@@ -150,6 +192,21 @@ class Runtime:
             if kind=='kernel-syscall':
                 need(row['pid']==self.owner,'peer executed while generated mapping active')
                 if row['op']=='entry':need(operation(row) in ['close','unmap'],'unsupported syscall while finite mapping dirty')
+    def write_baseline(self,pid,fd,current,before_size,offset):
+        origin=self.lookup_fd(pid,fd)
+        if origin is None:return None
+        need(self.active is None and origin['pid']==pid and origin['fd']==fd and current==origin['identity']==identity(os.fstat(origin['held'])) and before_size==current[3],'generated write lacks exact current held origin')
+        count=self.b.tasks[pid]['entry']['args'][2];need(type(count) is int and 0<=count<=self.b.maximum_file_bytes,'bounded generated write count')
+        need(type(offset) is int and 0<=offset and offset+count<=self.b.maximum_file_bytes,'bounded generated write offset');reserve=2*before_size+count+max(before_size,offset+count)+10*65536;self.b.reserve_generated_bytes(reserve);self.spending_thread=threading.get_ident()
+        origin['writePending']=True
+        return origin
+    def complete_write_bridge(self,origin,window,transition,held):
+        need(origin.get('writePending') and transition['afterIdentity']==identity(os.fstat(held)) and transition['afterIdentity'][:3]==origin['identity'][:3] and window['beforeIdentity']==origin['identity'] and window['baseline']==origin['sequence'],'generated write transition baseline differs')
+        current,ref=self.snapshot(held);need(current==identity(os.fstat(origin['held'])) and window['fd']==origin['fd'] and (ref['bytes'],ref['sha256'])==(transition['after']['bytes'],transition['after']['sha256']),'generated write full postimage differs from sole write projection')
+        row=self.b.emit(dict(kind='generated-vma-write-origin-transition',pid=window['pid'],originSequence=origin['sequence'],windowSequence=window['sequence'],transitionSequence=transition['sequence'],identity=current,original=ref))
+        origin.update(identity=current,data=(ref['bytes'],ref['sha256']),original=ref,sequence=row['sequence'],writePending=False,checkpointed=False)
+        self.reserved=0;self.spending_thread=None
+        return row
     def lookup_fd(self,pid,fd):
         try:current=identity(os.stat('/proc/'+str(pid)+'/fd/'+str(fd)))
         except FileNotFoundError:return None
@@ -175,10 +232,15 @@ class Runtime:
         elif op=='resize':
             origin=self.lookup_fd(pid,args[0])
             if origin is None:return False
-            need(args[0]==origin['fd'],'new selected generated descriptor requires unsupported explicit rebinding');need(origin['pid']==pid and origin['identity'][3]==0 and args[1]==1,'only actual own empty-to-one-byte resize supported')
+            try:
+                need(args[0]==origin['fd'],'new selected generated descriptor requires unsupported explicit rebinding');need(origin['pid']==pid and type(args[1]) is int and 0<=args[1]<=b.maximum_file_bytes<=CANONICAL_FILE_MAXIMUM,'only bounded own retained resize supported')
+            except ValueError:
+                try:resize_rejection_diagnostic(pid,entry,origin)
+                except BaseException:pass
+                raise
             self.pending[pid]=dict(op=op,origin=origin,fd=args[0])
         elif op=='map' and not(args[3]&0x20) and args[2]&2 and args[3]&1:
-            origin=self.lookup_fd(pid,args[4]);need(origin is not None,'mapped output lacks actual create/resize origin');map_dimensions(entry,args[4]);need(origin['pid']==pid and origin['identity'][3]==1,'selected own one-byte origin required');self.mm.unique(pid)
+            origin=self.lookup_fd(pid,args[4]);need(origin is not None,'mapped output lacks actual create/resize origin');map_dimensions(entry,args[4],origin['identity'][3]);need(origin['pid']==pid and 0<origin['identity'][3]<=b.maximum_file_bytes<=CANONICAL_FILE_MAXIMUM,'selected own bounded nonempty origin required');self.mm.unique(pid)
             self.pending[pid]=dict(op=op,origin=origin,fd=args[4])
         else:return False
         b.tasks[pid]['capture']=(None,'generated-vma-before');return True
@@ -187,7 +249,7 @@ class Runtime:
         if row['sequence']!=self.b.seq:row=self.b.barrier()
         need(row['sequence']==self.b.seq,'fresh all-task barrier required');return row
     def snapshot(self,fd):
-        before=identity(os.fstat(fd));need(stat.S_ISREG(before[2]) and before[3] in [0,1],'tiny regular generated original required')
+        before=identity(os.fstat(fd));need(stat.S_ISREG(before[2]) and 0<=before[3]<=self.b.maximum_file_bytes<=CANONICAL_FILE_MAXIMUM,'bounded regular generated original required')
         ref=self.b.snapshot_write_original(fd,before[3]);need(before==identity(os.fstat(fd)),'generated original changed during capture');return before,ref
     def maps(self,pid):return self.b.tool_maps(pid)
     def capture(self,pid):
@@ -196,8 +258,10 @@ class Runtime:
             path=pending['path'];parent=Path(path).parent;need(str(parent.resolve(strict=True))==str(parent) and absent(path),'actual fresh generated name required')
             held=os.open(parent,os.O_RDONLY|os.O_DIRECTORY|os.O_CLOEXEC|os.O_NOFOLLOW);b.retained.add(held);pending['parentFd']=held;need(identity(os.fstat(held))==identity(parent.lstat()),'same held/named create parent required');pending.update(parentFd=held,parentIdentity=identity(os.fstat(held)));common.update(path=path,parentIdentity=pending['parentIdentity'],nameAbsenceErrno=errno.ENOENT)
         else:
-            origin=pending['origin'];held=origin['held'];current=identity(os.fstat(held));need(same_object(current,origin['identity']),'retained generated backing object changed')
+            origin=pending['origin'];need(not origin.get('writePending'),'unverified write invalidated generated origin');held=origin['held'];current=identity(os.fstat(held));need(same_object(current,origin['identity']),'retained generated backing object changed')
             common.update(originSequence=origin['sequence'],path=origin['path'],identity=current,fd=pending['fd'])
+            if op in ['resize','map']:
+                reserved=resize_reservation_bytes(current[3],entry['args'][1],len(barrier['pids'])-1,b.tool_metadata_bytes) if op=='resize' else reservation_bytes(len(barrier['pids'])-1,b.tool_metadata_bytes,current[3],pending['fd']!=origin['fd']);b.reserve_generated_bytes(reserved);self.spending_thread=threading.get_ident();common.update(reservationBytes=reserved,metadataMaximumBytes=b.tool_metadata_bytes)
             if op in ['resize','map']:
                 need(current==origin['identity'] and current==identity(os.stat('/proc/'+str(pid)+'/fd/'+str(pending['fd']))),'generated preimage FD identity differs')
                 _,ref=self.snapshot(held);need((ref['bytes'],ref['sha256'])==origin['data'],'generated preimage bytes differ');common['beforeOriginal']=ref
@@ -210,23 +274,24 @@ class Runtime:
                 finally:
                     primary=sys.exc_info()[1];errors=self.cleanup_fds([selected])
                     if errors and primary is None:raise errors[0]
-            if op=='map':
+            if op in ['resize','map']:
                 selected=os.open('/proc/'+str(pid)+'/fd/'+str(pending['fd']),os.O_RDONLY|os.O_CLOEXEC);b.retained.add(selected);pending['selectedHeld']=selected
                 selected_identity,selected_ref=self.snapshot(selected);flags=b.generated_fd_flags(pid,pending['fd']);path=b.generated_fd_path(pid,pending['fd'])
                 need(selected_identity==current==identity(os.stat('/proc/'+str(pid)+'/fd/'+str(pending['fd']))) and (selected_ref['bytes'],selected_ref['sha256'])==origin['data'] and flags&3==2 and path==origin['path'],'selected mmap FD preimage differs')
                 lease=ProcLease(self,pid);pending.update(procLease=lease,selectedFlags=flags)
                 common.update(selectedIdentity=selected_identity,selectedOriginal=selected_ref,selectedFlags=flags,procLease=lease.first)
-                reserved=reservation_bytes(len(barrier['pids'])-1,b.tool_metadata_bytes);b.reserve_generated_bytes(reserved);self.spending_thread=threading.get_ident();common.update(reservationBytes=reserved,metadataMaximumBytes=b.tool_metadata_bytes)
                 self.mm.unique(pid);aliases=b.writable_aliases(current,pid,pending['fd']);need(len(aliases)==1 and aliases[0]['pid']==pid and aliases[0]['fd']==pending['fd'],'mapped output has another writable FD alias')
                 maps,values=self.maps(pid);need(not matching_maps(values,current),'backing file already has VMA aliases')
                 for peer,task in b.tasks.items():
                     if task['exited'] or peer==pid:continue
                     other,items=self.maps(peer);need(not matching_maps(items,current),'peer already maps output backing')
                     common.setdefault('peerMaps',[]).append(dict(pid=peer,original=other['original']))
-                page=os.sysconf('SC_PAGE_SIZE');rounded_span(0,1,page);end=min(b.deadline,time.monotonic()+WINDOW_SECONDS);pending.update(alarmToken=b.waiter.clamp(end),windowEnd=end)
-                common.update(beforeMapsOriginal=maps['original'],pageBytes=page,memoryDomain=self.mm.unique(pid),aliases=aliases,windowDeadlineMonotonicNs=str(int(end*1e9)),parentDeadlineMonotonicNs=str(int(b.waiter.parent_deadline*1e9)))
+                common.update(beforeMapsOriginal=maps['original'],aliases=aliases)
+                if op=='map':
+                    page=os.sysconf('SC_PAGE_SIZE');rounded_span(0,current[3],page);end=min(b.deadline,time.monotonic()+WINDOW_SECONDS);pending.update(alarmToken=b.waiter.clamp(end),windowEnd=end)
+                    common.update(pageBytes=page,memoryDomain=self.mm.unique(pid),windowDeadlineMonotonicNs=str(int(end*1e9)),parentDeadlineMonotonicNs=str(int(b.waiter.parent_deadline*1e9)))
             if op=='unmap':
-                current,ref=self.snapshot(held);maps,values=self.maps(pid);verify_established(values,self.active['address'],self.active['page'],current);common.update(beforeOriginal=ref,beforeMapsOriginal=maps['original'],epochSequence=self.active['sequence'])
+                current,ref=self.snapshot(held);maps,values=self.maps(pid);verify_established(values,self.active['address'],self.active['page'],current,self.active['length']);common.update(beforeOriginal=ref,beforeMapsOriginal=maps['original'],epochSequence=self.active['sequence'])
         row=b.emit(common);pending.update(window=row,preBarrier=barrier);return row
     def finish(self,pid,entry,exit):
         b=self.b;pending=self.pending[pid];window=pending['window'];op=pending['op'];need(b.exclusive==(pid,entry['sequence']) and exit['result']>=0 and exit['isError'] is False,'actual exclusive successful operation exit required')
@@ -245,8 +310,13 @@ class Runtime:
                 if parent not in b.retained:pending['parentFd']=None
                 if errors and primary is None:raise errors[0]
         elif op=='resize':
-            origin=pending['origin'];current,ref=self.snapshot(origin['held']);need(exit['result']==0 and current[:3]==origin['identity'][:3] and current[3]==1 and (ref['bytes'],ref['sha256'])==(1,hashlib.sha256(b'\0').hexdigest()),'actual zero extension differs')
-            row=b.emit(dict(common,identity=current,original=ref,originSequence=origin['sequence']));origin.update(identity=current,data=(ref['bytes'],ref['sha256']),original=ref,sequence=row['sequence'])
+            origin=pending['origin'];barrier=self.fresh_barrier();need(barrier['sequence']==exit['sequence']+1 and barrier['pids']==pending['preBarrier']['pids'] and barrier.get('taskOwnership')==pending['preBarrier'].get('taskOwnership'),'resize post-stop ownership/progress differs')
+            current,ref=self.snapshot(pending['selectedHeld']);need(exit['result']==0 and current[:3]==origin['identity'][:3] and current[3]==entry['args'][1] and current==identity(os.fstat(origin['held']))==identity(os.stat('/proc/'+str(pid)+'/fd/'+str(pending['fd']))) and b.generated_fd_flags(pid,pending['fd'])==pending['selectedFlags'] and b.generated_fd_path(pid,pending['fd'])==origin['path'],'actual resize returned FD/postimage differs')
+            projected=verify_resize_bytes(b.original_blocks(window['beforeOriginal']),b.original_blocks(ref),window['identity'][3],entry['args'][1],b.maximum_file_bytes,b.check)
+            need((projected['before']['bytes'],projected['before']['sha256'])==origin['data'],'resize entire before original differs')
+            proc=pending['procLease'].sample();row=b.emit(dict(common,identity=current,original=ref,originSequence=origin['sequence'],postBarrierSequence=barrier['sequence'],procAfter=proc,selectedFlags=pending['selectedFlags']))
+            errors=pending['procLease'].close()+self.cleanup_fds([pending['selectedHeld']]);need(not errors,'resize lease cleanup failed');pending.pop('procLease');pending.pop('selectedHeld');self.reserved=0;self.spending_thread=None
+            origin.update(identity=current,data=(ref['bytes'],ref['sha256']),original=ref,sequence=row['sequence']);self.checkpoints.pop(tuple(current[:2]),None)
         elif op=='map':
             origin=pending['origin'];current=identity(os.fstat(origin['held']));need(current==origin['identity'],'mmap changed backing preimage')
             barrier=self.fresh_barrier();need(barrier['sequence']==exit['sequence']+1 and barrier['pids']==pending['preBarrier']['pids'] and barrier.get('taskOwnership')==pending['preBarrier'].get('taskOwnership'),'mmap post-stop ownership/progress differs')
@@ -255,7 +325,7 @@ class Runtime:
                 before,ref=self.snapshot(selected)
                 need(before==current==identity(os.fstat(origin['held']))==identity(os.stat(selected_path)) and b.generated_fd_flags(pid,pending['fd'])==pending['selectedFlags'] and b.generated_fd_path(pid,pending['fd'])==origin['path'] and (ref['bytes'],ref['sha256'])==origin['data'],'mmap selected/origin full preimage differs')
                 return ref
-            first_body=selected_sample();proc_first=pending['procLease'].sample();maps,values=self.maps(pid);mapping=verify_established(values,exit['result'],window['pageBytes'],current)
+            first_body=selected_sample();proc_first=pending['procLease'].sample();maps,values=self.maps(pid);mapping=verify_established(values,exit['result'],window['pageBytes'],current,current[3])
             link_path='/proc/'+str(pid)+'/map_files/'+mapping['startHex']+'-'+mapping['endHex']
             first_link=raw_record(os.fsencode(os.readlink(link_path)));kernel_link(first_link,origin['path'],b.build);first_link_row=b.emit(dict(kind='generated-vma-kernel-link-original',pid=pid,entrySequence=entry['sequence'],postBarrierSequence=barrier['sequence'],mapsOriginal=maps['original'],range=[mapping['startHex'],mapping['endHex']],link=first_link,procLease=proc_first))
             confirmation,confirmed=self.maps(pid);need(values==confirmed and maps['original']['bytes']==confirmation['original']['bytes'] and maps['original']['sha256']==confirmation['original']['sha256'],'mmap full maps changed between kernel link samples')
@@ -264,7 +334,7 @@ class Runtime:
             end=pending['windowEnd'];token=pending['alarmToken']
             row=b.emit(dict(common,identity=current,kernelMappingEvidence=evidence,mapsOriginal=maps['original'],mapping=mapping,memoryDomain=self.mm.unique(pid),windowDeadlineMonotonicNs=str(int(end*1e9)),parentDeadlineMonotonicNs=str(int(b.waiter.parent_deadline*1e9))))
             primary=sys.exc_info()[1];errors=pending['procLease'].close()+self.cleanup_fds([pending['selectedHeld']]);need(not errors,'mmap lease cleanup failed');pending.pop('procLease');pending.pop('selectedHeld')
-            origin['fd']=pending['fd'];self.active=dict(pid=pid,origin=origin,address=exit['result'],page=window['pageBytes'],span=rounded_span(exit['result'],1,window['pageBytes']),sequence=row['sequence'],token=token)
+            origin['fd']=pending['fd'];self.active=dict(pid=pid,origin=origin,address=exit['result'],page=window['pageBytes'],length=current[3],span=rounded_span(exit['result'],current[3],window['pageBytes']),sequence=row['sequence'],token=token)
         elif op=='close':
             origin=pending['origin'];need(exit['result']==0 and absent('/proc/'+str(pid)+'/fd/'+str(pending['fd'])) and identity(os.fstat(origin['held']))==window['identity'],'actual FD close differs; mapping remains live')
             b.emit(dict(common,originSequence=origin['sequence'],fd=pending['fd'],fdAbsenceErrno=errno.ENOENT,identity=window['identity'],epochSequence=self.active['sequence']))
@@ -296,10 +366,18 @@ class Runtime:
 
 class Verifier:
     """Independent bounded raw/original replay; no caller Boolean approval."""
-    def __init__(self,capture_data,maps_data,metadata_maximum=4*1024**2,model=LEGACY_MODEL):
-        need(model in [LEGACY_MODEL,MODEL],'unknown mapping evidence model');self.model=model
+    def __init__(self,capture_data,maps_data,metadata_maximum=4*1024**2,model=LEGACY_MODEL,read_blocks=None,maximum_file=1024**2):
+        need(model in [LEGACY_MODEL,KERNEL_LINK_MODEL,MODEL],'unknown mapping evidence model');self.model=model;self.read_blocks=read_blocks;self.maximum_file=maximum_file
         self.capture_data=capture_data;self.maps_data=maps_data;self.metadata_maximum=metadata_maximum;self.mm=MemoryDomains();self.windows={};self.origins={};self.original_sequences={};self.map_sequences={};self.map_owners={};self.pending_window=None;self.transaction=None;self.active=None;self.events={};self.checkpoints={};self.consumers=[];self.metadata_bytes=0;self.pending_mapping_entries=set();self.create_paths={};self.last_observed_ns=None;self.parent_deadline_ns=None;self.fd_bindings={}
     def original(self,reference):return self.capture_data(reference)
+    def write_baseline(self,row,before):
+        need(self.model==MODEL and self.active is None,'generated write baseline model differs')
+        origin=self.origins.get(row['baseline']);need(origin and origin['pid']==row['pid'] and origin['fd']==row['fd'] and origin['identity']==row['beforeIdentity'] and origin['data']==before and origin['path']==row['path'] and origin.get('writePending'),'generated write exact origin baseline missing')
+        return origin
+    def consume_write_bridge(self,row,window,transition):
+        need(self.model==MODEL and transition and window and transition['sequence']==row['transitionSequence'] and transition['windowSequence']==window['sequence']==row['windowSequence'] and row['pid']==window['pid'],'generated write bridge lacks verified sole write transition')
+        origin=self.write_baseline(window,(window['before']['bytes'],window['before']['sha256']));need(transition['sequence']<self.original_sequences.get(self.key(row['original']),0)<row['sequence'] and row['originSequence']==window['baseline'] and row['identity']==transition['afterIdentity'] and self.original(row['original'])==(transition['after']['bytes'],transition['after']['sha256']) and transition.get('afterObservation') is None,'generated write bridge full checkpoint differs')
+        self.origins[row['sequence']]=dict(origin,identity=row['identity'],data=self.original(row['original']),writePending=False,checkpointed=False);del self.origins[row['originSequence']]
     @staticmethod
     def key(reference):return tuple(reference[key] for key in ['path','bytes','sha256'])
     def preimage_interval(self,row,barrier):
@@ -312,21 +390,39 @@ class Verifier:
             table=self.map_sequences if key=='beforeMapsOriginal' else self.original_sequences;sequence=table.get(self.key(row[key]),0)
             if key=='beforeMapsOriginal':need(self.map_owners.get(self.key(row[key]))==row['pid'],'preimage maps sampled a different actual PID')
             need(barrier['sequence']<sequence<row['sequence'],'generated preimage lacks its own fresh original emission')
+    def verify_selected_window(self,row,origin,barrier,seq):
+        need(row['selectedIdentity']==origin['identity'] and row['selectedFlags']&3==2 and self.original(row['selectedOriginal'])==origin['data'] and barrier['sequence']<self.original_sequences.get(self.key(row['selectedOriginal']),0)<seq,'selected actual FD original absent')
+        lease=row['procLease'];need(proc_identity(raw_bytes(lease['statOriginal']),row['pid'])==int(lease['starttime']) and len(lease['directoryIdentity'])==len(lease['statIdentity'])==6 and stat.S_ISDIR(lease['directoryIdentity'][2]) and stat.S_ISREG(lease['statIdentity'][2]),'entry proc lease malformed')
+        peers=row.get('peerMaps',[]);need(sorted(r['pid'] for r in peers)==sorted(p for p in barrier['pids'] if p!=row['pid']),'complete stopped resize peer maps required')
+        need(not matching_maps(self.maps_data(row['beforeMapsOriginal']),origin['identity']),'resize has own live mapping alias')
+        for peer in peers:need(self.map_owners.get(self.key(peer['original']))==peer['pid'] and barrier['sequence']<self.map_sequences.get(self.key(peer['original']),0)<seq and not matching_maps(self.maps_data(peer['original']),origin['identity']),'resize has unobserved/aliased peer maps')
+        aliases=row['aliases'];need(len(aliases)==1 and aliases[0]['pid']==row['pid'] and aliases[0]['fd']==row['fd'] and aliases[0]['accessMode']==2 and aliases[0]['flags']&3==2,'sole resize writable selected FD required')
     def allow_mapping_entry(self,row):
-        need(operation(row)=='map','actual mapping entry required');map_dimensions(row,row['args'][4]);origin=next((value for value in self.origins.values() if value['pid']==row['pid'] and value['identity'][3]==1),None)
-        need(origin is not None and origin['identity'][3]==1,'actual created/resized selected mapping origin missing');self.mm.unique(row['pid']);self.pending_mapping_entries.add(row['sequence']);return True
+        need(operation(row)=='map','actual mapping entry required');length=row['args'][1] if self.model==MODEL else 1
+        candidates=[value for value in self.origins.values() if value['pid']==row['pid'] and value['identity'][3]==length and length>0 and not value.get('writePending')]
+        need(candidates,'actual created/resized selected mapping origin missing');map_dimensions(row,row['args'][4],length)
+        # This only defers the raw entry. The later exclusive window must join
+        # its explicit originSequence and actual FD, with the complete typed
+        # selected-FD binding when the descriptor was reopened. No arbitrary
+        # first origin is chosen here, and no entry itself grants byte custody.
+        self.mm.unique(row['pid']);self.pending_mapping_entries.add(row['sequence']);return True
     def record(self,row,entries,exits,barriers,caps):
         kind=row['kind'];seq=row['sequence'];clock=row.get('observedMonotonicNs');need(isinstance(clock,str) and clock.isdecimal(),'actual monotonic raw observation required');now=int(clock);need(self.last_observed_ns is None or now>=self.last_observed_ns,'raw monotonic observation moved backwards');self.last_observed_ns=now;need(seq not in self.events,'duplicate generated raw sequence');self.events[seq]=row
         while len(self.events)>256:self.events.pop(next(iter(self.events)))
         if kind.startswith('generated-vma-') or kind=='exclusive-generated-vma-resume':
             self.metadata_bytes+=len(json.dumps(row,separators=(',',':')).encode());need(self.metadata_bytes<=4*1024**2,'shared generated replay metadata bound')
-        if kind=='generated-vma-kernel-link-original':need(self.model==MODEL and self.transaction and self.transaction['state']=='exited' and self.transaction['window']['operation']=='map','kernel link original outside new mapping transaction')
+        if kind=='generated-vma-kernel-link-original':need(self.model!=LEGACY_MODEL and self.transaction and self.transaction['state']=='exited' and self.transaction['window']['operation']=='map','kernel link original outside new mapping transaction')
         self.mm.record(row)
         if kind=='owned-root-binding':
             end=row.get('generatedVmaParentDeadlineMonotonicNs');need(isinstance(end,str) and end.isdecimal() and int(end)>now,'actual owned root parent deadline required');self.parent_deadline_ns=int(end)
         if self.active is None and kind=='kernel-syscall' and row['op']=='entry' and operation(row) in ['close','write']:
             for key,origin in list(self.origins.items()):
                 if origin['pid']==row['pid'] and origin['fd']==row['args'][0]:
+                    if self.model==MODEL and operation(row)=='write':
+                        origin['writePending']=True
+                        for checkpoint,value in list(self.checkpoints.items()):
+                            if value['identity'][:2]==origin['identity'][:2]:del self.checkpoints[checkpoint]
+                        continue
                     if origin.get('checkpointed'):
                         if operation(row)=='write':
                             for checkpoint,value in list(self.checkpoints.items()):
@@ -340,8 +436,8 @@ class Verifier:
                 need(kind=='kernel-syscall' and row.get('op')=='exit' and row.get('pid')==self.transaction['pid'] and row.get('entrySequence')==self.transaction['entrySequence'],'foreign event during generated exclusive syscall');self.transaction['state']='exited'
             elif state=='exited':
                 allowed=['write-original','toolchain-original','generated-vma-operation-exit']
-                if self.model==MODEL:allowed.append('generated-vma-kernel-link-original')
-                if self.model==MODEL and self.transaction['window']['operation']=='map' and seq==exits[self.transaction['entrySequence']]['sequence']+1:allowed=['all-stop-barrier']
+                if self.model!=LEGACY_MODEL:allowed.append('generated-vma-kernel-link-original')
+                if self.model!=LEGACY_MODEL and (self.transaction['window']['operation']=='map' or self.model==MODEL and self.transaction['window']['operation']=='resize') and seq==exits[self.transaction['entrySequence']]['sequence']+1:allowed=['all-stop-barrier']
                 need(kind in allowed,'event before generated postimage closure')
             else:need(kind=='exclusive-captured-syscall-exit','generated operation close missing')
         if self.active is not None:
@@ -368,22 +464,27 @@ class Verifier:
                 path=self.create_paths.pop(entry['sequence'],None);need(path and path['path']==row['path'] and path['sequence']<barrier['sequence'],'actual generated create path original differs')
                 create_dimensions(entry);need(row['nameAbsenceErrno']==errno.ENOENT and type(row['nameAbsenceErrno']) is int and len(row['parentIdentity'])==6 and stat.S_ISDIR(row['parentIdentity'][2]),'generated create parent/actual absence required')
             else:
-                origin=self.origins.get(row['originSequence']);need(origin and origin['pid']==row['pid'] and row['path']==origin['path'] and same_object(row['identity'],origin['identity']),'generated operation backing origin differs')
+                origin=self.origins.get(row['originSequence']);need(origin and not origin.get('writePending') and origin['pid']==row['pid'] and row['path']==origin['path'] and same_object(row['identity'],origin['identity']),'generated operation backing origin differs')
                 if op in ['resize','map']:
                     need(row['identity']==origin['identity'] and self.original(row['beforeOriginal'])==origin['data'],'generated operation exact byte preimage differs')
-                    if op=='resize':need(args[0]==row['fd']==origin['fd'] and args[1]==1 and origin['identity'][3]==0,'only empty-to-one-byte extension required')
+                    if op=='resize':
+                        need(args[0]==row['fd']==origin['fd'],'actual resize descriptor differs')
+                        if self.model==MODEL:
+                            need(type(args[1]) is int and 0<=args[1]<=self.maximum_file<=CANONICAL_FILE_MAXIMUM and row['reservationBytes']==resize_reservation_bytes(origin['identity'][3],args[1],len(barrier['pids'])-1,self.metadata_maximum),'bounded complete resize reservation differs')
+                            self.verify_selected_window(row,origin,barrier,seq)
+                        else:need(args[1]==1 and origin['identity'][3]==0,'only empty-to-one-byte extension required')
                 if op=='map':
                     need(entry['sequence'] in self.pending_mapping_entries,'mapping window has no admitted actual entry');self.pending_mapping_entries.remove(entry['sequence'])
-                    map_dimensions(entry,row['fd'])
+                    map_dimensions(entry,row['fd'],origin['identity'][3] if self.model==MODEL else 1)
                     if row['fd']!=origin['fd']:
                         selected=self.fd_bindings.pop(row.get('selectedFdBindingSequence'),None);ownership=[item for item in barrier.get('taskOwnership',[]) if item['tid']==row['pid']]
                         need(selected and len(ownership)==1 and selected['pid']==row['pid'] and selected['entrySequence']==entry['sequence'] and selected['barrierSequence']==barrier['sequence'] and selected['originSequence']==row['originSequence'] and selected['selectedFd']==entry['args'][4]==row['fd'] and selected['previousFd']==origin['fd'] and selected['fdTable']==ownership[0]['fdTable'] and selected['identity']==selected['retainedIdentity']==selected['namedIdentity']==origin['identity'] and selected['path']==origin['path'] and selected['flags']&3==2 and self.original(selected['original'])==origin['data'] and barrier['sequence']<self.original_sequences.get(self.key(selected['original']),0)<selected['sequence']<seq,'actual selected descriptor lacks full retained-origin binding')
                     else:need('selectedFdBindingSequence' not in row,'unexpected selected descriptor rebinding')
-                    need(origin['identity'][3]==1 and self.mm.unique(row['pid'])==row['memoryDomain'],'unique actual one-byte mapping domain required');rounded_span(0,1,row['pageBytes']);need(not matching_maps(self.maps_data(row['beforeMapsOriginal']),origin['identity']),'existing own VMA alias')
-                    peers=row.get('peerMaps',[]);need(row.get('metadataMaximumBytes')==self.metadata_maximum and row.get('reservationBytes')==(reservation_bytes if self.model==MODEL else legacy_reservation_bytes)(len(barrier['pids'])-1,self.metadata_maximum),'checkpoint reservation does not match canonical complete peer maps/raw bound');need(sorted(r['pid'] for r in peers)==sorted(p for p in barrier['pids'] if p!=row['pid']),'complete stopped peer maps required')
+                    need((0<origin['identity'][3]<=self.maximum_file if self.model==MODEL else origin['identity'][3]==1) and self.mm.unique(row['pid'])==row['memoryDomain'],'unique actual one-byte mapping domain required');rounded_span(0,1,row['pageBytes']);need(not matching_maps(self.maps_data(row['beforeMapsOriginal']),origin['identity']),'existing own VMA alias')
+                    peers=row.get('peerMaps',[]);need(row.get('metadataMaximumBytes')==self.metadata_maximum and row.get('reservationBytes')==(reservation_bytes(len(barrier['pids'])-1,self.metadata_maximum,origin['identity'][3],row['fd']!=origin['fd']) if self.model==MODEL else (kernel_link_reservation_bytes if self.model==KERNEL_LINK_MODEL else legacy_reservation_bytes)(len(barrier['pids'])-1,self.metadata_maximum)),'checkpoint reservation does not match canonical complete peer maps/raw bound');need(sorted(r['pid'] for r in peers)==sorted(p for p in barrier['pids'] if p!=row['pid']),'complete stopped peer maps required')
                     for peer in peers:
                         need(self.map_owners.get(self.key(peer['original']))==peer['pid'] and barrier['sequence']<self.map_sequences.get(self.key(peer['original']),0)<seq and not matching_maps(self.maps_data(peer['original']),origin['identity']),'existing/unobserved peer backing map')
-                    if self.model==MODEL:
+                    if self.model!=LEGACY_MODEL:
                         need(row['selectedIdentity']==origin['identity'] and row['selectedFlags']&3==2 and self.original(row['selectedOriginal'])==origin['data'] and barrier['sequence']<self.original_sequences.get(self.key(row['selectedOriginal']),0)<seq,'selected actual mmap FD original absent')
                         lease=row['procLease'];need(proc_identity(raw_bytes(lease['statOriginal']),row['pid'])==int(lease['starttime']) and len(lease['directoryIdentity'])==len(lease['statIdentity'])==6 and stat.S_ISDIR(lease['directoryIdentity'][2]) and stat.S_ISREG(lease['statIdentity'][2]),'entry proc lease malformed')
                     aliases=row['aliases'];need(len(aliases)==1 and aliases[0]['pid']==row['pid'] and aliases[0]['fd']==row['fd'] and aliases[0]['accessMode']==2 and aliases[0]['flags']&3==2,'sole selected writable descriptor required')
@@ -391,7 +492,7 @@ class Verifier:
                     need(self.active and self.active['originSequence']==row['originSequence'],'operation lacks active mapped epoch')
                     if op=='close':need(row['fd']==args[0],'actual selected close FD differs')
                     else:
-                        need(args[0]==self.active['address'] and rounded_span(args[0],args[1],self.active['page'])==self.active['span'],'partial/foreign munmap unsupported');verify_established(self.maps_data(row['beforeMapsOriginal']),self.active['address'],self.active['page'],row['identity']);need(self.original(row['beforeOriginal'])[0]==1,'actual unmap preimage required')
+                        need(args[0]==self.active['address'] and rounded_span(args[0],args[1],self.active['page'])==self.active['span'],'partial/foreign munmap unsupported');verify_established(self.maps_data(row['beforeMapsOriginal']),self.active['address'],self.active['page'],row['identity'],self.active['length']);need(self.original(row['beforeOriginal'])[0]==self.active['length'],'actual complete unmap preimage required')
             self.windows[seq]=row;self.pending_window=seq
         elif kind=='exclusive-generated-vma-resume':
             window=self.windows.get(row['captureSequence']);need(window and row['pid']==window['pid'] and row['entrySequence']==window['entrySequence'],'generated exclusive resume differs');self.pending_window=None;self.transaction=dict(pid=row['pid'],entrySequence=row['entrySequence'],window=window,state='resumed')
@@ -402,9 +503,17 @@ class Verifier:
                 current=row['identity'];need(row['path']==window['path'] and row['fd']==actual['result'] and len(current)==6 and stat.S_ISREG(current[2]) and current[3]==0 and self.original(row['original'])==(0,hashlib.sha256(b'').hexdigest()) and row['parentIdentity'][:3]==window['parentIdentity'][:3] and type(row['fdFlags']) is int and row['fdFlags']&3==2,'actual generated empty create differs')
                 self.origins[seq]=dict(pid=row['pid'],identity=current,path=row['path'],data=self.original(row['original']),fd=row['fd'])
             elif op=='resize':
-                origin=self.origins[window['originSequence']];current=row['identity'];need(row['result']==0 and row['originSequence']==window['originSequence'] and current[:3]==origin['identity'][:3] and current[3]==1 and self.original(row['original'])==(1,hashlib.sha256(b'\0').hexdigest()),'actual zero-extension bytes differ');self.origins[seq]=dict(origin,identity=current,data=self.original(row['original']));del self.origins[window['originSequence']]
+                origin=self.origins[window['originSequence']];current=row['identity'];need(row['result']==0 and row['originSequence']==window['originSequence'] and current[:3]==origin['identity'][:3],'actual resize object/exit differs')
+                if self.model==MODEL:
+                    actual_size=entry['args'][1];need(current[3]==actual_size and self.read_blocks is not None,'actual complete resize length/reader required');post=barriers.get(row['postBarrierSequence']);pre=barriers[window['barrierSequence']]
+                    need(post and post['sequence']==actual['sequence']+1 and post['pids']==pre['pids'] and post.get('taskOwnership')==pre.get('taskOwnership') and row['selectedFlags']==window['selectedFlags'],'actual resize post-stop differs')
+                    before=window['procLease'];sample=row['procAfter'];need(sample['directoryIdentity']==before['directoryIdentity'] and sample['statIdentity']==before['statIdentity'] and sample['starttime']==before['starttime'] and proc_identity(raw_bytes(sample['statOriginal']),row['pid'])==int(before['starttime']),'resize held proc lifetime differs')
+                    projected=verify_resize_bytes(self.read_blocks(window['beforeOriginal']),self.read_blocks(row['original']),origin['identity'][3],actual_size,self.maximum_file)
+                    need((projected['before']['bytes'],projected['before']['sha256'])==origin['data'] and (projected['after']['bytes'],projected['after']['sha256'])==self.original(row['original']),'entire resize originals differ')
+                else:need(origin['identity'][3]==0 and current[3]==1 and self.original(row['original'])==(1,hashlib.sha256(b'\0').hexdigest()),'actual zero-extension bytes differ')
+                self.origins[seq]=dict(origin,identity=current,data=self.original(row['original']));del self.origins[window['originSequence']]
             elif op=='map':
-                origin=self.origins[window['originSequence']];mapping=verify_established(self.maps_data(row['mapsOriginal']),actual['result'],window['pageBytes'],origin['identity']);need(row['mapping']==mapping and row['identity']==origin['identity'] and row['memoryDomain']==self.mm.unique(row['pid']),'actual mmap backing/domain differs')
+                origin=self.origins[window['originSequence']];mapping=verify_established(self.maps_data(row['mapsOriginal']),actual['result'],window['pageBytes'],origin['identity'],origin['identity'][3] if self.model==MODEL else 1);need(row['mapping']==mapping and row['identity']==origin['identity'] and row['memoryDomain']==self.mm.unique(row['pid']),'actual mmap backing/domain differs')
                 if self.model==LEGACY_MODEL:need('kernelMappingEvidence' not in row and row['mapFilesIdentity']==origin['identity'],'legacy actual map-files fstat required')
                 else:
                     need('mapFilesIdentity' not in row,'legacy fstat cannot masquerade as kernel mapping evidence');proof=row['kernelMappingEvidence'];post=barriers.get(proof['postBarrierSequence']);pre=barriers[window['barrierSequence']]
@@ -422,7 +531,7 @@ class Verifier:
                     for sample in [proof['procBefore'],proof['procAfter']]:
                         before=window['procLease'];need(sample['directoryIdentity']==before['directoryIdentity'] and sample['statIdentity']==before['statIdentity'] and sample['starttime']==before['starttime'] and proc_identity(raw_bytes(sample['statOriginal']),row['pid'])==int(before['starttime']),'actual held proc lifetime differs')
                 start=int(window['observedMonotonicNs']);deadline=int(window['windowDeadlineMonotonicNs']);parent=int(window['parentDeadlineMonotonicNs']);need(row['windowDeadlineMonotonicNs']==window['windowDeadlineMonotonicNs'] and row['parentDeadlineMonotonicNs']==window['parentDeadlineMonotonicNs'] and start<int(row['observedMonotonicNs'])<deadline<=parent==self.parent_deadline_ns and deadline-start<=int(WINDOW_SECONDS*1e9),'bounded single parent-owned mapping window required')
-                origin['fd']=window['fd'];self.active=dict(pid=row['pid'],originSequence=window['originSequence'],address=actual['result'],page=window['pageBytes'],span=rounded_span(actual['result'],1,window['pageBytes']),deadline=deadline,start=start,sequence=seq)
+                origin['fd']=window['fd'];self.active=dict(pid=row['pid'],originSequence=window['originSequence'],address=actual['result'],page=window['pageBytes'],length=origin['identity'][3] if self.model==MODEL else 1,span=rounded_span(actual['result'],origin['identity'][3] if self.model==MODEL else 1,window['pageBytes']),deadline=deadline,start=start,sequence=seq)
             elif op=='close':
                 need(row['result']==0 and row['fd']==window['fd'] and row['fdAbsenceErrno']==errno.ENOENT and row['identity']==window['identity'] and row['epochSequence']==self.active['sequence'],'actual FD close did not retain mapped object')
             elif op=='unmap':

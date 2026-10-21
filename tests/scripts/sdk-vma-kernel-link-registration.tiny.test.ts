@@ -5,7 +5,7 @@ import{sourceBindingKey as key,secondaryGitHubSourceBindingSelectors as secondar
 const sha=(value:Buffer|string)=>createHash('sha256').update(value).digest('hex'),groups={api,sdk,consumer,ci};
 test('SDK39 preserves all 206 actual prior whole recipes and binds exact kernel-link plus failure-only CMake helper bytes',()=>{
  for(const[name,values]of Object.entries(groups)){const old=before.hashes[name as keyof typeof before.hashes];for(let i=0;i<old.length;i++)expect(sha(JSON.stringify(values[i]))).toBe(old[i]!);}
- expect([api.length,sdk.length,consumer.length,ci.length,current.length]).toEqual([20,39,51,100,388]);
+ expect([api.length,sdk.length,consumer.length,ci.length,current.length]).toEqual([20,40,52,102,388]);
  for(const row of [...current,...sdk.at(-1)!.selectors,...sdk.at(-1)!.sourceBindings])expect(sha(fs.readFileSync(row.path))).toBe(row.sha256);
  expect(sdk.at(-1)!.sourceBindings.find(row=>row.path==='qlever/scripts/sdk-toolchain-materials.py')!.sha256).toBe('0cc20e6c0c589f6b3af8420a6aa230e65a39ca12f429bcba88e0578aeb02dee1');
 });

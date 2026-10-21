@@ -4,11 +4,13 @@ from pathlib import Path
 from unittest.mock import patch
 spec=importlib.util.spec_from_file_location('vma_files',Path(__file__).resolve().parents[1]/'scripts/sdk-generated-vma-originals.py');m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
 class Backend:
- def __init__(self,root):self.build=str(root);self.retained=set();self.tasks={10:{'entry':None,'exited':False}};self.seq=0;self.exclusive=None;self.originals={}
+ def __init__(self,root):self.maximum_file_bytes=1024**2;self.check=lambda:None;self.build=str(root);self.retained=set();self.tasks={10:{'entry':None,'exited':False}};self.seq=0;self.exclusive=None;self.originals={}
  def emit(self,row):self.seq+=1;return dict(row,sequence=self.seq)
  def barrier(self):return self.emit(dict(kind='all-stop-barrier',pids=[10],taskOwnership=[dict(tid=10,fdTable=10)]))
- def snapshot_write_original(self,fd,size):
-  data=os.pread(fd,size,0);ref=dict(path=str(len(self.originals)),bytes=len(data),sha256=hashlib.sha256(data).hexdigest());self.originals[ref['path']]=data;return ref
+ def snapshot_write_original(self,fd,size,offset=0):
+  data=os.pread(fd,size,offset);ref=dict(path=str(len(self.originals)),bytes=len(data),sha256=hashlib.sha256(data).hexdigest());self.originals[ref['path']]=data;return ref
+ def original_blocks(self,ref):
+  raw=self.originals[ref['path']];return (raw[i:i+65536] for i in range(0,len(raw),65536))
  def generated_fd_flags(self,pid,fd):return 2
 class Tests(unittest.TestCase):
  def setUp(self):
@@ -19,9 +21,63 @@ class Tests(unittest.TestCase):
   def opened(name,*args,**kwargs):return original_open(path if str(name)=='/proc/10/fd/'+str(fd) else name,*args,**kwargs)
   with patch.object(m.os,'open',side_effect=opened):row=self.r.finish(10,entry,dict(sequence=4,result=fd,isError=False))
   return path,fd,row
- def test_actual_create_and_zero_extension_same_held_fd(self):
+ def test_actual_create_retains_same_held_empty_fd(self):
   path,fd,row=self.create();origin=next(iter(self.r.origins.values()));self.assertEqual(origin['identity'],m.identity(os.fstat(fd)));self.assertEqual(self.b.originals[row['original']['path']],b'');self.assertIsNone(self.r.pending.get(10))
-  entry=dict(sequence=8,arch=0xc00000b7,nr=46,args=[fd,1,0,0,0,0]);self.b.tasks[10]['entry']=entry;self.r.pending[10]=dict(op='resize',origin=origin,fd=fd,window=dict(sequence=10));self.b.exclusive=(10,8);os.ftruncate(fd,1);result=self.r.finish(10,entry,dict(sequence=11,result=0,isError=False));self.assertEqual(self.b.originals[result['original']['path']],b'\0');self.assertEqual(origin['identity'],m.identity(os.fstat(fd)));self.assertEqual(len(self.b.retained),1)
+
+ def resize_control(self,arch,sizes,mutation=None):
+  path,fd,created=self.create();origin=next(iter(self.r.origins.values()));self.r.mm.domains={10:1};self.b.tool_metadata_bytes=4*1024**2;self.b.reserve_generated_bytes=lambda count:None;self.b.generated_fd_path=lambda *args:str(path);self.b.writable_aliases=lambda *args:[dict(pid=10,fd=fd,accessMode=2,flags=2)];self.b.tool_maps=lambda pid:(dict(original=dict(path='maps',bytes=0,sha256=hashlib.sha256(b'').hexdigest())),[])
+  proc=self.root/'resize-proc';proc.mkdir();(proc/'stat').write_bytes(b'10 (fixture) t '+b' '.join([b'0']*18+[b'123'])+b'\n');opened=m.os.open;statted=m.os.stat
+  def redirect(value):return proc if str(value)=='/proc/10' else path if str(value).startswith('/proc/10/fd/') else value
+  with patch.object(m.os,'open',side_effect=lambda value,*a,**kw:opened(redirect(value),*a,**kw)),patch.object(m.os,'stat',side_effect=lambda value,*a,**kw:statted(redirect(value),*a,**kw)):
+   for index,size in enumerate(sizes):
+    before=os.pread(fd,origin['identity'][3],0);start=20+index*50;entry=dict(sequence=start,arch=arch,nr=m.ABI[arch]['resize'],args=[fd,size,0,0,0,0]);self.b.tasks[10]['entry']=entry;self.b.seq=start;self.assertTrue(self.r.classify(10,entry,None));window=self.r.capture(10);self.b.exclusive=(10,start);os.ftruncate(fd,size)
+    if mutation=='body' and size:os.pwrite(fd,b'Q',0)
+    self.b.seq+=1;result=self.r.finish(10,entry,dict(sequence=self.b.seq,result=0,isError=False));expected=before[:size]+bytes(max(0,size-len(before)));self.assertEqual(self.b.originals[result['original']['path']],expected);self.assertEqual(origin['identity'],m.identity(os.fstat(fd)));self.assertEqual(self.b.originals[window['beforeOriginal']['path']],before)
+  return origin
+ def test_real_fd_resize_noop_shrink_regrow_zero_both_abis(self):
+  parent=self.root
+  for arch in m.ABI:
+   self.root=parent/str(arch);self.root.mkdir();self.b=Backend(self.root);self.r=m.Runtime(self.b);self.addCleanup(self.r.close);self.resize_control(arch,[0,1,4096,65537,1024,1024,0,7])
+ def test_resize_reservation_failure_happens_before_preimage_body_allocation(self):
+  actual=self.b.snapshot_write_original;calls=[]
+  self.b.snapshot_write_original=lambda *a,**kw:(calls.append(a[1]),actual(*a,**kw))[1]
+  # create retains its zero-byte original; reserve failure must precede every resize snapshot.
+  def denied(count):raise ValueError('remaining original ledger exhausted')
+  original=lambda count:None
+  # resize_control configures the callback, so wrap capture at its actual call boundary.
+  capture=self.r.capture
+  def guarded(pid):self.b.reserve_generated_bytes=denied;return capture(pid)
+  with patch.object(self.r,'capture',side_effect=lambda pid:capture(pid) if self.r.pending[pid]['op']=='create' else guarded(pid)):
+   with self.assertRaisesRegex(ValueError,'remaining original ledger'):self.resize_control(0xc00000b7,[4096])
+  self.assertEqual(calls,[0])
+ def test_resize_wrong_bytes_rejected_before_origin_update(self):
+  with self.assertRaises(ValueError):self.resize_control(0xc00000b7,[4096],mutation='body')
+ def test_existing_core_write_engine_advances_retained_origin_from_actual_full_projection(self):
+  spec=importlib.util.spec_from_file_location('epoch_core',Path(__file__).resolve().parents[1]/'scripts/sdk-ptrace-execution.py');core=importlib.util.module_from_spec(spec);spec.loader.exec_module(core)
+  path,fd,created=self.create();origin=next(iter(self.r.origins.values()));os.ftruncate(fd,7);origin.update(identity=m.identity(os.fstat(fd)),data=(7,hashlib.sha256(bytes(7)).hexdigest()))
+  self.b.generated_vma=self.r;self.b.write_states={};self.b.write_projections={};self.b.append_chains={};self.b.producers={};self.b.prepared_inputs={};self.b.sole_writer=lambda pid,selected,current:[dict(pid=pid,fd=selected)];self.b.fd_blocks=lambda held,size:(os.pread(held,min(65536,size-i),i) for i in range(0,size,65536));self.b.reserve_generated_bytes=lambda count:None
+  memory=self.root/'actual-buffer';memory.write_bytes(b'XY');entry=dict(kind='kernel-syscall',op='entry',pid=10,sequence=20,arch=0xc00000b7,nr=64,args=[fd,0,2,0,0,0]);self.b.tasks[10]['entry']=entry;self.r.record(entry);opened=core.os.open
+  def open_at(value,*a,**kw):return opened(path if str(value)=='/proc/10/fd/'+str(fd) else memory if str(value)=='/proc/10/mem' else value,*a,**kw)
+  with patch.object(self.r,'lookup_fd',return_value=origin),patch.object(core.os,'open',side_effect=open_at),patch.object(core,'fdpath',return_value=str(path)),patch.object(core,'descriptor_flags',return_value=2),patch.object(core,'descriptor_position',return_value=0):
+   window=core.Observer.capture_write(self.b,10,fd);self.b.exclusive=(10,20);os.pwrite(fd,b'XY',0)
+   original_stat=core.os.stat
+   with patch.object(core.os,'stat',side_effect=lambda value,*a,**kw:original_stat(path if str(value)=='/proc/10/fd/'+str(fd) else value,*a,**kw)):core.Observer.complete_write(self.b,10,entry,dict(sequence=30,result=2,isError=False))
+  self.assertFalse(origin['writePending']);self.assertEqual(origin['data'],(7,hashlib.sha256(b'XY'+bytes(5)).hexdigest()));self.assertEqual(origin['identity'],m.identity(os.fstat(fd)));self.assertEqual(self.b.originals[origin['original']['path']],b'XY'+bytes(5))
+  # A new bridge error remains primary even when its writer lease close fails.
+  entry['sequence']=40;self.r.record(entry);self.b.tasks[10]['entry']=entry
+  with patch.object(self.r,'lookup_fd',return_value=origin),patch.object(core.os,'open',side_effect=open_at),patch.object(core,'fdpath',return_value=str(path)),patch.object(core,'descriptor_flags',return_value=2),patch.object(core,'descriptor_position',return_value=0):window=core.Observer.capture_write(self.b,10,fd)
+  writer=self.b.tasks[10]['writeWindow'][1];self.b.exclusive=(10,40);primary=ValueError('actual bridge body failed');real_close=os.close
+  def failing_close(selected):
+   if selected==writer:raise OSError('writer cleanup failed')
+   return real_close(selected)
+  with patch.object(core.os,'stat',side_effect=lambda value,*a,**kw:original_stat(path if str(value)=='/proc/10/fd/'+str(fd) else value,*a,**kw)),patch.object(core,'descriptor_flags',return_value=2),patch.object(self.r,'snapshot',side_effect=primary),patch.object(core.os,'close',side_effect=failing_close):
+   with self.assertRaises(ValueError) as caught:core.Observer.complete_write(self.b,10,entry,dict(sequence=50,result=2,isError=False))
+  self.assertIs(caught.exception,primary);self.assertIn(writer,self.b.retained);self.assertEqual(len(self.r.cleanup_errors),1);real_close(writer);self.b.retained.remove(writer)
+  origin.update(identity=m.identity(os.fstat(fd)),data=(7,'0'*64));self.b.tasks[10]['entry']=entry
+  with patch.object(self.r,'lookup_fd',return_value=origin),patch.object(core.os,'open',side_effect=open_at),patch.object(core,'fdpath',return_value=str(path)),patch.object(core,'descriptor_flags',return_value=2),patch.object(core,'descriptor_position',return_value=0):
+   with self.assertRaisesRegex(AssertionError,'entire before bytes differ'):core.Observer.capture_write(self.b,10,fd)
+
+
  def test_create_postimage_failure_closes_only_its_owned_leases(self):
   with patch.object(self.b,'generated_fd_flags',return_value=0):
    with self.assertRaises(ValueError):self.create()
@@ -49,7 +105,7 @@ class Tests(unittest.TestCase):
   with self.assertRaises(ValueError):self.r.finish(10,entry,dict(sequence=11,result=0,isError=False))
   self.assertEqual(origin['identity'],before)
  def test_snapshot_rejects_large_or_changed_original(self):
-  path=self.root/'large';path.write_bytes(b'XX');fd=os.open(path,os.O_RDONLY);self.addCleanup(os.close,fd)
+  path=self.root/'large';path.write_bytes(bytes(self.b.maximum_file_bytes+1));fd=os.open(path,os.O_RDONLY);self.addCleanup(os.close,fd)
   with self.assertRaises(ValueError):self.r.snapshot(fd)
  def test_shared_mm_not_tgid_guess(self):
   mm=m.MemoryDomains();mm.record(dict(kind='owned-root-binding',pid=10,sequence=1));mm.record(dict(kind='actual-child-binding',parentPid=10,childPid=11,cloneFlags=0x100,sequence=2))
@@ -92,7 +148,7 @@ class Tests(unittest.TestCase):
     start=20+index*100;data=[b'X',b'Y'][index];entry=dict(sequence=start,arch=arch,nr=m.ABI[arch]['map'],args=[0,1,3,0x4001,selected,0]);self.b.tasks[10]['entry']=entry;self.b.seq=start;self.assertTrue(self.r.classify(10,entry,None));self.r.capture(10);self.b.exclusive=(10,start);state['mapped']=True
     if mutation=='body':os.pwrite(fd,b'Z',0)
     if mutation=='flags':self.b.generated_fd_flags=lambda *args:0
-    self.b.seq+=1;self.r.finish(10,entry,dict(sequence=self.b.seq,result=4096,isError=False));self.assertEqual(self.r.owner,10);self.assertEqual(reserved,[m.reservation_bytes(0,4*1024**2)]*(index+1))
+    self.b.seq+=1;self.r.finish(10,entry,dict(sequence=self.b.seq,result=4096,isError=False));self.assertEqual(self.r.owner,10);self.assertEqual(reserved,[m.reservation_bytes(0,4*1024**2,1,rebind and i>0) for i in range(index+1)])
     os.pwrite(fd,data,0);entry=dict(sequence=start+10,arch=arch,nr=m.ABI[arch]['unmap'],args=[4096,1,0,0,0,0]);self.b.tasks[10]['entry']=entry;self.b.seq=start+10;self.assertTrue(self.r.classify(10,entry,None));self.r.capture(10);self.b.exclusive=(10,start+10);state['mapped']=False;checkpoint=self.r.finish(10,entry,dict(sequence=start+15,result=0,isError=False));self.assertIsNone(self.r.owner);self.assertTrue(self.b.waiter.restored);self.assertEqual(self.b.originals[checkpoint['original']['path']],data);self.r.complete_phase()
     self.assertTrue(self.r.consumer(dict(sequence=start+20,path=str(path)),(1,hashlib.sha256(data).hexdigest()),m.identity(os.fstat(fd))))
    os.pwrite(fd,b'Z',0)
