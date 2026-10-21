@@ -61,7 +61,7 @@ class Tests(unittest.TestCase):
    with self.assertRaises(ValueError):m.verify_authority_syscall(arch,nr,args)
  def test_real_core_dispatch_uses_same_lease_and_exclusive_barriers_for_gid(self):
   for arch in [0xc000003e,0xc00000b7]:
-   rows=self.fixture(arch);entry=rows[6]['observation'];exit=rows[9]['observation'];o=object.__new__(backend.Observer);o.tasks={10:dict(stopped=False,exited=False,entry=None,initial=True)};o.process_authority=True;o.verified_setresuid_noop=False;o.verified_identity_noop=True;o.deny_optional_io_uring=False;o.exclusive=None;o.pausing=False;o.check=lambda:None;o.rows=[]
+   rows=self.fixture(arch);entry=rows[6]['observation'];exit=rows[9]['observation'];o=object.__new__(backend.Observer);o.generated_vma=None;o.generated_vma_output=False;o.tasks={10:dict(stopped=False,exited=False,entry=None,initial=True)};o.process_authority=True;o.verified_setresuid_noop=False;o.verified_identity_noop=True;o.deny_optional_io_uring=False;o.exclusive=None;o.pausing=False;o.check=lambda:None;o.rows=[]
    def emit(row):
     value=dict(row,sequence=len(o.rows)+5,phase='configure');o.rows.append(value);return value
    o.emit=emit;o.barrier=lambda:emit(dict(kind='all-stop-barrier',pids=[10],osStates=['t']))

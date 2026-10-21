@@ -14,7 +14,7 @@ const historicalKey=(row:{path:string;sha256:string;ref?:string})=>{if(row.ref!=
 const observed=(g:any)=>new Map([...g.selectors,...g.secondarySelectors??[]].map((row:any)=>[sourceBindingKey(row),row.sha256]));
 test('all complete SDK20 controller/API source sets survive with only their own already-required discriminator',()=>{
  for(const[groups,old]of[[CONSUMER,historical.consumer],[CI,historical.ci],[API,historical.api]]as const){
-  expect(groups.length).toBe(old.length+(groups===CI?74:groups===CONSUMER?37:15));
+  expect(groups.length).toBe(old.length+(groups===CI?76:groups===CONSUMER?38:15));
   for(const previous of old){
    const before=new Map(previous.selectors.map(row=>[historicalKey(row),row.sha256]));
    const matches=groups.filter(group=>JSON.stringify(group.selectors)===JSON.stringify(previous.selectors)&&hash(JSON.stringify(group.sourceBindings))===previous.sourceBindingsSha256);expect(matches).toHaveLength(1);const group=matches[0]!;
@@ -31,5 +31,5 @@ test('only minimal same-primary candidates fetch physical helper; all old global
  for(const group of API_WORKSPACE_SOURCE_GROUPS){const facts=observed(group);for(const role of secondaryGitHubSourceBindingSelectors(API,new Map(group.selectors.map(row=>[sourceBindingKey(row),row.sha256])))){const row=group.sourceBindings.find(row=>sourceBindingKey(row)===sourceBindingKey(role))!;facts.set(sourceBindingKey(role),row.sha256);}expect(selectGitHubSourceBindingGroup(API,facts)).toBe(group);facts.delete('source:'+role);expect(()=>selectGitHubSourceBindingGroup(API,facts)).toThrow();facts.set('source:'+role,'0'.repeat(64));expect(()=>selectGitHubSourceBindingGroup(API,facts)).toThrow();}
 });
 test('unified 362 original controller tree and selected API closure match every actual file byte',()=>{
- expect(current).toHaveLength(387);for(const row of [...current,...API_RECORDED_GITLINK_SOURCE_BINDINGS])expect(hash(fs.readFileSync(path.resolve(import.meta.dir,'../..',row.path)))).toBe(row.sha256);
+ expect(current).toHaveLength(388);for(const row of [...current,...API_RECORDED_GITLINK_SOURCE_BINDINGS])expect(hash(fs.readFileSync(path.resolve(import.meta.dir,'../..',row.path)))).toBe(row.sha256);
 });

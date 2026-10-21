@@ -54,7 +54,7 @@ class Tests(unittest.TestCase):
    with self.subTest(change=change),self.assertRaises((ValueError,KeyError)):self.inspect(rows)
 
  def test_actual_backend_captures_strict_exit_before_peer_barrier_and_actual_reap(self):
-  rows=self.fixture();observation=copy.deepcopy(rows[5]['observation']);o=object.__new__(backend.Observer);o.tasks={10:dict(stopped=False,exited=False,entry=None,initial=False)};o.process_authority=True;o.terminal_exit_evidence=True;o.capture_toolchain=False;o.shared_tasks=False;o.exclusive=None;o.root=10;o.current_phase='configure';o.wait_references=[];o.rows=[];o.check=lambda:None;o.tool_metadata_bytes=4194304;o.authority_handles=object();calls=[]
+  rows=self.fixture();observation=copy.deepcopy(rows[5]['observation']);o=object.__new__(backend.Observer);o.generated_vma=None;o.generated_vma_output=False;o.tasks={10:dict(stopped=False,exited=False,entry=None,initial=False)};o.process_authority=True;o.terminal_exit_evidence=True;o.capture_toolchain=False;o.shared_tasks=False;o.exclusive=None;o.root=10;o.current_phase='configure';o.wait_references=[];o.rows=[];o.check=lambda:None;o.tool_metadata_bytes=4194304;o.authority_handles=object();calls=[]
   def emit(row):
    value=dict(row,sequence=len(o.rows)+1,phase='configure');o.rows.append(value);return value
   o.emit=emit;o.tool_mountinfo_original=lambda *args:observation['authority']['mountinfoOriginal']
@@ -75,7 +75,7 @@ class Tests(unittest.TestCase):
   self.assertEqual(calls,['strict-own-exit-stop','peer-barrier','same-held-task-before-reap']);self.assertTrue(o.tasks[10]['exited']);self.assertTrue(o.tasks[10]['terminalAuthority']['lease'].closed)
   self.assertEqual([r['kind'] for r in o.rows],['ptrace-event','toolchain-terminal-authority','actual-wait-exit','all-stop-barrier','toolchain-terminal-authority-closed'])
  def test_late_exit_during_authority_barrier_closes_before_the_actual_resume(self):
-  o=object.__new__(backend.Observer);o.tasks={1:dict(stopped=True,exited=False,entry=None,initial=False,authorityPending=[('initial',None)]),2:dict(stopped=False,exited=False,entry=None,initial=False)}
+  o=object.__new__(backend.Observer);o.generated_vma=None;o.generated_vma_output=False;o.tasks={1:dict(stopped=True,exited=False,entry=None,initial=False,authorityPending=[('initial',None)]),2:dict(stopped=False,exited=False,entry=None,initial=False)}
   o.unknown_stops={};o.process_authority=True;o.terminal_exit_evidence=True;o.capture_toolchain=False;o.shared_tasks=False;o.exclusive=None;o.root=1;o.current_phase='configure';o.rows=[];o.check=lambda:None;o.tool_metadata_bytes=4194304;o.authority_handles=object();o.wait_references=[]
   def emit(row):
    value=dict(row,sequence=len(o.rows)+1,phase='configure');o.rows.append(value);return value
@@ -95,7 +95,7 @@ class Tests(unittest.TestCase):
   self.assertEqual(o.rows[3]['barrierSequence'],o.rows[2]['sequence']);self.assertEqual(o.rows[-1]['closeSequence'],o.rows[3]['sequence'])
 
  def test_z_without_prior_event_never_becomes_a_live_provider_or_fake_wait(self):
-  o=object.__new__(backend.Observer);o.tasks={10:dict(stopped=True,exited=False)}
+  o=object.__new__(backend.Observer);o.generated_vma=None;o.generated_vma_output=False;o.tasks={10:dict(stopped=True,exited=False)}
   with self.assertRaises(AssertionError),patch.object(backend.os,'waitpid',side_effect=AssertionError('no owned prior event')):o.reap_terminal_task(10)
 
  def test_terminal_resume_is_exact_signal_zero_unique_and_before_actual_wait(self):
@@ -110,7 +110,7 @@ class Tests(unittest.TestCase):
    elif change=='after-wait':rows[8],rows[9]=rows[9],rows[8];rows[8]['sequence']=9;rows[9]['sequence']=10
    with self.subTest(change=change),self.assertRaises(ValueError):self.inspect(rows)
  def test_real_resume_primitive_never_injects_a_signal_into_the_exit_task(self):
-  o=object.__new__(backend.Observer);o.exclusive=None;o.rows=[];terminal=dict(closed=True,original=dict(sequence=6),closedRow=dict(sequence=8));o.tasks={10:dict(stopped=True,exited=False,terminalAuthority=terminal)};o.emit=lambda row:o.rows.append(row)
+  o=object.__new__(backend.Observer);o.generated_vma=None;o.generated_vma_output=False;o.exclusive=None;o.rows=[];terminal=dict(closed=True,original=dict(sequence=6),closedRow=dict(sequence=8));o.tasks={10:dict(stopped=True,exited=False,terminalAuthority=terminal)};o.emit=lambda row:o.rows.append(row)
   with patch.object(backend,'state',return_value='t'),patch.object(backend.single,'trace') as trace:o.resume()
   trace.assert_called_once_with(backend.SYSCALL,10,0,0);self.assertEqual(o.rows[0]['signal'],0);self.assertFalse(o.tasks[10]['stopped'])
   o.tasks[10].update(stopped=True,signal=17)

@@ -12,7 +12,7 @@ ROOT=Path(__file__).resolve().parents[2]
 spec=importlib.util.spec_from_file_location('authority_entry_backend',ROOT/'qlever/scripts/sdk-ptrace-execution.py');m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
 class Tests(unittest.TestCase):
  def observer(self):
-  o=object.__new__(m.Observer);o.tasks={81:dict(stopped=False,exited=False,entry=None,initial=True,tgid=80)};o.root=80;o.current_phase='compile';o.process_authority=True;o.rows=[]
+  o=object.__new__(m.Observer);o.generated_vma=None;o.generated_vma_output=False;o.tasks={81:dict(stopped=False,exited=False,entry=None,initial=True,tgid=80)};o.root=80;o.current_phase='compile';o.process_authority=True;o.rows=[]
   def emit(row):
    row=dict(row,sequence=len(o.rows)+1);o.rows.append(row);return row
   o.emit=emit;return o

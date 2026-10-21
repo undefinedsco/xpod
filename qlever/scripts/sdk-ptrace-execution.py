@@ -26,6 +26,7 @@ bindings=load('multi_bindings',ROOT/'qlever/scripts/sdk-generation-multiprocess-
 single=load('sdk_ptrace_kernel',ROOT/'qlever/scripts/sdk-ptrace-kernel.py')
 owned_wait=load('owned_wait',ROOT/'qlever/scripts/sdk-blocking-owned-wait.py')
 tool_providers=load('tool_providers',ROOT/'qlever/scripts/sdk-tool-provider-originals.py')
+generated_vma_module=load('generated_vma_originals',ROOT/'qlever/scripts/sdk-generated-vma-originals.py')
 SEIZE=0x4206;INTERRUPT=0x4207;GETEVENTMSG=0x4201;SYSCALL=24;WALL=0x40000000
 OPTIONS=1|2|4|8|16|32|64|0x00100000
 MAX=16*1024**2
@@ -114,7 +115,7 @@ class BoundedPipePump:
         check();assert self.sha256 is not None,'actual stdio pipe did not close'
 
 class Observer:
-    def __init__(self,out,source,build,*,deadline_monotonic=None,check_budget=lambda:None,maximum_bytes=32*1024**2,maximum_file_bytes=1024**2,selected_names=SELECTED,maximum_processes=128,shard_bytes=None,require_success=True,maximum_stdio_bytes=None,shared_tasks=False,capture_toolchain=False,deny_optional_io_uring=False,verified_setresuid_noop=False,verified_identity_noop=False,terminal_exit_evidence=False):
+    def __init__(self,out,source,build,*,deadline_monotonic=None,check_budget=lambda:None,maximum_bytes=32*1024**2,maximum_file_bytes=1024**2,selected_names=SELECTED,maximum_processes=128,shard_bytes=None,require_success=True,maximum_stdio_bytes=None,shared_tasks=False,capture_toolchain=False,deny_optional_io_uring=False,verified_setresuid_noop=False,verified_identity_noop=False,terminal_exit_evidence=False,generated_vma_output=False):
         self.prepared_dependency_plan=None;self.dependency_roots={};self.dependency_cache=None
         self.shared_tasks=shared_tasks
         assert type(deny_optional_io_uring) is bool
@@ -130,6 +131,9 @@ class Observer:
         self.require_success=require_success;self.raw_bytes_completed=0;self.maximum_processes=maximum_processes;self.shard_bytes=shard_bytes
         self.deadline_monotonic=deadline_monotonic;self.check_budget=check_budget;self.maximum_bytes=maximum_bytes;self.maximum_file_bytes=maximum_file_bytes;self.selected_names=selected_names
         self.out=Path(out);self.capture_dir=self.out;self.source=str(source);self.build=str(build);self.tasks={};self.seq=0;self.records=[];self.captures=[];self.retained=set();self.producers={};self.write_states={};self.write_projections={};self.append_chains={};self.budget_context={};self.metadata_states=[];self.rename_records=[];self.consumers=[];self.raw=None;self.deadline=0;self.pausing=False;self.root=None;self.root_code=None;self.failures=[];self.current_phase=None;self.unknown_stops={};self.capture_bytes=0;self.exclusive=None;self.wait_references=[]
+        assert type(generated_vma_output) is bool and (not generated_vma_output or shared_tasks and capture_toolchain),'generated VMA requires existing actual shared-task/tool observation'
+        assert not generated_vma_output or self.build==generated_vma_module.BUILD_ROOT,'fixed generated output build root required'
+        self.generated_vma_output=generated_vma_output;self.generated_vma=generated_vma_module.Runtime(self) if generated_vma_output else None
     def dependency_mountinfo(self):
         with open('/proc/self/mountinfo','rb') as stream:data=stream.read(self.tool_metadata_bytes+1)
         assert len(data)<=self.tool_metadata_bytes,'dependency actual mountinfo byte bound';return data
@@ -229,19 +233,32 @@ class Observer:
     def claim(self,count,*,context=None):
         self.check_budget()
         with self.domain_lock:
-            if count<0 or self.domain_bytes+count>self.maximum_bytes:
+            generated=getattr(self,'generated_vma',None);reserved=generated.reserved if generated else 0;spend=min(count,reserved) if generated and generated.spending_thread==threading.get_ident() else 0
+            if count<0 or self.domain_bytes+reserved+count-spend>self.maximum_bytes:
                 diagnostic=dict(kind='execution-byte-bound',chargedBytes=self.domain_bytes,requestedBytes=count,maximumBytes=self.maximum_bytes,projectedBytes=self.domain_bytes+count,**(context or dict(role='other-execution-original')))
                 print('SDK_EXECUTION_BYTE_BOUND '+json.dumps(diagnostic,sort_keys=True),file=sys.stderr,flush=True)
                 raise AssertionError('shared execution original byte bound')
             self.domain_bytes+=count
+            if generated:generated.reserved-=spend
+    def reserve_generated_bytes(self,count):
+        self.check_budget()
+        with self.domain_lock:
+            assert self.generated_vma and type(count) is int and count>=0 and self.domain_bytes+self.generated_vma.reserved+count<=self.maximum_bytes,'same remaining execution ledger cannot reserve generated checkpoint'
+            self.generated_vma.reserved+=count
+    def generated_fd_flags(self,pid,fd):return descriptor_flags(pid,fd)
+    def generated_fd_path(self,pid,fd):return fdpath(pid,fd)
     def emit(self,row):
-        self.check();self.seq+=1;row=dict(row,sequence=self.seq,phase=self.current_phase,observedUnixNs=str(time.time_ns()));data=(json.dumps(row,sort_keys=True)+'\n').encode()
+        self.check();self.seq+=1;row=dict(row,sequence=self.seq,phase=self.current_phase,observedUnixNs=str(time.time_ns()),**(dict(observedMonotonicNs=str(time.monotonic_ns())) if getattr(self,'generated_vma_output',False) else {}));data=(json.dumps(row,sort_keys=True)+'\n').encode()
         assert len(data)<=65536,'actual raw record exceeds fixed range bound'
-        self.claim(len(data),context=dict(role='raw-record',rawKind=row['kind']));self.raw.write(data);self.raw.flush();return row
+        self.claim(len(data),context=dict(role='raw-record',rawKind=row['kind']));self.raw.write(data);self.raw.flush()
+        if self.generated_vma:self.generated_vma.record(row)
+        return row
     def wait_one(self):
         return self.waiter.wait_one()
     def check(self):
-        self.check_budget();assert not self.pump_errors,'actual bounded stdio failed: '+str(self.pump_errors);assert time.monotonic()<self.deadline,'all-stop observer deadline'
+        self.check_budget()
+        if hasattr(self,'waiter') and self.waiter.active:self.waiter.check()
+        assert not self.pump_errors,'actual bounded stdio failed: '+str(self.pump_errors);assert time.monotonic()<self.deadline,'all-stop observer deadline'
     def actual_tgid(self,pid):
         with open('/proc/'+str(pid)+'/status','rb') as source:data=source.read(65537)
         assert len(data)<=65536,'bounded actual task status'
@@ -367,34 +384,65 @@ class Observer:
             change=self.emit(dict(kind='actual-mode-transition',pid=pid,entrySequence=entry['sequence'],windowSequence=row['sequence'],exitSequence=exit['sequence'],afterIdentity=identity,result=exit['result'],isError=exit['isError']))
             self.metadata_states.append((row,change))
         finally:os.close(held);self.retained.remove(held)
+    def close_rename_leases(self,*descriptors):
+        primary=sys.exc_info()[1];failure=None
+        for fd in descriptors:
+            if fd is None:continue
+            try:os.close(fd)
+            except BaseException as error:
+                if failure is None:failure=error
+                continue # Still owned: outer cleanup can retry this descriptor.
+            try:self.retained.discard(fd)
+            except BaseException as error:
+                if failure is None:failure=error
+        if primary is None and failure is not None:raise failure
     def capture_rename(self,pid):
         barrier=self.barrier()
         if barrier['sequence']!=self.seq:barrier=self.barrier()
         assert barrier['sequence']==self.seq,'retained rename requires fresh final all-stop barrier'
         task=self.tasks[pid];old,new=task['rename'];entry=task['entry']
         assert old!=new and all(path.startswith(self.build+'/') and str(Path(path).resolve(strict=path==old))==path for path in [old,new]),'rename requires distinct canonical build paths'
-        assert retained_rename_path_absent(new),'retained rename destination already exists'
+        destination_absent=retained_rename_path_absent(new)
         source=probe.identity(os.stat(old,follow_symlinks=False));assert stat.S_ISREG(source[2])
         producer,retained,expected=self.producers[tuple(source[:2])];held=os.dup(retained);self.retained.add(held)
+        destination=None
         try:
             before=probe.identity(os.fstat(held));assert before==source,'rename source differs from retained producer FD'
             bindings.retained_metadata_chain(producer,dict(sequence=self.seq+1,path=old,identity=before),self.metadata_states)
             original=self.snapshot_write_original(held,before[3]);assert (original['bytes'],original['sha256'])==expected,'rename preimage bytes differ from producer'
-            assert before==probe.identity(os.fstat(held))==probe.identity(os.stat(old,follow_symlinks=False)) and retained_rename_path_absent(new),'rename preimage changed during all-stop capture'
-            row=self.emit(dict(kind='actual-rename-window',pid=pid,entrySequence=entry['sequence'],barrierSequence=barrier['sequence'],producerCaptureSequence=producer['sequence'],fromPath=old,toPath=new,beforeIdentity=before,namedIdentity=before,destinationAbsenceErrno=errno.ENOENT,beforeOriginal=original,leaseSequence=self.seq+1))
-            task['renameWindow']=(row,held,expected);held=None;return row
-        finally:
-            if held is not None:os.close(held);self.retained.remove(held)
+            destination_row=None
+            if not destination_absent:
+                named_destination=os.stat(new,follow_symlinks=False)
+                assert stat.S_ISREG(named_destination.st_mode) and named_destination.st_nlink==1,'rename replacement requires single-link regular named target'
+                destination=os.open(new,os.O_RDONLY|os.O_NONBLOCK|os.O_NOFOLLOW|os.O_CLOEXEC);self.retained.add(destination)
+                destination_stat=os.fstat(destination);destination_identity=probe.identity(destination_stat)
+                assert stat.S_ISREG(destination_identity[2]) and destination_stat.st_nlink==1 and destination_identity[:2]!=before[:2],'rename replacement requires distinct single-link regular target'
+                assert destination_identity==probe.identity(named_destination)==probe.identity(os.stat(new,follow_symlinks=False)),'rename replacement target changed before capture'
+                destination_original=self.snapshot_write_original(destination,destination_identity[3])
+                assert destination_identity==probe.identity(os.fstat(destination))==probe.identity(os.stat(new,follow_symlinks=False)) and os.fstat(destination).st_nlink==1,'rename replacement preimage changed during capture'
+                destination_row=dict(identity=destination_identity,namedIdentity=destination_identity,links=1,original=destination_original)
+            assert before==probe.identity(os.fstat(held))==probe.identity(os.stat(old,follow_symlinks=False)) and (retained_rename_path_absent(new) if destination_absent else destination_row['identity']==probe.identity(os.stat(new,follow_symlinks=False))),'rename preimage changed during all-stop capture'
+            row=self.emit(dict(kind='actual-rename-window',pid=pid,entrySequence=entry['sequence'],barrierSequence=barrier['sequence'],producerCaptureSequence=producer['sequence'],fromPath=old,toPath=new,beforeIdentity=before,namedIdentity=before,beforeOriginal=original,leaseSequence=self.seq+1,**({'destinationAbsenceErrno':errno.ENOENT} if destination_row is None else {'replacementBefore':destination_row})))
+            task['renameWindow']=(row,held,expected,destination);held=None;destination=None;return row
+        finally:self.close_rename_leases(held,destination)
     def complete_rename(self,pid,entry,exit):
-        row,held,expected=self.tasks[pid].pop('renameWindow')
+        row,held,expected,destination=self.tasks[pid].pop('renameWindow')
         try:
             assert self.exclusive==(pid,entry['sequence']) and exit['result']==0 and exit['isError'] is False,'retained rename lacks actual exclusive successful exit'
             after=probe.identity(os.fstat(held));assert after[:5]==row['beforeIdentity'][:5] and after==probe.identity(os.stat(row['toPath'],follow_symlinks=False)) and retained_rename_path_absent(row['fromPath']),'retained rename post namespace/identity differs'
             original=self.snapshot_write_original(held,after[3]);assert (original['bytes'],original['sha256'])==expected,'retained rename changed producer bytes'
             assert after==probe.identity(os.fstat(held))==probe.identity(os.stat(row['toPath'],follow_symlinks=False)) and retained_rename_path_absent(row['fromPath']),'retained rename postimage changed during capture'
-            change=self.emit(dict(kind='actual-rename-transition',pid=pid,entrySequence=entry['sequence'],windowSequence=row['sequence'],leaseSequence=row['leaseSequence'],exitSequence=exit['sequence'],afterIdentity=after,namedIdentity=after,afterOriginal=original,oldPathAbsent=True,oldPathAbsenceErrno=errno.ENOENT,result=exit['result'],isError=exit['isError']))
+            replacement_after=None
+            if destination is not None:
+                displaced=os.fstat(destination);displaced_identity=probe.identity(displaced);prior=row['replacementBefore']
+                assert displaced.st_nlink==0 and displaced_identity[:5]==prior['identity'][:5],'rename replacement displaced target identity/link changed'
+                displaced_original=self.snapshot_write_original(destination,displaced_identity[3])
+                assert (displaced_original['bytes'],displaced_original['sha256'])==(prior['original']['bytes'],prior['original']['sha256']) and displaced_identity==probe.identity(os.fstat(destination)) and os.fstat(destination).st_nlink==0,'rename replacement displaced bytes changed'
+                assert after==probe.identity(os.fstat(held))==probe.identity(os.stat(row['toPath'],follow_symlinks=False)) and retained_rename_path_absent(row['fromPath']),'rename replacement namespace changed during displaced capture'
+                replacement_after=dict(identity=displaced_identity,links=0,original=displaced_original)
+            change=self.emit(dict(kind='actual-rename-transition',pid=pid,entrySequence=entry['sequence'],windowSequence=row['sequence'],leaseSequence=row['leaseSequence'],exitSequence=exit['sequence'],afterIdentity=after,namedIdentity=after,afterOriginal=original,oldPathAbsent=True,oldPathAbsenceErrno=errno.ENOENT,result=exit['result'],isError=exit['isError'],**({} if replacement_after is None else {'replacementAfter':replacement_after})))
             self.metadata_states.append((row,change))
-        finally:os.close(held);self.retained.remove(held)
+        finally:self.close_rename_leases(held,destination)
     def snapshot_write_original(self,reader,size,*,offset=0):
         assert 0<=size<=self.maximum_file_bytes,'write original byte bound'
         name='capture-'+str(len(self.captures)).zfill(4)+'.original';count=0;digest=hashlib.sha256()
@@ -579,6 +627,7 @@ class Observer:
                 self.tasks[pid]['rwReadWindow']=(row,capture_fd,data,descriptor_position(pid,fd))
                 self.emit(dict(kind='actual-write-consumer-binding',captureSequence=row['sequence'],transitionSequence=transition['sequence'],path=target,identity=ident,readOffset=descriptor_position(pid,fd)))
             if role=='consumer' and not rw_read:
+                if self.generated_vma and self.generated_vma.consumer(row,data,ident):return row
                 original=self.producers.get(tuple(ident[:2]));prepared=False
                 if original is None:
                     original=self.prepared_inputs.get(target);prepared=original is not None
@@ -773,6 +822,7 @@ class Observer:
                     if int(mapping['startHex'],16)<end and int(mapping['endHex'],16)>begin:self.tool_mapping(pid,mapping,captured['sequence'],barrier['sequence'])
     def resume(self):
         for pid,row in list(self.tasks.items()):
+            if self.generated_vma and self.generated_vma.owner is not None and pid!=self.generated_vma.owner:continue
             if self.exclusive and pid!=self.exclusive[0]:continue
             if row.get('vforkHeldChild') is not None:continue
             if row['stopped'] and not row['exited']:
@@ -795,6 +845,12 @@ class Observer:
                 if task['exited']:terminal['lease'].close()
     def pending_captures(self):
         if self.exclusive:return
+        if self.generated_vma and self.generated_vma.owner is not None:
+            pid=self.generated_vma.owner;task=self.tasks[pid]
+            if task.get('capture'):
+                assert task.pop('capture')==(None,'generated-vma-before'),'unsupported capture while generated mapping dirty'
+                capture=self.generated_vma.capture(pid);task['entry']['captureSequence']=capture['sequence'];self.exclusive=(pid,task['entry']['sequence']);self.emit(dict(kind='exclusive-generated-vma-resume',pid=pid,entrySequence=task['entry']['sequence'],captureSequence=capture['sequence']))
+            return
         if getattr(self,'terminal_exit_evidence',False) and any(t.get('terminalAuthority') and not t['terminalAuthority']['closed'] for t in self.tasks.values()):
             self.close_terminal_authorities(self.barrier())
         while self.process_authority:
@@ -819,7 +875,7 @@ class Observer:
             pid,task=candidate;fd,role=task.pop('capture');
             if role!='writer-before':
                 self.barrier();self.checkpoint_appends('captured-access',task['entry']['sequence'])
-            capture=self.capture_rename(pid) if role=='rename-before' else self.capture_metadata(pid) if role=='metadata-before' else (self.capture_write(pid,fd) if role=='writer-before' else self.capture(pid,fd,role));task['entry']['captureSequence']=capture['sequence'];self.exclusive=(pid,task['entry']['sequence']);self.emit(dict(kind={'actual-write-window':'exclusive-write-resume','actual-mode-window':'exclusive-mode-resume','actual-rename-window':'exclusive-rename-resume','empty-read-window':'exclusive-empty-read-resume','alias-close-window':'exclusive-alias-close-resume'}.get(capture['kind'],'exclusive-captured-syscall-resume'),pid=pid,entrySequence=task['entry']['sequence'],captureSequence=capture['sequence']));break
+            capture=self.generated_vma.capture(pid) if role=='generated-vma-before' else self.capture_rename(pid) if role=='rename-before' else self.capture_metadata(pid) if role=='metadata-before' else (self.capture_write(pid,fd) if role=='writer-before' else self.capture(pid,fd,role));task['entry']['captureSequence']=capture['sequence'];self.exclusive=(pid,task['entry']['sequence']);self.emit(dict(kind={'generated-vma-operation-window':'exclusive-generated-vma-resume','actual-write-window':'exclusive-write-resume','actual-mode-window':'exclusive-mode-resume','actual-rename-window':'exclusive-rename-resume','empty-read-window':'exclusive-empty-read-resume','alias-close-window':'exclusive-alias-close-resume'}.get(capture['kind'],'exclusive-captured-syscall-resume'),pid=pid,entrySequence=task['entry']['sequence'],captureSequence=capture['sequence']));break
     def release_vfork_parent(self,child,event,reason):
         task=self.tasks[child];parent_pid=task.pop('vforkParent',None)
         if parent_pid is None:return
@@ -1028,6 +1084,7 @@ class Observer:
                         try:print('SDK_PROCESS_AUTHORITY_SYSCALL_DIAGNOSTIC_UNAVAILABLE '+type(diagnostic_error).__name__[:128],file=sys.stderr,flush=True)
                         except BaseException:pass
                     raise
+            if self.generated_vma and self.generated_vma.classify(pid,record,lambda dirfd,address:path_argument(pid,dirfd,address)):return
             if nr in [policy['clone'],policy['clone3']]:
                 flags=args[0] if nr==policy['clone'] else single.trace(2,pid,args[0])&((1<<64)-1)
                 task['observedCloneFlags']=flags
@@ -1090,6 +1147,8 @@ class Observer:
             old=task['entry']
             if old is None:assert task['initial'],'orphan syscall exit';task['initial']=False;return
             record['entrySequence']=old['sequence'];task['entry']=None
+            if self.generated_vma and pid in self.generated_vma.pending:
+                self.generated_vma.finish(pid,old,record);self.emit(dict(kind='exclusive-captured-syscall-exit',pid=pid,entrySequence=old['sequence'],result=record['result'],isError=record['isError']));self.exclusive=None;return
             transition=task.pop('setresuidTransition',None)
             if transition is not None:
                 try:
@@ -1197,10 +1256,11 @@ class Observer:
             for pump in pumps:pump.start()
             if self.process_authority:
                 os.close(ready_write);ready_write=None;self.check();remaining=max(0,self.deadline-time.monotonic());readable,_,_=select.select([ready_read],[],[],remaining);self.check();assert readable and os.read(ready_read,1)==b'R','child authority setup did not complete before release';os.close(ready_read);ready_read=None
-            self.emit(dict(kind='owned-root-binding',pid=child,command=command,backend='ptrace-all-stop-process-v1',**(dict(optionalIoUringModel='explicit-kernel-enosys-denial-v1') if self.deny_optional_io_uring else {}),**(dict(setresuidNoopModel='actual-stopped-setresuid-noop-v1') if self.verified_setresuid_noop else {}),**(dict(setresIdentityNoopModel='actual-stopped-setres-identity-noop-v1') if getattr(self,'verified_identity_noop',False) else {}),**(dict(processAuthorityModel=tool_providers.AUTHORITY_MODEL) if self.process_authority else {}),**(dict(exitAuthorityModel='actual-selected-exit-stop-before-peer-barrier-v1') if getattr(self,'terminal_exit_evidence',False) else {}),**(dict(taskOwnershipModel='all-tracked-tids-shared-fd-v1',tgid=child,fdTable=child) if self.shared_tasks else {})));single.trace(SEIZE,child,0,OPTIONS);single.trace(INTERRUPT,child);pid,status=self.wait_one();self.event(pid,status,False);self.pending_captures();os.write(write_fd,b'x');os.close(write_fd);write_fd=None;self.resume()
+            self.emit(dict(kind='owned-root-binding',pid=child,command=command,backend='ptrace-all-stop-process-v1',**(dict(generatedVmaModel=generated_vma_module.MODEL,generatedVmaBuildRoot=self.build,generatedVmaParentDeadlineMonotonicNs=str(int(self.waiter.parent_deadline*1e9))) if self.generated_vma else {}),**(dict(optionalIoUringModel='explicit-kernel-enosys-denial-v1') if self.deny_optional_io_uring else {}),**(dict(setresuidNoopModel='actual-stopped-setresuid-noop-v1') if self.verified_setresuid_noop else {}),**(dict(setresIdentityNoopModel='actual-stopped-setres-identity-noop-v1') if getattr(self,'verified_identity_noop',False) else {}),**(dict(processAuthorityModel=tool_providers.AUTHORITY_MODEL) if self.process_authority else {}),**(dict(exitAuthorityModel='actual-selected-exit-stop-before-peer-barrier-v1') if getattr(self,'terminal_exit_evidence',False) else {}),**(dict(taskOwnershipModel='all-tracked-tids-shared-fd-v1',tgid=child,fdTable=child) if self.shared_tasks else {})));single.trace(SEIZE,child,0,OPTIONS);single.trace(INTERRUPT,child);pid,status=self.wait_one();self.event(pid,status,False);self.pending_captures();os.write(write_fd,b'x');os.close(write_fd);write_fd=None;self.resume()
             while any(not r['exited'] for r in self.tasks.values()):
                 pid,status=self.wait_one();self.event(pid,status);self.pending_captures();self.resume()
             assert not any(task.get('vforkHeldChild') is not None for task in self.tasks.values()),'vfork child release/wait closure missing'
+            if self.generated_vma:self.generated_vma.complete_phase()
             self.checkpoint_appends('phase-final')
             for pump in pumps:pump.finish(self.check)
             if self.require_success:assert self.root_code==0,'actual observed root did not exit successfully'
@@ -1242,6 +1302,7 @@ class Observer:
         assert all(row['phase']==name for row in rows),'tool original belongs to another phase'
         return rows
     def close(self):
+        if getattr(self,'generated_vma',None):self.generated_vma.close()
         for task in getattr(self,'tasks',{}).values():
             transition=task.pop('setresuidTransition',None)
             if transition is not None:transition.close()
@@ -1275,7 +1336,7 @@ class SdkExecutionObserver(Observer):
         assert Path(source)==Path('/opt/qlever-sdk/source') and Path(build)==Path('/opt/qlever-sdk/build'),'fixed SDK source/build roots required'
         assert isinstance(deadline_monotonic,(float,int)) and math.isfinite(deadline_monotonic) and time.monotonic()<deadline_monotonic,'existing live SDK deadline required'
         super().__init__(out,source,build,deadline_monotonic=deadline_monotonic,check_budget=check_budget,maximum_bytes=maximum_bytes,
-            maximum_file_bytes=limits['shardBytes'],selected_names=None,maximum_processes=limits['sourceMembers'],shard_bytes=limits['shardBytes'],require_success=False,maximum_stdio_bytes=maximum_stdio_bytes,shared_tasks=True,capture_toolchain=True,deny_optional_io_uring=True,verified_identity_noop=True,terminal_exit_evidence=True)
+            maximum_file_bytes=limits['shardBytes'],selected_names=None,maximum_processes=limits['sourceMembers'],shard_bytes=limits['shardBytes'],require_success=False,maximum_stdio_bytes=maximum_stdio_bytes,shared_tasks=True,capture_toolchain=True,deny_optional_io_uring=True,verified_identity_noop=True,terminal_exit_evidence=True,generated_vma_output=True)
         self.capture_dir=self.out/'captures';self.capture_dir.mkdir(exist_ok=False);self.sdk_phase_index=0;self.sdk_failed=False
         mounts=Path('/proc/self/mountinfo').read_bytes();assert len(mounts)<=limits['metadataBytes'],'source provider metadata bound'
         self.source_provider=probe.effective_readonly(source,mounts);self.source_provider_originals=dict(mountinfo=probe.put(self.out/'source-provider.mountinfo.raw',mounts));self.claim(len(mounts))

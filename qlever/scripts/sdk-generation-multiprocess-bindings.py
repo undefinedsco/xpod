@@ -326,7 +326,7 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
     maximum_raw=limits['sourceMaterialBytes'] if limits else 32*1024**2
     maximum_file=limits['shardBytes'] if limits else 1024**2
     maximum_total=limits['sourceMaterialBytes'] if limits else 16*1024**2
-    original_cache={};retained_entries=set();phase_tracking=[]
+    original_cache={};retained_entries=set();phase_tracking=[];generated_verifier=None;generated_module=None
     denial_mode=False;denied_operations={};setresuid_mode=False;identity_mode=False;terminal_mode=False;setresuid_operations={}
     shared_mode=False;owners={};exec_fd_events={};vfork_events={};vfork_holds={};child_bindings={};wait_rows={}
     live=set();last=0;entries={};exits={};barriers={};caps={};paths={};renames=[];consumers=[];source_reads=[];total=0;capture_total=0;exclusive=None;root_codes={};clone_flags=set();clone_flag_values={}
@@ -450,6 +450,15 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                 need(dependency_expected_names is None or set(dependency_roots)==dependency_expected_names,'prepared dependency root universe is not completely registered');need(not live and not roots,'unique actual root required');live.add(row['pid']);roots.append(row['pid']);need(row['backend']=='ptrace-all-stop-process-v1','wrong observer backend')
                 need(row.get('taskOwnershipModel') in [None,'all-tracked-tids-shared-fd-v1'],'unknown task ownership model');shared_mode=row.get('taskOwnershipModel') is not None;owners={}
                 need(not denied_operations,'unclosed explicit syscall denial at new root');denial=row.get('optionalIoUringModel');need(denial in [None,'explicit-kernel-enosys-denial-v1'],'unknown optional syscall denial model');denial_mode=denial is not None
+                generated_model=row.get('generatedVmaModel')
+                if generated_model is not None:
+                    if generated_module is None:
+                        import importlib.util
+                        from pathlib import Path
+                        generated_spec=importlib.util.spec_from_file_location('generated_vma_replay',Path(__file__).with_name('sdk-generated-vma-originals.py'));generated_module=importlib.util.module_from_spec(generated_spec);generated_spec.loader.exec_module(generated_module)
+                    need(generated_model==generated_module.MODEL and row.get('generatedVmaBuildRoot')==generated_module.BUILD_ROOT and shared_mode,'unknown/unowned generated VMA model')
+                    if generated_verifier is None:generated_verifier=generated_module.Verifier(capture_data,tool_maps,limits.get('metadataBytes',4*1024**2) if limits else 4*1024**2)
+                else:need(generated_verifier is None,'generated VMA model changed across actual roots')
                 model=row.get('processAuthorityModel');need(model is None or model==provider_module().AUTHORITY_MODEL,'unknown process authority model');process_interval=provider_module().ProcessAuthorityInterval(row['pid']) if model is not None else None
                 need(not setresuid_operations,'unclosed setresuid transition at new root');uid_model=row.get('setresuidNoopModel');need(uid_model in [None,'actual-stopped-setresuid-noop-v1'],'unknown setresuid operation model');identity_model=row.get('setresIdentityNoopModel');need(identity_model in [None,'actual-stopped-setres-identity-noop-v1'] and not (identity_model and uid_model),'unknown or mixed identity operation model');identity_mode=identity_model is not None;setresuid_mode=uid_model is not None or identity_mode;need(not setresuid_mode or process_interval is not None,'setresuid model requires actual process authority interval')
                 terminal_model=row.get('exitAuthorityModel');need(terminal_model in [None,'actual-selected-exit-stop-before-peer-barrier-v1'],'unknown terminal authority model');terminal_mode=terminal_model is not None;need(not terminal_mode or process_interval is not None,'terminal model requires actual authority interval')
@@ -504,8 +513,18 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                 need(entry['nr']!=policy(entry['arch']).get('renameat2') or entry['args'][4]==0,'retained renameat2 flags unsupported')
                 need(paths.get(row['entrySequence'])==[row['fromPath'],row['toPath']] and row['fromPath']!=row['toPath'] and row['sequence'] not in rename_windows and row['leaseSequence']==row['sequence'],'retained rename paths/window/lease differs')
                 old,data=producer;close=exits.get(old['entrySequence']);before=row['beforeIdentity']
-                need(old['role']=='producer-close' and close and close['result']==0 and close['isError'] is False and len(before)==6 and before[:2]==old['identity'][:2] and before[3]==data[0] and row['namedIdentity']==before and row['destinationAbsenceErrno']==2 and type(row['destinationAbsenceErrno']) is int and capture_data(row['beforeOriginal'])==data,'retained rename preimage original differs')
-                need(row['barrierSequence']+1==write_original_sequences.get(tuple(row['beforeOriginal'][key] for key in ['path','bytes','sha256']),0)==row['sequence']-1,'retained rename preimage snapshot ordering differs')
+                need(old['role']=='producer-close' and close and close['result']==0 and close['isError'] is False and len(before)==6 and before[:2]==old['identity'][:2] and before[3]==data[0] and row['namedIdentity']==before and capture_data(row['beforeOriginal'])==data,'retained rename preimage original differs')
+                replacement=row.get('replacementBefore')
+                if replacement is None:
+                    need(row.get('destinationAbsenceErrno')==2 and type(row.get('destinationAbsenceErrno')) is int,'retained rename destination absence missing')
+                    snapshot_end=row['sequence']-1
+                else:
+                    need('destinationAbsenceErrno' not in row and type(replacement) is dict and set(replacement)=={'identity','namedIdentity','links','original'},'retained rename replacement preimage shape differs')
+                    target=replacement['identity'];need(type(target) is list and len(target)==6 and all(type(x) is int for x in target) and target==replacement['namedIdentity'] and target[:2]!=before[:2] and target[2]&0o170000==0o100000 and type(replacement['links']) is int and replacement['links']==1,'retained rename replacement target identity/link differs')
+                    target_data=capture_data(replacement['original']);need(target[3]==target_data[0] and replacement['original']['path']!=row['beforeOriginal']['path'],'retained rename replacement original differs')
+                    need(write_original_sequences.get(tuple(replacement['original'][key] for key in ['path','bytes','sha256']),0)==row['sequence']-1,'retained rename replacement snapshot ordering differs')
+                    snapshot_end=row['sequence']-2
+                need(row['barrierSequence']+1==write_original_sequences.get(tuple(row['beforeOriginal'][key] for key in ['path','bytes','sha256']),0)==snapshot_end,'retained rename preimage snapshot ordering differs')
                 retained_metadata_chain(old,dict(sequence=row['sequence'],path=row['fromPath'],identity=before),sorted([*mode_transitions.values(),*rename_transitions.values()],key=lambda pair:pair[1]['sequence']))
                 rename_windows[row['sequence']]=row;pending_rename_window=row['sequence'];retained_entries.add(row['entrySequence'])
             elif kind=='exclusive-rename-resume':
@@ -515,7 +534,19 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                 need(window and window['sequence'] not in rename_transitions and exclusive==(row['pid'],row['entrySequence']) and window['pid']==row['pid'] and window['entrySequence']==row['entrySequence'] and window['leaseSequence']==row['leaseSequence'] and exit and exit['sequence']==row['exitSequence'] and exit['result']==row['result']==0 and exit['isError'] is row['isError'] is False,'retained rename actual exit/lease differs')
                 before=window['beforeIdentity'];after=row['afterIdentity'];need(len(after)==6 and after[:5]==before[:5] and row['namedIdentity']==after and row['afterOriginal']['path']!=window['beforeOriginal']['path'] and row['oldPathAbsent'] is True and row['oldPathAbsenceErrno']==2 and type(row['oldPathAbsenceErrno']) is int and capture_data(row['afterOriginal'])==capture_data(window['beforeOriginal']),'retained rename changed bytes/identity/namespace')
                 need(row['exitSequence']<write_original_sequences.get(tuple(row['afterOriginal'][key] for key in ['path','bytes','sha256']),0)<row['sequence'],'retained rename postimage snapshot ordering differs')
+                replacement=window.get('replacementBefore');displaced=row.get('replacementAfter')
+                if replacement is None:need(displaced is None,'unexpected retained rename replacement completion')
+                else:
+                    need(type(displaced) is dict and set(displaced)=={'identity','links','original'},'retained rename replacement completion missing/shape differs')
+                    target=displaced['identity'];need(type(target) is list and len(target)==6 and all(type(x) is int for x in target) and target[:5]==replacement['identity'][:5] and type(displaced['links']) is int and displaced['links']==0,'retained rename displaced identity/link differs')
+                    need(displaced['original']['path'] not in [replacement['original']['path'],window['beforeOriginal']['path'],row['afterOriginal']['path']] and capture_data(displaced['original'])==capture_data(replacement['original']),'retained rename displaced original differs')
+                    need(write_original_sequences.get(tuple(row['afterOriginal'][key] for key in ['path','bytes','sha256']),0)==row['exitSequence']+1 and write_original_sequences.get(tuple(displaced['original'][key] for key in ['path','bytes','sha256']),0)==row['exitSequence']+2==row['sequence']-1,'retained rename displaced snapshot ordering differs')
                 rename_transitions[window['sequence']]=(window,row);active_rename['state']='completed'
+            elif kind=='exclusive-generated-vma-resume':
+                need(generated_verifier is not None and exclusive is None,'generated VMA exclusive operation model missing');exclusive=(row['pid'],row['entrySequence'])
+            elif kind in ['generated-vma-create-path','generated-vma-operation-window','generated-vma-selected-fd-binding','generated-vma-operation-exit','generated-vma-consumer-binding']:
+                need(generated_verifier is not None,'generated VMA original without explicit model')
+                if kind=='generated-vma-operation-window':retained_entries.add(row['entrySequence'])
             elif kind=='actual-mode-window':
                 entry=entries.get(row['entrySequence']);barrier=barriers.get(row['barrierSequence']);need(entry and barrier and entry['pid']==row['pid'] and row['pid'] in barrier['pids'],'actual chmod entry/barrier differs')
                 modes={0xc000003e:{90:1,91:1,268:2},0xc00000b7:{52:1,53:2}}[entry['arch']]
@@ -679,7 +710,8 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                         flags=row['args'][0]
                         if shared_mode:inspect_shared_clone_flags(flags)
                         else:need(not flags&(0x10000|0x400) and flags&~(0xff|0x100|0x4000|0x1000000|0x200000|0x100000000)==0,'unknown shared thread/FD clone')
-                    if row['nr']==rules['mmap']:need(not(row['args'][2]&2 and row['args'][3]&1),'shared writable mapping')
+                    if row['nr']==rules['mmap'] and row['args'][2]&2 and row['args'][3]&1:
+                        need(generated_verifier is not None and generated_verifier.allow_mapping_entry(row),'shared writable mapping');tool_pending.add('generated-shared-mapping-toolchain-source-authority-unverified')
                     if shared_mode:
                         need(not(row['nr']==436 and row['args'][2]&2),'unknown close_range UNSHARE table ownership')
                         if row['nr'] in ([59,322] if row['arch']==0xc000003e else [221,281]):need(row['pid']==owners[row['pid']]['tgid'],'nonleader exec TID replacement unsupported')
@@ -816,6 +848,7 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
             else:
                 need(row.get('pid') not in denied_operations,'signal or ptrace event interrupted explicit denial')
                 need(kind in ['ptrace-event','signal-delivery','generated-mmap-unverified'],'unknown raw observer event')
+            if generated_verifier is not None:generated_verifier.record(row,entries,exits,barriers,caps)
         need(not vfork_holds,'phase ended without vfork child release')
         need(not append_dirty,'phase ended without mandatory append full checkpoint')
         need(len(roots)==1 and not live and root_codes.get(roots[0])==0 and exclusive is None,'actual root/descendant wait closure incomplete')
@@ -870,6 +903,8 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
         if consumer is None:continue
         need(transition and consumer[0]['role']=='readwrite-consumer' and consumer[0]['identity']==transition['afterIdentity']==binding['identity'] and consumer[1]==((transition['after']['bytes'],transition['after']['sha256']) if 'path' not in transition['after'] else capture_data(transition['after'])) and consumer[0]['path']==binding['path'],'own-RW read lacks exact actual write byte provenance')
         cap,data=consumer;need(binding['readOffset']==write_read_exits[cap['sequence']]['readOffset'],'own-RW read offset binding differs');covered[cap['path']]=dict(path=cap['path'],bytes=data[0],sha256=data[1],writeTransitionSequence=transition['sequence'],consumerCaptureSequence=cap['sequence'],origin='actual-exclusive-write-transition')
+    mapped_outputs=generated_verifier.finish(caps,exits) if generated_verifier is not None else []
+    for mapped in mapped_outputs:covered[mapped['path']]=mapped
     prepared_covered={}
     for binding in prepared_consumers:
         consumer=successful.get(binding['captureSequence']);original=prepared.get(binding['producerCaptureSequence'])
@@ -888,5 +923,5 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
             actual=covered.get(path)
             if actual is None:pending.append('actual-successful-generated-consumer-missing:'+path)
             else:need(actual['bytes']==expected['bytes'] and actual['sha256']==expected['sha256'],'actual generated consumer differs from selected full-shard input')
-    return dict(schemaVersion=1,kind='all-stop-CMake-generated-byte-mechanics',selectedGeneratedConsumerByteCustodyVerified=not pending,outputs=sorted(covered.values(),key=lambda row:row['path']),observedSourceReadCaptures=len(source_reads),observedPreparedDependencyReadCaptures=dependency_reads,preparedDependencySourceAuthorityVerified=False,preparedDependencyPending=(['independent-FetchContent-dependency-stage-and-Git-or-URL-source-authority-unverified'] if dependency_roots else []),pending=pending,overallSdkSourceVerified=False,
+    return dict(schemaVersion=1,kind='all-stop-CMake-generated-byte-mechanics',observedGeneratedWritableMapCheckpoints=len(generated_verifier.checkpoints) if generated_verifier is not None else 0,generatedMappedConsumerByteCustodyVerified=bool(mapped_outputs),selectedGeneratedConsumerByteCustodyVerified=not pending,outputs=sorted(covered.values(),key=lambda row:row['path']),observedSourceReadCaptures=len(source_reads),observedPreparedDependencyReadCaptures=dependency_reads,preparedDependencySourceAuthorityVerified=False,preparedDependencyPending=(['independent-FetchContent-dependency-stage-and-Git-or-URL-source-authority-unverified'] if dependency_roots else []),pending=pending,overallSdkSourceVerified=False,
                 observedAliasOnlyCloses=len(alias_close_exits),observedActualModeTransitions=len(mode_transitions),observedNamedRetainedFdBindings=len(namespaces),observedActualWriteTransitions=len(write_transitions),observedEmptyReadEofWindows=len(empty_eofs),toolchainProcessAuthorityIntervals=process_intervals,toolchainProcessAuthorityIntervalVerified=bool(process_intervals) and all(row.get('model') is not None for row in process_intervals),toolchainProcessAuthorityPending=['toolchain-provider-namespace-external-writer-and-backing-snapshot-authority-unverified']+([] if process_intervals and all(row.get('model') is not None for row in process_intervals) else ['toolchain-owned-process-authority-interval-originals-unavailable']),toolchainFileSnapshots=list(tool_files.values()),toolchainOperationCoverage=tool_coverage.finish(sorted(tool_pending),sorted(tool_provider_pending)),toolchainActualExecImages=tool_execs,toolchainActualFileMappings=tool_mappings,toolchainObservationSha256=tool_digest.hexdigest(),toolchainStopProviderPending=sorted(tool_provider_pending),toolchainPending=sorted(tool_pending|tool_provider_pending|({'toolchain-executed-byte-immutability-and-full-source-authority-unverified'} if tool_execs else set())),toolchainSourceClosureVerified=False,preparedInputConsumers=list(prepared_covered.values()),preparedInputConsumerBytesVerified=bool(prepared_covered),phaseTracking=phase_tracking,scope='actual producer-close/rename/consumer bytes only; reviewed observer execution/Git/source/runtime authority independent')

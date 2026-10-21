@@ -1,20 +1,20 @@
 import copy,hashlib,importlib.util,json,unittest
 from pathlib import Path
 spec=importlib.util.spec_from_file_location('strict_rename',Path(__file__).resolve().parents[1]/'scripts/sdk-generation-multiprocess-bindings.py');m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
-def fixture():
+def fixture(replacement=False):
  rows=[];originals={};data=b'actual generated header';pre=[1,2,33188,len(data),4,5];ren=[1,2,33188,len(data),4,6];mode=[1,2,33261,len(data),4,7]
  def emit(kind,**fields):
   row=dict(kind=kind,phase='compile',sequence=len(rows)+1,**fields);rows.append(row);return row
  def entry(nr,args):return emit('kernel-syscall',pid=11,arch=0xc00000b7,op='entry',nr=nr,args=args)
  def exit(call,result):return emit('kernel-syscall',pid=11,arch=0xc00000b7,op='exit',entrySequence=call['sequence'],result=result,isError=False)
  def barrier():return emit('all-stop-barrier',pids=[10,11],osStates=['t','t'])
- def original():
-  name='capture-'+str(len(originals)).zfill(4)+'.original';originals[name]=data;ref=dict(path=name,bytes=len(data),sha256=hashlib.sha256(data).hexdigest());emit('write-original',original=ref);return ref
+ def original(payload=data):
+  name='capture-'+str(len(originals)).zfill(4)+'.original';originals[name]=payload;ref=dict(path=name,bytes=len(payload),sha256=hashlib.sha256(payload).hexdigest());emit('write-original',original=ref);return ref
  def capture(call,role,path,identity):
   b=barrier();ref=original();cap=emit('fd-capture',pid=11,fd=3,entrySequence=call['sequence'],role=role,path=path,identity=identity,barrierSequence=b['sequence'],writers=[dict(pid=11,fd=3)] if role=='producer-close' else [],original=ref);emit('exclusive-captured-syscall-resume',pid=11,entrySequence=call['sequence'],captureSequence=cap['sequence']);return cap
  emit('owned-root-binding',pid=10,backend='ptrace-all-stop-process-v1');emit('actual-child-binding',parentPid=10,childPid=11,event=1)
  close=entry(57,[3,0,0,0,0,0]);producer=capture(close,'producer-close','/build/temp',pre);exit(close,0);emit('exclusive-captured-syscall-exit',pid=11,entrySequence=close['sequence'],result=0,isError=False)
- rename=entry(38,[0,0,0,0,0,0]);emit('kernel-path-arguments',pid=11,entrySequence=rename['sequence'],renamePaths=['/build/temp','/build/final']);b=barrier();before=original();window=emit('actual-rename-window',pid=11,entrySequence=rename['sequence'],barrierSequence=b['sequence'],producerCaptureSequence=producer['sequence'],fromPath='/build/temp',toPath='/build/final',beforeIdentity=pre,namedIdentity=pre,destinationAbsenceErrno=2,beforeOriginal=before,leaseSequence=len(rows)+1);emit('exclusive-rename-resume',pid=11,entrySequence=rename['sequence'],captureSequence=window['sequence']);end=exit(rename,0);after=original();change=emit('actual-rename-transition',pid=11,entrySequence=rename['sequence'],windowSequence=window['sequence'],leaseSequence=window['sequence'],exitSequence=end['sequence'],afterIdentity=ren,namedIdentity=ren,afterOriginal=after,oldPathAbsent=True,oldPathAbsenceErrno=2,result=0,isError=False);emit('exclusive-captured-syscall-exit',pid=11,entrySequence=rename['sequence'],result=0,isError=False)
+ rename=entry(38,[0,0,0,0,0,0]);emit('kernel-path-arguments',pid=11,entrySequence=rename['sequence'],renamePaths=['/build/temp','/build/final']);b=barrier();before=original();target_before=original(b'old target') if replacement else None;window=emit('actual-rename-window',pid=11,entrySequence=rename['sequence'],barrierSequence=b['sequence'],producerCaptureSequence=producer['sequence'],fromPath='/build/temp',toPath='/build/final',beforeIdentity=pre,namedIdentity=pre,beforeOriginal=before,leaseSequence=len(rows)+1,**({'replacementBefore':dict(identity=[1,99,33188,10,8,9],namedIdentity=[1,99,33188,10,8,9],links=1,original=target_before)} if replacement else {'destinationAbsenceErrno':2}));emit('exclusive-rename-resume',pid=11,entrySequence=rename['sequence'],captureSequence=window['sequence']);end=exit(rename,0);after=original();target_after=original(b'old target') if replacement else None;change=emit('actual-rename-transition',pid=11,entrySequence=rename['sequence'],windowSequence=window['sequence'],leaseSequence=window['sequence'],exitSequence=end['sequence'],afterIdentity=ren,namedIdentity=ren,afterOriginal=after,oldPathAbsent=True,oldPathAbsenceErrno=2,result=0,isError=False,**({'replacementAfter':dict(identity=[1,99,33188,10,8,10],links=0,original=target_after)} if replacement else {}));emit('exclusive-captured-syscall-exit',pid=11,entrySequence=rename['sequence'],result=0,isError=False)
  chmod=entry(52,[3,0o755,0,0,0,0]);b=barrier();mw=emit('actual-mode-window',pid=11,path='/build/final',entrySequence=chmod['sequence'],barrierSequence=b['sequence'],beforeIdentity=ren,requestedMode=0o755);emit('exclusive-mode-resume',pid=11,entrySequence=chmod['sequence'],captureSequence=mw['sequence']);end=exit(chmod,0);mc=emit('actual-mode-transition',pid=11,entrySequence=chmod['sequence'],windowSequence=mw['sequence'],exitSequence=end['sequence'],afterIdentity=mode,result=0,isError=False);emit('exclusive-captured-syscall-exit',pid=11,entrySequence=chmod['sequence'],result=0,isError=False)
  read=entry(63,[3,0,100,0,0,0]);consumer=capture(read,'consumer','/build/final',mode);exit(read,len(data));emit('exclusive-captured-syscall-exit',pid=11,entrySequence=read['sequence'],result=len(data),isError=False);emit('retained-fd-namespace-binding',producerCaptureSequence=producer['sequence'],consumerCaptureSequence=consumer['sequence'],path='/build/final',namedIdentity=mode,retainedIdentity=mode,modeTransitions=[change['sequence'],mc['sequence']],metadataChainModel='actual-rename-mode-chain-v1');emit('generated-consumer-binding',captureSequence=consumer['sequence'],producerCaptureSequence=producer['sequence'],path='/build/final',identity=mode,retainedIdentity=mode);emit('actual-wait-exit',pid=11,returnCode=0);emit('actual-wait-exit',pid=10,returnCode=0)
  return rows,originals
@@ -29,6 +29,29 @@ def insert_row(rows,at,inserted):
   if 'modeTransitions' in row:row['modeTransitions']=[mapping[n] for n in row['modeTransitions']]
 
 class Tests(unittest.TestCase):
+ def test_replacement_originals_complete_raw_pair_both_abis(self):
+  for arch in [0xc00000b7,0xc000003e]:
+   rows,originals=fixture(True)
+   if arch==0xc000003e:
+    for r in rows:
+     if r['kind']=='kernel-syscall':
+      r['arch']=arch
+      if r['op']=='entry':r['nr']={57:3,38:82,52:91,63:0}[r['nr']]
+   self.assertEqual(len(observe(rows,originals)['outputs']),1)
+ def test_replacement_missing_mixed_link_identity_body_and_order_refuse(self):
+  for mutation in ['missing-before','missing-after','mixed-absent','links','inode','mode','size','body','same-ref','wrong-flags','missing-snapshot']:
+   with self.subTest(mutation=mutation):
+    rows,originals=fixture(True);w=next(r for r in rows if r['kind']=='actual-rename-window');a=next(r for r in rows if r['kind']=='actual-rename-transition')
+    if mutation=='missing-before':w.pop('replacementBefore')
+    elif mutation=='missing-after':a.pop('replacementAfter')
+    elif mutation=='mixed-absent':w['destinationAbsenceErrno']=2
+    elif mutation=='links':a['replacementAfter']['links']=1
+    elif mutation in ['inode','mode','size']:a['replacementAfter']['identity'][{'inode':1,'mode':2,'size':3}[mutation]]+=1
+    elif mutation=='body':ref=a['replacementAfter']['original'];originals[ref['path']]=b'x'*10;ref['sha256']=hashlib.sha256(b'x'*10).hexdigest()
+    elif mutation=='same-ref':a['replacementAfter']['original']=w['replacementBefore']['original']
+    elif mutation=='wrong-flags':r=next(r for r in rows if r['kind']=='kernel-syscall' and r.get('sequence')==w['entrySequence']);r['nr']=276;r['args'][4]=2
+    else:rows.remove(next(r for r in rows if r['kind']=='write-original' and r['original']==w['replacementBefore']['original']))
+    with self.assertRaises((ValueError,KeyError)):observe(rows,originals)
  def test_complete_raw_ref_chain(self):
   rows,originals=fixture();report=observe(rows,originals);self.assertEqual(len(report['outputs']),1);self.assertFalse(report['overallSdkSourceVerified'])
  def test_two_abi_tables_use_actual_entry_arch(self):

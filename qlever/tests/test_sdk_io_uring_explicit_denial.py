@@ -31,7 +31,7 @@ class Tests(unittest.TestCase):
   for arch in [0xc000003e,0xc00000b7]:
    for failure in [None,'success-return','signal','exec','changed-exe']:
     with self.subTest(arch=arch,failure=failure):
-     o=object.__new__(m.Observer);o.tasks={7:dict(stopped=False,exited=False,entry=None,initial=True)};o.root=7;o.current_phase='configure';o.deny_optional_io_uring=True;o.process_authority=True;o.rows=[]
+     o=object.__new__(m.Observer);o.generated_vma=None;o.generated_vma_output=False;o.tasks={7:dict(stopped=False,exited=False,entry=None,initial=True)};o.root=7;o.current_phase='configure';o.deny_optional_io_uring=True;o.process_authority=True;o.rows=[]
      def emit(row):
       value=dict(row,sequence=len(o.rows)+1);o.rows.append(value);return value
      o.emit=emit;exe=dict(identity=[1,2,0o100755,4,5,6],processStarttime=123);o.stopped_executable_diagnostic=lambda *_:dict(exe)
