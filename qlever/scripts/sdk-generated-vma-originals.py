@@ -20,6 +20,10 @@ LEGACY_MODEL='actual-generated-shared-vma-single-owner-v1'
 KERNEL_LINK_MODEL='actual-generated-shared-vma-single-owner-v2'
 MODEL='actual-generated-file-vma-single-owner-v3'
 COHORT_MODEL='actual-generated-file-vma-stopped-mm-cohort-v4'
+PRIVATE_WAKE_MODEL='actual-generated-file-vma-stopped-mm-cohort-private-wake-v5'
+COHORT_MODELS=(COHORT_MODEL,PRIVATE_WAKE_MODEL)
+WAKE_RAW_RECORDS=8
+WAKE_RESERVATION_BYTES=WAKE_RAW_RECORDS*65536
 CANONICAL_FILE_MAXIMUM=json.loads((Path(__file__).resolve().parents[2]/'scripts/lib/module-artifact-limits.json').read_bytes())['shardBytes']
 MAPPING_KIND='actual-exclusive-mmap-selected-file-v1'
 BUILD_ROOT='/opt/qlever-sdk/build'
@@ -27,7 +31,7 @@ FLAGS=0x4001  # Linux v6.12 UAPI: MAP_SHARED | MAP_NORESERVE; exact word only.
 PROTECTION=3
 WINDOW_SECONDS=1.0
 # One operation/ABI table, consumed by producer and independent replay.
-ABI={0xc000003e:dict(open=2,openat=257,resize=77,map=9,unmap=11,close=3,write=1),0xc00000b7:dict(open=None,openat=56,resize=46,map=222,unmap=215,close=57,write=64)}
+ABI={0xc000003e:dict(open=2,openat=257,resize=77,map=9,unmap=11,close=3,write=1,wake=202),0xc00000b7:dict(open=None,openat=56,resize=46,map=222,unmap=215,close=57,write=64,wake=98)}
 CREATE_REQUIRED=0x40|0x80
 CREATE_ALLOWED=3|CREATE_REQUIRED|0x80000|0x8000|0x20000
 
@@ -42,6 +46,19 @@ def absent(path):
 def operation(entry):
     need(entry.get('arch') in ABI and len(entry.get('args',[]))==6,'actual known ABI/six argument words required')
     rules=ABI[entry['arch']];return next((name for name,nr in rules.items() if nr is not None and nr==entry['nr']),None)
+def private_wake_dimensions(entry,active):
+    need(operation(entry)=='wake','actual futex ABI required')
+    args=entry['args'];need(all(type(word) is int and 0<=word<1<<64 for word in args),'canonical raw futex argument words required')
+    # Linux u32 val is passed to an int nr_wake. Reject truncation and the
+    # historical val=0 special behavior rather than interpreting it as no-op.
+    need(args[1]==129 and 1<=args[2]<=0x7fffffff,'only canonical positive FUTEX_WAKE_PRIVATE supported')
+    address=args[0];need(address>0 and address%4==0 and address+4<=1<<64,'naturally aligned finite private futex address required')
+    need(address+4<=active['address'] or address>=active['address']+active['span'],'private wake address overlaps generated output mapping')
+    return args[2]
+def private_wake_allowed(entry,active):
+    try:private_wake_dimensions(entry,active);return True
+    except (ValueError,KeyError,TypeError):return False
+
 def create_dimensions(entry):
     op=operation(entry);args=entry['args'];need(op in ['open','openat'],'actual create syscall required')
     flags=args[1] if op=='open' else args[2]
@@ -219,7 +236,8 @@ class MemoryDomains:
 
 class Runtime:
     def __init__(self,backend):
-        self.b=backend;self.model=COHORT_MODEL if getattr(backend,'generated_vma_shared_mm',False) else MODEL;self.mm=MemoryDomains();self.origins={};self.pending={};self.active=None;self.checkpoints={};self.reserved=0;self.metadata_bytes=0;self.spending_thread=None;self.cleanup_errors=[]
+        need(not getattr(backend,'generated_vma_private_wake',False) or getattr(backend,'generated_vma_shared_mm',False),'private wake requires existing stopped-MM model')
+        self.b=backend;self.model=PRIVATE_WAKE_MODEL if getattr(backend,'generated_vma_private_wake',False) else (COHORT_MODEL if getattr(backend,'generated_vma_shared_mm',False) else MODEL);self.mm=MemoryDomains();self.origins={};self.pending={};self.active=None;self.checkpoints={};self.reserved=0;self.metadata_bytes=0;self.spending_thread=None;self.cleanup_errors=[];self.wake_closing=None
     def cleanup_fds(self,fds):
         errors=[]
         for fd in dict.fromkeys(fd for fd in fds if fd is not None and fd in self.b.retained):
@@ -229,11 +247,16 @@ class Runtime:
         self.cleanup_errors.extend(errors)
         return errors
     def mapping_domain(self,pid,barrier=None):
-        return complete_memory_cohort(self.mm,pid,barrier) if self.model==COHORT_MODEL else (self.mm.unique(pid),[pid])
+        return complete_memory_cohort(self.mm,pid,barrier) if self.model in COHORT_MODELS else (self.mm.unique(pid),[pid])
     @property
     def owner(self):return self.active['pid'] if self.active is not None else None
     def record(self,row):
         self.mm.record(row);kind=row['kind']
+        if self.wake_closing is not None:
+            close=self.wake_closing
+            need(kind=='exclusive-captured-syscall-exit' and row['pid']==close['pid'] and row['entrySequence']==close['entrySequence'] and row['sequence']==close['entrySequence']+WAKE_RAW_RECORDS-1 and row['result']==close['result'] and row['isError'] is False,'private wake final exclusive close differs')
+            need(self.reserved>=close['baselineReserved'],'private wake raw reservation exhausted original closing share')
+            self.reserved=close['baselineReserved'];self.wake_closing=None
         if kind.startswith('generated-vma-') or kind=='exclusive-generated-vma-resume':
             self.metadata_bytes+=len(json.dumps(row,separators=(',',':')).encode());need(self.metadata_bytes<=4*1024**2,'shared generated metadata bound')
         if self.active is None and kind=='kernel-syscall' and row['op']=='entry' and operation(row) in ['close','write']:
@@ -245,12 +268,12 @@ class Runtime:
                     os.close(origin['held']);self.b.retained.remove(origin['held']);del self.origins[key]
         if self.active is not None:
             self.b.check();kind=row['kind']
-            if self.model==COHORT_MODEL:need(self.mapping_domain(self.owner)==(self.active['memoryDomain'],self.active['memoryDomainMembers']),'dirty mapping cohort changed')
+            if self.model in COHORT_MODELS:need(self.mapping_domain(self.owner)==(self.active['memoryDomain'],self.active['memoryDomainMembers']),'dirty mapping cohort changed')
             if kind in ['actual-child-binding','ptrace-event','signal-delivery','actual-wait-exit']:raise ValueError('generated VMA: unsupported event while finite mapping dirty')
             if kind=='kernel-syscall':
                 need(row['pid']==self.owner,'peer executed while generated mapping active')
                 if row['op']=='entry':
-                    allowed=operation(row) in ['close','unmap']
+                    allowed=operation(row) in ['close','unmap'] or self.model==PRIVATE_WAKE_MODEL and private_wake_allowed(row,self.active)
                     if not allowed:
                         try:dirty_syscall_rejection_diagnostic(row,self.active,self.owner)
                         except BaseException:pass
@@ -277,7 +300,11 @@ class Runtime:
     def classify(self,pid,entry,resolve):
         op=operation(entry);args=entry['args'];b=self.b
         if self.active is not None:
-            need(pid==self.owner and op in ['close','unmap'],'unsupported active mapping syscall')
+            need(pid==self.owner and (op in ['close','unmap'] or self.model==PRIVATE_WAKE_MODEL and private_wake_allowed(entry,self.active)),'unsupported active mapping syscall')
+            if op=='wake':
+                need(not self.pending and self.wake_closing is None,'prior private wake remains open');count=private_wake_dimensions(entry,self.active)
+                self.pending[pid]=dict(op='private-wake',origin=self.active['origin'],fd=None,wakeCount=count)
+                b.tasks[pid]['capture']=(None,'generated-vma-before');return True
             if op=='close':
                 origin=self.lookup_fd(pid,args[0]);need(origin is self.active['origin'],'only selected mapped backing FD may close')
             else:
@@ -321,7 +348,17 @@ class Runtime:
         ref=self.b.snapshot_write_original(fd,before[3]);need(before==identity(os.fstat(fd)),'generated original changed during capture');return before,ref
     def maps(self,pid):return self.b.tool_maps(pid)
     def capture(self,pid):
-        b=self.b;pending=self.pending[pid];op=pending['op'];entry=b.tasks[pid]['entry'];barrier=self.fresh_barrier();common=dict(kind='generated-vma-operation-window',operation=op,pid=pid,entrySequence=entry['sequence'],barrierSequence=barrier['sequence'])
+        b=self.b;pending=self.pending[pid];op=pending['op'];entry=b.tasks[pid]['entry']
+        if op=='private-wake':
+            need(self.model==PRIVATE_WAKE_MODEL and self.active is not None and pid==self.owner and self.spending_thread==threading.get_ident() and self.reserved>0,'private wake requires sole active cohort owner and retained closing reservation')
+            entry_bytes=len((json.dumps(entry,sort_keys=True)+'\n').encode());need(entry_bytes<=65536,'private wake actual entry raw bound')
+            baseline=self.reserved+entry_bytes;b.reserve_generated_bytes(WAKE_RESERVATION_BYTES);pending['baselineReserved']=baseline
+        barrier=self.fresh_barrier();common=dict(kind='generated-vma-operation-window',operation=op,pid=pid,entrySequence=entry['sequence'],barrierSequence=barrier['sequence'])
+        if op=='private-wake':
+            need(barrier['sequence']==entry['sequence']+1,'private wake entry must immediately reach fresh cohort barrier');domain,members=self.mapping_domain(pid,barrier)
+            need((domain,members)==(self.active['memoryDomain'],self.active['memoryDomainMembers']),'private wake pre-stop cohort changed')
+            common.update(originSequence=pending['origin']['sequence'],epochSequence=self.active['sequence'],memoryDomain=domain,memoryDomainMembers=members,wakeCount=private_wake_dimensions(entry,self.active),reservationBytes=WAKE_RESERVATION_BYTES)
+            row=b.emit(common);pending.update(window=row,preBarrier=barrier);return row
         if op=='create':
             path=pending['path'];parent=Path(path).parent;need(str(parent.resolve(strict=True))==str(parent) and absent(path),'actual fresh generated name required')
             held=os.open(parent,os.O_RDONLY|os.O_DIRECTORY|os.O_CLOEXEC|os.O_NOFOLLOW);b.retained.add(held);pending['parentFd']=held;need(identity(os.fstat(held))==identity(parent.lstat()),'same held/named create parent required');pending.update(parentFd=held,parentIdentity=identity(os.fstat(held)));common.update(path=path,parentIdentity=pending['parentIdentity'],nameAbsenceErrno=errno.ENOENT)
@@ -329,7 +366,7 @@ class Runtime:
             origin=pending['origin'];need(not origin.get('writePending'),'unverified write invalidated generated origin');held=origin['held'];current=identity(os.fstat(held));need(same_object(current,origin['identity']),'retained generated backing object changed')
             common.update(originSequence=origin['sequence'],path=origin['path'],identity=current,fd=pending['fd'])
             if op in ['resize','map']:
-                reserved=resize_reservation_bytes(current[3],entry['args'][1],len(barrier['pids'])-1,b.tool_metadata_bytes) if op=='resize' else (cohort_reservation_bytes(len(barrier['pids'])-1,len(self.mapping_domain(pid,barrier)[1])-1,b.tool_metadata_bytes,current[3],pending['fd']!=origin['fd']) if self.model==COHORT_MODEL else reservation_bytes(len(barrier['pids'])-1,b.tool_metadata_bytes,current[3],pending['fd']!=origin['fd']));b.reserve_generated_bytes(reserved);self.spending_thread=threading.get_ident();common.update(reservationBytes=reserved,metadataMaximumBytes=b.tool_metadata_bytes)
+                reserved=resize_reservation_bytes(current[3],entry['args'][1],len(barrier['pids'])-1,b.tool_metadata_bytes) if op=='resize' else (cohort_reservation_bytes(len(barrier['pids'])-1,len(self.mapping_domain(pid,barrier)[1])-1,b.tool_metadata_bytes,current[3],pending['fd']!=origin['fd']) if self.model in COHORT_MODELS else reservation_bytes(len(barrier['pids'])-1,b.tool_metadata_bytes,current[3],pending['fd']!=origin['fd']));b.reserve_generated_bytes(reserved);self.spending_thread=threading.get_ident();common.update(reservationBytes=reserved,metadataMaximumBytes=b.tool_metadata_bytes)
             if op in ['resize','map']:
                 need(current==origin['identity'] and current==identity(os.stat('/proc/'+str(pid)+'/fd/'+str(pending['fd']))),'generated preimage FD identity differs')
                 _,ref=self.snapshot(held);need((ref['bytes'],ref['sha256'])==origin['data'],'generated preimage bytes differ');common['beforeOriginal']=ref
@@ -353,13 +390,13 @@ class Runtime:
                 # its selected FD and all-peer no-existing-map guards below still apply.
                 if op=='map':
                     domain,cohort=self.mapping_domain(pid,barrier);pending.update(memoryDomain=domain,memoryDomainMembers=cohort)
-                    if self.model==COHORT_MODEL:common['memoryDomainMembers']=cohort
+                    if self.model in COHORT_MODELS:common['memoryDomainMembers']=cohort
                 aliases=b.writable_aliases(current,pid,pending['fd']);need(len(aliases)==1 and aliases[0]['pid']==pid and aliases[0]['fd']==pending['fd'],'mapped output has another writable FD alias')
                 maps,values=self.maps(pid);need(not matching_maps(values,current),'backing file already has VMA aliases')
-                for peer,task in (sorted(b.tasks.items()) if self.model==COHORT_MODEL else b.tasks.items()):
+                for peer,task in (sorted(b.tasks.items()) if self.model in COHORT_MODELS else b.tasks.items()):
                     if task['exited'] or peer==pid:continue
                     other,items=self.maps(peer);need(not matching_maps(items,current),'peer already maps output backing')
-                    if op=='map' and self.model==COHORT_MODEL and peer in cohort:need(numeric_mapping_geometry(items,b.check)==numeric_mapping_geometry(values,b.check),'same-MM pre-map numeric geometry differs')
+                    if op=='map' and self.model in COHORT_MODELS and peer in cohort:need(numeric_mapping_geometry(items,b.check)==numeric_mapping_geometry(values,b.check),'same-MM pre-map numeric geometry differs')
                     common.setdefault('peerMaps',[]).append(dict(pid=peer,original=other['original']))
                 common.update(beforeMapsOriginal=maps['original'],aliases=aliases)
                 if op=='map':
@@ -367,7 +404,7 @@ class Runtime:
                     common.update(pageBytes=page,memoryDomain=domain,windowDeadlineMonotonicNs=str(int(end*1e9)),parentDeadlineMonotonicNs=str(int(b.waiter.parent_deadline*1e9)))
             if op=='unmap':
                 current,ref=self.snapshot(held);maps,values=self.maps(pid);mapping=verify_established(values,self.active['address'],self.active['page'],current,self.active['length']);common.update(beforeOriginal=ref,beforeMapsOriginal=maps['original'],epochSequence=self.active['sequence'])
-                if self.model==COHORT_MODEL:
+                if self.model in COHORT_MODELS:
                     domain,cohort=self.mapping_domain(pid,barrier);need((domain,cohort)==(self.active['memoryDomain'],self.active['memoryDomainMembers']),'active mmap cohort changed before unmap');same=[]
                     for peer in cohort:
                         if peer==pid:continue
@@ -377,7 +414,13 @@ class Runtime:
     def finish(self,pid,entry,exit):
         b=self.b;pending=self.pending[pid];window=pending['window'];op=pending['op'];need(b.exclusive==(pid,entry['sequence']) and exit['result']>=0 and exit['isError'] is False,'actual exclusive successful operation exit required')
         common=dict(kind='generated-vma-operation-exit',operation=op,pid=pid,entrySequence=entry['sequence'],windowSequence=window['sequence'],exitSequence=exit['sequence'],result=exit['result'],isError=exit['isError'])
-        if op=='create':
+        if op=='private-wake':
+            need(self.model==PRIVATE_WAKE_MODEL and self.active is not None and exit['sequence']==entry['sequence']+4 and exit['result']<=private_wake_dimensions(entry,self.active),'actual private wake result differs')
+            barrier=self.fresh_barrier();need(barrier['sequence']==exit['sequence']+1 and barrier['pids']==pending['preBarrier']['pids'] and barrier.get('taskOwnership')==pending['preBarrier'].get('taskOwnership'),'private wake fresh post-stop ownership differs')
+            domain,members=self.mapping_domain(pid,barrier);need((domain,members)==(self.active['memoryDomain'],self.active['memoryDomainMembers']),'private wake post-stop cohort changed')
+            row=b.emit(dict(common,originSequence=pending['origin']['sequence'],epochSequence=self.active['sequence'],memoryDomain=domain,memoryDomainMembers=members,postBarrierSequence=barrier['sequence'],wakeCount=window['wakeCount']))
+            self.wake_closing=dict(pid=pid,entrySequence=entry['sequence'],baselineReserved=pending['baselineReserved'],result=exit['result'])
+        elif op=='create':
             parent=pending['parentFd'];held=None;registered=False
             try:
                 fd=exit['result'];held=os.open('/proc/'+str(pid)+'/fd/'+str(fd),os.O_RDONLY|os.O_CLOEXEC);b.retained.add(held);current,ref=self.snapshot(held)
@@ -414,7 +457,7 @@ class Runtime:
             evidence=dict(kind=MAPPING_KIND,linkBeforeSequence=first_link_row['sequence'],linkAfterSequence=last_link_row['sequence'],postBarrierSequence=barrier['sequence'],selectedFd=pending['fd'],selectedIdentity=current,retainedIdentity=identity(os.fstat(origin['held'])),namedIdentity=identity(os.stat(selected_path)),selectedFlags=pending['selectedFlags'],beforeOriginal=window['selectedOriginal'],postOriginal=first_body,confirmationOriginal=last_body,mapsConfirmationOriginal=confirmation['original'],linkBefore=first_link,linkAfter=last_link,procBefore=proc_first,procAfter=proc_last)
             end=pending['windowEnd'];token=pending['alarmToken']
             extra={}
-            if self.model==COHORT_MODEL:
+            if self.model in COHORT_MODELS:
                 domain,cohort=self.mapping_domain(pid,barrier);need((domain,cohort)==(pending['memoryDomain'],pending['memoryDomainMembers']),'actual mmap post-stop cohort differs');same=[]
                 for peer in cohort:
                     if peer==pid:continue
@@ -423,21 +466,21 @@ class Runtime:
             row=b.emit(dict(common,identity=current,kernelMappingEvidence=evidence,mapsOriginal=maps['original'],mapping=mapping,memoryDomain=self.mapping_domain(pid)[0],windowDeadlineMonotonicNs=str(int(end*1e9)),parentDeadlineMonotonicNs=str(int(b.waiter.parent_deadline*1e9)),**extra))
             primary=sys.exc_info()[1];errors=pending['procLease'].close()+self.cleanup_fds([pending['selectedHeld']]);need(not errors,'mmap lease cleanup failed');pending.pop('procLease');pending.pop('selectedHeld')
             origin['fd']=pending['fd'];self.active=dict(pid=pid,origin=origin,address=exit['result'],page=window['pageBytes'],length=current[3],span=rounded_span(exit['result'],current[3],window['pageBytes']),sequence=row['sequence'],token=token)
-            if self.model==COHORT_MODEL:self.active.update(memoryDomain=pending['memoryDomain'],memoryDomainMembers=pending['memoryDomainMembers'])
+            if self.model in COHORT_MODELS:self.active.update(memoryDomain=pending['memoryDomain'],memoryDomainMembers=pending['memoryDomainMembers'])
         elif op=='close':
             origin=pending['origin'];need(exit['result']==0 and absent('/proc/'+str(pid)+'/fd/'+str(pending['fd'])) and identity(os.fstat(origin['held']))==window['identity'],'actual FD close differs; mapping remains live')
             b.emit(dict(common,originSequence=origin['sequence'],fd=pending['fd'],fdAbsenceErrno=errno.ENOENT,identity=window['identity'],epochSequence=self.active['sequence']))
         elif op=='unmap':
             origin=pending['origin'];need(exit['result']==0,'actual whole unmap success required');post_extra={}
-            if self.model==COHORT_MODEL:
+            if self.model in COHORT_MODELS:
                 barrier=self.fresh_barrier();need(barrier['sequence']==exit['sequence']+1 and barrier['pids']==pending['preBarrier']['pids'] and barrier['taskOwnership']==pending['preBarrier']['taskOwnership'],'actual full-unmap fresh post-stop differs');domain,cohort=self.mapping_domain(pid,barrier);need((domain,cohort)==(self.active['memoryDomain'],self.active['memoryDomainMembers']),'actual full-unmap cohort changed');post_extra=dict(postBarrierSequence=barrier['sequence'],memoryDomainMembers=cohort)
             maps,values=self.maps(pid);need(not matching_maps(values,origin['identity']),'writable backing VMA alias remains')
             current,ref=self.snapshot(origin['held']);need(same_object(current,origin['identity']) and (ref['bytes'],ref['sha256'])==(window['beforeOriginal']['bytes'],window['beforeOriginal']['sha256']),'unmap changed backing object/bytes')
             peers=[]
-            for peer,task in (sorted(b.tasks.items()) if self.model==COHORT_MODEL else b.tasks.items()):
+            for peer,task in (sorted(b.tasks.items()) if self.model in COHORT_MODELS else b.tasks.items()):
                 if task['exited'] or peer==pid:continue
                 other,items=self.maps(peer);need(not matching_maps(items,current),'peer backing alias remained at checkpoint')
-                if self.model==COHORT_MODEL and peer in cohort:need(numeric_mapping_geometry(items,b.check)==numeric_mapping_geometry(values,b.check),'same-MM final VMA geometry differs')
+                if self.model in COHORT_MODELS and peer in cohort:need(numeric_mapping_geometry(items,b.check)==numeric_mapping_geometry(values,b.check),'same-MM final VMA geometry differs')
                 peers.append(dict(pid=peer,original=other['original']))
             row=b.emit(dict(common,path=origin['path'],identity=current,retainedIdentity=current,original=ref,afterMapsOriginal=maps['original'],afterPeerMaps=peers,epochSequence=self.active['sequence'],originSequence=origin['sequence'],**post_extra))
             token=self.active['token'];self.active=None;b.waiter.restore(token);self.reserved=0;self.spending_thread=None;origin.update(identity=current,data=(ref['bytes'],ref['sha256']),original=ref,checkpointed=True);self.checkpoints[tuple(current[:2])]=row
@@ -461,11 +504,11 @@ class Runtime:
 class Verifier:
     """Independent bounded raw/original replay; no caller Boolean approval."""
     def __init__(self,capture_data,maps_data,metadata_maximum=4*1024**2,model=LEGACY_MODEL,read_blocks=None,maximum_file=1024**2):
-        need(model in [LEGACY_MODEL,KERNEL_LINK_MODEL,MODEL,COHORT_MODEL],'unknown mapping evidence model');self.model=model;self.read_blocks=read_blocks;self.maximum_file=maximum_file
-        self.capture_data=capture_data;self.maps_data=maps_data;self.metadata_maximum=metadata_maximum;self.mm=MemoryDomains();self.windows={};self.origins={};self.original_sequences={};self.map_sequences={};self.map_owners={};self.pending_window=None;self.transaction=None;self.active=None;self.events={};self.checkpoints={};self.consumers=[];self.metadata_bytes=0;self.pending_mapping_entries=set();self.create_paths={};self.last_observed_ns=None;self.parent_deadline_ns=None;self.fd_bindings={}
+        need(model in [LEGACY_MODEL,KERNEL_LINK_MODEL,MODEL,COHORT_MODEL,PRIVATE_WAKE_MODEL],'unknown mapping evidence model');self.model=model;self.read_blocks=read_blocks;self.maximum_file=maximum_file
+        self.capture_data=capture_data;self.maps_data=maps_data;self.metadata_maximum=metadata_maximum;self.mm=MemoryDomains();self.windows={};self.origins={};self.original_sequences={};self.map_sequences={};self.map_owners={};self.pending_window=None;self.transaction=None;self.active=None;self.events={};self.checkpoints={};self.consumers=[];self.metadata_bytes=0;self.pending_mapping_entries=set();self.create_paths={};self.last_observed_ns=None;self.parent_deadline_ns=None;self.fd_bindings={};self.private_wakes=[]
     def original(self,reference):return self.capture_data(reference)
     def mapping_domain(self,pid,barrier=None):
-        return complete_memory_cohort(self.mm,pid,barrier) if self.model==COHORT_MODEL else (self.mm.unique(pid),[pid])
+        return complete_memory_cohort(self.mm,pid,barrier) if self.model in COHORT_MODELS else (self.mm.unique(pid),[pid])
     def verify_cohort_maps(self,rows,pid,members,owner_maps,barrier,sequence,identity=None,address=None,page=None,length=None):
         need(isinstance(rows,list) and [item['pid'] for item in rows]==[member for member in members if member!=pid],'exact ordered same-MM maps originals required')
         geometry=numeric_mapping_geometry(owner_maps,lambda:None)
@@ -474,11 +517,11 @@ class Verifier:
             maps=self.maps_data(item['original']);need(numeric_mapping_geometry(maps,lambda:None)==geometry,'same-MM numeric VMA geometry differs')
             if identity is not None:verify_established(maps,address,page,identity,length)
     def write_baseline(self,row,before):
-        need(self.model in [MODEL,COHORT_MODEL] and self.active is None,'generated write baseline model differs')
+        need(self.model in [MODEL,COHORT_MODEL,PRIVATE_WAKE_MODEL] and self.active is None,'generated write baseline model differs')
         origin=self.origins.get(row['baseline']);need(origin and origin['pid']==row['pid'] and origin['fd']==row['fd'] and origin['identity']==row['beforeIdentity'] and origin['data']==before and origin['path']==row['path'] and origin.get('writePending'),'generated write exact origin baseline missing')
         return origin
     def consume_write_bridge(self,row,window,transition):
-        need(self.model in [MODEL,COHORT_MODEL] and transition and window and transition['sequence']==row['transitionSequence'] and transition['windowSequence']==window['sequence']==row['windowSequence'] and row['pid']==window['pid'],'generated write bridge lacks verified sole write transition')
+        need(self.model in [MODEL,COHORT_MODEL,PRIVATE_WAKE_MODEL] and transition and window and transition['sequence']==row['transitionSequence'] and transition['windowSequence']==window['sequence']==row['windowSequence'] and row['pid']==window['pid'],'generated write bridge lacks verified sole write transition')
         origin=self.write_baseline(window,(window['before']['bytes'],window['before']['sha256']));need(transition['sequence']<self.original_sequences.get(self.key(row['original']),0)<row['sequence'] and row['originSequence']==window['baseline'] and row['identity']==transition['afterIdentity'] and self.original(row['original'])==(transition['after']['bytes'],transition['after']['sha256']) and transition.get('afterObservation') is None,'generated write bridge full checkpoint differs')
         self.origins[row['sequence']]=dict(origin,identity=row['identity'],data=self.original(row['original']),writePending=False,checkpointed=False);del self.origins[row['originSequence']]
     @staticmethod
@@ -501,7 +544,7 @@ class Verifier:
         for peer in peers:need(self.map_owners.get(self.key(peer['original']))==peer['pid'] and barrier['sequence']<self.map_sequences.get(self.key(peer['original']),0)<seq and not matching_maps(self.maps_data(peer['original']),origin['identity']),'resize has unobserved/aliased peer maps')
         aliases=row['aliases'];need(len(aliases)==1 and aliases[0]['pid']==row['pid'] and aliases[0]['fd']==row['fd'] and aliases[0]['accessMode']==2 and aliases[0]['flags']&3==2,'sole resize writable selected FD required')
     def allow_mapping_entry(self,row):
-        need(operation(row)=='map','actual mapping entry required');length=row['args'][1] if self.model in [MODEL,COHORT_MODEL] else 1
+        need(operation(row)=='map','actual mapping entry required');length=row['args'][1] if self.model in [MODEL,COHORT_MODEL,PRIVATE_WAKE_MODEL] else 1
         candidates=[value for value in self.origins.values() if value['pid']==row['pid'] and value['identity'][3]==length and length>0 and not value.get('writePending')]
         need(candidates,'actual created/resized selected mapping origin missing');map_dimensions(row,row['args'][4],length)
         # This only defers the raw entry. The later exclusive window must join
@@ -521,7 +564,7 @@ class Verifier:
         if self.active is None and kind=='kernel-syscall' and row['op']=='entry' and operation(row) in ['close','write']:
             for key,origin in list(self.origins.items()):
                 if origin['pid']==row['pid'] and origin['fd']==row['args'][0]:
-                    if self.model in [MODEL,COHORT_MODEL] and operation(row)=='write':
+                    if self.model in [MODEL,COHORT_MODEL,PRIVATE_WAKE_MODEL] and operation(row)=='write':
                         origin['writePending']=True
                         for checkpoint,value in list(self.checkpoints.items()):
                             if value['identity'][:2]==origin['identity'][:2]:del self.checkpoints[checkpoint]
@@ -538,17 +581,21 @@ class Verifier:
             if state=='resumed':
                 need(kind=='kernel-syscall' and row.get('op')=='exit' and row.get('pid')==self.transaction['pid'] and row.get('entrySequence')==self.transaction['entrySequence'],'foreign event during generated exclusive syscall');self.transaction['state']='exited'
             elif state=='exited':
-                allowed=['write-original','toolchain-original','generated-vma-operation-exit']
-                if self.model!=LEGACY_MODEL:allowed.append('generated-vma-kernel-link-original')
-                if self.model!=LEGACY_MODEL and (self.transaction['window']['operation']=='map' or self.model in [MODEL,COHORT_MODEL] and self.transaction['window']['operation']=='resize' or self.model==COHORT_MODEL and self.transaction['window']['operation']=='unmap') and seq==exits[self.transaction['entrySequence']]['sequence']+1:allowed=['all-stop-barrier']
-                need(kind in allowed,'event before generated postimage closure')
+                actual=exits[self.transaction['entrySequence']]
+                if self.transaction['window']['operation']=='private-wake':
+                    need(self.model==PRIVATE_WAKE_MODEL and ((seq==actual['sequence']+1 and kind=='all-stop-barrier') or (seq==actual['sequence']+2 and kind=='generated-vma-operation-exit')),'private wake post-stop/closure adjacency differs')
+                else:
+                    allowed=['write-original','toolchain-original','generated-vma-operation-exit']
+                    if self.model!=LEGACY_MODEL:allowed.append('generated-vma-kernel-link-original')
+                    if self.model!=LEGACY_MODEL and (self.transaction['window']['operation']=='map' or self.model in [MODEL,COHORT_MODEL,PRIVATE_WAKE_MODEL] and self.transaction['window']['operation']=='resize' or self.model in COHORT_MODELS and self.transaction['window']['operation']=='unmap') and seq==actual['sequence']+1:allowed=['all-stop-barrier']
+                    need(kind in allowed,'event before generated postimage closure')
             else:need(kind=='exclusive-captured-syscall-exit','generated operation close missing')
         if self.active is not None:
-            if self.model==COHORT_MODEL:need(self.mapping_domain(self.active['pid'])==(self.active['memoryDomain'],self.active['memoryDomainMembers']),'active mapping cohort membership changed')
+            if self.model in COHORT_MODELS:need(self.mapping_domain(self.active['pid'])==(self.active['memoryDomain'],self.active['memoryDomainMembers']),'active mapping cohort membership changed')
             if kind in ['actual-child-binding','ptrace-event','signal-delivery','actual-wait-exit']:raise ValueError('generated VMA: event while dirty mapping active')
             if kind=='kernel-syscall':
                 need(row['pid']==self.active['pid'],'peer ran while mapped output dirty')
-                if row['op']=='entry':need(operation(row) in ['close','unmap'],'unsupported active mapping syscall')
+                if row['op']=='entry':need(operation(row) in ['close','unmap'] or self.model==PRIVATE_WAKE_MODEL and private_wake_allowed(row,self.active),'unsupported active mapping syscall')
             now=row.get('observedMonotonicNs');need(isinstance(now,str) and now.isdecimal() and self.active['start']<=int(now)<self.active['deadline'],'finite mapping deadline absent/expired')
         if kind=='write-original':
             self.original_sequences[self.key(row['original'])]=seq
@@ -563,8 +610,13 @@ class Verifier:
             self.fd_bindings[seq]=row
         elif kind=='generated-vma-operation-window':
             need(self.transaction is None and self.pending_window is None,'overlapping generated operation');entry=entries.get(row['entrySequence']);barrier=barriers.get(row['barrierSequence']);need(entry and barrier and entry['pid']==row['pid'] and row['pid'] in barrier['pids'],'generated operation entry/actual all-stop missing');self.preimage_interval(row,barrier)
-            op=row['operation'];args=entry['args'];need(op==operation(entry) or op=='create' and operation(entry) in ['open','openat'],'generated operation ABI differs')
-            if op=='create':
+            op=row['operation'];args=entry['args'];need(op==operation(entry) or op=='create' and operation(entry) in ['open','openat'] or op=='private-wake' and self.model==PRIVATE_WAKE_MODEL and operation(entry)=='wake','generated operation ABI differs')
+            if op=='private-wake':
+                need(self.model==PRIVATE_WAKE_MODEL and self.active is not None and row['pid']==self.active['pid'] and barrier['sequence']==entry['sequence']+1 and seq==entry['sequence']+2,'private wake lacks adjacent entry/barrier/window')
+                domain,members=self.mapping_domain(row['pid'],barrier)
+                need((domain,members)==(self.active['memoryDomain'],self.active['memoryDomainMembers']) and row['memoryDomain']==domain and row['memoryDomainMembers']==members and row['epochSequence']==self.active['sequence'] and row['originSequence']==self.active['originSequence'],'private wake actual cohort/epoch differs')
+                need(row['wakeCount']==private_wake_dimensions(entry,self.active) and type(row['reservationBytes']) is int and row['reservationBytes']==WAKE_RESERVATION_BYTES,'private wake exact raw reservation or count differs')
+            elif op=='create':
                 path=self.create_paths.pop(entry['sequence'],None);need(path and path['path']==row['path'] and path['sequence']<barrier['sequence'],'actual generated create path original differs')
                 create_dimensions(entry);need(row['nameAbsenceErrno']==errno.ENOENT and type(row['nameAbsenceErrno']) is int and len(row['parentIdentity'])==6 and stat.S_ISDIR(row['parentIdentity'][2]),'generated create parent/actual absence required')
             else:
@@ -573,24 +625,24 @@ class Verifier:
                     need(row['identity']==origin['identity'] and self.original(row['beforeOriginal'])==origin['data'],'generated operation exact byte preimage differs')
                     if op=='resize':
                         need(args[0]==row['fd']==origin['fd'],'actual resize descriptor differs')
-                        if self.model in [MODEL,COHORT_MODEL]:
+                        if self.model in [MODEL,COHORT_MODEL,PRIVATE_WAKE_MODEL]:
                             need(type(args[1]) is int and 0<=args[1]<=self.maximum_file<=CANONICAL_FILE_MAXIMUM and row['reservationBytes']==resize_reservation_bytes(origin['identity'][3],args[1],len(barrier['pids'])-1,self.metadata_maximum),'bounded complete resize reservation differs')
                             self.verify_selected_window(row,origin,barrier,seq)
                         else:need(args[1]==1 and origin['identity'][3]==0,'only empty-to-one-byte extension required')
                 if op=='map':
                     need(entry['sequence'] in self.pending_mapping_entries,'mapping window has no admitted actual entry');self.pending_mapping_entries.remove(entry['sequence'])
-                    map_dimensions(entry,row['fd'],origin['identity'][3] if self.model in [MODEL,COHORT_MODEL] else 1)
+                    map_dimensions(entry,row['fd'],origin['identity'][3] if self.model in [MODEL,COHORT_MODEL,PRIVATE_WAKE_MODEL] else 1)
                     if row['fd']!=origin['fd']:
                         selected=self.fd_bindings.pop(row.get('selectedFdBindingSequence'),None);ownership=[item for item in barrier.get('taskOwnership',[]) if item['tid']==row['pid']]
                         need(selected and len(ownership)==1 and selected['pid']==row['pid'] and selected['entrySequence']==entry['sequence'] and selected['barrierSequence']==barrier['sequence'] and selected['originSequence']==row['originSequence'] and selected['selectedFd']==entry['args'][4]==row['fd'] and selected['previousFd']==origin['fd'] and selected['fdTable']==ownership[0]['fdTable'] and selected['identity']==selected['retainedIdentity']==selected['namedIdentity']==origin['identity'] and selected['path']==origin['path'] and selected['flags']&3==2 and self.original(selected['original'])==origin['data'] and barrier['sequence']<self.original_sequences.get(self.key(selected['original']),0)<selected['sequence']<seq,'actual selected descriptor lacks full retained-origin binding')
                     else:need('selectedFdBindingSequence' not in row,'unexpected selected descriptor rebinding')
-                    need((0<origin['identity'][3]<=self.maximum_file if self.model in [MODEL,COHORT_MODEL] else origin['identity'][3]==1) and self.mapping_domain(row['pid'])[0]==row['memoryDomain'],'unique actual one-byte mapping domain required');rounded_span(0,1,row['pageBytes']);need(not matching_maps(self.maps_data(row['beforeMapsOriginal']),origin['identity']),'existing own VMA alias')
+                    need((0<origin['identity'][3]<=self.maximum_file if self.model in [MODEL,COHORT_MODEL,PRIVATE_WAKE_MODEL] else origin['identity'][3]==1) and self.mapping_domain(row['pid'])[0]==row['memoryDomain'],'unique actual one-byte mapping domain required');rounded_span(0,1,row['pageBytes']);need(not matching_maps(self.maps_data(row['beforeMapsOriginal']),origin['identity']),'existing own VMA alias')
                     domain,members=self.mapping_domain(row['pid'],barrier)
-                    if self.model==COHORT_MODEL:need(row.get('memoryDomainMembers')==members,'map preimage cohort differs')
-                    peers=row.get('peerMaps',[]);need(row.get('metadataMaximumBytes')==self.metadata_maximum and row.get('reservationBytes')==(cohort_reservation_bytes(len(barrier['pids'])-1,len(members)-1,self.metadata_maximum,origin['identity'][3],row['fd']!=origin['fd']) if self.model==COHORT_MODEL else reservation_bytes(len(barrier['pids'])-1,self.metadata_maximum,origin['identity'][3],row['fd']!=origin['fd']) if self.model==MODEL else (kernel_link_reservation_bytes if self.model==KERNEL_LINK_MODEL else legacy_reservation_bytes)(len(barrier['pids'])-1,self.metadata_maximum)),'checkpoint reservation does not match canonical complete peer maps/raw bound');need(sorted(r['pid'] for r in peers)==sorted(p for p in barrier['pids'] if p!=row['pid']),'complete stopped peer maps required')
+                    if self.model in COHORT_MODELS:need(row.get('memoryDomainMembers')==members,'map preimage cohort differs')
+                    peers=row.get('peerMaps',[]);need(row.get('metadataMaximumBytes')==self.metadata_maximum and row.get('reservationBytes')==(cohort_reservation_bytes(len(barrier['pids'])-1,len(members)-1,self.metadata_maximum,origin['identity'][3],row['fd']!=origin['fd']) if self.model in COHORT_MODELS else reservation_bytes(len(barrier['pids'])-1,self.metadata_maximum,origin['identity'][3],row['fd']!=origin['fd']) if self.model==MODEL else (kernel_link_reservation_bytes if self.model==KERNEL_LINK_MODEL else legacy_reservation_bytes)(len(barrier['pids'])-1,self.metadata_maximum)),'checkpoint reservation does not match canonical complete peer maps/raw bound');need(sorted(r['pid'] for r in peers)==sorted(p for p in barrier['pids'] if p!=row['pid']),'complete stopped peer maps required')
                     for peer in peers:
                         need(self.map_owners.get(self.key(peer['original']))==peer['pid'] and barrier['sequence']<self.map_sequences.get(self.key(peer['original']),0)<seq and not matching_maps(self.maps_data(peer['original']),origin['identity']),'existing/unobserved peer backing map')
-                    if self.model==COHORT_MODEL:self.verify_cohort_maps([peer for peer in peers if peer['pid'] in members],row['pid'],members,self.maps_data(row['beforeMapsOriginal']),barrier,seq)
+                    if self.model in COHORT_MODELS:self.verify_cohort_maps([peer for peer in peers if peer['pid'] in members],row['pid'],members,self.maps_data(row['beforeMapsOriginal']),barrier,seq)
                     if self.model!=LEGACY_MODEL:
                         need(row['selectedIdentity']==origin['identity'] and row['selectedFlags']&3==2 and self.original(row['selectedOriginal'])==origin['data'] and barrier['sequence']<self.original_sequences.get(self.key(row['selectedOriginal']),0)<seq,'selected actual mmap FD original absent')
                         lease=row['procLease'];need(proc_identity(raw_bytes(lease['statOriginal']),row['pid'])==int(lease['starttime']) and len(lease['directoryIdentity'])==len(lease['statIdentity'])==6 and stat.S_ISDIR(lease['directoryIdentity'][2]) and stat.S_ISREG(lease['statIdentity'][2]),'entry proc lease malformed')
@@ -600,7 +652,7 @@ class Verifier:
                     if op=='close':need(row['fd']==args[0],'actual selected close FD differs')
                     else:
                         need(args[0]==self.active['address'] and rounded_span(args[0],args[1],self.active['page'])==self.active['span'],'partial/foreign munmap unsupported');verify_established(self.maps_data(row['beforeMapsOriginal']),self.active['address'],self.active['page'],row['identity'],self.active['length']);need(self.original(row['beforeOriginal'])[0]==self.active['length'],'actual complete unmap preimage required')
-                        if self.model==COHORT_MODEL:
+                        if self.model in COHORT_MODELS:
                             domain,members=self.mapping_domain(row['pid'],barrier);need(domain==self.active['memoryDomain'] and members==self.active['memoryDomainMembers'] and row.get('memoryDomainMembers')==members,'pre-unmap cohort changed');self.verify_cohort_maps(row.get('sameMemoryDomainMaps'),row['pid'],members,self.maps_data(row['beforeMapsOriginal']),barrier,seq,row['identity'],self.active['address'],self.active['page'],self.active['length'])
             self.windows[seq]=row;self.pending_window=seq
         elif kind=='exclusive-generated-vma-resume':
@@ -608,12 +660,18 @@ class Verifier:
         elif kind=='generated-vma-operation-exit':
             transaction=self.transaction;need(transaction and transaction['state']=='exited','generated postimage outside exclusive exit');window=transaction['window'];entry=entries[window['entrySequence']];actual=exits.get(window['entrySequence']);op=window['operation']
             need(row['windowSequence']==window['sequence'] and row['operation']==op and row['pid']==window['pid'] and row['entrySequence']==entry['sequence'] and actual and actual['sequence']==row['exitSequence'] and actual['result']==row['result'] and actual['isError'] is row['isError'] is False and actual['result']>=0,'generated actual syscall exit differs')
-            if op=='create':
+            if op=='private-wake':
+                need(self.model==PRIVATE_WAKE_MODEL and self.active is not None and actual['sequence']==entry['sequence']+4 and actual['result']<=private_wake_dimensions(entry,self.active),'private wake actual result differs')
+                post=barriers.get(row.get('postBarrierSequence'));pre=barriers[window['barrierSequence']]
+                need(post and post['sequence']==actual['sequence']+1 and seq==actual['sequence']+2 and post['pids']==pre['pids'] and post.get('taskOwnership')==pre.get('taskOwnership'),'private wake fresh post-stop/ownership missing')
+                domain,members=self.mapping_domain(row['pid'],post)
+                need((domain,members)==(self.active['memoryDomain'],self.active['memoryDomainMembers']) and row['memoryDomain']==domain and row['memoryDomainMembers']==members and row['wakeCount']==window['wakeCount'] and row['epochSequence']==window['epochSequence']==self.active['sequence'] and row['originSequence']==window['originSequence']==self.active['originSequence'],'private wake closure cohort/epoch differs')
+            elif op=='create':
                 current=row['identity'];need(row['path']==window['path'] and row['fd']==actual['result'] and len(current)==6 and stat.S_ISREG(current[2]) and current[3]==0 and self.original(row['original'])==(0,hashlib.sha256(b'').hexdigest()) and row['parentIdentity'][:3]==window['parentIdentity'][:3] and type(row['fdFlags']) is int and row['fdFlags']&3==2,'actual generated empty create differs')
                 self.origins[seq]=dict(pid=row['pid'],identity=current,path=row['path'],data=self.original(row['original']),fd=row['fd'])
             elif op=='resize':
                 origin=self.origins[window['originSequence']];current=row['identity'];need(row['result']==0 and row['originSequence']==window['originSequence'] and current[:3]==origin['identity'][:3],'actual resize object/exit differs')
-                if self.model in [MODEL,COHORT_MODEL]:
+                if self.model in [MODEL,COHORT_MODEL,PRIVATE_WAKE_MODEL]:
                     actual_size=entry['args'][1];need(current[3]==actual_size and self.read_blocks is not None,'actual complete resize length/reader required');post=barriers.get(row['postBarrierSequence']);pre=barriers[window['barrierSequence']]
                     need(post and post['sequence']==actual['sequence']+1 and post['pids']==pre['pids'] and post.get('taskOwnership')==pre.get('taskOwnership') and row['selectedFlags']==window['selectedFlags'],'actual resize post-stop differs')
                     before=window['procLease'];sample=row['procAfter'];need(sample['directoryIdentity']==before['directoryIdentity'] and sample['statIdentity']==before['statIdentity'] and sample['starttime']==before['starttime'] and proc_identity(raw_bytes(sample['statOriginal']),row['pid'])==int(before['starttime']),'resize held proc lifetime differs')
@@ -622,7 +680,7 @@ class Verifier:
                 else:need(origin['identity'][3]==0 and current[3]==1 and self.original(row['original'])==(1,hashlib.sha256(b'\0').hexdigest()),'actual zero-extension bytes differ')
                 self.origins[seq]=dict(origin,identity=current,data=self.original(row['original']));del self.origins[window['originSequence']]
             elif op=='map':
-                origin=self.origins[window['originSequence']];mapping=verify_established(self.maps_data(row['mapsOriginal']),actual['result'],window['pageBytes'],origin['identity'],origin['identity'][3] if self.model in [MODEL,COHORT_MODEL] else 1);need(row['mapping']==mapping and row['identity']==origin['identity'] and row['memoryDomain']==self.mapping_domain(row['pid'])[0],'actual mmap backing/domain differs')
+                origin=self.origins[window['originSequence']];mapping=verify_established(self.maps_data(row['mapsOriginal']),actual['result'],window['pageBytes'],origin['identity'],origin['identity'][3] if self.model in [MODEL,COHORT_MODEL,PRIVATE_WAKE_MODEL] else 1);need(row['mapping']==mapping and row['identity']==origin['identity'] and row['memoryDomain']==self.mapping_domain(row['pid'])[0],'actual mmap backing/domain differs')
                 if self.model==LEGACY_MODEL:need('kernelMappingEvidence' not in row and row['mapFilesIdentity']==origin['identity'],'legacy actual map-files fstat required')
                 else:
                     need('mapFilesIdentity' not in row,'legacy fstat cannot masquerade as kernel mapping evidence');proof=row['kernelMappingEvidence'];post=barriers.get(proof['postBarrierSequence']);pre=barriers[window['barrierSequence']]
@@ -639,16 +697,16 @@ class Verifier:
                         need(sample['kind']=='generated-vma-kernel-link-original' and sample['pid']==row['pid'] and sample['entrySequence']==entry['sequence'] and sample['postBarrierSequence']==post['sequence'] and sample['mapsOriginal']==ref and sample['range']==[mapping['startHex'],mapping['endHex']] and sample['link']==link and sample['procLease']==proc,'kernel link raw sample differs')
                     for sample in [proof['procBefore'],proof['procAfter']]:
                         before=window['procLease'];need(sample['directoryIdentity']==before['directoryIdentity'] and sample['statIdentity']==before['statIdentity'] and sample['starttime']==before['starttime'] and proc_identity(raw_bytes(sample['statOriginal']),row['pid'])==int(before['starttime']),'actual held proc lifetime differs')
-                if self.model==COHORT_MODEL:
+                if self.model in COHORT_MODELS:
                     domain,members=self.mapping_domain(row['pid'],post);need(row.get('memoryDomainMembers')==window['memoryDomainMembers']==members and domain==window['memoryDomain'],'post-map cohort changed');self.verify_cohort_maps(row.get('postMapPeerMaps'),row['pid'],members,self.maps_data(row['mapsOriginal']),post,seq,origin['identity'],actual['result'],window['pageBytes'],origin['identity'][3])
                 start=int(window['observedMonotonicNs']);deadline=int(window['windowDeadlineMonotonicNs']);parent=int(window['parentDeadlineMonotonicNs']);need(row['windowDeadlineMonotonicNs']==window['windowDeadlineMonotonicNs'] and row['parentDeadlineMonotonicNs']==window['parentDeadlineMonotonicNs'] and start<int(row['observedMonotonicNs'])<deadline<=parent==self.parent_deadline_ns and deadline-start<=int(WINDOW_SECONDS*1e9),'bounded single parent-owned mapping window required')
-                origin['fd']=window['fd'];self.active=dict(pid=row['pid'],originSequence=window['originSequence'],address=actual['result'],page=window['pageBytes'],length=origin['identity'][3] if self.model in [MODEL,COHORT_MODEL] else 1,span=rounded_span(actual['result'],origin['identity'][3] if self.model in [MODEL,COHORT_MODEL] else 1,window['pageBytes']),deadline=deadline,start=start,sequence=seq)
-                if self.model==COHORT_MODEL:self.active.update(memoryDomain=window['memoryDomain'],memoryDomainMembers=window['memoryDomainMembers'])
+                origin['fd']=window['fd'];self.active=dict(pid=row['pid'],originSequence=window['originSequence'],address=actual['result'],page=window['pageBytes'],length=origin['identity'][3] if self.model in [MODEL,COHORT_MODEL,PRIVATE_WAKE_MODEL] else 1,span=rounded_span(actual['result'],origin['identity'][3] if self.model in [MODEL,COHORT_MODEL,PRIVATE_WAKE_MODEL] else 1,window['pageBytes']),deadline=deadline,start=start,sequence=seq)
+                if self.model in COHORT_MODELS:self.active.update(memoryDomain=window['memoryDomain'],memoryDomainMembers=window['memoryDomainMembers'])
             elif op=='close':
                 need(row['result']==0 and row['fd']==window['fd'] and row['fdAbsenceErrno']==errno.ENOENT and row['identity']==window['identity'] and row['epochSequence']==self.active['sequence'],'actual FD close did not retain mapped object')
             elif op=='unmap':
                 origin=self.origins[window['originSequence']];need(row['result']==0 and row['originSequence']==window['originSequence'] and row['epochSequence']==self.active['sequence'] and not matching_maps(self.maps_data(row['afterMapsOriginal']),origin['identity']) and same_object(row['identity'],origin['identity']) and self.original(row['original'])==self.original(window['beforeOriginal']),'actual full-unmap/final snapshot differs');peers=row['afterPeerMaps'];barrier=barriers[window['barrierSequence']];need(sorted(p['pid'] for p in peers)==sorted(p for p in barrier['pids'] if p!=row['pid']),'complete final peer maps required')
-                if self.model==COHORT_MODEL:
+                if self.model in COHORT_MODELS:
                     post=barriers.get(row.get('postBarrierSequence'));need(post and post['sequence']==actual['sequence']+1 and post['pids']==barrier['pids'] and post.get('taskOwnership')==barrier.get('taskOwnership'),'fresh full-unmap post barrier missing');domain,members=self.mapping_domain(row['pid'],post);need(row.get('memoryDomainMembers')==members==window['memoryDomainMembers'] and domain==self.active['memoryDomain'],'full-unmap cohort changed');need(post['sequence']<self.map_sequences.get(self.key(row['afterMapsOriginal']),0)<seq,'final owner maps predate fresh barrier');self.verify_cohort_maps([peer for peer in peers if peer['pid'] in members],row['pid'],members,self.maps_data(row['afterMapsOriginal']),post,seq)
                 for peer in peers:need(self.map_owners.get(self.key(peer['original']))==peer['pid'] and row['exitSequence']<self.map_sequences.get(self.key(peer['original']),0)<seq and not matching_maps(self.maps_data(peer['original']),origin['identity']),'final peer backing alias remains/unobserved')
                 self.checkpoints[seq]=dict(row,data=self.original(row['original']));origin.update(identity=row['identity'],data=self.original(row['original']),checkpointed=True);self.active=None
@@ -658,7 +716,10 @@ class Verifier:
                 if key in row:need(self.map_owners.get(self.key(row[key]))==row['pid'] and row['exitSequence']<self.map_sequences.get(self.key(row[key]),0)<seq,'fresh actual post-operation maps missing')
             transaction['state']='completed'
         elif kind=='exclusive-captured-syscall-exit' and self.transaction is not None:
-            need(self.transaction['state']=='completed' and row['pid']==self.transaction['pid'] and row['entrySequence']==self.transaction['entrySequence'],'generated operation exclusive close differs');del self.windows[self.transaction['window']['sequence']];self.transaction=None
+            need(self.transaction['state']=='completed' and row['pid']==self.transaction['pid'] and row['entrySequence']==self.transaction['entrySequence'],'generated operation exclusive close differs')
+            if self.transaction['window']['operation']=='private-wake':
+                actual=exits[self.transaction['entrySequence']];need(seq==self.transaction['entrySequence']+WAKE_RAW_RECORDS-1 and row['result']==actual['result'] and row['isError'] is False,'private wake exclusive actual close differs');self.private_wakes.append(self.transaction['entrySequence'])
+            del self.windows[self.transaction['window']['sequence']];self.transaction=None
         elif kind=='generated-vma-consumer-binding':self.consumers.append(row)
     def finish(self,caps,exits):
         need(self.active is None and self.transaction is None and self.pending_window is None and not self.pending_mapping_entries and not self.fd_bindings,'unclosed generated mapping/window');outputs=[]

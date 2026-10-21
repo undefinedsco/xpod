@@ -42,7 +42,7 @@ def observe(archive_path,plan):
             bindings.need(ref['bytes']<=LIMITS['metadataBytes'],'metadata original bound');return json.loads(b''.join(stream(ref)))
         provider=plan['sourceProviderOriginals']['mountinfo'];bindings.need(provider['path']=='inner/toolchain-execution/source-provider.mountinfo.raw' and provider['bytes']<=LIMITS['metadataBytes'],'fixed bounded source provider original required')
         originals_util.effective_readonly(plan['sourceRoot'],b''.join(stream(provider)),resolve_local=False)
-        phase_rows=[];all_refs={};source_matches=set();unresolved_sources=set();uncovered=set();used_originals=set();dependency_registrations={};dependency_reads={};dependency_originals=None
+        phase_rows=[];all_refs={};source_matches=set();unresolved_sources=set();uncovered=set();unclassified_entries=[];used_originals=set();dependency_registrations={};dependency_reads={};dependency_originals=None
         for phase in plan['phases']:
             local={}
             for ref in phase['captures']['indexes']:
@@ -72,7 +72,7 @@ def observe(archive_path,plan):
                         if row.get('kind')=='owned-root-binding':bindings.need(row.get('command')==commands[phase_name],'actual traced root argv differs from closed SDK stage')
                         if row.get('kind')=='kernel-syscall' and row.get('op')=='entry':
                             policy=bindings.policy(row['arch']);classified={policy[key] for key in ['read','write','close','mmap','clone','clone3']}|policy['renameOps']|policy['exits']
-                            if row['nr'] not in classified:uncovered.add('unclassified-kernel-operation:'+hex(row['arch'])+':'+str(row['nr']))
+                            if row['nr'] not in classified:unclassified_entries.append((row['sequence'],'unclassified-kernel-operation:'+hex(row['arch'])+':'+str(row['nr'])))
                         if row.get('kind')=='prepared-dependency-source-root':
                             bindings.need(row['sequence'] not in dependency_registrations,'duplicate dependency raw registration sequence');dependency_registrations[row['sequence']]=row
                         if row.get('kind')=='generated-mmap-unverified':uncovered.add('generated-input-mmap:'+row['path'])
@@ -91,6 +91,11 @@ def observe(archive_path,plan):
                 else:
                     bindings.need(digest==(expected['bytes'],expected['sha256']),'actual source read snapshot differs from postpatch original');source_matches.add(row['path'])
         result=bindings.observe([(name,lines(name,refs)) for name,refs in phase_rows],read_original,plan['requiredInputs'],check,LIMITS,capture_observer)
+        # Only the complete typed v5 entry/barrier/resume/exit/postbarrier/close
+        # replay can discharge these exact operation sequences. Same nr outside
+        # the verified active epoch remains unclassified, never an allowlist.
+        private_wakes=set(result.get('verifiedPrivateWakeEntrySequences',[]))
+        uncovered.update(label for sequence,label in unclassified_entries if sequence not in private_wakes)
         bindings.need(used_originals==set(all_refs),'capture inventory contains no corresponding actual FD observation')
         for phase,actual in zip(plan['phases'],result['phaseTracking']):
             declared=phase.get('trackingReceipt')

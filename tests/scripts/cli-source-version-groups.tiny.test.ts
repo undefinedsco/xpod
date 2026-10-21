@@ -20,6 +20,19 @@ test('catalog CLI source tuple binds every newly executed catalog original befor
 test('keeps the precompression catalog helper tuple exact',()=>{expect(reviewedCliSourceVersion({...actual,sourceHelper:'1871c59b9f0bfb4c0ce824123ce9cdc5f472aba11245b5e0eb45c62c4fca42e2'})).toBe(true);});
 
 test('new same-primary CLI source tuple observes its own manifest bytes and preserves all seven old complete JSONs',()=>{
- expect(CLI_SOURCE_VERSION_GROUPS.length).toBe(8);for(let i=0;i<history.hashes.length;i++)expect(createHash('sha256').update(JSON.stringify(CLI_SOURCE_VERSION_GROUPS[i])).digest('hex')).toBe(history.hashes[i]!);
+ expect(CLI_SOURCE_VERSION_GROUPS.length).toBe(9);for(let i=0;i<history.hashes.length;i++)expect(createHash('sha256').update(JSON.stringify(CLI_SOURCE_VERSION_GROUPS[i])).digest('hex')).toBe(history.hashes[i]!);
  expect(reviewedCliSourceVersion(actual)).toBe(false);expect(reviewedCliSourceVersion(actual,name=>preServicePackOriginal(name)??readFileSync(name))).toBe(true);expect(reviewedCliSourceVersion(actual,name=>readFileSync(name))).toBe(true);expect(()=>reviewedCliSourceVersion(actual,()=>Buffer.from('mixed manifest'))).toThrow('catalog CLI complete source binding mismatch');expect(()=>reviewedCliSourceVersion(actual,()=>{throw Error('missing owned manifest');})).toThrow('missing owned manifest');
+});
+
+import entityHistory from '../fixtures/independent-admission/pre-sdk46-cli-whole-hashes.original.json';
+import priorShared from '../fixtures/independent-admission/pre-sdk46-shared-api-originals.original.json';
+test('shared payload CLI version preserves all eight actual f72 recipes and stages only already-owned discriminators',()=>{
+ expect(entityHistory.base).toBe('f72f8a8ab3f304631e7d4357be552dd441ea9a0d');expect(entityHistory.hashes.length).toBe(8);
+ for(let i=0;i<entityHistory.hashes.length;i++)expect(createHash('sha256').update(JSON.stringify(CLI_SOURCE_VERSION_GROUPS[i])).digest('hex')).toBe(entityHistory.hashes[i]!);
+ const payload='scripts/workspace-package-payload.cjs',prior=priorShared.files.find(row=>row.path===payload)!;const raw=Buffer.from(prior.rawBase64,'base64');expect(raw.length).toBe(prior.bytes);expect(createHash('sha256').update(raw).digest('hex')).toBe(prior.sha256);
+ const oldReads:string[]=[];expect(reviewedCliSourceVersion(actual,name=>{oldReads.push(name);if(name===payload)throw Error('old CLI must not fetch a future role');return preServicePackOriginal(name)??readFileSync(name);})).toBe(true);expect(oldReads).not.toContain(payload);
+ const readCurrent:string[]=[];expect(reviewedCliSourceVersion(actual,name=>{readCurrent.push(name);return readFileSync(name);})).toBe(true);expect(readCurrent).toEqual(['scripts/prepare-package-manifest.cjs',payload]);
+ expect(reviewedCliSourceVersion(actual,name=>name===payload?raw:readFileSync(name))).toBe(true);
+ expect(()=>reviewedCliSourceVersion(actual,name=>name===payload?Buffer.from('wrong payload'):readFileSync(name))).toThrow('catalog CLI complete source binding mismatch');
+ expect(()=>reviewedCliSourceVersion(actual,name=>{if(name===payload)throw Error('missing payload');return readFileSync(name);})).toThrow('missing payload');
 });

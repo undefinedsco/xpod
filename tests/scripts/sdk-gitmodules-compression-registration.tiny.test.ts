@@ -6,7 +6,7 @@ import{sourceBindingKey as key,secondaryGitHubSourceBindingSelectors as secondar
 const sha=(value:Buffer|string)=>createHash('sha256').update(value).digest('hex'),groups={api,sdk,consumer,ci};
 test('SDK41 preserves all 214 actual prior whole recipes and binds exact inert branch metadata and gzip6 complete archive source bytes',()=>{
  for(const[name,values]of Object.entries(groups)){const old=before.hashes[name as keyof typeof before.hashes];for(let i=0;i<old.length;i++)expect(sha(JSON.stringify(values[i]))).toBe(old[i]!);}
- expect([api.length,sdk.length,consumer.length,ci.length,current.length]).toEqual([23,45,57,112,394]);
+ expect([api.length,sdk.length,consumer.length,ci.length,current.length]).toEqual([24,46,58,114,403]);
  for(const row of [...current,...sdk.at(-1)!.selectors,...sdk.at(-1)!.sourceBindings])expect(sha(fs.readFileSync(row.path))).toBe(row.sha256);
  expect(sdk[40]!.sourceBindings.find(row=>row.path==='qlever/scripts/sdk-git-source-bindings.py')!.sha256).toBe('4c95c935a5789e1e0669ab1bf7eba67c05f91f013a51c9b6fe968fc288b222ba');
  expect(api[20]!.sourceBindings.find(row=>row.path==='packages/xpod-api/scripts/sourcekit-producer.ts')!.sha256).toBe('393f3a9b1eccd47b8b7d20954e02a267e69afd79135afab6bf2305f53644119a');
@@ -23,16 +23,20 @@ test('SDK41 policy stays within actual Contents inline byte threshold and bounde
 
 // The fixture is an ordinary exact historical byte source, never a capability.
 import originals from '../fixtures/independent-admission/pre-compression-api-originals.json';
+import preSdk46 from '../fixtures/independent-admission/pre-sdk46-shared-api-originals.original.json';
 import {controlledApiSourceRecipe} from '../../scripts/lib/independent-admission/module-source-phases';
 test('API compression discriminator selects complete old and new recipes without reading an undeclared future role',()=>{
+ expect(preSdk46.base).toBe('f72f8a8ab3f304631e7d4357be552dd441ea9a0d');
+ const priorShared=new Map(preSdk46.files.map(row=>{const raw=Buffer.from(row.rawBase64,'base64');expect(raw.length).toBe(row.bytes);expect(sha(raw)).toBe(row.sha256);return[row.path,raw] as const;}));
  const historical=new Map(originals.files.map(row=>{const raw=Buffer.from(row.rawBase64,'base64');expect(raw.length).toBe(row.bytes);expect(sha(raw)).toBe(row.sha256);return [row.path,raw] as const;}));
  const producer=api[20]!.selectors.find(row=>row.path==='scripts/api-module-producer.py')!.sha256;
- const oldRead=(name:string)=>historical.get(name)??preServicePackOriginal(name)??fs.readFileSync(name),newRead=(name:string)=>fs.readFileSync(name);
+ const oldRead=(name:string)=>historical.get(name)??preServicePackOriginal(name)??priorShared.get(name)??fs.readFileSync(name),newRead=(name:string)=>priorShared.get(name)??fs.readFileSync(name);
  expect(controlledApiSourceRecipe(oldRead,producer,'linux-x64').rows).toBe(api[19]!.sourceBindings);
  expect(controlledApiSourceRecipe(name=>preServicePackOriginal(name)??newRead(name),producer,'linux-x64').rows).toBe(api[20]!.sourceBindings);
  const oldPhysical=preServicePackOriginal('scripts/lib/physical-module-archive.ts');expect(oldPhysical).toBeDefined();
  const preIndexedRead=(name:string)=>name==='scripts/lib/physical-module-archive.ts'?oldPhysical!:newRead(name);
  expect(controlledApiSourceRecipe(preIndexedRead,producer,'linux-x64').rows).toBe(api[21]!.sourceBindings);
  expect(controlledApiSourceRecipe(newRead,producer,'linux-x64').rows).toBe(api[22]!.sourceBindings);
+ expect(controlledApiSourceRecipe(name=>fs.readFileSync(name),producer,'linux-x64').rows).toBe(api[23]!.sourceBindings);
  expect(()=>controlledApiSourceRecipe(name=>name==='packages/xpod-api/scripts/sourcekit-producer.ts'?Buffer.from('wrong'):newRead(name),producer,'linux-x64')).toThrow();
 });

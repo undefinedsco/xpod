@@ -27,8 +27,8 @@ def pack_body_references(collection):
         need(isinstance(ref,dict) and set(ref)=={'path','bytes','sha256'} and type(ref['bytes']) is int and 0<ref['bytes']<=32*META and isinstance(ref['sha256'],str) and re.fullmatch('[a-f0-9]{64}',ref['sha256']),'bounded plain actual body reference')
         need(ref['path']=='service-pack-bodies/objects/'+str(index).zfill(4)+'-'+ref['sha256']+'.original' and ref['path'] not in seen,'exact unique body ordinal path');seen.add(ref['path'])
         matching=[r for r in actual if r.get('reference')==ref];need(len(matching)==1,'unique actual body record')
-        row=matching[0];need(row.get('role') in ['seed-npm-pack','public-package-tar','final-service-pack'],'fixed body role')
-        need((isinstance(row.get('name'),str) and 0<len(row['name'])<=256) if row['role']=='public-package-tar' else row.get('name') is None,'fixed public body name')
+        row=matching[0];need(row.get('role') in ((['public-selected-input-source-tar'] if collection.get('details',{}).get('publicInputCustodyModel')=='actual-selected-public-input-source-v1' else []) + (['seed-npm-pack','public-package-tar','final-service-pack','selected-input-source-tar'] if collection.get('details',{}).get('inputCustodyModel') in ['actual-service-pack-input-custody-v1','actual-service-pack-input-custody-v2'] else ['seed-npm-pack','public-package-tar','final-service-pack'])),'fixed body role')
+        need((isinstance(row.get('name'),str) and 0<len(row['name'])<=256) if row['role'] in ['public-package-tar','selected-input-source-tar','public-selected-input-source-tar'] else row.get('name') is None,'fixed public body name')
         at=records.index(row);stats=[r for r in records[:at] if isinstance(r,dict) and r.get('kind')=='actual-pack-body-stat' and all(r.get(key)==row.get(key) for key in ['role','name','path','canonicalPath','identity']) and r.get('bytes')==ref['bytes']]
         need(len(stats)==1,'actual body stat/read origin must match');roles.append(row['role'])
     need(roles.count('seed-npm-pack')==roles.count('final-service-pack')==1,'exact seed and final body required')

@@ -10,6 +10,7 @@ import hashlib
 import importlib.util
 import json
 import math
+import re
 import select
 import os
 from pathlib import Path
@@ -125,7 +126,7 @@ class BoundedPipePump:
         check();assert self.sha256 is not None,'actual stdio pipe did not close'
 
 class Observer:
-    def __init__(self,out,source,build,*,deadline_monotonic=None,check_budget=lambda:None,maximum_bytes=32*1024**2,maximum_file_bytes=1024**2,selected_names=SELECTED,maximum_processes=128,shard_bytes=None,require_success=True,maximum_stdio_bytes=None,shared_tasks=False,capture_toolchain=False,deny_optional_io_uring=False,verified_setresuid_noop=False,verified_identity_noop=False,terminal_exit_evidence=False,generated_vma_output=False,generated_vma_shared_mm=False):
+    def __init__(self,out,source,build,*,deadline_monotonic=None,check_budget=lambda:None,maximum_bytes=32*1024**2,maximum_file_bytes=1024**2,selected_names=SELECTED,maximum_processes=128,shard_bytes=None,require_success=True,maximum_stdio_bytes=None,shared_tasks=False,capture_toolchain=False,deny_optional_io_uring=False,verified_setresuid_noop=False,verified_identity_noop=False,terminal_exit_evidence=False,generated_vma_output=False,generated_vma_shared_mm=False,generated_vma_private_wake=False):
         self.prepared_dependency_plan=None;self.dependency_roots={};self.dependency_cache=None
         self.shared_tasks=shared_tasks
         assert type(deny_optional_io_uring) is bool
@@ -140,10 +141,12 @@ class Observer:
         self.prepared_inputs={};self.prepared_sealed=False;self.domain_bytes=0;self.domain_lock=threading.Lock();self.pump_errors=[];self.maximum_stdio_bytes=maximum_stdio_bytes if maximum_stdio_bytes is not None else maximum_file_bytes
         self.require_success=require_success;self.raw_bytes_completed=0;self.maximum_processes=maximum_processes;self.shard_bytes=shard_bytes
         self.deadline_monotonic=deadline_monotonic;self.check_budget=check_budget;self.maximum_bytes=maximum_bytes;self.maximum_file_bytes=maximum_file_bytes;self.selected_names=selected_names
-        self.out=Path(out);self.capture_dir=self.out;self.source=str(source);self.build=str(build);self.tasks={};self.seq=0;self.records=[];self.captures=[];self.retained=set();self.producers={};self.write_states={};self.write_projections={};self.append_chains={};self.budget_context={};self.metadata_states=[];self.rename_records=[];self.consumers=[];self.raw=None;self.deadline=0;self.pausing=False;self.root=None;self.root_code=None;self.failures=[];self.current_phase=None;self.unknown_stops={};self.capture_bytes=0;self.exclusive=None;self.wait_references=[]
+        self.out=Path(out);self.capture_dir=self.out;self.source=str(source);self.build=str(build);self.tasks={};self.seq=0;self.records=[];self.captures=[];self.retained=set();self.producers={};self.write_states={};self.write_projections={};self.append_chains={};self.budget_context={};self.metadata_states=[];self.rename_records=[];self.consumers=[];self.raw=None;self.deadline=0;self.pausing=False;self.root=None;self.root_code=None;self.failures=[];self.current_phase=None;self.unknown_stops={};self.capture_bytes=0;self.capture_entities={};self.exclusive=None;self.wait_references=[]
         assert type(generated_vma_output) is bool and (not generated_vma_output or shared_tasks and capture_toolchain),'generated VMA requires existing actual shared-task/tool observation'
         assert not generated_vma_output or self.build==generated_vma_module.BUILD_ROOT,'fixed generated output build root required'
         assert type(generated_vma_shared_mm) is bool and (not generated_vma_shared_mm or generated_vma_output and shared_tasks and capture_toolchain),'shared-MM VMA requires existing generated/all-task/tool observation'
+        assert type(generated_vma_private_wake) is bool and (not generated_vma_private_wake or generated_vma_shared_mm),'private wake requires actual stopped-MM cohort model'
+        self.generated_vma_private_wake=generated_vma_private_wake
         self.generated_vma_shared_mm=generated_vma_shared_mm
         self.generated_vma_output=generated_vma_output;self.generated_vma=generated_vma_module.Runtime(self) if generated_vma_output else None
     def dependency_mountinfo(self):
@@ -256,7 +259,7 @@ class Observer:
                         key=key if key in completed else 'other'
                         completed[key]['count']+=1
                         completed[key]['bytes']+=row['original']['bytes']
-                    diagnostic=dict(kind='execution-byte-bound',chargedBytes=self.domain_bytes,requestedBytes=count,maximumBytes=self.maximum_bytes,projectedBytes=self.domain_bytes+count,generatedReservedBytes=reserved,completedCaptureBytes=self.capture_bytes,completedCaptures=completed,**(context or dict(role='other-execution-original')))
+                    diagnostic=dict(kind='execution-byte-bound',chargedBytes=self.domain_bytes,requestedBytes=count,maximumBytes=self.maximum_bytes,projectedBytes=self.domain_bytes+count,generatedReservedBytes=reserved,completedRetainedEntityBytes=self.capture_bytes,completedObservationReferencedBytes=sum(bucket['bytes'] for bucket in completed.values()),completedObservationReferences=completed,**(context or dict(role='other-execution-original')))
                     print('SDK_EXECUTION_BYTE_BOUND '+json.dumps(diagnostic,sort_keys=True),file=sys.stderr,flush=True)
                 except BaseException:
                     pass  # Diagnostic failure must never replace the original bound.
@@ -382,7 +385,7 @@ class Observer:
                     output.flush();os.fsync(output.fileno())
                 assert offset==identity[3] and identity==probe.identity(os.fstat(reader))==probe.identity(os.stat(path,follow_symlinks=False)),'prepared original changed during capture'
                 original=dict(path=name,bytes=offset,sha256=digest.hexdigest())
-                row=self.emit(dict(kind='prepared-build-input-original',path=path,identity=identity,original=original))
+                row=self.emit(dict(kind='prepared-build-input-original',path=path,identity=identity,original=original,originalEntityIdentity=self.register_capture_entity(original)))
                 inventory.update((json.dumps(dict(path=path,identity=identity,original=original),sort_keys=True)+'\n').encode())
                 self.captures.append(row);self.capture_bytes+=offset;self.retained.add(reader);self.prepared_inputs[path]=(row,reader,(offset,digest.hexdigest()));reader=None
             finally:
@@ -596,6 +599,44 @@ class Observer:
             os.close(held);self.retained.remove(held);del self.append_chains[key]
         self.budget_context={}
         return checked
+    def capture_entity_identity(self,reference):
+        name=reference['path'];assert re.fullmatch(r'capture-[0-9]{4,}\.original',name),'fixed retained capture entity required'
+        value=os.stat(self.capture_dir/name,follow_symlinks=False)
+        assert stat.S_ISREG(value.st_mode) and value.st_nlink==1 and value.st_size==reference['bytes'],'same single-link retained capture entity required'
+        return [*probe.identity(value),value.st_nlink]
+    def register_capture_entity(self,reference):
+        identity=self.capture_entity_identity(reference);prior=self.capture_entities.get(reference['path'])
+        assert prior is None or prior==(reference,identity),'capture entity path reused with different bytes or identity'
+        self.capture_entities[reference['path']]=(dict(reference),identity)
+        return identity
+    def verify_capture_entity(self,reference):
+        registered=self.capture_entities.get(reference['path']);assert registered and registered[0]==reference,'same registered capture entity required'
+        reader=os.open(self.capture_dir/reference['path'],os.O_RDONLY|os.O_CLOEXEC|os.O_NOFOLLOW|os.O_NONBLOCK);self.retained.add(reader)
+        try:
+            value=os.fstat(reader);identity=[*probe.identity(value),value.st_nlink]
+            assert stat.S_ISREG(value.st_mode) and value.st_nlink==1 and identity==registered[1] and identity==self.capture_entity_identity(reference),'retained capture entity changed before read'
+            offset=0;digest=hashlib.sha256()
+            while True:
+                self.check();block=os.pread(reader,65536,offset)
+                if not block:break
+                offset+=len(block);assert offset<=reference['bytes'];digest.update(block)
+            value=os.fstat(reader)
+            assert identity==[*probe.identity(value),value.st_nlink]==self.capture_entity_identity(reference) and (offset,digest.hexdigest())==(reference['bytes'],reference['sha256']),'retained capture entity bytes or identity changed'
+            return identity
+        finally:
+            primary=sys.exc_info()[1]
+            try:os.close(reader)
+            except BaseException:
+                if primary is None:raise
+            else:self.retained.remove(reader)
+    def phase_capture_files(self,capture_start):
+        # Raw observations stay one-per-window; each physical body appears once.
+        references={}
+        for row in self.captures[capture_start:]:
+            reference=row['original'];prior=references.get(reference['path'])
+            assert prior is None or prior==reference,'conflicting same-phase capture entity reference'
+            references[reference['path']]=reference
+        return [dict(reference,path=str(self.capture_dir/reference['path'])) for reference in references.values()]
     def capture(self,pid,fd,role):
         barrier=self.barrier();self.check();target=fdpath(pid,fd);path='/proc/'+str(pid)+'/fd/'+str(fd);before=os.stat(path);reader=os.open(path,os.O_RDONLY|os.O_CLOEXEC)
         try:
@@ -636,20 +677,39 @@ class Observer:
                     row=self.emit(diagnostic)
                     print('SDK_INPUT_CAPTURE_CONFLICT '+encoded,file=sys.stderr,flush=True)
                     raise AssertionError('live writable alias before consumer; diagnostic sequence '+str(row['sequence']))
-            name='capture-'+str(len(self.captures)).zfill(4)+'.original';offset=0;digest=hashlib.sha256()
-            with (self.capture_dir/name).open('xb') as output:
+            reusable=None
+            if role=='consumer' and not rw_read:
+                candidate=self.producers.get(tuple(ident[:2])) or self.prepared_inputs.get(target)
+                if candidate and candidate[0].get('phase')==self.current_phase and candidate[0]['original']['path'] in self.capture_entities:
+                    prior,held,expected=candidate
+                    if prior.get('originalEntityIdentity')==self.capture_entities[prior['original']['path']][1] and expected==(prior['original']['bytes'],prior['original']['sha256']):reusable=prior
+            name='capture-'+str(len(self.captures)).zfill(4)+'.original';offset=0;digest=hashlib.sha256();output=None
+            try:
+                if reusable is None:output=(self.capture_dir/name).open('xb')
                 while True:
                     block=os.pread(reader,65536,offset)
                     if not block:break
                     offset+=len(block);assert offset<=self.maximum_file_bytes
-                    self.claim(len(block),context=dict(role='fd-capture',captureRole=role,pid=pid,fd=fd,fileBytes=ident[3],captureOffset=offset-len(block)));output.write(block);digest.update(block);self.check()
-                output.flush();os.fsync(output.fileno())
+                    if output is not None:self.claim(len(block),context=dict(role='fd-capture',captureRole=role,pid=pid,fd=fd,fileBytes=ident[3],captureOffset=offset-len(block)));output.write(block)
+                    digest.update(block);self.check()
+                if output is not None:output.flush();os.fsync(output.fileno())
+            finally:
+                if output is not None:
+                    primary=sys.exc_info()[1]
+                    try:output.close()
+                    except BaseException:
+                        if primary is None:raise
             assert ident==probe.identity(os.fstat(reader))==probe.identity(os.stat(path))
-            data=(offset,digest.hexdigest());self.capture_bytes+=offset;ref=dict(path=name,bytes=offset,sha256=data[1])
+            data=(offset,digest.hexdigest())
+            if reusable is None:
+                self.capture_bytes+=offset;ref=dict(path=name,bytes=offset,sha256=data[1]);entity_identity=self.register_capture_entity(ref);storage={}
+            else:
+                ref=dict(reusable['original']);assert data==(ref['bytes'],ref['sha256']),'actual consumer bytes differ from retained original entity'
+                entity_identity=self.verify_capture_entity(ref);storage=dict(originalReuse=dict(model='same-phase-producer-original-v1',originCaptureSequence=reusable['sequence']))
             dependency=self.dependency_source(target) if role=='source-read' and target.startswith('/opt/qlever-sdk/dependencies/') else None
             if dependency:
                 binding,expected=dependency;assert expected['mode']==stat.S_IMODE(ident[2]) and (expected['bytes'],expected['sha256'])==data,'dependency actual held FD bytes differ from prepared snapshot'
-            row=self.emit(dict(**({'dependency':dependency[0]} if dependency else {}),kind='fd-capture',role='readwrite-consumer' if rw_read else role,pid=pid,fd=fd,entrySequence=self.tasks[pid]['entry']['sequence'],path=target,identity=ident,original=ref,barrierSequence=barrier['sequence'],writers=writers))
+            row=self.emit(dict(**({'dependency':dependency[0]} if dependency else {}),**storage,originalEntityIdentity=entity_identity,kind='fd-capture',role='readwrite-consumer' if rw_read else role,pid=pid,fd=fd,entrySequence=self.tasks[pid]['entry']['sequence'],path=target,identity=ident,original=ref,barrierSequence=barrier['sequence'],writers=writers))
             self.captures.append(row);capture_fd=reader;self.retained.add(reader);reader=None
             if role!='producer-close':self.tasks[pid]['releaseCaptureFd']=capture_fd
             if role=='producer-close':
@@ -1291,7 +1351,7 @@ class Observer:
             for pump in pumps:pump.start()
             if self.process_authority:
                 os.close(ready_write);ready_write=None;self.check();remaining=max(0,self.deadline-time.monotonic());readable,_,_=select.select([ready_read],[],[],remaining);self.check();assert readable and os.read(ready_read,1)==b'R','child authority setup did not complete before release';os.close(ready_read);ready_read=None
-            self.emit(dict(kind='owned-root-binding',pid=child,command=command,backend='ptrace-all-stop-process-v1',**(dict(generatedVmaModel=self.generated_vma.model,generatedVmaBuildRoot=self.build,generatedVmaParentDeadlineMonotonicNs=str(int(self.waiter.parent_deadline*1e9))) if self.generated_vma else {}),**(dict(optionalIoUringModel='explicit-kernel-enosys-denial-v1') if self.deny_optional_io_uring else {}),**(dict(setresuidNoopModel='actual-stopped-setresuid-noop-v1') if self.verified_setresuid_noop else {}),**(dict(setresIdentityNoopModel='actual-stopped-setres-identity-noop-v1') if getattr(self,'verified_identity_noop',False) else {}),**(dict(processAuthorityModel=tool_providers.AUTHORITY_MODEL) if self.process_authority else {}),**(dict(exitAuthorityModel='actual-selected-exit-stop-before-peer-barrier-v1') if getattr(self,'terminal_exit_evidence',False) else {}),**(dict(taskOwnershipModel='all-tracked-tids-shared-fd-v1',tgid=child,fdTable=child) if self.shared_tasks else {})));single.trace(SEIZE,child,0,OPTIONS);single.trace(INTERRUPT,child);pid,status=self.wait_one();self.event(pid,status,False);self.pending_captures();os.write(write_fd,b'x');os.close(write_fd);write_fd=None;self.resume()
+            self.emit(dict(kind='owned-root-binding',pid=child,command=command,backend='ptrace-all-stop-process-v1',captureOriginalEntityModel='same-phase-producer-original-v1',**(dict(generatedVmaModel=self.generated_vma.model,generatedVmaBuildRoot=self.build,generatedVmaParentDeadlineMonotonicNs=str(int(self.waiter.parent_deadline*1e9))) if self.generated_vma else {}),**(dict(optionalIoUringModel='explicit-kernel-enosys-denial-v1') if self.deny_optional_io_uring else {}),**(dict(setresuidNoopModel='actual-stopped-setresuid-noop-v1') if self.verified_setresuid_noop else {}),**(dict(setresIdentityNoopModel='actual-stopped-setres-identity-noop-v1') if getattr(self,'verified_identity_noop',False) else {}),**(dict(processAuthorityModel=tool_providers.AUTHORITY_MODEL) if self.process_authority else {}),**(dict(exitAuthorityModel='actual-selected-exit-stop-before-peer-barrier-v1') if getattr(self,'terminal_exit_evidence',False) else {}),**(dict(taskOwnershipModel='all-tracked-tids-shared-fd-v1',tgid=child,fdTable=child) if self.shared_tasks else {})));single.trace(SEIZE,child,0,OPTIONS);single.trace(INTERRUPT,child);pid,status=self.wait_one();self.event(pid,status,False);self.pending_captures();os.write(write_fd,b'x');os.close(write_fd);write_fd=None;self.resume()
             while any(not r['exited'] for r in self.tasks.values()):
                 pid,status=self.wait_one();self.event(pid,status);self.pending_captures();self.resume()
             assert not any(task.get('vforkHeldChild') is not None for task in self.tasks.values()),'vfork child release/wait closure missing'
@@ -1321,7 +1381,7 @@ class Observer:
             return dict(commandReceipt=dict(schemaVersion=1,command=command,actualExecutable=actual_executable(command),pid=child,pgid=root_pgid,actualWait=True,exit=self.root_code if self.root_code>=0 else None,signal=-self.root_code if self.root_code<0 else None,startedUnixNs=str(started_ns),completedUnixNs=str(completed_ns),rawClosedBeforeHash=True,stdout=dict(original(stdout_path),path=stdout_path.name),stderr=dict(original(stderr_path),path=stderr_path.name)),
                 trackingReceipt=dict(schemaVersion=1,kind='sdk-observer-tracked-phase-original',phase=name,observerPid=os.getpid(),command=command,actualRootPid=child,actualRootReturnCode=self.root_code,actualTrackedWait=True,trackedProcessesClosed=all(row['exited'] for row in self.tasks.values()),deadlineMonotonic=self.deadline,startedUnixNs=str(started_ns),completedUnixNs=str(completed_ns),waitReferences=self.wait_references),
                 rawTraceShards=[original(path) for path in self.raw.paths] if isinstance(self.raw,ShardedRaw) else [original(Path(self.raw.name))],
-                captureFiles=[dict(row['original'],path=str(self.capture_dir/row['original']['path'])) for row in self.captures[capture_start:]],
+                captureFiles=self.phase_capture_files(capture_start),
                 observedToolFiles=self.observed_tool_files(capture_start,name))
         finally:
             for control_fd in [ready_read,ready_write]:
@@ -1371,7 +1431,7 @@ class SdkExecutionObserver(Observer):
         assert Path(source)==Path('/opt/qlever-sdk/source') and Path(build)==Path('/opt/qlever-sdk/build'),'fixed SDK source/build roots required'
         assert isinstance(deadline_monotonic,(float,int)) and math.isfinite(deadline_monotonic) and time.monotonic()<deadline_monotonic,'existing live SDK deadline required'
         super().__init__(out,source,build,deadline_monotonic=deadline_monotonic,check_budget=check_budget,maximum_bytes=maximum_bytes,
-            maximum_file_bytes=limits['shardBytes'],selected_names=None,maximum_processes=limits['sourceMembers'],shard_bytes=limits['shardBytes'],require_success=False,maximum_stdio_bytes=maximum_stdio_bytes,shared_tasks=True,capture_toolchain=True,deny_optional_io_uring=True,verified_identity_noop=True,terminal_exit_evidence=True,generated_vma_output=True,generated_vma_shared_mm=True)
+            maximum_file_bytes=limits['shardBytes'],selected_names=None,maximum_processes=limits['sourceMembers'],shard_bytes=limits['shardBytes'],require_success=False,maximum_stdio_bytes=maximum_stdio_bytes,shared_tasks=True,capture_toolchain=True,deny_optional_io_uring=True,verified_identity_noop=True,terminal_exit_evidence=True,generated_vma_output=True,generated_vma_shared_mm=True,generated_vma_private_wake=True)
         self.capture_dir=self.out/'captures';self.capture_dir.mkdir(exist_ok=False);self.sdk_phase_index=0;self.sdk_failed=False
         mounts=Path('/proc/self/mountinfo').read_bytes();assert len(mounts)<=limits['metadataBytes'],'source provider metadata bound'
         self.source_provider=probe.effective_readonly(source,mounts);self.source_provider_originals=dict(mountinfo=probe.put(self.out/'source-provider.mountinfo.raw',mounts));self.claim(len(mounts))

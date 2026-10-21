@@ -77,9 +77,14 @@ function serviceWorkspacePackages(repoRoot, originals) {
 function getBundledLocalDependencies(repoRoot, profile = 'compat', originals, resolveRoot) {
   resolveRoot ??= (name, optional) => {
     const lexical = path.join(repoRoot, 'node_modules', ...name.split('/'));
-    const exists = !optional || fs.existsSync(lexical);
-    const canonical = exists ? fs.realpathSync(lexical) : undefined;
-    if (originals) originals.event({ role: 'actual-bundled-root-probe', name, optional, path: lexical, exists, canonicalPath: canonical ?? null });
+    const observed = originals ? originals.probePath(lexical, 'directory') : undefined;
+    const exists = observed ? observed.exists : !optional || fs.existsSync(lexical);
+    if (!optional && !exists) throw new Error('Required installed package root absent: ' + name);
+    const canonical = exists ? (observed ? observed.canonicalPath : fs.realpathSync(lexical)) : undefined;
+    if (originals) {
+      originals.event({ role: 'actual-bundled-root-probe', name, optional, path: lexical, exists, canonicalPath: canonical ?? null });
+      originals.event({ role: 'actual-bundled-root-input-custody', name, observation: observed.observation });
+    }
     return canonical;
   };
   const privatePatchedDependencies = [ DRIZZLE_SOLID_PACKAGE, EXTENSIONS_PACKAGE ].flatMap((name) => {
@@ -236,7 +241,7 @@ function isNonRuntimeBundledPath(relativePath, protectedPaths) {
   return false;
 }
 
-function shouldCopyBundledDependency(sourceRoot, sourcePath, patchedRuntime = false) {
+function shouldCopyBundledDependency(sourceRoot, sourcePath, patchedRuntime = false, readManifest = readPackageManifest) {
   const relativePath = path.relative(sourceRoot, sourcePath);
   if (!relativePath) {
     return true;
@@ -250,7 +255,7 @@ function shouldCopyBundledDependency(sourceRoot, sourcePath, patchedRuntime = fa
     return false;
   }
 
-  const manifest = readPackageManifest(sourceRoot);
+  const manifest = readManifest(sourceRoot);
   const protectedPaths = manifest ? collectProtectedDirectoryPaths(sourceRoot, manifest) : undefined;
   if (protectedPaths && isNonRuntimeBundledPath(relativePath, protectedPaths)) {
     return false;
@@ -439,18 +444,44 @@ function planExposedRuntimeDependencies({ packageDir, dependencies, manifest: in
   return { manifest, edges };
 }
 
+// One actual Node search-path contract, shared with retained-original replay.
+// It does not probe the filesystem or choose a second dependency resolver.
+function installedResolutionSearchRoots(source, globalPaths) {
+  if (path.sep !== '/' || typeof source !== 'string' || !path.posix.isAbsolute(source) || path.posix.normalize(source) !== source || source.length > 4096 || /[\\\u0000-\u001f\u007f]/u.test(source)) throw new Error('Canonical POSIX installed resolution source required');
+  if (!Array.isArray(globalPaths) || globalPaths.length > 128 || globalPaths.some(value => typeof value !== 'string' || !path.posix.isAbsolute(value) || path.posix.normalize(value) !== value || value.length > 4096 || /[\\\u0000-\u001f\u007f]/u.test(value))) throw new Error('Bounded actual Node global search originals required');
+  const roots = [...require('node:module')._nodeModulePaths(source), ...globalPaths];
+  if (!roots.length || roots.length > 128 || new Set(roots).size !== roots.length) throw new Error('Bounded unique actual Node search roots required');
+  return roots;
+}
+
+function inspectInstalledResolutionSearch(row) {
+  if (typeof row.name !== 'string' || !/^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/u.test(row.name)) throw new Error('Canonical installed package identity required');
+  const expected = installedResolutionSearchRoots(row.source, row.globalPaths);
+  if (JSON.stringify(row.searchRoots) !== JSON.stringify(expected)) throw new Error('Complete actual Node search vector required');
+  const candidates = expected.map(root => path.posix.join(root, ...row.name.split('/')));
+  if (!Array.isArray(row.probes) || !row.probes.length || row.probes.length > candidates.length || row.probes.some((probe, index) => !probe || probe.path !== candidates[index] || typeof probe.exists !== 'boolean' || (probe.exists && index !== row.probes.length - 1)) || (!row.probes[row.probes.length - 1].exists && row.probes.length !== candidates.length)) throw new Error('Complete actual Node first-hit/exhaustive-absence prefix required');
+  return Object.freeze({dependencySearchReplayed:true});
+}
+
 function exposeBundledRuntimeDependencies(packageDir, dependencies, originals) {
   const { createRequire } = require('node:module');
   const manifestPath = path.join(packageDir, 'package.json');
   const manifest = readPackManifest(manifestPath, 'root-after-workspace-removal', originals);
   const resolveInstalled = (source, name) => {
     const resolver = createRequire(path.join(source, 'package.json'));
-    const probes = [];
-    const resolved = resolver.resolve.paths('__xpod_runtime_dependency__')
+    const probes = [], observations = [];
+    const searchRoots = resolver.resolve.paths('__xpod_runtime_dependency__'), globalPaths = [...require('node:module').globalPaths];
+    if (originals && JSON.stringify(searchRoots) !== JSON.stringify(installedResolutionSearchRoots(source, globalPaths))) throw new Error('Actual Node search roots differ from source/global originals');
+    const resolved = searchRoots
       .map((root) => path.join(root, ...name.split('/')))
-      .find((root) => { const exists = fs.existsSync(path.join(root, 'package.json')); probes.push({ path: root, exists }); return exists; });
-    const canonical = resolved && fs.realpathSync(resolved);
-    if (originals) originals.event({ role: 'actual-node-resolution', source, name, probes, resolvedRoot: canonical ?? null });
+      .find((root) => { const observed = originals ? originals.probePath(path.join(root, 'package.json'), 'manifest') : undefined;const exists = observed ? observed.exists : fs.existsSync(path.join(root, 'package.json'));probes.push({ path: root, exists });if(observed)observations.push(observed.observation);return exists; });
+    const selected = originals && resolved ? originals.probePath(resolved, 'directory') : undefined;
+    const canonical = resolved && (selected ? selected.canonicalPath : fs.realpathSync(resolved));
+    if (originals) {
+      inspectInstalledResolutionSearch({source,name,searchRoots,globalPaths,probes});
+      originals.event({ role: 'actual-node-resolution', source, name, searchRoots, globalPaths, workerPid:process.pid, probes, resolvedRoot: canonical ?? null });
+      originals.event({ role: 'actual-node-input-custody', source, name, observations, selectedRoot: selected?.observation ?? null });
+    }
     return canonical;
   };
   const planned = planExposedRuntimeDependencies({ packageDir, dependencies, manifest,
@@ -459,17 +490,16 @@ function exposeBundledRuntimeDependencies(packageDir, dependencies, originals) {
     onNestedConflict: (childSource, childDestination, nestedManifest) => {
       const childProtectedPaths = collectProtectedDirectoryPaths(childSource, nestedManifest);
       fs.mkdirSync(path.dirname(childDestination), { recursive: true });
-      fs.cpSync(childSource, childDestination, {
-        recursive: true, dereference: true,
-        filter: (file) => {
-          const childRelativePath = path.relative(childSource, file);
-          if (['node_modules', '.git'].includes(childRelativePath.split(path.sep)[0])) return false;
-          if (isCompilerDiagnostic(childRelativePath)) return false;
-          if (isNonRuntimeBundledPath(childRelativePath, childProtectedPaths)) return false;
-          if (/\.(node|dylib|so|dll|exe)$/.test(file)) throw new Error(`Cannot bundle native dependency file: ${file}`);
-          return true;
-        },
-      });
+      const filter = (file) => {
+        const childRelativePath = path.relative(childSource, file);
+        if (['node_modules', '.git'].includes(childRelativePath.split(path.sep)[0])) return false;
+        if (isCompilerDiagnostic(childRelativePath)) return false;
+        if (isNonRuntimeBundledPath(childRelativePath, childProtectedPaths)) return false;
+        if (/\.(node|dylib|so|dll|exe)$/.test(file)) throw new Error(`Cannot bundle native dependency file: ${file}`);
+        return true;
+      };
+      if (originals) originals.copyTree(childSource, childDestination, filter, nestedManifest.name);
+      else fs.cpSync(childSource, childDestination, { recursive: true, dereference: true, filter });
     },
   });
   fs.writeFileSync(manifestPath, JSON.stringify(planned.manifest, null, 2) + '\n');
@@ -477,14 +507,13 @@ function exposeBundledRuntimeDependencies(packageDir, dependencies, originals) {
 
 // Both installed inputs and normalized public packages use the same runtime
 // materialization rules. Public transport archives retain their original bytes.
-function copyBundledRuntimeDependency(dependency, sourceRoot, destinationDir) {
+function copyBundledRuntimeDependency(dependency, sourceRoot, destinationDir, originals) {
   fs.rmSync(destinationDir, { recursive: true, force: true });
   fs.mkdirSync(path.dirname(destinationDir), { recursive: true });
-  fs.cpSync(sourceRoot, destinationDir, {
-    recursive: true,
-    dereference: true,
-    filter: (sourcePath) => shouldCopyBundledDependency(sourceRoot, sourcePath, dependency.patchedRuntime),
-  });
+  const selectedManifest = originals ? readPackManifest(path.join(sourceRoot, 'package.json'), 'actual-copy-selection-manifest', originals) : undefined;
+  const filter = sourcePath => shouldCopyBundledDependency(sourceRoot, sourcePath, dependency.patchedRuntime, originals ? () => selectedManifest : readPackageManifest);
+  if (originals) originals.copyTree(sourceRoot, destinationDir, filter, dependency.name);
+  else fs.cpSync(sourceRoot, destinationDir, { recursive: true, dereference: true, filter });
   if (dependency.name === DRIZZLE_SOLID_PACKAGE) patchBundledDrizzleSolid(destinationDir);
 }
 
@@ -508,7 +537,7 @@ function bundleLocalDependenciesIntoTarball(tarballPath, dependencies, profile =
 
     for (const dependency of dependencies) {
       const destinationDir = path.join(packageDir, 'node_modules', ...dependency.name.split('/'));
-      copyBundledRuntimeDependency(dependency, dependency.sourcePackageRoot, destinationDir);
+      copyBundledRuntimeDependency(dependency, dependency.sourcePackageRoot, destinationDir, originals);
       console.log(`[npm-pack] bundled local dependency ${dependency.name}`);
     }
 
@@ -536,7 +565,8 @@ function bundleLocalDependenciesIntoTarball(tarballPath, dependencies, profile =
         const archivePath = path.join(archiveDir, filename);
         // Standard publication normalizes workspace protocols to actual
         // package versions; no dependency fields or public exports are removed.
-        packCommand(originals, 'bun', ['pm', 'pack', '--ignore-scripts', '--filename', archivePath], {
+        if (originals) originals.capturePublicPack(dependency.sourcePackageRoot, dependency.name, archivePath);
+        else packCommand(originals, 'bun', ['pm', 'pack', '--ignore-scripts', '--filename', archivePath], {
           cwd: dependency.sourcePackageRoot, stdio: 'pipe',
         });
         const body = originals ? originals.retainBody(archivePath, 'public-package-tar', dependency.name) : undefined;
@@ -556,7 +586,7 @@ function bundleLocalDependenciesIntoTarball(tarballPath, dependencies, profile =
           const publicPackageDir = fs.mkdtempSync(path.join(tempRoot, 'public-package-'));
           packCommand(originals, 'tar', ['xf', archivePath, '-C', publicPackageDir]);
           const destinationDir = path.join(packageDir, 'node_modules', ...dependency.name.split('/'));
-          copyBundledRuntimeDependency(dependency, path.join(publicPackageDir, 'package'), destinationDir);
+          copyBundledRuntimeDependency(dependency, path.join(publicPackageDir, 'package'), destinationDir, originals);
           manifestInputs.push({ name: dependency.name, patchedRuntime: false, version: JSON.parse(publicManifest).version });
           fs.rmSync(archivePath);
           continue;
@@ -717,11 +747,11 @@ function main() {
   if (!['compat', 'service'].includes(profile)) throw new Error('Unsupported artifact profile');
   const retained = process.argv[5] === '--retain-service-originals';
   if (process.argv.length > 5 && !retained) throw new Error('Unsupported pack observation arguments');
-  let originals, phase, restoreStdio;
+  let originals, phase, restoreStdio, nodeRuntime;
   if (retained) {
     if (profile !== 'service' || process.argv.length !== 9 || !/^[a-f0-9]{40}$/u.test(process.argv[6])) throw new Error('Exact service source/parent observation required');
     phase = require('./service-pack-phase.cjs').createPackPhase({deadlineUnixMs:Number(process.argv[7]),retainedCeilingBytes:Number(process.argv[8])});
-    originals = require('./service-pack-originals.cjs').createServicePackOriginals({directory:path.join(repoRoot,'.test-data/service-pack-originals'),bodyDirectory:path.join(repoRoot,'.test-data/service-pack-bodies'),sourceSha:process.argv[6],check:phase.check,reserveBytes:phase.reserveBytes,remainingBytes:phase.remainingBytes,metadataStart:phase.metadataStart,execFileSync:phase.execFileSync});
+    originals = require('./service-pack-originals.cjs').createServicePackOriginals({directory:path.join(repoRoot,'.test-data/service-pack-originals'),bodyDirectory:path.join(repoRoot,'.test-data/service-pack-bodies'),sourceSha:process.argv[6],check:phase.check,reserveBytes:phase.reserveBytes,remainingBytes:phase.remainingBytes,metadataStart:phase.metadataStart,execFileSync:phase.execFileSync,reserveOriginalMaximum:phase.reserveOriginalMaximum,settleOriginalReservation:phase.settleOriginalReservation});
     phase.attachRecorder(originals);restoreStdio=phase.installStdio();
   }
 
@@ -729,7 +759,9 @@ function main() {
   fs.mkdirSync(packDir, { recursive: true });
   fs.mkdirSync(cacheDir, { recursive: true });
 
+  let packError;
   try {
+  if(originals){nodeRuntime=require('./service-pack-node-runtime.cjs').captureNodeWorker({check:phase.check});if(nodeRuntime)originals.event({role:'actual-node-runtime-before',observation:nodeRuntime.before});}
   const npmInvocation = getNpmInvocation([
     'pack',
     '--json',
@@ -762,11 +794,16 @@ function main() {
 
   console.log(`[npm-pack] wrote ${packJsonPath}`);
   console.log(`[npm-pack] tarball ${tarballPath}`);
-  if (originals) originals.seal({completion:'actual-pack-returned',budget:phase.snapshot()});
-  } finally { if (restoreStdio) restoreStdio(); }
+  if(nodeRuntime)originals.event({role:'actual-node-runtime-after',observation:nodeRuntime.finish()});
+  if (originals) originals.seal({...(nodeRuntime?{nodeRuntimeModel:'actual-linux-node-worker-executable-v1'}:{}),completion:'actual-pack-returned',resolutionSearchModel:'actual-node-module-search-prefix-v1',budget:phase.snapshot()});
+  } catch (error) { packError = error;throw error; } finally {
+    let cleanupError;try{if(nodeRuntime)nodeRuntime.close();}catch(error){cleanupError=error;}try { if (originals) originals.close(); } catch (error) { cleanupError ??= error; }
+    try { if (restoreStdio) restoreStdio(); } catch (error) { cleanupError ??= error; }
+    if (!packError && cleanupError) throw cleanupError;
+  }
 }
 
-module.exports = { removeWorkspaceDependenciesManifest, projectExposedRuntimeDependency, projectServicePackManifest, projectPackedManifest, planExposedRuntimeDependencies, getNpmInvocation, summarizeTarball, serviceWorkspacePackages, getBundledLocalDependencies, bundleLocalDependenciesIntoTarball, packWithManifestRestoration, applyServiceProfile, shouldCopyBundledDependency };
+module.exports = { installedResolutionSearchRoots, inspectInstalledResolutionSearch, removeWorkspaceDependenciesManifest, projectExposedRuntimeDependency, projectServicePackManifest, projectPackedManifest, planExposedRuntimeDependencies, getNpmInvocation, summarizeTarball, serviceWorkspacePackages, getBundledLocalDependencies, bundleLocalDependenciesIntoTarball, packWithManifestRestoration, applyServiceProfile, shouldCopyBundledDependency };
 
 if (require.main === module) {
   try {

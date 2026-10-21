@@ -10,15 +10,15 @@ import{selectSdkControllerHelperGroup as selectHelpers,requiredSdkControllerHelp
 const digest=(v:unknown)=>createHash('sha256').update(JSON.stringify(v)).digest('hex');
 test('SDK44 keeps every actual89f complete recipe and binds the final native-tested helper bytes',()=>{
  expect(before.base).toBe('89f13664c4a9b83951bd6a0a067a933717e2572a');expect(Object.values(before.hashes).reduce((n,rows)=>n+rows.length,0)).toBe(229);
- for(const[name,groups]of Object.entries({api,sdk,consumer,ci})){const old=before.hashes[name as keyof typeof before.hashes];expect(groups.slice(0,old.length).map(digest)).toEqual(old);expect(groups.length-old.length).toBe(name==='api'?0:name==='ci'?4:2);}
- expect(current).toHaveLength(394);for(const row of [...current,...sdk[sdk.length-1]!.selectors,...sdk[sdk.length-1]!.sourceBindings])expect(createHash('sha256').update(readFileSync(row.path)).digest('hex')).toBe(row.sha256);
+ for(const[name,groups]of Object.entries({api,sdk,consumer,ci})){const old=before.hashes[name as keyof typeof before.hashes];expect(groups.slice(0,old.length).map(digest)).toEqual(old);expect(groups.length-old.length).toBe(name==='api'?1:name==='ci'?6:3);}
+ expect(current).toHaveLength(403);for(const row of [...current,...sdk[sdk.length-1]!.selectors,...sdk[sdk.length-1]!.sourceBindings])expect(createHash('sha256').update(readFileSync(row.path)).digest('hex')).toBe(row.sha256);
  for(const row of inputs.files)expect(sdk[43]!.sourceBindings.find(binding=>binding.path===row.path)?.sha256??sdk[43]!.selectors.find(binding=>binding.path===row.path)?.sha256).toBe(row.sha256);
  const policy=readFileSync('scripts/lib/independent-admission/consumer-observer-policy.ts');expect(policy.byteLength<1024*1024).toBe(true);
  const base64=policy.toString('base64').match(/.{1,60}/gu)!.join('\n')+'\n';expect(Buffer.byteLength(JSON.stringify({type:'file',size:policy.byteLength,encoding:'base64',content:base64}))<=2*1024*1024).toBe(true);
 });
-test('only the eighteen complete declared helper tuples are admitted; nineteenth, ambiguity and observed33 refuse',()=>{
- const groups=Array.from({length:18},(_,i)=>Object.freeze([Object.freeze(['helper',String(i)] as const)]));expect(selectHelpers(groups,new Map(groups[17]!))).toBe(groups[17]!);expect(planHelpers(groups,['helper'],new Map(groups[17]!))).toBe(groups[17]!);
- for(const declared of [[...groups,[['helper','18'] as const]], [...groups.slice(0,17),groups[0]!]]){expect(()=>selectHelpers(declared,new Map(declared[declared.length-1]!))).toThrow();expect(()=>planHelpers(declared,['helper'],new Map(declared[declared.length-1]!))).toThrow();}
+test('only the nineteen complete declared helper tuples are admitted; twentieth, ambiguity and observed33 refuse',()=>{
+ const groups=Array.from({length:19},(_,i)=>Object.freeze([Object.freeze(['helper',String(i)] as const)]));expect(selectHelpers(groups,new Map(groups[18]!))).toBe(groups[18]!);expect(planHelpers(groups,['helper'],new Map(groups[18]!))).toBe(groups[18]!);
+ for(const declared of [[...groups,[['helper','19'] as const]], [...groups.slice(0,18),groups[0]!]]){expect(()=>selectHelpers(declared,new Map(declared[declared.length-1]!))).toThrow();expect(()=>planHelpers(declared,['helper'],new Map(declared[declared.length-1]!))).toThrow();}
  expect(()=>selectHelpers(groups,new Map(Array.from({length:33},(_,i)=>[String(i),'a'] as const)))).toThrow();
 });
 for(const[name,groups]of Object.entries({api,sdk,consumer,ci}))for(const[index,group]of groups.entries())test(`SDK44 ${name} complete recipe ${index+1} admits only its own observed whole tuple`,()=>{

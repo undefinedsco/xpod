@@ -203,6 +203,8 @@ async function inspectTarballFile(file, limits, signal) {
 async function inspectTarballStream(source, limits, signal) {
   validateTarInspectionLimits(limits);
   signal?.throwIfAborted();
+  if (limits.memberDigests !== undefined && limits.memberDigests !== true) throw new Error('Explicit member digest mode required');
+  if (limits.memberDigests ? !Number.isSafeInteger(limits.memberMetadataBytes) || limits.memberMetadataBytes < 1 || limits.memberMetadataBytes > 4 * 1024 ** 2 : limits.memberMetadataBytes !== undefined) throw new Error('Invalid member metadata budget');
   if (!source || typeof source.pipe !== 'function' || typeof source.destroy !== 'function' || typeof source.on !== 'function') throw new Error('Readable actual tarball stream required');
   const gunzip = zlib.createGunzip({ chunkSize: 65536 });
   source.on('error', error => gunzip.destroy(error));
@@ -212,6 +214,12 @@ async function inspectTarballStream(source, limits, signal) {
   const seen = new Set();
   let header = Buffer.alloc(BLOCK), used = 0, remaining = 0, padding = 0;
   let ended = false, expanded = 0, members = 0, manifestParts = [], manifestBytes = 0, current;
+  const memberDigests = limits.memberDigests ? [] : undefined;let memberMetadataBytes = 2, currentHash;
+  function memberComplete() {
+    if (!memberDigests) return;
+    const row = { path: current.path, type: current.type, mode: current.mode, bytes: current.size, ...(currentHash ? { sha256: currentHash.digest('hex') } : {}) };
+    memberDigests.push(row);currentHash = undefined;
+  }
   try {
     for await (const chunk of gunzip) {
       signal?.throwIfAborted();
@@ -225,7 +233,8 @@ async function inspectTarballStream(source, limits, signal) {
         } else if (remaining) {
           const count = Math.min(remaining, chunk.length - offset);
           if (current.path === MANIFEST_PATH) manifestParts.push(Buffer.from(chunk.subarray(offset, offset + count)));
-          remaining -= count; offset += count;
+          if (currentHash) currentHash.update(chunk.subarray(offset, offset + count));
+          remaining -= count; offset += count;if (!remaining) memberComplete();
         } else if (padding) {
           const count = Math.min(padding, chunk.length - offset);
           padding -= count; offset += count;
@@ -237,7 +246,14 @@ async function inspectTarballStream(source, limits, signal) {
             if (isZeroBlock(header)) { ended = true; continue; }
             if (++members > limits.members) throw new Error('Tar member budget exceeded');
             current = validateHeader(header, seen);
-            remaining = current.size;
+            if (memberDigests) {
+              if (current.type === 'directory' && current.size !== 0) throw new Error('Source directory member has data');
+              const reserved = { path: current.path, type: current.type, mode: current.mode, bytes: current.size, ...(current.type === 'file' ? { sha256: '0'.repeat(64) } : {}) };
+              const amount = Buffer.byteLength(JSON.stringify(reserved)) + (memberDigests.length ? 1 : 0);
+              if (memberMetadataBytes + amount > limits.memberMetadataBytes) throw new Error('Tar member metadata budget exceeded');
+              memberMetadataBytes += amount;currentHash = current.type === 'file' ? crypto.createHash('sha256') : undefined;
+            }
+            remaining = current.size;if (!remaining) memberComplete();
             padding = (BLOCK - remaining % BLOCK) % BLOCK;
             if (current.path === MANIFEST_PATH) {
               if (current.type !== 'file' || current.size > limits.manifestBytes) throw new Error('Tar manifest byte budget/type exceeded');
@@ -251,7 +267,7 @@ async function inspectTarballStream(source, limits, signal) {
     if (!members || !seen.has(MANIFEST_PATH)) throw new Error(`Corrupted tar payload: missing ${MANIFEST_PATH}`);
     const manifestOriginal = Buffer.concat(manifestParts, manifestBytes);
     const manifest = JSON.parse(manifestOriginal.toString('utf8'));
-    return { manifest, manifestOriginal, members, expandedBytes: expanded };
+    return { manifest, manifestOriginal, members, expandedBytes: expanded, ...(memberDigests ? { memberDigests } : {}) };
   } finally { signal?.removeEventListener('abort', abort); source.destroy(); gunzip.destroy(); }
 }
 

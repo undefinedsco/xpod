@@ -38,6 +38,21 @@ export async function measureRegistryArchiveExpansion(archive: Buffer, maximum: 
 interface Group { started: number; attempts: number; packed: number; expanded: number; active: boolean; caps: Map<string, object> }
 const groups = new WeakMap<object, Group>();
 const issued = new WeakMap<object, RegistryLegalOriginalView>();
+const archiveModes=new WeakMap<object,ReadonlyMap<string,number>>();
+/** Separate original-format observation; legacy member.mode and view JSON are
+ * unchanged. Callers receive a copy, never the issuer's retained map. */
+export function registryLegalOriginalArchiveModes(value:unknown):ReadonlyMap<string,number>|undefined{
+ const modes=value&&typeof value==='object'&&issued.has(value)?archiveModes.get(value):undefined;
+ return modes?new Map(modes):undefined;
+}
+const serviceSelected=new WeakMap<object,WeakMap<object,{originals:unknown;source:unknown;assertCurrent():void;facts:Readonly<{officialSelectedPayloadVerified:true;name:string;version:string;members:number}>}>>();
+/** Service association is current only while the same genuine selected source
+ * remains active. A generic registry cap alone never establishes this axis. */
+export function serviceRegistrySelectedInputView(cap:unknown,input:{pack:unknown;originals:unknown;source:unknown}){
+ const binding=cap&&typeof cap==='object'&&input.pack&&typeof input.pack==='object'?serviceSelected.get(cap)?.get(input.pack):undefined;
+ if(!binding||binding.originals!==input.originals||binding.source!==input.source)return undefined;
+ binding.assertCurrent();return Object.freeze({facts:binding.facts,assertCurrent:binding.assertCurrent});
+}
 export function registryLegalOriginalView(capability: unknown): RegistryLegalOriginalView | undefined {
   return capability && typeof capability === 'object' ? issued.get(capability) : undefined;
 }
@@ -114,7 +129,59 @@ export async function observeVerifierRegistryOriginal(input: { source: unknown; 
   if (!source) fail('private immutable Git source required for verifier originals');
   return acquireRegistryOriginal(input.source as object, source, input.name, input.version);
 }
-async function acquireRegistryOriginal(owner: object, source: DerivedSourceView, name: string, version: string): Promise<object> {
+export interface ServiceRegistryAcquisitionBudget {
+  check():void;remainingMs():number;
+  /** Parent accounting only, never an identity or capability assertion. The
+   * complete ceiling remains consumed on failure; no partial-absence refund. */
+  reserveBytes(bytes:number):void;
+}
+/** Service original admission shares the existing sole registry issuer. The
+ * selected witness is looked up from the actual private pack observation, never
+ * supplied as JSON. An original cap alone is not installed/source coverage. */
+export function canonicalServiceRegistryTarball(name:string,version:string):string {
+  if(!/^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/u.test(name)||!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/u.test(version))fail('exact service registry identity required');
+  return 'https://registry.npmjs.org/'+name+'/-/'+name.split('/').pop()+'-'+version+'.tgz';
+}
+export async function observeCandidateServiceRegistryOriginal(input:{originals:unknown;source:unknown;pack:unknown;name:string;version:string;budget:ServiceRegistryAcquisitionBudget}):Promise<object>{
+  const {nativeOriginalsView,assertCollectedNativeOriginalCustody}=await import('./native-original-collector');
+  const {assertDerivedSourceCurrent}=await import('./source-context');
+  const native=nativeOriginalsView(input.originals),source=derivedSourceView(input.source);
+  if(!native||!source||native.originFacts.sourceSha!==source.sourceSha)fail('same private service/source originals required');
+  if(!source.trackedPaths.includes('scripts/lib/independent-admission/candidate-service-pack-output.ts'))fail('current immutable private pack reader required');
+  const {candidateServicePackSelectedInputView}=await import('./candidate-service-pack-output');
+  const selected=candidateServicePackSelectedInputView(input.pack,input.originals,input.source);
+  if(!selected)fail('actual private completed selected source required');
+  const {readFileSync}=await import('node:fs');
+  const files=[['scripts/lib/independent-admission/legal-registry-originals.ts',new URL(import.meta.url)],['scripts/lib/registry-legal-original-limits.json',new URL('../registry-legal-original-limits.json',import.meta.url)]] as const;
+  const master=native.members.find(row=>row.path==='service-image-materials.json');if(!master)fail('same retained service master required');
+  const check=()=>{
+    input.budget.check();if(input.budget.remainingMs()<=0)fail('service parent deadline exhausted');
+    assertCollectedNativeOriginalCustody(input.originals);assertDerivedSourceCurrent(input.source);
+    if(nativeOriginalsView(input.originals)!==native||derivedSourceView(input.source)!==source)fail('private service inputs changed');
+    // Zero range verifies active lifetime and held/named master identity without
+    // spending or resetting the shared source ZIP byte allowance.
+    native.readOriginalRange(master.path,0,0);
+    for(const [path,url] of files)if(!source.trackedPaths.includes(path)||!source.readTracked(path).equals(readFileSync(url)))fail('immutable registry issuer executable closure differs');
+  };
+  check();canonicalServiceRegistryTarball(input.name,input.version);
+  const before=selected.read(input.name,input.version);
+  const transportBudget={check,remainingMs:()=>input.budget.remainingMs(),reserveBytes(count:number){check();input.budget.reserveBytes(count);check();}};
+  const cap=await acquireRegistryOriginal(input.originals as object,source,input.name,input.version,transportBudget);
+  check();const after=selected.read(input.name,input.version);if(after!==before)fail('selected source witness changed');
+  const original=registryLegalOriginalView(cap),modes=archiveModes.get(cap);
+  if(!original||!modes)fail('sole registry issuer did not retain original');
+  for(const member of after.members){
+    check();if(member.type!=='file'||!member.path.startsWith('package/'))fail('actual selected file required');
+    const relative=member.path.slice(8),row=original.members.find(row=>row.path===relative);
+    if(!row||row.bytes!==member.bytes||row.sha256!==member.sha256||modes.get(relative)!==member.mode)fail('selected source differs from official original bytes or mode; transform proof required');
+  }
+  if(!after.members.length||!after.members.some(row=>row.path==='package/package.json'))fail('selected manifest source closure required');
+  check();const bindings=serviceSelected.get(cap)??new WeakMap();serviceSelected.set(cap,bindings);
+  const facts=Object.freeze({officialSelectedPayloadVerified:true as const,name:input.name,version:input.version,members:after.members.length});
+  bindings.set(input.pack as object,Object.freeze({originals:input.originals,source:input.source,facts,assertCurrent(){check();if(selected.read(input.name,input.version)!==after)fail('private selected source witness changed');}}));
+  return cap;
+}
+async function acquireRegistryOriginal(owner: object, source: DerivedSourceView, name: string, version: string, parent?:ServiceRegistryAcquisitionBudget): Promise<object> {
   if (!source.trackedPaths.includes('bun.lock')) fail('immutable Bun lock required');
   const lockBytes = source.readTracked('bun.lock');
   const integrity = registryLegalLockEntries(lockBytes).get(name + '@' + version);
@@ -122,27 +189,56 @@ async function acquireRegistryOriginal(owner: object, source: DerivedSourceView,
   const policy = REGISTRY_LEGAL_ORIGINAL_LIMITS;
   const group = groups.get(owner) ?? { started: Date.now(), attempts: 0, packed: 0, expanded: 0, active: false, caps: new Map<string, object>() };
   groups.set(owner, group);
+  const checkParent=()=>{if(parent){parent.check();if(!Number.isFinite(parent.remainingMs())||parent.remainingMs()<=0)fail('inherited service acquisition deadline exhausted');}};checkParent();
   const key = name + '@' + version;
   const existing = group.caps.get(key); if (existing) return existing;
   if (group.active || group.attempts >= policy.groupAttempts || group.packed >= policy.groupPackedBytes || group.expanded >= policy.groupExpandedBytes || Date.now() - group.started >= policy.groupTimeoutMs) fail('artifact group budget exhausted or acquisition already active; original admission pending');
   group.attempts++; group.active = true;
   try {
-  const signal = AbortSignal.timeout(Math.min(policy.requestTimeoutMs, policy.groupTimeoutMs - (Date.now() - group.started)));
+  checkParent();
+  // Two packed representations (stream chunks/concatenation), two expanded
+  // parser/member representations, and metadata are all reserved before HTTP.
+  // This is debited against the caller's existing parent, not new allowance.
+  if(parent)parent.reserveBytes(2*policy.metadataBytes+2*policy.packagePackedBytes+2*policy.packageExpandedBytes);
+  const signal = AbortSignal.timeout(Math.max(1,Math.floor(Math.min(policy.requestTimeoutMs, policy.groupTimeoutMs - (Date.now() - group.started),parent?parent.remainingMs():Infinity))));
   const read = async (url: string, maximum: number, packed = false): Promise<Buffer> => {
-    const parsed = new URL(url);
+    checkParent();const parsed = new URL(url);
     if (parsed.origin !== 'https://registry.npmjs.org' || parsed.username || parsed.password || parsed.hash) fail('noncanonical registry origin');
-    const response = await fetch(url, { redirect: 'error', signal });
-    if (response.status !== 200 || !response.body) fail('registry HTTP status ' + response.status);
-    const reader = response.body!.getReader(), chunks: Buffer[] = []; let size = 0;
-    try { for (;;) { const next = await reader.read(); if (next.done) break; size += next.value.length;
-      if (packed) group.packed += next.value.length;
-      if (size > maximum || group.packed > policy.groupPackedBytes) fail('registry byte budget exceeded; original admission pending'); chunks.push(Buffer.from(next.value)); } }
-    finally { await reader.cancel().catch(() => {}); }
-    return Buffer.concat(chunks, size);
+    let response:Response|undefined,reader:ReadableStreamDefaultReader<Uint8Array>|undefined,primary:unknown;
+    const chunks:Buffer[]=[];let size=0,hadPrimary=false;
+    try {
+      response=await fetch(url,{redirect:'error',signal});checkParent();
+      if(response.body)reader=response.body.getReader();
+      if(response.status!==200||!reader){
+        // Only the new service contract retains a bounded error-body prefix.
+        // Historical acquisition keeps its original HTTP rejection behavior.
+        if(parent&&reader){for(;;){checkParent();const next=await reader.read();checkParent();if(next.done)break;const remaining=Math.min(maximum,65536)-size;if(remaining<=0)break;const block=Buffer.from(next.value.subarray(0,remaining));chunks.push(block);size+=block.length;if(size>=Math.min(maximum,65536))break;}}
+        fail('registry HTTP status '+response.status);
+      }
+      for(;;){
+        checkParent();const next=await reader.read();checkParent();if(next.done)break;
+        if(packed)group.packed+=next.value.length;
+        if(size+next.value.length>maximum||group.packed>policy.groupPackedBytes)fail('registry byte budget exceeded; original admission pending');
+        chunks.push(Buffer.from(next.value));size+=next.value.length;
+      }
+      return Buffer.concat(chunks,size);
+    }catch(error){
+      primary=error;hadPrimary=true;
+      if(parent&&error&&typeof error==='object'){
+        // Diagnostic bytes never issue an original cap. Keep the complete
+        // ceiling charged and the original exception object on every failure.
+        try{const headers:string[][]=[];let headerBytes=0;if(response)for(const [name,value] of response.headers){headerBytes+=Buffer.byteLength(name)+Buffer.byteLength(value);if(headerBytes>policy.metadataBytes)break;headers.push([name,value]);}Object.defineProperty(error,'serviceRegistryOriginalFailure',{value:Object.freeze({schemaVersion:1,kind:'failed-service-registry-original-request',url,status:response?.status??null,headers:Object.freeze(headers.map(row=>Object.freeze(row))),headersRepresentation:'fetch parsed headers',retainedPrefix:Buffer.concat(chunks,size),prefixBytes:size,completeBody:false,capabilityIssued:false}),enumerable:false});}catch{/* Diagnostic allocation/cleanup cannot replace the original rejection. */}
+      }
+      throw error;
+    }finally{
+      try{if(reader)await reader.cancel();}catch(error){if(!hadPrimary)throw error;}
+      try{checkParent();}catch(error){if(!hadPrimary)throw error;}
+    }
   };
   const metadataBytes = await read('https://registry.npmjs.org/' + encodeURIComponent(name) + '/' + encodeURIComponent(version), policy.metadataBytes);
-  const metadata = JSON.parse(metadataBytes.toString());
+  checkParent();const metadata = JSON.parse(metadataBytes.toString());
   if (metadata.name !== name || metadata.version !== version || metadata.dist?.integrity !== integrity) fail('registry metadata conflicts with immutable lock');
+  if(parent&&metadata.dist.tarball!==canonicalServiceRegistryTarball(name,version))fail('fixed canonical service registry tarball required');
   const archive = await read(metadata.dist.tarball, Math.min(policy.packagePackedBytes, policy.groupPackedBytes - group.packed), true);
   const expansionBudget = Math.min(policy.packageExpandedBytes, policy.groupExpandedBytes - group.expanded);
   // Reserve the full expansion ceiling even on malformed gzip/parser failure.
@@ -153,10 +249,10 @@ async function acquireRegistryOriginal(owner: object, source: DerivedSourceView,
   // debit their actual complete tar expansion, retaining all hard group bounds.
   group.expanded -= expansionBudget - expandedBytes;
 
-  const originals = new Map<string, Buffer>();
+  checkParent();const originals = new Map<string, Buffer>(),actualModes=new Map<string,number>();
   for (const row of inspected.entries) if (row.type === 'file') {
     if (!row.path.startsWith('package/')) fail('registry original outside package');
-    originals.set(row.path.slice(8), Buffer.from(row.content));
+    originals.set(row.path.slice(8), Buffer.from(row.content));actualModes.set(row.path.slice(8),row.mode);
   }
   const members = Object.freeze([...originals].map(([name, bytes]) => Object.freeze({ path: name, bytes: bytes.length, sha256: digest(bytes).toString('hex'), mode: 0o644 })));
   const cap = Object.freeze({});
@@ -165,6 +261,6 @@ async function acquireRegistryOriginal(owner: object, source: DerivedSourceView,
     readArchiveRange(offset: number, length: number) { if (!Number.isSafeInteger(offset) || !Number.isSafeInteger(length) || offset < 0 || length < 0 || length > 65536 || offset + length > archive.length) return fail('bounded original archive range required'); return Buffer.from(archive.subarray(offset, offset + length)); },
     readMemberRange(name: string, offset: number, length: number) { const bytes = originals.get(name); if (!bytes || !Number.isSafeInteger(offset) || !Number.isSafeInteger(length) || offset < 0 || length < 0 || length > 65536 || offset + length > bytes.length) return fail('bounded original member range required'); return Buffer.from(bytes.subarray(offset, offset + length)); },
     readMember(name: string) { const bytes = originals.get(name); if (!bytes) return fail('original member absent'); return Buffer.from(bytes); } }));
-  group.caps.set(key, cap); return cap;
+  archiveModes.set(cap,new Map(actualModes));group.caps.set(key, cap); return cap;
   } finally { group.active = false; }
 }

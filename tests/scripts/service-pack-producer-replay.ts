@@ -4,12 +4,15 @@ import path from 'node:path';
 import os from 'node:os';
 import {createRequire} from 'node:module';
 import assert from 'node:assert/strict';
+import {createHash} from 'node:crypto';
 import {replayServicePackManifest} from '../../scripts/lib/independent-admission/service-pack-manifest-replay';
 const require=createRequire(import.meta.url),{inspectTarballFile}=require('../../scripts/workspace-package-payload.cjs');
 const root=process.argv[2]!;const collection=JSON.parse(fs.readFileSync(path.join(root,'.test-data/service-pack-originals/materials.json'),'utf8'));
 const bodies=new Map<string,Buffer>(),publicManifests=new Map<string,Buffer>();
 for(const row of collection.records.filter((row:any)=>row.kind==='actual-pack-body')){
- const file=path.join(root,'.test-data',row.reference.path);const inspected=await inspectTarballFile(file,{expandedBytes:32*1024**2,members:10000,manifestBytes:128*1024});
+ const file=path.join(root,'.test-data',row.reference.path);
+ if(['selected-input-source-tar','public-selected-input-source-tar'].includes(row.role)){const raw=fs.readFileSync(file);assert.equal(raw.length,row.reference.bytes);assert.equal(createHash('sha256').update(raw).digest('hex'),row.reference.sha256);continue;}
+ assert.ok(['seed-npm-pack','public-package-tar','final-service-pack'].includes(row.role));const inspected=await inspectTarballFile(file,{expandedBytes:32*1024**2,members:10000,manifestBytes:128*1024});
  if(row.role==='public-package-tar')publicManifests.set(row.name,inspected.manifestOriginal);else bodies.set(row.role,inspected.manifestOriginal);
 }
 const input={collection,repoRoot:root,temporaryRoot:os.tmpdir(),afterRoot:fs.readFileSync(path.join(root,'package.json')),seedManifest:bodies.get('seed-npm-pack')!,finalManifest:bodies.get('final-service-pack')!,publicManifests,readObject:(reference:any)=>fs.readFileSync(path.join(root,'.test-data/service-pack-originals',reference.path))};

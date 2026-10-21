@@ -326,7 +326,7 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
     maximum_raw=limits['sourceMaterialBytes'] if limits else 32*1024**2
     maximum_file=limits['shardBytes'] if limits else 1024**2
     maximum_total=limits['sourceMaterialBytes'] if limits else 16*1024**2
-    original_cache={};retained_entries=set();phase_tracking=[];generated_verifier=None;generated_module=None
+    entity_model=None;entity_model_initialized=False;original_cache={};observed_entity_names=set();retained_entries=set();phase_tracking=[];generated_verifier=None;generated_module=None
     denial_mode=False;denied_operations={};setresuid_mode=False;identity_mode=False;terminal_mode=False;setresuid_operations={}
     shared_mode=False;owners={};exec_fd_events={};vfork_events={};vfork_holds={};child_bindings={};wait_rows={}
     live=set();last=0;entries={};exits={};barriers={};caps={};paths={};renames=[];consumers=[];source_reads=[];total=0;capture_total=0;exclusive=None;root_codes={};clone_flags=set();clone_flag_values={}
@@ -334,7 +334,7 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
     mode_windows={};mode_transitions={};rename_windows={};rename_transitions={};active_rename=None;pending_rename_window=None;latest_execution_sequence=0;write_original_sequences={};namespace_bindings=[]
     append_obligations={};append_completed={};append_dirty={};append_checkpoints={};append_hashes={};write_projections={};write_windows={};closed_write_windows=set();write_transitions={};write_consumers=[];write_read_exits={}
     empty_windows={};empty_eofs=set();dependency_roots={};dependency_reads=0;dependency_cache=None;dependency_expected_names=None;dependency_collection_identity=None
-    prepared={};prepared_consumers=[];prepared_digest=hashlib.sha256();prepared_count=0;prepared_sealed=False;prepared_paths=set()
+    reused_originals={};prepared={};prepared_consumers=[];prepared_digest=hashlib.sha256();prepared_count=0;prepared_sealed=False;prepared_paths=set()
     def capture_data(ref):
         nonlocal capture_total
         need(re.fullmatch(r'capture-[0-9]{4,}\.original',ref['path']) and 0<=ref['bytes']<=maximum_file,'fixed capture role/byte bound')
@@ -345,7 +345,7 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
             blocks=(original[offset:offset+65536] for offset in range(0,len(original),65536)) if isinstance(original,bytes) else original
             for block in blocks:
                 check();need(isinstance(block,bytes) and len(block)<=65536,'bounded actual capture block required');count+=len(block);need(count<=ref['bytes'],'capture actual byte bound');digest.update(block)
-            data=(count,digest.hexdigest());capture_total+=count;need(capture_total<=maximum_total and data==(ref['bytes'],ref['sha256']),'capture actual bytes/reference differs');original_cache[key]=data
+            data=(count,digest.hexdigest());capture_total+=count;need(capture_total<=maximum_total and data==(ref['bytes'],ref['sha256']),'capture actual bytes/reference differs');original_cache[key]=data;observed_entity_names.add(ref['path'])
         return original_cache[key]
     def dependency_bytes(ref):
         capture_data(ref);need(ref['bytes']<=4*1024**2,'dependency metadata byte bound')
@@ -450,6 +450,9 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                 need(not live and not roots and not phase_tracking and not prepared_sealed and row['files']==prepared_count and row['inventorySha256']==prepared_digest.hexdigest(),'prepared closed-set byte seal differs');prepared_sealed=True
                 need(all(value[0]['path'].startswith(row['buildRoot'].rstrip('/')+'/') for value in prepared.values()),'prepared original escapes actual build root')
             elif kind=='owned-root-binding':
+                observed_entity_model=row.get('captureOriginalEntityModel')
+                need('captureOriginalEntityModel' not in row or observed_entity_model=='same-phase-producer-original-v1','unknown capture entity model')
+                need(not entity_model_initialized or entity_model==observed_entity_model,'capture entity model changed across actual roots');entity_model=observed_entity_model;entity_model_initialized=True
                 need(dependency_expected_names is None or set(dependency_roots)==dependency_expected_names,'prepared dependency root universe is not completely registered');need(not live and not roots,'unique actual root required');live.add(row['pid']);roots.append(row['pid']);need(row['backend']=='ptrace-all-stop-process-v1','wrong observer backend')
                 need(row.get('taskOwnershipModel') in [None,'all-tracked-tids-shared-fd-v1'],'unknown task ownership model');shared_mode=row.get('taskOwnershipModel') is not None;owners={}
                 need(not denied_operations,'unclosed explicit syscall denial at new root');denial=row.get('optionalIoUringModel');need(denial in [None,'explicit-kernel-enosys-denial-v1'],'unknown optional syscall denial model');denial_mode=denial is not None
@@ -459,7 +462,7 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                         import importlib.util
                         from pathlib import Path
                         generated_spec=importlib.util.spec_from_file_location('generated_vma_replay',Path(__file__).with_name('sdk-generated-vma-originals.py'));generated_module=importlib.util.module_from_spec(generated_spec);generated_spec.loader.exec_module(generated_module)
-                    need(generated_model in [generated_module.LEGACY_MODEL,generated_module.KERNEL_LINK_MODEL,generated_module.MODEL,generated_module.COHORT_MODEL] and row.get('generatedVmaBuildRoot')==generated_module.BUILD_ROOT and shared_mode,'unknown/unowned generated VMA model')
+                    need(generated_model in [generated_module.LEGACY_MODEL,generated_module.KERNEL_LINK_MODEL,generated_module.MODEL,generated_module.COHORT_MODEL,generated_module.PRIVATE_WAKE_MODEL] and row.get('generatedVmaBuildRoot')==generated_module.BUILD_ROOT and shared_mode,'unknown/unowned generated VMA model')
                     if generated_verifier is not None:need(generated_verifier.model==generated_model,'generated VMA evidence model changed across roots')
                     if generated_verifier is None:generated_verifier=generated_module.Verifier(capture_data,tool_maps,limits.get('metadataBytes',4*1024**2) if limits else 4*1024**2,model=generated_model,read_blocks=lambda ref:original_blocks(ref),maximum_file=maximum_file)
                 else:need(generated_verifier is None,'generated VMA model changed across actual roots')
@@ -818,6 +821,17 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                 elif row['role']=='readwrite-consumer':
                     need(nr==rules['read'] and len(row['writers'])==1 and row['writers'][0]['pid']==row['pid'] and row['writers'][0]['fd']==row['fd'] and row['writers'][0]['accessMode']==2 and row['writers'][0]['flags']&3==2,'own-RW read has another writable alias')
                 else:need(nr==rules['read'] and row['writers']==[],'consumer/source has live writable alias')
+                reuse=row.get('originalReuse');alias_present='originalReuse' in row
+                if entity_model is not None and row['original']['path'] in observed_entity_names:need(alias_present,'shared physical capture entity lacks typed alias')
+                if alias_present:
+                    need(entity_model=='same-phase-producer-original-v1','capture entity alias lacks actual root model')
+                    need(isinstance(reuse,dict) and set(reuse)=={'model','originCaptureSequence'} and reuse['model']=='same-phase-producer-original-v1' and type(reuse['originCaptureSequence']) is int and reuse['originCaptureSequence']<row['sequence'],'exact prior capture entity alias required')
+                    prior=caps.get(reuse['originCaptureSequence']) or prepared.get(reuse['originCaptureSequence'])
+                    need(prior and row['role']=='consumer' and (prior[0]['kind']=='prepared-build-input-original' or prior[0].get('role')=='producer-close'),'capture entity alias lacks own producer/prepared origin')
+                    origin=prior[0];entity=row.get('originalEntityIdentity')
+                    need(row.get('phase')==origin.get('phase')==phase and row['original']==origin['original'] and row['identity'][:2]==origin['identity'][:2],'capture entity alias crosses phase, original or source identity')
+                    need(isinstance(entity,list) and len(entity)==7 and all(type(value) is int for value in entity) and entity==origin.get('originalEntityIdentity') and entity[3]==row['original']['bytes'] and entity[6]==1 and entity[2]&0o170000==0o100000,'capture entity alias lacks exact single-link physical original')
+                    reused_originals[row['sequence']]=reuse['originCaptureSequence']
                 data=capture_data(row['original'])
                 need(len(row['identity'])==6 and row['identity'][3]==data[0],'actual capture identity/size differs');caps[row['sequence']]=(row,data)
                 if capture_observer:capture_observer(row,data)
@@ -897,6 +911,11 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
             for reference in relation['modeTransitions']:
                 pair=mode_transitions.get(reference);need(pair and producer[0]['sequence']<reference<consumer[0]['sequence'] and pair[0]['beforeIdentity']==current,'namespace mode change has no actual chmod chain');current=pair[1]['afterIdentity']
         identity=consumer[0]['identity'];need(current[2]==identity[2] and identity[:2]==before[:2] and relation['path']==consumer[0]['path'] and relation['namedIdentity']==relation['retainedIdentity']==identity and producer[1]==consumer[1],'actual named path/retained FD byte identity differs');namespaces.add((producer[0]['sequence'],consumer[0]['sequence']))
+    for capture_sequence,origin_sequence in reused_originals.items():
+        pairs=[binding for binding in [*consumers,*prepared_consumers] if binding['captureSequence']==capture_sequence]
+        need(len(pairs)==1 and pairs[0]['producerCaptureSequence']==origin_sequence,'capture entity alias missing exact reverse consumer binding')
+        origin=prepared.get(origin_sequence) or successful.get(origin_sequence)
+        need(origin and (origin[0]['kind']=='prepared-build-input-original' and prepared_sealed or origin[0].get('role')=='producer-close'),'capture entity alias lacks sealed prepared or successful producer close')
     covered={};pending=[]
     for binding in consumers:
         consumer=successful.get(binding['captureSequence']);producer=successful.get(binding['producerCaptureSequence'])
@@ -931,5 +950,5 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
             actual=covered.get(path)
             if actual is None:pending.append('actual-successful-generated-consumer-missing:'+path)
             else:need(actual['bytes']==expected['bytes'] and actual['sha256']==expected['sha256'],'actual generated consumer differs from selected full-shard input')
-    return dict(schemaVersion=1,kind='all-stop-CMake-generated-byte-mechanics',observedGeneratedWritableMapCheckpoints=len(generated_verifier.checkpoints) if generated_verifier is not None else 0,generatedMappedConsumerByteCustodyVerified=bool(mapped_outputs),selectedGeneratedConsumerByteCustodyVerified=not pending,outputs=sorted(covered.values(),key=lambda row:row['path']),observedSourceReadCaptures=len(source_reads),observedPreparedDependencyReadCaptures=dependency_reads,preparedDependencySourceAuthorityVerified=False,preparedDependencyPending=(['independent-FetchContent-dependency-stage-and-Git-or-URL-source-authority-unverified'] if dependency_roots else []),pending=pending,overallSdkSourceVerified=False,
+    return dict(**(dict(verifiedPrivateWakeEntrySequences=list(generated_verifier.private_wakes)) if generated_verifier is not None and generated_verifier.model==generated_module.PRIVATE_WAKE_MODEL else {}),schemaVersion=1,kind='all-stop-CMake-generated-byte-mechanics',observedGeneratedWritableMapCheckpoints=len(generated_verifier.checkpoints) if generated_verifier is not None else 0,generatedMappedConsumerByteCustodyVerified=bool(mapped_outputs),selectedGeneratedConsumerByteCustodyVerified=not pending,outputs=sorted(covered.values(),key=lambda row:row['path']),observedSourceReadCaptures=len(source_reads),observedPreparedDependencyReadCaptures=dependency_reads,preparedDependencySourceAuthorityVerified=False,preparedDependencyPending=(['independent-FetchContent-dependency-stage-and-Git-or-URL-source-authority-unverified'] if dependency_roots else []),pending=pending,overallSdkSourceVerified=False,
                 observedAliasOnlyCloses=len(alias_close_exits),observedActualModeTransitions=len(mode_transitions),observedNamedRetainedFdBindings=len(namespaces),observedActualWriteTransitions=len(write_transitions),observedEmptyReadEofWindows=len(empty_eofs),toolchainProcessAuthorityIntervals=process_intervals,toolchainProcessAuthorityIntervalVerified=bool(process_intervals) and all(row.get('model') is not None for row in process_intervals),toolchainProcessAuthorityPending=['toolchain-provider-namespace-external-writer-and-backing-snapshot-authority-unverified']+([] if process_intervals and all(row.get('model') is not None for row in process_intervals) else ['toolchain-owned-process-authority-interval-originals-unavailable']),toolchainFileSnapshots=list(tool_files.values()),toolchainOperationCoverage=tool_coverage.finish(sorted(tool_pending),sorted(tool_provider_pending)),toolchainActualExecImages=tool_execs,toolchainActualFileMappings=tool_mappings,toolchainObservationSha256=tool_digest.hexdigest(),toolchainStopProviderPending=sorted(tool_provider_pending),toolchainPending=sorted(tool_pending|tool_provider_pending|({'toolchain-executed-byte-immutability-and-full-source-authority-unverified'} if tool_execs else set())),toolchainSourceClosureVerified=False,preparedInputConsumers=list(prepared_covered.values()),preparedInputConsumerBytesVerified=bool(prepared_covered),phaseTracking=phase_tracking,scope='actual producer-close/rename/consumer bytes only; reviewed observer execution/Git/source/runtime authority independent')

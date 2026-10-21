@@ -21,7 +21,9 @@ class Tests(unittest.TestCase):
   with contextlib.redirect_stderr(stream),self.assertRaisesRegex(AssertionError,'^shared execution original byte bound$'):s.claim(11)
   self.assertEqual(s.domain_bytes,90)
  def test_actual_summary(self):
-  s=Subject();stream=io.StringIO();self.rejection(s,stream);row=json.loads(stream.getvalue().split(' ',1)[1]);self.assertEqual(row['completedCaptures']['source-read'],dict(count=1,bytes=30));self.assertEqual(row['completedCaptureBytes'],50)
+  s=Subject();stream=io.StringIO();self.rejection(s,stream);row=json.loads(stream.getvalue().split(' ',1)[1]);self.assertEqual(row['completedObservationReferences']['source-read'],dict(count=1,bytes=30));self.assertEqual(row['completedRetainedEntityBytes'],50)
+ def test_reused_entity_observations_are_not_reported_as_physical_bytes(self):
+  s=Subject();s.captures.append(dict(s.captures[0]));stream=io.StringIO();self.rejection(s,stream);row=json.loads(stream.getvalue().split(' ',1)[1]);self.assertEqual(row['completedRetainedEntityBytes'],50);self.assertEqual(row['completedObservationReferencedBytes'],80);self.assertEqual(row['completedObservationReferences']['source-read'],dict(count=2,bytes=60));self.assertNotIn('completedCaptures',row)
  def test_success_does_not_inspect(self):
   s=Subject();s.captures=None;s.claim(10);self.assertEqual(s.domain_bytes,100)
  def test_write_failure(self):self.rejection(Subject(),Broken('write'))
@@ -32,5 +34,5 @@ class Tests(unittest.TestCase):
  def test_generated_reservation(self):
   s=Subject();s.generated_vma=type('V',(),dict(reserved=8,spending_thread=-1))();self.rejection(s,io.StringIO());self.assertEqual(s.generated_vma.reserved,8)
  def test_fixed_output(self):
-  s=Subject();s.captures=[dict(kind='unknown',original=dict(bytes=1))]*10000;stream=io.StringIO();self.rejection(s,stream);self.assertLess(len(stream.getvalue()),2048);self.assertEqual(len(json.loads(stream.getvalue().split(' ',1)[1])['completedCaptures']),8)
+  s=Subject();s.captures=[dict(kind='unknown',original=dict(bytes=1))]*10000;stream=io.StringIO();self.rejection(s,stream);self.assertLess(len(stream.getvalue()),2048);self.assertEqual(len(json.loads(stream.getvalue().split(' ',1)[1])['completedObservationReferences']),8)
 if __name__=='__main__':unittest.main()

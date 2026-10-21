@@ -37,19 +37,36 @@ const PRE_SERVICE_CLI_SOURCE_VERSION_GROUPS:readonly CliSourceVersionGroup[]=Obj
 ]);
 const priorServiceCliGroup=PRE_SERVICE_CLI_SOURCE_VERSION_GROUPS[PRE_SERVICE_CLI_SOURCE_VERSION_GROUPS.length-1]!;
 const serviceCliHashes:Readonly<Record<string,string>>=Object.freeze({'scripts/prepare-package-manifest.cjs':'c85d5f092821c53d7b7893417512a26be3c6165f835a8f03507fe0d09228ebf2'});
-export const CLI_SOURCE_VERSION_GROUPS:readonly CliSourceVersionGroup[]=Object.freeze([...PRE_SERVICE_CLI_SOURCE_VERSION_GROUPS,Object.freeze({...priorServiceCliGroup,secondarySourcePaths:Object.freeze(['scripts/prepare-package-manifest.cjs']),sourceBindings:Object.freeze([...(priorServiceCliGroup.sourceBindings??[]).map(row=>Object.freeze({...row,sha256:serviceCliHashes[row.path]??row.sha256})),Object.freeze({path:'scripts/workspace-package-payload.cjs',sha256:'edfdb44999a87551b744533019f5921e6098c65de7ccf63250e12858b9bcf48f'})])})]);
+const PRE_ENTITY_CLI_SOURCE_VERSION_GROUPS:readonly CliSourceVersionGroup[]=Object.freeze([...PRE_SERVICE_CLI_SOURCE_VERSION_GROUPS,Object.freeze({...priorServiceCliGroup,secondarySourcePaths:Object.freeze(['scripts/prepare-package-manifest.cjs']),sourceBindings:Object.freeze([...(priorServiceCliGroup.sourceBindings??[]).map(row=>Object.freeze({...row,sha256:serviceCliHashes[row.path]??row.sha256})),Object.freeze({path:'scripts/workspace-package-payload.cjs',sha256:'edfdb44999a87551b744533019f5921e6098c65de7ccf63250e12858b9bcf48f'})])})]);
+const entityCliParent=PRE_ENTITY_CLI_SOURCE_VERSION_GROUPS[PRE_ENTITY_CLI_SOURCE_VERSION_GROUPS.length-1]!;
+export const CLI_SOURCE_VERSION_GROUPS:readonly CliSourceVersionGroup[]=Object.freeze([...PRE_ENTITY_CLI_SOURCE_VERSION_GROUPS,Object.freeze({...entityCliParent,secondarySourcePaths:Object.freeze([...(entityCliParent.secondarySourcePaths??[]),'scripts/workspace-package-payload.cjs']),sourceBindings:Object.freeze((entityCliParent.sourceBindings??[]).map(row=>Object.freeze({...row,sha256:row.path==='scripts/workspace-package-payload.cjs'?'89a63085908a414251a34d0fae5143a6a20c28e4b8dfb05d3ea8b9113b8fdc49':row.sha256})))})]);
 function reviewedCliSourceGroup(observed:Readonly<Record<keyof typeof CLI_SOURCE_POLICY,string>>,readTracked?:(name:string)=>Buffer):CliSourceVersionGroup|undefined{
- const candidates=CLI_SOURCE_VERSION_GROUPS.filter(group=>
+ let candidates=CLI_SOURCE_VERSION_GROUPS.filter(group=>
   (['producer','publicationBudget','sourceHelper','sourceLimits','copier'] as const).every(key=>observed[key]===group[key])
   &&group.supervisors.some(value=>value===observed.supervisor)&&group.workflows.some(value=>value===observed.workflow));
- const roles=[...new Set(candidates.flatMap(group=>group.secondarySourcePaths??[]))];
- const owned=new Map<CliSourceVersionGroup,Map<string,string>>();
- for(const group of candidates){const rows=new Map<string,string>();for(const role of roles){const values=(group.sourceBindings??[]).filter(row=>row.path===role);if(!values.length||new Set(values.map(row=>row.sha256)).size!==1)fail('catalog CLI owned secondary original missing or conflicting');rows.set(role,values[0]!.sha256);}owned.set(group,rows);}
- if(roles.length&&!readTracked)return undefined;
- const observedRoles=new Map(roles.map(role=>[role,hash(readTracked!(role))]));
- const matches=candidates.filter(group=>roles.every(role=>observedRoles.get(role)===owned.get(group)!.get(role)));
- if(candidates.length&&roles.length&&matches.length!==1)fail('catalog CLI complete source binding mismatch: '+roles.join(','));
- return matches.length===1?matches[0]:undefined;
+ if(!candidates.length)return undefined;
+ const cache=new Map<string,string>();
+ // A later discriminator is read only after earlier owned roles have removed
+ // versions that never declared it. Every queried role is owned by every
+ // surviving candidate; declarations never substitute for observed originals.
+ while(candidates.length){
+  const owned=new Map<CliSourceVersionGroup,Map<string,string>>();
+  for(const group of candidates){
+   const rows=new Map<string,string>();
+   for(const binding of group.sourceBindings??[]){if(rows.has(binding.path)&&rows.get(binding.path)!==binding.sha256)fail('catalog CLI conflicting owned original');rows.set(binding.path,binding.sha256);}
+   for(const role of group.secondarySourcePaths??[])if(!rows.has(role))fail('catalog CLI owned secondary original missing');
+   owned.set(group,rows);
+  }
+  const pending=[...new Set(candidates.flatMap(group=>group.secondarySourcePaths??[]))].filter(role=>!cache.has(role));
+  if(!pending.length)return candidates.length===1?candidates[0]:undefined;
+  const shared=pending.filter(role=>candidates.every(group=>owned.get(group)!.has(role)));
+  if(!shared.length)fail('catalog CLI complete source binding mismatch: no common owned discriminator');
+  if(!readTracked)return undefined;
+  for(const role of shared)cache.set(role,hash(readTracked(role)));
+  candidates=candidates.filter(group=>shared.every(role=>owned.get(group)!.get(role)===cache.get(role)));
+  if(!candidates.length)fail('catalog CLI complete source binding mismatch: '+shared.join(','));
+ }
+ return undefined;
 }
 export function reviewedCliSourceVersion(observed:Readonly<Record<keyof typeof CLI_SOURCE_POLICY,string>>,readTracked?:(name:string)=>Buffer):boolean{return reviewedCliSourceGroup(observed,readTracked)!==undefined;}
 
