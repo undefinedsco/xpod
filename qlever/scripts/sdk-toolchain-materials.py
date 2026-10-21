@@ -93,9 +93,121 @@ def failure_diagnostic(result,out,directory,check):
     if len(json.dumps(value,sort_keys=True).encode())>65500:raise ValueError('failure diagnostic encoded bound')
     return value
 
+# Failure-only originals, never successful compilation/source authority. Paths
+# are a closed list: the nested actual CMake command owns the first three.
+CMAKE_FAILURE_PATHS=(('materials','generation/configure/command.receipt.json'),('materials','generation/configure/stdout.raw'),('materials','generation/configure/stderr.raw'),('build','CMakeFiles/CMakeError.log'),('build','CMakeFiles/CMakeOutput.log'),('build','CMakeFiles/CMakeConfigureLog.yaml'))
+CMAKE_FAILURE_SOURCE_LIMIT=4*1024**2
+CMAKE_FAILURE_RETAIN_LIMIT=256*1024
+
+def cmake_failure_originals(out,build,directory,check,remaining_bytes):
+    """Read only fixed failed-phase logs, holding every parent without links.
+
+    Large-but-bounded sources retain a labelled tail, not a fictitious complete
+    original. Both source and retained bytes are hashed. No trace/ENV scan.
+    """
+    check();out=Path(os.path.abspath(out));build=Path(os.path.abspath(build));directory=Path(os.path.abspath(directory))
+    if directory not in (out/'stages/configure',out/'stages/compile'):raise ValueError('fixed failed observer phase directory required')
+    ident=lambda value:(value.st_dev,value.st_ino,value.st_mode,value.st_size,value.st_mtime_ns,value.st_ctime_ns,value.st_nlink)
+    obj=lambda value:(value.st_dev,value.st_ino,value.st_mode)
+    held=[];bindings=[]
+    def close_all():
+        primary=sys.exc_info()[1];error=None
+        for fd in reversed(held):
+            try:os.close(fd)
+            except BaseException as value:
+                if error is None:error=value
+        if error is not None and primary is None:raise error
+    def directory_fd(path):
+        fd=os.open('/',os.O_RDONLY|os.O_DIRECTORY|os.O_CLOEXEC);held.append(fd)
+        for part in path.parts[1:]:
+            check();parent=fd;fd=os.open(part,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC,dir_fd=parent);held.append(fd);bindings.append((parent,part,fd,obj(os.fstat(fd))))
+        return fd
+    def stable_directories():
+        for parent,name,fd,initial in bindings:
+            check()
+            if initial!=obj(os.fstat(fd)) or initial!=obj(os.stat(name,dir_fd=parent,follow_symlinks=False)):raise ValueError('failure log directory identity changed')
+    rows=[];payloads=[];charged=0;destination=None
+    try:
+        roots={}
+        for domain,path in [('materials',out),('build',build)]:
+            try:roots[domain]=directory_fd(path)
+            except FileNotFoundError:roots[domain]=None
+        stage_fd=directory_fd(directory)
+        for ordinal,(domain,relative) in enumerate(CMAKE_FAILURE_PATHS,1):
+            check();base=dict(sourceDomain=domain,sourceRelativePath=relative)
+            if roots[domain] is None:rows.append(dict(base,status='missing'));continue
+            fd=None
+            try:
+                parent=roots[domain]
+                for part in Path(relative).parts[:-1]:
+                    previous=parent;parent=os.open(part,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC,dir_fd=parent);held.append(parent);bindings.append((previous,part,parent,obj(os.fstat(parent))))
+                name=Path(relative).name
+                fd=os.open(name,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK|os.O_CLOEXEC,dir_fd=parent);held.append(fd)
+                before=os.fstat(fd)
+                if not stat.S_ISREG(before.st_mode) or before.st_nlink!=1:raise ValueError('single regular failure log required')
+                if before.st_size>CMAKE_FAILURE_SOURCE_LIMIT:
+                    rows.append(dict(base,status='source-byte-bound',sourceBytes=before.st_size));continue
+                amount=min(before.st_size,CMAKE_FAILURE_RETAIN_LIMIT)
+                # Reserve metadata too, before the first body read or write.
+                if type(remaining_bytes()) is not int or remaining_bytes()<amount+65536:
+                    rows.append(dict(base,status='retained-byte-budget',sourceBytes=before.st_size));continue
+                digest=hashlib.sha256();tail=b'';observed=0
+                while True:
+                    check();block=os.read(fd,min(65536,before.st_size+1-observed))
+                    if not block:break
+                    observed+=len(block)
+                    if observed>before.st_size:raise ValueError('failure log grew')
+                    digest.update(block);tail=(tail+block)[-CMAKE_FAILURE_RETAIN_LIMIT:]
+                stable_directories()
+                if observed!=before.st_size or ident(before)!=ident(os.fstat(fd)) or ident(before)!=ident(os.stat(name,dir_fd=parent,follow_symlinks=False)):raise ValueError('failure log changed during read')
+                if remaining_bytes()<len(tail)+65536:raise ValueError('failure retained budget changed')
+                if destination is None:
+                    os.mkdir('cmake-failure',mode=0o700,dir_fd=stage_fd);destination=os.open('cmake-failure',os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC,dir_fd=stage_fd);held.append(destination)
+                retained_name=str(ordinal).zfill(2)+'.original.raw';target=os.open(retained_name,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW|os.O_CLOEXEC,0o600,dir_fd=destination);held.append(target)
+                try:
+                    offset=0
+                    while offset<len(tail):
+                        check();count=os.write(target,tail[offset:offset+65536])
+                        if count<=0:raise ValueError('failure original write made no progress')
+                        offset+=count
+                    os.fsync(target)
+                    target_identity=ident(os.fstat(target))
+                    if target_identity!=ident(os.stat(retained_name,dir_fd=destination,follow_symlinks=False)):raise ValueError('retained failure original identity changed')
+                finally:
+                    os.close(target);held.remove(target)
+                charged+=len(tail)
+                reference=dict(path=str((directory/'cmake-failure'/retained_name).relative_to(out)),bytes=len(tail),sha256=hashlib.sha256(tail).hexdigest())
+                row=dict(base,status='retained',sourceIdentity=list(ident(before)),sourceBytes=observed,sourceSha256=digest.hexdigest(),sourceOffset=observed-len(tail),complete=observed==len(tail),original=reference,retainedIdentity=list(target_identity))
+                rows.append(row);payloads.append((row,tail))
+            except FileNotFoundError:rows.append(dict(base,status='missing'))
+            except Exception as error:rows.append(dict(base,status='unavailable',errorType=type(error).__name__))
+            finally:
+                if fd is not None:
+                    os.close(fd);held.remove(fd)
+        stable_directories()
+        return dict(schemaVersion=1,kind='actual-failed-cmake-fixed-log-originals',phase=directory.name,authorityVerified=False,sourceByteLimit=CMAKE_FAILURE_SOURCE_LIMIT,perOriginalRetainedLimit=CMAKE_FAILURE_RETAIN_LIMIT,retainedBytes=charged,originals=rows),payloads
+    finally:close_all()
+
+def emit_cmake_failure_originals(out,build,directory,check,remaining_bytes,result=None):
+    """Best effort failure transport; diagnostics cannot replace the cause."""
+    try:
+        summary,payloads=cmake_failure_originals(out,build,directory,check,remaining_bytes)
+        if result is not None:
+            tracking=result['trackingReceipt']
+            summary['failedPhase']=dict(actualRootPid=tracking['actualRootPid'],actualRootReturnCode=tracking['actualRootReturnCode'],actualTrackedWait=tracking['actualTrackedWait'],trackedProcessesClosed=tracking['trackedProcessesClosed'],commandReceipt=commands.ref(Path(directory)/'command.receipt.json',out),trackingReceipt=commands.ref(Path(directory)/'tracking.receipt.json',out))
+        print('SDK_CMAKE_FAILURE_ORIGINALS '+json.dumps(summary,sort_keys=True,separators=(',',':')),file=sys.stderr,flush=True)
+        for row,data in payloads:
+            for offset in range(0,len(data),32768):
+                check();block=data[offset:offset+32768]
+                value=dict(schemaVersion=1,kind='actual-failed-cmake-original-chunk',path=row['original']['path'],original=row['original'],offset=offset,bytes=len(block),sha256=hashlib.sha256(block).hexdigest(),encoding='base64',data=base64.b64encode(block).decode('ascii'))
+                print('SDK_CMAKE_FAILURE_ORIGINAL_CHUNK '+json.dumps(value,sort_keys=True,separators=(',',':')),file=sys.stderr,flush=True)
+    except BaseException as error:
+        try:print('SDK_CMAKE_FAILURE_ORIGINALS_UNAVAILABLE '+json.dumps(dict(errorType=type(error).__name__),sort_keys=True),file=sys.stderr,flush=True)
+        except BaseException:pass
+
 class Session:
     def __init__(self,out,source,build,budget,check,maximum_bytes,prepared_dependencies=None):
-        self.out=Path(out);self.directory=self.out/'toolchain-execution';self.directory.mkdir()
+        self.out=Path(out);self.build=Path(build);self.directory=self.out/'toolchain-execution';self.directory.mkdir()
         self.budget=budget;self.phases=[];self.results=[];self.closed=False;self.tool_files=[];self.tool_captures=set()
         backend=load('execution_backend','sdk-ptrace-execution.py')
         dependency_options={}
@@ -128,14 +240,20 @@ class Session:
             if commands.ref(self.out/row['path'],self.out)!=row:raise ValueError('Execution phase input differs')
         directory=self.out/'stages'/name;directory.mkdir(parents=True)
         environment={key:value for key,value in os.environ.items() if key not in ('GH_TOKEN','GITHUB_TOKEN')}
-        result=self.observer.phase(name,argv,min(self.budget.end-reserve,time.monotonic()+timeout),cwd=str(HERE.parent),env=environment,stdoutPath=directory/'stdout.raw',stderrPath=directory/'stderr.raw')
+        try:
+            result=self.observer.phase(name,argv,min(self.budget.end-reserve,time.monotonic()+timeout),cwd=str(HERE.parent),env=environment,stdoutPath=directory/'stdout.raw',stderrPath=directory/'stderr.raw')
+        except BaseException:
+            emit_cmake_failure_originals(self.out,self.build,directory,lambda:self.budget.check(30),lambda:remaining_source_bytes(self.out))
+            raise
         write(directory/'command.receipt.json',result['commandReceipt']);write(directory/'tracking.receipt.json',result['trackingReceipt'])
         if result['commandReceipt']['exit']!=0 or result['commandReceipt']['signal'] is not None or result['trackingReceipt']['actualTrackedWait'] is not True or result['trackingReceipt']['trackedProcessesClosed'] is not True:
+            emit_cmake_failure_originals(self.out,self.build,directory,lambda:self.budget.check(30),lambda:remaining_source_bytes(self.out),result)
             try:
                 diagnostic=failure_diagnostic(result,self.out,directory,self.budget.check)
                 print('SDK_OBSERVER_PHASE_FAILURE '+json.dumps(diagnostic,sort_keys=True),file=sys.stderr,flush=True)
-            except Exception as error:
-                print('SDK_OBSERVER_PHASE_FAILURE_UNAVAILABLE '+json.dumps(dict(actualRootPid=result['trackingReceipt'].get('actualRootPid'),actualRootReturnCode=result['trackingReceipt'].get('actualRootReturnCode'),errorType=type(error).__name__),sort_keys=True),file=sys.stderr,flush=True)
+            except BaseException as error:
+                try:print('SDK_OBSERVER_PHASE_FAILURE_UNAVAILABLE '+json.dumps(dict(actualRootPid=result['trackingReceipt'].get('actualRootPid'),actualRootReturnCode=result['trackingReceipt'].get('actualRootReturnCode'),errorType=type(error).__name__),sort_keys=True),file=sys.stderr,flush=True)
+                except BaseException:pass
             raise ValueError('Actual observer phase failed or tracked waits incomplete')
         def reference(original):
             actual=commands.ref(original['path'],self.out)

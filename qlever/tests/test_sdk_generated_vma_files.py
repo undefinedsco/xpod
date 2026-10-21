@@ -55,7 +55,7 @@ class Tests(unittest.TestCase):
   mm=m.MemoryDomains();mm.record(dict(kind='owned-root-binding',pid=10,sequence=1));mm.record(dict(kind='actual-child-binding',parentPid=10,childPid=11,cloneFlags=0x100,sequence=2))
   with self.assertRaises(ValueError):mm.unique(10)
   mm.record(dict(kind='actual-wait-exit',pid=11,sequence=3));self.assertEqual(mm.unique(10),1)
- def mapping_control(self,arch,epochs,rebind=False):
+ def mapping_control(self,arch,epochs,rebind=False,mutation=None):
   # Real retained regular FD/bytes; maps/ptrace stops are explicitly simulated.
   path,fd,created=self.create();origin=next(iter(self.r.origins.values()));os.ftruncate(fd,1);origin.update(identity=m.identity(os.fstat(fd)),data=(1,hashlib.sha256(b'\0').hexdigest()))
   self.r.mm.domains={10:1};self.b.tool_metadata_bytes=4*1024**2;self.b.deadline=m.time.monotonic()+100;self.b.check=lambda:None;self.b.writable_aliases=lambda *args:[dict(pid=10,fd=fd,accessMode=2,flags=2)];reserved=[];self.b.reserve_generated_bytes=lambda count:reserved.append(count)
@@ -64,25 +64,48 @@ class Tests(unittest.TestCase):
    def clamp(inner,end):inner.end=end;inner.token=object();return inner.token
    def restore(inner,token):self.assertIs(token,inner.token);inner.restored=True
   self.b.waiter=Wait();state={'mapped':False}
+  proc=self.root/'proc-task';proc.mkdir();(proc/'stat').write_bytes(b'10 (fixture) t '+b' '.join([b'0']*18+[b'123'])+b'\n')
   def maps(pid):
    current=m.identity(os.fstat(fd));rows=[dict(startHex='1000',endHex='2000',permissions='rw-s',fileOffset=0,deviceMajor=os.major(current[0]),deviceMinor=os.minor(current[0]),inode=current[1])] if state['mapped'] else []
    return dict(original=dict(path='maps',bytes=1,sha256='0'*64)),rows
   self.b.generated_fd_path=lambda *args:str(path);self.b.tool_maps=maps;original_stat=m.os.stat;original_open=m.os.open
-  def redirect(value):return path if str(value).startswith('/proc/10/fd/') or str(value).startswith('/proc/10/map_files/') else value
+  readlinks=[]
+  def link(value):
+   readlinks.append(str(value))
+   if mutation=='link' and len(readlinks)==2:return str(path)+' (deleted)'
+   if mutation=='proc' and len(readlinks)==1:(proc/'stat').write_bytes(b'10 (fixture) t '+b' '.join([b'0']*18+[b'999'])+b'\n')
+   return str(path)
+  def redirect(value):
+   if str(value)=='/proc/10':return proc
+   if str(value).startswith('/proc/10/fd/'):return path
+   if str(value).startswith('/proc/10/map_files/'):raise AssertionError('map_files must never be opened or stat-followed')
+   return value
   def stat(value,*args,**kwargs):return original_stat(redirect(value),*args,**kwargs)
   def opened(value,*args,**kwargs):return original_open(redirect(value),*args,**kwargs)
-  with patch.object(m.os,'stat',side_effect=stat),patch.object(m.os,'open',side_effect=opened),patch.object(m.os,'sysconf',return_value=4096):
+  with patch.object(m.os,'stat',side_effect=stat),patch.object(m.os,'open',side_effect=opened),patch.object(m.os,'sysconf',return_value=4096),patch.object(m.os,'readlink',side_effect=link):
    for index in range(epochs):
     selected=fd
     if rebind and index:
      self.r.record(dict(kind='kernel-syscall',op='entry',pid=10,arch=arch,nr=m.ABI[arch]['close'],args=[fd,0,0,0,0,0]))
      selected=os.dup(fd);self.addCleanup(os.close,selected)
     self.b.writable_aliases=lambda *args:[dict(pid=10,fd=selected,accessMode=2,flags=2)]
-    start=20+index*100;data=[b'X',b'Y'][index];entry=dict(sequence=start,arch=arch,nr=m.ABI[arch]['map'],args=[0,1,3,0x4001,selected,0]);self.b.tasks[10]['entry']=entry;self.b.seq=start;self.assertTrue(self.r.classify(10,entry,None));self.r.capture(10);self.b.exclusive=(10,start);state['mapped']=True;self.r.finish(10,entry,dict(sequence=start+5,result=4096,isError=False));self.assertEqual(self.r.owner,10);self.assertEqual(reserved,[m.reservation_bytes(0,4*1024**2)]*(index+1))
+    start=20+index*100;data=[b'X',b'Y'][index];entry=dict(sequence=start,arch=arch,nr=m.ABI[arch]['map'],args=[0,1,3,0x4001,selected,0]);self.b.tasks[10]['entry']=entry;self.b.seq=start;self.assertTrue(self.r.classify(10,entry,None));self.r.capture(10);self.b.exclusive=(10,start);state['mapped']=True
+    if mutation=='body':os.pwrite(fd,b'Z',0)
+    if mutation=='flags':self.b.generated_fd_flags=lambda *args:0
+    self.b.seq+=1;self.r.finish(10,entry,dict(sequence=self.b.seq,result=4096,isError=False));self.assertEqual(self.r.owner,10);self.assertEqual(reserved,[m.reservation_bytes(0,4*1024**2)]*(index+1))
     os.pwrite(fd,data,0);entry=dict(sequence=start+10,arch=arch,nr=m.ABI[arch]['unmap'],args=[4096,1,0,0,0,0]);self.b.tasks[10]['entry']=entry;self.b.seq=start+10;self.assertTrue(self.r.classify(10,entry,None));self.r.capture(10);self.b.exclusive=(10,start+10);state['mapped']=False;checkpoint=self.r.finish(10,entry,dict(sequence=start+15,result=0,isError=False));self.assertIsNone(self.r.owner);self.assertTrue(self.b.waiter.restored);self.assertEqual(self.b.originals[checkpoint['original']['path']],data);self.r.complete_phase()
     self.assertTrue(self.r.consumer(dict(sequence=start+20,path=str(path)),(1,hashlib.sha256(data).hexdigest()),m.identity(os.fstat(fd))))
    os.pwrite(fd,b'Z',0)
    with self.assertRaises(ValueError):self.r.consumer(dict(sequence=start+21,path=str(path)),(1,hashlib.sha256(data).hexdigest()),m.identity(os.fstat(fd)))
+ def test_actual_fd_simulated_poststop_changes_reject_and_owned_cleanup(self):
+  original_root=self.root
+  for mutation in ['link','proc','body','flags']:
+   self.root=original_root/mutation;self.root.mkdir();self.b=Backend(self.root);self.r=m.Runtime(self.b);self.addCleanup(self.r.close)
+   with self.assertRaises(ValueError):self.mapping_control(0xc00000b7,1,mutation=mutation)
+   self.r.close();self.assertEqual(self.b.retained,set())
+ def test_proc_lease_wrong_pid_or_nonstop_raw_rejected(self):
+  for data in [b'11 (fixture) t '+b' '.join([b'0']*19)+b'\n',b'10 (fixture) Z '+b' '.join([b'0']*19)+b'\n']:
+   with self.assertRaises(ValueError):m.proc_identity(data,10)
  def test_simulated_stop_mapping_lease_checkpoint_and_shared_ledger(self):self.mapping_control(0xc00000b7,1)
  def test_two_epochs_keep_same_actual_fd_and_updated_full_snapshot_both_abis(self):
   original_root=self.root

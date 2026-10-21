@@ -456,8 +456,9 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                         import importlib.util
                         from pathlib import Path
                         generated_spec=importlib.util.spec_from_file_location('generated_vma_replay',Path(__file__).with_name('sdk-generated-vma-originals.py'));generated_module=importlib.util.module_from_spec(generated_spec);generated_spec.loader.exec_module(generated_module)
-                    need(generated_model==generated_module.MODEL and row.get('generatedVmaBuildRoot')==generated_module.BUILD_ROOT and shared_mode,'unknown/unowned generated VMA model')
-                    if generated_verifier is None:generated_verifier=generated_module.Verifier(capture_data,tool_maps,limits.get('metadataBytes',4*1024**2) if limits else 4*1024**2)
+                    need(generated_model in [generated_module.LEGACY_MODEL,generated_module.MODEL] and row.get('generatedVmaBuildRoot')==generated_module.BUILD_ROOT and shared_mode,'unknown/unowned generated VMA model')
+                    if generated_verifier is not None:need(generated_verifier.model==generated_model,'generated VMA evidence model changed across roots')
+                    if generated_verifier is None:generated_verifier=generated_module.Verifier(capture_data,tool_maps,limits.get('metadataBytes',4*1024**2) if limits else 4*1024**2,model=generated_model)
                 else:need(generated_verifier is None,'generated VMA model changed across actual roots')
                 model=row.get('processAuthorityModel');need(model is None or model==provider_module().AUTHORITY_MODEL,'unknown process authority model');process_interval=provider_module().ProcessAuthorityInterval(row['pid']) if model is not None else None
                 need(not setresuid_operations,'unclosed setresuid transition at new root');uid_model=row.get('setresuidNoopModel');need(uid_model in [None,'actual-stopped-setresuid-noop-v1'],'unknown setresuid operation model');identity_model=row.get('setresIdentityNoopModel');need(identity_model in [None,'actual-stopped-setres-identity-noop-v1'] and not (identity_model and uid_model),'unknown or mixed identity operation model');identity_mode=identity_model is not None;setresuid_mode=uid_model is not None or identity_mode;need(not setresuid_mode or process_interval is not None,'setresuid model requires actual process authority interval')
@@ -544,7 +545,7 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                 rename_transitions[window['sequence']]=(window,row);active_rename['state']='completed'
             elif kind=='exclusive-generated-vma-resume':
                 need(generated_verifier is not None and exclusive is None,'generated VMA exclusive operation model missing');exclusive=(row['pid'],row['entrySequence'])
-            elif kind in ['generated-vma-create-path','generated-vma-operation-window','generated-vma-selected-fd-binding','generated-vma-operation-exit','generated-vma-consumer-binding']:
+            elif kind in ['generated-vma-create-path','generated-vma-operation-window','generated-vma-selected-fd-binding','generated-vma-kernel-link-original','generated-vma-operation-exit','generated-vma-consumer-binding']:
                 need(generated_verifier is not None,'generated VMA original without explicit model')
                 if kind=='generated-vma-operation-window':retained_entries.add(row['entrySequence'])
             elif kind=='actual-mode-window':

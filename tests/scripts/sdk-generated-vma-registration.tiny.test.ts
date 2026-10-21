@@ -3,9 +3,9 @@ import before from'../fixtures/independent-admission/pre-generated-vma-whole-gro
 const hash=(v:unknown)=>createHash('sha256').update(JSON.stringify(v)).digest('hex'),groups={api,sdk,consumer,ci};
 test('SDK38 preserves actual 202 published whole recipes and binds only its composed actual import closure',()=>{
  for(const[name,values]of Object.entries(groups)){const old=before.hashes[name as keyof typeof before.hashes];for(let i=0;i<old.length;i++)expect(hash(values[i])).toBe(old[i]!);}
- expect([api.length,sdk.length,consumer.length,ci.length,current.length]).toEqual([20,38,50,98,388]);
+ expect([api.length,sdk.length,consumer.length,ci.length,current.length]).toEqual([20,39,51,100,388]);
  for(const row of [...current,...sdk.at(-1)!.selectors,...sdk.at(-1)!.sourceBindings])expect(createHash('sha256').update(fs.readFileSync(row.path)).digest('hex')).toBe(row.sha256);
- const name='qlever/scripts/sdk-generated-vma-originals.py';expect(sdk.at(-1)!.sourceBindings.some(row=>row.path===name)).toBe(true);expect(sdk.slice(0,-1).some(group=>group.sourceBindings.some(row=>row.path===name))).toBe(false);expect(api.some(group=>group.sourceBindings.some(row=>row.path===name))).toBe(false);
+ const name='qlever/scripts/sdk-generated-vma-originals.py';expect(sdk.at(-1)!.sourceBindings.some(row=>row.path===name)).toBe(true);expect(sdk.slice(0,37).some(group=>group.sourceBindings.some(row=>row.path===name))).toBe(false);expect(api.some(group=>group.sourceBindings.some(row=>row.path===name))).toBe(false);
 });
 for(const[name,values]of Object.entries(groups))for(const[index,group]of values.entries())test('SDK38 whole primary/own secondary '+name+' '+index,()=>{
  const primary=new Map(group.selectors.map(row=>[key(row),row.sha256])),roles=secondary(values,primary),tuple=new Map(primary);

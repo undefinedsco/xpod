@@ -12,7 +12,7 @@ const role='scripts/lib/inngest-controlled-materials.ts',stage='packages/xpod-ap
 const legacyRead=(p:string)=>{const prior=preRecorded.files.find(row=>row.path===p);if(prior){const raw=Buffer.from(prior.base64,'base64');expect(raw.length).toBe(prior.bytes);expect(sha(raw)).toBe(prior.sha256);return raw;}if(p==='scripts/agentfs-native-ci/supervise.py')return read('tests/fixtures/independent-admission/pre-pack-supervisor.original.txt');const row=legacy.files.find(row=>row.path===p);if(!row)return read(p);const raw=Buffer.from(row.base64,'base64');expect(raw.length).toBe(row.bytes);expect(sha(raw)).toBe(row.sha256);return raw;};
 const old=(p:string)=>p===role?read('tests/fixtures/independent-admission/controlled-pre-stage-0.original.txt'):p===stage?read('tests/fixtures/independent-admission/controlled-pre-stage-1.original.txt'):legacyRead(p);
 test('stage fifth original and index guards add an atomic source tree while all old source trees remain exact',()=>{
- expect(groups).toHaveLength(20);expect(c).toHaveLength(50);expect(ci).toHaveLength(98);expect(tcb).toHaveLength(388);expect(current).toHaveLength(75);
+ expect(groups).toHaveLength(20);expect(c).toHaveLength(51);expect(ci).toHaveLength(100);expect(tcb).toHaveLength(388);expect(current).toHaveLength(75);
  expect(current.filter(row=>previous.find(old=>old.path===row.path)?.sha256!==row.sha256).map(row=>row.path).sort()).toEqual([stage,role].sort());
  for(const row of [...API_RECORDED_GITLINK_SOURCE_BINDINGS,...tcb])expect(sha(read(row.path))).toBe(row.sha256);
  expect(groups.find(g=>'name' in g&&g.name==='root-minimal-website-source-projection')!.sourceBindings).toBe(previous);

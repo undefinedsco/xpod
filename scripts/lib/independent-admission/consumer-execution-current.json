@@ -429,7 +429,7 @@
   },
   {
     "path": "qlever/scripts/sdk-generated-vma-originals.py",
-    "sha256": "344d6a2f286a2c2adb7cd04ce8b239beef981fb59526becfc85c98b890ebb132"
+    "sha256": "1bb3c9c68a8dc6182a9db9279cef6e949828e05581b4c1afbe281686f696258c"
   },
   {
     "path": "qlever/scripts/sdk-generation-materials.py",
@@ -437,7 +437,7 @@
   },
   {
     "path": "qlever/scripts/sdk-generation-multiprocess-bindings.py",
-    "sha256": "f321f74d04736da80057fd528964acc3b7ed889cbf28575c00c3ac34d8899222"
+    "sha256": "2d57559c7a78e048fd608dfa7aa55372997e5575c09243c2f4ba7169fb2787dd"
   },
   {
     "path": "qlever/scripts/sdk-git-patch-projection.py",
@@ -537,7 +537,7 @@
   },
   {
     "path": "qlever/scripts/sdk-toolchain-materials.py",
-    "sha256": "f522fb4ae96194bbe1695c0269faec196c3094412ea4f9df99e3bb7fc5f948de"
+    "sha256": "0cc20e6c0c589f6b3af8420a6aa230e65a39ca12f429bcba88e0578aeb02dee1"
   },
   {
     "path": "qlever/scripts/sdk-upstream-source-materials.py",
@@ -1121,11 +1121,11 @@
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-fetchcontent.ts",
-    "sha256": "4758df598d2c7ab70cfd8fbee1559cb9177e21eb78ce26761bb8dca8c0e591c6"
+    "sha256": "a2ef7d73c88184f4c2f3a689a5d7d6ea353bb0fab18e6666a1a684540115a70b"
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-generation.ts",
-    "sha256": "4271fc8fa4fe7537415d03c9f149cf1c253970f64ad4d7780e1e676bec756f06"
+    "sha256": "12b7238f6464299d268a57e6503b5b7ab917440b7fc244f1a75a8d4f8e43a192"
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-inputs.ts",
@@ -1137,7 +1137,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-origin-policy.ts",
-    "sha256": "5a0b2c96844ee0e80dc8efb7a2f7ad576a2c72ed52ef692335466f653dd3652c"
+    "sha256": "7ff10c18b5d068f946456aa95ba25dcd544e1b00e363237b2206841837489206"
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-originals.ts",
@@ -1209,7 +1209,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/sdk-controller-helper-groups.ts",
-    "sha256": "753febfe447ee0df628756896eb29d3fc3d34d7d05f9a04e94372c87d7c470f3"
+    "sha256": "b70ecaf247ada286e20ee4fd7120bd3ff45cc677a0d9bc3b019e90a37a8ec453"
   },
   {
     "path": "scripts/lib/independent-admission/shared-source-lifetime.ts",
