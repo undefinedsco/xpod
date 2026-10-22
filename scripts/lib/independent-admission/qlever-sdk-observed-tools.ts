@@ -66,4 +66,4 @@ export async function observeQleverSdkObservedToolOriginals(capability:unknown,s
  }catch(error){facts.sdkObservedToolAfterShardBytesVerified=false;facts.sdkObservedToolsSignedDebianBinaryBytesVerified=false;delete facts.sdkObservedToolAfterShardFiles;pending.push('qlever-sdk-observed-tool-originals-unverified: '+String(error instanceof Error?error.message:error).slice(0,1024));}
  return Object.freeze({facts:Object.freeze(facts),pending:Object.freeze(pending)});
 }
-const HELPERS:readonly(readonly[string,string])[]=[['sdk-observed-tool-originals.py','bd3528847b176e5d8bf1a34c03ffe05e0e27173c10c6ab43f211278dc7a0d403'],['sdk-zip-originals.py','304a8d26c8a124af31f2b240f1b2af52312520982cd6e1f4cba70fde2602bcb8']];
+const HELPERS:readonly(readonly[string,string])[]=[['sdk-observed-tool-originals.py','cdde0249df89ba204d0eea4a81e97c722c5a629a8b66bf4ec66a1439f0bae31f'],['sdk-zip-originals.py','cf30b662bfec174a61d229811272241a945318259e9b181e8219330acf0555e6'],['sdk-execution-originals-util.py','870de0a7183d9636a1895e86be9e6d46f9527211c329b37741d6e988134c2f79']];
