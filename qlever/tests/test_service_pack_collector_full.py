@@ -81,6 +81,21 @@ class Tests(unittest.TestCase):
   self.ret=m.Retained(self.out,Budget());self.calls=[]
   wrong=list(captured['command']);wrong[1]='/service/scripts/run-npm-pack.cjs';self.fixture(lambda c,r:r.update(command=wrong))
   with self.assertRaises(ValueError):self.run_observe()
+ def test_versioned_build_parent_all_five_actual_raws_transit_with_closed_refs(self):
+  collection=self.fixture();end=collection['details']['budget']['deadlineUnixMs'];phase={}
+  import datetime
+  stamp=datetime.datetime.fromtimestamp((end-1000)/1000,datetime.timezone.utc).isoformat()
+  with tarfile.open(fileobj=io.BytesIO(self.phase)) as archive:base=json.loads(archive.extractfile('service-pack-phase/pack.receipt.json').read())
+  for name,command in m.pack_bindings.BUILD_COMMANDS:
+   receipt=dict(base,command=list(command),startedUTC=stamp,closedUTC=stamp);phase[name+'.receipt.json']=json.dumps(receipt).encode();phase[name+'.raw.log']=b''
+  for name in ['build-inputs.before.json','build-inputs.after.json','build-outputs.after.json']:phase[name]=b'{}'
+  charged=sum(map(len,phase.values()));allocation=32*m.META-charged-3*m.META;collection['details']['budget']['retainedCeilingBytes']=allocation
+  receipt=dict(base,command=[*base['command'][:-1],str(allocation)],startedUTC=stamp,closedUTC=stamp);phase['pack.receipt.json']=json.dumps(receipt).encode();phase['pack.raw.log']=b''
+  metadata=json.dumps(collection).encode();rows=[ref('service-pack-originals/materials.json',metadata),*collection['bodyOriginals'],*[ref('service-pack-phase/'+name,body) for name,body in phase.items()]]
+  parent=dict(schemaVersion=1,kind='actual-service-pack-parent-originals',sourceSha=self.sha,authorityVerified=False,retainedCeilingBytes=32*m.META,chargedOriginalBytes=sum(r['bytes'] for r in rows),deadlineUnixMs=end,originals=rows,workingDirectory=dict(path='/app',canonicalPath='/app',identity=['1','2','16877','4096','3','4','2'],completedIdentity=['1','2','16877','8192','5','6','3']),parentModel=m.pack_bindings.BUILD_PARENT_MODEL,buildChargedOriginalBytes=charged,workerRetainedCeilingBytes=allocation)
+  self.metadata=tar('service-pack-originals',{'materials.json':metadata});self.phase=tar('service-pack-phase',dict(phase,**{'materials.json':json.dumps(parent).encode()}))
+  _,observed=self.run_observe();self.assertTrue(observed['packInputObservation']['parentRawClosureVerified']);self.assertEqual(len(observed['packInputObservation']['phase']['originals']),15)
+
  def test_duplicate_body_reference_and_missing_stat_reject(self):
   for mutate in [lambda c,r:c['bodyOriginals'].append(c['bodyOriginals'][0]),lambda c,r:c['records'].pop(0)]:
    collection=self.fixture(mutate)

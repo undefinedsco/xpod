@@ -94,7 +94,7 @@ def observe(archive_path,plan):
         # Only the complete typed v5 entry/barrier/resume/exit/postbarrier/close
         # replay can discharge these exact operation sequences. Same nr outside
         # the verified active epoch remains unclassified, never an allowlist.
-        private_wakes=set(result.get('verifiedPrivateWakeEntrySequences',[]))
+        private_wakes=set(result.get('verifiedPrivateWakeEntrySequences',[]))|set(result.get('verifiedPrivateWaitMismatchEntrySequences',[]))
         uncovered.update(label for sequence,label in unclassified_entries if sequence not in private_wakes)
         bindings.need(used_originals==set(all_refs),'capture inventory contains no corresponding actual FD observation')
         for phase,actual in zip(plan['phases'],result['phaseTracking']):

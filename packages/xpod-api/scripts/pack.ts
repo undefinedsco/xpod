@@ -12,7 +12,7 @@ import { fileURLToPath } from 'node:url';
 const repo=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../../..');
 const stage=path.resolve(process.argv[2]??'');const output=process.argv[3];if(!process.argv[2]||!output||existsSync(output))throw new Error('Explicit fresh stage/archive paths required');
 const hash=(bytes:Buffer)=>createHash('sha256').update(bytes).digest('hex');
-const git=(args:string[])=>{const r=spawnSync('git',args,{cwd:repo,encoding:'utf8'});if(r.status!==0)throw new Error('Git source authority unavailable');return r.stdout.trim();};
+const git=(args:string[],trim=true)=>{const r=spawnSync('git',args,{cwd:repo,encoding:'utf8'});if(r.status!==0)throw new Error('Git source authority unavailable');return trim?r.stdout.trim():r.stdout;};
 function scan(root:string, relative=''):string[]{const found:string[]=[];for(const name of readdirSync(path.join(root,relative))){const f=relative?relative+'/'+name:name;const st=lstatSync(path.join(root,f));if(st.isSymbolicLink())throw new Error('Product symlink rejected');if(st.isDirectory())found.push(...scan(root,f));else if(st.isFile())found.push(f);else throw new Error('Product nonregular member rejected');}return found.sort();}
 verifyApiStageMaterials(repo,path.join(repo,'packages/xpod-api/dist'),stage);
 if(!readFileSync(path.join(stage,'NOTICE')).length)throw new Error('Original third-party NOTICE inventory required');
@@ -36,7 +36,8 @@ if(native.binarySHA256!==hash(readFileSync(path.join(stage,'node_modules/inngest
 for(const f of apiProducerSourcePaths(repo)){
  const to=path.join(stage,'source',f);mkdirSync(path.dirname(to),{recursive:true});copyFileSync(path.join(repo,f),to);
 }
-const sources=scan(path.join(stage,'source')).map(f=>{const bytes=readFileSync(path.join(stage,'source',f));const original=readFileSync(path.join(repo,f));if(!bytes.equals(original))throw new Error('Canonical source drift');return {path:f,bytes:bytes.length,sha256:hash(bytes),tracked:git(['ls-files','--',f])===f};});
+const trackedSourceFiles=new Set(git(['ls-files','-z'],false).split('\0').filter(Boolean));
+const sources=scan(path.join(stage,'source')).map(f=>{const bytes=readFileSync(path.join(stage,'source',f));const original=readFileSync(path.join(repo,f));if(!bytes.equals(original))throw new Error('Canonical source drift');return {path:f,bytes:bytes.length,sha256:hash(bytes),tracked:trackedSourceFiles.has(f)};});
 const authority={sourceCommit:git(['rev-parse','HEAD']),dirty:git(['status','--porcelain']).length>0,snapshotSHA256:hash(Buffer.from(JSON.stringify(sources))),scope:'actual canonical service source closure and original producer/toolchain declarations'};
 writeFileSync(path.join(stage,'provenance','source-inventory.json'),JSON.stringify({schemaVersion:1,sourceAuthority:authority,files:sources},null,2)+'\n');
 function verifyReleaseMaterials():void {

@@ -126,7 +126,7 @@ class BoundedPipePump:
         check();assert self.sha256 is not None,'actual stdio pipe did not close'
 
 class Observer:
-    def __init__(self,out,source,build,*,deadline_monotonic=None,check_budget=lambda:None,maximum_bytes=32*1024**2,maximum_file_bytes=1024**2,selected_names=SELECTED,maximum_processes=128,shard_bytes=None,require_success=True,maximum_stdio_bytes=None,shared_tasks=False,capture_toolchain=False,deny_optional_io_uring=False,verified_setresuid_noop=False,verified_identity_noop=False,terminal_exit_evidence=False,generated_vma_output=False,generated_vma_shared_mm=False,generated_vma_private_wake=False):
+    def __init__(self,out,source,build,*,deadline_monotonic=None,check_budget=lambda:None,maximum_bytes=32*1024**2,maximum_file_bytes=1024**2,selected_names=SELECTED,maximum_processes=128,shard_bytes=None,require_success=True,maximum_stdio_bytes=None,shared_tasks=False,capture_toolchain=False,deny_optional_io_uring=False,verified_setresuid_noop=False,verified_identity_noop=False,terminal_exit_evidence=False,generated_vma_output=False,generated_vma_shared_mm=False,generated_vma_private_wake=False,generated_vma_private_wait_mismatch=False):
         self.prepared_dependency_plan=None;self.dependency_roots={};self.dependency_cache=None
         self.shared_tasks=shared_tasks
         assert type(deny_optional_io_uring) is bool
@@ -147,6 +147,8 @@ class Observer:
         assert type(generated_vma_shared_mm) is bool and (not generated_vma_shared_mm or generated_vma_output and shared_tasks and capture_toolchain),'shared-MM VMA requires existing generated/all-task/tool observation'
         assert type(generated_vma_private_wake) is bool and (not generated_vma_private_wake or generated_vma_shared_mm),'private wake requires actual stopped-MM cohort model'
         self.generated_vma_private_wake=generated_vma_private_wake
+        assert type(generated_vma_private_wait_mismatch) is bool and (not generated_vma_private_wait_mismatch or generated_vma_private_wake),'wait mismatch requires complete private-wake cohort model'
+        self.generated_vma_private_wait_mismatch=generated_vma_private_wait_mismatch
         self.generated_vma_shared_mm=generated_vma_shared_mm
         self.generated_vma_output=generated_vma_output;self.generated_vma=generated_vma_module.Runtime(self) if generated_vma_output else None
     def dependency_mountinfo(self):
@@ -807,6 +809,10 @@ class Observer:
         reference=self.tool_mountinfo_original(pid,observation['mountNamespaceIdentity'],data)
         observation['mountinfoOriginal']=reference
         return self.emit(dict(kind='toolchain-provider-original',pid=pid,barrierSequence=barrier,fileOriginal=original,observation=observation))['sequence']
+    def generated_wait_word(self,pid,address):
+        assert sys.byteorder=='little' and single.ctypes.sizeof(single.ctypes.c_long)==8,'reviewed 64-bit little-endian ptrace word required'
+        assert type(address) is int and address>0 and address%4==0,'aligned uint32 word required'
+        value=single.trace(single.PEEKDATA,pid,address&~7);raw=int(value).to_bytes(8,'little',signed=True);return raw[address%8:address%8+4]
     def tool_maps(self,pid):
         # Read only while all registered potential writers are at OS stops.
         name='capture-'+str(len(self.captures)).zfill(4)+'.original';data=bytearray();digest=hashlib.sha256()
@@ -1431,7 +1437,7 @@ class SdkExecutionObserver(Observer):
         assert Path(source)==Path('/opt/qlever-sdk/source') and Path(build)==Path('/opt/qlever-sdk/build'),'fixed SDK source/build roots required'
         assert isinstance(deadline_monotonic,(float,int)) and math.isfinite(deadline_monotonic) and time.monotonic()<deadline_monotonic,'existing live SDK deadline required'
         super().__init__(out,source,build,deadline_monotonic=deadline_monotonic,check_budget=check_budget,maximum_bytes=maximum_bytes,
-            maximum_file_bytes=limits['shardBytes'],selected_names=None,maximum_processes=limits['sourceMembers'],shard_bytes=limits['shardBytes'],require_success=False,maximum_stdio_bytes=maximum_stdio_bytes,shared_tasks=True,capture_toolchain=True,deny_optional_io_uring=True,verified_identity_noop=True,terminal_exit_evidence=True,generated_vma_output=True,generated_vma_shared_mm=True,generated_vma_private_wake=True)
+            maximum_file_bytes=limits['shardBytes'],selected_names=None,maximum_processes=limits['sourceMembers'],shard_bytes=limits['shardBytes'],require_success=False,maximum_stdio_bytes=maximum_stdio_bytes,shared_tasks=True,capture_toolchain=True,deny_optional_io_uring=True,verified_identity_noop=True,terminal_exit_evidence=True,generated_vma_output=True,generated_vma_shared_mm=True,generated_vma_private_wake=True,generated_vma_private_wait_mismatch=True)
         self.capture_dir=self.out/'captures';self.capture_dir.mkdir(exist_ok=False);self.sdk_phase_index=0;self.sdk_failed=False
         mounts=Path('/proc/self/mountinfo').read_bytes();assert len(mounts)<=limits['metadataBytes'],'source provider metadata bound'
         self.source_provider=probe.effective_readonly(source,mounts);self.source_provider_originals=dict(mountinfo=probe.put(self.out/'source-provider.mountinfo.raw',mounts));self.claim(len(mounts))

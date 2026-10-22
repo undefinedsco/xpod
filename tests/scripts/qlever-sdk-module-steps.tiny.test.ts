@@ -1,5 +1,6 @@
 import {test,expect} from 'bun:test';
 import fs from 'node:fs';
+import {createHash} from 'node:crypto';
 import path from 'node:path';
 import oldSdk from '../fixtures/independent-admission/sdk-b-86cd-originals.json';
 import {observeQleverSdkGitHubOrigin,isQleverSdkGitHubOrigin,githubOriginFacts} from '../../scripts/lib/independent-admission/github-origin';
@@ -18,7 +19,7 @@ async function scenario(skip?:string,revision?:string,missing?:string,modified?:
   else if(relative.startsWith('contents/')){const name=relative.slice(9);requested.push(name);if(name===missing)return new Response(JSON.stringify({message:'Not Found'}),{status:404});
    if(revision&&oldSdk.missing.includes(name))return new Response(JSON.stringify({message:'Not Found'}),{status:404});
    const retained=(oldSdk.originals as Record<string,string>)[name];
-   const original=revision&&name==='scripts/agentfs-native-ci/supervise.py'?fs.readFileSync(path.join(import.meta.dir,'../fixtures/independent-admission/pre-pack-supervisor.original.txt')):revision&&name==='.github/workflows/css-native-source.yml'?fs.readFileSync(path.join(import.meta.dir,'../fixtures/independent-admission/css-native-source-pre-readonly.original.yml')):revision&&name===workflow?fs.readFileSync(path.join(import.meta.dir,'../fixtures/independent-admission/sdk-publisher-pre-readonly.original.yml')):revision&&retained?Buffer.from(retained,'base64'):fs.readFileSync(path.join(root,name));
+   const original=revision&&name==='scripts/agentfs-native-ci/supervise.py'?fs.readFileSync(path.join(import.meta.dir,'../fixtures/independent-admission/pre-pack-supervisor.original.txt')):revision&&name==='.github/workflows/css-native-source.yml'?fs.readFileSync(path.join(import.meta.dir,'../fixtures/independent-admission/css-native-source-pre-readonly.original.yml')):revision&&name===workflow?fs.readFileSync(path.join(import.meta.dir,'../fixtures/independent-admission/sdk-publisher-pre-readonly.original.yml')):revision&&retained?Buffer.from(retained,'base64'):revision&&name==='qlever/scripts/verify-local-runtime-artifacts.py'?fs.readFileSync(path.join(import.meta.dir,'../fixtures/independent-admission/pre-sdk47-runtime-verifier.original.py')):fs.readFileSync(path.join(root,name));
    if(!original.length)return new Response(JSON.stringify({message:'Not Found'}),{status:404});
    body={type:'file',path:name,encoding:'base64',content:(name===modified?Buffer.from('modified helper'):original).toString('base64')};}
   else if(relative==='actions/artifacts/24')body={id:24,expired:false,workflow_run:{id:22,head_sha:source},digest:'sha256:'+digest,size_in_bytes:100,name:`qlever-sdk-originals-linux-x64-${source}-22-1`,created_at:'2026-10-17T00:01:00Z'};
@@ -33,6 +34,7 @@ test('real module step shape accepts skipped service-only check, never skipped m
 });
 
 test('real old SDK tree omits future acquisition and unused parser; new tree requires exact helper originals',async()=>{
+ expect(createHash('sha256').update(fs.readFileSync(path.join(import.meta.dir,'../fixtures/independent-admission/pre-sdk47-runtime-verifier.original.py'))).digest('hex')).toBe('b95365f0736f531d772a394a9936911ae9d843b616f6c933030845102bf4efdf');
  const old=oldSdk.sourceSha;expect(oldSdk.missing).toContain('qlever/scripts/sdk-debian-source-acquisition.py');
  const result=await scenario(undefined,old);expect(isQleverSdkGitHubOrigin(result.capability)).toBe(true);
  expect(result.requested).not.toContain('qlever/scripts/sdk-debian-source-acquisition.py');

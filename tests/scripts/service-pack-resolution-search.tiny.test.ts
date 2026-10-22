@@ -11,7 +11,12 @@ test('actual host Node full search originals replay and omitted/extra/changed fi
  const parseBody=(role:string)=>{const row=actual.collection.records.find((r:any)=>r.kind==='actual-pack-body'&&r.role===role);const original=full.bodies.find((r:any)=>r.reference.path===row.reference.path)!.bytes;return inspectTarballBuffer(original,{expandedBytes:4*1024**2,members:100,gnuLongNames:true}).entries.find((r:any)=>r.path==='package/package.json').content as Buffer;};
  const publicManifests=new Map<string,Buffer>();for(const row of actual.collection.records.filter((r:any)=>r.kind==='actual-pack-body'&&r.role==='public-package-tar'))publicManifests.set(row.name,parseBody('public-package-tar'));
  const replay=(collection=actual.collection)=>replayServicePackManifest({collection,repoRoot:actual.repoRoot,temporaryRoot:os.tmpdir(),afterRoot,seedManifest:parseBody('seed-npm-pack'),finalManifest:parseBody('final-service-pack'),publicManifests,readObject:ref=>Buffer.from(actual.objects.get(ref.path)!),assertWorkspaceSource:(_relative,raw)=>{if(!raw.equals(afterRoot))throw Error('source root differs');}});
- expect(replay().installedDependencySearchReplayed).toBe(true);
+ const replayed=replay();expect(replayed.installedDependencySearchReplayed).toBe(true);
+ expect(replayed.selectedInputInstances.length).toBeGreaterThan(0);
+ expect(new Set(replayed.selectedInputInstances.map(row=>row.destinationRoot)).size).toBe(replayed.selectedInputInstances.length);
+ expect(replayed.selectedInputInstances.every(row=>row.sourceRoot.startsWith(actual.repoRoot)&&row.inputKind==='installed')).toBe(true);
+ expect(Object.isFrozen(replayed.selectedInputInstances)).toBe(true);
+ expect(replayed.packInputResolutionVerified).toBe(false);
  expect(run().dependencySearchCustodyVerified).toBe(true);const edit=(change:(collection:any)=>void)=>{const c=structuredClone(actual.collection);change(c);return()=>run(c);};
  expect(edit(c=>{c.records.find((r:any)=>r.role==='actual-node-resolution').searchRoots.shift();})).toThrow('search vector');const altered=structuredClone(actual.collection);altered.records.find((r:any)=>r.role==='actual-node-resolution').searchRoots.shift();expect(()=>replay(altered)).toThrow('search vector');
  expect(edit(c=>{const r=c.records.find((r:any)=>r.role==='actual-node-resolution');r.probes.shift();const at=c.records.indexOf(r);c.records[at+1].observations.shift();})).toThrow('prefix');

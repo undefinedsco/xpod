@@ -24,6 +24,8 @@
 !scripts/service-pack-parent.py
 !scripts/service-pack-phase.cjs
 !scripts/service-pack-originals.cjs
+!scripts/service-pack-node-runtime.cjs
+!scripts/service-build-observations.py
 !scripts/service-pack-input-custody.cjs
 !scripts/service-pack-public-inputs.cjs
 !scripts/service-pack-command.py
@@ -69,6 +71,3 @@ docker/qlever-local-runtime/**
 
 # Explicitly excluded (not needed in image)
 .github/
-
-# Actual same-worker Node executable/global-input observation.
-!scripts/service-pack-node-runtime.cjs

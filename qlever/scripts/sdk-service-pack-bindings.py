@@ -51,16 +51,51 @@ def service_pack_worker_plans(context,record,references):
         result.append(dict(name=label,command=command,stdoutMaximum=maximum))
     return result
 
+BUILD_PARENT_MODEL='actual-service-build-pack-parent-v1'
+BUILD_COMMANDS=(('build-packages',('bun','run','build:packages')),('build-ts',('bun','run','build:ts')),('build-components',('bun','run','build:components')),('check-components',('bun','scripts/check-components-runtime-metadata.cjs')),('build-ui',('bun','run','build:ui')))
+def phase_names(model=None):
+    need(model in [None,BUILD_PARENT_MODEL],'known actual parent model')
+    stages=([name for name,_ in BUILD_COMMANDS] if model else [])+['pack']
+    return [name+suffix for name in stages for suffix in ['.receipt.json','.raw.log']]+(['build-inputs.before.json','build-inputs.after.json','build-outputs.after.json'] if model else [])
+def verify_stage_receipt(receipt,raw):
+    need(isinstance(receipt,dict) and type(receipt.get('exit')) is int and receipt['exit']==0 and all(key in receipt and receipt[key] is None for key in ['signal','resourceStop','supervisorError']) and isinstance(receipt.get('cleanupErrors'),list) and not receipt['cleanupErrors'] and receipt.get('actualWait') is True and receipt.get('ownedGroupAbsentAfterWait') is True and receipt.get('rawClosedBeforeHash') is True,'pack actual successful wait/closure required')
+    need(receipt.get('snapshotOriginalRetained') is not False and not receipt.get('receiptSnapshotOverflow') and receipt.get('rawOverflow') is False and receipt.get('actualRawPipeEof') is True and type(receipt.get('retainedRawBytes')) is int and receipt['retainedRawBytes']==len(raw) and receipt.get('rawSHA256')==hashlib.sha256(raw).hexdigest() and receipt.get('rawByteLimit')==META,'complete upstream supervision raw/receipt required')
+
 def verify_pack_parent(collection,parent,phase_originals,captured):
     need(parent.get('sourceSha')==collection.get('sourceSha') and parent.get('authorityVerified') is False and parent.get('retainedCeilingBytes')==32*META,'same source/upstream pack budget')
     rows=parent.get('originals');need(isinstance(rows,list) and len(rows)==len(captured) and all(isinstance(r,dict) and set(r)=={'path','bytes','sha256'} for r in rows),'closed actual pack parent index')
     indexed={r['path']:r for r in rows};need(len(indexed)==len(rows) and indexed==captured,'parent metadata/body full retained closed set differs')
     need(type(parent.get('chargedOriginalBytes')) is int and parent['chargedOriginalBytes']==sum(r['bytes'] for r in rows)<=32*META,'actual parent charged byte inventory')
-    receipt=json.loads(phase_originals['pack.receipt.json']);raw=phase_originals['pack.raw.log'];budget=collection.get('details',{}).get('budget',{})
-    deadline=parent.get('deadlineUnixMs');need(type(deadline) is int and budget.get('deadlineUnixMs')==deadline and budget.get('retainedCeilingBytes')==30*META,'same actual pack worker deadline/allocation')
-    need(receipt.get('command')==['node','/app/scripts/run-npm-pack.cjs','.test-data/service-pack','.test-data/service-pack-cache','service','--retain-service-originals',parent['sourceSha'],str(deadline),str(30*META)],'exact upstream pack command')
-    need(receipt.get('exit')==0 and type(receipt.get('exit')) is int and receipt.get('signal') is None and receipt.get('resourceStop') is None and receipt.get('supervisorError') is None and isinstance(receipt.get('cleanupErrors'),list) and len(receipt['cleanupErrors'])==0 and all(key in receipt for key in ['signal','resourceStop','supervisorError']) and receipt.get('actualWait') is True and receipt.get('ownedGroupAbsentAfterWait') is True and receipt.get('rawClosedBeforeHash') is True,'pack actual successful wait/closure required')
-    need(receipt.get('snapshotOriginalRetained') is not False and not receipt.get('receiptSnapshotOverflow') and receipt.get('rawOverflow') is False and receipt.get('actualRawPipeEof') is True and receipt.get('retainedRawBytes')==len(raw) and receipt.get('rawSHA256')==hashlib.sha256(raw).hexdigest() and receipt.get('rawByteLimit')==META,'complete upstream supervision raw/receipt required')
+    model=parent.get('parentModel');need('parentModel' not in parent or model==BUILD_PARENT_MODEL,'explicit known parent model when declared');need(set(phase_originals)==set(phase_names(model)),'exact versioned actual parent originals')
+    snapshot_names={'build-inputs.before.json','build-inputs.after.json','build-outputs.after.json'}
+    for name,data in phase_originals.items():
+        row=captured.get('service-pack-phase/'+name)
+        need(isinstance(row,dict) and type(row.get('bytes')) is int and 0<=row['bytes']<=META,'bounded parent phase body')
+        if isinstance(data,bytes):need(row['bytes']==len(data) and row['sha256']==hashlib.sha256(data).hexdigest(),'phase body differs from full closed index')
+        else:need(model and name in snapshot_names and data==row,'snapshot reference requires independent private-reader body verification')
+    budget=collection.get('details',{}).get('budget',{});deadline=parent.get('deadlineUnixMs');allocation=30*META
+    if model:
+        cwd=parent.get('workingDirectory');need(isinstance(cwd,dict) and set(cwd)=={'path','canonicalPath','identity','completedIdentity'} and cwd['path']==cwd['canonicalPath']=='/app','actual fixed build working directory')
+        for identity in [cwd['identity'],cwd['completedIdentity']]:need(isinstance(identity,list) and len(identity)==7 and all(isinstance(v,str) and len(v)<=20 and re.fullmatch(r'0|[1-9][0-9]*',v) for v in identity) and int(identity[2])&0o170000==0o040000,'full actual held build directory identity')
+        need(cwd['identity'][:3]==cwd['completedIdentity'][:3],'same held build source directory object')
+        build_charged=sum(captured['service-pack-phase/'+name]['bytes'] for name in phase_names(model) if not name.startswith('pack.'))
+        allocation=32*META-build_charged-3*META
+        need(parent.get('buildChargedOriginalBytes')==build_charged and parent.get('workerRetainedCeilingBytes')==allocation and allocation>2*META,'same parent actual build evidence subtraction')
+        prior=None
+        from datetime import datetime,timezone,timedelta
+        def stamp(value):
+            need(isinstance(value,str),'actual closed stage timestamp')
+            parsed=datetime.fromisoformat(value.replace('Z','+00:00'))
+            need(parsed.tzinfo is not None and parsed.utcoffset().total_seconds()==0 and value in [parsed.isoformat(),parsed.isoformat(timespec='milliseconds').replace('+00:00','Z')],'actual exact UTC stage timestamp');return parsed
+        for stage,command in list(BUILD_COMMANDS)+[('pack',None)]:
+            receipt=json.loads(phase_originals[stage+'.receipt.json']);verify_stage_receipt(receipt,phase_originals[stage+'.raw.log'])
+            if command:need(receipt.get('command')==list(command),'exact supervised actual build command')
+            start=stamp(receipt.get('startedUTC'));closed=stamp(receipt.get('closedUTC'))
+            need(type(deadline) is int and datetime(1970,1,1,tzinfo=timezone.utc)+timedelta(milliseconds=deadline-900000)<=start<=closed<=datetime(1970,1,1,tzinfo=timezone.utc)+timedelta(milliseconds=deadline) and (prior is None or prior<=start),'single actual build/pack parent window and order');prior=closed
+    receipt=json.loads(phase_originals['pack.receipt.json']);raw=phase_originals['pack.raw.log']
+    need(type(deadline) is int and budget.get('deadlineUnixMs')==deadline and budget.get('retainedCeilingBytes')==allocation,'same actual pack worker deadline/allocation')
+    need(receipt.get('command')==['node','/app/scripts/run-npm-pack.cjs','.test-data/service-pack','.test-data/service-pack-cache','service','--retain-service-originals',parent['sourceSha'],str(deadline),str(allocation)],'exact upstream pack command')
+    verify_stage_receipt(receipt,raw)
     need(collection.get('details',{}).get('completion')=='actual-pack-returned' and collection.get('authorityVerified') is False,'actual pack sealed observation only')
     return dict(parentRawClosureVerified=True,packManifestTransformationVerified=False,pending=['same-private-source-and-pack-input-resolution-closure-unverified'])
 
@@ -69,7 +104,12 @@ def main():
     raw=sys.stdin.buffer.read(5*META+1);need(len(raw)<=5*META,'bounded existing metadata request');request=json.loads(raw);end_ms=request.get('deadlineUnixMs');need(type(end_ms) is int and 0<end_ms-time.time()*1000<=120000,'remaining same parent deadline required');end=end_ms/1000
     originals={}
     for row in request['phaseOriginals']:
-        need(set(row)=={'name','bytes','sha256','encoding','content'} and row['name'] in ['pack.receipt.json','pack.raw.log'] and row['name'] not in originals and row['encoding']=='base64' and type(row['bytes']) is int and 0<=row['bytes']<=META and isinstance(row['content'],str) and len(row['content'])<=4*((row['bytes']+2)//3),'bounded exact parent original encoding')
-        data=base64.b64decode(row['content'],validate=True);need(len(data)==row['bytes'] and hashlib.sha256(data).hexdigest()==row['sha256'],'actual parent original hash');originals[row['name']]=data
-    need(set(originals)=={'pack.receipt.json','pack.raw.log'} and time.time()<end,'complete parent originals/remaining deadline');refs=pack_body_references(request['collection']);mechanics=verify_pack_parent(request['collection'],request['parent'],originals,request['captured']);plans=service_pack_worker_plans(request['workerContext'],request['packObservation'],refs);need(time.time()<end,'parent deadline exhausted');output=json.dumps(dict(bodyOriginals=refs,workerPlans=plans,mechanics=mechanics),separators=(',',':')).encode();need(len(output)<=META,'bounded mechanical projection');sys.stdout.buffer.write(output)
+        need(set(row)=={'name','bytes','sha256','encoding','content'} and row['name'] in phase_names(request['parent'].get('parentModel')) and row['name'] not in originals and type(row['bytes']) is int and 0<=row['bytes']<=META and isinstance(row['content'],str),'bounded exact parent original encoding')
+        if row['encoding']=='reference':
+            need(request['parent'].get('parentModel')==BUILD_PARENT_MODEL and row['name'] in ['build-inputs.before.json','build-inputs.after.json','build-outputs.after.json'] and row['content']=='','fixed source-checked snapshot reference only')
+            originals[row['name']]=dict(path='service-pack-phase/'+row['name'],bytes=row['bytes'],sha256=row['sha256'])
+        else:
+            need(row['encoding']=='base64' and len(row['content'])<=4*((row['bytes']+2)//3),'bounded exact parent original base64')
+            data=base64.b64decode(row['content'],validate=True);need(len(data)==row['bytes'] and hashlib.sha256(data).hexdigest()==row['sha256'],'actual parent original hash');originals[row['name']]=data
+    need(set(originals)==set(phase_names(request['parent'].get('parentModel'))) and time.time()<end,'complete parent originals/remaining deadline');refs=pack_body_references(request['collection']);mechanics=verify_pack_parent(request['collection'],request['parent'],originals,request['captured']);plans=service_pack_worker_plans(request['workerContext'],request['packObservation'],refs);need(time.time()<end,'parent deadline exhausted');output=json.dumps(dict(bodyOriginals=refs,workerPlans=plans,mechanics=mechanics),separators=(',',':')).encode();need(len(output)<=META,'bounded mechanical projection');sys.stdout.buffer.write(output)
 if __name__=='__main__':main()

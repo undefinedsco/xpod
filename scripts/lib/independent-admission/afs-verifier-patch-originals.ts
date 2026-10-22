@@ -86,17 +86,18 @@ const diffs = Object.freeze({
 } satisfies Record<string, readonly string[]>);
 interface PackageIdentity {readonly name: string; readonly version: string; readonly path: string; readonly logicalPaths?: readonly string[]}
 interface SnapshotFile {readonly path: string; readonly kind: string; readonly bytes?: number; readonly sha256?: string; readonly target?: string}
-/** Six reviewed package families only. The other installer inputs are reported
- * separately as controlled frozen-install facts, never as observed registry tars. */
-export function inspectAfsVerifierPatchedPackages(input: {
-  readonly source: unknown; readonly originals?: readonly unknown[];
-  readonly packages: readonly PackageIdentity[]; readonly files: readonly SnapshotFile[];
-}): Readonly<{verified: boolean; pending: readonly string[]; facts: Readonly<Record<string, unknown>>}> {
-  const pending: string[] = [], facts: Record<string, unknown> = {}; let count = 0, changed = 0;
-  try {
-    const source = derivedSourceView(input.source); need(source, 'immutable private source required'); assertDerivedSourceCurrent(input.source);
-    const lockBytes = source.readTracked('bun.lock'), lock = registryLegalLockEntries(lockBytes);
-    const pkg = JSON.parse(source.readTracked('package.json').toString());
+/** One reviewed official-to-installed projection used by both whole-package
+ * verification and selected service members. It issues no new capability.
+ * The caller must still prove aliases, selected bytes/modes and full membership.
+ */
+export function projectReviewedInstalledPackage(input:{source:unknown;original:unknown;logicalPaths:readonly string[]}) {
+ const source=derivedSourceView(input.source);need(source,'immutable private source required');assertDerivedSourceCurrent(input.source);
+ const original=registryLegalOriginalView(input.original);need(original&&original.sourceSha===source.sourceSha,'same-source official original required');
+ const lockBytes=source.readTracked('bun.lock'),lock=registryLegalLockEntries(lockBytes),pkg=JSON.parse(source.readTracked('package.json').toString());
+ const item={name:original.name,version:original.version},identity=item.name+'@'+item.version;
+ need(original.integrity===lock.get(identity)&&original.lockSha256===hash(lockBytes),'official patched package immutable SRI differs:'+identity);
+ need(Array.isArray(input.logicalPaths)&&input.logicalPaths.length>0&&input.logicalPaths.every(safe),'actual logical instance paths required');
+ const isTop=(name:string)=>input.logicalPaths.includes('node_modules/'+name);let changed=0;
     const sourceBytes = (name: string, expected: string) => { const bytes = source.readTracked(name); need(bytes.length <= MAXIMUM && hash(bytes) === expected, 'reviewed immutable patch source differs:' + name); return bytes; };
     const loaded = new Map<string, any>();
     const transform = (name: keyof typeof scripts) => {
@@ -108,6 +109,53 @@ export function inspectAfsVerifierPatchedPackages(input: {
       delete require.cache[require.resolve(filename)]; module = require(filename); assertLegalFileIdentity(identity);
       need(readFileSync(filename).equals(bytes), 'reviewed transform changed while loading'); loaded.set(name, module); return module;
     };
+      const expected = new Map(original.members.map(row => [row.path, {bytes: row.bytes, sha256: row.sha256}]));
+      const modified = new Map<string, Buffer>();
+      const read = (name: string) => {
+        const prior = modified.get(name); if (prior) return prior;
+        const row = expected.get(name); need(row && row.bytes <= MAXIMUM, 'bounded upstream patch target missing:' + name);
+        const bytes = original.readMember(name); need(bytes.length === row.bytes && hash(bytes) === row.sha256, 'upstream original bytes differ'); return bytes;
+      };
+      const update = (name: string, project: (text: string) => string) => { const bytes = read(name), text = bytes.toString('utf8'); need(Buffer.from(text).equals(bytes), 'patch target UTF-8 differs'); const result = Buffer.from(project(text)); need(result.length <= MAXIMUM, 'projected patch target bound'); modified.set(name, result); };
+      const diff = diffs[identity as keyof typeof diffs];
+      if (diff) {
+        need(pkg.patchedDependencies?.[identity] === diff[0], 'immutable Bun patch declaration differs');
+        const patch = sourceBytes(diff[0]!, diff[1]!);
+        const before = new Map<string, Buffer>();
+        for (const line of patch.toString().split('\n').filter(line => line.startsWith('--- a/'))) before.set(line.slice(6), read(line.slice(6)));
+        for (const [name, bytes] of applyVerifierUnifiedPatch(before, patch)) modified.set(name, bytes);
+      } else need(!Object.prototype.hasOwnProperty.call(pkg.patchedDependencies ?? {},identity), 'unreviewed Bun patch version:' + identity);
+      if (item.name === 'jose' && expected.has('dist/node/esm/index.js')) update('package.json', transform('scripts/patch-jose.js').patchPackageManifest);
+      // The actual postinstall addresses the top-level core/browser package.
+      // Nested copies are independent untouched originals, not silently patched.
+      if (item.name === '@inrupt/solid-client-authn-core' && isTop(item.name)) {
+        need(item.version === '3.1.1', 'unreviewed core patch version');
+        const refresh = transform('scripts/patch-inrupt-authn-refresh.js'), transport = transform('scripts/patch-inrupt-authn-transport.js');
+        update('src/authenticatedFetch/fetchFactory.ts', refresh.patchSource); for (const name of ['dist/index.js', 'dist/index.mjs']) update(name, refresh.patchBundle);
+        for (const [name, kind] of [['src/authenticatedFetch/dpopUtils.ts', 'source'], ['src/authenticatedFetch/fetchFactory.ts', 'factory'], ['dist/authenticatedFetch/dpopUtils.d.ts', 'dts'], ['dist/index.js', 'cjs'], ['dist/index.mjs', 'esm']]) update(name!, text => transport.patchResourceDpop(text, kind));
+      }
+      if (item.name === '@inrupt/solid-client-authn-browser' && isTop(item.name)) {
+        need(item.version === '3.1.1', 'unreviewed browser patch version');
+        const transport = transform('scripts/patch-inrupt-authn-transport.js'), cleanup = transform('scripts/patch-inrupt-authn-operation-cleanup.js');
+        for (const [name, method] of [['src/Session.ts', 'patchSessionSource'], ['src/dependencies.ts', 'patchDependenciesSource'], ['src/login/oidc/incomingRedirectHandler/AuthCodeRedirectHandler.ts', 'patchHandlerSource'], ['dist/index.js', 'patchBundle'], ['dist/index.mjs', 'patchBundle'], ['dist/Session.d.ts', 'patchSessionDts'], ['dist/dependencies.d.ts', 'patchDependenciesDts'], ['dist/login/oidc/incomingRedirectHandler/AuthCodeRedirectHandler.d.ts', 'patchHandlerDts']]) update(name!, transport[method!]);
+        update('src/Session.ts', cleanup.patchSource); for (const name of ['dist/index.js', 'dist/index.mjs']) update(name, cleanup.patchBundle);
+      }
+      for (const [name, bytes] of modified) { const row = expected.get(name)!; if (hash(bytes) !== row.sha256) changed++; expected.set(name, {bytes: bytes.length, sha256: hash(bytes)}); }
+
+ assertDerivedSourceCurrent(input.source);
+ return Object.freeze({members:expected,changed,readMember(name:string){const raw=modified.get(name)??original.readMember(name),row=expected.get(name);need(row&&raw.length===row.bytes&&hash(raw)===row.sha256,'projected member bytes differ');return Buffer.from(raw);}});
+}
+
+/** Six reviewed package families only. The other installer inputs are reported
+ * separately as controlled frozen-install facts, never as observed registry tars. */
+export function inspectAfsVerifierPatchedPackages(input: {
+  readonly source: unknown; readonly originals?: readonly unknown[];
+  readonly packages: readonly PackageIdentity[]; readonly files: readonly SnapshotFile[];
+}): Readonly<{verified: boolean; pending: readonly string[]; facts: Readonly<Record<string, unknown>>}> {
+  const pending: string[] = [], facts: Record<string, unknown> = {}; let count = 0, changed = 0;
+  try {
+    const source = derivedSourceView(input.source); need(source, 'immutable private source required'); assertDerivedSourceCurrent(input.source);
+    const lockBytes = source.readTracked('bun.lock'), lock = registryLegalLockEntries(lockBytes);
     const selected = input.packages.filter(row => AFS_VERIFIER_PATCH_PACKAGES.includes(row.name));
     need(selected.length > 0, 'actual patched package identities missing');
     for (const item of selected) {
@@ -128,44 +176,13 @@ export function inspectAfsVerifierPatchedPackages(input: {
         throw Error('AFS verifier patch: snapshot alias cycle');
       };
       need(item.logicalPaths.every(name => resolve(name + '/package.json') === item.path + '/package.json'), 'snapshot logical package alias differs');
-      const isTop = (name: string) => item.logicalPaths!.includes('node_modules/' + name);
       const identity = item.name + '@' + item.version;
-      const candidates = (input.originals ?? []).map(cap => registryLegalOriginalView(cap)).filter(view => view?.sourceSha === source.sourceSha && view.name === item.name && view.version === item.version);
-      need(candidates.length === 1, 'official patched package original missing or ambiguous:' + identity); const original = candidates[0]!;
+      const candidates = (input.originals ?? []).map(cap => ({cap,view:registryLegalOriginalView(cap)})).filter(({view}) => view?.sourceSha === source.sourceSha && view.name === item.name && view.version === item.version);
+      need(candidates.length === 1, 'official patched package original missing or ambiguous:' + identity); const original = candidates[0]!.view!;
       need(original.integrity === lock.get(identity) && original.lockSha256 === hash(lockBytes), 'official patched package immutable SRI differs:' + identity);
       const rows = input.files.filter(row => row.path.startsWith(item.path + '/') && !input.packages.some(other => other.path !== item.path && other.path.startsWith(item.path + '/') && row.path.startsWith(other.path + '/')));
-      const expected = new Map(original.members.map(row => [row.path, {bytes: row.bytes, sha256: row.sha256}]));
-      const modified = new Map<string, Buffer>();
-      const read = (name: string) => {
-        const prior = modified.get(name); if (prior) return prior;
-        const row = expected.get(name); need(row && row.bytes <= MAXIMUM, 'bounded upstream patch target missing:' + name);
-        const bytes = original.readMember(name); need(bytes.length === row.bytes && hash(bytes) === row.sha256, 'upstream original bytes differ'); return bytes;
-      };
-      const update = (name: string, project: (text: string) => string) => { const bytes = read(name), text = bytes.toString('utf8'); need(Buffer.from(text).equals(bytes), 'patch target UTF-8 differs'); const result = Buffer.from(project(text)); need(result.length <= MAXIMUM, 'projected patch target bound'); modified.set(name, result); };
-      const diff = diffs[identity as keyof typeof diffs];
-      if (diff) {
-        need(pkg.patchedDependencies?.[identity] === diff[0], 'immutable Bun patch declaration differs');
-        const patch = sourceBytes(diff[0]!, diff[1]!);
-        const before = new Map<string, Buffer>();
-        for (const line of patch.toString().split('\n').filter(line => line.startsWith('--- a/'))) before.set(line.slice(6), read(line.slice(6)));
-        for (const [name, bytes] of applyVerifierUnifiedPatch(before, patch)) modified.set(name, bytes);
-      } else if (!['jose', '@inrupt/solid-client-authn-core', '@inrupt/solid-client-authn-browser'].includes(item.name)) need(false, 'unreviewed Bun patch version:' + identity);
-      if (item.name === 'jose' && expected.has('dist/node/esm/index.js')) update('package.json', transform('scripts/patch-jose.js').patchPackageManifest);
-      // The actual postinstall addresses the top-level core/browser package.
-      // Nested copies are independent untouched originals, not silently patched.
-      if (item.name === '@inrupt/solid-client-authn-core' && isTop(item.name)) {
-        need(item.version === '3.1.1', 'unreviewed core patch version');
-        const refresh = transform('scripts/patch-inrupt-authn-refresh.js'), transport = transform('scripts/patch-inrupt-authn-transport.js');
-        update('src/authenticatedFetch/fetchFactory.ts', refresh.patchSource); for (const name of ['dist/index.js', 'dist/index.mjs']) update(name, refresh.patchBundle);
-        for (const [name, kind] of [['src/authenticatedFetch/dpopUtils.ts', 'source'], ['src/authenticatedFetch/fetchFactory.ts', 'factory'], ['dist/authenticatedFetch/dpopUtils.d.ts', 'dts'], ['dist/index.js', 'cjs'], ['dist/index.mjs', 'esm']]) update(name!, text => transport.patchResourceDpop(text, kind));
-      }
-      if (item.name === '@inrupt/solid-client-authn-browser' && isTop(item.name)) {
-        need(item.version === '3.1.1', 'unreviewed browser patch version');
-        const transport = transform('scripts/patch-inrupt-authn-transport.js'), cleanup = transform('scripts/patch-inrupt-authn-operation-cleanup.js');
-        for (const [name, method] of [['src/Session.ts', 'patchSessionSource'], ['src/dependencies.ts', 'patchDependenciesSource'], ['src/login/oidc/incomingRedirectHandler/AuthCodeRedirectHandler.ts', 'patchHandlerSource'], ['dist/index.js', 'patchBundle'], ['dist/index.mjs', 'patchBundle'], ['dist/Session.d.ts', 'patchSessionDts'], ['dist/dependencies.d.ts', 'patchDependenciesDts'], ['dist/login/oidc/incomingRedirectHandler/AuthCodeRedirectHandler.d.ts', 'patchHandlerDts']]) update(name!, transport[method!]);
-        update('src/Session.ts', cleanup.patchSource); for (const name of ['dist/index.js', 'dist/index.mjs']) update(name, cleanup.patchBundle);
-      }
-      for (const [name, bytes] of modified) { const row = expected.get(name)!; if (hash(bytes) !== row.sha256) changed++; expected.set(name, {bytes: bytes.length, sha256: hash(bytes)}); }
+      need(diffs[identity as keyof typeof diffs]||['jose','@inrupt/solid-client-authn-core','@inrupt/solid-client-authn-browser'].includes(item.name),'unreviewed Bun patch version:'+identity);
+      const projection=projectReviewedInstalledPackage({source:input.source,original:candidates[0]!.cap,logicalPaths:item.logicalPaths!}),expected=projection.members;changed+=projection.changed;
       need(rows.length === expected.size && rows.every(row => { const actual = expected.get(row.path.slice(item.path.length + 1)); return row.kind === 'file' && actual && actual.bytes === row.bytes && actual.sha256 === row.sha256; }), 'actual package full byte universe differs from official patched projection:' + identity);
       count++;
     }

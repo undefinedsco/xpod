@@ -1,5 +1,6 @@
 """Pure Docker context policy contracts; no Docker build or native qualification."""
 import re
+import ast
 import json
 import unittest
 from pathlib import Path
@@ -82,9 +83,13 @@ class ModuleContextTests(unittest.TestCase):
         self.assertEqual(externals, ['tar']); self.assertIn('tar', cli['devDependencies'])
         self.assertIn('ENV NODE_ENV=development', (ROOT / 'Dockerfile').read_text())
         runtime_edges = {
-            'scripts/run-npm-pack.cjs': {'./service-pack-phase.cjs', './service-pack-originals.cjs'},
+            'scripts/run-npm-pack.cjs': {'./service-pack-phase.cjs', './service-pack-originals.cjs', './service-pack-node-runtime.cjs'},
             'scripts/service-pack-phase.cjs': {'./lib/module-artifact-limits.json'},
-            'scripts/service-pack-originals.cjs': {'./lib/module-artifact-limits.json'},
+            'scripts/service-pack-originals.cjs': {'./lib/module-artifact-limits.json', './service-pack-copy-ledger.cjs', './service-pack-input-custody.cjs', './service-pack-public-inputs.cjs'},
+            'scripts/service-pack-copy-ledger.cjs': {'./lib/module-artifact-limits.json'},
+            'scripts/service-pack-input-custody.cjs': {'./lib/module-artifact-limits.json'},
+            'scripts/service-pack-public-inputs.cjs': {'./lib/module-artifact-limits.json'},
+            'scripts/service-pack-node-runtime.cjs': {'./lib/module-artifact-limits.json'},
             'scripts/check-dependency-state.ts': set(),
         }
         for source, expected in runtime_edges.items():
@@ -128,7 +133,16 @@ class ModuleContextTests(unittest.TestCase):
         self.assertIn('!LICENSE', self.rules)
         self.assertGreater((ROOT / 'LICENSE').stat().st_size, 0)
         dockerfile = (ROOT / 'Dockerfile').read_text()
-        self.assertLess(dockerfile.index('COPY . .'), dockerfile.index('RUN bun run build:packages'))
+        copied = dockerfile.index('COPY . .')
+        local_build = 'RUN if [ -z "${XPOD_SOURCE_SHA}" ]; then bun run build:packages'
+        retained_build = 'python3 scripts/service-pack-parent.py --source-sha "${XPOD_SOURCE_SHA}" --include-build'
+        self.assertLess(copied, dockerfile.index(local_build))
+        self.assertLess(copied, dockerfile.index(retained_build))
+        bindings = ast.parse((ROOT / 'qlever/scripts/sdk-service-pack-bindings.py').read_text())
+        tables = [node.value for node in bindings.body if isinstance(node, ast.Assign)
+                  and any(isinstance(target, ast.Name) and target.id == 'BUILD_COMMANDS' for target in node.targets)]
+        self.assertEqual(len(tables), 1)
+        self.assertIn(('build-packages', ('bun', 'run', 'build:packages')), ast.literal_eval(tables[0]))
 
     def test_host_python_cache_and_test_outputs_remain_excluded_after_all_exceptions(self):
         final_exception = max(index for index, rule in enumerate(self.rules) if rule.startswith('!'))

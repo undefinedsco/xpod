@@ -3,6 +3,7 @@ import {isDeepStrictEqual} from 'node:util';
 import type {CollectedNativeOriginalsView} from './native-originals';
 import {nativeOriginalsView,assertCollectedNativeOriginalCustody} from './native-original-collector';
 import {isCandidateServiceImageGitHubOrigin} from './github-origin';
+import {candidateServiceCheckoutStageNames,inspectCandidateServiceAbiSourceStages,candidateServiceAbiSeedStreams} from './candidate-service-abi-source-stages';
 export interface CandidateServiceRelationshipContract {
  readonly schemaVersion:1;
  readonly workflowPath:'.github/workflows/candidate.yml';
@@ -22,13 +23,16 @@ export function inspectCandidateServiceOriginalUniverse(view:CollectedNativeOrig
  const refs=new Map<string,any>();let total=0;
  for(const row of view.members){need(Number.isSafeInteger(row.bytes)&&row.bytes>=0&&/^[a-f0-9]{64}$/u.test(row.sha256),'actual bounded service member');total+=row.bytes;need(total<=totalLimit,'actual service retained byte ceiling');}
  for(const row of master.originals){need(row&&Object.keys(row).sort().join(',')==='bytes,path,sha256'&&typeof row.path==='string'&&!refs.has(row.path),'unique plain service original');const actual=members.get(row.path);need(actual&&actual.bytes===row.bytes&&actual.sha256===row.sha256&&row.path!=='service-image-materials.json','exact service original reference');refs.set(row.path,row);}
- const streamed=new Set<string>();
- const permit=(ref:any,pattern:RegExp)=>{need(ref&&pattern.test(ref.path)&&refs.has(ref.path)&&isDeepStrictEqual(ref,refs.get(ref.path))&&!streamed.has(ref.path),'exact typed pack stream reference');streamed.add(ref.path);};
+ const streamed=new Map<string,number>();
+ const permit=(ref:any,pattern:RegExp,maximum=totalLimit)=>{need(ref&&pattern.test(ref.path)&&refs.has(ref.path)&&isDeepStrictEqual(ref,refs.get(ref.path))&&!streamed.has(ref.path)&&ref.bytes<=maximum,'exact typed service stream reference');streamed.set(ref.path,maximum);};
  const pack=master.packInputObservation;
  if(pack!==undefined){
   need(pack?.schemaVersion===1&&pack.kind==='actual-stopped-service-image-pack-inputs'&&Array.isArray(pack.bodies)&&pack.bodies.length<=512,'typed pack stream layout');
   permit(pack.phase?.stage?.stdout,/^stages\/service-output-copy-pack-phase\/stdout\.raw$/u);
   for(const row of pack.bodies){permit(row.original,/^output\/service-pack-bodies\/objects\/[0-9]{4}-[a-f0-9]{64}\.original$/u);permit(row.rawTarOriginal,/^stages\/service-output-copy-pack-body-[0-9]{4}\/stdout\.raw$/u);need(isDeepStrictEqual(row.rawTarOriginal,row.stage?.stdout),'same actual body stage stdout');}
+ }
+ for(const row of candidateServiceAbiSeedStreams(master)){
+  permit(row.reference,/^(?:abi-seed|xpod-service-output-[a-f0-9]{32}-scratch)\/abi\.sqlite$/u,row.maximumBytes);
  }
  for(const row of refs.values()){
   need(row.bytes<=metadataLimit||streamed.has(row.path),'large service original requires exact typed pack stream');
@@ -74,7 +78,7 @@ export function inspectCandidateServiceRelationship(view:CollectedNativeOriginal
  need(service.config?.Labels?.['org.opencontainers.image.revision']===origin.sourceSha&&service.config?.Labels?.['org.opencontainers.image.source']==='https://github.com/undefinedsco/xpod','actual service revision labels');
  const metadata=JSON.parse(bytes(master.sourceOriginals?.buildMetadata).toString());need(metadata['containerimage.digest']===master.serviceImageReferenceByDigest.split('@')[1]&&metadata['containerimage.config.digest']===master.images.service.configDigest,'actual build action/registry config cross-seal');
  const before=bytes(master.sourceOriginals?.rootManifestBefore),after=bytes(master.sourceOriginals?.rootManifestAfter);
- const expectedStages=['service-source-head','service-source-manifest','service-source-status'];need(Array.isArray(master.stages)&&isDeepStrictEqual(master.stages.map((row:any)=>row.name),expectedStages),'complete ordered checkout command universe');
+ const expectedStages=candidateServiceCheckoutStageNames(master);need(Array.isArray(master.stages)&&isDeepStrictEqual(master.stages.map((row:any)=>row.name),expectedStages),'complete ordered checkout command universe');
  need(typeof master.sourcePath==='string'&&master.sourcePath.startsWith('/')&&!master.sourcePath.split('/').some((part:string)=>part==='.'||part==='..')&&master.controllerPath===master.sourcePath+'/qlever/scripts/sdk-service-image-originals.py','actual fixed checkout/controller command path');
  const jobRows=view.metadataOriginals.filter(row=>/^jobs(?:-page-\d+)?\.original\.json$/u.test(row.name)).flatMap(row=>JSON.parse(row.data.toString()).jobs??[]);const producerJobs=jobRows.filter((row:any)=>row.id===origin.producerJobId);need(producerJobs.length===1,'actual unique service job raw');const producerJob=producerJobs[0];const jobStart=Date.parse(producerJob.started_at)*1e6,jobEnd=Date.parse(producerJob.completed_at)*1e6;need(Number.isFinite(jobStart)&&Number.isFinite(jobEnd)&&jobStart<=jobEnd,'actual service job window');let completed=jobStart;
  const named=(name:string)=>{const rows=master.stages?.filter((row:any)=>row.name===name);need(rows?.length===1,'unique actual checkout stage');const stage=rows[0],receipt=JSON.parse(bytes(stage.receipt).toString()),supervision=JSON.parse(bytes(stage.supervisionReceipt).toString());const supervisorRaw=bytes(stage.supervisionRaw);bytes(stage.stderr);
@@ -85,6 +89,7 @@ export function inspectCandidateServiceRelationship(view:CollectedNativeOriginal
   need(Number.isSafeInteger(receipt.pgid)&&receipt.pgid>0&&Number.isInteger(receipt.startedUnixNs)&&Number.isInteger(receipt.completedUnixNs)&&completed<=receipt.startedUnixNs&&receipt.completedUnixNs>=receipt.startedUnixNs&&receipt.completedUnixNs<=jobEnd,'actual command PID group and window');
   need(receipt.exit===0&&receipt.signal===null&&receipt.actualWait===true&&receipt.rawClosedBeforeHash===true&&supervision.exit===0&&supervision.signal===null&&supervision.actualWait===true&&supervision.rawClosedBeforeHash===true&&supervision.ownedGroupAbsentAfterWait===true&&receipt.pgid===supervision.pgid&&supervision.resourceStop===null&&supervision.supervisorError===null&&Array.isArray(supervision.cleanupErrors)&&supervision.cleanupErrors.length===0&&supervision.rawSHA256===digest(supervisorRaw),'closed actual checkout supervision');completed=receipt.completedUnixNs;return bytes(stage.stdout);};
  need(named('service-source-head').toString().trim()===origin.sourceSha&&named('service-source-manifest').equals(before),'actual Git HEAD and before manifest');named('service-source-status');
+ inspectCandidateServiceAbiSourceStages(master,named);
  need(JSON.parse(before.toString()).name==='@undefineds.co/xpod'&&JSON.parse(after.toString()).name==='@undefineds.co/xpod','actual root manifest identity');
  return Object.freeze({sdkArtifact:master.sdkArtifact,sourceSha:origin.sourceSha,runId:origin.runId,runAttempt:origin.runAttempt,target:'linux-x64',sdkImage:master.sdkArtifact.sdkImageReferenceByDigest,master});
 }

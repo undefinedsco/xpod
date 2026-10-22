@@ -235,7 +235,7 @@ def service_pack_sidecar_tar(path,check,*,phase=False):
                 need(item.name in [root_name,root_name+'/',*([root_name+'/objects',root_name+'/objects/'] if not phase else [])] and item.size==0 and not item.linkname,'fixed pack sidecar directories only');continue
             need(item.type in (tarfile.REGTYPE,tarfile.AREGTYPE) and not item.linkname,'regular pack sidecar original only')
             name=item.name;is_index=name==root_name+'/materials.json'
-            need(is_index or (name in [root_name+'/pack.raw.log',root_name+'/pack.receipt.json'] if phase else re.fullmatch(r'service-pack-originals/objects/[a-f0-9]{64}\.original',name)),'fixed pack sidecar original namespace')
+            need(is_index or (name in [root_name+'/'+name for name in pack_bindings.phase_names(pack_bindings.BUILD_PARENT_MODEL)] if phase else re.fullmatch(r'service-pack-originals/objects/[a-f0-9]{64}\.original',name)),'fixed pack sidecar original namespace')
             need(0<=item.size<=META and (item.size>0 or phase or name==root_name+'/objects/'+hashlib.sha256(b'').hexdigest()+'.original'),'pack sidecar original byte bound')
             total+=item.size;need(total<=(3*META if phase else META),'shared pack metadata byte bound');pieces=[];count=0
             with archive.extractfile(item) as source:
@@ -250,7 +250,7 @@ def service_pack_sidecar_tar(path,check,*,phase=False):
                 originals[relative]=body
     while guard.read(65536):check()
     if phase:
-        need(isinstance(collection,dict) and collection.get('schemaVersion')==1 and collection.get('kind')=='actual-service-pack-parent-originals' and set(originals)=={'pack.raw.log','pack.receipt.json'},'exact actual pack parent originals');return dict(collection=collection,collectionOriginal=index_original,originals=originals)
+        need(isinstance(collection,dict) and collection.get('schemaVersion')==1 and collection.get('kind')=='actual-service-pack-parent-originals' and set(originals)==set(pack_bindings.phase_names(collection.get('parentModel'))),'exact actual pack parent originals');return dict(collection=collection,collectionOriginal=index_original,originals=originals)
     need(isinstance(collection,dict) and collection.get('schemaVersion')==1 and collection.get('kind')=='actual-service-pack-manifest-inputs','explicit pack sidecar collection')
     refs=collection.get('originals');need(isinstance(refs,list) and len(refs)==len(originals) and len(refs)<=4095,'closed pack sidecar original set')
     registered=set()
@@ -317,7 +317,7 @@ def observe_output_image(image,config,retained,source,source_sha,*,capture_pack_
                 observed=retain_pack_body_tar(body_stage['stdout'],ref,retained);need(observed['bodyOriginalCaptured'],'actual full body capture pending')
                 captured[ref['path']]=ref;body_observations.append(dict(reference=ref,original=observed['original'],rawTarOriginal=body_stage['stdout'],stage=body_stage))
             mechanics=verify_pack_parent(pack['collection'],phase_pack['collection'],phase_pack['originals'],captured)
-            pack_observation=dict(schemaVersion=1,kind='actual-stopped-service-image-pack-inputs',imageReferenceByDigest=image,configDigest=config,containerId=cid,stage=pack_stage,metadata=metadata,bodies=body_observations,phase=dict(stage=phase_stage,metadata=phase_metadata,receipt=phase_refs['pack.receipt.json'],raw=phase_refs['pack.raw.log']),mechanicsVerified=True,**mechanics)
+            pack_observation=dict(schemaVersion=1,kind='actual-stopped-service-image-pack-inputs',imageReferenceByDigest=image,configDigest=config,containerId=cid,stage=pack_stage,metadata=metadata,bodies=body_observations,phase=dict(stage=phase_stage,metadata=phase_metadata,receipt=phase_refs['pack.receipt.json'],raw=phase_refs['pack.raw.log'],**(dict(originals=phase_refs) if phase_pack['collection'].get('parentModel') else {})),mechanicsVerified=True,**mechanics)
         _,raw=stage('remove',cleanup=True,cap=5);need(raw.decode().strip()==cid,'actual owned output removal ID')
         _,raw=stage('confirm-absent',cleanup=True,cap=5);need(raw==b'','removed output container remains present');removed=True
         return reference,dict(schemaVersion=1,kind='actual-stopped-service-image-root-manifest',imageReferenceByDigest=image,configDigest=config,containerId=cid,containerName=name,ownerNonce=nonce,stages=stages,**(dict(packInputObservation=pack_observation) if pack_observation else {}))
@@ -340,11 +340,27 @@ def observe_output_image(image,config,retained,source,source_sha,*,capture_pack_
             try:retained.save('output/failure.original.json',(json.dumps(dict(schemaVersion=1,kind='failed-service-output-observation',containerName=name,ownerNonce=nonce,containerId=cid,stages=stages,failedStages=failures,cleanupErrors=cleanup_errors,releaseAccepted=False),sort_keys=True)+'\n').encode())
             except BaseException:pass
 
+SERVICE_ABI_SOURCE_PATHS={
+    'abi-header':'qlever/rdf_protocol/include/xpod_rdf_physical_backend.h',
+    'abi-adapter':'qlever/qlever_adapter/src/xpod_qlever_adapter.cpp',
+    'abi-runtime':'qlever/qlever_local_runtime/src/xpod_qlever_local_runtime.cpp',
+    'abi-client':'src/storage/rdf/LocalQleverNativeSparqlClient.ts',
+}
+SERVICE_ABI_HELPER_PATHS={'declarations': 'qlever/scripts/sdk-service-abi-declarations.py', 'collector': 'qlever/scripts/sdk-service-abi-collector.py', 'direct_commands': 'qlever/scripts/sdk-service-abi-direct-runtime-commands.py', 'retained_session': 'qlever/scripts/sdk-service-abi-retained-session.py', 'host_session': 'qlever/scripts/sdk-service-abi-host-session.py', 'transport': 'qlever/scripts/sdk-service-abi-transport.py', 'replay': 'qlever/scripts/sdk-service-abi-protocol-replay.py', 'helper': 'qlever/scripts/verify-local-runtime-artifacts.py', 'seed': 'qlever/scripts/sdk-service-abi-seed.py', 'source_custody': 'qlever/scripts/sdk-service-abi-source-custody.py'}
+SERVICE_CAPTURE_PATHS={**SERVICE_ABI_SOURCE_PATHS,**{'abi-helper-'+role.replace('_','-'):path for role,path in SERVICE_ABI_HELPER_PATHS.items()}}
+SERVICE_SOURCE_ROLES=('head','manifest','status',*SERVICE_CAPTURE_PATHS,*(role+'-oid' for role in SERVICE_CAPTURE_PATHS))
+
 def worker(mode,source,sha):
-    need(mode in ['head','manifest','status'] and re.fullmatch('[a-f0-9]{40}',sha),'fixed checkout observation')
+    need(mode in SERVICE_SOURCE_ROLES and re.fullmatch('[a-f0-9]{40}',sha),'fixed checkout observation')
     path=Path(source);need(path.is_absolute() and path.resolve(strict=True)==path,'canonical actual checkout path')
     resource.setrlimit(resource.RLIMIT_FSIZE,(META,META))
-    command=['git','--no-pager','-C',str(path),*({'head':['rev-parse','--verify','HEAD'],'manifest':['show',sha+':package.json'],'status':['status','--porcelain=v1','--untracked-files=no']}[mode])]
+    if mode in SERVICE_CAPTURE_PATHS:
+        arguments=['show',sha+':'+SERVICE_CAPTURE_PATHS[mode]]
+    elif mode.endswith('-oid') and mode[:-4] in SERVICE_CAPTURE_PATHS:
+        arguments=['rev-parse','--verify',sha+':'+SERVICE_CAPTURE_PATHS[mode[:-4]]]
+    else:
+        arguments={'head':['rev-parse','--verify','HEAD'],'manifest':['show',sha+':package.json'],'status':['status','--porcelain=v1','--untracked-files=no']}[mode]
+    command=['git','--no-pager','-C',str(path),*arguments]
     os.execv('/usr/bin/git',command)
 
 def capture(args):
@@ -355,42 +371,93 @@ def capture(args):
     source=Path(args.source);need(source.is_absolute() and source.resolve(strict=True)==source,'actual canonical checkout')
     out=Path(args.out);need(out.is_absolute() and out.parent.resolve(strict=True)==Path(os.environ['RUNNER_TEMP']).resolve(strict=True) and out.name=='service-image-originals','fixed owned original output');out.mkdir(mode=0o700,exist_ok=False)
     budget=outer.budgets.ExecutionBudget(args.deadline)
-    with collection.absolute_budget(budget):
-        retained=Retained(out,budget);stages=[]
-        def stage(mode):
-            held=retained.reserve(5*META);row=outer.commands.capture('service-source-'+mode,['/usr/bin/python3','-I','-S','-B',str(Path(__file__).resolve()),'--worker',mode,'--source',str(source),'--source-sha',args.source_sha],out,source,timeout=budget.timeout(15),resource_profile='observation');stages.append(row);retained.settle(held,[row[key] for key in ['receipt','stdout','stderr','supervisionReceipt','supervisionRaw']]);return outer.bounded_original(out/row['stdout']['path'],META,lambda:budget.check(0))
-        need(stage('head').decode().strip()==args.source_sha,'actual checkout HEAD/source differs');committed=stage('manifest');stage('status')
-        references={}
-        for label,path in [('rootManifestBefore',args.root_manifest_before),('rootManifestAfter',args.root_manifest_after),('buildMetadata',args.build_metadata)]:
-            raw=outer.bounded_original(Path(path),META if label=='buildMetadata' else 128*1024,lambda:budget.check(0));references[label]=retained.save(label+'.original.json',raw)
-        before=outer.bounded_original(out/references['rootManifestBefore']['path'],META,lambda:budget.check(0));after=outer.bounded_original(out/references['rootManifestAfter']['path'],META,lambda:budget.check(0));need(before==committed and after==outer.bounded_original(source/'package.json',META,lambda:budget.check(0)),'actual before/Git and after/current root manifests differ')
-        need(json.loads(before).get('name')==json.loads(after).get('name')=='@undefineds.co/xpod','actual root package identity')
-        # These two optional fixed siblings are archival context, never SDK authority.
-        for phase,path in [('before',args.root_manifest_before),('after',args.root_manifest_after)]:
-            desktop=Path(path).parent/'desktop/package.json'
-            if desktop.exists():references['desktopManifest'+phase.title()]=retained.save('desktop-'+phase+'.original.json',outer.bounded_original(desktop,128*1024,lambda:budget.check(0)))
-        metadata=json.loads(outer.bounded_original(out/references['buildMetadata']['path'],META,lambda:budget.check(0)));need(metadata.get('containerimage.digest')==service.split('@')[1] and outer.binding.digest(metadata.get('containerimage.config.digest')),'actual build action metadata/image digest')
-        observed={}
-        for role,image in [('service',service),('localRuntime',local),('sdk',sdk)]:
-            held=retained.reserve(3*META);value=images.registry_originals(image,'linux-x64',out/role,budget=budget,reserve_seconds=0);refs=[value['manifestOriginal'],value['configOriginal'],*([value['platformManifestOriginal']] if 'platformManifestOriginal' in value else [])];retained.settle(held,refs);observed[role]=value
-        need(observed['service']['configDigest']==metadata['containerimage.config.digest'],'actual build action and independently fetched registry config differ')
-        service_config=json.loads(outer.bounded_original(out/observed['service']['configOriginal']['path'],META,lambda:budget.check(0)));local_config=json.loads(outer.bounded_original(out/observed['localRuntime']['configOriginal']['path'],META,lambda:budget.check(0)));facts=inspect_relationship(service_config,local_config,args.source_sha)
-        references['serviceRootManifest'],output_observation=observe_output_image(service,observed['service']['configDigest'],retained,source,args.source_sha,capture_pack_inputs=getattr(args,'capture_service_pack_originals',False))
-        pack_observation=output_observation.pop('packInputObservation',None)
-        if pack_observation:
-            references['servicePackMetadata']=pack_observation['metadata']
-            for role,key in [('servicePackParentMetadata','metadata'),('servicePackParentReceipt','receipt'),('servicePackParentRaw','raw')]:references[role]=pack_observation['phase'][key]
-        sdk_ref=dict(artifactId=args.sdk_artifact_id,artifactSha256=args.sdk_artifact_digest,sourceSha=args.source_sha,runId=run,runAttempt=attempt,target='linux-x64',sdkProfile='service-trixie',sdkImageReferenceByDigest=sdk,master=dict(path='materials.json',bytes=args.sdk_master_bytes,sha256=args.sdk_master_sha256))
-        master=dict(schemaVersion=1,kind='xpod-candidate-service-image-originals',sourcePath=str(source),controllerPath=str(Path(__file__).resolve()),sourceSha=args.source_sha,runHeadSha=args.source_sha,runId=run,runAttempt=attempt,target='linux-x64',sdkProfile='service-trixie',serviceImageReferenceByDigest=service,localRuntimeImageReferenceByDigest=local,sdkArtifact=sdk_ref,images=observed,sourceOriginals=references,outputImageObservation=output_observation,**(dict(packInputObservation=pack_observation) if pack_observation else {}),stages=stages,originals=[retained.refs[name] for name in sorted(retained.refs)],facts=facts,releaseAccepted=False,pending=['service-whole-application-source-closure-unverified','service-runtime-abi-unverified','service-sdk-source-and-compiler-closure-unverified'],scope='Actual registry/config/checkout originals; SDK relationship requires independent same-run GitHub issuer and SDK private custody')
-        raw=(json.dumps(master,sort_keys=True,indent=2)+'\n').encode();ref=retained.save('service-image-materials.json',raw)
-        with open(os.environ['GITHUB_OUTPUT'],'a') as output:output.write('master_sha256='+ref['sha256']+'\nmaster_bytes='+str(ref['bytes'])+'\n')
-        return master
+    abi_custody=None;abi_primary=None
+    try:
+        with collection.absolute_budget(budget):
+            retained=Retained(out,budget);stages=[]
+            def stage(mode):
+                held=retained.reserve(5*META);row=outer.commands.capture('service-source-'+mode,['/usr/bin/python3','-I','-S','-B',str(Path(__file__).resolve()),'--worker',mode,'--source',str(source),'--source-sha',args.source_sha],out,source,timeout=budget.timeout(15),resource_profile='observation');stages.append(row);retained.settle(held,[row[key] for key in ['receipt','stdout','stderr','supervisionReceipt','supervisionRaw']]);return outer.bounded_original(out/row['stdout']['path'],META,lambda:budget.check(0))
+            need(stage('head').decode().strip()==args.source_sha,'actual checkout HEAD/source differs');committed=stage('manifest');stage('status')
+            references={}
+            abi_observation=None
+            if getattr(args,'capture_service_abi_originals',False):
+                import types
+                source_rows=[];source_bodies=[];helper_rows={};helper_bodies={}
+                for role,path in SERVICE_CAPTURE_PATHS.items():
+                    oid_raw=stage(role+'-oid');oid=oid_raw.decode('ascii').strip()
+                    need(re.fullmatch('[a-f0-9]{40}',oid),'actual complete Git blob OID required')
+                    oid_ref=stages[-1]['stdout']
+                    raw=stage(role);need(len(raw)<=1024**2,'fixed ABI source byte bound')
+                    need(hashlib.sha1(b'blob '+str(len(raw)).encode()+b'\0'+raw).hexdigest()==oid,'actual Git blob OID/body differ')
+                    references[role]=stages[-1]['stdout'];references[role+'-oid']=oid_ref
+                    source_rows.append(dict(role=role,path=path,gitBlobOid=oid,body=references[role],oidOriginal=oid_ref))
+                    if role in SERVICE_ABI_SOURCE_PATHS:
+                        source_bodies.append(raw)
+                    else:
+                        key=next(key for key in SERVICE_ABI_HELPER_PATHS if role=='abi-helper-'+key.replace('_','-'))
+                        helper_rows[key]=dict(path=path,gitBlobOid=oid,body=references[role]);helper_bodies[key]=raw
+                custody_module=types.ModuleType('xpod_abi_source_custody_bootstrap')
+                custody_module.__file__=str(source/SERVICE_ABI_HELPER_PATHS['source_custody'])
+                exec(compile(helper_bodies['source_custody'],custody_module.__file__,'exec'),custody_module.__dict__)
+                abi_custody=custody_module.Custody(source,helper_rows,retained)
+                abi_modules=abi_custody.modules
+                abi_observation=dict(schemaVersion=1,sourceSha=args.source_sha,sources=source_rows,expectedAbi=abi_modules['declarations'].declarations(*source_bodies),runtimeAbiVerified=False,scope='immutable Git declarations and held helper bytes only; actual binary, loader and native membership pending')
+            for label,path in [('rootManifestBefore',args.root_manifest_before),('rootManifestAfter',args.root_manifest_after),('buildMetadata',args.build_metadata)]:
+                raw=outer.bounded_original(Path(path),META if label=='buildMetadata' else 128*1024,lambda:budget.check(0));references[label]=retained.save(label+'.original.json',raw)
+            before=outer.bounded_original(out/references['rootManifestBefore']['path'],META,lambda:budget.check(0));after=outer.bounded_original(out/references['rootManifestAfter']['path'],META,lambda:budget.check(0));need(before==committed and after==outer.bounded_original(source/'package.json',META,lambda:budget.check(0)),'actual before/Git and after/current root manifests differ')
+            need(json.loads(before).get('name')==json.loads(after).get('name')=='@undefineds.co/xpod','actual root package identity')
+            # These two optional fixed siblings are archival context, never SDK authority.
+            for phase,path in [('before',args.root_manifest_before),('after',args.root_manifest_after)]:
+                desktop=Path(path).parent/'desktop/package.json'
+                if desktop.exists():references['desktopManifest'+phase.title()]=retained.save('desktop-'+phase+'.original.json',outer.bounded_original(desktop,128*1024,lambda:budget.check(0)))
+            metadata=json.loads(outer.bounded_original(out/references['buildMetadata']['path'],META,lambda:budget.check(0)));need(metadata.get('containerimage.digest')==service.split('@')[1] and outer.binding.digest(metadata.get('containerimage.config.digest')),'actual build action metadata/image digest')
+            observed={}
+            for role,image in [('service',service),('localRuntime',local),('sdk',sdk)]:
+                held=retained.reserve(3*META);value=images.registry_originals(image,'linux-x64',out/role,budget=budget,reserve_seconds=0);refs=[value['manifestOriginal'],value['configOriginal'],*([value['platformManifestOriginal']] if 'platformManifestOriginal' in value else [])];retained.settle(held,refs);observed[role]=value
+            need(observed['service']['configDigest']==metadata['containerimage.config.digest'],'actual build action and independently fetched registry config differ')
+            service_config=json.loads(outer.bounded_original(out/observed['service']['configOriginal']['path'],META,lambda:budget.check(0)));local_config=json.loads(outer.bounded_original(out/observed['localRuntime']['configOriginal']['path'],META,lambda:budget.check(0)));facts=inspect_relationship(service_config,local_config,args.source_sha)
+            references['serviceRootManifest'],output_observation=observe_output_image(service,observed['service']['configDigest'],retained,source,args.source_sha,capture_pack_inputs=getattr(args,'capture_service_pack_originals',False))
+            abi_runtime_observation=None
+            if abi_custody is not None:
+                abi_custody.assert_current()
+                seed=abi_modules['seed'].generate(retained=retained,
+                    helper_reference=helper_rows['helper']['body'],
+                    worker_reference=helper_rows['seed']['body'],
+                    assert_current=abi_custody.assert_current,transport=abi_modules['transport'],
+                    control_collector=abi_modules['collector'].capture_bounded_control)
+                abi_runtime_observation=abi_modules['collector'].collect(
+                    image=service,config=observed['service']['configDigest'],source=source,
+                    retained=retained,seed_reference=seed['original'],
+                    expected_abi=abi_observation['expectedAbi'],image_commands=sys.modules[__name__],
+                    direct_commands=abi_modules['direct_commands'],retained_session=abi_modules['retained_session'],
+                    host_session=abi_modules['host_session'],helper=abi_modules['helper'],
+                    transport=abi_modules['transport'],replay=abi_modules['replay'],
+                    assert_current=abi_custody.assert_current)
+                abi_runtime_observation['seedObservation']=seed
+                abi_custody.assert_current()
+            pack_observation=output_observation.pop('packInputObservation',None)
+            if pack_observation:
+                references['servicePackMetadata']=pack_observation['metadata']
+                for role,key in [('servicePackParentMetadata','metadata'),('servicePackParentReceipt','receipt'),('servicePackParentRaw','raw')]:references[role]=pack_observation['phase'][key]
+            sdk_ref=dict(artifactId=args.sdk_artifact_id,artifactSha256=args.sdk_artifact_digest,sourceSha=args.source_sha,runId=run,runAttempt=attempt,target='linux-x64',sdkProfile='service-trixie',sdkImageReferenceByDigest=sdk,master=dict(path='materials.json',bytes=args.sdk_master_bytes,sha256=args.sdk_master_sha256))
+            master=dict(schemaVersion=1,kind='xpod-candidate-service-image-originals',sourcePath=str(source),controllerPath=str(Path(__file__).resolve()),sourceSha=args.source_sha,runHeadSha=args.source_sha,runId=run,runAttempt=attempt,target='linux-x64',sdkProfile='service-trixie',serviceImageReferenceByDigest=service,localRuntimeImageReferenceByDigest=local,sdkArtifact=sdk_ref,images=observed,sourceOriginals=references,outputImageObservation=output_observation,**(dict(serviceAbiDeclarations=abi_observation) if abi_observation else {}),**(dict(serviceAbiRuntimeObservation=abi_runtime_observation) if abi_runtime_observation else {}),**(dict(packInputObservation=pack_observation) if pack_observation else {}),stages=stages,originals=[retained.refs[name] for name in sorted(retained.refs)],facts=facts,releaseAccepted=False,pending=['service-whole-application-source-closure-unverified','service-runtime-abi-unverified','service-sdk-source-and-compiler-closure-unverified'],scope='Actual registry/config/checkout originals; SDK relationship requires independent same-run GitHub issuer and SDK private custody')
+            raw=(json.dumps(master,sort_keys=True,indent=2)+'\n').encode();ref=retained.save('service-image-materials.json',raw)
+            with open(os.environ['GITHUB_OUTPUT'],'a') as output:output.write('master_sha256='+ref['sha256']+'\nmaster_bytes='+str(ref['bytes'])+'\n')
+            return master
+    except BaseException as error:
+        abi_primary=error
+        raise
+    finally:
+        if abi_custody is not None:
+            try:abi_custody.close()
+            except BaseException:
+                if abi_primary is None:raise
 
 if __name__=='__main__':
     import argparse
-    parser=argparse.ArgumentParser();parser.add_argument('--worker',choices=['head','manifest','status']);parser.add_argument('--image-worker',choices=[*OUTPUT_ROLES,OUTPUT_PACK_ROLE,OUTPUT_PACK_PHASE_ROLE,OUTPUT_PACK_BODY_ROLE,'cleanup-list','cleanup-inspect','cleanup-remove','cleanup-confirm-absent']);parser.add_argument('--container-id');parser.add_argument('--container-name');parser.add_argument('--owner-nonce');parser.add_argument('--source',required=True);parser.add_argument('--source-sha',required=True)
+    parser=argparse.ArgumentParser();parser.add_argument('--worker',choices=SERVICE_SOURCE_ROLES);parser.add_argument('--image-worker',choices=[*OUTPUT_ROLES,OUTPUT_PACK_ROLE,OUTPUT_PACK_PHASE_ROLE,OUTPUT_PACK_BODY_ROLE,'cleanup-list','cleanup-inspect','cleanup-remove','cleanup-confirm-absent']);parser.add_argument('--container-id');parser.add_argument('--container-name');parser.add_argument('--owner-nonce');parser.add_argument('--source',required=True);parser.add_argument('--source-sha',required=True)
     for key in ['out','service-image','local-runtime-image','sdk-image','sdk-artifact-digest','sdk-master-sha256','root-manifest-before','root-manifest-after','build-metadata']:parser.add_argument('--'+key)
-    parser.add_argument('--body-path');parser.add_argument('--copy-byte-bound',type=int);parser.add_argument('--capture-service-pack-originals',action='store_true');parser.add_argument('--sdk-artifact-id',type=int);parser.add_argument('--sdk-master-bytes',type=int);parser.add_argument('--deadline',type=float);args=parser.parse_args()
+    parser.add_argument('--capture-service-abi-originals',action='store_true');parser.add_argument('--body-path');parser.add_argument('--copy-byte-bound',type=int);parser.add_argument('--capture-service-pack-originals',action='store_true');parser.add_argument('--sdk-artifact-id',type=int);parser.add_argument('--sdk-master-bytes',type=int);parser.add_argument('--deadline',type=float);args=parser.parse_args()
     need(not(args.worker and args.image_worker),'single fixed worker mode')
     if args.image_worker:image_worker(args)
     elif args.worker:worker(args.worker,args.source,args.source_sha)

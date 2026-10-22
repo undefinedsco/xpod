@@ -45,13 +45,15 @@ export function registryLegalOriginalArchiveModes(value:unknown):ReadonlyMap<str
  const modes=value&&typeof value==='object'&&issued.has(value)?archiveModes.get(value):undefined;
  return modes?new Map(modes):undefined;
 }
-const serviceSelected=new WeakMap<object,WeakMap<object,{originals:unknown;source:unknown;assertCurrent():void;facts:Readonly<{officialSelectedPayloadVerified:true;name:string;version:string;members:number}>}>>();
+type ServiceSelectedBinding={originals:unknown;source:unknown;coordinateInstances:number;assertCurrent():void;facts:Readonly<{officialSelectedPayloadVerified:true;name:string;version:string;members:number}>};
+const serviceSelected=new WeakMap<object,WeakMap<object,Map<string,ServiceSelectedBinding>>>();
 /** Service association is current only while the same genuine selected source
  * remains active. A generic registry cap alone never establishes this axis. */
-export function serviceRegistrySelectedInputView(cap:unknown,input:{pack:unknown;originals:unknown;source:unknown}){
- const binding=cap&&typeof cap==='object'&&input.pack&&typeof input.pack==='object'?serviceSelected.get(cap)?.get(input.pack):undefined;
+export function serviceRegistrySelectedInputView(cap:unknown,input:{pack:unknown;originals:unknown;source:unknown;sourceRoot?:string}){
+ const instances=cap&&typeof cap==='object'&&input.pack&&typeof input.pack==='object'?serviceSelected.get(cap)?.get(input.pack):undefined;
+ const binding=input.sourceRoot===undefined?(instances?.size===1?[...instances.values()][0]:undefined):instances?.get(input.sourceRoot);
  if(!binding||binding.originals!==input.originals||binding.source!==input.source)return undefined;
- binding.assertCurrent();return Object.freeze({facts:binding.facts,assertCurrent:binding.assertCurrent});
+ binding.assertCurrent();if(input.sourceRoot===undefined&&binding.coordinateInstances!==1)return undefined;return Object.freeze({facts:binding.facts,assertCurrent:binding.assertCurrent});
 }
 export function registryLegalOriginalView(capability: unknown): RegistryLegalOriginalView | undefined {
   return capability && typeof capability === 'object' ? issued.get(capability) : undefined;
@@ -134,7 +136,13 @@ export interface ServiceRegistryAcquisitionBudget {
   /** Parent accounting only, never an identity or capability assertion. The
    * complete ceiling remains consumed on failure; no partial-absence refund. */
   reserveBytes(bytes:number):void;
+  /** Optional existing-parent token pair. The issuer never invents a ledger. */
+  reserveOriginalMaximum?(maximum:number):object;
+  settleOriginalReservation?(token:object,actual:number,unusedOriginalsAbsent:boolean):void;
 }
+interface ServiceOriginalReservation {owner:object;token:object;actual:number;settled:boolean;settle(token:object,actual:number,unusedOriginalsAbsent:boolean):void}
+const serviceOriginalReservations=new WeakMap<object,ServiceOriginalReservation>();
+
 /** Service original admission shares the existing sole registry issuer. The
  * selected witness is looked up from the actual private pack observation, never
  * supplied as JSON. An original cap alone is not installed/source coverage. */
@@ -142,7 +150,11 @@ export function canonicalServiceRegistryTarball(name:string,version:string):stri
   if(!/^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/u.test(name)||!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/u.test(version))fail('exact service registry identity required');
   return 'https://registry.npmjs.org/'+name+'/-/'+name.split('/').pop()+'-'+version+'.tgz';
 }
-export async function observeCandidateServiceRegistryOriginal(input:{originals:unknown;source:unknown;pack:unknown;name:string;version:string;budget:ServiceRegistryAcquisitionBudget}):Promise<object>{
+type CandidateServiceRegistryInput={originals:unknown;source:unknown;pack:unknown;name:string;version:string;sourceRoot?:string;budget:ServiceRegistryAcquisitionBudget};
+export async function observeCandidateServiceRegistryOriginal(input:CandidateServiceRegistryInput):Promise<object>{return observeServiceInstalledOriginal(input,false);}
+/** Same sole issuer, with the immutable reviewed installer transform replay. */
+export async function observeCandidateServiceInstalledOriginal(input:CandidateServiceRegistryInput):Promise<object>{return observeServiceInstalledOriginal(input,true);}
+async function observeServiceInstalledOriginal(input:CandidateServiceRegistryInput,projectInstalled:boolean):Promise<object>{
   const {nativeOriginalsView,assertCollectedNativeOriginalCustody}=await import('./native-original-collector');
   const {assertDerivedSourceCurrent}=await import('./source-context');
   const native=nativeOriginalsView(input.originals),source=derivedSourceView(input.source);
@@ -164,24 +176,34 @@ export async function observeCandidateServiceRegistryOriginal(input:{originals:u
     for(const [path,url] of files)if(!source.trackedPaths.includes(path)||!source.readTracked(path).equals(readFileSync(url)))fail('immutable registry issuer executable closure differs');
   };
   check();canonicalServiceRegistryTarball(input.name,input.version);
-  const before=selected.read(input.name,input.version);
-  const transportBudget={check,remainingMs:()=>input.budget.remainingMs(),reserveBytes(count:number){check();input.budget.reserveBytes(count);check();}};
+  const before=selected.read(input.name,input.version,input.sourceRoot);if(before.inputKind!=='installed')fail('workspace inputs require immutable workspace build source, not registry identity');
+  if(Boolean(input.budget.reserveOriginalMaximum)!==Boolean(input.budget.settleOriginalReservation))fail('complete existing-parent reservation token pair required');
+  const transportBudget={check,remainingMs:()=>input.budget.remainingMs(),reserveBytes(count:number){check();input.budget.reserveBytes(count);check();},reservationOwner:input.budget as object,...(input.budget.reserveOriginalMaximum?{reserveOriginalMaximum:(maximum:number)=>input.budget.reserveOriginalMaximum!(maximum),settleOriginalReservation:(token:object,actual:number,absent:boolean)=>input.budget.settleOriginalReservation!(token,actual,absent)}:{})};
   const cap=await acquireRegistryOriginal(input.originals as object,source,input.name,input.version,transportBudget);
-  check();const after=selected.read(input.name,input.version);if(after!==before)fail('selected source witness changed');
+  check();const after=selected.read(input.name,input.version,input.sourceRoot);if(after!==before)fail('selected source witness changed');
   const original=registryLegalOriginalView(cap),modes=archiveModes.get(cap);
   if(!original||!modes)fail('sole registry issuer did not retain original');
+  let projected:ReturnType<typeof import('./afs-verifier-patch-originals').projectReviewedInstalledPackage>|undefined;
+  if(projectInstalled){
+    const relative='scripts/lib/independent-admission/afs-verifier-patch-originals.ts',url=new URL('./afs-verifier-patch-originals.ts',import.meta.url);
+    if(!source.trackedPaths.includes(relative)||!source.readTracked(relative).equals(readFileSync(url)))fail('immutable installed projection reader differs');
+    const projection=await import('./afs-verifier-patch-originals');check();
+    projected=projection.projectReviewedInstalledPackage({source:input.source,original:cap,logicalPaths:after.logicalPaths??[]});
+  }
   for(const member of after.members){
     check();if(member.type!=='file'||!member.path.startsWith('package/'))fail('actual selected file required');
-    const relative=member.path.slice(8),row=original.members.find(row=>row.path===relative);
+    const relative=member.path.slice(8),row=projected?.members.get(relative)??original.members.find(row=>row.path===relative);
     if(!row||row.bytes!==member.bytes||row.sha256!==member.sha256||modes.get(relative)!==member.mode)fail('selected source differs from official original bytes or mode; transform proof required');
   }
   if(!after.members.length||!after.members.some(row=>row.path==='package/package.json'))fail('selected manifest source closure required');
   check();const bindings=serviceSelected.get(cap)??new WeakMap();serviceSelected.set(cap,bindings);
+  const instances=bindings.get(input.pack as object)??new Map<string,ServiceSelectedBinding>();bindings.set(input.pack as object,instances);const prior=instances.get(after.sourceRoot);if(prior)prior.assertCurrent();
+  const reservation=serviceOriginalReservations.get(cap);if(reservation&&!reservation.settled){if(reservation.owner!==input.budget)fail('same existing parent reservation owner required');check();reservation.settle(reservation.token,reservation.actual,true);reservation.settled=true;}
   const facts=Object.freeze({officialSelectedPayloadVerified:true as const,name:input.name,version:input.version,members:after.members.length});
-  bindings.set(input.pack as object,Object.freeze({originals:input.originals,source:input.source,facts,assertCurrent(){check();if(selected.read(input.name,input.version)!==after)fail('private selected source witness changed');}}));
+  instances.set(after.sourceRoot,Object.freeze({coordinateInstances:selected.list().filter(row=>row.name===input.name&&row.version===input.version).length,originals:input.originals,source:input.source,facts,assertCurrent(){check();if(selected.read(input.name,input.version,input.sourceRoot)!==after)fail('private selected source witness changed');}}));
   return cap;
 }
-async function acquireRegistryOriginal(owner: object, source: DerivedSourceView, name: string, version: string, parent?:ServiceRegistryAcquisitionBudget): Promise<object> {
+async function acquireRegistryOriginal(owner: object, source: DerivedSourceView, name: string, version: string, parent?:(ServiceRegistryAcquisitionBudget&{reservationOwner?:object})): Promise<object> {
   if (!source.trackedPaths.includes('bun.lock')) fail('immutable Bun lock required');
   const lockBytes = source.readTracked('bun.lock');
   const integrity = registryLegalLockEntries(lockBytes).get(name + '@' + version);
@@ -199,7 +221,10 @@ async function acquireRegistryOriginal(owner: object, source: DerivedSourceView,
   // Two packed representations (stream chunks/concatenation), two expanded
   // parser/member representations, and metadata are all reserved before HTTP.
   // This is debited against the caller's existing parent, not new allowance.
-  if(parent)parent.reserveBytes(2*policy.metadataBytes+2*policy.packagePackedBytes+2*policy.packageExpandedBytes);
+  const maximum=2*policy.metadataBytes+2*policy.packagePackedBytes+2*policy.packageExpandedBytes;
+  const token=parent?.reserveOriginalMaximum?.(maximum);
+  if(parent?.reserveOriginalMaximum&&(!token||typeof token!=='object'))fail('actual existing parent reservation token required');
+  if(parent&&!parent.reserveOriginalMaximum)parent.reserveBytes(maximum);
   const signal = AbortSignal.timeout(Math.max(1,Math.floor(Math.min(policy.requestTimeoutMs, policy.groupTimeoutMs - (Date.now() - group.started),parent?parent.remainingMs():Infinity))));
   const read = async (url: string, maximum: number, packed = false): Promise<Buffer> => {
     checkParent();const parsed = new URL(url);
@@ -261,6 +286,7 @@ async function acquireRegistryOriginal(owner: object, source: DerivedSourceView,
     readArchiveRange(offset: number, length: number) { if (!Number.isSafeInteger(offset) || !Number.isSafeInteger(length) || offset < 0 || length < 0 || length > 65536 || offset + length > archive.length) return fail('bounded original archive range required'); return Buffer.from(archive.subarray(offset, offset + length)); },
     readMemberRange(name: string, offset: number, length: number) { const bytes = originals.get(name); if (!bytes || !Number.isSafeInteger(offset) || !Number.isSafeInteger(length) || offset < 0 || length < 0 || length > 65536 || offset + length > bytes.length) return fail('bounded original member range required'); return Buffer.from(bytes.subarray(offset, offset + length)); },
     readMember(name: string) { const bytes = originals.get(name); if (!bytes) return fail('original member absent'); return Buffer.from(bytes); } }));
+  if(token){if(!parent?.settleOriginalReservation||!parent.reservationOwner)fail('same existing parent token owner required');const actual=2*metadataBytes.length+2*archive.length+2*expandedBytes;if(!Number.isSafeInteger(actual)||actual<=0||actual>maximum)fail('actual complete original representation byte settlement bound');serviceOriginalReservations.set(cap,{owner:parent.reservationOwner,token,actual,settled:false,settle:parent.settleOriginalReservation});}
   archiveModes.set(cap,new Map(actualModes));group.caps.set(key, cap); return cap;
   } finally { group.active = false; }
 }

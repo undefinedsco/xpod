@@ -47,12 +47,12 @@ COPY scripts/patch-inrupt-authn-operation-cleanup.js ./scripts/patch-inrupt-auth
 RUN NODE_TLS_REJECT_UNAUTHORIZED=0 bun install --frozen-lockfile
 
 COPY . .
-RUN bun run build:packages && bun run build:ts && bun run build:components && bun scripts/check-components-runtime-metadata.cjs && bun run build:ui
 ARG XPOD_SOURCE_SHA
+RUN if [ -z "${XPOD_SOURCE_SHA}" ]; then bun run build:packages && bun run build:ts && bun run build:components && bun scripts/check-components-runtime-metadata.cjs && bun run build:ui; fi
 # Explicit provenance builds use the bounded parent. Local builds keep the
 # existing pack recipe and do not claim retained pack provenance.
 RUN if [ -n "${XPOD_SOURCE_SHA}" ]; then \
-      python3 scripts/service-pack-parent.py --source-sha "${XPOD_SOURCE_SHA}"; \
+      python3 scripts/service-pack-parent.py --source-sha "${XPOD_SOURCE_SHA}" --include-build; \
     else \
       node scripts/run-npm-pack.cjs .test-data/service-pack .test-data/service-pack-cache service; \
     fi \

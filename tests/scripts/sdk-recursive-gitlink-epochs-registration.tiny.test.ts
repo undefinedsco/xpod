@@ -5,7 +5,7 @@ import{sourceBindingKey as key,secondaryGitHubSourceBindingSelectors as secondar
 const sha=(value:Buffer|string)=>createHash('sha256').update(value).digest('hex'),groups={api,sdk,consumer,ci};
 test('SDK40 preserves all 210 actual prior whole recipes and binds exact recursive Gitlink and generated-file epoch helper bytes',()=>{
  for(const[name,values]of Object.entries(groups)){const old=before.hashes[name as keyof typeof before.hashes];for(let i=0;i<old.length;i++)expect(sha(JSON.stringify(values[i]))).toBe(old[i]!);}
- expect([api.length,sdk.length,consumer.length,ci.length,current.length]).toEqual([24,46,58,114,403]);
+ expect([api.length,sdk.length,consumer.length,ci.length,current.length]).toEqual([25,47,59,116,420]);
  for(const row of [...current,...sdk.at(-1)!.selectors,...sdk.at(-1)!.sourceBindings])expect(sha(fs.readFileSync(row.path))).toBe(row.sha256);
  expect(sdk[39]!.sourceBindings.find(row=>row.path==='qlever/scripts/sdk-fetchcontent-materials.py')!.sha256).toBe('927d5f119e575d6e4eaabc1a485b338148eceb450486b99c3b4a8569088a215c');
  expect(sdk[39]!.sourceBindings.find(row=>row.path==='qlever/scripts/sdk-generated-vma-originals.py')!.sha256).toBe('cb61ff3bd93190490dd9630751983b45076d60f58f19af64a8df33cb4b236587');

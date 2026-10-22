@@ -171,13 +171,37 @@ def add_original(archive, file, name, root, public_source_inputs=None):
     if not stat.S_ISREG(before.st_mode):
         raise ValueError('Ordinary build input required')
     info.size = before.st_size
-    with file.open('rb') as stream:
-        archive.addfile(info, stream)
-    value = dict(path=name, kind='file', bytes=before.st_size, sha256=digest(file), mode=info.mode)
-    after = file.lstat()
-    if (before.st_ino, before.st_dev, before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (after.st_ino, after.st_dev, after.st_size, after.st_mtime_ns, after.st_ctime_ns):
-        raise ValueError('Build input changed during capture')
-    return value
+    identity = lambda row: (row.st_dev, row.st_ino, row.st_mode, row.st_size, row.st_nlink, row.st_mtime_ns, row.st_ctime_ns)
+    fd = os.open(file, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode) or identity(before) != identity(os.fstat(fd)):
+            raise ValueError('Build input changed before capture')
+        digest_state = hashlib.sha256()
+        count = 0
+        class OriginalReader:
+            def read(self, size=-1):
+                nonlocal count
+                check(file)
+                remaining = size if size >= 0 else before.st_size - count
+                pieces = []
+                while remaining:
+                    check(file)
+                    block = os.read(fd, min(remaining, 65536))
+                    if not block:
+                        break
+                    count += len(block)
+                    if count > before.st_size:
+                        raise ValueError('Build input grew during capture')
+                    digest_state.update(block)
+                    pieces.append(block)
+                    remaining -= len(block)
+                return b''.join(pieces)
+        archive.addfile(info, OriginalReader())
+        if count != before.st_size or os.read(fd, 1) or identity(before) != identity(os.fstat(fd)) or identity(before) != identity(file.lstat()):
+            raise ValueError('Build input changed during capture')
+        return dict(path=name, kind='file', bytes=count, sha256=digest_state.hexdigest(), mode=info.mode)
+    finally:
+        os.close(fd)
 
 
 def dependency_paths(repo):

@@ -31,9 +31,30 @@ export function replayServicePackManifest(input:{collection:any;repoRoot:string;
  const packageDir=path.posix.dirname(seedRow.path),unpack=path.posix.relative(input.temporaryRoot,packageDir);need(/^xpod-pack-[a-zA-Z0-9_-]+\/unpack\/package$/u.test(unpack),'fixed actual pack temporary layout');
  const unpacked=manifest(packageDir+'/package.json','seed-packed-root-manifest');need(unpacked.raw.equals(input.seedManifest),'seed body and actual unpacked original differ');
  const removed=manifest(packageDir+'/package.json','root-after-workspace-removal');same(removed.value,pack.removeWorkspaceDependenciesManifest(seed),'workspace removal differs from sole projection');
+ // Instances are keyed by the actual source and destination, never name/version.
+ // The sole production planner chooses these paths; this does not grant source.
+ const selectedInputInstances:Array<Readonly<{name:string;version:string;sourceRoot:string;destinationRoot:string;inputKind:'workspace'|'installed';patchedRuntime:boolean;logicalPaths:readonly string[]}>>=[];
+ const selectedDestinations=new Set<string>();
+ const addInstance=(sourceRoot:string,destinationRoot:string,value:any)=>{
+  need(absolute(sourceRoot)&&absolute(destinationRoot)&&typeof value?.name==='string'&&typeof value?.version==='string'&&value.version.length>0,'selected instance actual manifest');
+  need(!selectedDestinations.has(destinationRoot),'duplicate selected instance destination');selectedDestinations.add(destinationRoot);
+  const dependency=dependencies.find((item:any)=>item.sourcePackageRoot===sourceRoot&&item.name===value.name);
+  const relative=path.posix.relative(input.repoRoot,sourceRoot);
+  const workspace=!!dependency&&relative==='packages/'+value.name.replace(/^@undefineds\.co\//u,'');
+  const aliases=new Set<string>();for(const row of collection.records){if(row.role==='actual-bundled-root-probe'&&row.exists&&row.canonicalPath===sourceRoot)aliases.add(path.posix.relative(input.repoRoot,row.path));if(row.role==='actual-node-resolution'&&row.resolvedRoot===sourceRoot&&row.probes?.length)aliases.add(path.posix.relative(input.repoRoot,row.probes[row.probes.length-1].path));}if(workspace)aliases.add(relative);need(aliases.size>0&&[...aliases].every(name=>!name.startsWith('../')&&!name.startsWith('/')),'selected instance actual logical aliases');
+  selectedInputInstances.push(Object.freeze({name:value.name,version:value.version,sourceRoot,destinationRoot,inputKind:workspace?'workspace':'installed',patchedRuntime:dependency?.patchedRuntime===true,logicalPaths:Object.freeze([...aliases])}));
+ };
  let unresolvedProbeCount=0;
  const planned=pack.planExposedRuntimeDependencies({packageDir,dependencies,manifest:removed.value,
-  readManifest:(file:string,role:string)=>manifest(file,role).value,
+  readManifest:(file:string,role:string)=>{
+   const value=manifest(file,role).value;
+   if(role==='actual-resolution-parent-manifest'){
+    const sourceRoot=path.posix.dirname(file),dependency=dependencies.find((item:any)=>item.sourcePackageRoot===sourceRoot&&item.name===value.name);
+    if(dependency){const destinationRoot=packageDir+'/node_modules/'+dependency.name;if(!selectedDestinations.has(destinationRoot))addInstance(sourceRoot,destinationRoot,value);}
+   }
+   return value;
+  },
+  onNestedConflict:(sourceRoot:string,destinationRoot:string,value:any)=>addInstance(sourceRoot,destinationRoot,value),
   resolveInstalled:(source:string,name:string)=>{
    const row=take('actual-node-resolution','actual-resolution-event');need(row.source===source&&row.name===name&&Array.isArray(row.probes)&&row.probes.length>0&&row.probes.length<=128,'ordered actual Node resolution');const seen=new Set();
    if(collection.details?.resolutionSearchModel==='actual-node-module-search-prefix-v1')pack.inspectInstalledResolutionSearch(row);
@@ -51,5 +72,5 @@ export function replayServicePackManifest(input:{collection:any;repoRoot:string;
  const actualSelected=take('actual-final-selected-inputs','actual-resolution-event');same(actualSelected.dependencies,selected,'final inputs differ from actual selected manifests');
  const projected=pack.projectServicePackManifest(seed,planned.edges,selected);same(projected,pack.projectPackedManifest(planned.manifest,selected,'service'),'single complete projection stages disagree');
  const actualFinal=object(take('actual-final-projected-manifest','actual-buffer').reference);const expected=Buffer.from(JSON.stringify(projected,null,2)+'\n');need(actualFinal.equals(expected)&&actualFinal.equals(input.finalManifest),'final body manifest differs from actual same-call projection');need(cursor===rows.length,'unexpected repeated/unconsumed projection input');
- return Object.freeze({candidateVersion:projected.version,afterRootSha256:sha(input.afterRoot),seedManifestSha256:sha(input.seedManifest),finalManifestSha256:sha(input.finalManifest),finalManifestOriginal:Buffer.from(actualFinal),selectedPackages:selected.length,recordedResolutionProbes:unresolvedProbeCount,recordedManifestProjectionReplayed:true as const,installedDependencySearchReplayed:collection.details?.resolutionSearchModel==='actual-node-module-search-prefix-v1',packInputResolutionVerified:false as const,pending:Object.freeze(['service-pack-installed-input-source-and-absence-probe-custody-unverified'])});
+ return Object.freeze({candidateVersion:projected.version,afterRootSha256:sha(input.afterRoot),seedManifestSha256:sha(input.seedManifest),finalManifestSha256:sha(input.finalManifest),finalManifestOriginal:Buffer.from(actualFinal),selectedPackages:selected.length,selectedInputInstances:Object.freeze(selectedInputInstances),recordedResolutionProbes:unresolvedProbeCount,recordedManifestProjectionReplayed:true as const,installedDependencySearchReplayed:collection.details?.resolutionSearchModel==='actual-node-module-search-prefix-v1',packInputResolutionVerified:false as const,pending:Object.freeze(['service-pack-installed-input-source-and-absence-probe-custody-unverified'])});
 }

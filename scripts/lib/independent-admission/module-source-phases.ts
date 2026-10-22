@@ -9,7 +9,7 @@ import { join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { collectedArtifactView } from './artifact-collector';
 import { derivedSourceView } from './source-context';
-import { githubOriginFacts, githubOriginOriginals, API_NOTICE_SOURCE_BINDINGS, API_ATTESTED_NOTICE_SOURCE_BINDINGS, API_WEBSITE_STAGE_SOURCE_BINDINGS, API_WORKSPACE_SOURCE_GROUPS, type GitHubOriginObservation } from './github-origin';
+import { githubOriginFacts, githubOriginOriginals, API_NOTICE_SOURCE_BINDINGS, API_ATTESTED_NOTICE_SOURCE_BINDINGS, API_SERVICE_BUILD_SOURCE_BINDINGS, API_WEBSITE_STAGE_SOURCE_BINDINGS, API_WORKSPACE_SOURCE_GROUPS, type GitHubOriginObservation } from './github-origin';
 
 // These policies review actual phase-plan and supervisor implementations. The
 // producer remains the sole phase/command declaration; no parallel phase table.
@@ -28,13 +28,16 @@ export function reviewedModuleSupervisorSource(module:'api'|'css'|'afs',readTrac
  if(!['api','css','afs'].includes(module))return false;
  const supervisor='scripts/agentfs-native-ci/supervise.py',actual=hash(readTracked(supervisor));
  if(actual===moduleSourcePhasePolicy.supervisor)return true;
+ const versions=[API_ATTESTED_NOTICE_SOURCE_BINDINGS,API_SERVICE_BUILD_SOURCE_BINDINGS];
+ return versions.some(bindings=>{
  const expected=Object.freeze([
   ['scripts/'+module+'-module-producer.py',moduleSourcePhasePolicy[module]],
-  ['scripts/lib/module-source-materials.py',API_ATTESTED_NOTICE_SOURCE_BINDINGS.find(row=>row.path==='scripts/lib/module-source-materials.py')!.sha256],
+  ['scripts/lib/module-source-materials.py',bindings.find(row=>row.path==='scripts/lib/module-source-materials.py')!.sha256],
   ['scripts/lib/module-artifact-limits.json',moduleSourcePhasePolicy.limits],
   [supervisor,'139185a450f07812edc1300e24b68787012d1f334e6f27c2bb9e6b8a84d2af77'],
  ] as const);
  return expected.every(([path,sha256])=>hash(readTracked(path))===sha256);
+ });
 }
 /** Complete reviewed CSS parent/producer versions. Origin event/head/job
  * authority remains exclusively in the private GitHub observer. */
@@ -396,7 +399,7 @@ export function inspectModuleSourcePhases(input: { artifact: unknown; source: un
     || producer.sourceBefore?.status !== '' || producer.sourceAfter?.status !== '') return fail('module source/origin identity mismatch');
   if (!reviewedModuleProducerSource(module, hash(source.readTracked(`scripts/${module}-module-producer.py`)))
     || !reviewedModuleSupervisorSource(module,name=>source.readTracked(name))
-    || ![moduleSourcePhasePolicy.materials, '07dbfc5531b7b3b812fe6f532141c964255b90f46ed30a05c86f6e42ef2e0ee5', 'c28f194ca9767f2aeddd9cff6f633dac2280ae9c4e5d716d3273706afce81850', 'cc4592e9649eb9f8e92140d9674beb90b78a769d7563df01f5d2971bfdf13258', 'b582490cdbbd2b857fa6ce20d0b5d85a73605c90b96063a3c17bf7b38be93601', '99eb684db2712cee74ae40f7ac17a55c1dcd74682162b75947203cf2628c6e16'].includes(hash(source.readTracked('scripts/lib/module-source-materials.py')))
+    || ![API_SERVICE_BUILD_SOURCE_BINDINGS.find(row=>row.path==='scripts/lib/module-source-materials.py')!.sha256, moduleSourcePhasePolicy.materials, '07dbfc5531b7b3b812fe6f532141c964255b90f46ed30a05c86f6e42ef2e0ee5', 'c28f194ca9767f2aeddd9cff6f633dac2280ae9c4e5d716d3273706afce81850', 'cc4592e9649eb9f8e92140d9674beb90b78a769d7563df01f5d2971bfdf13258', 'b582490cdbbd2b857fa6ce20d0b5d85a73605c90b96063a3c17bf7b38be93601', '99eb684db2712cee74ae40f7ac17a55c1dcd74682162b75947203cf2628c6e16'].includes(hash(source.readTracked('scripts/lib/module-source-materials.py')))
     || hash(source.readTracked('scripts/lib/module-artifact-limits.json')) !== moduleSourcePhasePolicy.limits
     || (module === 'afs' && !reviewedModuleProducerSource('api', hash(source.readTracked('scripts/api-module-producer.py'))))) {
     return { status: 'pending' as const, reason: 'module-source-phase-policy-unreviewed', sourceQualified: false as const };
