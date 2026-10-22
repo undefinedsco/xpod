@@ -11,7 +11,7 @@ from pathlib import Path
 ROOT=Path(__file__).resolve().parents[2]
 spec=importlib.util.spec_from_file_location('clang_cmake_cleanup',ROOT/'qlever/tests/run_sdk_prepared_input_probe.py');shared=importlib.util.module_from_spec(spec);spec.loader.exec_module(shared);backend=shared.backend
 
-def run(destination):
+def run(destination,metadata_stress=False):
  out=Path(destination);out.mkdir(parents=True,exist_ok=False)
  build=Path('/opt/qlever-sdk/build');assert build.is_dir()and not any(build.iterdir()),'isolated empty canonical build root required'
  deadline=time.monotonic()+300
@@ -38,8 +38,11 @@ def run(destination):
     with Path(ref['path']).open('rb')as source:
      for line in source:check();yield line
   limits=json.loads((ROOT/'scripts/lib/module-artifact-limits.json').read_text())
-  record['report']=backend.bindings.observe([(name,raw(phase))for(name,_),phase in zip(commands,record['phases'])],read,{},check=check,limits=limits)
+  record['report']=backend.bindings.observe([(name,raw(phase))for(name,_),phase in zip(commands,record['phases'])],read,{},check=check,limits=limits,compact_tool_coverage=True)
   assert record['report']['overallSdkSourceVerified']is False and record['report']['verifiedCoordinatedWaitIntervals']
+  if observer.generated_vma.retained_metadata:
+   record['generatedMetadata']=dict(producerPeakBytes=observer.generated_vma.metadata_high_water,reader=record['report']['observedGeneratedRetainedMetadata'])
+   assert record['generatedMetadata']['producerPeakBytes']<=4*1024**2 and record['generatedMetadata']['reader']['peakBytes']<=4*1024**2
   assert (build/'diagnostic').is_file()
   executed=subprocess.run([str(build/'diagnostic')],stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=5,check=False)
   assert executed.returncode==0 and not executed.stdout and not executed.stderr,'actual compiled diagnostic failed'
@@ -65,9 +68,10 @@ def run(destination):
     if row['sequence']==sequence:change(row);yield(json.dumps(row)+'\n').encode()
     else:yield line
   record['refusals']={}
-  for name,(target,change)in changes.items():
+  record['mutationSuite']='covered-by-normal-probe' if metadata_stress else 'six-actual-trace-mutations'
+  for name,(target,change)in ([] if metadata_stress else changes.items()):
    sequence=selected[target]['sequence']
-   try:backend.bindings.observe([(phase_name,altered(phase,sequence,change))for(phase_name,_),phase in zip(commands,record['phases'])],read,{},check=check,limits=limits)
+   try:backend.bindings.observe([(phase_name,altered(phase,sequence,change))for(phase_name,_),phase in zip(commands,record['phases'])],read,{},check=check,limits=limits,compact_tool_coverage=True)
    except(ValueError,KeyError,AssertionError,TypeError)as error:record['refusals'][name]=str(error)
    else:raise AssertionError('accepted altered actual Clang trace: '+name)
   record['completed']=True
@@ -78,4 +82,4 @@ def run(destination):
   print(json.dumps({k:v for k,v in record.items()if k not in ['phases','report','traceback']}),flush=True)
  if failed:raise RuntimeError('actual CMake/Clang diagnostic failed; see original observation')
 if __name__=='__main__':
- assert len(sys.argv)==2;run(sys.argv[1])
+ assert len(sys.argv)in [2,3] and (len(sys.argv)==2 or sys.argv[2]=='--metadata-stress');run(sys.argv[1],metadata_stress=len(sys.argv)==3)

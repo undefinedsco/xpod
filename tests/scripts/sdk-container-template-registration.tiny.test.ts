@@ -6,7 +6,7 @@ import current from '../../scripts/lib/independent-admission/consumer-execution-
 const hash=(x:unknown)=>createHash('sha256').update(JSON.stringify(x)).digest('hex');
 test('SDK26 preserves every old whole source recipe and promotes only its own mandatory originals',()=>{
  for(const[name,groups]of Object.entries({sdk,consumer,ci})){
-  const old=previous[name as keyof typeof previous];expect(groups).toHaveLength(old.length+(name==='sdk'?25:name==='ci'?54:27));
+  const old=previous[name as keyof typeof previous];expect(groups).toHaveLength(old.length+(name==='sdk'?26:name==='ci'?56:28));
   for(let i=0;i<old.length;i++){const g=groups[i]!,before=old[i]!;expect(g.selectors).toEqual(before.selectors);expect(hash(g.sourceBindings)).toBe(before.sourceBindingsSha256);const metadata=Object.fromEntries(Object.entries(g).filter(([k])=>!['selectors','secondarySelectors','sourceBindings'].includes(k)));expect(hash(metadata)).toBe(before.metadataSha256);
    for(const role of before.secondarySelectors)expect(g.secondarySelectors?.some(row=>JSON.stringify(row)===JSON.stringify(role))).toBe(true);
    for(const role of g.secondarySelectors??[])if(!before.secondarySelectors.some(old=>JSON.stringify(old)===JSON.stringify(role)))expect([...g.selectors,...g.sourceBindings].some(row=>JSON.stringify(row)===JSON.stringify(role))).toBe(true);

@@ -9,12 +9,12 @@ backend=load('coordinated_factory_backend',ROOT/'qlever/scripts/sdk-ptrace-execu
 class Tests(unittest.TestCase):
  def test_low_level_default_is_legacy_and_sdk_enables_complete_capability(self):
   parameters=inspect.signature(backend.Observer.__init__).parameters
-  for name in ['capture_maps_content_entities','serialize_terminal_syscalls','io_uring_enosys_v2','generated_vma_coordinated_wait','generated_vma_parked_wait','stopped_writer_aliases','queued_identity_noop']:self.assertIs(parameters[name].default,False)
+  for name in ['retained_generated_metadata','capture_maps_content_entities','serialize_terminal_syscalls','io_uring_enosys_v2','generated_vma_coordinated_wait','generated_vma_parked_wait','stopped_writer_aliases','queued_identity_noop']:self.assertIs(parameters[name].default,False)
   marker=RuntimeError('stop before actual observation')
   with patch.object(backend.Observer,'__init__',side_effect=marker)as call:
    with self.assertRaises(RuntimeError)as caught:backend.SdkExecutionObserver(Path('.'),'/opt/qlever-sdk/source','/opt/qlever-sdk/build',deadline_monotonic=time.monotonic()+10,check_budget=lambda:None,maximum_bytes=1024,maximum_stdio_bytes=1024)
   self.assertIs(caught.exception,marker)
-  for name in ['capture_maps_content_entities','serialize_terminal_syscalls','io_uring_enosys_v2','generated_vma_coordinated_wait','generated_vma_parked_wait','stopped_writer_aliases','queued_identity_noop','generated_vma_private_wait_mismatch','generated_vma_shared_mm']:self.assertIs(call.call_args.kwargs[name],True)
+  for name in ['retained_generated_metadata','capture_maps_content_entities','serialize_terminal_syscalls','io_uring_enosys_v2','generated_vma_coordinated_wait','generated_vma_parked_wait','stopped_writer_aliases','queued_identity_noop','generated_vma_private_wait_mismatch','generated_vma_shared_mm']:self.assertIs(call.call_args.kwargs[name],True)
  def verifier(self,model):return base.create_verifier(base,lambda ref:(ref['bytes'],ref['sha256']),lambda ref:[],model=model,read_blocks=lambda ref:iter(()))
  def test_factory_preserves_legacy_reader_and_selects_explicit_streaming_reader(self):
   old=self.verifier(base.PRIVATE_WAIT_MODEL);self.assertIs(type(old),base.Verifier)

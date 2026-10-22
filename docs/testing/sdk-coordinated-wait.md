@@ -25,6 +25,16 @@ V8 支持无超时的私有 `FUTEX_WAIT`、实时 `FUTEX_WAIT_BITSET` 与任意�
 
 maps 原件使用独立的 `same-phase-maps-content-entity-v1` 存储模型。每次采样仍完整读取当前 `/proc/<pid>/maps`，核对当前 FD 与命名文件的前后 identity；复用前还会完整读取、校验既有物理实体。相同内容仅保存一份，但每条原件引用都携带本次真实 `observationSequence`。maps 的 PID、屏障与先后关系按该采样序号验证，不能把同一内容的两次采样合成一次。旧版本继续使用独立物理文件；阶段之间不复用。物理原件清单只列一次文件，字节、元数据与执行时限上限不增加。
 
+## SDK51 元数据与操作投影
+
+`actual-closed-generated-transaction-retained-metadata-v1` 将生成映射元数据的计量范围明确改为仍保留的协议状态与当前未闭合事务。只有真实独占调用退出、完整字节快照和关闭引用均已验证，且没有活动映射、待处理映射或调度轮次时，才能重新计量。所有仍保留的 origin、checkpoint、消费者、内存域和等待事实继续计入同一个 4 MiB 上限；原始历史记录保留在原有有界 ledger 中。该计量是规范化元数据大小，不是 Python RSS。旧模型保留累计计量规则，不能静默获得新行为。
+
+工具链控制器另外输出版本 2 的 `indexed-tool-operation-coverage-v1`：每条操作保存固定的 11 列，缺失映射保存完整的 9 列，路径通过唯一绝对路径表引用，inode 与偏移使用精确十进制字符串。每条操作及其映射义务分别保留；缺失原因按原始操作序号、路径、地址范围和偏移逐条还原，不同时在操作与全局列表重复保存长文本。TypeScript 按操作迭代，避免保留整份展开副本。未知布局、额外列、错误索引、缺失义务和重复映射继续拒绝；缺失映射不会获得完整覆盖资格。旧版本 1 的读取和上限不变。
+
+追加写检查点在 syscall-entry 时保存实际事件序号，全停屏障导致任务关闭当前 entry 后仍引用原始事件。独立 reader 继续要求该 entry 已真实出现且早于检查点，不能以空值或新事件替代。
+
+24 项独立 C++ 编译探测夹具位于 `fixtures/clang-cmake-metadata`。使用下述 Clang/CMake 容器参数替换 source 挂载，并在输出路径后追加 `--metadata-stress`，执行实际 configure、build、生成程序和一次完整独立重放。该压力模式共享原有 300 秒父截止时间，不重复正常小型探针的六组篡改重放；两种探针均须执行。SDK50 的相同夹具实际触发旧累计元数据上限，SDK51 在原有 4 MiB 上限内完成；两者均不替代真实 QLever SDK 的完整构建与发布门禁。
+
 ## 原生探针
 
 `qlever/tests/run_sdk_coordinated_wait_probe.py` 编译实际 C/pthread 夹具，覆盖两种等待操作、零至两个停止祖先、候选线程相等 entry 排队、不匹配等待与异址 wake，解除映射后继续执行实际 FD 写入，再使用完整流式 reader 重放。它还篡改 peer、信号、epoch、中断状态和闭合引用并验证拒绝，最后执行实际 wait/ECHILD 清理。
@@ -53,3 +63,5 @@ docker run --rm --read-only --cap-add SYS_PTRACE --security-opt seccomp=unconfin
 ## 版本绑定
 
 SDK50 注册前冻结的 255 组完整绑定必须逐组保持一致。变更的 helper 作为完整新 tuple 追加到 observer、generation/FetchContent controller 与当前源码绑定。当前 closure 为 421 个文件；声明 helper 组数量上限为 23，单组观察角色上限仍为 32。新增组不得改变旧版本需要读取的路径，也不得让历史组继承未来 import。
+
+SDK51 在保留 SDK50 的全部 259 组完整绑定后追加新 tuple；当前仍为 421 个文件。声明 helper 组上限为 24，单组观察角色上限仍为 32。

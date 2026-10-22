@@ -90,7 +90,7 @@ def observe(archive_path,plan):
                 if expected is None:unresolved_sources.add(row['path'])
                 else:
                     bindings.need(digest==(expected['bytes'],expected['sha256']),'actual source read snapshot differs from postpatch original');source_matches.add(row['path'])
-        result=bindings.observe([(name,lines(name,refs)) for name,refs in phase_rows],read_original,plan['requiredInputs'],check,LIMITS,capture_observer)
+        result=bindings.observe([(name,lines(name,refs)) for name,refs in phase_rows],read_original,plan['requiredInputs'],check,LIMITS,capture_observer,compact_tool_coverage=True)
         # Only the complete typed v5 entry/barrier/resume/exit/postbarrier/close
         # replay can discharge these exact operation sequences. Same nr outside
         # the verified active epoch remains unclassified, never an allowlist.

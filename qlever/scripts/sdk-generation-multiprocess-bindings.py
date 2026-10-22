@@ -333,7 +333,52 @@ class ToolchainOperationCoverage:
         result=dict(schemaVersion=1,scope='verified raw operation/file associations; effective-RO and source authority independent',operations=self.operations,pending=pending,stopProviderPending=list(stop_provider_pending))
         need(len(json.dumps(result,separators=(',',':')).encode())<=self.maximum_bytes,'tool operation final metadata bound');return result
 
-def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,limits=None,capture_observer=None):
+class IndexedToolchainOperationCoverage:
+    """Lossless operation projection with explicit positional fields and paths.
+
+    The raw verified operations remain separate; only their wire layout changes.
+    Missing mappings retain all nine parser fields instead of duplicating a long
+    reason string in both each operation and the global pending list.
+    """
+    MODEL='indexed-tool-operation-coverage-v1'
+    MAPPING_FIELDS=('startHex','endHex','permissions','fileOffset','deviceMajor','deviceMinor','inode','path','mapsLineIndex')
+    def __init__(self,maximum_bytes=4*1024**2,maximum_members=50000,check=lambda:None):
+        self.operations=[];self.by_capture={};self.paths=[];self.path_ids={};self.maximum_bytes=maximum_bytes;self.maximum_members=maximum_members;self.check=check;self.charged=256
+    def claim(self,value):
+        self.check();self.charged+=len(json.dumps(value,separators=(',',':')).encode())+1
+        need(self.charged<=self.maximum_bytes,'indexed tool operation projection metadata bound')
+    def mapping_key(self,mapping):
+        need(set(mapping) in [set(self.MAPPING_FIELDS),set(self.MAPPING_FIELDS[:-1])],'unknown indexed mapping field')
+        path=mapping['path']
+        if path not in self.path_ids:
+            self.claim(path);self.path_ids[path]=len(self.paths);self.paths.append(path)
+        return tuple(self.path_ids[path] if field=='path' else str(mapping[field]) if field in ['fileOffset','inode'] else mapping.get(field) for field in self.MAPPING_FIELDS)
+    def start(self,kind,row,entry,mappings,primary=None):
+        self.check();need(len(self.operations)<self.maximum_members,'tool operation member bound')
+        need(kind in ['exec','mmap','protect'] and row['sequence'] not in self.by_capture,'duplicate tool operation capture')
+        selected=[mapping for mapping in mappings if mapping['inode']>0 and mapping['path'].startswith('/')]
+        expected={self.mapping_key(mapping):False for mapping in selected}
+        need(len(expected)==len(selected),'duplicate actual tool VMA')
+        primary_file=None
+        if kind=='exec':
+            primary_file={**primary,'identityDecimal':[str(number) for number in primary['identity']]};del primary_file['identity']
+        value=[kind,row['phase'],row['pid'],entry['sequence'],row['sequence'],len(expected),row['execEventSequence'] if kind=='exec' else row['exitSequence'],primary_file,row['elf'] if kind=='exec' else None,[],[]]
+        self.claim(value)
+        for key in expected:self.claim(key)
+        self.operations.append(value);self.by_capture[row['sequence']]=dict(value=value,expected=expected)
+    def mapped(self,parent,row,original_sequence,provider=None):
+        need(parent in self.by_capture,'tool VMA has no verified operation')
+        state=self.by_capture[parent];key=self.mapping_key(row['mapping'])
+        need(key in state['expected'] and not state['expected'][key],'duplicate or unrelated tool VMA original')
+        value=dict(observedPath=row['mapping']['path'],identityDecimal=[str(number) for number in row['identity']],original=row['original'],mapping=row['mapping'],captureSequence=row['sequence'],originalCaptureSequence=original_sequence,stopReadonlyProvider=provider)
+        self.claim(value);state['expected'][key]=True;state['value'][9].append(value)
+    def finish(self,unresolved=(),stop_provider_pending=()):
+        for state in self.by_capture.values():
+            self.check();state['value'][10]=[list(key) for key,seen in sorted(state['expected'].items()) if not seen]
+        result=dict(schemaVersion=2,model=self.MODEL,scope='verified raw operation/file associations; effective-RO and source authority independent',paths=self.paths,operations=self.operations,pending=list(unresolved),stopProviderPending=list(stop_provider_pending))
+        need(len(json.dumps(result,separators=(',',':')).encode())<=self.maximum_bytes,'indexed tool operation final metadata bound');return result
+
+def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,limits=None,capture_observer=None,compact_tool_coverage=False):
     maximum_raw=limits['sourceMaterialBytes'] if limits else 32*1024**2
     maximum_file=limits['shardBytes'] if limits else 1024**2
     maximum_total=limits['sourceMaterialBytes'] if limits else 16*1024**2
@@ -380,7 +425,7 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
         for block in blocks:check();need(isinstance(block,bytes) and len(block)<=65536,'dependency metadata range bound');data.extend(block);need(len(data)<=ref['bytes'],'dependency metadata grew')
         need((len(data),hashlib.sha256(data).hexdigest())==(ref['bytes'],ref['sha256']),'dependency metadata original changed');return bytes(data)
     def dependency_json(ref):return json.loads(dependency_bytes(ref))
-    tool_coverage=ToolchainOperationCoverage(limits.get('metadataBytes',4*1024**2) if limits else 4*1024**2,limits.get('sourceMembers',50000) if limits else 50000,check)
+    tool_coverage=(IndexedToolchainOperationCoverage if compact_tool_coverage else ToolchainOperationCoverage)(limits.get('metadataBytes',4*1024**2) if limits else 4*1024**2,limits.get('sourceMembers',50000) if limits else 50000,check)
     tool_originals={};tool_files={};tool_pending=set();tool_execs=0;tool_mappings=0;tool_core=None;exec_events={};terminal_events={};tool_exec_paths={};tool_protect_before={};tool_providers={};tool_provider_pending=set();provider_verifier=None;tool_digest=hashlib.sha256()
     process_interval=None;process_intervals=[]
     def provider_module():
@@ -517,14 +562,15 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                 need(row.get('taskOwnershipModel') in [None,'all-tracked-tids-shared-fd-v1'],'unknown task ownership model');shared_mode=row.get('taskOwnershipModel') is not None;owners={}
                 need(not denied_operations,'unclosed explicit syscall denial at new root');denial=row.get('optionalIoUringModel');need(denial in [None,'explicit-kernel-enosys-denial-v1','explicit-kernel-enosys-denial-v2'],'unknown optional syscall denial model');denial_mode=denial is not None
                 generated_model=row.get('generatedVmaModel')
+                metadata_model=row.get('generatedVmaMetadataModel');need(metadata_model in [None,'actual-closed-generated-transaction-retained-metadata-v1']and(metadata_model is None or generated_model=='actual-generated-file-vma-stopped-mm-cohort-parked-universe-wait-v8'),'unknown generated metadata accounting model')
                 if generated_model is not None:
                     if generated_module is None:
                         import importlib.util
                         from pathlib import Path
                         generated_spec=importlib.util.spec_from_file_location('generated_vma_replay',Path(__file__).with_name('sdk-generated-vma-originals.py'));generated_module=importlib.util.module_from_spec(generated_spec);generated_spec.loader.exec_module(generated_module)
                     need(generated_model in [generated_module.LEGACY_MODEL,generated_module.KERNEL_LINK_MODEL,generated_module.MODEL,generated_module.COHORT_MODEL,generated_module.PRIVATE_WAKE_MODEL,generated_module.PRIVATE_WAIT_MODEL,*generated_module.COORDINATED_WAIT_MODELS] and row.get('generatedVmaBuildRoot')==generated_module.BUILD_ROOT and shared_mode,'unknown/unowned generated VMA model')
-                    if generated_verifier is not None:need(generated_verifier.model==generated_model,'generated VMA evidence model changed across roots')
-                    if generated_verifier is None:generated_verifier=generated_module.create_verifier(generated_module,capture_data,tool_maps,limits.get('metadataBytes',4*1024**2) if limits else 4*1024**2,model=generated_model,read_blocks=lambda ref:original_blocks(ref),maximum_file=maximum_file)
+                    if generated_verifier is not None:need(generated_verifier.model==generated_model and generated_verifier.retained_metadata==(metadata_model is not None),'generated VMA evidence model changed across roots')
+                    if generated_verifier is None:generated_verifier=generated_module.create_verifier(generated_module,capture_data,tool_maps,limits.get('metadataBytes',4*1024**2) if limits else 4*1024**2,model=generated_model,read_blocks=lambda ref:original_blocks(ref),maximum_file=maximum_file,retained_metadata=metadata_model is not None)
                 else:need(generated_verifier is None,'generated VMA model changed across actual roots')
                 model=row.get('processAuthorityModel');need(model is None or model==provider_module().AUTHORITY_MODEL,'unknown process authority model');process_interval=provider_module().ProcessAuthorityInterval(row['pid']) if model is not None else None
                 need(not setresuid_operations,'unclosed setresuid transition at new root');uid_model=row.get('setresuidNoopModel');need(uid_model in [None,'actual-stopped-setresuid-noop-v1'],'unknown setresuid operation model');identity_model=row.get('setresIdentityNoopModel');need(identity_model in [None,'actual-stopped-setres-identity-noop-v1','actual-stopped-setres-identity-noop-queued-v2'] and not (identity_model and uid_model),'unknown or mixed identity operation model');identity_mode=identity_model is not None;queued_identity_mode=identity_model=='actual-stopped-setres-identity-noop-queued-v2';setresuid_mode=uid_model is not None or identity_mode;need(not setresuid_mode or process_interval is not None,'setresuid model requires actual process authority interval')
@@ -1063,5 +1109,5 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
             actual=covered.get(path)
             if actual is None:pending.append('actual-successful-generated-consumer-missing:'+path)
             else:need(actual['bytes']==expected['bytes'] and actual['sha256']==expected['sha256'],'actual generated consumer differs from selected full-shard input')
-    return dict(**(dict(verifiedCoordinatedWaitIntervals=list(getattr(generated_verifier,'coordinated_waits',[]))) if generated_verifier is not None and generated_verifier.model in generated_module.COORDINATED_WAIT_MODELS else {}),**(dict(verifiedPrivateWakeEntrySequences=list(generated_verifier.private_wakes),**(dict(verifiedPrivateWaitMismatchEntrySequences=list(generated_verifier.private_waits)) if generated_verifier.model in generated_module.PRIVATE_WAIT_MODELS else {})) if generated_verifier is not None and generated_verifier.model in generated_module.WAKE_MODELS else {}),schemaVersion=1,kind='all-stop-CMake-generated-byte-mechanics',observedGeneratedWritableMapCheckpoints=len(generated_verifier.checkpoints) if generated_verifier is not None else 0,generatedMappedConsumerByteCustodyVerified=bool(mapped_outputs),selectedGeneratedConsumerByteCustodyVerified=not pending,outputs=sorted(covered.values(),key=lambda row:row['path']),observedSourceReadCaptures=len(source_reads),observedPreparedDependencyReadCaptures=dependency_reads,preparedDependencySourceAuthorityVerified=False,preparedDependencyPending=(['independent-FetchContent-dependency-stage-and-Git-or-URL-source-authority-unverified'] if dependency_roots else []),pending=pending,overallSdkSourceVerified=False,
+    return dict(**(dict(observedGeneratedRetainedMetadata=dict(model=generated_module.RETAINED_METADATA_MODEL,maximumBytes=4*1024**2,peakBytes=generated_verifier.metadata_high_water))if generated_verifier is not None and generated_verifier.retained_metadata else {}),**(dict(verifiedCoordinatedWaitIntervals=list(getattr(generated_verifier,'coordinated_waits',[]))) if generated_verifier is not None and generated_verifier.model in generated_module.COORDINATED_WAIT_MODELS else {}),**(dict(verifiedPrivateWakeEntrySequences=list(generated_verifier.private_wakes),**(dict(verifiedPrivateWaitMismatchEntrySequences=list(generated_verifier.private_waits)) if generated_verifier.model in generated_module.PRIVATE_WAIT_MODELS else {})) if generated_verifier is not None and generated_verifier.model in generated_module.WAKE_MODELS else {}),schemaVersion=1,kind='all-stop-CMake-generated-byte-mechanics',observedGeneratedWritableMapCheckpoints=len(generated_verifier.checkpoints) if generated_verifier is not None else 0,generatedMappedConsumerByteCustodyVerified=bool(mapped_outputs),selectedGeneratedConsumerByteCustodyVerified=not pending,outputs=sorted(covered.values(),key=lambda row:row['path']),observedSourceReadCaptures=len(source_reads),observedPreparedDependencyReadCaptures=dependency_reads,preparedDependencySourceAuthorityVerified=False,preparedDependencyPending=(['independent-FetchContent-dependency-stage-and-Git-or-URL-source-authority-unverified'] if dependency_roots else []),pending=pending,overallSdkSourceVerified=False,
                 observedAliasOnlyCloses=len(alias_close_exits),observedActualModeTransitions=len(mode_transitions),observedNamedRetainedFdBindings=len(namespaces),observedActualWriteTransitions=len(write_transitions),observedEmptyReadEofWindows=len(empty_eofs),toolchainProcessAuthorityIntervals=process_intervals,toolchainProcessAuthorityIntervalVerified=bool(process_intervals) and all(row.get('model') is not None for row in process_intervals),toolchainProcessAuthorityPending=['toolchain-provider-namespace-external-writer-and-backing-snapshot-authority-unverified']+([] if process_intervals and all(row.get('model') is not None for row in process_intervals) else ['toolchain-owned-process-authority-interval-originals-unavailable']),toolchainFileSnapshots=list(tool_files.values()),toolchainOperationCoverage=tool_coverage.finish(sorted(tool_pending),sorted(tool_provider_pending)),toolchainActualExecImages=tool_execs,toolchainActualFileMappings=tool_mappings,toolchainObservationSha256=tool_digest.hexdigest(),toolchainStopProviderPending=sorted(tool_provider_pending),toolchainPending=sorted(tool_pending|tool_provider_pending|({'toolchain-executed-byte-immutability-and-full-source-authority-unverified'} if tool_execs else set())),toolchainSourceClosureVerified=False,preparedInputConsumers=list(prepared_covered.values()),preparedInputConsumerBytesVerified=bool(prepared_covered),phaseTracking=phase_tracking,scope='actual producer-close/rename/consumer bytes only; reviewed observer execution/Git/source/runtime authority independent')

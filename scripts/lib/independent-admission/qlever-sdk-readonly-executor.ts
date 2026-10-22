@@ -1,3 +1,4 @@
+import {sdkToolchainOperations} from './qlever-sdk-toolchain-source';
 import {selectSdkControllerHelperGroup} from './sdk-controller-helper-groups';
 import {createHash} from 'node:crypto';
 import {execFileSync} from 'node:child_process';
@@ -39,7 +40,7 @@ export async function observeQleverSdkReadOnlyExecutor(input:{sdkOriginals:unkno
   const observed=execution.sdkGeneratedInputOriginals as any,coverage=execution.sdkToolchainOperationCoverage as any;
   need(execution.sdkActualConfigureCompileTrackedWaitVerified===true&&observed?.toolchainProcessAuthorityIntervalVerified===true&&Array.isArray(coverage?.operations)&&coverage.operations.length>0&&coverage.operations.length<=limits.sourceMembers,'actual closed authority/operation universe required');
   const providers:any[]=[];
-  for(const op of coverage.operations){check();need(Array.isArray(op.mapOriginals)&&Array.isArray(op.unresolved)&&op.unresolved.length===0&&op.mapOriginals.length===op.expectedFileMappingCount,'complete actual operation mapping universe');if(op.kind==='exec'){need(op.primaryFile?.stopReadonlyProvider,'actual exec provider absent');providers.push(op.primaryFile.stopReadonlyProvider);}for(const file of op.mapOriginals){need(file.stopReadonlyProvider,'actual mapped provider absent');providers.push(file.stopReadonlyProvider);}}
+  for(const op of sdkToolchainOperations(coverage,check)){check();need(Array.isArray(op.mapOriginals)&&Array.isArray(op.unresolved)&&op.unresolved.length===0&&op.mapOriginals.length===op.expectedFileMappingCount,'complete actual operation mapping universe');if(op.kind==='exec'){need(op.primaryFile?.stopReadonlyProvider,'actual exec provider absent');providers.push(op.primaryFile.stopReadonlyProvider);}for(const file of op.mapOriginals){need(file.stopReadonlyProvider,'actual mapped provider absent');providers.push(file.stopReadonlyProvider);}}
   need(providers.length>0&&providers.length<=limits.sourceMembers,'bounded same-private provider universe');
   const python=realpathSync('/usr/bin/python3'),pythonIdentity=captureLegalFileIdentity(python);
   const identity={sourceSha:sdk.originFacts.sourceSha,runHeadSha:sdk.originFacts.runHeadSha,runId:sdk.originFacts.runId,runAttempt:sdk.originFacts.runAttempt,target:sdk.originFacts.target,sdkProfile:sdk.sdkProfile};

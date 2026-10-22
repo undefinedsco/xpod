@@ -192,6 +192,31 @@ class ProcLease:
         return result
     def close(self):return self.r.cleanup_fds([self.stat,self.directory])
 
+RETAINED_METADATA_MODEL='actual-closed-generated-transaction-retained-metadata-v1'
+def retained_metadata_bytes(value,maximum=4*1024**2):
+    """Bound normalized live protocol state; raw history stays in its own ledger.
+
+    Count shared containers once, retain every scalar/reference, and include
+    held proc lease metadata without following its back-reference to observer.
+    This is a protocol metadata measure, not a Python heap-size estimate.
+    """
+    total=0;seen=set();pending=[value]
+    while pending:
+        item=pending.pop();kind=type(item)
+        if kind in [dict,list,tuple,set]or kind is ProcLease:
+            if id(item)in seen:continue
+            seen.add(id(item));total+=2
+            if kind is dict:
+                total+=2*len(item);pending.extend(item.keys());pending.extend(item.values())
+            elif kind is ProcLease:pending.extend([item.pid,item.directory,item.stat,item.first])
+            else:total+=len(item);pending.extend(item)
+        else:
+            need(item is None or kind in [str,int,float,bool],'unknown retained generated metadata resource')
+            need(kind is not float or math.isfinite(item),'nonfinite retained generated metadata')
+            total+=len(json.dumps(item,separators=(',',':'),ensure_ascii=True).encode())
+        need(total<=maximum,'retained generated metadata bound')
+    return total
+
 def resize_rejection_diagnostic(pid,entry,origin):
     """Only already-held stop/origin metadata; never source bytes or authority."""
     def number(value):return value if type(value) is int and 0<=value<1<<64 else 'unavailable'
@@ -280,7 +305,15 @@ class MemoryDomains:
 class Runtime:
     def __init__(self,backend):
         need(not getattr(backend,'generated_vma_private_wake',False) or getattr(backend,'generated_vma_shared_mm',False),'private wake requires existing stopped-MM model')
-        self.b=backend;self.model=PARKED_WAIT_MODEL if getattr(backend,'generated_vma_parked_wait',False) else COORDINATED_WAIT_MODEL if getattr(backend,'generated_vma_coordinated_wait',False) else PRIVATE_WAIT_MODEL if getattr(backend,'generated_vma_private_wait_mismatch',False) else PRIVATE_WAKE_MODEL if getattr(backend,'generated_vma_private_wake',False) else (COHORT_MODEL if getattr(backend,'generated_vma_shared_mm',False) else MODEL);self.mm=MemoryDomains();self.origins={};self.pending={};self.active=None;self.checkpoints={};self.reserved=0;self.metadata_bytes=0;self.spending_thread=None;self.cleanup_errors=[];self.wake_closing=None
+        self.b=backend;self.model=PARKED_WAIT_MODEL if getattr(backend,'generated_vma_parked_wait',False) else COORDINATED_WAIT_MODEL if getattr(backend,'generated_vma_coordinated_wait',False) else PRIVATE_WAIT_MODEL if getattr(backend,'generated_vma_private_wait_mismatch',False) else PRIVATE_WAKE_MODEL if getattr(backend,'generated_vma_private_wake',False) else (COHORT_MODEL if getattr(backend,'generated_vma_shared_mm',False) else MODEL);self.mm=MemoryDomains();self.origins={};self.pending={};self.active=None;self.checkpoints={};self.reserved=0;self.metadata_bytes=0;self.spending_thread=None;self.cleanup_errors=[];self.wake_closing=None;self.retained_metadata=getattr(backend,'retained_generated_metadata',False);self.metadata_close_entry=None;self.metadata_high_water=0
+        need(not self.retained_metadata or self.model==PARKED_WAIT_MODEL,'retained metadata requires explicit parked-wait model')
+    def charge_metadata(self,row):
+        self.metadata_bytes+=len(json.dumps(row,separators=(',',':')).encode());need(self.metadata_bytes<=4*1024**2,'shared generated metadata bound');self.metadata_high_water=max(self.metadata_high_water,self.metadata_bytes)
+    def checkpoint_metadata(self,close):
+        need(self.metadata_close_entry is not None and close.get('kind')=='exclusive-captured-syscall-exit'and(close['pid'],close['entrySequence'],close['sequence'])==self.metadata_close_entry,'metadata release requires its actual generated exclusive close')
+        need(self.retained_metadata and self.active is None and not self.pending and getattr(self,'round',None)is None,'metadata release requires actual closed generated transaction')
+        self.metadata_bytes=retained_metadata_bytes(dict(origins=self.origins,checkpoints=self.checkpoints,pending=self.pending,active=self.active,memoryDomains=self.mm.domains,memoryProvenance=self.mm.provenance,wakeClosing=self.wake_closing,deferred=getattr(self,'deferred',{})))
+        self.metadata_high_water=max(self.metadata_high_water,self.metadata_bytes);self.metadata_close_entry=None
     def cleanup_fds(self,fds):
         errors=[]
         for fd in dict.fromkeys(fd for fd in fds if fd is not None and fd in self.b.retained):
@@ -295,13 +328,16 @@ class Runtime:
     def owner(self):return self.active['pid'] if self.active is not None else None
     def record(self,row):
         self.mm.record(row);kind=row['kind']
+        if self.retained_metadata and self.metadata_close_entry is not None:
+            need(kind=='exclusive-captured-syscall-exit'and(row['pid'],row['entrySequence'],row['sequence'])==self.metadata_close_entry,'metadata release lost actual generated exclusive close')
+            self.checkpoint_metadata(row)
         if self.wake_closing is not None:
             close=self.wake_closing
             need(kind=='exclusive-captured-syscall-exit' and row['pid']==close['pid'] and row['entrySequence']==close['entrySequence'] and row['sequence']==close.get('closeSequence',close['entrySequence']+WAKE_RAW_RECORDS-1) and row['result']==close['result'] and row['isError'] is close.get('isError',False),'private wake final exclusive close differs')
             need(self.reserved>=close['baselineReserved'],'private wake raw reservation exhausted original closing share')
             self.reserved=close['baselineReserved'];self.wake_closing=None
         if kind.startswith('generated-vma-') or kind=='exclusive-generated-vma-resume':
-            self.metadata_bytes+=len(json.dumps(row,separators=(',',':')).encode());need(self.metadata_bytes<=4*1024**2,'shared generated metadata bound')
+            self.charge_metadata(row)
         if self.active is None and kind=='kernel-syscall' and row['op']=='entry' and operation(row) in ['close','write']:
             for key,origin in list(self.origins.items()):
                 if origin['pid']==row['pid'] and origin.get('fd')==row['args'][0] and self.lookup_fd(row['pid'],row['args'][0]) is origin:
@@ -552,7 +588,9 @@ class Runtime:
                 peers.append(dict(pid=peer,original=other['original']))
             row=b.emit(dict(common,path=origin['path'],identity=current,retainedIdentity=current,original=ref,afterMapsOriginal=maps['original'],afterPeerMaps=peers,epochSequence=self.active['sequence'],originSequence=origin['sequence'],**post_extra))
             token=self.active['token'];self.active=None;b.waiter.restore(token);self.reserved=0;self.spending_thread=None;origin.update(identity=current,data=(ref['bytes'],ref['sha256']),original=ref,checkpointed=True);self.checkpoints[tuple(current[:2])]=row
-        self.pending.pop(pid);return row if op!='close' else None
+        self.pending.pop(pid)
+        if self.retained_metadata and self.active is None and not self.pending:self.metadata_close_entry=(pid,entry['sequence'],self.b.seq+1)
+        return row if op!='close' else None
     def consumer(self,row,data,identity_value):
         checkpoint=self.checkpoints.get(tuple(identity_value[:2]));origin=self.origins.get(tuple(identity_value[:2]))
         if checkpoint is None:return False
@@ -575,9 +613,18 @@ class Runtime:
 
 class Verifier:
     """Independent bounded raw/original replay; no caller Boolean approval."""
-    def __init__(self,capture_data,maps_data,metadata_maximum=4*1024**2,model=LEGACY_MODEL,read_blocks=None,maximum_file=1024**2):
+    def __init__(self,capture_data,maps_data,metadata_maximum=4*1024**2,model=LEGACY_MODEL,read_blocks=None,maximum_file=1024**2,retained_metadata=False):
         need(model in [LEGACY_MODEL,KERNEL_LINK_MODEL,MODEL,COHORT_MODEL,*WAKE_MODELS],'unknown mapping evidence model');self.model=model;self.read_blocks=read_blocks;self.maximum_file=maximum_file
+        need(type(retained_metadata)is bool and(not retained_metadata or model==PARKED_WAIT_MODEL),'retained metadata requires explicit parked-wait model');self.retained_metadata=retained_metadata;self.metadata_high_water=0;self.metadata_closed_operation=None
         self.capture_data=capture_data;self.maps_data=maps_data;self.metadata_maximum=metadata_maximum;self.mm=MemoryDomains();self.windows={};self.origins={};self.original_sequences={};self.map_sequences={};self.map_owners={};self.pending_window=None;self.transaction=None;self.active=None;self.events={};self.checkpoints={};self.consumers=[];self.metadata_bytes=0;self.pending_mapping_entries=set();self.create_paths={};self.last_observed_ns=None;self.parent_deadline_ns=None;self.fd_bindings={};self.private_wakes=[];self.private_waits=[]
+    def charge_metadata(self,row):
+        self.metadata_bytes+=len(json.dumps(row,separators=(',',':')).encode());need(self.metadata_bytes<=4*1024**2,'shared generated replay metadata bound');self.metadata_high_water=max(self.metadata_high_water,self.metadata_bytes)
+    def checkpoint_metadata(self,close):
+        need(self.metadata_closed_operation is not None and close.get('kind')=='exclusive-captured-syscall-exit'and(close['pid'],close['entrySequence'],close['sequence'])==self.metadata_closed_operation,'metadata replay release lacks actual closed own operation')
+        need(self.retained_metadata and self.active is None and self.transaction is None and self.pending_window is None and not self.pending_mapping_entries and not self.fd_bindings and not getattr(self,'scheduled_active',False),'metadata replay release requires actual closed generated transaction')
+        names=['origins','checkpoints','events','windows','original_sequences','map_sequences','map_owners','consumers','create_paths','private_wakes','private_waits','deferred','coordinated_waits','coordinated_epoch']
+        state={name:getattr(self,name,None)for name in names};state.update(memoryDomains=self.mm.domains,memoryProvenance=self.mm.provenance)
+        self.metadata_bytes=retained_metadata_bytes(state);self.metadata_high_water=max(self.metadata_high_water,self.metadata_bytes);self.metadata_closed_operation=None
     def original(self,reference):return self.capture_data(reference)
     def mapping_domain(self,pid,barrier=None):
         return complete_memory_cohort(self.mm,pid,barrier) if self.model in COHORT_MODELS else (self.mm.unique(pid),[pid])
@@ -644,7 +691,7 @@ class Verifier:
         kind=row['kind'];seq=row['sequence'];clock=row.get('observedMonotonicNs');need(isinstance(clock,str) and clock.isdecimal(),'actual monotonic raw observation required');now=int(clock);need(self.last_observed_ns is None or now>=self.last_observed_ns,'raw monotonic observation moved backwards');self.last_observed_ns=now;need(seq not in self.events,'duplicate generated raw sequence');self.events[seq]=row
         while len(self.events)>256:self.events.pop(next(iter(self.events)))
         if kind.startswith('generated-vma-') or kind=='exclusive-generated-vma-resume':
-            self.metadata_bytes+=len(json.dumps(row,separators=(',',':')).encode());need(self.metadata_bytes<=4*1024**2,'shared generated replay metadata bound')
+            self.charge_metadata(row)
         if kind=='generated-vma-kernel-link-original':need(self.model!=LEGACY_MODEL and self.transaction and self.transaction['state']=='exited' and self.transaction['window']['operation']=='map','kernel link original outside new mapping transaction')
         self.mm.record(row)
         if kind=='owned-root-binding':
@@ -824,6 +871,8 @@ class Verifier:
             elif self.transaction['window']['operation']=='private-wake':
                 actual=exits[self.transaction['entrySequence']];need(seq==self.transaction['entrySequence']+WAKE_RAW_RECORDS-1 and row['result']==actual['result'] and row['isError'] is False,'private wake exclusive actual close differs');self.private_wakes.append(self.transaction['entrySequence'])
             del self.windows[self.transaction['window']['sequence']];self.transaction=None
+            if self.retained_metadata and self.active is None:
+                self.metadata_closed_operation=(row['pid'],row['entrySequence'],row['sequence']);self.checkpoint_metadata(row)
         elif kind=='generated-vma-consumer-binding':self.consumers.append(row)
     def finish(self,caps,exits):
         need(self.active is None and self.transaction is None and self.pending_window is None and not self.pending_mapping_entries and not self.fd_bindings,'unclosed generated mapping/window');outputs=[]

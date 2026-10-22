@@ -39,7 +39,7 @@ def runtime_type(core):
                 if self.active is None:self.deferred={}
                 return result
             self.b.check()
-            self.metadata_bytes+=len(json.dumps(row,separators=(',',':')).encode());base.need(self.metadata_bytes<=4*1024**2,'shared generated metadata bound')
+            self.charge_metadata(row)
             kind=row['kind']
             if kind=='ptrace-event':
                 assert current['stage']=='peer-running' and row['pid']==current['peer'] and row['event']==128,'unexpected event during bounded peer trial'
@@ -357,7 +357,7 @@ def verifier_type(base):
             need(self.active and self.active['start']<=now<self.active['deadline'],'same finite mapping deadline expired')
             need(seq not in self.events,'duplicate scheduled raw sequence');self.events[seq]=row
             while len(self.events)>256:self.events.pop(next(iter(self.events)))
-            self.metadata_bytes+=len(json.dumps(row,separators=(',',':')).encode());need(self.metadata_bytes<=4*1024**2,'shared scheduled metadata bound')
+            self.charge_metadata(row)
             if row['kind']=='write-original':self.original_sequences[self.key(row['original'])]=seq
             if row['kind']=='toolchain-original' and row.get('captureKind')=='maps':
                 need('observationSequence'not in row['original']or type(row['original']['observationSequence'])is int and row['original']['observationSequence']==seq,'scheduled maps actual observation sequence differs')
