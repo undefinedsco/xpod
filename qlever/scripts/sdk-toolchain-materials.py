@@ -18,6 +18,7 @@ CONTEXT_RESERVE=512*1024**2
 def load(name,file):
     spec=importlib.util.spec_from_file_location(name,HERE/file);module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module);return module
 commands=load('execution_commands','sdk-command-materials.py')
+raw_records=load('execution_raw_records','sdk-execution-originals-util.py')
 
 def write(path,value):
     data=(json.dumps(value,sort_keys=True,indent=2)+'\n').encode()
@@ -38,7 +39,7 @@ def failure_diagnostic(result,out,directory,check):
     out=Path(out).resolve(strict=True);directory=Path(directory).resolve(strict=True)
     directory.relative_to(out);tracking=result['trackingReceipt'];command=result['commandReceipt']
     identity=lambda row:(row.st_dev,row.st_ino,row.st_mode,row.st_size,row.st_mtime_ns,row.st_ctime_ns)
-    parents={};images={};nonzero={};refs=[];tail=b'';total=0
+    parents={};images={};nonzero={};refs=[];tail=b'';total=0;raw_decoder=raw_records.RawRecordDecoder()
     def scan(path,expected,parse=False,keep_tail=False):
         nonlocal total,tail
         check();path=Path(path);path=path.parent.resolve(strict=True)/path.name;path.relative_to(out)
@@ -58,7 +59,8 @@ def failure_diagnostic(result,out,directory,check):
                     while b'\n' in pending:
                         line,pending=pending.split(b'\n',1)
                         if len(line)>65535:raise ValueError('failure raw record bound')
-                        row=json.loads(line)
+                        row=raw_decoder.feed(line+b'\n')
+                        if row is None:continue
                         if row.get('kind')=='actual-child-binding':
                             if len(parents)>=250000:raise ValueError('failure process inventory bound')
                             parents[row['childPid']]=row['parentPid']
@@ -79,6 +81,7 @@ def failure_diagnostic(result,out,directory,check):
     shards=result['rawTraceShards']
     if len(shards)>32:raise ValueError('failure raw shard count bound')
     for row in shards:refs.append(scan(row['path'],row,parse=True))
+    raw_decoder.finish()
     failures=[]
     for pid,row in sorted(nonzero.items())[:8]:
         chain=[];seen=set();current=pid

@@ -68,17 +68,17 @@ def observe(archive_path,plan):
                         at=pending.find(b'\n')
                         if at<0:break
                         bindings.need(at+1<=LIMITS['rangeBytes'],'raw record bound');line=bytes(pending[:at+1]);del pending[:at+1]
-                        row=json.loads(line)
-                        if row.get('kind')=='owned-root-binding':bindings.need(row.get('command')==commands[phase_name],'actual traced root argv differs from closed SDK stage')
-                        if row.get('kind')=='kernel-syscall' and row.get('op')=='entry':
-                            policy=bindings.policy(row['arch']);classified={policy[key] for key in ['read','write','close','mmap','clone','clone3']}|policy['renameOps']|policy['exits']
-                            if row['nr'] not in classified:unclassified_entries.append((row['sequence'],'unclassified-kernel-operation:'+hex(row['arch'])+':'+str(row['nr'])))
-                        if row.get('kind')=='prepared-dependency-source-root':
-                            bindings.need(row['sequence'] not in dependency_registrations,'duplicate dependency raw registration sequence');dependency_registrations[row['sequence']]=row
-                        if row.get('kind')=='generated-mmap-unverified':uncovered.add('generated-input-mmap:'+row['path'])
                         yield line
                     bindings.need(len(pending)<=LIMITS['rangeBytes'],'unfinished raw record bound')
             bindings.need(not pending,'raw JSONL final newline required')
+        def record_observer(phase_name,row):
+            if row.get('kind')=='owned-root-binding':bindings.need(row.get('command')==commands[phase_name],'actual traced root argv differs from closed SDK stage')
+            if row.get('kind')=='kernel-syscall' and row.get('op')=='entry':
+                policy=bindings.policy(row['arch']);classified={policy[key] for key in ['read','write','close','mmap','clone','clone3']}|policy['renameOps']|policy['exits']
+                if row['nr'] not in classified:unclassified_entries.append((row['sequence'],'unclassified-kernel-operation:'+hex(row['arch'])+':'+str(row['nr'])))
+            if row.get('kind')=='prepared-dependency-source-root':
+                bindings.need(row['sequence'] not in dependency_registrations,'duplicate dependency raw registration sequence');dependency_registrations[row['sequence']]=row
+            if row.get('kind')=='generated-mmap-unverified':uncovered.add('generated-input-mmap:'+row['path'])
         bindings.need({name for name in member.names if name.startswith('inner/toolchain-execution/captures/')}=={ref['path'] for ref in all_refs.values()},'capture original ZIP closed set differs')
         source_files=plan['sourceFiles']
         def capture_observer(row,digest):
@@ -90,7 +90,7 @@ def observe(archive_path,plan):
                 if expected is None:unresolved_sources.add(row['path'])
                 else:
                     bindings.need(digest==(expected['bytes'],expected['sha256']),'actual source read snapshot differs from postpatch original');source_matches.add(row['path'])
-        result=bindings.observe([(name,lines(name,refs)) for name,refs in phase_rows],read_original,plan['requiredInputs'],check,LIMITS,capture_observer,compact_tool_coverage=True)
+        result=bindings.observe([(name,lines(name,refs)) for name,refs in phase_rows],read_original,plan['requiredInputs'],check,LIMITS,capture_observer,compact_tool_coverage=True,record_observer=record_observer)
         # Only the complete typed v5 entry/barrier/resume/exit/postbarrier/close
         # replay can discharge these exact operation sequences. Same nr outside
         # the verified active epoch remains unclassified, never an allowlist.

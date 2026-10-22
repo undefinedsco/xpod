@@ -1,8 +1,9 @@
+import {completeObserved} from './source-binding-group.fixture';
 import {test,expect} from 'bun:test';
 import {CONSUMER_SOURCE_GROUPS,CONTROLLER_POLICY_BINDINGS} from '../../scripts/lib/independent-admission/consumer-observer-policy';
 import {sourceBindingKey,selectGitHubSourceBindingGroup} from '../../scripts/lib/independent-admission/github-source-binding-groups';
 test('complete old/new workflow tuples select only their whole source recipe',()=>{
- for(const group of CONSUMER_SOURCE_GROUPS){const observed=new Map([...group.selectors,...(group.secondarySelectors??[])].map(row=>[sourceBindingKey(row),row.sha256]));expect(selectGitHubSourceBindingGroup(CONSUMER_SOURCE_GROUPS,observed)).toBe(group);}
+ for(const group of CONSUMER_SOURCE_GROUPS){const observed=completeObserved(CONSUMER_SOURCE_GROUPS,group);expect(selectGitHubSourceBindingGroup(CONSUMER_SOURCE_GROUPS,observed)).toBe(group);}
  const mixed=new Map(CONSUMER_SOURCE_GROUPS[0]!.selectors.map(row=>[sourceBindingKey(row),row.sha256]));
  const next=CONSUMER_SOURCE_GROUPS[1]!.selectors.find(row=>row.path.includes('archive-consumer'))!;mixed.set(sourceBindingKey(next),next.sha256);
  expect(()=>selectGitHubSourceBindingGroup(CONSUMER_SOURCE_GROUPS,mixed)).toThrow('group not reviewed');
@@ -18,7 +19,7 @@ test('new group pins actual dynamic execution helpers without self hash recursio
 
 test('catalog and retained historical implementation select complete existing-path source tuples',()=>{
  const next=CONSUMER_SOURCE_GROUPS[1]!,old=CONSUMER_SOURCE_GROUPS.find(group=>group.sourceBindings.length===335)!;expect(old).toBeDefined();expect(next.secondarySelectors?.map(row=>row.path)).toEqual(old.secondarySelectors?.map(row=>row.path));
- const tuple=(group:typeof next)=>new Map([...group.selectors,...(group.secondarySelectors??[])].map(row=>[sourceBindingKey(row),row.sha256]));
+ const tuple=(group:typeof next)=>completeObserved(CONSUMER_SOURCE_GROUPS,group);
  expect(selectGitHubSourceBindingGroup(CONSUMER_SOURCE_GROUPS,tuple(old))).toBe(old);
  for(const row of next.secondarySelectors??[]){const mixed=tuple(next);mixed.set(sourceBindingKey(row),'f'.repeat(64));expect(()=>selectGitHubSourceBindingGroup(CONSUMER_SOURCE_GROUPS,mixed)).toThrow();}
  for(const path of ['package.json','bun.lock','scripts/lib/physical-module-stage.ts','scripts/prepare-package-manifest.cjs'])expect(old.sourceBindings.find(row=>row.path===path)?.sha256).not.toBe(next.sourceBindings.find(row=>row.path===path)?.sha256);
@@ -32,5 +33,5 @@ test('hoisted build-tools use a distinct whole closure and old versions never re
  expect(next.secondarySelectors?.find(row=>row.path===path)?.sha256).not.toBe(old.secondarySelectors?.find(row=>row.path===path)?.sha256);
  expect(next.sourceBindings.some(row=>row.path==='packages/xpod-cli/src/build-dependency-layout.ts')).toBe(true);
  expect(old.sourceBindings.some(row=>row.path==='packages/xpod-cli/src/build-dependency-layout.ts')).toBe(false);
- for(const group of [old,next]){const observed=new Map([...group.selectors,...(group.secondarySelectors??[])].map(row=>[sourceBindingKey(row),row.sha256]));expect(selectGitHubSourceBindingGroup(CONSUMER_SOURCE_GROUPS,observed)).toBe(group);observed.set('source:'+path,'e'.repeat(64));expect(()=>selectGitHubSourceBindingGroup(CONSUMER_SOURCE_GROUPS,observed)).toThrow();}
+ for(const group of [old,next]){const observed=completeObserved(CONSUMER_SOURCE_GROUPS,group);expect(selectGitHubSourceBindingGroup(CONSUMER_SOURCE_GROUPS,observed)).toBe(group);observed.set('source:'+path,'e'.repeat(64));expect(()=>selectGitHubSourceBindingGroup(CONSUMER_SOURCE_GROUPS,observed)).toThrow();}
 });

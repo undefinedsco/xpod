@@ -4,6 +4,10 @@ Not a capability. Controlled observer/TCB execution, Git inputs and upstream
 runtime/toolchain authority remain independent of this mechanical axis.
 """
 import hashlib
+import importlib.util
+from pathlib import Path
+_raw_spec=importlib.util.spec_from_file_location('sdk_raw_records',Path(__file__).with_name('sdk-execution-originals-util.py'))
+raw_records=importlib.util.module_from_spec(_raw_spec);_raw_spec.loader.exec_module(raw_records)
 import json
 import re
 import struct
@@ -378,7 +382,7 @@ class IndexedToolchainOperationCoverage:
         result=dict(schemaVersion=2,model=self.MODEL,scope='verified raw operation/file associations; effective-RO and source authority independent',paths=self.paths,operations=self.operations,pending=list(unresolved),stopProviderPending=list(stop_provider_pending))
         need(len(json.dumps(result,separators=(',',':')).encode())<=self.maximum_bytes,'indexed tool operation final metadata bound');return result
 
-def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,limits=None,capture_observer=None,compact_tool_coverage=False):
+def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,limits=None,capture_observer=None,compact_tool_coverage=False,record_observer=None):
     maximum_raw=limits['sourceMaterialBytes'] if limits else 32*1024**2
     maximum_file=limits['shardBytes'] if limits else 1024**2
     maximum_total=limits['sourceMaterialBytes'] if limits else 16*1024**2
@@ -499,9 +503,12 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
         need(list(derived.values())==aliases,'writable aliases differ from complete stopped FD census')
         return aliases
     for phase,lines in phase_lines:
-        need(not live,'prior actual process tree has not closed');roots=[];waits=[]
+        need(not live,'prior actual process tree has not closed');roots=[];waits=[];raw_decoder=raw_records.RawRecordDecoder()
         for raw in lines:
-            check();total+=len(raw);need(total<=maximum_raw and len(raw)<=65536,'tiny raw aggregate/record bound');row=json.loads(raw);need(row['sequence']==last+1 and row['phase']==phase,'phase/raw sequence differs');last=row['sequence'];kind=row['kind']
+            check();total+=len(raw);need(total<=maximum_raw and len(raw)<=65536,'tiny raw aggregate/record bound');row=raw_decoder.feed(raw)
+            if row is None:continue
+            need(row['sequence']==last+1 and row['phase']==phase,'phase/raw sequence differs');last=row['sequence'];kind=row['kind']
+            if record_observer is not None:record_observer(phase,row)
             if pending_rename_window is not None:need(kind=='exclusive-rename-resume' and row.get('captureSequence')==pending_rename_window,'retained rename window not immediately exclusively resumed')
             if kind in ['kernel-syscall','actual-child-binding']:latest_execution_sequence=row['sequence']
             if active_rename is not None:
@@ -551,6 +558,7 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                 need(not live and not roots and not phase_tracking and not prepared_sealed and row['files']==prepared_count and row['inventorySha256']==prepared_digest.hexdigest(),'prepared closed-set byte seal differs');prepared_sealed=True
                 need(all(value[0]['path'].startswith(row['buildRoot'].rstrip('/')+'/') for value in prepared.values()),'prepared original escapes actual build root')
             elif kind=='owned-root-binding':
+                need(row.get('rawRecordModel')==raw_decoder.model,'declared raw record model differs from actual phase format')
                 observed_entity_model=row.get('captureOriginalEntityModel')
                 need('captureOriginalEntityModel' not in row or observed_entity_model in ['same-phase-producer-original-v1','same-phase-content-entity-v2'],'unknown capture entity model')
                 need(not entity_model_initialized or entity_model==observed_entity_model,'capture entity model changed across actual roots');entity_model=observed_entity_model;entity_model_initialized=True
@@ -1021,6 +1029,7 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
             if generated_verifier is not None:
                 generated_verifier.metadata_chain=retained_metadata_chain;generated_verifier.verified_metadata_states=sorted([*mode_transitions.values(),*rename_transitions.values()],key=lambda pair:pair[1]['sequence'])
                 generated_verifier.record(row,entries,exits,barriers,caps)
+        raw_decoder.finish()
         need(not vfork_holds,'phase ended without vfork child release')
         need(not append_dirty,'phase ended without mandatory append full checkpoint')
         need(len(roots)==1 and not live and root_codes.get(roots[0])==0 and exclusive is None,'actual root/descendant wait closure incomplete')

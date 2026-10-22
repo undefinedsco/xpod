@@ -1,4 +1,4 @@
-const completeObserved=(groups:any,group:any)=>{const facts=new Map<string,string>(group.selectors.map((row:any)=>[sourceBindingKey(row),row.sha256]));for(const role of secondaryGitHubSourceBindingSelectors(groups,facts)){const row=[...group.selectors,...group.secondarySelectors??[],...group.sourceBindings].find((row:any)=>sourceBindingKey(row)===sourceBindingKey(role));facts.set(sourceBindingKey(role),row.sha256);}return facts;};
+import {completeObserved} from './source-binding-group.fixture';
 import {describe,it,expect} from 'bun:test';
 import {readFileSync} from 'node:fs';
 import {createHash} from 'node:crypto';
@@ -24,7 +24,7 @@ describe('API normal workspace lifecycle atomic registration',()=>{
   originals.set('scripts/lib/api-install-selection.cjs',Buffer.from('changed'));expect(()=>controlledApiSourceRecipe(p=>originals.get(p)!,hash('scripts/api-module-producer.py'),'darwin-arm64')).toThrow();
  });
  it('controller current and historical implementations remain unambiguous and cannot mix workspace phases',()=>{
-  for(const groups of [CONSUMER_SOURCE_GROUPS,CI_CONSUMER_SOURCE_GROUPS])for(const group of groups){const facts=observed(group);expect(()=>secondaryGitHubSourceBindingSelectors(groups,facts)).not.toThrow();expect(selectGitHubSourceBindingGroup(groups,facts)).toBe(group);}
-  const group=CONSUMER_SOURCE_GROUPS.find(row=>row.sourceBindings.some(b=>b.path==='scripts/api-producer-dependencies.cjs'))!;const facts=observed(group);facts.set('source:scripts/lib/independent-admission/module-source-phases.ts','0'.repeat(64));expect(()=>selectGitHubSourceBindingGroup(CONSUMER_SOURCE_GROUPS,facts)).toThrow();
+  for(const groups of [CONSUMER_SOURCE_GROUPS,CI_CONSUMER_SOURCE_GROUPS])for(const group of groups){const facts=completeObserved(groups,group);expect(()=>secondaryGitHubSourceBindingSelectors(groups,facts)).not.toThrow();expect(selectGitHubSourceBindingGroup(groups,facts)).toBe(group);}
+  const group=CONSUMER_SOURCE_GROUPS.find(row=>row.sourceBindings.some(b=>b.path==='scripts/api-producer-dependencies.cjs'))!;const facts=completeObserved(CONSUMER_SOURCE_GROUPS,group);facts.set('source:scripts/lib/independent-admission/module-source-phases.ts','0'.repeat(64));expect(()=>selectGitHubSourceBindingGroup(CONSUMER_SOURCE_GROUPS,facts)).toThrow();
  });
 });

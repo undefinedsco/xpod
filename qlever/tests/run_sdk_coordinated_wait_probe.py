@@ -30,7 +30,7 @@ def run(destination,parked_parents=0,classic_wait=False):
   phase=backend.Observer.phase(observer,'configure',command,cwd='/opt/qlever-sdk/source',env={'PATH':'/usr/bin:/bin','LANG':'C','LC_ALL':'C'})
   assert phase['trackingReceipt']['actualRootReturnCode']==0 and phase['trackingReceipt']['trackedProcessesClosed']
   stdout=json.loads((originals/'configure.stdout.raw').read_text());assert stdout['waited']==0 and stdout['woken']==1 and stdout['value']==66 and stdout['ioUringErrno']==38 and stdout['sideWaited']==-1 and stdout['sideErrno']==11
-  raw=b''.join(Path(ref['path']).read_bytes() for ref in phase['rawTraceShards']);rows=[json.loads(line) for line in raw.splitlines()]
+  raw=b''.join(Path(ref['path']).read_bytes() for ref in phase['rawTraceShards']);rows=list(backend.probe.decoded_raw_records(raw.splitlines(keepends=True)))
   refs={Path(ref['path']).name:ref for ref in phase['captureFiles']}
   def read_original(name,maximum):
    assert re.fullmatch(r'capture-[0-9]{4,8}\.original',name) and name in refs
@@ -41,7 +41,9 @@ def run(destination,parked_parents=0,classic_wait=False):
      if not block:break
      yield block
   limits=dict(sourceMaterialBytes=512*1024**2,shardBytes=16*1024**2)
-  def replay(values):return backend.bindings.observe([('configure',[(json.dumps(row)+'\n').encode() for row in values])],read_original,{},limits=limits)
+  def replay(values):
+   encoder=backend.probe.IndexedRawEncoder()
+   return backend.bindings.observe([('configure',[line for row in values for line in encoder.encode(row)])],read_original,{},limits=limits)
   report=replay(rows);assert report['overallSdkSourceVerified']is False and len(report['verifiedCoordinatedWaitIntervals'])==1 and not report['verifiedPrivateWaitMismatchEntrySequences']
   assert any(row['kind']=='generated-vma-write-origin-transition' for row in rows),'actual post-unmap write bridge missing'
   assert any(row['kind']=='generated-kernel-wait-side-wait-deferred'for row in rows),'actual equal peer entry not deferred'

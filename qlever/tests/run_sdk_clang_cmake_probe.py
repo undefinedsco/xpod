@@ -49,8 +49,7 @@ def run(destination,metadata_stress=False):
   record['actualCompiledProgramReturnCode']=executed.returncode
   selected={}
   for phase in record['phases']:
-   for line in raw(phase):
-    row=json.loads(line)
+   for row in backend.probe.decoded_raw_records(raw(phase)):
     if row['kind']=='actual-rename-window'and 'generatedCheckpointSequence'in row:selected.setdefault('rename',row)
     if row['kind']=='generated-vma-consumer-binding'and row.get('metadataTransitions'):selected.setdefault('consumer',row)
   assert set(selected)=={'rename','consumer'},'actual generated checkpoint rename/consumer evidence missing'
@@ -63,10 +62,10 @@ def run(destination,metadata_stress=False):
    'wrong-metadata-reference':('consumer',lambda row:row.update(metadataTransitions=[1])),
   }
   def altered(phase,sequence,change):
-   for line in raw(phase):
-    row=json.loads(line)
-    if row['sequence']==sequence:change(row);yield(json.dumps(row)+'\n').encode()
-    else:yield line
+   encoder=backend.probe.IndexedRawEncoder()
+   for row in backend.probe.decoded_raw_records(raw(phase)):
+    if row['sequence']==sequence:change(row)
+    yield from encoder.encode(row)
   record['refusals']={}
   record['mutationSuite']='covered-by-normal-probe' if metadata_stress else 'six-actual-trace-mutations'
   for name,(target,change)in ([] if metadata_stress else changes.items()):

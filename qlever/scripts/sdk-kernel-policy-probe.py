@@ -104,7 +104,7 @@ def run(destination,identity,deadline,remaining_retained_bytes):
   observer=backend.Observer(originals,source,build,deadline_monotonic=phase_end,maximum_bytes=available,maximum_stdio_bytes=1024**2,maximum_processes=64,selected_names=None,**parameters)
   try:
    phase=observer.phase('configure',command,cwd=str(source),env={'PATH':'/usr/bin:/bin','LANG':'C','LC_ALL':'C'})
-   rows=[json.loads(line) for path in sorted(originals.glob('configure*jsonl')) for line in path.open('rb')]
+   rows=list(backend.probe.decoded_raw_records(line for path in sorted(originals.glob('configure*jsonl')) for line in path.open('rb')))
    denials=[r for r in rows if r['kind']=='explicit-io-uring-setup-denied'];completions=[r for r in rows if r['kind']=='explicit-io-uring-setup-denied-exit']
    def actual_capture(name,maximum):
     assert re.fullmatch(r'capture-[0-9]{4,}\.original',name),'fixed capture original only'
