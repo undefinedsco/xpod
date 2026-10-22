@@ -1,9 +1,10 @@
-import ast,contextlib,io,json,pathlib,sys,threading,unittest
+import ast,contextlib,io,json,pathlib,sys,threading,unittest,re
 HERE=pathlib.Path(__file__).resolve().parent
 tree=ast.parse((HERE.parent/'scripts/sdk-ptrace-execution.py').read_text())
 cls=next(n for n in tree.body if isinstance(n,ast.ClassDef) and any(isinstance(f,ast.FunctionDef) and f.name=='claim' for f in n.body))
 fn=next(f for f in cls.body if isinstance(f,ast.FunctionDef) and f.name=='claim')
-ns=dict(threading=threading,json=json,sys=sys)
+ns=dict(threading=threading,json=json,sys=sys,re=re)
+helper=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=='completed_capture_storage_census');exec(compile(ast.Module(body=[helper],type_ignores=[]),'<actual-storage-census>','exec'),ns)
 exec(compile(ast.Module(body=[fn],type_ignores=[]),'<actual-frozen-claim>','exec'),ns)
 class Subject:
  claim=ns['claim']

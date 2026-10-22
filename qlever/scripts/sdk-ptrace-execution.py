@@ -125,8 +125,28 @@ class BoundedPipePump:
         while self.thread.is_alive():check();self.thread.join(.05)
         check();assert self.sha256 is not None,'actual stdio pipe did not close'
 
+def completed_capture_storage_census(rows,phase):
+    """Bounded failure-only lower bound from existing complete raw references."""
+    seen={};buckets={};visited=0;truncated=False;invalid=False
+    for row in rows:
+        if visited>=8192:truncated=True;break
+        visited+=1
+        if not isinstance(row,dict) or row.get('phase')!=phase:continue
+        ref=row.get('original',{});name=ref.get('path');size=ref.get('bytes');digest=ref.get('sha256')
+        if not isinstance(name,str) or not re.fullmatch(r'capture-[0-9]{4,}\.original',name) or type(size) is not int or size<0 or not isinstance(digest,str) or not re.fullmatch('[a-f0-9]{64}',digest):invalid=True;continue
+        key=(size,digest)
+        if name in seen:
+            if seen[name]!=key:invalid=True
+            continue
+        if len(seen)>=4096:truncated=True;continue
+        seen[name]=key;bucket=buckets.setdefault(key,dict(physicalEntities=0,consumerEntities=0));bucket['physicalEntities']+=1
+        if row.get('kind')=='fd-capture' and row.get('role')=='consumer':bucket['consumerEntities']+=1
+    duplicates=[dict(bytes=size,sha256=digest,**value,potentialDuplicatePhysicalBytes=(value['physicalEntities']-1)*size) for (size,digest),value in buckets.items() if value['physicalEntities']>1]
+    duplicates.sort(key=lambda row:(-row['potentialDuplicatePhysicalBytes'],row['sha256']))
+    return dict(kind='same-phase-physical-content-census',phase=phase,visitedObservations=visited,distinctPhysicalReferences=len(seen),maximumVisitedObservations=8192,maximumPhysicalReferences=4096,truncated=truncated,invalidReferenceMetadata=invalid,topBuckets=duplicates[:4],duplicateBucketCount=len(duplicates),potentialDuplicatePhysicalBytesLowerBound=sum(row['potentialDuplicatePhysicalBytes'] for row in duplicates),scope='same complete bytes/SHA storage only; no source identity, actual reuse eligibility, or IO saving proven')
+
 class Observer:
-    def __init__(self,out,source,build,*,deadline_monotonic=None,check_budget=lambda:None,maximum_bytes=32*1024**2,maximum_file_bytes=1024**2,selected_names=SELECTED,maximum_processes=128,shard_bytes=None,require_success=True,maximum_stdio_bytes=None,shared_tasks=False,capture_toolchain=False,deny_optional_io_uring=False,verified_setresuid_noop=False,verified_identity_noop=False,terminal_exit_evidence=False,generated_vma_output=False,generated_vma_shared_mm=False,generated_vma_private_wake=False,generated_vma_private_wait_mismatch=False):
+    def __init__(self,out,source,build,*,deadline_monotonic=None,check_budget=lambda:None,maximum_bytes=32*1024**2,maximum_file_bytes=1024**2,selected_names=SELECTED,maximum_processes=128,shard_bytes=None,require_success=True,maximum_stdio_bytes=None,shared_tasks=False,capture_toolchain=False,deny_optional_io_uring=False,verified_setresuid_noop=False,verified_identity_noop=False,terminal_exit_evidence=False,generated_vma_output=False,generated_vma_shared_mm=False,generated_vma_private_wake=False,generated_vma_private_wait_mismatch=False,capture_content_entities=False):
         self.prepared_dependency_plan=None;self.dependency_roots={};self.dependency_cache=None
         self.shared_tasks=shared_tasks
         assert type(deny_optional_io_uring) is bool
@@ -137,11 +157,13 @@ class Observer:
         self.verified_identity_noop=verified_identity_noop
         assert type(terminal_exit_evidence) is bool
         self.terminal_exit_evidence=terminal_exit_evidence
+        assert type(capture_content_entities) is bool,'explicit content storage model flag required'
+        self.capture_content_entities=capture_content_entities
         self.capture_toolchain=capture_toolchain;self.process_authority=bool(capture_toolchain);self.authority_handles=tool_providers.ProcessAuthorityHandles();self.tool_original_cache={};self.tool_provider_cache={};self.tool_metadata_bytes=json.loads((ROOT/'scripts/lib/module-artifact-limits.json').read_text())['metadataBytes']
         self.prepared_inputs={};self.prepared_sealed=False;self.domain_bytes=0;self.domain_lock=threading.Lock();self.pump_errors=[];self.maximum_stdio_bytes=maximum_stdio_bytes if maximum_stdio_bytes is not None else maximum_file_bytes
         self.require_success=require_success;self.raw_bytes_completed=0;self.maximum_processes=maximum_processes;self.shard_bytes=shard_bytes
         self.deadline_monotonic=deadline_monotonic;self.check_budget=check_budget;self.maximum_bytes=maximum_bytes;self.maximum_file_bytes=maximum_file_bytes;self.selected_names=selected_names
-        self.out=Path(out);self.capture_dir=self.out;self.source=str(source);self.build=str(build);self.tasks={};self.seq=0;self.records=[];self.captures=[];self.retained=set();self.producers={};self.write_states={};self.write_projections={};self.append_chains={};self.budget_context={};self.metadata_states=[];self.rename_records=[];self.consumers=[];self.raw=None;self.deadline=0;self.pausing=False;self.root=None;self.root_code=None;self.failures=[];self.current_phase=None;self.unknown_stops={};self.capture_bytes=0;self.capture_entities={};self.exclusive=None;self.wait_references=[]
+        self.out=Path(out);self.capture_dir=self.out;self.source=str(source);self.build=str(build);self.tasks={};self.seq=0;self.records=[];self.captures=[];self.retained=set();self.producers={};self.write_states={};self.write_projections={};self.append_chains={};self.budget_context={};self.metadata_states=[];self.rename_records=[];self.consumers=[];self.raw=None;self.deadline=0;self.pausing=False;self.root=None;self.root_code=None;self.failures=[];self.current_phase=None;self.unknown_stops={};self.capture_bytes=0;self.capture_entities={};self.content_capture_pool={};self.exclusive=None;self.wait_references=[]
         assert type(generated_vma_output) is bool and (not generated_vma_output or shared_tasks and capture_toolchain),'generated VMA requires existing actual shared-task/tool observation'
         assert not generated_vma_output or self.build==generated_vma_module.BUILD_ROOT,'fixed generated output build root required'
         assert type(generated_vma_shared_mm) is bool and (not generated_vma_shared_mm or generated_vma_output and shared_tasks and capture_toolchain),'shared-MM VMA requires existing generated/all-task/tool observation'
@@ -262,7 +284,9 @@ class Observer:
                         completed[key]['count']+=1
                         completed[key]['bytes']+=row['original']['bytes']
                     diagnostic=dict(kind='execution-byte-bound',chargedBytes=self.domain_bytes,requestedBytes=count,maximumBytes=self.maximum_bytes,projectedBytes=self.domain_bytes+count,generatedReservedBytes=reserved,completedRetainedEntityBytes=self.capture_bytes,completedObservationReferencedBytes=sum(bucket['bytes'] for bucket in completed.values()),completedObservationReferences=completed,**(context or dict(role='other-execution-original')))
-                    print('SDK_EXECUTION_BYTE_BOUND '+json.dumps(diagnostic,sort_keys=True),file=sys.stderr,flush=True)
+                    diagnostic['completedStorageCensus']=completed_capture_storage_census(self.captures,getattr(self,'current_phase',None))
+                    encoded=json.dumps(diagnostic,sort_keys=True);assert len(encoded.encode())<=4096,'bounded execution storage diagnostic'
+                    print('SDK_EXECUTION_BYTE_BOUND '+encoded,file=sys.stderr,flush=True)
                 except BaseException:
                     pass  # Diagnostic failure must never replace the original bound.
                 raise AssertionError('shared execution original byte bound')
@@ -276,10 +300,15 @@ class Observer:
     def generated_fd_flags(self,pid,fd):return descriptor_flags(pid,fd)
     def generated_fd_path(self,pid,fd):return fdpath(pid,fd)
     def emit(self,row):
-        self.check();self.seq+=1;row=dict(row,sequence=self.seq,phase=self.current_phase,observedUnixNs=str(time.time_ns()),**(dict(observedMonotonicNs=str(time.monotonic_ns())) if getattr(self,'generated_vma_output',False) else {}));data=(json.dumps(row,sort_keys=True)+'\n').encode()
+        self.check();self.seq+=1;row=dict(row,sequence=self.seq,phase=self.current_phase,observedUnixNs=str(time.time_ns()),**(dict(observedMonotonicNs=str(time.monotonic_ns())) if getattr(self,'generated_vma_output',False) else {}));data=None
+        if getattr(self,'capture_content_entities',False) and row.get('kind') in ['fd-capture','prepared-build-input-original','write-original','toolchain-original'] and 'original' in row:
+            entity=self.register_capture_entity(row['original']);assert row.get('originalEntityIdentity',entity)==entity,'physical storage identity differs';row['originalEntityIdentity']=entity
+        data=(json.dumps(row,sort_keys=True)+'\n').encode()
         assert len(data)<=65536,'actual raw record exceeds fixed range bound'
         self.claim(len(data),context=dict(role='raw-record',rawKind=row['kind']));self.raw.write(data);self.raw.flush()
         if self.generated_vma:self.generated_vma.record(row)
+        if getattr(self,'capture_content_entities',False) and row.get('kind') in ['fd-capture','prepared-build-input-original','write-original','toolchain-original'] and 'original' in row and 'originalReuse' not in row:
+            ref=row['original'];self.content_capture_pool.setdefault((self.current_phase,ref['bytes'],ref['sha256']),row)
         return row
     def wait_one(self):
         return self.waiter.wait_one()
@@ -631,6 +660,42 @@ class Observer:
             except BaseException:
                 if primary is None:raise
             else:self.retained.remove(reader)
+    def read_capture_fd(self,reader,output,*,context=None):
+        offset=0;digest=hashlib.sha256()
+        while True:
+            self.check();block=os.pread(reader,65536,offset)
+            if not block:break
+            offset+=len(block);assert offset<=self.maximum_file_bytes,'bounded actual capture FD required'
+            if output is not None:self.claim(len(block),context=dict(context or {},captureOffset=offset-len(block),capturePrefixSHA256=digest.copy().hexdigest()));output.write(block)
+            digest.update(block)
+        return offset,digest.hexdigest()
+    def content_capture_original(self,reader,target,ident,name,context):
+        # Lookup follows a fresh complete FD read. The pool is physical storage,
+        # never a substitute for this window's FD/source/operation provenance.
+        value=os.fstat(reader);before=[*probe.identity(value),value.st_nlink];assert before[:6]==ident,'actual FD changed before content observation'
+        def named():
+            value=os.stat(target,follow_symlinks=False);return [*probe.identity(value),value.st_nlink]
+        try:initial_named=named()
+        except (FileNotFoundError,NotADirectoryError,PermissionError):initial_named=None
+        eligible=initial_named==before and stat.S_ISREG(before[2])
+        data=self.read_capture_fd(reader,None)
+        current=os.fstat(reader);assert before==[*probe.identity(current),current.st_nlink],'actual complete content FD changed'
+        if eligible:assert named()==before,'actual named content FD changed'
+        prior=self.content_capture_pool.get((self.current_phase,*data)) if eligible else None
+        if prior is not None:
+            assert prior['phase']==self.current_phase and prior['sequence']<=self.seq and prior['original']['path'] in self.capture_entities,'actual prior samephase canonical required'
+            ref=dict(prior['original']);entity=self.verify_capture_entity(ref)
+            assert data==(ref['bytes'],ref['sha256']) and entity==prior['originalEntityIdentity'],'actual body differs from canonical retained entity'
+            value=os.fstat(reader);assert before==[*probe.identity(value),value.st_nlink]==named(),'FD/named identity changed during canonical verification'
+            return ref,entity,dict(originalReuse=dict(model='same-phase-content-entity-v2',originCaptureSequence=prior['sequence']),captureWindowIdentity=before,captureWindowAfterIdentity=[*probe.identity(value),value.st_nlink],namedWindowIdentity=initial_named,namedWindowAfterIdentity=named()),data
+        # Unknown contents incur a second actual held-FD pass, not a refunded
+        # speculative body. Charge each output block before writing it.
+        with (self.capture_dir/name).open('xb') as output:
+            actual=self.read_capture_fd(reader,output,context=context);output.flush();os.fsync(output.fileno())
+        value=os.fstat(reader);assert actual==data and before==[*probe.identity(value),value.st_nlink],'fresh physical content pass changed actual FD/body'
+        if eligible:assert named()==before,'actual named source changed during physical capture'
+        ref=dict(path=name,bytes=data[0],sha256=data[1]);self.capture_bytes+=data[0];entity=self.register_capture_entity(ref)
+        return ref,entity,dict(captureWindowIdentity=before,captureWindowAfterIdentity=[*probe.identity(value),value.st_nlink],**(dict(namedWindowIdentity=initial_named,namedWindowAfterIdentity=named()) if eligible else {})),data
     def phase_capture_files(self,capture_start):
         # Raw observations stay one-per-window; each physical body appears once.
         references={}
@@ -685,29 +750,35 @@ class Observer:
                 if candidate and candidate[0].get('phase')==self.current_phase and candidate[0]['original']['path'] in self.capture_entities:
                     prior,held,expected=candidate
                     if prior.get('originalEntityIdentity')==self.capture_entities[prior['original']['path']][1] and expected==(prior['original']['bytes'],prior['original']['sha256']):reusable=prior
-            name='capture-'+str(len(self.captures)).zfill(4)+'.original';offset=0;digest=hashlib.sha256();output=None
-            try:
-                if reusable is None:output=(self.capture_dir/name).open('xb')
-                while True:
-                    block=os.pread(reader,65536,offset)
-                    if not block:break
-                    offset+=len(block);assert offset<=self.maximum_file_bytes
-                    if output is not None:self.claim(len(block),context=dict(role='fd-capture',captureRole=role,pid=pid,fd=fd,fileBytes=ident[3],captureOffset=offset-len(block)));output.write(block)
-                    digest.update(block);self.check()
-                if output is not None:output.flush();os.fsync(output.fileno())
-            finally:
-                if output is not None:
-                    primary=sys.exc_info()[1]
-                    try:output.close()
-                    except BaseException:
-                        if primary is None:raise
-            assert ident==probe.identity(os.fstat(reader))==probe.identity(os.stat(path))
-            data=(offset,digest.hexdigest())
-            if reusable is None:
-                self.capture_bytes+=offset;ref=dict(path=name,bytes=offset,sha256=data[1]);entity_identity=self.register_capture_entity(ref);storage={}
+            name='capture-'+str(len(self.captures)).zfill(4)+'.original'
+            if self.capture_content_entities:
+                context=dict(role='fd-capture',captureRole=role,pid=pid,fd=fd,fileBytes=ident[3],captureIdentity=ident,capturePathPrefix=os.fsencode(target)[:128].decode('utf-8','backslashreplace'),capturePathSHA256=hashlib.sha256(os.fsencode(target)).hexdigest(),captureObservationComplete=False)
+                ref,entity_identity,storage,data=self.content_capture_original(reader,target,ident,name,context)
+                offset=data[0]
             else:
-                ref=dict(reusable['original']);assert data==(ref['bytes'],ref['sha256']),'actual consumer bytes differ from retained original entity'
-                entity_identity=self.verify_capture_entity(ref);storage=dict(originalReuse=dict(model='same-phase-producer-original-v1',originCaptureSequence=reusable['sequence']))
+                name='capture-'+str(len(self.captures)).zfill(4)+'.original';offset=0;digest=hashlib.sha256();output=None
+                try:
+                    if reusable is None:output=(self.capture_dir/name).open('xb')
+                    while True:
+                        block=os.pread(reader,65536,offset)
+                        if not block:break
+                        offset+=len(block);assert offset<=self.maximum_file_bytes
+                        if output is not None:self.claim(len(block),context=dict(role='fd-capture',captureRole=role,pid=pid,fd=fd,fileBytes=ident[3],captureOffset=offset-len(block),captureIdentity=ident,capturePathPrefix=os.fsencode(target)[:128].decode('utf-8','backslashreplace'),capturePathSHA256=hashlib.sha256(os.fsencode(target)).hexdigest(),captureObservationComplete=False,capturePrefixSHA256=digest.copy().hexdigest()));output.write(block)
+                        digest.update(block);self.check()
+                    if output is not None:output.flush();os.fsync(output.fileno())
+                finally:
+                    if output is not None:
+                        primary=sys.exc_info()[1]
+                        try:output.close()
+                        except BaseException:
+                            if primary is None:raise
+                assert ident==probe.identity(os.fstat(reader))==probe.identity(os.stat(path))
+                data=(offset,digest.hexdigest())
+                if reusable is None:
+                    self.capture_bytes+=offset;ref=dict(path=name,bytes=offset,sha256=data[1]);entity_identity=self.register_capture_entity(ref);storage={}
+                else:
+                    ref=dict(reusable['original']);assert data==(ref['bytes'],ref['sha256']),'actual consumer bytes differ from retained original entity'
+                    entity_identity=self.verify_capture_entity(ref);storage=dict(originalReuse=dict(model='same-phase-producer-original-v1',originCaptureSequence=reusable['sequence']))
             dependency=self.dependency_source(target) if role=='source-read' and target.startswith('/opt/qlever-sdk/dependencies/') else None
             if dependency:
                 binding,expected=dependency;assert expected['mode']==stat.S_IMODE(ident[2]) and (expected['bytes'],expected['sha256'])==data,'dependency actual held FD bytes differ from prepared snapshot'
@@ -1357,7 +1428,7 @@ class Observer:
             for pump in pumps:pump.start()
             if self.process_authority:
                 os.close(ready_write);ready_write=None;self.check();remaining=max(0,self.deadline-time.monotonic());readable,_,_=select.select([ready_read],[],[],remaining);self.check();assert readable and os.read(ready_read,1)==b'R','child authority setup did not complete before release';os.close(ready_read);ready_read=None
-            self.emit(dict(kind='owned-root-binding',pid=child,command=command,backend='ptrace-all-stop-process-v1',captureOriginalEntityModel='same-phase-producer-original-v1',**(dict(generatedVmaModel=self.generated_vma.model,generatedVmaBuildRoot=self.build,generatedVmaParentDeadlineMonotonicNs=str(int(self.waiter.parent_deadline*1e9))) if self.generated_vma else {}),**(dict(optionalIoUringModel='explicit-kernel-enosys-denial-v1') if self.deny_optional_io_uring else {}),**(dict(setresuidNoopModel='actual-stopped-setresuid-noop-v1') if self.verified_setresuid_noop else {}),**(dict(setresIdentityNoopModel='actual-stopped-setres-identity-noop-v1') if getattr(self,'verified_identity_noop',False) else {}),**(dict(processAuthorityModel=tool_providers.AUTHORITY_MODEL) if self.process_authority else {}),**(dict(exitAuthorityModel='actual-selected-exit-stop-before-peer-barrier-v1') if getattr(self,'terminal_exit_evidence',False) else {}),**(dict(taskOwnershipModel='all-tracked-tids-shared-fd-v1',tgid=child,fdTable=child) if self.shared_tasks else {})));single.trace(SEIZE,child,0,OPTIONS);single.trace(INTERRUPT,child);pid,status=self.wait_one();self.event(pid,status,False);self.pending_captures();os.write(write_fd,b'x');os.close(write_fd);write_fd=None;self.resume()
+            self.emit(dict(kind='owned-root-binding',pid=child,command=command,backend='ptrace-all-stop-process-v1',captureOriginalEntityModel='same-phase-content-entity-v2' if self.capture_content_entities else 'same-phase-producer-original-v1',**(dict(generatedVmaModel=self.generated_vma.model,generatedVmaBuildRoot=self.build,generatedVmaParentDeadlineMonotonicNs=str(int(self.waiter.parent_deadline*1e9))) if self.generated_vma else {}),**(dict(optionalIoUringModel='explicit-kernel-enosys-denial-v1') if self.deny_optional_io_uring else {}),**(dict(setresuidNoopModel='actual-stopped-setresuid-noop-v1') if self.verified_setresuid_noop else {}),**(dict(setresIdentityNoopModel='actual-stopped-setres-identity-noop-v1') if getattr(self,'verified_identity_noop',False) else {}),**(dict(processAuthorityModel=tool_providers.AUTHORITY_MODEL) if self.process_authority else {}),**(dict(exitAuthorityModel='actual-selected-exit-stop-before-peer-barrier-v1') if getattr(self,'terminal_exit_evidence',False) else {}),**(dict(taskOwnershipModel='all-tracked-tids-shared-fd-v1',tgid=child,fdTable=child) if self.shared_tasks else {})));single.trace(SEIZE,child,0,OPTIONS);single.trace(INTERRUPT,child);pid,status=self.wait_one();self.event(pid,status,False);self.pending_captures();os.write(write_fd,b'x');os.close(write_fd);write_fd=None;self.resume()
             while any(not r['exited'] for r in self.tasks.values()):
                 pid,status=self.wait_one();self.event(pid,status);self.pending_captures();self.resume()
             assert not any(task.get('vforkHeldChild') is not None for task in self.tasks.values()),'vfork child release/wait closure missing'
@@ -1437,7 +1508,7 @@ class SdkExecutionObserver(Observer):
         assert Path(source)==Path('/opt/qlever-sdk/source') and Path(build)==Path('/opt/qlever-sdk/build'),'fixed SDK source/build roots required'
         assert isinstance(deadline_monotonic,(float,int)) and math.isfinite(deadline_monotonic) and time.monotonic()<deadline_monotonic,'existing live SDK deadline required'
         super().__init__(out,source,build,deadline_monotonic=deadline_monotonic,check_budget=check_budget,maximum_bytes=maximum_bytes,
-            maximum_file_bytes=limits['shardBytes'],selected_names=None,maximum_processes=limits['sourceMembers'],shard_bytes=limits['shardBytes'],require_success=False,maximum_stdio_bytes=maximum_stdio_bytes,shared_tasks=True,capture_toolchain=True,deny_optional_io_uring=True,verified_identity_noop=True,terminal_exit_evidence=True,generated_vma_output=True,generated_vma_shared_mm=True,generated_vma_private_wake=True,generated_vma_private_wait_mismatch=True)
+            maximum_file_bytes=limits['shardBytes'],selected_names=None,maximum_processes=limits['sourceMembers'],shard_bytes=limits['shardBytes'],require_success=False,maximum_stdio_bytes=maximum_stdio_bytes,shared_tasks=True,capture_toolchain=True,deny_optional_io_uring=True,verified_identity_noop=True,terminal_exit_evidence=True,generated_vma_output=True,generated_vma_shared_mm=True,generated_vma_private_wake=True,generated_vma_private_wait_mismatch=True,capture_content_entities=True)
         self.capture_dir=self.out/'captures';self.capture_dir.mkdir(exist_ok=False);self.sdk_phase_index=0;self.sdk_failed=False
         mounts=Path('/proc/self/mountinfo').read_bytes();assert len(mounts)<=limits['metadataBytes'],'source provider metadata bound'
         self.source_provider=probe.effective_readonly(source,mounts);self.source_provider_originals=dict(mountinfo=probe.put(self.out/'source-provider.mountinfo.raw',mounts));self.claim(len(mounts))

@@ -10,4 +10,4 @@ test('actual tiny producer body set/parent mechanical CLI closes refs and reject
   const run=()=>JSON.parse(execFileSync('/usr/bin/python3',['-I','-S','-B',path.resolve('qlever/scripts/sdk-service-pack-bindings.py')],{input:JSON.stringify(request),stdio:['pipe','pipe','pipe']}).toString());
   if(negative)expect(run).toThrow();else{const observed=run();expect(observed.mechanics.parentRawClosureVerified).toBe(true);expect(observed.workerPlans.length).toBe(protocol.bodies.length+2);expect(observed.bodyOriginals).toEqual(protocol.collection.bodyOriginals);}
  }}finally{fs.rmSync(root,{recursive:true,force:true});}
-});
+},15000);

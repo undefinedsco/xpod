@@ -7,6 +7,7 @@ import hashlib
 import json
 import re
 import struct
+import stat
 import shlex
 POLICIES={
  0xc00000b7:dict(exec={221,281},execveat=281,protect={226,288},read=63,write=64,close=57,mmap=222,clone=220,clone3=435,spawn={220,435},renameat=38,renameat2=276,renameOps={38,276},exits={93,94},forbidden={0,1,2,3,4,292,425,426,427,271,117,97,268}),
@@ -326,7 +327,7 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
     maximum_raw=limits['sourceMaterialBytes'] if limits else 32*1024**2
     maximum_file=limits['shardBytes'] if limits else 1024**2
     maximum_total=limits['sourceMaterialBytes'] if limits else 16*1024**2
-    entity_model=None;entity_model_initialized=False;original_cache={};observed_entity_names=set();retained_entries=set();phase_tracking=[];generated_verifier=None;generated_module=None
+    entity_model=None;entity_model_initialized=False;storage_origins={};storage_entities={};storage_aliases={};pending_storage_rows=[];original_cache={};observed_entity_names=set();retained_entries=set();phase_tracking=[];generated_verifier=None;generated_module=None
     denial_mode=False;denied_operations={};setresuid_mode=False;identity_mode=False;terminal_mode=False;setresuid_operations={}
     shared_mode=False;owners={};exec_fd_events={};vfork_events={};vfork_holds={};child_bindings={};wait_rows={}
     live=set();last=0;entries={};exits={};barriers={};caps={};paths={};renames=[];consumers=[];source_reads=[];total=0;capture_total=0;exclusive=None;root_codes={};clone_flags=set();clone_flag_values={}
@@ -347,6 +348,12 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                 check();need(isinstance(block,bytes) and len(block)<=65536,'bounded actual capture block required');count+=len(block);need(count<=ref['bytes'],'capture actual byte bound');digest.update(block)
             data=(count,digest.hexdigest());capture_total+=count;need(capture_total<=maximum_total and data==(ref['bytes'],ref['sha256']),'capture actual bytes/reference differs');original_cache[key]=data;observed_entity_names.add(ref['path'])
         return original_cache[key]
+    def storage_original(row):
+        ref=row['original'];data=capture_data(ref);entity=row.get('originalEntityIdentity')
+        need(isinstance(entity,list) and len(entity)==7 and all(type(value) is int and value>=0 for value in entity) and entity[3]==data[0] and entity[6]==1 and entity[2]&0o170000==0o100000,'canonical physical content entity identity malformed')
+        old=storage_entities.get(ref['path']);need(old is None,'canonical physical content path repeated without typed alias')
+        storage_entities.setdefault(ref['path'],row);storage_origins[row['sequence']]=row
+        return data
     def dependency_bytes(ref):
         capture_data(ref);need(ref['bytes']<=4*1024**2,'dependency metadata byte bound')
         value=read_original(ref['path'],maximum_file);blocks=[value] if isinstance(value,bytes) else value;data=bytearray()
@@ -451,8 +458,11 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                 need(all(value[0]['path'].startswith(row['buildRoot'].rstrip('/')+'/') for value in prepared.values()),'prepared original escapes actual build root')
             elif kind=='owned-root-binding':
                 observed_entity_model=row.get('captureOriginalEntityModel')
-                need('captureOriginalEntityModel' not in row or observed_entity_model=='same-phase-producer-original-v1','unknown capture entity model')
+                need('captureOriginalEntityModel' not in row or observed_entity_model in ['same-phase-producer-original-v1','same-phase-content-entity-v2'],'unknown capture entity model')
                 need(not entity_model_initialized or entity_model==observed_entity_model,'capture entity model changed across actual roots');entity_model=observed_entity_model;entity_model_initialized=True
+                if entity_model=='same-phase-content-entity-v2':
+                    for pending in pending_storage_rows:storage_original(pending)
+                pending_storage_rows.clear()
                 need(dependency_expected_names is None or set(dependency_roots)==dependency_expected_names,'prepared dependency root universe is not completely registered');need(not live and not roots,'unique actual root required');live.add(row['pid']);roots.append(row['pid']);need(row['backend']=='ptrace-all-stop-process-v1','wrong observer backend')
                 need(row.get('taskOwnershipModel') in [None,'all-tracked-tids-shared-fd-v1'],'unknown task ownership model');shared_mode=row.get('taskOwnershipModel') is not None;owners={}
                 need(not denied_operations,'unclosed explicit syscall denial at new root');denial=row.get('optionalIoUringModel');need(denial in [None,'explicit-kernel-enosys-denial-v1'],'unknown optional syscall denial model');denial_mode=denial is not None
@@ -822,17 +832,27 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                     need(nr==rules['read'] and len(row['writers'])==1 and row['writers'][0]['pid']==row['pid'] and row['writers'][0]['fd']==row['fd'] and row['writers'][0]['accessMode']==2 and row['writers'][0]['flags']&3==2,'own-RW read has another writable alias')
                 else:need(nr==rules['read'] and row['writers']==[],'consumer/source has live writable alias')
                 reuse=row.get('originalReuse');alias_present='originalReuse' in row
+                if entity_model=='same-phase-content-entity-v2':
+                    window=row.get('captureWindowIdentity');need(isinstance(window,list) and len(window)==7 and all(type(value) is int and value>=0 for value in window) and window[:6]==row['identity'] and stat.S_ISREG(window[2]) and row.get('captureWindowAfterIdentity')==window,'content capture lacks complete fresh FD pre/post identity')
+                    if 'namedWindowIdentity' in row:need(row['namedWindowIdentity']==window and row.get('namedWindowAfterIdentity')==window,'content named pre/post identity differs')
                 if entity_model is not None and row['original']['path'] in observed_entity_names:need(alias_present,'shared physical capture entity lacks typed alias')
-                if alias_present:
-                    need(entity_model=='same-phase-producer-original-v1','capture entity alias lacks actual root model')
-                    need(isinstance(reuse,dict) and set(reuse)=={'model','originCaptureSequence'} and reuse['model']=='same-phase-producer-original-v1' and type(reuse['originCaptureSequence']) is int and reuse['originCaptureSequence']<row['sequence'],'exact prior capture entity alias required')
-                    prior=caps.get(reuse['originCaptureSequence']) or prepared.get(reuse['originCaptureSequence'])
-                    need(prior and row['role']=='consumer' and (prior[0]['kind']=='prepared-build-input-original' or prior[0].get('role')=='producer-close'),'capture entity alias lacks own producer/prepared origin')
-                    origin=prior[0];entity=row.get('originalEntityIdentity')
-                    need(row.get('phase')==origin.get('phase')==phase and row['original']==origin['original'] and row['identity'][:2]==origin['identity'][:2],'capture entity alias crosses phase, original or source identity')
-                    need(isinstance(entity,list) and len(entity)==7 and all(type(value) is int for value in entity) and entity==origin.get('originalEntityIdentity') and entity[3]==row['original']['bytes'] and entity[6]==1 and entity[2]&0o170000==0o100000,'capture entity alias lacks exact single-link physical original')
-                    reused_originals[row['sequence']]=reuse['originCaptureSequence']
+                if alias_present and entity_model=='same-phase-content-entity-v2':
+                    need(isinstance(reuse,dict) and set(reuse)=={'model','originCaptureSequence'} and reuse['model']==entity_model and type(reuse['originCaptureSequence']) is int and 0<reuse['originCaptureSequence']<row['sequence'],'exact backward content storage alias required')
+                    origin=storage_origins.get(reuse['originCaptureSequence']);need(origin and origin.get('phase')==row.get('phase')==phase and origin['original']==row['original'],'content storage alias missing own phase/prior physical original')
+                    entity=row.get('originalEntityIdentity');need(entity==origin['originalEntityIdentity'],'content storage alias mixes physical entity')
+                    window=row.get('captureWindowIdentity');need(isinstance(window,list) and len(window)==7 and all(type(value) is int and value>=0 for value in window) and window[:6]==row['identity'] and row.get('namedWindowIdentity')==window and stat.S_ISREG(window[2]),'content alias lacks own fresh full FD/named window identity')
+                    storage_aliases[row['sequence']]=reuse['originCaptureSequence']
+                elif alias_present:
+                        need(entity_model=='same-phase-producer-original-v1','capture entity alias lacks actual root model')
+                        need(isinstance(reuse,dict) and set(reuse)=={'model','originCaptureSequence'} and reuse['model']=='same-phase-producer-original-v1' and type(reuse['originCaptureSequence']) is int and reuse['originCaptureSequence']<row['sequence'],'exact prior capture entity alias required')
+                        prior=caps.get(reuse['originCaptureSequence']) or prepared.get(reuse['originCaptureSequence'])
+                        need(prior and row['role']=='consumer' and (prior[0]['kind']=='prepared-build-input-original' or prior[0].get('role')=='producer-close'),'capture entity alias lacks own producer/prepared origin')
+                        origin=prior[0];entity=row.get('originalEntityIdentity')
+                        need(row.get('phase')==origin.get('phase')==phase and row['original']==origin['original'] and row['identity'][:2]==origin['identity'][:2],'capture entity alias crosses phase, original or source identity')
+                        need(isinstance(entity,list) and len(entity)==7 and all(type(value) is int for value in entity) and entity==origin.get('originalEntityIdentity') and entity[3]==row['original']['bytes'] and entity[6]==1 and entity[2]&0o170000==0o100000,'capture entity alias lacks exact single-link physical original')
+                        reused_originals[row['sequence']]=reuse['originCaptureSequence']
                 data=capture_data(row['original'])
+                if entity_model=='same-phase-content-entity-v2' and not alias_present:storage_original(row)
                 need(len(row['identity'])==6 and row['identity'][3]==data[0],'actual capture identity/size differs');caps[row['sequence']]=(row,data)
                 if capture_observer:capture_observer(row,data)
                 if row['role']=='source-read':
@@ -870,6 +890,9 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
             else:
                 need(row.get('pid') not in denied_operations,'signal or ptrace event interrupted explicit denial')
                 need(kind in ['ptrace-event','signal-delivery','generated-mmap-unverified'],'unknown raw observer event')
+            if kind in ['prepared-build-input-original','write-original','toolchain-original'] and 'original' in row:
+                if entity_model=='same-phase-content-entity-v2':storage_original(row)
+                elif not entity_model_initialized:pending_storage_rows.append(row)
             if generated_verifier is not None:generated_verifier.record(row,entries,exits,barriers,caps)
         need(not vfork_holds,'phase ended without vfork child release')
         need(not append_dirty,'phase ended without mandatory append full checkpoint')
@@ -931,6 +954,15 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
         need(transition and consumer[0]['role']=='readwrite-consumer' and consumer[0]['identity']==transition['afterIdentity']==binding['identity'] and consumer[1]==((transition['after']['bytes'],transition['after']['sha256']) if 'path' not in transition['after'] else capture_data(transition['after'])) and consumer[0]['path']==binding['path'],'own-RW read lacks exact actual write byte provenance')
         cap,data=consumer;need(binding['readOffset']==write_read_exits[cap['sequence']]['readOffset'],'own-RW read offset binding differs');covered[cap['path']]=dict(path=cap['path'],bytes=data[0],sha256=data[1],writeTransitionSequence=transition['sequence'],consumerCaptureSequence=cap['sequence'],origin='actual-exclusive-write-transition')
     mapped_outputs=generated_verifier.finish(caps,exits) if generated_verifier is not None else []
+    for sequence,origin_sequence in storage_aliases.items():
+        actual=successful.get(sequence)
+        if actual is None:continue  # Storage never converts an interrupted read to consumption.
+        row=actual[0]
+        if row['role']=='consumer':
+            relations=[binding for binding in [*consumers,*prepared_consumers,*(generated_verifier.consumers if generated_verifier is not None else [])] if binding['captureSequence']==sequence]
+            need(len(relations)==1,'content storage alias lacks unique own consumer provenance binding')
+        elif row['role']=='readwrite-consumer':need(len([binding for binding in write_consumers if binding['captureSequence']==sequence])==1,'content storage alias lacks own actual write transition binding')
+
     for mapped in mapped_outputs:covered[mapped['path']]=mapped
     prepared_covered={}
     for binding in prepared_consumers:
