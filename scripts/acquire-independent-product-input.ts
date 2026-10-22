@@ -88,10 +88,24 @@ function limit(value: number | undefined, maximum: number): number {
   if (!positive(value) || value > maximum) fail('invalid lower resource bound');
   return value;
 }
-async function stream(response: Response, destination: string, bound: number) {
+async function withinSignal<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
+  signal.throwIfAborted();
+  return new Promise<T>((resolve, reject) => {
+    const abort = () => reject(signal.reason);
+    signal.addEventListener('abort', abort, { once: true });
+    operation.then(resolve, reject).finally(() => signal.removeEventListener('abort', abort));
+  });
+}
+async function stream(response: Response, destination: string, bound: number, signal?: AbortSignal) {
   const length = response.headers.get('content-length');
   if (length !== null && (!/^\d+$/u.test(length) || Number(length) > bound)) {
-    await response.body?.cancel();
+    try {
+      const cancelled = response.body?.cancel();
+      if (cancelled) {
+        if (signal) await withinSignal(cancelled, signal);
+        else await cancelled;
+      }
+    } catch { /* Cancellation cannot replace the size-bound rejection. */ }
     fail('download declared size exceeds bound');
   }
   if (!response.body) fail('download body missing');
@@ -100,7 +114,7 @@ async function stream(response: Response, destination: string, bound: number) {
   const reader = response.body.getReader();
   try {
     while (true) {
-      const chunk = await reader.read();
+      const chunk = await (signal ? withinSignal(reader.read(), signal) : reader.read());
       if (chunk.done) break;
       bytes += chunk.value.length;
       if (bytes > bound) fail('download actual size exceeds bound');
@@ -113,8 +127,14 @@ async function stream(response: Response, destination: string, bound: number) {
     if (length !== null && Number(length) !== bytes) fail('download content length mismatch');
     return { bytes, sha256: hash.digest('hex') };
   } finally {
-    await reader.cancel().catch(() => {});
-    closeSync(fd);
+    try {
+      const cancelled = reader.cancel();
+      if (signal) {
+        if (signal.aborted) void cancelled.catch(() => {});
+        else await withinSignal(cancelled, signal).catch(() => {});
+      } else await cancelled.catch(() => {});
+    } catch { /* Cancellation cannot prevent descriptor closure. */ }
+    finally { closeSync(fd); }
   }
 }
 /** Acquires a ZIP and inventory, never extracts members or confers product admission. */
@@ -171,13 +191,14 @@ async function acquireProductInput(input: ArtifactAcquisitionInput, output: stri
   return await withOwnedTempRoot('xpod-artifact-acquisition-', async (temporary: string) => {
     const metadata: Record<string, unknown> = {};
     const originals: MetadataBinding['originals'] = {};
-    async function json(name: string, relative: string): Promise<any> {
+    async function json(name: string, relative: string, signal = AbortSignal.timeout(30_000), bound = 1024 * 1024): Promise<any> {
+      signal.throwIfAborted();
       // Job dependencies may have closed while a cached API response still says queued.
       // Revalidate metadata; terminal success and exact custody checks remain mandatory.
-      const response = await transport(endpoint(relative), { headers: { ...headers, 'Cache-Control': 'no-cache', Pragma: 'no-cache' }, redirect: 'error', signal: AbortSignal.timeout(30_000) });
+      const response = await withinSignal(transport(endpoint(relative), { headers: { ...headers, 'Cache-Control': 'no-cache', Pragma: 'no-cache' }, redirect: 'error', signal }), signal);
       if (response.status !== 200) fail('GitHub metadata request failed');
       const destination = path.join(temporary, name + '.json');
-      const downloaded = await stream(response, destination, 1024 * 1024);
+      const downloaded = await stream(response, destination, bound, signal);
       const raw = readFileSync(destination);
       if (raw.length !== downloaded.bytes || sha256(raw) !== downloaded.sha256) fail('metadata changed before parsing');
       const value = JSON.parse(raw.toString('utf8'));
@@ -194,9 +215,40 @@ async function acquireProductInput(input: ArtifactAcquisitionInput, output: stri
     if (workflow.id !== run.workflow_id || !(legacy ? ['.github/workflows/legacy-root-compat.yml', '.github/workflows/candidate.yml'].includes(workflow.path) : nativeOriginals ? [...(candidateRole?['.github/workflows/candidate.yml']:[]),'.github/workflows/agentfs-native-acceptance.yml','.github/workflows/build-qlever-macos-runtime.yml','.github/workflows/publish-qlever-runtime-sdk.yml',CSS_PRODUCT_WORKFLOW,CSS_ROUTED_PRODUCT_WORKFLOW].includes(workflow.path) : registryConsumer ? workflow.path === '.github/workflows/independent-publication.yml' : PRODUCERS.has(workflow.path)) || run.path?.split('@')[0] !== workflow.path) fail('untrusted producer workflow');
     let producerJob: any, legacyJobs: any;
     if (legacy) {
-      const jobs = await json('jobs', `actions/runs/${input.runId}/attempts/${input.runAttempt}/jobs?per_page=100`);
-      legacyJobs = jobs;
-      producerJob = createRequire(import.meta.url)('./lib/legacy-root-artifact-context.cjs').verifyProducerJob(input, run, workflow, jobs);
+      // One metadata budget, including every response body; retries cannot reset it.
+      const signal = AbortSignal.timeout(30_000);
+      const context = createRequire(import.meta.url)('./lib/legacy-root-artifact-context.cjs');
+      const jobName = context.producerJobName(input, run, workflow);
+      const relative = `actions/runs/${input.runId}/attempts/${input.runAttempt}/jobs?per_page=100`;
+      let remaining = 1024 * 1024;
+      let pendingJobId: number | undefined;
+      for (let attempt = 0; attempt < 6; attempt++) {
+        if (remaining <= 0) fail('producer metadata cumulative byte bound exceeded');
+        const name = `jobs-attempt-${attempt}`;
+        const jobs = await json(name, relative, signal, remaining);
+        remaining -= originals[name].bytes;
+        // Identity is checked before deciding whether waiting is permitted.
+        if (!Number.isSafeInteger(jobs.total_count) || !Array.isArray(jobs.jobs) || jobs.total_count !== jobs.jobs.length) fail('producer jobs inventory mismatch');
+        const selected = jobs.jobs.filter((job: any) => job.name === jobName);
+        if (selected.length !== 1) fail('producer job is not unique');
+        const job = selected[0];
+        if ((pendingJobId !== undefined && job.id !== pendingJobId) || job.run_id !== input.runId || job.run_attempt !== input.runAttempt || job.head_sha !== input.runHeadSha) fail('producer job identity mismatch');
+        if (job.status === 'completed') {
+          producerJob = context.verifyProducerJob(input, run, workflow, jobs);
+          legacyJobs = jobs;
+          renameSync(path.join(temporary, name + '.json'), path.join(temporary, 'jobs.json'));
+          originals.jobs = { ...originals[name], path: 'metadata/jobs.original.json' };
+          delete metadata[name]; delete originals[name];
+          break;
+        }
+        if (!['queued', 'in_progress', 'waiting', 'pending', 'requested'].includes(job.status) || job.conclusion !== null) fail('invalid nonterminal producer state');
+        if (!positive(job.id)) fail('nonterminal producer id missing');
+        pendingJobId = job.id;
+        delete metadata[name]; delete originals[name];
+        if (attempt === 5) fail('producer metadata attempt bound exceeded');
+        await withinSignal(new Promise<void>(resolve => setTimeout(resolve, 500)), signal);
+      }
+      if (!producerJob) fail('terminal successful producer required');
       // Retained separately: the original three-member custody projection stays unchanged.
       delete metadata.jobs;
     }

@@ -1,4 +1,5 @@
-import { afterEach, expect, test } from 'bun:test';
+import * as nativeFs from 'node:fs';
+import { afterEach, expect, test, spyOn } from 'bun:test';
 import { createHash } from 'node:crypto';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, renameSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
@@ -355,3 +356,50 @@ fs.writeFileSync(f.resultFile,JSON.stringify({observed,primarySame:failure===pri
     expect(statSync(f.output + '.original').isDirectory()).toBe(true);
   }
 });
+
+test('bounded legacy refresh preserves terminal original bytes and refuses failure, identity, deadlines and resource excess',async()=>{
+ const keys=['GITHUB_ACTIONS','GITHUB_REPOSITORY','GITHUB_RUN_ID','GITHUB_RUN_ATTEMPT'];const saved=keys.map(k=>process.env[k]);
+ Object.assign(process.env,{GITHUB_ACTIONS:'true',GITHUB_REPOSITORY:'undefinedsco/xpod',GITHUB_RUN_ID:'42',GITHUB_RUN_ATTEMPT:'2'});
+ try{for(const mode of ['success','failure','identity','deadline','body-deadline','bytes','attempts']){
+  const f=fixture([{name:'supply-index.original.json',body:'{}',mode:0o100644}]);f.run.path=f.workflow.path='.github/workflows/legacy-root-compat.yml';f.run.status='in_progress';f.run.conclusion=null;f.artifact.name=`legacy-root-normal-afs-${f.input.sourceSha}-42-2`;
+  const job:any={id:55,name:'legacy-root-normal-afs',status:'in_progress',conclusion:null,run_id:42,run_attempt:2,head_sha:f.input.runHeadSha,started_at:'2026-10-15T00:00:00Z',completed_at:'2026-10-15T00:02:00Z'};
+  let calls=0,last='';const signals:AbortSignal[]=[];const timeout=AbortSignal.timeout.bind(AbortSignal);
+  const timing=mode.includes('deadline')?spyOn(AbortSignal,'timeout').mockImplementation((ms: number)=>{expect(ms).toBe(30000);return timeout(20);}):undefined;
+  const transport=(async(url:any,options:any)=>{
+   if(!String(url).endsWith('/jobs?per_page=100'))return f.transport(url,options);calls++;signals.push(options.signal);
+   if(mode==='deadline')return new Promise(()=>{});
+   if(mode==='body-deadline')return new Response(new ReadableStream({start(){}}));
+   if(mode==='identity')job.head_sha='b'.repeat(40);
+   if(mode==='failure'){job.status='completed';job.conclusion='failure';}
+   if(mode==='success'&&calls===2){job.status='completed';job.conclusion='success';}
+   last=JSON.stringify({total_count:1,jobs:[job]},null,3)+' \n';if(mode==='bytes')last+=' '.repeat(600000);return new Response(last);
+  })as typeof fetch;
+  try{if(mode==='success'){
+   const receipt=await acquireLegacyRootSupply(f.input,f.output,{fetch:transport});expect(calls).toBe(2);expect(signals[0]).toBe(signals[1]);
+   const raw=readFileSync(path.join(f.output,'metadata/jobs.original.json'));expect(raw.toString()).toBe(last);expect(receipt.producerJob.bytes).toBe(raw.length);expect(receipt.producerJob.sha256).toBe(createHash('sha256').update(raw).digest('hex'));expect(JSON.parse(readFileSync(path.join(f.output,'metadata.json'),'utf8')).jobs).toBeUndefined();
+  }else{await expect(acquireLegacyRootSupply(f.input,f.output,{fetch:transport})).rejects.toThrow();expect(existsSync(f.output)).toBe(false);if(['failure','identity','deadline','body-deadline'].includes(mode))expect(calls).toBe(1);if(mode==='bytes')expect(calls).toBe(2);if(mode==='attempts'){expect(calls).toBe(6);expect(new Set(signals).size).toBe(1);}}}finally{timing?.mockRestore();}
+ }}finally{keys.forEach((k,i)=>{if(saved[i]===undefined)delete process.env[k];else process.env[k]=saved[i];});}
+},15000);
+
+test('legacy metadata cancellation is deadline bounded and closes opened descriptors even when cancel hangs or throws',async()=>{
+ const keys=['GITHUB_ACTIONS','GITHUB_REPOSITORY','GITHUB_RUN_ID','GITHUB_RUN_ATTEMPT'];const saved=keys.map(k=>process.env[k]);
+ Object.assign(process.env,{GITHUB_ACTIONS:'true',GITHUB_REPOSITORY:'undefinedsco/xpod',GITHUB_RUN_ID:'42',GITHUB_RUN_ATTEMPT:'2'});
+ try{for(const mode of ['declared-hang','declared-throw','reader-hang','reader-throw']){
+  const f=fixture();f.run.path=f.workflow.path='.github/workflows/legacy-root-compat.yml';f.run.status='in_progress';f.run.conclusion=null;
+  const timeout=AbortSignal.timeout.bind(AbortSignal),realOpen=nativeFs.openSync,realClose=nativeFs.closeSync;let targetFd:number|undefined;const closed:number[]=[];
+  const timing=spyOn(AbortSignal,'timeout').mockImplementation((ms: number)=>{expect(ms).toBe(30000);return timeout(30);});
+  const opening=spyOn(nativeFs,'openSync').mockImplementation(((...args:any[])=>{const fd=Reflect.apply(realOpen,nativeFs,args);if(String(args[0]).endsWith('jobs-attempt-0.json'))targetFd=fd;return fd;})as typeof nativeFs.openSync);
+  const closing=spyOn(nativeFs,'closeSync').mockImplementation((fd: number)=>{closed.push(fd);realClose(fd);});
+  let cancelled=0;
+  const cancel=()=>{cancelled++;if(mode.endsWith('throw'))throw Error('cancel fixture failure');return new Promise<void>(()=>{});};
+  const transport=(async(url:any,options:any)=>{
+   if(!String(url).endsWith('/jobs?per_page=100'))return f.transport(url,options);
+   let read=0;const body=mode.startsWith('declared')?{cancel}:{getReader:()=>({read:async()=>++read===1?{done:false,value:Buffer.alloc(1024*1024+1)}:{done:true},cancel})};
+   const response = new Response(null, { headers: mode.startsWith('declared') ? { 'content-length': String(1024*1024+1) } : {} });
+   Object.defineProperty(response, 'body', { value: body });
+   return response;
+  })as typeof fetch;
+  try{await expect(acquireLegacyRootSupply(f.input,f.output,{fetch:transport})).rejects.toThrow('size exceeds bound');expect(cancelled).toBe(1);if(mode.startsWith('reader')){expect(typeof targetFd).toBe('number');expect(closed).toContain(targetFd!);}expect(existsSync(f.output)).toBe(false);}
+  finally{closing.mockRestore();opening.mockRestore();timing.mockRestore();}
+ }}finally{keys.forEach((k,i)=>{if(saved[i]===undefined)delete process.env[k];else process.env[k]=saved[i];});}
+},5000);
