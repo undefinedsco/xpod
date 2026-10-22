@@ -50,6 +50,24 @@ test('acquires exact ZIP and inventory while keeping actual checkout/product qua
   expect(result.materialRole).toBe('test-materials'); expect(result.blockers).toContain('cli-consumer-test-archive-not-publishable');
   expect(JSON.parse(readFileSync(path.join(f.output, 'metadata.json'), 'utf8')).run.run_attempt).toBe(2);
 });
+test('revalidates cached metadata before checking the actual terminal producer original', async () => {
+  const f = fixture();
+  const stale = { ...f.run, status: 'in_progress', conclusion: null };
+  const transport = (async (url: any, options: any) => {
+    const headers = new Headers(options?.headers);
+    if (String(url).endsWith('/attempts/2') && headers.get('cache-control') !== 'no-cache') return Response.json(stale);
+    return f.transport(url, options);
+  }) as typeof fetch;
+  const result = await acquireIndependentProductInput(f.input, f.output, { fetch: transport });
+  const requests = f.requests.filter(row => !row.url.endsWith('/zip'));
+  expect(requests).toHaveLength(3);
+  for (const row of requests) {
+    expect(new Headers(row.options?.headers).get('cache-control')).toBe('no-cache');
+    expect(new Headers(row.options?.headers).get('pragma')).toBe('no-cache');
+  }
+  expect(JSON.parse(readFileSync(path.join(f.output, 'metadata/run.original.json'), 'utf8')).status).toBe('completed');
+  expect(result.releaseQualified).toBe(false);
+});
 test('AFS product archive role is distinct from native inputs and mounted evidence', async () => {
   const f = fixture(); f.workflow.path = f.run.path = '.github/workflows/agentfs-module-mounted-acceptance.yml';
   f.artifact.name = `afs-module-products-linux-x64-${f.input.sourceSha}-42-2`;
@@ -192,7 +210,7 @@ test('same-workflow legacy supply requires successful producer job and exact run
   const saved = Object.fromEntries(['GITHUB_ACTIONS', 'GITHUB_REPOSITORY', 'GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT'].map(key => [key, process.env[key]]));
   try {
     Object.assign(process.env, { GITHUB_ACTIONS: 'true', GITHUB_REPOSITORY: 'undefinedsco/xpod', GITHUB_RUN_ID: '42', GITHUB_RUN_ATTEMPT: '2' });
-    for (const negative of ['none', 'job-failed', 'job-open', 'expired', 'wrong-source', 'old-attempt', 'digest', 'runtime']) {
+    for (const negative of ['none', 'cached-job', 'job-failed', 'job-open', 'expired', 'wrong-source', 'old-attempt', 'digest', 'runtime']) {
       const f = fixture([{ name: 'supply-index.original.json', body: '{}', mode: 0o100644 }]);
       f.run.status = 'in_progress'; f.run.conclusion = null; f.run.updated_at = f.run.run_started_at; f.run.path = '.github/workflows/legacy-root-compat.yml'; f.workflow.path = f.run.path;
       f.artifact.name = `legacy-root-normal-afs-${f.input.sourceSha}-42-2`;
@@ -204,8 +222,12 @@ test('same-workflow legacy supply requires successful producer job and exact run
       if (negative === 'old-attempt') jobs.jobs[0].run_attempt = 1;
       if (negative === 'digest') f.artifact.digest = 'sha256:' + 'b'.repeat(64);
       if (negative === 'runtime') process.env.GITHUB_RUN_ATTEMPT = '1';
-      const transport = (async (url: any, options: any) => String(url).endsWith('/jobs?per_page=100') ? Response.json(jobs) : f.transport(url, options)) as typeof fetch;
-      if (negative === 'none') {
+      const transport = (async (url: any, options: any) => {
+        if (!String(url).endsWith('/jobs?per_page=100')) return f.transport(url, options);
+        const fresh = new Headers(options?.headers).get('cache-control') === 'no-cache';
+        return Response.json(negative === 'cached-job' && !fresh ? { total_count: 1, jobs: [{ ...jobs.jobs[0], status: 'queued', conclusion: null }] } : jobs);
+      }) as typeof fetch;
+      if (negative === 'none' || negative === 'cached-job') {
         const result = await acquireLegacyRootSupply(f.input, f.output, { fetch: transport });
         expect(result.kind).toBe('legacy-root-same-run-acquisition');
         expect(readFileSync(path.join(f.output, 'metadata/jobs.original.json')).length > 0).toBe(true);

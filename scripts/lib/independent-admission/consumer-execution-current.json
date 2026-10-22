@@ -609,7 +609,7 @@
   },
   {
     "path": "scripts/acquire-independent-product-input.ts",
-    "sha256": "cd94ef85cdecf725d4c5c98890653450fd8e7c12ab227eaed5edb6ce9dc2a78d"
+    "sha256": "eafaa1f84745727b489cc69d2f88d0777ebfa0339a55e1e89d82d7f55a9009f7"
   },
   {
     "path": "scripts/agentfs-native-ci/accept.py",
@@ -721,7 +721,7 @@
   },
   {
     "path": "scripts/css-module-producer.py",
-    "sha256": "78e2ec3c272233602083f81d574cfefc5f6c36e9200c1d92e6f7935bd6cac41f"
+    "sha256": "9bc6411c30e8f96402f39b80acf9e8af27350bfde84d0ec6d4e5f8eb04a05da4"
   },
   {
     "path": "scripts/fix-dist-js-imports.mjs",
@@ -1053,7 +1053,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/module-source-phases.ts",
-    "sha256": "2626f7bc6ae357465b4fcf925c1ac91b8c974f1122534c32c0d5d9c281857968"
+    "sha256": "b0b13e685f1992ae240b1a0add2bf05566b3c16f60da15c941bb5f8c04dc7fa9"
   },
   {
     "path": "scripts/lib/independent-admission/native-admission-requirements.ts",
@@ -1217,7 +1217,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-origin-policy.ts",
-    "sha256": "34cbacbc572bdf870ec65127b9fc19e00fa08d327155e3c9d69dad9bbf76f1ee"
+    "sha256": "d1eb3072b408e6bdc0df58fcf465778f6f6e24f97c37172cf7b90d880509e347"
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-originals.ts",

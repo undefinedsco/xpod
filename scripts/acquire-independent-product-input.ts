@@ -172,7 +172,9 @@ async function acquireProductInput(input: ArtifactAcquisitionInput, output: stri
     const metadata: Record<string, unknown> = {};
     const originals: MetadataBinding['originals'] = {};
     async function json(name: string, relative: string): Promise<any> {
-      const response = await transport(endpoint(relative), { headers, redirect: 'error', signal: AbortSignal.timeout(30_000) });
+      // Job dependencies may have closed while a cached API response still says queued.
+      // Revalidate metadata; terminal success and exact custody checks remain mandatory.
+      const response = await transport(endpoint(relative), { headers: { ...headers, 'Cache-Control': 'no-cache', Pragma: 'no-cache' }, redirect: 'error', signal: AbortSignal.timeout(30_000) });
       if (response.status !== 200) fail('GitHub metadata request failed');
       const destination = path.join(temporary, name + '.json');
       const downloaded = await stream(response, destination, 1024 * 1024);

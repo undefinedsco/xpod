@@ -21,6 +21,7 @@ export const moduleSourcePhasePolicy = Object.freeze({
   limits: 'c1c529aba719356c682affbe630c215e28cc07163192f8f3b601aab7b0126bd4',
   supervisor: '49fd9c7a7a9c9dc1612b1261f0cbc218166f48487df726239437ae9ad98ba407',
 });
+const CSS_METADATA_REVALIDATION_PRODUCER='9bc6411c30e8f96402f39b80acf9e8af27350bfde84d0ec6d4e5f8eb04a05da4';
 /** The old supervisor remains interpreted by the existing legacy phase checks.
  * The opt-in pack supervisor may be consumed only with the complete current
  * module producer/materials/limits tuple from the same immutable source. */
@@ -29,21 +30,23 @@ export function reviewedModuleSupervisorSource(module:'api'|'css'|'afs',readTrac
  const supervisor='scripts/agentfs-native-ci/supervise.py',actual=hash(readTracked(supervisor));
  if(actual===moduleSourcePhasePolicy.supervisor)return true;
  const versions=[API_ATTESTED_NOTICE_SOURCE_BINDINGS,API_SERVICE_BUILD_SOURCE_BINDINGS];
- return versions.some(bindings=>{
+ const producers=module==='css'?[moduleSourcePhasePolicy.css,CSS_METADATA_REVALIDATION_PRODUCER]:[moduleSourcePhasePolicy[module]];
+ return versions.some(bindings=>producers.some(producer=>{
  const expected=Object.freeze([
-  ['scripts/'+module+'-module-producer.py',moduleSourcePhasePolicy[module]],
+  ['scripts/'+module+'-module-producer.py',producer],
   ['scripts/lib/module-source-materials.py',bindings.find(row=>row.path==='scripts/lib/module-source-materials.py')!.sha256],
   ['scripts/lib/module-artifact-limits.json',moduleSourcePhasePolicy.limits],
   [supervisor,'139185a450f07812edc1300e24b68787012d1f334e6f27c2bb9e6b8a84d2af77'],
  ] as const);
  return expected.every(([path,sha256])=>hash(readTracked(path))===sha256);
- });
+ }));
 }
 /** Complete reviewed CSS parent/producer versions. Origin event/head/job
  * authority remains exclusively in the private GitHub observer. */
 export const CSS_SOURCE_PARENT_VERSIONS = Object.freeze([
   Object.freeze({workflowSha256: '8312031501f9f0d640e100ddec75e0fe1150d0ee93812b3f8c6785b032319c0f', producerSha256: '431d033a41f01ab317124e1e5488543ea1ac82fa59c2ef3845ddd43ab4e61f4c', targets: 'darwin-arm64-only' as const}),
   Object.freeze({workflowSha256: '601aa8fe01ee1367be4e97dc6e868d7bc3e79ed1fea5e8f9531aa759e78d7d51', producerSha256: moduleSourcePhasePolicy.css, targets: 'canonical-catalog' as const}),
+  Object.freeze({workflowSha256: '601aa8fe01ee1367be4e97dc6e868d7bc3e79ed1fea5e8f9531aa759e78d7d51', producerSha256: CSS_METADATA_REVALIDATION_PRODUCER, targets: 'canonical-catalog' as const}),
 ]);
 export function reviewedModuleProducerSource(module: 'api' | 'css' | 'afs', sha256: string): boolean {
   return module === 'css' ? CSS_SOURCE_PARENT_VERSIONS.some(row => row.producerSha256 === sha256)

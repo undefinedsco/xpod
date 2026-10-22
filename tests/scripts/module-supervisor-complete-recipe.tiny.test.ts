@@ -14,3 +14,11 @@ test('opt-in supervisor requires each module current complete producer/materials
   for(const changed of['scripts/'+module+'-module-producer.py','scripts/lib/module-source-materials.py','scripts/lib/module-artifact-limits.json',supervisor])expect(inspect(module,name=>name===changed?Buffer.from('mixed or unreviewed'):actual(name))).toBe(false);
  }
 });
+
+test('CSS metadata revalidation preserves the exact prior producer and its opt-in supervisor tuples',()=>{
+ const producer='scripts/css-module-producer.py',prior=fs.readFileSync(path.join(root,'tests/fixtures/independent-admission/css-producer-pre-freshness.original.py'));
+ expect(createHash('sha256').update(prior).digest('hex')).toBe('78e2ec3c272233602083f81d574cfefc5f6c36e9200c1d92e6f7935bd6cac41f');
+ const actual=(name:string)=>fs.readFileSync(path.join(root,name));
+ expect(inspect('css',name=>name===producer?prior:actual(name))).toBe(true);
+ expect(inspect('css',name=>name===producer?Buffer.from('unreviewed CSS producer'):actual(name))).toBe(false);
+});
