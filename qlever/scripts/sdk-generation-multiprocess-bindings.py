@@ -13,6 +13,12 @@ POLICIES={
  0xc00000b7:dict(exec={221,281},execveat=281,protect={226,288},read=63,write=64,close=57,mmap=222,clone=220,clone3=435,spawn={220,435},renameat=38,renameat2=276,renameOps={38,276},exits={93,94},forbidden={0,1,2,3,4,292,425,426,427,271,117,97,268}),
  0xc000003e:dict(exec={59,322},execveat=322,protect={10,329},read=0,write=1,close=3,mmap=9,clone=56,clone3=435,spawn={56,57,58,435},rename=82,renameat=264,renameat2=316,renameOps={82,264,316},exits={60,231},forbidden={206,207,208,209,210,333,425,426,427,311,101,272,308}),
 }
+def physical_original_reference(reference):
+    return {key:reference[key]for key in ['path','bytes','sha256']}
+
+def tool_original_key(reference):
+    return (reference['path'],reference['observationSequence'])if 'observationSequence'in reference else reference['path']
+
 def retained_metadata_chain(producer,consumer,states):
     """Join only independently verified operation endpoints; never infer a gap.
 
@@ -28,7 +34,8 @@ def retained_metadata_chain(producer,consumer,states):
         if before[:2]!=producer['identity'][:2]:continue
         need(previous<sequence and len(before)==len(after)==6 and before==current,'retained metadata chain gap/order')
         if window['kind']=='actual-rename-window':
-            need(window['producerCaptureSequence']==producer['sequence'] and window['fromPath']==path and after[:5]==before[:5],'retained rename chain producer/path/bytes metadata differs')
+            reference='generatedCheckpointSequence'if producer.get('kind')=='generated-vma-operation-exit'and producer.get('operation')=='unmap'else 'producerCaptureSequence'
+            need(window.get(reference)==producer['sequence']and ('producerCaptureSequence'in window)!=('generatedCheckpointSequence'in window) and window['fromPath']==path and after[:5]==before[:5],'retained rename chain producer/path/bytes metadata differs')
             path=window['toPath']
         else:
             need(window['kind']=='actual-mode-window' and after[:2]==before[:2] and after[3:5]==before[3:5],'retained metadata chain unknown operation/changed bytes')
@@ -47,14 +54,17 @@ def denied_io_uring_register_layout(arch):
     policy(arch)
     # Linux x86_64 user_regs_struct.orig_rax and arm64 NT_ARM_SYSTEM_CALL.
     return {0xc000003e:(1,216,120,8),0xc00000b7:(0x404,4,0,4)}[arch]
-def verify_denied_io_uring_registers(arch,nr,before,after):
+def denied_io_uring_substitute(model,width):
+    need(model in ['explicit-kernel-enosys-denial-v1','explicit-kernel-enosys-denial-v2'],'unknown explicit denial register model')
+    return b'\xff'*width if model=='explicit-kernel-enosys-denial-v1' else (0x7fffffff).to_bytes(width,'little')
+def verify_denied_io_uring_registers(arch,nr,before,after,*,model='explicit-kernel-enosys-denial-v1'):
     need(type(nr) is int and nr==425,'only io_uring_setup may be explicitly denied')
     regset,size,offset,width=denied_io_uring_register_layout(arch)
     need(type(before) is bytes and type(after) is bytes and len(before)==len(after)==size,'exact denial register set required')
     need(int.from_bytes(before[offset:offset+width],'little')==nr,'actual entry register syscall differs')
-    expected=before[:offset]+b'\xff'*width+before[offset+width:]
+    expected=before[:offset]+denied_io_uring_substitute(model,width)+before[offset+width:]
     need(after==expected,'denial changed other registers or failed to set invalid syscall')
-    return dict(registerSet=regset,registerBytes=size,syscallOffset=offset,syscallBytes=width,originalSyscall=nr,substitutedSyscall=-1)
+    return dict(registerSet=regset,registerBytes=size,syscallOffset=offset,syscallBytes=width,originalSyscall=nr,substitutedSyscall=-1 if model=='explicit-kernel-enosys-denial-v1' else 0x7fffffff)
 def append_boundary_syscall(arch,nr,args=None):
     rules=policy(arch)
     # open/openat allocate a descriptor; they do not consume file contents.
@@ -327,8 +337,8 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
     maximum_raw=limits['sourceMaterialBytes'] if limits else 32*1024**2
     maximum_file=limits['shardBytes'] if limits else 1024**2
     maximum_total=limits['sourceMaterialBytes'] if limits else 16*1024**2
-    entity_model=None;entity_model_initialized=False;storage_origins={};storage_entities={};storage_aliases={};pending_storage_rows=[];original_cache={};observed_entity_names=set();retained_entries=set();phase_tracking=[];generated_verifier=None;generated_module=None
-    denial_mode=False;denied_operations={};setresuid_mode=False;identity_mode=False;queued_identity_mode=False;stopped_alias_mode=False;terminal_mode=False;setresuid_operations={}
+    entity_model=None;entity_model_initialized=False;maps_entity_model=None;maps_entity_initialized=False;storage_origins={};storage_entities={};storage_aliases={};pending_storage_rows=[];original_cache={};observed_entity_names=set();retained_entries=set();phase_tracking=[];generated_verifier=None;generated_module=None
+    denial_mode=False;denial=None;denied_operations={};setresuid_mode=False;identity_mode=False;queued_identity_mode=False;stopped_alias_mode=False;terminal_mode=False;setresuid_operations={}
     shared_mode=False;owners={};exec_fd_events={};vfork_events={};vfork_holds={};child_bindings={};wait_rows={}
     live=set();last=0;entries={};exits={};barriers={};caps={};paths={};renames=[];consumers=[];source_reads=[];total=0;capture_total=0;exclusive=None;root_codes={};clone_flags=set();clone_flag_values={}
     alias_close_windows={};alias_close_exits=set()
@@ -351,8 +361,18 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
     def storage_original(row):
         ref=row['original'];data=capture_data(ref);entity=row.get('originalEntityIdentity')
         need(isinstance(entity,list) and len(entity)==7 and all(type(value) is int and value>=0 for value in entity) and entity[3]==data[0] and entity[6]==1 and entity[2]&0o170000==0o100000,'canonical physical content entity identity malformed')
-        old=storage_entities.get(ref['path']);need(old is None,'canonical physical content path repeated without typed alias')
-        storage_entities.setdefault(ref['path'],row);storage_origins[row['sequence']]=row
+        reuse=row.get('originalReuse')
+        if row.get('captureKind')=='maps'and maps_entity_model is not None:
+            window=row.get('mapsWindowIdentity');need(isinstance(window,list)and len(window)==7 and all(type(v)is int and v>=0 for v in window)and stat.S_ISREG(window[2])and window[3]==0 and window[6]==1 and row.get('mapsWindowAfterIdentity')==row.get('mapsNamedWindowIdentity')==row.get('mapsNamedWindowAfterIdentity')==window,'maps lacks complete fresh proc FD/named identities')
+            need(type(ref.get('observationSequence'))is int and ref['observationSequence']==row['sequence'],'maps reference lacks its own actual observation sequence')
+        else:need('observationSequence'not in ref,'observation reference requires maps storage model')
+        if reuse is not None:
+            need(maps_entity_model=='same-phase-maps-content-entity-v1'and row.get('kind')=='toolchain-original'and row.get('captureKind')=='maps','noncanonical maps alias requires explicit model')
+            need(isinstance(reuse,dict)and set(reuse)=={'model','originCaptureSequence'}and reuse['model']==maps_entity_model and type(reuse['originCaptureSequence'])is int and 0<reuse['originCaptureSequence']<row['sequence'],'exact backward maps physical alias required')
+            origin=storage_origins.get(reuse['originCaptureSequence']);need(origin and origin['kind']=='toolchain-original'and origin.get('captureKind')=='maps'and origin['phase']==row['phase']and physical_original_reference(origin['original'])==physical_original_reference(ref)and entity==origin['originalEntityIdentity'],'maps alias mixes phase, original or physical identity')
+        else:
+            old=storage_entities.get(ref['path']);need(old is None,'canonical physical content path repeated without typed alias')
+            storage_entities.setdefault(ref['path'],row);storage_origins[row['sequence']]=row
         return data
     def dependency_bytes(ref):
         capture_data(ref);need(ref['bytes']<=4*1024**2,'dependency metadata byte bound')
@@ -374,7 +394,7 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
         capture_data(reference);value=read_original(reference['path'],maximum_file)
         return (value[i:i+65536] for i in range(0,len(value),65536)) if isinstance(value,bytes) else value
     def tool_ref(reference,kind=None):
-        value=tool_originals.get(reference['path']);need(value and value['original']==reference and (kind is None or value['captureKind']==kind),'toolchain reference lacks actual complete original')
+        value=tool_originals.get(tool_original_key(reference));need(value and value['original']==reference and (kind is None or value['captureKind']==kind),'toolchain reference lacks actual complete original')
         return value
     def tool_maps(reference):
         tool_ref(reference,'maps');need(reference['bytes']<=4*1024**2,'bounded maps original')
@@ -489,26 +509,28 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                 observed_entity_model=row.get('captureOriginalEntityModel')
                 need('captureOriginalEntityModel' not in row or observed_entity_model in ['same-phase-producer-original-v1','same-phase-content-entity-v2'],'unknown capture entity model')
                 need(not entity_model_initialized or entity_model==observed_entity_model,'capture entity model changed across actual roots');entity_model=observed_entity_model;entity_model_initialized=True
+                declared_maps_entity=row.get('mapsOriginalEntityModel');need(declared_maps_entity in [None,'same-phase-maps-content-entity-v1']and(not maps_entity_initialized or declared_maps_entity==maps_entity_model)and(declared_maps_entity is None or entity_model=='same-phase-content-entity-v2'),'unknown or changed maps physical entity model');maps_entity_model=declared_maps_entity;maps_entity_initialized=True
                 if entity_model=='same-phase-content-entity-v2':
                     for pending in pending_storage_rows:storage_original(pending)
                 pending_storage_rows.clear()
                 need(dependency_expected_names is None or set(dependency_roots)==dependency_expected_names,'prepared dependency root universe is not completely registered');need(not live and not roots,'unique actual root required');live.add(row['pid']);roots.append(row['pid']);need(row['backend']=='ptrace-all-stop-process-v1','wrong observer backend')
                 need(row.get('taskOwnershipModel') in [None,'all-tracked-tids-shared-fd-v1'],'unknown task ownership model');shared_mode=row.get('taskOwnershipModel') is not None;owners={}
-                need(not denied_operations,'unclosed explicit syscall denial at new root');denial=row.get('optionalIoUringModel');need(denial in [None,'explicit-kernel-enosys-denial-v1'],'unknown optional syscall denial model');denial_mode=denial is not None
+                need(not denied_operations,'unclosed explicit syscall denial at new root');denial=row.get('optionalIoUringModel');need(denial in [None,'explicit-kernel-enosys-denial-v1','explicit-kernel-enosys-denial-v2'],'unknown optional syscall denial model');denial_mode=denial is not None
                 generated_model=row.get('generatedVmaModel')
                 if generated_model is not None:
                     if generated_module is None:
                         import importlib.util
                         from pathlib import Path
                         generated_spec=importlib.util.spec_from_file_location('generated_vma_replay',Path(__file__).with_name('sdk-generated-vma-originals.py'));generated_module=importlib.util.module_from_spec(generated_spec);generated_spec.loader.exec_module(generated_module)
-                    need(generated_model in [generated_module.LEGACY_MODEL,generated_module.KERNEL_LINK_MODEL,generated_module.MODEL,generated_module.COHORT_MODEL,generated_module.PRIVATE_WAKE_MODEL,generated_module.PRIVATE_WAIT_MODEL,generated_module.COORDINATED_WAIT_MODEL] and row.get('generatedVmaBuildRoot')==generated_module.BUILD_ROOT and shared_mode,'unknown/unowned generated VMA model')
+                    need(generated_model in [generated_module.LEGACY_MODEL,generated_module.KERNEL_LINK_MODEL,generated_module.MODEL,generated_module.COHORT_MODEL,generated_module.PRIVATE_WAKE_MODEL,generated_module.PRIVATE_WAIT_MODEL,*generated_module.COORDINATED_WAIT_MODELS] and row.get('generatedVmaBuildRoot')==generated_module.BUILD_ROOT and shared_mode,'unknown/unowned generated VMA model')
                     if generated_verifier is not None:need(generated_verifier.model==generated_model,'generated VMA evidence model changed across roots')
                     if generated_verifier is None:generated_verifier=generated_module.create_verifier(generated_module,capture_data,tool_maps,limits.get('metadataBytes',4*1024**2) if limits else 4*1024**2,model=generated_model,read_blocks=lambda ref:original_blocks(ref),maximum_file=maximum_file)
                 else:need(generated_verifier is None,'generated VMA model changed across actual roots')
                 model=row.get('processAuthorityModel');need(model is None or model==provider_module().AUTHORITY_MODEL,'unknown process authority model');process_interval=provider_module().ProcessAuthorityInterval(row['pid']) if model is not None else None
                 need(not setresuid_operations,'unclosed setresuid transition at new root');uid_model=row.get('setresuidNoopModel');need(uid_model in [None,'actual-stopped-setresuid-noop-v1'],'unknown setresuid operation model');identity_model=row.get('setresIdentityNoopModel');need(identity_model in [None,'actual-stopped-setres-identity-noop-v1','actual-stopped-setres-identity-noop-queued-v2'] and not (identity_model and uid_model),'unknown or mixed identity operation model');identity_mode=identity_model is not None;queued_identity_mode=identity_model=='actual-stopped-setres-identity-noop-queued-v2';setresuid_mode=uid_model is not None or identity_mode;need(not setresuid_mode or process_interval is not None,'setresuid model requires actual process authority interval')
                 alias_model=row.get('stoppedWriterAliasModel');need(alias_model in [None,'all-stop-exclusive-write-aliases-v1'],'unknown stopped writer alias model');stopped_alias_mode=alias_model is not None;need(not stopped_alias_mode or shared_mode and process_interval is not None,'stopped aliases require complete task/process authority')
-                terminal_model=row.get('exitAuthorityModel');need(terminal_model in [None,'actual-selected-exit-stop-before-peer-barrier-v1'],'unknown terminal authority model');terminal_mode=terminal_model is not None;need(not terminal_mode or process_interval is not None,'terminal model requires actual authority interval')
+                terminal_model=row.get('exitAuthorityModel');need(terminal_model in [None,'actual-selected-exit-stop-before-peer-barrier-v1','actual-selected-exit-stop-held-terminal-peers-v2'],'unknown terminal authority model');terminal_mode=terminal_model is not None;need(not terminal_mode or process_interval is not None,'terminal model requires actual authority interval')
+                if process_interval is not None:process_interval.terminal_peer_model=terminal_model=='actual-selected-exit-stop-held-terminal-peers-v2'
                 if shared_mode:need(row['tgid']==row['fdTable']==row['pid'],'initial root ownership differs');owners[row['pid']]=dict(tgid=row['tgid'],fdTable=row['fdTable'])
             elif kind=='actual-child-binding':
                 child_bindings[row['childPid']]=row
@@ -536,8 +558,9 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                 if process_interval is not None:process_interval.wait(row['pid'],row if terminal_mode else None)
                 need(row['pid'] in live,'wait on unknown process');live.remove(row['pid']);root_codes[row['pid']]=row['returnCode'];waits.append(dict(pid=row['pid'],sequence=row['sequence'],returnCode=row['returnCode'],phase=phase))
             elif kind=='all-stop-barrier':
-                need(row['pids']==sorted(live) and row['osStates']==['t']*len(live),'potential writer not in actual complete tracing-stop barrier')
-                if shared_mode:need(row['taskOwnership']==[dict(tid=pid,**owners[pid]) for pid in sorted(live)],'complete actual TID/TGID/shared-table ownership differs')
+                terminal_peers=process_interval.terminal_peers(row)if process_interval is not None else set();need(process_interval is not None or 'terminalPeers'not in row,'terminal peers lack owned process interval')
+                need(row['pids']==sorted(live-terminal_peers) and row['osStates']==['t']*len(live-terminal_peers),'potential writer not in actual complete tracing-stop barrier')
+                if shared_mode:need(row['taskOwnership']==[dict(tid=pid,**owners[pid]) for pid in sorted(live-terminal_peers)],'complete actual TID/TGID/shared-table ownership differs')
                 barriers[row['sequence']]=row
             elif kind=='actual-exec-fd-table-unshare':
                 event=exec_fd_events.get(row['eventSequence']);owner=owners.get(row['pid']);need(shared_mode and owner and event and event['pid']==row['pid'] and owner['tgid']==row['pid']==row['tgid'] and owner['fdTable']==row['priorFdTable'] and row['fdTable']==-event['sequence'],'exec FD-table unshare lacks actual leader exec event');owner['fdTable']=row['fdTable'];exec_fd_events.pop(row['eventSequence'])
@@ -555,12 +578,17 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                 need(window and window['sequence'] not in alias_close_exits and exclusive==(row['pid'],row['entrySequence']) and window['entrySequence']==row['entrySequence'] and window['pid']==row['pid'] and exit and exit['sequence']==row['exitSequence'] and not exit['isError'] and exit['result']==0 and not row['isError'] and row['result']==0,'alias close missing actual successful exit')
                 need(row['retainedIdentity'][:2]==window['identity'][:2] and row['slotAbsences']==[dict(tid=pid,fd=window['fd'],errorCode=2) for pid in window['tableOwners']],'alias close has no actual same-table slot absence');alias_close_exits.add(window['sequence'])
             elif kind=='actual-rename-window':
-                entry=entries.get(row['entrySequence']);barrier=barriers.get(row['barrierSequence']);producer=caps.get(row['producerCaptureSequence'])
+                entry=entries.get(row['entrySequence']);barrier=barriers.get(row['barrierSequence'])
+                generated_checkpoint=row.get('generatedCheckpointSequence')
+                if generated_checkpoint is not None:
+                    need(generated_verifier is not None and generated_verifier.model==generated_module.PARKED_WAIT_MODEL and 'producerCaptureSequence'not in row,'generated rename requires explicit v8 checkpoint')
+                    checkpoint=generated_verifier.checkpoints.get(generated_checkpoint);producer=(checkpoint,checkpoint['data'])if checkpoint else None
+                else:producer=caps.get(row['producerCaptureSequence'])
                 need(entry and barrier and producer and row['pid']==entry['pid'] and exclusive is None and row['pid'] in barrier['pids'] and entry['sequence']<barrier['sequence'] and latest_execution_sequence<=barrier['sequence'] and entry['nr'] in policy(entry['arch'])['renameOps'],'retained rename entry/barrier/producer missing')
                 need(entry['nr']!=policy(entry['arch']).get('renameat2') or entry['args'][4]==0,'retained renameat2 flags unsupported')
                 need(paths.get(row['entrySequence'])==[row['fromPath'],row['toPath']] and row['fromPath']!=row['toPath'] and row['sequence'] not in rename_windows and row['leaseSequence']==row['sequence'],'retained rename paths/window/lease differs')
                 old,data=producer;close=exits.get(old['entrySequence']);before=row['beforeIdentity']
-                need(old['role']=='producer-close' and close and close['result']==0 and close['isError'] is False and len(before)==6 and before[:2]==old['identity'][:2] and before[3]==data[0] and row['namedIdentity']==before and capture_data(row['beforeOriginal'])==data,'retained rename preimage original differs')
+                need((generated_checkpoint is not None and old['operation']=='unmap'and old['result']==0 and old['isError']is False or generated_checkpoint is None and old['role']=='producer-close' and close and close['result']==0 and close['isError'] is False)and len(before)==6 and before[:2]==old['identity'][:2] and before[3]==data[0] and row['namedIdentity']==before and capture_data(row['beforeOriginal'])==data,'retained rename preimage original differs')
                 replacement=row.get('replacementBefore')
                 if replacement is None:
                     need(row.get('destinationAbsenceErrno')==2 and type(row.get('destinationAbsenceErrno')) is int,'retained rename destination absence missing')
@@ -590,9 +618,14 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                     need(write_original_sequences.get(tuple(row['afterOriginal'][key] for key in ['path','bytes','sha256']),0)==row['exitSequence']+1 and write_original_sequences.get(tuple(displaced['original'][key] for key in ['path','bytes','sha256']),0)==row['exitSequence']+2==row['sequence']-1,'retained rename displaced snapshot ordering differs')
                 rename_transitions[window['sequence']]=(window,row);active_rename['state']='completed'
             elif kind.startswith('generated-kernel-wait-'):
-                need(generated_verifier is not None and generated_verifier.model==generated_module.COORDINATED_WAIT_MODEL,'coordinated wait requires explicit model')
-                need(kind in ['generated-kernel-wait-window','generated-kernel-wait-waiter-resume','generated-kernel-wait-quiescent','generated-kernel-wait-peer-resume','generated-kernel-wait-peer-stopped','generated-kernel-wait-wake-window','generated-kernel-wait-waker-resume','generated-kernel-wait-closed'],'unknown coordinated wait record')
-                if kind=='generated-kernel-wait-window':retained_entries.add(row['entrySequence'])
+                need(generated_verifier is not None and generated_verifier.model in generated_module.COORDINATED_WAIT_MODELS,'coordinated wait requires explicit model')
+                need(kind in ['generated-kernel-wait-window','generated-kernel-wait-waiter-resume','generated-kernel-wait-quiescent','generated-kernel-wait-peer-resume','generated-kernel-wait-peer-stopped','generated-kernel-wait-wake-window','generated-kernel-wait-waker-resume','generated-kernel-wait-closed','generated-kernel-wait-side-wait-window','generated-kernel-wait-side-wait-resume','generated-kernel-wait-side-wait-closed','generated-kernel-wait-side-wait-deferred','generated-kernel-wait-peer-entry-selected'],'unknown coordinated wait record')
+                if kind.startswith('generated-kernel-wait-side-'):need(generated_verifier.model==generated_module.PARKED_WAIT_MODEL,'peer side wait requires v8 parked model')
+                if kind=='generated-kernel-wait-side-wait-resume':
+                    need(exclusive is None,'peer mismatch crossed an exclusive operation');exclusive=(row['pid'],row['entrySequence'])
+                if kind=='generated-kernel-wait-window':
+                    retained_entries.add(row['entrySequence'])
+                    for peer in row.get('initialPeerEntries',[]):retained_entries.add(peer['entrySequence'])
                 else:need(generated_verifier.scheduled_active,'coordinated record outside established wait interval')
                 if kind=='generated-kernel-wait-quiescent':
                     need(exclusive is not None and exclusive[0]==row['observation']['pid'],'kernel quiescence outside selected exclusive waiter');exclusive=None
@@ -629,7 +662,7 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                 if baseline=='empty':need(before[0]==0,'nonempty write preimage has no original authority')
                 elif baseline in write_transitions:
                     prior=write_transitions[baseline];need(prior['afterIdentity']==row['beforeIdentity'] and ((prior['after']['bytes'],prior['after']['sha256']) if 'path' not in prior['after'] else capture_data(prior['after']))==before,'write preimage differs from previous actual transition')
-                elif generated_verifier is not None and generated_verifier.model in [generated_module.MODEL,generated_module.COORDINATED_WAIT_MODEL] and baseline in generated_verifier.origins:
+                elif generated_verifier is not None and generated_verifier.model in [generated_module.MODEL,*generated_module.COORDINATED_WAIT_MODELS] and baseline in generated_verifier.origins:
                     generated_verifier.write_baseline(row,before)
                 else:
                     prior=prepared.get(baseline) or caps.get(baseline);need(prior and prior[0]['identity']==row['beforeIdentity'] and prior[1]==before,'write preimage has no retained original')
@@ -749,7 +782,7 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                 need(denial_mode and pending and pending['state']=='entry' and entry==pending['entry'],'unbound or duplicate explicit denial')
                 need(row['arch']==entry['arch'] and row['args']==entry['args'],'explicit denial entry words differ')
                 wait=row.get('waitStatus');need(type(wait) is int and wait==(((5|0x80)<<8)|127),'explicit denial syscall stop differs')
-                before=bytes.fromhex(row['beforeRegistersHex']);after=bytes.fromhex(row['afterRegistersHex']);description=verify_denied_io_uring_registers(entry['arch'],entry['nr'],before,after)
+                before=bytes.fromhex(row['beforeRegistersHex']);after=bytes.fromhex(row['afterRegistersHex']);description=verify_denied_io_uring_registers(entry['arch'],entry['nr'],before,after,model=denial)
                 need(all(row.get(key)==value for key,value in description.items()),'explicit denial register description differs')
                 executable=row.get('executable');need(isinstance(executable,dict) and len(executable.get('identity',[]))==6 and type(executable.get('processStarttime')) is int,'explicit denial stopped executable identity required')
                 pending.update(state='substituted',denial=row)
@@ -800,11 +833,11 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
             elif kind=='toolchain-original':
                 need(not append_dirty,'tool/source output before mandatory append full checkpoint')
                 need(bool(live) and row['captureKind'] in ['file','maps','mountinfo'],'actual tool original must be observed with live stopped tracees')
-                data=capture_data(row['original']);need(row['original']['path'] not in tool_originals,'duplicate tool original')
+                data=capture_data(row['original']);need(tool_original_key(row['original'])not in tool_originals,'duplicate tool original')
                 if row['captureKind']=='file':
                     need(len(row['identity'])==6 and row['identity'][3]==data[0],'tool FD identity/bytes differ');tool_files[row['original']['path']]=dict(observedPath=row['observedPath'],identity=row['identity'],original=row['original'])
                 else:need(data[0]<=4*1024**2 and type(row.get('observedPid')) is int and row['observedPid'] in live,'bounded live tracee metadata original')
-                tool_originals[row['original']['path']]=row
+                tool_originals[tool_original_key(row['original'])]=row
             elif kind=='toolchain-process-authority':
                 need(process_interval is not None,'process authority original lacks declared root contract');need(not terminal_mode or row.get('role')!='exit-stop','new terminal model requires early EXIT originals, not legacy delayed sample');tool_barrier(row);mount_original=tool_ref(row['observation']['mountinfoOriginal'],'mountinfo');process_interval.sample(row,dependency_bytes(mount_original['original']))
             elif kind=='toolchain-provider-original':
@@ -939,7 +972,9 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
             if kind in ['prepared-build-input-original','write-original','toolchain-original'] and 'original' in row:
                 if entity_model=='same-phase-content-entity-v2':storage_original(row)
                 elif not entity_model_initialized:pending_storage_rows.append(row)
-            if generated_verifier is not None:generated_verifier.record(row,entries,exits,barriers,caps)
+            if generated_verifier is not None:
+                generated_verifier.metadata_chain=retained_metadata_chain;generated_verifier.verified_metadata_states=sorted([*mode_transitions.values(),*rename_transitions.values()],key=lambda pair:pair[1]['sequence'])
+                generated_verifier.record(row,entries,exits,barriers,caps)
         need(not vfork_holds,'phase ended without vfork child release')
         need(not append_dirty,'phase ended without mandatory append full checkpoint')
         need(len(roots)==1 and not live and root_codes.get(roots[0])==0 and exclusive is None,'actual root/descendant wait closure incomplete')
@@ -975,7 +1010,7 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
             references=retained_metadata_chain(producer[0],consumer[0],verified)
             need(references==relation['modeTransitions'],'retained metadata chain references differ');current=consumer[0]['identity']
         else:
-            need(not any(window['producerCaptureSequence']==producer[0]['sequence'] and producer[0]['sequence']<change['sequence']<consumer[0]['sequence'] for window,change in rename_transitions.values()),'typed retained rename cannot use historical post-only chain')
+            need(not any(window.get('producerCaptureSequence')==producer[0]['sequence'] and producer[0]['sequence']<change['sequence']<consumer[0]['sequence'] for window,change in rename_transitions.values()),'typed retained rename cannot use historical post-only chain')
             need('metadataChainModel' not in relation,'unknown retained metadata chain model')
             for reference in relation['modeTransitions']:
                 pair=mode_transitions.get(reference);need(pair and producer[0]['sequence']<reference<consumer[0]['sequence'] and pair[0]['beforeIdentity']==current,'namespace mode change has no actual chmod chain');current=pair[1]['afterIdentity']
@@ -991,7 +1026,7 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
         if consumer is None:continue # Interrupted read/mmap does not prove consumption.
         need(producer and producer[0]['role']=='producer-close' and consumer[0]['role']=='consumer','consumer actual producer close missing')
         cap,data=consumer;old,expected=producer;need(cap['identity']==binding['identity']==binding['retainedIdentity'] and cap['identity'][:2]==old['identity'][:2],'consumer retained FD inode differs')
-        if any(window['producerCaptureSequence']==old['sequence'] and old['sequence']<change['sequence']<cap['sequence'] for window,change in rename_transitions.values()):need((old['sequence'],cap['sequence']) in namespaces,'typed retained rename consumer lacks complete metadata chain')
+        if any(window.get('producerCaptureSequence')==old['sequence'] and old['sequence']<change['sequence']<cap['sequence'] for window,change in rename_transitions.values()):need((old['sequence'],cap['sequence']) in namespaces,'typed retained rename consumer lacks complete metadata chain')
         if cap['path']!=old['path']:need((old['sequence'],cap['sequence']) in namespaces or any(r['producerCaptureSequence']==old['sequence'] and r['toPath']==cap['path'] for r in renames),'consumer lacks actual temporary-to-final rename or named FD identity')
         need(data==expected,'actual generated bytes changed between producer close and consumer read');covered[cap['path']]=dict(path=cap['path'],bytes=data[0],sha256=data[1],producerCaptureSequence=old['sequence'],consumerCaptureSequence=cap['sequence'])
     for binding in write_consumers:
@@ -1028,5 +1063,5 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
             actual=covered.get(path)
             if actual is None:pending.append('actual-successful-generated-consumer-missing:'+path)
             else:need(actual['bytes']==expected['bytes'] and actual['sha256']==expected['sha256'],'actual generated consumer differs from selected full-shard input')
-    return dict(**(dict(verifiedCoordinatedWaitIntervals=list(getattr(generated_verifier,'coordinated_waits',[]))) if generated_verifier is not None and generated_verifier.model==generated_module.COORDINATED_WAIT_MODEL else {}),**(dict(verifiedPrivateWakeEntrySequences=list(generated_verifier.private_wakes),**(dict(verifiedPrivateWaitMismatchEntrySequences=list(generated_verifier.private_waits)) if generated_verifier.model in generated_module.PRIVATE_WAIT_MODELS else {})) if generated_verifier is not None and generated_verifier.model in generated_module.WAKE_MODELS else {}),schemaVersion=1,kind='all-stop-CMake-generated-byte-mechanics',observedGeneratedWritableMapCheckpoints=len(generated_verifier.checkpoints) if generated_verifier is not None else 0,generatedMappedConsumerByteCustodyVerified=bool(mapped_outputs),selectedGeneratedConsumerByteCustodyVerified=not pending,outputs=sorted(covered.values(),key=lambda row:row['path']),observedSourceReadCaptures=len(source_reads),observedPreparedDependencyReadCaptures=dependency_reads,preparedDependencySourceAuthorityVerified=False,preparedDependencyPending=(['independent-FetchContent-dependency-stage-and-Git-or-URL-source-authority-unverified'] if dependency_roots else []),pending=pending,overallSdkSourceVerified=False,
+    return dict(**(dict(verifiedCoordinatedWaitIntervals=list(getattr(generated_verifier,'coordinated_waits',[]))) if generated_verifier is not None and generated_verifier.model in generated_module.COORDINATED_WAIT_MODELS else {}),**(dict(verifiedPrivateWakeEntrySequences=list(generated_verifier.private_wakes),**(dict(verifiedPrivateWaitMismatchEntrySequences=list(generated_verifier.private_waits)) if generated_verifier.model in generated_module.PRIVATE_WAIT_MODELS else {})) if generated_verifier is not None and generated_verifier.model in generated_module.WAKE_MODELS else {}),schemaVersion=1,kind='all-stop-CMake-generated-byte-mechanics',observedGeneratedWritableMapCheckpoints=len(generated_verifier.checkpoints) if generated_verifier is not None else 0,generatedMappedConsumerByteCustodyVerified=bool(mapped_outputs),selectedGeneratedConsumerByteCustodyVerified=not pending,outputs=sorted(covered.values(),key=lambda row:row['path']),observedSourceReadCaptures=len(source_reads),observedPreparedDependencyReadCaptures=dependency_reads,preparedDependencySourceAuthorityVerified=False,preparedDependencyPending=(['independent-FetchContent-dependency-stage-and-Git-or-URL-source-authority-unverified'] if dependency_roots else []),pending=pending,overallSdkSourceVerified=False,
                 observedAliasOnlyCloses=len(alias_close_exits),observedActualModeTransitions=len(mode_transitions),observedNamedRetainedFdBindings=len(namespaces),observedActualWriteTransitions=len(write_transitions),observedEmptyReadEofWindows=len(empty_eofs),toolchainProcessAuthorityIntervals=process_intervals,toolchainProcessAuthorityIntervalVerified=bool(process_intervals) and all(row.get('model') is not None for row in process_intervals),toolchainProcessAuthorityPending=['toolchain-provider-namespace-external-writer-and-backing-snapshot-authority-unverified']+([] if process_intervals and all(row.get('model') is not None for row in process_intervals) else ['toolchain-owned-process-authority-interval-originals-unavailable']),toolchainFileSnapshots=list(tool_files.values()),toolchainOperationCoverage=tool_coverage.finish(sorted(tool_pending),sorted(tool_provider_pending)),toolchainActualExecImages=tool_execs,toolchainActualFileMappings=tool_mappings,toolchainObservationSha256=tool_digest.hexdigest(),toolchainStopProviderPending=sorted(tool_provider_pending),toolchainPending=sorted(tool_pending|tool_provider_pending|({'toolchain-executed-byte-immutability-and-full-source-authority-unverified'} if tool_execs else set())),toolchainSourceClosureVerified=False,preparedInputConsumers=list(prepared_covered.values()),preparedInputConsumerBytesVerified=bool(prepared_covered),phaseTracking=phase_tracking,scope='actual producer-close/rename/consumer bytes only; reviewed observer execution/Git/source/runtime authority independent')

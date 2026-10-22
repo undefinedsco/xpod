@@ -502,6 +502,13 @@ class ExitStopAuthorityLease:
         need(self.process_identity==util.identity(os.fstat(self.fds['process']))==util.identity(os.stat('/proc/'+str(self.pid),follow_symlinks=False)),'EXIT task held directory differs before wait')
         value=self._read('stat',4096);need(self._starttime(value['data'])==self.starttime,'EXIT task reused before actual wait')
         return value['data'][value['data'].rfind(')')+2:].split()[0]
+    def terminal_peer_original(self):
+        need(self.assert_task_before_wait()=='Z','terminal peer must be an actual held zombie')
+        before=self._read('stat',4096);after=self._read('stat',4096)
+        need(before==after and self._starttime(before['data'])==self.starttime,'terminal peer stat/lifetime changed')
+        need(before['data'][before['data'].rfind(')')+2:].split()[0]=='Z','terminal peer is not a zombie')
+        need(self.process_identity==util.identity(os.fstat(self.fds['process']))==util.identity(os.stat('/proc/'+str(self.pid),follow_symlinks=False)),'terminal peer held process changed')
+        return dict(pid=self.pid,processIdentity=self.process_identity,statOriginals=[before,after])
     close=StoppedIdentityNoopTransition.close
 
 def verify_exit_stop_authority_original(record,mountinfo,actual_event,*,pid):
@@ -524,7 +531,8 @@ def verify_exit_stop_authority_original(record,mountinfo,actual_event,*,pid):
 
 class ProcessAuthorityInterval:
     """Pure replay state. It never grants immutable backing/source authority."""
-    def __init__(self,root_pid):
+    def __init__(self,root_pid,*,terminal_peer_model=False):
+        need(type(terminal_peer_model)is bool,'typed terminal peer model required');self.terminal_peer_model=terminal_peer_model;self.terminal_originals={};self.terminal_resume_rows={}
         self.root=root_pid;self.parents={root_pid:None};self.samples={};self.exec_pending={};self.exit_pending={};self.waited=set();self.closed=set();self.baseline=None;self.count=0;self.setresuid_pending={};self.setresuid_count=0;self.terminal_samples={};self.terminal_waits={};self.terminal_messages={};self.terminal_closed_rows={};self.terminal_resumed=set()
     def child(self,parent,child):
         need(not self.setresuid_pending,'child event during exclusive setresuid transition')
@@ -552,13 +560,31 @@ class ProcessAuthorityInterval:
         value=verify_exit_stop_authority_original(row['observation'],mountinfo,actual_event,pid=pid)
         need(value==self.baseline,'strict EXIT authority differs from owned baseline')
         self.terminal_samples[pid]=dict(row=json.loads(json.dumps(row)),event=actual_event)
+        self.terminal_originals[pid]=self.terminal_samples[pid]
         self.terminal_messages[pid]=row['observation']['exitStatus'];self.count+=1
+    def terminal_peers(self,barrier):
+        peers=barrier.get('terminalPeers',[])
+        need(isinstance(peers,list)and len(peers)<=128 and(not peers or self.terminal_peer_model),'terminal peers require explicit v2 model')
+        need([row['pid']for row in peers]==sorted(set(row['pid']for row in peers)),'unique ordered terminal peers required')
+        for peer in peers:
+            pid=peer['pid'];original=self.terminal_originals.get(pid);closed=self.terminal_closed_rows.get(pid);resume=self.terminal_resume_rows.get(pid)
+            need(original and closed and resume and pid in self.closed and pid not in self.waited and pid not in self.terminal_waits,'terminal peer lacks closed/resumed live EXIT authority')
+            sample=original['row'];observation=sample['observation']
+            need(peer['originalSequence']==sample['sequence']and peer['closeSequence']==closed['sequence']and peer['resumeSequence']==resume['sequence']and sample['phase']==closed['phase']==resume['phase']==barrier['phase']and sample['sequence']<closed['sequence']<resume['sequence']<barrier['sequence'],'terminal peer causal references differ')
+            need(peer['processIdentity']==observation['processIdentity'],'terminal peer held process identity differs')
+            rows=peer['statOriginals'];need(isinstance(rows,list)and len(rows)==2 and rows[0]==rows[1],'terminal peer dual stat originals differ')
+            for row in rows:
+                need(isinstance(row,dict)and isinstance(row.get('data'),str),'terminal peer stat missing')
+                raw=row['data'];data=raw.encode();identity(row['identity'])
+                need(row['identity']==observation['statOriginals'][0]['identity']and row['bytes']==len(data)<=4096 and hashlib.sha256(data).hexdigest()==row['sha256'],'terminal peer held stat identity/bytes differ')
+                end=raw.rfind(')');fields=raw[end+2:].split();need(raw.startswith(str(pid)+' (')and end>0 and len(fields)>=20 and fields[0]=='Z'and fields[19]==observation['processStarttime'],'terminal peer must retain same actual zombie lifetime')
+        return {row['pid']for row in peers}
     def terminal_close(self,row,barrier):
         pid=row['pid'];sample=self.terminal_samples.get(pid)
         need(sample is not None and row.get('originalSequence')==sample['row']['sequence'] and row.get('eventSequence')==sample['event']['sequence'],'terminal close lacks identical early observation')
         need(barrier.get('kind')=='all-stop-barrier' and barrier.get('sequence')==row.get('barrierSequence') and barrier.get('phase')==row.get('phase')==sample['row'].get('phase'),'terminal close lacks same-phase peer barrier')
         need(type(row.get('sequence')) is int and sample['row']['sequence']<barrier['sequence']<row['sequence'],'terminal peer barrier must follow the early own-stop snapshot')
-        live=sorted(set(self.parents)-self.waited-set(self.terminal_waits))
+        live=sorted(set(self.parents)-self.waited-set(self.terminal_waits)-self.terminal_peers(barrier))
         need(barrier.get('pids')==live and barrier.get('osStates')==['t']*len(live),'terminal close peer stop universe incomplete')
         wait=self.terminal_waits.get(pid)
         need(row.get('actualWaitSequence')==(wait['sequence'] if wait else None),'terminal close actual wait reference differs')
@@ -568,7 +594,7 @@ class ProcessAuthorityInterval:
         pid=row['pid'];closed=self.terminal_closed_rows.get(pid)
         need(closed is not None and pid in self.closed and pid not in self.waited and pid not in self.terminal_resumed,'terminal resume outside its owned closed boundary')
         need(row.get('request')=='PTRACE_SYSCALL' and type(row.get('signal')) is int and row['signal']==0 and row.get('originalSequence')==closed['originalSequence'] and row.get('closeSequence')==closed['sequence']<row['sequence'],'terminal resume lacks exact signal-zero primitive/causality')
-        self.terminal_resumed.add(pid)
+        self.terminal_resumed.add(pid);self.terminal_resume_rows[pid]=dict(row)
     def syscall(self,row):
         need(not self.setresuid_pending,'another syscall before setresuid transition consumed')
         need(row['pid'] in self.samples and row['pid'] not in self.closed and row['pid'] not in self.waited and row['pid'] not in self.terminal_messages and row['pid'] not in self.exec_pending and row['pid'] not in self.exit_pending,'syscall resumed outside live authority boundary')

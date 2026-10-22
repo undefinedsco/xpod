@@ -34,7 +34,7 @@ def cstring(pid,address):
 
 class RegisterVector(ctypes.Structure):
     _fields_=[('base',ctypes.c_void_p),('length',ctypes.c_size_t)]
-def deny_io_uring_setup(pid,arch,nr):
+def deny_io_uring_setup(pid,arch,nr,*,model='explicit-kernel-enosys-denial-v1'):
     """Change only the syscall number at its held entry stop; never resume."""
     regset,size,offset,width=bindings.denied_io_uring_register_layout(arch)
     assert nr==425,'only reviewed setup denial supported'
@@ -43,9 +43,9 @@ def deny_io_uring_setup(pid,arch,nr):
         trace(0x4204,pid,regset,ctypes.byref(vector))
         assert vector.length==size,'kernel returned a different register layout'
         return bytes(buffer.raw)
-    before=read();after=before[:offset]+b'\xff'*width+before[offset+width:]
-    bindings.verify_denied_io_uring_registers(arch,nr,before,after)
+    before=read();after=before[:offset]+bindings.denied_io_uring_substitute(model,width)+before[offset+width:]
+    bindings.verify_denied_io_uring_registers(arch,nr,before,after,model=model)
     buffer=ctypes.create_string_buffer(after,size);vector=RegisterVector(ctypes.cast(buffer,ctypes.c_void_p),size)
     trace(0x4205,pid,regset,ctypes.byref(vector))
-    actual=read();description=bindings.verify_denied_io_uring_registers(arch,nr,before,actual)
+    actual=read();description=bindings.verify_denied_io_uring_registers(arch,nr,before,actual,model=model)
     return dict(**description,beforeRegistersHex=before.hex(),afterRegistersHex=actual.hex())

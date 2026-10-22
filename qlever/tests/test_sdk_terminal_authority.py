@@ -53,6 +53,33 @@ class Tests(unittest.TestCase):
     o=rows[5]['observation'];data=o['statOriginals'][0]['data'].replace(') t ',') Z ');row=f.original(data,91);o['statOriginals']=[row,row]
    with self.subTest(change=change),self.assertRaises((ValueError,KeyError)):self.inspect(rows)
 
+ def peer_fixture(self):
+  rows=self.fixture()[:8];rows[0]['exitAuthorityModel']='actual-selected-exit-stop-held-terminal-peers-v2'
+  rows.append(dict(kind='actual-terminal-exit-resume',pid=10,originalSequence=6,closeSequence=8,request='PTRACE_SYSCALL',signal=0,sequence=9,phase='configure'))
+  original=rows[5]['observation'];raw=original['statOriginals'][0]['data'].replace(') t ',') Z ');stat=f.original(raw,91)
+  peer=dict(pid=10,originalSequence=6,closeSequence=8,resumeSequence=9,processIdentity=original['processIdentity'],statOriginals=[stat,stat])
+  rows.append(dict(kind='all-stop-barrier',pids=[],osStates=[],terminalPeers=[peer],sequence=10,phase='configure'))
+  rows.append(dict(kind='actual-wait-exit',pid=10,returnCode=0,waitStatus=0,sequence=11,phase='configure'))
+  return rows
+ def test_v2_held_terminal_peer_is_a_nonwriter_until_its_actual_wait(self):
+  report=self.inspect(self.peer_fixture());self.assertFalse(report['overallSdkSourceVerified'])
+  self.assertEqual(report['toolchainProcessAuthorityIntervals'][0]['trackedProcesses'],1)
+ def test_terminal_peer_cannot_replace_live_authority_or_omit_actual_wait(self):
+  for mutation in ['v1','bad-original','bad-close','bad-resume','bad-process','bad-stat-identity','running','reuse','missing-wait','unknown-peer','duplicate-peer']:
+   rows=self.peer_fixture();peer=rows[9]['terminalPeers'][0]
+   if mutation=='v1':rows[0]['exitAuthorityModel']='actual-selected-exit-stop-before-peer-barrier-v1'
+   elif mutation=='bad-original':peer['originalSequence']=1
+   elif mutation=='bad-close':peer['closeSequence']=1
+   elif mutation=='bad-resume':peer['resumeSequence']=1
+   elif mutation=='bad-process':peer['processIdentity']=[1,999,0o40755,0,0,0]
+   elif mutation=='bad-stat-identity':peer['statOriginals']=[dict(peer['statOriginals'][0],identity=[1,999,0o100444,0,0,0])]*2
+   elif mutation in ['running','reuse']:
+    raw=peer['statOriginals'][0]['data'].replace(') Z ',') R ')if mutation=='running'else peer['statOriginals'][0]['data'].replace('123','124')
+    peer['statOriginals']=[f.original(raw,91)]*2
+   elif mutation=='missing-wait':rows.pop()
+   elif mutation=='unknown-peer':peer['pid']=11
+   elif mutation=='duplicate-peer':rows[9]['terminalPeers'].append(copy.deepcopy(peer))
+   with self.subTest(mutation=mutation),self.assertRaises((ValueError,KeyError)):self.inspect(rows)
  def test_actual_backend_captures_strict_exit_before_peer_barrier_and_actual_reap(self):
   rows=self.fixture();observation=copy.deepcopy(rows[5]['observation']);o=object.__new__(backend.Observer);o.generated_vma=None;o.generated_vma_output=False;o.tasks={10:dict(stopped=False,exited=False,entry=None,initial=False)};o.process_authority=True;o.terminal_exit_evidence=True;o.capture_toolchain=False;o.shared_tasks=False;o.exclusive=None;o.root=10;o.current_phase='configure';o.wait_references=[];o.rows=[];o.check=lambda:None;o.tool_metadata_bytes=4194304;o.authority_handles=object();calls=[]
   def emit(row):

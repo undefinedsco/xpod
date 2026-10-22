@@ -42,6 +42,17 @@ class Tests(unittest.TestCase):
    consumer=copy.deepcopy(self.consumer);consumer['identity'][index]+=1
    with self.assertRaises(ValueError):join(self.producer,consumer,[self.rename,self.chmod])
   with self.assertRaises(ValueError):join(self.producer,dict(self.consumer,path='/wrong'),[self.rename,self.chmod])
+ def test_generated_unmap_checkpoint_uses_the_same_exact_metadata_chain(self):
+  producer=dict(self.producer,kind='generated-vma-operation-exit',operation='unmap')
+  rename=copy.deepcopy(self.rename);rename[0]['generatedCheckpointSequence']=rename[0].pop('producerCaptureSequence')
+  self.assertEqual(join(producer,self.consumer,[rename,self.chmod]),[20,30])
+  for mutation in ['wrong-checkpoint','ordinary-reference','both-references','missing-change']:
+   changed=copy.deepcopy(rename)
+   if mutation=='wrong-checkpoint':changed[0]['generatedCheckpointSequence']=9
+   elif mutation=='ordinary-reference':changed[0]['producerCaptureSequence']=changed[0].pop('generatedCheckpointSequence')
+   elif mutation=='both-references':changed[0]['producerCaptureSequence']=10
+   with self.subTest(mutation=mutation),self.assertRaises(ValueError):
+    join(producer,self.consumer,[changed]if mutation=='missing-change'else [changed,self.chmod])
  def test_unknown_operation_cannot_fill_ctime_gap(self):
   rename=copy.deepcopy(self.rename);rename[0]['kind']='retained-fd-rename-binding'
   with self.assertRaises(ValueError):join(self.producer,self.consumer,[rename,self.chmod])
