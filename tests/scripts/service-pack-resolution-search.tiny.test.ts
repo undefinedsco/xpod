@@ -23,6 +23,11 @@ test('actual host Node full search originals replay and omitted/extra/changed fi
  expect(edit(c=>{const r=c.records.find((r:any)=>r.role==='actual-node-resolution');r.searchRoots.push('/unclaimed/node_modules');})).toThrow('search vector');
  expect(edit(c=>{const r=c.records.find((r:any)=>r.role==='actual-node-resolution');r.probes[0].path='/other/node_modules/'+r.name;})).toThrow('prefix');
  expect(edit(c=>{const r=c.records.find((r:any)=>r.role==='actual-node-resolution');r.probes.push({...r.probes[r.probes.length-1]});c.records[c.records.indexOf(r)+1].observations.push({...c.records[c.records.indexOf(r)+1].observations[c.records[c.records.indexOf(r)+1].observations.length-1]});})).toThrow();
- const legacy=structuredClone(actual.collection);delete legacy.details.resolutionSearchModel;for(const r of legacy.records)if(r.role==='actual-node-resolution'){delete r.searchRoots;delete r.globalPaths;}expect(run(legacy).dependencySearchCustodyVerified).toBe(false);
+ const legacy=structuredClone(actual.collection);delete legacy.details.resolutionSearchModel;for(const r of legacy.records)if(r.role==='actual-node-resolution'){delete r.searchRoots;delete r.globalPaths;}
+ // A retained Linux worker declaration requires its matching search model.
+ if(legacy.details.nodeRuntimeModel==='actual-linux-node-worker-executable-v1')expect(()=>run(legacy)).toThrow('same actual runtime search model');
+ delete legacy.details.nodeRuntimeModel;
+ legacy.records=legacy.records.filter((row:any)=>!['actual-node-runtime-before','actual-node-runtime-after'].includes(row.role));
+ expect(run(legacy).dependencySearchCustodyVerified).toBe(false);
  }finally{fs.rmSync(root,{recursive:true,force:true});}
 });
