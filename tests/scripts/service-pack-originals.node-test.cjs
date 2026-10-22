@@ -19,7 +19,7 @@ test('preexpired, oversized actual originals and retained budget exhaustion neve
 test('path replacement during a held-FD read is rejected before registering a false original',()=>fixture(root=>{
  const file=path.join(root,'package.json');fs.writeFileSync(file,'{"name":"first"}');const out=path.join(root,'originals'),writer=createServicePackOriginals({directory:out,sourceSha:'a'.repeat(40),check(){},reserveBytes(){}});const realRead=fs.readSync;let replaced=false;
  fs.readSync=function(...args){const n=realRead.apply(fs,args);if(!replaced){replaced=true;fs.renameSync(file,file+'.old');fs.writeFileSync(file,'{"name":"other"}');}return n;};
- try{assert.throws(()=>writer.readManifest(file,'input'),/identity drift/);}finally{fs.readSync=realRead;}
+ try{assert.throws(()=>writer.readManifest(file,'input'),/identity drift|held\/named parent changed/);}finally{fs.readSync=realRead;}
  assert.deepEqual(fs.readdirSync(path.join(out,'objects')),[]);
 }));
 test('seed and final retain two physical full bodies even when bytes match',()=>fixture(root=>{
