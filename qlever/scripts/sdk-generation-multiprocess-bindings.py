@@ -328,7 +328,7 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
     maximum_file=limits['shardBytes'] if limits else 1024**2
     maximum_total=limits['sourceMaterialBytes'] if limits else 16*1024**2
     entity_model=None;entity_model_initialized=False;storage_origins={};storage_entities={};storage_aliases={};pending_storage_rows=[];original_cache={};observed_entity_names=set();retained_entries=set();phase_tracking=[];generated_verifier=None;generated_module=None
-    denial_mode=False;denied_operations={};setresuid_mode=False;identity_mode=False;terminal_mode=False;setresuid_operations={}
+    denial_mode=False;denied_operations={};setresuid_mode=False;identity_mode=False;queued_identity_mode=False;stopped_alias_mode=False;terminal_mode=False;setresuid_operations={}
     shared_mode=False;owners={};exec_fd_events={};vfork_events={};vfork_holds={};child_bindings={};wait_rows={}
     live=set();last=0;entries={};exits={};barriers={};caps={};paths={};renames=[];consumers=[];source_reads=[];total=0;capture_total=0;exclusive=None;root_codes={};clone_flags=set();clone_flag_values={}
     alias_close_windows={};alias_close_exits=set()
@@ -404,6 +404,35 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
         except ValueError as error:return dict(unresolved='actual-ELF-interpreter-unclassified:'+str(error)[:256])
         finally:
             if hasattr(original,'close'):original.close()
+    def write_alias_inventory(value,identity,pid,fd):
+        need(stopped_alias_mode and isinstance(value,dict),'stopped alias inventory requires explicit model')
+        need(value.get('scope')=='all live stopped tracked FD tables; only selected syscall resumes','stopped alias scope differs')
+        need(value.get('taskOwnership')==[dict(tid=owner,**owners[owner]) for owner in sorted(live)],'stopped alias task ownership differs')
+        aliases=value.get('aliases');need(isinstance(aliases,list) and 1<=len(aliases)<=64,'bounded complete alias inventory required')
+        seen=set();selected=False
+        for alias in aliases:
+            owner=alias.get('pid');slot=alias.get('fd');need(owner in live and type(slot) is int and 0<=slot and alias.get('fdTable')==owners[owner]['fdTable'],'alias has unknown owner/FD table')
+            key=(alias['fdTable'],slot);need(key not in seen,'duplicate shared-table alias');seen.add(key)
+            need(alias.get('identity')==identity and type(alias.get('flags')) is int and alias['flags']&3 in [1,2] and alias.get('accessMode')==alias['flags']&3,'alias inode or writable access differs')
+            selected=selected or owner==pid and slot==fd
+        need(selected,'selected writer absent from complete alias inventory')
+        tables=value.get('descriptorTables');need(isinstance(tables,list) and [table.get('pid') for table in tables]==sorted(live),'complete stopped FD table census missing')
+        shared={};derived={}
+        for table in tables:
+            owner=table['pid'];table_id=owners[owner]['fdTable'];need(table.get('fdTable')==table_id,'census FD table differs from actual clone lineage')
+            slots=table.get('descriptors');need(isinstance(slots,list) and len(slots)<=1024,'bounded complete FD slots required')
+            prior=shared.setdefault(table_id,slots);need(prior==slots,'shared FD table census differs between stopped owners')
+            seen_slots=set()
+            for descriptor in slots:
+                need(isinstance(descriptor,list) and len(descriptor)==3,'exact FD census descriptor required')
+                slot,actual,flags=descriptor;need(type(slot) is int and slot>=0 and slot not in seen_slots and isinstance(actual,list) and len(actual)==6 and all(type(n) is int for n in actual) and type(flags) is int,'invalid FD census slot/identity/flags');seen_slots.add(slot)
+                if actual[:2]!=identity[:2] or flags&3==0:continue
+                need(actual==identity,'same-inode alias census identity differs')
+                key=(table_id,slot);alias=dict(pid=owner,fd=slot,identity=actual,flags=flags,accessMode=flags&3,fdTable=table_id)
+                if owner==pid and slot==fd:derived[key]=alias
+                else:derived.setdefault(key,alias)
+        need(list(derived.values())==aliases,'writable aliases differ from complete stopped FD census')
+        return aliases
     for phase,lines in phase_lines:
         need(not live,'prior actual process tree has not closed');roots=[];waits=[]
         for raw in lines:
@@ -472,12 +501,13 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                         import importlib.util
                         from pathlib import Path
                         generated_spec=importlib.util.spec_from_file_location('generated_vma_replay',Path(__file__).with_name('sdk-generated-vma-originals.py'));generated_module=importlib.util.module_from_spec(generated_spec);generated_spec.loader.exec_module(generated_module)
-                    need(generated_model in [generated_module.LEGACY_MODEL,generated_module.KERNEL_LINK_MODEL,generated_module.MODEL,generated_module.COHORT_MODEL,generated_module.PRIVATE_WAKE_MODEL,generated_module.PRIVATE_WAIT_MODEL] and row.get('generatedVmaBuildRoot')==generated_module.BUILD_ROOT and shared_mode,'unknown/unowned generated VMA model')
+                    need(generated_model in [generated_module.LEGACY_MODEL,generated_module.KERNEL_LINK_MODEL,generated_module.MODEL,generated_module.COHORT_MODEL,generated_module.PRIVATE_WAKE_MODEL,generated_module.PRIVATE_WAIT_MODEL,generated_module.COORDINATED_WAIT_MODEL] and row.get('generatedVmaBuildRoot')==generated_module.BUILD_ROOT and shared_mode,'unknown/unowned generated VMA model')
                     if generated_verifier is not None:need(generated_verifier.model==generated_model,'generated VMA evidence model changed across roots')
-                    if generated_verifier is None:generated_verifier=generated_module.Verifier(capture_data,tool_maps,limits.get('metadataBytes',4*1024**2) if limits else 4*1024**2,model=generated_model,read_blocks=lambda ref:original_blocks(ref),maximum_file=maximum_file)
+                    if generated_verifier is None:generated_verifier=generated_module.create_verifier(generated_module,capture_data,tool_maps,limits.get('metadataBytes',4*1024**2) if limits else 4*1024**2,model=generated_model,read_blocks=lambda ref:original_blocks(ref),maximum_file=maximum_file)
                 else:need(generated_verifier is None,'generated VMA model changed across actual roots')
                 model=row.get('processAuthorityModel');need(model is None or model==provider_module().AUTHORITY_MODEL,'unknown process authority model');process_interval=provider_module().ProcessAuthorityInterval(row['pid']) if model is not None else None
-                need(not setresuid_operations,'unclosed setresuid transition at new root');uid_model=row.get('setresuidNoopModel');need(uid_model in [None,'actual-stopped-setresuid-noop-v1'],'unknown setresuid operation model');identity_model=row.get('setresIdentityNoopModel');need(identity_model in [None,'actual-stopped-setres-identity-noop-v1'] and not (identity_model and uid_model),'unknown or mixed identity operation model');identity_mode=identity_model is not None;setresuid_mode=uid_model is not None or identity_mode;need(not setresuid_mode or process_interval is not None,'setresuid model requires actual process authority interval')
+                need(not setresuid_operations,'unclosed setresuid transition at new root');uid_model=row.get('setresuidNoopModel');need(uid_model in [None,'actual-stopped-setresuid-noop-v1'],'unknown setresuid operation model');identity_model=row.get('setresIdentityNoopModel');need(identity_model in [None,'actual-stopped-setres-identity-noop-v1','actual-stopped-setres-identity-noop-queued-v2'] and not (identity_model and uid_model),'unknown or mixed identity operation model');identity_mode=identity_model is not None;queued_identity_mode=identity_model=='actual-stopped-setres-identity-noop-queued-v2';setresuid_mode=uid_model is not None or identity_mode;need(not setresuid_mode or process_interval is not None,'setresuid model requires actual process authority interval')
+                alias_model=row.get('stoppedWriterAliasModel');need(alias_model in [None,'all-stop-exclusive-write-aliases-v1'],'unknown stopped writer alias model');stopped_alias_mode=alias_model is not None;need(not stopped_alias_mode or shared_mode and process_interval is not None,'stopped aliases require complete task/process authority')
                 terminal_model=row.get('exitAuthorityModel');need(terminal_model in [None,'actual-selected-exit-stop-before-peer-barrier-v1'],'unknown terminal authority model');terminal_mode=terminal_model is not None;need(not terminal_mode or process_interval is not None,'terminal model requires actual authority interval')
                 if shared_mode:need(row['tgid']==row['fdTable']==row['pid'],'initial root ownership differs');owners[row['pid']]=dict(tgid=row['tgid'],fdTable=row['fdTable'])
             elif kind=='actual-child-binding':
@@ -559,6 +589,13 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                     need(displaced['original']['path'] not in [replacement['original']['path'],window['beforeOriginal']['path'],row['afterOriginal']['path']] and capture_data(displaced['original'])==capture_data(replacement['original']),'retained rename displaced original differs')
                     need(write_original_sequences.get(tuple(row['afterOriginal'][key] for key in ['path','bytes','sha256']),0)==row['exitSequence']+1 and write_original_sequences.get(tuple(displaced['original'][key] for key in ['path','bytes','sha256']),0)==row['exitSequence']+2==row['sequence']-1,'retained rename displaced snapshot ordering differs')
                 rename_transitions[window['sequence']]=(window,row);active_rename['state']='completed'
+            elif kind.startswith('generated-kernel-wait-'):
+                need(generated_verifier is not None and generated_verifier.model==generated_module.COORDINATED_WAIT_MODEL,'coordinated wait requires explicit model')
+                need(kind in ['generated-kernel-wait-window','generated-kernel-wait-waiter-resume','generated-kernel-wait-quiescent','generated-kernel-wait-peer-resume','generated-kernel-wait-peer-stopped','generated-kernel-wait-wake-window','generated-kernel-wait-waker-resume','generated-kernel-wait-closed'],'unknown coordinated wait record')
+                if kind=='generated-kernel-wait-window':retained_entries.add(row['entrySequence'])
+                else:need(generated_verifier.scheduled_active,'coordinated record outside established wait interval')
+                if kind=='generated-kernel-wait-quiescent':
+                    need(exclusive is not None and exclusive[0]==row['observation']['pid'],'kernel quiescence outside selected exclusive waiter');exclusive=None
             elif kind=='exclusive-generated-vma-resume':
                 need(generated_verifier is not None and exclusive is None,'generated VMA exclusive operation model missing');exclusive=(row['pid'],row['entrySequence'])
             elif kind in ['generated-vma-create-path','generated-vma-operation-window','generated-vma-selected-fd-binding','generated-vma-kernel-link-original','generated-vma-operation-exit','generated-vma-consumer-binding']:
@@ -582,13 +619,17 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                 need(entry and barrier and entry['pid']==row['pid'] and row['pid'] in barrier['pids'] and entry['nr']==policy(entry['arch'])['write'] and entry['args'][0]==row['fd'],'actual write entry/barrier differs')
                 need(all(type(row[key]) is int and 0<=row[key]<=maximum_file for key in ['position','offset']) and type(entry['args'][2]) is int and 0<=entry['args'][2]<=maximum_file and row['offset']+entry['args'][2]<=maximum_file,'exact bounded write position/offset/count required')
                 need(row['flags']&3==2 and row['writers']==[dict(pid=row['pid'],fd=row['fd'])] and row['offset']==(row['beforeIdentity'][3] if row['flags']&1024 else row['position']),'actual write has another alias or offset differs')
+                if stopped_alias_mode:
+                    need(barrier['pids']==sorted(live) and barrier['osStates']==['t']*len(live),'alias write lacks complete stopped universe')
+                    write_alias_inventory(row.get('stoppedAliasInventory'),row['beforeIdentity'],row['pid'],row['fd'])
+                else:need('stoppedAliasInventory' not in row,'alias write requires explicit model')
                 delta=row.get('format') in ['bounded-write-delta-v1','bounded-append-effect-v1'];need(row.get('format') in [None,'bounded-write-delta-v1','bounded-append-effect-v1'],'unknown write evidence format')
                 before=(row['before']['bytes'],row['before']['sha256']) if delta else capture_data(row['before']);buffer=capture_data(row['buffer']);need(before[0]==row['beforeIdentity'][3] and buffer[0]==entry['args'][2],'write originals differ from actual dimensions')
                 baseline=row['baseline']
                 if baseline=='empty':need(before[0]==0,'nonempty write preimage has no original authority')
                 elif baseline in write_transitions:
                     prior=write_transitions[baseline];need(prior['afterIdentity']==row['beforeIdentity'] and ((prior['after']['bytes'],prior['after']['sha256']) if 'path' not in prior['after'] else capture_data(prior['after']))==before,'write preimage differs from previous actual transition')
-                elif generated_verifier is not None and generated_verifier.model==generated_module.MODEL and baseline in generated_verifier.origins:
+                elif generated_verifier is not None and generated_verifier.model in [generated_module.MODEL,generated_module.COORDINATED_WAIT_MODEL] and baseline in generated_verifier.origins:
                     generated_verifier.write_baseline(row,before)
                 else:
                     prior=prepared.get(baseline) or caps.get(baseline);need(prior and prior[0]['identity']==row['beforeIdentity'] and prior[1]==before,'write preimage has no retained original')
@@ -619,6 +660,10 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                 window=write_windows.get(row['windowSequence']);exit=exits.get(row['entrySequence'])
                 need(window and exclusive==(row['pid'],row['entrySequence']) and window['entrySequence']==row['entrySequence'] and window['pid']==row['pid'] and exit and exit['sequence']==row['exitSequence'],'actual write exit/window differs')
                 need(type(row['result']) is int and type(exit['result']) is int and not exit['isError'] and row['isError'] is False and row['result']==exit['result'] and 0<=row['result']<=window['buffer']['bytes'] and row['afterIdentity'][:3]==window['beforeIdentity'][:3],'actual write result/identity differs')
+                if 'stoppedAliasInventory' in window:
+                    after_aliases=write_alias_inventory(row.get('stoppedAliasInventoryAfter'),row['afterIdentity'],row['pid'],window['fd'])
+                    need([{**alias,'identity':window['beforeIdentity']} for alias in after_aliases]==window['stoppedAliasInventory']['aliases'],'alias bindings changed during exclusive syscall')
+                else:need('stoppedAliasInventoryAfter' not in row,'unexpected alias postimage')
                 def blocks(ref):
                     value=read_original(ref['path'],maximum_file)
                     return (value[i:i+65536] for i in range(0,len(value),65536)) if isinstance(value,bytes) else value
@@ -675,7 +720,7 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
             elif kind=='exclusive-captured-syscall-resume':
                 need(exclusive is None and row['captureSequence'] in caps and caps[row['captureSequence']][0]['entrySequence']==row['entrySequence'],'exclusive capture resume differs');exclusive=(row['pid'],row['entrySequence'])
             elif kind=='exclusive-captured-syscall-exit':
-                need(exclusive==(row['pid'],row['entrySequence']) and row['entrySequence'] in exits,'exclusive read/close stop boundary differs');exclusive=None
+                need((exclusive==(row['pid'],row['entrySequence']) or generated_verifier is not None and getattr(generated_verifier,'scheduled_active',False) and exclusive is None) and row['entrySequence'] in exits,'exclusive read/close stop boundary differs');exclusive=None
                 if active_rename is not None:need(active_rename['state']=='completed','retained rename closed before verified transition');active_rename=None
             elif kind in ['setresuid-noop-entry-original','identity-noop-entry-original']:
                 pending=setresuid_operations.get(row.get('pid'));entry=entries.get(row.get('entrySequence'));barrier=barriers.get(row.get('barrierSequence'))
@@ -724,7 +769,7 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                         denied_operations[row['pid']]=dict(state='entry',entry=row);retained_entries.add(row['sequence'])
                     else:need(row['nr'] not in rules['forbidden'],'unsupported asynchronous/external writer syscall')
                     if setresuid_mode and (provider_module().identity_noop_axis(row['arch'],row['nr']) in ['Uid','Gid'] if identity_mode else provider_module().identity_noop_axis(row['arch'],row['nr'])=='Uid'):
-                        need(not setresuid_operations and exclusive is None,'overlapping setresuid operation')
+                        need(exclusive is None and row['pid'] not in setresuid_operations and (queued_identity_mode and all(value['state']=='entry' for value in setresuid_operations.values()) or not setresuid_operations),'overlapping setresuid operation')
                         setresuid_operations[row['pid']]=dict(state='entry',entry=row);retained_entries.add(row['sequence'])
                     elif process_interval is not None:process_interval.syscall(row)
                     if row['nr']==rules['clone']:
@@ -737,6 +782,7 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                         need(not(row['nr']==436 and row['args'][2]&2),'unknown close_range UNSHARE table ownership')
                         if row['nr'] in ([59,322] if row['arch']==0xc000003e else [221,281]):need(row['pid']==owners[row['pid']]['tgid'],'nonleader exec TID replacement unsupported')
                     entries[row['sequence']]=row
+                    if generated_verifier is not None and getattr(generated_verifier,'scheduled_active',False):retained_entries.add(row['sequence'])
                     if row['nr'] in rules['exec'] or row['nr'] in rules['protect'] and row['args'][2]&4 or row['nr']==rules['mmap'] and (not(row['args'][3]&0x20) or row['args'][2]&4):retained_entries.add(row['sequence'])
                 elif row['op']=='exit':
                     if 'entrySequence' in row:
@@ -982,5 +1028,5 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
             actual=covered.get(path)
             if actual is None:pending.append('actual-successful-generated-consumer-missing:'+path)
             else:need(actual['bytes']==expected['bytes'] and actual['sha256']==expected['sha256'],'actual generated consumer differs from selected full-shard input')
-    return dict(**(dict(verifiedPrivateWakeEntrySequences=list(generated_verifier.private_wakes),**(dict(verifiedPrivateWaitMismatchEntrySequences=list(generated_verifier.private_waits)) if generated_verifier.model==generated_module.PRIVATE_WAIT_MODEL else {})) if generated_verifier is not None and generated_verifier.model in generated_module.WAKE_MODELS else {}),schemaVersion=1,kind='all-stop-CMake-generated-byte-mechanics',observedGeneratedWritableMapCheckpoints=len(generated_verifier.checkpoints) if generated_verifier is not None else 0,generatedMappedConsumerByteCustodyVerified=bool(mapped_outputs),selectedGeneratedConsumerByteCustodyVerified=not pending,outputs=sorted(covered.values(),key=lambda row:row['path']),observedSourceReadCaptures=len(source_reads),observedPreparedDependencyReadCaptures=dependency_reads,preparedDependencySourceAuthorityVerified=False,preparedDependencyPending=(['independent-FetchContent-dependency-stage-and-Git-or-URL-source-authority-unverified'] if dependency_roots else []),pending=pending,overallSdkSourceVerified=False,
+    return dict(**(dict(verifiedCoordinatedWaitIntervals=list(getattr(generated_verifier,'coordinated_waits',[]))) if generated_verifier is not None and generated_verifier.model==generated_module.COORDINATED_WAIT_MODEL else {}),**(dict(verifiedPrivateWakeEntrySequences=list(generated_verifier.private_wakes),**(dict(verifiedPrivateWaitMismatchEntrySequences=list(generated_verifier.private_waits)) if generated_verifier.model in generated_module.PRIVATE_WAIT_MODELS else {})) if generated_verifier is not None and generated_verifier.model in generated_module.WAKE_MODELS else {}),schemaVersion=1,kind='all-stop-CMake-generated-byte-mechanics',observedGeneratedWritableMapCheckpoints=len(generated_verifier.checkpoints) if generated_verifier is not None else 0,generatedMappedConsumerByteCustodyVerified=bool(mapped_outputs),selectedGeneratedConsumerByteCustodyVerified=not pending,outputs=sorted(covered.values(),key=lambda row:row['path']),observedSourceReadCaptures=len(source_reads),observedPreparedDependencyReadCaptures=dependency_reads,preparedDependencySourceAuthorityVerified=False,preparedDependencyPending=(['independent-FetchContent-dependency-stage-and-Git-or-URL-source-authority-unverified'] if dependency_roots else []),pending=pending,overallSdkSourceVerified=False,
                 observedAliasOnlyCloses=len(alias_close_exits),observedActualModeTransitions=len(mode_transitions),observedNamedRetainedFdBindings=len(namespaces),observedActualWriteTransitions=len(write_transitions),observedEmptyReadEofWindows=len(empty_eofs),toolchainProcessAuthorityIntervals=process_intervals,toolchainProcessAuthorityIntervalVerified=bool(process_intervals) and all(row.get('model') is not None for row in process_intervals),toolchainProcessAuthorityPending=['toolchain-provider-namespace-external-writer-and-backing-snapshot-authority-unverified']+([] if process_intervals and all(row.get('model') is not None for row in process_intervals) else ['toolchain-owned-process-authority-interval-originals-unavailable']),toolchainFileSnapshots=list(tool_files.values()),toolchainOperationCoverage=tool_coverage.finish(sorted(tool_pending),sorted(tool_provider_pending)),toolchainActualExecImages=tool_execs,toolchainActualFileMappings=tool_mappings,toolchainObservationSha256=tool_digest.hexdigest(),toolchainStopProviderPending=sorted(tool_provider_pending),toolchainPending=sorted(tool_pending|tool_provider_pending|({'toolchain-executed-byte-immutability-and-full-source-authority-unverified'} if tool_execs else set())),toolchainSourceClosureVerified=False,preparedInputConsumers=list(prepared_covered.values()),preparedInputConsumerBytesVerified=bool(prepared_covered),phaseTracking=phase_tracking,scope='actual producer-close/rename/consumer bytes only; reviewed observer execution/Git/source/runtime authority independent')

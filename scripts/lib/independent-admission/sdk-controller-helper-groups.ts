@@ -1,5 +1,5 @@
 /** Pure exact controller-byte tuple selection; no original capability issuer. */
-const MAXIMUM_DECLARED_HELPER_GROUPS = 21;
+const MAXIMUM_DECLARED_HELPER_GROUPS = 22;
 const MAXIMUM_OBSERVED_HELPERS = 32;
 export function selectSdkControllerHelperGroup(groups:readonly (readonly (readonly [string,string])[])[],observed:ReadonlyMap<string,string>):readonly (readonly [string,string])[]{
  if(!groups.length||groups.length>MAXIMUM_DECLARED_HELPER_GROUPS||observed.size>MAXIMUM_OBSERVED_HELPERS)throw Error('SDK controller complete helper group differs');

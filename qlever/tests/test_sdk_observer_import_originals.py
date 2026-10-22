@@ -4,9 +4,9 @@ from pathlib import Path
 from unittest.mock import patch
 ROOT=Path(__file__).resolve().parents[2]
 spec=importlib.util.spec_from_file_location('observer_imports',ROOT/'qlever/scripts/sdk-toolchain-materials.py');m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
-NAMES=['sdk-ptrace-execution.py','sdk-ptrace-kernel.py','sdk-execution-originals-util.py','sdk-generation-multiprocess-bindings.py','sdk-blocking-owned-wait.py','sdk-tool-provider-originals.py','sdk-generated-vma-originals.py']
+NAMES=['sdk-ptrace-execution.py','sdk-ptrace-kernel.py','sdk-execution-originals-util.py','sdk-generation-multiprocess-bindings.py','sdk-blocking-owned-wait.py','sdk-tool-provider-originals.py','sdk-generated-vma-originals.py','sdk-coordinated-wait.py']
 class Tests(unittest.TestCase):
- def test_finalize_preserves_all_seven_real_source_bodies_and_refs(self):
+ def test_finalize_preserves_complete_current_source_bodies_and_refs(self):
   parent=ROOT/'.test-data/observer-imports';parent.mkdir(parents=True,exist_ok=True)
   with tempfile.TemporaryDirectory(dir=parent) as tmp:
    root=Path(tmp);sources=root/'source';sources.mkdir();out=root/'out';out.mkdir();session=m.Session.__new__(m.Session);session.out=out;session.directory=out/'toolchain-execution';session.directory.mkdir();session.phases=[];session.results=[];session.budget=types.SimpleNamespace(check=lambda:None,deadline_unix=123);mount=session.directory/'mount';mount.write_bytes(b'actual mount placeholder');session.observer=types.SimpleNamespace(source_provider_originals=dict(mountinfo=dict(path='mount')))
@@ -20,5 +20,5 @@ class Tests(unittest.TestCase):
    # A real phase uses the same observer list; no caller supplies its file set.
    (sources/NAMES[-1]).unlink();out2=root/'missing';out2.mkdir();session.out=out2;session.directory=out2/'toolchain-execution';session.directory.mkdir()
    with patch.object(m,'HERE',sources):
-    with self.assertRaisesRegex(ValueError,'sdk-generated-vma-originals'):session.finalize(inner,{},dict(files=[],pending=[]))
+    with self.assertRaisesRegex(ValueError,'sdk-coordinated-wait'):session.finalize(inner,{},dict(files=[],pending=[]))
 if __name__=='__main__':unittest.main()

@@ -19,6 +19,7 @@ import stat
 import sys
 import time
 import threading
+from types import SimpleNamespace
 ROOT=Path(__file__).resolve().parents[2]
 def load(name,path):
     spec=importlib.util.spec_from_file_location(name,path);value=importlib.util.module_from_spec(spec);spec.loader.exec_module(value);return value
@@ -146,7 +147,7 @@ def completed_capture_storage_census(rows,phase):
     return dict(kind='same-phase-physical-content-census',phase=phase,visitedObservations=visited,distinctPhysicalReferences=len(seen),maximumVisitedObservations=8192,maximumPhysicalReferences=4096,truncated=truncated,invalidReferenceMetadata=invalid,topBuckets=duplicates[:4],duplicateBucketCount=len(duplicates),potentialDuplicatePhysicalBytesLowerBound=sum(row['potentialDuplicatePhysicalBytes'] for row in duplicates),scope='same complete bytes/SHA storage only; no source identity, actual reuse eligibility, or IO saving proven')
 
 class Observer:
-    def __init__(self,out,source,build,*,deadline_monotonic=None,check_budget=lambda:None,maximum_bytes=32*1024**2,maximum_file_bytes=1024**2,selected_names=SELECTED,maximum_processes=128,shard_bytes=None,require_success=True,maximum_stdio_bytes=None,shared_tasks=False,capture_toolchain=False,deny_optional_io_uring=False,verified_setresuid_noop=False,verified_identity_noop=False,terminal_exit_evidence=False,generated_vma_output=False,generated_vma_shared_mm=False,generated_vma_private_wake=False,generated_vma_private_wait_mismatch=False,capture_content_entities=False):
+    def __init__(self,out,source,build,*,deadline_monotonic=None,check_budget=lambda:None,maximum_bytes=32*1024**2,maximum_file_bytes=1024**2,selected_names=SELECTED,maximum_processes=128,shard_bytes=None,require_success=True,maximum_stdio_bytes=None,shared_tasks=False,capture_toolchain=False,deny_optional_io_uring=False,verified_setresuid_noop=False,verified_identity_noop=False,terminal_exit_evidence=False,generated_vma_output=False,generated_vma_shared_mm=False,generated_vma_private_wake=False,generated_vma_private_wait_mismatch=False,capture_content_entities=False,queued_identity_noop=False,stopped_writer_aliases=False,generated_vma_coordinated_wait=False):
         self.prepared_dependency_plan=None;self.dependency_roots={};self.dependency_cache=None
         self.shared_tasks=shared_tasks
         assert type(deny_optional_io_uring) is bool
@@ -155,6 +156,12 @@ class Observer:
         assert type(verified_identity_noop) is bool and not (verified_identity_noop and verified_setresuid_noop),'one explicit identity transition model required'
         self.verified_setresuid_noop=verified_setresuid_noop
         self.verified_identity_noop=verified_identity_noop
+        assert type(queued_identity_noop) is bool and (not queued_identity_noop or verified_identity_noop and capture_toolchain),'queued identity requires actual identity/authority observation'
+        self.queued_identity_noop=queued_identity_noop
+        assert type(stopped_writer_aliases) is bool and (not stopped_writer_aliases or shared_tasks and capture_toolchain),'stopped alias writes require tracked authority and FD tables'
+        self.stopped_writer_aliases=stopped_writer_aliases
+        assert type(generated_vma_coordinated_wait) is bool and (not generated_vma_coordinated_wait or generated_vma_private_wait_mismatch and generated_vma_shared_mm),'coordinated wait requires existing stopped-MM private wait model'
+        self.generated_vma_coordinated_wait=generated_vma_coordinated_wait
         assert type(terminal_exit_evidence) is bool
         self.terminal_exit_evidence=terminal_exit_evidence
         assert type(capture_content_entities) is bool,'explicit content storage model flag required'
@@ -172,7 +179,7 @@ class Observer:
         assert type(generated_vma_private_wait_mismatch) is bool and (not generated_vma_private_wait_mismatch or generated_vma_private_wake),'wait mismatch requires complete private-wake cohort model'
         self.generated_vma_private_wait_mismatch=generated_vma_private_wait_mismatch
         self.generated_vma_shared_mm=generated_vma_shared_mm
-        self.generated_vma_output=generated_vma_output;self.generated_vma=generated_vma_module.Runtime(self) if generated_vma_output else None
+        self.generated_vma_output=generated_vma_output;self.generated_vma=generated_vma_module.create_runtime(self,SimpleNamespace(generated_vma_module=generated_vma_module,single=single,SYSCALL=SYSCALL,INTERRUPT=INTERRUPT,state=state)) if generated_vma_output else None
     def dependency_mountinfo(self):
         with open('/proc/self/mountinfo','rb') as stream:data=stream.read(self.tool_metadata_bytes+1)
         assert len(data)<=self.tool_metadata_bytes,'dependency actual mountinfo byte bound';return data
@@ -382,6 +389,28 @@ class Observer:
         aliases=self.writable_aliases(identity,target_pid,target_fd)
         assert len(aliases)==1 and aliases[0]['pid']==target_pid and aliases[0]['fd']==target_fd,'another writable FD aliases selected output inode'
         return [dict(pid=target_pid,fd=target_fd)]
+    def stopped_write_alias_inventory(self,pid,fd,identity):
+        assert self.shared_tasks and self.process_authority and not self.pausing,'stopped write aliases require initialized complete ownership'
+        ownership=self.verify_task_ownership()
+        assert all(task['stopped'] and state(other)=='t' for other,task in self.tasks.items() if not task['exited']),'write alias owner is not stopped'
+        aliases=self.writable_aliases(identity,pid,fd)
+        assert aliases and any(value['pid']==pid and value['fd']==fd for value in aliases),'selected writable FD missing from actual alias scan'
+        result=[]
+        for alias in aliases:
+            owner=alias['pid'];slot=alias['fd'];actual=probe.identity(os.stat('/proc/'+str(owner)+'/fd/'+str(slot)))
+            assert actual==identity and descriptor_flags(owner,slot)==alias['flags'],'write alias changed during all-stop inventory'
+            result.append(dict(**alias,identity=actual,fdTable=self.tasks[owner]['fdTable']))
+        tables=[]
+        for owner,task in sorted(self.tasks.items()):
+            if task['exited']:continue
+            descriptors=[]
+            for value in self.bounded_fd_slots(owner):
+                self.check();slot=int(value);actual=probe.identity(os.stat('/proc/'+str(owner)+'/fd/'+value));flags=descriptor_flags(owner,slot)
+                descriptors.append([slot,actual,flags])
+            tables.append(dict(pid=owner,fdTable=task['fdTable'],descriptors=descriptors))
+        inventory=dict(aliases=result,taskOwnership=ownership,descriptorTables=tables,scope='all live stopped tracked FD tables; only selected syscall resumes')
+        assert len(json.dumps(inventory,separators=(',',':')).encode())<=32768,'bounded complete stopped FD inventory exceeds raw-record budget'
+        return inventory
     def seal_prepared_build_inputs(self):
         # This runs once, before the first tracee is forked. Existing build
         # inputs have a different origin from a close observed by this tracer.
@@ -525,7 +554,8 @@ class Observer:
         barrier=self.barrier();entry=self.tasks[pid]['entry'];path=fdpath(pid,fd);reader=os.open('/proc/'+str(pid)+'/fd/'+str(fd),os.O_RDONLY|os.O_CLOEXEC)
         try:
             identity=probe.identity(os.fstat(reader));assert stat.S_ISREG(identity[2]) and identity[3]<=self.maximum_file_bytes
-            writers=self.sole_writer(pid,fd,identity);flags=descriptor_flags(pid,fd);assert flags&os.O_ACCMODE==os.O_RDWR
+            alias_inventory=self.stopped_write_alias_inventory(pid,fd,identity) if getattr(self,'stopped_writer_aliases',False) else None
+            writers=[dict(pid=pid,fd=fd)] if alias_inventory else self.sole_writer(pid,fd,identity);flags=descriptor_flags(pid,fd);assert flags&os.O_ACCMODE==os.O_RDWR
             position=descriptor_position(pid,fd);offset=identity[3] if flags&os.O_APPEND else position;count=entry['args'][2]
             assert count<=self.maximum_file_bytes and offset+count<=self.maximum_file_bytes,'bounded actual write range'
             generated_origin=self.generated_vma.write_baseline(pid,fd,identity,identity[3],offset) if self.generated_vma else None
@@ -555,7 +585,7 @@ class Observer:
             try:
                 self.budget_context['role']='actual-write-buffer';buffer=self.snapshot_write_original(memory,count,offset=entry['args'][1])
             finally:os.close(memory)
-            row=self.emit(dict(kind='actual-write-window',pid=pid,fd=fd,path=path,entrySequence=entry['sequence'],barrierSequence=barrier['sequence'],beforeIdentity=identity,format='bounded-append-effect-v1' if append else 'bounded-write-delta-v1',initialBefore=initial,before=before,buffer=buffer,offset=offset,position=position,flags=flags,writers=writers,baseline=baseline))
+            row=self.emit(dict(kind='actual-write-window',pid=pid,fd=fd,path=path,entrySequence=entry['sequence'],barrierSequence=barrier['sequence'],beforeIdentity=identity,format='bounded-append-effect-v1' if append else 'bounded-write-delta-v1',initialBefore=initial,before=before,buffer=buffer,offset=offset,position=position,flags=flags,writers=writers,baseline=baseline,**(dict(stoppedAliasInventory=alias_inventory) if alias_inventory else {})))
             self.budget_context={}
             if generated_origin is not None:self.tasks[pid]['generatedWriteOrigin']=generated_origin
             if append and chain is None:
@@ -573,7 +603,11 @@ class Observer:
         try:
             assert self.exclusive==(pid,entry['sequence']) and not exit['isError'] and 0<=exit['result']<=entry['args'][2],'actual write failed or returned invalid count'
             identity=probe.identity(os.fstat(held));assert identity==probe.identity(os.stat('/proc/'+str(pid)+'/fd/'+str(row['fd']))) and identity[:3]==row['beforeIdentity'][:3] and descriptor_flags(pid,row['fd'])==row['flags'],'actual writer FD changed'
-            self.sole_writer(pid,row['fd'],identity)
+            alias_after=self.stopped_write_alias_inventory(pid,row['fd'],identity) if 'stoppedAliasInventory' in row else None
+            if alias_after:
+                expected=row['stoppedAliasInventory'];assert alias_after['taskOwnership']==expected['taskOwnership'],'write alias ownership changed'
+                assert [{**alias,'identity':row['beforeIdentity']} for alias in alias_after['aliases']]==expected['aliases'],'write alias descriptor binding changed'
+            else:self.sole_writer(pid,row['fd'],identity)
             key=tuple(identity[:2]);segments=self.write_projections.get(key)
             if row['initialBefore'] is not None:segments=[(row['initialBefore'],0,row['beforeIdentity'][3])] if row['beforeIdentity'][3] else []
             assert segments is not None,'write delta baseline projection missing'
@@ -599,7 +633,7 @@ class Observer:
                 expected=bindings.digest_blocks(bindings.segment_blocks(segments,self.original_blocks,self.check),self.maximum_file_bytes,self.check)
                 assert after==expected and identity==probe.identity(os.fstat(held)),'actual post-write bytes differ from syscall buffer projection';extra={}
             self.write_projections[key]=segments
-            transition=self.emit(dict(kind='actual-write-transition',pid=pid,entrySequence=entry['sequence'],windowSequence=row['sequence'],exitSequence=exit['sequence'],afterIdentity=identity,after=after,result=exit['result'],isError=exit['isError'],**extra))
+            transition=self.emit(dict(kind='actual-write-transition',pid=pid,entrySequence=entry['sequence'],windowSequence=row['sequence'],exitSequence=exit['sequence'],afterIdentity=identity,after=after,result=exit['result'],isError=exit['isError'],**(dict(stoppedAliasInventoryAfter=alias_after) if alias_after else {}),**extra))
             if row['format']=='bounded-append-effect-v1':chain['transition']=transition
             self.write_states[tuple(identity[:2])]=transition
             generated_origin=self.tasks[pid].pop('generatedWriteOrigin',None)
@@ -992,10 +1026,12 @@ class Observer:
                 for mapping in mappings:
                     if int(mapping['startHex'],16)<end and int(mapping['endHex'],16)>begin:self.tool_mapping(pid,mapping,captured['sequence'],barrier['sequence'])
     def resume(self):
+        if self.generated_vma and getattr(self.generated_vma,'round',None) is not None:return self.generated_vma.drive()
         for pid,row in list(self.tasks.items()):
             if self.generated_vma and self.generated_vma.owner is not None and pid!=self.generated_vma.owner:continue
             if self.exclusive and pid!=self.exclusive[0]:continue
             if row.get('vforkHeldChild') is not None:continue
+            if row.get('identityNoopPending'):continue
             if row['stopped'] and not row['exited']:
                 terminal=row.get('terminalAuthority')
                 if terminal:
@@ -1014,7 +1050,33 @@ class Observer:
                 terminal['closedRow']=self.emit(dict(kind='toolchain-terminal-authority-closed',pid=pid,eventSequence=terminal['event']['sequence'],originalSequence=terminal['original']['sequence'],barrierSequence=barrier['sequence'],actualWaitSequence=task.get('actualWaitSequence')))
                 terminal['closed']=True
                 if task['exited']:terminal['lease'].close()
+    def capture_identity_noop_entry(self,pid,record,status):
+        task=self.tasks[pid]
+        assert self.exclusive is None and not self.pausing and not task.get('authorityPending'),'identity requires initialized exclusive authority boundary'
+        assert task['stopped'] and not task['exited'] and task['entry'] is record,'identity entry changed before its boundary'
+        identity_axis=tool_providers.identity_noop_axis(record['arch'],record['nr'])
+        barrier=self.barrier()
+        transition_type=tool_providers.StoppedIdentityNoopTransition if getattr(self,'verified_identity_noop',False) else tool_providers.StoppedSetresuidTransition
+        transition=transition_type(pid,record['arch'],record['nr'],record['args'],self.check,entry_sequence=record['sequence'],barrier_sequence=barrier['sequence'],stopped_wait_status=status)
+        task['setresuidTransition']=transition
+        try:
+            self.emit(dict(kind='identity-noop-entry-original' if getattr(self,'verified_identity_noop',False) else 'setresuid-noop-entry-original',**(dict(identityAxis=identity_axis) if getattr(self,'verified_identity_noop',False) else {}),pid=pid,entrySequence=record['sequence'],barrierSequence=barrier['sequence'],observation=transition.observation))
+            self.exclusive=(pid,record['sequence'])
+        except BaseException:transition.close();task.pop('setresuidTransition',None);raise
+    def capture_queued_identity(self):
+        if not getattr(self,'queued_identity_noop',False):return False
+        assert self.exclusive is None and not self.pausing,'queued identity requires a quiescent dispatcher'
+        for pid,task in self.tasks.items():
+            pending=task.get('identityNoopPending')
+            if pending and not task['exited'] and not task.get('authorityPending'):
+                entry_sequence,status=pending;record=task['entry']
+                assert record is not None and record['sequence']==entry_sequence and task['stopped'],'queued identity lost its actual stopped entry'
+                self.capture_identity_noop_entry(pid,record,status)
+                del task['identityNoopPending']
+                return True
+        return False
     def pending_captures(self):
+        if self.generated_vma and getattr(self.generated_vma,'round',None) is not None:return
         if self.exclusive:return
         if self.generated_vma and self.generated_vma.owner is not None:
             pid=self.generated_vma.owner;task=self.tasks[pid]
@@ -1022,12 +1084,14 @@ class Observer:
                 assert task.pop('capture')==(None,'generated-vma-before'),'unsupported capture while generated mapping dirty'
                 capture=self.generated_vma.capture(pid);task['entry']['captureSequence']=capture['sequence'];self.exclusive=(pid,task['entry']['sequence']);self.emit(dict(kind='exclusive-generated-vma-resume',pid=pid,entrySequence=task['entry']['sequence'],captureSequence=capture['sequence']))
             return
+        if self.capture_queued_identity():return
         if getattr(self,'terminal_exit_evidence',False) and any(t.get('terminalAuthority') and not t['terminalAuthority']['closed'] for t in self.tasks.values()):
             self.close_terminal_authorities(self.barrier())
         while self.process_authority:
             selected=next(((pid,row) for pid,row in self.tasks.items() if row.get('authorityPending') and not row['exited']),None)
             if selected is None:break
             pid,task=selected;role,event_sequence=task['authorityPending'].pop(0);self.capture_process_authority(pid,role,event_sequence)
+        if self.capture_queued_identity():return
         if any(task.get('appendBoundary') for task in self.tasks.values()):
             self.barrier()
             for task in self.tasks.values():
@@ -1047,6 +1111,7 @@ class Observer:
             if role!='writer-before':
                 self.barrier();self.checkpoint_appends('captured-access',task['entry']['sequence'])
             capture=self.generated_vma.capture(pid) if role=='generated-vma-before' else self.capture_rename(pid) if role=='rename-before' else self.capture_metadata(pid) if role=='metadata-before' else (self.capture_write(pid,fd) if role=='writer-before' else self.capture(pid,fd,role));task['entry']['captureSequence']=capture['sequence'];self.exclusive=(pid,task['entry']['sequence']);self.emit(dict(kind={'generated-vma-operation-window':'exclusive-generated-vma-resume','actual-write-window':'exclusive-write-resume','actual-mode-window':'exclusive-mode-resume','actual-rename-window':'exclusive-rename-resume','empty-read-window':'exclusive-empty-read-resume','alias-close-window':'exclusive-alias-close-resume'}.get(capture['kind'],'exclusive-captured-syscall-resume'),pid=pid,entrySequence=task['entry']['sequence'],captureSequence=capture['sequence']));break
+        if self.exclusive is None:self.capture_queued_identity()
     def release_vfork_parent(self,child,event,reason):
         task=self.tasks[child];parent_pid=task.pop('vforkParent',None)
         if parent_pid is None:return
@@ -1228,15 +1293,12 @@ class Observer:
             assert task['entry'] is None,'syscall entry missing prior exit';task['initial']=False;task['entry']=record;nr=record['nr'];args=record['args']
             identity_axis=tool_providers.identity_noop_axis(kernel['arch'],nr)
             if self.process_authority and ((getattr(self,'verified_identity_noop',False) and identity_axis is not None) or (getattr(self,'verified_setresuid_noop',False) and identity_axis=='Uid')):
-                assert self.exclusive is None and not self.pausing and not task.get('authorityPending'),'setresuid requires initialized exclusive authority boundary'
-                barrier=self.barrier()
-                transition_type=tool_providers.StoppedIdentityNoopTransition if getattr(self,'verified_identity_noop',False) else tool_providers.StoppedSetresuidTransition
-                transition=transition_type(pid,kernel['arch'],nr,args,self.check,entry_sequence=record['sequence'],barrier_sequence=barrier['sequence'],stopped_wait_status=status)
-                task['setresuidTransition']=transition
-                try:
-                    self.emit(dict(kind='identity-noop-entry-original' if getattr(self,'verified_identity_noop',False) else 'setresuid-noop-entry-original',**(dict(identityAxis=identity_axis) if getattr(self,'verified_identity_noop',False) else {}),pid=pid,entrySequence=record['sequence'],barrierSequence=barrier['sequence'],observation=transition.observation))
-                    self.exclusive=(pid,record['sequence'])
-                except BaseException:transition.close();task.pop('setresuidTransition',None);raise
+                assert self.exclusive is None,'identity entry crossed an active exclusive operation'
+                if getattr(self,'queued_identity_noop',False) and (self.pausing or task.get('authorityPending')):
+                    assert task['stopped'] and not task.get('identityNoopPending'),'duplicate or nonstopped queued identity entry'
+                    task['identityNoopPending']=(record['sequence'],status)
+                    return
+                self.capture_identity_noop_entry(pid,record,status)
                 return
             if nr==425 and getattr(self,'deny_optional_io_uring',False):
                 executable=self.stopped_executable_diagnostic(pid,status)
@@ -1428,7 +1490,7 @@ class Observer:
             for pump in pumps:pump.start()
             if self.process_authority:
                 os.close(ready_write);ready_write=None;self.check();remaining=max(0,self.deadline-time.monotonic());readable,_,_=select.select([ready_read],[],[],remaining);self.check();assert readable and os.read(ready_read,1)==b'R','child authority setup did not complete before release';os.close(ready_read);ready_read=None
-            self.emit(dict(kind='owned-root-binding',pid=child,command=command,backend='ptrace-all-stop-process-v1',captureOriginalEntityModel='same-phase-content-entity-v2' if self.capture_content_entities else 'same-phase-producer-original-v1',**(dict(generatedVmaModel=self.generated_vma.model,generatedVmaBuildRoot=self.build,generatedVmaParentDeadlineMonotonicNs=str(int(self.waiter.parent_deadline*1e9))) if self.generated_vma else {}),**(dict(optionalIoUringModel='explicit-kernel-enosys-denial-v1') if self.deny_optional_io_uring else {}),**(dict(setresuidNoopModel='actual-stopped-setresuid-noop-v1') if self.verified_setresuid_noop else {}),**(dict(setresIdentityNoopModel='actual-stopped-setres-identity-noop-v1') if getattr(self,'verified_identity_noop',False) else {}),**(dict(processAuthorityModel=tool_providers.AUTHORITY_MODEL) if self.process_authority else {}),**(dict(exitAuthorityModel='actual-selected-exit-stop-before-peer-barrier-v1') if getattr(self,'terminal_exit_evidence',False) else {}),**(dict(taskOwnershipModel='all-tracked-tids-shared-fd-v1',tgid=child,fdTable=child) if self.shared_tasks else {})));single.trace(SEIZE,child,0,OPTIONS);single.trace(INTERRUPT,child);pid,status=self.wait_one();self.event(pid,status,False);self.pending_captures();os.write(write_fd,b'x');os.close(write_fd);write_fd=None;self.resume()
+            self.emit(dict(kind='owned-root-binding',pid=child,command=command,backend='ptrace-all-stop-process-v1',captureOriginalEntityModel='same-phase-content-entity-v2' if self.capture_content_entities else 'same-phase-producer-original-v1',**(dict(generatedVmaModel=self.generated_vma.model,generatedVmaBuildRoot=self.build,generatedVmaParentDeadlineMonotonicNs=str(int(self.waiter.parent_deadline*1e9))) if self.generated_vma else {}),**(dict(stoppedWriterAliasModel='all-stop-exclusive-write-aliases-v1') if getattr(self,'stopped_writer_aliases',False) else {}),**(dict(optionalIoUringModel='explicit-kernel-enosys-denial-v1') if self.deny_optional_io_uring else {}),**(dict(setresuidNoopModel='actual-stopped-setresuid-noop-v1') if self.verified_setresuid_noop else {}),**(dict(setresIdentityNoopModel='actual-stopped-setres-identity-noop-queued-v2' if getattr(self,'queued_identity_noop',False) else 'actual-stopped-setres-identity-noop-v1') if getattr(self,'verified_identity_noop',False) else {}),**(dict(processAuthorityModel=tool_providers.AUTHORITY_MODEL) if self.process_authority else {}),**(dict(exitAuthorityModel='actual-selected-exit-stop-before-peer-barrier-v1') if getattr(self,'terminal_exit_evidence',False) else {}),**(dict(taskOwnershipModel='all-tracked-tids-shared-fd-v1',tgid=child,fdTable=child) if self.shared_tasks else {})));single.trace(SEIZE,child,0,OPTIONS);single.trace(INTERRUPT,child);pid,status=self.wait_one();self.event(pid,status,False);self.pending_captures();os.write(write_fd,b'x');os.close(write_fd);write_fd=None;self.resume()
             while any(not r['exited'] for r in self.tasks.values()):
                 pid,status=self.wait_one();self.event(pid,status);self.pending_captures();self.resume()
             assert not any(task.get('vforkHeldChild') is not None for task in self.tasks.values()),'vfork child release/wait closure missing'
@@ -1508,7 +1570,7 @@ class SdkExecutionObserver(Observer):
         assert Path(source)==Path('/opt/qlever-sdk/source') and Path(build)==Path('/opt/qlever-sdk/build'),'fixed SDK source/build roots required'
         assert isinstance(deadline_monotonic,(float,int)) and math.isfinite(deadline_monotonic) and time.monotonic()<deadline_monotonic,'existing live SDK deadline required'
         super().__init__(out,source,build,deadline_monotonic=deadline_monotonic,check_budget=check_budget,maximum_bytes=maximum_bytes,
-            maximum_file_bytes=limits['shardBytes'],selected_names=None,maximum_processes=limits['sourceMembers'],shard_bytes=limits['shardBytes'],require_success=False,maximum_stdio_bytes=maximum_stdio_bytes,shared_tasks=True,capture_toolchain=True,deny_optional_io_uring=True,verified_identity_noop=True,terminal_exit_evidence=True,generated_vma_output=True,generated_vma_shared_mm=True,generated_vma_private_wake=True,generated_vma_private_wait_mismatch=True,capture_content_entities=True)
+            maximum_file_bytes=limits['shardBytes'],selected_names=None,maximum_processes=limits['sourceMembers'],shard_bytes=limits['shardBytes'],require_success=False,maximum_stdio_bytes=maximum_stdio_bytes,shared_tasks=True,capture_toolchain=True,deny_optional_io_uring=True,verified_identity_noop=True,terminal_exit_evidence=True,generated_vma_output=True,generated_vma_shared_mm=True,generated_vma_private_wake=True,generated_vma_private_wait_mismatch=True,capture_content_entities=True,queued_identity_noop=True,stopped_writer_aliases=True,generated_vma_coordinated_wait=True)
         self.capture_dir=self.out/'captures';self.capture_dir.mkdir(exist_ok=False);self.sdk_phase_index=0;self.sdk_failed=False
         mounts=Path('/proc/self/mountinfo').read_bytes();assert len(mounts)<=limits['metadataBytes'],'source provider metadata bound'
         self.source_provider=probe.effective_readonly(source,mounts);self.source_provider_originals=dict(mountinfo=probe.put(self.out/'source-provider.mountinfo.raw',mounts));self.claim(len(mounts))

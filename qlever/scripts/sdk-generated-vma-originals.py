@@ -23,7 +23,9 @@ MODEL='actual-generated-file-vma-single-owner-v3'
 COHORT_MODEL='actual-generated-file-vma-stopped-mm-cohort-v4'
 PRIVATE_WAKE_MODEL='actual-generated-file-vma-stopped-mm-cohort-private-wake-v5'
 PRIVATE_WAIT_MODEL='actual-generated-file-vma-stopped-mm-cohort-private-wait-mismatch-v6'
-WAKE_MODELS=(PRIVATE_WAKE_MODEL,PRIVATE_WAIT_MODEL)
+COORDINATED_WAIT_MODEL='actual-generated-file-vma-stopped-mm-cohort-coordinated-wait-v7'
+PRIVATE_WAIT_MODELS=(PRIVATE_WAIT_MODEL,COORDINATED_WAIT_MODEL)
+WAKE_MODELS=(PRIVATE_WAKE_MODEL,*PRIVATE_WAIT_MODELS)
 COHORT_MODELS=(COHORT_MODEL,*WAKE_MODELS)
 LINUX_EAGAIN=11
 WAKE_RAW_RECORDS=8
@@ -273,7 +275,7 @@ class MemoryDomains:
 class Runtime:
     def __init__(self,backend):
         need(not getattr(backend,'generated_vma_private_wake',False) or getattr(backend,'generated_vma_shared_mm',False),'private wake requires existing stopped-MM model')
-        self.b=backend;self.model=PRIVATE_WAIT_MODEL if getattr(backend,'generated_vma_private_wait_mismatch',False) else PRIVATE_WAKE_MODEL if getattr(backend,'generated_vma_private_wake',False) else (COHORT_MODEL if getattr(backend,'generated_vma_shared_mm',False) else MODEL);self.mm=MemoryDomains();self.origins={};self.pending={};self.active=None;self.checkpoints={};self.reserved=0;self.metadata_bytes=0;self.spending_thread=None;self.cleanup_errors=[];self.wake_closing=None
+        self.b=backend;self.model=COORDINATED_WAIT_MODEL if getattr(backend,'generated_vma_coordinated_wait',False) else PRIVATE_WAIT_MODEL if getattr(backend,'generated_vma_private_wait_mismatch',False) else PRIVATE_WAKE_MODEL if getattr(backend,'generated_vma_private_wake',False) else (COHORT_MODEL if getattr(backend,'generated_vma_shared_mm',False) else MODEL);self.mm=MemoryDomains();self.origins={};self.pending={};self.active=None;self.checkpoints={};self.reserved=0;self.metadata_bytes=0;self.spending_thread=None;self.cleanup_errors=[];self.wake_closing=None
     def cleanup_fds(self,fds):
         errors=[]
         for fd in dict.fromkeys(fd for fd in fds if fd is not None and fd in self.b.retained):
@@ -309,7 +311,7 @@ class Runtime:
             if kind=='kernel-syscall':
                 need(row['pid']==self.owner,'peer executed while generated mapping active')
                 if row['op']=='entry':
-                    allowed=operation(row) in ['close','unmap'] or self.model in WAKE_MODELS and private_wake_allowed(row,self.active) or self.model==PRIVATE_WAIT_MODEL and private_wait_allowed(row,self.active)
+                    allowed=operation(row) in ['close','unmap'] or self.model in WAKE_MODELS and private_wake_allowed(row,self.active) or self.model in PRIVATE_WAIT_MODELS and private_wait_allowed(row,self.active)
                     if not allowed:
                         try:dirty_syscall_rejection_diagnostic(row,self.active,self.owner)
                         except BaseException:pass
@@ -336,9 +338,9 @@ class Runtime:
     def classify(self,pid,entry,resolve):
         op=operation(entry);args=entry['args'];b=self.b
         if self.active is not None:
-            need(pid==self.owner and (op in ['close','unmap'] or self.model in WAKE_MODELS and private_wake_allowed(entry,self.active) or self.model==PRIVATE_WAIT_MODEL and private_wait_allowed(entry,self.active)),'unsupported active mapping syscall')
+            need(pid==self.owner and (op in ['close','unmap'] or self.model in WAKE_MODELS and private_wake_allowed(entry,self.active) or self.model in PRIVATE_WAIT_MODELS and private_wait_allowed(entry,self.active)),'unsupported active mapping syscall')
             if op=='wake':
-                if self.model==PRIVATE_WAIT_MODEL and private_wait_allowed(entry,self.active):
+                if self.model in PRIVATE_WAIT_MODELS and private_wait_allowed(entry,self.active):
                     need(not self.pending and self.wake_closing is None,'prior wait window remains open');self.pending[pid]=dict(op='private-wait-mismatch',origin=self.active['origin'],fd=None);b.tasks[pid]['capture']=(None,'generated-vma-before');return True
                 need(not self.pending and self.wake_closing is None,'prior private wake remains open');count=private_wake_dimensions(entry,self.active)
                 self.pending[pid]=dict(op='private-wake',origin=self.active['origin'],fd=None,wakeCount=count)
@@ -404,7 +406,7 @@ class Runtime:
             baseline=self.reserved+entry_bytes;reservation=WAKE_RESERVATION_BYTES if op=='private-wake' else wait_reservation_bytes(len(self.active['memoryDomainMembers']),b.tool_metadata_bytes);b.reserve_generated_bytes(reservation);pending.update(baselineReserved=baseline,reservation=reservation)
         barrier=self.fresh_barrier();common=dict(kind='generated-vma-operation-window',operation=op,pid=pid,entrySequence=entry['sequence'],barrierSequence=barrier['sequence'])
         if op=='private-wait-mismatch':
-            need(self.model==PRIVATE_WAIT_MODEL and barrier['sequence']==entry['sequence']+1,'wait immediate fresh pre-barrier required')
+            need(self.model in PRIVATE_WAIT_MODELS and barrier['sequence']==entry['sequence']+1,'wait immediate fresh pre-barrier required')
             lease=ProcLease(self,pid);pending['lease']=lease
             samples,word=self.wait_samples(pid,entry,barrier)
             row=b.emit(dict(common,originSequence=pending['origin']['sequence'],epochSequence=self.active['sequence'],memoryDomain=self.active['memoryDomain'],memoryDomainMembers=self.active['memoryDomainMembers'],reservationBytes=pending['reservation'],metadataMaximumBytes=b.tool_metadata_bytes,procLease=lease.first,wordOriginal=word,cohortMaps=samples,machineWordBytes=8,byteOrder='little'))
@@ -470,7 +472,7 @@ class Runtime:
         b=self.b;pending=self.pending[pid];window=pending['window'];op=pending['op'];need(b.exclusive==(pid,entry['sequence']) and ((op=='private-wait-mismatch' and exit['result']==-LINUX_EAGAIN and exit['isError'] is True) or (op!='private-wait-mismatch' and exit['result']>=0 and exit['isError'] is False)),'actual exclusive operation exit required')
         common=dict(kind='generated-vma-operation-exit',operation=op,pid=pid,entrySequence=entry['sequence'],windowSequence=window['sequence'],exitSequence=exit['sequence'],result=exit['result'],isError=exit['isError'])
         if op=='private-wait-mismatch':
-            need(self.model==PRIVATE_WAIT_MODEL and self.active is not None and exit['sequence']==window['sequence']+2,'wait actual exclusive exit adjacency differs')
+            need(self.model in PRIVATE_WAIT_MODELS and self.active is not None and exit['sequence']==window['sequence']+2,'wait actual exclusive exit adjacency differs')
             barrier=self.fresh_barrier();need(barrier['sequence']==exit['sequence']+1 and barrier['pids']==pending['preBarrier']['pids'] and barrier['taskOwnership']==pending['preBarrier']['taskOwnership'],'wait immediate fresh post-barrier differs')
             samples,word=self.wait_samples(pid,entry,barrier);after=pending['lease'].sample();need(word==window['wordOriginal'] and samples==[dict(row,original=samples[i]['original']) for i,row in enumerate(window['cohortMaps'])],'wait pre/post word or map geometry changed')
             row=b.emit(dict(common,originSequence=pending['origin']['sequence'],epochSequence=self.active['sequence'],memoryDomain=self.active['memoryDomain'],memoryDomainMembers=self.active['memoryDomainMembers'],postBarrierSequence=barrier['sequence'],wordOriginal=word,cohortMaps=samples,procAfter=after))
@@ -656,7 +658,7 @@ class Verifier:
             elif state=='exited':
                 actual=exits[self.transaction['entrySequence']]
                 if self.transaction['window']['operation']=='private-wait-mismatch':
-                    need(self.model==PRIVATE_WAIT_MODEL and ((seq==actual['sequence']+1 and kind=='all-stop-barrier') or (seq>actual['sequence']+1 and kind in ['toolchain-original','generated-vma-operation-exit'])),'wait post-stop observation order differs')
+                    need(self.model in PRIVATE_WAIT_MODELS and ((seq==actual['sequence']+1 and kind=='all-stop-barrier') or (seq>actual['sequence']+1 and kind in ['toolchain-original','generated-vma-operation-exit'])),'wait post-stop observation order differs')
                 elif self.transaction['window']['operation']=='private-wake':
                     need(self.model in WAKE_MODELS and ((seq==actual['sequence']+1 and kind=='all-stop-barrier') or (seq==actual['sequence']+2 and kind=='generated-vma-operation-exit')),'private wake post-stop/closure adjacency differs')
                 else:
@@ -670,7 +672,7 @@ class Verifier:
             if kind in ['actual-child-binding','ptrace-event','signal-delivery','actual-wait-exit']:raise ValueError('generated VMA: event while dirty mapping active')
             if kind=='kernel-syscall':
                 need(row['pid']==self.active['pid'],'peer ran while mapped output dirty')
-                if row['op']=='entry':need(operation(row) in ['close','unmap'] or self.model in WAKE_MODELS and private_wake_allowed(row,self.active) or self.model==PRIVATE_WAIT_MODEL and private_wait_allowed(row,self.active),'unsupported active mapping syscall')
+                if row['op']=='entry':need(operation(row) in ['close','unmap'] or self.model in WAKE_MODELS and private_wake_allowed(row,self.active) or self.model in PRIVATE_WAIT_MODELS and private_wait_allowed(row,self.active),'unsupported active mapping syscall')
             now=row.get('observedMonotonicNs');need(isinstance(now,str) and now.isdecimal() and self.active['start']<=int(now)<self.active['deadline'],'finite mapping deadline absent/expired')
         if kind=='write-original':
             self.original_sequences[self.key(row['original'])]=seq
@@ -685,9 +687,9 @@ class Verifier:
             self.fd_bindings[seq]=row
         elif kind=='generated-vma-operation-window':
             need(self.transaction is None and self.pending_window is None,'overlapping generated operation');entry=entries.get(row['entrySequence']);barrier=barriers.get(row['barrierSequence']);need(entry and barrier and entry['pid']==row['pid'] and row['pid'] in barrier['pids'],'generated operation entry/actual all-stop missing');self.preimage_interval(row,barrier)
-            op=row['operation'];args=entry['args'];need(op==operation(entry) or op=='create' and operation(entry) in ['open','openat'] or op=='private-wake' and self.model in WAKE_MODELS and operation(entry)=='wake' or op=='private-wait-mismatch' and self.model==PRIVATE_WAIT_MODEL and operation(entry)=='wake','generated operation ABI differs')
+            op=row['operation'];args=entry['args'];need(op==operation(entry) or op=='create' and operation(entry) in ['open','openat'] or op=='private-wake' and self.model in WAKE_MODELS and operation(entry)=='wake' or op=='private-wait-mismatch' and self.model in PRIVATE_WAIT_MODELS and operation(entry)=='wake','generated operation ABI differs')
             if op=='private-wait-mismatch':
-                need(self.model==PRIVATE_WAIT_MODEL and self.active is not None and row['pid']==self.active['pid'] and barrier['sequence']==entry['sequence']+1,'wait adjacent entry/fresh barrier required');self.verify_wait_samples(row,entry,barrier)
+                need(self.model in PRIVATE_WAIT_MODELS and self.active is not None and row['pid']==self.active['pid'] and barrier['sequence']==entry['sequence']+1,'wait adjacent entry/fresh barrier required');self.verify_wait_samples(row,entry,barrier)
                 need(row['epochSequence']==self.active['sequence'] and row['originSequence']==self.active['originSequence'] and row['machineWordBytes']==8 and row['byteOrder']=='little','wait epoch or machine word differs')
                 need(type(row['reservationBytes']) is int and row['metadataMaximumBytes']==self.metadata_maximum and row['reservationBytes']==wait_reservation_bytes(len(row['memoryDomainMembers']),self.metadata_maximum),'wait exact reservation differs')
                 verify_proc_lease(row['procLease'],row['pid'],canonical=True)
@@ -741,7 +743,7 @@ class Verifier:
             transaction=self.transaction;need(transaction and transaction['state']=='exited','generated postimage outside exclusive exit');window=transaction['window'];entry=entries[window['entrySequence']];actual=exits.get(window['entrySequence']);op=window['operation']
             need(row['windowSequence']==window['sequence'] and row['operation']==op and row['pid']==window['pid'] and row['entrySequence']==entry['sequence'] and actual and actual['sequence']==row['exitSequence'] and actual['result']==row['result'] and actual['isError'] is row['isError'] and ((op=='private-wait-mismatch' and actual['isError'] is True and actual['result']==-LINUX_EAGAIN) or (op!='private-wait-mismatch' and actual['isError'] is False and actual['result']>=0)),'generated actual syscall exit differs')
             if op=='private-wait-mismatch':
-                need(self.model==PRIVATE_WAIT_MODEL and self.active is not None and actual['sequence']==window['sequence']+2,'wait actual exit adjacency differs');post=barriers.get(row['postBarrierSequence']);pre=barriers[window['barrierSequence']]
+                need(self.model in PRIVATE_WAIT_MODELS and self.active is not None and actual['sequence']==window['sequence']+2,'wait actual exit adjacency differs');post=barriers.get(row['postBarrierSequence']);pre=barriers[window['barrierSequence']]
                 need(post and post['sequence']==actual['sequence']+1 and post['pids']==pre['pids'] and post['taskOwnership']==pre['taskOwnership'],'wait fresh post-stop ownership differs');samples=self.verify_wait_samples(row,entry,post)
                 need(row['wordOriginal']==window['wordOriginal'] and samples==[dict(item,original=samples[i]['original']) for i,item in enumerate(window['cohortMaps'])],'wait pre/post full word/maps differs')
                 before=verify_proc_lease(window['procLease'],row['pid'],canonical=True);after=verify_proc_lease(row['procAfter'],row['pid'],canonical=True);need(after['directoryIdentity']==before['directoryIdentity'] and after['statIdentity']==before['statIdentity'] and after['starttime']==before['starttime'] and proc_identity(raw_bytes(after['statOriginal']),row['pid'])==int(before['starttime']),'wait held proc lifetime differs')
@@ -816,3 +818,16 @@ class Verifier:
             if exit is None or exit['isError'] or exit['result']<=0:continue
             need(actual['role']=='consumer' and checkpoint['sequence']<actual['sequence']<row['sequence'] and actual['identity']==row['identity']==checkpoint['identity'] and actual['path']==row['path'] and data==checkpoint['data'],'mapped generated consumer byte/identity checkpoint differs');outputs.append(dict(path=actual['path'],bytes=data[0],sha256=data[1],consumerCaptureSequence=actual['sequence'],mappedCheckpointSequence=checkpoint['sequence']))
         return outputs
+
+
+def scheduled_module():
+    import importlib.util
+    path=Path(__file__).with_name('sdk-coordinated-wait.py')
+    spec=importlib.util.spec_from_file_location('sdk_coordinated_wait',path);module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module);return module
+
+def create_runtime(backend,core):
+    return scheduled_module().runtime_type(core)(backend) if getattr(backend,'generated_vma_coordinated_wait',False) else Runtime(backend)
+
+def create_verifier(module,*args,**kwargs):
+    if kwargs.get('model')==COORDINATED_WAIT_MODEL:return scheduled_module().verifier_type(module)(*args,**kwargs)
+    return Verifier(*args,**kwargs)

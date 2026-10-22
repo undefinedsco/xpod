@@ -1,7 +1,8 @@
 import fs from 'node:fs';
 import {fileURLToPath} from 'node:url';
 import {createHash} from 'node:crypto';
-import current from './consumer-execution-current.json';
+import liveCurrent from './consumer-execution-current.json';
+const current=Object.freeze(liveCurrent.filter(row=>row.path!=="qlever/scripts/sdk-coordinated-wait.py").map(row=>Object.freeze({...row,sha256:({"qlever/scripts/sdk-generated-vma-originals.py":"c1c52f52e1dd1087e00d14d4319cdc8969c0ef9491e364eca7c623f2f1fc7ae6","qlever/scripts/sdk-generation-multiprocess-bindings.py":"e0010b05a1aa5d4ab023557f4dab8559a2c38d9699dd5d5d8dba082a1eac5993","qlever/scripts/sdk-ptrace-execution.py":"fc7465673026136c4a26e972f80449e0cb4ba6fc08b05a3498906a79351551b9","qlever/scripts/sdk-toolchain-materials.py":"0cc20e6c0c589f6b3af8420a6aa230e65a39ca12f429bcba88e0578aeb02dee1","scripts/lib/independent-admission/qlever-sdk-fetchcontent.ts":"3b08084d20fb29aa8d8b8ad23389fd9b201c06ced725d4da43edce9be354edfc","scripts/lib/independent-admission/qlever-sdk-generation.ts":"010c47554e061fc7831810e16ab869dbbd8305ba073893d20f365fb5fa23a5c9","scripts/lib/independent-admission/qlever-sdk-origin-policy.ts":"01390a9d7fdf9776826bcc48a109212fda37a8e35a57301e9fb2bd25f685c6c3","scripts/lib/independent-admission/sdk-controller-helper-groups.ts":"bd499bc3278260a814914392fe4a05ffc9773689ca0b8a8b23be80e4176d79fe"} as Readonly<Record<string,string>>)[row.path]??row.sha256})));
 import type {GitHubSourceBindingGroup} from './github-source-binding-groups';
 /** Exact consumer source implementation reviewed with the v18 workflow tree.
 * These bind the actual checked-out source, separately from run-head YAML. */
@@ -29,7 +30,7 @@ if(!before.isFile()||before.nlink!==1n||before.size>2n*1024n**2n)throw Error('Bo
 const bytes=fs.readFileSync(fd),after=fs.fstatSync(fd,{bigint:true}),named=fs.lstatSync(file,{bigint:true});
 for(const row of [after,named])if(!['dev','ino','mode','size','nlink','mtimeNs','ctimeNs'].every(key=>before[key as keyof typeof before]===row[key as keyof typeof row]))throw Error('Controller policy original changed at module load');
 if(BigInt(bytes.length)!==before.size)throw Error('Controller policy original truncated');
-if(name.endsWith('.json')&&JSON.stringify(JSON.parse(bytes.toString('utf8')))!==JSON.stringify(current))throw Error('Controller policy imported data changed');
+if(name.endsWith('.json')&&JSON.stringify(JSON.parse(bytes.toString('utf8')))!==JSON.stringify(liveCurrent))throw Error('Controller policy imported data changed');
 return Object.freeze({path:'scripts/lib/independent-admission/'+name,sha256:createHash('sha256').update(bytes).digest('hex')});
 }finally{fs.closeSync(fd);}
 }));
@@ -314,5 +315,9 @@ const PRE_CONTENT_CURRENT=Object.freeze(current.map(row=>Object.freeze({...row,s
 const PRE_CONTENT_ANCHORS=Object.freeze([{"path":"scripts/lib/independent-admission/consumer-observer-policy.ts","sha256":"6eaa9bc18397bf63a4bbd73c7582f87e0675c490465578b4c4089477dc0558e3"},{"path":"scripts/lib/independent-admission/consumer-execution-current.json","sha256":"7f0bd9344eee47ff354928c11882bab8c3e7db3800e35be7c19a95baebe7dc41"}]);
 const PRE_CONTENT_CONSUMER_SOURCE_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...PRE_BUILD_CONSUMER_SOURCE_GROUPS,rebindNoticeCurrent(PRE_BUILD_CONSUMER_SOURCE_GROUPS[PRE_BUILD_CONSUMER_SOURCE_GROUPS.length-1]!,PRE_CONTENT_CURRENT,PRE_CONTENT_ANCHORS)]);
 const PRE_CONTENT_CI_CONSUMER_SOURCE_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...PRE_BUILD_CI_CONSUMER_SOURCE_GROUPS,...PRE_BUILD_CI_CONSUMER_SOURCE_GROUPS.slice(-2).map(group=>rebindNoticeCurrent(group,PRE_CONTENT_CURRENT,PRE_CONTENT_ANCHORS))]);
-export const CONSUMER_SOURCE_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...PRE_CONTENT_CONSUMER_SOURCE_GROUPS,rebindNoticeCurrent(PRE_CONTENT_CONSUMER_SOURCE_GROUPS[PRE_CONTENT_CONSUMER_SOURCE_GROUPS.length-1]!,current,CONTROLLER_POLICY_BINDINGS)]);
-export const CI_CONSUMER_SOURCE_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...PRE_CONTENT_CI_CONSUMER_SOURCE_GROUPS,...PRE_CONTENT_CI_CONSUMER_SOURCE_GROUPS.slice(-2).map(group=>rebindNoticeCurrent(group,current,CONTROLLER_POLICY_BINDINGS))]);
+const PRE_COORDINATED_ANCHORS=Object.freeze([{"path":"scripts/lib/independent-admission/consumer-observer-policy.ts","sha256":"8bee9dfc91dc183572ce269a0a39420b0d5cead59539bda4190643065ed0c112"},{"path":"scripts/lib/independent-admission/consumer-execution-current.json","sha256":"03088d40f4593bb10e9342ab4055e6c16db5341ab5ce9cfa787702793f9ea715"}]);
+const PRE_COORDINATED_CONSUMER_SOURCE_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...PRE_CONTENT_CONSUMER_SOURCE_GROUPS,rebindNoticeCurrent(PRE_CONTENT_CONSUMER_SOURCE_GROUPS[PRE_CONTENT_CONSUMER_SOURCE_GROUPS.length-1]!,current,PRE_COORDINATED_ANCHORS)]);
+const PRE_COORDINATED_CI_CONSUMER_SOURCE_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...PRE_CONTENT_CI_CONSUMER_SOURCE_GROUPS,...PRE_CONTENT_CI_CONSUMER_SOURCE_GROUPS.slice(-2).map(group=>rebindNoticeCurrent(group,current,PRE_COORDINATED_ANCHORS))]);
+
+export const CONSUMER_SOURCE_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...PRE_COORDINATED_CONSUMER_SOURCE_GROUPS,rebindNoticeCurrent(PRE_COORDINATED_CONSUMER_SOURCE_GROUPS[PRE_COORDINATED_CONSUMER_SOURCE_GROUPS.length-1]!,liveCurrent,CONTROLLER_POLICY_BINDINGS)]);
+export const CI_CONSUMER_SOURCE_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...PRE_COORDINATED_CI_CONSUMER_SOURCE_GROUPS,...PRE_COORDINATED_CI_CONSUMER_SOURCE_GROUPS.slice(-2).map(group=>rebindNoticeCurrent(group,liveCurrent,CONTROLLER_POLICY_BINDINGS))]);
