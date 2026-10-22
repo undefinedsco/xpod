@@ -13,4 +13,7 @@ class Tests(unittest.TestCase):
   result=census(rows,'compile');self.assertTrue(result['invalidReferenceMetadata']);self.assertEqual(result['potentialDuplicatePhysicalBytesLowerBound'],0);self.assertNotIn('verified',result)
  def test_fixed_observation_and_entity_caps(self):
   result=census([row('capture-%04d.original'%i) for i in range(10000)],'compile');self.assertEqual(result['visitedObservations'],8192);self.assertEqual(result['distinctPhysicalReferences'],4096);self.assertTrue(result['truncated']);self.assertEqual(len(result['topBuckets']),1)
+ def test_recent_compile_survives_large_configure_prefix(self):
+  rows=[row('capture-0000.original',phase='configure')]*9000+[row('capture-9001.original'),row('capture-9002.original')]
+  result=census(rows,'compile');self.assertEqual(result['visitedObservations'],8192);self.assertEqual(result['matchedPhaseObservations'],2);self.assertEqual(result['availableObservations'],9002);self.assertTrue(result['truncated']);self.assertEqual(result['potentialDuplicatePhysicalBytesLowerBound'],3807335)
 if __name__=='__main__':unittest.main()

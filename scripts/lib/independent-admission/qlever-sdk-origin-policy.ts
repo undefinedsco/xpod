@@ -1301,7 +1301,11 @@ const PRE_FRESH_SDK_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([..
 const freshSdkHashes:Readonly<Record<string,string>>=Object.freeze({"scripts/css-module-producer.py":"9bc6411c30e8f96402f39b80acf9e8af27350bfde84d0ec6d4e5f8eb04a05da4"});
 const freshSdkParent=PRE_FRESH_SDK_GROUPS[PRE_FRESH_SDK_GROUPS.length-1]!;
 const freshSdkBindings=(rows:readonly GitHubSourceBinding[])=>Object.freeze(rows.map(row=>Object.freeze({...row,sha256:freshSdkHashes[row.path]??row.sha256})));
-export const QLEVER_SDK_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...PRE_FRESH_SDK_GROUPS,Object.freeze({...freshSdkParent,selectors:freshSdkBindings(freshSdkParent.selectors),secondarySelectors:freshSdkBindings(freshSdkParent.secondarySelectors??[]),sourceBindings:freshSdkBindings(freshSdkParent.sourceBindings)})]);
+const PRE_DIAGNOSTIC_SDK_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...PRE_FRESH_SDK_GROUPS,Object.freeze({...freshSdkParent,selectors:freshSdkBindings(freshSdkParent.selectors),secondarySelectors:freshSdkBindings(freshSdkParent.secondarySelectors??[]),sourceBindings:freshSdkBindings(freshSdkParent.sourceBindings)})]);
+const diagnosticSdkHashes:Readonly<Record<string,string>>=Object.freeze({"qlever/scripts/sdk-ptrace-execution.py":"19569e239cb21ea014ba2fee7674b2e0c86acf52322ba87472752a204a0d51e9"});
+const diagnosticSdkParent=PRE_DIAGNOSTIC_SDK_GROUPS[PRE_DIAGNOSTIC_SDK_GROUPS.length-1]!;
+const diagnosticSdkBindings=(rows:readonly GitHubSourceBinding[])=>Object.freeze(rows.map(row=>Object.freeze({...row,sha256:diagnosticSdkHashes[row.path]??row.sha256})));
+export const QLEVER_SDK_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...PRE_DIAGNOSTIC_SDK_GROUPS,Object.freeze({...diagnosticSdkParent,selectors:diagnosticSdkBindings(diagnosticSdkParent.selectors),secondarySelectors:diagnosticSdkBindings(diagnosticSdkParent.secondarySelectors??[]),sourceBindings:diagnosticSdkBindings(diagnosticSdkParent.sourceBindings)})]);
 export const QLEVER_LINUX_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([
  {selectors:sdkSelectors('cbedd3e2478de5e22108b6689c595a658ca891c9bd47552caec830e86f47fea8','a75c7be34b5c5fafff85c0d67d814ba1aaf14bcf5db5404a860fe3b9a11009bd'),sourceBindings:QLEVER_LINUX_SOURCE_BINDINGS.filter(row=>!['.github/workflows/publish-qlever-runtime-sdk.yml','.github/workflows/build-qlever-linux-runtime.yml'].includes(row.path))},
  ...QLEVER_SDK_EXECUTION_GROUPS,

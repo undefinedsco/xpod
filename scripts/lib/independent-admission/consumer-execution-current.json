@@ -485,7 +485,7 @@
   },
   {
     "path": "qlever/scripts/sdk-ptrace-execution.py",
-    "sha256": "64f5a428a53faf0ff12ba2e01578bcd03040137e94a22dfeebfd9379f3c0a030"
+    "sha256": "19569e239cb21ea014ba2fee7674b2e0c86acf52322ba87472752a204a0d51e9"
   },
   {
     "path": "qlever/scripts/sdk-ptrace-kernel.py",
@@ -1217,7 +1217,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-origin-policy.ts",
-    "sha256": "d1eb3072b408e6bdc0df58fcf465778f6f6e24f97c37172cf7b90d880509e347"
+    "sha256": "0bf9aedda86c8f5cced5dcdb8cb9ce7323e39798799d08a5e1645a727be79b64"
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-originals.ts",

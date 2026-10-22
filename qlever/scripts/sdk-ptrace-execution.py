@@ -128,11 +128,12 @@ class BoundedPipePump:
 
 def completed_capture_storage_census(rows,phase):
     """Bounded failure-only lower bound from existing complete raw references."""
-    seen={};buckets={};visited=0;truncated=False;invalid=False
-    for row in rows:
+    seen={};buckets={};visited=0;matched=0;truncated=False;invalid=False
+    for row in reversed(rows):
         if visited>=8192:truncated=True;break
         visited+=1
         if not isinstance(row,dict) or row.get('phase')!=phase:continue
+        matched+=1
         ref=row.get('original',{});name=ref.get('path');size=ref.get('bytes');digest=ref.get('sha256')
         if not isinstance(name,str) or not re.fullmatch(r'capture-[0-9]{4,}\.original',name) or type(size) is not int or size<0 or not isinstance(digest,str) or not re.fullmatch('[a-f0-9]{64}',digest):invalid=True;continue
         key=(size,digest)
@@ -144,7 +145,7 @@ def completed_capture_storage_census(rows,phase):
         if row.get('kind')=='fd-capture' and row.get('role')=='consumer':bucket['consumerEntities']+=1
     duplicates=[dict(bytes=size,sha256=digest,**value,potentialDuplicatePhysicalBytes=(value['physicalEntities']-1)*size) for (size,digest),value in buckets.items() if value['physicalEntities']>1]
     duplicates.sort(key=lambda row:(-row['potentialDuplicatePhysicalBytes'],row['sha256']))
-    return dict(kind='same-phase-physical-content-census',phase=phase,visitedObservations=visited,distinctPhysicalReferences=len(seen),maximumVisitedObservations=8192,maximumPhysicalReferences=4096,truncated=truncated,invalidReferenceMetadata=invalid,topBuckets=duplicates[:4],duplicateBucketCount=len(duplicates),potentialDuplicatePhysicalBytesLowerBound=sum(row['potentialDuplicatePhysicalBytes'] for row in duplicates),scope='same complete bytes/SHA storage only; no source identity, actual reuse eligibility, or IO saving proven')
+    return dict(kind='same-phase-physical-content-census',phase=phase,scanOrder='newest-first',availableObservations=len(rows),matchedPhaseObservations=matched,visitedObservations=visited,distinctPhysicalReferences=len(seen),maximumVisitedObservations=8192,maximumPhysicalReferences=4096,truncated=truncated,invalidReferenceMetadata=invalid,topBuckets=duplicates[:4],duplicateBucketCount=len(duplicates),potentialDuplicatePhysicalBytesLowerBound=sum(row['potentialDuplicatePhysicalBytes'] for row in duplicates),scope='same complete bytes/SHA storage only; no source identity, actual reuse eligibility, or IO saving proven')
 
 class Observer:
     def __init__(self,out,source,build,*,deadline_monotonic=None,check_budget=lambda:None,maximum_bytes=32*1024**2,maximum_file_bytes=1024**2,selected_names=SELECTED,maximum_processes=128,shard_bytes=None,require_success=True,maximum_stdio_bytes=None,shared_tasks=False,capture_toolchain=False,deny_optional_io_uring=False,verified_setresuid_noop=False,verified_identity_noop=False,terminal_exit_evidence=False,generated_vma_output=False,generated_vma_shared_mm=False,generated_vma_private_wake=False,generated_vma_private_wait_mismatch=False,capture_content_entities=False,queued_identity_noop=False,stopped_writer_aliases=False,generated_vma_coordinated_wait=False,generated_vma_parked_wait=False,io_uring_enosys_v2=False,serialize_terminal_syscalls=False,capture_maps_content_entities=False,retained_generated_metadata=False,indexed_raw_records=False):
@@ -179,7 +180,7 @@ class Observer:
         assert type(retained_generated_metadata)is bool and(not retained_generated_metadata or generated_vma_output and generated_vma_parked_wait),'retained generated metadata requires complete parked-wait observer'
         self.retained_generated_metadata=retained_generated_metadata
         self.capture_toolchain=capture_toolchain;self.process_authority=bool(capture_toolchain);self.authority_handles=tool_providers.ProcessAuthorityHandles();self.tool_original_cache={};self.tool_provider_cache={};self.tool_metadata_bytes=json.loads((ROOT/'scripts/lib/module-artifact-limits.json').read_text())['metadataBytes']
-        self.prepared_inputs={};self.prepared_sealed=False;self.domain_bytes=0;self.domain_lock=threading.Lock();self.pump_errors=[];self.maximum_stdio_bytes=maximum_stdio_bytes if maximum_stdio_bytes is not None else maximum_file_bytes
+        self.prepared_inputs={};self.prepared_sealed=False;self.domain_bytes=0;self.claim_bytes=dict.fromkeys(('raw-wire','capture-body','stdio','provider-other'),0);self.domain_lock=threading.Lock();self.pump_errors=[];self.maximum_stdio_bytes=maximum_stdio_bytes if maximum_stdio_bytes is not None else maximum_file_bytes
         self.require_success=require_success;self.raw_bytes_completed=0;self.maximum_processes=maximum_processes;self.shard_bytes=shard_bytes
         self.deadline_monotonic=deadline_monotonic;self.check_budget=check_budget;self.maximum_bytes=maximum_bytes;self.maximum_file_bytes=maximum_file_bytes;self.selected_names=selected_names
         self.out=Path(out);self.capture_dir=self.out;self.source=str(source);self.build=str(build);self.tasks={};self.seq=0;self.records=[];self.captures=[];self.retained=set();self.producers={};self.write_states={};self.write_projections={};self.append_chains={};self.budget_context={};self.metadata_states=[];self.rename_records=[];self.consumers=[];self.raw=None;self.deadline=0;self.pausing=False;self.root=None;self.root_code=None;self.failures=[];self.current_phase=None;self.unknown_stops={};self.capture_bytes=0;self.capture_entities={};self.content_capture_pool={};self.exclusive=None;self.wait_references=[]
@@ -288,7 +289,7 @@ class Observer:
         with self.domain_lock:
             self.maximum_bytes=min(self.maximum_bytes,self.domain_bytes+remaining_bytes)
             return self.maximum_bytes
-    def claim(self,count,*,context=None):
+    def claim(self,count,*,context=None,category='provider-other'):
         self.check_budget()
         with self.domain_lock:
             generated=getattr(self,'generated_vma',None);reserved=generated.reserved if generated else 0;spend=min(count,reserved) if generated and generated.spending_thread==threading.get_ident() else 0
@@ -303,6 +304,10 @@ class Observer:
                         completed[key]['count']+=1
                         completed[key]['bytes']+=row['original']['bytes']
                     diagnostic=dict(kind='execution-byte-bound',chargedBytes=self.domain_bytes,requestedBytes=count,maximumBytes=self.maximum_bytes,projectedBytes=self.domain_bytes+count,generatedReservedBytes=reserved,completedRetainedEntityBytes=self.capture_bytes,completedObservationReferencedBytes=sum(bucket['bytes'] for bucket in completed.values()),completedObservationReferences=completed,**(context or dict(role='other-execution-original')))
+                    diagnostic['successfulClaimBytes']=dict(self.claim_bytes)
+                    diagnostic['rawBytesCompleted']=getattr(self,'raw_bytes_completed',0)
+                    raw=getattr(self,'raw',None)
+                    if raw is not None and hasattr(raw,'paths') and hasattr(raw,'total'):diagnostic['currentRawShards']=dict(count=len(raw.paths),bytes=raw.total)
                     diagnostic['completedStorageCensus']=completed_capture_storage_census(self.captures,getattr(self,'current_phase',None))
                     encoded=json.dumps(diagnostic,sort_keys=True);assert len(encoded.encode())<=4096,'bounded execution storage diagnostic'
                     print('SDK_EXECUTION_BYTE_BOUND '+encoded,file=sys.stderr,flush=True)
@@ -310,11 +315,25 @@ class Observer:
                     pass  # Diagnostic failure must never replace the original bound.
                 raise AssertionError('shared execution original byte bound')
             self.domain_bytes+=count
+            self.claim_bytes[category if category in self.claim_bytes else 'provider-other']+=count
             if generated:generated.reserved-=spend
     def reserve_generated_bytes(self,count):
         self.check_budget()
         with self.domain_lock:
-            assert self.generated_vma and type(count) is int and count>=0 and self.domain_bytes+self.generated_vma.reserved+count<=self.maximum_bytes,'same remaining execution ledger cannot reserve generated checkpoint'
+            if not (self.generated_vma and type(count) is int and count>=0 and self.domain_bytes+self.generated_vma.reserved+count<=self.maximum_bytes):
+                try:
+                    context=getattr(self,'budget_context',{})
+                    detail={key:context[key] for key in ('role','pid','fd','identity','writeCount','writeOffset','pathSha256') if key in context}
+                    if 'path' in context:detail.update(path=context['path'][:128],pathTruncated=context.get('pathTruncated',False) or len(context['path'])>128)
+                    identity=context.get('identity',[])
+                    origin=getattr(self.generated_vma,'origins',{}).get(tuple(identity[:2]))
+                    if origin is not None:detail['originSequence']=origin['sequence']
+                    value=dict(kind='generated-reservation-bound',phase=self.current_phase,requestedBytes=count,chargedBytes=self.domain_bytes,maximumBytes=self.maximum_bytes,generatedReservedBytes=self.generated_vma.reserved if self.generated_vma else 0,successfulClaimBytes=dict(self.claim_bytes),context=detail,authorityVerified=False)
+                    encoded=json.dumps(value,sort_keys=True);assert len(encoded.encode())<=4000
+                    print('SDK_GENERATED_RESERVATION_BOUND '+encoded,file=sys.stderr,flush=True)
+                except BaseException:
+                    pass  # Preserve the same rejection even if diagnostics fail.
+                raise AssertionError('same remaining execution ledger cannot reserve generated checkpoint')
             self.generated_vma.reserved+=count
     def generated_fd_flags(self,pid,fd):return descriptor_flags(pid,fd)
     def generated_fd_path(self,pid,fd):return fdpath(pid,fd)
@@ -324,7 +343,7 @@ class Observer:
             entity=self.register_capture_entity(row['original']);assert row.get('originalEntityIdentity',entity)==entity,'physical storage identity differs';row['originalEntityIdentity']=entity
         parts=self.raw_encoder.encode(row) if getattr(self,'indexed_raw_records',False) else [(json.dumps(row,sort_keys=True)+'\n').encode()]
         size=sum(map(len,parts));assert size<=65536,'actual raw record exceeds fixed range bound'
-        self.claim(size,context=dict(role='raw-record',rawKind=row['kind']))
+        self.claim(size,category='raw-wire',context=dict(role='raw-record',rawKind=row['kind']))
         for data in parts:self.raw.write(data)
         self.raw.flush()
         if self.generated_vma:self.generated_vma.record(row)
@@ -461,7 +480,7 @@ class Observer:
                         self.check();block=os.pread(reader,65536,offset)
                         if not block:break
                         offset+=len(block);assert offset<=identity[3] and offset<=self.maximum_file_bytes,'prepared original grew during capture'
-                        self.claim(len(block));output.write(block);digest.update(block)
+                        self.claim(len(block),category='capture-body');output.write(block);digest.update(block)
                     output.flush();os.fsync(output.fileno())
                 assert offset==identity[3] and identity==probe.identity(os.fstat(reader))==probe.identity(os.stat(path,follow_symlinks=False)),'prepared original changed during capture'
                 original=dict(path=name,bytes=offset,sha256=digest.hexdigest())
@@ -563,7 +582,7 @@ class Observer:
         with (self.capture_dir/name).open('xb') as output:
             while count<size:
                 self.check();block=os.pread(reader,min(65536,size-count),offset+count);assert block,'short actual write original'
-                self.claim(len(block),context=self.budget_context);output.write(block);count+=len(block);digest.update(block)
+                self.claim(len(block),category='capture-body',context=self.budget_context);output.write(block);count+=len(block);digest.update(block)
             output.flush();os.fsync(output.fileno())
         row=self.emit(dict(kind='write-original',original=dict(path=name,bytes=count,sha256=digest.hexdigest())))
         self.captures.append(row);self.capture_bytes+=count;return row['original']
@@ -586,8 +605,8 @@ class Observer:
             writers=[dict(pid=pid,fd=fd)] if alias_inventory else self.sole_writer(pid,fd,identity);flags=descriptor_flags(pid,fd);assert flags&os.O_ACCMODE==os.O_RDWR
             position=descriptor_position(pid,fd);offset=identity[3] if flags&os.O_APPEND else position;count=entry['args'][2]
             assert count<=self.maximum_file_bytes and offset+count<=self.maximum_file_bytes,'bounded actual write range'
-            generated_origin=self.generated_vma.write_baseline(pid,fd,identity,identity[3],offset) if self.generated_vma else None
             self.budget_context=dict(path=path[:4096],pathTruncated=len(path)>4096,pathSha256=hashlib.sha256(os.fsencode(path)).hexdigest(),role='write-before',pid=pid,fd=fd,identity=identity,writeCount=count,writeOffset=offset)
+            generated_origin=self.generated_vma.write_baseline(pid,fd,identity,identity[3],offset) if self.generated_vma else None
             key=tuple(identity[:2]);chain=self.append_chains.get(key)
             append=offset==identity[3] and generated_origin is None
             if chain and not append:self.checkpoint_appends('nonappend-write',entry['sequence']);chain=None
@@ -730,7 +749,7 @@ class Observer:
             self.check();block=os.pread(reader,65536,offset)
             if not block:break
             offset+=len(block);assert offset<=self.maximum_file_bytes,'bounded actual capture FD required'
-            if output is not None:self.claim(len(block),context=dict(context or {},captureOffset=offset-len(block),capturePrefixSHA256=digest.copy().hexdigest()));output.write(block)
+            if output is not None:self.claim(len(block),category='capture-body',context=dict(context or {},captureOffset=offset-len(block),capturePrefixSHA256=digest.copy().hexdigest()));output.write(block)
             digest.update(block)
         return offset,digest.hexdigest()
     def prior_content_entity(self,data,*,scope=()):
@@ -832,7 +851,7 @@ class Observer:
                         block=os.pread(reader,65536,offset)
                         if not block:break
                         offset+=len(block);assert offset<=self.maximum_file_bytes
-                        if output is not None:self.claim(len(block),context=dict(role='fd-capture',captureRole=role,pid=pid,fd=fd,fileBytes=ident[3],captureOffset=offset-len(block),captureIdentity=ident,capturePathPrefix=os.fsencode(target)[:128].decode('utf-8','backslashreplace'),capturePathSHA256=hashlib.sha256(os.fsencode(target)).hexdigest(),captureObservationComplete=False,capturePrefixSHA256=digest.copy().hexdigest()));output.write(block)
+                        if output is not None:self.claim(len(block),category='capture-body',context=dict(role='fd-capture',captureRole=role,pid=pid,fd=fd,fileBytes=ident[3],captureOffset=offset-len(block),captureIdentity=ident,capturePathPrefix=os.fsencode(target)[:128].decode('utf-8','backslashreplace'),capturePathSHA256=hashlib.sha256(os.fsencode(target)).hexdigest(),captureObservationComplete=False,capturePrefixSHA256=digest.copy().hexdigest()));output.write(block)
                         digest.update(block);self.check()
                     if output is not None:output.flush();os.fsync(output.fileno())
                 finally:
@@ -896,7 +915,7 @@ class Observer:
                 self.check();block=os.pread(reader,65536,offset)
                 if not block:break
                 offset+=len(block);assert offset<=before[3] and offset<=self.maximum_file_bytes,'tool FD grew during bounded capture'
-                self.claim(len(block));output.write(block);digest.update(block)
+                self.claim(len(block),category='capture-body');output.write(block);digest.update(block)
             output.flush();os.fsync(output.fileno())
         assert offset==before[3] and before==probe.identity(os.fstat(reader)),'tool FD changed during capture'
         original=dict(path=name,bytes=offset,sha256=digest.hexdigest())
@@ -910,7 +929,7 @@ class Observer:
             assert len(self.tool_provider_cache)<self.maximum_processes,'actual tool provider original count bound'
             name='capture-'+str(len(self.captures)).zfill(4)+'.original'
             with (self.capture_dir/name).open('xb') as output:
-                for at in range(0,len(data),65536):self.check();block=data[at:at+65536];self.claim(len(block));output.write(block)
+                for at in range(0,len(data),65536):self.check();block=data[at:at+65536];self.claim(len(block),category='capture-body');output.write(block)
                 output.flush();os.fsync(output.fileno())
             reference=dict(path=name,bytes=len(data),sha256=digest)
             capture=self.emit(dict(kind='toolchain-original',captureKind='mountinfo',observedPid=pid,original=reference));self.captures.append(capture);self.capture_bytes+=len(data);self.tool_provider_cache[key]=reference
@@ -970,7 +989,7 @@ class Observer:
             if reused is None:
                 with(self.capture_dir/name).open('xb')as output:
                     for at in range(0,len(data),65536):
-                        self.check();block=data[at:at+65536];self.claim(len(block),context=dict(role='toolchain-original',captureKind='maps',observedPid=pid));output.write(block)
+                        self.check();block=data[at:at+65536];self.claim(len(block),category='capture-body',context=dict(role='toolchain-original',captureKind='maps',observedPid=pid));output.write(block)
                     output.flush();os.fsync(output.fileno())
                 ref=dict(path=name,bytes=observed[0],sha256=observed[1]);self.capture_bytes+=observed[0]
             else:
@@ -988,7 +1007,7 @@ class Observer:
                 self.check();block=source.read(65536)
                 if not block:break
                 assert len(data)+len(block)<=self.tool_metadata_bytes,'bounded actual maps required'
-                self.claim(len(block));output.write(block);data.extend(block);digest.update(block)
+                self.claim(len(block),category='capture-body');output.write(block);data.extend(block);digest.update(block)
             output.flush();os.fsync(output.fileno())
         original=dict(path=name,bytes=len(data),sha256=digest.hexdigest())
         row=self.emit(dict(kind='toolchain-original',captureKind='maps',observedPid=pid,original=original));self.captures.append(row);self.capture_bytes+=len(data)
@@ -1571,7 +1590,7 @@ class Observer:
                 os.chdir(cwd if cwd is not None else self.source);os.execve(actual_executable(command),command,env if env is not None else {'PATH':'/usr/bin:/bin','LANG':'C','LC_ALL':'C','HOME':str(self.out),'TMPDIR':str(self.out)})
             except BaseException:os._exit(70)
         os.close(stdout_write);os.close(stderr_write);self.pump_errors=[]
-        pumps=[BoundedPipePump(stdout_read,stdout_path,self.maximum_stdio_bytes,self.claim,self.pump_errors),BoundedPipePump(stderr_read,stderr_path,self.maximum_stdio_bytes,self.claim,self.pump_errors)]
+        pumps=[BoundedPipePump(stdout_read,stdout_path,self.maximum_stdio_bytes,lambda count:self.claim(count,category='stdio'),self.pump_errors),BoundedPipePump(stderr_read,stderr_path,self.maximum_stdio_bytes,lambda count:self.claim(count,category='stdio'),self.pump_errors)]
         root_pgid=os.getpgid(child);self.root=child;self.tasks[child]=dict(stopped=False,exited=False,entry=None,initial=True,**(dict(authorityPending=[('initial-root',None)]) if self.process_authority else {}),**(dict(tgid=child,fdTable=child) if self.shared_tasks else {}))
         try:
             os.close(read_fd)
