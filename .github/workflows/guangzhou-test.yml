@@ -93,14 +93,14 @@ jobs:
       contents: read
       packages: read
     env:
-      KUBE_CONFIG_DATA: ${{ secrets.GZ_KUBE_CONFIG_DATA }}
+      KUBE_CONFIG_DATA: ${{ secrets.KUBE_CONFIG_DATA }}
       TARGET_IMAGE: ghcr.io/undefinedsco/xpod@${{ needs.validate-build-publish.outputs.digest }}
     steps:
       - name: Validate deployment boundary
         run: |
           set -euo pipefail
           if [ -z "$KUBE_CONFIG_DATA" ]; then
-            echo "::error::GZ_KUBE_CONFIG_DATA is required"
+            echo "::error::KUBE_CONFIG_DATA (base64 Guangzhou kubeconfig) is required"
             exit 1
           fi
           mkdir -p "$HOME/.kube"
