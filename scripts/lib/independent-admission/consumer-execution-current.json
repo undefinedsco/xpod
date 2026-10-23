@@ -941,7 +941,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/github-origin.ts",
-    "sha256": "2174bcb6d47eda9657d7830d9b8f3333756a45f291565f95c889efd965c5fc06"
+    "sha256": "9ae437cd15d37da03d1ef9b6ed2fb52d25f010dce54d939bfe12374631b93ff6"
   },
   {
     "path": "scripts/lib/independent-admission/github-source-binding-groups.ts",
@@ -1345,7 +1345,7 @@
   },
   {
     "path": "scripts/lib/inngest-controlled-build.py",
-    "sha256": "b71657667db6587a4cab1390170a274b0b54fdaf2db50c1ec89587b12231752d"
+    "sha256": "5f0dc7f2d58dc57ea268d5cd2733a4a95fa77ac77a672078d4134bbca2fe41de"
   },
   {
     "path": "scripts/lib/inngest-controlled-materials.ts",
@@ -1405,7 +1405,7 @@
   },
   {
     "path": "scripts/lib/physical-module-archive.ts",
-    "sha256": "76ab9f1e461c1d61f18b625cc624e7c1774e27807127a7b6295a2114f7bbb1cc"
+    "sha256": "01a27c05e2541449ec843e9a62bfc6b76f3c95f916b624f522415c006b99bd34"
   },
   {
     "path": "scripts/lib/physical-module-bins.ts",

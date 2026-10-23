@@ -239,3 +239,20 @@ for (const dependencyKind of ['type-reference', 'module-import']) for (const mod
     expect(selected(original)).toEqual([mode.expected]); expect(selected(bound)).toEqual(selected(original));
     emitDeclarations(config, input);
   }));
+
+test('ordinary resolution caches are private to each fresh Program', () => fixture(({ root, client, cli, config, write }) => {
+  write('workspace/node_modules/ordinary/package.json', { name: 'ordinary', types: './first.d.ts' });
+  write('workspace/node_modules/ordinary/first.d.ts', "export declare const value: 'first';");
+  write('workspace/node_modules/ordinary/second.d.ts', "export declare const value: 'second';");
+  write('workspace/src/consumer.ts', "export {value} from 'ordinary';");
+  const input = createDeclarationInput([cli, client], () => {});
+  const first = createDeclarationBuild(config, input);
+  first.emitDeclarations();
+  expect(first.program.getSourceFiles().some(file => file.fileName.endsWith('/ordinary/first.d.ts'))).toBe(true);
+  write('workspace/node_modules/ordinary/package.json', { name: 'ordinary', types: './second.d.ts' });
+  const second = createDeclarationBuild(config, input);
+  second.emitDeclarations();
+  expect(second.program).not.toBe(first.program);
+  expect(second.program.getSourceFiles().some(file => file.fileName.endsWith('/ordinary/second.d.ts'))).toBe(true);
+  expect(second.program.getSourceFiles().some(file => file.fileName.endsWith('/ordinary/first.d.ts'))).toBe(false);
+}));

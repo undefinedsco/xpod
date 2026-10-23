@@ -1173,8 +1173,11 @@ function rebindApiCaptureInputRows<T extends {readonly path:string;readonly sha2
 }
 const apiControlledDescriptorSourceGroup25=Object.freeze({...buildApiParent,name:"service-build-source-and-protocol-causality",secondarySelectors:Object.freeze([...(buildApiParent.secondarySelectors??[]).map(row=>Object.freeze({...row,sha256:buildApiHashes[row.path]??row.sha256})),...apiServiceBuildSourceBindings25.filter(row=>Object.prototype.hasOwnProperty.call(buildApiHashes,row.path)&&!(buildApiParent.secondarySelectors??[]).some(role=>role.path===row.path))]),sourceBindings:apiServiceBuildSourceBindings25});
 const apiCaptureInputsTimingGroup=Object.freeze({...apiControlledDescriptorSourceGroup25,name:"api-capture-inputs-timing",selectors:rebindApiCaptureInputRows(apiControlledDescriptorSourceGroup25.selectors),secondarySelectors:rebindApiCaptureInputRows(apiControlledDescriptorSourceGroup25.secondarySelectors),sourceBindings:rebindApiCaptureInputRows(apiControlledDescriptorSourceGroup25.sourceBindings)});
-export const API_SERVICE_BUILD_SOURCE_BINDINGS=apiCaptureInputsTimingGroup.sourceBindings;
-export const API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS:readonly (GitHubSourceBindingGroup&{readonly name?:string})[]=Object.freeze([...PRE_BUILD_API_GROUPS,apiControlledDescriptorSourceGroup25,apiCaptureInputsTimingGroup]);
+const apiPerformanceHashes:Readonly<Record<string,string>>={"scripts/lib/inngest-controlled-build.py":"5f0dc7f2d58dc57ea268d5cd2733a4a95fa77ac77a672078d4134bbca2fe41de","scripts/lib/physical-module-archive.ts":"01a27c05e2541449ec843e9a62bfc6b76f3c95f916b624f522415c006b99bd34"};
+const rebindApiPerformanceRows=(rows:GitHubSourceBindingGroup['sourceBindings']|undefined)=>Object.freeze((rows??[]).map(row=>Object.freeze({...row,sha256:apiPerformanceHashes[row.path]??row.sha256})));
+const apiCapturePerformanceGroup=Object.freeze({...apiCaptureInputsTimingGroup,name:'api-capture-performance',selectors:rebindApiPerformanceRows(apiCaptureInputsTimingGroup.selectors),secondarySelectors:rebindApiPerformanceRows(apiCaptureInputsTimingGroup.secondarySelectors),sourceBindings:rebindApiPerformanceRows(apiCaptureInputsTimingGroup.sourceBindings)});
+export const API_SERVICE_BUILD_SOURCE_BINDINGS=apiCapturePerformanceGroup.sourceBindings;
+export const API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS:readonly (GitHubSourceBindingGroup&{readonly name?:string})[]=Object.freeze([...PRE_BUILD_API_GROUPS,apiControlledDescriptorSourceGroup25,apiCaptureInputsTimingGroup,apiCapturePerformanceGroup]);
 
 export const API_WORKSPACE_SOURCE_GROUPS=Object.freeze(API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS.filter(group=>group.sourceBindings.some(row=>row.path==='scripts/lib/api-scoped-dependency-state.ts')));
 

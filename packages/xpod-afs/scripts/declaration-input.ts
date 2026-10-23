@@ -64,6 +64,9 @@ export function createDeclarationInput(roots: readonly string[], assertProducerC
     const originalRead = host.readFile.bind(host), originalExists = host.fileExists.bind(host), originalRealpath = host.realpath?.bind(host);
     host.fileExists = file => { const owner = ownerOf(file); if (owner) resolveArtifactPath(owner, file, true); return originalExists(file); };
     host.realpath = file => { const owner = ownerOf(file); return owner ? resolveArtifactPath(owner, file) : originalRealpath ? originalRealpath(file) : file; };
+    // Cache ordinary dependency resolution only within this fresh Program.
+    // Owned SDK relative imports remain uncached and retain every path check.
+    const moduleResolutionCache = ts.createModuleResolutionCache(host.getCurrentDirectory(), host.getCanonicalFileName, parsed.options);
     const relativeOwner = (from: string, name: string): string | undefined => {
       const owner = ownerOf(from);
       if (!owner || !(name.startsWith('.') || path.isAbsolute(name))) return undefined;
@@ -103,7 +106,7 @@ export function createDeclarationInput(roots: readonly string[], assertProducerC
       if (selected) return { resolvedModule: { resolvedFileName: selected, isExternalLibraryImport: true,
         extension: selected.endsWith('.d.mts') ? ts.Extension.Dmts : selected.endsWith('.d.cts') ? ts.Extension.Dcts : ts.Extension.Dts } };
       const owner = relativeOwner(containingFile, name);
-      const resolved = ts.resolveModuleName(name, containingFile, options ?? parsed.options, host, undefined, redirectedReference,
+      const resolved = ts.resolveModuleName(name, containingFile, options ?? parsed.options, host, owner ? undefined : moduleResolutionCache, redirectedReference,
         ts.getModeForUsageLocation(containingSourceFile, literal, options ?? parsed.options));
       if (owner && resolved.resolvedModule) resolveArtifactPath(owner, resolved.resolvedModule.resolvedFileName);
       return resolved;

@@ -299,7 +299,13 @@ def domains(work):
     source=inventory(work/'source');dependencies={p:v for p,v in source.items() if 'node_modules' in Path(p).parts};source={p:v for p,v in source.items() if p not in dependencies}
     return dict(source=source,dependencies=dependencies,toolchain=inventory(work/'tools'))
 def total_check(work):
-    total=sum(p.stat().st_size for p in work.rglob('*') if p.is_file() and not p.is_symlink() and (p.relative_to(work).parts[0] in ['materials','originals','products'] or p.parent==work and p.suffix=='.json'))
+    total=0
+    for root in work.glob('*'):
+        if root.name in ('materials','originals','products'):
+            if root.is_file() and not root.is_symlink():total+=root.stat().st_size
+            if root.is_dir() and not root.is_symlink():
+                total+=sum(p.stat().st_size for p in root.rglob('*') if p.is_file() and not p.is_symlink())
+        elif root.suffix=='.json' and root.is_file() and not root.is_symlink():total+=root.stat().st_size
     need(total<=min(_retained_byte_ceiling,LIMITS['sourceMaterialBytes']),'shared retained material total');need(shutil.disk_usage(work).free>=LIMITS['freeFloorBytes'],'disk floor');return total
 
 class MaterialBudget:

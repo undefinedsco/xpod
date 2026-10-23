@@ -44,16 +44,31 @@ export function packPhysicalModule(stage:string,output:string,adapter:{moduleId:
  manifest.xpodModule={schemaVersion:1,id:adapter.moduleId,cliApiVersion:MODULE_API_VERSION,platform:process.platform,arch:process.arch,entry:adapter.entry,files};writeFileSync(path.join(stage,'package.json'),JSON.stringify(manifest,null,2)+'\n');
  adapter.verifyArchiveMaterials?.(stage);
  writePhysicalModuleArchive(stage,output);
- const readback=spawnSync('python3',['-c',`import sys,tarfile,json,hashlib
-with tarfile.open(sys.argv[1]) as t:
- members=t.getmembers();names=[m.name for m in members]
- assert len(names)==len(set(names)) and len(names)<=50000 and all(m.isfile() and m.name.startswith('package/') and '..' not in m.name.split('/') for m in members)
- by_name={m.name:m for m in members}
- manifest=json.load(t.extractfile(by_name['package/package.json']));rows=manifest['xpodModule']['files']
- assert set(names)-{'package/package.json'}=={'package/'+r['path'] for r in rows}
- for row in rows:
-  member=by_name['package/'+row['path']];body=t.extractfile(member).read()
-  assert len(body)==row['size'] and hashlib.sha256(body).hexdigest()==row['sha256'] and member.mode==row['mode']
+ const readback=spawnSync('python3',['-c',`import sys,tarfile,json,hashlib,gzip
+names=[];seen=set();summaries={};manifest=None
+with open(sys.argv[1],'rb') as raw:
+ with gzip.GzipFile(fileobj=raw,mode='rb') as stream:
+  with tarfile.open(fileobj=stream,mode='r|') as t:
+   for member in t:
+    name=member.name
+    assert member.isfile() and name.startswith('package/') and '..' not in name.split('/')
+    assert name not in seen and len(names)<50000
+    seen.add(name);names.append(name)
+    body=t.extractfile(member);digest=hashlib.sha256();size=0;payload=bytearray()
+    while True:
+     chunk=body.read(1048576)
+     if not chunk:break
+     digest.update(chunk);size+=len(chunk)
+     if name=='package/package.json':payload.extend(chunk)
+    summaries[name]=(size,digest.hexdigest(),member.mode)
+    if name=='package/package.json':manifest=json.loads(payload)
+  while stream.read(1048576):pass
+if manifest is None:raise KeyError('package/package.json')
+rows=manifest['xpodModule']['files']
+assert set(names)-{'package/package.json'}=={'package/'+r['path'] for r in rows}
+for row in rows:
+ size,sha256,mode=summaries['package/'+row['path']]
+ assert size==row['size'] and sha256==row['sha256'] and mode==row['mode']
 `,path.resolve(output)],{stdio:'inherit'});
  if(readback.error||readback.status!==0)throw new Error('Actual module archive inventory readback failed');
  const bytes=readFileSync(output);return {archive:path.resolve(output),sha256:hash(bytes),integrity:'sha512-'+createHash('sha512').update(bytes).digest('base64'),members:files.length+1};
