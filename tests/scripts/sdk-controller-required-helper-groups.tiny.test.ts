@@ -12,8 +12,8 @@ test('sixteen declared complete groups only; observed original bound remains thi
  const groups=Array.from({length:16},(_,i)=>[['model.py',String(i)],['shared.py','b']]as const);expect(select(groups,new Map(groups[15]!))).toBe(groups[15]);expect(()=>select([...groups,groups[15]!],new Map(groups[15]!))).toThrow();expect(()=>plan([...groups,groups[15]!],names,new Map(groups[15]!))).toThrow();expect(()=>select([old],new Map(Array.from({length:33},(_,i)=>[String(i),'a'])))).toThrow();
 });
 
-test('twenty-six registered recipes fit capacity; a twenty-seventh rejects before extra reads',()=>{
- const groups=Array.from({length:26},(_,i)=>[['model.py',String(i)],['shared.py','b']]as const);
- const observed=new Map(groups[25]!);expect(plan(groups,names,observed)).toBe(groups[25]);expect(select(groups,observed)).toBe(groups[25]);
- const overflow=[...groups,[['model.py','26'],['shared.py','b']]as const];expect(()=>plan(overflow,names,observed)).toThrow();expect(()=>select(overflow,observed)).toThrow();
+test('twenty-seven registered recipes fit capacity; a twenty-eighth rejects before extra reads',()=>{
+ const groups=Array.from({length:27},(_,i)=>[['model.py',String(i)],['shared.py','b']]as const);
+ const observed=new Map(groups[26]!);expect(plan(groups,names,observed)).toBe(groups[26]);expect(select(groups,observed)).toBe(groups[26]);
+ const overflow=[...groups,[['model.py','27'],['shared.py','b']]as const];expect(()=>plan(overflow,names,observed)).toThrow();expect(()=>select(overflow,observed)).toThrow();
 });

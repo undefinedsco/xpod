@@ -35,6 +35,12 @@ WAKE_RESERVATION_BYTES=WAKE_RAW_RECORDS*65536
 CANONICAL_FILE_MAXIMUM=json.loads((Path(__file__).resolve().parents[2]/'scripts/lib/module-artifact-limits.json').read_bytes())['shardBytes']
 MAPPING_KIND='actual-exclusive-mmap-selected-file-v1'
 BUILD_ROOT='/opt/qlever-sdk/build'
+
+def validated_build_root(value):
+    # Supplied by the trusted caller, never inferred from a trace declaration.
+    need(isinstance(value,str) and value.startswith('/') and len(os.fsencode(value))<=4096 and '\\' not in value and all(ord(c)>=32 and ord(c)!=127 for c in value) and all(part not in ['', '.', '..'] for part in value.split('/')[1:]),'canonical caller-owned generated build root required')
+    return value
+
 FLAGS=0x4001  # Linux v6.12 UAPI: MAP_SHARED | MAP_NORESERVE; exact word only.
 PROTECTION=3
 WINDOW_SECONDS=1.0
@@ -613,7 +619,8 @@ class Runtime:
 
 class Verifier:
     """Independent bounded raw/original replay; no caller Boolean approval."""
-    def __init__(self,capture_data,maps_data,metadata_maximum=4*1024**2,model=LEGACY_MODEL,read_blocks=None,maximum_file=1024**2,retained_metadata=False):
+    def __init__(self,capture_data,maps_data,metadata_maximum=4*1024**2,model=LEGACY_MODEL,read_blocks=None,maximum_file=1024**2,retained_metadata=False,build_root=BUILD_ROOT):
+        self.build_root=validated_build_root(build_root)
         need(model in [LEGACY_MODEL,KERNEL_LINK_MODEL,MODEL,COHORT_MODEL,*WAKE_MODELS],'unknown mapping evidence model');self.model=model;self.read_blocks=read_blocks;self.maximum_file=maximum_file
         need(type(retained_metadata)is bool and(not retained_metadata or model==PARKED_WAIT_MODEL),'retained metadata requires explicit parked-wait model');self.retained_metadata=retained_metadata;self.metadata_high_water=0;self.metadata_closed_operation=None
         self.capture_data=capture_data;self.maps_data=maps_data;self.metadata_maximum=metadata_maximum;self.mm=MemoryDomains();self.windows={};self.origins={};self.original_sequences={};self.map_sequences={};self.map_owners={};self.pending_window=None;self.transaction=None;self.active=None;self.events={};self.checkpoints={};self.consumers=[];self.metadata_bytes=0;self.pending_mapping_entries=set();self.create_paths={};self.last_observed_ns=None;self.parent_deadline_ns=None;self.fd_bindings={};self.private_wakes=[];self.private_waits=[]
@@ -743,7 +750,7 @@ class Verifier:
             while len(self.map_sequences)>256:
                 old=next(iter(self.map_sequences));self.map_sequences.pop(old);self.map_owners.pop(old)
         elif kind=='generated-vma-create-path':
-            entry=entries.get(row['entrySequence']);need(entry and entry['pid']==row['pid'],'actual create path entry missing');dirfd,address=create_dimensions(entry);path=row['path'];need(path.startswith(BUILD_ROOT+'/') and len(os.fsencode(path))<=4096 and all(part not in ['', '.', '..'] for part in path.split('/')[1:]) and row['dirFd']==dirfd and row['pathArgIndex']==(0 if operation(entry)=='open' else 1),'actual fixed generated path arguments differ');self.create_paths[entry['sequence']]=row
+            entry=entries.get(row['entrySequence']);need(entry and entry['pid']==row['pid'],'actual create path entry missing');dirfd,address=create_dimensions(entry);path=row['path'];need(path.startswith(self.build_root+'/') and len(os.fsencode(path))<=4096 and all(part not in ['', '.', '..'] for part in path.split('/')[1:]) and row['dirFd']==dirfd and row['pathArgIndex']==(0 if operation(entry)=='open' else 1),'actual fixed generated path arguments differ');self.create_paths[entry['sequence']]=row
         elif kind=='generated-vma-selected-fd-binding':
             self.fd_bindings[seq]=row
         elif kind=='generated-vma-operation-window':
@@ -839,7 +846,7 @@ class Verifier:
                     for name in ['postOriginal','confirmationOriginal']:
                         need(self.original(proof[name])==origin['data'] and post['sequence']<self.original_sequences.get(self.key(proof[name]),0)<seq,'actual mapping body confirmation absent')
                     confirm=proof['mapsConfirmationOriginal'];need(confirm['bytes']==row['mapsOriginal']['bytes'] and confirm['sha256']==row['mapsOriginal']['sha256'] and self.maps_data(confirm)==self.maps_data(row['mapsOriginal']) and self.map_owners.get(self.map_key(confirm))==row['pid'] and post['sequence']<self.map_sequences.get(self.map_key(row['mapsOriginal']),0)<self.map_sequences.get(self.map_key(confirm),0)<seq,'full numeric maps confirmation differs')
-                    kernel_link(proof['linkBefore'],origin['path']);need(proof['linkBefore']==proof['linkAfter'],'kernel link samples differ')
+                    kernel_link(proof['linkBefore'],origin['path'],self.build_root);need(proof['linkBefore']==proof['linkAfter'],'kernel link samples differ')
                     first=self.events.get(proof['linkBeforeSequence']);last=self.events.get(proof['linkAfterSequence'])
                     need(first and last and post['sequence']<self.map_sequences[self.map_key(row['mapsOriginal'])]<first['sequence']<self.map_sequences[self.map_key(confirm)]<last['sequence']<seq,'kernel link/maps sample order differs')
                     for sample,link,ref,proc in [(first,proof['linkBefore'],row['mapsOriginal'],proof['procBefore']),(last,proof['linkAfter'],confirm,proof['procAfter'])]:

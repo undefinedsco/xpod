@@ -145,6 +145,19 @@ export async function observeQleverSdkToolchainSourceOriginals(capability:unknow
         const joined=inspectSdkToolchainSourceArchiveJoin({files:result.facts.sdkToolchainSignedFileCoordinates,coordinates:archives.coordinates,collection,checksums:checksumRows,signedReleases:signed},check);check();assertCurrent();Object.assign(joinedFacts,joined);pending.delete(ARCHIVE_GAP);
       }catch(error){pending.add('qlever-sdk-toolchain-source-archive-join-unverified: '+String(error instanceof Error?error.message:error).slice(0,1024));}
     }
+    // Only the same SDK's private, fully replayed execution observation can
+    // discharge lifetime immutability. A public JSON diagnostic cannot do so.
+    if(execution.sdkToolchainExecutionLifetimeImmutabilityVerified===true){
+      joinedFacts.sdkToolchainExecutionLifetimeImmutabilityVerified=true;
+      joinedFacts.sdkToolchainExecutionLifetimeScope=execution.sdkToolchainExecutionLifetimeScope;
+      pending.delete('qlever-sdk-toolchain-execution-lifetime-immutability-unverified');
+    }
+    joinedFacts.sdkToolchainSourceClosureVerified=joinedFacts.sdkToolchainExecutionLifetimeImmutabilityVerified===true
+      && joinedFacts.sdkToolchainOperationCoverageVerified===true
+      && joinedFacts.sdkToolchainObservedAfterFileBindingsVerified===true
+      && joinedFacts.sdkToolchainSignedDebianBinaryFileBindingsVerified===true
+      && joinedFacts.sdkToolchainStopReadOnlyProviderCoverageVerified===true
+      && joinedFacts.sdkToolchainExactSourceArchiveCoverageVerified===true && pending.size===0;
     check();assertCurrent();return Object.freeze({facts:Object.freeze(joinedFacts),pending:Object.freeze([...pending]),assertCurrent});
   }catch(error){return Object.freeze({facts:Object.freeze(facts),pending:Object.freeze(['qlever-sdk-toolchain-private-coverage-unverified: '+String(error instanceof Error?error.message:error).slice(0,1024)])});}
 }

@@ -1,12 +1,14 @@
 # SDK execution raw record storage
 
-The normal SDK observer uses `schema-indexed-ndjson-v1`. This is a lossless
+The normal SDK observer uses `schema-indexed-ndjson-v2` inside the lossless
+`kernel-raw-gzip-v1` container. This is a lossless
 storage format: it indexes repeated sets of field names and retains every event,
 its ordering, all nested values, and exact integer values. It neither combines
-events nor compresses capture file contents. The low-level observer defaults to
-legacy object JSONL for existing diagnostic callers.
+events nor changes capture file contents. Historical object JSONL and indexed
+v1 remain readable. Explicit low-level diagnostic callers can retain their
+legacy settings.
 
-Each phase begins with `["schema-indexed-ndjson-v1"]`. A new sorted, unique key
+The historical v1 phase begins with `["schema-indexed-ndjson-v1"]`. A new sorted, unique key
 set is declared as `["schema", id, keys]` and immediately used by
 `["row", id, values]`. IDs start at zero and increase without gaps. The decoder
 persists across that phase's physical shards. A decoded `owned-root-binding`
@@ -42,3 +44,16 @@ integers, legacy streams, malformed dictionaries and rows, and both size limits.
 The actual Linux coordinated-wait and Clang/CMake probes exercise the normal
 producer and independent reader together. Diagnostic results are not full SDK
 publication qualification.
+
+V2 indexes constant kind, phase, and architecture fields and encodes selected
+integer fields as exact deltas. Canonical decimal string timestamps retain their
+string type and original decimal bytes after decoding; noncanonical strings
+(including leading zeroes) stay literal. Record order, values, and identities
+are unchanged. The same 4 GiB aggregate logical wire bound, 512 MiB logical
+shard bound, 64 KiB expanded record/emit limits, and schema bounds apply.
+
+Gzip physical bytes, including final trailers and temporary peaks, share the
+existing retained-byte ledger. Encoded and logical lengths and SHA256 are both
+verified. Readers must exhaust each stream before issuing an observation; CRC,
+truncation, missing EOF, extra data, and concatenated gzip members are rejected.
+Physical compression does not increase a logical or time budget.

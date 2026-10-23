@@ -45,3 +45,19 @@ it('actual adapter protocol deduplicates signatures by exact InRelease path acro
  const bytes=Buffer.from(JSON.stringify(collection)),ref={...state.archives.collection,bytes:bytes.length,sha256:hash(bytes)},master=Buffer.from(JSON.stringify({debianSources:ref}));state.archives.collection=ref;state.sdk.masterReference={path:'materials.json',bytes:master.length,sha256:hash(master)};state.sdk.readOriginal=(path:string)=>path==='materials.json'?master:bytes;
  expect(state.signature.sdkDebianSignatureOriginals.observations).toHaveLength(1);const result=await observeQleverSdkToolchainSourceOriginals(state.cap,state.source);expect(result.facts.sdkToolchainExactSourceArchiveCoverageVerified).toBe(true);expect(result.pending).not.toContain(gap);expect(result.pending).toContain('qlever-sdk-toolchain-execution-lifetime-immutability-unverified');
 });
+it('same private execution lifetime discharges only its own obligation and is guarded by execution custody',async()=>{
+ state.execution.sdkToolchainExecutionLifetimeImmutabilityVerified=true;
+ state.execution.sdkToolchainExecutionLifetimeScope='controlled test protocol';
+ const result=await observeQleverSdkToolchainSourceOriginals(state.cap,state.source);
+ expect(result.facts.sdkToolchainExecutionLifetimeImmutabilityVerified).toBe(true);
+ expect(result.pending).not.toContain('qlever-sdk-toolchain-execution-lifetime-immutability-unverified');
+ expect(result.facts.sdkToolchainSourceClosureVerified).toBe(false);
+ expect(result.pending).toContain('qlever-sdk-toolchain-effective-readonly-provider-coverage-unavailable');
+ state.execution={...state.execution};expect(()=>result.assertCurrent!()).toThrow('custody changed');
+});
+it.each([false,undefined,'true',1])('non-true private lifetime value %s never discharges lifetime',async value=>{
+ state.execution.sdkToolchainExecutionLifetimeImmutabilityVerified=value;
+ const result=await observeQleverSdkToolchainSourceOriginals(state.cap,state.source);
+ expect(result.pending).toContain('qlever-sdk-toolchain-execution-lifetime-immutability-unverified');
+ expect(result.facts.sdkToolchainSourceClosureVerified).toBe(false);
+});

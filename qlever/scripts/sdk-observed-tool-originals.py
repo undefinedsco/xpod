@@ -19,6 +19,9 @@ bindings=importlib.util.module_from_spec(bindings_spec);bindings_spec.loader.exe
 LIMITS=zip_originals.LIMITS
 need=zip_originals.need
 
+wire_spec=importlib.util.spec_from_file_location('tool_wire_reader',Path(__file__).with_name('sdk-raw-wire-reader.py'))
+wire_reader=importlib.util.module_from_spec(wire_spec);wire_spec.loader.exec_module(wire_reader)
+
 def observe(archive_path,plan):
     remaining=plan['remainingMilliseconds'];need(type(remaining) in (int,float) and 0<remaining<=LIMITS['timeoutMs'],'shared tool observation deadline')
     end=time.monotonic()+remaining/1000
@@ -44,6 +47,7 @@ def observe(archive_path,plan):
         def small(ref):
             need(ref['bytes']<=LIMITS['metadataBytes'],'bounded tool metadata original')
             return json.loads(b''.join(stream(ref)))
+        logical_raw_bytes=0
         for phase in phases:
             captures={}
             for ref in phase['captures']['indexes']:
@@ -66,21 +70,17 @@ def observe(archive_path,plan):
                     need(name not in descriptors and name not in seen and captures.get(name)==original,'same-phase parent capture missing/duplicated')
                     descriptors[name]=row
             need(len(descriptors)==summary['files'] and sum(row['original']['bytes'] for row in descriptors.values())==summary['bytes'],'complete tool descriptor count/bytes')
-            raw_tools={};line=bytearray();last_sequence=0;decoder=raw_records.RawRecordDecoder()
+            raw_tools={};last_sequence=0;decoder=raw_records.RawRecordDecoder()
             for ref in phase['rawTraceShards']:
-                for block in stream(ref):
-                    line.extend(block)
-                    while True:
-                        at=line.find(b'\n')
-                        if at<0:break
-                        need(at+1<=LIMITS['rangeBytes'],'bounded raw event record');row=decoder.feed(bytes(line[:at+1]));del line[:at+1]
-                        if row is None:continue
-                        need(row['phase']==phase['name'] and type(row['sequence']) is int and row['sequence']>last_sequence,'ordered same-phase actual raw events');last_sequence=row['sequence']
-                        if row.get('kind')=='toolchain-original' and row.get('captureKind')=='file':
-                            original=row['original'];name=Path(original['path']).name
-                            need(original['path']==name and name not in raw_tools,'unique raw tool role');raw_tools[name]=row
-                    need(len(line)<=LIMITS['rangeBytes'],'unfinished raw event bound')
-            need(not line,'raw event final newline');decoder.finish()
+                for raw in wire_reader.iter_shard_records(stream(ref),ref,check=check,maximum_encoded=LIMITS['shardBytes'],maximum_logical=LIMITS['shardBytes'],maximum_record=LIMITS['rangeBytes']):
+                    logical_raw_bytes+=len(raw);need(logical_raw_bytes<=LIMITS['sourceMaterialBytes'],'cumulative logical raw bound')
+                    row=decoder.feed(raw)
+                    if row is None:continue
+                    need(row['phase']==phase['name'] and type(row['sequence']) is int and row['sequence']>last_sequence,'ordered same-phase actual raw events');last_sequence=row['sequence']
+                    if row.get('kind')=='toolchain-original' and row.get('captureKind')=='file':
+                        original=row['original'];name=Path(original['path']).name
+                        need(original['path']==name and name not in raw_tools,'unique raw tool role');raw_tools[name]=row
+            decoder.finish()
             need(set(raw_tools)==set(descriptors),'raw/descriptor closed tool universe differs')
             for name,row in descriptors.items():
                 check();raw=raw_tools[name];ref=row['original'];trusted=expected_by_name.get(name)

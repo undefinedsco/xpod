@@ -8,7 +8,7 @@ import time
 
 def load(name):
     spec=importlib.util.spec_from_file_location(name,Path(__file__).with_name(name+'.py'));module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module);return module
-zip_originals=load('sdk-zip-originals');bindings=load('sdk-generation-multiprocess-bindings');originals_util=load('sdk-execution-originals-util');LIMITS=zip_originals.LIMITS
+wire_reader=load('sdk-raw-wire-reader');zip_originals=load('sdk-zip-originals');bindings=load('sdk-generation-multiprocess-bindings');originals_util=load('sdk-execution-originals-util');LIMITS=zip_originals.LIMITS
 
 def retain_dependency_read_capture(row,digest,registrations,paths,originals):
     """Projection only; caller must complete observe() full raw/FD validation."""
@@ -59,18 +59,8 @@ def observe(archive_path,plan):
             ref=all_refs.get(name);bindings.need(ref and ref['bytes']<=maximum,'same registered capture original required');used_originals.add(name);return stream(ref)
         commands={phase['name']:phase['actualCommand'] for phase in plan['phases']}
         def lines(phase_name,refs):
-            pending=bytearray()
             for ref in refs:
-                bindings.need(ref['bytes']<=LIMITS['shardBytes'],'raw shard bound')
-                for block in stream(ref):
-                    pending.extend(block)
-                    while True:
-                        at=pending.find(b'\n')
-                        if at<0:break
-                        bindings.need(at+1<=LIMITS['rangeBytes'],'raw record bound');line=bytes(pending[:at+1]);del pending[:at+1]
-                        yield line
-                    bindings.need(len(pending)<=LIMITS['rangeBytes'],'unfinished raw record bound')
-            bindings.need(not pending,'raw JSONL final newline required')
+                yield from wire_reader.iter_shard_records(stream(ref),ref,check=check,maximum_encoded=LIMITS['shardBytes'],maximum_logical=LIMITS['shardBytes'],maximum_record=LIMITS['rangeBytes'])
         def record_observer(phase_name,row):
             if row.get('kind')=='owned-root-binding':bindings.need(row.get('command')==commands[phase_name],'actual traced root argv differs from closed SDK stage')
             if row.get('kind')=='kernel-syscall' and row.get('op')=='entry':

@@ -176,6 +176,10 @@ def verify_write_bytes(before,buffer,after,before_size,offset,count,maximum,chec
         need(post.take(size)==bytes(expected),'actual post-write bytes differ from syscall buffer projection');position+=size
     need(post.take(1)==b'','actual post-write original has extra bytes')
     return expected_size
+def executable_memory_policy():
+    spec=importlib.util.spec_from_file_location('sdk_executable_memory_policy',Path(__file__).with_name('sdk-executable-memory-policy.py'))
+    value=importlib.util.module_from_spec(spec);spec.loader.exec_module(value);return value
+
 def parse_proc_maps(raw):
     need(isinstance(raw,bytes) and len(raw)<=4*1024**2,'bounded maps original required')
     result=[];previous=0
@@ -430,7 +434,7 @@ class IndexedToolchainOperationCoverage:
         result=dict(schemaVersion=2,model=self.MODEL,scope='verified raw operation/file associations; effective-RO and source authority independent',paths=self.paths,operations=self.operations,pending=list(unresolved),stopProviderPending=list(stop_provider_pending))
         need(len(json.dumps(result,separators=(',',':')).encode())<=self.maximum_bytes,'indexed tool operation final metadata bound');return result
 
-def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,limits=None,capture_observer=None,compact_tool_coverage=False,record_observer=None):
+def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,limits=None,capture_observer=None,compact_tool_coverage=False,record_observer=None,generated_build_root='/opt/qlever-sdk/build'):
     maximum_raw=limits['sourceMaterialBytes'] if limits else 32*1024**2
     maximum_file=limits['shardBytes'] if limits else 1024**2
     maximum_total=limits['sourceMaterialBytes'] if limits else 16*1024**2
@@ -510,7 +514,9 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
         for block in blocks:
             check();need(isinstance(block,bytes) and len(block)<=65536,'bounded maps block');count+=len(block);need(count<=reference['bytes'],'maps byte bound');digest.update(block);parts.append(block)
         need((count,digest.hexdigest())==(reference['bytes'],reference['sha256']),'maps original changed')
-        return parse_proc_maps(b''.join(parts))
+        mappings=parse_proc_maps(b''.join(parts))
+        if memory_mode:memory_checker.validate_mappings(mappings)
+        return mappings
     def tool_barrier(row):
         value=barriers.get(row['barrierSequence']);need(value and value['pids']==sorted(live) and row['pid'] in live,'tool snapshot lacks complete actual stop barrier')
     def tool_provider(sequence,consumer,file_original,actual_path):
@@ -561,8 +567,9 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                 else:derived.setdefault(key,alias)
         need(list(derived.values())==aliases,'writable aliases differ from complete stopped FD census')
         return aliases
+    lifetime_verified_phases=[]
     for phase,lines in phase_lines:
-        need(not live,'prior actual process tree has not closed');roots=[];waits=[];raw_decoder=raw_records.RawRecordDecoder()
+        need(not live,'prior actual process tree has not closed');roots=[];waits=[];raw_decoder=raw_records.RawRecordDecoder();lease_model=None;lease_tokens={};lease_closed=[];memory_missing=False;memory_shared_entries=set();memory_released_entries=set();lease_pids=[];lease_terminal=False;memory_mode=None;memory_checker=executable_memory_policy();memory_writes={}
         for raw in lines:
             check();total+=len(raw);need(total<=maximum_raw and len(raw)<=65536,'tiny raw aggregate/record bound');row=raw_decoder.feed(raw)
             if row is None:continue
@@ -619,6 +626,7 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                 need(not live and not roots and not phase_tracking and not prepared_sealed and row['files']==prepared_count and row['inventorySha256']==prepared_digest.hexdigest(),'prepared closed-set byte seal differs');prepared_sealed=True
                 need(all(value[0]['path'].startswith(row['buildRoot'].rstrip('/')+'/') for value in prepared.values()),'prepared original escapes actual build root')
             elif kind=='owned-root-binding':
+                memory_mode=row.get('executableMemoryPolicy');need(memory_mode in [None,memory_checker.MODEL],'unknown executable memory policy');lease_model=row.get('toolchainLifetimeModel');need(lease_model in [None,'kernel-held-read-lease-v1'],'unknown lifetime model')
                 need(row.get('rawRecordModel')==raw_decoder.model,'declared raw record model differs from actual phase format')
                 declared_chunk=row.get('chunkOriginalStorageModel')
                 need(declared_chunk in [None,'chunk-original-v1'] and (not chunk_storage_initialized or chunk_storage_model==declared_chunk),'unknown or changed chunk storage model')
@@ -642,9 +650,9 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                         import importlib.util
                         from pathlib import Path
                         generated_spec=importlib.util.spec_from_file_location('generated_vma_replay',Path(__file__).with_name('sdk-generated-vma-originals.py'));generated_module=importlib.util.module_from_spec(generated_spec);generated_spec.loader.exec_module(generated_module)
-                    need(generated_model in [generated_module.LEGACY_MODEL,generated_module.KERNEL_LINK_MODEL,generated_module.MODEL,generated_module.COHORT_MODEL,generated_module.PRIVATE_WAKE_MODEL,generated_module.PRIVATE_WAIT_MODEL,*generated_module.COORDINATED_WAIT_MODELS] and row.get('generatedVmaBuildRoot')==generated_module.BUILD_ROOT and shared_mode,'unknown/unowned generated VMA model')
+                    need(generated_model in [generated_module.LEGACY_MODEL,generated_module.KERNEL_LINK_MODEL,generated_module.MODEL,generated_module.COHORT_MODEL,generated_module.PRIVATE_WAKE_MODEL,generated_module.PRIVATE_WAIT_MODEL,*generated_module.COORDINATED_WAIT_MODELS] and row.get('generatedVmaBuildRoot')==generated_module.validated_build_root(generated_build_root) and shared_mode,'unknown/unowned generated VMA model')
                     if generated_verifier is not None:need(generated_verifier.model==generated_model and generated_verifier.retained_metadata==(metadata_model is not None),'generated VMA evidence model changed across roots')
-                    if generated_verifier is None:generated_verifier=generated_module.create_verifier(generated_module,capture_data,tool_maps,limits.get('metadataBytes',4*1024**2) if limits else 4*1024**2,model=generated_model,read_blocks=lambda ref:original_blocks(ref),maximum_file=maximum_file,retained_metadata=metadata_model is not None)
+                    if generated_verifier is None:generated_verifier=generated_module.create_verifier(generated_module,capture_data,tool_maps,limits.get('metadataBytes',4*1024**2) if limits else 4*1024**2,model=generated_model,read_blocks=lambda ref:original_blocks(ref),maximum_file=maximum_file,retained_metadata=metadata_model is not None,build_root=generated_build_root)
                 else:need(generated_verifier is None,'generated VMA model changed across actual roots')
                 model=row.get('processAuthorityModel');need(model is None or model==provider_module().AUTHORITY_MODEL,'unknown process authority model');process_interval=provider_module().ProcessAuthorityInterval(row['pid']) if model is not None else None
                 need(not setresuid_operations,'unclosed setresuid transition at new root');uid_model=row.get('setresuidNoopModel');need(uid_model in [None,'actual-stopped-setresuid-noop-v1'],'unknown setresuid operation model');identity_model=row.get('setresIdentityNoopModel');need(identity_model in [None,'actual-stopped-setres-identity-noop-v1','actual-stopped-setres-identity-noop-queued-v2'] and not (identity_model and uid_model),'unknown or mixed identity operation model');identity_mode=identity_model is not None;queued_identity_mode=identity_model=='actual-stopped-setres-identity-noop-queued-v2';setresuid_mode=uid_model is not None or identity_mode;need(not setresuid_mode or process_interval is not None,'setresuid model requires actual process authority interval')
@@ -917,6 +925,10 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                 if row['op']=='entry':
                     if append_boundary_syscall(row['arch'],row['nr'],row['args']):append_obligations[row['sequence']]=dict(append_dirty)
                     rules=policy(row['arch'])
+                    if memory_mode:
+                        need(memory_checker.decision(row['arch'],row['nr'],row['args']) is None or row['nr']==425 and denial_mode,'forbidden executable memory operation in successful phase')
+                        descriptor=memory_checker.write_descriptor(row['arch'],row['nr'],row['args'])
+                        if descriptor is not None:memory_writes[row['sequence']]=(row['pid'],descriptor)
                     need(row['pid'] not in denied_operations,'another syscall before explicit denial completion')
                     if row['nr']==425 and denial_mode:
                         denied_operations[row['pid']]=dict(state='entry',entry=row);retained_entries.add(row['sequence'])
@@ -967,6 +979,10 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
             elif kind=='toolchain-exec-path-entry':
                 tool_barrier(row);entry=entries.get(row['entrySequence']);need(entry and entry['pid']==row['pid'] and entry['nr']==row['syscall'] and entry['nr'] in policy(entry['arch'])['exec'] and isinstance(row['entryPath'],str) and len(row['entryPath'].encode())<=4096,'actual exec path entry differs');tool_exec_paths[row['sequence']]=row
             elif kind=='toolchain-exec-image-capture':
+                if memory_mode:
+                    personality=row.get('executionPersonalityRaw');need(isinstance(personality,str) and re.fullmatch(r'[0-9a-f]{8}\n',personality) and not int(personality,16)&0x400000,'actual execution personality permits implicit executable mappings')
+                    held=[value for value in lease_tokens.values() if value['acquisitionSequence']==row.get('lifetimeLeaseSequence')]
+                    need(len(held)==1 and held[0]['identity']==row['exe']['identity'] and held[0]['acquisitionSequence']<row['sequence'],'actual executable lacks prior exact continuously-held inode')
                 tool_barrier(row);entry=entries.get(row['execEntrySequence']);event=exec_events.get(row['execEventSequence']);need(entry and event and entry['pid']==row['pid']==event['pid'] and entry['nr'] in policy(entry['arch'])['exec'],'actual exec entry/event relation differs');retained_entries.add(entry['sequence'])
                 path_entry=tool_exec_paths.pop(row.get('execPathEntrySequence'),None)
                 if path_entry:need(path_entry['entrySequence']==entry['sequence'] and path_entry['pid']==row['pid'] and path_entry['lexicalPath']==row['exe']['lexicalPath'],'actual exec path/executable snapshot differs')
@@ -999,11 +1015,19 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                     tool_core=dict(sequence=row['sequence'],pid=row['pid'],maps=maps,mappingKind='protect',begin=args[0],length=args[1])
                 entries.pop(entry['sequence']);exits.pop(entry['sequence']);retained_entries.discard(entry['sequence']);tool_protect_before.pop(entry['sequence'],None)
                 tool_digest.update((json.dumps(row,sort_keys=True)+'\n').encode())
+            elif kind=='toolchain-kernel-executable-mapping':
+                tool_barrier(row);need(memory_mode==row.get('model')==memory_checker.MODEL and tool_core and row['parentCaptureSequence']==tool_core['sequence'] and row['pid']==tool_core['pid'] and row['mapping'] in tool_core['maps'],'kernel mapping lacks exact actual maps/parent relation')
+                mapping=row['mapping'];need(mapping['inode']==0 and mapping['path'] in ['[vdso]','[vsyscall]'] and 'x' in mapping['permissions'] and 'w' not in mapping['permissions'],'only exact kernel special RX mappings are outside userspace source universe')
             elif kind=='toolchain-mapping-original':
                 tool_barrier(row);need(tool_core and row['parentCaptureSequence']==tool_core['sequence'] and row['pid']==tool_core['pid'] and row['mapping'] in tool_core['maps'],'actual VMA snapshot relation differs')
                 mapping=row['mapping'];need(mapping['inode']>0 and mapping['path'].startswith('/'),'anonymous/kernel VMA cannot claim file original authority');identity=row['identity'];need(len(identity)==6 and identity==tool_ref(row['original'],'file')['identity'],'mapped original FD/bytes differ')
                 import os
                 need((os.major(identity[0]),os.minor(identity[0]),identity[1])==(mapping['deviceMajor'],mapping['deviceMinor'],mapping['inode']),'actual VMA inode/device differs from mapped FD')
+                if memory_mode:need(row.get('mappingBackingModel')=='held-pre-use-lease-v1','memory-protected phase requires held VMA inode contract')
+                if row.get('mappingBackingModel') is not None:
+                    need(row['mappingBackingModel']=='held-pre-use-lease-v1' and lease_model=='kernel-held-read-lease-v1','unknown held VMA backing contract')
+                    held=[value for value in lease_tokens.values() if value['acquisitionSequence']==row.get('lifetimeLeaseSequence')]
+                    need(len(held)==1 and held[0]['identity']==identity and held[0]['acquisitionSequence']<row['parentCaptureSequence'],'VMA backing lacks earlier exact held token')
                 descriptor=row.get('actualFd')
                 if tool_core.get('mappingKind')=='mmap':
                     need(not tool_core['anonymous'] and descriptor==tool_core['descriptor'] and descriptor is not None,'anonymous or different FD cannot claim mapped file original')
@@ -1014,9 +1038,16 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                 provider=tool_provider(row.get('providerSequence'),row,tool_ref(row['original'],'file'),mapping['path'])
                 tool_coverage.mapped(tool_core['sequence'],row,tool_ref(row['original'],'file')['sequence'],provider)
                 tool_mappings+=1;tool_digest.update((json.dumps(row,sort_keys=True)+'\n').encode())
-            elif kind=='toolchain-unresolved':tool_pending.add(row['reason'])
+            elif kind=='toolchain-unresolved':
+                # Stop-time mount provenance is independent of a continuous inode lease.
+                # Every other unresolved observation remains a lifetime blocker.
+                if row['reason']!='toolchain-effective-readonly-provider-unverified':memory_missing=True
+                tool_pending.add(row['reason'])
             elif kind=='kernel-clone-flags':
                 entry=entries.get(row['entrySequence']);clone_flags.add(row['entrySequence']);need(entry and entry['pid']==row['pid'] and entry['nr'] in [policy(entry['arch'])['clone'],435],'clone memory flags entry differs');flags=row['flags'];clone_flag_values[row['entrySequence']]=flags
+                if memory_mode:
+                    need(not flags&0x400 and (not flags&0x100 or flags&0x4000),'executable memory policy requires independent FD tables and kernel-held vfork for shared VM')
+                    if flags&0x100:memory_shared_entries.add(entry['sequence'])
                 if shared_mode:inspect_shared_clone_flags(flags)
                 else:need(not flags&(0x10000|0x400) and flags&~(0xff|0x100|0x4000|0x1000000|0x200000|0x100000000)==0,'unknown shared writer/FD flags')
                 if flags&0x100:tool_pending.add('toolchain-shared-address-space-clone-unverified')
@@ -1075,7 +1106,7 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
             elif kind=='vfork-parent-release':
                 parent=row['parentPid'];hold=vfork_holds.get(parent);event=vfork_events.get(row['releaseSequence']);wait=wait_rows.get(row['releaseSequence']);child=row['childPid']
                 need(hold and parent in live and hold['childPid']==child and row['holdSequence']==hold['sequence'] and row['actualParentState']=='t','VFORK release wrong parent/child/stop')
-                need((row['releaseKind']=='actual-exec' and child in live and event and event['pid']==child and event['event']==4) or (row['releaseKind']=='actual-terminal-wait' and child not in live and wait and wait['pid']==child),'VFORK release lacks actual child exec/terminal wait');del vfork_holds[parent]
+                need((row['releaseKind']=='actual-exec' and child in live and event and event['pid']==child and event['event']==4) or (row['releaseKind']=='actual-terminal-wait' and child not in live and wait and wait['pid']==child),'VFORK release lacks actual child exec/terminal wait');memory_released_entries.add(hold['entrySequence']);del vfork_holds[parent]
             elif kind=='ptrace-event':
                 need(row.get('event') in [1,2,3,4,5,6,128],'unknown actual ptrace event')
                 if process_interval is not None:process_interval.event(row['pid'],row['event'],row['sequence'])
@@ -1083,6 +1114,34 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                 if shared_mode and row['event']==4:exec_fd_events[row['sequence']]=row
                 if row['event']==4:exec_events[row['sequence']]=row
                 if row['event']==6 and terminal_mode:terminal_events[row['sequence']]=row
+            elif kind=='executable-memory-write-fd':
+                need(memory_mode==row.get('model')==memory_checker.MODEL and memory_writes.pop(row.get('entrySequence'),None)==(row.get('pid'),row.get('fd')) and row['sequence']==row['entrySequence']+1,'memory FD check lacks exact syscall entry')
+                need(row.get('target') is None or isinstance(row.get('target'),str),'actual descriptor target must be a string or closed descriptor')
+                need(not memory_checker.memory_fd(row.get('target')),'proc memory writer in successful execution')
+            elif kind in ['toolchain-lease-acquired','toolchain-lease-reused']:
+                need(lease_model=='kernel-held-read-lease-v1' and not lease_terminal and not lease_closed,'lease outside active phase')
+                entry=entries.get(row.get('entrySequence'));barrier=barriers.get(row.get('barrierSequence'))
+                need(entry and barrier and entry['pid']==row['pid'] and row['pid'] in barrier['pids'] and entry['sequence']<barrier['sequence']<row['sequence'],'lease actual entry/barrier binding differs')
+                need(row.get('role') in ['executable','interpreter','mmap'],'lease role differs')
+                identity=row.get('identity');token=row.get('leaseId')
+                need(type(token)is int and token>0 and isinstance(identity,list) and len(identity)==6 and all(type(v)is int for v in identity) and identity[2]&0o170000==0o100000,'regular lease token identity required')
+                if kind=='toolchain-lease-acquired':
+                    need(row.get('model')==lease_model and token not in lease_tokens and token==len(lease_tokens)+1 and len(lease_tokens)<4096,'duplicate/unbounded lease acquisition')
+                    lease_tokens[token]=dict(leaseId=token,identity=identity,acquisitionSequence=row['sequence'])
+                else:need(lease_tokens.get(token)==dict(leaseId=token,identity=identity,acquisitionSequence=row.get('acquisitionSequence')),'lease reuse changed acquisition')
+            elif kind=='toolchain-lease-closed-token':
+                need(lease_model==row.get('model')=='kernel-held-read-lease-v1' and not live and not lease_terminal and not lease_pids,'lease token close before actual waits/after closure')
+                value={key:row.get(key) for key in ['leaseId','identity','acquisitionSequence']}
+                need(value==lease_tokens.get(len(lease_closed)+1),'lease closed token sequence/identity differs');lease_closed.append(value)
+            elif kind=='toolchain-lease-closed-pids':
+                need(lease_model==row.get('model')=='kernel-held-read-lease-v1' and not live and not lease_terminal and len(lease_closed)==len(lease_tokens),'lease PID close before token/wait closure')
+                values=row.get('actualClosedPids');need(isinstance(values,list) and 0<len(values)<=256 and row.get('offset')==len(lease_pids),'bounded sequential closed PID chunk required');lease_pids.extend(values)
+            elif kind=='toolchain-leases-closed':
+                need(lease_model==row.get('model')=='kernel-held-read-lease-v1' and not live and not lease_terminal and len(lease_closed)==len(lease_tokens),'lease terminal closure incomplete')
+                digest=hashlib.sha256()
+                for value in lease_closed:digest.update(json.dumps(value,sort_keys=True,separators=(',',':')).encode()+b'\n')
+                need(row.get('tokenCount')==len(lease_closed) and row.get('tokensSha256')==digest.hexdigest() and row.get('actualClosedPidCount')==len(lease_pids) and lease_pids==sorted(wait['pid'] for wait in waits) and row.get('allTrackedWaitsClosed') is True,'lease terminal count/hash/actual waits differ')
+                lease_terminal=True
             elif kind=='retained-fd-rename-binding':renames.append(row)
             elif kind=='generated-consumer-binding':consumers.append(row)
             elif kind=='prepared-consumer-binding':prepared_consumers.append(row)
@@ -1096,6 +1155,16 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                 generated_verifier.metadata_chain=retained_metadata_chain;generated_verifier.verified_metadata_states=sorted([*mode_transitions.values(),*rename_transitions.values()],key=lambda pair:pair[1]['sequence'])
                 generated_verifier.record(row,entries,exits,barriers,caps)
         raw_decoder.finish()
+        need(not memory_writes,'missing actual executable memory FD checks')
+        need(lease_model is None or lease_terminal,'declared lifetime phase missing exact token/wait closure')
+        # Every actual file VMA obligation must have its held-inode original;
+        # a missing row cannot be excused merely by the absence of an error row.
+        phase_mapping_complete=True
+        for state in tool_coverage.by_capture.values():
+            value=state['value'];operation_phase=value[1] if isinstance(value,list) else value['phase']
+            if operation_phase==phase:
+                phase_mapping_complete=phase_mapping_complete and (all(state['expected'].values()) if isinstance(value,list) else set(state['expected'])==state['seen'])
+        lifetime_verified_phases.append(bool(memory_mode and lease_model and lease_terminal and lease_tokens and not memory_missing and memory_shared_entries<=memory_released_entries and phase_mapping_complete))
         need(not vfork_holds,'phase ended without vfork child release')
         need(not append_dirty,'phase ended without mandatory append full checkpoint')
         need(len(roots)==1 and not live and root_codes.get(roots[0])==0 and exclusive is None,'actual root/descendant wait closure incomplete')
@@ -1174,6 +1243,8 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
         cap,data=consumer;prior,expected=original
         need(cap['path']==binding['path']==prior['path'] and cap['identity']==binding['identity']==binding['retainedIdentity'] and cap['identity'][:2]==prior['identity'][:2] and data==expected,'actual prepared consumer bytes/FD relation differs')
         prepared_covered[cap['path']]=dict(path=cap['path'],bytes=data[0],sha256=data[1],preparedCaptureSequence=prior['sequence'],consumerCaptureSequence=cap['sequence'])
+    lifetime_verified=bool(lifetime_verified_phases) and all(lifetime_verified_phases)
+    if lifetime_verified:tool_pending.discard('toolchain-shared-address-space-clone-unverified')
     need(not setresuid_operations,'setresuid transition lacks final causal closure')
     need(not denied_operations,'explicit denial missing final causal closure')
     if required_inputs is None:
@@ -1185,4 +1256,4 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
             if actual is None:pending.append('actual-successful-generated-consumer-missing:'+path)
             else:need(actual['bytes']==expected['bytes'] and actual['sha256']==expected['sha256'],'actual generated consumer differs from selected full-shard input')
     return dict(**(dict(observedGeneratedRetainedMetadata=dict(model=generated_module.RETAINED_METADATA_MODEL,maximumBytes=4*1024**2,peakBytes=generated_verifier.metadata_high_water))if generated_verifier is not None and generated_verifier.retained_metadata else {}),**(dict(verifiedCoordinatedWaitIntervals=list(getattr(generated_verifier,'coordinated_waits',[]))) if generated_verifier is not None and generated_verifier.model in generated_module.COORDINATED_WAIT_MODELS else {}),**(dict(verifiedPrivateWakeEntrySequences=list(generated_verifier.private_wakes),**(dict(verifiedPrivateWaitMismatchEntrySequences=list(generated_verifier.private_waits)) if generated_verifier.model in generated_module.PRIVATE_WAIT_MODELS else {})) if generated_verifier is not None and generated_verifier.model in generated_module.WAKE_MODELS else {}),schemaVersion=1,kind='all-stop-CMake-generated-byte-mechanics',observedGeneratedWritableMapCheckpoints=len(generated_verifier.checkpoints) if generated_verifier is not None else 0,generatedMappedConsumerByteCustodyVerified=bool(mapped_outputs),selectedGeneratedConsumerByteCustodyVerified=not pending,outputs=sorted(covered.values(),key=lambda row:row['path']),observedSourceReadCaptures=len(source_reads),observedPreparedDependencyReadCaptures=dependency_reads,preparedDependencySourceAuthorityVerified=False,preparedDependencyPending=(['independent-FetchContent-dependency-stage-and-Git-or-URL-source-authority-unverified'] if dependency_roots else []),pending=pending,overallSdkSourceVerified=False,
-                observedAliasOnlyCloses=len(alias_close_exits),observedActualModeTransitions=len(mode_transitions),observedNamedRetainedFdBindings=len(namespaces),observedActualWriteTransitions=len(write_transitions),observedEmptyReadEofWindows=len(empty_eofs),toolchainProcessAuthorityIntervals=process_intervals,toolchainProcessAuthorityIntervalVerified=bool(process_intervals) and all(row.get('model') is not None for row in process_intervals),toolchainProcessAuthorityPending=['toolchain-provider-namespace-external-writer-and-backing-snapshot-authority-unverified']+([] if process_intervals and all(row.get('model') is not None for row in process_intervals) else ['toolchain-owned-process-authority-interval-originals-unavailable']),toolchainFileSnapshots=list(tool_files.values()),toolchainOperationCoverage=tool_coverage.finish(sorted(tool_pending),sorted(tool_provider_pending)),toolchainActualExecImages=tool_execs,toolchainActualFileMappings=tool_mappings,toolchainObservationSha256=tool_digest.hexdigest(),toolchainStopProviderPending=sorted(tool_provider_pending),toolchainPending=sorted(tool_pending|tool_provider_pending|({'toolchain-executed-byte-immutability-and-full-source-authority-unverified'} if tool_execs else set())),toolchainSourceClosureVerified=False,preparedInputConsumers=list(prepared_covered.values()),preparedInputConsumerBytesVerified=bool(prepared_covered),phaseTracking=phase_tracking,scope='actual producer-close/rename/consumer bytes only; reviewed observer execution/Git/source/runtime authority independent')
+                observedAliasOnlyCloses=len(alias_close_exits),observedActualModeTransitions=len(mode_transitions),observedNamedRetainedFdBindings=len(namespaces),observedActualWriteTransitions=len(write_transitions),observedEmptyReadEofWindows=len(empty_eofs),toolchainProcessAuthorityIntervals=process_intervals,toolchainProcessAuthorityIntervalVerified=bool(process_intervals) and all(row.get('model') is not None for row in process_intervals),toolchainProcessAuthorityPending=['toolchain-provider-namespace-external-writer-and-backing-snapshot-authority-unverified']+([] if process_intervals and all(row.get('model') is not None for row in process_intervals) else ['toolchain-owned-process-authority-interval-originals-unavailable']),toolchainFileSnapshots=list(tool_files.values()),toolchainOperationCoverage=tool_coverage.finish(sorted(tool_pending),sorted(tool_provider_pending)),toolchainActualExecImages=tool_execs,toolchainActualFileMappings=tool_mappings,toolchainObservationSha256=tool_digest.hexdigest(),toolchainStopProviderPending=sorted(tool_provider_pending),toolchainPending=sorted(tool_pending|tool_provider_pending|({'toolchain-executed-byte-immutability-and-full-source-authority-unverified'} if tool_execs else set())),toolchainExecutionLifetimeImmutabilityVerified=lifetime_verified,toolchainExecutionLifetimeScope='leased backing inode plus enforced file-exec-no-transition-v1; kernel special RX mappings remain controller TCB',toolchainSourceClosureVerified=False,preparedInputConsumers=list(prepared_covered.values()),preparedInputConsumerBytesVerified=bool(prepared_covered),phaseTracking=phase_tracking,scope='actual producer-close/rename/consumer bytes only; reviewed observer execution/Git/source/runtime authority independent')

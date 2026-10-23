@@ -19,6 +19,7 @@ def load(name,file):
     spec=importlib.util.spec_from_file_location(name,HERE/file);module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module);return module
 commands=load('execution_commands','sdk-command-materials.py')
 raw_records=load('execution_raw_records','sdk-execution-originals-util.py')
+wire_reader=load('execution_wire_reader','sdk-raw-wire-reader.py')
 
 def write(path,value):
     data=(json.dumps(value,sort_keys=True,indent=2)+'\n').encode()
@@ -39,38 +40,39 @@ def failure_diagnostic(result,out,directory,check):
     out=Path(out).resolve(strict=True);directory=Path(directory).resolve(strict=True)
     directory.relative_to(out);tracking=result['trackingReceipt'];command=result['commandReceipt']
     identity=lambda row:(row.st_dev,row.st_ino,row.st_mode,row.st_size,row.st_mtime_ns,row.st_ctime_ns)
-    parents={};images={};nonzero={};refs=[];tail=b'';total=0;raw_decoder=raw_records.RawRecordDecoder()
+    parents={};images={};nonzero={};refs=[];tail=b'';total=0;logical_total=0;raw_decoder=raw_records.RawRecordDecoder()
     def scan(path,expected,parse=False,keep_tail=False):
-        nonlocal total,tail
+        nonlocal total,tail,logical_total
         check();path=Path(path);path=path.parent.resolve(strict=True)/path.name;path.relative_to(out)
         fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW)
         try:
-            before=os.fstat(fd);size=0;digest=hashlib.sha256();pending=b''
+            before=os.fstat(fd);size=0;digest=hashlib.sha256()
             if not stat.S_ISREG(before.st_mode) or before.st_size>LIMIT:raise ValueError('bounded regular failure original required')
-            while True:
-                check();block=os.read(fd,65536)
-                if not block:break
-                size+=len(block);total+=len(block)
-                if size>before.st_size or total>LIMIT:raise ValueError('failure original aggregate bound')
-                digest.update(block)
-                if keep_tail:tail=(tail+block)[-32768:]
-                if parse:
-                    pending+=block
-                    while b'\n' in pending:
-                        line,pending=pending.split(b'\n',1)
-                        if len(line)>65535:raise ValueError('failure raw record bound')
-                        row=raw_decoder.feed(line+b'\n')
-                        if row is None:continue
-                        if row.get('kind')=='actual-child-binding':
-                            if len(parents)>=250000:raise ValueError('failure process inventory bound')
-                            parents[row['childPid']]=row['parentPid']
-                        if row.get('kind')=='actual-wait-exit':
-                            if row.get('actualExecImage') is not None:images[row['pid']]=row['actualExecImage']
-                            if row['returnCode']!=0:
-                                if len(nonzero)>=250000:raise ValueError('failure wait inventory bound')
-                                nonzero[row['pid']]=dict(pid=row['pid'],returnCode=row['returnCode'],sequence=row['sequence'])
-                    if len(pending)>65536:raise ValueError('failure partial raw record bound')
-            if pending:raise ValueError('failure raw incomplete line')
+            def blocks():
+                nonlocal size,total,tail
+                while True:
+                    check();block=os.read(fd,65536)
+                    if not block:break
+                    size+=len(block);total+=len(block)
+                    if size>before.st_size or total>LIMIT:raise ValueError('failure original aggregate bound')
+                    digest.update(block)
+                    if keep_tail:tail=(tail+block)[-32768:]
+                    yield block
+            rows=wire_reader.iter_shard_records(blocks(),expected,check=check,maximum_encoded=LIMIT,maximum_logical=LIMIT) if parse else blocks()
+            for raw in rows:
+                logical_total+=len(raw)
+                if logical_total>LIMIT:raise ValueError('failure logical original aggregate bound')
+                if not parse:continue
+                row=raw_decoder.feed(raw)
+                if row is None:continue
+                if row.get('kind')=='actual-child-binding':
+                    if len(parents)>=250000:raise ValueError('failure process inventory bound')
+                    parents[row['childPid']]=row['parentPid']
+                if row.get('kind')=='actual-wait-exit':
+                    if row.get('actualExecImage') is not None:images[row['pid']]=row['actualExecImage']
+                    if row['returnCode']!=0:
+                        if len(nonzero)>=250000:raise ValueError('failure wait inventory bound')
+                        nonzero[row['pid']]=dict(pid=row['pid'],returnCode=row['returnCode'],sequence=row['sequence'])
             if identity(before)!=identity(os.fstat(fd)) or identity(before)!=identity(path.lstat()):raise ValueError('failure original changed')
             actual=dict(path=str(path.relative_to(out)),bytes=size,sha256=digest.hexdigest())
             if (actual['bytes'],actual['sha256'])!=(expected['bytes'],expected['sha256']):raise ValueError('failure original reference differs')
@@ -262,7 +264,7 @@ class Session:
             actual=commands.ref(original['path'],self.out)
             if any(actual[key]!=original[key] for key in ('bytes','sha256')):raise ValueError('Execution original changed')
             return actual
-        traces=[reference(row) for row in result['rawTraceShards']]
+        traces=[dict(reference(row),**({'wire':row['wire']} if 'wire' in row else {})) for row in result['rawTraceShards']]
         captures=[reference(row) for row in result['captureFiles']]
         snapshots=self.tool_snapshots(name,result['observedToolFiles'],captures,reference)
         for row in inputs:
@@ -326,7 +328,7 @@ class Session:
         observer=[]
         # Preserve the complete fixed backend import graph; same immutable Git
         # sourcePath verification remains the receiver's responsibility.
-        for filename in ['sdk-ptrace-execution.py','sdk-ptrace-kernel.py','sdk-execution-originals-util.py','sdk-generation-multiprocess-bindings.py','sdk-blocking-owned-wait.py','sdk-tool-provider-originals.py','sdk-generated-vma-originals.py','sdk-coordinated-wait.py','sdk-original-chunk-store.py']:
+        for filename in ['sdk-ptrace-execution.py','sdk-ptrace-kernel.py','sdk-execution-originals-util.py','sdk-generation-multiprocess-bindings.py','sdk-blocking-owned-wait.py','sdk-tool-provider-originals.py','sdk-generated-vma-originals.py','sdk-coordinated-wait.py','sdk-original-chunk-store.py','sdk-tool-lifetime-leases.py','sdk-executable-memory-policy.py','sdk-raw-wire-codec.py','sdk-raw-wire-reader.py']:
             path=HERE/filename
             if not path.is_file():raise ValueError('Observer original source missing: '+filename)
             target=self.directory/filename

@@ -6,6 +6,7 @@ it never issues source/SDK/native authority.
 """
 import ctypes
 import errno
+import fcntl
 import hashlib
 import importlib.util
 import json
@@ -30,6 +31,12 @@ owned_wait=load('owned_wait',ROOT/'qlever/scripts/sdk-blocking-owned-wait.py')
 tool_providers=load('tool_providers',ROOT/'qlever/scripts/sdk-tool-provider-originals.py')
 generated_vma_module=load('generated_vma_originals',ROOT/'qlever/scripts/sdk-generated-vma-originals.py')
 chunk_store=load('sdk_chunk_originals',ROOT/'qlever/scripts/sdk-original-chunk-store.py')
+lifetime_leases=load('sdk_tool_lifetime_leases',ROOT/'qlever/scripts/sdk-tool-lifetime-leases.py')
+raw_wire_codec=load('sdk_raw_wire_codec',ROOT/'qlever/scripts/sdk-raw-wire-codec.py')
+memory_policy=load('sdk_executable_memory_policy',ROOT/'qlever/scripts/sdk-executable-memory-policy.py')
+LIFETIME_MODEL='kernel-held-read-lease-v1'
+LIFETIME_MAXIMUM_DEPTH=8
+LIFETIME_OPEN_ERRORS=frozenset([errno.EACCES,errno.EPERM,errno.ENOENT,errno.ENOTDIR,errno.ELOOP,errno.ENAMETOOLONG,errno.ESTALE,errno.ENXIO,errno.ESRCH])
 
 class CaptureReservation:
     """One snapshot reservation in the observer's existing source-byte ledger."""
@@ -121,6 +128,29 @@ class ShardedRaw:
     def tell(self):return self.total
     def close(self):self.file.flush();os.fsync(self.file.fileno());self.file.close()
 
+class EncodedShardedRaw:
+    def __init__(self,observer,name,maximum):
+        self.observer=observer;self.name_prefix=name;self.maximum=maximum;self.paths=[];self.references={};self.writer=None;self.current_logical=0;self.total=0;self.finished=False;self.open_next()
+    def charge(self,count):
+        self.observer.claim(count,category='raw-wire');self.total+=count
+    def open_next(self):
+        path=self.observer.out/(self.name_prefix+'.trace-'+str(len(self.paths)).zfill(4)+'.jsonl.gz');self.paths.append(path)
+        self.writer=raw_wire_codec.RawWriter(path,claim=self.charge,check=self.observer.check,maximum_logical=self.maximum,maximum_encoded=self.maximum)
+        self.current_logical=0
+    def finish_current(self):
+        self.references[str(self.paths[-1])]=self.writer.finish()
+    def write(self,data):
+        assert not self.finished,'raw stream already closed'
+        if self.current_logical+len(data)>self.maximum:self.finish_current();self.open_next()
+        self.writer.write_record(data);self.current_logical+=len(data)
+    def flush(self):pass  # gzip buffering is bounded; finish owns the trailer/fsync.
+    def tell(self):return self.total
+    def finish(self):
+        if not self.finished:self.finish_current();self.finished=True
+    def close(self):
+        if not self.finished:self.writer.abort()
+
+
 def actual_executable(command):
     assert isinstance(command,list) and command,'actual argv required'
     executable='/usr/bin/bash' if command[0]=='bash' else command[0]
@@ -171,7 +201,7 @@ def completed_capture_storage_census(rows,phase):
     return dict(kind='same-phase-physical-content-census',phase=phase,scanOrder='newest-first',availableObservations=len(rows),matchedPhaseObservations=matched,visitedObservations=visited,distinctPhysicalReferences=len(seen),maximumVisitedObservations=8192,maximumPhysicalReferences=4096,truncated=truncated,invalidReferenceMetadata=invalid,topBuckets=duplicates[:4],duplicateBucketCount=len(duplicates),potentialDuplicatePhysicalBytesLowerBound=sum(row['potentialDuplicatePhysicalBytes'] for row in duplicates),scope='same complete bytes/SHA storage only; no source identity, actual reuse eligibility, or IO saving proven')
 
 class Observer:
-    def __init__(self,out,source,build,*,deadline_monotonic=None,check_budget=lambda:None,maximum_bytes=32*1024**2,maximum_file_bytes=1024**2,selected_names=SELECTED,maximum_processes=128,shard_bytes=None,require_success=True,maximum_stdio_bytes=None,shared_tasks=False,capture_toolchain=False,deny_optional_io_uring=False,verified_setresuid_noop=False,verified_identity_noop=False,terminal_exit_evidence=False,generated_vma_output=False,generated_vma_shared_mm=False,generated_vma_private_wake=False,generated_vma_private_wait_mismatch=False,capture_content_entities=False,queued_identity_noop=False,stopped_writer_aliases=False,generated_vma_coordinated_wait=False,generated_vma_parked_wait=False,io_uring_enosys_v2=False,serialize_terminal_syscalls=False,capture_maps_content_entities=False,retained_generated_metadata=False,indexed_raw_records=False):
+    def __init__(self,out,source,build,*,deadline_monotonic=None,check_budget=lambda:None,maximum_bytes=32*1024**2,maximum_file_bytes=1024**2,selected_names=SELECTED,maximum_processes=128,shard_bytes=None,require_success=True,maximum_stdio_bytes=None,shared_tasks=False,capture_toolchain=False,deny_optional_io_uring=False,verified_setresuid_noop=False,verified_identity_noop=False,terminal_exit_evidence=False,generated_vma_output=False,generated_vma_shared_mm=False,generated_vma_private_wake=False,generated_vma_private_wait_mismatch=False,capture_content_entities=False,queued_identity_noop=False,stopped_writer_aliases=False,generated_vma_coordinated_wait=False,generated_vma_parked_wait=False,io_uring_enosys_v2=False,serialize_terminal_syscalls=False,capture_maps_content_entities=False,retained_generated_metadata=False,indexed_raw_records=False,compressed_raw=False,generated_build_root=generated_vma_module.BUILD_ROOT):
         assert type(indexed_raw_records) is bool
         self.indexed_raw_records=indexed_raw_records
         self.prepared_dependency_plan=None;self.dependency_roots={};self.dependency_cache=None
@@ -204,11 +234,13 @@ class Observer:
         self.retained_generated_metadata=retained_generated_metadata
         self.capture_toolchain=capture_toolchain;self.process_authority=bool(capture_toolchain);self.authority_handles=tool_providers.ProcessAuthorityHandles();self.tool_original_cache={};self.tool_provider_cache={};self.tool_metadata_bytes=json.loads((ROOT/'scripts/lib/module-artifact-limits.json').read_text())['metadataBytes']
         self.prepared_inputs={};self.prepared_sealed=False;self.domain_bytes=0;self.claim_bytes=dict.fromkeys(('raw-wire','capture-body','stdio','provider-other'),0);self.domain_lock=threading.Lock();self.pump_errors=[];self.maximum_stdio_bytes=maximum_stdio_bytes if maximum_stdio_bytes is not None else maximum_file_bytes
-        self.require_success=require_success;self.raw_bytes_completed=0;self.maximum_processes=maximum_processes;self.shard_bytes=shard_bytes
+        self.compressed_raw=compressed_raw;self.logical_raw_bytes=0;self.raw_logical_limit=json.loads((ROOT/'scripts/lib/module-artifact-limits.json').read_text())['sourceMaterialBytes'];self.require_success=require_success;self.raw_bytes_completed=0;self.maximum_processes=maximum_processes;self.shard_bytes=shard_bytes
         self.deadline_monotonic=deadline_monotonic;self.check_budget=check_budget;self.maximum_bytes=maximum_bytes;self.maximum_file_bytes=maximum_file_bytes;self.selected_names=selected_names
         self.out=Path(out);self.capture_dir=self.out;self.source=str(source);self.build=str(build);self.tasks={};self.seq=0;self.records=[];self.captures=[];self.retained=set();self.producers={};self.write_states={};self.write_projections={};self.append_chains={};self.budget_context={};self.metadata_states=[];self.rename_records=[];self.consumers=[];self.raw=None;self.deadline=0;self.pausing=False;self.root=None;self.root_code=None;self.failures=[];self.current_phase=None;self.unknown_stops={};self.capture_bytes=0;self.capture_entities={};self.content_capture_pool={};self.exclusive=None;self.wait_references=[]
+        self.lifetime_leases=None;self.lifetime_phase=None;self.lifetime_acquired={};self.lifetime_by_identity={};self.authority_observed=set()
         assert type(generated_vma_output) is bool and (not generated_vma_output or shared_tasks and capture_toolchain),'generated VMA requires existing actual shared-task/tool observation'
-        assert not generated_vma_output or self.build==generated_vma_module.BUILD_ROOT,'fixed generated output build root required'
+        self.generated_build_root=generated_vma_module.validated_build_root(generated_build_root)
+        assert not generated_vma_output or self.build==self.generated_build_root,'caller-owned generated output build root differs'
         assert type(generated_vma_shared_mm) is bool and (not generated_vma_shared_mm or generated_vma_output and shared_tasks and capture_toolchain),'shared-MM VMA requires existing generated/all-task/tool observation'
         assert type(generated_vma_private_wake) is bool and (not generated_vma_private_wake or generated_vma_shared_mm),'private wake requires actual stopped-MM cohort model'
         self.generated_vma_private_wake=generated_vma_private_wake
@@ -369,7 +401,9 @@ class Observer:
             entity=self.register_capture_entity(row['original']);assert row.get('originalEntityIdentity',entity)==entity,'physical storage identity differs';row['originalEntityIdentity']=entity
         parts=self.raw_encoder.encode(row) if getattr(self,'indexed_raw_records',False) else [(json.dumps(row,sort_keys=True)+'\n').encode()]
         size=sum(map(len,parts));assert size<=65536,'actual raw record exceeds fixed range bound'
-        self.claim(size,category='raw-wire',context=dict(role='raw-record',rawKind=row['kind']))
+        assert self.logical_raw_bytes+size<=self.raw_logical_limit,'cumulative logical raw wire bound'
+        self.logical_raw_bytes+=size
+        if not self.compressed_raw:self.claim(size,category='raw-wire',context=dict(role='raw-record',rawKind=row['kind']))
         for data in parts:self.raw.write(data)
         self.raw.flush()
         if self.generated_vma:self.generated_vma.record(row)
@@ -383,6 +417,7 @@ class Observer:
         self.check_budget()
         if hasattr(self,'waiter') and self.waiter.active:self.waiter.check()
         assert not self.pump_errors,'actual bounded stdio failed: '+str(self.pump_errors);assert time.monotonic()<self.deadline,'all-stop observer deadline'
+        if self.lifetime_leases is not None:self.lifetime_leases.check()
     def actual_tgid(self,pid):
         with open('/proc/'+str(pid)+'/status','rb') as source:data=source.read(65537)
         assert len(data)<=65536,'bounded actual task status'
@@ -954,6 +989,129 @@ class Observer:
             return row
         finally:
             if reader is not None:os.close(reader)
+    def enforce_executable_memory(self,pid,record):
+        reason=memory_policy.decision(record['arch'],record['nr'],record['args'])
+        # Existing controlled ENOSYS substitution prevents setup from executing;
+        # enter/register and all unmediated asynchronous submissions stay refused.
+        if record['nr']==425 and self.deny_optional_io_uring:reason=None
+        descriptor=memory_policy.write_descriptor(record['arch'],record['nr'],record['args'])
+        if descriptor is not None:
+            target=fdpath(pid,descriptor)
+            if memory_policy.memory_fd(target):reason='proc-memory-write-descriptor'
+            self.emit(dict(kind='executable-memory-write-fd',model=memory_policy.MODEL,pid=pid,entrySequence=record['sequence'],fd=descriptor,target=target))
+        if reason:
+            self.emit(dict(kind='executable-memory-refused',model=memory_policy.MODEL,pid=pid,entrySequence=record['sequence'],reason=reason))
+            raise ValueError('executable memory policy refused before resume: '+reason)
+
+    def lifetime_open(self,pid,path):
+        """Open the actual lexical target through the tracee's own root.
+
+        Existing process authority must already have sampled this pid. Binding
+        the opened root re-validates its six-field identity, so a root swap
+        between the authority barrier and this open refuses the lease.
+        """
+        assert isinstance(path,str) and path.startswith('/') and '\x00' not in path,'absolute actual lexical target required'
+        assert pid in self.authority_observed,'lifetime target requires an existing actual process authority sample'
+        root=os.open('/proc/'+str(pid)+'/root',os.O_PATH|os.O_DIRECTORY|os.O_CLOEXEC)
+        try:
+            # The held root must still be the identity captured by process
+            # authority; bind() rechecks the full six-field stat of this FD.
+            self.authority_handles.bind('root',root)
+            # Linux openat2 RESOLVE_IN_ROOT also confines absolute symlink
+            # targets. A relative openat alone would still escape via symlinks.
+            assert os.uname().machine in ['x86_64','aarch64'],'supported openat2 ABI required'
+            how=(ctypes.c_uint64*3)(os.O_RDONLY|os.O_CLOEXEC|os.O_NONBLOCK,0,0x10|0x02)
+            libc=ctypes.CDLL(None,use_errno=True);libc.syscall.restype=ctypes.c_long
+            descriptor=libc.syscall(ctypes.c_long(437),ctypes.c_int(root),ctypes.c_char_p(os.fsencode(path)),ctypes.byref(how),ctypes.c_size_t(ctypes.sizeof(how)))
+            if descriptor<0:raise OSError(ctypes.get_errno(),'root-contained lifetime open failed',path)
+            return descriptor
+        finally:os.close(root)
+    def execveat_descriptor_is_image(self,pid,descriptor):
+        """Reject an empty-path execveat target that cannot be a regular image."""
+        try:
+            value=os.stat('/proc/'+str(pid)+'/fd/'+str(descriptor))
+            return stat.S_ISREG(value.st_mode) and not descriptor_flags(pid,descriptor)&os.O_PATH
+        except (FileNotFoundError,ProcessLookupError):return False
+    def lifetime_acquisition(self,pid,lexical,role,entry_sequence,barrier_sequence,*,descriptor=None,depth=0,source='lexical',collected=None):
+        """Acquire one actual kernel read lease before the syscall is resumed.
+
+        Every local descriptor is closed in this function; LeaseSet holds its own
+        CLOEXEC duplicate, so a tracee FD may later close without ending evidence.
+        """
+        assert self.lifetime_leases is not None and depth<=LIFETIME_MAXIMUM_DEPTH,'bounded lifetime lease recursion required'
+        assert role in ['executable','interpreter','mmap'],'typed lifetime lease role required'
+        local=None
+        try:
+            try:
+                local=os.open('/proc/'+str(pid)+'/fd/'+str(descriptor),os.O_RDONLY|os.O_CLOEXEC|os.O_NONBLOCK) if descriptor is not None else self.lifetime_open(pid,lexical)
+            except OSError as error:
+                if error.errno not in LIFETIME_OPEN_ERRORS:raise
+                self.tool_unresolved(pid,'toolchain-lease-open-unavailable',role=role,actualPath=lexical[:4096],errorCode=error.errno,entrySequence=entry_sequence,barrierSequence=barrier_sequence,source=source)
+                return None
+            value=os.fstat(local);ident=probe.identity(value)
+            if not stat.S_ISREG(value.st_mode):
+                self.tool_unresolved(pid,'toolchain-lease-unsupported-nonregular',role=role,actualPath=lexical[:4096],identity=ident,entrySequence=entry_sequence,barrierSequence=barrier_sequence,source=source)
+                return None
+            if not fcntl.fcntl(local,fcntl.F_GETFL)&os.O_NONBLOCK:
+                self.tool_unresolved(pid,'toolchain-lease-descriptor-flags-differ',role=role,actualPath=lexical[:4096],identity=ident,entrySequence=entry_sequence,barrierSequence=barrier_sequence,source=source)
+                return None
+            return self.lifetime_ensure(pid,local,ident,lexical,role,entry_sequence,barrier_sequence,source=source,depth=depth,collected=collected)
+        finally:
+            if local is not None:os.close(local)
+    def lifetime_ensure(self,pid,reader,ident,lexical,role,entry_sequence,barrier_sequence,*,source,depth,collected=None):
+        key=tuple(ident[:2]);present=self.lifetime_acquired.get(key)
+        if present is not None:
+            assert present['identity']==ident,'same leased inode changed identity before reuse'
+            self.lifetime_leases.check(present['token'])
+            if collected is not None:collected.append(list(ident))
+            if role in ['executable','interpreter']:
+                interpreter=self.lifetime_classify(reader,ident)
+                if interpreter is not None:self.lifetime_interpreter(pid,interpreter,depth+1,entry_sequence,barrier_sequence,collected)
+            return self.emit(dict(kind='toolchain-lease-reused',pid=pid,leaseId=present['token']['leaseId'],acquisitionSequence=present['sequence'],identity=ident,entrySequence=entry_sequence,barrierSequence=barrier_sequence,role=role,source=source,scope='same kernel-held read lease token reused; no second acquisition'))
+        # Classify before acquiring. An unsupported executable format stays an
+        # explicit pending observation and must never receive lease evidence.
+        interpreter=None
+        if role in ['executable','interpreter']:
+            try:interpreter=self.lifetime_classify(reader,ident)
+            except ValueError as error:
+                self.tool_unresolved(pid,'toolchain-lease-format-unclassified',role=role,actualPath=lexical[:4096],detail=str(error)[:256],entrySequence=entry_sequence,barrierSequence=barrier_sequence)
+                return None
+        token=self.lifetime_leases.acquire(reader)
+        assert token['identity']==ident and fcntl.fcntl(reader,fcntl.F_GETLEASE)==fcntl.F_RDLCK,'actual held kernel read lease required before resume'
+        captured=self.emit(dict(kind='toolchain-lease-acquired',model=LIFETIME_MODEL,pid=pid,role=role,source=source,identity=ident,actualPath=lexical[:4096],actualPathTruncated=len(lexical)>4096,actualPathSha256=hashlib.sha256(os.fsencode(lexical)).hexdigest(),leaseId=token['leaseId'],entrySequence=entry_sequence,barrierSequence=barrier_sequence,depth=depth,**({'interpreter':interpreter} if interpreter else {})))
+        self.lifetime_acquired[key]=dict(token=dict(token),sequence=captured['sequence'],identity=list(ident))
+        self.lifetime_by_identity[tuple(ident)]=dict(token=dict(token),sequence=captured['sequence'])
+        if collected is not None:collected.append(list(ident))
+        if interpreter is not None:self.lifetime_interpreter(pid,interpreter,depth+1,entry_sequence,barrier_sequence,collected)
+        return captured
+    def lifetime_classify(self,reader,ident):
+        """Return the single actual interpreter named by supported image bytes."""
+        header=os.pread(reader,4096,0)
+        if header.startswith(b'#!'):
+            words=header[2:].split(b'\n',1)[0].split()
+            interpreter=words[0].decode('utf-8','strict') if words else ''
+        elif header.startswith(b'\x7fELF'):
+            interpreter=bindings.elf_interpreter(lambda offset,size:os.pread(reader,size,offset),ident[3]).get('interpreter') or ''
+        else:raise ValueError('actual image is neither supported ELF64 nor an absolute shebang')
+        if interpreter and (not interpreter.startswith('/') or '\x00' in interpreter or len(interpreter.encode())>4096):raise ValueError('absolute bounded interpreter path required')
+        return interpreter or None
+    def lifetime_interpreter(self,pid,interpreter,depth,entry_sequence,barrier_sequence,collected=None):
+        if depth>LIFETIME_MAXIMUM_DEPTH:
+            self.tool_unresolved(pid,'toolchain-lease-interpreter-depth-exceeded',role='interpreter',actualPath=interpreter[:4096],entrySequence=entry_sequence,barrierSequence=barrier_sequence);return
+        local=None
+        try:
+            try:local=self.lifetime_open(pid,interpreter)
+            except OSError as error:
+                if error.errno not in LIFETIME_OPEN_ERRORS:raise
+                self.tool_unresolved(pid,'toolchain-lease-interpreter-open-unavailable',role='interpreter',actualPath=interpreter[:4096],errorCode=error.errno,entrySequence=entry_sequence,barrierSequence=barrier_sequence)
+                return
+            value=os.fstat(local);next_identity=probe.identity(value)
+            if not stat.S_ISREG(value.st_mode):
+                self.tool_unresolved(pid,'toolchain-lease-unsupported-nonregular',role='interpreter',actualPath=interpreter[:4096],identity=next_identity,entrySequence=entry_sequence,barrierSequence=barrier_sequence)
+                return
+            self.lifetime_ensure(pid,local,next_identity,interpreter,'interpreter',entry_sequence,barrier_sequence,source='interpreter',depth=depth,collected=collected)
+        finally:
+            if local is not None:os.close(local)
     def tool_unresolved(self,pid,reason,**fields):
         return self.emit(dict(kind='toolchain-unresolved',pid=pid,reason=reason,**fields))
     def tool_original(self,reader,observed_path):
@@ -996,6 +1154,7 @@ class Observer:
             print('SDK_PROCESS_AUTHORITY_REJECTED '+encoded,file=sys.stderr,flush=True)
             raise
         observation['mountinfoOriginal']=self.tool_mountinfo_original(pid,observation['namespaces']['mnt']['identity'],mounts)
+        self.authority_observed.add(pid)
         self.emit(dict(kind='toolchain-process-authority',pid=pid,role=role,eventSequence=event_sequence,barrierSequence=barrier['sequence'],observation=observation))
     def capture_exit_authority_at_stop(self,pid,status,event):
         lease=tool_providers.ExitStopAuthorityLease(pid,status,event['exitStatus'],self.check,self.tool_metadata_bytes,self.authority_handles)
@@ -1048,7 +1207,8 @@ class Observer:
             assert before==identity(os.fstat(source.fileno()))==identity(os.stat(path,follow_symlinks=False)),'maps FD/named identity changed during physical original verification'
             ref=dict(ref,observationSequence=self.seq+1)
             row=self.emit(dict(kind='toolchain-original',captureKind='maps',observedPid=pid,original=ref,mapsWindowIdentity=before,mapsWindowAfterIdentity=after,mapsNamedWindowIdentity=named,mapsNamedWindowAfterIdentity=identity(os.stat(path,follow_symlinks=False)),**extra));self.captures.append(row)
-        return row,bindings.parse_proc_maps(bytes(data))
+        mappings=bindings.parse_proc_maps(bytes(data));memory_policy.validate_mappings(mappings)
+        return row,mappings
     def tool_maps(self,pid):
         if getattr(self,'capture_maps_content_entities',False):return self.content_tool_maps(pid)
         # Read only while all registered potential writers are at OS stops.
@@ -1062,33 +1222,45 @@ class Observer:
             output.flush();os.fsync(output.fileno())
         original=dict(path=name,bytes=len(data),sha256=digest.hexdigest())
         row=self.emit(dict(kind='toolchain-original',captureKind='maps',observedPid=pid,original=original));self.captures.append(row);self.capture_bytes+=len(data)
-        return row,bindings.parse_proc_maps(bytes(data))
-    def tool_mapping(self,pid,mapping,parent,barrier,actual_fd=None):
+        mappings=bindings.parse_proc_maps(bytes(data));memory_policy.validate_mappings(mappings)
+        return row,mappings
+    def tool_mapping(self,pid,mapping,parent,barrier,actual_fd=None,*,required=False,permitted=None):
         common=dict(pid=pid,parentCaptureSequence=parent,barrierSequence=barrier,mapping=mapping,actualFd=actual_fd)
+        if mapping['inode']==0 and mapping['path'] in ['[vdso]','[vsyscall]'] and 'x' in mapping['permissions'] and 'w' not in mapping['permissions']:
+            return self.emit(dict(kind='toolchain-kernel-executable-mapping',model=memory_policy.MODEL,**common,scope='kernel-provided immutable execution mapping; kernel is controller TCB, not a userspace source archive'))
         if mapping['inode']==0 or not mapping['path'].startswith('/'):
             return self.tool_unresolved(pid,'anonymous-or-kernel-mapping-original-unavailable',**{key:value for key,value in common.items() if key!='pid'})
         path='/proc/'+str(pid)+'/map_files/'+mapping['startHex']+'-'+mapping['endHex']
-        try:
-            reader=os.open(path,os.O_RDONLY|os.O_CLOEXEC)
-        except OSError as error:
-            if error.errno not in [errno.EPERM,errno.EACCES,errno.ENOENT,errno.ESRCH]:raise
-            return self.tool_unresolved(pid,'actual-map-files-FD-unavailable',errorCode=error.errno,**{key:value for key,value in common.items() if key!='pid'})
+        held_candidates=[value for identity,value in self.lifetime_by_identity.items() if (os.major(identity[0]),os.minor(identity[0]),identity[1])==(mapping['deviceMajor'],mapping['deviceMinor'],mapping['inode'])]
+        if len(held_candidates)!=1:
+            return self.tool_unresolved(pid,'actual-VMA-has-no-unique-pre-use-held-inode',**{key:value for key,value in common.items() if key!='pid'})
+        backing=held_candidates[0]
+        reader=self.lifetime_leases.duplicate_reader(backing['token'])
+        common['mappingBackingModel']='held-pre-use-lease-v1'
         try:
             identity=probe.identity(os.fstat(reader));assert (os.major(identity[0]),os.minor(identity[0]),identity[1])==(mapping['deviceMajor'],mapping['deviceMinor'],mapping['inode']),'actual map_files FD differs from VMA'
             original=self.tool_original(reader,mapping['path'])
             if actual_fd is not None:
                 if actual_fd['identity']!=identity:return self.tool_unresolved(pid,'entry-FD-to-actual-mapped-file-identity-differs',**{key:value for key,value in common.items() if key!='pid'})
-            assert identity==probe.identity(os.fstat(reader))==probe.identity(os.stat(path)),'actual mapped FD identity changed'
+            assert identity==probe.identity(os.fstat(reader))==backing['token']['identity'],'actual held mapping inode identity changed'
+            self.lifetime_leases.check(backing['token'])
+            held=self.lifetime_by_identity.get(tuple(identity))
+            if held is not None and (permitted is None or tuple(identity) in permitted):self.lifetime_leases.check(held['token'])
+            else:
+                held=None
+                if required:self.tool_unresolved(pid,'toolchain-lifetime-lease-unavailable',role='mapping',parentCaptureSequence=parent,actualPath=mapping['path'][:4096],identity=identity,scope='initial exec image backing VMA has no earlier matching pre-use read lease')
             provider=self.tool_provider(pid,reader,mapping['path'],identity,original['original'],barrier)
-            return self.emit(dict(kind='toolchain-mapping-original',**common,identity=identity,original=original['original'],providerSequence=provider))
+            return self.emit(dict(kind='toolchain-mapping-original',**common,identity=identity,original=original['original'],providerSequence=provider,**({'lifetimeLeaseSequence':held['sequence']} if held is not None else {})))
         finally:os.close(reader)
     def observe_tool_stop(self,pid,job):
         barrier=self.barrier();self.check();kind,entry,event=job
         if kind=='exec-before':
             self.tasks[pid].pop('toolExecPath',None)
-            args=entry['args'];at=1 if entry['nr']==profile(entry['arch'])['execveat'] else 0
+            rules=profile(entry['arch']);args=entry['args'];at=1 if entry['nr']==rules['execveat'] else 0
+            lexical=None;raw_path=''
             try:
-                raw_path=single.cstring(pid,args[at]);cwd=os.readlink('/proc/'+str(pid)+'/cwd');base=cwd if at==0 or args[0] in [0xffffffffffffff9c,0xffffff9c,-100] else fdpath(pid,args[0])
+                raw_path=single.cstring(pid,args[at]) if args[at] else ''
+                cwd=os.readlink('/proc/'+str(pid)+'/cwd');base=cwd if at==0 or args[0] in [0xffffffffffffff9c,0xffffff9c,-100] else fdpath(pid,args[0])
                 lexical=os.path.normpath(raw_path if raw_path.startswith('/') else base+'/'+raw_path) if raw_path and base else None
                 captured=self.emit(dict(kind='toolchain-exec-path-entry',pid=pid,barrierSequence=barrier['sequence'],entrySequence=entry['sequence'],syscall=entry['nr'],entryPath=raw_path,lexicalPath=lexical,scope='actual entry-stop string only; actual executable FD is independently captured'))
                 self.tasks[pid]['toolExecPath']=captured
@@ -1099,6 +1271,21 @@ class Observer:
             except ValueError as error:
                 if str(error)!='tracee path bound':raise
                 self.tool_unresolved(pid,'exec-entry-path-bound',entrySequence=entry['sequence'])
+            descriptor=args[0] if entry['nr']==rules['execveat'] and not raw_path and args[0] not in [0xffffffffffffff9c,0xffffff9c,-100] else None
+            if descriptor is not None and not self.execveat_descriptor_is_image(pid,descriptor):
+                self.tool_unresolved(pid,'toolchain-lease-unsupported-nonregular',role='executable',actualPath='/proc/'+str(pid)+'/fd/'+str(descriptor),entrySequence=entry['sequence'],barrierSequence=barrier['sequence'],source='execveat-fd');descriptor=None;lexical=None
+            collected=[]
+            if lexical is not None or descriptor is not None:
+                # Actual entry-stop target through the tracee root (or its own
+                # execveat FD) is leased before this syscall may resume.
+                # Authority/lease invariant ValueError and LeaseError both
+                # abort; only an ordinary open failure stays explicit pending.
+                try:
+                    lease=self.lifetime_acquisition(pid,lexical or '/proc/'+str(pid)+'/fd/'+str(descriptor),'executable',entry['sequence'],barrier['sequence'],descriptor=descriptor,source='execveat-fd' if descriptor is not None else 'lexical',collected=collected)
+                    if lease is not None:self.tasks[pid]['toolExecLease']=dict(sequence=lease['sequence'],identities=[list(value) for value in collected],entrySequence=entry['sequence'])
+                except OSError as error:
+                    self.tool_unresolved(pid,'toolchain-lease-acquisition-failed',role='executable',entrySequence=entry['sequence'],barrierSequence=barrier['sequence'],errorClass=type(error).__name__)
+            else:self.tool_unresolved(pid,'toolchain-lease-target-unresolved',entrySequence=entry['sequence'],barrierSequence=barrier['sequence'],hasRawPath=bool(raw_path))
         elif kind=='exec':
             expected=profile(entry['arch'])['exec'] if entry is not None else []
             if entry is None or entry['nr'] not in expected:
@@ -1113,15 +1300,32 @@ class Observer:
                 try:elf=bindings.elf_interpreter(lambda offset,size:os.pread(reader,size,offset),identity[3])
                 except ValueError as error:elf=dict(unresolved='actual-ELF-interpreter-unclassified:'+str(error)[:256])
                 assert identity==probe.identity(os.fstat(reader))==probe.identity(os.stat(path)),'actual exe FD changed'
+                lease=self.tasks[pid].pop('toolExecLease',None)
+                permitted={tuple(value) for value in lease['identities']} if lease is not None and lease['entrySequence']==entry['sequence'] else set()
+                if tuple(identity) not in permitted:self.tool_unresolved(pid,'toolchain-lifetime-lease-mismatch',role='executable',execEntrySequence=entry['sequence'],actualPath=resolved[:4096],identity=identity,permittedIdentities=[list(value) for value in sorted(permitted)],scope='actual exec image differs from its own pre-resume acquisition chain')
+                held=self.lifetime_by_identity.get(tuple(identity))
+                if held is not None:self.lifetime_leases.check(held['token'])
                 provider=self.tool_provider(pid,reader,resolved,identity,original['original'],barrier['sequence'])
                 maps,mappings=self.tool_maps(pid)
-                captured=self.emit(dict(kind='toolchain-exec-image-capture',pid=pid,barrierSequence=barrier['sequence'],execEntrySequence=entry['sequence'],execEventSequence=event['sequence'],execPathEntrySequence=self.tasks[pid].get('toolExecPath',{}).get('sequence'),exe=dict(lexicalPath=self.tasks[pid].get('toolExecPath',{}).get('lexicalPath'),resolvedPath=resolved,identity=identity,original=original['original'],providerSequence=provider),elf=elf,mapsOriginal=maps['original']))
+                with open('/proc/'+str(pid)+'/personality','rb') as personality_file:personality=personality_file.read(33)
+                assert re.fullmatch(rb'[0-9a-f]{8}\n',personality) and not int(personality,16)&0x400000,'READ_IMPLIES_EXEC personality refused before executable resume'
+                captured=self.emit(dict(kind='toolchain-exec-image-capture',executionPersonalityRaw=personality.decode('ascii'),pid=pid,barrierSequence=barrier['sequence'],execEntrySequence=entry['sequence'],execEventSequence=event['sequence'],execPathEntrySequence=self.tasks[pid].get('toolExecPath',{}).get('sequence'),exe=dict(lexicalPath=self.tasks[pid].get('toolExecPath',{}).get('lexicalPath'),resolvedPath=resolved,identity=identity,original=original['original'],providerSequence=provider),elf=elf,mapsOriginal=maps['original'],**(dict(lifetimeLeaseSequence=held['sequence'],lifetimeLeaseVerified=tuple(identity) in permitted) if held is not None else {})))
                 for mapping in mappings:
-                    if mapping['inode'] or 'x' in mapping['permissions']:self.tool_mapping(pid,mapping,captured['sequence'],barrier['sequence'])
+                    if mapping['inode'] or 'x' in mapping['permissions']:
+                        # Every initial executable/interpreter backing VMA must
+                        # match this exec's own pre-resume acquisition chain.
+                        self.tool_mapping(pid,mapping,captured['sequence'],barrier['sequence'],required=True,permitted=permitted)
             finally:os.close(reader)
         elif kind=='protect-before':
             maps,_=self.tool_maps(pid);self.tasks[pid]['toolProtectBefore']=maps['original']
             self.emit(dict(kind='toolchain-executable-protection-before',pid=pid,barrierSequence=barrier['sequence'],entrySequence=entry['sequence'],mapsOriginal=maps['original']))
+        elif kind=='mmap-before':
+            self.tasks[pid].pop('toolMmapLease',None)
+            descriptor=entry['args'][4]
+            # Only queued for a nonanonymous regular FD; this job must acquire
+            # through the tracee's own /proc/PID/fd/N before the kernel maps it.
+            lease=self.lifetime_acquisition(pid,fdpath(pid,descriptor) or '/proc/'+str(pid)+'/fd/'+str(descriptor),'mmap',entry['sequence'],barrier['sequence'],descriptor=descriptor,source='descriptor')
+            if lease is not None:self.tasks[pid]['toolMmapLease']=dict(sequence=lease['sequence'],identity=lease['identity'],entrySequence=entry['sequence'])
         else:
             maps,mappings=self.tool_maps(pid);args=entry['args']
             if kind=='mmap':
@@ -1137,7 +1341,13 @@ class Observer:
                     except OSError as error:
                         if error.errno not in [errno.EPERM,errno.EACCES,errno.ENOENT,errno.ESRCH]:raise
                         self.tool_unresolved(pid,'actual-mmap-FD-original-unavailable',entrySequence=entry['sequence'],errorCode=error.errno)
-                captured=self.emit(dict(kind='toolchain-file-mapping-capture',pid=pid,barrierSequence=barrier['sequence'],entrySequence=entry['sequence'],exitSequence=event['sequence'],actualReturnedAddressHex=format(begin,'x'),actualFd=fd,requestedLength=args[1],fileOffset=args[5],flags=args[3],protection=args[2],mapsOriginal=maps['original']))
+                lease=self.tasks[pid].pop('toolMmapLease',None)
+                if lease is not None and not(anonymous or fd is None or lease['identity']!=fd['identity'] or lease['entrySequence']!=entry['sequence']):
+                    self.lifetime_leases.check(self.lifetime_by_identity[tuple(lease['identity'])]['token'])
+                else:
+                    lease=None
+                    if not anonymous and fd is not None:self.tool_unresolved(pid,'toolchain-lifetime-lease-unavailable',role='mmap',entrySequence=entry['sequence'],barrierSequence=barrier['sequence'],identity=fd.get('identity'),actualPath=fdpath(pid,args[4]),scope='file-backed mmap has no earlier matching pre-use read lease')
+                captured=self.emit(dict(kind='toolchain-file-mapping-capture',pid=pid,barrierSequence=barrier['sequence'],entrySequence=entry['sequence'],exitSequence=event['sequence'],actualReturnedAddressHex=format(begin,'x'),actualFd=fd,requestedLength=args[1],fileOffset=args[5],flags=args[3],protection=args[2],mapsOriginal=maps['original'],**(dict(lifetimeLeaseSequence=lease['sequence'],lifetimeLeaseIdentity=lease['identity']) if lease is not None else {})))
                 selected=[row for row in mappings if int(row['startHex'],16)<end and int(row['endHex'],16)>begin]
                 bindings.verify_vma_range(mappings,begin,args[1],args[2])
                 if anonymous:self.tool_unresolved(pid,'anonymous-or-JIT-mapping-source-unresolved',parentCaptureSequence=captured['sequence'])
@@ -1155,8 +1365,21 @@ class Observer:
                 if before is None:self.tool_unresolved(pid,'executable-protection-before-VMA-unavailable',parentCaptureSequence=captured['sequence'])
                 actual_mappings=bindings.verify_vma_range(mappings,begin,args[1],args[2])
                 if any(mapping['inode']==0 or not mapping['path'].startswith('/') for mapping in actual_mappings):self.tool_unresolved(pid,'anonymous-or-JIT-mapping-source-unresolved',parentCaptureSequence=captured['sequence'])
+                def protected(mapping):
+                    try:return self.tool_mapping(pid,mapping,captured['sequence'],barrier['sequence'])
+                    except BaseException:
+                        # A mapping-original rejection must not hide its own
+                        # explicit lifetime fault before this syscall resumes.
+                        self.tool_unresolved(pid,'toolchain-lifetime-lease-unavailable',role='protected-mapping',parentCaptureSequence=captured['sequence'],actualPath=mapping['path'][:4096],mapping=mapping,scope='executable protection original could not be bound to any earlier pre-use lease')
+                        raise
+                # mprotect never acquires. Each executable file-backed mapping
+                # must carry an earlier full-identity lease, else explicit pending.
+                for mapping in actual_mappings:
+                    if 'x' not in mapping['permissions'] or mapping['inode']==0 or not mapping['path'].startswith('/'):continue
+                    row=protected(mapping)
+                    if 'lifetimeLeaseSequence' not in row:self.tool_unresolved(pid,'toolchain-lifetime-lease-unavailable',role='protected-mapping',parentCaptureSequence=captured['sequence'],actualPath=mapping['path'][:4096],mapping=mapping,scope='executable protection has no earlier matching pre-use read lease')
                 for mapping in mappings:
-                    if int(mapping['startHex'],16)<end and int(mapping['endHex'],16)>begin:self.tool_mapping(pid,mapping,captured['sequence'],barrier['sequence'])
+                    if int(mapping['startHex'],16)<end and int(mapping['endHex'],16)>begin and mapping not in actual_mappings:protected(mapping)
     def resume(self):
         if self.generated_vma and getattr(self.generated_vma,'round',None) is not None:return self.generated_vma.drive()
         focus=getattr(self,'terminal_focus',None)
@@ -1447,6 +1670,7 @@ class Observer:
         if kernel['op']=='exit' and task['entry'] is not None:kernel['entrySequence']=task['entry']['sequence']
         record=self.emit(dict(kind='kernel-syscall',pid=pid,**kernel,**(dict(waitStatus=status) if getattr(self,'verified_setresuid_noop',False) or getattr(self,'verified_identity_noop',False) else {})))
         if record['op']=='entry':
+            if self.capture_toolchain:self.enforce_executable_memory(pid,record)
             assert task['entry'] is None,'syscall entry missing prior exit';task['initial']=False;task['entry']=record;nr=record['nr'];args=record['args']
             identity_axis=tool_providers.identity_noop_axis(kernel['arch'],nr)
             if self.process_authority and ((getattr(self,'verified_identity_noop',False) and identity_axis is not None) or (getattr(self,'verified_setresuid_noop',False) and identity_axis=='Uid')):
@@ -1477,6 +1701,7 @@ class Observer:
             if self.generated_vma and self.generated_vma.classify(pid,record,lambda dirfd,address:path_argument(pid,dirfd,address)):return
             if nr in [policy['clone'],policy['clone3']]:
                 flags=args[0] if nr==policy['clone'] else single.trace(2,pid,args[0])&((1<<64)-1)
+                if self.capture_toolchain:assert not flags&0x400 and (not flags&0x100 or flags&0x4000),'executable memory policy requires independent FD tables and kernel-held vfork for shared VM before clone resume'
                 task['observedCloneFlags']=flags
                 if self.shared_tasks:bindings.inspect_shared_clone_flags(flags);task['cloneFlags']=flags
                 elif flags&(0x10000|0x400):self.reject_shared_clone(pid,record,flags)
@@ -1495,12 +1720,13 @@ class Observer:
                 try:self.syscall_rejection_diagnostic(pid,status,record,shared_mapping=True)
                 except BaseException:pass
                 raise AssertionError('shared writable mapping refused before resume')
-            if self.capture_toolchain and nr in policy['exec']:task.setdefault('toolPending',[]).append(('exec-before',record,None))
+            if self.capture_toolchain and nr in policy['exec']:task.pop('toolExecLease',None);task.setdefault('toolPending',[]).append(('exec-before',record,None))
             if self.capture_toolchain and nr in policy['protect'] and args[2]&4:task.setdefault('toolPending',[]).append(('protect-before',record,None))
-            if self.capture_toolchain and nr==policy['mmap']:task.pop('toolMmapFd',None)
+            if self.capture_toolchain and nr==policy['mmap']:task.pop('toolMmapFd',None);task.pop('toolMmapLease',None)
             if self.capture_toolchain and nr==policy['mmap'] and not(args[3]&0x20) and args[4]<(1<<31):
                 try:task['toolMmapFd']=dict(fd=args[4],identity=probe.identity(os.stat('/proc/'+str(pid)+'/fd/'+str(args[4]))))
                 except FileNotFoundError:task['toolMmapFd']=None
+                if task['toolMmapFd'] and stat.S_ISREG(task['toolMmapFd']['identity'][2]):task.setdefault('toolPending',[]).append(('mmap-before',record,None))
             selected=None;fd=None
             if nr in [policy['read'],policy['write'],policy['close']]:fd=args[0];selected=fdpath(pid,fd)
             if nr==policy['mmap'] and args[4]<(1<<31):fd=args[4];selected=fdpath(pid,fd)
@@ -1594,9 +1820,9 @@ class Observer:
             if self.capture_toolchain:
                 rules=profile(old['arch'])
                 if record['isError']:
-                    if old['nr']==rules['mmap']:task.pop('toolMmapFd',None)
+                    if old['nr']==rules['mmap']:task.pop('toolMmapFd',None);task.pop('toolMmapLease',None)
                     if old['nr'] in rules['protect']:task.pop('toolProtectBefore',None)
-                    if old['nr'] in rules['exec']:task.pop('toolExecPath',None)
+                    if old['nr'] in rules['exec']:task.pop('toolExecPath',None);task.pop('toolExecLease',None)
                 if not record['isError'] and record['result']>=0 and old['nr']==rules['mmap'] and (not(old['args'][3]&0x20) or old['args'][2]&4):task.setdefault('toolPending',[]).append(('mmap',old,record))
                 if not record['isError'] and record['result']==0 and old['nr'] in rules['protect'] and old['args'][2]&4:task.setdefault('toolPending',[]).append(('protect-after',old,record))
             if task.get('renameWindow') is not None:self.complete_rename(pid,old,record)
@@ -1620,8 +1846,8 @@ class Observer:
             return self.phase_armed(name,command,cwd,env,stdoutPath,stderrPath)
     def phase_armed(self,name,command,cwd,env,stdoutPath,stderrPath):
         capture_start=len(self.captures);started_ns=time.time_ns();stdout_path=Path(stdoutPath) if stdoutPath is not None else self.out/(name+'.stdout.raw');stderr_path=Path(stderrPath) if stderrPath is not None else self.out/(name+'.stderr.raw')
-        self.wait_references=[];self.tasks={};self.unknown_stops={};self.root_code=None;self.current_phase=name;self.raw=ShardedRaw(self.out,name,self.shard_bytes) if self.shard_bytes else open(self.out/(name+'.syscalls.original.jsonl'),'xb')
-        self.raw_encoder=probe.IndexedRawEncoder() if self.indexed_raw_records else None
+        self.wait_references=[];self.tasks={};self.unknown_stops={};self.root_code=None;self.current_phase=name;self.raw=EncodedShardedRaw(self,name,self.shard_bytes or self.maximum_file_bytes) if self.compressed_raw else ShardedRaw(self.out,name,self.shard_bytes) if self.shard_bytes else open(self.out/(name+'.syscalls.original.jsonl'),'xb')
+        self.raw_encoder=probe.IndexedRawEncoderV2() if self.indexed_raw_records else None
         if not self.prepared_sealed:
             try:
                 self.seal_prepared_dependency_sources()
@@ -1644,23 +1870,30 @@ class Observer:
         pumps=[BoundedPipePump(stdout_read,stdout_path,self.maximum_stdio_bytes,lambda count:self.claim(count,category='stdio'),self.pump_errors),BoundedPipePump(stderr_read,stderr_path,self.maximum_stdio_bytes,lambda count:self.claim(count,category='stdio'),self.pump_errors)]
         root_pgid=os.getpgid(child);self.root=child;self.tasks[child]=dict(stopped=False,exited=False,entry=None,initial=True,**(dict(authorityPending=[('initial-root',None)]) if self.process_authority else {}),**(dict(tgid=child,fdTable=child) if self.shared_tasks else {}))
         try:
+            # Created only here, in the parent after fork: the child must never
+            # inherit a lease FD or SIGIO ownership.
+            if self.capture_toolchain:self.lifetime_leases=lifetime_leases.LeaseSet()
+            self.lifetime_phase=name;self.lifetime_acquired={};self.lifetime_by_identity={};self.authority_observed=set()
             os.close(read_fd)
             for pump in pumps:pump.start()
             if self.process_authority:
                 os.close(ready_write);ready_write=None;self.check();remaining=max(0,self.deadline-time.monotonic());readable,_,_=select.select([ready_read],[],[],remaining);self.check();assert readable and os.read(ready_read,1)==b'R','child authority setup did not complete before release';os.close(ready_read);ready_read=None
-            self.emit(dict(kind='owned-root-binding',pid=child,command=command,**(dict(rawRecordModel=probe.RAW_RECORD_MODEL)if self.indexed_raw_records else {}),backend='ptrace-all-stop-process-v1',**(dict(chunkOriginalStorageModel='chunk-original-v1') if self.capture_content_entities else {}),captureOriginalEntityModel='same-phase-content-entity-v2' if self.capture_content_entities else 'same-phase-producer-original-v1',**(dict(mapsOriginalEntityModel='same-phase-maps-content-entity-v1')if getattr(self,'capture_maps_content_entities',False)else {}),**(dict(generatedVmaModel=self.generated_vma.model,**(dict(generatedVmaMetadataModel=generated_vma_module.RETAINED_METADATA_MODEL)if getattr(self,'retained_generated_metadata',False)else {}),generatedVmaBuildRoot=self.build,generatedVmaParentDeadlineMonotonicNs=str(int(self.waiter.parent_deadline*1e9))) if self.generated_vma else {}),**(dict(stoppedWriterAliasModel='all-stop-exclusive-write-aliases-v1') if getattr(self,'stopped_writer_aliases',False) else {}),**(dict(optionalIoUringModel='explicit-kernel-enosys-denial-v2' if getattr(self,'io_uring_enosys_v2',False) else 'explicit-kernel-enosys-denial-v1') if self.deny_optional_io_uring else {}),**(dict(setresuidNoopModel='actual-stopped-setresuid-noop-v1') if self.verified_setresuid_noop else {}),**(dict(setresIdentityNoopModel='actual-stopped-setres-identity-noop-queued-v2' if getattr(self,'queued_identity_noop',False) else 'actual-stopped-setres-identity-noop-v1') if getattr(self,'verified_identity_noop',False) else {}),**(dict(processAuthorityModel=tool_providers.AUTHORITY_MODEL) if self.process_authority else {}),**(dict(exitAuthorityModel='actual-selected-exit-stop-held-terminal-peers-v2'if getattr(self,'serialize_terminal_syscalls',False)else 'actual-selected-exit-stop-before-peer-barrier-v1') if getattr(self,'terminal_exit_evidence',False) else {}),**(dict(taskOwnershipModel='all-tracked-tids-shared-fd-v1',tgid=child,fdTable=child) if self.shared_tasks else {})));single.trace(SEIZE,child,0,OPTIONS);single.trace(INTERRUPT,child);pid,status=self.wait_one();self.event(pid,status,False);self.pending_captures();os.write(write_fd,b'x');os.close(write_fd);write_fd=None;self.resume()
+            self.emit(dict(kind='owned-root-binding',pid=child,command=command,**(dict(toolchainLifetimeModel=LIFETIME_MODEL,executableMemoryPolicy=memory_policy.MODEL) if self.capture_toolchain else {}),**(dict(rawRecordModel=probe.RAW_RECORD_MODEL_V2)if self.indexed_raw_records else {}),backend='ptrace-all-stop-process-v1',**(dict(chunkOriginalStorageModel='chunk-original-v1') if self.capture_content_entities else {}),captureOriginalEntityModel='same-phase-content-entity-v2' if self.capture_content_entities else 'same-phase-producer-original-v1',**(dict(mapsOriginalEntityModel='same-phase-maps-content-entity-v1')if getattr(self,'capture_maps_content_entities',False)else {}),**(dict(generatedVmaModel=self.generated_vma.model,**(dict(generatedVmaMetadataModel=generated_vma_module.RETAINED_METADATA_MODEL)if getattr(self,'retained_generated_metadata',False)else {}),generatedVmaBuildRoot=self.build,generatedVmaParentDeadlineMonotonicNs=str(int(self.waiter.parent_deadline*1e9))) if self.generated_vma else {}),**(dict(stoppedWriterAliasModel='all-stop-exclusive-write-aliases-v1') if getattr(self,'stopped_writer_aliases',False) else {}),**(dict(optionalIoUringModel='explicit-kernel-enosys-denial-v2' if getattr(self,'io_uring_enosys_v2',False) else 'explicit-kernel-enosys-denial-v1') if self.deny_optional_io_uring else {}),**(dict(setresuidNoopModel='actual-stopped-setresuid-noop-v1') if self.verified_setresuid_noop else {}),**(dict(setresIdentityNoopModel='actual-stopped-setres-identity-noop-queued-v2' if getattr(self,'queued_identity_noop',False) else 'actual-stopped-setres-identity-noop-v1') if getattr(self,'verified_identity_noop',False) else {}),**(dict(processAuthorityModel=tool_providers.AUTHORITY_MODEL) if self.process_authority else {}),**(dict(exitAuthorityModel='actual-selected-exit-stop-held-terminal-peers-v2'if getattr(self,'serialize_terminal_syscalls',False)else 'actual-selected-exit-stop-before-peer-barrier-v1') if getattr(self,'terminal_exit_evidence',False) else {}),**(dict(taskOwnershipModel='all-tracked-tids-shared-fd-v1',tgid=child,fdTable=child) if self.shared_tasks else {})));single.trace(SEIZE,child,0,OPTIONS);single.trace(INTERRUPT,child);pid,status=self.wait_one();self.event(pid,status,False);self.pending_captures();os.write(write_fd,b'x');os.close(write_fd);write_fd=None;self.resume()
             while any(not r['exited'] for r in self.tasks.values()):
                 pid,status=self.wait_one();self.event(pid,status);self.pending_captures();self.resume()
             assert getattr(self,'terminal_focus',None)is None,'serialized terminal wait did not close'
             assert not any(task.get('vforkHeldChild') is not None for task in self.tasks.values()),'vfork child release/wait closure missing'
             if self.generated_vma:self.generated_vma.complete_phase()
             self.checkpoint_appends('phase-final')
+            # Exact boundary: every tracked wait is closed; closures follow.
+            self.complete_lifetime_leases()
             for pump in pumps:pump.finish(self.check)
             if self.require_success:assert self.root_code==0,'actual observed root did not exit successfully'
             completed_ns=time.time_ns()
             summary=dict(schemaVersion=1,kind='owned-multiprocess-all-stop-CMake-diagnostic',command=command,actualRootPid=child,actualRootReturnCode=self.root_code,actualTrackedPids=sorted(self.tasks),allTrackedWaitsClosed=all(r['exited'] for r in self.tasks.values()),backend='ptrace-all-stop-process-v1',scope='tracked process wait/FD-byte observations only; shared threads/FD tables/async writers unsupported')
             probe.jsonfile(self.out/(name+'.receipt.json'),summary)
             self.raw.flush()
+            if isinstance(self.raw,EncodedShardedRaw):self.raw.finish()
             def original(path):
                 digest=hashlib.sha256();size=0;fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW)
                 try:
@@ -1678,10 +1911,11 @@ class Observer:
                 finally:os.close(fd)
             return dict(commandReceipt=dict(schemaVersion=1,command=command,actualExecutable=actual_executable(command),pid=child,pgid=root_pgid,actualWait=True,exit=self.root_code if self.root_code>=0 else None,signal=-self.root_code if self.root_code<0 else None,startedUnixNs=str(started_ns),completedUnixNs=str(completed_ns),rawClosedBeforeHash=True,stdout=dict(original(stdout_path),path=stdout_path.name),stderr=dict(original(stderr_path),path=stderr_path.name)),
                 trackingReceipt=dict(schemaVersion=1,kind='sdk-observer-tracked-phase-original',phase=name,observerPid=os.getpid(),command=command,actualRootPid=child,actualRootReturnCode=self.root_code,actualTrackedWait=True,trackedProcessesClosed=all(row['exited'] for row in self.tasks.values()),deadlineMonotonic=self.deadline,startedUnixNs=str(started_ns),completedUnixNs=str(completed_ns),waitReferences=self.wait_references),
-                rawTraceShards=[original(path) for path in self.raw.paths] if isinstance(self.raw,ShardedRaw) else [original(Path(self.raw.name))],
+                rawTraceShards=[dict(original(path),wire=self.raw.references[str(path)]) for path in self.raw.paths] if isinstance(self.raw,EncodedShardedRaw) else [original(path) for path in self.raw.paths] if isinstance(self.raw,ShardedRaw) else [original(Path(self.raw.name))],
                 captureFiles=self.phase_capture_files(capture_start),
                 observedToolFiles=self.observed_tool_files(capture_start,name))
         finally:
+            primary=sys.exc_info()[1]
             for control_fd in [ready_read,ready_write]:
                 if control_fd is not None:os.close(control_fd)
             if write_fd is not None:os.close(write_fd)
@@ -1689,7 +1923,33 @@ class Observer:
                 if not row['exited']:
                     try:os.kill(pid,signal.SIGKILL)
                     except ProcessLookupError:pass
+            leases=self.lifetime_leases
+            if leases is not None:
+                try:leases.close()
+                except BaseException:
+                    if primary is None:raise
+                finally:self.lifetime_leases=None
             self.raw_bytes_completed+=self.raw.tell();self.raw.close()
+    def complete_lifetime_leases(self):
+        """Require and emit only real closed lease tokens after all waits."""
+        leases=self.lifetime_leases
+        if leases is None:return None
+        assert all(row['exited'] for row in self.tasks.values()),'lifetime lease closure before allTrackedWaitsClosed'
+        closed_pids=sorted(pid for pid,row in self.tasks.items() if row['exited'])
+        tokens=leases.complete()
+        acquired={row['token']['leaseId']:row['sequence'] for row in self.lifetime_acquired.values()}
+        assert set(acquired)=={token['leaseId'] for token in tokens} and sorted(acquired)==[token['leaseId'] for token in tokens],'lease tokens/acquisitions differ'
+        # Each token and closed PID remains explicit, in bounded rows; never
+        # expand the existing 64 KiB raw-record limit for a large phase.
+        digest=hashlib.sha256()
+        for token in tokens:
+            value=dict(leaseId=token['leaseId'],identity=token['identity'],acquisitionSequence=acquired[token['leaseId']])
+            digest.update(json.dumps(value,sort_keys=True,separators=(',',':')).encode()+b'\n')
+            self.emit(dict(kind='toolchain-lease-closed-token',model=LIFETIME_MODEL,pid=self.root,phaseName=self.lifetime_phase,**value))
+        for offset in range(0,len(closed_pids),256):
+            self.emit(dict(kind='toolchain-lease-closed-pids',model=LIFETIME_MODEL,pid=self.root,phaseName=self.lifetime_phase,offset=offset,actualClosedPids=closed_pids[offset:offset+256]))
+        row=self.emit(dict(kind='toolchain-leases-closed',model=LIFETIME_MODEL,pid=self.root,phaseName=self.lifetime_phase,tokenCount=len(tokens),tokensSha256=digest.hexdigest(),actualClosedPidCount=len(closed_pids),allTrackedWaitsClosed=True,scope='actual kernel-held read leases closed after all tracked waits; no source authority'))
+        return row
     def observed_tool_files(self,capture_start,name):
         rows=[dict(actualOriginalPath=row['observedPath'],identity=row['identity'],actualMode=row['identity'][2],sourceKind='actual-tool-file-fd-snapshot',role='observed-tool-file',phase=row['phase'],rawEventKind='toolchain-original',captureSequence=row['sequence'],original=dict(row['original'],path=str(self.capture_dir/row['original']['path']))) for row in self.captures[capture_start:] if row.get('kind')=='toolchain-original' and row.get('captureKind')=='file']
         assert all(row['phase']==name for row in rows),'tool original belongs to another phase'
@@ -1729,7 +1989,7 @@ class SdkExecutionObserver(Observer):
         assert Path(source)==Path('/opt/qlever-sdk/source') and Path(build)==Path('/opt/qlever-sdk/build'),'fixed SDK source/build roots required'
         assert isinstance(deadline_monotonic,(float,int)) and math.isfinite(deadline_monotonic) and time.monotonic()<deadline_monotonic,'existing live SDK deadline required'
         super().__init__(out,source,build,deadline_monotonic=deadline_monotonic,check_budget=check_budget,maximum_bytes=maximum_bytes,
-            maximum_file_bytes=limits['shardBytes'],selected_names=None,maximum_processes=limits['sourceMembers'],shard_bytes=limits['shardBytes'],require_success=False,maximum_stdio_bytes=maximum_stdio_bytes,shared_tasks=True,capture_toolchain=True,deny_optional_io_uring=True,verified_identity_noop=True,terminal_exit_evidence=True,generated_vma_output=True,generated_vma_shared_mm=True,generated_vma_private_wake=True,generated_vma_private_wait_mismatch=True,capture_content_entities=True,queued_identity_noop=True,stopped_writer_aliases=True,generated_vma_coordinated_wait=True,generated_vma_parked_wait=True,io_uring_enosys_v2=True,serialize_terminal_syscalls=True,capture_maps_content_entities=True,retained_generated_metadata=True,indexed_raw_records=True)
+            maximum_file_bytes=limits['shardBytes'],selected_names=None,maximum_processes=limits['sourceMembers'],shard_bytes=limits['shardBytes'],require_success=False,maximum_stdio_bytes=maximum_stdio_bytes,shared_tasks=True,capture_toolchain=True,deny_optional_io_uring=True,verified_identity_noop=True,terminal_exit_evidence=True,generated_vma_output=True,generated_vma_shared_mm=True,generated_vma_private_wake=True,generated_vma_private_wait_mismatch=True,capture_content_entities=True,queued_identity_noop=True,stopped_writer_aliases=True,generated_vma_coordinated_wait=True,generated_vma_parked_wait=True,io_uring_enosys_v2=True,serialize_terminal_syscalls=True,capture_maps_content_entities=True,retained_generated_metadata=True,indexed_raw_records=True,compressed_raw=True)
         self.capture_dir=self.out/'captures';self.capture_dir.mkdir(exist_ok=False);self.sdk_phase_index=0;self.sdk_failed=False
         mounts=Path('/proc/self/mountinfo').read_bytes();assert len(mounts)<=limits['metadataBytes'],'source provider metadata bound'
         self.source_provider=probe.effective_readonly(source,mounts);self.source_provider_originals=dict(mountinfo=probe.put(self.out/'source-provider.mountinfo.raw',mounts));self.claim(len(mounts))

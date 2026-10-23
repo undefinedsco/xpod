@@ -19,6 +19,16 @@ function need(value: unknown, reason: string): asserts value { if (!value) throw
 type SourceOriginalReference=Readonly<{path:string;bytes:number;sha256:string}>;
 type SourceArchiveOriginalView=Readonly<{sourceSha:string;target:string;collection:SourceOriginalReference;ledger:SourceOriginalReference;coordinates:readonly Readonly<{name:string;version:string;dsc:SourceOriginalReference;archives:readonly SourceOriginalReference[]}>[];requiredCoordinates:readonly Readonly<{name:string;version:string}>[];absentOwnedCoordinates:readonly Readonly<{name:string;version:string}>[];ownedCoordinatesComplete:boolean;scope:'actual DSC and complete archive checksum mechanics only';officialAuthorityVerified:false;assertCurrent():void}>;
 const verifiedInputs = new WeakMap<object, Readonly<{sourceArchiveView?:SourceArchiveOriginalView;sdk: NonNullable<ReturnType<typeof qleverSdkOriginalsView>>; afterReference: Readonly<{path: string; bytes: number; sha256: string}>; rows: readonly Readonly<{originalPath: string; bytes: number; sha256: string; mode: number}>[] }>>();
+type SdkSourceAdmissionResult = Readonly<{verified: boolean; facts: Readonly<Record<string, unknown>>; pending: readonly string[]; assertCurrent(): void}>;
+const sourceAdmissions = new WeakMap<object, Readonly<{sdkOriginals: unknown; source: unknown; result: SdkSourceAdmissionResult}>>();
+/** Only the actual complete observer result, bound to both original private handles. */
+export function qleverSdkSourceAdmissionView(value: unknown, input: {sdkOriginals: unknown; source: unknown}): SdkSourceAdmissionResult | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const held = sourceAdmissions.get(value);
+  if (!held || held.sdkOriginals !== input.sdkOriginals || held.source !== input.source || !held.result.verified) return undefined;
+  held.result.assertCurrent();
+  return held.result;
+}
 /** Reuses the one actual full-shard verification, never caller JSON facts. */
 export function sdkVerifiedInputOriginalView(capability: unknown) {
   if (!capability || typeof capability !== 'object') return undefined;
@@ -332,7 +342,7 @@ export async function observeQleverSdkSourceAdmission(input: {sdkOriginals: unkn
       upstreamGitPreimages: facts.sdkUpstreamGitCommitTreePreimageClosureVerified === true,
       reviewedPatchProjection: facts.sdkUpstreamReviewedPatchProjectionVerified === true,
       selectedUpstreamInputOriginals: facts.sdkSelectedUpstreamInputOriginalsVerified === true,
-      generatedInputIoClosure: facts.sdkGeneratedInputIoClosureVerified===true, toolchainSourceClosure: 'verifier-not-implemented' as const});
+      generatedInputIoClosure: facts.sdkGeneratedInputIoClosureVerified===true, toolchainSourceClosure: toolchainGuard!==undefined && facts.sdkToolchainSourceClosureVerified===true});
     facts.sdkSourceRequiredAxes = axes;
     verified = Object.values(axes).every(value => value === true) && pending.size === 0;
     facts.sdkSourceCompletenessVerified = verified;
@@ -347,5 +357,7 @@ export async function observeQleverSdkSourceAdmission(input: {sdkOriginals: unkn
   }
   const freeze = (value: unknown): void => {if (value && typeof value === 'object') {Object.values(value).forEach(freeze); Object.freeze(value);}};
   freeze(facts);
-  return Object.freeze({verified, facts: Object.freeze(facts), pending: Object.freeze([...pending]), assertCurrent});
+  const result = Object.freeze({verified, facts: Object.freeze(facts), pending: Object.freeze([...pending]), assertCurrent});
+  sourceAdmissions.set(result, Object.freeze({sdkOriginals: input.sdkOriginals, source: input.source, result}));
+  return result;
 }
