@@ -23,7 +23,7 @@ describe('observed tools narrow byte joins',()=>{
    expect(createHash('sha256').update(bytes).digest('hex'),name+' reviewed bytes').toBe(expected);
   };
   for(const row of rows){expect(row).toHaveLength(2);verify(row[0],row[1]);}
-  expect(rows.map(row=>row[0])).toEqual(expect.arrayContaining(['sdk-zip-originals.py','sdk-execution-originals-util.py']));
+  expect(rows.map(row=>row[0])).toEqual(expect.arrayContaining(['sdk-zip-originals.py','sdk-execution-originals-util.py','sdk-generation-multiprocess-bindings.py','sdk-original-chunk-store.py']));
   expect(()=>verify('sdk-zip-originals.py','304a8d26c8a124af31f2b240f1b2af52312520982cd6e1f4cba70fde2602bcb8')).toThrow();
  });
  it('joins only actual full-shard and exact private binary file projection; does not invent before',()=>{

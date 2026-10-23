@@ -14,6 +14,8 @@ spec=importlib.util.spec_from_file_location('tool_zip',Path(__file__).with_name(
 zip_originals=importlib.util.module_from_spec(spec);spec.loader.exec_module(zip_originals)
 raw_spec=importlib.util.spec_from_file_location('tool_raw_records',Path(__file__).with_name('sdk-execution-originals-util.py'))
 raw_records=importlib.util.module_from_spec(raw_spec);raw_spec.loader.exec_module(raw_records)
+bindings_spec=importlib.util.spec_from_file_location('tool_capture_bindings',Path(__file__).with_name('sdk-generation-multiprocess-bindings.py'))
+bindings=importlib.util.module_from_spec(bindings_spec);bindings_spec.loader.exec_module(bindings)
 LIMITS=zip_originals.LIMITS
 need=zip_originals.need
 
@@ -47,8 +49,8 @@ def observe(archive_path,plan):
             for ref in phase['captures']['indexes']:
                 index=small(ref);need(index.get('schemaVersion')==1 and isinstance(index.get('files'),list),'capture index schema')
                 for row in index['files']:
-                    name=Path(row['path']).name
-                    need(row['path']=='inner/toolchain-execution/captures/'+name and name not in captures,'unique same-phase registered capture')
+                    name=bindings.capture_inventory_name(row['path'])
+                    need(name not in captures,'unique same-phase registered capture')
                     captures[name]=row
             need(len(captures)==phase['captures']['files'] and sum(row['bytes'] for row in captures.values())==phase['captures']['bytes'],'complete phase capture count/bytes')
             descriptors={};summary=phase.get('toolFileSnapshots')

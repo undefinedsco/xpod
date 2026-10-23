@@ -48,9 +48,9 @@ def observe(archive_path,plan):
             for ref in phase['captures']['indexes']:
                 index=small(ref);bindings.need(index.get('schemaVersion')==1 and isinstance(index.get('files'),list),'capture index schema')
                 for original in index['files']:
-                    name=Path(original['path']).name;bindings.need(name not in local and original['path'].startswith('inner/toolchain-execution/captures/'),'unique registered capture role')
+                    name=bindings.capture_inventory_name(original['path']);bindings.need(name not in local,'unique registered capture role')
                     bindings.need(original['bytes']<=LIMITS['shardBytes'],'capture original bound');local[name]=original
-                    if name in all_refs:bindings.need(all_refs[name]==original,'global capture basename ambiguity')
+                    if name in all_refs:bindings.need(all_refs[name]==original,'global physical capture ambiguity')
                     all_refs[name]=original
             bindings.need(len(local)==phase['captures']['files'] and sum(ref['bytes'] for ref in local.values())==phase['captures']['bytes'],'actual capture original inventory differs')
             phase_rows.append((phase['name'],phase['rawTraceShards']))

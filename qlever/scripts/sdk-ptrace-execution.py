@@ -29,6 +29,29 @@ single=load('sdk_ptrace_kernel',ROOT/'qlever/scripts/sdk-ptrace-kernel.py')
 owned_wait=load('owned_wait',ROOT/'qlever/scripts/sdk-blocking-owned-wait.py')
 tool_providers=load('tool_providers',ROOT/'qlever/scripts/sdk-tool-provider-originals.py')
 generated_vma_module=load('generated_vma_originals',ROOT/'qlever/scripts/sdk-generated-vma-originals.py')
+chunk_store=load('sdk_chunk_originals',ROOT/'qlever/scripts/sdk-original-chunk-store.py')
+
+class CaptureReservation:
+    """One snapshot reservation in the observer's existing source-byte ledger."""
+    def __init__(self,observer):self.observer=observer;self.reserved=0;self.active=False;self.committed_bytes=0
+    def reserve(self,count):
+        b=self.observer;b.check_budget()
+        with b.domain_lock:
+            assert not self.active and type(count) is int and count>=0
+            generated=getattr(b,'generated_vma',None)
+            assert b.domain_bytes+getattr(b,'chunk_reserved',0)+(generated.reserved if generated else 0)+count<=b.maximum_bytes,'shared capture reservation bound'
+            b.chunk_reserved=getattr(b,'chunk_reserved',0)+count;self.reserved=count;self.active=True
+    def commit(self,count):
+        b=self.observer
+        with b.domain_lock:
+            assert self.active and type(count) is int and 0<=count<=self.reserved
+            b.domain_bytes+=count;b.claim_bytes['capture-body']+=count;self.committed_bytes+=count
+            b.chunk_reserved-=count;self.reserved-=count
+    def release(self):
+        b=self.observer
+        with b.domain_lock:
+            assert self.active
+            b.chunk_reserved-=self.reserved;self.reserved=0;self.active=False
 SEIZE=0x4206;INTERRUPT=0x4207;GETEVENTMSG=0x4201;SYSCALL=24;WALL=0x40000000
 OPTIONS=1|2|4|8|16|32|64|0x00100000
 MAX=16*1024**2
@@ -293,7 +316,7 @@ class Observer:
         self.check_budget()
         with self.domain_lock:
             generated=getattr(self,'generated_vma',None);reserved=generated.reserved if generated else 0;spend=min(count,reserved) if generated and generated.spending_thread==threading.get_ident() else 0
-            if count<0 or self.domain_bytes+reserved+count-spend>self.maximum_bytes:
+            if count<0 or self.domain_bytes+getattr(self,'chunk_reserved',0)+reserved+count-spend>self.maximum_bytes:
                 try:
                     # Failure-only aggregation of already retained metadata. No new
                     # payload/proc reads, authority, reservation or byte-limit change.
@@ -320,7 +343,7 @@ class Observer:
     def reserve_generated_bytes(self,count):
         self.check_budget()
         with self.domain_lock:
-            if not (self.generated_vma and type(count) is int and count>=0 and self.domain_bytes+self.generated_vma.reserved+count<=self.maximum_bytes):
+            if not (self.generated_vma and type(count) is int and count>=0 and self.domain_bytes+getattr(self,'chunk_reserved',0)+self.generated_vma.reserved+count<=self.maximum_bytes):
                 try:
                     context=getattr(self,'budget_context',{})
                     detail={key:context[key] for key in ('role','pid','fd','identity','writeCount','writeOffset','pathSha256') if key in context}
@@ -339,7 +362,10 @@ class Observer:
     def generated_fd_path(self,pid,fd):return fdpath(pid,fd)
     def emit(self,row):
         self.check();self.seq+=1;row=dict(row,sequence=self.seq,phase=self.current_phase,observedUnixNs=str(time.time_ns()),**(dict(observedMonotonicNs=str(time.monotonic_ns())) if getattr(self,'generated_vma_output',False) else {}));data=None
-        if getattr(self,'capture_content_entities',False) and row.get('kind') in ['fd-capture','prepared-build-input-original','write-original','toolchain-original'] and 'original' in row:
+        if row.get('original',{}).get('storage'):
+            if row['kind']=='write-original':row['storageIdentity']=self.chunk_identity(row['original'])
+            else:assert any(capture['original']==row['original'] for capture in self.captures),'chunk reference lacks earlier write snapshot'
+        elif getattr(self,'capture_content_entities',False) and row.get('kind') in ['fd-capture','prepared-build-input-original','write-original','toolchain-original'] and 'original' in row:
             entity=self.register_capture_entity(row['original']);assert row.get('originalEntityIdentity',entity)==entity,'physical storage identity differs';row['originalEntityIdentity']=entity
         parts=self.raw_encoder.encode(row) if getattr(self,'indexed_raw_records',False) else [(json.dumps(row,sort_keys=True)+'\n').encode()]
         size=sum(map(len,parts));assert size<=65536,'actual raw record exceeds fixed range bound'
@@ -347,7 +373,7 @@ class Observer:
         for data in parts:self.raw.write(data)
         self.raw.flush()
         if self.generated_vma:self.generated_vma.record(row)
-        if getattr(self,'capture_content_entities',False) and row.get('kind') in ['fd-capture','prepared-build-input-original','write-original','toolchain-original'] and 'original' in row and 'originalReuse' not in row:
+        if getattr(self,'capture_content_entities',False) and row.get('kind') in ['fd-capture','prepared-build-input-original','write-original','toolchain-original'] and 'original' in row and 'originalReuse' not in row and 'storage' not in row['original']:
             ref=row['original'];scope=('maps',)if getattr(self,'capture_maps_content_entities',False)and row.get('captureKind')=='maps'else ()
             self.content_capture_pool.setdefault((self.current_phase,*scope,ref['bytes'],ref['sha256']),row)
         return row
@@ -576,8 +602,23 @@ class Observer:
             change=self.emit(dict(kind='actual-rename-transition',pid=pid,entrySequence=entry['sequence'],windowSequence=row['sequence'],leaseSequence=row['leaseSequence'],exitSequence=exit['sequence'],afterIdentity=after,namedIdentity=after,afterOriginal=original,oldPathAbsent=True,oldPathAbsenceErrno=errno.ENOENT,result=exit['result'],isError=exit['isError'],**({} if replacement_after is None else {'replacementAfter':replacement_after})))
             self.metadata_states.append((row,change))
         finally:self.close_rename_leases(held,destination)
+    def chunk_identity(self,reference):
+        storage=reference['storage'];assert storage['model']=='chunk-original-v1'
+        ref=storage['manifest'];value=os.stat(self.capture_dir/ref['path'],follow_symlinks=False)
+        assert stat.S_ISREG(value.st_mode) and value.st_nlink==1 and value.st_size==ref['bytes']
+        return [*probe.identity(value),value.st_nlink]
     def snapshot_write_original(self,reader,size,*,offset=0):
         assert 0<=size<=self.maximum_file_bytes,'write original byte bound'
+        source=os.fstat(reader)
+        if getattr(self,'capture_content_entities',False) and offset==0 and stat.S_ISREG(source.st_mode) and source.st_size==size:
+            self.check();number=len(self.captures);ledger=CaptureReservation(self)
+            manifest=chunk_store.snapshot(self.capture_dir,reader,number,ledger,self.check)
+            data=chunk_store.read_manifest(self.capture_dir,manifest,self.check)
+            reference=dict(path='capture-'+str(number).zfill(4)+'.original',bytes=data['bytes'],sha256=data['sha256'],storage=dict(model='chunk-original-v1',manifest=manifest))
+            physical_bytes=ledger.committed_bytes
+            row=self.emit(dict(kind='write-original',original=reference))
+            self.captures.append(row);self.capture_bytes+=physical_bytes
+            return reference
         name='capture-'+str(len(self.captures)).zfill(4)+'.original';count=0;digest=hashlib.sha256()
         with (self.capture_dir/name).open('xb') as output:
             while count<size:
@@ -592,6 +633,9 @@ class Observer:
             self.check();block=os.pread(reader,min(65536,size-offset),offset);assert block,'short held write image'
             offset+=len(block);yield block
     def original_blocks(self,ref):
+        if ref.get('storage'):
+            yield from chunk_store.blocks(self.capture_dir,ref['storage']['manifest'],self.check)
+            return
         with (self.capture_dir/ref['path']).open('rb') as stream:
             while True:
                 self.check();block=stream.read(65536)
@@ -788,9 +832,16 @@ class Observer:
         # Raw observations stay one-per-window; each physical body appears once.
         references={}
         for row in self.captures[capture_start:]:
-            reference=bindings.physical_original_reference(row['original']);prior=references.get(reference['path'])
-            assert prior is None or prior==reference,'conflicting same-phase capture entity reference'
-            references[reference['path']]=reference
+            original=row['original']
+            if original.get('storage'):
+                manifest=original['storage']['manifest'];data=chunk_store.read_manifest(self.capture_dir,manifest,self.check)
+                assert (data['bytes'],data['sha256'])==(original['bytes'],original['sha256'])
+                physical=[manifest]+[dict(path='chunks/'+chunk['sha256'],bytes=chunk['bytes'],sha256=chunk['sha256']) for chunk in data['chunks']]
+            else:physical=[bindings.physical_original_reference(original)]
+            for reference in physical:
+                prior=references.get(reference['path'])
+                assert prior is None or prior==reference,'conflicting same-phase capture entity reference'
+                references[reference['path']]=reference
         return [dict(reference,path=str(self.capture_dir/reference['path'])) for reference in references.values()]
     def capture(self,pid,fd,role):
         barrier=self.barrier();self.check();target=fdpath(pid,fd);path='/proc/'+str(pid)+'/fd/'+str(fd);before=os.stat(path);reader=os.open(path,os.O_RDONLY|os.O_CLOEXEC)
@@ -1597,7 +1648,7 @@ class Observer:
             for pump in pumps:pump.start()
             if self.process_authority:
                 os.close(ready_write);ready_write=None;self.check();remaining=max(0,self.deadline-time.monotonic());readable,_,_=select.select([ready_read],[],[],remaining);self.check();assert readable and os.read(ready_read,1)==b'R','child authority setup did not complete before release';os.close(ready_read);ready_read=None
-            self.emit(dict(kind='owned-root-binding',pid=child,command=command,**(dict(rawRecordModel=probe.RAW_RECORD_MODEL)if self.indexed_raw_records else {}),backend='ptrace-all-stop-process-v1',captureOriginalEntityModel='same-phase-content-entity-v2' if self.capture_content_entities else 'same-phase-producer-original-v1',**(dict(mapsOriginalEntityModel='same-phase-maps-content-entity-v1')if getattr(self,'capture_maps_content_entities',False)else {}),**(dict(generatedVmaModel=self.generated_vma.model,**(dict(generatedVmaMetadataModel=generated_vma_module.RETAINED_METADATA_MODEL)if getattr(self,'retained_generated_metadata',False)else {}),generatedVmaBuildRoot=self.build,generatedVmaParentDeadlineMonotonicNs=str(int(self.waiter.parent_deadline*1e9))) if self.generated_vma else {}),**(dict(stoppedWriterAliasModel='all-stop-exclusive-write-aliases-v1') if getattr(self,'stopped_writer_aliases',False) else {}),**(dict(optionalIoUringModel='explicit-kernel-enosys-denial-v2' if getattr(self,'io_uring_enosys_v2',False) else 'explicit-kernel-enosys-denial-v1') if self.deny_optional_io_uring else {}),**(dict(setresuidNoopModel='actual-stopped-setresuid-noop-v1') if self.verified_setresuid_noop else {}),**(dict(setresIdentityNoopModel='actual-stopped-setres-identity-noop-queued-v2' if getattr(self,'queued_identity_noop',False) else 'actual-stopped-setres-identity-noop-v1') if getattr(self,'verified_identity_noop',False) else {}),**(dict(processAuthorityModel=tool_providers.AUTHORITY_MODEL) if self.process_authority else {}),**(dict(exitAuthorityModel='actual-selected-exit-stop-held-terminal-peers-v2'if getattr(self,'serialize_terminal_syscalls',False)else 'actual-selected-exit-stop-before-peer-barrier-v1') if getattr(self,'terminal_exit_evidence',False) else {}),**(dict(taskOwnershipModel='all-tracked-tids-shared-fd-v1',tgid=child,fdTable=child) if self.shared_tasks else {})));single.trace(SEIZE,child,0,OPTIONS);single.trace(INTERRUPT,child);pid,status=self.wait_one();self.event(pid,status,False);self.pending_captures();os.write(write_fd,b'x');os.close(write_fd);write_fd=None;self.resume()
+            self.emit(dict(kind='owned-root-binding',pid=child,command=command,**(dict(rawRecordModel=probe.RAW_RECORD_MODEL)if self.indexed_raw_records else {}),backend='ptrace-all-stop-process-v1',**(dict(chunkOriginalStorageModel='chunk-original-v1') if self.capture_content_entities else {}),captureOriginalEntityModel='same-phase-content-entity-v2' if self.capture_content_entities else 'same-phase-producer-original-v1',**(dict(mapsOriginalEntityModel='same-phase-maps-content-entity-v1')if getattr(self,'capture_maps_content_entities',False)else {}),**(dict(generatedVmaModel=self.generated_vma.model,**(dict(generatedVmaMetadataModel=generated_vma_module.RETAINED_METADATA_MODEL)if getattr(self,'retained_generated_metadata',False)else {}),generatedVmaBuildRoot=self.build,generatedVmaParentDeadlineMonotonicNs=str(int(self.waiter.parent_deadline*1e9))) if self.generated_vma else {}),**(dict(stoppedWriterAliasModel='all-stop-exclusive-write-aliases-v1') if getattr(self,'stopped_writer_aliases',False) else {}),**(dict(optionalIoUringModel='explicit-kernel-enosys-denial-v2' if getattr(self,'io_uring_enosys_v2',False) else 'explicit-kernel-enosys-denial-v1') if self.deny_optional_io_uring else {}),**(dict(setresuidNoopModel='actual-stopped-setresuid-noop-v1') if self.verified_setresuid_noop else {}),**(dict(setresIdentityNoopModel='actual-stopped-setres-identity-noop-queued-v2' if getattr(self,'queued_identity_noop',False) else 'actual-stopped-setres-identity-noop-v1') if getattr(self,'verified_identity_noop',False) else {}),**(dict(processAuthorityModel=tool_providers.AUTHORITY_MODEL) if self.process_authority else {}),**(dict(exitAuthorityModel='actual-selected-exit-stop-held-terminal-peers-v2'if getattr(self,'serialize_terminal_syscalls',False)else 'actual-selected-exit-stop-before-peer-barrier-v1') if getattr(self,'terminal_exit_evidence',False) else {}),**(dict(taskOwnershipModel='all-tracked-tids-shared-fd-v1',tgid=child,fdTable=child) if self.shared_tasks else {})));single.trace(SEIZE,child,0,OPTIONS);single.trace(INTERRUPT,child);pid,status=self.wait_one();self.event(pid,status,False);self.pending_captures();os.write(write_fd,b'x');os.close(write_fd);write_fd=None;self.resume()
             while any(not r['exited'] for r in self.tasks.values()):
                 pid,status=self.wait_one();self.event(pid,status);self.pending_captures();self.resume()
             assert getattr(self,'terminal_focus',None)is None,'serialized terminal wait did not close'

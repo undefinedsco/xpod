@@ -18,7 +18,55 @@ POLICIES={
  0xc000003e:dict(exec={59,322},execveat=322,protect={10,329},read=0,write=1,close=3,mmap=9,clone=56,clone3=435,spawn={56,57,58,435},rename=82,renameat=264,renameat2=316,renameOps={82,264,316},exits={60,231},forbidden={206,207,208,209,210,333,425,426,427,311,101,272,308}),
 }
 def physical_original_reference(reference):
-    return {key:reference[key]for key in ['path','bytes','sha256']}
+    return {key:reference[key]for key in ['path','bytes','sha256']+(['storage'] if 'storage' in reference else [])}
+
+def capture_inventory_name(path):
+    prefix='inner/toolchain-execution/captures/'
+    need(type(path) is str and path.startswith(prefix),'fixed capture inventory prefix')
+    name=path[len(prefix):]
+    need(re.fullmatch(r'(capture-[0-9]{4,}\.original|manifests/[0-9]+\.json|chunks/[0-9a-f]{64})',name),'fixed capture inventory role')
+    return name
+
+def chunk_module():
+    import importlib.util
+    from pathlib import Path
+    spec=importlib.util.spec_from_file_location('verified_chunk_originals',Path(__file__).with_name('sdk-original-chunk-store.py'))
+    module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module);return module
+
+class CaptureOriginalReader:
+    """One physical-byte inventory, with explicit logical chunk observations."""
+    def __init__(self,read_original,maximum_file,maximum_total,check):
+        self.read_original=read_original;self.maximum_file=maximum_file;self.maximum_total=maximum_total;self.check=check
+        self.physical={};self.physical_bytes=0;self.logical={};self.codec=None
+    def physical_blocks(self,ref):
+        need(type(ref) is dict and set(ref)=={'path','bytes','sha256'},'exact physical capture reference')
+        name=ref['path'];need(type(name) is str and re.fullmatch(r'(capture-[0-9]{4,}\.original|manifests/[0-9]+\.json|chunks/[0-9a-f]{64})',name),'fixed physical capture path')
+        need(type(ref['bytes']) is int and 0<=ref['bytes']<=self.maximum_file and type(ref['sha256']) is str and re.fullmatch(r'[0-9a-f]{64}',ref['sha256']),'physical capture size/hash bound')
+        old=self.physical.get(name);need(old is None or old==ref,'physical capture reference changed')
+        if old is None:
+            self.physical_bytes+=ref['bytes'];need(self.physical_bytes<=self.maximum_total,'shared physical capture byte bound');self.physical[name]=dict(ref)
+        value=self.read_original(name,self.maximum_file)
+        if isinstance(value,bytes):
+            need(len(value)<=1024**2,'legacy tiny byte reader bound');body=value;value=(body[i:i+65536] for i in range(0,len(body),65536))
+        count=0;digest=hashlib.sha256()
+        for block in value:
+            self.check();need(type(block) is bytes and len(block)<=65536,'bounded physical capture block');count+=len(block);need(count<=ref['bytes'],'physical capture grew');digest.update(block);yield block
+        need((count,digest.hexdigest())==(ref['bytes'],ref['sha256']),'physical capture bytes/hash differ')
+    def manifest(self,reference):
+        need(type(reference) is dict and set(reference)=={'path','bytes','sha256','storage'},'exact logical chunk reference')
+        storage=reference.get('storage');need(type(storage) is dict and set(storage)=={'model','manifest'} and storage['model']=='chunk-original-v1','explicit chunk original storage required')
+        if self.codec is None:self.codec=chunk_module()
+        ref=storage['manifest'];need(type(ref) is dict and type(ref.get('bytes')) is int and 0<=ref['bytes']<=1024**2,'bounded chunk manifest');data=b''.join(self.physical_blocks(ref));manifest=self.codec.validate_manifest_bytes(data,ref)
+        need((manifest['bytes'],manifest['sha256'])==(reference['bytes'],reference['sha256']),'logical original differs from manifest')
+        match=re.fullmatch(r'capture-([0-9]{4,})\.original',reference['path']);need(match and int(match.group(1))==manifest['sequence'] and ref['path']=='manifests/'+str(manifest['sequence'])+'.json','manifest observation sequence differs')
+        identity=manifest['sourceIdentityBefore'];need(all(type(v) is int and v>=0 for v in identity) and stat.S_ISREG(identity[2]) and identity[3]==reference['bytes'],'manifest source identity differs')
+        return manifest
+    def blocks(self,reference):
+        name=reference['path'];canonical=physical_original_reference(reference);prior=self.logical.get(name);need(prior is None or prior==canonical,'logical original reference changed');self.logical[name]=canonical
+        if 'storage' in reference:
+            self.manifest(reference)
+            yield from self.codec.blocks_from_reader(reference['storage']['manifest'],self.physical_blocks,self.check)
+        else:yield from self.physical_blocks(physical_original_reference(reference))
 
 def tool_original_key(reference):
     return (reference['path'],reference['observationSequence'])if 'observationSequence'in reference else reference['path']
@@ -386,6 +434,9 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
     maximum_raw=limits['sourceMaterialBytes'] if limits else 32*1024**2
     maximum_file=limits['shardBytes'] if limits else 1024**2
     maximum_total=limits['sourceMaterialBytes'] if limits else 16*1024**2
+    chunk_storage_model=None;chunk_storage_initialized=False
+    original_reader=CaptureOriginalReader(read_original,maximum_file,maximum_total,check)
+    def read_reference(reference):return original_reader.blocks(reference)
     entity_model=None;entity_model_initialized=False;maps_entity_model=None;maps_entity_initialized=False;storage_origins={};storage_entities={};storage_aliases={};pending_storage_rows=[];original_cache={};observed_entity_names=set();retained_entries=set();phase_tracking=[];generated_verifier=None;generated_module=None
     denial_mode=False;denial=None;denied_operations={};setresuid_mode=False;identity_mode=False;queued_identity_mode=False;stopped_alias_mode=False;terminal_mode=False;setresuid_operations={}
     shared_mode=False;owners={};exec_fd_events={};vfork_events={};vfork_holds={};child_bindings={};wait_rows={}
@@ -398,17 +449,25 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
     def capture_data(ref):
         nonlocal capture_total
         need(re.fullmatch(r'capture-[0-9]{4,}\.original',ref['path']) and 0<=ref['bytes']<=maximum_file,'fixed capture role/byte bound')
+        prior=original_reader.logical.get(ref['path']);need(prior is None or prior==physical_original_reference(ref),'cached logical original reference changed')
         key=(ref['path'],ref['bytes'],ref['sha256'])
         if key not in original_cache:
-            original=read_original(ref['path'],maximum_file);digest=hashlib.sha256();count=0
+            original=read_reference(ref);digest=hashlib.sha256();count=0
             if isinstance(original,bytes):need(len(original)<=1024**2,'legacy tiny byte reader bound')
             blocks=(original[offset:offset+65536] for offset in range(0,len(original),65536)) if isinstance(original,bytes) else original
             for block in blocks:
                 check();need(isinstance(block,bytes) and len(block)<=65536,'bounded actual capture block required');count+=len(block);need(count<=ref['bytes'],'capture actual byte bound');digest.update(block)
-            data=(count,digest.hexdigest());capture_total+=count;need(capture_total<=maximum_total and data==(ref['bytes'],ref['sha256']),'capture actual bytes/reference differs');original_cache[key]=data;observed_entity_names.add(ref['path'])
+            data=(count,digest.hexdigest());capture_total=original_reader.physical_bytes;need(capture_total<=maximum_total and data==(ref['bytes'],ref['sha256']),'capture actual bytes/reference differs');original_cache[key]=data;observed_entity_names.add(ref['path'])
         return original_cache[key]
     def storage_original(row):
         ref=row['original'];data=capture_data(ref);entity=row.get('originalEntityIdentity')
+        if 'storage' in ref:
+            need(chunk_storage_model=='chunk-original-v1' and row['kind']=='write-original' and 'originalEntityIdentity' not in row and 'originalReuse' not in row,'chunk storage requires declared own write observation')
+            physical=ref['storage']['manifest'];identity=row.get('storageIdentity')
+            need(type(identity) is list and len(identity)==7 and all(type(v) is int and v>=0 for v in identity) and stat.S_ISREG(identity[2]) and identity[3]==physical['bytes'] and identity[6]==1,'actual manifest physical identity differs')
+            need(ref['path'] not in storage_entities,'chunk observation repeated')
+            original_reader.manifest(ref);storage_entities[ref['path']]=row;storage_origins[row['sequence']]=row
+            return data
         need(isinstance(entity,list) and len(entity)==7 and all(type(value) is int and value>=0 for value in entity) and entity[3]==data[0] and entity[6]==1 and entity[2]&0o170000==0o100000,'canonical physical content entity identity malformed')
         reuse=row.get('originalReuse')
         if row.get('captureKind')=='maps'and maps_entity_model is not None:
@@ -425,7 +484,7 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
         return data
     def dependency_bytes(ref):
         capture_data(ref);need(ref['bytes']<=4*1024**2,'dependency metadata byte bound')
-        value=read_original(ref['path'],maximum_file);blocks=[value] if isinstance(value,bytes) else value;data=bytearray()
+        value=read_reference(ref);blocks=[value] if isinstance(value,bytes) else value;data=bytearray()
         for block in blocks:check();need(isinstance(block,bytes) and len(block)<=65536,'dependency metadata range bound');data.extend(block);need(len(data)<=ref['bytes'],'dependency metadata grew')
         need((len(data),hashlib.sha256(data).hexdigest())==(ref['bytes'],ref['sha256']),'dependency metadata original changed');return bytes(data)
     def dependency_json(ref):return json.loads(dependency_bytes(ref))
@@ -440,14 +499,14 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
             spec=importlib.util.spec_from_file_location('verified_tool_provider',Path(__file__).with_name('sdk-tool-provider-originals.py'));provider_verifier=importlib.util.module_from_spec(spec);spec.loader.exec_module(provider_verifier)
         return provider_verifier
     def original_blocks(reference):
-        capture_data(reference);value=read_original(reference['path'],maximum_file)
+        capture_data(reference);value=read_reference(reference)
         return (value[i:i+65536] for i in range(0,len(value),65536)) if isinstance(value,bytes) else value
     def tool_ref(reference,kind=None):
         value=tool_originals.get(tool_original_key(reference));need(value and value['original']==reference and (kind is None or value['captureKind']==kind),'toolchain reference lacks actual complete original')
         return value
     def tool_maps(reference):
         tool_ref(reference,'maps');need(reference['bytes']<=4*1024**2,'bounded maps original')
-        original=read_original(reference['path'],maximum_file);blocks=[original] if isinstance(original,bytes) else original;parts=[];count=0;digest=hashlib.sha256()
+        original=read_reference(reference);blocks=[original] if isinstance(original,bytes) else original;parts=[];count=0;digest=hashlib.sha256()
         for block in blocks:
             check();need(isinstance(block,bytes) and len(block)<=65536,'bounded maps block');count+=len(block);need(count<=reference['bytes'],'maps byte bound');digest.update(block);parts.append(block)
         need((count,digest.hexdigest())==(reference['bytes'],reference['sha256']),'maps original changed')
@@ -463,7 +522,7 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
         need(record['pid']==consumer['pid'] and record['phase']==consumer['phase'] and record['barrierSequence']==consumer['barrierSequence'] and record['fileOriginal']==file_original['original'] and record['observation']['actualPath']==actual_path and record['observation']['identity']==file_original['identity'],'tool provider original operation/FD/path/barrier differs')
         record['used']=True;return record['verified']
     def tool_elf(reference):
-        original=read_original(reference['path'],maximum_file);iterator=iter([original] if isinstance(original,bytes) else original);prefix=bytearray()
+        original=read_reference(reference);iterator=iter([original] if isinstance(original,bytes) else original);prefix=bytearray()
         def read(offset,size):
             need(0<=offset and size<=65536 and offset+size<=min(reference['bytes'],4*1024**2),'ELF metadata window bound')
             while len(prefix)<offset+size:
@@ -508,6 +567,8 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
             check();total+=len(raw);need(total<=maximum_raw and len(raw)<=65536,'tiny raw aggregate/record bound');row=raw_decoder.feed(raw)
             if row is None:continue
             need(row['sequence']==last+1 and row['phase']==phase,'phase/raw sequence differs');last=row['sequence'];kind=row['kind']
+            if isinstance(row.get('original'),dict) and 'storage' in row['original']:
+                need((not chunk_storage_initialized or chunk_storage_model=='chunk-original-v1') and (kind=='write-original' or original_reader.logical.get(row['original']['path'])==row['original']),'chunk original requires declared write or earlier exact reference')
             if record_observer is not None:record_observer(phase,row)
             if pending_rename_window is not None:need(kind=='exclusive-rename-resume' and row.get('captureSequence')==pending_rename_window,'retained rename window not immediately exclusively resumed')
             if kind in ['kernel-syscall','actual-child-binding']:latest_execution_sequence=row['sequence']
@@ -542,7 +603,7 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                 need(len(index['shards'])==len(row['inventoryShardOriginals']),'dependency raw shard references differ')
                 for expected,actual in zip(index['shards'],row['inventoryShardOriginals']):need((expected['bytes'],expected['sha256'])==(actual['bytes'],actual['sha256']),'dependency shard registration differs')
                 files=dependency_inventory_rows(index,[dependency_json(ref) for ref in row['inventoryShardOriginals']],250000,check);need(sum(len(item['files']) for item in dependency_roots.values())+len(files)<=250000,'dependency aggregate member bound')
-                capture_data(row['mountinfoOriginal']);mountvalue=read_original(row['mountinfoOriginal']['path'],maximum_file);mountparts=[mountvalue] if isinstance(mountvalue,bytes) else mountvalue;mountbytes=bytearray()
+                capture_data(row['mountinfoOriginal']);mountvalue=read_reference(row['mountinfoOriginal']);mountparts=[mountvalue] if isinstance(mountvalue,bytes) else mountvalue;mountbytes=bytearray()
                 for block in mountparts:
                     check();need(isinstance(block,bytes) and len(block)<=65536 and len(mountbytes)+len(block)<=row['mountinfoOriginal']['bytes']<=4*1024**2,'dependency mountinfo byte bound');mountbytes.extend(block)
                 mountbytes=bytes(mountbytes);need((len(mountbytes),hashlib.sha256(mountbytes).hexdigest())==(row['mountinfoOriginal']['bytes'],row['mountinfoOriginal']['sha256']),'dependency mountinfo changed')
@@ -559,10 +620,15 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                 need(all(value[0]['path'].startswith(row['buildRoot'].rstrip('/')+'/') for value in prepared.values()),'prepared original escapes actual build root')
             elif kind=='owned-root-binding':
                 need(row.get('rawRecordModel')==raw_decoder.model,'declared raw record model differs from actual phase format')
+                declared_chunk=row.get('chunkOriginalStorageModel')
+                need(declared_chunk in [None,'chunk-original-v1'] and (not chunk_storage_initialized or chunk_storage_model==declared_chunk),'unknown or changed chunk storage model')
+                need(declared_chunk is not None or not any('storage' in ref for ref in original_reader.logical.values()),'undeclared chunk original')
+                chunk_storage_model=declared_chunk;chunk_storage_initialized=True
                 observed_entity_model=row.get('captureOriginalEntityModel')
                 need('captureOriginalEntityModel' not in row or observed_entity_model in ['same-phase-producer-original-v1','same-phase-content-entity-v2'],'unknown capture entity model')
                 need(not entity_model_initialized or entity_model==observed_entity_model,'capture entity model changed across actual roots');entity_model=observed_entity_model;entity_model_initialized=True
                 declared_maps_entity=row.get('mapsOriginalEntityModel');need(declared_maps_entity in [None,'same-phase-maps-content-entity-v1']and(not maps_entity_initialized or declared_maps_entity==maps_entity_model)and(declared_maps_entity is None or entity_model=='same-phase-content-entity-v2'),'unknown or changed maps physical entity model');maps_entity_model=declared_maps_entity;maps_entity_initialized=True
+                need(chunk_storage_model is None or entity_model=='same-phase-content-entity-v2','chunk storage requires physical content model')
                 if entity_model=='same-phase-content-entity-v2':
                     for pending in pending_storage_rows:storage_original(pending)
                 pending_storage_rows.clear()
@@ -734,7 +800,7 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                             digest=hashlib.sha256()
                             # Use original reader streaming; never load a whole original.
                             def initial_blocks(ref):
-                                value=read_original(ref['path'],maximum_file)
+                                value=read_reference(ref)
                                 return (value[i:i+65536] for i in range(0,len(value),65536)) if isinstance(value,bytes) else value
                             for block in segment_blocks(segments,initial_blocks,check):digest.update(block)
                             need(digest.hexdigest()==before[1],'append baseline full digest differs');append_hashes[key]=digest
@@ -752,7 +818,7 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                     need([{**alias,'identity':window['beforeIdentity']} for alias in after_aliases]==window['stoppedAliasInventory']['aliases'],'alias bindings changed during exclusive syscall')
                 else:need('stoppedAliasInventoryAfter' not in row,'unexpected alias postimage')
                 def blocks(ref):
-                    value=read_original(ref['path'],maximum_file)
+                    value=read_reference(ref)
                     return (value[i:i+65536] for i in range(0,len(value),65536)) if isinstance(value,bytes) else value
                 if window.get('format') in ['bounded-write-delta-v1','bounded-append-effect-v1']:
                     need(set(row['after'])=={'bytes','sha256'},'delta after must be digest only')
