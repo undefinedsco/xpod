@@ -363,11 +363,31 @@ def write_metadata(file,value,budget):
     budget.reserve(len(encoded))
     with file.open('xb') as out:out.write(encoded)
 
+def _timing_start():
+    try:return time.monotonic()
+    except Exception:return None
+
+def _timing_event(stage,started,success=True,file_count=None,byte_count=None,rows=None,groups=None):
+    try:
+        event={'event':'capture-inputs-timing','stage':stage,'elapsedSeconds':round(time.monotonic()-started,6),'success':success}
+        if rows is not None:file_count=len(rows);byte_count=sum(row.get('bytes',0) for row in rows.values())
+        if groups is not None:file_count=sum(map(len,groups.values()));byte_count=sum(row.get('bytes',0) for rows in groups.values() for row in rows.values())
+        if file_count is not None:event['fileCount']=file_count
+        if byte_count is not None:event['bytes']=byte_count
+        print(json.dumps(event,separators=(',',':')),file=sys.stderr,flush=True)
+    except Exception:pass
+
 def capture_inputs(work,target='linux-arm64'):
-    need(not (work/'inputs.original.json').exists(),'fresh input snapshot required');before=domains(work);need(sum(map(len,before.values()))<=LIMITS['sourceMembers'],'combined source input member bound');records={};budget=MaterialBudget(work)
-    for name,rows in before.items():records[name]=capture_domain(work,'before-'+name,name,rows,work/('tools' if name=='toolchain' else 'source'),budget,target)
-    after=domains(work);need(after==before,'build inputs changed during capture')
-    write_metadata(work/'inputs.original.json',dict(sourceKind=POLICY['sourceKind'],target=target,originals=records),budget);total_check(work)
+    started=None;success=False
+    try:
+        started=_timing_start();step=_timing_start();need(not (work/'inputs.original.json').exists(),'fresh input snapshot required');before=domains(work);need(sum(map(len,before.values()))<=LIMITS['sourceMembers'],'combined source input member bound');_timing_event('before-domains',step,groups=before)
+        records={};budget=MaterialBudget(work)
+        for name,rows in before.items():
+            step=_timing_start();records[name]=capture_domain(work,'before-'+name,name,rows,work/('tools' if name=='toolchain' else 'source'),budget,target);_timing_event('capture-domain-'+{'source':'source','dependencies':'dependencies','toolchain':'toolchain'}.get(name,'other'),step,rows=rows)
+        step=_timing_start();after=domains(work);need(after==before,'build inputs changed during capture');_timing_event('after-domains',step,groups=after)
+        step=_timing_start();write_metadata(work/'inputs.original.json',dict(sourceKind=POLICY['sourceKind'],target=target,originals=records),budget);_timing_event('write-metadata',step)
+        step=_timing_start();total_check(work);_timing_event('total-check',step);success=True
+    finally:_timing_event('capture-inputs',started,success=success)
 
 def verify_binary_target(file,target):
     descriptor=target_descriptor(target)['binaryFormat']
