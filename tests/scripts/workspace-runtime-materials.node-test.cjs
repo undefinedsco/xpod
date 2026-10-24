@@ -110,11 +110,16 @@ function noGitBundleFixture(root, installed, explicit) {
   const tools=path.join(cli,'dist/build-tools/index.cjs');fs.mkdirSync(path.dirname(tools),{recursive:true});
   fs.writeFileSync(path.join(cli,'package.json'),JSON.stringify({name:'@undefineds.co/xpod-cli',exports:{'./build-tools':'./dist/build-tools/index.cjs'}}));
   const captured=path.join(workspace,'notices-call.json');
-  fs.writeFileSync(tools,`exports.collectJavascriptNotices=o=>{require('node:fs').writeFileSync(${JSON.stringify(captured)},JSON.stringify(o));require('node:fs').mkdirSync(o.destination,{recursive:true});};`);
+  // Stub only the build-tool calls used here; these cases verify physical tool
+  // roots and no-Git provenance rather than metafile canonicalisation.
+  fs.writeFileSync(tools,`exports.canonicalBuildMetafile=raw=>Buffer.from(JSON.stringify(JSON.parse(raw.toString('utf8')),null,2)+'\\n');
+exports.collectJavascriptNotices=o=>{require('node:fs').writeFileSync(${JSON.stringify(captured)},JSON.stringify(o));require('node:fs').mkdirSync(o.destination,{recursive:true});};`);
   if (!installed) {const link=path.join(workspace,'node_modules/@undefineds.co/xpod-cli');fs.mkdirSync(path.dirname(link),{recursive:true});fs.symlinkSync(cli,link,'dir');}
   const generated=explicit?path.join(workspace,'explicit-originals'):path.join(cli,'licenses/javascript/generated/1.4.2');fs.mkdirSync(generated,{recursive:true});
   fs.writeFileSync(path.join(generated,'index.json'),JSON.stringify({bunVersion:'1.4.2',prefixBytes:4,prefixSha256:hash('head')}));
-  fs.mkdirSync(path.join(pkg,'dist'),{recursive:true});fs.writeFileSync(path.join(pkg,'dist/payload.cjs'),'head\n// fixture.ts\n');fs.writeFileSync(path.join(pkg,'dist/meta.json'),'{}');
+  fs.mkdirSync(path.join(pkg,'dist'),{recursive:true});fs.writeFileSync(path.join(pkg,'dist/payload.cjs'),'head\n// fixture.ts\n');
+  // The collector canonicalises this minimal, valid metafile before collection.
+  fs.writeFileSync(path.join(pkg,'dist/meta.json'),JSON.stringify({inputs:{'src/index.ts':{bytes:1,imports:[]}},outputs:{'dist/payload.cjs':{bytes:1,imports:[],inputs:{'src/index.ts':{bytesInOutput:1},exports:[]}}}}));
   const helper=path.join(workspace,'scripts/workspace-runtime-materials.cjs');fs.copyFileSync(path.resolve(process.env.XPOD_COLLECTOR_TEST_IMPLEMENTATION??'scripts/workspace-runtime-materials.cjs'),helper);
   const bun=path.join(workspace,'bin/bun');fs.writeFileSync(bun,`#!/bin/sh\ncase "$1" in --version) printf '1.4.2\\n';; --revision) printf 'fixture-revision\\n';; -e) printf '%s' '${bun}';; *) exit 99;; esac\n`,{mode:0o700});
   const child=path.join(workspace,'run.cjs');fs.writeFileSync(child,`require(${JSON.stringify(helper)}).collectWorkspaceRuntimeMaterials({packageRoot:process.cwd(),bundles:[{name:'fixture',payload:'dist/payload.cjs',metafile:'dist/meta.json'}],${explicit?'generated:'+JSON.stringify(generated):''}}).then(x=>process.stdout.write(JSON.stringify(x))).catch(e=>{console.error(e.message);process.exitCode=1;});`);

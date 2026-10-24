@@ -88,9 +88,22 @@ describe('admitted module host with real child HTTP listeners', () => {
   });
 
   it('retains a pending strict listener close across timeout and succeeds on retry', async () => {
-    const host = new DeferredCloseHost(); const selected = await port();
-    const runtime: ModuleRuntimeHandle = await startModuleRuntime({ modules: [await module('css', 'strict')], port: selected, bindHost: '127.0.0.1', baseUrl: `http://127.0.0.1:${selected}/`, runtimeHost: host });
+    class EphemeralCloseHost extends DeferredCloseHost {
+      requestedPort?: number;
+      assignedPort?: number;
+      override async listen(server: RuntimeListenableServer, endpoint: RuntimeListenEndpoint): Promise<void> {
+        await super.listen(server, endpoint);
+        if (endpoint.type === 'port') {
+          this.requestedPort = endpoint.port;
+          this.assignedPort = ((server as http.Server).address() as net.AddressInfo).port;
+        }
+      }
+    }
+    const host = new EphemeralCloseHost();
+    const runtime: ModuleRuntimeHandle = await startModuleRuntime({ modules: [await module('css', 'strict')], port: 0, bindHost: '127.0.0.1', baseUrl: 'http://127.0.0.1:0/', runtimeHost: host });
     try {
+      expect(host.requestedPort).toBe(0);
+      expect(host.assignedPort).toBeGreaterThan(0);
       const first = runtime.stop(); const concurrent = runtime.stop();
       expect(concurrent).toBe(first);
       const failures = await Promise.allSettled([first, concurrent]);

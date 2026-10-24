@@ -24,9 +24,9 @@ outer=load('sdk-readonly-executor');images=load('sdk-image-originals');limits=lo
 need=outer.binding.need
 profiles=load('qlever_compiler_profile')
 
-def repository_for(target):
+def repository_for(target,profile_name='module-bookworm-gcc12'):
     need(target in ['linux-x64','linux-arm64'],'fixed module SDK target')
-    profile=next(row for row in profiles.PROFILES if row['name']=='module-bookworm-gcc12')
+    profile=profiles.declared_profile(profile_name)
     return 'ghcr.io/undefinedsco/xpod-qlever-sdk'+profile['repository_suffix']+('' if target=='linux-x64' else '-arm64')
 
 def file_identity(value):return (value.st_dev,value.st_ino,value.st_mode,value.st_size,value.st_mtime_ns,value.st_ctime_ns,value.st_nlink)
@@ -187,15 +187,20 @@ def _collect(image,target,route_root,context_root,out,deadline,budget,local_vali
     master_path=out/('validation-materials.json' if local_validation else 'materials.json');ledger.write(master_path,master);return ledger.ref(master_path,out)
 
 def collect(image,target,route_root,context_root,out,deadline,*,local_validation=False):
-    need(local_validation or image.startswith(repository_for(target)+'@sha256:') and outer.binding.digest(image.split('@')[-1]),'fixed target module SDK repository/digest')
     budget=outer.budgets.ExecutionBudget(deadline)
-    with absolute_budget(budget):return _collect(image,target,route_root,context_root,out,deadline,budget,local_validation)
+    with absolute_budget(budget):
+        normal=json.loads(outer.bounded_original(Path(route_root)/'normal-route.original.json',limits['metadataBytes'],lambda:budget.check(60)))
+        identity=normal['identity'];outer.binding.same_tuple(identity,identity)
+        need(identity['target']==target,'same actual normal target')
+        need(local_validation or image.startswith(repository_for(target,identity['sdkProfile'])+'@sha256:') and outer.binding.digest(image.split('@')[-1]),'fixed actual-profile SDK repository/digest')
+        return _collect(image,target,route_root,context_root,out,deadline,budget,local_validation)
 
 def publish(route_root,target,repository,out,deadline,credentials):
-    need(repository==repository_for(target),'fixed declared module SDK repository');budget=outer.budgets.ExecutionBudget(deadline)
+    budget=outer.budgets.ExecutionBudget(deadline)
     with absolute_budget(budget):
         route_root=Path(route_root).resolve(strict=True);normal=json.loads(outer.bounded_original(route_root/'normal-route.original.json',limits['metadataBytes'],lambda:budget.check(60)));identity=normal['identity'];outer.binding.same_tuple(identity,identity)
         need(identity['target']==target and identity['sourceSha']==os.environ['GITHUB_SHA'] and identity['runId']==int(os.environ['GITHUB_RUN_ID']) and identity['runAttempt']==int(os.environ['GITHUB_RUN_ATTEMPT']) and normal['deadlineUnix']==float(deadline),'publisher same actual workflow tuple')
+        expected_repository=repository_for(target,identity['sdkProfile']);repository=repository or expected_repository;need(repository==expected_repository,'fixed actual-profile SDK repository');
         config=normal['linkedImageConfig'];need(outer.binding.digest(config),'actual loaded linked config');credentials=Path(credentials);need(credentials.is_absolute() and credentials.resolve(strict=True)==credentials and credentials.is_dir(),'fixed canonical login-action credential directory')
         # Login-action is the trusted credential owner. Its bytes never enter an
         # original, a guest bind, an argv value or a retained environment dump.
@@ -214,7 +219,7 @@ def publish(route_root,target,repository,out,deadline,credentials):
 if __name__=='__main__':
     import argparse
     parser=argparse.ArgumentParser();parser.add_argument('--mode',choices=['publish','collect','validate'],default='collect');parser.add_argument('--image');parser.add_argument('--target',choices=['linux-x64','linux-arm64'],required=True);parser.add_argument('--repository');parser.add_argument('--credentials');parser.add_argument('--route-root',required=True);parser.add_argument('--context-root');parser.add_argument('--out',required=True);parser.add_argument('--deadline',required=True,type=float);args=parser.parse_args()
-    if args.mode=='publish':publish(args.route_root,args.target,args.repository or repository_for(args.target),args.out,args.deadline,args.credentials)
+    if args.mode=='publish':publish(args.route_root,args.target,args.repository,args.out,args.deadline,args.credentials)
     else:
         need((args.image is not None or args.mode=='validate') and args.context_root is not None,'actual image and source context required');ref=collect(args.image,args.target,args.route_root,args.context_root,args.out,args.deadline,local_validation=args.mode=='validate')
         with open(os.environ['GITHUB_OUTPUT'],'a') as output:output.write('master_sha256='+ref['sha256']+'\nmaster_bytes='+str(ref['bytes'])+'\n')

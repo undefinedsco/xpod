@@ -139,7 +139,11 @@ it('actual acquisition output satisfies receiver source schema; unrooted refs an
     expect(fixture.binaryCalls[0]!.slice(0,2)).toEqual([cap,sourceCap]);
     expect(signed.facts.sdkSelectedDebianBinaryFilesVerified).toBe(true);
     expect(signed.pending).toContain('binary-other-obligation');
-    expect((signed.facts.sdkSourceRequiredAxes as any).toolchainSourceClosure).toBe('verifier-not-implemented');
+    // The actual verifier exists, but this serialization fixture supplies no
+    // tracked toolchain execution or private toolchain custody guard.
+    expect((signed.facts.sdkSourceRequiredAxes as any).toolchainSourceClosure).toBe(false);
+    expect(signed.facts.sdkToolchainSourceClosureVerified).not.toBe(true);
+    expect(signed.facts.sdkSourceCompletenessVerified).toBe(false);
     signed.assertCurrent();const savedBinary=fixture.binary;fixture.binary=undefined;
     expect(()=>signed.assertCurrent()).toThrow('binary observation custody changed');fixture.binary=savedBinary;
     expect(fixture.calls.every((value,index,values)=>value>0 && value<=10000 && (!index || value<=values[index-1]!))).toBe(true);
@@ -211,6 +215,8 @@ it('actual acquisition output satisfies receiver source schema; unrooted refs an
       const oldName=row.path.replace('debian-source/package-0000','debian-sources/package-0');
       originals.set(oldName,originals.get(row.path)!);row.path=oldName;
     }
-    expect(observe(oldGroup).pending).toContain('QLever SDK source: Debian original group/reference set differs');
+    const invalidGroup=observe(oldGroup);
+    expect(invalidGroup.pending).toContain('Debian source archive mechanics: Debian original group/reference set differs');
+    expect(invalidGroup.facts.debianDscAndAllSourceArchiveBytesVerified).not.toBe(true);
   } finally {fixture.view=undefined;rmSync(temporary,{recursive:true,force:true});}
 });

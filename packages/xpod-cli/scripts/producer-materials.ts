@@ -1,3 +1,4 @@
+import { c as createTar } from 'tar';
 import { cpSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
@@ -65,12 +66,12 @@ export async function exportProducerMaterials(packageRoot: string, canonicalSour
   rmSync(root, { recursive: true, force: true });
   mkdirSync(root, { recursive: true });
   cpSync(path.join(packageRoot, 'licenses/javascript'), path.join(root, 'javascript'), { recursive: true });
-  cpSync(path.join(packageRoot, '.test-data/build/client-inputs.json'), path.join(root, 'client-inputs.json'));
-  // Preserve the raw main-entry invocation alongside the existing client/output evidence.
-  cpSync(path.join(packageRoot, '.test-data/build/npm-entry-inputs.json'), path.join(root, 'npm-entry-inputs.json'));
+  cpSync(path.join(packageRoot, '.test-data/build/client-inputs.canonical.json'), path.join(root, 'client-inputs.json'));
+  // Publish the declared canonical representation; raw invocation bytes remain in .test-data/build.
+  cpSync(path.join(packageRoot, '.test-data/build/npm-entry-inputs.canonical.json'), path.join(root, 'npm-entry-inputs.json'));
   const earlyManifest = JSON.parse(readFileSync(path.join(packageRoot, 'package.json'), 'utf8'));
   const hasOutput = Boolean(earlyManifest.exports?.['./output']);
-  if (hasOutput) cpSync(path.join(packageRoot, '.test-data/build/output-inputs.json'), path.join(root, 'output-inputs.json'));
+  if (hasOutput) cpSync(path.join(packageRoot, '.test-data/build/output-inputs.canonical.json'), path.join(root, 'output-inputs.json'));
   const source = path.join(root, 'source');
   const files: Array<{ path: string; bytes: number; sha256: string }> = [];
   const visit = (directory: string, origin = packageRoot, prefix = ''): void => {
@@ -125,8 +126,9 @@ export async function exportProducerMaterials(packageRoot: string, canonicalSour
       files: published.files });
   }
   writeFileSync(path.join(root, 'source-inventory.json'), JSON.stringify({ schemaVersion: 1, files }, null, 2) + '\n');
-  const packed = spawnSync('tar', ['-czf', path.join(root, 'client-source.tar.gz'), '-C', source, '.']);
-  if (packed.error || packed.status !== 0) throw new Error('CLI producer source archive failed');
+  // Host owner IDs and copy timestamps are not immutable source identity.
+  await createTar({ file: path.join(root, 'client-source.tar.gz'), cwd: source, gzip: true,
+    portable: true, noMtime: true, noDirRecurse: true, strict: true }, files.map(file => file.path).sort());
   await verifyProducerSourceArchive({ archive: path.join(root, 'client-source.tar.gz'), inventory: path.join(root, 'source-inventory.json') });
   const inventory: Array<{ path: string; bytes: number; sha256: string }> = [];
   const inventoryDirectory = (directory: string): void => {

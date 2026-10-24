@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { isNativeLegalMaterial } from './legal-coverage';
-import type { CollectedArtifactView } from './artifact-contract';
+import type { CollectedArtifactView, CollectedArtifactMember } from './artifact-contract';
+import type { RegistryLegalOriginalView } from './legal-registry-originals';
 import { installedLegalOriginalViews } from './legal-installed-originals';
 import type { DerivedSourceView } from './artifact-contract';
 import { registryLegalOriginalView } from './legal-registry-originals';
@@ -9,6 +10,54 @@ const canonical = (value: unknown): value is string => typeof value === 'string'
   && !value.includes('\\') && !value.startsWith('/') && !value.split('/').some(part => !part || part === '.' || part === '..');
 function reject(message: string): never { throw new Error('Legal material inventory: ' + message); }
 const isNotice = (name: string) => /^(?:licen[cs]e|copying|notice)(?:[._-]|$)/iu.test(path.posix.basename(name));
+
+/** Pure scoped-grant check shared by physical and service adapters. The caller
+ * must obtain the original reader from its private issuer; this returns no
+ * capability and cannot confer original custody. */
+export function inspectPhysicalOriginalMemberGrant(input: {
+  original: Pick<RegistryLegalOriginalView, 'members' | 'readMember' | 'readMemberRange'>;
+  originalMembers: ReadonlyMap<string, CollectedArtifactMember>;
+  member: CollectedArtifactMember; relative: string; placement: string;
+  members: ReadonlyMap<string, CollectedArtifactMember>; declaredLicense: unknown;
+  /** Official archive mode when the caller's private issuer observed one. */
+  mode?: number;
+  verifyGrant?: (bytes: Buffer, declaredLicense?: unknown) => boolean;
+  declarations?: (bytes: Buffer, declaredLicense: unknown) => string[];
+}): string[] {
+  const { original, originalMembers, member, relative, placement, members, declaredLicense, mode, verifyGrant, declarations } = input;
+  const pending: string[] = [];
+  const actual = originalMembers.get(relative);
+  if (!actual || actual.sha256 !== member.sha256 || actual.bytes !== member.bytes) {
+    pending.push('Modified dependency member requires source derivation: ' + member.path); return pending;
+  }
+  if (mode !== undefined && mode !== member.mode) {
+    pending.push('Runtime member mode differs from official original: ' + member.path); return pending;
+  }
+  const signature = original.readMemberRange(relative, 0, Math.min(actual.bytes, 4));
+  if (isNativeLegalMaterial(signature)) {
+    pending.push('Native original requires native grant scope: ' + member.path); return pending;
+  }
+  if (!declarations) pending.push('Explicit per-member declaration audit required: ' + member.path);
+  else if (actual.bytes > 1024 * 1024) pending.push('Bounded per-member declaration audit requires range adapter: ' + member.path);
+  else for (const conflict of declarations(original.readMember(relative), declaredLicense)) pending.push(member.path + ': ' + conflict);
+  let directory = path.posix.dirname(relative), grants: string[] = [];
+  for (;;) {
+    grants = original.members.filter(row => path.posix.dirname(row.path) === directory && /^(?:licen[cs]e|copying)(?:[._-]|$)/iu.test(path.posix.basename(row.path))).map(row => row.path);
+    if (grants.length || directory === '.') break;
+    directory = path.posix.dirname(directory);
+  }
+  if (!grants.length || grants.some(grant => !verifyGrant?.(original.readMember(grant), declaredLicense))) pending.push('Unverified original scoped grant: ' + member.path);
+  let ancestor = path.posix.dirname(relative);
+  for (;;) {
+    for (const notice of original.members.filter(row => path.posix.dirname(row.path) === ancestor && isNotice(row.path))) {
+      const retained = members.get(placement + '/' + notice.path);
+      if (!retained || retained.sha256 !== notice.sha256 || retained.bytes !== notice.bytes) pending.push('Applicable original notice is not retained: ' + placement + '/' + notice.path);
+    }
+    if (ancestor === '.') break;
+    ancestor = path.posix.dirname(ancestor);
+  }
+  return pending;
+}
 
 /** Checks the existing physical-module-notices format against the collected
  * archive. Integrity is deliberately separate from original issuer authority. */
@@ -82,39 +131,14 @@ export function inspectPhysicalLegalMaterials(artifact: CollectedArtifactView, o
       const manifest = members.get(placement + '/package.json');
       const original = candidates.find(view => view?.members.some(row => row.path === 'package.json' && row.sha256 === manifest?.sha256 && row.bytes === manifest?.bytes));
       if (!original) { pending.push('Immutable registry or observed-installed-source issuer required: ' + name + '@' + version); continue; }
-      const upstream = new Map(original.members.map(member => [member.path, member]));
+      const originalMembers = new Map(original.members.map(member => [member.path, member]));
       const declaredLicense = JSON.parse(original.readMember('package.json').toString()).license;
       for (const member of artifact.members.filter(row => covered.has(row.path) && row.path.startsWith(placement + '/'))) {
         const before = pending.length;
         const relative = member.path.slice(placement.length + 1);
         if (relative.split('/').includes('node_modules')) continue;
-        const actual = upstream.get(relative);
-        if (!actual || actual.sha256 !== member.sha256 || actual.bytes !== member.bytes) {
-          pending.push('Modified dependency member requires source derivation: ' + member.path); continue;
-        }
-        const signature = original.readMemberRange(relative, 0, Math.min(actual.bytes, 4));
-        if (isNativeLegalMaterial(signature)) {
-          pending.push('Native original requires native grant scope: ' + member.path); continue;
-        }
-        if (!declarations) pending.push('Explicit per-member declaration audit required: ' + member.path);
-        else if (actual.bytes > 1024 * 1024) pending.push('Bounded per-member declaration audit requires range adapter: ' + member.path);
-        else for (const conflict of declarations(original.readMember(relative), declaredLicense)) pending.push(member.path + ': ' + conflict);
-        let directory = path.posix.dirname(relative), grants: string[] = [];
-        for (;;) {
-          grants = original.members.filter(row => path.posix.dirname(row.path) === directory && /^(?:licen[cs]e|copying)(?:[._-]|$)/iu.test(path.posix.basename(row.path))).map(row => row.path);
-          if (grants.length || directory === '.') break;
-          directory = path.posix.dirname(directory);
-        }
-        if (!grants.length || grants.some(grant => !verifyGrant?.(original.readMember(grant), declaredLicense))) pending.push('Unverified original scoped grant: ' + member.path);
-        let ancestor = path.posix.dirname(relative);
-        for (;;) {
-          for (const notice of original.members.filter(row => path.posix.dirname(row.path) === ancestor && isNotice(row.path))) {
-            const retained = members.get(placement + '/' + notice.path);
-            if (!retained || retained.sha256 !== notice.sha256 || retained.bytes !== notice.bytes) pending.push('Applicable original notice is not retained: ' + placement + '/' + notice.path);
-          }
-          if (ancestor === '.') break;
-          ancestor = path.posix.dirname(ancestor);
-        }
+        pending.push(...inspectPhysicalOriginalMemberGrant({ original, originalMembers, member, relative, placement, members,
+          declaredLicense, verifyGrant, declarations }));
         if (pending.length === before) qualifiedPaths.push(member.path);
       }
     }

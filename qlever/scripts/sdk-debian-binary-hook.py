@@ -34,10 +34,12 @@ def preserve_ownership(out,paths,remaining,ref,check):
         rows.append(dict(originalPath=str(source),original=original));used+=size
     return rows,used
 
-def acquire(out,selected_rows,ownership,ledger_ref,target,remaining,stage,ref,check):
+def acquire(out,selected_rows,ownership,ledger_ref,target,remaining,stage,ref,check,*,sdk_profile='module-bookworm-gcc12'):
     if target not in ('linux-x64','linux-arm64'):raise ValueError('Fixed SDK target required')
     retained,ownership_bytes=preserve_ownership(out,ownership,remaining,ref,check)
     spec=importlib.util.spec_from_file_location('sdk_debian_binary_legal',HERE/'sdk-debian-binary-originals.py')
     legal=importlib.util.module_from_spec(spec);spec.loader.exec_module(legal)
-    binary_ref,binary_bytes=legal.acquire(out,selected_rows,retained,ledger_ref,target,remaining,stage,ref,check)
+    profile_spec=importlib.util.spec_from_file_location('sdk_binary_profile',HERE/'qlever_compiler_profile.py');profiles=importlib.util.module_from_spec(profile_spec);profile_spec.loader.exec_module(profiles)
+    declared=profiles.declared_profile(sdk_profile)
+    binary_ref,binary_bytes=legal.acquire(out,selected_rows,retained,ledger_ref,target,remaining,stage,ref,check,security_suite=declared['distribution']+'-security')
     return binary_ref,binary_bytes,ownership_bytes

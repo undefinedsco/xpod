@@ -1,0 +1,945 @@
+"""Finite generated-output mapping mechanics; never a source/SDK issuer.
+
+The sole observer supplies actual stops, raw writer, original ledger and deadline.
+The parser independently replays the same ABI/operation contract below. No second
+tracer, user path allowlist or independent byte budget. The v6 word probe uses
+only the existing selected-stop ptrace primitive and retains four bytes.
+"""
+import base64
+import errno
+import hashlib
+import json
+import math
+import os
+from pathlib import Path
+import stat
+import time
+import threading
+import sys
+
+LEGACY_MODEL='actual-generated-shared-vma-single-owner-v1'
+KERNEL_LINK_MODEL='actual-generated-shared-vma-single-owner-v2'
+MODEL='actual-generated-file-vma-single-owner-v3'
+COHORT_MODEL='actual-generated-file-vma-stopped-mm-cohort-v4'
+PRIVATE_WAKE_MODEL='actual-generated-file-vma-stopped-mm-cohort-private-wake-v5'
+PRIVATE_WAIT_MODEL='actual-generated-file-vma-stopped-mm-cohort-private-wait-mismatch-v6'
+COORDINATED_WAIT_MODEL='actual-generated-file-vma-stopped-mm-cohort-coordinated-wait-v7'
+PARKED_WAIT_MODEL='actual-generated-file-vma-stopped-mm-cohort-parked-universe-wait-v8'
+COORDINATED_WAIT_MODELS=(COORDINATED_WAIT_MODEL,PARKED_WAIT_MODEL)
+PRIVATE_WAIT_MODELS=(PRIVATE_WAIT_MODEL,*COORDINATED_WAIT_MODELS)
+WAKE_MODELS=(PRIVATE_WAKE_MODEL,*PRIVATE_WAIT_MODELS)
+COHORT_MODELS=(COHORT_MODEL,*WAKE_MODELS)
+LINUX_EAGAIN=11
+WAKE_RAW_RECORDS=8
+WAKE_RESERVATION_BYTES=WAKE_RAW_RECORDS*65536
+CANONICAL_FILE_MAXIMUM=json.loads((Path(__file__).resolve().parents[2]/'scripts/lib/module-artifact-limits.json').read_bytes())['shardBytes']
+MAPPING_KIND='actual-exclusive-mmap-selected-file-v1'
+BUILD_ROOT='/opt/qlever-sdk/build'
+
+def validated_build_root(value):
+    # Supplied by the trusted caller, never inferred from a trace declaration.
+    need(isinstance(value,str) and value.startswith('/') and len(os.fsencode(value))<=4096 and '\\' not in value and all(ord(c)>=32 and ord(c)!=127 for c in value) and all(part not in ['', '.', '..'] for part in value.split('/')[1:]),'canonical caller-owned generated build root required')
+    return value
+
+FLAGS=0x4001  # Linux v6.12 UAPI: MAP_SHARED | MAP_NORESERVE; exact word only.
+PROTECTION=3
+WINDOW_SECONDS=1.0
+# One operation/ABI table, consumed by producer and independent replay.
+ABI={0xc000003e:dict(open=2,openat=257,resize=77,map=9,unmap=11,close=3,write=1,wake=202),0xc00000b7:dict(open=None,openat=56,resize=46,map=222,unmap=215,close=57,write=64,wake=98)}
+CREATE_REQUIRED=0x40|0x80
+CREATE_ALLOWED=3|CREATE_REQUIRED|0x80000|0x8000|0x20000
+
+def need(value,why):
+    if not value:raise ValueError('generated VMA: '+why)
+def identity(value):return [value.st_dev,value.st_ino,value.st_mode,value.st_size,value.st_mtime_ns,value.st_ctime_ns]
+def absent(path):
+    try:os.lstat(path)
+    except FileNotFoundError:return True
+    return False
+
+def operation(entry):
+    need(entry.get('arch') in ABI and len(entry.get('args',[]))==6,'actual known ABI/six argument words required')
+    rules=ABI[entry['arch']];return next((name for name,nr in rules.items() if nr is not None and nr==entry['nr']),None)
+def private_wake_dimensions(entry,active):
+    need(operation(entry)=='wake','actual futex ABI required')
+    args=entry['args'];need(all(type(word) is int and 0<=word<1<<64 for word in args),'canonical raw futex argument words required')
+    # Linux u32 val is passed to an int nr_wake. Reject truncation and the
+    # historical val=0 special behavior rather than interpreting it as no-op.
+    need(args[1]==129 and 1<=args[2]<=0x7fffffff,'only canonical positive FUTEX_WAKE_PRIVATE supported')
+    address=args[0];need(address>0 and address%4==0 and address+4<=1<<64,'naturally aligned finite private futex address required')
+    need(address+4<=active['address'] or address>=active['address']+active['span'],'private wake address overlaps generated output mapping')
+    return args[2]
+def private_wake_allowed(entry,active):
+    try:private_wake_dimensions(entry,active);return True
+    except (ValueError,KeyError,TypeError):return False
+
+def create_dimensions(entry):
+    op=operation(entry);args=entry['args'];need(op in ['open','openat'],'actual create syscall required')
+    flags=args[1] if op=='open' else args[2]
+    need(flags&3==2 and flags&CREATE_REQUIRED==CREATE_REQUIRED and flags&~CREATE_ALLOWED==0,'reviewed exclusive RW creation flags required')
+    return (-100,args[0]) if op=='open' else (args[0],args[1])
+def map_dimensions(entry,fd,length=1):
+    need(operation(entry)=='map' and type(length) is int and length>0 and entry['args']==[0,length,PROTECTION,FLAGS,fd,0],'fixed one-byte non-executable shared mapping required')
+def private_wait_dimensions(entry,active,*,model=PRIVATE_WAIT_MODEL):
+    need(operation(entry)=='wake','actual futex syscall ABI required')
+    args=entry['args'];need(all(type(word) is int and 0<=word<1<<64 for word in args),'canonical six raw futex words required')
+    if model==PARKED_WAIT_MODEL:
+        need(args[2]<=0xffffffff and (args[1]==128 and args[3]==0 or args[1]==393 and args[3:]==[0,0,0xffffffff]),'only private untimed WAIT or realtime WAIT_BITSET supported')
+    else:need(args[1:]==[393,0,0,0,0xffffffff],'only exact private WAIT_BITSET realtime mismatch dimensions supported')
+    address=args[0];need(address>0 and address%4==0 and address+4<=1<<64 and (address+4<=active['address'] or address>=active['address']+active['span']),'wait word aligned and outside dirty mapping required')
+    return address
+
+def private_wait_allowed(entry,active,*,model=PRIVATE_WAIT_MODEL):
+    try:private_wait_dimensions(entry,active,model=model);return True
+    except (ValueError,KeyError,TypeError):return False
+
+def wait_reservation_bytes(members,metadata_maximum):
+    need(type(members) is int and 1<=members<=128 and type(metadata_maximum) is int and 0<metadata_maximum<=4*1024**2,'bounded wait cohort metadata required')
+    return 2*members*metadata_maximum+(8+2*members)*65536
+
+def wait_word_mapping(mappings,address,*,allow_heap=False):
+    need(type(allow_heap)is bool,'typed private heap mapping selection required')
+    base=address&~7;rows=[row for row in mappings if int(row['startHex'],16)<=base and base+8<=int(row['endHex'],16)]
+    need(len(rows)==1,'complete machine word lies in one actual VMA required');row=rows[0]
+    need(row['permissions']=='rw-p' and row['inode']==0 and row['deviceMajor']==row['deviceMinor']==0 and row['fileOffset']==0 and (row.get('path','')=='' or row.get('path','')=='[stack]' or allow_heap and row.get('path','')=='[heap]' or row.get('path','').startswith('[anon:')),'only private writable anonymous wait word mapping supported')
+    return row
+
+def verify_wait_word(record,entry,active,*,model=PRIVATE_WAIT_MODEL):
+    address=private_wait_dimensions(entry,active,model=model);data=raw_bytes(record)
+    need(len(data)==4 and int.from_bytes(data,'little')!=entry['args'][2],'actual complete uint32 must differ from expected value')
+    return data
+
+def rounded_span(address,length,page):
+    need(type(page) is int and 4096<=page<=65536 and page&(page-1)==0,'actual bounded power-of-two page geometry required')
+    need(type(address) is int and address>=0 and address%page==0 and type(length) is int and length>0 and address+length<=1<<64,'aligned bounded actual VMA range required')
+    size=((length+page-1)//page)*page;need(address+size<=1<<64,'rounded VMA range overflow');return size
+
+def matching_maps(mappings,file_identity):
+    dev,ino=file_identity[:2]
+    return [row for row in mappings if (row['deviceMajor'],row['deviceMinor'],row['inode'])==(os.major(dev),os.minor(dev),ino)]
+def verify_established(mappings,address,page,file_identity,length=1):
+    size=rounded_span(address,length,page);rows=matching_maps(mappings,file_identity)
+    need(len(rows)==1,'exact sole backing VMA required');row=rows[0]
+    need(row['startHex']==format(address,'x') and row['endHex']==format(address+size,'x') and row['permissions']=='rw-s' and row['fileOffset']==0,'actual whole shared RW VMA geometry differs')
+    return row
+
+def reservation_bytes(peer_count,metadata_maximum,file_bytes=1,selected_rebinding=False):
+    need(type(peer_count) is int and 0<=peer_count<128 and type(metadata_maximum) is int and 0<metadata_maximum<=4*1024**2,'canonical bounded checkpoint reservation required')
+    # Four own maps plus before/after maps for every stopped peer; raw records
+    # have the existing 64KiB maximum. Unused reserved bytes are never charged.
+    need(type(file_bytes) is int and 0<file_bytes<=CANONICAL_FILE_MAXIMUM,'bounded proven mapping file size required')
+    need(type(selected_rebinding) is bool,'exact selected rebinding dimension required')
+    return (5+2*peer_count)*metadata_maximum+(44+2*peer_count)*65536+(7 if selected_rebinding else 6)*file_bytes
+
+def cohort_reservation_bytes(peer_count,cohort_peers,metadata_maximum,file_bytes,selected_rebinding=False):
+    need(type(cohort_peers) is int and 0<=cohort_peers<=peer_count,'complete bounded same-MM peer count required')
+    return reservation_bytes(peer_count,metadata_maximum,file_bytes,selected_rebinding)+2*cohort_peers*(metadata_maximum+65536)+65536
+
+GEOMETRY_KEYS=('startHex','endHex','permissions','fileOffset','deviceMajor','deviceMinor','inode')
+
+def numeric_mapping_geometry(mappings,check=lambda:None):
+    """Complete pure-local geometry projection; ``check`` is a caller policy.
+
+    The observer passes its cheap per-iteration refusal here, never a full
+    lease sweep: the parsed body is pure local data, while lease/source
+    validation stays bracketed around the real /proc read that produced it.
+    """
+    result=[]
+    for row in mappings:
+        check();need(all(key in row for key in GEOMETRY_KEYS),'complete parsed numeric VMA required');result.append(tuple(row[key] for key in GEOMETRY_KEYS))
+    return result
+
+def same_mapping_geometry(first,second,check=lambda:None):
+    """Bounded compare of two complete projections with one iterated policy."""
+    need(len(first)==len(second),'same-MM numeric VMA geometry differs')
+    for left,right in zip(first,second):
+        check();need(left==right,'same-MM numeric VMA geometry differs')
+    return True
+
+def cohort_mapping_geometry(parsed_members,bracket,local=lambda:None):
+    """One coherent same-MM geometry primitive shared by every actual caller.
+
+    ``parsed_members`` is the complete ordered list of pure-local parsed maps
+    for one stopped cohort. ``bracket`` is the caller's full live validation at
+    the entry/exit boundary (lease/source/ownership); ``local`` is only the
+    cheap deadline/stdio refusal iterated over the local projection. Identity
+    of the complete numeric geometry stays exact.
+    """
+    need(isinstance(parsed_members,list) and 1<=len(parsed_members)<=128,'bounded complete ordered cohort mappings required')
+    bracket()
+    try:
+        values=[numeric_mapping_geometry(parsed,local) for parsed in parsed_members]
+        geometry=values[0]
+        for value in values[1:]:same_mapping_geometry(value,geometry,local)
+    finally:
+        bracket()
+    return geometry
+
+def verify_peer_geometry(peer_maps,owner_maps,bracket,local=lambda:None):
+    """Peer/owner geometry through the same shared cohort primitive."""
+    return cohort_mapping_geometry([owner_maps,peer_maps],bracket,local)
+
+def complete_memory_cohort(mm,pid,barrier=None):
+    need(pid in mm.domains and 0<len(mm.domains)<=128,'bounded actual memory domain required')
+    domain=mm.domains[pid];members=sorted(p for p,value in mm.domains.items() if value==domain)
+    need(members and pid in members,'selected actual memory cohort required')
+    if barrier is not None:
+        need(barrier['pids']==sorted(mm.domains) and barrier['osStates']==['t']*len(mm.domains),'complete actual stopped memory-domain universe required')
+        need([row['tid'] for row in barrier['taskOwnership']]==barrier['pids'],'complete actual FD-table ownership required')
+    return domain,members
+
+def kernel_link_reservation_bytes(peer_count,metadata_maximum):return (5+2*peer_count)*metadata_maximum+(44+2*peer_count)*65536+6
+
+def resize_reservation_bytes(before_size,after_size,peer_count,metadata_maximum):
+    need(all(type(v) is int and 0<=v<=CANONICAL_FILE_MAXIMUM for v in [before_size,after_size]) and type(peer_count) is int and 0<=peer_count<128,'bounded resize pre/post/peer requirements')
+    return 2*before_size+after_size+(1+peer_count)*metadata_maximum+10*65536
+
+def legacy_reservation_bytes(peer_count,metadata_maximum):return (4+2*peer_count)*metadata_maximum+(40+2*peer_count)*65536+3
+
+def same_object(first,second):return len(first)==len(second)==6 and first[:4]==second[:4]
+
+def raw_record(data):
+    need(isinstance(data,bytes) and 0<len(data)<=4096,'bounded nonempty kernel raw required')
+    return dict(bytes=len(data),sha256=hashlib.sha256(data).hexdigest(),encoding='base64',content=base64.b64encode(data).decode('ascii'))
+def raw_bytes(record):
+    need(set(record)=={'bytes','sha256','encoding','content'} and record['encoding']=='base64' and type(record['bytes']) is int and 0<record['bytes']<=4096 and isinstance(record['content'],str) and len(record['content'])<=5464,'bounded exact kernel raw encoding required')
+    data=base64.b64decode(record['content'],validate=True);need(raw_record(data)==record,'kernel raw fullbytes/hash differ');return data
+def proc_identity(data,pid):
+    need(len(data)<=4096 and data.endswith(b'\n'),'bounded complete proc stat required');end=data.rfind(b')');need(end>0 and data[:data.find(b' ')].decode()==str(pid),'actual proc stat PID differs')
+    fields=data[end+2:].split();need(len(fields)>=20 and fields[0] in [b't',b'T'] and fields[19].isdigit(),'actual stopped task/starttime required');return int(fields[19])
+def verify_proc_lease(lease,pid,canonical=False):
+    need(isinstance(lease,dict) and proc_identity(raw_bytes(lease['statOriginal']),pid)==int(lease['starttime']) and len(lease['directoryIdentity'])==len(lease['statIdentity'])==6 and stat.S_ISDIR(lease['directoryIdentity'][2]) and stat.S_ISREG(lease['statIdentity'][2]),'entry proc lease malformed')
+    if canonical:
+        need(set(lease)=={'directoryIdentity','statIdentity','statOriginal','starttime'} and isinstance(lease['starttime'],str) and lease['starttime'].isdecimal(),'canonical held proc lease required')
+        for key in ['directoryIdentity','statIdentity']:need(isinstance(lease[key],list) and all(type(value) is int and value>=0 for value in lease[key]),'canonical full proc identity required')
+    return lease
+def kernel_link(record,path,build_root=BUILD_ROOT):
+    data=raw_bytes(record);need(b'\0' not in data and data.decode('utf-8','strict')==path and path.startswith(build_root+'/') and not path.endswith(' (deleted)') and all(part not in ['', '.', '..'] for part in path.split('/')[1:]),'exact nondeleted kernel link differs')
+
+class ProcLease:
+    """Same held proc directory/stat across the selected actual syscall stop."""
+    def __init__(self,runtime,pid):
+        self.r=runtime;self.pid=pid;self.directory=None;self.stat=None;self.base='/proc/'+str(pid)
+        try:
+            self.directory=os.open(self.base,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC);runtime.b.retained.add(self.directory)
+            self.stat=os.open('stat',os.O_RDONLY|os.O_NOFOLLOW|os.O_CLOEXEC,dir_fd=self.directory);runtime.b.retained.add(self.stat)
+            self.first=self.sample()
+        except BaseException:
+            runtime.cleanup_fds([self.stat,self.directory]);raise
+    def sample(self):
+        self.r.b.check();directory=identity(os.fstat(self.directory));named=identity(os.stat(self.base,follow_symlinks=False));held=identity(os.fstat(self.stat));named_stat=identity(os.stat('stat',dir_fd=self.directory,follow_symlinks=False))
+        need(directory==named and stat.S_ISDIR(directory[2]) and held==named_stat and stat.S_ISREG(held[2]),'same held/named proc lease differs')
+        data=os.pread(self.stat,4097,0);start=proc_identity(data,self.pid)
+        need(directory==identity(os.fstat(self.directory))==identity(os.stat(self.base,follow_symlinks=False)) and held==identity(os.fstat(self.stat))==identity(os.stat('stat',dir_fd=self.directory,follow_symlinks=False)),'proc lease changed while sampling')
+        result=dict(directoryIdentity=directory,statIdentity=held,statOriginal=raw_record(data),starttime=str(start))
+        if hasattr(self,'first'):need(result['directoryIdentity']==self.first['directoryIdentity'] and result['statIdentity']==self.first['statIdentity'] and result['starttime']==self.first['starttime'],'proc lifetime changed across actual syscall')
+        return result
+    def close(self):return self.r.cleanup_fds([self.stat,self.directory])
+
+RETAINED_METADATA_MODEL='actual-closed-generated-transaction-retained-metadata-v1'
+def retained_metadata_bytes(value,maximum=4*1024**2):
+    """Bound normalized live protocol state; raw history stays in its own ledger.
+
+    Count shared containers once, retain every scalar/reference, and include
+    held proc lease metadata without following its back-reference to observer.
+    This is a protocol metadata measure, not a Python heap-size estimate.
+    """
+    total=0;seen=set();pending=[value]
+    while pending:
+        item=pending.pop();kind=type(item)
+        if kind in [dict,list,tuple,set]or kind is ProcLease:
+            if id(item)in seen:continue
+            seen.add(id(item));total+=2
+            if kind is dict:
+                total+=2*len(item);pending.extend(item.keys());pending.extend(item.values())
+            elif kind is ProcLease:pending.extend([item.pid,item.directory,item.stat,item.first])
+            else:total+=len(item);pending.extend(item)
+        else:
+            need(item is None or kind in [str,int,float,bool],'unknown retained generated metadata resource')
+            need(kind is not float or math.isfinite(item),'nonfinite retained generated metadata')
+            total+=len(json.dumps(item,separators=(',',':'),ensure_ascii=True).encode())
+        need(total<=maximum,'retained generated metadata bound')
+    return total
+
+def resize_rejection_diagnostic(pid,entry,origin):
+    """Only already-held stop/origin metadata; never source bytes or authority."""
+    def number(value):return value if type(value) is int and 0<=value<1<<64 else 'unavailable'
+    def six(value):return [number(v) for v in value] if isinstance(value,(list,tuple)) and len(value)==6 else 'unavailable'
+    current='unavailable'
+    try:current=six(identity(os.fstat(origin['held'])))
+    except BaseException:pass
+    reference=origin.get('original');original='unavailable'
+    if isinstance(reference,dict):
+        name=reference.get('path');digest=reference.get('sha256');size=reference.get('bytes')
+        if isinstance(name,str) and 0<len(name)<=256 and all(32<=ord(c)<127 for c in name) and isinstance(digest,str) and len(digest)==64 and all(c in '0123456789abcdef' for c in digest):original=dict(path=name,bytes=number(size),sha256=digest)
+    row=dict(schemaVersion=1,kind='actual-stopped-generated-resize-rejected',pid=number(pid),entrySequence=number(entry.get('sequence')),arch=number(entry.get('arch')),nr=number(entry.get('nr')),args=six(entry.get('args')),originPid=number(origin.get('pid')),originFd=number(origin.get('fd')),originSequence=number(origin.get('sequence')),originIdentity=six(origin.get('identity')),currentHeldIdentity=current,original=original,authorityVerified=False)
+    raw='SDK_GENERATED_RESIZE_REJECTED '+json.dumps(row,separators=(',',':'))
+    if len(raw.encode('utf-8'))<=4096:print(raw,file=sys.stderr,flush=True)
+
+def verify_resize_bytes(before,after,before_size,after_size,maximum,check=lambda:None):
+    if type(maximum) is not int or maximum<0 or not all(type(v) is int and 0<=v<=maximum for v in [before_size,after_size]):raise ValueError('bounded resize sizes')
+    prior=hashlib.sha256();expected=hashlib.sha256();count=0
+    for block in before:
+        check()
+        if not isinstance(block,bytes) or not 0<len(block)<=65536 or count+len(block)>before_size:raise ValueError('bounded complete before blocks')
+        prior.update(block);keep=min(len(block),max(0,after_size-count));expected.update(block[:keep]);count+=len(block)
+    if count!=before_size:raise ValueError('short before')
+    for offset in range(before_size,after_size,65536):check();expected.update(bytes(min(65536,after_size-offset)))
+    actual=hashlib.sha256();count=0
+    for block in after:
+        check()
+        if not isinstance(block,bytes) or not 0<len(block)<=65536 or count+len(block)>after_size:raise ValueError('bounded complete after blocks')
+        actual.update(block);count+=len(block)
+    if count!=after_size or actual.digest()!=expected.digest():raise ValueError('complete resize projection differs')
+    return dict(before=dict(bytes=before_size,sha256=prior.hexdigest()),after=dict(bytes=after_size,sha256=actual.hexdigest()))
+
+def memory_domain_rejection_diagnostic(pid,entry,mm,check):
+    """Bounded observed-domain context only; never admits an operation."""
+    check();domain=mm.domains.get(pid);count=0;members=[];digest=hashlib.sha256()
+    for task,value in mm.domains.items():
+        check();row=dict(pid=task,memoryDomain=value,source=mm.provenance.get(task))
+        raw=json.dumps(row,separators=(',',':'),sort_keys=True).encode();digest.update(raw+b'\n')
+        if value==domain:
+            count+=1
+            if len(members)<8:members.append(row)
+    row=dict(schemaVersion=1,kind='actual-generated-memory-domain-rejection',authorityVerified=False,
+        pid=pid,entrySequence=entry['sequence'],arch=entry['arch'],nr=entry['nr'],args=entry['args'],
+        memoryDomain=domain,ownedTaskCount=len(mm.domains),sameMemoryDomainCount=count,
+        observedDomainRowsSHA256=digest.hexdigest(),memberPrefix=members,memberPrefixTruncated=count>len(members))
+    data=b'SDK_GENERATED_MEMORY_DOMAIN_REJECTION '+json.dumps(row,separators=(',',':'),sort_keys=True).encode()+b'\n'
+    need(len(data)<=4096,'bounded memory domain diagnostic required');check();os.write(2,data)
+
+def dirty_syscall_rejection_diagnostic(entry,active,owner):
+    """Failure-only projection of already emitted entry and held epoch metadata."""
+    def number(value):return value if type(value) is int and 0<=value<1<<64 else 'unavailable'
+    def words(value):return [number(v) for v in value] if isinstance(value,(list,tuple)) and len(value)==6 else 'unavailable'
+    def reference(value):
+        if not isinstance(value,dict):return 'unavailable'
+        name=value.get('path');digest=value.get('sha256');size=value.get('bytes')
+        if not isinstance(name,str) or not 0<len(name)<=256 or not all(32<=ord(c)<127 for c in name) or not isinstance(digest,str) or len(digest)!=64 or any(c not in '0123456789abcdef' for c in digest) or type(size) is not int or not 0<=size<1<<64:return 'unavailable'
+        return dict(path=name,bytes=size,sha256=digest)
+    origin=active.get('origin',{});members=active.get('memoryDomainMembers',[])
+    cohort=[number(v) for v in members] if isinstance(members,(list,tuple)) and len(members)<=128 else []
+    domain=active.get('memoryDomain');domain=domain if type(domain) is int and -(1<<64)<domain<1<<64 else 'unavailable'
+    row=dict(schemaVersion=1,kind='actual-generated-dirty-syscall-rejected',authorityVerified=False,
+        pid=number(entry.get('pid')),arch=number(entry.get('arch')),nr=number(entry.get('nr')),args=words(entry.get('args')),entrySequence=number(entry.get('sequence')),
+        owner=number(owner),mappingSequence=number(active.get('sequence')),address=number(active.get('address')),length=number(active.get('length')),span=number(active.get('span')),page=number(active.get('page')),
+        memoryDomain=domain,memoryDomainMemberCount=len(cohort),memoryDomainMemberPrefix=cohort[:8],memoryDomainMembersSHA256=hashlib.sha256(json.dumps(cohort,separators=(',',':')).encode()).hexdigest(),originSequence=number(origin.get('sequence')),originPid=number(origin.get('pid')),originFd=number(origin.get('fd')),originIdentity=words(origin.get('identity')),original=reference(origin.get('original')))
+    data='SDK_GENERATED_DIRTY_SYSCALL_REJECTED '+json.dumps(row,separators=(',',':'),sort_keys=True)+'\n'
+    if len(data.encode('utf-8'))<=4096:sys.stderr.write(data);sys.stderr.flush()
+
+class MemoryDomains:
+    """Derived solely from already observed actual root/clone/exec/wait rows."""
+    def __init__(self):self.domains={};self.provenance={}
+    def record(self,row):
+        kind=row['kind']
+        if kind=='owned-root-binding':
+            need(not self.domains,'prior memory domain remains');self.domains[row['pid']]=row['sequence'];self.provenance[row['pid']]=dict(kind=kind,sequence=row['sequence'])
+        elif kind=='actual-child-binding':
+            need(row['parentPid'] in self.domains and row['childPid'] not in self.domains and type(row.get('cloneFlags')) is int,'actual clone flags/parent memory domain required')
+            self.domains[row['childPid']]=self.domains[row['parentPid']] if row['cloneFlags']&0x100 else row['sequence'];self.provenance[row['childPid']]=dict(kind=kind,sequence=row['sequence'],parentPid=row['parentPid'],cloneFlags=row['cloneFlags'])
+        elif kind=='ptrace-event' and row['event']==4:
+            need(row['pid'] in self.domains,'actual exec memory domain missing');self.domains[row['pid']]=-row['sequence'];self.provenance[row['pid']]=dict(kind=kind,sequence=row['sequence'],event=4)
+        elif kind=='actual-wait-exit':
+            need(row['pid'] in self.domains,'actual terminal memory domain missing');del self.domains[row['pid']];self.provenance.pop(row['pid'],None)
+    def unique(self,pid):
+        need(pid in self.domains and [p for p,v in self.domains.items() if v==self.domains[pid]]==[pid],'mapping owner is not the sole actual memory-domain member')
+        return self.domains[pid]
+
+class Runtime:
+    def __init__(self,backend):
+        need(not getattr(backend,'generated_vma_private_wake',False) or getattr(backend,'generated_vma_shared_mm',False),'private wake requires existing stopped-MM model')
+        self.b=backend;self.model=PARKED_WAIT_MODEL if getattr(backend,'generated_vma_parked_wait',False) else COORDINATED_WAIT_MODEL if getattr(backend,'generated_vma_coordinated_wait',False) else PRIVATE_WAIT_MODEL if getattr(backend,'generated_vma_private_wait_mismatch',False) else PRIVATE_WAKE_MODEL if getattr(backend,'generated_vma_private_wake',False) else (COHORT_MODEL if getattr(backend,'generated_vma_shared_mm',False) else MODEL);self.mm=MemoryDomains();self.origins={};self.pending={};self.active=None;self.checkpoints={};self.reserved=0;self.metadata_bytes=0;self.spending_thread=None;self.cleanup_errors=[];self.wake_closing=None;self.retained_metadata=getattr(backend,'retained_generated_metadata',False);self.metadata_close_entry=None;self.metadata_high_water=0
+        need(not self.retained_metadata or self.model==PARKED_WAIT_MODEL,'retained metadata requires explicit parked-wait model')
+    def charge_metadata(self,row):
+        self.metadata_bytes+=len(json.dumps(row,separators=(',',':')).encode());need(self.metadata_bytes<=4*1024**2,'shared generated metadata bound');self.metadata_high_water=max(self.metadata_high_water,self.metadata_bytes)
+    def checkpoint_metadata(self,close):
+        need(self.metadata_close_entry is not None and close.get('kind')=='exclusive-captured-syscall-exit'and(close['pid'],close['entrySequence'],close['sequence'])==self.metadata_close_entry,'metadata release requires its actual generated exclusive close')
+        need(self.retained_metadata and self.active is None and not self.pending and getattr(self,'round',None)is None,'metadata release requires actual closed generated transaction')
+        self.metadata_bytes=retained_metadata_bytes(dict(origins=self.origins,checkpoints=self.checkpoints,pending=self.pending,active=self.active,memoryDomains=self.mm.domains,memoryProvenance=self.mm.provenance,wakeClosing=self.wake_closing,deferred=getattr(self,'deferred',{})))
+        self.metadata_high_water=max(self.metadata_high_water,self.metadata_bytes);self.metadata_close_entry=None
+    def cleanup_fds(self,fds):
+        errors=[]
+        for fd in dict.fromkeys(fd for fd in fds if fd is not None and fd in self.b.retained):
+            try:os.close(fd)
+            except BaseException as error:errors.append(error)
+            else:self.b.retained.discard(fd)
+        self.cleanup_errors.extend(errors)
+        return errors
+    def mapping_domain(self,pid,barrier=None):
+        return complete_memory_cohort(self.mm,pid,barrier) if self.model in COHORT_MODELS else (self.mm.unique(pid),[pid])
+    @property
+    def owner(self):return self.active['pid'] if self.active is not None else None
+    def record(self,row):
+        self.mm.record(row);kind=row['kind']
+        if self.retained_metadata and self.metadata_close_entry is not None:
+            need(kind=='exclusive-captured-syscall-exit'and(row['pid'],row['entrySequence'],row['sequence'])==self.metadata_close_entry,'metadata release lost actual generated exclusive close')
+            self.checkpoint_metadata(row)
+        if self.wake_closing is not None:
+            close=self.wake_closing
+            need(kind=='exclusive-captured-syscall-exit' and row['pid']==close['pid'] and row['entrySequence']==close['entrySequence'] and row['sequence']==close.get('closeSequence',close['entrySequence']+WAKE_RAW_RECORDS-1) and row['result']==close['result'] and row['isError'] is close.get('isError',False),'private wake final exclusive close differs')
+            need(self.reserved>=close['baselineReserved'],'private wake raw reservation exhausted original closing share')
+            self.reserved=close['baselineReserved'];self.wake_closing=None
+        if kind.startswith('generated-vma-') or kind=='exclusive-generated-vma-resume':
+            self.charge_metadata(row)
+        if self.active is None and kind=='kernel-syscall' and row['op']=='entry' and operation(row) in ['close','write']:
+            for key,origin in list(self.origins.items()):
+                if origin['pid']==row['pid'] and origin.get('fd')==row['args'][0] and self.lookup_fd(row['pid'],row['args'][0]) is origin:
+                    if operation(row)=='write':
+                        origin['writePending']=True;self.checkpoints.pop(key,None);continue
+                    if origin.get('checkpointed'):continue
+                    os.close(origin['held']);self.b.retained.remove(origin['held']);del self.origins[key]
+        if self.active is not None:
+            self.b.check();kind=row['kind']
+            if self.model in COHORT_MODELS:need(self.mapping_domain(self.owner)==(self.active['memoryDomain'],self.active['memoryDomainMembers']),'dirty mapping cohort changed')
+            if kind in ['actual-child-binding','ptrace-event','signal-delivery','actual-wait-exit']:raise ValueError('generated VMA: unsupported event while finite mapping dirty')
+            if kind=='kernel-syscall':
+                need(row['pid']==self.owner,'peer executed while generated mapping active')
+                if row['op']=='entry':
+                    allowed=operation(row) in ['close','unmap'] or self.model in WAKE_MODELS and private_wake_allowed(row,self.active) or self.model in PRIVATE_WAIT_MODELS and private_wait_allowed(row,self.active,model=self.model)
+                    if not allowed:
+                        try:dirty_syscall_rejection_diagnostic(row,self.active,self.owner)
+                        except BaseException:pass
+                    need(allowed,'unsupported syscall while finite mapping dirty')
+    def write_baseline(self,pid,fd,current,before_size,offset):
+        origin=self.lookup_fd(pid,fd)
+        if origin is None:return None
+        need(self.active is None and origin['pid']==pid and origin['fd']==fd and current==origin['identity']==identity(os.fstat(origin['held'])) and before_size==current[3],'generated write lacks exact current held origin')
+        count=self.b.tasks[pid]['entry']['args'][2];need(type(count) is int and 0<=count<=self.b.maximum_file_bytes,'bounded generated write count')
+        need(type(offset) is int and 0<=offset and offset+count<=self.b.maximum_file_bytes,'bounded generated write offset');reserve=2*before_size+count+max(before_size,offset+count)+10*65536;self.b.reserve_generated_bytes(reserve);self.spending_thread=threading.get_ident()
+        origin['writePending']=True
+        return origin
+    def complete_write_bridge(self,origin,window,transition,held):
+        need(origin.get('writePending') and transition['afterIdentity']==identity(os.fstat(held)) and transition['afterIdentity'][:3]==origin['identity'][:3] and window['beforeIdentity']==origin['identity'] and window['baseline']==origin['sequence'],'generated write transition baseline differs')
+        current,ref=self.snapshot(held);need(current==identity(os.fstat(origin['held'])) and window['fd']==origin['fd'] and (ref['bytes'],ref['sha256'])==(transition['after']['bytes'],transition['after']['sha256']),'generated write full postimage differs from sole write projection')
+        row=self.b.emit(dict(kind='generated-vma-write-origin-transition',pid=window['pid'],originSequence=origin['sequence'],windowSequence=window['sequence'],transitionSequence=transition['sequence'],identity=current,original=ref))
+        origin.update(identity=current,data=(ref['bytes'],ref['sha256']),original=ref,sequence=row['sequence'],writePending=False,checkpointed=False)
+        self.reserved=0;self.spending_thread=None
+        return row
+    def lookup_fd(self,pid,fd):
+        try:current=identity(os.stat('/proc/'+str(pid)+'/fd/'+str(fd)))
+        except FileNotFoundError:return None
+        return self.origins.get(tuple(current[:2]))
+    def classify(self,pid,entry,resolve):
+        op=operation(entry);args=entry['args'];b=self.b
+        if self.active is not None:
+            need(pid==self.owner and (op in ['close','unmap'] or self.model in WAKE_MODELS and private_wake_allowed(entry,self.active) or self.model in PRIVATE_WAIT_MODELS and private_wait_allowed(entry,self.active,model=self.model)),'unsupported active mapping syscall')
+            if op=='wake':
+                if self.model in PRIVATE_WAIT_MODELS and private_wait_allowed(entry,self.active,model=self.model):
+                    need(not self.pending and self.wake_closing is None,'prior wait window remains open');self.pending[pid]=dict(op='private-wait-mismatch',origin=self.active['origin'],fd=None);b.tasks[pid]['capture']=(None,'generated-vma-before');return True
+                need(not self.pending and self.wake_closing is None,'prior private wake remains open');count=private_wake_dimensions(entry,self.active)
+                self.pending[pid]=dict(op='private-wake',origin=self.active['origin'],fd=None,wakeCount=count)
+                b.tasks[pid]['capture']=(None,'generated-vma-before');return True
+            if op=='close':
+                origin=self.lookup_fd(pid,args[0]);need(origin is self.active['origin'],'only selected mapped backing FD may close')
+            else:
+                need(args[0]==self.active['address'] and rounded_span(args[0],args[1],self.active['page'])==self.active['span'],'partial or foreign munmap unsupported')
+                origin=self.active['origin']
+            self.pending[pid]=dict(op=op,origin=origin,fd=args[0] if op=='close' else None)
+        elif op in ['open','openat']:
+            try:dirfd,address=create_dimensions(entry)
+            except ValueError:return False
+            path=resolve(dirfd,address)
+            if not path.startswith(b.build+'/'):return False
+            need(str(Path(path).resolve(strict=False))==path,'canonical generated path required')
+            self.b.emit(dict(kind='generated-vma-create-path',pid=pid,entrySequence=entry['sequence'],path=path,dirFd=dirfd,pathArgIndex=0 if op=='open' else 1))
+            self.pending[pid]=dict(op='create',path=path)
+        elif op=='resize':
+            origin=self.lookup_fd(pid,args[0])
+            if origin is None:return False
+            try:
+                need(args[0]==origin['fd'],'new selected generated descriptor requires unsupported explicit rebinding');need(origin['pid']==pid and type(args[1]) is int and 0<=args[1]<=b.maximum_file_bytes<=CANONICAL_FILE_MAXIMUM,'only bounded own retained resize supported')
+            except ValueError:
+                try:resize_rejection_diagnostic(pid,entry,origin)
+                except BaseException:pass
+                raise
+            self.pending[pid]=dict(op=op,origin=origin,fd=args[0])
+        elif op=='map' and not(args[3]&0x20) and args[2]&2 and args[3]&1:
+            origin=self.lookup_fd(pid,args[4]);need(origin is not None,'mapped output lacks actual create/resize origin');map_dimensions(entry,args[4],origin['identity'][3]);need(origin['pid']==pid and 0<origin['identity'][3]<=b.maximum_file_bytes<=CANONICAL_FILE_MAXIMUM,'selected own bounded nonempty origin required')
+            try:self.mapping_domain(pid)
+            except ValueError:
+                try:memory_domain_rejection_diagnostic(pid,entry,self.mm,b.check)
+                except BaseException:pass
+                raise
+            self.pending[pid]=dict(op=op,origin=origin,fd=args[4])
+        else:return False
+        b.tasks[pid]['capture']=(None,'generated-vma-before');return True
+    def fresh_barrier(self):
+        row=self.b.barrier()
+        if row['sequence']!=self.b.seq:row=self.b.barrier()
+        need(row['sequence']==self.b.seq,'fresh all-task barrier required');return row
+    def snapshot(self,fd):
+        before=identity(os.fstat(fd));need(stat.S_ISREG(before[2]) and 0<=before[3]<=self.b.maximum_file_bytes<=CANONICAL_FILE_MAXIMUM,'bounded regular generated original required')
+        ref=self.b.snapshot_write_original(fd,before[3]);need(before==identity(os.fstat(fd)),'generated original changed during capture');return before,ref
+    def maps(self,pid):return self.b.tool_maps(pid)
+    def wait_samples(self,pid,entry,barrier):
+        address=private_wait_dimensions(entry,self.active,model=self.model);domain,members=self.mapping_domain(pid,barrier)
+        need((domain,members)==(self.active['memoryDomain'],self.active['memoryDomainMembers']),'wait cohort changed')
+        rows=[];baseline=None
+        for member in members:
+            raw,parsed=self.maps(member);mapping=wait_word_mapping(parsed,address,allow_heap=self.model==PARKED_WAIT_MODEL);geometry=numeric_mapping_geometry(parsed,self.b.check_deadline)
+            if baseline is None:baseline=geometry
+            else:same_mapping_geometry(geometry,baseline,self.b.check_deadline)
+            rows.append(dict(pid=member,original=raw['original'],mapping=mapping))
+        word=self.b.generated_wait_word(pid,address);verify_wait_word(raw_record(word),entry,self.active,model=self.model)
+        return rows,raw_record(word)
+    def capture(self,pid):
+        b=self.b;pending=self.pending[pid];op=pending['op'];entry=b.tasks[pid]['entry']
+        if op in ['private-wake','private-wait-mismatch']:
+            need(self.model in WAKE_MODELS and self.active is not None and pid==self.owner and self.spending_thread==threading.get_ident() and self.reserved>0,'private wake requires sole active cohort owner and retained closing reservation')
+            entry_bytes=len((json.dumps(entry,sort_keys=True)+'\n').encode());need(entry_bytes<=65536,'private wake actual entry raw bound')
+            baseline=self.reserved+entry_bytes;reservation=WAKE_RESERVATION_BYTES if op=='private-wake' else wait_reservation_bytes(len(self.active['memoryDomainMembers']),b.tool_metadata_bytes);b.reserve_generated_bytes(reservation);pending.update(baselineReserved=baseline,reservation=reservation)
+        barrier=self.fresh_barrier();common=dict(kind='generated-vma-operation-window',operation=op,pid=pid,entrySequence=entry['sequence'],barrierSequence=barrier['sequence'])
+        if op=='private-wait-mismatch':
+            need(self.model in PRIVATE_WAIT_MODELS and barrier['sequence']==entry['sequence']+1,'wait immediate fresh pre-barrier required')
+            lease=ProcLease(self,pid);pending['lease']=lease
+            samples,word=self.wait_samples(pid,entry,barrier)
+            row=b.emit(dict(common,originSequence=pending['origin']['sequence'],epochSequence=self.active['sequence'],memoryDomain=self.active['memoryDomain'],memoryDomainMembers=self.active['memoryDomainMembers'],reservationBytes=pending['reservation'],metadataMaximumBytes=b.tool_metadata_bytes,procLease=lease.first,wordOriginal=word,cohortMaps=samples,machineWordBytes=8,byteOrder='little'))
+            pending.update(window=row,preBarrier=barrier);return row
+        if op=='private-wake':
+            need(barrier['sequence']==entry['sequence']+1,'private wake entry must immediately reach fresh cohort barrier');domain,members=self.mapping_domain(pid,barrier)
+            need((domain,members)==(self.active['memoryDomain'],self.active['memoryDomainMembers']),'private wake pre-stop cohort changed')
+            common.update(originSequence=pending['origin']['sequence'],epochSequence=self.active['sequence'],memoryDomain=domain,memoryDomainMembers=members,wakeCount=private_wake_dimensions(entry,self.active),reservationBytes=WAKE_RESERVATION_BYTES)
+            row=b.emit(common);pending.update(window=row,preBarrier=barrier);return row
+        if op=='create':
+            path=pending['path'];parent=Path(path).parent;need(str(parent.resolve(strict=True))==str(parent) and absent(path),'actual fresh generated name required')
+            held=os.open(parent,os.O_RDONLY|os.O_DIRECTORY|os.O_CLOEXEC|os.O_NOFOLLOW);b.retained.add(held);pending['parentFd']=held;need(identity(os.fstat(held))==identity(parent.lstat()),'same held/named create parent required');pending.update(parentFd=held,parentIdentity=identity(os.fstat(held)));common.update(path=path,parentIdentity=pending['parentIdentity'],nameAbsenceErrno=errno.ENOENT)
+        else:
+            origin=pending['origin'];need(not origin.get('writePending'),'unverified write invalidated generated origin');held=origin['held'];current=identity(os.fstat(held));need(same_object(current,origin['identity']),'retained generated backing object changed')
+            common.update(originSequence=origin['sequence'],path=origin['path'],identity=current,fd=pending['fd'])
+            if op in ['resize','map']:
+                reserved=resize_reservation_bytes(current[3],entry['args'][1],len(barrier['pids'])-1,b.tool_metadata_bytes) if op=='resize' else (cohort_reservation_bytes(len(barrier['pids'])-1,len(self.mapping_domain(pid,barrier)[1])-1,b.tool_metadata_bytes,current[3],pending['fd']!=origin['fd']) if self.model in COHORT_MODELS else reservation_bytes(len(barrier['pids'])-1,b.tool_metadata_bytes,current[3],pending['fd']!=origin['fd']));b.reserve_generated_bytes(reserved);self.spending_thread=threading.get_ident();common.update(reservationBytes=reserved,metadataMaximumBytes=b.tool_metadata_bytes)
+            if op in ['resize','map']:
+                need(current==origin['identity'] and current==identity(os.stat('/proc/'+str(pid)+'/fd/'+str(pending['fd']))),'generated preimage FD identity differs')
+                _,ref=self.snapshot(held);need((ref['bytes'],ref['sha256'])==origin['data'],'generated preimage bytes differ');common['beforeOriginal']=ref
+            if op=='map' and pending['fd']!=origin['fd']:
+                selected_path='/proc/'+str(pid)+'/fd/'+str(pending['fd']);selected=os.open(selected_path,os.O_RDONLY|os.O_CLOEXEC);b.retained.add(selected)
+                try:
+                    selected_identity,selected_ref=self.snapshot(selected);flags=b.generated_fd_flags(pid,pending['fd']);path=b.generated_fd_path(pid,pending['fd']);ownership=[row for row in barrier['taskOwnership'] if row['tid']==pid]
+                    need(len(ownership)==1 and flags&3==2 and flags==b.generated_fd_flags(pid,pending['fd']) and path==b.generated_fd_path(pid,pending['fd'])==origin['path'] and selected_identity==identity(os.fstat(selected))==identity(os.stat(selected_path))==identity(os.fstat(held))==origin['identity'] and (selected_ref['bytes'],selected_ref['sha256'])==origin['data'],'actual selected FD rebinding differs from retained origin')
+                    binding=b.emit(dict(kind='generated-vma-selected-fd-binding',pid=pid,entrySequence=entry['sequence'],barrierSequence=barrier['sequence'],originSequence=origin['sequence'],selectedFd=pending['fd'],previousFd=origin['fd'],fdTable=ownership[0]['fdTable'],identity=selected_identity,retainedIdentity=current,namedIdentity=identity(os.stat(selected_path)),flags=flags,path=path,original=selected_ref));common['selectedFdBindingSequence']=binding['sequence']
+                finally:
+                    primary=sys.exc_info()[1];errors=self.cleanup_fds([selected])
+                    if errors and primary is None:raise errors[0]
+            if op in ['resize','map']:
+                selected=os.open('/proc/'+str(pid)+'/fd/'+str(pending['fd']),os.O_RDONLY|os.O_CLOEXEC);b.retained.add(selected);pending['selectedHeld']=selected
+                selected_identity,selected_ref=self.snapshot(selected);flags=b.generated_fd_flags(pid,pending['fd']);path=b.generated_fd_path(pid,pending['fd'])
+                need(selected_identity==current==identity(os.stat('/proc/'+str(pid)+'/fd/'+str(pending['fd']))) and (selected_ref['bytes'],selected_ref['sha256'])==origin['data'] and flags&3==2 and path==origin['path'],'selected mmap FD preimage differs')
+                lease=ProcLease(self,pid);pending.update(procLease=lease,selectedFlags=flags)
+                common.update(selectedIdentity=selected_identity,selectedOriginal=selected_ref,selectedFlags=flags,procLease=lease.first)
+                # Only mmap opens an independently mutable address-space window.
+                # Resize keeps every peer stopped and proves the whole file projection;
+                # its selected FD and all-peer no-existing-map guards below still apply.
+                if op=='map':
+                    domain,cohort=self.mapping_domain(pid,barrier);pending.update(memoryDomain=domain,memoryDomainMembers=cohort)
+                    if self.model in COHORT_MODELS:common['memoryDomainMembers']=cohort
+                aliases=b.writable_aliases(current,pid,pending['fd']);need(len(aliases)==1 and aliases[0]['pid']==pid and aliases[0]['fd']==pending['fd'],'mapped output has another writable FD alias')
+                maps,values=self.maps(pid);need(not matching_maps(values,current),'backing file already has VMA aliases')
+                for peer,task in (sorted(b.tasks.items()) if self.model in COHORT_MODELS else b.tasks.items()):
+                    if task['exited'] or peer==pid:continue
+                    other,items=self.maps(peer);need(not matching_maps(items,current),'peer already maps output backing')
+                    if op=='map' and self.model in COHORT_MODELS and peer in cohort:verify_peer_geometry(items,values,b.check,b.check_deadline)
+                    common.setdefault('peerMaps',[]).append(dict(pid=peer,original=other['original']))
+                common.update(beforeMapsOriginal=maps['original'],aliases=aliases)
+                if op=='map':
+                    page=os.sysconf('SC_PAGE_SIZE');rounded_span(0,current[3],page);end=min(b.deadline,time.monotonic()+WINDOW_SECONDS);pending.update(alarmToken=b.waiter.clamp(end),windowEnd=end)
+                    common.update(pageBytes=page,memoryDomain=domain,windowDeadlineMonotonicNs=str(int(end*1e9)),parentDeadlineMonotonicNs=str(int(b.waiter.parent_deadline*1e9)))
+            if op=='unmap':
+                current,ref=self.snapshot(held);maps,values=self.maps(pid);mapping=verify_established(values,self.active['address'],self.active['page'],current,self.active['length']);common.update(beforeOriginal=ref,beforeMapsOriginal=maps['original'],epochSequence=self.active['sequence'])
+                if self.model in COHORT_MODELS:
+                    domain,cohort=self.mapping_domain(pid,barrier);need((domain,cohort)==(self.active['memoryDomain'],self.active['memoryDomainMembers']),'active mmap cohort changed before unmap');same=[]
+                    for peer in cohort:
+                        if peer==pid:continue
+                        other,items=self.maps(peer);verify_peer_geometry(items,values,b.check,b.check_deadline);need(verify_established(items,self.active['address'],self.active['page'],current,self.active['length'])==mapping,'same-MM pre-unmap VMA differs');same.append(dict(pid=peer,original=other['original']))
+                    common.update(memoryDomainMembers=cohort,sameMemoryDomainMaps=same)
+        row=b.emit(common);pending.update(window=row,preBarrier=barrier);return row
+    def finish(self,pid,entry,exit):
+        b=self.b;pending=self.pending[pid];window=pending['window'];op=pending['op'];need(b.exclusive==(pid,entry['sequence']) and ((op=='private-wait-mismatch' and exit['result']==-LINUX_EAGAIN and exit['isError'] is True) or (op!='private-wait-mismatch' and exit['result']>=0 and exit['isError'] is False)),'actual exclusive operation exit required')
+        common=dict(kind='generated-vma-operation-exit',operation=op,pid=pid,entrySequence=entry['sequence'],windowSequence=window['sequence'],exitSequence=exit['sequence'],result=exit['result'],isError=exit['isError'])
+        if op=='private-wait-mismatch':
+            need(self.model in PRIVATE_WAIT_MODELS and self.active is not None and exit['sequence']==window['sequence']+2,'wait actual exclusive exit adjacency differs')
+            barrier=self.fresh_barrier();need(barrier['sequence']==exit['sequence']+1 and barrier['pids']==pending['preBarrier']['pids'] and barrier['taskOwnership']==pending['preBarrier']['taskOwnership'],'wait immediate fresh post-barrier differs')
+            samples,word=self.wait_samples(pid,entry,barrier);after=pending['lease'].sample();need(word==window['wordOriginal'] and samples==[dict(row,original=samples[i]['original']) for i,row in enumerate(window['cohortMaps'])],'wait pre/post word or map geometry changed')
+            row=b.emit(dict(common,originSequence=pending['origin']['sequence'],epochSequence=self.active['sequence'],memoryDomain=self.active['memoryDomain'],memoryDomainMembers=self.active['memoryDomainMembers'],postBarrierSequence=barrier['sequence'],wordOriginal=word,cohortMaps=samples,procAfter=after))
+            need(not pending['lease'].close(),'wait held proc close failed');self.wake_closing=dict(pid=pid,entrySequence=entry['sequence'],baselineReserved=pending['baselineReserved'],result=exit['result'],isError=True,closeSequence=row['sequence']+1)
+        elif op=='private-wake':
+            need(self.model in WAKE_MODELS and self.active is not None and exit['sequence']==entry['sequence']+4 and exit['result']<=private_wake_dimensions(entry,self.active),'actual private wake result differs')
+            barrier=self.fresh_barrier();need(barrier['sequence']==exit['sequence']+1 and barrier['pids']==pending['preBarrier']['pids'] and barrier.get('taskOwnership')==pending['preBarrier'].get('taskOwnership'),'private wake fresh post-stop ownership differs')
+            domain,members=self.mapping_domain(pid,barrier);need((domain,members)==(self.active['memoryDomain'],self.active['memoryDomainMembers']),'private wake post-stop cohort changed')
+            row=b.emit(dict(common,originSequence=pending['origin']['sequence'],epochSequence=self.active['sequence'],memoryDomain=domain,memoryDomainMembers=members,postBarrierSequence=barrier['sequence'],wakeCount=window['wakeCount']))
+            self.wake_closing=dict(pid=pid,entrySequence=entry['sequence'],baselineReserved=pending['baselineReserved'],result=exit['result'])
+        elif op=='create':
+            parent=pending['parentFd'];held=None;registered=False
+            try:
+                fd=exit['result'];held=os.open('/proc/'+str(pid)+'/fd/'+str(fd),os.O_RDONLY|os.O_CLOEXEC);b.retained.add(held);current,ref=self.snapshot(held)
+                need(current[3]==0 and current==identity(os.stat(pending['path'],follow_symlinks=False)),'actual created FD/named empty file differ')
+                need(identity(os.fstat(parent))[:3]==pending['parentIdentity'][:3] and identity(os.fstat(parent))==identity(Path(pending['path']).parent.stat()),'generated create parent object changed')
+                flags=b.generated_fd_flags(pid,fd);need(flags&3==2,'actual returned create FD is not RW')
+                row=b.emit(dict(common,fd=fd,fdFlags=flags,path=pending['path'],identity=current,original=ref,parentIdentity=identity(os.fstat(parent))))
+                need(tuple(current[:2]) not in self.origins and len(self.origins)<128,'unique bounded generated origins required');self.origins[tuple(current[:2])]=dict(pid=pid,fd=fd,sequence=row['sequence'],path=pending['path'],held=held,identity=current,data=(ref['bytes'],ref['sha256']),original=ref);registered=True
+            finally:
+                primary=sys.exc_info()[1];errors=self.cleanup_fds([parent]+([held] if not registered else []))
+                if parent not in b.retained:pending['parentFd']=None
+                if errors and primary is None:raise errors[0]
+        elif op=='resize':
+            origin=pending['origin'];barrier=self.fresh_barrier();need(barrier['sequence']==exit['sequence']+1 and barrier['pids']==pending['preBarrier']['pids'] and barrier.get('taskOwnership')==pending['preBarrier'].get('taskOwnership'),'resize post-stop ownership/progress differs')
+            current,ref=self.snapshot(pending['selectedHeld']);need(exit['result']==0 and current[:3]==origin['identity'][:3] and current[3]==entry['args'][1] and current==identity(os.fstat(origin['held']))==identity(os.stat('/proc/'+str(pid)+'/fd/'+str(pending['fd']))) and b.generated_fd_flags(pid,pending['fd'])==pending['selectedFlags'] and b.generated_fd_path(pid,pending['fd'])==origin['path'],'actual resize returned FD/postimage differs')
+            projected=verify_resize_bytes(b.original_blocks(window['beforeOriginal']),b.original_blocks(ref),window['identity'][3],entry['args'][1],b.maximum_file_bytes,b.check)
+            need((projected['before']['bytes'],projected['before']['sha256'])==origin['data'],'resize entire before original differs')
+            proc=pending['procLease'].sample();row=b.emit(dict(common,identity=current,original=ref,originSequence=origin['sequence'],postBarrierSequence=barrier['sequence'],procAfter=proc,selectedFlags=pending['selectedFlags']))
+            errors=pending['procLease'].close()+self.cleanup_fds([pending['selectedHeld']]);need(not errors,'resize lease cleanup failed');pending.pop('procLease');pending.pop('selectedHeld');self.reserved=0;self.spending_thread=None
+            origin.update(identity=current,data=(ref['bytes'],ref['sha256']),original=ref,sequence=row['sequence']);self.checkpoints.pop(tuple(current[:2]),None)
+        elif op=='map':
+            origin=pending['origin'];current=identity(os.fstat(origin['held']));need(current==origin['identity'],'mmap changed backing preimage')
+            barrier=self.fresh_barrier();need(barrier['sequence']==exit['sequence']+1 and barrier['pids']==pending['preBarrier']['pids'] and barrier.get('taskOwnership')==pending['preBarrier'].get('taskOwnership'),'mmap post-stop ownership/progress differs')
+            selected=pending['selectedHeld'];selected_path='/proc/'+str(pid)+'/fd/'+str(pending['fd'])
+            def selected_sample():
+                before,ref=self.snapshot(selected)
+                need(before==current==identity(os.fstat(origin['held']))==identity(os.stat(selected_path)) and b.generated_fd_flags(pid,pending['fd'])==pending['selectedFlags'] and b.generated_fd_path(pid,pending['fd'])==origin['path'] and (ref['bytes'],ref['sha256'])==origin['data'],'mmap selected/origin full preimage differs')
+                return ref
+            first_body=selected_sample();proc_first=pending['procLease'].sample();maps,values=self.maps(pid);mapping=verify_established(values,exit['result'],window['pageBytes'],current,current[3])
+            link_path='/proc/'+str(pid)+'/map_files/'+mapping['startHex']+'-'+mapping['endHex']
+            first_link=raw_record(os.fsencode(os.readlink(link_path)));kernel_link(first_link,origin['path'],b.build);first_link_row=b.emit(dict(kind='generated-vma-kernel-link-original',pid=pid,entrySequence=entry['sequence'],postBarrierSequence=barrier['sequence'],mapsOriginal=maps['original'],range=[mapping['startHex'],mapping['endHex']],link=first_link,procLease=proc_first))
+            confirmation,confirmed=self.maps(pid);need(values==confirmed and maps['original']['bytes']==confirmation['original']['bytes'] and maps['original']['sha256']==confirmation['original']['sha256'],'mmap full maps changed between kernel link samples')
+            last_link=raw_record(os.fsencode(os.readlink(link_path)));need(first_link==last_link,'kernel VMA link changed');last_body=selected_sample();proc_last=pending['procLease'].sample();last_link_row=b.emit(dict(kind='generated-vma-kernel-link-original',pid=pid,entrySequence=entry['sequence'],postBarrierSequence=barrier['sequence'],mapsOriginal=confirmation['original'],range=[mapping['startHex'],mapping['endHex']],link=last_link,procLease=proc_last))
+            evidence=dict(kind=MAPPING_KIND,linkBeforeSequence=first_link_row['sequence'],linkAfterSequence=last_link_row['sequence'],postBarrierSequence=barrier['sequence'],selectedFd=pending['fd'],selectedIdentity=current,retainedIdentity=identity(os.fstat(origin['held'])),namedIdentity=identity(os.stat(selected_path)),selectedFlags=pending['selectedFlags'],beforeOriginal=window['selectedOriginal'],postOriginal=first_body,confirmationOriginal=last_body,mapsConfirmationOriginal=confirmation['original'],linkBefore=first_link,linkAfter=last_link,procBefore=proc_first,procAfter=proc_last)
+            end=pending['windowEnd'];token=pending['alarmToken']
+            extra={}
+            if self.model in COHORT_MODELS:
+                domain,cohort=self.mapping_domain(pid,barrier);need((domain,cohort)==(pending['memoryDomain'],pending['memoryDomainMembers']),'actual mmap post-stop cohort differs');same=[]
+                for peer in cohort:
+                    if peer==pid:continue
+                    other,items=self.maps(peer);verify_peer_geometry(items,confirmed,b.check,b.check_deadline);need(verify_established(items,exit['result'],window['pageBytes'],current,current[3])==mapping,'same-MM post-map VMA differs');same.append(dict(pid=peer,original=other['original']))
+                extra=dict(memoryDomainMembers=cohort,postMapPeerMaps=same)
+            row=b.emit(dict(common,identity=current,kernelMappingEvidence=evidence,mapsOriginal=maps['original'],mapping=mapping,memoryDomain=self.mapping_domain(pid)[0],windowDeadlineMonotonicNs=str(int(end*1e9)),parentDeadlineMonotonicNs=str(int(b.waiter.parent_deadline*1e9)),**extra))
+            primary=sys.exc_info()[1];errors=pending['procLease'].close()+self.cleanup_fds([pending['selectedHeld']]);need(not errors,'mmap lease cleanup failed');pending.pop('procLease');pending.pop('selectedHeld')
+            origin['fd']=pending['fd'];self.active=dict(pid=pid,origin=origin,address=exit['result'],page=window['pageBytes'],length=current[3],span=rounded_span(exit['result'],current[3],window['pageBytes']),sequence=row['sequence'],token=token)
+            if self.model in COHORT_MODELS:self.active.update(memoryDomain=pending['memoryDomain'],memoryDomainMembers=pending['memoryDomainMembers'])
+        elif op=='close':
+            origin=pending['origin'];need(exit['result']==0 and absent('/proc/'+str(pid)+'/fd/'+str(pending['fd'])) and identity(os.fstat(origin['held']))==window['identity'],'actual FD close differs; mapping remains live')
+            b.emit(dict(common,originSequence=origin['sequence'],fd=pending['fd'],fdAbsenceErrno=errno.ENOENT,identity=window['identity'],epochSequence=self.active['sequence']))
+        elif op=='unmap':
+            origin=pending['origin'];need(exit['result']==0,'actual whole unmap success required');post_extra={}
+            if self.model in COHORT_MODELS:
+                barrier=self.fresh_barrier();need(barrier['sequence']==exit['sequence']+1 and barrier['pids']==pending['preBarrier']['pids'] and barrier['taskOwnership']==pending['preBarrier']['taskOwnership'],'actual full-unmap fresh post-stop differs');domain,cohort=self.mapping_domain(pid,barrier);need((domain,cohort)==(self.active['memoryDomain'],self.active['memoryDomainMembers']),'actual full-unmap cohort changed');post_extra=dict(postBarrierSequence=barrier['sequence'],memoryDomainMembers=cohort)
+            maps,values=self.maps(pid);need(not matching_maps(values,origin['identity']),'writable backing VMA alias remains')
+            current,ref=self.snapshot(origin['held']);need(same_object(current,origin['identity']) and (ref['bytes'],ref['sha256'])==(window['beforeOriginal']['bytes'],window['beforeOriginal']['sha256']),'unmap changed backing object/bytes')
+            peers=[]
+            for peer,task in (sorted(b.tasks.items()) if self.model in COHORT_MODELS else b.tasks.items()):
+                if task['exited'] or peer==pid:continue
+                other,items=self.maps(peer);need(not matching_maps(items,current),'peer backing alias remained at checkpoint')
+                if self.model in COHORT_MODELS and peer in cohort:verify_peer_geometry(items,values,b.check,b.check_deadline)
+                peers.append(dict(pid=peer,original=other['original']))
+            row=b.emit(dict(common,path=origin['path'],identity=current,retainedIdentity=current,original=ref,afterMapsOriginal=maps['original'],afterPeerMaps=peers,epochSequence=self.active['sequence'],originSequence=origin['sequence'],**post_extra))
+            token=self.active['token'];self.active=None;b.waiter.restore(token);self.reserved=0;self.spending_thread=None;origin.update(identity=current,data=(ref['bytes'],ref['sha256']),original=ref,checkpointed=True);self.checkpoints[tuple(current[:2])]=row
+        self.pending.pop(pid)
+        if self.retained_metadata and self.active is None and not self.pending:self.metadata_close_entry=(pid,entry['sequence'],self.b.seq+1)
+        return row if op!='close' else None
+    def consumer(self,row,data,identity_value):
+        checkpoint=self.checkpoints.get(tuple(identity_value[:2]));origin=self.origins.get(tuple(identity_value[:2]))
+        if checkpoint is None:return False
+        need(origin and identity(os.fstat(origin['held']))==identity_value and data==(checkpoint['original']['bytes'],checkpoint['original']['sha256']),'mapped consumer held byte checkpoint differs')
+        extra={}
+        if self.model==PARKED_WAIT_MODEL:
+            extra['metadataTransitions']=self.b.retained_metadata_chain(checkpoint,row)
+        else:need(identity_value==checkpoint['identity'] and row['path']==checkpoint['path'],'mapped consumer held byte checkpoint differs')
+        self.b.emit(dict(kind='generated-vma-consumer-binding',captureSequence=row['sequence'],checkpointSequence=checkpoint['sequence'],path=row['path'],identity=identity_value,**extra));return True
+    def complete_phase(self):need(self.active is None and not self.pending,'phase ended with unclosed generated mapping')
+    def close(self):
+        self.reserved=0;self.spending_thread=None
+        # Failed closes remain in the existing observer retained set for its
+        # outer cleanup retry. Try every lease, never hide a propagating error.
+        self.cleanup_fds([origin['held'] for origin in self.origins.values()]+[pending.get('parentFd') for pending in self.pending.values()])
+        self.cleanup_fds([pending.get('selectedHeld') for pending in self.pending.values()])
+        for pending in self.pending.values():
+            if pending.get('procLease'):pending['procLease'].close()
+        self.origins.clear();self.pending.clear()
+
+class Verifier:
+    """Independent bounded raw/original replay; no caller Boolean approval."""
+    def __init__(self,capture_data,maps_data,metadata_maximum=4*1024**2,model=LEGACY_MODEL,read_blocks=None,maximum_file=1024**2,retained_metadata=False,build_root=BUILD_ROOT):
+        self.build_root=validated_build_root(build_root)
+        need(model in [LEGACY_MODEL,KERNEL_LINK_MODEL,MODEL,COHORT_MODEL,*WAKE_MODELS],'unknown mapping evidence model');self.model=model;self.read_blocks=read_blocks;self.maximum_file=maximum_file
+        need(type(retained_metadata)is bool and(not retained_metadata or model==PARKED_WAIT_MODEL),'retained metadata requires explicit parked-wait model');self.retained_metadata=retained_metadata;self.metadata_high_water=0;self.metadata_closed_operation=None
+        self.capture_data=capture_data;self.maps_data=maps_data;self.metadata_maximum=metadata_maximum;self.mm=MemoryDomains();self.windows={};self.origins={};self.original_sequences={};self.map_sequences={};self.map_owners={};self.pending_window=None;self.transaction=None;self.active=None;self.events={};self.checkpoints={};self.consumers=[];self.metadata_bytes=0;self.pending_mapping_entries=set();self.create_paths={};self.last_observed_ns=None;self.parent_deadline_ns=None;self.fd_bindings={};self.private_wakes=[];self.private_waits=[]
+    def charge_metadata(self,row):
+        self.metadata_bytes+=len(json.dumps(row,separators=(',',':')).encode());need(self.metadata_bytes<=4*1024**2,'shared generated replay metadata bound');self.metadata_high_water=max(self.metadata_high_water,self.metadata_bytes)
+    def checkpoint_metadata(self,close):
+        need(self.metadata_closed_operation is not None and close.get('kind')=='exclusive-captured-syscall-exit'and(close['pid'],close['entrySequence'],close['sequence'])==self.metadata_closed_operation,'metadata replay release lacks actual closed own operation')
+        need(self.retained_metadata and self.active is None and self.transaction is None and self.pending_window is None and not self.pending_mapping_entries and not self.fd_bindings and not getattr(self,'scheduled_active',False),'metadata replay release requires actual closed generated transaction')
+        names=['origins','checkpoints','events','windows','original_sequences','map_sequences','map_owners','consumers','create_paths','private_wakes','private_waits','deferred','coordinated_waits','coordinated_epoch']
+        state={name:getattr(self,name,None)for name in names};state.update(memoryDomains=self.mm.domains,memoryProvenance=self.mm.provenance)
+        self.metadata_bytes=retained_metadata_bytes(state);self.metadata_high_water=max(self.metadata_high_water,self.metadata_bytes);self.metadata_closed_operation=None
+    def original(self,reference):return self.capture_data(reference)
+    def mapping_domain(self,pid,barrier=None):
+        return complete_memory_cohort(self.mm,pid,barrier) if self.model in COHORT_MODELS else (self.mm.unique(pid),[pid])
+    def verify_cohort_maps(self,rows,pid,members,owner_maps,barrier,sequence,identity=None,address=None,page=None,length=None):
+        need(isinstance(rows,list) and [item['pid'] for item in rows]==[member for member in members if member!=pid],'exact ordered same-MM maps originals required')
+        geometry=numeric_mapping_geometry(owner_maps,lambda:None)
+        for item in rows:
+            need(set(item)=={'pid','original'} and self.map_owners.get(self.map_key(item['original']))==item['pid'] and barrier['sequence']<self.map_sequences.get(self.map_key(item['original']),0)<sequence,'same-MM maps actual PID/order differs')
+            maps=self.maps_data(item['original']);need(numeric_mapping_geometry(maps,lambda:None)==geometry,'same-MM numeric VMA geometry differs')
+            if identity is not None:verify_established(maps,address,page,identity,length)
+    def write_baseline(self,row,before):
+        need(self.model in [MODEL,COHORT_MODEL,*WAKE_MODELS] and self.active is None,'generated write baseline model differs')
+        origin=self.origins.get(row['baseline']);need(origin and origin['pid']==row['pid'] and origin['fd']==row['fd'] and origin['identity']==row['beforeIdentity'] and origin['data']==before and origin['path']==row['path'] and origin.get('writePending'),'generated write exact origin baseline missing')
+        return origin
+    def verify_wait_samples(self,row,entry,barrier):
+        address=private_wait_dimensions(entry,self.active,model=self.model);domain,members=self.mapping_domain(row['pid'],barrier)
+        need((domain,members)==(self.active['memoryDomain'],self.active['memoryDomainMembers']) and row['memoryDomain']==domain and row['memoryDomainMembers']==members,'wait actual same-MM cohort differs')
+        samples=row['cohortMaps'];need(isinstance(samples,list) and [r['pid'] for r in samples]==members,'complete ordered wait maps cohort required')
+        geometry=None
+        for offset,sample in enumerate(samples):
+            ref=sample['original'];key=self.map_key(ref);need(self.map_sequences.get(key)==barrier['sequence']+offset+1 and self.map_owners.get(key)==sample['pid'],'wait maps raw owner/order differs')
+            parsed=self.maps_data(ref);need(wait_word_mapping(parsed,address,allow_heap=self.model==PARKED_WAIT_MODEL)==sample['mapping'],'wait private anonymous mapping differs');current=numeric_mapping_geometry(parsed)
+            if geometry is None:geometry=current
+            else:need(current==geometry,'wait cohort VMA geometry differs')
+        need(row['sequence']==barrier['sequence']+len(samples)+1,'wait maps closure adjacency differs');verify_wait_word(row['wordOriginal'],entry,self.active,model=self.model)
+        return samples
+    def consume_write_bridge(self,row,window,transition):
+        need(self.model in [MODEL,COHORT_MODEL,*WAKE_MODELS] and transition and window and transition['sequence']==row['transitionSequence'] and transition['windowSequence']==window['sequence']==row['windowSequence'] and row['pid']==window['pid'],'generated write bridge lacks verified sole write transition')
+        origin=self.write_baseline(window,(window['before']['bytes'],window['before']['sha256']));need(transition['sequence']<self.original_sequences.get(self.key(row['original']),0)<row['sequence'] and row['originSequence']==window['baseline'] and row['identity']==transition['afterIdentity'] and self.original(row['original'])==(transition['after']['bytes'],transition['after']['sha256']) and transition.get('afterObservation') is None,'generated write bridge full checkpoint differs')
+        self.origins[row['sequence']]=dict(origin,identity=row['identity'],data=self.original(row['original']),writePending=False,checkpointed=False);del self.origins[row['originSequence']]
+    @staticmethod
+    def map_key(reference):
+        original=tuple(reference[key]for key in ['path','bytes','sha256'])
+        return (reference['observationSequence'],*original)if 'observationSequence'in reference else original
+    @staticmethod
+    def key(reference):return tuple(reference[key] for key in ['path','bytes','sha256'])
+    def preimage_interval(self,row,barrier):
+        # Exact producer order permits only bounded original emissions; no task
+        # event can hide between the actual barrier and preimage window.
+        need(barrier['sequence']>row['entrySequence'] and barrier['sequence']<row['sequence'],'fresh generated operation barrier/order required')
+        for seq in range(barrier['sequence']+1,row['sequence']):need(self.events[seq]['kind'] in ['write-original','toolchain-original','generated-vma-selected-fd-binding'],'task/event between generated preimage barrier/window')
+        for key in ['beforeOriginal','beforeMapsOriginal']:
+            if key not in row:continue
+            table=self.map_sequences if key=='beforeMapsOriginal' else self.original_sequences;sequence=table.get(self.map_key(row[key])if key=='beforeMapsOriginal'else self.key(row[key]),0)
+            if key=='beforeMapsOriginal':need(self.map_owners.get(self.map_key(row[key]))==row['pid'],'preimage maps sampled a different actual PID')
+            need(barrier['sequence']<sequence<row['sequence'],'generated preimage lacks its own fresh original emission')
+    def verify_selected_window(self,row,origin,barrier,seq):
+        need(row['selectedIdentity']==origin['identity'] and row['selectedFlags']&3==2 and self.original(row['selectedOriginal'])==origin['data'] and barrier['sequence']<self.original_sequences.get(self.key(row['selectedOriginal']),0)<seq,'selected actual FD original absent')
+        lease=verify_proc_lease(row['procLease'],row['pid'])
+        peers=row.get('peerMaps',[]);need(sorted(r['pid'] for r in peers)==sorted(p for p in barrier['pids'] if p!=row['pid']),'complete stopped resize peer maps required')
+        need(not matching_maps(self.maps_data(row['beforeMapsOriginal']),origin['identity']),'resize has own live mapping alias')
+        for peer in peers:need(self.map_owners.get(self.map_key(peer['original']))==peer['pid'] and barrier['sequence']<self.map_sequences.get(self.map_key(peer['original']),0)<seq and not matching_maps(self.maps_data(peer['original']),origin['identity']),'resize has unobserved/aliased peer maps')
+        aliases=row['aliases'];need(len(aliases)==1 and aliases[0]['pid']==row['pid'] and aliases[0]['fd']==row['fd'] and aliases[0]['accessMode']==2 and aliases[0]['flags']&3==2,'sole resize writable selected FD required')
+    def allow_mapping_entry(self,row):
+        need(operation(row)=='map','actual mapping entry required');length=row['args'][1] if self.model in [MODEL,COHORT_MODEL,*WAKE_MODELS] else 1
+        candidates=[value for value in self.origins.values() if value['pid']==row['pid'] and value['identity'][3]==length and length>0 and not value.get('writePending')]
+        need(candidates,'actual created/resized selected mapping origin missing');map_dimensions(row,row['args'][4],length)
+        # This only defers the raw entry. The later exclusive window must join
+        # its explicit originSequence and actual FD, with the complete typed
+        # selected-FD binding when the descriptor was reopened. No arbitrary
+        # first origin is chosen here, and no entry itself grants byte custody.
+        self.mapping_domain(row['pid'])[0];self.pending_mapping_entries.add(row['sequence']);return True
+    def record(self,row,entries,exits,barriers,caps):
+        kind=row['kind'];seq=row['sequence'];clock=row.get('observedMonotonicNs');need(isinstance(clock,str) and clock.isdecimal(),'actual monotonic raw observation required');now=int(clock);need(self.last_observed_ns is None or now>=self.last_observed_ns,'raw monotonic observation moved backwards');self.last_observed_ns=now;need(seq not in self.events,'duplicate generated raw sequence');self.events[seq]=row
+        while len(self.events)>256:self.events.pop(next(iter(self.events)))
+        if kind.startswith('generated-vma-') or kind=='exclusive-generated-vma-resume':
+            self.charge_metadata(row)
+        if kind=='generated-vma-kernel-link-original':need(self.model!=LEGACY_MODEL and self.transaction and self.transaction['state']=='exited' and self.transaction['window']['operation']=='map','kernel link original outside new mapping transaction')
+        self.mm.record(row)
+        if kind=='owned-root-binding':
+            end=row.get('generatedVmaParentDeadlineMonotonicNs');need(isinstance(end,str) and end.isdecimal() and int(end)>now,'actual owned root parent deadline required');self.parent_deadline_ns=int(end)
+        if self.active is None and kind=='kernel-syscall' and row['op']=='entry' and operation(row) in ['close','write']:
+            for key,origin in list(self.origins.items()):
+                if origin['pid']==row['pid'] and origin['fd']==row['args'][0]:
+                    if self.model in [MODEL,COHORT_MODEL,*WAKE_MODELS] and operation(row)=='write':
+                        origin['writePending']=True
+                        for checkpoint,value in list(self.checkpoints.items()):
+                            if value['identity'][:2]==origin['identity'][:2]:del self.checkpoints[checkpoint]
+                        continue
+                    if origin.get('checkpointed'):
+                        if operation(row)=='write':
+                            for checkpoint,value in list(self.checkpoints.items()):
+                                if value['identity'][:2]==origin['identity'][:2]:del self.checkpoints[checkpoint]
+                        continue
+                    del self.origins[key]
+        if self.pending_window is not None:need(kind=='exclusive-generated-vma-resume' and row.get('captureSequence')==self.pending_window,'generated operation window must be immediately exclusively resumed')
+        if self.transaction is not None:
+            state=self.transaction['state']
+            if state=='resumed':
+                need(kind=='kernel-syscall' and row.get('op')=='exit' and row.get('pid')==self.transaction['pid'] and row.get('entrySequence')==self.transaction['entrySequence'],'foreign event during generated exclusive syscall');self.transaction['state']='exited'
+            elif state=='exited':
+                actual=exits[self.transaction['entrySequence']]
+                if self.transaction['window']['operation']=='private-wait-mismatch':
+                    need(self.model in PRIVATE_WAIT_MODELS and ((seq==actual['sequence']+1 and kind=='all-stop-barrier') or (seq>actual['sequence']+1 and kind in ['toolchain-original','generated-vma-operation-exit'])),'wait post-stop observation order differs')
+                elif self.transaction['window']['operation']=='private-wake':
+                    need(self.model in WAKE_MODELS and ((seq==actual['sequence']+1 and kind=='all-stop-barrier') or (seq==actual['sequence']+2 and kind=='generated-vma-operation-exit')),'private wake post-stop/closure adjacency differs')
+                else:
+                    allowed=['write-original','toolchain-original','generated-vma-operation-exit']
+                    if self.model!=LEGACY_MODEL:allowed.append('generated-vma-kernel-link-original')
+                    if self.model!=LEGACY_MODEL and (self.transaction['window']['operation']=='map' or self.model in [MODEL,COHORT_MODEL,*WAKE_MODELS] and self.transaction['window']['operation']=='resize' or self.model in COHORT_MODELS and self.transaction['window']['operation']=='unmap') and seq==actual['sequence']+1:allowed=['all-stop-barrier']
+                    need(kind in allowed,'event before generated postimage closure')
+            else:need(kind=='exclusive-captured-syscall-exit','generated operation close missing')
+        if self.active is not None:
+            if self.model in COHORT_MODELS:need(self.mapping_domain(self.active['pid'])==(self.active['memoryDomain'],self.active['memoryDomainMembers']),'active mapping cohort membership changed')
+            if kind in ['actual-child-binding','ptrace-event','signal-delivery','actual-wait-exit']:raise ValueError('generated VMA: event while dirty mapping active')
+            if kind=='kernel-syscall':
+                need(row['pid']==self.active['pid'],'peer ran while mapped output dirty')
+                if row['op']=='entry':need(operation(row) in ['close','unmap'] or self.model in WAKE_MODELS and private_wake_allowed(row,self.active) or self.model in PRIVATE_WAIT_MODELS and private_wait_allowed(row,self.active,model=self.model),'unsupported active mapping syscall')
+            now=row.get('observedMonotonicNs');need(isinstance(now,str) and now.isdecimal() and self.active['start']<=int(now)<self.active['deadline'],'finite mapping deadline absent/expired')
+        if kind=='write-original':
+            self.original_sequences[self.key(row['original'])]=seq
+            while len(self.original_sequences)>256:self.original_sequences.pop(next(iter(self.original_sequences)))
+        elif kind=='toolchain-original' and row.get('captureKind')=='maps':
+            need('observationSequence'not in row['original']or type(row['original']['observationSequence'])is int and row['original']['observationSequence']==seq,'maps actual observation sequence differs')
+            self.map_sequences[self.map_key(row['original'])]=seq;self.map_owners[self.map_key(row['original'])]=row['observedPid']
+            while len(self.map_sequences)>256:
+                old=next(iter(self.map_sequences));self.map_sequences.pop(old);self.map_owners.pop(old)
+        elif kind=='generated-vma-create-path':
+            entry=entries.get(row['entrySequence']);need(entry and entry['pid']==row['pid'],'actual create path entry missing');dirfd,address=create_dimensions(entry);path=row['path'];need(path.startswith(self.build_root+'/') and len(os.fsencode(path))<=4096 and all(part not in ['', '.', '..'] for part in path.split('/')[1:]) and row['dirFd']==dirfd and row['pathArgIndex']==(0 if operation(entry)=='open' else 1),'actual fixed generated path arguments differ');self.create_paths[entry['sequence']]=row
+        elif kind=='generated-vma-selected-fd-binding':
+            self.fd_bindings[seq]=row
+        elif kind=='generated-vma-operation-window':
+            need(self.transaction is None and self.pending_window is None,'overlapping generated operation');entry=entries.get(row['entrySequence']);barrier=barriers.get(row['barrierSequence']);need(entry and barrier and entry['pid']==row['pid'] and row['pid'] in barrier['pids'],'generated operation entry/actual all-stop missing');self.preimage_interval(row,barrier)
+            op=row['operation'];args=entry['args'];need(op==operation(entry) or op=='create' and operation(entry) in ['open','openat'] or op=='private-wake' and self.model in WAKE_MODELS and operation(entry)=='wake' or op=='private-wait-mismatch' and self.model in PRIVATE_WAIT_MODELS and operation(entry)=='wake','generated operation ABI differs')
+            if op=='private-wait-mismatch':
+                need(self.model in PRIVATE_WAIT_MODELS and self.active is not None and row['pid']==self.active['pid'] and barrier['sequence']==entry['sequence']+1,'wait adjacent entry/fresh barrier required');self.verify_wait_samples(row,entry,barrier)
+                need(row['epochSequence']==self.active['sequence'] and row['originSequence']==self.active['originSequence'] and row['machineWordBytes']==8 and row['byteOrder']=='little','wait epoch or machine word differs')
+                need(type(row['reservationBytes']) is int and row['metadataMaximumBytes']==self.metadata_maximum and row['reservationBytes']==wait_reservation_bytes(len(row['memoryDomainMembers']),self.metadata_maximum),'wait exact reservation differs')
+                verify_proc_lease(row['procLease'],row['pid'],canonical=True)
+            elif op=='private-wake':
+                need(self.model in WAKE_MODELS and self.active is not None and row['pid']==self.active['pid'] and barrier['sequence']==entry['sequence']+1 and seq==entry['sequence']+2,'private wake lacks adjacent entry/barrier/window')
+                domain,members=self.mapping_domain(row['pid'],barrier)
+                need((domain,members)==(self.active['memoryDomain'],self.active['memoryDomainMembers']) and row['memoryDomain']==domain and row['memoryDomainMembers']==members and row['epochSequence']==self.active['sequence'] and row['originSequence']==self.active['originSequence'],'private wake actual cohort/epoch differs')
+                need(row['wakeCount']==private_wake_dimensions(entry,self.active) and type(row['reservationBytes']) is int and row['reservationBytes']==WAKE_RESERVATION_BYTES,'private wake exact raw reservation or count differs')
+            elif op=='create':
+                path=self.create_paths.pop(entry['sequence'],None);need(path and path['path']==row['path'] and path['sequence']<barrier['sequence'],'actual generated create path original differs')
+                create_dimensions(entry);need(row['nameAbsenceErrno']==errno.ENOENT and type(row['nameAbsenceErrno']) is int and len(row['parentIdentity'])==6 and stat.S_ISDIR(row['parentIdentity'][2]),'generated create parent/actual absence required')
+            else:
+                origin=self.origins.get(row['originSequence']);need(origin and not origin.get('writePending') and origin['pid']==row['pid'] and row['path']==origin['path'] and same_object(row['identity'],origin['identity']),'generated operation backing origin differs')
+                if op in ['resize','map']:
+                    need(row['identity']==origin['identity'] and self.original(row['beforeOriginal'])==origin['data'],'generated operation exact byte preimage differs')
+                    if op=='resize':
+                        need(args[0]==row['fd']==origin['fd'],'actual resize descriptor differs')
+                        if self.model in [MODEL,COHORT_MODEL,*WAKE_MODELS]:
+                            need(type(args[1]) is int and 0<=args[1]<=self.maximum_file<=CANONICAL_FILE_MAXIMUM and row['reservationBytes']==resize_reservation_bytes(origin['identity'][3],args[1],len(barrier['pids'])-1,self.metadata_maximum),'bounded complete resize reservation differs')
+                            self.verify_selected_window(row,origin,barrier,seq)
+                        else:need(args[1]==1 and origin['identity'][3]==0,'only empty-to-one-byte extension required')
+                if op=='map':
+                    need(entry['sequence'] in self.pending_mapping_entries,'mapping window has no admitted actual entry');self.pending_mapping_entries.remove(entry['sequence'])
+                    map_dimensions(entry,row['fd'],origin['identity'][3] if self.model in [MODEL,COHORT_MODEL,*WAKE_MODELS] else 1)
+                    if row['fd']!=origin['fd']:
+                        selected=self.fd_bindings.pop(row.get('selectedFdBindingSequence'),None);ownership=[item for item in barrier.get('taskOwnership',[]) if item['tid']==row['pid']]
+                        need(selected and len(ownership)==1 and selected['pid']==row['pid'] and selected['entrySequence']==entry['sequence'] and selected['barrierSequence']==barrier['sequence'] and selected['originSequence']==row['originSequence'] and selected['selectedFd']==entry['args'][4]==row['fd'] and selected['previousFd']==origin['fd'] and selected['fdTable']==ownership[0]['fdTable'] and selected['identity']==selected['retainedIdentity']==selected['namedIdentity']==origin['identity'] and selected['path']==origin['path'] and selected['flags']&3==2 and self.original(selected['original'])==origin['data'] and barrier['sequence']<self.original_sequences.get(self.key(selected['original']),0)<selected['sequence']<seq,'actual selected descriptor lacks full retained-origin binding')
+                    else:need('selectedFdBindingSequence' not in row,'unexpected selected descriptor rebinding')
+                    need((0<origin['identity'][3]<=self.maximum_file if self.model in [MODEL,COHORT_MODEL,*WAKE_MODELS] else origin['identity'][3]==1) and self.mapping_domain(row['pid'])[0]==row['memoryDomain'],'unique actual one-byte mapping domain required');rounded_span(0,1,row['pageBytes']);need(not matching_maps(self.maps_data(row['beforeMapsOriginal']),origin['identity']),'existing own VMA alias')
+                    domain,members=self.mapping_domain(row['pid'],barrier)
+                    if self.model in COHORT_MODELS:need(row.get('memoryDomainMembers')==members,'map preimage cohort differs')
+                    peers=row.get('peerMaps',[]);need(row.get('metadataMaximumBytes')==self.metadata_maximum and row.get('reservationBytes')==(cohort_reservation_bytes(len(barrier['pids'])-1,len(members)-1,self.metadata_maximum,origin['identity'][3],row['fd']!=origin['fd']) if self.model in COHORT_MODELS else reservation_bytes(len(barrier['pids'])-1,self.metadata_maximum,origin['identity'][3],row['fd']!=origin['fd']) if self.model==MODEL else (kernel_link_reservation_bytes if self.model==KERNEL_LINK_MODEL else legacy_reservation_bytes)(len(barrier['pids'])-1,self.metadata_maximum)),'checkpoint reservation does not match canonical complete peer maps/raw bound');need(sorted(r['pid'] for r in peers)==sorted(p for p in barrier['pids'] if p!=row['pid']),'complete stopped peer maps required')
+                    for peer in peers:
+                        need(self.map_owners.get(self.map_key(peer['original']))==peer['pid'] and barrier['sequence']<self.map_sequences.get(self.map_key(peer['original']),0)<seq and not matching_maps(self.maps_data(peer['original']),origin['identity']),'existing/unobserved peer backing map')
+                    if self.model in COHORT_MODELS:self.verify_cohort_maps([peer for peer in peers if peer['pid'] in members],row['pid'],members,self.maps_data(row['beforeMapsOriginal']),barrier,seq)
+                    if self.model!=LEGACY_MODEL:
+                        need(row['selectedIdentity']==origin['identity'] and row['selectedFlags']&3==2 and self.original(row['selectedOriginal'])==origin['data'] and barrier['sequence']<self.original_sequences.get(self.key(row['selectedOriginal']),0)<seq,'selected actual mmap FD original absent')
+                        lease=verify_proc_lease(row['procLease'],row['pid'])
+                    aliases=row['aliases'];need(len(aliases)==1 and aliases[0]['pid']==row['pid'] and aliases[0]['fd']==row['fd'] and aliases[0]['accessMode']==2 and aliases[0]['flags']&3==2,'sole selected writable descriptor required')
+                if op in ['close','unmap']:
+                    need(self.active and self.active['originSequence']==row['originSequence'],'operation lacks active mapped epoch')
+                    if op=='close':need(row['fd']==args[0],'actual selected close FD differs')
+                    else:
+                        need(args[0]==self.active['address'] and rounded_span(args[0],args[1],self.active['page'])==self.active['span'],'partial/foreign munmap unsupported');verify_established(self.maps_data(row['beforeMapsOriginal']),self.active['address'],self.active['page'],row['identity'],self.active['length']);need(self.original(row['beforeOriginal'])[0]==self.active['length'],'actual complete unmap preimage required')
+                        if self.model in COHORT_MODELS:
+                            domain,members=self.mapping_domain(row['pid'],barrier);need(domain==self.active['memoryDomain'] and members==self.active['memoryDomainMembers'] and row.get('memoryDomainMembers')==members,'pre-unmap cohort changed');self.verify_cohort_maps(row.get('sameMemoryDomainMaps'),row['pid'],members,self.maps_data(row['beforeMapsOriginal']),barrier,seq,row['identity'],self.active['address'],self.active['page'],self.active['length'])
+            self.windows[seq]=row;self.pending_window=seq
+        elif kind=='exclusive-generated-vma-resume':
+            window=self.windows.get(row['captureSequence']);need(window and row['pid']==window['pid'] and row['entrySequence']==window['entrySequence'],'generated exclusive resume differs');self.pending_window=None;self.transaction=dict(pid=row['pid'],entrySequence=row['entrySequence'],window=window,state='resumed')
+        elif kind=='generated-vma-operation-exit':
+            transaction=self.transaction;need(transaction and transaction['state']=='exited','generated postimage outside exclusive exit');window=transaction['window'];entry=entries[window['entrySequence']];actual=exits.get(window['entrySequence']);op=window['operation']
+            need(row['windowSequence']==window['sequence'] and row['operation']==op and row['pid']==window['pid'] and row['entrySequence']==entry['sequence'] and actual and actual['sequence']==row['exitSequence'] and actual['result']==row['result'] and actual['isError'] is row['isError'] and ((op=='private-wait-mismatch' and actual['isError'] is True and actual['result']==-LINUX_EAGAIN) or (op!='private-wait-mismatch' and actual['isError'] is False and actual['result']>=0)),'generated actual syscall exit differs')
+            if op=='private-wait-mismatch':
+                need(self.model in PRIVATE_WAIT_MODELS and self.active is not None and actual['sequence']==window['sequence']+2,'wait actual exit adjacency differs');post=barriers.get(row['postBarrierSequence']);pre=barriers[window['barrierSequence']]
+                need(post and post['sequence']==actual['sequence']+1 and post['pids']==pre['pids'] and post['taskOwnership']==pre['taskOwnership'],'wait fresh post-stop ownership differs');samples=self.verify_wait_samples(row,entry,post)
+                need(row['wordOriginal']==window['wordOriginal'] and samples==[dict(item,original=samples[i]['original']) for i,item in enumerate(window['cohortMaps'])],'wait pre/post full word/maps differs')
+                before=verify_proc_lease(window['procLease'],row['pid'],canonical=True);after=verify_proc_lease(row['procAfter'],row['pid'],canonical=True);need(after['directoryIdentity']==before['directoryIdentity'] and after['statIdentity']==before['statIdentity'] and after['starttime']==before['starttime'] and proc_identity(raw_bytes(after['statOriginal']),row['pid'])==int(before['starttime']),'wait held proc lifetime differs')
+                need(row['epochSequence']==window['epochSequence']==self.active['sequence'] and row['originSequence']==window['originSequence']==self.active['originSequence'],'wait closure epoch/origin differs')
+            elif op=='private-wake':
+                need(self.model in WAKE_MODELS and self.active is not None and actual['sequence']==entry['sequence']+4 and actual['result']<=private_wake_dimensions(entry,self.active),'private wake actual result differs')
+                post=barriers.get(row.get('postBarrierSequence'));pre=barriers[window['barrierSequence']]
+                need(post and post['sequence']==actual['sequence']+1 and seq==actual['sequence']+2 and post['pids']==pre['pids'] and post.get('taskOwnership')==pre.get('taskOwnership'),'private wake fresh post-stop/ownership missing')
+                domain,members=self.mapping_domain(row['pid'],post)
+                need((domain,members)==(self.active['memoryDomain'],self.active['memoryDomainMembers']) and row['memoryDomain']==domain and row['memoryDomainMembers']==members and row['wakeCount']==window['wakeCount'] and row['epochSequence']==window['epochSequence']==self.active['sequence'] and row['originSequence']==window['originSequence']==self.active['originSequence'],'private wake closure cohort/epoch differs')
+            elif op=='create':
+                current=row['identity'];need(row['path']==window['path'] and row['fd']==actual['result'] and len(current)==6 and stat.S_ISREG(current[2]) and current[3]==0 and self.original(row['original'])==(0,hashlib.sha256(b'').hexdigest()) and row['parentIdentity'][:3]==window['parentIdentity'][:3] and type(row['fdFlags']) is int and row['fdFlags']&3==2,'actual generated empty create differs')
+                self.origins[seq]=dict(pid=row['pid'],identity=current,path=row['path'],data=self.original(row['original']),fd=row['fd'])
+            elif op=='resize':
+                origin=self.origins[window['originSequence']];current=row['identity'];need(row['result']==0 and row['originSequence']==window['originSequence'] and current[:3]==origin['identity'][:3],'actual resize object/exit differs')
+                if self.model in [MODEL,COHORT_MODEL,*WAKE_MODELS]:
+                    actual_size=entry['args'][1];need(current[3]==actual_size and self.read_blocks is not None,'actual complete resize length/reader required');post=barriers.get(row['postBarrierSequence']);pre=barriers[window['barrierSequence']]
+                    need(post and post['sequence']==actual['sequence']+1 and post['pids']==pre['pids'] and post.get('taskOwnership')==pre.get('taskOwnership') and row['selectedFlags']==window['selectedFlags'],'actual resize post-stop differs')
+                    before=window['procLease'];sample=row['procAfter'];need(sample['directoryIdentity']==before['directoryIdentity'] and sample['statIdentity']==before['statIdentity'] and sample['starttime']==before['starttime'] and proc_identity(raw_bytes(sample['statOriginal']),row['pid'])==int(before['starttime']),'resize held proc lifetime differs')
+                    projected=verify_resize_bytes(self.read_blocks(window['beforeOriginal']),self.read_blocks(row['original']),origin['identity'][3],actual_size,self.maximum_file)
+                    need((projected['before']['bytes'],projected['before']['sha256'])==origin['data'] and (projected['after']['bytes'],projected['after']['sha256'])==self.original(row['original']),'entire resize originals differ')
+                else:need(origin['identity'][3]==0 and current[3]==1 and self.original(row['original'])==(1,hashlib.sha256(b'\0').hexdigest()),'actual zero-extension bytes differ')
+                self.origins[seq]=dict(origin,identity=current,data=self.original(row['original']));del self.origins[window['originSequence']]
+            elif op=='map':
+                origin=self.origins[window['originSequence']];mapping=verify_established(self.maps_data(row['mapsOriginal']),actual['result'],window['pageBytes'],origin['identity'],origin['identity'][3] if self.model in [MODEL,COHORT_MODEL,*WAKE_MODELS] else 1);need(row['mapping']==mapping and row['identity']==origin['identity'] and row['memoryDomain']==self.mapping_domain(row['pid'])[0],'actual mmap backing/domain differs')
+                if self.model==LEGACY_MODEL:need('kernelMappingEvidence' not in row and row['mapFilesIdentity']==origin['identity'],'legacy actual map-files fstat required')
+                else:
+                    need('mapFilesIdentity' not in row,'legacy fstat cannot masquerade as kernel mapping evidence');proof=row['kernelMappingEvidence'];post=barriers.get(proof['postBarrierSequence']);pre=barriers[window['barrierSequence']]
+                    need(proof['kind']==MAPPING_KIND and post and post['sequence']==actual['sequence']+1 and post['pids']==pre['pids'] and post.get('taskOwnership')==pre.get('taskOwnership'),'fresh actual mmap post-stop differs')
+                    need(proof['selectedFd']==window['fd']==entry['args'][4] and proof['selectedIdentity']==proof['retainedIdentity']==proof['namedIdentity']==origin['identity'] and proof['selectedFlags']==window['selectedFlags'],'actual selected/held/named mapping backing differs')
+                    need(proof['beforeOriginal']==window['selectedOriginal'],'selected mmap preimage reference differs')
+                    for name in ['postOriginal','confirmationOriginal']:
+                        need(self.original(proof[name])==origin['data'] and post['sequence']<self.original_sequences.get(self.key(proof[name]),0)<seq,'actual mapping body confirmation absent')
+                    confirm=proof['mapsConfirmationOriginal'];need(confirm['bytes']==row['mapsOriginal']['bytes'] and confirm['sha256']==row['mapsOriginal']['sha256'] and self.maps_data(confirm)==self.maps_data(row['mapsOriginal']) and self.map_owners.get(self.map_key(confirm))==row['pid'] and post['sequence']<self.map_sequences.get(self.map_key(row['mapsOriginal']),0)<self.map_sequences.get(self.map_key(confirm),0)<seq,'full numeric maps confirmation differs')
+                    kernel_link(proof['linkBefore'],origin['path'],self.build_root);need(proof['linkBefore']==proof['linkAfter'],'kernel link samples differ')
+                    first=self.events.get(proof['linkBeforeSequence']);last=self.events.get(proof['linkAfterSequence'])
+                    need(first and last and post['sequence']<self.map_sequences[self.map_key(row['mapsOriginal'])]<first['sequence']<self.map_sequences[self.map_key(confirm)]<last['sequence']<seq,'kernel link/maps sample order differs')
+                    for sample,link,ref,proc in [(first,proof['linkBefore'],row['mapsOriginal'],proof['procBefore']),(last,proof['linkAfter'],confirm,proof['procAfter'])]:
+                        need(sample['kind']=='generated-vma-kernel-link-original' and sample['pid']==row['pid'] and sample['entrySequence']==entry['sequence'] and sample['postBarrierSequence']==post['sequence'] and sample['mapsOriginal']==ref and sample['range']==[mapping['startHex'],mapping['endHex']] and sample['link']==link and sample['procLease']==proc,'kernel link raw sample differs')
+                    for sample in [proof['procBefore'],proof['procAfter']]:
+                        before=window['procLease'];need(sample['directoryIdentity']==before['directoryIdentity'] and sample['statIdentity']==before['statIdentity'] and sample['starttime']==before['starttime'] and proc_identity(raw_bytes(sample['statOriginal']),row['pid'])==int(before['starttime']),'actual held proc lifetime differs')
+                if self.model in COHORT_MODELS:
+                    domain,members=self.mapping_domain(row['pid'],post);need(row.get('memoryDomainMembers')==window['memoryDomainMembers']==members and domain==window['memoryDomain'],'post-map cohort changed');self.verify_cohort_maps(row.get('postMapPeerMaps'),row['pid'],members,self.maps_data(row['mapsOriginal']),post,seq,origin['identity'],actual['result'],window['pageBytes'],origin['identity'][3])
+                start=int(window['observedMonotonicNs']);deadline=int(window['windowDeadlineMonotonicNs']);parent=int(window['parentDeadlineMonotonicNs']);need(row['windowDeadlineMonotonicNs']==window['windowDeadlineMonotonicNs'] and row['parentDeadlineMonotonicNs']==window['parentDeadlineMonotonicNs'] and start<int(row['observedMonotonicNs'])<deadline<=parent==self.parent_deadline_ns and deadline-start<=int(WINDOW_SECONDS*1e9),'bounded single parent-owned mapping window required')
+                origin['fd']=window['fd'];self.active=dict(pid=row['pid'],originSequence=window['originSequence'],address=actual['result'],page=window['pageBytes'],length=origin['identity'][3] if self.model in [MODEL,COHORT_MODEL,*WAKE_MODELS] else 1,span=rounded_span(actual['result'],origin['identity'][3] if self.model in [MODEL,COHORT_MODEL,*WAKE_MODELS] else 1,window['pageBytes']),deadline=deadline,start=start,sequence=seq)
+                if self.model in COHORT_MODELS:self.active.update(memoryDomain=window['memoryDomain'],memoryDomainMembers=window['memoryDomainMembers'])
+            elif op=='close':
+                need(row['result']==0 and row['fd']==window['fd'] and row['fdAbsenceErrno']==errno.ENOENT and row['identity']==window['identity'] and row['epochSequence']==self.active['sequence'],'actual FD close did not retain mapped object')
+            elif op=='unmap':
+                origin=self.origins[window['originSequence']];need(row['result']==0 and row['originSequence']==window['originSequence'] and row['epochSequence']==self.active['sequence'] and not matching_maps(self.maps_data(row['afterMapsOriginal']),origin['identity']) and same_object(row['identity'],origin['identity']) and self.original(row['original'])==self.original(window['beforeOriginal']),'actual full-unmap/final snapshot differs');peers=row['afterPeerMaps'];barrier=barriers[window['barrierSequence']];need(sorted(p['pid'] for p in peers)==sorted(p for p in barrier['pids'] if p!=row['pid']),'complete final peer maps required')
+                if self.model in COHORT_MODELS:
+                    post=barriers.get(row.get('postBarrierSequence'));need(post and post['sequence']==actual['sequence']+1 and post['pids']==barrier['pids'] and post.get('taskOwnership')==barrier.get('taskOwnership'),'fresh full-unmap post barrier missing');domain,members=self.mapping_domain(row['pid'],post);need(row.get('memoryDomainMembers')==members==window['memoryDomainMembers'] and domain==self.active['memoryDomain'],'full-unmap cohort changed');need(post['sequence']<self.map_sequences.get(self.map_key(row['afterMapsOriginal']),0)<seq,'final owner maps predate fresh barrier');self.verify_cohort_maps([peer for peer in peers if peer['pid'] in members],row['pid'],members,self.maps_data(row['afterMapsOriginal']),post,seq)
+                for peer in peers:need(self.map_owners.get(self.map_key(peer['original']))==peer['pid'] and row['exitSequence']<self.map_sequences.get(self.map_key(peer['original']),0)<seq and not matching_maps(self.maps_data(peer['original']),origin['identity']),'final peer backing alias remains/unobserved')
+                self.checkpoints[seq]=dict(row,data=self.original(row['original']));origin.update(identity=row['identity'],data=self.original(row['original']),checkpointed=True);self.active=None
+            if 'original' in row:
+                need(row['exitSequence']<self.original_sequences.get(self.key(row['original']),0)<seq,'fresh generated postimage original missing')
+            for key in ['mapsOriginal','afterMapsOriginal']:
+                if key in row:need(self.map_owners.get(self.map_key(row[key]))==row['pid'] and row['exitSequence']<self.map_sequences.get(self.map_key(row[key]),0)<seq,'fresh actual post-operation maps missing')
+            transaction['state']='completed';transaction['completedSequence']=seq
+        elif kind=='exclusive-captured-syscall-exit' and self.transaction is not None:
+            need(self.transaction['state']=='completed' and row['pid']==self.transaction['pid'] and row['entrySequence']==self.transaction['entrySequence'],'generated operation exclusive close differs')
+            if self.transaction['window']['operation']=='private-wait-mismatch':
+                actual=exits[self.transaction['entrySequence']];need(seq==self.transaction['completedSequence']+1 and row['result']==actual['result']==-LINUX_EAGAIN and row['isError'] is True,'wait exclusive close actual mismatch differs');self.private_waits.append(self.transaction['entrySequence'])
+            elif self.transaction['window']['operation']=='private-wake':
+                actual=exits[self.transaction['entrySequence']];need(seq==self.transaction['entrySequence']+WAKE_RAW_RECORDS-1 and row['result']==actual['result'] and row['isError'] is False,'private wake exclusive actual close differs');self.private_wakes.append(self.transaction['entrySequence'])
+            del self.windows[self.transaction['window']['sequence']];self.transaction=None
+            if self.retained_metadata and self.active is None:
+                self.metadata_closed_operation=(row['pid'],row['entrySequence'],row['sequence']);self.checkpoint_metadata(row)
+        elif kind=='generated-vma-consumer-binding':self.consumers.append(row)
+    def finish(self,caps,exits):
+        need(self.active is None and self.transaction is None and self.pending_window is None and not self.pending_mapping_entries and not self.fd_bindings,'unclosed generated mapping/window');outputs=[]
+        for row in self.consumers:
+            cap=caps.get(row['captureSequence']);checkpoint=self.checkpoints.get(row['checkpointSequence']);need(cap and checkpoint,'mapped consumer originals missing');actual,data=cap;exit=exits.get(actual['entrySequence'])
+            if exit is None or exit['isError'] or exit['result']<=0:continue
+            need(actual['role']=='consumer' and checkpoint['sequence']<actual['sequence']<row['sequence'] and actual['identity']==row['identity'] and actual['path']==row['path'] and data==checkpoint['data'],'mapped generated consumer byte/identity checkpoint differs')
+            if self.model==PARKED_WAIT_MODEL:
+                need(row.get('metadataTransitions')==self.metadata_chain(checkpoint,actual,self.verified_metadata_states),'mapped consumer verified metadata chain differs')
+            else:need(actual['identity']==checkpoint['identity']and 'metadataTransitions'not in row,'mapped generated consumer byte/identity checkpoint differs')
+            outputs.append(dict(path=actual['path'],bytes=data[0],sha256=data[1],consumerCaptureSequence=actual['sequence'],mappedCheckpointSequence=checkpoint['sequence']))
+        return outputs
+
+
+def scheduled_module():
+    import importlib.util
+    path=Path(__file__).with_name('sdk-coordinated-wait.py')
+    spec=importlib.util.spec_from_file_location('sdk_coordinated_wait',path);module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module);return module
+
+def create_runtime(backend,core):
+    return scheduled_module().runtime_type(core)(backend) if getattr(backend,'generated_vma_coordinated_wait',False) else Runtime(backend)
+
+def create_verifier(module,*args,**kwargs):
+    if kwargs.get('model') in COORDINATED_WAIT_MODELS:return scheduled_module().verifier_type(module)(*args,**kwargs)
+    return Verifier(*args,**kwargs)

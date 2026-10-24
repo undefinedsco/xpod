@@ -3,14 +3,22 @@ set -Eeuo pipefail
 
 mode=${1:-all}
 [[ $# -le 1 && "$mode" =~ ^(all|prepare-only|source-only|configure-prepared|build-prepared)$ ]] || { echo 'unsupported private SDK phase' >&2; exit 64; }
-if [[ "$mode" != all && ( ${XPOD_QLEVER_CMAKE_C_COMPILER:-} != gcc-12 || ${XPOD_QLEVER_CMAKE_CXX_COMPILER:-} != g++-12 ) ]]; then
-  echo 'private prepared phases require the module GCC12 profile' >&2; exit 64
-fi
 component_root=${XPOD_RDF_COMPONENT_ROOT:-/components}
 qlever_root="$component_root/qlever"
 source_dir=${XPOD_QLEVER_SOURCE_DIR:-/opt/qlever-sdk/source}
 build_dir=${XPOD_QLEVER_BUILD_DIR:-/opt/qlever-sdk/build}
 jobs=${XPOD_QLEVER_BUILD_JOBS:-4}
+if [[ "$mode" != all ]]; then
+  prepared_profile=$(python3 "$qlever_root/scripts/qlever_compiler_profile.py" profile)
+  python3 - "$prepared_profile" <<'PROFILE'
+import json,os,sys
+identity=json.loads(os.environ['XPOD_QLEVER_SDK_IDENTITY'])
+if identity.get('sdkProfile')!=sys.argv[1]:raise RuntimeError('Prepared identity/compiler profile differs')
+PROFILE
+  if [[ "$mode" == source-only && "$prepared_profile" == service-trixie ]]; then
+    python3 "$qlever_root/scripts/sdk-service-profile-materials.py"
+  fi
+fi
 incremental_sdk=${XPOD_QLEVER_INCREMENTAL_SDK:-0}
 prior_validation_marker=${XPOD_QLEVER_PRIOR_VALIDATION_MARKER:-}
 
@@ -174,6 +182,12 @@ if [[ "$mode" == prepare-only || "$mode" == configure-prepared ]] || [[ ! -f "$b
     -DUSE_PRECOMPILED_HEADERS=OFF \
     -DUSE_IO_URING=OFF \
     -DCMAKE_CXX_FLAGS="$adapter_flags")
+  if [[ "$mode" == configure-prepared && "$prepared_profile" == service-trixie ]]; then
+    declared_linker=$(python3 "$qlever_root/scripts/qlever_compiler_profile.py" linker_program)
+    linker_path=$(command -v "$declared_linker")
+    [[ "$linker_path" == /* && -x "$linker_path" ]] || { echo 'actual declared service linker absent' >&2; exit 64; }
+    cmake_command+=(-DCMAKE_EXE_LINKER_FLAGS="-fuse-ld=$linker_path" -DCMAKE_SHARED_LINKER_FLAGS="-fuse-ld=$linker_path")
+  fi
   if [[ "$mode" == configure-prepared ]]; then
     test -f /opt/qlever-sdk/dependencies/sources.cmake
     cmake_command+=(-C /opt/qlever-sdk/dependencies/sources.cmake)

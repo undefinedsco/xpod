@@ -341,3 +341,29 @@ test('source-kit cliui notice retains its default paths through the same templat
   expect(renderCliuiModificationNotice({ payload: 'dist/cli.mjs', sourceNotice: 'source.txt', termsNotice: 'terms.txt' }))
     .toContain('as dist/cli.mjs.');
 });
+
+
+test('explicit producer input paths bind bytes and reject aliases, unused paths and substitution', () => {
+  const parent = path.resolve('.test-data/xpod-cli/projected-notices'); mkdirSync(parent, { recursive: true });
+  const work = mkdtempSync(path.join(parent, 'case-'));
+  try {
+    const repo = path.join(work, 'repo'); mkdirSync(path.join(repo, 'node_modules'), { recursive: true });
+    const source = path.join(repo, 'random-build.ts'); writeFileSync(source, 'export const value = 1;');
+    const other = path.join(repo, 'other.ts'); writeFileSync(other, 'export const value = 2;');
+    const metafile = path.join(work, 'meta.json');
+    writeFileSync(metafile, JSON.stringify({ inputs: { [source]: { bytes: 23, imports: [] }, [other]: { bytes: 23, imports: [] } }, outputs: { 'main.js': { inputs: {} } } }));
+    const cli = path.join(work, 'cli'); writeFileSync(cli, 'compiled');
+    const options = { metafile, stageRoot: repo, repoRoot: repo, destination: path.join(work, 'out'), target: 'darwin-arm64', cli, bunVersion: '1.4.2' };
+    const binding = { physicalPath: source, logicalPath: 'packages/tool/output.ts', sha256: sha256File(source) };
+    collectJavascriptNotices({ ...options, inputPaths: [binding] });
+    const index = JSON.parse(readFileSync(path.join(options.destination, 'index.json'), 'utf8'));
+    expect(index.inputs.find((row: {path:string}) => row.path === binding.logicalPath).sha256).toBe(binding.sha256);
+    expect(() => collectJavascriptNotices({ ...options, inputPaths: [{ ...binding, sha256: '0'.repeat(64) }] })).toThrow('bytes changed');
+    expect(() => collectJavascriptNotices({ ...options, inputPaths: [{ ...binding, logicalPath: 'other.ts' }] })).toThrow('collision');
+    expect(() => collectJavascriptNotices({ ...options, inputPaths: [binding, binding] })).toThrow('binding');
+    expect(() => collectJavascriptNotices({ ...options, inputPaths: [{ ...binding, physicalPath: path.join(repo, 'unused.ts') }] })).toThrow('Unused');
+    for (const logicalPath of ['../escape', '/absolute', 'a//b', 'a\\b']) expect(() => collectJavascriptNotices({ ...options, inputPaths: [{ ...binding, logicalPath }] })).toThrow('binding');
+    writeFileSync(source, 'different');
+    expect(() => collectJavascriptNotices({ ...options, inputPaths: [binding] })).toThrow('bytes changed');
+  } finally { rmSync(work, { recursive: true, force: true }); }
+});

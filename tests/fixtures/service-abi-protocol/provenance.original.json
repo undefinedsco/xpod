@@ -1,0 +1,23 @@
+{
+  "scope": "Historical service native protocol bytes only, no candidate/GitHub/native-source qualification. Fixture places command/seed/GitHub receipts mechanically around these originals; source declaration and smoke replay still use the sole reviewed Python implementations.",
+  "origin": "Root historical service tmpfs retained diagnostic transcript, independently copied and hashed in abi-protocol-receiver-independent/inputs.original.json",
+  "requests": 9,
+  "wholeServiceAbiVerified": false,
+  "originals": [
+    {
+      "path": "stdin.original.raw",
+      "bytes": 3776,
+      "sha256": "294af9dc58acc6db12a1fda8ec6fa215b4e3f74881e7d1b01ff15bba735a1a41"
+    },
+    {
+      "path": "stdout.original.raw",
+      "bytes": 20881,
+      "sha256": "f97ad3b84a27d3584f8e7d7ad381deec2b205eecf7b34760c4c84be99473e20e"
+    },
+    {
+      "path": "stderr.original.raw",
+      "bytes": 1152,
+      "sha256": "c7a3335875a05fb503b898d742151268f36a2b180d417f2d62a1e7afa16f8fc2"
+    }
+  ]
+}

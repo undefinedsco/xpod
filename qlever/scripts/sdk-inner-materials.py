@@ -8,14 +8,19 @@ import re
 from pathlib import Path
 import shlex
 import shutil
+import sys
 import tarfile
 
 HERE=Path(__file__).resolve().parent
 spec=importlib.util.spec_from_file_location('sdk_commands',HERE/'sdk-command-materials.py')
 commands=importlib.util.module_from_spec(spec);spec.loader.exec_module(commands)
-SDK_TOOLS=(('gcc-12','tool-gcc-12'),('g++-12','tool-gxx-12'),('ld.bfd','tool-ld-bfd'),
-           ('ar','tool-ar'),('ranlib','tool-ranlib'),('cmake','tool-cmake'),('make','tool-make'),
-           ('python3','tool-python3'),('git','tool-git'))
+spec=importlib.util.spec_from_file_location('sdk_profile_inner',HERE/'qlever_compiler_profile.py')
+profile_module=importlib.util.module_from_spec(spec);spec.loader.exec_module(profile_module)
+COMMON_SDK_TOOLS=(('ar','tool-ar'),('ranlib','tool-ranlib'),('cmake','tool-cmake'),('make','tool-make'),('python3','tool-python3'),('git','tool-git'))
+def sdk_tools(profile_name):
+    profile=profile_module.declared_profile(profile_name)
+    return tuple((name,'tool-'+name.replace('+','x').replace('.','-')) for name in [profile['c'],profile['cxx'],profile['linker_program']])+COMMON_SDK_TOOLS
+SDK_TOOLS=sdk_tools('module-bookworm-gcc12')
 spec=importlib.util.spec_from_file_location('sdk_tar_budget',HERE/'sdk-tar-budget.py')
 tar_budget=importlib.util.module_from_spec(spec);spec.loader.exec_module(tar_budget)
 LIMIT=4*1024**3
@@ -132,10 +137,11 @@ def dependency_paths(build):
 def configure_inputs(build):
     file=Path(build)/'CMakeFiles/Makefile.cmake'
     if not file.is_file():raise ValueError('Actual CMake configure dependency originals missing')
-    match=re.search(r'set\(CMAKE_MAKEFILE_DEPENDS\s+(.*?)\n\)',file.read_text(),re.S)
-    if not match:raise ValueError('Actual CMake configure dependency layout unsupported')
+    if file.stat().st_size>8*1024**2:raise ValueError('SDK configure dependency record budget')
+    matches=re.findall(r'^set\(CMAKE_MAKEFILE_DEPENDS[ \t]*\r?\n(.*?)^[ \t]*\)[ \t]*(?:\r?\n|$)',file.read_text(),re.M|re.S)
+    if len(matches)!=1:raise ValueError('Actual CMake configure dependency layout unsupported')
     result={file}
-    for name in shlex.split(match.group(1)):
+    for name in shlex.split(matches[0]):
         path=Path(name);path=path if path.is_absolute() else Path(build)/path
         if not path.is_file():raise ValueError('Recorded CMake input original missing')
         result.add(path)
@@ -163,14 +169,24 @@ def prepare_materials(component,source,build,out,jobs):
     component=Path(component);source=Path(source);build=Path(build);out=Path(out);out.mkdir(parents=True,exist_ok=False)
     budget=initialize_budget(4200);stages=[]
     identity=json.loads(os.environ['XPOD_QLEVER_SDK_IDENTITY'])
-    if identity.get('sdkProfile')!='module-bookworm-gcc12':raise ValueError('Actual SDK producer identity required')
+    profile=profile_module.declared_profile(identity.get('sdkProfile'))
+    if profile_module.compiler_spec()['profile']!=profile['name']:raise ValueError('Actual SDK producer/compiler profile differs')
     def stage(name,command,inputs=(),timeout=30,reserve=4200):
-        row=commands.capture(name,command,out,component,inputs,timeout=budget.timeout(timeout,reserve));stages.append(row);return row
+        try:
+            row=commands.capture(name,command,out,component,inputs,timeout=budget.timeout(timeout,reserve))
+        except Exception:
+            try:
+                diagnostic=commands.failed_stage_originals(name,out,lambda:budget.check(0))
+                print('SDK_PREPARED_STAGE_FAILURE '+json.dumps(diagnostic,sort_keys=True,separators=(',',':')),file=sys.stderr,flush=True)
+            except Exception as diagnostic_error:
+                print('SDK_PREPARED_STAGE_FAILURE_UNAVAILABLE '+type(diagnostic_error).__name__,file=sys.stderr,flush=True)
+            raise
+        stages.append(row);return row
     private_key='XPOD_QLEVER_UPSTREAM_MATERIALS_DIR'
     if private_key in os.environ:raise ValueError('Upstream capture directory is owned by the module producer')
     os.environ[private_key]=str(out/'upstream-source')
     try:
-        stage('source-prepare',['bash',str(component/'scripts/build-module-runtime-sdk.sh'),'source-only'],timeout=1800)
+        stage('source-prepare',['bash',str(component/('scripts/build-module-runtime-sdk.sh' if profile['name']=='module-bookworm-gcc12' else 'scripts/build-qlever-runtime-sdk.sh')),'source-only'],timeout=1800)
     finally:
         del os.environ[private_key]
     stage('fetchcontent-prepare',['python3',str(component/'scripts/sdk-fetchcontent-materials.py'),'prepare'],timeout=3600)
@@ -185,9 +201,20 @@ def build_materials(component,source,build,out,jobs):
     prepared=json.loads((out/'source-prepared.json').read_text())
     identity=json.loads(os.environ['XPOD_QLEVER_SDK_IDENTITY'])
     if prepared['identity']!=identity or prepared['deadlineUnix']!=budget.deadline_unix:raise ValueError('Prepared SDK identity/deadline differs')
+    profile=profile_module.declared_profile(identity.get('sdkProfile'))
+    if profile_module.compiler_spec()['profile']!=profile['name']:raise ValueError('Actual prepared compiler profile differs')
     stages=[*prepared['stages'],prepared['dependencyStage']]
     def stage(name,command,inputs=(),timeout=30,reserve=4200):
-        row=commands.capture(name,command,out,component,inputs,timeout=budget.timeout(timeout,reserve));stages.append(row);return row
+        try:
+            row=commands.capture(name,command,out,component,inputs,timeout=budget.timeout(timeout,reserve))
+        except Exception:
+            try:
+                diagnostic=commands.failed_stage_originals(name,out,lambda:budget.check(0))
+                print('SDK_PREPARED_STAGE_FAILURE '+json.dumps(diagnostic,sort_keys=True,separators=(',',':')),file=sys.stderr,flush=True)
+            except Exception as diagnostic_error:
+                print('SDK_PREPARED_STAGE_FAILURE_UNAVAILABLE '+type(diagnostic_error).__name__,file=sys.stderr,flush=True)
+            raise
+        stages.append(row);return row
     def archive(files,destination,before,compile_outputs=(),metadata_originals=(),observed_after=None):
         return archive_inputs(files,destination,before,compile_outputs,metadata_originals,remaining_bytes=lambda:toolchain.remaining_source_bytes(out),observed_after=observed_after)
     execution=toolchain.Session(out,source,build,budget,check_budget,toolchain.remaining_source_bytes(out),prepared_dependencies=prepared['dependencyCollection'])
@@ -215,8 +242,8 @@ def build_materials(component,source,build,out,jobs):
             for index,token in enumerate(tokens):
                 value=tokens[index+1] if token in ['-I','-isystem'] and index+1<len(tokens) else token[2:] if token.startswith('-I') else None
                 if value:roots.add(Path(value) if Path(value).is_absolute() else Path(entry['directory'])/value)
-        # GCC reports its own actual default header search paths; no hardcoded SDK copy.
-        row=stage('compiler-search',['g++-12','-E','-x','c++','-v','/dev/null'])
+        # The declared compiler reports its actual default header paths; no copied module search list.
+        row=stage('compiler-search',[profile['cxx'],'-E','-x','c++','-v','/dev/null'])
         search=(out/row['stderr']['path']).read_text();inside=False
         for line in search.splitlines():
             if '#include <...> search starts here:' in line:inside=True;continue
@@ -231,13 +258,15 @@ def build_materials(component,source,build,out,jobs):
                 if len(candidates)>100000:raise ValueError('SDK candidate input count budget')
         candidates.update(candidate(path) for path in configure_inputs(build))
         candidates.add(candidate(component.parent/'scripts/lib/module-artifact-limits.json'))
-        for name,stage_id in SDK_TOOLS:
+        for name,stage_id in sdk_tools(profile['name']):
             tool=shutil.which(name)
             if not tool:raise ValueError('Actual SDK tool missing: '+name)
             candidates.add(candidate(tool))
             stage(stage_id,[tool,'--version'])
-        compiler=stage('compiler-program',['g++-12','-print-prog-name=cc1plus'])
-        cc1plus=candidate(Path((out/compiler['stdout']['path']).read_text().strip()));candidates.add(cc1plus)
+        compiler=stage('compiler-program',[profile['cxx'],'-print-prog-name='+profile['compiler_program']])
+        actual_program=Path((out/compiler['stdout']['path']).read_text().strip())
+        if not actual_program.is_absolute() or not actual_program.is_file():raise ValueError('Actual declared compiler program path required')
+        compiler_program=candidate(actual_program);candidates.add(compiler_program)
         link_tokens=shlex.split((build/'CMakeFiles/qlever-server.dir/link.txt').read_text())
         for token in link_tokens:
             path=Path(token)
@@ -267,8 +296,8 @@ def build_materials(component,source,build,out,jobs):
         selected.update(path for path in Path('/opt/qlever-sdk/profile').rglob('*') if path.is_file() and not path.is_symlink())
         selected.update(path for path in (component/'scripts').iterdir() if path.is_file() and path.suffix in ['.py','.sh'])
         selected.update([build/'compile_commands.json',build/'CMakeCache.txt',component/'qlever.lock.json',component.parent/'scripts/lib/module-artifact-limits.json'])
-        selected.update(Path(shutil.which(name)) for name,_ in SDK_TOOLS)
-        selected.add(cc1plus)
+        selected.update(Path(shutil.which(name)) for name,_ in sdk_tools(profile['name']))
+        selected.add(compiler_program)
         observed_tools,observed_tool_pending=execution.after_tool_inputs(file_identity)
         selected.update(Path(path) for path in observed_tools)
         ownership=[];installed=set();metadata_originals=set()
@@ -337,7 +366,7 @@ def build_materials(component,source,build,out,jobs):
                      'toolchain-original-domain-not-yet-complete',*(['symlink-original-unavailable-before-compile'] if link_pending else []),*(['generated-input-causality-unavailable'] if inventory['pending'] else [])])
         execution_ref,execution_bytes=execution.finalize(inner,upstream_ref,inventory)
         if execution_bytes+debian_bytes+upstream_bytes+generation_bytes+symlink_bytes+sum(row['bytes'] for row in inventory['shards'])>LIMIT-512*1024**2:raise ValueError('Shared source/execution aggregate exceeds reserved source budget')
-        binary_ref,binary_bytes,binary_ownership_bytes=binary_hook.acquire(out,inventory['files'],ownership,ledger['stdout'],identity['target'],lambda:toolchain.remaining_source_bytes(out),source_stage,commands.ref,check_budget)
+        binary_ref,binary_bytes,binary_ownership_bytes=binary_hook.acquire(out,inventory['files'],ownership,ledger['stdout'],identity['target'],lambda:toolchain.remaining_source_bytes(out),source_stage,commands.ref,check_budget,sdk_profile=profile['name'])
         toolchain.remaining_source_bytes(out)  # Whole retained domain, not overlapping counter sums.
         inner.update(dependencyCollection=prepared['dependencyCollection'],dependencyMaterialBytes=prepared['dependencyMaterialBytes'],toolchainExecution=execution_ref,toolchainExecutionBytes=execution_bytes,debianBinaries=binary_ref,debianBinaryBytes=binary_bytes,debianBinaryOwnershipBytes=binary_ownership_bytes)
         dump(out/'build-inner.json',inner)

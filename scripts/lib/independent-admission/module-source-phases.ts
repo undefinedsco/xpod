@@ -1,3 +1,5 @@
+import {noticeVerifierRequired} from '../notice-source-attestation';
+import type {DerivedSourceView} from './artifact-contract';
 import { productTarget } from '../../module-product-targets';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
@@ -7,27 +9,48 @@ import { join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { collectedArtifactView } from './artifact-collector';
 import { derivedSourceView } from './source-context';
-import { githubOriginFacts, githubOriginOriginals, API_WEBSITE_STAGE_SOURCE_BINDINGS, API_WORKSPACE_SOURCE_GROUPS, type GitHubOriginObservation } from './github-origin';
+import { githubOriginFacts, githubOriginOriginals, API_NOTICE_SOURCE_BINDINGS, API_ATTESTED_NOTICE_SOURCE_BINDINGS, API_SERVICE_BUILD_SOURCE_BINDINGS, API_WEBSITE_STAGE_SOURCE_BINDINGS, API_WORKSPACE_SOURCE_GROUPS, type GitHubOriginObservation } from './github-origin';
 
 // These policies review actual phase-plan and supervisor implementations. The
 // producer remains the sole phase/command declaration; no parallel phase table.
 export const moduleSourcePhasePolicy = Object.freeze({
-  api: '68ecfb5c66dd0f1882ef707e86a4c74df7d0406bb9bb68eb011bb20872ef23bf',
+  api: 'f6abdd37eee47c33a1df9f76b7e0fb99ce8efee88c5b40ddcaa1d7a0f66091e6',
   css: '78e2ec3c272233602083f81d574cfefc5f6c36e9200c1d92e6f7935bd6cac41f',
   afs: 'c44348bd2e28b04c5e427c0070045c0e28c9437b7abadae6bdcc72d405abd508',
   materials: '1871c59b9f0bfb4c0ce824123ce9cdc5f472aba11245b5e0eb45c62c4fca42e2',
   limits: 'c1c529aba719356c682affbe630c215e28cc07163192f8f3b601aab7b0126bd4',
   supervisor: '49fd9c7a7a9c9dc1612b1261f0cbc218166f48487df726239437ae9ad98ba407',
 });
+const CSS_METADATA_REVALIDATION_PRODUCER='9bc6411c30e8f96402f39b80acf9e8af27350bfde84d0ec6d4e5f8eb04a05da4';
+/** The old supervisor remains interpreted by the existing legacy phase checks.
+ * The opt-in pack supervisor may be consumed only with the complete current
+ * module producer/materials/limits tuple from the same immutable source. */
+export function reviewedModuleSupervisorSource(module:'api'|'css'|'afs',readTracked:(path:string)=>Buffer):boolean {
+ if(!['api','css','afs'].includes(module))return false;
+ const supervisor='scripts/agentfs-native-ci/supervise.py',actual=hash(readTracked(supervisor));
+ if(actual===moduleSourcePhasePolicy.supervisor)return true;
+ const versions=[API_ATTESTED_NOTICE_SOURCE_BINDINGS,API_SERVICE_BUILD_SOURCE_BINDINGS];
+ const producers=module==='css'?[moduleSourcePhasePolicy.css,CSS_METADATA_REVALIDATION_PRODUCER]:[moduleSourcePhasePolicy[module]];
+ return versions.some(bindings=>producers.some(producer=>{
+ const expected=Object.freeze([
+  ['scripts/'+module+'-module-producer.py',producer],
+  ['scripts/lib/module-source-materials.py',bindings.find(row=>row.path==='scripts/lib/module-source-materials.py')!.sha256],
+  ['scripts/lib/module-artifact-limits.json',moduleSourcePhasePolicy.limits],
+  [supervisor,'139185a450f07812edc1300e24b68787012d1f334e6f27c2bb9e6b8a84d2af77'],
+ ] as const);
+ return expected.every(([path,sha256])=>hash(readTracked(path))===sha256);
+ }));
+}
 /** Complete reviewed CSS parent/producer versions. Origin event/head/job
  * authority remains exclusively in the private GitHub observer. */
 export const CSS_SOURCE_PARENT_VERSIONS = Object.freeze([
   Object.freeze({workflowSha256: '8312031501f9f0d640e100ddec75e0fe1150d0ee93812b3f8c6785b032319c0f', producerSha256: '431d033a41f01ab317124e1e5488543ea1ac82fa59c2ef3845ddd43ab4e61f4c', targets: 'darwin-arm64-only' as const}),
   Object.freeze({workflowSha256: '601aa8fe01ee1367be4e97dc6e868d7bc3e79ed1fea5e8f9531aa759e78d7d51', producerSha256: moduleSourcePhasePolicy.css, targets: 'canonical-catalog' as const}),
+  Object.freeze({workflowSha256: '601aa8fe01ee1367be4e97dc6e868d7bc3e79ed1fea5e8f9531aa759e78d7d51', producerSha256: CSS_METADATA_REVALIDATION_PRODUCER, targets: 'canonical-catalog' as const}),
 ]);
 export function reviewedModuleProducerSource(module: 'api' | 'css' | 'afs', sha256: string): boolean {
   return module === 'css' ? CSS_SOURCE_PARENT_VERSIONS.some(row => row.producerSha256 === sha256)
-    : module === 'api' ? [moduleSourcePhasePolicy.api, 'bd668dc98e481496f8b2cf6a1ba97541caafc70f39acf8d8757226e4cedca588', '0169bfbf726dce149e5a0fa995fd06bbe618236f1829d0575ccb0bafeea8b450', '8cfb86a4fa5de62e2938e51e459ae9c5c3bbe95cf0aaad88d59de9a9b900e920', '6999603e280c8df1be5fe068eff34cf4c357dc99e9052914040ab6db330ce058', '14fbe7416ad1e1f19ca9384614b1b57404e2ed89d2a766172c490b11cc4667e8', 'eaeddab536d6e606042039cfe5290393d5c5a3e454fb590354cc35e5afe2975f'].includes(sha256) : sha256 === moduleSourcePhasePolicy[module];
+    : module === 'api' ? [moduleSourcePhasePolicy.api,API_NOTICE_SOURCE_BINDINGS.find(row=>row.path==='scripts/api-module-producer.py')!.sha256,'68ecfb5c66dd0f1882ef707e86a4c74df7d0406bb9bb68eb011bb20872ef23bf', 'bd668dc98e481496f8b2cf6a1ba97541caafc70f39acf8d8757226e4cedca588', '0169bfbf726dce149e5a0fa995fd06bbe618236f1829d0575ccb0bafeea8b450', '8cfb86a4fa5de62e2938e51e459ae9c5c3bbe95cf0aaad88d59de9a9b900e920', '6999603e280c8df1be5fe068eff34cf4c357dc99e9052914040ab6db330ce058', '14fbe7416ad1e1f19ca9384614b1b57404e2ed89d2a766172c490b11cc4667e8', 'eaeddab536d6e606042039cfe5290393d5c5a3e454fb590354cc35e5afe2975f'].includes(sha256) : sha256 === moduleSourcePhasePolicy[module];
 }
 const PRE_PUBLIC_DESCRIPTOR_API_RECIPE = Object.freeze([
   {
@@ -262,10 +285,10 @@ const HISTORICAL_CONTROLLED_API_RECIPE = Object.freeze([
 /** Producer hash selects one whole recipe before any recipe file is read. */
 export function controlledApiSourceRecipe(readTracked:(name:string)=>Buffer,producerSha:string,target:string){
  const historical=producerSha==='6999603e280c8df1be5fe068eff34cf4c357dc99e9052914040ab6db330ce058';
- if(!historical&&![moduleSourcePhasePolicy.api,'bd668dc98e481496f8b2cf6a1ba97541caafc70f39acf8d8757226e4cedca588','0169bfbf726dce149e5a0fa995fd06bbe618236f1829d0575ccb0bafeea8b450','8cfb86a4fa5de62e2938e51e459ae9c5c3bbe95cf0aaad88d59de9a9b900e920'].includes(producerSha)||historical&&target!=='linux-arm64')return fail('controlled producer/target recipe not reviewed');
+ if(!historical&&![moduleSourcePhasePolicy.api,API_NOTICE_SOURCE_BINDINGS.find(row=>row.path==='scripts/api-module-producer.py')!.sha256,'68ecfb5c66dd0f1882ef707e86a4c74df7d0406bb9bb68eb011bb20872ef23bf','bd668dc98e481496f8b2cf6a1ba97541caafc70f39acf8d8757226e4cedca588','0169bfbf726dce149e5a0fa995fd06bbe618236f1829d0575ccb0bafeea8b450','8cfb86a4fa5de62e2938e51e459ae9c5c3bbe95cf0aaad88d59de9a9b900e920'].includes(producerSha)||historical&&target!=='linux-arm64')return fail('controlled producer/target recipe not reviewed');
  if(!historical){const policy=JSON.parse(readTracked('packages/xpod-api/scripts/inngest-controlled-build-policy.json').toString());if(!Object.prototype.hasOwnProperty.call(policy.targetDescriptors??{},target))return fail('controlled descriptor target not reviewed');}
- const candidates=["0169bfbf726dce149e5a0fa995fd06bbe618236f1829d0575ccb0bafeea8b450","bd668dc98e481496f8b2cf6a1ba97541caafc70f39acf8d8757226e4cedca588"].includes(producerSha)?API_WORKSPACE_SOURCE_GROUPS.filter(group=>group.selectors.some(row=>row.path==='scripts/api-module-producer.py'&&row.sha256===producerSha)).map(group=>group.sourceBindings):historical?[HISTORICAL_CONTROLLED_API_RECIPE]:producerSha===moduleSourcePhasePolicy.api?[PRE_CATALOG_API_SOURCE_RECIPE,CONTROLLED_API_SOURCE_RECIPE]:[PRE_PUBLIC_DESCRIPTOR_API_RECIPE,PRE_BUDGET_API_SOURCE_RECIPE];
- const matches=candidates.filter(rows=>rows.filter(row=>["scripts/lib/inngest-controlled-build.py", "packages/xpod-api/scripts/inngest-controlled-build-policy.json", "scripts/lib/module-source-materials.py", "scripts/lib/physical-module-stage.ts", "scripts/lib/api-scoped-dependency-state.ts", "scripts/lib/inngest-controlled-materials.ts"].includes(row.path)).every(row=>hash(readTracked(row.path))===row.sha256));
+ const candidates=[moduleSourcePhasePolicy.api,"988a1aaae9c786fefa4e0901f3a2de207401ea08f23c9154d941a640a6c70870","0169bfbf726dce149e5a0fa995fd06bbe618236f1829d0575ccb0bafeea8b450","bd668dc98e481496f8b2cf6a1ba97541caafc70f39acf8d8757226e4cedca588"].includes(producerSha)?API_WORKSPACE_SOURCE_GROUPS.filter(group=>group.selectors.some(row=>row.path==='scripts/api-module-producer.py'&&row.sha256===producerSha)).map(group=>group.sourceBindings):historical?[HISTORICAL_CONTROLLED_API_RECIPE]:producerSha==='68ecfb5c66dd0f1882ef707e86a4c74df7d0406bb9bb68eb011bb20872ef23bf'?[PRE_CATALOG_API_SOURCE_RECIPE,CONTROLLED_API_SOURCE_RECIPE]:[PRE_PUBLIC_DESCRIPTOR_API_RECIPE,PRE_BUDGET_API_SOURCE_RECIPE];
+ const matches=candidates.filter(rows=>rows.filter(row=>["scripts/lib/inngest-controlled-build.py", "packages/xpod-api/scripts/inngest-controlled-build-policy.json", "scripts/lib/module-source-materials.py", "scripts/lib/physical-module-stage.ts", "scripts/lib/api-scoped-dependency-state.ts", "scripts/lib/inngest-controlled-materials.ts", "scripts/agentfs-native-ci/supervise.py", "packages/xpod-api/scripts/sourcekit-producer.ts", "scripts/workspace-package-payload.cjs", "scripts/lib/physical-module-archive.ts"].includes(row.path)).every(row=>hash(readTracked(row.path))===row.sha256));
  if(matches.length!==1)return fail('controlled native complete source recipe not reviewed');
  const rows=matches[0];
  for(const row of rows)if(hash(readTracked(row.path))!==row.sha256)return fail('controlled native complete source recipe mismatch');
@@ -275,19 +298,33 @@ export function controlledApiSourceRecipe(readTracked:(name:string)=>Buffer,prod
 const hash = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
 const fail = (message: string): never => { throw new Error('Module source phases: ' + message); };
 
+/** Candidate rows select no authority: every member must equal the complete
+ * regular-file closure of the one immutable source capability directory. */
+export function verifiedNoticeSupplementDirectories(source:Pick<DerivedSourceView,'trackedPaths'|'readTracked'|'readTrackedGitObject'>,inputs:unknown):readonly string[]{
+ if(inputs===undefined)return [];
+ if(!Array.isArray(inputs)||inputs.length!==1)return fail('exact notice supplement input declaration required');
+ const entry=inputs[0],directory='packages/xpod-api/notice-supplements';
+ if(entry?.directory!==directory||!Array.isArray(entry.files)||!entry.files.length||entry.files.length>512||!source.readTrackedGitObject)return fail('notice supplement source closure required');
+ const paths=source.trackedPaths.filter(name=>name.startsWith(directory+'/')).sort();
+ if(paths.length!==entry.files.length||JSON.stringify(paths)!==JSON.stringify([...entry.files].sort()))return fail('notice supplement tracked member closure mismatch');
+ const seen=new Set<string>();for(const name of entry.files){if(typeof name!=='string'||seen.has(name)||!paths.includes(name))return fail('notice supplement original coordinate invalid');seen.add(name);const original=source.readTrackedGitObject(name);if(!['100644','100755'].includes(original.mode)||!original.bytes.length||original.bytes.length>8*1024**2||!source.readTracked(name).equals(original.bytes))return fail('notice supplement immutable original mismatch');}
+ return [directory];
+}
+
 /** Pure policy projection from the one reviewed producer's phase_plan. This
  * executes verifier-owned, hash-checked code, never candidate source code. */
 export function reviewedModulePhasePlan(module: 'api' | 'css' | 'afs', repositoryRoot: string, outputRoot: string,
-  version: string, target: string, controlled?:Readonly<{sourceKind:string;retainedByteCeiling:number;planVersion?:'current'|'linux-arm64-v1'}>,workspace?:Readonly<{recipe:'api-ui-root-minimal-v2';sourceSha:string}>): readonly { name: string; command: string[]; timeoutSeconds: number }[] {
+  version: string, target: string, controlled?:Readonly<{sourceKind:string;retainedByteCeiling:number;planVersion?:'current'|'linux-arm64-v1'}>,workspace?:Readonly<{recipe:'api-ui-root-minimal-v2';sourceSha:string}>,noticeSupplements:readonly string[]=[],noticeVerifier=false): readonly { name: string; command: string[]; timeoutSeconds: number }[] {
   if (!Object.prototype.hasOwnProperty.call(moduleSourcePhasePolicy, module) || !['api', 'css', 'afs'].includes(module)) return fail('unsupported producer');
   const file = fileURLToPath(new URL(`../../${module}-module-producer.py`, import.meta.url));
   const before = readFileSync(file);
   if (!reviewedModuleProducerSource(module, hash(before))) return fail('verifier producer policy drift');
-  const checkControlledController=()=>{if(controlled||workspace)for(const row of workspace?API_WEBSITE_STAGE_SOURCE_BINDINGS:CONTROLLED_API_SOURCE_RECIPE)if(hash(readFileSync(join(fileURLToPath(new URL('../../../',import.meta.url)),row.path)))!==row.sha256)return fail('controlled verifier source recipe drift');};
+  if(controlled&&!workspace)return fail('controlled verifier source recipe drift: exact workspace recipe required');
+  const checkControlledController=()=>{if(controlled||workspace)controlledApiSourceRecipe(name=>readFileSync(join(fileURLToPath(new URL('../../../',import.meta.url)),name)),hash(before),target);};
   checkControlledController();
   const wrapper = "import json,sys; p={'__name__':'reviewed_phase_policy','__file__':sys.argv[1]}; exec(compile(sys.stdin.buffer.read(),sys.argv[1],'exec'),p); a=json.loads(sys.argv[2]); print(json.dumps([{'name':n,'command':c,'timeoutSeconds':t} for n,c,t in p['phase_plan'](*a)]))";
   const result = spawnSync('/usr/bin/python3', ['-I', '-B', '-c', wrapper, file,
-    JSON.stringify([repositoryRoot, outputRoot, version, target,...(workspace?[controlled?.sourceKind??null,controlled?.retainedByteCeiling??null,controlled?.planVersion??'current',workspace.recipe,workspace.sourceSha]:controlled?[controlled.sourceKind,controlled.retainedByteCeiling,controlled.planVersion??'current']:[])])], { timeout: 2500, maxBuffer: 65536,
+    JSON.stringify([repositoryRoot, outputRoot, version, target,...(noticeSupplements.length?[controlled?.sourceKind??null,controlled?.retainedByteCeiling??null,controlled?.planVersion??'current',workspace?.recipe??'global-v1',workspace?.sourceSha??null,noticeSupplements.map(name=>join(repositoryRoot,name)),noticeVerifier]:workspace?[controlled?.sourceKind??null,controlled?.retainedByteCeiling??null,controlled?.planVersion??'current',workspace.recipe,workspace.sourceSha]:controlled?[controlled.sourceKind,controlled.retainedByteCeiling,controlled.planVersion??'current']:[])])], { timeout: 2500, maxBuffer: 65536,
     env: { PATH: '/usr/bin:/bin', LANG: 'C.UTF-8' }, input: before, encoding: 'utf8' });
   if (result.status !== 0 || result.signal || result.error || hash(readFileSync(file)) !== hash(before)) return fail('reviewed phase projection failed');
   checkControlledController();
@@ -364,8 +401,8 @@ export function inspectModuleSourcePhases(input: { artifact: unknown; source: un
     || producer.sourceBefore?.sha !== source.sourceSha || producer.sourceAfter?.sha !== source.sourceSha
     || producer.sourceBefore?.status !== '' || producer.sourceAfter?.status !== '') return fail('module source/origin identity mismatch');
   if (!reviewedModuleProducerSource(module, hash(source.readTracked(`scripts/${module}-module-producer.py`)))
-    || hash(source.readTracked('scripts/agentfs-native-ci/supervise.py')) !== moduleSourcePhasePolicy.supervisor
-    || ![moduleSourcePhasePolicy.materials, '07dbfc5531b7b3b812fe6f532141c964255b90f46ed30a05c86f6e42ef2e0ee5', 'c28f194ca9767f2aeddd9cff6f633dac2280ae9c4e5d716d3273706afce81850', 'cc4592e9649eb9f8e92140d9674beb90b78a769d7563df01f5d2971bfdf13258', 'b582490cdbbd2b857fa6ce20d0b5d85a73605c90b96063a3c17bf7b38be93601', '99eb684db2712cee74ae40f7ac17a55c1dcd74682162b75947203cf2628c6e16'].includes(hash(source.readTracked('scripts/lib/module-source-materials.py')))
+    || !reviewedModuleSupervisorSource(module,name=>source.readTracked(name))
+    || ![API_SERVICE_BUILD_SOURCE_BINDINGS.find(row=>row.path==='scripts/lib/module-source-materials.py')!.sha256, moduleSourcePhasePolicy.materials, '07dbfc5531b7b3b812fe6f532141c964255b90f46ed30a05c86f6e42ef2e0ee5', 'c28f194ca9767f2aeddd9cff6f633dac2280ae9c4e5d716d3273706afce81850', 'cc4592e9649eb9f8e92140d9674beb90b78a769d7563df01f5d2971bfdf13258', 'b582490cdbbd2b857fa6ce20d0b5d85a73605c90b96063a3c17bf7b38be93601', '99eb684db2712cee74ae40f7ac17a55c1dcd74682162b75947203cf2628c6e16'].includes(hash(source.readTracked('scripts/lib/module-source-materials.py')))
     || hash(source.readTracked('scripts/lib/module-artifact-limits.json')) !== moduleSourcePhasePolicy.limits
     || (module === 'afs' && !reviewedModuleProducerSource('api', hash(source.readTracked('scripts/api-module-producer.py'))))) {
     return { status: 'pending' as const, reason: 'module-source-phase-policy-unreviewed', sourceQualified: false as const };
@@ -407,9 +444,23 @@ export function inspectModuleSourcePhases(input: { artifact: unknown; source: un
   if(!repositoryRoot.startsWith('/')||!outputRoot!.startsWith('/'))return fail('absolute producer roots required');
   if(producer.workspaceRecipe!==undefined&&(module!=='api'||producer.workspaceRecipe!=='api-ui-root-minimal-v2'))return fail('unsupported exact workspace recipe');
   const workspace=producer.workspaceRecipe===undefined?undefined:{recipe:'api-ui-root-minimal-v2' as const,sourceSha:source.sourceSha};
-  const plan = reviewedModulePhasePlan(module, repositoryRoot, outputRoot, artifact.identity.version, artifact.identity.target,controlled?{sourceKind:producer.nativeSourceKind,retainedByteCeiling:producer.nativeRetainedByteCeiling,planVersion:controlledRecipe!.planVersion}:undefined,workspace);
+  const actualNoticeProducer=module==='api'?hash(source.readTracked('scripts/api-module-producer.py')):undefined,priorNoticeProducer=API_NOTICE_SOURCE_BINDINGS.find(row=>row.path==='scripts/api-module-producer.py')!.sha256;
+  if(producer.noticeSupplementInputs!==undefined&&![priorNoticeProducer,moduleSourcePhasePolicy.api].includes(actualNoticeProducer??''))return fail('notice receipt requires exact reviewed producer');
+  const noticeDirectories=verifiedNoticeSupplementDirectories(source,producer.noticeSupplementInputs);
+  if(noticeDirectories.length&&module!=='api')return fail('notice supplements are API-only');
+  const requiredVerifier=actualNoticeProducer!==priorNoticeProducer&&actualNoticeProducer===moduleSourcePhasePolicy.api&&noticeDirectories.some(directory=>noticeVerifierRequired(JSON.parse(source.readTracked(directory+'/index.json').toString('utf8'))));
+  if(requiredVerifier!==Boolean(producer.noticeVerifierOriginals))return fail('immutable attestation/verifier original requirement differs');
+  const plan = reviewedModulePhasePlan(module, repositoryRoot, outputRoot, artifact.identity.version, artifact.identity.target,controlled?{sourceKind:producer.nativeSourceKind,retainedByteCeiling:producer.nativeRetainedByteCeiling,planVersion:controlledRecipe!.planVersion}:undefined,workspace,noticeDirectories,requiredVerifier);
   const closure = verifyClosedModulePhaseReceipts(plan, producer, artifact.producerOriginals, artifact.readProducerOriginal,
     { started: job.started_at, closed: job.completed_at });
+  if(requiredVerifier){
+    const ref=producer.noticeVerifierOriginals,metadata=artifact.readProducerOriginal(ref.path,4*1024**2);if(metadata.length!==ref.bytes||hash(metadata)!==ref.sha256)return fail('verifier master original differs');
+    const tools=JSON.parse(metadata.toString('utf8')),requestRef=tools.request,requestBytes=artifact.readProducerOriginal('source-materials/notice-tools/'+requestRef.path,4096);
+    if(requestBytes.length!==requestRef.bytes||hash(requestBytes)!==requestRef.sha256)return fail('verifier request original differs');
+    const request=JSON.parse(requestBytes.toString('utf8')),acquire=producer.phases.find((row:any)=>row.name==='notice-verifier-acquire');
+    const first=JSON.parse(artifact.readProducerOriginal(producer.phases[0].receipt.path,1024**2).toString('utf8')),actual=JSON.parse(artifact.readProducerOriginal(acquire.receipt.path,1024**2).toString('utf8'));
+    if(request.schemaVersion!==1||request.ceilingBytes!==64*1024**2||!Number.isFinite(request.deadlineUnixSeconds)||request.deadlineUnixSeconds*1000<=Date.parse(actual.startedUTC)||request.deadlineUnixSeconds*1000>Date.parse(first.startedUTC)+50*60*1000||!isDeepStrictEqual(request.supplements,noticeDirectories.map(directory=>join(repositoryRoot,directory))))return fail('verifier same-parent window/reservation/source inputs differ');
+  }
   return { status: 'observed' as const, sourceQualified: false as const, sourceSha: source.sourceSha,
     module, target: artifact.identity.target, ...closure, scope: 'actual-owned-phase-originals-only' as const };
 }

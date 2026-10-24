@@ -35,7 +35,8 @@ function resolveCatalogManifest(pkg, root = pkg) {
   return result;
 }
 
-function sanitizeManifest(pkg) {
+function sanitizeManifest(pkg, options = { includePlatformPackages: process.env.XPOD_INCLUDE_PLATFORM_PACKAGES === 'true' }) {
+  if (!options || typeof options.includePlatformPackages !== 'boolean' || Object.keys(options).length !== 1) throw new Error('Exact platform package projection policy required');
   const nextPkg = resolveCatalogManifest(pkg);
   delete nextPkg.catalog;
   delete nextPkg.catalogs;
@@ -57,7 +58,7 @@ function sanitizeManifest(pkg) {
   delete nextPkg.bundledDependencies;
   delete nextPkg.patchedDependencies;
 
-  if (process.env.XPOD_INCLUDE_PLATFORM_PACKAGES !== 'true' && nextPkg.optionalDependencies) {
+  if (!options.includePlatformPackages && nextPkg.optionalDependencies) {
     const nextOptionalDependencies = { ...nextPkg.optionalDependencies };
     for (const dependencyName of Object.keys(nextOptionalDependencies)) {
       if (dependencyName.startsWith(PLATFORM_PACKAGE_PREFIX)) {

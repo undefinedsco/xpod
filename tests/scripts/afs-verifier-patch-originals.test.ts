@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { expect, it } from 'vitest';
-import { applyVerifierUnifiedPatch, inspectAfsVerifierPatchedPackages } from '../../scripts/lib/independent-admission/afs-verifier-patch-originals';
+import { applyVerifierUnifiedPatch, inspectAfsVerifierPatchedPackages, projectReviewedInstalledPackage } from '../../scripts/lib/independent-admission/afs-verifier-patch-originals';
 
 it('projects the real reviewed oidc patch once and rejects duplicate or changed upstream bytes', () => {
   const patch = readFileSync(path.resolve(__dirname, '../../patches/oidc-provider@9.5.1.patch'));
@@ -47,4 +47,8 @@ it('supports every hunk and file in all three real Bun patch originals', () => {
     expect(actual.size).toBe(files.size);
     expect(() => applyVerifierUnifiedPatch(actual, patch)).toThrow();
   }
+});
+
+it('shared selected projection still requires actual private source and sole registry capability',()=>{
+ expect(()=>projectReviewedInstalledPackage({source:{sourceSha:'a'.repeat(40)},original:{name:'negotiate',version:'1.0.1',verified:true},logicalPaths:['node_modules/negotiate']})).toThrow('immutable private source required');
 });

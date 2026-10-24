@@ -1,6 +1,7 @@
 """Bounded pure slice reconstruction and FD inventory rejection, no authority."""
 import importlib.util
 import io
+import time
 from pathlib import Path
 import unittest
 from unittest.mock import patch
@@ -19,13 +20,13 @@ class Tests(unittest.TestCase):
   originals[ref['path']]=b'changed';
   with self.assertRaises(ValueError):list(m.segment_blocks(segments,lambda row:[originals[row['path']]]))
  def test_fd_scan_refuses_before_unbounded_collection(self):
-  observer=b.Observer('/unused','/unused','/unused');observer.check=lambda:None
+  observer=b.Observer('/unused','/unused','/unused');observer.deadline=time.monotonic()+60;observer.check_budget=lambda:None;observer.current_phase='configure';observer.check=lambda:None
   class Entries:
    def __enter__(self):return (type('Entry',(),{'name':str(n)}) for n in range(5000))
    def __exit__(self,*args):pass
   with patch.object(b.os,'scandir',return_value=Entries()),self.assertRaisesRegex(AssertionError,'slots unsupported'):observer.bounded_fd_slots(7)
  def test_alias_key_count_refuses_not_truncates(self):
-  observer=b.Observer('/unused','/unused','/unused');observer.tasks={7:dict(exited=False)};observer.check=lambda:None
+  observer=b.Observer('/unused','/unused','/unused');observer.deadline=time.monotonic()+60;observer.check_budget=lambda:None;observer.current_phase='configure';observer.tasks={7:dict(exited=False)};observer.check=lambda:None
   identity=[1,2,0o100600,0,1,1];item=type('Stat',(),dict(st_dev=1,st_ino=2))()
   with patch.object(observer,'bounded_fd_slots',return_value=list(map(str,range(65)))),patch.object(b.os,'stat',return_value=item),patch.object(b,'descriptor_flags',return_value=2),self.assertRaisesRegex(AssertionError,'alias keys unsupported'):observer.writable_aliases(identity)
  def test_delta_protocol_and_self_consistent_payload_tamper_rejected(self):

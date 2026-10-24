@@ -1,3 +1,4 @@
+import {resolveExecutableIdentityPath} from './legal-file-custody';
 import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, realpathSync } from 'node:fs';
@@ -22,7 +23,7 @@ async function observeOwnedNativeOriginals(view: CollectedNativeOriginalsView, k
     return await view.withArchiveFile(async original => {
       let result;
       try {
-        result = await runPublicationCommand(realpathSync('/usr/bin/python3'), ['-I', '-B', script, original.path, ...arguments_], {
+        result = await runPublicationCommand(resolveExecutableIdentityPath('/usr/bin/python3'), ['-I', '-B', script, original.path, ...arguments_], {
           cwd: directory, env: { PATH: '/usr/bin:/bin', HOME: directory, LANG: 'C.UTF-8' }, evidence: directory,
           label: 'native-tar', timeoutMs: 120000, rawLimit: 8 * 1024 ** 2,
         });

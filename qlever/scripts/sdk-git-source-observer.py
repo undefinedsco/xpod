@@ -26,15 +26,21 @@ def observe(archive_path,plan):
         bindings.need(inventory.get('schemaVersion')==1 and isinstance(inventory.get('files'),list),'prepatch inventory schema required')
         commit_raw=small(plan['commitOriginal'])
         bindings.need(hashlib.sha1(('commit '+str(len(commit_raw))+'\0').encode()+commit_raw).hexdigest()==plan['commit'],'actual locked commit original differs')
+        requested=plan.get('selectedOriginalPaths',[])
+        bindings.need(isinstance(requested,list) and len(requested)<=LIMITS['sourceMembers'] and all(bindings.canonical(path) for path in requested) and len(set(requested))==len(requested),'canonical unique selected original paths required')
         patches=[];targets=set()
         for item in plan['reviewedPatches']:
             raw=base64.b64decode(item['base64'],validate=True);bindings.need(small(item['file'])==raw,'actual patch differs from immutable reviewed bytes')
             patches.append(dict(name=item['name'],bytes=raw))
             targets.update(projection.patch_targets(raw))
+        retain=targets|set(requested);bindings.need(len(retain)<=LIMITS['sourceMembers'],'retained original path bound')
         bindings.need(small(plan['patchSeries'])==base64.b64decode(plan['reviewedSeriesBase64'],validate=True),'actual patch series original differs')
-        with member(plan['objectPack']) as stream:result=bindings.verify_git_originals(stream,plan['commit'],listing,ids,inventory['files'],check,targets)
+        with member(plan['objectPack']) as stream:result=bindings.verify_git_originals(stream,plan['commit'],listing,ids,inventory['files'],check,retain)
         post=json.loads(small(plan['postpatchInventory']));post.update(addedPaths=plan['addedPaths'],deletedPaths=plan['deletedPaths'])
-        result['patchProjection']=projection.project(result.pop('_retainedPreimages'),result.pop('_prepatchRows'),patches,post,plan['gitExecutable'],deadline,check)
+        retained=result.pop('_retainedPreimages');pre_rows=result.pop('_prepatchRows')
+        result['patchProjection']=projection.project(retained,pre_rows,patches,post,plan['gitExecutable'],deadline,check,selected_paths=requested)
+        if requested:
+            bindings.need(len(json.dumps(result,separators=(',',':')).encode())<=LIMITS['metadataBytes'],'bounded selected originals result required')
 
         bindings.need(result['rootTreeOid']==plan['rootTree'] and result['commitBytes']==len(commit_raw) and result['commitSha256']==hashlib.sha256(commit_raw).hexdigest(),'commit/root-tree originals differ from pack')
         bindings.need(result['packBytes']==plan['objectPack']['bytes'] and result['packSha256']==plan['objectPack']['sha256'],'registered whole Git pack original differs')

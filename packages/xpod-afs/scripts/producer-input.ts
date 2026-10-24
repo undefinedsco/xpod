@@ -4,7 +4,7 @@ import { lstatSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import path from 'node:path';
 
 export type ProducerBuildTools = Pick<typeof import('@undefineds.co/xpod-cli/build-tools'),
-  'verifyProducerSourceArchive' | 'collectJavascriptNotices'>;
+  'verifyProducerSourceArchive' | 'collectJavascriptNotices' | 'canonicalBuildMetafile' | 'projectBuildMetafile'>;
 const loadedTools = new Map<string, { sha256: string; tools: ProducerBuildTools }>();
 const digest = (file: string): string => createHash('sha256').update(readFileSync(file)).digest('hex');
 
@@ -89,7 +89,7 @@ export function resolveProducerInput(args: readonly string[]) {
   const previous = loadedTools.get(toolsPath);
   if (previous && previous.sha256 !== toolsSHA256) throw new Error('Cached producer tools artifact hash changed');
   const tools = previous?.tools ?? createRequire(manifestPath)(toolsPath) as ProducerBuildTools;
-  if (typeof tools.verifyProducerSourceArchive !== 'function' || typeof tools.collectJavascriptNotices !== 'function') {
+  if (typeof tools.verifyProducerSourceArchive !== 'function' || typeof tools.collectJavascriptNotices !== 'function' || typeof tools.canonicalBuildMetafile !== 'function' || typeof tools.projectBuildMetafile !== 'function') {
     throw new Error('Explicit producer build tools do not implement the public contract');
   }
   loadedTools.set(toolsPath, { sha256: toolsSHA256, tools });

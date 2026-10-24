@@ -1,4 +1,5 @@
 """Reviewed text patch projection using only the controller Git, never candidate code."""
+import base64
 import hashlib
 import json
 import os
@@ -54,15 +55,21 @@ def patch_targets(raw):
     need(targets and not old_left and not new_left and old is None and git_pair is None and hunks>0,'incomplete file patch/hunk')
     return targets
 
-def project(preimages,pre_rows,patches,post,git,deadline,check):
+def project(preimages,pre_rows,patches,post,git,deadline,check,selected_paths=None):
     def need(value,reason):
         if not value:raise ValueError('SDK reviewed patch projection: '+reason)
     targets=set()
     for patch in patches:
         for name in patch_targets(patch['bytes']):
             need(name in preimages and pre_rows[name]['mode'] in ('100644','100755'),'actual regular pinned patch preimage required');targets.add(name)
+    requested=[] if selected_paths is None else list(selected_paths)
+    need(len(requested)<=LIMITS['sourceMembers'] and len(set(requested))==len(requested),'bounded unique selected paths required')
+    for name in requested:
+        need(isinstance(name,str) and name and not name.startswith('/') and '\\' not in name and all(part not in ('','.','..') for part in name.split('/')),'canonical selected path required')
+        need(name in preimages and pre_rows.get(name,{}).get('mode') in ('100644','100755'),'regular retained selected source required')
     need(post.get('schemaVersion')==1 and isinstance(post.get('files'),list) and post.get('addedPaths')==[] and post.get('deletedPaths')==[],'exact unchanged path set required by current reviewed patch recipe')
     actual={row['path']:row for row in post['files']};need(len(actual)==len(post['files']) and set(actual)==set(pre_rows),'postpatch full path set differs')
+    for name in requested:need(name in actual and actual[name].get('mode') in ('100644','100755'),'regular selected postpatch file required')
     need(shutil.disk_usage(tempfile.gettempdir()).free-sum(len(value) for value in preimages.values())>=LIMITS['freeFloorBytes'],'controller patch workspace disk floor')
     with tempfile.TemporaryDirectory(prefix='sdk-reviewed-patch-') as folder:
         root=Path(folder)
@@ -85,4 +92,20 @@ def project(preimages,pre_rows,patches,post,git,deadline,check):
                 need(info.st_size<=LIMITS['metadataBytes'],'bounded patched file required');raw=file.read_bytes();need(len(raw)<=LIMITS['metadataBytes'],'bounded patched file required')
                 expected.update(blobOid=hashlib.sha1(('blob '+str(len(raw))+'\0').encode()+raw).hexdigest(),mode=format(stat.S_IMODE(info.st_mode)|stat.S_IFREG,'06o'),bytes=len(raw),sha256=hashlib.sha256(raw).hexdigest())
             need(all(actual[name].get(key)==value for key,value in expected.items()),'postpatch projection bytes/mode differ: '+name)
-    return dict(verified=True,patchedPaths=sorted(targets),addedPaths=[],deletedPaths=[],scope='immutable reviewed current text series applied exactly once to pinned Git preimages')
+        # Selection reads happen only after every complete-path/byte check passed.
+        selected=[];total=0
+        for name in requested:
+            check();row=actual[name]
+            if name in targets:
+                file=root/name;info=file.lstat();need(stat.S_ISREG(info.st_mode),'selected output is nonregular')
+                need(info.st_size<=LIMITS['metadataBytes'],'bounded selected output required');raw=file.read_bytes()
+            else:
+                raw=preimages[name]
+            need(len(raw)==row['bytes'] and hashlib.sha256(raw).hexdigest()==row['sha256'],'selected actual bytes differ from verified postpatch row')
+            total+=len(raw);need(total<=LIMITS['metadataBytes'],'cumulative selected original bytes bound')
+            selected.append(dict(path=name,mode=0o755 if row['mode']=='100755' else 0o644,bytes=len(raw),sha256=row['sha256'],base64=base64.b64encode(raw).decode('ascii')))
+    result=dict(verified=True,patchedPaths=sorted(targets),addedPaths=[],deletedPaths=[],scope='immutable reviewed current text series applied exactly once to pinned Git preimages')
+    if requested:
+        need(len(json.dumps(selected,separators=(',',':')).encode())<=LIMITS['metadataBytes'],'selected originals JSON/base64 metadata bound')
+        result['selectedOriginals']=selected
+    return result

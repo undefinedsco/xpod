@@ -119,6 +119,9 @@ export function collectJavascriptNotices(options: {
   supplements?: string | string[];
   /** Exact canonical first-party files admitted by the producer's boundary gate. */
   canonicalSources?: { root: string; files: readonly { path: string; sha256: string }[] };
+  /** Explicit producer path projection, verified against the actual input bytes.
+   * This changes output labels only; all existing source confinement still applies. */
+  inputPaths?: readonly { physicalPath: string; logicalPath: string; sha256: string }[];
   /** Actual staged packages shipped independently of the bundler import graph. */
   vendoredRoots?: string[];
   requireVendoredOriginals?: boolean;
@@ -144,6 +147,16 @@ export function collectJavascriptNotices(options: {
   if (!metadata.inputs || !metadata.outputs || Object.keys(metadata.inputs).length === 0 || Object.keys(metadata.outputs).length === 0) {
     throw new Error('Invalid JavaScript build metafile');
   }
+  const projectedInputs = new Map<string, { logicalPath: string; sha256: string }>();
+  const projectedLabels = new Set<string>();
+  for (const binding of options.inputPaths ?? []) {
+    if (!path.isAbsolute(binding.physicalPath) || !/^[a-f0-9]{64}$/.test(binding.sha256)
+      || !binding.logicalPath || /[\\\x00-\x1f\x7f]/u.test(binding.logicalPath)
+      || path.posix.isAbsolute(binding.logicalPath) || binding.logicalPath.split('/').some(part => !part || part === '.' || part === '..')
+      || projectedInputs.has(binding.physicalPath) || projectedLabels.has(binding.logicalPath)) throw new Error('Invalid explicit input path binding');
+    projectedInputs.set(binding.physicalPath, binding); projectedLabels.add(binding.logicalPath);
+  }
+  const usedProjections = new Set<string>(), emittedInputPaths = new Set<string>();
   const packages = new Map<string, PackageNotice>();
   const supplementIndex = supplements(options.supplements);
   const objects = new Map<string, string>();
@@ -244,9 +257,15 @@ export function collectJavascriptNotices(options: {
       if (!Number.isFinite(contribution) || contribution < 0) { throw new Error(`Invalid output contribution: ${raw}`); }
       bytesInOutput += contribution;
     }
+    const actualSha256 = sha256File(filename), projection = projectedInputs.get(candidate);
+    if (projection && projection.sha256 !== actualSha256) throw new Error('Projected input bytes changed');
+    if (projection) usedProjections.add(candidate);
+    const inputPath = projection?.logicalPath ?? (dependency ? dependencyPath(dependencyRoot!, filename) : slash(path.relative(stageRoot, filename)));
+    if (emittedInputPaths.has(inputPath)) throw new Error('Projected input path collision');
+    emittedInputPaths.add(inputPath);
     inputs.push({
-      path: dependency ? dependencyPath(dependencyRoot!, filename) : slash(path.relative(stageRoot, filename)),
-      sha256: sha256File(filename), bytes: input.bytes, bytesInOutput,
+      path: inputPath,
+      sha256: actualSha256, bytes: input.bytes, bytesInOutput,
       ...(packageRoot ? { packageRoot } : {}),
     });
     for (const imported of input.imports) {
@@ -261,6 +280,7 @@ export function collectJavascriptNotices(options: {
       externalImports.add(name);
     }
   }
+  if (usedProjections.size !== projectedInputs.size) throw new Error('Unused explicit input path binding');
   for (const declaredRoot of options.vendoredRoots ?? []) {
     const root = realpathSync(declaredRoot);
     const info = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8')) as Record<string, unknown>;

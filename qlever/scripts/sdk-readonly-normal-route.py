@@ -16,14 +16,16 @@ HERE=Path(__file__).resolve().parent
 def load(name):
     spec=importlib.util.spec_from_file_location(name,HERE/(name+'.py'));value=importlib.util.module_from_spec(spec);spec.loader.exec_module(value);return value
 outer=load('sdk-readonly-executor');result_context=load('sdk-readonly-result-context');binding=outer.binding
+profiles=load('qlever_compiler_profile')
 
 # This is the existing runtime assembly contract, with its compiled build and
 # originals coming from stopped output volumes rather than an omitted commit.
 def linked_dockerfile(prepared):
     binding.need(binding.digest(prepared),'immutable actual prepared image config')
     return ('FROM '+prepared+' AS build\nCOPY build/ /opt/qlever-sdk/build/\nCOPY materials/ /opt/qlever-sdk/materials/\n'
-        'FROM build AS linked-verification\nARG XPOD_QLEVER_SDK_DEADLINE_UNIX\nARG XPOD_QLEVER_SDK_IDENTITY\n'
+        'FROM build AS linked-verification\n'+''.join('COPY verification/'+name+' /components/qlever/scripts/'+name+'\n' for name in result_context.VERIFICATION_SCRIPTS)+'ARG XPOD_QLEVER_SDK_DEADLINE_UNIX\nARG XPOD_QLEVER_SDK_IDENTITY\n'
         'RUN XPOD_QLEVER_SDK_DEADLINE_UNIX="${XPOD_QLEVER_SDK_DEADLINE_UNIX}" XPOD_QLEVER_SDK_IDENTITY="${XPOD_QLEVER_SDK_IDENTITY}" exec python3 /components/qlever/scripts/sdk-owned-runs.py linked\n'
+        'RUN node --version\n'
         'FROM build AS runtime\nCOPY --from=linked-verification /opt/qlever-sdk/materials/linked-inner.json /opt/qlever-sdk/materials/owner-linked.guard.json /opt/qlever-sdk/materials/\n'
         'COPY --from=linked-verification /opt/qlever-sdk/materials/stages/test-adapter /opt/qlever-sdk/materials/stages/test-adapter\n'
         'COPY --from=linked-verification /opt/qlever-sdk/materials/stages/test-runtime /opt/qlever-sdk/materials/stages/test-runtime\n'
@@ -31,7 +33,8 @@ def linked_dockerfile(prepared):
 
 prepared_argv=binding.prepared_argv
 
-def run(identity,deadline,out,context_originals):
+def run(identity,deadline,out,context_originals,kernel_probe_only=False):
+    binding.need(type(kernel_probe_only) is bool,'explicit kernel diagnostic mode required')
     binding.same_tuple(identity,identity);budget=outer.budgets.ExecutionBudget(deadline);check=lambda:budget.check(60)
     binding.need(outer.platform.system()=='Linux' and os.geteuid()==0,'normal outer route requires actual Linux host root')
     out=Path(out).resolve();binding.need(not out.exists() and out.parent.resolve()==Path(os.environ['RUNNER_TEMP']).resolve() and out.name=='qlever-sdk-outer','fixed host-only output root parent');out.mkdir(mode=0o700)
@@ -55,6 +58,14 @@ def run(identity,deadline,out,context_originals):
         created_builder=True
         stage('create-owned-builder',binding.local_docker(['docker','buildx','create','--name',builder,'--driver','docker-container','--bootstrap']),120)
         build_metadata=out/'prepared-buildkit.original.json';stage('prepare-source-image',prepared_argv(builder,platform,identity,deadline,build_metadata),19800,1200);prepared=metadata(build_metadata)['containerimage.config.digest'];binding.need(binding.digest(prepared),'actual BuildKit prepared config')
+        if kernel_probe_only:
+            probe=load('sdk-kernel-probe-controller')
+            before_probe=daemon.sample(check)
+            observation=probe.run(prepared,identity,min(deadline,time.time()+120),out/'kernel-probe',remaining_ledger(out,context_originals,check))
+            binding.need(before_probe==daemon.sample(check),'same held daemon throughout kernel diagnostic')
+            final=dict(schemaVersion=1,kind='qlever-kernel-probe-route-originals',identity=identity,sourcePreparedConfig=prepared,stages=stages,kernelProbe=observation,daemonActivationOriginals=daemon.seal_originals(),releaseAccepted=False,sdkQualified=False,scope='Native kernel operation diagnostics only; no SDK, source, registry or release qualification')
+            save('kernel-probe-route.original.json',final)
+            return final
         before=daemon.sample(check);record=outer.execute(prepared,identity,deadline,out/'readonly-executor');cid=json.loads(outer.bounded_original(out/'readonly-executor'/record['originals']['containerAfter']['path'],binding.META,check))['Id']
         # State was already independently closed by execute; recheck immediately
         # before export and reject any other container mounting either output.
@@ -63,7 +74,7 @@ def run(identity,deadline,out,context_originals):
         binding.need({row['Name'] for row in users if row.get('Type')=='volume'}==set(record['volumes'].values()),'same exact owned output volumes')
         for index,volume in enumerate(record['volumes'].values()):
             active=stage('reject-output-volume-writer-'+str(index),binding.local_docker(['docker','ps','-q','--filter','volume='+volume])).decode().splitlines();binding.need(not active,'foreign active output volume writer')
-        context_path=Path(os.environ['RUNNER_TEMP']).resolve()/'qlever-sdk-build-work';plan=dict(containerId=cid,context=str(context_path),deadlineUnix=deadline,dockerfile=linked_dockerfile(prepared),remainingRetainedBytes=remaining_ledger(out,context_originals,check))
+        context_path=Path(os.environ['RUNNER_TEMP']).resolve()/'qlever-sdk-build-work';plan=dict(containerId=cid,context=str(context_path),deadlineUnix=deadline,dockerfile=linked_dockerfile(prepared),sourceContextOriginals=str(Path(context_originals).resolve()),sourceSha=identity['sourceSha'],remainingRetainedBytes=remaining_ledger(out,context_originals,check))
         save('export.plan.json',plan);stage('export-stopped-outputs',['/usr/bin/python3','-I','-S','-B',str(HERE/'sdk-readonly-result-context.py'),'export','--plan',str(out/'export.plan.json')],600)
         exported=metadata(context_path/'result-context.json');plan.update(export=exported,builder=builder,platform=platform,metadata=str(out/'linked-buildkit.original.json'),identity=identity)
         save('linked.plan.json',plan);stage('compose-linked-image',['/usr/bin/python3','-I','-S','-B',str(HERE/'sdk-readonly-result-context.py'),'build','--plan',str(out/'linked.plan.json')],1200)
@@ -94,4 +105,4 @@ def remaining_ledger(out,context_originals,check):
 
 if __name__=='__main__':
     import argparse
-    parser=argparse.ArgumentParser();parser.add_argument('--identity',required=True);parser.add_argument('--deadline',required=True,type=float);parser.add_argument('--out',required=True);parser.add_argument('--context-originals',required=True);a=parser.parse_args();run(json.loads(a.identity),a.deadline,a.out,a.context_originals)
+    parser=argparse.ArgumentParser();parser.add_argument('--identity',required=True);parser.add_argument('--deadline',required=True,type=float);parser.add_argument('--out',required=True);parser.add_argument('--context-originals',required=True);parser.add_argument('--kernel-probe-only',action='store_true');a=parser.parse_args();run(json.loads(a.identity),a.deadline,a.out,a.context_originals,a.kernel_probe_only)

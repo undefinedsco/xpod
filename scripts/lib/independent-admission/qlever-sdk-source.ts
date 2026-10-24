@@ -1,3 +1,4 @@
+import {inspectDebianSourceArchiveCore} from './qlever-debian-source-archive-core';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { readFileSync, realpathSync } from 'node:fs';
@@ -10,7 +11,7 @@ import { inspectSdkInputOwnership } from './qlever-sdk-inputs';
 import { inspectSdkBuildExecution, SdkTrackedPhaseOriginalsUnobserved, SDK_TRACKED_PHASE_UNOBSERVED } from './qlever-sdk-execution';
 import { inspectSdkSymlinkOriginals } from './qlever-sdk-symlinks';
 import { qleverSdkOriginalsView } from './qlever-sdk-originals';
-import { captureLegalFileIdentity, assertLegalFileIdentity } from './legal-file-custody';
+import { captureLegalFileIdentity, assertLegalFileIdentity,resolveExecutableIdentityPath} from './legal-file-custody';
 const hash = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
 const SHA = /^[a-f0-9]{64}$/u;
 const HELPER_SHA = 'dddb499b82df467ff41511dd6dfab5877ed7d63cbcfa88fb772be9e6152aca6c';
@@ -19,6 +20,16 @@ function need(value: unknown, reason: string): asserts value { if (!value) throw
 type SourceOriginalReference=Readonly<{path:string;bytes:number;sha256:string}>;
 type SourceArchiveOriginalView=Readonly<{sourceSha:string;target:string;collection:SourceOriginalReference;ledger:SourceOriginalReference;coordinates:readonly Readonly<{name:string;version:string;dsc:SourceOriginalReference;archives:readonly SourceOriginalReference[]}>[];requiredCoordinates:readonly Readonly<{name:string;version:string}>[];absentOwnedCoordinates:readonly Readonly<{name:string;version:string}>[];ownedCoordinatesComplete:boolean;scope:'actual DSC and complete archive checksum mechanics only';officialAuthorityVerified:false;assertCurrent():void}>;
 const verifiedInputs = new WeakMap<object, Readonly<{sourceArchiveView?:SourceArchiveOriginalView;sdk: NonNullable<ReturnType<typeof qleverSdkOriginalsView>>; afterReference: Readonly<{path: string; bytes: number; sha256: string}>; rows: readonly Readonly<{originalPath: string; bytes: number; sha256: string; mode: number}>[] }>>();
+type SdkSourceAdmissionResult = Readonly<{verified: boolean; facts: Readonly<Record<string, unknown>>; pending: readonly string[]; assertCurrent(): void}>;
+const sourceAdmissions = new WeakMap<object, Readonly<{sdkOriginals: unknown; source: unknown; result: SdkSourceAdmissionResult}>>();
+/** Only the actual complete observer result, bound to both original private handles. */
+export function qleverSdkSourceAdmissionView(value: unknown, input: {sdkOriginals: unknown; source: unknown}): SdkSourceAdmissionResult | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const held = sourceAdmissions.get(value);
+  if (!held || held.sdkOriginals !== input.sdkOriginals || held.source !== input.source || !held.result.verified) return undefined;
+  held.result.assertCurrent();
+  return held.result;
+}
 /** Reuses the one actual full-shard verification, never caller JSON facts. */
 export function sdkVerifiedInputOriginalView(capability: unknown) {
   if (!capability || typeof capability !== 'object') return undefined;
@@ -60,7 +71,7 @@ export function inspectQleverSdkSourceOriginals(capability: unknown, remainingMi
     need(master.identity.sourceSha === sdk.originFacts.sourceSha && master.identity.target === sdk.originFacts.target && master.kind === 'qlever-linux-sdk-originals', 'SDK master/source binding differs');
     const helper = fileURLToPath(new URL('../../../qlever/scripts/sdk-debian-source-materials.py', import.meta.url));
     const helperIdentity = captureLegalFileIdentity(helper); need(helperIdentity.size <= BigInt(limits.metadataBytes) && hash(readFileSync(helper)) === HELPER_SHA, 'reviewed controller source parser differs');
-    const python = realpathSync('/usr/bin/python3'), pythonIdentity = captureLegalFileIdentity(python);
+    const python = resolveExecutableIdentityPath('/usr/bin/python3'), pythonIdentity = captureLegalFileIdentity(python);
     const parse = (mode: '--parse-dsc' | '--parse-ledger', bytes: Buffer) => {
       check(); assertLegalFileIdentity(helperIdentity); assertLegalFileIdentity(pythonIdentity);
       const output = execFileSync(python, ['-I', '-S', '-B', helper, mode], {input: bytes, maxBuffer: limits.metadataBytes,
@@ -126,35 +137,13 @@ export function inspectQleverSdkSourceOriginals(capability: unknown, remainingMi
     const sources = JSON.parse(small(master.debianSources).toString());
     need(sources.schemaVersion === 1 && sources.kind === 'qlever-sdk-exact-debian-source-originals' && Array.isArray(sources.packages) && sources.packages.length > 0 && sources.packages.length <= 4096, 'SDK Debian source collection schema differs');
     need(reference(sources.sourceIdentities).path === ledgerReference.path, 'source acquisition ledger differs from actual SDK build ledger');
-    const identities = new Set(Object.values(ledger).map((row: any) => row.source.name + '\0' + row.source.version));
-    const seen = new Set<string>(),archiveCoordinates: {name:string;version:string;dsc:SourceOriginalReference;archives:readonly SourceOriginalReference[]}[]=[]; let sourceBytes = 0;
-    const originalReference=(value:any):SourceOriginalReference=>{const ref=reference(value);return Object.freeze({path:ref.path,bytes:ref.bytes,sha256:ref.sha256});};
-    for (const item of sources.packages) {
-      const coordinate = item.name + '\0' + item.version;
-      need(!seen.has(coordinate) && identities.has(coordinate), 'exact Debian source identity absent or repeated in actual dpkg ledger'); seen.add(coordinate);
-      const dscRef = reference(item.dsc), dsc = parse('--parse-dsc', small(dscRef));
-      need(dsc.name === item.name && dsc.version === item.version && path.posix.basename(dscRef.path) === item.name + '_' + item.version.replace(/^[0-9]+:/u, '') + '.dsc', 'actual dsc source/version differs');
-      const parent = path.posix.dirname(dscRef.path);
-      need(/^inner\/debian-source\/package-[0-9]{4}$/u.test(parent) && Array.isArray(item.files) && item.files.length === dsc.files.length, 'Debian original group/reference set differs');
-      const expected = new Map<string, any>(dsc.files.map((row: any) => [row.name, row]));
-      const names = new Set<string>([dscRef.path]),archives:SourceOriginalReference[]=[]; sourceBytes += dscRef.bytes;
-      for (const value of item.files) {
-        const ref = reference(value), relative = ref.path.slice(parent.length + 1), declared = expected.get(relative);
-        need(ref.path.startsWith(parent + '/') && !names.has(ref.path) && declared && ref.bytes === declared.bytes && ref.sha256 === declared.sha256, 'all orig/debian archive bytes must match dsc SHA256 universe'); names.add(ref.path);
-        need(ref.bytes <= limits.shardBytes, 'Debian source member exceeds fixed original bound');
-        sourceBytes += ref.bytes;
-        need(total + sourceBytes <= limits.sourceMaterialBytes, 'SDK context/input/Debian domains exceed shared source budget');
-        const digest = createHash('sha256');
-        for (let offset = 0; offset < ref.bytes; offset += limits.rangeBytes) {
-          check(); const length = Math.min(limits.rangeBytes, ref.bytes - offset), bytes = sdk.readOriginalRange(ref.path, offset, length);
-          need(bytes.length === length, 'Debian source original truncated'); digest.update(bytes);
-        }
-        need(digest.digest('hex') === declared.sha256, 'actual complete Debian source original hash differs');archives.push(originalReference(ref));
-      }
-      const actual = sdk.members.filter(row => row.path.startsWith(parent + '/'));
-      need(actual.length === names.size && actual.every(row => names.has(row.path)), 'unregistered extra Debian source original member');archiveCoordinates.push(Object.freeze({name:dsc.name,version:dsc.version,dsc:originalReference(dscRef),archives:Object.freeze(archives)}));
-      need(total + sourceBytes <= limits.sourceMaterialBytes, 'SDK context/input/Debian domains exceed shared source budget');
-    }
+    const archiveResult = inspectDebianSourceArchiveCore({packages: sources.packages,
+      allowedCoordinates: Object.values(ledger).map((row: any) => row.source), reader: sdk, reference, small,
+      parseDsc: bytes => parse('--parse-dsc', bytes), maximumFileBytes: limits.shardBytes,
+      maximumTotalBytes: limits.sourceMaterialBytes - total, check});
+    const archiveCoordinates = archiveResult.coordinates, sourceBytes = archiveResult.sourceBytes;
+    const seen = new Set(archiveCoordinates.map(row => row.name + '\0' + row.version));
+    const originalReference = (value: any): SourceOriginalReference => {const ref = reference(value); return Object.freeze({path: ref.path, bytes: ref.bytes, sha256: ref.sha256});};
     need(qleverSdkOriginalsView(capability) === sdk, 'SDK source custody changed');
     facts.sdkRelatedOriginalCustodyVerified = true; facts.debianDscAndAllSourceArchiveBytesVerified = true;
     facts.debianSourcePackageInstances = seen.size; facts.debianSourceOriginalBytes = sourceBytes;
@@ -213,7 +202,15 @@ export async function observeQleverSdkSourceAdmission(input: {sdkOriginals: unkn
   let fetchContentGuard:(()=>void)|undefined;
   let verified = false;
   try {
-    need(sdk && source && sdk.originFacts.sourceSha === source.sourceSha, 'same issued SDK and immutable source required');
+    // App-vs-SDK ORIGIN PARTITION. The SDK artifact is acquired from its own
+    // GitHub coordinates and carries its own immutable source commit. It is NOT
+    // required to equal the app commit. The real bindings are: the SDK master
+    // identity must equal this SDK origin's own facts (checked below), and the
+    // app source relationship is bound by the service master's typed SDK
+    // locator (artifact id/digest/master image) in the source qualification.
+    need(sdk && source, 'same issued SDK and immutable source required');
+    need(sdk.originFacts.sourceSha === JSON.parse(sdk.readOriginal(sdk.masterReference.path, 8 * 1024 ** 2).toString()).identity?.sourceSha,
+      'SDK origin and SDK master source coordinate differ');
     const remaining = input.remainingMilliseconds ?? limits.timeoutMs;
     need(Number.isFinite(remaining) && remaining >= 1, 'shared SDK source deadline expired');
     const deadline = performance.now() + Math.min(remaining, limits.timeoutMs);
@@ -332,7 +329,7 @@ export async function observeQleverSdkSourceAdmission(input: {sdkOriginals: unkn
       upstreamGitPreimages: facts.sdkUpstreamGitCommitTreePreimageClosureVerified === true,
       reviewedPatchProjection: facts.sdkUpstreamReviewedPatchProjectionVerified === true,
       selectedUpstreamInputOriginals: facts.sdkSelectedUpstreamInputOriginalsVerified === true,
-      generatedInputIoClosure: facts.sdkGeneratedInputIoClosureVerified===true, toolchainSourceClosure: 'verifier-not-implemented' as const});
+      generatedInputIoClosure: facts.sdkGeneratedInputIoClosureVerified===true, toolchainSourceClosure: toolchainGuard!==undefined && facts.sdkToolchainSourceClosureVerified===true});
     facts.sdkSourceRequiredAxes = axes;
     verified = Object.values(axes).every(value => value === true) && pending.size === 0;
     facts.sdkSourceCompletenessVerified = verified;
@@ -347,5 +344,7 @@ export async function observeQleverSdkSourceAdmission(input: {sdkOriginals: unkn
   }
   const freeze = (value: unknown): void => {if (value && typeof value === 'object') {Object.values(value).forEach(freeze); Object.freeze(value);}};
   freeze(facts);
-  return Object.freeze({verified, facts: Object.freeze(facts), pending: Object.freeze([...pending]), assertCurrent});
+  const result = Object.freeze({verified, facts: Object.freeze(facts), pending: Object.freeze([...pending]), assertCurrent});
+  sourceAdmissions.set(result, Object.freeze({sdkOriginals: input.sdkOriginals, source: input.source, result}));
+  return result;
 }

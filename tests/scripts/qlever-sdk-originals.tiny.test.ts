@@ -1,3 +1,4 @@
+const completeObserved=(groups:any,group:any)=>{const facts=new Map<string,string>(group.selectors.map((row:any)=>[sourceBindingKey(row),row.sha256]));for(const role of secondaryGitHubSourceBindingSelectors(groups,facts)){const row=[...group.selectors,...group.secondarySelectors??[],...group.sourceBindings].find((row:any)=>sourceBindingKey(row)===sourceBindingKey(role));facts.set(sourceBindingKey(role),row.sha256);}return facts;};
 import {test,expect} from 'bun:test';
 import {inspectQleverSdkArtifactReference,inspectQleverSdkMasterBinding,qleverSdkOriginalsView,collectRelatedQleverSdkOriginals} from '../../scripts/lib/independent-admission/qlever-sdk-originals';
 import {QLEVER_LINUX_EXECUTION_GROUPS,QLEVER_SDK_B_SOURCE_BINDINGS,QLEVER_SDK_EXECUTION_GROUPS} from '../../scripts/lib/independent-admission/qlever-sdk-origin-policy';
@@ -18,7 +19,7 @@ test('SDK data reference/master checks bind exact producer tuple/image and every
  expect(()=>inspectQleverSdkMasterBinding({...master,image:{...master.image,platform:'linux/arm64'}},reference,runHeadSha,members)).toThrow();
 });
 test('SDK origin source recipes remain whole versioned groups',()=>{
- for(const group of QLEVER_LINUX_EXECUTION_GROUPS)expect(selectGitHubSourceBindingGroup(QLEVER_LINUX_EXECUTION_GROUPS,new Map([...group.selectors,...(group.secondarySelectors??[])].map(row=>[sourceBindingKey(row),row.sha256])))).toBe(group);
+ for(const group of QLEVER_LINUX_EXECUTION_GROUPS)expect(selectGitHubSourceBindingGroup(QLEVER_LINUX_EXECUTION_GROUPS,completeObserved(QLEVER_LINUX_EXECUTION_GROUPS,group))).toBe(group);
  const mixed=new Map(QLEVER_LINUX_EXECUTION_GROUPS[0]!.selectors.map(row=>[sourceBindingKey(row),row.sha256]));const next=QLEVER_LINUX_EXECUTION_GROUPS[1]!.selectors.find(row=>row.path==='.github/workflows/publish-qlever-runtime-sdk.yml')!;mixed.set(sourceBindingKey(next),next.sha256);expect(()=>selectGitHubSourceBindingGroup(QLEVER_LINUX_EXECUTION_GROUPS,mixed)).toThrow();
  for(const path of ['qlever/scripts/sdk-image-originals.py','qlever/scripts/sdk-inner-materials.py','qlever/scripts/sdk-command-materials.py','qlever/scripts/sdk-execution-budget.py','.dockerignore'])expect(QLEVER_SDK_B_SOURCE_BINDINGS.some(row=>row.path===path)).toBe(true);
 });
@@ -82,7 +83,7 @@ test('owned SDK RUNs select the complete PID1 registry/guard and preserve earlie
 
 test('source-prepared SDK group binds the complete changed recipe without mixing historical selectors',()=>{
  const old=QLEVER_SDK_EXECUTION_GROUPS[6]!,next=QLEVER_SDK_EXECUTION_GROUPS[7]!;
- expect(QLEVER_SDK_EXECUTION_GROUPS).toHaveLength(23);
+ expect(QLEVER_SDK_EXECUTION_GROUPS).toHaveLength(67);
  const selected=new Map([...next.selectors,...(next.secondarySelectors??[])].map(row=>[sourceBindingKey(row),row.sha256]));
  expect(selectGitHubSourceBindingGroup(QLEVER_SDK_EXECUTION_GROUPS,selected)).toBe(next);
  for(const path of ['docker/qlever-runtime-sdk/Dockerfile.module-bookworm','qlever/scripts/sdk-inner-materials.py']){
@@ -135,7 +136,7 @@ test('prepared observer refines only the complete context-self tuple, with no mi
   expect(()=>selectGitHubSourceBindingGroup(QLEVER_SDK_EXECUTION_GROUPS,mixed)).toThrow();
  }
  for(const group of QLEVER_SDK_EXECUTION_GROUPS.slice(0,10))expect(secondaryGitHubSourceBindingSelectors(QLEVER_SDK_EXECUTION_GROUPS,new Map(group.selectors.map(row=>[sourceBindingKey(row),row.sha256])))).toHaveLength(0);
- const stripped={...next,secondarySelectors:[]};expect(()=>secondaryGitHubSourceBindingSelectors([old,stripped],primary)).toThrow('incomplete shared');
+ const stripped={...next,secondarySelectors:[],sourceBindings:next.sourceBindings.filter(row=>!old.secondarySelectors!.some(role=>sourceBindingKey(role)===sourceBindingKey(row)))};expect(()=>secondaryGitHubSourceBindingSelectors([old,stripped],primary)).toThrow();
 });
 
 test('Debian binary collection selects a whole producer/parser closure after shared originals',()=>{
@@ -191,8 +192,8 @@ test('combined single observer version preserves old pair and rejects mixed prod
 
 test('prepared dependency recipe is one exact complete SDK18 group',()=>{
  const next=QLEVER_SDK_EXECUTION_GROUPS[17]!,previous=QLEVER_SDK_EXECUTION_GROUPS[16]!;
- expect(QLEVER_SDK_EXECUTION_GROUPS).toHaveLength(23);
- for(const group of QLEVER_SDK_EXECUTION_GROUPS){const map=new Map([...group.selectors,...(group.secondarySelectors??[])].map(row=>[sourceBindingKey(row),row.sha256]));expect(selectGitHubSourceBindingGroup(QLEVER_SDK_EXECUTION_GROUPS,map)).toBe(group);}
+ expect(QLEVER_SDK_EXECUTION_GROUPS).toHaveLength(67);
+ for(const group of QLEVER_SDK_EXECUTION_GROUPS){const map=completeObserved(QLEVER_SDK_EXECUTION_GROUPS,group);expect(selectGitHubSourceBindingGroup(QLEVER_SDK_EXECUTION_GROUPS,map)).toBe(group);}
  expect(next.sourceBindings.find(row=>row.path==='qlever/scripts/sdk-fetchcontent-materials.py')?.sha256).toBe('8ec24a7e0e68197bb2bfe127733a18f5db64477e2b3f549feb95af05e4f4097f');
  for(const role of [...next.selectors,...next.secondarySelectors!]){const map=new Map([...next.selectors,...next.secondarySelectors!].map(row=>[sourceBindingKey(row),row.sha256]));map.set(sourceBindingKey(role),'0'.repeat(64));expect(()=>selectGitHubSourceBindingGroup(QLEVER_SDK_EXECUTION_GROUPS,map)).toThrow();}
  for(const role of next.secondarySelectors!){

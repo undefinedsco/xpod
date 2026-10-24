@@ -104,11 +104,12 @@ class HeldContainer:
         try:
             for role in ['mnt','pid','user']:self.fds[role]=os.open('/proc/'+str(pid)+'/ns/'+role,os.O_RDONLY|os.O_CLOEXEC)
             self.fds['root']=os.open('/proc/'+str(pid)+'/root',os.O_PATH|os.O_DIRECTORY|os.O_CLOEXEC)
+            root=os.fstat(self.fds['root']);self.root_object=[root.st_dev,root.st_ino,root.st_mode,root.st_size]
         except BaseException:self.close();raise
     def close(self):
         for fd in self.fds.values():os.close(fd)
         self.fds.clear()
-    def sample(self,check):
+    def sample(self,check,diagnose=None):
         def read(path,maximum):
             data=bytearray()
             with open(path,'rb') as raw:
@@ -117,11 +118,17 @@ class HeldContainer:
                     if not chunk:break
                     data.extend(chunk);binding.need(len(data)<=maximum,'outside proc original bound')
             return bytes(data)
+        # Establish the fixed PID1 ready barrier before taking the first
+        # interval sample. Never compare a partially initialized first frame
+        # with a ready process after docker cp.
+        ready=Path('/proc/'+str(self.pid)+'/root/opt/qlever-sdk/materials/readonly-executor.ready.json')
+        while not ready.exists():check();time.sleep(.01)
+        handshake=json.loads(bounded_original(ready,16384,check))
         def ident(item):return [item.st_dev,item.st_ino,item.st_mode,item.st_size,item.st_mtime_ns,item.st_ctime_ns]
         base='/proc/'+str(self.pid);namespaces={}
         for role in ['mnt','pid','user']:
             check();path=base+'/ns/'+role;held=ident(os.fstat(self.fds[role]));binding.need(held==ident(os.stat(path)),'outside actual namespace changed');namespaces[role]=dict(link=os.readlink(path),identity=held)
-        root=ident(os.fstat(self.fds['root']));binding.need(root==ident(os.stat(base+'/root')),'outside actual root changed')
+        root=ident(os.fstat(self.fds['root']));binding.need(root==ident(os.stat(base+'/root')),'outside actual root changed');binding.need(root[:4]==self.root_object,'held root object changed')
         children=read(base+'/task/'+str(self.pid)+'/children',65536).decode().split();binding.need(not children,'actual PID1 already has candidate child before release')
         mounts=read(base+'/mountinfo',binding.META).decode('utf-8','strict');roots=[]
         for line in mounts.splitlines():
@@ -130,12 +137,22 @@ class HeldContainer:
         binding.need(len(roots)==1 and 'ro' in roots[0]['options'] and not roots[0]['propagation'],'actual root must be readonly/private mount')
         status=read(base+'/status',16384).decode();nsrows=[line.split()[1:] for line in status.splitlines() if line.startswith('NSpid:')];binding.need(len(nsrows)==1 and [int(v) for v in nsrows[0]]==[self.pid,1],'actual container namespace PID1 required')
         command=read(base+'/cmdline',16384).rstrip(b'\0').split(b'\0');binding.need(command==[v.encode() for v in ['/usr/bin/python3','-I','-S','-B','/components/qlever/scripts/sdk-readonly-executor-entry.py']],'actual PID1 fixed entry image command differs')
-        ready=Path(base+'/root/opt/qlever-sdk/materials/readonly-executor.ready.json')
-        while not ready.exists():check();time.sleep(.01)
-        handshake=json.loads(bounded_original(ready,16384,check))
-        value=dict(containerPid=self.pid,namespacePids=[int(v) for v in nsrows[0]],ready=handshake,command=[v.decode() for v in command],rootPidStarttime=read(base+'/stat',16384).decode().rsplit(')',1)[1].split()[19],namespaces=namespaces,rootIdentity=root,children=[],rootMount=roots[0],mountinfo=mounts)
+        value=dict(containerPid=self.pid,namespacePids=[int(v) for v in nsrows[0]],ready=handshake,command=[v.decode() for v in command],rootPidStarttime=read(base+'/stat',16384).decode().rsplit(')',1)[1].split()[19],namespaces=namespaces,rootIdentity=root,rootObjectIdentity=list(self.root_object),children=[],rootMount=roots[0],mountinfo=mounts)
+        binding.need(root==ident(os.fstat(self.fds['root']))==ident(os.stat(base+'/root')),'full root metadata changed inside one sample')
         if self.first is None:self.first=value
-        else:binding.need(value==self.first,'held executor identity changed before release')
+        elif binding.host_object_frame(value)!=binding.host_object_frame(self.first):
+            if diagnose is not None:
+                changed=[]
+                def difference(left,right,path=''):
+                    if type(left) is type(right) and isinstance(left,dict):
+                        for key in sorted(set(left)|set(right)):
+                            if key not in left or key not in right:changed.append(path+'/'+key)
+                            else:difference(left[key],right[key],path+'/'+key)
+                    elif left!=right:changed.append(path)
+                difference(self.first,value)
+                binding.need(len(changed)<=128 and all(len(path)<=256 for path in changed),'bounded held sample diagnostic paths')
+                diagnose(dict(schemaVersion=1,kind='actual-held-executor-sample-difference',authorityVerified=False,baseline=self.first,current=value,changedPaths=changed))
+            binding.need(False,'held executor identity changed before release')
         return value
 
 def execute(prepared_image,identity,deadline,out,network='bridge'):
@@ -160,10 +177,10 @@ def execute(prepared_image,identity,deadline,out,network='bridge'):
         for role,volume in zip(['build','materials'],volumes.values()):stage('create-volume-'+role,['docker','volume','create',volume])
         cid=stage('create-executor',argv).decode().strip();binding.need(re.fullmatch('[a-f0-9]{64}',cid),'actual created Docker ID');created=True
         stage('start-executor',['docker','start',cid]);before=inspect('containerBefore','container',cid,CONTAINER_TEMPLATE);binding.verify_container(before,prepared_image,volumes);binding.need(before['State']['Running'] is True,'release-gated container not live')
-        held=HeldContainer(before['State']['Pid']);save('hostBefore',held.sample(check))
+        held=HeldContainer(before['State']['Pid']);save('hostBefore',held.sample(check,lambda value:save('hostIdentityDiagnostic',value,0)))
         diff=stage('root-diff-before',['docker','diff',cid]).decode();binding.need(not diff.strip(),'readonly root starts modified');save('rootDiffBefore',[])
         stage('copy-prepared',['docker','cp',cid+':/opt/qlever-sdk/materials/source-prepared.json',str(out/'source-prepared.copied.json')]);copied=bounded_original(out/'source-prepared.copied.json',binding.META,check);originals['sourcePreparedCopied']=dict(path='source-prepared.copied.json',bytes=len(copied),sha256=hashlib.sha256(copied).hexdigest());prepared=json.loads(copied);binding.same_tuple(prepared['identity'],identity);save('sourcePrepared',prepared)
-        save('hostBeforeRelease',held.sample(check));release=out/'release.original';release.write_bytes((nonce+'\n').encode());originals['release']=commands.ref(release,out);stage('release-executor',['docker','cp',str(release),cid+':/opt/qlever-sdk/materials/readonly-executor.release'])
+        save('hostBeforeRelease',held.sample(check,lambda value:save('hostIdentityDiagnostic',value,0)));release=out/'release.original';release.write_bytes((nonce+'\n').encode());originals['release']=commands.ref(release,out);stage('release-executor',['docker','cp',str(release),cid+':/opt/qlever-sdk/materials/readonly-executor.release'])
         code=stage('wait-executor',['docker','wait',cid],19800).decode().strip();binding.need(code=='0','actual readonly SDK executor nonzero');save('wait',dict(containerId=cid,exitCode=int(code),actualDockerWait=True))
         stage('executor-logs',['docker','logs',cid],30);inspect('containerAfter','container',cid,CONTAINER_TEMPLATE)
         diff=stage('root-diff-after',['docker','diff',cid]).decode();binding.need(not diff.strip(),'readonly image root changed');save('rootDiffAfter',[])

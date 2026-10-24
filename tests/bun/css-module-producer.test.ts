@@ -105,3 +105,30 @@ for delta in [{'run_attempt':1},{'path':'.github/workflows/other.yml'},{'head_sh
  else:raise AssertionError('foreign run accepted')
 `);
 });
+
+test('CSS metadata revalidates API state before strict run and native custody checks', () => {
+ python(`from unittest.mock import patch
+requests=[]
+identity={'runId':42,'runAttempt':2,'runHeadSha':'b'*40,'event':'pull_request'}
+run={'id':42,'run_attempt':2,'head_sha':'b'*40,'path':m.WORKFLOW,'event':'pull_request','repository':{'full_name':m.REPOSITORY},'head_repository':{'full_name':m.REPOSITORY},'status':'in_progress'}
+class MetadataVerified(Exception):pass
+class Opener:
+ def open(self,request,timeout):
+  requests.append((request,timeout));headers=dict((key.lower(),value)for key,value in request.header_items())
+  value=run if headers.get('cache-control')=='no-cache'else dict(run,status='queued')
+  return io.BytesIO(json.dumps(value if request.full_url.endswith('/attempts/2')else {}).encode())
+with tempfile.TemporaryDirectory(dir=base)as tmp,patch.object(m.urllib.request,'build_opener',return_value=Opener()),patch.object(m.shutil,'disk_usage',return_value=type('Disk',(),{'free':m.FLOOR_BYTES+1024})()),patch.object(m,'validate_native_metadata',side_effect=MetadataVerified):
+ root=pathlib.Path(tmp)
+ try:m.acquire_native(root,{'GH_TOKEN':'test-canary','CSS_NATIVE_ARTIFACT_ID':'7'},identity)
+ except MetadataVerified:pass
+ else:raise AssertionError('actual metadata validation stage was not reached')
+ assert len(requests)==3
+ for request,timeout in requests:
+  headers=dict((key.lower(),value)for key,value in request.header_items())
+  assert headers['cache-control']=='no-cache'and headers['pragma']=='no-cache'and timeout==60
+ assert json.loads((root/'originals/run.raw.json').read_text())==run
+ try:m.validate_run(identity,dict(run,status='queued'))
+ except ValueError:pass
+ else:raise AssertionError('fresh queued state was accepted')
+`);
+});

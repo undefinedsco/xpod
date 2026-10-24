@@ -73,7 +73,7 @@ function assertSafePath(name) {
   }
 }
 
-function validateHeader(block, seen, { gnuLongNames = false, longName } = {}) {
+function validateHeader(block, seen, { gnuLongNames = false, longName, gitArchiveCommit } = {}) {
   const storedChecksum = readOctal(block, 148, 8);
   const checksumBlock = Buffer.from(block);
   checksumBlock.fill(0x20, 148, 156);
@@ -86,6 +86,10 @@ function validateHeader(block, seen, { gnuLongNames = false, longName } = {}) {
   const typeflag = String.fromCharCode(block[156]);
   const mode = readOctal(block, 100, 8) & 0o7777;
   const size = readOctal(block, 124, 12);
+  if (gitArchiveCommit !== undefined && typeflag === 'g') {
+    if (prefix || fullName !== 'pax_global_header' || size !== 52 || longName !== undefined) throw new Error('Invalid Git global PAX metadata');
+    return { path: fullName, type: 'git-global', mode, size };
+  }
   if (gnuLongNames && typeflag === 'L') {
     if (longName !== undefined) throw new Error('Repeated GNU long name metadata');
     if (prefix || fullName !== '././@LongLink' || size < 2 || size > 4096) throw new Error('Invalid GNU long name metadata');
@@ -109,7 +113,8 @@ function validateHeader(block, seen, { gnuLongNames = false, longName } = {}) {
 // any nonzero byte after the end-of-archive marker.
 function parseTar(buffer, limits) {
   if (limits && (!Number.isSafeInteger(limits.members) || limits.members < 1 || limits.members > 100000
-    || limits.gnuLongNames !== undefined && typeof limits.gnuLongNames !== 'boolean')) throw new Error('Invalid tar member budget');
+    || limits.gnuLongNames !== undefined && typeof limits.gnuLongNames !== 'boolean'
+    || limits.gitArchiveCommit !== undefined && (typeof limits.gitArchiveCommit !== 'string' || !/^[a-f0-9]{40}$/u.test(limits.gitArchiveCommit)))) throw new Error('Invalid tar member budget');
   const entries = [];
   const seen = new Set();
   let offset = 0;
@@ -122,11 +127,21 @@ function parseTar(buffer, limits) {
       break;
     }
     if (limits && ++headers > limits.members) throw new Error('Tar member budget exceeded');
-    const { path: fullName, type, mode, size } = validateHeader(block, seen, { gnuLongNames: limits?.gnuLongNames, longName });
+    const { path: fullName, type, mode, size } = validateHeader(block, seen, { gnuLongNames: limits?.gnuLongNames, longName, gitArchiveCommit: limits?.gitArchiveCommit });
     offset += BLOCK;
     const content = buffer.subarray(offset, offset + size);
     if (content.length < size) throw new Error(`Corrupted tar entry content: ${fullName}`);
-    offset += Math.ceil(size / BLOCK) * BLOCK;
+    const paddingEnd = offset + Math.ceil(size / BLOCK) * BLOCK;
+    if (paddingEnd > buffer.length) throw new Error('Corrupted tar entry padding');
+    if (type === 'git-global') {
+      // Git archives use one non-overriding comment record. No path, size or
+      // link overrides, unknown records, alternate encodings or late globals.
+      if (offset !== BLOCK || !content.equals(Buffer.from('52 comment=' + limits.gitArchiveCommit + '\n'))
+        || !isZeroBlock(buffer.subarray(offset + size, paddingEnd))) throw new Error('Git global PAX exact commit/position/padding differs');
+      offset = paddingEnd;
+      continue;
+    }
+    offset = paddingEnd;
     if (type === 'long-name') {
       if (content[content.length - 1] !== 0 || content.indexOf(0) !== content.length - 1) throw new Error('Invalid GNU long name terminator');
       longName = decodeName(content.subarray(0, -1));
@@ -172,13 +187,33 @@ function inspectTarballBuffer(compressed, limits) {
   return { entries, manifest };
 }
 
-// Single gunzip pass, bounded header/name set and manifest only; never materializes payloads.
-async function inspectTarballFile(file, limits, signal) {
+function validateTarInspectionLimits(limits) {
   for (const [key, maximum] of Object.entries({ expandedBytes: 4 * 1024 ** 3, members: 100000, manifestBytes: MANIFEST_MAX_BYTES })) {
     if (!limits || !Number.isSafeInteger(limits[key]) || limits[key] < 1 || limits[key] > maximum) throw new Error('Invalid tar inspection budget');
   }
+}
+// The same parser accepts a file stream or private-custody range stream. No
+// extracted body or second archive parser is created by a transport adapter.
+async function inspectTarballFile(file, limits, signal) {
+  validateTarInspectionLimits(limits);
   signal?.throwIfAborted();
-  const source = require('node:fs').createReadStream(file, { highWaterMark: 65536 });
+
+  return inspectTarballStream(require('node:fs').createReadStream(file, { highWaterMark: 65536 }), limits, signal);
+}
+// Single gunzip pass, bounded header/name set and manifest only; never materializes payloads.
+async function inspectTarballStream(source, limits, signal, memberRange, visitMemberRange) {
+  validateTarInspectionLimits(limits);
+  signal?.throwIfAborted();
+  if (memberRange !== undefined && (!memberRange || typeof memberRange.path !== 'string'
+    || !Number.isSafeInteger(memberRange.offset) || memberRange.offset < 0
+    || !Number.isSafeInteger(memberRange.length) || memberRange.length < 0 || memberRange.length > 65536)) throw new Error('Bounded member range required');
+  if (memberRange) memberRange = Object.freeze({ path: memberRange.path, offset: memberRange.offset, length: memberRange.length });
+  if (visitMemberRange !== undefined && typeof visitMemberRange !== 'function') throw new Error('Member range visitor must be a function');
+  const rangeOutput = memberRange ? Buffer.alloc(memberRange.length) : undefined;
+  let rangeFound = false, rangeCopied = 0;
+  if (limits.memberDigests !== undefined && limits.memberDigests !== true) throw new Error('Explicit member digest mode required');
+  if (limits.memberDigests ? !Number.isSafeInteger(limits.memberMetadataBytes) || limits.memberMetadataBytes < 1 || limits.memberMetadataBytes > 4 * 1024 ** 2 : limits.memberMetadataBytes !== undefined) throw new Error('Invalid member metadata budget');
+  if (!source || typeof source.pipe !== 'function' || typeof source.destroy !== 'function' || typeof source.on !== 'function') throw new Error('Readable actual tarball stream required');
   const gunzip = zlib.createGunzip({ chunkSize: 65536 });
   source.on('error', error => gunzip.destroy(error));
   const abort = () => gunzip.destroy(signal.reason);
@@ -187,6 +222,12 @@ async function inspectTarballFile(file, limits, signal) {
   const seen = new Set();
   let header = Buffer.alloc(BLOCK), used = 0, remaining = 0, padding = 0;
   let ended = false, expanded = 0, members = 0, manifestParts = [], manifestBytes = 0, current;
+  const memberDigests = limits.memberDigests ? [] : undefined;let memberMetadataBytes = 2, currentHash;
+  function memberComplete() {
+    if (!memberDigests) return;
+    const row = { path: current.path, type: current.type, mode: current.mode, bytes: current.size, ...(currentHash ? { sha256: currentHash.digest('hex') } : {}) };
+    memberDigests.push(row);currentHash = undefined;
+  }
   try {
     for await (const chunk of gunzip) {
       signal?.throwIfAborted();
@@ -198,9 +239,23 @@ async function inspectTarballFile(file, limits, signal) {
           if (!isZeroBlock(chunk.subarray(offset))) throw new Error('Corrupted tar payload: nonzero data after end-of-archive marker');
           offset = chunk.length;
         } else if (remaining) {
-          const count = Math.min(remaining, chunk.length - offset);
+          const count = Math.min(remaining, chunk.length - offset, 65536);
           if (current.path === MANIFEST_PATH) manifestParts.push(Buffer.from(chunk.subarray(offset, offset + count)));
-          remaining -= count; offset += count;
+          if (currentHash) currentHash.update(chunk.subarray(offset, offset + count));
+          if (visitMemberRange) {
+            const result = visitMemberRange(Object.freeze({path:current.path,type:current.type,mode:current.mode,bytes:current.size}), current.size-remaining, Buffer.from(chunk.subarray(offset,offset+count)));
+            // The visitor is synchronous: never issue a completed parse while validation is pending.
+            if (result !== null && (typeof result === 'object' || typeof result === 'function') && typeof result.then === 'function') {
+              Promise.resolve(result).catch(() => {});
+              throw new Error('Member range visitor must complete synchronously');
+            }
+          }
+          if (memberRange && current.path === memberRange.path) {
+            const position = current.size - remaining, start = Math.max(position, memberRange.offset), end = Math.min(position + count, memberRange.offset + memberRange.length);
+            if (end > start) { chunk.copy(rangeOutput, start - memberRange.offset, offset + start - position, offset + end - position); rangeCopied += end - start; }
+          }
+
+          remaining -= count; offset += count;if (!remaining) memberComplete();
         } else if (padding) {
           const count = Math.min(padding, chunk.length - offset);
           padding -= count; offset += count;
@@ -212,7 +267,19 @@ async function inspectTarballFile(file, limits, signal) {
             if (isZeroBlock(header)) { ended = true; continue; }
             if (++members > limits.members) throw new Error('Tar member budget exceeded');
             current = validateHeader(header, seen);
-            remaining = current.size;
+            if (memberRange && current.path === memberRange.path) {
+              if (current.type !== 'file' || memberRange.offset > current.size - memberRange.length) throw new Error('Regular member range outside original');
+              rangeFound = true;
+            }
+
+            if (memberDigests) {
+              if (current.type === 'directory' && current.size !== 0) throw new Error('Source directory member has data');
+              const reserved = { path: current.path, type: current.type, mode: current.mode, bytes: current.size, ...(current.type === 'file' ? { sha256: '0'.repeat(64) } : {}) };
+              const amount = Buffer.byteLength(JSON.stringify(reserved)) + (memberDigests.length ? 1 : 0);
+              if (memberMetadataBytes + amount > limits.memberMetadataBytes) throw new Error('Tar member metadata budget exceeded');
+              memberMetadataBytes += amount;currentHash = current.type === 'file' ? crypto.createHash('sha256') : undefined;
+            }
+            remaining = current.size;if (!remaining) memberComplete();
             padding = (BLOCK - remaining % BLOCK) % BLOCK;
             if (current.path === MANIFEST_PATH) {
               if (current.type !== 'file' || current.size > limits.manifestBytes) throw new Error('Tar manifest byte budget/type exceeded');
@@ -224,8 +291,10 @@ async function inspectTarballFile(file, limits, signal) {
     }
     if (!ended || remaining || padding || used || expanded % BLOCK) throw new Error('Corrupted tar payload: truncated or missing end-of-archive marker');
     if (!members || !seen.has(MANIFEST_PATH)) throw new Error(`Corrupted tar payload: missing ${MANIFEST_PATH}`);
-    const manifest = JSON.parse(Buffer.concat(manifestParts, manifestBytes).toString('utf8'));
-    return { manifest, members, expandedBytes: expanded };
+    const manifestOriginal = Buffer.concat(manifestParts, manifestBytes);
+    const manifest = JSON.parse(manifestOriginal.toString('utf8'));
+    if (memberRange && (!rangeFound || rangeCopied !== memberRange.length)) throw new Error('Requested original member missing or shortened');
+    return { manifest, manifestOriginal, members, expandedBytes: expanded, ...(memberDigests ? { memberDigests } : {}), ...(memberRange ? { memberRange: rangeOutput } : {}) };
   } finally { signal?.removeEventListener('abort', abort); source.destroy(); gunzip.destroy(); }
 }
 
@@ -300,5 +369,6 @@ module.exports = {
   parseTar,
   inspectTarballBuffer,
   inspectTarballFile,
+  inspectTarballStream,
   comparePackagePayloads,
 };

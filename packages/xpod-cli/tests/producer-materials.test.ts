@@ -27,9 +27,9 @@ test('rebuilds a closed producer inventory without stale source or a previous in
     for (const [file, value] of Object.entries({
       'package.json': JSON.stringify({ name: '@fixture/client', version: '1' }),
       'licenses/javascript/index.json': '{"schemaVersion":1,"entries":[]}',
-      '.test-data/build/npm-entry-inputs.json': '{"inputs":{}}',
+      '.test-data/build/npm-entry-inputs.canonical.json': '{"inputs":{}}',
       'dist/xpod.mjs': 'export {};',
-      '.test-data/build/client-inputs.json': '{"inputs":{}}',
+      '.test-data/build/client-inputs.canonical.json': '{"inputs":{}}',
       'dist/client.cjs': 'module.exports = {};', 'dist/client.mjs': 'export {};',
       'src/current.ts': 'export {};', 'src/removed.ts': 'old source',
     })) {
@@ -40,13 +40,16 @@ test('rebuilds a closed producer inventory without stale source or a previous in
     rmSync(path.join(root, 'src/removed.ts'));
     await exportProducerMaterials(root);
     const materials = path.join(root, 'dist/producer-materials');
+    const firstArchive = readFileSync(path.join(materials, 'client-source.tar.gz'));
+    await exportProducerMaterials(root);
+    expect(readFileSync(path.join(materials, 'client-source.tar.gz')).equals(firstArchive)).toBe(true);
     expect(existsSync(path.join(materials, 'source/src/removed.ts'))).toBe(false);
     const index = JSON.parse(readFileSync(path.join(materials, 'index.json'), 'utf8'));
     expect(index.files.some((file: { path: string }) => file.path === 'index.json')).toBe(false);
     expect(index.producer).toMatchObject({ name: '@fixture/client', version: '1' });
     expect(index.status).toBe('producer-materials-only');
     expect(index.coreMetafile).toBe('npm-entry-inputs.json');
-    expect(readFileSync(path.join(materials, index.coreMetafile), 'utf8')).toBe(readFileSync(path.join(root, '.test-data/build/npm-entry-inputs.json'), 'utf8'));
+    expect(readFileSync(path.join(materials, index.coreMetafile), 'utf8')).toBe(readFileSync(path.join(root, '.test-data/build/npm-entry-inputs.canonical.json'), 'utf8'));
     expect(index.corePayloads.esmSHA256).toBe(createHash('sha256').update(readFileSync(path.join(root, 'dist/xpod.mjs'))).digest('hex'));
     expect(typeof index.sourceAuthority.snapshotSHA256).toBe('string');
     expect(/^[a-f0-9]{64}$/.test(index.sourceAuthority.snapshotSHA256)).toBe(true);
@@ -102,9 +105,9 @@ test('preserves declared canonical workspace runtime source in the same verified
     for (const [file, value] of Object.entries({
       'xpod-cli/package.json': JSON.stringify({ name: '@undefineds.co/xpod-cli', version: '1', dependencies: { '@undefineds.co/xpod-client': 'workspace:*' } }),
       'xpod-cli/licenses/javascript/index.json': '{"schemaVersion":1,"entries":[]}',
-      'xpod-cli/.test-data/build/npm-entry-inputs.json': '{"inputs":{}}',
+      'xpod-cli/.test-data/build/npm-entry-inputs.canonical.json': '{"inputs":{}}',
       'xpod-cli/dist/xpod.mjs': 'export {};',
-      'xpod-cli/.test-data/build/client-inputs.json': '{"inputs":{}}',
+      'xpod-cli/.test-data/build/client-inputs.canonical.json': '{"inputs":{}}',
       'xpod-cli/dist/client.cjs': 'module.exports = {};', 'xpod-cli/dist/client.mjs': 'export {};',
       'xpod-cli/src/client.ts': 'export {};',
       'xpod-client/package.json': JSON.stringify({ name: '@undefineds.co/xpod-client', version: '1' }),

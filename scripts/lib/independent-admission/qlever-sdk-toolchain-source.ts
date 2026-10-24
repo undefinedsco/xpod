@@ -16,10 +16,31 @@ const positive=(value:unknown):value is number=>Number.isSafeInteger(value)&&Num
 const sha=(value:unknown):value is string=>typeof value==='string'&&/^[a-f0-9]{64}$/u.test(value);
 const decimalIdentity=(value:unknown):value is readonly string[]=>Array.isArray(value)&&value.length===6&&value.every((part:unknown)=>typeof part==='string'&&/^(?:0|[1-9][0-9]{0,19})$/u.test(part)&&BigInt(part)<=0xffffffffffffffffn);
 const absolute=(value:unknown):value is string=>typeof value==='string'&&value.startsWith('/')&&!/[\x00-\x1f\x7f\\]/u.test(value)&&value.split('/').slice(1).every(part=>part&&part!=='.'&&part!=='..');
+/** Decode one independently replayed operation at a time. No whole expanded
+ * copy is retained, and v1 keeps its original representation and limits. */
+export function* sdkToolchainOperations(coverage:any,check:()=>void=()=>{}):Generator<any> {
+  need(coverage&&(coverage.schemaVersion===1||coverage.schemaVersion===2)&&Array.isArray(coverage.operations)&&coverage.operations.length<=limits.sourceMembers,'known bounded tool operation layout required');
+  need(Buffer.byteLength(JSON.stringify(coverage))<=limits.metadataBytes,'bounded operation projection required');
+  if(coverage.schemaVersion===1){for(const operation of coverage.operations){check();yield operation;}return;}
+  need(coverage.model==='indexed-tool-operation-coverage-v1'&&Array.isArray(coverage.paths)&&coverage.paths.length<=limits.sourceMembers,'known indexed tool operation model required');
+  const paths=coverage.paths as unknown[];
+  need(paths.every(absolute)&&new Set(paths).size===paths.length,'unique absolute indexed mapping paths required');
+  for(const row of coverage.operations){
+    check();need(Array.isArray(row)&&row.length===11&&['exec','mmap','protect'].includes(row[0])&&typeof row[1]==='string'&&row[1].length>0&&row[1].length<=64&&[row[2],row[3],row[4],row[6]].every(positive)&&Number.isSafeInteger(row[5])&&row[5]>=0&&Array.isArray(row[9])&&Array.isArray(row[10])&&row[9].length+row[10].length===row[5],'exact indexed operation fields required');
+    need(row[0]==='exec'?row[7]&&row[8]:row[7]===null&&row[8]===null,'indexed operation role fields differ');
+    const missing=new Set<string>();
+    const unresolved=row[10].map((mapping:any)=>{
+      need(Array.isArray(mapping)&&mapping.length===9&&mapping.slice(0,2).every((part:unknown)=>typeof part==='string'&&/^(?:0|[1-9a-f][0-9a-f]*)$/u.test(part))&&BigInt('0x'+mapping[0])<BigInt('0x'+mapping[1])&&typeof mapping[2]==='string'&&/^[r-][w-][x-][ps]$/u.test(mapping[2])&&[mapping[3],mapping[6]].every((part:unknown)=>typeof part==='string'&&/^(?:0|[1-9][0-9]{0,19})$/u.test(part)&&BigInt(part)<=0xffffffffffffffffn)&&BigInt(mapping[6])>0&&mapping.slice(4,6).every((part:unknown)=>Number.isSafeInteger(part)&&Number(part)>=0)&&Number.isSafeInteger(mapping[7])&&mapping[7]>=0&&mapping[7]<paths.length&&(mapping[8]===null||positive(mapping[8])),'complete indexed missing mapping fields required');
+      const key=JSON.stringify(mapping);need(!missing.has(key),'duplicate indexed missing VMA');missing.add(key);
+      return 'toolchain-operation-file-mapping-original-unavailable:'+row[4]+':'+paths[mapping[7]]+':'+mapping[0]+'-'+mapping[1]+':'+mapping[3];
+    });
+    yield {kind:row[0],phase:row[1],pid:row[2],entrySequence:row[3],captureSequence:row[4],expectedFileMappingCount:row[5],...(row[0]==='exec'?{execEventSequence:row[6],primaryFile:row[7],elf:row[8]}:{exitSequence:row[6]}),mapOriginals:row[9],unresolved};
+  }
+}
 /** Pure diagnostic join. Calling it with JSON never registers any capability. */
 export function inspectSdkToolchainOperationFileCoverage(input:{coverage:unknown;observedFiles:readonly any[];afterRows:readonly Readonly<{originalPath:string;bytes:number;sha256:string;mode:number}>[];binaryFiles:readonly DebianInstalledBinaryFile[]},check:()=>void=()=>{}) {
   const coverage=input.coverage as any;
-  need(coverage?.schemaVersion===1&&Array.isArray(coverage.operations)&&coverage.operations.length>0&&coverage.operations.length<=limits.sourceMembers&&Array.isArray(coverage.pending),'complete nonempty operation projection required');
+  need((coverage?.schemaVersion===1||coverage?.schemaVersion===2)&&Array.isArray(coverage.operations)&&coverage.operations.length>0&&coverage.operations.length<=limits.sourceMembers&&Array.isArray(coverage.pending),'complete nonempty operation projection required');
   need(Buffer.byteLength(JSON.stringify(coverage))<=limits.metadataBytes,'bounded operation projection required');
   const pending=new Set<string>(),files=new Map<string,Readonly<{path:string;bytes:number;sha256:string;mode:number;binary?:DebianInstalledBinaryFile['binary'];source?:DebianInstalledBinaryFile['source']}>>(),operations=new Set<string>();
   for(const reason of coverage.pending){need(typeof reason==='string'&&reason.length<=4096,'bounded exact missing coverage reason');pending.add(reason);}
@@ -51,12 +72,13 @@ export function inspectSdkToolchainOperationFileCoverage(input:{coverage:unknown
     const row=Object.freeze({path:file.observedPath,bytes:original.bytes,sha256:original.sha256,mode,...(binary[0]?{binary:binary[0].binary,source:binary[0].source}:{})});
     const previous=files.get(file.observedPath);need(!previous||isDeepStrictEqual(previous,row),'tool file changed between observed operations');files.set(file.observedPath,row);
   };
-  for(const op of coverage.operations){
+  for(const op of sdkToolchainOperations(coverage,check)){
     check();need(['exec','mmap','protect'].includes(op?.kind)&&['configure','compile'].includes(op.phase)&&positive(op.pid)&&positive(op.entrySequence)&&positive(op.captureSequence)&&op.entrySequence<op.captureSequence&&Number.isSafeInteger(op.expectedFileMappingCount)&&op.expectedFileMappingCount>=0&&Array.isArray(op.mapOriginals)&&Array.isArray(op.unresolved),'actual operation relation required');
     const key=op.phase+':'+op.captureSequence;need(!operations.has(key),'duplicate operation capture');operations.add(key);
     if(op.kind==='exec'){need(positive(op.execEventSequence)&&op.entrySequence<op.execEventSequence&&op.execEventSequence<op.captureSequence&&op.primaryFile,'actual exec stop/image relation required');execs++;join(op.primaryFile,op.phase);}
     else need(positive(op.exitSequence)&&op.entrySequence<op.exitSequence&&op.exitSequence<op.captureSequence,'actual successful mapping/protection result relation required');
     if(op.mapOriginals.length!==op.expectedFileMappingCount||op.unresolved.length){operationCoverage=false;pending.add('toolchain-operation-file-mapping-coverage-incomplete:'+key);}
+    for(const reason of op.unresolved){need(typeof reason==='string'&&reason.length<=4096,'bounded exact missing coverage reason');pending.add(reason);}
     const ranges=new Set<string>();
     for(const file of op.mapOriginals){
       need(positive(file.captureSequence)&&file.captureSequence>op.captureSequence&&file.mapping&&typeof file.mapping.startHex==='string'&&typeof file.mapping.endHex==='string','actual VMA capture relation required');
@@ -123,6 +145,19 @@ export async function observeQleverSdkToolchainSourceOriginals(capability:unknow
         const joined=inspectSdkToolchainSourceArchiveJoin({files:result.facts.sdkToolchainSignedFileCoordinates,coordinates:archives.coordinates,collection,checksums:checksumRows,signedReleases:signed},check);check();assertCurrent();Object.assign(joinedFacts,joined);pending.delete(ARCHIVE_GAP);
       }catch(error){pending.add('qlever-sdk-toolchain-source-archive-join-unverified: '+String(error instanceof Error?error.message:error).slice(0,1024));}
     }
+    // Only the same SDK's private, fully replayed execution observation can
+    // discharge lifetime immutability. A public JSON diagnostic cannot do so.
+    if(execution.sdkToolchainExecutionLifetimeImmutabilityVerified===true){
+      joinedFacts.sdkToolchainExecutionLifetimeImmutabilityVerified=true;
+      joinedFacts.sdkToolchainExecutionLifetimeScope=execution.sdkToolchainExecutionLifetimeScope;
+      pending.delete('qlever-sdk-toolchain-execution-lifetime-immutability-unverified');
+    }
+    joinedFacts.sdkToolchainSourceClosureVerified=joinedFacts.sdkToolchainExecutionLifetimeImmutabilityVerified===true
+      && joinedFacts.sdkToolchainOperationCoverageVerified===true
+      && joinedFacts.sdkToolchainObservedAfterFileBindingsVerified===true
+      && joinedFacts.sdkToolchainSignedDebianBinaryFileBindingsVerified===true
+      && joinedFacts.sdkToolchainStopReadOnlyProviderCoverageVerified===true
+      && joinedFacts.sdkToolchainExactSourceArchiveCoverageVerified===true && pending.size===0;
     check();assertCurrent();return Object.freeze({facts:Object.freeze(joinedFacts),pending:Object.freeze([...pending]),assertCurrent});
   }catch(error){return Object.freeze({facts:Object.freeze(facts),pending:Object.freeze(['qlever-sdk-toolchain-private-coverage-unverified: '+String(error instanceof Error?error.message:error).slice(0,1024)])});}
 }

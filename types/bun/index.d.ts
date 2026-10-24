@@ -15,6 +15,7 @@ declare module 'bun:test' {
     toContain(expected: unknown): void;
     toHaveLength(expected: number): void;
     toBeGreaterThan(expected: number): void;
+    toBeGreaterThanOrEqual(expected: number): void;
     toBeTruthy(): void;
     toBeFalsy(): void;
     toBeNull(): void;
@@ -25,6 +26,13 @@ declare module 'bun:test' {
     readonly resolves: Expectation;
     readonly rejects: Expectation;
   }
+
+  type MethodKey<T> = { [K in keyof T]-?: T[K] extends (...args: never[]) => unknown ? K : never }[keyof T];
+  export interface MethodSpy<TImplementation> {
+    mockImplementation(implementation: TImplementation): this;
+    mockRestore(): void;
+  }
+  export function spyOn<T extends object, K extends MethodKey<T>>(target: T, key: K): MethodSpy<T[K]>;
 
   export function describe(name: string, body: TestBody): void;
   export function test(name: string, body: TestBody, timeout?: number): void;

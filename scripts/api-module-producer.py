@@ -122,7 +122,7 @@ def target_identity(repo, target):
     return json.loads(subprocess.check_output(['bun', str(Path(repo) / 'scripts/module-product-targets.ts'), 'api', target, '--require-host'], cwd=repo, text=True))
 
 
-def phase_plan(repo, output, version, target, source_kind=None, retained_byte_ceiling=None, controlled_plan_version='current', workspace_recipe='global-v1', workspace_source_sha=None):
+def phase_plan(repo, output, version, target, source_kind=None, retained_byte_ceiling=None, controlled_plan_version='current', workspace_recipe='global-v1', workspace_source_sha=None, notice_supplements=(), notice_verifier_required=False):
     """Commands are the normal producer entrypoints, without replacement writers."""
     repo, output = Path(repo), Path(output)
     api = ['bun', 'run', '--cwd', 'packages/xpod-api']
@@ -140,6 +140,14 @@ def phase_plan(repo, output, version, target, source_kind=None, retained_byte_ce
         ('pack', api + ['pack', str(output / 'stage'), str(output / 'product.tgz')], 600),
         ('pack-result', ['bun', '-e', "import {readFileSync} from 'node:fs';import {parseApiPackReceipt} from './scripts/collect-api-release-input';console.log(JSON.stringify(parseApiPackReceipt(readFileSync(process.argv[1]))));", str(output / 'evidence/pack.raw.log')], 60),
     ]
+    if notice_supplements:
+        for row in rows:
+            if row[0]=='notices':row[1].extend(['--registry-lock',str(repo/'bun.lock'),*map(str,notice_supplements)])
+    if type(notice_verifier_required) is not bool:raise ValueError('Exact notice verifier requirement required')
+    if notice_verifier_required:
+        if not notice_supplements:raise ValueError('Immutable notice attestation inputs required')
+        at=next(index for index,row in enumerate(rows) if row[0]=='notices')
+        rows.insert(at,('notice-verifier-acquire',['bun',str(repo/'scripts/lib/acquire-notice-verifier.ts'),str(output/'notice-tools'),str(output/'evidence/notice-verifier-request.original.json')],300))
     if workspace_recipe not in ('global-v1','api-ui-root-minimal-v2'):
         raise ValueError('Exact API workspace recipe required')
     if workspace_recipe == 'api-ui-root-minimal-v2':
@@ -328,14 +336,87 @@ def controlled_retained_plan(inputs, retained, limits):
                 totalRetainedByteCeiling=limits['sourceMaterialBytes'])
 
 
-def produce(repo, output, target, environment=None, source_kind=None, workspace_recipe='global-v1'):
+def bounded_notice_original(file,maximum):
+    fd=os.open(file,os.O_RDONLY|os.O_NOFOLLOW)
+    identity=lambda value:(value.st_dev,value.st_ino,value.st_mode,value.st_size,value.st_mtime_ns,value.st_ctime_ns,value.st_nlink)
+    try:
+        before=os.fstat(fd)
+        if not stat.S_ISREG(before.st_mode) or before.st_size>maximum:raise ValueError('Bounded regular notice original required')
+        parts=[];size=0
+        while True:
+            check_parent_deadline();block=os.read(fd,min(65536,maximum+1-size))
+            if not block:break
+            size+=len(block)
+            if size>maximum:raise ValueError('Notice original grew')
+            parts.append(block)
+        if size!=before.st_size or identity(before)!=identity(os.fstat(fd)) or identity(before)!=identity(file.lstat()):raise ValueError('Notice original identity changed')
+        return b''.join(parts)
+    finally:os.close(fd)
+
+def notice_verifier_requirement(repo, directories, source_sha):
+    """Only tracked immutable supplement declarations can add this phase."""
+    required=False
+    for directory in directories:
+        file=Path(directory)/'index.json'
+        if file.is_symlink() or not file.is_file() or file.stat().st_size>4*1024**2:raise ValueError('Bounded notice supplement index required')
+        actual=bounded_notice_original(file,4*1024**2);relative=str(file.relative_to(repo))
+        blob=subprocess.check_output(['git','rev-parse',source_sha+':'+relative],cwd=repo,text=True).strip()
+        if not re.fullmatch(r'[0-9a-f]{40}',blob):raise ValueError('Exact immutable notice index blob required')
+        size=int(subprocess.check_output(['git','cat-file','-s',blob],cwd=repo,text=True))
+        if size>4*1024**2:raise ValueError('Immutable notice index byte budget')
+        immutable=subprocess.check_output(['git','cat-file','blob',blob],cwd=repo)
+        if len(immutable)!=size:raise ValueError('Immutable notice index size differs')
+        if actual!=immutable:raise ValueError('Notice supplement index differs from immutable source')
+        value=json.loads(actual)
+        if value.get('schemaVersion')!=1 or not isinstance(value.get('entries'),list) or len(value['entries'])>512:raise ValueError('Exact bounded notice supplement index required')
+        required=required or any(isinstance(row,dict) and isinstance(row.get('sourceOriginals'),dict) and 'attestation' in row['sourceOriginals'] for row in value['entries'])
+    return required
+
+
+def retain_notice_verifier_originals(output):
+    """No copies: all fixed acquisition originals were pre-reserved together."""
+    source=output/'notice-tools';receipt=source/'acquisition.original.json'
+    if source.is_symlink() or not source.is_dir() or receipt.is_symlink() or not receipt.is_file() or receipt.stat().st_size>4*1024**2:raise ValueError('Closed notice verifier originals required')
+    body=bounded_notice_original(receipt,4*1024**2);value=json.loads(body)
+    refs=[value.get(role) for role in ['archive','executable','trustedRoot','checksums','request']]+value.get('acquisitionOriginals',[])
+    if value.get('schemaVersion')!=1 or value.get('kind')!='reviewed-notice-attestation-verifier-originals' or len(refs)!=12:raise ValueError('Exact verifier original universe required')
+    names={'acquisition.original.json'};total=len(body)
+    for ref in refs:
+        if not isinstance(ref,dict) or not isinstance(ref.get('path'),str) or ref['path'] in names or Path(ref['path']).is_absolute() or any(x in ('','.','..') for x in ref['path'].split('/')):raise ValueError('Exact verifier original coordinate required')
+        names.add(ref['path']);file=source/ref['path'];node=source
+        for part in ref['path'].split('/'):
+            node=node/part
+            if node.is_symlink():raise ValueError('Verifier original link rejected')
+        if reference(file,source)!=ref:raise ValueError('Verifier original bytes differ')
+        total+=ref['bytes']
+    members=list(source.rglob('*'))
+    if any(file.is_symlink() or not(file.is_file() or file.is_dir()) for file in members) or {str(file.relative_to(source)) for file in members if file.is_dir()}!={'http'}:raise ValueError('Verifier retained directory closed set differs')
+    actual={str(file.relative_to(source)) for file in members if file.is_file()}
+    if actual!=names or total>64*1024**2:raise ValueError('Verifier retained closed set/shared reservation differs')
+    destination=output/'source-materials/notice-tools'
+    if destination.parent.is_symlink() or not destination.parent.is_dir() or destination.parent.resolve()!=destination.parent:raise ValueError('Canonical source material retention parent required')
+    if destination.exists() or destination.is_symlink():raise ValueError('Fresh verifier retention required')
+    source.rename(destination)
+    return reference(destination/'acquisition.original.json',output)
+
+def produce(repo, output, target, environment=None, source_kind=None, workspace_recipe='global-v1', notice_supplements=()):
     if workspace_recipe not in ('global-v1','api-ui-root-minimal-v2'):raise ValueError('Exact API workspace recipe required')
     repo, output = Path(repo).resolve(), Path(output).resolve()
+    checked_supplements=[]
+    if len(notice_supplements)>1 or any(relative!='packages/xpod-api/notice-supplements' for relative in notice_supplements):raise ValueError('Exact tracked notice supplement API directory required')
+    for relative in notice_supplements:
+        candidate=repo/relative
+        if not relative or Path(relative).is_absolute() or any(part in ('','..','.') for part in relative.split('/')) or candidate.resolve()!=candidate or not candidate.is_dir():raise ValueError('Canonical tracked notice supplement directory required')
+        actual={str(path.relative_to(repo)) for path in candidate.rglob('*') if path.is_file()}
+        tracked=set(subprocess.check_output(['git','ls-files','--',relative],cwd=repo,text=True).splitlines())
+        if len(actual)>512 or not actual or actual!=tracked or any(path.is_symlink() for path in candidate.rglob('*')):raise ValueError('Closed tracked notice supplement inputs required')
+        checked_supplements.append(candidate)
     environment = dict(os.environ if environment is None else environment)
     target_info = target_identity(repo, target)
     if not target_info['nativeSourceAvailable']:
         raise ValueError('API native source is pending for requested target')
     before = source_state(repo)
+    verifier_required=notice_verifier_requirement(repo,checked_supplements,before['sha'])
     identity = context(environment, before)
     manifest = json.loads((repo / 'packages/xpod-api/package.json').read_text())
     version = manifest.get('version')
@@ -354,6 +435,8 @@ def produce(repo, output, target, environment=None, source_kind=None, workspace_
                    rss=dict(enforced=False, observation='POSIX cumulative waited-child maximum; not group aggregate', cumulativeWaitedChildMaxRSSBytes=None),
                    published=False, releaseQualified=False, consumerValidated=False, legalClearance=False, nativeAdmission=False,
                    blockers=['controlled-preview-only', 'source-native-legal-consumer-release-admission-unverified', 'other-platform-products-unverified'])
+    if checked_supplements:
+        receipt['noticeSupplementInputs']=[dict(directory=str(directory.relative_to(repo)),files=[str(path.relative_to(repo)) for path in sorted(directory.rglob('*')) if path.is_file()]) for directory in checked_supplements]
     if workspace_recipe!='global-v1':receipt['workspaceRecipe']=workspace_recipe
     spec = importlib.util.spec_from_file_location('api_product_supervise', repo / 'scripts/agentfs-native-ci/supervise.py')
     supervise = importlib.util.module_from_spec(spec)
@@ -383,7 +466,8 @@ def produce(repo, output, target, environment=None, source_kind=None, workspace_
         receipt['resources'] = dict(freshRequiredBytes=FRESH_BYTES, floorBytes=FLOOR_BYTES, initialFreeBytes=initial_free)
         if initial_free < FRESH_BYTES:
             raise ValueError('Fresh API producer capacity below 8GiB')
-        queue = list(phase_plan(repo, output, version, target, workspace_recipe=workspace_recipe, workspace_source_sha=before['sha']))
+        if verifier_required:reserve(64*1024**2)
+        queue = list(phase_plan(repo, output, version, target, workspace_recipe=workspace_recipe, workspace_source_sha=before['sha'],notice_supplements=checked_supplements,notice_verifier_required=verifier_required))
         while queue:
             name, command, timeout = queue.pop(0)
             if controlled is not None and name == 'native-inputs':
@@ -408,6 +492,9 @@ def produce(repo, output, target, environment=None, source_kind=None, workspace_
             if remaining <= 0:
                 raise ValueError('API product overall deadline')
             cwd, scoped = repo, phase_environment(environment, name)
+            if name=='notice-verifier-acquire':
+                request=dict(schemaVersion=1,deadlineUnixSeconds=time.time()+remaining,ceilingBytes=64*1024**2,supplements=list(map(str,checked_supplements)))
+                with (evidence/'notice-verifier-request.original.json').open('x') as raw:json.dump(request,raw)
             if name in native_rows:
                 remaining = min(remaining, native_end-time.monotonic())
                 if remaining <= 0:
@@ -429,6 +516,7 @@ def produce(repo, output, target, environment=None, source_kind=None, workspace_
         with parent_finalization_deadline(started+50*60):
             if controlled is not None:
                 receipt['nativeBuildOriginals'] = retain_controlled_originals(output, reserve)
+            if verifier_required:receipt['noticeVerifierOriginals']=retain_notice_verifier_originals(output)
             after = source_state(repo)
             if after != before:
                 raise ValueError('Tracked source changed during product production')
@@ -444,6 +532,24 @@ def produce(repo, output, target, environment=None, source_kind=None, workspace_
         receipt['failure'] = f'{type(error).__name__}: {error}'
         raise
     finally:
+        failed_tools=output/'notice-tools'
+        if failed_tools.exists() and receipt.get('status')=='failed':
+            try:
+                if failed_tools.is_symlink():raise ValueError('Failed verifier links rejected')
+                failed_count=0;failed_bytes=0
+                for file in failed_tools.rglob('*'):
+                    failed_count+=1
+                    if failed_count>32:raise ValueError('Failed verifier diagnostic member bound')
+                    info=file.lstat()
+                    if stat.S_ISDIR(info.st_mode):continue
+                    if not stat.S_ISREG(info.st_mode) or info.st_nlink!=1:raise ValueError('Failed verifier regular originals required')
+                    failed_bytes+=info.st_size
+                    if failed_bytes>64*1024**2:raise ValueError('Failed verifier diagnostic retained bound')
+                destination=output/'source-materials/notice-tools'
+                if destination.exists() or destination.parent.is_symlink() or not destination.parent.is_dir() or destination.parent.resolve()!=destination.parent:raise ValueError('Owned failed verifier retention parent required')
+                failed_tools.rename(destination)
+                receipt['failedNoticeVerifierOriginals']=dict(path='source-materials/notice-tools',scope='failed/partial diagnostic originals only; no tool/source authority')
+            except BaseException as retain_error:receipt['noticeVerifierRetentionError']=type(retain_error).__name__
         receipt['elapsedSeconds'] = time.monotonic() - started
         with (output / 'producer.receipt.json').open('x') as destination:
             json.dump(receipt, destination, indent=2)
@@ -456,6 +562,7 @@ if __name__ == '__main__':
     parser.add_argument('--target', required=True)
     parser.add_argument('--native-source-kind', choices=['xpod-controlled-inngest-build-v1'])
     parser.add_argument('--workspace-recipe',choices=['global-v1','api-ui-root-minimal-v2'],default='global-v1')
+    parser.add_argument('--notice-supplement',action='append',default=[])
     args = parser.parse_args()
-    result = produce(Path(__file__).resolve().parent.parent, Path(args.out), args.target, source_kind=args.native_source_kind, workspace_recipe=args.workspace_recipe)
+    result = produce(Path(__file__).resolve().parent.parent, Path(args.out), args.target, source_kind=args.native_source_kind, workspace_recipe=args.workspace_recipe,notice_supplements=args.notice_supplement)
     print(json.dumps(result))

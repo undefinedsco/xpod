@@ -1,3 +1,4 @@
+import { canonicalBuildMetafile, projectBuildMetafile } from '../../xpod-cli/src/build-metafile';
 import { test, expect } from 'bun:test';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
@@ -8,7 +9,7 @@ function fixture() {
   const base=path.resolve(import.meta.dir,'../../../.test-data/staged-producer');mkdirSync(base,{recursive:true});
   const parent=mkdtempSync(path.join(base,'case-')),root=path.join(parent,'original');mkdirSync(root);
   writeFileSync(path.join(root,'index.json'),'original');writeFileSync(path.join(root,'output.mjs'),'export const value=1;');
-  const input={root,indexPath:path.join(root,'index.json'),toolsPath:path.join(root,'output.mjs'),tools:{async verifyProducerSourceArchive(){throw new Error('staging must not call tools');},collectJavascriptNotices(){throw new Error('staging must not call tools');}},assertCurrent(){},resolveImport(){return path.join(root,'output.mjs');}} satisfies ReturnType<typeof resolveProducerInput>;
+  const input={root,indexPath:path.join(root,'index.json'),toolsPath:path.join(root,'output.mjs'),tools:{canonicalBuildMetafile,projectBuildMetafile,async verifyProducerSourceArchive(){throw new Error('staging must not call tools');},collectJavascriptNotices(){throw new Error('staging must not call tools');}},assertCurrent(){},resolveImport(){return path.join(root,'output.mjs');}} satisfies ReturnType<typeof resolveProducerInput>;
   return {parent,root,input,stage:path.join(parent,'stage')};
 }
 

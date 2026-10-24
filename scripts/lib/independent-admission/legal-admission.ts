@@ -1,14 +1,17 @@
+import {inspectNativeGitInputGrants} from './candidate-service-native-grant';
+import type {candidateServiceNativeLegalMaterials} from './candidate-service-native-legal-materials';
 import { readLegalProductManifest } from './legal-product-manifest';
 import path from 'node:path';
 import { inspectExactSourceGrantBinding, type ExactSourceGrantBinding as Binding } from './legal-exact-source';
 import { LegalCoverageLedger, type LegalCoverageReport } from './legal-coverage';
 import { inspectTranspiledLegalMappings } from './legal-source-mappings';
 import { inspectBundleLegalMaterials } from './legal-bundle-materials';
-import { inspectPhysicalLegalMaterials } from './legal-material-inventory';
+import { inspectPhysicalLegalMaterials, inspectPhysicalOriginalMemberGrant } from './legal-material-inventory';
 import { createHash } from 'node:crypto';
-import { collectedArtifactView } from './artifact-collector';
+import { collectedArtifactView, candidateServiceRuntimeArtifactPath } from './artifact-collector';
+import { canonicalServiceRegistryTarball, registryLegalOriginalArchiveModes, registryLegalOriginalView, serviceRegistrySelectedInputView } from './legal-registry-originals';
 import { derivedSourceView } from './source-context';
-import type { CollectedArtifactMember, DerivedSourceView } from './artifact-contract';
+import type { CollectedArtifactMember, CollectedArtifactView, DerivedSourceView } from './artifact-contract';
 import type { AdmissionContext } from './index';
 
 // Reuse the existing SPDX MIT standard-template material, not another license
@@ -19,6 +22,10 @@ const ISC_TEMPLATE = 'packages/xpod-cli/licenses/native/collection/objects/' + I
 const APACHE_TEMPLATE = 'packages/xpod-cli/licenses/native/collection/objects/cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30.txt';
 const APACHE_TEMPLATE_SHA = 'cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30';
 const MIT_TEMPLATE_SHA = 'b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5';
+/** Same reviewed standard originals, exported for root-service adapters that
+ * must apply the existing text predicates rather than a second catalog. */
+export const LEGAL_GRANT_TEMPLATE_PATHS = Object.freeze({ mit: MIT_TEMPLATE,
+  isc: ISC_TEMPLATE, apache: APACHE_TEMPLATE });
 const hash = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
 function fail(message: string): never { throw new Error('Legal admission: ' + message); }
 const safe = (value: unknown): value is string => typeof value === 'string' && value.length > 0 && !value.includes('\\')
@@ -225,4 +232,177 @@ export function verifyLegalAdmission(evidence: unknown, context: Pick<AdmissionC
   facts.normativeGrantVerified = !pending.some(message => /grant|copyright|license declaration|SPDX expression/iu.test(message));
   facts.legalQualified = coverage.complete && pending.length === 0;
   return result();
+}
+
+/** Service root adapter. Runtime app/SDK file members are joined to the
+ * existing evaluators. Exact-source members reuse the immutable Git binding;
+ * installed projections reuse the sole registry original issuer, recorded
+ * archive metadata and the actual selected-input binding. Directory/symlink
+ * records are structural membership only and never acquire a file grant.
+ * Modified, generated and native members remain specific pending scopes. */
+export type CandidateServiceOriginKind = 'exact-source' | 'installed-projection' | 'workspace-transform' | 'native-runtime';
+export interface CandidateServiceDependencyOriginal {
+  readonly original: unknown;
+  readonly name: string;
+  readonly version: string;
+  readonly sourceRoot: string;
+  readonly archive: Readonly<{ url: string; bytes: number; sha256: string }>;
+}
+export interface CandidateServiceLegalOrigin {
+  /** Exact absolute runtime file path, never a stripped archive-relative path. */
+  readonly path: string;
+  readonly kind: CandidateServiceOriginKind;
+  readonly sourcePath?: string;
+  readonly originalPath?: string;
+  readonly runtimePath?: string;
+  readonly original?: unknown;
+  /** Canonical installed-projection provenance; never normalized away. */
+  readonly dependency?: CandidateServiceDependencyOriginal;
+}
+/** Pure installed-origin provenance checks. Exported so focused tests can
+ * exercise exact URL/name/version/placement without minting a registry cap. */
+export function inspectCandidateServiceInstalledProvenance(origin: CandidateServiceLegalOrigin,
+  source: Pick<DerivedSourceView, 'sourceSha'>, view: Readonly<{sourceSha:string;name:string;version:string;archiveBytes:number;archiveSha256:string;readMetadata():Buffer}>,
+  member: Readonly<{bytes:number;sha256:string;mode:number}>, originalMode: number | undefined, memberPath: string): string[] {
+  const pending: string[] = [], dependency = origin.dependency;
+  if (!dependency) return ['Installed original provenance missing: ' + origin.path];
+  if (view.sourceSha !== source.sourceSha || view.name !== dependency.name || view.version !== dependency.version) return ['Installed original source/name/version differs from provenance: ' + origin.path];
+  if (!origin.originalPath || !dependency.sourceRoot) return ['Installed original package-relative path and sourceRoot required: ' + origin.path];
+  if (origin.path !== dependency.sourceRoot + '/' + origin.originalPath) pending.push('Runtime member/sourceRoot placement differs from provenance: ' + origin.path);
+  const placement = memberPath.slice(0, memberPath.length - origin.originalPath.length - 1);
+  if (placement !== candidateServiceRuntimeArtifactPath(dependency.sourceRoot)) pending.push('Runtime placement adapter differs from provenance: ' + origin.path);
+  let metadata: any;
+  try { metadata = JSON.parse(view.readMetadata().toString('utf8')); } catch { return ['Original registry metadata JSON required: ' + origin.path]; }
+  let canonicalUrl: string;
+  try { canonicalUrl = canonicalServiceRegistryTarball(dependency.name, dependency.version); } catch { return ['Exact installed registry identity required: ' + origin.path]; }
+  if (metadata?.dist?.tarball !== dependency.archive.url || dependency.archive.url !== canonicalUrl) pending.push('Installed archive URL differs from canonical registry metadata: ' + origin.path);
+  if (dependency.archive.bytes !== view.archiveBytes || dependency.archive.sha256 !== view.archiveSha256) pending.push('Installed archive identity differs from official original: ' + origin.path);
+  if (originalMode === undefined) pending.push('Official registry archive mode missing: ' + origin.path);
+  else if (originalMode !== member.mode) pending.push('Runtime member mode differs from official original: ' + origin.path);
+  return pending;
+}
+export interface CandidateServiceLegalEvaluatorOptions {
+  readonly nativePackageGrant?: (input: import('./candidate-service-native-runtime-originals').CandidateServiceNativeInputBinding, memberPath:string, verifyGrant:(bytes:Buffer)=>boolean, declarations:(bytes:Buffer)=>string[])=>{covered:boolean;pending:readonly string[]};
+  readonly workspaceTransformGrant?: (origin: CandidateServiceLegalOrigin, memberPath:string, verifyGrant:(bytes:Buffer)=>boolean, declarations:(bytes:Buffer)=>string[])=>{covered:boolean;pending:readonly string[]};
+  readonly nativeReadTracked?: (path:string)=>Buffer;
+  readonly nativeReadBudget?: import('./candidate-service-native-grant').NativeGrantReadBudget;
+  readonly nativeMaterials?: ReturnType<typeof candidateServiceNativeLegalMaterials>;
+  readonly runtimeArtifact?: unknown;
+  readonly originals?: unknown;
+  readonly source?: unknown;
+  readonly grants?: Readonly<{ mit: Buffer; isc: Buffer; apache: Buffer }>;
+  readonly check?: () => void;
+}
+const absoluteServiceRuntimePath = (name: string): boolean => name === '/app' || name.startsWith('/app/')
+  || name === '/opt/xpod/qlever' || name.startsWith('/opt/xpod/qlever/');
+export function inspectCandidateServiceLegalOrigins(artifact: CollectedArtifactView, source: DerivedSourceView,
+  origins: readonly CandidateServiceLegalOrigin[], memberPaths: ReadonlyMap<string, string>, pending: string[], template: Buffer,
+  options: CandidateServiceLegalEvaluatorOptions = {}): LegalCoverageReport {
+  const ledger = new LegalCoverageLedger(artifact.members), tracked = new Set(source.trackedPaths), seen = new Set<string>();
+  const members = new Map(artifact.members.map(row => [row.path, row]));
+  // Official original readers retain immutable copies. Cache package indexes
+  // only within this observation; current selected binding still runs per file.
+  const packageIndexes = new Map<object, { modes: ReturnType<typeof registryLegalOriginalArchiveModes>; originalMembers: Map<string, CollectedArtifactMember>; declaredLicense: unknown }>();
+  const grantSet = options.grants ?? { mit: template, isc: Buffer.alloc(0), apache: Buffer.alloc(0) };
+  const verifyGrant = (declared: unknown) => (bytes: Buffer) =>
+    Boolean((declared === undefined || declared === 'ISC') && grantSet.isc.length && verifyIscGrantText(bytes, grantSet.isc, declared))
+    || Boolean(grantSet.apache.length && verifyApacheGrantText(bytes, grantSet.apache, declared))
+    || Boolean((declared === undefined || declared === 'MIT') && verifyMitGrantText(bytes, grantSet.mit));
+  const declarations = (declared: unknown) => (bytes: Buffer) => explicitLicenseConflicts(bytes,
+    declared === 'Apache-2.0' ? 'Apache-2.0' : declared === 'ISC' ? 'ISC' : 'MIT');
+  const noticeAncestors = (sourcePath: string) => {
+    const ancestors: string[] = []; let current = path.posix.dirname(sourcePath);
+    for (;;) { ancestors.push(current); if (current === '.') break; current = path.posix.dirname(current); }
+    return source.trackedPaths.filter((file: string) => notice(file) && ancestors.includes(path.posix.dirname(file)));
+  };
+  for (const origin of origins) {
+    if (!origin || !absoluteServiceRuntimePath(origin.path) || seen.has(origin.path)) fail('unsafe or duplicate absolute service origin');
+    seen.add(origin.path);
+    // The collector's injective absolute->archive adapter must contain this
+    // exact runtime entry. Membership is validated structurally, never guessed.
+    const memberPath = memberPaths.get(origin.path);
+    if (!memberPath) fail('service origin is not an actual runtime member');
+    const member = members.get(memberPath);
+    // Directory/symlink records are structural only: no invented file origin.
+    if (!member) continue;
+    options.check?.();
+    if (origin.kind === 'exact-source') {
+      if (!origin.sourcePath || !tracked.has(origin.sourcePath)) { pending.push('Exact source mapping absent from immutable Git: ' + origin.path); continue; }
+      let directory = path.posix.dirname(origin.sourcePath), grantSourcePath: string | undefined;
+      for (;;) {
+        grantSourcePath = source.trackedPaths.filter((file: string) => license(file) && path.posix.dirname(file) === directory).sort()[0];
+        if (grantSourcePath || directory === '.') break;
+        directory = path.posix.dirname(directory);
+      }
+      if (!grantSourcePath) { pending.push('Original scoped grant missing: ' + origin.sourcePath); continue; }
+      const before = pending.length;
+      const exactReader=options.nativeReadTracked?{...source,readTracked:options.nativeReadTracked}:source;
+      pending.push(...inspectExactSourceGrantBinding({ path: member.path, sourcePath: origin.sourcePath, grantSourcePath }, artifact, exactReader,
+        bytes => verifyMitGrantText(bytes, template), explicitLicenseConflicts));
+      for (const filename of noticeAncestors(origin.sourcePath)) {
+        const bytes = exactReader.readTracked(filename);
+        if (!artifact.members.some((row: CollectedArtifactMember) => row.bytes === bytes.length && row.sha256 === hash(bytes))) pending.push('Applicable original notice not retained: ' + filename);
+      }
+      if (pending.length === before) ledger.cover(member.path, 'exact-source', origin.sourcePath);
+      continue;
+    }
+    if (origin.kind === 'installed-projection') {
+      const dependency = origin.dependency;
+      // The dependency original is authoritative only when the sole registry
+      // issuer recognizes the exact private handle; structural objects fail here.
+      const view = registryLegalOriginalView(dependency?.original);
+      if (!dependency || !view) { pending.push('Private registry original capability required for installed projection: ' + origin.path); continue; }
+      let packageIndex = packageIndexes.get(view);
+      if (!packageIndex) {
+        let declaredLicense: unknown;
+        try { declaredLicense = JSON.parse(view.readMember('package.json').toString()).license; }
+        catch { pending.push('Original package manifest required: ' + origin.path); continue; }
+        packageIndex = { modes: registryLegalOriginalArchiveModes(dependency.original),
+          originalMembers: new Map(view.members.map(row => [row.path, row])), declaredLicense };
+        packageIndexes.set(view, packageIndex);
+      }
+      const { modes, originalMembers, declaredLicense } = packageIndex;
+      const provenance = inspectCandidateServiceInstalledProvenance(origin, source, view, member,
+        origin.originalPath ? modes?.get(origin.originalPath) : undefined, member.path);
+      if (provenance.length) { pending.push(...provenance); continue; }
+      if (!origin.originalPath || !dependency.sourceRoot) continue;
+      if (!options.runtimeArtifact || !options.originals || !options.source) {
+        pending.push('Current service selected-input binding inputs required: ' + origin.path); continue;
+      }
+      const selected = serviceRegistrySelectedInputView(dependency.original, { pack: options.runtimeArtifact,
+        originals: options.originals, source: options.source, sourceRoot: dependency.sourceRoot });
+      if (!selected) { pending.push('Current service selected-input binding required: ' + origin.path); continue; }
+      const placement = member.path.slice(0, member.path.length - origin.originalPath.length - 1);
+      const before = pending.length;
+      pending.push(...inspectPhysicalOriginalMemberGrant({ original: view, originalMembers, member, relative: origin.originalPath,
+        placement, members, declaredLicense, mode: modes?.get(origin.originalPath), verifyGrant: verifyGrant(declaredLicense), declarations: declarations(declaredLicense) }));
+      options.check?.();
+      selected.assertCurrent();
+      if (pending.length === before) ledger.cover(member.path, 'physical-original', dependency.name + '@' + dependency.version + ':' + dependency.sourceRoot);
+      continue;
+    }
+    if(origin.kind==='native-runtime'){
+      if(!options.nativeMaterials||!options.nativeReadBudget||!options.nativeReadTracked||!origin.runtimePath||!origin.original){pending.push('Exact private native context and output binding required: '+origin.path);continue;}
+      const inputs=options.nativeMaterials.inputsForOrigin({path:origin.path,runtimePath:origin.runtimePath,original:origin.original});
+      const git=inputs.filter(row=>row.via==='git');let complete=inputs.length>0;
+      if(git.length){const result=inspectNativeGitInputGrants({inputs:git,source,artifact,budget:options.nativeReadBudget,readTracked:options.nativeReadTracked,memberPath:member.path,check:()=>options.check?.(),verifyGrant:verifyGrant(undefined),declarations:bytes=>explicitLicenseConflicts(bytes)});pending.push(...result.pending);complete&&=result.covered;}
+      for(const row of inputs.filter(row=>row.via!=='git')){const result=options.nativePackageGrant?.(row,member.path,verifyGrant(undefined),bytes=>explicitLicenseConflicts(bytes));if(!result){pending.push('Native '+row.via+' input requires original package/source license applicability: '+row.path+':'+row.sha256);complete=false;}else{pending.push(...result.pending);complete&&=result.covered;}}
+      if(!inputs.length)pending.push('Native output has no authenticated contributing input bindings: '+origin.path);
+      options.nativeMaterials.assertCurrent();
+      if(complete)ledger.cover(member.path,'native-source',origin.runtimePath);
+      continue;
+    }
+    if (origin.kind === 'workspace-transform' && options.workspaceTransformGrant) {
+      const result = options.workspaceTransformGrant(origin, member.path, verifyGrant(undefined), bytes => explicitLicenseConflicts(bytes));
+      pending.push(...result.pending);
+      if (result.covered) ledger.cover(member.path, 'transpiled-source', origin.sourcePath ?? origin.path);
+      continue;
+    }
+    pending.push(origin.kind === 'workspace-transform' ? 'Private workspace-transform grant mapping not delivered: ' + origin.path
+      : 'Private local-runtime original grant adapter not delivered: ' + origin.path);
+    options.check?.();
+  }
+  const coverage = ledger.report();
+  if (!coverage.complete) pending.push('Whole app/SDK runtime grant coverage unresolved for ' + coverage.uncovered.length + ' actual members; see coverage.uncovered');
+  return coverage;
 }

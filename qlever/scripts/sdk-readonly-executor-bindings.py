@@ -2,6 +2,11 @@
 import hashlib
 import json
 import re
+import stat
+import importlib.util
+from pathlib import Path
+_profile_spec=importlib.util.spec_from_file_location("readonly_profiles",Path(__file__).with_name("qlever_compiler_profile.py"))
+profiles=importlib.util.module_from_spec(_profile_spec);_profile_spec.loader.exec_module(profiles)
 MODEL='controller-owned-daemon-readonly-image-v1'
 WRITABLE={'/opt/qlever-sdk/build','/opt/qlever-sdk/materials'}
 META=4*1024**2
@@ -13,9 +18,9 @@ def identity(value):
     need(isinstance(value,list) and len(value)==6 and all(type(v) is int and 0<=v<1<<64 for v in value),'full actual identity');return value
 def same_tuple(value,expected):
     need(value==expected and isinstance(value,dict),'exact source/job/target tuple')
-    need(re.fullmatch('[a-f0-9]{40}',value.get('sourceSha','')) and type(value.get('runId')) is int and value['runId']>0 and type(value.get('runAttempt')) is int and value['runAttempt']>0 and value.get('target') in ['linux-x64','linux-arm64'] and value.get('sdkProfile')=='module-bookworm-gcc12','supported SDK source tuple')
+    need(re.fullmatch('[a-f0-9]{40}',value.get('sourceSha','')) and type(value.get('runId')) is int and value['runId']>0 and type(value.get('runAttempt')) is int and value['runAttempt']>0 and value.get('target') in ['linux-x64','linux-arm64'] and value.get('sdkProfile') in ['module-bookworm-gcc12','service-trixie'],'supported SDK source tuple')
 IMAGE_TEMPLATE='{"Id":{{json .Id}},"Os":{{json .Os}},"Architecture":{{json .Architecture}},"RootFS":{{json .RootFS}},"Volumes":{{json .Config.Volumes}},"OnBuild":{{json .Config.OnBuild}}}'
-CONTAINER_TEMPLATE='{"Id":{{json .Id}},"Image":{{json .Image}},"Path":{{json .Path}},"Args":{{json .Args}},"HostConfig":{"ReadonlyRootfs":{{json .HostConfig.ReadonlyRootfs}},"Privileged":{{json .HostConfig.Privileged}},"CapAdd":{{json .HostConfig.CapAdd}},"CapDrop":{{json .HostConfig.CapDrop}},"PidMode":{{json .HostConfig.PidMode}},"IpcMode":{{json .HostConfig.IpcMode}},"CgroupnsMode":{{json .HostConfig.CgroupnsMode}},"VolumesFrom":{{json .HostConfig.VolumesFrom}},"Binds":{{json .HostConfig.Binds}},"Devices":{{json .HostConfig.Devices}},"DeviceRequests":{{json .HostConfig.DeviceRequests}},"SecurityOpt":{{json .HostConfig.SecurityOpt}},"RestartPolicy":{{json .HostConfig.RestartPolicy}},"Tmpfs":{{json .HostConfig.Tmpfs}},"NetworkMode":{{json .HostConfig.NetworkMode}}},"Mounts":{{json .Mounts}},"Healthcheck":{{json .Config.Healthcheck}},"State":{"Running":{{json .State.Running}},"Pid":{{json .State.Pid}},"ExitCode":{{json .State.ExitCode}},"OOMKilled":{{json .State.OOMKilled}}}'
+CONTAINER_TEMPLATE='{"Id":{{json .Id}},"Image":{{json .Image}},"Path":{{json .Path}},"Args":{{json .Args}},"HostConfig":{"ReadonlyRootfs":{{json .HostConfig.ReadonlyRootfs}},"Privileged":{{json .HostConfig.Privileged}},"CapAdd":{{json .HostConfig.CapAdd}},"CapDrop":{{json .HostConfig.CapDrop}},"PidMode":{{json .HostConfig.PidMode}},"IpcMode":{{json .HostConfig.IpcMode}},"CgroupnsMode":{{json .HostConfig.CgroupnsMode}},"VolumesFrom":{{json .HostConfig.VolumesFrom}},"Binds":{{json .HostConfig.Binds}},"Devices":{{json .HostConfig.Devices}},"DeviceRequests":{{json .HostConfig.DeviceRequests}},"SecurityOpt":{{json .HostConfig.SecurityOpt}},"RestartPolicy":{{json .HostConfig.RestartPolicy}},"Tmpfs":{{json .HostConfig.Tmpfs}},"NetworkMode":{{json .HostConfig.NetworkMode}}},"Mounts":{{json .Mounts}},"Healthcheck":{{json .Config.Healthcheck}},"State":{"Running":{{json .State.Running}},"Pid":{{json .State.Pid}},"ExitCode":{{json .State.ExitCode}},"OOMKilled":{{json .State.OOMKilled}}}}'
 
 def local_docker(command):
     need(command and command[0]=='docker' and '--host' not in command and '--context' not in command,'fixed local Docker endpoint only')
@@ -29,7 +34,7 @@ def ownership(identity):
 def prepared_argv(builder,platform,identity,deadline,metadata):
     same_tuple(identity,identity);need(re.fullmatch('[A-Za-z0-9_-]{1,100}',builder) is not None,'owned builder name')
     need(platform=={'linux-x64':'linux/amd64','linux-arm64':'linux/arm64'}[identity['target']],'native target/platform exact pair')
-    return local_docker(['docker','buildx','build','--builder',builder,'--file','docker/qlever-runtime-sdk/Dockerfile.module-bookworm','--target','source-prepared','--platform',platform,'--progress','rawjson','--load','--no-cache-filter','source-prepared','--metadata-file',str(metadata),'--build-arg','XPOD_QLEVER_BUILD_JOBS=2','--build-arg','XPOD_QLEVER_SDK_DEADLINE_UNIX='+str(deadline),'--build-arg','XPOD_QLEVER_SDK_IDENTITY='+json.dumps(identity,sort_keys=True,separators=(',',':')),'.'])
+    return local_docker(['docker','buildx','build','--builder',builder,'--file',profiles.declared_profile(identity['sdkProfile'])['dockerfile'],'--target','source-prepared','--platform',platform,'--progress','rawjson','--load','--no-cache-filter','source-prepared','--metadata-file',str(metadata),'--build-arg','XPOD_QLEVER_BUILD_JOBS=2','--build-arg','XPOD_QLEVER_SDK_DEADLINE_UNIX='+str(deadline),'--build-arg','XPOD_QLEVER_SDK_IDENTITY='+json.dumps(identity,sort_keys=True,separators=(',',':')),'.'])
 
 def create_argv(image,identity,deadline,network,nonce):
     need(digest(image) and network in ['none','bridge'] and re.fullmatch('[a-f0-9]{64}',nonce) is not None,'fixed config image/network/nonce')
@@ -106,7 +111,7 @@ def verify(record,originals,expected):
     prepared=read('sourcePrepared');need(read('sourcePreparedCopied')==prepared,'actual cp original differs from semantic prepared metadata');same_tuple(prepared['identity'],expected)
     need(prepared['deadlineUnix']==record['deadlineUnix'],'one prepared/build deadline')
     host=read('hostBefore');need(host['containerPid']==before['State']['Pid'] and host['rootPidStarttime'].isdigit() and host['namespacePids']==[host['containerPid'],1] and host['ready']==dict(pid=1,nonce=record['nonce'],identity=expected,deadlineUnix=record['deadlineUnix']) and host['command']==['/usr/bin/python3','-I','-S','-B','/components/qlever/scripts/sdk-readonly-executor-entry.py'],'actual daemon PID1/starttime/release handshake')
-    host_after=read('hostBeforeRelease');need(host_after==host,'held provider/task identity changed before release')
+    host_after=read('hostBeforeRelease');need(host_object_frame(host_after)==host_object_frame(host),'held provider/task identity changed before release')
     for role in ['mnt','pid','user']:
         row=host['namespaces'][role];identity(row['identity']);need(re.fullmatch(role+r':\[([0-9]+)\]',row['link']) is not None,'actual host namespace role');need(int(row['link'].split('[')[1][:-1])==row['identity'][1],'held namespace inode')
     identity(host['rootIdentity']);need(host['children']==[],'source RUN began before outer initial ownership observation');root_mount=host['rootMount'];need(type(root_mount['mountId']) is int and root_mount['mountId']>0 and root_mount['mount']=='/' and 'ro' in root_mount['options'] and root_mount['propagation']==[],'actual private readonly root mount')
@@ -115,10 +120,21 @@ def verify(record,originals,expected):
     need(read('rootDiffBefore')==[] and read('rootDiffAfter')==[],'prepared image root unexpectedly changed')
     return dict(schemaVersion=1,model=MODEL,containerId=cid,preparedImageConfig=image['Id'],rootfsDiffIds=image['RootFS']['Layers'],hostNamespaceOriginal=host,scope='Owned Docker daemon/kernel is trusted; actual read-only image-backed root and isolated writable build/materials only',daemonManagedReadOnlyExecutorVerified=True,globalHostWriterAbsenceVerified=False,toolchainLifetimeImmutabilityVerified=False,wholeSdkSourceVerified=False)
 
+def host_object_frame(host):
+    """Canonical live held-root object coordinates, not a metadata-time or
+    global backing-immutability assertion. Legacy frames stay exact/full."""
+    if 'rootObjectIdentity' not in host:return host
+    raw=host.get('rootIdentity');identity(raw)
+    root=host['rootObjectIdentity'];need(isinstance(root,list) and len(root)==4 and root==raw[:4] and stat.S_ISDIR(root[2]),'held root object coordinates differ from full raw metadata')
+    return {**host,'rootIdentity':root}
+
 def join_provider(proof,provider):
     """Consumes already independently verified same-SDK stopped-FD provider facts."""
     need(proof['daemonManagedReadOnlyExecutorVerified'] is True,'outer actual executor absent')
-    host=proof['hostNamespaceOriginal'];need(provider['mountNamespaceIdentityDecimal']==[str(v) for v in host['namespaces']['mnt']['identity']] and provider['rootIdentityDecimal']==[str(v) for v in host['rootIdentity']],'actual provider outside owned image namespace/root')
+    host=proof['hostNamespaceOriginal'];frame=host_object_frame(host)
+    root=provider.get('rootIdentityDecimal');need(isinstance(root,list) and len(root)==6 and all(isinstance(v,str) and re.fullmatch(r'0|[1-9][0-9]*',v) for v in root),'actual provider full root metadata decimal original')
+    expected=[str(v) for v in frame['rootIdentity']]
+    need(provider['mountNamespaceIdentityDecimal']==[str(v) for v in host['namespaces']['mnt']['identity']] and (root[:4]==expected if 'rootObjectIdentity' in host else root==expected),'actual provider outside owned image namespace/root')
     p=provider['provider'];need(p['mount']=='/' and 'ro' in p['mountOptions'] and p['mountId']==host['rootMount']['mountId'],'selected tool must use same read-only image root, not output/tmp/provider alias')
     need(provider['mountNamespace']==host['namespaces']['mnt']['link'],'provider namespace link differs')
     return dict(providerBoundToOwnedImageRoot=True,preparedImageConfig=proof['preparedImageConfig'],scope=proof['scope'],globalHostWriterAbsenceVerified=False)

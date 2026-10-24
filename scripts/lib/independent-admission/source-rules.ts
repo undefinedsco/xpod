@@ -25,8 +25,8 @@ const REVIEWED_SUPERVISORS = new Set([CLI_SOURCE_POLICY.supervisor,
   '7fb899a72bd50ae36b35649964e502c5984a97587ffd5570f6d830fb31d6bd27']);
 /** The original reviewed combinations remain historical. The callback helper
  * is admitted only with its one actually reviewed current execution tuple. */
-type CliSourceVersionGroup=Readonly<Record<keyof typeof CLI_SOURCE_POLICY,string>>&Readonly<{supervisors:readonly string[];workflows:readonly string[];sourceBindings?:readonly Readonly<{path:string;sha256:string}>[]}>;
-export const CLI_SOURCE_VERSION_GROUPS:readonly CliSourceVersionGroup[]=Object.freeze([
+type CliSourceVersionGroup=Readonly<Record<keyof typeof CLI_SOURCE_POLICY,string>>&Readonly<{supervisors:readonly string[];workflows:readonly string[];sourceBindings?:readonly Readonly<{path:string;sha256:string}>[];secondarySourcePaths?:readonly string[]}>;
+const PRE_SERVICE_CLI_SOURCE_VERSION_GROUPS:readonly CliSourceVersionGroup[]=Object.freeze([
  Object.freeze({...CLI_SOURCE_POLICY,supervisors:Object.freeze([...REVIEWED_SUPERVISORS]),workflows:Object.freeze([CLI_SOURCE_POLICY.workflow,'c856baf24a28fe789db1e80c26e7b69b7e4e08bd0923f52ce376840ac885c1eb'])}),
  Object.freeze({...CLI_SOURCE_POLICY,sourceHelper:'c28f194ca9767f2aeddd9cff6f633dac2280ae9c4e5d716d3273706afce81850',supervisors:Object.freeze(['7fb899a72bd50ae36b35649964e502c5984a97587ffd5570f6d830fb31d6bd27']),workflows:Object.freeze([CLI_SOURCE_POLICY.workflow])}),
  Object.freeze({...CLI_SOURCE_POLICY,sourceHelper:'07dbfc5531b7b3b812fe6f532141c964255b90f46ed30a05c86f6e42ef2e0ee5',supervisors:Object.freeze(['7fb899a72bd50ae36b35649964e502c5984a97587ffd5570f6d830fb31d6bd27']),workflows:Object.freeze([CLI_SOURCE_POLICY.workflow])}),
@@ -35,13 +35,44 @@ export const CLI_SOURCE_VERSION_GROUPS:readonly CliSourceVersionGroup[]=Object.f
  Object.freeze({...CLI_SOURCE_POLICY,...{"producer":"099ce70c1565bed8802e1b6276f9216ab78cc4ebeb12df60592eb426252db110","sourceHelper":"b582490cdbbd2b857fa6ce20d0b5d85a73605c90b96063a3c17bf7b38be93601","supervisors":["7fb899a72bd50ae36b35649964e502c5984a97587ffd5570f6d830fb31d6bd27"],"workflows":["ce1e33a5f6a0052aa9d585f1556b6b07624cff0df3222d37ee4a5f9fc5f1046e"],"sourceBindings":[{"path":"scripts/prepare-package-manifest.cjs","sha256":"47c24e7547f03493161baea3abdf7686db7c21a791d4871535e66d0a3dac2a02"},{"path":"scripts/platform-binaries.cjs","sha256":"95dc2afc4501a87418c4858faa4f77bf0b1930061c649c3d771d607d3d8ecc7f"},{"path":"package.json","sha256":"9b6916d878ab959bc4825382df29c0ca279e2d88e7bfc19cb61552e857f6a3f2"},{"path":"bun.lock","sha256":"8e191efdefc855b72cea0f8cbc3e3ad2f5c3f47c4466553f7d23bd04fccc3d0d"}]}}),
  Object.freeze({...CLI_SOURCE_POLICY,...{"producer":"099ce70c1565bed8802e1b6276f9216ab78cc4ebeb12df60592eb426252db110","sourceHelper":"99eb684db2712cee74ae40f7ac17a55c1dcd74682162b75947203cf2628c6e16","supervisors":["7fb899a72bd50ae36b35649964e502c5984a97587ffd5570f6d830fb31d6bd27"],"workflows":["ce1e33a5f6a0052aa9d585f1556b6b07624cff0df3222d37ee4a5f9fc5f1046e"],"sourceBindings":[{"path":"scripts/prepare-package-manifest.cjs","sha256":"47c24e7547f03493161baea3abdf7686db7c21a791d4871535e66d0a3dac2a02"},{"path":"scripts/platform-binaries.cjs","sha256":"95dc2afc4501a87418c4858faa4f77bf0b1930061c649c3d771d607d3d8ecc7f"},{"path":"package.json","sha256":"9b6916d878ab959bc4825382df29c0ca279e2d88e7bfc19cb61552e857f6a3f2"},{"path":"bun.lock","sha256":"8e191efdefc855b72cea0f8cbc3e3ad2f5c3f47c4466553f7d23bd04fccc3d0d"}]}}),
 ]);
-function reviewedCliSourceGroup(observed:Readonly<Record<keyof typeof CLI_SOURCE_POLICY,string>>):CliSourceVersionGroup|undefined{
- const matches=CLI_SOURCE_VERSION_GROUPS.filter(group=>
+const priorServiceCliGroup=PRE_SERVICE_CLI_SOURCE_VERSION_GROUPS[PRE_SERVICE_CLI_SOURCE_VERSION_GROUPS.length-1]!;
+const serviceCliHashes:Readonly<Record<string,string>>=Object.freeze({'scripts/prepare-package-manifest.cjs':'c85d5f092821c53d7b7893417512a26be3c6165f835a8f03507fe0d09228ebf2'});
+const PRE_ENTITY_CLI_SOURCE_VERSION_GROUPS:readonly CliSourceVersionGroup[]=Object.freeze([...PRE_SERVICE_CLI_SOURCE_VERSION_GROUPS,Object.freeze({...priorServiceCliGroup,secondarySourcePaths:Object.freeze(['scripts/prepare-package-manifest.cjs']),sourceBindings:Object.freeze([...(priorServiceCliGroup.sourceBindings??[]).map(row=>Object.freeze({...row,sha256:serviceCliHashes[row.path]??row.sha256})),Object.freeze({path:'scripts/workspace-package-payload.cjs',sha256:'edfdb44999a87551b744533019f5921e6098c65de7ccf63250e12858b9bcf48f'})])})]);
+const entityCliParent=PRE_ENTITY_CLI_SOURCE_VERSION_GROUPS[PRE_ENTITY_CLI_SOURCE_VERSION_GROUPS.length-1]!;
+const PRE_BUILD_CLI_SOURCE_VERSION_GROUPS:readonly CliSourceVersionGroup[]=Object.freeze([...PRE_ENTITY_CLI_SOURCE_VERSION_GROUPS,Object.freeze({...entityCliParent,secondarySourcePaths:Object.freeze([...(entityCliParent.secondarySourcePaths??[]),'scripts/workspace-package-payload.cjs']),sourceBindings:Object.freeze((entityCliParent.sourceBindings??[]).map(row=>Object.freeze({...row,sha256:row.path==='scripts/workspace-package-payload.cjs'?'89a63085908a414251a34d0fae5143a6a20c28e4b8dfb05d3ea8b9113b8fdc49':row.sha256})))})]);
+const buildCliParent=PRE_BUILD_CLI_SOURCE_VERSION_GROUPS[PRE_BUILD_CLI_SOURCE_VERSION_GROUPS.length-1]!;
+export const CLI_SOURCE_VERSION_GROUPS:readonly CliSourceVersionGroup[]=Object.freeze([...PRE_BUILD_CLI_SOURCE_VERSION_GROUPS,Object.freeze({...buildCliParent,sourceHelper:'d0bcdbdec78a1bdb2cebb90910b4dd7c678c5027fc9856fc5475961b3da10dd1'}),/** Final combined slice: the reviewed catalog CLI tuple re-bound to the ACTUAL
+* R226 supervisor bytes; every earlier supervisor variant stays declared. */
+Object.freeze({...buildCliParent,sourceHelper:'d0bcdbdec78a1bdb2cebb90910b4dd7c678c5027fc9856fc5475961b3da10dd1',supervisors:Object.freeze(['30b890b9b73e819b40b1fc4de511b80cad50255d99af7d0699315b06e4a5a2c3'] as const),sourceBindings:Object.freeze((buildCliParent.sourceBindings??[]).map(row=>Object.freeze({...row,sha256:row.path==='scripts/workspace-package-payload.cjs'?'f88176458eba63d238cf99412bbc834143fe6b1e74089b27c290c0be040d2d33':row.sha256})))})]);
+function reviewedCliSourceGroup(observed:Readonly<Record<keyof typeof CLI_SOURCE_POLICY,string>>,readTracked?:(name:string)=>Buffer):CliSourceVersionGroup|undefined{
+ let candidates=CLI_SOURCE_VERSION_GROUPS.filter(group=>
   (['producer','publicationBudget','sourceHelper','sourceLimits','copier'] as const).every(key=>observed[key]===group[key])
   &&group.supervisors.some(value=>value===observed.supervisor)&&group.workflows.some(value=>value===observed.workflow));
- return matches.length===1?matches[0]:undefined;
+ if(!candidates.length)return undefined;
+ const cache=new Map<string,string>();
+ // A later discriminator is read only after earlier owned roles have removed
+ // versions that never declared it. Every queried role is owned by every
+ // surviving candidate; declarations never substitute for observed originals.
+ while(candidates.length){
+  const owned=new Map<CliSourceVersionGroup,Map<string,string>>();
+  for(const group of candidates){
+   const rows=new Map<string,string>();
+   for(const binding of group.sourceBindings??[]){if(rows.has(binding.path)&&rows.get(binding.path)!==binding.sha256)fail('catalog CLI conflicting owned original');rows.set(binding.path,binding.sha256);}
+   for(const role of group.secondarySourcePaths??[])if(!rows.has(role))fail('catalog CLI owned secondary original missing');
+   owned.set(group,rows);
+  }
+  const pending=[...new Set(candidates.flatMap(group=>group.secondarySourcePaths??[]))].filter(role=>!cache.has(role));
+  if(!pending.length)return candidates.length===1?candidates[0]:undefined;
+  const shared=pending.filter(role=>candidates.every(group=>owned.get(group)!.has(role)));
+  if(!shared.length)fail('catalog CLI complete source binding mismatch: no common owned discriminator');
+  if(!readTracked)return undefined;
+  for(const role of shared)cache.set(role,hash(readTracked(role)));
+  candidates=candidates.filter(group=>shared.every(role=>owned.get(group)!.get(role)===cache.get(role)));
+  if(!candidates.length)fail('catalog CLI complete source binding mismatch: '+shared.join(','));
+ }
+ return undefined;
 }
-export function reviewedCliSourceVersion(observed:Readonly<Record<keyof typeof CLI_SOURCE_POLICY,string>>):boolean{return reviewedCliSourceGroup(observed)!==undefined;}
+export function reviewedCliSourceVersion(observed:Readonly<Record<keyof typeof CLI_SOURCE_POLICY,string>>,readTracked?:(name:string)=>Buffer):boolean{return reviewedCliSourceGroup(observed,readTracked)!==undefined;}
 
 const fail = (message: string): never => { throw new Error('Independent source rules: ' + message); };
 const canonicalJson = (value: any): string => JSON.stringify(value && typeof value === 'object'
@@ -58,7 +89,7 @@ export function verifyCliInputSet(
     sourceLimits:hash(readTracked('scripts/lib/module-artifact-limits.json')),
     copier:hash(readTracked('scripts/cli-build-inputs.cjs')),
     supervisor:hash(readTracked('scripts/lib/afs-publication-command.cjs')),
-    workflow:hash(readTracked('.github/workflows/cli-package.yml'))});
+    workflow:hash(readTracked('.github/workflows/cli-package.yml'))},readTracked);
   if (!reviewedGroup) {
     return { sourceInputSetVerified: false, generatedBuildManifestVerified: false,
       pending: 'source-input-policy-unreviewed: immutable producer/copier/supervisor/workflow differs from reviewed policy' };

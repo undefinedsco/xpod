@@ -27,7 +27,7 @@ export function inspectReviewedSdkOuterExecutorOrigin(input:{group:GitHubSourceB
  const rule=input.group?.outerExecutor;
  if(!rule)return undefined;
  const callers=[{path:rule.workflowPath,sha256:rule.workflowSha256},...(rule.additionalWorkflows??[])];
- need(callers.length===new Set(callers.map(row=>row.path)).size&&callers.length<=2,'unique fixed standalone/nested caller contracts required');
+ need(callers.length===new Set(callers.map(row=>row.path)).size&&callers.length<=3&&callers.every(row=>['.github/workflows/publish-qlever-runtime-sdk.yml','.github/workflows/css-native-products.yml','.github/workflows/candidate.yml'].includes(row.path)),'unique fixed standalone/nested caller contracts required');
  need(rule.schemaVersion===1&&rule.model==='reviewed-run-outer-controller-v1'&&callers.some(row=>row.path===input.workflowPath&&row.sha256===input.workflowSha256)&&rule.uploadDomain==='RUNNER_TEMP/qlever-sdk-outer','exact reviewed workflow/upload boundary required');
  if(input.workflowPath!==rule.workflowPath)need(input.group!.sourceBindings.some(row=>row.path===input.workflowPath&&row.sha256===input.workflowSha256&&!row.reviewedSha256?.length),'nested caller belongs to the same exact whole source group');
  const collector=input.group!.sourceBindings.find(row=>row.path===rule.collector.path);
