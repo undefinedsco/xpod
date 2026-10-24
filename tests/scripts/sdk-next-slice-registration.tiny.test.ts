@@ -27,6 +27,8 @@ import f6Groups from '../fixtures/independent-admission/f6-published-sdk-slice.o
 import sdk823Groups from '../fixtures/independent-admission/sdk-823-published-slice.original.json';
 /** Immutable FB058 published baseline (65/80/158/28). New slices start AFTER these. */
 import fb058Groups from '../fixtures/independent-admission/fb058-published-slice.original.json';
+/** Immutable 42807 published baseline (SDK 66 incl. c1a170 body). Fresh slices start AFTER these. */
+import fb42807Groups from '../fixtures/independent-admission/42807-published-slice.original.json';
 import {
   CONSUMER_SOURCE_GROUPS as consumer,
   CI_CONSUMER_SOURCE_GROUPS as ci,
@@ -125,15 +127,17 @@ test('the accepted SDK823 baseline proves all 299 published whole histories', ()
     expect(groups.slice(0, published.length).map(hashValue)).toEqual(published);
   }
   // Only genuinely new, UNPUBLISHED current groups follow the 299 published ones.
-  expect([sdk.length, consumer.length, ci.length, api.length]).toEqual([66, 81, 160, 28]);
+  expect([sdk.length, consumer.length, ci.length, api.length]).toEqual([67, 82, 162, 28]);
 });
 
 test('the appended groups bind the actual frozen body and real module bytes', () => {
-  expect(sha(read(BODY))).toBe('c1a17030483599f6b85abd301ed9d56710ece5c1dda1af8d726df7cbb2c022b1');
+  expect(sha(read(BODY))).toBe('507bf2eae69c9cce70b530708e662addd0771b9b87f32b7429d4a4b3e6bd41a3');
   for (const [name, groups] of Object.entries(families)) {
-    // slice boundary = the IMMUTABLE FB058 published counts. FB index 64 is published
-    // and legitimately keeps its own historical bytes; only groups AFTER it are current.
-    const published = (fb058Groups.published as Record<string, number>)[name]!;
+    // slice boundary = the IMMUTABLE 42807 published counts (SDK 66 incl the c1a170 body).
+    // Every index below it is published and legitimately keeps its own bytes; only groups
+    // AFTER it are the fresh current slice. Using FB65 here would wrongly treat SDK index 65
+    // (already published at 42807) as current.
+    const published = (fb42807Groups.published as Record<string, number>)[name]!;
     for (const group of groups.slice(published)) {
       for (const row of rows(group)) {
         if ((row as any).ref === 'run-head') continue; // binds the CI run's own bytes
@@ -180,7 +184,7 @@ test('the live canonical binds every actual row of the final combined tree', () 
   expect(new Set(current.map((r) => r.path)).size).toBe(457);
   for (const row of current) expect(sha(read(row.path))).toBe(row.sha256);
   const body = current.find((r) => r.path === BODY)!;
-  expect(body.sha256).toBe('c1a17030483599f6b85abd301ed9d56710ece5c1dda1af8d726df7cbb2c022b1');
+  expect(body.sha256).toBe('507bf2eae69c9cce70b530708e662addd0771b9b87f32b7429d4a4b3e6bd41a3');
   expect(current.find((r) => r.path === 'qlever/scripts/sdk-original-chunk-store.py')!.sha256)
     .toBe('d53ea1e6c8e8a270c3290d095e800596b7afa42c6b5135153dbb42db0bf2e43e');
 });
@@ -188,7 +192,7 @@ test('the live canonical binds every actual row of the final combined tree', () 
 test('helper tuples keep their published 29/39/32 history and the appends bind all real roles', () => {
   const tables = [
     ['qlever-sdk-generation.ts', 'REVIEWED_CONTROLLER_HELPER_GROUPS_NEXT', 'controller', 30],
-    ['qlever-sdk-generation.ts', 'REVIEWED_OBSERVER_GROUPS', 'observer', 41],
+    ['qlever-sdk-generation.ts', 'REVIEWED_OBSERVER_GROUPS', 'observer', 42],
     ['qlever-sdk-fetchcontent.ts', 'REVIEWED_HELPER_GROUPS_NEXT', 'fetch', 33],
   ] as const;
   for (const [file, name, family, count] of tables) {
@@ -199,7 +203,7 @@ test('helper tuples keep their published 29/39/32 history and the appends bind a
     const last = groups.at(-1)!;
     const entries = (Array.isArray(last) ? last : Object.entries(last as Record<string, string>)) as [string, string][];
     // Controller/fetch declarations allow 33 groups; observer history is separate.
-    expect(groups.length <= (family === 'observer' ? 41 : 33)).toBe(true);
+    expect(groups.length <= (family === 'observer' ? 42 : 33)).toBe(true);
     expect(entries.length <= 32).toBe(true);
     expect(new Set(entries.map(([role]) => role)).size).toBe(entries.length);
     for (const [role, expected] of entries) {
@@ -209,7 +213,7 @@ test('helper tuples keep their published 29/39/32 history and the appends bind a
   }
   // One new observer tuple follows the 39 published SDK823 tuples.
   const observer = recipes('qlever-sdk-generation.ts', 'REVIEWED_OBSERVER_GROUPS');
-  expect(observer).toHaveLength(41);
+  expect(observer).toHaveLength(42);
 });
 
 test('every group still selects itself uniquely and refuses missing/mixed roles', () => {

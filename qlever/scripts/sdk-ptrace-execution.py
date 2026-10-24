@@ -40,6 +40,16 @@ PHASE_PROGRESS_INTERVAL=60.0
 PHASE_PROGRESS_MAXIMUM_SNAPSHOTS=32
 PHASE_PROGRESS_MAXIMUM_BYTES=8192
 PHASE_PROGRESS_BUCKETS=('wait_one','event','pending_captures','resume','barrier','verify_task_ownership','emit','lifetime_lease_check')
+# Every branch of pending_captures_original that can hold one long span.
+# Closed constant: an unknown name is never recorded, so the snapshot cannot
+# grow with observed data.
+PENDING_CAPTURE_SUBSTEPS=('capture','capture_write','capture_rename','capture_metadata',
+                         'generated_vma_capture','capture_process_authority',
+                         'capture_queued_identity','checkpoint_append_boundaries',
+                         'checkpoint_appends','observe_tool_stop','capture_bti_pending',
+                         'capture_clone3_pending','close_terminal_authorities',
+                         'barrier_before_capture')
+PHASE_PROGRESS_MAXIMUM_SPANS=8
 PHASE_PROGRESS_PREFIX='SDK_OBSERVER_PHASE_PROGRESS '
 
 class PhaseProgress:
@@ -48,16 +58,45 @@ class PhaseProgress:
     Every value is read from state this observer already holds. Nothing here
     issues authority, extends a deadline, or retains event arrays.
     """
-    __slots__=('phase','started','deadline','now','buckets','active','active_started','failed','failed_started','last_snapshot','snapshots','failure_snapshots','ticks','events','waits','last_boundary','last_wait')
+    __slots__=('phase','started','deadline','now','buckets','active','active_started','failed','failed_started','last_snapshot','snapshots','failure_snapshots','ticks','events','waits','last_boundary','last_wait',
+               'substeps','substep_last','spans','spans_dropped','maps_bytes_last','maps_bytes_max','maps_bodies')
     def __init__(self,phase,deadline,now=time.monotonic):
         self.phase=phase;self.started=now();self.deadline=deadline;self.now=now
         self.buckets={name:[0,0,0] for name in PHASE_PROGRESS_BUCKETS}
         self.active=None;self.active_started=None;self.failed=None;self.failed_started=None
         self.last_snapshot=self.started;self.snapshots=0;self.failure_snapshots=0
         self.ticks=0;self.events=0;self.waits=0;self.last_boundary=None;self.last_wait=None
+        # Bounded per-substep counters plus a short ring of tagged spans. Both
+        # are fixed-size: no observed value ever becomes a key or an index.
+        self.substeps={name:[0,0,0] for name in PENDING_CAPTURE_SUBSTEPS}
+        self.substep_last=None;self.spans=[];self.spans_dropped=0
+        self.maps_bytes_last=0;self.maps_bytes_max=0;self.maps_bodies=0
     def record(self,name,elapsed_ns):
         try:
             bucket=self.buckets[name];bucket[0]+=1;bucket[1]+=elapsed_ns;bucket[2]=max(bucket[2],elapsed_ns)
+        except BaseException:pass
+    def record_substep(self,name,elapsed_ns):
+        """Inclusive duration of one already-existing pending_captures sub-step.
+
+        Only whitelisted names are stored; the mapping size never grows. Nothing
+        is written to any stream and no new syscall is issued.
+        """
+        try:
+            bucket=self.substeps[name];bucket[0]+=1;bucket[1]+=elapsed_ns;bucket[2]=max(bucket[2],elapsed_ns)
+            self.substep_last=name
+        except BaseException:pass
+    def observe_maps_body(self,count):
+        """Record a maps body length this observer already read and hashed."""
+        try:
+            if type(count) is int and count>=0:
+                self.maps_bytes_last=count;self.maps_bytes_max=max(self.maps_bytes_max,count);self.maps_bodies+=1
+        except BaseException:pass
+    def record_span(self,span):
+        """Retain one bounded tagged span; drop the oldest past the fixed cap."""
+        try:
+            if len(self.spans)>=PHASE_PROGRESS_MAXIMUM_SPANS:
+                del self.spans[0];self.spans_dropped+=1
+            self.spans.append(span)
         except BaseException:pass
     def observe_boundary(self,row):
         try:self.last_boundary=dict(kind=row.get('kind'),pid=row.get('pid'),entrySequence=row.get('entrySequence'),barrierSequence=row.get('barrierSequence'))
@@ -1350,6 +1389,8 @@ class Observer:
                     assert len(data)+len(block)<=self.tool_metadata_bytes,'bounded actual maps required'
                     data.extend(block);digest.update(block)
                 observed=(len(data),digest.hexdigest());after=identity(os.fstat(source.fileno()));assert before==after==identity(os.stat(path,follow_symlinks=False)),'actual complete maps FD changed'
+                progress=self.phase_progress()
+                if progress is not None:progress.observe_maps_body(observed[0])
                 reused=self.prior_content_entity(observed,scope=('maps',));extra={}
                 if reused is None:
                     with(self.capture_dir/name).open('xb')as output:
@@ -1690,6 +1731,63 @@ class Observer:
                 ended=self.phase_progress_ns(progress)
                 if started is not None and ended is not None:progress.record(name,ended-started)
             finally:progress.active,progress.active_started=previous
+    def owned_window_state(self):
+        """Held waiter window metadata only; issues no syscall and never arms.
+
+        Returns (windowActive, deadlineNs, parentDeadlineNs) read from the existing
+        BlockingOwnedWait attributes this observer already holds. ``deadline`` is
+        the currently armed deadline, which equals ``parent_deadline`` exactly when
+        no local mapping window is clamped.
+        """
+        waiter=getattr(self,'waiter',None)
+        if waiter is None:return (False,None,None)
+        try:
+            deadline=getattr(waiter,'deadline',None)
+            parent=getattr(waiter,'parent_deadline',None)
+            active=bool(getattr(waiter,'active',False))
+            def ns(value):
+                return None if value is None else int(value*1e9)
+            return (active,ns(deadline),ns(parent))
+        except BaseException:
+            return (False,None,None)
+    def instrument_substep(self,name,function,*arguments,**keywords):
+        """Inclusive duration of one existing pending_captures sub-step.
+
+        Timing-only: the return value and exception identity are preserved exactly
+        as ``instrument`` does, and nothing is published here. An unknown name is
+        executed unchanged and NOT recorded, so the fixed tables never grow and no
+        runtime assertion is added to a diagnostic path.
+
+        Each observed span is tagged with the owned-window state seen at its START
+        and its END. That makes correlation honest: a span whose two tags differ
+        crossed the window boundary, and a span tagged inactive was not inside any
+        local window. Nothing here infers a window start.
+        """
+        progress=self.phase_progress()
+        if progress is None or name not in PENDING_CAPTURE_SUBSTEPS:
+            return function(*arguments,**keywords)
+        started=self.phase_progress_ns(progress)
+        active_start,deadline_start,parent_start=self.owned_window_state()
+        try:return function(*arguments,**keywords)
+        finally:
+            try:
+                ended=self.phase_progress_ns(progress)
+                active_end,deadline_end,parent_end=self.owned_window_state()
+                if started is not None and ended is not None:
+                    progress.record_substep(name,ended-started)
+                    progress.record_span(dict(
+                        name=name,startNs=str(started),elapsedNs=str(ended-started),
+                        windowActiveStart=active_start,windowActiveEnd=active_end,
+                        windowDeadlineNsStart=None if deadline_start is None else str(deadline_start),
+                        windowDeadlineNsEnd=None if deadline_end is None else str(deadline_end),
+                        windowParentNsStart=None if parent_start is None else str(parent_start),
+                        windowParentNsEnd=None if parent_end is None else str(parent_end),
+                        crossedWindowStart=bool(active_start and not active_end),
+                        clampedStart=bool(active_start and parent_start is not None
+                                          and deadline_start is not None and deadline_start!=parent_start),
+                        clampedEnd=bool(active_end and parent_end is not None
+                                        and deadline_end is not None and deadline_end!=parent_end)))
+            except BaseException:pass
     def snapshot_due(self):
         progress=self.phase_progress()
         if progress is None:return False
@@ -1715,7 +1813,11 @@ class Observer:
         started=ns(getattr(progress,'started',None)) if progress is not None else None
         deadline=ns(getattr(progress,'deadline',None)) if progress is not None else None
         now_ns=ns(now)
-        payload=dict(schemaVersion=1,kind=kind,authorityVerified=False,phase=self.current_phase,phaseStartedMonotonicNs=str(started) if started is not None else None,phaseDeadlineMonotonicNs=str(deadline) if deadline is not None else None,nowMonotonicNs=str(now_ns) if now_ns is not None else None,elapsedNs=str(now_ns-started) if now_ns is not None and started is not None else None,remainingNs=str(deadline-now_ns) if deadline is not None and now_ns is not None else None,globalRawSequence=getattr(self,'seq',0),phaseTicks=getattr(progress,'ticks',0) if progress is not None else 0,eventCount=getattr(progress,'events',0) if progress is not None else 0,waitReturnCount=getattr(progress,'waits',0) if progress is not None else 0,lastBoundary=getattr(progress,'last_boundary',None) if progress is not None else None,lastWait=getattr(progress,'last_wait',None) if progress is not None else None,taskCounts=state_counts,exclusiveOwnerPid=exclusive[0] if isinstance(exclusive,tuple) and len(exclusive)==2 else None,exclusiveOwnerSequence=exclusive[1] if isinstance(exclusive,tuple) and len(exclusive)==2 else None,terminalFocusPid=terminal,generatedVmaOwner=getattr(generated,'owner',None) if generated is not None else None,lifetimeLeaseActive=lifecycle is not None,lifetimeLeaseCount=len(lifecycle.fds) if lifecycle is not None else 0,activeInclusiveMethod=getattr(progress,'active',None) if progress is not None else None,activeInclusiveMethodStartedNs=str(getattr(progress,'active_started',None)) if progress is not None and getattr(progress,'active_started',None) is not None else None,lastFailedInclusiveMethod=getattr(progress,'failed',None) if progress is not None else None,lastFailedInclusiveMethodStartedNs=str(getattr(progress,'failed_started',None)) if progress is not None and getattr(progress,'failed_started',None) is not None else None,inclusiveBuckets={name:dict(calls=value[0],totalNs=value[1],maxNs=value[2]) for name,value in (progress.buckets.items() if progress is not None else [])},inclusiveDurationNote='inclusive nested durations; buckets overlap by design; non-additive',failure=bool(failure))
+        window_active,window_deadline,window_parent=self.owned_window_state()
+        owned_window=(window_active,
+                      None if window_deadline is None else str(window_deadline),
+                      None if window_parent is None else str(window_parent))
+        payload=dict(schemaVersion=1,kind=kind,authorityVerified=False,phase=self.current_phase,phaseStartedMonotonicNs=str(started) if started is not None else None,phaseDeadlineMonotonicNs=str(deadline) if deadline is not None else None,nowMonotonicNs=str(now_ns) if now_ns is not None else None,elapsedNs=str(now_ns-started) if now_ns is not None and started is not None else None,remainingNs=str(deadline-now_ns) if deadline is not None and now_ns is not None else None,globalRawSequence=getattr(self,'seq',0),phaseTicks=getattr(progress,'ticks',0) if progress is not None else 0,eventCount=getattr(progress,'events',0) if progress is not None else 0,waitReturnCount=getattr(progress,'waits',0) if progress is not None else 0,lastBoundary=getattr(progress,'last_boundary',None) if progress is not None else None,lastWait=getattr(progress,'last_wait',None) if progress is not None else None,taskCounts=state_counts,exclusiveOwnerPid=exclusive[0] if isinstance(exclusive,tuple) and len(exclusive)==2 else None,exclusiveOwnerSequence=exclusive[1] if isinstance(exclusive,tuple) and len(exclusive)==2 else None,terminalFocusPid=terminal,generatedVmaOwner=getattr(generated,'owner',None) if generated is not None else None,lifetimeLeaseActive=lifecycle is not None,lifetimeLeaseCount=len(lifecycle.fds) if lifecycle is not None else 0,activeInclusiveMethod=getattr(progress,'active',None) if progress is not None else None,activeInclusiveMethodStartedNs=str(getattr(progress,'active_started',None)) if progress is not None and getattr(progress,'active_started',None) is not None else None,lastFailedInclusiveMethod=getattr(progress,'failed',None) if progress is not None else None,lastFailedInclusiveMethodStartedNs=str(getattr(progress,'failed_started',None)) if progress is not None and getattr(progress,'failed_started',None) is not None else None,inclusiveBuckets={name:dict(calls=value[0],totalNs=value[1],maxNs=value[2]) for name,value in (progress.buckets.items() if progress is not None else [])},pendingCaptureSubsteps={name:dict(calls=value[0],totalNs=value[1],maxNs=value[2]) for name,value in (getattr(progress,'substeps',{}) or {}).items()},pendingCaptureSubstepLast=getattr(progress,'substep_last',None),pendingCaptureSpans=list(getattr(progress,'spans',()) or ()),pendingCaptureSpansDropped=getattr(progress,'spans_dropped',0),mapsBodyBytesLast=getattr(progress,'maps_bytes_last',0),mapsBodyBytesMax=getattr(progress,'maps_bytes_max',0),mapsBodyCount=getattr(progress,'maps_bodies',0),ownedWindowActive=owned_window[0],ownedWindowDeadlineNs=owned_window[1],ownedWindowParentNs=owned_window[2],inclusiveDurationNote='inclusive nested durations; buckets overlap by design; non-additive',failure=bool(failure))
         return payload
     def publish_phase_progress(self,kind,failure=False):
         """Bounded stderr diagnostic from held state only; never raises.
@@ -1797,31 +1899,31 @@ class Observer:
         if self.generated_vma and getattr(self.generated_vma,'round',None) is not None:return
         if self.exclusive:return
         if getattr(self,'terminal_focus',None)is not None:
-            if any(t.get('terminalAuthority')and not t['terminalAuthority']['closed']for t in self.tasks.values()):self.close_terminal_authorities(self.barrier())
+            if any(t.get('terminalAuthority')and not t['terminalAuthority']['closed']for t in self.tasks.values()):self.instrument_substep('close_terminal_authorities',self.close_terminal_authorities,self.barrier())
             return
         if self.generated_vma and self.generated_vma.owner is not None:
             pid=self.generated_vma.owner;task=self.tasks[pid]
             if task.get('capture'):
                 assert task.pop('capture')==(None,'generated-vma-before'),'unsupported capture while generated mapping dirty'
-                capture=self.generated_vma.capture(pid);task['entry']['captureSequence']=capture['sequence'];self.exclusive=(pid,task['entry']['sequence']);self.emit(dict(kind='exclusive-generated-vma-resume',pid=pid,entrySequence=task['entry']['sequence'],captureSequence=capture['sequence']))
+                capture=self.instrument_substep('generated_vma_capture',self.generated_vma.capture,pid);task['entry']['captureSequence']=capture['sequence'];self.exclusive=(pid,task['entry']['sequence']);self.emit(dict(kind='exclusive-generated-vma-resume',pid=pid,entrySequence=task['entry']['sequence'],captureSequence=capture['sequence']))
             return
-        if self.capture_queued_identity():return
+        if self.instrument_substep('capture_queued_identity',self.capture_queued_identity):return
         if getattr(self,'terminal_exit_evidence',False) and any(t.get('terminalAuthority') and not t['terminalAuthority']['closed'] for t in self.tasks.values()):
-            self.close_terminal_authorities(self.barrier())
+            self.instrument_substep('close_terminal_authorities',self.close_terminal_authorities,self.barrier())
         while self.process_authority:
             selected=next(((pid,row) for pid,row in self.tasks.items() if row.get('authorityPending') and not row['exited']),None)
             if selected is None:break
-            pid,task=selected;role,event_sequence=task['authorityPending'].pop(0);self.capture_process_authority(pid,role,event_sequence)
-        if self.capture_queued_identity():return
-        self.checkpoint_append_boundaries()
+            pid,task=selected;role,event_sequence=task['authorityPending'].pop(0);self.instrument_substep('capture_process_authority',self.capture_process_authority,pid,role,event_sequence)
+        if self.instrument_substep('capture_queued_identity',self.capture_queued_identity):return
+        self.instrument_substep('checkpoint_append_boundaries',self.checkpoint_append_boundaries)
         while self.capture_toolchain:
             selected=next(((pid,row) for pid,row in self.tasks.items() if row.get('toolPending') and not row['exited']),None)
             if selected is None:break
             pid,task=selected
-            self.barrier();self.checkpoint_appends('toolchain-access',task['entry']['sequence'] if task.get('entry') else None)
-            self.observe_tool_stop(pid,task['toolPending'].pop(0))
-        if self.capture_bti_pending():return
-        if self.capture_clone3_pending():return
+            self.barrier();self.instrument_substep('checkpoint_appends',self.checkpoint_appends,'toolchain-access',task['entry']['sequence'] if task.get('entry') else None)
+            self.instrument_substep('observe_tool_stop',self.observe_tool_stop,pid,task['toolPending'].pop(0))
+        if self.instrument_substep('capture_bti_pending',self.capture_bti_pending):return
+        if self.instrument_substep('capture_clone3_pending',self.capture_clone3_pending):return
         # All candidate entries encountered while stopping peers are preserved;
         # process each before resuming any potential writer.
         while True:
@@ -1829,9 +1931,14 @@ class Observer:
             if not candidate:break
             pid,task=candidate;fd,role=task.pop('capture');
             if role!='writer-before':
-                self.barrier();self.checkpoint_appends('captured-access',task['entry']['sequence'])
-            capture=self.generated_vma.capture(pid) if role=='generated-vma-before' else self.capture_rename(pid) if role=='rename-before' else self.capture_metadata(pid) if role=='metadata-before' else (self.capture_write(pid,fd) if role=='writer-before' else self.capture(pid,fd,role));task['entry']['captureSequence']=capture['sequence'];self.exclusive=(pid,task['entry']['sequence']);self.emit(dict(kind={'generated-vma-operation-window':'exclusive-generated-vma-resume','actual-write-window':'exclusive-write-resume','actual-mode-window':'exclusive-mode-resume','actual-rename-window':'exclusive-rename-resume','empty-read-window':'exclusive-empty-read-resume','alias-close-window':'exclusive-alias-close-resume'}.get(capture['kind'],'exclusive-captured-syscall-resume'),pid=pid,entrySequence=task['entry']['sequence'],captureSequence=capture['sequence']));break
-        if self.exclusive is None:self.capture_queued_identity()
+                self.instrument_substep('barrier_before_capture',self.barrier);self.instrument_substep('checkpoint_appends',self.checkpoint_appends,'captured-access',task['entry']['sequence'])
+            function,arguments,substep=(self.generated_vma.capture,(pid,),'generated_vma_capture') if role=='generated-vma-before' else \
+                (self.capture_rename,(pid,),'capture_rename') if role=='rename-before' else \
+                (self.capture_metadata,(pid,),'capture_metadata') if role=='metadata-before' else \
+                (self.capture_write,(pid,fd),'capture_write') if role=='writer-before' else \
+                (self.capture,(pid,fd,role),'capture')
+            capture=self.instrument_substep(substep,function,*arguments);task['entry']['captureSequence']=capture['sequence'];self.exclusive=(pid,task['entry']['sequence']);self.emit(dict(kind={'generated-vma-operation-window':'exclusive-generated-vma-resume','actual-write-window':'exclusive-write-resume','actual-mode-window':'exclusive-mode-resume','actual-rename-window':'exclusive-rename-resume','empty-read-window':'exclusive-empty-read-resume','alias-close-window':'exclusive-alias-close-resume'}.get(capture['kind'],'exclusive-captured-syscall-resume'),pid=pid,entrySequence=task['entry']['sequence'],captureSequence=capture['sequence']));break
+        if self.exclusive is None:self.instrument_substep('capture_queued_identity',self.capture_queued_identity)
     def release_vfork_parent(self,child,event,reason):
         task=self.tasks[child];parent_pid=task.pop('vforkParent',None)
         if parent_pid is None:return

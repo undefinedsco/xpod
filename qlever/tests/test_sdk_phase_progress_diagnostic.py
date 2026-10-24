@@ -219,4 +219,213 @@ class PhaseProgressDiagnosticTest(unittest.TestCase):
   obj.current_phase='configure';obj.deadline=obj.deadline+1
   self.assertIsNone(obj.phase_progress(),'a changed deadline drops stale counters')
 
+class PendingCaptureSubstepTest(unittest.TestCase):
+ """Substep spans, owned-window tags and maps-body sizes from REAL methods."""
+
+ publish = PhaseProgressDiagnosticTest.publish
+ records = PhaseProgressDiagnosticTest.records
+
+ def _with_waiter(self, clock, deadline=5000.0, window=None, parent=None):
+  obj=observer(clock,deadline=deadline)
+  class Waiter:pass
+  waiter=Waiter()
+  waiter.active=True
+  waiter.deadline=deadline if window is None else window
+  waiter.parent_deadline=deadline if parent is None else parent
+  obj.waiter=waiter
+  return obj
+
+ def test_constant_covers_every_real_pending_branch(self):
+  expected={'capture','capture_write','capture_rename','capture_metadata',
+            'generated_vma_capture','capture_process_authority',
+            'capture_queued_identity','checkpoint_append_boundaries',
+            'checkpoint_appends','observe_tool_stop','capture_bti_pending',
+            'capture_clone3_pending','close_terminal_authorities',
+            'barrier_before_capture'}
+  self.assertEqual(set(backend.PENDING_CAPTURE_SUBSTEPS),expected)
+  self.assertEqual(len(backend.PENDING_CAPTURE_SUBSTEPS),len(expected))
+
+ def test_unknown_name_executes_without_recording_or_asserting(self):
+  clock=Clock(1000.0);obj=observer(clock,deadline=5000.0)
+  def work():clock.advance(9.0);return 'kept'
+  self.assertEqual(obj.instrument_substep('not_a_branch',work),'kept')
+  record=self.records(self.publish(obj))[0]
+  self.assertTrue(all(v['calls']==0 for v in record['pendingCaptureSubsteps'].values()))
+  self.assertEqual(record['pendingCaptureSpans'],[])
+
+ def test_unknown_name_exception_still_propagates(self):
+  obj=observer(Clock(),deadline=5000.0)
+  class Boom(Exception):pass
+  failure=Boom('x')
+  def work():raise failure
+  with self.assertRaises(Boom) as caught:obj.instrument_substep('not_a_branch',work)
+  self.assertIs(caught.exception,failure)
+
+ def test_span_records_window_state_at_start_and_end(self):
+  clock=Clock(1000.0);obj=self._with_waiter(clock,deadline=5000.0)
+  def work():clock.advance(0.25)
+  obj.instrument_substep('capture',work)
+  span=self.records(self.publish(obj))[0]['pendingCaptureSpans'][0]
+  self.assertEqual(span['name'],'capture')
+  self.assertEqual(span['startNs'],ns(1000.0))
+  self.assertEqual(span['elapsedNs'],str(int(0.25*1e9)))
+  self.assertTrue(span['windowActiveStart']);self.assertTrue(span['windowActiveEnd'])
+  self.assertFalse(span['clampedStart']);self.assertFalse(span['crossedWindowStart'])
+  self.assertEqual(span['windowDeadlineNsStart'],ns(5000.0))
+  self.assertEqual(span['windowParentNsStart'],ns(5000.0))
+
+ def test_clamped_window_is_marked_and_start_is_not_inferred(self):
+  clock=Clock(1000.0);obj=self._with_waiter(clock,deadline=5000.0,window=1000.75,parent=5000.0)
+  def work():clock.advance(0.10)
+  obj.instrument_substep('observe_tool_stop',work)
+  span=self.records(self.publish(obj))[0]['pendingCaptureSpans'][0]
+  self.assertTrue(span['clampedStart']);self.assertTrue(span['clampedEnd'])
+  self.assertEqual(span['windowDeadlineNsStart'],ns(1000.75))
+  self.assertEqual(span['windowParentNsStart'],ns(5000.0))
+  # The diagnostic must never publish a derived window start.
+  self.assertNotIn('windowStartNs',span)
+
+ def test_no_waiter_marks_spans_inactive_not_missing(self):
+  clock=Clock(1000.0);obj=observer(clock,deadline=5000.0)
+  def work():clock.advance(0.01)
+  obj.instrument_substep('capture',work)
+  record=self.records(self.publish(obj))[0]
+  span=record['pendingCaptureSpans'][0]
+  self.assertFalse(span['windowActiveStart']);self.assertFalse(span['windowActiveEnd'])
+  self.assertIsNone(span['windowDeadlineNsStart'])
+  self.assertFalse(record['ownedWindowActive'])
+  self.assertIsNone(record['ownedWindowDeadlineNs'])
+
+ def test_span_ring_is_bounded_and_counts_drops(self):
+  clock=Clock(1000.0);obj=observer(clock,deadline=5000.0)
+  total=backend.PHASE_PROGRESS_MAXIMUM_SPANS+5
+  for _ in range(total):
+   def work():clock.advance(0.001)
+   obj.instrument_substep('capture',work)
+  record=self.records(self.publish(obj))[0]
+  self.assertEqual(len(record['pendingCaptureSpans']),backend.PHASE_PROGRESS_MAXIMUM_SPANS)
+  self.assertEqual(record['pendingCaptureSpansDropped'],5)
+
+ def test_maps_body_sizes_from_observed_lengths(self):
+  obj=observer(Clock())
+  for size in (4096,65536,12000):obj._phase_progress.observe_maps_body(size)
+  record=self.records(self.publish(obj))[0]
+  self.assertEqual((record['mapsBodyBytesLast'],record['mapsBodyBytesMax'],record['mapsBodyCount']),(12000,65536,3))
+
+ def test_maps_body_rejects_non_integer(self):
+  obj=observer(Clock());progress=obj._phase_progress
+  progress.observe_maps_body(1024)
+  for bad in (True,-1,'2048',None,1.5):progress.observe_maps_body(bad)
+  record=self.records(self.publish(obj))[0]
+  self.assertEqual((record['mapsBodyBytesLast'],record['mapsBodyBytesMax'],record['mapsBodyCount']),(1024,1024,1))
+
+ def test_real_sigalrm_inside_substep_propagates_same_object(self):
+  import signal,time as _t
+  obj=observer(Clock(),deadline=5000.0)
+  class Deadline(TimeoutError):pass
+  raised=[]
+  def handler(signum,frame):
+   raised.append(Deadline('actual owned child observation deadline'))
+   raise raised[-1]
+  previous=signal.signal(signal.SIGALRM,handler)
+  try:
+   def work():
+    signal.setitimer(signal.ITIMER_REAL,0.001);_t.sleep(0.05)
+   with self.assertRaises(Deadline) as caught:obj.instrument_substep('capture',work)
+  finally:
+   signal.setitimer(signal.ITIMER_REAL,0);signal.signal(signal.SIGALRM,previous)
+  self.assertIs(caught.exception,raised[0])
+  self.assertEqual(obj.phase_progress_payload('phase-progress')['pendingCaptureSubsteps']['capture']['calls'],1)
+
+ def test_worst_case_payload_stays_under_cap(self):
+  clock=Clock(1000.0);obj=self._with_waiter(clock,deadline=5000.0)
+  for name in backend.PENDING_CAPTURE_SUBSTEPS:
+   def work():clock.advance(0.001)
+   for _ in range(9):obj.instrument_substep(name,work)
+  for _ in range(50):obj._phase_progress.observe_maps_body(4194304)
+  lines=[l for l in self.publish(obj).getvalue().splitlines() if l.startswith(PREFIX)]
+  self.assertEqual(len(lines),1)
+  self.assertLessEqual(len(lines[0].encode())+1,backend.PHASE_PROGRESS_MAXIMUM_BYTES)
+
+ def test_publication_failure_never_replaces_primary(self):
+  obj=observer(Clock(),deadline=5000.0)
+  obj._phase_progress.record_substep('capture',123)
+  class Primary(Exception):pass
+  primary=Primary('original')
+  with mock.patch.object(backend.sys,'stderr',None):
+   try:raise primary
+   except Primary:obj.publish_phase_progress('phase-failure',True)
+  self.assertIs(primary.__class__,Primary)
+
+
+class RealCallSiteTest(unittest.TestCase):
+ """The wiring itself: real content_tool_maps and real pending_captures branches.
+
+ Omitting the observe_maps_body call, or dropping an instrument_substep wrapper,
+ must fail these tests.
+ """
+
+ def _observer(self, clock):
+  obj=observer(clock,deadline=clock()+30.0)
+  obj.capture_maps_content_entities=True
+  obj.tool_metadata_bytes=1<<20
+  obj.captures=[];obj.seq=0;obj.capture_entities={};obj.content_capture_pool={}
+  obj.capture_bytes=0;obj.budget_context={}
+  # Real content_tool_maps needs the real check path; only the budget leaf is
+  # stubbed because this bare Observer has no ledger.
+  obj.check_budget=lambda:None
+  obj.pump_errors=[]
+  return obj
+
+ def test_real_content_tool_maps_records_actual_body_bytes(self):
+  import os,tempfile,hashlib
+  clock=Clock(backend.time.monotonic());obj=self._observer(clock)
+  body=b''.join(b'%08x-%08x r-xp 00000000 08:01 1 /lib/x.so\n'%(a,a+0x1000) for a in range(0x400000,0x400000+40*0x1000,0x1000))
+  work=tempfile.mkdtemp()
+  try:
+   maps=os.path.join(work,'maps')
+   with open(maps,'wb') as handle:handle.write(body)
+   pid=4242;target='/proc/%d/maps'%pid
+   import builtins
+   real_open,real_stat,real_fstat=builtins.open,backend.os.stat,backend.os.fstat
+   class ProcStat:
+    def __init__(self,real):self._real=real
+    def __getattr__(self,name):return 0 if name=='st_size' else getattr(self._real,name)
+   maps_ino=real_stat(maps).st_ino
+   builtins.open=lambda p,*a,**k:real_open(maps if str(p)==target else p,*a,**k)
+   def stat_redirect(p,*a,**k):
+    return ProcStat(real_stat(maps,*a,**k)) if str(p)==target else real_stat(p,*a,**k)
+   backend.os.stat=stat_redirect
+   backend.os.fstat=lambda fd,*a,**k:(ProcStat(real_fstat(fd,*a,**k)) if real_fstat(fd,*a,**k).st_ino==maps_ino else real_fstat(fd,*a,**k))
+   from pathlib import Path as _P
+   obj.capture_dir=_P(work)
+   obj.raw=None;obj.compressed_raw=False
+   import threading as _th
+   obj.domain_lock=_th.Lock();obj.domain_bytes=0
+   obj.claim_bytes={'capture-body':0,'raw-wire':0,'stdio':0,'provider-other':0}
+   obj.maximum_bytes=64*1024**2
+   obj.emit=lambda row:dict(row,sequence=1)
+   try:
+    obj.content_tool_maps(pid)
+   finally:
+    builtins.open,backend.os.stat,backend.os.fstat=real_open,real_stat,real_fstat
+   record=obj.phase_progress_payload('phase-progress')
+   self.assertEqual(record['mapsBodyCount'],1)
+   self.assertEqual(record['mapsBodyBytesLast'],len(body))
+   self.assertEqual(record['mapsBodyBytesMax'],len(body))
+  finally:
+   import shutil;shutil.rmtree(work,ignore_errors=True)
+
+ def test_real_pending_branch_dispatch_is_instrumented(self):
+  clock=Clock(1000.0);obj=observer(clock,deadline=5000.0)
+  obj.generated_vma=None;obj.exclusive=None;obj.terminal_focus=None
+  obj.process_authority=False;obj.capture_toolchain=False
+  obj.terminal_exit_evidence=False;obj.tasks={}
+  obj.capture_queued_identity=lambda:True
+  obj.pending_captures_original()
+  record=obj.phase_progress_payload('phase-progress')
+  self.assertEqual(record['pendingCaptureSubsteps']['capture_queued_identity']['calls'],1)
+  self.assertEqual(record['pendingCaptureSubstepLast'],'capture_queued_identity')
+
+
 if __name__=='__main__':unittest.main()

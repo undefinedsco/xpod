@@ -61,12 +61,61 @@ const target = process.env.XPOD_AFS_LIFETIME_TARGET;
     const runtime = readFileSync(path.join(output, 'package/dist/command-host.mjs'), 'utf8');
     expect(/(?:from\s*|import\s*\(|require\s*\()\s*['"]@undefineds\.co\/xpod-cli(?:\/|['"])/.test(runtime)).toBe(false);
     const kit = JSON.parse(readFileSync(path.join(output, 'package/provenance/module-source-kit.json'), 'utf8'));
-    const fresh = kit.files.filter((file: { path: string }) => file.path.includes('/producer-cli-') && file.path.endsWith('/dist/output.mjs'));
-    expect(fresh.length).toBe(1);
-    expect(old.every(name => !fresh.some((file: { path: string }) => path.resolve(repo, file.path) === name))).toBe(true);
-    const copied = readFileSync(path.join(output, 'module-source', fresh[0].path));
-    expect(createHash('sha256').update(copied).digest('hex')).toBe(fresh[0].sha256);
-    expect(copied.length).toBe(fresh[0].bytes);
+    // Kit rows are repo-relative LOGICAL paths: copyAfsSourceKit copies the
+    // published commands-inputs keys, so a physical /producer-cli- staging path
+    // cannot appear and this filter can never match.
+    const safeLogical = (name: string): boolean => typeof name === 'string' && name !== ''
+      && !path.isAbsolute(name) && !name.includes('\\')
+      && !/[\x00-\x1f\x7f]/u.test(name)
+      && name.split('/').every(part => part !== '' && part !== '.' && part !== '..');
+    const kitPaths: string[] = kit.files.map((file: { path: string }) => file.path);
+    expect(kitPaths.every(safeLogical)).toBe(true);
+    expect(kitPaths.some(name => name.includes('producer-cli-'))).toBe(false);
+    // Every published non-node_modules input is in the kit (subset: kit adds files).
+    for (const name of publishedKeys.filter((entry: string) => !entry.includes('node_modules/')))
+      expect(kitPaths).toContain(name);
+
+    // Freshness: re-hash the ORIGINAL copied provenance bytes and bind them to
+    // the kit digest and the shipped payload. A hex-shaped string proves nothing.
+    const materials = kit.publicClientMaterials;
+    const indexBytes = readFileSync(path.join(output, 'package/provenance/cli-producer-materials.json'));
+    expect(createHash('sha256').update(indexBytes).digest('hex')).toBe(materials.indexSHA256);
+    const index = JSON.parse(indexBytes.toString('utf8'));
+    expect(index.status).toBe('producer-materials-only');
+    expect(index.outputPayloads?.esmSHA256).toMatch(/^[a-f0-9]{64}$/u);
+    expect(index.outputPayloads.esmSHA256).toBe(materials.outputPayloads.esmSHA256);
+    // The copied source inventory is the exact retained original.
+    const inventoryBytes = readFileSync(path.join(output, 'package/provenance/cli-client-source-inventory.json'));
+    expect(createHash('sha256').update(inventoryBytes).digest('hex')).toBe(materials.sourceInventorySHA256);
+    // The source snapshot hashes the copied source inventory's file list.
+    const sourceInventory = JSON.parse(inventoryBytes.toString('utf8'));
+    expect(materials.sourceAuthority.snapshotSHA256).toBe(index.sourceAuthority.snapshotSHA256);
+    expect(createHash('sha256').update(JSON.stringify(sourceInventory.files)).digest('hex'))
+      .toBe(index.sourceAuthority.snapshotSHA256);
+    expect(materials.sourceAuthority.sourceCommit).toBe(index.sourceAuthority.sourceCommit);
+
+    // The bundled CLI output must be the declared payload and match its row.
+    const cliOutput = kit.files.filter((file: { path: string, bytes: number, sha256: string }) =>
+      file.path === 'packages/xpod-cli/dist/output.mjs');
+    expect(cliOutput.length).toBe(1);
+    expect(cliOutput[0].sha256).toBe(index.outputPayloads.esmSHA256);
+    const copied = readFileSync(path.join(output, 'module-source', cliOutput[0].path));
+    expect(createHash('sha256').update(copied).digest('hex')).toBe(cliOutput[0].sha256);
+    expect(copied.length).toBe(cliOutput[0].bytes);
+
+    // Logical paths are stable and bytes may be identical, so also bind the NEW
+    // physical staging scope recorded by the post-module metafile.
+    const physicalAfter = JSON.parse(readFileSync(
+      path.join(repo, 'packages/xpod-afs/.test-data/build/commands-inputs.physical.json'), 'utf8'));
+    const physicalAfterKeys = Object.keys(physicalAfter.inputs);
+    const freshPhysical = physicalAfterKeys.filter(name => name.includes('/producer-cli-') && name.endsWith('/dist/output.mjs'));
+    expect(freshPhysical.length).toBe(1);
+    expect(old.some(name => name === freshPhysical[0])).toBe(false);
+    // Staging files have been deleted after their bound bytes were copied.
+    expect(freshPhysical.every(name => !existsSync(name))).toBe(true);
+    expect(physicalAfter.inputs[freshPhysical[0]].bytes).toBe(copied.length);
+    // Every old deleted client scope path is still gone.
+    expect(old.every(name => !existsSync(name))).toBe(true);
     const archive = JSON.parse(readFileSync(path.join(output, 'build.safe.json'), 'utf8'));
     expect(createHash('sha256').update(readFileSync(archive.archive)).digest('hex')).toBe(archive.sha256);
     process.stdout.write(JSON.stringify({ stage: 'client-cleanup-then-module', exit: 0, target,
