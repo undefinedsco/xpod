@@ -34,6 +34,45 @@ export const afsLibraryBuildArgs = [
 ];
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+/** Projection roots for one physical command-metafile input. */
+export interface CommandInputRoots {
+  readonly producerRoot: string;
+  readonly dependencyRoot: string;
+  readonly repoRoot: string;
+}
+
+/** Containment on the implementation's own separator: a relative path is inside
+ * a root only when it is not absolute and its first segment is not `..`. */
+function containedIn(relative: string, implementation: typeof path): boolean {
+  return !implementation.isAbsolute(relative)
+    && relative !== '..' && !relative.startsWith('..' + implementation.sep);
+}
+
+/** Error for a physical input that lies outside every declared projection root. */
+export const COMMAND_INPUT_OUTSIDE_ROOTS = 'Command input outside declared producer/dependency/repo roots';
+
+/** The single classification+projection for one physical input of the command
+ * graph: producer staging first, then dependencies, else repo-relative. Emits a
+ * POSIX logical path; the caller still reads and hashes the physical bytes.
+ * `implementation` exists so the Windows shape is executable on any host.
+ *
+ * The repo-relative fallback is itself containment-checked: a path on another
+ * drive (or otherwise outside the repo) makes `relative` return an absolute
+ * form, which must never be normalized into a logical path. */
+export function projectCommandInputPath(
+  physicalPath: string,
+  roots: CommandInputRoots,
+  implementation: typeof path = path,
+): string {
+  const producerRelative = implementation.relative(roots.producerRoot, physicalPath);
+  if (containedIn(producerRelative, implementation)) return 'packages/xpod-cli/' + producerRelative.split(implementation.sep).join('/');
+  const dependencyRelative = implementation.relative(roots.dependencyRoot, physicalPath);
+  if (containedIn(dependencyRelative, implementation)) return 'node_modules/' + dependencyRelative.split(implementation.sep).join('/');
+  const repoRelative = implementation.relative(roots.repoRoot, physicalPath);
+  if (containedIn(repoRelative, implementation)) return repoRelative.split(implementation.sep).join('/');
+  throw new Error(COMMAND_INPUT_OUTSIDE_ROOTS);
+}
+
 /** Compile and collect against the caller's live, verified producer scope. */
 export async function buildAfsClient(producerInput: ReturnType<typeof resolveProducerInput>, clientRoot: string) {
   await buildObserver.phase('client-materials-before', () => resolveProducerMaterials(producerInput.indexPath, clientRoot, producerInput.tools));
@@ -148,14 +187,11 @@ export async function buildAfsClient(producerInput: ReturnType<typeof resolvePro
   producerInput.assertCurrent();
   const repoRoot = path.resolve(root, '../..');
   const dependencyRoot = realpathSync(path.join(repoRoot, 'node_modules'));
-  const commandInputPaths = Object.keys(commandMetafile.inputs).map(physicalPath => {
-    const producerRelative = path.relative(producerInput.root, physicalPath);
-    const isProducer = producerRelative !== '..' && !producerRelative.startsWith('../') && !path.isAbsolute(producerRelative);
-    const dependencyRelative = path.relative(dependencyRoot, physicalPath);
-    const isDependency = dependencyRelative !== '..' && !dependencyRelative.startsWith('../') && !path.isAbsolute(dependencyRelative);
-    const logicalPath = (isProducer ? 'packages/xpod-cli/' + producerRelative : isDependency ? 'node_modules/' + dependencyRelative : path.relative(repoRoot, physicalPath)).split(path.sep).join('/');
-    return { physicalPath, logicalPath, sha256: createHash('sha256').update(readFileSync(physicalPath)).digest('hex') };
-  });
+  const commandInputPaths = Object.keys(commandMetafile.inputs).map(physicalPath => ({
+    physicalPath,
+    logicalPath: projectCommandInputPath(physicalPath, { producerRoot: producerInput.root, dependencyRoot, repoRoot }),
+    sha256: createHash('sha256').update(readFileSync(physicalPath)).digest('hex'),
+  }));
   writeFileSync(path.join(root, 'dist/commands-inputs.json'), producerInput.tools.projectBuildMetafile(physicalBytes, commandInputPaths));
   producerInput.assertCurrent();
   const commandNames = publicValueExports['./commands'];

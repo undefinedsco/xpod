@@ -21,9 +21,12 @@ import path from 'node:path';
 import {createHash} from 'node:crypto';
 import vm from 'node:vm';
 import ts from 'typescript';
+import {CLI_SOURCE_VERSION_GROUPS} from '../../scripts/lib/independent-admission/source-rules';
 import f6Groups from '../fixtures/independent-admission/f6-published-sdk-slice.original.json';
 /** Immutable PUBLISHED SDK823 baseline (64/79/156 = 299, API27, helpers 29/39/32). */
 import sdk823Groups from '../fixtures/independent-admission/sdk-823-published-slice.original.json';
+/** Immutable FB058 published baseline (65/80/158/28). New slices start AFTER these. */
+import fb058Groups from '../fixtures/independent-admission/fb058-published-slice.original.json';
 import {
   CONSUMER_SOURCE_GROUPS as consumer,
   CI_CONSUMER_SOURCE_GROUPS as ci,
@@ -93,6 +96,24 @@ test('immutable f6 baseline proves the 63/78/154/27 published prefixes', () => {
   }
 });
 
+test('the immutable FB058 baseline proves its full published 65/80/158/28 prefixes', () => {
+  // Separate frozen fixture: S823 (64/79/156) and f6 (63/78/154) keep their own checks.
+  expect((fb058Groups as any).base).toBe('fb058dee958f438e2eb17b34be43ce5b133d50ef');
+  expect([fb058Groups.published.sdk, fb058Groups.published.consumer,
+    fb058Groups.published.ci, fb058Groups.published.api]).toEqual([65, 80, 158, 28]);
+  for (const [name, groups] of Object.entries(families)) {
+    const published = (fb058Groups.groupHashes as any)[name] as unknown[];
+    // EVERY published index including the last is compared
+    for (let i = 0; i < published.length; i++) {
+      expect(hashValue(groups[i])).toBe(published[i]);
+    }
+    expect(groups.length).toBeGreaterThanOrEqual(published.length);
+  }
+  for (let i = 0; i < fb058Groups.cliHashes.length; i++) {
+    expect(hashValue(CLI_SOURCE_VERSION_GROUPS[i]!)).toBe(fb058Groups.cliHashes[i]);
+  }
+});
+
 test('the accepted SDK823 baseline proves all 299 published whole histories', () => {
   // Separate self-contained PUBLISHED-SDK823 anchor (64/79/156 = 299 + API27).
   expect((sdk823Groups as any).base).toBe('82385bee4c6167988a50e1225eb95dc287e61fe3');
@@ -104,13 +125,15 @@ test('the accepted SDK823 baseline proves all 299 published whole histories', ()
     expect(groups.slice(0, published.length).map(hashValue)).toEqual(published);
   }
   // Only genuinely new, UNPUBLISHED current groups follow the 299 published ones.
-  expect([sdk.length, consumer.length, ci.length, api.length]).toEqual([65, 80, 158, 28]);
+  expect([sdk.length, consumer.length, ci.length, api.length]).toEqual([66, 81, 160, 28]);
 });
 
 test('the appended groups bind the actual frozen body and real module bytes', () => {
-  expect(sha(read(BODY))).toBe('972d2fd49a98ca7f19505ed01c8b387536419aec4508fbe5a46080e84c70bcdb');
+  expect(sha(read(BODY))).toBe('c1a17030483599f6b85abd301ed9d56710ece5c1dda1af8d726df7cbb2c022b1');
   for (const [name, groups] of Object.entries(families)) {
-    const published = ((sdk823Groups as any)[name] as unknown[]).length;
+    // slice boundary = the IMMUTABLE FB058 published counts. FB index 64 is published
+    // and legitimately keeps its own historical bytes; only groups AFTER it are current.
+    const published = (fb058Groups.published as Record<string, number>)[name]!;
     for (const group of groups.slice(published)) {
       for (const row of rows(group)) {
         if ((row as any).ref === 'run-head') continue; // binds the CI run's own bytes
@@ -157,7 +180,7 @@ test('the live canonical binds every actual row of the final combined tree', () 
   expect(new Set(current.map((r) => r.path)).size).toBe(457);
   for (const row of current) expect(sha(read(row.path))).toBe(row.sha256);
   const body = current.find((r) => r.path === BODY)!;
-  expect(body.sha256).toBe('972d2fd49a98ca7f19505ed01c8b387536419aec4508fbe5a46080e84c70bcdb');
+  expect(body.sha256).toBe('c1a17030483599f6b85abd301ed9d56710ece5c1dda1af8d726df7cbb2c022b1');
   expect(current.find((r) => r.path === 'qlever/scripts/sdk-original-chunk-store.py')!.sha256)
     .toBe('d53ea1e6c8e8a270c3290d095e800596b7afa42c6b5135153dbb42db0bf2e43e');
 });
@@ -165,7 +188,7 @@ test('the live canonical binds every actual row of the final combined tree', () 
 test('helper tuples keep their published 29/39/32 history and the appends bind all real roles', () => {
   const tables = [
     ['qlever-sdk-generation.ts', 'REVIEWED_CONTROLLER_HELPER_GROUPS_NEXT', 'controller', 30],
-    ['qlever-sdk-generation.ts', 'REVIEWED_OBSERVER_GROUPS', 'observer', 40],
+    ['qlever-sdk-generation.ts', 'REVIEWED_OBSERVER_GROUPS', 'observer', 41],
     ['qlever-sdk-fetchcontent.ts', 'REVIEWED_HELPER_GROUPS_NEXT', 'fetch', 33],
   ] as const;
   for (const [file, name, family, count] of tables) {
@@ -176,7 +199,7 @@ test('helper tuples keep their published 29/39/32 history and the appends bind a
     const last = groups.at(-1)!;
     const entries = (Array.isArray(last) ? last : Object.entries(last as Record<string, string>)) as [string, string][];
     // Controller/fetch declarations allow 33 groups; observer history is separate.
-    expect(groups.length <= (family === 'observer' ? 40 : 33)).toBe(true);
+    expect(groups.length <= (family === 'observer' ? 41 : 33)).toBe(true);
     expect(entries.length <= 32).toBe(true);
     expect(new Set(entries.map(([role]) => role)).size).toBe(entries.length);
     for (const [role, expected] of entries) {
@@ -186,7 +209,7 @@ test('helper tuples keep their published 29/39/32 history and the appends bind a
   }
   // One new observer tuple follows the 39 published SDK823 tuples.
   const observer = recipes('qlever-sdk-generation.ts', 'REVIEWED_OBSERVER_GROUPS');
-  expect(observer).toHaveLength(40);
+  expect(observer).toHaveLength(41);
 });
 
 test('every group still selects itself uniquely and refuses missing/mixed roles', () => {

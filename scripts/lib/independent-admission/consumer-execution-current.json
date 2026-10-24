@@ -489,7 +489,7 @@
  },
  {
   "path":"qlever/scripts/sdk-ptrace-execution.py",
-  "sha256":"972d2fd49a98ca7f19505ed01c8b387536419aec4508fbe5a46080e84c70bcdb"
+  "sha256":"c1a17030483599f6b85abd301ed9d56710ece5c1dda1af8d726df7cbb2c022b1"
  },
  {
   "path":"qlever/scripts/sdk-ptrace-kernel.py",
@@ -997,7 +997,7 @@
  },
  {
   "path":"scripts/lib/independent-admission/legal-file-custody.ts",
-  "sha256":"f692a130410929834b3fd71cd4145b6afd83e366cfa78701741dd09eedf6c887"
+  "sha256":"b579ef2ee66eb539c228bd2e334c66b42c63ebefe8f3998bcf2245d8a57209b1"
  },
  {
   "path":"scripts/lib/independent-admission/legal-installed-originals.ts",
@@ -1209,7 +1209,7 @@
  },
  {
   "path":"scripts/lib/independent-admission/qlever-sdk-generation.ts",
-  "sha256":"dd3a2905706a189a8f0bbb9a398b083e3cf717f6e823ae82f42f9e6975b78bc3"
+  "sha256":"21b9f1a8df59e97e64a1d3996b28fa4ad748e5420a0c2816d72774f0f020dd46"
  },
  {
   "path":"scripts/lib/independent-admission/qlever-sdk-inputs.ts",
@@ -1221,7 +1221,7 @@
  },
  {
   "path":"scripts/lib/independent-admission/qlever-sdk-origin-policy.ts",
-  "sha256":"c17a773875e67941034845300b0ff8d9bf7cb24819aa70eedf81b0cf7d4e49ec"
+  "sha256":"c6e40664610f787b0c86f4f88e73fbbe6f402e4eece0fabd3f701826f821fbc1"
  },
  {
   "path":"scripts/lib/independent-admission/qlever-sdk-originals.ts",

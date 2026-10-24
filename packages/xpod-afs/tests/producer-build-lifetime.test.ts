@@ -40,7 +40,14 @@ const target = process.env.XPOD_AFS_LIFETIME_TARGET;
   try {
     await run('client', ['--mode', 'client']);
     expect(scopes()).toEqual(before);
-    const old = Object.keys(JSON.parse(readFileSync(path.join(repo, 'packages/xpod-afs/dist/commands-inputs.json'), 'utf8')).inputs)
+    // Published inputs use logical paths; retained physical inputs identify
+    // the producer scope that the completed client build has already deleted.
+    const published = JSON.parse(readFileSync(path.join(repo, 'packages/xpod-afs/dist/commands-inputs.json'), 'utf8'));
+    const publishedKeys = Object.keys(published.inputs);
+    expect(publishedKeys.some(name => name.includes('/producer-cli-'))).toBe(false);
+    expect(publishedKeys.some(name => path.isAbsolute(name))).toBe(false);
+    const old = Object.keys(JSON.parse(readFileSync(
+      path.join(repo, 'packages/xpod-afs/.test-data/build/commands-inputs.physical.json'), 'utf8')).inputs)
       .filter(name => name.includes('/producer-cli-'));
     expect(old.length > 0).toBe(true);
     expect(old.every(name => !existsSync(name))).toBe(true);

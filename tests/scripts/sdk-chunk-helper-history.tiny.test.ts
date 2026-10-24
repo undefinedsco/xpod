@@ -23,7 +23,7 @@ function recipes(file:string,name:string):unknown[]{
  const scope:{result?:unknown[]}={};runInNewContext(ts.transpileModule(declarations+'\nresult='+name+';',{compilerOptions:{target:ts.ScriptTarget.ES2021,module:ts.ModuleKind.None}}).outputText,scope,{timeout:1000});return scope.result!;
 }
 test('SDK chunk addition preserves all 76 historical helper and observer whole recipes',()=>{
- for(const [file,name,key,count] of [['qlever-sdk-generation.ts','REVIEWED_CONTROLLER_HELPER_GROUPS_NEXT','helpers',30],['qlever-sdk-generation.ts','REVIEWED_OBSERVER_GROUPS','observer',40],['qlever-sdk-fetchcontent.ts','REVIEWED_HELPER_GROUPS_NEXT','fetch',33]]as const){
+ for(const [file,name,key,count] of [['qlever-sdk-generation.ts','REVIEWED_CONTROLLER_HELPER_GROUPS_NEXT','helpers',30],['qlever-sdk-generation.ts','REVIEWED_OBSERVER_GROUPS','observer',41],['qlever-sdk-fetchcontent.ts','REVIEWED_HELPER_GROUPS_NEXT','fetch',33]]as const){
   const groups=recipes(file,name);expect(groups).toHaveLength(count);expect(groups.slice(0,before[key].length).map(hash)).toEqual(before[key]);
   const last=groups.at(-1)!;const entries=Array.isArray(last)?last as [string,string][]:Object.entries(last as Record<string,string>);
   expect(entries.some(([name])=>name.endsWith('sdk-original-chunk-store.py'))).toBe(true);expect(entries.some(([name])=>name.endsWith('sdk-generated-vma-originals.py'))).toBe(true);

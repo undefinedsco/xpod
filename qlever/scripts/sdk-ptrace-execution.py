@@ -517,7 +517,23 @@ class Observer:
         self.check_budget()
         if hasattr(self,'waiter') and self.waiter.active:self.waiter.check()
         assert not self.pump_errors,'actual bounded stdio failed: '+str(self.pump_errors);assert time.monotonic()<self.deadline,'all-stop observer deadline'
-        if self.lifetime_leases is not None:self.instrument('lifetime_lease_check',self.lifetime_leases.check)
+        if self.lifetime_leases is not None and not self.owned_maps_frame_active():self.instrument('lifetime_lease_check',self.lifetime_leases.check)
+    def owned_maps_frame_active(self):
+        """True only on the exact thread/phase that opened the private maps frame.
+
+        Deliberately not a general nesting API: the frame is owned by one
+        ``content_tool_maps`` call, is not re-entrant, and cannot be adopted by
+        another thread or a later phase.
+        """
+        frame=getattr(self,'owned_maps_frame',None)
+        return frame is not None and frame[0]==threading.get_ident() and frame[1]==self.current_phase
+    def open_owned_maps_frame(self):
+        """Open the single private maps frame; refuse if any frame already exists."""
+        assert getattr(self,'owned_maps_frame',None) is None,'owned maps frame is not re-entrant'
+        self.owned_maps_frame=(threading.get_ident(),self.current_phase)
+    def close_owned_maps_frame(self):
+        """Unconditionally drop the frame, whatever the caller observed."""
+        self.owned_maps_frame=None
     def check_deadline(self):
         """Per-iteration fast refusal: deadline/stdio/budget only, no lease sweep.
 
@@ -1309,35 +1325,56 @@ class Observer:
         assert type(address) is int and address>0 and address%4==0,'aligned uint32 word required'
         value=single.trace(single.PEEKDATA,pid,address&~7);raw=int(value).to_bytes(8,'little',signed=True);return raw[address%8:address%8+4]
     def content_tool_maps(self,pid):
+        """One complete read-only maps observation under a private single frame.
+
+        The frame exists only for the duration of this call, on this thread and
+        phase, and is never re-entrant. Inside it, nested ``check()`` calls still
+        run budget, waiter, stdio and deadline refusal on every existing call and
+        skip only the redundant full lifetime-lease sweep. The frame is closed
+        unconditionally, a COMPLETE check runs before any result can escape, and
+        emission happens after the frame is gone so it pays its own full sweeps.
+        Every fresh read, digest and identity assertion is unchanged.
+        """
         path='/proc/'+str(pid)+'/maps';name='capture-'+str(len(self.captures)).zfill(4)+'.original';data=bytearray();digest=hashlib.sha256()
         def identity(value):return [*probe.identity(value),value.st_nlink]
         with open(path,'rb')as source:
             before=identity(os.fstat(source.fileno()));named=identity(os.stat(path,follow_symlinks=False))
             assert stat.S_ISREG(before[2])and before[3]==0 and before[6]==1 and before==named,'actual proc maps descriptor/named identity differs'
-            # Full live validation brackets this one read-only maps body; the
-            # block iterations are pure local copying and pay only the cheap
-            # deadline/stdio refusal. The trailing check still validates.
             self.check()
+            pending=None;failure=None
+            self.open_owned_maps_frame()
             try:
                 while True:
                     self.check_deadline();block=source.read(65536)
                     if not block:break
                     assert len(data)+len(block)<=self.tool_metadata_bytes,'bounded actual maps required'
                     data.extend(block);digest.update(block)
-            finally:self.check()
-            observed=(len(data),digest.hexdigest());after=identity(os.fstat(source.fileno()));assert before==after==identity(os.stat(path,follow_symlinks=False)),'actual complete maps FD changed'
-            reused=self.prior_content_entity(observed,scope=('maps',));extra={}
-            if reused is None:
-                with(self.capture_dir/name).open('xb')as output:
-                    for at in range(0,len(data),65536):
-                        self.check();block=data[at:at+65536];self.claim(len(block),category='capture-body',context=dict(role='toolchain-original',captureKind='maps',observedPid=pid));output.write(block)
-                    output.flush();os.fsync(output.fileno())
-                ref=dict(path=name,bytes=observed[0],sha256=observed[1]);self.capture_bytes+=observed[0]
-            else:
-                prior,ref,_=reused;extra['originalReuse']=dict(model='same-phase-maps-content-entity-v1',originCaptureSequence=prior['sequence'])
-            assert before==identity(os.fstat(source.fileno()))==identity(os.stat(path,follow_symlinks=False)),'maps FD/named identity changed during physical original verification'
-            ref=dict(ref,observationSequence=self.seq+1)
-            row=self.emit(dict(kind='toolchain-original',captureKind='maps',observedPid=pid,original=ref,mapsWindowIdentity=before,mapsWindowAfterIdentity=after,mapsNamedWindowIdentity=named,mapsNamedWindowAfterIdentity=identity(os.stat(path,follow_symlinks=False)),**extra));self.captures.append(row)
+                observed=(len(data),digest.hexdigest());after=identity(os.fstat(source.fileno()));assert before==after==identity(os.stat(path,follow_symlinks=False)),'actual complete maps FD changed'
+                reused=self.prior_content_entity(observed,scope=('maps',));extra={}
+                if reused is None:
+                    with(self.capture_dir/name).open('xb')as output:
+                        for at in range(0,len(data),65536):
+                            self.check();block=data[at:at+65536];self.claim(len(block),category='capture-body',context=dict(role='toolchain-original',captureKind='maps',observedPid=pid));output.write(block)
+                        output.flush();os.fsync(output.fileno())
+                    ref=dict(path=name,bytes=observed[0],sha256=observed[1]);self.capture_bytes+=observed[0]
+                else:
+                    prior,ref,_=reused;extra['originalReuse']=dict(model='same-phase-maps-content-entity-v1',originCaptureSequence=prior['sequence'])
+                assert before==identity(os.fstat(source.fileno()))==identity(os.stat(path,follow_symlinks=False)),'maps FD/named identity changed during physical original verification'
+                ref=dict(ref,observationSequence=self.seq+1)
+                pending=dict(kind='toolchain-original',captureKind='maps',observedPid=pid,original=ref,mapsWindowIdentity=before,mapsWindowAfterIdentity=after,mapsNamedWindowIdentity=named,mapsNamedWindowAfterIdentity=identity(os.stat(path,follow_symlinks=False)),**extra)
+            except BaseException as error:
+                failure=error
+            finally:
+                # Unconditional reset, then a COMPLETE validation that cannot be
+                # suppressed by any frame. A broken lease refuses the result even
+                # when the body bytes and digests were complete.
+                self.close_owned_maps_frame()
+                try:self.check()
+                except BaseException as error:
+                    failure=error if failure is None else failure
+            if failure is not None:raise failure
+            # Emitted after the frame: emit pays its own full sweeps.
+            row=self.emit(pending);self.captures.append(row)
         mappings=bindings.parse_proc_maps(bytes(data));memory_policy.validate_mappings(mappings)
         return row,mappings
     def tool_maps(self,pid):
@@ -1678,7 +1715,7 @@ class Observer:
         started=ns(getattr(progress,'started',None)) if progress is not None else None
         deadline=ns(getattr(progress,'deadline',None)) if progress is not None else None
         now_ns=ns(now)
-        payload=dict(schemaVersion=1,kind=kind,authorityVerified=False,phase=self.current_phase,phaseStartedMonotonicNs=str(started) if started is not None else None,phaseDeadlineMonotonicNs=str(deadline) if deadline is not None else None,nowMonotonicNs=str(now_ns) if now_ns is not None else None,elapsedNs=str(now_ns-started) if now_ns is not None and started is not None else None,remainingNs=str(deadline-now_ns) if deadline is not None and now_ns is not None else None,globalRawSequence=getattr(self,'seq',0),phaseTicks=getattr(progress,'ticks',0) if progress is not None else 0,eventCount=getattr(progress,'events',0) if progress is not None else 0,waitReturnCount=getattr(progress,'waits',0) if progress is not None else 0,lastBoundary=getattr(progress,'last_boundary',None) if progress is not None else None,lastWait=getattr(progress,'last_wait',None) if progress is not None else None,taskCounts=state_counts,exclusiveOwnerPid=exclusive[0] if isinstance(exclusive,tuple) and len(exclusive)==2 else None,exclusiveOwnerSequence=exclusive[1] if isinstance(exclusive,tuple) and len(exclusive)==2 else None,terminalFocusPid=terminal,generatedVmaOwner=getattr(generated,'owner',None) if generated is not None else None,lifetimeLeaseActive=lifecycle is not None,activeInclusiveMethod=getattr(progress,'active',None) if progress is not None else None,activeInclusiveMethodStartedNs=str(getattr(progress,'active_started',None)) if progress is not None and getattr(progress,'active_started',None) is not None else None,lastFailedInclusiveMethod=getattr(progress,'failed',None) if progress is not None else None,lastFailedInclusiveMethodStartedNs=str(getattr(progress,'failed_started',None)) if progress is not None and getattr(progress,'failed_started',None) is not None else None,inclusiveBuckets={name:dict(calls=value[0],totalNs=value[1],maxNs=value[2]) for name,value in (progress.buckets.items() if progress is not None else [])},inclusiveDurationNote='inclusive nested durations; buckets overlap by design; non-additive',failure=bool(failure))
+        payload=dict(schemaVersion=1,kind=kind,authorityVerified=False,phase=self.current_phase,phaseStartedMonotonicNs=str(started) if started is not None else None,phaseDeadlineMonotonicNs=str(deadline) if deadline is not None else None,nowMonotonicNs=str(now_ns) if now_ns is not None else None,elapsedNs=str(now_ns-started) if now_ns is not None and started is not None else None,remainingNs=str(deadline-now_ns) if deadline is not None and now_ns is not None else None,globalRawSequence=getattr(self,'seq',0),phaseTicks=getattr(progress,'ticks',0) if progress is not None else 0,eventCount=getattr(progress,'events',0) if progress is not None else 0,waitReturnCount=getattr(progress,'waits',0) if progress is not None else 0,lastBoundary=getattr(progress,'last_boundary',None) if progress is not None else None,lastWait=getattr(progress,'last_wait',None) if progress is not None else None,taskCounts=state_counts,exclusiveOwnerPid=exclusive[0] if isinstance(exclusive,tuple) and len(exclusive)==2 else None,exclusiveOwnerSequence=exclusive[1] if isinstance(exclusive,tuple) and len(exclusive)==2 else None,terminalFocusPid=terminal,generatedVmaOwner=getattr(generated,'owner',None) if generated is not None else None,lifetimeLeaseActive=lifecycle is not None,lifetimeLeaseCount=len(lifecycle.fds) if lifecycle is not None else 0,activeInclusiveMethod=getattr(progress,'active',None) if progress is not None else None,activeInclusiveMethodStartedNs=str(getattr(progress,'active_started',None)) if progress is not None and getattr(progress,'active_started',None) is not None else None,lastFailedInclusiveMethod=getattr(progress,'failed',None) if progress is not None else None,lastFailedInclusiveMethodStartedNs=str(getattr(progress,'failed_started',None)) if progress is not None and getattr(progress,'failed_started',None) is not None else None,inclusiveBuckets={name:dict(calls=value[0],totalNs=value[1],maxNs=value[2]) for name,value in (progress.buckets.items() if progress is not None else [])},inclusiveDurationNote='inclusive nested durations; buckets overlap by design; non-additive',failure=bool(failure))
         return payload
     def publish_phase_progress(self,kind,failure=False):
         """Bounded stderr diagnostic from held state only; never raises.

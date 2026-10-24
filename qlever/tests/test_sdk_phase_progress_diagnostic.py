@@ -174,11 +174,21 @@ class PhaseProgressDiagnosticTest(unittest.TestCase):
   for key in ('phaseTicks','eventCount','waitReturnCount','globalRawSequence'):self.assertIn(key,record)
  def test_owners_from_existing_metadata_only(self):
   obj=observer(Clock());obj.exclusive=(7,11);obj.terminal_focus=9
-  obj.generated_vma=SimpleNamespace(owner=8);obj.lifetime_leases=object()
+  obj.generated_vma=SimpleNamespace(owner=8);obj.lifetime_leases=SimpleNamespace(fds=(11,12))
   record=self.records(self.publish(obj))[0]
   self.assertEqual((record['exclusiveOwnerPid'],record['exclusiveOwnerSequence']),(7,11))
   self.assertEqual(record['terminalFocusPid'],9);self.assertEqual(record['generatedVmaOwner'],8)
   self.assertIs(record['lifetimeLeaseActive'],True)
+  self.assertEqual(record['lifetimeLeaseCount'],2)
+ def test_lease_inventory_count_reads_current_held_metadata(self):
+  obj=observer(Clock())
+  self.assertEqual(self.records(self.publish(obj))[0]['lifetimeLeaseCount'],0)
+  obj.lifetime_leases=SimpleNamespace(fds=(11,12,13))
+  self.assertEqual(self.records(self.publish(obj))[0]['lifetimeLeaseCount'],3)
+  obj.lifetime_leases.fds=(11,12,13,14)
+  record=self.records(self.publish(obj,failure=True))[0]
+  self.assertEqual(record['lifetimeLeaseCount'],4)
+  self.assertIs(record['failure'],True)
  def test_writer_failure_cannot_replace_primary_exception(self):
   obj=observer(Clock());sentinel=TimeoutError('primary')
   with mock.patch.object(backend.sys,'stderr',SimpleNamespace(write=mock.Mock(side_effect=OSError('closed')),flush=mock.Mock())):

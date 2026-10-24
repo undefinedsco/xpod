@@ -11,7 +11,9 @@ test('SDK ownership cohort and bounded FD fixtures retain refusal guards', {
     'qlever.tests.test_sdk_ownership_cohort',
     'qlever.tests.test_sdk_shared_task_ownership',
     'qlever.tests.test_sdk_write_delta_chain',
-    'qlever.tests.test_sdk_fdinfo_fields'], {
+    'qlever.tests.test_sdk_fdinfo_fields',
+    'qlever.tests.test_sdk_maps_readonly_boundary',
+    'qlever.tests.test_sdk_phase_progress_diagnostic'], {
     cwd: path.resolve(__dirname, '../..'), encoding: 'utf8', timeout: 30000, maxBuffer: 1024 * 1024,
   });
   assert.equal(result.error, undefined, String(result.error));

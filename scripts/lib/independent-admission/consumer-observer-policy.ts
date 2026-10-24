@@ -10,6 +10,7 @@ import f6SnapshotCanonical from './consumer-execution-f6-snapshot.json';
 * published tails derive from THESE bytes, so finalising the live canonical for
 * the combined SOURCE/Bun/legal tree can never rewrite the published history. */
 import sdkAcceptedCanonical from './consumer-execution-sdk-accepted-snapshot.json';
+import fbSnapshotCanonical from './consumer-execution-fb-snapshot.json';
 /** Immutable prior canonical (exact HEAD3a bytes): already-published groups derive here. */
 import windowPreCanonical from './consumer-execution-window-pre.json';
 /** Immutable prior canonical (exact HEAD030 bytes): published groups derive here. */
@@ -758,6 +759,11 @@ const PRE_F6_SNAPSHOT_CONTROLLER_POLICY_BINDINGS=Object.freeze([
 ]);
 /** Mapping-window slice: same complete recipe with the actually rehashed observers. */
 const mappingWindowRecipe=(g:GitHubSourceBindingGroup)=>indexedControllerRecipe(rebindNoticeCurrent(g,f6SnapshotCanonical,PRE_F6_SNAPSHOT_CONTROLLER_POLICY_BINDINGS),'source:scripts/lib/independent-admission/qlever-sdk-generation.ts');
+/** Frozen FB058 controller anchors: the published 80/158 tails bind these exact bytes. */
+const PRE_FB_CONTROLLER_POLICY_BINDINGS=Object.freeze([
+ Object.freeze({path:'scripts/lib/independent-admission/consumer-observer-policy.ts',sha256:'f78182e41ca3a913dfff6ccd990929b8255a8282d2ed5da85e90efd7fc8ecd08'}),
+ Object.freeze({path:'scripts/lib/independent-admission/consumer-execution-current.json',sha256:'c59db41bc8b7c44f3c227170261f15123c59bfa67ef260f71a2af61adbce1ec9'})
+]);
 /** Frozen accepted-SDK controller anchors: the published 79/156 tails bind these. */
 const PRE_SDK_ACCEPTED_CONTROLLER_POLICY_BINDINGS=Object.freeze([
  Object.freeze({path:'scripts/lib/independent-admission/consumer-observer-policy.ts',sha256:'979f0bcec35e25978678d9d059e5ecb13edf03b81f2ba46c8a21314f665b4075'}),
@@ -767,8 +773,9 @@ const nextSliceRecipe=(g:GitHubSourceBindingGroup)=>indexedControllerRecipe(rebi
 /** Final combined SOURCE/Bun/legal slice: same complete recipe re-bound to the
 * ACTUAL final tree bytes. The live canonical + live controller anchors are the
 * real new bytes; every published tail keeps its frozen snapshot. */
+const fbSliceRecipe=(g:GitHubSourceBindingGroup)=>indexedControllerRecipe(rebindNoticeCurrent(g,fbSnapshotCanonical,PRE_FB_CONTROLLER_POLICY_BINDINGS),'source:scripts/lib/independent-admission/qlever-sdk-generation.ts');
 const finalJointRecipe=(g:GitHubSourceBindingGroup)=>indexedControllerRecipe(rebindNoticeCurrent(g,canonicalCurrent,CONTROLLER_POLICY_BINDINGS),'source:scripts/lib/independent-admission/qlever-sdk-generation.ts');
-export const CONSUMER_SOURCE_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...PRE_ROWS_DIAGNOSTIC_CONSUMER_SOURCE_GROUPS,rowsDiagnosticRecipe(PRE_ROWS_DIAGNOSTIC_CONSUMER_SOURCE_GROUPS[PRE_ROWS_DIAGNOSTIC_CONSUMER_SOURCE_GROUPS.length-1]!),threadRecipe(PRE_ROWS_DIAGNOSTIC_CONSUMER_SOURCE_GROUPS[PRE_ROWS_DIAGNOSTIC_CONSUMER_SOURCE_GROUPS.length-1]!),bracketCurrentRecipe(PRE_ROWS_DIAGNOSTIC_CONSUMER_SOURCE_GROUPS[PRE_ROWS_DIAGNOSTIC_CONSUMER_SOURCE_GROUPS.length-1]!),mappingWindowRecipe(PRE_ROWS_DIAGNOSTIC_CONSUMER_SOURCE_GROUPS[PRE_ROWS_DIAGNOSTIC_CONSUMER_SOURCE_GROUPS.length-1]!),nextSliceRecipe(mappingWindowRecipe(PRE_ROWS_DIAGNOSTIC_CONSUMER_SOURCE_GROUPS[PRE_ROWS_DIAGNOSTIC_CONSUMER_SOURCE_GROUPS.length-1]!)),finalJointRecipe(nextSliceRecipe(mappingWindowRecipe(PRE_ROWS_DIAGNOSTIC_CONSUMER_SOURCE_GROUPS[PRE_ROWS_DIAGNOSTIC_CONSUMER_SOURCE_GROUPS.length-1]!)))]);
-export const CI_CONSUMER_SOURCE_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...PRE_ROWS_DIAGNOSTIC_CI_SOURCE_GROUPS,...PRE_ROWS_DIAGNOSTIC_CI_SOURCE_GROUPS.slice(-2).map(rowsDiagnosticRecipe),...PRE_ROWS_DIAGNOSTIC_CI_SOURCE_GROUPS.slice(-2).map(threadRecipe),...PRE_ROWS_DIAGNOSTIC_CI_SOURCE_GROUPS.slice(-2).map(bracketCurrentRecipe),...PRE_ROWS_DIAGNOSTIC_CI_SOURCE_GROUPS.slice(-2).map(mappingWindowRecipe),...PRE_ROWS_DIAGNOSTIC_CI_SOURCE_GROUPS.slice(-2).map(g=>nextSliceRecipe(mappingWindowRecipe(g))),...PRE_ROWS_DIAGNOSTIC_CI_SOURCE_GROUPS.slice(-2).map(g=>finalJointRecipe(nextSliceRecipe(mappingWindowRecipe(g))))]);
+export const CONSUMER_SOURCE_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...PRE_ROWS_DIAGNOSTIC_CONSUMER_SOURCE_GROUPS,rowsDiagnosticRecipe(PRE_ROWS_DIAGNOSTIC_CONSUMER_SOURCE_GROUPS[PRE_ROWS_DIAGNOSTIC_CONSUMER_SOURCE_GROUPS.length-1]!),threadRecipe(PRE_ROWS_DIAGNOSTIC_CONSUMER_SOURCE_GROUPS[PRE_ROWS_DIAGNOSTIC_CONSUMER_SOURCE_GROUPS.length-1]!),bracketCurrentRecipe(PRE_ROWS_DIAGNOSTIC_CONSUMER_SOURCE_GROUPS[PRE_ROWS_DIAGNOSTIC_CONSUMER_SOURCE_GROUPS.length-1]!),mappingWindowRecipe(PRE_ROWS_DIAGNOSTIC_CONSUMER_SOURCE_GROUPS[PRE_ROWS_DIAGNOSTIC_CONSUMER_SOURCE_GROUPS.length-1]!),nextSliceRecipe(mappingWindowRecipe(PRE_ROWS_DIAGNOSTIC_CONSUMER_SOURCE_GROUPS[PRE_ROWS_DIAGNOSTIC_CONSUMER_SOURCE_GROUPS.length-1]!)),fbSliceRecipe(nextSliceRecipe(mappingWindowRecipe(PRE_ROWS_DIAGNOSTIC_CONSUMER_SOURCE_GROUPS[PRE_ROWS_DIAGNOSTIC_CONSUMER_SOURCE_GROUPS.length-1]!))),finalJointRecipe(nextSliceRecipe(mappingWindowRecipe(PRE_ROWS_DIAGNOSTIC_CONSUMER_SOURCE_GROUPS[PRE_ROWS_DIAGNOSTIC_CONSUMER_SOURCE_GROUPS.length-1]!)))]);
+export const CI_CONSUMER_SOURCE_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...PRE_ROWS_DIAGNOSTIC_CI_SOURCE_GROUPS,...PRE_ROWS_DIAGNOSTIC_CI_SOURCE_GROUPS.slice(-2).map(rowsDiagnosticRecipe),...PRE_ROWS_DIAGNOSTIC_CI_SOURCE_GROUPS.slice(-2).map(threadRecipe),...PRE_ROWS_DIAGNOSTIC_CI_SOURCE_GROUPS.slice(-2).map(bracketCurrentRecipe),...PRE_ROWS_DIAGNOSTIC_CI_SOURCE_GROUPS.slice(-2).map(mappingWindowRecipe),...PRE_ROWS_DIAGNOSTIC_CI_SOURCE_GROUPS.slice(-2).map(g=>nextSliceRecipe(mappingWindowRecipe(g))),...PRE_ROWS_DIAGNOSTIC_CI_SOURCE_GROUPS.slice(-2).map(g=>fbSliceRecipe(nextSliceRecipe(mappingWindowRecipe(g)))),...PRE_ROWS_DIAGNOSTIC_CI_SOURCE_GROUPS.slice(-2).map(g=>finalJointRecipe(nextSliceRecipe(mappingWindowRecipe(g))))]);
 freezeGitHubSourceBindingGroups(CONSUMER_SOURCE_GROUPS);
 freezeGitHubSourceBindingGroups(CI_CONSUMER_SOURCE_GROUPS);
