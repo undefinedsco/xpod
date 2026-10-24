@@ -6,3 +6,4 @@ from qlever.tests.test_sdk_terminal_authority import Tests as TerminalAuthorityT
 from qlever.tests.test_sdk_terminal_serialization import Tests as TerminalSerializationTests
 from qlever.tests.test_sdk_append_boundary_queue import Tests as AppendBoundaryQueueTests
 from qlever.tests.test_sdk_indexed_tool_coverage import Tests as IndexedToolCoverageTests
+from qlever.tests.test_sdk_sigq_sampling import Tests as SigQSamplingTests

@@ -7,7 +7,7 @@ f=importlib.util.module_from_spec(spec);spec.loader.exec_module(f)
 b=f.backend
 class Tests(unittest.TestCase):
  def observer(self, enabled=True):
-  o=object.__new__(b.Observer)
+  o=object.__new__(b.Observer);o.capture_toolchain=False
   o.generated_vma=None;o.generated_vma_output=False
   o.tasks={pid:dict(stopped=False,exited=False,entry=None,initial=True) for pid in [10,11]}
   o.process_authority=True;o.verified_setresuid_noop=False;o.verified_identity_noop=True

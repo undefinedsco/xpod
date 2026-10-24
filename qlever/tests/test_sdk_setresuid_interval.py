@@ -3,7 +3,7 @@ import copy,hashlib,importlib.util,json,unittest
 from pathlib import Path
 p=Path(__file__).parents[1]/'scripts/sdk-tool-provider-originals.py';s=importlib.util.spec_from_file_location('provider_interval',p);m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
 MOUNTS=b'149 1 0:1 / / ro - overlay overlay ro\n'
-def status():return 'Pid: 10\nTgid: 10\nState: t (tracing stop)\nTracerPid: 2\nUid: 0 0 0 0\nGid: 0 0 0 0\nGroups: 0\nNoNewPrivs: 1\n'+''.join(k+': 0000000000000000\n' for k in m._CAPS)
+def status():return 'Pid: 10\nTgid: 10\nState: t (tracing stop)\nTracerPid: 2\nUid: 0 0 0 0\nGid: 0 0 0 0\nGroups: 0\nNoNewPrivs: 1\nSigQ: 0/1000\n'+''.join(k+': 0000000000000000\n' for k in m._CAPS)
 def original(data,ino):return dict(data=data,bytes=len(data.encode()),sha256=hashlib.sha256(data.encode()).hexdigest(),identity=[1,ino,0o100444,0,0,0])
 def setup():
  ns={role:dict(link=role+':['+str(ino)+']',identity=[1,ino,0o100444,0,0,0],held=dict(descriptor=ino,identity=[1,ino,0o100444,0,0,0])) for ino,role in enumerate(['mnt','pid','user'],10)}

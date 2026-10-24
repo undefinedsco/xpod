@@ -1001,6 +1001,7 @@ class Observer:
             self.emit(dict(kind='executable-memory-write-fd',model=memory_policy.MODEL,pid=pid,entrySequence=record['sequence'],fd=descriptor,target=target))
         if reason:
             self.emit(dict(kind='executable-memory-refused',model=memory_policy.MODEL,pid=pid,entrySequence=record['sequence'],reason=reason))
+            print('SDK_EXECUTABLE_MEMORY_REFUSED '+json.dumps(dict(arch=record['arch'],nr=record['nr'],pid=pid,entrySequence=record['sequence'],reason=reason),sort_keys=True,separators=(',',':')),file=sys.stderr,flush=True)
             raise ValueError('executable memory policy refused before resume: '+reason)
 
     def lifetime_open(self,pid,path):

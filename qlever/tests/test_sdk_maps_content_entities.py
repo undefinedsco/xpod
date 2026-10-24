@@ -5,7 +5,7 @@ from unittest.mock import patch
 ROOT=Path(__file__).resolve().parents[2]
 spec=importlib.util.spec_from_file_location('maps_content_backend',ROOT/'qlever/scripts/sdk-ptrace-execution.py');core=importlib.util.module_from_spec(spec);spec.loader.exec_module(core)
 MODEL='same-phase-maps-content-entity-v1'
-BODY=b'1000-2000 r-xp 00000000 00:00 0 /bin/fixture\n'
+BODY=b'1000-2000 r--p 00000000 00:00 0 /bin/fixture\n'
 class ActualStorageTests(unittest.TestCase):
  def setUp(self):
   parent=ROOT/'.test-data/sdk-maps-content';parent.mkdir(exist_ok=True);self.temp=tempfile.TemporaryDirectory(dir=parent);self.addCleanup(self.temp.cleanup);self.root=Path(self.temp.name);self.out=self.root/'out';self.out.mkdir();self.source=self.root/'modeled-proc-maps';self.source.write_bytes(BODY)

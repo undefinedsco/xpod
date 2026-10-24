@@ -103,7 +103,7 @@ class Tests(unittest.TestCase):
   self.assertEqual([r['kind'] for r in o.rows],['ptrace-event','toolchain-terminal-authority','actual-wait-exit','all-stop-barrier','toolchain-terminal-authority-closed'])
  def test_late_exit_during_authority_barrier_closes_before_the_actual_resume(self):
   o=object.__new__(backend.Observer);o.generated_vma=None;o.generated_vma_output=False;o.tasks={1:dict(stopped=True,exited=False,entry=None,initial=False,authorityPending=[('initial',None)]),2:dict(stopped=False,exited=False,entry=None,initial=False)}
-  o.unknown_stops={};o.process_authority=True;o.terminal_exit_evidence=True;o.capture_toolchain=False;o.shared_tasks=False;o.exclusive=None;o.root=1;o.current_phase='configure';o.rows=[];o.check=lambda:None;o.tool_metadata_bytes=4194304;o.authority_handles=object();o.wait_references=[]
+  o.authority_observed=set();o.unknown_stops={};o.process_authority=True;o.terminal_exit_evidence=True;o.capture_toolchain=False;o.shared_tasks=False;o.exclusive=None;o.root=1;o.current_phase='configure';o.rows=[];o.check=lambda:None;o.tool_metadata_bytes=4194304;o.authority_handles=object();o.wait_references=[]
   def emit(row):
    value=dict(row,sequence=len(o.rows)+1,phase='configure');o.rows.append(value);return value
   o.emit=emit;o.wait_one=lambda:(2,STOP);o.tool_mountinfo_original=lambda *args:dict(path='mountinfo',bytes=0,sha256='0'*64)

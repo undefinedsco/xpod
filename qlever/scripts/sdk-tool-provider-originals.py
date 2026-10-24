@@ -163,6 +163,34 @@ def status_authority(raw,*,pid,tracer=None):
         words=values[key].split();need((key=='Groups' or len(words)==4) and len(words)<=256 and all(word.isdigit() and int(word)<1<<32 for word in words),'actual UID/GID/group role differs');result[key]=[int(word) for word in words]
     return dict(result,noNewPrivs=1,capabilities={key:0 for key in _CAPS})
 
+_SIGQ_VALUE_RE=re.compile(r'([ \t]*)(0|[1-9][0-9]*)/(0|[1-9][0-9]*)([ \t]*)')
+def _sigq_unsigned(text):
+    return len(text)<=20 and re.fullmatch(r'(?:0|[1-9][0-9]{0,19})',text) is not None and int(text)<1<<64
+def _strict_status_projection(raw):
+    """Project one bounded status to a comparison form without its SigQ count."""
+    need(isinstance(raw,str) and len(raw.encode())<=16384,'bounded actual process status required')
+    lines=raw.split('\n');found=[]
+    for index,line in enumerate(lines):
+        key,separator,value=line.partition(':')
+        if key=='SigQ':
+            match=_SIGQ_VALUE_RE.fullmatch(value)
+            need(separator and match is not None and _sigq_unsigned(match.group(2)) and _sigq_unsigned(match.group(3)),'well-formed single SigQ count/limit required')
+            found.append((index,match))
+    need(len(found)==1,'exactly one actual SigQ status line required')
+    index,match=found[0]
+    lines[index]='SigQ:'+match.group(1)+'<queued-signals>'+match.group(3)+match.group(4)
+    return '\n'.join(lines),match.group(3)
+def stopped_status_originals_equal(first,second):
+    """Strict raw status equality except SigQ's real-UID queued counter.
+
+    /proc/PID/status SigQ is count/limit for the REAL UID; the count is shared
+    by all processes of that UID, while the second field is this process's
+    RLIMIT_SIGPENDING. No other byte, field or whitespace may differ.
+    """
+    first_projection,first_limit=_strict_status_projection(first)
+    second_projection,second_limit=_strict_status_projection(second)
+    return first_limit==second_limit and first_projection==second_projection
+
 # Pure candidate checks only. The existing syscall gate remains strict until
 # the backend binds both actual stopped samples and receipts to one transition.
 # Single reviewed ABI/identity-axis authority shared by producer and replay.
@@ -258,9 +286,10 @@ class StoppedIdentityNoopTransition:
             need(row['link']==os.readlink(path) and row['identity']==util.identity(os.fstat(self.fds[key]))==util.identity(os.stat(path)),'actual authority namespace changed')
         need(self.process_identity==util.identity(os.fstat(self.fds['process']))==util.identity(os.stat('/proc/'+str(self.pid),follow_symlinks=False)),'actual process directory identity changed')
         statuses.append(self._read('status',16384));stats.append(self._read('stat',4096))
-        if statuses[0]['data']!=statuses[1]['data'] or stats[0]['data']!=stats[1]['data']:
+        stable=stopped_status_originals_equal(statuses[0]['data'],statuses[1]['data']) and stats[0]['data']==stats[1]['data']
+        if not stable:
             stopped_authority_difference_diagnostic(self.pid,statuses,stats)
-        need(statuses[0]['data']==statuses[1]['data'] and stats[0]['data']==stats[1]['data'],'actual stopped authority changed during capture')
+        need(stable,'actual stopped authority changed during capture')
         need(first==status_authority(statuses[1]['data'],pid=self.pid,tracer=os.getpid()),'actual stopped authority differs')
         self.check();uname=os.uname();values=dict(zip(['sysname','nodename','release','version','machine'],uname))
         need(all(isinstance(v,str) and len(v.encode())<=1024 for v in values.values()),'actual uname bound')
@@ -310,7 +339,11 @@ def verify_stopped_identity_noop_original(row,role):
         for original in rows:
             need(isinstance(original,dict) and isinstance(original.get('data'),str),'actual setresuid raw text required')
             data=original['data'].encode();need(type(original.get('bytes')) is int and len(data)==original['bytes']<=maximum and hashlib.sha256(data).hexdigest()==original.get('sha256'),'actual setresuid raw identity differs');identity(original.get('identity'));out.append(original['data'])
-        need(out[0]==out[1] and rows[0]['identity']==rows[1]['identity'],'actual setresuid dual originals differ');raws[key]=out[0]
+        if key=='statusOriginals':
+            need(stopped_status_originals_equal(out[0],out[1]) and rows[0]['identity']==rows[1]['identity'],'actual setresuid dual originals differ')
+        else:
+            need(out[0]==out[1] and rows[0]['identity']==rows[1]['identity'],'actual setresuid dual originals differ')
+        raws[key]=out[0]
     authority=status_authority(raws['statusOriginals'],pid=row['pid'],tracer=row['observerPid'])
     fields={}
     for line in raws['statusOriginals'].splitlines():

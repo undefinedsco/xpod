@@ -25,7 +25,7 @@ class Tests(unittest.TestCase):
   for name,fn in [('open',op),('stat',st),('readlink',link)]:
    x=patch.object(m.os,name,fn);x.start();self.addCleanup(x.stop)
  def raw(self,uid='0 0 0 0',state='t',groups='0'):
-  return f'Pid: 49\nTgid: 49\nTracerPid: {os.getpid()}\nState: {state} (tracing stop)\nUid: {uid}\nGid: 0 0 0 0\nGroups: {groups}\nNoNewPrivs: 1\n'+''.join(k+': 0000000000000000\n' for k in m._CAPS)
+  return f'Pid: 49\nTgid: 49\nTracerPid: {os.getpid()}\nState: {state} (tracing stop)\nUid: {uid}\nGid: 0 0 0 0\nGroups: {groups}\nNoNewPrivs: 1\nSigQ: 0/1000\n'+''.join(k+': 0000000000000000\n' for k in m._CAPS)
  def check(self):self.calls+=1
  def entry(self,**kw):
   args=dict(entry_sequence=1,barrier_sequence=2,stopped_wait_status=(133<<8)|127);args.update(kw)

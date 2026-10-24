@@ -8,7 +8,7 @@ test('lifetime registration retains all 293 complete historical source recipes',
 test('all 97 historical Python observer and helper recipes remain exact',()=>{
  for(const[key,hashes]of Object.entries(before.helpers)){
   const[file,name]=key.split('#'),source=fs.readFileSync(file!,'utf8'),ast=ts.createSourceFile(file!,source,ts.ScriptTarget.Latest,true);const chunks:string[]=[];
-  for(const stmt of ast.statements)if(ts.isVariableStatement(stmt))for(const d of stmt.declarationList.declarations)if(/^(HELPERS|LOCAL_HELPERS|REVIEWED_.*|PRE_LIFETIME_.*|LIFETIME_HELPER_GROUP)$/.test(d.name.getText(ast)))chunks.push('const '+d.getText(ast)+';');
+  for(const stmt of ast.statements)if(ts.isVariableStatement(stmt))for(const d of stmt.declarationList.declarations)if(/^(HELPERS|LOCAL_HELPERS|REVIEWED_.*|PRE_(?:LIFETIME|SIGQ)_.*|LIFETIME_HELPER_GROUP)$/.test(d.name.getText(ast)))chunks.push('const '+d.getText(ast)+';');
   const scope:{result?:unknown[]}={};runInNewContext(ts.transpileModule(chunks.join('\n')+'\nresult='+name+';',{compilerOptions:{target:ts.ScriptTarget.ES2021,module:ts.ModuleKind.None}}).outputText,scope,{timeout:1000});expect(scope.result!.slice(0,hashes.length).map(hash)).toEqual(hashes);
  }
 });
