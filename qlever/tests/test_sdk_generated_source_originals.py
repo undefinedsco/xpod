@@ -13,16 +13,29 @@ scanner=load('generated_source',ROOT/'qlever/scripts/sdk-generated-source-origin
 fixture=load('multi_fixture',Path(__file__).with_name('test_sdk_generation_multiprocess_bindings.py'))
 def scenario(change=None,tracked=False,bad_wait=False):
     rows,originals=fixture.fixture();prefix='inner/toolchain-execution/';members={prefix+'captures/'+name:bytes for name,bytes in originals.items()}
+    source_files={}
     def ref(path):return dict(path=path,bytes=len(members[path]),sha256=hashlib.sha256(members[path]).hexdigest())
     def put(path,value):members[path]=json.dumps(value).encode();return ref(path)
     rows[0]['command']=['fixed-fixture-command']
-    if change:change(rows,members)
+    def source_read(path,data,mode=0o644):
+        tail=rows[-2:];del rows[-2:]
+        def emit(kind,**fields):
+            row=dict(kind=kind,phase='compile',sequence=len(rows)+1,**fields);rows.append(row);return row
+        entry=emit('kernel-syscall',pid=11,arch=fixture.ARCH,op='entry',nr=63,args=[3,0,len(data)])
+        barrier=emit('all-stop-barrier',pids=[10,11],osStates=['t','t']);name='capture-'+str(len(originals)).zfill(4)+'.original';originals[name]=data
+        capture=emit('fd-capture',pid=11,fd=3,entrySequence=entry['sequence'],role='source-read',path=path,identity=[1,len(originals)+100,0o100000|mode,len(data),5,6],barrierSequence=barrier['sequence'],writers=[],original=dict(path=name,bytes=len(data),sha256=hashlib.sha256(data).hexdigest()))
+        emit('exclusive-captured-syscall-resume',pid=11,entrySequence=entry['sequence'],captureSequence=capture['sequence'])
+        emit('kernel-syscall',pid=11,arch=fixture.ARCH,op='exit',entrySequence=entry['sequence'],result=len(data),isError=False)
+        emit('exclusive-captured-syscall-exit',pid=11,entrySequence=entry['sequence'],result=len(data),isError=False)
+        for row in tail:row['sequence']=len(rows)+1;rows.append(row)
+        members[prefix+'captures/'+name]=data;source_files.setdefault(path,dict(bytes=len(data),sha256=hashlib.sha256(data).hexdigest(),mode=mode));return capture
+    if change:change(rows,members,source_files,source_read) if change.__code__.co_argcount==4 else change(rows,members)
     captures=[ref(name) for name in sorted(members) if name.startswith(prefix+'captures/')]
     index=put(prefix+'capture-index-0000.json',dict(schemaVersion=1,files=captures))
     rawpath=prefix+'compile.trace-0000.jsonl';members[rawpath]=b''.join((json.dumps(row)+'\n').encode() for row in rows)
     required={r['path']:dict(bytes=r['original']['bytes'],sha256=r['original']['sha256']) for r in rows if r['kind']=='fd-capture' and r['role']=='consumer'}
     provider=prefix+'source-provider.mountinfo.raw';members[provider]=b'1 0 0:1 / / ro - overlay overlay rw\n'
-    plan=dict(sourceRoot='/opt/qlever-sdk/source',sourceProviderOriginals=dict(mountinfo=ref(provider)),remainingMilliseconds=5000,phases=[dict(name='compile',actualCommand=['fixed-fixture-command'],rawTraceShards=[ref(rawpath)],captures=dict(indexes=[index],files=len(captures),bytes=sum(row['bytes'] for row in captures)))],sourceFiles={},requiredInputs=required)
+    plan=dict(sourceRoot='/opt/qlever-sdk/source',sourceProviderOriginals=dict(mountinfo=ref(provider)),remainingMilliseconds=5000,phases=[dict(name='compile',actualCommand=['fixed-fixture-command'],rawTraceShards=[ref(rawpath)],captures=dict(indexes=[index],files=len(captures),bytes=sum(row['bytes'] for row in captures)))],sourceFiles=source_files,requiredInputs=required)
     if tracked:
         # A separate actual root/wait raw phase precedes compile; all sequence
         # references are shifted with their original records, not approvals.
@@ -63,4 +76,29 @@ class Tests(unittest.TestCase):
     def test_unreferenced_capture_original_rejected(self):
         def change(rows,members):members['inner/toolchain-execution/captures/capture-9999.original']=b'not-observed'
         with self.assertRaisesRegex(ValueError,'no corresponding actual FD'):scenario(change)
+    def test_real_source_rows_are_complete_capture_inventory(self):
+        def change(rows,members,source_files,source_read):
+            self.source_rows=[source_read('/opt/qlever-sdk/source/src/a.c',b'alpha'),source_read('/opt/qlever-sdk/source/src/b.c',b'beta',0o755)]
+        result=scenario(change)
+        self.assertEqual(result['postpatchSourceReadSnapshotsMatched'],2)
+        self.assertEqual(result['postpatchSourceReadCaptures'],[dict(path='/opt/qlever-sdk/source/src/a.c',bytes=5,sha256=hashlib.sha256(b'alpha').hexdigest(),mode=0o644,captures=1),dict(path='/opt/qlever-sdk/source/src/b.c',bytes=4,sha256=hashlib.sha256(b'beta').hexdigest(),mode=0o755,captures=1)])
+        self.assertEqual(result['unresolvedSourceReadPaths'],[])
+    def test_mismatched_expected_and_changed_mode_rejected(self):
+        def expected(rows,members,source_files,source_read):source_read('/opt/qlever-sdk/source/src/a.c',b'alpha');source_files['/opt/qlever-sdk/source/src/a.c']['sha256']='0'*64
+        with self.assertRaisesRegex(ValueError,'actual source read snapshot differs'):scenario(expected)
+        def mode(rows,members,source_files,source_read):source_read('/opt/qlever-sdk/source/src/a.c',b'alpha');source_files['/opt/qlever-sdk/source/src/a.c']['mode']=0o755
+        with self.assertRaisesRegex(ValueError,'actual source read snapshot differs'):scenario(mode)
+    def test_duplicate_same_path_counted_and_conflict_rejected(self):
+        def duplicate(rows,members,source_files,source_read):
+            source_read('/opt/qlever-sdk/source/src/a.c',b'alpha');source_read('/opt/qlever-sdk/source/src/a.c',b'alpha')
+        result=scenario(duplicate);self.assertEqual(result['postpatchSourceReadCaptures'][0]['captures'],2)
+    def test_unresolved_source_is_not_added(self):
+        def change(rows,members,source_files,source_read):source_read('/opt/qlever-sdk/source/src/missing.c',b'gap');source_files.clear()
+        result=scenario(change)
+        self.assertEqual(result['postpatchSourceReadSnapshotsMatched'],0);self.assertEqual(result['postpatchSourceReadCaptures'],[]);self.assertEqual(result['unresolvedSourceReadPaths'],['/opt/qlever-sdk/source/src/missing.c'])
+    def test_projection_helper_is_pure_and_enforces_capture_invariants(self):
+        row=dict(path='/source/a.c',identity=[1,2,0o100644,3,4,5]);paths={};digest=(3,'a'*64)
+        first=scanner.retain_postpatch_source_read_capture(row,digest,paths);self.assertEqual(first,dict(path='/source/a.c',bytes=3,sha256='a'*64,mode=0o644,captures=1))
+        second=scanner.retain_postpatch_source_read_capture(row,digest,paths);self.assertIs(second,first);self.assertEqual(second['captures'],2)
+        with self.assertRaisesRegex(ValueError,'bytes/sha256/mode changed'):scanner.retain_postpatch_source_read_capture(dict(row,identity=[1,2,0o100600,3,4,5]),digest,paths)
 if __name__=='__main__':unittest.main()

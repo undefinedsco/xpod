@@ -36,6 +36,36 @@ raw_wire_codec=load('sdk_raw_wire_codec',ROOT/'qlever/scripts/sdk-raw-wire-codec
 memory_policy=load('sdk_executable_memory_policy',ROOT/'qlever/scripts/sdk-executable-memory-policy.py')
 LIFETIME_MODEL='kernel-held-read-lease-v1'
 LIFETIME_MAXIMUM_DEPTH=8
+PHASE_PROGRESS_INTERVAL=60.0
+PHASE_PROGRESS_MAXIMUM_SNAPSHOTS=32
+PHASE_PROGRESS_MAXIMUM_BYTES=8192
+PHASE_PROGRESS_BUCKETS=('wait_one','event','pending_captures','resume','barrier','verify_task_ownership','emit','lifetime_lease_check')
+PHASE_PROGRESS_PREFIX='SDK_OBSERVER_PHASE_PROGRESS '
+
+class PhaseProgress:
+    """Bounded in-memory progress counters for one phase; diagnostics only.
+
+    Every value is read from state this observer already holds. Nothing here
+    issues authority, extends a deadline, or retains event arrays.
+    """
+    __slots__=('phase','started','deadline','now','buckets','active','active_started','failed','failed_started','last_snapshot','snapshots','failure_snapshots','ticks','events','waits','last_boundary','last_wait')
+    def __init__(self,phase,deadline,now=time.monotonic):
+        self.phase=phase;self.started=now();self.deadline=deadline;self.now=now
+        self.buckets={name:[0,0,0] for name in PHASE_PROGRESS_BUCKETS}
+        self.active=None;self.active_started=None;self.failed=None;self.failed_started=None
+        self.last_snapshot=self.started;self.snapshots=0;self.failure_snapshots=0
+        self.ticks=0;self.events=0;self.waits=0;self.last_boundary=None;self.last_wait=None
+    def record(self,name,elapsed_ns):
+        try:
+            bucket=self.buckets[name];bucket[0]+=1;bucket[1]+=elapsed_ns;bucket[2]=max(bucket[2],elapsed_ns)
+        except BaseException:pass
+    def observe_boundary(self,row):
+        try:self.last_boundary=dict(kind=row.get('kind'),pid=row.get('pid'),entrySequence=row.get('entrySequence'),barrierSequence=row.get('barrierSequence'))
+        except BaseException:pass
+    def observe_wait(self,pid,status):
+        try:self.last_wait=dict(pid=pid,status=status,atNs=str(int(self.now()*1e9)))
+        except BaseException:pass
+
 LIFETIME_OPEN_ERRORS=frozenset([errno.EACCES,errno.EPERM,errno.ENOENT,errno.ENOTDIR,errno.ELOOP,errno.ENAMETOOLONG,errno.ESTALE,errno.ENXIO,errno.ESRCH])
 
 class CaptureReservation:
@@ -393,6 +423,10 @@ class Observer:
     def generated_fd_flags(self,pid,fd):return descriptor_flags(pid,fd)
     def generated_fd_path(self,pid,fd):return fdpath(pid,fd)
     def emit(self,row):
+        progress=self.phase_progress()
+        if progress is None:return self.emit_original(row)
+        return self.instrument('emit',self.emit_original,row)
+    def emit_original(self,row):
         self.check();self.seq+=1;row=dict(row,sequence=self.seq,phase=self.current_phase,observedUnixNs=str(time.time_ns()),**(dict(observedMonotonicNs=str(time.monotonic_ns())) if getattr(self,'generated_vma_output',False) else {}));data=None
         if row.get('original',{}).get('storage'):
             if row['kind']=='write-original':row['storageIdentity']=self.chunk_identity(row['original'])
@@ -410,14 +444,24 @@ class Observer:
         if getattr(self,'capture_content_entities',False) and row.get('kind') in ['fd-capture','prepared-build-input-original','write-original','toolchain-original'] and 'original' in row and 'originalReuse' not in row and 'storage' not in row['original']:
             ref=row['original'];scope=('maps',)if getattr(self,'capture_maps_content_entities',False)and row.get('captureKind')=='maps'else ()
             self.content_capture_pool.setdefault((self.current_phase,*scope,ref['bytes'],ref['sha256']),row)
+        progress=self.phase_progress()
+        if progress is not None:progress.observe_boundary(row)
         return row
     def wait_one(self):
+        progress=self.phase_progress()
+        if progress is None:return self.wait_one_original()
+        result=self.instrument('wait_one',self.wait_one_original)
+        try:
+            progress.waits+=1;progress.observe_wait(result[0],result[1])
+        except BaseException:pass
+        return result
+    def wait_one_original(self):
         return self.waiter.wait_one()
     def check(self):
         self.check_budget()
         if hasattr(self,'waiter') and self.waiter.active:self.waiter.check()
         assert not self.pump_errors,'actual bounded stdio failed: '+str(self.pump_errors);assert time.monotonic()<self.deadline,'all-stop observer deadline'
-        if self.lifetime_leases is not None:self.lifetime_leases.check()
+        if self.lifetime_leases is not None:self.instrument('lifetime_lease_check',self.lifetime_leases.check)
     def actual_tgid(self,pid):
         with open('/proc/'+str(pid)+'/status','rb') as source:data=source.read(65537)
         assert len(data)<=65536,'bounded actual task status'
@@ -425,6 +469,8 @@ class Observer:
         assert int(values[b'Pid'])==pid and int(values[b'TracerPid'])==os.getpid(),'task is not actually owned by observer'
         return int(values[b'Tgid'])
     def verify_task_ownership(self,terminal_peers=()):
+        return self.instrument('verify_task_ownership',self.verify_task_ownership_original,terminal_peers)
+    def verify_task_ownership_original(self,terminal_peers=()):
         excluded=set(terminal_peers);live={pid:row for pid,row in self.tasks.items() if not row['exited']and pid not in excluded};groups={};tables={};ownership=[]
         for pid,row in sorted(live.items()):
             self.check();tgid=self.actual_tgid(pid);assert tgid==row['tgid'],'actual TGID differs from kernel clone binding';groups.setdefault(tgid,[]).append(pid)
@@ -458,6 +504,8 @@ class Observer:
                 else:result.setdefault(key,actual)
         return list(result.values())
     def barrier(self):
+        return self.instrument('barrier',self.barrier_original)
+    def barrier_original(self):
         self.pausing=True
         try:
             for pid,row in list(self.tasks.items()):
@@ -1385,6 +1433,10 @@ class Observer:
                 for mapping in mappings:
                     if int(mapping['startHex'],16)<end and int(mapping['endHex'],16)>begin and mapping not in actual_mappings:protected(mapping)
     def resume(self):
+        progress=self.phase_progress()
+        if progress is None:return self.resume_original()
+        return self.instrument('resume',self.resume_original)
+    def resume_original(self):
         if self.generated_vma and getattr(self.generated_vma,'round',None) is not None:return self.generated_vma.drive()
         focus=getattr(self,'terminal_focus',None)
         if focus is not None and self.tasks[focus].get('terminalAuthority',{}).get('closed')and state(focus)=='Z':self.terminal_focus=None
@@ -1489,6 +1541,94 @@ class Observer:
         assert self.bti_held(pid,after)==original['mappingSequences'],'BTI prior held mappings changed'
         self.emit(dict(kind='bti-hardening-after',model=original['model'],pid=pid,entrySequence=entry['sequence'],exitSequence=event['sequence'],beforeSequence=original['sequence'],barrierSequence=barrier['sequence'],mapsOriginal=maps['original']))
         del self.tasks[pid]['btiOriginal'];self.exclusive=None
+    def phase_progress(self):
+        progress=getattr(self,'_phase_progress',None)
+        if progress is None or progress.deadline!=self.deadline or progress.phase!=self.current_phase:return None
+        return progress
+    def phase_progress_ns(self,progress):
+        try:return int(progress.now()*1e9)
+        except BaseException:return None
+    def instrument(self,name,function,*arguments,**keywords):
+        """Inclusive duration of one existing call; return/exception identity kept.
+
+        Nested calls are timed independently, so their buckets intentionally
+        overlap: barrier/resume/emit/lease work is charged to each bucket.
+        """
+        progress=self.phase_progress()
+        if progress is None:return function(*arguments,**keywords)
+        started=self.phase_progress_ns(progress);previous=(progress.active,progress.active_started)
+        progress.active=name;progress.active_started=started
+        if previous[0] is None:progress.failed=None;progress.failed_started=None
+        try:return function(*arguments,**keywords)
+        except BaseException:
+            try:
+                if progress.failed is None:progress.failed=name;progress.failed_started=started
+            except BaseException:pass
+            raise
+        finally:
+            try:
+                ended=self.phase_progress_ns(progress)
+                if started is not None and ended is not None:progress.record(name,ended-started)
+            finally:progress.active,progress.active_started=previous
+    def snapshot_due(self):
+        progress=self.phase_progress()
+        if progress is None:return False
+        now=progress.now()
+        if now-progress.last_snapshot<PHASE_PROGRESS_INTERVAL:return False
+        if progress.snapshots>=PHASE_PROGRESS_MAXIMUM_SNAPSHOTS:return False
+        progress.last_snapshot=now;return True
+    def phase_progress_payload(self,kind,failure=False):
+        progress=getattr(self,'_phase_progress',None)
+        now=(progress.now() if progress is not None else time.monotonic());tasks=getattr(self,'tasks',{}) or {}
+        state_counts=dict(stopped=0,running=0,exited=0,pending=0)
+        try:
+            for task in tasks.values():
+                if task.get('exited'):state_counts['exited']+=1
+                elif task.get('stopped'):state_counts['stopped']+=1
+                else:state_counts['running']+=1
+                if any(task.get(key) for key in ('clone3Pending','btiPending','capture','identityNoopPending','authorityPending','toolPending')):state_counts['pending']+=1
+        except BaseException:pass
+        exclusive=getattr(self,'exclusive',None);terminal=getattr(self,'terminal_focus',None)
+        generated=getattr(self,'generated_vma',None)
+        lifecycle=getattr(self,'lifetime_leases',None)
+        def ns(value):return int(value*1e9) if value is not None else None
+        started=ns(getattr(progress,'started',None)) if progress is not None else None
+        deadline=ns(getattr(progress,'deadline',None)) if progress is not None else None
+        now_ns=ns(now)
+        payload=dict(schemaVersion=1,kind=kind,authorityVerified=False,phase=self.current_phase,phaseStartedMonotonicNs=str(started) if started is not None else None,phaseDeadlineMonotonicNs=str(deadline) if deadline is not None else None,nowMonotonicNs=str(now_ns) if now_ns is not None else None,elapsedNs=str(now_ns-started) if now_ns is not None and started is not None else None,remainingNs=str(deadline-now_ns) if deadline is not None and now_ns is not None else None,globalRawSequence=getattr(self,'seq',0),phaseTicks=getattr(progress,'ticks',0) if progress is not None else 0,eventCount=getattr(progress,'events',0) if progress is not None else 0,waitReturnCount=getattr(progress,'waits',0) if progress is not None else 0,lastBoundary=getattr(progress,'last_boundary',None) if progress is not None else None,lastWait=getattr(progress,'last_wait',None) if progress is not None else None,taskCounts=state_counts,exclusiveOwnerPid=exclusive[0] if isinstance(exclusive,tuple) and len(exclusive)==2 else None,exclusiveOwnerSequence=exclusive[1] if isinstance(exclusive,tuple) and len(exclusive)==2 else None,terminalFocusPid=terminal,generatedVmaOwner=getattr(generated,'owner',None) if generated is not None else None,lifetimeLeaseActive=lifecycle is not None,activeInclusiveMethod=getattr(progress,'active',None) if progress is not None else None,activeInclusiveMethodStartedNs=str(getattr(progress,'active_started',None)) if progress is not None and getattr(progress,'active_started',None) is not None else None,lastFailedInclusiveMethod=getattr(progress,'failed',None) if progress is not None else None,lastFailedInclusiveMethodStartedNs=str(getattr(progress,'failed_started',None)) if progress is not None and getattr(progress,'failed_started',None) is not None else None,inclusiveBuckets={name:dict(calls=value[0],totalNs=value[1],maxNs=value[2]) for name,value in (progress.buckets.items() if progress is not None else [])},inclusiveDurationNote='inclusive nested durations; buckets overlap by design; non-additive',failure=bool(failure))
+        return payload
+    def publish_phase_progress(self,kind,failure=False):
+        """Bounded stderr diagnostic from held state only; never raises.
+
+        The attempt is counted before writing, so a failed write is never
+        retried and cannot exceed 32 normal plus at most 1 failure line.
+        """
+        progress=getattr(self,'_phase_progress',None)
+        try:
+            if progress is not None:
+                if failure:
+                    if progress.failure_snapshots>=1:return
+                    progress.failure_snapshots+=1
+                else:
+                    if progress.snapshots>=PHASE_PROGRESS_MAXIMUM_SNAPSHOTS:return
+                    progress.snapshots+=1
+            payload=self.phase_progress_payload(kind,failure)
+            encoded=json.dumps(payload,sort_keys=True,separators=(',',':'))
+            line=(PHASE_PROGRESS_PREFIX+encoded+'\n').encode()
+            assert len(line)<=PHASE_PROGRESS_MAXIMUM_BYTES,'bounded phase progress snapshot line'
+            sys.stderr.write(line.decode());sys.stderr.flush()
+        except BaseException:pass
+    def publish_clone3_parse_refusal(self,pid,entry,barrier,size,data,refusal):
+        # Exactly the already-read stopped-task struct: no pointer, argv, env or
+        # additional /proc access; grants no source, ABI or process authority.
+        try:
+            bounded=type(data) is bytes and type(size) is int and size in memory_policy.CLONE3_SIZES and len(data)<=size
+            complete=bounded and len(data)==size
+            payload=dict(kind='clone3-args-parse-refused',schemaVersion=1,model='stopped-clone3-parse-refused-v1',pid=pid,arch=entry['arch'],syscall=entry['nr'],entrySequence=entry['sequence'],barrierSequence=barrier['sequence'],requestedSize=size,capturedLength=len(data) if bounded else None,complete=complete,dataHex=data.hex() if bounded else None,sha256=hashlib.sha256(data).hexdigest() if bounded else None,flagsHex=data[:8][::-1].hex() if bounded and len(data)>=8 else None,refusal=type(refusal).__name__[:64],authorityVerified=False,scope='actual stopped-task clone3 argument bytes already read; strict parse refused; no source, ABI or process authority',phase=self.current_phase)
+            encoded=json.dumps(payload,sort_keys=True,separators=(',',':'))
+            assert len(encoded.encode())<=1024,'bounded clone3 refusal diagnostic'
+            print('SDK_CLONE3_ARGS_PARSE_REFUSED '+encoded,file=sys.stderr,flush=True)
+        except BaseException:pass
     def capture_clone3_pending(self):
         selected=next(((pid,task) for pid,task in self.tasks.items() if task.get('clone3Pending') and not task['exited']),None)
         if selected is None:return False
@@ -1500,7 +1640,12 @@ class Observer:
         descriptor=os.open('/proc/'+str(pid)+'/mem',os.O_RDONLY|os.O_CLOEXEC)
         try:data=os.pread(descriptor,size,address)
         finally:os.close(descriptor)
-        parsed=memory_policy.parse_clone3_original(data,size)
+        try:parsed=memory_policy.parse_clone3_original(data,size)
+        except ValueError as refusal:
+            # Mechanical refusal record for the bytes already read above; the
+            # strict parse still refuses with this exact exception object.
+            self.publish_clone3_parse_refusal(pid,entry,barrier,size,data,refusal)
+            raise
         original=self.emit(dict(kind='kernel-clone3-args-original',model='stopped-clone3-args-v1',pid=pid,entrySequence=entry['sequence'],barrierSequence=barrier['sequence'],size=size,dataHex=data.hex(),sha256=hashlib.sha256(data).hexdigest(),flags=parsed['flags'],exitSignal=parsed['exitSignal']))
         flags=parsed['flags']|parsed['exitSignal'];bindings.inspect_shared_clone_flags(flags)
         task['observedCloneFlags']=flags;task['cloneFlags']=flags;task['clone3Original']=original
@@ -1518,6 +1663,10 @@ class Observer:
         self.emit(dict(kind='clone3-arguments-consumed',pid=pid,entrySequence=original['entrySequence'],originalSequence=original['sequence'],eventSequence=event['sequence'],childPid=child))
         task.pop('clone3Original');self.exclusive=None
     def pending_captures(self):
+        progress=self.phase_progress()
+        if progress is None:return self.pending_captures_original()
+        return self.instrument('pending_captures',self.pending_captures_original)
+    def pending_captures_original(self):
         if self.generated_vma and getattr(self.generated_vma,'round',None) is not None:return
         if self.exclusive:return
         if getattr(self,'terminal_focus',None)is not None:
@@ -1664,6 +1813,13 @@ class Observer:
         row=self.syscall_rejection_diagnostic(pid,status,entry)
         raise AssertionError('unsupported asynchronous/external writer syscall; diagnostic sequence '+str(row['sequence']))
     def event(self,pid,status,allow_capture=True):
+        progress=self.phase_progress()
+        if progress is None:return self.event_original(pid,status,allow_capture)
+        try:
+            progress.events+=1
+        except BaseException:pass
+        return self.instrument('event',self.event_original,pid,status,allow_capture)
+    def event_original(self,pid,status,allow_capture=True):
         if pid not in self.tasks:
             assert os.WIFSTOPPED(status) and status>>16==128,'unregistered non-child tracee event'
             tracer=[line.split()[1] for line in Path('/proc',str(pid),'status').read_text().splitlines() if line.startswith('TracerPid:')]
@@ -1921,7 +2077,7 @@ class Observer:
             return self.phase_armed(name,command,cwd,env,stdoutPath,stderrPath)
     def phase_armed(self,name,command,cwd,env,stdoutPath,stderrPath):
         capture_start=len(self.captures);started_ns=time.time_ns();stdout_path=Path(stdoutPath) if stdoutPath is not None else self.out/(name+'.stdout.raw');stderr_path=Path(stderrPath) if stderrPath is not None else self.out/(name+'.stderr.raw')
-        self.wait_references=[];self.tasks={};self.unknown_stops={};self.root_code=None;self.current_phase=name;self.raw=EncodedShardedRaw(self,name,self.shard_bytes or self.maximum_file_bytes) if self.compressed_raw else ShardedRaw(self.out,name,self.shard_bytes) if self.shard_bytes else open(self.out/(name+'.syscalls.original.jsonl'),'xb')
+        self.wait_references=[];self.tasks={};self.unknown_stops={};self.root_code=None;self.current_phase=name;self._phase_progress=PhaseProgress(name,self.deadline);self.raw=EncodedShardedRaw(self,name,self.shard_bytes or self.maximum_file_bytes) if self.compressed_raw else ShardedRaw(self.out,name,self.shard_bytes) if self.shard_bytes else open(self.out/(name+'.syscalls.original.jsonl'),'xb')
         self.raw_encoder=probe.IndexedRawEncoderV2() if self.indexed_raw_records else None
         if not self.prepared_sealed:
             try:
@@ -1955,7 +2111,9 @@ class Observer:
                 os.close(ready_write);ready_write=None;self.check();remaining=max(0,self.deadline-time.monotonic());readable,_,_=select.select([ready_read],[],[],remaining);self.check();assert readable and os.read(ready_read,1)==b'R','child authority setup did not complete before release';os.close(ready_read);ready_read=None
             self.emit(dict(kind='owned-root-binding',pid=child,command=command,**(dict(toolchainLifetimeModel=LIFETIME_MODEL,executableMemoryPolicy=memory_policy.MODEL,clone3ArgsModel='stopped-clone3-args-v1',btiHardeningModel='held-rx-bti-hardening-v1') if self.capture_toolchain else {}),**(dict(rawRecordModel=probe.RAW_RECORD_MODEL_V2)if self.indexed_raw_records else {}),backend='ptrace-all-stop-process-v1',**(dict(chunkOriginalStorageModel='chunk-original-v1') if self.capture_content_entities else {}),captureOriginalEntityModel='same-phase-content-entity-v2' if self.capture_content_entities else 'same-phase-producer-original-v1',**(dict(mapsOriginalEntityModel='same-phase-maps-content-entity-v1')if getattr(self,'capture_maps_content_entities',False)else {}),**(dict(generatedVmaModel=self.generated_vma.model,**(dict(generatedVmaMetadataModel=generated_vma_module.RETAINED_METADATA_MODEL)if getattr(self,'retained_generated_metadata',False)else {}),generatedVmaBuildRoot=self.build,generatedVmaParentDeadlineMonotonicNs=str(int(self.waiter.parent_deadline*1e9))) if self.generated_vma else {}),**(dict(stoppedWriterAliasModel='all-stop-exclusive-write-aliases-v1') if getattr(self,'stopped_writer_aliases',False) else {}),**(dict(optionalIoUringModel='explicit-kernel-enosys-denial-v2' if getattr(self,'io_uring_enosys_v2',False) else 'explicit-kernel-enosys-denial-v1') if self.deny_optional_io_uring else {}),**(dict(setresuidNoopModel='actual-stopped-setresuid-noop-v1') if self.verified_setresuid_noop else {}),**(dict(setresIdentityNoopModel='actual-stopped-setres-identity-noop-queued-v2' if getattr(self,'queued_identity_noop',False) else 'actual-stopped-setres-identity-noop-v1') if getattr(self,'verified_identity_noop',False) else {}),**(dict(processAuthorityModel=tool_providers.AUTHORITY_MODEL) if self.process_authority else {}),**(dict(exitAuthorityModel='actual-selected-exit-stop-held-terminal-peers-v2'if getattr(self,'serialize_terminal_syscalls',False)else 'actual-selected-exit-stop-before-peer-barrier-v1') if getattr(self,'terminal_exit_evidence',False) else {}),**(dict(taskOwnershipModel='all-tracked-tids-shared-fd-v1',tgid=child,fdTable=child) if self.shared_tasks else {})));single.trace(SEIZE,child,0,OPTIONS);single.trace(INTERRUPT,child);pid,status=self.wait_one();self.event(pid,status,False);self.pending_captures();os.write(write_fd,b'x');os.close(write_fd);write_fd=None;self.resume()
             while any(not r['exited'] for r in self.tasks.values()):
+                progress=self._phase_progress;progress.ticks+=1
                 pid,status=self.wait_one();self.event(pid,status);self.pending_captures();self.resume()
+                if self.snapshot_due():self.publish_phase_progress('phase-progress')
             assert getattr(self,'terminal_focus',None)is None,'serialized terminal wait did not close'
             assert not any(task.get('vforkHeldChild') is not None for task in self.tasks.values()),'vfork child release/wait closure missing'
             if self.generated_vma:self.generated_vma.complete_phase()
@@ -1991,6 +2149,11 @@ class Observer:
                 observedToolFiles=self.observed_tool_files(capture_start,name))
         finally:
             primary=sys.exc_info()[1]
+            # Exactly one failure snapshot from held state; never self.check after
+            # expiry and never let diagnostic failure replace the primary error.
+            if primary is not None:
+                progress=getattr(self,'_phase_progress',None)
+                if progress is not None and progress.failure_snapshots<1:self.publish_phase_progress('phase-failure',failure=True)
             for control_fd in [ready_read,ready_write]:
                 if control_fd is not None:os.close(control_fd)
             if write_fd is not None:os.close(write_fd)

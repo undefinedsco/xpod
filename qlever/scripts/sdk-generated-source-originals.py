@@ -25,6 +25,16 @@ def retain_dependency_read_capture(row,digest,registrations,paths,originals):
     bindings.need(len(paths)<=LIMITS['sourceMembers'],'dependency captured path projection bound')
     return current
 
+
+def retain_postpatch_source_read_capture(row,digest,paths):
+    """Projection only; caller must complete observe() raw/FD validation first."""
+    value=dict(path=row['path'],bytes=digest[0],sha256=digest[1],mode=row['identity'][2]&0o7777)
+    previous=paths.get(row['path'])
+    if previous:bindings.need(all(previous[key]==item for key,item in value.items()),'postpatch source captured path bytes/sha256/mode changed');previous['captures']+=1;value=previous
+    else:value['captures']=1;paths[row['path']]=value
+    bindings.need(len(paths)<=LIMITS['sourceMembers'],'postpatch source captured path projection bound')
+    return paths[row['path']]
+
 def observe(archive_path,plan):
     remaining=plan['remainingMilliseconds'];bindings.need(isinstance(remaining,(int,float)) and 0<remaining<=LIMITS['timeoutMs'],'shared remaining deadline required')
     deadline=time.monotonic()+remaining/1000
@@ -42,7 +52,7 @@ def observe(archive_path,plan):
             bindings.need(ref['bytes']<=LIMITS['metadataBytes'],'metadata original bound');return json.loads(b''.join(stream(ref)))
         provider=plan['sourceProviderOriginals']['mountinfo'];bindings.need(provider['path']=='inner/toolchain-execution/source-provider.mountinfo.raw' and provider['bytes']<=LIMITS['metadataBytes'],'fixed bounded source provider original required')
         originals_util.effective_readonly(plan['sourceRoot'],b''.join(stream(provider)),resolve_local=False)
-        phase_rows=[];all_refs={};source_matches=set();unresolved_sources=set();uncovered=set();unclassified_entries=[];used_originals=set();dependency_registrations={};dependency_reads={};dependency_originals=None
+        phase_rows=[];all_refs={};postpatch_reads={};unresolved_sources=set();uncovered=set();unclassified_entries=[];used_originals=set();dependency_registrations={};dependency_reads={};dependency_originals=None
         for phase in plan['phases']:
             local={}
             for ref in phase['captures']['indexes']:
@@ -79,7 +89,7 @@ def observe(archive_path,plan):
                 expected=source_files.get(row['path'])
                 if expected is None:unresolved_sources.add(row['path'])
                 else:
-                    bindings.need(digest==(expected['bytes'],expected['sha256']),'actual source read snapshot differs from postpatch original');source_matches.add(row['path'])
+                    bindings.need(isinstance(expected,dict) and digest==(expected.get('bytes'),expected.get('sha256')) and row['identity'][2]&0o7777==expected.get('mode',row['identity'][2]&0o7777),'actual source read snapshot differs from postpatch original');retain_postpatch_source_read_capture(row,digest,postpatch_reads)
         result=bindings.observe([(name,lines(name,refs)) for name,refs in phase_rows],read_original,plan['requiredInputs'],check,LIMITS,capture_observer,compact_tool_coverage=True,record_observer=record_observer)
         # Only the complete typed v5 entry/barrier/resume/exit/postbarrier/close
         # replay can discharge these exact operation sequences. Same nr outside
@@ -94,7 +104,7 @@ def observe(archive_path,plan):
                 bindings.need(declared.get('actualTrackedWait') is True and declared.get('trackedProcessesClosed') is True and declared.get('command')==phase['actualCommand'],'typed tracking declaration differs')
                 bindings.need(all(declared.get(key)==actual[key] for key in ['actualRootPid','actualRootReturnCode','waitReferences']),'actual kernel wait references differ from typed receipt')
         check();result['actualConfigureCompileTrackedWaitVerified']=len(plan['phases'])==2 and [phase['name'] for phase in plan['phases']]==['configure','compile'] and all('trackingReceipt' in phase for phase in plan['phases'])
-        result['postpatchSourceReadSnapshotsMatched']=len(source_matches);result['unresolvedSourceReadPaths']=sorted(unresolved_sources);result['uncoveredOperations']=sorted(uncovered)
+        result['postpatchSourceReadSnapshotsMatched']=len(postpatch_reads);result['postpatchSourceReadCaptures']=sorted(postpatch_reads.values(),key=lambda row:row['path']);result['unresolvedSourceReadPaths']=sorted(unresolved_sources);result['uncoveredOperations']=sorted(uncovered)
         result['dependencySourceReadOriginals']=dependency_originals
         result['dependencySourceReadCaptures']=sorted(dependency_reads.values(),key=lambda row:row['path'])
         result['generatedInputIoClosureExceptDependencyOriginVerified']=result['selectedGeneratedConsumerByteCustodyVerified'] and not unresolved_sources and not uncovered
