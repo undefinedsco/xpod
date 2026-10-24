@@ -145,6 +145,23 @@ def descriptor_flags(pid,fd):
     text=Path('/proc',str(pid),'fdinfo',str(fd)).read_text();rows=[x.split()[1] for x in text.splitlines() if x.startswith('flags:')];assert len(rows)==1;return int(rows[0],8)
 def descriptor_position(pid,fd):
     rows=[line.split()[1] for line in Path('/proc',str(pid),'fdinfo',str(fd)).read_text().splitlines() if line.startswith('pos:')];assert len(rows)==1;return int(rows[0])
+def bounded_fd_slot_names(pid,local,maximum=1024):
+    """Read one bounded actual FD slot-name table; the caller owns the bracket.
+
+    ``local`` is the caller's cheap per-entry deadline/stdio refusal. The caller
+    is responsible for the live entry/finally validation around the read: a
+    standalone call brackets this primitive with its full ``check``; a caller
+    that already bracketed a whole read-only cohort sweep passes its cheap
+    checker here. Exact slot/stat/flags/position checks stay in the caller, and
+    every discovered name is still returned in canonical order.
+    """
+    assert type(pid) is int and pid>0 and type(maximum) is int and 0<maximum<=1024,'bounded actual FD owner required'
+    values=[]
+    with os.scandir('/proc/'+str(pid)+'/fd') as entries:
+        for entry in entries:
+            local();assert len(values)<maximum,'actual FD table slots unsupported above 1024'
+            values.append(entry.name)
+    return sorted(values,key=int)
 def state(pid):
     fields=Path('/proc',str(pid),'stat').read_text().rsplit(')',1)[1].split();return fields[0]
 
@@ -508,7 +525,11 @@ class Observer:
             for pid,row in sorted(live.items()):
                 self.check_deadline();tgid=self.actual_tgid(pid);assert tgid==row['tgid'],'actual TGID differs from kernel clone binding';groups.setdefault(tgid,[]).append(pid)
                 descriptors=[]
-                for value in self.bounded_fd_slots(pid):
+                # This whole live cohort is already bracketed by the entry and
+                # finally self.check() below, so each member's read-only FD name
+                # scan pays only the cheap deadline/stdio refusal. Standalone
+                # bounded_fd_slots keeps its full entry/finally guards.
+                for value in bounded_fd_slot_names(pid,self.check_deadline):
                     self.check_deadline();fd=int(value);item=os.stat('/proc/'+str(pid)+'/fd/'+value);descriptors.append([fd,probe.identity(item),descriptor_flags(pid,fd),descriptor_position(pid,fd)])
                 table=row['fdTable'];prior=tables.setdefault(table,descriptors);assert prior==descriptors,'CLONE_FILES table differs between stopped owners'
                 ownership.append(dict(tid=pid,tgid=tgid,fdTable=table))
@@ -517,16 +538,11 @@ class Observer:
         for tgid,tids in groups.items():assert sorted(int(value) for value in os.listdir('/proc/'+str(tgid)+'/task'))==sorted(tids+[pid for pid in excluded if self.tasks[pid]['tgid']==tgid]),'unregistered or missing actual TGID task'
         return ownership
     def bounded_fd_slots(self,pid):
-        values=[]
         self.check()
         try:
-            with os.scandir('/proc/'+str(pid)+'/fd') as entries:
-                for entry in entries:
-                    self.check_deadline();assert len(values)<1024,'actual FD table slots unsupported above 1024'
-                    values.append(entry.name)
+            return bounded_fd_slot_names(pid,self.check_deadline)
         finally:
             self.check()
-        return sorted(values,key=int)
     def writable_aliases(self,identity,target_pid=None,target_fd=None):
         result={}
         self.check()

@@ -3,12 +3,24 @@ import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
+import { gzipSync } from 'node:zlib';
 import { expect, it, vi } from 'vitest';
 const fixture = vi.hoisted(() => ({cap: undefined as any, view: undefined as any}));
 // Protocol fixture only, NEVER a central issuer or actual OpenPGP authority.
 vi.mock('../../scripts/lib/independent-admission/qlever-sdk-originals', () => ({qleverSdkOriginalsView: (value: unknown) => value === fixture.cap ? fixture.view : undefined}));
 import { observeQleverSdkDebianIndexOriginals, qleverSdkDebianIndexObservation } from '../../scripts/lib/independent-admission/qlever-sdk-debian-index';
 const hash = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
+// Fixture-only child processes are bounded. A hung helper must fail this test
+// instead of stalling a whole gate: execFileSync's spawnSync timeout is the only
+// bound that works while it blocks, plus SIGKILL and a capped buffer.
+const FIXTURE_CHILD = {timeout: 30_000, killSignal: 'SIGKILL' as const, maxBuffer: 8 * 1024 ** 2};
+// Standard gzip wire bytes from Node, independent of the production Python
+// codecs. An apt-derived `*_source_Sources.gz` is ordinary gzip; only this
+// fixture compressor changes, production decode/Observer/OpenPGP stay as-is.
+function fixturePython(code: string, args: string[], input?: string): Buffer {
+  const options = input === undefined ? FIXTURE_CHILD : {...FIXTURE_CHILD, input};
+  return execFileSync('/usr/bin/python3', ['-I', '-S', '-B', '-c', code, ...args], options);
+}
 async function scenario(change?: (rows: Map<string, Buffer>, collection: any, master: any) => void, remainingMilliseconds?: number, zipForm?: 'zip64' | 'oversized-directory', budgetFault?: 'pre-expired' | 'post-expired' | 'near-end') {
   mkdirSync('.test-data/sdk-debian-index-observer', {recursive: true});
   const root = mkdtempSync(path.resolve('.test-data/sdk-debian-index-observer/case-'));
@@ -32,7 +44,7 @@ async function scenario(change?: (rows: Map<string, Buffer>, collection: any, ma
     resourceStop: null, supervisorError: null, elapsedSeconds: 3, cleanupErrors: [], ownedGroupMembers: [], startedUTC: '2026-10-17T00:00:09Z', closedUTC: '2026-10-17T00:00:12Z'});
   const stage = {classification: 'unclassified-producer-gpgv-originals', name: 'debian-index-0', receipt, stdout, stderr, supervisionRaw, supervisionReceipt, inputs: [], outputs: []};
   const collection: any = {schemaVersion: 1, kind: 'qlever-sdk-exact-debian-source-originals', packages, indexOriginals: sources.map((bytes, i) => ({inRelease: release, keyring, verificationStage: stage,
-    sources: put(indexes + ['main', 'contrib'][i] + '_source_Sources.gz', execFileSync('/usr/bin/python3', ['-I', '-S', '-B', '-c', 'import gzip,sys;sys.stdout.buffer.write(gzip.compress(sys.stdin.buffer.read(),mtime=0))'], {input: bytes}))}))};
+    sources: put(indexes + ['main', 'contrib'][i] + '_source_Sources.gz', gzipSync(bytes))}))};
   const master: any = {kind: 'qlever-linux-sdk-originals', identity: {sourceSha: '1'.repeat(40), target: 'linux-x64'}, stages: [stage]};
   let clock: {mockRestore(): void} | undefined, offset = 0;
   if (budgetFault) { const now = performance.now.bind(performance); clock = vi.spyOn(performance, 'now').mockImplementation(() => now() + offset); }
@@ -50,8 +62,9 @@ async function scenario(change?: (rows: Map<string, Buffer>, collection: any, ma
     master.debianSources = put('inner/debian-source/materials.json', actualCollection); const masterReference = put('materials.json', master);
     const jobs = Buffer.from(JSON.stringify({jobs: [{id: 100, started_at: '2026-10-17T00:00:00Z', completed_at: '2026-10-17T00:01:00Z'}]}));
     const zip = path.join(root, 'sdk.zip');
-    execFileSync('/usr/bin/python3', ['-I', '-S', '-B', '-c', 'import sys,json,zipfile,base64\nx=json.load(sys.stdin)\nwith zipfile.ZipFile(sys.argv[1],"w",compression=zipfile.ZIP_DEFLATED) as z:\n for name,value in x.items():z.writestr(name,base64.b64decode(value))', zip], {input: JSON.stringify(Object.fromEntries([...rows].map(([name, bytes]) => [name, bytes.toString('base64')]))) });
-    if (zipForm) execFileSync('/usr/bin/python3', ['-I', '-S', '-B', '-c', 'import pathlib,struct,sys\np=pathlib.Path(sys.argv[1]);b=p.read_bytes();at=b.rfind(b"PK\\x05\\x06");e=list(struct.unpack_from("<4s4H2LH",b,at))\nif sys.argv[2]=="zip64":\n z=struct.pack("<4sQ2H2L4Q",b"PK\\x06\\x06",44,45,45,0,0,e[4],e[4],e[5],e[6]);l=struct.pack("<4sLQL",b"PK\\x06\\x07",0,at,1);e[3]=e[4]=65535;e[5]=e[6]=0xffffffff;p.write_bytes(b[:at]+z+l+struct.pack("<4s4H2LH",*e))\nelse:\n e[5]=4194305;p.write_bytes(b[:at]+struct.pack("<4s4H2LH",*e))', zip, zipForm]);
+    fixturePython('import sys,json,zipfile,base64\nx=json.load(sys.stdin)\nwith zipfile.ZipFile(sys.argv[1],"w",compression=zipfile.ZIP_DEFLATED) as z:\n for name,value in x.items():z.writestr(name,base64.b64decode(value))', [zip],
+      JSON.stringify(Object.fromEntries([...rows].map(([name, bytes]) => [name, bytes.toString('base64')]))));
+    if (zipForm) fixturePython('import pathlib,struct,sys\np=pathlib.Path(sys.argv[1]);b=p.read_bytes();at=b.rfind(b"PK\\x05\\x06");e=list(struct.unpack_from("<4s4H2LH",b,at))\nif sys.argv[2]=="zip64":\n z=struct.pack("<4sQ2H2L4Q",b"PK\\x06\\x06",44,45,45,0,0,e[4],e[4],e[5],e[6]);l=struct.pack("<4sLQL",b"PK\\x06\\x07",0,at,1);e[3]=e[4]=65535;e[5]=e[6]=0xffffffff;p.write_bytes(b[:at]+z+l+struct.pack("<4s4H2LH",*e))\nelse:\n e[5]=4194305;p.write_bytes(b[:at]+struct.pack("<4s4H2LH",*e))', [zip, zipForm]);
     const archive = {bytes: readFileSync(zip).length, sha256: hash(readFileSync(zip))};
     fixture.cap = Object.freeze({fixture: true}); let zipCalls = 0, callbackCalls = 0; const observedRemaining: number[] = [];
     fixture.view = {masterReference, archive, originFacts: {sourceSha: '1'.repeat(40), target: 'linux-x64', producerJobId: 100,
