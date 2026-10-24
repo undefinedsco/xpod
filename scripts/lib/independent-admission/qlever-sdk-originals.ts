@@ -74,7 +74,12 @@ export function qleverSdkArtifactAcquisition(nativeOriginals:CollectedNativeOrig
   if(contracts.length!==1)return fail('unique exact candidate service relationship contract required');
   const jobs=githubOriginOriginals(native.origin).filter(row=>/^jobs(?:-page-\d+)?\.original\.json$/u.test(row.name)).flatMap(row=>JSON.parse(row.data.toString()).jobs??[]);
   inspectCandidateServiceJobChain({jobs,contract:contracts[0]!,sourceSha:native.originFacts.sourceSha,runId:native.originFacts.runId,runAttempt:native.originFacts.runAttempt,producerJobId:native.originFacts.producerJobId});
-  const reference=inspectQleverSdkArtifactReference(relation.sdkArtifact,{...native.originFacts,target:relation.target,sdkImage:relation.sdkImage,sdkProfile:'service-trixie'});
+  // The APP master names the exact SDK artifact/image tuple. The SDK is an
+  // INDEPENDENT origin: its own source commit is unrelated to the app commit,
+  // so the app origin facts are merged only for run/attempt/target identity,
+  // and the SDK source SHA is taken from the SDK locator itself.
+  const sdkLocator=relation.sdkArtifact;
+  const reference=inspectQleverSdkArtifactReference(sdkLocator,{...native.originFacts,sourceSha:sdkLocator.sourceSha,target:relation.target,sdkImage:relation.sdkImage,sdkProfile:'service-trixie'});
   return Object.freeze({reference,coordinates:Object.freeze({schemaVersion:1 as const,sourceSha:reference.sourceSha,runHeadSha:native.originFacts.runHeadSha,runId:reference.runId,runAttempt:reference.runAttempt,artifactId:reference.artifactId,artifactSha256:reference.artifactSha256})});
  }
  if(!native||isQleverSdkGitHubOrigin(native.origin)||native.originFacts.workflowPath!=='.github/workflows/css-native-products.yml')return fail('actual routed native runtime originals required');

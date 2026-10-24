@@ -1,3 +1,4 @@
+import { canonicalBuildMetafile } from '../src/build-metafile';
 import canonicalHostSources from './canonical-host-sources.json';
 import { cliBuildDependencyLayout, buildDependencyRootArgument } from '../src/build-dependency-layout';
 import { buildPublicTools } from './public-build-tools';
@@ -31,7 +32,9 @@ for (const [entryName, filename, format, profile] of [['npm-entry', 'xpod.mjs', 
   const build = spawnSync('bun', ['build', '--target=node', '--external=@undefineds.co/xpod-client', `--format=${format}`, `--metafile=${metadata}`, '--outfile', payload, entry],
     { cwd: packageRoot, stdio: 'inherit', env: bunBundleEnvironment(process.env) });
   if (build.status !== 0) throw new Error('CLI build failed');
-  const inputs = Object.keys(JSON.parse(readFileSync(metadata, 'utf8')).inputs);
+  const canonicalMetadata = metadata.replace(/\.json$/u, '.canonical.json');
+  writeFileSync(canonicalMetadata, canonicalBuildMetafile(readFileSync(metadata)));
+  const inputs = Object.keys(JSON.parse(readFileSync(canonicalMetadata, 'utf8')).inputs);
   if (inputs.some(file => {
     const absolute = path.resolve(packageRoot, file);
     const relative = path.relative(packageRoot, absolute).replaceAll(path.sep, '/');
@@ -40,7 +43,7 @@ for (const [entryName, filename, format, profile] of [['npm-entry', 'xpod.mjs', 
   }) || inputs.some(file => /node_modules\/(?:@solid\/community-server|inngest(?:-cli)?\/|@undefineds.co\/xpod)/.test(file))) {
     throw new Error('Public CLI unexpectedly depends on server, UI or native module sources');
   }
-  collectJavascriptNotices({ dependencyRoots, metafile: metadata, stageRoot: packageRoot, repoRoot,
+  collectJavascriptNotices({ dependencyRoots, metafile: canonicalMetadata, stageRoot: packageRoot, repoRoot,
     canonicalSources: hostBindings,
     destination: path.join(output, 'licenses', profile), target: `${process.platform}-${process.arch}`, cli: payload,
     bunVersion: process.versions.bun ?? 'unknown', supplements: path.join(packageRoot, 'licenses/javascript'),
@@ -53,7 +56,9 @@ const outputBuild = spawnSync('bun', ['build', '--target=node', '--format=esm', 
   `--metafile=${outputMetadata}`, '--outfile', path.join(output, 'output.mjs'), path.join(packageRoot, 'src/lib/output.ts')],
   { cwd: packageRoot, stdio: 'inherit', env: bunBundleEnvironment(process.env) });
 if (outputBuild.error || outputBuild.status !== 0) throw new Error('Public output build failed');
-collectJavascriptNotices({ dependencyRoots, metafile: outputMetadata, stageRoot: packageRoot, repoRoot,
+const canonicalOutputMetadata = outputMetadata.replace(/\.json$/u, '.canonical.json');
+writeFileSync(canonicalOutputMetadata, canonicalBuildMetafile(readFileSync(outputMetadata)));
+collectJavascriptNotices({ dependencyRoots, metafile: canonicalOutputMetadata, stageRoot: packageRoot, repoRoot,
   destination: path.join(output, 'licenses/output'), sharedObjectRoot: path.join(output, 'licenses/core/objects'),
   target: `${process.platform}-${process.arch}`, cli: path.join(output, 'output.mjs'), bunVersion: process.versions.bun ?? 'unknown',
   generated: path.join(packageRoot, 'licenses/javascript/generated', process.versions.bun ?? 'unknown'), generatedProfile: 'output-esm' });

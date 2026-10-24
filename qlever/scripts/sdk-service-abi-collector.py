@@ -12,6 +12,7 @@ import re
 import secrets
 import stat
 import time
+import types
 
 META = 1024**2
 TMPFS_OPTIONS = 'rw,noexec,nosuid,nodev,size=8388608,mode=0700'
@@ -237,9 +238,19 @@ def command_for(direct_commands, image_commands, role, image, name, nonce, cid, 
     return command
 
 
+def membership_arguments(host_session, cid, config, image):
+    """Forward the actual owned ABI CID PID locator, never a caller PID."""
+    provider = host_session.container_pid_provider(cid)
+    need(callable(provider), 'actual same owned ABI container pid provider required')
+    return dict(membership_pid_provider=provider,
+                membership_container=dict(containerId=cid, configDigest=config,
+                                          imageDigest=image))
+
+
 def collect(*, image, config, source, retained, seed_reference, expected_abi,
             image_commands, direct_commands, retained_session, host_session,
-            helper, transport, replay, assert_current):
+            helper, transport, replay, assert_current, role_commands, role_session,
+            role_collector, read_budget_module, elf_module):
     """Collect one fresh CID axis using the original absolute parent deadline.
 
     image_commands is the existing service image module; direct_commands and
@@ -247,6 +258,8 @@ def collect(*, image, config, source, retained, seed_reference, expected_abi,
     A protocol observation never asserts complete native/loader/source coverage.
     """
     budget = retained.budget
+    shared_reads = read_budget_module.SharedReadBudget(
+        read_budget_module.MAXIMUM_BYTES_LIMIT, lambda: budget.check(0))
     need(isinstance(expected_abi, dict)
          and set(expected_abi) == {'abiVersion', 'adapterAbiVersion', 'physicalBackendAbiVersion'}
          and all(type(value) is int and value > 0 for value in expected_abi.values()),
@@ -351,7 +364,11 @@ def collect(*, image, config, source, retained, seed_reference, expected_abi,
         session = retained_session.observe(command, retained=retained,
             host_session=host_session, output=retained.out/'abi-session',
             helper=helper, transport=transport, replay=replay,
-            expected_abi=expected_abi, parent_deadline=protocol_end)
+            expected_abi=expected_abi, parent_deadline=protocol_end,
+            membership=retained, membership_module=host_session,
+            membership_read_budget=shared_reads, membership_elf_module=elf_module,
+            reference_runtime_members=True,
+            **membership_arguments(host_session, cid, config, image))
         assert_current()
         observation = session.get('observation', {})
         cleanup = observation.get('hostProcessCleanup', {})
@@ -380,8 +397,22 @@ def collect(*, image, config, source, retained, seed_reference, expected_abi,
              and identity(os.fstat(seed_fd)) == identity(seed_value) == identity((scratch/'abi.sqlite').lstat()),
              'retained seed full SHA/identity changed after native protocol')
         result['session'] = session
+        need(observation.get('membershipObserved') is True and observation.get('membership'),
+             'actual session membership must be complete before publishing')
+        result['membershipObserved'] = True
         inspect(stage('inspect'))
         result['runtimeProtocolObserved'] = True
+        result['roleSessions'] = []
+        for role in role_commands.ROLES:
+            assert_current(); budget.check(10)
+            result['roleSessions'].append(role_collector.collect(role, image=image,
+                config=config, nonce=secrets.token_hex(16), source=source,
+                retained=retained, commands=role_commands, bun_session=role_session,
+                host_session=host_session, transport=transport,
+                control=types.SimpleNamespace(capture_bounded_control=capture_bounded_control),
+                read_budget=shared_reads, elf_module=elf_module,
+                deadline=protocol_end, assert_current=assert_current))
+        result['sharedRoleReadBytes'] = shared_reads.consumed
     except BaseException as error:
         primary = error
         result.update(failureClass=type(error).__name__, failureMessage=str(error)[:2048])

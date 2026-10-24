@@ -12,6 +12,7 @@ import { createHash } from 'node:crypto';
 import { CLI_PRODUCT_WORKFLOW, cliPublicationArtifactNames, type ArtifactAcquisitionInput } from '../../acquire-independent-product-input';
 import { productTarget } from '../../module-product-targets';
 import { MODULE_TARGETS } from '../../../packages/xpod-cli/src/module-catalog';
+import {candidateServiceNativeRuntimeArtifactName} from './candidate-service-native-runtime-contract';
 
 declare const originBrand: unique symbol;
 /** Only the controlled observers below can issue this in-process capability. */
@@ -36,7 +37,9 @@ type Original = { name: string; endpoint: string; data: Buffer };
 const nativeOrigins = new WeakSet<object>();
 const sdkOrigins = new WeakSet<object>();
 const candidateServiceOrigins = new WeakSet<object>();
+const candidateServiceNativeRuntimeOrigins = new WeakSet<object>();
 export function isCandidateServiceImageGitHubOrigin(value:unknown):value is GitHubOriginObservation {return value!==null&&typeof value==='object'&&candidateServiceOrigins.has(value);}
+export function isCandidateServiceNativeRuntimeGitHubOrigin(value:unknown):value is GitHubOriginObservation {return value!==null&&typeof value==='object'&&candidateServiceNativeRuntimeOrigins.has(value);}
 export function isQleverSdkGitHubOrigin(value:unknown):value is GitHubOriginObservation {return value!==null&&typeof value==='object'&&sdkOrigins.has(value);}
 const normalModuleOrigins = new WeakSet<object>();
 export function isRoutedCssProductGitHubOrigin(value:unknown):value is GitHubOriginObservation {
@@ -115,6 +118,22 @@ export async function observeCandidateServiceImageGitHubOrigin(input:ArtifactAcq
   sourceGroupAncestorJobs(group){const contract=group?.candidateServiceRelationship;if(!contract)throw Error('Independent GitHub origin: candidate service ancestor contract missing');return [contract.sdkJob,contract.localRuntimeJob];},
  });
  nativeOrigins.add(result);candidateServiceOrigins.add(result);return result;
+}
+/** A separate original-byte role for the focused local-runtime producer. The
+ * service image and SDK roles cannot substitute for this same-job artifact. */
+export async function observeCandidateServiceNativeRuntimeGitHubOrigin(input:ArtifactAcquisitionInput,options:{token?:string}={}):Promise<GitHubOriginObservation> {
+ const groups=QLEVER_SDK_EXECUTION_GROUPS.filter(group=>group.candidateServiceRelationship!==undefined);
+ if(!groups.length)throw Error('Independent GitHub origin: candidate native runtime source recipe not reviewed');
+ const versions=[...new Set(groups.map(group=>group.candidateServiceRelationship!.workflowSha256))];
+ const steps=['Publish and resolve the immutable digest','Retain focused native runtime originals','Upload focused native runtime originals'];
+ const result=await observeGitHubOrigin(input,options,{
+  workflowPath:'.github/workflows/candidate.yml',workflowSha256:versions[0]!,reviewedWorkflowVersions:versions.map(workflowSha256=>({workflowSha256,jobName:()=> 'publish_qlever_local_runtime / publish',sourceBindingGroups:groups})),
+  events:['push','workflow_dispatch'],requiredBranch:'staging',stagingPushWorkflowSha256s:versions,allowRunningRun:true,workflowRef:'run-head',sourceBindingGroups:groups,target:'linux-x64',
+  artifactNames:value=>[candidateServiceNativeRuntimeArtifactName(value)],jobName:()=> 'publish_qlever_local_runtime / publish',requiredStep:steps[1]!,requiredSteps:steps,
+  sourceGroupJobContract(group){const contract=group?.candidateServiceRelationship;if(!contract||contract.schemaVersion!==1||contract.workflowPath!=='.github/workflows/candidate.yml'||!versions.includes(contract.workflowSha256))throw Error('Independent GitHub origin: exact candidate native runtime contract missing');return {name:contract.localRuntimeJob,requiredStep:steps[1]!,requiredSteps:steps};},
+  sourceGroupAncestorJobs(group){const contract=group?.candidateServiceRelationship;if(!contract)throw Error('Independent GitHub origin: candidate native runtime SDK ancestor contract missing');return [contract.sdkJob];},
+ });
+ nativeOrigins.add(result);candidateServiceNativeRuntimeOrigins.add(result);return result;
 }
 export async function observeCliGitHubOrigin(input: ArtifactAcquisitionInput, options: { token?: string } = {}): Promise<GitHubOriginObservation> {
   return observeGitHubOrigin(input, options, {
@@ -1176,8 +1195,19 @@ const apiCaptureInputsTimingGroup=Object.freeze({...apiControlledDescriptorSourc
 const apiPerformanceHashes:Readonly<Record<string,string>>={"scripts/lib/inngest-controlled-build.py":"5f0dc7f2d58dc57ea268d5cd2733a4a95fa77ac77a672078d4134bbca2fe41de","scripts/lib/physical-module-archive.ts":"01a27c05e2541449ec843e9a62bfc6b76f3c95f916b624f522415c006b99bd34"};
 const rebindApiPerformanceRows=(rows:GitHubSourceBindingGroup['sourceBindings']|undefined)=>Object.freeze((rows??[]).map(row=>Object.freeze({...row,sha256:apiPerformanceHashes[row.path]??row.sha256})));
 const apiCapturePerformanceGroup=Object.freeze({...apiCaptureInputsTimingGroup,name:'api-capture-performance',selectors:rebindApiPerformanceRows(apiCaptureInputsTimingGroup.selectors),secondarySelectors:rebindApiPerformanceRows(apiCaptureInputsTimingGroup.secondarySelectors),sourceBindings:rebindApiPerformanceRows(apiCaptureInputsTimingGroup.sourceBindings)});
-export const API_SERVICE_BUILD_SOURCE_BINDINGS=apiCapturePerformanceGroup.sourceBindings;
-export const API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS:readonly (GitHubSourceBindingGroup&{readonly name?:string})[]=Object.freeze([...PRE_BUILD_API_GROUPS,apiControlledDescriptorSourceGroup25,apiCaptureInputsTimingGroup,apiCapturePerformanceGroup]);
+/** Final combined slice: the newest published API recipe re-bound to the ACTUAL
+* final tree bytes. Only roles whose real bytes changed are re-hashed; the four
+* published groups above stay byte-identical. */
+const finalJointApiHashes:Readonly<Record<string,string>>=Object.freeze({
+ "scripts/workspace-package-payload.cjs":"f88176458eba63d238cf99412bbc834143fe6b1e74089b27c290c0be040d2d33",
+ "scripts/workspace-runtime-materials.cjs":"dbecd348e945a664b182c1a09ce2185d336085651f05582d254e3fcc0ab8feee",
+ "scripts/lib/independent-admission/legal-registry-originals.ts":"a764214bed261f37a1c22117b0c6c4577fbf676cc834e99f870af3eba827517a",
+ "packages/xpod-cli/scripts/build-package.ts":"569cc8e59141ce02d16df6ef9745d9fb8e3d77dd4c1440e6073aac8c8da2bb46",
+ "packages/xpod-client/scripts/build.ts":"4970c1586831229eb532b63f109787b7f2126d12aa87c5266a178bca17140c65"});
+const rebindFinalApiRows=(rows:GitHubSourceBindingGroup['sourceBindings']|undefined)=>Object.freeze((rows??[]).map(row=>Object.freeze({...row,sha256:finalJointApiHashes[row.path]??row.sha256})));
+const apiFinalJointGroup=Object.freeze({...apiCapturePerformanceGroup,name:'api-final-joint-source',selectors:rebindFinalApiRows(apiCapturePerformanceGroup.selectors),secondarySelectors:rebindFinalApiRows(apiCapturePerformanceGroup.secondarySelectors),sourceBindings:rebindFinalApiRows(apiCapturePerformanceGroup.sourceBindings)});
+export const API_SERVICE_BUILD_SOURCE_BINDINGS=apiFinalJointGroup.sourceBindings;
+export const API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS:readonly (GitHubSourceBindingGroup&{readonly name?:string})[]=Object.freeze([...PRE_BUILD_API_GROUPS,apiControlledDescriptorSourceGroup25,apiCaptureInputsTimingGroup,apiCapturePerformanceGroup,apiFinalJointGroup]);
 
 export const API_WORKSPACE_SOURCE_GROUPS=Object.freeze(API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS.filter(group=>group.sourceBindings.some(row=>row.path==='scripts/lib/api-scoped-dependency-state.ts')));
 

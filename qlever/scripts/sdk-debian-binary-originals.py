@@ -137,14 +137,14 @@ def verify_packages(inrelease, stream, signed_path, requests, check=lambda: None
         pending += block
         while b'\n' in pending:
             line, pending = pending.split(b'\n', 1)
-            need(len(line) <= CHUNK, 'Packages line bound')
+            need(stanza_bytes + len(line) + 1 <= META, 'Packages stanza byte bound')
             if not line:
                 finish()
             else:
                 stanza_bytes += len(line) + 1
                 need(stanza_bytes <= META, 'Packages stanza byte bound')
                 lines.append(line)
-        need(len(pending) <= CHUNK, 'unfinished Packages line bound')
+        need(stanza_bytes + len(pending) <= META, 'unfinished Packages stanza byte bound')
     if pending:
         need(stanza_bytes + len(pending) <= META, 'Packages final stanza byte bound')
         lines.append(pending)

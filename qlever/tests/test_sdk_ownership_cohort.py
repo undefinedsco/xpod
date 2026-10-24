@@ -168,6 +168,15 @@ class Fixture:
     def position(self, pid, fd):
         return 0
 
+    def fields(self, pid, fd, *, flags=True, position=True):
+        """Native one-read contract: one call returns the requested fields."""
+        values = []
+        if flags:
+            values.append(self.flags(pid, fd))
+        if position:
+            values.append(self.position(pid, fd))
+        return tuple(values) if flags and position else values[0]
+
     def __enter__(self):
         self.saved = {
             'scandir': backend.os.scandir,
@@ -175,12 +184,14 @@ class Fixture:
             'listdir': backend.os.listdir,
             'flags': backend.descriptor_flags,
             'position': backend.descriptor_position,
+            'fields': backend.descriptor_fields,
         }
         backend.os.scandir = self.scandir
         backend.os.stat = lambda path: fd_stat(path, self.saved['stat'])
         backend.os.listdir = self.listdir
         backend.descriptor_flags = self.flags
         backend.descriptor_position = self.position
+        backend.descriptor_fields = self.fields
         self.observer = self.observer()
         return self
 
@@ -190,6 +201,7 @@ class Fixture:
         backend.os.listdir = self.saved['listdir']
         backend.descriptor_flags = self.saved['flags']
         backend.descriptor_position = self.saved['position']
+        backend.descriptor_fields = self.saved['fields']
         return False
 
 

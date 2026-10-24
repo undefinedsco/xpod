@@ -1,7 +1,8 @@
 /** Pure exact controller-byte tuple selection; no original capability issuer. */
-// 31 historical whole tuples + 1 appended mapping-window tuple. The observed
-// per-tuple helper bound stays 32; only the declared version count grew.
-const MAXIMUM_DECLARED_HELPER_GROUPS = 32;
+// 32 historical whole tuples + 1 appended final-slice tuple (fetch reached the
+// previous declared 32). The observed PER-TUPLE role bound stays 32; only the
+// declared VERSION count grows to the exact new maximum.
+const MAXIMUM_DECLARED_HELPER_GROUPS = 33;
 const MAXIMUM_OBSERVED_HELPERS = 32;
 export function selectSdkControllerHelperGroup(groups:readonly (readonly (readonly [string,string])[])[],observed:ReadonlyMap<string,string>):readonly (readonly [string,string])[]{
  if(!groups.length||groups.length>MAXIMUM_DECLARED_HELPER_GROUPS||observed.size>MAXIMUM_OBSERVED_HELPERS)throw Error('SDK controller complete helper group differs');

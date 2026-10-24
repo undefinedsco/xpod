@@ -5,8 +5,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveProducerMaterials } from './producer-materials';
 import { resolveProducerInput, resolveRuntimeClientInput } from './producer-input';
-import { collectAfsJavascriptMaterials } from './javascript-materials';
-import { buildAfsClient } from './build-client';
+import { collectAfsJavascriptMaterials, copyAfsSourceKit } from './javascript-materials';
+import { afsLibraryBuildArgs, buildAfsClient } from './build-client';
 import { withStagedProducerInput } from './staged-producer-input';
 
 const originalProducerInput = resolveProducerInput(process.argv.slice(2));
@@ -16,7 +16,7 @@ const clientPackageRoot = resolveRuntimeClientInput(process.argv.slice(2));
 await withStagedProducerInput(originalProducerInput, path.join(packageRoot, '.test-data'), async producerInput => {
   // Never consume a previous client build's compiler graph: its producer scope
   // has already closed. Compile and package under this one verified lifetime.
-  await buildObserver.phase('module-fresh-client', () => buildAfsClient(producerInput, clientPackageRoot));
+  const clientBuild = await buildObserver.phase('module-fresh-client', () => buildAfsClient(producerInput, clientPackageRoot));
   const producer = await buildObserver.phase('module-materials', () => resolveProducerMaterials(producerInput.indexPath, clientPackageRoot, producerInput.tools));
   const publicInputs = producer.clientMetafile;
   const args = process.argv.slice(2);
@@ -41,7 +41,7 @@ await withStagedProducerInput(originalProducerInput, path.join(packageRoot, '.te
   cpSync(path.join(packageRoot, 'dist'), path.join(stage, 'dist'), { recursive: true });
   cpSync(path.join(packageRoot, 'src'), path.join(stage, 'src'), { recursive: true });
   const metadata = path.join(output, 'bundle-inputs.json');
-  await checked('module-library-bundle', 'bun', ['build', '--target=node', '--format=cjs', '--external=@undefineds.co/xpod-client', '--external=drizzle-orm', '--external=bun:sqlite', `--metafile=${metadata}`, '--outfile', path.join(stage, 'dist/library.cjs'), path.join(packageRoot, 'dist/library-source.ts')], packageRoot);
+  await checked('module-library-bundle', 'bun', ['build', ...afsLibraryBuildArgs, `--metafile=${metadata}`, '--outfile', path.join(stage, 'dist/library.cjs'), path.join(packageRoot, 'dist/library-source.ts')], packageRoot);
   copyFileSync(path.join(packageRoot, 'dist/entry.mjs'), path.join(stage, 'dist/entry.mjs'));
   // A single declaration drives each staged vendor copy and notice collection.
   const clientVendor = { sourceRoot: clientPackageRoot,
@@ -80,11 +80,12 @@ await withStagedProducerInput(originalProducerInput, path.join(packageRoot, '.te
   if (inputs.some(p => /(?:@solid\/community-server|src\/(?:api|storage)|inngest)/.test(p))) { throw new Error('AFS bundle contains service inputs'); }
   await buildObserver.phase('module-notices', () => collectAfsJavascriptMaterials({ buildTools: producerInput.tools, packageRoot, repoRoot, destination: path.join(stage, 'licenses/javascript-afs'), target,
     library: path.join(stage, 'dist/library.cjs'), libraryMetafile: metadata,
-    commands: path.join(stage, 'dist/command-host.mjs'), commandsMetafile: path.join(packageRoot, 'dist/commands-inputs.json'),
+    commands: path.join(stage, 'dist/command-host.mjs'), commandsMetafile: clientBuild.physicalCommandMetafile, commandInputPaths: clientBuild.commandInputPaths,
     producer, vendoredRoots: vendoredPackages.map(vendor => vendor.stageRoot!) }));
   const sourceFiles = [...inputs.filter(p => !p.includes('node_modules/')).map(p => path.relative(repoRoot, path.resolve(packageRoot, p))), 'package.json', 'bun.lock', '.componentsjs-generator-config.json', 'config/components-ignore.json', 'scripts/check-afs-package.cjs'];
   const commandInputs = Object.keys(JSON.parse(readFileSync(path.join(packageRoot, 'dist/commands-inputs.json'), 'utf8')).inputs) as string[];
-  sourceFiles.push(...commandInputs.filter(filename => !filename.includes('node_modules/')).map(filename => path.relative(repoRoot, path.resolve(repoRoot, filename))));
+  sourceFiles.push(...commandInputs.filter(filename => !filename.includes('node_modules/')));
+  clientBuild.assertCurrent();
   function sourceTree(directory: string): void {
     for (const name of readdirSync(directory).sort()) {
       if (['node_modules', 'dist', '.test-data', 'build'].includes(name)) { continue; }
@@ -115,14 +116,7 @@ await withStagedProducerInput(originalProducerInput, path.join(packageRoot, '.te
     if (createHash('sha256').update(readFileSync(path.join(stage, relative))).digest('hex') !== expected) throw new Error('Copied public producer payload is not snapshot-bound');
   }
   const sourceRoot = path.join(output, 'module-source');
-  for (const name of new Set(sourceFiles)) {
-    if (name.startsWith('..') || path.isAbsolute(name)) { throw new Error('Source outside repository'); }
-    const dest = path.join(sourceRoot, name); mkdirSync(path.dirname(dest), { recursive: true }); copyFileSync(path.join(repoRoot, name), dest);
-  }
-  const sourceInventory = [...new Set(sourceFiles)].sort().map(name => {
-    const bytes = readFileSync(path.join(repoRoot, name));
-    return { path: name, bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') };
-  });
+  const sourceInventory = copyAfsSourceKit({ repoRoot, destination: sourceRoot, sourceFiles, commandBuild: clientBuild });
   const sourceTreeDigest = createHash('sha256').update(JSON.stringify(sourceInventory)).digest('hex');
   const nativeFacts = JSON.parse(readFileSync(path.join(stage, 'provenance/native-reuse.json'), 'utf8'));
   nativeFacts.moduleSourceTreeSHA256 = sourceTreeDigest;

@@ -42,13 +42,21 @@ describe('actual candidate service image output byte mechanics',()=>{
   const input=fixture(),handle={},sourceHandle={},read=vi.fn();simulated.native={handle,view:{origin:{},originFacts:{sourceSha:'e'.repeat(40)}}};simulated.source={handle:sourceHandle,view:{sourceSha:'e'.repeat(40),trackedPaths:[],readTracked:read}};simulated.mutation.mockClear();
   expect(observeCandidateServiceImageOutput({originals:handle,source:sourceHandle})).toBeUndefined();expect(read).not.toHaveBeenCalled();expect(simulated.mutation).not.toHaveBeenCalled();
  });
- it('returns independently guarded actual manifest copy and sealed ref; mutation invalidates reads',()=>{
+ it('returns defensive manifest copies while native and source custody remain current',()=>{
   const input=fixture(),handle={},sourceHandle={},paths=['scripts/lib/independent-admission/candidate-service-image-output.ts','scripts/lib/independent-admission/candidate-service-root-mutation.ts','qlever/scripts/sdk-service-image-originals.py','qlever/scripts/sdk-service-pack-bindings.py','scripts/lib/module-artifact-limits.json','scripts/lib/independent-admission/candidate-service-output-stage.ts','scripts/workspace-package-payload.cjs'];
   const read=vi.fn((path:string)=>readFileSync(fileURLToPath(new URL('../../'+path,import.meta.url))));const guard=vi.fn();simulated.mutation.mockReturnValue({facts:{candidateVersion:input.candidateVersion},assertCurrent:guard});simulated.relation={master:input.master};simulated.nativeGuard.mockReset();simulated.sourceGuard.mockReset();
+  simulated.nativeGuard.mockImplementation((value:unknown)=>{if(value!==handle)throw Error('native custody handle changed');});
+  simulated.sourceGuard.mockImplementation((value:unknown)=>{
+   if(value!==sourceHandle)throw Error('source custody handle changed');
+   for(const path of paths)if(!simulated.source.view.readTracked(path).equals(read(path)))throw Error('immutable executable source changed');
+  });
   simulated.native={handle,view:{origin:{},originFacts:{sourceSha:'e'.repeat(40),producerJobId:1},members:[...input.values].map(([path,body])=>({path,bytes:body.length,sha256:sha(body)})),metadataOriginals:[{name:'jobs.original.json',data:raw({jobs:[{id:1,...input.job}]})}],readOriginal:(path:string)=>input.values.get(path)}};simulated.source={handle:sourceHandle,view:{sourceSha:'e'.repeat(40),trackedPaths:paths,readTracked:read}};
   const observation=observeCandidateServiceImageOutput({originals:handle,source:sourceHandle})!;expect(observation.facts.imageManifestVersionBound).toBe(true);expect(observation.wholeServiceSourceVerified).toBe(false);expect(observation.pending).toContain('candidate-service-pack-manifest-transformation-unverified');const first=observation.readManifestOriginal();expect(first.bytes.equals(input.body)).toBe(true);expect(Object.isFrozen(first.reference)).toBe(true);first.bytes.fill(0);expect(observation.readManifestOriginal().bytes.equals(input.body)).toBe(true);expect(guard).toHaveBeenCalled();expect(simulated.nativeGuard).toHaveBeenCalled();expect(simulated.sourceGuard).toHaveBeenCalled();
   simulated.source.view.readTracked=(path:string)=>path.endsWith('candidate-service-image-output.ts')?Buffer.from('future observer'):read(path);expect(()=>observation.assertCurrent()).toThrow('executable source');simulated.source.view.readTracked=read;
-  input.values.set(input.master.sourceOriginals.serviceRootManifest.path,raw({name:'@undefineds.co/xpod',version:'wrong'}));expect(()=>observation.readManifestOriginal()).toThrow();
+  // Model the real retained-archive guard refusing a changed original. A mutable
+  // projection map alone does not model production archive custody.
+  simulated.nativeGuard.mockImplementationOnce(()=>{throw Error('retained archive identity changed');});
+  expect(()=>observation.readManifestOriginal()).toThrow('archive identity changed');
  });
  it('cannot issue an observation from serialized producer/source facts',()=>{expect(()=>observeCandidateServiceImageOutput({originals:fixture().master,source:{sourceSha:'e'.repeat(40)}})).toThrow('issued');});
 });

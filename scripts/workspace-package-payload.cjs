@@ -197,12 +197,20 @@ function validateTarInspectionLimits(limits) {
 async function inspectTarballFile(file, limits, signal) {
   validateTarInspectionLimits(limits);
   signal?.throwIfAborted();
+
   return inspectTarballStream(require('node:fs').createReadStream(file, { highWaterMark: 65536 }), limits, signal);
 }
 // Single gunzip pass, bounded header/name set and manifest only; never materializes payloads.
-async function inspectTarballStream(source, limits, signal) {
+async function inspectTarballStream(source, limits, signal, memberRange, visitMemberRange) {
   validateTarInspectionLimits(limits);
   signal?.throwIfAborted();
+  if (memberRange !== undefined && (!memberRange || typeof memberRange.path !== 'string'
+    || !Number.isSafeInteger(memberRange.offset) || memberRange.offset < 0
+    || !Number.isSafeInteger(memberRange.length) || memberRange.length < 0 || memberRange.length > 65536)) throw new Error('Bounded member range required');
+  if (memberRange) memberRange = Object.freeze({ path: memberRange.path, offset: memberRange.offset, length: memberRange.length });
+  if (visitMemberRange !== undefined && typeof visitMemberRange !== 'function') throw new Error('Member range visitor must be a function');
+  const rangeOutput = memberRange ? Buffer.alloc(memberRange.length) : undefined;
+  let rangeFound = false, rangeCopied = 0;
   if (limits.memberDigests !== undefined && limits.memberDigests !== true) throw new Error('Explicit member digest mode required');
   if (limits.memberDigests ? !Number.isSafeInteger(limits.memberMetadataBytes) || limits.memberMetadataBytes < 1 || limits.memberMetadataBytes > 4 * 1024 ** 2 : limits.memberMetadataBytes !== undefined) throw new Error('Invalid member metadata budget');
   if (!source || typeof source.pipe !== 'function' || typeof source.destroy !== 'function' || typeof source.on !== 'function') throw new Error('Readable actual tarball stream required');
@@ -231,9 +239,22 @@ async function inspectTarballStream(source, limits, signal) {
           if (!isZeroBlock(chunk.subarray(offset))) throw new Error('Corrupted tar payload: nonzero data after end-of-archive marker');
           offset = chunk.length;
         } else if (remaining) {
-          const count = Math.min(remaining, chunk.length - offset);
+          const count = Math.min(remaining, chunk.length - offset, 65536);
           if (current.path === MANIFEST_PATH) manifestParts.push(Buffer.from(chunk.subarray(offset, offset + count)));
           if (currentHash) currentHash.update(chunk.subarray(offset, offset + count));
+          if (visitMemberRange) {
+            const result = visitMemberRange(Object.freeze({path:current.path,type:current.type,mode:current.mode,bytes:current.size}), current.size-remaining, Buffer.from(chunk.subarray(offset,offset+count)));
+            // The visitor is synchronous: never issue a completed parse while validation is pending.
+            if (result !== null && (typeof result === 'object' || typeof result === 'function') && typeof result.then === 'function') {
+              Promise.resolve(result).catch(() => {});
+              throw new Error('Member range visitor must complete synchronously');
+            }
+          }
+          if (memberRange && current.path === memberRange.path) {
+            const position = current.size - remaining, start = Math.max(position, memberRange.offset), end = Math.min(position + count, memberRange.offset + memberRange.length);
+            if (end > start) { chunk.copy(rangeOutput, start - memberRange.offset, offset + start - position, offset + end - position); rangeCopied += end - start; }
+          }
+
           remaining -= count; offset += count;if (!remaining) memberComplete();
         } else if (padding) {
           const count = Math.min(padding, chunk.length - offset);
@@ -246,6 +267,11 @@ async function inspectTarballStream(source, limits, signal) {
             if (isZeroBlock(header)) { ended = true; continue; }
             if (++members > limits.members) throw new Error('Tar member budget exceeded');
             current = validateHeader(header, seen);
+            if (memberRange && current.path === memberRange.path) {
+              if (current.type !== 'file' || memberRange.offset > current.size - memberRange.length) throw new Error('Regular member range outside original');
+              rangeFound = true;
+            }
+
             if (memberDigests) {
               if (current.type === 'directory' && current.size !== 0) throw new Error('Source directory member has data');
               const reserved = { path: current.path, type: current.type, mode: current.mode, bytes: current.size, ...(current.type === 'file' ? { sha256: '0'.repeat(64) } : {}) };
@@ -267,7 +293,8 @@ async function inspectTarballStream(source, limits, signal) {
     if (!members || !seen.has(MANIFEST_PATH)) throw new Error(`Corrupted tar payload: missing ${MANIFEST_PATH}`);
     const manifestOriginal = Buffer.concat(manifestParts, manifestBytes);
     const manifest = JSON.parse(manifestOriginal.toString('utf8'));
-    return { manifest, manifestOriginal, members, expandedBytes: expanded, ...(memberDigests ? { memberDigests } : {}) };
+    if (memberRange && (!rangeFound || rangeCopied !== memberRange.length)) throw new Error('Requested original member missing or shortened');
+    return { manifest, manifestOriginal, members, expandedBytes: expanded, ...(memberDigests ? { memberDigests } : {}), ...(memberRange ? { memberRange: rangeOutput } : {}) };
   } finally { signal?.removeEventListener('abort', abort); source.destroy(); gunzip.destroy(); }
 }
 

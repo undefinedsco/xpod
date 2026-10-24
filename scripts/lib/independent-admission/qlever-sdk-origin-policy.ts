@@ -1332,7 +1332,45 @@ const nextSdkBodyBindings=(rows:readonly GitHubSourceBinding[])=>Object.freeze(r
 const PRE_NEXT_SLICE_SDK_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([
 ...PRE_MAPPING_WINDOW_SDK_GROUPS,
 Object.freeze({...PRE_F6_SNAPSHOT_SDK_GROUP,...(PRE_MAPPING_WINDOW_SDK_GROUPS[PRE_MAPPING_WINDOW_SDK_GROUPS.length-1]!.candidateServiceRelationship?{candidateServiceRelationship:PRE_MAPPING_WINDOW_SDK_GROUPS[PRE_MAPPING_WINDOW_SDK_GROUPS.length-1]!.candidateServiceRelationship}:{}),...(PRE_MAPPING_WINDOW_SDK_GROUPS[PRE_MAPPING_WINDOW_SDK_GROUPS.length-1]!.outerExecutor?{outerExecutor:PRE_MAPPING_WINDOW_SDK_GROUPS[PRE_MAPPING_WINDOW_SDK_GROUPS.length-1]!.outerExecutor}:{}),selectors:nextSdkBodyBindings(PRE_F6_SNAPSHOT_SDK_GROUP.selectors),secondarySelectors:nextSdkBodyBindings(PRE_F6_SNAPSHOT_SDK_GROUP.secondarySelectors??[]),sourceBindings:nextSdkBodyBindings(PRE_F6_SNAPSHOT_SDK_GROUP.sourceBindings)})]);
-export const QLEVER_SDK_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=PRE_NEXT_SLICE_SDK_GROUPS
+/** Final combined SOURCE/Bun/legal slice: the newest SDK recipe re-bound to the
+* ACTUAL final tree bytes. Only roles whose real bytes changed are re-hashed; all
+* 64 published groups are untouched. */
+const finalSdkHashes:Readonly<Record<string,string>>=Object.freeze({
+ "qlever/scripts/sdk-ptrace-execution.py":"972d2fd49a98ca7f19505ed01c8b387536419aec4508fbe5a46080e84c70bcdb",
+ "qlever/scripts/sdk-original-chunk-store.py":"d53ea1e6c8e8a270c3290d095e800596b7afa42c6b5135153dbb42db0bf2e43e",
+ ".github/workflows/qlever-readonly-normal-job.yml":"9faa58b30c22bbff673607050874140a852878caf407797499a65ec241f7fadc",
+ ".github/workflows/candidate.yml":"999f183da7a146433afeca5cf009556876e9fcec02f9545efaad8b5c6d88f962",
+ ".github/workflows/publish-qlever-local-runtime.yml":"cf6822cf0c8c204267f959a8b233daa144d4dcbbc394d02ff706a3c29a397715",
+ "docker/qlever-local-runtime/Dockerfile":"af934f19b9b9fee35025eb2aa7dcb941208eb3f87bbc63ce297f799fed6521e2",
+ "qlever/scripts/run-focused-native-build.sh":"6a59996534dd8f02501861a5607f6e7faa84b7903f87ef3466e26467e05cf5dd",
+ "qlever/scripts/sdk-debian-binary-originals.py":"f9f780094a7e0d7e530ff1f3200b1ef187587bd6e4463b4291940186f6fd5e5c",
+ "qlever/scripts/sdk-fetchcontent-source-bindings.py":"1c7367873f2f2b58106f50dc80551481c09ca5463a7d68b7fbfcd1f1554c12de",
+ "qlever/scripts/sdk-fetchcontent-source-observer.py":"9386f0327d30507d46a5c775d18fd182f21e9f37bff43cb350ef676d0740e94c",
+ "qlever/scripts/sdk-service-abi-collector.py":"606ca041d2be6682351d096d11c645a11d4bd795b49f54ed274b75d731744e13",
+ "qlever/scripts/sdk-service-abi-host-session.py":"cd0885a56db490b0d43dc5df59e0caebb83a0a233c785b94465e4168613c95ed",
+ "qlever/scripts/sdk-service-abi-receiver.py":"8ed3f2fee4dc92cc5ea8bdf782f9d2c0b46b176580aba573a35c54470b06e02b",
+ "qlever/scripts/sdk-service-abi-retained-session.py":"7b03e06a3c6c84b779e581c266f54f2cf64cb97815a28ffa27a257ecbbaed468",
+ "qlever/scripts/sdk-service-abi-transport.py":"c1bf1b86743e58cd9abed3340f8d14ae31d2b7928a502dbe781d1195c37dd011",
+ "qlever/scripts/sdk-service-image-originals.py":"4d8f203562f73b2e87e1998be28bf0dcd26615e3ceea7c82a38d5646e5d2618c",
+ "qlever/scripts/sdk-service-pack-bindings.py":"ace125eb26d4f165594a5d1407c2f3ff2002cff4ded2d1c7427da2e1bf9b46c4",
+ "qlever/scripts/sdk-zip-originals.py":"56f5ec76344b82b5e8242508208b5635663c037b2b915013e23b91c8ccdc3e17",
+ "scripts/check-candidate-service-sdk-source.ts":"60e26d2a9a0e9a680f495ab0694def8496c20bec5c5203063af7699056459a91",
+ "scripts/lib/independent-admission/candidate-service-abi-protocol-replay.ts":"e3d764fc2d1452bd0d199c0c594afe1c29333f070c529317fcb386d35d20155a",
+ "scripts/lib/independent-admission/candidate-service-abi-source-stages.ts":"a3a67551c17c93b7aaba492e7da1ed1d3565a90297015bcf4cb12469f8ac863f",
+ "scripts/lib/independent-admission/candidate-service-image-output.ts":"a926860dd8e505685062ff613a2ef4f00ddd40c57e4926c905f059b669169760",
+ "scripts/lib/independent-admission/candidate-service-pack-output.ts":"07243f34a1dd41a9996c1af294bd547518e2762b969ee7e89d3b9015d44046ac",
+ "scripts/lib/independent-admission/candidate-service-runtime-protocol.ts":"a90b346af64f843d869b0e79b1f9f17b17531e57235e8224b494bfa6992aa9d5",
+ "scripts/lib/independent-admission/qlever-sdk-service-relationship.ts":"5c0f0db22e7af44daa7610fadc83d5befe61d1c82f3772985142d7f4488b3968",
+ "scripts/lib/independent-admission/service-workspace-build-replay.ts":"6cd08e4698bbd68a13f704ebbb34c593e6bbeb3d09b55f7be1cd3c31f6d6ffea",
+ "scripts/lib/independent-admission/source-original-tar.ts":"6ea8895b995cd3de4c63fd23ebc4b0360513e44139562f92f6e6b06791d0059e",
+ "scripts/service-build-observations.py":"862290bed635da174b6bb9d65f49b768042018633a8e5ecca2eebe3c9d0a5fdf",
+ "scripts/workspace-package-payload.cjs":"f88176458eba63d238cf99412bbc834143fe6b1e74089b27c290c0be040d2d33"
+} as Readonly<Record<string,string>>);
+const finalSdkBindings=(rows:readonly GitHubSourceBinding[])=>Object.freeze(rows.map(row=>Object.freeze({...row,sha256:finalSdkHashes[row.path]??row.sha256})));
+const PRE_FINAL_SLICE_SDK_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([
+...PRE_NEXT_SLICE_SDK_GROUPS,
+Object.freeze({...PRE_NEXT_SLICE_SDK_GROUPS[PRE_NEXT_SLICE_SDK_GROUPS.length-1]!,candidateServiceRelationship:PRE_NEXT_SLICE_SDK_GROUPS[PRE_NEXT_SLICE_SDK_GROUPS.length-1]!.candidateServiceRelationship?{...PRE_NEXT_SLICE_SDK_GROUPS[PRE_NEXT_SLICE_SDK_GROUPS.length-1]!.candidateServiceRelationship!,workflowSha256:'999f183da7a146433afeca5cf009556876e9fcec02f9545efaad8b5c6d88f962'}:undefined,selectors:finalSdkBindings(PRE_NEXT_SLICE_SDK_GROUPS[PRE_NEXT_SLICE_SDK_GROUPS.length-1]!.selectors),secondarySelectors:finalSdkBindings(PRE_NEXT_SLICE_SDK_GROUPS[PRE_NEXT_SLICE_SDK_GROUPS.length-1]!.secondarySelectors??[]),sourceBindings:finalSdkBindings(PRE_NEXT_SLICE_SDK_GROUPS[PRE_NEXT_SLICE_SDK_GROUPS.length-1]!.sourceBindings)})]);
+export const QLEVER_SDK_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=PRE_FINAL_SLICE_SDK_GROUPS
 export const QLEVER_LINUX_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([
  {selectors:sdkSelectors('cbedd3e2478de5e22108b6689c595a658ca891c9bd47552caec830e86f47fea8','a75c7be34b5c5fafff85c0d67d814ba1aaf14bcf5db5404a860fe3b9a11009bd'),sourceBindings:QLEVER_LINUX_SOURCE_BINDINGS.filter(row=>!['.github/workflows/publish-qlever-runtime-sdk.yml','.github/workflows/build-qlever-linux-runtime.yml'].includes(row.path))},
  ...QLEVER_SDK_EXECUTION_GROUPS,

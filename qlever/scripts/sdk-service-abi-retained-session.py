@@ -7,6 +7,7 @@ import hashlib
 import os
 from pathlib import Path
 import stat
+import threading
 
 
 def observe(command, *, retained, host_session, output, **session_args):
@@ -18,11 +19,16 @@ def observe(command, *, retained, host_session, output, **session_args):
     if 'reserve' in session_args:
         raise ValueError('the existing service ledger owns all session charges')
     metadata_limit = 1024**2
+    # One serialized ledger; membership capture reserves/settles per file while
+    # protocol streams are still reserving. No parallel precharge is refunded.
+    ledger = threading.RLock()
+    retained.ledger_lock = ledger
     reserved = retained.reserve(metadata_limit)
 
     def charge(amount):
         nonlocal reserved
-        reserved += retained.reserve(amount)
+        with ledger:
+            reserved += retained.reserve(amount)
 
     # On any failure leave all charged bytes reserved, including partial writes.
     result = host_session.observe(command, output=output, reserve=charge,
@@ -64,6 +70,7 @@ def observe(command, *, retained, host_session, output, **session_args):
                 if primary is None: raise
         refs.append(dict(path='abi-session/' + name, bytes=len(raw), sha256=hashlib.sha256(raw).hexdigest()))
     # Existing settle independently reads/hash-checks the same closed originals.
-    retained.settle(reserved, refs)
+    with ledger:
+        retained.settle(reserved, refs)
     return dict(observation=result, originals=refs, serviceAbiVerified=False,
                 scope='retained host protocol session only; whole service authority pending')

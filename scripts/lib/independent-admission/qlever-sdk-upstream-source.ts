@@ -1,6 +1,7 @@
 import {selectSdkControllerHelperGroup} from './sdk-controller-helper-groups';
 import { inspectSdkBuildExecution } from './qlever-sdk-execution';
 import { createHash } from 'node:crypto';
+import { runSdkSelectedOriginalCommand } from './sdk-selected-original-command';
 import { execFileSync } from 'node:child_process';
 import { readFileSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -8,13 +9,45 @@ import { performance } from 'node:perf_hooks';
 import limits from '../module-artifact-limits.json';
 import { qleverSdkOriginalsView } from './qlever-sdk-originals';
 import { derivedSourceView, assertDerivedSourceCurrent } from './source-context';
-import { sdkVerifiedInputOriginalView } from './qlever-sdk-source';
+import { sdkVerifiedInputOriginalView, qleverSdkSourceAdmissionView } from './qlever-sdk-source';
 import { isDeepStrictEqual } from 'node:util';
-import { captureLegalFileIdentity, assertLegalFileIdentity } from './legal-file-custody';
+import { captureLegalFileIdentity, assertLegalFileIdentity,resolveExecutableIdentityPath} from './legal-file-custody';
 const hash = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
 function need(value: unknown, reason: string): asserts value { if (!value) throw Error('SDK upstream source: ' + reason); }
-const upstreamObservations=new WeakMap<object,Readonly<{cmakeDeclaration:Readonly<{bytes:number;sha256:string}>;assertCurrent():void}>>();
-export function qleverSdkUpstreamGitObservation(capability:unknown){if(!capability||typeof capability!=='object')return undefined;const observation=upstreamObservations.get(capability);observation?.assertCurrent();return observation;}
+type PostpatchMember=Readonly<{path:string;mode:number;bytes:number;sha256:string}>;
+type SelectedReadBudget=Readonly<{check():void;remainingMs():number;remainingReadBytes():number;reserveBytes(bytes:number):void;chargeReadBytes(bytes:number):void}>;
+type SelectedReader=Readonly<{postpatchMembers:readonly PostpatchMember[];readSelectedOriginals(paths:readonly string[],budget:SelectedReadBudget):Promise<Readonly<{paths:readonly string[];readTracked(path:string):Buffer;assertCurrent():void}>>;assertCurrent():void}>;
+type StoredObservation=Readonly<{sourceCapability:unknown;cmakeDeclaration:Readonly<{bytes:number;sha256:string}>;assertCurrent():void;postpatchMembers:readonly PostpatchMember[];readSelectedOriginals:(paths:readonly string[],budget:SelectedReadBudget,admission:unknown)=>ReturnType<SelectedReader['readSelectedOriginals']>}>;
+const upstreamObservations=new WeakMap<object,StoredObservation>();
+const publicObservations=new WeakMap<object,Readonly<{cmakeDeclaration:Readonly<{bytes:number;sha256:string}>;assertCurrent():void}>>();
+/** Existing public shape only; selected reader is deliberately absent here. */
+export function qleverSdkUpstreamGitObservation(capability:unknown){if(!capability||typeof capability!=='object')return undefined;const observation=upstreamObservations.get(capability);observation?.assertCurrent();return observation?publicObservations.get(capability):undefined;}
+/** Only the same already-verified upstream observation; this never inserts a view. */
+export function qleverSdkUpstreamSelectedOriginalsView(capability:unknown,sourceCapability:unknown,admission:unknown):SelectedReader|undefined{
+ if(!capability||typeof capability!=='object')return undefined;
+ const observation=upstreamObservations.get(capability);if(!observation||observation.sourceCapability!==sourceCapability)return undefined;
+ const admitted=qleverSdkSourceAdmissionView(admission,{sdkOriginals:capability,source:sourceCapability});
+ if(!admitted||qleverSdkOriginalsView(capability)===undefined||derivedSourceView(sourceCapability)===undefined)return undefined;
+ observation.assertCurrent();admitted.assertCurrent();
+ const assertCurrent=()=>{need(upstreamObservations.get(capability as unknown as object)===observation,'same upstream observation required');observation.assertCurrent();const current=qleverSdkSourceAdmissionView(admission,{sdkOriginals:capability,source:sourceCapability});need(current&&current.verified===true,'same verified SDK source admission required');current.assertCurrent();};
+ return Object.freeze({postpatchMembers:observation.postpatchMembers,readSelectedOriginals:(paths:readonly string[],budget:SelectedReadBudget)=>{assertCurrent();return observation.readSelectedOriginals(paths,budget,admission);},assertCurrent});
+}
+/** Mechanical response validation only; this function cannot issue any SDK capability. */
+export function inspectSdkSelectedOriginalResponse(observed:any,baseline:any,requested:readonly PostpatchMember[],budget:Pick<SelectedReadBudget,'check'|'reserveBytes'>):readonly Readonly<{path:string;bytes:Buffer}>[]{
+ budget.check();need(requested.length>0&&requested.length<=limits.sourceMembers&&new Set(requested.map(row=>row.path)).size===requested.length,'unique bounded selected response request');
+ const projection=observed?.patchProjection,rows=projection?.selectedOriginals;
+ need(baseline?.verified===true&&baseline.patchProjection?.verified===true&&Array.isArray(rows),'complete captured and selected Git projection required');
+ const {selectedOriginals:_selected,...plainProjection}=projection;
+ need(isDeepStrictEqual({...observed,patchProjection:plainProjection},baseline),'complete selected Git result differs from original verified result');
+ need(rows.length===requested.length,'exact selected original set required');
+ const expected=new Map(requested.map(row=>[row.path,row])),seen=new Set<string>(),out:{path:string;bytes:Buffer}[]=[];let total=0;
+ for(const row of rows){budget.check();const held=expected.get(row?.path);need(held&&!seen.has(row.path),'unexpected or duplicate selected response path');
+  need(typeof row.base64==='string'&&row.base64.length<=Math.ceil(limits.metadataBytes/3)*4&&/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(row.base64),'bounded canonical selected base64 required');
+  need(Number.isSafeInteger(row.bytes)&&row.bytes>=0&&row.bytes===held.bytes&&row.mode===held.mode&&(row.mode===0o644||row.mode===0o755),'selected byte size/mode differs');total+=row.bytes;need(total<=limits.metadataBytes,'selected logical byte ceiling');budget.reserveBytes(row.bytes);
+  const bytes=Buffer.from(row.base64,'base64');need(bytes.toString('base64')===row.base64&&bytes.length===held.bytes&&hash(bytes)===held.sha256&&row.sha256===held.sha256,'selected original bytes/hash differ');seen.add(row.path);out.push(Object.freeze({path:row.path,bytes}));
+ }
+ budget.check();return Object.freeze(out);
+}
 const HELPERS = [
   ['sdk-git-source-bindings.py', '612063f44d09932b93883db2d186d197bd828e07d39e2df430d9dbe574fd66d0'],
   ['sdk-git-source-observer.py', 'fd578d0fef97c1d3b4b60e5510320c109c6930580d91db9335d67cbacff186f6'],
@@ -118,15 +151,29 @@ export async function observeQleverSdkUpstreamGitOriginals(capability: unknown, 
     const helperDigests=new Map<string,string>();
     const helpers = HELPERS.map(([name]) => { const file = fileURLToPath(new URL('../../../qlever/scripts/' + name, import.meta.url)), identity = captureLegalFileIdentity(file); need(identity.size <= BigInt(limits.metadataBytes), 'bounded reviewed controller Git helper');helperDigests.set(name,hash(readFileSync(file)));assertLegalFileIdentity(identity); return identity; });
     selectSdkControllerHelperGroup(REVIEWED_HELPER_GROUPS,helperDigests);helpers.forEach(assertLegalFileIdentity);
-    const python = realpathSync('/usr/bin/python3'), pythonIdentity = captureLegalFileIdentity(python), git = realpathSync('/usr/bin/git'), gitIdentity = captureLegalFileIdentity(git);
+    const python = resolveExecutableIdentityPath('/usr/bin/python3'), pythonIdentity = captureLegalFileIdentity(python), git = resolveExecutableIdentityPath('/usr/bin/git'), gitIdentity = captureLegalFileIdentity(git);
     const limitsPath = fileURLToPath(new URL('../module-artifact-limits.json', import.meta.url)), limitsIdentity = captureLegalFileIdentity(limitsPath);
     const { moduleSourcePhasePolicy } = await import('./module-source-phases'); need(hash(readFileSync(limitsPath)) === moduleSourcePhasePolicy.limits, 'reviewed source budget differs');
     const identities = [...helpers, pythonIdentity, gitIdentity, limitsIdentity]; identities.forEach(assertLegalFileIdentity);
+    const observerRefs = Object.fromEntries(['commitOriginal', 'treeListing', 'objectIds', 'prepatchInventory', 'objectPack'].map(field => [field, ref(upstream[field])]));
+    const planBase = {commit: lock.commit, rootTree: upstream.rootTree, gitExecutable: git, reviewedPatches, reviewedSeriesBase64: seriesBytes.toString('base64'), patchSeries: ref(upstream.patchSeries), postpatchInventory: ref(upstream.postpatchInventory), addedPaths: upstream.addedPaths, deletedPaths: upstream.deletedPaths, ...observerRefs};
+    const observerPlan = (selectedPaths: readonly string[], remainingMilliseconds: number) => Buffer.from(JSON.stringify({remainingMilliseconds, ...planBase, ...(selectedPaths.length ? {selectedOriginalPaths: [...selectedPaths]} : {})}));
+    // The shared supervised command owns plan/cap reservation, refreshed
+    // deadlines, actual IO accounting and group-absence observation.
+    const runSelectedObserver = async (selectedPaths: readonly string[], parent: SelectedReadBudget) => {
+      const command = await runSdkSelectedOriginalCommand({
+        archiveIdentity: sdk.archive,
+        withArchiveFile: (operation, budget) => sdk.withArchiveFile(operation as any, budget),
+        python, helperPath: helpers[1]!.path,
+        createPlan: remainingMs => observerPlan(selectedPaths, remainingMs),
+        remainingMs: () => deadline - performance.now(),
+        budget: parent,
+      });
+      return command.json;
+    };
     const result = await sdk.withArchiveFile(async archive => {
       check(); need(archive.identity.bytes === sdk.archive.bytes && archive.identity.sha256 === sdk.archive.sha256, 'same retained SDK archive required');
-      const plan = Buffer.from(JSON.stringify({remainingMilliseconds: Math.floor(deadline - performance.now()), commit: lock.commit, rootTree: upstream.rootTree, gitExecutable: git, reviewedPatches, reviewedSeriesBase64: seriesBytes.toString('base64'), patchSeries: ref(upstream.patchSeries), postpatchInventory: ref(upstream.postpatchInventory), addedPaths: upstream.addedPaths, deletedPaths: upstream.deletedPaths,
-        ...Object.fromEntries(['commitOriginal', 'treeListing', 'objectIds', 'prepatchInventory', 'objectPack'].map(field => [field, ref(upstream[field])]))}));
-      need(plan.length <= limits.metadataBytes, 'bounded fixed Git observer plan required');
+      const plan = observerPlan([], Math.max(1, Math.floor(deadline - performance.now()))); need(plan.length <= limits.metadataBytes, 'bounded fixed Git observer plan required');
       const bytes = execFileSync(python, ['-I', '-S', '-B', helpers[1]!.path, archive.path], {input: plan, maxBuffer: limits.metadataBytes,
         timeout: Math.max(1, Math.floor(deadline - performance.now())), env: {PATH: '/usr/bin:/bin', LANG: 'C.UTF-8'}, stdio: ['pipe', 'pipe', 'pipe']});
       return JSON.parse(bytes.toString());
@@ -143,10 +190,41 @@ export async function observeQleverSdkUpstreamGitOriginals(capability: unknown, 
     const cmake=postRows.get('CMakeLists.txt'),actualCmake=actualRows.get(upstream.sourceRoot+'/CMakeLists.txt');
     if(cmake&&actualCmake&&cmake.bytes===actualCmake.bytes&&cmake.sha256===actualCmake.sha256&&parseInt(cmake.mode,8)%0o10000===actualCmake.mode){
       const assertCurrent=()=>{identities.forEach(assertLegalFileIdentity);assertDerivedSourceCurrent(sourceCapability);need(qleverSdkOriginalsView(capability)===sdk&&sdkVerifiedInputOriginalView(capability)?.rows===verifiedInputs.rows,'upstream source/input custody changed');};assertCurrent();
-      upstreamObservations.set(capability as object,Object.freeze({cmakeDeclaration:Object.freeze({bytes:cmake.bytes,sha256:cmake.sha256}),assertCurrent}));
+      // Same verified snapshot only; selected reads re-run the complete raw
+      // Git/patch observer and never trust these frozen rows alone.
+      const postpatchMembers: readonly PostpatchMember[]=Object.freeze(post.files.map((row:any)=>Object.freeze({path:row.path,mode:parseInt(row.mode,8)%0o10000,bytes:row.bytes,sha256:row.sha256})));
+      need(postpatchMembers.length===post.files.length,'unique frozen postpatch members required');
+      const memberByPath=new Map(postpatchMembers.map(row=>[row.path,row]));
+      const readSelectedOriginals=async (paths:readonly string[],parent:SelectedReadBudget,admission:unknown)=>{
+        need(qleverSdkSourceAdmissionView(admission,{sdkOriginals:capability,source:sourceCapability})?.verified===true,'same verified private SDK source admission required');
+        need(parent&&typeof parent.check==='function'&&typeof parent.remainingMs==='function'&&typeof parent.remainingReadBytes==='function'&&typeof parent.reserveBytes==='function'&&typeof parent.chargeReadBytes==='function','same parent read budget required');
+        if(!Array.isArray(paths)||!paths.length||paths.length>limits.sourceMembers||new Set(paths).size!==paths.length)throw Error('SDK upstream selected source: canonical unique requested paths required');
+        const requested: string[]=[];const requestedBytes=new Map<string,number>();let logical=0;
+        for(const path of paths){parent.check();need(typeof path==='string'&&path&&!path.startsWith('/')&&!/[\\\u0000-\u001f\u007f]/u.test(path)&&path.split('/').every(part=>part&&part!=='.'&&part!=='..'),'canonical requested selected source required');const row=memberByPath.get(path);need(row&&Number.isSafeInteger(row.bytes)&&row.bytes>=0&&(row.mode===0o644||row.mode===0o755),'requested selected regular member absent from captured postpatch snapshot');requestedBytes.set(path,row.bytes);logical+=row.bytes;need(logical<=limits.metadataBytes,'cumulative selected logical member bound');requested.push(path);}
+        parent.check();need(parent.remainingMs()>0,'selected source window exhausted');
+        // The fixed pack is authenticated by its exact registered identity and
+        // may legitimately exceed the 4MiB metadata ceiling; only the JSON
+        // response remains <= metadata. Charge the shared source domain.
+        let fixed=0;for(const field of ['commitOriginal','treeListing','objectIds','prepatchInventory','objectPack','postpatchInventory','patchSeries'])fixed+=ref(upstream[field]).bytes;
+        for(const item of reviewedPatches)fixed+=item.file.bytes;
+        need(Number.isSafeInteger(result.expandedBytes)&&result.expandedBytes>=0&&result.expandedBytes<=limits.sourceMaterialBytes,'captured full pack expanded byte bound');
+        const precharge=fixed+logical+result.expandedBytes;need(precharge<=limits.sourceMaterialBytes,'selected observer fixed original source-material bound');
+        need(precharge<=parent.remainingReadBytes(),'selected observer exceeds same parent remaining read bytes');
+        parent.reserveBytes(precharge);parent.chargeReadBytes(precharge);parent.check();need(parent.remainingReadBytes()>0,'shared read budget exhausted before selected spawn');
+        const observed=await runSelectedObserver(requested,parent);
+        const selectedRows=inspectSdkSelectedOriginalResponse(observed,result,requested.map(path=>memberByPath.get(path)!),parent);
+        const raw=new Map(selectedRows.map(row=>[row.path,row.bytes]));
+        const current=()=>{parent.check();assertCurrent();need(qleverSdkOriginalsView(capability)===sdk&&sdkVerifiedInputOriginalView(capability)?.rows===verifiedInputs.rows&&derivedSourceView(sourceCapability)===source,'selected upstream custody changed');need(qleverSdkSourceAdmissionView(admission,{sdkOriginals:capability,source:sourceCapability})?.verified===true,'same verified SDK source admission required for selected result');};
+        current();
+        return Object.freeze({paths:Object.freeze([...requested]),readTracked:(path:string)=>{current();const value=raw.get(path);if(!value)throw Error('SDK upstream selected source: path was not requested');parent.check();need(value.length<=parent.remainingReadBytes(),'selected copy exceeds parent read budget');parent.reserveBytes(value.length);parent.chargeReadBytes(value.length);return Buffer.from(value);},assertCurrent:current});
+      };
+      const cmakeDeclaration=Object.freeze({bytes:cmake.bytes,sha256:cmake.sha256});
+      publicObservations.set(capability as object,Object.freeze({cmakeDeclaration,assertCurrent}));
+      upstreamObservations.set(capability as object,Object.freeze({sourceCapability,cmakeDeclaration,postpatchMembers,readSelectedOriginals,assertCurrent}));
     }
   } catch (error) { pending.add((error as Error).message); }
   return Object.freeze({facts: Object.freeze(facts), pending: Object.freeze([...pending])});
 }
 
-const REVIEWED_HELPER_GROUPS:readonly(readonly(readonly[string,string])[])[]=Object.freeze([...Object.freeze([...Object.freeze([HELPERS,Object.freeze([["sdk-git-source-bindings.py","612063f44d09932b93883db2d186d197bd828e07d39e2df430d9dbe574fd66d0"],["sdk-git-source-observer.py","fd578d0fef97c1d3b4b60e5510320c109c6930580d91db9335d67cbacff186f6"],["sdk-git-patch-projection.py","3e4051b50acf6be11ade6e5d6c05ca23ab8376aa4ff5861975088eab642c8f23"],["sdk-zip-originals.py","86cca59ac6a30eb719fe10dbaf6939c4e7c50328e757f22d3d4d34ea90fe6c10"]] as const),Object.freeze([["sdk-git-source-bindings.py","612063f44d09932b93883db2d186d197bd828e07d39e2df430d9dbe574fd66d0"],["sdk-git-source-observer.py","fd578d0fef97c1d3b4b60e5510320c109c6930580d91db9335d67cbacff186f6"],["sdk-git-patch-projection.py","3e4051b50acf6be11ade6e5d6c05ca23ab8376aa4ff5861975088eab642c8f23"],["sdk-zip-originals.py","cf30b662bfec174a61d229811272241a945318259e9b181e8219330acf0555e6"]] as const),Object.freeze([["sdk-git-source-bindings.py","0fec964b836bd14a197de3df0c536bd1f8353db70f91e31debb93497808101e5"],["sdk-git-source-observer.py","fd578d0fef97c1d3b4b60e5510320c109c6930580d91db9335d67cbacff186f6"],["sdk-git-patch-projection.py","3e4051b50acf6be11ade6e5d6c05ca23ab8376aa4ff5861975088eab642c8f23"],["sdk-zip-originals.py","cf30b662bfec174a61d229811272241a945318259e9b181e8219330acf0555e6"]] as const)]),Object.freeze([["sdk-git-source-bindings.py","f44b1a83859c4f84120dd0521468a26437f6df846465b35ec5e6e5efdd0fcd87"],["sdk-git-source-observer.py","fd578d0fef97c1d3b4b60e5510320c109c6930580d91db9335d67cbacff186f6"],["sdk-git-patch-projection.py","3e4051b50acf6be11ade6e5d6c05ca23ab8376aa4ff5861975088eab642c8f23"],["sdk-zip-originals.py","cf30b662bfec174a61d229811272241a945318259e9b181e8219330acf0555e6"]] as const)]),Object.freeze([["sdk-git-source-bindings.py","4c95c935a5789e1e0669ab1bf7eba67c05f91f013a51c9b6fe968fc288b222ba"],["sdk-git-source-observer.py","fd578d0fef97c1d3b4b60e5510320c109c6930580d91db9335d67cbacff186f6"],["sdk-git-patch-projection.py","3e4051b50acf6be11ade6e5d6c05ca23ab8376aa4ff5861975088eab642c8f23"],["sdk-zip-originals.py","cf30b662bfec174a61d229811272241a945318259e9b181e8219330acf0555e6"]] as const)]);
+const PRE_SELECTED_HELPER_GROUPS:readonly(readonly(readonly[string,string])[])[]=Object.freeze([...Object.freeze([...Object.freeze([HELPERS,Object.freeze([["sdk-git-source-bindings.py","612063f44d09932b93883db2d186d197bd828e07d39e2df430d9dbe574fd66d0"],["sdk-git-source-observer.py","fd578d0fef97c1d3b4b60e5510320c109c6930580d91db9335d67cbacff186f6"],["sdk-git-patch-projection.py","3e4051b50acf6be11ade6e5d6c05ca23ab8376aa4ff5861975088eab642c8f23"],["sdk-zip-originals.py","86cca59ac6a30eb719fe10dbaf6939c4e7c50328e757f22d3d4d34ea90fe6c10"]] as const),Object.freeze([["sdk-git-source-bindings.py","612063f44d09932b93883db2d186d197bd828e07d39e2df430d9dbe574fd66d0"],["sdk-git-source-observer.py","fd578d0fef97c1d3b4b60e5510320c109c6930580d91db9335d67cbacff186f6"],["sdk-git-patch-projection.py","3e4051b50acf6be11ade6e5d6c05ca23ab8376aa4ff5861975088eab642c8f23"],["sdk-zip-originals.py","cf30b662bfec174a61d229811272241a945318259e9b181e8219330acf0555e6"]] as const),Object.freeze([["sdk-git-source-bindings.py","0fec964b836bd14a197de3df0c536bd1f8353db70f91e31debb93497808101e5"],["sdk-git-source-observer.py","fd578d0fef97c1d3b4b60e5510320c109c6930580d91db9335d67cbacff186f6"],["sdk-git-patch-projection.py","3e4051b50acf6be11ade6e5d6c05ca23ab8376aa4ff5861975088eab642c8f23"],["sdk-zip-originals.py","cf30b662bfec174a61d229811272241a945318259e9b181e8219330acf0555e6"]] as const)]),Object.freeze([["sdk-git-source-bindings.py","f44b1a83859c4f84120dd0521468a26437f6df846465b35ec5e6e5efdd0fcd87"],["sdk-git-source-observer.py","fd578d0fef97c1d3b4b60e5510320c109c6930580d91db9335d67cbacff186f6"],["sdk-git-patch-projection.py","3e4051b50acf6be11ade6e5d6c05ca23ab8376aa4ff5861975088eab642c8f23"],["sdk-zip-originals.py","cf30b662bfec174a61d229811272241a945318259e9b181e8219330acf0555e6"]] as const)]),Object.freeze([["sdk-git-source-bindings.py","4c95c935a5789e1e0669ab1bf7eba67c05f91f013a51c9b6fe968fc288b222ba"],["sdk-git-source-observer.py","fd578d0fef97c1d3b4b60e5510320c109c6930580d91db9335d67cbacff186f6"],["sdk-git-patch-projection.py","3e4051b50acf6be11ade6e5d6c05ca23ab8376aa4ff5861975088eab642c8f23"],["sdk-zip-originals.py","cf30b662bfec174a61d229811272241a945318259e9b181e8219330acf0555e6"]] as const)]);
+const REVIEWED_HELPER_GROUPS=Object.freeze([...PRE_SELECTED_HELPER_GROUPS,Object.freeze([["sdk-git-source-bindings.py", "4c95c935a5789e1e0669ab1bf7eba67c05f91f013a51c9b6fe968fc288b222ba"], ["sdk-git-source-observer.py", "a16ec233749df128e9cf21405a26c42c3cfc64e8482ddb94fdc2635b83dc77cd"], ["sdk-git-patch-projection.py", "37e009c20ec5250f7e22bd450f3d9ae74ecddf7f15a51c4e2dd8f55126925aa0"], ["sdk-zip-originals.py", "56f5ec76344b82b5e8242508208b5635663c037b2b915013e23b91c8ccdc3e17"]] as const)]);

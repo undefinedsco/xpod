@@ -25,11 +25,36 @@ export function inspectCandidateServiceOriginalUniverse(view:CollectedNativeOrig
  for(const row of master.originals){need(row&&Object.keys(row).sort().join(',')==='bytes,path,sha256'&&typeof row.path==='string'&&!refs.has(row.path),'unique plain service original');const actual=members.get(row.path);need(actual&&actual.bytes===row.bytes&&actual.sha256===row.sha256&&row.path!=='service-image-materials.json','exact service original reference');refs.set(row.path,row);}
  const streamed=new Map<string,number>();
  const permit=(ref:any,pattern:RegExp,maximum=totalLimit)=>{need(ref&&pattern.test(ref.path)&&refs.has(ref.path)&&isDeepStrictEqual(ref,refs.get(ref.path))&&!streamed.has(ref.path)&&ref.bytes<=maximum,'exact typed service stream reference');streamed.set(ref.path,maximum);};
+ const build=master.buildInputObservation;
+ if(build!==undefined){
+  need(build?.schemaVersion===1&&build.kind==='retained-official-registry-build-inputs'&&Array.isArray(build.packages)&&build.packages.length<=512,'typed retained build input layout');
+  const coordinates=new Set<string>();
+  for(const row of build.packages){
+   need(typeof row.name==='string'&&typeof row.version==='string'&&typeof row.integrity==='string'&&/^sha512-[A-Za-z0-9+/]{86}==$/u.test(row.integrity),'complete build input coordinate');
+   const hash=Buffer.from(row.integrity.slice(7),'base64');need(hash.length===64&&hash.toString('base64')===row.integrity.slice(7),'canonical build input SRI');
+   const coordinate=row.name+'@'+row.version;need(!coordinates.has(coordinate),'unique retained build coordinate');coordinates.add(coordinate);
+   const prefix='build-inputs/registry/'+hash.toString('hex')+'/';
+   need(row.archive?.path===prefix+'archive.tgz'&&row.metadata?.path===prefix+'metadata.json'&&row.transport?.path===prefix+'transport.json','canonical typed build original paths');
+   permit(row.archive,/^build-inputs\/registry\/[a-f0-9]{128}\/archive\.tgz$/u);
+   for(const ref of [row.metadata,row.transport])need(ref&&refs.has(ref.path)&&isDeepStrictEqual(ref,refs.get(ref.path))&&ref.bytes<=metadataLimit,'exact bounded build metadata original');
+  }
+ }
  const pack=master.packInputObservation;
  if(pack!==undefined){
   need(pack?.schemaVersion===1&&pack.kind==='actual-stopped-service-image-pack-inputs'&&Array.isArray(pack.bodies)&&pack.bodies.length<=512,'typed pack stream layout');
   permit(pack.phase?.stage?.stdout,/^stages\/service-output-copy-pack-phase\/stdout\.raw$/u);
   for(const row of pack.bodies){permit(row.original,/^output\/service-pack-bodies\/objects\/[0-9]{4}-[a-f0-9]{64}\.original$/u);permit(row.rawTarOriginal,/^stages\/service-output-copy-pack-body-[0-9]{4}\/stdout\.raw$/u);need(isDeepStrictEqual(row.rawTarOriginal,row.stage?.stdout),'same actual body stage stdout');}
+ }
+ const runtime=master.runtimeMemberObservation;
+ if(runtime!==undefined){
+  need(runtime?.schemaVersion===1&&runtime.kind==='actual-stopped-service-image-runtime-roots'&&Array.isArray(runtime.roots)&&runtime.roots.length===2,'typed complete runtime stream layout');
+  const output=master.outputImageObservation;
+  need(runtime.imageReferenceByDigest===output?.imageReferenceByDigest&&runtime.configDigest===output?.configDigest&&runtime.containerId===output?.containerId,'same actual runtime/output image context');
+  for(const [index,[root,role]] of [['/app','copy-runtime-app'],['/opt/xpod/qlever','copy-runtime-sdk']].entries()){
+   const row=runtime.roots[index];need(row?.targetRoot===root&&row.imageReferenceByDigest===runtime.imageReferenceByDigest&&row.configDigest===runtime.configDigest&&row.containerId===runtime.containerId,'fixed runtime root identity');
+   need(row.archive?.path==='stages/service-output-'+role+'/stdout.raw','fixed runtime raw stdout');
+   permit(row.archive,/^stages\/service-output-copy-runtime-(?:app|sdk)\/stdout\.raw$/u);
+  }
  }
  for(const row of candidateServiceAbiSeedStreams(master)){
   permit(row.reference,/^(?:abi-seed|xpod-service-output-[a-f0-9]{32}-scratch)\/abi\.sqlite$/u,row.maximumBytes);
@@ -97,7 +122,8 @@ export function inspectCandidateServiceRelationship(view:CollectedNativeOriginal
 
 // Only a real issued view can key this cache. Ordinary mechanics remain uncached.
 type ServiceRelationship = ReturnType<typeof inspectCandidateServiceRelationship>;
-const relationshipCache = new WeakMap<CollectedNativeOriginalsView, {seal:string;relationship:ServiceRelationship}>();
+export type CandidateServiceRelationshipBudget=Readonly<{check():void;chargeReadBytes(bytes:number):void}>;
+const relationshipCache = new WeakMap<CollectedNativeOriginalsView, {seal:string;relationship:ServiceRelationship;budget?:CandidateServiceRelationshipBudget}>();
 function freezeRelationship(value:ServiceRelationship):ServiceRelationship {
  const pending:object[]=[value],seen=new WeakSet<object>();
  while(pending.length){const item=pending.pop()!;if(seen.has(item))continue;seen.add(item);for(const child of Object.values(item))if(child!==null&&typeof child==='object')pending.push(child);Object.freeze(item);}
@@ -106,24 +132,34 @@ function freezeRelationship(value:ServiceRelationship):ServiceRelationship {
 /** Reuse a validated relationship across observers without re-reading the
  * entire retained universe. Every call checks live private custody, the exact
  * master identity and current API originals; compacted readers remain unusable. */
-export function readCandidateServiceRelationship(originals:unknown):ServiceRelationship {
+export function readCandidateServiceRelationship(originals:unknown,budget?:CandidateServiceRelationshipBudget):ServiceRelationship {
  const view=nativeOriginalsView(originals);
  need(view&&isCandidateServiceImageGitHubOrigin(view.origin),'issued candidate service originals required');
+ const cached=relationshipCache.get(view!);
+ need(!budget||typeof budget.check==='function'&&typeof budget.chargeReadBytes==='function','complete shared relationship budget');
+ need(!budget||!cached?.budget||cached.budget===budget,'same shared relationship budget required');
+ const parent=budget??cached?.budget;
+ if(cached&&parent)cached.budget=parent;
+ const charge=(bytes:number)=>{if(parent){parent.check();parent.chargeReadBytes(bytes);}};
+ const observed:CollectedNativeOriginalsView=parent?{...view!,
+  readOriginal(name,maximum){parent.check();const row=view!.members.find(row=>row.path===name);if(row)charge(row.bytes);const bytes=view!.readOriginal(name,maximum);parent.check();return bytes;},
+  readOriginalRange(name,offset,length){charge(length);const bytes=view!.readOriginalRange(name,offset,length);parent.check();return bytes;},
+ }:view!;
  function currentSeal():string {
   assertCollectedNativeOriginalCustody(originals);
   const member=view!.members.find(row=>row.path==='service-image-materials.json');
   need(member&&member.bytes<=4*1024**2,'bounded service relationship master');
   // This checks the private lifetime as well as the held projection identity.
-  view!.readOriginalRange(member.path,0,0);
+  observed.readOriginalRange(member.path,0,0);
   // First pure inspection fully hashes this same held projection. The zero
   // range above rechecks all held/named identity fields without charging the
   // unchanged body again on every nested getter.
-  const metadata=view!.metadataOriginals.map(row=>({name:row.name,endpoint:row.endpoint,bytes:row.data.length,sha256:digest(row.data)}));
+  const metadata=view!.metadataOriginals.map(row=>{charge(row.data.length);return {name:row.name,endpoint:row.endpoint,bytes:row.data.length,sha256:digest(row.data)};});
   return JSON.stringify({origin:view!.originFacts,archive:view!.archive,metadata,master:{bytes:member.bytes,sha256:member.sha256}});
  }
- const seal=currentSeal(),cached=relationshipCache.get(view!);
+ const seal=currentSeal();
  if(cached){need(cached.seal===seal,'current relationship origin or API originals differ');return cached.relationship;}
- const relationship=freezeRelationship(inspectCandidateServiceRelationship(view!));
+ const relationship=freezeRelationship(inspectCandidateServiceRelationship(observed));
  need(currentSeal()===seal,'relationship changed during initial validation');
- relationshipCache.set(view!,{seal,relationship});return relationship;
+ relationshipCache.set(view!,{seal,relationship,...(parent?{budget:parent}:{})});return relationship;
 }

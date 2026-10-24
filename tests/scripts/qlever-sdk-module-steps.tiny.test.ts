@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import {createHash} from 'node:crypto';
 import path from 'node:path';
 import oldSdk from '../fixtures/independent-admission/sdk-b-86cd-originals.json';
+import oldTree from '../fixtures/independent-admission/sdk-86cd-tree-originals.json';
 import {observeQleverSdkGitHubOrigin,isQleverSdkGitHubOrigin,githubOriginFacts} from '../../scripts/lib/independent-admission/github-origin';
 const root=process.env.XPOD_ORIGIN_SOURCE_FIXTURE??path.resolve(import.meta.dir,'../..'),source='9'.repeat(40),digest='8'.repeat(64),workflow='.github/workflows/publish-qlever-runtime-sdk.yml';
 let fixtureId=200;
@@ -18,7 +19,7 @@ async function scenario(skip?:string,revision?:string,missing?:string,modified?:
   else if(relative==='actions/workflows/23')body={id:23,path:workflow};
   else if(relative.startsWith('contents/')){const name=relative.slice(9);requested.push(name);if(name===missing)return new Response(JSON.stringify({message:'Not Found'}),{status:404});
    if(revision&&oldSdk.missing.includes(name))return new Response(JSON.stringify({message:'Not Found'}),{status:404});
-   const retained=(oldSdk.originals as Record<string,string>)[name];
+   const retained=(oldSdk.originals as Record<string,string>)[name]??(oldTree.originals as Record<string,string>)[name];
    const original=revision&&name==='scripts/agentfs-native-ci/supervise.py'?fs.readFileSync(path.join(import.meta.dir,'../fixtures/independent-admission/pre-pack-supervisor.original.txt')):revision&&name==='.github/workflows/css-native-source.yml'?fs.readFileSync(path.join(import.meta.dir,'../fixtures/independent-admission/css-native-source-pre-readonly.original.yml')):revision&&name===workflow?fs.readFileSync(path.join(import.meta.dir,'../fixtures/independent-admission/sdk-publisher-pre-readonly.original.yml')):revision&&retained?Buffer.from(retained,'base64'):revision&&name==='qlever/scripts/verify-local-runtime-artifacts.py'?fs.readFileSync(path.join(import.meta.dir,'../fixtures/independent-admission/pre-sdk47-runtime-verifier.original.py')):fs.readFileSync(path.join(root,name));
    if(!original.length)return new Response(JSON.stringify({message:'Not Found'}),{status:404});
    body={type:'file',path:name,encoding:'base64',content:(name===modified?Buffer.from('modified helper'):original).toString('base64')};}

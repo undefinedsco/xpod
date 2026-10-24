@@ -15,7 +15,15 @@ export function createTinyServicePackProtocol(root:string,afterRoot:Buffer,sourc
  const collectionFile=path.join(root,'.test-data/service-pack-originals/materials.json'),originalCollection=fs.readFileSync(collectionFile),collection=JSON.parse(originalCollection.toString());fs.writeFileSync(path.join(root,'collection.before-placement.original.json'),originalCollection);
  const remap=(value:any):any=>{if(typeof value==='string')return value.startsWith(root)?'/app'+value.slice(root.length):value.startsWith(os.tmpdir()+'/')?'/tmp'+value.slice(os.tmpdir().length):value.startsWith(path.dirname(path.dirname(source))+'/')?'/app'+value.slice(path.dirname(path.dirname(source)).length):value;if(Array.isArray(value))return value.map(remap);if(value&&typeof value==='object')return Object.fromEntries(Object.entries(value).map(([key,item])=>[key,remap(item)]));return value;};
  const unplacedObjects=new Map<string,Buffer>();for(const ref of collection.originals)unplacedObjects.set(ref.path,fs.readFileSync(path.join(root,'.test-data/service-pack-originals',ref.path)));
- const placed=remap(collection);placed.details.budget.deadlineUnixMs=900000;delete placed.details.resolutionSearchModel;delete placed.details.nodeRuntimeModel; // The real host ancestor universe is not the simulated /app namespace. Keep it only in unplaced originals.
+ const placed=remap(collection);
+ // Keep the ACTUAL pack-phase budget the real producer sealed into the collection
+ // (`run-npm-pack.cjs:753,798` -> `service-pack-phase.cjs.snapshot()`): its
+ // deadlineUnixMs and retainedCeilingBytes come from the real pack invocation
+ // (argv 7/8). The previous literal `=900000` silently replaced the real
+ // deadline, so `sdk-service-pack-bindings.py:96` could never match the parent
+ // window ("same actual pack worker deadline/allocation"). Placement remaps
+ // PATHS; it must not rewrite the sealed budget values.
+ delete placed.details.resolutionSearchModel;delete placed.details.nodeRuntimeModel; // The real host ancestor universe is not the simulated /app namespace. Keep it only in unplaced originals.
 
  const objects=new Map<string,Buffer>();for(const ref of placed.originals)objects.set(ref.path,fs.readFileSync(path.join(root,'.test-data/service-pack-originals',ref.path)));
  const ledgerPlacements:any[]=[];for(const row of placed.records){if(row.role!=='actual-selected-input-copy-ledger')continue;const old=row.reference,original=objects.get(old.path)!,rewritten=Buffer.from(JSON.stringify(remap(JSON.parse(original.toString())))),ref={path:'objects/'+sha(rewritten)+'.original',bytes:rewritten.length,sha256:sha(rewritten)};objects.delete(old.path);objects.set(ref.path,rewritten);placed.originals=placed.originals.map((item:any)=>item.path===old.path?ref:item);row.reference=ref;ledgerPlacements.push({actualOriginalSha256:sha(original),simulatedPlacementSha256:ref.sha256});}

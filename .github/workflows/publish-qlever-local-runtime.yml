@@ -36,6 +36,14 @@ on:
       digest:
         description: Published OCI manifest digest
         value: ${{ jobs.publish.outputs.digest }}
+      native_runtime_artifact_id:
+        value: ${{ jobs.publish.outputs.native_runtime_artifact_id }}
+      native_runtime_artifact_digest:
+        value: ${{ jobs.publish.outputs.native_runtime_artifact_digest }}
+      native_runtime_master_bytes:
+        value: ${{ jobs.publish.outputs.native_runtime_master_bytes }}
+      native_runtime_master_sha256:
+        value: ${{ jobs.publish.outputs.native_runtime_master_sha256 }}
 
 permissions:
   contents: read
@@ -61,6 +69,10 @@ jobs:
     outputs:
       image: ${{ steps.publish.outputs.image }}
       digest: ${{ steps.publish.outputs.digest }}
+      native_runtime_artifact_id: ${{ steps.native_originals_upload.outputs.artifact-id }}
+      native_runtime_artifact_digest: ${{ steps.native_originals_upload.outputs.artifact-digest }}
+      native_runtime_master_bytes: ${{ steps.native_originals.outputs.master_bytes }}
+      native_runtime_master_sha256: ${{ steps.native_originals.outputs.master_sha256 }}
     steps:
       - name: Validate immutable inputs
         shell: bash
@@ -68,6 +80,7 @@ jobs:
           PRIOR_SDK_IMAGE: ${{ inputs.prior_sdk_image }}
         run: |
           set -euo pipefail
+          echo "XPOD_NATIVE_JOB_DEADLINE=$(python3 -c 'import time; print(time.monotonic() + 120 * 60)')" >> "${GITHUB_ENV}"
           [[ "${GITHUB_SHA}" =~ ^[a-f0-9]{40}$ ]]
           [[ "${PRIOR_SDK_IMAGE}" =~ ^[^[:space:]]+@sha256:[a-f0-9]{64}$ ]] \
             || { echo 'prior_sdk_image must be an immutable @sha256 image reference' >&2; exit 64; }
@@ -306,6 +319,46 @@ jobs:
           [[ "${digest}" =~ ^sha256:[a-f0-9]{64}$ ]] || exit 1
           echo "digest=${digest}" >> "${GITHUB_OUTPUT}"
           echo "image=${IMAGE}@${digest}" >> "${GITHUB_OUTPUT}"
+
+      - name: Retain focused native runtime originals
+        id: native_originals
+        if: needs.resolve_target.outputs.sdk_profile == 'service-trixie'
+        shell: bash
+        env:
+          PRIOR_SDK_IMAGE: ${{ inputs.prior_sdk_image }}
+          RUNTIME_IMAGE: ${{ steps.publish.outputs.image }}
+        run: |
+          set -euo pipefail
+          python3 qlever/scripts/sdk-service-native-runtime-host.py \
+            --source-sha "${GITHUB_SHA}" \
+            --sdk-image "${PRIOR_SDK_IMAGE}" \
+            --runtime-image "${RUNTIME_IMAGE}" \
+            --run-id "${GITHUB_RUN_ID}" --run-attempt "${GITHUB_RUN_ATTEMPT}" \
+            --job publish \
+            --out "${RUNNER_TEMP}/candidate-service-native-runtime" \
+            --maximum-bytes 134217728 \
+            --deadline-monotonic "${XPOD_NATIVE_JOB_DEADLINE}"
+          python3 - <<'PY_NATIVE_MASTER'
+          import hashlib, os
+          from pathlib import Path
+          master = Path(os.environ['RUNNER_TEMP']) / 'candidate-service-native-runtime/materials.json'
+          size = master.stat().st_size
+          assert 0 < size <= 4194304 and not master.is_symlink()
+          raw = master.read_bytes()
+          assert len(raw) == size
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f'master_bytes={size}\nmaster_sha256={hashlib.sha256(raw).hexdigest()}\n')
+          PY_NATIVE_MASTER
+
+      - name: Upload focused native runtime originals
+        id: native_originals_upload
+        if: needs.resolve_target.outputs.sdk_profile == 'service-trixie'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: candidate-service-native-runtime-${{ needs.resolve_target.outputs.target }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/candidate-service-native-runtime/
+          if-no-files-found: error
+          retention-days: 7
 
       - name: Record the deployable image
         shell: bash

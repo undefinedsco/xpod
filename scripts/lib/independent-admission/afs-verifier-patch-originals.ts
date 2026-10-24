@@ -47,7 +47,8 @@ export function applyVerifierUnifiedPatch(originals: ReadonlyMap<string, Buffer>
     const source = original.toString('utf8'); need(Buffer.from(source).equals(original), 'UTF-8 original required');
     const hasNewline = source.endsWith('\n');
     const input = (hasNewline ? source.slice(0, -1) : source).split('\n'), output: string[] = []; let cursor = 0;
-    need(target.oldNoNewlineAt === undefined ? hasNewline : !hasNewline && target.oldNoNewlineAt === input.length, 'upstream final newline differs');
+    const touchesOldEnd = target.hunks.some(hunk => hunk.oldStart - 1 + hunk.oldCount === input.length);
+    need(target.oldNoNewlineAt === undefined ? hasNewline || !touchesOldEnd : !hasNewline && target.oldNoNewlineAt === input.length, 'upstream final newline differs');
     for (const hunk of target.hunks) {
       const at = hunk.oldStart - 1;
       need(at >= cursor && at + hunk.oldCount <= input.length, 'overlapping or out-of-bounds hunk');
@@ -57,7 +58,8 @@ export function applyVerifierUnifiedPatch(originals: ReadonlyMap<string, Buffer>
     }
     for (let index = cursor; index < input.length; index++) output.push(input[index]!);
     need(target.newNoNewlineAt === undefined || target.newNoNewlineAt === output.length, 'projected final newline position differs');
-    const bytes = Buffer.from(output.join('\n') + (target.newNoNewlineAt === undefined ? '\n' : '')); need(bytes.length <= MAXIMUM, 'projected file exceeds bound'); result.set(target.path, bytes);
+    const outputHasNewline = target.newNoNewlineAt === undefined && (target.oldNoNewlineAt !== undefined || hasNewline);
+    const bytes = Buffer.from(output.join('\n') + (outputHasNewline ? '\n' : '')); need(bytes.length <= MAXIMUM, 'projected file exceeds bound'); result.set(target.path, bytes);
   }
   return result;
 }

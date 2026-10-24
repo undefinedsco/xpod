@@ -18,6 +18,12 @@ const roles = [
  ['abi-helper-helper','qlever/scripts/verify-local-runtime-artifacts.py'],
  ['abi-helper-seed','qlever/scripts/sdk-service-abi-seed.py'],
  ['abi-helper-source-custody','qlever/scripts/sdk-service-abi-source-custody.py'],
+ ['abi-helper-role-commands','qlever/scripts/sdk-service-abi-role-commands.py'],
+ ['abi-helper-role-session','qlever/scripts/sdk-service-abi-bun-role-session.py'],
+ ['abi-helper-role-collector','qlever/scripts/sdk-service-abi-role-collector.py'],
+ ['abi-helper-read-budget-module','qlever/scripts/sdk-service-abi-read-budget.py'],
+ ['abi-helper-elf-module','qlever/scripts/sdk-service-abi-elf.py'],
+ ['abi-role-probe','qlever/scripts/sdk-service-abi-role-probe.mjs'],
 ] as const;
 const legacy = ['service-source-head','service-source-manifest','service-source-status'] as const;
 function need(value:unknown,why:string):asserts value {if(!value)throw Error('Service ABI source stages: '+why);}

@@ -7,6 +7,7 @@ import path from 'node:path';
 export function collectAfsJavascriptMaterials(options: {
   buildTools: ProducerBuildTools; packageRoot: string; repoRoot: string; destination: string; target: string;
   library: string; libraryMetafile: string; commands: string; commandsMetafile: string;
+  commandInputPaths?: readonly { physicalPath: string; logicalPath: string; sha256: string }[];
   producer: { generatedRoot: string; supplements: string }; vendoredRoots?: string[];
 }): void {
   const bunVersion = process.versions.bun ?? 'unknown';
@@ -41,7 +42,32 @@ export function collectAfsJavascriptMaterials(options: {
   // Command SDK/output inputs have their own actual compiler graph and original prefix.
   options.buildTools.collectJavascriptNotices({ metafile: options.commandsMetafile, stageRoot: options.repoRoot, repoRoot: options.repoRoot,
     destination: path.join(options.destination, 'commands'), target: options.target,
+    inputPaths: options.commandInputPaths,
     cli: options.commands, bunVersion, supplements, generated: originalGenerated, generatedProfile: 'afs-commands' });
   mkdirSync(options.destination, { recursive: true });
   copyFileSync(path.join(options.repoRoot, 'LICENSE'), path.join(options.destination, 'LICENSE'));
+}
+
+
+/** Materialize the actual compiler inputs, including the live producer artifact.
+ * Logical labels never select a same-named repository sibling for a bound input. */
+export function copyAfsSourceKit(input: {
+  repoRoot: string; destination: string; sourceFiles: readonly string[];
+  commandBuild: { assertCurrent(): void; sourceBinding(name: string): Readonly<{physicalPath: string; logicalPath: string; sha256: string}> | undefined };
+}): Array<{path: string; bytes: number; sha256: string}> {
+  input.commandBuild.assertCurrent();
+  const inventory: Array<{path: string; bytes: number; sha256: string}> = [];
+  for (const name of [...new Set(input.sourceFiles)].sort()) {
+    if (!name || path.isAbsolute(name) || /[\\\x00-\x1f\x7f]/u.test(name) || name.split('/').some(part => !part || part === '.' || part === '..')) throw new Error('Source outside repository');
+    const binding = input.commandBuild.sourceBinding(name);
+    if (binding && binding.logicalPath !== name) throw new Error('Actual compiler source binding differs');
+    const source = binding ? binding.physicalPath : path.join(input.repoRoot, name);
+    const bytes = readFileSync(source), sha256 = createHash('sha256').update(bytes).digest('hex');
+    if (binding && sha256 !== binding.sha256) throw new Error('Actual compiler source bytes changed');
+    const dest = path.join(input.destination, name); mkdirSync(path.dirname(dest), { recursive: true }); copyFileSync(source, dest);
+    if (!readFileSync(dest).equals(bytes)) throw new Error('Source changed during materialization');
+    inventory.push({ path: name, bytes: bytes.length, sha256 });
+  }
+  input.commandBuild.assertCurrent();
+  return inventory;
 }

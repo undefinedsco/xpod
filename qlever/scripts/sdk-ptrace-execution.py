@@ -141,10 +141,25 @@ def fdpath(pid,fd):
     try:return os.readlink('/proc/'+str(pid)+'/fd/'+str(fd))
     except FileNotFoundError:return None
 
-def descriptor_flags(pid,fd):
-    text=Path('/proc',str(pid),'fdinfo',str(fd)).read_text();rows=[x.split()[1] for x in text.splitlines() if x.startswith('flags:')];assert len(rows)==1;return int(rows[0],8)
-def descriptor_position(pid,fd):
-    rows=[line.split()[1] for line in Path('/proc',str(pid),'fdinfo',str(fd)).read_text().splitlines() if line.startswith('pos:')];assert len(rows)==1;return int(rows[0])
+def descriptor_fields(pid,fd,*,flags=True,position=True):
+    """One actual /proc/<pid>/fdinfo/<fd> read for the requested numeric fields.
+
+    Coalesces the flags:/pos: extraction onto a SINGLE kernel view of the same
+    stopped descriptor. Field parsing, octal/decimal decoding and the
+    exactly-one-row refusal are unchanged; only the number of reads changes.
+    Requesting one field keeps the other field's absence irrelevant, so the
+    standalone wrappers below stay compatible where only one is needed.
+    """
+    text=Path('/proc',str(pid),'fdinfo',str(fd)).read_text()
+    lines=text.splitlines()
+    value=[]
+    if flags:
+        rows=[x.split()[1] for x in lines if x.startswith('flags:')];assert len(rows)==1;value.append(int(rows[0],8))
+    if position:
+        rows=[line.split()[1] for line in lines if line.startswith('pos:')];assert len(rows)==1;value.append(int(rows[0]))
+    return (value[0],value[1]) if flags and position else value[0]
+def descriptor_flags(pid,fd):return descriptor_fields(pid,fd,flags=True,position=False)
+def descriptor_position(pid,fd):return descriptor_fields(pid,fd,flags=False,position=True)
 def bounded_fd_slot_names(pid,local,maximum=1024):
     """Read one bounded actual FD slot-name table; the caller owns the bracket.
 
@@ -530,7 +545,7 @@ class Observer:
                 # scan pays only the cheap deadline/stdio refusal. Standalone
                 # bounded_fd_slots keeps its full entry/finally guards.
                 for value in bounded_fd_slot_names(pid,self.check_deadline):
-                    self.check_deadline();fd=int(value);item=os.stat('/proc/'+str(pid)+'/fd/'+value);descriptors.append([fd,probe.identity(item),descriptor_flags(pid,fd),descriptor_position(pid,fd)])
+                    self.check_deadline();fd=int(value);item=os.stat('/proc/'+str(pid)+'/fd/'+value);flags,position=descriptor_fields(pid,fd);descriptors.append([fd,probe.identity(item),flags,position])
                 table=row['fdTable'];prior=tables.setdefault(table,descriptors);assert prior==descriptors,'CLONE_FILES table differs between stopped owners'
                 ownership.append(dict(tid=pid,tgid=tgid,fdTable=table))
         finally:

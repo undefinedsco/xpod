@@ -1,7 +1,7 @@
 import type { buildDependencyLayout, buildDependencyRootArgument } from '../../xpod-cli/src/build-dependency-layout';
 import ts from 'typescript';
 import { spawnSync } from 'node:child_process';
-import { copyFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createRequire } from 'node:module';
@@ -29,7 +29,11 @@ writeFileSync(path.join(root, 'dist/index.mjs'), "import client from './library.
 
 const toolsArg = process.argv.indexOf('--build-tools');
 const tools = toolsArg >= 0 ? path.resolve(process.argv[toolsArg + 1]) : createRequire(path.join(root, 'package.json')).resolve('@undefineds.co/xpod-cli/build-tools');
-const tooling = await import(pathToFileURL(tools).href) as { collectJavascriptNotices: typeof collectJavascriptNotices; buildDependencyLayout: typeof buildDependencyLayout; buildDependencyRootArgument: typeof buildDependencyRootArgument };
+const tooling = await import(pathToFileURL(tools).href) as { collectJavascriptNotices: typeof collectJavascriptNotices; buildDependencyLayout: typeof buildDependencyLayout; buildDependencyRootArgument: typeof buildDependencyRootArgument; canonicalBuildMetafile(raw: Buffer): Buffer };
+const rawMetafile = readFileSync(path.join(root, 'dist/inputs.json'));
+mkdirSync(path.join(root, '.test-data/build'), { recursive: true });
+writeFileSync(path.join(root, '.test-data/build/client-inputs.raw.json'), rawMetafile);
+writeFileSync(path.join(root, 'dist/inputs.json'), tooling.canonicalBuildMetafile(rawMetafile));
 const layout = tooling.buildDependencyLayout(root, { name: '@undefineds.co/xpod-client', workspacePath: 'packages/xpod-client' }, tooling.buildDependencyRootArgument(process.argv.slice(2)));
 tooling.collectJavascriptNotices({ metafile: path.join(root, 'dist/inputs.json'), stageRoot: root, ...layout,
   destination: path.join(root, 'dist/licenses'), target: `${process.platform}-${process.arch}`,

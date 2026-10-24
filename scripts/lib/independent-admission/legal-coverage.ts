@@ -1,5 +1,5 @@
 import type { CollectedArtifactMember } from './artifact-contract';
-export type LegalCoverageAxis = 'exact-source' | 'transpiled-source' | 'physical-original' | 'compiler-original';
+export type LegalCoverageAxis = 'exact-source' | 'transpiled-source' | 'physical-original' | 'compiler-original' | 'native-source';
 export interface LegalCoverageEntry { path: string; sha256: string; bytes: number; axis: LegalCoverageAxis; original: string }
 export interface LegalCoverageReport { entries: LegalCoverageEntry[]; uncovered: { path: string; reason: string }[]; complete: boolean }
 /** A pure accounting primitive. It cannot issue source, original or permission

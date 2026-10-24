@@ -125,13 +125,18 @@ describe('QLever local runtime image contract', () => {
   it('builds only the local bridge from an immutable prior runtime SDK', () => {
     expect(existsSync(dockerfilePath)).toBe(true);
     const dockerfile = readFileSync(dockerfilePath, 'utf8');
-    const build = stageBody(dockerfile, 'build');
+    const inputs = stageBody(dockerfile, 'build-inputs');
+    const build = inputs + '\n' + stageBody(dockerfile, 'build');
 
     expect(dockerfile).toMatch(
       /^# syntax=docker\/dockerfile:1\.7@sha256:[a-f0-9]{64}$/m,
     );
     expect(dockerfile).toContain('ARG XPOD_QLEVER_PRIOR_SDK_IMAGE');
-    expect(dockerfile).toContain('FROM ${XPOD_QLEVER_PRIOR_SDK_IMAGE} AS build');
+    expect(dockerfile).toContain('FROM ${XPOD_QLEVER_PRIOR_SDK_IMAGE} AS build-inputs');
+    expect(dockerfile).toContain('FROM build-inputs AS build');
+    expect(inputs).toContain('Acquire::AllowInsecureRepositories=false');
+    expect(inputs).toContain('APT::Get::AllowUnauthenticated=false');
+    expect(inputs).not.toContain('rm -rf /var/lib/apt/lists');
     expect(build).toContain("grep -Eq '^.+@sha256:[0-9a-f]{64}$'");
     expect(build).toContain('must be an immutable digest reference');
     expect(build).toContain('COPY qlever/patches /workspace/xpod/qlever/patches');

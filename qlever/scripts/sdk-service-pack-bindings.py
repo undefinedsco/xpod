@@ -12,7 +12,7 @@ OUTPUT_PACK_PHASE_ROLE='copy-pack-phase'
 OUTPUT_PACK_BODY_ROLE='copy-pack-body'
 def service_output_worker_argv(source,source_sha,role,image,name,nonce,cid=None,body_path=None,copy_bound=None):
     need(isinstance(source,str) and source.startswith('/') and str(Path(source))==source and not any(p in ['.','..'] for p in source.split('/')) and isinstance(source_sha,str) and re.fullmatch('[a-f0-9]{40}',source_sha),'fixed source worker identity')
-    need(role in ['pull','create','inspect','copy','remove','confirm-absent',OUTPUT_PACK_ROLE,OUTPUT_PACK_PHASE_ROLE,OUTPUT_PACK_BODY_ROLE,'cleanup-list','cleanup-inspect','cleanup-remove','cleanup-confirm-absent'],'fixed output worker role')
+    need(role in ['pull','create','inspect','copy','remove','confirm-absent','copy-runtime-app','copy-runtime-sdk',OUTPUT_PACK_ROLE,OUTPUT_PACK_PHASE_ROLE,OUTPUT_PACK_BODY_ROLE,'cleanup-list','cleanup-inspect','cleanup-remove','cleanup-confirm-absent'],'fixed output worker role')
     argv=['/usr/bin/python3','-I','-S','-B',source+'/qlever/scripts/sdk-service-image-originals.py','--source',source,'--source-sha',source_sha,'--image-worker',role,'--service-image',image,'--container-name',name,'--owner-nonce',nonce]
     if cid is not None:argv+=['--container-id',cid]
     if body_path is not None:argv+=['--body-path',body_path]

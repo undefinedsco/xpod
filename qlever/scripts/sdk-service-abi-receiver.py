@@ -48,7 +48,8 @@ def replay(sources, record, seed_size, output_root):
     pack = dict(common)
     selected(sources['pack'], ['OUTPUT_PACK_ROLE', 'OUTPUT_PACK_PHASE_ROLE', 'OUTPUT_PACK_BODY_ROLE'], pack)
     image = dict(common, outer=types.SimpleNamespace(binding=types.SimpleNamespace(**binding)), pack_bindings=types.SimpleNamespace(**pack))
-    selected(sources['image'], ['OUTPUT_INSPECT_TEMPLATE', 'OUTPUT_LABEL', 'OUTPUT_ROLES', 'OUTPUT_PACK_ROLE', 'OUTPUT_PACK_PHASE_ROLE', 'OUTPUT_PACK_BODY_ROLE', 'exact_image', 'output_image_command', 'inspect_output_container'], image)
+    image_constants = ['RUNTIME_ROOTS', 'RUNTIME_ROLES'] if any(isinstance(node, ast.Assign) and any(isinstance(target, ast.Name) and target.id == 'RUNTIME_ROLES' for target in node.targets) for node in ast.parse(sources['image']).body) else []
+    selected(sources['image'], ['OUTPUT_INSPECT_TEMPLATE', 'OUTPUT_LABEL', 'OUTPUT_ROLES', 'OUTPUT_PACK_ROLE', 'OUTPUT_PACK_PHASE_ROLE', 'OUTPUT_PACK_BODY_ROLE', 'exact_image', 'output_image_command', 'inspect_output_container'] + image_constants, image)
     images = types.SimpleNamespace(**image)
 
     class SnapshotPath(PurePosixPath):

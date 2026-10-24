@@ -41,10 +41,12 @@ export type SourceGzipBlockIndex=Readonly<{schemaVersion:1;kind:'source-tar-gzip
 
 /** Controlled-only encoded input. Locations deliberately are not returned: tar
  * expanded offsets are never physical gzip offsets or ordinary raw locations. */
-export function inspectGzipBlockSourceOriginalTar(input:{archive:SourceTarReference;index:unknown;rows:ReadonlyMap<string,SourceTarRow>;readRange(name:string,offset:number,length:number):Buffer;check():void}){
+export function createGzipBlockSourceReader(input:{archive:SourceTarReference;index:unknown;readRange(name:string,offset:number,length:number):Buffer;check():void}){
  const fail=(why:string):never=>{throw Error('Source gzip originals: '+why);};
  const need:(value:unknown,why:string)=>asserts value=(value,why)=>{if(!value)fail(why);};
- const index=input.index as any,ref=input.archive;input.check();
+ const supplied=input.index as any,ref=Object.freeze({...input.archive});input.check();
+ // Detach mutable caller containers; this is a byte decoder, never an issuer.
+ const index=supplied&&{...supplied,archive:supplied.archive&&{...supplied.archive},expanded:supplied.expanded&&{...supplied.expanded},blocks:Array.isArray(supplied.blocks)?supplied.blocks.map((row:any)=>row&&({...row})):supplied.blocks};
  const integer=(value:unknown):value is number=>typeof value==='number'&&Number.isSafeInteger(value)&&value>=0;
  need(index?.schemaVersion===1&&index.kind==='source-tar-gzip-block-index'&&Object.keys(index).sort().join(',')==='archive,blocks,expanded,kind,schemaVersion'&&index.archive&&Object.keys(index.archive).sort().join(',')==='bytes,path,sha256'&&index.archive.path===ref.path&&index.archive.bytes===ref.bytes&&index.archive.sha256===ref.sha256,'same encoded archive index');
  need(integer(ref.bytes)&&ref.bytes<=limits.shardBytes&&/^[a-f0-9]{64}$/u.test(ref.sha256)&&index.expanded&&Object.keys(index.expanded).sort().join(',')==='bytes,sha256'&&integer(index.expanded.bytes)&&index.expanded.bytes>0&&index.expanded.bytes<=limits.shardBytes&&/^[a-f0-9]{64}$/u.test(index.expanded.sha256),'expanded and retained shard bounds');
@@ -52,20 +54,29 @@ export function inspectGzipBlockSourceOriginalTar(input:{archive:SourceTarRefere
  let packedEnd=0,expandedEnd=0;
  for(let i=0;i<index.blocks.length;i++){input.check();const row=index.blocks[i];need(row&&Object.keys(row).sort().join(',')==='bytes,expandedBytes,expandedOffset,offset'&&[row.offset,row.bytes,row.expandedOffset,row.expandedBytes].every(integer)&&row.offset===packedEnd&&row.expandedOffset===expandedEnd&&row.bytes>=18&&row.bytes<=limits.rangeBytes+1024&&row.expandedBytes>0&&row.expandedBytes<=limits.rangeBytes&&(i===index.blocks.length-1||row.expandedBytes===limits.rangeBytes),'contiguous bounded gzip blocks');packedEnd+=row.bytes;expandedEnd+=row.expandedBytes;need(packedEnd<=ref.bytes&&expandedEnd<=limits.shardBytes,'gzip index aggregate bound');}
  need(packedEnd===ref.bytes&&expandedEnd===index.expanded.bytes,'exact gzip index closure');
- const packedHash=createHash('sha256');let nextBlock=0,cachedIndex=-1,cached=Buffer.alloc(0);
- const decoded=(number:number)=>{input.check();if(cachedIndex===number)return cached;need(number===nextBlock,'sequential encoded archive required');const row=index.blocks[number],packed=Buffer.alloc(row.bytes);
+ const packedHash=createHash('sha256'),expandedHash=createHash('sha256'),blockHashes:string[]=[];let complete=false,nextBlock=0,cachedIndex=-1,cached=Buffer.alloc(0);
+ const decoded=(number:number)=>{input.check();if(cachedIndex===number)return cached;need(complete||number===nextBlock,'sequential encoded archive required');const row=index.blocks[number],packed=Buffer.alloc(row.bytes);
   for(let offset=0;offset<packed.length;offset+=limits.rangeBytes){input.check();const size=Math.min(limits.rangeBytes,packed.length-offset),bytes=input.readRange(ref.path,row.offset+offset,size);need(bytes.length===size,'gzip original truncated');bytes.copy(packed,offset);}
-  packedHash.update(packed);
+  const packedDigest=createHash('sha256').update(packed).digest('hex');if(complete)need(blockHashes[number]===packedDigest,'held gzip block bytes changed');else{packedHash.update(packed);blockHashes.push(packedDigest);}
   // Producer uses the canonical fixed gzip header (no optional metadata).
   need(packed[0]===31&&packed[1]===139&&packed[2]===8&&packed[3]===0&&packed.readUInt32LE(4)===0,'fixed gzip member header');
   let raw:Buffer;try{const measured=inflateRawSync(packed.subarray(10),{info:true,maxOutputLength:limits.rangeBytes}) as unknown as {buffer:Buffer;engine:{bytesWritten:number}};
    need(integer(measured.engine.bytesWritten)&&10+measured.engine.bytesWritten+8===packed.length,'one exact gzip member without trailing or concatenation');raw=gunzipSync(packed,{maxOutputLength:limits.rangeBytes});
   }catch(error){return fail('bounded valid gzip member required: '+String(error instanceof Error?error.message:error).slice(0,160));}
-  need(raw.length===row.expandedBytes,'gzip expanded block length');cached=raw;cachedIndex=number;nextBlock++;return cached;
+  need(raw.length===row.expandedBytes,'gzip expanded block length');if(!complete){expandedHash.update(raw);nextBlock++;if(nextBlock===index.blocks.length){need(packedHash.digest('hex')===ref.sha256,'complete encoded original digest');need(expandedHash.digest('hex')===index.expanded.sha256,'complete expanded original digest');complete=true;}}cached=raw;cachedIndex=number;return cached;
  };
- const observed=inspectSourceOriginalTar({archive:{path:ref.path,bytes:index.expanded.bytes,sha256:index.expanded.sha256},rows:input.rows,check:input.check,readRange(name,offset,length){
-  need(name===ref.path&&integer(offset)&&integer(length)&&length<=limits.rangeBytes&&offset<=index.expanded.bytes-length,'expanded virtual range bound');const result=Buffer.alloc(length);let used=0;
+ const readRange=(offset:number,length:number)=>{
+  input.check();need(integer(offset)&&integer(length)&&length<=limits.rangeBytes&&offset<=index.expanded.bytes-length,'expanded virtual range bound');const result=Buffer.alloc(length);let used=0;
   while(used<length){const at=offset+used,number=Math.floor(at/limits.rangeBytes),raw=decoded(number),within=at-index.blocks[number].expandedOffset,count=Math.min(length-used,raw.length-within);need(count>0,'expanded block range');raw.copy(result,used,within,within+count);used+=count;}return result;
+ };
+ return Object.freeze({expanded:Object.freeze({...index.expanded}) as Readonly<{bytes:number;sha256:string}>,readRange,assertComplete(){input.check();need(complete,'complete encoded original digest required');}});
+}
+
+/** Existing source tar verifier uses the same bounded codec as runtime capture. */
+export function inspectGzipBlockSourceOriginalTar(input:{archive:SourceTarReference;index:unknown;rows:ReadonlyMap<string,SourceTarRow>;readRange(name:string,offset:number,length:number):Buffer;check():void}){
+ const reader=createGzipBlockSourceReader(input);
+ const observed=inspectSourceOriginalTar({archive:{path:input.archive.path,...reader.expanded},rows:input.rows,check:input.check,readRange(name,offset,length){
+  if(name!==input.archive.path)throw Error('Source gzip originals: expanded virtual path');return reader.readRange(offset,length);
  }});
- need(nextBlock===index.blocks.length&&packedHash.digest('hex')===ref.sha256,'complete encoded original digest');input.check();return {seen:observed.seen,expandedBytes:index.expanded.bytes};
+ reader.assertComplete();return {seen:observed.seen,expandedBytes:reader.expanded.bytes};
 }

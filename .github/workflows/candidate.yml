@@ -266,6 +266,10 @@ jobs:
           SDK_ARTIFACT_DIGEST: ${{ needs.publish_qlever_runtime_sdk.outputs.sdk_artifact_digest }}
           SDK_MASTER_BYTES: ${{ needs.publish_qlever_runtime_sdk.outputs.sdk_master_bytes }}
           SDK_MASTER_SHA256: ${{ needs.publish_qlever_runtime_sdk.outputs.sdk_master_sha256 }}
+          NATIVE_RUNTIME_ARTIFACT_ID: ${{ needs.publish_qlever_local_runtime.outputs.native_runtime_artifact_id }}
+          NATIVE_RUNTIME_ARTIFACT_DIGEST: ${{ needs.publish_qlever_local_runtime.outputs.native_runtime_artifact_digest }}
+          NATIVE_RUNTIME_MASTER_BYTES: ${{ needs.publish_qlever_local_runtime.outputs.native_runtime_master_bytes }}
+          NATIVE_RUNTIME_MASTER_SHA256: ${{ needs.publish_qlever_local_runtime.outputs.native_runtime_master_sha256 }}
         run: |
           set -euo pipefail
           metadata="$RUNNER_TEMP/service-build-metadata.original.json"
@@ -277,6 +281,8 @@ jobs:
             --local-runtime-image "$LOCAL_RUNTIME_IMAGE" --sdk-image "$SDK_IMAGE" \
             --sdk-artifact-id "$SDK_ARTIFACT_ID" --sdk-artifact-digest "$SDK_ARTIFACT_DIGEST" \
             --sdk-master-bytes "$SDK_MASTER_BYTES" --sdk-master-sha256 "$SDK_MASTER_SHA256" \
+            --native-runtime-artifact-id "$NATIVE_RUNTIME_ARTIFACT_ID" --native-runtime-artifact-digest "$NATIVE_RUNTIME_ARTIFACT_DIGEST" \
+            --native-runtime-master-bytes "$NATIVE_RUNTIME_MASTER_BYTES" --native-runtime-master-sha256 "$NATIVE_RUNTIME_MASTER_SHA256" \
             --root-manifest-before "$RUNNER_TEMP/service-source-manifests/before/package.json" \
             --root-manifest-after "$RUNNER_TEMP/service-source-manifests/after/package.json" \
             --capture-service-pack-originals \

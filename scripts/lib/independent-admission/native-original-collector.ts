@@ -7,7 +7,7 @@ import { createRequire } from 'node:module';
 import { isDeepStrictEqual } from 'node:util';
 import { verifyAcquiredMetadata } from '../../acquire-independent-product-input';
 import limits from '../module-artifact-limits.json';
-import { githubOriginFacts, githubOriginOriginals, isNativeGitHubOrigin, isCandidateServiceImageGitHubOrigin, isQleverSdkGitHubOrigin } from './github-origin';
+import { githubOriginFacts, githubOriginOriginals, isNativeGitHubOrigin, isCandidateServiceImageGitHubOrigin, isQleverSdkGitHubOrigin, isCandidateServiceNativeRuntimeGitHubOrigin } from './github-origin';
 import { nativeOriginalLifetime } from './native-original-lifetime';
 import { lazyZipOriginals } from './lazy-zip-originals';
 import type { CollectedArtifactMember } from './artifact-contract';
@@ -32,7 +32,7 @@ export function nativeOriginalsView(value: unknown): CollectedNativeOriginalsVie
  * issue byte custody. A normal module product is deliberately rejected. */
 export async function collectNativeAdmissionOriginals(input: NativeAdmissionOriginalCollectionInput): Promise<CollectedNativeOriginalsCapability> {
   const origin = githubOriginFacts(input.githubOrigin);
-  if (!isNativeGitHubOrigin(input.githubOrigin) || !origin || !(['.github/workflows/agentfs-native-acceptance.yml','.github/workflows/build-qlever-macos-runtime.yml','.github/workflows/publish-qlever-runtime-sdk.yml','.github/workflows/css-module-product.yml','.github/workflows/css-native-products.yml'].includes(origin.workflowPath)||(origin.workflowPath==='.github/workflows/candidate.yml'&&(isCandidateServiceImageGitHubOrigin(input.githubOrigin)||isQleverSdkGitHubOrigin(input.githubOrigin)))) || !origin.target) fail('registered independent native origin required');
+  if (!isNativeGitHubOrigin(input.githubOrigin) || !origin || !(['.github/workflows/agentfs-native-acceptance.yml','.github/workflows/build-qlever-macos-runtime.yml','.github/workflows/publish-qlever-runtime-sdk.yml','.github/workflows/css-module-product.yml','.github/workflows/css-native-products.yml'].includes(origin.workflowPath)||(origin.workflowPath==='.github/workflows/candidate.yml'&&(isCandidateServiceImageGitHubOrigin(input.githubOrigin)||isQleverSdkGitHubOrigin(input.githubOrigin)||isCandidateServiceNativeRuntimeGitHubOrigin(input.githubOrigin)))) || !origin.target) fail('registered independent native origin required');
   const facts = origin!;
   const root = path.resolve(input.acquisitionRoot);
   if (fs.realpathSync(root) !== root) fail('canonical acquisition root required');

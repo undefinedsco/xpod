@@ -1,7 +1,7 @@
 import {execFileSync} from 'node:child_process';
 import {realpathSync} from 'node:fs';
 import {performance} from 'node:perf_hooks';
-import {captureLegalFileIdentity,assertLegalFileIdentity} from './legal-file-custody';
+import {captureLegalFileIdentity,assertLegalFileIdentity,resolveExecutableIdentityPath} from './legal-file-custody';
 /** Reuse the sole Python declarations parser and shared smoke replay. This
  * mechanism issues no source, actual-process-wait or release qualification. */
 const worker=String.raw`
@@ -41,7 +41,7 @@ export function replayCandidateServiceAbiProtocol(input:{sources:Readonly<Record
  const request=Buffer.from(JSON.stringify({sources:encode(input.sources),protocol:encode(input.protocol)}));need(request.length<=4*1024**2,'same metadata request ceiling required');
  const remaining=input.remainingMs();need(Number.isFinite(remaining)&&remaining>0,'original remaining parent window required');
  const deadline=performance.now()+remaining;
- const python=realpathSync('/usr/bin/python3'),pythonIdentity=captureLegalFileIdentity(python);
+ const python=resolveExecutableIdentityPath('/usr/bin/python3'),pythonIdentity=captureLegalFileIdentity(python);
  input.assertCurrent();assertLegalFileIdentity(pythonIdentity);
  const timeout=deadline-performance.now();need(timeout>0,'original parent window exhausted before replay');
  const raw=execFileSync(python,['-I','-S','-B','-c',worker],{input:request,maxBuffer:1024**2,timeout:Math.max(1,Math.floor(timeout)),env:{PATH:'/usr/bin:/bin',LANG:'C'}});

@@ -393,6 +393,17 @@ def _verify_existing_chunk(
 
 def _stage_file(txn_fd: int, name: str, data: bytes) -> os.stat_result:
     """Create and fsync a private staging file, returning its stat."""
+    st = _stage_bytes(txn_fd, name, data)
+    _flush_stage(txn_fd, name, len(data), _identity(st))
+    return st
+
+
+def _stage_bytes(txn_fd: int, name: str, data: bytes) -> os.stat_result:
+    """Write one private staging file without flushing it yet.
+
+    Not durable until ``_flush_stage`` runs; callers must flush every staged
+    name before linking any of them into a published directory.
+    """
     global WRITE_BYTES, write_bytes
 
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
@@ -401,7 +412,6 @@ def _stage_file(txn_fd: int, name: str, data: bytes) -> os.stat_result:
     fd = os.open(name, flags, 0o600, dir_fd=txn_fd)
     try:
         _write_all(fd, data)
-        os.fsync(fd)
     finally:
         os.close(fd)
 
@@ -413,6 +423,32 @@ def _stage_file(txn_fd: int, name: str, data: bytes) -> os.stat_result:
     WRITE_BYTES += len(data)
     write_bytes = WRITE_BYTES
     return st
+
+
+def _flush_stage(
+    txn_fd: int, name: str, length: int, created: List[int]
+) -> None:
+    """Flush exactly the staging inode this transaction created.
+
+    The full creation identity (dev, ino, mode, size, mtime, ctime, nlink) is
+    re-checked before the flush and again after it, so a same-inode in-place
+    rewrite, a name replacement or a size change is refused instead of flushed.
+    One descriptor is held at a time; no per-chunk transaction check is issued.
+    """
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    fd = os.open(name, flags, dir_fd=txn_fd)
+    try:
+        before = os.fstat(fd)
+        if not _is_regular(before):
+            raise SnapshotError("staged file is not a regular file: %s" % name)
+        if _identity(before) != created or before.st_size != length:
+            raise SnapshotError("staged file identity changed: %s" % name)
+        os.fsync(fd)
+        if _identity(os.fstat(fd)) != created:
+            raise SnapshotError("staged file changed while flushing: %s" % name)
+    finally:
+        os.close(fd)
 
 
 def _unlink_if_owned(
@@ -625,7 +661,7 @@ def snapshot(
 
         whole = hashlib.sha256()
         chunks: List[Dict[str, object]] = []
-        new_order: List[Tuple[str, int, str, int, int]] = []
+        new_order: List[Tuple[str, int, str, List[int]]] = []
         new_chunk_bytes = 0
         verified_existing: Dict[str, int] = {}
         staged_chunks: Dict[str, Tuple[str, int, int, int]] = {}
@@ -653,7 +689,7 @@ def snapshot(
                     except FileNotFoundError:
                         stage_name = "chunk-" + chunk_sha
                         staged_names.add(stage_name)
-                        st = _stage_file(txn_fd, stage_name, data)
+                        st = _stage_bytes(txn_fd, stage_name, data)
                         staged_chunks[chunk_sha] = (
                             stage_name,
                             length,
@@ -661,13 +697,19 @@ def snapshot(
                             st.st_ino,
                         )
                         new_order.append(
-                            (chunk_sha, length, stage_name, st.st_dev, st.st_ino)
+                            (chunk_sha, length, stage_name, _identity(st))
                         )
                         new_chunk_bytes += length
                     else:
                         verified_existing[chunk_sha] = length
 
             offset += length
+
+        # Flush every staged chunk before any of them is linked, so the existing
+        # rule "a published chunk is already durable" still holds.  This sits
+        # between the same two transaction checks as before (no per-chunk scan).
+        for chunk_sha, length, stage_name, stage_identity in new_order:
+            _flush_stage(txn_fd, stage_name, length, stage_identity)
 
         check()
 
@@ -695,7 +737,11 @@ def snapshot(
 
         # Publish chunks first, using no-clobber hard links from the private
         # staging directory.  A pre-existing final name is never replaced.
-        for chunk_sha, length, stage_name, stage_dev, stage_ino in new_order:
+        for chunk_sha, length, stage_name, stage_identity in new_order:
+            stage_dev, stage_ino = stage_identity[0], stage_identity[1]
+            staged = os.stat(stage_name, dir_fd=txn_fd, follow_symlinks=False)
+            if _identity(staged) != stage_identity:
+                raise SnapshotError("staged chunk changed before publish: %s" % stage_name)
             try:
                 os.link(
                     stage_name,

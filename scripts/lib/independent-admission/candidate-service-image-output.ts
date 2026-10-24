@@ -10,6 +10,7 @@ import {derivedSourceView,assertDerivedSourceCurrent} from './source-context';
 import {isCandidateServiceImageGitHubOrigin} from './github-origin';
 import {readCandidateServiceRelationship} from './qlever-sdk-service-relationship';
 import {observeCandidateServiceRootMutation} from './candidate-service-root-mutation';
+import {captureLegalFileIdentity,assertLegalFileIdentity,type LegalFileIdentity} from './legal-file-custody';
 const require=createRequire(import.meta.url),{parseTar}=require('../../workspace-package-payload.cjs');
 const sha=(raw:Buffer)=>createHash('sha256').update(raw).digest('hex');
 const MAX=4*1024**2,TAR=256*1024,MANIFEST=128*1024;
@@ -65,11 +66,32 @@ export function observeCandidateServiceImageOutput(input:{originals:unknown;sour
  if(!EXECUTED_PATHS.every(path=>source.trackedPaths.includes(path)))return undefined;
  const mutation=observeCandidateServiceRootMutation(input);
  const guard=()=>{need(nativeOriginalsView(input.originals)===view&&derivedSourceView(input.source)===source&&isCandidateServiceImageGitHubOrigin(view.origin),'private original/source handle changed');assertCollectedNativeOriginalCustody(input.originals);assertDerivedSourceCurrent(input.source);mutation.assertCurrent();};
+ // Hot path: the full stage/master/root-manifest/copy structural validation runs
+ // exactly ONCE per private observation. Every later nested getter re-proves
+ // live custody instead (retained archive/descriptor lifetime, source HEAD and
+ // cleanliness, relationship seal, and captured runtime-helper file identities),
+ // so an actual change still refuses. Cached manifest bytes are returned only as
+ // defensive copies and are never serialized as authority.
+ let validated:{readonly facts:any;readonly reference:Readonly<{path:string;bytes:number;sha256:string}>;readonly manifest:Buffer}|undefined;
+ let helperIdentities:readonly LegalFileIdentity[]|undefined;
+ const liveCustody=()=>{
+  need(nativeOriginalsView(input.originals)===view&&derivedSourceView(input.source)===source&&isCandidateServiceImageGitHubOrigin(view.origin),'private original/source handle changed');
+  assertCollectedNativeOriginalCustody(input.originals);
+  assertDerivedSourceCurrent(input.source);
+  // The relationship read re-proves the native lifetime/descriptor custody and
+  // the exact master seal without re-walking the unchanged structural graph.
+  readCandidateServiceRelationship(input.originals);
+  for(const identity of helperIdentities!)assertLegalFileIdentity(identity);
+ };
  const inspect=()=>{
+  if(validated){liveCustody();return {facts:validated.facts,reference:validated.reference,manifest:Buffer.from(validated.manifest)};}
   guard();for(const path of EXECUTED_PATHS)need(source.readTracked(path).equals(readFileSync(resolve(SOURCE_ROOT,path))),'immutable image observer/producer/parser executable source differs');
+  const identities=EXECUTED_PATHS.map(path=>captureLegalFileIdentity(resolve(SOURCE_ROOT,path)));
   const relation=readCandidateServiceRelationship(input.originals),jobs=view.metadataOriginals.filter(row=>/^jobs(?:-page-\d+)?\.original\.json$/u.test(row.name)).flatMap(row=>JSON.parse(row.data.toString()).jobs??[]),selected=jobs.filter((row:any)=>row.id===view.originFacts.producerJobId);need(selected.length===1,'unique actual same service job');
   const read=(ref:any,maximum:number)=>{need(ref&&Number.isSafeInteger(ref.bytes)&&ref.bytes>=0&&ref.bytes<=maximum&&typeof ref.path==='string','bounded actual output ref');const rows=view.members.filter(row=>row.path===ref.path);need(rows.length===1&&rows[0]!.bytes===ref.bytes&&rows[0]!.sha256===ref.sha256,'output reference outside actual retained closed set');const raw=view.readOriginal(ref.path,maximum);need(raw.length===ref.bytes&&sha(raw)===ref.sha256,'actual output original bytes drift');return raw;};
-  const facts=inspectCandidateServiceImageOutput({master:relation.master,read,candidateVersion:mutation.facts.candidateVersion,job:selected[0]});const reference=relation.master.sourceOriginals.serviceRootManifest;const manifest=read(reference,MANIFEST);guard();return {facts,reference:Object.freeze({path:reference.path as string,bytes:reference.bytes as number,sha256:reference.sha256 as string}),manifest};
+  const facts=inspectCandidateServiceImageOutput({master:relation.master,read,candidateVersion:mutation.facts.candidateVersion,job:selected[0]});const reference=relation.master.sourceOriginals.serviceRootManifest;const manifest=read(reference,MANIFEST);guard();
+  helperIdentities=Object.freeze(identities);validated=Object.freeze({facts,reference:Object.freeze({path:reference.path as string,bytes:reference.bytes as number,sha256:reference.sha256 as string}),manifest:Buffer.from(manifest)});
+  return {facts:validated.facts,reference:validated.reference,manifest:Buffer.from(validated.manifest)};
  };
  const initial=inspect(),facts=initial.facts;return Object.freeze({facts,pending:Object.freeze(['candidate-service-pack-manifest-transformation-unverified','candidate-service-whole-source-closure-unverified','candidate-service-runtime-abi-unverified','candidate-service-legal-coverage-unverified']),wholeServiceSourceVerified:false as const,serviceAbiVerified:false as const,assertCurrent(){need(isDeepStrictEqual(inspect().facts,facts),'actual image output observation changed');},readManifestOriginal(){const current=inspect();need(isDeepStrictEqual(current.facts,facts)&&isDeepStrictEqual(current.reference,initial.reference)&&current.manifest.equals(initial.manifest),'actual image manifest original changed');return Object.freeze({reference:current.reference,bytes:Buffer.from(current.manifest)});}});
 }

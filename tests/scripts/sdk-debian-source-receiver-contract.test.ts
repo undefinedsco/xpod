@@ -216,7 +216,7 @@ it('actual acquisition output satisfies receiver source schema; unrooted refs an
       originals.set(oldName,originals.get(row.path)!);row.path=oldName;
     }
     const invalidGroup=observe(oldGroup);
-    expect(invalidGroup.pending).toContain('QLever SDK source: Debian original group/reference set differs');
+    expect(invalidGroup.pending).toContain('Debian source archive mechanics: Debian original group/reference set differs');
     expect(invalidGroup.facts.debianDscAndAllSourceArchiveBytesVerified).not.toBe(true);
   } finally {fixture.view=undefined;rmSync(temporary,{recursive:true,force:true});}
 });

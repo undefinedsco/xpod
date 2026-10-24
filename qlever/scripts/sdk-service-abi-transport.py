@@ -155,20 +155,38 @@ class SmokeSession:
 
 class SmokeProcess:
     """The existing smoke's text-pipe interface, backed by one finite session."""
-    def __init__(self, argv, *, expected_abi=None, **limits):
+    def __init__(self, argv, *, expected_abi=None, pre_shutdown_hook=None, **limits):
         if expected_abi is not None and (type(expected_abi) is not dict or set(expected_abi)!=
             {'abiVersion','adapterAbiVersion','physicalBackendAbiVersion'} or
             any(type(value) is not int or value<1 for value in expected_abi.values())):
             raise ValueError('exact source-derived ABI declarations required')
+        if pre_shutdown_hook is not None and not callable(pre_shutdown_hook):
+            raise ValueError('actual synchronous pre-shutdown hook required')
         self.session=SmokeSession(argv,**limits)
         self.stdin=self
         self.stdout=self
         self.expected_abi=dict(expected_abi) if expected_abi is not None else None
         self.ready_checked=False
+        self.pre_shutdown_hook=pre_shutdown_hook
+        self.pre_shutdown_done=False
 
     def write(self, text):
         if not isinstance(text,str):raise TypeError('text protocol input required')
-        self.session.write(text.encode('utf-8'))
+        raw=text.encode('utf-8')
+        # The existing exact shutdown JSON is the single deterministic point
+        # after all queries and before the process can exit. The hook runs
+        # synchronously on this thread; its failure prevents shutdown bytes.
+        if self.pre_shutdown_hook is not None and not self.pre_shutdown_done:
+            try:
+                value=json.loads(raw)
+            except (TypeError,ValueError):
+                value=None
+            if isinstance(value,dict) and value.get('type')=='shutdown':
+                self.session.check()
+                self.pre_shutdown_hook()
+                self.session.check()
+                self.pre_shutdown_done=True
+        self.session.write(raw)
         return len(text)
 
     def flush(self):

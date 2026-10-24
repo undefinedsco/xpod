@@ -22,6 +22,8 @@ import {createHash} from 'node:crypto';
 import vm from 'node:vm';
 import ts from 'typescript';
 import f6Groups from '../fixtures/independent-admission/f6-published-sdk-slice.original.json';
+/** Immutable PUBLISHED SDK823 baseline (64/79/156 = 299, API27, helpers 29/39/32). */
+import sdk823Groups from '../fixtures/independent-admission/sdk-823-published-slice.original.json';
 import {
   CONSUMER_SOURCE_GROUPS as consumer,
   CI_CONSUMER_SOURCE_GROUPS as ci,
@@ -80,20 +82,35 @@ function recipes(file: string, name: string): unknown[] {
 
 const families = {sdk, consumer, ci, api} as const;
 
-test('all published f6 whole histories are preserved byte-for-byte', () => {
+test('immutable f6 baseline proves the 63/78/154/27 published prefixes', () => {
+  // RESTORED committed fixture: exact f6 anchors (04f2d692…). Never rewritten.
+  expect((f6Groups as any).base).toBe('f6f070a95684c09c6ca92dd116101080a0c45561');
+  expect([f6Groups.sdk.length, f6Groups.consumer.length, f6Groups.ci.length, f6Groups.api.length])
+    .toEqual([63, 78, 154, 27]);
   for (const [name, groups] of Object.entries(families)) {
     const published = (f6Groups as any)[name] as unknown[];
-    expect(groups.length >= published.length).toBe(true);
     expect(groups.slice(0, published.length).map(hashValue)).toEqual(published);
   }
-  // The slice appends exactly: +1 SDK, +1 consumer, +2 CI (two selector variants), +0 API.
-  expect([sdk.length, consumer.length, ci.length, api.length]).toEqual([64, 79, 156, 27]);
+});
+
+test('the accepted SDK823 baseline proves all 299 published whole histories', () => {
+  // Separate self-contained PUBLISHED-SDK823 anchor (64/79/156 = 299 + API27).
+  expect((sdk823Groups as any).base).toBe('82385bee4c6167988a50e1225eb95dc287e61fe3');
+  expect([sdk823Groups.sdk.length, sdk823Groups.consumer.length, sdk823Groups.ci.length,
+    sdk823Groups.api.length]).toEqual([64, 79, 156, 27]);
+  expect(sdk823Groups.sdk.length + sdk823Groups.consumer.length + sdk823Groups.ci.length).toBe(299);
+  for (const [name, groups] of Object.entries(families)) {
+    const published = (sdk823Groups as any)[name] as unknown[];
+    expect(groups.slice(0, published.length).map(hashValue)).toEqual(published);
+  }
+  // Only genuinely new, UNPUBLISHED current groups follow the 299 published ones.
+  expect([sdk.length, consumer.length, ci.length, api.length]).toEqual([65, 80, 158, 28]);
 });
 
 test('the appended groups bind the actual frozen body and real module bytes', () => {
-  expect(sha(read(BODY))).toBe('efd6578bf659e696033a9277e98c278e1c21dd7b7bbe967b60a6df02c3898095');
+  expect(sha(read(BODY))).toBe('972d2fd49a98ca7f19505ed01c8b387536419aec4508fbe5a46080e84c70bcdb');
   for (const [name, groups] of Object.entries(families)) {
-    const published = ((f6Groups as any)[name] as unknown[]).length;
+    const published = ((sdk823Groups as any)[name] as unknown[]).length;
     for (const group of groups.slice(published)) {
       for (const row of rows(group)) {
         if ((row as any).ref === 'run-head') continue; // binds the CI run's own bytes
@@ -108,7 +125,7 @@ test('the appended SDK recipe carries the published typed service contracts', ()
   const last = sdk.at(-1) as any;
   expect(last.candidateServiceRelationship).toBeDefined();
   expect(last.outerExecutor).toBeDefined();
-  expect(last.candidateServiceRelationship).toEqual((sdk.at(-2) as any).candidateServiceRelationship);
+  expect(last.candidateServiceRelationship?.workflowSha256).toBe(sha(read('.github/workflows/candidate.yml')));
   expect(last.outerExecutor).toEqual((sdk.at(-2) as any).outerExecutor);
 });
 
@@ -126,29 +143,40 @@ test('published f6 recipes resolve the immutable snapshot, never the rewritten l
   expect(appended.sha256).toBe(sha(read(`${LIB}/consumer-execution-current.json`)));
 });
 
-test('the live canonical binds every actual row and stays in the published 426 domain', () => {
-  expect(current.length).toBe(426);
-  expect(new Set(current.map((r) => r.path)).size).toBe(426);
-  for (const row of current) expect(sha(read(row.path))).toBe(row.sha256);
-  const body = current.find((r) => r.path === BODY)!;
-  expect(body.sha256).toBe('efd6578bf659e696033a9277e98c278e1c21dd7b7bbe967b60a6df02c3898095');
+test('the frozen published canonical keeps its exact 426 rows and accepted bytes', () => {
+  // The immutable published snapshot is the SDK-accepted canonical (25fe9f00…).
+  const snapshot = JSON.parse(read(`${LIB}/consumer-execution-sdk-accepted-snapshot.json`).toString('utf8'));
+  expect(snapshot.length).toBe(426);
+  expect(new Set(snapshot.map((r: any) => r.path)).size).toBe(426);
+  expect(sha(read(`${LIB}/consumer-execution-sdk-accepted-snapshot.json`)))
+    .toBe('25fe9f0000627600068d69093889f9100a57528d7331f549174231bfab5ff635');
 });
 
-test('helper tuples keep their published history and the append binds all real roles', () => {
+test('the live canonical binds every actual row of the final combined tree', () => {
+  expect(current.length).toBe(457);
+  expect(new Set(current.map((r) => r.path)).size).toBe(457);
+  for (const row of current) expect(sha(read(row.path))).toBe(row.sha256);
+  const body = current.find((r) => r.path === BODY)!;
+  expect(body.sha256).toBe('972d2fd49a98ca7f19505ed01c8b387536419aec4508fbe5a46080e84c70bcdb');
+  expect(current.find((r) => r.path === 'qlever/scripts/sdk-original-chunk-store.py')!.sha256)
+    .toBe('d53ea1e6c8e8a270c3290d095e800596b7afa42c6b5135153dbb42db0bf2e43e');
+});
+
+test('helper tuples keep their published 29/39/32 history and the appends bind all real roles', () => {
   const tables = [
-    ['qlever-sdk-generation.ts', 'REVIEWED_CONTROLLER_HELPER_GROUPS', 'controller', 29],
-    ['qlever-sdk-generation.ts', 'REVIEWED_OBSERVER_GROUPS', 'observer', 39],
-    ['qlever-sdk-fetchcontent.ts', 'REVIEWED_HELPER_GROUPS', 'fetch', 32],
+    ['qlever-sdk-generation.ts', 'REVIEWED_CONTROLLER_HELPER_GROUPS_NEXT', 'controller', 30],
+    ['qlever-sdk-generation.ts', 'REVIEWED_OBSERVER_GROUPS', 'observer', 40],
+    ['qlever-sdk-fetchcontent.ts', 'REVIEWED_HELPER_GROUPS_NEXT', 'fetch', 33],
   ] as const;
   for (const [file, name, family, count] of tables) {
     const groups = recipes(file, name);
     expect(groups).toHaveLength(count);
-    const published = (f6Groups as any).helpers[family] as unknown[];
+    const published = (sdk823Groups as any).helpers[family] as unknown[];
     expect(groups.slice(0, published.length).map(hashValue)).toEqual(published);
     const last = groups.at(-1)!;
     const entries = (Array.isArray(last) ? last : Object.entries(last as Record<string, string>)) as [string, string][];
-    // Declared caps: 32 versions max and 32 roles per tuple, unchanged.
-    expect(groups.length <= 40).toBe(true);
+    // Controller/fetch declarations allow 33 groups; observer history is separate.
+    expect(groups.length <= (family === 'observer' ? 40 : 33)).toBe(true);
     expect(entries.length <= 32).toBe(true);
     expect(new Set(entries.map(([role]) => role)).size).toBe(entries.length);
     for (const [role, expected] of entries) {
@@ -156,9 +184,9 @@ test('helper tuples keep their published history and the append binds all real r
       expect(sha(read(p))).toBe(expected);
     }
   }
-  // observers changed exactly once (the body role); controller/fetch never grew.
+  // One new observer tuple follows the 39 published SDK823 tuples.
   const observer = recipes('qlever-sdk-generation.ts', 'REVIEWED_OBSERVER_GROUPS');
-  expect(observer).toHaveLength(39);
+  expect(observer).toHaveLength(40);
 });
 
 test('every group still selects itself uniquely and refuses missing/mixed roles', () => {

@@ -8,7 +8,9 @@ import {resolve,join} from 'node:path';
 import {createHash} from 'node:crypto';
 import {execFileSync} from 'node:child_process';
 const origin={},facts:any={sourceSha:'a'.repeat(40),runHeadSha:'a'.repeat(40),runId:1,runAttempt:1,artifactId:1,workflowPath:'.github/workflows/publish-qlever-runtime-sdk.yml',target:'linux-x64'};
-mockModule('../../scripts/lib/independent-admission/github-origin',()=>({githubOriginFacts:(v:unknown)=>v===origin?facts:undefined,githubOriginOriginals:()=>[],isNativeGitHubOrigin:(v:unknown)=>v===origin,isCandidateServiceImageGitHubOrigin:()=>false,isQleverSdkGitHubOrigin:()=>true}));
+// This fixture issues an SDK origin, so it cannot grant native-runtime authority.
+const isCandidateServiceNativeRuntimeGitHubOrigin=()=>false;
+mockModule('../../scripts/lib/independent-admission/github-origin',()=>({githubOriginFacts:(v:unknown)=>v===origin?facts:undefined,githubOriginOriginals:()=>[],isNativeGitHubOrigin:(v:unknown)=>v===origin,isCandidateServiceImageGitHubOrigin:()=>false,isCandidateServiceNativeRuntimeGitHubOrigin,isQleverSdkGitHubOrigin:()=>true}));
 mockModule('../../scripts/acquire-independent-product-input',()=>({verifyAcquiredMetadata:()=>{}}));
 test('actual issued native view keeps its shared four-pass-plus-1MiB range ceiling',async()=>{
  const parent=resolve('.test-data/service-native-range-budget');mkdirSync(parent,{recursive:true});const root=mkdtempSync(join(parent,'actual-')),previous=process.env.TMPDIR;process.env.TMPDIR=root;

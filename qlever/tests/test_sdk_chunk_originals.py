@@ -234,6 +234,239 @@ class ChunkStoreTests(TemporaryTreeTests):
             self.assertEqual(yielded, parts[:len(yielded)])
 
 
+class BatchedStagingTests(TemporaryTreeTests):
+    """Durability/custody contract of batched chunk staging (behavioural only)."""
+
+    def _source(self, chunks):
+        payload = b''.join(hashlib.sha256(b'batched-chunk-%d' % i).digest() * 2048
+                           for i in range(chunks))[:chunks * store.CHUNK_SIZE]
+        source = self.root / ('source-%d.bin' % chunks)
+        source.write_bytes(payload)
+        return source, payload
+
+    def _snap(self, root, source, sequence, check=None):
+        fd = os.open(source, os.O_RDONLY)
+        try:
+            return store.snapshot(root, fd, sequence, store.Ledger(10_000_000),
+                                  check or (lambda: None))
+        finally:
+            os.close(fd)
+
+    def _clean(self, root, label):
+        self.assertFalse((root / 'manifests').is_dir() and any((root / 'manifests').iterdir()),
+                         '%s published a manifest' % label)
+        chunks = sorted((root / 'chunks').iterdir()) if (root / 'chunks').is_dir() else []
+        self.assertEqual(chunks, [], '%s left published chunks' % label)
+        self.assertEqual(txn_names(root), set(), '%s left a staging directory' % label)
+
+    def _traced(self, mutate=None):
+        """Tracing context: real os.open/fsync/link; ``mutate(name, n, dir_fd)``
+        runs just before the n-th staging fsync."""
+        state = {'names': {}, 'synced': set(), 'links': [], 'mutated': 0}
+        real_open, real_fsync, real_link = store.os.open, store.os.fsync, store.os.link
+
+        def tracked_open(path, flags, *args, **kwargs):
+            fd = real_open(path, flags, *args, **kwargs)
+            if isinstance(path, str) and path.startswith('chunk-'):
+                state['names'][fd] = (path, kwargs.get('dir_fd'))
+            else:
+                state['names'].pop(fd, None)
+            return fd
+
+        def tracked_fsync(fd):
+            entry = state['names'].get(fd)
+            if entry is not None:
+                if mutate is not None:
+                    state['mutated'] += 1
+                    mutate(entry[0], state['mutated'], entry[1])
+            result = real_fsync(fd)
+            if entry is not None:
+                state['synced'].add(entry[0])
+            return result
+
+        def tracked_link(src_name, dst_name, *args, **kwargs):
+            if isinstance(src_name, str) and src_name.startswith('chunk-'):
+                state['links'].append((src_name, src_name in state['synced']))
+            return real_link(src_name, dst_name, *args, **kwargs)
+
+        store.os.open, store.os.fsync, store.os.link = tracked_open, tracked_fsync, tracked_link
+        return state, (lambda: setattr(store.os, 'open', real_open) or
+                       setattr(store.os, 'fsync', real_fsync) or
+                       setattr(store.os, 'link', real_link))
+
+    def test_check_callback_count_is_bounded_constant(self):
+        root = self.root / 'root'; root.mkdir()
+        source, payload = self._source(128)
+        calls = [0]
+
+        def count():
+            calls[0] += 1
+
+        result = self._snap(root, source, 0, count)
+        manifest = store.read_manifest(root, result)
+        self.assertEqual(len(manifest['chunks']), 128)
+        self.assertEqual(len({c['sha256'] for c in manifest['chunks']}), 128)
+        self.assertEqual(manifest['sha256'], hashlib.sha256(payload).hexdigest())
+        self.assertEqual(b''.join(store.blocks(root, result)), payload)
+        # Batching must not turn transaction checkpoints into per-chunk scans.
+        self.assertEqual(calls[0], 5)
+        calls[0] = 0
+        self._snap(root, source, 1, count)
+        self.assertEqual(calls[0], 5)
+
+    def test_expected_fsync_counts(self):
+        root = self.root / 'root'; root.mkdir()
+        source, _ = self._source(16)
+        real_fsync = store.os.fsync
+        seen = []
+        store.os.fsync = lambda fd: (seen.append(1), real_fsync(fd))[1]
+        try:
+            self._snap(root, source, 0); fresh = len(seen); del seen[:]
+            self._snap(root, source, 1); existing = len(seen)
+        finally:
+            store.os.fsync = real_fsync
+        self.assertEqual(fresh, 16 + 3)     # per new chunk + manifest + two dirs
+        self.assertEqual(existing, 3)       # no new chunk durability
+
+    def test_no_link_before_its_own_fsync(self):
+        root = self.root / 'root'; root.mkdir()
+        source, _ = self._source(8)
+        state, restore = self._traced()
+        try:
+            self._snap(root, source, 0)
+        finally:
+            restore()
+        self.assertTrue(state['links'])
+        self.assertEqual([n for n, synced_at_link in state['links'] if not synced_at_link], [])
+        self.assertEqual(len(state['synced']), 8)
+
+    def _fault(self, label, mutate, expect=store.SnapshotError):
+        root = self.root / ('root-' + label); root.mkdir()
+        source, _ = self._source(8)
+        state, restore = self._traced(mutate)
+        try:
+            with self.assertRaises(expect):
+                self._snap(root, source, 0)
+        finally:
+            restore()
+        self.assertGreaterEqual(state['mutated'], 2, '%s mutation never ran' % label)
+        self._clean(root, label)
+        return state
+
+    def test_same_inode_overwrite_before_flush_is_refused(self):
+        def overwrite(name, count, dir_fd):
+            if count != 3:
+                return
+            fd = os.open(name, os.O_WRONLY, dir_fd=dir_fd)
+            try:
+                os.write(fd, b'Z' * 4096)
+            finally:
+                os.close(fd)
+        self._fault('overwrite', overwrite, store.SnapshotError)
+
+    def test_replacement_symlink_and_size_change_are_refused(self):
+        def replace(name, count, dir_fd):
+            if count != 2:
+                return
+            os.unlink(name, dir_fd=dir_fd)
+            fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=dir_fd)
+            os.write(fd, b'R' * store.CHUNK_SIZE); os.close(fd)
+
+        def symlink(name, count, dir_fd):
+            if count != 2:
+                return
+            os.unlink(name, dir_fd=dir_fd)
+            os.symlink('/etc/passwd', name, dir_fd=dir_fd)
+
+        def truncate(name, count, dir_fd):
+            if count != 2:
+                return
+            fd = os.open(name, os.O_WRONLY, dir_fd=dir_fd)
+            try:
+                os.ftruncate(fd, 7)
+            finally:
+                os.close(fd)
+
+        for label, mutate in (('replace', replace), ('symlink', symlink), ('size', truncate)):
+            with self.subTest(label=label):
+                self._fault(label, mutate)
+
+    def test_fsync_or_link_failure_rolls_back(self):
+        for failing in ('fsync', 'link'):
+            with self.subTest(failing=failing):
+                root = self.root / ('root-' + failing); root.mkdir()
+                source, _ = self._source(8)
+                original = getattr(store.os, failing)
+                calls = [0]
+                failure = OSError(5, 'injected %s failure' % failing)
+
+                def broken(*args, **kwargs):
+                    calls[0] += 1
+                    if calls[0] == 4:
+                        raise failure
+                    return original(*args, **kwargs)
+
+                setattr(store.os, failing, broken)
+                ledger = store.Ledger(10_000_000)
+                try:
+                    fd = os.open(source, os.O_RDONLY)
+                    try:
+                        with self.assertRaises(OSError) as caught:
+                            store.snapshot(root, fd, 0, ledger)
+                        self.assertIs(caught.exception, failure)
+                    finally:
+                        os.close(fd)
+                finally:
+                    setattr(store.os, failing, original)
+                self._clean(root, failing)
+                self.assertEqual(ledger.retained_bytes, 0)
+                self.assertEqual(ledger.reserved_bytes, 0)
+
+    def test_interrupt_during_flush_propagates_and_rolls_back(self):
+        """Both a real SIGALRM and the outer check callback must abort the batch."""
+        import signal
+
+        class ObservationDeadline(TimeoutError):
+            pass
+
+        def alarm(signum, frame):
+            raise ObservationDeadline('actual owned child observation deadline')
+
+        def fire(name, count, dir_fd):
+            if count == 2:
+                signal.raise_signal(signal.SIGALRM)
+
+        root = self.root / 'root'; root.mkdir()
+        source, _ = self._source(8)
+        previous = signal.signal(signal.SIGALRM, alarm)
+        state, restore = self._traced(fire)
+        try:
+            with self.assertRaises(ObservationDeadline):
+                self._snap(root, source, 0)
+        finally:
+            signal.signal(signal.SIGALRM, previous)
+            restore()
+        self.assertGreaterEqual(state['mutated'], 2)
+        self._clean(root, 'sigalrm')
+
+        root = self.root / 'root-callback'; root.mkdir()
+        calls = [0]
+
+        def check():
+            calls[0] += 1
+            if calls[0] == 3:
+                raise TimeoutError('actual owned child observation deadline')
+
+        fd = os.open(source, os.O_RDONLY)
+        ledger = store.Ledger(10_000_000)
+        try:
+            with self.assertRaises(TimeoutError):
+                store.snapshot(root, fd, 0, ledger, check)
+        finally:
+            os.close(fd)
+        self._clean(root, 'callback')
+
+
 class RawReferenceTests(TemporaryTreeTests):
 
     def test_raw_maps_observations_share_physical_and_changed_hash_rejects(self):

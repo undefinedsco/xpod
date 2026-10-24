@@ -50,7 +50,10 @@ def observe(path,plan):
         if read_captures:
             seal=plan['sourceReferenceSeal'];sources.need(seal['collection']==plan['collection'] and seal['declaration']==collection['declarationSource']['file'] and seal['cache']==collection['cmakeCache'],'actual dependency read metadata seal differs');expected={key:dict(bytes=seal[key]['bytes'],sha256=seal[key]['sha256']) for key in ['prepared','collection','declaration','cache']}
             sources.need(observed==expected,'actual dependency read registration differs from private source originals')
-        declarations=shared.parse_fetchcontent_declarations(declaration.decode());dependencies=collection['dependencies'];sources.need([row['declaration'] for row in dependencies]==declarations,'complete actual declaration universe differs');results=[]
+        declarations=shared.parse_fetchcontent_declarations(declaration.decode());dependencies=collection['dependencies'];sources.need([row['declaration'] for row in dependencies]==declarations,'complete actual declaration universe differs');requested=plan.get('selectedOriginalPaths',[]);sources.need(isinstance(requested,list) and len(requested)<=LIMITS['sourceMembers'],'bounded selected original paths');requested_names=[]
+        for name in requested:
+            sources.need(isinstance(name,str) and name.startswith('/opt/qlever-sdk/dependencies/') and sources.bindings.canonical(name.removeprefix('/opt/qlever-sdk/dependencies/')) and name not in requested_names,'canonical unique absolute selected path');requested_names.append(name)
+        selected_budget={'bytes':0,'encoded':0};selected_rows=[];results=[]
         sources.need(collection.get('cmakeCachePath')=='/opt/qlever-sdk/dependencies/sources.cmake','fixed generated CMake cache path required');cache=small(collection['cmakeCache']);sources.need(cache.decode()==shared.fetchcontent_source_bindings(dependencies),'actual CMake cache projection differs');cache_selected=0
         for item in records:
             if item['path']==collection['cmakeCachePath']:
@@ -58,21 +61,45 @@ def observe(path,plan):
         for row in dependencies:
             check();sources.need(row['name']==row['declaration']['name'] and row['sourceRoot']=='/opt/qlever-sdk/dependencies/'+row['name'] and row['sourceOriginals']['kind']==row['declaration']['method'],'exact declared source identity')
             index=rooted_metadata_references(json.loads(small(row['sourceInventory'])));sources.need(isinstance(index.get('shards'),list) and len(index['shards'])<=LIMITS['sourceMaterialFiles'],'bounded physical shard set');physical=sources.physical_rows(index,(json.loads(small(ref)) for ref in index['shards']));original=rooted_metadata_references(json.loads(small(row['sourceOriginals']['file'])))
+            prefix=row['sourceRoot']+'/'
             for item in records:
-                prefix=row['sourceRoot']+'/'
                 if item['path'].startswith(prefix):
                     relative=item['path'][len(prefix):];expected=physical.get(relative);sources.need(expected and expected['kind']=='file' and all(item.get(key)==expected[key] for key in ('bytes','sha256','mode')),'actual selected shard file differs from prepared source');joined.add(item['path'])
                     if row['declaration']['method']=='git' and '.git' in relative.split('/'):
                         unresolved.append('qlever-sdk-FetchContent-selected-Git-metadata-source-unresolved:'+item['path'])
                         if item['captures']:origin_unresolved.add(item['path'])
+            local=[name[len(prefix):] for name in requested_names if name.startswith(prefix)]
             if row['declaration']['method']=='git':
                 sources.need(original.get('sourceRoot')==row['sourceRoot'],'actual Git source root differs')
-                result=sources.verify_git(original,row['declaration'],physical,small,member,check,index.get('emptyDirectories'))
-            else:result=sources.verify_url(original,row['declaration'],physical,member,check)
+                result=sources.verify_git(original,row['declaration'],physical,small,member,check,index.get('emptyDirectories'),selected_paths=local,_budget=selected_budget)
+            else:result=sources.verify_url(original,row['declaration'],physical,member,check,selected_paths=local,_budget=selected_budget)
+            prefix_abs=row['sourceRoot']+'/'
+            for selected in result.pop('selectedOriginals',[]):
+                absolute=prefix_abs+selected['path'];requested=absolute in requested_names
+                need_flag=selected.get('requested')
+                sources.need(requested==need_flag,'selected requested mapping differs')
+                if requested:
+                    item=next((record for record in records if record['path']==absolute),None);sources.need(item and item['bytes']==selected['bytes'] and item['sha256']==selected['sha256'] and item['mode']==selected['mode'],'selected original bytes differ from actual input record')
+                else:
+                    sources.need(sources.NOTICE.fullmatch(absolute.rsplit('/',1)[-1]),'automatic selected notice role required')
+                selected_rows.append(dict(selected,path=absolute,requested=requested))
             for link in result.get('unmaterializedGitlinks',[]):
                 unresolved.append('qlever-sdk-FetchContent-unmaterialized-Gitlink-source-unresolved:'+row['sourceRoot']+'/'+link['path']+'@'+link['commitOid'])
             results.append(dict(name=row['name'],method=row['declaration']['method'],**result))
-    sources.need(joined==selected_paths,'actual selected dependency universe incomplete');check();return dict(selectedInputs=sum(item['selected'] for item in records),selectedGeneratedCacheInputs=cache_selected,observedDependencyReadCaptures=read_captures,dependencySourceReadOriginsVerified=not origin_unresolved,kind='qlever-sdk-FetchContent-source-byte-mechanics',dependencies=results,declaredSourceByteClosureVerified=True,overallSourceAuthorityVerified=False,pending=unresolved)
+    sources.need(joined==selected_paths,'actual selected dependency universe incomplete')
+    if requested_names:
+        need_rows=selected_rows
+        sources.need(len({row['path'] for row in need_rows})==len(need_rows),'unique selected response paths required')
+        sources.need({row['path'] for row in need_rows if row.get('requested')}==set(requested_names),'exact requested selected originals required')
+        sources.need(all(row['path'] in requested_names for row in need_rows if row.get('requested')),'requested flag only on requested paths')
+        sources.need(all(not row.get('requested') for row in need_rows if row['path'] not in requested_names),'ancestor notices must be requested=false')
+        sources.need(selected_budget['bytes']<=LIMITS['metadataBytes'] and selected_budget['encoded']<=LIMITS['metadataBytes'],'cumulative selected result metadata bound')
+        sources.need(len(json.dumps(need_rows,separators=(',',':')).encode())<=LIMITS['metadataBytes'],'bounded serialized selected result')
+    check();result=dict(selectedInputs=sum(item['selected'] for item in records),selectedGeneratedCacheInputs=cache_selected,observedDependencyReadCaptures=read_captures,dependencySourceReadOriginsVerified=not origin_unresolved,kind='qlever-sdk-FetchContent-source-byte-mechanics',dependencies=results,declaredSourceByteClosureVerified=True,overallSourceAuthorityVerified=False,pending=unresolved)
+    if requested_names:
+        result['selectedOriginals']=selected_rows
+        sources.need(len(json.dumps(result,separators=(',',':')).encode())<=LIMITS['metadataBytes'],'complete selected response bound')
+    return result
 
 if __name__=='__main__':
     if len(sys.argv)!=2:raise SystemExit('Fixed retained SDK ZIP path required')

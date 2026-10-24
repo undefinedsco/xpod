@@ -2,8 +2,26 @@ const fs=require('node:fs'),cp=require('node:child_process'),crypto=require('nod
 const ts=require('typescript');
 // Extract the real private issuer function for a protocol fixture; this creates no exported issuer.
 const root=path.resolve(__dirname,'../..'),source=fs.readFileSync(path.join(root,'scripts/lib/independent-admission/source-context.ts'),'utf8');
-const ast=ts.createSourceFile('source-context.ts',source,ts.ScriptTarget.Latest,true);const node=ast.statements.find(n=>ts.isFunctionDeclaration(n)&&n.name.text==='deriveExactAdmissionSource');
-const fn=ts.transpileModule(node.getText(ast)+'\nexports.derive=deriveExactAdmissionSource',{compilerOptions:{target:ts.ScriptTarget.ES2021,module:ts.ModuleKind.CommonJS}}).outputText;
+const ast=ts.createSourceFile('source-context.ts',source,ts.ScriptTarget.Latest,true);
+const node=ast.statements.find(n=>ts.isFunctionDeclaration(n)&&n.name.text==='deriveExactAdmissionSource');
+// The real function now closes over the private `sourceBudget` helper and its
+// `sourceBudgets` WeakMap (source-context.ts:15-20). Extract those REAL
+// declarations alongside it instead of injecting a no-op budget stub, so the
+// harness exercises the production helper closure rather than a mirror.
+function realDecl(name){
+ const found=ast.statements.find(n=>ts.isFunctionDeclaration(n)&&n.name.text===name);
+ if(!found)throw Error('harness: real '+name+' declaration missing');
+ return found.getText(ast);
+}
+function realConst(name){
+ const found=ast.statements.find(n=>ts.isVariableStatement(n)&&n.declarationList.declarations.some(d=>d.name.getText(ast)===name));
+ if(!found)throw Error('harness: real '+name+' declaration missing');
+ return found.getText(ast);
+}
+// Every private module-level WeakMap the real function touches is itself a REAL
+// declaration extracted from the module, never a re-implemented mirror.
+const helpers=[realConst('sourceBudgets'),realDecl('sourceBudget'),realConst('bulkSources')].join('\n');
+const fn=ts.transpileModule(helpers+'\n'+node.getText(ast)+'\nexports.derive=deriveExactAdmissionSource',{compilerOptions:{target:ts.ScriptTarget.ES2021,module:ts.ModuleKind.CommonJS}}).outputText;
 const issued=new WeakMap(),currentChecks=new WeakMap();const exports0={};new Function('exports','realpathSync','execFileSync','createHash','issued','currentChecks','fail','sourceLimits',fn)(exports0,fs.realpathSync,cp.execFileSync,crypto.createHash,issued,currentChecks,m=>{throw Error(m)},{shardBytes:536870912});
 const checkout=process.env.SOURCE_BLOB_FIXTURE_REPO || root;
 // Source checkout must be clean: isolated exact commit Git worktree below.
