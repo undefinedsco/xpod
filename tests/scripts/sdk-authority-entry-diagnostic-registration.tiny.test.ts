@@ -6,7 +6,7 @@ import {CONSUMER_SOURCE_GROUPS as consumer,CI_CONSUMER_SOURCE_GROUPS as ci} from
 import current from '../../scripts/lib/independent-admission/consumer-execution-current.json';
 const sha=(value:unknown)=>createHash('sha256').update(JSON.stringify(value)).digest('hex');
 test('SDK30 authority entry diagnostics preserve every complete SDK29/API/controller original recipe',()=>{
- for(const[name,groups]of Object.entries({sdk,consumer,ci})){const old=before[name as keyof typeof before];expect(groups).toHaveLength(name==='api'?27:name==='sdk'?60:name==='ci'?150:76);for(let i=0;i<old.length;i++)expect(sha(groups[i])).toBe(old[i]);}
+ for(const[name,groups]of Object.entries({sdk,consumer,ci})){const old=before[name as keyof typeof before];expect(groups).toHaveLength(name==='api'?27:name==='sdk'?62:name==='ci'?152:77);for(let i=0;i<old.length;i++)expect(sha(groups[i])).toBe(old[i]);}
  expect(current).toHaveLength(426);for(const row of current)expect(createHash('sha256').update(fs.readFileSync(path.resolve(import.meta.dir,'../..',row.path))).digest('hex')).toBe(row.sha256);
  const last=sdk[sdk.length-1]!;for(const row of [...last.selectors,...last.sourceBindings])expect(createHash('sha256').update(fs.readFileSync(path.resolve(import.meta.dir,'../..',row.path))).digest('hex')).toBe(row.sha256);
 });

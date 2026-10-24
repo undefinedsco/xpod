@@ -13,7 +13,7 @@ test('sixteen declared complete groups only; observed original bound remains thi
 });
 
 test('thirty registered recipes fit capacity; a thirty-first rejects before extra reads',()=>{
- const groups=Array.from({length:30},(_,i)=>[['model.py',String(i)],['shared.py','b']]as const);
+ const groups=Array.from({length:31},(_,i)=>[['model.py',String(i)],['shared.py','b']]as const);
  const observed=new Map(groups[29]!);expect(plan(groups,names,observed)).toBe(groups[29]);expect(select(groups,observed)).toBe(groups[29]);
  const overflow=[...groups,[['model.py','30'],['shared.py','b']]as const];expect(()=>plan(overflow,names,observed)).toThrow();expect(()=>select(overflow,observed)).toThrow();
 });

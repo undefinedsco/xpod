@@ -59,6 +59,72 @@ CLONE3_THREAD_FLAGS=CLONE_VM|CLONE_FS|CLONE_FILES|CLONE_SIGHAND|CLONE_THREAD|CLO
 CLONE3_THREAD_REQUIRED_FIELDS=('child_tid','parent_tid','tls')
 CLONE3_ZERO_FIELDS=('pidfd','child_tid','parent_tid','tls','set_tid','set_tid_size','cgroup')
 
+# Single shared clone-shape policy used by BOTH the legacy clone(2) syscall branch
+# and the clone3 struct branch, with an explicit syscall-shape distinction so the
+# two paths cannot disagree about semantics while keeping clone3's struct-specific
+# field strictness.
+CLONE_PARENT=0x8000
+CLONE_CHILD_SETTID=0x1000000
+CLONE3_LEGACY_THREAD_REQUIRED=CLONE_VM|CLONE_FS|CLONE_FILES|CLONE_SIGHAND|CLONE_THREAD
+# Exact preexisting HEAD030 legacy clone(2) known mask, identical to the
+# bindings.inspect_shared_clone_flags contract: fork/vfork/thread ownership flags
+# plus CLONE_PARENT, CLONE_CHILD_SETTID and CLONE_CLEAR_SIGHAND.
+LEGACY_CLONE_KNOWN=(0xff|CLONE_VM|CLONE_VFORK|CLONE_FS|CLONE_FILES|CLONE_SIGHAND|
+                    CLONE_THREAD|CLONE_PARENT|CLONE_SYSVSEM|CLONE_SETTLS|
+                    CLONE_PARENT_SETTID|CLONE_CHILD_CLEARTID|CLONE_CHILD_SETTID|
+                    CLONE_CLEAR_SIGHAND)
+# clone3 keeps its own tighter masks: the struct branch never inherits the wider
+# legacy fork word. (The non-thread clone3 mask is CLONE_VFORK_FLAGS.)
+CLONE3_THREAD_ALLOWED=CLONE3_THREAD_FLAGS
+
+
+def classify_clone(flags, *, syscall='legacy'):
+    """Classify an actual clone(2)/clone3 flag word; raises on unknown/mixed shape.
+
+    syscall='legacy' accepts the exact HEAD030 clone(2) known mask (fork/vfork/
+    thread ownership flags incl. CLONE_PARENT, CLONE_CHILD_SETTID,
+    CLONE_CLEAR_SIGHAND); clone3 thread/non-thread masks stay as strict as before.
+    Returns a frozen-shape dict describing the only accepted shapes:
+      thread : CLONE_THREAD sharing VM/FS/FILES/SIGHAND
+      vfork  : CLONE_VM|CLONE_VFORK shared memory with a held parent
+      fork   : independent address space
+    """
+    if type(flags) is not int or flags < 0:
+        raise ValueError('clone flags must be a non-negative integer')
+    if syscall=='legacy':allowed=LEGACY_CLONE_KNOWN
+    elif syscall=='clone3':allowed=CLONE_VFORK_FLAGS
+    elif syscall=='clone3-thread':allowed=CLONE3_THREAD_ALLOWED
+    else:raise ValueError('unknown clone syscall shape')
+    thread = bool(flags & CLONE_THREAD)
+    # Thread mode must not carry any exit-signal byte.
+    if thread and flags & 0xff:
+        raise ValueError('clone thread mode must not carry an exit signal')
+    if flags & ~allowed:
+        raise ValueError('unknown clone flags refused' if syscall=='legacy' else 'unsupported clone3 flags')
+    shared_vm = bool(flags & CLONE_VM)
+    vfork = bool(flags & CLONE_VFORK)
+    if thread:
+        if vfork:
+            raise ValueError('clone thread mode may not request vfork')
+        if flags & CLONE3_LEGACY_THREAD_REQUIRED != CLONE3_LEGACY_THREAD_REQUIRED:
+            raise ValueError('clone thread mode requires shared VM/FS/FILES/SIGHAND')
+        return dict(thread=True,vfork=False,sharedVm=True,sharedFdTable=True,
+                    sharedSignalHandlers=True,exitSignal=0)
+    if vfork:
+        if not shared_vm:
+            raise ValueError('CLONE_VFORK requires CLONE_VM')
+        if flags & CLONE_FILES:
+            raise ValueError('vfork may not share the FD table')
+        return dict(thread=False,vfork=True,sharedVm=True,sharedFdTable=False,
+                    sharedSignalHandlers=bool(flags & CLONE_SIGHAND),exitSignal=None)
+    if flags & CLONE_FILES:
+        raise ValueError('shared FD table requires clone thread mode')
+    if shared_vm:
+        raise ValueError('CLONE_VM requires CLONE_VFORK or CLONE_THREAD')
+    return dict(thread=False,vfork=False,sharedVm=False,sharedFdTable=False,
+                sharedSignalHandlers=bool(flags & CLONE_SIGHAND),exitSignal=None)
+
+
 def parse_clone3_original(data,size):
  if type(data) is not bytes:raise ValueError('clone3 args must be actual bytes')
  if type(size) is not int or size not in CLONE3_SIZES:raise ValueError('unsupported clone3 args size')
@@ -72,12 +138,8 @@ def parse_clone3_original(data,size):
   # Ordinary pthread thread creation: thread group plus shared address space,
   # FD table, signal handlers and semaphore undo; exit_signal is zero and the
   # TLS/TID words are real userspace pointers supplied by the library.
-  if flags&~CLONE3_THREAD_FLAGS:raise ValueError('unsupported clone3 thread flags')
-  if flags&CLONE_VFORK:raise ValueError('clone3 thread mode may not request vfork')
-  # A thread is defined by a shared address space; CLONE_THREAD without CLONE_VM
-  # is not a thread and must not be accepted as one.
-  for required in (CLONE_VM,CLONE_FS,CLONE_FILES,CLONE_SIGHAND):
-   if not flags&required:raise ValueError('clone3 thread mode requires shared VM/FS/FILES/SIGHAND')
+  shape=classify_clone(flags,syscall='clone3-thread')
+  if not shape['thread']:raise ValueError('clone3 thread mode requires CLONE_THREAD')
   if values['exit_signal']!=0:raise ValueError('clone3 thread exit signal must be zero')
   # set_tid/cgroup are kernel-extension words: no thread may request them.
   for name in ('set_tid','set_tid_size','cgroup'):
@@ -93,9 +155,9 @@ def parse_clone3_original(data,size):
   if not stack or not stack_size:raise ValueError('CLONE_VM requires stack and stack size')
   if stack+stack_size>=2**64:raise ValueError('clone3 stack range overflows')
   return dict(flags=flags,exitSignal=values['exit_signal'],stack=stack,stackSize=stack_size,size=size,thread=True,tgidShared=True,sharedFdTable=True,sharedSignalHandlers=True)
- if flags&~CLONE_VFORK_FLAGS:raise ValueError('unsupported clone3 flags')
- has_vm=bool(flags&CLONE_VM)
- has_vfork=bool(flags&CLONE_VFORK)
+ shape=classify_clone(flags,syscall='clone3')
+ has_vm=shape['sharedVm']
+ has_vfork=shape['vfork']
  if has_vm!=has_vfork:raise ValueError('CLONE_VM and CLONE_VFORK must be used together')
  if values['exit_signal']!=17:raise ValueError('clone3 exit signal must be SIGCHLD')
  if any(values[name] for name in CLONE3_ZERO_FIELDS):raise ValueError('unsupported nonzero clone3 field')

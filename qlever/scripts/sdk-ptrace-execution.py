@@ -462,6 +462,13 @@ class Observer:
         if hasattr(self,'waiter') and self.waiter.active:self.waiter.check()
         assert not self.pump_errors,'actual bounded stdio failed: '+str(self.pump_errors);assert time.monotonic()<self.deadline,'all-stop observer deadline'
         if self.lifetime_leases is not None:self.instrument('lifetime_lease_check',self.lifetime_leases.check)
+    def check_deadline(self):
+        """Per-iteration fast refusal: deadline/stdio/budget only, no lease sweep.
+
+        The full lease validation is bracketed around each read-only body, so a
+        transient loss inside the body is still caught before the result escapes.
+        """
+        assert not self.pump_errors,'actual bounded stdio failed: '+str(self.pump_errors);assert time.monotonic()<self.deadline,'all-stop observer deadline'
     def actual_tgid(self,pid):
         with open('/proc/'+str(pid)+'/status','rb') as source:data=source.read(65537)
         assert len(data)<=65536,'bounded actual task status'
@@ -472,36 +479,48 @@ class Observer:
         return self.instrument('verify_task_ownership',self.verify_task_ownership_original,terminal_peers)
     def verify_task_ownership_original(self,terminal_peers=()):
         excluded=set(terminal_peers);live={pid:row for pid,row in self.tasks.items() if not row['exited']and pid not in excluded};groups={};tables={};ownership=[]
-        for pid,row in sorted(live.items()):
-            self.check();tgid=self.actual_tgid(pid);assert tgid==row['tgid'],'actual TGID differs from kernel clone binding';groups.setdefault(tgid,[]).append(pid)
-            descriptors=[]
-            for value in self.bounded_fd_slots(pid):
-                self.check();fd=int(value);item=os.stat('/proc/'+str(pid)+'/fd/'+value);descriptors.append([fd,probe.identity(item),descriptor_flags(pid,fd),descriptor_position(pid,fd)])
-            table=row['fdTable'];prior=tables.setdefault(table,descriptors);assert prior==descriptors,'CLONE_FILES table differs between stopped owners'
-            ownership.append(dict(tid=pid,tgid=tgid,fdTable=table))
+        self.check()
+        try:
+            for pid,row in sorted(live.items()):
+                self.check_deadline();tgid=self.actual_tgid(pid);assert tgid==row['tgid'],'actual TGID differs from kernel clone binding';groups.setdefault(tgid,[]).append(pid)
+                descriptors=[]
+                for value in self.bounded_fd_slots(pid):
+                    self.check_deadline();fd=int(value);item=os.stat('/proc/'+str(pid)+'/fd/'+value);descriptors.append([fd,probe.identity(item),descriptor_flags(pid,fd),descriptor_position(pid,fd)])
+                table=row['fdTable'];prior=tables.setdefault(table,descriptors);assert prior==descriptors,'CLONE_FILES table differs between stopped owners'
+                ownership.append(dict(tid=pid,tgid=tgid,fdTable=table))
+        finally:
+            self.check()
         for tgid,tids in groups.items():assert sorted(int(value) for value in os.listdir('/proc/'+str(tgid)+'/task'))==sorted(tids+[pid for pid in excluded if self.tasks[pid]['tgid']==tgid]),'unregistered or missing actual TGID task'
         return ownership
     def bounded_fd_slots(self,pid):
         values=[]
-        with os.scandir('/proc/'+str(pid)+'/fd') as entries:
-            for entry in entries:
-                self.check();assert len(values)<1024,'actual FD table slots unsupported above 1024'
-                values.append(entry.name)
+        self.check()
+        try:
+            with os.scandir('/proc/'+str(pid)+'/fd') as entries:
+                for entry in entries:
+                    self.check_deadline();assert len(values)<1024,'actual FD table slots unsupported above 1024'
+                    values.append(entry.name)
+        finally:
+            self.check()
         return sorted(values,key=int)
     def writable_aliases(self,identity,target_pid=None,target_fd=None):
         result={}
-        for pid,row in sorted(self.tasks.items()):
-            if row['exited']:continue
-            for value in self.bounded_fd_slots(pid):
-                self.check();fd=int(value);item=os.stat('/proc/'+str(pid)+'/fd/'+value)
-                if (item.st_dev,item.st_ino)!=tuple(identity[:2]):continue
-                flags=descriptor_flags(pid,fd)
-                if flags&os.O_ACCMODE==os.O_RDONLY:continue
-                table=row['fdTable'] if self.shared_tasks else pid;key=(table,fd)
-                assert key in result or len(result)<64,'writable alias keys unsupported above 64'
-                actual=dict(pid=pid,fd=fd,flags=flags,accessMode=flags&os.O_ACCMODE)
-                if pid==target_pid and fd==target_fd:result[key]=actual
-                else:result.setdefault(key,actual)
+        self.check()
+        try:
+            for pid,row in sorted(self.tasks.items()):
+                if row['exited']:continue
+                for value in self.bounded_fd_slots(pid):
+                    self.check_deadline();fd=int(value);item=os.stat('/proc/'+str(pid)+'/fd/'+value)
+                    if (item.st_dev,item.st_ino)!=tuple(identity[:2]):continue
+                    flags=descriptor_flags(pid,fd)
+                    if flags&os.O_ACCMODE==os.O_RDONLY:continue
+                    table=row['fdTable'] if self.shared_tasks else pid;key=(table,fd)
+                    assert key in result or len(result)<64,'writable alias keys unsupported above 64'
+                    actual=dict(pid=pid,fd=fd,flags=flags,accessMode=flags&os.O_ACCMODE)
+                    if pid==target_pid and fd==target_fd:result[key]=actual
+                    else:result.setdefault(key,actual)
+        finally:
+            self.check()
         return list(result.values())
     def barrier(self):
         return self.instrument('barrier',self.barrier_original)
@@ -1936,7 +1955,13 @@ class Observer:
                 return
             if nr in [policy['clone'],policy['clone3']]:
                 flags=args[0] if nr==policy['clone'] else single.trace(2,pid,args[0])&((1<<64)-1)
-                if self.capture_toolchain:assert not flags&0x400 and (not flags&0x100 or flags&0x4000),'executable memory policy requires independent FD tables and kernel-held vfork for shared VM before clone resume'
+                # The executable-memory clone-shape policy applies only to the
+                # toolchain-capture path; the generic observer path keeps its
+                # original behaviour (shared-task flag checks only, below).
+                if self.capture_toolchain:
+                    shape=memory_policy.classify_clone(flags)
+                    if not shape['thread'] and not shape['vfork']:
+                        assert not flags&0x400,'executable memory policy requires independent FD tables for a non-thread clone'
                 task['observedCloneFlags']=flags
                 if self.shared_tasks:bindings.inspect_shared_clone_flags(flags);task['cloneFlags']=flags
                 elif flags&(0x10000|0x400):self.reject_shared_clone(pid,record,flags)

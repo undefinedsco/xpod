@@ -489,7 +489,7 @@
   },
   {
     "path": "qlever/scripts/sdk-ptrace-execution.py",
-    "sha256": "6fbae64d24181f2e048a45da5fb6e830f134d2dbbe1d17953fbdf24252ccc25e"
+    "sha256": "7b462ee02f2a0b5d49522a571cc52b10b3c570a6190395b4c98b9347f6dc702b"
   },
   {
     "path": "qlever/scripts/sdk-ptrace-kernel.py",
@@ -1205,11 +1205,11 @@
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-fetchcontent.ts",
-    "sha256": "43dcde939673672a64e1bfd187b3bb390f0ec6b0e2a80e868c61f5d37604c38e"
+    "sha256": "40b215718a1db02d124e9d9f1215602ff2e8cd4c331e5653a3cb6a6a65553e70"
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-generation.ts",
-    "sha256": "b56859d9d1d69a6b4afd77ba203b1f885cf927d4b852b7f0bac5a47a931e9fcf"
+    "sha256": "7c973bcacafb7a98f46483ef185a726806cb4341cc146bc7e04633e3394038e1"
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-inputs.ts",
@@ -1217,11 +1217,11 @@
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-observed-tools.ts",
-    "sha256": "7af6e872b5dfee94db15517a35218beeff92a3d3e7711aa527e312d487b68f5b"
+    "sha256": "659c0b5d14d864d064a7896cc250d609e57934691d5bff8eb45cacfb08d24740"
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-origin-policy.ts",
-    "sha256": "5e4a7beacbb59cdc0c82b05a08a7582cb7a41fc4dc2655a25434d094e4783c73"
+    "sha256": "6a4e0c4362014081a5c9309638abcad5629df88fab1cb258ab8a1bcdc6527b31"
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-originals.ts",
@@ -1293,7 +1293,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/sdk-controller-helper-groups.ts",
-    "sha256": "d861983ac407b613b996403c2724afa2d77d0ac0857998c7512eb286da4d953c"
+    "sha256": "908d48aa8cf4841ebe1dac48dece91cd2012c6284c382e8a9169ac792f5080b4"
   },
   {
     "path": "scripts/lib/independent-admission/service-pack-copied-payload.ts",
@@ -1701,6 +1701,6 @@
   },
   {
     "path": "qlever/scripts/sdk-executable-memory-policy.py",
-    "sha256": "2e29f1a6568cefb1582ee84d24e1098ac153f04ccdd4a0646e522ee9571c55df"
+    "sha256": "2b0e64d55c28ab995d2385f4b4a0852c838d029b3111c813fb7fd837d95a2f9c"
   }
 ]
