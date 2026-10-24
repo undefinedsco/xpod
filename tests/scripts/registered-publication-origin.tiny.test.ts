@@ -55,7 +55,7 @@ test('caller/reusable/child/helper originals are exact, no mixed whole group',as
 });
 
 test('fixed preinstall reusable workflow selects a separate exact group and retains old metadata scope',async()=>{
- expect(CI_CONSUMER_SOURCE_GROUPS).toHaveLength(144);
+ expect(CI_CONSUMER_SOURCE_GROUPS).toHaveLength(146);
  expect(githubOriginFacts(await scenario('prepublish'))?.workflowPath).toBe('.github/workflows/ci.yml');
  expect(githubOriginFacts(await scenario('prepublish',{legacyWorkflow:true}))?.workflowPath).toBe('.github/workflows/ci.yml');
  const actualOrigin=createHash('sha256').update(fs.readFileSync(path.join(root,'scripts/lib/independent-admission/github-origin.ts'))).digest('hex');

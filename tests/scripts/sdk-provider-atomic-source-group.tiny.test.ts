@@ -9,7 +9,7 @@ import {selectGitHubSourceBindingGroup,secondaryGitHubSourceBindingSelectors,sou
 const root=path.resolve(import.meta.dir,'../..');
 const tuple=(group:(typeof QLEVER_SDK_EXECUTION_GROUPS)[number])=>new Map([...group.selectors,...(group.secondarySelectors??[])].map(row=>[sourceBindingKey(row),row.sha256]));
 test('all twenty-two SDK whole recipes select uniquely and current runtime imports match actual bytes',()=>{
- expect(QLEVER_SDK_EXECUTION_GROUPS).toHaveLength(57);
+ expect(QLEVER_SDK_EXECUTION_GROUPS).toHaveLength(58);
  for(const group of QLEVER_SDK_EXECUTION_GROUPS)expect(selectGitHubSourceBindingGroup(QLEVER_SDK_EXECUTION_GROUPS,completeObserved(QLEVER_SDK_EXECUTION_GROUPS,group))).toBe(group);
  const current=QLEVER_SDK_EXECUTION_GROUPS.at(-1)!;
  for(const row of [...current.selectors,...current.sourceBindings])expect(createHash('sha256').update(fs.readFileSync(path.join(root,row.path))).digest('hex')).toBe(row.sha256);

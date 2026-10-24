@@ -1251,7 +1251,10 @@ class Observer:
                 held=None
                 if required:self.tool_unresolved(pid,'toolchain-lifetime-lease-unavailable',role='mapping',parentCaptureSequence=parent,actualPath=mapping['path'][:4096],identity=identity,scope='initial exec image backing VMA has no earlier matching pre-use read lease')
             provider=self.tool_provider(pid,reader,mapping['path'],identity,original['original'],barrier)
-            return self.emit(dict(kind='toolchain-mapping-original',**common,identity=identity,original=original['original'],providerSequence=provider,**({'lifetimeLeaseSequence':held['sequence']} if held is not None else {})))
+            row=self.emit(dict(kind='toolchain-mapping-original',**common,identity=identity,original=original['original'],providerSequence=provider,**({'lifetimeLeaseSequence':held['sequence']} if held is not None else {})))
+            if held is not None and mapping['permissions'] in ['r-xp','r-xs']:
+                self.tasks[pid].setdefault('approvedExecutableMappings',{})[tuple(sorted(mapping.items()))]=row
+            return row
         finally:os.close(reader)
     def observe_tool_stop(self,pid,job):
         barrier=self.barrier();self.check();kind,entry,event=job
@@ -1402,7 +1405,7 @@ class Observer:
             if self.generated_vma and self.generated_vma.owner is not None and pid!=self.generated_vma.owner:continue
             if self.exclusive and pid!=self.exclusive[0]:continue
             if row.get('vforkHeldChild') is not None:continue
-            if row.get('identityNoopPending'):continue
+            if row.get('identityNoopPending') or row.get('clone3Pending') or row.get('btiPending'):continue
             if row['stopped'] and not row['exited']:
                 terminal=row.get('terminalAuthority')
                 if terminal:
@@ -1455,6 +1458,65 @@ class Observer:
             # mutable entry slot, which can already be closed at this point.
             boundary=task.pop('appendBoundary',None)
             if boundary is not None:self.checkpoint_appends('syscall-boundary',boundary)
+    def bti_held(self,pid,mappings):
+        prior=[]
+        for mapping in mappings:
+            row=self.tasks[pid].get('approvedExecutableMappings',{}).get(tuple(sorted(mapping.items())))
+            assert row and row.get('lifetimeLeaseSequence'),'BTI lacks prior exact approved executable VMA'
+            held=self.lifetime_by_identity.get(tuple(row['identity']))
+            assert held and held['sequence']==row['lifetimeLeaseSequence'],'BTI lost original held backing'
+            self.lifetime_leases.check(held['token']);prior.append(row['sequence'])
+        return prior
+    def capture_bti_pending(self):
+        selected=next(((pid,task) for pid,task in self.tasks.items() if task.get('btiPending') and not task['exited']),None)
+        if selected is None:return False
+        assert self.exclusive is None
+        pid,task=selected;barrier=self.barrier();entry=task['entry']
+        assert task['stopped'] and state(pid)=='t' and entry['sequence']==task['btiPending']
+        page_size=os.sysconf('SC_PAGE_SIZE');maps,mappings=self.tool_maps(pid)
+        selected=memory_policy.bti_mappings(entry['arch'],entry['nr'],entry['args'],mappings,page_size)
+        prior=self.bti_held(pid,selected)
+        original=self.emit(dict(kind='bti-hardening-before',model='held-rx-bti-hardening-v1',pid=pid,entrySequence=entry['sequence'],barrierSequence=barrier['sequence'],pageSize=page_size,mapsOriginal=maps['original'],mappingSequences=prior))
+        task['btiOriginal']=(original,selected);del task['btiPending'];self.exclusive=(pid,entry['sequence'])
+        return True
+    def complete_bti(self,pid,entry,event):
+        original,before=self.tasks[pid]['btiOriginal']
+        assert self.exclusive==(pid,entry['sequence']) and event['entrySequence']==entry['sequence']
+        assert event['isError'] and event['result']<0 or event['isError'] is False and event['result']==0,'BTI exit differs'
+        barrier=self.barrier();maps,mappings=self.tool_maps(pid)
+        after=memory_policy.bti_mappings(entry['arch'],entry['nr'],entry['args'],mappings,original['pageSize'])
+        assert after==before,'BTI changed executable backing/range/offset/permissions'
+        assert self.bti_held(pid,after)==original['mappingSequences'],'BTI prior held mappings changed'
+        self.emit(dict(kind='bti-hardening-after',model=original['model'],pid=pid,entrySequence=entry['sequence'],exitSequence=event['sequence'],beforeSequence=original['sequence'],barrierSequence=barrier['sequence'],mapsOriginal=maps['original']))
+        del self.tasks[pid]['btiOriginal'];self.exclusive=None
+    def capture_clone3_pending(self):
+        selected=next(((pid,task) for pid,task in self.tasks.items() if task.get('clone3Pending') and not task['exited']),None)
+        if selected is None:return False
+        assert self.exclusive is None
+        pid,task=selected;barrier=self.barrier();entry=task['entry']
+        assert task['stopped'] and state(pid)=='t' and entry['sequence']==task['clone3Pending'] and entry['nr']==435
+        address,size=entry['args'][:2]
+        assert type(size) is int and size in memory_policy.CLONE3_SIZES and type(address) is int and 0<address<1<<64 and address+size<1<<64,'bounded clone3 argument range required'
+        descriptor=os.open('/proc/'+str(pid)+'/mem',os.O_RDONLY|os.O_CLOEXEC)
+        try:data=os.pread(descriptor,size,address)
+        finally:os.close(descriptor)
+        parsed=memory_policy.parse_clone3_original(data,size)
+        original=self.emit(dict(kind='kernel-clone3-args-original',model='stopped-clone3-args-v1',pid=pid,entrySequence=entry['sequence'],barrierSequence=barrier['sequence'],size=size,dataHex=data.hex(),sha256=hashlib.sha256(data).hexdigest(),flags=parsed['flags'],exitSignal=parsed['exitSignal']))
+        flags=parsed['flags']|parsed['exitSignal'];bindings.inspect_shared_clone_flags(flags)
+        task['observedCloneFlags']=flags;task['cloneFlags']=flags;task['clone3Original']=original
+        del task['clone3Pending']
+        self.emit(dict(kind='kernel-clone-flags',pid=pid,entrySequence=entry['sequence'],flags=flags,clone3OriginalSequence=original['sequence']))
+        self.exclusive=(pid,entry['sequence'])
+        self.emit(dict(kind='exclusive-clone3-resume',pid=pid,entrySequence=entry['sequence'],originalSequence=original['sequence']))
+        return True
+    def complete_clone3_consumption(self,pid,event,*,child=None):
+        task=self.tasks[pid];original=task.get('clone3Original')
+        if original is None:return
+        assert self.exclusive==(pid,original['entrySequence'])
+        if child is None:assert event['op']=='exit' and event['entrySequence']==original['entrySequence'] and event['isError'] and event['result']<0,'clone3 success requires actual child event'
+        else:assert event['event'] in [1,2] and (event['event']==2)==bool(original['flags']&0x4000),'clone3 child event differs from vfork flags'
+        self.emit(dict(kind='clone3-arguments-consumed',pid=pid,entrySequence=original['entrySequence'],originalSequence=original['sequence'],eventSequence=event['sequence'],childPid=child))
+        task.pop('clone3Original');self.exclusive=None
     def pending_captures(self):
         if self.generated_vma and getattr(self.generated_vma,'round',None) is not None:return
         if self.exclusive:return
@@ -1482,6 +1544,8 @@ class Observer:
             pid,task=selected
             self.barrier();self.checkpoint_appends('toolchain-access',task['entry']['sequence'] if task.get('entry') else None)
             self.observe_tool_stop(pid,task['toolPending'].pop(0))
+        if self.capture_bti_pending():return
+        if self.capture_clone3_pending():return
         # All candidate entries encountered while stopping peers are preserved;
         # process each before resuming any potential writer.
         while True:
@@ -1660,6 +1724,7 @@ class Observer:
                     assert flags&0x4000 and task.get('vforkHeldChild') is None and task['stopped'] and state(pid)=='t','actual VFORK event/parent stop required'
                     hold=self.emit(dict(kind='vfork-parent-held',parentPid=pid,childPid=new,eventSequence=observed_event['sequence'],entrySequence=task['entry']['sequence'],actualParentState='t'))
                     task.update(vforkHeldChild=new,vforkHoldSequence=hold['sequence']);self.tasks[new]['vforkParent']=pid
+                self.complete_clone3_consumption(pid,observed_event,child=new)
                 if new in self.unknown_stops:self.event(new,self.unknown_stops.pop(new),False)
             elif event not in [4,5,6,128]:raise ValueError('unsupported ptrace event')
             return
@@ -1671,7 +1736,7 @@ class Observer:
         if kernel['op']=='exit' and task['entry'] is not None:kernel['entrySequence']=task['entry']['sequence']
         record=self.emit(dict(kind='kernel-syscall',pid=pid,**kernel,**(dict(waitStatus=status) if getattr(self,'verified_setresuid_noop',False) or getattr(self,'verified_identity_noop',False) else {})))
         if record['op']=='entry':
-            if self.capture_toolchain:self.enforce_executable_memory(pid,record)
+            if self.capture_toolchain and record['nr']!=435 and not memory_policy.bti_candidate(record['arch'],record['nr'],record['args']):self.enforce_executable_memory(pid,record)
             assert task['entry'] is None,'syscall entry missing prior exit';task['initial']=False;task['entry']=record;nr=record['nr'];args=record['args']
             identity_axis=tool_providers.identity_noop_axis(kernel['arch'],nr)
             if self.process_authority and ((getattr(self,'verified_identity_noop',False) and identity_axis is not None) or (getattr(self,'verified_setresuid_noop',False) and identity_axis=='Uid')):
@@ -1700,6 +1765,12 @@ class Observer:
                         except BaseException:pass
                     raise
             if self.generated_vma and self.generated_vma.classify(pid,record,lambda dirfd,address:path_argument(pid,dirfd,address)):return
+            if self.capture_toolchain and memory_policy.bti_candidate(record['arch'],nr,args):
+                task['btiPending']=record['sequence'];return
+            if nr==435 and self.capture_toolchain:
+                assert self.shared_tasks,'clone3 original requires complete tracked task ownership'
+                task['clone3Pending']=record['sequence']
+                return
             if nr in [policy['clone'],policy['clone3']]:
                 flags=args[0] if nr==policy['clone'] else single.trace(2,pid,args[0])&((1<<64)-1)
                 if self.capture_toolchain:assert not flags&0x400 and (not flags&0x100 or flags&0x4000),'executable memory policy requires independent FD tables and kernel-held vfork for shared VM before clone resume'
@@ -1764,6 +1835,9 @@ class Observer:
             old=task['entry']
             if old is None:assert task['initial'],'orphan syscall exit';task['initial']=False;return
             record['entrySequence']=old['sequence'];task['entry']=None
+            self.complete_clone3_consumption(pid,record)
+            if task.get('btiOriginal'):
+                self.complete_bti(pid,old,record);return
             if self.generated_vma and pid in self.generated_vma.pending:
                 self.generated_vma.finish(pid,old,record);self.emit(dict(kind='exclusive-captured-syscall-exit',pid=pid,entrySequence=old['sequence'],result=record['result'],isError=record['isError']));self.exclusive=None;return
             transition=task.pop('setresuidTransition',None)
@@ -1879,7 +1953,7 @@ class Observer:
             for pump in pumps:pump.start()
             if self.process_authority:
                 os.close(ready_write);ready_write=None;self.check();remaining=max(0,self.deadline-time.monotonic());readable,_,_=select.select([ready_read],[],[],remaining);self.check();assert readable and os.read(ready_read,1)==b'R','child authority setup did not complete before release';os.close(ready_read);ready_read=None
-            self.emit(dict(kind='owned-root-binding',pid=child,command=command,**(dict(toolchainLifetimeModel=LIFETIME_MODEL,executableMemoryPolicy=memory_policy.MODEL) if self.capture_toolchain else {}),**(dict(rawRecordModel=probe.RAW_RECORD_MODEL_V2)if self.indexed_raw_records else {}),backend='ptrace-all-stop-process-v1',**(dict(chunkOriginalStorageModel='chunk-original-v1') if self.capture_content_entities else {}),captureOriginalEntityModel='same-phase-content-entity-v2' if self.capture_content_entities else 'same-phase-producer-original-v1',**(dict(mapsOriginalEntityModel='same-phase-maps-content-entity-v1')if getattr(self,'capture_maps_content_entities',False)else {}),**(dict(generatedVmaModel=self.generated_vma.model,**(dict(generatedVmaMetadataModel=generated_vma_module.RETAINED_METADATA_MODEL)if getattr(self,'retained_generated_metadata',False)else {}),generatedVmaBuildRoot=self.build,generatedVmaParentDeadlineMonotonicNs=str(int(self.waiter.parent_deadline*1e9))) if self.generated_vma else {}),**(dict(stoppedWriterAliasModel='all-stop-exclusive-write-aliases-v1') if getattr(self,'stopped_writer_aliases',False) else {}),**(dict(optionalIoUringModel='explicit-kernel-enosys-denial-v2' if getattr(self,'io_uring_enosys_v2',False) else 'explicit-kernel-enosys-denial-v1') if self.deny_optional_io_uring else {}),**(dict(setresuidNoopModel='actual-stopped-setresuid-noop-v1') if self.verified_setresuid_noop else {}),**(dict(setresIdentityNoopModel='actual-stopped-setres-identity-noop-queued-v2' if getattr(self,'queued_identity_noop',False) else 'actual-stopped-setres-identity-noop-v1') if getattr(self,'verified_identity_noop',False) else {}),**(dict(processAuthorityModel=tool_providers.AUTHORITY_MODEL) if self.process_authority else {}),**(dict(exitAuthorityModel='actual-selected-exit-stop-held-terminal-peers-v2'if getattr(self,'serialize_terminal_syscalls',False)else 'actual-selected-exit-stop-before-peer-barrier-v1') if getattr(self,'terminal_exit_evidence',False) else {}),**(dict(taskOwnershipModel='all-tracked-tids-shared-fd-v1',tgid=child,fdTable=child) if self.shared_tasks else {})));single.trace(SEIZE,child,0,OPTIONS);single.trace(INTERRUPT,child);pid,status=self.wait_one();self.event(pid,status,False);self.pending_captures();os.write(write_fd,b'x');os.close(write_fd);write_fd=None;self.resume()
+            self.emit(dict(kind='owned-root-binding',pid=child,command=command,**(dict(toolchainLifetimeModel=LIFETIME_MODEL,executableMemoryPolicy=memory_policy.MODEL,clone3ArgsModel='stopped-clone3-args-v1',btiHardeningModel='held-rx-bti-hardening-v1') if self.capture_toolchain else {}),**(dict(rawRecordModel=probe.RAW_RECORD_MODEL_V2)if self.indexed_raw_records else {}),backend='ptrace-all-stop-process-v1',**(dict(chunkOriginalStorageModel='chunk-original-v1') if self.capture_content_entities else {}),captureOriginalEntityModel='same-phase-content-entity-v2' if self.capture_content_entities else 'same-phase-producer-original-v1',**(dict(mapsOriginalEntityModel='same-phase-maps-content-entity-v1')if getattr(self,'capture_maps_content_entities',False)else {}),**(dict(generatedVmaModel=self.generated_vma.model,**(dict(generatedVmaMetadataModel=generated_vma_module.RETAINED_METADATA_MODEL)if getattr(self,'retained_generated_metadata',False)else {}),generatedVmaBuildRoot=self.build,generatedVmaParentDeadlineMonotonicNs=str(int(self.waiter.parent_deadline*1e9))) if self.generated_vma else {}),**(dict(stoppedWriterAliasModel='all-stop-exclusive-write-aliases-v1') if getattr(self,'stopped_writer_aliases',False) else {}),**(dict(optionalIoUringModel='explicit-kernel-enosys-denial-v2' if getattr(self,'io_uring_enosys_v2',False) else 'explicit-kernel-enosys-denial-v1') if self.deny_optional_io_uring else {}),**(dict(setresuidNoopModel='actual-stopped-setresuid-noop-v1') if self.verified_setresuid_noop else {}),**(dict(setresIdentityNoopModel='actual-stopped-setres-identity-noop-queued-v2' if getattr(self,'queued_identity_noop',False) else 'actual-stopped-setres-identity-noop-v1') if getattr(self,'verified_identity_noop',False) else {}),**(dict(processAuthorityModel=tool_providers.AUTHORITY_MODEL) if self.process_authority else {}),**(dict(exitAuthorityModel='actual-selected-exit-stop-held-terminal-peers-v2'if getattr(self,'serialize_terminal_syscalls',False)else 'actual-selected-exit-stop-before-peer-barrier-v1') if getattr(self,'terminal_exit_evidence',False) else {}),**(dict(taskOwnershipModel='all-tracked-tids-shared-fd-v1',tgid=child,fdTable=child) if self.shared_tasks else {})));single.trace(SEIZE,child,0,OPTIONS);single.trace(INTERRUPT,child);pid,status=self.wait_one();self.event(pid,status,False);self.pending_captures();os.write(write_fd,b'x');os.close(write_fd);write_fd=None;self.resume()
             while any(not r['exited'] for r in self.tasks.values()):
                 pid,status=self.wait_one();self.event(pid,status);self.pending_captures();self.resume()
             assert getattr(self,'terminal_focus',None)is None,'serialized terminal wait did not close'

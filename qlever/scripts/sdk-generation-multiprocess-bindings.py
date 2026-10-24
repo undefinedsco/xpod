@@ -434,6 +434,15 @@ class IndexedToolchainOperationCoverage:
         result=dict(schemaVersion=2,model=self.MODEL,scope='verified raw operation/file associations; effective-RO and source authority independent',paths=self.paths,operations=self.operations,pending=list(unresolved),stopProviderPending=list(stop_provider_pending))
         need(len(json.dumps(result,separators=(',',':')).encode())<=self.maximum_bytes,'indexed tool operation final metadata bound');return result
 
+def verify_stopped_original_order(original,barrier,boundary,consumer,*,inline=False):
+    """Bind a retained observation to this phase's actual stopped boundary."""
+    phase=consumer.get('phase')
+    need(isinstance(phase,str) and bool(phase) and all(value.get('phase')==phase for value in [original,barrier,boundary]),'stopped original phase differs')
+    sequences=[value.get('sequence') for value in [boundary,barrier,original,consumer]]
+    need(all(type(value) is int and value>0 for value in sequences),'stopped original requires actual integer sequences')
+    start,stop,observed,used=sequences
+    need(start<stop<observed and (observed==used if inline else observed<used),'stopped original is outside its actual boundary/barrier window')
+
 def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,limits=None,capture_observer=None,compact_tool_coverage=False,record_observer=None,generated_build_root='/opt/qlever-sdk/build'):
     maximum_raw=limits['sourceMaterialBytes'] if limits else 32*1024**2
     maximum_file=limits['shardBytes'] if limits else 1024**2
@@ -569,7 +578,7 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
         return aliases
     lifetime_verified_phases=[]
     for phase,lines in phase_lines:
-        need(not live,'prior actual process tree has not closed');roots=[];waits=[];raw_decoder=raw_records.RawRecordDecoder();lease_model=None;lease_tokens={};lease_closed=[];memory_missing=False;memory_shared_entries=set();memory_released_entries=set();lease_pids=[];lease_terminal=False;memory_mode=None;memory_checker=executable_memory_policy();memory_writes={}
+        need(not live,'prior actual process tree has not closed');roots=[];waits=[];raw_decoder=raw_records.RawRecordDecoder();lease_model=None;lease_tokens={};lease_closed=[];memory_missing=False;memory_shared_entries=set();memory_released_entries=set();lease_pids=[];lease_terminal=False;memory_mode=None;bti_mode=None;bti_required=set();bti_originals={};bti_completed=set();approved_rx={};clone3_mode=None;clone3_originals={};clone3_consumed=set();clone3_events={};memory_checker=executable_memory_policy();memory_writes={}
         for raw in lines:
             check();total+=len(raw);need(total<=maximum_raw and len(raw)<=65536,'tiny raw aggregate/record bound');row=raw_decoder.feed(raw)
             if row is None:continue
@@ -626,6 +635,8 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                 need(not live and not roots and not phase_tracking and not prepared_sealed and row['files']==prepared_count and row['inventorySha256']==prepared_digest.hexdigest(),'prepared closed-set byte seal differs');prepared_sealed=True
                 need(all(value[0]['path'].startswith(row['buildRoot'].rstrip('/')+'/') for value in prepared.values()),'prepared original escapes actual build root')
             elif kind=='owned-root-binding':
+                bti_mode=row.get('btiHardeningModel');need(bti_mode in [None,'held-rx-bti-hardening-v1'],'unknown BTI model')
+                clone3_mode=row.get('clone3ArgsModel');need(clone3_mode in [None,'stopped-clone3-args-v1'],'unknown clone3 argument model')
                 memory_mode=row.get('executableMemoryPolicy');need(memory_mode in [None,memory_checker.MODEL],'unknown executable memory policy');lease_model=row.get('toolchainLifetimeModel');need(lease_model in [None,'kernel-held-read-lease-v1'],'unknown lifetime model')
                 need(row.get('rawRecordModel')==raw_decoder.model,'declared raw record model differs from actual phase format')
                 declared_chunk=row.get('chunkOriginalStorageModel')
@@ -926,7 +937,8 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                     if append_boundary_syscall(row['arch'],row['nr'],row['args']):append_obligations[row['sequence']]=dict(append_dirty)
                     rules=policy(row['arch'])
                     if memory_mode:
-                        need(memory_checker.decision(row['arch'],row['nr'],row['args']) is None or row['nr']==425 and denial_mode,'forbidden executable memory operation in successful phase')
+                        need(memory_checker.decision(row['arch'],row['nr'],row['args']) is None or row['nr']==425 and denial_mode or row['nr']==435 and clone3_mode is not None or bti_mode and memory_checker.bti_candidate(row['arch'],row['nr'],row['args']),'forbidden executable memory operation in successful phase')
+                        if bti_mode and memory_checker.bti_candidate(row['arch'],row['nr'],row['args']):bti_required.add(row['sequence'])
                         descriptor=memory_checker.write_descriptor(row['arch'],row['nr'],row['args'])
                         if descriptor is not None:memory_writes[row['sequence']]=(row['pid'],descriptor)
                     need(row['pid'] not in denied_operations,'another syscall before explicit denial completion')
@@ -958,7 +970,7 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                         if row['pid'] in setresuid_operations:
                             pending=setresuid_operations[row['pid']];need(pending['state']=='begun' and pending['entry']==entry and row['result']==0 and row['isError'] is False and row['arch']==entry['arch'],'setresuid lacks actual same-entry successful exit');pending.update(state='exited',exit=row)
                         if entry['nr']==435:need(row['entrySequence'] in clone_flags,'clone3 lacks actual flags original')
-                        if row['isError'] and (entry['nr'] in policy(entry['arch'])['exec'] or entry['nr'] in policy(entry['arch'])['protect'] or entry['nr']==policy(entry['arch'])['mmap']):retained_entries.discard(row['entrySequence']);tool_protect_before.pop(row['entrySequence'],None)
+                        if row['isError'] and row['entrySequence'] not in bti_originals and (entry['nr'] in policy(entry['arch'])['exec'] or entry['nr'] in policy(entry['arch'])['protect'] or entry['nr']==policy(entry['arch'])['mmap']):retained_entries.discard(row['entrySequence']);tool_protect_before.pop(row['entrySequence'],None)
                         if row['entrySequence'] in retained_entries:exits[row['entrySequence']]=row
                         else:entries.pop(row['entrySequence']);clone_flags.discard(row['entrySequence'])
                 else:need(False,'unknown syscall-info operation')
@@ -1037,14 +1049,64 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                 if descriptor:need(descriptor['identity']==identity,'actual mapping process FD differs')
                 provider=tool_provider(row.get('providerSequence'),row,tool_ref(row['original'],'file'),mapping['path'])
                 tool_coverage.mapped(tool_core['sequence'],row,tool_ref(row['original'],'file')['sequence'],provider)
+                if mapping['permissions'] in ['r-xp','r-xs'] and row.get('lifetimeLeaseSequence'):approved_rx[row['sequence']]=row
                 tool_mappings+=1;tool_digest.update((json.dumps(row,sort_keys=True)+'\n').encode())
             elif kind=='toolchain-unresolved':
                 # Stop-time mount provenance is independent of a continuous inode lease.
                 # Every other unresolved observation remains a lifetime blocker.
                 if row['reason']!='toolchain-effective-readonly-provider-unverified':memory_missing=True
                 tool_pending.add(row['reason'])
+            elif kind=='bti-hardening-before':
+                entry=entries.get(row['entrySequence']);barrier=barriers.get(row['barrierSequence']);tool_barrier(row)
+                need(bti_mode==row.get('model')=='held-rx-bti-hardening-v1' and memory_mode and entry and entry['pid']==row['pid'] and entry['sequence'] not in bti_originals,'BTI lacks unique declared entry')
+                need(exclusive is None and entry['sequence']<barrier['sequence'] and latest_execution_sequence<=barrier['sequence'],'BTI lacks current all-stop barrier')
+                maps_original=tool_ref(row['mapsOriginal'],'maps');need(maps_original['observedPid']==row['pid'],'BTI before maps belong to another task')
+                verify_stopped_original_order(maps_original,barrier,entry,row)
+                mappings=memory_checker.bti_mappings(entry['arch'],entry['nr'],entry['args'],tool_maps(row['mapsOriginal']),row['pageSize'])
+                refs=row['mappingSequences'];need(isinstance(refs,list) and len(refs)==len(mappings) and len(set(refs))==len(refs),'BTI mapping references differ')
+                for mapping,sequence in zip(mappings,refs):
+                    prior=approved_rx.get(sequence)
+                    need(prior and prior['pid']==row['pid'] and prior['mapping']==mapping and sequence<entry['sequence'],'BTI lacks earlier approved exact RX VMA')
+                    held=[value for value in lease_tokens.values() if value['acquisitionSequence']==prior['lifetimeLeaseSequence']]
+                    need(len(held)==1 and held[0]['identity']==prior['identity'],'BTI lacks same held inode')
+                bti_originals[entry['sequence']]=(row,mappings);retained_entries.add(entry['sequence']);exclusive=(row['pid'],entry['sequence'])
+            elif kind=='bti-hardening-after':
+                pair=bti_originals.get(row['entrySequence']);entry=entries.get(row['entrySequence']);actual=exits.get(row['entrySequence']);tool_barrier(row)
+                need(pair and entry and actual and row.get('model')==bti_mode and exclusive==(row['pid'],row['entrySequence']) and row['entrySequence'] not in bti_completed,'BTI lacks exclusive actual exit')
+                before,mappings=pair
+                need(row['beforeSequence']==before['sequence'] and row['exitSequence']==actual['sequence'] and actual['pid']==row['pid'] and actual['arch']==entry['arch'],'BTI exit linkage differs')
+                need(actual['isError'] and actual['result']<0 or actual['isError'] is False and actual['result']==0,'BTI exit result differs')
+                need(actual['sequence']<row['barrierSequence'] and latest_execution_sequence<=row['barrierSequence'],'BTI after maps lack current stop')
+                maps_original=tool_ref(row['mapsOriginal'],'maps');need(maps_original['observedPid']==row['pid'],'BTI after maps belong to another task')
+                verify_stopped_original_order(maps_original,barriers[row['barrierSequence']],actual,row)
+                after=memory_checker.bti_mappings(entry['arch'],entry['nr'],entry['args'],tool_maps(row['mapsOriginal']),before['pageSize'])
+                need(after==mappings,'BTI changed actual VMA range/backing/offset/permissions')
+                bti_completed.add(entry['sequence']);entries.pop(entry['sequence']);exits.pop(entry['sequence']);retained_entries.discard(entry['sequence']);exclusive=None
+            elif kind=='kernel-clone3-args-original':
+                entry=entries.get(row['entrySequence']);barrier=barriers.get(row['barrierSequence'])
+                need(clone3_mode==row.get('model')=='stopped-clone3-args-v1' and memory_mode and shared_mode and entry and entry['nr']==435 and entry['pid']==row['pid'] and entry['sequence'] not in clone3_originals,'clone3 original lacks unique declared actual entry')
+                need(exclusive is None and barrier and row['pid'] in barrier['pids'] and entry['sequence']<barrier['sequence'] and latest_execution_sequence<=barrier['sequence'],'clone3 original lacks current all-stop barrier')
+                verify_stopped_original_order(row,barrier,entry,row,inline=True)
+                size=row['size'];need(type(size) is int and size==entry['args'][1] and size in memory_checker.CLONE3_SIZES and 0<entry['args'][0]<1<<64 and entry['args'][0]+size<1<<64,'clone3 size/address differs')
+                need(isinstance(row['dataHex'],str) and len(row['dataHex'])==size*2 and re.fullmatch('[0-9a-f]+',row['dataHex']) is not None,'bounded canonical clone3 original required')
+                data=bytes.fromhex(row['dataHex']);need(hashlib.sha256(data).hexdigest()==row['sha256'],'clone3 original digest differs');parsed=memory_checker.parse_clone3_original(data,size)
+                need(row['flags']==parsed['flags'] and row['exitSignal']==parsed['exitSignal'],'clone3 original projection differs');clone3_originals[entry['sequence']]=row;retained_entries.add(entry['sequence'])
+            elif kind=='exclusive-clone3-resume':
+                original=clone3_originals.get(row['entrySequence'])
+                need(original and exclusive is None and original['pid']==row['pid'] and original['sequence']==row['originalSequence'] and row['entrySequence'] in clone_flags and row['sequence']==original['sequence']+2,'clone3 exclusive window differs');exclusive=(row['pid'],row['entrySequence'])
+            elif kind=='clone3-arguments-consumed':
+                original=clone3_originals.get(row['entrySequence']);event=clone3_events.get(row['eventSequence']);exit=exits.get(row['entrySequence']);child=row['childPid']
+                need(original and original['pid']==row['pid'] and original['sequence']==row['originalSequence'] and exclusive==(row['pid'],row['entrySequence']) and row['entrySequence'] not in clone3_consumed,'clone3 consumption lacks exclusive original')
+                if child is None:
+                    need(exit and exit['sequence']==row['eventSequence'] and exit['isError'] is True and exit['result']<0,'clone3 failure release lacks actual negative exit');memory_released_entries.add(row['entrySequence'])
+                else:
+                    binding=child_bindings.get(child);need(event and event['pid']==row['pid'] and event['event']==(2 if original['flags']&0x4000 else 1) and binding and binding['parentPid']==row['pid'] and binding['cloneEntrySequence']==row['entrySequence'] and binding['event']==event['event'] and original['sequence']<event['sequence']<binding['sequence']<row['sequence'],'clone3 child release lacks actual matching kernel event')
+                    if original['flags']&0x4000:need(row['pid'] in vfork_holds and vfork_holds[row['pid']]['childPid']==child,'clone3 shared VM lacks kernel-held parent')
+                clone3_consumed.add(row['entrySequence']);exclusive=None
             elif kind=='kernel-clone-flags':
                 entry=entries.get(row['entrySequence']);clone_flags.add(row['entrySequence']);need(entry and entry['pid']==row['pid'] and entry['nr'] in [policy(entry['arch'])['clone'],435],'clone memory flags entry differs');flags=row['flags'];clone_flag_values[row['entrySequence']]=flags
+                if memory_mode and entry['nr']==435:
+                    original=clone3_originals.get(entry['sequence']);need(original and row.get('clone3OriginalSequence')==original['sequence'] and flags==original['flags']|original['exitSignal'] and row['sequence']==original['sequence']+1,'clone3 flags lack exact bounded original')
                 if memory_mode:
                     need(not flags&0x400 and (not flags&0x100 or flags&0x4000),'executable memory policy requires independent FD tables and kernel-held vfork for shared VM')
                     if flags&0x100:memory_shared_entries.add(entry['sequence'])
@@ -1108,8 +1170,10 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                 need(hold and parent in live and hold['childPid']==child and row['holdSequence']==hold['sequence'] and row['actualParentState']=='t','VFORK release wrong parent/child/stop')
                 need((row['releaseKind']=='actual-exec' and child in live and event and event['pid']==child and event['event']==4) or (row['releaseKind']=='actual-terminal-wait' and child not in live and wait and wait['pid']==child),'VFORK release lacks actual child exec/terminal wait');memory_released_entries.add(hold['entrySequence']);del vfork_holds[parent]
             elif kind=='ptrace-event':
+                if exclusive is not None and (exclusive[1] in clone3_originals or exclusive[1] in bti_originals):need(row['pid']==exclusive[0],'another task event during clone3 argument window')
                 need(row.get('event') in [1,2,3,4,5,6,128],'unknown actual ptrace event')
                 if process_interval is not None:process_interval.event(row['pid'],row['event'],row['sequence'])
+                if row['event'] in [1,2]:clone3_events[row['sequence']]=row
                 if row['event'] in [2,4]:vfork_events[row['sequence']]=row
                 if shared_mode and row['event']==4:exec_fd_events[row['sequence']]=row
                 if row['event']==4:exec_events[row['sequence']]=row
@@ -1154,6 +1218,8 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
             if generated_verifier is not None:
                 generated_verifier.metadata_chain=retained_metadata_chain;generated_verifier.verified_metadata_states=sorted([*mode_transitions.values(),*rename_transitions.values()],key=lambda pair:pair[1]['sequence'])
                 generated_verifier.record(row,entries,exits,barriers,caps)
+        need(bti_required==set(bti_originals)==bti_completed,'BTI hardening window not closed')
+        need(set(clone3_originals)==clone3_consumed,'clone3 argument consumption not closed')
         raw_decoder.finish()
         need(not memory_writes,'missing actual executable memory FD checks')
         need(lease_model is None or lease_terminal,'declared lifetime phase missing exact token/wait closure')

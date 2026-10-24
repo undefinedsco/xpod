@@ -7,3 +7,8 @@ from qlever.tests.test_sdk_terminal_serialization import Tests as TerminalSerial
 from qlever.tests.test_sdk_append_boundary_queue import Tests as AppendBoundaryQueueTests
 from qlever.tests.test_sdk_indexed_tool_coverage import Tests as IndexedToolCoverageTests
 from qlever.tests.test_sdk_sigq_sampling import Tests as SigQSamplingTests
+from qlever.tests.test_sdk_clone3_args import Clone3ArgsTest as Clone3ArgsTests
+from qlever.tests.test_sdk_clone3_binding import Tests as Clone3BindingTests
+
+from test_sdk_bti_predicate import BtiPredicateTests
+from test_sdk_bti_binding import BtiBindingTests
