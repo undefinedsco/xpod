@@ -41,7 +41,7 @@
  },
  {
   "path":"docker/qlever-runtime-sdk/Dockerfile.module-bookworm",
-  "sha256":"f5a25db22bf285bb65b296f1e4eb65e7dc41d7f6211a19f8351d42f98b6feadb"
+  "sha256":"da121171f5e9910512e2d7c972150c6e4d2ec381039608a6eb5081789946136a"
  },
  {
   "path":"package.json",
@@ -333,7 +333,7 @@
  },
  {
   "path":"qlever/scripts/build-qlever-runtime-sdk.sh",
-  "sha256":"4cbf76190be1ea0ba32015350c24174ff9810b52af551a9eba0d36a4a5cb8d54"
+  "sha256":"c495dcc7a4dca6b8cbeec65d8740b1260809e9a40700870e6c6ab59b93506074"
  },
  {
   "path":"qlever/scripts/macos_companion_originals.py",
@@ -437,7 +437,7 @@
  },
  {
   "path":"qlever/scripts/sdk-generation-materials.py",
-  "sha256":"216521f3c656a6166b4ff9f35bc3ed95cfb44679f5a9bd78382033ee35e3feb8"
+  "sha256":"1eb78d1c0e834de69cf760f9aaa739cbb198d4e9812a84f1344d471d1ee91705"
  },
  {
   "path":"qlever/scripts/sdk-generation-multiprocess-bindings.py",
@@ -461,7 +461,7 @@
  },
  {
   "path":"qlever/scripts/sdk-inner-materials.py",
-  "sha256":"fe72dcbeaaa08638cbeb8f5508650332aab6c63da61e129704870ddf4ba8929f"
+  "sha256":"fb34432edaa5c0884c3e9ca34efd28f31536f535c38b5ba6ec18d58944642ba5"
  },
  {
   "path":"qlever/scripts/sdk-kernel-policy-probe.py",
@@ -1221,7 +1221,7 @@
  },
  {
   "path":"scripts/lib/independent-admission/qlever-sdk-origin-policy.ts",
-  "sha256":"21d30086963be8e4babb83b92f3306185f50b7d54a1330fbdeb584aa36a3db68"
+  "sha256":"adf580a185e0563cf3f72bc622015c3f86686193aaae05cf313a63f521ca9722"
  },
  {
   "path":"scripts/lib/independent-admission/qlever-sdk-originals.ts",
@@ -1826,5 +1826,17 @@
  {
   "path":"scripts/service-workspace-replay.py",
   "sha256":"c7fd9ad9da6a4cec17b0cc638838ffaaf9167b0e6650c98340de54b366e4a37a"
+ },
+ {
+  "path":"qlever/scripts/cmake_file_api.py",
+  "sha256":"cee5f61c2f2fa072827bd67901d6a129b07f98876469f25c5ca8bacb441b9412"
+ },
+ {
+  "path":"qlever/scripts/link_command_adapter.py",
+  "sha256":"6da48b0625ed18c725081a2bc36e87176474deda3a1f6368a6163c7b0d029bcf"
+ },
+ {
+  "path":"qlever/scripts/link_command_origin.py",
+  "sha256":"0696060070de7d585e15a92eebf4d796a89ca31a0efa8b86225d2ff068d69c0c"
  }
 ]

@@ -5,7 +5,7 @@ import {CONSUMER_SOURCE_GROUPS as consumer,CI_CONSUMER_SOURCE_GROUPS as ci} from
 import current from '../../scripts/lib/independent-admission/consumer-execution-current.json';
 const hash=(value:unknown)=>createHash('sha256').update(JSON.stringify(value)).digest('hex');
 test('SDK27 adds diagnostic scope while preserving every complete old private source recipe and controller anchor',()=>{
- for(const [name,groups]of Object.entries({sdk,consumer,ci})){const old=previous[name as keyof typeof previous];expect(groups).toHaveLength(name==='api'?28:name==='sdk'?67:name==='ci'?162:82);for(let i=0;i<old.length;i++)expect(hash(groups[i])).toBe(old[i]);}
- expect(current).toHaveLength(457);for(const row of current)expect(createHash('sha256').update(fs.readFileSync(path.resolve(import.meta.dir,'../..',row.path))).digest('hex')).toBe(row.sha256);
+ for(const [name,groups]of Object.entries({sdk,consumer,ci})){const old=previous[name as keyof typeof previous];expect(groups).toHaveLength(name==='api'?28:name==='sdk'?68:name==='ci'?164:83);for(let i=0;i<old.length;i++)expect(hash(groups[i])).toBe(old[i]);}
+ expect(current).toHaveLength(460);for(const row of current)expect(createHash('sha256').update(fs.readFileSync(path.resolve(import.meta.dir,'../..',row.path))).digest('hex')).toBe(row.sha256);
  const latest=sdk[sdk.length-1]!;for(const row of [...latest.selectors,...latest.sourceBindings])expect(createHash('sha256').update(fs.readFileSync(path.resolve(import.meta.dir,'../..',row.path))).digest('hex')).toBe(row.sha256);
 });

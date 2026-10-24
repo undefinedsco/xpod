@@ -39,6 +39,7 @@ RUN apt-get -o Acquire::Retries=5 -o Acquire::AllowInsecureRepositories=false -o
     libzstd-dev \
     lld-19 \
     make \
+    ninja-build \
     python3 \
     zlib1g-dev
 

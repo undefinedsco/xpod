@@ -12,11 +12,13 @@ import sys
 import tarfile
 
 HERE=Path(__file__).resolve().parent
+spec=importlib.util.spec_from_file_location('sdk_cmake_file_api',HERE/'cmake_file_api.py')
+file_api=importlib.util.module_from_spec(spec);spec.loader.exec_module(file_api)
 spec=importlib.util.spec_from_file_location('sdk_commands',HERE/'sdk-command-materials.py')
 commands=importlib.util.module_from_spec(spec);spec.loader.exec_module(commands)
 spec=importlib.util.spec_from_file_location('sdk_profile_inner',HERE/'qlever_compiler_profile.py')
 profile_module=importlib.util.module_from_spec(spec);spec.loader.exec_module(profile_module)
-COMMON_SDK_TOOLS=(('ar','tool-ar'),('ranlib','tool-ranlib'),('cmake','tool-cmake'),('make','tool-make'),('python3','tool-python3'),('git','tool-git'))
+COMMON_SDK_TOOLS=(('ar','tool-ar'),('ranlib','tool-ranlib'),('cmake','tool-cmake'),('make','tool-make'),('ninja','tool-ninja'),('python3','tool-python3'),('git','tool-git'))
 def sdk_tools(profile_name):
     profile=profile_module.declared_profile(profile_name)
     return tuple((name,'tool-'+name.replace('+','x').replace('.','-')) for name in [profile['c'],profile['cxx'],profile['linker_program']])+COMMON_SDK_TOOLS
@@ -134,7 +136,8 @@ def dependency_paths(build):
     if not result:raise ValueError('Actual compiler dependency originals missing')
     return result
 
-def configure_inputs(build):
+def _makefile_depends(build):
+    """Unix Makefiles: the CMake-owned CMAKE_MAKEFILE_DEPENDS record."""
     file=Path(build)/'CMakeFiles/Makefile.cmake'
     if not file.is_file():raise ValueError('Actual CMake configure dependency originals missing')
     if file.stat().st_size>8*1024**2:raise ValueError('SDK configure dependency record budget')
@@ -145,6 +148,64 @@ def configure_inputs(build):
         path=Path(name);path=path if path.is_absolute() else Path(build)/path
         if not path.is_file():raise ValueError('Recorded CMake input original missing')
         result.add(path)
+    return result
+
+def configure_inputs(build):
+    """Configure dependency originals for WHICHEVER generator actually ran.
+
+    Dispatch is by the actual build tree, never by preference: a Ninja build has
+    no CMakeFiles/Makefile.cmake, so the File API reply is the only source and a
+    missing reply is fatal. A Unix-Makefiles build keeps its existing record
+    byte-for-byte. Reading never creates a query.
+    """
+    build=Path(build)
+    makefile_cmake=build/'CMakeFiles/Makefile.cmake'
+    reply_dir=build/'.cmake'/'api'/'v1'/'reply'
+    if makefile_cmake.is_file():
+        if reply_dir.is_dir():
+            # Both present: require agreement on the generator, never guess.
+            try:
+                name=file_api.generator(str(build))
+            except file_api.FileApiUnavailable as error:
+                raise ValueError('Actual CMake generator identity unavailable: %s'%error)
+            if name!='Unix Makefiles':
+                raise ValueError('Actual CMake generator/reply disagreement: '+name)
+        return _makefile_depends(build)
+    if not reply_dir.is_dir():
+        raise ValueError('Actual CMake configure dependency originals missing')
+    file_api.verify_queries_present(str(build))
+    try:
+        paths,_originals=file_api.configure_inputs(str(build),check_budget)
+    except file_api.FileApiUnavailable as error:
+        raise ValueError('Actual CMake File API configure originals unavailable: %s'%error)
+    return {Path(row) for row in paths}
+
+
+def generator_metadata_originals(build):
+    """Generator-owned build-graph originals that MUST be retained.
+
+    Ninja: build.ninja plus every CMakeFiles/*.ninja (the real build graph).
+    Makefiles: the Makefile and the CMakeFiles Makefile fragments. Both also
+    retain the complete File API reply set so the semantic graph is preserved.
+    """
+    build=Path(build)
+    result=set()
+    for name in ('build.ninja','Makefile'):
+        path=build/name
+        if path.is_file():result.add(path)
+    for directory,dirs,names in os.walk(build,followlinks=False):
+        dirs[:]=[n for n in dirs if not (Path(directory)/n).is_symlink()]
+        for name in names:
+            if name.endswith('.ninja') or name in ('Makefile.cmake','cmake.check_cache'):
+                path=Path(directory)/name
+                if not path.is_symlink() and path.is_file():result.add(path)
+    reply_dir=build/'.cmake'/'api'/'v1'/'reply'
+    if reply_dir.is_dir():
+        for path in reply_dir.rglob('*.json'):
+            if not path.is_symlink() and path.is_file():result.add(path)
+    for name in ('CMakeCache.txt','compile_commands.json'):
+        path=build/name
+        if path.is_file():result.add(path)
     return result
 
 spec=importlib.util.spec_from_file_location('sdk_debian_acquisition',HERE/'sdk-debian-source-acquisition.py')
@@ -267,7 +328,34 @@ def build_materials(component,source,build,out,jobs):
         actual_program=Path((out/compiler['stdout']['path']).read_text().strip())
         if not actual_program.is_absolute() or not actual_program.is_file():raise ValueError('Actual declared compiler program path required')
         compiler_program=candidate(actual_program);candidates.add(compiler_program)
-        link_tokens=shlex.split((build/'CMakeFiles/qlever-server.dir/link.txt').read_text())
+        link_path=build/'CMakeFiles/qlever-server.dir/link.txt'
+        # link.txt authority depends on the generator that ACTUALLY configured
+        # this tree. The schema is shared with the producer through
+        # link_command_origin, so producer and consumer cannot drift.
+        try:
+            actual_generator=file_api.generator(str(Path(build)))
+        except file_api.FileApiUnavailable as error:
+            raise ValueError('Actual CMake generator identity unavailable: %s'%error)
+        spec=importlib.util.spec_from_file_location('inner_link_origin',HERE/'link_command_origin.py')
+        link_origin=importlib.util.module_from_spec(spec);spec.loader.exec_module(link_origin)
+        if actual_generator=='Ninja':
+            # MANDATORY, and every referenced original is re-observed.
+            record=link_origin.read_record(link_path,
+                member_limit=link_origin.MEMBER_LIMIT_FOR_RECORD,
+                build_root=str(build),generator='Ninja',
+                materials_root=str(materials))
+            # The raw capture originals are retained evidence, not a claim.
+            for key in ('rawStdout','rawStderr'):
+                path=Path(record[key]['path'])
+                if not path.is_file():raise ValueError('Derived link raw original missing: '+str(path))
+                selected.add(path)
+            selected.add(Path(link_origin.record_path(str(link_path))))
+        elif actual_generator=='Unix Makefiles':
+            if Path(link_origin.record_path(str(link_path))).exists():
+                raise ValueError('CMake-authored link command must not carry a derived origin')
+        else:
+            raise ValueError('Actual CMake generator unsupported: '+str(actual_generator))
+        link_tokens=shlex.split(link_path.read_text())
         for token in link_tokens:
             path=Path(token)
             if path.is_absolute() and path.is_file() and re.search(r'\.(?:a|so(?:\.[A-Za-z0-9_.+-]+)?)$',token):candidates.add(candidate(path))

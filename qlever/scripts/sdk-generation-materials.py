@@ -7,13 +7,24 @@ import sys
 
 HERE=Path(__file__).resolve().parent
 
+def _load_helper():
+    spec=importlib.util.spec_from_file_location('gen_cmake_file_api',HERE/'cmake_file_api.py')
+    module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module);return module
+
+file_api=_load_helper()
+
 def load(name,file):
     spec=importlib.util.spec_from_file_location(name,HERE/file);module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module);return module
 commands=load('generation_commands','sdk-command-materials.py')
 budgets=load('generation_budget','sdk-execution-budget.py')
 MEMBER=512*1024**2
 METADATA=4*1024**2
+# Makefiles-only artifacts (kept so a Unix-Makefiles build is unchanged).
 METADATA_NAMES={'build.make','DependInfo.cmake','flags.make','link.txt','Makefile.cmake','cmake.check_cache'}
+# Generator-independent build-graph artifacts. Ninja emits the .ninja graph
+# instead of per-target make fragments; both must be retained so the used build
+# graph is not narrowed to JSON replies plus link.txt.
+NINJA_METADATA_NAMES={'build.ninja','rules.ninja','CMakeCache.txt','compile_commands.json'}
 
 def write(path,value,check):
     size=0
@@ -50,24 +61,112 @@ def configure(out,source,build,argv,check):
     write(out/'configure-materials.json',value,check)
     return value
 
+def derive_link_command(build,budget,materials=None,cwd=None,tool='ninja'):
+    """Derive the planned link command for the generator that configured.
+
+    Runs after configure and before the first metadata snapshot, because
+    retention requires link.txt and Ninja never writes one. Idempotent: a repeat
+    derivation over our OWN record replaces it; a foreign link.txt is refused.
+    """
+    build=Path(build).resolve()
+    generator=file_api.generator(str(build))
+    if generator=='Unix Makefiles':
+        return None
+    if generator!='Ninja':
+        raise ValueError('Actual CMake generator unsupported: '+str(generator))
+    spec=importlib.util.spec_from_file_location('generation_link_command',HERE/'link_command_adapter.py')
+    adapter=importlib.util.module_from_spec(spec);spec.loader.exec_module(adapter)
+    materials=materials or str(build/'link-command-materials')
+    cwd=cwd or str(build)
+    result=adapter.retain(str(build),'qlever-server',generator='Ninja',tool=tool,
+        materials=materials,cwd=cwd,budget=budget)
+    receipt=build/'link-command.receipt.json'
+    if receipt.exists():
+        # our own prior derivation: replace the receipt, keep it consistent
+        receipt.unlink()
+    receipt.write_text(json.dumps(result,sort_keys=True,indent=2)+'\n')
+    return result
+
 def metadata_paths(build,check):
-    build=Path(build).resolve();required=[build/'CMakeCache.txt',build/'compile_commands.json',build/'CMakeFiles/Makefile.cmake']
+    """Retain the COMPLETE configure/build-system evidence for either generator.
+
+    Baseline: CMakeCache.txt + compile_commands.json (generator-independent).
+    Then: the generator's own build graph (Ninja: build.ninja and every
+    CMakeFiles/*.ninja; Makefiles: the existing fragment set), the CMake-owned
+    File API reply set (index + every referenced object), and link.txt, which is
+    CMake-owned under Makefiles and derived-and-validated under Ninja.
+    """
+    build=Path(build).resolve()
+    required=[build/'CMakeCache.txt',build/'compile_commands.json']
     if any(not path.is_file() for path in required):raise ValueError('Actual CMake baseline metadata originals missing')
+    reply_dir=build/'.cmake'/'api'/'v1'/'reply'
+    makefile_cmake=build/'CMakeFiles'/'Makefile.cmake'
+    link_txt=build/'CMakeFiles'/'qlever-server.dir'/'link.txt'
+    # Exactly one generator's graph must exist; disagreement is fatal.
+    if reply_dir.is_dir():
+        generator=file_api.generator(str(build))
+    elif makefile_cmake.is_file():
+        generator='Unix Makefiles'
+    else:
+        raise ValueError('Actual CMake generator metadata originals missing')
+    if generator not in ('Ninja','Unix Makefiles'):
+        raise ValueError('Actual CMake generator unsupported: '+str(generator))
+    if generator=='Ninja' and makefile_cmake.is_file():
+        raise ValueError('Actual CMake generator/reply disagreement: Ninja reply with Makefiles records')
+    if not link_txt.is_file():
+        raise ValueError('Actual CMake link command original missing: '+str(link_txt))
     result=set()
     def candidate(path):
-        resolved=path.resolve(strict=True)
+        check();resolved=path.resolve(strict=True)
         if not resolved.is_relative_to(build):raise ValueError('CMake metadata escaped build root')
-        if not resolved.is_file():raise ValueError('CMake metadata original must be regular')
+        if path.is_symlink() or not resolved.is_file():raise ValueError('CMake metadata original must be regular')
         result.add(path)
     for path in required:candidate(path)
+    for name in NINJA_METADATA_NAMES:
+        path=build/name
+        if path.is_file():candidate(path)
     if (build/'Makefile').is_file():candidate(build/'Makefile')
+    wanted = NINJA_METADATA_NAMES | (METADATA_NAMES if generator=='Unix Makefiles' else {'link.txt'})
     for directory,dirs,names in os.walk(build,followlinks=False):
         check();dirs[:]=[name for name in dirs if name!='.git' and not (Path(directory)/name).is_symlink()]
         for name in names:
-            if name not in METADATA_NAMES:continue
+            if name not in wanted and not name.endswith('.ninja'):continue
             path=Path(directory)/name
             candidate(path)
             if len(result)>10000:raise ValueError('CMake metadata member count bound')
+    # The DERIVED link-command provenance closure: origin record, receipt and the
+    # captured raw streams. Without these the raw Ninja digests would not survive
+    # into the generation originals archive.
+    receipt = build/'link-command.receipt.json'
+    if receipt.is_file():
+        candidate(receipt)
+    origin_path = build/'CMakeFiles'/'qlever-server.dir'/'origin.json'
+    if origin_path.is_file():
+        candidate(origin_path)
+        record = json.loads(origin_path.read_text())
+        # Raw capture streams may live in the SDK materials tree, which is
+        # OUTSIDE the build root and therefore not retainable here. Their digests
+        # survive inside the origin record (which is retained), and the materials
+        # tree is separately retained by the capture materials archive. Only
+        # build-root files are added to THIS closure.
+        for key in ('rawStdout', 'rawStderr'):
+            claimed = (record.get(key) or {}).get('path')
+            if isinstance(claimed, str) and Path(claimed).is_file():
+                try:
+                    candidate(Path(claimed))
+                except ValueError:
+                    pass            # outside build root: retained via materials
+    # The complete File API reply set PLUS the codemodel's transitive reference
+    # closure (per-directory and per-target JSON, target children, backtrace
+    # graphs). Retaining only the root query replies would narrow the used
+    # build-graph evidence.
+    if reply_dir.is_dir():
+        for path in sorted(reply_dir.rglob('*.json')):
+            candidate(path)
+        file_api.verify_queries_present(str(build))
+        closure,_originals=file_api.codemodel_closure(str(build),check)
+        for path in sorted(closure):
+            candidate(Path(path))
     return result
 
 def snapshot(out,build,phase,archive,identity,check):
@@ -122,3 +221,6 @@ if __name__=='__main__':
     resource.setrlimit(resource.RLIMIT_FSIZE,(limit,limit))
     budget=budgets.ExecutionBudget(os.environ['XPOD_QLEVER_SDK_DEADLINE_UNIX'])
     configure(Path(sys.argv[2]),Path(sys.argv[3]),Path(sys.argv[4]),sys.argv[6:],lambda:budget.check(4200))
+    # Post-configure, pre-snapshot: the generator's link command must exist before
+    # any metadata retention that requires it.
+    derive_link_command(Path(sys.argv[4]),budget)

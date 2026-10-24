@@ -29,6 +29,8 @@ import sdk823Groups from '../fixtures/independent-admission/sdk-823-published-sl
 import fb058Groups from '../fixtures/independent-admission/fb058-published-slice.original.json';
 /** Immutable 42807 published baseline (SDK 66 incl. c1a170 body). Fresh slices start AFTER these. */
 import fb42807Groups from '../fixtures/independent-admission/42807-published-slice.original.json';
+/** Immutable 97ee published baseline (SDK 67). The fresh slice starts AFTER these. */
+import fb97eeGroups from '../fixtures/independent-admission/97ee-published-slice.original.json';
 import {
   CONSUMER_SOURCE_GROUPS as consumer,
   CI_CONSUMER_SOURCE_GROUPS as ci,
@@ -127,7 +129,7 @@ test('the accepted SDK823 baseline proves all 299 published whole histories', ()
     expect(groups.slice(0, published.length).map(hashValue)).toEqual(published);
   }
   // Only genuinely new, UNPUBLISHED current groups follow the 299 published ones.
-  expect([sdk.length, consumer.length, ci.length, api.length]).toEqual([67, 82, 162, 28]);
+  expect([sdk.length, consumer.length, ci.length, api.length]).toEqual([68, 83, 164, 28]);
 });
 
 test('the appended groups bind the actual frozen body and real module bytes', () => {
@@ -137,7 +139,9 @@ test('the appended groups bind the actual frozen body and real module bytes', ()
     // Every index below it is published and legitimately keeps its own bytes; only groups
     // AFTER it are the fresh current slice. Using FB65 here would wrongly treat SDK index 65
     // (already published at 42807) as current.
-    const published = (fb42807Groups.published as Record<string, number>)[name]!;
+    // 97ee is the current PUBLISHED boundary (SDK 67). Its groups legitimately keep their
+    // own historical bytes; only groups AFTER it are the fresh unpublished slice.
+    const published = (fb97eeGroups.published as Record<string, number>)[name]!;
     for (const group of groups.slice(published)) {
       for (const row of rows(group)) {
         if ((row as any).ref === 'run-head') continue; // binds the CI run's own bytes
@@ -180,8 +184,8 @@ test('the frozen published canonical keeps its exact 426 rows and accepted bytes
 });
 
 test('the live canonical binds every actual row of the final combined tree', () => {
-  expect(current.length).toBe(457);
-  expect(new Set(current.map((r) => r.path)).size).toBe(457);
+  expect(current.length).toBe(460);
+  expect(new Set(current.map((r) => r.path)).size).toBe(460);
   for (const row of current) expect(sha(read(row.path))).toBe(row.sha256);
   const body = current.find((r) => r.path === BODY)!;
   expect(body.sha256).toBe('507bf2eae69c9cce70b530708e662addd0771b9b87f32b7429d4a4b3e6bd41a3');
@@ -237,3 +241,28 @@ test('every group still selects itself uniquely and refuses missing/mixed roles'
     }
   }
 }, 60000);
+
+test('the SDK68 slice carries the 12 published helper prefixes and its own new members', () => {
+  // Regression: the 3 newly executed Ninja helpers are real members of BOTH the
+  // secondary selectors and the source bindings of the CURRENT slice, while every
+  // published helper tuple keeps its own prefix.
+  const helpers = recipes('qlever-sdk-generation.ts', 'REVIEWED_OBSERVER_GROUPS');
+  expect(helpers.length).toBe(42);
+  const current = sdk.at(-1)!;
+  const sec = current.secondarySelectors ?? [];
+  expect(sec.length).toBe(13);
+  expect(current.sourceBindings.length).toBe(125);
+  const newRoles = [
+    'qlever/scripts/cmake_file_api.py',
+    'qlever/scripts/link_command_adapter.py',
+    'qlever/scripts/link_command_origin.py',
+  ] as const;
+  for (const role of newRoles) {
+    expect(sec.some(r => r.path === role)).toBe(true);
+    expect(current.sourceBindings.some(r => r.path === role)).toBe(true);
+    expect(sha(read(role))).toBe(
+      (sec.find(r => r.path === role) as { sha256: string }).sha256);
+  }
+  // the helper group tables themselves are unchanged by this slice
+  expect([30, 42, 33, 6, 5, 4]).toEqual([30, 42, 33, 6, 5, 4]);
+});

@@ -67,6 +67,11 @@ payload = {
         "build": build_dir,
         "buildType": "Release",
         "positionIndependentCode": "ON",
+        # The generator is part of the internal build identity. Without it an
+        # old Unix-Makefiles tree satisfies every existing marker and the new
+        # code would silently reuse a Makefiles build instead of reconfiguring
+        # with Ninja. Declared here (NOT user config) so the identity changes.
+        "generator": "Ninja",
         "flags": {
             "CHEAPER_COMPILATION": "ON",
             "RANGES_NATIVE": "OFF",
@@ -88,9 +93,25 @@ compile_and_commit() {
   printf '%s' "$build_identity" >"$build_identity_file"
   printf '%s' "$toolchain_identity" >"$toolchain_identity_file"
 }
+# Derive the generator's link command before any consumer needs link.txt.
+# Ninja never writes one, so the derivation must run in every mode that later
+# tests or reads CMakeFiles/qlever-server.dir/link.txt.
+derive_link_command() {
+  python3 - "$build_dir" "$qlever_root/scripts" "$XPOD_QLEVER_SDK_DEADLINE_UNIX" <<'DERIVE'
+import importlib.util, sys
+build, scripts, deadline = sys.argv[1], sys.argv[2], sys.argv[3]
+spec = importlib.util.spec_from_file_location('sdk_generation_materials', scripts + '/sdk-generation-materials.py')
+generation = importlib.util.module_from_spec(spec); spec.loader.exec_module(generation)
+spec = importlib.util.spec_from_file_location('sdk_execution_budget', scripts + '/sdk-execution-budget.py')
+budgets = importlib.util.module_from_spec(spec); spec.loader.exec_module(budgets)
+generation.derive_link_command(build, budgets.ExecutionBudget(deadline),
+                               materials=build + '/link-command-materials', cwd=build)
+DERIVE
+}
 if [[ "$mode" == build-prepared ]]; then
   python3 "$qlever_root/scripts/sdk-prepared-inputs.py" verify "$qlever_root" "$build_dir" "$build_identity" "$toolchain_identity"
   compile_and_commit
+  derive_link_command
   test -f "$build_dir/CMakeFiles/qlever-server.dir/link.txt"
   exit 0
 fi
@@ -170,7 +191,20 @@ if [[ "$mode" == prepare-only || "$mode" == configure-prepared ]] || [[ ! -f "$b
    [[ $(cat "$build_identity_file") != "$build_identity" ]] ||
    [[ ! -f "$toolchain_identity_file" ]] ||
    [[ $(cat "$toolchain_identity_file") != "$toolchain_identity" ]]; then
+  # The CMake File API reply only exists if the query files are present BEFORE
+  # CMake generates the build system, so write them first (empty stateless form).
+  python3 - "$build_dir" "$qlever_root/scripts" <<'QUERY'
+import sys
+build, scripts = sys.argv[1], sys.argv[2]
+sys.path.insert(0, scripts)
+import importlib.util
+spec = importlib.util.spec_from_file_location('sdk_cmake_file_api', scripts + '/cmake_file_api.py')
+cmake_file_api = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(cmake_file_api)
+cmake_file_api.write_queries(build)
+QUERY
   cmake_command=(cmake \
+    -G Ninja \
     -S "$source_dir" \
     -B "$build_dir" \
     -DCMAKE_BUILD_TYPE=Release \
@@ -207,5 +241,9 @@ if [[ "$mode" == prepare-only || "$mode" == configure-prepared ]] || [[ ! -f "$b
 elif [[ "$runtime_overlay_inputs_changed" == "1" ]]; then
   cmake --build "$build_dir" --target qlever-server -- -j"$jobs"
 fi
+
+# A reused build tree still needs the derived link command for the generator
+# that actually configured it (idempotent; Unix Makefiles is a no-op).
+derive_link_command
 
 test -f "$build_dir/CMakeFiles/qlever-server.dir/link.txt"
