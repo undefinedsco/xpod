@@ -16,6 +16,11 @@ def identity(fd):
             value.st_mtime_ns, value.st_ctime_ns]
 
 
+def interrupted(error):
+    """An interruption (e.g. caller SIGALRM) rather than a kernel errno."""
+    return isinstance(error, OSError) and error.errno is None
+
+
 class LeaseSet:
     def __init__(self, maximum=4096):
         if type(maximum) is not int or maximum < 1:
@@ -64,6 +69,12 @@ class LeaseSet:
                     self._reject('leased inode identity changed')
             self._ready()
         except OSError as error:
+            # A caller-owned SIGALRM (or any other interruption without an
+            # errno) is the observation deadline, not a lease verdict: report
+            # it verbatim so the actual timeout stays visible. Only a genuine
+            # errno from a lease/proc syscall becomes a sticky lease failure.
+            if interrupted(error):
+                raise
             self._reject('lease check failed: ' + str(error.errno))
 
     def duplicate_reader(self, token):
@@ -112,8 +123,12 @@ class LeaseSet:
             self._held[key] = {'fd': owned, 'token': token}
             owned = None
             return dict(token, identity=list(before))
-        except BaseException:
-            self._failure = self._failure or 'lease acquisition failed'
+        except BaseException as error:
+            # An interrupted acquisition leaves no lease verdict behind; the
+            # timeout keeps propagating and a later check still evaluates the
+            # real lease state instead of reporting a synthetic failure.
+            if not interrupted(error):
+                self._failure = self._failure or 'lease acquisition failed'
             raise
         finally:
             if owned is not None:

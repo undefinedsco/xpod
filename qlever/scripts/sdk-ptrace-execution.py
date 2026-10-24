@@ -91,6 +91,15 @@ class CaptureReservation:
             b.chunk_reserved-=self.reserved;self.reserved=0;self.active=False
 SEIZE=0x4206;INTERRUPT=0x4207;GETEVENTMSG=0x4201;SYSCALL=24;WALL=0x40000000
 OPTIONS=1|2|4|8|16|32|64|0x00100000
+
+def expected_oserror(error,errnos):
+    """True only for a named kernel errno; an interrupted syscall re-raises.
+
+    A caller-owned SIGALRM raises ``TimeoutError`` (``errno is None``) from
+    inside these syscalls. Treating it as an expected open/stat failure would
+    hide the actual observation deadline; only real kernel codes are absorbed.
+    """
+    return isinstance(error,OSError) and error.errno in errnos
 MAX=16*1024**2
 def close_child_observer_retained(descriptors):
     """Drop observer-only fork copies before the initial authority barrier.
@@ -165,14 +174,17 @@ class EncodedShardedRaw:
         self.observer.claim(count,category='raw-wire');self.total+=count
     def open_next(self):
         path=self.observer.out/(self.name_prefix+'.trace-'+str(len(self.paths)).zfill(4)+'.jsonl.gz');self.paths.append(path)
-        self.writer=raw_wire_codec.RawWriter(path,claim=self.charge,check=self.observer.check,maximum_logical=self.maximum,maximum_encoded=self.maximum)
+        self.writer=raw_wire_codec.RawWriter(path,claim=self.charge,check=self.observer.check,record_check=getattr(self.observer,'check_deadline',None),maximum_logical=self.maximum,maximum_encoded=self.maximum)
         self.current_logical=0
     def finish_current(self):
         self.references[str(self.paths[-1])]=self.writer.finish()
-    def write(self,data):
+    def write(self,data,*,bracketed=False):
         assert not self.finished,'raw stream already closed'
         if self.current_logical+len(data)>self.maximum:self.finish_current();self.open_next()
-        self.writer.write_record(data);self.current_logical+=len(data)
+        if bracketed and getattr(self.observer,'check_deadline',None) is not None:
+            self.writer.write_record(data,bracketed=True)
+        else:self.writer.write_record(data)
+        self.current_logical+=len(data)
     def flush(self):pass  # gzip buffering is bounded; finish owns the trailer/fsync.
     def tell(self):return self.total
     def finish(self):
@@ -427,25 +439,37 @@ class Observer:
         if progress is None:return self.emit_original(row)
         return self.instrument('emit',self.emit_original,row)
     def emit_original(self,row):
-        self.check();self.seq+=1;row=dict(row,sequence=self.seq,phase=self.current_phase,observedUnixNs=str(time.time_ns()),**(dict(observedMonotonicNs=str(time.monotonic_ns())) if getattr(self,'generated_vma_output',False) else {}));data=None
-        if row.get('original',{}).get('storage'):
-            if row['kind']=='write-original':row['storageIdentity']=self.chunk_identity(row['original'])
-            else:assert any(capture['original']==row['original'] for capture in self.captures),'chunk reference lacks earlier write snapshot'
-        elif getattr(self,'capture_content_entities',False) and row.get('kind') in ['fd-capture','prepared-build-input-original','write-original','toolchain-original'] and 'original' in row:
-            entity=self.register_capture_entity(row['original']);assert row.get('originalEntityIdentity',entity)==entity,'physical storage identity differs';row['originalEntityIdentity']=entity
-        parts=self.raw_encoder.encode(row) if getattr(self,'indexed_raw_records',False) else [(json.dumps(row,sort_keys=True)+'\n').encode()]
-        size=sum(map(len,parts));assert size<=65536,'actual raw record exceeds fixed range bound'
-        assert self.logical_raw_bytes+size<=self.raw_logical_limit,'cumulative logical raw wire bound'
-        self.logical_raw_bytes+=size
-        if not self.compressed_raw:self.claim(size,category='raw-wire',context=dict(role='raw-record',rawKind=row['kind']))
-        for data in parts:self.raw.write(data)
-        self.raw.flush()
-        if self.generated_vma:self.generated_vma.record(row)
-        if getattr(self,'capture_content_entities',False) and row.get('kind') in ['fd-capture','prepared-build-input-original','write-original','toolchain-original'] and 'original' in row and 'originalReuse' not in row and 'storage' not in row['original']:
-            ref=row['original'];scope=('maps',)if getattr(self,'capture_maps_content_entities',False)and row.get('captureKind')=='maps'else ()
-            self.content_capture_pool.setdefault((self.current_phase,*scope,ref['bytes'],ref['sha256']),row)
-        progress=self.phase_progress()
-        if progress is not None:progress.observe_boundary(row)
+        # One complete live validation brackets this single record publication.
+        # Encoding/compression/write of this same already-captured row is pure
+        # local work: it pays only the cheap deadline/stdio refusal per
+        # iteration (record_check). The trailing check runs on success AND on
+        # every exception, so an altered lease/source/ownership state can never
+        # let a row escape; no validated state is reused across records.
+        self.check()
+        try:
+            self.seq+=1;row=dict(row,sequence=self.seq,phase=self.current_phase,observedUnixNs=str(time.time_ns()),**(dict(observedMonotonicNs=str(time.monotonic_ns())) if getattr(self,'generated_vma_output',False) else {}));data=None
+            if row.get('original',{}).get('storage'):
+                if row['kind']=='write-original':row['storageIdentity']=self.chunk_identity(row['original'])
+                else:assert any(capture['original']==row['original'] for capture in self.captures),'chunk reference lacks earlier write snapshot'
+            elif getattr(self,'capture_content_entities',False) and row.get('kind') in ['fd-capture','prepared-build-input-original','write-original','toolchain-original'] and 'original' in row:
+                entity=self.register_capture_entity(row['original']);assert row.get('originalEntityIdentity',entity)==entity,'physical storage identity differs';row['originalEntityIdentity']=entity
+            parts=self.raw_encoder.encode(row) if getattr(self,'indexed_raw_records',False) else [(json.dumps(row,sort_keys=True)+'\n').encode()]
+            size=sum(map(len,parts));assert size<=65536,'actual raw record exceeds fixed range bound'
+            assert self.logical_raw_bytes+size<=self.raw_logical_limit,'cumulative logical raw wire bound'
+            self.logical_raw_bytes+=size
+            if not self.compressed_raw:self.claim(size,category='raw-wire',context=dict(role='raw-record',rawKind=row['kind']))
+            for data in parts:
+                if isinstance(self.raw,EncodedShardedRaw):self.raw.write(data,bracketed=True)
+                else:self.raw.write(data)
+            self.raw.flush()
+            if self.generated_vma:self.generated_vma.record(row)
+            if getattr(self,'capture_content_entities',False) and row.get('kind') in ['fd-capture','prepared-build-input-original','write-original','toolchain-original'] and 'original' in row and 'originalReuse' not in row and 'storage' not in row['original']:
+                ref=row['original'];scope=('maps',)if getattr(self,'capture_maps_content_entities',False)and row.get('captureKind')=='maps'else ()
+                self.content_capture_pool.setdefault((self.current_phase,*scope,ref['bytes'],ref['sha256']),row)
+            progress=self.phase_progress()
+            if progress is not None:progress.observe_boundary(row)
+        finally:
+            self.check()
         return row
     def wait_one(self):
         progress=self.phase_progress()
@@ -531,7 +555,7 @@ class Observer:
                 if not row['stopped'] and not row['exited']:
                     try:single.trace(INTERRUPT,pid)
                     except OSError as error:
-                        if error.errno not in [errno.EIO,errno.ESRCH]:raise
+                        if not expected_oserror(error,[errno.EIO,errno.ESRCH]):raise
             def terminal_peer(pid,row):
                 terminal=row.get('terminalAuthority')
                 return getattr(self,'serialize_terminal_syscalls',False)and terminal and terminal['closed']and terminal.get('resumed')and state(pid)=='Z'
@@ -730,17 +754,19 @@ class Observer:
         row=self.emit(dict(kind='write-original',original=dict(path=name,bytes=count,sha256=digest.hexdigest())))
         self.captures.append(row);self.capture_bytes+=count;return row['original']
     def fd_blocks(self,reader,size):
+        # Streamed blocks stay a true boundary: callers bracket the full read
+        # and full digest. Iterations only pay the cheap deadline/stdio check.
         offset=0
         while offset<size:
-            self.check();block=os.pread(reader,min(65536,size-offset),offset);assert block,'short held write image'
+            self.check_deadline();block=os.pread(reader,min(65536,size-offset),offset);assert block,'short held write image'
             offset+=len(block);yield block
     def original_blocks(self,ref):
         if ref.get('storage'):
-            yield from chunk_store.blocks(self.capture_dir,ref['storage']['manifest'],self.check)
+            yield from chunk_store.blocks(self.capture_dir,ref['storage']['manifest'],self.check_deadline)
             return
         with (self.capture_dir/ref['path']).open('rb') as stream:
             while True:
-                self.check();block=stream.read(65536)
+                self.check_deadline();block=stream.read(65536)
                 if not block:break
                 yield block
     def capture_write(self,pid,fd):
@@ -1113,7 +1139,7 @@ class Observer:
             try:
                 local=os.open('/proc/'+str(pid)+'/fd/'+str(descriptor),os.O_RDONLY|os.O_CLOEXEC|os.O_NONBLOCK) if descriptor is not None else self.lifetime_open(pid,lexical)
             except OSError as error:
-                if error.errno not in LIFETIME_OPEN_ERRORS:raise
+                if not expected_oserror(error,LIFETIME_OPEN_ERRORS):raise
                 self.tool_unresolved(pid,'toolchain-lease-open-unavailable',role=role,actualPath=lexical[:4096],errorCode=error.errno,entrySequence=entry_sequence,barrierSequence=barrier_sequence,source=source)
                 return None
             value=os.fstat(local);ident=probe.identity(value)
@@ -1170,7 +1196,7 @@ class Observer:
         try:
             try:local=self.lifetime_open(pid,interpreter)
             except OSError as error:
-                if error.errno not in LIFETIME_OPEN_ERRORS:raise
+                if not expected_oserror(error,LIFETIME_OPEN_ERRORS):raise
                 self.tool_unresolved(pid,'toolchain-lease-interpreter-open-unavailable',role='interpreter',actualPath=interpreter[:4096],errorCode=error.errno,entrySequence=entry_sequence,barrierSequence=barrier_sequence)
                 return
             value=os.fstat(local);next_identity=probe.identity(value)
@@ -1257,11 +1283,17 @@ class Observer:
         with open(path,'rb')as source:
             before=identity(os.fstat(source.fileno()));named=identity(os.stat(path,follow_symlinks=False))
             assert stat.S_ISREG(before[2])and before[3]==0 and before[6]==1 and before==named,'actual proc maps descriptor/named identity differs'
-            while True:
-                self.check();block=source.read(65536)
-                if not block:break
-                assert len(data)+len(block)<=self.tool_metadata_bytes,'bounded actual maps required'
-                data.extend(block);digest.update(block)
+            # Full live validation brackets this one read-only maps body; the
+            # block iterations are pure local copying and pay only the cheap
+            # deadline/stdio refusal. The trailing check still validates.
+            self.check()
+            try:
+                while True:
+                    self.check_deadline();block=source.read(65536)
+                    if not block:break
+                    assert len(data)+len(block)<=self.tool_metadata_bytes,'bounded actual maps required'
+                    data.extend(block);digest.update(block)
+            finally:self.check()
             observed=(len(data),digest.hexdigest());after=identity(os.fstat(source.fileno()));assert before==after==identity(os.stat(path,follow_symlinks=False)),'actual complete maps FD changed'
             reused=self.prior_content_entity(observed,scope=('maps',));extra={}
             if reused is None:
@@ -1336,7 +1368,7 @@ class Observer:
                 captured=self.emit(dict(kind='toolchain-exec-path-entry',pid=pid,barrierSequence=barrier['sequence'],entrySequence=entry['sequence'],syscall=entry['nr'],entryPath=raw_path,lexicalPath=lexical,scope='actual entry-stop string only; actual executable FD is independently captured'))
                 self.tasks[pid]['toolExecPath']=captured
             except OSError as error:
-                if error.errno not in [errno.EIO,errno.EFAULT,errno.EPERM,errno.EACCES,errno.ENOENT]:raise
+                if not expected_oserror(error,[errno.EIO,errno.EFAULT,errno.EPERM,errno.EACCES,errno.ENOENT]):raise
                 self.tool_unresolved(pid,'exec-entry-path-original-unavailable',entrySequence=entry['sequence'],errorCode=error.errno)
             except UnicodeError:self.tool_unresolved(pid,'exec-entry-path-non-UTF8',entrySequence=entry['sequence'])
             except ValueError as error:
@@ -1355,6 +1387,7 @@ class Observer:
                     lease=self.lifetime_acquisition(pid,lexical or '/proc/'+str(pid)+'/fd/'+str(descriptor),'executable',entry['sequence'],barrier['sequence'],descriptor=descriptor,source='execveat-fd' if descriptor is not None else 'lexical',collected=collected)
                     if lease is not None:self.tasks[pid]['toolExecLease']=dict(sequence=lease['sequence'],identities=[list(value) for value in collected],entrySequence=entry['sequence'])
                 except OSError as error:
+                    if not expected_oserror(error,LIFETIME_OPEN_ERRORS):raise
                     self.tool_unresolved(pid,'toolchain-lease-acquisition-failed',role='executable',entrySequence=entry['sequence'],barrierSequence=barrier['sequence'],errorClass=type(error).__name__)
             else:self.tool_unresolved(pid,'toolchain-lease-target-unresolved',entrySequence=entry['sequence'],barrierSequence=barrier['sequence'],hasRawPath=bool(raw_path))
         elif kind=='exec':
@@ -1364,7 +1397,7 @@ class Observer:
             path='/proc/'+str(pid)+'/exe'
             try:reader=os.open(path,os.O_RDONLY|os.O_CLOEXEC)
             except OSError as error:
-                if error.errno not in [errno.EPERM,errno.EACCES,errno.ENOENT,errno.ESRCH]:raise
+                if not expected_oserror(error,[errno.EPERM,errno.EACCES,errno.ENOENT,errno.ESRCH]):raise
                 self.tool_unresolved(pid,'exec-stop-executable-FD-unavailable',execEntrySequence=entry['sequence'],execEventSequence=event['sequence'],errorCode=error.errno);return
             try:
                 identity=probe.identity(os.fstat(reader));resolved=os.readlink(path);original=self.tool_original(reader,resolved)
@@ -1410,7 +1443,7 @@ class Observer:
                             else:self.tool_unresolved(pid,'actual-mmap-FD-changed-or-nonregular',entrySequence=entry['sequence'])
                         finally:os.close(reader)
                     except OSError as error:
-                        if error.errno not in [errno.EPERM,errno.EACCES,errno.ENOENT,errno.ESRCH]:raise
+                        if not expected_oserror(error,[errno.EPERM,errno.EACCES,errno.ENOENT,errno.ESRCH]):raise
                         self.tool_unresolved(pid,'actual-mmap-FD-original-unavailable',entrySequence=entry['sequence'],errorCode=error.errno)
                 lease=self.tasks[pid].pop('toolMmapLease',None)
                 if lease is not None and not(anonymous or fd is None or lease['identity']!=fd['identity'] or lease['entrySequence']!=entry['sequence']):

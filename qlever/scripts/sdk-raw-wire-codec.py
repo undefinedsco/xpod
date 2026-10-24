@@ -32,14 +32,22 @@ def _positive(name, value):
 
 
 class RawWriter:
-    """Write one gzip member directly to a new exclusive regular file."""
+    """Write one gzip member directly to a new exclusive regular file.
+
+    ``check`` is the full live validation callback. ``record_check`` is an
+    optional cheaper refusal (deadline/stdio only) used for the pure-local
+    compression/write iterations of one already-bracketed record; it never
+    replaces the entry/exit ``check`` calls.
+    """
 
     def __init__(self, path, *, claim, check, maximum_logical,
-                 maximum_encoded, maximum_record=65536):
-        if not callable(claim) or not callable(check):
+                 maximum_encoded, maximum_record=65536, record_check=None):
+        if not callable(claim) or not callable(check) or (
+                record_check is not None and not callable(record_check)):
             raise RawWireError('claim and check callbacks are required')
         self._claim = claim
         self._check_callback = check
+        self._record_check_callback = record_check or check
         self.maximum_logical = _nonnegative('maximum_logical', maximum_logical)
         self.maximum_encoded = _nonnegative('maximum_encoded', maximum_encoded)
         self.maximum_record = _positive('maximum_record', maximum_record)
@@ -96,6 +104,9 @@ class RawWriter:
     def _check(self):
         self._check_callback()
 
+    def _record_check(self):
+        self._record_check_callback()
+
     def _fail(self, reason):
         if self._failure is None:
             self._failure = str(reason)
@@ -120,25 +131,32 @@ class RawWriter:
                 raise RawWireError('raw wire write made no bounded progress')
             view = view[written:]
 
-    def _emit_encoded(self, output):
+    def _emit_encoded(self, output, *, bracketed=False):
         if not output:
             return
+        check = self._record_check if bracketed else self._check
         for offset in range(0, len(output), CHUNK):
             block = output[offset:offset + CHUNK]
-            self._check()
+            check()
             if self._encoded_bytes + len(block) > self.maximum_encoded:
                 raise RawWireError('encoded raw wire byte bound exceeded')
             # Charge the exact retained range before the first byte of it can
             # appear in the file.  A later short write can only overcharge.
             self._claim(len(block))
-            self._check()
+            check()
             self._write_all(block)
             self._encoded.update(block)
             self._encoded_bytes += len(block)
-            self._check()
+            check()
 
-    def write_record(self, raw):
-        """Append one exact LF-terminated row without reinterpreting it."""
+    def write_record(self, raw, *, bracketed=False):
+        """Append one exact LF-terminated row without reinterpreting it.
+
+        ``bracketed=True`` means the caller already validated at the entry and
+        will validate again at its own exit, so this record's local compression
+        and write iterations only use ``record_check``. Plain calls keep the
+        original full check on entry, iterations and exit.
+        """
         self._ready()
         if type(raw) is not bytes:
             self._reject('raw record must be bytes')
@@ -150,16 +168,25 @@ class RawWriter:
             self._reject('raw record must have exactly one final LF')
         if self._logical_bytes + len(raw) > self.maximum_logical:
             self._reject('logical raw wire byte bound exceeded')
+        if bracketed:
+            check = self._record_check
+        else:
+            check = self._check
         try:
-            self._check()
+            # A full live validation brackets this one publication. When the
+            # caller owns that bracket, the pure-local feed/encode/write
+            # iterations only pay its cheap refusal. A failure still closes
+            # the writer, so no partial success can escape.
+            check()
             for offset in range(0, len(raw), FEED):
-                self._check()
+                self._record_check()
                 self._emit_encoded(
-                    self._compressor.compress(raw[offset:offset + FEED]))
+                    self._compressor.compress(raw[offset:offset + FEED]),
+                    bracketed=True)
             self._logical.update(raw)
             self._logical_bytes += len(raw)
             self._records += 1
-            self._check()
+            check()
         except BaseException:
             self._fail('raw wire record write failed')
             raise

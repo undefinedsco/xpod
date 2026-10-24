@@ -23,10 +23,10 @@ function recipes(file:string,name:string):unknown[]{
  const scope:{result?:unknown[]}={};runInNewContext(ts.transpileModule(declarations+'\nresult='+name+';',{compilerOptions:{target:ts.ScriptTarget.ES2021,module:ts.ModuleKind.None}}).outputText,scope,{timeout:1000});return scope.result!;
 }
 test('SDK chunk addition preserves all 76 historical helper and observer whole recipes',()=>{
- for(const [file,name,key,count] of [['qlever-sdk-generation.ts','REVIEWED_CONTROLLER_HELPER_GROUPS','helpers',28],['qlever-sdk-generation.ts','REVIEWED_OBSERVER_GROUPS','observer',37],['qlever-sdk-fetchcontent.ts','REVIEWED_HELPER_GROUPS','fetch',31]]as const){
+ for(const [file,name,key,count] of [['qlever-sdk-generation.ts','REVIEWED_CONTROLLER_HELPER_GROUPS','helpers',29],['qlever-sdk-generation.ts','REVIEWED_OBSERVER_GROUPS','observer',38],['qlever-sdk-fetchcontent.ts','REVIEWED_HELPER_GROUPS','fetch',32]]as const){
   const groups=recipes(file,name);expect(groups).toHaveLength(count);expect(groups.slice(0,before[key].length).map(hash)).toEqual(before[key]);
   const last=groups.at(-1)!;const entries=Array.isArray(last)?last as [string,string][]:Object.entries(last as Record<string,string>);
-  expect(entries.some(([name])=>name.endsWith('sdk-original-chunk-store.py'))).toBe(true);
+  expect(entries.some(([name])=>name.endsWith('sdk-original-chunk-store.py'))).toBe(true);expect(entries.some(([name])=>name.endsWith('sdk-generated-vma-originals.py'))).toBe(true);
   for(const [name,expected]of entries){const path=name.startsWith('qlever/')?name:'qlever/scripts/'+name;expect(createHash('sha256').update(fs.readFileSync(path)).digest('hex')).toBe(expected);}
  }
 });

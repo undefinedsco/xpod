@@ -135,11 +135,49 @@ def cohort_reservation_bytes(peer_count,cohort_peers,metadata_maximum,file_bytes
     need(type(cohort_peers) is int and 0<=cohort_peers<=peer_count,'complete bounded same-MM peer count required')
     return reservation_bytes(peer_count,metadata_maximum,file_bytes,selected_rebinding)+2*cohort_peers*(metadata_maximum+65536)+65536
 
+GEOMETRY_KEYS=('startHex','endHex','permissions','fileOffset','deviceMajor','deviceMinor','inode')
+
 def numeric_mapping_geometry(mappings,check=lambda:None):
-    keys=('startHex','endHex','permissions','fileOffset','deviceMajor','deviceMinor','inode');result=[]
+    """Complete pure-local geometry projection; ``check`` is a caller policy.
+
+    The observer passes its cheap per-iteration refusal here, never a full
+    lease sweep: the parsed body is pure local data, while lease/source
+    validation stays bracketed around the real /proc read that produced it.
+    """
+    result=[]
     for row in mappings:
-        check();need(all(key in row for key in keys),'complete parsed numeric VMA required');result.append(tuple(row[key] for key in keys))
+        check();need(all(key in row for key in GEOMETRY_KEYS),'complete parsed numeric VMA required');result.append(tuple(row[key] for key in GEOMETRY_KEYS))
     return result
+
+def same_mapping_geometry(first,second,check=lambda:None):
+    """Bounded compare of two complete projections with one iterated policy."""
+    need(len(first)==len(second),'same-MM numeric VMA geometry differs')
+    for left,right in zip(first,second):
+        check();need(left==right,'same-MM numeric VMA geometry differs')
+    return True
+
+def cohort_mapping_geometry(parsed_members,bracket,local=lambda:None):
+    """One coherent same-MM geometry primitive shared by every actual caller.
+
+    ``parsed_members`` is the complete ordered list of pure-local parsed maps
+    for one stopped cohort. ``bracket`` is the caller's full live validation at
+    the entry/exit boundary (lease/source/ownership); ``local`` is only the
+    cheap deadline/stdio refusal iterated over the local projection. Identity
+    of the complete numeric geometry stays exact.
+    """
+    need(isinstance(parsed_members,list) and 1<=len(parsed_members)<=128,'bounded complete ordered cohort mappings required')
+    bracket()
+    try:
+        values=[numeric_mapping_geometry(parsed,local) for parsed in parsed_members]
+        geometry=values[0]
+        for value in values[1:]:same_mapping_geometry(value,geometry,local)
+    finally:
+        bracket()
+    return geometry
+
+def verify_peer_geometry(peer_maps,owner_maps,bracket,local=lambda:None):
+    """Peer/owner geometry through the same shared cohort primitive."""
+    return cohort_mapping_geometry([owner_maps,peer_maps],bracket,local)
 
 def complete_memory_cohort(mm,pid,barrier=None):
     need(pid in mm.domains and 0<len(mm.domains)<=128,'bounded actual memory domain required')
@@ -439,9 +477,9 @@ class Runtime:
         need((domain,members)==(self.active['memoryDomain'],self.active['memoryDomainMembers']),'wait cohort changed')
         rows=[];baseline=None
         for member in members:
-            raw,parsed=self.maps(member);mapping=wait_word_mapping(parsed,address,allow_heap=self.model==PARKED_WAIT_MODEL);geometry=numeric_mapping_geometry(parsed,self.b.check)
+            raw,parsed=self.maps(member);mapping=wait_word_mapping(parsed,address,allow_heap=self.model==PARKED_WAIT_MODEL);geometry=numeric_mapping_geometry(parsed,self.b.check_deadline)
             if baseline is None:baseline=geometry
-            else:need(geometry==baseline,'same MM wait maps differ')
+            else:same_mapping_geometry(geometry,baseline,self.b.check_deadline)
             rows.append(dict(pid=member,original=raw['original'],mapping=mapping))
         word=self.b.generated_wait_word(pid,address);verify_wait_word(raw_record(word),entry,self.active,model=self.model)
         return rows,raw_record(word)
@@ -500,7 +538,7 @@ class Runtime:
                 for peer,task in (sorted(b.tasks.items()) if self.model in COHORT_MODELS else b.tasks.items()):
                     if task['exited'] or peer==pid:continue
                     other,items=self.maps(peer);need(not matching_maps(items,current),'peer already maps output backing')
-                    if op=='map' and self.model in COHORT_MODELS and peer in cohort:need(numeric_mapping_geometry(items,b.check)==numeric_mapping_geometry(values,b.check),'same-MM pre-map numeric geometry differs')
+                    if op=='map' and self.model in COHORT_MODELS and peer in cohort:verify_peer_geometry(items,values,b.check,b.check_deadline)
                     common.setdefault('peerMaps',[]).append(dict(pid=peer,original=other['original']))
                 common.update(beforeMapsOriginal=maps['original'],aliases=aliases)
                 if op=='map':
@@ -512,7 +550,7 @@ class Runtime:
                     domain,cohort=self.mapping_domain(pid,barrier);need((domain,cohort)==(self.active['memoryDomain'],self.active['memoryDomainMembers']),'active mmap cohort changed before unmap');same=[]
                     for peer in cohort:
                         if peer==pid:continue
-                        other,items=self.maps(peer);need(numeric_mapping_geometry(items,b.check)==numeric_mapping_geometry(values,b.check) and verify_established(items,self.active['address'],self.active['page'],current,self.active['length'])==mapping,'same-MM pre-unmap VMA differs');same.append(dict(pid=peer,original=other['original']))
+                        other,items=self.maps(peer);verify_peer_geometry(items,values,b.check,b.check_deadline);need(verify_established(items,self.active['address'],self.active['page'],current,self.active['length'])==mapping,'same-MM pre-unmap VMA differs');same.append(dict(pid=peer,original=other['original']))
                     common.update(memoryDomainMembers=cohort,sameMemoryDomainMaps=same)
         row=b.emit(common);pending.update(window=row,preBarrier=barrier);return row
     def finish(self,pid,entry,exit):
@@ -571,7 +609,7 @@ class Runtime:
                 domain,cohort=self.mapping_domain(pid,barrier);need((domain,cohort)==(pending['memoryDomain'],pending['memoryDomainMembers']),'actual mmap post-stop cohort differs');same=[]
                 for peer in cohort:
                     if peer==pid:continue
-                    other,items=self.maps(peer);need(numeric_mapping_geometry(items,b.check)==numeric_mapping_geometry(confirmed,b.check) and verify_established(items,exit['result'],window['pageBytes'],current,current[3])==mapping,'same-MM post-map VMA differs');same.append(dict(pid=peer,original=other['original']))
+                    other,items=self.maps(peer);verify_peer_geometry(items,confirmed,b.check,b.check_deadline);need(verify_established(items,exit['result'],window['pageBytes'],current,current[3])==mapping,'same-MM post-map VMA differs');same.append(dict(pid=peer,original=other['original']))
                 extra=dict(memoryDomainMembers=cohort,postMapPeerMaps=same)
             row=b.emit(dict(common,identity=current,kernelMappingEvidence=evidence,mapsOriginal=maps['original'],mapping=mapping,memoryDomain=self.mapping_domain(pid)[0],windowDeadlineMonotonicNs=str(int(end*1e9)),parentDeadlineMonotonicNs=str(int(b.waiter.parent_deadline*1e9)),**extra))
             primary=sys.exc_info()[1];errors=pending['procLease'].close()+self.cleanup_fds([pending['selectedHeld']]);need(not errors,'mmap lease cleanup failed');pending.pop('procLease');pending.pop('selectedHeld')
@@ -590,7 +628,7 @@ class Runtime:
             for peer,task in (sorted(b.tasks.items()) if self.model in COHORT_MODELS else b.tasks.items()):
                 if task['exited'] or peer==pid:continue
                 other,items=self.maps(peer);need(not matching_maps(items,current),'peer backing alias remained at checkpoint')
-                if self.model in COHORT_MODELS and peer in cohort:need(numeric_mapping_geometry(items,b.check)==numeric_mapping_geometry(values,b.check),'same-MM final VMA geometry differs')
+                if self.model in COHORT_MODELS and peer in cohort:verify_peer_geometry(items,values,b.check,b.check_deadline)
                 peers.append(dict(pid=peer,original=other['original']))
             row=b.emit(dict(common,path=origin['path'],identity=current,retainedIdentity=current,original=ref,afterMapsOriginal=maps['original'],afterPeerMaps=peers,epochSequence=self.active['sequence'],originSequence=origin['sequence'],**post_extra))
             token=self.active['token'];self.active=None;b.waiter.restore(token);self.reserved=0;self.spending_thread=None;origin.update(identity=current,data=(ref['bytes'],ref['sha256']),original=ref,checkpointed=True);self.checkpoints[tuple(current[:2])]=row

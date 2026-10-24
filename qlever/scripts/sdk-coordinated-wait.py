@@ -108,12 +108,16 @@ def runtime_type(core):
                 row=self.note('window',pid=pid,entrySequence=entry['sequence'],members=members,barrierSequence=barrier['sequence'],wordOriginal=base.raw_record(word),procLease=pending['lease'].first,cohortMaps=self.last_samples,epochSequence=self.active['sequence'],originSequence=self.active['origin']['sequence'],qualification=False,**(dict(deferredPeerEntries=[dict(pid=p,entrySequence=call['sequence'])for p,call in sorted(self.deferred.items())],initialPeerEntries=[dict(pid=p,entrySequence=call['sequence'])for p,call in sorted(self.round['initialEntries'].items())])if self.model==base.PARKED_WAIT_MODEL else {}))
                 pending['window']=row;return row
         def geometry(self):
-            values=[];samples=[]
+            # One shared cohort primitive: full live validation brackets the
+            # whole stopped-cohort sweep, while the pure-local projection only
+            # pays the cheap deadline/stdio refusal per row.
+            parsed_members=[];samples=[]
             for pid in self.round['members']:
                 raw,parsed=self.maps(pid)
                 if 'initialMappings'not in self.round:self.round['initialMappings']=parsed
-                values.append(base.numeric_mapping_geometry(parsed,self.b.check));samples.append(dict(pid=pid,original=raw['original']))
-            assert all(value==values[0]for value in values),'same-MM maps differ';self.last_samples=samples;return values[0]
+                parsed_members.append(parsed);samples.append(dict(pid=pid,original=raw['original']))
+            geometry=base.cohort_mapping_geometry(parsed_members,self.b.check,self.b.check_deadline)
+            self.last_samples=samples;return geometry
         def kernel_state(self):
             current=self.round;lease=current['lease'];pid=current['owner'];entry=current['entry']
             directory=base.identity(os.fstat(lease.directory));held=base.identity(os.fstat(lease.stat))
