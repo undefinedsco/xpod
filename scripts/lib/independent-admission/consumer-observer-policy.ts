@@ -1,7 +1,9 @@
 import fs from 'node:fs';
 import {fileURLToPath} from 'node:url';
 import {createHash} from 'node:crypto';
-import rowsDiagnosticCurrent from './consumer-execution-current.json';
+import canonicalCurrent from './consumer-execution-current.json';
+/** Immutable previous closure: every published group derives from these bytes. */
+import rowsDiagnosticCurrent from './consumer-execution-pre-thread.json';
 const clone3Current=Object.freeze(rowsDiagnosticCurrent.map(row=>Object.freeze({...row,sha256:({"qlever/scripts/sdk-generated-source-originals.py":"17ca66f7b0366dbd19b118b45ff547a4d5a3e6de4eb59eb8d37a5bc65e6bd647","qlever/scripts/sdk-ptrace-execution.py":"3a9e88f531b7b56647543c66df5b142b553a5679f044ae4499eb364c46975d59","scripts/lib/independent-admission/qlever-sdk-fetchcontent.ts":"f547d2043b9e1110e5a0ac6571f78b49aac129ddac67e2830064c1fb23b22e6f","scripts/lib/independent-admission/qlever-sdk-generation.ts":"5253f94cc271ace8cbf26476f7f5f149ca1d9f278f423ec25011dce78578b340","scripts/lib/independent-admission/qlever-sdk-origin-policy.ts":"5298310d668855808b7f2aa7b6f46ab35d91de6f1051f9f792b5f6276e5c42aa","scripts/lib/independent-admission/sdk-controller-helper-groups.ts":"04d7f4700bf7b2dfdcffcafb6099527eb5a413b26311baf1913cee230b1597b2"} as Readonly<Record<string,string>>)[row.path]??row.sha256})));
 const sigqCurrent=Object.freeze(clone3Current.map(row=>Object.freeze({...row,sha256:({"qlever/scripts/sdk-generation-multiprocess-bindings.py":"ab95b8054017037fc4a0268c900f586845f3f9bfb5005d38666cc450de95130a","qlever/scripts/sdk-ptrace-execution.py":"aebf036def2daffca92d564edf05a4fa41d533cce2c3d4c42cd06ac60dacb219","scripts/lib/independent-admission/qlever-sdk-fetchcontent.ts":"0b9a4065fd88d1012ce864c261aa5d8234ee13cd26b12582fbe1a27fad597505","scripts/lib/independent-admission/qlever-sdk-generation.ts":"65460ddfeec65ea4ae5c711d8dfe148143189a224b1838c9e50dd0ca7cb3ef47","scripts/lib/independent-admission/qlever-sdk-observed-tools.ts":"80235267a58530656e1b7e0de10f3f4cb977ecc96b5e0e23928c0964a137f2b0","scripts/lib/independent-admission/qlever-sdk-origin-policy.ts":"84b84122e9fa3c2da003435a3a4ec5cb969c29cd0379b0c336b4b4652963f309","scripts/lib/independent-admission/sdk-controller-helper-groups.ts":"f1d7b967ec318b9e99b0d8016f0a9e262898659888e949ba305a8b04fb76f5f4","qlever/scripts/sdk-executable-memory-policy.py":"de61ee9f6f71b871e68fd279b1672e6947c2bbcbc80e3f4a92b38e1a99da57bb"} as Readonly<Record<string,string>>)[row.path]??row.sha256})));
 const lifetimeCurrent=Object.freeze(sigqCurrent.map(row=>Object.freeze({...row,sha256:({"qlever/scripts/sdk-ptrace-execution.py":"0a4fc7ee3741d900a2176ebe99256347ba978d316a1d9fdced310f68df8cbf15","qlever/scripts/sdk-tool-provider-originals.py":"f3a158fce95fa1c724c8e7a0e70626f8e495484fc8fbd968c8cc8499db22b434","scripts/lib/independent-admission/qlever-sdk-fetchcontent.ts":"438ccc8f6765548687de7d2534546114807da8b7aaf677e60fcdce0de879f77b","scripts/lib/independent-admission/qlever-sdk-generation.ts":"58f654ce7e567a3f3eb1f7858f74e3ae0cd55f09dc786518730d2bb369eadebd","scripts/lib/independent-admission/qlever-sdk-origin-policy.ts":"ff214a860593d84c457b7f51200c1632e80fb6b1c22fc1b65c5a4f9980a22a71","scripts/lib/independent-admission/sdk-controller-helper-groups.ts":"2f8ccd3a7d7b9fbde20845abcf8d08b54ff8b3da1aa0b11acd5e685aec9a8c3f"} as Readonly<Record<string,string>>)[row.path]??row.sha256})));
@@ -360,7 +362,7 @@ if(!before.isFile()||before.nlink!==1n||before.size>2n*1024n**2n)throw Error('Bo
 const bytes=fs.readFileSync(fd),after=fs.fstatSync(fd,{bigint:true}),named=fs.lstatSync(file,{bigint:true});
 for(const row of [after,named])if(!['dev','ino','mode','size','nlink','mtimeNs','ctimeNs'].every(key=>before[key as keyof typeof before]===row[key as keyof typeof row]))throw Error('Controller policy original changed at module load');
 if(BigInt(bytes.length)!==before.size)throw Error('Controller policy original truncated');
-if(name.endsWith('.json')&&JSON.stringify(JSON.parse(bytes.toString('utf8')))!==JSON.stringify(rowsDiagnosticCurrent))throw Error('Controller policy imported data changed');
+if(name.endsWith('.json')&&JSON.stringify(JSON.parse(bytes.toString('utf8')))!==JSON.stringify(canonicalCurrent))throw Error('Controller policy imported data changed');
 return Object.freeze({path:'scripts/lib/independent-admission/'+name,sha256:createHash('sha256').update(bytes).digest('hex')});
 }finally{fs.closeSync(fd);}
 }));
@@ -718,8 +720,14 @@ const clone3Recipe=(g:GitHubSourceBindingGroup)=>indexedControllerRecipe(rebindN
 const PRE_ROWS_DIAGNOSTIC_CONSUMER_SOURCE_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...PRE_CLONE3_CONSUMER_SOURCE_GROUPS,clone3Recipe(PRE_CLONE3_CONSUMER_SOURCE_GROUPS[PRE_CLONE3_CONSUMER_SOURCE_GROUPS.length-1]!)]);
 const PRE_ROWS_DIAGNOSTIC_CI_SOURCE_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...PRE_CLONE3_CI_SOURCE_GROUPS,...PRE_CLONE3_CI_SOURCE_GROUPS.slice(-2).map(clone3Recipe)]);
 
-const rowsDiagnosticRecipe=(g:GitHubSourceBindingGroup)=>indexedControllerRecipe(rebindNoticeCurrent(g,rowsDiagnosticCurrent,CONTROLLER_POLICY_BINDINGS),'source:scripts/lib/independent-admission/qlever-sdk-generation.ts');
-export const CONSUMER_SOURCE_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...PRE_ROWS_DIAGNOSTIC_CONSUMER_SOURCE_GROUPS,rowsDiagnosticRecipe(PRE_ROWS_DIAGNOSTIC_CONSUMER_SOURCE_GROUPS[PRE_ROWS_DIAGNOSTIC_CONSUMER_SOURCE_GROUPS.length-1]!)]);
-export const CI_CONSUMER_SOURCE_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...PRE_ROWS_DIAGNOSTIC_CI_SOURCE_GROUPS,...PRE_ROWS_DIAGNOSTIC_CI_SOURCE_GROUPS.slice(-2).map(rowsDiagnosticRecipe)]);
+/** Frozen HEAD-2888 controller anchors: published whole groups bind these bytes. */
+const PRE_THREAD_CONTROLLER_POLICY_BINDINGS=Object.freeze([
+ Object.freeze({path:'scripts/lib/independent-admission/consumer-observer-policy.ts',sha256:'c59982b0b2a2e02d15957d147578b72c9c61e99e7e52dd353047dae7dafffed9'}),
+ Object.freeze({path:'scripts/lib/independent-admission/consumer-execution-current.json',sha256:'9f39a9939d627fb58b89be70bf240b7c0f322f34df288e54c8399f0da061c973'})
+]);
+const rowsDiagnosticRecipe=(g:GitHubSourceBindingGroup)=>indexedControllerRecipe(rebindNoticeCurrent(g,rowsDiagnosticCurrent,PRE_THREAD_CONTROLLER_POLICY_BINDINGS),'source:scripts/lib/independent-admission/qlever-sdk-generation.ts');
+const threadRecipe=(g:GitHubSourceBindingGroup)=>indexedControllerRecipe(rebindNoticeCurrent(g,canonicalCurrent,CONTROLLER_POLICY_BINDINGS),'source:scripts/lib/independent-admission/qlever-sdk-generation.ts');
+export const CONSUMER_SOURCE_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...PRE_ROWS_DIAGNOSTIC_CONSUMER_SOURCE_GROUPS,rowsDiagnosticRecipe(PRE_ROWS_DIAGNOSTIC_CONSUMER_SOURCE_GROUPS[PRE_ROWS_DIAGNOSTIC_CONSUMER_SOURCE_GROUPS.length-1]!),threadRecipe(PRE_ROWS_DIAGNOSTIC_CONSUMER_SOURCE_GROUPS[PRE_ROWS_DIAGNOSTIC_CONSUMER_SOURCE_GROUPS.length-1]!)]);
+export const CI_CONSUMER_SOURCE_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...PRE_ROWS_DIAGNOSTIC_CI_SOURCE_GROUPS,...PRE_ROWS_DIAGNOSTIC_CI_SOURCE_GROUPS.slice(-2).map(rowsDiagnosticRecipe),...PRE_ROWS_DIAGNOSTIC_CI_SOURCE_GROUPS.slice(-2).map(threadRecipe)]);
 freezeGitHubSourceBindingGroups(CONSUMER_SOURCE_GROUPS);
 freezeGitHubSourceBindingGroups(CI_CONSUMER_SOURCE_GROUPS);

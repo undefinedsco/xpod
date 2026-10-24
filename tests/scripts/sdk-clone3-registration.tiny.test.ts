@@ -7,8 +7,17 @@ const hash=(x:unknown)=>createHash('sha256').update(JSON.stringify(x)).digest('h
 test('Clone3/BTI registration retains all 301 complete historical source recipes',()=>{for(const[k,v]of Object.entries({api,sdk,consumer,ci}))expect(v.slice(0,before.groups[k as keyof typeof before.groups].length).map(hash)).toEqual(before.groups[k as keyof typeof before.groups]);});
 test('all 103 historical Python observer and helper recipes remain exact',()=>{
  for(const[key,hashes]of Object.entries(before.helpers)){
-  const[file,name]=key.split('#'),source=fs.readFileSync(file!,'utf8'),ast=ts.createSourceFile(file!,source,ts.ScriptTarget.Latest,true);const chunks:string[]=[];
-  for(const stmt of ast.statements)if(ts.isVariableStatement(stmt))for(const d of stmt.declarationList.declarations)if(/^(HELPERS|LOCAL_HELPERS|REVIEWED_.*|PRE_(?:LIFETIME|SIGQ|CLONE3|POSTPATCH|ROWS_DIAGNOSTIC)_.*|LIFETIME_HELPER_GROUP)$/.test(d.name.getText(ast)))chunks.push('const '+d.getText(ast)+';');
+  const[file,name]=key.split('#'),source=fs.readFileSync(file!,'utf8'),ast=ts.createSourceFile(file!,source,ts.ScriptTarget.Latest,true,ts.ScriptKind.TS);
+  // Recursive actual const-initializer dependency collection (no name whitelist).
+  const constants=new Map<string,ts.Expression>();
+  for(const statement of ast.statements)if(ts.isVariableStatement(statement)&&(statement.declarationList.flags&ts.NodeFlags.Const))for(const declaration of statement.declarationList.declarations)if(ts.isIdentifier(declaration.name)&&declaration.initializer)constants.set(declaration.name.text,declaration.initializer);
+  if(!constants.has(name))throw Error('missing top-level const '+name);
+  const needed=new Set<string>([name]),visit=(node:ts.Node):void=>{
+   if(ts.isIdentifier(node)&&!(ts.isPropertyAccessExpression(node.parent)&&node.parent.name===node)&&!(ts.isPropertyAssignment(node.parent)&&node.parent.name===node)){const initializer=constants.get(node.text);if(initializer&&!needed.has(node.text)){needed.add(node.text);visit(initializer);}}
+   ts.forEachChild(node,visit);
+  };
+  visit(constants.get(name)!);
+  const chunks:string[]=ast.statements.filter((statement):statement is ts.VariableStatement=>ts.isVariableStatement(statement)&&statement.declarationList.declarations.some(declaration=>ts.isIdentifier(declaration.name)&&needed.has(declaration.name.text))).map(node=>'const '+node.declarationList.declarations[0]!.getText(ast)+';');
   const scope:{result?:unknown[]}={};runInNewContext(ts.transpileModule(chunks.join('\n')+'\nresult='+name+';',{compilerOptions:{target:ts.ScriptTarget.ES2021,module:ts.ModuleKind.None}}).outputText,scope,{timeout:1000});expect(scope.result!.slice(0,hashes.length).map(hash)).toEqual(hashes);
  }
 });

@@ -42,7 +42,21 @@ CLONE3_SIZES=(64,80,88)
 CLONE_VM=0x100
 CLONE_VFORK=0x4000
 CLONE_CLEAR_SIGHAND=0x100000000
-CLONE3_SUPPORTED_FLAGS=CLONE_VM|CLONE_VFORK|CLONE_CLEAR_SIGHAND
+CLONE_VFORK_FLAGS=CLONE_VM|CLONE_VFORK|CLONE_CLEAR_SIGHAND
+# Actual pthread_create thread mode: shared VM/FS/FILES/SIGHAND, thread group,
+# SysV semaphore undo inheritance and the TLS/TID handshakes glibc supplies.
+CLONE_FS=0x200
+CLONE_FILES=0x400
+CLONE_SIGHAND=0x800
+CLONE_THREAD=0x10000
+CLONE_SYSVSEM=0x40000
+CLONE_SETTLS=0x80000
+CLONE_PARENT_SETTID=0x100000
+CLONE_CHILD_CLEARTID=0x200000
+CLONE_PIDFD=0x1000
+CLONE3_THREAD_FLAGS=CLONE_VM|CLONE_FS|CLONE_FILES|CLONE_SIGHAND|CLONE_THREAD|CLONE_SYSVSEM|CLONE_SETTLS|CLONE_PARENT_SETTID|CLONE_CHILD_CLEARTID
+# Fields a thread-mode struct must populate; pidfd stays forbidden for threads.
+CLONE3_THREAD_REQUIRED_FIELDS=('child_tid','parent_tid','tls')
 CLONE3_ZERO_FIELDS=('pidfd','child_tid','parent_tid','tls','set_tid','set_tid_size','cgroup')
 
 def parse_clone3_original(data,size):
@@ -53,7 +67,33 @@ def parse_clone3_original(data,size):
  for index,name in enumerate(CLONE3_FIELDS):
   if index*8+8<=size:values[name]=int.from_bytes(data[index*8:index*8+8],'little')
  flags=values['flags']
- if flags&~CLONE3_SUPPORTED_FLAGS:raise ValueError('unsupported clone3 flags')
+ thread=bool(flags&CLONE_THREAD)
+ if thread:
+  # Ordinary pthread thread creation: thread group plus shared address space,
+  # FD table, signal handlers and semaphore undo; exit_signal is zero and the
+  # TLS/TID words are real userspace pointers supplied by the library.
+  if flags&~CLONE3_THREAD_FLAGS:raise ValueError('unsupported clone3 thread flags')
+  if flags&CLONE_VFORK:raise ValueError('clone3 thread mode may not request vfork')
+  # A thread is defined by a shared address space; CLONE_THREAD without CLONE_VM
+  # is not a thread and must not be accepted as one.
+  for required in (CLONE_VM,CLONE_FS,CLONE_FILES,CLONE_SIGHAND):
+   if not flags&required:raise ValueError('clone3 thread mode requires shared VM/FS/FILES/SIGHAND')
+  if values['exit_signal']!=0:raise ValueError('clone3 thread exit signal must be zero')
+  # set_tid/cgroup are kernel-extension words: no thread may request them.
+  for name in ('set_tid','set_tid_size','cgroup'):
+   if values[name]:raise ValueError('unsupported clone3 thread field')
+  # pidfd is only meaningful with CLONE_PIDFD (not set here); without it the
+  # word is unread by the kernel and must not be asserted zero.
+  if flags&CLONE_PIDFD:
+   if not values['pidfd']:raise ValueError('clone3 thread pidfd requires a descriptor value')
+  elif values['pidfd'] and not values['child_tid']:raise ValueError('clone3 thread pidfd word without CLONE_PIDFD')
+  for name in CLONE3_THREAD_REQUIRED_FIELDS:
+   if not values[name]:raise ValueError('clone3 thread field must be a real non-zero value')
+  stack=values['stack'];stack_size=values['stack_size']
+  if not stack or not stack_size:raise ValueError('CLONE_VM requires stack and stack size')
+  if stack+stack_size>=2**64:raise ValueError('clone3 stack range overflows')
+  return dict(flags=flags,exitSignal=values['exit_signal'],stack=stack,stackSize=stack_size,size=size,thread=True,tgidShared=True,sharedFdTable=True,sharedSignalHandlers=True)
+ if flags&~CLONE_VFORK_FLAGS:raise ValueError('unsupported clone3 flags')
  has_vm=bool(flags&CLONE_VM)
  has_vfork=bool(flags&CLONE_VFORK)
  if has_vm!=has_vfork:raise ValueError('CLONE_VM and CLONE_VFORK must be used together')

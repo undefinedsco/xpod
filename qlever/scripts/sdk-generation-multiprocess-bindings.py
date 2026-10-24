@@ -135,6 +135,8 @@ def append_boundary_syscall(arch,nr,args=None):
            0xc00000b7:{23,24,25,35,36,45,46,49,52,53,56,57,215,221,222,281,436}}[arch]
     return nr in extra or nr in rules['renameOps']
 
+_THREAD_CLONE_ALLOWED=0xff|0x100|0x200|0x400|0x800|0x4000|0x8000|0x10000|0x40000|0x80000|0x100000|0x200000|0x1000000|0x100000000
+
 def inspect_shared_clone_flags(flags):
     need(type(flags) is int and flags>=0,'actual clone flags required')
     allowed=0xff|0x100|0x200|0x400|0x800|0x4000|0x8000|0x10000|0x40000|0x80000|0x100000|0x200000|0x1000000|0x100000000
@@ -1100,7 +1102,7 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                 if child is None:
                     need(exit and exit['sequence']==row['eventSequence'] and exit['isError'] is True and exit['result']<0,'clone3 failure release lacks actual negative exit');memory_released_entries.add(row['entrySequence'])
                 else:
-                    binding=child_bindings.get(child);need(event and event['pid']==row['pid'] and event['event']==(2 if original['flags']&0x4000 else 1) and binding and binding['parentPid']==row['pid'] and binding['cloneEntrySequence']==row['entrySequence'] and binding['event']==event['event'] and original['sequence']<event['sequence']<binding['sequence']<row['sequence'],'clone3 child release lacks actual matching kernel event')
+                    binding=child_bindings.get(child);need(event and event['pid']==row['pid'] and event['event']==(2 if original['flags']&0x4000 else 3 if original['flags']&0x10000 else 1) and binding and binding['parentPid']==row['pid'] and binding['cloneEntrySequence']==row['entrySequence'] and binding['event']==event['event'] and original['sequence']<event['sequence']<binding['sequence']<row['sequence'],'clone3 child release lacks actual matching kernel event')
                     if original['flags']&0x4000:need(row['pid'] in vfork_holds and vfork_holds[row['pid']]['childPid']==child,'clone3 shared VM lacks kernel-held parent')
                 clone3_consumed.add(row['entrySequence']);exclusive=None
             elif kind=='kernel-clone-flags':
@@ -1108,7 +1110,13 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                 if memory_mode and entry['nr']==435:
                     original=clone3_originals.get(entry['sequence']);need(original and row.get('clone3OriginalSequence')==original['sequence'] and flags==original['flags']|original['exitSignal'] and row['sequence']==original['sequence']+1,'clone3 flags lack exact bounded original')
                 if memory_mode:
-                    need(not flags&0x400 and (not flags&0x100 or flags&0x4000),'executable memory policy requires independent FD tables and kernel-held vfork for shared VM')
+                    thread=bool(flags&0x10000)
+                    if thread:
+                        # Thread mode shares the parent's address space, FD table
+                        # and signal handlers inside one thread group; the kernel
+                        # child event and actual TGID still prove it in observe().
+                        need(flags&(0x100|0x400|0x800)==(0x100|0x400|0x800) and not flags&0x4000 and not flags&~(_THREAD_CLONE_ALLOWED),'thread clone must share VM/FD/SIGHAND and use known flags')
+                    else:need(not flags&0x400 and (not flags&0x100 or flags&0x4000),'executable memory policy requires independent FD tables and kernel-held vfork for shared VM')
                     if flags&0x100:memory_shared_entries.add(entry['sequence'])
                 if shared_mode:inspect_shared_clone_flags(flags)
                 else:need(not flags&(0x10000|0x400) and flags&~(0xff|0x100|0x4000|0x1000000|0x200000|0x100000000)==0,'unknown shared writer/FD flags')
@@ -1173,7 +1181,7 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                 if exclusive is not None and (exclusive[1] in clone3_originals or exclusive[1] in bti_originals):need(row['pid']==exclusive[0],'another task event during clone3 argument window')
                 need(row.get('event') in [1,2,3,4,5,6,128],'unknown actual ptrace event')
                 if process_interval is not None:process_interval.event(row['pid'],row['event'],row['sequence'])
-                if row['event'] in [1,2]:clone3_events[row['sequence']]=row
+                if row['event'] in [1,2,3]:clone3_events[row['sequence']]=row
                 if row['event'] in [2,4]:vfork_events[row['sequence']]=row
                 if shared_mode and row['event']==4:exec_fd_events[row['sequence']]=row
                 if row['event']==4:exec_events[row['sequence']]=row

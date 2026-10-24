@@ -1646,7 +1646,7 @@ class Observer:
             # strict parse still refuses with this exact exception object.
             self.publish_clone3_parse_refusal(pid,entry,barrier,size,data,refusal)
             raise
-        original=self.emit(dict(kind='kernel-clone3-args-original',model='stopped-clone3-args-v1',pid=pid,entrySequence=entry['sequence'],barrierSequence=barrier['sequence'],size=size,dataHex=data.hex(),sha256=hashlib.sha256(data).hexdigest(),flags=parsed['flags'],exitSignal=parsed['exitSignal']))
+        original=self.emit(dict(kind='kernel-clone3-args-original',model='stopped-clone3-args-v1',pid=pid,entrySequence=entry['sequence'],barrierSequence=barrier['sequence'],size=size,dataHex=data.hex(),sha256=hashlib.sha256(data).hexdigest(),flags=parsed['flags'],exitSignal=parsed['exitSignal'],threadMode=parsed.get('thread',False)))
         flags=parsed['flags']|parsed['exitSignal'];bindings.inspect_shared_clone_flags(flags)
         task['observedCloneFlags']=flags;task['cloneFlags']=flags;task['clone3Original']=original
         del task['clone3Pending']
@@ -1659,7 +1659,14 @@ class Observer:
         if original is None:return
         assert self.exclusive==(pid,original['entrySequence'])
         if child is None:assert event['op']=='exit' and event['entrySequence']==original['entrySequence'] and event['isError'] and event['result']<0,'clone3 success requires actual child event'
-        else:assert event['event'] in [1,2] and (event['event']==2)==bool(original['flags']&0x4000),'clone3 child event differs from vfork flags'
+        else:
+            # Actual kernel event must match the requested clone shape:
+            # PTRACE_EVENT_VFORK=2 for CLONE_VFORK, PTRACE_EVENT_CLONE=3 for
+            # CLONE_THREAD (ordinary pthread_create), PTRACE_EVENT_FORK=1 else.
+            flags=original['flags'];expected=2 if flags&0x4000 else 3 if flags&0x10000 else 1
+            assert event['event']==expected,'clone3 child event differs from requested clone flags'
+        # Thread mode shares the parent TGID and FD table; the kernel child event
+        # and actual /proc TGID are still required to confirm it below.
         self.emit(dict(kind='clone3-arguments-consumed',pid=pid,entrySequence=original['entrySequence'],originalSequence=original['sequence'],eventSequence=event['sequence'],childPid=child))
         task.pop('clone3Original');self.exclusive=None
     def pending_captures(self):
