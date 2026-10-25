@@ -284,6 +284,76 @@ describe('CloudGatewayModelsClient', () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
+  it('keeps the deployment-owned key out of log lines and upstream machine diagnostics', async() => {
+    const secret = 'sk-deployment-SENTINEL-key';
+    const log = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const fetchImpl = vi.fn(async() => {
+      throw new TypeError(`fetch failed https://ai-gateway/v1/chat/completions?key=${secret}`);
+    }) as unknown as typeof fetch;
+    const client = new CloudGatewayModelsClient({
+      cloudGatewayOrigin: 'http://ai-gateway',
+      apiBaseUrl: 'http://ai-gateway/v1',
+      deploymentOwned: true,
+      authorize: () => `Bearer ${secret}`,
+      fetch: fetchImpl,
+    });
+    await expect(client.completeJson({
+      auth: AUTH,
+      protocol: 'chatCompletions',
+      body: CHAT_BODY,
+    })).rejects.toMatchObject({ code: 'provider_error', status: 502, message: 'Cloud inference is unreachable' });
+    expect(JSON.stringify(log.mock.calls)).not.toContain(secret);
+    log.mockRestore();
+  });
+
+  it('never reflects a deployment-owned upstream authorization failure', async() => {
+    const secret = 'sk-deployment-SENTINEL-key';
+    const fetchImpl = vi.fn(async(_url: string | URL | Request, init?: RequestInit) => {
+      expect(init?.redirect).toBe('error');
+      return Response.json({
+        error: { message: `Invalid proxy server token passed: ${secret}`, code: 'invalid_api_key', status: 401 },
+      }, { status: 401 });
+    }) as unknown as typeof fetch;
+    const client = new CloudGatewayModelsClient({
+      cloudGatewayOrigin: 'http://ai-gateway',
+      apiBaseUrl: 'http://ai-gateway/v1',
+      deploymentOwned: true,
+      authorize: () => `Bearer ${secret}`,
+      fetch: fetchImpl,
+    });
+    const error = await client.completeJson({
+      auth: AUTH,
+      protocol: 'chatCompletions',
+      body: CHAT_BODY,
+    }).catch((caught: unknown) => caught) as { message: string; status: number; code: string };
+    expect(error.message).toBe('Deployment model inference failed');
+    expect(error.status).toBe(401);
+    expect(error.code).toBe('provider_error');
+    expect(JSON.stringify(error)).not.toContain(secret);
+  });
+
+  it('does not retain a deployment key in the inference failure cause', async() => {
+    const secret = 'sk-network-SENTINEL';
+    const fetchImpl = vi.fn(async() => {
+      throw Object.assign(new TypeError(`connect failed for Bearer ${secret}`), { code: `ESOCKET_${secret}` });
+    }) as unknown as typeof fetch;
+    const client = new CloudGatewayModelsClient({
+      cloudGatewayOrigin: 'http://ai-gateway',
+      apiBaseUrl: 'http://ai-gateway/v1',
+      deploymentOwned: true,
+      authorize: () => `Bearer ${secret}`,
+      fetch: fetchImpl,
+    });
+    const failure = await client.completeJson({
+      auth: AUTH,
+      protocol: 'chatCompletions',
+      body: CHAT_BODY,
+    }).catch((error: unknown) => error) as Error & { cause?: unknown };
+    expect(failure.message).toBe('Cloud inference is unreachable');
+    expect(failure.cause).toBeUndefined();
+    expect(`${failure.stack}${String(failure.cause ?? '')}`).not.toContain(secret);
+  });
+
   it('surfaces unreachable Cloud Chat as provider_error 502', async() => {
     const fetchImpl = vi.fn(async() => {
       throw new Error('ECONNREFUSED');

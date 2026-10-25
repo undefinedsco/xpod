@@ -65,6 +65,10 @@ import { PodModelSelectionRepository } from '../ai-gateway/models/PodModelSelect
 import { ProviderModelSelectionService } from '../ai-gateway/models/ProviderModelSelectionService';
 import { ModelRouter } from '../ai-gateway/routing/ModelRouter';
 import {
+  DeploymentBuiltinConnection,
+  resolveDeploymentBuiltinConfig,
+} from '../ai-gateway/builtin/DeploymentBuiltinConnection';
+import {
   CloudGatewayModelsClient,
   resolveCloudModelsGatewayOrigin,
 } from '../ai-gateway/CloudGatewayModelsClient';
@@ -481,6 +485,11 @@ export function registerCommonServices(
       return new InMemorySessionAffinityStore({ secret });
     }).singleton(),
 
+    deploymentBuiltinConnection: asFunction(({ config }: ApiContainerCradle) => {
+      const builtin = resolveDeploymentBuiltinConfig(config.edition);
+      return builtin ? new DeploymentBuiltinConnection(builtin) : null;
+    }).singleton(),
+
     aiGatewayService: asFunction((cradle: ApiContainerCradle) => {
       const { config } = cradle;
       const gatewayProviderRegistry = cradle.gatewayProviderRegistry;
@@ -512,6 +521,7 @@ export function registerCommonServices(
         cloudModels: cloudGatewayOrigin
           ? new CloudGatewayModelsClient({ cloudGatewayOrigin })
           : undefined,
+        builtin: cradle.deploymentBuiltinConnection ?? undefined,
         usageRecorder: async ({ webId, apiKeyId, totalTokens }) => {
           const pod = await cradle.podLookupRepo?.findByWebId(webId);
           if (!pod) {

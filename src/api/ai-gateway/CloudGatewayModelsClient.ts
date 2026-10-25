@@ -5,6 +5,8 @@ import { GatewayProtocolError } from './errors';
 import type { GatewayEvent, GatewayProtocol } from './types';
 import type { GatewayModelProjection } from './routing/ModelRouter';
 import { parseGatewayModelList } from './models/GatewayModelProjection';
+import { parseSseStream } from '../service/provider-http-transport';
+import { parseCompatibleChatSse, parseOpenAiResponsesSse } from './providers/ProviderRuntimeAdapter';
 
 const DEFAULT_TIMEOUT_MS = 3_000;
 const INFERENCE_TIMEOUT_MS = 60_000;
@@ -17,6 +19,22 @@ const PROTOCOL_PATH: Record<GatewayProtocol, string> = {
 
 export interface CloudGatewayModelsClientOptions {
   cloudGatewayOrigin: string;
+  /**
+   * Upstream API base that already carries its version prefix (for example `http://ai-gateway/v1`).
+   * When set, `/v1/...` paths are resolved beneath it instead of the origin root.
+   */
+  apiBaseUrl?: string;
+  /** Overrides how the upstream is authenticated; defaults to forwarding the caller's Solid Bearer token. */
+  authorize?: (auth: AuthContext) => string | undefined;
+  /** Last-moment request body rewrite (model mapping, end-user attribution). */
+  rewriteBody?: (body: unknown, auth: AuthContext) => unknown;
+  /**
+   * This client authenticates with a deployment-held secret instead of the caller's forwarded
+   * identity. Such a client must never surface upstream text (it can echo the key) and must not
+   * follow redirects with the Authorization header: `redirect: 'error'` keeps the secret on the
+   * configured origin.
+   */
+  deploymentOwned?: boolean;
   fetch?: typeof fetch;
   timeoutMs?: number;
   inferenceTimeoutMs?: number;
@@ -33,20 +51,34 @@ export class CloudGatewayModelsClient {
   private readonly logger = getLoggerFor(this);
   public readonly modelsUrl: string;
   private readonly origin: string;
+  private readonly apiBase?: string;
+  private readonly authorize: (auth: AuthContext) => string | undefined;
+  private readonly rewriteBody?: (body: unknown, auth: AuthContext) => unknown;
+  private readonly deploymentOwned: boolean;
   private readonly fetchImpl: typeof fetch;
   private readonly timeoutMs: number;
   private readonly inferenceTimeoutMs: number;
 
   public constructor(options: CloudGatewayModelsClientOptions) {
     this.origin = `${options.cloudGatewayOrigin.replace(/\/+$/u, '')}/`;
-    this.modelsUrl = new URL('/v1/models', this.origin).href;
+    this.apiBase = options.apiBaseUrl ? `${options.apiBaseUrl.replace(/\/+$/u, '')}/` : undefined;
+    this.authorize = options.authorize ?? callerIdentityAuthorization;
+    this.rewriteBody = options.rewriteBody;
+    this.deploymentOwned = options.deploymentOwned === true;
+    this.modelsUrl = this.upstreamUrl('/v1/models');
     this.fetchImpl = options.fetch ?? fetch;
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.inferenceTimeoutMs = options.inferenceTimeoutMs ?? INFERENCE_TIMEOUT_MS;
   }
 
+  private upstreamUrl(path: string): string {
+    return this.apiBase
+      ? new URL(path.replace(/^\/v1\//u, ''), this.apiBase).href
+      : new URL(path, this.origin).href;
+  }
+
   public async listModels(auth: AuthContext): Promise<GatewayModelProjection[]> {
-    const authorization = callerIdentityAuthorization(auth);
+    const authorization = this.authorize(auth);
     if (!authorization) {
       return [];
     }
@@ -59,6 +91,7 @@ export class CloudGatewayModelsClient {
           authorization,
         },
         signal: AbortSignal.timeout(this.timeoutMs),
+        ...(this.deploymentOwned ? { redirect: 'error' as const } : {}),
       });
       if (!response.ok) {
         this.logger.warn(`Cloud /v1/models returned ${response.status}; keeping local models only`);
@@ -67,7 +100,7 @@ export class CloudGatewayModelsClient {
       }
       return parseGatewayModelList(await response.json(), { fallbackOwner: 'cloud' });
     } catch (error) {
-      this.logger.warn(`Cloud /v1/models unreachable; keeping local models only: ${errorMessage(error)}`);
+      this.logger.warn(`Cloud /v1/models unreachable; keeping local models only: ${safeFailureCode(error)}`);
       return [];
     }
   }
@@ -84,9 +117,17 @@ export class CloudGatewayModelsClient {
       stream: false,
       accept: 'application/json',
     });
-    const payload = await readJsonObject(response);
+    const payload = await readJsonObject(response, this.deploymentOwned);
     if (!response.ok) {
-      throw cloudInferenceError(response.status, payload);
+      throw cloudInferenceError(response.status, payload, this.deploymentOwned);
+    }
+    if (!payload) {
+      // Only a deployment-owned upstream gets here: a 2xx body that is not a JSON object is a
+      // protocol failure, never a successful empty answer. The raw text is never surfaced.
+      throw new GatewayProtocolError('Deployment model inference failed', {
+        code: 'provider_error',
+        status: 502,
+      });
     }
     return payload;
   }
@@ -104,9 +145,72 @@ export class CloudGatewayModelsClient {
       accept: 'text/event-stream',
     });
     if (!response.ok) {
-      throw cloudInferenceError(response.status, await readJsonObject(response).catch(() => undefined));
+      throw cloudInferenceError(
+        response.status,
+        await readJsonObject(response, this.deploymentOwned),
+        this.deploymentOwned,
+      );
+    }
+    if (this.deploymentOwned) {
+      yield* this.deploymentStream(response, input.protocol, input.auth);
+      return;
     }
     yield* parseCloudSse(response);
+  }
+
+  /**
+   * Deployment-owned streams use the same protocol decoders as Provider runtimes, so a real
+   * Responses transcript (`response.output_text.delta`, tools, usage, `response.completed`) is
+   * understood instead of only Chat `choices`. Every reader/protocol failure is replaced with an
+   * opaque Gateway error: a malformed frame or upstream error can quote the deployment key, and
+   * neither its message, stack, cause nor details may leave this method.
+   */
+  private async *deploymentStream(
+    response: Response,
+    protocol: GatewayProtocol,
+    auth: AuthContext,
+  ): AsyncIterable<GatewayEvent> {
+    if (!response.body) {
+      throw new GatewayProtocolError('Deployment model stream failed', { code: 'provider_error', status: 502 });
+    }
+    const secret = this.authorize(auth)?.replace(/^Bearer\s+/iu, '');
+    let decoder: AsyncIterable<GatewayEvent>;
+    try {
+      const events = parseSseStream(response.body);
+      decoder = protocol === 'responses'
+        ? parseOpenAiResponsesSse(events, secret)
+        : protocol === 'chatCompletions'
+          ? parseCompatibleChatSse(events, secret)
+          : opaqueDeploymentStreamError(undefined);
+    } catch (error) {
+      throw opaqueDeploymentStreamError(error);
+    }
+    let started = false;
+    let completed = false;
+    try {
+      for await (const event of decoder) {
+        if (event.type === 'response.started') {
+          started = true;
+        } else if (!started) {
+          // Compatible Chat streams may omit the assistant role that the shared decoder uses to
+          // announce a response; keep the pre-existing envelope without inventing text.
+          started = true;
+          yield { type: 'response.started', id: 'deployment' };
+        }
+        if (event.type === 'response.completed') {
+          completed = true;
+        }
+        yield event;
+      }
+    } catch (error) {
+      throw opaqueDeploymentStreamError(error);
+    }
+    if (!completed) {
+      throw new GatewayProtocolError('Deployment model stream ended before completion', {
+        code: 'provider_error',
+        status: 502,
+      });
+    }
   }
 
   private async inferenceResponse(input: {
@@ -118,7 +222,7 @@ export class CloudGatewayModelsClient {
     signal?: AbortSignal;
     invocationMetadata?: GatewayInvocationMetadata;
   }): Promise<Response> {
-    const authorization = callerIdentityAuthorization(input.auth);
+    const authorization = this.authorize(input.auth);
     if (!authorization) {
       throw new GatewayProtocolError('Cloud inference requires a forwardable Solid Bearer identity', {
         code: 'credential_unavailable',
@@ -127,8 +231,9 @@ export class CloudGatewayModelsClient {
     }
     const timeout = AbortSignal.timeout(this.inferenceTimeoutMs);
     const linked = input.signal ? AbortSignal.any([input.signal, timeout]) : timeout;
-    const url = new URL(PROTOCOL_PATH[input.protocol], this.origin).href;
-    const body = withStreamFlag(input.body, input.stream);
+    const url = this.upstreamUrl(PROTOCOL_PATH[input.protocol]);
+    const rewritten = this.rewriteBody ? this.rewriteBody(input.body, input.auth) : input.body;
+    const body = withStreamFlag(rewritten, input.stream);
     try {
       return await this.fetchImpl(url, {
         method: 'POST',
@@ -140,13 +245,16 @@ export class CloudGatewayModelsClient {
         },
         body: JSON.stringify(body),
         signal: linked,
+        ...(this.deploymentOwned ? { redirect: 'error' as const } : {}),
       });
     } catch (error) {
-      this.logger.warn(`Cloud ${PROTOCOL_PATH[input.protocol]} unreachable: ${errorMessage(error)}`);
+      this.logger.warn(`Cloud ${PROTOCOL_PATH[input.protocol]} unreachable: ${safeFailureCode(error)}`);
       throw new GatewayProtocolError('Cloud inference is unreachable', {
         code: 'provider_error',
         status: 502,
-        cause: error,
+        // A raw fetch error can carry the request URL, headers or response text. A
+        // deployment-owned client never retains it; the forwarded-identity contract keeps it.
+        ...(this.deploymentOwned ? {} : { cause: error }),
       });
     }
   }
@@ -218,19 +326,47 @@ function withStreamFlag(body: unknown, stream: boolean): unknown {
   return { ...(body as Record<string, unknown>), stream };
 }
 
-async function readJsonObject(response: Response): Promise<Record<string, unknown>> {
+async function readJsonObject(
+  response: Response,
+  strict = false,
+): Promise<Record<string, unknown> | undefined> {
   const payload = await response.json().catch(() => undefined);
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
-    return {};
+    return strict ? undefined : {};
   }
   return payload as Record<string, unknown>;
 }
 
-function cloudInferenceError(status: number, payload: Record<string, unknown> | undefined): GatewayProtocolError {
+/**
+ * Upstream failure as the gateway reports it.
+ *
+ * The forwarded-identity client keeps the upstream message (the Cloud gateway wrote it for this
+ * caller). A deployment-owned client must not: an ai-gateway/LiteLLM error routinely quotes the
+ * submitted key or request, and that text would reach logs and the browser. For that client only a
+ * status-derived message and a whitelisted machine code survive.
+ */
+function cloudInferenceError(
+  status: number,
+  payload: Record<string, unknown> | undefined,
+  deploymentOwned = false,
+): GatewayProtocolError {
   const error = payload?.error;
   const record = error && typeof error === 'object' && !Array.isArray(error)
     ? error as Record<string, unknown>
     : undefined;
+  if (deploymentOwned) {
+    const code = record?.code === 'model_not_available' || record?.code === 'credential_unavailable' || record?.code === 'invalid_request'
+      ? record.code
+      : 'provider_error';
+    const upstreamStatus = typeof record?.status === 'number'
+      && Number.isInteger(record.status) && record.status >= 400 && record.status <= 599
+      ? record.status
+      : status;
+    return new GatewayProtocolError('Deployment model inference failed', {
+      code,
+      status: upstreamStatus,
+    });
+  }
   const message = typeof record?.message === 'string' && record.message.trim()
     ? record.message.trim()
     : `Cloud inference failed with HTTP ${status}`;
@@ -364,6 +500,50 @@ function originOf(value: string | undefined): string | undefined {
   }
 }
 
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+/**
+ * Error diagnostics safe for a log line: a machine code, never the free-form message. Fetch
+ * failures carry request URLs and sometimes request text in `message`, and the deployment-owned
+ * upstream also sees the Authorization header.
+ */
+const SAFE_FETCH_FAILURE_CODES = new Set([
+  'ECONNREFUSED',
+  'ECONNRESET',
+  'ENOTFOUND',
+  'EAI_AGAIN',
+  'ETIMEDOUT',
+  'EPIPE',
+  'UND_ERR_CONNECT_TIMEOUT',
+  'UND_ERR_HEADERS_TIMEOUT',
+  'UND_ERR_BODY_TIMEOUT',
+  'UND_ERR_SOCKET',
+  'UND_ERR_CLOSED',
+  'UND_ERR_ABORTED',
+  'ERR_INVALID_URL',
+  'CERT_HAS_EXPIRED',
+  'ERR_TLS_CERT_ALTNAME_INVALID',
+]);
+
+/** Deployment-owned failure diagnostics: a known transport code, never arbitrary error text. */
+function safeFailureCode(error: unknown): string {
+  if (error instanceof Error && error.name === 'AbortError') {
+    return 'aborted';
+  }
+  const code = (error as { code?: unknown } | undefined)?.code;
+  if (typeof code === 'string' && SAFE_FETCH_FAILURE_CODES.has(code)) {
+    return code;
+  }
+  if (error instanceof Error && error.name === 'TypeError') {
+    return 'network_error';
+  }
+  return 'request_failed';
+}
+
+function opaqueDeploymentStreamError(error: unknown): never {
+  const status = error instanceof GatewayProtocolError && error.status >= 400 && error.status <= 599
+    ? error.status
+    : 502;
+  throw new GatewayProtocolError('Deployment model stream failed', {
+    code: 'provider_error',
+    status,
+  });
 }
