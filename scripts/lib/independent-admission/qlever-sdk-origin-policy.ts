@@ -929,6 +929,10 @@ const activatedDaemonRecipe=new Map([
 const activatedDaemonBindings=Object.freeze([...daemonDiagnosticBindings.map(row=>Object.freeze({...row,sha256:activatedDaemonRecipe.get(row.path)??row.sha256})),Object.freeze({path:'qlever/scripts/sdk-local-daemon-originals.py',sha256:'9c5541b959d86d690f1d1806e123ce046008d8e82ab5127685e51d31c8e5dcd5'})]);
 const activatedDaemonGroup:GitHubSourceBindingGroup=Object.freeze({...dependencyVersionGroup(activatedDaemonBindings),outerExecutor:Object.freeze({...daemonDiagnosticGroup.outerExecutor!,collector:Object.freeze({path:'qlever/scripts/sdk-readonly-executor.py',sha256:'cdd151c67f228485ff1e4aed735c550853ee9d38b3f996a9be4af9eb3fcc2f15'})})});
 export const QLEVER_SERVICE_SDK_WORKFLOW_SHA='82d0b10d4a7cdbc5a770a5e48b38876126ecce3c2c0fcf02004a5199c1dc37da';
+/** CURRENT reviewed publish-qlever-runtime-sdk.yml bytes (ce9a85a). APPEND-ONLY:
+* the two workflowSha constants above stay historical literals so every published
+* group keeps its own bytes. */
+export const QLEVER_CURRENT_SDK_WORKFLOW_SHA='fb98edf2367bf8311125139d0b40b5bb9e769ffe7aefe901f377d2d546e6c871';
 const serviceProfileBindings=Object.freeze([
   {
     "path": ".dockerignore",
@@ -1808,14 +1812,92 @@ const fae70Hashes:Readonly<Record<string,string>>=Object.freeze({
  "qlever/scripts/sdk-generated-vma-originals.py":"81dd4390b205a1a9a40109cf260dbfe2ad9ab7d378c4282dfa986aaf8d3604ec"
 });
 const fae70Bindings=(rows:readonly GitHubSourceBinding[])=>Object.freeze(rows.map(row=>Object.freeze({...row,sha256:fae70Hashes[row.path]??row.sha256})));
+/** 351e302e slice: the reviewed recent-reference hotpath change re-hashed ONLY
+* qlever/scripts/sdk-ptrace-execution.py, and the two executor workflow bytes moved
+* with the portable regression test. Every prior published/final tuple keeps its
+* own frozen bytes; this map carries only those genuinely re-hashed roles, so no
+* historical group is rewritten. */
+const c351eHashes:Readonly<Record<string,string>>=Object.freeze({
+ "qlever/scripts/sdk-ptrace-execution.py":"0b05a11fe6d46d5cfed7687e13036d902ad8219ab057af273894a53a5650c56f",
+ ".github/workflows/publish-qlever-runtime-sdk.yml":"fb98edf2367bf8311125139d0b40b5bb9e769ffe7aefe901f377d2d546e6c871",
+ ".github/workflows/qlever-readonly-executor.yml":"c7c58a46076155730ff941be1d92a77bc4c0fe007ed25fc1f8648d86e1c73b89"
+});
+const c351eBindings=(rows:readonly GitHubSourceBinding[])=>Object.freeze(rows.map(row=>Object.freeze({...row,sha256:c351eHashes[row.path]??row.sha256})));
+/** B794 SDK72 slice (OWNED-WINDOW DIAGNOSTIC v2). Only the two genuinely
+* re-hashed observer bodies and their new Python test moved; every prior
+* published tuple keeps its own frozen bytes. The extra map carries the new
+* test so it is registered rather than silently unlisted. */
+const b794Hashes:Readonly<Record<string,string>>=Object.freeze({
+ "qlever/scripts/sdk-ptrace-execution.py":"33c556a55edcec602682b2c241acc655a5c400471dad6acb876c591fcf514677",
+ "qlever/scripts/sdk-generated-vma-originals.py":"b5e1d095d60952005bb7820811234e33e1d03f4b29c595faa4ef3c8eb0d8a22c",
+ "qlever/tests/test_qlever_owned_window_diagnostic.py":"7d1a3f217bf2666bb4d2a7530d579ddd2d10bbbbfdca780d0dd836c53fd1553c"
+});
+const b794Bindings=(rows:readonly GitHubSourceBinding[])=>Object.freeze(rows.map(row=>Object.freeze({...row,sha256:b794Hashes[row.path]??row.sha256})));
+/** The new diagnostic test is appended only once, into the new tail's bindings. */
+const B794_OWNED_WINDOW_TEST_BINDING=Object.freeze({path:'qlever/tests/test_qlever_owned_window_diagnostic.py',sha256:b794Hashes['qlever/tests/test_qlever_owned_window_diagnostic.py']!});
 const PRE_FINAL_SLICE_SDK_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([
 ...PRE_NEXT_SLICE_SDK_GROUPS,
 Object.freeze({...PRE_NEXT_SLICE_SDK_GROUPS[PRE_NEXT_SLICE_SDK_GROUPS.length-1]!,candidateServiceRelationship:PRE_NEXT_SLICE_SDK_GROUPS[PRE_NEXT_SLICE_SDK_GROUPS.length-1]!.candidateServiceRelationship?{...PRE_NEXT_SLICE_SDK_GROUPS[PRE_NEXT_SLICE_SDK_GROUPS.length-1]!.candidateServiceRelationship!,workflowSha256:'999f183da7a146433afeca5cf009556876e9fcec02f9545efaad8b5c6d88f962'}:undefined,selectors:finalSdkBindings(PRE_NEXT_SLICE_SDK_GROUPS[PRE_NEXT_SLICE_SDK_GROUPS.length-1]!.selectors),secondarySelectors:finalSdkBindings(PRE_NEXT_SLICE_SDK_GROUPS[PRE_NEXT_SLICE_SDK_GROUPS.length-1]!.secondarySelectors??[]),sourceBindings:finalSdkBindings(PRE_NEXT_SLICE_SDK_GROUPS[PRE_NEXT_SLICE_SDK_GROUPS.length-1]!.sourceBindings)}),Object.freeze({...PRE_NEXT_SLICE_SDK_GROUPS[PRE_NEXT_SLICE_SDK_GROUPS.length-1]!,candidateServiceRelationship:{...PRE_NEXT_SLICE_SDK_GROUPS[PRE_NEXT_SLICE_SDK_GROUPS.length-1]!.candidateServiceRelationship!,workflowSha256:'999f183da7a146433afeca5cf009556876e9fcec02f9545efaad8b5c6d88f962'},selectors:nextApprovedSdkBindings(PRE_NEXT_SLICE_SDK_GROUPS[PRE_NEXT_SLICE_SDK_GROUPS.length-1]!.selectors),secondarySelectors:nextApprovedSdkBindings(PRE_NEXT_SLICE_SDK_GROUPS[PRE_NEXT_SLICE_SDK_GROUPS.length-1]!.secondarySelectors??[]),sourceBindings:nextApprovedSdkBindings(PRE_NEXT_SLICE_SDK_GROUPS[PRE_NEXT_SLICE_SDK_GROUPS.length-1]!.sourceBindings)}),Object.freeze({...PRE_NEXT_SLICE_SDK_GROUPS[PRE_NEXT_SLICE_SDK_GROUPS.length-1]!,candidateServiceRelationship:PRE_NEXT_SLICE_SDK_GROUPS[PRE_NEXT_SLICE_SDK_GROUPS.length-1]!.candidateServiceRelationship?{...PRE_NEXT_SLICE_SDK_GROUPS[PRE_NEXT_SLICE_SDK_GROUPS.length-1]!.candidateServiceRelationship!,workflowSha256:'999f183da7a146433afeca5cf009556876e9fcec02f9545efaad8b5c6d88f962'}:undefined,selectors:finalApprovedSdkBindings(PRE_NEXT_SLICE_SDK_GROUPS[PRE_NEXT_SLICE_SDK_GROUPS.length-1]!.selectors),secondarySelectors:finalApprovedSdkBindings(PRE_NEXT_SLICE_SDK_GROUPS[PRE_NEXT_SLICE_SDK_GROUPS.length-1]!.secondarySelectors??[]),sourceBindings:finalApprovedSdkBindings(PRE_NEXT_SLICE_SDK_GROUPS[PRE_NEXT_SLICE_SDK_GROUPS.length-1]!.sourceBindings)}),Object.freeze({...PRE_NEXT_SLICE_SDK_GROUPS[PRE_NEXT_SLICE_SDK_GROUPS.length-1]!,candidateServiceRelationship:PRE_NEXT_SLICE_SDK_GROUPS[PRE_NEXT_SLICE_SDK_GROUPS.length-1]!.candidateServiceRelationship?{...PRE_NEXT_SLICE_SDK_GROUPS[PRE_NEXT_SLICE_SDK_GROUPS.length-1]!.candidateServiceRelationship!,workflowSha256:'999f183da7a146433afeca5cf009556876e9fcec02f9545efaad8b5c6d88f962'}:undefined,selectors:ninja68Bindings(PRE_NEXT_SLICE_SDK_GROUPS[PRE_NEXT_SLICE_SDK_GROUPS.length-1]!.selectors),secondarySelectors:Object.freeze([...ninja68Bindings(PRE_NEXT_SLICE_SDK_GROUPS[PRE_NEXT_SLICE_SDK_GROUPS.length-1]!.secondarySelectors??[]),...QLEVER_SDK_NINJA_SOURCE_BINDINGS]),sourceBindings:Object.freeze([...ninja68Bindings(PRE_NEXT_SLICE_SDK_GROUPS[PRE_NEXT_SLICE_SDK_GROUPS.length-1]!.sourceBindings),...QLEVER_SDK_NINJA_SOURCE_BINDINGS])})]);
-export const QLEVER_SDK_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([
+const PUBLISHED_SDK_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([
 ...PRE_FINAL_SLICE_SDK_GROUPS,
 Object.freeze({...PRE_FINAL_SLICE_SDK_GROUPS[PRE_FINAL_SLICE_SDK_GROUPS.length-1]!,selectors:e4ea69Bindings(PRE_FINAL_SLICE_SDK_GROUPS[PRE_FINAL_SLICE_SDK_GROUPS.length-1]!.selectors),secondarySelectors:Object.freeze([...e4ea69Bindings(PRE_FINAL_SLICE_SDK_GROUPS[PRE_FINAL_SLICE_SDK_GROUPS.length-1]!.secondarySelectors??[]),...QLEVER_SDK_NATIVE69_SOURCE_BINDINGS]),sourceBindings:Object.freeze([...e4ea69Bindings(PRE_FINAL_SLICE_SDK_GROUPS[PRE_FINAL_SLICE_SDK_GROUPS.length-1]!.sourceBindings),...QLEVER_SDK_NATIVE69_SOURCE_BINDINGS])}),
 Object.freeze({...PRE_FINAL_SLICE_SDK_GROUPS[PRE_FINAL_SLICE_SDK_GROUPS.length-1]!,selectors:fae70Bindings(e4ea69Bindings(PRE_FINAL_SLICE_SDK_GROUPS[PRE_FINAL_SLICE_SDK_GROUPS.length-1]!.selectors)),secondarySelectors:fae70Bindings(Object.freeze([...e4ea69Bindings(PRE_FINAL_SLICE_SDK_GROUPS[PRE_FINAL_SLICE_SDK_GROUPS.length-1]!.secondarySelectors??[]),...QLEVER_SDK_NATIVE69_SOURCE_BINDINGS])),sourceBindings:fae70Bindings(Object.freeze([...e4ea69Bindings(PRE_FINAL_SLICE_SDK_GROUPS[PRE_FINAL_SLICE_SDK_GROUPS.length-1]!.sourceBindings),...QLEVER_SDK_NATIVE69_SOURCE_BINDINGS]))}),
+Object.freeze({...PRE_FINAL_SLICE_SDK_GROUPS[PRE_FINAL_SLICE_SDK_GROUPS.length-1]!,selectors:c351eBindings(fae70Bindings(e4ea69Bindings(PRE_FINAL_SLICE_SDK_GROUPS[PRE_FINAL_SLICE_SDK_GROUPS.length-1]!.selectors))),secondarySelectors:c351eBindings(fae70Bindings(Object.freeze([...e4ea69Bindings(PRE_FINAL_SLICE_SDK_GROUPS[PRE_FINAL_SLICE_SDK_GROUPS.length-1]!.secondarySelectors??[]),...QLEVER_SDK_NATIVE69_SOURCE_BINDINGS]))),sourceBindings:c351eBindings(fae70Bindings(Object.freeze([...e4ea69Bindings(PRE_FINAL_SLICE_SDK_GROUPS[PRE_FINAL_SLICE_SDK_GROUPS.length-1]!.sourceBindings),...QLEVER_SDK_NATIVE69_SOURCE_BINDINGS])))}),
+/** SDK72 tail (APPEND-ONLY; index 70 is never rebound). Carries the CURRENT
+* reviewed outer-executor callers: primary publish workflow = fb98 (CURRENT),
+* css-native-products = 601 and candidate = 999 (their exact on-disk bytes),
+* replacing the stale historical 82d0/870d literals only IN THIS NEW TAIL.
+* The two re-hashed observer bodies and the new owned-window diagnostic test
+* make the selectors/secondaries differ from index 70, so selection stays
+* unique instead of becoming ambiguous. */
+Object.freeze({...PRE_FINAL_SLICE_SDK_GROUPS[PRE_FINAL_SLICE_SDK_GROUPS.length-1]!,
+ outerExecutor:Object.freeze({...PRE_FINAL_SLICE_SDK_GROUPS[PRE_FINAL_SLICE_SDK_GROUPS.length-1]!.outerExecutor!,
+  workflowSha256:QLEVER_CURRENT_SDK_WORKFLOW_SHA,
+  additionalWorkflows:Object.freeze([
+   {path:'.github/workflows/css-native-products.yml',sha256:'601aa8fe01ee1367be4e97dc6e868d7bc3e79ed1fea5e8f9531aa759e78d7d51'},
+   {path:'.github/workflows/candidate.yml',sha256:'999f183da7a146433afeca5cf009556876e9fcec02f9545efaad8b5c6d88f962'}])}),
+ selectors:c351eBindings(fae70Bindings(e4ea69Bindings(PRE_FINAL_SLICE_SDK_GROUPS[PRE_FINAL_SLICE_SDK_GROUPS.length-1]!.selectors))),
+ secondarySelectors:b794Bindings(c351eBindings(fae70Bindings(Object.freeze([...e4ea69Bindings(PRE_FINAL_SLICE_SDK_GROUPS[PRE_FINAL_SLICE_SDK_GROUPS.length-1]!.secondarySelectors??[]),...QLEVER_SDK_NATIVE69_SOURCE_BINDINGS])))),
+ sourceBindings:Object.freeze([...b794Bindings(c351eBindings(fae70Bindings(Object.freeze([...e4ea69Bindings(PRE_FINAL_SLICE_SDK_GROUPS[PRE_FINAL_SLICE_SDK_GROUPS.length-1]!.sourceBindings),...QLEVER_SDK_NATIVE69_SOURCE_BINDINGS])))),B794_OWNED_WINDOW_TEST_BINDING])}),
 ]);
+const SDK71_GROUP:GitHubSourceBindingGroup=PUBLISHED_SDK_GROUPS[PUBLISHED_SDK_GROUPS.length-1]!;
+const refusedCallerHashes:Readonly<Record<string,string>>=Object.freeze({
+ "qlever/scripts/sdk-ptrace-execution.py":"d17665de920f1f5b10eecb5ecf09a4257af05d6964feb6870487e37a57b6965c",
+ "qlever/tests/test_sdk_refused_caller_diagnostic.py":"18b69627faec06d4739c72cc97ace9260be9ae841b01591f1f87279468554d2c"
+});
+const refusedCallerBindings=(rows:readonly GitHubSourceBinding[])=>Object.freeze(rows.map(row=>Object.freeze({...row,sha256:refusedCallerHashes[row.path]??row.sha256})));
+/** SDK73 tail (APPEND-ONLY): root's refused-caller diagnostic changed ONLY the
+ * ptrace observer body and added its Python test. Every workflow literal stays the
+ * exact 9d02 caller bytes (fb98/601aa8/999f): no reviewed version is invented. */
+const NEXT_SDK_GROUP:GitHubSourceBindingGroup=Object.freeze({...SDK71_GROUP,
+ selectors:refusedCallerBindings(SDK71_GROUP.selectors),
+ secondarySelectors:refusedCallerBindings(SDK71_GROUP.secondarySelectors??[]),
+ sourceBindings:Object.freeze([...refusedCallerBindings(SDK71_GROUP.sourceBindings),
+  Object.freeze({path:'qlever/tests/test_sdk_refused_caller_diagnostic.py',sha256:refusedCallerHashes['qlever/tests/test_sdk_refused_caller_diagnostic.py']!})])
+});
+const inputPlanHashes:Readonly<Record<string,string>>=Object.freeze({
+ "qlever/scripts/sdk-tool-lifetime-leases.py":"223aebb49d2e691c73e3f2006d3549676c5b79f1e219d79a2a7052602621a0f5",
+ "qlever/tests/test_sdk_lease_input_plan.py":"db01da449341fbdeeed0b90f055119c9429e83a2c8d5387dfe70fdb37ad2be56"
+});
+const inputPlanBindings=(rows:readonly GitHubSourceBinding[])=>Object.freeze(rows.map(row=>Object.freeze({...row,sha256:inputPlanHashes[row.path]??row.sha256})));
+/** The changed lease module is a source row, not a published selector, so it is
+ * PROMOTED into this new tail's secondaries. Every older candidate already owns
+ * that role in its own source bindings, which keeps historical selection exact:
+ * an old lease hash selects the old tuple, the current hash selects this one. */
+const INPUT_PLAN_LEASE_ROLE=Object.freeze({path:'qlever/scripts/sdk-tool-lifetime-leases.py',
+ sha256:inputPlanHashes['qlever/scripts/sdk-tool-lifetime-leases.py']!});
+/** Immutable-input-plan tail (APPEND-ONLY): the source change re-hashed ONLY the
+ * lease module body and added its behavioural test. Every published 2406 selector,
+ * secondary and source row keeps its own bytes; only this new tail rebinds them. */
+const INPUT_PLAN_SDK_GROUP:GitHubSourceBindingGroup=Object.freeze({...NEXT_SDK_GROUP,
+ selectors:inputPlanBindings(NEXT_SDK_GROUP.selectors),
+ secondarySelectors:Object.freeze([...inputPlanBindings(NEXT_SDK_GROUP.secondarySelectors??[]),INPUT_PLAN_LEASE_ROLE]),
+ sourceBindings:Object.freeze([...inputPlanBindings(NEXT_SDK_GROUP.sourceBindings),
+  Object.freeze({path:'qlever/tests/test_sdk_lease_input_plan.py',sha256:inputPlanHashes['qlever/tests/test_sdk_lease_input_plan.py']!})])
+});
+/** The single published SDK catalogue, append-only: the 9d02 slice, the 2406
+ * refused-caller slice, and this genuine immutable-input-plan tuple. */
+export const QLEVER_SDK_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...PUBLISHED_SDK_GROUPS,NEXT_SDK_GROUP,INPUT_PLAN_SDK_GROUP]);
 export const QLEVER_LINUX_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([
  {selectors:sdkSelectors('cbedd3e2478de5e22108b6689c595a658ca891c9bd47552caec830e86f47fea8','a75c7be34b5c5fafff85c0d67d814ba1aaf14bcf5db5404a860fe3b9a11009bd'),sourceBindings:QLEVER_LINUX_SOURCE_BINDINGS.filter(row=>!['.github/workflows/publish-qlever-runtime-sdk.yml','.github/workflows/build-qlever-linux-runtime.yml'].includes(row.path))},
  ...QLEVER_SDK_EXECUTION_GROUPS,

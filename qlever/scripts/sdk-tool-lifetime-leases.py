@@ -85,6 +85,20 @@ class LeaseSet:
             raise ValueError('positive unique lease bound required')
         self.maximum = maximum
         self._held = {}
+        # Immutable REGISTRATION input for the unfiltered sweep: one
+        # (fd, expected identity tuple) per held row, built only from data fixed
+        # at acquire time. It is never authority for an observation: every check
+        # still issues a fresh F_GETLEASE + fstat per fd and compares all six
+        # fields. It only removes the per-check Python rebuild of identical
+        # (fd, tuple(identity)) pairs.
+        #
+        # `_held` has exactly two writes in this class: the insert in acquire()
+        # and the clear in close(). Both invalidate the plan, and check() also
+        # requires the plan length to equal the live owned-set length, so a
+        # shrunken set can never be served a stale plan. There is no per-row
+        # delete, rename or in-place row mutation, and acquire() returns a COPY
+        # of the token, so callers cannot alias the stored identity.
+        self._plan = None
         self._failure = None
         # ONE resolution, at construction, through the class seam.
         self._native_binding, self._native = self._resolve_native_backend()
@@ -116,22 +130,39 @@ class LeaseSet:
 
     def check(self, token=None):
         self._ready()
-        rows = list(self._held.values())
-        if token is not None:
+        # The unfiltered sweep is the hot path. Its input is pure registration
+        # data: for every held row, the owned fd and the identity recorded at
+        # acquire. Rebuild that tuple only when the owned set changed; validate
+        # it against the live size so an added or removed row is never served
+        # stale data. A filtered call (token given) keeps the original
+        # value-comparing path, because "which row matched" is part of it.
+        plan = None
+        if token is None:
+            plan = self._plan
+            if plan is None or len(plan) != len(self._held):
+                plan = tuple((row['fd'], tuple(row['token']['identity']))
+                             for row in self._held.values())
+                self._plan = plan
+        if plan is not None:
+            pairs = plan           # tuple: no extra O(n) copy per check
+        else:
+            rows = list(self._held.values())
             rows = [row for row in rows if row['token'] == token]
             if len(rows) != 1:
                 self._reject('unknown or changed lease token')
+            pairs = [(row['fd'], tuple(row['token']['identity'])) for row in rows]
         try:
             if self._native is not None and self._native_binding is not None:
                 self._native_binding.sweep_rows(
                     self._native,
-                    [(row['fd'], tuple(row['token']['identity'])) for row in rows],
+                    pairs,
                     self._reject)
             else:
-                for row in rows:
-                    if fcntl.fcntl(row['fd'], fcntl.F_GETLEASE) != fcntl.F_RDLCK:
+                # Pure-Python backend verifies EVERY pair, planned ones included.
+                for fd, expected in pairs:
+                    if fcntl.fcntl(fd, fcntl.F_GETLEASE) != fcntl.F_RDLCK:
                         self._reject('read lease no longer held')
-                    if identity(row['fd']) != row['token']['identity']:
+                    if identity(fd) != list(expected):
                         self._reject('leased inode identity changed')
             self._ready()
         except OSError as error:
@@ -187,6 +218,7 @@ class LeaseSet:
             self._ready()
             token = {'leaseId': len(self._held) + 1, 'identity': before}
             self._held[key] = {'fd': owned, 'token': token}
+            self._plan = None      # owned set changed: the plan is no longer the whole set
             owned = None
             return dict(token, identity=list(before))
         except BaseException as error:
@@ -239,6 +271,7 @@ class LeaseSet:
                 try: os.close(fd)
                 except OSError as caught: error = error or caught
         self._held.clear()
+        self._plan = None              # owned set changed
         self._closed = True
         if signal.getsignal(signal.SIGIO) == self._handler:
             signal.signal(signal.SIGIO, self._previous)

@@ -73,6 +73,7 @@ class Harness:
     instrument_substep = obs.Observer.instrument_substep
     owned_window_state = obs.Observer.owned_window_state
     phase_progress_ns = obs.Observer.phase_progress_ns
+    window_summary = obs.Observer.window_summary
     release_vfork_parent = obs.Observer.release_vfork_parent
     complete_clone3_consumption = obs.Observer.complete_clone3_consumption
 
@@ -253,6 +254,7 @@ class VmaHarness:
         self.instrument = obs.Observer.instrument.__get__(self)
         self.phase_progress = obs.Observer.phase_progress.__get__(self)
         self.phase_progress_ns = obs.Observer.phase_progress_ns.__get__(self)
+        self.window_summary = obs.Observer.window_summary.__get__(self)
         self.owned_window_state = obs.Observer.owned_window_state.__get__(self)
         self.waiter = type('W', (), {'restore': lambda _self, token: self.restored.append(token)})()
 

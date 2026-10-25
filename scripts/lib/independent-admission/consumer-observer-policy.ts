@@ -16,6 +16,19 @@ import e4eaSnapshotCanonical from './consumer-execution-e4ea-snapshot.json';
 /** Frozen fae9170b published canonical (473 rows @ a6e07db4). Every fae group
 * binds THESE bytes, so the next append can never rewrite fae history. */
 import fae9170bSnapshotCanonical from './consumer-execution-fae9170b-snapshot.json';
+/** Frozen ab94021 published canonical (478 rows @ 3c036d91). The published
+* finalJoint tail binds THESE bytes, so the next append can never rewrite it. */
+import ab94021SnapshotCanonical from './consumer-execution-ab94021-snapshot.json';
+/** Frozen ce9a85a published canonical (481 rows @ eb4e62cf). Every ce9 group
+* binds THESE bytes, so the new SDK72 append can never rewrite ce9 history. */
+import ce9a85aSnapshotCanonical from './consumer-execution-ce9a85a-snapshot.json';
+/** Frozen 9d02 published canonical (483 rows @ 42a5c21e). Every 9d02 group
+* binds THESE bytes, so the refused-caller append can never rewrite 9d02. */
+import n9d02SnapshotCanonical from './consumer-execution-9d02b2d-snapshot.json';
+/** Frozen 2406 published canonical (485 rows @ a00b3eb1). Every published
+* 2406 group binds THESE bytes, so the immutable-input-plan append can never
+* rewrite published2406 history. */
+import n2406SnapshotCanonical from './consumer-execution-2406eac-snapshot.json';
 /** Frozen 97ee published canonical (457 rows @ 9756b34c). */
 import fb97eeSnapshotCanonical from './consumer-execution-97ee-snapshot.json';
 /** Frozen 42807 published canonical (457 rows @ 6b9609d9). */
@@ -806,7 +819,39 @@ const slice97eeRecipe=(g:GitHubSourceBindingGroup)=>indexedControllerRecipe(rebi
 const sliceE4eaRecipe=(g:GitHubSourceBindingGroup)=>indexedControllerRecipe(rebindNoticeCurrent(g,e4eaSnapshotCanonical,PRE_E4EA_CONTROLLER_POLICY_BINDINGS),'source:scripts/lib/independent-admission/qlever-sdk-generation.ts');
 const slice42807Recipe=(g:GitHubSourceBindingGroup)=>indexedControllerRecipe(rebindNoticeCurrent(g,fb42807SnapshotCanonical,PRE_42807_CONTROLLER_POLICY_BINDINGS),'source:scripts/lib/independent-admission/qlever-sdk-generation.ts');
 
+/** Frozen ab94021 controller anchors: the PUBLISHED finalJoint tail binds these
+* exact bytes. They are literals, so later edits to the live policy/canonical can
+* never rewrite ab history. The moving finalJoint/current input is frozen to the
+* exact ab canonical478 snapshot BEFORE consumer-execution-current.json changes. */
+const PRE_AB94021_CONTROLLER_POLICY_BINDINGS=Object.freeze([
+ Object.freeze({path:'scripts/lib/independent-admission/consumer-observer-policy.ts',sha256:'a7fe27a4566d9ef2e84179494f07062c2b9b3f5090862285892dbfdc5f79d653'}),
+ Object.freeze({path:'scripts/lib/independent-admission/consumer-execution-current.json',sha256:'3c036d91ee62839f6cd886d2b9da307d804a6e41c152cf0c93c6ae440c3dcb47'})
+]);
+const sliceAb94021Recipe=(g:GitHubSourceBindingGroup)=>indexedControllerRecipe(rebindNoticeCurrent(g,ab94021SnapshotCanonical,PRE_AB94021_CONTROLLER_POLICY_BINDINGS),'source:scripts/lib/independent-admission/qlever-sdk-generation.ts');
+/** Frozen ce9a85a controller anchors: the PUBLISHED ce9 tail binds these exact
+* bytes. They are literals, so later edits to the live policy/canonical can never
+* rewrite ce9 history. The moving finalJoint/current input is frozen to the exact
+* ce9 canonical481 snapshot BEFORE consumer-execution-current.json changes. */
+const PRE_CE9A85A_CONTROLLER_POLICY_BINDINGS=Object.freeze([
+ Object.freeze({path:'scripts/lib/independent-admission/consumer-observer-policy.ts',sha256:'cbff399584d80ecb3f5a5f464ca4049bac7a1a4f5c77b77f862044d29232e52c'}),
+ Object.freeze({path:'scripts/lib/independent-admission/consumer-execution-current.json',sha256:'eb4e62cf3f17956dbfbee1b335a2c67a718075802b304c7505f9c2514e8ed548'})
+]);
+const sliceCe9a85aRecipe=(g:GitHubSourceBindingGroup)=>indexedControllerRecipe(rebindNoticeCurrent(g,ce9a85aSnapshotCanonical,PRE_CE9A85A_CONTROLLER_POLICY_BINDINGS),'source:scripts/lib/independent-admission/qlever-sdk-generation.ts');
 const finalJointRecipe=(g:GitHubSourceBindingGroup)=>indexedControllerRecipe(rebindNoticeCurrent(g,canonicalCurrent,CONTROLLER_POLICY_BINDINGS),'source:scripts/lib/independent-admission/qlever-sdk-generation.ts');
+/** Frozen 9d02 controller anchors: the PUBLISHED 9d02 tail binds these exact
+* bytes. They are literals, so later edits to the live policy/canonical can never
+* rewrite 9d02 history. The moving finalJoint/current input is frozen to the exact
+* 9d02 canonical483 snapshot BEFORE consumer-execution-current.json changes. */
+const PRE_9D02_CONTROLLER_POLICY_BINDINGS=Object.freeze([
+ Object.freeze({path:'scripts/lib/independent-admission/consumer-observer-policy.ts',sha256:'05604bbd683c8d0610ce5da302d0827d81397a6c250d941770a535afc7aeae0d'}),
+ Object.freeze({path:'scripts/lib/independent-admission/consumer-execution-current.json',sha256:'42a5c21ea9b4dcfca4e0d3e2badf16dd9d77d0b165ec91db7816ef11baec9acf'})
+]);
+/** The 9d02 published row set is exactly its frozen 483 canonical rows; the two
+* frozen controller anchors (policy + canonical) are appended once, exactly as
+* the published 9d02 tail emitted them. This reproduces index 86 byte-for-byte. */
+const PRE_9D02_ROW_SET=Object.freeze(n9d02SnapshotCanonical.map(row=>Object.freeze({path:row.path,sha256:row.sha256})));
+const slice9d02Recipe=(g:GitHubSourceBindingGroup)=>indexedControllerRecipe(rebindNoticeCurrent(g,PRE_9D02_ROW_SET,PRE_9D02_CONTROLLER_POLICY_BINDINGS),'source:scripts/lib/independent-admission/qlever-sdk-generation.ts');
+
 /** Frozen fae9170b controller anchors: the PUBLISHED fae tails bind these exact
 * bytes. They are literals, so later edits to the live policy/canonical can never
 * rewrite fae history. */
@@ -816,7 +861,20 @@ const PRE_FAE9170B_CONTROLLER_POLICY_BINDINGS=Object.freeze([
 ]);
 /** fae published slice: frozen snapshot + frozen anchors only, never the live files. */
 const sliceFae9170bRecipe=(g:GitHubSourceBindingGroup)=>indexedControllerRecipe(rebindNoticeCurrent(g,fae9170bSnapshotCanonical,PRE_FAE9170B_CONTROLLER_POLICY_BINDINGS),'source:scripts/lib/independent-admission/qlever-sdk-generation.ts');
-export const CONSUMER_SOURCE_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...PRE_ROWS_DIAGNOSTIC_CONSUMER_SOURCE_GROUPS,rowsDiagnosticRecipe(PRE_ROWS_DIAGNOSTIC_CONSUMER_SOURCE_GROUPS[PRE_ROWS_DIAGNOSTIC_CONSUMER_SOURCE_GROUPS.length-1]!),threadRecipe(PRE_ROWS_DIAGNOSTIC_CONSUMER_SOURCE_GROUPS[PRE_ROWS_DIAGNOSTIC_CONSUMER_SOURCE_GROUPS.length-1]!),bracketCurrentRecipe(PRE_ROWS_DIAGNOSTIC_CONSUMER_SOURCE_GROUPS[PRE_ROWS_DIAGNOSTIC_CONSUMER_SOURCE_GROUPS.length-1]!),mappingWindowRecipe(PRE_ROWS_DIAGNOSTIC_CONSUMER_SOURCE_GROUPS[PRE_ROWS_DIAGNOSTIC_CONSUMER_SOURCE_GROUPS.length-1]!),nextSliceRecipe(mappingWindowRecipe(PRE_ROWS_DIAGNOSTIC_CONSUMER_SOURCE_GROUPS[PRE_ROWS_DIAGNOSTIC_CONSUMER_SOURCE_GROUPS.length-1]!)),fbSliceRecipe(nextSliceRecipe(mappingWindowRecipe(PRE_ROWS_DIAGNOSTIC_CONSUMER_SOURCE_GROUPS[PRE_ROWS_DIAGNOSTIC_CONSUMER_SOURCE_GROUPS.length-1]!))),slice42807Recipe(nextSliceRecipe(mappingWindowRecipe(PRE_ROWS_DIAGNOSTIC_CONSUMER_SOURCE_GROUPS[PRE_ROWS_DIAGNOSTIC_CONSUMER_SOURCE_GROUPS.length-1]!))),slice97eeRecipe(nextSliceRecipe(mappingWindowRecipe(PRE_ROWS_DIAGNOSTIC_CONSUMER_SOURCE_GROUPS[PRE_ROWS_DIAGNOSTIC_CONSUMER_SOURCE_GROUPS.length-1]!))),sliceE4eaRecipe(nextSliceRecipe(mappingWindowRecipe(PRE_ROWS_DIAGNOSTIC_CONSUMER_SOURCE_GROUPS[PRE_ROWS_DIAGNOSTIC_CONSUMER_SOURCE_GROUPS.length-1]!))),sliceFae9170bRecipe(nextSliceRecipe(mappingWindowRecipe(PRE_ROWS_DIAGNOSTIC_CONSUMER_SOURCE_GROUPS[PRE_ROWS_DIAGNOSTIC_CONSUMER_SOURCE_GROUPS.length-1]!))),finalJointRecipe(nextSliceRecipe(mappingWindowRecipe(PRE_ROWS_DIAGNOSTIC_CONSUMER_SOURCE_GROUPS[PRE_ROWS_DIAGNOSTIC_CONSUMER_SOURCE_GROUPS.length-1]!)))]);
-export const CI_CONSUMER_SOURCE_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...PRE_ROWS_DIAGNOSTIC_CI_SOURCE_GROUPS,...PRE_ROWS_DIAGNOSTIC_CI_SOURCE_GROUPS.slice(-2).map(rowsDiagnosticRecipe),...PRE_ROWS_DIAGNOSTIC_CI_SOURCE_GROUPS.slice(-2).map(threadRecipe),...PRE_ROWS_DIAGNOSTIC_CI_SOURCE_GROUPS.slice(-2).map(bracketCurrentRecipe),...PRE_ROWS_DIAGNOSTIC_CI_SOURCE_GROUPS.slice(-2).map(mappingWindowRecipe),...PRE_ROWS_DIAGNOSTIC_CI_SOURCE_GROUPS.slice(-2).map(g=>nextSliceRecipe(mappingWindowRecipe(g))),...PRE_ROWS_DIAGNOSTIC_CI_SOURCE_GROUPS.slice(-2).map(g=>fbSliceRecipe(nextSliceRecipe(mappingWindowRecipe(g)))),...PRE_ROWS_DIAGNOSTIC_CI_SOURCE_GROUPS.slice(-2).map(g=>slice42807Recipe(nextSliceRecipe(mappingWindowRecipe(g)))),...PRE_ROWS_DIAGNOSTIC_CI_SOURCE_GROUPS.slice(-2).map(g=>slice97eeRecipe(nextSliceRecipe(mappingWindowRecipe(g)))),...PRE_ROWS_DIAGNOSTIC_CI_SOURCE_GROUPS.slice(-2).map(g=>sliceE4eaRecipe(nextSliceRecipe(mappingWindowRecipe(g)))),...PRE_ROWS_DIAGNOSTIC_CI_SOURCE_GROUPS.slice(-2).map(g=>sliceFae9170bRecipe(nextSliceRecipe(mappingWindowRecipe(g)))),...PRE_ROWS_DIAGNOSTIC_CI_SOURCE_GROUPS.slice(-2).map(g=>finalJointRecipe(nextSliceRecipe(mappingWindowRecipe(g))))]);
+/** Frozen 2406 controller anchors: the PUBLISHED 2406 tails bind these exact bytes.
+* They are literals, so later edits to the live policy/canonical can never rewrite
+* the published2406 slice. */
+const PRE_2406_CONTROLLER_POLICY_BINDINGS=Object.freeze([
+ Object.freeze({path:'scripts/lib/independent-admission/consumer-observer-policy.ts',sha256:'a63c2f06ba1492cb7ab248ac20f36926a0f2a3ddacfdbdd4f39bbd4f88df7af0'}),
+ Object.freeze({path:'scripts/lib/independent-admission/consumer-execution-current.json',sha256:'a00b3eb1c902df3faec5490316384893df8fb9e02d0f0b254425cd78f849e0d5'})
+]);
+/** The published 2406 row set is exactly its frozen 485 canonical rows; the two
+* frozen controller anchors are appended once, exactly as the published 2406 tail
+* emitted them. This reproduces index 87 byte-for-byte. */
+const PRE_2406_ROW_SET=Object.freeze(n2406SnapshotCanonical.map(row=>Object.freeze({path:row.path,sha256:row.sha256})));
+const slice2406Recipe=(g:GitHubSourceBindingGroup)=>indexedControllerRecipe(rebindNoticeCurrent(g,PRE_2406_ROW_SET,PRE_2406_CONTROLLER_POLICY_BINDINGS),'source:scripts/lib/independent-admission/qlever-sdk-generation.ts');
+
+export const CONSUMER_SOURCE_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...PRE_ROWS_DIAGNOSTIC_CONSUMER_SOURCE_GROUPS,rowsDiagnosticRecipe(PRE_ROWS_DIAGNOSTIC_CONSUMER_SOURCE_GROUPS[PRE_ROWS_DIAGNOSTIC_CONSUMER_SOURCE_GROUPS.length-1]!),threadRecipe(PRE_ROWS_DIAGNOSTIC_CONSUMER_SOURCE_GROUPS[PRE_ROWS_DIAGNOSTIC_CONSUMER_SOURCE_GROUPS.length-1]!),bracketCurrentRecipe(PRE_ROWS_DIAGNOSTIC_CONSUMER_SOURCE_GROUPS[PRE_ROWS_DIAGNOSTIC_CONSUMER_SOURCE_GROUPS.length-1]!),mappingWindowRecipe(PRE_ROWS_DIAGNOSTIC_CONSUMER_SOURCE_GROUPS[PRE_ROWS_DIAGNOSTIC_CONSUMER_SOURCE_GROUPS.length-1]!),nextSliceRecipe(mappingWindowRecipe(PRE_ROWS_DIAGNOSTIC_CONSUMER_SOURCE_GROUPS[PRE_ROWS_DIAGNOSTIC_CONSUMER_SOURCE_GROUPS.length-1]!)),fbSliceRecipe(nextSliceRecipe(mappingWindowRecipe(PRE_ROWS_DIAGNOSTIC_CONSUMER_SOURCE_GROUPS[PRE_ROWS_DIAGNOSTIC_CONSUMER_SOURCE_GROUPS.length-1]!))),slice42807Recipe(nextSliceRecipe(mappingWindowRecipe(PRE_ROWS_DIAGNOSTIC_CONSUMER_SOURCE_GROUPS[PRE_ROWS_DIAGNOSTIC_CONSUMER_SOURCE_GROUPS.length-1]!))),slice97eeRecipe(nextSliceRecipe(mappingWindowRecipe(PRE_ROWS_DIAGNOSTIC_CONSUMER_SOURCE_GROUPS[PRE_ROWS_DIAGNOSTIC_CONSUMER_SOURCE_GROUPS.length-1]!))),sliceE4eaRecipe(nextSliceRecipe(mappingWindowRecipe(PRE_ROWS_DIAGNOSTIC_CONSUMER_SOURCE_GROUPS[PRE_ROWS_DIAGNOSTIC_CONSUMER_SOURCE_GROUPS.length-1]!))),sliceFae9170bRecipe(nextSliceRecipe(mappingWindowRecipe(PRE_ROWS_DIAGNOSTIC_CONSUMER_SOURCE_GROUPS[PRE_ROWS_DIAGNOSTIC_CONSUMER_SOURCE_GROUPS.length-1]!))),sliceAb94021Recipe(nextSliceRecipe(mappingWindowRecipe(PRE_ROWS_DIAGNOSTIC_CONSUMER_SOURCE_GROUPS[PRE_ROWS_DIAGNOSTIC_CONSUMER_SOURCE_GROUPS.length-1]!))),sliceCe9a85aRecipe(nextSliceRecipe(mappingWindowRecipe(PRE_ROWS_DIAGNOSTIC_CONSUMER_SOURCE_GROUPS[PRE_ROWS_DIAGNOSTIC_CONSUMER_SOURCE_GROUPS.length-1]!))),slice9d02Recipe(nextSliceRecipe(mappingWindowRecipe(PRE_ROWS_DIAGNOSTIC_CONSUMER_SOURCE_GROUPS[PRE_ROWS_DIAGNOSTIC_CONSUMER_SOURCE_GROUPS.length-1]!))),slice2406Recipe(nextSliceRecipe(mappingWindowRecipe(PRE_ROWS_DIAGNOSTIC_CONSUMER_SOURCE_GROUPS[PRE_ROWS_DIAGNOSTIC_CONSUMER_SOURCE_GROUPS.length-1]!))),finalJointRecipe(nextSliceRecipe(mappingWindowRecipe(PRE_ROWS_DIAGNOSTIC_CONSUMER_SOURCE_GROUPS[PRE_ROWS_DIAGNOSTIC_CONSUMER_SOURCE_GROUPS.length-1]!)))]);
+export const CI_CONSUMER_SOURCE_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...PRE_ROWS_DIAGNOSTIC_CI_SOURCE_GROUPS,...PRE_ROWS_DIAGNOSTIC_CI_SOURCE_GROUPS.slice(-2).map(rowsDiagnosticRecipe),...PRE_ROWS_DIAGNOSTIC_CI_SOURCE_GROUPS.slice(-2).map(threadRecipe),...PRE_ROWS_DIAGNOSTIC_CI_SOURCE_GROUPS.slice(-2).map(bracketCurrentRecipe),...PRE_ROWS_DIAGNOSTIC_CI_SOURCE_GROUPS.slice(-2).map(mappingWindowRecipe),...PRE_ROWS_DIAGNOSTIC_CI_SOURCE_GROUPS.slice(-2).map(g=>nextSliceRecipe(mappingWindowRecipe(g))),...PRE_ROWS_DIAGNOSTIC_CI_SOURCE_GROUPS.slice(-2).map(g=>fbSliceRecipe(nextSliceRecipe(mappingWindowRecipe(g)))),...PRE_ROWS_DIAGNOSTIC_CI_SOURCE_GROUPS.slice(-2).map(g=>slice42807Recipe(nextSliceRecipe(mappingWindowRecipe(g)))),...PRE_ROWS_DIAGNOSTIC_CI_SOURCE_GROUPS.slice(-2).map(g=>slice97eeRecipe(nextSliceRecipe(mappingWindowRecipe(g)))),...PRE_ROWS_DIAGNOSTIC_CI_SOURCE_GROUPS.slice(-2).map(g=>sliceE4eaRecipe(nextSliceRecipe(mappingWindowRecipe(g)))),...PRE_ROWS_DIAGNOSTIC_CI_SOURCE_GROUPS.slice(-2).map(g=>sliceFae9170bRecipe(nextSliceRecipe(mappingWindowRecipe(g)))),...PRE_ROWS_DIAGNOSTIC_CI_SOURCE_GROUPS.slice(-2).map(g=>sliceAb94021Recipe(nextSliceRecipe(mappingWindowRecipe(g)))),...PRE_ROWS_DIAGNOSTIC_CI_SOURCE_GROUPS.slice(-2).map(g=>sliceCe9a85aRecipe(nextSliceRecipe(mappingWindowRecipe(g)))),...PRE_ROWS_DIAGNOSTIC_CI_SOURCE_GROUPS.slice(-2).map(g=>slice9d02Recipe(nextSliceRecipe(mappingWindowRecipe(g)))),...PRE_ROWS_DIAGNOSTIC_CI_SOURCE_GROUPS.slice(-2).map(g=>slice2406Recipe(nextSliceRecipe(mappingWindowRecipe(g)))),...PRE_ROWS_DIAGNOSTIC_CI_SOURCE_GROUPS.slice(-2).map(g=>finalJointRecipe(nextSliceRecipe(mappingWindowRecipe(g))))]);
 freezeGitHubSourceBindingGroups(CONSUMER_SOURCE_GROUPS);
 freezeGitHubSourceBindingGroups(CI_CONSUMER_SOURCE_GROUPS);

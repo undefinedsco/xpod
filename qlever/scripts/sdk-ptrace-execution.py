@@ -294,6 +294,94 @@ def fdpath(pid,fd):
     try:return os.readlink('/proc/'+str(pid)+'/fd/'+str(fd))
     except FileNotFoundError:return None
 
+REFUSED_CALLER_MAX_PATH=512
+REFUSED_CALLER_MAPS_LIMIT=65536
+
+def refused_caller_snapshot(pid,record,check=None):
+    """Bounded diagnostic provenance for an executable-memory refusal.
+
+    Everything here is PROVENANCE ONLY, captured at the fatal stop. It is never
+    authority for held bytes, and it is never evidence that a mapping permission
+    holds: the maps line is a single non-atomic sample that may overlap the target
+    range, may cover only part of it, and may already be stale.
+
+    Bounded by construction: six integer args already present on the record, one
+    readlink plus one stat of /proc/<pid>/exe, and ONE maps read capped at
+    REFUSED_CALLER_MAPS_LIMIT bytes returning at most one overlapping line.
+
+    Unreadable optional inputs become an explicit 'unavailable' tag; they never
+    permit resume and never mask the caller's ValueError.
+    """
+    def clipped(value):
+        if not isinstance(value,str):return None
+        raw=value.encode('utf-8','surrogatepass')
+        return value if len(raw)<=REFUSED_CALLER_MAX_PATH else raw[:REFUSED_CALLER_MAX_PATH].decode('utf-8','replace')+'...'
+
+    args=record.get('args')
+    snapshot=dict(arch=int(record['arch']),nr=int(record['nr']),
+                  syscallArgs=[int(a) for a in args[:6]] if isinstance(args,(list,tuple)) else None,
+                  syscallArgsComplete=isinstance(args,(list,tuple)) and len(args)>=6,
+                  executable=None,executableIdentity=None,
+                  executableSource='unavailable',mappingSample=None,mappingSampleSource='unavailable',
+                  mappingSampleIsPermissionProof=False,mappingSampleIsAtomic=False)
+    directory=None
+    try:
+        if check is not None:check()
+        directory=os.open('/proc/'+str(pid),os.O_RDONLY|os.O_DIRECTORY|os.O_CLOEXEC)
+        raw=os.readlink('exe',dir_fd=directory)
+        info=os.stat('exe',dir_fd=directory,follow_symlinks=True)
+        snapshot.update(executable=clipped(raw),
+                        executableIdentity=[info.st_dev,info.st_ino,info.st_mode,
+                                            info.st_size,info.st_mtime_ns,info.st_ctime_ns],
+                        executableSource='stop-time /proc executable read+stat; diagnostic provenance, not held-byte authority')
+    except TimeoutError:
+        raise                       # a real owned deadline must never be swallowed
+    except OSError:
+        snapshot['executableSource']='unavailable'
+    finally:
+        if directory is not None:
+            try:os.close(directory)
+            except TimeoutError:raise
+            except OSError:pass
+    address=None
+    length=None
+    if snapshot['syscallArgsComplete']:
+        address=snapshot['syscallArgs'][0];length=snapshot['syscallArgs'][1]
+    try:
+        if check is not None:check()
+        source=os.open('/proc/'+str(pid)+'/maps',os.O_RDONLY|os.O_CLOEXEC)
+        try:raw=os.read(source,REFUSED_CALLER_MAPS_LIMIT)
+        finally:os.close(source)
+        snapshot.update(mappingSample=_overlapping_maps_line(raw,address,length),
+                        mappingSampleSource='single bounded /proc/<pid>/maps prefix; overlapping line only, NOT a range permission proof')
+    except TimeoutError:
+        raise                       # a real owned deadline must never be swallowed
+    except OSError:
+        snapshot['mappingSampleSource']='unavailable'
+    return snapshot
+
+def _overlapping_maps_line(raw,address,length):
+    """At most ONE maps line that overlaps [address,address+length).
+
+    Explicitly non-atomic and explicitly not a permission proof: the caller may
+    have already been refused, the sample may cover only part of the range, and a
+    truncated prefix may hide the true mapping entirely.
+    """
+    if address is None:return None
+    end=address+(length or 0)
+    for line in raw.split(b'\n'):
+        parts=line.split(None,5)
+        if len(parts)<2 or b'-' not in parts[0]:continue
+        try:low,high=[int(x,16) for x in parts[0].split(b'-',1)]
+        except ValueError:continue
+        if low<=address<high or (end and low<end and address<high):
+            path=parts[5].decode('utf-8','replace').strip() if len(parts)>5 else ''
+            return dict(range=parts[0].decode('ascii','replace'),
+                        permissions=parts[1].decode('ascii','replace'),
+                        path=(path.encode('utf-8')[:REFUSED_CALLER_MAX_PATH].decode('utf-8','replace') if path else None),
+                        overlap='contains-address' if low<=address<high else 'overlaps-range-only')
+    return None
+
 def descriptor_fields(pid,fd,*,flags=True,position=True):
     """One actual /proc/<pid>/fdinfo/<fd> read for the requested numeric fields.
 
@@ -637,7 +725,14 @@ class Observer:
             self.seq+=1;row=dict(row,sequence=self.seq,phase=self.current_phase,observedUnixNs=str(time.time_ns()),**(dict(observedMonotonicNs=str(time.monotonic_ns())) if getattr(self,'generated_vma_output',False) else {}));data=None
             if row.get('original',{}).get('storage'):
                 if row['kind']=='write-original':row['storageIdentity']=self.chunk_identity(row['original'])
-                else:assert any(capture['original']==row['original'] for capture in self.captures),'chunk reference lacks earlier write snapshot'
+                else:
+                    # Membership only. Producers append the row and return that same original,
+                    # but maps/peer captures can append more rows before the final emit, so the
+                    # live reference sits a few positions from the tail. Search a small fixed
+                    # recent window first, then fall back to the unchanged full forward scan.
+                    # 64 is a performance heuristic, not an admission/capture/role/maps bound.
+                    original=row['original'];captures=self.captures
+                    assert any(capture['original']==original for capture in captures[-64:]) or any(capture['original']==original for capture in captures),'chunk reference lacks earlier write snapshot'
             elif getattr(self,'capture_content_entities',False) and row.get('kind') in ['fd-capture','prepared-build-input-original','write-original','toolchain-original'] and 'original' in row:
                 entity=self.register_capture_entity(row['original']);assert row.get('originalEntityIdentity',entity)==entity,'physical storage identity differs';row['originalEntityIdentity']=entity
             parts=self.raw_encoder.encode(row) if getattr(self,'indexed_raw_records',False) else [(json.dumps(row,sort_keys=True)+'\n').encode()]
@@ -1296,7 +1391,10 @@ class Observer:
             self.emit(dict(kind='executable-memory-write-fd',model=memory_policy.MODEL,pid=pid,entrySequence=record['sequence'],fd=descriptor,target=target))
         if reason:
             self.emit(dict(kind='executable-memory-refused',model=memory_policy.MODEL,pid=pid,entrySequence=record['sequence'],reason=reason))
-            print('SDK_EXECUTABLE_MEMORY_REFUSED '+json.dumps(dict(arch=record['arch'],nr=record['nr'],pid=pid,entrySequence=record['sequence'],reason=reason),sort_keys=True,separators=(',',':')),file=sys.stderr,flush=True)
+            # Diagnostic provenance ONLY on the existing fatal refusal branch. The
+            # retained raw event row above and the raised error below are unchanged.
+            refusedCaller=refused_caller_snapshot(pid,record,self.check)
+            print('SDK_EXECUTABLE_MEMORY_REFUSED '+json.dumps(dict(arch=record['arch'],nr=record['nr'],pid=pid,entrySequence=record['sequence'],reason=reason,refusedCaller=refusedCaller),sort_keys=True,separators=(',',':')),file=sys.stderr,flush=True)
             raise ValueError('executable memory policy refused before resume: '+reason)
 
     def lifetime_open(self,pid,path):
@@ -1825,6 +1923,94 @@ class Observer:
     def phase_progress_ns(self,progress):
         try:return int(progress.now()*1e9)
         except BaseException:return None
+    # ---- bounded per-owned-window diagnostic -------------------------------
+    #
+    # Motivation: in the failing run a full lease sweep was entered with only
+    # 171.610us of the 1s owned window left, and the retained 8-span ring could not
+    # answer "what ran in the first ~790ms of this window". This records a SMALL
+    # fixed baseline when a window is armed and reports per-method count/duration
+    # DELTAS relative to it while that window is still the active one.
+    #
+    # Deliberate limits, so the reader cannot over-read the numbers:
+    #   * no per-event list, no per-call dict, no extra clock read or syscall on the
+    #     hot path: the deltas ride on the counters instrument() already updates;
+    #   * the numbers are INCLUSIVE deltas. A parent call that started before the arm
+    #     and is still running contributes its pre-arm time to the delta, so this is
+    #     never an exclusive per-window decomposition;
+    #   * only the innermost method active at arm time is known, so crossedMethods
+    #     lists exactly that one name and says so;
+    #   * the field is emitted ONLY while the window is genuinely active and its
+    #     deadline still matches the recorded one - a closed window, a later phase,
+    #     or a deadline mismatch never reports stale data;
+    #   * nothing is written to the raw evidence stream;
+    #   * a real TimeoutError / KeyboardInterrupt / SystemExit is re-raised
+    #     untouched: only ordinary diagnostic-internal faults are suppressed.
+    WINDOW_METHOD_KEYS=PHASE_PROGRESS_BUCKETS
+
+    def window_arm(self,deadline_ns):
+        """Record a bounded baseline for the window being armed right now.
+
+        Reads no kernel state, takes no lease, checks nothing, and returns nothing.
+        A previous baseline is dropped first, so a failed arm cannot leave stale
+        data behind for the next window.
+        """
+        self._window_diag=None
+        try:
+            progress=self.phase_progress()
+            if progress is None:return None
+            baseline={name:tuple(progress.buckets[name]) for name in self.WINDOW_METHOD_KEYS
+                      if name in progress.buckets}
+            self._window_diag=dict(deadlineNs=int(deadline_ns),
+                                   phase=getattr(self,'current_phase',None),
+                                   baseline=baseline,
+                                   activeAtArm=getattr(progress,'active',None),
+                                   armedSeq=getattr(progress,'events',0))
+        except (TimeoutError,KeyboardInterrupt,SystemExit):
+            raise                      # an owned deadline must never be hidden here
+        except BaseException:
+            self._window_diag=None     # ordinary diagnostic fault: stay inert
+        return None
+
+    def window_summary(self):
+        """Inclusive per-method deltas for the CURRENT armed window, or None.
+
+        Returns None unless the owned window is actually active and its deadline
+        still equals the one recorded at arm time, so a closed window, a later
+        phase, or a re-armed window can never report stale numbers.
+        """
+        try:
+            diag=getattr(self,'_window_diag',None)
+            progress=self.phase_progress()
+            if diag is None or progress is None:return None
+            active,deadline,_parent=self.owned_window_state()
+            if not active or deadline is None:return None
+            if getattr(self,'current_phase',None)!=diag.get('phase'):return None
+            if int(deadline)!=diag['deadlineNs']:return None   # owned_window_state already returns ns
+            rows=[];crossed=[]
+            for name in self.WINDOW_METHOD_KEYS:
+                base=diag['baseline'].get(name)
+                if base is None:continue
+                calls,total,maximum=progress.buckets[name]
+                dcalls=calls-base[0];dtotal=total-base[1]
+                if dcalls==0 and dtotal==0:continue
+                rows.append(dict(method=name,calls=dcalls,totalNs=dtotal))
+                if name==diag.get('activeAtArm'):crossed.append(name)
+            return dict(windowDeadlineNs=diag['deadlineNs'],armedEventCount=diag['armedSeq'],
+                        methods=rows,crossedMethods=crossed,
+                        knownInnermostAtArm=diag.get('activeAtArm'),
+                        semantics=('inclusive deltas since window arm; overlapping and NOT additive. '
+                                   'A parent call already running at arm time contributes its pre-arm '
+                                   'time, so this is not an exclusive per-window decomposition. '
+                                   'Only the innermost active method at arm time is known; enclosing '
+                                   'calls that were already running are not separately marked, and '
+                                   'Still-running calls enter these buckets only when they complete; '
+                                   'their partial duration is not included.'),
+                        spanRing='last %d retained spans remain the only per-operation view' % PHASE_PROGRESS_MAXIMUM_SPANS)
+        except (TimeoutError,KeyboardInterrupt,SystemExit):
+            raise                      # never hide an owned deadline or interpreter exit
+        except BaseException:
+            return None
+
     def instrument(self,name,function,*arguments,**keywords):
         """Inclusive duration of one existing call; return/exception identity kept.
 
@@ -1933,7 +2119,11 @@ class Observer:
         owned_window=(window_active,
                       None if window_deadline is None else str(window_deadline),
                       None if window_parent is None else str(window_parent))
+        # Optional bounded per-window diagnostic. Present only after a window was
+        # armed; a failure to build it must never hide the primary diagnostic.
+        payload_window=self.window_summary()
         payload=dict(schemaVersion=1,kind=kind,authorityVerified=False,phase=self.current_phase,phaseStartedMonotonicNs=str(started) if started is not None else None,phaseDeadlineMonotonicNs=str(deadline) if deadline is not None else None,nowMonotonicNs=str(now_ns) if now_ns is not None else None,elapsedNs=str(now_ns-started) if now_ns is not None and started is not None else None,remainingNs=str(deadline-now_ns) if deadline is not None and now_ns is not None else None,globalRawSequence=getattr(self,'seq',0),phaseTicks=getattr(progress,'ticks',0) if progress is not None else 0,eventCount=getattr(progress,'events',0) if progress is not None else 0,waitReturnCount=getattr(progress,'waits',0) if progress is not None else 0,lastBoundary=getattr(progress,'last_boundary',None) if progress is not None else None,lastWait=getattr(progress,'last_wait',None) if progress is not None else None,taskCounts=state_counts,exclusiveOwnerPid=exclusive[0] if isinstance(exclusive,tuple) and len(exclusive)==2 else None,exclusiveOwnerSequence=exclusive[1] if isinstance(exclusive,tuple) and len(exclusive)==2 else None,terminalFocusPid=terminal,generatedVmaOwner=getattr(generated,'owner',None) if generated is not None else None,lifetimeLeaseActive=lifecycle is not None,lifetimeLeaseCount=len(lifecycle.fds) if lifecycle is not None else 0,activeInclusiveMethod=getattr(progress,'active',None) if progress is not None else None,activeInclusiveMethodStartedNs=str(getattr(progress,'active_started',None)) if progress is not None and getattr(progress,'active_started',None) is not None else None,lastFailedInclusiveMethod=getattr(progress,'failed',None) if progress is not None else None,lastFailedInclusiveMethodStartedNs=str(getattr(progress,'failed_started',None)) if progress is not None and getattr(progress,'failed_started',None) is not None else None,inclusiveBuckets={name:dict(calls=value[0],totalNs=value[1],maxNs=value[2]) for name,value in (progress.buckets.items() if progress is not None else [])},pendingCaptureSubsteps={name:dict(calls=value[0],totalNs=value[1],maxNs=value[2]) for name,value in (getattr(progress,'substeps',{}) or {}).items()},pendingCaptureSubstepLast=getattr(progress,'substep_last',None),pendingCaptureSpans=list(getattr(progress,'spans',()) or ()),pendingCaptureSpansDropped=getattr(progress,'spans_dropped',0),mapsBodyBytesLast=getattr(progress,'maps_bytes_last',0),mapsBodyBytesMax=getattr(progress,'maps_bytes_max',0),mapsBodyCount=getattr(progress,'maps_bodies',0),syscallStops=getattr(progress,'syscall_summary',lambda:None)() if progress is not None else None,ownedWindowActive=owned_window[0],ownedWindowDeadlineNs=owned_window[1],ownedWindowParentNs=owned_window[2],inclusiveDurationNote='inclusive nested durations; buckets overlap by design; non-additive',failure=bool(failure))
+        if payload_window is not None:payload['ownedWindowActivity']=payload_window
         return payload
     def publish_phase_progress(self,kind,failure=False):
         """Bounded stderr diagnostic from held state only; never raises.

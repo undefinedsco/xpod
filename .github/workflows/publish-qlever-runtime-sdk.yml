@@ -2,10 +2,10 @@ name: Publish QLever runtime SDK image
 
 on:
   pull_request:
+    # The readonly entry qualifies its own scripts and workflow changes.
+    # Run this wrapper's PR qualification when its own wiring changes.
     paths:
       - '.github/workflows/publish-qlever-runtime-sdk.yml'
-      - '.github/workflows/qlever-readonly-executor.yml'
-      - 'qlever/scripts/sdk-readonly-*.py'
   workflow_dispatch:
     inputs:
       readonly_executor:

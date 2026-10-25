@@ -17,7 +17,7 @@ test('thirty-five registered recipes fit capacity; a thirty-sixth rejects before
  // diagnostic genuinely pushed the fetch CURRENT catalogue to a 35th tuple.
  // Only the catalogue length changed; the observed PER-TUPLE role bound stays 32
  // (see the previous case).
- const groups=Array.from({length:35},(_,i)=>[['model.py',String(i)],['shared.py','b']]as const);
+ const groups=Array.from({length:36},(_,i)=>[['model.py',String(i)],['shared.py','b']]as const);
  const observed=new Map(groups[30]!);expect(plan(groups,names,observed)).toBe(groups[30]);expect(select(groups,observed)).toBe(groups[30]);
- const overflow=[...groups,[['model.py','35'],['shared.py','b']]as const];expect(()=>plan(overflow,names,observed)).toThrow();expect(()=>select(overflow,observed)).toThrow();
+ const overflow=[...groups,[['model.py','36'],['shared.py','b']]as const];expect(()=>plan(overflow,names,observed)).toThrow();expect(()=>select(overflow,observed)).toThrow();
 });
