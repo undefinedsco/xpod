@@ -31,28 +31,35 @@ test('every ACTUAL 9d02 published prefix is byte-identical and only genuine tupl
  for(const name of Object.keys(groups) as (keyof typeof groups)[]){
   const live=groups[name] as readonly unknown[];
   if(name==='cli'){
-   expect(live.map(digest)).toEqual(published.cliHashes);
-   expect(live.length).toBe(published.publishedAll.cli);
+   // The 9d02 fixture publishes CLI only as its plain hash list, so compare the
+   // published PREFIX to that list and let the ORM 0.3.26 joint tuple append.
+   expect(live.slice(0,published.cliHashes.length).map(digest)).toEqual(published.cliHashes);
+   expect(published.publishedAll.cli).toBe(published.cliHashes.length);
+   expect(live.length-published.cliHashes.length).toBe(1);
    continue;
   }
   const frozen=(published.groupHashes as Record<string,string[]>)[name]!;
   expect(frozen.length).toBe(publishedCounts[name]);
   expect(live.slice(0,frozen.length).map(digest)).toEqual(frozen);
-  // TWO genuine slices follow the published 9d02 catalogue: the refused-caller
- // slice and the immutable-input-plan slice. Each adds one group per family and
- // two to CI; api/cli remain untouched.
- expect(live.length-frozen.length).toBe({sdk:2,consumer:2,ci:4,linux:2,api:0}[name as 'sdk']??0);
+  // Genuine slices follow the published 9d02 catalogue: refused-caller,
+ // immutable-input-plan, the ORM 0.3.26 joint tail (one tuple for API/CLI, one
+ // consumer and two CI) and the ORM 0.3.26 joint SDK tail binding the actual
+ // current manifest/lock plus the four reviewed SDK build inputs. Each is a real
+ // appended recipe, not a rewrite.
+ expect(live.length-frozen.length).toBe({sdk:3,consumer:3,ci:6,linux:3,api:1}[name as 'sdk']??0);
  }
 });
 
 test('the appended tuples are exactly two genuine slices each and the deltas are explainable',()=>{
- // +2 SDK tuples (Linux repeats them as a superset), +2 consumer, +4 CI; api/cli untouched.
- expect(sdk.length).toBe(74);
- expect(linux.length).toBe(75);
- expect(consumer.length).toBe(89);
- expect(ci.length).toBe(176);
- expect(api.length).toBe(28);
- expect(cli.length).toBe(11);
+ // +3 SDK tuples (Linux repeats them as a superset), +3 consumer, +6 CI, and the
+ // ORM 0.3.26 joint tail appends exactly one API and one CLI tuple.
+ expect(sdk.length).toBe(75);
+ expect(linux.length).toBe(76);
+ expect(consumer.length).toBe(90);
+ expect(ci.length).toBe(178);
+ expect(api.length).toBe(29);
+ // CLI gains the ORM 0.3.26 joint tuple on top of the published 11.
+ expect(cli.length).toBe(12);
  // Linux is the same SDK catalogue with exactly one leading Linux tuple.
  expect(linux.slice(1).map(digest)).toEqual(sdk.map(digest));
  // CI is the published CI slice plus one appended pair per new consumer recipe.
@@ -127,18 +134,22 @@ test('the canonical path/hash closure still holds and the frozen 9d02 snapshot i
  // 483 published rows + the refused-caller test + the frozen 9d02 snapshot, then
  // the immutable-input-plan test + the frozen 2406 snapshot (the moving canonical
  // never lists itself).
- expect(current).toHaveLength(487);
+ expect(current).toHaveLength(489);
  expect(new Set(current.map(row=>row.path)).size).toBe(current.length);
  for(const row of current)expect(createHash('sha256').update(disk(row.path)).digest('hex')).toBe(row.sha256);
  const snapshot=blob('scripts/lib/independent-admission/consumer-execution-current.json');
  expect(createHash('sha256').update(snapshot).digest('hex')).toBe(published.canonical.sha256);
  expect(disk('scripts/lib/independent-admission/consumer-execution-9d02b2d-snapshot.json').equals(snapshot)).toBe(true);
  expect((published.canonical as {rows:number}).rows).toBe(483);
- const added=current.slice(483).map(row=>row.path);
+ const added=current.slice(483,487).map(row=>row.path);
  expect(added).toEqual(['qlever/tests/test_sdk_refused_caller_diagnostic.py',
   'scripts/lib/independent-admission/consumer-execution-9d02b2d-snapshot.json',
   'qlever/tests/test_sdk_lease_input_plan.py',
   'scripts/lib/independent-admission/consumer-execution-2406eac-snapshot.json']);
+ // The ORM 0.3.26 joint append only ADDS after the published 2406 tail.
+ expect(current.slice(487).map(row=>row.path).sort()).toEqual([
+  'patches/@undefineds.co%2Fdrizzle-solid@0.3.26.patch',
+  'scripts/lib/independent-admission/consumer-execution-f803e9c2-snapshot.json']);
  expect(current.slice(0,483).map(row=>digest(row))).not.toEqual([]);
  // the published 483 row paths are all retained exactly once
  const live=new Set(current.map(row=>row.path));
@@ -160,10 +171,14 @@ test('published consumer binding rows are unchanged and the two new rows are exa
   if(file.startsWith('scripts/')||file==='')expect(live.sha256).toBe(hash);
   expect(typeof live.sha256).toBe('string');
  }
- // the canonical snapshot + the new test are the ONLY registration rows added.
- const added=current.slice(483).map(row=>row.path).sort();
+ // the published 2406 tail rows stay exactly as published; the ORM 0.3.26 joint
+ // registration only APPENDS its own two rows after that immutable tail.
+ const added=current.slice(483,487).map(row=>row.path).sort();
  expect(added).toEqual(['qlever/tests/test_sdk_lease_input_plan.py',
   'qlever/tests/test_sdk_refused_caller_diagnostic.py',
   'scripts/lib/independent-admission/consumer-execution-2406eac-snapshot.json',
   'scripts/lib/independent-admission/consumer-execution-9d02b2d-snapshot.json']);
+ expect(current.slice(487).map(row=>row.path).sort()).toEqual([
+  'patches/@undefineds.co%2Fdrizzle-solid@0.3.26.patch',
+  'scripts/lib/independent-admission/consumer-execution-f803e9c2-snapshot.json']);
 });

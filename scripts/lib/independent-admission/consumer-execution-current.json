@@ -33,7 +33,7 @@
   },
   {
     "path": "bun.lock",
-    "sha256": "8e191efdefc855b72cea0f8cbc3e3ad2f5c3f47c4466553f7d23bd04fccc3d0d"
+    "sha256": "ff70b48d929511d94b9350abbb91ee4980aa9e86532190574fe2f3e42b221042"
   },
   {
     "path": "desktop/package.json",
@@ -45,7 +45,7 @@
   },
   {
     "path": "package.json",
-    "sha256": "9b6916d878ab959bc4825382df29c0ca279e2d88e7bfc19cb61552e857f6a3f2"
+    "sha256": "f07277658e7d111655eb52ba560d6c2f2b3b3652a38ad0f137b2cb0812c206f6"
   },
   {
     "path": "packages/ai-connections-runtime/package.json",
@@ -321,7 +321,7 @@
   },
   {
     "path": "qlever/qlever.lock.json",
-    "sha256": "b866d64c5559b976ffc70183f11e1a4a8fd04ea585dfc3c14a439f08df776a18"
+    "sha256": "ca3e1b35232b659ddc57b62c9a87bd967982c2f5174cc2aa6cc6b1273e3de804"
   },
   {
     "path": "qlever/scripts/apply-patches.py",
@@ -333,7 +333,7 @@
   },
   {
     "path": "qlever/scripts/build-qlever-runtime-sdk.sh",
-    "sha256": "c495dcc7a4dca6b8cbeec65d8740b1260809e9a40700870e6c6ab59b93506074"
+    "sha256": "4aa0520c841b200f5f696e3a93f3485b0163029a7cbba6fe39db89c99b6c6e6c"
   },
   {
     "path": "qlever/scripts/macos_companion_originals.py",
@@ -865,7 +865,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/afs-verifier-patch-originals.ts",
-    "sha256": "1c3f4acadf5174a95b8b3f3a0fb1c15f77b4e30fe2118f27b475bebca92840d4"
+    "sha256": "739ea34b65587cc514df2d7851602bfb2eb13531c58bfb3427faf9eda083990e"
   },
   {
     "path": "scripts/lib/independent-admission/afs-verifier-runtime-originals.ts",
@@ -941,7 +941,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/github-origin.ts",
-    "sha256": "eb7d17fdf0b8aedc312940e0e6a3fc65bc01dd6423f0e532508da58602aa84e8"
+    "sha256": "186a3f3392af57e7b0786b1c36a9253891cb29543f462b75fd2d9502da6480ac"
   },
   {
     "path": "scripts/lib/independent-admission/github-source-binding-groups.ts",
@@ -1021,7 +1021,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/legal-registry-originals.ts",
-    "sha256": "a764214bed261f37a1c22117b0c6c4577fbf676cc834e99f870af3eba827517a"
+    "sha256": "97ddc06639a4ec3a264ea42310e5db0dee8c17e7f31aaed627fca0f508cfe578"
   },
   {
     "path": "scripts/lib/independent-admission/legal-source-mappings.ts",
@@ -1057,7 +1057,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/module-source-phases.ts",
-    "sha256": "b0b13e685f1992ae240b1a0add2bf05566b3c16f60da15c941bb5f8c04dc7fa9"
+    "sha256": "38d75efbd178777c7ed5278359ea7429a2d7942cc46f7bd83b7e30f01ad49ec2"
   },
   {
     "path": "scripts/lib/independent-admission/native-admission-requirements.ts",
@@ -1221,7 +1221,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-origin-policy.ts",
-    "sha256": "808c66625b65552eebd763a18a9f5d9339e0646a8e58b50fd70a2216a648e4ab"
+    "sha256": "480be95db3210a63a641da38c3dc63247f524ffd45844440329f2d7b7f51e98e"
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-originals.ts",
@@ -1337,7 +1337,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/source-rules.ts",
-    "sha256": "ca259271ab61e9bb06afcc9d3f9428c17730d196d58b4f05f5e2c5ff13a36a78"
+    "sha256": "2b272709289f2373481fc785963ce10d4003cd1c35d71e71fe4f45bcd7e83cb8"
   },
   {
     "path": "scripts/lib/independent-admission/verified-admission-cache.ts",
@@ -1946,5 +1946,13 @@
   {
     "path": "scripts/lib/independent-admission/consumer-execution-2406eac-snapshot.json",
     "sha256": "a00b3eb1c902df3faec5490316384893df8fb9e02d0f0b254425cd78f849e0d5"
+  },
+  {
+    "path": "patches/@undefineds.co%2Fdrizzle-solid@0.3.26.patch",
+    "sha256": "15917daa88260327bb30d5da25d9db7efb0fd3386c7f0494102fa780ac870789"
+  },
+  {
+    "path": "scripts/lib/independent-admission/consumer-execution-f803e9c2-snapshot.json",
+    "sha256": "e6f52d0933f25e4f024f93614c0d99aef5c412de73dfa0be45033760b0e61954"
   }
 ]

@@ -49,6 +49,10 @@ import n9d02Groups from '../fixtures/independent-admission/9d02b2d-published-sli
 /** Immutable 2406eac published baseline (73/88/174/28, Linux 74, CLI 11). The
  * immutable-input-plan append starts strictly AFTER these groups. */
 import n2406Groups from '../fixtures/independent-admission/2406eac-published-slice.original.json';
+/** Immutable f803 published baseline (74/89/176/75/28/11). Index 73 is PUBLISHED
+ * history now, so it must be proved against the actual f803 bytes and must NOT be
+ * compared to current disk (its manifest rows predate the ORM 0.3.26 bump). */
+import f803Groups from '../fixtures/independent-admission/f803e9c2-published-slice.original.json';
 import {
   CONSUMER_SOURCE_GROUPS as consumer,
   CI_CONSUMER_SOURCE_GROUPS as ci,
@@ -146,8 +150,10 @@ test('the accepted SDK823 baseline proves all 299 published whole histories', ()
     const published = (sdk823Groups as any)[name] as unknown[];
     expect(groups.slice(0, published.length).map(hashValue)).toEqual(published);
   }
-  // Only genuinely new, UNPUBLISHED current groups follow the 299 published ones.
-  expect([sdk.length, consumer.length, ci.length, api.length]).toEqual([74, 89, 176, 28]);
+  // Only genuinely new, UNPUBLISHED current groups follow the 299 published ones:
+  // the immutable-input-plan slice, the ORM 0.3.26 joint API/CLI/consumer/CI tail
+  // and the ORM 0.3.26 joint SDK tuple.
+  expect([sdk.length, consumer.length, ci.length, api.length]).toEqual([75, 90, 178, 29]);
 });
 
 test('the immutable fae9170b baseline proves its full published 69/84/166/28 prefixes', () => {
@@ -175,14 +181,15 @@ test('the immutable fae9170b baseline proves its full published 69/84/166/28 pre
 });
 
 test('only the genuinely new immutable-input-plan slice follows published2406', () => {
-  // Exactly ONE new group per family beyond published2406, two for CI.
+  // Two genuine appends now sit beyond published2406 (the immutable-input-plan
+  // slice and the ORM 0.3.26 joint tail), four for CI.
   expect([sdk.length, consumer.length, ci.length, api.length, linuxGroups.length, CLI_SOURCE_VERSION_GROUPS.length])
-    .toEqual([74, 89, 176, 28, 75, 11]);
+    .toEqual([75, 90, 178, 29, 76, 12]);
   expect([(n2406Groups as any).published.sdk, (n2406Groups as any).published.consumer,
     (n2406Groups as any).published.ci, (n2406Groups as any).published.linux]).toEqual([73, 88, 174, 74]);
   expect([sdk.length - n2406Groups.published.sdk, consumer.length - n2406Groups.published.consumer,
     ci.length - n2406Groups.published.ci, linuxGroups.length - n2406Groups.published.linux])
-    .toEqual([1, 1, 2, 1]);
+    .toEqual([2, 2, 4, 2]);
   // Every published2406 group keeps its own exact bytes, including its last.
   for (const [name, groups] of Object.entries({sdk, consumer, ci, api, linux: linuxGroups})) {
     const published = (n2406Groups as any).groupHashes[name] as unknown[];
@@ -197,17 +204,22 @@ test('only the genuinely new immutable-input-plan slice follows published2406', 
 test('the appended groups bind the actual frozen body and real module bytes', () => {
   expect(sha(read(BODY))).toBe('d17665de920f1f5b10eecb5ecf09a4257af05d6964feb6870487e37a57b6965c');
   for (const [name, groups] of Object.entries(families)) {
-    // slice boundary = the IMMUTABLE 42807 published counts (SDK 66 incl the c1a170 body).
-    // Every index below it is published and legitimately keeps its own bytes; only groups
-    // AFTER it are the fresh current slice. Using FB65 here would wrongly treat SDK index 65
-    // (already published at 42807) as current.
-    // fae9170b is the current published boundary (SDK 69 / consumer 84 / CI 166).
-    // Every group at or below it keeps its own frozen bytes; only groups AFTER
-    // it are the fresh SDK70 slice bound to live bytes.
-    // 2406eac is the now-published boundary; every group at or below it keeps
-    // its frozen bytes and only groups AFTER it are the fresh input-plan slice.
-    const published = (n2406Groups.published as Record<string, number>)[name]!;
-    for (const group of groups.slice(published)) {
+    // PUBLISHED f803 history ends at the f803 counts (SDK 74, i.e. indices 0..73).
+    // Those tuples — including index 73 — are immutable published history: they are
+    // proved against the ACTUAL f803 read bytes recorded in the fixture, never
+    // against the current working tree, whose manifest rows moved with ORM 0.3.26.
+    const published = (f803Groups.published as Record<string, number>)[name]!;
+    const publishedHashes = (f803Groups.groupHashes as Record<string, string[]>)[name]!;
+    expect(publishedHashes).toHaveLength(published);
+    for (let index = 0; index < published; index++) {
+      expect(hashValue((groups as readonly unknown[])[index])).toBe(publishedHashes[index]);
+    }
+    // Only the genuinely NEW tail appended after f803 is claimed to bind CURRENT
+    // disk bytes. Requiring an unpublished historical tuple to match today's disk
+    // would silently demand a rewrite of published history.
+    const appended = groups.slice(published);
+    expect(appended.length).toBeGreaterThan(0);
+    for (const group of appended) {
       for (const row of rows(group)) {
         if ((row as any).ref === 'run-head') continue; // binds the CI run's own bytes
         expect(sha(read((row as any).path))).toBe((row as any).sha256);
@@ -256,8 +268,8 @@ test('the frozen published canonical keeps its exact 426 rows and accepted bytes
 });
 
 test('the live canonical binds every actual row of the final combined tree', () => {
-  expect(current.length).toBe(487);
-  expect(new Set(current.map((r) => r.path)).size).toBe(487);
+  expect(current.length).toBe(489);
+  expect(new Set(current.map((r) => r.path)).size).toBe(489);
   // The genuinely new roles of this slice: the corrected SDK inner producer and
   // the CI-discovered Ninja regression that now runs under `test_qlever*`.
   expect(current.find((r) => r.path === 'qlever/scripts/sdk-inner-materials.py')!.sha256)
@@ -343,9 +355,10 @@ test('the SDK69 slice carries the published helper prefixes and its own new memb
   const current = sdk.at(-1)!;
   const sec = current.secondarySelectors ?? [];
   expect(sec.length).toBeGreaterThanOrEqual(17);
-  // 130 published rows (incl. the owned-window diagnostic test) + the newly
-  // registered refused-caller diagnostic test in this tail.
-  expect(current.sourceBindings.length).toBe(132);
+  // 132 published/earlier rows (incl. the owned-window and refused-caller
+  // diagnostics) + the three ORM 0.3.26 SDK build-input rows in this tail
+  // (patch series, production-only subdirectory patch, bun.lock).
+  expect(current.sourceBindings.length).toBe(135);
   expect(current.sourceBindings.some(r => r.path === 'qlever/tests/test_qlever_owned_window_diagnostic.py')).toBe(true);
   expect(current.sourceBindings.some(r => r.path === 'qlever/tests/test_sdk_refused_caller_diagnostic.py')).toBe(true);
   const newRoles = [

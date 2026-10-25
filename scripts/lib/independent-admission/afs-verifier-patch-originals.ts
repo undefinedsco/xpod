@@ -83,9 +83,16 @@ const scripts = Object.freeze({
 });
 const diffs = Object.freeze({
   'oidc-provider@9.5.1': ['patches/oidc-provider@9.5.1.patch', 'ab20339bffd5ddb7041a79f83624da24baabedeabde95ee9f055cf091015b037'],
+  // The historical 0.3.25 publication keeps its own immutable patch source key.
   '@undefineds.co/drizzle-solid@0.3.25': ['patches/@undefineds.co%2Fdrizzle-solid@0.3.25.patch', '15917daa88260327bb30d5da25d9db7efb0fd3386c7f0494102fa780ac870789'],
+  // The joint 0.3.26 publication happens to carry byte-identical patch content;
+  // it is still a distinct reviewed identity/source path, never a relabelled 25.
+  '@undefineds.co/drizzle-solid@0.3.26': ['patches/@undefineds.co%2Fdrizzle-solid@0.3.26.patch', '15917daa88260327bb30d5da25d9db7efb0fd3386c7f0494102fa780ac870789'],
   '@solid/community-server@8.0.0-alpha.1': ['patches/@solid%2Fcommunity-server@8.0.0-alpha.1.patch', '36b8796d16459344b6ee7b83f3cfd98d2325ef4cc144bb33e6a3710b6e234283'],
 } satisfies Record<string, readonly string[]>);
+/** Frozen review data only: callers may read the declared identities but can
+ * never issue patch or source authority through this view. */
+export const AFS_VERIFIER_PATCH_ORIGINALS: Readonly<Record<string, readonly string[]>> = diffs;
 interface PackageIdentity {readonly name: string; readonly version: string; readonly path: string; readonly logicalPaths?: readonly string[]}
 interface SnapshotFile {readonly path: string; readonly kind: string; readonly bytes?: number; readonly sha256?: string; readonly target?: string}
 /** One reviewed official-to-installed projection used by both whole-package

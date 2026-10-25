@@ -77,6 +77,12 @@ payload = {
             "RANGES_NATIVE": "OFF",
             "USE_PRECOMPILED_HEADERS": "OFF",
             "USE_IO_URING": "OFF",
+            # Production-only SDK profile. Upstream defaults remain ON, so an
+            # ordinary developer configure is unchanged; the SDK explicitly
+            # excludes the unused upstream benchmark/test subdirectories while
+            # still building the complete qlever-server runtime + adapter.
+            "XPOD_SDK_BUILD_BENCHMARKS": "OFF",
+            "XPOD_SDK_BUILD_TESTS": "OFF",
         },
     },
 }
@@ -215,6 +221,8 @@ QUERY
     -DRANGES_NATIVE=OFF \
     -DUSE_PRECOMPILED_HEADERS=OFF \
     -DUSE_IO_URING=OFF \
+    -DXPOD_SDK_BUILD_BENCHMARKS=OFF \
+    -DXPOD_SDK_BUILD_TESTS=OFF \
     -DCMAKE_CXX_FLAGS="$adapter_flags")
   if [[ "$mode" == configure-prepared && "$prepared_profile" == service-trixie ]]; then
     declared_linker=$(python3 "$qlever_root/scripts/qlever_compiler_profile.py" linker_program)

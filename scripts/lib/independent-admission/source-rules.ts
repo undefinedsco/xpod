@@ -43,7 +43,13 @@ const PRE_BUILD_CLI_SOURCE_VERSION_GROUPS:readonly CliSourceVersionGroup[]=Objec
 const buildCliParent=PRE_BUILD_CLI_SOURCE_VERSION_GROUPS[PRE_BUILD_CLI_SOURCE_VERSION_GROUPS.length-1]!;
 export const CLI_SOURCE_VERSION_GROUPS:readonly CliSourceVersionGroup[]=Object.freeze([...PRE_BUILD_CLI_SOURCE_VERSION_GROUPS,Object.freeze({...buildCliParent,sourceHelper:'d0bcdbdec78a1bdb2cebb90910b4dd7c678c5027fc9856fc5475961b3da10dd1'}),/** Final combined slice: the reviewed catalog CLI tuple re-bound to the ACTUAL
 * R226 supervisor bytes; every earlier supervisor variant stays declared. */
-Object.freeze({...buildCliParent,sourceHelper:'d0bcdbdec78a1bdb2cebb90910b4dd7c678c5027fc9856fc5475961b3da10dd1',supervisors:Object.freeze(['30b890b9b73e819b40b1fc4de511b80cad50255d99af7d0699315b06e4a5a2c3'] as const),sourceBindings:Object.freeze((buildCliParent.sourceBindings??[]).map(row=>Object.freeze({...row,sha256:row.path==='scripts/workspace-package-payload.cjs'?'f88176458eba63d238cf99412bbc834143fe6b1e74089b27c290c0be040d2d33':row.sha256})))})]);
+Object.freeze({...buildCliParent,sourceHelper:'d0bcdbdec78a1bdb2cebb90910b4dd7c678c5027fc9856fc5475961b3da10dd1',supervisors:Object.freeze(['30b890b9b73e819b40b1fc4de511b80cad50255d99af7d0699315b06e4a5a2c3'] as const),sourceBindings:Object.freeze((buildCliParent.sourceBindings??[]).map(row=>Object.freeze({...row,sha256:row.path==='scripts/workspace-package-payload.cjs'?'f88176458eba63d238cf99412bbc834143fe6b1e74089b27c290c0be040d2d33':row.sha256})))}),
+ /** ORM 0.3.26 joint CLI tuple: ONLY the two manifest facts moved (package.json
+ * and bun.lock). Those roles are declared as discriminators so the published
+ * R226 tuple and this one separate strictly by actual bytes; every earlier
+ * tuple above stays byte-identical and keeps its own published values. */
+ Object.freeze({...buildCliParent,sourceHelper:'d0bcdbdec78a1bdb2cebb90910b4dd7c678c5027fc9856fc5475961b3da10dd1',supervisors:Object.freeze(['30b890b9b73e819b40b1fc4de511b80cad50255d99af7d0699315b06e4a5a2c3'] as const),secondarySourcePaths:Object.freeze([...(buildCliParent.secondarySourcePaths??[]),'package.json','bun.lock']),sourceBindings:Object.freeze((buildCliParent.sourceBindings??[]).map(row=>Object.freeze({...row,sha256:row.path==='scripts/workspace-package-payload.cjs'?'f88176458eba63d238cf99412bbc834143fe6b1e74089b27c290c0be040d2d33':row.path==='package.json'?'f07277658e7d111655eb52ba560d6c2f2b3b3652a38ad0f137b2cb0812c206f6':row.path==='bun.lock'?'ff70b48d929511d94b9350abbb91ee4980aa9e86532190574fe2f3e42b221042':row.sha256})))})
+]);
 function reviewedCliSourceGroup(observed:Readonly<Record<keyof typeof CLI_SOURCE_POLICY,string>>,readTracked?:(name:string)=>Buffer):CliSourceVersionGroup|undefined{
  let candidates=CLI_SOURCE_VERSION_GROUPS.filter(group=>
   (['producer','publicationBudget','sourceHelper','sourceLimits','copier'] as const).every(key=>observed[key]===group[key])

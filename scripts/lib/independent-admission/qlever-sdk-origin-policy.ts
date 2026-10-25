@@ -1895,9 +1895,45 @@ const INPUT_PLAN_SDK_GROUP:GitHubSourceBindingGroup=Object.freeze({...NEXT_SDK_G
  sourceBindings:Object.freeze([...inputPlanBindings(NEXT_SDK_GROUP.sourceBindings),
   Object.freeze({path:'qlever/tests/test_sdk_lease_input_plan.py',sha256:inputPlanHashes['qlever/tests/test_sdk_lease_input_plan.py']!})])
 });
+/** ORM 0.3.26 joint SDK tuple (APPEND-ONLY; index 73 is never rebound). Only the
+ * roles whose actual bytes moved are re-hashed: the root manifest/lock facts
+ * (`package.json`, `bun.lock`), the QLever lock, and the reviewed SDK build
+ * script. The three roles the earlier candidates ALSO own (`package.json`,
+ * `qlever/qlever.lock.json`, `qlever/scripts/build-qlever-runtime-sdk.sh`) are
+ * promoted into `secondarySelectors`, so old/new separate by actual bytes and a
+ * MIXTURE (e.g. current manifest with the f803 lock) matches no tuple and is
+ * refused instead of silently selecting the nearest tail. `qlever/patches/series`
+ * and the new production-only subdirectory patch are new roles no published
+ * tuple owns, so they are registered as source rows only (verified against the
+ * actual originals) rather than invented as historical selectors. */
+const ORM326_SDK_SOURCE_HASHES:Readonly<Record<string,string>>=Object.freeze({
+ "package.json":"f07277658e7d111655eb52ba560d6c2f2b3b3652a38ad0f137b2cb0812c206f6",
+ "bun.lock":"ff70b48d929511d94b9350abbb91ee4980aa9e86532190574fe2f3e42b221042",
+ "qlever/qlever.lock.json":"ca3e1b35232b659ddc57b62c9a87bd967982c2f5174cc2aa6cc6b1273e3de804",
+ "qlever/scripts/build-qlever-runtime-sdk.sh":"4aa0520c841b200f5f696e3a93f3485b0163029a7cbba6fe39db89c99b6c6e6c"
+});
+const rebindOrm326SdkRows=(rows:readonly GitHubSourceBinding[]|undefined)=>Object.freeze((rows??[]).map(row=>Object.freeze({...row,sha256:ORM326_SDK_SOURCE_HASHES[row.path]??row.sha256})));
+/** The QLever lock's `patchSeriesSha256` is the reviewed series digest; the
+ * patch series and the new production-only subdirectory patch are bound as the
+ * actual current build inputs. */
+const ORM326_SDK_BUILD_INPUT_BINDINGS=Object.freeze([
+Object.freeze({path:'qlever/patches/series',sha256:'7ca34d6ce0b92df7711f24fde094dcdfc72251813b33bb15679b7deace5e00dc'}),
+Object.freeze({path:'qlever/patches/qlever-production-only-subdirectories.patch',sha256:'206fe7cc83a1aad406fd81d1f17728ed0a54ad91175c74ddecc692651c0a5501'}),
+Object.freeze({path:'bun.lock',sha256:ORM326_SDK_SOURCE_HASHES['bun.lock']!})]);
+/** Strict old/new discriminators; every candidate above already owns each role. */
+const ORM326_SDK_PRIMARY_DISCRIMINATORS=Object.freeze([
+Object.freeze({path:'package.json',sha256:ORM326_SDK_SOURCE_HASHES['package.json']!}),
+Object.freeze({path:'qlever/qlever.lock.json',sha256:ORM326_SDK_SOURCE_HASHES['qlever/qlever.lock.json']!}),
+Object.freeze({path:'qlever/scripts/build-qlever-runtime-sdk.sh',sha256:ORM326_SDK_SOURCE_HASHES['qlever/scripts/build-qlever-runtime-sdk.sh']!})]);
+const ORM326_SDK_GROUP:GitHubSourceBindingGroup=Object.freeze({...INPUT_PLAN_SDK_GROUP,
+ selectors:INPUT_PLAN_SDK_GROUP.selectors,
+ secondarySelectors:Object.freeze([...rebindOrm326SdkRows(INPUT_PLAN_SDK_GROUP.secondarySelectors??[]),...ORM326_SDK_PRIMARY_DISCRIMINATORS]),
+ sourceBindings:Object.freeze([...rebindOrm326SdkRows(INPUT_PLAN_SDK_GROUP.sourceBindings),...ORM326_SDK_BUILD_INPUT_BINDINGS])});
 /** The single published SDK catalogue, append-only: the 9d02 slice, the 2406
- * refused-caller slice, and this genuine immutable-input-plan tuple. */
-export const QLEVER_SDK_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...PUBLISHED_SDK_GROUPS,NEXT_SDK_GROUP,INPUT_PLAN_SDK_GROUP]);
+ * refused-caller slice, the immutable-input-plan tuple, and the ORM 0.3.26 joint
+ * SDK tuple binding the actual current ORM manifest/lock and the four reviewed
+ * SDK build inputs (build script, QLever lock, series, production-only patch). */
+export const QLEVER_SDK_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...PUBLISHED_SDK_GROUPS,NEXT_SDK_GROUP,INPUT_PLAN_SDK_GROUP,ORM326_SDK_GROUP]);
 export const QLEVER_LINUX_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([
  {selectors:sdkSelectors('cbedd3e2478de5e22108b6689c595a658ca891c9bd47552caec830e86f47fea8','a75c7be34b5c5fafff85c0d67d814ba1aaf14bcf5db5404a860fe3b9a11009bd'),sourceBindings:QLEVER_LINUX_SOURCE_BINDINGS.filter(row=>!['.github/workflows/publish-qlever-runtime-sdk.yml','.github/workflows/build-qlever-linux-runtime.yml'].includes(row.path))},
  ...QLEVER_SDK_EXECUTION_GROUPS,

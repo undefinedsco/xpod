@@ -1206,8 +1206,28 @@ const finalJointApiHashes:Readonly<Record<string,string>>=Object.freeze({
  "packages/xpod-client/scripts/build.ts":"4970c1586831229eb532b63f109787b7f2126d12aa87c5266a178bca17140c65"});
 const rebindFinalApiRows=(rows:GitHubSourceBindingGroup['sourceBindings']|undefined)=>Object.freeze((rows??[]).map(row=>Object.freeze({...row,sha256:finalJointApiHashes[row.path]??row.sha256})));
 const apiFinalJointGroup=Object.freeze({...apiCapturePerformanceGroup,name:'api-final-joint-source',selectors:rebindFinalApiRows(apiCapturePerformanceGroup.selectors),secondarySelectors:rebindFinalApiRows(apiCapturePerformanceGroup.secondarySelectors),sourceBindings:rebindFinalApiRows(apiCapturePerformanceGroup.sourceBindings)});
-export const API_SERVICE_BUILD_SOURCE_BINDINGS=apiFinalJointGroup.sourceBindings;
-export const API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS:readonly (GitHubSourceBindingGroup&{readonly name?:string})[]=Object.freeze([...PRE_BUILD_API_GROUPS,apiControlledDescriptorSourceGroup25,apiCaptureInputsTimingGroup,apiCapturePerformanceGroup,apiFinalJointGroup]);
+/** ORM 0.3.26 moved exactly these three API source facts: the two manifest
+ * facts and the joined legal-registry helper. Only they are re-hashed; the
+ * published f803 `api-final-joint-source` group above stays byte-identical. */
+const ORM326_API_SOURCE_HASHES:Readonly<Record<string,string>>=Object.freeze({
+ "bun.lock":"ff70b48d929511d94b9350abbb91ee4980aa9e86532190574fe2f3e42b221042",
+ "package.json":"f07277658e7d111655eb52ba560d6c2f2b3b3652a38ad0f137b2cb0812c206f6",
+ "scripts/lib/independent-admission/legal-registry-originals.ts":"97ddc06639a4ec3a264ea42310e5db0dee8c17e7f31aaed627fca0f508cfe578"
+});
+const rebindOrm326ApiRows=(rows:readonly {readonly path:string;readonly sha256:string}[]|undefined)=>Object.freeze((rows??[]).map(row=>Object.freeze({...row,sha256:ORM326_API_SOURCE_HASHES[row.path]??row.sha256})));
+/** Strict old/new discriminator: the 0.3.26 patch exists only in the current
+ * tree, so declaring it PRIMARY separates this tail from every earlier tuple by
+ * actual bytes (absent => old tail, present => this tail) with no fallback. */
+const ORM326_PATCH_26='patches/@undefineds.co%2Fdrizzle-solid@0.3.26.patch';
+const ORM326_PATCH_26_SHA='15917daa88260327bb30d5da25d9db7efb0fd3386c7f0494102fa780ac870789';
+const apiOrm326JointGroup=Object.freeze({...apiFinalJointGroup,name:'api-orm-0.3.26-joint-source',
+ selectors:Object.freeze([...apiFinalJointGroup.selectors,Object.freeze({path:ORM326_PATCH_26,sha256:ORM326_PATCH_26_SHA})]),
+ secondarySelectors:rebindOrm326ApiRows(apiFinalJointGroup.secondarySelectors),
+ sourceBindings:Object.freeze([...rebindOrm326ApiRows(apiFinalJointGroup.sourceBindings),Object.freeze({path:ORM326_PATCH_26,sha256:ORM326_PATCH_26_SHA})])});
+/** CURRENT API tuple. The published f803 group and its exact row value above
+ * remain selectable and unchanged. */
+export const API_SERVICE_BUILD_SOURCE_BINDINGS=apiOrm326JointGroup.sourceBindings;
+export const API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS:readonly (GitHubSourceBindingGroup&{readonly name?:string})[]=Object.freeze([...PRE_BUILD_API_GROUPS,apiControlledDescriptorSourceGroup25,apiCaptureInputsTimingGroup,apiCapturePerformanceGroup,apiFinalJointGroup,apiOrm326JointGroup]);
 
 export const API_WORKSPACE_SOURCE_GROUPS=Object.freeze(API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS.filter(group=>group.sourceBindings.some(row=>row.path==='scripts/lib/api-scoped-dependency-state.ts')));
 
