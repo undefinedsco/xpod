@@ -394,6 +394,114 @@ describe('SolidTokenAuthenticator internal dereference', () => {
     }
   });
 
+  it.each([
+    ['Bearer', ' trailing-junk'],
+    ['DPoP', ' trailing-junk'],
+    ['Bearer', ' extra.jwt.segments'],
+    ['dpop', '\tjunk'],
+  ])('rejects a real verified %s header with trailing content: %j', async(scheme, suffix) => {
+    stubCanonicalFetch();
+    const proofKeys = await generateKeyPair('ES256');
+    const accessToken = await signAccessToken({
+      issuer: canonicalIssuer,
+      webId: canonicalWebId,
+      dpopJkt: await calculateJwkThumbprint(await exportJWK(proofKeys.publicKey)),
+    });
+    const canonicalUrl = `${canonicalIssuer}v1/models`;
+    const proof = await signDpopProof({
+      accessToken,
+      htu: canonicalUrl,
+      htm: 'GET',
+      publicKey: proofKeys.publicKey,
+      privateKey: proofKeys.privateKey,
+    });
+
+    try {
+      const authenticator = new SolidTokenAuthenticator({
+        publicBaseUrl: canonicalIssuer,
+        internalBaseUrl: `${internalOrigin}/.oidc/token`,
+      });
+      const authorization = `${scheme} ${accessToken}${suffix}`;
+      expect(authenticator.canAuthenticate({ headers: { authorization } } as never)).toBe(false);
+      const result = await authenticator.authenticate({
+        method: 'GET',
+        url: '/v1/models',
+        headers: {
+          ...canonicalRouteHeaders({ accessToken, proof, canonicalUrl }),
+          authorization,
+        },
+      } as never);
+      expect(result.success).toBe(false);
+      expect(result).not.toHaveProperty('context');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it.each([
+    ['Bearer', ' '],
+    ['Bearer', '\t'],
+    ['Bearer', ' \t '],
+    ['DPoP', '\t'],
+  ])('accepts a real verified %s header separated by horizontal whitespace %j', async(scheme, separator) => {
+    stubCanonicalFetch();
+    const proofKeys = await generateKeyPair('ES256');
+    const accessToken = await signAccessToken({
+      issuer: canonicalIssuer,
+      webId: canonicalWebId,
+      dpopJkt: await calculateJwkThumbprint(await exportJWK(proofKeys.publicKey)),
+    });
+    const canonicalUrl = `${canonicalIssuer}v1/models`;
+    const proof = await signDpopProof({
+      accessToken,
+      htu: canonicalUrl,
+      htm: 'GET',
+      publicKey: proofKeys.publicKey,
+      privateKey: proofKeys.privateKey,
+    });
+
+    try {
+      const authenticator = new SolidTokenAuthenticator({
+        publicBaseUrl: canonicalIssuer,
+        internalBaseUrl: `${internalOrigin}/.oidc/token`,
+      });
+      const authorization = `${scheme}${separator}${accessToken}`;
+      expect(authenticator.canAuthenticate({ headers: { authorization } } as never)).toBe(true);
+      const result = await authenticator.authenticate({
+        method: 'GET',
+        url: '/v1/models',
+        headers: {
+          ...canonicalRouteHeaders({ accessToken, proof, canonicalUrl }),
+          authorization,
+        },
+      } as never);
+      expect(result).toMatchObject({ success: true, context: { tokenType: 'DPoP' } });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('rejects a verified token with a newline separator instead of treating it as whitespace', async() => {
+    stubCanonicalFetch();
+    const accessToken = await signAccessToken({ issuer: canonicalIssuer, webId: canonicalWebId });
+    try {
+      const authenticator = new SolidTokenAuthenticator({
+        publicBaseUrl: canonicalIssuer,
+        internalBaseUrl: `${internalOrigin}/.oidc/token`,
+      });
+      expect(authenticator.canAuthenticate({
+        headers: { authorization: `Bearer\n${accessToken}` },
+      } as never)).toBe(false);
+      await expect(authenticator.authenticate({
+        method: 'GET',
+        url: '/v1/models',
+        headers: { authorization: `Bearer\n${accessToken}` },
+      } as never)).resolves.toMatchObject({ success: false, error: 'Invalid Authorization header' });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('verifies a canonical DPoP signature for a request transported over a local route', async() => {
     stubCanonicalFetch();
     const proofKeys = await generateKeyPair('ES256');

@@ -22,6 +22,33 @@ export interface SolidTokenAuthenticatorOptions {
 }
 
 /**
+ * Parse one Solid Authorization header value into its canonical scheme and token.
+ *
+ * The full header is parsed before anything is rewritten: exactly one scheme and one token,
+ * separated by horizontal whitespace (`SP`/`HTAB`, with optional surrounding whitespace).
+ * Trailing content is rejected rather than discarded, so canonicalizing the header for the
+ * verifier cannot widen the grammar the verifier itself enforces.
+ */
+function parseSolidAuthorizationHeader(
+  value: string,
+): { scheme: 'Bearer' | 'DPoP'; token: string } | undefined {
+  const header = value.replace(/^[\t ]+|[\t ]+$/gu, '');
+  const parts = header.split(/[\t ]+/u);
+  if (parts.length !== 2) {
+    return undefined;
+  }
+  const [rawScheme, token] = parts;
+  if (!rawScheme || !token) {
+    return undefined;
+  }
+  const scheme = rawScheme.toLowerCase();
+  if (scheme !== 'bearer' && scheme !== 'dpop') {
+    return undefined;
+  }
+  return { scheme: scheme === 'dpop' ? 'DPoP' : 'Bearer', token };
+}
+
+/**
  * Authenticator for Solid access tokens (Bearer or DPoP).
  */
 export class SolidTokenAuthenticator implements Authenticator {
@@ -49,14 +76,11 @@ export class SolidTokenAuthenticator implements Authenticator {
     if (!auth) {
       return false;
     }
-    const [scheme, token] = auth.split(' ');
-    if (!scheme || !token) {
+    const parsed = parseSolidAuthorizationHeader(auth);
+    if (!parsed) {
       return false;
     }
-    if (!['bearer', 'dpop'].includes(scheme.toLowerCase())) {
-      return false;
-    }
-    return this.isJwt(token.trim());
+    return this.isJwt(parsed.token);
   }
 
   public async authenticate(request: IncomingMessage): Promise<AuthResult> {
@@ -65,15 +89,15 @@ export class SolidTokenAuthenticator implements Authenticator {
       return { success: false, error: 'Missing Authorization header' };
     }
 
-    const [scheme, rawToken] = authorization.split(' ');
-    const normalizedScheme = scheme?.toLowerCase();
-    if (!rawToken || !['bearer', 'dpop'].includes(normalizedScheme)) {
+    const parsed = parseSolidAuthorizationHeader(authorization);
+    if (!parsed) {
       return { success: false, error: 'Invalid Authorization header' };
     }
-    const canonicalAuthorization = `${normalizedScheme === 'dpop' ? 'DPoP' : 'Bearer'} ${rawToken}`;
+    const { scheme: normalizedScheme, token: rawToken } = parsed;
+    const canonicalAuthorization = `${normalizedScheme} ${rawToken}`;
     const dpopRaw = request.headers.dpop;
     const dpopHeader = Array.isArray(dpopRaw) ? dpopRaw[0] : dpopRaw;
-    if (normalizedScheme === 'dpop' && !dpopHeader?.trim()) {
+    if (normalizedScheme === 'DPoP' && !dpopHeader?.trim()) {
       return { success: false, error: 'Missing DPoP header' };
     }
 
@@ -83,7 +107,7 @@ export class SolidTokenAuthenticator implements Authenticator {
       const url = this.buildRequestUrl(request);
       const payload = await this.verifyRequest(canonicalAuthorization, dpopHeader, method, url, request);
       // A confirmation-bound token cannot become replayable by changing its scheme.
-      const tokenType = normalizedScheme === 'dpop' || payload.cnf !== undefined ? 'DPoP' : 'Bearer';
+      const tokenType = normalizedScheme === 'DPoP' || payload.cnf !== undefined ? 'DPoP' : 'Bearer';
       if (tokenType === 'DPoP' && !dpopHeader?.trim()) {
         return { success: false, error: 'Missing DPoP header' };
       }
