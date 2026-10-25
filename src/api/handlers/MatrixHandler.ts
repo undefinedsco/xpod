@@ -531,11 +531,27 @@ function safeLocalErrorFrames(error: unknown): string[] {
   return frames;
 }
 
+function isPodAuthorizationError(error: unknown): boolean {
+  const seen = new Set<object>();
+  for (let depth = 0; depth < 6 && error && typeof error === 'object' && !seen.has(error); depth++) {
+    seen.add(error);
+    const failure = error as { status?: unknown; statusCode?: unknown; message?: unknown; cause?: unknown };
+    if ([failure.status, failure.statusCode].some(status => status === 401 || status === 403)) return true;
+    // drizzle-solid currently wraps failed writes in an Error without a status/cause.
+    // Match that operation's HTTP status, never an arbitrary occurrence in a body.
+    if (typeof failure.message === 'string' && /^Write failed for \S+: (?:401 Unauthorized|403 Forbidden)(?:\s|$)/.test(failure.message)) return true;
+    error = failure.cause;
+  }
+  return false;
+}
+
 function sendError(response: ServerResponse, error: unknown): void {
   if (error instanceof MatrixError) {
     sendMatrixError(response, error.status, error.errcode, error.message);
   } else if (error instanceof SyntaxError || error instanceof URIError) {
     sendMatrixError(response, 400, 'M_BAD_JSON', 'Malformed JSON or URL encoding');
+  } else if (isPodAuthorizationError(error)) {
+    sendMatrixError(response, 403, 'M_FORBIDDEN', 'Pod access was denied. Check the Pod interface credential and resource permissions.');
   } else {
     const detail = handlerErrorDetail(error);
     const frames = safeLocalErrorFrames(error);

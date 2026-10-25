@@ -537,7 +537,11 @@ export class PodMatrixStore {
     }
     const podFetch = await this.runPhase(trace, 'getDb.credentials', {}, async () =>
       this.podAccess ? await this.podAccess.getPodFetch(context.webId, {auth, podBaseUrl: context.podUrl}) : undefined);
-    if (!podFetch) throw new MatrixError(403, 'M_FORBIDDEN', 'Grant Pod interface access before using Matrix');
+    if (!podFetch) {
+      throw new MatrixError(403, 'M_FORBIDDEN', auth.tokenType === 'DPoP'
+        ? 'Grant Pod interface access and use its client credential for Matrix. The browser DPoP session cannot be forwarded to the Pod.'
+        : 'Grant Pod interface access before using Matrix');
+    }
     const db: Db = drizzle(
       {
         fetch: this.tracePodFetch(podFetch),

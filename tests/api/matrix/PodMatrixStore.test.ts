@@ -109,4 +109,19 @@ describe('PodMatrixStore owner Pod access', () => {
     await expect(store.createRoom({}, context)).rejects.toThrow('Grant Pod interface access');
     expect(drizzle).not.toHaveBeenCalled();
   });
+
+  it('names the DPoP replay limit when a browser session has no outbound Pod capability', async () => {
+    const { context: cachedContext } = matrixHarness();
+    const { _matrixDb: _cachedDb, ...context } = cachedContext;
+    const store = new PodMatrixStore({ podAccess: { getPodFetch: async () => undefined } });
+    await expect(store.createRoom({}, {
+      ...context,
+      auth: { type: 'solid', webId: context.webId, tokenType: 'DPoP', dpopProof: 'browser-proof' },
+    })).rejects.toMatchObject({
+      status: 403,
+      errcode: 'M_FORBIDDEN',
+      message: expect.stringContaining('browser DPoP session cannot be forwarded'),
+    });
+    expect(drizzle).not.toHaveBeenCalled();
+  });
 });
