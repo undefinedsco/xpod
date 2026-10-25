@@ -4,6 +4,7 @@ import importlib.util
 import json
 from pathlib import Path
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 ROOT=Path(__file__).resolve().parents[2]
@@ -29,7 +30,7 @@ class Tests(unittest.TestCase):
  def test_dedupe_only_same_actual_table_and_slot_not_other_alias(self):
   base=ROOT/'.test-data/sdk-shared-task-tests';base.mkdir(parents=True,exist_ok=True)
   with tempfile.NamedTemporaryFile(dir=base) as file:
-   identity=backend.probe.identity(Path(file.name).stat());observer=backend.Observer('/unused','/unused','/unused',shared_tasks=True);observer.tasks={7:dict(exited=False,fdTable=7),8:dict(exited=False,fdTable=7)};observer.check=lambda:None
+   identity=backend.probe.identity(Path(file.name).stat());observer=backend.Observer('/unused','/unused','/unused',shared_tasks=True);observer.deadline=time.monotonic()+60;observer.check_budget=lambda:None;observer.current_phase='configure';observer.tasks={7:dict(exited=False,fdTable=7),8:dict(exited=False,fdTable=7)};observer.check=lambda:None
    def listing(path):return ['4']
    with patch.object(observer,'bounded_fd_slots',return_value=['4']),patch.object(backend.os,'stat',return_value=Path(file.name).stat()),patch.object(backend,'descriptor_flags',return_value=2):
     self.assertEqual(observer.sole_writer(8,4,identity),[dict(pid=8,fd=4)])

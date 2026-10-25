@@ -21,6 +21,16 @@
 !scripts/workspace-runtime-materials.cjs
 !scripts/build-afs-from-producer.ts
 !scripts/run-npm-pack.cjs
+!scripts/service-pack-parent.py
+!scripts/service-pack-phase.cjs
+!scripts/service-pack-originals.cjs
+!scripts/service-pack-node-runtime.cjs
+!scripts/service-build-observations.py
+!scripts/service-pack-input-custody.cjs
+!scripts/service-pack-public-inputs.cjs
+!scripts/service-pack-command.py
+!scripts/service-pack-copy-ledger.cjs
+!scripts/service-pack-source-body.py
 !scripts/prepare-package-manifest.cjs
 !scripts/platform-binaries.cjs
 !scripts/check-dependency-state.ts
@@ -44,9 +54,11 @@ docker/**
 !docker/qlever-runtime-sdk/
 docker/qlever-runtime-sdk/**
 !docker/qlever-runtime-sdk/Dockerfile.module-bookworm
+!docker/qlever-runtime-sdk/Dockerfile
 !docker/qlever-local-runtime/
 docker/qlever-local-runtime/**
 !docker/qlever-local-runtime/Dockerfile.module-bookworm
+!docker/qlever-local-runtime/Dockerfile
 
 # Never copy host build/install artifacts into the Linux build context.
 **/node_modules

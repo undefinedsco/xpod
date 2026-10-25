@@ -141,13 +141,14 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def download(url, destination, token=None, limit=ARCHIVE_LIMIT):
+def download(url, destination, token=None, limit=ARCHIVE_LIMIT, *, revalidate=False):
     """Bounded original bytes; credentials only reach api.github.com, never redirects."""
     opener=urllib.request.build_opener(NoRedirect)
     for _ in range(6):
         parsed=urllib.parse.urlparse(url)
         if parsed.scheme!='https' or parsed.username or parsed.password or parsed.fragment or parsed.port not in (None,443): raise ValueError('Unsafe acquisition URL')
         headers={'Accept':'application/vnd.github+json','User-Agent':'xpod-css-preview'}
+        if revalidate: headers.update({'Cache-Control':'no-cache','Pragma':'no-cache'})
         if token:
             if parsed.netloc!='api.github.com': raise ValueError('Credential host mismatch')
             headers['Authorization']='Bearer '+token
@@ -251,7 +252,7 @@ def acquire_native(output, env, identity):
     if not token: raise ValueError('Actions read token required')
     aid=int(env['CSS_NATIVE_ARTIFACT_ID']);api='https://api.github.com/repos/'+REPOSITORY+'/actions/'
     for name,url in [('run.raw.json',api+f'runs/{identity["runId"]}/attempts/{identity["runAttempt"]}'),('artifact.metadata.raw.json',api+'artifacts/'+str(aid)),('native-jobs.raw.json',api+f'runs/{identity["runId"]}/attempts/{identity["runAttempt"]}/jobs?per_page=100')]:
-        download(url,originals/name,token,1024**2)
+        download(url,originals/name,token,1024**2,revalidate=True)
     validate_run(identity,json.loads((originals/'run.raw.json').read_text()))
     digest,job=validate_native_metadata(identity,env,json.loads((originals/'artifact.metadata.raw.json').read_text()),json.loads((originals/'native-jobs.raw.json').read_text()))
     download(api+'artifacts/'+str(aid)+'/zip',originals/'native.zip',token)

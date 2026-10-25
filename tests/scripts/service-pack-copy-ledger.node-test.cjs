@@ -1,0 +1,16 @@
+'use strict';
+const {test}=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path');
+const {createCopyLedger,readCopyLedger}=require('../../scripts/service-pack-copy-ledger.cjs');
+const {createServicePackInputCustody}=require('../../scripts/service-pack-input-custody.cjs');
+test('actual copied 1700-member package roundtrips every full identity without 1700 outer records',()=>{
+ const parent=path.resolve('.test-data/service-pack-copy-ledger');fs.mkdirSync(parent,{recursive:true});const root=fs.mkdtempSync(path.join(parent,'actual-')),source=path.join(root,'source'),destination=path.join(root,'destination'),observer=createServicePackInputCustody({check(){}});fs.mkdirSync(source);const originals=[];
+ try{for(let i=0;i<1700;i++)fs.writeFileSync(path.join(source,'member-'+i),String(i));const ledger=createCopyLedger({roots:[source,destination],check(){}});observer.copyTree(source,destination,{filter:()=>true,record:row=>{originals.push(row);ledger.add(row);}});const raw=ledger.seal();assert.ok(originals.length>512);assert.ok(raw.length<4*1024**2);assert.deepEqual(readCopyLedger(raw,()=>{}),originals);console.log(JSON.stringify({kind:'actual-copied-member-ledger-capacity',files:1700,observations:originals.length,encodedBytes:raw.length,uncompactedBytes:Buffer.byteLength(JSON.stringify(originals)),scope:'actual ordinary FS copies only; no registry/Git/native qualification'}));const data=JSON.parse(raw);data.rows[0][1][1]=data.strings.length;assert.throws(()=>readCopyLedger(Buffer.from(JSON.stringify(data)),()=>{}),/reference/);
+ }finally{observer.close();fs.rmSync(root,{recursive:true,force:true});}
+});
+test('encoded budget refuses before appending and does not truncate valid evidence',()=>{
+ const ledger=createCopyLedger({roots:['/a','/b'],check(){},maximum:200});const identity=['1','2','16877','1','3','4'],parent={path:'/a',canonicalPath:'/a',identity,nlink:'1'};assert.throws(()=>ledger.add({kind:'actual-pack-input-directory-begin-v1',source:{kind:'actual-pack-input-present-v1',probeKind:'directory',sequence:1,path:'/a/long-name',canonicalPath:'/a/long-name',identity,nlink:'1',parent},destination:'/b/long-name'}),/metadata exceeded/);assert.throws(()=>ledger.seal(),/previous encoding failure/);
+});
+test('same codec losslessly preserves actual selected pre/checkpoint/post observations without a second field table',()=>{
+ const root=path.resolve('.test-data/service-pack-copy-ledger');fs.mkdirSync(root,{recursive:true});const actual=fs.mkdtempSync(path.join(root,'selected-')),observer=createServicePackInputCustody({check(){}});fs.writeFileSync(path.join(actual,'package.json'),'{}');fs.writeFileSync(path.join(actual,'empty'),'');let lease;
+ try{lease=observer.leaseSelectedFiles(actual,['package.json','empty']);const originals=[...lease.before(),...lease.checkpoint(),...lease.finish()],ledger=createCopyLedger({roots:[actual],check(){}});for(const row of originals)ledger.add(row);const raw=ledger.seal();assert.deepEqual(readCopyLedger(raw,()=>{}),originals);const malformed=JSON.parse(raw);malformed.rows[0].pop();assert.throws(()=>readCopyLedger(Buffer.from(JSON.stringify(malformed)),()=>{}),/selected input tuple/);}finally{lease?.close();observer.close();fs.rmSync(actual,{recursive:true,force:true});}
+});

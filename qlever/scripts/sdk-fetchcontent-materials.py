@@ -38,12 +38,21 @@ def rooted(value,prefix):
         return {key:rooted(item,prefix) for key,item in value.items()}
     return value
 def physical_inventory(source,out,materials,budget):
-    source=Path(source);rows=[];shards=[];count=0;total=0
+    source=Path(source);rows=[];shards=[];count=0;total=0;empty=[];empty_bytes=2
     def flush():
         path=out/('inventory-'+str(len(shards)).zfill(4)+'.json');value=dict(schemaVersion=1,files=rows)
         if len(json.dumps(value,sort_keys=True).encode())>remaining(materials):raise ValueError('Dependency inventory remaining budget')
         dump(path,value,budget.check);shards.append(git.ref(path,materials,budget.check))
     for directory,dirs,files in os.walk(source,followlinks=False):
+        budget.check(4200)
+        if not dirs and not files and Path(directory)!=source:
+            path=Path(directory);before=path.lstat()
+            if not stat.S_ISDIR(before.st_mode) or any(path.iterdir()):raise ValueError('Empty dependency directory changed')
+            after=path.lstat();identity=lambda row:[str(value) for value in (row.st_dev,row.st_ino,row.st_mode,row.st_size,row.st_mtime_ns,row.st_ctime_ns)]
+            if identity(before)!=identity(after):raise ValueError('Empty dependency directory identity changed')
+            entry=dict(path=path.relative_to(source).as_posix(),identityDecimal=identity(after));empty_bytes+=len(json.dumps(entry).encode())+(2 if empty else 0)
+            if len(empty)>=LIMITS['sourceMembers'] or empty_bytes>META:raise ValueError('Empty dependency directory metadata bound')
+            empty.append(entry)
         linked=[name for name in dirs if (Path(directory)/name).is_symlink()];dirs[:]=sorted(name for name in dirs if name not in linked)
         for name in sorted([*files,*linked]):
             budget.check(4200);path=Path(directory)/name;before=path.lstat();relative=path.relative_to(source).as_posix()
@@ -60,7 +69,7 @@ def physical_inventory(source,out,materials,budget):
             rows.append(row);count+=1;total+=row['bytes']
             if count>LIMITS['sourceMembers'] or total>LIMITS['sourceMaterialBytes']:raise ValueError('Dependency physical source inventory bound')
     if rows:flush()
-    path=out/'source-inventory.json';dump(path,dict(schemaVersion=1,files=count,bytes=total,shards=shards),budget.check)
+    path=out/'source-inventory.json';dump(path,dict(schemaVersion=1,files=count,bytes=total,shards=shards,emptyDirectories=empty),budget.check)
     return git.ref(path,materials,budget.check)
 
 class PreparedCollector(git.Collector):
@@ -70,7 +79,45 @@ class PreparedCollector(git.Collector):
         result=super().command(name,argv,min(maximum,available),stdin)
         remaining(self.materials);return result
 
-def prepare_git(declaration,source,out,materials,budget):
+def gitmodules_original(source,row,check):
+    """Read only the held, bounded file named by the already retained tree row."""
+    if row.get('mode')!='100644' or type(row.get('bytes')) is not int or not 0<=row['bytes']<=META:raise ValueError('Pinned regular Gitmodules metadata bound')
+    signature=lambda st:(st.st_dev,st.st_ino,st.st_mode,st.st_size,st.st_mtime_ns,st.st_ctime_ns,st.st_nlink)
+    held=[];parents=[]
+    try:
+        fd=os.open('/',os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW);held.append(fd)
+        for part in Path(source).absolute().parts[1:]:
+            check();parent=fd;fd=os.open(part,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=parent);held.append(fd)
+            parents.append((parent,part,fd,signature(os.fstat(fd))))
+        before=os.stat('.gitmodules',dir_fd=fd,follow_symlinks=False)
+        if not stat.S_ISREG(before.st_mode) or before.st_nlink!=1 or before.st_size!=row['bytes']:raise ValueError('Pinned Gitmodules actual metadata differs')
+        parent=fd;file_fd=os.open('.gitmodules',os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK,dir_fd=parent);held.append(file_fd)
+        if signature(os.fstat(file_fd))!=signature(before):raise ValueError('Gitmodules held identity differs')
+        parts=[];count=0;digest=hashlib.sha256()
+        while True:
+            check();block=os.read(file_fd,min(65536,row['bytes']-count+1))
+            if not block:break
+            count+=len(block)
+            if count>row['bytes']:raise ValueError('Gitmodules metadata grew')
+            parts.append(block);digest.update(block)
+        if count!=row['bytes'] or digest.hexdigest()!=row['sha256'] or signature(before)!=signature(os.fstat(file_fd)) or signature(before)!=signature(os.stat('.gitmodules',dir_fd=parent,follow_symlinks=False)):raise ValueError('Pinned Gitmodules bytes/identity changed')
+        for parent,name,fd,identity in parents:
+            if identity!=signature(os.fstat(fd)) or identity!=signature(os.stat(name,dir_fd=parent,follow_symlinks=False)):raise ValueError('Gitmodules parent identity changed')
+        return b''.join(parts)
+    finally:
+        primary=sys.exc_info()[0] is not None;cleanup=None
+        for fd in reversed(held):
+            try:os.close(fd)
+            except BaseException as error:
+                if cleanup is None:cleanup=error
+        if cleanup is not None and not primary:raise cleanup
+
+def prepare_git(declaration,source,out,materials,budget,_ancestors=(),_count=None):
+    key=(declaration['repository'],declaration['commit'])
+    if len(_ancestors)>=16 or key in _ancestors:raise ValueError('Recursive Gitlink depth/cycle refused')
+    if _count is None:_count=[0]
+    _count[0]+=1
+    if _count[0]>LIMITS['sourceMembers']:raise ValueError('Recursive Gitlink count bound')
     source.mkdir()
     collector=PreparedCollector.for_git_source(source,out,budget,declaration['repository'],declaration['commit']);collector.materials=materials
     collector.command('clone',['git','clone','--no-checkout','--config','advice.detachedHead=false',declaration['repository'],'.'])
@@ -79,8 +126,25 @@ def prepare_git(declaration,source,out,materials,budget):
     if (collector.out/shallow['stdout']['path']).read_text().strip()!='false':raise ValueError('Complete Git acquisition required')
     config=collector.command('complete-config',['git','config','--local','--list'])
     if re.search(r'(?im)^(?:extensions\.partialclone|remote\..*\.(?:promisor|partialclonefilter))=',(collector.out/config['stdout']['path']).read_text()):raise ValueError('Partial Git acquisition refused')
-    snapshot=collector.git_snapshot()
-    path=out/'git-materials.json';dump(path,dict(schemaVersion=1,kind='qlever-sdk-dependency-git-originals',**rooted(snapshot,out.relative_to(materials).as_posix()),stages=rooted(collector.stages,out.relative_to(materials).as_posix())),budget.check)
+    snapshot=collector.git_snapshot(allow_unmaterialized_gitlinks=True)
+    inventory=json.loads((collector.out/snapshot['prepatchInventory']['path']).read_bytes())
+    children=[]
+    links=inventory.get('gitlinks',[])
+    if links:
+        spec=importlib.util.spec_from_file_location('recursive_gitlink_bindings',HERE/'sdk-git-source-bindings.py');shared=importlib.util.module_from_spec(spec);spec.loader.exec_module(shared)
+        row=next((row for row in inventory['files'] if row['path']=='.gitmodules'),None)
+        if row is None or row['mode']!='100644' or row['bytes']>META:raise ValueError('Pinned regular Gitmodules required')
+        raw=gitmodules_original(source,row,lambda:budget.check(4200))
+        repositories=shared.gitlink_repositories(raw,links)
+        for ordinal,link in enumerate(links):
+            budget.check(4200);target=source/link['path'];identity=[str(value) for value in (lambda st:(st.st_dev,st.st_ino,st.st_mode,st.st_size,st.st_mtime_ns,st.st_ctime_ns))(target.lstat())]
+            if identity!=link['identityDecimal'] or any(target.iterdir()):raise ValueError('Gitlink empty checkout changed before materialization')
+            target.rmdir()
+            child=dict(repository=repositories[link['path']],commit=link['commitOid'])
+            reference=prepare_git(child,target,out/('submodule-'+str(ordinal).zfill(4)),materials,budget,(*_ancestors,key),_count)
+            children.append(dict(path=link['path'],repository=child['repository'],commit=child['commit'],original=reference))
+    path=out/'git-materials.json';dump(path,dict(schemaVersion=1,kind='qlever-sdk-dependency-git-originals',**rooted(snapshot,out.relative_to(materials).as_posix()),stages=rooted(collector.stages,out.relative_to(materials).as_posix()),materializedGitlinks=children),budget.check)
+
     return git.ref(path,materials,budget.check)
 
 def download(url,target,algorithm,digest,materials,budget):

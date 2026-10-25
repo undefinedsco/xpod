@@ -76,6 +76,7 @@ jobs:
           cache-to: type=gha,mode=max,scope=xpod-server
           build-args: |
             XPOD_QLEVER_LOCAL_RUNTIME_IMAGE=${{ inputs.qlever-local-runtime-image }}
+            XPOD_SOURCE_SHA=${{ steps.source.outputs.commit }}
 
       - name: Resolve immutable digest
         id: publish

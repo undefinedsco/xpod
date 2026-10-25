@@ -68,12 +68,57 @@ def copy_tar(raw,archive,domain,check,seen):
         need(not any(chunk),'nonzero trailing exported tar')
     return dict(bytes=stream.count,sha256=stream.sha.hexdigest())
 
-def export(cid,out,deadline,ceiling,dockerfile):
+VERIFICATION_SCRIPTS=('check-qlever-real-adapter-build.cjs','check-qlever-real-runtime.cjs','check-qlever-upstream-patches.cjs')
+
+def verification_originals(context_originals,source_sha,check):
+    """Read only the three exact immutable Git-context members; no extraction.
+    Same retained tar, full SHA, guarded headers, same deadline and 4MiB buffers.
+    """
+    check();need(isinstance(source_sha,str) and outer.binding.re.fullmatch('[a-f0-9]{40}',source_sha),'same immutable verification source SHA')
+    context_path=Path(context_originals);raw=outer.bounded_original(context_path,LIMITS['metadataBytes'],check);context=json.loads(raw)
+    need(context.get('schemaVersion')==1 and context.get('sourceSha')==source_sha and isinstance(context.get('files'),list) and len(context['files'])<=LIMITS['sourceMembers'],'same bounded source context metadata')
+    archive_ref=context.get('archive');need(isinstance(archive_ref,dict) and archive_ref.get('path')=='context.original.tar' and type(archive_ref.get('bytes')) is int and 0<archive_ref['bytes']<=LIMITS['shardBytes'] and outer.binding.re.fullmatch('[a-f0-9]{64}',archive_ref.get('sha256','')),'exact immutable source tar reference')
+    targets={}
+    for name in VERIFICATION_SCRIPTS:
+        source='qlever/scripts/'+name;rows=[row for row in context['files'] if isinstance(row,dict) and isinstance(row.get('file'),dict) and row['file'].get('path')==source]
+        need(len(rows)==1 and type(rows[0].get('mode')) is int and 0<=rows[0]['mode']<=0o7777 and type(rows[0]['file'].get('bytes')) is int and 0<rows[0]['file']['bytes']<=LIMITS['metadataBytes'] and outer.binding.re.fullmatch('[a-f0-9]{64}',rows[0]['file'].get('sha256','')),'unique fixed verification original')
+        targets[source]=rows[0]
+    need(sum(row['file']['bytes'] for row in targets.values())<=LIMITS['metadataBytes'],'aggregate verification original memory bound')
+    path=context_path.parent/'context.original.tar';fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW|os.O_CLOEXEC)
+    def identity(value):return (value.st_dev,value.st_ino,value.st_mode,value.st_size,value.st_mtime_ns,value.st_ctime_ns,value.st_nlink)
+    found={}
+    try:
+        before=os.fstat(fd);need(outer.stat.S_ISREG(before.st_mode) and before.st_nlink==1 and before.st_size==archive_ref['bytes'] and identity(before)==identity(path.lstat()),'same held immutable source tar')
+        with os.fdopen(os.dup(fd),'rb') as original:
+            stream=CheckedStream(original,check);guard=binary.TarHeaderGuard(stream,{'bytes':0,'members':0},check,metadata_members=LIMITS['sourceMembers'])
+            with tarfile.open(fileobj=guard,mode='r|',bufsize=65536) as archive:
+                for member in archive:
+                    check()
+                    if member.name not in targets:continue
+                    row=targets[member.name];ref=row['file'];need(member.name not in found and member.isfile() and member.size==ref['bytes'] and member.mode==row['mode'],'one regular immutable verification member')
+                    parts=[];count=0;digest=hashlib.sha256();source=archive.extractfile(member)
+                    while count<member.size:
+                        check();data=source.read(min(65536,member.size-count));need(data,'complete verification source bytes');parts.append(data);count+=len(data);digest.update(data)
+                    need(digest.hexdigest()==ref['sha256'],'verification original full SHA');found[member.name]=b''.join(parts)
+            while True:
+                block=guard.read(65536)
+                if not block:break
+                need(not any(block),'immutable source tar trailing material')
+            need(stream.count==archive_ref['bytes'] and stream.sha.hexdigest()==archive_ref['sha256'],'complete immutable context tar SHA')
+        check();need(identity(before)==identity(os.fstat(fd))==identity(path.lstat()) and set(found)==set(targets),'verification source custody/closure changed')
+    finally:os.close(fd)
+    return [(name,found['qlever/scripts/'+name]) for name in VERIFICATION_SCRIPTS]
+
+
+def export(cid,out,deadline,ceiling,dockerfile,source_context=None,source_sha=None):
     need(outer.binding.re.fullmatch('[a-f0-9]{64}',cid) is not None,'fixed stopped container ID');need(type(ceiling) is int and 0<ceiling<=LIMITS['sourceMaterialBytes'],'parent remaining retained ceiling');budget=outer.budgets.ExecutionBudget(deadline);check=lambda:budget.check(30)
+    verification=verification_originals(source_context,source_sha,check) if source_context is not None else []
     out=Path(out);out.mkdir(exist_ok=False);writer=Shards(out,ceiling,check);seen=set();streams={}
     try:
         with tarfile.open(fileobj=writer,mode='w|',format=tarfile.PAX_FORMAT,bufsize=65536) as archive:
             info=tarfile.TarInfo('Dockerfile');info.size=len(dockerfile);info.mode=0o444;archive.addfile(info,io.BytesIO(dockerfile))
+            for name,data in verification:
+                check();info=tarfile.TarInfo('verification/'+name);info.size=len(data);info.mode=0o444;archive.addfile(info,io.BytesIO(data));seen.add(info.name)
             for domain in ['build','materials']:
                 check();command=outer.binding.local_docker(['docker','cp',cid+':/opt/qlever-sdk/'+domain,'-']);child=subprocess.Popen(command,stdout=subprocess.PIPE,stderr=sys.stderr,preexec_fn=bound_docker_raw)
                 try:
@@ -175,7 +220,7 @@ def copy_final_inner(plan,budget):
 
 def dispatch(mode,plan):
     budget=outer.budgets.ExecutionBudget(plan['deadlineUnix']);budget.check(0 if mode in ['remove-builder','image-copy-remove'] else 30)
-    if mode=='export':return export(plan['containerId'],plan['context'],plan['deadlineUnix'],plan['remainingRetainedBytes'],plan['dockerfile'].encode())
+    if mode=='export':return export(plan['containerId'],plan['context'],plan['deadlineUnix'],plan['remainingRetainedBytes'],plan['dockerfile'].encode(),plan.get('sourceContextOriginals'),plan.get('sourceSha'))
     if mode=='build':
         need(outer.binding.re.fullmatch('[A-Za-z0-9_-]{1,100}',plan['builder']) is not None and plan['platform'] in ['linux/amd64','linux/arm64'],'fixed owned builder/platform')
         return build_from_shards(plan['export'],plan['context'],plan['deadlineUnix'],plan['builder'],plan['platform'],plan['metadata'],plan['identity'])

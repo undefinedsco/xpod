@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { verifyModuleClientMaterials, moduleClientPath, hashBytes, hashFile, verifyBoundFile, type ModuleAdmissionInputs } from './module-admission';
 import { isolatedModuleEnvironment } from './module-admission';
 import { observeChildLifecycle, reapOwnedGroup } from './platform-admission';
-import { installedConsumerWatchdogMs } from './owned-installed-consumer';
+import { installedConsumerWatchdogMs, INSTALLED_CONSUMER_PARENT_MS, INSTALLED_CONSUMER_CLEANUP_MS } from './owned-installed-consumer';
 import { MODULE_INSTALL_PHASES, MODULE_INSTALL_DIAGNOSTIC_LIMIT, type ModuleInstallPhaseEvent } from '../../../packages/xpod-cli/src/module-install-diagnostics';
 
 import nativeAuthority from './native-authority.json';
@@ -101,7 +101,7 @@ const child: Projection = { ...fields('string', 'command state signal groupState
 const binding: Record<string, Projection> = { ...fields('string', 'profile moduleSourceSHA nativeBuildSourceSHA moduleArchiveSHA256 moduleSRI manifestSHA256 inventorySHA256 moduleSourceTreeSHA256 coreSHA256 runtime runtimePath runtimeVersion runtimeSHA256 installedEntry installedEntrySHA256 installedHelper installedHelperSHA256 installedLibrarySHA256 installedClientSHA256 installedClientPath storeRoot transport'),
   ...fields('string', 'inputAuthoritySHA256 driverSHA256 chainReceiptSHA256 chainCleanupReceiptSHA256 platformReceiptSHA256'), actualPlatformExit: 'number', moduleAndCoreArtifactUnchanged: 'boolean', installedInventoryReverified: 'boolean' };
 const close: Projection = { ...fields('number', 'exit'), ...fields('string', 'signal rawSHA256 resourceStop supervisorError'), ...fields('boolean', 'actualWait rawClosedBeforeHash ownedGroupAbsentAfterWait'), cleanupErrors: ['string'] };
-const installedObservation: Projection = { ...fields('number', 'timeoutMs elapsedMs'), ...fields('boolean', 'timeoutObserved closeObserved groupClosed') };
+const installedObservation: Projection = { ...fields('number', 'timeoutMs elapsedMs parentDeadlineMonotonicMs startedMonotonicMs'), ...fields('boolean', 'timeoutObserved closeObserved groupClosed') };
 const installPhase: Projection = { ...fields('string', 'kind phase state'), ...fields('number', 'elapsedMs durationMs') };
 const installedSummary: Projection = { bytes: 'number', truncated: 'boolean', codes: ['string'], installPhases: [installPhase], installPhasesTruncated: 'boolean' };
 const installedStage: Projection = { observation: installedObservation, ...fields('string', 'stage actualSignal stdoutSHA256 stderrSHA256'), ...fields('number', 'pid actualExit'), ...fields('boolean', 'actualWait rawClosed groupAbsent'), installPhases: [installPhase], installPhasesTruncated: 'boolean' };
@@ -155,7 +155,13 @@ export const MODULE_CHAIN_STAGES = ['mount', 'kernel-identity', 'proxy-identity'
 export const MODULE_CHAIN_ERROR_CODES = ['ENOENT', 'EACCES', 'EPERM', 'ETIMEDOUT', 'unknown'] as const;
 const INSTALLED_SUMMARY_CODES = ['sqlite-experimental-warning', 'ENOENT', 'EACCES', 'EPERM', 'ENOSPC', 'ETIMEDOUT', 'ECONNRESET', 'cli-ok', 'cli-error', 'module_install_failed', 'module_metadata_invalid', 'module_integrity_failed', 'module_download_failed'] as const;
 function validInstalledObservation(row: any, stage: string): boolean {
-  return row === undefined || row && Number.isInteger(row.timeoutMs) && row.timeoutMs > 0 && row.timeoutMs <= installedConsumerWatchdogMs(stage)
+  const hasParent = row?.parentDeadlineMonotonicMs !== undefined || row?.startedMonotonicMs !== undefined;
+  const parentBound = !hasParent || Number.isFinite(row.parentDeadlineMonotonicMs) && Number.isFinite(row.startedMonotonicMs)
+    && row.startedMonotonicMs >= 0 && row.elapsedMs <= row.parentDeadlineMonotonicMs - row.startedMonotonicMs
+    && row.parentDeadlineMonotonicMs - row.startedMonotonicMs <= INSTALLED_CONSUMER_PARENT_MS
+    && row.timeoutMs <= Math.floor(row.parentDeadlineMonotonicMs - row.startedMonotonicMs - INSTALLED_CONSUMER_CLEANUP_MS);
+  return row === undefined || row && parentBound && Number.isInteger(row.timeoutMs) && row.timeoutMs > 0
+    && row.timeoutMs <= installedConsumerWatchdogMs(stage, hasParent ? INSTALLED_CONSUMER_PARENT_MS : undefined)
     && Number.isFinite(row.elapsedMs) && row.elapsedMs >= 0 && row.elapsedMs <= 86_400_000
     && ['timeoutObserved', 'closeObserved', 'groupClosed'].every(key => typeof row[key] === 'boolean');
 }

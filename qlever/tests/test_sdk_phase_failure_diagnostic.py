@@ -37,8 +37,8 @@ class FailureDiagnosticTests(unittest.TestCase):
     def test_failed_phase_emits_diagnostic_and_still_raises_before_success_collection(self):
         parent=ROOT/'.test-data/sdk-failure-diagnostic';parent.mkdir(parents=True,exist_ok=True)
         with tempfile.TemporaryDirectory(dir=parent) as temporary:
-            out=Path(temporary);session=module.Session.__new__(module.Session);session.out=out
-            session.budget=types.SimpleNamespace(end=time.monotonic()+10,timeout=lambda cap,reserve:1,check=lambda:None)
+            out=Path(temporary);session=module.Session.__new__(module.Session);session.out=out;session.build=out/'build'
+            session.budget=types.SimpleNamespace(end=time.monotonic()+10,timeout=lambda cap,reserve:1,check=lambda reserve=0:None)
             session.observer=types.SimpleNamespace(tighten_remaining=lambda amount:None,phase=lambda name,argv,deadline,**options:self.fixture(out,Path(options['stdoutPath']).parent))
             output=io.StringIO()
             with contextlib.redirect_stderr(output),self.assertRaisesRegex(ValueError,'Actual observer phase failed'):

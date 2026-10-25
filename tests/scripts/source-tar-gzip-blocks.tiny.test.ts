@@ -1,6 +1,6 @@
 import {test,expect} from 'bun:test';
 import fs from 'node:fs';import path from 'node:path';import {spawnSync} from 'node:child_process';import {createHash} from 'node:crypto';import {gzipSync} from 'node:zlib';
-import {inspectSourceOriginalTar,inspectGzipBlockSourceOriginalTar} from '../../scripts/lib/independent-admission/source-original-tar';
+import {inspectSourceOriginalTar,inspectGzipBlockSourceOriginalTar,createGzipBlockSourceReader} from '../../scripts/lib/independent-admission/source-original-tar';
 import limits from '../../scripts/lib/module-artifact-limits.json';
 const sha=(b:Buffer)=>createHash('sha256').update(b).digest('hex');
 function fixture(run:(f:any)=>void){const base=path.resolve(import.meta.dir,'../../.test-data');fs.mkdirSync(base,{recursive:true});const root=fs.mkdtempSync(path.join(base,'gzip-originals-'));
@@ -25,4 +25,13 @@ test('the decoded tar still enforces every indexed member digest mode link and c
  for(const field of ['sha256','mode','target']){const rows=new Map(f.rows as Map<string,any>),key=field==='target'?'node_modules/link':'node_modules/a';rows.set(key,{...rows.get(key),[field]:field==='mode'?0o755:field==='target'?'random':'0'.repeat(64)});expect(()=>f.inspect({rows})).toThrow();}
  const rows=new Map(f.rows);rows.delete('node_modules/random');expect(()=>f.inspect({rows})).toThrow();
  expect(()=>f.inspect({check(){throw Error('expired one deadline');}})).toThrow('expired');
+}));
+
+test('shared gzip reader verifies full bytes before random access and detaches indices/buffers',()=>fixture((f:any)=>{
+ const index=structuredClone(f.index),reader=createGzipBlockSourceReader({archive:f.archive,index,check(){},readRange:(_name,offset,length)=>f.packed.subarray(offset,offset+length)});
+ expect(()=>reader.assertComplete()).toThrow('complete');expect(()=>reader.readRange(limits.rangeBytes*2,1)).toThrow('sequential');
+ index.blocks[0].offset=999;index.expanded.bytes=0;
+ for(let offset=0;offset<reader.expanded.bytes;offset+=limits.rangeBytes)reader.readRange(offset,Math.min(limits.rangeBytes,reader.expanded.bytes-offset));
+ reader.assertComplete();const first=reader.readRange(0,64),saved=Buffer.from(first);first.fill(0);expect(reader.readRange(0,64)).toEqual(saved);
+ reader.readRange(reader.expanded.bytes-1,1);f.packed[0]^=1;expect(()=>reader.readRange(0,1)).toThrow('held gzip block bytes changed');
 }));

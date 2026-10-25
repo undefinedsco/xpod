@@ -1,3 +1,4 @@
+import {resolveExecutableIdentityPath} from './legal-file-custody';
 import {inspectNativeAdmissionRequirements} from './native-admission-requirements';
 import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
@@ -177,7 +178,7 @@ export async function verifyLinuxRuntimeOriginals(target: string, binary: Buffer
   const parent = path.join(repo, '.test-data/native-abi-originals'); mkdirSync(parent, {recursive: true});
   const directory = mkdtempSync(path.join(parent, 'case-'));
   const input = path.join(directory, 'input.json'); writeFileSync(input, request, {flag: 'wx', mode: 0o600});
-  const python = realpathSync('/usr/bin/python3');
+  const python = resolveExecutableIdentityPath('/usr/bin/python3');
   const wrapper = "import sys,os,runpy; source=sys.argv[2]; sys.stdin=open(sys.argv[1],encoding='utf8'); sys.path.insert(0,os.path.dirname(source)); sys.argv=[source,'--verify-runtime-abi-originals']; runpy.run_path(source,run_name='__main__')";
   const { runPublicationCommand } = createRequire(import.meta.url)('../afs-publication-command.cjs');
   let safeCleanup = false;

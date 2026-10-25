@@ -1,5 +1,6 @@
 """Pure Docker context policy contracts; no Docker build or native qualification."""
 import re
+import ast
 import json
 import unittest
 from pathlib import Path
@@ -38,11 +39,12 @@ class ModuleContextTests(unittest.TestCase):
             self.assertTrue((ROOT / file).is_file())
         exceptions = [rule for rule in self.rules if rule.startswith('!docker/')]
         self.assertEqual(set(exceptions), {'!docker/', '!docker/qlever-runtime-sdk/', '!docker/qlever-local-runtime/',
-            '!docker/qlever-runtime-sdk/Dockerfile.module-bookworm', '!docker/qlever-local-runtime/Dockerfile.module-bookworm'})
+            '!docker/qlever-runtime-sdk/Dockerfile.module-bookworm', '!docker/qlever-local-runtime/Dockerfile.module-bookworm',
+            '!docker/qlever-runtime-sdk/Dockerfile', '!docker/qlever-local-runtime/Dockerfile'})
         self.assertNotIn('!docker/**', self.rules)
 
     def test_every_module_sdk_docker_recipe_copy_has_an_exact_context_exception(self):
-        recipe = (ROOT / 'docker/qlever-runtime-sdk/Dockerfile.module-bookworm').read_text()
+        recipe = '\n'.join((ROOT / file).read_text() for file in ['docker/qlever-runtime-sdk/Dockerfile.module-bookworm','docker/qlever-runtime-sdk/Dockerfile'])
         sources = re.findall(r'^COPY ((?:docker/|scripts/|\.dockerignore)\S*) \S+$', recipe, re.M)
         self.assertGreaterEqual(len(sources), 5)
         self.assertIn('.dockerignore', sources)
@@ -52,7 +54,7 @@ class ModuleContextTests(unittest.TestCase):
 
     def test_every_direct_service_docker_script_reference_has_an_exact_context_exception(self):
         dockerfile = (ROOT / 'Dockerfile').read_text()
-        scripts = set(re.findall(r'(?:/app/)?(scripts/[A-Za-z0-9_./-]+\.(?:cjs|mjs|ts|js))', dockerfile))
+        scripts = set(re.findall(r'(?:/app/)?(scripts/[A-Za-z0-9_./-]+\.(?:cjs|mjs|ts|js|py))', dockerfile))
         self.assertTrue(scripts)
         for source in scripts:
             with self.subTest(source=source):
@@ -80,12 +82,29 @@ class ModuleContextTests(unittest.TestCase):
         cli = json.loads((ROOT / 'packages/xpod-cli/package.json').read_text())
         self.assertEqual(externals, ['tar']); self.assertIn('tar', cli['devDependencies'])
         self.assertIn('ENV NODE_ENV=development', (ROOT / 'Dockerfile').read_text())
-        for name in ['scripts/run-npm-pack.cjs', 'scripts/check-dependency-state.ts']:
-            text = (ROOT / name).read_text()
+        runtime_edges = {
+            'scripts/run-npm-pack.cjs': {'./service-pack-phase.cjs', './service-pack-originals.cjs', './service-pack-node-runtime.cjs'},
+            'scripts/service-pack-phase.cjs': {'./lib/module-artifact-limits.json'},
+            'scripts/service-pack-originals.cjs': {'./lib/module-artifact-limits.json', './service-pack-copy-ledger.cjs', './service-pack-input-custody.cjs', './service-pack-public-inputs.cjs'},
+            'scripts/service-pack-copy-ledger.cjs': {'./lib/module-artifact-limits.json'},
+            'scripts/service-pack-input-custody.cjs': {'./lib/module-artifact-limits.json'},
+            'scripts/service-pack-public-inputs.cjs': {'./lib/module-artifact-limits.json'},
+            'scripts/service-pack-node-runtime.cjs': {'./lib/module-artifact-limits.json'},
+            'scripts/check-dependency-state.ts': set(),
+        }
+        for source, expected in runtime_edges.items():
+            text = (ROOT / source).read_text()
             dependencies = runtime_dependency_specifiers(text)
             self.assertTrue(dependencies)
-            for name in dependencies:
-                self.assertTrue(name.startswith('node:'))
+            self.assertEqual({name for name in dependencies if not name.startswith('node:')}, expected)
+            for name in expected:
+                target = (ROOT / source).parent / name
+                self.assertTrue(target.resolve().is_relative_to(ROOT / 'scripts'))
+                relative = target.resolve().relative_to(ROOT).as_posix()
+                self.assertIn('!' + relative, self.rules)
+                self.assertTrue(target.is_file())
+        self.assertIn('!scripts/service-pack-parent.py', self.rules)
+        self.assertIn('!scripts/agentfs-native-ci/supervise.py', self.rules)
 
     def test_builtin_gate_erases_only_type_imports_and_keeps_runtime_nonbuiltin_edges(self):
         source = "\n".join([
@@ -114,7 +133,16 @@ class ModuleContextTests(unittest.TestCase):
         self.assertIn('!LICENSE', self.rules)
         self.assertGreater((ROOT / 'LICENSE').stat().st_size, 0)
         dockerfile = (ROOT / 'Dockerfile').read_text()
-        self.assertLess(dockerfile.index('COPY . .'), dockerfile.index('RUN bun run build:packages'))
+        copied = dockerfile.index('COPY . .')
+        local_build = 'RUN if [ -z "${XPOD_SOURCE_SHA}" ]; then bun run build:packages'
+        retained_build = 'python3 scripts/service-pack-parent.py --source-sha "${XPOD_SOURCE_SHA}" --include-build'
+        self.assertLess(copied, dockerfile.index(local_build))
+        self.assertLess(copied, dockerfile.index(retained_build))
+        bindings = ast.parse((ROOT / 'qlever/scripts/sdk-service-pack-bindings.py').read_text())
+        tables = [node.value for node in bindings.body if isinstance(node, ast.Assign)
+                  and any(isinstance(target, ast.Name) and target.id == 'BUILD_COMMANDS' for target in node.targets)]
+        self.assertEqual(len(tables), 1)
+        self.assertIn(('build-packages', ('bun', 'run', 'build:packages')), ast.literal_eval(tables[0]))
 
     def test_host_python_cache_and_test_outputs_remain_excluded_after_all_exceptions(self):
         final_exception = max(index for index, rule in enumerate(self.rules) if rule.startswith('!'))

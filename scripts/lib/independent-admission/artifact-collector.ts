@@ -27,6 +27,119 @@ export function assertCollectedPublicationCustody(artifact:unknown):void{
  else if(publicationBindings.has(artifact as object))fail('retained publication custody assertion missing');
 }
 const issued = new WeakMap<object, CollectedArtifactView>();
+
+/** Read-only runtime-artifact bridge. The API-owned runtime issuer supplies
+ * the only actual app/SDK membership view; this collector reuses its existing
+ * private capability store instead of creating a second membership issuer. */
+export type CandidateServiceRuntimeEntry =
+  | { readonly path: string; readonly type: 'file'; readonly mode: number; readonly bytes: number; readonly sha256: string }
+  | { readonly path: string; readonly type: 'directory'; readonly mode: number; readonly bytes: 0 }
+  | { readonly path: string; readonly type: 'symlink'; readonly mode: number; readonly bytes: 0; readonly target: string };
+export interface CollectedCandidateServiceRuntimeBinding {
+  readonly runtime: unknown;
+  readonly view: CollectedArtifactView;
+  readonly identity: Readonly<{sourceSha:string;runId:number;runAttempt:number;imageDigest:string;imageConfigDigest:string;containerId:string}>;
+  readonly entries: readonly CandidateServiceRuntimeEntry[];
+  readonly files: readonly CollectedArtifactMember[];
+  readonly originals: unknown;
+  readonly source: unknown;
+  assertCurrent(): void;
+}
+const candidateServiceRuntimeBindings = new WeakMap<object, CollectedCandidateServiceRuntimeBinding>();
+/** The runtime issuer is one API-owned module. No extension alias, alternate
+ * module or caller reconstruction may stand in for it. */
+const candidateServiceRuntimeGet = (): ((value:unknown,originals:unknown,source:unknown)=>any)|undefined => {
+  try {
+    const loaded = require('./candidate-service-runtime-artifact') as Record<string, unknown>;
+    return typeof loaded.candidateServiceRuntimeArtifactView === 'function'
+      ? loaded.candidateServiceRuntimeArtifactView as (value:unknown,originals:unknown,source:unknown)=>any : undefined;
+  } catch (error) {
+    const code=(error as NodeJS.ErrnoException)?.code, message=error instanceof Error?error.message:'';
+    if(code==='MODULE_NOT_FOUND'||code==='ERR_MODULE_NOT_FOUND')return undefined;
+    if(message.includes("Cannot find module './candidate-service-runtime-artifact"))return undefined;
+    throw error;
+  }
+};
+const CANDIDATE_SERVICE_ROOT = '/opt/xpod/qlever', CANDIDATE_SERVICE_APP = '/app';
+/** Injective absolute-root adapter. `/app/...` and `/opt/xpod/qlever/...` can
+ * never collide after mapping, and no path segment is stripped. */
+export function candidateServiceRuntimeArtifactPath(absolutePath:string):string {
+ if(typeof absolutePath!=='string'||!absolutePath.startsWith('/'))fail('absolute service runtime path required');
+ const mapped=absolutePath===CANDIDATE_SERVICE_APP?'app':absolutePath.startsWith(CANDIDATE_SERVICE_APP+'/')?'app/'+absolutePath.slice(CANDIDATE_SERVICE_APP.length+1)
+  :absolutePath===CANDIDATE_SERVICE_ROOT?'opt/xpod/qlever':absolutePath.startsWith(CANDIDATE_SERVICE_ROOT+'/')?'opt/xpod/qlever/'+absolutePath.slice(CANDIDATE_SERVICE_ROOT.length+1):undefined;
+ if(!mapped||mapped.split('/').some(part=>!part||part==='.'||part==='..'))return fail('service runtime path outside the fixed app/Qlever roots');
+ return mapped;
+}
+function candidateServiceRuntimeResolvedLinkTarget(absolutePath:string,target:string):string {
+ if(typeof target!=='string'||!target||/[\u0000-\u001f\u007f\\]/u.test(target))fail('UTF-8 service runtime symlink target required');
+ const root=absolutePath===CANDIDATE_SERVICE_APP||absolutePath.startsWith(CANDIDATE_SERVICE_APP+'/')?CANDIDATE_SERVICE_APP:CANDIDATE_SERVICE_ROOT;
+ const value=target.startsWith('/')?target:path.posix.join(path.posix.dirname(absolutePath),target);
+ const resolved=path.posix.normalize(value);
+ if(resolved!==root&&!resolved.startsWith(root+'/'))fail('service runtime symlink escapes its declared root');
+ return resolved;
+}
+/** Raw tar linkname semantics: relative resolves from the link parent, absolute
+ * stays absolute, and the result must remain inside the same declared root. */
+export function candidateServiceRuntimeLinkTargetPath(absolutePath:string,target:string):string {
+ return candidateServiceRuntimeArtifactPath(candidateServiceRuntimeResolvedLinkTarget(absolutePath,target));
+}
+/** Existing collector issuer accepts one privately issued runtime view. No
+ * caller path, JSON manifest or reconstructed member list can reach this. */
+export function collectCandidateServiceRuntimeArtifact(input:{runtime:unknown;originals:unknown;source:unknown}): CollectedArtifactCapability|undefined {
+ const get=candidateServiceRuntimeGet();if(!get)return undefined;
+ const {derivedSourceView,assertDerivedSourceCurrent}=require('./source-context.ts') as typeof import('./source-context');
+ const {nativeOriginalsView,assertCollectedNativeOriginalCustody}=require('./native-original-collector.ts') as typeof import('./native-original-collector');
+ const {isCandidateServiceImageGitHubOrigin}=require('./github-origin.ts') as typeof import('./github-origin');
+ const sourceView=derivedSourceView(input.source),originals=nativeOriginalsView(input.originals);
+ if(!sourceView||!originals||!isCandidateServiceImageGitHubOrigin(originals.origin)||originals.originFacts.sourceSha!==sourceView.sourceSha)return fail('same issued candidate service native/source handles required');
+ const source=sourceView;
+ const runtime=get(input.runtime,input.originals,input.source);if(!runtime||typeof runtime!=='object')return undefined;
+ const identity=runtime.identity,entries=runtime.members;
+ if(!identity||identity.sourceSha!==source.sourceSha||!Number.isSafeInteger(identity.runId)||identity.runId<=0||!Number.isSafeInteger(identity.runAttempt)||identity.runAttempt<=0
+  ||!/^sha256:[a-f0-9]{64}$/u.test(identity.imageDigest)||!/^sha256:[a-f0-9]{64}$/u.test(identity.imageConfigDigest)||!/^[a-f0-9]{64}$/u.test(identity.containerId))fail('actual runtime identity differs from source');
+ if(typeof runtime.readMemberRange!=='function'||typeof runtime.assertCurrent!=='function')fail('actual runtime member reader required');
+ if(!Array.isArray(entries)||entries.length<1||entries.length>100000)fail('bounded actual runtime membership required');
+ const seenAbsolute=new Set<string>(),seenMapped=new Set<string>(),frozen:CandidateServiceRuntimeEntry[]=entries.map((entry:any)=>{
+  if(!entry||typeof entry.path!=='string')fail('actual runtime member path required');
+  candidateServiceRuntimeArtifactPath(entry.path);
+  if(seenAbsolute.has(entry.path))fail('duplicate actual runtime member');
+  seenAbsolute.add(entry.path);const mapped=candidateServiceRuntimeArtifactPath(entry.path);if(seenMapped.has(mapped))fail('runtime path adapter collision');seenMapped.add(mapped);
+  if(!Number.isInteger(entry.mode)||entry.mode<0||entry.mode>0o777)fail('runtime member mode required');
+  if(entry.type==='file'){
+   if(!Number.isSafeInteger(entry.bytes)||entry.bytes<0||entry.bytes>8*1024**2||!/^[a-f0-9]{64}$/u.test(entry.sha256))fail('bounded regular runtime file identity required');
+   return Object.freeze({path:entry.path,type:'file' as const,mode:entry.mode,bytes:entry.bytes,sha256:entry.sha256});
+  }
+  if(entry.type==='directory'){if(entry.bytes!==0||entry.sha256!==undefined)fail('runtime directory membership only');return Object.freeze({path:entry.path,type:'directory' as const,mode:entry.mode,bytes:0 as const});}
+  if(entry.type==='symlink'){candidateServiceRuntimeLinkTargetPath(entry.path,entry.target);if(entry.bytes!==0||entry.sha256!==undefined)fail('runtime symlink target identity only');return Object.freeze({path:entry.path,type:'symlink' as const,mode:entry.mode,bytes:0 as const,target:entry.target});}
+  return fail('runtime hardlink or unknown member type requires reviewed support');
+ });
+ // Links must resolve to the fixed /app selflink or another declared member;
+ // a dangling or rewritten target would change actual runtime semantics.
+ for(const entry of frozen)if(entry.type==='symlink'){const resolved=candidateServiceRuntimeResolvedLinkTarget(entry.path,entry.target);if(resolved!==CANDIDATE_SERVICE_APP&&!seenAbsolute.has(resolved))return fail('runtime symlink target outside declared membership');}
+ const files=frozen.filter((entry):entry is Extract<CandidateServiceRuntimeEntry,{type:'file'}>=>entry.type==='file').map(entry=>{
+  const mapped=candidateServiceRuntimeArtifactPath(entry.path);return Object.freeze({path:mapped,sha256:entry.sha256,bytes:entry.bytes,mode:entry.mode});
+ });
+ const byMapped=new Map(frozen.map(entry=>[candidateServiceRuntimeArtifactPath(entry.path),entry]));
+ const fileByMapped=new Map(files.map(row=>[row.path,row]));
+ const readRange=(name:string,offset:number,length:number):Buffer=>{const row=fileByMapped.get(name);if(!row||!Number.isSafeInteger(offset)||offset<0||!Number.isSafeInteger(length)||length<0||length>65536||offset>row.bytes-length)return fail('bounded actual runtime file range required');const absolute=byMapped.get(name)!.path;const bytes=runtime.readMemberRange(absolute,offset,length);if(!Buffer.isBuffer(bytes)||bytes.length!==length)return fail('actual runtime member range shortened');return Buffer.from(bytes);};
+ const readMember=(name:string,maximum:number):Buffer=>{const row=fileByMapped.get(name);if(!row||!Number.isSafeInteger(maximum)||maximum<0||maximum>8*1024**2||row.bytes>maximum)return fail('bounded actual runtime file read required');const bytes=Buffer.alloc(row.bytes),hash=createHash('sha256');for(let offset=0;offset<row.bytes;offset+=65536){const part=readRange(name,offset,Math.min(65536,row.bytes-offset));part.copy(bytes,offset);hash.update(part);}if(hash.digest('hex')!==row.sha256)fail('actual runtime member digest differs');return bytes;};
+ const manifestRow=fileByMapped.get('app/package.json');if(!manifestRow||manifestRow.bytes>128*1024)fail('runtime app root manifest required');
+ let manifest:any;try{manifest=JSON.parse(readMember('app/package.json',128*1024).toString('utf8'));}catch{fail('actual runtime app root manifest JSON required');}
+ if(manifest?.name!=='@undefineds.co/xpod'||typeof manifest.version!=='string')fail('service app root manifest identity required');
+ const memberDigest=createHash('sha256').update(JSON.stringify({identity,entries:frozen})).digest();
+ const view:CollectedArtifactView=Object.freeze({identity:Object.freeze({sourceSha:source.sourceSha,package:manifest.name,version:manifest.version,target:'linux-x64',archiveSha256:memberDigest.toString('hex'),integrity:'sha256-'+memberDigest.toString('base64'),archiveBytes:memberDigest.length}),members:Object.freeze(files),producerOriginals:Object.freeze([]),readMember,readMemberRange(name:string,offset:number,length:number){return readRange(name,offset,length);},readProducerOriginal(){return fail('runtime artifact has no producer original reader');}});
+ const capability=issueCollectedView(view);
+ const assertCurrent=()=>{if(derivedSourceView(input.source)!==source||nativeOriginalsView(input.originals)!==originals||!isCandidateServiceImageGitHubOrigin(originals.origin))return fail('retained runtime private handles changed');assertCollectedNativeOriginalCustody(input.originals);assertDerivedSourceCurrent(input.source);
+  // Zero-range read verifies the active native lifetime without charging bytes.
+  const master=originals.members.find(row=>row.path==='service-image-materials.json');if(!master)return fail('same retained service master required');originals.readOriginalRange(master.path,0,0);runtime.assertCurrent();const current=get(input.runtime,input.originals,input.source);if(!current)fail('runtime artifact view revoked');if(!isDeepStrictEqual(current.identity,identity)||!isDeepStrictEqual(current.members,entries))fail('runtime artifact membership changed');};
+ assertCurrent();candidateServiceRuntimeBindings.set(capability,Object.freeze({runtime,view,identity:Object.freeze({sourceSha:identity.sourceSha,runId:identity.runId,runAttempt:identity.runAttempt,imageDigest:identity.imageDigest,imageConfigDigest:identity.imageConfigDigest,containerId:identity.containerId}),entries:Object.freeze(frozen),files:Object.freeze(files),originals:input.originals,source:input.source,assertCurrent}));
+ return capability;
+}
+export function collectedCandidateServiceRuntime(value:unknown):CollectedCandidateServiceRuntimeBinding|undefined {
+ const binding=value&&typeof value==='object'?candidateServiceRuntimeBindings.get(value):undefined;
+ if(!binding)return undefined;binding.assertCurrent();return binding;
+}
+
 const disposers = new WeakMap<object, () => void>();
 const sourceCompactors = new WeakMap<object, () => void>();
 type PublicationArchiveSource = { kind: 'buffer'; bytes: Buffer } | { kind: 'file'; path: string };

@@ -2,6 +2,7 @@ import {productConsumerOriginalLimits} from './lib/independent-admission/product
 import { PUBLICATION_DISK_LIMITS } from './lib/independent-admission/publication-disk-budget';
 import { archiveConsumerArtifactName } from './lib/independent-admission/archive-consumer-originals';
 import { registryConsumerArtifactName } from './lib/independent-admission/registry-consumer-originals';
+import {candidateServiceNativeRuntimeArtifactName} from './lib/independent-admission/candidate-service-native-runtime-contract';
 import { createHash } from 'node:crypto';
 import { chmodSync, closeSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, statfsSync, writeFileSync, writeSync } from 'node:fs';
 import path from 'node:path';
@@ -88,10 +89,24 @@ function limit(value: number | undefined, maximum: number): number {
   if (!positive(value) || value > maximum) fail('invalid lower resource bound');
   return value;
 }
-async function stream(response: Response, destination: string, bound: number) {
+async function withinSignal<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
+  signal.throwIfAborted();
+  return new Promise<T>((resolve, reject) => {
+    const abort = () => reject(signal.reason);
+    signal.addEventListener('abort', abort, { once: true });
+    operation.then(resolve, reject).finally(() => signal.removeEventListener('abort', abort));
+  });
+}
+async function stream(response: Response, destination: string, bound: number, signal?: AbortSignal) {
   const length = response.headers.get('content-length');
   if (length !== null && (!/^\d+$/u.test(length) || Number(length) > bound)) {
-    await response.body?.cancel();
+    try {
+      const cancelled = response.body?.cancel();
+      if (cancelled) {
+        if (signal) await withinSignal(cancelled, signal);
+        else await cancelled;
+      }
+    } catch { /* Cancellation cannot replace the size-bound rejection. */ }
     fail('download declared size exceeds bound');
   }
   if (!response.body) fail('download body missing');
@@ -100,7 +115,7 @@ async function stream(response: Response, destination: string, bound: number) {
   const reader = response.body.getReader();
   try {
     while (true) {
-      const chunk = await reader.read();
+      const chunk = await (signal ? withinSignal(reader.read(), signal) : reader.read());
       if (chunk.done) break;
       bytes += chunk.value.length;
       if (bytes > bound) fail('download actual size exceeds bound');
@@ -113,8 +128,14 @@ async function stream(response: Response, destination: string, bound: number) {
     if (length !== null && Number(length) !== bytes) fail('download content length mismatch');
     return { bytes, sha256: hash.digest('hex') };
   } finally {
-    await reader.cancel().catch(() => {});
-    closeSync(fd);
+    try {
+      const cancelled = reader.cancel();
+      if (signal) {
+        if (signal.aborted) void cancelled.catch(() => {});
+        else await withinSignal(cancelled, signal).catch(() => {});
+      } else await cancelled.catch(() => {});
+    } catch { /* Cancellation cannot prevent descriptor closure. */ }
+    finally { closeSync(fd); }
   }
 }
 /** Acquires a ZIP and inventory, never extracts members or confers product admission. */
@@ -140,13 +161,23 @@ export async function acquireNativeAdmissionOriginals(input: ArtifactAcquisition
   if (Object.keys(options).some(key => key !== 'token')) fail('unknown native original transport option');
   return acquireProductInput(input, output, { token: options.token }, false, false, true);
 }
+/** The existing native transport may observe a live candidate run only after
+ * the existing private issuer closed the exact service or SDK producer job. */
+export async function acquireCandidateServiceOriginals(input:ArtifactAcquisitionInput,output:string,origin:unknown,options:{token?:string}={}) {
+ if(Object.keys(options).some(key=>key!=='token'))fail('unknown candidate original transport option');
+ const issuer=await import('./lib/independent-admission/github-origin');
+ const facts=issuer.githubOriginFacts(origin);
+ const role=issuer.isCandidateServiceImageGitHubOrigin(origin)?'service':issuer.isQleverSdkGitHubOrigin(origin)?'sdk':issuer.isCandidateServiceNativeRuntimeGitHubOrigin(origin)?'native-runtime':undefined;
+ if(!facts||!role||facts.workflowPath!=='.github/workflows/candidate.yml'||facts.sourceSha!==input.sourceSha||facts.runHeadSha!==input.runHeadSha||facts.runId!==input.runId||facts.runAttempt!==input.runAttempt||facts.artifactId!==input.artifactId||facts.artifactSha256!==input.artifactSha256)fail('issued exact candidate original role required');
+ return acquireProductInput(input,output,{token:options.token},false,false,true,false,undefined,role);
+}
 /** Same-run legacy transport; never admits a still-running independent producer run. */
 export async function acquireLegacyRootSupply(input: ArtifactAcquisitionInput, output: string, dependencies: Dependencies = {}) {
   if (process.env.GITHUB_ACTIONS !== 'true' || process.env.GITHUB_REPOSITORY !== REPOSITORY
     || String(input.runId) !== process.env.GITHUB_RUN_ID || String(input.runAttempt) !== process.env.GITHUB_RUN_ATTEMPT) fail('same-run runtime binding required');
   return acquireProductInput(input, output, { ...dependencies, limits: { packedBytes: 16 * 1024 ** 2, expandedBytes: 40 * 1024 ** 2, members: 4096 } }, true);
 }
-async function acquireProductInput(input: ArtifactAcquisitionInput, output: string, dependencies: Dependencies, legacy: boolean, registryConsumer = false, nativeOriginals = false, archiveConsumer = false,consumerModule?:'afs') {
+async function acquireProductInput(input: ArtifactAcquisitionInput, output: string, dependencies: Dependencies, legacy: boolean, registryConsumer = false, nativeOriginals = false, archiveConsumer = false,consumerModule?:'afs',candidateRole?:'service'|'sdk'|'native-runtime') {
   if (input?.schemaVersion !== 1 || !/^[a-f0-9]{40}$/u.test(input.sourceSha) || !/^[a-f0-9]{40}$/u.test(input.runHeadSha)
     || !/^[a-f0-9]{64}$/u.test(input.artifactSha256) || ![input.runId, input.runAttempt, input.artifactId].every(positive)) fail('exact source/run/attempt/artifact binding required');
   if (Object.keys(input).some(key => !['schemaVersion', 'sourceSha', 'runHeadSha', 'runId', 'runAttempt', 'artifactId', 'artifactSha256'].includes(key))) fail('unknown acquisition selector');
@@ -161,11 +192,14 @@ async function acquireProductInput(input: ArtifactAcquisitionInput, output: stri
   return await withOwnedTempRoot('xpod-artifact-acquisition-', async (temporary: string) => {
     const metadata: Record<string, unknown> = {};
     const originals: MetadataBinding['originals'] = {};
-    async function json(name: string, relative: string): Promise<any> {
-      const response = await transport(endpoint(relative), { headers, redirect: 'error', signal: AbortSignal.timeout(30_000) });
+    async function json(name: string, relative: string, signal = AbortSignal.timeout(30_000), bound = 1024 * 1024): Promise<any> {
+      signal.throwIfAborted();
+      // Job dependencies may have closed while a cached API response still says queued.
+      // Revalidate metadata; terminal success and exact custody checks remain mandatory.
+      const response = await withinSignal(transport(endpoint(relative), { headers: { ...headers, 'Cache-Control': 'no-cache', Pragma: 'no-cache' }, redirect: 'error', signal }), signal);
       if (response.status !== 200) fail('GitHub metadata request failed');
       const destination = path.join(temporary, name + '.json');
-      const downloaded = await stream(response, destination, 1024 * 1024);
+      const downloaded = await stream(response, destination, bound, signal);
       const raw = readFileSync(destination);
       if (raw.length !== downloaded.bytes || sha256(raw) !== downloaded.sha256) fail('metadata changed before parsing');
       const value = JSON.parse(raw.toString('utf8'));
@@ -174,17 +208,48 @@ async function acquireProductInput(input: ArtifactAcquisitionInput, output: stri
       return value;
     }
     const run = await json('run', `actions/runs/${input.runId}/attempts/${input.runAttempt}`);
-    if (run.id !== input.runId || run.run_attempt !== input.runAttempt || (!legacy && !(run.status==='completed'?run.conclusion==='success':registryConsumer&&run.status==='in_progress'&&run.conclusion===null)) || (legacy && !['queued', 'in_progress', 'completed'].includes(run.status))
+    if (run.id !== input.runId || run.run_attempt !== input.runAttempt || (!legacy && !(run.status==='completed'?run.conclusion==='success':(registryConsumer||candidateRole!==undefined)&&run.status==='in_progress'&&run.conclusion===null)) || (legacy && !['queued', 'in_progress', 'completed'].includes(run.status))
       || run.repository?.full_name !== REPOSITORY || run.head_repository?.full_name !== REPOSITORY || run.head_sha !== input.runHeadSha
       || !['push', 'pull_request', 'workflow_dispatch'].includes(run.event) || !positive(run.workflow_id)) fail('untrusted producer run');
     if (!registryConsumer && run.event !== 'pull_request' && input.sourceSha !== input.runHeadSha) fail('non-PR build source differs from run head');
     const workflow = await json('workflow', `actions/workflows/${run.workflow_id}`);
-    if (workflow.id !== run.workflow_id || !(legacy ? ['.github/workflows/legacy-root-compat.yml', '.github/workflows/candidate.yml'].includes(workflow.path) : nativeOriginals ? ['.github/workflows/agentfs-native-acceptance.yml','.github/workflows/build-qlever-macos-runtime.yml','.github/workflows/publish-qlever-runtime-sdk.yml',CSS_PRODUCT_WORKFLOW,CSS_ROUTED_PRODUCT_WORKFLOW].includes(workflow.path) : registryConsumer ? workflow.path === '.github/workflows/independent-publication.yml' : PRODUCERS.has(workflow.path)) || run.path?.split('@')[0] !== workflow.path) fail('untrusted producer workflow');
+    if (workflow.id !== run.workflow_id || !(legacy ? ['.github/workflows/legacy-root-compat.yml', '.github/workflows/candidate.yml'].includes(workflow.path) : nativeOriginals ? [...(candidateRole?['.github/workflows/candidate.yml']:[]),'.github/workflows/agentfs-native-acceptance.yml','.github/workflows/build-qlever-macos-runtime.yml','.github/workflows/publish-qlever-runtime-sdk.yml',CSS_PRODUCT_WORKFLOW,CSS_ROUTED_PRODUCT_WORKFLOW].includes(workflow.path) : registryConsumer ? workflow.path === '.github/workflows/independent-publication.yml' : PRODUCERS.has(workflow.path)) || run.path?.split('@')[0] !== workflow.path) fail('untrusted producer workflow');
     let producerJob: any, legacyJobs: any;
     if (legacy) {
-      const jobs = await json('jobs', `actions/runs/${input.runId}/attempts/${input.runAttempt}/jobs?per_page=100`);
-      legacyJobs = jobs;
-      producerJob = createRequire(import.meta.url)('./lib/legacy-root-artifact-context.cjs').verifyProducerJob(input, run, workflow, jobs);
+      // One metadata budget, including every response body; retries cannot reset it.
+      const signal = AbortSignal.timeout(30_000);
+      const context = createRequire(import.meta.url)('./lib/legacy-root-artifact-context.cjs');
+      const jobName = context.producerJobName(input, run, workflow);
+      const relative = `actions/runs/${input.runId}/attempts/${input.runAttempt}/jobs?per_page=100`;
+      let remaining = 1024 * 1024;
+      let pendingJobId: number | undefined;
+      for (let attempt = 0; attempt < 6; attempt++) {
+        if (remaining <= 0) fail('producer metadata cumulative byte bound exceeded');
+        const name = `jobs-attempt-${attempt}`;
+        const jobs = await json(name, relative, signal, remaining);
+        remaining -= originals[name].bytes;
+        // Identity is checked before deciding whether waiting is permitted.
+        if (!Number.isSafeInteger(jobs.total_count) || !Array.isArray(jobs.jobs) || jobs.total_count !== jobs.jobs.length) fail('producer jobs inventory mismatch');
+        const selected = jobs.jobs.filter((job: any) => job.name === jobName);
+        if (selected.length !== 1) fail('producer job is not unique');
+        const job = selected[0];
+        if ((pendingJobId !== undefined && job.id !== pendingJobId) || job.run_id !== input.runId || job.run_attempt !== input.runAttempt || job.head_sha !== input.runHeadSha) fail('producer job identity mismatch');
+        if (job.status === 'completed') {
+          producerJob = context.verifyProducerJob(input, run, workflow, jobs);
+          legacyJobs = jobs;
+          renameSync(path.join(temporary, name + '.json'), path.join(temporary, 'jobs.json'));
+          originals.jobs = { ...originals[name], path: 'metadata/jobs.original.json' };
+          delete metadata[name]; delete originals[name];
+          break;
+        }
+        if (!['queued', 'in_progress', 'waiting', 'pending', 'requested'].includes(job.status) || job.conclusion !== null) fail('invalid nonterminal producer state');
+        if (!positive(job.id)) fail('nonterminal producer id missing');
+        pendingJobId = job.id;
+        delete metadata[name]; delete originals[name];
+        if (attempt === 5) fail('producer metadata attempt bound exceeded');
+        await withinSignal(new Promise<void>(resolve => setTimeout(resolve, 500)), signal);
+      }
+      if (!producerJob) fail('terminal successful producer required');
       // Retained separately: the original three-member custody projection stays unchanged.
       delete metadata.jobs;
     }
@@ -193,13 +258,13 @@ async function acquireProductInput(input: ArtifactAcquisitionInput, output: stri
     const consumerName=archiveConsumer?archiveConsumerArtifactName:registryConsumerArtifactName;
     const consumerNames = (['client', 'cli'] as const).map(module => consumerName({ module, sourceSha: input.sourceSha, runId: input.runId, runAttempt: input.runAttempt }))
       .concat((['api', 'css', 'afs'] as const).flatMap(module => MODULE_TARGETS.map(target => consumerName({ module, target: `${target.platform}-${target.arch}`, sourceSha: input.sourceSha, runId: input.runId, runAttempt: input.runAttempt }))));
-    const allowedNames = nativeOriginals && workflow.path === '.github/workflows/publish-qlever-runtime-sdk.yml' ? ['linux-x64','linux-arm64'].map(target=>`qlever-sdk-originals-${target}-${input.sourceSha}-${input.runId}-${input.runAttempt}`) : nativeOriginals ? workflow.path === '.github/workflows/agentfs-native-acceptance.yml' ? MODULE_TARGETS.map(target => `agentfs-native-${target.platform}-${target.arch}-${input.sourceSha}`) : (workflow.path === CSS_PRODUCT_WORKFLOW ? ['darwin-arm64'] : ['darwin-arm64','darwin-x64']).map(target => `qlever-local-runtime-${target}-${input.sourceSha}`).concat(workflow.path===CSS_ROUTED_PRODUCT_WORKFLOW?['linux-x64','linux-arm64'].map(target=>`qlever-local-runtime-${target}-${input.sourceSha}-${input.runId}-${input.runAttempt}`):[]).concat(workflow.path===CSS_ROUTED_PRODUCT_WORKFLOW?['linux-x64','linux-arm64'].map(target=>`qlever-sdk-originals-${target}-${input.sourceSha}-${input.runId}-${input.runAttempt}`):[]) : registryConsumer ? consumerNames.filter(name=>consumerModule!=='afs'||name.startsWith(archiveConsumer?'xpod-archive-consumer-afs-':'xpod-registry-consumer-afs-')) : legacy ? [`legacy-root-normal-afs-${input.sourceSha}-${input.runId}-${input.runAttempt}`] : workflow.path === CLI_PRODUCT_WORKFLOW
+    const allowedNames = candidateRole ? [candidateRole==='native-runtime'?candidateServiceNativeRuntimeArtifactName(input):candidateRole==='service'?`candidate-service-image-originals-${input.sourceSha}-${input.runId}-${input.runAttempt}`:`qlever-sdk-originals-service-trixie-linux-x64-${input.sourceSha}-${input.runId}-${input.runAttempt}`] : nativeOriginals && workflow.path === '.github/workflows/publish-qlever-runtime-sdk.yml' ? ['linux-x64','linux-arm64'].map(target=>`qlever-sdk-originals-${target}-${input.sourceSha}-${input.runId}-${input.runAttempt}`) : nativeOriginals ? workflow.path === '.github/workflows/agentfs-native-acceptance.yml' ? MODULE_TARGETS.map(target => `agentfs-native-${target.platform}-${target.arch}-${input.sourceSha}`) : (workflow.path === CSS_PRODUCT_WORKFLOW ? ['darwin-arm64'] : ['darwin-arm64','darwin-x64']).map(target => `qlever-local-runtime-${target}-${input.sourceSha}`).concat(workflow.path===CSS_ROUTED_PRODUCT_WORKFLOW?['linux-x64','linux-arm64'].map(target=>`qlever-local-runtime-${target}-${input.sourceSha}-${input.runId}-${input.runAttempt}`):[]).concat(workflow.path===CSS_ROUTED_PRODUCT_WORKFLOW?['linux-x64','linux-arm64'].map(target=>`qlever-sdk-originals-${target}-${input.sourceSha}-${input.runId}-${input.runAttempt}`):[]) : registryConsumer ? consumerNames.filter(name=>consumerModule!=='afs'||name.startsWith(archiveConsumer?'xpod-archive-consumer-afs-':'xpod-registry-consumer-afs-')) : legacy ? [`legacy-root-normal-afs-${input.sourceSha}-${input.runId}-${input.runAttempt}`] : workflow.path === CLI_PRODUCT_WORKFLOW
       ? [...['Linux', 'macOS'].map(os => `xpod-cli-${os}-${input.sourceSha}`), ...cliPublicationNames]
       : [API_PRODUCT_WORKFLOW, CSS_PRODUCT_WORKFLOW,CSS_ROUTED_PRODUCT_WORKFLOW].includes(workflow.path)
         ? productTargets(workflow.path !== API_PRODUCT_WORKFLOW ? 'css' : 'api').filter(row => row.nativeSourceAvailable||workflow.path===CSS_ROUTED_PRODUCT_WORKFLOW)
           .map(row => `${workflow.path !== API_PRODUCT_WORKFLOW ? 'css' : 'api'}-module-products-${row.target}-${input.sourceSha}-${input.runId}-${input.runAttempt}`)
       : MODULE_TARGETS.flatMap(target => [`afs-module-products-${target.platform}-${target.arch}-${input.sourceSha}-${input.runId}-${input.runAttempt}`, `afs-module-production-${target.platform}-${target.arch}-${input.sourceSha}-${input.runId}-${input.runAttempt}`]);
-    const created = Date.parse(artifact.created_at), started = Date.parse(run.run_started_at), completed = registryConsumer && run.status==='in_progress' ? Date.now() : Date.parse(legacy ? producerJob.completed_at : run.updated_at);
+    const created = Date.parse(artifact.created_at), started = Date.parse(run.run_started_at), completed = (registryConsumer||candidateRole!==undefined) && run.status==='in_progress' ? Date.now() : Date.parse(legacy ? producerJob.completed_at : run.updated_at);
     if (artifact.id !== input.artifactId || !allowedNames.includes(artifact.name) || artifact.expired !== false || artifact.workflow_run?.id !== run.id
       || artifact.workflow_run?.head_sha !== input.runHeadSha || artifact.digest !== 'sha256:' + input.artifactSha256
       || !positive(artifact.size_in_bytes) || artifact.size_in_bytes > limits.packedBytes

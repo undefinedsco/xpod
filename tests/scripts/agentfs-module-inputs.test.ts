@@ -3,7 +3,7 @@ import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { reviewedModulePhasePlan } from '../../scripts/lib/independent-admission/module-source-phases';
-import { installedConsumerWatchdogMs, runOwnedInstalledConsumer } from '../../scripts/agentfs-native-ci/mounted/owned-installed-consumer';
+import { installedConsumerWatchdogMs, runOwnedInstalledConsumer, INSTALLED_CONSUMER_PARENT_MS, INSTALLED_CONSUMER_CLEANUP_MS } from '../../scripts/agentfs-native-ci/mounted/owned-installed-consumer';
 import { collectModule, exportSafe, nativeFacts, projectReceipt, projectRecoveryDiagnostic, INSTALLED_CONSUMER_STAGES, verifyInstalledConsumerReceipts, recordInstalledConsumerFailure, assertInstalledConsumerProducer, persistInstalledConsumerReceipt } from '../../scripts/agentfs-native-ci/mounted/prepare-module-inputs';
 import { verifyModuleClientMaterials, moduleClientPath, hashBytes, verifyCliRuntimeTree, writeBootstrapEvidence } from '../../scripts/agentfs-native-ci/mounted/module-admission';
 
@@ -468,7 +468,7 @@ describe('owned installed consumer diagnostics', () => {
   }
   it('keeps phase budgets and helper source in the producer identity', () => {
     const testSource = readFileSync('packages/xpod-afs/tests/installed-module.test.ts', 'utf8');
-    expect(testSource).toContain('runOwnedInstalledConsumer(runtime, args, env, root, installedConsumerWatchdogMs(stage), stage)');
+    expect(testSource).toContain('runOwnedInstalledConsumer(runtime, args, env, root, installedConsumerWatchdogMs(stage, INSTALLED_CONSUMER_PARENT_MS), stage, parentDeadlineMonotonicMs)');
     expect(testSource).toContain('}, 60_000)');
     expect(testSource).toContain('`${label}-cli-${phaseLabel}`');
     expect(testSource.match(/artifactTest\.skipIf/g)).toHaveLength(1);
@@ -507,5 +507,51 @@ describe('owned installed consumer diagnostics', () => {
       expect(result.observation.groupClosed).toBe(false); expect(result.error?.message).toBe('Owned group absence unconfirmed');
     } finally { kill.mockRestore(); }
   }));
+
+});
+
+
+describe('installed consumer shared parent deadline', () => {
+  it('clips installation to its original 60s parent and preserves cleanup without resetting the parent', () => asyncFixture(async root => {
+    const parent = performance.now() + INSTALLED_CONSUMER_CLEANUP_MS + 800;
+    const result = await runOwnedInstalledConsumer(process.execPath, ['-e', 'process.exit(0)'], process.env, root,
+      installedConsumerWatchdogMs('node-cli-install', INSTALLED_CONSUMER_PARENT_MS), 'node-cli-install', parent);
+    expect(result.status).toBe(0); expect(result.observation.timeoutObserved).toBe(false);
+    const observed = result.observation;
+    expect(observed.parentDeadlineMonotonicMs).toBe(parent);
+    expect(observed.timeoutMs).toBeLessThanOrEqual(800);
+    expect(observed.timeoutMs).toBeLessThanOrEqual(Math.floor(parent - observed.startedMonotonicMs! - INSTALLED_CONSUMER_CLEANUP_MS));
+    const marker = path.join(root, 'deadline-reset-child');
+    await expect(runOwnedInstalledConsumer(process.execPath, ['-e', `require('node:fs').writeFileSync(${JSON.stringify(marker)},'started')`],
+      process.env, root, 60_000, 'node-cli-install', performance.now() + INSTALLED_CONSUMER_CLEANUP_MS)).rejects.toThrow('expired');
+    expect(existsSync(marker)).toBe(false);
+  }));
+  it('rejects expanded parent bounds and keeps small commands at 10s even with a parent', () => asyncFixture(async root => {
+    await expect(runOwnedInstalledConsumer(process.execPath, ['-e', 'process.exit(0)'], process.env, root, 10_001,
+      'node-cli-before-list', performance.now() + 50_000)).rejects.toThrow('watchdog');
+    await expect(runOwnedInstalledConsumer(process.execPath, ['-e', 'process.exit(0)'], process.env, root, 60_000,
+      'node-cli-install', performance.now() + 70_000)).rejects.toThrow('parent deadline');
+    expect(() => installedConsumerWatchdogMs('node-cli-install', 60_001)).toThrow('parent budget');
+    const source = readFileSync('packages/xpod-afs/tests/installed-module.test.ts','utf8');
+    expect(source).toContain('performance.now() + INSTALLED_CONSUMER_PARENT_MS');
+    expect(source).toContain('new Response(Readable.toWeb(createReadStream(');
+    expect(source).toContain('highWaterMark:64*1024');
+    expect(source).not.toContain('new Response(readFileSync(');
+    expect(source).toContain('}, 60_000)');
+  }));
+  it('projects only complete parent-bound install observations and rejects resealed deadline expansion', () => {
+    const observation = { timeoutMs: 20_000, elapsedMs: 1, timeoutObserved: false, closeObserved: true, groupClosed: true,
+      startedMonotonicMs: 100, parentDeadlineMonotonicMs: 30_100 };
+    const project = (row: unknown, stage = 'node-cli-install') => projectReceipt('installed-consumer.safe.json', { stages: [{ stage, observation: row }] });
+    expect(project(observation)).toMatchObject({ stages: [{ observation }] });
+    const missingEnd = { ...observation }; delete (missingEnd as Partial<typeof observation>).parentDeadlineMonotonicMs;
+    const missingStart = { ...observation }; delete (missingStart as Partial<typeof observation>).startedMonotonicMs;
+    for (const row of [missingEnd, missingStart, { ...observation, parentDeadlineMonotonicMs: 70_100 },
+      { ...observation, timeoutMs: 27_001 }, { ...observation, elapsedMs: 30_001 }, { ...observation, startedMonotonicMs: -1 },
+      { ...observation, parentDeadlineMonotonicMs: '30100' }, { ...observation, parentDeadlineMonotonicMs: NaN }]) {
+      expect(() => project(row)).toThrow('invalid installed phase diagnostic');
+    }
+    expect(() => project(observation, 'node-cli-before-list')).toThrow('invalid installed phase diagnostic');
+  });
 
 });

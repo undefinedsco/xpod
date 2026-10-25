@@ -119,6 +119,34 @@ class BinaryOriginalTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             module.verify_packages(release, io.BytesIO(compressed), 'main/binary-arm64/Packages.gz', request)
 
+    def test_cross_chunk_provides_line_uses_existing_stanza_budget(self):
+        # Actual trixie arm64 librust-winapi-dev Provides is 75,650 bytes
+        # including newline. Reproduce its size without treating armor as trust.
+        path = 'main/binary-amd64/Packages.xz'
+        request = [dict(package='missing', version='1', architecture='amd64',
+                        source=dict(name='missing', version='1'))]
+        class Reads(io.BytesIO):
+            def read(self, size=-1):
+                self.assert_size(size)
+                return super().read(size)
+        for length, accepted in [(75650, True), (module.META + 1, False)]:
+            body = (b'Package: librust-winapi-dev\nVersion: 1\nArchitecture: amd64\n'
+                    + b'Provides: ' + b'x' * (length - 11) + b'\n\n')
+            packed = module.lzma.compress(body)
+            release = ('-----BEGIN PGP SIGNED MESSAGE-----\nHash: SHA256\n\n'
+                       'Components: main\nArchitectures: amd64\nSHA256:\n '
+                       + sha(packed) + ' ' + str(len(packed)) + ' ' + path
+                       + '\n-----BEGIN PGP SIGNATURE-----\nfixture\n'
+                       '-----END PGP SIGNATURE-----\n').encode()
+            stream = Reads(packed)
+            stream.assert_size = lambda n: self.assertTrue(0 <= n <= module.CHUNK)
+            if accepted:
+                self.assertEqual(module.verify_packages(release, stream, path, request,
+                                                       require_all=False), [])
+            else:
+                with self.assertRaisesRegex(ValueError, 'stanza byte bound'):
+                    module.verify_packages(release, stream, path, request, require_all=False)
+
     def test_producer_protocol_preserves_exact_refs_and_counts_external_stages_once(self):
         # Protocol-only stage stub; no apt, network, signature or SDK cap.
         deb, expected, selected = self.package()

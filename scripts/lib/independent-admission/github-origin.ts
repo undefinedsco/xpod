@@ -1,5 +1,5 @@
 import {inspectReviewedSdkOuterExecutorOrigin,type QleverSdkOuterExecutorOriginAuthority} from './qlever-sdk-outer-authority';
-import {QLEVER_SDK_WORKFLOW,QLEVER_SDK_WORKFLOW_SHA,QLEVER_SDK_EXECUTION_GROUPS,QLEVER_LINUX_EXECUTION_GROUPS,QLEVER_READONLY_SDK_WORKFLOW_SHA} from './qlever-sdk-origin-policy';
+import {QLEVER_SDK_WORKFLOW,QLEVER_SDK_WORKFLOW_SHA,QLEVER_SDK_EXECUTION_GROUPS,QLEVER_LINUX_EXECUTION_GROUPS,QLEVER_READONLY_SDK_WORKFLOW_SHA,QLEVER_SERVICE_SDK_WORKFLOW_SHA} from './qlever-sdk-origin-policy';
 import {selectGitHubSourceBindingGroup,secondaryGitHubSourceBindingSelectors,sourceBindingKey,type GitHubSourceBindingGroup} from './github-source-binding-groups';
 import {immutableGitContentsEndpoint,cachedGitContentsOriginal,retainGitContentsOriginal} from './github-immutable-original-cache';
 import {QLEVER_LINUX_SOURCE_BINDINGS} from './qlever-linux-origin-policy';
@@ -12,6 +12,7 @@ import { createHash } from 'node:crypto';
 import { CLI_PRODUCT_WORKFLOW, cliPublicationArtifactNames, type ArtifactAcquisitionInput } from '../../acquire-independent-product-input';
 import { productTarget } from '../../module-product-targets';
 import { MODULE_TARGETS } from '../../../packages/xpod-cli/src/module-catalog';
+import {candidateServiceNativeRuntimeArtifactName} from './candidate-service-native-runtime-contract';
 
 declare const originBrand: unique symbol;
 /** Only the controlled observers below can issue this in-process capability. */
@@ -35,6 +36,10 @@ export interface GitHubOriginFacts {
 type Original = { name: string; endpoint: string; data: Buffer };
 const nativeOrigins = new WeakSet<object>();
 const sdkOrigins = new WeakSet<object>();
+const candidateServiceOrigins = new WeakSet<object>();
+const candidateServiceNativeRuntimeOrigins = new WeakSet<object>();
+export function isCandidateServiceImageGitHubOrigin(value:unknown):value is GitHubOriginObservation {return value!==null&&typeof value==='object'&&candidateServiceOrigins.has(value);}
+export function isCandidateServiceNativeRuntimeGitHubOrigin(value:unknown):value is GitHubOriginObservation {return value!==null&&typeof value==='object'&&candidateServiceNativeRuntimeOrigins.has(value);}
 export function isQleverSdkGitHubOrigin(value:unknown):value is GitHubOriginObservation {return value!==null&&typeof value==='object'&&sdkOrigins.has(value);}
 const normalModuleOrigins = new WeakSet<object>();
 export function isRoutedCssProductGitHubOrigin(value:unknown):value is GitHubOriginObservation {
@@ -97,6 +102,38 @@ interface OriginPolicy {
   issueSdkOuterAuthority?:true;
   target?: string;
   sourceBindings?: readonly { path: string; sha256: string; reviewedSha256?: readonly string[]; ref?:'run-head' }[];
+}
+/** Same issuer, independently authenticated candidate image-artifact role.
+ * A producer JSON selector cannot enroll a source tree in this role. */
+export async function observeCandidateServiceImageGitHubOrigin(input:ArtifactAcquisitionInput,options:{token?:string}={}):Promise<GitHubOriginObservation> {
+ const groups=QLEVER_SDK_EXECUTION_GROUPS.filter(group=>group.candidateServiceRelationship!==undefined);
+ if(!groups.length)throw Error('Independent GitHub origin: candidate service source recipe not reviewed');
+ const versions=[...new Set(groups.map(group=>group.candidateServiceRelationship!.workflowSha256))];
+ const artifactNames=(value:ArtifactAcquisitionInput)=>['candidate-service-image-originals-'+value.sourceSha+'-'+value.runId+'-'+value.runAttempt];
+ const result=await observeGitHubOrigin(input,options,{
+  workflowPath:'.github/workflows/candidate.yml',workflowSha256:versions[0]!,reviewedWorkflowVersions:versions.map(workflowSha256=>({workflowSha256,jobName:()=> 'build_image',sourceBindingGroups:groups})),
+  events:['push','workflow_dispatch'],requiredBranch:'staging',stagingPushWorkflowSha256s:versions,allowRunningRun:true,workflowRef:'run-head',sourceBindingGroups:groups,target:'linux-x64',
+  artifactNames,jobName:()=> 'build_image',requiredStep:'Retain candidate service image/SDK originals',requiredSteps:['Apply candidate root version','Build and push RC image','Retain candidate service image/SDK originals','Upload candidate service image originals'],
+  sourceGroupJobContract(group){const contract=group?.candidateServiceRelationship;if(!contract||contract.schemaVersion!==1||contract.workflowPath!=='.github/workflows/candidate.yml'||!versions.includes(contract.workflowSha256))throw Error('Independent GitHub origin: exact candidate service contract missing');return {name:contract.serviceJob,requiredStep:'Retain candidate service image/SDK originals',requiredSteps:['Apply candidate root version','Build and push RC image','Retain candidate service image/SDK originals','Upload candidate service image originals']};},
+  sourceGroupAncestorJobs(group){const contract=group?.candidateServiceRelationship;if(!contract)throw Error('Independent GitHub origin: candidate service ancestor contract missing');return [contract.sdkJob,contract.localRuntimeJob];},
+ });
+ nativeOrigins.add(result);candidateServiceOrigins.add(result);return result;
+}
+/** A separate original-byte role for the focused local-runtime producer. The
+ * service image and SDK roles cannot substitute for this same-job artifact. */
+export async function observeCandidateServiceNativeRuntimeGitHubOrigin(input:ArtifactAcquisitionInput,options:{token?:string}={}):Promise<GitHubOriginObservation> {
+ const groups=QLEVER_SDK_EXECUTION_GROUPS.filter(group=>group.candidateServiceRelationship!==undefined);
+ if(!groups.length)throw Error('Independent GitHub origin: candidate native runtime source recipe not reviewed');
+ const versions=[...new Set(groups.map(group=>group.candidateServiceRelationship!.workflowSha256))];
+ const steps=['Publish and resolve the immutable digest','Retain focused native runtime originals','Upload focused native runtime originals'];
+ const result=await observeGitHubOrigin(input,options,{
+  workflowPath:'.github/workflows/candidate.yml',workflowSha256:versions[0]!,reviewedWorkflowVersions:versions.map(workflowSha256=>({workflowSha256,jobName:()=> 'publish_qlever_local_runtime / publish',sourceBindingGroups:groups})),
+  events:['push','workflow_dispatch'],requiredBranch:'staging',stagingPushWorkflowSha256s:versions,allowRunningRun:true,workflowRef:'run-head',sourceBindingGroups:groups,target:'linux-x64',
+  artifactNames:value=>[candidateServiceNativeRuntimeArtifactName(value)],jobName:()=> 'publish_qlever_local_runtime / publish',requiredStep:steps[1]!,requiredSteps:steps,
+  sourceGroupJobContract(group){const contract=group?.candidateServiceRelationship;if(!contract||contract.schemaVersion!==1||contract.workflowPath!=='.github/workflows/candidate.yml'||!versions.includes(contract.workflowSha256))throw Error('Independent GitHub origin: exact candidate native runtime contract missing');return {name:contract.localRuntimeJob,requiredStep:steps[1]!,requiredSteps:steps};},
+  sourceGroupAncestorJobs(group){const contract=group?.candidateServiceRelationship;if(!contract)throw Error('Independent GitHub origin: candidate native runtime SDK ancestor contract missing');return [contract.sdkJob];},
+ });
+ nativeOrigins.add(result);candidateServiceNativeRuntimeOrigins.add(result);return result;
 }
 export async function observeCliGitHubOrigin(input: ArtifactAcquisitionInput, options: { token?: string } = {}): Promise<GitHubOriginObservation> {
   return observeGitHubOrigin(input, options, {
@@ -1097,7 +1134,14 @@ function withWebsiteStageSelector(group:GitHubSourceBindingGroup):GitHubSourceBi
  const binding=group.sourceBindings.find(row=>row.path==='scripts/lib/inngest-controlled-materials.ts');if(!binding)throw Error('Website stage selector must be an existing original');
  return Object.freeze({...group,secondarySelectors:Object.freeze([...(group.secondarySelectors??[]),binding])});
 }
-export const API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS=Object.freeze([
+export const API_NOTICE_SOURCE_BINDINGS=Object.freeze([...API_WEBSITE_STAGE_SOURCE_BINDINGS.map(row=>Object.freeze({...row,sha256:({"scripts/api-module-producer.py":"988a1aaae9c786fefa4e0901f3a2de207401ea08f23c9154d941a640a6c70870","scripts/lib/physical-module-notices.ts":"b2acc236bce0635174eb345703ea1c93c4366eff85fd802ed0183d36265bee88","scripts/workspace-package-payload.cjs":"022f6e1f3aa68af10dce711b067876f100d0b51a7d005222d564f4e4b8149df7"} as Readonly<Record<string,string>>)[row.path]??row.sha256})),...[{"path":"packages/xpod-api/scripts/notice-material.ts","sha256":"a09f42ba1c00bdfe958181fb2170fd19aeda9fc4b9be0477e13cdf99acf0dcb1"},{"path":"scripts/lib/independent-admission/legal-registry-originals.ts","sha256":"e2fb72ed1fff93ed2d476cb1a14eded47fbee5bfd57869a3c32deffe125d8c47"},{"path":"scripts/lib/registry-legal-original-limits.json","sha256":"b94085a1266b8f902940f00f903f6ec965b0c311cb97035593d9d025db920a07"}].map(row=>Object.freeze(row))]);
+/** Next complete tool-acquisition recipe; registration follows separately. */
+export const API_ATTESTED_NOTICE_SOURCE_BINDINGS=Object.freeze([...API_NOTICE_SOURCE_BINDINGS.map(row=>Object.freeze({...row,sha256:({"scripts/api-module-producer.py": "f6abdd37eee47c33a1df9f76b7e0fb99ce8efee88c5b40ddcaa1d7a0f66091e6", "scripts/lib/physical-module-notices.ts": "5a9b003bfb965bc6210987ae0b9d639c35110a6a557be9f9cb2cfe8df8aee869", "packages/xpod-api/scripts/notice-material.ts": "0215614b01fc3c3f665d9d9c6db09bdca5bdc0ff182be0530d25001e64912ac1"} as Readonly<Record<string,string>>)[row.path]??row.sha256})),...[{"path": "scripts/lib/notice-source-attestation.ts", "sha256": "a195c03c83c80a6ef0b4d0c851919d229de61469d368f7b371f64e6e40ec6c9a"}, {"path": "scripts/lib/acquire-notice-verifier.ts", "sha256": "39c7603d214654cd891ba1f3294e556ab7c3ace60fac247e2ebae78e4721b694"}].map(row=>Object.freeze(row))]);
+
+export const API_PACK_SUPERVISION_SOURCE_BINDINGS=Object.freeze(API_ATTESTED_NOTICE_SOURCE_BINDINGS.map(row=>Object.freeze({...row,sha256:row.path==='scripts/agentfs-native-ci/supervise.py'?'139185a450f07812edc1300e24b68787012d1f334e6f27c2bb9e6b8a84d2af77':row.sha256})));
+const RECORDED_GITLINK_SOURCE_HASHES:Readonly<Record<string,string>>=Object.freeze({"packages/xpod-api/scripts/inngest-controlled-build-policy.json":"6c54f5fe5e04f0dd10dfc6b13088b74c97538f8b32fa6470ce7a60692ac92b58","scripts/lib/inngest-controlled-build.py":"77f5924c146b12af167d7601be882c890afb5dbc5c43393f2c309c3bfa028b25","scripts/lib/inngest-controlled-materials.ts":"4917b5a512fd851bfd0a181f0f1ea012c759c73a18f8cbfbccd503b77260bb16"});
+export const API_RECORDED_GITLINK_SOURCE_BINDINGS=Object.freeze([...API_PACK_SUPERVISION_SOURCE_BINDINGS.map(row=>Object.freeze({...row,sha256:RECORDED_GITLINK_SOURCE_HASHES[row.path]??row.sha256})),Object.freeze({"path":"packages/xpod-api/scripts/inngest-website-gitlink.original.json","sha256":"99a5f5b1739ce3d02ed3f15d51e297f060c60bbd5b82d1850f7ad1abcbf5c74d"})]);
+const PRE_COMPRESSED_API_SOURCE_GROUPS=Object.freeze([
  {name:"historical-descriptor",selectors:[{"path": "scripts/api-module-producer.py", "sha256": "8cfb86a4fa5de62e2938e51e459ae9c5c3bbe95cf0aaad88d59de9a9b900e920"}],secondarySelectors:[{"path": "packages/xpod-api/scripts/inngest-controlled-build-policy.json", "sha256": "03fe62750b08a55b763c028367e3eb6d25d17128088191cf4edf3c76c0d507d6"}, {"path": "scripts/lib/inngest-controlled-build.py", "sha256": "a8746e8bed74dec2a6726a36e5aed623173d6666dfed925b2d8848fa3358aec2"}, {"path": "scripts/lib/module-source-materials.py", "sha256": "c28f194ca9767f2aeddd9cff6f633dac2280ae9c4e5d716d3273706afce81850"}],sourceBindings:API_CONTROLLED_DESCRIPTOR_SOURCE_BINDINGS},
  {name:"public-source-inputs",selectors:[{"path": "scripts/api-module-producer.py", "sha256": "8cfb86a4fa5de62e2938e51e459ae9c5c3bbe95cf0aaad88d59de9a9b900e920"}],secondarySelectors:[{"path": "packages/xpod-api/scripts/inngest-controlled-build-policy.json", "sha256": "fab9a0628c0e6424f7a99bf2ca249c53b9ed2a1498d94d8d90ce226e01a7e284"}, {"path": "scripts/lib/inngest-controlled-build.py", "sha256": "6f82f617c67e70d75b2023993df3846b2caccef34c4a937cd58299cb7bcec99e"}, {"path": "scripts/lib/module-source-materials.py", "sha256": "07dbfc5531b7b3b812fe6f532141c964255b90f46ed30a05c86f6e42ef2e0ee5"}],sourceBindings:API_PUBLIC_SOURCE_BINDINGS},
  {selectors:[{"path": "scripts/api-module-producer.py", "sha256": "68ecfb5c66dd0f1882ef707e86a4c74df7d0406bb9bb68eb011bb20872ef23bf"}],secondarySelectors:[{"path": "packages/xpod-api/scripts/inngest-controlled-build-policy.json", "sha256": "fab9a0628c0e6424f7a99bf2ca249c53b9ed2a1498d94d8d90ce226e01a7e284"}, {"path": "scripts/lib/inngest-controlled-build.py", "sha256": "44995b48418f3b0af1bdd3608c8b3c1307ad3cbc4c927d03a92fbf37b5a60404"}, {"path": "scripts/lib/module-source-materials.py", "sha256": "1871c59b9f0bfb4c0ce824123ce9cdc5f472aba11245b5e0eb45c62c4fca42e2"},{"path": "scripts/lib/physical-module-stage.ts", "sha256": "41bbf5387ab913625aa29663c0f2758b3b783de28f48c201d375369a7268c750"}],sourceBindings:API_RETAINED_BUDGET_SOURCE_BINDINGS},
@@ -1114,7 +1158,57 @@ export const API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS=Object.freeze([
  {name:"root-minimal-node-public-tool-input",selectors:[{path:"scripts/api-module-producer.py",sha256:"bd668dc98e481496f8b2cf6a1ba97541caafc70f39acf8d8757226e4cedca588"}],secondarySelectors:[{"path": "packages/xpod-api/scripts/inngest-controlled-build-policy.json", "sha256": "2a199144729930c2a2927319cc52c55413785a6c85720d952caffbe36e2b555a"}, {"path": "scripts/lib/inngest-controlled-build.py", "sha256": "a983997f77ced56b382122730a0be869cbccd6c412b60c660960d963c0fac85b"}, {"path": "scripts/lib/module-source-materials.py", "sha256": "99eb684db2712cee74ae40f7ac17a55c1dcd74682162b75947203cf2628c6e16"}, {"path": "scripts/lib/physical-module-stage.ts", "sha256": "d9dc03f66ca040637a6d1d2d3a405252cdd6ba71d69aad95361a53f7d94c200f"}, {path:"scripts/lib/api-scoped-dependency-state.ts",sha256:"f9edbb6e2e50e3c568268f9d7c33175a380d248d2ad4541879eac5ddd25064a1"}],sourceBindings:API_NODE_PUBLIC_TOOL_SOURCE_BINDINGS},
  {name:"root-minimal-website-source-projection",selectors:[{path:"scripts/api-module-producer.py",sha256:"bd668dc98e481496f8b2cf6a1ba97541caafc70f39acf8d8757226e4cedca588"}],secondarySelectors:[{"path": "packages/xpod-api/scripts/inngest-controlled-build-policy.json", "sha256": "bd8f3d1df1ff282dba66e7a9b4bfa68836212501253f7e60647f569d0bf855d0"}, {"path": "scripts/lib/inngest-controlled-build.py", "sha256": "9ab22ab214b191ef8e1c05f7200595026ef82f103960a0e15af01c6505e33200"}, {"path": "scripts/lib/module-source-materials.py", "sha256": "99eb684db2712cee74ae40f7ac17a55c1dcd74682162b75947203cf2628c6e16"}, {"path": "scripts/lib/physical-module-stage.ts", "sha256": "d9dc03f66ca040637a6d1d2d3a405252cdd6ba71d69aad95361a53f7d94c200f"}, {path:"scripts/lib/api-scoped-dependency-state.ts",sha256:"f9edbb6e2e50e3c568268f9d7c33175a380d248d2ad4541879eac5ddd25064a1"}],sourceBindings:API_WEBSITE_SOURCE_BINDINGS},
  {name:"root-minimal-website-stage-closed-originals",selectors:[{path:"scripts/api-module-producer.py",sha256:"bd668dc98e481496f8b2cf6a1ba97541caafc70f39acf8d8757226e4cedca588"}],secondarySelectors:[{"path": "packages/xpod-api/scripts/inngest-controlled-build-policy.json", "sha256": "bd8f3d1df1ff282dba66e7a9b4bfa68836212501253f7e60647f569d0bf855d0"}, {"path": "scripts/lib/inngest-controlled-build.py", "sha256": "9ab22ab214b191ef8e1c05f7200595026ef82f103960a0e15af01c6505e33200"}, {"path": "scripts/lib/module-source-materials.py", "sha256": "99eb684db2712cee74ae40f7ac17a55c1dcd74682162b75947203cf2628c6e16"}, {"path": "scripts/lib/physical-module-stage.ts", "sha256": "d9dc03f66ca040637a6d1d2d3a405252cdd6ba71d69aad95361a53f7d94c200f"}, {path:"scripts/lib/api-scoped-dependency-state.ts",sha256:"f9edbb6e2e50e3c568268f9d7c33175a380d248d2ad4541879eac5ddd25064a1"}],sourceBindings:API_WEBSITE_STAGE_SOURCE_BINDINGS}
+,
+ {name:"tracked-notice-original-closed-inputs",selectors:[{path:"scripts/api-module-producer.py",sha256:"988a1aaae9c786fefa4e0901f3a2de207401ea08f23c9154d941a640a6c70870"}],secondarySelectors:[{"path":"packages/xpod-api/scripts/inngest-controlled-build-policy.json","sha256":"bd8f3d1df1ff282dba66e7a9b4bfa68836212501253f7e60647f569d0bf855d0"},{"path":"scripts/lib/inngest-controlled-build.py","sha256":"9ab22ab214b191ef8e1c05f7200595026ef82f103960a0e15af01c6505e33200"},{"path":"scripts/lib/module-source-materials.py","sha256":"99eb684db2712cee74ae40f7ac17a55c1dcd74682162b75947203cf2628c6e16"},{"path":"scripts/lib/physical-module-stage.ts","sha256":"d9dc03f66ca040637a6d1d2d3a405252cdd6ba71d69aad95361a53f7d94c200f"},{"path":"scripts/lib/api-scoped-dependency-state.ts","sha256":"f9edbb6e2e50e3c568268f9d7c33175a380d248d2ad4541879eac5ddd25064a1"}],sourceBindings:API_NOTICE_SOURCE_BINDINGS},
+ {name:"tracked-attested-notice-verifier-originals",selectors:[{path:"scripts/api-module-producer.py",sha256:"f6abdd37eee47c33a1df9f76b7e0fb99ce8efee88c5b40ddcaa1d7a0f66091e6"}],secondarySelectors:API_NOTICE_SOURCE_BINDINGS.filter(row=>["packages/xpod-api/scripts/inngest-controlled-build-policy.json","scripts/lib/inngest-controlled-build.py","scripts/lib/module-source-materials.py","scripts/lib/physical-module-stage.ts","scripts/lib/api-scoped-dependency-state.ts"].includes(row.path)),sourceBindings:API_ATTESTED_NOTICE_SOURCE_BINDINGS}
+,
+ {name:"pack-supervised-normal-module",selectors:[{"path":"scripts/api-module-producer.py","sha256":"f6abdd37eee47c33a1df9f76b7e0fb99ce8efee88c5b40ddcaa1d7a0f66091e6"}],secondarySelectors:[{"path":"packages/xpod-api/scripts/inngest-controlled-build-policy.json","sha256":"bd8f3d1df1ff282dba66e7a9b4bfa68836212501253f7e60647f569d0bf855d0"},{"path":"scripts/lib/api-scoped-dependency-state.ts","sha256":"f9edbb6e2e50e3c568268f9d7c33175a380d248d2ad4541879eac5ddd25064a1"},{"path":"scripts/lib/inngest-controlled-build.py","sha256":"9ab22ab214b191ef8e1c05f7200595026ef82f103960a0e15af01c6505e33200"},{"path":"scripts/lib/module-source-materials.py","sha256":"99eb684db2712cee74ae40f7ac17a55c1dcd74682162b75947203cf2628c6e16"},{"path":"scripts/lib/physical-module-stage.ts","sha256":"d9dc03f66ca040637a6d1d2d3a405252cdd6ba71d69aad95361a53f7d94c200f"},{"path":"scripts/agentfs-native-ci/supervise.py","sha256":"139185a450f07812edc1300e24b68787012d1f334e6f27c2bb9e6b8a84d2af77"}],sourceBindings:API_PACK_SUPERVISION_SOURCE_BINDINGS},
+ {name:"recorded-parent-gitlink-normal-module",selectors:[{"path":"scripts/api-module-producer.py","sha256":"f6abdd37eee47c33a1df9f76b7e0fb99ce8efee88c5b40ddcaa1d7a0f66091e6"}],secondarySelectors:[{"path":"packages/xpod-api/scripts/inngest-controlled-build-policy.json","sha256":"6c54f5fe5e04f0dd10dfc6b13088b74c97538f8b32fa6470ce7a60692ac92b58"},{"path":"scripts/lib/api-scoped-dependency-state.ts","sha256":"f9edbb6e2e50e3c568268f9d7c33175a380d248d2ad4541879eac5ddd25064a1"},{"path":"scripts/lib/inngest-controlled-build.py","sha256":"77f5924c146b12af167d7601be882c890afb5dbc5c43393f2c309c3bfa028b25"},{"path":"scripts/lib/module-source-materials.py","sha256":"99eb684db2712cee74ae40f7ac17a55c1dcd74682162b75947203cf2628c6e16"},{"path":"scripts/lib/physical-module-stage.ts","sha256":"d9dc03f66ca040637a6d1d2d3a405252cdd6ba71d69aad95361a53f7d94c200f"},{"path":"scripts/agentfs-native-ci/supervise.py","sha256":"139185a450f07812edc1300e24b68787012d1f334e6f27c2bb9e6b8a84d2af77"}],sourceBindings:API_RECORDED_GITLINK_SOURCE_BINDINGS},
 ].map(withWebsiteStageSelector));
+const compressedApiSourceHashes:Readonly<Record<string,string>>=Object.freeze({"packages/xpod-api/scripts/sourcekit-producer.ts":"393f3a9b1eccd47b8b7d20954e02a267e69afd79135afab6bf2305f53644119a","scripts/lib/physical-module-archive.ts":"042ae8317b1d43d83c8bbc25038b063874f1e5e11bb0e8b25adeb954ab741635"});
+export const API_COMPRESSED_ARCHIVE_SOURCE_BINDINGS=Object.freeze(API_RECORDED_GITLINK_SOURCE_BINDINGS.map(row=>Object.freeze({...row,sha256:compressedApiSourceHashes[row.path]??row.sha256})));
+const preCompressedApiGroup=PRE_COMPRESSED_API_SOURCE_GROUPS[PRE_COMPRESSED_API_SOURCE_GROUPS.length-1]!;
+const PRE_SERVICE_PACK_API_SOURCE_GROUPS:readonly (GitHubSourceBindingGroup&{readonly name?:string})[]=Object.freeze([...PRE_COMPRESSED_API_SOURCE_GROUPS,Object.freeze({...preCompressedApiGroup,name:"compressed-api-archives-normal-module",secondarySelectors:Object.freeze([...(preCompressedApiGroup.secondarySelectors??[]),...API_COMPRESSED_ARCHIVE_SOURCE_BINDINGS.filter(row=>row.path==="packages/xpod-api/scripts/sourcekit-producer.ts")]),sourceBindings:API_COMPRESSED_ARCHIVE_SOURCE_BINDINGS})]);
+
+const servicePackApiHashes:Readonly<Record<string,string>>=Object.freeze({"scripts/prepare-package-manifest.cjs":"c85d5f092821c53d7b7893417512a26be3c6165f835a8f03507fe0d09228ebf2","scripts/workspace-package-payload.cjs":"edfdb44999a87551b744533019f5921e6098c65de7ccf63250e12858b9bcf48f"});
+export const API_SERVICE_PACK_SOURCE_BINDINGS=Object.freeze(API_COMPRESSED_ARCHIVE_SOURCE_BINDINGS.map(row=>Object.freeze({...row,sha256:servicePackApiHashes[row.path]??row.sha256})));
+const preServicePackApiGroup=PRE_SERVICE_PACK_API_SOURCE_GROUPS[PRE_SERVICE_PACK_API_SOURCE_GROUPS.length-1]!;
+const PRE_INDEXED_ARCHIVE_API_SOURCE_GROUPS:readonly (GitHubSourceBindingGroup&{readonly name?:string})[]=Object.freeze([...PRE_SERVICE_PACK_API_SOURCE_GROUPS,Object.freeze({...preServicePackApiGroup,name:"service-pack-projection-normal-module",secondarySelectors:Object.freeze([...(preServicePackApiGroup.secondarySelectors??[]),...API_SERVICE_PACK_SOURCE_BINDINGS.filter(row=>row.path==="scripts/workspace-package-payload.cjs")]),sourceBindings:API_SERVICE_PACK_SOURCE_BINDINGS})]);
+
+
+const indexedArchiveHashes:Readonly<Record<string,string>>=Object.freeze({"scripts/lib/physical-module-archive.ts":"76ab9f1e461c1d61f18b625cc624e7c1774e27807127a7b6295a2114f7bbb1cc"});
+export const API_INDEXED_ARCHIVE_SOURCE_BINDINGS=Object.freeze(API_SERVICE_PACK_SOURCE_BINDINGS.map(row=>Object.freeze({...row,sha256:indexedArchiveHashes[row.path]??row.sha256})));
+const indexedArchiveParent=PRE_INDEXED_ARCHIVE_API_SOURCE_GROUPS[PRE_INDEXED_ARCHIVE_API_SOURCE_GROUPS.length-1]!;
+const PRE_SERVICE_ENTITY_API_SOURCE_GROUPS:readonly (GitHubSourceBindingGroup&{readonly name?:string})[]=Object.freeze([...PRE_INDEXED_ARCHIVE_API_SOURCE_GROUPS,Object.freeze({...indexedArchiveParent,name:"indexed-physical-archive-readback",secondarySelectors:Object.freeze([...(indexedArchiveParent.secondarySelectors??[]),...API_INDEXED_ARCHIVE_SOURCE_BINDINGS.filter(row=>row.path==="scripts/lib/physical-module-archive.ts")]),sourceBindings:API_INDEXED_ARCHIVE_SOURCE_BINDINGS})]);
+const serviceEntityApiHashes:Readonly<Record<string,string>>=Object.freeze({"scripts/workspace-package-payload.cjs":"89a63085908a414251a34d0fae5143a6a20c28e4b8dfb05d3ea8b9113b8fdc49","scripts/lib/independent-admission/legal-registry-originals.ts":"44c3e6527fea0325a6e861fc94596c6882d15d51f544dbfaeafd34fdd34316f5"});
+const serviceEntityApiParent=PRE_SERVICE_ENTITY_API_SOURCE_GROUPS[PRE_SERVICE_ENTITY_API_SOURCE_GROUPS.length-1]!;
+export const API_SERVICE_ENTITY_SOURCE_BINDINGS=Object.freeze(serviceEntityApiParent.sourceBindings.map(row=>Object.freeze({...row,sha256:serviceEntityApiHashes[row.path]??row.sha256})));
+const PRE_BUILD_API_GROUPS:readonly (GitHubSourceBindingGroup&{readonly name?:string})[]=Object.freeze([...PRE_SERVICE_ENTITY_API_SOURCE_GROUPS,Object.freeze({...serviceEntityApiParent,name:"service-registry-originals-and-exact-member-modes",secondarySelectors:Object.freeze([...(serviceEntityApiParent.secondarySelectors??[]).map(row=>Object.freeze({...row,sha256:serviceEntityApiHashes[row.path]??row.sha256})),...API_SERVICE_ENTITY_SOURCE_BINDINGS.filter(row=>Object.prototype.hasOwnProperty.call(serviceEntityApiHashes,row.path)&&!(serviceEntityApiParent.secondarySelectors??[]).some(role=>role.path===row.path))]),sourceBindings:API_SERVICE_ENTITY_SOURCE_BINDINGS})]);
+const buildApiHashes:Readonly<Record<string,string>>=Object.freeze({"packages/xpod-api/scripts/pack.ts":"b44ade87dff77d4cae687f9c19f14ed9511c20e5e54acafacbac975186dbfa32","scripts/lib/module-source-materials.py":"d0bcdbdec78a1bdb2cebb90910b4dd7c678c5027fc9856fc5475961b3da10dd1","scripts/lib/independent-admission/legal-registry-originals.ts":"3070327262f7c8bdeef21ea0fe1b3e633e4710b05d6994f80bee974da779f74a"});
+const buildApiParent=PRE_BUILD_API_GROUPS[PRE_BUILD_API_GROUPS.length-1]!;
+const apiServiceBuildSourceBindings25=Object.freeze(buildApiParent.sourceBindings.map(row=>Object.freeze({...row,sha256:buildApiHashes[row.path]??row.sha256})));
+function rebindApiCaptureInputRows<T extends {readonly path:string;readonly sha256:string}>(rows:readonly T[]|undefined):readonly T[]{
+  return Object.freeze((rows??[]).map(row=>Object.freeze((row.path==='scripts/lib/inngest-controlled-build.py'?{...row,sha256:'b71657667db6587a4cab1390170a274b0b54fdaf2db50c1ec89587b12231752d'}:row) as T)));
+}
+const apiControlledDescriptorSourceGroup25=Object.freeze({...buildApiParent,name:"service-build-source-and-protocol-causality",secondarySelectors:Object.freeze([...(buildApiParent.secondarySelectors??[]).map(row=>Object.freeze({...row,sha256:buildApiHashes[row.path]??row.sha256})),...apiServiceBuildSourceBindings25.filter(row=>Object.prototype.hasOwnProperty.call(buildApiHashes,row.path)&&!(buildApiParent.secondarySelectors??[]).some(role=>role.path===row.path))]),sourceBindings:apiServiceBuildSourceBindings25});
+const apiCaptureInputsTimingGroup=Object.freeze({...apiControlledDescriptorSourceGroup25,name:"api-capture-inputs-timing",selectors:rebindApiCaptureInputRows(apiControlledDescriptorSourceGroup25.selectors),secondarySelectors:rebindApiCaptureInputRows(apiControlledDescriptorSourceGroup25.secondarySelectors),sourceBindings:rebindApiCaptureInputRows(apiControlledDescriptorSourceGroup25.sourceBindings)});
+const apiPerformanceHashes:Readonly<Record<string,string>>={"scripts/lib/inngest-controlled-build.py":"5f0dc7f2d58dc57ea268d5cd2733a4a95fa77ac77a672078d4134bbca2fe41de","scripts/lib/physical-module-archive.ts":"01a27c05e2541449ec843e9a62bfc6b76f3c95f916b624f522415c006b99bd34"};
+const rebindApiPerformanceRows=(rows:GitHubSourceBindingGroup['sourceBindings']|undefined)=>Object.freeze((rows??[]).map(row=>Object.freeze({...row,sha256:apiPerformanceHashes[row.path]??row.sha256})));
+const apiCapturePerformanceGroup=Object.freeze({...apiCaptureInputsTimingGroup,name:'api-capture-performance',selectors:rebindApiPerformanceRows(apiCaptureInputsTimingGroup.selectors),secondarySelectors:rebindApiPerformanceRows(apiCaptureInputsTimingGroup.secondarySelectors),sourceBindings:rebindApiPerformanceRows(apiCaptureInputsTimingGroup.sourceBindings)});
+/** Final combined slice: the newest published API recipe re-bound to the ACTUAL
+* final tree bytes. Only roles whose real bytes changed are re-hashed; the four
+* published groups above stay byte-identical. */
+const finalJointApiHashes:Readonly<Record<string,string>>=Object.freeze({
+ "scripts/workspace-package-payload.cjs":"f88176458eba63d238cf99412bbc834143fe6b1e74089b27c290c0be040d2d33",
+ "scripts/workspace-runtime-materials.cjs":"dbecd348e945a664b182c1a09ce2185d336085651f05582d254e3fcc0ab8feee",
+ "scripts/lib/independent-admission/legal-registry-originals.ts":"a764214bed261f37a1c22117b0c6c4577fbf676cc834e99f870af3eba827517a",
+ "packages/xpod-cli/scripts/build-package.ts":"569cc8e59141ce02d16df6ef9745d9fb8e3d77dd4c1440e6073aac8c8da2bb46",
+ "packages/xpod-client/scripts/build.ts":"4970c1586831229eb532b63f109787b7f2126d12aa87c5266a178bca17140c65"});
+const rebindFinalApiRows=(rows:GitHubSourceBindingGroup['sourceBindings']|undefined)=>Object.freeze((rows??[]).map(row=>Object.freeze({...row,sha256:finalJointApiHashes[row.path]??row.sha256})));
+const apiFinalJointGroup=Object.freeze({...apiCapturePerformanceGroup,name:'api-final-joint-source',selectors:rebindFinalApiRows(apiCapturePerformanceGroup.selectors),secondarySelectors:rebindFinalApiRows(apiCapturePerformanceGroup.secondarySelectors),sourceBindings:rebindFinalApiRows(apiCapturePerformanceGroup.sourceBindings)});
+export const API_SERVICE_BUILD_SOURCE_BINDINGS=apiFinalJointGroup.sourceBindings;
+export const API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS:readonly (GitHubSourceBindingGroup&{readonly name?:string})[]=Object.freeze([...PRE_BUILD_API_GROUPS,apiControlledDescriptorSourceGroup25,apiCaptureInputsTimingGroup,apiCapturePerformanceGroup,apiFinalJointGroup]);
+
 export const API_WORKSPACE_SOURCE_GROUPS=Object.freeze(API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS.filter(group=>group.sourceBindings.some(row=>row.path==='scripts/lib/api-scoped-dependency-state.ts')));
 
 
@@ -1270,7 +1364,15 @@ export async function observeQleverNativeGitHubOrigin(input:ArtifactAcquisitionI
 
 /** SDK byte custody is independently observed, never inferred from a runtime
  * image reference or a normal CSS product observation. */
-export async function observeQleverSdkGitHubOrigin(input:ArtifactAcquisitionInput,target:string,invocation:'standalone'|'css-native-products',options:{token?:string}={}):Promise<GitHubOriginObservation>{
+export async function observeQleverSdkGitHubOrigin(input:ArtifactAcquisitionInput,target:string,invocation:'standalone'|'css-native-products'|'candidate-service',options:{token?:string}={}):Promise<GitHubOriginObservation>{
+ if(invocation==='candidate-service'){
+  if(target!=='linux-x64')return fail('candidate service SDK target differs');
+  const groups=QLEVER_SDK_EXECUTION_GROUPS.filter(group=>group.candidateServiceRelationship!==undefined);
+  if(!groups.length)return fail('candidate service SDK whole source not reviewed');
+  const versions=[...new Set(groups.map(group=>group.candidateServiceRelationship!.workflowSha256))];
+  const observation=await observeGitHubOrigin(input,options,{workflowPath:'.github/workflows/candidate.yml',workflowSha256:versions[0]!,reviewedWorkflowVersions:versions.map(workflowSha256=>({workflowSha256,jobName:()=> 'publish_qlever_runtime_sdk / readonly_publish / published_sdk / sdk',sourceBindingGroups:groups})),events:['push','workflow_dispatch'],requiredBranch:'staging',stagingPushWorkflowSha256s:versions,workflowRef:'run-head',allowRunningRun:true,target,artifactNames:row=>[`qlever-sdk-originals-service-trixie-${target}-${row.sourceSha}-${row.runId}-${row.runAttempt}`],jobName:()=> 'publish_qlever_runtime_sdk / readonly_publish / published_sdk / sdk',requiredStep:'Bind actual readonly SDK image and build originals',requiredSteps:['Verify controller closure','Capture immutable source context','Build readonly SDK and linked image','Publish the actual linked readonly SDK','Seal controller originals for upload','Upload exact SDK original materials'],sourceBindingGroups:groups,issueSdkOuterAuthority:true});
+  nativeOrigins.add(observation);sdkOrigins.add(observation);return observation;
+ }
  if(!['linux-x64','linux-arm64'].includes(target)||!['standalone','css-native-products'].includes(invocation))return fail('fixed SDK target and invocation required');
  const nested=invocation==='css-native-products';
  const readonlyName=nested?`targets (${target}) / native / linux / readonly_publish / published_sdk / sdk`:'readonly_publish / published_sdk / sdk';
@@ -1279,7 +1381,7 @@ export async function observeQleverSdkGitHubOrigin(input:ArtifactAcquisitionInpu
  const readonlySteps=['Verify controller closure','Capture immutable source context','Build readonly SDK and linked image','Publish the actual linked readonly SDK','Seal controller originals for upload','Upload exact SDK original materials'];
  const observation=await observeGitHubOrigin(input,options,{
   workflowPath:nested?CSS_NATIVE_PRODUCTS_WORKFLOW:QLEVER_SDK_WORKFLOW,workflowSha256:nested?CSS_NATIVE_PARENT_SHA:QLEVER_SDK_WORKFLOW_SHA,
-  ...(nested?cssStagingParentPolicy(legacyName):{reviewedWorkflowVersions:[{workflowSha256:QLEVER_READONLY_SDK_WORKFLOW_SHA,jobName:()=>readonlyName}]}),
+  ...(nested?cssStagingParentPolicy(legacyName):{reviewedWorkflowVersions:[{workflowSha256:QLEVER_READONLY_SDK_WORKFLOW_SHA,jobName:()=>readonlyName},{workflowSha256:QLEVER_SERVICE_SDK_WORKFLOW_SHA,jobName:()=>readonlyName}]}),
   events:nested?['workflow_dispatch','push']:['workflow_dispatch'],target,
   artifactNames:row=>[`qlever-sdk-originals-${target}-${row.sourceSha}-${row.runId}-${row.runAttempt}`],
   jobName:()=>legacyName,requiredStep:'Bind actual SDK image and build originals',requiredSteps:legacySteps,
@@ -1311,7 +1413,9 @@ export async function observeProductConsumerGitHubOrigin(input:ArtifactAcquisiti
   const callerNames=names.map(name=>'independent-publication / '+name);
   const registered:OriginPolicy={...manual,
     workflowPath:'.github/workflows/ci.yml',workflowSha256:CI_PUBLICATION_WORKFLOW_SHA,
-    reviewedWorkflowVersions:[],requiredBranch:'staging',
+    reviewedWorkflowVersions:[{workflowSha256:'d587e9fc889409a30814098fdfda9f00b322423fe47af52f70f9a6e2d7dc48bf',
+      jobName:()=>callerNames[0]!,
+      sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS}],requiredBranch:'staging',
     jobName:()=>callerNames[0]!,jobNames:()=>callerNames,
     sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS,
   };

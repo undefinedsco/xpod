@@ -74,7 +74,7 @@ export function inspectSdkBuildExecution(input: {master: any; members: readonly 
       && ownerEnd <= BigInt(Math.floor(prepared.deadlineUnix * 1e9)), 'sourcePrepare owner/job/raw window differs');
   }
   const recipes: [string, string[]][] = [
-    ...(preparedMode ? [['source-prepare', ['bash', '/components/qlever/scripts/build-module-runtime-sdk.sh', 'source-only']]] as [string, string[]][] : []),
+    ...(preparedMode ? [['source-prepare', ['bash', input.master.identity?.sdkProfile==='service-trixie'?'/components/qlever/scripts/build-qlever-runtime-sdk.sh':'/components/qlever/scripts/build-module-runtime-sdk.sh', 'source-only']]] as [string, string[]][] : []),
     ['configure', preparedMode ? ['bash', '/components/qlever/scripts/build-qlever-runtime-sdk.sh', 'configure-prepared'] : ['bash', '/components/qlever/scripts/build-module-runtime-sdk.sh', 'prepare-only']],
     ['compile', ['bash', '/components/qlever/scripts/build-qlever-runtime-sdk.sh', 'build-prepared']],
   ];

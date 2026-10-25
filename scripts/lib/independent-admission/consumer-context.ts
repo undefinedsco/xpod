@@ -1,5 +1,5 @@
 import {inspectInngestRuntimeOriginals,inngestRuntimeLabels,inngestRuntimeOriginalNames,inngestRuntimeAdditionalDurationMs} from './inngest-runtime-originals';
-import {captureLegalFileIdentity,assertLegalFileIdentity} from './legal-file-custody';
+import {captureLegalFileIdentity,assertLegalFileIdentity,resolveExecutableIdentityPath} from './legal-file-custody';
 import {readSignatureOriginal} from './qlever-signature-original-custody';
 import {observeAfsConsumerVerifierRegistryOriginals} from './afs-consumer-registry-originals';
 import {openAfsConsumerDirectoryOriginals} from './afs-consumer-directory-originals';
@@ -883,7 +883,7 @@ async function observeModuleRegistryConsumer(input: RegistryInstalledProductCons
   const supervision = path.join(parent, 'supervision'); fs.mkdirSync(supervision, { mode: 0o700 });
   try {
     let row: any;
-    try { row = await runPublicationCommand(fs.realpathSync('/usr/bin/python3'), [driver, requestPath, '--run'], {
+    try { row = await runPublicationCommand(resolveExecutableIdentityPath('/usr/bin/python3'), [driver, requestPath, '--run'], {
       cwd: parent, env: { PATH: process.env.PATH, LANG: 'C.UTF-8' }, evidence: supervision,
       label: 'module-registry-consumer', timeoutMs: plan.module==='afs'?afsConsumerBudget(input.stage).consumerRunSeconds*1000:600_000+(plan.module==='api'?inngestRuntimeAdditionalDurationMs:0), rawLimit: 2 * 1024 ** 2,
     }); } catch (error) { const outcome=(error as {outcome?:any}).outcome;retain=!moduleCommandClosed(outcome);preserveControl=plan.module==='afs';throw error; }
@@ -903,7 +903,7 @@ async function observeModuleRegistryConsumer(input: RegistryInstalledProductCons
       preserveControl=true;
       const deadline=Date.now()+afsConsumerBudget(input.stage).safeExportSeconds*1000;
       const safe=path.join(path.dirname(evidence),'safe-evidence','afs-checked-originals');
-      let exported:any;try{exported=await runPublicationCommand(fs.realpathSync('/usr/bin/python3'),[driver,requestPath,'--export-safe-originals',safe],{
+      let exported:any;try{exported=await runPublicationCommand(resolveExecutableIdentityPath('/usr/bin/python3'),[driver,requestPath,'--export-safe-originals',safe],{
         cwd:parent,env:{PATH:process.env.PATH,LANG:'C.UTF-8'},evidence:supervision,label:'module-afs-safe-export',timeoutMs:Math.max(1,deadline-Date.now()),rawLimit:2*1024**2,
       });}catch(error){retain=!moduleCommandClosed((error as {outcome?:any}).outcome);throw error;}
       if(exported.code!==0||!exported.actualWait||!exported.actualClose||!exported.groupAbsent||!exported.rawComplete||!exported.rawClosedBeforeHash||!exported.pipeEOF?.every(Boolean)){retain=true;fail('AFS safe export supervisor closure unavailable');}

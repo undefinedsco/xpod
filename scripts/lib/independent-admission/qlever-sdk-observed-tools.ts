@@ -11,7 +11,8 @@ import {qleverSdkExecutionOriginalObservation} from './qlever-sdk-generation';
 import {qleverSdkDebianBinaryObservation} from './qlever-sdk-debian-binary';
 import {derivedSourceView,assertDerivedSourceCurrent} from './source-context';
 import {hashSignatureControllerFile} from './qlever-signature-original-custody';
-import {assertLegalFileIdentity} from './legal-file-custody';
+import {selectSdkControllerHelperGroup} from './sdk-controller-helper-groups';
+import {assertLegalFileIdentity,resolveExecutableIdentityPath} from './legal-file-custody';
 import {inspectSdkObservedToolAfterFiles} from './qlever-sdk-inputs';
 const hash=(value:Buffer)=>createHash('sha256').update(value).digest('hex');
 function need(value:unknown,reason:string):asserts value {if(!value)throw Error('SDK observed tools: '+reason);}
@@ -44,8 +45,10 @@ export async function observeQleverSdkObservedToolOriginals(capability:unknown,s
    if(!phase.toolFileSnapshots)return Object.freeze({facts:Object.freeze(facts),pending:Object.freeze(['qlever-sdk-observed-tool-descriptor-originals-unavailable'])});
    for(const value of [...phase.rawTraceShards,...phase.captures.indexes,...phase.toolFileSnapshots.indexes])ref(value);
   }
-  const helpers=HELPERS.map(([name,expected])=>{const file=fileURLToPath(new URL('../../../qlever/scripts/'+name,import.meta.url)),row=hashSignatureControllerFile(file,check);need(row.sha256===expected,'reviewed controller helper differs');return row.identity;});
-  const python=realpathSync('/usr/bin/python3'),pythonIdentity=hashSignatureControllerFile(python,check).identity;
+  const observedRoles=new Map<string,string>();
+  const helpers=HELPERS.map(([name])=>{const file=fileURLToPath(new URL('../../../qlever/scripts/'+name,import.meta.url)),row=hashSignatureControllerFile(file,check);observedRoles.set(name,row.sha256);return row.identity;});
+  selectSdkControllerHelperGroup([HELPERS],observedRoles);
+  const python=resolveExecutableIdentityPath('/usr/bin/python3'),pythonIdentity=hashSignatureControllerFile(python,check).identity;
   const assertCurrent=()=>{need(qleverSdkOriginalsView(capability)===sdk&&derivedSourceView(sourceCapability)===source&&qleverSdkExecutionOriginalObservation(capability)===execution&&qleverSdkDebianBinaryObservation(capability)===binary,'existing private original custody changed');const current=sdkVerifiedInputOriginalView(capability);need(current?.rows===inputs.rows&&current.afterReference===inputs.afterReference,'verified after-shard custody changed');assertDerivedSourceCurrent(sourceCapability);for(const identity of [...helpers,pythonIdentity])assertLegalFileIdentity(identity);};
   assertCurrent();check();
   const mechanics=await sdk.withArchiveFile(async archive=>{
@@ -66,4 +69,4 @@ export async function observeQleverSdkObservedToolOriginals(capability:unknown,s
  }catch(error){facts.sdkObservedToolAfterShardBytesVerified=false;facts.sdkObservedToolsSignedDebianBinaryBytesVerified=false;delete facts.sdkObservedToolAfterShardFiles;pending.push('qlever-sdk-observed-tool-originals-unverified: '+String(error instanceof Error?error.message:error).slice(0,1024));}
  return Object.freeze({facts:Object.freeze(facts),pending:Object.freeze(pending)});
 }
-const HELPERS:readonly(readonly[string,string])[]=[['sdk-observed-tool-originals.py','bd3528847b176e5d8bf1a34c03ffe05e0e27173c10c6ab43f211278dc7a0d403'],['sdk-zip-originals.py','304a8d26c8a124af31f2b240f1b2af52312520982cd6e1f4cba70fde2602bcb8']];
+const HELPERS:readonly(readonly[string,string])[]=[["sdk-observed-tool-originals.py","40e11866d0c427d1feae7f278908d0c14ac790c32b24441380103b4a8ad5dcb3"],["sdk-zip-originals.py","56f5ec76344b82b5e8242508208b5635663c037b2b915013e23b91c8ccdc3e17"],["sdk-execution-originals-util.py","bb3e3d40403034e82f42c9243659deeab74c74484c77267ab9a41537caf89bff"],["sdk-generation-multiprocess-bindings.py","868e0963eb03ea92398a197ba66ca8a30dba24b8f239b1d3c766d4e136f650f4"],["sdk-original-chunk-store.py","d53ea1e6c8e8a270c3290d095e800596b7afa42c6b5135153dbb42db0bf2e43e"],["sdk-raw-wire-reader.py","caa95365bc480eec4990d0c1f09d14327e87620d5939b53120db6179a9722a41"],["sdk-executable-memory-policy.py","2b0e64d55c28ab995d2385f4b4a0852c838d029b3111c813fb7fd837d95a2f9c"]];

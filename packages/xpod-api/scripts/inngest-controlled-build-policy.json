@@ -247,6 +247,14 @@
         },
         "pattern": "website/pages/docs/*",
         "root": "pages/docs"
+      },
+      "gitlinkEvidence": {
+        "kind": "reviewed-github-contents-original-v1",
+        "original": {
+          "path": "packages/xpod-api/scripts/inngest-website-gitlink.original.json",
+          "bytes": 884,
+          "sha256": "99a5f5b1739ce3d02ed3f15d51e297f060c60bbd5b82d1850f7ad1abcbf5c74d"
+        }
       }
     }
   ]

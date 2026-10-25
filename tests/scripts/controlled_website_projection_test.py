@@ -25,7 +25,7 @@ func GetDocsFS() (fs.FS, error) {
 MODULES=b'[submodule "internal/embeddocs/website"]\n\tpath = internal/embeddocs/website\n\turl = git@github.com:inngest/website.git\n\tbranch = main\n'
 class WebsiteProjection(unittest.TestCase):
  def setUp(self):
-  (ROOT/'.test-data').mkdir(exist_ok=True);self.temp=tempfile.TemporaryDirectory(dir=ROOT/'.test-data');self.work=Path(self.temp.name);(self.work/'originals').mkdir();self.policy=copy.deepcopy(build.POLICY);self.dependency=self.policy['sourceDependencies'][0];self.target='linux-arm64';self.patcher=patch.object(build,'POLICY',self.policy);self.patcher.start()
+  (ROOT/'.test-data').mkdir(exist_ok=True);self.temp=tempfile.TemporaryDirectory(dir=ROOT/'.test-data');self.work=Path(self.temp.name);(self.work/'originals').mkdir();self.policy=copy.deepcopy(build.POLICY);self.dependency=self.policy['sourceDependencies'][0];self.dependency.pop('gitlinkEvidence',None);self.target='linux-arm64';self.patcher=patch.object(build,'POLICY',self.policy);self.patcher.start()
  def tearDown(self):self.patcher.stop();self.temp.cleanup()
  def archive(self,pin,prefix,members):
   out=self.work/'originals'/pin['file']

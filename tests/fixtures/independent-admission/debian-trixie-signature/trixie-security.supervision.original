@@ -1,0 +1,27 @@
+{
+  "command": [
+    "/usr/bin/python3",
+    "-B",
+    "/input/qlever/scripts/sdk-command-materials.py",
+    "--exec-child",
+    "/output/probe/stages/trixie-security-gpgv",
+    "[\"/usr/bin/gpgv\", \"--homedir\", \"/output/probe/gnupg\", \"--keyring\", \"/output/probe/reviewed-13-keys.gpg\", \"--status-fd\", \"1\", \"--output\", \"/output/probe/trixie-security.body.original\", \"/output/probe/inputs/trixie-security.InRelease\"]"
+  ],
+  "pid": 13,
+  "pgid": 13,
+  "actualWait": true,
+  "exit": 2,
+  "signal": null,
+  "supervisorError": null,
+  "cleanupErrors": [],
+  "startedUTC": "2026-10-18T09:04:59.289025+00:00",
+  "closedUTC": "2026-10-18T09:04:59.399900+00:00",
+  "elapsedSeconds": 0.11088329198537394,
+  "rawClosedBeforeHash": true,
+  "rawSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "resourceStop": null,
+  "freshAvailableBytes": 6038736896,
+  "ownedGroupAbsentAfterWait": true,
+  "ownedGroupMembersBeforeStop": [],
+  "ownedGroupMembers": []
+}

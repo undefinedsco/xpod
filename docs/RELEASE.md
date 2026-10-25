@@ -8,6 +8,8 @@ Xpod 发布必须先经过 Release Candidate，再由 stable tag 提升同一个
 
 ## 完整旧包兼容门禁
 
+旧包 producer 的 GitHub job 状态可能在依赖作业完成后仍返回 `in_progress`。获取器仅对同一 run、attempt、head 和唯一 job 身份的非终态元数据做有界重取：最多 6 次、间隔 500 ms，共用 30 秒截止时间与 1 MiB 响应预算，响应体读取及取消清理也受同一期限约束。最终仍须通过原有 completed/success、artifact 时间及摘要校验，只保存最后成功响应的原始字节；终态失败与身份变化立即拒绝。这不新增逐 step 校验，也不能代替实际 18 条兼容通道通过。
+
 `legacy-root-compat.yml` 独立承担完整旧服务包的 18 条兼容通道：Node/Bun 消费者 × Linux/macOS/Windows × Node 22/24/25。每条通道执行原七阶段：frozen install、平台包版本检查、完整 build、pack、包校验、消费者安装、消费者 smoke。独立 CLI 与模块 producer 的成功不能代替这些检查，也不能把失败降为可选项。
 
 PR 和 `main` push 直接触发该工作流；`staging` push 由 `candidate.yml` 调用同一完整矩阵，避免同时再运行一份独立矩阵。RC 仍须保留同次 run 的全部 18 条通道及原始证据。
@@ -65,6 +67,16 @@ Windows 保留平台默认 shell/PATH。完整 build 产生的 UI 变化由 Vite
 开发分支。仓库维护者应将 GitHub `rc` Environment 的 deployment branch policy
 限制为 `staging`，并对 `staging`/`main` 启用 PR 审查与必需检查；这些服务端设置需另行核对，
 不能仅凭本文或 workflow 文件宣称已配置。
+
+`release.yml` 的 `build_desktop_macos` 也使用 `rc` Environment 读取真实 AI
+验收 secrets，因此仅允许 `staging` 的策略会阻止 stable tag 的桌面 job。
+准备提升时，先核对 exact accepted staging SHA、版本和 acceptance，再为这一个
+确定的 stable tag 添加精确 tag policy；保留 staging branch policy，不开放通配符
+或其他开发分支。必须在触发 stable workflow 前完成并读取服务端策略确认，避免
+npm/生产提升已执行后才发现桌面 job 无权进入环境。该发布及其必要重跑结束后，
+核实没有关联活动 job，再删除本次 tag policy 并读取确认。policy 控制 GitHub job
+的环境进入许可，不代表取得共享 RC 所有权；删除 policy 也不是取消任务或回收
+部署的操作，不应假定它对已排队 job 的行为。
 
 首次启用时，由发布负责人选定并审查集成基线，一次性创建长期 `staging` 分支，再通过
 普通 merge 纳入本变更；不要直接将任意开发分支重命名为 staging。2026-10-07 的

@@ -8,7 +8,7 @@ import {collectedArtifactView} from './artifact-collector';
 import {derivedSourceView,assertDerivedSourceCurrent} from './source-context';
 import {nativeOriginalsView,assertCollectedNativeOriginalCustody} from './native-original-collector';
 import {inspectModuleNativeMaterials} from './native-module-materials';
-import {captureLegalFileIdentity,assertLegalFileIdentity} from './legal-file-custody';
+import {captureLegalFileIdentity,assertLegalFileIdentity,resolveExecutableIdentityPath} from './legal-file-custody';
 import {readSignatureOriginal} from './qlever-signature-original-custody';
 import limits from '../module-artifact-limits.json';
 const hash=(bytes:Buffer)=>createHash('sha256').update(bytes).digest('hex');
@@ -32,7 +32,7 @@ export async function observeAfsSourceOriginals(input:{artifact:unknown;source:u
   const packages=native.members.filter(row=>row.path.endsWith('-'+product.identity.target+'.tar.gz'));need(packages.length===1&&packages[0]!.sha256===selected.archive,'exact native package archive required');
   const repository=fileURLToPath(new URL('../../../',import.meta.url)),helper=path.join(repository,'scripts/lib/independent-admission/afs-source-originals.py');
   const helperIdentity=captureLegalFileIdentity(helper);need(helperIdentity.size<=BigInt(limits.metadataBytes),'bounded controller source observer required');const helperSha=hash(readFileSync(helper));
-  const python=realpathSync('/usr/bin/python3'),pythonIdentity=captureLegalFileIdentity(python);
+  const python=resolveExecutableIdentityPath('/usr/bin/python3'),pythonIdentity=captureLegalFileIdentity(python);
   const parent=path.join(repository,'.test-data/afs-source-observations');mkdirSync(parent,{recursive:true});const directory=mkdtempSync(path.join(parent,'observed-'));retainedDirectory=directory;
   const {runPublicationCommand}=createRequire(import.meta.url)('../afs-publication-command.cjs');
   const observed=await native.withArchiveFile(async original=>{

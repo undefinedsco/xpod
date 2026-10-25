@@ -190,6 +190,11 @@ async function collectWorkspaceRuntimeMaterials(options) {
       for (const bundle of options.bundles) {
         if (!/^[a-z][a-z0-9-]*$/.test(bundle.name)) throw new Error('Unsafe bundle material name');
         const payload = path.join(root, bundle.payload); const metafile = path.join(root, bundle.metafile);
+        const rawMetadata = regular(metafile);
+        const rawDirectory = path.join(root, '.test-data/build');
+        fs.mkdirSync(rawDirectory, { recursive: true });
+        fs.writeFileSync(path.join(rawDirectory, bundle.name + '-inputs.raw.json'), rawMetadata);
+        fs.writeFileSync(metafile, tools.canonicalBuildMetafile(rawMetadata));
         let selectedGenerated = generated; let profile;
         try { profile = chooseGeneratedProfile(generated, payload); } catch (error) {
           if (error.message !== 'Actual generated prefix has no admitted original-source profile') throw error;

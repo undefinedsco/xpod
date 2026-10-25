@@ -144,7 +144,7 @@ class Collector:
             import base64
             result['readlinkBase64']=base64.b64encode(data).decode('ascii')
         return result
-    def git_snapshot(self):
+    def git_snapshot(self,allow_unmaterialized_gitlinks=False):
         head=self.command('git-head',['git','rev-parse','--verify','HEAD'])
         if (self.out/head['stdout']['path']).read_text().strip()!=self.lock['commit']:raise ValueError('Upstream actual HEAD differs from lock')
         commit=self.command('git-commit',['git','cat-file','commit',self.lock['commit']])
@@ -153,11 +153,25 @@ class Collector:
         root_tree=data.split(b'\n',1)[0].removeprefix(b'tree ').decode('ascii')
         if not OID.fullmatch(root_tree):raise ValueError('Upstream commit tree OID absent')
         listing=self.command('git-tree',['git','ls-tree','-r','-t','-z','--full-tree',self.lock['commit']])
-        objects={self.lock['commit'],root_tree};files=[];logical=0
+        objects={self.lock['commit'],root_tree};files=[];gitlinks=[];logical=0
         for record in (self.out/listing['stdout']['path']).read_bytes().split(b'\0'):
             if not record:continue
             header,name=record.split(b'\t',1);mode,kind,oid=header.decode('ascii').split();name=safe(name.decode('utf-8'))
-            if kind=='commit' and mode=='160000':raise ValueError('Unprepared Gitlink source: '+name+'@'+oid)
+            if kind=='commit' and mode=='160000':
+                if not allow_unmaterialized_gitlinks:raise ValueError('Unprepared Gitlink source: '+name+'@'+oid)
+                if not OID.fullmatch(oid):raise ValueError('Gitlink commit OID differs')
+                path=self.source/name
+                parent=self.source
+                for part in Path(name).parts[:-1]:
+                    parent=parent/part
+                    if not stat.S_ISDIR(parent.lstat().st_mode):raise ValueError('Gitlink parent is not a real directory: '+name)
+                before=path.lstat()
+                if not stat.S_ISDIR(before.st_mode) or any(path.iterdir()):raise ValueError('Gitlink checkout is materialized or not an empty directory: '+name)
+                after=path.lstat();identity=lambda row:[row.st_dev,row.st_ino,row.st_mode,row.st_size,row.st_mtime_ns,row.st_ctime_ns]
+                if identity(before)!=identity(after):raise ValueError('Gitlink empty directory changed: '+name)
+                gitlinks.append(dict(path=name,mode=mode,commitOid=oid,state='unmaterialized-empty-directory',identityDecimal=[str(value) for value in identity(after)]))
+                if len(gitlinks)>100000:raise ValueError('Gitlink count bound')
+                continue
             if not OID.fullmatch(oid) or kind not in ('tree','blob'):raise ValueError('Unsupported Git source object kind')
             objects.add(oid)
             if kind=='tree':continue
@@ -182,7 +196,7 @@ class Collector:
         pack=self.command('git-pack',['git','pack-objects','--stdout','--window=0','--depth=0','--no-reuse-delta','--no-reuse-object'],MEMBER,ids)
         status=self.command('git-clean',['git','status','--porcelain','--untracked-files=all'])
         if (self.out/status['stdout']['path']).stat().st_size:raise ValueError('Upstream prepatch checkout is not clean')
-        write(self.out/'prepatch-inventory.json',dict(schemaVersion=1,files=files),self.check)
+        write(self.out/'prepatch-inventory.json',dict(schemaVersion=1,files=files,**({'gitlinks':gitlinks} if allow_unmaterialized_gitlinks else {})),self.check)
         return dict(rootTree=root_tree,objectIdsFormat='ascii-sorted-unique-sha1-lf',objectFormat='sha1',repository=self.lock['repository'],commit=self.lock['commit'],sourceRoot=str(self.source),commitOriginal=commit['stdout'],treeListing=listing['stdout'],objectIds=self.reference(ids),objectPack=pack['stdout'],prepatchInventory=self.reference(self.out/'prepatch-inventory.json'))
     def before(self):
         git=self.git_snapshot()

@@ -1,4 +1,5 @@
 const fs = require('node:fs');
+const { executableIdentityMatches: matchesFixedExecutable } = require('./executable-identity-path.cjs');
 const path = require('node:path');
 const os = require('node:os');
 const crypto = require('node:crypto');
@@ -30,8 +31,13 @@ function commandBudget(command, args, { cwd, env = {}, label }) {
     const maximumTimeoutMs = PUBLICATION_BUDGET.producerWindowMs + PUBLICATION_BUDGET.terminationGraceMs;
     return { maximumTimeoutMs, runtimeProbe: { executable, executableSha256, argv: ['--version'], stdout: probe.stdout, stderr: probe.stderr, status: probe.status, identity: Object.fromEntries(['dev','ino','size','ctimeNs','mtimeNs','mode'].map(key => [key, String(after[key])])) } };
   }
+  // Only the Python actually selected by the fixed `/usr/bin/python3` path is
+  // accepted: the requested leaf itself or its explicit bounded leaf-symlink
+  // target (Linux /usr/bin/python3 -> python3.11). A sibling hardlink such as
+  // /usr/bin/git is rejected because it is not that selection, even though it
+  // shares dev/ino. No inode-only comparison and no platform branch.
   const python = label === 'module-registry-consumer' && exact('scripts/lib/afs-module-consumer.py', [args[1], '--run'])
-    && path.isAbsolute(command) && fs.realpathSync(command) === fs.realpathSync('/usr/bin/python3');
+    && matchesFixedExecutable('/usr/bin/python3', command);
   if (python && label === 'module-registry-consumer' && exact('scripts/lib/afs-module-consumer.py', [args[1], '--run']) && args[1] === path.join(cwd, 'plan.json') && fs.realpathSync(path.dirname(cwd)) === fs.realpathSync(os.tmpdir()) && path.basename(cwd).startsWith('xpod-registry-module-consumer-')) {
     const stat = fs.lstatSync(args[1]);
     if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.size > 1024 * 1024) throw new Error('Fixed AFS plan original required');

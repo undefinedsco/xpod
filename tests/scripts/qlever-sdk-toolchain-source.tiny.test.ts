@@ -1,5 +1,5 @@
 import {test,expect} from 'bun:test';
-import {inspectSdkToolchainOperationFileCoverage,observeQleverSdkToolchainSourceOriginals} from '../../scripts/lib/independent-admission/qlever-sdk-toolchain-source';
+import {inspectSdkToolchainOperationFileCoverage,observeQleverSdkToolchainSourceOriginals,sdkToolchainOperations} from '../../scripts/lib/independent-admission/qlever-sdk-toolchain-source';
 function fixture(){
  const identityDecimal=['1','7',String(0o100755),'100','1700000000000000001','1700000000000000002'];
  const original={path:'capture-1.original',bytes:100,sha256:'a'.repeat(64)};
@@ -34,4 +34,24 @@ test('verified stopped-provider projection adds only stop scope, never lifetime 
  for(const file of [input.coverage.operations[0]!.primaryFile,...input.coverage.operations[0]!.mapOriginals])Object.assign(file,{stopReadonlyProvider:provider});
  const result=inspectSdkToolchainOperationFileCoverage(input);expect(result.facts.sdkToolchainStopReadOnlyProviderCoverageVerified).toBe(true);expect(result.facts.sdkToolchainStopReadOnlyCaptureCount).toBe(2);expect(result.pending).toContain('qlever-sdk-toolchain-execution-lifetime-immutability-unverified');expect(result.facts.sdkToolchainSourceClosureVerified).toBe(false);
  const changed=fixture();Object.assign(changed.coverage.operations[0]!.primaryFile,{stopReadonlyProvider:{...provider,identityDecimal:['1','9',...identity.slice(2)]}});expect(()=>inspectSdkToolchainOperationFileCoverage(changed)).toThrow('stopped provider/file relation');
+});
+
+function indexedFixture(){
+ const input=fixture(),op=input.coverage.operations[0]!;
+ return {...input,coverage:{schemaVersion:2,model:'indexed-tool-operation-coverage-v1',paths:[] as string[],operations:[[op.kind,op.phase,op.pid,op.entrySequence,op.captureSequence,op.expectedFileMappingCount,op.execEventSequence,op.primaryFile,op.elf,op.mapOriginals,[]]] as any[][],pending:[] as string[],stopProviderPending:[]}};
+}
+test('indexed operations preserve complete legacy joins and decode one operation at a time',()=>{
+ const input=indexedFixture();expect([...sdkToolchainOperations(input.coverage)]).toEqual(fixture().coverage.operations);
+ expect(inspectSdkToolchainOperationFileCoverage(input)).toEqual(inspectSdkToolchainOperationFileCoverage(fixture()));
+ expect(Array.isArray(input.coverage.operations[0])).toBe(true);
+});
+test('indexed missing VMA keeps its operation, range, path and uint64 offset',()=>{
+ const input=indexedFixture(),row=input.coverage.operations[0]!;input.coverage.paths.push('/usr/lib/libfixture.so');row[9]=[];row[10]=[['1000','2000','r-xp','9223372036854775807',1,2,'18446744073709551615',0,1]];
+ const [op]=sdkToolchainOperations(input.coverage);expect(op.unresolved).toEqual(['toolchain-operation-file-mapping-original-unavailable:4:/usr/lib/libfixture.so:1000-2000:9223372036854775807']);
+ expect(inspectSdkToolchainOperationFileCoverage(input).facts.sdkToolchainOperationCoverageVerified).toBe(false);
+});
+test('indexed malformed model, shape, reference, missing count or extra field fail',()=>{
+ const mutations=[(c:any)=>c.model='unknown',(c:any)=>c.operations[0].push(null),(c:any)=>c.operations[0][9]=[],(c:any)=>{c.operations[0][9]=[];c.operations[0][10]=[['1000','2000','r-xp','0',1,2,'7',0,1]];},(c:any)=>c.paths=['/usr/lib/fixture','/usr/lib/fixture']];
+ for(const mutate of mutations){const input=indexedFixture();mutate(input.coverage);expect(()=>[...sdkToolchainOperations(input.coverage)]).toThrow();}
+ const input=indexedFixture();expect(()=>[...sdkToolchainOperations(input.coverage,()=>{throw Error('same parent deadline');})]).toThrow('same parent deadline');
 });
