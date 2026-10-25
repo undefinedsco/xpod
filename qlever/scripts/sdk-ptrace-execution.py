@@ -1832,6 +1832,94 @@ class Observer:
     def phase_progress_ns(self,progress):
         try:return int(progress.now()*1e9)
         except BaseException:return None
+    # ---- bounded per-owned-window diagnostic -------------------------------
+    #
+    # Motivation: in the failing run a full lease sweep was entered with only
+    # 171.610us of the 1s owned window left, and the retained 8-span ring could not
+    # answer "what ran in the first ~790ms of this window". This records a SMALL
+    # fixed baseline when a window is armed and reports per-method count/duration
+    # DELTAS relative to it while that window is still the active one.
+    #
+    # Deliberate limits, so the reader cannot over-read the numbers:
+    #   * no per-event list, no per-call dict, no extra clock read or syscall on the
+    #     hot path: the deltas ride on the counters instrument() already updates;
+    #   * the numbers are INCLUSIVE deltas. A parent call that started before the arm
+    #     and is still running contributes its pre-arm time to the delta, so this is
+    #     never an exclusive per-window decomposition;
+    #   * only the innermost method active at arm time is known, so crossedMethods
+    #     lists exactly that one name and says so;
+    #   * the field is emitted ONLY while the window is genuinely active and its
+    #     deadline still matches the recorded one - a closed window, a later phase,
+    #     or a deadline mismatch never reports stale data;
+    #   * nothing is written to the raw evidence stream;
+    #   * a real TimeoutError / KeyboardInterrupt / SystemExit is re-raised
+    #     untouched: only ordinary diagnostic-internal faults are suppressed.
+    WINDOW_METHOD_KEYS=PHASE_PROGRESS_BUCKETS
+
+    def window_arm(self,deadline_ns):
+        """Record a bounded baseline for the window being armed right now.
+
+        Reads no kernel state, takes no lease, checks nothing, and returns nothing.
+        A previous baseline is dropped first, so a failed arm cannot leave stale
+        data behind for the next window.
+        """
+        self._window_diag=None
+        try:
+            progress=self.phase_progress()
+            if progress is None:return None
+            baseline={name:tuple(progress.buckets[name]) for name in self.WINDOW_METHOD_KEYS
+                      if name in progress.buckets}
+            self._window_diag=dict(deadlineNs=int(deadline_ns),
+                                   phase=getattr(self,'current_phase',None),
+                                   baseline=baseline,
+                                   activeAtArm=getattr(progress,'active',None),
+                                   armedSeq=getattr(progress,'events',0))
+        except (TimeoutError,KeyboardInterrupt,SystemExit):
+            raise                      # an owned deadline must never be hidden here
+        except BaseException:
+            self._window_diag=None     # ordinary diagnostic fault: stay inert
+        return None
+
+    def window_summary(self):
+        """Inclusive per-method deltas for the CURRENT armed window, or None.
+
+        Returns None unless the owned window is actually active and its deadline
+        still equals the one recorded at arm time, so a closed window, a later
+        phase, or a re-armed window can never report stale numbers.
+        """
+        try:
+            diag=getattr(self,'_window_diag',None)
+            progress=self.phase_progress()
+            if diag is None or progress is None:return None
+            active,deadline,_parent=self.owned_window_state()
+            if not active or deadline is None:return None
+            if getattr(self,'current_phase',None)!=diag.get('phase'):return None
+            if int(deadline)!=diag['deadlineNs']:return None   # owned_window_state already returns ns
+            rows=[];crossed=[]
+            for name in self.WINDOW_METHOD_KEYS:
+                base=diag['baseline'].get(name)
+                if base is None:continue
+                calls,total,maximum=progress.buckets[name]
+                dcalls=calls-base[0];dtotal=total-base[1]
+                if dcalls==0 and dtotal==0:continue
+                rows.append(dict(method=name,calls=dcalls,totalNs=dtotal))
+                if name==diag.get('activeAtArm'):crossed.append(name)
+            return dict(windowDeadlineNs=diag['deadlineNs'],armedEventCount=diag['armedSeq'],
+                        methods=rows,crossedMethods=crossed,
+                        knownInnermostAtArm=diag.get('activeAtArm'),
+                        semantics=('inclusive deltas since window arm; overlapping and NOT additive. '
+                                   'A parent call already running at arm time contributes its pre-arm '
+                                   'time, so this is not an exclusive per-window decomposition. '
+                                   'Only the innermost active method at arm time is known; enclosing '
+                                   'calls that were already running are not separately marked, and '
+                                   'Still-running calls enter these buckets only when they complete; '
+                                   'their partial duration is not included.'),
+                        spanRing='last %d retained spans remain the only per-operation view' % PHASE_PROGRESS_MAXIMUM_SPANS)
+        except (TimeoutError,KeyboardInterrupt,SystemExit):
+            raise                      # never hide an owned deadline or interpreter exit
+        except BaseException:
+            return None
+
     def instrument(self,name,function,*arguments,**keywords):
         """Inclusive duration of one existing call; return/exception identity kept.
 
@@ -1940,7 +2028,11 @@ class Observer:
         owned_window=(window_active,
                       None if window_deadline is None else str(window_deadline),
                       None if window_parent is None else str(window_parent))
+        # Optional bounded per-window diagnostic. Present only after a window was
+        # armed; a failure to build it must never hide the primary diagnostic.
+        payload_window=self.window_summary()
         payload=dict(schemaVersion=1,kind=kind,authorityVerified=False,phase=self.current_phase,phaseStartedMonotonicNs=str(started) if started is not None else None,phaseDeadlineMonotonicNs=str(deadline) if deadline is not None else None,nowMonotonicNs=str(now_ns) if now_ns is not None else None,elapsedNs=str(now_ns-started) if now_ns is not None and started is not None else None,remainingNs=str(deadline-now_ns) if deadline is not None and now_ns is not None else None,globalRawSequence=getattr(self,'seq',0),phaseTicks=getattr(progress,'ticks',0) if progress is not None else 0,eventCount=getattr(progress,'events',0) if progress is not None else 0,waitReturnCount=getattr(progress,'waits',0) if progress is not None else 0,lastBoundary=getattr(progress,'last_boundary',None) if progress is not None else None,lastWait=getattr(progress,'last_wait',None) if progress is not None else None,taskCounts=state_counts,exclusiveOwnerPid=exclusive[0] if isinstance(exclusive,tuple) and len(exclusive)==2 else None,exclusiveOwnerSequence=exclusive[1] if isinstance(exclusive,tuple) and len(exclusive)==2 else None,terminalFocusPid=terminal,generatedVmaOwner=getattr(generated,'owner',None) if generated is not None else None,lifetimeLeaseActive=lifecycle is not None,lifetimeLeaseCount=len(lifecycle.fds) if lifecycle is not None else 0,activeInclusiveMethod=getattr(progress,'active',None) if progress is not None else None,activeInclusiveMethodStartedNs=str(getattr(progress,'active_started',None)) if progress is not None and getattr(progress,'active_started',None) is not None else None,lastFailedInclusiveMethod=getattr(progress,'failed',None) if progress is not None else None,lastFailedInclusiveMethodStartedNs=str(getattr(progress,'failed_started',None)) if progress is not None and getattr(progress,'failed_started',None) is not None else None,inclusiveBuckets={name:dict(calls=value[0],totalNs=value[1],maxNs=value[2]) for name,value in (progress.buckets.items() if progress is not None else [])},pendingCaptureSubsteps={name:dict(calls=value[0],totalNs=value[1],maxNs=value[2]) for name,value in (getattr(progress,'substeps',{}) or {}).items()},pendingCaptureSubstepLast=getattr(progress,'substep_last',None),pendingCaptureSpans=list(getattr(progress,'spans',()) or ()),pendingCaptureSpansDropped=getattr(progress,'spans_dropped',0),mapsBodyBytesLast=getattr(progress,'maps_bytes_last',0),mapsBodyBytesMax=getattr(progress,'maps_bytes_max',0),mapsBodyCount=getattr(progress,'maps_bodies',0),syscallStops=getattr(progress,'syscall_summary',lambda:None)() if progress is not None else None,ownedWindowActive=owned_window[0],ownedWindowDeadlineNs=owned_window[1],ownedWindowParentNs=owned_window[2],inclusiveDurationNote='inclusive nested durations; buckets overlap by design; non-additive',failure=bool(failure))
+        if payload_window is not None:payload['ownedWindowActivity']=payload_window
         return payload
     def publish_phase_progress(self,kind,failure=False):
         """Bounded stderr diagnostic from held state only; never raises.

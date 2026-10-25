@@ -5,7 +5,7 @@ import {sourceBindingKey as key,secondaryGitHubSourceBindingSelectors as seconda
 const hash=(b:Buffer)=>createHash('sha256').update(b).digest('hex');
 test('canonical current closure binds physical role bytes and published history stays exact',()=>{
  // Runtime consumers read THIS canonical file, not a test fixture.
- expect(current).toHaveLength(481);
+ expect(current).toHaveLength(483);
  const seen=new Set<string>();
  for(const row of current){expect(seen.has(row.path)).toBe(false);seen.add(row.path);expect(hash(fs.readFileSync(path.resolve(import.meta.dir,'../..',row.path)))).toBe(row.sha256);}
  // Published historical groups are unchanged; new groups are appended and unique.
@@ -14,7 +14,7 @@ test('canonical current closure binds physical role bytes and published history 
  expect(new Set(ci.map(g=>JSON.stringify(g))).size).toBe(ci.length);
 });
 test('local helper complete-tuple implementation has one atomic controller tree and no future original fetch',()=>{
- expect(current).toHaveLength(481);expect(c).toHaveLength(86);expect(ci).toHaveLength(170);
+ expect(current).toHaveLength(483);expect(c).toHaveLength(87);expect(ci).toHaveLength(172);
  for(const row of current)expect(hash(fs.readFileSync(path.resolve(import.meta.dir,'../..',row.path)))).toBe(row.sha256);
  expect(current.some(row=>row.path==='scripts/lib/independent-admission/sdk-controller-helper-groups.ts')).toBe(true);
  for(const groups of [c,ci])for(const group of groups){const observed=new Map(group.selectors.map(row=>[key(row),row.sha256]));for(const role of secondary(groups,observed)){const original=[...group.selectors,...group.sourceBindings,...group.secondarySelectors??[]].find(row=>key(row)===key(role));expect(original).toBeDefined();observed.set(key(role),original!.sha256);}expect(select(groups,observed)).toBe(group);}

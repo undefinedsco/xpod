@@ -1,5 +1,5 @@
 import {inspectReviewedSdkOuterExecutorOrigin,type QleverSdkOuterExecutorOriginAuthority} from './qlever-sdk-outer-authority';
-import {QLEVER_SDK_WORKFLOW,QLEVER_SDK_WORKFLOW_SHA,QLEVER_SDK_EXECUTION_GROUPS,QLEVER_LINUX_EXECUTION_GROUPS,QLEVER_READONLY_SDK_WORKFLOW_SHA,QLEVER_SERVICE_SDK_WORKFLOW_SHA} from './qlever-sdk-origin-policy';
+import {QLEVER_SDK_WORKFLOW,QLEVER_SDK_WORKFLOW_SHA,QLEVER_SDK_EXECUTION_GROUPS,QLEVER_LINUX_EXECUTION_GROUPS,QLEVER_READONLY_SDK_WORKFLOW_SHA,QLEVER_SERVICE_SDK_WORKFLOW_SHA,QLEVER_CURRENT_SDK_WORKFLOW_SHA} from './qlever-sdk-origin-policy';
 import {selectGitHubSourceBindingGroup,secondaryGitHubSourceBindingSelectors,sourceBindingKey,type GitHubSourceBindingGroup} from './github-source-binding-groups';
 import {immutableGitContentsEndpoint,cachedGitContentsOriginal,retainGitContentsOriginal} from './github-immutable-original-cache';
 import {QLEVER_LINUX_SOURCE_BINDINGS} from './qlever-linux-origin-policy';
@@ -1381,7 +1381,7 @@ export async function observeQleverSdkGitHubOrigin(input:ArtifactAcquisitionInpu
  const readonlySteps=['Verify controller closure','Capture immutable source context','Build readonly SDK and linked image','Publish the actual linked readonly SDK','Seal controller originals for upload','Upload exact SDK original materials'];
  const observation=await observeGitHubOrigin(input,options,{
   workflowPath:nested?CSS_NATIVE_PRODUCTS_WORKFLOW:QLEVER_SDK_WORKFLOW,workflowSha256:nested?CSS_NATIVE_PARENT_SHA:QLEVER_SDK_WORKFLOW_SHA,
-  ...(nested?cssStagingParentPolicy(legacyName):{reviewedWorkflowVersions:[{workflowSha256:QLEVER_READONLY_SDK_WORKFLOW_SHA,jobName:()=>readonlyName},{workflowSha256:QLEVER_SERVICE_SDK_WORKFLOW_SHA,jobName:()=>readonlyName}]}),
+  ...(nested?cssStagingParentPolicy(legacyName):{reviewedWorkflowVersions:[{workflowSha256:QLEVER_READONLY_SDK_WORKFLOW_SHA,jobName:()=>readonlyName},{workflowSha256:QLEVER_SERVICE_SDK_WORKFLOW_SHA,jobName:()=>readonlyName},{workflowSha256:QLEVER_CURRENT_SDK_WORKFLOW_SHA,jobName:()=>readonlyName}]}),
   events:nested?['workflow_dispatch','push']:['workflow_dispatch'],target,
   artifactNames:row=>[`qlever-sdk-originals-${target}-${row.sourceSha}-${row.runId}-${row.runAttempt}`],
   jobName:()=>legacyName,requiredStep:'Bind actual SDK image and build originals',requiredSteps:legacySteps,
