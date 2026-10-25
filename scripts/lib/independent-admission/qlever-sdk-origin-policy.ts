@@ -1640,6 +1640,12 @@ const finalApprovedSdkHashes:Readonly<Record<string,string>>=Object.freeze({
 });
 
 const finalApprovedSdkBindings=(rows:readonly GitHubSourceBinding[])=>Object.freeze(rows.map(row=>Object.freeze({...row,sha256:finalApprovedSdkHashes[row.path]??row.sha256})));
+export const QLEVER_SDK_NATIVE69_SOURCE_BINDINGS=Object.freeze([
+ Object.freeze({path:"qlever/scripts/native/lease_sweep_ext.c",sha256:"b0f1268aad6b0ebdb1122151a75dd8cba6a9a140ff2581f8374f3c85c37c0209"}),
+ Object.freeze({path:"qlever/scripts/native/build_native_helper.py",sha256:"4d17b1ec234e198c364624fb93ace650c530de76592858ff04a0711832b23fa8"}),
+ Object.freeze({path:"qlever/scripts/native/lease_sweep_binding.py",sha256:"097c756ccae5f0cf44f33e930f7fb0072be0f702c96a43ad0c9b597e8d610643"}),
+ Object.freeze({path:"qlever/scripts/bounded-original-reader.py",sha256:"7472b4cea6d6b978d66bd2848383097e54eb95c6747bad5eed58a5bdc02f3df8"})
+]);
 const ninja68Hashes:Readonly<Record<string,string>>=Object.freeze({
  ".dockerignore":"d963850551764c9782f128bd94782fa5b0a638df138cc4ee523b2fa8ba52a7f7",
  ".github/workflows/build-qlever-linux-runtime.yml":"fa5b8202a4bdf5032870c3155f1ac0b9b369ad414147006a3567dc53725566b7",
@@ -1775,11 +1781,29 @@ const ninja68Hashes:Readonly<Record<string,string>>=Object.freeze({
  "scripts/workspace-package-payload.cjs":"f88176458eba63d238cf99412bbc834143fe6b1e74089b27c290c0be040d2d33"
 });
 const ninja68Bindings=(rows:readonly GitHubSourceBinding[])=>Object.freeze(rows.map(row=>Object.freeze({...row,sha256:ninja68Hashes[row.path]??row.sha256})));
+const e4ea69Hashes:Readonly<Record<string,string>>=Object.freeze({
+ "docker/qlever-runtime-sdk/Dockerfile":"b432624a984d3a22d82876246e5efd2b9bf62d2ba0eb33822b96493af9e59836",
+ "docker/qlever-runtime-sdk/Dockerfile.module-bookworm":"52368a88844bd81a49543c767fe714a6eef1b86c113b7487d2dabed46faf3ec8",
+ "qlever/scripts/bounded-original-reader.py":"7472b4cea6d6b978d66bd2848383097e54eb95c6747bad5eed58a5bdc02f3df8",
+ "qlever/scripts/cmake_file_api.py":"6a7f6383c4c0e5524e997c885bc8dea75b75fb9cef8c6b920adbb12020670ea7",
+ "qlever/scripts/link_command_adapter.py":"5bbc44e6d0f8c44c2fbee271acce73c0272f45896ce82630e1ba88e9c24b7f29",
+ "qlever/scripts/link_command_origin.py":"5aa14c4ba7bc5316504dbed06be7f72ff282becf9c49ba655fe1d0b3ffdb116d",
+ "qlever/scripts/native/build_native_helper.py":"4d17b1ec234e198c364624fb93ace650c530de76592858ff04a0711832b23fa8",
+ "qlever/scripts/native/lease_sweep_binding.py":"097c756ccae5f0cf44f33e930f7fb0072be0f702c96a43ad0c9b597e8d610643",
+ "qlever/scripts/native/lease_sweep_ext.c":"b0f1268aad6b0ebdb1122151a75dd8cba6a9a140ff2581f8374f3c85c37c0209",
+ "qlever/scripts/sdk-coordinated-wait.py":"8901250ae8a3bfb023a05e0f239a39dc83a11787c9c00f2dd64577cd95c68182",
+ "qlever/scripts/sdk-ptrace-execution.py":"137ed44bb5bf1b09eed677903cf32a251586ebcdb7900df1c4a362d645a50f90",
+ "qlever/scripts/sdk-tool-lifetime-leases.py":"24353373097e6890865a69b0cc5a0509b27a4d05a8aa2662b351e7ee16826cfc"
+});
+const e4ea69Bindings=(rows:readonly GitHubSourceBinding[])=>Object.freeze(rows.map(row=>Object.freeze({...row,sha256:e4ea69Hashes[row.path]??row.sha256})));
 const finalSdkBindings=(rows:readonly GitHubSourceBinding[])=>Object.freeze(rows.map(row=>Object.freeze({...row,sha256:finalSdkHashes[row.path]??row.sha256})));
 const PRE_FINAL_SLICE_SDK_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([
 ...PRE_NEXT_SLICE_SDK_GROUPS,
 Object.freeze({...PRE_NEXT_SLICE_SDK_GROUPS[PRE_NEXT_SLICE_SDK_GROUPS.length-1]!,candidateServiceRelationship:PRE_NEXT_SLICE_SDK_GROUPS[PRE_NEXT_SLICE_SDK_GROUPS.length-1]!.candidateServiceRelationship?{...PRE_NEXT_SLICE_SDK_GROUPS[PRE_NEXT_SLICE_SDK_GROUPS.length-1]!.candidateServiceRelationship!,workflowSha256:'999f183da7a146433afeca5cf009556876e9fcec02f9545efaad8b5c6d88f962'}:undefined,selectors:finalSdkBindings(PRE_NEXT_SLICE_SDK_GROUPS[PRE_NEXT_SLICE_SDK_GROUPS.length-1]!.selectors),secondarySelectors:finalSdkBindings(PRE_NEXT_SLICE_SDK_GROUPS[PRE_NEXT_SLICE_SDK_GROUPS.length-1]!.secondarySelectors??[]),sourceBindings:finalSdkBindings(PRE_NEXT_SLICE_SDK_GROUPS[PRE_NEXT_SLICE_SDK_GROUPS.length-1]!.sourceBindings)}),Object.freeze({...PRE_NEXT_SLICE_SDK_GROUPS[PRE_NEXT_SLICE_SDK_GROUPS.length-1]!,candidateServiceRelationship:{...PRE_NEXT_SLICE_SDK_GROUPS[PRE_NEXT_SLICE_SDK_GROUPS.length-1]!.candidateServiceRelationship!,workflowSha256:'999f183da7a146433afeca5cf009556876e9fcec02f9545efaad8b5c6d88f962'},selectors:nextApprovedSdkBindings(PRE_NEXT_SLICE_SDK_GROUPS[PRE_NEXT_SLICE_SDK_GROUPS.length-1]!.selectors),secondarySelectors:nextApprovedSdkBindings(PRE_NEXT_SLICE_SDK_GROUPS[PRE_NEXT_SLICE_SDK_GROUPS.length-1]!.secondarySelectors??[]),sourceBindings:nextApprovedSdkBindings(PRE_NEXT_SLICE_SDK_GROUPS[PRE_NEXT_SLICE_SDK_GROUPS.length-1]!.sourceBindings)}),Object.freeze({...PRE_NEXT_SLICE_SDK_GROUPS[PRE_NEXT_SLICE_SDK_GROUPS.length-1]!,candidateServiceRelationship:PRE_NEXT_SLICE_SDK_GROUPS[PRE_NEXT_SLICE_SDK_GROUPS.length-1]!.candidateServiceRelationship?{...PRE_NEXT_SLICE_SDK_GROUPS[PRE_NEXT_SLICE_SDK_GROUPS.length-1]!.candidateServiceRelationship!,workflowSha256:'999f183da7a146433afeca5cf009556876e9fcec02f9545efaad8b5c6d88f962'}:undefined,selectors:finalApprovedSdkBindings(PRE_NEXT_SLICE_SDK_GROUPS[PRE_NEXT_SLICE_SDK_GROUPS.length-1]!.selectors),secondarySelectors:finalApprovedSdkBindings(PRE_NEXT_SLICE_SDK_GROUPS[PRE_NEXT_SLICE_SDK_GROUPS.length-1]!.secondarySelectors??[]),sourceBindings:finalApprovedSdkBindings(PRE_NEXT_SLICE_SDK_GROUPS[PRE_NEXT_SLICE_SDK_GROUPS.length-1]!.sourceBindings)}),Object.freeze({...PRE_NEXT_SLICE_SDK_GROUPS[PRE_NEXT_SLICE_SDK_GROUPS.length-1]!,candidateServiceRelationship:PRE_NEXT_SLICE_SDK_GROUPS[PRE_NEXT_SLICE_SDK_GROUPS.length-1]!.candidateServiceRelationship?{...PRE_NEXT_SLICE_SDK_GROUPS[PRE_NEXT_SLICE_SDK_GROUPS.length-1]!.candidateServiceRelationship!,workflowSha256:'999f183da7a146433afeca5cf009556876e9fcec02f9545efaad8b5c6d88f962'}:undefined,selectors:ninja68Bindings(PRE_NEXT_SLICE_SDK_GROUPS[PRE_NEXT_SLICE_SDK_GROUPS.length-1]!.selectors),secondarySelectors:Object.freeze([...ninja68Bindings(PRE_NEXT_SLICE_SDK_GROUPS[PRE_NEXT_SLICE_SDK_GROUPS.length-1]!.secondarySelectors??[]),...QLEVER_SDK_NINJA_SOURCE_BINDINGS]),sourceBindings:Object.freeze([...ninja68Bindings(PRE_NEXT_SLICE_SDK_GROUPS[PRE_NEXT_SLICE_SDK_GROUPS.length-1]!.sourceBindings),...QLEVER_SDK_NINJA_SOURCE_BINDINGS])})]);
-export const QLEVER_SDK_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=PRE_FINAL_SLICE_SDK_GROUPS
+export const QLEVER_SDK_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([
+...PRE_FINAL_SLICE_SDK_GROUPS,
+Object.freeze({...PRE_FINAL_SLICE_SDK_GROUPS[PRE_FINAL_SLICE_SDK_GROUPS.length-1]!,selectors:e4ea69Bindings(PRE_FINAL_SLICE_SDK_GROUPS[PRE_FINAL_SLICE_SDK_GROUPS.length-1]!.selectors),secondarySelectors:Object.freeze([...e4ea69Bindings(PRE_FINAL_SLICE_SDK_GROUPS[PRE_FINAL_SLICE_SDK_GROUPS.length-1]!.secondarySelectors??[]),...QLEVER_SDK_NATIVE69_SOURCE_BINDINGS]),sourceBindings:Object.freeze([...e4ea69Bindings(PRE_FINAL_SLICE_SDK_GROUPS[PRE_FINAL_SLICE_SDK_GROUPS.length-1]!.sourceBindings),...QLEVER_SDK_NATIVE69_SOURCE_BINDINGS])}),
+]);
 export const QLEVER_LINUX_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([
  {selectors:sdkSelectors('cbedd3e2478de5e22108b6689c595a658ca891c9bd47552caec830e86f47fea8','a75c7be34b5c5fafff85c0d67d814ba1aaf14bcf5db5404a860fe3b9a11009bd'),sourceBindings:QLEVER_LINUX_SOURCE_BINDINGS.filter(row=>!['.github/workflows/publish-qlever-runtime-sdk.yml','.github/workflows/build-qlever-linux-runtime.yml'].includes(row.path))},
  ...QLEVER_SDK_EXECUTION_GROUPS,

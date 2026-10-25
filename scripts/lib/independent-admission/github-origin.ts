@@ -1413,7 +1413,9 @@ export async function observeProductConsumerGitHubOrigin(input:ArtifactAcquisiti
   const callerNames=names.map(name=>'independent-publication / '+name);
   const registered:OriginPolicy={...manual,
     workflowPath:'.github/workflows/ci.yml',workflowSha256:CI_PUBLICATION_WORKFLOW_SHA,
-    reviewedWorkflowVersions:[],requiredBranch:'staging',
+    reviewedWorkflowVersions:[{workflowSha256:'d587e9fc889409a30814098fdfda9f00b322423fe47af52f70f9a6e2d7dc48bf',
+      jobName:()=>callerNames[0]!,
+      sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS}],requiredBranch:'staging',
     jobName:()=>callerNames[0]!,jobNames:()=>callerNames,
     sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS,
   };

@@ -20,14 +20,74 @@ def interrupted(error):
     """An interruption (e.g. caller SIGALRM) rather than a kernel errno."""
     return isinstance(error, OSError) and error.errno is None
 
+# Native TCB helper for THIS observer only. It is loaded from ONE fixed internal
+# path; callers cannot nominate a library. When it is absent we do NOT pretend a
+# sweep happened - see LeaseSet.__init__.
+def _load_native_lease_sweep():
+    """Load the observer's TCB binding from ONE fixed layout.
+
+    No directory argument: the layout follows this file's own location. In a
+    normal SDK run this succeeds; on a host without a built helper it returns
+    None so the public diagnostic API keeps working. The SDK observer does NOT
+    use that leniency - see required_native_backend().
+    """
+    import importlib.util as _importlib_util
+    from pathlib import Path as _Path
+    here = _Path(globals().get('__file__') or '.').resolve().parent
+    helper = here / 'native' / 'lease_sweep_binding.py'
+    if not helper.is_file():
+        return None
+    spec = _importlib_util.spec_from_file_location('lease_sweep_binding', helper)
+    if spec is None or spec.loader is None:
+        return None
+    module = _importlib_util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def required_native_backend():
+    """SDK-mode factory: return (binding, extension) or raise.
+
+    FAIL CLOSED. A missing helper, an unverified build receipt, a source or ELF
+    hash mismatch, or an interpreter ABI mismatch all abort the SDK observation
+    instead of silently checking fewer leases.
+    """
+    binding = _load_native_lease_sweep()
+    if binding is None:
+        raise RuntimeError('SDK native lease backend required but not present')
+    return binding, binding.load_required()
+
+
+def pure_backend():
+    """Host-diagnosis factory: explicitly no native backend."""
+    return None, None
+
 
 class LeaseSet:
+    # B3 FIX -- ONE dependency-injection seam, resolved once per instance.
+    #
+    # The BASE class keeps the ORIGINAL pure-Python behaviour: the base
+    # Observer host-diagnostic path in sdk-service-native-runtime-originals.py
+    # (which passes capture_toolchain=True) therefore behaves exactly as it did
+    # before this change. The SDK execution observer rebinds this seam for its
+    # own subclass; there is no ENV var, no CLI flag, no receipt field, and no
+    # per-call re-resolution.
+    _native_backend_required = False
+
+    def _resolve_native_backend(self):
+        if not self._native_backend_required:
+            return None, None
+        return required_native_backend()
+
     def __init__(self, maximum=4096):
+        """Original public constructor. Pure Python unless a subclass opts in."""
         if type(maximum) is not int or maximum < 1:
             raise ValueError('positive unique lease bound required')
         self.maximum = maximum
         self._held = {}
         self._failure = None
+        # ONE resolution, at construction, through the class seam.
+        self._native_binding, self._native = self._resolve_native_backend()
         self._closed = False
         self._previous = signal.getsignal(signal.SIGIO)
         if callable(self._previous):
@@ -62,11 +122,17 @@ class LeaseSet:
             if len(rows) != 1:
                 self._reject('unknown or changed lease token')
         try:
-            for row in rows:
-                if fcntl.fcntl(row['fd'], fcntl.F_GETLEASE) != fcntl.F_RDLCK:
-                    self._reject('read lease no longer held')
-                if identity(row['fd']) != row['token']['identity']:
-                    self._reject('leased inode identity changed')
+            if self._native is not None and self._native_binding is not None:
+                self._native_binding.sweep_rows(
+                    self._native,
+                    [(row['fd'], tuple(row['token']['identity'])) for row in rows],
+                    self._reject)
+            else:
+                for row in rows:
+                    if fcntl.fcntl(row['fd'], fcntl.F_GETLEASE) != fcntl.F_RDLCK:
+                        self._reject('read lease no longer held')
+                    if identity(row['fd']) != row['token']['identity']:
+                        self._reject('leased inode identity changed')
             self._ready()
         except OSError as error:
             # A caller-owned SIGALRM (or any other interruption without an
@@ -178,3 +244,17 @@ class LeaseSet:
             signal.signal(signal.SIGIO, self._previous)
         if error:
             raise error
+
+
+class SdkLeaseSet(LeaseSet):
+    """SDK execution observer's LeaseSet: the native backend is REQUIRED.
+
+    Selecting this CLASS is the single DI decision. It is made once, by the SDK
+    observer, at its own construction - never by the base Observer, never by an
+    environment/CLI switch, and never per phase.
+    """
+
+    _native_backend_required = True
+
+    def __init__(self, maximum=4096):
+        super().__init__(maximum)

@@ -21,7 +21,7 @@ RUN cmake_version='3.31.6-2~bpo12+1' \
  && apt-get -o Acquire::AllowInsecureRepositories=false -o Acquire::AllowDowngradeToInsecureRepositories=false update \
  && apt-get -o APT::Get::AllowUnauthenticated=false install -y --no-install-recommends \
     ca-certificates debian-archive-keyring gpgv gcc-12 g++-12 binutils "cmake=${cmake_version}" "cmake-data=${cmake_version}" ninja-build git make python3 \
-    libboost-container1.81-dev libboost-iostreams1.81-dev libboost-program-options1.81-dev libboost-url1.81-dev \
+    python3-dev libboost-container1.81-dev libboost-iostreams1.81-dev libboost-program-options1.81-dev libboost-url1.81-dev \
     libbz2-dev libicu-dev liblzma-dev libssl-dev libzstd-dev zlib1g-dev libsqlite3-dev patchelf
 
 COPY .dockerignore /opt/qlever-sdk/profile/.dockerignore
@@ -36,6 +36,14 @@ COPY qlever/rdf_protocol /components/qlever/rdf_protocol
 COPY qlever/backend_contract /components/qlever/backend_contract
 COPY qlever/candidate_contract /components/qlever/candidate_contract
 COPY qlever/scripts /components/qlever/scripts
+# B2: `COPY qlever/scripts` already brings native/ wholesale, but the pre-built
+# extension and its receipt are host artefacts. Rebuild them here with THIS
+# profile's declared C compiler.
+RUN rm -rf /components/qlever/scripts/native/header-originals \
+ && python3 /components/qlever/scripts/native/build_native_helper.py \
+      /components/qlever/scripts/native/lease_sweep_ext.c \
+      /components/qlever/scripts/native \
+      --cc gcc-12
 COPY qlever/qlever_local_runtime /components/qlever/qlever_local_runtime
 COPY qlever/rdf_sqlite_backend /components/qlever/rdf_sqlite_backend
 COPY docker/qlever-runtime-sdk/Dockerfile.module-bookworm /opt/qlever-sdk/profile/Dockerfile

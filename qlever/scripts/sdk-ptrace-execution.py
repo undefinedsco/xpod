@@ -314,6 +314,8 @@ def completed_capture_storage_census(rows,phase):
     return dict(kind='same-phase-physical-content-census',phase=phase,scanOrder='newest-first',availableObservations=len(rows),matchedPhaseObservations=matched,visitedObservations=visited,distinctPhysicalReferences=len(seen),maximumVisitedObservations=8192,maximumPhysicalReferences=4096,truncated=truncated,invalidReferenceMetadata=invalid,topBuckets=duplicates[:4],duplicateBucketCount=len(duplicates),potentialDuplicatePhysicalBytesLowerBound=sum(row['potentialDuplicatePhysicalBytes'] for row in duplicates),scope='same complete bytes/SHA storage only; no source identity, actual reuse eligibility, or IO saving proven')
 
 class Observer:
+    # Base host observer: pure-Python lease checking, exactly as before.
+    lifetime_leases_class = lifetime_leases.LeaseSet
     def __init__(self,out,source,build,*,deadline_monotonic=None,check_budget=lambda:None,maximum_bytes=32*1024**2,maximum_file_bytes=1024**2,selected_names=SELECTED,maximum_processes=128,shard_bytes=None,require_success=True,maximum_stdio_bytes=None,shared_tasks=False,capture_toolchain=False,deny_optional_io_uring=False,verified_setresuid_noop=False,verified_identity_noop=False,terminal_exit_evidence=False,generated_vma_output=False,generated_vma_shared_mm=False,generated_vma_private_wake=False,generated_vma_private_wait_mismatch=False,capture_content_entities=False,queued_identity_noop=False,stopped_writer_aliases=False,generated_vma_coordinated_wait=False,generated_vma_parked_wait=False,io_uring_enosys_v2=False,serialize_terminal_syscalls=False,capture_maps_content_entities=False,retained_generated_metadata=False,indexed_raw_records=False,compressed_raw=False,generated_build_root=generated_vma_module.BUILD_ROOT):
         assert type(indexed_raw_records) is bool
         self.indexed_raw_records=indexed_raw_records
@@ -2343,7 +2345,7 @@ class Observer:
         try:
             # Created only here, in the parent after fork: the child must never
             # inherit a lease FD or SIGIO ownership.
-            if self.capture_toolchain:self.lifetime_leases=lifetime_leases.LeaseSet()
+            if self.capture_toolchain:self.lifetime_leases=self.lifetime_leases_class()
             self.lifetime_phase=name;self.lifetime_acquired={};self.lifetime_by_identity={};self.authority_observed=set()
             os.close(read_fd)
             for pump in pumps:pump.start()
@@ -2453,6 +2455,12 @@ class Observer:
 
 
 class SdkExecutionObserver(Observer):
+    # B3 FIX: the SDK observer alone requires the native lease backend.
+    # This is the single DI decision; the base Observer stays pure so the
+    # host-diagnostic path in sdk-service-native-runtime-originals.py is
+    # unchanged. No env/CLI switch, no per-phase re-resolution: the class
+    # is fixed here once, and LeaseSet resolves the backend at construction.
+    lifetime_leases_class = lifetime_leases.SdkLeaseSet
     """Production API: one instance per actual inner build owner.
 
     The caller supplies the existing ExecutionBudget.end and remaining *shared*

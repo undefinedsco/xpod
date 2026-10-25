@@ -53,6 +53,29 @@ jobs:
           python3 -m unittest discover -s qlever/tests -p 'test_qlever*'
           python3 -m unittest discover -s qlever/tests -p 'test_resolve_runtime_sdk_build.py'
           python3 -m unittest discover -s qlever/tests -p 'test_macos*.py'
+          python3 qlever/tests/test_bounded_original_reader.py
+
+      # Fast native lease contract gate for the MAIN CI job. Runs after the
+      # static contract checks and before this job's own build steps, so a
+      # broken reader/formatter/ABI fails in seconds. It is NOT a
+      # cross-workflow precondition: independent SDK workflows may start in
+      # parallel. The gate builds the observer's real helper with a real
+      # compiler child and runs every contract case; "0 tests ran" fails.
+      - name: Install interpreter-matched C headers for the native gate
+        run: |
+          set -eu
+          PY=/usr/bin/python3
+          VER=$($PY -c 'import sys;print("%d.%d"%sys.version_info[:2])')
+          INC=$($PY -c 'import sysconfig;print(sysconfig.get_paths()["include"])')
+          echo "interpreter: $($PY --version)  version=$VER  include=$INC"
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends "python${VER}-dev" clang
+          test -f "$INC/Python.h"
+
+      - name: Native lease contract gate
+        env:
+          NATIVE_LEASE_CC: clang
+        run: /usr/bin/python3 qlever/tests/run_native_lease_gate.py -v
 
       - name: Install ripgrep differential oracle
         run: |

@@ -26,8 +26,28 @@ under the source root is a hard refusal.
 Nothing here is fabricated: every path returned came from CMake's own reply, and
 the reply originals are returned so the caller can retain their exact bytes.
 """
+import importlib.util
 import json
 import os
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def _load_sibling(name, filename):
+    """Load a sibling SDK module by path, so no caller sys.path is assumed."""
+    for directory in (HERE, os.path.join(HERE, 'siblings')):
+        candidate = os.path.join(directory, filename)
+        if os.path.isfile(candidate):
+            break
+    else:
+        raise ImportError('SDK sibling module missing: ' + filename)
+    spec = importlib.util.spec_from_file_location(name, candidate)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+reader = _load_sibling('cmake_file_api_bounded_reader', 'bounded-original-reader.py')
 
 CLIENT = 'xpod-sdk-producer'
 API_VERSION = 'v1'
@@ -78,29 +98,23 @@ def _identity(handle):
 def _bounded_read(path):
     """Read one CMake-owned original under the SDK metadata bound.
 
-    The read is bounded BEFORE allocation (`read(MEMBER_LIMIT + 1)`), so a file
-    that grows after the size check cannot drive an unbounded allocation, and
-    the identity is compared before and after exactly as the SDK's existing
-    `file_identity()` reader does. This does not weaken SOURCE evidence: it
-    refuses rather than truncating.
+    The shared reader allocates exactly the verified `fstat` length, so a reply of a
+    few KB allocates a few KB. The earlier form read `MEMBER_LIMIT + 1` and let
+    CPython shrink the buffer to the real size; glibc satisfies that shrink on an
+    mmap'd chunk with `mremap(MAYMOVE)`, which this SDK's executable-memory policy
+    refuses (the `memory-remap-outside-fixed-executable-mapping-scope` reason).
+    Growth is still refused by an independent one-byte EOF probe inside the reader,
+    and the before/after identity comparison is unchanged. This does not weaken
+    SOURCE evidence: it refuses rather than truncating.
     """
-    if os.path.islink(path):
-        raise FileApiUnavailable('File API original must not be a symlink: ' + path)
-    if not os.path.isfile(path):
-        raise FileApiUnavailable('File API original must be a regular file: ' + path)
-    with open(path, 'rb') as handle:
-        before = _identity(handle)
-        if before[3] > MEMBER_LIMIT:
-            raise FileApiUnavailable('File API original exceeds the metadata member bound: ' + path)
-        raw = handle.read(MEMBER_LIMIT + 1)
-        after = _identity(handle)
-    if len(raw) > MEMBER_LIMIT:
-        raise FileApiUnavailable('File API original grew past the metadata member bound: ' + path)
-    if before != after:
-        raise FileApiUnavailable('File API original changed while read: ' + path)
-    if len(raw) != before[3]:
-        raise FileApiUnavailable('File API original changed while read: ' + path)
-    return raw
+    return reader.read_bounded_original(
+        path, MEMBER_LIMIT, FileApiUnavailable,
+        messages={'symlink': 'File API original must not be a symlink: %s',
+                  'regular': 'File API original must be a regular file: %s',
+                  'over': 'File API original exceeds the metadata member bound: %s',
+                  'grew': 'File API original grew past the metadata member bound: %s',
+                  'short': 'File API original changed while read: %s',
+                  'changed': 'File API original changed while read: %s'})
 
 
 def _contained(root, candidate):

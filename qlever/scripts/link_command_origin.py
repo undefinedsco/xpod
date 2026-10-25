@@ -20,6 +20,7 @@ Every path is resolved and re-verified here, so a forged record cannot point
 outside the build scope or claim digests it does not have.
 """
 import hashlib
+import importlib.util
 import json
 import os
 
@@ -35,6 +36,40 @@ def _identity(handle):
     value = os.fstat(handle.fileno())
     return (value.st_dev, value.st_ino, value.st_mode, value.st_size,
             value.st_mtime_ns, value.st_ctime_ns)
+
+
+def _load_sibling(name, filename):
+    """Load a sibling SDK module by path, so no caller sys.path is assumed."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    for directory in (here, os.path.join(here, 'siblings')):
+        candidate = os.path.join(directory, filename)
+        if os.path.isfile(candidate):
+            break
+    else:
+        raise ImportError('SDK sibling module missing: ' + filename)
+    spec = importlib.util.spec_from_file_location(name, candidate)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+reader = _load_sibling('link_origin_bounded_reader', 'bounded-original-reader.py')
+
+
+def bounded_original_bytes(path, limit, error):
+    """Read one regular original under `limit` via the shared bounded reader.
+
+    Kept as a thin module-local name so callers keep their signature; the algorithm
+    itself lives once in `bounded-original-reader.py`.
+    """
+    return reader.read_bounded_original(
+        path, limit, error,
+        messages={'symlink': 'original must be a regular non-symlink file: %s',
+                  'regular': 'original must be a regular non-symlink file: %s',
+                  'over': 'original exceeds the member bound: %s',
+                  'grew': 'original grew past the member bound: %s',
+                  'short': 'original changed while read: %s',
+                  'changed': 'original changed while read: %s'})
 
 
 def bounded_file_identity(path, limit):
@@ -117,10 +152,7 @@ def read_record(link_txt, *, member_limit, build_root, generator=None, materials
     allowed = [build_root] + ([materials_root] if materials_root else [])
     if not _contained(build_root, path):
         raise OriginInvalid('derived origin escapes the build root')
-    with open(path, 'rb') as handle:
-        raw = handle.read(MEMBER_LIMIT_FOR_RECORD + 1)
-    if len(raw) > MEMBER_LIMIT_FOR_RECORD:
-        raise OriginInvalid('derived origin record exceeds its bound')
+    raw = bounded_original_bytes(path, MEMBER_LIMIT_FOR_RECORD, OriginInvalid)
     record = json.loads(raw.decode('utf-8'))
     if not isinstance(record, dict) or record.get('schemaVersion') != SCHEMA_VERSION:
         raise OriginInvalid('derived origin schema unsupported')

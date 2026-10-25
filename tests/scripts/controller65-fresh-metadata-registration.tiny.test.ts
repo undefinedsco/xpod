@@ -11,7 +11,7 @@ const sha=(raw:Buffer|string)=>createHash('sha256').update(raw).digest('hex');
 test('Controller65 preserves all 267 exact Git50f complete recipes and binds current 426 physical originals',()=>{
  expect(before.base).toBe('50f821d16a6fd81ec0c7333df3c71aad0780dff0');
  expect(Object.values(before.hashes).reduce((sum,rows)=>sum+rows.length,0)).toBe(267);
- expect([api.length,sdk.length,consumer.length,ci.length,current.length]).toEqual([28,68,83,164,460]);
+ expect([api.length,sdk.length,consumer.length,ci.length,current.length]).toEqual([28,69,84,166,473]);
  for(const [name,values] of Object.entries({api,sdk,consumer,ci})){const old=before.hashes[name as keyof typeof before.hashes];expect(values.slice(0,old.length).map(row=>sha(JSON.stringify(row)))).toEqual(old);}
  for(const row of [...current,...actualApi,...sdk.at(-1)!.selectors,...sdk.at(-1)!.sourceBindings])expect(sha(readFileSync(row.path))).toBe(row.sha256);
  expect(api.at(-1)!.sourceBindings).toBe(actualApi);

@@ -25,11 +25,34 @@ def runtime_type(core):
         def note(self,kind,**fields):
             if self.model==base.PARKED_WAIT_MODEL and kind in ['window','quiescent','peer-stopped','wake-window','closed','side-wait-window','side-wait-closed','side-wait-deferred']:
                 current=self.round;assert current is not None
+                # One synchronous read-only cohort sweep per note(). Bracket it the
+                # way verify_task_ownership_original does: a full self.b.check()
+                # entry, cheap per-member deadline/stdio refusal inside the body,
+                # and a full self.b.check() in finally. Every member is still read
+                # for real on every note() -- nothing is cached across notes.
+                #
+                # The closing guard must never replace an error raised inside the
+                # body: a sticky SIGIO failure or an expired deadline would
+                # otherwise mask the SIGALRM or peer-state exception that the caller
+                # actually needs to see. This mirrors the repository's existing
+                # cleanup pattern (sdk-ptrace-execution.py:947-953): keep the
+                # primary and only raise the guard error when there is none.
+                self.b.check()
                 states=[]
-                for pid in current['universe']:
-                    if pid==current['owner']:continue
-                    self.b.check();actual=core.state(pid);assert actual=='t','parked task escaped actual tracing stop'
-                    states.append(dict(pid=pid,state=actual))
+                failure=None
+                try:
+                    for pid in current['universe']:
+                        if pid==current['owner']:continue
+                        self.b.check_deadline();actual=core.state(pid);assert actual=='t','parked task escaped actual tracing stop'
+                        states.append(dict(pid=pid,state=actual))
+                except BaseException as error:
+                    failure=error
+                    raise
+                finally:
+                    try:
+                        self.b.check()
+                    except BaseException as guard:
+                        if failure is None:raise
                 fields.update(stoppedUniverse=current['universe'],stoppedTaskStates=states)
             return self.b.emit(dict(kind='generated-kernel-wait-'+kind,**fields))
         def record(self,row):

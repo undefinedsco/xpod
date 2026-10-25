@@ -244,7 +244,8 @@ def retain_ninja(build, target='qlever-server', tool=NINJA, materials=None,
             'ninja -t commands -s failed or is unsupported; refusing to fall back '
             'to the whole dependency command chain: %s' % error)
     raw_stdout = os.path.join(materials, result['stdout']['path'])
-    text = open(raw_stdout, 'rb').read(commands.RAW_LIMIT + 1).decode('utf-8', 'replace')
+    text = origin.bounded_original_bytes(
+        raw_stdout, commands.RAW_LIMIT, LinkCommandUnavailable).decode('utf-8', 'replace')
     lines = [line.rstrip() for line in text.splitlines() if line.strip()]
     if not lines:
         raise LinkCommandUnavailable('ninja -t commands printed no commands')

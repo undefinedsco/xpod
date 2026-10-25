@@ -27,10 +27,30 @@ const observedFromDisk = () => {
   return new Map(rows.map(r => [sourceBindingKey(r), sha(readFileSync(path.join(ROOT, r.path)))]));
 };
 
-test('one authoritative declaration per new helper, matching real bytes', () => {
+/** The immutable e4 declaration pins HISTORICAL bytes. It must keep the exact
+ * values it was published with even though the files have since changed; the
+ * CURRENT slice is what must match the real bytes today. */
+const HISTORICAL_NINJA_SHA: Readonly<Record<string, string>> = Object.freeze({
+  'qlever/scripts/cmake_file_api.py': 'cee5f61c2f2fa072827bd67901d6a129b07f98876469f25c5ca8bacb441b9412',
+  'qlever/scripts/link_command_adapter.py': '6da48b0625ed18c725081a2bc36e87176474deda3a1f6368a6163c7b0d029bcf',
+  'qlever/scripts/link_command_origin.py': '0696060070de7d585e15a92eebf4d796a89ca31a0efa8b86225d2ff068d69c0c',
+});
+
+test('the immutable e4 declaration keeps its published historical pins', () => {
   expect(QLEVER_SDK_NINJA_SOURCE_BINDINGS.map(r => r.path)).toEqual([...NEW_ROLES].sort());
   for (const row of QLEVER_SDK_NINJA_SOURCE_BINDINGS) {
-    expect(sha(readFileSync(path.join(ROOT, row.path)))).toBe(row.sha256);
+    expect(row.sha256).toBe(HISTORICAL_NINJA_SHA[row.path]);
+  }
+});
+
+test('the CURRENT slice binds the same three paths to the real bytes today', () => {
+  const g = current();
+  const rows = [...g.selectors, ...(g.secondarySelectors ?? []), ...g.sourceBindings];
+  for (const row of QLEVER_SDK_NINJA_SOURCE_BINDINGS) {
+    const live = rows.find(r => r.path === row.path);
+    expect(live).toBeDefined();
+    expect(live!.sha256).toBe(sha(readFileSync(path.join(ROOT, row.path))));
+    expect(live!.sha256).not.toBe(row.sha256);
   }
 });
 

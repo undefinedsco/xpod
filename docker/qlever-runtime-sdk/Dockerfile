@@ -41,6 +41,7 @@ RUN apt-get -o Acquire::Retries=5 -o Acquire::AllowInsecureRepositories=false -o
     make \
     ninja-build \
     python3 \
+    python3-dev \
     zlib1g-dev
 
 COPY .dockerignore /opt/qlever-sdk/profile/.dockerignore
@@ -55,6 +56,16 @@ COPY qlever/rdf_protocol /components/qlever/rdf_protocol
 COPY qlever/backend_contract /components/qlever/backend_contract
 COPY qlever/candidate_contract /components/qlever/candidate_contract
 COPY qlever/scripts/*.py qlever/scripts/*.sh /components/qlever/scripts/
+# B2 FIX: the glob above is SINGLE-LEVEL, so qlever/scripts/native/* was never
+# copied and the SDK observer's required backend could not exist in the image.
+# The native helper directory is copied explicitly and COMPLETELY.
+COPY qlever/scripts/native /components/qlever/scripts/native
+# Build the extension with the image's real compiler child.
+RUN rm -rf /components/qlever/scripts/native/header-originals \
+ && python3 /components/qlever/scripts/native/build_native_helper.py \
+      /components/qlever/scripts/native/lease_sweep_ext.c \
+      /components/qlever/scripts/native \
+      --cc clang-19
 COPY qlever/qlever_local_runtime /components/qlever/qlever_local_runtime
 COPY qlever/rdf_sqlite_backend /components/qlever/rdf_sqlite_backend
 COPY docker/qlever-runtime-sdk/Dockerfile /opt/qlever-sdk/profile/Dockerfile

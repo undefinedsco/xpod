@@ -115,8 +115,11 @@ def with_tools(generator='Ninja'):
             try:
                 scripts = os.path.join(root, 'scripts')
                 os.makedirs(scripts)
-                # the two new helpers come from the candidate
-                for helper in ('cmake_file_api.py', 'link_command_adapter.py', 'link_command_origin.py'):
+                # the new helpers come from the candidate; the shared bounded reader
+                # is the sibling both cmake_file_api and link_command_origin load, so
+                # it must be staged too or the fail-closed loader refuses the fixture.
+                for helper in ('cmake_file_api.py', 'link_command_adapter.py',
+                               'link_command_origin.py', 'bounded-original-reader.py'):
                     shutil.copy2(SCRIPTS / helper, scripts)
                 # every other SDK producer: from R when available, otherwise
                 # from the staged bundle next to this candidate (Linux probe).
