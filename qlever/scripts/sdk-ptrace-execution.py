@@ -48,9 +48,46 @@ PENDING_CAPTURE_SUBSTEPS=('capture','capture_write','capture_rename','capture_me
                          'capture_queued_identity','checkpoint_append_boundaries',
                          'checkpoint_appends','observe_tool_stop','capture_bti_pending',
                          'capture_clone3_pending','close_terminal_authorities',
-                         'barrier_before_capture')
+                         'barrier_before_capture',
+                         'generated_vma_finish','generated_vma_finish_emit')
 PHASE_PROGRESS_MAXIMUM_SPANS=8
 PHASE_PROGRESS_PREFIX='SDK_OBSERVER_PHASE_PROGRESS '
+
+# Bounded syscall-stop histogram model.
+#
+# bindings.POLICIES lists only SELECTED policy operations; it is NOT a full
+# syscall name table and deliberately omits openat/fstat/fcntl/statx/newfstatat,
+# which are exactly the hot metadata operations we need to tell apart. So the
+# histogram buckets by NUMERIC (arch, nr) identity over a finite closed domain
+# per arch: 0..max(every numeric value the existing policy declares for that
+# arch, including the `forbidden` set). Numbers inside that closed range are
+# counted individually; anything outside collapses into ONE aggregate. Policy
+# role strings are attached only as an OPTIONAL label where the policy already
+# names that exact number - no second hand-written syscall name table.
+#
+# This does NOT claim coverage of the whole Linux ABI: the reported
+# coveredNumericRange makes the boundary explicit.
+def _phase_syscall_domains():
+    domains = {}
+    labels = {}
+    for arch, rules in sorted(bindings.__dict__.get('POLICIES', {}).items()):
+        maximum = -1
+        for role, value in sorted(rules.items()):
+            numbers = value if isinstance(value, (set, frozenset)) else {value}
+            for nr in numbers:
+                if type(nr) is not int or nr < 0:
+                    continue
+                maximum = max(maximum, nr)
+                labels.setdefault((arch, nr), role)
+        if maximum >= 0:
+            domains[arch] = maximum
+    return domains, labels
+
+PHASE_SYSCALL_DOMAINS, PHASE_SYSCALL_ROLE_LABELS = _phase_syscall_domains()
+PHASE_SYSCALL_OTHER = 'other'
+PHASE_SYSCALL_TOP = 8
+
+
 
 class PhaseProgress:
     """Bounded in-memory progress counters for one phase; diagnostics only.
@@ -59,7 +96,7 @@ class PhaseProgress:
     issues authority, extends a deadline, or retains event arrays.
     """
     __slots__=('phase','started','deadline','now','buckets','active','active_started','failed','failed_started','last_snapshot','snapshots','failure_snapshots','ticks','events','waits','last_boundary','last_wait',
-               'substeps','substep_last','spans','spans_dropped','maps_bytes_last','maps_bytes_max','maps_bodies')
+               'substeps','substep_last','spans','spans_dropped','maps_bytes_last','maps_bytes_max','maps_bodies','syscall_stops','syscall_entries','syscall_exits')
     def __init__(self,phase,deadline,now=time.monotonic):
         self.phase=phase;self.started=now();self.deadline=deadline;self.now=now
         self.buckets={name:[0,0,0] for name in PHASE_PROGRESS_BUCKETS}
@@ -71,6 +108,11 @@ class PhaseProgress:
         self.substeps={name:[0,0,0] for name in PENDING_CAPTURE_SUBSTEPS}
         self.substep_last=None;self.spans=[];self.spans_dropped=0
         self.maps_bytes_last=0;self.maps_bytes_max=0;self.maps_bodies=0
+        # Bounded syscall-STOP histogram. Only the fixed key set above plus one
+        # aggregate is ever stored; unknown numbers cannot grow it.
+        self.syscall_stops={}
+        self.syscall_entries=0
+        self.syscall_exits=0
     def record(self,name,elapsed_ns):
         try:
             bucket=self.buckets[name];bucket[0]+=1;bucket[1]+=elapsed_ns;bucket[2]=max(bucket[2],elapsed_ns)
@@ -98,6 +140,78 @@ class PhaseProgress:
                 del self.spans[0];self.spans_dropped+=1
             self.spans.append(span)
         except BaseException:pass
+    def observe_syscall(self,row):
+        """Count one already-decoded kernel-syscall stop.
+
+        Ownership/control-flow rule: this hook must NEVER convert an owned
+        timeout or interrupt into silence. `self.check()` and the surrounding
+        observer can raise the caller's own SIGALRM TimeoutError while we are
+        running; that object has to propagate unchanged so the primary
+        exception identity is preserved.
+
+        Only THIS counter's own data problems are tolerated, and only by explicit
+        type/shape validation - never a blanket catch. We read nothing but plain
+        ints and a str from the observer's own TCB dict, and we never execute a
+        caller-supplied method.
+        """
+        if not isinstance(row, dict) or row.get('kind') != 'kernel-syscall':
+            return
+        op = row.get('op')
+        if op == 'entry':
+            pass
+        elif op == 'exit':
+            pass
+        else:
+            return
+        arch = row.get('arch')
+        nr = row.get('nr')
+        if type(arch) is not int or type(nr) is not int:
+            return
+        maximum = PHASE_SYSCALL_DOMAINS.get(arch)
+        if maximum is not None and 0 <= nr <= maximum:
+            key = (arch, nr)
+        else:
+            key = PHASE_SYSCALL_OTHER
+        bucket = self.syscall_stops.get(key)
+        if bucket is None:
+            bucket = self.syscall_stops[key] = [0, 0]
+        bucket[0] += 1
+        if op == 'entry':
+            self.syscall_entries += 1
+            bucket[1] += 1
+        else:
+            self.syscall_exits += 1
+
+    def syscall_summary(self):
+        """Top-N bounded projection plus totals. No untrusted text is emitted."""
+        records = []
+        for key, value in self.syscall_stops.items():
+            if key == PHASE_SYSCALL_OTHER:
+                records.append((1, 0, 0, dict(name=PHASE_SYSCALL_OTHER,
+                                              stops=value[0], entries=value[1])))
+                continue
+            arch, nr = key
+            record = dict(arch=arch, nr=nr, stops=value[0], entries=value[1])
+            role = PHASE_SYSCALL_ROLE_LABELS.get(key)
+            if role is not None:
+                record['policyRole'] = role
+            # per-arch numeric ordering keeps the tail deterministic
+            records.append((0, -value[0], arch * 100000 + nr, record))
+        # highest stop count first; the single aggregate always sorts last
+        records.sort(key=lambda item: (item[0], item[1], item[2]))
+        top = [record for _, _, _, record in records[:PHASE_SYSCALL_TOP]]
+        return dict(top=top,
+                    distinctKeys=len(self.syscall_stops),
+                    entries=self.syscall_entries,
+                    exits=self.syscall_exits,
+                    totalStops=self.syscall_entries + self.syscall_exits,
+                    topLimit=PHASE_SYSCALL_TOP,
+                    coveredNumericRange={str(arch): [0, maximum]
+                                         for arch, maximum in sorted(PHASE_SYSCALL_DOMAINS.items())},
+                    unknownAggregate=PHASE_SYSCALL_OTHER,
+                    keyModel='bounded-arch-numeric-domain-v2',
+                    scope='stop COUNTS only; not wall time; domain is NOT the whole Linux ABI')
+
     def observe_boundary(self,row):
         try:self.last_boundary=dict(kind=row.get('kind'),pid=row.get('pid'),entrySequence=row.get('entrySequence'),barrierSequence=row.get('barrierSequence'))
         except BaseException:pass
@@ -1819,7 +1933,7 @@ class Observer:
         owned_window=(window_active,
                       None if window_deadline is None else str(window_deadline),
                       None if window_parent is None else str(window_parent))
-        payload=dict(schemaVersion=1,kind=kind,authorityVerified=False,phase=self.current_phase,phaseStartedMonotonicNs=str(started) if started is not None else None,phaseDeadlineMonotonicNs=str(deadline) if deadline is not None else None,nowMonotonicNs=str(now_ns) if now_ns is not None else None,elapsedNs=str(now_ns-started) if now_ns is not None and started is not None else None,remainingNs=str(deadline-now_ns) if deadline is not None and now_ns is not None else None,globalRawSequence=getattr(self,'seq',0),phaseTicks=getattr(progress,'ticks',0) if progress is not None else 0,eventCount=getattr(progress,'events',0) if progress is not None else 0,waitReturnCount=getattr(progress,'waits',0) if progress is not None else 0,lastBoundary=getattr(progress,'last_boundary',None) if progress is not None else None,lastWait=getattr(progress,'last_wait',None) if progress is not None else None,taskCounts=state_counts,exclusiveOwnerPid=exclusive[0] if isinstance(exclusive,tuple) and len(exclusive)==2 else None,exclusiveOwnerSequence=exclusive[1] if isinstance(exclusive,tuple) and len(exclusive)==2 else None,terminalFocusPid=terminal,generatedVmaOwner=getattr(generated,'owner',None) if generated is not None else None,lifetimeLeaseActive=lifecycle is not None,lifetimeLeaseCount=len(lifecycle.fds) if lifecycle is not None else 0,activeInclusiveMethod=getattr(progress,'active',None) if progress is not None else None,activeInclusiveMethodStartedNs=str(getattr(progress,'active_started',None)) if progress is not None and getattr(progress,'active_started',None) is not None else None,lastFailedInclusiveMethod=getattr(progress,'failed',None) if progress is not None else None,lastFailedInclusiveMethodStartedNs=str(getattr(progress,'failed_started',None)) if progress is not None and getattr(progress,'failed_started',None) is not None else None,inclusiveBuckets={name:dict(calls=value[0],totalNs=value[1],maxNs=value[2]) for name,value in (progress.buckets.items() if progress is not None else [])},pendingCaptureSubsteps={name:dict(calls=value[0],totalNs=value[1],maxNs=value[2]) for name,value in (getattr(progress,'substeps',{}) or {}).items()},pendingCaptureSubstepLast=getattr(progress,'substep_last',None),pendingCaptureSpans=list(getattr(progress,'spans',()) or ()),pendingCaptureSpansDropped=getattr(progress,'spans_dropped',0),mapsBodyBytesLast=getattr(progress,'maps_bytes_last',0),mapsBodyBytesMax=getattr(progress,'maps_bytes_max',0),mapsBodyCount=getattr(progress,'maps_bodies',0),ownedWindowActive=owned_window[0],ownedWindowDeadlineNs=owned_window[1],ownedWindowParentNs=owned_window[2],inclusiveDurationNote='inclusive nested durations; buckets overlap by design; non-additive',failure=bool(failure))
+        payload=dict(schemaVersion=1,kind=kind,authorityVerified=False,phase=self.current_phase,phaseStartedMonotonicNs=str(started) if started is not None else None,phaseDeadlineMonotonicNs=str(deadline) if deadline is not None else None,nowMonotonicNs=str(now_ns) if now_ns is not None else None,elapsedNs=str(now_ns-started) if now_ns is not None and started is not None else None,remainingNs=str(deadline-now_ns) if deadline is not None and now_ns is not None else None,globalRawSequence=getattr(self,'seq',0),phaseTicks=getattr(progress,'ticks',0) if progress is not None else 0,eventCount=getattr(progress,'events',0) if progress is not None else 0,waitReturnCount=getattr(progress,'waits',0) if progress is not None else 0,lastBoundary=getattr(progress,'last_boundary',None) if progress is not None else None,lastWait=getattr(progress,'last_wait',None) if progress is not None else None,taskCounts=state_counts,exclusiveOwnerPid=exclusive[0] if isinstance(exclusive,tuple) and len(exclusive)==2 else None,exclusiveOwnerSequence=exclusive[1] if isinstance(exclusive,tuple) and len(exclusive)==2 else None,terminalFocusPid=terminal,generatedVmaOwner=getattr(generated,'owner',None) if generated is not None else None,lifetimeLeaseActive=lifecycle is not None,lifetimeLeaseCount=len(lifecycle.fds) if lifecycle is not None else 0,activeInclusiveMethod=getattr(progress,'active',None) if progress is not None else None,activeInclusiveMethodStartedNs=str(getattr(progress,'active_started',None)) if progress is not None and getattr(progress,'active_started',None) is not None else None,lastFailedInclusiveMethod=getattr(progress,'failed',None) if progress is not None else None,lastFailedInclusiveMethodStartedNs=str(getattr(progress,'failed_started',None)) if progress is not None and getattr(progress,'failed_started',None) is not None else None,inclusiveBuckets={name:dict(calls=value[0],totalNs=value[1],maxNs=value[2]) for name,value in (progress.buckets.items() if progress is not None else [])},pendingCaptureSubsteps={name:dict(calls=value[0],totalNs=value[1],maxNs=value[2]) for name,value in (getattr(progress,'substeps',{}) or {}).items()},pendingCaptureSubstepLast=getattr(progress,'substep_last',None),pendingCaptureSpans=list(getattr(progress,'spans',()) or ()),pendingCaptureSpansDropped=getattr(progress,'spans_dropped',0),mapsBodyBytesLast=getattr(progress,'maps_bytes_last',0),mapsBodyBytesMax=getattr(progress,'maps_bytes_max',0),mapsBodyCount=getattr(progress,'maps_bodies',0),syscallStops=getattr(progress,'syscall_summary',lambda:None)() if progress is not None else None,ownedWindowActive=owned_window[0],ownedWindowDeadlineNs=owned_window[1],ownedWindowParentNs=owned_window[2],inclusiveDurationNote='inclusive nested durations; buckets overlap by design; non-additive',failure=bool(failure))
         return payload
     def publish_phase_progress(self,kind,failure=False):
         """Bounded stderr diagnostic from held state only; never raises.
@@ -1839,6 +1953,17 @@ class Observer:
             payload=self.phase_progress_payload(kind,failure)
             encoded=json.dumps(payload,sort_keys=True,separators=(',',':'))
             line=(PHASE_PROGRESS_PREFIX+encoded+'\n').encode()
+            if len(line)>PHASE_PROGRESS_MAXIMUM_BYTES and isinstance(payload,dict) and 'syscallStops' in payload:
+                # The histogram is OPTIONAL instrumentation. It must never make a
+                # diagnostic that was previously valid become unpublishable, so on
+                # overflow we drop ONLY this new field and serialize the original
+                # old payload again. No old field is removed and the fixed cap is
+                # unchanged; a frame that was ALREADY too large still fails the
+                # assert below exactly as before.
+                fallback=dict(payload)
+                fallback.pop('syscallStops',None)
+                encoded=json.dumps(fallback,sort_keys=True,separators=(',',':'))
+                line=(PHASE_PROGRESS_PREFIX+encoded+'\n').encode()
             assert len(line)<=PHASE_PROGRESS_MAXIMUM_BYTES,'bounded phase progress snapshot line'
             sys.stderr.write(line.decode());sys.stderr.flush()
         except BaseException:pass
@@ -2126,7 +2251,10 @@ class Observer:
             assert sig==signal.SIGCHLD,'unexpected tracee signal';task['signal']=sig;self.emit(dict(kind='signal-delivery',pid=pid,signal=sig));return
         kernel,_=single.syscall(pid);policy=profile(kernel['arch'])
         if kernel['op']=='exit' and task['entry'] is not None:kernel['entrySequence']=task['entry']['sequence']
-        record=self.emit(dict(kind='kernel-syscall',pid=pid,**kernel,**(dict(waitStatus=status) if getattr(self,'verified_setresuid_noop',False) or getattr(self,'verified_identity_noop',False) else {})))
+        _kernel_row=dict(kind='kernel-syscall',pid=pid,**kernel,**(dict(waitStatus=status) if getattr(self,'verified_setresuid_noop',False) or getattr(self,'verified_identity_noop',False) else {}))
+        _phase_progress=self.phase_progress()
+        if _phase_progress is not None:_phase_progress.observe_syscall(_kernel_row)
+        record=self.emit(_kernel_row)
         if record['op']=='entry':
             if self.capture_toolchain and record['nr']!=435 and not memory_policy.bti_candidate(record['arch'],record['nr'],record['args']):self.enforce_executable_memory(pid,record)
             assert task['entry'] is None,'syscall entry missing prior exit';task['initial']=False;task['entry']=record;nr=record['nr'];args=record['args']
@@ -2237,7 +2365,7 @@ class Observer:
             if task.get('btiOriginal'):
                 self.complete_bti(pid,old,record);return
             if self.generated_vma and pid in self.generated_vma.pending:
-                self.generated_vma.finish(pid,old,record);self.emit(dict(kind='exclusive-captured-syscall-exit',pid=pid,entrySequence=old['sequence'],result=record['result'],isError=record['isError']));self.exclusive=None;return
+                self.instrument_substep('generated_vma_finish',self.generated_vma.finish,pid,old,record);self.emit(dict(kind='exclusive-captured-syscall-exit',pid=pid,entrySequence=old['sequence'],result=record['result'],isError=record['isError']));self.exclusive=None;return
             transition=task.pop('setresuidTransition',None)
             if transition is not None:
                 try:

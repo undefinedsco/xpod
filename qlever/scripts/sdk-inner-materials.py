@@ -338,12 +338,19 @@ def build_materials(component,source,build,out,jobs):
             raise ValueError('Actual CMake generator identity unavailable: %s'%error)
         spec=importlib.util.spec_from_file_location('inner_link_origin',HERE/'link_command_origin.py')
         link_origin=importlib.util.module_from_spec(spec);spec.loader.exec_module(link_origin)
+        # A distinct evidence set collects the Ninja origin originals BEFORE the
+        # compile. It must stay empty here: the REAL compiler dependency closure
+        # (dependency_paths) refuses a tree with no *.o.d and may only be read
+        # after the compile that produces them. The post-compile update below
+        # augments this same set, so the originals survive into archive() without
+        # being treated as claimed compiler dependencies.
+        selected=set()
         if actual_generator=='Ninja':
             # MANDATORY, and every referenced original is re-observed.
             record=link_origin.read_record(link_path,
                 member_limit=link_origin.MEMBER_LIMIT_FOR_RECORD,
                 build_root=str(build),generator='Ninja',
-                materials_root=str(materials))
+                materials_root=str(out))
             # The raw capture originals are retained evidence, not a claim.
             for key in ('rawStdout','rawStderr'):
                 path=Path(record[key]['path'])
@@ -370,7 +377,9 @@ def build_materials(component,source,build,out,jobs):
         before_links_ref=commands.ref(out/'symlinks-before.json',out)
         stages.append(execution.phase('compile',['bash',str(component/'scripts/build-qlever-runtime-sdk.sh'),'build-prepared'],[before_ref,before_links_ref,generation_before],14400,4800))
         execution.close()
-        selected=dependency_paths(build)
+        # Augment, never replace: the Ninja origin originals added above are part of
+        # the retained evidence set and must survive into archive().
+        selected.update(dependency_paths(build))
         # Preserve original depfiles and actual direct linker inputs as build outputs.
         outputs=set(build.rglob('*.o.d'));selected.update(outputs)
         link=build/'CMakeFiles/qlever-server.dir/link.txt';selected.add(link)

@@ -78,10 +78,14 @@ test('REAL published controller30 and fetch33 tuple VALUES are byte-exact', () =
 });
 
 test('appended CURRENT catalogues add exactly one fresh tail tuple', () => {
+  // TWO genuine appends have landed on the published NEXT history: the SDK70
+  // inner-materials correction and the final reviewed VMA diagnostic (whose
+  // generated-VMA bytes are members of controller/fetch CURRENT). The historical
+  // NEXT catalogues stay at 30/33 and are never rewritten to force a +1.
   const c = localConst('qlever-sdk-generation.ts', 'REVIEWED_CONTROLLER_HELPER_GROUPS_CURRENT');
   const f = localConst('qlever-sdk-fetchcontent.ts', 'REVIEWED_HELPER_GROUPS_CURRENT');
-  expect(c.length).toBe(31);
-  expect(f.length).toBe(34);
+  expect(c.length).toBe(32);
+  expect(f.length).toBe(35);
   const cur = '8901250ae8a3bfb023a05e0f239a39dc83a11787c9c00f2dd64577cd95c68182';
   const waitDigests = (groups: any[]) => groups.map(g => {
     const rows = Array.isArray(g) ? g : Object.entries(g);
@@ -183,10 +187,10 @@ function productionCallCatalog(file: string, callee: string): {arg: string; cata
   return {arg: found, catalog: localConst(file, found)};
 }
 
-test('the PRODUCTION controller caller uses the name plan over CURRENT31', () => {
+test('the PRODUCTION controller caller uses the name plan over CURRENT32', () => {
   const plan = productionCallCatalog('qlever-sdk-generation.ts', 'requiredSdkControllerHelperNames');
   expect(plan.arg).toBe('REVIEWED_CONTROLLER_HELPER_GROUPS_CURRENT');
-  expect(plan.catalog.length).toBe(31);
+  expect(plan.catalog.length).toBe(32);
   const exact = productionCallCatalog('qlever-sdk-generation.ts', 'selectSdkControllerHelperGroup');
   expect(exact.arg).toBe('REVIEWED_CONTROLLER_HELPER_GROUPS_CURRENT');
   const src = readFileSync(path.join(LIB, 'qlever-sdk-generation.ts'), 'utf8');
@@ -194,10 +198,10 @@ test('the PRODUCTION controller caller uses the name plan over CURRENT31', () =>
   expect(src).toContain('for(const name of requiredSdkControllerHelperNames(');
 });
 
-test('the PRODUCTION fetch caller uses the name plan over CURRENT34', () => {
+test('the PRODUCTION fetch caller uses the name plan over CURRENT35', () => {
   const plan = productionCallCatalog('qlever-sdk-fetchcontent.ts', 'requiredSdkControllerHelperNames');
   expect(plan.arg).toBe('REVIEWED_HELPER_GROUPS_CURRENT');
-  expect(plan.catalog.length).toBe(34);
+  expect(plan.catalog.length).toBe(35);
   const exact = productionCallCatalog('qlever-sdk-fetchcontent.ts', 'selectSdkControllerHelperGroup');
   expect(exact.arg).toBe('REVIEWED_HELPER_GROUPS_CURRENT');
 });
@@ -205,8 +209,8 @@ test('the PRODUCTION fetch caller uses the name plan over CURRENT34', () => {
 test('the REAL production-called catalogs admit end to end on actual helper bytes', () => {
   const sha = (n: string) => createHash('sha256').update(readFileSync(path.join(ROOT, 'qlever/scripts', n))).digest('hex');
   const cases: readonly [string, readonly string[], number][] = [
-    ['qlever-sdk-generation.ts', ['sdk-zip-originals.py', 'sdk-generation-multiprocess-bindings.py', 'sdk-execution-originals-util.py', 'sdk-generated-source-originals.py', 'sdk-tool-provider-originals.py', 'sdk-generated-vma-originals.py', 'sdk-coordinated-wait.py', 'sdk-original-chunk-store.py', 'sdk-raw-wire-reader.py', 'sdk-executable-memory-policy.py'], 31],
-    ['qlever-sdk-fetchcontent.ts', ['sdk-fetchcontent-source-observer.py', 'sdk-fetchcontent-source-bindings.py', 'sdk-zip-originals.py', 'sdk-git-source-bindings.py', 'sdk-debian-binary-originals.py', 'sdk-debian-index-bindings.py', 'sdk-generation-multiprocess-bindings.py', 'sdk-execution-originals-util.py', 'sdk-tool-provider-originals.py', 'sdk-generated-vma-originals.py', 'sdk-coordinated-wait.py', 'sdk-original-chunk-store.py', 'sdk-raw-wire-reader.py', 'sdk-executable-memory-policy.py'], 34],
+    ['qlever-sdk-generation.ts', ['sdk-zip-originals.py', 'sdk-generation-multiprocess-bindings.py', 'sdk-execution-originals-util.py', 'sdk-generated-source-originals.py', 'sdk-tool-provider-originals.py', 'sdk-generated-vma-originals.py', 'sdk-coordinated-wait.py', 'sdk-original-chunk-store.py', 'sdk-raw-wire-reader.py', 'sdk-executable-memory-policy.py'], 32],
+    ['qlever-sdk-fetchcontent.ts', ['sdk-fetchcontent-source-observer.py', 'sdk-fetchcontent-source-bindings.py', 'sdk-zip-originals.py', 'sdk-git-source-bindings.py', 'sdk-debian-binary-originals.py', 'sdk-debian-index-bindings.py', 'sdk-generation-multiprocess-bindings.py', 'sdk-execution-originals-util.py', 'sdk-tool-provider-originals.py', 'sdk-generated-vma-originals.py', 'sdk-coordinated-wait.py', 'sdk-original-chunk-store.py', 'sdk-raw-wire-reader.py', 'sdk-executable-memory-policy.py'], 35],
   ];
   for (const [file, names, expectedGroups] of cases) {
     // bind the catalogs the PRODUCTION CALL SITES actually pass

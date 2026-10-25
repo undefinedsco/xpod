@@ -630,7 +630,10 @@ class Runtime:
                 other,items=self.maps(peer);need(not matching_maps(items,current),'peer backing alias remained at checkpoint')
                 if self.model in COHORT_MODELS and peer in cohort:verify_peer_geometry(items,values,b.check,b.check_deadline)
                 peers.append(dict(pid=peer,original=other['original']))
-            row=b.emit(dict(common,path=origin['path'],identity=current,retainedIdentity=current,original=ref,afterMapsOriginal=maps['original'],afterPeerMaps=peers,epochSequence=self.active['sequence'],originSequence=origin['sequence'],**post_extra))
+            # split measurement only: instrument_substep preserves the return value
+            # and exception identity exactly, so a TimeoutError propagates unchanged
+            # while this span is recorded on the existing bounded ring.
+            row=b.instrument_substep('generated_vma_finish_emit',b.emit,dict(common,path=origin['path'],identity=current,retainedIdentity=current,original=ref,afterMapsOriginal=maps['original'],afterPeerMaps=peers,epochSequence=self.active['sequence'],originSequence=origin['sequence'],**post_extra))
             token=self.active['token'];self.active=None;b.waiter.restore(token);self.reserved=0;self.spending_thread=None;origin.update(identity=current,data=(ref['bytes'],ref['sha256']),original=ref,checkpointed=True);self.checkpoints[tuple(current[:2])]=row
         self.pending.pop(pid)
         if self.retained_metadata and self.active is None and not self.pending:self.metadata_close_entry=(pid,entry['sequence'],self.b.seq+1)

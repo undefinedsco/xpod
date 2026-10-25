@@ -236,12 +236,16 @@ class PendingCaptureSubstepTest(unittest.TestCase):
   return obj
 
  def test_constant_covers_every_real_pending_branch(self):
+  # Explicit reviewed whitelist: the pending-capture branches PLUS the
+  # generated-VMA finish timings. Hard-coded on purpose so a silently added or
+  # renamed branch fails here instead of being accepted from production.
   expected={'capture','capture_write','capture_rename','capture_metadata',
             'generated_vma_capture','capture_process_authority',
             'capture_queued_identity','checkpoint_append_boundaries',
             'checkpoint_appends','observe_tool_stop','capture_bti_pending',
             'capture_clone3_pending','close_terminal_authorities',
-            'barrier_before_capture'}
+            'barrier_before_capture',
+            'generated_vma_finish','generated_vma_finish_emit'}
   self.assertEqual(set(backend.PENDING_CAPTURE_SUBSTEPS),expected)
   self.assertEqual(len(backend.PENDING_CAPTURE_SUBSTEPS),len(expected))
 

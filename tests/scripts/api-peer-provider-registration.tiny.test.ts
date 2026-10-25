@@ -10,7 +10,7 @@ test('peer registration preserves the diagnostic tuple and binds only the two ac
  expect(groups.find(group=>'name' in group&&group.name==='root-minimal-bounded-identity-diagnostic')!.sourceBindings).toBe(before);
  expect(groups.find(group=>'name' in group&&group.name==='root-minimal-physical-peer-provider')!.sourceBindings).toBe(next);
  expect(next.filter(row=>before.find(old=>old.path===row.path)?.sha256!==row.sha256).map(row=>row.path).sort()).toEqual(['scripts/check-api-producer-dependency-state.ts','scripts/lib/api-scoped-dependency-state.ts']);
- expect(next).toHaveLength(75);expect(current).toHaveLength(473);
+ expect(next).toHaveLength(75);expect(current).toHaveLength(478);
  for(const row of [...actual,...current])expect(hash(readFileSync(path.resolve(import.meta.dir,'../..',row.path)))).toBe(row.sha256);
 });
 test('every old API tuple still selects; new peer tuple rejects missing and mixed mandatory helper bytes',()=>{

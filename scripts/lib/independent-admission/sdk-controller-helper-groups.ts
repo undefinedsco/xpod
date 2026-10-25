@@ -3,7 +3,7 @@
 // current helper bytes require. The observed PER-TUPLE role bound stays 32; only
 // the declared VERSION count grows, and only to the exact real maximum created by
 // a genuine append. This is a catalogue length, never a capture capacity.
-const MAXIMUM_DECLARED_HELPER_GROUPS = 34;
+const MAXIMUM_DECLARED_HELPER_GROUPS = 35;
 const MAXIMUM_OBSERVED_HELPERS = 32;
 const DIFFERS = 'SDK controller complete helper group differs';
 
