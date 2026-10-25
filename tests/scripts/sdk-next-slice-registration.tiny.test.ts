@@ -46,6 +46,9 @@ import abGroups from '../fixtures/independent-admission/ab94021-published-slice.
  *  Linux 72 / CLI 11). The B794 owned-window append starts strictly AFTER these. */
 import ce9Groups from '../fixtures/independent-admission/ce9a85a-published-slice.original.json';
 import n9d02Groups from '../fixtures/independent-admission/9d02b2d-published-slice.original.json';
+/** Immutable 2406eac published baseline (73/88/174/28, Linux 74, CLI 11). The
+ * immutable-input-plan append starts strictly AFTER these groups. */
+import n2406Groups from '../fixtures/independent-admission/2406eac-published-slice.original.json';
 import {
   CONSUMER_SOURCE_GROUPS as consumer,
   CI_CONSUMER_SOURCE_GROUPS as ci,
@@ -144,7 +147,7 @@ test('the accepted SDK823 baseline proves all 299 published whole histories', ()
     expect(groups.slice(0, published.length).map(hashValue)).toEqual(published);
   }
   // Only genuinely new, UNPUBLISHED current groups follow the 299 published ones.
-  expect([sdk.length, consumer.length, ci.length, api.length]).toEqual([73, 88, 174, 28]);
+  expect([sdk.length, consumer.length, ci.length, api.length]).toEqual([74, 89, 176, 28]);
 });
 
 test('the immutable fae9170b baseline proves its full published 69/84/166/28 prefixes', () => {
@@ -171,15 +174,24 @@ test('the immutable fae9170b baseline proves its full published 69/84/166/28 pre
   }
 });
 
-test('only the genuinely new SDK70 slice follows every published baseline', () => {
-  // Exactly ONE new group per family beyond fae, and two for CI (2 recipes/slice).
+test('only the genuinely new immutable-input-plan slice follows published2406', () => {
+  // Exactly ONE new group per family beyond published2406, two for CI.
   expect([sdk.length, consumer.length, ci.length, api.length, linuxGroups.length, CLI_SOURCE_VERSION_GROUPS.length])
-    .toEqual([73, 88, 174, 28, 74, 11]);
-  // Three appends since fae: ab94021, 351e302e and the B794 owned-window
-  // diagnostic. Each adds one per family and two for CI (2 recipes/slice).
-  expect([sdk.length - fbFaeGroups.published.sdk, consumer.length - fbFaeGroups.published.consumer,
-    ci.length - fbFaeGroups.published.ci, linuxGroups.length - fbFaeGroups.published.linux])
-    .toEqual([4, 4, 8, 4]);
+    .toEqual([74, 89, 176, 28, 75, 11]);
+  expect([(n2406Groups as any).published.sdk, (n2406Groups as any).published.consumer,
+    (n2406Groups as any).published.ci, (n2406Groups as any).published.linux]).toEqual([73, 88, 174, 74]);
+  expect([sdk.length - n2406Groups.published.sdk, consumer.length - n2406Groups.published.consumer,
+    ci.length - n2406Groups.published.ci, linuxGroups.length - n2406Groups.published.linux])
+    .toEqual([1, 1, 2, 1]);
+  // Every published2406 group keeps its own exact bytes, including its last.
+  for (const [name, groups] of Object.entries({sdk, consumer, ci, api, linux: linuxGroups})) {
+    const published = (n2406Groups as any).groupHashes[name] as unknown[];
+    for (let i = 0; i < published.length; i++) expect(hashValue((groups as readonly unknown[])[i])).toBe(published[i]);
+    expect((groups as readonly unknown[]).length).toBeGreaterThanOrEqual(published.length);
+  }
+  for (let i = 0; i < (n2406Groups as any).cliHashes.length; i++) {
+    expect(hashValue(CLI_SOURCE_VERSION_GROUPS[i]!)).toBe((n2406Groups as any).cliHashes[i]);
+  }
 });
 
 test('the appended groups bind the actual frozen body and real module bytes', () => {
@@ -192,9 +204,9 @@ test('the appended groups bind the actual frozen body and real module bytes', ()
     // fae9170b is the current published boundary (SDK 69 / consumer 84 / CI 166).
     // Every group at or below it keeps its own frozen bytes; only groups AFTER
     // it are the fresh SDK70 slice bound to live bytes.
-    // 9d02b2d is the now-published boundary; every group at or below it keeps
-    // its frozen bytes and only groups AFTER it are the fresh refused-caller slice.
-    const published = (n9d02Groups.published as Record<string, number>)[name]!;
+    // 2406eac is the now-published boundary; every group at or below it keeps
+    // its frozen bytes and only groups AFTER it are the fresh input-plan slice.
+    const published = (n2406Groups.published as Record<string, number>)[name]!;
     for (const group of groups.slice(published)) {
       for (const row of rows(group)) {
         if ((row as any).ref === 'run-head') continue; // binds the CI run's own bytes
@@ -244,8 +256,8 @@ test('the frozen published canonical keeps its exact 426 rows and accepted bytes
 });
 
 test('the live canonical binds every actual row of the final combined tree', () => {
-  expect(current.length).toBe(485);
-  expect(new Set(current.map((r) => r.path)).size).toBe(485);
+  expect(current.length).toBe(487);
+  expect(new Set(current.map((r) => r.path)).size).toBe(487);
   // The genuinely new roles of this slice: the corrected SDK inner producer and
   // the CI-discovered Ninja regression that now runs under `test_qlever*`.
   expect(current.find((r) => r.path === 'qlever/scripts/sdk-inner-materials.py')!.sha256)
@@ -275,7 +287,7 @@ test('the live canonical binds every actual row of the final combined tree', () 
 test('helper tuples retain the e4 published histories and current role bytes', () => {
   const tables = [
     ['qlever-sdk-generation.ts', 'REVIEWED_CONTROLLER_HELPER_GROUPS_CURRENT', 'controller', 33],
-    ['qlever-sdk-generation.ts', 'REVIEWED_OBSERVER_GROUPS', 'observer', 47],
+    ['qlever-sdk-generation.ts', 'REVIEWED_OBSERVER_GROUPS', 'observer', 48],
     ['qlever-sdk-fetchcontent.ts', 'REVIEWED_HELPER_GROUPS_CURRENT', 'fetch', 36],
   ] as const;
   for (const [file, name, family, count] of tables) {
@@ -297,7 +309,7 @@ test('helper tuples retain the e4 published histories and current role bytes', (
   // phase-syscall diagnostic then appended the 44th, and the 351e302e hotpath
   // re-hash appends a 45th rather than rebinding the published one.
   const observer = recipes('qlever-sdk-generation.ts', 'REVIEWED_OBSERVER_GROUPS');
-  expect(observer).toHaveLength(47);
+  expect(observer).toHaveLength(48);
 });
 
 test('every group still selects itself uniquely and refuses missing/mixed roles', () => {
@@ -327,13 +339,13 @@ test('the SDK69 slice carries the published helper prefixes and its own new memb
   // secondary selectors and the source bindings of the CURRENT slice, while every
   // published helper tuple keeps its own prefix.
   const helpers = recipes('qlever-sdk-generation.ts', 'REVIEWED_OBSERVER_GROUPS');
-  expect(helpers.length).toBe(47);
+  expect(helpers.length).toBe(48);
   const current = sdk.at(-1)!;
   const sec = current.secondarySelectors ?? [];
   expect(sec.length).toBeGreaterThanOrEqual(17);
   // 130 published rows (incl. the owned-window diagnostic test) + the newly
   // registered refused-caller diagnostic test in this tail.
-  expect(current.sourceBindings.length).toBe(131);
+  expect(current.sourceBindings.length).toBe(132);
   expect(current.sourceBindings.some(r => r.path === 'qlever/tests/test_qlever_owned_window_diagnostic.py')).toBe(true);
   expect(current.sourceBindings.some(r => r.path === 'qlever/tests/test_sdk_refused_caller_diagnostic.py')).toBe(true);
   const newRoles = [

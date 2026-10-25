@@ -17,6 +17,8 @@ const ROOT=path.resolve(import.meta.dirname,'../..');
 const BASE='9d02b2d4c3acbb8451b12aba24434749ec0bf59a';
 const git=(args:string[])=>execFileSync('git',args,{cwd:ROOT,encoding:'buffer',stdio:['ignore','pipe','pipe']});
 const blob=(file:string)=>git(['show',`${BASE}:${file}`]);
+const PUBLISHED_2406='2406eac37627ebd515a5db5839eb7856ba228bdf';
+const blob2406=(file:string)=>git(['show',`${PUBLISHED_2406}:${file}`]);
 const digest=(v:unknown)=>createHash('sha256').update(JSON.stringify(v)).digest('hex');
 const disk=(file:string)=>readFileSync(path.join(ROOT,file));
 const sha=(file:string)=>createHash('sha256').update(disk(file)).digest('hex');
@@ -36,32 +38,42 @@ test('every ACTUAL 9d02 published prefix is byte-identical and only genuine tupl
   const frozen=(published.groupHashes as Record<string,string[]>)[name]!;
   expect(frozen.length).toBe(publishedCounts[name]);
   expect(live.slice(0,frozen.length).map(digest)).toEqual(frozen);
-  expect(live.length-frozen.length).toBe({sdk:1,consumer:1,ci:2,linux:1,api:0}[name as 'sdk']??0);
+  // TWO genuine slices follow the published 9d02 catalogue: the refused-caller
+ // slice and the immutable-input-plan slice. Each adds one group per family and
+ // two to CI; api/cli remain untouched.
+ expect(live.length-frozen.length).toBe({sdk:2,consumer:2,ci:4,linux:2,api:0}[name as 'sdk']??0);
  }
 });
 
-test('the appended tuples are exactly one genuine slice each and the deltas are explainable',()=>{
- // +1 SDK tuple (Linux repeats it as a superset), +1 consumer, +2 CI; api/cli untouched.
- expect(sdk.length).toBe(73);
- expect(linux.length).toBe(74);
- expect(consumer.length).toBe(88);
- expect(ci.length).toBe(174);
+test('the appended tuples are exactly two genuine slices each and the deltas are explainable',()=>{
+ // +2 SDK tuples (Linux repeats them as a superset), +2 consumer, +4 CI; api/cli untouched.
+ expect(sdk.length).toBe(74);
+ expect(linux.length).toBe(75);
+ expect(consumer.length).toBe(89);
+ expect(ci.length).toBe(176);
  expect(api.length).toBe(28);
  expect(cli.length).toBe(11);
  // Linux is the same SDK catalogue with exactly one leading Linux tuple.
  expect(linux.slice(1).map(digest)).toEqual(sdk.map(digest));
  // CI is the published CI slice plus one appended pair per new consumer recipe.
  expect(ci.slice(0,172).map(digest)).toEqual((published.groupHashes as Record<string,string[]>).ci!);
+ // Each appended slice keeps the same secondary count as its predecessor recipe.
  const tail=ci[ci.length-1]!,prior=ci[ci.length-3]!;
  expect(tail.secondarySelectors?.length).toBe(prior.secondarySelectors?.length);
 });
 
-test('the new SDK tuple binds the actual refused-caller bytes and registers the new test',()=>{
- const tail=sdk[sdk.length-1]!;
+test('the published refused-caller tuple binds its actual bytes and registers the new test',()=>{
+ // The refused-caller slice is PUBLISHED at 2406 (index 72); the last tuple is the
+ // newer immutable-input-plan slice, which inherits the same observer body bytes.
+ const tail=sdk[72]!;
  const rows=[...tail.selectors,...tail.secondarySelectors??[],...tail.sourceBindings];
  const changed=rows.filter(row=>row.path==='qlever/scripts/sdk-ptrace-execution.py');
  expect(changed.length).toBeGreaterThan(0);
- for(const row of changed)expect(row.sha256).toBe(sha('qlever/scripts/sdk-ptrace-execution.py'));
+ for(const row of changed)expect(row.sha256).toBe('d17665de920f1f5b10eecb5ecf09a4257af05d6964feb6870487e37a57b6965c');
+ // The lease module is untouched by the refused-caller slice: it keeps the
+ // published 2406 bytes there and is re-hashed ONLY in the newer slice.
+ const lease=rows.filter(row=>row.path==='qlever/scripts/sdk-tool-lifetime-leases.py');
+ for(const row of lease)expect(row.sha256).toBe('24353373097e6890865a69b0cc5a0509b27a4d05a8aa2662b351e7ee16826cfc');
  const test_='qlever/tests/test_sdk_refused_caller_diagnostic.py';
  expect(tail.sourceBindings.filter(row=>row.path===test_)).toHaveLength(1);
  expect(tail.sourceBindings.find(row=>row.path===test_)!.sha256).toBe(sha(test_));
@@ -71,13 +83,16 @@ test('the new SDK tuple binds the actual refused-caller bytes and registers the 
  expect(tail.outerExecutor!.additionalWorkflows!.map(row=>[row.path,row.sha256])).toEqual([
   ['.github/workflows/css-native-products.yml','601aa8fe01ee1367be4e97dc6e868d7bc3e79ed1fea5e8f9531aa759e78d7d51'],
   ['.github/workflows/candidate.yml','999f183da7a146433afeca5cf009556876e9fcec02f9545efaad8b5c6d88f962']]);
- // every path the tail claims is the actual file on disk
- for(const row of rows)expect(sha(row.path)).toBe(row.sha256);
+ // This historical tuple keeps the PUBLISHED 2406 bytes, so compare it to the
+ // immutable Git blob, not to the newer working tree.
+ for(const row of rows)expect(createHash('sha256').update(blob2406(row.path)).digest('hex')).toBe(row.sha256);
 });
 
 test('the new consumer/CI tuples bind the actual bytes and reject any unknown appended tuple',()=>{
- const tail=consumer[consumer.length-1]!;
- for(const row of [...tail.selectors,...tail.secondarySelectors??[],...tail.sourceBindings])expect(sha(row.path)).toBe(row.sha256);
+ const tail=consumer[87]!;
+ // Historical tuple: it must still bind the exact published 2406 Git blobs.
+ for(const row of [...tail.selectors,...tail.secondarySelectors??[],...tail.sourceBindings])
+  expect(createHash('sha256').update(blob2406(row.path)).digest('hex')).toBe(row.sha256);
  // a complete tuple selects uniquely
  const observed=new Map(tail.selectors.map(row=>[sourceBindingKey(row),row.sha256]));
  for(const role of secondary(consumer,observed)){
@@ -109,9 +124,10 @@ test('the new consumer/CI tuples bind the actual bytes and reject any unknown ap
 });
 
 test('the canonical path/hash closure still holds and the frozen 9d02 snapshot is the published canonical',()=>{
- // 483 published rows + the new Python test + the frozen snapshot (the moving
- // canonical never lists itself).
- expect(current).toHaveLength(485);
+ // 483 published rows + the refused-caller test + the frozen 9d02 snapshot, then
+ // the immutable-input-plan test + the frozen 2406 snapshot (the moving canonical
+ // never lists itself).
+ expect(current).toHaveLength(487);
  expect(new Set(current.map(row=>row.path)).size).toBe(current.length);
  for(const row of current)expect(createHash('sha256').update(disk(row.path)).digest('hex')).toBe(row.sha256);
  const snapshot=blob('scripts/lib/independent-admission/consumer-execution-current.json');
@@ -120,7 +136,9 @@ test('the canonical path/hash closure still holds and the frozen 9d02 snapshot i
  expect((published.canonical as {rows:number}).rows).toBe(483);
  const added=current.slice(483).map(row=>row.path);
  expect(added).toEqual(['qlever/tests/test_sdk_refused_caller_diagnostic.py',
-  'scripts/lib/independent-admission/consumer-execution-9d02b2d-snapshot.json']);
+  'scripts/lib/independent-admission/consumer-execution-9d02b2d-snapshot.json',
+  'qlever/tests/test_sdk_lease_input_plan.py',
+  'scripts/lib/independent-admission/consumer-execution-2406eac-snapshot.json']);
  expect(current.slice(0,483).map(row=>digest(row))).not.toEqual([]);
  // the published 483 row paths are all retained exactly once
  const live=new Set(current.map(row=>row.path));
@@ -144,6 +162,8 @@ test('published consumer binding rows are unchanged and the two new rows are exa
  }
  // the canonical snapshot + the new test are the ONLY registration rows added.
  const added=current.slice(483).map(row=>row.path).sort();
- expect(added).toEqual(['qlever/tests/test_sdk_refused_caller_diagnostic.py',
+ expect(added).toEqual(['qlever/tests/test_sdk_lease_input_plan.py',
+  'qlever/tests/test_sdk_refused_caller_diagnostic.py',
+  'scripts/lib/independent-admission/consumer-execution-2406eac-snapshot.json',
   'scripts/lib/independent-admission/consumer-execution-9d02b2d-snapshot.json']);
 });

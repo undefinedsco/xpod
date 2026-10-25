@@ -11,9 +11,9 @@ import {CONSUMER_SOURCE_GROUPS as consumer,CI_CONSUMER_SOURCE_GROUPS as ci} from
 import {sourceBindingKey as key,secondaryGitHubSourceBindingSelectors as secondary,selectGitHubSourceBindingGroup as select} from '../../scripts/lib/independent-admission/github-source-binding-groups';
 const sha=(bytes:string|Buffer)=>createHash('sha256').update(bytes).digest('hex');
 test('API18 preserves all SDK31 complete historical groups and binds actual runtime closure',()=>{
- const groups={api,sdk,consumer,ci};expect([api.length,sdk.length,consumer.length,ci.length]).toEqual([28,73,88,174]);
+ const groups={api,sdk,consumer,ci};expect([api.length,sdk.length,consumer.length,ci.length]).toEqual([28,74,89,176]);
  for(const name of Object.keys(groups) as (keyof typeof groups)[])for(let i=0;i<historical.groups[name].length;i++)expect(sha(JSON.stringify(groups[name][i]))).toBe(historical.groups[name][i]!);
- const root=fileURLToPath(new URL('../../',import.meta.url));expect(current.length).toBe(485);expect(API_SERVICE_BUILD_SOURCE_BINDINGS.length).toBe(81);
+ const root=fileURLToPath(new URL('../../',import.meta.url));expect(current.length).toBe(487);expect(API_SERVICE_BUILD_SOURCE_BINDINGS.length).toBe(81);
  for(const row of [...current,...API_SERVICE_BUILD_SOURCE_BINDINGS])expect(sha(readFileSync(join(root,row.path)))).toBe(row.sha256);
 });
 // Keep every historical tuple and missing-role assertion in its own bounded test.

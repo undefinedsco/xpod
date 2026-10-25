@@ -1875,9 +1875,29 @@ const NEXT_SDK_GROUP:GitHubSourceBindingGroup=Object.freeze({...SDK71_GROUP,
  sourceBindings:Object.freeze([...refusedCallerBindings(SDK71_GROUP.sourceBindings),
   Object.freeze({path:'qlever/tests/test_sdk_refused_caller_diagnostic.py',sha256:refusedCallerHashes['qlever/tests/test_sdk_refused_caller_diagnostic.py']!})])
 });
-/** The single published SDK catalogue, append-only: the 9d02 slice plus this one
- * genuine next tuple. */
-export const QLEVER_SDK_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...PUBLISHED_SDK_GROUPS,NEXT_SDK_GROUP]);
+const inputPlanHashes:Readonly<Record<string,string>>=Object.freeze({
+ "qlever/scripts/sdk-tool-lifetime-leases.py":"223aebb49d2e691c73e3f2006d3549676c5b79f1e219d79a2a7052602621a0f5",
+ "qlever/tests/test_sdk_lease_input_plan.py":"db01da449341fbdeeed0b90f055119c9429e83a2c8d5387dfe70fdb37ad2be56"
+});
+const inputPlanBindings=(rows:readonly GitHubSourceBinding[])=>Object.freeze(rows.map(row=>Object.freeze({...row,sha256:inputPlanHashes[row.path]??row.sha256})));
+/** The changed lease module is a source row, not a published selector, so it is
+ * PROMOTED into this new tail's secondaries. Every older candidate already owns
+ * that role in its own source bindings, which keeps historical selection exact:
+ * an old lease hash selects the old tuple, the current hash selects this one. */
+const INPUT_PLAN_LEASE_ROLE=Object.freeze({path:'qlever/scripts/sdk-tool-lifetime-leases.py',
+ sha256:inputPlanHashes['qlever/scripts/sdk-tool-lifetime-leases.py']!});
+/** Immutable-input-plan tail (APPEND-ONLY): the source change re-hashed ONLY the
+ * lease module body and added its behavioural test. Every published 2406 selector,
+ * secondary and source row keeps its own bytes; only this new tail rebinds them. */
+const INPUT_PLAN_SDK_GROUP:GitHubSourceBindingGroup=Object.freeze({...NEXT_SDK_GROUP,
+ selectors:inputPlanBindings(NEXT_SDK_GROUP.selectors),
+ secondarySelectors:Object.freeze([...inputPlanBindings(NEXT_SDK_GROUP.secondarySelectors??[]),INPUT_PLAN_LEASE_ROLE]),
+ sourceBindings:Object.freeze([...inputPlanBindings(NEXT_SDK_GROUP.sourceBindings),
+  Object.freeze({path:'qlever/tests/test_sdk_lease_input_plan.py',sha256:inputPlanHashes['qlever/tests/test_sdk_lease_input_plan.py']!})])
+});
+/** The single published SDK catalogue, append-only: the 9d02 slice, the 2406
+ * refused-caller slice, and this genuine immutable-input-plan tuple. */
+export const QLEVER_SDK_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...PUBLISHED_SDK_GROUPS,NEXT_SDK_GROUP,INPUT_PLAN_SDK_GROUP]);
 export const QLEVER_LINUX_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([
  {selectors:sdkSelectors('cbedd3e2478de5e22108b6689c595a658ca891c9bd47552caec830e86f47fea8','a75c7be34b5c5fafff85c0d67d814ba1aaf14bcf5db5404a860fe3b9a11009bd'),sourceBindings:QLEVER_LINUX_SOURCE_BINDINGS.filter(row=>!['.github/workflows/publish-qlever-runtime-sdk.yml','.github/workflows/build-qlever-linux-runtime.yml'].includes(row.path))},
  ...QLEVER_SDK_EXECUTION_GROUPS,

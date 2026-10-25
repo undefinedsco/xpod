@@ -229,6 +229,13 @@ Object.freeze({...PRE_SYSCALL_DIAGNOSTIC_OBSERVER_TUPLE,
 Object.freeze({...PRE_SYSCALL_DIAGNOSTIC_OBSERVER_TUPLE,
  "qlever/scripts/sdk-ptrace-execution.py":"d17665de920f1f5b10eecb5ecf09a4257af05d6964feb6870487e37a57b6965c",
  "qlever/scripts/sdk-generated-vma-originals.py":"b5e1d095d60952005bb7820811234e33e1d03f4b29c595faa4ef3c8eb0d8a22c"} as Readonly<Record<string,string>>),
+/** Immutable-input-plan observer tuple (48th): this source change touched ONLY
+ * qlever/scripts/sdk-tool-lifetime-leases.py, so just that role is re-hashed.
+ * Appended, never rebound: the published 47-tuple prefix stays byte-identical. */
+Object.freeze({...PRE_SYSCALL_DIAGNOSTIC_OBSERVER_TUPLE,
+ "qlever/scripts/sdk-ptrace-execution.py":"d17665de920f1f5b10eecb5ecf09a4257af05d6964feb6870487e37a57b6965c",
+ "qlever/scripts/sdk-tool-lifetime-leases.py":"223aebb49d2e691c73e3f2006d3549676c5b79f1e219d79a2a7052602621a0f5",
+ "qlever/scripts/sdk-generated-vma-originals.py":"b5e1d095d60952005bb7820811234e33e1d03f4b29c595faa4ef3c8eb0d8a22c"} as Readonly<Record<string,string>>),
 ]);
 
 
