@@ -535,6 +535,59 @@ describe('MatrixHandler', () => {
     expect(result.body()).toEqual({ errcode, error: message });
   });
 
+  it.each([
+    [Object.assign(new Error('Pod refused'), { status: 401 })],
+    [Object.assign(new Error('Pod refused'), { status: 403 })],
+    [Object.assign(new Error('Pod refused'), { statusCode: 401 })],
+    [Object.assign(new Error('Pod refused'), { statusCode: 403 })],
+    [new Error('outer', { cause: Object.assign(new Error('inner'), { status: 401 }) })],
+    [new Error('outer', { cause: new Error('inner', { cause: Object.assign(new Error('deep'), { statusCode: 403 }) }) })],
+    [new Error('Write failed for https://pods.example/alice/x.ttl: 401 Unauthorized')],
+    [new Error('Write failed for https://pods.example/alice/x.ttl: 403 Forbidden')],
+  ])('maps downstream Pod authorization failures to Matrix 403 without leaking the URL', async (error) => {
+    const store = createStore({ getAccount: vi.fn(async () => { throw error; }) });
+    const { server, routes } = createMockServer();
+    registerMatrixRoutes(server, { store, resolvePodUrl: async () => 'https://pods.example/alice/' });
+    const result = createResponse();
+    await routes['GET /_matrix/client/v3/account/whoami'].handler(createRequest('/'), result.response, {});
+
+    expect(result.response.statusCode).toBe(403);
+    const body = result.body();
+    expect(body).toMatchObject({ errcode: 'M_FORBIDDEN' });
+    expect(String((body as { error: string }).error)).toContain('Pod interface credential');
+    expect(JSON.stringify(body)).not.toContain('https://');
+    expect(JSON.stringify(body)).not.toContain('pods.example');
+    expect(JSON.stringify(body)).not.toContain('Pod refused');
+  });
+
+  it.each([
+    [new Error('request mentioned 401 in a body: not a Pod write')],
+    [new Error('Write failed for https://pods.example/alice/x.ttl: 500 Internal Server Error')],
+    [new Error('status 401 in unrelated text')],
+  ])('keeps arbitrary texts containing status-like numbers as 500', async (error) => {
+    const store = createStore({ getAccount: vi.fn(async () => { throw error; }) });
+    const { server, routes } = createMockServer();
+    registerMatrixRoutes(server, { store, resolvePodUrl: async () => 'https://pods.example/alice/' });
+    const result = createResponse();
+    await routes['GET /_matrix/client/v3/account/whoami'].handler(createRequest('/'), result.response, {});
+    expect(result.response.statusCode).toBe(500);
+    expect(result.body()).toEqual({ errcode: 'M_UNKNOWN', error: 'Internal server error' });
+  });
+
+  it('preserves the unauthenticated Matrix entry as 401, not the Pod 403', async () => {
+    const store = createStore();
+    const { server, routes } = createMockServer();
+    registerMatrixRoutes(server, { store, resolvePodUrl: async () => 'https://pods.example/alice/' });
+    const result = createResponse();
+    await routes['GET /_matrix/client/v3/account/whoami'].handler(
+      createRequest('/', undefined, { host: 'localhost' }, { type: 'node', accountId: 'alice' }),
+      result.response,
+      {},
+    );
+    expect(result.response.statusCode).toBe(401);
+    expect(result.body()).toEqual({ errcode: 'M_UNAUTHORIZED', error: 'Matrix API requires Solid WebID authentication' });
+  });
+
   it('records only whitelisted safe error fields for unknown failures', async () => {
     logFactory.memory.lines.length = 0;
     const error = Object.assign(

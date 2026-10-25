@@ -53,7 +53,7 @@ export class SolidTokenAuthenticator implements Authenticator {
     if (!scheme || !token) {
       return false;
     }
-    if (scheme !== 'Bearer' && scheme !== 'DPoP') {
+    if (!['bearer', 'dpop'].includes(scheme.toLowerCase())) {
       return false;
     }
     return this.isJwt(token.trim());
@@ -66,9 +66,14 @@ export class SolidTokenAuthenticator implements Authenticator {
     }
 
     const [scheme, rawToken] = authorization.split(' ');
+    const normalizedScheme = scheme?.toLowerCase();
+    if (!rawToken || !['bearer', 'dpop'].includes(normalizedScheme)) {
+      return { success: false, error: 'Invalid Authorization header' };
+    }
+    const canonicalAuthorization = `${normalizedScheme === 'dpop' ? 'DPoP' : 'Bearer'} ${rawToken}`;
     const dpopRaw = request.headers.dpop;
     const dpopHeader = Array.isArray(dpopRaw) ? dpopRaw[0] : dpopRaw;
-    if (scheme === 'DPoP' && !dpopHeader) {
+    if (normalizedScheme === 'dpop' && !dpopHeader?.trim()) {
       return { success: false, error: 'Missing DPoP header' };
     }
 
@@ -76,7 +81,12 @@ export class SolidTokenAuthenticator implements Authenticator {
       // Build the request URL for verification
       const method = (request.method ?? 'GET') as 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH' | 'HEAD' | 'OPTIONS';
       const url = this.buildRequestUrl(request);
-      const payload = await this.verifyRequest(authorization, dpopHeader, method, url, request);
+      const payload = await this.verifyRequest(canonicalAuthorization, dpopHeader, method, url, request);
+      // A confirmation-bound token cannot become replayable by changing its scheme.
+      const tokenType = normalizedScheme === 'dpop' || payload.cnf !== undefined ? 'DPoP' : 'Bearer';
+      if (tokenType === 'DPoP' && !dpopHeader?.trim()) {
+        return { success: false, error: 'Missing DPoP header' };
+      }
 
       const webId = this.extractWebId(payload);
       if (!webId) {
@@ -101,7 +111,7 @@ export class SolidTokenAuthenticator implements Authenticator {
         accountId,
         clientId,
         accessToken: rawToken?.trim(),
-        tokenType: scheme === 'DPoP' ? 'DPoP' : 'Bearer',
+        tokenType,
         dpopProof: dpopHeader?.trim(),
       };
 
