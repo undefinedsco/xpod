@@ -207,6 +207,12 @@ PRE_SYSCALL_DIAGNOSTIC_OBSERVER_TUPLE,
 Object.freeze({...PRE_SYSCALL_DIAGNOSTIC_OBSERVER_TUPLE,
  "qlever/scripts/sdk-ptrace-execution.py":"a9b7c09aa74c9c629cf47d78a156cbff929f985832ce50a5eeafe596c39585f6",
  "qlever/scripts/sdk-generated-vma-originals.py":"81dd4390b205a1a9a40109cf260dbfe2ad9ab7d378c4282dfa986aaf8d3604ec"} as Readonly<Record<string,string>>),
+/** 351e302e observer tuple (45th): the reviewed recent-reference hotpath change
+* re-hashed ONLY qlever/scripts/sdk-ptrace-execution.py. Appended, never rebound,
+* so the published 44-tuple prefix above stays byte-identical. */
+Object.freeze({...PRE_SYSCALL_DIAGNOSTIC_OBSERVER_TUPLE,
+ "qlever/scripts/sdk-ptrace-execution.py":"0b05a11fe6d46d5cfed7687e13036d902ad8219ab057af273894a53a5650c56f",
+ "qlever/scripts/sdk-generated-vma-originals.py":"81dd4390b205a1a9a40109cf260dbfe2ad9ab7d378c4282dfa986aaf8d3604ec"} as Readonly<Record<string,string>>),
 ]);
 
 

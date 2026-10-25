@@ -6,8 +6,8 @@ import current from'../../scripts/lib/independent-admission/consumer-execution-c
 import{sourceBindingKey as key,secondaryGitHubSourceBindingSelectors as secondary,selectGitHubSourceBindingGroup as select}from'../../scripts/lib/independent-admission/github-source-binding-groups';
 const hash=(v:unknown)=>createHash('sha256').update(JSON.stringify(v)).digest('hex');
 test('SDK34 preserves all complete historical recipes and binds only the actual reviewed identity/terminal tree',()=>{
- for(const[name,groups]of Object.entries({sdk,consumer,ci})){const prior=before[name as keyof typeof before];expect(groups.length).toBe(name==='api'?28:name==='sdk'?70:name==='ci'?168:85);for(let i=0;i<prior.length;i++)expect(hash(groups[i])).toBe(prior[i]!);}
- expect(current).toHaveLength(478);for(const row of [...current,...sdk.at(-1)!.selectors,...sdk.at(-1)!.sourceBindings])expect(createHash('sha256').update(fs.readFileSync(row.path)).digest('hex')).toBe(row.sha256);
+ for(const[name,groups]of Object.entries({sdk,consumer,ci})){const prior=before[name as keyof typeof before];expect(groups.length).toBe(name==='api'?28:name==='sdk'?71:name==='ci'?170:86);for(let i=0;i<prior.length;i++)expect(hash(groups[i])).toBe(prior[i]!);}
+ expect(current).toHaveLength(481);for(const row of [...current,...sdk.at(-1)!.selectors,...sdk.at(-1)!.sourceBindings])expect(createHash('sha256').update(fs.readFileSync(row.path)).digest('hex')).toBe(row.sha256);
  expect(fs.statSync('scripts/lib/independent-admission/consumer-observer-policy.ts').size<1024*1024).toBe(true);
 });
 // Keep the complete historical matrix; each recipe has its own bounded test.

@@ -637,7 +637,14 @@ class Observer:
             self.seq+=1;row=dict(row,sequence=self.seq,phase=self.current_phase,observedUnixNs=str(time.time_ns()),**(dict(observedMonotonicNs=str(time.monotonic_ns())) if getattr(self,'generated_vma_output',False) else {}));data=None
             if row.get('original',{}).get('storage'):
                 if row['kind']=='write-original':row['storageIdentity']=self.chunk_identity(row['original'])
-                else:assert any(capture['original']==row['original'] for capture in self.captures),'chunk reference lacks earlier write snapshot'
+                else:
+                    # Membership only. Producers append the row and return that same original,
+                    # but maps/peer captures can append more rows before the final emit, so the
+                    # live reference sits a few positions from the tail. Search a small fixed
+                    # recent window first, then fall back to the unchanged full forward scan.
+                    # 64 is a performance heuristic, not an admission/capture/role/maps bound.
+                    original=row['original'];captures=self.captures
+                    assert any(capture['original']==original for capture in captures[-64:]) or any(capture['original']==original for capture in captures),'chunk reference lacks earlier write snapshot'
             elif getattr(self,'capture_content_entities',False) and row.get('kind') in ['fd-capture','prepared-build-input-original','write-original','toolchain-original'] and 'original' in row:
                 entity=self.register_capture_entity(row['original']);assert row.get('originalEntityIdentity',entity)==entity,'physical storage identity differs';row['originalEntityIdentity']=entity
             parts=self.raw_encoder.encode(row) if getattr(self,'indexed_raw_records',False) else [(json.dumps(row,sort_keys=True)+'\n').encode()]

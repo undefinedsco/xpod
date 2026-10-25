@@ -39,6 +39,9 @@ import fbE4Groups from '../fixtures/independent-admission/e4ea-published-slice.o
  *  Linux 70 / CLI 11, helpers 31-43-34). The SDK70 append starts strictly AFTER
  *  these, and every one of those groups must keep its own exact bytes. */
 import fbFaeGroups from '../fixtures/independent-admission/fae9170b-published-slice.original.json';
+/** Immutable ab94021 published baseline (SDK 70 / consumer 85 / CI 168 / API 28 /
+ *  Linux 71 / CLI 11). The 351e302e append starts strictly AFTER these. */
+import abGroups from '../fixtures/independent-admission/ab94021-published-slice.original.json';
 import {
   CONSUMER_SOURCE_GROUPS as consumer,
   CI_CONSUMER_SOURCE_GROUPS as ci,
@@ -137,7 +140,7 @@ test('the accepted SDK823 baseline proves all 299 published whole histories', ()
     expect(groups.slice(0, published.length).map(hashValue)).toEqual(published);
   }
   // Only genuinely new, UNPUBLISHED current groups follow the 299 published ones.
-  expect([sdk.length, consumer.length, ci.length, api.length]).toEqual([70, 85, 168, 28]);
+  expect([sdk.length, consumer.length, ci.length, api.length]).toEqual([71, 86, 170, 28]);
 });
 
 test('the immutable fae9170b baseline proves its full published 69/84/166/28 prefixes', () => {
@@ -167,14 +170,16 @@ test('the immutable fae9170b baseline proves its full published 69/84/166/28 pre
 test('only the genuinely new SDK70 slice follows every published baseline', () => {
   // Exactly ONE new group per family beyond fae, and two for CI (2 recipes/slice).
   expect([sdk.length, consumer.length, ci.length, api.length, linuxGroups.length, CLI_SOURCE_VERSION_GROUPS.length])
-    .toEqual([70, 85, 168, 28, 71, 11]);
+    .toEqual([71, 86, 170, 28, 72, 11]);
+  // Two appends since fae: the ab94021 slice and the 351e302e slice. Each adds one
+  // per family and two for CI (2 recipes/slice), so the cumulative delta is 2/2/4/2.
   expect([sdk.length - fbFaeGroups.published.sdk, consumer.length - fbFaeGroups.published.consumer,
     ci.length - fbFaeGroups.published.ci, linuxGroups.length - fbFaeGroups.published.linux])
-    .toEqual([1, 1, 2, 1]);
+    .toEqual([2, 2, 4, 2]);
 });
 
 test('the appended groups bind the actual frozen body and real module bytes', () => {
-  expect(sha(read(BODY))).toBe('a9b7c09aa74c9c629cf47d78a156cbff929f985832ce50a5eeafe596c39585f6');
+  expect(sha(read(BODY))).toBe('0b05a11fe6d46d5cfed7687e13036d902ad8219ab057af273894a53a5650c56f');
   for (const [name, groups] of Object.entries(families)) {
     // slice boundary = the IMMUTABLE 42807 published counts (SDK 66 incl the c1a170 body).
     // Every index below it is published and legitimately keeps its own bytes; only groups
@@ -183,7 +188,9 @@ test('the appended groups bind the actual frozen body and real module bytes', ()
     // fae9170b is the current published boundary (SDK 69 / consumer 84 / CI 166).
     // Every group at or below it keeps its own frozen bytes; only groups AFTER
     // it are the fresh SDK70 slice bound to live bytes.
-    const published = (fbFaeGroups.published as Record<string, number>)[name]!;
+    // ab94021 is the now-published boundary; every group at or below it keeps its
+    // frozen bytes and only groups AFTER it are the fresh 351e302e slice.
+    const published = (abGroups.published as Record<string, number>)[name]!;
     for (const group of groups.slice(published)) {
       for (const row of rows(group)) {
         if ((row as any).ref === 'run-head') continue; // binds the CI run's own bytes
@@ -226,8 +233,8 @@ test('the frozen published canonical keeps its exact 426 rows and accepted bytes
 });
 
 test('the live canonical binds every actual row of the final combined tree', () => {
-  expect(current.length).toBe(478);
-  expect(new Set(current.map((r) => r.path)).size).toBe(478);
+  expect(current.length).toBe(481);
+  expect(new Set(current.map((r) => r.path)).size).toBe(481);
   // The genuinely new roles of this slice: the corrected SDK inner producer and
   // the CI-discovered Ninja regression that now runs under `test_qlever*`.
   expect(current.find((r) => r.path === 'qlever/scripts/sdk-inner-materials.py')!.sha256)
@@ -236,7 +243,7 @@ test('the live canonical binds every actual row of the final combined tree', () 
     .toBe('474fb14d45835438d222abe89e606fa17e0c68f8fafed7d4e3c869bb7d9d3a7b');
   // The reviewed phase-syscall diagnostic plus its three CI-discovered tests.
   expect(current.find((r) => r.path === 'qlever/scripts/sdk-ptrace-execution.py')!.sha256)
-    .toBe('a9b7c09aa74c9c629cf47d78a156cbff929f985832ce50a5eeafe596c39585f6');
+    .toBe('0b05a11fe6d46d5cfed7687e13036d902ad8219ab057af273894a53a5650c56f');
   // The final reviewed VMA diagnostic and its root-corrected behavioural test.
   expect(current.find((r) => r.path === 'qlever/scripts/sdk-generated-vma-originals.py')!.sha256)
     .toBe('81dd4390b205a1a9a40109cf260dbfe2ad9ab7d378c4282dfa986aaf8d3604ec');
@@ -249,7 +256,7 @@ test('the live canonical binds every actual row of the final combined tree', () 
   ] as const) expect(current.find((r) => r.path === p)!.sha256).toBe(h);
   for (const row of current) expect(sha(read(row.path))).toBe(row.sha256);
   const body = current.find((r) => r.path === BODY)!;
-  expect(body.sha256).toBe('a9b7c09aa74c9c629cf47d78a156cbff929f985832ce50a5eeafe596c39585f6');
+  expect(body.sha256).toBe('0b05a11fe6d46d5cfed7687e13036d902ad8219ab057af273894a53a5650c56f');
   expect(current.find((r) => r.path === 'qlever/scripts/sdk-original-chunk-store.py')!.sha256)
     .toBe('d53ea1e6c8e8a270c3290d095e800596b7afa42c6b5135153dbb42db0bf2e43e');
 });
@@ -257,7 +264,7 @@ test('the live canonical binds every actual row of the final combined tree', () 
 test('helper tuples retain the e4 published histories and current role bytes', () => {
   const tables = [
     ['qlever-sdk-generation.ts', 'REVIEWED_CONTROLLER_HELPER_GROUPS_CURRENT', 'controller', 32],
-    ['qlever-sdk-generation.ts', 'REVIEWED_OBSERVER_GROUPS', 'observer', 44],
+    ['qlever-sdk-generation.ts', 'REVIEWED_OBSERVER_GROUPS', 'observer', 45],
     ['qlever-sdk-fetchcontent.ts', 'REVIEWED_HELPER_GROUPS_CURRENT', 'fetch', 35],
   ] as const;
   for (const [file, name, family, count] of tables) {
@@ -276,9 +283,10 @@ test('helper tuples retain the e4 published histories and current role bytes', (
     }
   }
   // The native-sweep observer tuple follows the 42 published tuples; the reviewed
-  // phase-syscall diagnostic then appends exactly one more (44 total).
+  // phase-syscall diagnostic then appended the 44th, and the 351e302e hotpath
+  // re-hash appends a 45th rather than rebinding the published one.
   const observer = recipes('qlever-sdk-generation.ts', 'REVIEWED_OBSERVER_GROUPS');
-  expect(observer).toHaveLength(44);
+  expect(observer).toHaveLength(45);
 });
 
 test('every group still selects itself uniquely and refuses missing/mixed roles', () => {
@@ -308,7 +316,7 @@ test('the SDK69 slice carries the published helper prefixes and its own new memb
   // secondary selectors and the source bindings of the CURRENT slice, while every
   // published helper tuple keeps its own prefix.
   const helpers = recipes('qlever-sdk-generation.ts', 'REVIEWED_OBSERVER_GROUPS');
-  expect(helpers.length).toBe(44);
+  expect(helpers.length).toBe(45);
   const current = sdk.at(-1)!;
   const sec = current.secondarySelectors ?? [];
   expect(sec.length).toBe(17);
