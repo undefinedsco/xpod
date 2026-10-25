@@ -100,7 +100,7 @@ import { RdfSearchReconciliationRepository } from '../../search/RdfSearchReconci
 import { RdfSearchReconciliationWorker } from '../service/RdfSearchReconciliationWorker';
 import { ApiServer } from '../ApiServer';
 import { ChatKitService, PodChatKitStore, VercelAiProvider } from '../chatkit';
-import { PodMatrixStore } from '../matrix';
+import { createMatrixStorageVerifier, PodMatrixStore, SqlMatrixRoomDirectory } from '../matrix';
 import { ClientReconcilerCoordinator, ServerGroupReconcilerService } from '../reconciler';
 import { InngestRunExecutionBackend } from '../runs/InngestRunExecutionBackend';
 import { PiAgentRuntimeDriver } from '../runs/PiAgentRuntimeDriver';
@@ -732,11 +732,16 @@ export function registerCommonServices(
       });
     }).singleton(),
 
-    matrixStore: asFunction(({ db, ownerPodAccess, serverGroupReconcilerService }: ApiContainerCradle) => {
+    matrixStore: asFunction(({ db, ownerPodAccess, podLookupRepo, serverGroupReconcilerService }: ApiContainerCradle) => {
       return new PodMatrixStore({
         serverGroupReconcilerService,
         podAccess: ownerPodAccess,
         journal: new SqlMatrixEventJournal(db),
+        // Reference directory shares the identity DB so it survives restarts.
+        // Verification uses persisted Pod ownership, never a caller-supplied address.
+        directory: new SqlMatrixRoomDirectory(db,
+          podLookupRepo ? createMatrixStorageVerifier(podLookupRepo) : undefined),
+        ...(podLookupRepo ? { verifyStorage: createMatrixStorageVerifier(podLookupRepo) } : {}),
         serverName: (() => {
           try {
             return new URL(process.env.CSS_BASE_URL ?? '').host || undefined;
