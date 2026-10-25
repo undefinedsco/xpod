@@ -294,6 +294,94 @@ def fdpath(pid,fd):
     try:return os.readlink('/proc/'+str(pid)+'/fd/'+str(fd))
     except FileNotFoundError:return None
 
+REFUSED_CALLER_MAX_PATH=512
+REFUSED_CALLER_MAPS_LIMIT=65536
+
+def refused_caller_snapshot(pid,record,check=None):
+    """Bounded diagnostic provenance for an executable-memory refusal.
+
+    Everything here is PROVENANCE ONLY, captured at the fatal stop. It is never
+    authority for held bytes, and it is never evidence that a mapping permission
+    holds: the maps line is a single non-atomic sample that may overlap the target
+    range, may cover only part of it, and may already be stale.
+
+    Bounded by construction: six integer args already present on the record, one
+    readlink plus one stat of /proc/<pid>/exe, and ONE maps read capped at
+    REFUSED_CALLER_MAPS_LIMIT bytes returning at most one overlapping line.
+
+    Unreadable optional inputs become an explicit 'unavailable' tag; they never
+    permit resume and never mask the caller's ValueError.
+    """
+    def clipped(value):
+        if not isinstance(value,str):return None
+        raw=value.encode('utf-8','surrogatepass')
+        return value if len(raw)<=REFUSED_CALLER_MAX_PATH else raw[:REFUSED_CALLER_MAX_PATH].decode('utf-8','replace')+'...'
+
+    args=record.get('args')
+    snapshot=dict(arch=int(record['arch']),nr=int(record['nr']),
+                  syscallArgs=[int(a) for a in args[:6]] if isinstance(args,(list,tuple)) else None,
+                  syscallArgsComplete=isinstance(args,(list,tuple)) and len(args)>=6,
+                  executable=None,executableIdentity=None,
+                  executableSource='unavailable',mappingSample=None,mappingSampleSource='unavailable',
+                  mappingSampleIsPermissionProof=False,mappingSampleIsAtomic=False)
+    directory=None
+    try:
+        if check is not None:check()
+        directory=os.open('/proc/'+str(pid),os.O_RDONLY|os.O_DIRECTORY|os.O_CLOEXEC)
+        raw=os.readlink('exe',dir_fd=directory)
+        info=os.stat('exe',dir_fd=directory,follow_symlinks=True)
+        snapshot.update(executable=clipped(raw),
+                        executableIdentity=[info.st_dev,info.st_ino,info.st_mode,
+                                            info.st_size,info.st_mtime_ns,info.st_ctime_ns],
+                        executableSource='stop-time /proc executable read+stat; diagnostic provenance, not held-byte authority')
+    except TimeoutError:
+        raise                       # a real owned deadline must never be swallowed
+    except OSError:
+        snapshot['executableSource']='unavailable'
+    finally:
+        if directory is not None:
+            try:os.close(directory)
+            except TimeoutError:raise
+            except OSError:pass
+    address=None
+    length=None
+    if snapshot['syscallArgsComplete']:
+        address=snapshot['syscallArgs'][0];length=snapshot['syscallArgs'][1]
+    try:
+        if check is not None:check()
+        source=os.open('/proc/'+str(pid)+'/maps',os.O_RDONLY|os.O_CLOEXEC)
+        try:raw=os.read(source,REFUSED_CALLER_MAPS_LIMIT)
+        finally:os.close(source)
+        snapshot.update(mappingSample=_overlapping_maps_line(raw,address,length),
+                        mappingSampleSource='single bounded /proc/<pid>/maps prefix; overlapping line only, NOT a range permission proof')
+    except TimeoutError:
+        raise                       # a real owned deadline must never be swallowed
+    except OSError:
+        snapshot['mappingSampleSource']='unavailable'
+    return snapshot
+
+def _overlapping_maps_line(raw,address,length):
+    """At most ONE maps line that overlaps [address,address+length).
+
+    Explicitly non-atomic and explicitly not a permission proof: the caller may
+    have already been refused, the sample may cover only part of the range, and a
+    truncated prefix may hide the true mapping entirely.
+    """
+    if address is None:return None
+    end=address+(length or 0)
+    for line in raw.split(b'\n'):
+        parts=line.split(None,5)
+        if len(parts)<2 or b'-' not in parts[0]:continue
+        try:low,high=[int(x,16) for x in parts[0].split(b'-',1)]
+        except ValueError:continue
+        if low<=address<high or (end and low<end and address<high):
+            path=parts[5].decode('utf-8','replace').strip() if len(parts)>5 else ''
+            return dict(range=parts[0].decode('ascii','replace'),
+                        permissions=parts[1].decode('ascii','replace'),
+                        path=(path.encode('utf-8')[:REFUSED_CALLER_MAX_PATH].decode('utf-8','replace') if path else None),
+                        overlap='contains-address' if low<=address<high else 'overlaps-range-only')
+    return None
+
 def descriptor_fields(pid,fd,*,flags=True,position=True):
     """One actual /proc/<pid>/fdinfo/<fd> read for the requested numeric fields.
 
@@ -1303,7 +1391,10 @@ class Observer:
             self.emit(dict(kind='executable-memory-write-fd',model=memory_policy.MODEL,pid=pid,entrySequence=record['sequence'],fd=descriptor,target=target))
         if reason:
             self.emit(dict(kind='executable-memory-refused',model=memory_policy.MODEL,pid=pid,entrySequence=record['sequence'],reason=reason))
-            print('SDK_EXECUTABLE_MEMORY_REFUSED '+json.dumps(dict(arch=record['arch'],nr=record['nr'],pid=pid,entrySequence=record['sequence'],reason=reason),sort_keys=True,separators=(',',':')),file=sys.stderr,flush=True)
+            # Diagnostic provenance ONLY on the existing fatal refusal branch. The
+            # retained raw event row above and the raised error below are unchanged.
+            refusedCaller=refused_caller_snapshot(pid,record,self.check)
+            print('SDK_EXECUTABLE_MEMORY_REFUSED '+json.dumps(dict(arch=record['arch'],nr=record['nr'],pid=pid,entrySequence=record['sequence'],reason=reason,refusedCaller=refusedCaller),sort_keys=True,separators=(',',':')),file=sys.stderr,flush=True)
             raise ValueError('executable memory policy refused before resume: '+reason)
 
     def lifetime_open(self,pid,path):

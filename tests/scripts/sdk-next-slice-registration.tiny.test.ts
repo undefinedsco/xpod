@@ -45,6 +45,7 @@ import abGroups from '../fixtures/independent-admission/ab94021-published-slice.
 /** Immutable ce9a85a published baseline (SDK 71 / consumer 86 / CI 170 / API 28 /
  *  Linux 72 / CLI 11). The B794 owned-window append starts strictly AFTER these. */
 import ce9Groups from '../fixtures/independent-admission/ce9a85a-published-slice.original.json';
+import n9d02Groups from '../fixtures/independent-admission/9d02b2d-published-slice.original.json';
 import {
   CONSUMER_SOURCE_GROUPS as consumer,
   CI_CONSUMER_SOURCE_GROUPS as ci,
@@ -143,7 +144,7 @@ test('the accepted SDK823 baseline proves all 299 published whole histories', ()
     expect(groups.slice(0, published.length).map(hashValue)).toEqual(published);
   }
   // Only genuinely new, UNPUBLISHED current groups follow the 299 published ones.
-  expect([sdk.length, consumer.length, ci.length, api.length]).toEqual([72, 87, 172, 28]);
+  expect([sdk.length, consumer.length, ci.length, api.length]).toEqual([73, 88, 174, 28]);
 });
 
 test('the immutable fae9170b baseline proves its full published 69/84/166/28 prefixes', () => {
@@ -173,16 +174,16 @@ test('the immutable fae9170b baseline proves its full published 69/84/166/28 pre
 test('only the genuinely new SDK70 slice follows every published baseline', () => {
   // Exactly ONE new group per family beyond fae, and two for CI (2 recipes/slice).
   expect([sdk.length, consumer.length, ci.length, api.length, linuxGroups.length, CLI_SOURCE_VERSION_GROUPS.length])
-    .toEqual([72, 87, 172, 28, 73, 11]);
+    .toEqual([73, 88, 174, 28, 74, 11]);
   // Three appends since fae: ab94021, 351e302e and the B794 owned-window
   // diagnostic. Each adds one per family and two for CI (2 recipes/slice).
   expect([sdk.length - fbFaeGroups.published.sdk, consumer.length - fbFaeGroups.published.consumer,
     ci.length - fbFaeGroups.published.ci, linuxGroups.length - fbFaeGroups.published.linux])
-    .toEqual([3, 3, 6, 3]);
+    .toEqual([4, 4, 8, 4]);
 });
 
 test('the appended groups bind the actual frozen body and real module bytes', () => {
-  expect(sha(read(BODY))).toBe('33c556a55edcec602682b2c241acc655a5c400471dad6acb876c591fcf514677');
+  expect(sha(read(BODY))).toBe('d17665de920f1f5b10eecb5ecf09a4257af05d6964feb6870487e37a57b6965c');
   for (const [name, groups] of Object.entries(families)) {
     // slice boundary = the IMMUTABLE 42807 published counts (SDK 66 incl the c1a170 body).
     // Every index below it is published and legitimately keeps its own bytes; only groups
@@ -191,9 +192,9 @@ test('the appended groups bind the actual frozen body and real module bytes', ()
     // fae9170b is the current published boundary (SDK 69 / consumer 84 / CI 166).
     // Every group at or below it keeps its own frozen bytes; only groups AFTER
     // it are the fresh SDK70 slice bound to live bytes.
-    // ce9a85a is the now-published boundary; every group at or below it keeps its
-    // frozen bytes and only groups AFTER it are the fresh B794 slice.
-    const published = (ce9Groups.published as Record<string, number>)[name]!;
+    // 9d02b2d is the now-published boundary; every group at or below it keeps
+    // its frozen bytes and only groups AFTER it are the fresh refused-caller slice.
+    const published = (n9d02Groups.published as Record<string, number>)[name]!;
     for (const group of groups.slice(published)) {
       for (const row of rows(group)) {
         if ((row as any).ref === 'run-head') continue; // binds the CI run's own bytes
@@ -214,7 +215,9 @@ test('the appended SDK recipe carries the published typed service contracts', ()
   // two additional workflows bind their exact on-disk bytes.
   expect(last.outerExecutor.workflowSha256).toBe(sha(read('.github/workflows/publish-qlever-runtime-sdk.yml')));
   for (const caller of last.outerExecutor.additionalWorkflows) expect(caller.sha256).toBe(sha(read(caller.path)));
-  expect(last.outerExecutor).not.toEqual((sdk.at(-2) as any).outerExecutor);
+  // This slice re-binds only the observer body: the outer executor is the same
+  // reviewed caller set, so it must be byte-identical to the published 9d02 tail.
+  expect(last.outerExecutor).toEqual((sdk.at(-2) as any).outerExecutor);
 });
 
 test('published f6 recipes resolve the immutable snapshot, never the rewritten live file', () => {
@@ -241,8 +244,8 @@ test('the frozen published canonical keeps its exact 426 rows and accepted bytes
 });
 
 test('the live canonical binds every actual row of the final combined tree', () => {
-  expect(current.length).toBe(483);
-  expect(new Set(current.map((r) => r.path)).size).toBe(483);
+  expect(current.length).toBe(485);
+  expect(new Set(current.map((r) => r.path)).size).toBe(485);
   // The genuinely new roles of this slice: the corrected SDK inner producer and
   // the CI-discovered Ninja regression that now runs under `test_qlever*`.
   expect(current.find((r) => r.path === 'qlever/scripts/sdk-inner-materials.py')!.sha256)
@@ -251,7 +254,7 @@ test('the live canonical binds every actual row of the final combined tree', () 
     .toBe('474fb14d45835438d222abe89e606fa17e0c68f8fafed7d4e3c869bb7d9d3a7b');
   // The reviewed phase-syscall diagnostic plus its three CI-discovered tests.
   expect(current.find((r) => r.path === 'qlever/scripts/sdk-ptrace-execution.py')!.sha256)
-    .toBe('33c556a55edcec602682b2c241acc655a5c400471dad6acb876c591fcf514677');
+    .toBe('d17665de920f1f5b10eecb5ecf09a4257af05d6964feb6870487e37a57b6965c');
   // The final reviewed VMA diagnostic and its root-corrected behavioural test.
   expect(current.find((r) => r.path === 'qlever/scripts/sdk-generated-vma-originals.py')!.sha256)
     .toBe('b5e1d095d60952005bb7820811234e33e1d03f4b29c595faa4ef3c8eb0d8a22c');
@@ -264,7 +267,7 @@ test('the live canonical binds every actual row of the final combined tree', () 
   ] as const) expect(current.find((r) => r.path === p)!.sha256).toBe(h);
   for (const row of current) expect(sha(read(row.path))).toBe(row.sha256);
   const body = current.find((r) => r.path === BODY)!;
-  expect(body.sha256).toBe('33c556a55edcec602682b2c241acc655a5c400471dad6acb876c591fcf514677');
+  expect(body.sha256).toBe('d17665de920f1f5b10eecb5ecf09a4257af05d6964feb6870487e37a57b6965c');
   expect(current.find((r) => r.path === 'qlever/scripts/sdk-original-chunk-store.py')!.sha256)
     .toBe('d53ea1e6c8e8a270c3290d095e800596b7afa42c6b5135153dbb42db0bf2e43e');
 });
@@ -272,7 +275,7 @@ test('the live canonical binds every actual row of the final combined tree', () 
 test('helper tuples retain the e4 published histories and current role bytes', () => {
   const tables = [
     ['qlever-sdk-generation.ts', 'REVIEWED_CONTROLLER_HELPER_GROUPS_CURRENT', 'controller', 33],
-    ['qlever-sdk-generation.ts', 'REVIEWED_OBSERVER_GROUPS', 'observer', 46],
+    ['qlever-sdk-generation.ts', 'REVIEWED_OBSERVER_GROUPS', 'observer', 47],
     ['qlever-sdk-fetchcontent.ts', 'REVIEWED_HELPER_GROUPS_CURRENT', 'fetch', 36],
   ] as const;
   for (const [file, name, family, count] of tables) {
@@ -294,7 +297,7 @@ test('helper tuples retain the e4 published histories and current role bytes', (
   // phase-syscall diagnostic then appended the 44th, and the 351e302e hotpath
   // re-hash appends a 45th rather than rebinding the published one.
   const observer = recipes('qlever-sdk-generation.ts', 'REVIEWED_OBSERVER_GROUPS');
-  expect(observer).toHaveLength(46);
+  expect(observer).toHaveLength(47);
 });
 
 test('every group still selects itself uniquely and refuses missing/mixed roles', () => {
@@ -324,13 +327,15 @@ test('the SDK69 slice carries the published helper prefixes and its own new memb
   // secondary selectors and the source bindings of the CURRENT slice, while every
   // published helper tuple keeps its own prefix.
   const helpers = recipes('qlever-sdk-generation.ts', 'REVIEWED_OBSERVER_GROUPS');
-  expect(helpers.length).toBe(46);
+  expect(helpers.length).toBe(47);
   const current = sdk.at(-1)!;
   const sec = current.secondarySelectors ?? [];
   expect(sec.length).toBeGreaterThanOrEqual(17);
-  // 129 published + 1 newly registered owned-window diagnostic test in the B794 tail.
-  expect(current.sourceBindings.length).toBe(130);
+  // 130 published rows (incl. the owned-window diagnostic test) + the newly
+  // registered refused-caller diagnostic test in this tail.
+  expect(current.sourceBindings.length).toBe(131);
   expect(current.sourceBindings.some(r => r.path === 'qlever/tests/test_qlever_owned_window_diagnostic.py')).toBe(true);
+  expect(current.sourceBindings.some(r => r.path === 'qlever/tests/test_sdk_refused_caller_diagnostic.py')).toBe(true);
   const newRoles = [
     'qlever/scripts/cmake_file_api.py',
     'qlever/scripts/link_command_adapter.py',

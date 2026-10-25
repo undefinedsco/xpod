@@ -223,6 +223,12 @@ Object.freeze({...PRE_SYSCALL_DIAGNOSTIC_OBSERVER_TUPLE,
 Object.freeze({...PRE_SYSCALL_DIAGNOSTIC_OBSERVER_TUPLE,
  "qlever/scripts/sdk-ptrace-execution.py":"33c556a55edcec602682b2c241acc655a5c400471dad6acb876c591fcf514677",
  "qlever/scripts/sdk-generated-vma-originals.py":"b5e1d095d60952005bb7820811234e33e1d03f4b29c595faa4ef3c8eb0d8a22c"} as Readonly<Record<string,string>>),
+/** Refused-caller diagnostic tuple (47th): root's single fatal-STDERR ctypes
+ * provenance line changes ONLY the ptrace observer body. Appended, never
+ * rebound, so the published 46-tuple prefix above stays byte-identical. */
+Object.freeze({...PRE_SYSCALL_DIAGNOSTIC_OBSERVER_TUPLE,
+ "qlever/scripts/sdk-ptrace-execution.py":"d17665de920f1f5b10eecb5ecf09a4257af05d6964feb6870487e37a57b6965c",
+ "qlever/scripts/sdk-generated-vma-originals.py":"b5e1d095d60952005bb7820811234e33e1d03f4b29c595faa4ef3c8eb0d8a22c"} as Readonly<Record<string,string>>),
 ]);
 
 
