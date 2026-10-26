@@ -613,5 +613,163 @@ class ArchiveChainTests(TemporaryTreeTests):
         self.assertEqual(scanner.observe(self.archive(payload), plan)['phaseTracking'][0]['phase'], 'configure')
 
 
+class SnapshotTelemetryTest(unittest.TestCase):
+    """Out-of-band scalar counters must survive a real timeout DURING fsync.
+
+    The production deadline is a SIGALRM inside os.fsync. These tests inject the
+    same TimeoutError object at the same call site instead of arming a timer, then
+    assert (a) identity of the propagated exception, (b) the counters are exactly
+    those at the failure point, and (c) rollback/published state did not change.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix='telemetry-', dir=ROOT / '.test-data')
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.data = self.root / 'root'
+        self.data.mkdir()
+
+    def _source(self, chunks):
+        source = self.root / ('source-%d.bin' % chunks)
+        fd = os.open(source, os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600)
+        self.addCleanup(os.close, fd)
+        payload = b''.join(bytes([65 + i]) * store.CHUNK_SIZE for i in range(chunks))
+        write_all(fd, payload)
+        os.fsync(fd)
+        return fd, payload
+
+    def _published(self):
+        chunks = sorted(p.name for p in (self.data / 'chunks').iterdir()) if (self.data / 'chunks').is_dir() else []
+        manifests = sorted(p.name for p in (self.data / 'manifests').iterdir()) if (self.data / 'manifests').is_dir() else []
+        txns = sorted(p.name for p in self.data.iterdir() if p.name.startswith('.txn-'))
+        return dict(chunks=chunks, manifests=manifests, txns=txns)
+
+    def test_fresh_and_existing_counts_are_unchanged_and_reported(self):
+        fd, _ = self._source(16)
+        telemetry = {}
+        store.snapshot(self.data, fd, 0, store.Ledger(10_000_000), telemetry=telemetry)
+        self.assertEqual(telemetry['stage'], 'done')
+        self.assertFalse(telemetry['failed'])
+        self.assertEqual(telemetry['chunks'], 16)
+        self.assertEqual(telemetry['newChunks'], 16)
+        self.assertEqual(telemetry['reusedChunks'], 0)
+        self.assertEqual(telemetry['newChunkBytes'], 16 * store.CHUNK_SIZE)
+        self.assertEqual(telemetry['stageFsyncStarted'], 16 + 1)   # 16 chunks + manifest
+        self.assertEqual(telemetry['stageFsyncCompleted'], 16 + 1)
+        self.assertEqual(telemetry['dirFsyncStarted'], 2)          # chunks/ + manifests/
+        self.assertEqual(telemetry['dirFsyncCompleted'], 2)
+        self.assertGreater(telemetry['manifestBytes'], 0)
+
+        # The pre-existing durability counts must be byte-for-byte unchanged.
+        real_fsync = store.os.fsync
+        seen = []
+        store.os.fsync = lambda target: (seen.append(1), real_fsync(target))[1]
+        try:
+            store.snapshot(self.data, fd, 1, store.Ledger(10_000_000), telemetry=telemetry)
+        finally:
+            store.os.fsync = real_fsync
+        self.assertEqual(len(seen), 3, 'existing snapshot durability unchanged: manifest + 2 dirs')
+        self.assertEqual(telemetry['stageFsyncStarted'], 1)
+        self.assertEqual(telemetry['stageFsyncCompleted'], 1)
+        self.assertEqual(telemetry['newChunks'], 0)
+        self.assertEqual(telemetry['reusedChunks'], 16)
+
+    def test_manifest_fsync_timeout_keeps_exact_counters_and_propagates_same_object(self):
+        fd, _ = self._source(8)
+        sentinel = TimeoutError('actual owned child observation deadline')
+        real_fsync = store.os.fsync
+        telemetry = {}
+        state = {'manifest_stage': False}
+
+        def tripwire(target):
+            # inside the private staging dir: this is the manifest staging inode
+            if state['manifest_stage']:
+                raise sentinel
+            return real_fsync(target)
+
+        real_stage_file = store._stage_file
+
+        def stage_file(txn_fd, name, data, telemetry=None):
+            state['manifest_stage'] = True
+            try:
+                return real_stage_file(txn_fd, name, data, telemetry)
+            finally:
+                state['manifest_stage'] = False
+
+        store.os.fsync = tripwire
+        store._stage_file = stage_file
+        try:
+            with self.assertRaises(TimeoutError) as caught:
+                store.snapshot(self.data, fd, 0, store.Ledger(10_000_000), telemetry=telemetry)
+        finally:
+            store.os.fsync = real_fsync
+            store._stage_file = real_stage_file
+
+        self.assertIs(caught.exception, sentinel, 'the same TimeoutError object must propagate')
+        self.assertTrue(telemetry['failed'])
+        self.assertEqual(telemetry['errorKind'], 'TimeoutError')
+        self.assertEqual(telemetry['stage'], 'stage-manifest')
+        # exact counters AT the failed manifest fsync
+        self.assertEqual(telemetry['sourceBytes'], 8 * store.CHUNK_SIZE)
+        self.assertEqual(telemetry['chunks'], 8)
+        self.assertEqual(telemetry['newChunks'], 8)
+        self.assertEqual(telemetry['stageFsyncStarted'], 8 + 1)  # 8 chunk flushes + 1 manifest start
+        self.assertEqual(telemetry['stageFsyncCompleted'], 8)    # the manifest one did NOT complete
+        self.assertEqual(telemetry['dirFsyncStarted'], 1)         # only chunks/ has been synced so far
+        self.assertEqual(telemetry['dirFsyncCompleted'], 1)
+        self.assertGreater(telemetry['manifestBytes'], 0)
+        # no published partial state, and no staging directory left behind
+        self.assertEqual(self._published(), dict(chunks=[], manifests=[], txns=[]))
+
+    def test_chunk_fsync_timeout_is_also_reported(self):
+        fd, _ = self._source(4)
+        sentinel = TimeoutError('actual owned child observation deadline')
+        real_fsync = store.os.fsync
+        telemetry = {}
+        calls = [0]
+
+        def tripwire(target):
+            calls[0] += 1
+            if calls[0] == 3:      # a per-chunk staging flush, not the manifest
+                raise sentinel
+            return real_fsync(target)
+
+        store.os.fsync = tripwire
+        try:
+            with self.assertRaises(TimeoutError) as caught:
+                store.snapshot(self.data, fd, 0, store.Ledger(10_000_000), telemetry=telemetry)
+        finally:
+            store.os.fsync = real_fsync
+        self.assertIs(caught.exception, sentinel)
+        self.assertEqual(telemetry['stage'], 'flush')
+        self.assertEqual(telemetry['stageFsyncStarted'], 3)
+        self.assertEqual(telemetry['stageFsyncCompleted'], 2)
+        self.assertEqual(telemetry['errorKind'], 'TimeoutError')
+        self.assertEqual(self._published(), dict(chunks=[], manifests=[], txns=[]))
+
+    def test_bounded_projection_drops_content_and_foreign_keys(self):
+        telemetry = {
+            'stage': 'stage-manifest', 'sourceBytes': 7, 'chunks': 1,
+            'failed': True, 'errorKind': 'TimeoutError',
+            'path': '/etc/passwd', 'sha256': 'a' * 64, 'data': b'secret',
+            'query': 'SELECT *', 'token': 'credential',
+            'chunksList': [{'sha256': 'b' * 64}],
+        }
+        row = store.bounded_snapshot_telemetry(telemetry)
+        self.assertEqual(set(row) - {'model'}, {
+            'stage', 'sourceBytes', 'chunks', 'failed', 'errorKind'})
+        for banned in ('path', 'sha256', 'data', 'query', 'token', 'chunksList'):
+            self.assertNotIn(banned, row)
+        self.assertNotIn('/etc/passwd', json.dumps(row))
+        self.assertIsNone(store.bounded_snapshot_telemetry(None))
+        self.assertIsNone(store.bounded_snapshot_telemetry(['not', 'a', 'dict']))
+
+    def test_telemetry_absent_path_matches_old_signature(self):
+        fd, payload = self._source(2)
+        result = store.snapshot(self.data, fd, 0, store.Ledger(10_000_000))
+        self.assertEqual(set(result), {'path', 'bytes', 'sha256'})
+        self.assertEqual(b''.join(store.blocks(self.data, result)), payload)
+
+
 if __name__ == '__main__':
     unittest.main()

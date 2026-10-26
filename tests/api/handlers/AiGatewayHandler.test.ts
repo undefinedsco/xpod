@@ -19,6 +19,7 @@ import { ProviderRuntimeRegistry } from '../../../src/api/ai-gateway/providers/P
 import { InMemorySessionAffinityStore } from '../../../src/api/ai-gateway/routing/InMemorySessionAffinityStore';
 import { ModelRouter } from '../../../src/api/ai-gateway/routing/ModelRouter';
 import { encodePlaintextCredential } from '../../../src/api/ai-gateway/credentials/PlaintextCredentialPayload';
+import { DeploymentBuiltinConnection } from '../../../src/api/ai-gateway/builtin/DeploymentBuiltinConnection';
 import type { GatewayEvent } from '../../../src/api/ai-gateway/types';
 import type { AuthenticatedRequest } from '../../../src/api/middleware/AuthMiddleware';
 import type { ApiServer } from '../../../src/api/ApiServer';
@@ -178,6 +179,8 @@ function createFixture(options: {
   includeDeepSeek?: boolean;
   onAbort?: () => void;
   acceptanceEndpointsEnabled?: boolean;
+  builtin?: boolean;
+  podListFailure?: Error;
 } = {}) {
   const registry = createDefaultProviderRegistry();
   const events = options.events ?? [
@@ -241,7 +244,10 @@ function createFixture(options: {
     secretPayload: secretPayload('sk-other'),
   }] : [];
   const store: GatewayCredentialStore = {
-    listCredentials: vi.fn(async({ webId }) => webId === WEB_ID ? credentials : otherCredentials),
+    listCredentials: vi.fn(async({ webId }) => {
+      if (options.podListFailure) throw options.podListFailure;
+      return webId === WEB_ID ? credentials : otherCredentials;
+    }),
     recordSuccess: vi.fn(async() => {}),
     recordFailure: vi.fn(async() => {}),
   };
@@ -277,8 +283,10 @@ function createFixture(options: {
   const runtimes = {
     get: vi.fn(() => runtime),
   } as unknown as ProviderRuntimeRegistry;
+  const builtinFetch = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) =>
+    Response.json({ id: 'builtin', object: 'response', choices: [] }));
   const service = new AiGatewayService({
-    deployment: 'local',
+    deployment: options.builtin ? 'cloud' : 'local',
     registry,
     router: new ModelRouter({
       registry,
@@ -299,13 +307,19 @@ function createFixture(options: {
       open: vi.fn(async () => { throw new Error('plaintext credential should bypass vault'); }),
     },
     runtimes,
+    ...(options.builtin ? {
+      builtin: new DeploymentBuiltinConnection(
+        { apiBase: 'http://ai-gateway/v1', apiKey: 'deployment-key-SENTINEL', modelMap: {} },
+        { fetch: builtinFetch as never },
+      ),
+    } : {}),
   });
   const { server, routes } = createServer();
   registerAiGatewayRoutes(server, {
     service,
     acceptanceEndpointsEnabled: options.acceptanceEndpointsEnabled,
   });
-  return { routes, service, store, runtime, runtimes };
+  return { routes, service, store, runtime, runtimes, builtinFetch };
 }
 
 async function callRoute(routes: Record<string, Function>, methodAndPath: string, req: AuthenticatedRequest): Promise<any> {
@@ -465,6 +479,87 @@ describe('AiGatewayHandler task failure diagnostics', () => {
     expect(receipts(logs)).toEqual([expect.objectContaining({ callerHTTPstatus: 500, code: 'internal_error' })]);
     expect(receipts(logs)[0]).not.toHaveProperty('underlyingErrorStatus');
     expect(JSON.stringify(receipts(logs))).not.toContain('private-error');
+  });
+});
+
+describe('AiGatewayHandler deployment built-ins', () => {
+  afterEach(() => resetInternalLoggerFactory());
+
+  it('serves /v1/models for a verified DPoP caller whose Pod is unreadable', async () => {
+    const { routes } = createFixture({
+      builtin: true,
+      podListFailure: Object.assign(new Error('fetch failed https://pod.example/alice/?token=SENTINEL'), { code: 'ENOTFOUND' }),
+    });
+    const res = await callRoute(routes, 'GET /v1/models', request('/v1/models', undefined, {
+      type: 'solid', webId: WEB_ID, tokenType: 'DPoP', accessToken: 'dpop-token', dpopProof: 'proof',
+    }));
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body).data.map((model: any) => `${model.id}:${model.owned_by}`)).toEqual([
+      'linx:xpod-builtin', 'linx-lite:xpod-builtin',
+    ]);
+  });
+
+  it.each([
+    ['/v1/chat/completions', { messages: [{ role: 'user', content: 'hello' }] }],
+    ['/v1/responses', { input: 'hello' }],
+  ])('completes %s JSON on the deployment route without the Pod router', async (path, body) => {
+    const { routes, runtime, builtinFetch } = createFixture({ builtin: true });
+    builtinFetch.mockResolvedValueOnce(Response.json({ id: 'builtin-json', object: 'response', choices: [] }));
+    const res = await callRoute(routes, `POST ${path}`, request(path, { model: 'linx', ...body }, {
+      type: 'solid', webId: WEB_ID, tokenType: 'DPoP', accessToken: 'dpop-token', dpopProof: 'proof',
+    }));
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body).id).toBe('builtin-json');
+    expect(runtime.execute).not.toHaveBeenCalled();
+    const init = builtinFetch.mock.calls[0]?.[1] as RequestInit;
+    expect(new Headers(init.headers).get('authorization')).toContain('Bearer deployment-key');
+  });
+
+  it('streams a real Responses transcript through the deployment route without the Pod runtime', async () => {
+    const { routes, runtime, builtinFetch } = createFixture({ builtin: true });
+    builtinFetch.mockResolvedValueOnce(new Response([
+      'event: response.created',
+      'data: {"type":"response.created","response":{"id":"resp_builtin"}}',
+      '',
+      'event: response.output_text.delta',
+      'data: {"type":"response.output_text.delta","delta":"real-answer"}',
+      '',
+      'event: response.completed',
+      'data: {"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":4,"output_tokens":2,"total_tokens":6}}}',
+      '',
+      '',
+    ].join('\n'), { headers: { 'content-type': 'text/event-stream' } }));
+    const res = await callRoute(routes, 'POST /v1/responses', request('/v1/responses', {
+      model: 'linx-lite', stream: true, input: 'hello',
+    }, {
+      type: 'solid', webId: WEB_ID, tokenType: 'DPoP', accessToken: 'dpop-token', dpopProof: 'proof',
+    }));
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['content-type']).toContain('text/event-stream');
+    expect(res.body).toContain('data: {"type":"response.created","response":{"id":"resp_builtin"}}');
+    expect(res.body).toContain('"delta":"real-answer"');
+    expect(res.body).toContain('"type":"response.usage"');
+    expect(res.body).toContain('"type":"response.completed"');
+    expect(res.body.trim().endsWith('data: [DONE]')).toBe(true);
+    expect(runtime.execute).not.toHaveBeenCalled();
+  });
+
+  it('fails a deployment-owned Responses stream that reports response.failed without leaking the key', async () => {
+    const { routes, builtinFetch } = createFixture({ builtin: true });
+    const secret = 'deployment-key-SENTINEL';
+    builtinFetch.mockResolvedValueOnce(new Response(
+      'data: {"type":"response.created","response":{"id":"resp_failed"}}\n\n'
+      + `data: {"type":"response.failed","response":{"error":{"type":"invalid_request_error","message":"Incorrect API key provided: ${secret}","code":"invalid_api_key"}}}\n\n`,
+      { headers: { 'content-type': 'text/event-stream' } },
+    ));
+    const res = await callRoute(routes, 'POST /v1/responses', request('/v1/responses', {
+      model: 'linx', stream: true, input: 'hello',
+    }, {
+      type: 'solid', webId: WEB_ID, tokenType: 'DPoP', accessToken: 'dpop-token', dpopProof: 'proof',
+    }));
+    expect(res.body).not.toContain(secret);
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toContain('Deployment model stream failed');
   });
 });
 

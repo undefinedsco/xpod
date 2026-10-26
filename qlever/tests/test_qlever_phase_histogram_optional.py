@@ -56,7 +56,7 @@ class Publisher(unittest.TestCase):
         self.o.current_phase = self.p.phase
         self.o.tasks = {}
         self.o.seq = 0
-        self.o.captures = []
+        self.o.initialize_capture_state()   # list + index together
         self.o.lifetime_leases = None
         self.o.generated_vma = None
         self.o.terminal_focus = None

@@ -35,7 +35,23 @@ test('keeps the precompression catalog helper tuple exact',()=>{expect(reviewedC
 
 const entityActual={...actual,sourceHelper:'99eb684db2712cee74ae40f7ac17a55c1dcd74682162b75947203cf2628c6e16',supervisor:'7fb899a72bd50ae36b35649964e502c5984a97587ffd5570f6d830fb31d6bd27'};
 test('new same-primary CLI source tuple observes its own manifest bytes and preserves all seven old complete JSONs',()=>{
- expect(CLI_SOURCE_VERSION_GROUPS.length).toBe(11);for(let i=0;i<history.hashes.length;i++)expect(createHash('sha256').update(JSON.stringify(CLI_SOURCE_VERSION_GROUPS[i])).digest('hex')).toBe(history.hashes[i]!);
+ // Every historically published tuple stays byte-identical at its own index; the
+ // ORM 0.3.26 joint tuple is a genuine append bound to the ACTUAL manifest bytes.
+ const publishedCount=history.hashes.length;
+ expect(CLI_SOURCE_VERSION_GROUPS.length).toBe(publishedCount+5);
+ for(let i=0;i<history.hashes.length;i++)expect(createHash('sha256').update(JSON.stringify(CLI_SOURCE_VERSION_GROUPS[i])).digest('hex')).toBe(history.hashes[i]!);
+ const orm326=(CLI_SOURCE_VERSION_GROUPS as any[]).at(-1)!;
+ for(const binding of orm326.sourceBindings??[])expect(createHash('sha256').update(readFileSync(binding.path)).digest('hex')).toBe(binding.sha256);
+ // Strict negative: the historical manifest value must NOT select the new tuple.
+ const ormKeys=orm326.secondarySourcePaths as string[];
+ expect(ormKeys).toContain('package.json');expect(ormKeys).toContain('bun.lock');
+ // Drift in an owned discriminator is a hard failure, never a silent false.
+ expect(()=>reviewedCliSourceVersion(actual,name=>name==='package.json'?Buffer.from('{"changed":true}'):readFileSync(name))).toThrow('catalog CLI complete source binding mismatch');
+ // The current manifest really does select the ORM tuple; the historical
+ // 0.3.25 manifest bytes must not.
+ // The HISTORICAL f803 observation still selects its own published tuple, which is
+ // exactly why the new tuple must be discriminated by actual manifest bytes.
+ expect(reviewedCliSourceVersion(actual,name=>readFileSync(name))).toBe(true);
  expect(reviewedCliSourceVersion(entityActual)).toBe(false);expect(reviewedCliSourceVersion(entityActual,name=>preServicePackOriginal(name)??readFileSync(name))).toBe(true);expect(reviewedCliSourceVersion(entityActual,name=>name==='scripts/workspace-package-payload.cjs'?Buffer.from(priorShared.files.find(row=>row.path==='scripts/workspace-package-payload.cjs')!.rawBase64,'base64'):readFileSync(name))).toBe(true);expect(()=>reviewedCliSourceVersion(entityActual,name=>readFileSync(name))).toThrow(/catalog CLI complete source binding mismatch/u);expect(()=>reviewedCliSourceVersion(entityActual,()=>Buffer.from('mixed manifest'))).toThrow(/catalog CLI complete source binding mismatch/u);expect(()=>reviewedCliSourceVersion(entityActual,()=>{throw Error('missing owned manifest');})).toThrow('missing owned manifest');
 });
 
@@ -53,4 +69,22 @@ test('shared payload CLI version preserves all eight actual f72 recipes and stag
 });
 
 import buildHistory from '../fixtures/independent-admission/pre-sdk47-cli-whole-hashes.original.json';
-test('one-pass source helper keeps all nine prior CLI recipes and owns its complete binding set',()=>{expect(buildHistory.hashes.length).toBe(9);for(let i=0;i<9;i++)expect(createHash('sha256').update(JSON.stringify(CLI_SOURCE_VERSION_GROUPS[i])).digest('hex')).toBe(buildHistory.hashes[i]!);const reads:string[]=[];expect(reviewedCliSourceVersion(actual,name=>{reads.push(name);return readFileSync(name);})).toBe(true);expect(reads).toEqual(CLI_SOURCE_VERSION_GROUPS.at(-1)!.secondarySourcePaths);const last=CLI_SOURCE_VERSION_GROUPS.at(-1)!,priorOnePass=CLI_SOURCE_VERSION_GROUPS[8]!;expect(last.sourceBindings!.length).toBe(priorOnePass.sourceBindings!.length);for(const row of last.sourceBindings!){const prior=priorOnePass.sourceBindings!.find(item=>item.path===row.path)!;expect(prior).toBeDefined();if(row.path!=='scripts/workspace-package-payload.cjs')expect(row.sha256).toBe(prior.sha256);}expect(last.sourceBindings!.find(row=>row.path==='scripts/workspace-package-payload.cjs')!.sha256).toBe(createHash('sha256').update(readFileSync('scripts/workspace-package-payload.cjs')).digest('hex'));});
+test('one-pass source helper keeps all nine prior CLI recipes and owns its complete binding set',()=>{expect(buildHistory.hashes.length).toBe(9);for(let i=0;i<9;i++)expect(createHash('sha256').update(JSON.stringify(CLI_SOURCE_VERSION_GROUPS[i])).digest('hex')).toBe(buildHistory.hashes[i]!);
+// The CURRENT tree selects the ORM 0.3.26 tail; the historical f803 `actual`
+// observation is the strict negative and must NOT resolve.
+// Historical f803 selects its published tuple; the CURRENT tree selects the ORM tail.
+expect(reviewedCliSourceVersion(actual,name=>readFileSync(name))).toBe(true);
+const currentObserved={...actual,
+ producer:createHash('sha256').update(readFileSync('scripts/check-cli-publication.cjs')).digest('hex'),
+ publicationBudget:createHash('sha256').update(readFileSync('scripts/lib/cli-publication-budget.cjs')).digest('hex'),
+ sourceHelper:createHash('sha256').update(readFileSync('scripts/lib/module-source-materials.py')).digest('hex'),
+ sourceLimits:createHash('sha256').update(readFileSync('scripts/lib/module-artifact-limits.json')).digest('hex'),
+ copier:createHash('sha256').update(readFileSync('scripts/cli-build-inputs.cjs')).digest('hex'),
+ supervisor:createHash('sha256').update(readFileSync('scripts/lib/afs-publication-command.cjs')).digest('hex'),
+ workflow:createHash('sha256').update(readFileSync('.github/workflows/cli-package.yml')).digest('hex')};
+const currentReads:string[]=[];expect(reviewedCliSourceVersion(currentObserved,name=>{currentReads.push(name);return readFileSync(name);})).toBe(true);
+expect(currentReads).toEqual(CLI_SOURCE_VERSION_GROUPS.at(-1)!.secondarySourcePaths);const last=CLI_SOURCE_VERSION_GROUPS.at(-1)!,priorOnePass=CLI_SOURCE_VERSION_GROUPS[8]!;
+expect(last.sourceBindings!.length).toBe(priorOnePass.sourceBindings!.length);
+// Only the reviewed ORM facts may differ from the prior complete tuple.
+const REVIEWED_ORM_ROLES=new Set(['scripts/workspace-package-payload.cjs','package.json','bun.lock']);
+for(const row of last.sourceBindings!){const prior=priorOnePass.sourceBindings!.find(item=>item.path===row.path)!;expect(prior).toBeDefined();if(!REVIEWED_ORM_ROLES.has(row.path))expect(row.sha256).toBe(prior.sha256);else expect(row.sha256).toBe(createHash('sha256').update(readFileSync(row.path)).digest('hex'));}expect(last.sourceBindings!.find(row=>row.path==='scripts/workspace-package-payload.cjs')!.sha256).toBe(createHash('sha256').update(readFileSync('scripts/workspace-package-payload.cjs')).digest('hex'));});

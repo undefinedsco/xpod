@@ -26,6 +26,10 @@ class Clock:
 
 def observer(clock,deadline=5000.0,phase='configure'):
  obj=object.__new__(backend.Observer)
+ # object.__new__ skips __init__, so initialise the ONE capture resource through
+ # the genuine production factory (ordered list + membership index together)
+ # instead of hand-copying part of the state.
+ obj.initialize_capture_state()
  obj.current_phase=phase;obj.tasks={};obj.seq=0;obj.exclusive=None;obj.terminal_focus=None
  obj.generated_vma=None;obj.lifetime_leases=None;obj.deadline=deadline
  obj._phase_progress=backend.PhaseProgress(phase,deadline,now=clock)
@@ -245,7 +249,8 @@ class PendingCaptureSubstepTest(unittest.TestCase):
             'checkpoint_appends','observe_tool_stop','capture_bti_pending',
             'capture_clone3_pending','close_terminal_authorities',
             'barrier_before_capture',
-            'generated_vma_finish','generated_vma_finish_emit'}
+            'generated_vma_finish','generated_vma_finish_emit',
+            'generated_vma_snapshot','generated_vma_remap'}
   self.assertEqual(set(backend.PENDING_CAPTURE_SUBSTEPS),expected)
   self.assertEqual(len(backend.PENDING_CAPTURE_SUBSTEPS),len(expected))
 

@@ -24,6 +24,15 @@ export const REGISTRY_LEGAL_ORIGINAL_LIMITS = Object.freeze(registryOriginalLimi
 export const VERIFIER_REGISTRY_ORIGINAL_PACKAGES = Object.freeze(['jose', '@inrupt/solid-client-authn-core',
   '@inrupt/solid-client-authn-browser', 'oidc-provider', '@undefineds.co/drizzle-solid', '@solid/community-server'] as const);
 const scope = new Set<string>(VERIFIER_REGISTRY_ORIGINAL_PACKAGES);
+/** Append-only actual published SRI for exact verifier-scope coordinates.
+ * 0.3.25 stays the historical publication; 0.3.26 is the joint publication.
+ * Both are byte-identical patches but distinct official tars/SRI, so a lock is
+ * never allowed to relabel one as the other. Coordinates outside this table
+ * (the remaining scope packages) stay bound to the immutable lock alone. */
+export const VERIFIER_REGISTRY_ORIGINAL_SRI: Readonly<Record<string, string>> = Object.freeze({
+  '@undefineds.co/drizzle-solid@0.3.25': 'sha512-hwcEOHJhzyQ+0l9G0lqUxkeTJNeC5Y/Q72S+cF7fkKidCxxX79o9WB9L3Hzk6UvtUfBjxtINyQ1yDv6d3pv1aw==',
+  '@undefineds.co/drizzle-solid@0.3.26': 'sha512-x51lhiVpNmLcky4G66pF32WdR9vRfSse9ZufKe3CmD+5/Fi4L7f6x75E8V4SokR9AHUNTYCbccldeTtxHRSkqw==',
+});
 /** Program-side representation roles share one validator and one issuer.
  * Held build originals use existing module bounds; online legal acquisition
  * retains its original smaller package/group policy without a caller override. */
@@ -440,13 +449,17 @@ export async function observeCandidateServiceRetainedBuildDependencyOriginal(inp
 async function acquireRegistryOriginal(owner: object, source: DerivedSourceView, name: string, version: string, parent?:(ServiceRegistryAcquisitionBudget&{reservationOwner?:object})): Promise<object> {
   if (!source.trackedPaths.includes('bun.lock')) fail('immutable Bun lock required');
   const lockBytes = source.readTracked('bun.lock');
-  const integrity = registryLegalLockEntries(lockBytes).get(name + '@' + version);
+  const key = name + '@' + version;
+  const integrity = registryLegalLockEntries(lockBytes).get(key);
   if (!integrity) fail('immutable registry SRI missing');
+  // A reviewed public coordinate is bound to its actual published SRI here, at
+  // the sole issuer, so no caller path can accept a relabelled 25/26 payload.
+  const reviewed = VERIFIER_REGISTRY_ORIGINAL_SRI[key];
+  if (reviewed !== undefined && integrity !== reviewed) fail('reviewed verifier registry SRI differs:' + key);
   const policy = REGISTRY_LEGAL_ORIGINAL_LIMITS;
   const group = groups.get(owner) ?? { started: Date.now(), attempts: 0, packed: 0, expanded: 0, active: false, caps: new Map<string, object>() };
   groups.set(owner, group);
   const checkParent=()=>{if(parent){parent.check();if(!Number.isFinite(parent.remainingMs())||parent.remainingMs()<=0)fail('inherited service acquisition deadline exhausted');}};checkParent();
-  const key = name + '@' + version;
   const existing = group.caps.get(key); if (existing) return existing;
   if (group.active || group.attempts >= policy.groupAttempts || group.packed >= policy.groupPackedBytes || group.expanded >= policy.groupExpandedBytes || Date.now() - group.started >= policy.groupTimeoutMs) fail('artifact group budget exhausted or acquisition already active; original admission pending');
   group.attempts++; group.active = true;

@@ -183,7 +183,15 @@ const REVIEWED_CONTROLLER_HELPER_GROUPS_NEXT:readonly(readonly(readonly[string,s
 * unchanged, plus ONE appended fresh 10-role tuple carrying the actual bytes. */
 const REVIEWED_CONTROLLER_HELPER_GROUPS_CURRENT:readonly(readonly(readonly[string,string])[])[]=Object.freeze([
 ...REVIEWED_CONTROLLER_HELPER_GROUPS_NEXT,Object.freeze([["sdk-zip-originals.py","56f5ec76344b82b5e8242508208b5635663c037b2b915013e23b91c8ccdc3e17"],["sdk-generation-multiprocess-bindings.py","868e0963eb03ea92398a197ba66ca8a30dba24b8f239b1d3c766d4e136f650f4"],["sdk-execution-originals-util.py","bb3e3d40403034e82f42c9243659deeab74c74484c77267ab9a41537caf89bff"],["sdk-generated-source-originals.py","9c5dc796e9eb7df74cbfd0a81a3353d3664edb8cc885338c5160d3fa43a52bb4"],["sdk-tool-provider-originals.py","2b786463648dfa924977224feb281b7e3fae552d1e331c7c2749ce133103317a"],["sdk-generated-vma-originals.py","bb6dfdb6d1ade387230553dd6f2663bdcfabbcfc6853f581846629ba955486c4"],["sdk-coordinated-wait.py","8901250ae8a3bfb023a05e0f239a39dc83a11787c9c00f2dd64577cd95c68182"],["sdk-original-chunk-store.py","d53ea1e6c8e8a270c3290d095e800596b7afa42c6b5135153dbb42db0bf2e43e"],["sdk-raw-wire-reader.py","caa95365bc480eec4990d0c1f09d14327e87620d5939b53120db6179a9722a41"],["sdk-executable-memory-policy.py","2b0e64d55c28ab995d2385f4b4a0852c838d029b3111c813fb7fd837d95a2f9c"]] as const),
-Object.freeze([["sdk-zip-originals.py","56f5ec76344b82b5e8242508208b5635663c037b2b915013e23b91c8ccdc3e17"],["sdk-generation-multiprocess-bindings.py","868e0963eb03ea92398a197ba66ca8a30dba24b8f239b1d3c766d4e136f650f4"],["sdk-execution-originals-util.py","bb3e3d40403034e82f42c9243659deeab74c74484c77267ab9a41537caf89bff"],["sdk-generated-source-originals.py","9c5dc796e9eb7df74cbfd0a81a3353d3664edb8cc885338c5160d3fa43a52bb4"],["sdk-tool-provider-originals.py","2b786463648dfa924977224feb281b7e3fae552d1e331c7c2749ce133103317a"],["sdk-generated-vma-originals.py","81dd4390b205a1a9a40109cf260dbfe2ad9ab7d378c4282dfa986aaf8d3604ec"],["sdk-coordinated-wait.py","8901250ae8a3bfb023a05e0f239a39dc83a11787c9c00f2dd64577cd95c68182"],["sdk-original-chunk-store.py","d53ea1e6c8e8a270c3290d095e800596b7afa42c6b5135153dbb42db0bf2e43e"],["sdk-raw-wire-reader.py","caa95365bc480eec4990d0c1f09d14327e87620d5939b53120db6179a9722a41"],["sdk-executable-memory-policy.py","2b0e64d55c28ab995d2385f4b4a0852c838d029b3111c813fb7fd837d95a2f9c"]] as const)]);
+Object.freeze([["sdk-zip-originals.py","56f5ec76344b82b5e8242508208b5635663c037b2b915013e23b91c8ccdc3e17"],["sdk-generation-multiprocess-bindings.py","868e0963eb03ea92398a197ba66ca8a30dba24b8f239b1d3c766d4e136f650f4"],["sdk-execution-originals-util.py","bb3e3d40403034e82f42c9243659deeab74c74484c77267ab9a41537caf89bff"],["sdk-generated-source-originals.py","9c5dc796e9eb7df74cbfd0a81a3353d3664edb8cc885338c5160d3fa43a52bb4"],["sdk-tool-provider-originals.py","2b786463648dfa924977224feb281b7e3fae552d1e331c7c2749ce133103317a"],["sdk-generated-vma-originals.py","81dd4390b205a1a9a40109cf260dbfe2ad9ab7d378c4282dfa986aaf8d3604ec"],["sdk-coordinated-wait.py","8901250ae8a3bfb023a05e0f239a39dc83a11787c9c00f2dd64577cd95c68182"],["sdk-original-chunk-store.py","d53ea1e6c8e8a270c3290d095e800596b7afa42c6b5135153dbb42db0bf2e43e"],["sdk-raw-wire-reader.py","caa95365bc480eec4990d0c1f09d14327e87620d5939b53120db6179a9722a41"],["sdk-executable-memory-policy.py","2b0e64d55c28ab995d2385f4b4a0852c838d029b3111c813fb7fd837d95a2f9c"]] as const),
+/** B794 controller tuple (append-only, never a rebind): only the owned-window
+* diagnostic v2 re-hashed sdk-generated-vma-originals.py; the published
+* 32-tuple prefix above stays byte-identical. */
+Object.freeze([["sdk-zip-originals.py","56f5ec76344b82b5e8242508208b5635663c037b2b915013e23b91c8ccdc3e17"],["sdk-generation-multiprocess-bindings.py","868e0963eb03ea92398a197ba66ca8a30dba24b8f239b1d3c766d4e136f650f4"],["sdk-execution-originals-util.py","bb3e3d40403034e82f42c9243659deeab74c74484c77267ab9a41537caf89bff"],["sdk-generated-source-originals.py","9c5dc796e9eb7df74cbfd0a81a3353d3664edb8cc885338c5160d3fa43a52bb4"],["sdk-tool-provider-originals.py","2b786463648dfa924977224feb281b7e3fae552d1e331c7c2749ce133103317a"],["sdk-generated-vma-originals.py","b5e1d095d60952005bb7820811234e33e1d03f4b29c595faa4ef3c8eb0d8a22c"],["sdk-coordinated-wait.py","8901250ae8a3bfb023a05e0f239a39dc83a11787c9c00f2dd64577cd95c68182"],["sdk-original-chunk-store.py","d53ea1e6c8e8a270c3290d095e800596b7afa42c6b5135153dbb42db0bf2e43e"],["sdk-raw-wire-reader.py","caa95365bc480eec4990d0c1f09d14327e87620d5939b53120db6179a9722a41"],["sdk-executable-memory-policy.py","2b0e64d55c28ab995d2385f4b4a0852c838d029b3111c813fb7fd837d95a2f9c"]] as const),
+/** SDK19 failure-telemetry controller tuple (34th): the frozen slice re-hashed the
+* coordinated-wait caller and the original chunk store; every earlier published
+* helper tuple keeps its own bytes. Appended, never rebound. */
+Object.freeze([["sdk-zip-originals.py","56f5ec76344b82b5e8242508208b5635663c037b2b915013e23b91c8ccdc3e17"],["sdk-generation-multiprocess-bindings.py","adcd3a8ffdbcbe0925e199757db4fd95489c86a69f9a0b31fa7d555f5fcc7bc1"],["sdk-execution-originals-util.py","bb3e3d40403034e82f42c9243659deeab74c74484c77267ab9a41537caf89bff"],["sdk-generated-source-originals.py","9c5dc796e9eb7df74cbfd0a81a3353d3664edb8cc885338c5160d3fa43a52bb4"],["sdk-tool-provider-originals.py","2b786463648dfa924977224feb281b7e3fae552d1e331c7c2749ce133103317a"],["sdk-generated-vma-originals.py","b5e1d095d60952005bb7820811234e33e1d03f4b29c595faa4ef3c8eb0d8a22c"],["sdk-coordinated-wait.py","778fdaad5802df943c8e7e96e4de79a32845508947c9ae436e742248b2e7aa1a"],["sdk-original-chunk-store.py","67ea1a610f15f74288d623694b1a4886a82b0f29a186c40e69bdd232b39f96db"],["sdk-raw-wire-reader.py","caa95365bc480eec4990d0c1f09d14327e87620d5939b53120db6179a9722a41"],["sdk-executable-memory-policy.py","ae0c241805d4d72a89103a21fe224a29138df4c8c63de55128b107d92c6e7724"]] as const)]);
 
 const PRE_ROWS_DIAGNOSTIC_OBSERVER_GROUPS:readonly Readonly<Record<string,string>>[]=Object.freeze([...PRE_ROWS_DIAGNOSTIC_REVIEWED_OBSERVER_GROUPS,Object.freeze({"qlever/scripts/sdk-ptrace-execution.py":"d6e4fff348a74be70ffa999b7efa6cf49d9486e724087afe29f8e9dc232fe1f9","qlever/scripts/sdk-ptrace-kernel.py":"730265e9329551a8eebc922edea1e71bb21be32fd205098b5784693235b789d2","qlever/scripts/sdk-execution-originals-util.py":"bb3e3d40403034e82f42c9243659deeab74c74484c77267ab9a41537caf89bff","qlever/scripts/sdk-blocking-owned-wait.py":"8c16b0953312613f792a4cdac51f87c6b554f7b9a28315268e0b7f02fbf3ed99","qlever/scripts/sdk-generation-multiprocess-bindings.py":"1cc352b8df3d1c9eb6b164257c58efe448acd0c0db19815691e2b83237cfb64d","qlever/scripts/sdk-tool-provider-originals.py":"2b786463648dfa924977224feb281b7e3fae552d1e331c7c2749ce133103317a","qlever/scripts/sdk-generated-vma-originals.py":"69085c6b3d963636d7df8600b36bf9336eb8d4e59a04da0982a935b2c708d324","qlever/scripts/sdk-coordinated-wait.py":"66404e23ce92900034cb113b9fcbc6ec63ace7557d2429c16e1c8e2cb5dca51a","qlever/scripts/sdk-original-chunk-store.py":"5bf42b4fa31b99d36d118e74e7b724ad7d7e74d211a2e3ac5e5bac66d366e8a7","qlever/scripts/sdk-raw-wire-codec.py":"6249a3305c45954f991d702cb159daab6ae413104332cd169717df43d6303f80","qlever/scripts/sdk-raw-wire-reader.py":"caa95365bc480eec4990d0c1f09d14327e87620d5939b53120db6179a9722a41","qlever/scripts/sdk-tool-lifetime-leases.py":"4c01049922f5c086475554ed6c179d3e86dd73bdb4263371a32d9be2372cc410","qlever/scripts/sdk-executable-memory-policy.py":"6462e64eb8bcffd9d91d56f4bf7588c867d242782eda55f636c51f9a0a2ee170"})]);
 /** clone3 thread mode observer row with the three actually rehashed helpers. */
@@ -207,6 +215,100 @@ PRE_SYSCALL_DIAGNOSTIC_OBSERVER_TUPLE,
 Object.freeze({...PRE_SYSCALL_DIAGNOSTIC_OBSERVER_TUPLE,
  "qlever/scripts/sdk-ptrace-execution.py":"a9b7c09aa74c9c629cf47d78a156cbff929f985832ce50a5eeafe596c39585f6",
  "qlever/scripts/sdk-generated-vma-originals.py":"81dd4390b205a1a9a40109cf260dbfe2ad9ab7d378c4282dfa986aaf8d3604ec"} as Readonly<Record<string,string>>),
+/** 351e302e observer tuple (45th): the reviewed recent-reference hotpath change
+* re-hashed ONLY qlever/scripts/sdk-ptrace-execution.py. Appended, never rebound,
+* so the published 44-tuple prefix above stays byte-identical. */
+Object.freeze({...PRE_SYSCALL_DIAGNOSTIC_OBSERVER_TUPLE,
+ "qlever/scripts/sdk-ptrace-execution.py":"0b05a11fe6d46d5cfed7687e13036d902ad8219ab057af273894a53a5650c56f",
+ "qlever/scripts/sdk-generated-vma-originals.py":"81dd4390b205a1a9a40109cf260dbfe2ad9ab7d378c4282dfa986aaf8d3604ec"} as Readonly<Record<string,string>>),
+/** B794 observer tuple (46th): the owned-window diagnostic v2 re-hashed BOTH
+* observer bodies. Appended, never rebound, so the published 45-tuple prefix
+* above stays byte-identical. */
+Object.freeze({...PRE_SYSCALL_DIAGNOSTIC_OBSERVER_TUPLE,
+ "qlever/scripts/sdk-ptrace-execution.py":"33c556a55edcec602682b2c241acc655a5c400471dad6acb876c591fcf514677",
+ "qlever/scripts/sdk-generated-vma-originals.py":"b5e1d095d60952005bb7820811234e33e1d03f4b29c595faa4ef3c8eb0d8a22c"} as Readonly<Record<string,string>>),
+/** Refused-caller diagnostic tuple (47th): root's single fatal-STDERR ctypes
+ * provenance line changes ONLY the ptrace observer body. Appended, never
+ * rebound, so the published 46-tuple prefix above stays byte-identical. */
+Object.freeze({...PRE_SYSCALL_DIAGNOSTIC_OBSERVER_TUPLE,
+ "qlever/scripts/sdk-ptrace-execution.py":"d17665de920f1f5b10eecb5ecf09a4257af05d6964feb6870487e37a57b6965c",
+ "qlever/scripts/sdk-generated-vma-originals.py":"b5e1d095d60952005bb7820811234e33e1d03f4b29c595faa4ef3c8eb0d8a22c"} as Readonly<Record<string,string>>),
+/** Immutable-input-plan observer tuple (48th): this source change touched ONLY
+ * qlever/scripts/sdk-tool-lifetime-leases.py, so just that role is re-hashed.
+ * Appended, never rebound: the published 47-tuple prefix stays byte-identical. */
+Object.freeze({...PRE_SYSCALL_DIAGNOSTIC_OBSERVER_TUPLE,
+ "qlever/scripts/sdk-ptrace-execution.py":"d17665de920f1f5b10eecb5ecf09a4257af05d6964feb6870487e37a57b6965c",
+ "qlever/scripts/sdk-tool-lifetime-leases.py":"223aebb49d2e691c73e3f2006d3549676c5b79f1e219d79a2a7052602621a0f5",
+ "qlever/scripts/sdk-generated-vma-originals.py":"b5e1d095d60952005bb7820811234e33e1d03f4b29c595faa4ef3c8eb0d8a22c"} as Readonly<Record<string,string>>),
+/** CURRENT UNPUBLISHED combined tuple (49th): SDK19 failure telemetry PLUS the
+ * SDK70 private-anonymous non-executable remap capability and its replay
+ * verifier. It moves the ptrace observer, the coordinated-wait caller, the
+ * original chunk store, the generation multiprocess bindings (stopped-original
+ * ordering now uses the ACTUAL owner_capture) and the executable-memory policy.
+ * Appended, never rebound, so every one of the published 48 whole recipes above
+ * stays byte-for-byte identical. This adds a real capability; it does not
+ * restate a weaker or broader authority claim. */
+Object.freeze({...PRE_SYSCALL_DIAGNOSTIC_OBSERVER_TUPLE,
+ "qlever/scripts/sdk-ptrace-execution.py":"1af678e069d81a2fea07a0652b14382e2bc3b1917bab5f5eeeb8db78d4bb4a9f",
+ "qlever/scripts/sdk-coordinated-wait.py":"778fdaad5802df943c8e7e96e4de79a32845508947c9ae436e742248b2e7aa1a",
+ "qlever/scripts/sdk-original-chunk-store.py":"67ea1a610f15f74288d623694b1a4886a82b0f29a186c40e69bdd232b39f96db",
+ "qlever/scripts/sdk-generation-multiprocess-bindings.py":"adcd3a8ffdbcbe0925e199757db4fd95489c86a69f9a0b31fa7d555f5fcc7bc1",
+ "qlever/scripts/sdk-executable-memory-policy.py":"ae0c241805d4d72a89103a21fe224a29138df4c8c63de55128b107d92c6e7724",
+ "qlever/scripts/sdk-tool-lifetime-leases.py":"223aebb49d2e691c73e3f2006d3549676c5b79f1e219d79a2a7052602621a0f5",
+ "qlever/scripts/sdk-generated-vma-originals.py":"b5e1d095d60952005bb7820811234e33e1d03f4b29c595faa4ef3c8eb0d8a22c"} as Readonly<Record<string,string>>),
+/** Current observer tuple: capture-reference indexing, opaque child setup
+ * diagnostics, and deferred remap proof after a barrier settles. All 49
+ * published tuples above retain their exact values. */
+Object.freeze({...PRE_SYSCALL_DIAGNOSTIC_OBSERVER_TUPLE,
+ "qlever/scripts/sdk-ptrace-execution.py":"703fe49a1cb083fc78a69eddd43891a8696fac3d44f148f33110f8a448c6db39",
+ "qlever/scripts/sdk-coordinated-wait.py":"778fdaad5802df943c8e7e96e4de79a32845508947c9ae436e742248b2e7aa1a",
+ "qlever/scripts/sdk-original-chunk-store.py":"67ea1a610f15f74288d623694b1a4886a82b0f29a186c40e69bdd232b39f96db",
+ "qlever/scripts/sdk-generation-multiprocess-bindings.py":"adcd3a8ffdbcbe0925e199757db4fd95489c86a69f9a0b31fa7d555f5fcc7bc1",
+ "qlever/scripts/sdk-executable-memory-policy.py":"ae0c241805d4d72a89103a21fe224a29138df4c8c63de55128b107d92c6e7724",
+ "qlever/scripts/sdk-tool-lifetime-leases.py":"223aebb49d2e691c73e3f2006d3549676c5b79f1e219d79a2a7052602621a0f5",
+ "qlever/scripts/sdk-generated-vma-originals.py":"b5e1d095d60952005bb7820811234e33e1d03f4b29c595faa4ef3c8eb0d8a22c"} as Readonly<Record<string,string>>),
+/** CURRENT UNPUBLISHED capture-init + fatal-lease-diagnostic tuple (51st).
+ *
+ * The one-time `initialize_capture_state` factory is the genuine production
+ * change (ptrace 703fe49a -> a1583c24). This tuple spreads
+ * PRE_SYSCALL_DIAGNOSTIC_OBSERVER_TUPLE and therefore re-pins SEVEN bodies:
+ * two of them were genuinely stale in that base tuple (coordinated-wait
+ * 8901250a -> 778fdaad, tool-lifetime-leases 24353373 -> 223aebba) and the
+ * other four are consistent restatements already equal to disk. It does NOT
+ * claim that seven bodies changed in this slice.
+ *
+ * All 50 tuples above are published at 71f9 and stay byte-identical. */
+Object.freeze({...PRE_SYSCALL_DIAGNOSTIC_OBSERVER_TUPLE,
+ "qlever/scripts/sdk-ptrace-execution.py":"77c9c89284cd4c155684d5b5f61c1499f92e1ed331aed62d966bc5fe057c6db8",
+ "qlever/scripts/sdk-coordinated-wait.py":"778fdaad5802df943c8e7e96e4de79a32845508947c9ae436e742248b2e7aa1a",
+ "qlever/scripts/sdk-original-chunk-store.py":"67ea1a610f15f74288d623694b1a4886a82b0f29a186c40e69bdd232b39f96db",
+ "qlever/scripts/sdk-generation-multiprocess-bindings.py":"adcd3a8ffdbcbe0925e199757db4fd95489c86a69f9a0b31fa7d555f5fcc7bc1",
+ "qlever/scripts/sdk-executable-memory-policy.py":"ae0c241805d4d72a89103a21fe224a29138df4c8c63de55128b107d92c6e7724",
+ "qlever/scripts/sdk-tool-lifetime-leases.py":"ea2d298d355cc41431ad3cd125eba2a0ec6929b99690628b5b5bcb02d93cfa83",
+ "qlever/scripts/sdk-generated-vma-originals.py":"b5e1d095d60952005bb7820811234e33e1d03f4b29c595faa4ef3c8eb0d8a22c"} as Readonly<Record<string,string>>),
+/** CURRENT UNPUBLISHED archive-lifecycle tuple (52nd): the declared archive
+ * create/append shape (`qcs`, no separate index pass) moves ONLY the ptrace
+ * observer body. All 51 tuples above are published at cbb and stay byte-identical.
+ * Source bytes only; no SDK qualification is claimed. */
+/** CURRENT UNPUBLISHED capture-init + fatal-lease-diagnostic tuple (51st).
+ *
+ * The one-time `initialize_capture_state` factory is the genuine production
+ * change (ptrace 703fe49a -> a1583c24). This tuple spreads
+ * PRE_SYSCALL_DIAGNOSTIC_OBSERVER_TUPLE and therefore re-pins SEVEN bodies:
+ * two of them were genuinely stale in that base tuple (coordinated-wait
+ * 8901250a -> 778fdaad, tool-lifetime-leases 24353373 -> 223aebba) and the
+ * other four are consistent restatements already equal to disk. It does NOT
+ * claim that seven bodies changed in this slice.
+ *
+ * All 50 tuples above are published at 71f9 and stay byte-identical. */
+Object.freeze({...PRE_SYSCALL_DIAGNOSTIC_OBSERVER_TUPLE,
+ "qlever/scripts/sdk-ptrace-execution.py":"e85c370cf26b45d911d90d8fbe99de67242d57620ec5cff6990d3e22f3e76999",
+ "qlever/scripts/sdk-coordinated-wait.py":"778fdaad5802df943c8e7e96e4de79a32845508947c9ae436e742248b2e7aa1a",
+ "qlever/scripts/sdk-original-chunk-store.py":"67ea1a610f15f74288d623694b1a4886a82b0f29a186c40e69bdd232b39f96db",
+ "qlever/scripts/sdk-generation-multiprocess-bindings.py":"adcd3a8ffdbcbe0925e199757db4fd95489c86a69f9a0b31fa7d555f5fcc7bc1",
+ "qlever/scripts/sdk-executable-memory-policy.py":"ae0c241805d4d72a89103a21fe224a29138df4c8c63de55128b107d92c6e7724",
+ "qlever/scripts/sdk-tool-lifetime-leases.py":"ea2d298d355cc41431ad3cd125eba2a0ec6929b99690628b5b5bcb02d93cfa83",
+ "qlever/scripts/sdk-generated-vma-originals.py":"b5e1d095d60952005bb7820811234e33e1d03f4b29c595faa4ef3c8eb0d8a22c"} as Readonly<Record<string,string>>),
 ]);
 
 

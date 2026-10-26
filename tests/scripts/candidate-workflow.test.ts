@@ -526,7 +526,7 @@ esac
     expect(runText).not.toContain('delete pvc -l');
     expect(runText).not.toMatch(/DROP DATABASE|CREATE DATABASE|CREATE EXTENSION|ALTER SCHEMA/);
     expect(runText.indexOf('scripts/verify-protected-rc-database.sh'))
-      .toBeLessThan(runText.indexOf('create secret generic'));
+      .toBeLessThan(runText.indexOf('create secret generic "$XPOD_RUNTIME_SECRET_NAME"'));
     expect(runText).not.toContain('kubectl rollout status deployment/xpod-inngest');
     expect(runText).toContain('node scripts/update-gateway-rc-configmap.cjs');
     expect(runText).toContain('https://id-rc.undefineds.cn/service/status');
@@ -594,13 +594,17 @@ esac
   });
 
   it.each([
+    ['postgresql://xpod_rc:fixture@xpod-rc-rdf-postgres:5432/xpod_rc', true],
+    ['postgresql://xpod_rc:fixture@xpod-rc-rdf-postgres.ns-iknkxtc8.svc.cluster.local/xpod_rc', true],
+    // The current shared-host credential is ACCEPTED and rebound to the
+    // dedicated service; the shared instance itself is never targeted.
     ['postgresql://xpod_rc:fixture@xpod-rdf-postgres:5432/xpod_rc', true],
-    ['postgresql://xpod_rc:fixture@xpod-rdf-postgres.ns-iknkxtc8.svc.cluster.local/xpod_rc', true],
-    ['postgresql://xpod_rc:fixture@xpod-rdf-postgres:5432/xpod_cn', false],
-    ['postgresql://postgres:fixture@xpod-rdf-postgres:5432/xpod_rc', false],
+    ['postgresql://xpod_rc:fixture@xpod-rc-rdf-postgres:5432/xpod_cn', false],
+    ['postgresql://xpod_rc:fixture@xpod-rc-rdf-postgres:5432/xpod_co', false],
+    ['postgresql://postgres:fixture@xpod-rc-rdf-postgres:5432/xpod_rc', false],
     ['postgresql://xpod_rc:fixture@production-postgres:5432/xpod_rc', false],
-    ['https://xpod_rc:fixture@xpod-rdf-postgres:5432/xpod_rc', false],
-  ])('validates both configured database URLs before resetting the shared RC database (%s)', async (url, allowed) => {
+    ['https://xpod_rc:fixture@xpod-rc-rdf-postgres:5432/xpod_rc', false],
+  ])('derives the RC-only database host before validating APP_ENV_FILE (%s)', async (url, allowed) => {
     const workflow = await loadWorkflow();
     const run = workflow.jobs.deploy_and_accept.steps.find((step: any) => step.name === 'Validate RC runtime secret isolation').run;
     const script = run.match(/<<'NODE'\n([\s\S]*?)\nNODE/)[1];
@@ -612,8 +616,8 @@ esac
     try {
       for (const key of ['CSS_IDENTITY_DB_URL', 'CSS_SPARQL_ENDPOINT']) {
         const entries = {
-          CSS_IDENTITY_DB_URL: 'postgresql://xpod_rc:fixture@xpod-rdf-postgres/xpod_rc',
-          CSS_SPARQL_ENDPOINT: 'postgresql://xpod_rc:fixture@xpod-rdf-postgres/xpod_rc',
+          CSS_IDENTITY_DB_URL: 'postgresql://xpod_rc:fixture@xpod-rc-rdf-postgres/xpod_rc',
+          CSS_SPARQL_ENDPOINT: 'postgresql://xpod_rc:fixture@xpod-rc-rdf-postgres/xpod_rc',
           CSS_REDIS_CLIENT: 'redis://redis:6379/1',
           CSS_MINIO_ENDPOINT: 'https://fixture.r2.cloudflarestorage.com',
           CSS_MINIO_BUCKET_NAME: 'xpod-rc', CSS_MINIO_ACCESS_KEY: 'fixture', CSS_MINIO_SECRET_KEY: 'fixture',
@@ -625,11 +629,14 @@ esac
         const runValidation = () => execFileSync(process.execPath, ['-', envPath, seedPath], {
           env: {...process.env, SEALOS_NAMESPACE: 'ns-iknkxtc8'}, input: script, stdio: 'pipe',
         });
-        if (allowed) expect(runValidation).not.toThrow();
-        else expect(runValidation).toThrow(/must use the isolated xpod_rc database and role/);
+        const failure = (() => { try { runValidation(); return ''; } catch (error: any) {
+          return String(error.stderr ?? error.message);
+        } })();
+        if (allowed) expect(failure, failure).toBe('');
+        else expect(failure).toMatch(/RC database configuration rejected|RC-only PostgreSQL/);
       }
     } finally { await rm(directory, { recursive: true, force: true }); }
-    const preflight = workflow.jobs.deploy_and_accept.steps.find((step: any) => step.name === 'Verify protected RC database without changing data').run;
+    const preflight = workflow.jobs.deploy_and_accept.steps.find((step: any) => step.name === 'Verify RC-only PostgreSQL and bootstrap without touching production').run;
     expect(preflight).toContain('scripts/verify-protected-rc-database.sh');
   });
 
@@ -1156,7 +1163,9 @@ exit "$TEST_ORIGINAL"
     expect(steps[pair].run).toContain('--source-sha "$NATIVE_SOURCE_SHA" --runner-sha256 "$runner_sha"');
     expect(steps[pair].run).toContain('umask 077');
     expect(steps[pair].run).toContain('trap cleanup_native_registry EXIT');
-    expect(steps[pair].run).toContain('--select-registry-authority');
+    expect(steps[pair].run).toContain('scripts/select-pg-registry-authority.ts');
+    expect(steps[pair].run).toContain('--current-image "$PG_REGISTRY_AUTHORITY_IMAGE"');
+    expect(steps[pair].run).toContain('--target-image "$NATIVE_PG_IMAGE"');
     expect(steps[pair].run).toContain('get secret "$pg_workload_authority"');
     expect(steps[pair].run).not.toContain('tcr-creds');
     expect(steps[pair].run).toContain('--install-registry-config');
@@ -1177,7 +1186,9 @@ exit "$TEST_ORIGINAL"
     expect(step.run).toContain('preconditions:{uid:job.metadata.uid}');
     expect(step.run).toContain('--validate-pull-job');
     expect(step.run).toContain('--job-uid "$job_uid"');
-    expect(step.run).toContain('--select-registry-authority');
+    expect(step.run).toContain('scripts/select-pg-registry-authority.ts');
+    expect(step.run).toContain('--current-image "$PG_REGISTRY_AUTHORITY_IMAGE"');
+    expect(step.run).toContain('--target-image "$NATIVE_PG_IMAGE"');
     expect(step.run).toContain('--authority-name "$pg_authority"');
     expect(step.run).toContain('job.spec.template.spec.imagePullSecrets=[{name:process.env.PREFLIGHT_AUTHORITY}]');
     expect(step.run).not.toContain('tcr-creds');

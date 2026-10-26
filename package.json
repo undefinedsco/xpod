@@ -311,12 +311,12 @@
     "@comunica/mediator-combine-pipeline": "^4.5.0",
     "componentsjs": "^6.4.0",
     "oidc-provider": "9.5.1",
-    "@undefineds.co/drizzle-solid": "0.3.25"
+    "@undefineds.co/drizzle-solid": "0.3.26"
   },
   "packageManager": "bun@1.4.2",
   "patchedDependencies": {
     "oidc-provider@9.5.1": "patches/oidc-provider@9.5.1.patch",
-    "@undefineds.co/drizzle-solid@0.3.25": "patches/@undefineds.co%2Fdrizzle-solid@0.3.25.patch",
+    "@undefineds.co/drizzle-solid@0.3.26": "patches/@undefineds.co%2Fdrizzle-solid@0.3.26.patch",
     "@solid/community-server@8.0.0-alpha.1": "patches/@solid%2Fcommunity-server@8.0.0-alpha.1.patch"
   },
   "trustedDependencies": [
@@ -336,7 +336,7 @@
       "@solid/access-token-verifier": "2.1.1",
       "@solid/community-server": "8.0.0-alpha.1",
       "@types/semver": "7.7.1",
-      "@undefineds.co/drizzle-solid": "0.3.25",
+      "@undefineds.co/drizzle-solid": "0.3.26",
       "@undefineds.co/models": "0.2.63",
       "acme-client": "^5.1.3",
       "ai": "^6.0.6",

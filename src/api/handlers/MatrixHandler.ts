@@ -134,11 +134,26 @@ export function registerMatrixRoutes(server: ApiServer, options: MatrixHandlerOp
 
   server.post('/_matrix/client/v3/rooms/:roomId/invite', async (request, response, params) => {
     try {
-      const body = await readJson<{ user_id?: unknown }>(request);
+      const body = await readJson<{ user_id?: unknown; targetWebID?: unknown }>(request);
       if (!body || typeof body.user_id !== 'string' || body.user_id.length === 0) {
         throw new MatrixError(400, 'M_BAD_JSON', 'Invite requires user_id');
       }
-      await store.inviteUser(decodeURIComponent(params.roomId), body.user_id, await buildContext(request, options));
+      // Optional extension, not a Matrix-native field: the caller supplies the
+      // invited person's full WebID. It must map to the same canonical MXID;
+      // the MXID itself is a hash and is never decoded into an identity.
+      if (body.targetWebID !== undefined && (typeof body.targetWebID !== 'string' || body.targetWebID.length === 0)) {
+        throw new MatrixError(400, 'M_BAD_JSON', 'targetWebID must be a non-empty string');
+      }
+      if (body.targetWebID === undefined) {
+        await store.inviteUser(decodeURIComponent(params.roomId), body.user_id, await buildContext(request, options));
+      } else {
+        await store.inviteUser(
+          decodeURIComponent(params.roomId),
+          body.user_id,
+          await buildContext(request, options),
+          String(body.targetWebID),
+        );
+      }
       sendJson(response, 200, {});
     } catch (error) {
       sendError(response, error);

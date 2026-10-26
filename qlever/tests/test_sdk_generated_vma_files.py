@@ -5,6 +5,10 @@ from unittest.mock import patch
 spec=importlib.util.spec_from_file_location('vma_files',Path(__file__).resolve().parents[1]/'scripts/sdk-generated-vma-originals.py');m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
 class Backend:
  def __init__(self,root):self.maximum_file_bytes=1024**2;self.check=lambda:None;self.check_deadline=lambda:None;self.build=str(root);self.retained=set();self.tasks={10:{'entry':None,'exited':False}};self.seq=0;self.exclusive=None;self.originals={}
+ # Production finish() now brackets its snapshot with the declared substep
+ # boundary. Mirror that interface instead of stubbing it out, so the existing
+ # timeout/order assertions still exercise the real call shape.
+ def instrument_substep(self,name,function,*arguments,**keywords):return function(*arguments,**keywords)
  def emit(self,row):self.seq+=1;return dict(row,sequence=self.seq)
  def barrier(self):return self.emit(dict(kind='all-stop-barrier',pids=[10],taskOwnership=[dict(tid=10,fdTable=10)]))
  def snapshot_write_original(self,fd,size,offset=0):

@@ -1,9 +1,11 @@
 """Owned Linux read leases. Tokens are observations, never authority by themselves."""
 import errno
 import fcntl
+import hashlib
 import os
 import signal
 import stat
+import time
 
 
 class LeaseError(RuntimeError):
@@ -85,6 +87,20 @@ class LeaseSet:
             raise ValueError('positive unique lease bound required')
         self.maximum = maximum
         self._held = {}
+        # Immutable REGISTRATION input for the unfiltered sweep: one
+        # (fd, expected identity tuple) per held row, built only from data fixed
+        # at acquire time. It is never authority for an observation: every check
+        # still issues a fresh F_GETLEASE + fstat per fd and compares all six
+        # fields. It only removes the per-check Python rebuild of identical
+        # (fd, tuple(identity)) pairs.
+        #
+        # `_held` has exactly two writes in this class: the insert in acquire()
+        # and the clear in close(). Both invalidate the plan, and check() also
+        # requires the plan length to equal the live owned-set length, so a
+        # shrunken set can never be served a stale plan. There is no per-row
+        # delete, rename or in-place row mutation, and acquire() returns a COPY
+        # of the token, so callers cannot alias the stored identity.
+        self._plan = None
         self._failure = None
         # ONE resolution, at construction, through the class seam.
         self._native_binding, self._native = self._resolve_native_backend()
@@ -102,6 +118,170 @@ class LeaseSet:
         self._failure = self._failure or reason
         raise LeaseError(self._failure)
 
+    DIAGNOSTIC_MAXIMUM_BYTES=8192
+    DIAGNOSTIC_MAXIMUM_ROWS=64
+    DIAGNOSTIC_SCAN_MAXIMUM=4096
+
+    def failure_diagnostic(self, deadline=None):
+        """Read-only fatal-path snapshot over the ALREADY-OWNED lease FDs.
+
+        Issued only after the set is already fatally failed, so it can never
+        change admission. Per held FD it re-reads F_GETLEASE and the six-field
+        identity and reports whether the lock is still RDLCK. It never acquires,
+        releases, retries, sleeps or extends a budget, and it never replaces the
+        caller's original LeaseError.
+
+        Scan is BOUNDED by min(existing maximum, DIAGNOSTIC_SCAN_MAXIMUM) using
+        islice over the live mapping, so no full list copy is built. If the scan
+        is cut short by the row cap or an expired deadline, the payload says so
+        explicitly (`scannedComplete`, `truncated`, `partialReason`) and never
+        claims `allHeldStillReadable=true` on incomplete evidence.
+
+        ABNORMAL ROWS ARE RETAINED FIRST. Rows are ordered abnormal-before-ok,
+        so the row cap can never drop a mismatched lease behind healthy ones.
+
+        Output is compact JSON capped at DIAGNOSTIC_MAXIMUM_BYTES; if even the
+        base payload exceeds that bound the function returns None instead of an
+        oversized frame. `authority=False` means this is evidence only.
+        """
+        import itertools
+        import json as _json
+
+        rows = []
+        inspected = 0
+        abnormal = 0
+        partial = None
+        scan_limit = self.DIAGNOSTIC_SCAN_MAXIMUM
+        try:
+            if type(self.maximum) is int:
+                scan_limit = min(self.maximum, self.DIAGNOSTIC_SCAN_MAXIMUM)
+        except BaseException:
+            pass
+
+        clock_unavailable = False
+
+        def expired():
+            nonlocal clock_unavailable
+            if deadline is None:
+                return False
+            try:
+                return time.monotonic() >= deadline
+            except BaseException:
+                # A broken clock must not be read as "not expired": stop the scan
+                # and report a fixed partial reason instead of claiming completion.
+                clock_unavailable = True
+                return True
+
+        for row in itertools.islice(self._held.values(), scan_limit):
+            if expired():
+                partial = 'clock-unavailable' if clock_unavailable else 'deadline-expired'
+                break
+            inspected += 1
+            entry = dict(leaseId=None, state='unknown', mismatch=False,
+                         identityEqual=None, error=None, path=None)
+            fd = row.get('fd')
+            token = row.get('token') or {}
+            expected = token.get('identity')
+            if type(token.get('leaseId')) is int:
+                entry['leaseId'] = token['leaseId']
+            if type(fd) is not int:
+                entry['state'] = 'invalid-fd'
+                entry['error'] = 'numeric-fd-required'
+                entry['mismatch'] = True
+                abnormal += 1
+                rows.append(entry)
+                continue
+            try:
+                lock = fcntl.fcntl(fd, fcntl.F_GETLEASE)
+                entry['state'] = ('rdlck' if lock == fcntl.F_RDLCK else
+                                  'unlck' if lock == fcntl.F_UNLCK else
+                                  'wrlck' if lock == fcntl.F_WRLCK else 'other')
+                entry['mismatch'] = lock != fcntl.F_RDLCK
+            except OSError as exc:
+                entry['state'] = 'fgetlease-error'
+                entry['error'] = ('errno-%d' % exc.errno) if type(exc.errno) is int else 'errno-None'
+                entry['mismatch'] = True
+            except BaseException as exc:
+                entry['state'] = 'fgetlease-error'
+                entry['error'] = type(exc).__name__
+                entry['mismatch'] = True
+            try:
+                info = os.fstat(fd)
+                actual = [info.st_dev, info.st_ino, info.st_mode,
+                          info.st_size, info.st_mtime_ns, info.st_ctime_ns]
+                if isinstance(expected, list):
+                    entry['identityEqual'] = actual == expected
+                    if entry['identityEqual'] is False:
+                        entry['mismatch'] = True
+            except OSError as exc:
+                entry['identityEqual'] = False
+                entry['mismatch'] = True
+                if entry['error'] is None:
+                    entry['error'] = ('errno-%d' % exc.errno) if type(exc.errno) is int else 'errno-None'
+            except BaseException as exc:
+                entry['identityEqual'] = False
+                entry['mismatch'] = True
+                if entry['error'] is None:
+                    entry['error'] = type(exc).__name__
+            if entry['mismatch']:
+                abnormal += 1
+                try:
+                    target = os.readlink('/proc/self/fd/%d' % fd)
+                    if target.startswith(('/opt/qlever-sdk/', '/components/', '/usr/')):
+                        entry['path'] = target[:256]
+                    else:
+                        entry['path'] = 'sha256:' + hashlib.sha256(
+                            os.fsencode(target)).hexdigest()
+                except OSError as exc:
+                    entry['path'] = ('unavailable-errno-%d' % exc.errno) if type(exc.errno) is int else 'unavailable-errno-None'
+                except BaseException as exc:
+                    entry['path'] = 'unavailable-' + type(exc).__name__
+            rows.append(entry)
+
+        total = len(self._held)
+        if partial is None and clock_unavailable:
+            partial = 'clock-unavailable'
+        if partial is None and inspected < total:
+            # Bounded scan stopped early for a non-deadline reason.
+            partial = 'scan-limit'
+        scanned_complete = partial is None and inspected >= total
+
+        # ABNORMAL FIRST: a row cap must never hide a mismatched lease.
+        ordered = ([r for r in rows if r['mismatch']] +
+                   [r for r in rows if not r['mismatch']])
+        omitted = max(0, len(ordered) - self.DIAGNOSTIC_MAXIMUM_ROWS)
+        kept = ordered[:self.DIAGNOSTIC_MAXIMUM_ROWS]
+
+        payload = dict(
+            schemaVersion=2, kind='read-lease-fatal-diagnostic', authority=False,
+            signalSenderKnown=False,
+            evidenceNote=('Current lock/identity evidence for already-owned FDs only. A holder '
+                          'of this evidence CANNOT infer the SIGIO sender: the handler records '
+                          'no sender, so this does not prove a kernel-originated break.'),
+            heldLeaseCount=total, inspectedLeaseCount=inspected,
+            totalRowCount=len(ordered), omittedRowCount=omitted,
+            scannedComplete=scanned_complete,
+            truncated=bool(omitted or partial or not scanned_complete),
+            partialReason=partial,
+            abnormalLeaseCount=abnormal,
+            allHeldStillReadable=(scanned_complete and abnormal == 0 and total > 0),
+            leases=kept)
+        # Byte bound: shrink the RETAINED rows (abnormal-first order preserved)
+        # until the frame fits, then report the omission explicitly. Only if even
+        # the empty base payload cannot fit do we return None.
+        try:
+            encoded = _json.dumps(payload, sort_keys=True, separators=(',', ':'))
+            while len(encoded.encode('utf-8')) > self.DIAGNOSTIC_MAXIMUM_BYTES and payload['leases']:
+                dropped = payload['leases'].pop()
+                payload['omittedRowCount'] += 1
+                payload['truncated'] = True
+                encoded = _json.dumps(payload, sort_keys=True, separators=(',', ':'))
+        except BaseException:
+            return None
+        if len(encoded.encode('utf-8')) > self.DIAGNOSTIC_MAXIMUM_BYTES:
+            return None
+        return encoded
+
     def _ready(self):
         if self._closed:
             raise LeaseError('lease set closed')
@@ -116,22 +296,39 @@ class LeaseSet:
 
     def check(self, token=None):
         self._ready()
-        rows = list(self._held.values())
-        if token is not None:
+        # The unfiltered sweep is the hot path. Its input is pure registration
+        # data: for every held row, the owned fd and the identity recorded at
+        # acquire. Rebuild that tuple only when the owned set changed; validate
+        # it against the live size so an added or removed row is never served
+        # stale data. A filtered call (token given) keeps the original
+        # value-comparing path, because "which row matched" is part of it.
+        plan = None
+        if token is None:
+            plan = self._plan
+            if plan is None or len(plan) != len(self._held):
+                plan = tuple((row['fd'], tuple(row['token']['identity']))
+                             for row in self._held.values())
+                self._plan = plan
+        if plan is not None:
+            pairs = plan           # tuple: no extra O(n) copy per check
+        else:
+            rows = list(self._held.values())
             rows = [row for row in rows if row['token'] == token]
             if len(rows) != 1:
                 self._reject('unknown or changed lease token')
+            pairs = [(row['fd'], tuple(row['token']['identity'])) for row in rows]
         try:
             if self._native is not None and self._native_binding is not None:
                 self._native_binding.sweep_rows(
                     self._native,
-                    [(row['fd'], tuple(row['token']['identity'])) for row in rows],
+                    pairs,
                     self._reject)
             else:
-                for row in rows:
-                    if fcntl.fcntl(row['fd'], fcntl.F_GETLEASE) != fcntl.F_RDLCK:
+                # Pure-Python backend verifies EVERY pair, planned ones included.
+                for fd, expected in pairs:
+                    if fcntl.fcntl(fd, fcntl.F_GETLEASE) != fcntl.F_RDLCK:
                         self._reject('read lease no longer held')
-                    if identity(row['fd']) != row['token']['identity']:
+                    if identity(fd) != list(expected):
                         self._reject('leased inode identity changed')
             self._ready()
         except OSError as error:
@@ -187,6 +384,7 @@ class LeaseSet:
             self._ready()
             token = {'leaseId': len(self._held) + 1, 'identity': before}
             self._held[key] = {'fd': owned, 'token': token}
+            self._plan = None      # owned set changed: the plan is no longer the whole set
             owned = None
             return dict(token, identity=list(before))
         except BaseException as error:
@@ -239,6 +437,7 @@ class LeaseSet:
                 try: os.close(fd)
                 except OSError as caught: error = error or caught
         self._held.clear()
+        self._plan = None              # owned set changed
         self._closed = True
         if signal.getsignal(signal.SIGIO) == self._handler:
             signal.signal(signal.SIGIO, self._previous)

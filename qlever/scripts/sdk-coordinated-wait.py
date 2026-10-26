@@ -248,7 +248,7 @@ def runtime_type(core):
             current['stage']='closing';barrier=self.b.barrier();assert self.geometry()==current['beforeGeometry']
             after=current['lease'].sample();assert not current['lease'].close()
             word=self.b.generated_wait_word(current['owner'],current['entry']['args'][0]);assert word==current['wakeWord']
-            identity,original=self.snapshot(self.active['origin']['held']);assert base.same_object(identity,self.active['origin']['identity'])
+            identity,original=self.b.instrument_substep('generated_vma_snapshot',self.snapshot,self.active['origin']['held']);assert base.same_object(identity,self.active['origin']['identity'])
             assert self.reserved>=current['baseline'];self.reserved=current['baseline']
             for member in [current['owner'],current['peer']]:del self.pending[member]
             self.note('closed',waitEntrySequence=current['entry']['sequence'],wakeEntrySequence=current['wakeEntry']['sequence'],waitExitSequence=current['exits'][current['owner']]['sequence'],wakeExitSequence=current['exits'][current['peer']]['sequence'],barrierSequence=barrier['sequence'],procAfter=after,wordOriginal=base.raw_record(word),cohortMaps=self.last_samples,backingOriginal=original,backingIdentity=identity,qualification=False)

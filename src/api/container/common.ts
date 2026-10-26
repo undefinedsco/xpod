@@ -65,6 +65,10 @@ import { PodModelSelectionRepository } from '../ai-gateway/models/PodModelSelect
 import { ProviderModelSelectionService } from '../ai-gateway/models/ProviderModelSelectionService';
 import { ModelRouter } from '../ai-gateway/routing/ModelRouter';
 import {
+  DeploymentBuiltinConnection,
+  resolveDeploymentBuiltinConfig,
+} from '../ai-gateway/builtin/DeploymentBuiltinConnection';
+import {
   CloudGatewayModelsClient,
   resolveCloudModelsGatewayOrigin,
 } from '../ai-gateway/CloudGatewayModelsClient';
@@ -100,7 +104,7 @@ import { RdfSearchReconciliationRepository } from '../../search/RdfSearchReconci
 import { RdfSearchReconciliationWorker } from '../service/RdfSearchReconciliationWorker';
 import { ApiServer } from '../ApiServer';
 import { ChatKitService, PodChatKitStore, VercelAiProvider } from '../chatkit';
-import { PodMatrixStore } from '../matrix';
+import { createMatrixStorageVerifier, PodMatrixStore, SqlMatrixRoomDirectory } from '../matrix';
 import { ClientReconcilerCoordinator, ServerGroupReconcilerService } from '../reconciler';
 import { InngestRunExecutionBackend } from '../runs/InngestRunExecutionBackend';
 import { PiAgentRuntimeDriver } from '../runs/PiAgentRuntimeDriver';
@@ -481,6 +485,11 @@ export function registerCommonServices(
       return new InMemorySessionAffinityStore({ secret });
     }).singleton(),
 
+    deploymentBuiltinConnection: asFunction(({ config }: ApiContainerCradle) => {
+      const builtin = resolveDeploymentBuiltinConfig(config.edition);
+      return builtin ? new DeploymentBuiltinConnection(builtin) : null;
+    }).singleton(),
+
     aiGatewayService: asFunction((cradle: ApiContainerCradle) => {
       const { config } = cradle;
       const gatewayProviderRegistry = cradle.gatewayProviderRegistry;
@@ -512,6 +521,7 @@ export function registerCommonServices(
         cloudModels: cloudGatewayOrigin
           ? new CloudGatewayModelsClient({ cloudGatewayOrigin })
           : undefined,
+        builtin: cradle.deploymentBuiltinConnection ?? undefined,
         usageRecorder: async ({ webId, apiKeyId, totalTokens }) => {
           const pod = await cradle.podLookupRepo?.findByWebId(webId);
           if (!pod) {
@@ -732,11 +742,16 @@ export function registerCommonServices(
       });
     }).singleton(),
 
-    matrixStore: asFunction(({ db, ownerPodAccess, serverGroupReconcilerService }: ApiContainerCradle) => {
+    matrixStore: asFunction(({ db, ownerPodAccess, podLookupRepo, serverGroupReconcilerService }: ApiContainerCradle) => {
       return new PodMatrixStore({
         serverGroupReconcilerService,
         podAccess: ownerPodAccess,
         journal: new SqlMatrixEventJournal(db),
+        // Reference directory shares the identity DB so it survives restarts.
+        // Verification uses persisted Pod ownership, never a caller-supplied address.
+        directory: new SqlMatrixRoomDirectory(db,
+          podLookupRepo ? createMatrixStorageVerifier(podLookupRepo) : undefined),
+        ...(podLookupRepo ? { verifyStorage: createMatrixStorageVerifier(podLookupRepo) } : {}),
         serverName: (() => {
           try {
             return new URL(process.env.CSS_BASE_URL ?? '').host || undefined;

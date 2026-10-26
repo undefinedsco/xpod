@@ -10,7 +10,7 @@ const sha=(raw:Buffer|string)=>createHash('sha256').update(raw).digest('hex');
 test('SDK46 keeps every actual f72 whole recipe and binds the composed service and entity source',()=>{
  expect(before.base).toBe('f72f8a8ab3f304631e7d4357be552dd441ea9a0d');
  expect(Object.values(before.hashes).reduce((sum,rows)=>sum+rows.length,0)).toBe(237);
- expect([api.length,sdk.length,consumer.length,ci.length,current.length]).toEqual([28,70,85,168,478]);
+ expect([api.length,sdk.length,consumer.length,ci.length,current.length]).toEqual([29,80,96,190,504]);
  for(const[name,groups]of Object.entries({api,sdk,consumer,ci})){const old=before.hashes[name as keyof typeof before.hashes];expect(groups.slice(0,old.length).map(row=>sha(JSON.stringify(row)))).toEqual(old);}
  for(const row of [...current,...apiBindings,...sdk.at(-1)!.selectors,...sdk.at(-1)!.sourceBindings])expect(sha(readFileSync(row.path))).toBe(row.sha256);
  expect(api.at(-1)!.sourceBindings).toBe(apiBindings);

@@ -542,7 +542,7 @@ class Runtime:
                     common.setdefault('peerMaps',[]).append(dict(pid=peer,original=other['original']))
                 common.update(beforeMapsOriginal=maps['original'],aliases=aliases)
                 if op=='map':
-                    page=os.sysconf('SC_PAGE_SIZE');rounded_span(0,current[3],page);end=min(b.deadline,time.monotonic()+WINDOW_SECONDS);pending.update(alarmToken=b.waiter.clamp(end),windowEnd=end)
+                    page=os.sysconf('SC_PAGE_SIZE');rounded_span(0,current[3],page);end=min(b.deadline,time.monotonic()+WINDOW_SECONDS);pending.update(alarmToken=b.waiter.clamp(end),windowEnd=end);getattr(b,'window_arm',lambda _d:None)(int(end*1e9))
                     common.update(pageBytes=page,memoryDomain=domain,windowDeadlineMonotonicNs=str(int(end*1e9)),parentDeadlineMonotonicNs=str(int(b.waiter.parent_deadline*1e9)))
             if op=='unmap':
                 current,ref=self.snapshot(held);maps,values=self.maps(pid);mapping=verify_established(values,self.active['address'],self.active['page'],current,self.active['length']);common.update(beforeOriginal=ref,beforeMapsOriginal=maps['original'],epochSequence=self.active['sequence'])

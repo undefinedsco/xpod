@@ -131,15 +131,25 @@ GitHub 需要配置独立的 GitHub Environment `rc`：
 RC 公开入口为 `https://id-rc.undefineds.cn`、`https://pods-rc.undefineds.cn`
 和 `https://api-rc.undefineds.cn`。RC 的 `.cn` DNS-only CNAME 统一指向
 Sealos ingress，三个 Ingress 经统一 Nginx Gateway 路由到 RC 服务；TLS Secret
-由 Sealos certificate controller 在 Ingress 创建后签发。overlay 不创建
-physical PostgreSQL、Redis、object storage 或独立 Kubernetes cluster；它复用现有物理基础设施，
-但必须使用独立 logical database or schema、独立 Redis DB 和独立 object bucket。
-`APP_ENV_FILE` 的 `CSS_IDENTITY_DB_URL` 与 `CSS_SPARQL_ENDPOINT` 均指向共享
-`xpod-rdf-postgres` 的独立 `xpod_rc` 库和角色；不再丢弃这些配置或注入临时数据库 URL。
+由 Sealos certificate controller 在 Ingress 创建后签发。overlay 的 kustomization 不包含
+physical PostgreSQL 资源（专用 PG 模板独立渲染，保证 app 只做一次最终 apply），也不创建
+Redis、object storage 或独立 Kubernetes cluster；它复用现有 Redis/R2/Ingress 基础设施，
+但使用独立 nonzero Redis DB、独立 object bucket 和独立 PostgreSQL workload。
+RC 拥有专用 PostgreSQL 17：`statefulset/xpod-rc-rdf-postgres`、同名 Service 和独立 8 GiB PVC，
+由与 pre-K8s 17+6 conformance、exact-image pull 相同的 `NATIVE_PG_IMAGE`（`6a5731d7…`）渲染。
+共享生产实例 `statefulset/xpod-rdf-postgres` 及其 `xpod_cn`/`xpod_co` 数据不由 RC 读取、重置、
+升级或缩容；RC 每轮只 DROP/CREATE 专用实例上的逻辑库 `xpod_rc`。
+`APP_ENV_FILE` 的 `CSS_IDENTITY_DB_URL` 与 `CSS_SPARQL_ENDPOINT` 由集中式 materializer 从当前
+凭据派生专用 `xpod-rc-rdf-postgres` 主机名，保留 role/database/密码与所有其它字段；不需要手工
+改 GitHub secret，也没有新的配置别名或回退。直接调用严格校验器时，共享生产主机和
+production role/database 仍被拒绝。
 
 推荐的 RC Kubernetes 资源拓扑：
 
 - runtime Secret：`xpod-rc-secret`
+- RC-only PostgreSQL StatefulSet：`xpod-rc-rdf-postgres`（含 Service 与独立 PVC）
+- bootstrap Job：`xpod-rc-postgres-bootstrap-<run>-<attempt>`（每轮唯一、按 nonce+UID 回收）
+- administrator Secret：`xpod-rc-postgres-bootstrap`（与 PVC 绑定、保留，见 admin 文档）
 - Xpod Deployment：`xpod-rc`
 - shared Inngest Deployment：`xpod-inngest`（只复用，不由 RC overlay 创建或缩容）
 - RC-only Inngest Deployment：`xpod-rc-inngest`（若存在，仅在确认本轮 RC 所有权后回收）
@@ -228,11 +238,15 @@ Do not reuse the production `APP_ENV_FILE`。RC `APP_ENV_FILE` 必须提供
 - `XPOD_INNGEST_EVENT_KEY`
 - `XPOD_INNGEST_SIGNING_KEY`
 
-候选 workflow 在任何集群请求前校验 GZ server/namespace。Identity/RDF DSN 必须
-使用 `xpod-rdf-postgres` 上的 `xpod_rc` 专用角色和同名数据库，且凭据一致；禁止
-URL query/fragment 或冲突的数据库覆盖。每轮重建这个 RC 数据库并安装
-`vector → xpod_rdf → xpod_qlever`，不重建共享实例、不触碰 `xpod_cn`/`xpod_co`。
-此操作会销毁上一轮 RC 数据；上线前必须确认共享 RC 独占权和数据处理边界。
+候选 workflow 在任何集群请求前校验 GZ server/namespace。当前 `APP_ENV_FILE`
+可以是旧的共享 host 凭据；集中式 materializer 只在内存/临时文件中把两个 DSN 的主机名
+改写到专用 `xpod-rc-rdf-postgres`，保留 `xpod_rc` 角色/同名数据库、scheme、端口和
+percent-encoded 密码，其它字段逐字节不变，随后才跑严格校验器。禁止 URL query/fragment、
+冲突的数据库覆盖或生产 role/database。每轮在专用实例上重建逻辑库并安装
+`vector → xpod_rdf → xpod_qlever`；共享实例和 `xpod_cn`/`xpod_co` 既不重建也不触碰。
+此操作只销毁上一轮 RC 数据；重置前必须通过 fail-closed quiescence（`deployment/xpod-rc`
+`spec.replicas=0`、observed replicas 全 0、无 running/pending/unknown/terminating pod），
+candidate 绝不主动缩容活动候选，跨轮独占权由 ROOT 协调。
 `CSS_REDIS_CLIENT` 必须显式指向
 独立 Redis DB，格式上应类似 `CSS_REDIS_CLIENT=.../<nonzero>`；候选 workflow
 会拒绝缺少 DB index、使用 Redis DB 0 或包含 production marker 的 Redis URL。
@@ -398,11 +412,13 @@ stable promotion 校验以下内容：
 - artifact 的 source SHA、source branch、target version、candidate version
   和 endpoint 与当前 tag 匹配；
 - image digest 是 `sha256:<64-lowercase-hex>`；
-- required checks 全部通过，包括 `image`、`service-status`、`oidc`、
-  `dashboard`、`protected-route`、
-  `deployed-digest`、`direct-pod`、`public-service`、`secret-isolation`、
-  `authenticated-pod`、`pod-read-write`、`gateway-key`、`ai-connections`、
-  `models`、`chat`、`task-approval`、`qlever-local`、`package-consumers` 和 `desktop`。
+- required checks 全部 25 项通过：`image`、`service-status`、`oidc`、
+  `dashboard`、`protected-route`、`deployed-digest`、`direct-pod`、
+  `public-service`、`secret-isolation`、`authenticated-pod`、`pod-read-write`、
+  `gateway-key`、`ai-connections`、`models`、`chat`、`task-approval`、
+  `native-sparql`、`native-public16`、`native-private17`、
+  `native-namespace-pull`、`qlever-local`、`package-consumers`、
+  `legacy-root-compat`、`runtime-mode-matrix` 和 `desktop`。
 
 `deployed-digest` 证明 RC Deployment 运行的是 accepted digest，
 `direct-pod` 证明 ready Pod 的 imageID 包含同一个 digest。stable tag 只做
@@ -428,8 +444,11 @@ RC。不要删除 stable tag 重新试，也不要把失败 digest 手工推进�
 
 candidate workflow 的 `cleanup_rc` 在服务、桌面和最终验收全部结束后执行 cleanup，确认本轮 RC 所有权并核对本轮
 seed Secret 的部署绑定后将 `deployment/xpod-rc` 和存在的 `xpod-rc-inngest`
-scale-to-zero；共享 `statefulset/xpod-rdf-postgres` 与 `deployment/xpod-inngest` 保持运行。
-下一次 RC workflow 会重新 apply overlay、写入 Secret、设置 digest 并等待 rollout。
+scale-to-zero；共享 `statefulset/xpod-rdf-postgres`、`deployment/xpod-inngest` 以及 RC 自己的
+`statefulset/xpod-rc-rdf-postgres`/PVC/administrator Secret 都保持运行。本轮 bootstrap Job
+只在本轮 nonce 注解与 live UID 都匹配时以 `DeleteOptions.preconditions.uid` 删除，foreign 或
+被替换的同名 Job 一律保留，观察/删除/wait 失败不被吞掉。下一次 RC workflow 会重新 apply
+overlay、写入 Secret、派生专用 DB host、设置 digest 并等待 rollout。
 手动恢复 RC 时可在同一 namespace 将 Xpod Deployment scale 到 1，然后重新
 运行 candidate workflow 做完整验收。
 
@@ -593,9 +612,25 @@ bun run test:integration
 
 桌面版本发布前，必须先构建候选 DMG/ZIP，实际安装 DMG，使用安装后的应用完成本地 full 验收；通过后才继续发布。开发启动、仅解压 ZIP、单元或隔离集成测试不能替代安装后的完整登录、Consent、会话复用与业务链路验收。安装隔离、产物一致性和清理规则见 [桌面权限验收](testing/desktop-permission-acceptance.md)。
 
-## 受保护 RC 数据库
+## RC 专用 PostgreSQL 与受保护边界
 
-候选部署不再重置共享 `xpod_rc`，也不创建或升级扩展。部署前只读检查现有 PG17 数据库、owner 和扩展版本；不满足时保留源数据并停止。真实迁移须独立完成受保护备份、全量恢复核对和产品验收，工具或夹具通过不能代替。详见 [受保护部署边界](testing/protected-rc-deployment.md)。
+RC 使用专用 `statefulset/xpod-rc-rdf-postgres`（独立 PVC、Service 与 administrator Secret），
+共享生产 `xpod-rdf-postgres` 及其数据永不重置、升级或删除。任何 RC 变更前必须先通过
+17 semantic + 6 wire 的 installed-image conformance、同 PG17 full integration、Private17
+admission 和 namespace pull preflight；然后 fail-closed quiescence 通过才允许 bootstrap Job
+DROP/CREATE 专用实例上的逻辑库 `xpod_rc`。bootstrap Job 名为
+`xpod-rc-postgres-bootstrap-<run>-<attempt>`，只在 ownership 注解与 live UID 同时匹配时用
+`DeleteOptions.preconditions.uid` 删除；清理同样保留 RC StatefulSet、PVC 和 administrator Secret。
+bootstrap 创建非超级用户 `xpod_rc`（`NOSUPERUSER NOCREATEROLE NOCREATEDB`）并在每轮
+`ALTER ROLE` 后用该密码真实认证。两个扩展不提供任何 GRANT，故 bootstrap 在安装扩展后只对
+schema `xpod_rdf` 授予应用所需的最小 `USAGE`/表 DML/sequence 权限及同 schema 的 default
+privileges，grantee 仅 `xpod_rc`：没有 `PUBLIC`、`GRANT ALL`、superuser/createrole/createdb、
+ownership 转移或 `REASSIGN OWNED`。controller 的 parser 错误只报配置键，不携带原始 URL、
+密码、`error.input`/`cause` 或 decoder 文本；合法 percent-encoded 凭据逐字节保留。
+administrator 凭据与 PVC 一起保留，撤销必须按 `deploy/sealos/rc/RC-POSTGRES-ADMIN.md`
+同时删除 StatefulSet、PVC 和两个 Secret；部分撤销不能收回旧密码。既有 production
+backup/full-restore 证明不等于 RC 产品验收，工具或夹具通过也不能替代真实部署回执。详见
+[受保护部署边界](testing/protected-rc-deployment.md)。
 
 
 兼容 Bun 通道另存受限 `registry.metadata.json`：从 `createRegistry.publishedMetadata()` 读取真实 PUT 后已经解析、移除 `_attachments` 的记录，保留 exact version 的 name/version/运行依赖/bundle 字段及 dist integrity/shasum，URL 只保哈希。记录哈希来自该解析对象的 JSON 序列化，**不是原始 HTTP body 哈希**；原 wire bytes 未保留。它与原 tgz SHA/字节、`install.manifests.json` 的原件及 selectedInput 绑定，比较字段缺失或变化但不修补 registry 供给。安装失败仍保留这份诊断，未成功发布记录、绑定不符或超过 1 MiB 时记固定 unavailable；不提供安装成功、resolver 父边或发布资格证明。

@@ -41,9 +41,18 @@ class Tests(fixture.Tests):
   import contextlib,io,json
   from qlever.tests.test_sdk_terminal_authority import backend
   observer=object.__new__(backend.Observer);observer.deny_optional_io_uring=True;observer.emit=lambda row:row
+  # The refusal branch now also captures bounded refused-caller provenance, so the
+  # fixture supplies the real budget/deadline hooks the observer contract assumes.
+  observer.check_budget=lambda:None;observer.pump_errors=[];observer.deadline=float('inf')
+  observer.lifetime_leases=None
   record=dict(arch=0xc000003e,nr=101,args=[0]*6,sequence=7)
   stderr=io.StringIO()
   with contextlib.redirect_stderr(stderr),self.assertRaisesRegex(ValueError,'external-memory-writer'):
    observer.enforce_executable_memory(49,record)
   prefix,raw=stderr.getvalue().strip().split(' ',1);self.assertEqual(prefix,'SDK_EXECUTABLE_MEMORY_REFUSED');value=json.loads(raw)
-  self.assertEqual(set(value),{'arch','nr','pid','entrySequence','reason'});self.assertEqual(value['nr'],101);self.assertLess(len(raw),512)
+  # The RAW refusal row keeps exactly its published shape and tiny size; the new
+  # provenance lives only in the extra refusedCaller field of the stderr line.
+  self.assertEqual(set(value),{'arch','nr','pid','entrySequence','reason','refusedCaller'})
+  self.assertEqual(value['nr'],101);self.assertLess(len(json.dumps({k:value[k] for k in value if k!='refusedCaller'})),512)
+  self.assertFalse(value['refusedCaller']['mappingSampleIsPermissionProof'])
+  self.assertFalse(value['refusedCaller']['mappingSampleIsAtomic'])

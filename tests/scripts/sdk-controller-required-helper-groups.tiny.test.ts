@@ -12,12 +12,12 @@ test('sixteen declared complete groups only; observed original bound remains thi
  const groups=Array.from({length:16},(_,i)=>[['model.py',String(i)],['shared.py','b']]as const);expect(select(groups,new Map(groups[15]!))).toBe(groups[15]);expect(()=>select([...groups,groups[15]!],new Map(groups[15]!))).toThrow();expect(()=>plan([...groups,groups[15]!],names,new Map(groups[15]!))).toThrow();expect(()=>select([old],new Map(Array.from({length:33},(_,i)=>[String(i),'a'])))).toThrow();
 });
 
-test('thirty-five registered recipes fit capacity; a thirty-sixth rejects before extra reads',()=>{
+test('thirty-seven registered recipes fit capacity; a thirty-eighth rejects before extra reads',()=>{
  // The declared VERSION catalogue is now exactly 35: the FINAL reviewed VMA
  // diagnostic genuinely pushed the fetch CURRENT catalogue to a 35th tuple.
  // Only the catalogue length changed; the observed PER-TUPLE role bound stays 32
  // (see the previous case).
- const groups=Array.from({length:35},(_,i)=>[['model.py',String(i)],['shared.py','b']]as const);
+ const groups=Array.from({length:37},(_,i)=>[['model.py',String(i)],['shared.py','b']]as const);
  const observed=new Map(groups[30]!);expect(plan(groups,names,observed)).toBe(groups[30]);expect(select(groups,observed)).toBe(groups[30]);
- const overflow=[...groups,[['model.py','35'],['shared.py','b']]as const];expect(()=>plan(overflow,names,observed)).toThrow();expect(()=>select(overflow,observed)).toThrow();
+ const overflow=[...groups,[['model.py','37'],['shared.py','b']]as const];expect(()=>plan(overflow,names,observed)).toThrow();expect(()=>select(overflow,observed)).toThrow();
 });

@@ -83,7 +83,9 @@ test('a suppressed new-helper role makes SDK68 unselectable (generic selector)',
     for (const r of [...(current().secondarySelectors ?? []), ...current().sourceBindings]) {
       if (r.path === role) observed.delete(sourceBindingKey(r));
     }
+    // A role suppressed BEFORE the staged walk completes is reported by the
+    // explicit staged-ownership category; the refusal itself is unchanged.
     expect(() => selectGitHubSourceBindingGroup(QLEVER_SDK_EXECUTION_GROUPS, observed))
-      .toThrow(/exact workflow\/source group not reviewed/u);
+      .toThrow(/staged secondary observation incomplete/u);
   }
 });

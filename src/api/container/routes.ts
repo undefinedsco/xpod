@@ -241,6 +241,7 @@ function registerSharedRoutes(
     customModelsService: providerCustomModelsService,
     aiClientConfiguration: aiClientConfigurationService?.capability(),
     aiConnectionInvocationKeyIssuer,
+    deploymentBuiltin: container.resolve('deploymentBuiltinConnection', { allowUnregistered: true }) ?? undefined,
   });
   registerAiClientConfigurationRoutes(server, {
     service: aiClientConfigurationService,

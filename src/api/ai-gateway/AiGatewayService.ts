@@ -4,6 +4,9 @@ import { getLoggerFor } from 'global-logger-factory';
 import { GatewayProtocolError, normalizeGatewayError } from './errors';
 import type { AuthContext } from '../auth/AuthContext';
 import { getWebId } from '../auth/AuthContext';
+import type { DeploymentBuiltinConnection } from './builtin/DeploymentBuiltinConnection';
+import { DEPLOYMENT_BUILTIN_CONNECTION_ID } from './builtin/DeploymentBuiltinConnection';
+import { isPodAccessFailure } from './pod/OwnerPodAccess';
 import type { CredentialVault } from './credentials/CredentialVault';
 import type { EncryptedCredentialSecret } from './credentials/KeyWrapper';
 import { decodePlaintextCredential } from './credentials/PlaintextCredentialPayload';
@@ -113,6 +116,8 @@ export interface AiGatewayServiceOptions {
   usageRecorder?: (input: GatewayUsageRecord) => Promise<void>;
   /** Local edition only: splice Cloud GET /v1/models using the caller's identity. */
   cloudModels?: CloudGatewayModelsClient;
+  /** Cloud only: deployment-owned `linx` / `linx-lite` connection; needs no Pod access. */
+  builtin?: DeploymentBuiltinConnection;
 }
 
 export interface GatewayUsageRecord {
@@ -176,6 +181,7 @@ export class AiGatewayService {
   private readonly now: () => Date;
   private readonly usageRecorder?: (input: GatewayUsageRecord) => Promise<void>;
   private readonly cloudModels?: CloudGatewayModelsClient;
+  private readonly builtin?: DeploymentBuiltinConnection;
 
   public constructor(options: AiGatewayServiceOptions) {
     this.deployment = options.deployment;
@@ -187,6 +193,7 @@ export class AiGatewayService {
     this.now = options.now ?? (() => new Date());
     this.usageRecorder = options.usageRecorder;
     this.cloudModels = options.cloudModels;
+    this.builtin = options.builtin;
     for (const frontend of options.frontends ?? [
       new ResponsesFrontend(),
       new MessagesFrontend(),
@@ -214,6 +221,21 @@ export class AiGatewayService {
     const frontend = this.frontend(input.protocol);
     const request = frontend.parseRequest(input.body);
     validateGatewayRequest(request, input.protocol);
+    if (this.builtinHandles(input.protocol, request)) {
+      return {
+        protocol: input.protocol,
+        frontend,
+        request,
+        route: this.builtinRoute(request.model),
+        events: this.builtin!.executeStream({
+          auth: input.auth,
+          protocol: input.protocol,
+          body: input.body,
+          signal: input.signal,
+          invocationMetadata: input.invocationMetadata,
+        }),
+      };
+    }
     let route: ModelRouteResult;
     try {
       route = await this.router.route({
@@ -266,6 +288,15 @@ export class AiGatewayService {
     const frontend = this.frontend(input.protocol);
     const request = frontend.parseRequest(input.body);
     validateGatewayRequest(request, input.protocol);
+    if (this.builtinHandles(input.protocol, request)) {
+      return this.builtin!.completeJson({
+        auth: input.auth,
+        protocol: input.protocol,
+        body: input.body,
+        signal: input.signal,
+        invocationMetadata: input.invocationMetadata,
+      });
+    }
     let route: ModelRouteResult;
     try {
       route = await this.router.route({
@@ -307,16 +338,31 @@ export class AiGatewayService {
   public async listModels(auth: AuthContext): Promise<GatewayModelListItem[]> {
     this.requireScope(auth, 'models:read');
     const principal = this.requirePrincipal(auth);
-    const local = await this.router.listVisibleModels({
-      webId: principal.webId,
-      deployment: this.deployment,
-      auth,
-    });
+    const builtin = this.builtin?.listModels() ?? [];
+    let local: GatewayModelListItem[];
+    try {
+      local = await this.router.listVisibleModels({
+        webId: principal.webId,
+        deployment: this.deployment,
+        auth,
+      });
+    } catch (error) {
+      // Pod-backed models are additive: a session without Pod access (for example a browser DPoP
+      // token) still gets the deployment built-ins instead of a 403, and an unreachable Pod must
+      // not turn the built-in listing into a 5xx. The failure is logged as a bounded code only;
+      // the raw message can carry a Pod URL or credential state.
+      if (!this.builtin) {
+        throw error;
+      }
+      this.logger.warn(`Pod-backed models unavailable; serving deployment built-ins only: ${safePodFailureCode(error)}`);
+      local = [];
+    }
+    const merged = unionGatewayModelLists(builtin, local);
     if (!this.cloudModels) {
-      return local;
+      return merged;
     }
     const cloud = await this.cloudModels.listModels(auth);
-    return unionGatewayModelLists(local, cloud);
+    return unionGatewayModelLists(merged, cloud);
   }
 
   public async acceptanceProvenance(input: {
@@ -812,6 +858,45 @@ export class AiGatewayService {
       || (error.code === 'invalid_request' && error.message === 'Unable to resolve model route');
   }
 
+  /**
+   * The deployment built-in publishes the OpenAI Chat and Responses protocols only. An explicit
+   * credential id keeps the request on the Pod path, and a different protocol falls through so the
+   * caller is not told an upstream protocol is available when it is not.
+   */
+  private builtinHandles(protocol: GatewayProtocol, request: GatewayRequest): boolean {
+    return Boolean(this.builtin)
+      && (protocol === 'chatCompletions' || protocol === 'responses')
+      && this.builtin!.owns(request.model)
+      && !explicitCredentialIdFor(request);
+  }
+
+  private builtinRoute(model: string | undefined): ModelRouteResult {
+    const requested = model?.trim() || DEPLOYMENT_BUILTIN_CONNECTION_ID;
+    const provider: ProviderDescriptor = {
+      id: this.builtin!.id,
+      label: this.builtin!.label,
+      authModes: ['apiKey'],
+      protocols: ['chatCompletions', 'responses'],
+      defaultBaseUrl: '',
+      safeBaseUrls: [],
+      capabilities: {},
+      models: [{ id: requested }],
+    };
+    return {
+      provider,
+      model: requested,
+      credential: {
+        id: 'deployment-builtin',
+        credentialIri: 'deployment-builtin',
+        provider: this.builtin!.id,
+        authMode: 'apiKey',
+        enabled: true,
+      },
+      source: 'exact-model',
+      failover: { allowedBeforeFirstEvent: false, committed: true, clientEventEmitted: false },
+    };
+  }
+
   private cloudIdentityRoute(model: string | undefined): ModelRouteResult {
     const requested = model?.trim() || 'cloud';
     const provider: ProviderDescriptor = {
@@ -863,6 +948,17 @@ export class AiGatewayService {
       });
     }
   }
+}
+
+/** Log-safe classification of a Pod-backed listing failure: never its free-form message. */
+function safePodFailureCode(error: unknown): string {
+  if (error instanceof Error && isPodAccessFailure(error.message)) {
+    return 'pod_access_unavailable';
+  }
+  const code = (error as { code?: unknown } | undefined)?.code;
+  return typeof code === 'string' && /^[A-Za-z][A-Za-z0-9_.-]{0,63}$/u.test(code)
+    ? `pod_read_failed:${code}`
+    : 'pod_read_failed';
 }
 
 function hasGatewayScope(auth: AuthContext, scope: string): boolean {

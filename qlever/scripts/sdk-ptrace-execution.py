@@ -49,7 +49,8 @@ PENDING_CAPTURE_SUBSTEPS=('capture','capture_write','capture_rename','capture_me
                          'checkpoint_appends','observe_tool_stop','capture_bti_pending',
                          'capture_clone3_pending','close_terminal_authorities',
                          'barrier_before_capture',
-                         'generated_vma_finish','generated_vma_finish_emit')
+                         'generated_vma_finish','generated_vma_finish_emit',
+                         'generated_vma_snapshot','generated_vma_remap')
 PHASE_PROGRESS_MAXIMUM_SPANS=8
 PHASE_PROGRESS_PREFIX='SDK_OBSERVER_PHASE_PROGRESS '
 
@@ -254,6 +255,24 @@ def expected_oserror(error,errnos):
     """
     return isinstance(error,OSError) and error.errno in errnos
 MAX=16*1024**2
+SDK_LIMITS_PATH=ROOT/'scripts/lib/module-artifact-limits.json'
+
+
+def load_sdk_execution_limits():
+    """The ONE canonical load of the published execution-profile limits.
+
+    Both the production SDK observer and the canonical fixtures read the exact
+    same JSON through this function, so a fixture can never carry its own copy of
+    a production limit (e.g. a hardcoded 2 MiB tool-FD bound that the real
+    profile sets to `shardBytes`). It is a profile-source centralisation, not a
+    fallback: a missing or malformed file still raises.
+    """
+    limits=json.loads(SDK_LIMITS_PATH.read_text())
+    assert isinstance(limits,dict) and type(limits.get('shardBytes')) is int and limits['shardBytes']>0,'canonical execution limit requires positive shardBytes'
+    assert type(limits.get('sourceMaterialBytes')) is int and type(limits.get('metadataBytes')) is int,'canonical execution limit requires sourceMaterialBytes/metadataBytes'
+    return limits
+
+
 def close_child_observer_retained(descriptors):
     """Drop observer-only fork copies before the initial authority barrier.
 
@@ -293,6 +312,94 @@ def profile(arch):return bindings.policy(arch)
 def fdpath(pid,fd):
     try:return os.readlink('/proc/'+str(pid)+'/fd/'+str(fd))
     except FileNotFoundError:return None
+
+REFUSED_CALLER_MAX_PATH=512
+REFUSED_CALLER_MAPS_LIMIT=65536
+
+def refused_caller_snapshot(pid,record,check=None):
+    """Bounded diagnostic provenance for an executable-memory refusal.
+
+    Everything here is PROVENANCE ONLY, captured at the fatal stop. It is never
+    authority for held bytes, and it is never evidence that a mapping permission
+    holds: the maps line is a single non-atomic sample that may overlap the target
+    range, may cover only part of it, and may already be stale.
+
+    Bounded by construction: six integer args already present on the record, one
+    readlink plus one stat of /proc/<pid>/exe, and ONE maps read capped at
+    REFUSED_CALLER_MAPS_LIMIT bytes returning at most one overlapping line.
+
+    Unreadable optional inputs become an explicit 'unavailable' tag; they never
+    permit resume and never mask the caller's ValueError.
+    """
+    def clipped(value):
+        if not isinstance(value,str):return None
+        raw=value.encode('utf-8','surrogatepass')
+        return value if len(raw)<=REFUSED_CALLER_MAX_PATH else raw[:REFUSED_CALLER_MAX_PATH].decode('utf-8','replace')+'...'
+
+    args=record.get('args')
+    snapshot=dict(arch=int(record['arch']),nr=int(record['nr']),
+                  syscallArgs=[int(a) for a in args[:6]] if isinstance(args,(list,tuple)) else None,
+                  syscallArgsComplete=isinstance(args,(list,tuple)) and len(args)>=6,
+                  executable=None,executableIdentity=None,
+                  executableSource='unavailable',mappingSample=None,mappingSampleSource='unavailable',
+                  mappingSampleIsPermissionProof=False,mappingSampleIsAtomic=False)
+    directory=None
+    try:
+        if check is not None:check()
+        directory=os.open('/proc/'+str(pid),os.O_RDONLY|os.O_DIRECTORY|os.O_CLOEXEC)
+        raw=os.readlink('exe',dir_fd=directory)
+        info=os.stat('exe',dir_fd=directory,follow_symlinks=True)
+        snapshot.update(executable=clipped(raw),
+                        executableIdentity=[info.st_dev,info.st_ino,info.st_mode,
+                                            info.st_size,info.st_mtime_ns,info.st_ctime_ns],
+                        executableSource='stop-time /proc executable read+stat; diagnostic provenance, not held-byte authority')
+    except TimeoutError:
+        raise                       # a real owned deadline must never be swallowed
+    except OSError:
+        snapshot['executableSource']='unavailable'
+    finally:
+        if directory is not None:
+            try:os.close(directory)
+            except TimeoutError:raise
+            except OSError:pass
+    address=None
+    length=None
+    if snapshot['syscallArgsComplete']:
+        address=snapshot['syscallArgs'][0];length=snapshot['syscallArgs'][1]
+    try:
+        if check is not None:check()
+        source=os.open('/proc/'+str(pid)+'/maps',os.O_RDONLY|os.O_CLOEXEC)
+        try:raw=os.read(source,REFUSED_CALLER_MAPS_LIMIT)
+        finally:os.close(source)
+        snapshot.update(mappingSample=_overlapping_maps_line(raw,address,length),
+                        mappingSampleSource='single bounded /proc/<pid>/maps prefix; overlapping line only, NOT a range permission proof')
+    except TimeoutError:
+        raise                       # a real owned deadline must never be swallowed
+    except OSError:
+        snapshot['mappingSampleSource']='unavailable'
+    return snapshot
+
+def _overlapping_maps_line(raw,address,length):
+    """At most ONE maps line that overlaps [address,address+length).
+
+    Explicitly non-atomic and explicitly not a permission proof: the caller may
+    have already been refused, the sample may cover only part of the range, and a
+    truncated prefix may hide the true mapping entirely.
+    """
+    if address is None:return None
+    end=address+(length or 0)
+    for line in raw.split(b'\n'):
+        parts=line.split(None,5)
+        if len(parts)<2 or b'-' not in parts[0]:continue
+        try:low,high=[int(x,16) for x in parts[0].split(b'-',1)]
+        except ValueError:continue
+        if low<=address<high or (end and low<end and address<high):
+            path=parts[5].decode('utf-8','replace').strip() if len(parts)>5 else ''
+            return dict(range=parts[0].decode('ascii','replace'),
+                        permissions=parts[1].decode('ascii','replace'),
+                        path=(path.encode('utf-8')[:REFUSED_CALLER_MAX_PATH].decode('utf-8','replace') if path else None),
+                        overlap='contains-address' if low<=address<high else 'overlaps-range-only')
+    return None
 
 def descriptor_fields(pid,fd,*,flags=True,position=True):
     """One actual /proc/<pid>/fdinfo/<fd> read for the requested numeric fields.
@@ -427,7 +534,101 @@ def completed_capture_storage_census(rows,phase):
     duplicates.sort(key=lambda row:(-row['potentialDuplicatePhysicalBytes'],row['sha256']))
     return dict(kind='same-phase-physical-content-census',phase=phase,scanOrder='newest-first',availableObservations=len(rows),matchedPhaseObservations=matched,visitedObservations=visited,distinctPhysicalReferences=len(seen),maximumVisitedObservations=8192,maximumPhysicalReferences=4096,truncated=truncated,invalidReferenceMetadata=invalid,topBuckets=duplicates[:4],duplicateBucketCount=len(duplicates),potentialDuplicatePhysicalBytesLowerBound=sum(row['potentialDuplicatePhysicalBytes'] for row in duplicates),scope='same complete bytes/SHA storage only; no source identity, actual reuse eligibility, or IO saving proven')
 
-class Observer:
+_ABSENT=object()
+
+
+_MREMAP_DEFERRED=object()   # explicit "queued, not yet proved" outcome
+
+
+class CapturesMixin:
+    """Append-only capture index. Pure lookup acceleration over captured rows."""
+
+    def capture_index_key(self, reference):
+        """Immutable, full-fidelity key preserving every field `==` distinguishes.
+
+        Covers the required reference fields plus any extra metadata (e.g.
+        `observationSequence`) and nested `storage`. Absent vs explicit None is
+        distinguished. Unsupported types raise rather than weakening the key.
+        """
+        if type(reference) is not dict:
+            raise TypeError('capture reference must be a dict')
+        return self._freeze(reference)
+
+    @staticmethod
+    def _freeze(value):
+        """Type-tagged recursive snapshot. NEVER a substitute for equality.
+
+        The key is only a bucket selector: every hit is re-checked with full
+        `==` against the stored reference. Tuple and list are tagged separately
+        (Python dict equality distinguishes them), and bool is tagged apart from
+        int even though `True == 1`, because a differing key costs only a bucket
+        miss, after which the exact old scan decides.
+        """
+        if value is _ABSENT:
+            return ('absent',)
+        if value is None:
+            return ('none',)
+        if type(value) is bool:
+            return ('bool', value)
+        if type(value) is int:
+            return ('int', value)
+        if type(value) is float:
+            return ('float', value)
+        if type(value) is str:
+            return ('str', value)
+        if type(value) is bytes:
+            return ('bytes', value)
+        if type(value) is dict:
+            # dict equality ignores key order, so sort to mirror `==` exactly.
+            return ('dict', tuple(sorted((k, CapturesMixin._freeze(v))
+                                        for k, v in value.items())))
+        if type(value) is list:
+            return ('list', tuple(CapturesMixin._freeze(item) for item in value))
+        if type(value) is tuple:
+            return ('tuple', tuple(CapturesMixin._freeze(item) for item in value))
+        # Any other runtime type: a fresh opaque marker guarantees a bucket miss,
+        # so the exact old ordered scan decides. This never fails where the old
+        # oracle would have allowed a comparison.
+        return ('opaque', id(value), type(value).__name__)
+
+    def initialize_capture_state(self):
+        """Initialise the ONE capture resource: ordered list + membership index.
+
+        Single initialisation point for the capture state. Production
+        `Observer.__init__` calls it once; fixtures built with `Observer.__new__`
+        must call it explicitly instead of assigning `captures` (or the index)
+        ad hoc, so the list and its index can never drift apart.
+        """
+        self.captures=[]
+        self.capture_buckets={}
+
+    def append_capture(self, row):
+        """Single append point: ordered list and bucket index stay in lockstep.
+
+        The bucket stores the ROW, not a frozen key, so a later in-place mutation
+        of the stored reference is observed by the full-equality re-check.
+        """
+        self.captures.append(row)
+        self.capture_buckets.setdefault(
+            self.capture_index_key(row['original']), []).append(row)
+
+    def capture_present(self, reference):
+        """Exactly the old predicate: key narrows, FULL `==` decides.
+
+        Equivalent to ``any(c['original']==reference for c in captures[-64:]) or
+        any(c['original']==reference for c in captures)``. A bucket hit is only a
+        candidate: it must pass full dict equality against the CURRENT stored
+        reference. Any miss (including a stored-in-place mutation that staled the
+        bucket key) falls back to the exact old ordered scan, so the result can
+        never be stronger than the original predicate.
+        """
+        for row in self.capture_buckets.get(self.capture_index_key(reference), ()):
+            if row['original'] == reference:
+                return True
+        return any(capture['original'] == reference for capture in self.captures)
+
+
+class Observer(CapturesMixin):
     # Base host observer: pure-Python lease checking, exactly as before.
     lifetime_leases_class = lifetime_leases.LeaseSet
     def __init__(self,out,source,build,*,deadline_monotonic=None,check_budget=lambda:None,maximum_bytes=32*1024**2,maximum_file_bytes=1024**2,selected_names=SELECTED,maximum_processes=128,shard_bytes=None,require_success=True,maximum_stdio_bytes=None,shared_tasks=False,capture_toolchain=False,deny_optional_io_uring=False,verified_setresuid_noop=False,verified_identity_noop=False,terminal_exit_evidence=False,generated_vma_output=False,generated_vma_shared_mm=False,generated_vma_private_wake=False,generated_vma_private_wait_mismatch=False,capture_content_entities=False,queued_identity_noop=False,stopped_writer_aliases=False,generated_vma_coordinated_wait=False,generated_vma_parked_wait=False,io_uring_enosys_v2=False,serialize_terminal_syscalls=False,capture_maps_content_entities=False,retained_generated_metadata=False,indexed_raw_records=False,compressed_raw=False,generated_build_root=generated_vma_module.BUILD_ROOT):
@@ -465,7 +666,7 @@ class Observer:
         self.prepared_inputs={};self.prepared_sealed=False;self.domain_bytes=0;self.claim_bytes=dict.fromkeys(('raw-wire','capture-body','stdio','provider-other'),0);self.domain_lock=threading.Lock();self.pump_errors=[];self.maximum_stdio_bytes=maximum_stdio_bytes if maximum_stdio_bytes is not None else maximum_file_bytes
         self.compressed_raw=compressed_raw;self.logical_raw_bytes=0;self.raw_logical_limit=json.loads((ROOT/'scripts/lib/module-artifact-limits.json').read_text())['sourceMaterialBytes'];self.require_success=require_success;self.raw_bytes_completed=0;self.maximum_processes=maximum_processes;self.shard_bytes=shard_bytes
         self.deadline_monotonic=deadline_monotonic;self.check_budget=check_budget;self.maximum_bytes=maximum_bytes;self.maximum_file_bytes=maximum_file_bytes;self.selected_names=selected_names
-        self.out=Path(out);self.capture_dir=self.out;self.source=str(source);self.build=str(build);self.tasks={};self.seq=0;self.records=[];self.captures=[];self.retained=set();self.producers={};self.write_states={};self.write_projections={};self.append_chains={};self.budget_context={};self.metadata_states=[];self.rename_records=[];self.consumers=[];self.raw=None;self.deadline=0;self.pausing=False;self.root=None;self.root_code=None;self.failures=[];self.current_phase=None;self.unknown_stops={};self.capture_bytes=0;self.capture_entities={};self.content_capture_pool={};self.exclusive=None;self.wait_references=[]
+        self.out=Path(out);self.capture_dir=self.out;self.source=str(source);self.build=str(build);self.tasks={};self.seq=0;self.records=[];self.initialize_capture_state();self.retained=set();self.producers={};self.write_states={};self.write_projections={};self.append_chains={};self.budget_context={};self.metadata_states=[];self.rename_records=[];self.consumers=[];self.raw=None;self.deadline=0;self.pausing=False;self.root=None;self.root_code=None;self.failures=[];self.current_phase=None;self.unknown_stops={};self.capture_bytes=0;self.capture_entities={};self.content_capture_pool={};self.snapshot_telemetry=None;self.snapshot_telemetry_completed=None;self.snapshot_telemetry_failure=None;self.mremap_proof_active=False;self.mremap_barriers=0;self.mremapDeferred=None;self.exclusive=None;self.wait_references=[]
         self.lifetime_leases=None;self.lifetime_phase=None;self.lifetime_acquired={};self.lifetime_by_identity={};self.authority_observed=set()
         assert type(generated_vma_output) is bool and (not generated_vma_output or shared_tasks and capture_toolchain),'generated VMA requires existing actual shared-task/tool observation'
         self.generated_build_root=generated_vma_module.validated_build_root(generated_build_root)
@@ -637,7 +838,17 @@ class Observer:
             self.seq+=1;row=dict(row,sequence=self.seq,phase=self.current_phase,observedUnixNs=str(time.time_ns()),**(dict(observedMonotonicNs=str(time.monotonic_ns())) if getattr(self,'generated_vma_output',False) else {}));data=None
             if row.get('original',{}).get('storage'):
                 if row['kind']=='write-original':row['storageIdentity']=self.chunk_identity(row['original'])
-                else:assert any(capture['original']==row['original'] for capture in self.captures),'chunk reference lacks earlier write snapshot'
+                else:
+                    # Membership only. Producers append the row and return that same original,
+                    # but maps/peer captures can append more rows before the final emit, so the
+                    # live reference sits a few positions from the tail. Search a small fixed
+                    # recent window first, then fall back to the unchanged full forward scan.
+                    # 64 is a performance heuristic, not an admission/capture/role/maps bound.
+                    original=row['original']
+                    # Membership only. The index answers the exact same equality
+                    # predicate; a transient miss falls back to the full forward
+                    # scan, so admission strength and the assert text are identical.
+                    assert self.capture_present(original),'chunk reference lacks earlier write snapshot'
             elif getattr(self,'capture_content_entities',False) and row.get('kind') in ['fd-capture','prepared-build-input-original','write-original','toolchain-original'] and 'original' in row:
                 entity=self.register_capture_entity(row['original']);assert row.get('originalEntityIdentity',entity)==entity,'physical storage identity differs';row['originalEntityIdentity']=entity
             parts=self.raw_encoder.encode(row) if getattr(self,'indexed_raw_records',False) else [(json.dumps(row,sort_keys=True)+'\n').encode()]
@@ -840,7 +1051,7 @@ class Observer:
                 original=dict(path=name,bytes=offset,sha256=digest.hexdigest())
                 row=self.emit(dict(kind='prepared-build-input-original',path=path,identity=identity,original=original,originalEntityIdentity=self.register_capture_entity(original)))
                 inventory.update((json.dumps(dict(path=path,identity=identity,original=original),sort_keys=True)+'\n').encode())
-                self.captures.append(row);self.capture_bytes+=offset;self.retained.add(reader);self.prepared_inputs[path]=(row,reader,(offset,digest.hexdigest()));reader=None
+                self.append_capture(row);self.capture_bytes+=offset;self.retained.add(reader);self.prepared_inputs[path]=(row,reader,(offset,digest.hexdigest()));reader=None
             finally:
                 if reader is not None:os.close(reader)
         assert before==entries() and root_identity==(probe.identity(root.lstat()) if root.exists() else None),'prepared build input root/closed set or identity changed during snapshot'
@@ -940,12 +1151,23 @@ class Observer:
         source=os.fstat(reader)
         if getattr(self,'capture_content_entities',False) and offset==0 and stat.S_ISREG(source.st_mode) and source.st_size==size:
             self.check();number=len(self.captures);ledger=CaptureReservation(self)
-            manifest=chunk_store.snapshot(self.capture_dir,reader,number,ledger,self.check)
+            # Out-of-band counter sink. It is updated in place by the chunk store
+            # BEFORE each fsync it counts, so a deadline raised inside the manifest
+            # fsync still leaves the exact counters at the failure point in
+            # self.snapshot_telemetry for the existing phase-failure diagnostic.
+            # It is never a proof field, never in the manifest or the receipt.
+            telemetry=dict();self.snapshot_telemetry=telemetry
+            try:
+                manifest=chunk_store.snapshot(self.capture_dir,reader,number,ledger,self.check,telemetry=telemetry)
+            except BaseException:
+                self.snapshot_telemetry_failure=chunk_store.bounded_snapshot_telemetry(telemetry)
+                raise
             data=chunk_store.read_manifest(self.capture_dir,manifest,self.check)
             reference=dict(path='capture-'+str(number).zfill(4)+'.original',bytes=data['bytes'],sha256=data['sha256'],storage=dict(model='chunk-original-v1',manifest=manifest))
             physical_bytes=ledger.committed_bytes
             row=self.emit(dict(kind='write-original',original=reference))
-            self.captures.append(row);self.capture_bytes+=physical_bytes
+            self.append_capture(row);self.capture_bytes+=physical_bytes
+            self.snapshot_telemetry_completed=chunk_store.bounded_snapshot_telemetry(telemetry)
             return reference
         name='capture-'+str(len(self.captures)).zfill(4)+'.original';count=0;digest=hashlib.sha256()
         with (self.capture_dir/name).open('xb') as output:
@@ -954,7 +1176,7 @@ class Observer:
                 self.claim(len(block),category='capture-body',context=self.budget_context);output.write(block);count+=len(block);digest.update(block)
             output.flush();os.fsync(output.fileno())
         row=self.emit(dict(kind='write-original',original=dict(path=name,bytes=count,sha256=digest.hexdigest())))
-        self.captures.append(row);self.capture_bytes+=count;return row['original']
+        self.append_capture(row);self.capture_bytes+=count;return row['original']
     def fd_blocks(self,reader,size):
         # Streamed blocks stay a true boundary: callers bracket the full read
         # and full digest. Iterations only pay the cheap deadline/stdio check.
@@ -1252,7 +1474,7 @@ class Observer:
             if dependency:
                 binding,expected=dependency;assert expected['mode']==stat.S_IMODE(ident[2]) and (expected['bytes'],expected['sha256'])==data,'dependency actual held FD bytes differ from prepared snapshot'
             row=self.emit(dict(**({'dependency':dependency[0]} if dependency else {}),**storage,originalEntityIdentity=entity_identity,kind='fd-capture',role='readwrite-consumer' if rw_read else role,pid=pid,fd=fd,entrySequence=self.tasks[pid]['entry']['sequence'],path=target,identity=ident,original=ref,barrierSequence=barrier['sequence'],writers=writers))
-            self.captures.append(row);capture_fd=reader;self.retained.add(reader);reader=None
+            self.append_capture(row);capture_fd=reader;self.retained.add(reader);reader=None
             if role!='producer-close':self.tasks[pid]['releaseCaptureFd']=capture_fd
             if role=='producer-close':
                 previous=self.producers.get(tuple(ident[:2]))
@@ -1294,10 +1516,250 @@ class Observer:
             target=fdpath(pid,descriptor)
             if memory_policy.memory_fd(target):reason='proc-memory-write-descriptor'
             self.emit(dict(kind='executable-memory-write-fd',model=memory_policy.MODEL,pid=pid,entrySequence=record['sequence'],fd=descriptor,target=target))
+        # Bounded private-anonymous mremap capability. `decision()` still refuses
+        # every remap; this branch can only CLEAR that one reason, and only when
+        # the whole source range is proved under a real all-stop. Every failure
+        # path returns the original reason unchanged.
+        if reason=='memory-remap-outside-fixed-executable-mapping-scope':
+            proof=self.prove_private_anonymous_remap(pid,record)
+            if proof is _MREMAP_DEFERRED:
+                # Queued: the entry stays stopped and resume is blocked. This is
+                # NOT an admission and NOT a refusal; return without raising and
+                # without emitting an allow row.
+                return _MREMAP_DEFERRED
+            if proof is not None:
+                self.emit(dict(kind='executable-memory-remap-allowed',model=memory_policy.REMAP_MODEL,pid=pid,entrySequence=record['sequence'],**proof))
+                self.tasks[pid]['mremapPending']=dict(entrySequence=record['sequence'],**proof)
+                # Hold the exclusive slot and let ONLY this owner resume. Every
+                # same-MM peer stays in its tracing stop until the verified exit.
+                self.exclusive=(pid,record['sequence'])
+                self.emit(dict(kind='exclusive-remap-resume',model=memory_policy.REMAP_MODEL,pid=pid,
+                               entrySequence=record['sequence'],barrierSequence=proof['barrierSequence'],
+                               request='PTRACE_SYSCALL',signal=0))
+                reason=None
         if reason:
             self.emit(dict(kind='executable-memory-refused',model=memory_policy.MODEL,pid=pid,entrySequence=record['sequence'],reason=reason))
-            print('SDK_EXECUTABLE_MEMORY_REFUSED '+json.dumps(dict(arch=record['arch'],nr=record['nr'],pid=pid,entrySequence=record['sequence'],reason=reason),sort_keys=True,separators=(',',':')),file=sys.stderr,flush=True)
+            # Diagnostic provenance ONLY on the existing fatal refusal branch. The
+            # retained raw event row above and the raised error below are unchanged.
+            refusedCaller=refused_caller_snapshot(pid,record,self.check)
+            print('SDK_EXECUTABLE_MEMORY_REFUSED '+json.dumps(dict(arch=record['arch'],nr=record['nr'],pid=pid,entrySequence=record['sequence'],reason=reason,refusedCaller=refusedCaller),sort_keys=True,separators=(',',':')),file=sys.stderr,flush=True)
             raise ValueError('executable memory policy refused before resume: '+reason)
+
+    def prove_private_anonymous_remap(self,pid,record,*,phase='entry'):
+        """Prove + retain one mremap as an exclusive private-anonymous resize.
+
+        Returns the proof dict when EVERY precondition holds, else None. Never
+        raises for a failed proof: the caller keeps the original refusal.
+
+        The all-stop is taken ONCE here, but the transaction is not released at
+        the syscall entry: the caller installs `exclusive=(pid, entrySequence)`
+        and only clears it after the actual syscall EXIT maps are verified, so
+        every same-MM peer stays in its tracing stop for the whole kernel call.
+        """
+        maximum=getattr(self,'maximum_file_bytes',None)
+        candidate,reason,geometry=memory_policy.remap_shape(record['arch'],record['nr'],record['args'],maximum)
+        if not candidate:return None
+        interval=memory_policy.remap_range(geometry['oldAddress'],geometry['oldSize'])
+        if interval is None:return None
+        low,high=interval
+        # A nested enforcement while a barrier is already settling must not
+        # re-enter it; the outer pass owns the stop universe. DEFER instead of
+        # declining: the entry stays stopped, the barrier completes, and the
+        # proof runs unchanged from the quiescent dispatcher. A failed deferred
+        # proof still surfaces the ORIGINAL reason, so no admission is gained.
+        if getattr(self,'pausing',False):
+            # Only an eligible entry may be deferred; if it cannot be queued the
+            # caller must fail closed with the ORIGINAL reason.
+            if self.defer_mremap_proof(pid,record):return _MREMAP_DEFERRED
+            return None
+        if getattr(self,'mremap_proof_active',False):return None
+        generated=getattr(self,'generated_vma',None)
+        if generated is None or getattr(generated,'mm',None) is None:return None
+        if getattr(self,'exclusive',None) is not None:return None
+        self.mremap_proof_active=True
+        try:
+            barrier=self.barrier()
+            domain,members=generated.mapping_domain(pid,barrier)
+            # Unknown peers: every cohort TGID must expose exactly the tracked
+            # stopped task set, so no untracked thread can mutate this MM.
+            if not self.mremap_cohort_closed(pid,members,barrier):return None
+            owner_maps=None;peers=[]
+            for member in members:
+                captured,mappings=self.tool_maps(member)
+                ok,why,covered,executable=memory_policy.cover_nonexec_range(mappings,low,high)
+                if not ok:return None
+                if member==pid:owner_maps=captured['original']
+                else:peers.append(dict(pid=member,original=captured['original']))
+            if owner_maps is None:return None
+            return dict(phase=phase,barrierSequence=barrier['sequence'],memoryDomain=domain,
+                        memoryDomainMembers=members,range=[low,high],oldSize=geometry['oldSize'],
+                        newSize=geometry['newSize'],flags=geometry['flags'],
+                        mayMove=geometry['mayMove'],coverageComplete=True,executableBytes=0,
+                        ownerMaps=owner_maps,cohortMaps=peers)
+        finally:
+            self.mremap_proof_active=False
+
+    def defer_mremap_proof(self,pid,record):
+        """Queue one ELIGIBLE potential mremap for proof after the barrier settles.
+
+        Returns True only when the entry was actually queued. Returns False for
+        every ineligible case, and the caller then refuses with the original
+        reason (fail closed).
+
+        ORDERING FACT (verified at the call site): `enforce_executable_memory`
+        runs at :2777 BEFORE `task['entry']=record` at :2778, so during a barrier
+        settle the task's `entry` is still None. The candidate therefore comes
+        from `record`, not from `task['entry']`, and the queue pins that exact
+        record object plus its sequence. At proof time the two must agree.
+        """
+        if not self.mremap_proof_eligible(record):return False
+        task=self.tasks.get(pid)
+        if task is None or task.get('exited') or not task.get('stopped'):return False
+        if task.get('entry') is not None and task['entry'].get('sequence')!=record.get('sequence'):return False
+        if getattr(self,'mremapDeferred',None) is None:self.mremapDeferred={}
+        existing=self.mremapDeferred.get(pid)
+        if existing is not None:
+            assert existing['entrySequence']==record['sequence'],'two distinct deferred mremap entries for one task'
+            return True
+        self.mremapDeferred[pid]=dict(entrySequence=record['sequence'],record=record)
+        return True
+
+    def mremap_proof_eligible(self,record):
+        """Cheap, side-effect-free eligibility gate shared by both paths."""
+        maximum=getattr(self,'maximum_file_bytes',None)
+        candidate,_reason,_geometry=memory_policy.remap_shape(record['arch'],record['nr'],record['args'],maximum)
+        if not candidate:return False
+        if memory_policy.remap_range(record['args'][0],record['args'][1]) is None:return False
+        generated=getattr(self,'generated_vma',None)
+        if generated is None or getattr(generated,'mm',None) is None:return False
+        if getattr(self,'exclusive',None) is not None:return False
+        return True
+
+    def capture_deferred_mremap(self):
+        """Prove one queued entry from the quiescent dispatcher.
+
+        A queue entry that no longer matches the stopped syscall entry is a
+        FAIL-CLOSED condition, never a silent drop: dropping could resume an
+        unproved mremap entry.
+        """
+        if not getattr(self,'mremapDeferred',None):return False
+        if self.pausing or self.exclusive is not None or getattr(self,'mremap_proof_active',False):return False
+        for pid in sorted(self.mremapDeferred):
+            pending=self.mremapDeferred[pid]
+            task=self.tasks.get(pid)
+            if task is None or task.get('exited'):
+                del self.mremapDeferred[pid]
+                raise ValueError('deferred mremap task vanished before proof')
+            if not task.get('stopped'):
+                del self.mremapDeferred[pid]
+                raise ValueError('deferred mremap task is not stopped before proof')
+            entry=task.get('entry')
+            record=pending['record']
+            if entry is None or entry.get('sequence')!=pending['entrySequence'] or record.get('sequence')!=pending['entrySequence']:
+                del self.mremapDeferred[pid]
+                raise ValueError('deferred mremap entry changed before proof')
+            del self.mremapDeferred[pid]
+            proof=self.prove_private_anonymous_remap(pid,record,phase='deferred')
+            if proof is None:
+                self.emit(dict(kind='executable-memory-refused',model=memory_policy.MODEL,pid=pid,
+                               entrySequence=record['sequence'],
+                               reason='memory-remap-outside-fixed-executable-mapping-scope'))
+                raise ValueError('executable memory policy refused before resume: '
+                                 'memory-remap-outside-fixed-executable-mapping-scope')
+            self.emit(dict(kind='executable-memory-remap-allowed',model=memory_policy.REMAP_MODEL,
+                           pid=pid,entrySequence=record['sequence'],deferred=True,**proof))
+            self.tasks[pid]['mremapPending']=dict(entrySequence=record['sequence'],**proof)
+            self.exclusive=(pid,record['sequence'])
+            self.emit(dict(kind='exclusive-remap-resume',model=memory_policy.REMAP_MODEL,pid=pid,
+                           entrySequence=record['sequence'],barrierSequence=proof['barrierSequence'],
+                           request='PTRACE_SYSCALL',signal=0))
+            return True
+        return False
+
+    def mremap_cohort_closed(self,pid,members,barrier):
+        """Global all-stop closure PLUS exact same-MM peer ownership.
+
+        `members` is the generated-VMA memory-domain cohort (same CLONE_VM
+        domain), NOT every live process: an independent Ninja/clang process has
+        its own address space and cannot mutate this MM. The global barrier must
+        still cover every live task and every live task must be in a stopped 't'
+        state, so no independent process can fork/exec or change mappings while
+        we act either.
+        """
+        if not isinstance(members,(list,tuple)) or not members:return False
+        ownership=barrier.get('taskOwnership') or []
+        if [row['tid'] for row in ownership]!=list(barrier.get('pids') or []):return False
+        live=sorted(p for p,row in self.tasks.items() if not row.get('exited'))
+        # Global closure: the barrier covers the entire tracked live universe.
+        if list(barrier.get('pids') or [])!=live:return False
+        generated=getattr(self,'generated_vma',None);mm=getattr(generated,'mm',None)
+        if mm is None:return False
+        # Every live task must have a real memory-domain record (cloneVM tracking),
+        # so an unmodelled process can never hide inside this phase.
+        if sorted(mm.domains)!=live:return False
+        domain=mm.domains.get(pid)
+        if domain is None:return False
+        same=sorted(p for p,value in mm.domains.items() if value==domain)
+        if same!=sorted(members):return False
+        for member in members:
+            row=self.tasks.get(member)
+            if row is None or not row.get('stopped') or row.get('exited'):return False
+            tgid=row.get('tgid',member)
+            try:threads=sorted(int(name) for name in os.listdir('/proc/'+str(tgid)+'/task'))
+            except OSError:return False
+            known=sorted(p for p,other in self.tasks.items() if not other.get('exited') and other.get('tgid',p)==tgid)
+            if threads!=known:return False
+        return True
+
+    def mremap_maps(self,pid):
+        """One bounded complete /proc/<pid>/maps read, parsed; None on failure."""
+        try:
+            with open('/proc/'+str(pid)+'/maps','rb') as source:raw=source.read(4*1024**2+1)
+        except OSError:return None
+        if len(raw)>4*1024**2:return None
+        try:return bindings.parse_proc_maps(raw)
+        except (ValueError,AssertionError):return None
+
+    def verify_private_anonymous_remap(self,pid,entry,record):
+        """Verify the ACTUAL kernel result, then close the exclusive transaction.
+
+        Runs only while every same-MM peer is still stopped: the entry barrier
+        plus `exclusive` held them across the whole kernel call. On any doubt the
+        assertion fires BEFORE the exclusive slot is released, so the phase ends
+        unclosed instead of silently accepted.
+        """
+        pending=self.tasks[pid].pop('mremapPending',None)
+        if pending is None:return None
+        assert self.exclusive==(pid,entry['sequence']),'remap exit lacks its exclusive owner'
+        assert record['entrySequence']==pending['entrySequence'],'remap exit/entry sequence differs'
+        if record['isError'] or not isinstance(record['result'],int) or record['result']<0:
+            self.emit(dict(kind='executable-memory-remap-closed',model=memory_policy.REMAP_MODEL,
+                           pid=pid,entrySequence=entry['sequence'],exitSequence=record['sequence'],
+                           memoryDomain=pending['memoryDomain'],kernelError=record['result']))
+            self.exclusive=None
+            return None
+        low,high=pending['range'];base=record['result']
+        assert base>0 and base%4096==0,'remap returned an unaligned base'
+        new_high=base+pending['newSize']
+        assert new_high<=1<<64,'remap result range overflow'
+        barrier=self.barrier()
+        owner_maps=None;peers=[]
+        for member in pending['memoryDomainMembers']:
+            captured,mappings=self.tool_maps(member)
+            ok,reason,covered,executable=memory_policy.cover_nonexec_range(mappings,base,new_high)
+            assert ok,'remap post-exit destination is not private anonymous non-executable: '+str(reason)
+            assert executable==0,'remap post-exit destination contains executable bytes'
+            if member==pid:owner_maps=captured['original']
+            else:peers.append(dict(pid=member,original=captured['original']))
+        assert owner_maps is not None,'remap owner maps missing'
+        self.emit(dict(kind='executable-memory-remap-verified',model=memory_policy.REMAP_MODEL,
+                       pid=pid,entrySequence=entry['sequence'],exitSequence=record['sequence'],
+                       barrierSequence=barrier['sequence'],memoryDomain=pending['memoryDomain'],
+                       memoryDomainMembers=pending['memoryDomainMembers'],
+                       oldRange=[low,high],newBase=base,newRange=[base,new_high],
+                       coverageComplete=True,executableBytes=0,ownerMaps=owner_maps,cohortMaps=peers))
+        self.exclusive=None
+        return base
 
     def lifetime_open(self,pid,path):
         """Open the actual lexical target through the tracee's own root.
@@ -1425,7 +1887,7 @@ class Observer:
         assert offset==before[3] and before==probe.identity(os.fstat(reader)),'tool FD changed during capture'
         original=dict(path=name,bytes=offset,sha256=digest.hexdigest())
         row=self.emit(dict(kind='toolchain-original',captureKind='file',observedPath=observed_path,identity=before,original=original))
-        self.captures.append(row);self.capture_bytes+=offset;self.tool_original_cache[tuple(before)]=row
+        self.append_capture(row);self.capture_bytes+=offset;self.tool_original_cache[tuple(before)]=row
         return row
     def tool_mountinfo_original(self,pid,namespace_identity,data):
         digest=hashlib.sha256(data).hexdigest();key=(tuple(namespace_identity),digest)
@@ -1437,7 +1899,7 @@ class Observer:
                 for at in range(0,len(data),65536):self.check();block=data[at:at+65536];self.claim(len(block),category='capture-body');output.write(block)
                 output.flush();os.fsync(output.fileno())
             reference=dict(path=name,bytes=len(data),sha256=digest)
-            capture=self.emit(dict(kind='toolchain-original',captureKind='mountinfo',observedPid=pid,original=reference));self.captures.append(capture);self.capture_bytes+=len(data);self.tool_provider_cache[key]=reference
+            capture=self.emit(dict(kind='toolchain-original',captureKind='mountinfo',observedPid=pid,original=reference));self.append_capture(capture);self.capture_bytes+=len(data);self.tool_provider_cache[key]=reference
         return reference
     def capture_process_authority(self,pid,role,event_sequence=None):
         barrier=self.barrier()
@@ -1531,7 +1993,7 @@ class Observer:
                     failure=error if failure is None else failure
             if failure is not None:raise failure
             # Emitted after the frame: emit pays its own full sweeps.
-            row=self.emit(pending);self.captures.append(row)
+            row=self.emit(pending);self.append_capture(row)
         mappings=bindings.parse_proc_maps(bytes(data));memory_policy.validate_mappings(mappings)
         return row,mappings
     def tool_maps(self,pid):
@@ -1546,7 +2008,7 @@ class Observer:
                 self.claim(len(block),category='capture-body');output.write(block);data.extend(block);digest.update(block)
             output.flush();os.fsync(output.fileno())
         original=dict(path=name,bytes=len(data),sha256=digest.hexdigest())
-        row=self.emit(dict(kind='toolchain-original',captureKind='maps',observedPid=pid,original=original));self.captures.append(row);self.capture_bytes+=len(data)
+        row=self.emit(dict(kind='toolchain-original',captureKind='maps',observedPid=pid,original=original));self.append_capture(row);self.capture_bytes+=len(data)
         mappings=bindings.parse_proc_maps(bytes(data));memory_policy.validate_mappings(mappings)
         return row,mappings
     def tool_mapping(self,pid,mapping,parent,barrier,actual_fd=None,*,required=False,permitted=None):
@@ -1735,6 +2197,11 @@ class Observer:
             if self.exclusive and pid!=self.exclusive[0]:continue
             if row.get('vforkHeldChild') is not None:continue
             if row.get('identityNoopPending') or row.get('clone3Pending') or row.get('btiPending'):continue
+            if getattr(self,'mremapDeferred',None) and pid in self.mremapDeferred:continue
+            # Never resume a pid whose initial/late authority sample has not been
+            # captured yet: the next pending_captures() drains it at this same
+            # held stop, so this defers real work instead of rejecting anything.
+            if row.get('authorityPending'):continue
             if row['stopped'] and not row['exited']:
                 terminal=row.get('terminalAuthority')
                 if terminal:
@@ -1825,6 +2292,94 @@ class Observer:
     def phase_progress_ns(self,progress):
         try:return int(progress.now()*1e9)
         except BaseException:return None
+    # ---- bounded per-owned-window diagnostic -------------------------------
+    #
+    # Motivation: in the failing run a full lease sweep was entered with only
+    # 171.610us of the 1s owned window left, and the retained 8-span ring could not
+    # answer "what ran in the first ~790ms of this window". This records a SMALL
+    # fixed baseline when a window is armed and reports per-method count/duration
+    # DELTAS relative to it while that window is still the active one.
+    #
+    # Deliberate limits, so the reader cannot over-read the numbers:
+    #   * no per-event list, no per-call dict, no extra clock read or syscall on the
+    #     hot path: the deltas ride on the counters instrument() already updates;
+    #   * the numbers are INCLUSIVE deltas. A parent call that started before the arm
+    #     and is still running contributes its pre-arm time to the delta, so this is
+    #     never an exclusive per-window decomposition;
+    #   * only the innermost method active at arm time is known, so crossedMethods
+    #     lists exactly that one name and says so;
+    #   * the field is emitted ONLY while the window is genuinely active and its
+    #     deadline still matches the recorded one - a closed window, a later phase,
+    #     or a deadline mismatch never reports stale data;
+    #   * nothing is written to the raw evidence stream;
+    #   * a real TimeoutError / KeyboardInterrupt / SystemExit is re-raised
+    #     untouched: only ordinary diagnostic-internal faults are suppressed.
+    WINDOW_METHOD_KEYS=PHASE_PROGRESS_BUCKETS
+
+    def window_arm(self,deadline_ns):
+        """Record a bounded baseline for the window being armed right now.
+
+        Reads no kernel state, takes no lease, checks nothing, and returns nothing.
+        A previous baseline is dropped first, so a failed arm cannot leave stale
+        data behind for the next window.
+        """
+        self._window_diag=None
+        try:
+            progress=self.phase_progress()
+            if progress is None:return None
+            baseline={name:tuple(progress.buckets[name]) for name in self.WINDOW_METHOD_KEYS
+                      if name in progress.buckets}
+            self._window_diag=dict(deadlineNs=int(deadline_ns),
+                                   phase=getattr(self,'current_phase',None),
+                                   baseline=baseline,
+                                   activeAtArm=getattr(progress,'active',None),
+                                   armedSeq=getattr(progress,'events',0))
+        except (TimeoutError,KeyboardInterrupt,SystemExit):
+            raise                      # an owned deadline must never be hidden here
+        except BaseException:
+            self._window_diag=None     # ordinary diagnostic fault: stay inert
+        return None
+
+    def window_summary(self):
+        """Inclusive per-method deltas for the CURRENT armed window, or None.
+
+        Returns None unless the owned window is actually active and its deadline
+        still equals the one recorded at arm time, so a closed window, a later
+        phase, or a re-armed window can never report stale numbers.
+        """
+        try:
+            diag=getattr(self,'_window_diag',None)
+            progress=self.phase_progress()
+            if diag is None or progress is None:return None
+            active,deadline,_parent=self.owned_window_state()
+            if not active or deadline is None:return None
+            if getattr(self,'current_phase',None)!=diag.get('phase'):return None
+            if int(deadline)!=diag['deadlineNs']:return None   # owned_window_state already returns ns
+            rows=[];crossed=[]
+            for name in self.WINDOW_METHOD_KEYS:
+                base=diag['baseline'].get(name)
+                if base is None:continue
+                calls,total,maximum=progress.buckets[name]
+                dcalls=calls-base[0];dtotal=total-base[1]
+                if dcalls==0 and dtotal==0:continue
+                rows.append(dict(method=name,calls=dcalls,totalNs=dtotal))
+                if name==diag.get('activeAtArm'):crossed.append(name)
+            return dict(windowDeadlineNs=diag['deadlineNs'],armedEventCount=diag['armedSeq'],
+                        methods=rows,crossedMethods=crossed,
+                        knownInnermostAtArm=diag.get('activeAtArm'),
+                        semantics=('inclusive deltas since window arm; overlapping and NOT additive. '
+                                   'A parent call already running at arm time contributes its pre-arm '
+                                   'time, so this is not an exclusive per-window decomposition. '
+                                   'Only the innermost active method at arm time is known; enclosing '
+                                   'calls that were already running are not separately marked, and '
+                                   'Still-running calls enter these buckets only when they complete; '
+                                   'their partial duration is not included.'),
+                        spanRing='last %d retained spans remain the only per-operation view' % PHASE_PROGRESS_MAXIMUM_SPANS)
+        except (TimeoutError,KeyboardInterrupt,SystemExit):
+            raise                      # never hide an owned deadline or interpreter exit
+        except BaseException:
+            return None
+
     def instrument(self,name,function,*arguments,**keywords):
         """Inclusive duration of one existing call; return/exception identity kept.
 
@@ -1933,7 +2488,26 @@ class Observer:
         owned_window=(window_active,
                       None if window_deadline is None else str(window_deadline),
                       None if window_parent is None else str(window_parent))
+        # Optional bounded per-window diagnostic. Present only after a window was
+        # armed; a failure to build it must never hide the primary diagnostic.
+        payload_window=self.window_summary()
         payload=dict(schemaVersion=1,kind=kind,authorityVerified=False,phase=self.current_phase,phaseStartedMonotonicNs=str(started) if started is not None else None,phaseDeadlineMonotonicNs=str(deadline) if deadline is not None else None,nowMonotonicNs=str(now_ns) if now_ns is not None else None,elapsedNs=str(now_ns-started) if now_ns is not None and started is not None else None,remainingNs=str(deadline-now_ns) if deadline is not None and now_ns is not None else None,globalRawSequence=getattr(self,'seq',0),phaseTicks=getattr(progress,'ticks',0) if progress is not None else 0,eventCount=getattr(progress,'events',0) if progress is not None else 0,waitReturnCount=getattr(progress,'waits',0) if progress is not None else 0,lastBoundary=getattr(progress,'last_boundary',None) if progress is not None else None,lastWait=getattr(progress,'last_wait',None) if progress is not None else None,taskCounts=state_counts,exclusiveOwnerPid=exclusive[0] if isinstance(exclusive,tuple) and len(exclusive)==2 else None,exclusiveOwnerSequence=exclusive[1] if isinstance(exclusive,tuple) and len(exclusive)==2 else None,terminalFocusPid=terminal,generatedVmaOwner=getattr(generated,'owner',None) if generated is not None else None,lifetimeLeaseActive=lifecycle is not None,lifetimeLeaseCount=len(lifecycle.fds) if lifecycle is not None else 0,activeInclusiveMethod=getattr(progress,'active',None) if progress is not None else None,activeInclusiveMethodStartedNs=str(getattr(progress,'active_started',None)) if progress is not None and getattr(progress,'active_started',None) is not None else None,lastFailedInclusiveMethod=getattr(progress,'failed',None) if progress is not None else None,lastFailedInclusiveMethodStartedNs=str(getattr(progress,'failed_started',None)) if progress is not None and getattr(progress,'failed_started',None) is not None else None,inclusiveBuckets={name:dict(calls=value[0],totalNs=value[1],maxNs=value[2]) for name,value in (progress.buckets.items() if progress is not None else [])},pendingCaptureSubsteps={name:dict(calls=value[0],totalNs=value[1],maxNs=value[2]) for name,value in (getattr(progress,'substeps',{}) or {}).items()},pendingCaptureSubstepLast=getattr(progress,'substep_last',None),pendingCaptureSpans=list(getattr(progress,'spans',()) or ()),pendingCaptureSpansDropped=getattr(progress,'spans_dropped',0),mapsBodyBytesLast=getattr(progress,'maps_bytes_last',0),mapsBodyBytesMax=getattr(progress,'maps_bytes_max',0),mapsBodyCount=getattr(progress,'maps_bodies',0),syscallStops=getattr(progress,'syscall_summary',lambda:None)() if progress is not None else None,ownedWindowActive=owned_window[0],ownedWindowDeadlineNs=owned_window[1],ownedWindowParentNs=owned_window[2],inclusiveDurationNote='inclusive nested durations; buckets overlap by design; non-additive',failure=bool(failure))
+        if payload_window is not None:payload['ownedWindowActivity']=payload_window
+        # Out-of-band chunk-store counters for the active/failed snapshot. Bounded
+        # scalars only, diagnostics-only, never read by any verifier and never a
+        # proof field: presence here grants no authority over captured bytes.
+        try:
+            snapshot=dict(active=None,completed=None,failed=None)
+            active=getattr(self,'snapshot_telemetry',None)
+            if active:snapshot['active']=chunk_store.bounded_snapshot_telemetry(active)
+            completed=getattr(self,'snapshot_telemetry_completed',None)
+            if completed:snapshot['completed']=dict(completed)
+            failed=getattr(self,'snapshot_telemetry_failure',None)
+            if failed:snapshot['failed']=dict(failed)
+            if snapshot['active'] is not None or snapshot['completed'] is not None or snapshot['failed'] is not None:
+                snapshot['authority']='diagnostic-only: counters are out-of-band and grant no capture/durability authority'
+                payload['snapshotTelemetry']=snapshot
+        except BaseException:pass
         return payload
     def publish_phase_progress(self,kind,failure=False):
         """Bounded stderr diagnostic from held state only; never raises.
@@ -2034,13 +2608,24 @@ class Observer:
                 assert task.pop('capture')==(None,'generated-vma-before'),'unsupported capture while generated mapping dirty'
                 capture=self.instrument_substep('generated_vma_capture',self.generated_vma.capture,pid);task['entry']['captureSequence']=capture['sequence'];self.exclusive=(pid,task['entry']['sequence']);self.emit(dict(kind='exclusive-generated-vma-resume',pid=pid,entrySequence=task['entry']['sequence'],captureSequence=capture['sequence']))
             return
-        if self.instrument_substep('capture_queued_identity',self.capture_queued_identity):return
-        if getattr(self,'terminal_exit_evidence',False) and any(t.get('terminalAuthority') and not t['terminalAuthority']['closed'] for t in self.tasks.values()):
-            self.instrument_substep('close_terminal_authorities',self.close_terminal_authorities,self.barrier())
+        if self.capture_deferred_mremap():return
+        # INITIAL/LATE process-authority samples are a PRECONDITION for admitting
+        # any syscall from that pid (the consumer's interval requires
+        # `pid in samples` before it will replay a syscall row). This drain used
+        # to sit AFTER the first `capture_queued_identity` call, which can return
+        # early holding an exclusive slot; the pending pid was then resumed and
+        # produced a syscall row before its `initial-child` sample existed, which
+        # the consumer correctly rejected as "syscall resumed outside live
+        # authority boundary". The sample is captured at the SAME already-held
+        # stop (capture_process_authority takes its own all-stop barrier), so this
+        # is a scheduling move of real evidence, not synthesised data.
         while self.process_authority:
             selected=next(((pid,row) for pid,row in self.tasks.items() if row.get('authorityPending') and not row['exited']),None)
             if selected is None:break
             pid,task=selected;role,event_sequence=task['authorityPending'].pop(0);self.instrument_substep('capture_process_authority',self.capture_process_authority,pid,role,event_sequence)
+        if self.instrument_substep('capture_queued_identity',self.capture_queued_identity):return
+        if getattr(self,'terminal_exit_evidence',False) and any(t.get('terminalAuthority') and not t['terminalAuthority']['closed'] for t in self.tasks.values()):
+            self.instrument_substep('close_terminal_authorities',self.close_terminal_authorities,self.barrier())
         if self.instrument_substep('capture_queued_identity',self.capture_queued_identity):return
         self.instrument_substep('checkpoint_append_boundaries',self.checkpoint_append_boundaries)
         while self.capture_toolchain:
@@ -2366,6 +2951,10 @@ class Observer:
                 self.complete_bti(pid,old,record);return
             if self.generated_vma and pid in self.generated_vma.pending:
                 self.instrument_substep('generated_vma_finish',self.generated_vma.finish,pid,old,record);self.emit(dict(kind='exclusive-captured-syscall-exit',pid=pid,entrySequence=old['sequence'],result=record['result'],isError=record['isError']));self.exclusive=None;return
+            if task.get('mremapPending'):
+                # Proven private-anonymous resize: verify the ACTUAL kernel result
+                # against fresh maps before anything else consumes this exit.
+                self.instrument_substep('generated_vma_remap',self.verify_private_anonymous_remap,pid,old,record)
             transition=task.pop('setresuidTransition',None)
             if transition is not None:
                 try:
@@ -2458,15 +3047,30 @@ class Observer:
         ready_read,ready_write=os.pipe() if self.process_authority else (None,None)
         read_fd,write_fd=os.pipe();stdout_read,stdout_write=os.pipe();stderr_read,stderr_write=os.pipe();child=os.fork()
         if child==0:
+            stage='setup'
             try:
                 os.close(write_fd);os.close(stdout_read);os.close(stderr_read)
                 close_child_observer_retained(self.retained)
                 if self.process_authority:
-                    os.close(ready_read);tool_providers.restrict_child_authority();os.write(ready_write,b'R');os.close(ready_write)
-                assert os.read(read_fd,1)==b'x';os.close(read_fd)
-                os.dup2(stdout_write,1);os.dup2(stderr_write,2);os.close(stdout_write);os.close(stderr_write)
-                os.chdir(cwd if cwd is not None else self.source);os.execve(actual_executable(command),command,env if env is not None else {'PATH':'/usr/bin:/bin','LANG':'C','LC_ALL':'C','HOME':str(self.out),'TMPDIR':str(self.out)})
-            except BaseException:os._exit(70)
+                    stage='authority';os.close(ready_read);tool_providers.restrict_child_authority();os.write(ready_write,b'R');os.close(ready_write)
+                stage='release';assert os.read(read_fd,1)==b'x';os.close(read_fd)
+                stage='stdio';os.dup2(stdout_write,1);os.dup2(stderr_write,2);os.close(stdout_write);os.close(stderr_write)
+                stage='chdir';os.chdir(cwd if cwd is not None else self.source)
+                stage='exec';os.execve(actual_executable(command),command,env if env is not None else {'PATH':'/usr/bin:/bin','LANG':'C','LC_ALL':'C','HOME':str(self.out),'TMPDIR':str(self.out)})
+            except BaseException as failure:
+                # OPAQUE child-setup diagnostic: fixed stage name + exception
+                # CLASS + numeric errno ONLY. Deliberately excludes the
+                # exception text, argv, env, paths and any token/secret. Exit
+                # status and control flow are unchanged (still 70).
+                code = getattr(failure,'errno',None)
+                code = code if type(code) is int else -1
+                try:
+                    os.write(2,b'SDK_CHILD_SETUP_FAILED stage='+stage.encode('ascii')+
+                             b' type='+type(failure).__name__.encode('ascii','replace')[:48]+
+                             b' errno='+str(code).encode('ascii')+b'\n')
+                except BaseException:
+                    pass
+                os._exit(70)
         os.close(stdout_write);os.close(stderr_write);self.pump_errors=[]
         pumps=[BoundedPipePump(stdout_read,stdout_path,self.maximum_stdio_bytes,lambda count:self.claim(count,category='stdio'),self.pump_errors),BoundedPipePump(stderr_read,stderr_path,self.maximum_stdio_bytes,lambda count:self.claim(count,category='stdio'),self.pump_errors)]
         root_pgid=os.getpgid(child);self.root=child;self.tasks[child]=dict(stopped=False,exited=False,entry=None,initial=True,**(dict(authorityPending=[('initial-root',None)]) if self.process_authority else {}),**(dict(tgid=child,fdTable=child) if self.shared_tasks else {}))
@@ -2479,7 +3083,7 @@ class Observer:
             for pump in pumps:pump.start()
             if self.process_authority:
                 os.close(ready_write);ready_write=None;self.check();remaining=max(0,self.deadline-time.monotonic());readable,_,_=select.select([ready_read],[],[],remaining);self.check();assert readable and os.read(ready_read,1)==b'R','child authority setup did not complete before release';os.close(ready_read);ready_read=None
-            self.emit(dict(kind='owned-root-binding',pid=child,command=command,**(dict(toolchainLifetimeModel=LIFETIME_MODEL,executableMemoryPolicy=memory_policy.MODEL,clone3ArgsModel='stopped-clone3-args-v1',btiHardeningModel='held-rx-bti-hardening-v1') if self.capture_toolchain else {}),**(dict(rawRecordModel=probe.RAW_RECORD_MODEL_V2)if self.indexed_raw_records else {}),backend='ptrace-all-stop-process-v1',**(dict(chunkOriginalStorageModel='chunk-original-v1') if self.capture_content_entities else {}),captureOriginalEntityModel='same-phase-content-entity-v2' if self.capture_content_entities else 'same-phase-producer-original-v1',**(dict(mapsOriginalEntityModel='same-phase-maps-content-entity-v1')if getattr(self,'capture_maps_content_entities',False)else {}),**(dict(generatedVmaModel=self.generated_vma.model,**(dict(generatedVmaMetadataModel=generated_vma_module.RETAINED_METADATA_MODEL)if getattr(self,'retained_generated_metadata',False)else {}),generatedVmaBuildRoot=self.build,generatedVmaParentDeadlineMonotonicNs=str(int(self.waiter.parent_deadline*1e9))) if self.generated_vma else {}),**(dict(stoppedWriterAliasModel='all-stop-exclusive-write-aliases-v1') if getattr(self,'stopped_writer_aliases',False) else {}),**(dict(optionalIoUringModel='explicit-kernel-enosys-denial-v2' if getattr(self,'io_uring_enosys_v2',False) else 'explicit-kernel-enosys-denial-v1') if self.deny_optional_io_uring else {}),**(dict(setresuidNoopModel='actual-stopped-setresuid-noop-v1') if self.verified_setresuid_noop else {}),**(dict(setresIdentityNoopModel='actual-stopped-setres-identity-noop-queued-v2' if getattr(self,'queued_identity_noop',False) else 'actual-stopped-setres-identity-noop-v1') if getattr(self,'verified_identity_noop',False) else {}),**(dict(processAuthorityModel=tool_providers.AUTHORITY_MODEL) if self.process_authority else {}),**(dict(exitAuthorityModel='actual-selected-exit-stop-held-terminal-peers-v2'if getattr(self,'serialize_terminal_syscalls',False)else 'actual-selected-exit-stop-before-peer-barrier-v1') if getattr(self,'terminal_exit_evidence',False) else {}),**(dict(taskOwnershipModel='all-tracked-tids-shared-fd-v1',tgid=child,fdTable=child) if self.shared_tasks else {})));single.trace(SEIZE,child,0,OPTIONS);single.trace(INTERRUPT,child);pid,status=self.wait_one();self.event(pid,status,False);self.pending_captures();os.write(write_fd,b'x');os.close(write_fd);write_fd=None;self.resume()
+            self.emit(dict(kind='owned-root-binding',pid=child,command=command,**(dict(toolchainLifetimeModel=LIFETIME_MODEL,executableMemoryPolicy=memory_policy.MODEL,clone3ArgsModel='stopped-clone3-args-v1',btiHardeningModel='held-rx-bti-hardening-v1',**(dict(remapCapabilityModel=memory_policy.REMAP_MODEL) if self.generated_vma else {})) if self.capture_toolchain else {}),**(dict(rawRecordModel=probe.RAW_RECORD_MODEL_V2)if self.indexed_raw_records else {}),backend='ptrace-all-stop-process-v1',**(dict(chunkOriginalStorageModel='chunk-original-v1') if self.capture_content_entities else {}),captureOriginalEntityModel='same-phase-content-entity-v2' if self.capture_content_entities else 'same-phase-producer-original-v1',**(dict(mapsOriginalEntityModel='same-phase-maps-content-entity-v1')if getattr(self,'capture_maps_content_entities',False)else {}),**(dict(generatedVmaModel=self.generated_vma.model,**(dict(generatedVmaMetadataModel=generated_vma_module.RETAINED_METADATA_MODEL)if getattr(self,'retained_generated_metadata',False)else {}),generatedVmaBuildRoot=self.build,generatedVmaParentDeadlineMonotonicNs=str(int(self.waiter.parent_deadline*1e9))) if self.generated_vma else {}),**(dict(stoppedWriterAliasModel='all-stop-exclusive-write-aliases-v1') if getattr(self,'stopped_writer_aliases',False) else {}),**(dict(optionalIoUringModel='explicit-kernel-enosys-denial-v2' if getattr(self,'io_uring_enosys_v2',False) else 'explicit-kernel-enosys-denial-v1') if self.deny_optional_io_uring else {}),**(dict(setresuidNoopModel='actual-stopped-setresuid-noop-v1') if self.verified_setresuid_noop else {}),**(dict(setresIdentityNoopModel='actual-stopped-setres-identity-noop-queued-v2' if getattr(self,'queued_identity_noop',False) else 'actual-stopped-setres-identity-noop-v1') if getattr(self,'verified_identity_noop',False) else {}),**(dict(processAuthorityModel=tool_providers.AUTHORITY_MODEL) if self.process_authority else {}),**(dict(exitAuthorityModel='actual-selected-exit-stop-held-terminal-peers-v2'if getattr(self,'serialize_terminal_syscalls',False)else 'actual-selected-exit-stop-before-peer-barrier-v1') if getattr(self,'terminal_exit_evidence',False) else {}),**(dict(taskOwnershipModel='all-tracked-tids-shared-fd-v1',tgid=child,fdTable=child) if self.shared_tasks else {})));single.trace(SEIZE,child,0,OPTIONS);single.trace(INTERRUPT,child);pid,status=self.wait_one();self.event(pid,status,False);self.pending_captures();os.write(write_fd,b'x');os.close(write_fd);write_fd=None;self.resume()
             while any(not r['exited'] for r in self.tasks.values()):
                 progress=self._phase_progress;progress.ticks+=1
                 pid,status=self.wait_one();self.event(pid,status);self.pending_captures();self.resume()
@@ -2522,6 +3126,23 @@ class Observer:
             # Exactly one failure snapshot from held state; never self.check after
             # expiry and never let diagnostic failure replace the primary error.
             if primary is not None:
+                # One-shot, out-of-band lease failure diagnostic. Fatal path only:
+                # it runs because the phase is already raising, so it cannot alter
+                # admission. Emission is bounded (<=8192 bytes), goes to stderr only,
+                # never enters the raw stream, and every failure inside it is
+                # swallowed so the ORIGINAL exception object still propagates.
+                if not getattr(self,'lease_failure_diagnostic_emitted',False):
+                    self.lease_failure_diagnostic_emitted=True
+                    try:
+                        leases=getattr(self,'lifetime_leases',None)
+                        if leases is not None and getattr(leases,'_failure',None):
+                            # Pass the EXISTING phase deadline; never extend it.
+                            text=leases.failure_diagnostic(deadline=getattr(self,'deadline',None))
+                            if text is not None and len(text.encode())<=8192:
+                                sys.stderr.write('SDK_READ_LEASE_FATAL '+text+'\n')
+                                sys.stderr.flush()
+                    except BaseException:
+                        pass
                 progress=getattr(self,'_phase_progress',None)
                 if progress is not None and progress.failure_snapshots<1:self.publish_phase_progress('phase-failure',failure=True)
             for control_fd in [ready_read,ready_write]:
@@ -2597,7 +3218,7 @@ class SdkExecutionObserver(Observer):
     process group while this long-lived observer still retains descriptors.
     """
     def __init__(self,out,source,build,*,deadline_monotonic,check_budget,maximum_bytes,maximum_stdio_bytes,prepared_dependencies=None):
-        limits=json.loads((ROOT/'scripts/lib/module-artifact-limits.json').read_text())
+        limits=load_sdk_execution_limits()
         assert isinstance(maximum_bytes,int) and 0<maximum_bytes<=limits['sourceMaterialBytes'],'canonical shared execution byte bound required'
         assert isinstance(maximum_stdio_bytes,int) and 0<maximum_stdio_bytes<=min(maximum_bytes,limits['shardBytes']),'existing bounded command raw limit required'
         assert Path(source)==Path('/opt/qlever-sdk/source') and Path(build)==Path('/opt/qlever-sdk/build'),'fixed SDK source/build roots required'

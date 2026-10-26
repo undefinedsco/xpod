@@ -1,6 +1,6 @@
 import {inspectReviewedSdkOuterExecutorOrigin,type QleverSdkOuterExecutorOriginAuthority} from './qlever-sdk-outer-authority';
-import {QLEVER_SDK_WORKFLOW,QLEVER_SDK_WORKFLOW_SHA,QLEVER_SDK_EXECUTION_GROUPS,QLEVER_LINUX_EXECUTION_GROUPS,QLEVER_READONLY_SDK_WORKFLOW_SHA,QLEVER_SERVICE_SDK_WORKFLOW_SHA} from './qlever-sdk-origin-policy';
-import {selectGitHubSourceBindingGroup,secondaryGitHubSourceBindingSelectors,sourceBindingKey,type GitHubSourceBindingGroup} from './github-source-binding-groups';
+import {QLEVER_SDK_WORKFLOW,QLEVER_SDK_WORKFLOW_SHA,QLEVER_SDK_EXECUTION_GROUPS,QLEVER_LINUX_EXECUTION_GROUPS,QLEVER_READONLY_SDK_WORKFLOW_SHA,QLEVER_SERVICE_SDK_WORKFLOW_SHA,QLEVER_CURRENT_SDK_WORKFLOW_SHA} from './qlever-sdk-origin-policy';
+import {acquireOwnedSecondaryBindings,selectGitHubSourceBindingGroup,secondaryGitHubSourceBindingSelectors,sourceBindingKey,type GitHubSourceBindingGroup} from './github-source-binding-groups';
 import {immutableGitContentsEndpoint,cachedGitContentsOriginal,retainGitContentsOriginal} from './github-immutable-original-cache';
 import {QLEVER_LINUX_SOURCE_BINDINGS} from './qlever-linux-origin-policy';
 import {QLEVER_OBSERVER_PATH,QLEVER_OBSERVER_V20,QLEVER_OBSERVER_V22,QLEVER_OBSERVER_V23,qleverObserverCompanionBindings} from './qlever-observer-policy';
@@ -1206,8 +1206,28 @@ const finalJointApiHashes:Readonly<Record<string,string>>=Object.freeze({
  "packages/xpod-client/scripts/build.ts":"4970c1586831229eb532b63f109787b7f2126d12aa87c5266a178bca17140c65"});
 const rebindFinalApiRows=(rows:GitHubSourceBindingGroup['sourceBindings']|undefined)=>Object.freeze((rows??[]).map(row=>Object.freeze({...row,sha256:finalJointApiHashes[row.path]??row.sha256})));
 const apiFinalJointGroup=Object.freeze({...apiCapturePerformanceGroup,name:'api-final-joint-source',selectors:rebindFinalApiRows(apiCapturePerformanceGroup.selectors),secondarySelectors:rebindFinalApiRows(apiCapturePerformanceGroup.secondarySelectors),sourceBindings:rebindFinalApiRows(apiCapturePerformanceGroup.sourceBindings)});
-export const API_SERVICE_BUILD_SOURCE_BINDINGS=apiFinalJointGroup.sourceBindings;
-export const API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS:readonly (GitHubSourceBindingGroup&{readonly name?:string})[]=Object.freeze([...PRE_BUILD_API_GROUPS,apiControlledDescriptorSourceGroup25,apiCaptureInputsTimingGroup,apiCapturePerformanceGroup,apiFinalJointGroup]);
+/** ORM 0.3.26 moved exactly these three API source facts: the two manifest
+ * facts and the joined legal-registry helper. Only they are re-hashed; the
+ * published f803 `api-final-joint-source` group above stays byte-identical. */
+const ORM326_API_SOURCE_HASHES:Readonly<Record<string,string>>=Object.freeze({
+ "bun.lock":"ff70b48d929511d94b9350abbb91ee4980aa9e86532190574fe2f3e42b221042",
+ "package.json":"f07277658e7d111655eb52ba560d6c2f2b3b3652a38ad0f137b2cb0812c206f6",
+ "scripts/lib/independent-admission/legal-registry-originals.ts":"97ddc06639a4ec3a264ea42310e5db0dee8c17e7f31aaed627fca0f508cfe578"
+});
+const rebindOrm326ApiRows=(rows:readonly {readonly path:string;readonly sha256:string}[]|undefined)=>Object.freeze((rows??[]).map(row=>Object.freeze({...row,sha256:ORM326_API_SOURCE_HASHES[row.path]??row.sha256})));
+/** Strict old/new discriminator: the 0.3.26 patch exists only in the current
+ * tree, so declaring it PRIMARY separates this tail from every earlier tuple by
+ * actual bytes (absent => old tail, present => this tail) with no fallback. */
+const ORM326_PATCH_26='patches/@undefineds.co%2Fdrizzle-solid@0.3.26.patch';
+const ORM326_PATCH_26_SHA='15917daa88260327bb30d5da25d9db7efb0fd3386c7f0494102fa780ac870789';
+const apiOrm326JointGroup=Object.freeze({...apiFinalJointGroup,name:'api-orm-0.3.26-joint-source',
+ selectors:Object.freeze([...apiFinalJointGroup.selectors,Object.freeze({path:ORM326_PATCH_26,sha256:ORM326_PATCH_26_SHA})]),
+ secondarySelectors:rebindOrm326ApiRows(apiFinalJointGroup.secondarySelectors),
+ sourceBindings:Object.freeze([...rebindOrm326ApiRows(apiFinalJointGroup.sourceBindings),Object.freeze({path:ORM326_PATCH_26,sha256:ORM326_PATCH_26_SHA})])});
+/** CURRENT API tuple. The published f803 group and its exact row value above
+ * remain selectable and unchanged. */
+export const API_SERVICE_BUILD_SOURCE_BINDINGS=apiOrm326JointGroup.sourceBindings;
+export const API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS:readonly (GitHubSourceBindingGroup&{readonly name?:string})[]=Object.freeze([...PRE_BUILD_API_GROUPS,apiControlledDescriptorSourceGroup25,apiCaptureInputsTimingGroup,apiCapturePerformanceGroup,apiFinalJointGroup,apiOrm326JointGroup]);
 
 export const API_WORKSPACE_SOURCE_GROUPS=Object.freeze(API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS.filter(group=>group.sourceBindings.some(row=>row.path==='scripts/lib/api-scoped-dependency-state.ts')));
 
@@ -1381,7 +1401,7 @@ export async function observeQleverSdkGitHubOrigin(input:ArtifactAcquisitionInpu
  const readonlySteps=['Verify controller closure','Capture immutable source context','Build readonly SDK and linked image','Publish the actual linked readonly SDK','Seal controller originals for upload','Upload exact SDK original materials'];
  const observation=await observeGitHubOrigin(input,options,{
   workflowPath:nested?CSS_NATIVE_PRODUCTS_WORKFLOW:QLEVER_SDK_WORKFLOW,workflowSha256:nested?CSS_NATIVE_PARENT_SHA:QLEVER_SDK_WORKFLOW_SHA,
-  ...(nested?cssStagingParentPolicy(legacyName):{reviewedWorkflowVersions:[{workflowSha256:QLEVER_READONLY_SDK_WORKFLOW_SHA,jobName:()=>readonlyName},{workflowSha256:QLEVER_SERVICE_SDK_WORKFLOW_SHA,jobName:()=>readonlyName}]}),
+  ...(nested?cssStagingParentPolicy(legacyName):{reviewedWorkflowVersions:[{workflowSha256:QLEVER_READONLY_SDK_WORKFLOW_SHA,jobName:()=>readonlyName},{workflowSha256:QLEVER_SERVICE_SDK_WORKFLOW_SHA,jobName:()=>readonlyName},{workflowSha256:QLEVER_CURRENT_SDK_WORKFLOW_SHA,jobName:()=>readonlyName}]}),
   events:nested?['workflow_dispatch','push']:['workflow_dispatch'],target,
   artifactNames:row=>[`qlever-sdk-originals-${target}-${row.sourceSha}-${row.runId}-${row.runAttempt}`],
   jobName:()=>legacyName,requiredStep:'Bind actual SDK image and build originals',requiredSteps:legacySteps,
@@ -1414,6 +1434,22 @@ export async function observeProductConsumerGitHubOrigin(input:ArtifactAcquisiti
   const registered:OriginPolicy={...manual,
     workflowPath:'.github/workflows/ci.yml',workflowSha256:CI_PUBLICATION_WORKFLOW_SHA,
     reviewedWorkflowVersions:[{workflowSha256:'d587e9fc889409a30814098fdfda9f00b322423fe47af52f70f9a6e2d7dc48bf',
+      jobName:()=>callerNames[0]!,
+      sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS},
+      // APPEND-ONLY: the `test` job now checks out full Git history so the real
+      // 9d02/2406/19fe commit readers resolve, and it runs the dedicated SDK70
+      // executable-memory remap gate. Same jobs and sources; the published
+      // d587e9fc version above stays byte-identical and remains selectable.
+      // The earlier fetch-depth-only variant 09208b75 was never published, so this
+      // genuine current file replaces it rather than remaining as fake history.
+      {workflowSha256:'7b5a920f0dc7920e47565315fe2da2ac94ad92fda43cd6426f7387a12a9359d4',
+      jobName:()=>callerNames[0]!,
+      sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS},
+      // APPEND-ONLY (both versions above stay byte-identical and selectable): the
+      // SDK70 gate now runs as root because the real child authority drop uses
+      // PR_CAPBSET_DROP and needs CAP_SETPCAP on an unprivileged CI host. Same
+      // gate source, same declared compiler, same 18 canonical E2E cases.
+      {workflowSha256:'3ff5f524e82c30d732a1cefadbf87b6372da61e3e9f5b025507d305642e6990c',
       jobName:()=>callerNames[0]!,
       sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS}],requiredBranch:'staging',
     jobName:()=>callerNames[0]!,jobNames:()=>callerNames,
@@ -1510,13 +1546,17 @@ async function observeGitHubOrigin(input: ArtifactAcquisitionInput, options: { t
     }));
     // New observer versions refine only an already matched historical tuple.
     // A missing/modified helper remains fatal; no old-tree 404 is swallowed.
-    const secondary=secondaryGitHubSourceBindingSelectors(sourceBindingGroups,observed);
-    await Promise.all(secondary.map(async binding=>{
+    // Staged, BOUNDED acquisition. Each round asks the one planner for the roles
+    // still outstanding at the earliest unresolved declared stage, so a role an
+    // older recipe never owned is never requested. Every key is fetched at most
+    // once, all rounds share the SAME absolute deadline (the AbortSignal created
+    // above), and the round count is bounded by the number of declared roles.
+    selectedSourceGroup=await acquireOwnedSecondaryBindings(sourceBindingGroups,observed,async binding=>{
       const original=await read('policy-secondary-'+binding.path.replace(/[^a-z0-9]/giu,'-')+'.original.json',`contents/${binding.path}?ref=${binding.ref==='run-head'?input.runHeadSha:input.sourceSha}`);
       if(original.type!=='file'||original.path!==binding.path||original.encoding!=='base64'||typeof original.content!=='string')fail('immutable secondary group selector missing');
-      observed.set(sourceBindingKey(binding),sha(Buffer.from(original.content.replace(/\s/gu,''),'base64')));
-    }));
-    selectedSourceGroup=selectGitHubSourceBindingGroup(sourceBindingGroups,observed);sourceBindings=[...selectedSourceGroup.sourceBindings];
+      return sha(Buffer.from(original.content.replace(/\s/gu,''),'base64'));
+    },()=>{if(signal.aborted)fail('immutable secondary group selector missing');});
+    sourceBindings=[...selectedSourceGroup.sourceBindings];
   }
   for (let offset=0;offset<sourceBindings.length;) {
    const batch=sourceBindings.slice(offset,offset+8);offset+=batch.length;

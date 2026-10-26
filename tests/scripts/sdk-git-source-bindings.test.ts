@@ -79,7 +79,10 @@ root=pathlib.Path(sys.argv[2]);names=[name.strip() for name in (root/'series').r
 ordinary=0;files=0
 for name in names:
  raw=(root/name).read_bytes();files+=len(m.patch_targets(raw));ordinary+=not raw.startswith(b'diff --git ')
-assert len(names)==67 and ordinary==33 and files==84
+assert len(names)==68 and ordinary==33 and files==85
+# The appended production-only CMake patch must preserve the complete old corpus.
+assert names[-1]=='qlever-production-only-subdirectories.patch'
+assert len(names[:-1])==67 and sum(len(m.patch_targets((root/name).read_bytes())) for name in names[:-1])==84
 replayed=[]
 for name in ['qlever-exists-join-test-accessor.patch','qlever-operation-physical-cancellation.patch']:
  raw=(root/name).read_bytes();lines=raw.splitlines(keepends=True);first=next(i for i,line in enumerate(lines) if line.startswith(b'@@ '));end=next((i for i in range(first+1,len(lines)) if lines[i].startswith((b'@@ ',b'diff --git ',b'--- '))),len(lines))
@@ -99,5 +102,5 @@ assert m.patch_targets(b'--- a/file\n+++ b/file\n@@ -1,2 +1,2 @@\n--- a/evil\n++
 print(json.dumps(dict(patches=len(names),ordinary=ordinary,fileHeaders=files,replayed=replayed,rejected=len(invalid))))
 `;
   const value = JSON.parse(execFileSync('/usr/bin/python3', ['-I', '-S', '-B', '-c', program, path.resolve('qlever/scripts/sdk-git-patch-projection.py'), path.resolve('qlever/patches')], {encoding: 'utf8', timeout: 30000}));
-  expect(value).toMatchObject({patches: 67, ordinary: 33, fileHeaders: 84, rejected: 8}); expect(value.replayed).toHaveLength(2);
+  expect(value).toMatchObject({patches: 68, ordinary: 33, fileHeaders: 85, rejected: 8}); expect(value.replayed).toHaveLength(2);
 });
