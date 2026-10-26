@@ -88,10 +88,13 @@ jobs:
       # headers above and builds the observer's OWN native lease DI with the
       # declared compiler. Linux-only and fail-closed: wrong platform, missing
       # compiler/headers/fixture, zero cases, any skip or nonzero exit fails.
+      # The real child authority drop uses PR_CAPBSET_DROP, requiring
+      # CAP_SETPCAP. Run the producer as root; the observed child still drops
+      # every capability. Preserve the declared native compiler for this gate.
       - name: SDK70 executable-memory remap gate
         env:
           NATIVE_LEASE_CC: clang
-        run: /usr/bin/python3 qlever/tests/run_sdk70_mremap_gate.py -v
+        run: sudo -E /usr/bin/python3 qlever/tests/run_sdk70_mremap_gate.py -v
 
       - name: Install ripgrep differential oracle
         run: |

@@ -1444,6 +1444,13 @@ export async function observeProductConsumerGitHubOrigin(input:ArtifactAcquisiti
       // genuine current file replaces it rather than remaining as fake history.
       {workflowSha256:'7b5a920f0dc7920e47565315fe2da2ac94ad92fda43cd6426f7387a12a9359d4',
       jobName:()=>callerNames[0]!,
+      sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS},
+      // APPEND-ONLY (both versions above stay byte-identical and selectable): the
+      // SDK70 gate now runs as root because the real child authority drop uses
+      // PR_CAPBSET_DROP and needs CAP_SETPCAP on an unprivileged CI host. Same
+      // gate source, same declared compiler, same 18 canonical E2E cases.
+      {workflowSha256:'3ff5f524e82c30d732a1cefadbf87b6372da61e3e9f5b025507d305642e6990c',
+      jobName:()=>callerNames[0]!,
       sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS}],requiredBranch:'staging',
     jobName:()=>callerNames[0]!,jobNames:()=>callerNames,
     sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS,

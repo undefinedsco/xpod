@@ -53,6 +53,9 @@ import n2406Groups from '../fixtures/independent-admission/2406eac-published-sli
  * history now, so it must be proved against the actual f803 bytes and must NOT be
  * compared to current disk (its manifest rows predate the ORM 0.3.26 bump). */
 import f803Groups from '../fixtures/independent-admission/f803e9c2-published-slice.original.json';
+/** Immutable PUBLISHED 0d baseline (76/77/91/180/29/12).
+ * Its tuples are history and bind their own 0d Git bytes, never today's disk. */
+import n0dGroups from '../fixtures/independent-admission/0d-published-slice.original.json';
 /** Immutable PUBLISHED 19fe baseline (75/90/178/29/76/12). Index 74 (SDK) and
  * 89 (consumer) are published history now, so they must be proved against the
  * ACTUAL 19fe bytes and never against today's disk. */
@@ -157,7 +160,7 @@ test('the accepted SDK823 baseline proves all 299 published whole histories', ()
   // Only genuinely new, UNPUBLISHED current groups follow the 299 published ones:
   // the immutable-input-plan slice, the ORM 0.3.26 joint API/CLI/consumer/CI tail
   // and the ORM 0.3.26 joint SDK tuple.
-  expect([sdk.length, consumer.length, ci.length, api.length]).toEqual([76, 91, 180, 29]);
+  expect([sdk.length, consumer.length, ci.length, api.length]).toEqual([76, 92, 182, 29]);
 });
 
 test('the immutable fae9170b baseline proves its full published 69/84/166/28 prefixes', () => {
@@ -188,12 +191,12 @@ test('only the genuinely new immutable-input-plan slice follows published2406', 
   // Two genuine appends now sit beyond published2406 (the immutable-input-plan
   // slice and the ORM 0.3.26 joint tail), four for CI.
   expect([sdk.length, consumer.length, ci.length, api.length, linuxGroups.length, CLI_SOURCE_VERSION_GROUPS.length])
-    .toEqual([76, 91, 180, 29, 77, 12]);
+    .toEqual([76, 92, 182, 29, 77, 12]);
   expect([(n2406Groups as any).published.sdk, (n2406Groups as any).published.consumer,
     (n2406Groups as any).published.ci, (n2406Groups as any).published.linux]).toEqual([73, 88, 174, 74]);
   expect([sdk.length - n2406Groups.published.sdk, consumer.length - n2406Groups.published.consumer,
     ci.length - n2406Groups.published.ci, linuxGroups.length - n2406Groups.published.linux])
-    .toEqual([3, 3, 6, 3]);
+    .toEqual([3, 4, 8, 3]);
   // Every published2406 group keeps its own exact bytes, including its last.
   for (const [name, groups] of Object.entries({sdk, consumer, ci, api, linux: linuxGroups})) {
     const published = (n2406Groups as any).groupHashes[name] as unknown[];
@@ -212,16 +215,26 @@ test('the appended groups bind the actual frozen body and real module bytes', ()
     // Those tuples — including index 73 — are immutable published history: they are
     // proved against the ACTUAL f803 read bytes recorded in the fixture, never
     // against the current working tree, whose manifest rows moved with ORM 0.3.26.
+    // PROVE the published 19fe prefix byte-for-byte (whole values, not disk).
     const published = (n19feGroups.published as Record<string, number>)[name]!;
     const publishedHashes = (n19feGroups.groupHashes as Record<string, string[]>)[name]!;
     expect(publishedHashes).toHaveLength(published);
     for (let index = 0; index < published; index++) {
       expect(hashValue((groups as readonly unknown[])[index])).toBe(publishedHashes[index]);
     }
-    // Only the genuinely NEW tail appended after f803 is claimed to bind CURRENT
-    // disk bytes. Requiring an unpublished historical tuple to match today's disk
-    // would silently demand a rewrite of published history.
-    const appended = groups.slice(published);
+    // The 0d commit is ALSO published now. Those tuples legitimately bind their
+    // own historical Git bytes (e.g. github-origin 1181832c…), which differ from
+    // today's file, so they must keep being verified as immutable HISTORY and must
+    // never be re-bound, skipped or replaced by value equality.
+    const published0d = (n0dGroups.published as Record<string, number>)[name]!;
+    const hashes0d = (n0dGroups.groupHashes as Record<string, string[]>)[name]!;
+    expect(hashes0d).toHaveLength(published0d);
+    for (let index = 0; index < published0d; index++) {
+      expect(hashValue((groups as readonly unknown[])[index])).toBe(hashes0d[index]);
+    }
+    // Only groups appended AFTER the published 0d catalogue are claimed to bind
+    // CURRENT disk bytes (consumer 92 / CI 181-182; SDK stays 76, so it has none).
+    const appended = groups.slice(published0d);
     // A family with no new appended tuple (e.g. API/CLI here) proves its entire
     // published catalogue above instead of inventing an append.
     if (!appended.length) continue;
@@ -274,8 +287,8 @@ test('the frozen published canonical keeps its exact 426 rows and accepted bytes
 });
 
 test('the live canonical binds every actual row of the final combined tree', () => {
-  expect(current.length).toBe(496);
-  expect(new Set(current.map((r) => r.path)).size).toBe(496);
+  expect(current.length).toBe(497);
+  expect(new Set(current.map((r) => r.path)).size).toBe(497);
   // The genuinely new roles of this slice: the corrected SDK inner producer and
   // the CI-discovered Ninja regression that now runs under `test_qlever*`.
   expect(current.find((r) => r.path === 'qlever/scripts/sdk-inner-materials.py')!.sha256)

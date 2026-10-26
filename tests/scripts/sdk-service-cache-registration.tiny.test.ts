@@ -7,7 +7,7 @@ import {API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS as api} from '../../scripts/lib/
 import {sourceBindingKey as key,secondaryGitHubSourceBindingSelectors as secondary,selectGitHubSourceBindingGroup as select} from '../../scripts/lib/independent-admission/github-source-binding-groups';
 const hash=(b:string|Buffer)=>createHash('sha256').update(b).digest('hex'),root=path.resolve(import.meta.dir,'../..');
 test('cache and exact service COPY fix preserve all SDK1–24/API16 whole recipes and every prior controller source set',()=>{
- expect(current).toHaveLength(496);for(const row of current)expect(hash(fs.readFileSync(path.join(root,row.path)))).toBe(row.sha256);
+ expect(current).toHaveLength(497);for(const row of current)expect(hash(fs.readFileSync(path.join(root,row.path)))).toBe(row.sha256);
  expect(sdk).toHaveLength(76);expect(JSON.parse(JSON.stringify(sdk.slice(0,24)))).toEqual(before.sdk);expect(JSON.parse(JSON.stringify(api.slice(0,16)))).toEqual(before.api);
  for(const[groups,old]of[[c,before.c],[ci,before.ci]]as const)for(const prior of old)expect(groups.filter(g=>JSON.stringify(g.selectors)===JSON.stringify(prior.selectors)&&hash(JSON.stringify(g.sourceBindings))===prior.sourceBindingsSha256)).toHaveLength(1);
  const latest=sdk[24]!;for(const row of [...sdk[sdk.length-1]!.selectors,...sdk[sdk.length-1]!.sourceBindings])expect(hash(fs.readFileSync(path.join(root,row.path)))).toBe(row.sha256);

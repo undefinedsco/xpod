@@ -941,7 +941,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/github-origin.ts",
-    "sha256": "1181832cac722d9b9267b74bb310a1490b030aad958b955c866e3ae46e0f7f82"
+    "sha256": "871da09d9e702cda69c86fa8f95664c7e452512b24b9bc976805cb8093a2d778"
   },
   {
     "path": "scripts/lib/independent-admission/github-source-binding-groups.ts",
@@ -1982,5 +1982,9 @@
   {
     "path": "tests/scripts/sdk70-remap-policy.test.ts",
     "sha256": "2923447eb2d2744a40648b4c28a84729d0884d3a7e4ed112acb29901d27c0ccf"
+  },
+  {
+    "path": "scripts/lib/independent-admission/consumer-execution-0d-snapshot.json",
+    "sha256": "5af9406879dc9de1a0910094afdb1fdaccacaf1121901b40a21584c5fc4d97bf"
   }
 ]
