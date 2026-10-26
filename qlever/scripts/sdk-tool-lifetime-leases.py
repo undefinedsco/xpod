@@ -1,9 +1,11 @@
 """Owned Linux read leases. Tokens are observations, never authority by themselves."""
 import errno
 import fcntl
+import hashlib
 import os
 import signal
 import stat
+import time
 
 
 class LeaseError(RuntimeError):
@@ -115,6 +117,170 @@ class LeaseSet:
     def _reject(self, reason):
         self._failure = self._failure or reason
         raise LeaseError(self._failure)
+
+    DIAGNOSTIC_MAXIMUM_BYTES=8192
+    DIAGNOSTIC_MAXIMUM_ROWS=64
+    DIAGNOSTIC_SCAN_MAXIMUM=4096
+
+    def failure_diagnostic(self, deadline=None):
+        """Read-only fatal-path snapshot over the ALREADY-OWNED lease FDs.
+
+        Issued only after the set is already fatally failed, so it can never
+        change admission. Per held FD it re-reads F_GETLEASE and the six-field
+        identity and reports whether the lock is still RDLCK. It never acquires,
+        releases, retries, sleeps or extends a budget, and it never replaces the
+        caller's original LeaseError.
+
+        Scan is BOUNDED by min(existing maximum, DIAGNOSTIC_SCAN_MAXIMUM) using
+        islice over the live mapping, so no full list copy is built. If the scan
+        is cut short by the row cap or an expired deadline, the payload says so
+        explicitly (`scannedComplete`, `truncated`, `partialReason`) and never
+        claims `allHeldStillReadable=true` on incomplete evidence.
+
+        ABNORMAL ROWS ARE RETAINED FIRST. Rows are ordered abnormal-before-ok,
+        so the row cap can never drop a mismatched lease behind healthy ones.
+
+        Output is compact JSON capped at DIAGNOSTIC_MAXIMUM_BYTES; if even the
+        base payload exceeds that bound the function returns None instead of an
+        oversized frame. `authority=False` means this is evidence only.
+        """
+        import itertools
+        import json as _json
+
+        rows = []
+        inspected = 0
+        abnormal = 0
+        partial = None
+        scan_limit = self.DIAGNOSTIC_SCAN_MAXIMUM
+        try:
+            if type(self.maximum) is int:
+                scan_limit = min(self.maximum, self.DIAGNOSTIC_SCAN_MAXIMUM)
+        except BaseException:
+            pass
+
+        clock_unavailable = False
+
+        def expired():
+            nonlocal clock_unavailable
+            if deadline is None:
+                return False
+            try:
+                return time.monotonic() >= deadline
+            except BaseException:
+                # A broken clock must not be read as "not expired": stop the scan
+                # and report a fixed partial reason instead of claiming completion.
+                clock_unavailable = True
+                return True
+
+        for row in itertools.islice(self._held.values(), scan_limit):
+            if expired():
+                partial = 'clock-unavailable' if clock_unavailable else 'deadline-expired'
+                break
+            inspected += 1
+            entry = dict(leaseId=None, state='unknown', mismatch=False,
+                         identityEqual=None, error=None, path=None)
+            fd = row.get('fd')
+            token = row.get('token') or {}
+            expected = token.get('identity')
+            if type(token.get('leaseId')) is int:
+                entry['leaseId'] = token['leaseId']
+            if type(fd) is not int:
+                entry['state'] = 'invalid-fd'
+                entry['error'] = 'numeric-fd-required'
+                entry['mismatch'] = True
+                abnormal += 1
+                rows.append(entry)
+                continue
+            try:
+                lock = fcntl.fcntl(fd, fcntl.F_GETLEASE)
+                entry['state'] = ('rdlck' if lock == fcntl.F_RDLCK else
+                                  'unlck' if lock == fcntl.F_UNLCK else
+                                  'wrlck' if lock == fcntl.F_WRLCK else 'other')
+                entry['mismatch'] = lock != fcntl.F_RDLCK
+            except OSError as exc:
+                entry['state'] = 'fgetlease-error'
+                entry['error'] = ('errno-%d' % exc.errno) if type(exc.errno) is int else 'errno-None'
+                entry['mismatch'] = True
+            except BaseException as exc:
+                entry['state'] = 'fgetlease-error'
+                entry['error'] = type(exc).__name__
+                entry['mismatch'] = True
+            try:
+                info = os.fstat(fd)
+                actual = [info.st_dev, info.st_ino, info.st_mode,
+                          info.st_size, info.st_mtime_ns, info.st_ctime_ns]
+                if isinstance(expected, list):
+                    entry['identityEqual'] = actual == expected
+                    if entry['identityEqual'] is False:
+                        entry['mismatch'] = True
+            except OSError as exc:
+                entry['identityEqual'] = False
+                entry['mismatch'] = True
+                if entry['error'] is None:
+                    entry['error'] = ('errno-%d' % exc.errno) if type(exc.errno) is int else 'errno-None'
+            except BaseException as exc:
+                entry['identityEqual'] = False
+                entry['mismatch'] = True
+                if entry['error'] is None:
+                    entry['error'] = type(exc).__name__
+            if entry['mismatch']:
+                abnormal += 1
+                try:
+                    target = os.readlink('/proc/self/fd/%d' % fd)
+                    if target.startswith(('/opt/qlever-sdk/', '/components/', '/usr/')):
+                        entry['path'] = target[:256]
+                    else:
+                        entry['path'] = 'sha256:' + hashlib.sha256(
+                            os.fsencode(target)).hexdigest()
+                except OSError as exc:
+                    entry['path'] = ('unavailable-errno-%d' % exc.errno) if type(exc.errno) is int else 'unavailable-errno-None'
+                except BaseException as exc:
+                    entry['path'] = 'unavailable-' + type(exc).__name__
+            rows.append(entry)
+
+        total = len(self._held)
+        if partial is None and clock_unavailable:
+            partial = 'clock-unavailable'
+        if partial is None and inspected < total:
+            # Bounded scan stopped early for a non-deadline reason.
+            partial = 'scan-limit'
+        scanned_complete = partial is None and inspected >= total
+
+        # ABNORMAL FIRST: a row cap must never hide a mismatched lease.
+        ordered = ([r for r in rows if r['mismatch']] +
+                   [r for r in rows if not r['mismatch']])
+        omitted = max(0, len(ordered) - self.DIAGNOSTIC_MAXIMUM_ROWS)
+        kept = ordered[:self.DIAGNOSTIC_MAXIMUM_ROWS]
+
+        payload = dict(
+            schemaVersion=2, kind='read-lease-fatal-diagnostic', authority=False,
+            signalSenderKnown=False,
+            evidenceNote=('Current lock/identity evidence for already-owned FDs only. A holder '
+                          'of this evidence CANNOT infer the SIGIO sender: the handler records '
+                          'no sender, so this does not prove a kernel-originated break.'),
+            heldLeaseCount=total, inspectedLeaseCount=inspected,
+            totalRowCount=len(ordered), omittedRowCount=omitted,
+            scannedComplete=scanned_complete,
+            truncated=bool(omitted or partial or not scanned_complete),
+            partialReason=partial,
+            abnormalLeaseCount=abnormal,
+            allHeldStillReadable=(scanned_complete and abnormal == 0 and total > 0),
+            leases=kept)
+        # Byte bound: shrink the RETAINED rows (abnormal-first order preserved)
+        # until the frame fits, then report the omission explicitly. Only if even
+        # the empty base payload cannot fit do we return None.
+        try:
+            encoded = _json.dumps(payload, sort_keys=True, separators=(',', ':'))
+            while len(encoded.encode('utf-8')) > self.DIAGNOSTIC_MAXIMUM_BYTES and payload['leases']:
+                dropped = payload['leases'].pop()
+                payload['omittedRowCount'] += 1
+                payload['truncated'] = True
+                encoded = _json.dumps(payload, sort_keys=True, separators=(',', ':'))
+        except BaseException:
+            return None
+        if len(encoded.encode('utf-8')) > self.DIAGNOSTIC_MAXIMUM_BYTES:
+            return None
+        return encoded
 
     def _ready(self):
         if self._closed:

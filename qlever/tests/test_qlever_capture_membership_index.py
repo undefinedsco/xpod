@@ -43,8 +43,8 @@ class Host(obs.CapturesMixin):
     """Minimal host: only the ordered list and the index."""
 
     def __init__(self):
-        self.captures = []
-        self.capture_buckets = {}
+        # Same factory production uses: list + index initialised together.
+        self.initialize_capture_state()
 
     def add(self, original):
         self.append_capture({'original': original})

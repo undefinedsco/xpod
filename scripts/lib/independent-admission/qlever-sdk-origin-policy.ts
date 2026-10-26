@@ -2011,7 +2011,36 @@ const CAPTURE_INDEX_SDK_GROUP:GitHubSourceBindingGroup=Object.freeze({...SDK19_T
  selectors:SDK19_TELEMETRY_GROUP.selectors,
  secondarySelectors:Object.freeze([...rebindCaptureIndexRows(SDK19_TELEMETRY_GROUP.secondarySelectors??[]),...CAPTURE_INDEX_DISCRIMINATORS]),
  sourceBindings:Object.freeze([...rebindCaptureIndexRows(SDK19_TELEMETRY_GROUP.sourceBindings),...CAPTURE_INDEX_TEST_BINDINGS])});
-export const QLEVER_SDK_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...PUBLISHED_SDK_GROUPS,NEXT_SDK_GROUP,INPUT_PLAN_SDK_GROUP,ORM326_SDK_GROUP,SDK19_TELEMETRY_GROUP,CAPTURE_INDEX_SDK_GROUP]);
+/** SDK78 capture-initialization slice (APPEND-ONLY; every slice above, including
+ * CAPTURE_INDEX_SOURCE_HASHES and SDK19_TELEMETRY_MOVED_HASHES, is PUBLISHED at
+ * 71f9 and is never rebound). The real production change initializes capture
+ * state once in CapturesMixin and the Observer constructor invokes it; only the
+ * ptrace observer body and three capture/telemetry fixtures moved. */
+const SDK78_SOURCE_HASHES:Readonly<Record<string,string>>=Object.freeze({
+ "qlever/scripts/sdk-ptrace-execution.py":"77c9c89284cd4c155684d5b5f61c1499f92e1ed331aed62d966bc5fe057c6db8",
+ "qlever/scripts/sdk-tool-lifetime-leases.py":"ea2d298d355cc41431ad3cd125eba2a0ec6929b99690628b5b5bcb02d93cfa83",
+ "qlever/tests/test_qlever_snapshot_telemetry.py":"d7bb0660f32f16a4e934c9e007b5c922f24362eb654102177319920bd57457cd",
+ "qlever/tests/test_qlever_capture_membership_index.py":"a3822754480051a84293ade994493f68227a95b35ffdf229e78431ef5d177e22",
+ "qlever/tests/test_qlever_phase_histogram_optional.py":"adfeebe0c560b460c27b2e8e732ace9445885ae4d6a6657635ac72c813191792",
+ "qlever/tests/test_qlever_read_lease_diagnostic.py":"eadc024640b289de0ea9c54441e1a273f09515b78c4c2202c34f6ee7d7227266"
+});
+const rebindSdk78Rows=(rows:readonly GitHubSourceBinding[]|undefined)=>Object.freeze((rows??[]).map(row=>Object.freeze({...row,sha256:SDK78_SOURCE_HASHES[row.path]??row.sha256})));
+/** Only ONE fixture is a genuinely NEW role at 71f9: the phase-histogram test.
+ * The snapshot-telemetry and capture-membership-index fixtures already own their
+ * published source bindings, and `rebindSdk78Rows` re-hashes them in place, so
+ * re-appending them here would create a second, ambiguous copy of the same role.
+ *
+ * No extra discriminator is appended: the ptrace observer is ALREADY an inherited
+ * common secondary selector and `rebindSdk78Rows` re-hashes it, so old/new
+ * separate strictly by actual bytes without duplicating the role. */
+const SDK78_TEST_BINDINGS=Object.freeze([
+Object.freeze({path:'qlever/tests/test_qlever_phase_histogram_optional.py',sha256:SDK78_SOURCE_HASHES['qlever/tests/test_qlever_phase_histogram_optional.py']!}),
+Object.freeze({path:'qlever/tests/test_qlever_read_lease_diagnostic.py',sha256:SDK78_SOURCE_HASHES['qlever/tests/test_qlever_read_lease_diagnostic.py']!})]);
+const SDK78_GROUP:GitHubSourceBindingGroup=Object.freeze({...CAPTURE_INDEX_SDK_GROUP,
+ selectors:CAPTURE_INDEX_SDK_GROUP.selectors,
+ secondarySelectors:rebindSdk78Rows(CAPTURE_INDEX_SDK_GROUP.secondarySelectors),
+ sourceBindings:Object.freeze([...rebindSdk78Rows(CAPTURE_INDEX_SDK_GROUP.sourceBindings),...SDK78_TEST_BINDINGS])});
+export const QLEVER_SDK_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...PUBLISHED_SDK_GROUPS,NEXT_SDK_GROUP,INPUT_PLAN_SDK_GROUP,ORM326_SDK_GROUP,SDK19_TELEMETRY_GROUP,CAPTURE_INDEX_SDK_GROUP,SDK78_GROUP]);
 export const QLEVER_LINUX_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([
  {selectors:sdkSelectors('cbedd3e2478de5e22108b6689c595a658ca891c9bd47552caec830e86f47fea8','a75c7be34b5c5fafff85c0d67d814ba1aaf14bcf5db5404a860fe3b9a11009bd'),sourceBindings:QLEVER_LINUX_SOURCE_BINDINGS.filter(row=>!['.github/workflows/publish-qlever-runtime-sdk.yml','.github/workflows/build-qlever-linux-runtime.yml'].includes(row.path))},
  ...QLEVER_SDK_EXECUTION_GROUPS,

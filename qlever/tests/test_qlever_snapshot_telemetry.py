@@ -148,7 +148,9 @@ class SnapshotWriteOriginalTimeout(unittest.TestCase):
         o.capture_dir = self.capture
         o.capture_content_entities = True
         o.maximum_file_bytes = 1024 * 1024
-        o.captures = []
+        # Explicit factory, not ad-hoc state: the capture list and its index
+        # must be initialised together (production __init__ calls this once).
+        o.initialize_capture_state()
         o.capture_bytes = 0
         o.snapshot_telemetry = None
         o.snapshot_telemetry_completed = None

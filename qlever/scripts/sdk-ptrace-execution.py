@@ -573,6 +573,17 @@ class CapturesMixin:
         # oracle would have allowed a comparison.
         return ('opaque', id(value), type(value).__name__)
 
+    def initialize_capture_state(self):
+        """Initialise the ONE capture resource: ordered list + membership index.
+
+        Single initialisation point for the capture state. Production
+        `Observer.__init__` calls it once; fixtures built with `Observer.__new__`
+        must call it explicitly instead of assigning `captures` (or the index)
+        ad hoc, so the list and its index can never drift apart.
+        """
+        self.captures=[]
+        self.capture_buckets={}
+
     def append_capture(self, row):
         """Single append point: ordered list and bucket index stay in lockstep.
 
@@ -637,7 +648,7 @@ class Observer(CapturesMixin):
         self.prepared_inputs={};self.prepared_sealed=False;self.domain_bytes=0;self.claim_bytes=dict.fromkeys(('raw-wire','capture-body','stdio','provider-other'),0);self.domain_lock=threading.Lock();self.pump_errors=[];self.maximum_stdio_bytes=maximum_stdio_bytes if maximum_stdio_bytes is not None else maximum_file_bytes
         self.compressed_raw=compressed_raw;self.logical_raw_bytes=0;self.raw_logical_limit=json.loads((ROOT/'scripts/lib/module-artifact-limits.json').read_text())['sourceMaterialBytes'];self.require_success=require_success;self.raw_bytes_completed=0;self.maximum_processes=maximum_processes;self.shard_bytes=shard_bytes
         self.deadline_monotonic=deadline_monotonic;self.check_budget=check_budget;self.maximum_bytes=maximum_bytes;self.maximum_file_bytes=maximum_file_bytes;self.selected_names=selected_names
-        self.out=Path(out);self.capture_dir=self.out;self.source=str(source);self.build=str(build);self.tasks={};self.seq=0;self.records=[];self.captures=[];self.retained=set();self.producers={};self.write_states={};self.write_projections={};self.append_chains={};self.budget_context={};self.metadata_states=[];self.rename_records=[];self.consumers=[];self.raw=None;self.deadline=0;self.pausing=False;self.root=None;self.root_code=None;self.failures=[];self.current_phase=None;self.unknown_stops={};self.capture_bytes=0;self.capture_buckets={};self.capture_entities={};self.content_capture_pool={};self.snapshot_telemetry=None;self.snapshot_telemetry_completed=None;self.snapshot_telemetry_failure=None;self.mremap_proof_active=False;self.mremap_barriers=0;self.mremapDeferred=None;self.exclusive=None;self.wait_references=[]
+        self.out=Path(out);self.capture_dir=self.out;self.source=str(source);self.build=str(build);self.tasks={};self.seq=0;self.records=[];self.initialize_capture_state();self.retained=set();self.producers={};self.write_states={};self.write_projections={};self.append_chains={};self.budget_context={};self.metadata_states=[];self.rename_records=[];self.consumers=[];self.raw=None;self.deadline=0;self.pausing=False;self.root=None;self.root_code=None;self.failures=[];self.current_phase=None;self.unknown_stops={};self.capture_bytes=0;self.capture_entities={};self.content_capture_pool={};self.snapshot_telemetry=None;self.snapshot_telemetry_completed=None;self.snapshot_telemetry_failure=None;self.mremap_proof_active=False;self.mremap_barriers=0;self.mremapDeferred=None;self.exclusive=None;self.wait_references=[]
         self.lifetime_leases=None;self.lifetime_phase=None;self.lifetime_acquired={};self.lifetime_by_identity={};self.authority_observed=set()
         assert type(generated_vma_output) is bool and (not generated_vma_output or shared_tasks and capture_toolchain),'generated VMA requires existing actual shared-task/tool observation'
         self.generated_build_root=generated_vma_module.validated_build_root(generated_build_root)
@@ -3083,6 +3094,23 @@ class Observer(CapturesMixin):
             # Exactly one failure snapshot from held state; never self.check after
             # expiry and never let diagnostic failure replace the primary error.
             if primary is not None:
+                # One-shot, out-of-band lease failure diagnostic. Fatal path only:
+                # it runs because the phase is already raising, so it cannot alter
+                # admission. Emission is bounded (<=8192 bytes), goes to stderr only,
+                # never enters the raw stream, and every failure inside it is
+                # swallowed so the ORIGINAL exception object still propagates.
+                if not getattr(self,'lease_failure_diagnostic_emitted',False):
+                    self.lease_failure_diagnostic_emitted=True
+                    try:
+                        leases=getattr(self,'lifetime_leases',None)
+                        if leases is not None and getattr(leases,'_failure',None):
+                            # Pass the EXISTING phase deadline; never extend it.
+                            text=leases.failure_diagnostic(deadline=getattr(self,'deadline',None))
+                            if text is not None and len(text.encode())<=8192:
+                                sys.stderr.write('SDK_READ_LEASE_FATAL '+text+'\n')
+                                sys.stderr.flush()
+                    except BaseException:
+                        pass
                 progress=getattr(self,'_phase_progress',None)
                 if progress is not None and progress.failure_snapshots<1:self.publish_phase_progress('phase-failure',failure=True)
             for control_fd in [ready_read,ready_write]:

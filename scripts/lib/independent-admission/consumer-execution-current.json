@@ -489,7 +489,7 @@
   },
   {
     "path": "qlever/scripts/sdk-ptrace-execution.py",
-    "sha256": "703fe49a1cb083fc78a69eddd43891a8696fac3d44f148f33110f8a448c6db39"
+    "sha256": "77c9c89284cd4c155684d5b5f61c1499f92e1ed331aed62d966bc5fe057c6db8"
   },
   {
     "path": "qlever/scripts/sdk-ptrace-kernel.py",
@@ -1209,7 +1209,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-generation.ts",
-    "sha256": "f319d478b0551bd5a5f9a6b213a8e207e3020b7313797ea38ed935a780d237bf"
+    "sha256": "dfd59b5000e2bbe29d06a889b54d65fa4012fc47c0d76d9e89ac9f99f1450038"
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-inputs.ts",
@@ -1221,7 +1221,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-origin-policy.ts",
-    "sha256": "abe1fbb0d26471dd6e8cb0ee5a57ec4eb28f6a8e6e6b380f7c95f48f5f3c8dd3"
+    "sha256": "cfaa80850f3e5b2bbb1a16a52f9d8e5f2d54d41c30293e100bf915cf265bfe31"
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-originals.ts",
@@ -1697,7 +1697,7 @@
   },
   {
     "path": "qlever/scripts/sdk-tool-lifetime-leases.py",
-    "sha256": "223aebb49d2e691c73e3f2006d3549676c5b79f1e219d79a2a7052602621a0f5"
+    "sha256": "ea2d298d355cc41431ad3cd125eba2a0ec6929b99690628b5b5bcb02d93cfa83"
   },
   {
     "path": "qlever/scripts/sdk-executable-memory-policy.py",
@@ -1897,7 +1897,7 @@
   },
   {
     "path": "qlever/tests/test_qlever_phase_histogram_optional.py",
-    "sha256": "7f644cf8c3532b5b45c1fe8db43ed45fe978c4e00858ee5b39f6018e0f7b71de"
+    "sha256": "adfeebe0c560b460c27b2e8e732ace9445885ae4d6a6657635ac72c813191792"
   },
   {
     "path": "qlever/tests/test_qlever_phase_syscall_diagnostics.py",
@@ -1994,5 +1994,13 @@
   {
     "path": "qlever/tests/test_sdk70_mremap_barrier_e2e.py",
     "sha256": "03031faa56246a55c1390902a2df1f58c3307e81c776df25557656f78e25e4ae"
+  },
+  {
+    "path": "scripts/lib/independent-admission/consumer-execution-71f9-snapshot.json",
+    "sha256": "96004ea20b72a221066fef352121472fce5ad4d91aa9eaaf9a18bc14397d4202"
+  },
+  {
+    "path": "qlever/tests/test_qlever_read_lease_diagnostic.py",
+    "sha256": "eadc024640b289de0ea9c54441e1a273f09515b78c4c2202c34f6ee7d7227266"
   }
 ]
