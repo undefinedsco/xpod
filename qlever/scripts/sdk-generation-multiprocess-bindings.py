@@ -580,7 +580,7 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
         return aliases
     lifetime_verified_phases=[]
     for phase,lines in phase_lines:
-        need(not live,'prior actual process tree has not closed');roots=[];waits=[];raw_decoder=raw_records.RawRecordDecoder();lease_model=None;lease_tokens={};lease_closed=[];memory_missing=False;memory_shared_entries=set();memory_released_entries=set();lease_pids=[];lease_terminal=False;memory_mode=None;bti_mode=None;bti_required=set();bti_originals={};bti_completed=set();approved_rx={};clone3_mode=None;clone3_originals={};clone3_consumed=set();clone3_events={};memory_checker=executable_memory_policy();memory_writes={}
+        need(not live,'prior actual process tree has not closed');roots=[];waits=[];raw_decoder=raw_records.RawRecordDecoder();lease_model=None;lease_tokens={};lease_closed=[];memory_missing=False;memory_shared_entries=set();memory_released_entries=set();lease_pids=[];lease_terminal=False;memory_mode=None;bti_mode=None;bti_required=set();bti_originals={};bti_completed=set();approved_rx={};clone3_mode=None;clone3_originals={};clone3_consumed=set();clone3_events={};memory_checker=executable_memory_policy();memory_writes={};remap_mode=None;remap_required=set();remap_originals={};remap_consumed=set()
         for raw in lines:
             check();total+=len(raw);need(total<=maximum_raw and len(raw)<=65536,'tiny raw aggregate/record bound');row=raw_decoder.feed(raw)
             if row is None:continue
@@ -639,7 +639,8 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
             elif kind=='owned-root-binding':
                 bti_mode=row.get('btiHardeningModel');need(bti_mode in [None,'held-rx-bti-hardening-v1'],'unknown BTI model')
                 clone3_mode=row.get('clone3ArgsModel');need(clone3_mode in [None,'stopped-clone3-args-v1'],'unknown clone3 argument model')
-                memory_mode=row.get('executableMemoryPolicy');need(memory_mode in [None,memory_checker.MODEL],'unknown executable memory policy');lease_model=row.get('toolchainLifetimeModel');need(lease_model in [None,'kernel-held-read-lease-v1'],'unknown lifetime model')
+                memory_mode=row.get('executableMemoryPolicy');need(memory_mode in [None,memory_checker.MODEL],'unknown executable memory policy')
+                remap_mode=row.get('remapCapabilityModel');need(remap_mode in [None,memory_checker.REMAP_MODEL] and (remap_mode is None or memory_mode==memory_checker.MODEL),'unknown or unfounded mremap capability model');lease_model=row.get('toolchainLifetimeModel');need(lease_model in [None,'kernel-held-read-lease-v1'],'unknown lifetime model')
                 need(row.get('rawRecordModel')==raw_decoder.model,'declared raw record model differs from actual phase format')
                 declared_chunk=row.get('chunkOriginalStorageModel')
                 need(declared_chunk in [None,'chunk-original-v1'] and (not chunk_storage_initialized or chunk_storage_model==declared_chunk),'unknown or changed chunk storage model')
@@ -939,7 +940,14 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                     if append_boundary_syscall(row['arch'],row['nr'],row['args']):append_obligations[row['sequence']]=dict(append_dirty)
                     rules=policy(row['arch'])
                     if memory_mode:
-                        need(memory_checker.decision(row['arch'],row['nr'],row['args']) is None or row['nr']==425 and denial_mode or row['nr']==435 and clone3_mode is not None or bti_mode and memory_checker.bti_candidate(row['arch'],row['nr'],row['args']),'forbidden executable memory operation in successful phase')
+                        remap_reason=memory_checker.decision(row['arch'],row['nr'],row['args'])
+                        remap_candidate=False
+                        if remap_reason=='memory-remap-outside-fixed-executable-mapping-scope' and remap_mode==memory_checker.REMAP_MODEL:
+                            # Shape only: the raw replay below still requires the
+                            # exact exclusive/barrier/coverage/exit chain.
+                            remap_candidate=memory_checker.remap_shape(row['arch'],row['nr'],row['args'],maximum_file)[0]
+                            if remap_candidate:remap_required.add(row['sequence'])
+                        need(remap_reason is None or remap_candidate or row['nr']==425 and denial_mode or row['nr']==435 and clone3_mode is not None or bti_mode and memory_checker.bti_candidate(row['arch'],row['nr'],row['args']),'forbidden executable memory operation in successful phase')
                         if bti_mode and memory_checker.bti_candidate(row['arch'],row['nr'],row['args']):bti_required.add(row['sequence'])
                         descriptor=memory_checker.write_descriptor(row['arch'],row['nr'],row['args'])
                         if descriptor is not None:memory_writes[row['sequence']]=(row['pid'],descriptor)
@@ -1072,6 +1080,82 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                     held=[value for value in lease_tokens.values() if value['acquisitionSequence']==prior['lifetimeLeaseSequence']]
                     need(len(held)==1 and held[0]['identity']==prior['identity'],'BTI lacks same held inode')
                 bti_originals[entry['sequence']]=(row,mappings);retained_entries.add(entry['sequence']);exclusive=(row['pid'],entry['sequence'])
+            elif kind=='executable-memory-remap-allowed':
+                entry=entries.get(row['entrySequence']);barrier=barriers.get(row['barrierSequence'])
+                need(remap_mode==row.get('model')==memory_checker.REMAP_MODEL and memory_mode,'mremap allowance lacks the declared capability model')
+                need(generated_verifier is not None and generated_verifier.model in generated_module.COHORT_MODELS,'mremap requires a real supported generated MM model')
+                need(entry and entry['pid']==row['pid'] and entry['sequence'] in remap_required and entry['sequence'] not in remap_originals,'mremap allowance lacks its shape-admitted actual entry')
+                need(exclusive is None and barrier and row['pid'] in barrier['pids'] and latest_execution_sequence<=barrier['sequence'],'mremap allowance lacks a current all-stop barrier')
+                need(entry['sequence']<barrier['sequence'],'mremap entry did not precede its barrier')
+                target=memory_checker.remap_range(entry['args'][0],entry['args'][1]);need(target is not None and list(target)==row['range'],'mremap range differs from actual entry words')
+                need(row['oldSize']==entry['args'][1] and row['newSize']==entry['args'][2] and row['flags']==entry['args'][3] and row.get('coverageComplete') is True and row.get('executableBytes')==0,'mremap proof projection differs from entry')
+                # G1: derive domain+cohort from the ACTUAL verifier memory-domain
+                # history, never from the row's self-asserted fields.
+                domain,members=generated_verifier.mapping_domain(row['pid'],barrier)
+                need(row.get('memoryDomain')==domain and row.get('memoryDomainMembers')==members,'mremap cohort/domain differs from actual fork/cloneVM history')
+                need(1<=len(members)<=128,'bounded actual cohort required')
+                # maps causality: owner + peer originals must be real captured
+                # records whose map sequence sits strictly after this barrier.
+                owner=row.get('ownerMaps');need(isinstance(owner,dict),'mremap owner maps original missing')
+                owner_capture=tool_ref(owner,'maps');need(owner_capture['observedPid']==row['pid'],'owner maps sampled another pid')
+                verify_stopped_original_order(owner_capture,barrier,entry,row)
+                need(barrier['sequence']<generated_verifier.map_sequences.get(generated_verifier.map_key(owner),0)<row['sequence'],'owner maps outside entry barrier -> allowance window')
+                owner_parsed=tool_maps(owner)
+                ok,why,covered,executable_b=memory_checker.cover_nonexec_range(owner_parsed,row['range'][0],row['range'][1])
+                need(ok and executable_b==0,'forged or incomplete mremap owner coverage')
+                peers=row['cohortMaps'];need(isinstance(peers,list) and [item['pid'] for item in peers]==[m for m in members if m!=row['pid']],'complete ordered same-MM peer maps required')
+                generated_verifier.verify_cohort_maps(peers,row['pid'],members,owner_parsed,barrier,row['sequence'])
+                for item in peers:
+                    parsed=tool_maps(item['original'])
+                    ok,why,covered,executable_b=memory_checker.cover_nonexec_range(parsed,row['range'][0],row['range'][1])
+                    need(ok and executable_b==0,'forged or incomplete mremap peer coverage')
+                remap_originals[entry['sequence']]=row;retained_entries.add(entry['sequence'])
+            elif kind=='exclusive-remap-resume':
+                original=remap_originals.get(row['entrySequence'])
+                need(original and original['sequence']<row['sequence'] and exclusive is None and row['pid']==original['pid'] and row.get('model')==remap_mode and row['barrierSequence']==original['barrierSequence'],'mremap exclusive resume lacks its own allowance')
+                entry=entries.get(row['entrySequence']);need(entry and entry['sequence'] not in exits,'mremap resume lacks the actual entry')
+                need(row['request']=='PTRACE_SYSCALL' and row.get('signal')==0,'mremap resume must be a plain syscall resume')
+                exclusive=(row['pid'],row['entrySequence'])
+            elif kind=='executable-memory-remap-verified':
+                original=remap_originals.get(row['entrySequence']);entry=entries.get(row['entrySequence']);actual=exits.get(row['entrySequence'])
+                need(original and entry and actual and row.get('model')==remap_mode,'mremap verification lacks its allowed/exited transaction')
+                need(exclusive==(row['pid'],row['entrySequence']) and row['entrySequence'] not in remap_consumed,'mremap verification outside its exclusive owner')
+                need(row['exitSequence']==actual['sequence'] and actual['pid']==row['pid'] and actual['isError'] is False and type(actual['result']) is int and actual['result']>0,'mremap verification lacks a successful actual exit')
+                need(actual['result']==row['newBase'],'mremap verification result differs from the kernel exit')
+                need(row['oldRange']==original['range'] and row['newRange']==[row['newBase'],row['newBase']+original['newSize']],'mremap verified range arithmetic differs')
+                need(row.get('coverageComplete') is True and row.get('executableBytes')==0,'mremap verified coverage flag differs')
+                tool_barrier(row);barrier=barriers[row['barrierSequence']]
+                need(actual['sequence']<row['barrierSequence'] and latest_execution_sequence<=row['barrierSequence'],'mremap exit maps lack a current stop')
+                # G1 both ends: re-derive the domain/cohort at the EXIT barrier.
+                domain,members=generated_verifier.mapping_domain(row['pid'],barrier)
+                need(domain==original['memoryDomain'] and members==original['memoryDomainMembers'],'mremap cohort/domain changed across the exclusive call')
+                need(row.get('memoryDomain')==domain and row.get('memoryDomainMembers')==members,'mremap exit cohort differs from actual fork/cloneVM history')
+                # G2: post-exit evidence must be a FRESH capture inside the
+                # exitBarrier -> verified window, never the entry maps reused.
+                need(barrier['sequence']<row['sequence'],'exit barrier did not precede verification')
+                owner=row.get('ownerMaps');need(isinstance(owner,dict),'mremap exit owner maps missing')
+                need(original.get('ownerMaps')!=owner,'stale entry original reused on exit')
+                need(tool_ref(owner,'maps')['observedPid']==row['pid'],'exit owner maps sampled another pid')
+                need(barrier['sequence']<generated_verifier.map_sequences.get(generated_verifier.map_key(owner),0)<row['sequence'],'exit owner maps outside exit barrier -> verified window')
+                owner_parsed=tool_maps(owner)
+                ok,why,covered,executable_b=memory_checker.cover_nonexec_range(owner_parsed,row['newRange'][0],row['newRange'][1])
+                need(ok and executable_b==0,'forged or incomplete mremap destination coverage')
+                peers=row['cohortMaps'];need(isinstance(peers,list) and [item['pid'] for item in peers]==[m for m in members if m!=row['pid']],'complete ordered post-exit peer maps required')
+                generated_verifier.verify_cohort_maps(peers,row['pid'],members,owner_parsed,barrier,row['sequence'])
+                for item in peers:
+                    parsed=tool_maps(item['original'])
+                    ok,why,covered,executable_b=memory_checker.cover_nonexec_range(parsed,row['newRange'][0],row['newRange'][1])
+                    need(ok and executable_b==0,'forged or incomplete mremap destination peer coverage')
+                # the unchanged/shrink case must still carry a NEW capture per member
+                entry_keys={generated_verifier.map_key(item['original']) for item in original.get('cohortMaps') or []}
+                for item in peers:
+                    need(generated_verifier.map_key(item['original']) not in entry_keys,'exit peer maps reused the entry capture')
+                remap_consumed.add(row['entrySequence']);entries.pop(row['entrySequence'],None);exits.pop(row['entrySequence'],None);retained_entries.discard(row['entrySequence']);exclusive=None
+            elif kind=='executable-memory-remap-closed':
+                original=remap_originals.get(row['entrySequence']);actual=exits.get(row['entrySequence'])
+                need(original and actual and exclusive==(row['pid'],row['entrySequence']) and row.get('model')==remap_mode,'mremap close lacks its exclusive transaction')
+                need(actual['isError'] is True and actual['result']==row['kernelError'] and actual['result']<0,'mremap close lacks the actual kernel error exit')
+                remap_consumed.add(row['entrySequence']);entries.pop(row['entrySequence'],None);exits.pop(row['entrySequence'],None);retained_entries.discard(row['entrySequence']);exclusive=None
             elif kind=='bti-hardening-after':
                 pair=bti_originals.get(row['entrySequence']);entry=entries.get(row['entrySequence']);actual=exits.get(row['entrySequence']);tool_barrier(row)
                 need(pair and entry and actual and row.get('model')==bti_mode and exclusive==(row['pid'],row['entrySequence']) and row['entrySequence'] not in bti_completed,'BTI lacks exclusive actual exit')
@@ -1227,6 +1311,7 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                 generated_verifier.metadata_chain=retained_metadata_chain;generated_verifier.verified_metadata_states=sorted([*mode_transitions.values(),*rename_transitions.values()],key=lambda pair:pair[1]['sequence'])
                 generated_verifier.record(row,entries,exits,barriers,caps)
         need(bti_required==set(bti_originals)==bti_completed,'BTI hardening window not closed')
+        need(remap_required==set(remap_originals)==remap_consumed,'mremap capability window not closed')
         need(set(clone3_originals)==clone3_consumed,'clone3 argument consumption not closed')
         raw_decoder.finish()
         need(not memory_writes,'missing actual executable memory FD checks')

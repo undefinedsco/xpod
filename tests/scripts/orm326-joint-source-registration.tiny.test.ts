@@ -31,9 +31,9 @@ test('every published f803 prefix stays byte-identical; only the ORM 0.3.26 tail
     expect(live.slice(0, frozen.length).map(digest)).toEqual(frozen);
     // sdk +1 and linux +1 are the ORM 0.3.26 joint SDK tuple (the f803 prefix
     // above stays byte-identical); api +1, cli +1, consumer +1, CI +2 append.
-    expect(live.length - frozen.length).toBe({sdk: 1, consumer: 1, ci: 2, linux: 1, api: 1, cli: 1}[name] ?? 0);
+    expect(live.length - frozen.length).toBe({sdk: 2, consumer: 2, ci: 4, linux: 2, api: 1, cli: 1}[name] ?? 0);
   }
-  expect([sdk.length, linux.length, consumer.length, ci.length, api.length, cli.length]).toEqual([75, 76, 90, 178, 29, 12]);
+  expect([sdk.length, linux.length, consumer.length, ci.length, api.length, cli.length]).toEqual([76, 77, 91, 180, 29, 12]);
 });
 
 test('the frozen f803 snapshot is the published canonical bytes and the moving canonical only appends', () => {
@@ -44,8 +44,17 @@ test('the frozen f803 snapshot is the published canonical bytes and the moving c
   expect(frozenRows.length).toBe(487);
   // The moving canonical retains every f803 row at its published position.
   expect(current.slice(0, frozenRows.length).map(row => row.path)).toEqual(frozenRows.map(row => row.path));
-  expect(current.length).toBe(frozenRows.length + 2);
-  expect(current.slice(frozenRows.length).map(row => row.path)).toEqual([PATCH_26, SNAPSHOT]);
+  expect(current.length).toBe(frozenRows.length + 9);
+  // Two genuine appends follow the frozen f803 rows: the ORM 0.3.26 patch +
+  // f803 snapshot pair, then the SDK19 telemetry canonical snapshot.
+  expect(current.slice(frozenRows.length).map(row => row.path)).toEqual([PATCH_26, SNAPSHOT,
+    'scripts/lib/independent-admission/consumer-execution-19fe-snapshot.json',
+    'qlever/tests/test_sdk70_mremap_predicate.py',
+    'qlever/tests/test_sdk70_mremap_observer.py',
+    'qlever/tests/test_sdk70_mremap_native.py',
+    'qlever/tests/test_sdk70_mremap_e2e.py',
+    'qlever/tests/run_sdk70_mremap_gate.py',
+    'tests/scripts/sdk70-remap-policy.test.ts']);
   expect(new Set(current.map(row => row.path)).size).toBe(current.length);
 });
 
@@ -64,7 +73,7 @@ test('the current canonical binds actual disk bytes and re-hashes only rows that
   // re-bound too, never dropped; nothing outside the frozen row set is invented.
   const frozenPaths = new Set(frozenRows.map(row => row.path));
   for (const movedPath of moved) expect(frozenPaths.has(movedPath)).toBe(true);
-  expect(current.length).toBe(frozenRows.length + 2);
+  expect(current.length).toBe(frozenRows.length + 9);
   // Historical facts are never dropped or relabelled.
   const patch25 = current.find(row => row.path === PATCH_25)!;
   expect(patch25.sha256).toBe('15917daa88260327bb30d5da25d9db7efb0fd3386c7f0494102fa780ac870789');
@@ -146,6 +155,6 @@ test('old and new tails are strictly disambiguated by actual bytes, never loosen
   expect(select(consumer, unknown)).toBe(tail);
   // The previous (published f803) tail still selects itself, untouched.
   const publishedTail = consumer[consumer.length - 2]!;
-  expect(consumer.indexOf(publishedTail)).toBe(88);
+  expect(consumer.indexOf(publishedTail)).toBe(89);
   expect(select(consumer, new Map([...publishedTail.selectors, ...(publishedTail.secondarySelectors ?? []), ...publishedTail.sourceBindings].map(row => [key(row), row.sha256] as const)))).toBe(publishedTail);
 });

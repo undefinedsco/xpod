@@ -46,17 +46,17 @@ test('every ACTUAL 9d02 published prefix is byte-identical and only genuine tupl
  // consumer and two CI) and the ORM 0.3.26 joint SDK tail binding the actual
  // current manifest/lock plus the four reviewed SDK build inputs. Each is a real
  // appended recipe, not a rewrite.
- expect(live.length-frozen.length).toBe({sdk:3,consumer:3,ci:6,linux:3,api:1}[name as 'sdk']??0);
+ expect(live.length-frozen.length).toBe({sdk:4,consumer:4,ci:8,linux:4,api:1}[name as 'sdk']??0);
  }
 });
 
 test('the appended tuples are exactly two genuine slices each and the deltas are explainable',()=>{
  // +3 SDK tuples (Linux repeats them as a superset), +3 consumer, +6 CI, and the
  // ORM 0.3.26 joint tail appends exactly one API and one CLI tuple.
- expect(sdk.length).toBe(75);
- expect(linux.length).toBe(76);
- expect(consumer.length).toBe(90);
- expect(ci.length).toBe(178);
+ expect(sdk.length).toBe(76);
+ expect(linux.length).toBe(77);
+ expect(consumer.length).toBe(91);
+ expect(ci.length).toBe(180);
  expect(api.length).toBe(29);
  // CLI gains the ORM 0.3.26 joint tuple on top of the published 11.
  expect(cli.length).toBe(12);
@@ -134,7 +134,7 @@ test('the canonical path/hash closure still holds and the frozen 9d02 snapshot i
  // 483 published rows + the refused-caller test + the frozen 9d02 snapshot, then
  // the immutable-input-plan test + the frozen 2406 snapshot (the moving canonical
  // never lists itself).
- expect(current).toHaveLength(489);
+ expect(current).toHaveLength(496);
  expect(new Set(current.map(row=>row.path)).size).toBe(current.length);
  for(const row of current)expect(createHash('sha256').update(disk(row.path)).digest('hex')).toBe(row.sha256);
  const snapshot=blob('scripts/lib/independent-admission/consumer-execution-current.json');
@@ -147,9 +147,18 @@ test('the canonical path/hash closure still holds and the frozen 9d02 snapshot i
   'qlever/tests/test_sdk_lease_input_plan.py',
   'scripts/lib/independent-admission/consumer-execution-2406eac-snapshot.json']);
  // The ORM 0.3.26 joint append only ADDS after the published 2406 tail.
+ // The 19fe telemetry slice appended the f803 snapshot's ORM tail plus the frozen
+ // 19fe canonical snapshot; all three are genuine registered source rows.
  expect(current.slice(487).map(row=>row.path).sort()).toEqual([
   'patches/@undefineds.co%2Fdrizzle-solid@0.3.26.patch',
-  'scripts/lib/independent-admission/consumer-execution-f803e9c2-snapshot.json']);
+  'qlever/tests/run_sdk70_mremap_gate.py',
+  'qlever/tests/test_sdk70_mremap_e2e.py',
+  'qlever/tests/test_sdk70_mremap_native.py',
+  'qlever/tests/test_sdk70_mremap_observer.py',
+  'qlever/tests/test_sdk70_mremap_predicate.py',
+  'scripts/lib/independent-admission/consumer-execution-19fe-snapshot.json',
+  'scripts/lib/independent-admission/consumer-execution-f803e9c2-snapshot.json',
+  'tests/scripts/sdk70-remap-policy.test.ts']);
  expect(current.slice(0,483).map(row=>digest(row))).not.toEqual([]);
  // the published 483 row paths are all retained exactly once
  const live=new Set(current.map(row=>row.path));
@@ -178,7 +187,17 @@ test('published consumer binding rows are unchanged and the two new rows are exa
   'qlever/tests/test_sdk_refused_caller_diagnostic.py',
   'scripts/lib/independent-admission/consumer-execution-2406eac-snapshot.json',
   'scripts/lib/independent-admission/consumer-execution-9d02b2d-snapshot.json']);
+ // After the published 2406 tail the ORM 0.3.26 patch + f803 snapshot pair was
+ // appended, and the 19fe telemetry slice then appended its frozen canonical
+ // snapshot. All three are genuine registered source rows.
  expect(current.slice(487).map(row=>row.path).sort()).toEqual([
   'patches/@undefineds.co%2Fdrizzle-solid@0.3.26.patch',
-  'scripts/lib/independent-admission/consumer-execution-f803e9c2-snapshot.json']);
+  'qlever/tests/run_sdk70_mremap_gate.py',
+  'qlever/tests/test_sdk70_mremap_e2e.py',
+  'qlever/tests/test_sdk70_mremap_native.py',
+  'qlever/tests/test_sdk70_mremap_observer.py',
+  'qlever/tests/test_sdk70_mremap_predicate.py',
+  'scripts/lib/independent-admission/consumer-execution-19fe-snapshot.json',
+  'scripts/lib/independent-admission/consumer-execution-f803e9c2-snapshot.json',
+  'tests/scripts/sdk70-remap-policy.test.ts']);
 });

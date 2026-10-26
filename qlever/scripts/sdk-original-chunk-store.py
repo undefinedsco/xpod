@@ -299,8 +299,81 @@ def _write_all(fd: int, data: bytes) -> None:
         view = view[written:]
 
 
-def _fsync_dir(fd: int) -> None:
+_TELEMETRY_STAGES = (
+    "open", "scan", "flush", "check", "publish-chunks", "fsync-chunks-dir",
+    "stage-manifest", "publish-manifest", "fsync-manifests-dir", "cleanup", "done",
+)
+_TELEMETRY_ERROR_KINDS = (
+    "TimeoutError", "OSError", "SnapshotError", "ManifestError",
+    "FileNotFoundError", "FileExistsError", "AssertionError",
+)
+_TELEMETRY_KEYS = (
+    "model", "stage", "sourceBytes", "chunks", "newChunks", "reusedChunks",
+    "repeatedChunks", "newChunkBytes", "manifestBytes", "stageFsyncStarted",
+    "stageFsyncCompleted", "dirFsyncStarted", "dirFsyncCompleted", "failed",
+    "errorKind", "errorErrno",
+)
+
+
+def _telemetry_reset(telemetry) -> None:
+    """Initialise the caller-owned out-of-band counters.  Scalars only."""
+    if telemetry is None:
+        return
+    telemetry.clear()
+    telemetry.update(
+        model=MODEL, stage="open", sourceBytes=0, chunks=0, newChunks=0,
+        reusedChunks=0, repeatedChunks=0, newChunkBytes=0, manifestBytes=0,
+        stageFsyncStarted=0, stageFsyncCompleted=0, dirFsyncStarted=0,
+        dirFsyncCompleted=0, failed=False, errorKind=None, errorErrno=None,
+    )
+
+
+def _telemetry_stage(telemetry, stage: str) -> None:
+    if telemetry is None or stage not in _TELEMETRY_STAGES:
+        return
+    telemetry["stage"] = stage
+
+
+def _telemetry_failed(telemetry, exc: BaseException) -> None:
+    """Stamp the stage reached by a failed snapshot; never carries content."""
+    if telemetry is None:
+        return
+    try:
+        telemetry["failed"] = True
+        name = type(exc).__name__
+        telemetry["errorKind"] = name if name in _TELEMETRY_ERROR_KINDS else "other"
+        code = getattr(exc, "errno", None)
+        telemetry["errorErrno"] = code if type(code) is int else None
+    except BaseException:
+        pass
+
+
+def bounded_snapshot_telemetry(telemetry):
+    """Copy only declared number/enum fields; drop anything else.  Never raises."""
+    if type(telemetry) is not dict:
+        return None
+    row = {}
+    for name in _TELEMETRY_KEYS:
+        value = telemetry.get(name)
+        if name in ("model", "stage", "errorKind"):
+            if isinstance(value, str) and (
+                value in _TELEMETRY_STAGES or value in _TELEMETRY_ERROR_KINDS
+                or value == MODEL or value == "other"
+            ):
+                row[name] = value
+        elif name == "failed":
+            if type(value) is bool:
+                row[name] = value
+        elif type(value) is int:
+            row[name] = value
+    return row
+
+
+def _fsync_dir(fd: int, telemetry=None) -> None:
     """Best-effort durability for a directory entry."""
+    started = telemetry is not None
+    if started:
+        telemetry["dirFsyncStarted"] += 1
     try:
         os.fsync(fd)
     except OSError as exc:
@@ -312,6 +385,8 @@ def _fsync_dir(fd: int) -> None:
             errno.EROFS,
         ):
             raise
+    if started:
+        telemetry["dirFsyncCompleted"] += 1
 
 
 def _open_subdir(
@@ -391,10 +466,10 @@ def _verify_existing_chunk(
         os.close(fd)
 
 
-def _stage_file(txn_fd: int, name: str, data: bytes) -> os.stat_result:
+def _stage_file(txn_fd: int, name: str, data: bytes, telemetry=None) -> os.stat_result:
     """Create and fsync a private staging file, returning its stat."""
     st = _stage_bytes(txn_fd, name, data)
-    _flush_stage(txn_fd, name, len(data), _identity(st))
+    _flush_stage(txn_fd, name, len(data), _identity(st), telemetry)
     return st
 
 
@@ -426,7 +501,7 @@ def _stage_bytes(txn_fd: int, name: str, data: bytes) -> os.stat_result:
 
 
 def _flush_stage(
-    txn_fd: int, name: str, length: int, created: List[int]
+    txn_fd: int, name: str, length: int, created: List[int], telemetry=None
 ) -> None:
     """Flush exactly the staging inode this transaction created.
 
@@ -444,7 +519,11 @@ def _flush_stage(
             raise SnapshotError("staged file is not a regular file: %s" % name)
         if _identity(before) != created or before.st_size != length:
             raise SnapshotError("staged file identity changed: %s" % name)
+        if telemetry is not None:
+            telemetry["stageFsyncStarted"] += 1
         os.fsync(fd)
+        if telemetry is not None:
+            telemetry["stageFsyncCompleted"] += 1
         if _identity(os.fstat(fd)) != created:
             raise SnapshotError("staged file changed while flushing: %s" % name)
     finally:
@@ -543,6 +622,8 @@ def snapshot(
     sequence: int,
     ledger,
     check: Callable[[], None] = lambda: None,
+    *,
+    telemetry=None,
 ):
     """Publish one snapshot of an already-open regular source file.
 
@@ -566,6 +647,12 @@ def snapshot(
     check:
         Optional callback invoked at transaction checkpoints.  Raising from it
         forces a clean rollback.
+    telemetry:
+        Optional caller-owned dict updated in place with scalars only (stage and
+        fsync counters, byte/chunk totals).  Out-of-band: never read back, never
+        part of the manifest or the published receipt, and updated before the
+        fsync it counts so a deadline during that fsync still retains the exact
+        counters at the failure point.
 
     Returns
     -------
@@ -574,6 +661,8 @@ def snapshot(
         "sha256": <manifest digest>}``.
     """
     global WRITE_BYTES
+
+    _telemetry_reset(telemetry)
 
     if not isinstance(sequence, int) or isinstance(sequence, bool) or sequence < 0:
         raise ValueError("sequence must be a strictly non-negative integer")
@@ -623,6 +712,9 @@ def snapshot(
             raise SnapshotError("source exceeds 512 MiB limit")
         size = before.st_size
         identity_before = _identity(before)
+        if telemetry is not None:
+            telemetry["sourceBytes"] = size
+        _telemetry_stage(telemetry, "scan")
 
         number_of_chunks = (size + CHUNK_SIZE - 1) // CHUNK_SIZE
         manifest_bound = MANIFEST_BASE_BOUND + number_of_chunks * MANIFEST_CHUNK_BOUND
@@ -705,12 +797,23 @@ def snapshot(
 
             offset += length
 
+        if telemetry is not None:
+            telemetry["chunks"] = len(chunks)
+            telemetry["newChunks"] = len(new_order)
+            telemetry["reusedChunks"] = len(verified_existing)
+            telemetry["repeatedChunks"] = (
+                len(chunks) - len(new_order) - len(verified_existing)
+            )
+            telemetry["newChunkBytes"] = new_chunk_bytes
+        _telemetry_stage(telemetry, "flush")
+
         # Flush every staged chunk before any of them is linked, so the existing
         # rule "a published chunk is already durable" still holds.  This sits
         # between the same two transaction checks as before (no per-chunk scan).
         for chunk_sha, length, stage_name, stage_identity in new_order:
-            _flush_stage(txn_fd, stage_name, length, stage_identity)
+            _flush_stage(txn_fd, stage_name, length, stage_identity, telemetry)
 
+        _telemetry_stage(telemetry, "check")
         check()
 
         after = os.fstat(fd)
@@ -732,7 +835,10 @@ def snapshot(
         ).encode("utf-8")
         if len(manifest_bytes) > manifest_bound:
             raise SnapshotError("serialized manifest exceeds reserved bound")
+        if telemetry is not None:
+            telemetry["manifestBytes"] = len(manifest_bytes)
 
+        _telemetry_stage(telemetry, "publish-chunks")
         check()
 
         # Publish chunks first, using no-clobber hard links from the private
@@ -786,14 +892,17 @@ def snapshot(
             ):
                 raise SnapshotError("published chunk is not stable with nlink 1")
 
-        _fsync_dir(chunks_fd)
+        _telemetry_stage(telemetry, "fsync-chunks-dir")
+        _fsync_dir(chunks_fd, telemetry)
 
+        _telemetry_stage(telemetry, "stage-manifest")
         check()
 
         # Manifest is published last, also with an exclusive no-clobber link.
         manifest_stage = "manifest.json"
         staged_names.add(manifest_stage)
-        manifest_st = _stage_file(txn_fd, manifest_stage, manifest_bytes)
+        manifest_st = _stage_file(txn_fd, manifest_stage, manifest_bytes, telemetry)
+        _telemetry_stage(telemetry, "publish-manifest")
         os.link(
             manifest_stage,
             target_name,
@@ -835,7 +944,9 @@ def snapshot(
             or stable_manifest.st_size != len(manifest_bytes)
         ):
             raise SnapshotError("published manifest is not stable with nlink 1")
-        _fsync_dir(manifests_fd)
+        _telemetry_stage(telemetry, "fsync-manifests-dir")
+        _fsync_dir(manifests_fd, telemetry)
+        _telemetry_stage(telemetry, "cleanup")
 
         check()
 
@@ -870,9 +981,15 @@ def snapshot(
 
         ledger.release()
         reserved = False
+        _telemetry_stage(telemetry, "done")
         return result
 
     except BaseException as exc:
+        # Stamp the stage reached *before* rollback touches the filesystem, so a
+        # deadline during the manifest fsync retains the exact counters at that
+        # point even though rollback then removes the partial state.  Scalar
+        # mutation only: never masks or replaces the propagating exception.
+        _telemetry_failed(telemetry, exc)
         cleanup_error: Optional[BaseException] = None
         if not committed:
             try:

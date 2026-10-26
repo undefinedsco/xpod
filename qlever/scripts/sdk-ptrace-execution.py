@@ -49,7 +49,8 @@ PENDING_CAPTURE_SUBSTEPS=('capture','capture_write','capture_rename','capture_me
                          'checkpoint_appends','observe_tool_stop','capture_bti_pending',
                          'capture_clone3_pending','close_terminal_authorities',
                          'barrier_before_capture',
-                         'generated_vma_finish','generated_vma_finish_emit')
+                         'generated_vma_finish','generated_vma_finish_emit',
+                         'generated_vma_snapshot','generated_vma_remap')
 PHASE_PROGRESS_MAXIMUM_SPANS=8
 PHASE_PROGRESS_PREFIX='SDK_OBSERVER_PHASE_PROGRESS '
 
@@ -553,7 +554,7 @@ class Observer:
         self.prepared_inputs={};self.prepared_sealed=False;self.domain_bytes=0;self.claim_bytes=dict.fromkeys(('raw-wire','capture-body','stdio','provider-other'),0);self.domain_lock=threading.Lock();self.pump_errors=[];self.maximum_stdio_bytes=maximum_stdio_bytes if maximum_stdio_bytes is not None else maximum_file_bytes
         self.compressed_raw=compressed_raw;self.logical_raw_bytes=0;self.raw_logical_limit=json.loads((ROOT/'scripts/lib/module-artifact-limits.json').read_text())['sourceMaterialBytes'];self.require_success=require_success;self.raw_bytes_completed=0;self.maximum_processes=maximum_processes;self.shard_bytes=shard_bytes
         self.deadline_monotonic=deadline_monotonic;self.check_budget=check_budget;self.maximum_bytes=maximum_bytes;self.maximum_file_bytes=maximum_file_bytes;self.selected_names=selected_names
-        self.out=Path(out);self.capture_dir=self.out;self.source=str(source);self.build=str(build);self.tasks={};self.seq=0;self.records=[];self.captures=[];self.retained=set();self.producers={};self.write_states={};self.write_projections={};self.append_chains={};self.budget_context={};self.metadata_states=[];self.rename_records=[];self.consumers=[];self.raw=None;self.deadline=0;self.pausing=False;self.root=None;self.root_code=None;self.failures=[];self.current_phase=None;self.unknown_stops={};self.capture_bytes=0;self.capture_entities={};self.content_capture_pool={};self.exclusive=None;self.wait_references=[]
+        self.out=Path(out);self.capture_dir=self.out;self.source=str(source);self.build=str(build);self.tasks={};self.seq=0;self.records=[];self.captures=[];self.retained=set();self.producers={};self.write_states={};self.write_projections={};self.append_chains={};self.budget_context={};self.metadata_states=[];self.rename_records=[];self.consumers=[];self.raw=None;self.deadline=0;self.pausing=False;self.root=None;self.root_code=None;self.failures=[];self.current_phase=None;self.unknown_stops={};self.capture_bytes=0;self.capture_entities={};self.content_capture_pool={};self.snapshot_telemetry=None;self.snapshot_telemetry_completed=None;self.snapshot_telemetry_failure=None;self.mremap_proof_active=False;self.mremap_barriers=0;self.exclusive=None;self.wait_references=[]
         self.lifetime_leases=None;self.lifetime_phase=None;self.lifetime_acquired={};self.lifetime_by_identity={};self.authority_observed=set()
         assert type(generated_vma_output) is bool and (not generated_vma_output or shared_tasks and capture_toolchain),'generated VMA requires existing actual shared-task/tool observation'
         self.generated_build_root=generated_vma_module.validated_build_root(generated_build_root)
@@ -1035,12 +1036,23 @@ class Observer:
         source=os.fstat(reader)
         if getattr(self,'capture_content_entities',False) and offset==0 and stat.S_ISREG(source.st_mode) and source.st_size==size:
             self.check();number=len(self.captures);ledger=CaptureReservation(self)
-            manifest=chunk_store.snapshot(self.capture_dir,reader,number,ledger,self.check)
+            # Out-of-band counter sink. It is updated in place by the chunk store
+            # BEFORE each fsync it counts, so a deadline raised inside the manifest
+            # fsync still leaves the exact counters at the failure point in
+            # self.snapshot_telemetry for the existing phase-failure diagnostic.
+            # It is never a proof field, never in the manifest or the receipt.
+            telemetry=dict();self.snapshot_telemetry=telemetry
+            try:
+                manifest=chunk_store.snapshot(self.capture_dir,reader,number,ledger,self.check,telemetry=telemetry)
+            except BaseException:
+                self.snapshot_telemetry_failure=chunk_store.bounded_snapshot_telemetry(telemetry)
+                raise
             data=chunk_store.read_manifest(self.capture_dir,manifest,self.check)
             reference=dict(path='capture-'+str(number).zfill(4)+'.original',bytes=data['bytes'],sha256=data['sha256'],storage=dict(model='chunk-original-v1',manifest=manifest))
             physical_bytes=ledger.committed_bytes
             row=self.emit(dict(kind='write-original',original=reference))
             self.captures.append(row);self.capture_bytes+=physical_bytes
+            self.snapshot_telemetry_completed=chunk_store.bounded_snapshot_telemetry(telemetry)
             return reference
         name='capture-'+str(len(self.captures)).zfill(4)+'.original';count=0;digest=hashlib.sha256()
         with (self.capture_dir/name).open('xb') as output:
@@ -1389,6 +1401,22 @@ class Observer:
             target=fdpath(pid,descriptor)
             if memory_policy.memory_fd(target):reason='proc-memory-write-descriptor'
             self.emit(dict(kind='executable-memory-write-fd',model=memory_policy.MODEL,pid=pid,entrySequence=record['sequence'],fd=descriptor,target=target))
+        # Bounded private-anonymous mremap capability. `decision()` still refuses
+        # every remap; this branch can only CLEAR that one reason, and only when
+        # the whole source range is proved under a real all-stop. Every failure
+        # path returns the original reason unchanged.
+        if reason=='memory-remap-outside-fixed-executable-mapping-scope':
+            proof=self.prove_private_anonymous_remap(pid,record)
+            if proof is not None:
+                self.emit(dict(kind='executable-memory-remap-allowed',model=memory_policy.REMAP_MODEL,pid=pid,entrySequence=record['sequence'],**proof))
+                self.tasks[pid]['mremapPending']=dict(entrySequence=record['sequence'],**proof)
+                # Hold the exclusive slot and let ONLY this owner resume. Every
+                # same-MM peer stays in its tracing stop until the verified exit.
+                self.exclusive=(pid,record['sequence'])
+                self.emit(dict(kind='exclusive-remap-resume',model=memory_policy.REMAP_MODEL,pid=pid,
+                               entrySequence=record['sequence'],barrierSequence=proof['barrierSequence'],
+                               request='PTRACE_SYSCALL',signal=0))
+                reason=None
         if reason:
             self.emit(dict(kind='executable-memory-refused',model=memory_policy.MODEL,pid=pid,entrySequence=record['sequence'],reason=reason))
             # Diagnostic provenance ONLY on the existing fatal refusal branch. The
@@ -1396,6 +1424,137 @@ class Observer:
             refusedCaller=refused_caller_snapshot(pid,record,self.check)
             print('SDK_EXECUTABLE_MEMORY_REFUSED '+json.dumps(dict(arch=record['arch'],nr=record['nr'],pid=pid,entrySequence=record['sequence'],reason=reason,refusedCaller=refusedCaller),sort_keys=True,separators=(',',':')),file=sys.stderr,flush=True)
             raise ValueError('executable memory policy refused before resume: '+reason)
+
+    def prove_private_anonymous_remap(self,pid,record,*,phase='entry'):
+        """Prove + retain one mremap as an exclusive private-anonymous resize.
+
+        Returns the proof dict when EVERY precondition holds, else None. Never
+        raises for a failed proof: the caller keeps the original refusal.
+
+        The all-stop is taken ONCE here, but the transaction is not released at
+        the syscall entry: the caller installs `exclusive=(pid, entrySequence)`
+        and only clears it after the actual syscall EXIT maps are verified, so
+        every same-MM peer stays in its tracing stop for the whole kernel call.
+        """
+        maximum=getattr(self,'maximum_file_bytes',None)
+        candidate,reason,geometry=memory_policy.remap_shape(record['arch'],record['nr'],record['args'],maximum)
+        if not candidate:return None
+        interval=memory_policy.remap_range(geometry['oldAddress'],geometry['oldSize'])
+        if interval is None:return None
+        low,high=interval
+        # A nested enforcement while a barrier is already settling must not
+        # re-enter it; the outer pass owns the stop universe.
+        if getattr(self,'pausing',False) or getattr(self,'mremap_proof_active',False):return None
+        generated=getattr(self,'generated_vma',None)
+        if generated is None or getattr(generated,'mm',None) is None:return None
+        if getattr(self,'exclusive',None) is not None:return None
+        self.mremap_proof_active=True
+        try:
+            barrier=self.barrier()
+            domain,members=generated.mapping_domain(pid,barrier)
+            # Unknown peers: every cohort TGID must expose exactly the tracked
+            # stopped task set, so no untracked thread can mutate this MM.
+            if not self.mremap_cohort_closed(pid,members,barrier):return None
+            owner_maps=None;peers=[]
+            for member in members:
+                captured,mappings=self.tool_maps(member)
+                ok,why,covered,executable=memory_policy.cover_nonexec_range(mappings,low,high)
+                if not ok:return None
+                if member==pid:owner_maps=captured['original']
+                else:peers.append(dict(pid=member,original=captured['original']))
+            if owner_maps is None:return None
+            return dict(phase=phase,barrierSequence=barrier['sequence'],memoryDomain=domain,
+                        memoryDomainMembers=members,range=[low,high],oldSize=geometry['oldSize'],
+                        newSize=geometry['newSize'],flags=geometry['flags'],
+                        mayMove=geometry['mayMove'],coverageComplete=True,executableBytes=0,
+                        ownerMaps=owner_maps,cohortMaps=peers)
+        finally:
+            self.mremap_proof_active=False
+
+    def mremap_cohort_closed(self,pid,members,barrier):
+        """Global all-stop closure PLUS exact same-MM peer ownership.
+
+        `members` is the generated-VMA memory-domain cohort (same CLONE_VM
+        domain), NOT every live process: an independent Ninja/clang process has
+        its own address space and cannot mutate this MM. The global barrier must
+        still cover every live task and every live task must be in a stopped 't'
+        state, so no independent process can fork/exec or change mappings while
+        we act either.
+        """
+        if not isinstance(members,(list,tuple)) or not members:return False
+        ownership=barrier.get('taskOwnership') or []
+        if [row['tid'] for row in ownership]!=list(barrier.get('pids') or []):return False
+        live=sorted(p for p,row in self.tasks.items() if not row.get('exited'))
+        # Global closure: the barrier covers the entire tracked live universe.
+        if list(barrier.get('pids') or [])!=live:return False
+        generated=getattr(self,'generated_vma',None);mm=getattr(generated,'mm',None)
+        if mm is None:return False
+        # Every live task must have a real memory-domain record (cloneVM tracking),
+        # so an unmodelled process can never hide inside this phase.
+        if sorted(mm.domains)!=live:return False
+        domain=mm.domains.get(pid)
+        if domain is None:return False
+        same=sorted(p for p,value in mm.domains.items() if value==domain)
+        if same!=sorted(members):return False
+        for member in members:
+            row=self.tasks.get(member)
+            if row is None or not row.get('stopped') or row.get('exited'):return False
+            tgid=row.get('tgid',member)
+            try:threads=sorted(int(name) for name in os.listdir('/proc/'+str(tgid)+'/task'))
+            except OSError:return False
+            known=sorted(p for p,other in self.tasks.items() if not other.get('exited') and other.get('tgid',p)==tgid)
+            if threads!=known:return False
+        return True
+
+    def mremap_maps(self,pid):
+        """One bounded complete /proc/<pid>/maps read, parsed; None on failure."""
+        try:
+            with open('/proc/'+str(pid)+'/maps','rb') as source:raw=source.read(4*1024**2+1)
+        except OSError:return None
+        if len(raw)>4*1024**2:return None
+        try:return bindings.parse_proc_maps(raw)
+        except (ValueError,AssertionError):return None
+
+    def verify_private_anonymous_remap(self,pid,entry,record):
+        """Verify the ACTUAL kernel result, then close the exclusive transaction.
+
+        Runs only while every same-MM peer is still stopped: the entry barrier
+        plus `exclusive` held them across the whole kernel call. On any doubt the
+        assertion fires BEFORE the exclusive slot is released, so the phase ends
+        unclosed instead of silently accepted.
+        """
+        pending=self.tasks[pid].pop('mremapPending',None)
+        if pending is None:return None
+        assert self.exclusive==(pid,entry['sequence']),'remap exit lacks its exclusive owner'
+        assert record['entrySequence']==pending['entrySequence'],'remap exit/entry sequence differs'
+        if record['isError'] or not isinstance(record['result'],int) or record['result']<0:
+            self.emit(dict(kind='executable-memory-remap-closed',model=memory_policy.REMAP_MODEL,
+                           pid=pid,entrySequence=entry['sequence'],exitSequence=record['sequence'],
+                           memoryDomain=pending['memoryDomain'],kernelError=record['result']))
+            self.exclusive=None
+            return None
+        low,high=pending['range'];base=record['result']
+        assert base>0 and base%4096==0,'remap returned an unaligned base'
+        new_high=base+pending['newSize']
+        assert new_high<=1<<64,'remap result range overflow'
+        barrier=self.barrier()
+        owner_maps=None;peers=[]
+        for member in pending['memoryDomainMembers']:
+            captured,mappings=self.tool_maps(member)
+            ok,reason,covered,executable=memory_policy.cover_nonexec_range(mappings,base,new_high)
+            assert ok,'remap post-exit destination is not private anonymous non-executable: '+str(reason)
+            assert executable==0,'remap post-exit destination contains executable bytes'
+            if member==pid:owner_maps=captured['original']
+            else:peers.append(dict(pid=member,original=captured['original']))
+        assert owner_maps is not None,'remap owner maps missing'
+        self.emit(dict(kind='executable-memory-remap-verified',model=memory_policy.REMAP_MODEL,
+                       pid=pid,entrySequence=entry['sequence'],exitSequence=record['sequence'],
+                       barrierSequence=barrier['sequence'],memoryDomain=pending['memoryDomain'],
+                       memoryDomainMembers=pending['memoryDomainMembers'],
+                       oldRange=[low,high],newBase=base,newRange=[base,new_high],
+                       coverageComplete=True,executableBytes=0,ownerMaps=owner_maps,cohortMaps=peers))
+        self.exclusive=None
+        return base
 
     def lifetime_open(self,pid,path):
         """Open the actual lexical target through the tracee's own root.
@@ -2124,6 +2283,21 @@ class Observer:
         payload_window=self.window_summary()
         payload=dict(schemaVersion=1,kind=kind,authorityVerified=False,phase=self.current_phase,phaseStartedMonotonicNs=str(started) if started is not None else None,phaseDeadlineMonotonicNs=str(deadline) if deadline is not None else None,nowMonotonicNs=str(now_ns) if now_ns is not None else None,elapsedNs=str(now_ns-started) if now_ns is not None and started is not None else None,remainingNs=str(deadline-now_ns) if deadline is not None and now_ns is not None else None,globalRawSequence=getattr(self,'seq',0),phaseTicks=getattr(progress,'ticks',0) if progress is not None else 0,eventCount=getattr(progress,'events',0) if progress is not None else 0,waitReturnCount=getattr(progress,'waits',0) if progress is not None else 0,lastBoundary=getattr(progress,'last_boundary',None) if progress is not None else None,lastWait=getattr(progress,'last_wait',None) if progress is not None else None,taskCounts=state_counts,exclusiveOwnerPid=exclusive[0] if isinstance(exclusive,tuple) and len(exclusive)==2 else None,exclusiveOwnerSequence=exclusive[1] if isinstance(exclusive,tuple) and len(exclusive)==2 else None,terminalFocusPid=terminal,generatedVmaOwner=getattr(generated,'owner',None) if generated is not None else None,lifetimeLeaseActive=lifecycle is not None,lifetimeLeaseCount=len(lifecycle.fds) if lifecycle is not None else 0,activeInclusiveMethod=getattr(progress,'active',None) if progress is not None else None,activeInclusiveMethodStartedNs=str(getattr(progress,'active_started',None)) if progress is not None and getattr(progress,'active_started',None) is not None else None,lastFailedInclusiveMethod=getattr(progress,'failed',None) if progress is not None else None,lastFailedInclusiveMethodStartedNs=str(getattr(progress,'failed_started',None)) if progress is not None and getattr(progress,'failed_started',None) is not None else None,inclusiveBuckets={name:dict(calls=value[0],totalNs=value[1],maxNs=value[2]) for name,value in (progress.buckets.items() if progress is not None else [])},pendingCaptureSubsteps={name:dict(calls=value[0],totalNs=value[1],maxNs=value[2]) for name,value in (getattr(progress,'substeps',{}) or {}).items()},pendingCaptureSubstepLast=getattr(progress,'substep_last',None),pendingCaptureSpans=list(getattr(progress,'spans',()) or ()),pendingCaptureSpansDropped=getattr(progress,'spans_dropped',0),mapsBodyBytesLast=getattr(progress,'maps_bytes_last',0),mapsBodyBytesMax=getattr(progress,'maps_bytes_max',0),mapsBodyCount=getattr(progress,'maps_bodies',0),syscallStops=getattr(progress,'syscall_summary',lambda:None)() if progress is not None else None,ownedWindowActive=owned_window[0],ownedWindowDeadlineNs=owned_window[1],ownedWindowParentNs=owned_window[2],inclusiveDurationNote='inclusive nested durations; buckets overlap by design; non-additive',failure=bool(failure))
         if payload_window is not None:payload['ownedWindowActivity']=payload_window
+        # Out-of-band chunk-store counters for the active/failed snapshot. Bounded
+        # scalars only, diagnostics-only, never read by any verifier and never a
+        # proof field: presence here grants no authority over captured bytes.
+        try:
+            snapshot=dict(active=None,completed=None,failed=None)
+            active=getattr(self,'snapshot_telemetry',None)
+            if active:snapshot['active']=chunk_store.bounded_snapshot_telemetry(active)
+            completed=getattr(self,'snapshot_telemetry_completed',None)
+            if completed:snapshot['completed']=dict(completed)
+            failed=getattr(self,'snapshot_telemetry_failure',None)
+            if failed:snapshot['failed']=dict(failed)
+            if snapshot['active'] is not None or snapshot['completed'] is not None or snapshot['failed'] is not None:
+                snapshot['authority']='diagnostic-only: counters are out-of-band and grant no capture/durability authority'
+                payload['snapshotTelemetry']=snapshot
+        except BaseException:pass
         return payload
     def publish_phase_progress(self,kind,failure=False):
         """Bounded stderr diagnostic from held state only; never raises.
@@ -2556,6 +2730,10 @@ class Observer:
                 self.complete_bti(pid,old,record);return
             if self.generated_vma and pid in self.generated_vma.pending:
                 self.instrument_substep('generated_vma_finish',self.generated_vma.finish,pid,old,record);self.emit(dict(kind='exclusive-captured-syscall-exit',pid=pid,entrySequence=old['sequence'],result=record['result'],isError=record['isError']));self.exclusive=None;return
+            if task.get('mremapPending'):
+                # Proven private-anonymous resize: verify the ACTUAL kernel result
+                # against fresh maps before anything else consumes this exit.
+                self.instrument_substep('generated_vma_remap',self.verify_private_anonymous_remap,pid,old,record)
             transition=task.pop('setresuidTransition',None)
             if transition is not None:
                 try:
@@ -2669,7 +2847,7 @@ class Observer:
             for pump in pumps:pump.start()
             if self.process_authority:
                 os.close(ready_write);ready_write=None;self.check();remaining=max(0,self.deadline-time.monotonic());readable,_,_=select.select([ready_read],[],[],remaining);self.check();assert readable and os.read(ready_read,1)==b'R','child authority setup did not complete before release';os.close(ready_read);ready_read=None
-            self.emit(dict(kind='owned-root-binding',pid=child,command=command,**(dict(toolchainLifetimeModel=LIFETIME_MODEL,executableMemoryPolicy=memory_policy.MODEL,clone3ArgsModel='stopped-clone3-args-v1',btiHardeningModel='held-rx-bti-hardening-v1') if self.capture_toolchain else {}),**(dict(rawRecordModel=probe.RAW_RECORD_MODEL_V2)if self.indexed_raw_records else {}),backend='ptrace-all-stop-process-v1',**(dict(chunkOriginalStorageModel='chunk-original-v1') if self.capture_content_entities else {}),captureOriginalEntityModel='same-phase-content-entity-v2' if self.capture_content_entities else 'same-phase-producer-original-v1',**(dict(mapsOriginalEntityModel='same-phase-maps-content-entity-v1')if getattr(self,'capture_maps_content_entities',False)else {}),**(dict(generatedVmaModel=self.generated_vma.model,**(dict(generatedVmaMetadataModel=generated_vma_module.RETAINED_METADATA_MODEL)if getattr(self,'retained_generated_metadata',False)else {}),generatedVmaBuildRoot=self.build,generatedVmaParentDeadlineMonotonicNs=str(int(self.waiter.parent_deadline*1e9))) if self.generated_vma else {}),**(dict(stoppedWriterAliasModel='all-stop-exclusive-write-aliases-v1') if getattr(self,'stopped_writer_aliases',False) else {}),**(dict(optionalIoUringModel='explicit-kernel-enosys-denial-v2' if getattr(self,'io_uring_enosys_v2',False) else 'explicit-kernel-enosys-denial-v1') if self.deny_optional_io_uring else {}),**(dict(setresuidNoopModel='actual-stopped-setresuid-noop-v1') if self.verified_setresuid_noop else {}),**(dict(setresIdentityNoopModel='actual-stopped-setres-identity-noop-queued-v2' if getattr(self,'queued_identity_noop',False) else 'actual-stopped-setres-identity-noop-v1') if getattr(self,'verified_identity_noop',False) else {}),**(dict(processAuthorityModel=tool_providers.AUTHORITY_MODEL) if self.process_authority else {}),**(dict(exitAuthorityModel='actual-selected-exit-stop-held-terminal-peers-v2'if getattr(self,'serialize_terminal_syscalls',False)else 'actual-selected-exit-stop-before-peer-barrier-v1') if getattr(self,'terminal_exit_evidence',False) else {}),**(dict(taskOwnershipModel='all-tracked-tids-shared-fd-v1',tgid=child,fdTable=child) if self.shared_tasks else {})));single.trace(SEIZE,child,0,OPTIONS);single.trace(INTERRUPT,child);pid,status=self.wait_one();self.event(pid,status,False);self.pending_captures();os.write(write_fd,b'x');os.close(write_fd);write_fd=None;self.resume()
+            self.emit(dict(kind='owned-root-binding',pid=child,command=command,**(dict(toolchainLifetimeModel=LIFETIME_MODEL,executableMemoryPolicy=memory_policy.MODEL,clone3ArgsModel='stopped-clone3-args-v1',btiHardeningModel='held-rx-bti-hardening-v1',**(dict(remapCapabilityModel=memory_policy.REMAP_MODEL) if self.generated_vma else {})) if self.capture_toolchain else {}),**(dict(rawRecordModel=probe.RAW_RECORD_MODEL_V2)if self.indexed_raw_records else {}),backend='ptrace-all-stop-process-v1',**(dict(chunkOriginalStorageModel='chunk-original-v1') if self.capture_content_entities else {}),captureOriginalEntityModel='same-phase-content-entity-v2' if self.capture_content_entities else 'same-phase-producer-original-v1',**(dict(mapsOriginalEntityModel='same-phase-maps-content-entity-v1')if getattr(self,'capture_maps_content_entities',False)else {}),**(dict(generatedVmaModel=self.generated_vma.model,**(dict(generatedVmaMetadataModel=generated_vma_module.RETAINED_METADATA_MODEL)if getattr(self,'retained_generated_metadata',False)else {}),generatedVmaBuildRoot=self.build,generatedVmaParentDeadlineMonotonicNs=str(int(self.waiter.parent_deadline*1e9))) if self.generated_vma else {}),**(dict(stoppedWriterAliasModel='all-stop-exclusive-write-aliases-v1') if getattr(self,'stopped_writer_aliases',False) else {}),**(dict(optionalIoUringModel='explicit-kernel-enosys-denial-v2' if getattr(self,'io_uring_enosys_v2',False) else 'explicit-kernel-enosys-denial-v1') if self.deny_optional_io_uring else {}),**(dict(setresuidNoopModel='actual-stopped-setresuid-noop-v1') if self.verified_setresuid_noop else {}),**(dict(setresIdentityNoopModel='actual-stopped-setres-identity-noop-queued-v2' if getattr(self,'queued_identity_noop',False) else 'actual-stopped-setres-identity-noop-v1') if getattr(self,'verified_identity_noop',False) else {}),**(dict(processAuthorityModel=tool_providers.AUTHORITY_MODEL) if self.process_authority else {}),**(dict(exitAuthorityModel='actual-selected-exit-stop-held-terminal-peers-v2'if getattr(self,'serialize_terminal_syscalls',False)else 'actual-selected-exit-stop-before-peer-barrier-v1') if getattr(self,'terminal_exit_evidence',False) else {}),**(dict(taskOwnershipModel='all-tracked-tids-shared-fd-v1',tgid=child,fdTable=child) if self.shared_tasks else {})));single.trace(SEIZE,child,0,OPTIONS);single.trace(INTERRUPT,child);pid,status=self.wait_one();self.event(pid,status,False);self.pending_captures();os.write(write_fd,b'x');os.close(write_fd);write_fd=None;self.resume()
             while any(not r['exited'] for r in self.tasks.values()):
                 progress=self._phase_progress;progress.ticks+=1
                 pid,status=self.wait_one();self.event(pid,status);self.pending_captures();self.resume()

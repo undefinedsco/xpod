@@ -36,7 +36,12 @@ jobs:
     if: ${{ github.event_name != 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     steps:
+      # The Git-history immutability tests read real commits (9d02/2406/19fe).
+      # A default shallow checkout cannot resolve them, so this job needs full
+      # history. Only this existing step changes; no test is skipped.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: oven-sh/setup-bun@v2
         with:
@@ -76,6 +81,17 @@ jobs:
         env:
           NATIVE_LEASE_CC: clang
         run: /usr/bin/python3 qlever/tests/run_native_lease_gate.py -v
+
+      # Executable-memory remap (SDK70). Dedicated REAL-Linux gate: CI discovers
+      # only `test_qlever*.py`, so the canonical `test_sdk70_mremap*` modules
+      # would otherwise never run here. Runs after the interpreter-matched
+      # headers above and builds the observer's OWN native lease DI with the
+      # declared compiler. Linux-only and fail-closed: wrong platform, missing
+      # compiler/headers/fixture, zero cases, any skip or nonzero exit fails.
+      - name: SDK70 executable-memory remap gate
+        env:
+          NATIVE_LEASE_CC: clang
+        run: /usr/bin/python3 qlever/tests/run_sdk70_mremap_gate.py -v
 
       - name: Install ripgrep differential oracle
         run: |

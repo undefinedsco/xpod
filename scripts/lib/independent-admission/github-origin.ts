@@ -1435,6 +1435,15 @@ export async function observeProductConsumerGitHubOrigin(input:ArtifactAcquisiti
     workflowPath:'.github/workflows/ci.yml',workflowSha256:CI_PUBLICATION_WORKFLOW_SHA,
     reviewedWorkflowVersions:[{workflowSha256:'d587e9fc889409a30814098fdfda9f00b322423fe47af52f70f9a6e2d7dc48bf',
       jobName:()=>callerNames[0]!,
+      sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS},
+      // APPEND-ONLY: the `test` job now checks out full Git history so the real
+      // 9d02/2406/19fe commit readers resolve, and it runs the dedicated SDK70
+      // executable-memory remap gate. Same jobs and sources; the published
+      // d587e9fc version above stays byte-identical and remains selectable.
+      // The earlier fetch-depth-only variant 09208b75 was never published, so this
+      // genuine current file replaces it rather than remaining as fake history.
+      {workflowSha256:'7b5a920f0dc7920e47565315fe2da2ac94ad92fda43cd6426f7387a12a9359d4',
+      jobName:()=>callerNames[0]!,
       sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS}],requiredBranch:'staging',
     jobName:()=>callerNames[0]!,jobNames:()=>callerNames,
     sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS,

@@ -1929,11 +1929,66 @@ const ORM326_SDK_GROUP:GitHubSourceBindingGroup=Object.freeze({...INPUT_PLAN_SDK
  selectors:INPUT_PLAN_SDK_GROUP.selectors,
  secondarySelectors:Object.freeze([...rebindOrm326SdkRows(INPUT_PLAN_SDK_GROUP.secondarySelectors??[]),...ORM326_SDK_PRIMARY_DISCRIMINATORS]),
  sourceBindings:Object.freeze([...rebindOrm326SdkRows(INPUT_PLAN_SDK_GROUP.sourceBindings),...ORM326_SDK_BUILD_INPUT_BINDINGS])});
+/** CURRENT UNPUBLISHED combined slice: SDK19 failure telemetry + SDK70 private-
+ * anonymous NON-EXECUTABLE remap capability and its replay verifier (APPEND-ONLY;
+ * index 74 is published 19fe and is never rebound). It moves five Python roles —
+ * the ptrace observer, the coordinated-wait caller, the original chunk store, the
+ * generation multiprocess bindings (stopped-original ordering now uses the ACTUAL
+ * owner_capture rather than the barrier) and the executable-memory policy — plus
+ * the telemetry and SDK70 diagnostic tests. No CMake, QLever lock, package
+ * manifest or build-script bytes moved, so the ORM 0.3.26 build-input rows keep
+ * their published values verbatim and no version is invented.
+ *
+ * The promoted roles are secondary SELECTORS because every surviving candidate
+ * already owns them, which is what makes a mixture (new ptrace body with the old
+ * chunk store) match no tuple instead of silently selecting the nearest tail.
+ * This adds a REAL restricted capability; it is not "instrumentation only" and it
+ * does not broaden any existing authority, lease, timer or durability guarantee. */
+const SDK19_TELEMETRY_SOURCE_HASHES:Readonly<Record<string,string>>=Object.freeze({
+ "qlever/scripts/sdk-ptrace-execution.py":"1af678e069d81a2fea07a0652b14382e2bc3b1917bab5f5eeeb8db78d4bb4a9f",
+ "qlever/scripts/sdk-coordinated-wait.py":"778fdaad5802df943c8e7e96e4de79a32845508947c9ae436e742248b2e7aa1a",
+ "qlever/scripts/sdk-original-chunk-store.py":"67ea1a610f15f74288d623694b1a4886a82b0f29a186c40e69bdd232b39f96db",
+ "qlever/scripts/sdk-executable-memory-policy.py":"ae0c241805d4d72a89103a21fe224a29138df4c8c63de55128b107d92c6e7724",
+ "qlever/scripts/sdk-generation-multiprocess-bindings.py":"adcd3a8ffdbcbe0925e199757db4fd95489c86a69f9a0b31fa7d555f5fcc7bc1"
+});
+const rebindSdk19TelemetryRows=(rows:readonly GitHubSourceBinding[]|undefined)=>Object.freeze((rows??[]).map(row=>Object.freeze({...row,sha256:SDK19_TELEMETRY_SOURCE_HASHES[row.path]??row.sha256})));
+/** Strict old/new discriminators: owned by every surviving candidate already. */
+const SDK19_TELEMETRY_DISCRIMINATORS=Object.freeze([
+Object.freeze({path:'qlever/scripts/sdk-ptrace-execution.py',sha256:SDK19_TELEMETRY_SOURCE_HASHES['qlever/scripts/sdk-ptrace-execution.py']!}),
+Object.freeze({path:'qlever/scripts/sdk-coordinated-wait.py',sha256:SDK19_TELEMETRY_SOURCE_HASHES['qlever/scripts/sdk-coordinated-wait.py']!}),
+Object.freeze({path:'qlever/scripts/sdk-original-chunk-store.py',sha256:SDK19_TELEMETRY_SOURCE_HASHES['qlever/scripts/sdk-original-chunk-store.py']!}),
+/** Promoted because the SDK70 slice CHANGED this executable-memory policy. Every
+ * surviving candidate already owns the role, so a stale policy now refuses to
+ * select the tail instead of slipping through as a source row. */
+Object.freeze({path:'qlever/scripts/sdk-executable-memory-policy.py',sha256:SDK19_TELEMETRY_SOURCE_HASHES['qlever/scripts/sdk-executable-memory-policy.py']!})]);
+/** Two genuinely new diagnostic tests plus the two re-hashed existing ones. They
+ * are registered source rows only: no older tuple owns them, so declaring them
+ * as discriminators would weaken an older tuple's ownership contract. */
+const SDK19_TELEMETRY_TEST_BINDINGS=Object.freeze([
+Object.freeze({path:'qlever/tests/test_qlever_snapshot_telemetry.py',sha256:'d1bababe4081f9f8e654adc0487438e281cb2a2cfbf11b917608de8366f421e6'}),
+Object.freeze({path:'qlever/tests/test_qlever_coordinated_snapshot_substep.py',sha256:'ad97a4605dfc4aa1ff72b30a33919e62c3228a5254de080c3e43bd54b70a6432'}),
+Object.freeze({path:'qlever/tests/test_sdk_chunk_originals.py',sha256:'bf0b2bcc870ddfa072db0f7da1f914ba08fb4949ae0c2e383235d8181bfd25a6'}),
+Object.freeze({path:'qlever/tests/test_sdk_generated_vma_files.py',sha256:'c9cd36c1fbc4d03e11b9e091bbb5b7f3de2858d78e926d5cbf102337b96d3ec3'}),
+/** SDK70 executable-memory remap: the four canonical diagnostic tests plus the
+ * dedicated Linux gate runner and the portable wrapper. These are registered
+ * source rows (mandatory verification), not selection discriminators: no older
+ * tuple owns them, so declaring them as such would weaken an older contract. */
+Object.freeze({path:'qlever/tests/test_sdk70_mremap_predicate.py',sha256:'9a27f26a2ac3ecbeba12d5344f3f97b49339eb3f88d13da73ff200a29ef4666c'}),
+Object.freeze({path:'qlever/tests/test_sdk70_mremap_observer.py',sha256:'f25333c0430938962b83a38ad3dd6167d8e0075357228ca0311f92a18fc5b568'}),
+Object.freeze({path:'qlever/tests/test_sdk70_mremap_native.py',sha256:'1392213a450d3a87cbd602fd78c18ff122d0ba999a088da12d521b37ae907660'}),
+Object.freeze({path:'qlever/tests/test_sdk70_mremap_e2e.py',sha256:'67a57466c8c80782a092741633474eaad446e5d0ac66181edf1d7fcd28ed1eca'}),
+Object.freeze({path:'qlever/tests/run_sdk70_mremap_gate.py',sha256:'7d145e60ae11bbc201d9039971f5a7fc51d04715806c5eb6fe64c10a803d076d'}),
+Object.freeze({path:'tests/scripts/sdk70-remap-policy.test.ts',sha256:'2923447eb2d2744a40648b4c28a84729d0884d3a7e4ed112acb29901d27c0ccf'})]);
+const SDK19_TELEMETRY_GROUP:GitHubSourceBindingGroup=Object.freeze({...ORM326_SDK_GROUP,
+ selectors:ORM326_SDK_GROUP.selectors,
+ secondarySelectors:Object.freeze([...rebindSdk19TelemetryRows(ORM326_SDK_GROUP.secondarySelectors??[]),...SDK19_TELEMETRY_DISCRIMINATORS]),
+ sourceBindings:Object.freeze([...rebindSdk19TelemetryRows(ORM326_SDK_GROUP.sourceBindings),...SDK19_TELEMETRY_TEST_BINDINGS])});
 /** The single published SDK catalogue, append-only: the 9d02 slice, the 2406
- * refused-caller slice, the immutable-input-plan tuple, and the ORM 0.3.26 joint
+ * refused-caller slice, the immutable-input-plan tuple, the ORM 0.3.26 joint
  * SDK tuple binding the actual current ORM manifest/lock and the four reviewed
- * SDK build inputs (build script, QLever lock, series, production-only patch). */
-export const QLEVER_SDK_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...PUBLISHED_SDK_GROUPS,NEXT_SDK_GROUP,INPUT_PLAN_SDK_GROUP,ORM326_SDK_GROUP]);
+ * SDK build inputs (build script, QLever lock, series, production-only patch),
+ * and the SDK19 failure-telemetry tuple. */
+export const QLEVER_SDK_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...PUBLISHED_SDK_GROUPS,NEXT_SDK_GROUP,INPUT_PLAN_SDK_GROUP,ORM326_SDK_GROUP,SDK19_TELEMETRY_GROUP]);
 export const QLEVER_LINUX_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([
  {selectors:sdkSelectors('cbedd3e2478de5e22108b6689c595a658ca891c9bd47552caec830e86f47fea8','a75c7be34b5c5fafff85c0d67d814ba1aaf14bcf5db5404a860fe3b9a11009bd'),sourceBindings:QLEVER_LINUX_SOURCE_BINDINGS.filter(row=>!['.github/workflows/publish-qlever-runtime-sdk.yml','.github/workflows/build-qlever-linux-runtime.yml'].includes(row.path))},
  ...QLEVER_SDK_EXECUTION_GROUPS,

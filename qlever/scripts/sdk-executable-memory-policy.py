@@ -26,6 +26,122 @@ def write_descriptor(arch,nr,args):
  slot=ABI[arch]['writes'].get(nr)
  return None if slot is None else args[slot]
 
+# ---------------------------------------------------------------------------
+# Bounded private-anonymous mremap candidate
+#
+# `decision()` above stays argument-blind and UNCHANGED: every remap is still
+# refused by default. This predicate is consulted only by the observer, and only
+# after it has proved the whole source range under a real all-stop. It is a
+# pure shape test on the six syscall arguments; it grants nothing on its own.
+#
+# Allowed shape is deliberately the narrowest that covers ordinary allocator
+# growth: mremap on the two supported arches with flags 0 or MREMAP_MAYMOVE.
+# ---------------------------------------------------------------------------
+# Separate declared capability model: this is a real raw-record capability, not
+# the `file-exec-no-transition-v1` diagnostic, so the verifier can accept it only
+# when every exclusive/coverage obligation is present in the actual raw stream.
+REMAP_MODEL='private-anonymous-nonexec-mremap-v1'
+MREMAP_MAYMOVE=1
+MREMAP_FIXED=2
+MREMAP_DONTUNMAP=4
+MREMAP_ALLOWED_FLAGS=frozenset([0,MREMAP_MAYMOVE])
+MREMAP_REASON_FIXED='memory-remap-fixed-destination-refused'
+MREMAP_REASON_DONTUNMAP='memory-remap-dontunmap-refused'
+MREMAP_REASON_FLAGS='memory-remap-unknown-flag-refused'
+MREMAP_REASON_SIZES='memory-remap-size-refused'
+MREMAP_REASON_ALIGN='memory-remap-address-alignment-refused'
+MREMAP_REASON_BOUND='memory-remap-size-bound-refused'
+
+
+def _exact_int(value):
+ return type(value) is int
+
+
+def remap_shape(arch,nr,args,maximum=None):
+ """Classify one remap syscall's ARGUMENT SHAPE only. Never grants permission.
+
+ Returns (candidate, reason, geometry) where geometry is a dict of already
+ validated integers when candidate is True. Any doubt returns candidate=False
+ with a specific closed-set reason; the caller must then refuse as it does now.
+ """
+ if arch not in ABI:return False,'unsupported executable-memory ABI',None
+ p=ABI[arch]
+ if not _exact_int(nr) or not _exact_int(arch):return False,MREMAP_REASON_FLAGS,None
+ if nr==p['remap_pages']:return False,'memory-remap-file-pages-refused',None
+ if nr!=p['remap']:return False,MREMAP_REASON_FLAGS,None
+ if not isinstance(args,(list,tuple)) or len(args)<6:return False,MREMAP_REASON_SIZES,None
+ if not all(_exact_int(value) and 0<=value<1<<64 for value in args[:6]):return False,MREMAP_REASON_SIZES,None
+ old_address,old_size,new_size,flags,new_address,_=args[:6]
+ if flags&MREMAP_FIXED:return False,MREMAP_REASON_FIXED,None
+ if flags&MREMAP_DONTUNMAP:return False,MREMAP_REASON_DONTUNMAP,None
+ if flags not in MREMAP_ALLOWED_FLAGS:return False,MREMAP_REASON_FLAGS,None
+ if old_size==0 or new_size==0:return False,MREMAP_REASON_SIZES,None
+ if old_address==0 or old_address%4096:return False,MREMAP_REASON_ALIGN,None
+ if old_address+old_size>1<<64 or new_size>1<<64:return False,MREMAP_REASON_BOUND,None
+ if maximum is not None:
+  if not _exact_int(maximum) or maximum<0:return False,MREMAP_REASON_BOUND,None
+  if old_size>maximum or new_size>maximum:return False,MREMAP_REASON_BOUND,None
+ # MREMAP_FIXED already refused, so new_address cannot select a destination.
+ return True,None,dict(oldAddress=old_address,oldSize=old_size,newSize=new_size,
+                       flags=flags,mayMove=bool(flags&MREMAP_MAYMOVE),newAddress=new_address)
+
+
+def remap_range(old_address,old_size,page=4096):
+ """Page-rounded closed source interval, or None when it cannot be formed."""
+ if not(_exact_int(old_address) and _exact_int(old_size) and _exact_int(page)):return None
+ if page<=0 or old_size<=0 or old_address<0:return None
+ low=old_address-(old_address%page)
+ high=old_address+old_size
+ if high<=old_address or high>1<<64:return None
+ high=high+((page-high%page)%page)
+ if high>1<<64:return None
+ return low,high
+
+
+def mapping_is_private_anonymous_nonexec(row):
+ """True only for a plain private anonymous non-executable data VMA.
+
+ Conservative on purpose: shared ('s'), executable ('x'), file-backed (ino != 0
+ or a non-empty path) and bracketed special mappings are all rejected. A caller
+ that needs one of those must extend this predicate with separate proof.
+ """
+ if not isinstance(row,dict):return False
+ permissions=row.get('permissions')
+ if not isinstance(permissions,str) or len(permissions)!=4:return False
+ if permissions[0]!='r' or permissions[1]!='w':return False
+ if permissions[2]!='-' or permissions[3]!='p':return False
+ path=row.get('path')
+ if path:return False
+ return row.get('inode')==0
+
+
+def cover_nonexec_range(mappings,low,high,page=4096):
+ """Prove [low,high) is fully covered by contiguous private-anon non-exec VMAs.
+
+ Returns (ok, reason, coveredBytes, executableBytes). Any hole, any executable
+ page, any non-private/non-anonymous/non-data VMA or an unaligned boundary fails
+ closed. Never treats a single sample line as permission: every overlapping VMA
+ must be consumed in address order until the interval is exactly covered.
+ """
+ if not(_exact_int(low) and _exact_int(high) and _exact_int(page)):return False,'memory-remap-range-shape-refused',0,0
+ if page<=0 or low<0 or high<=low or low%page or high%page:return False,'memory-remap-range-shape-refused',0,0
+ if not isinstance(mappings,(list,tuple)):return False,'memory-remap-maps-unavailable',0,0
+ cursor=low;covered=0;executable=0
+ rows=sorted((row for row in mappings if isinstance(row,dict) and 'startHex' in row and 'endHex' in row),
+             key=lambda row:int(row['startHex'],16))
+ for row in rows:
+  start=int(row['startHex'],16);stop=int(row['endHex'],16)
+  if stop<=cursor or start>=high:
+   continue
+  if start>cursor:return False,'memory-remap-range-hole-refused',covered,executable
+  if not mapping_is_private_anonymous_nonexec(row):
+   permissions=row.get('permissions') or ''
+   if 'x' in permissions:executable+=max(0,min(stop,high)-max(start,cursor))
+   return False,'memory-remap-vma-not-private-anonymous-nonexec-refused',covered,executable
+  covered+=max(0,min(stop,high)-cursor);cursor=min(stop,high)
+  if cursor>=high:return True,None,covered,executable
+ return False,'memory-remap-range-not-fully-covered',covered,executable
+
 def memory_fd(path):
  import re
  return isinstance(path,str) and re.fullmatch(r'/proc/(?:self|thread-self|[0-9]+)/(?:task/[0-9]+/)?mem',path) is not None
