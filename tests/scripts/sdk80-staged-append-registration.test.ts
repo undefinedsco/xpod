@@ -15,32 +15,46 @@ import {CONSUMER_SOURCE_GROUPS as CONSUMER,CI_CONSUMER_SOURCE_GROUPS as CI} from
 import {API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS as API} from '../../scripts/lib/independent-admission/github-origin';
 import {CLI_SOURCE_VERSION_GROUPS as CLI} from '../../scripts/lib/independent-admission/source-rules';
 import {selectGitHubSourceBindingGroup,acquireOwnedSecondaryBindings,sourceBindingKey} from '../../scripts/lib/independent-admission/github-source-binding-groups';
+import {decodeCatalog} from './sdk-helper-catalog.fixture';
 
 const ROOT=path.resolve(import.meta.dirname,'../..');
 const DISK=(p:string)=>createHash('sha256').update(readFileSync(path.join(ROOT,p))).digest('hex');
 const whole=(g:unknown)=>createHash('sha256').update(JSON.stringify(g)).digest('hex');
-const BASELINE=JSON.parse(readFileSync(path.join(ROOT,'.test-data/tencent-coordination/published-dca-baseline/BASELINE.json'),'utf8'));
+/** IMMUTABLE tracked copy of the published DCA whole catalogue. It is a
+ * committed fixture, so this suite is portable on a clean CI checkout that has
+ * no ignored `.test-data` tree. */
+const BASELINE=JSON.parse(readFileSync(new URL('../fixtures/independent-admission/dca-published-slice.original.json',import.meta.url),'utf8'));
+const GROUP_HASHES=BASELINE.groupHashes as Record<string,readonly string[]>;
 /** The 9 same-primary SDK peers plus SDK80: only these can compete. */
 const PEERS=SDK.slice(70);
 const FAMILIES:readonly [string,readonly any[]][]=[['sdk',SDK],['linux',LINUX],['consumer',CONSUMER],['ci',CI],['api',API],['cli',CLI]];
 
 it('every published DCA whole prefix stays byte-identical',()=>{
   for(const [name,groups] of FAMILIES){
-    const frozen=BASELINE.hashes[name] as string[];
+    const frozen=GROUP_HASHES[name]!;
     expect(groups.length).toBeGreaterThanOrEqual(frozen.length);
     for(let i=0;i<frozen.length;i++) expect(whole(groups[i]),`${name}[${i}]`).toBe(frozen[i]);
     // the frozen prefix is never regenerated from the live tail
-    expect(frozen.length).toBe(BASELINE.counts[name]);
+    expect(frozen.length).toBe((BASELINE.published as Record<string,number>)[name]);
   }
 });
 
-it('published helper prefixes are untouched at 52/34/37 and readonly keeps its six',()=>{
-  const obs=(BASELINE.helpers.observer as string[]).length;
-  const ctl=(BASELINE.helpers.controller as string[]).length;
-  const fet=(BASELINE.helpers.fetch as string[]).length;
-  expect([obs,ctl,fet]).toEqual([52,34,37]);
-  const ro=BASELINE.hashes.readonly as string[]|undefined;
-  if(ro) expect(ro).toHaveLength(6);
+it('published helper prefixes are untouched at 52/34/37, compared against shipped whole data',()=>{
+  const helpers=BASELINE.helpers as Record<string,readonly string[]>;
+  expect([helpers.observer!.length,helpers.controller!.length,helpers.fetch!.length]).toEqual([52,34,37]);
+  // Compare the ACTUAL shipped helper catalogues against the frozen published
+  // whole-tuple hashes, not merely the baseline array lengths.
+  const CASES:[string,string,string][]=[
+    ['qlever-sdk-generation.ts','REVIEWED_OBSERVER_GROUPS','observer'],
+    ['qlever-sdk-generation.ts','REVIEWED_CONTROLLER_HELPER_GROUPS_CURRENT','controller'],
+    ['qlever-sdk-fetchcontent.ts','REVIEWED_HELPER_GROUPS_CURRENT','fetch']];
+  for(const [file,name,key] of CASES){
+    const live=decodeCatalog('scripts/lib/independent-admission/'+file,name) as readonly unknown[];
+    expect(live.length,key+' live length').toBeGreaterThanOrEqual(helpers[key]!.length);
+    for(let index=0;index<helpers[key]!.length;index++){
+      expect(whole(live[index]),`${key}[${index}]`).toBe(helpers[key]![index]);
+    }
+  }
 });
 
 it('SDK79 and SDK80 are the SAME stage 0 and differ only in the explicit stage 1',()=>{
