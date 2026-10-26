@@ -19,7 +19,12 @@ permissions:
   contents: read
 
 env:
-  NATIVE_PG_IMAGE: ccr.ccs.tencentyun.com/undefineds/xpod-rdf-postgres@sha256:1199698c789fb65897e4b0bd370f7faa959bcbdd3499784af256ad5bb8f0a5f3
+  # One canonical immutable PG17 input. The same digest feeds the pre-K8s
+  # 17-semantic + 6-wire gate, the pull preflight, the RC-only PostgreSQL
+  # StatefulSet and its bootstrap Job. No second copy exists.
+  NATIVE_PG_IMAGE: ccr.ccs.tencentyun.com/undefineds/xpod-rdf-postgres@sha256:6a5731d7df8b4d677d3de51c53961fa8f484f8a1f87e7fd667dd0db1ffa3e1db
+  # Current shared production workload digest. It is a CREDENTIAL SOURCE, not a
+  # target: its imagePullSecret is reused, its image and data are untouched.
   PG_REGISTRY_AUTHORITY_IMAGE: ccr.ccs.tencentyun.com/undefineds/xpod-rdf-postgres@sha256:635a5eee0ea1461c8cde8425fdf0ca7d0965bc083d8860bb7aa04498c9688986
 
 jobs:
@@ -470,23 +475,18 @@ jobs:
             }
           }
           const namespace = process.env.SEALOS_NAMESPACE;
-          const sharedPostgresHosts = new Set([
-            'xpod-rdf-postgres',
-            `xpod-rdf-postgres.${namespace}`,
-            `xpod-rdf-postgres.${namespace}.svc`,
-            `xpod-rdf-postgres.${namespace}.svc.cluster.local`,
-          ]);
-          for (const key of ['CSS_IDENTITY_DB_URL', 'CSS_SPARQL_ENDPOINT']) {
-            let url;
-            try { url = new URL(entries.get(key)); } catch {
-              throw new Error(`${key} must be a valid PostgreSQL URL`);
-            }
-            if (!['postgres:', 'postgresql:'].includes(url.protocol) ||
-                decodeURIComponent(url.username) !== 'xpod_rc' || url.pathname !== '/xpod_rc' ||
-                !sharedPostgresHosts.has(url.hostname) || (url.port && url.port !== '5432')) {
-              throw new Error(`${key} must use the isolated xpod_rc database and role on shared PostgreSQL`);
-            }
+          // One centralized materializer: the RC database URLs are rebound from
+          // whatever credentialed service host the current APP_ENV_FILE names to
+          // the dedicated RC PostgreSQL Service, preserving credentials and all
+          // other fields. No manual APP_ENV_FILE host rewrite is required.
+          const boundary = require('./scripts/check-rc-deployment-boundary.cjs');
+          let materialized;
+          try {
+            materialized = boundary.materializeRcDatabaseConfiguration(entries, namespace);
+          } catch (error) {
+            throw new Error(`RC database configuration rejected: ${error.message}`);
           }
+          for (const [ key, value ] of materialized.entries) entries.set(key, value);
           const seed = JSON.parse(seedText);
           if (!Array.isArray(seed)) {
             throw new Error('XPOD_RC_SEED_CONFIG must be a seed account array');
@@ -495,7 +495,6 @@ jobs:
           if (!accountKeys.some((value) => value.includes('alice')) || !accountKeys.some((value) => value.includes('bob'))) {
             throw new Error('XPOD_RC_SEED_CONFIG must include Alice and Bob seed accounts');
           }
-          require('./scripts/check-rc-deployment-boundary.cjs').validateDatabases(entries);
           const productionDomainPattern = /(^|[^A-Za-z0-9.-])id\.undefineds\.(?:co|cn)\b/;
           const redisValue = entries.get('CSS_REDIS_CLIENT') || '';
           if (/(?:prod|production|xpod-cloud)/i.test(redisValue) || productionDomainPattern.test(redisValue)) {
@@ -529,8 +528,9 @@ jobs:
           if (objectStoreUrl.protocol !== 'https:' || !objectStoreUrl.hostname.endsWith('.r2.cloudflarestorage.com')) {
             throw new Error('RC object-store endpoint must use Cloudflare R2 over HTTPS');
           }
-          // RC 与 cn/co 共用同一个 Postgres 实例，库由 APP_ENV_FILE 指定；
-          // 这两个键不再过滤（过滤会让配置里的值静默失效）。
+          // The RC database now lives on the dedicated RC-only PostgreSQL
+          // Service. Nothing in this file points at the shared production
+          // instance; production xpod_cn/xpod_co are never used by RC.
           fs.writeFileSync(process.argv[2], `${[ ...entries ].map(([ key, value ]) => `${key}=${value}`).join('\n')}\n`);
           NODE
           bun scripts/verify-rc-r2-access.ts --env-file "$env_file"
@@ -566,8 +566,13 @@ jobs:
           }
           trap cleanup_native_registry EXIT
           kubectl -n "$SEALOS_NAMESPACE" get statefulset xpod-rdf-postgres -o json > "$docker_config_dir/pg-workload.json"
-          pg_workload_authority="$(bun scripts/check-qlever-installed-image-conformance.ts \
-            --select-registry-authority "$docker_config_dir/pg-workload.json" --pg-image "$PG_REGISTRY_AUTHORITY_IMAGE")"
+          # Authorise the pull credential from the shared production workload,
+          # strictly bound to the declared current/target digests. This is a
+          # credential source, not a claim about RC's target workload image.
+          pg_workload_authority="$(bun scripts/select-pg-registry-authority.ts \
+            --pg-workload "$docker_config_dir/pg-workload.json" \
+            --current-image "$PG_REGISTRY_AUTHORITY_IMAGE" \
+            --target-image "$NATIVE_PG_IMAGE")"
           kubectl -n "$SEALOS_NAMESPACE" get secret "$pg_workload_authority" -o jsonpath='{.data.\.dockerconfigjson}' 2>/dev/null \
             | base64 --decode 2>/dev/null \
             | bun scripts/check-qlever-installed-image-conformance.ts \
@@ -691,9 +696,10 @@ jobs:
           }
           trap cleanup_namespace_native EXIT
           kubectl -n "$SEALOS_NAMESPACE" get statefulset xpod-rdf-postgres -o json > "$preflight_dir/pg-workload.json"
-          pg_authority="$(bun scripts/check-qlever-installed-image-conformance.ts \
-            --select-registry-authority "$preflight_dir/pg-workload.json" \
-            --pg-image "$PG_REGISTRY_AUTHORITY_IMAGE")"
+          pg_authority="$(bun scripts/select-pg-registry-authority.ts \
+            --pg-workload "$preflight_dir/pg-workload.json" \
+            --current-image "$PG_REGISTRY_AUTHORITY_IMAGE" \
+            --target-image "$NATIVE_PG_IMAGE")"
           PREFLIGHT_NAME="$job_name" PREFLIGHT_NONCE="$nonce" PREFLIGHT_AUTHORITY="$pg_authority" bun -e '
             const fs=require("node:fs");const {parseDocument}=require("yaml");
             const job=parseDocument(fs.readFileSync("deploy/sealos/rc/pull-preflight.yaml","utf8")).toJSON();
@@ -717,12 +723,128 @@ jobs:
             --pg-image "$NATIVE_PG_IMAGE" \
             --pull-receipt "${RUNNER_TEMP}/namespace-native-pull-check.json"
 
-      - name: Verify protected RC database without changing data
+      - name: Verify RC-only PostgreSQL and bootstrap without touching production
         run: |
           set -euo pipefail
-          # Never reset a shared database. Missing/mismatched state requires a
-          # separately verified protected backup/restore, not deployment DDL.
-          kubectl -n "$SEALOS_NAMESPACE" exec -i statefulset/xpod-rdf-postgres -- sh -s < scripts/verify-protected-rc-database.sh
+          # The RC database lives on a dedicated PG17 StatefulSet rendered from
+          # the same canonical NATIVE_PG_IMAGE as the gate and the pull
+          # preflight. Production xpod_cn/xpod_co and the shared instance are
+          # never read or written by this step.
+          # W1: env_file is step-local in the validation step. Re-derive the
+          # canonical path here instead of relying on a cross-step shell
+          # variable; no secret value is exported or logged.
+          env_file="${RUNNER_TEMP}/xpod-rc.env"
+          if [ ! -f "$env_file" ]; then
+            echo "::error::validated RC env file is missing"
+            exit 1
+          fi
+          pg_output="${RUNNER_TEMP}/xpod-rc-postgres.rendered.yaml"
+          # D2: run-owned Job name. A fixed name would let a COMPLETE Job from a
+          # previous run satisfy `wait --for=condition=complete` and silently skip
+          # provisioning; its pod template is immutable, so a changed template
+          # cannot be applied over an old Job either.
+          pg_job_name="xpod-rc-postgres-bootstrap-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          if [[ ! "$pg_job_name" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ || ${#pg_job_name} -gt 63 ]]; then
+            echo "::error::run-scoped bootstrap job name is invalid"
+            exit 1
+          fi
+          node scripts/render-rc-manifests.cjs \
+            --overlay deploy/sealos/rc \
+            --pg-only \
+            --pg-output "$pg_output" \
+            --pg-job-name "$pg_job_name" \
+            --pg-owner "$pg_job_name" \
+            --namespace "$SEALOS_NAMESPACE" \
+            --pg-image "$NATIVE_PG_IMAGE"
+          # Two secrets back the RC-only server:
+          #  * xpod-rc-postgres-bootstrap holds the superuser used only by the
+          #    bootstrap Job. It is created once and retained with the PVC; it is
+          #    never rotated per run (rotating it would lock the Job out of an
+          #    already-initialised data directory).
+          #  * xpod-rc-postgres-app carries the xpod_rc password taken from the
+          #    already-validated APP_ENV_FILE. Nothing is printed.
+          if [ -z "$(kubectl -n "$SEALOS_NAMESPACE" get secret xpod-rc-postgres-bootstrap --ignore-not-found -o name)" ]; then
+            bootstrap_dir="$(mktemp -d "${RUNNER_TEMP}/rc-pg-bootstrap.XXXXXX")"
+            chmod 700 "$bootstrap_dir"
+            node -e '
+              const fs = require("node:fs");
+              const crypto = require("node:crypto");
+              const dir = process.argv[1];
+              fs.writeFileSync(`${dir}/username`, "xpod_rc_admin", { mode: 0o600 });
+              fs.writeFileSync(`${dir}/password`, crypto.randomBytes(32).toString("base64url"), { mode: 0o600 });
+              fs.writeFileSync(`${dir}/database`, "postgres", { mode: 0o600 });
+            ' "$bootstrap_dir"
+            kubectl -n "$SEALOS_NAMESPACE" create secret generic xpod-rc-postgres-bootstrap --from-file="$bootstrap_dir"
+            rm -rf "$bootstrap_dir"
+          fi
+          app_dir="$(mktemp -d "${RUNNER_TEMP}/rc-pg-app.XXXXXX")"
+          chmod 700 "$app_dir"
+          node -e '
+            const fs = require("node:fs");
+            const text = fs.readFileSync(process.argv[1], "utf8");
+            const line = text.split(/\r?\n/).find((entry) => entry.startsWith("CSS_IDENTITY_DB_URL="));
+            if (!line) throw new Error("CSS_IDENTITY_DB_URL missing");
+            const url = new URL(line.slice("CSS_IDENTITY_DB_URL=".length));
+            if (url.username !== "xpod_rc" || url.pathname !== "/xpod_rc" || !url.password) {
+              throw new Error("validated APP_ENV DB URL is not the RC role/database");
+            }
+            fs.writeFileSync(process.argv[2] + "/password", decodeURIComponent(url.password), { mode: 0o600 });
+          ' "$env_file" "$app_dir"
+          kubectl -n "$SEALOS_NAMESPACE" create secret generic xpod-rc-postgres-app --from-file="$app_dir" --dry-run=client -o yaml | kubectl apply -f -
+          rm -rf "$app_dir"
+          # D4: the Job below is the single authority that applies this exact
+          # password with ALTER ROLE, on every run, before the app starts. It
+          # reads the same Secret, so Secret and database cannot diverge without
+          # the Job failing.
+          # W3: fail-closed quiescence precondition. The bootstrap Job will
+          # DROP/CREATE xpod_rc, so no RC app pod may be running or terminating.
+          # This never scales an active candidate; ROOT owns cross-run
+          # coordination. Production is not inspected or modified.
+          # Any kubectl failure (forbidden, timeout, API error) must abort. Only
+          # an authoritative 404 may be treated as "object absent", which is why
+          # --ignore-not-found is used and the empty file is produced solely by
+          # that path.
+          quiesce_dir="$(mktemp -d "${RUNNER_TEMP}/rc-quiesce.XXXXXX")"
+          chmod 700 "$quiesce_dir"
+          kubectl -n "$SEALOS_NAMESPACE" get deployment xpod-rc --ignore-not-found -o json \
+            > "$quiesce_dir/deployment.json"
+          kubectl -n "$SEALOS_NAMESPACE" get pods -l app=xpod-rc -o json \
+            > "$quiesce_dir/pods.json"
+          deployment_arg=()
+          if [ -s "$quiesce_dir/deployment.json" ]; then deployment_arg=(--deployment "$quiesce_dir/deployment.json"); fi
+          node scripts/rc-bootstrap-ownership.cjs quiescent \
+            "${deployment_arg[@]}" \
+            --pods "$quiesce_dir/pods.json" \
+            --output "$quiesce_dir/quiescence.json" || {
+              echo "::error::RC application is active; refusing to reset the RC database. ROOT must coordinate ownership."
+              exit 1
+            }
+          rm -rf "$quiesce_dir"
+
+          # D2: run-owned Job name. A retry inside the same run/attempt reuses
+          # the name, so any leftover is removed only after proving it belongs
+          # to this run via a nonce annotation AND its live UID.
+          existing_dir="$(mktemp -d "${RUNNER_TEMP}/rc-existing-job.XXXXXX")"
+          chmod 700 "$existing_dir"
+          kubectl -n "$SEALOS_NAMESPACE" get job "$pg_job_name" --ignore-not-found -o json \
+            > "$existing_dir/existing-job.json"
+          if [ -s "$existing_dir/existing-job.json" ]; then
+            node scripts/rc-bootstrap-ownership.cjs delete-options \
+              --job "$existing_dir/existing-job.json" \
+              --owner "$pg_job_name" \
+              --output "$existing_dir/delete-options.json" || {
+                echo "::error::refusing to delete a same-name Job not owned by this run"
+                exit 1
+              }
+            kubectl delete --raw "/apis/batch/v1/namespaces/${SEALOS_NAMESPACE}/jobs/${pg_job_name}" \
+              -f "$existing_dir/delete-options.json" >/dev/null
+            kubectl -n "$SEALOS_NAMESPACE" wait --for=delete "job/$pg_job_name" --timeout=120s
+          fi
+          rm -rf "$existing_dir"
+          kubectl -n "$SEALOS_NAMESPACE" apply -f "$pg_output"
+          kubectl -n "$SEALOS_NAMESPACE" rollout status statefulset/xpod-rc-rdf-postgres --timeout=900s
+          kubectl -n "$SEALOS_NAMESPACE" wait --for=condition=complete "job/$pg_job_name" --timeout=900s
+          kubectl -n "$SEALOS_NAMESPACE" exec -i statefulset/xpod-rc-rdf-postgres -- sh -s < scripts/verify-protected-rc-database.sh
 
       - name: Create runtime secrets
         run: |
@@ -2030,14 +2152,56 @@ jobs:
           node scripts/rc-cleanup-ownership.cjs deployment "$observation" "$SEALOS_NAMESPACE" "$XPOD_RC_SEED_SECRET_NAME"
           ownership_status=$?
           set -e
+          # ------------------------------------------------------------------
+          # Owned bootstrap Job cleanup. This runs UNCONDITIONALLY (no app
+          # ownership gate): a bootstrap that failed before the app was ever
+          # applied must still remove its own Job. Namespace validation above
+          # is mandatory and already happened.
+          #
+          # Ownership proof is nonce + live UID (DeleteOptions precondition).
+          # A foreign or replaced same-name Job is retained with a message; a
+          # delete failure is NOT swallowed, it fails this step.
+          bootstrap_job="xpod-rc-postgres-bootstrap-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          bootstrap_dir="$(mktemp -d "${RUNNER_TEMP}/rc-bootstrap-cleanup.XXXXXX")"
+          chmod 700 "$bootstrap_dir"
+          # --ignore-not-found makes an empty result mean an authoritative 404.
+          # Any API/forbidden/timeout error leaves non-zero and aborts here.
+          kubectl -n "$SEALOS_NAMESPACE" get job "$bootstrap_job" --ignore-not-found -o json \
+            > "$bootstrap_dir/job.json"
+          if [ -s "$bootstrap_dir/job.json" ]; then
+            if node scripts/rc-bootstrap-ownership.cjs delete-options \
+              --job "$bootstrap_dir/job.json" --owner "$bootstrap_job" \
+              --output "$bootstrap_dir/delete-options.json"; then
+              kubectl delete --raw "/apis/batch/v1/namespaces/${SEALOS_NAMESPACE}/jobs/${bootstrap_job}" \
+                -f "$bootstrap_dir/delete-options.json" >/dev/null
+              kubectl -n "$SEALOS_NAMESPACE" wait --for=delete "job/$bootstrap_job" --timeout=120s
+              kubectl -n "$SEALOS_NAMESPACE" wait --for=delete pod -l "job-name=$bootstrap_job" --timeout=120s
+            else
+              echo 'Bootstrap Job is not owned by this run; retained'
+            fi
+          else
+            # The Job is already absent (authoritative 404). Its own pods must
+            # still be proven gone: a hard delete or a failed bootstrap can leave
+            # an orphan Pod behind, and a wait on a missing Job would not catch
+            # it. This branch is the reason the earlier version was incomplete.
+            kubectl -n "$SEALOS_NAMESPACE" wait --for=delete pod -l "job-name=$bootstrap_job" --timeout=120s
+          fi
+          rm -rf "$bootstrap_dir"
+
+          # ------------------------------------------------------------------
+          # RC application teardown, gated by the deployment ownership status.
           if [ "$ownership_status" -eq 0 ]; then
             kubectl -n "$SEALOS_NAMESPACE" scale deployment/xpod-rc --replicas=0
             if [ -n "$(kubectl -n "$SEALOS_NAMESPACE" get deployment/xpod-rc-inngest --ignore-not-found -o name)" ]; then
               kubectl -n "$SEALOS_NAMESPACE" scale deployment/xpod-rc-inngest --replicas=0
             fi
             kubectl -n "$SEALOS_NAMESPACE" delete secret "$XPOD_RC_SEED_SECRET_NAME" --ignore-not-found
+            # The RC-only PostgreSQL StatefulSet, its PVC and the retained
+            # bootstrap superuser secret are intentionally NOT deleted: they are
+            # the RC server itself, and the next run re-provisions only the
+            # logical xpod_rc database through the bootstrap Job.
           elif [ "$ownership_status" -eq 2 ]; then
-            echo 'RC is absent or belongs to another run; resources retained'
+            echo 'RC is absent or belongs to another run; application resources retained'
           else
             exit "$ownership_status"
           fi

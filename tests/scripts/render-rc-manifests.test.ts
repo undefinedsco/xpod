@@ -134,4 +134,72 @@ describe('RC manifest renderer', () => {
       stderr: expect.stringContaining('immutable sha256 digest'),
     });
   });
+
+  it('renders an RC-only PG half separate from the app half', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-rc-render-pg-'));
+    tempRoots.push(root);
+    const appOutput = path.join(root, 'app.yaml');
+    const pgOutput = path.join(root, 'pg.yaml');
+    const pgImage = `ccr.ccs.tencentyun.com/undefineds/xpod-rdf-postgres@sha256:${'b'.repeat(64)}`;
+    await execFile('node', [
+      scriptPath,
+      '--overlay', overlayPath,
+      '--output', appOutput,
+      '--namespace', 'assigned-ns',
+      '--secret-name', 'custom-secret',
+      '--seed-secret-name', 'custom-seed',
+      '--image', immutableImage,
+      '--pg-image', pgImage,
+      '--pg-output', pgOutput,
+      '--pg-job-name', 'xpod-rc-postgres-bootstrap-123-1',
+      '--pg-owner', 'xpod-rc-postgres-bootstrap-123-1',
+    ], { cwd: repoRoot });
+
+    // The app file must still contain exactly the application objects; the RC
+    // PostgreSQL StatefulSet/Job may never leak into the single final apply.
+    const appObjects = parseAllDocuments(await readFile(appOutput, 'utf8'))
+      .map((document) => document.toJSON() as any).filter(Boolean);
+    expect(appObjects.some((object) => object.kind === 'StatefulSet')).toBe(false);
+    expect(appObjects.some((object) => object.kind === 'Job')).toBe(false);
+
+    const pgObjects = parseAllDocuments(await readFile(pgOutput, 'utf8'))
+      .map((document) => document.toJSON() as any).filter(Boolean);
+    const statefulSet = pgObjects.find((object) => object.kind === 'StatefulSet');
+    expect(statefulSet.metadata.name).toBe('xpod-rc-rdf-postgres');
+    expect(statefulSet.spec.template.spec.containers[0].image).toBe(pgImage);
+    const job = pgObjects.find((object) => object.kind === 'Job');
+    expect(job.metadata.name).toBe('xpod-rc-postgres-bootstrap-123-1');
+    expect(job.metadata.annotations['xpod.undefineds.co/bootstrap-owner'])
+      .toBe('xpod-rc-postgres-bootstrap-123-1');
+    expect(await readFile(pgOutput, 'utf8')).not.toContain('xpod-rdf-postgres@sha256:635a5eee');
+  });
+
+  it('rejects an incomplete PG half and the static bootstrap Job name', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-rc-render-pg-reject-'));
+    tempRoots.push(root);
+    const pgImage = `ccr.ccs.tencentyun.com/undefineds/xpod-rdf-postgres@sha256:${'c'.repeat(64)}`;
+    await expect(execFile('node', [
+      scriptPath,
+      '--overlay', overlayPath,
+      '--output', path.join(root, 'app.yaml'),
+      '--namespace', 'assigned-ns',
+      '--secret-name', 'custom-secret',
+      '--seed-secret-name', 'custom-seed',
+      '--image', immutableImage,
+      '--pg-image', pgImage,
+    ], { cwd: repoRoot })).rejects.toMatchObject({
+      stderr: expect.stringContaining('must be provided together'),
+    });
+    await expect(execFile('node', [
+      scriptPath,
+      '--overlay', overlayPath,
+      '--namespace', 'assigned-ns',
+      '--pg-only',
+      '--pg-output', path.join(root, 'pg.yaml'),
+      '--pg-job-name', 'xpod-rc-postgres-bootstrap',
+      '--pg-image', pgImage,
+    ], { cwd: repoRoot })).rejects.toMatchObject({
+      stderr: expect.stringContaining('run-scoped, not the static template name'),
+    });
+  });
 });

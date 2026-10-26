@@ -13,7 +13,7 @@ import {describe, expect, it} from 'vitest';
  * Linux gate `qlever/tests/run_sdk70_mremap_gate.py`, which must never execute
  * as a default Mac/unit case.
  */
-const ROOT = path.resolve(import.meta.dir, '../..');
+const ROOT = path.resolve(import.meta.dirname, '../..');
 const TESTS = path.join(ROOT, 'qlever/tests');
 
 /** Canonical modules that are pure policy/contract and therefore portable. */

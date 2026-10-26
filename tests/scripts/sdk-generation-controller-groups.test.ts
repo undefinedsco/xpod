@@ -13,11 +13,27 @@ const HASH = (name: string) =>
 /** the real bytes on disk for a whole tuple */
 const actual = (group: readonly (readonly [string, string])[]) => new Map(group.map(([name]) => [name, HASH(name)]));
 
+/** Frozen WHOLE-TUPLE sha256 literals for the six readonly helper tuples that
+ * were PUBLISHED at dca33cd37e1130563a26be49d17ca8ca56620030. They are derived
+ * INDEPENDENTLY from the exact git blob
+ *   git show dca33cd3:scripts/lib/independent-admission/qlever-sdk-readonly-executor.ts
+ * (JSON.stringify of each decoded whole tuple), never from the current table, so
+ * they can actually disprove historical drift. The live table now holds a 7th
+ * tuple appended after publication; the first six must stay byte-identical. */
+const READONLY_DCA_PUBLISHED_SIX = Object.freeze([
+  '3c875914a488bf6f18b5f44a4138806807f87b1cbe89bb3a51f2087e3abe367d',
+  '53999e5151aac3ed460776a3b43b9aa47ed2403b7cdfbf527c79e576135dc066',
+  'c9a524ffb9842e5eac5662caf01071ad3e90e52877e085d74e543c56808f594c',
+  'cc0e29e4daf3e909809030524c57599018727f2f986b0ec748a218ea7f156b54',
+  '19d389d052d4bdf1469fdac6052b213dfd6b7194fc02b5eed5e5447f28632ccb',
+  '8b50bc2b41afe85868de8d76d8148efad7cfd4ea67ab2705b17929a659742dba',
+]);
+
 for (const [file, historicalName, currentName, historicalCount, currentCount] of [
-  ['qlever-sdk-generation.ts', 'REVIEWED_CONTROLLER_HELPER_GROUPS_NEXT', 'REVIEWED_CONTROLLER_HELPER_GROUPS_CURRENT', 30, 33],
+  ['qlever-sdk-generation.ts', 'REVIEWED_CONTROLLER_HELPER_GROUPS_NEXT', 'REVIEWED_CONTROLLER_HELPER_GROUPS_CURRENT', 30, 34],
   ['qlever-sdk-upstream-source.ts', 'REVIEWED_HELPER_GROUPS', 'REVIEWED_HELPER_GROUPS', 7, 7],
-  ['qlever-sdk-fetchcontent.ts', 'REVIEWED_HELPER_GROUPS_NEXT', 'REVIEWED_HELPER_GROUPS_CURRENT', 33, 36],
-  ['qlever-sdk-readonly-executor.ts', 'REVIEWED_READONLY_HELPER_GROUPS', 'REVIEWED_READONLY_HELPER_GROUPS', 6, 6],
+  ['qlever-sdk-fetchcontent.ts', 'REVIEWED_HELPER_GROUPS_NEXT', 'REVIEWED_HELPER_GROUPS_CURRENT', 33, 37],
+  ['qlever-sdk-readonly-executor.ts', 'REVIEWED_READONLY_HELPER_GROUPS', 'REVIEWED_READONLY_HELPER_GROUPS', 7, 7],
 ] as const) it(file + ' keeps its whole historical tuples and admits the real current bytes', () => {
   // The published/historical catalogue is frozen history: every one of its whole
   // tuples must still select exclusively from its own declared bytes, even though
@@ -51,6 +67,25 @@ for (const [file, historicalName, currentName, historicalCount, currentCount] of
     }
   }
 
+  // GENUINE HISTORICAL PROOF for the readonly catalogue.
+  // `historicalName === currentName` there, so `historical` and `current` are the
+  // SAME array and the slice comparison above is tautological. Re-prove the six
+  // published tuples against frozen literals derived from the dca33cd3 git blob.
+  if (file === 'qlever-sdk-readonly-executor.ts') {
+    const wholeHash = (group: readonly (readonly [string, string])[]) =>
+      createHash('sha256').update(JSON.stringify(group)).digest('hex');
+    expect(current).toHaveLength(7);
+    expect(READONLY_DCA_PUBLISHED_SIX).toHaveLength(6);
+    const published = current.slice(0, 6);
+    expect(published.map(wholeHash)).toEqual([...READONLY_DCA_PUBLISHED_SIX]);
+    // the frozen six are a real frozen prefix, not a re-slice of the tail
+    for (let index = 0; index < 6; index++) expect(wholeHash(published[index]!)).toBe(READONLY_DCA_PUBLISHED_SIX[index]);
+    // the inserted 7th tuple is genuinely new and matches the real bytes on disk
+    const appended = current[6]!;
+    expect(wholeHash(appended)).not.toBe(READONLY_DCA_PUBLISHED_SIX[5]);
+    expect(select(current, actual(appended))).toBe(appended);
+  }
+
   if (currentCount > historicalCount) {
     // genuine append: the new tail adds exactly the reviewed extra roles
     expect(latest.slice(historical[0]!.length).map(([name]) => name)).toEqual(
@@ -71,21 +106,20 @@ for (const [file, historicalName, currentName, historicalCount, currentCount] of
   }
 });
 
-it('bounds thirty-six reviewed whole tuples, accepting only the production maximum and rejecting thirty-seven or an ambiguous tuple', () => {
-  // The declared VERSION maximum is genuinely 36: the B794 owned-window
-  // diagnostic gave fetch CURRENT a real 36th tuple, so the catalogue policy
-  // admits exactly that many DECLARED versions. This is a version-count ceiling,
-  // never a capture/role capacity: the observed PER-TUPLE role bound stays 32
-  // (asserted by the next case), and 1s/1800/8192 are untouched.
-  // Expected numbers come from the published ce9 baselines (controller 32,
-  // fetch 35) plus this one genuine append - NOT from reading the implementation.
-  const groups = Array.from({length: 36}, (_, i) => Object.freeze([Object.freeze(['helper', String(i)] as const)]));
-  // the genuine 36th version is the current production maximum and selects
-  expect(groups).toHaveLength(36);
-  expect(select(groups, new Map(groups[35]!))).toBe(groups[35]);
+it('bounds thirty-seven reviewed whole tuples, accepting only the production maximum and rejecting thirty-eight or an ambiguous tuple', () => {
+  // The declared VERSION maximum is genuinely 37: after the B794 owned-window
+  // diagnostic (36) the SDK79 archive-lifecycle slice appended one more real
+  // fetch version, so the catalogue policy admits exactly that many DECLARED
+  // versions. This is a version-count ceiling, never a capture/role capacity:
+  // the observed PER-TUPLE role bound stays 32 (asserted by the next case),
+  // and 1s/1800/8192 are untouched.
+  const groups = Array.from({length: 37}, (_, i) => Object.freeze([Object.freeze(['helper', String(i)] as const)]));
+  // the genuine 37th version is the current production maximum and selects
+  expect(groups).toHaveLength(37);
+  expect(select(groups, new Map(groups[36]!))).toBe(groups[36]);
   expect(select(groups, new Map(groups[0]!))).toBe(groups[0]);
-  // a 37th declared version exceeds the reviewed catalogue and is refused
-  expect(() => select([...groups, [['helper', '36']]], new Map([['helper', '36']]))).toThrow();
+  // a 38th declared version exceeds the reviewed catalogue and is refused
+  expect(() => select([...groups, [['helper', '37']]], new Map([['helper', '37']]))).toThrow();
   // a duplicate/ambiguous tuple is refused
   expect(() => select([...groups.slice(0, 25), groups[0]!], new Map(groups[0]!))).toThrow();
 });

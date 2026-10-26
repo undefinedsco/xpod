@@ -2073,7 +2073,31 @@ const SDK79_GROUP:GitHubSourceBindingGroup=Object.freeze({...SDK78_GROUP,
  selectors:SDK78_GROUP.selectors,
  secondarySelectors:rebindSdk79Rows(SDK78_GROUP.secondarySelectors),
  sourceBindings:Object.freeze([...rebindSdk79Rows(SDK78_GROUP.sourceBindings),...SDK79_TEST_BINDINGS])});
-export const QLEVER_SDK_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...PUBLISHED_SDK_GROUPS,NEXT_SDK_GROUP,INPUT_PLAN_SDK_GROUP,ORM326_SDK_GROUP,SDK19_TELEMETRY_GROUP,CAPTURE_INDEX_SDK_GROUP,SDK78_GROUP,SDK79_GROUP]);
+/** SDK80 staged-owned-secondary slice (APPEND-ONLY, UNPUBLISHED).
+ * Inherits the WHOLE SDK79 group; only the changed leaf is re-pinned:
+ * `tests/scripts/sdk70-remap-policy.test.ts` (Node-portable `import.meta.dirname`).
+ *
+ * Stage 0 is unchanged: the shared ptrace discriminator still selects first. The
+ * staged-ownership wrapper (that same leaf) is declared as an explicit stage-1
+ * selector, so it is requested only after every stage-0 non-owner has been
+ * eliminated. SDK79 and SDK80 both own it as sourceBindings, so the later stage
+ * keeps strict ownership without altering stage 0. */
+const SDK80_REMAP_LEAF='tests/scripts/sdk70-remap-policy.test.ts';
+const SDK80_SOURCE_HASHES:Readonly<Record<string,string>>=Object.freeze({
+ 'tests/scripts/sdk70-remap-policy.test.ts':'e288b18a470144508f6460034d2cc90500cf0917b00bb7671d07c52dd245e6aa',
+ '.github/workflows/candidate.yml':'76373a179ec6ac63d24c79fc0b759e09f1045087bd66ce46c26214963d12dc5d'
+});
+const rebindSdk80Rows=(rows:readonly GitHubSourceBinding[]|undefined)=>Object.freeze((rows??[]).map(row=>Object.freeze({...row,sha256:SDK80_SOURCE_HASHES[row.path]??row.sha256})));
+const SDK80_WRAPPER_BINDING:GitHubSourceBinding=Object.freeze({path:SDK80_REMAP_LEAF,sha256:SDK80_SOURCE_HASHES[SDK80_REMAP_LEAF]!});
+const SDK80_GROUP:GitHubSourceBindingGroup=Object.freeze({...SDK79_GROUP,
+ selectors:SDK79_GROUP.selectors,
+ secondarySelectors:SDK79_GROUP.secondarySelectors,
+ secondarySelectorStages:Object.freeze([Object.freeze([SDK80_WRAPPER_BINDING])]),
+ sourceBindings:rebindSdk80Rows(SDK79_GROUP.sourceBindings),
+ candidateServiceRelationship:Object.freeze({...SDK79_GROUP.candidateServiceRelationship!,workflowSha256:'76373a179ec6ac63d24c79fc0b759e09f1045087bd66ce46c26214963d12dc5d'}),
+ outerExecutor:Object.freeze({...SDK79_GROUP.outerExecutor!,
+  additionalWorkflows:Object.freeze((SDK79_GROUP.outerExecutor!.additionalWorkflows??[]).map(row=>row.path==='.github/workflows/candidate.yml'?Object.freeze({...row,sha256:'76373a179ec6ac63d24c79fc0b759e09f1045087bd66ce46c26214963d12dc5d'}):row))})});
+export const QLEVER_SDK_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...PUBLISHED_SDK_GROUPS,NEXT_SDK_GROUP,INPUT_PLAN_SDK_GROUP,ORM326_SDK_GROUP,SDK19_TELEMETRY_GROUP,CAPTURE_INDEX_SDK_GROUP,SDK78_GROUP,SDK79_GROUP,SDK80_GROUP]);
 export const QLEVER_LINUX_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([
  {selectors:sdkSelectors('cbedd3e2478de5e22108b6689c595a658ca891c9bd47552caec830e86f47fea8','a75c7be34b5c5fafff85c0d67d814ba1aaf14bcf5db5404a860fe3b9a11009bd'),sourceBindings:QLEVER_LINUX_SOURCE_BINDINGS.filter(row=>!['.github/workflows/publish-qlever-runtime-sdk.yml','.github/workflows/build-qlever-linux-runtime.yml'].includes(row.path))},
  ...QLEVER_SDK_EXECUTION_GROUPS,

@@ -1,4 +1,4 @@
-import {completeObserved} from './source-binding-group.fixture';
+import {completeObserved,observedSecondaryBindings} from './source-binding-group.fixture';
 import {test,expect} from 'bun:test';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -10,7 +10,7 @@ import {QLEVER_SDK_EXECUTION_GROUPS as S} from '../../scripts/lib/independent-ad
 import {selectGitHubSourceBindingGroup as select,secondaryGitHubSourceBindingSelectors as secondary,sourceBindingKey as key,type GitHubSourceBindingGroup} from '../../scripts/lib/independent-admission/github-source-binding-groups';
 const root=path.resolve(import.meta.dir,'../..'),sha=(v:string|Buffer)=>createHash('sha256').update(v).digest('hex');
 test('readonly SDK21 adds a complete producer group and preserves all 9b64 historical own originals',()=>{
- for(const [groups,old,extra] of [[S,previous.sdk,59],[C,previous.consumer,77],[I,previous.ci,154]] as const){
+ for(const [groups,old,extra] of [[S,previous.sdk,60],[C,previous.consumer,78],[I,previous.ci,156]] as const){
   expect(groups.length).toBe(old.length+extra);
   for(const item of old){const preserved=groups.filter(group=>sha(JSON.stringify(group.sourceBindings))===item.sourceBindingsSha256&&JSON.stringify(group.selectors)===JSON.stringify(item.selectors));expect(preserved).toHaveLength(1);const own=preserved[0]!;const group=select(groups,completeObserved(groups,own));expect(group.selectors).toEqual(item.selectors);expect((group.secondarySelectors??[]).filter(row=>!(['scripts/lib/independent-admission/qlever-sdk-origin-policy.ts','qlever/scripts/sdk-readonly-executor.py','scripts/lib/independent-admission/qlever-sdk-debian-index.ts'].includes(row.path)))).toEqual(item.secondarySelectors.filter(row=>!(['scripts/lib/independent-admission/qlever-sdk-origin-policy.ts','qlever/scripts/sdk-readonly-executor.py','scripts/lib/independent-admission/qlever-sdk-debian-index.ts'].includes(row.path))));
    for(const role of group.secondarySelectors??[]){const owned=[...item.selectors,...item.secondarySelectors,...group.sourceBindings].find(row=>key(row)===key(role));expect(owned?.sha256).toBe(role.sha256);}expect(sha(JSON.stringify(group.sourceBindings))).toBe(item.sourceBindingsSha256);}
@@ -18,13 +18,13 @@ test('readonly SDK21 adds a complete producer group and preserves all 9b64 histo
  const group=S.at(-1)!;expect(group.outerExecutor).toBeDefined();expect(group.sourceBindings.some(row=>row.path.endsWith('sdk-readonly-collection.py'))).toBe(true);
  for(const old of S.slice(0,20))expect(old.outerExecutor).toBeUndefined();
  for(const row of [...group.selectors,...group.sourceBindings,...current])expect(sha(fs.readFileSync(path.join(root,row.path)))).toBe(row.sha256);
- expect(current).toHaveLength(503);
+ expect(current).toHaveLength(504);
 });
 test('real primary then shared secondary resolver rejects missing and changed roles across all historical and current trees',()=>{
  for(const groups of [S,C,I])for(const group of groups){
-  const observed=new Map(group.selectors.map(row=>[key(row),row.sha256]));
-  for(const role of secondary(groups,observed)){const owned=[...group.selectors,...(group.secondarySelectors??[]),...group.sourceBindings].find(row=>key(row)===key(role));expect(owned).toBeDefined();observed.set(key(role),owned!.sha256);}
-  expect(select(groups,observed)).toBe(group);
-  for(const role of [...group.selectors,...(group.secondarySelectors??[])]){const missing=new Map(observed);missing.delete(key(role));expect(()=>select(groups,missing)).toThrow();const changed=new Map(observed);changed.set(key(role),'f'.repeat(64));expect(()=>select(groups,changed)).toThrow();}
+  // Complete the WHOLE staged acquisition, then prove every observed role refuses.
+  const observed=completeObserved(groups as any,group as any);
+  expect(select(groups as any,observed)).toBe(group);
+  for(const role of [...group.selectors,...observedSecondaryBindings(group as any,observed)]){const missing=new Map(observed);missing.delete(key(role));expect(()=>select(groups,missing)).toThrow();const changed=new Map(observed);changed.set(key(role),'f'.repeat(64));expect(()=>select(groups,changed)).toThrow();}
  }
 },30000);

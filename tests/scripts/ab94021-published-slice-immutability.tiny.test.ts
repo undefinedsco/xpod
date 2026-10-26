@@ -15,6 +15,7 @@
  * satisfy a later change, and its own hashes are never edited.
  */
 import {test, expect} from 'bun:test';
+import {completeObserved, observedSecondaryBindings} from './source-binding-group.fixture';
 import fs from 'node:fs';
 import path from 'node:path';
 import {createHash} from 'node:crypto';
@@ -81,24 +82,23 @@ test('every published and appended family group selects uniquely and refuses bad
     for (const [index, group] of (groups as readonly any[]).entries()) {
       const observed = new Map<string, string>();
       for (const row of group.selectors) observed.set(key(row), row.sha256);
-      const required = secondary(groups as readonly any[], observed);
-      for (const role of required) {
+      // Stage 0 must resolve against OWN originals; assert that surface, then
+      // complete the WHOLE acquisition (SDK79/80 also need stage-1 roles).
+      for (const role of secondary(groups as readonly any[], observed)) {
         const own = [...group.selectors, ...(group.secondarySelectors ?? []), ...group.sourceBindings]
           .find((row: any) => key(row) === key(role));
         expect(own).toBeDefined();
-        observed.set(key(role), own!.sha256);
       }
-      // Positive: the complete tuple resolves to exactly this group.
-      expect(select(groups as readonly any[], observed)).toBe(group);
-      // Negative: a missing required role must be refused.
-      for (const role of required) {
-        const missing = new Map(observed);
+      const full = completeObserved(groups as readonly any[], group as any);
+      // Positive: the COMPLETE tuple resolves to exactly this group.
+      expect(select(groups as readonly any[], full)).toBe(group);
+      // Negative: every ACTUALLY acquired role must be refused when absent or
+      // mixed, including roles promoted only by a later stage.
+      for (const role of observedSecondaryBindings(group as any, full as any)) {
+        const missing = new Map(full);
         missing.delete(key(role));
         expect(() => select(groups as readonly any[], missing)).toThrow();
-      }
-      // Negative: a mixed (unknown) hash must be refused, never adopted.
-      for (const role of required) {
-        const mixed = new Map(observed);
+        const mixed = new Map(full);
         mixed.set(key(role), 'f'.repeat(64));
         expect(() => select(groups as readonly any[], mixed)).toThrow();
       }

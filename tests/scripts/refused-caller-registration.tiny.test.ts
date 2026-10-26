@@ -46,17 +46,17 @@ test('every ACTUAL 9d02 published prefix is byte-identical and only genuine tupl
  // consumer and two CI) and the ORM 0.3.26 joint SDK tail binding the actual
  // current manifest/lock plus the four reviewed SDK build inputs. Each is a real
  // appended recipe, not a rewrite.
- expect(live.length-frozen.length).toBe({sdk:7,consumer:8,ci:16,linux:7,api:1}[name as 'sdk']??0);
+ expect(live.length-frozen.length).toBe({sdk:8,consumer:9,ci:18,linux:8,api:1}[name as 'sdk']??0);
  }
 });
 
 test('the appended tuples are exactly two genuine slices each and the deltas are explainable',()=>{
  // +3 SDK tuples (Linux repeats them as a superset), +3 consumer, +6 CI, and the
  // ORM 0.3.26 joint tail appends exactly one API and one CLI tuple.
- expect(sdk.length).toBe(79);
- expect(linux.length).toBe(80);
- expect(consumer.length).toBe(95);
- expect(ci.length).toBe(188);
+ expect(sdk.length).toBe(80);
+ expect(linux.length).toBe(81);
+ expect(consumer.length).toBe(96);
+ expect(ci.length).toBe(190);
  expect(api.length).toBe(29);
  // CLI gains the ORM 0.3.26 joint tuple on top of the published 11.
  expect(cli.length).toBe(12);
@@ -134,7 +134,7 @@ test('the canonical path/hash closure still holds and the frozen 9d02 snapshot i
  // 483 published rows + the refused-caller test + the frozen 9d02 snapshot, then
  // the immutable-input-plan test + the frozen 2406 snapshot (the moving canonical
  // never lists itself).
- expect(current).toHaveLength(503);
+ expect(current).toHaveLength(504);
  expect(new Set(current.map(row=>row.path)).size).toBe(current.length);
  for(const row of current)expect(createHash('sha256').update(disk(row.path)).digest('hex')).toBe(row.sha256);
  const snapshot=blob('scripts/lib/independent-admission/consumer-execution-current.json');
@@ -164,6 +164,7 @@ test('the canonical path/hash closure still holds and the frozen 9d02 snapshot i
   'scripts/lib/independent-admission/consumer-execution-6b-snapshot.json',
   'scripts/lib/independent-admission/consumer-execution-71f9-snapshot.json',
   'scripts/lib/independent-admission/consumer-execution-cbb-snapshot.json',
+  'scripts/lib/independent-admission/consumer-execution-dca-snapshot.json',
   'scripts/lib/independent-admission/consumer-execution-f803e9c2-snapshot.json',
   'tests/scripts/sdk70-remap-policy.test.ts']);
  expect(current.slice(0,483).map(row=>digest(row))).not.toEqual([]);
@@ -212,6 +213,7 @@ test('published consumer binding rows are unchanged and the two new rows are exa
   'scripts/lib/independent-admission/consumer-execution-6b-snapshot.json',
   'scripts/lib/independent-admission/consumer-execution-71f9-snapshot.json',
   'scripts/lib/independent-admission/consumer-execution-cbb-snapshot.json',
+  'scripts/lib/independent-admission/consumer-execution-dca-snapshot.json',
   'scripts/lib/independent-admission/consumer-execution-f803e9c2-snapshot.json',
   'tests/scripts/sdk70-remap-policy.test.ts']);
 });

@@ -21,6 +21,7 @@ import path from 'node:path';
 import {createHash} from 'node:crypto';
 import vm from 'node:vm';
 import ts from 'typescript';
+import {completeObserved} from './source-binding-group.fixture';
 import {CLI_SOURCE_VERSION_GROUPS} from '../../scripts/lib/independent-admission/source-rules';
 import f6Groups from '../fixtures/independent-admission/f6-published-sdk-slice.original.json';
 /** Immutable PUBLISHED SDK823 baseline (64/79/156 = 299, API27, helpers 29/39/32). */
@@ -64,6 +65,8 @@ import n6bGroups from '../fixtures/independent-admission/6b-published-slice.orig
 import n71f9Groups from '../fixtures/independent-admission/71f9-published-slice.original.json';
 /** Immutable PUBLISHED cbb baseline (79/80/95/188). Its tuples are history. */
 import ncbbGroups from '../fixtures/independent-admission/cbb-published-slice.original.json';
+/** Immutable PUBLISHED DCA baseline (79/80/95/188): its tuples are history. */
+import ndcaGroups from '../fixtures/independent-admission/dca-published-slice.original.json';
 /** Immutable PUBLISHED 19fe baseline (75/90/178/29/76/12). Index 74 (SDK) and
  * 89 (consumer) are published history now, so they must be proved against the
  * ACTUAL 19fe bytes and never against today's disk. */
@@ -87,7 +90,7 @@ const BODY = 'qlever/scripts/sdk-ptrace-execution.py';
 const sha = (v: string | Buffer) => createHash('sha256').update(v).digest('hex');
 const hashValue = (v: unknown) => sha(JSON.stringify(v));
 const read = (p: string) => fs.readFileSync(path.join(ROOT, p));
-const rows = (g: any) => [...g.selectors, ...(g.secondarySelectors ?? []), ...g.sourceBindings];
+const rows = (g: any) => [...g.selectors, ...(g.secondarySelectors ?? []), ...((g.secondarySelectorStages ?? []).flat()), ...g.sourceBindings];
 
 /** AST-read a module-private reviewed tuple table, exactly like production. */
 function recipes(file: string, name: string): unknown[] {
@@ -168,7 +171,7 @@ test('the accepted SDK823 baseline proves all 299 published whole histories', ()
   // Only genuinely new, UNPUBLISHED current groups follow the 299 published ones:
   // the immutable-input-plan slice, the ORM 0.3.26 joint API/CLI/consumer/CI tail
   // and the ORM 0.3.26 joint SDK tuple.
-  expect([sdk.length, consumer.length, ci.length, api.length]).toEqual([79, 95, 188, 29]);
+  expect([sdk.length, consumer.length, ci.length, api.length]).toEqual([80, 96, 190, 29]);
 });
 
 test('the immutable fae9170b baseline proves its full published 69/84/166/28 prefixes', () => {
@@ -199,12 +202,12 @@ test('only the genuinely new immutable-input-plan slice follows published2406', 
   // Two genuine appends now sit beyond published2406 (the immutable-input-plan
   // slice and the ORM 0.3.26 joint tail), four for CI.
   expect([sdk.length, consumer.length, ci.length, api.length, linuxGroups.length, CLI_SOURCE_VERSION_GROUPS.length])
-    .toEqual([79, 95, 188, 29, 80, 12]);
+    .toEqual([80, 96, 190, 29, 81, 12]);
   expect([(n2406Groups as any).published.sdk, (n2406Groups as any).published.consumer,
     (n2406Groups as any).published.ci, (n2406Groups as any).published.linux]).toEqual([73, 88, 174, 74]);
   expect([sdk.length - n2406Groups.published.sdk, consumer.length - n2406Groups.published.consumer,
     ci.length - n2406Groups.published.ci, linuxGroups.length - n2406Groups.published.linux])
-    .toEqual([6, 7, 14, 6]);
+    .toEqual([7, 8, 16, 7]);
   // Every published2406 group keeps its own exact bytes, including its last.
   for (const [name, groups] of Object.entries({sdk, consumer, ci, api, linux: linuxGroups})) {
     const published = (n2406Groups as any).groupHashes[name] as unknown[];
@@ -263,7 +266,14 @@ test('the appended groups bind the actual frozen body and real module bytes', ()
     }
     // Only groups appended AFTER the published 0d catalogue are claimed to bind
     // CURRENT disk bytes (consumer 92 / CI 181-182; SDK stays 76, so it has none).
-    const appended = groups.slice(Math.max(published0d, published6b, published71, publishedCbb));
+    const publishedDca = (ndcaGroups.published as Record<string, number>)[name]!;
+    const hashesDca = (ndcaGroups.groupHashes as Record<string, string[]>)[name]!;
+    expect(hashesDca).toHaveLength(publishedDca);
+    for (let index = 0; index < publishedDca; index++) {
+      expect(hashValue((groups as readonly unknown[])[index])).toBe(hashesDca[index]);
+    }
+    // DCA is the CURRENT published baseline, so only later groups bind live bytes.
+    const appended = groups.slice(Math.max(published0d, published6b, published71, publishedCbb, publishedDca));
     // A family with no new appended tuple (e.g. API/CLI here) proves its entire
     // published catalogue above instead of inventing an append.
     if (!appended.length) continue;
@@ -281,15 +291,25 @@ test('the appended SDK recipe carries the published typed service contracts', ()
   const last = sdk.at(-1) as any;
   expect(last.candidateServiceRelationship).toBeDefined();
   expect(last.outerExecutor).toBeDefined();
+  // The published previous group keeps its reviewed relationship literal;
+  // the new SDK80 binds the final workflow bytes on disk.
+  expect((sdk.at(-2) as any).candidateServiceRelationship.workflowSha256).toBe('999f183da7a146433afeca5cf009556876e9fcec02f9545efaad8b5c6d88f962');
   expect(last.candidateServiceRelationship?.workflowSha256).toBe(sha(read('.github/workflows/candidate.yml')));
+  expect(last.candidateServiceRelationship?.workflowPath).toBe('.github/workflows/candidate.yml');
   // The B794 tail deliberately carries CURRENT outer-executor callers, so it must
   // NOT equal the published index-70 literal: primary publish = CURRENT, and the
   // two additional workflows bind their exact on-disk bytes.
   expect(last.outerExecutor.workflowSha256).toBe(sha(read('.github/workflows/publish-qlever-runtime-sdk.yml')));
   for (const caller of last.outerExecutor.additionalWorkflows) expect(caller.sha256).toBe(sha(read(caller.path)));
-  // This slice re-binds only the observer body: the outer executor is the same
-  // reviewed caller set, so it must be byte-identical to the published 9d02 tail.
-  expect(last.outerExecutor).toEqual((sdk.at(-2) as any).outerExecutor);
+  // SDK80 differs from the published SDK79 tail ONLY in the reviewed candidate
+  // workflow caller: every other outer-executor field is inherited unchanged.
+  const previous=(sdk.at(-2) as any).outerExecutor;
+  expect({...last.outerExecutor,additionalWorkflows:undefined})
+    .toEqual({...previous,additionalWorkflows:undefined});
+  expect(last.outerExecutor.additionalWorkflows.map((row:any)=>row.path))
+    .toEqual(previous.additionalWorkflows.map((row:any)=>row.path));
+  const changed=last.outerExecutor.additionalWorkflows.filter((row:any)=>row.sha256!==previous.additionalWorkflows.find((p:any)=>p.path===row.path).sha256);
+  expect(changed.map((row:any)=>row.path)).toEqual(['.github/workflows/candidate.yml']);
 });
 
 test('published f6 recipes resolve the immutable snapshot, never the rewritten live file', () => {
@@ -316,8 +336,8 @@ test('the frozen published canonical keeps its exact 426 rows and accepted bytes
 });
 
 test('the live canonical binds every actual row of the final combined tree', () => {
-  expect(current.length).toBe(503);
-  expect(new Set(current.map((r) => r.path)).size).toBe(503);
+  expect(current.length).toBe(504);
+  expect(new Set(current.map((r) => r.path)).size).toBe(504);
   // The genuinely new roles of this slice: the corrected SDK inner producer and
   // the CI-discovered Ninja regression that now runs under `test_qlever*`.
   expect(current.find((r) => r.path === 'qlever/scripts/sdk-inner-materials.py')!.sha256)
@@ -375,12 +395,10 @@ test('helper tuples retain the e4 published histories and current role bytes', (
 test('every group still selects itself uniquely and refuses missing/mixed roles', () => {
   for (const [name, groups] of Object.entries(families)) {
     for (const group of groups) {
-      const tuple = new Map<string, string>((group as any).selectors.map((r: any) => [key(r) as string, r.sha256 as string] as [string, string]));
-      for (const role of secondary(groups as any, tuple)) {
-        const own = rows(group).find((r: any) => key(r) === key(role)) as any;
-        expect(own).toBeDefined();
-        tuple.set(key(role) as string, own.sha256 as string);
-      }
+      // The shared fixture iterates the SAME production planner, so staged
+      // recipes receive every role they request while legacy recipes still fill
+      // only their own historical mandatory SHA.
+      const tuple = completeObserved(groups as any, group as any);
       expect(select(groups as any, tuple)).toBe(group);
       for (const role of (group as any).secondarySelectors ?? []) {
         const missing = new Map(tuple);

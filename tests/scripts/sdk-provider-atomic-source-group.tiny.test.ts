@@ -9,7 +9,8 @@ import {selectGitHubSourceBindingGroup,secondaryGitHubSourceBindingSelectors,sou
 const root=path.resolve(import.meta.dir,'../..');
 const tuple=(group:(typeof QLEVER_SDK_EXECUTION_GROUPS)[number])=>new Map([...group.selectors,...(group.secondarySelectors??[])].map(row=>[sourceBindingKey(row),row.sha256]));
 test('all twenty-two SDK whole recipes select uniquely and current runtime imports match actual bytes',()=>{
- expect(QLEVER_SDK_EXECUTION_GROUPS).toHaveLength(79);
+ // SDK79 published 79; the SDK80 append adds exactly one whole group.
+ expect(QLEVER_SDK_EXECUTION_GROUPS).toHaveLength(80);
  for(const group of QLEVER_SDK_EXECUTION_GROUPS)expect(selectGitHubSourceBindingGroup(QLEVER_SDK_EXECUTION_GROUPS,completeObserved(QLEVER_SDK_EXECUTION_GROUPS,group))).toBe(group);
  const current=QLEVER_SDK_EXECUTION_GROUPS.at(-1)!;
  for(const row of [...current.selectors,...current.sourceBindings])expect(createHash('sha256').update(fs.readFileSync(path.join(root,row.path))).digest('hex')).toBe(row.sha256);
@@ -32,9 +33,13 @@ test('pre-provider 342 closure and new provider closure retain distinct whole co
 test('actual pre-selection resolver has a shared existing-path secondary role set on every primary candidate',()=>{
  for(const groups of [CONSUMER_SOURCE_GROUPS,CI_CONSUMER_SOURCE_GROUPS,QLEVER_SDK_EXECUTION_GROUPS])for(const group of groups){
   const primary=new Map(group.selectors.map(row=>[sourceBindingKey(row),row.sha256]));
-  const roles=secondaryGitHubSourceBindingSelectors(groups,primary);
-  const retained=[...group.selectors,...(group.secondarySelectors??[]),...group.sourceBindings];
-  for(const role of roles){const original=retained.find(row=>sourceBindingKey(row)===sourceBindingKey(role));expect(original).toBeDefined();primary.set(sourceBindingKey(role),original!.sha256);}
-  expect(selectGitHubSourceBindingGroup(groups,primary)).toBe(group);
+  // Stage 0 must resolve against OWN originals...
+  for(const role of secondaryGitHubSourceBindingSelectors(groups,primary)){
+   const original=[...group.selectors,...(group.secondarySelectors??[]),...(group.secondarySelectorStages??[]).flat(),...group.sourceBindings].find(row=>sourceBindingKey(row)===sourceBindingKey(role));
+   expect(original).toBeDefined();
+  }
+  // ...then the WHOLE acquisition, including promoted later-stage roles.
+  const facts=completeObserved(groups,group);
+  expect(selectGitHubSourceBindingGroup(groups,facts)).toBe(group);
  }
 });

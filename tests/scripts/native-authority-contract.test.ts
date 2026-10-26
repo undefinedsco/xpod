@@ -11,7 +11,7 @@ import { describe, expect, it } from 'vitest';
  * a superseded artifact id, and so a "fixed" hash cannot be claimed without the
  * authority file actually carrying it.
  */
-const ROOT = path.resolve(import.meta.dir, '../..');
+const ROOT = path.resolve(import.meta.dirname, '../..');
 const AUTHORITY = 'scripts/agentfs-native-ci/mounted/native-authority.json';
 
 describe('AFS native authority contract', () => {

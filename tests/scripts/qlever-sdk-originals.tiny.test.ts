@@ -1,8 +1,8 @@
-const completeObserved=(groups:any,group:any)=>{const facts=new Map<string,string>(group.selectors.map((row:any)=>[sourceBindingKey(row),row.sha256]));for(const role of secondaryGitHubSourceBindingSelectors(groups,facts)){const row=[...group.selectors,...group.secondarySelectors??[],...group.sourceBindings].find((row:any)=>sourceBindingKey(row)===sourceBindingKey(role));facts.set(sourceBindingKey(role),row.sha256);}return facts;};
 import {test,expect} from 'bun:test';
 import {inspectQleverSdkArtifactReference,inspectQleverSdkMasterBinding,qleverSdkOriginalsView,collectRelatedQleverSdkOriginals} from '../../scripts/lib/independent-admission/qlever-sdk-originals';
 import {QLEVER_LINUX_EXECUTION_GROUPS,QLEVER_SDK_B_SOURCE_BINDINGS,QLEVER_SDK_EXECUTION_GROUPS} from '../../scripts/lib/independent-admission/qlever-sdk-origin-policy';
 import {selectGitHubSourceBindingGroup,secondaryGitHubSourceBindingSelectors,sourceBindingKey} from '../../scripts/lib/independent-admission/github-source-binding-groups';
+import {completeObserved} from './source-binding-group.fixture';
 const sourceSha='a'.repeat(40),runHeadSha='b'.repeat(40),sdkImage='ghcr.io/undefinedsco/xpod-qlever-runtime-sdk@sha256:'+'c'.repeat(64);
 function fixture(){
  const reference=inspectQleverSdkArtifactReference({artifactId:7,artifactSha256:'d'.repeat(64),sourceSha,runId:10,runAttempt:2,target:'linux-x64',sdkProfile:'module-bookworm-gcc12',sdkImageReferenceByDigest:sdkImage,master:{path:'materials.json',bytes:123,sha256:'e'.repeat(64)}},{sourceSha,runId:10,runAttempt:2,target:'linux-x64',sdkImage});
@@ -42,7 +42,8 @@ test('SDK tar recipes and staging producer select whole groups, never individual
 
 test('Debian v3 SDK execution binds inner/image/Docker/acquisition as one version',()=>{
  const old=QLEVER_SDK_EXECUTION_GROUPS[2]!,next=QLEVER_SDK_EXECUTION_GROUPS[3]!;
- const map=new Map([...next.selectors,...(next.secondarySelectors??[])].map(row=>[sourceBindingKey(row),row.sha256]));
+ // Complete the WHOLE acquisition: these recipes also carry later-stage roles.
+ const map=completeObserved(QLEVER_SDK_EXECUTION_GROUPS,next);
  expect(selectGitHubSourceBindingGroup(QLEVER_SDK_EXECUTION_GROUPS,map)).toBe(next);
  for(const name of ['qlever/scripts/sdk-inner-materials.py','qlever/scripts/sdk-image-originals.py','docker/qlever-runtime-sdk/Dockerfile.module-bookworm']){
   const before=old.selectors.find(row=>row.path===name)!;const mixed=new Map(map);mixed.set(sourceBindingKey(before),before.sha256);
@@ -83,7 +84,8 @@ test('owned SDK RUNs select the complete PID1 registry/guard and preserve earlie
 
 test('source-prepared SDK group binds the complete changed recipe without mixing historical selectors',()=>{
  const old=QLEVER_SDK_EXECUTION_GROUPS[6]!,next=QLEVER_SDK_EXECUTION_GROUPS[7]!;
- expect(QLEVER_SDK_EXECUTION_GROUPS).toHaveLength(79);
+ // SDK79 published 79; the SDK80 append adds exactly one whole group.
+ expect(QLEVER_SDK_EXECUTION_GROUPS).toHaveLength(80);
  const selected=new Map([...next.selectors,...(next.secondarySelectors??[])].map(row=>[sourceBindingKey(row),row.sha256]));
  expect(selectGitHubSourceBindingGroup(QLEVER_SDK_EXECUTION_GROUPS,selected)).toBe(next);
  for(const path of ['docker/qlever-runtime-sdk/Dockerfile.module-bookworm','qlever/scripts/sdk-inner-materials.py']){
@@ -192,7 +194,8 @@ test('combined single observer version preserves old pair and rejects mixed prod
 
 test('prepared dependency recipe is one exact complete SDK18 group',()=>{
  const next=QLEVER_SDK_EXECUTION_GROUPS[17]!,previous=QLEVER_SDK_EXECUTION_GROUPS[16]!;
- expect(QLEVER_SDK_EXECUTION_GROUPS).toHaveLength(79);
+ // SDK79 published 79; the SDK80 append adds exactly one whole group.
+ expect(QLEVER_SDK_EXECUTION_GROUPS).toHaveLength(80);
  for(const group of QLEVER_SDK_EXECUTION_GROUPS){const map=completeObserved(QLEVER_SDK_EXECUTION_GROUPS,group);expect(selectGitHubSourceBindingGroup(QLEVER_SDK_EXECUTION_GROUPS,map)).toBe(group);}
  expect(next.sourceBindings.find(row=>row.path==='qlever/scripts/sdk-fetchcontent-materials.py')?.sha256).toBe('8ec24a7e0e68197bb2bfe127733a18f5db64477e2b3f549feb95af05e4f4097f');
  for(const role of [...next.selectors,...next.secondarySelectors!]){const map=new Map([...next.selectors,...next.secondarySelectors!].map(row=>[sourceBindingKey(row),row.sha256]));map.set(sourceBindingKey(role),'0'.repeat(64));expect(()=>selectGitHubSourceBindingGroup(QLEVER_SDK_EXECUTION_GROUPS,map)).toThrow();}

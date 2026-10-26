@@ -1,6 +1,6 @@
 import {inspectReviewedSdkOuterExecutorOrigin,type QleverSdkOuterExecutorOriginAuthority} from './qlever-sdk-outer-authority';
 import {QLEVER_SDK_WORKFLOW,QLEVER_SDK_WORKFLOW_SHA,QLEVER_SDK_EXECUTION_GROUPS,QLEVER_LINUX_EXECUTION_GROUPS,QLEVER_READONLY_SDK_WORKFLOW_SHA,QLEVER_SERVICE_SDK_WORKFLOW_SHA,QLEVER_CURRENT_SDK_WORKFLOW_SHA} from './qlever-sdk-origin-policy';
-import {selectGitHubSourceBindingGroup,secondaryGitHubSourceBindingSelectors,sourceBindingKey,type GitHubSourceBindingGroup} from './github-source-binding-groups';
+import {acquireOwnedSecondaryBindings,selectGitHubSourceBindingGroup,secondaryGitHubSourceBindingSelectors,sourceBindingKey,type GitHubSourceBindingGroup} from './github-source-binding-groups';
 import {immutableGitContentsEndpoint,cachedGitContentsOriginal,retainGitContentsOriginal} from './github-immutable-original-cache';
 import {QLEVER_LINUX_SOURCE_BINDINGS} from './qlever-linux-origin-policy';
 import {QLEVER_OBSERVER_PATH,QLEVER_OBSERVER_V20,QLEVER_OBSERVER_V22,QLEVER_OBSERVER_V23,qleverObserverCompanionBindings} from './qlever-observer-policy';
@@ -1546,13 +1546,17 @@ async function observeGitHubOrigin(input: ArtifactAcquisitionInput, options: { t
     }));
     // New observer versions refine only an already matched historical tuple.
     // A missing/modified helper remains fatal; no old-tree 404 is swallowed.
-    const secondary=secondaryGitHubSourceBindingSelectors(sourceBindingGroups,observed);
-    await Promise.all(secondary.map(async binding=>{
+    // Staged, BOUNDED acquisition. Each round asks the one planner for the roles
+    // still outstanding at the earliest unresolved declared stage, so a role an
+    // older recipe never owned is never requested. Every key is fetched at most
+    // once, all rounds share the SAME absolute deadline (the AbortSignal created
+    // above), and the round count is bounded by the number of declared roles.
+    selectedSourceGroup=await acquireOwnedSecondaryBindings(sourceBindingGroups,observed,async binding=>{
       const original=await read('policy-secondary-'+binding.path.replace(/[^a-z0-9]/giu,'-')+'.original.json',`contents/${binding.path}?ref=${binding.ref==='run-head'?input.runHeadSha:input.sourceSha}`);
       if(original.type!=='file'||original.path!==binding.path||original.encoding!=='base64'||typeof original.content!=='string')fail('immutable secondary group selector missing');
-      observed.set(sourceBindingKey(binding),sha(Buffer.from(original.content.replace(/\s/gu,''),'base64')));
-    }));
-    selectedSourceGroup=selectGitHubSourceBindingGroup(sourceBindingGroups,observed);sourceBindings=[...selectedSourceGroup.sourceBindings];
+      return sha(Buffer.from(original.content.replace(/\s/gu,''),'base64'));
+    },()=>{if(signal.aborted)fail('immutable secondary group selector missing');});
+    sourceBindings=[...selectedSourceGroup.sourceBindings];
   }
   for (let offset=0;offset<sourceBindings.length;) {
    const batch=sourceBindings.slice(offset,offset+8);offset+=batch.length;
