@@ -25,8 +25,10 @@ const whole=(g:unknown)=>createHash('sha256').update(JSON.stringify(g)).digest('
  * no ignored `.test-data` tree. */
 const BASELINE=JSON.parse(readFileSync(new URL('../fixtures/independent-admission/dca-published-slice.original.json',import.meta.url),'utf8'));
 const GROUP_HASHES=BASELINE.groupHashes as Record<string,readonly string[]>;
-/** The 9 same-primary SDK peers plus SDK80: only these can compete. */
-const PEERS=SDK.slice(70);
+/** The 9 same-primary SDK peers plus SDK80: only these can compete. Pinned by
+ * index so a later appended tail cannot change what this historical suite means. */
+const SDK80_INDEX=79;
+const PEERS=SDK.slice(70,SDK80_INDEX+1);
 const FAMILIES:readonly [string,readonly any[]][]=[['sdk',SDK],['linux',LINUX],['consumer',CONSUMER],['ci',CI],['api',API],['cli',CLI]];
 
 it('every published DCA whole prefix stays byte-identical',()=>{
@@ -58,10 +60,12 @@ it('published helper prefixes are untouched at 52/34/37, compared against shippe
 });
 
 it('SDK79 and SDK80 are the SAME stage 0 and differ only in the explicit stage 1',()=>{
-  const old=SDK[SDK.length-2]!;
-  const next=SDK[SDK.length-1]!;
-  expect(SDK).toHaveLength(80);
-  expect(LINUX).toHaveLength(81);
+  const old=SDK[SDK80_INDEX-1]!;
+  const next=SDK[SDK80_INDEX]!;
+  // LIVE counts grow with each appended tail; the SDK79/SDK80 identity below is
+  // what this suite actually pins, so the old pair keeps its meaning via slice.
+  expect(SDK.slice(0,80)).toHaveLength(80);
+  expect(LINUX.slice(0,81)).toHaveLength(81);
   // stage 0 identical: the shared ptrace discriminator did not move
   expect(JSON.stringify(next.secondarySelectors)).toBe(JSON.stringify(old.secondarySelectors));
   expect(JSON.stringify(next.selectors)).toBe(JSON.stringify(old.selectors));
@@ -90,7 +94,7 @@ it('real staged resolution selects each group without a future GET of the wrappe
 },60000);
 
 it('old/new/unknown/missing/mixed refusals stay load-bearing',()=>{
-  const next=SDK.at(-1)!;
+  const next=SDK[SDK80_INDEX]!;
   const tuple=new Map<string,string>();
   for(const row of [...next.selectors,...(next.secondarySelectors??[]),...(next.secondarySelectorStages??[]).flat(),...next.sourceBindings]) tuple.set(sourceBindingKey(row),row.sha256);
   // selecting with the real tuple yields the exact group

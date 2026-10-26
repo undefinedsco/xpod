@@ -162,7 +162,11 @@ export async function acquireNativeAdmissionOriginals(input: ArtifactAcquisition
   return acquireProductInput(input, output, { token: options.token }, false, false, true);
 }
 /** The existing native transport may observe a live candidate run only after
- * the existing private issuer closed the exact service or SDK producer job. */
+ * the existing private issuer closed the exact service or SDK producer job. The
+ * same issued provenance is also the ONLY way a completed-failure OVERALL run is
+ * accepted here: a downstream consumer failure can leave the producing job and
+ * its retained artifact closed-success at the original attempt. It grants no
+ * source admission, RC qualification or generic failed-run acceptance. */
 export async function acquireCandidateServiceOriginals(input:ArtifactAcquisitionInput,output:string,origin:unknown,options:{token?:string}={}) {
  if(Object.keys(options).some(key=>key!=='token'))fail('unknown candidate original transport option');
  const issuer=await import('./lib/independent-admission/github-origin');
@@ -208,7 +212,12 @@ async function acquireProductInput(input: ArtifactAcquisitionInput, output: stri
       return value;
     }
     const run = await json('run', `actions/runs/${input.runId}/attempts/${input.runAttempt}`);
-    if (run.id !== input.runId || run.run_attempt !== input.runAttempt || (!legacy && !(run.status==='completed'?run.conclusion==='success':(registryConsumer||candidateRole!==undefined)&&run.status==='in_progress'&&run.conclusion===null)) || (legacy && !['queued', 'in_progress', 'completed'].includes(run.status))
+    // candidateRole is set ONLY by the private-issued candidate wrapper above.
+    // Its completed-failure case remains exact: same run/attempt/head/workflow,
+    // and the issuer already closed the same-attempt producer job/steps and
+    // artifact/source/ancestor custody before the capability was issued.
+    const candidateCompletedFailure = candidateRole !== undefined && run?.status === 'completed' && run?.conclusion === 'failure';
+    if (run.id !== input.runId || run.run_attempt !== input.runAttempt || (!legacy && !candidateCompletedFailure && !(run.status==='completed'?run.conclusion==='success':(registryConsumer||candidateRole!==undefined)&&run.status==='in_progress'&&run.conclusion===null)) || (legacy && !['queued', 'in_progress', 'completed'].includes(run.status))
       || run.repository?.full_name !== REPOSITORY || run.head_repository?.full_name !== REPOSITORY || run.head_sha !== input.runHeadSha
       || !['push', 'pull_request', 'workflow_dispatch'].includes(run.event) || !positive(run.workflow_id)) fail('untrusted producer run');
     if (!registryConsumer && run.event !== 'pull_request' && input.sourceSha !== input.runHeadSha) fail('non-PR build source differs from run head');

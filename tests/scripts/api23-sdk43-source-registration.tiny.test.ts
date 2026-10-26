@@ -10,7 +10,7 @@ import{completeObserved,observedSecondaryBindings}from'./source-binding-group.fi
 const digest=(v:unknown)=>createHash('sha256').update(JSON.stringify(v)).digest('hex');
 test('API23 SDK43 preserve the actual 38f complete history and bind every current executed byte',()=>{
  expect(before.base).toBe('38f37d14bc44ebe0068a206b82cbc22ffaf30b5a');expect(Object.values(before.hashes).reduce((n,rows)=>n+rows.length,0)).toBe(224);
- for(const[name,groups]of Object.entries({api,sdk,consumer,ci})){const old=before.hashes[name as keyof typeof before.hashes];expect(groups.slice(0,old.length).map(digest)).toEqual(old);expect(groups.length-old.length).toBe((({api:29,sdk:80,ci:190,consumer:96} as Record<string,number>)[name]!)-old.length);}
+ for(const[name,groups]of Object.entries({api,sdk,consumer,ci})){const old=before.hashes[name as keyof typeof before.hashes];expect(groups.slice(0,old.length).map(digest)).toEqual(old);expect(groups.length-old.length).toBe((({api:29,sdk:81,ci:192,consumer:97} as Record<string,number>)[name]!)-old.length);}
  expect(current).toHaveLength(504);for(const row of [...current,...api[api.length-1]!.sourceBindings,...sdk[sdk.length-1]!.selectors,...sdk[sdk.length-1]!.sourceBindings])expect(createHash('sha256').update(readFileSync(row.path)).digest('hex')).toBe(row.sha256);
  const reads:string[]=[];expect(controlledApiSourceRecipe(name=>{reads.push(name);return readFileSync(name);},api[api.length-1]!.selectors[0]!.sha256,'linux-arm64').rows).toBe(API_SERVICE_BUILD_SOURCE_BINDINGS);expect(reads).toContain('scripts/lib/physical-module-archive.ts');
 });

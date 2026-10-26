@@ -5,7 +5,7 @@ import current from '../../scripts/lib/independent-admission/consumer-execution-
 const hash=(v:unknown)=>createHash('sha256').update(JSON.stringify(v)).digest('hex');
 test('SDK30 and Notice fork whole originals both survive before the single actual joint current',()=>{
  // SDK80 append: one new whole group per consumer family; tcb 504 unchanged.
- expect(c).toHaveLength(96);expect(ci).toHaveLength(190);expect(current).toHaveLength(504);
+ expect(c).toHaveLength(97);expect(ci).toHaveLength(192);expect(current).toHaveLength(504);
  for(const [groups,prior]of [[c,parents.sdk30Consumer],[ci,parents.sdk30CI],[c,parents.noticeConsumer],[ci,parents.noticeCI]]as const){const all=new Set(groups.map(hash));for(const sha of prior)expect(all.has(sha)).toBe(true);}
  for(const row of current)expect(createHash('sha256').update(fs.readFileSync(path.resolve(import.meta.dir,'../..',row.path))).digest('hex')).toBe(row.sha256);
  // The Notice joint recipe, the subsequent SDK31 recipe AND the ORM 0.3.26 joint
@@ -13,8 +13,8 @@ test('SDK30 and Notice fork whole originals both survive before the single actua
  // Frozen 0d parents stay unchanged; only the genuine post-0d tails are appended:
  // consumer 91 -> 92 (+1) and CI 180 -> 182 (+2). The additive constants below
  // therefore track the real current tail delta, never a historical index.
- // Real post-baseline tails: consumer +55 (was +54) and CI +110 (was +108),
- // each increased by exactly the SDK80 append (+1 / +2 whole groups).
- expect(new Set([...parents.sdk30Consumer,...parents.noticeConsumer ]).size+55).toBe(c.length);
- expect(new Set([...parents.sdk30CI,...parents.noticeCI]).size+110).toBe(ci.length);
+ // Real post-baseline tails: consumer +56 and CI +112, each increased by exactly
+ // the SDK80 and candidate-producer-attempt appends (+1/+1 and +2/+2 groups).
+ expect(new Set([...parents.sdk30Consumer,...parents.noticeConsumer ]).size+56).toBe(c.length);
+ expect(new Set([...parents.sdk30CI,...parents.noticeCI]).size+112).toBe(ci.length);
 });

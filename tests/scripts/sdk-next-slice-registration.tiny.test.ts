@@ -171,7 +171,7 @@ test('the accepted SDK823 baseline proves all 299 published whole histories', ()
   // Only genuinely new, UNPUBLISHED current groups follow the 299 published ones:
   // the immutable-input-plan slice, the ORM 0.3.26 joint API/CLI/consumer/CI tail
   // and the ORM 0.3.26 joint SDK tuple.
-  expect([sdk.length, consumer.length, ci.length, api.length]).toEqual([80, 96, 190, 29]);
+  expect([sdk.length, consumer.length, ci.length, api.length]).toEqual([81, 97, 192, 29]);
 });
 
 test('the immutable fae9170b baseline proves its full published 69/84/166/28 prefixes', () => {
@@ -199,15 +199,15 @@ test('the immutable fae9170b baseline proves its full published 69/84/166/28 pre
 });
 
 test('only the genuinely new immutable-input-plan slice follows published2406', () => {
-  // Two genuine appends now sit beyond published2406 (the immutable-input-plan
-  // slice and the ORM 0.3.26 joint tail), four for CI.
+  // Appends beyond published2406: the immutable-input-plan slice, the ORM 0.3.26
+  // joint tail, and the candidate-producer-attempt SDK81/new current tails.
   expect([sdk.length, consumer.length, ci.length, api.length, linuxGroups.length, CLI_SOURCE_VERSION_GROUPS.length])
-    .toEqual([80, 96, 190, 29, 81, 12]);
+    .toEqual([81, 97, 192, 29, 82, 12]);
   expect([(n2406Groups as any).published.sdk, (n2406Groups as any).published.consumer,
     (n2406Groups as any).published.ci, (n2406Groups as any).published.linux]).toEqual([73, 88, 174, 74]);
   expect([sdk.length - n2406Groups.published.sdk, consumer.length - n2406Groups.published.consumer,
     ci.length - n2406Groups.published.ci, linuxGroups.length - n2406Groups.published.linux])
-    .toEqual([7, 8, 16, 7]);
+    .toEqual([8, 9, 18, 8]);
   // Every published2406 group keeps its own exact bytes, including its last.
   for (const [name, groups] of Object.entries({sdk, consumer, ci, api, linux: linuxGroups})) {
     const published = (n2406Groups as any).groupHashes[name] as unknown[];
@@ -277,7 +277,12 @@ test('the appended groups bind the actual frozen body and real module bytes', ()
     // A family with no new appended tuple (e.g. API/CLI here) proves its entire
     // published catalogue above instead of inventing an append.
     if (!appended.length) continue;
-    for (const group of appended) {
+    // Older appended tails are history now; only the CURRENT tail(s) of each
+    // family bind today's disk bytes. CI has TWO existing current variants that
+    // differ only in the run-head workflow selector, so both current SOURCE
+    // closures are tested; the run-head rows themselves stay skipped.
+    const current = name === 'ci' ? appended.slice(-2) : appended.slice(-1);
+    for (const group of current) {
       for (const row of rows(group)) {
         if ((row as any).ref === 'run-head') continue; // binds the CI run's own bytes
         expect(sha(read((row as any).path))).toBe((row as any).sha256);
@@ -291,9 +296,9 @@ test('the appended SDK recipe carries the published typed service contracts', ()
   const last = sdk.at(-1) as any;
   expect(last.candidateServiceRelationship).toBeDefined();
   expect(last.outerExecutor).toBeDefined();
-  // The published previous group keeps its reviewed relationship literal;
-  // the new SDK80 binds the final workflow bytes on disk.
-  expect((sdk.at(-2) as any).candidateServiceRelationship.workflowSha256).toBe('999f183da7a146433afeca5cf009556876e9fcec02f9545efaad8b5c6d88f962');
+  // SDK79 keeps its reviewed published relationship literal; the current SDK81
+  // binds the final candidate workflow bytes on disk.
+  expect((sdk.at(-3) as any).candidateServiceRelationship.workflowSha256).toBe('999f183da7a146433afeca5cf009556876e9fcec02f9545efaad8b5c6d88f962');
   expect(last.candidateServiceRelationship?.workflowSha256).toBe(sha(read('.github/workflows/candidate.yml')));
   expect(last.candidateServiceRelationship?.workflowPath).toBe('.github/workflows/candidate.yml');
   // The B794 tail deliberately carries CURRENT outer-executor callers, so it must
@@ -424,7 +429,7 @@ test('the SDK69 slice carries the published helper prefixes and its own new memb
   // 132 published/earlier rows (incl. the owned-window and refused-caller
   // diagnostics) + the three ORM 0.3.26 SDK build-input rows in this tail
   // (patch series, production-only subdirectory patch, bun.lock).
-  expect(current.sourceBindings.length).toBe(152);
+  expect(current.sourceBindings.length).toBe(154);
   expect(current.sourceBindings.some(r => r.path === 'qlever/tests/test_qlever_owned_window_diagnostic.py')).toBe(true);
   expect(current.sourceBindings.some(r => r.path === 'qlever/tests/test_sdk_refused_caller_diagnostic.py')).toBe(true);
   const newRoles = [

@@ -43,20 +43,21 @@ test('every ACTUAL 9d02 published prefix is byte-identical and only genuine tupl
   expect(live.slice(0,frozen.length).map(digest)).toEqual(frozen);
   // Genuine slices follow the published 9d02 catalogue: refused-caller,
  // immutable-input-plan, the ORM 0.3.26 joint tail (one tuple for API/CLI, one
- // consumer and two CI) and the ORM 0.3.26 joint SDK tail binding the actual
- // current manifest/lock plus the four reviewed SDK build inputs. Each is a real
- // appended recipe, not a rewrite.
- expect(live.length-frozen.length).toBe({sdk:8,consumer:9,ci:18,linux:8,api:1}[name as 'sdk']??0);
+ // consumer and two CI), the ORM 0.3.26 joint SDK tail binding the actual
+ // current manifest/lock plus the four reviewed SDK build inputs, and the
+ // candidate-producer-attempt SDK81 plus its new consumer/CI current tails.
+ // Each is a real appended recipe, not a rewrite.
+ expect(live.length-frozen.length).toBe({sdk:9,consumer:10,ci:20,linux:9,api:1}[name as 'sdk']??0);
  }
 });
 
 test('the appended tuples are exactly two genuine slices each and the deltas are explainable',()=>{
  // +3 SDK tuples (Linux repeats them as a superset), +3 consumer, +6 CI, and the
  // ORM 0.3.26 joint tail appends exactly one API and one CLI tuple.
- expect(sdk.length).toBe(80);
- expect(linux.length).toBe(81);
- expect(consumer.length).toBe(96);
- expect(ci.length).toBe(190);
+ expect(sdk.length).toBe(81);
+ expect(linux.length).toBe(82);
+ expect(consumer.length).toBe(97);
+ expect(ci.length).toBe(192);
  expect(api.length).toBe(29);
  // CLI gains the ORM 0.3.26 joint tuple on top of the published 11.
  expect(cli.length).toBe(12);

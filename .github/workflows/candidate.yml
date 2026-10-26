@@ -186,6 +186,10 @@ jobs:
       packages: write
     outputs:
       digest: ${{ steps.build.outputs.digest }}
+      # The attempt that actually produced the retained service/SDK originals.
+      # A failed downstream consumer rerun must keep consuming these original
+      # coordinates; the consumer's own run attempt is never substituted.
+      producer_attempt: ${{ steps.producer_identity.outputs.attempt }}
       service_artifact_id: ${{ steps.service_originals_upload.outputs.artifact-id }}
       service_artifact_digest: ${{ steps.service_originals_upload.outputs.artifact-digest }}
       service_master_sha256: ${{ steps.service_originals.outputs.master_sha256 }}
@@ -194,6 +198,13 @@ jobs:
       REF_NAME: ${{ github.ref_name }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Bind this producer job's actual attempt
+        id: producer_identity
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
+          echo "attempt=$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -336,6 +347,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SOURCE_SHA: ${{ needs.metadata.outputs.sourceSha }}
+          PRODUCER_ATTEMPT: ${{ needs.build_image.outputs.producer_attempt }}
           SERVICE_ARTIFACT_ID: ${{ needs.build_image.outputs.service_artifact_id }}
           SERVICE_ARTIFACT_DIGEST: ${{ needs.build_image.outputs.service_artifact_digest }}
           SERVICE_MASTER_BYTES: ${{ needs.build_image.outputs.service_master_bytes }}
@@ -343,7 +355,7 @@ jobs:
         run: |
           set -euo pipefail
           bun scripts/check-candidate-service-sdk-source.ts \
-            --source-sha "$SOURCE_SHA" --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --source-sha "$SOURCE_SHA" --run-id "$GITHUB_RUN_ID" --run-attempt "$PRODUCER_ATTEMPT" \
             --service-artifact-id "$SERVICE_ARTIFACT_ID" --service-artifact-digest "$SERVICE_ARTIFACT_DIGEST" \
             --service-master-bytes "$SERVICE_MASTER_BYTES" --service-master-sha256 "$SERVICE_MASTER_SHA256" \
             --checkout "$GITHUB_WORKSPACE" --output "$RUNNER_TEMP/service-sdk-source-observation" --require-qualification

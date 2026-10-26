@@ -85,6 +85,41 @@ new candidate produces a valid joint proof, no image or RC may claim this
 admission. Shared RC continues to require an ordinary reviewed merge into
 `staging` and exclusive queue ownership.
 
+## Same-failed-candidate resume
+
+Re-running only the failed `deploy_and_accept` job is supported **only** as
+consuming the original successful producer attempt. `build_image` exports the
+attempt that actually produced the retained service/SDK originals
+(`producer_attempt`), and `observe_service_sdk_source` passes that value to the
+source/ABI observer instead of `GITHUB_RUN_ATTEMPT`. The service artifact, SDK
+artifact, source closure and ABI relation therefore stay on the original
+attempt/digest pair; nothing is rebuilt, renamed or spoofed, and the consumer's
+own run attempt still owns the RC seed secret, cleanup and observation
+artifacts.
+
+GitHub attempts are immutable: attempt 1 of a run that later succeeded at
+attempt 2 remains `completed/failure`. The candidate-only origin scope may
+therefore accept that overall run state, but it is **provisional**: the private
+issuer still requires the exact same-attempt producer job, its required steps,
+the artifact name/digest/window, the immutable workflow bytes and the source
+SDK/kernel/ancestor custody. Only then is an authenticity capability issued,
+and that capability never claims RC qualification, installed-image conformance
+or release acceptance. Cancelled, timed-out, neutral, skipped and every other
+non-success conclusion stay rejected, as do failed runs of any other workflow
+and mismatched source/job/attempt/digest coordinates.
+
+A **whole-run rerun** that genuinely re-executes every producer at a new
+attempt produces new producer coordinates (and possibly a new image digest).
+That is a different candidate artifact: it needs a fresh joint admission and
+Private17 proof and is not the case claimed here. Only the failed
+`deploy_and_accept` consumer retry that keeps producer attempt 1 is claimed.
+
+A **partial** rerun that rebuilds only `build_image` (or only the SDK) at
+attempt 2 is **not** claimed: the deploy path requires both the service and SDK
+producers to be the original attempt. Source/tree identity is never substituted
+for digest identity. Refresh timing of `XPOD_PRIVATE17_ADMISSION_SHA256` remains
+unknown; no race or new configuration is relied upon.
+
 Focused public regression:
 
 ```sh
