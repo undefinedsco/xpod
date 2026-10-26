@@ -225,6 +225,81 @@ class Positive(BoundaryCase):
         self.assertNotIn('mremapPending', fx.tasks[101])
 
 
+class AuthorityDrainOrder(unittest.TestCase):
+    """Deterministic scheduling evidence for the initial-authority sample.
+
+    This drives the REAL `pending_captures_original` with a minimal host whose
+    only interesting behaviour is a queued identity capture that returns True
+    (i.e. it consumed the turn and would previously have returned early). It
+    records the ORDER of two side effects:
+
+        sample  -> the process-authority capture callback ran
+        identity-> the queued identity capture callback returned True
+
+    The producer must capture the authority sample BEFORE any early return from
+    the queued identity capture, otherwise the still-unsampled pid can be resumed
+    and emit a syscall row that the consumer rejects as "syscall resumed outside
+    live authority boundary".
+
+    This is explicit UNIT scheduling evidence, not fake real-process acceptance;
+    the real scope comes from root's native Ninja raw-replay runs.
+    """
+
+    def _host(self, events):
+        observer = obs.Observer.__new__(obs.Observer)
+        # A child pid whose initial-child authority sample is still pending.
+        observer.tasks = {2: dict(stopped=True, exited=False, entry=None,
+                                  initial=True, authorityPending=[('initial-child', None)])}
+        observer.process_authority = True
+        observer.capture_toolchain = False
+        observer.generated_vma = None
+        observer.exclusive = None
+        observer.terminal_focus = None
+        observer.terminal_exit_evidence = False
+        observer.mremapDeferred = None
+        observer.process_authority_capture = None
+
+        def instrument_substep(name, function, *args, **kwargs):
+            return function(*args, **kwargs)
+
+        observer.instrument_substep = instrument_substep
+        observer.capture_deferred_mremap = lambda: False
+
+        def capture_process_authority(pid, role, event_sequence=None):
+            events.append(('sample', pid, role))
+            observer.authority_observed = getattr(observer, 'authority_observed', set())
+            observer.authority_observed.add(pid)
+            return dict(sequence=1, pid=pid, role=role)
+
+        def capture_queued_identity():
+            events.append(('identity', None, None))
+            return True     # consumed the turn: producer may return early
+
+        observer.capture_process_authority = capture_process_authority
+        observer.capture_queued_identity = capture_queued_identity
+        observer.checkpoint_append_boundaries = lambda *a, **k: None
+        observer.capture_bti_pending = lambda *a, **k: False
+        observer.capture_clone3_pending = lambda *a, **k: False
+        return observer
+
+    def test_authority_sample_precedes_early_identity_return(self):
+        events = []
+        observer = self._host(events)
+        observer.pending_captures_original()
+
+        self.assertIn(('sample', 2, 'initial-child'), events,
+                      'the pending initial-child sample was never captured')
+        kinds = [kind for kind, _pid, _role in events]
+        self.assertLess(kinds.index('sample'), kinds.index('identity'),
+                        'the authority sample must run before the queued identity '
+                        'capture can return early; observed order: %r' % (kinds,))
+        # The pending row is consumed exactly once and the pid is now sampled.
+        self.assertEqual(observer.tasks[2].get('authorityPending'), [])
+        self.assertIn(2, observer.authority_observed)
+        # The early return is preserved: the identity capture still ended the turn.
+        self.assertEqual(kinds[-1], 'identity')
+
+
 class Negative(BoundaryCase):
     def _refused(self, fx, expect='memory-remap-outside-fixed-executable-mapping-scope', **over):
         # A failed proof must keep the ORIGINAL decision() reason: the capability

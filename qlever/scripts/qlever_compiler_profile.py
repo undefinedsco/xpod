@@ -41,6 +41,44 @@ def compiler_spec():
     raise RuntimeError('Unsupported declared QLever compiler pair; no fallback')
 
 
+# The archive lifecycle is a declared toolchain fact, not per-call caller policy.
+#
+# GNU `ar qc` leaves the symbol index to a separate `ranlib` pass, which rewrites
+# the finished archive and breaks the read lease held on it. `q`+`c`+`s` builds
+# the index in the SAME write, and the same `s` flag keeps an existing member set
+# correctly indexed on append.
+#
+# CMake derives THREE steps from these variables, and the defaults are:
+#   CREATE  "<CMAKE_AR> qc <TARGET> <LINK_FLAGS> <OBJECTS>"
+#   APPEND  "<CMAKE_AR> q  <TARGET> <LINK_FLAGS> <OBJECTS>"
+#   FINISH  "<CMAKE_RANLIB> <TARGET>"      <-- the hidden `ranlib` pass
+# CMake only applies a `<lang>/<toolchain>-<lang>.cmake` default when the
+# variable is NOT DEFINED, so omitting FINISH leaves `ranlib` in the lifecycle
+# even when CREATE/APPEND are ours. FINISH is therefore declared EMPTY: an
+# explicit empty command is the honest way to say "no separate index pass",
+# unlike pointing it at a no-op `ranlib` or faking `true`.
+#
+# KNOWN LIMIT (unresolved, do NOT generalise): an APPEND that mutates an archive
+# already held under a read lease still breaks that lease. Root's real-observer
+# evidence (sdk79-final-native-gates/append-actual-observer.log) shows `qcs`
+# create succeeding and a follow-up `qcs` append on the SAME archive failing with
+# LeaseError/F_GETLEASE=unlck. The indexed flags make the INDEX correct; they do
+# not make in-place mutation lease-safe. The SDK pins the Ninja generator, whose
+# archive edge is exercised by the regression; the general append hazard is
+# recorded as unresolved rather than papered over.
+ARCHIVE_COMMAND = dict(
+    create='<CMAKE_AR> qcs <TARGET> <LINK_FLAGS> <OBJECTS>',
+    append='<CMAKE_AR> qcs <TARGET> <LINK_FLAGS> <OBJECTS>',
+    finish='',
+    separate_index_update=False,
+)
+
+
+def archive_command():
+    """Full canonical CREATE/APPEND/FINISH argument templates, shared by impl+test."""
+    return dict(ARCHIVE_COMMAND)
+
+
 def compiler_versions():
     spec = compiler_spec()
     def version(command):
@@ -61,6 +99,8 @@ if __name__ == '__main__':
     import sys
     if len(sys.argv) == 3 and sys.argv[1] == 'sdk-profile':
         print(json.dumps(sdk_profile(sys.argv[2]), sort_keys=True))
+    elif sys.argv[1:] == ['archive']:
+        print(json.dumps(archive_command(), sort_keys=True))
     elif sys.argv[1:] in [['c'], ['cxx'], ['linker'], ['profile'], ['linker_program']]:
         print(compiler_spec()[sys.argv[1]])
     else:

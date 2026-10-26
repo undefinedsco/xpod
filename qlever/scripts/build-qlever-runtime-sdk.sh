@@ -35,6 +35,13 @@ build_contract_pending="$build_dir/.xpod-build-contract.json.pending"
 
 c_compiler=$(python3 "$qlever_root/scripts/qlever_compiler_profile.py" c)
 cxx_compiler=$(python3 "$qlever_root/scripts/qlever_compiler_profile.py" cxx)
+# Full canonical archive lifecycle: CREATE/APPEND are indexed single-pass, FINISH
+# is explicitly EMPTY so CMake does not append its default `ranlib <TARGET>`
+# step (CMake only applies defaults for undefined variables).
+archive_lifecycle=$(python3 "$qlever_root/scripts/qlever_compiler_profile.py" archive)
+archive_create=$(printf '%s' "$archive_lifecycle" | python3 -c 'import json,sys; print(json.load(sys.stdin)["create"])')
+archive_append=$(printf '%s' "$archive_lifecycle" | python3 -c 'import json,sys; print(json.load(sys.stdin)["append"])')
+archive_finish=$(printf '%s' "$archive_lifecycle" | python3 -c 'import json,sys; print(json.load(sys.stdin)["finish"])')
 
 build_contract=$(python3 - "$source_dir" "$build_dir" "$qlever_root/scripts" <<'PY'
 import json
@@ -45,7 +52,7 @@ from pathlib import Path
 
 source_dir, build_dir = sys.argv[1:3]
 sys.path.insert(0, sys.argv[3])
-from qlever_compiler_profile import compiler_versions
+from qlever_compiler_profile import archive_command, compiler_versions
 os_release = Path(os.environ.get("XPOD_QLEVER_OS_RELEASE_FILE", "/etc/os-release"))
 pretty_name = ""
 for line in os_release.read_text().splitlines():
@@ -72,6 +79,11 @@ payload = {
         # code would silently reuse a Makefiles build instead of reconfiguring
         # with Ninja. Declared here (NOT user config) so the identity changes.
         "generator": "Ninja",
+        # Indexed archive create/append shape. Declared in the identity so a
+        # tree configured with the old two-pass `qc`+ranlib form cannot be
+        # silently reused: the toolchain identity changes and the script
+        # reconfigures instead.
+        "archive": archive_command(),
         "flags": {
             "CHEAPER_COMPILATION": "ON",
             "RANGES_NATIVE": "OFF",
@@ -223,7 +235,13 @@ QUERY
     -DUSE_IO_URING=OFF \
     -DXPOD_SDK_BUILD_BENCHMARKS=OFF \
     -DXPOD_SDK_BUILD_TESTS=OFF \
-    -DCMAKE_CXX_FLAGS="$adapter_flags")
+    -DCMAKE_CXX_FLAGS="$adapter_flags" \
+    -DCMAKE_C_ARCHIVE_CREATE="$archive_create" \
+    -DCMAKE_C_ARCHIVE_APPEND="$archive_append" \
+    -DCMAKE_C_ARCHIVE_FINISH="$archive_finish" \
+    -DCMAKE_CXX_ARCHIVE_CREATE="$archive_create" \
+    -DCMAKE_CXX_ARCHIVE_APPEND="$archive_append" \
+    -DCMAKE_CXX_ARCHIVE_FINISH="$archive_finish")
   if [[ "$mode" == configure-prepared && "$prepared_profile" == service-trixie ]]; then
     declared_linker=$(python3 "$qlever_root/scripts/qlever_compiler_profile.py" linker_program)
     linker_path=$(command -v "$declared_linker")

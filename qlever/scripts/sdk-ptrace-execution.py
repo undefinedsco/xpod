@@ -255,6 +255,24 @@ def expected_oserror(error,errnos):
     """
     return isinstance(error,OSError) and error.errno in errnos
 MAX=16*1024**2
+SDK_LIMITS_PATH=ROOT/'scripts/lib/module-artifact-limits.json'
+
+
+def load_sdk_execution_limits():
+    """The ONE canonical load of the published execution-profile limits.
+
+    Both the production SDK observer and the canonical fixtures read the exact
+    same JSON through this function, so a fixture can never carry its own copy of
+    a production limit (e.g. a hardcoded 2 MiB tool-FD bound that the real
+    profile sets to `shardBytes`). It is a profile-source centralisation, not a
+    fallback: a missing or malformed file still raises.
+    """
+    limits=json.loads(SDK_LIMITS_PATH.read_text())
+    assert isinstance(limits,dict) and type(limits.get('shardBytes')) is int and limits['shardBytes']>0,'canonical execution limit requires positive shardBytes'
+    assert type(limits.get('sourceMaterialBytes')) is int and type(limits.get('metadataBytes')) is int,'canonical execution limit requires sourceMaterialBytes/metadataBytes'
+    return limits
+
+
 def close_child_observer_retained(descriptors):
     """Drop observer-only fork copies before the initial authority barrier.
 
@@ -2180,6 +2198,10 @@ class Observer(CapturesMixin):
             if row.get('vforkHeldChild') is not None:continue
             if row.get('identityNoopPending') or row.get('clone3Pending') or row.get('btiPending'):continue
             if getattr(self,'mremapDeferred',None) and pid in self.mremapDeferred:continue
+            # Never resume a pid whose initial/late authority sample has not been
+            # captured yet: the next pending_captures() drains it at this same
+            # held stop, so this defers real work instead of rejecting anything.
+            if row.get('authorityPending'):continue
             if row['stopped'] and not row['exited']:
                 terminal=row.get('terminalAuthority')
                 if terminal:
@@ -2587,13 +2609,23 @@ class Observer(CapturesMixin):
                 capture=self.instrument_substep('generated_vma_capture',self.generated_vma.capture,pid);task['entry']['captureSequence']=capture['sequence'];self.exclusive=(pid,task['entry']['sequence']);self.emit(dict(kind='exclusive-generated-vma-resume',pid=pid,entrySequence=task['entry']['sequence'],captureSequence=capture['sequence']))
             return
         if self.capture_deferred_mremap():return
-        if self.instrument_substep('capture_queued_identity',self.capture_queued_identity):return
-        if getattr(self,'terminal_exit_evidence',False) and any(t.get('terminalAuthority') and not t['terminalAuthority']['closed'] for t in self.tasks.values()):
-            self.instrument_substep('close_terminal_authorities',self.close_terminal_authorities,self.barrier())
+        # INITIAL/LATE process-authority samples are a PRECONDITION for admitting
+        # any syscall from that pid (the consumer's interval requires
+        # `pid in samples` before it will replay a syscall row). This drain used
+        # to sit AFTER the first `capture_queued_identity` call, which can return
+        # early holding an exclusive slot; the pending pid was then resumed and
+        # produced a syscall row before its `initial-child` sample existed, which
+        # the consumer correctly rejected as "syscall resumed outside live
+        # authority boundary". The sample is captured at the SAME already-held
+        # stop (capture_process_authority takes its own all-stop barrier), so this
+        # is a scheduling move of real evidence, not synthesised data.
         while self.process_authority:
             selected=next(((pid,row) for pid,row in self.tasks.items() if row.get('authorityPending') and not row['exited']),None)
             if selected is None:break
             pid,task=selected;role,event_sequence=task['authorityPending'].pop(0);self.instrument_substep('capture_process_authority',self.capture_process_authority,pid,role,event_sequence)
+        if self.instrument_substep('capture_queued_identity',self.capture_queued_identity):return
+        if getattr(self,'terminal_exit_evidence',False) and any(t.get('terminalAuthority') and not t['terminalAuthority']['closed'] for t in self.tasks.values()):
+            self.instrument_substep('close_terminal_authorities',self.close_terminal_authorities,self.barrier())
         if self.instrument_substep('capture_queued_identity',self.capture_queued_identity):return
         self.instrument_substep('checkpoint_append_boundaries',self.checkpoint_append_boundaries)
         while self.capture_toolchain:
@@ -3186,7 +3218,7 @@ class SdkExecutionObserver(Observer):
     process group while this long-lived observer still retains descriptors.
     """
     def __init__(self,out,source,build,*,deadline_monotonic,check_budget,maximum_bytes,maximum_stdio_bytes,prepared_dependencies=None):
-        limits=json.loads((ROOT/'scripts/lib/module-artifact-limits.json').read_text())
+        limits=load_sdk_execution_limits()
         assert isinstance(maximum_bytes,int) and 0<maximum_bytes<=limits['sourceMaterialBytes'],'canonical shared execution byte bound required'
         assert isinstance(maximum_stdio_bytes,int) and 0<maximum_stdio_bytes<=min(maximum_bytes,limits['shardBytes']),'existing bounded command raw limit required'
         assert Path(source)==Path('/opt/qlever-sdk/source') and Path(build)==Path('/opt/qlever-sdk/build'),'fixed SDK source/build roots required'

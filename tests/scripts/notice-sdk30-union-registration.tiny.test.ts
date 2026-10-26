@@ -4,7 +4,7 @@ import {CONSUMER_SOURCE_GROUPS as c,CI_CONSUMER_SOURCE_GROUPS as ci} from '../..
 import current from '../../scripts/lib/independent-admission/consumer-execution-current.json';
 const hash=(v:unknown)=>createHash('sha256').update(JSON.stringify(v)).digest('hex');
 test('SDK30 and Notice fork whole originals both survive before the single actual joint current',()=>{
- expect(c).toHaveLength(94);expect(ci).toHaveLength(186);expect(current).toHaveLength(501);
+ expect(c).toHaveLength(95);expect(ci).toHaveLength(188);expect(current).toHaveLength(503);
  for(const [groups,prior]of [[c,parents.sdk30Consumer],[ci,parents.sdk30CI],[c,parents.noticeConsumer],[ci,parents.noticeCI]]as const){const all=new Set(groups.map(hash));for(const sha of prior)expect(all.has(sha)).toBe(true);}
  for(const row of current)expect(createHash('sha256').update(fs.readFileSync(path.resolve(import.meta.dir,'../..',row.path))).digest('hex')).toBe(row.sha256);
  // The Notice joint recipe, the subsequent SDK31 recipe AND the ORM 0.3.26 joint
@@ -12,6 +12,6 @@ test('SDK30 and Notice fork whole originals both survive before the single actua
  // Frozen 0d parents stay unchanged; only the genuine post-0d tails are appended:
  // consumer 91 -> 92 (+1) and CI 180 -> 182 (+2). The additive constants below
  // therefore track the real current tail delta, never a historical index.
- expect(new Set([...parents.sdk30Consumer,...parents.noticeConsumer ]).size+53).toBe(c.length);
- expect(new Set([...parents.sdk30CI,...parents.noticeCI]).size+106).toBe(ci.length);
+ expect(new Set([...parents.sdk30Consumer,...parents.noticeConsumer ]).size+54).toBe(c.length);
+ expect(new Set([...parents.sdk30CI,...parents.noticeCI]).size+108).toBe(ci.length);
 });

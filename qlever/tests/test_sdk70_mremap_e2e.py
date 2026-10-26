@@ -250,11 +250,14 @@ def make_observer(originals, trusted_root):
     attribute rather than constructing SdkExecutionObserver (whose phase()
     pins a fixed build argv) or faking a backend.
     """
+    # Canonical profile, loaded through the SAME factory production uses:
+    # maximum_file_bytes is the profile's shardBytes, never a fixture-local copy.
+    limits = obs.load_sdk_execution_limits()
     observer = obs.Observer(
         originals, ROOT, trusted_root,
         deadline_monotonic=time.monotonic() + 120,
         maximum_bytes=256 * 1024 * 1024,
-        maximum_file_bytes=2 * 1024 * 1024,
+        maximum_file_bytes=limits['shardBytes'],
         maximum_stdio_bytes=2 * 1024 * 1024,
         selected_names=None,
         shared_tasks=True,
@@ -463,8 +466,14 @@ class EndToEnd(unittest.TestCase):
     def _replay(self, shards, originals, limits=None, label=None):
         """Replay through PRODUCTION raw wire: gzip -> verified logical records."""
         trust = self.trusted_roots.get(label or '')
-        limits = limits or dict(sourceMaterialBytes=256 * 1024 * 1024,
-                                shardBytes=2 * 1024 * 1024)
+        # Replay must read the SAME canonical profile the producer used. A local
+        # 2 MiB default here silently rejected captures the producer legitimately
+        # took under shardBytes (the x64 padded-ELF regression).
+        canonical = obs.load_sdk_execution_limits()
+        # Harness-only: the replay byte budget must match the declared source
+        # profile, not a stale 256 MiB fixture copy. No product value changes.
+        limits = limits or dict(sourceMaterialBytes=canonical['sourceMaterialBytes'],
+                                shardBytes=canonical['shardBytes'])
 
         def read_original(name, maximum):
             # Preserve production capture layout (chunk subdirs) and stream in
@@ -513,8 +522,9 @@ class EndToEnd(unittest.TestCase):
         for path in shards:
             for record in rawwire.iter_shard_records(
                     self._shard_blocks(path), self._wire_reference(path, label),
-                    check=lambda: None, maximum_encoded=2 * 1024 * 1024,
-                    maximum_logical=2 * 1024 * 1024):
+                    check=lambda: None,
+                    maximum_encoded=obs.load_sdk_execution_limits()['shardBytes'],
+                    maximum_logical=obs.load_sdk_execution_limits()['shardBytes']):
                 row = decoder.feed(record)
                 if row is not None:
                     rows.append((path, row))
@@ -550,12 +560,13 @@ class EndToEnd(unittest.TestCase):
         # exactly as the producer's did; resetting per file would silently change
         # the declared transport model.
         encoder = rawcodec.IndexedRawEncoderV2()
+        wire_bound = obs.load_sdk_execution_limits()['shardBytes']
         for path in shards:
             target = out / path.name
             writer = rawwriter.RawWriter(target, claim=lambda n: None,
                                          check=lambda: None,
-                                         maximum_logical=2 * 1024 * 1024,
-                                         maximum_encoded=2 * 1024 * 1024)
+                                         maximum_logical=wire_bound,
+                                         maximum_encoded=wire_bound)
             for row in by_shard.get(path, []):
                 for part in encoder.encode(row):
                     writer.write_record(part)
@@ -625,6 +636,92 @@ class EndToEnd(unittest.TestCase):
         if len(domains) >= 2:
             self.assertGreaterEqual(len(set(domains.values())), 2,
                                     'fork child shares the owner memory domain')
+
+    def test_real_oversize_tool_fd_is_captured_under_canonical_bound(self):
+        """REGRESSION: a >2MiB native tool FD must be captured, not refused.
+
+        The x64 CI failures were `bounded regular tool FD required`: the fixture
+        carried a hardcoded 2 MiB tool-FD bound while the canonical profile sets
+        `shardBytes` (512 MiB). This compiles a REAL native ELF, appends >=3 MiB
+        of harmless trailing padding BEFORE the observer opens it, and runs the
+        actual existing `_run_phase`/`make_observer` path.
+
+        It must FAIL against a fixture that keeps the 2 MiB literal, and pass
+        with the canonical bound, on native Linux (ARM64 locally, x64 in CI).
+        """
+        limits = obs.load_sdk_execution_limits()
+        binary = build(CHILD_C, self.root / 'bin', 'oversize-tool')
+        # Padding BEFORE the observer ever opens the file, so the FD size is
+        # genuinely over the legacy 2 MiB bound when tool_original runs.
+        with open(binary, 'ab') as stream:
+            stream.write(b'\0' * (3 * 1024 * 1024))
+        size = os.path.getsize(binary)
+        self.assertGreater(size, 2 * 1024 * 1024,
+                           'padding did not exceed the legacy 2 MiB fixture bound')
+        self.assertLessEqual(size, limits['shardBytes'],
+                             'padding must stay inside the canonical profile bound')
+
+        originals, shards, phase = self._run_phase(binary, 'oversize-tool')
+        # the real command must have completed successfully
+        receipt = phase['commandReceipt']
+        self.assertEqual(receipt['exit'], 0,
+                         'padded native tool command did not exit 0')
+        # and the production raw replay must accept the real stream
+        report = self._replay(shards, originals, label='oversize-tool')
+        self.assertIsNotNone(report)
+        # bind the ACTUAL captured tool original bytes above the legacy bound
+        _decoder, rows = self._decode_rows(shards, 'oversize-tool')
+        captured = [row['original'] for _path, row in rows
+                    if row.get('kind') == 'toolchain-original'
+                    and row.get('captureKind') == 'file']
+        self.assertTrue(captured, 'no toolchain file original was captured')
+        biggest = max(item['bytes'] for item in captured)
+        self.assertGreater(biggest, 2 * 1024 * 1024,
+                           'captured tool original never exceeded the legacy 2 MiB bound')
+        self.assertLessEqual(biggest, limits['shardBytes'])
+
+    def test_every_syscall_follows_its_pids_authority_sample(self):
+        """INVARIANT (positive): authority samples precede syscall rows.
+
+        The consumer interval (sdk-tool-provider-originals.py:633) requires
+        `pid in samples` before it replays a `kernel-syscall` row. This asserts
+        that invariant over a REAL multi-process phase.
+
+        HONESTY: this is an invariant POSITIVE, not a guaranteed negative control.
+        A single-process child cannot reproduce the original race at all, so this
+        case uses the existing forking fixture and requires at least two sampled
+        pids to actually exercise parent/child authority capture. Whether the old
+        scheduling would fail here depends on timing; the deterministic scheduling
+        evidence lives in
+        `test_sdk70_mremap_observer.AuthorityDrainOrder`, which the actual baseline
+        producer fails by construction. Root's three real Ninja raw replays supply
+        the real-scope evidence.
+        """
+        binary = build(CHILD_FORK_C, self.root / 'bin', 'authority-order')
+        _originals, shards, phase = self._run_phase(binary, 'authority-order')
+        _decoder, rows = self._decode_rows(shards, 'authority-order')
+
+        sampled = {}
+        violations = []
+        syscalls = 0
+        for _path, row in rows:
+            kind = row.get('kind')
+            pid = row.get('pid')
+            if kind == 'toolchain-process-authority':
+                sampled.setdefault(pid, row['sequence'])
+            elif kind == 'kernel-syscall':
+                syscalls += 1
+                first = sampled.get(pid)
+                if first is None or first > row['sequence']:
+                    violations.append((row['sequence'], pid, first))
+        self.assertGreaterEqual(len(sampled), 2,
+                                'the fixture must exercise parent AND child authority '
+                                'capture; sampled pids: %r' % (sorted(sampled),))
+        self.assertGreater(syscalls, 0, 'the phase produced no syscall rows')
+        self.assertEqual(violations, [],
+                         'syscall rows preceded their pid authority sample: %r'
+                         % (violations[:5],))
+        self.assertEqual(phase['commandReceipt']['exit'], 0)
 
     def test_real_shared_mm_peer_is_in_the_derived_cohort(self):
         """A real pthread peer (same CLONE_VM domain) must appear in the cohort."""
@@ -849,11 +946,12 @@ class EndToEnd(unittest.TestCase):
             by_shard.setdefault(path, []).append(row)
         produced = []
         encoder = rawcodec.IndexedRawEncoderV2()   # one per phase, spans shards
+        wire_bound = obs.load_sdk_execution_limits()['shardBytes']
         for path in shards:
             target = out / path.name
             writer = rawwriter.RawWriter(target, claim=lambda n: None, check=lambda: None,
-                                         maximum_logical=2 * 1024 * 1024,
-                                         maximum_encoded=2 * 1024 * 1024)
+                                         maximum_logical=wire_bound,
+                                         maximum_encoded=wire_bound)
             for row in by_shard.get(path, []):
                 for part in encoder.encode(row):
                     writer.write_record(part)

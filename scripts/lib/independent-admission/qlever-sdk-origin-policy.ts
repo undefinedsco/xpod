@@ -2014,8 +2014,11 @@ const CAPTURE_INDEX_SDK_GROUP:GitHubSourceBindingGroup=Object.freeze({...SDK19_T
 /** SDK78 capture-initialization slice (APPEND-ONLY; every slice above, including
  * CAPTURE_INDEX_SOURCE_HASHES and SDK19_TELEMETRY_MOVED_HASHES, is PUBLISHED at
  * 71f9 and is never rebound). The real production change initializes capture
- * state once in CapturesMixin and the Observer constructor invokes it; only the
- * ptrace observer body and three capture/telemetry fixtures moved. */
+ * state once in CapturesMixin and the Observer constructor invokes it, and the
+ * same slice adds the fatal F_GETLEASE diagnostic; TWO bodies moved
+ * (sdk-ptrace-execution.py, sdk-tool-lifetime-leases.py) and FOUR fixtures were
+ * registered (snapshot_telemetry, capture_membership_index, phase_histogram,
+ * read_lease_diagnostic). Descriptive only: no published value changes. */
 const SDK78_SOURCE_HASHES:Readonly<Record<string,string>>=Object.freeze({
  "qlever/scripts/sdk-ptrace-execution.py":"77c9c89284cd4c155684d5b5f61c1499f92e1ed331aed62d966bc5fe057c6db8",
  "qlever/scripts/sdk-tool-lifetime-leases.py":"ea2d298d355cc41431ad3cd125eba2a0ec6929b99690628b5b5bcb02d93cfa83",
@@ -2040,7 +2043,37 @@ const SDK78_GROUP:GitHubSourceBindingGroup=Object.freeze({...CAPTURE_INDEX_SDK_G
  selectors:CAPTURE_INDEX_SDK_GROUP.selectors,
  secondarySelectors:rebindSdk78Rows(CAPTURE_INDEX_SDK_GROUP.secondarySelectors),
  sourceBindings:Object.freeze([...rebindSdk78Rows(CAPTURE_INDEX_SDK_GROUP.sourceBindings),...SDK78_TEST_BINDINGS])});
-export const QLEVER_SDK_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...PUBLISHED_SDK_GROUPS,NEXT_SDK_GROUP,INPUT_PLAN_SDK_GROUP,ORM326_SDK_GROUP,SDK19_TELEMETRY_GROUP,CAPTURE_INDEX_SDK_GROUP,SDK78_GROUP]);
+/** SDK79 archive-lifecycle slice (APPEND-ONLY; every slice above, including the
+ * SDK78 map and the published cbb rows, is never rebound). The frozen reviewed
+ * change adds a declared archive create/append shape (`qcs`, no separate index
+ * pass) to the compiler profile, wires it into the SDK build, and adds the real
+ * archive-lifecycle regression test. The ptrace observer body genuinely changed
+ * (capability alignment), so it stays the common discriminator by actual bytes.
+ *
+ * NOTE: this registration binds source bytes only. Generic append lease safety is
+ * still unproven and no SDK qualification is claimed. */
+const SDK79_SOURCE_HASHES:Readonly<Record<string,string>>=Object.freeze({
+ ".github/workflows/qlever-readonly-normal-job.yml":"d4f66444c5057478105267dfb7b90e8c8a7e5cfb0df3e6fc92fcb72c9e436d61",
+ "qlever/scripts/sdk-ptrace-execution.py":"e85c370cf26b45d911d90d8fbe99de67242d57620ec5cff6990d3e22f3e76999",
+ "qlever/scripts/build-qlever-runtime-sdk.sh":"9244950e1fb801c142e2fafdaab3cf50cebb31c647b4e2bbb9b9e94c2f2812d0",
+ "qlever/scripts/qlever_compiler_profile.py":"7b9c05563e21ff05e33e3ac61641ad418fe48b5cc48e3399ca02c14beb6d248b",
+ "qlever/tests/test_sdk70_mremap_e2e.py":"c1525f5a35ffb33a6aed2775bf5e572148652afdf022211d89493e7c0793091f",
+ "qlever/tests/test_sdk70_mremap_observer.py":"ff4b065f065c287c9be64a29ca1f1f69173149bfade75aeb81cf389fd152b548",
+ "qlever/tests/test_qlever_archive_lifecycle.py":"9349839696aef2cdd512aa93071d0344fbdf58f20db938d714c747fc52aac7d1"
+});
+const rebindSdk79Rows=(rows:readonly GitHubSourceBinding[]|undefined)=>Object.freeze((rows??[]).map(row=>Object.freeze({...row,sha256:SDK79_SOURCE_HASHES[row.path]??row.sha256})));
+/** The archive-lifecycle regression is a genuinely NEW role at cbb, so it is a
+ * mandatory SOURCE binding. No historical group owns it, and inventing it as a
+ * selector would break their ownership contract. No discriminator is appended:
+ * ptrace is already an inherited common selector and is re-hashed above. */
+const SDK79_TEST_BINDINGS=Object.freeze([
+Object.freeze({path:'qlever/tests/test_sdk70_mremap_observer.py',sha256:SDK79_SOURCE_HASHES['qlever/tests/test_sdk70_mremap_observer.py']!}),
+Object.freeze({path:'qlever/tests/test_qlever_archive_lifecycle.py',sha256:SDK79_SOURCE_HASHES['qlever/tests/test_qlever_archive_lifecycle.py']!})]);
+const SDK79_GROUP:GitHubSourceBindingGroup=Object.freeze({...SDK78_GROUP,
+ selectors:SDK78_GROUP.selectors,
+ secondarySelectors:rebindSdk79Rows(SDK78_GROUP.secondarySelectors),
+ sourceBindings:Object.freeze([...rebindSdk79Rows(SDK78_GROUP.sourceBindings),...SDK79_TEST_BINDINGS])});
+export const QLEVER_SDK_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...PUBLISHED_SDK_GROUPS,NEXT_SDK_GROUP,INPUT_PLAN_SDK_GROUP,ORM326_SDK_GROUP,SDK19_TELEMETRY_GROUP,CAPTURE_INDEX_SDK_GROUP,SDK78_GROUP,SDK79_GROUP]);
 export const QLEVER_LINUX_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([
  {selectors:sdkSelectors('cbedd3e2478de5e22108b6689c595a658ca891c9bd47552caec830e86f47fea8','a75c7be34b5c5fafff85c0d67d814ba1aaf14bcf5db5404a860fe3b9a11009bd'),sourceBindings:QLEVER_LINUX_SOURCE_BINDINGS.filter(row=>!['.github/workflows/publish-qlever-runtime-sdk.yml','.github/workflows/build-qlever-linux-runtime.yml'].includes(row.path))},
  ...QLEVER_SDK_EXECUTION_GROUPS,

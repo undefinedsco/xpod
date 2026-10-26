@@ -333,7 +333,7 @@
   },
   {
     "path": "qlever/scripts/build-qlever-runtime-sdk.sh",
-    "sha256": "4aa0520c841b200f5f696e3a93f3485b0163029a7cbba6fe39db89c99b6c6e6c"
+    "sha256": "9244950e1fb801c142e2fafdaab3cf50cebb31c647b4e2bbb9b9e94c2f2812d0"
   },
   {
     "path": "qlever/scripts/macos_companion_originals.py",
@@ -357,7 +357,7 @@
   },
   {
     "path": "qlever/scripts/qlever_compiler_profile.py",
-    "sha256": "c61d01533194652f9e6fff03da72749bb3926e753653334db5cb5692335613be"
+    "sha256": "7b9c05563e21ff05e33e3ac61641ad418fe48b5cc48e3399ca02c14beb6d248b"
   },
   {
     "path": "qlever/scripts/resolve-runtime-sdk-build.sh",
@@ -489,7 +489,7 @@
   },
   {
     "path": "qlever/scripts/sdk-ptrace-execution.py",
-    "sha256": "77c9c89284cd4c155684d5b5f61c1499f92e1ed331aed62d966bc5fe057c6db8"
+    "sha256": "e85c370cf26b45d911d90d8fbe99de67242d57620ec5cff6990d3e22f3e76999"
   },
   {
     "path": "qlever/scripts/sdk-ptrace-kernel.py",
@@ -1209,7 +1209,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-generation.ts",
-    "sha256": "dfd59b5000e2bbe29d06a889b54d65fa4012fc47c0d76d9e89ac9f99f1450038"
+    "sha256": "7fde94f4d063eee29010fe26bf11b25c9cbf138b34853ffc09d0109bca3a0923"
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-inputs.ts",
@@ -1221,7 +1221,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-origin-policy.ts",
-    "sha256": "cfaa80850f3e5b2bbb1a16a52f9d8e5f2d54d41c30293e100bf915cf265bfe31"
+    "sha256": "8c7ded53c1e8147b8fc0c2b54959da7bd7277a80a7dd5cd531e1b096f3e20d48"
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-originals.ts",
@@ -1965,7 +1965,7 @@
   },
   {
     "path": "qlever/tests/test_sdk70_mremap_observer.py",
-    "sha256": "f4df5b2d0744aa1d41dfbb52043cc492d7309a4530afb1e31ec92a9ac665ac62"
+    "sha256": "ff4b065f065c287c9be64a29ca1f1f69173149bfade75aeb81cf389fd152b548"
   },
   {
     "path": "qlever/tests/test_sdk70_mremap_native.py",
@@ -1973,7 +1973,7 @@
   },
   {
     "path": "qlever/tests/test_sdk70_mremap_e2e.py",
-    "sha256": "67a57466c8c80782a092741633474eaad446e5d0ac66181edf1d7fcd28ed1eca"
+    "sha256": "c1525f5a35ffb33a6aed2775bf5e572148652afdf022211d89493e7c0793091f"
   },
   {
     "path": "qlever/tests/run_sdk70_mremap_gate.py",
@@ -2002,5 +2002,13 @@
   {
     "path": "qlever/tests/test_qlever_read_lease_diagnostic.py",
     "sha256": "eadc024640b289de0ea9c54441e1a273f09515b78c4c2202c34f6ee7d7227266"
+  },
+  {
+    "path": "scripts/lib/independent-admission/consumer-execution-cbb-snapshot.json",
+    "sha256": "b85f16cf5a5852186b6fdba17e8795c722be8c175528fee2cd596857e2a82c4f"
+  },
+  {
+    "path": "qlever/tests/test_qlever_archive_lifecycle.py",
+    "sha256": "9349839696aef2cdd512aa93071d0344fbdf58f20db938d714c747fc52aac7d1"
   }
 ]

@@ -286,6 +286,29 @@ Object.freeze({...PRE_SYSCALL_DIAGNOSTIC_OBSERVER_TUPLE,
  "qlever/scripts/sdk-executable-memory-policy.py":"ae0c241805d4d72a89103a21fe224a29138df4c8c63de55128b107d92c6e7724",
  "qlever/scripts/sdk-tool-lifetime-leases.py":"ea2d298d355cc41431ad3cd125eba2a0ec6929b99690628b5b5bcb02d93cfa83",
  "qlever/scripts/sdk-generated-vma-originals.py":"b5e1d095d60952005bb7820811234e33e1d03f4b29c595faa4ef3c8eb0d8a22c"} as Readonly<Record<string,string>>),
+/** CURRENT UNPUBLISHED archive-lifecycle tuple (52nd): the declared archive
+ * create/append shape (`qcs`, no separate index pass) moves ONLY the ptrace
+ * observer body. All 51 tuples above are published at cbb and stay byte-identical.
+ * Source bytes only; no SDK qualification is claimed. */
+/** CURRENT UNPUBLISHED capture-init + fatal-lease-diagnostic tuple (51st).
+ *
+ * The one-time `initialize_capture_state` factory is the genuine production
+ * change (ptrace 703fe49a -> a1583c24). This tuple spreads
+ * PRE_SYSCALL_DIAGNOSTIC_OBSERVER_TUPLE and therefore re-pins SEVEN bodies:
+ * two of them were genuinely stale in that base tuple (coordinated-wait
+ * 8901250a -> 778fdaad, tool-lifetime-leases 24353373 -> 223aebba) and the
+ * other four are consistent restatements already equal to disk. It does NOT
+ * claim that seven bodies changed in this slice.
+ *
+ * All 50 tuples above are published at 71f9 and stay byte-identical. */
+Object.freeze({...PRE_SYSCALL_DIAGNOSTIC_OBSERVER_TUPLE,
+ "qlever/scripts/sdk-ptrace-execution.py":"e85c370cf26b45d911d90d8fbe99de67242d57620ec5cff6990d3e22f3e76999",
+ "qlever/scripts/sdk-coordinated-wait.py":"778fdaad5802df943c8e7e96e4de79a32845508947c9ae436e742248b2e7aa1a",
+ "qlever/scripts/sdk-original-chunk-store.py":"67ea1a610f15f74288d623694b1a4886a82b0f29a186c40e69bdd232b39f96db",
+ "qlever/scripts/sdk-generation-multiprocess-bindings.py":"adcd3a8ffdbcbe0925e199757db4fd95489c86a69f9a0b31fa7d555f5fcc7bc1",
+ "qlever/scripts/sdk-executable-memory-policy.py":"ae0c241805d4d72a89103a21fe224a29138df4c8c63de55128b107d92c6e7724",
+ "qlever/scripts/sdk-tool-lifetime-leases.py":"ea2d298d355cc41431ad3cd125eba2a0ec6929b99690628b5b5bcb02d93cfa83",
+ "qlever/scripts/sdk-generated-vma-originals.py":"b5e1d095d60952005bb7820811234e33e1d03f4b29c595faa4ef3c8eb0d8a22c"} as Readonly<Record<string,string>>),
 ]);
 
 
