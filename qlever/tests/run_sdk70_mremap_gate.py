@@ -14,14 +14,17 @@ FAIL-CLOSED CONTRACT
     cleanup ALL fail this gate. There is no skip / default / "accepted" flag.
 
 FIXTURE
-    A private `.test-data/sdk70-mremap-gate-*` layout is created per run with the
-    repository's real relative shape:
+    An owned runtime project is created per run under the canonical Linux `/tmp`
+    (never `TMPDIR`, which `sudo -E` preserves), with the repository's real
+    relative shape:
 
-        <root>/qlever/scripts/<public SDK modules + native/>
-        <root>/scripts/lib/<required constants>
-        <root>/qlever/tests/<canonical test modules>
+        /tmp/sdk70-gate-owned-*/project/qlever/scripts/<public SDK modules + native/>
+        /tmp/sdk70-gate-owned-*/project/scripts/lib/<required constants>
+        /tmp/sdk70-gate-owned-*/project/qlever/tests/<canonical test modules>
+        /tmp/sdk70-gate-owned-*/project/.test-data/            (internal scratch)
 
-    Copied inputs are hashed and verified after copying. Only this owned layout
+    The internal `.test-data` keeps the repository-relative contract. Copied
+    inputs are hashed and verified after copying. Only this owned outer directory
     is removed, in `finally`.
 
 Usage:
@@ -37,6 +40,7 @@ import hashlib
 import importlib.util
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -51,7 +55,7 @@ DEFAULT_ROOT = HERE.parents[1]
 #   * native is a STANDALONE script (see STANDALONE_SCRIPT) and is executed as a
 #     real child exactly once; it is NOT a unittest module.
 STDLIB_MODULES = ('test_sdk70_mremap_predicate', 'test_sdk70_mremap_observer',
-                  'test_sdk70_mremap_e2e')
+                  'test_sdk70_mremap_e2e', 'test_sdk70_mremap_barrier_e2e')
 STANDALONE_SCRIPT = 'test_sdk70_mremap_native.py'
 TEST_FILES = tuple('qlever/tests/%s.py' % name for name in STDLIB_MODULES) + \
     ('qlever/tests/' + STANDALONE_SCRIPT,)
@@ -140,6 +144,100 @@ def interpreter_headers():
     if not sysconfig.get_config_var('EXT_SUFFIX'):
         raise AssertionError('interpreter has no EXT_SUFFIX')
     return include
+
+
+# Canonical Linux temp root. NOT tempfile.gettempdir(): that honours TMPDIR,
+# which `sudo -E` preserves, so a private TMPDIR under the runner's home would
+# silently reintroduce exactly the layout defect this function exists to avoid.
+PROJECT_BASE = '/tmp'
+
+
+def search_allowed(uid, gid, mode, *, child_uid=0, child_gid=0):
+    """Can a capability-empty uid0 child SEARCH (traverse) this directory?
+
+    After the fixture's real capability drop the child keeps uid 0 but has an
+    EMPTY capability set, so `CAP_DAC_OVERRIDE`/`CAP_DAC_READ_SEARCH` are gone
+    and ordinary permission classes apply.
+
+    POSIX permission classes are EXCLUSIVE: the kernel selects exactly ONE class
+    by ownership and never falls through.
+
+      * uid match  -> OWNER class -> bool(S_IXUSR)
+      * gid match  -> GROUP class -> bool(S_IXGRP)
+      * otherwise  -> OTHER class -> bool(S_IXOTH)
+
+    So a root-owned `0001` is NOT searchable by the child (owner class wins and
+    lacks the x bit), even though `other` has x. The fixture child's root gid is
+    known, so no supplementary-group modelling is needed here.
+    """
+    if uid == child_uid:
+        return bool(mode & stat.S_IXUSR)
+    if gid == child_gid:
+        return bool(mode & stat.S_IXGRP)
+    return bool(mode & stat.S_IXOTH)
+
+
+def create_project_root():
+    """Materialise the runtime project OUTSIDE the (possibly private) checkout.
+
+    WHY
+        The gate used to mkdtemp under `DEFAULT_ROOT/.test-data`. When the
+        checkout lives under a runner-owned private ancestor (e.g.
+        `/blocked-home/project` owned by uid 65534, mode 0700), the observed
+        child -- after its real capability drop to uid 0 with an empty
+        capability set -- cannot traverse that ancestor, so `os.chdir(cwd)`
+        fails with EACCES. The child then exits 70 silently and the parent
+        reports `actual observed root did not exit successfully`.
+
+        The runtime project must therefore live under a base whose ancestors are
+        searchable by that child. `/tmp` is root-owned 1777, and the owned
+        directories we create are root-owned 0700, which the child CAN search
+        through the owner class. Only a foreign-owned 0700 ancestor blocks.
+
+    TEMP-ROOT CONTRACT / data hygiene
+        The root is created by this process under the canonical Linux `/tmp`,
+        is the ONLY thing removed in `finally`, and contains the required
+        internal `.test-data` hierarchy so the fixture sees the normal
+        repository-relative shape. No user configuration, environment variable
+        or CLI flag selects it. mkdtemp's default 0700 is kept: it is owned by
+        the current (root) euid, so the child traverses it legitimately, and
+        nothing else on the box can read the layout.
+
+    Returns (outer, project) where `project` holds the canonical tree.
+    """
+    base = Path(PROJECT_BASE)
+    if not base.is_dir():
+        raise AssertionError('canonical project base unavailable: %s' % base)
+    project_base = base.resolve()
+    outer = Path(tempfile.mkdtemp(prefix='sdk70-gate-owned-', dir=str(project_base)))
+    try:
+        project = outer / 'project'
+        # The fixture's own test data must live inside the project, never in a
+        # user home; this mirrors the repository-relative contract.
+        for relative in ('qlever/scripts/native', 'qlever/tests', '.test-data'):
+            (project / relative).mkdir(parents=True, exist_ok=True)
+        # Verify the ACTUAL path/ownership the capability-empty child will walk:
+        # project -> outer -> /tmp inclusive.
+        probe = project
+        while True:
+            info = probe.stat()
+            mode = stat.S_IMODE(info.st_mode)
+            if not search_allowed(info.st_uid, info.st_gid, mode):
+                raise AssertionError(
+                    'project ancestor is not searchable by a capability-empty uid0 '
+                    'child: %s (uid=%d gid=%d mode=%04o)'
+                    % (probe, info.st_uid, info.st_gid, mode))
+            if probe == project_base or probe == probe.parent:
+                break
+            probe = probe.parent
+        return outer, project
+    except BaseException:
+        # Nothing outside this owned outer may be touched, and a partially built
+        # layout must not leak: remove ONLY what mkdtemp created, then re-raise.
+        shutil.rmtree(outer, ignore_errors=True)
+        if outer.exists():
+            sys.stderr.write('SDK70 GATE SCAFFOLD CLEANUP FAILED: %s\n' % outer)
+        raise
 
 
 def copy_verified(source_root, target, relative):
@@ -262,7 +360,10 @@ def main(argv):
     except AssertionError as error:
         return fail(str(error))
 
-    target = Path(tempfile.mkdtemp(prefix='sdk70-mremap-gate-', dir=str(Path(DEFAULT_ROOT) / '.test-data')))
+    try:
+        outer, target = create_project_root()
+    except AssertionError as error:
+        return fail(str(error))
     created = True
     try:
         copied = build_layout(source_root, target, required)
@@ -317,11 +418,13 @@ def main(argv):
     except Exception as error:
         return fail('%s: %s' % (type(error).__name__, error))
     finally:
-        # Remove ONLY this owned layout; an incomplete cleanup is a hard failure.
+        # Remove ONLY the owned outer root this process created; never the
+        # source checkout and never a caller-owned temp path. An incomplete
+        # cleanup is a hard failure.
         if created:
-            shutil.rmtree(target, ignore_errors=True)
-            if target.exists():
-                sys.stderr.write('SDK70 GATE CLEANUP FAILED: %s\n' % target)
+            shutil.rmtree(outer, ignore_errors=True)
+            if outer.exists():
+                sys.stderr.write('SDK70 GATE CLEANUP FAILED: %s\n' % outer)
                 os._exit(3)
 
 

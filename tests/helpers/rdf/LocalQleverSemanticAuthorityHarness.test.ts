@@ -132,10 +132,11 @@ describe('LocalQleverSemanticAuthorityHarness', () => {
     expect(sharedHelper).toContain("document.graph === 'default'");
     expect(sharedHelper).toContain('DataFactory.defaultGraph()');
     expect(sharedHelper).toContain('DataFactory.namedNode(document.sourceUri)');
-    // The native authority has to be exercised under the dataset mode the
-    // product uses for a container endpoint, otherwise it answers the fixture
-    // with strict default-graph semantics the public authority never applies.
-    expect(helper).toContain("defaultDataset: 'scopedUnion'");
+    // The native authority forwards the case's DECLARED dataset and otherwise
+    // keeps the historical container mode the product uses for an endpoint.
+    // A malformed declaration fails closed instead of silently defaulting.
+    expect(helper).toContain('semanticCaseDefaultDataset(testCase)');
+    expect(helper).not.toContain("defaultDataset: 'scopedUnion'");
   });
 
   it('uses RDF/JS canonical lowercase language tags', () => {

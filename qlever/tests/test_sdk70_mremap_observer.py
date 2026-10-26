@@ -85,7 +85,8 @@ class Fixture:
         self.rows = []
         self.pausing = False
         self.mremap_proof_active = False
-        self.tasks = {pid: dict(stopped=True, exited=False, tgid=pid) for pid in members}
+        self.tasks = {pid: dict(stopped=True, exited=False, tgid=pid,
+                                entry=dict(sequence=11)) for pid in members}
         self.barriers = 0
         self.mm = type('MM', (), {})()
         # real cloneVM tracking: every live task gets a domain; members share one
@@ -97,8 +98,11 @@ class Fixture:
         self.check = lambda: None
         self.exclusive = None
         # bind the REAL production methods under test to this fixture
+        self.mremapDeferred = None
         for name in ('enforce_executable_memory', 'prove_private_anonymous_remap',
                      'mremap_cohort_closed', 'mremap_maps',
+                     'defer_mremap_proof', 'capture_deferred_mremap',
+                     'mremap_proof_eligible',
                      'verify_private_anonymous_remap'):
             setattr(self, name, getattr(obs.Observer, name).__get__(self))
 
@@ -268,11 +272,25 @@ class Negative(BoundaryCase):
         fx.generated_vma.mapping_domain = lambda pid, barrier=None: (7, [101, 102])
         self._refused(fx)
 
-    def test_nested_proof_while_pausing_refuses_without_recursing(self):
+    def test_nested_proof_while_pausing_defers_without_admitting_or_recursing(self):
+        """A potential mremap collected during a barrier settle is QUEUED.
+
+        It must not be admitted (no proof has run), must not take a nested
+        barrier, and must still surface the original refusal afterwards if the
+        deferred proof declines.
+        """
         fx = self.build(lines=[_real_maps_line(0x10000, 0x31000, 'rw-p')])
         fx.pausing = True
-        self._refused(fx)
+        outcome = fx.enforce_executable_memory(101, self.record())
+        self.assertIs(outcome, obs._MREMAP_DEFERRED,
+                      'the ENFORCER must return the explicit deferred outcome, not raise')
         self.assertEqual(fx.barriers, 0, 'no barrier may be taken inside a settling pass')
+        self.assertIsNone(fx.exclusive, 'deferral must not take the exclusive slot')
+        self.assertNotIn('mremapPending', fx.tasks[101])
+        self.assertNotIn('executable-memory-remap-allowed',
+                         [r['kind'] for r in fx.rows])
+        self.assertEqual(fx.mremapDeferred[101]['entrySequence'], 11,
+                         'the candidate entry must be retained for later proof')
 
     def test_dontunmap_and_unknown_flags_refuse(self):
         fx = self.build(lines=[_real_maps_line(0x10000, 0x31000, 'rw-p')])

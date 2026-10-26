@@ -8,7 +8,7 @@ function recipes(file:string,name:string):unknown[]{
  return decodeCatalog('scripts/lib/independent-admission/'+file,name) as unknown[];
 }
 test('SDK chunk addition preserves all 76 historical helper and observer whole recipes',()=>{
- for(const [file,name,current,key,count] of [['qlever-sdk-generation.ts','REVIEWED_CONTROLLER_HELPER_GROUPS_NEXT','REVIEWED_CONTROLLER_HELPER_GROUPS_CURRENT','helpers',30],['qlever-sdk-generation.ts','REVIEWED_OBSERVER_GROUPS','REVIEWED_OBSERVER_GROUPS','observer',49],['qlever-sdk-fetchcontent.ts','REVIEWED_HELPER_GROUPS_NEXT','REVIEWED_HELPER_GROUPS_CURRENT','fetch',33]]as const){
+ for(const [file,name,current,key,count] of [['qlever-sdk-generation.ts','REVIEWED_CONTROLLER_HELPER_GROUPS_NEXT','REVIEWED_CONTROLLER_HELPER_GROUPS_CURRENT','helpers',30],['qlever-sdk-generation.ts','REVIEWED_OBSERVER_GROUPS','REVIEWED_OBSERVER_GROUPS','observer',50],['qlever-sdk-fetchcontent.ts','REVIEWED_HELPER_GROUPS_NEXT','REVIEWED_HELPER_GROUPS_CURRENT','fetch',33]]as const){
   const groups=recipes(file,name);expect(groups).toHaveLength(count);expect(groups.slice(0,before[key].length).map(hash)).toEqual(before[key]);
   // the CURRENT catalogue is one genuine append on top of that history
   // Four genuine cumulative appends now sit on top of the frozen NEXT history

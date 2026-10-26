@@ -1988,7 +1988,30 @@ const SDK19_TELEMETRY_GROUP:GitHubSourceBindingGroup=Object.freeze({...ORM326_SD
  * SDK tuple binding the actual current ORM manifest/lock and the four reviewed
  * SDK build inputs (build script, QLever lock, series, production-only patch),
  * and the SDK19 failure-telemetry tuple. */
-export const QLEVER_SDK_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...PUBLISHED_SDK_GROUPS,NEXT_SDK_GROUP,INPUT_PLAN_SDK_GROUP,ORM326_SDK_GROUP,SDK19_TELEMETRY_GROUP]);
+const CAPTURE_INDEX_SOURCE_HASHES:Readonly<Record<string,string>>=Object.freeze({
+ "qlever/tests/test_sdk70_mremap_observer.py":"f4df5b2d0744aa1d41dfbb52043cc492d7309a4530afb1e31ec92a9ac665ac62",
+ "qlever/scripts/sdk-ptrace-execution.py":"703fe49a1cb083fc78a69eddd43891a8696fac3d44f148f33110f8a448c6db39",
+ "qlever/tests/run_sdk70_mremap_gate.py":"80793c4f8f7988dc36ef9c3680b8a1695a9690977948310ccbf403fa9b348675"
+});
+const rebindCaptureIndexRows=(rows:readonly GitHubSourceBinding[]|undefined)=>Object.freeze((rows??[]).map(row=>Object.freeze({...row,sha256:CAPTURE_INDEX_SOURCE_HASHES[row.path]??row.sha256})));
+const CAPTURE_INDEX_DISCRIMINATORS=Object.freeze([
+Object.freeze({path:'qlever/scripts/sdk-ptrace-execution.py',sha256:CAPTURE_INDEX_SOURCE_HASHES['qlever/scripts/sdk-ptrace-execution.py']!}),
+
+Object.freeze({path:'qlever/scripts/sdk-executable-memory-policy.py',sha256:'ae0c241805d4d72a89103a21fe224a29138df4c8c63de55128b107d92c6e7724'}),
+Object.freeze({path:'qlever/scripts/sdk-generation-multiprocess-bindings.py',sha256:'adcd3a8ffdbcbe0925e199757db4fd95489c86a69f9a0b31fa7d555f5fcc7bc1'})]);
+const CAPTURE_INDEX_TEST_BINDINGS=Object.freeze([
+Object.freeze({path:'qlever/tests/test_sdk70_mremap_barrier_e2e.py',sha256:'03031faa56246a55c1390902a2df1f58c3307e81c776df25557656f78e25e4ae'}),
+Object.freeze({path:'qlever/tests/test_qlever_capture_membership_index.py',sha256:'35d69e3e7d8d5d6bde736929cda0e445b2664570df982e7ddf0f1b7f2f473dea'}),
+Object.freeze({path:'qlever/tests/test_qlever_gate_layout_guard.py',sha256:'bb14f54be32de9ca697391ca96242218dde34d31b4cbf16df64bb246a520b82d'})]);
+
+/** Current unpublished observer and gate slice. Deferred entries remain
+ * stopped until the full remap proof succeeds; the gate includes the real
+ * barrier-entry regression. Earlier source groups are unchanged. */
+const CAPTURE_INDEX_SDK_GROUP:GitHubSourceBindingGroup=Object.freeze({...SDK19_TELEMETRY_GROUP,
+ selectors:SDK19_TELEMETRY_GROUP.selectors,
+ secondarySelectors:Object.freeze([...rebindCaptureIndexRows(SDK19_TELEMETRY_GROUP.secondarySelectors??[]),...CAPTURE_INDEX_DISCRIMINATORS]),
+ sourceBindings:Object.freeze([...rebindCaptureIndexRows(SDK19_TELEMETRY_GROUP.sourceBindings),...CAPTURE_INDEX_TEST_BINDINGS])});
+export const QLEVER_SDK_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...PUBLISHED_SDK_GROUPS,NEXT_SDK_GROUP,INPUT_PLAN_SDK_GROUP,ORM326_SDK_GROUP,SDK19_TELEMETRY_GROUP,CAPTURE_INDEX_SDK_GROUP]);
 export const QLEVER_LINUX_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([
  {selectors:sdkSelectors('cbedd3e2478de5e22108b6689c595a658ca891c9bd47552caec830e86f47fea8','a75c7be34b5c5fafff85c0d67d814ba1aaf14bcf5db5404a860fe3b9a11009bd'),sourceBindings:QLEVER_LINUX_SOURCE_BINDINGS.filter(row=>!['.github/workflows/publish-qlever-runtime-sdk.yml','.github/workflows/build-qlever-linux-runtime.yml'].includes(row.path))},
  ...QLEVER_SDK_EXECUTION_GROUPS,

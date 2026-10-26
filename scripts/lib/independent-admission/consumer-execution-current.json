@@ -489,7 +489,7 @@
   },
   {
     "path": "qlever/scripts/sdk-ptrace-execution.py",
-    "sha256": "1af678e069d81a2fea07a0652b14382e2bc3b1917bab5f5eeeb8db78d4bb4a9f"
+    "sha256": "703fe49a1cb083fc78a69eddd43891a8696fac3d44f148f33110f8a448c6db39"
   },
   {
     "path": "qlever/scripts/sdk-ptrace-kernel.py",
@@ -1209,7 +1209,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-generation.ts",
-    "sha256": "901b895227480cbbbb193d9657c8e3614361dd02af69cb4062e88255e20c72c8"
+    "sha256": "f319d478b0551bd5a5f9a6b213a8e207e3020b7313797ea38ed935a780d237bf"
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-inputs.ts",
@@ -1221,7 +1221,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-origin-policy.ts",
-    "sha256": "548be432e40d8a89cf43c3204cc90aec55cbbb035f92cf47d4c4013888f40d3d"
+    "sha256": "abe1fbb0d26471dd6e8cb0ee5a57ec4eb28f6a8e6e6b380f7c95f48f5f3c8dd3"
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-originals.ts",
@@ -1965,7 +1965,7 @@
   },
   {
     "path": "qlever/tests/test_sdk70_mremap_observer.py",
-    "sha256": "f25333c0430938962b83a38ad3dd6167d8e0075357228ca0311f92a18fc5b568"
+    "sha256": "f4df5b2d0744aa1d41dfbb52043cc492d7309a4530afb1e31ec92a9ac665ac62"
   },
   {
     "path": "qlever/tests/test_sdk70_mremap_native.py",
@@ -1977,7 +1977,7 @@
   },
   {
     "path": "qlever/tests/run_sdk70_mremap_gate.py",
-    "sha256": "7d145e60ae11bbc201d9039971f5a7fc51d04715806c5eb6fe64c10a803d076d"
+    "sha256": "80793c4f8f7988dc36ef9c3680b8a1695a9690977948310ccbf403fa9b348675"
   },
   {
     "path": "tests/scripts/sdk70-remap-policy.test.ts",
@@ -1986,5 +1986,13 @@
   {
     "path": "scripts/lib/independent-admission/consumer-execution-0d-snapshot.json",
     "sha256": "5af9406879dc9de1a0910094afdb1fdaccacaf1121901b40a21584c5fc4d97bf"
+  },
+  {
+    "path": "scripts/lib/independent-admission/consumer-execution-6b-snapshot.json",
+    "sha256": "40fc657e38554ebbcfc838f64f9b7ed715d0fd412b0b8382cc1bed96721e0754"
+  },
+  {
+    "path": "qlever/tests/test_sdk70_mremap_barrier_e2e.py",
+    "sha256": "03031faa56246a55c1390902a2df1f58c3307e81c776df25557656f78e25e4ae"
   }
 ]
