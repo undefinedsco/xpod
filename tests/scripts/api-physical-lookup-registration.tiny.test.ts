@@ -16,7 +16,7 @@ test('all complete SDK20 controller/API source sets survive with only their own 
  for(const[groups,old]of[[CONSUMER,historical.consumer],[CI,historical.ci],[API,historical.api]]as const){
   // API delta 24 unchanged; the SDK80 append adds one whole group to each
   // consumer family tail (83 -> 84, 166 -> 168).
-  expect(groups.length).toBe(old.length+(groups===CI?168:groups===CONSUMER?84:24));
+  expect(groups.length).toBe(old.length+(groups===CI?170:groups===CONSUMER?85:24));
   for(const previous of old){
    const before=new Map(previous.selectors.map(row=>[historicalKey(row),row.sha256]));
    const matches=groups.filter(group=>JSON.stringify(group.selectors)===JSON.stringify(previous.selectors)&&hash(JSON.stringify(group.sourceBindings))===previous.sourceBindingsSha256);expect(matches).toHaveLength(1);const group=matches[0]!;

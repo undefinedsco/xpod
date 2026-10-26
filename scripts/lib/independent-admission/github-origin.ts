@@ -92,6 +92,11 @@ interface OriginPolicy {
   sourceGroupJobContract?(group:GitHubSourceBindingGroup|undefined):Readonly<{name:string;requiredStep:string;requiredSteps:readonly string[]}>;
   maximumJobPages?:number;
   allowRunningRun?:true;
+  /** Candidate producer roles only. A completed-failure OVERALL run is still
+   * accepted for observation, but the issuer's existing same-attempt producer
+   * job/step/artifact/source/ancestor closure below remains mandatory before
+   * any observation capability is issued. It never grants RC qualification. */
+  allowCandidateProducerFailure?:true;
   requiredBranch?: string;
   sourceMayDiffer?:true;
   workflowRef?:'run-head';
@@ -112,7 +117,7 @@ export async function observeCandidateServiceImageGitHubOrigin(input:ArtifactAcq
  const artifactNames=(value:ArtifactAcquisitionInput)=>['candidate-service-image-originals-'+value.sourceSha+'-'+value.runId+'-'+value.runAttempt];
  const result=await observeGitHubOrigin(input,options,{
   workflowPath:'.github/workflows/candidate.yml',workflowSha256:versions[0]!,reviewedWorkflowVersions:versions.map(workflowSha256=>({workflowSha256,jobName:()=> 'build_image',sourceBindingGroups:groups})),
-  events:['push','workflow_dispatch'],requiredBranch:'staging',stagingPushWorkflowSha256s:versions,allowRunningRun:true,workflowRef:'run-head',sourceBindingGroups:groups,target:'linux-x64',
+  events:['push','workflow_dispatch'],requiredBranch:'staging',stagingPushWorkflowSha256s:versions,allowRunningRun:true,allowCandidateProducerFailure:true,workflowRef:'run-head',sourceBindingGroups:groups,target:'linux-x64',
   artifactNames,jobName:()=> 'build_image',requiredStep:'Retain candidate service image/SDK originals',requiredSteps:['Apply candidate root version','Build and push RC image','Retain candidate service image/SDK originals','Upload candidate service image originals'],
   sourceGroupJobContract(group){const contract=group?.candidateServiceRelationship;if(!contract||contract.schemaVersion!==1||contract.workflowPath!=='.github/workflows/candidate.yml'||!versions.includes(contract.workflowSha256))throw Error('Independent GitHub origin: exact candidate service contract missing');return {name:contract.serviceJob,requiredStep:'Retain candidate service image/SDK originals',requiredSteps:['Apply candidate root version','Build and push RC image','Retain candidate service image/SDK originals','Upload candidate service image originals']};},
   sourceGroupAncestorJobs(group){const contract=group?.candidateServiceRelationship;if(!contract)throw Error('Independent GitHub origin: candidate service ancestor contract missing');return [contract.sdkJob,contract.localRuntimeJob];},
@@ -128,7 +133,7 @@ export async function observeCandidateServiceNativeRuntimeGitHubOrigin(input:Art
  const steps=['Publish and resolve the immutable digest','Retain focused native runtime originals','Upload focused native runtime originals'];
  const result=await observeGitHubOrigin(input,options,{
   workflowPath:'.github/workflows/candidate.yml',workflowSha256:versions[0]!,reviewedWorkflowVersions:versions.map(workflowSha256=>({workflowSha256,jobName:()=> 'publish_qlever_local_runtime / publish',sourceBindingGroups:groups})),
-  events:['push','workflow_dispatch'],requiredBranch:'staging',stagingPushWorkflowSha256s:versions,allowRunningRun:true,workflowRef:'run-head',sourceBindingGroups:groups,target:'linux-x64',
+  events:['push','workflow_dispatch'],requiredBranch:'staging',stagingPushWorkflowSha256s:versions,allowRunningRun:true,allowCandidateProducerFailure:true,workflowRef:'run-head',sourceBindingGroups:groups,target:'linux-x64',
   artifactNames:value=>[candidateServiceNativeRuntimeArtifactName(value)],jobName:()=> 'publish_qlever_local_runtime / publish',requiredStep:steps[1]!,requiredSteps:steps,
   sourceGroupJobContract(group){const contract=group?.candidateServiceRelationship;if(!contract||contract.schemaVersion!==1||contract.workflowPath!=='.github/workflows/candidate.yml'||!versions.includes(contract.workflowSha256))throw Error('Independent GitHub origin: exact candidate native runtime contract missing');return {name:contract.localRuntimeJob,requiredStep:steps[1]!,requiredSteps:steps};},
   sourceGroupAncestorJobs(group){const contract=group?.candidateServiceRelationship;if(!contract)throw Error('Independent GitHub origin: candidate native runtime SDK ancestor contract missing');return [contract.sdkJob];},
@@ -1390,7 +1395,7 @@ export async function observeQleverSdkGitHubOrigin(input:ArtifactAcquisitionInpu
   const groups=QLEVER_SDK_EXECUTION_GROUPS.filter(group=>group.candidateServiceRelationship!==undefined);
   if(!groups.length)return fail('candidate service SDK whole source not reviewed');
   const versions=[...new Set(groups.map(group=>group.candidateServiceRelationship!.workflowSha256))];
-  const observation=await observeGitHubOrigin(input,options,{workflowPath:'.github/workflows/candidate.yml',workflowSha256:versions[0]!,reviewedWorkflowVersions:versions.map(workflowSha256=>({workflowSha256,jobName:()=> 'publish_qlever_runtime_sdk / readonly_publish / published_sdk / sdk',sourceBindingGroups:groups})),events:['push','workflow_dispatch'],requiredBranch:'staging',stagingPushWorkflowSha256s:versions,workflowRef:'run-head',allowRunningRun:true,target,artifactNames:row=>[`qlever-sdk-originals-service-trixie-${target}-${row.sourceSha}-${row.runId}-${row.runAttempt}`],jobName:()=> 'publish_qlever_runtime_sdk / readonly_publish / published_sdk / sdk',requiredStep:'Bind actual readonly SDK image and build originals',requiredSteps:['Verify controller closure','Capture immutable source context','Build readonly SDK and linked image','Publish the actual linked readonly SDK','Seal controller originals for upload','Upload exact SDK original materials'],sourceBindingGroups:groups,issueSdkOuterAuthority:true});
+  const observation=await observeGitHubOrigin(input,options,{workflowPath:'.github/workflows/candidate.yml',workflowSha256:versions[0]!,reviewedWorkflowVersions:versions.map(workflowSha256=>({workflowSha256,jobName:()=> 'publish_qlever_runtime_sdk / readonly_publish / published_sdk / sdk',sourceBindingGroups:groups})),events:['push','workflow_dispatch'],requiredBranch:'staging',stagingPushWorkflowSha256s:versions,workflowRef:'run-head',allowRunningRun:true,allowCandidateProducerFailure:true,target,artifactNames:row=>[`qlever-sdk-originals-service-trixie-${target}-${row.sourceSha}-${row.runId}-${row.runAttempt}`],jobName:()=> 'publish_qlever_runtime_sdk / readonly_publish / published_sdk / sdk',requiredStep:'Bind actual readonly SDK image and build originals',requiredSteps:['Verify controller closure','Capture immutable source context','Build readonly SDK and linked image','Publish the actual linked readonly SDK','Seal controller originals for upload','Upload exact SDK original materials'],sourceBindingGroups:groups,issueSdkOuterAuthority:true});
   nativeOrigins.add(observation);sdkOrigins.add(observation);return observation;
  }
  if(!['linux-x64','linux-arm64'].includes(target)||!['standalone','css-native-products'].includes(invocation))return fail('fixed SDK target and invocation required');
@@ -1458,9 +1463,17 @@ export async function observeProductConsumerGitHubOrigin(input:ArtifactAcquisiti
   return observeGitHubOrigin(input,options,[manual,registered]);
 }
 
-/** Metadata checks alone grant no observation capability. */
-export function observedGitHubRunStateAccepted(status:unknown,conclusion:unknown,scope:'closed-producer'|'live-consumer'):boolean {
-  return status==='completed'?conclusion==='success':scope==='live-consumer'&&status==='in_progress'&&conclusion===null;
+export type ObservedGitHubRunStateScope='closed-producer'|'live-consumer'|'candidate-producer';
+const observedGitHubRunStateScopes:readonly ObservedGitHubRunStateScope[]=Object.freeze(['closed-producer','live-consumer','candidate-producer']);
+/** Metadata checks alone grant no observation capability. The candidate scope
+ * accepts a completed-failure OVERALL run only provisionally; issuance still
+ * requires the later exact same-attempt producer job/step/artifact/source
+ * closure. Cancelled, timed-out, neutral and every other conclusion stay out.
+ * Unknown scopes (including future/forged values and non-strings) always fail. */
+export function observedGitHubRunStateAccepted(status:unknown,conclusion:unknown,scope:unknown):boolean {
+  if(typeof scope!=='string'||!observedGitHubRunStateScopes.includes(scope as ObservedGitHubRunStateScope))return false;
+  if(status==='completed')return conclusion==='success'||(scope==='candidate-producer'&&conclusion==='failure');
+  return (scope==='live-consumer'||scope==='candidate-producer')&&status==='in_progress'&&conclusion===null;
 }
 export function observedGitHubJobWindowAccepted(job:any,artifact:any,input:ArtifactAcquisitionInput):boolean {
   const created=Date.parse(artifact?.created_at),start=Date.parse(job?.started_at),end=Date.parse(job?.completed_at);
@@ -1515,9 +1528,11 @@ async function observeGitHubOrigin(input: ArtifactAcquisitionInput, options: { t
   const choices=(Array.isArray(policies)?policies:[policies]) as readonly OriginPolicy[];
   const policy=choices.find(row=>run.path?.split('@')[0]===row.workflowPath);
   if(!policy) return fail('unreviewed producer workflow path');
+  const runScope:ObservedGitHubRunStateScope=policy.allowCandidateProducerFailure===true?'candidate-producer':policy.allowRunningRun===true?'live-consumer':'closed-producer';
+  if(runScope==='candidate-producer'&&(policy.workflowPath!=='.github/workflows/candidate.yml'||policy.allowRunningRun!==true))return fail('candidate producer scope requires the exact live-observable candidate workflow');
   if (run.id !== input.runId || run.run_attempt !== input.runAttempt || run.head_sha !== input.runHeadSha
     || run.repository?.full_name !== repository || run.head_repository?.full_name !== repository
-    || !observedGitHubRunStateAccepted(run.status,run.conclusion,policy.allowRunningRun===true?'live-consumer':'closed-producer') || !positive(run.workflow_id)
+    || !observedGitHubRunStateAccepted(run.status,run.conclusion,runScope) || !positive(run.workflow_id)
     || !policy.events.includes(run.event)
     || (policy.requiredBranch!==undefined && run.head_branch!==policy.requiredBranch)
     || (run.event !== 'pull_request' && input.sourceSha !== input.runHeadSha && policy.sourceMayDiffer!==true)

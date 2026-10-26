@@ -2097,7 +2097,34 @@ const SDK80_GROUP:GitHubSourceBindingGroup=Object.freeze({...SDK79_GROUP,
  candidateServiceRelationship:Object.freeze({...SDK79_GROUP.candidateServiceRelationship!,workflowSha256:'76373a179ec6ac63d24c79fc0b759e09f1045087bd66ce46c26214963d12dc5d'}),
  outerExecutor:Object.freeze({...SDK79_GROUP.outerExecutor!,
   additionalWorkflows:Object.freeze((SDK79_GROUP.outerExecutor!.additionalWorkflows??[]).map(row=>row.path==='.github/workflows/candidate.yml'?Object.freeze({...row,sha256:'76373a179ec6ac63d24c79fc0b759e09f1045087bd66ce46c26214963d12dc5d'}):row))})});
-export const QLEVER_SDK_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...PUBLISHED_SDK_GROUPS,NEXT_SDK_GROUP,INPUT_PLAN_SDK_GROUP,ORM326_SDK_GROUP,SDK19_TELEMETRY_GROUP,CAPTURE_INDEX_SDK_GROUP,SDK78_GROUP,SDK79_GROUP,SDK80_GROUP]);
+/** SDK81 candidate-producer-attempt slice (APPEND-ONLY, UNPUBLISHED).
+ * SDK80 is the WHOLE inherited base; only the reviewed candidate workflow moved
+ * (76373a -> 92846c). Stage 0 and the SDK80 stage-1 remap wrapper are unchanged.
+ * A genuine later stage carries `.github/workflows/candidate.yml`, a role every
+ * SDK71-80 survivor already owns as a sourceBinding, so it is requested only
+ * after earlier stages eliminated non-current peers; never a new discriminator. */
+const SDK81_CANDIDATE_WORKFLOW='.github/workflows/candidate.yml';
+const SDK81_SOURCE_HASHES:Readonly<Record<string,string>>=Object.freeze({
+ [SDK81_CANDIDATE_WORKFLOW]:'92846c4b16da8dec7afcecac757ee2f18ac4db9e6b54805a6b59cf25a8ef7420',
+ // Genuinely new regression roles: source-only (never selectors), following the
+ // SDK78/SDK79 precedent for new tests. No older tuple owns them.
+ 'tests/scripts/candidate-producer-attempt.tiny.test.ts':'ae49a98ff031274c34493341177f6e249db2e7881c9d1e24cf99591d0d144bdb',
+ 'tests/scripts/candidate-producer-attempt-binding.test.ts':'f1a165e7a2f2ad3a6f8f5443c0eb6c255cb84c6caf08eaf0bdb23bc916f895e9'
+});
+const SDK81_NEW_TEST_BINDINGS=Object.freeze([
+ Object.freeze({path:'tests/scripts/candidate-producer-attempt.tiny.test.ts',sha256:SDK81_SOURCE_HASHES['tests/scripts/candidate-producer-attempt.tiny.test.ts']!}),
+ Object.freeze({path:'tests/scripts/candidate-producer-attempt-binding.test.ts',sha256:SDK81_SOURCE_HASHES['tests/scripts/candidate-producer-attempt-binding.test.ts']!})]);
+const rebindSdk81Rows=(rows:readonly GitHubSourceBinding[]|undefined)=>Object.freeze((rows??[]).map(row=>Object.freeze({...row,sha256:SDK81_SOURCE_HASHES[row.path]??row.sha256})));
+const SDK81_STAGE2_BINDING:GitHubSourceBinding=Object.freeze({path:SDK81_CANDIDATE_WORKFLOW,sha256:SDK81_SOURCE_HASHES[SDK81_CANDIDATE_WORKFLOW]!});
+const SDK81_GROUP:GitHubSourceBindingGroup=Object.freeze({...SDK80_GROUP,
+ selectors:SDK80_GROUP.selectors,
+ secondarySelectors:SDK80_GROUP.secondarySelectors,
+ secondarySelectorStages:Object.freeze([...(SDK80_GROUP.secondarySelectorStages??[]),Object.freeze([SDK81_STAGE2_BINDING])]),
+ sourceBindings:Object.freeze([...rebindSdk81Rows(SDK80_GROUP.sourceBindings),...SDK81_NEW_TEST_BINDINGS]),
+ candidateServiceRelationship:Object.freeze({...SDK80_GROUP.candidateServiceRelationship!,workflowSha256:SDK81_SOURCE_HASHES[SDK81_CANDIDATE_WORKFLOW]!}),
+ outerExecutor:Object.freeze({...SDK80_GROUP.outerExecutor!,
+  additionalWorkflows:Object.freeze((SDK80_GROUP.outerExecutor!.additionalWorkflows??[]).map(row=>row.path===SDK81_CANDIDATE_WORKFLOW?Object.freeze({...row,sha256:SDK81_SOURCE_HASHES[SDK81_CANDIDATE_WORKFLOW]!}):row))})});
+export const QLEVER_SDK_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...PUBLISHED_SDK_GROUPS,NEXT_SDK_GROUP,INPUT_PLAN_SDK_GROUP,ORM326_SDK_GROUP,SDK19_TELEMETRY_GROUP,CAPTURE_INDEX_SDK_GROUP,SDK78_GROUP,SDK79_GROUP,SDK80_GROUP,SDK81_GROUP]);
 export const QLEVER_LINUX_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([
  {selectors:sdkSelectors('cbedd3e2478de5e22108b6689c595a658ca891c9bd47552caec830e86f47fea8','a75c7be34b5c5fafff85c0d67d814ba1aaf14bcf5db5404a860fe3b9a11009bd'),sourceBindings:QLEVER_LINUX_SOURCE_BINDINGS.filter(row=>!['.github/workflows/publish-qlever-runtime-sdk.yml','.github/workflows/build-qlever-linux-runtime.yml'].includes(row.path))},
  ...QLEVER_SDK_EXECUTION_GROUPS,
