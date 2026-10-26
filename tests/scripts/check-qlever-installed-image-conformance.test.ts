@@ -356,7 +356,13 @@ describe('private17 sanitized single JSON boundary', () => {
   const expected = { admissionSha256: '', installedImage: `ghcr.io/undefinedsco/xpod@sha256:${'a'.repeat(64)}`,
     pgImage: `ccr.ccs.tencentyun.com/undefineds/xpod-rdf-postgres@sha256:${'b'.repeat(64)}`,
     sourceSha: 'c'.repeat(40), runnerSha256: 'd'.repeat(64) };
-  function proof(): Record<string, any> {
+  // The admitted producer source array and private contract each moved once; the
+  // historical single-field values below must stay rejected on their own.
+  const PRODUCER_SHA256 = '6356588bdee4250f66d87739c41ece044b05c3d3197de89eda673b18b7c8d688';
+  const CONTRACT_SHA256 = 'e7a40270edc77b29313da0858a949f5ee8d126a30c5857f454c39e9b03ee6469';
+  const OLD_PRODUCER_SHA256 = '7c2176daae1ee2b356dd02471a942866faceab24b2cf429a2305471b3e7194da';
+  const OLD_CONTRACT_SHA256 = '6f1346e598f11959b1e696639fd151f498bd8901ef658c5613435a44d5c46ca1';
+  function proof(overrides: { producerSHA256?: string; privateContractSHA256?: string } = {}): Record<string, any> {
     const server = { systemIdentifier: '7694358013082710061', containerId: '1'.repeat(64),
       database: `xpod_joint_${'2'.repeat(32)}`, versionNum: 170010 };
     const suite = (count: number) => ({ systemIdentifier: server.systemIdentifier, containerId: server.containerId,
@@ -366,7 +372,7 @@ describe('private17 sanitized single JSON boundary', () => {
       sourceSha: expected.sourceSha, serviceImage: expected.installedImage, postgresImage: expected.pgImage,
       runnerSHA256: expected.runnerSha256,
       contractSHA256: createHash('sha256').update(readFileSync(path.join(root, 'scripts/lib/joint-installed-admission.ts'))).digest('hex'),
-      privateContractSHA256: '6f1346e598f11959b1e696639fd151f498bd8901ef658c5613435a44d5c46ca1',
+      privateContractSHA256: overrides.privateContractSHA256 ?? CONTRACT_SHA256,
       server, schema: { beforeOID: 17238, afterPrepareOID: 17238, afterSuitesOID: 17238, projectionColumns: 2, projectionTriggers: 1 },
       public: { ...suite(16), fixtureSHA256: 'c15f1bba83aff573b9e3bab685bf66bacb35cd82bac7a13e93e8163559ed5778',
         caseSetSHA256: '2ce68e4cc93952d123c133baf0cbd92497d73e8d246ea81d48906fd9792bcd99',
@@ -375,7 +381,7 @@ describe('private17 sanitized single JSON boundary', () => {
         caseSetSHA256: '348777fe09a4e4baba4287e579cb7b665e5d83aeab144819beb16cb34e12d24e',
         validatorSHA256: 'e962c8b94e771f753661810179b8ad982e9dfd4158e6620518b5dbf56cc73374' },
       abi: '1|true', producer: { actualExit: 0, signal: null, childCount: 1,
-        closedRawSHA256: ['f'.repeat(64)], sourceSHA256: '7c2176daae1ee2b356dd02471a942866faceab24b2cf429a2305471b3e7194da', closedReceiptSHA256: '9'.repeat(64) },
+        closedRawSHA256: ['f'.repeat(64)], sourceSHA256: overrides.producerSHA256 ?? PRODUCER_SHA256, closedReceiptSHA256: '9'.repeat(64) },
       cleanup: { databaseAbsent: true, semanticSchemasAbsent: true, ownedResourcesAbsent: true } };
   }
   function check(bytes: string, authority?: string, installedImage = expected.installedImage): Record<string, unknown> {
@@ -392,6 +398,22 @@ describe('private17 sanitized single JSON boundary', () => {
     expect(check(JSON.stringify(proof()))).toMatchObject({ status: 'ok', sourceSha: expected.sourceSha,
       installedImage: expected.installedImage, pgImage: expected.pgImage, database: `xpod_joint_${'2'.repeat(32)}`,
       evidenceBoundary: 'immutable-installed-joint' });
+  });
+  // The producer source array and the private contract were re-pinned together.
+  // Each old value must still be refused on its own, so a proof carrying only one
+  // half of the pair can never ride on the other half being correct.
+  it('accepts the re-pinned producer/contract pair and rejects either old value alone', () => {
+    expect(check(JSON.stringify(proof()))).toMatchObject({ status: 'ok', evidenceBoundary: 'immutable-installed-joint' });
+    expect(() => check(JSON.stringify(proof({ producerSHA256: OLD_PRODUCER_SHA256 }))))
+      .toThrow(/producer closure mismatch/);
+    expect(() => check(JSON.stringify(proof({ privateContractSHA256: OLD_CONTRACT_SHA256 }))))
+      .toThrow(/candidate binding mismatch/);
+    expect(() => check(JSON.stringify(proof({ producerSHA256: OLD_PRODUCER_SHA256,
+      privateContractSHA256: OLD_CONTRACT_SHA256 })))).toThrow();
+    // An unrelated 64-hex value never substitutes for the admitted pair.
+    for (const field of ['producerSHA256', 'privateContractSHA256'] as const) {
+      expect(() => check(JSON.stringify(proof({ [field]: '0'.repeat(64) })))).toThrow();
+    }
   });
   it.each(['accepted', 'wrong-authority', 'cross-server', 'private-field'])
   ('checks %s joint evidence through the actual CLI without a separate Public16 envelope', scenario => {

@@ -290,9 +290,15 @@ export function validatePullJob(job: PullJob, pods: PullPod[], expected: {
 const PRIVATE_FIXTURE_SHA256 = '09e389146adc51a10a26785a34ef471c66d8bbf00f61b0b69d536d29874120b8';
 const PRIVATE17_CASE_SET_SHA256 = '348777fe09a4e4baba4287e579cb7b665e5d83aeab144819beb16cb34e12d24e';
 const PRIVATE17_VALIDATOR_SHA256 = 'e962c8b94e771f753661810179b8ad982e9dfd4158e6620518b5dbf56cc73374';
-const PRIVATE17_CONTRACT_SHA256 = '6f1346e598f11959b1e696639fd151f498bd8901ef658c5613435a44d5c46ca1';
+// The historical Private17 joint fixture moved to an explicit versioned private
+// path so it can never displace the public 17+6 semantic corpus. Only the
+// fixture-path constant changed; the pinned fixture digest above is unchanged.
+const PRIVATE17_CONTRACT_SHA256 = 'e7a40270edc77b29313da0858a949f5ee8d126a30c5857f454c39e9b03ee6469';
 // Fail closed until the private producer's final frozen source is admitted by ROOT.
-const PRIVATE17_PRODUCER_SHA256 = '7c2176daae1ee2b356dd02471a942866faceab24b2cf429a2305471b3e7194da';
+// sha256 of the compact JSON array of the producer, input-kit builder and installed
+// bootstrap digests. Joint mode takes PostgreSQL from the caller's own exact
+// approved image, so this source pin does not imply any single PG digest.
+const PRIVATE17_PRODUCER_SHA256 = '6356588bdee4250f66d87739c41ece044b05c3d3197de89eda673b18b7c8d688';
 const PRIVATE17_MAX_BYTES = 64 * 1024;
 const PRIVATE17_ASSET = 'private17-admission.json';
 const SHA256 = /^[a-f0-9]{64}$/;
