@@ -77,9 +77,13 @@ test('the live canonical binds every actual row byte and retains every old membe
   expect((current as unknown[]).length).toBeGreaterThanOrEqual(snapshot.length);
 });
 
-test('every published and appended family group selects uniquely and refuses bad roles', () => {
-  for (const [name, groups] of Object.entries(families)) {
-    for (const [index, group] of (groups as readonly any[]).entries()) {
+// Split per family+index so each group is an independent case: a failure names
+// the exact family and published/appended index, and no single case can consume
+// the whole per-test default timeout. The selection and negative-role assertions
+// are IDENTICAL to the former aggregate; only the iteration shape changed.
+for (const [name, groups] of Object.entries(families)) {
+  for (const [index, group] of (groups as readonly any[]).entries()) {
+    test(`${name}[${index}] selects uniquely and refuses missing or mixed roles`, () => {
       const observed = new Map<string, string>();
       for (const row of group.selectors) observed.set(key(row), row.sha256);
       // Stage 0 must resolve against OWN originals; assert that surface, then
@@ -102,10 +106,9 @@ test('every published and appended family group selects uniquely and refuses bad
         mixed.set(key(role), 'f'.repeat(64));
         expect(() => select(groups as readonly any[], mixed)).toThrow();
       }
-      void index; void name;
-    }
+    });
   }
-});
+}
 
 test('an unregistered tuple cannot borrow a published group', () => {
   // A tuple whose only change is an unknown hash for one selector must not match.
