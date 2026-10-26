@@ -35,26 +35,55 @@ builder, installed bootstrap. Validator and private contract digests remain
 separate bindings. A changed dependency requires rebinding and fresh acceptance.
 
 The producer authority is now bound to
-`7c2176daae1ee2b356dd02471a942866faceab24b2cf429a2305471b3e7194da`
-after formal CNB amd64 run `cnb-2gt-1k4f22ire` passed on public source
-`944acf06a5ffe8ead2562ec515faed11c2164751`, private producer source
-`e3ec7ff1c89bbb6072b5538be58455e03c43c279`, service digest
-`6ada40ff9a772c0c4d9658e42248f0c2c32b290dd2cdaf1481d7dc40cb3ad50d`
-and the approved PG17 digest `1199698c789fb65897e4b0bd370f7faa959bcbdd3499784af256ad5bb8f0a5f3`.
-The actual producer and wrapper exited zero. Both serialized reports were
-independently checked again with the canonical validators; all child log hashes,
-the producer receipt hash and external absence of owned resources were checked.
-The sanitized proof SHA256 is
-`f9ec2ac0f9dac2f47f03cab94c5ccd5a0eec07d910d19eb869e5cd3e0b7f19c4`.
-Private reports were exported encrypted and retained only in private evidence.
+`6356588bdee4250f66d87739c41ece044b05c3d3197de89eda673b18b7c8d688`, the
+SHA256 of the compact JSON array of the current producer, input-kit builder and
+installed bootstrap digests:
 
-This CNB run validates the formal producer and v2 contract. The existing release
-transport still requires a GHCR service image and separately configured byte
-authority. Local file verification also accepts the approved CNB repository,
-with the same exact-byte authority check; arbitrary repositories remain rejected. Updating this pin changes public source and validator bytes, so final
-source commits, native/mounted artifacts and installed images must be bound
-again before promotion. Shared RC continues to require an ordinary reviewed
-merge into `staging` and exclusive queue ownership.
+| private component | sha256 |
+|---|---|
+| `produce-installed-component-admission.ts` | `72b184674f8bdfbfd8c67f0364ac69f131745d400d7822e045a7469cd364fd83` |
+| `installed-joint-inputs.ts` | `3f0035dbb7362cb8256e4952ae0a5d55973e3c8552cc63197504915ff7b5a265` |
+| `installed-joint-bootstrap.cjs` | `386fbfe8303a72a8ddb13c8fc23141856c3129c40055b0c35c6895f5248de38d` |
+
+Those three file digests are shown because the pin is only reproducible from
+them; their contents stay in the private tree. The pinned private contract moved
+with them to `e7a40270edc77b29313da0858a949f5ee8d126a30c5857f454c39e9b03ee6469`,
+whose only change from the previous binding is where the historical Private17
+joint fixture lives: that corpus now sits at an explicit versioned private path
+so it can never displace the public 17+6 semantic corpus at
+`qlever/tests/fixtures/qlever-semantic-conformance.cjs`. The fixture's own bytes
+and case set are unchanged, so the private validator (`e962c8b9…`) and both
+suites' digests stay exactly where they were.
+
+Joint mode no longer implies a single PostgreSQL digest. It takes PostgreSQL from
+the caller's own `--postgres-image`, accepted only in the strict
+`ccr.ccs.tencentyun.com/undefineds/xpod-rdf-postgres@sha256:<digest>` form, and the
+issued proof binds the exact value returned; public validation still requires
+`proof.postgresImage` to equal the caller's `--pg-image`. That keeps the pair on
+whatever canonical `NATIVE_PG_IMAGE` the candidate deploys, while floating tags,
+foreign registries and malformed digests stay rejected before any Docker call.
+
+Previous binding, kept for history: source array
+`7c2176daae1ee2b356dd02471a942866faceab24b2cf429a2305471b3e7194da` from private
+producer commit `e3ec7ff1c89bbb6072b5538be58455e03c43c279`, formal CNB amd64 run
+`cnb-2gt-1k4f22ire` on public source
+`944acf06a5ffe8ead2562ec515faed11c2164751`, service digest
+`6ada40ff9a772c0c4d9658e42248f0c2c32b290dd2cdaf1481d7dc40cb3ad50d`, PG17
+`1199698c789fb65897e4b0bd370f7faa959bcbdd3499784af256ad5bb8f0a5f3`, sanitized
+proof `f9ec2ac0f9dac2f47f03cab94c5ccd5a0eec07d910d19eb869e5cd3e0b7f19c4`. That
+proof does not carry over: the producer and private contract bytes changed, so a
+fresh admission must be produced against the new public source and the actual
+candidate digest pair.
+
+This pin change is public source only. The existing release transport still
+requires a GHCR service image and a separately configured byte authority. Local
+file verification also accepts the approved CNB repository, with the same
+exact-byte authority check; arbitrary repositories remain rejected. Updating this
+pin changes public source bytes, so the future source commit, native/mounted
+artifacts and installed images must be bound again before promotion — and until a
+new candidate produces a valid joint proof, no image or RC may claim this
+admission. Shared RC continues to require an ordinary reviewed merge into
+`staging` and exclusive queue ownership.
 
 Focused public regression:
 
