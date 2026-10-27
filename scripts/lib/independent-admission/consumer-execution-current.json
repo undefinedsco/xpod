@@ -613,7 +613,7 @@
   },
   {
     "path": "scripts/acquire-independent-product-input.ts",
-    "sha256": "ac5d87abfd4a86b1b7b330c7c024694650356050a950efa09a306681fb25347d"
+    "sha256": "d1f5f5116b2f07d7e21c11c2964c439cf8e1173ad05bbae7dcffb6bfb720252f"
   },
   {
     "path": "scripts/agentfs-native-ci/accept.py",
@@ -1377,7 +1377,7 @@
   },
   {
     "path": "scripts/lib/legacy-root-artifact-context.cjs",
-    "sha256": "6ba3f512c07d4f853039a27a060564259ed38bf77337bd8713141aa47b321fa4"
+    "sha256": "92b4910bd61271ae0877e4e11c41fd4a969f183683ac18984dbf762add46d8f2"
   },
   {
     "path": "scripts/lib/module-artifact-limits.json",

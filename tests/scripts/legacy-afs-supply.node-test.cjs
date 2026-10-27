@@ -6,7 +6,7 @@ const crypto = require('node:crypto');
 const { execFileSync, spawnSync } = require('node:child_process');
 const normal = require('../../scripts/lib/legacy-afs-supply.cjs');
 const helper = require('../../scripts/lib/root-registry-supply.cjs');
-const { verifyContext } = require('../../scripts/lib/legacy-root-artifact-context.cjs');
+const { verifyContext, verifyProducerClosure, producerClosure } = require('../../scripts/lib/legacy-root-artifact-context.cjs');
 const hash = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
 const write = (file, value) => { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, typeof value === 'string' || Buffer.isBuffer(value) ? value : JSON.stringify(value)); };
 test('actual eleven-package source graph selects the standalone AFS emitter without mutating private source', () => {
@@ -42,6 +42,133 @@ test('same-run successful producer is independent from the running workflow; sta
     const changed = structuredClone(f); mutate(changed); assert.throws(() => verifyContext(changed.input, changed.metadata, changed.jobs));
   }
 });
+
+// Exact shape of the retained original producer job as the GitHub API returns it
+// for run 40520472407 / job 122246082451: every recorded step completed and
+// successful, the final `Complete job` step closed at 14:23:34Z, while the job
+// header itself stayed in_progress/null with a null completed_at.
+function staleHeaderProducerJob() {
+  const at = ['2026-10-27T14:22:47Z', '2026-10-27T14:22:47Z', '2026-10-27T14:22:47Z', '2026-10-27T14:22:49Z',
+    '2026-10-27T14:22:49Z', '2026-10-27T14:22:50Z', '2026-10-27T14:22:50Z', '2026-10-27T14:22:51Z',
+    '2026-10-27T14:22:51Z', '2026-10-27T14:23:00Z', '2026-10-27T14:23:00Z', '2026-10-27T14:23:21Z',
+    '2026-10-27T14:23:21Z', '2026-10-27T14:23:23Z', '2026-10-27T14:23:23Z', '2026-10-27T14:23:32Z',
+    '2026-10-27T14:23:32Z', '2026-10-27T14:23:33Z', '2026-10-27T14:23:33Z', '2026-10-27T14:23:33Z',
+    '2026-10-27T14:23:33Z', '2026-10-27T14:23:33Z', '2026-10-27T14:23:33Z', '2026-10-27T14:23:34Z',
+    '2026-10-27T14:23:34Z', '2026-10-27T14:23:34Z'];
+  const names = ['Set up job', 'Run actions/checkout@v4', 'Run oven-sh/setup-bun@v2', 'Run actions/setup-node@v4',
+    'Run bun install --frozen-lockfile', 'Produce original CLI, client and standalone AFS JS distributions',
+    'Run actions/upload-artifact@v4', 'Retain full normal CLI sourcekit originals even when supply fails',
+    'Retain original producer diagnostics even when supply fails', 'Post Run actions/setup-node@v4',
+    'Post Run oven-sh/setup-bun@v2', 'Post Run actions/checkout@v4', 'Complete job'];
+  const numbers = [1, 2, 3, 4, 5, 6, 7, 8, 9, 16, 17, 18, 19];
+  const steps = names.map((name, index) => ({
+    number: numbers[index], name, status: 'completed', conclusion: 'success',
+    started_at: at[index * 2], completed_at: at[index * 2 + 1],
+  }));
+  // the legacy workflow's own job name; the scoped `legacy_root_compat / ...` form is
+  // what the candidate workflow reports for the same referenced producer.
+  return { id: 122246082451, name: 'legacy-root-normal-afs', status: 'in_progress',
+    conclusion: null, started_at: '2026-10-27T14:22:46Z', completed_at: null,
+    run_id: 40520472407, run_attempt: 1, head_sha: 'b'.repeat(40), steps };
+}
+test('actual stale-header producer job closes by explicit step evidence without mutating the header', () => {
+  const input = { sourceSha: 'a'.repeat(40), runHeadSha: 'b'.repeat(40), runId: 40520472407, runAttempt: 1, artifactId: 12741457563, artifactSha256: 'c'.repeat(64) };
+  const run = { id: 40520472407, run_attempt: 1, head_sha: input.runHeadSha, status: 'in_progress', event: 'pull_request', workflow_id: 9, path: '.github/workflows/legacy-root-compat.yml', repository: { full_name: 'undefinedsco/xpod' }, head_repository: { full_name: 'undefinedsco/xpod' }, run_started_at: '2026-10-27T14:22:20Z' };
+  const workflow = { id: 9, path: run.path };
+  const artifact = { id: 12741457563, name: `legacy-root-normal-afs-${input.sourceSha}-40520472407-1`, digest: 'sha256:' + input.artifactSha256, expired: false, size_in_bytes: 3968335, workflow_run: { id: 40520472407, head_sha: input.runHeadSha }, created_at: '2026-10-27T14:23:22Z' };
+  const job = staleHeaderProducerJob();
+  const jobs = { total_count: 1, jobs: [job] };
+  const before = JSON.stringify(jobs);
+  const verified = verifyProducerClosure(input, run, workflow, jobs);
+  assert.deepEqual(verified.closure, { source: 'steps', completedAt: '2026-10-27T14:23:34Z' });
+  assert.equal(verified.job.status, 'in_progress');
+  assert.equal(verified.job.completed_at, null);
+  assert.equal(JSON.stringify(jobs), before, 'retained original metadata must stay byte-identical');
+  // the downstream custody check derives the SAME closure
+  const context = verifyContext(input, { run, workflow, artifact }, jobs);
+  assert.deepEqual(context.closure, verified.closure);
+  // the original completed/success header path is unchanged
+  const terminal = structuredClone(jobs);
+  terminal.jobs[0].status = 'completed'; terminal.jobs[0].conclusion = 'success'; terminal.jobs[0].completed_at = '2026-10-27T14:23:34Z';
+  assert.deepEqual(verifyProducerClosure(input, run, workflow, terminal).closure, { source: 'header', completedAt: '2026-10-27T14:23:34Z' });
+});
+test('producer closure refuses every partial, failed, ambiguous, misordered or unclosed step shape', () => {
+  const input = { sourceSha: 'a'.repeat(40), runHeadSha: 'b'.repeat(40), runId: 40520472407, runAttempt: 1, artifactId: 12741457563, artifactSha256: 'c'.repeat(64) };
+  const base = () => staleHeaderProducerJob();
+  const closureIndex = 12;
+  // A still-running job is NOT an error: it returns null so the caller keeps
+  // polling inside the existing bound. Everything below is a terminal defect.
+  // A job whose steps are recorded but whose `Complete job` is not recorded yet is
+  // still legitimately in flight, so it polls instead of throwing.
+  const pendingClosure = base(); pendingClosure.steps.pop();
+  assert.equal(producerClosure(input, pendingClosure), null, 'unrecorded closure step still polls');
+  const pendingHeader = base(); pendingHeader.completed_at = '2026-10-27T14:23:34Z';
+  assert.equal(producerClosure(input, pendingHeader), null, 'timestamp arriving before terminal status still polls');
+  const noSteps = base(); noSteps.steps = [];
+  assert.equal(producerClosure(input, noSteps), null, 'job without steps yet still polls');
+  const stillRunning = base();
+  stillRunning.steps[closureIndex] = { ...stillRunning.steps[closureIndex], status: 'in_progress', conclusion: null, completed_at: null };
+  assert.equal(producerClosure(input, stillRunning), null, 'still-running producer polls, never closes');
+  const cases = [
+    ['completed header without conclusion', job => { job.status = 'completed'; }],
+    ['nonterminal header with conclusion', job => { job.conclusion = 'success'; }],
+    ['failed step', job => { job.steps[5].conclusion = 'failure'; }],
+    ['cancelled step', job => { job.steps[5].conclusion = 'cancelled'; }],
+    ['unknown step conclusion', job => { job.steps[5].conclusion = 'neutral'; }],
+    ['duplicate closure step', job => { const last = job.steps[closureIndex]; job.steps[closureIndex - 1].name = 'Complete job'; }],
+    ['closure not final', job => { job.steps.push({ number: 20, name: 'Post Run x', status: 'completed', conclusion: 'success', started_at: '2026-10-27T14:23:34Z', completed_at: '2026-10-27T14:23:34Z' }); }],
+    ['closure failed', job => { job.steps[closureIndex].conclusion = 'failure'; }],
+    ['closure skipped', job => { job.steps[closureIndex].conclusion = 'skipped'; }],
+    ['duplicate step number', job => { job.steps[2].number = job.steps[1].number; }],
+    ['unordered step numbers', job => { job.steps[2].number = job.steps[1].number - 1; }],
+    ['non-integer step number', job => { job.steps[2].number = '3'; }],
+    ['duplicate produce step', job => { job.steps[8].name = 'Produce original CLI, client and standalone AFS JS distributions'; }],
+    ['duplicate upload step', job => { job.steps[8].name = 'Run actions/upload-artifact@v4'; }],
+    ['duplicate critical step later failure', job => { job.steps[8].name = 'Produce original CLI, client and standalone AFS JS distributions'; job.steps[8].conclusion = 'failure'; }],
+    ['duplicate upload step later failure', job => { job.steps[8].name = 'Run actions/upload-artifact@v4'; job.steps[8].conclusion = 'failure'; }],
+    ['produce completes after upload starts', job => { job.steps[5].completed_at = '2026-10-27T14:23:22Z'; }],
+    ['upload completes after closure starts', job => { job.steps[6].completed_at = '2026-10-27T14:23:35Z'; }],
+    ['missing produce step', job => { job.steps[5].name = 'Something else'; }],
+    ['failed produce step', job => { job.steps[5].conclusion = 'failure'; }],
+    ['missing upload step', job => { job.steps[6].name = 'Something else'; }],
+    ['failed upload step', job => { job.steps[6].conclusion = 'failure'; }],
+    ['upload before produce', job => { const produced = job.steps[5]; job.steps[5] = job.steps[6]; job.steps[6] = produced; }],
+    ['step starts before job', job => { job.steps[0].started_at = '2026-10-27T14:22:00Z'; }],
+    ['step ends after closure', job => { job.steps[6].completed_at = '2026-10-27T14:24:00Z'; }],
+    ['closure without timestamp', job => { job.steps[closureIndex].completed_at = null; }],
+    ['closure before start', job => { job.steps[closureIndex].completed_at = '2026-10-27T14:00:00Z'; }],
+    ['unknown header status', job => { job.status = 'weird'; }],
+    ['run id mismatch', job => { job.run_id = 1; }],
+    ['attempt mismatch', job => { job.run_attempt = 2; }],
+    ['head mismatch', job => { job.head_sha = 'd'.repeat(40); }],
+  ];
+  for (const [label, mutate] of cases) {
+    const job = base(); mutate(job);
+    assert.throws(() => producerClosure(input, job), undefined, label);
+  }
+  for (const conclusion of ['failure', 'cancelled', 'timed_out', 'action_required']) {
+    const job = base(); job.status = 'completed'; job.conclusion = conclusion; job.completed_at = '2026-10-27T14:23:34Z';
+    assert.throws(() => producerClosure(input, job), undefined, 'terminal ' + conclusion);
+  }
+  // duplicate/absent producer job selection and inventory drift
+  const run = { id: 40520472407, run_attempt: 1, head_sha: input.runHeadSha, status: 'in_progress', event: 'pull_request', workflow_id: 9, path: '.github/workflows/legacy-root-compat.yml', repository: { full_name: 'undefinedsco/xpod' }, head_repository: { full_name: 'undefinedsco/xpod' }, run_started_at: '2026-10-27T14:22:20Z' };
+  const workflow = { id: 9, path: run.path };
+  for (const jobs of [{ total_count: 2, jobs: [base()] }, { total_count: 1, jobs: [base(), base()] }, { total_count: 1, jobs: [{ ...base(), name: 'other' }] }]) {
+    assert.throws(() => verifyProducerClosure(input, run, workflow, jobs));
+  }
+  // a stale header whose artifact lands after the step closure is refused
+  const artifactLate = { id: 12741457563, name: `legacy-root-normal-afs-${input.sourceSha}-40520472407-1`, digest: 'sha256:' + input.artifactSha256, expired: false, size_in_bytes: 100, workflow_run: { id: 40520472407, head_sha: input.runHeadSha }, created_at: '2026-10-27T15:00:00Z' };
+  assert.throws(() => verifyContext(input, { run, workflow, artifact: artifactLate }, { total_count: 1, jobs: [base()] }));
+  const artifactEarly = { ...artifactLate, created_at: '2026-10-27T14:00:00Z' };
+  assert.throws(() => verifyContext(input, { run, workflow, artifact: artifactEarly }, { total_count: 1, jobs: [base()] }));
+  const expired = { ...artifactLate, created_at: '2026-10-27T14:23:22Z', expired: true };
+  assert.throws(() => verifyContext(input, { run, workflow, artifact: expired }, { total_count: 1, jobs: [base()] }));
+  const wrongDigest = { ...artifactLate, created_at: '2026-10-27T14:23:22Z', digest: 'sha256:' + 'd'.repeat(64) };
+  assert.throws(() => verifyContext(input, { run, workflow, artifact: wrongDigest }, { total_count: 1, jobs: [base()] }));
+  const wrongName = { ...artifactLate, created_at: '2026-10-27T14:23:22Z', name: 'legacy-root-normal-afs-' + input.sourceSha + '-40520472407-2' };
+  assert.throws(() => verifyContext(input, { run, workflow, artifact: wrongName }, { total_count: 1, jobs: [base()] }));
+});
+
 function fixture(operation) {
   const parent = path.resolve('.test-data/legacy-afs-supply'); fs.mkdirSync(parent, { recursive: true }); const root = fs.mkdtempSync(path.join(parent, 'case-'));
   try { return operation(root); } finally { fs.rmSync(root, { recursive: true, force: true }); }

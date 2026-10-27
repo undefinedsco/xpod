@@ -239,6 +239,67 @@ test('same-workflow legacy supply requires successful producer job and exact run
     }
   } finally { for (const [key, value] of Object.entries(saved)) if (value === undefined) delete process.env[key]; else process.env[key] = value; }
 });
+test('public closure interface returns null for a legitimate partial producer and closes once the raw original settles', async () => {
+  const saved = Object.fromEntries(['GITHUB_ACTIONS', 'GITHUB_REPOSITORY', 'GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT'].map(key => [key, process.env[key]]));
+  try {
+    Object.assign(process.env, { GITHUB_ACTIONS: 'true', GITHUB_REPOSITORY: 'undefinedsco/xpod', GITHUB_RUN_ID: '42', GITHUB_RUN_ATTEMPT: '2' });
+    const context = createRequire(import.meta.url)('../../scripts/lib/legacy-root-artifact-context.cjs');
+    const producerJob = (overrides: any = {}) => ({
+      id: 7, name: 'legacy-root-normal-afs', status: 'in_progress', conclusion: null,
+      started_at: '2026-10-15T00:00:30Z', completed_at: null,
+      run_id: 42, run_attempt: 2, head_sha: 'a'.repeat(40),
+      steps: [
+        { number: 1, name: 'Set up job', status: 'completed', conclusion: 'success', started_at: '2026-10-15T00:00:31Z', completed_at: '2026-10-15T00:00:31Z' },
+        { number: 6, name: 'Produce original CLI, client and standalone AFS JS distributions', status: 'completed', conclusion: 'success', started_at: '2026-10-15T00:00:32Z', completed_at: '2026-10-15T00:00:38Z' },
+        { number: 7, name: 'Run actions/upload-artifact@v4', status: 'completed', conclusion: 'success', started_at: '2026-10-15T00:00:38Z', completed_at: '2026-10-15T00:00:52Z' },
+        { number: 19, name: 'Complete job', status: 'completed', conclusion: 'success', started_at: '2026-10-15T00:00:52Z', completed_at: '2026-10-15T00:00:52Z' },
+      ],
+      ...overrides,
+    });
+    const input = { runId: 42, runAttempt: 2, runHeadSha: 'a'.repeat(40) };
+    const run = { id: 42, run_attempt: 2, head_sha: input.runHeadSha, workflow_id: 9, path: '.github/workflows/legacy-root-compat.yml' };
+    const workflow = { id: 9, path: run.path };
+
+    // (a) PUBLIC interface: a legitimately partial producer yields null, never a throw.
+    for (const partial of [
+      { steps: [{ number: 1, name: 'Set up job', status: 'in_progress', conclusion: null, started_at: '2026-10-15T00:00:31Z', completed_at: null }] },
+      { steps: [] },
+      { steps: [{ number: 1, name: 'Set up job', status: 'completed', conclusion: 'success', started_at: '2026-10-15T00:00:31Z', completed_at: '2026-10-15T00:00:31Z' }] },
+    ]) {
+      expect(context.verifyProducerClosure(input, run, workflow, { total_count: 1, jobs: [producerJob(partial)] })).toBeNull();
+    }
+    // custody is still strict about the missing closure
+    expect(() => context.verifyContext(input, { run, workflow, artifact: {} }, { total_count: 1, jobs: [producerJob({ steps: [] })] })).toThrow();
+
+    // (b) real acquirer seam: partial attempts then a closed original, all inside the existing 6x500ms budget.
+    const f = fixture([{ name: 'supply-index.original.json', body: '{}', mode: 0o100644 }]);
+    f.run.status = 'in_progress'; f.run.conclusion = null; f.run.updated_at = f.run.run_started_at; f.run.path = '.github/workflows/legacy-root-compat.yml'; f.workflow.path = f.run.path;
+    f.artifact.name = `legacy-root-normal-afs-${f.input.sourceSha}-42-2`;
+    // Align the timeline with the fixture attempt (run started 00:00, artifact 00:01)
+    // so the artifact legitimately falls inside the producer's closed window.
+    f.artifact.created_at = '2026-10-15T00:00:45Z';
+    const closed = producerJob({ head_sha: f.input.runHeadSha });
+    const partial = producerJob({ head_sha: f.input.runHeadSha, steps: [closed.steps[0], { ...closed.steps[1], status: 'in_progress', conclusion: null, completed_at: null }] });
+    let polls = 0;
+    const transport = (async (url: any, options: any) => {
+      if (!String(url).endsWith('/jobs?per_page=100')) return f.transport(url, options);
+      polls += 1;
+      // first three polls are still running, the fourth is the closed original
+      return Response.json({ total_count: 1, jobs: [polls < 4 ? partial : closed] });
+    }) as typeof fetch;
+    const result = await acquireLegacyRootSupply(f.input, f.output, { fetch: transport });
+    expect(polls).toBe(4);
+    expect(result.kind).toBe('legacy-root-same-run-acquisition');
+    const receipt = JSON.parse(readFileSync(path.join(f.output, 'receipt.json'), 'utf8'));
+    expect(receipt.producerClosure.source).toBe('steps');
+    expect(receipt.producerClosure.completedAt).toBe('2026-10-15T00:00:52Z');
+    expect(receipt.producerClosure.headerStatus).toBe('in_progress');
+    // the retained raw original still carries the untouched in_progress header
+    const retained = JSON.parse(readFileSync(path.join(f.output, 'metadata/jobs.original.json'), 'utf8'));
+    expect(retained.jobs[0].status).toBe('in_progress');
+    expect(retained.jobs[0].completed_at).toBeNull();
+  } finally { for (const [key, value] of Object.entries(saved)) if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+});
 test('actual queued GitHub attempt admits only its already successful exact normal producer', async () => {
   const observed = JSON.parse(readFileSync(path.resolve('tests/fixtures/legacy-root-queued-run.json'), 'utf8'));
   expect(observed.run.status).toBe('queued');

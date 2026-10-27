@@ -223,7 +223,7 @@ async function acquireProductInput(input: ArtifactAcquisitionInput, output: stri
     if (!registryConsumer && run.event !== 'pull_request' && input.sourceSha !== input.runHeadSha) fail('non-PR build source differs from run head');
     const workflow = await json('workflow', `actions/workflows/${run.workflow_id}`);
     if (workflow.id !== run.workflow_id || !(legacy ? ['.github/workflows/legacy-root-compat.yml', '.github/workflows/candidate.yml'].includes(workflow.path) : nativeOriginals ? [...(candidateRole?['.github/workflows/candidate.yml']:[]),'.github/workflows/agentfs-native-acceptance.yml','.github/workflows/build-qlever-macos-runtime.yml','.github/workflows/publish-qlever-runtime-sdk.yml',CSS_PRODUCT_WORKFLOW,CSS_ROUTED_PRODUCT_WORKFLOW].includes(workflow.path) : registryConsumer ? workflow.path === '.github/workflows/independent-publication.yml' : PRODUCERS.has(workflow.path)) || run.path?.split('@')[0] !== workflow.path) fail('untrusted producer workflow');
-    let producerJob: any, legacyJobs: any;
+    let producerJob: any, producerClosure: { source: string; completedAt: string } | undefined, legacyJobs: any;
     if (legacy) {
       // One metadata budget, including every response body; retries cannot reset it.
       const signal = AbortSignal.timeout(30_000);
@@ -243,8 +243,13 @@ async function acquireProductInput(input: ArtifactAcquisitionInput, output: stri
         if (selected.length !== 1) fail('producer job is not unique');
         const job = selected[0];
         if ((pendingJobId !== undefined && job.id !== pendingJobId) || job.run_id !== input.runId || job.run_attempt !== input.runAttempt || job.head_sha !== input.runHeadSha) fail('producer job identity mismatch');
-        if (job.status === 'completed') {
-          producerJob = context.verifyProducerJob(input, run, workflow, jobs);
+        // Closure is decided by the ONE shared canonical verifier: the original
+        // completed/success header path, or an explicit closure-evidence path when
+        // the header is stale but every retained step is a complete original.
+        const verified = context.verifyProducerClosure(input, run, workflow, jobs);
+        if (verified) {
+          producerJob = verified.job;
+          producerClosure = verified.closure;
           legacyJobs = jobs;
           renameSync(path.join(temporary, name + '.json'), path.join(temporary, 'jobs.json'));
           originals.jobs = { ...originals[name], path: 'metadata/jobs.original.json' };
@@ -258,7 +263,7 @@ async function acquireProductInput(input: ArtifactAcquisitionInput, output: stri
         if (attempt === 5) fail('producer metadata attempt bound exceeded');
         await withinSignal(new Promise<void>(resolve => setTimeout(resolve, 500)), signal);
       }
-      if (!producerJob) fail('terminal successful producer required');
+      if (!producerJob || !producerClosure) fail('terminal successful producer required');
       // Retained separately: the original three-member custody projection stays unchanged.
       delete metadata.jobs;
     }
@@ -273,11 +278,11 @@ async function acquireProductInput(input: ArtifactAcquisitionInput, output: stri
         ? productTargets(workflow.path !== API_PRODUCT_WORKFLOW ? 'css' : 'api').filter(row => row.nativeSourceAvailable||workflow.path===CSS_ROUTED_PRODUCT_WORKFLOW)
           .map(row => `${workflow.path !== API_PRODUCT_WORKFLOW ? 'css' : 'api'}-module-products-${row.target}-${input.sourceSha}-${input.runId}-${input.runAttempt}`)
       : MODULE_TARGETS.flatMap(target => [`afs-module-products-${target.platform}-${target.arch}-${input.sourceSha}-${input.runId}-${input.runAttempt}`, `afs-module-production-${target.platform}-${target.arch}-${input.sourceSha}-${input.runId}-${input.runAttempt}`]);
-    const created = Date.parse(artifact.created_at), started = Date.parse(run.run_started_at), completed = (registryConsumer||candidateRole!==undefined) && run.status==='in_progress' ? Date.now() : Date.parse(legacy ? producerJob.completed_at : run.updated_at);
+    const created = Date.parse(artifact.created_at), started = Date.parse(run.run_started_at), completed = (registryConsumer||candidateRole!==undefined) && run.status==='in_progress' ? Date.now() : Date.parse(legacy ? producerClosure!.completedAt : run.updated_at);
     if (artifact.id !== input.artifactId || !allowedNames.includes(artifact.name) || artifact.expired !== false || artifact.workflow_run?.id !== run.id
       || artifact.workflow_run?.head_sha !== input.runHeadSha || artifact.digest !== 'sha256:' + input.artifactSha256
       || !positive(artifact.size_in_bytes) || artifact.size_in_bytes > limits.packedBytes
-      || ![created, started, completed].every(Number.isFinite) || created < started || created > completed || (legacy && (created < Date.parse(producerJob.started_at) || created > Date.parse(producerJob.completed_at)))) fail('artifact identity/digest/attempt window mismatch');
+      || ![created, started, completed].every(Number.isFinite) || created < started || created > completed || (legacy && (created < Date.parse(producerJob.started_at) || created > Date.parse(producerClosure!.completedAt)))) fail('artifact identity/digest/attempt window mismatch');
     if (legacy) createRequire(import.meta.url)('./lib/legacy-root-artifact-context.cjs').verifyContext(input, metadata, legacyJobs);
     let url = endpoint(`actions/artifacts/${input.artifactId}/zip`);
     let response: Response | undefined;
@@ -307,7 +312,13 @@ async function acquireProductInput(input: ArtifactAcquisitionInput, output: stri
     const cliPublication = workflow.path === CLI_PRODUCT_WORKFLOW && cliPublicationNames.includes(artifact.name);
     const cliTestMaterial = workflow.path === CLI_PRODUCT_WORKFLOW && !cliPublication;
     const receipt = { schemaVersion: 1, kind: legacy ? 'legacy-root-same-run-acquisition' : 'independent-product-artifact-acquisition', status: 'blocked',
-      ...(legacy ? { producerJob: { ...jobsOriginal, path: 'metadata/jobs.original.json' } } : {}),
+      ...(legacy ? { producerJob: { ...jobsOriginal, path: 'metadata/jobs.original.json' },
+        // Explicit closure EVIDENCE, never mutable truth. The retained original
+        // jobs metadata above still carries the untouched API header bytes.
+        producerClosure: { source: producerClosure!.source, completedAt: producerClosure!.completedAt,
+          jobId: producerJob.id, jobName: producerJob.name, runId: producerJob.run_id,
+          runAttempt: producerJob.run_attempt, headSha: producerJob.head_sha,
+          headerStatus: producerJob.status, headerConclusion: producerJob.conclusion } } : {}),
       materialRole: nativeOriginals ? 'native-admission-originals' : registryConsumer ? archiveConsumer?'archive-consumer-originals':'registry-consumer-originals' : legacy ? 'legacy-root-normal-js-originals' : cliPublication ? CLI_PUBLICATION_MATERIAL_ROLE : cliTestMaterial ? 'test-materials' : ([API_PRODUCT_WORKFLOW, CSS_PRODUCT_WORKFLOW,CSS_ROUTED_PRODUCT_WORKFLOW].includes(workflow.path) || (workflow.path === '.github/workflows/agentfs-module-mounted-acceptance.yml' && artifact.name.startsWith('afs-module-production-'))) ? 'controlled-preview-materials' : 'module-product-materials',
       repository: REPOSITORY, expectedSourceSha: input.sourceSha, runHeadSha: input.runHeadSha,
       runId: input.runId, runAttempt: input.runAttempt, artifactId: input.artifactId, workflowPath: workflow.path,
