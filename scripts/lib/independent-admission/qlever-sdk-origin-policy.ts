@@ -2194,7 +2194,41 @@ const SDK83_GROUP:GitHubSourceBindingGroup=Object.freeze({...SDK82_GROUP,
  secondarySelectors:SDK82_GROUP.secondarySelectors,
  secondarySelectorStages:Object.freeze([...(SDK82_GROUP.secondarySelectorStages??[]),Object.freeze([SDK83_STAGE4_BINDING])]),
  sourceBindings:rebindSdk83Rows(SDK82_GROUP.sourceBindings)});
-export const QLEVER_SDK_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...PUBLISHED_SDK_GROUPS,NEXT_SDK_GROUP,INPUT_PLAN_SDK_GROUP,ORM326_SDK_GROUP,SDK19_TELEMETRY_GROUP,CAPTURE_INDEX_SDK_GROUP,SDK78_GROUP,SDK79_GROUP,SDK80_GROUP,SDK81_GROUP,SDK82_GROUP,SDK83_GROUP]);
+/** SDK84 precompiled-header experiment (APPEND-ONLY, UNPUBLISHED).
+ * SDK83 is the WHOLE inherited base: selectors, stage 1-4, secondarySelectors,
+ * candidate service relationship and outer executor are byte-identical. The
+ * one-variable change flips upstream `USE_PRECOMPILED_HEADERS` OFF->ON for the
+ * Linux SDK recipe and keeps the prior-SDK validator/contract in lockstep, so
+ * exactly TWO existing mandatory roles move:
+ *   1. `qlever/scripts/build-qlever-runtime-sdk.sh` (hashed flag + cmake arg);
+ *   2. `qlever/scripts/validate-prior-sdk.py` (required prior-cache flag).
+ * Both are re-pins of pre-owned roles. PCH only caches header parsing: it does
+ * not merge translation units, add targets, or relax any lease/observation,
+ * source/material budget or ABI boundary. The macOS runtime stays OFF. */
+const SDK84_SOURCE_HASHES:Readonly<Record<string,string>>=Object.freeze({
+ 'qlever/scripts/build-qlever-runtime-sdk.sh':'0f5a6e7bc1ab900a1bf1fd8368b5ae77ff72b908e8f4812495e5c4497f789c13',
+ 'qlever/scripts/validate-prior-sdk.py':'54c3d0df6cc4304fab43a48416a799b6af3309def5ed7f772127c15c28ac516e',
+ // SDK81's regression test is an EXISTING mandatory role whose live frontier
+ // counts moved for this append (83/84/99/196 -> 84/85/99/196), so its bytes
+ // genuinely changed and it must be re-pinned rather than dropped.
+ 'tests/scripts/candidate-producer-attempt-binding.test.ts':'501df8461fac5846e2bb11f251f59e71819e120f88544fb6128b5d4ea9d17d47'
+});
+const rebindSdk84Rows=(rows:readonly GitHubSourceBinding[]|undefined)=>Object.freeze((rows??[]).map(row=>Object.freeze({...row,sha256:SDK84_SOURCE_HASHES[row.path]??row.sha256})));
+const SDK84_BUILD_RECIPE='qlever/scripts/build-qlever-runtime-sdk.sh';
+const SDK84_STAGE5_BINDING:GitHubSourceBinding=Object.freeze({path:SDK84_BUILD_RECIPE,sha256:SDK84_SOURCE_HASHES[SDK84_BUILD_RECIPE]!});
+const SDK84_GROUP:GitHubSourceBindingGroup=Object.freeze({...SDK83_GROUP,
+ selectors:SDK83_GROUP.selectors,
+ // The build recipe is ALREADY a stage-0 secondarySelector of every SDK70-83
+ // survivor, so its new bytes must be re-hashed there too; otherwise stage 0 and
+ // stage 5 would declare two different values for the same owned role.
+ secondarySelectors:rebindSdk84Rows(SDK83_GROUP.secondarySelectors),
+ // Stage 5 carries the SDK build-recipe role, which every SDK70-83 stage-0
+ // survivor already owns as a mandatory sourceBinding. The value alone separates
+ // this PCH slice from SDK83, so no new discriminator and no generic-selector
+ // change is introduced.
+ secondarySelectorStages:Object.freeze([...(SDK83_GROUP.secondarySelectorStages??[]),Object.freeze([SDK84_STAGE5_BINDING])]),
+ sourceBindings:rebindSdk84Rows(SDK83_GROUP.sourceBindings)});
+export const QLEVER_SDK_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...PUBLISHED_SDK_GROUPS,NEXT_SDK_GROUP,INPUT_PLAN_SDK_GROUP,ORM326_SDK_GROUP,SDK19_TELEMETRY_GROUP,CAPTURE_INDEX_SDK_GROUP,SDK78_GROUP,SDK79_GROUP,SDK80_GROUP,SDK81_GROUP,SDK82_GROUP,SDK83_GROUP,SDK84_GROUP]);
 export const QLEVER_LINUX_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([
  {selectors:sdkSelectors('cbedd3e2478de5e22108b6689c595a658ca891c9bd47552caec830e86f47fea8','a75c7be34b5c5fafff85c0d67d814ba1aaf14bcf5db5404a860fe3b9a11009bd'),sourceBindings:QLEVER_LINUX_SOURCE_BINDINGS.filter(row=>!['.github/workflows/publish-qlever-runtime-sdk.yml','.github/workflows/build-qlever-linux-runtime.yml'].includes(row.path))},
  ...QLEVER_SDK_EXECUTION_GROUPS,

@@ -13,9 +13,10 @@ const hash=(value:string|Buffer)=>createHash('sha256').update(value).digest('hex
 const observed=(group:GitHubSourceBindingGroup)=>new Map([...group.selectors,...(group.secondarySelectors??[])].map(row=>[sourceBindingKey(row),row.sha256]));
 test('all a101 historical SDK and controller groups preserve their complete own original binding sets',()=>{
  for(const [groups,old] of [[SDK,historical.sdk],[CONSUMER,historical.consumer],[CI,historical.ci]] as const){
-  // Historical deltas 60/84/168 are unchanged; the SDK80 append contributes
-  // exactly one new whole group to each family, so the live delta is +1.
-  expect(groups.length).toBe(old.length+(groups===SDK?64:groups===CI?176:88));
+  // Historical deltas 60/84/168 are unchanged; each SDK append contributes
+  // exactly one new whole group to the SDK family (SDK84 included), while the
+  // consumer/CI deltas here are unchanged.
+  expect(groups.length).toBe(old.length+(groups===SDK?65:groups===CI?176:88));
   for(const previous of old){
    const matches=groups.filter(group=>JSON.stringify(group.selectors)===JSON.stringify(previous.selectors)&&hash(JSON.stringify(group.sourceBindings))===previous.sourceBindingsSha256);expect(matches).toHaveLength(1);const group=matches[0]!;
    expect(group.selectors).toEqual(previous.selectors);

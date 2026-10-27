@@ -87,7 +87,14 @@ payload = {
         "flags": {
             "CHEAPER_COMPILATION": "ON",
             "RANGES_NATIVE": "OFF",
-            "USE_PRECOMPILED_HEADERS": "OFF",
+            # SDK84 PCH experiment: precompiled headers are upstream-supported
+            # and cover the real engine targets (parser/engine/sparqlExpressions/
+            # index/util/mediaTypes/http/rdfTypes/rdfEscaping, with qlever-server
+            # REUSE_FROM engine). They only cache header parsing; they neither
+            # merge translation units nor change the configured target set. The
+            # flag stays part of this hashed contract, so an OFF cache identity
+            # can never satisfy an ON build.
+            "USE_PRECOMPILED_HEADERS": "ON",
             "USE_IO_URING": "OFF",
             # Production-only SDK profile. Upstream defaults remain ON, so an
             # ordinary developer configure is unchanged; the SDK explicitly
@@ -231,7 +238,7 @@ QUERY
     -DCMAKE_CXX_COMPILER_LAUNCHER= \
     -DCHEAPER_COMPILATION=ON \
     -DRANGES_NATIVE=OFF \
-    -DUSE_PRECOMPILED_HEADERS=OFF \
+    -DUSE_PRECOMPILED_HEADERS=ON \
     -DUSE_IO_URING=OFF \
     -DXPOD_SDK_BUILD_BENCHMARKS=OFF \
     -DXPOD_SDK_BUILD_TESTS=OFF \

@@ -59,7 +59,8 @@ const helper=(file:string,name:string)=>decodeCatalog('scripts/lib/independent-a
 it('every published whole prefix is byte-identical to the captured 7863 baseline',()=>{
   // LIVE frontier (SDK83 appended): the historical SDK82 slice is proven by its
   // own frozen prefix below, not by these current lengths.
-  expect(SDK).toHaveLength(83);expect(LINUX).toHaveLength(84);
+  // LIVE frontier (SDK84 appended); this slice is proven by its frozen prefix.
+  expect(SDK).toHaveLength(84);expect(LINUX).toHaveLength(85);
   expect(CONSUMER).toHaveLength(99);expect(CI).toHaveLength(196);
   expect(API).toHaveLength(29);expect(CLI).toHaveLength(12);
   prefix(SDK.slice(0,81),OLD_SDK_GROUPS,'sdk');
