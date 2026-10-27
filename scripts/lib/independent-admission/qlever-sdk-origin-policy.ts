@@ -2250,7 +2250,26 @@ const SDK85_GROUP:GitHubSourceBindingGroup=Object.freeze({...SDK84_GROUP,
  secondarySelectors:rebindSdk85Rows(SDK84_GROUP.secondarySelectors),
  secondarySelectorStages:Object.freeze((SDK84_GROUP.secondarySelectorStages??[]).map(stage=>rebindSdk85Rows(stage))),
  sourceBindings:rebindSdk85Rows(SDK84_GROUP.sourceBindings)});
-export const QLEVER_SDK_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...PUBLISHED_SDK_GROUPS,NEXT_SDK_GROUP,INPUT_PLAN_SDK_GROUP,ORM326_SDK_GROUP,SDK19_TELEMETRY_GROUP,CAPTURE_INDEX_SDK_GROUP,SDK78_GROUP,SDK79_GROUP,SDK80_GROUP,SDK81_GROUP,SDK82_GROUP,SDK83_GROUP,SDK84_GROUP,SDK85_GROUP]);
+/** SDK86 metadata/ownership slice (APPEND-ONLY, UNPUBLISHED).
+ * SDK85 is the WHOLE inherited base; selectors are unchanged and NO stage is added.
+ * Exactly the roles whose bytes move are re-pinned: both runtime helper modules
+ * (each already owns a stage-0 secondarySelector and/or a sourceBinding) and the
+ * mandatory frontier leaf. This slice composes the retained v11 timestamp/link
+ * metadata correction with the component-level task-ownership descriptor-sharing
+ * simplification; every lease, cadence, deadline and byte cap is unchanged. */
+const SDK86_SOURCE_HASHES:Readonly<Record<string,string>>=Object.freeze({
+ 'qlever/scripts/sdk-generation-multiprocess-bindings.py':'c59c84466007a7641fa69147bfb5f3301a259085f064ceea0962b04d84f23233',
+ 'qlever/scripts/sdk-ptrace-execution.py':'1bb9533e6a499b35347c2bc5d66644360cf6eff733251c9fac15d2f704e0662d',
+ // SDK81's mandatory regression leaf: sourceBinding only; its bytes move with the frontier counts.
+ 'tests/scripts/candidate-producer-attempt-binding.test.ts':'6018218f537a88607be392cb081a53cbdc64cf0fd3f21a00df6f7f9eaf178b76'
+});
+const rebindSdk86Rows=(rows:readonly GitHubSourceBinding[]|undefined)=>Object.freeze((rows??[]).map(row=>Object.freeze({...row,sha256:SDK86_SOURCE_HASHES[row.path]??row.sha256})));
+const SDK86_GROUP:GitHubSourceBindingGroup=Object.freeze({...SDK85_GROUP,
+ selectors:SDK85_GROUP.selectors,
+ secondarySelectors:rebindSdk86Rows(SDK85_GROUP.secondarySelectors),
+ secondarySelectorStages:Object.freeze((SDK85_GROUP.secondarySelectorStages??[]).map(stage=>rebindSdk86Rows(stage))),
+ sourceBindings:rebindSdk86Rows(SDK85_GROUP.sourceBindings)});
+export const QLEVER_SDK_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...PUBLISHED_SDK_GROUPS,NEXT_SDK_GROUP,INPUT_PLAN_SDK_GROUP,ORM326_SDK_GROUP,SDK19_TELEMETRY_GROUP,CAPTURE_INDEX_SDK_GROUP,SDK78_GROUP,SDK79_GROUP,SDK80_GROUP,SDK81_GROUP,SDK82_GROUP,SDK83_GROUP,SDK84_GROUP,SDK85_GROUP,SDK86_GROUP]);
 export const QLEVER_LINUX_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([
  {selectors:sdkSelectors('cbedd3e2478de5e22108b6689c595a658ca891c9bd47552caec830e86f47fea8','a75c7be34b5c5fafff85c0d67d814ba1aaf14bcf5db5404a860fe3b9a11009bd'),sourceBindings:QLEVER_LINUX_SOURCE_BINDINGS.filter(row=>!['.github/workflows/publish-qlever-runtime-sdk.yml','.github/workflows/build-qlever-linux-runtime.yml'].includes(row.path))},
  ...QLEVER_SDK_EXECUTION_GROUPS,

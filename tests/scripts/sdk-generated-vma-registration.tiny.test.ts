@@ -4,7 +4,7 @@ import{completeObserved,observedSecondaryBindings}from'./source-binding-group.fi
 const hash=(v:unknown)=>createHash('sha256').update(JSON.stringify(v)).digest('hex'),groups={api,sdk,consumer,ci};
 test('SDK38 preserves actual 202 published whole recipes and binds only its composed actual import closure',()=>{
  for(const[name,values]of Object.entries(groups)){const old=before.hashes[name as keyof typeof before.hashes];for(let i=0;i<old.length;i++)expect(hash(values[i])).toBe(old[i]!);}
- expect([api.length,sdk.length,consumer.length,ci.length,current.length]).toEqual([29,85,99,196,504]);
+ expect([api.length,sdk.length,consumer.length,ci.length,current.length]).toEqual([29,86,99,196,504]);
  for(const row of [...current,...sdk.at(-1)!.selectors,...sdk.at(-1)!.sourceBindings])expect(createHash('sha256').update(fs.readFileSync(row.path)).digest('hex')).toBe(row.sha256);
  const name='qlever/scripts/sdk-generated-vma-originals.py';expect(sdk.at(-1)!.sourceBindings.some(row=>row.path===name)).toBe(true);expect(sdk.slice(0,37).some(group=>group.sourceBindings.some(row=>row.path===name))).toBe(false);expect(api.some(group=>group.sourceBindings.some(row=>row.path===name))).toBe(false);
 });

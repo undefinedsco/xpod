@@ -8,11 +8,13 @@ Xpod 发布必须先经过 Release Candidate，再由 stable tag 提升同一个
 
 ## 完整旧包兼容门禁
 
-旧包 producer 的 GitHub job 状态可能在依赖作业完成后仍返回 `in_progress`。获取器仅对同一 run、attempt、head 和唯一 job 身份的非终态元数据做有界重取：最多 6 次、间隔 500 ms，共用 30 秒截止时间与 1 MiB 响应预算，响应体读取及取消清理也受同一期限约束。最终仍须通过原有 completed/success、artifact 时间及摘要校验，只保存最后成功响应的原始字节；终态失败与身份变化立即拒绝。这不新增逐 step 校验，也不能代替实际 18 条兼容通道通过。
+旧包 producer 的 GitHub job 状态可能在依赖作业完成后仍返回 `in_progress`。获取器仅对同一 run、attempt、head 和唯一 job 身份的非终态元数据做有界重取：最多 6 次、间隔 500 ms，共用 30 秒截止时间与 1 MiB 响应预算，响应体读取及取消清理也受同一期限约束。最终须通过下述显式终态或步骤闭包判定，以及原有 artifact 时间和摘要校验，只保存最后成功响应的原始字节；终态失败与身份变化立即拒绝。步骤闭包不能代替实际 18 条兼容通道通过。
 
 `legacy-root-compat.yml` 独立承担完整旧服务包的 18 条兼容通道：Node/Bun 消费者 × Linux/macOS/Windows × Node 22/24/25。每条通道执行原七阶段：frozen install、平台包版本检查、完整 build、pack、包校验、消费者安装、消费者 smoke。独立 CLI 与模块 producer 的成功不能代替这些检查，也不能把失败降为可选项。
 
 PR 和 `main` push 直接触发该工作流；`staging` push 由 `candidate.yml` 调用同一完整矩阵，避免同时再运行一份独立矩阵。RC 仍须保留同次 run 的全部 18 条通道及原始证据。
+
+producer job 的终态判定以**保留的原始 job 记录**为准，而不是只看可能滞后的 API 头。两条路径都保留完整身份与工件校验：头为 `completed`/`success` 时保留原有成功路径；仅当头处于受支持的非终态，且 `conclusion` 与 `completed_at` 均为 null 时，才启用显式闭包证据——必须存在唯一且位于末尾的 `Complete job` 步骤（`success` 且闭合时间有效）、步骤号严格递增的唯一安全整数、所有步骤 `completed` 且结论仅为 `success`/`skipped`、normal producer 的 produce 步骤与工件上传步骤均 `success` 且按 produce -> upload -> closure 因果排序、且所有步骤窗口落在真实 start 与闭合时间之内。任何 `failure`/`cancelled`/`timed_out` 等显式终态失败即使步骤全绿也一律拒绝；部分信息保留原有有界重试，未知状态、重复闭合或跳过关键步骤不得用于闭包判定。闭包来源与闭合时间作为**显式证据**写入 receipt（`producerClosure`），fetched job 本身绝不被改写，原始 metadata 仍逐字节保留 `in_progress` 头；acquirer 与下游 custody 复用同一个共享验证器，不允许以"步骤看起来成功"替代头状态的静默 fallback。
 
 Windows 保留平台默认 shell/PATH。完整 build 产生的 UI 变化由 Vite 与验收器共用 `ui/build-targets.json` 声明输出边界：旧的 tracked 输出删除记录与本次 Rollup/publicDir 产物清单分别验证，保留完整 Git 状态；源码、锁文件和未知静态文件漂移继续阻断。不能通过忽略整个 `static/` 绕过源码检查。
 

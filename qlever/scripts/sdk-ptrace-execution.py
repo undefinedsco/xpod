@@ -43,7 +43,7 @@ PHASE_PROGRESS_BUCKETS=('wait_one','event','pending_captures','resume','barrier'
 # Every branch of pending_captures_original that can hold one long span.
 # Closed constant: an unknown name is never recorded, so the snapshot cannot
 # grow with observed data.
-PENDING_CAPTURE_SUBSTEPS=('capture','capture_write','capture_rename','capture_metadata',
+PENDING_CAPTURE_SUBSTEPS=('capture','capture_write','capture_rename','capture_metadata','capture_link_metadata',
                          'generated_vma_capture','capture_process_authority',
                          'capture_queued_identity','checkpoint_append_boundaries',
                          'checkpoint_appends','observe_tool_stop','capture_bti_pending',
@@ -440,6 +440,62 @@ def bounded_fd_slot_names(pid,local,maximum=1024):
 def state(pid):
     fields=Path('/proc',str(pid),'stat').read_text().rsplit(')',1)[1].split();return fields[0]
 
+# ---- v4 timestamp metadata support (scratch candidate) -------------------
+# Same proof boundary as chmod: raw argument observation at a fresh all-stop,
+# a held descriptor whose fstat proves the inode identity, a successful exit,
+# and a post-stat transition. Raw operand ADDRESSES are recorded so replay can
+# bind the captured bytes to the actual entry arguments.
+TIMESPEC_ABI_BYTES=32
+TIMESTAMP_MODEL='actual-utimensat-timespec-v6'
+TIMESTAMP_CHAIN_MODEL='actual-rename-mode-timestamp-chain-v6'
+UTIME_NOW_NS=1073741823
+UTIME_OMIT_NS=1073741822
+TIMESTAMP_SYSCALLS={0xc000003e:280,0xc00000b7:88}  # utimensat; futimens = NULL pathname
+
+class _Timespec64(ctypes.Structure):
+    _fields_=[('tv_sec',ctypes.c_int64),('tv_nsec',ctypes.c_int64)]
+
+def read_stopped_bytes(pid,address,size):
+    """Exact bytes from a STOPPED tracee; caller guarantees the all-stop."""
+    assert type(size) is int and 0<size<=4096,'bounded stopped read size'
+    assert type(address) is int and 0<address<1<<64 and address+size<1<<64,'bounded stopped range'
+    descriptor=os.open('/proc/'+str(pid)+'/mem',os.O_RDONLY|os.O_CLOEXEC)
+    try:data=os.pread(descriptor,size,address)
+    finally:os.close(descriptor)
+    assert len(data)==size,'stopped read incomplete'
+    return data
+
+def read_stopped_cstring(pid,address,maximum=4096):
+    assert type(address) is int and 0<address<1<<64,'bounded pathname address'
+    descriptor=os.open('/proc/'+str(pid)+'/mem',os.O_RDONLY|os.O_CLOEXEC)
+    data=bytearray()
+    try:
+        while len(data)<maximum:
+            block=os.pread(descriptor,min(256,maximum-len(data)),address+len(data))
+            assert block,'pathname read ended without NUL'
+            if b'\0' in block:data.extend(block.split(b'\0',1)[0]);return bytes(data)
+            data.extend(block)
+    finally:os.close(descriptor)
+    raise ValueError('tracee pathname bound')
+
+# ONE decoder: the shared binder implementation (imported above), so the observer,
+# retained chain and raw replay cannot drift on ABI width or nsec validation.
+decode_timespec=bindings.decode_timespec
+
+# ---- v8 link/unlink inode-metadata effect support (scratch candidate) ----
+# link/unlink change nlink and therefore ctime on a regular file. They are
+# recorded through the SAME window/transition interface as chmod/timestamp so the
+# retained chain sees an actual operation endpoint instead of an unexplained gap.
+LINK_MODEL='actual-link-inode-effect-v8'
+LINK_SYSCALLS={0xc000003e:dict(link=86,linkat=265,unlink=87,unlinkat=263),
+               0xc00000b7:dict(linkat=37,unlinkat=35)}
+
+def link_metadata_form(arch,nr):
+    table=LINK_SYSCALLS.get(arch) or {}
+    for name,number in table.items():
+        if number==nr:return name
+    return None
+
 def path_argument(pid,dirfd,address):
     value=single.cstring(pid,address)
     if value.startswith('/'):return os.path.normpath(value)
@@ -666,7 +722,7 @@ class Observer(CapturesMixin):
         self.prepared_inputs={};self.prepared_sealed=False;self.domain_bytes=0;self.claim_bytes=dict.fromkeys(('raw-wire','capture-body','stdio','provider-other'),0);self.domain_lock=threading.Lock();self.pump_errors=[];self.maximum_stdio_bytes=maximum_stdio_bytes if maximum_stdio_bytes is not None else maximum_file_bytes
         self.compressed_raw=compressed_raw;self.logical_raw_bytes=0;self.raw_logical_limit=json.loads((ROOT/'scripts/lib/module-artifact-limits.json').read_text())['sourceMaterialBytes'];self.require_success=require_success;self.raw_bytes_completed=0;self.maximum_processes=maximum_processes;self.shard_bytes=shard_bytes
         self.deadline_monotonic=deadline_monotonic;self.check_budget=check_budget;self.maximum_bytes=maximum_bytes;self.maximum_file_bytes=maximum_file_bytes;self.selected_names=selected_names
-        self.out=Path(out);self.capture_dir=self.out;self.source=str(source);self.build=str(build);self.tasks={};self.seq=0;self.records=[];self.initialize_capture_state();self.retained=set();self.producers={};self.write_states={};self.write_projections={};self.append_chains={};self.budget_context={};self.metadata_states=[];self.rename_records=[];self.consumers=[];self.raw=None;self.deadline=0;self.pausing=False;self.root=None;self.root_code=None;self.failures=[];self.current_phase=None;self.unknown_stops={};self.capture_bytes=0;self.capture_entities={};self.content_capture_pool={};self.snapshot_telemetry=None;self.snapshot_telemetry_completed=None;self.snapshot_telemetry_failure=None;self.mremap_proof_active=False;self.mremap_barriers=0;self.mremapDeferred=None;self.exclusive=None;self.wait_references=[]
+        self.out=Path(out);self.capture_dir=self.out;self.source=str(source);self.build=str(build);self.tasks={};self.seq=0;self.records=[];self.initialize_capture_state();self.retained=set();self.producers={};self.write_states={};self.write_projections={};self.append_chains={};self.budget_context={};self.metadata_states=[];self.timespec_originals={};self.rename_records=[];self.consumers=[];self.raw=None;self.deadline=0;self.pausing=False;self.root=None;self.root_code=None;self.failures=[];self.current_phase=None;self.unknown_stops={};self.capture_bytes=0;self.capture_entities={};self.content_capture_pool={};self.snapshot_telemetry=None;self.snapshot_telemetry_completed=None;self.snapshot_telemetry_failure=None;self.mremap_proof_active=False;self.mremap_barriers=0;self.mremapDeferred=None;self.exclusive=None;self.wait_references=[]
         self.lifetime_leases=None;self.lifetime_phase=None;self.lifetime_acquired={};self.lifetime_by_identity={};self.authority_observed=set()
         assert type(generated_vma_output) is bool and (not generated_vma_output or shared_tasks and capture_toolchain),'generated VMA requires existing actual shared-task/tool observation'
         self.generated_build_root=generated_vma_module.validated_build_root(generated_build_root)
@@ -917,18 +973,32 @@ class Observer(CapturesMixin):
         return self.instrument('verify_task_ownership',self.verify_task_ownership_original,terminal_peers)
     def verify_task_ownership_original(self,terminal_peers=()):
         excluded=set(terminal_peers);live={pid:row for pid,row in self.tasks.items() if not row['exited']and pid not in excluded};groups={};tables={};ownership=[]
+        # Declared-table multiplicity over the EXACT filtered live set. A single
+        # owner cannot demonstrate CLONE_FILES equality with itself, so its
+        # descriptor values are never compared; the bounded slot ENUMERATION and
+        # its 1024-slot cap still run for every owner below, at the original point.
+        counts={}
+        for row in live.values():counts[row['fdTable']]=counts.get(row['fdTable'],0)+1
         self.check()
         try:
             for pid,row in sorted(live.items()):
                 self.check_deadline();tgid=self.actual_tgid(pid);assert tgid==row['tgid'],'actual TGID differs from kernel clone binding';groups.setdefault(tgid,[]).append(pid)
-                descriptors=[]
+                # Enumerated ONCE per owner for every live owner: keeps the real
+                # 1024-slot bound and the cheap deadline refusal at the original
+                # point. Only a shared declared table needs the per-owner
+                # descriptor snapshot that the equality assertion consumes.
+                shared=counts[row['fdTable']]>1
+                descriptors=[] if shared else None
                 # This whole live cohort is already bracketed by the entry and
                 # finally self.check() below, so each member's read-only FD name
                 # scan pays only the cheap deadline/stdio refusal. Standalone
                 # bounded_fd_slots keeps its full entry/finally guards.
                 for value in bounded_fd_slot_names(pid,self.check_deadline):
+                    if not shared:continue
                     self.check_deadline();fd=int(value);item=os.stat('/proc/'+str(pid)+'/fd/'+value);flags,position=descriptor_fields(pid,fd);descriptors.append([fd,probe.identity(item),flags,position])
-                table=row['fdTable'];prior=tables.setdefault(table,descriptors);assert prior==descriptors,'CLONE_FILES table differs between stopped owners'
+                table=row['fdTable']
+                if shared:
+                    prior=tables.setdefault(table,descriptors);assert prior==descriptors,'CLONE_FILES table differs between stopped owners'
                 ownership.append(dict(tid=pid,tgid=tgid,fdTable=table))
         finally:
             self.check()
@@ -1060,22 +1130,196 @@ class Observer(CapturesMixin):
     def retained_metadata_chain(self,producer,consumer):
         return bindings.retained_metadata_chain(producer,consumer,self.metadata_states)
     def capture_metadata(self,pid):
-        barrier=self.barrier();task=self.tasks[pid];path,access,mode=task.pop('metadataPath');held=os.open(access,os.O_RDONLY|os.O_CLOEXEC)
+        # Fresh all-stop BEFORE any namespace/memory read; the build-scope decision
+        # and target resolution both happen here, never at the entry stop.
+        barrier=self.barrier();task=self.tasks[pid];meta=task.pop('metadataPath')
+        assert self.exclusive is None
+        if 'model' not in meta:
+            path,access,mode=meta
+            held=os.open(access,os.O_RDONLY|os.O_CLOEXEC)
+            try:
+                identity=probe.identity(os.fstat(held));assert stat.S_ISREG(identity[2])
+                row=self.emit(dict(kind='actual-mode-window',pid=pid,path=path,entrySequence=task['entry']['sequence'],barrierSequence=barrier['sequence'],beforeIdentity=identity,requestedMode=mode))
+                task['metadataWindow']=(row,held,access,meta);self.retained.add(held);held=None;return row
+            finally:
+                if held is not None:os.close(held)
+        raw_path=b'';namespace_hex=None;named=None
+        if meta['form']=='path':
+            raw_path=read_stopped_cstring(pid,meta['pathAddress'])
+            if raw_path.startswith(b'/'):namespace_hex=None;named=os.fsdecode(raw_path)
+            else:
+                base=os.readlink('/proc/'+str(pid)+'/cwd') if meta['dirfd'] in [0xffffffffffffff9c,0xffffff9c,-100] else fdpath(pid,meta['dirfd'])
+                assert base,'timestamp namespace base unavailable'
+                namespace_hex=base.encode().hex()
+                named=os.path.normpath(base+'/'+os.fsdecode(raw_path))
+            access=named
+        else:
+            # fd form: follow the /proc/<pid>/fd/N magic link, exactly like the
+            # existing chmod fd path does (follow_symlinks=True for /proc paths).
+            named=fdpath(pid,meta['dirfd'])
+            assert named,'timestamp fd target unavailable at all-stop'
+            namespace_hex=named.encode().hex()
+            access='/proc/'+str(pid)+'/fd/'+str(meta['dirfd'])
+        if not (named and named.startswith(self.build+'/')):
+            # Honest fail-closed record: outside the observed build root, so no
+            # window is claimed. Not a product restriction, just scope.
+            self.emit(dict(kind='timestamp-target-unobserved',pid=pid,entrySequence=task['entry']['sequence'],
+                           form=meta['form'],resolved=bool(named),
+                           underBuild=bool(named and named.startswith(self.build+'/')),
+                           reason='resolved target is absent or outside the observed generated build root'))
+            return None
+        times_hex=None
+        if meta['timesAddress']!=0:
+            times_hex=read_stopped_bytes(pid,meta['timesAddress'],TIMESPEC_ABI_BYTES).hex()
+        # utimensat(2) with flags==0 FOLLOWS: a symlink operand mutates its regular
+        # target, so the followed stat decides. A directory or other non-regular
+        # operand mutates no regular inode and is honestly out of this contract.
+        followed=probe.identity(os.stat(access,follow_symlinks=True))
+        if not stat.S_ISREG(followed[2]):
+            self.emit(dict(kind='timestamp-target-unobserved',pid=pid,entrySequence=task['entry']['sequence'],
+                           form=meta['form'],resolved=True,regular=False,
+                           reason='followed utimensat target is not a regular file'))
+            return None
+        held=os.open(access,os.O_RDONLY|os.O_CLOEXEC)
         try:
             identity=probe.identity(os.fstat(held));assert stat.S_ISREG(identity[2])
-            row=self.emit(dict(kind='actual-mode-window',pid=pid,path=path,entrySequence=task['entry']['sequence'],barrierSequence=barrier['sequence'],beforeIdentity=identity,requestedMode=mode))
-            task['metadataWindow']=(row,held,access);self.retained.add(held);held=None;return row
-        finally:
-            if held is not None:os.close(held)
+            assert followed==identity,'named target does not resolve to the held inode'
+        except BaseException:
+            os.close(held);raise
+        payload=dict(model=TIMESTAMP_MODEL,arch=meta['entryArch'],syscall=meta['entryNr'],form=meta['form'],
+                     pathAddress=meta['pathAddress'],timesAddress=meta['timesAddress'],
+                     dirfd=meta['dirfd'],flags=meta['flags'],pathHex=raw_path.hex(),
+                     namespaceHex=namespace_hex,timesHex=times_hex)
+        digest=hashlib.sha256(json.dumps(payload,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+        operand=self.emit(dict(kind='kernel-metadata-args-original',pid=pid,entrySequence=task['entry']['sequence'],
+                               barrierSequence=barrier['sequence'],operandSha256=digest,**payload))
+        decoded=None if times_hex is None else [list(p) for p in decode_timespec(bytes.fromhex(times_hex))]
+        row=self.emit(dict(kind='actual-timestamp-window',model=TIMESTAMP_MODEL,pid=pid,path=named,
+                           entrySequence=task['entry']['sequence'],barrierSequence=barrier['sequence'],
+                           beforeIdentity=identity,argsOriginalSequence=operand['sequence'],
+                           timesAbsent=times_hex is None,times=decoded,
+                           entryArch=meta['entryArch'],entryNr=meta['entryNr']))
+        self.timespec_originals[operand['sequence']]=operand
+        task['metadataWindow']=(row,held,access,meta);self.retained.add(held);held=None;return row
     def complete_metadata(self,pid,entry,exit):
-        row,held,access=self.tasks[pid].pop('metadataWindow')
+        if self.tasks[pid].get('metadataWindow') is None:
+            # unobserved/out-of-scope target: no window was claimed
+            self.tasks[pid].pop('metadataWindow',None);return
+        row,held,access,meta=self.tasks[pid].pop('metadataWindow')
         try:
-            identity=probe.identity(os.fstat(held));assert not exit['isError'] and exit['result']==0 and self.exclusive==(pid,entry['sequence']),'actual chmod did not complete exclusively'
-            before=row['beforeIdentity'];assert identity[:2]==before[:2] and identity[3:5]==before[3:5] and stat.S_IFMT(identity[2])==stat.S_IFMT(before[2]) and stat.S_IMODE(identity[2])==row['requestedMode']&0o7777,'actual chmod changed file bytes/identity or wrong mode'
-            assert probe.identity(os.stat(access,follow_symlinks=access.startswith('/proc/')))==identity,'actual chmod access path changed'
-            change=self.emit(dict(kind='actual-mode-transition',pid=pid,entrySequence=entry['sequence'],windowSequence=row['sequence'],exitSequence=exit['sequence'],afterIdentity=identity,result=exit['result'],isError=exit['isError']))
+            identity=probe.identity(os.fstat(held))
+            assert not exit['isError'] and exit['result']==0 and self.exclusive==(pid,entry['sequence']),'actual metadata operation did not complete exclusively'
+            before=row['beforeIdentity']
+            if row['kind']=='actual-link-window':
+                # Unchanged dev/ino/mode/size/mtime; ctime and nlink are the effects.
+                assert identity[:4]==before[:4] and identity[4]==before[4],'actual link changed inode/mode/size/mtime'
+                before_links=row['beforeLinks']
+                operand=self.args_original(row)
+                if meta['form'] in ('link','linkat'):
+                    want=before_links+1
+                    assert os.fstat(held).st_nlink==want,'actual link nlink effect differs'
+                    # NOW the destination must exist and resolve to the SAME inode.
+                    destination=os.fsdecode(bytes.fromhex(operand['newPathHex']))
+                    if operand['newNamespaceHex']:
+                        destination=os.path.normpath(os.fsdecode(bytes.fromhex(operand['newNamespaceHex']))+'/'+destination)
+                    destination_identity=probe.identity(os.stat(destination,follow_symlinks=False))
+                    assert destination_identity==identity,'actual link destination does not resolve to the held inode'
+                else:
+                    want=before_links-1
+                    assert os.fstat(held).st_nlink==want,'actual unlink nlink effect differs'
+                    # The removed pathname is expected to be absent; its absence is the
+                    # evidence, never a requirement that it still exist.
+                    try:os.stat(row.get('removedPath') or os.fsdecode(bytes.fromhex(operand['newPathHex'])))
+                    except FileNotFoundError:pass
+                    else:raise AssertionError('actual unlink left the removed pathname present')
+                change=self.emit(dict(kind='actual-link-transition',model=LINK_MODEL,pid=pid,entrySequence=entry['sequence'],windowSequence=row['sequence'],exitSequence=exit['sequence'],afterIdentity=identity,afterLinks=want,result=exit['result'],isError=exit['isError']))
+                self.metadata_states.append((row,change));return
+            if 'model' not in meta:
+                assert identity[:2]==before[:2] and identity[3:5]==before[3:5] and stat.S_IFMT(identity[2])==stat.S_IFMT(before[2]) and stat.S_IMODE(identity[2])==row['requestedMode']&0o7777,'actual chmod changed file bytes/identity or wrong mode'
+                assert probe.identity(os.stat(access,follow_symlinks=access.startswith('/proc/')))==identity,'actual chmod access path changed'
+                change=self.emit(dict(kind='actual-mode-transition',pid=pid,entrySequence=entry['sequence'],windowSequence=row['sequence'],exitSequence=exit['sequence'],afterIdentity=identity,result=exit['result'],isError=exit['isError']))
+            else:
+                assert identity[:4]==before[:4] and stat.S_IMODE(identity[2])==stat.S_IMODE(before[2]),'actual timestamp changed inode/mode/size'
+                if not row['timesAbsent']:
+                    bindings.timestamp_effect(before,identity,decode_timespec(bytes.fromhex(self.args_original(row)['timesHex'])))
+                # utimensat with flags==0 follows, so the post-check must follow too.
+                assert probe.identity(os.stat(access,follow_symlinks=True))==identity,'actual timestamp access path changed'
+                change=self.emit(dict(kind='actual-timestamp-transition',model=TIMESTAMP_MODEL,pid=pid,entrySequence=entry['sequence'],windowSequence=row['sequence'],exitSequence=exit['sequence'],afterIdentity=identity,result=exit['result'],isError=exit['isError']))
             self.metadata_states.append((row,change))
         finally:os.close(held);self.retained.remove(held)
+    def capture_link_metadata(self,pid):
+        """Entry all-stop: hold the EXISTING inode the operation acts on.
+
+        For link/linkat the destination does not exist yet, so it is NOT stat'ed
+        here; only the actual existing SOURCE is held and identity-proven. For
+        unlink/unlinkat the target exists and is held. Destination resolution and
+        its post-exit existence are checked after the exclusive successful exit.
+        """
+        barrier=self.barrier();task=self.tasks[pid];meta=task.pop('linkMetadata')
+        assert self.exclusive is None
+        def resolve(dirfd,address):
+            raw=read_stopped_cstring(pid,address)
+            if raw.startswith(b'/'):target=raw.decode();namespace=None
+            else:
+                relative_to_cwd=dirfd is None or dirfd in [0xffffffffffffff9c,0xffffff9c,-100]
+                base=os.readlink('/proc/'+str(pid)+'/cwd') if relative_to_cwd else fdpath(pid,dirfd)
+                assert base,'link namespace base unavailable'
+                target=os.path.normpath(base+'/'+raw.decode());namespace=base.encode().hex()
+            return target,raw.hex(),namespace
+        follow=bool(meta['flags']&0x400)
+        new_target,new_path_hex,new_ns_hex=resolve(meta['newDirfd'],meta['newPathAddress'])
+        old_target=old_path_hex=old_ns_hex=None
+        if meta['oldPathAddress'] is not None:
+            old_target,old_path_hex,old_ns_hex=resolve(meta['oldDirfd'],meta['oldPathAddress'])
+        # The inode acted upon: the SOURCE for link, the TARGET for unlink.
+        if meta['form'] in ('link','linkat'):
+            assert old_target,'link requires a source operand'
+            held_path=old_target
+        else:
+            held_path=new_target
+        if not (held_path and held_path.startswith(self.build+'/')):
+            self.emit(dict(kind='link-metadata-unobserved',pid=pid,entrySequence=task['entry']['sequence'],
+                           form=meta['form'],resolved=bool(held_path),
+                           underBuild=bool(held_path and held_path.startswith(self.build+'/')),
+                           reason='operand inode is absent or outside the observed generated build root'))
+            return None
+        # link/linkat name the SOURCE inode (followed only under AT_SYMLINK_FOLLOW);
+        # unlink/unlinkat remove the NAMED inode - never the symlink target. A
+        # non-regular operand (directory removal, symlink unlink) changes no
+        # retained regular inode, so it is honestly unobserved rather than asserted.
+        operand_follow=follow if meta['form'] in ('link','linkat') else False
+        operand=probe.identity(os.stat(held_path,follow_symlinks=operand_follow))
+        if not stat.S_ISREG(operand[2]):
+            self.emit(dict(kind='link-metadata-unobserved',pid=pid,entrySequence=task['entry']['sequence'],
+                           form=meta['form'],resolved=True,regular=False,
+                           reason='operand inode is not a regular file'))
+            return None
+        held=os.open(held_path,os.O_RDONLY|os.O_CLOEXEC)
+        try:
+            identity=probe.identity(os.fstat(held));assert stat.S_ISREG(identity[2])
+            assert operand==identity,'held operand path does not resolve to the held inode'
+            links=os.fstat(held).st_nlink
+        except BaseException:
+            os.close(held);raise
+        payload=dict(model=LINK_MODEL,arch=meta['entryArch'],syscall=meta['entryNr'],form=meta['form'],
+                     newDirfd=meta['newDirfd'],newPathAddress=meta['newPathAddress'],
+                     oldDirfd=meta['oldDirfd'],oldPathAddress=meta['oldPathAddress'],
+                     flags=meta['flags'],newPathHex=new_path_hex,newNamespaceHex=new_ns_hex,
+                     oldPathHex=old_path_hex,oldNamespaceHex=old_ns_hex,
+                     heldPathHex=os.fsencode(held_path).hex(),heldRole=('source' if meta['form'] in ('link','linkat') else 'target'))
+        digest=hashlib.sha256(json.dumps(payload,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+        operand=self.emit(dict(kind='kernel-link-args-original',pid=pid,entrySequence=task['entry']['sequence'],
+                               barrierSequence=barrier['sequence'],operandSha256=digest,**payload))
+        row=self.emit(dict(kind='actual-link-window',model=LINK_MODEL,pid=pid,path=held_path,form=meta['form'],
+                           entrySequence=task['entry']['sequence'],barrierSequence=barrier['sequence'],
+                           beforeIdentity=identity,beforeLinks=links,argsOriginalSequence=operand['sequence'],
+                           entryArch=meta['entryArch'],entryNr=meta['entryNr']))
+        self.timespec_originals[operand['sequence']]=operand
+        task['metadataWindow']=(row,held,held_path,meta);self.retained.add(held);held=None;return row
+    def args_original(self,row):
+        original=self.timespec_originals.get(row['argsOriginalSequence'])
+        assert original is not None,'timestamp argument original unavailable'
+        return original
     def close_rename_leases(self,*descriptors):
         primary=sys.exc_info()[1];failure=None
         for fd in descriptors:
@@ -1498,10 +1742,22 @@ class Observer(CapturesMixin):
                 held_data=(held_bytes,held_hash.hexdigest())
                 assert now==probe.identity(os.fstat(held))
                 assert data==expected==held_data and now==ident,'actual prepared/generated bytes changed before consumer: '+str(dict(path=target,dev=ident[0],ino=ident[1]))
-                if target!=old['path'] or any(window['kind']=='actual-rename-window' and window.get('producerCaptureSequence')==old['sequence'] for window,change in self.metadata_states):
+                timestamp_for_producer=any(window['kind'] in ('actual-timestamp-window','actual-link-window') and old['sequence']<change['sequence']<row['sequence'] for window,change in self.metadata_states)
+                if target!=old['path'] or timestamp_for_producer or any(window['kind']=='actual-rename-window' and window.get('producerCaptureSequence')==old['sequence'] for window,change in self.metadata_states):
                     named_identity=probe.identity(os.stat(target,follow_symlinks=False));assert named_identity==ident==probe.identity(os.fstat(held)),'actual named path does not refer to retained producer FD'
-                    mode_refs=bindings.retained_metadata_chain(old,row,self.metadata_states)
-                    self.emit(dict(kind='retained-fd-namespace-binding',producerCaptureSequence=old['sequence'],consumerCaptureSequence=row['sequence'],path=target,namedIdentity=named_identity,retainedIdentity=now,modeTransitions=mode_refs,metadataChainModel='actual-rename-mode-chain-v1'))
+                    try:
+                        mode_refs=bindings.retained_metadata_chain(old,row,self.metadata_states)
+                    except BaseException:
+                        # Close the framed raw shard before propagating so the
+                        # failure record itself stays decodable (no partial gzip).
+                        try:
+                            if isinstance(self.raw,EncodedShardedRaw):self.raw.finish()
+                            else:self.raw.close()
+                        except BaseException:pass
+                        raise
+                    has_timestamp=any(window['kind'] in ('actual-timestamp-window','actual-link-window') for window,_ in self.metadata_states)
+                    model=TIMESTAMP_CHAIN_MODEL if has_timestamp else 'actual-rename-mode-chain-v1'
+                    self.emit(dict(kind='retained-fd-namespace-binding',producerCaptureSequence=old['sequence'],consumerCaptureSequence=row['sequence'],path=target,namedIdentity=named_identity,retainedIdentity=now,modeTransitions=mode_refs,metadataChainModel=model))
                 self.consumers.append(self.emit(dict(kind='prepared-consumer-binding' if prepared else 'generated-consumer-binding',captureSequence=row['sequence'],producerCaptureSequence=old['sequence'],path=target,identity=ident,retainedIdentity=now,actualBytesEqual=True)))
             return row
         finally:
@@ -2647,9 +2903,14 @@ class Observer(CapturesMixin):
             function,arguments,substep=(self.generated_vma.capture,(pid,),'generated_vma_capture') if role=='generated-vma-before' else \
                 (self.capture_rename,(pid,),'capture_rename') if role=='rename-before' else \
                 (self.capture_metadata,(pid,),'capture_metadata') if role=='metadata-before' else \
+                (self.capture_link_metadata,(pid,),'capture_link_metadata') if role=='link-metadata-before' else \
                 (self.capture_write,(pid,fd),'capture_write') if role=='writer-before' else \
                 (self.capture,(pid,fd,role),'capture')
-            capture=self.instrument_substep(substep,function,*arguments);task['entry']['captureSequence']=capture['sequence'];self.exclusive=(pid,task['entry']['sequence']);self.emit(dict(kind={'generated-vma-operation-window':'exclusive-generated-vma-resume','actual-write-window':'exclusive-write-resume','actual-mode-window':'exclusive-mode-resume','actual-rename-window':'exclusive-rename-resume','empty-read-window':'exclusive-empty-read-resume','alias-close-window':'exclusive-alias-close-resume'}.get(capture['kind'],'exclusive-captured-syscall-resume'),pid=pid,entrySequence=task['entry']['sequence'],captureSequence=capture['sequence']));break
+            capture=self.instrument_substep(substep,function,*arguments)
+            if capture is None:
+                # capture declined to claim an endpoint (unobserved/out-of-scope target)
+                task['entry']['captureSequence']=None;break
+            task['entry']['captureSequence']=capture['sequence'];self.exclusive=(pid,task['entry']['sequence']);self.emit(dict(kind={'generated-vma-operation-window':'exclusive-generated-vma-resume','actual-write-window':'exclusive-write-resume','actual-link-window':'exclusive-link-resume','actual-mode-window':'exclusive-mode-resume','actual-timestamp-window':'exclusive-timestamp-resume','actual-rename-window':'exclusive-rename-resume','empty-read-window':'exclusive-empty-read-resume','alias-close-window':'exclusive-alias-close-resume'}.get(capture['kind'],'exclusive-captured-syscall-resume'),pid=pid,entrySequence=task['entry']['sequence'],captureSequence=capture['sequence']));break
         if self.exclusive is None:self.instrument_substep('capture_queued_identity',self.capture_queued_identity)
     def release_vfork_parent(self,child,event,reason):
         task=self.tasks[child];parent_pid=task.pop('vforkParent',None)
@@ -2922,6 +3183,39 @@ class Observer(CapturesMixin):
                     elif nr==policy['read'] and selected.startswith(self.build+'/') and (self.selected_names is None or Path(selected).name in self.selected_names):task['capture']=(fd,'consumer')
                     elif nr==policy['mmap'] and selected.startswith(self.build+'/') and (self.selected_names is None or Path(selected).name in self.selected_names):self.emit(dict(kind='generated-mmap-unverified',pid=pid,path=selected,entrySequence=record['sequence']))
                     elif nr==policy['read'] and (selected.startswith(self.source+'/') or selected.startswith('/opt/qlever-sdk/dependencies/')):task['capture']=(fd,'source-read')
+            if nr==TIMESTAMP_SYSCALLS[kernel['arch']] and args[3]==0:
+                # flags==0 only. NOTHING is resolved or stat'ed here: the build-root
+                # decision and every namespace/memory read happen at the fresh
+                # all-stop in capture_metadata, where /proc/<pid>/fd and /proc/<pid>/cwd
+                # are stable. The entry contributes only the raw operand addresses.
+                task['metadataPath']=dict(model=TIMESTAMP_MODEL,
+                    form=('fd' if args[1]==0 else 'path'),dirfd=args[0],
+                    pathAddress=args[1],timesAddress=args[2],flags=args[3],
+                    entryNr=nr,entryArch=kernel['arch'])
+                task['capture']=(None,'metadata-before')
+            link_form=link_metadata_form(kernel['arch'],nr)
+            if link_form is not None:
+                # EXACT per-form operand layout on the reviewed ABIs:
+                #   link(oldpath, newpath)                    : args[0]=old, args[1]=new, no dirfd
+                #   linkat(olddirfd, oldpath, newdirfd, newpath, flags) : args[0..4]
+                #   unlink(path)                              : args[0]=path, no dirfd
+                #   unlinkat(dirfd, path, flags)              : args[0]=dirfd,args[1]=path,args[2]=flags
+                # Nothing is read from tracee memory here; the args carry raw addresses.
+                if link_form=='link':
+                    operands=dict(newDirfd=None,newPathAddress=args[1],
+                                  oldDirfd=None,oldPathAddress=args[0],flags=0)
+                elif link_form=='linkat':
+                    operands=dict(newDirfd=args[2],newPathAddress=args[3],
+                                  oldDirfd=args[0],oldPathAddress=args[1],flags=args[4])
+                elif link_form=='unlink':
+                    operands=dict(newDirfd=None,newPathAddress=args[0],
+                                  oldDirfd=None,oldPathAddress=None,flags=0)
+                else:  # unlinkat
+                    operands=dict(newDirfd=args[0],newPathAddress=args[1],
+                                  oldDirfd=None,oldPathAddress=None,flags=args[2])
+                task['linkMetadata']=dict(model=LINK_MODEL,form=link_form,entryNr=nr,
+                                          entryArch=kernel['arch'],**operands)
+                task['capture']=(None,'link-metadata-before')
             mode_ops={0xc000003e:{90:'path',91:'fd',268:'at'},0xc00000b7:{52:'fd',53:'at'}}[kernel['arch']]
             if nr in mode_ops:
                 form=mode_ops[nr]

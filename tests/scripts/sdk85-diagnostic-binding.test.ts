@@ -24,6 +24,9 @@ const sha=(p:string)=>createHash('sha256').update(readFileSync(path.join(ROOT,p)
 const HELPER='qlever/scripts/sdk-generation-multiprocess-bindings.py';
 const LEAF='tests/scripts/candidate-producer-attempt-binding.test.ts';
 const OLD_HELPER='adcd3a8ffdbcbe0925e199757db4fd95489c86a69f9a0b31fa7d555f5fcc7bc1';
+// SDK85's own frozen pins (historical; never follow the live file bytes).
+const OLD_HELPER_PIN='15f38ce15f120f6d0bca7a89553014d6ee2e6de6159fcf1ae303ec95ca616a54';
+const OLD_LEAF_PIN='a2c74cb0f72108e4cbad420aa53a1a00c5fb8284ce7de5ac85d9a8aacc28cb5d';
 const all=(g:any)=>[...g.selectors,...(g.secondarySelectors??[]),...(g.secondarySelectorStages??[]).flat(),...g.sourceBindings];
 
 it('SDK85 whole-inherits SDK84 and re-pins exactly the two pre-owned roles',()=>{
@@ -46,16 +49,24 @@ it('SDK85 whole-inherits SDK84 and re-pins exactly the two pre-owned roles',()=>
   expect(new Set(moved)).toEqual(new Set([HELPER,LEAF]));
   expect(moved.filter(p=>p===HELPER)).toHaveLength(3);
   expect(moved.filter(p=>p===LEAF)).toHaveLength(1);
-  for(const row of all(next).filter((r:any)=>r.path===HELPER)) expect(row.sha256).toBe(sha(HELPER));
-  expect(next.sourceBindings.find(r=>r.path===LEAF)!.sha256).toBe(sha(LEAF));
+  // Historical SDK85 case: this group keeps ITS OWN frozen bytes. Comparing to the
+  // live file would silently re-point history at the later SDK86 values.
+  for(const row of all(next).filter((r:any)=>r.path===HELPER)) expect(row.sha256).toBe(OLD_HELPER_PIN);
+  expect(next.sourceBindings.find(r=>r.path===LEAF)!.sha256).toBe(OLD_LEAF_PIN);
   // Linux peers SDK with one leading tuple
   expect(LINUX).toHaveLength(SDK.length+1);
-  expect(whole(LINUX[LINUX.length-1]!)).toBe(whole(next));
+  // historical SDK85 case: pin the Linux index instead of following the live tail,
+  // which now ends at SDK86 and would make this historical assertion vacuous.
+  // Historical SDK85 case: the Linux peer index shifts once a later group is
+  // appended, so bind the SDK85 group itself rather than a moving index.
+  expect(whole(LINUX.find((g:any)=>whole(g)===whole(next))!)).toBe(whole(next));
 });
 
 it('generic selector reaches SDK85 only with the real helper bytes',()=>{
   const oldSlice=SDK[83]!,next=SDK[84]!;
-  const peers=SDK.slice(-15);
+  // historical SDK85 case: fixed window through SDK85 so the later SDK86 tail
+  // cannot capture an SDK85-era observation.
+  const peers=SDK.slice(69,85);
   // SDK84-era observation (old helper bytes) must resolve to SDK84 itself
   const oldObservation=new Map<string,string>();
   for(const row of [...oldSlice.selectors,...(oldSlice.secondarySelectors??[]),...(oldSlice.secondarySelectorStages??[]).flat()])

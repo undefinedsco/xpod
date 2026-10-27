@@ -11,21 +11,21 @@ import{selectSdkControllerHelperGroup as selectHelpers,requiredSdkControllerHelp
 const digest=(v:unknown)=>createHash('sha256').update(JSON.stringify(v)).digest('hex');
 test('SDK44 keeps every actual89f complete recipe and binds the final native-tested helper bytes',()=>{
  expect(before.base).toBe('89f13664c4a9b83951bd6a0a067a933717e2572a');expect(Object.values(before.hashes).reduce((n,rows)=>n+rows.length,0)).toBe(229);
- for(const[name,groups]of Object.entries({api,sdk,consumer,ci})){const old=before.hashes[name as keyof typeof before.hashes];expect(groups.slice(0,old.length).map(digest)).toEqual(old);expect(groups.length-old.length).toBe((({api:29,sdk:85,ci:196,consumer:99} as Record<string,number>)[name]!)-old.length);}
+ for(const[name,groups]of Object.entries({api,sdk,consumer,ci})){const old=before.hashes[name as keyof typeof before.hashes];expect(groups.slice(0,old.length).map(digest)).toEqual(old);expect(groups.length-old.length).toBe((({api:29,sdk:86,ci:196,consumer:99} as Record<string,number>)[name]!)-old.length);}
  expect(current).toHaveLength(504);for(const row of [...current,...sdk[sdk.length-1]!.selectors,...sdk[sdk.length-1]!.sourceBindings])expect(createHash('sha256').update(readFileSync(row.path)).digest('hex')).toBe(row.sha256);
  for(const row of inputs.files)expect(sdk[43]!.sourceBindings.find(binding=>binding.path===row.path)?.sha256??sdk[43]!.selectors.find(binding=>binding.path===row.path)?.sha256).toBe(row.sha256);
  const policy=readFileSync('scripts/lib/independent-admission/consumer-observer-policy.ts');expect(policy.byteLength<1024*1024).toBe(true);
  const base64=policy.toString('base64').match(/.{1,60}/gu)!.join('\n')+'\n';expect(Buffer.byteLength(JSON.stringify({type:'file',size:policy.byteLength,encoding:'base64',content:base64}))<=2*1024*1024).toBe(true);
 });
-test('thirty-eight complete declared helper tuples are admitted; thirty-ninth, ambiguity and observed33 refuse',()=>{
+test('thirty-nine complete declared helper tuples are admitted; fortieth, ambiguity and observed33 refuse',()=>{
  // The declared VERSION catalogue is now exactly 38 (genuine appends: the B794
- // owned-window diagnostic, the SDK19 failure-telemetry slice, and the SDK85
- // fail-only diagnostic tuple pushed the fetch CURRENT catalogue to a 38th
- // tuple). This is a declared VERSION count, never an artifact/capture/per-tuple
- // capacity. The observed PER-TUPLE role bound remains 32, asserted by
+ // owned-window diagnostic, the SDK19 failure-telemetry slice, the SDK85
+ // fail-only diagnostic tuple and the SDK86 append pushed the fetch CURRENT
+ // catalogue to a 39th tuple). This is a declared VERSION count, never an
+ // artifact/capture/per-tuple capacity. The observed PER-TUPLE role bound remains 32, asserted by
  // full32/full33 below.
- const groups=Array.from({length:38},(_,i)=>Object.freeze([Object.freeze(['helper',String(i)] as const)]));expect(selectHelpers(groups,new Map(groups[37]!))).toBe(groups[37]!);expect(planHelpers(groups,['helper'],new Map(groups[37]!))).toBe(groups[37]!);
- for(const declared of [[...groups,[['helper','38'] as const]], [...groups.slice(0,25),groups[0]!]]){expect(()=>selectHelpers(declared,new Map(declared[declared.length-1]!))).toThrow();expect(()=>planHelpers(declared,['helper'],new Map(declared[declared.length-1]!))).toThrow();}
+ const groups=Array.from({length:39},(_,i)=>Object.freeze([Object.freeze(['helper',String(i)] as const)]));expect(selectHelpers(groups,new Map(groups[38]!))).toBe(groups[38]!);expect(planHelpers(groups,['helper'],new Map(groups[38]!))).toBe(groups[38]!);
+ for(const declared of [[...groups,[['helper','39'] as const]], [...groups.slice(0,25),groups[0]!]]){expect(()=>selectHelpers(declared,new Map(declared[declared.length-1]!))).toThrow();expect(()=>planHelpers(declared,['helper'],new Map(declared[declared.length-1]!))).toThrow();}
  const full32=Object.freeze(Array.from({length:32},(_,i)=>Object.freeze([String(i),'a'] as const)));expect(selectHelpers([full32],new Map(full32))).toBe(full32);expect(planHelpers([full32],full32.map(row=>row[0]),new Map(full32))).toBe(full32);
  expect(()=>selectHelpers(groups,new Map(Array.from({length:33},(_,i)=>[String(i),'a'] as const)))).toThrow();
  const full33=Object.freeze(Array.from({length:33},(_,i)=>Object.freeze([String(i),'a'] as const)));expect(()=>selectHelpers([full33],new Map(full33))).toThrow();expect(()=>planHelpers([full33],full33.map(row=>row[0]),new Map(full33))).toThrow();

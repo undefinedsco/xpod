@@ -286,7 +286,11 @@ class LocalRefusal(unittest.TestCase):
     def test_timeout_during_the_cohort_is_not_masked(self):
         pids = [761, 763]
         tables = {pid: ['0'] for pid in pids}
-        with Fixture(pids, tables, fail_flags=True) as fixture:
+        # These two pids must share ONE declared fd table so the cohort really
+        # reads descriptor_fields: with singleton tables the optimized sweep
+        # legitimately never touches those fields, and the injected flag failure
+        # could not fire. The timeout assertion itself is unchanged.
+        with Fixture(pids, tables, fd_tables={pid: 1700 for pid in pids}, fail_flags=True) as fixture:
             with self.assertRaisesRegex(TimeoutError, 'actual owned child observation deadline'):
                 fixture.observer.verify_task_ownership_original()
         self.assertEqual(fixture.full, 2, 'the finally boundary still runs on timeout')
@@ -303,6 +307,22 @@ class LocalRefusal(unittest.TestCase):
         self.assertLessEqual(len(names), 1025,
                              'the 1024 slot cap refuses before unbounded collection')
         self.assertEqual(fixture.full, 2)
+
+    def test_cohort_refuses_singleton_above_1024_slots_and_still_runs_finally(self):
+        """The optimized sweep may skip UNUSED singleton snapshots, never the cap.
+
+        A singleton declared fd table still enumerates its slots through the real
+        bounded loop, so a 5000-slot table must be refused - this is the guard for
+        the historic "cap removed for singleton owners" bug.
+        """
+        names = []
+        with Fixture([791], {791: [str(index) for index in range(5000)]},
+                     names=names) as fixture:
+            with self.assertRaisesRegex(AssertionError, 'slots unsupported'):
+                fixture.observer.verify_task_ownership_original()
+        self.assertLessEqual(len(names), 1025,
+                             'the cohort still bounds slot enumeration at 1024')
+        self.assertEqual(fixture.full, 2, 'entry and finally both ran')
 
     def test_scan_failure_in_standalone_slots_still_runs_finally(self):
         with Fixture([781], {781: ['0']}, fail_scan=781) as fixture:

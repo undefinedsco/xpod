@@ -243,7 +243,7 @@ class PendingCaptureSubstepTest(unittest.TestCase):
   # Explicit reviewed whitelist: the pending-capture branches PLUS the
   # generated-VMA finish timings. Hard-coded on purpose so a silently added or
   # renamed branch fails here instead of being accepted from production.
-  expected={'capture','capture_write','capture_rename','capture_metadata',
+  expected={'capture','capture_write','capture_rename','capture_metadata','capture_link_metadata',
             'generated_vma_capture','capture_process_authority',
             'capture_queued_identity','checkpoint_append_boundaries',
             'checkpoint_appends','observe_tool_stop','capture_bti_pending',
