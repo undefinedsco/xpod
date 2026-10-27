@@ -71,6 +71,116 @@ class CaptureOriginalReader:
 def tool_original_key(reference):
     return (reference['path'],reference['observationSequence'])if 'observationSequence'in reference else reference['path']
 
+# FAIL-ONLY bounded diagnostic suffix for the final identity/path mismatch.
+#
+# The next genuine failure must carry enough operands to decide whether the
+# mismatch is a path-only or an identity-only divergence, without leaking raw
+# paths, file contents, arbitrary exception text or unbounded integers.
+# This runs ONLY on the failing branch; a successful chain never calls it.
+_METADATA_CHAIN_DIAGNOSTIC_LIMIT = 4096
+_METADATA_CHAIN_DIAGNOSTIC_INTS = 8
+# Bounded WORK limits: these reject oversized inputs BEFORE any encode/hash/join,
+# so the fail-only diagnostic can never do unbounded work on a hostile value.
+_METADATA_CHAIN_DIAGNOSTIC_PATH_CHARS = 4096
+_METADATA_CHAIN_DIAGNOSTIC_PATH_BYTES = 16384
+_METADATA_CHAIN_DIAGNOSTIC_REFERENCES = 4096
+_METADATA_CHAIN_DIAGNOSTIC_FALLBACK = 'metadata-chain-diagnostic=unavailable'
+
+def _bounded_int(value):
+    """Exact non-negative int that fits the bounded decimal rendering, else None."""
+    if type(value) is not int or value < 0 or value > (1 << 63) - 1:
+        return None
+    return value
+
+def _identity_fields(value):
+    """Six exact non-negative ints in probe.identity field order, else None.
+
+    probe.identity field order is
+    [st_dev, st_ino, st_mode, st_size, st_mtime_ns, st_ctime_ns].
+    """
+    if type(value) not in (list, tuple) or len(value) != 6:
+        return None
+    fields = [_bounded_int(field) for field in value]
+    return None if any(field is None for field in fields) else fields
+
+def _path_summary(value):
+    """SHA-256 and byte length of a path; never the path bytes themselves.
+
+    Rejects by type and CHARACTER length before encoding, then by encoded byte
+    length before hashing, so an arbitrarily long string never causes unbounded
+    encode/hash work in this fail-only path.
+    """
+    if type(value) is not str or len(value) > _METADATA_CHAIN_DIAGNOSTIC_PATH_CHARS:
+        return None
+    try:
+        encoded = value.encode('utf-8', 'surrogatepass')
+    except BaseException:
+        return None
+    if len(encoded) > _METADATA_CHAIN_DIAGNOSTIC_PATH_BYTES:
+        return None
+    return hashlib.sha256(encoded).hexdigest(), len(encoded)
+
+def _subsequence_summary(references):
+    """Bounded count/tail/digest of matching metadata references.
+
+    Rejects a wrong type or an over-long list BEFORE any iteration/join, then
+    requires EVERY reference to be an exact non-negative int in range before any
+    str() conversion, so neither the digest nor the tail can do unbounded work.
+    """
+    if type(references) is not list or len(references) > _METADATA_CHAIN_DIAGNOSTIC_REFERENCES:
+        return None
+    for item in references:
+        if _bounded_int(item) is None:
+            return None
+    tail = references[-_METADATA_CHAIN_DIAGNOSTIC_INTS:]
+    digest = hashlib.sha256(','.join(str(item) for item in references).encode('ascii')).hexdigest()
+    return len(references), tail, digest
+
+def metadata_chain_diagnostic(producer, consumer, current, path, references):
+    """Fixed-schema, bounded suffix describing the final identity/path mismatch.
+
+    Fail-closed: any malformed input yields the fixed fallback token. This helper
+    never raises and never substitutes for the caller's own assertion.
+    """
+    try:
+        producer_identity = _identity_fields(producer.get('identity'))
+        consumer_identity = _identity_fields(consumer.get('identity'))
+        composed_identity = _identity_fields(current)
+        producer_sequence = _bounded_int(producer.get('sequence'))
+        consumer_sequence = _bounded_int(consumer.get('sequence'))
+        producer_path = _path_summary(producer.get('path'))
+        consumer_path = _path_summary(consumer.get('path'))
+        composed_path = _path_summary(path)
+        composed_reference = _subsequence_summary(references)
+        if None in (producer_identity, consumer_identity, composed_identity, producer_sequence,
+                    consumer_sequence, producer_path, consumer_path, composed_path,
+                    composed_reference):
+            return _METADATA_CHAIN_DIAGNOSTIC_FALLBACK
+        mismatch = [index for index in range(6)
+                    if composed_identity[index] != consumer_identity[index]]
+        payload = dict(
+            schemaVersion=1,
+            producerSequence=producer_sequence,
+            consumerSequence=consumer_sequence,
+            producerIdentity=producer_identity,
+            composedIdentity=composed_identity,
+            consumerIdentity=consumer_identity,
+            identityMismatchFields=mismatch,
+            producerPathSha256=producer_path[0], producerPathBytes=producer_path[1],
+            composedPathSha256=composed_path[0], composedPathBytes=composed_path[1],
+            consumerPathSha256=consumer_path[0], consumerPathBytes=consumer_path[1],
+            composedPathDiffers=composed_path[0] != consumer_path[0],
+            metadataReferenceCount=composed_reference[0],
+            metadataReferenceLast=composed_reference[1],
+            metadataReferenceDigest=composed_reference[2])
+        rendered = 'metadata-chain-diagnostic=' + json.dumps(
+            payload, sort_keys=True, separators=(',', ':'))
+        if len(rendered) > _METADATA_CHAIN_DIAGNOSTIC_LIMIT:
+            return _METADATA_CHAIN_DIAGNOSTIC_FALLBACK
+        return rendered
+    except BaseException:
+        return _METADATA_CHAIN_DIAGNOSTIC_FALLBACK
+
 def retained_metadata_chain(producer,consumer,states):
     """Join only independently verified operation endpoints; never infer a gap.
 
@@ -92,7 +202,9 @@ def retained_metadata_chain(producer,consumer,states):
         else:
             need(window['kind']=='actual-mode-window' and after[:2]==before[:2] and after[3:5]==before[3:5],'retained metadata chain unknown operation/changed bytes')
         current=after;previous=sequence;references.append(sequence)
-    need(current==consumer['identity'] and path==consumer['path'],'retained metadata chain final full identity/path differs')
+    if not (current==consumer['identity'] and path==consumer['path']):
+        raise ValueError('multi-process generation originals: retained metadata chain final full identity/path differs; '+
+            metadata_chain_diagnostic(producer,consumer,current,path,references))
     return references
 
 def policy(arch):

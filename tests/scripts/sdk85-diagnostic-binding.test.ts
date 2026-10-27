@@ -1,0 +1,88 @@
+/** SDK85 fail-only bounded retained-metadata-chain diagnostics (APPEND-ONLY).
+ *
+ * Real shape of this slice, verified against the live closure:
+ *  1. SDK85 whole-inherits SDK84 and moves exactly TWO existing mandatory roles:
+ *     the helper module (3 pre-owned occurrences: 2 stage-0 secondarySelectors +
+ *     1 sourceBinding) and SDK81's regression leaf (1 sourceBinding, re-pinned by
+ *     SDK84 and edited again here for the SDK85 frontier). No stage is added.
+ *  2. An observation carrying the SDK84-era helper bytes resolves to SDK84, never
+ *     to SDK85; the actual helper bytes plus the full declared surface resolve to
+ *     SDK85; a stale helper value is refused.
+ *  3. Historical prefixes and the 504-row canonical still bind actual bytes.
+ */
+import {createHash} from 'node:crypto';
+import {readFileSync} from 'node:fs';
+import path from 'node:path';
+import {it,expect} from 'vitest';
+import {QLEVER_SDK_EXECUTION_GROUPS as SDK,QLEVER_LINUX_EXECUTION_GROUPS as LINUX} from '../../scripts/lib/independent-admission/qlever-sdk-origin-policy';
+import {selectGitHubSourceBindingGroup,secondaryGitHubSourceBindingSelectors,sourceBindingKey} from '../../scripts/lib/independent-admission/github-source-binding-groups';
+import {completeObserved} from './source-binding-group.fixture';
+
+const ROOT=path.resolve(import.meta.dirname,'../..');
+const whole=(g:unknown)=>createHash('sha256').update(JSON.stringify(g)).digest('hex');
+const sha=(p:string)=>createHash('sha256').update(readFileSync(path.join(ROOT,p))).digest('hex');
+const HELPER='qlever/scripts/sdk-generation-multiprocess-bindings.py';
+const LEAF='tests/scripts/candidate-producer-attempt-binding.test.ts';
+const OLD_HELPER='adcd3a8ffdbcbe0925e199757db4fd95489c86a69f9a0b31fa7d555f5fcc7bc1';
+const all=(g:any)=>[...g.selectors,...(g.secondarySelectors??[]),...(g.secondarySelectorStages??[]).flat(),...g.sourceBindings];
+
+it('SDK85 whole-inherits SDK84 and re-pins exactly the two pre-owned roles',()=>{
+  const old=SDK[83]!,next=SDK[84]!;
+  expect(JSON.stringify(next.selectors)).toBe(JSON.stringify(old.selectors));
+  expect(JSON.stringify(next.candidateServiceRelationship)).toBe(JSON.stringify(old.candidateServiceRelationship));
+  expect(JSON.stringify(next.outerExecutor)).toBe(JSON.stringify(old.outerExecutor));
+  // this slice adds no new stage and keeps the SDK84 stage surface intact
+  expect((next.secondarySelectorStages??[]).length).toBe((old.secondarySelectorStages??[]).length);
+  expect(JSON.stringify(next.secondarySelectorStages)).toBe(JSON.stringify(old.secondarySelectorStages));
+  expect(next.sourceBindings.length).toBe(old.sourceBindings.length);
+  const before=all(old),after=all(next);
+  expect(after.length).toBe(before.length);
+  const moved:string[]=[];
+  for(let i=0;i<before.length;i++){
+    expect(after[i].path,`role[${i}].path`).toBe(before[i].path);
+    if(before[i].sha256!==after[i].sha256)moved.push(after[i].path);
+  }
+  // helper (3 occurrences) + leaf (1 occurrence); nothing else
+  expect(new Set(moved)).toEqual(new Set([HELPER,LEAF]));
+  expect(moved.filter(p=>p===HELPER)).toHaveLength(3);
+  expect(moved.filter(p=>p===LEAF)).toHaveLength(1);
+  for(const row of all(next).filter((r:any)=>r.path===HELPER)) expect(row.sha256).toBe(sha(HELPER));
+  expect(next.sourceBindings.find(r=>r.path===LEAF)!.sha256).toBe(sha(LEAF));
+  // Linux peers SDK with one leading tuple
+  expect(LINUX).toHaveLength(SDK.length+1);
+  expect(whole(LINUX[LINUX.length-1]!)).toBe(whole(next));
+});
+
+it('generic selector reaches SDK85 only with the real helper bytes',()=>{
+  const oldSlice=SDK[83]!,next=SDK[84]!;
+  const peers=SDK.slice(-15);
+  // SDK84-era observation (old helper bytes) must resolve to SDK84 itself
+  const oldObservation=new Map<string,string>();
+  for(const row of [...oldSlice.selectors,...(oldSlice.secondarySelectors??[]),...(oldSlice.secondarySelectorStages??[]).flat()])
+    oldObservation.set(sourceBindingKey(row),row.sha256);
+  expect(selectGitHubSourceBindingGroup(peers,oldObservation)).toBe(oldSlice);
+  // full current surface resolves to exactly SDK85
+  const current=completeObserved(peers,next);
+  expect(selectGitHubSourceBindingGroup(peers,current)).toBe(next);
+  // stale helper value in that surface is refused
+  const stale=new Map(current);stale.set('source:'+HELPER,'f'.repeat(64));
+  expect(()=>selectGitHubSourceBindingGroup(peers,stale)).toThrow();
+  // removing the helper from the full stage-0 surface makes it a real outstanding
+  // request (the inherited stage-0 secondarySelectors declare it)
+  const withoutHelper=new Map<string,string>();
+  for(const row of [...next.selectors,...(next.secondarySelectors??[])])withoutHelper.set(sourceBindingKey(row),row.sha256);
+  withoutHelper.delete('source:'+HELPER);
+  expect(secondaryGitHubSourceBindingSelectors(peers,withoutHelper).map(r=>r.path)).toContain(HELPER);
+  // the previous helper bytes are provably not the current declaration
+  expect((next.secondarySelectors??[]).filter(r=>r.path===HELPER).every(r=>r.sha256!==OLD_HELPER)).toBe(true);
+});
+
+it('historical prefixes and the 504-row canonical still bind actual bytes',()=>{
+  const rows=JSON.parse(readFileSync(path.join(ROOT,'scripts/lib/independent-admission/consumer-execution-current.json'),'utf8')) as {path:string;sha256:string}[];
+  expect(rows).toHaveLength(504);
+  expect(new Set(rows.map(r=>r.path)).size).toBe(504);
+  for(const row of rows) expect(sha(row.path),row.path).toBe(row.sha256);
+  expect(rows.find(r=>r.path===HELPER)!.sha256).toBe(sha(HELPER));
+  // the regression leaf is a policy-owned mandatory role, not a canonical row
+  expect(rows.some(r=>r.path===LEAF)).toBe(false);
+});
