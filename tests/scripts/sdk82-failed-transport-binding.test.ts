@@ -60,7 +60,7 @@ it('every published whole prefix is byte-identical to the captured 7863 baseline
   // LIVE frontier (SDK83 appended): the historical SDK82 slice is proven by its
   // own frozen prefix below, not by these current lengths.
   // LIVE frontier (SDK84 appended); this slice is proven by its frozen prefix.
-  expect(SDK).toHaveLength(85);expect(LINUX).toHaveLength(86);
+  expect(SDK).toHaveLength(86);expect(LINUX).toHaveLength(87);
   expect(CONSUMER).toHaveLength(99);expect(CI).toHaveLength(196);
   expect(API).toHaveLength(29);expect(CLI).toHaveLength(12);
   prefix(SDK.slice(0,81),OLD_SDK_GROUPS,'sdk');
@@ -79,7 +79,7 @@ it('helper and readonly registries keep every captured whole vector',()=>{
     const live=helper(file,name);
     // Frozen vector proves the historical PREFIX; the live frontier is asserted
     // explicitly so a later append can never look like a rewritten history.
-    expect(live.length,name).toBe({REVIEWED_OBSERVER_GROUPS:53,REVIEWED_CONTROLLER_HELPER_GROUPS_CURRENT:35,REVIEWED_HELPER_GROUPS_CURRENT:38}[name as 'REVIEWED_OBSERVER_GROUPS']);
+    expect(live.length,name).toBe({REVIEWED_OBSERVER_GROUPS:54,REVIEWED_CONTROLLER_HELPER_GROUPS_CURRENT:36,REVIEWED_HELPER_GROUPS_CURRENT:39}[name as 'REVIEWED_OBSERVER_GROUPS']);
     for(let i=0;i<hashes.length;i++) expect(whole(live[i]),`${name}[${i}]`).toBe(hashes[i]);
   }
   const readonly=helper('qlever-sdk-readonly-executor.ts','REVIEWED_READONLY_HELPER_GROUPS');

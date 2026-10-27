@@ -4,6 +4,7 @@ Not a capability. Controlled observer/TCB execution, Git inputs and upstream
 runtime/toolchain authority remain independent of this mechanical axis.
 """
 import hashlib
+import posixpath
 import importlib.util
 from pathlib import Path
 _raw_spec=importlib.util.spec_from_file_location('sdk_raw_records',Path(__file__).with_name('sdk-execution-originals-util.py'))
@@ -13,6 +14,55 @@ import re
 import struct
 import stat
 import shlex
+TIMESTAMP_MODEL='actual-utimensat-timespec-v6'
+TIMESTAMP_CHAIN_MODEL='actual-rename-mode-timestamp-chain-v6'
+UTIME_NOW_NS=1073741823
+UTIME_OMIT_NS=1073741822
+TIMESTAMP_SYSCALLS={0xc000003e:280,0xc00000b7:88}
+
+def timespec_pair(sec,nsec):
+    """Validate ONE kernel timespec: nsec is 0..999999999 or UTIME_NOW/UTIME_OMIT.
+
+    The kernel rejects anything else with EINVAL, so a successfully completed
+    utimensat/futimens can never legitimately carry such a value.
+    """
+    need(type(sec) is int and type(nsec) is int,'timespec integer fields required')
+    need(0<=nsec<=999999999 or nsec in (UTIME_NOW_NS,UTIME_OMIT_NS),'timespec nsec outside kernel range')
+    return (sec,nsec)
+
+def decode_timespec(data):
+    assert len(data)==32,'timespec must be 32 bytes'
+    return [timespec_pair(int.from_bytes(data[i*16:i*16+8],'little',signed=True),
+                          int.from_bytes(data[i*16+8:i*16+16],'little',signed=True)) for i in range(2)]
+
+def timestamp_effect(before,after,times):
+    """The single utimensat/futimens effect contract.
+
+    Used by the recorder, the retained metadata chain and the raw replay, so the
+    three sites cannot disagree. Shape and per-timespec validation happen HERE:
+    callers pass the operand array through unchanged.
+
+    Both-OMIT is a true kernel no-op, so the WHOLE six-field identity must stay
+    byte-identical - including ctime, which any real timestamp change advances.
+    A single OMIT preserves its field; an explicit value follows the documented
+    round-DOWN rule (the kernel may truncate to filesystem resolution, never up).
+    """
+    need(isinstance(times,(list,tuple)) and len(times)==2,'exact two-timespec operand array required')
+    for pair in times:
+        # each element must be exactly {tv_sec,tv_nsec}: no extra or missing fields
+        need(isinstance(pair,(list,tuple)) and len(pair)==2,'exact two-field timespec pairs required')
+    atime,mtimes=timespec_pair(times[0][0],times[0][1]),timespec_pair(times[1][0],times[1][1])
+    need(len(before)==6 and len(after)==6,'full six-field timestamp identities required')
+    need(before[:3]==after[:3] and before[3]==after[3] and stat.S_IMODE(before[2])==stat.S_IMODE(after[2]),'timestamp changed inode/mode/size')
+    if atime[1]==UTIME_OMIT_NS and mtimes[1]==UTIME_OMIT_NS:
+        need(before==after,'both-OMIT timestamps changed (no field, including ctime, may move)')
+        return
+    if mtimes[1]==UTIME_OMIT_NS:need(after[4]==before[4],'UTIME_OMIT changed mtime')
+    elif mtimes[1]!=UTIME_NOW_NS:need(after[4]<=mtimes[0]*10**9+mtimes[1],'requested mtime exceeds requested value')
+
+LINK_MODEL='actual-link-inode-effect-v8'
+LINK_SYSCALLS={0xc000003e:dict(link=86,linkat=265,unlink=87,unlinkat=263),0xc00000b7:dict(linkat=37,unlinkat=35)}
+
 POLICIES={
  0xc00000b7:dict(exec={221,281},execveat=281,protect={226,288},read=63,write=64,close=57,mmap=222,clone=220,clone3=435,spawn={220,435},renameat=38,renameat2=276,renameOps={38,276},exits={93,94},forbidden={0,1,2,3,4,292,425,426,427,271,117,97,268}),
  0xc000003e:dict(exec={59,322},execveat=322,protect={10,329},read=0,write=1,close=3,mmap=9,clone=56,clone3=435,spawn={56,57,58,435},rename=82,renameat=264,renameat2=316,renameOps={82,264,316},exits={60,231},forbidden={206,207,208,209,210,333,425,426,427,311,101,272,308}),
@@ -194,8 +244,39 @@ def retained_metadata_chain(producer,consumer,states):
         if not (producer['sequence']<sequence<consumer['sequence']):continue
         before=window['beforeIdentity'];after=change['afterIdentity']
         if before[:2]!=producer['identity'][:2]:continue
+        # FULL six-field BEFORE continuity for EVERY admitted operation. A timestamp
+        # writes afterIdentity (mtime/ctime); it never justifies a mismatched BEFORE.
+        # If a before state cannot equal the composed current, the operation is not
+        # admissible here and the chain must refuse rather than relax the check.
         need(previous<sequence and len(before)==len(after)==6 and before==current,'retained metadata chain gap/order')
-        if window['kind']=='actual-rename-window':
+        if window['kind']=='actual-link-window':
+            need(window.get('model')==LINK_MODEL,'link window lacks declared model')
+            # link/unlink changes nlink and ctime only; dev/ino/mode/size/mtime and
+            # the composed namespace path are unaffected.
+            need(after[:5]==before[:5],'retained link changed inode/mode/size/mtime')
+            # nlink must move by exactly one in the direction of the operation.
+            form=window.get('form')
+            before_links=window.get('beforeLinks');after_links=change.get('afterLinks')
+            need(type(before_links) is int and type(after_links) is int,'retained link counts required')
+            need(after_links==(before_links+1 if form in ('link','linkat') else before_links-1),'retained link nlink effect differs')
+            # A link/unlink operand names another alias of the SAME inode; it does not
+            # move the composed namespace path (identical to the chmod rule). The
+            # operand's own path is bound to its raw bytes in the window branch.
+        elif window['kind']=='actual-timestamp-window':
+            need(window.get('model')==TIMESTAMP_MODEL,'timestamp window lacks declared model')
+            # Same mechanics as chmod: inode identity proves the metadata effect and
+            # the composed namespace path is UNCHANGED by an inode-metadata op.
+            need(after[:4]==before[:4] and stat.S_IMODE(after[2])==stat.S_IMODE(before[2]),'retained timestamp changed inode/mode/size')
+            # Same as the existing chmod branch: an inode-metadata operation does NOT
+            # move the composed namespace path. A hard-link alias may be the operand
+            # while the consumer keeps the original name; the inode identity proves
+            # the effect. The operand's own path is validated against its raw bytes in
+            # the window branch, so no path restriction is invented here.
+            if window.get('timesAbsent'):
+                need(window.get('times') is None,'retained timestamp absent-times mismatch')
+            else:
+                timestamp_effect(before,after,window.get('times'))
+        elif window['kind']=='actual-rename-window':
             reference='generatedCheckpointSequence'if producer.get('kind')=='generated-vma-operation-exit'and producer.get('operation')=='unmap'else 'producerCaptureSequence'
             need(window.get(reference)==producer['sequence']and ('producerCaptureSequence'in window)!=('generatedCheckpointSequence'in window) and window['fromPath']==path and after[:5]==before[:5],'retained rename chain producer/path/bytes metadata differs')
             path=window['toPath']
@@ -569,7 +650,7 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
     shared_mode=False;owners={};exec_fd_events={};vfork_events={};vfork_holds={};child_bindings={};wait_rows={}
     live=set();last=0;entries={};exits={};barriers={};caps={};paths={};renames=[];consumers=[];source_reads=[];total=0;capture_total=0;exclusive=None;root_codes={};clone_flags=set();clone_flag_values={}
     alias_close_windows={};alias_close_exits=set()
-    mode_windows={};mode_transitions={};rename_windows={};rename_transitions={};active_rename=None;pending_rename_window=None;latest_execution_sequence=0;write_original_sequences={};namespace_bindings=[]
+    link_windows={};link_transitions={};link_args={};mode_windows={};mode_transitions={};timestamp_windows={};timestamp_transitions={};metadata_args={};rename_windows={};rename_transitions={};active_rename=None;pending_rename_window=None;latest_execution_sequence=0;write_original_sequences={};namespace_bindings=[]
     append_obligations={};append_completed={};append_dirty={};append_checkpoints={};append_hashes={};write_projections={};write_windows={};closed_write_windows=set();write_transitions={};write_consumers=[];write_read_exits={}
     empty_windows={};empty_eofs=set();dependency_roots={};dependency_reads=0;dependency_cache=None;dependency_expected_names=None;dependency_collection_identity=None
     reused_originals={};prepared={};prepared_consumers=[];prepared_digest=hashlib.sha256();prepared_count=0;prepared_sealed=False;prepared_paths=set()
@@ -854,7 +935,7 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                     need(write_original_sequences.get(tuple(replacement['original'][key] for key in ['path','bytes','sha256']),0)==row['sequence']-1,'retained rename replacement snapshot ordering differs')
                     snapshot_end=row['sequence']-2
                 need(row['barrierSequence']+1==write_original_sequences.get(tuple(row['beforeOriginal'][key] for key in ['path','bytes','sha256']),0)==snapshot_end,'retained rename preimage snapshot ordering differs')
-                retained_metadata_chain(old,dict(sequence=row['sequence'],path=row['fromPath'],identity=before),sorted([*mode_transitions.values(),*rename_transitions.values()],key=lambda pair:pair[1]['sequence']))
+                retained_metadata_chain(old,dict(sequence=row['sequence'],path=row['fromPath'],identity=before),sorted([*mode_transitions.values(),*timestamp_transitions.values(),*link_transitions.values(),*rename_transitions.values()],key=lambda pair:pair[1]['sequence']))
                 rename_windows[row['sequence']]=row;pending_rename_window=row['sequence'];retained_entries.add(row['entrySequence'])
             elif kind=='exclusive-rename-resume':
                 window=rename_windows.get(row['captureSequence']);need(window and exclusive is None and window['pid']==row['pid'] and window['entrySequence']==row['entrySequence'],'retained rename exclusive resume differs');exclusive=(row['pid'],row['entrySequence']);active_rename=dict(pid=row['pid'],entrySequence=row['entrySequence'],state='resumed');pending_rename_window=None
@@ -888,6 +969,117 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
             elif kind in ['generated-vma-create-path','generated-vma-operation-window','generated-vma-selected-fd-binding','generated-vma-kernel-link-original','generated-vma-operation-exit','generated-vma-consumer-binding']:
                 need(generated_verifier is not None,'generated VMA original without explicit model')
                 if kind=='generated-vma-operation-window':retained_entries.add(row['entrySequence'])
+            elif kind=='kernel-metadata-args-original':
+                entry=entries.get(row['entrySequence']);barrier=barriers.get(row['barrierSequence'])
+                need(row.get('model')==TIMESTAMP_MODEL and entry and barrier and entry['pid']==row['pid'] and row['pid'] in barrier['pids'],'metadata args original needs model/entry/barrier')
+                verify_stopped_original_order(row,barrier,entry,row,inline=True)
+                need(row['syscall']==entry['nr']==TIMESTAMP_SYSCALLS.get(entry['arch']) and row['arch']==entry['arch'],'metadata args syscall/arch differs')
+                # BIND the captured bytes to the ACTUAL entry arguments.
+                need(row['dirfd']==entry['args'][0] and row['pathAddress']==entry['args'][1] and row['timesAddress']==entry['args'][2] and row['flags']==entry['args'][3],'metadata args operand addresses differ from actual entry')
+                need(row['form'] in ['path','fd'] and row['form']==('fd' if entry['args'][1]==0 else 'path'),'metadata args form differs from entry')
+                path_bytes=bytes.fromhex(row['pathHex'])
+                need((row['form']=='fd')==(not path_bytes),'metadata args pathname presence differs from form')
+                times_bytes=None
+                if row['timesHex'] is not None:
+                    times_bytes=bytes.fromhex(row['timesHex']);need(len(times_bytes)==32,'metadata args timespec must be 32 ABI bytes')
+                expected=hashlib.sha256(json.dumps(dict(model=TIMESTAMP_MODEL,arch=row['arch'],syscall=row['syscall'],form=row['form'],pathAddress=row['pathAddress'],timesAddress=row['timesAddress'],dirfd=row['dirfd'],flags=row['flags'],pathHex=row['pathHex'],namespaceHex=row['namespaceHex'],timesHex=row['timesHex']),sort_keys=True,separators=(',',':')).encode()).hexdigest()
+                need(expected==row['operandSha256'],'metadata args operand digest differs')
+                metadata_args[row['sequence']]=row;retained_entries.add(entry['sequence'])
+            elif kind=='kernel-link-args-original':
+                entry=entries.get(row['entrySequence']);barrier=barriers.get(row['barrierSequence'])
+                need(row.get('model')==LINK_MODEL and entry and barrier and entry['pid']==row['pid'] and row['pid'] in barrier['pids'],'link args original needs model/entry/barrier')
+                verify_stopped_original_order(row,barrier,entry,row,inline=True)
+                need(row['syscall']==entry['nr'] and row['arch']==entry['arch'],'link args syscall/arch differs')
+
+                # EXACT per-form binding, matching the observer's layout.
+                need(row['heldRole'] in ('source','target'),'link held role differs')
+                if row['form']=='link':
+                    need(row['oldDirfd'] is None and row['oldPathAddress']==entry['args'][0],'link source operand differs')
+                    need(row['newDirfd'] is None and row['newPathAddress']==entry['args'][1],'link destination operand differs')
+                    need(row['flags']==0 and row['heldRole']=='source','link has no flags and holds the source')
+                elif row['form']=='linkat':
+                    need(row['oldDirfd']==entry['args'][0] and row['oldPathAddress']==entry['args'][1],'linkat source operands differ')
+                    need(row['newDirfd']==entry['args'][2] and row['newPathAddress']==entry['args'][3],'linkat destination operands differ')
+                    need(row['flags']==entry['args'][4] and entry['args'][4] in (0,0x400),'linkat flags must be 0 or AT_SYMLINK_FOLLOW')
+                    need(row['heldRole']=='source','linkat holds the source')
+                elif row['form']=='unlink':
+                    need(row['oldPathAddress'] is None and row['newPathAddress']==entry['args'][0],'unlink path operand differs')
+                    need(row['newDirfd'] is None and row['flags']==0,'unlink has no dirfd/flags')
+                    need(row['heldRole']=='target','unlink holds the target')
+                else:  # unlinkat
+                    need(row['newDirfd']==entry['args'][0] and row['newPathAddress']==entry['args'][1],'unlinkat operands differ')
+                    need(row['flags']==entry['args'][2] and entry['args'][2]==0,'unlinkat flags must be zero')
+                    need(row['heldRole']=='target','unlinkat holds the target')
+                expected=hashlib.sha256(json.dumps(dict(model=LINK_MODEL,arch=row['arch'],syscall=row['syscall'],form=row['form'],
+                    newDirfd=row['newDirfd'],newPathAddress=row['newPathAddress'],oldDirfd=row['oldDirfd'],
+                    oldPathAddress=row['oldPathAddress'],flags=row['flags'],
+                    newPathHex=row['newPathHex'],newNamespaceHex=row['newNamespaceHex'],
+                    oldPathHex=row['oldPathHex'],oldNamespaceHex=row['oldNamespaceHex'],
+                    heldPathHex=row['heldPathHex'],heldRole=row['heldRole']),sort_keys=True,separators=(',',':')).encode()).hexdigest()
+                need(expected==row['operandSha256'],'link args operand digest differs')
+                link_args[row['sequence']]=row;retained_entries.add(entry['sequence'])
+            elif kind=='actual-link-window':
+                entry=entries.get(row['entrySequence']);barrier=barriers.get(row['barrierSequence'])
+                need(row.get('model')==LINK_MODEL and entry and barrier and entry['pid']==row['pid'] and row['pid'] in barrier['pids'],'actual link entry/barrier differs')
+                original=link_args.get(row.get('argsOriginalSequence'))
+                need(original and original['entrySequence']==row['entrySequence'] and original['pid']==row['pid'],'actual link lacks its own args original')
+                # row.form must agree with BOTH the bound original and the real entry.
+                need(row.get('form')==original['form'],'actual link window form differs from its args original')
+                need(original['syscall']==entry['nr'],'actual link args syscall differs from actual entry')
+                need(LINK_SYSCALLS[entry['arch']][original['form']]==entry['nr'],'actual link form does not match the actual entry syscall')
+                need(len(row['beforeIdentity'])==6 and type(row['beforeLinks']) is int and row['beforeLinks']>=1,'actual link identity/link count shape differs')
+                # window.path must equal the target resolved from ITS OWN raw operand
+                # bytes; it is never an unconstrained annotation.
+                held=bytes.fromhex(original['heldPathHex']).decode()
+                need(row['path']==held,'actual link window path differs from its own held operand')
+                link_windows[row['sequence']]=row;retained_entries.add(row['entrySequence'])
+            elif kind=='exclusive-link-resume':
+                window=link_windows.get(row['captureSequence']);need(window and exclusive is None and window['pid']==row['pid'] and window['entrySequence']==row['entrySequence'],'actual link exclusive resume differs');exclusive=(row['pid'],row['entrySequence'])
+            elif kind=='actual-link-transition':
+                window=link_windows.get(row['windowSequence']);exit=exits.get(row['entrySequence'])
+                need(row.get('model')==LINK_MODEL,'actual link transition lacks declared model')
+                need(window and exclusive==(row['pid'],row['entrySequence']) and window['entrySequence']==row['entrySequence'] and window['pid']==row['pid'],'actual link transition window differs')
+                need(exit and exit['sequence']==row['exitSequence'] and not exit['isError'] and exit['result']==0 and row['isError'] is False and row['result']==0,'actual link exit differs')
+                before=window['beforeIdentity'];after=row['afterIdentity']
+                need(len(after)==6 and after[:5]==before[:5],'actual link changed inode/mode/size/mtime')
+                need(type(row['afterLinks']) is int and row['afterLinks']>=0,'actual link result link count shape differs')
+                # Direction is an OPERATION fact, verified here rather than only in chain
+                # composition, so a swapped window/transition pair cannot pass.
+                expected=(window['beforeLinks']+1) if window['form'] in ('link','linkat') else (window['beforeLinks']-1)
+                need(row['afterLinks']==expected,'actual link transition nlink direction differs')
+                link_transitions[row['sequence']]=(window,row)
+            elif kind=='actual-timestamp-window':
+                entry=entries.get(row['entrySequence']);barrier=barriers.get(row['barrierSequence'])
+                need(row.get('model')==TIMESTAMP_MODEL and entry and barrier and entry['pid']==row['pid'] and row['pid'] in barrier['pids'],'actual timestamp entry/barrier differs')
+                original=metadata_args.get(row.get('argsOriginalSequence'))
+                need(original and original['entrySequence']==row['entrySequence'] and original['pid']==row['pid'],'actual timestamp lacks its own args original')
+                need(len(row['beforeIdentity'])==6 and (original['timesHex'] is None)==(row['timesAbsent'] is True),'actual timestamp identity/times-absence differs')
+                decoded=None if original['timesHex'] is None else [list(p) for p in decode_timespec(bytes.fromhex(original['timesHex']))]
+                need(row.get('times')==decoded,'actual timestamp times differ from bound operand bytes')
+                # The window path must equal the target resolved from its OWN raw
+                # operand bytes, independent of any producer->consumer chain.
+                raw_path=bytes.fromhex(original['pathHex'])
+                if original['form']=='fd':
+                    expected=bytes.fromhex(original['namespaceHex']).decode()
+                elif raw_path.startswith(b'/'):expected=raw_path.decode()
+                else:
+                    need(original['namespaceHex'],'relative timestamp requires a captured namespace base')
+                    expected=posixpath.normpath(bytes.fromhex(original['namespaceHex']).decode()+'/'+raw_path.decode())
+                need(row['path']==expected,'actual timestamp window path differs from its raw resolved target')
+                timestamp_windows[row['sequence']]=row;retained_entries.add(row['entrySequence'])
+            elif kind=='exclusive-timestamp-resume':
+                window=timestamp_windows.get(row['captureSequence']);need(window and exclusive is None and window['pid']==row['pid'] and window['entrySequence']==row['entrySequence'],'actual timestamp exclusive resume differs');exclusive=(row['pid'],row['entrySequence'])
+            elif kind=='actual-timestamp-transition':
+                window=timestamp_windows.get(row['windowSequence']);exit=exits.get(row['entrySequence'])
+                need(row.get('model')==TIMESTAMP_MODEL,'actual timestamp transition lacks declared model')
+                need(window and exclusive==(row['pid'],row['entrySequence']) and window['entrySequence']==row['entrySequence'] and window['pid']==row['pid'],'actual timestamp transition window differs')
+                need(exit and exit['sequence']==row['exitSequence'] and not exit['isError'] and exit['result']==0 and row['isError'] is False and row['result']==0,'actual timestamp exit differs')
+                before=window['beforeIdentity'];after=row['afterIdentity']
+                if window['timesAbsent']:
+                    need(len(after)==6 and after[:4]==before[:4] and after[2]&0o7777==before[2]&0o7777,'actual timestamp changed inode identity/mode/size')
+                else:
+                    timestamp_effect(before,after,decode_timespec(bytes.fromhex(metadata_args[window['argsOriginalSequence']]['timesHex'])))
+                timestamp_transitions[row['sequence']]=(window,row)
             elif kind=='actual-mode-window':
                 entry=entries.get(row['entrySequence']);barrier=barriers.get(row['barrierSequence']);need(entry and barrier and entry['pid']==row['pid'] and row['pid'] in barrier['pids'],'actual chmod entry/barrier differs')
                 modes={0xc000003e:{90:1,91:1,268:2},0xc00000b7:{52:1,53:2}}[entry['arch']]
@@ -1420,7 +1612,7 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                 if entity_model=='same-phase-content-entity-v2':storage_original(row)
                 elif not entity_model_initialized:pending_storage_rows.append(row)
             if generated_verifier is not None:
-                generated_verifier.metadata_chain=retained_metadata_chain;generated_verifier.verified_metadata_states=sorted([*mode_transitions.values(),*rename_transitions.values()],key=lambda pair:pair[1]['sequence'])
+                generated_verifier.metadata_chain=retained_metadata_chain;generated_verifier.verified_metadata_states=sorted([*mode_transitions.values(),*timestamp_transitions.values(),*link_transitions.values(),*rename_transitions.values()],key=lambda pair:pair[1]['sequence'])
                 generated_verifier.record(row,entries,exits,barriers,caps)
         need(bti_required==set(bti_originals)==bti_completed,'BTI hardening window not closed')
         need(remap_required==set(remap_originals)==remap_consumed,'mremap capability window not closed')
@@ -1444,6 +1636,8 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
     need(set(alias_close_windows)==alias_close_exits,'alias close missing actual close/slot closure')
     need(not exec_fd_events,'actual exec FD table change missing')
     need(len(mode_windows)==len(mode_transitions),'actual chmod window missing actual exit')
+    need(len(timestamp_windows)==len(timestamp_transitions),'actual timestamp window missing actual exit')
+    need(len(link_windows)==len(link_transitions),'actual link window missing actual exit')
     need(active_rename is None and pending_rename_window is None and len(rename_windows)==len(rename_transitions),'retained rename window missing actual exit')
     need(len(write_windows)==len(write_transitions),'actual write window missing exit transition')
     need({seq for seq,(row,_) in caps.items() if row['role']=='readwrite-consumer'}==set(write_read_exits),'own-RW read missing actual stable exit')
@@ -1466,8 +1660,8 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
         producer=successful.get(relation['producerCaptureSequence']);consumer=caps.get(relation['consumerCaptureSequence'])
         need(producer and consumer and producer[0]['role']=='producer-close' and consumer[0]['role']=='consumer' and producer[0]['sequence']<consumer[0]['sequence']<relation['sequence'],'namespace binding lacks prior retained producer/current consumer')
         before=producer[0]['identity'];current=before
-        if relation.get('metadataChainModel')=='actual-rename-mode-chain-v1':
-            verified=sorted([*mode_transitions.values(),*rename_transitions.values()],key=lambda pair:pair[1]['sequence'])
+        if relation.get('metadataChainModel') in ['actual-rename-mode-chain-v1',TIMESTAMP_CHAIN_MODEL]:
+            verified=sorted([*mode_transitions.values(),*timestamp_transitions.values(),*link_transitions.values(),*rename_transitions.values()],key=lambda pair:pair[1]['sequence'])
             references=retained_metadata_chain(producer[0],consumer[0],verified)
             need(references==relation['modeTransitions'],'retained metadata chain references differ');current=consumer[0]['identity']
         else:

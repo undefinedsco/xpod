@@ -47,15 +47,15 @@ test('every ACTUAL 9d02 published prefix is byte-identical and only genuine tupl
  // current manifest/lock plus the four reviewed SDK build inputs, and the
  // candidate-producer-attempt SDK81 plus its new consumer/CI current tails.
  // Each is a real appended recipe, not a rewrite.
- expect(live.length-frozen.length).toBe({sdk:13,consumer:12,ci:24,linux:13,api:1}[name as 'sdk']??0);
+ expect(live.length-frozen.length).toBe({sdk:14,consumer:12,ci:24,linux:14,api:1}[name as 'sdk']??0);
  }
 });
 
 test('the appended tuples are exactly two genuine slices each and the deltas are explainable',()=>{
  // +3 SDK tuples (Linux repeats them as a superset), +3 consumer, +6 CI, and the
  // ORM 0.3.26 joint tail appends exactly one API and one CLI tuple.
- expect(sdk.length).toBe(85);
- expect(linux.length).toBe(86);
+ expect(sdk.length).toBe(86);
+ expect(linux.length).toBe(87);
  expect(consumer.length).toBe(99);
  expect(ci.length).toBe(196);
  expect(api.length).toBe(29);

@@ -12,13 +12,14 @@ test('sixteen declared complete groups only; observed original bound remains thi
  const groups=Array.from({length:16},(_,i)=>[['model.py',String(i)],['shared.py','b']]as const);expect(select(groups,new Map(groups[15]!))).toBe(groups[15]);expect(()=>select([...groups,groups[15]!],new Map(groups[15]!))).toThrow();expect(()=>plan([...groups,groups[15]!],names,new Map(groups[15]!))).toThrow();expect(()=>select([old],new Map(Array.from({length:33},(_,i)=>[String(i),'a'])))).toThrow();
 });
 
-test('thirty-eight registered recipes fit capacity; a thirty-ninth rejects before extra reads',()=>{
- // The declared VERSION catalogue is exactly 38 after the SDK85 fail-only
- // diagnostic append pushed the fetch CURRENT catalogue to a 38th tuple. Only the
- // catalogue length changed; the observed PER-TUPLE role bound stays 32 (see the
- // previous case). Every non-matching tuple carries a DISTINCT digest, so the
- // overflow refusal comes from the COUNT bound, not from ambiguity.
- const groups=Array.from({length:38},(_,i)=>[['model.py',String(i)],['shared.py','b']]as const);
- const observed=new Map(groups[37]!);expect(plan(groups,names,observed)).toBe(groups[37]);expect(select(groups,observed)).toBe(groups[37]);
- const overflow=[...groups,[['model.py','38'],['shared.py','b']]as const];expect(()=>plan(overflow,names,observed)).toThrow();expect(()=>select(overflow,observed)).toThrow();
+test('thirty-nine registered recipes fit capacity; a fortieth rejects before extra reads',()=>{
+ // The declared VERSION catalogue is exactly 39 after the SDK86 append pushed the
+ // fetch CURRENT catalogue to a 39th tuple. Only the catalogue length changed; the
+ // observed PER-TUPLE role bound stays 32 (see the previous case) and the 1024-slot
+ // FD cap, lease cadence and capture bounds are untouched. Every non-matching tuple
+ // carries a DISTINCT digest, so the overflow refusal comes from the COUNT bound,
+ // not from ambiguity.
+ const groups=Array.from({length:39},(_,i)=>[['model.py',String(i)],['shared.py','b']]as const);
+ const observed=new Map(groups[38]!);expect(plan(groups,names,observed)).toBe(groups[38]);expect(select(groups,observed)).toBe(groups[38]);
+ const overflow=[...groups,[['model.py','39'],['shared.py','b']]as const];expect(()=>plan(overflow,names,observed)).toThrow();expect(()=>select(overflow,observed)).toThrow();
 });

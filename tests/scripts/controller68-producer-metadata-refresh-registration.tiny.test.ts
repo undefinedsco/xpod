@@ -12,7 +12,7 @@ const sha=(raw:Buffer|string)=>createHash('sha256').update(raw).digest('hex');
 test('Controller68 preserves all 278 exact pre-refresh complete recipes and binds current 426 physical originals',()=>{
  expect(before.base).toBe('0537ef123f763db449abd34850a40a865c19821f');
  expect(Object.values(before.hashes).reduce((sum,rows)=>sum+rows.length,0)).toBe(278);
- expect([api.length,sdk.length,consumer.length,ci.length,current.length]).toEqual([29,85,99,196,504]);
+ expect([api.length,sdk.length,consumer.length,ci.length,current.length]).toEqual([29,86,99,196,504]);
  for(const [name,values] of Object.entries({api,sdk,consumer,ci})){const old=before.hashes[name as keyof typeof before.hashes];expect(values.slice(0,old.length).map(row=>sha(JSON.stringify(row)))).toEqual(old);}
  for(const row of [...current,...actualApi,...sdk.at(-1)!.selectors,...sdk.at(-1)!.sourceBindings])expect(sha(readFileSync(row.path))).toBe(row.sha256);
  expect(api.at(-1)!.sourceBindings).toBe(actualApi);

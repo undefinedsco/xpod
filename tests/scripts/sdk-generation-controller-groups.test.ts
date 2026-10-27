@@ -30,9 +30,9 @@ const READONLY_DCA_PUBLISHED_SIX = Object.freeze([
 ]);
 
 for (const [file, historicalName, currentName, historicalCount, currentCount] of [
-  ['qlever-sdk-generation.ts', 'REVIEWED_CONTROLLER_HELPER_GROUPS_NEXT', 'REVIEWED_CONTROLLER_HELPER_GROUPS_CURRENT', 30, 35],
+  ['qlever-sdk-generation.ts', 'REVIEWED_CONTROLLER_HELPER_GROUPS_NEXT', 'REVIEWED_CONTROLLER_HELPER_GROUPS_CURRENT', 30, 36],
   ['qlever-sdk-upstream-source.ts', 'REVIEWED_HELPER_GROUPS', 'REVIEWED_HELPER_GROUPS', 7, 7],
-  ['qlever-sdk-fetchcontent.ts', 'REVIEWED_HELPER_GROUPS_NEXT', 'REVIEWED_HELPER_GROUPS_CURRENT', 33, 38],
+  ['qlever-sdk-fetchcontent.ts', 'REVIEWED_HELPER_GROUPS_NEXT', 'REVIEWED_HELPER_GROUPS_CURRENT', 33, 39],
   ['qlever-sdk-readonly-executor.ts', 'REVIEWED_READONLY_HELPER_GROUPS', 'REVIEWED_READONLY_HELPER_GROUPS', 7, 7],
 ] as const) it(file + ' keeps its whole historical tuples and admits the real current bytes', () => {
   // The published/historical catalogue is frozen history: every one of its whole
@@ -113,13 +113,13 @@ it('bounds thirty-eight reviewed whole tuples, accepting only the production max
   // catalogue policy admits exactly that many DECLARED versions. This is a
   // version-count ceiling, never a capture/role capacity: the observed PER-TUPLE
   // role bound stays 32 (asserted by the next case), and 1s/1800/8192 are untouched.
-  const groups = Array.from({length: 38}, (_, i) => Object.freeze([Object.freeze(['helper', String(i)] as const)]));
-  // the genuine 38th version is the current production maximum and selects
-  expect(groups).toHaveLength(38);
-  expect(select(groups, new Map(groups[37]!))).toBe(groups[37]);
+  const groups = Array.from({length: 39}, (_, i) => Object.freeze([Object.freeze(['helper', String(i)] as const)]));
+  // the genuine 39th declared version is the current production maximum and selects
+  expect(groups).toHaveLength(39);
+  expect(select(groups, new Map(groups[38]!))).toBe(groups[38]);
   expect(select(groups, new Map(groups[0]!))).toBe(groups[0]);
-  // a 39th declared version exceeds the reviewed catalogue and is refused
-  expect(() => select([...groups, [['helper', '38']]], new Map([['helper', '38']]))).toThrow();
+  // a 40th declared version exceeds the reviewed catalogue and is refused
+  expect(() => select([...groups, [['helper', '39']]], new Map([['helper', '39']]))).toThrow();
   // a duplicate/ambiguous tuple is refused
   expect(() => select([...groups.slice(0, 25), groups[0]!], new Map(groups[0]!))).toThrow();
 });
