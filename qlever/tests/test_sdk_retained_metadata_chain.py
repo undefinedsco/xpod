@@ -1,11 +1,17 @@
-"""Pure endpoint composition only; not kernel/original verification or a cap."""
-import ast,copy,unittest
+"""Pure endpoint composition only; not kernel/original verification or a cap.
+
+The module is imported as the ACTUAL production module (not an AST-extracted
+function in a fake scope). The previous extraction re-created only
+`retained_metadata_chain`, so the real fail-only diagnostic helper it calls was
+undefined and the fixture diverged from production. Importing the module keeps
+every existing assertion and also exercises the real bounded diagnostic.
+"""
+import copy,importlib.util,unittest
 from pathlib import Path
 SOURCE=Path(__file__).resolve().parents[1]/'scripts/sdk-generation-multiprocess-bindings.py'
-node=next(n for n in ast.parse(SOURCE.read_text()).body if isinstance(n,ast.FunctionDef) and n.name=='retained_metadata_chain')
-def need(value,why):
- if not value:raise ValueError(why)
-scope={'need':need};exec(compile(ast.Module(body=[node],type_ignores=[]),str(SOURCE),'exec'),scope);join=scope[node.name]
+spec=importlib.util.spec_from_file_location('sdk_generation_multiprocess_bindings_retained',SOURCE)
+module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+join=module.retained_metadata_chain
 class Tests(unittest.TestCase):
  def setUp(self):
   self.pre=[1,2,33188,1571,40,50];self.ren=[1,2,33188,1571,40,60];self.mode=[1,2,33261,1571,40,70]

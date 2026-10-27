@@ -29,7 +29,9 @@ const LEAF='tests/scripts/candidate-producer-attempt-binding.test.ts';
 const OLD_RECIPE='9244950e1fb801c142e2fafdaab3cf50cebb31c647b4e2bbb9b9e94c2f2812d0';
 
 it('SDK84 whole-inherits SDK83 and re-pins exactly three existing mandatory roles',()=>{
-  const old=SDK[SDK.length-2]!,next=SDK[SDK.length-1]!;
+  // FIXED HISTORICAL indices: this case tests the SDK84 feature, so it must not
+  // follow the latest tail once SDK85 is appended. Zero-indexed SDK83=82, SDK84=83.
+  const old=SDK[82]!,next=SDK[83]!;
   expect(JSON.stringify(next.selectors)).toBe(JSON.stringify(old.selectors));
   expect(JSON.stringify(next.candidateServiceRelationship)).toBe(JSON.stringify(old.candidateServiceRelationship));
   expect(JSON.stringify(next.outerExecutor)).toBe(JSON.stringify(old.outerExecutor));
@@ -42,7 +44,13 @@ it('SDK84 whole-inherits SDK83 and re-pins exactly three existing mandatory role
   // Three existing mandatory roles move: the two edited build-contract files and
   // SDK81's regression leaf whose live frontier counts moved for this append.
   expect(moved).toEqual(new Set([RECIPE,VALIDATOR,LEAF]));
-  for(const p of [RECIPE,VALIDATOR,LEAF]) expect(next.sourceBindings.find(r=>r.path===p)!.sha256).toBe(sha(p));
+  expect(next.sourceBindings.find(r=>r.path===RECIPE)!.sha256).toBe(sha(RECIPE));
+  expect(next.sourceBindings.find(r=>r.path===VALIDATOR)!.sha256).toBe(sha(VALIDATOR));
+  // The LEAF was re-pinned by SDK84 for its then-live frontier counts. A later
+  // slice (SDK85) legitimately moved it again, so this PUBLISHED tuple keeps the
+  // SDK84-era value and must NOT follow today's bytes.
+  expect(next.sourceBindings.find(r=>r.path===LEAF)!.sha256)
+    .toBe('501df8461fac5846e2bb11f251f59e71819e120f88544fb6128b5d4ea9d17d47');
   // stage 5 carries the pre-owned build-recipe role only
   const stages=next.secondarySelectorStages??[];
   expect(stages.length).toBe((old.secondarySelectorStages??[]).length+1);
@@ -50,15 +58,17 @@ it('SDK84 whole-inherits SDK83 and re-pins exactly three existing mandatory role
   expect(stages[stages.length-1]![0]!.sha256).toBe(sha(RECIPE));
   // the same role is re-hashed in the inherited stage-0 secondary selectors
   expect(next.secondarySelectors!.find(r=>r.path===RECIPE)!.sha256).toBe(sha(RECIPE));
-  expect(LINUX).toHaveLength(SDK.length+1);
-  expect(whole(LINUX[LINUX.length-1]!)).toBe(whole(next));
+  // Linux peers SDK with one leading Linux tuple, so the SDK84 historical group
+  // is at Linux index 84 (SDK index 83 + 1). Must not follow the latest tail.
+  expect(whole(LINUX[84]!)).toBe(whole(next));
 });
 
 it('real staged walk: old recipe selects SDK83, new selects SDK84',()=>{
   // Stage-0 candidates for this slice: SDK70..SDK84. Including SDK84 is required
   // because it is the recipe that DECLARES stage 5.
-  const peers=SDK.slice(-14);
-  const old=SDK[SDK.length-2]!,next=SDK[SDK.length-1]!;
+  // Historical SDK84 slice: SDK70..SDK84 fixed window (SDK85 excluded).
+  const peers=SDK.slice(70,84);
+  const old=SDK[82]!,next=SDK[83]!;
   const base=new Map<string,string>();
   for(const r of [...old.selectors,...(old.secondarySelectors??[]),...(old.secondarySelectorStages??[]).flat()]) base.set(sourceBindingKey(r),r.sha256);
   // With the inherited observation (old value) the whole set resolves to SDK83;

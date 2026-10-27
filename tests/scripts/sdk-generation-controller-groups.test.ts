@@ -30,9 +30,9 @@ const READONLY_DCA_PUBLISHED_SIX = Object.freeze([
 ]);
 
 for (const [file, historicalName, currentName, historicalCount, currentCount] of [
-  ['qlever-sdk-generation.ts', 'REVIEWED_CONTROLLER_HELPER_GROUPS_NEXT', 'REVIEWED_CONTROLLER_HELPER_GROUPS_CURRENT', 30, 34],
+  ['qlever-sdk-generation.ts', 'REVIEWED_CONTROLLER_HELPER_GROUPS_NEXT', 'REVIEWED_CONTROLLER_HELPER_GROUPS_CURRENT', 30, 35],
   ['qlever-sdk-upstream-source.ts', 'REVIEWED_HELPER_GROUPS', 'REVIEWED_HELPER_GROUPS', 7, 7],
-  ['qlever-sdk-fetchcontent.ts', 'REVIEWED_HELPER_GROUPS_NEXT', 'REVIEWED_HELPER_GROUPS_CURRENT', 33, 37],
+  ['qlever-sdk-fetchcontent.ts', 'REVIEWED_HELPER_GROUPS_NEXT', 'REVIEWED_HELPER_GROUPS_CURRENT', 33, 38],
   ['qlever-sdk-readonly-executor.ts', 'REVIEWED_READONLY_HELPER_GROUPS', 'REVIEWED_READONLY_HELPER_GROUPS', 7, 7],
 ] as const) it(file + ' keeps its whole historical tuples and admits the real current bytes', () => {
   // The published/historical catalogue is frozen history: every one of its whole
@@ -106,20 +106,20 @@ for (const [file, historicalName, currentName, historicalCount, currentCount] of
   }
 });
 
-it('bounds thirty-seven reviewed whole tuples, accepting only the production maximum and rejecting thirty-eight or an ambiguous tuple', () => {
-  // The declared VERSION maximum is genuinely 37: after the B794 owned-window
-  // diagnostic (36) the SDK79 archive-lifecycle slice appended one more real
-  // fetch version, so the catalogue policy admits exactly that many DECLARED
-  // versions. This is a version-count ceiling, never a capture/role capacity:
-  // the observed PER-TUPLE role bound stays 32 (asserted by the next case),
-  // and 1s/1800/8192 are untouched.
-  const groups = Array.from({length: 37}, (_, i) => Object.freeze([Object.freeze(['helper', String(i)] as const)]));
-  // the genuine 37th version is the current production maximum and selects
-  expect(groups).toHaveLength(37);
-  expect(select(groups, new Map(groups[36]!))).toBe(groups[36]);
+it('bounds thirty-eight reviewed whole tuples, accepting only the production maximum and rejecting thirty-nine or an ambiguous tuple', () => {
+  // The declared VERSION maximum is genuinely 38: after the B794 owned-window
+  // diagnostic (36) and the SDK79 archive-lifecycle slice (37), the SDK85
+  // fail-only diagnostic tuple appended one more real fetch version, so the
+  // catalogue policy admits exactly that many DECLARED versions. This is a
+  // version-count ceiling, never a capture/role capacity: the observed PER-TUPLE
+  // role bound stays 32 (asserted by the next case), and 1s/1800/8192 are untouched.
+  const groups = Array.from({length: 38}, (_, i) => Object.freeze([Object.freeze(['helper', String(i)] as const)]));
+  // the genuine 38th version is the current production maximum and selects
+  expect(groups).toHaveLength(38);
+  expect(select(groups, new Map(groups[37]!))).toBe(groups[37]);
   expect(select(groups, new Map(groups[0]!))).toBe(groups[0]);
-  // a 38th declared version exceeds the reviewed catalogue and is refused
-  expect(() => select([...groups, [['helper', '37']]], new Map([['helper', '37']]))).toThrow();
+  // a 39th declared version exceeds the reviewed catalogue and is refused
+  expect(() => select([...groups, [['helper', '38']]], new Map([['helper', '38']]))).toThrow();
   // a duplicate/ambiguous tuple is refused
   expect(() => select([...groups.slice(0, 25), groups[0]!], new Map(groups[0]!))).toThrow();
 });
