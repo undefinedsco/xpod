@@ -1,4 +1,4 @@
-import { sqliteTable, text, integer, primaryKey } from 'drizzle-orm/sqlite-core';
+import { sqliteTable, text, integer, primaryKey, index, uniqueIndex } from 'drizzle-orm/sqlite-core';
 
 export const usage = sqliteTable('identity_usage', {
   scopeType: text('scope_type').notNull(), // 'account' | 'pod'
@@ -96,3 +96,18 @@ export const podInterfaceKeys = sqliteTable('identity_pod_interface_key', {
   createdAt: integer('created_at').notNull().$defaultFn(() => Math.floor(Date.now() / 1000)),
   updatedAt: integer('updated_at').notNull().$defaultFn(() => Math.floor(Date.now() / 1000)),
 });
+
+/** Authoritative external identity/account bindings; timestamps use UTC (SQLite: Unix seconds). */
+export const externalIdentities = sqliteTable('identity_external_identities', {
+  id: text('id').primaryKey(),
+  accountId: text('account_id').notNull(),
+  provider: text('provider').notNull(),
+  namespace: text('namespace').notNull(),
+  subject: text('subject').notNull(),
+  unionId: text('union_id'),
+  createdAt: integer('created_at').notNull(),
+  updatedAt: integer('updated_at').notNull(),
+}, (table) => [
+  uniqueIndex('identity_external_identities_subject_idx').on(table.provider, table.namespace, table.subject),
+  index('identity_external_identities_account_idx').on(table.accountId),
+]);

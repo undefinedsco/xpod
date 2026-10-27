@@ -16,12 +16,18 @@ it('protects the last password through HTTP while permitting passwordless Pod ac
   const origin = `http://localhost:${port}`;
   const database = `sqlite:${path.join(root, 'identity.sqlite')}`;
   const cloud = JSON.parse(await readFile(path.resolve('config/cloud.json'), 'utf8'));
+  const external = JSON.parse(await readFile(path.resolve('config/external-login.json'), 'utf8'));
+  const accountId = 'urn:undefineds:xpod:AccountStorageOverride';
   const accountOverride = cloud['@graph'].find((entry: { overrideInstance?: { '@id'?: string } }) =>
-    entry.overrideInstance?.['@id'] === 'urn:solid-server:default:AccountStorage');
-  expect(accountOverride.overrideParameters['@type']).toBe('LoginMethodGuardStorage');
+    entry.overrideInstance?.['@id'] === accountId);
+  expect(accountOverride.overrideParameters['@type']).toBe('ExternalIdentityAccountStorage');
   const config = path.join(root, 'account-config.json');
   await writeFile(config, JSON.stringify({ '@context': cloud['@context'],
-    import: ['css:config/default.json'], '@graph': [accountOverride] }));
+    import: ['css:config/default.json'], '@graph': [
+      ...external['@graph'].filter((entry: { '@id'?: string; overrideInstance?: { '@id'?: string } }) =>
+        entry['@id'] === accountId || entry.overrideInstance?.['@id'] === 'urn:solid-server:default:AccountStorage'),
+      accountOverride,
+    ] }));
   const request = (route: string, method: string, body?: object, token?: string) => fetch(new URL(route, origin), {
     method, redirect: 'manual', headers: { Accept: 'application/json', ...(body ? { 'Content-Type': 'application/json' } : {}),
       ...(token ? { Authorization: `CSS-Account-Token ${token}` } : {}) },

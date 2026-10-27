@@ -1,9 +1,24 @@
 import { describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
-import { executeQuery, getIdentityDatabase } from '../../../src/identity/drizzle/db';
+import { executeQuery, executeStatement, getIdentityDatabase } from '../../../src/identity/drizzle/db';
 import { UsageRepository } from '../../../src/storage/quota/UsageRepository';
 
 describe('UsageRepository', () => {
+  it('rolls back the pod increment when updating its account fails', async () => {
+    const db = getIdentityDatabase('sqlite::memory:usage-repository-rollback');
+    const repo = new UsageRepository(db);
+    await executeStatement(db, sql`CREATE TRIGGER reject_account_usage BEFORE INSERT ON identity_usage
+      WHEN NEW.scope_type = 'account' BEGIN SELECT RAISE(ABORT, 'account increment failed'); END`);
+    try {
+      await expect(repo.incrementUsage('rollback-account', 'rollback-pod', 10, 3, 7)).rejects.toThrow('account increment failed');
+      expect((await executeQuery(db, sql`SELECT scope_id FROM identity_usage`)).rows).toEqual([]);
+    } finally { await executeStatement(db, sql`DROP TRIGGER reject_account_usage`); }
+
+    await Promise.all(Array.from({ length: 10 }, () => repo.incrementUsage('account', 'pod', 1, 2, 3)));
+    expect(await repo.getAccountUsage('account')).toMatchObject({ storageBytes: 10, ingressBytes: 20, egressBytes: 30 });
+    expect(await repo.getPodUsage('pod')).toMatchObject({ storageBytes: 10, ingressBytes: 20, egressBytes: 30 });
+  });
+
   it('stores account and pod metrics as scoped rows in identity_usage', async () => {
     const db = getIdentityDatabase(`sqlite::memory:usage-repository-${Date.now()}`);
     const repo = new UsageRepository(db);

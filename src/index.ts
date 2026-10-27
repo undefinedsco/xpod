@@ -1,6 +1,10 @@
 import './runtime/configure-drizzle-solid';
+export { ExternalIdentityAccountStorage } from './identity/external/ExternalIdentityAccountStorage';
 export { EnvExtractor } from './init/EnvExtractor';
 export { ExternalLoginService } from './identity/external/ExternalLoginService';
+export { ExternalLoginProviderFactory } from './identity/external/ExternalLoginProviderFactory';
+export type { ExternalLoginEntry, ExternalLoginConnectorFactory } from './identity/external/ExternalLoginProviderFactory';
+export type { ExternalLoginProvider, ExternalIdentity } from './identity/external/ExternalLoginProvider';
 export { ExternalLoginRequestGuard } from './identity/external/ExternalLoginRequestGuard';
 export { ExternalLoginHandler, ExternalLoginControls } from './identity/external/ExternalLoginHandler';
 export { LocalPodDeletionHttpHandler } from './http/LocalPodDeletionHttpHandler';

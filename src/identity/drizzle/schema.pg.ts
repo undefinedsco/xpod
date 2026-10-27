@@ -1,4 +1,4 @@
-import { pgTable, text, timestamp } from 'drizzle-orm/pg-core';
+import { pgTable, text, timestamp, index, uniqueIndex } from 'drizzle-orm/pg-core';
 import { bigint as pgBigint } from 'drizzle-orm/pg-core/columns/bigint';
 import { integer } from 'drizzle-orm/pg-core/columns/integer';
 
@@ -96,3 +96,18 @@ export const podInterfaceKeys = pgTable('identity_pod_interface_key', {
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow(),
 });
+
+/** Authoritative external identity/account bindings; timestamps use UTC (SQLite: Unix seconds). */
+export const externalIdentities = pgTable('identity_external_identities', {
+  id: text('id').primaryKey(),
+  accountId: text('account_id').notNull(),
+  provider: text('provider').notNull(),
+  namespace: text('namespace').notNull(),
+  subject: text('subject').notNull(),
+  unionId: text('union_id'),
+  createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull(),
+}, (table) => [
+  uniqueIndex('identity_external_identities_subject_idx').on(table.provider, table.namespace, table.subject),
+  index('identity_external_identities_account_idx').on(table.accountId),
+]);

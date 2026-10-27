@@ -9,7 +9,10 @@
       "mutationLocker": "PodMutationLockingHttpHandler:_resourceLocker",
       "mutationDb": "PodMutationLockingHttpHandler:_identityDbUrl",
       "mutationBase": "PodMutationLockingHttpHandler:_baseUrl",
-      "podLifecycleRedis": "PodLifecycleRedisLocker:_options_redisClient"
+      "podLifecycleRedis": "PodLifecycleRedisLocker:_options_redisClient",
+      "identityAccountSource": "ExternalIdentityAccountStorage:_options_storage",
+      "identityAccountDatabase": "ExternalIdentityAccountStorage:_options_identityDbUrl",
+      "identityAccountPasswordless": "ExternalIdentityAccountStorage:_options_allowPasswordlessAccounts"
     }
   ],
   "import": [
@@ -113,14 +116,16 @@
       }
     },
     {
-      "comment": "Persist CSS account identity records in the clustered identity DB. LoginMethodGuardStorage keeps the last-login-method deletion guard while allowing SP-linked accounts to exist without passwords.",
+      "comment": "Persist CSS account identity records in the clustered identity DB. ExternalIdentityAccountStorage keeps the last-login-method deletion guard while allowing SP-linked accounts to exist without passwords.",
       "@type": "Override",
       "overrideInstance": {
-        "@id": "urn:solid-server:default:AccountStorage"
+        "@id": "urn:undefineds:xpod:AccountStorageOverride"
       },
       "overrideParameters": {
-        "@type": "LoginMethodGuardStorage",
-        "storage": {
+        "@type": "ExternalIdentityAccountStorage",
+        "identityAccountPasswordless": true,
+        "identityAccountDatabase": { "@id": "urn:solid-server:default:variable:identityDbUrl" },
+        "identityAccountSource": {
           "@type": "DrizzleIndexedStorage",
           "connectionString": {
             "@id": "urn:solid-server:default:variable:identityDbUrl",

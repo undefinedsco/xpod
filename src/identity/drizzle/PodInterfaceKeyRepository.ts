@@ -1,7 +1,7 @@
 import { eq } from 'drizzle-orm';
 import { getLoggerFor } from 'global-logger-factory';
 import type { IdentityDatabase } from './db';
-import { ensurePodInterfaceKeyTable, getSchema, fromDbTimestamp, toDbTimestamp } from './db';
+import { executeIdentityOperation, ensurePodInterfaceKeyTable, getSchema, fromDbTimestamp, toDbTimestamp } from './db';
 
 /**
  * The interface access key a Pod grants its owner's server-side components.
@@ -45,11 +45,11 @@ export class PodInterfaceKeyRepository implements PodInterfaceKeyRepositoryPort 
 
   public async read(ownerWebId: string): Promise<PodInterfaceKeyRecord | undefined> {
     await this.ensureReady();
-    const rows = await this.db
+    const rows = await executeIdentityOperation(this.db, async executor => executor
       .select()
       .from(this.schema.podInterfaceKeys)
       .where(eq(this.schema.podInterfaceKeys.ownerWebId, ownerWebId))
-      .limit(1);
+      .limit(1));
     const row = rows[0];
     if (!row) {
       return undefined;
@@ -65,7 +65,7 @@ export class PodInterfaceKeyRepository implements PodInterfaceKeyRepositoryPort 
 
   public async list(): Promise<PodInterfaceKeyRecord[]> {
     await this.ensureReady();
-    const rows = await this.db.select().from(this.schema.podInterfaceKeys);
+    const rows = await executeIdentityOperation(this.db, async executor => executor.select().from(this.schema.podInterfaceKeys));
     return (rows as any[]).map((row) => ({
       ownerWebId: String(row.ownerWebId),
       clientId: String(row.clientId),
@@ -79,32 +79,32 @@ export class PodInterfaceKeyRepository implements PodInterfaceKeyRepositoryPort 
     await this.ensureReady();
     const existing = await this.read(record.ownerWebId);
     if (existing) {
-      await this.db
+      await executeIdentityOperation(this.db, async executor => executor
         .update(this.schema.podInterfaceKeys)
         .set({
           clientId: record.clientId,
           sealedSecret: record.sealedSecret,
           updatedAt: toDbTimestamp(this.db, new Date()),
         })
-        .where(eq(this.schema.podInterfaceKeys.ownerWebId, record.ownerWebId));
+        .where(eq(this.schema.podInterfaceKeys.ownerWebId, record.ownerWebId)));
       this.logger.info(`Rotated the Pod interface key for ${record.ownerWebId}`);
       return;
     }
-    await this.db.insert(this.schema.podInterfaceKeys).values({
+    await executeIdentityOperation(this.db, async executor => executor.insert(this.schema.podInterfaceKeys).values({
       ownerWebId: record.ownerWebId,
       clientId: record.clientId,
       sealedSecret: record.sealedSecret,
       createdAt: toDbTimestamp(this.db, new Date()),
       updatedAt: toDbTimestamp(this.db, new Date()),
-    });
+    }));
     this.logger.info(`Stored a Pod interface key for ${record.ownerWebId}`);
   }
 
   public async remove(ownerWebId: string): Promise<void> {
     await this.ensureReady();
-    await this.db
+    await executeIdentityOperation(this.db, async executor => executor
       .delete(this.schema.podInterfaceKeys)
-      .where(eq(this.schema.podInterfaceKeys.ownerWebId, ownerWebId));
+      .where(eq(this.schema.podInterfaceKeys.ownerWebId, ownerWebId)));
   }
 
   private async ensureReady(): Promise<void> {

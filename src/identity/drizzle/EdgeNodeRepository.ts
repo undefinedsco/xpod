@@ -1,7 +1,7 @@
 import { randomBytes, randomUUID, createHash, timingSafeEqual } from 'node:crypto';
 import { sql, eq } from 'drizzle-orm';
 import type { IdentityDatabase } from './db';
-import { ensureCloudClusterTables, executeStatement, executeStatementWithCount, executeQuery, toDbTimestamp, fromDbTimestamp } from './db';
+import { executeIdentityOperation, ensureCloudClusterTables, executeStatement, executeStatementWithCount, executeQuery, toDbTimestamp, fromDbTimestamp } from './db';
 import { edgeNodes } from './schema';
 
 export interface EdgeNodeRepositoryOptions {
@@ -413,7 +413,7 @@ export class EdgeNodeRepository {
     connectivityStatus: string | null;
   } | undefined> {
     await this.ready;
-    const row = await this.db
+    const row = await executeIdentityOperation(this.db, async executor => executor
       .select({
         id: edgeNodes.id,
         capabilities: edgeNodes.capabilities,
@@ -424,7 +424,7 @@ export class EdgeNodeRepository {
       })
       .from(edgeNodes)
       .where(eq(edgeNodes.id, nodeId))
-      .limit(1);
+      .limit(1));
 
     if (row.length === 0) {
       return undefined;
@@ -455,7 +455,7 @@ export class EdgeNodeRepository {
     connectivityStatus: string | null;
   }>> {
     await this.ready;
-    const rows = await this.db
+    const rows = await executeIdentityOperation(this.db, async executor => executor
       .select({
         id: edgeNodes.id,
         capabilities: edgeNodes.capabilities,
@@ -465,7 +465,7 @@ export class EdgeNodeRepository {
         connectivityStatus: edgeNodes.connectivityStatus,
       })
       .from(edgeNodes)
-      .orderBy(edgeNodes.lastSeen);
+      .orderBy(edgeNodes.lastSeen));
 
     return rows.map((row: typeof rows[0]) => {
       const metadata = row.metadata as Record<string, unknown> | null;

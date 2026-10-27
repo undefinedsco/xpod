@@ -1,7 +1,10 @@
 [
-  "LogtoLoginProvider",
+  "ExternalLoginProviderFactory",
+  "LogtoSocialConnectorAdapter",
+  "logtoSocialConnectorFactories",
+  "createExternalLoginProviderFactory",
+  "configuredExternalLoginEntries",
   "ExternalLoginRepository",
-  "createWechatLoginProvider",
   "externalLoginDigest",
   "protectExternalLoginMetadata",
   "ActivityEmitter",

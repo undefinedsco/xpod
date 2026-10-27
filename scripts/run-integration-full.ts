@@ -38,6 +38,7 @@ const composeArgs = [
 const runtimeRoot = path.resolve('.test-data/full-runtime', process.env.XPOD_FULL_RUN_ID || `${Date.now()}-${process.pid}`);
 let infrastructurePorts: InfrastructurePorts = { postgres: 5432, redis: 6379, minio: OBJECT_STORE_PORT };
 const defaultTargets = [
+  'tests/identity/external/ExternalIdentityStorage.postgres.integration.test.ts',
   'tests/integration/CloudClientCredentialVisibility.integration.test.ts',
   'tests/integration/AgentDirectoryProtocol.integration.test.ts',
   'tests/integration/RedisLockOwnership.integration.test.ts',

@@ -8,10 +8,22 @@ This document provides a comprehensive overview of all custom components develop
 `ResolveLoginHandler` 复用 cookie、remember 设置和原 OIDC interaction 的完成逻辑。
 `ExternalLoginControls` 通过同一 provider 注册表公布登录入口及绑定状态；未配置时不公布入口。
 `ExternalLoginService` 负责浏览器事务和账号绑定，微信协议由 Logto 网站连接器实现。
+Logto 只作为连接器供应商，保持 Xpod 单进程；`ExternalLoginProviderFactory` 根据程序侧声明
+创建统一 provider，`LogtoSocialConnectorAdapter` 集中适配供应商接口。工厂和适配器是共享普通
+TypeScript 模块，不由 Components.js 单独创建；职责与扩展方式见 [连接器工厂适配](external-login-connectors.md)。
 `EnvExtractor` 从唯一规范 ENV 键读取部署方凭据，不把 AppSecret 暴露成 CLI 参数。
 `ExternalLoginRequestGuard` 只对已注册外部登录路由的浏览器修改请求检查 Origin/Fetch Metadata，
 拒绝跨来源请求（含同站兄弟子域），不拦截微信返回的 GET 页面或改写原密码登录。
 这些组件是账号交互链的新增实现，不替换密码登录，也不建立第二套会话系统。
+
+`ExternalIdentityAccountStorage` 等位替换 CSS AccountStorage，将 `external-login` 类型交给
+`ExternalIdentityStorage` 的独立 SQL 表，其余类型保留原存储。Cloud 保留永久无密码账号策略，
+Local 保留 CSS 原有策略；账号修改按同一账号协调，SQL 操作使用同一连接事务。
+Local 的内部子类覆盖 CSS 账号过期钩子，在同一账号事务内复查登录计数并清理空账号。
+`SqliteKeyValueStorage` 复用身份连接，避免 Local 账号和外部绑定分别持有 SQLite 写锁。
+SQL 辅助函数和既有 ORM 仓储统一经过 `executeIdentityOperation`，使并发请求在 SQLite 上
+按事务边界排队、PG 仓储加入正确的事务连接；用量仓储复用同一异步事务入口。
+字段、时间语义与旧数据升级见 [外部身份扩展表](external-login-storage.md)。
 
 接口、秘密配置、本地联调准备及当前测试限制见 [微信登录方案](wechat-login-design.md)。
 
@@ -31,7 +43,7 @@ Xpod 遵循**等位替换原则**：用自定义组件替换 CSS 同层级的默
 | `FileDataAccessor` | `MixDataAccessor` | 混合存储：`.ttl` / `.jsonld` 先落真实本地文件作为权威事实，再同步 Quadstore/SPARQL 索引；非结构化文件走 FileSystem/MinIO |
 | RDF `DataAccessor` (Local/Standalone) | `SolidRdfDataAccessor` | 从主 RDF 引擎读写；首次启用空索引时先完成旧 quints 数据迁移，再允许 CSS 读取资源及 ACR 元数据 |
 | `SparqlDataAccessor` | `QuadstoreSparqlDataAccessor` | 基于 Quadstore + SQLUp 的 SPARQL 存储，支持 SQLite/PostgreSQL/MySQL |
-| `BaseLoginAccountStorage` | `LoginMethodGuardStorage` + `DrizzleIndexedStorage` | 数据库存储账户信息，支持集群部署，替代 CSS 的文件存储；保留"最后一个登录方法不可删除"的防锁定保护，但允许 SP 托管账户无密码存在（不要求登录方法、不做孤儿账户过期） |
+| CSS AccountStorage | `ExternalIdentityAccountStorage` | 统一外部身份扩展表与账号事务协调；Cloud 内部使用 LoginMethodGuardStorage + DrizzleIndexedStorage，允许 SP 托管无密码账号；Local 保留 BaseLoginAccountStorage 策略与 WrappedIndexedStorage |
 | `DPoPWebIdExtractor` | `ConfiguredLoopbackDPoPWebIdExtractor` | 保留 issuer、签名、audience/expiry 与完整 DPoP 校验；仅为与 CSS `baseUrl` 完全同源的 HTTP `127/8` 或 `::1` 桌面回环地址放开 upstream 的 localhost-only URI 限制 |
 | Account `AuthorizingHttpHandler.credentialsExtractor`（暂缓方案） | `CachedHandler` + `AccountHostDPoPCredentialsExtractor` | 未接线的审计原型；基于错误 Local-profile 前提的方案已撤回，Draft PR #29 暂缓，不进入发布产物 |
 | `PassthroughStore` | `UsageTrackingStore` | 包装 Store，添加带宽/存储用量追踪和限速功能 |
@@ -181,7 +193,7 @@ Cloud / managed Local 的独立 `profile/card` 始终在 Cloud，用于身份与
 ### DrizzleIndexedStorage
 - **Path**: `src/identity/drizzle/DrizzleIndexedStorage.ts`
 - **Purpose**: CSS IndexedStorage adapter for account authentication and management
-- **Wiring**: Cloud 模式下由 `LoginMethodGuardStorage` 包裹后作为 `AccountStorage`（`config/cloud.json`）。
+- **Wiring**: Cloud 模式下作为 `ExternalIdentityAccountStorage` 的底层账号存储，由其内部的 `LoginMethodGuardStorage` 保留原有账号保护（`config/cloud.json`）。
 - **Table**: `identity_store(container, id, payload)`
 - **Containers**:
   - `account` - User account payload, including account-level role flags.

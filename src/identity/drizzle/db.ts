@@ -1,4 +1,5 @@
 import { Pool, types } from 'pg';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { drizzle as drizzlePg } from 'drizzle-orm/node-postgres';
 import { sql } from 'drizzle-orm';
 import type { SQL } from 'drizzle-orm/sql';
@@ -18,7 +19,8 @@ export type IdentitySchema = typeof pgSchema | typeof sqliteSchema;
  *
  * @example
  * const schema = getSchema(db);
- * await db.select().from(schema.usage).where(eq(schema.usage.scopeId, id));
+ * await executeIdentityOperation(db, async client =>
+ *   client.select().from(schema.usage).where(eq(schema.usage.scopeId, id)));
  */
 export function getSchema(db: IdentityDatabase): typeof pgSchema | typeof sqliteSchema {
   return isDatabaseSqlite(db) ? sqliteSchema : pgSchema;
@@ -42,6 +44,72 @@ const dbCache = new Map<string, CachedConnection>();
 const dbInitPromises = new WeakMap<object, Promise<void>>();
 const dbPostgresPools = new WeakMap<object, Pool>();
 const cloudClusterInitPromises = new WeakMap<object, Promise<void>>();
+interface IdentityTransaction { executor: IdentityDatabase; active: boolean }
+const transactionContext = new AsyncLocalStorage<Map<object, IdentityTransaction>>();
+const sqliteTransactions = new WeakMap<object, Promise<unknown>>();
+function serializeSqlite<T>(db: IdentityDatabase, action: () => T | Promise<T>): Promise<T> {
+  const previous = sqliteTransactions.get(db) ?? Promise.resolve();
+  const pending = previous.catch(() => undefined).then(action);
+  sqliteTransactions.set(db, pending);
+  return pending;
+}
+function currentTransaction(db: IdentityDatabase): IdentityTransaction | undefined {
+  const transaction = transactionContext.getStore()?.get(db);
+  return transaction?.active ? transaction : undefined;
+}
+
+/** Execute ORM operations through the same isolation boundary as raw SQL helpers. */
+export async function executeIdentityOperation<T>(
+  db: IdentityDatabase,
+  action: (executor: IdentityDatabase) => T | PromiseLike<T>,
+): Promise<T> {
+  await ensureDatabaseReady(db);
+  const transaction = currentTransaction(db);
+  if (transaction) return action(transaction.executor);
+  return isDatabaseSqlite(db) ? serializeSqlite(db, () => Promise.resolve(action(db))) : action(db);
+}
+
+/** Use executeIdentityOperation / SQL helpers for all work in this transaction. */
+export async function withIdentityTransaction<T>(
+  db: IdentityDatabase,
+  action: (executor: IdentityDatabase) => Promise<T>,
+): Promise<T> {
+  const existing = currentTransaction(db);
+  if (existing) return action(existing.executor);
+  await ensureDatabaseReady(db);
+  const run = async () => {
+    const client = isDatabaseSqlite(db) ? undefined : await dbPostgresPools.get(db)?.connect();
+    if (!isDatabaseSqlite(db) && !client) throw new Error('Identity transaction requires a registered PostgreSQL pool');
+    const executor = client ? drizzlePg(client) : db;
+    const transaction = { executor, active: true };
+    const context = new Map(transactionContext.getStore());
+    context.set(db, transaction);
+    let began = false;
+    try {
+      if (client) await client.query('BEGIN');
+      else db.run(sql`BEGIN IMMEDIATE`);
+      began = true;
+      const result = await transactionContext.run(context, () => action(executor));
+      if (client) await client.query('COMMIT');
+      else db.run(sql`COMMIT`);
+      return result;
+    } catch (error) {
+      if (began) {
+        if (client) await client.query('ROLLBACK').catch(() => undefined);
+        else db.run(sql`ROLLBACK`);
+      }
+      throw error;
+    } finally { transaction.active = false; client?.release(); }
+  };
+  if (!isDatabaseSqlite(db)) return run();
+  return serializeSqlite(db, run);
+}
+
+/** Transaction-scoped cross-worker lock; SQLite's immediate transaction serializes writers. */
+export async function lockIdentityAccount(db: IdentityDatabase, key: string): Promise<void> {
+  if (!currentTransaction(db)) throw new Error('Identity lock requires a transaction');
+  if (!isDatabaseSqlite(db)) await executeQuery(db, sql`SELECT pg_advisory_xact_lock(hashtextextended(${key}, 0))`);
+}
 
 const JSON_OIDS = [114, 3802];
 const POSTGRES_INITIALIZATION_RETRY_DELAYS_MS = [1_000, 2_000, 4_000, 8_000, 16_000, 30_000];
@@ -207,14 +275,9 @@ export async function executeQuery<T = Record<string, unknown>>(
   db: IdentityDatabase,
   query: SQL,
 ): Promise<QueryResult<T>> {
-  await ensureDatabaseReady(db);
-  if (isDatabaseSqlite(db)) {
-    // SQLite: db.all() returns array directly
-    const rows = db.all(query) as T[];
-    return { rows };
-  }
-  // PostgreSQL: db.execute() returns { rows: [...] }
-  return db.execute(query) as Promise<QueryResult<T>>;
+  return executeIdentityOperation(db, async executor => isDatabaseSqlite(db)
+    ? { rows: executor.all(query) as T[] }
+    : executor.execute(query));
 }
 
 /**
@@ -225,14 +288,10 @@ export async function executeStatement(
   db: IdentityDatabase,
   query: SQL,
 ): Promise<void> {
-  await ensureDatabaseReady(db);
-  if (isDatabaseSqlite(db)) {
-    // SQLite: db.run() for statements
-    db.run(query);
-    return;
-  }
-  // PostgreSQL: db.execute() works for statements too
-  await db.execute(query);
+  await executeIdentityOperation(db, async executor => {
+    if (isDatabaseSqlite(db)) executor.run(query);
+    else await executor.execute(query);
+  });
 }
 
 /**
@@ -246,13 +305,11 @@ export async function executeStatementWithCount(
   db: IdentityDatabase,
   query: SQL,
 ): Promise<number | undefined> {
-  await ensureDatabaseReady(db);
-  if (isDatabaseSqlite(db)) {
-    const result = db.run(query) as unknown as { changes?: unknown } | undefined;
-    return typeof result?.changes === 'number' ? result.changes : undefined;
-  }
-  const result = await db.execute(query) as unknown as { rowCount?: unknown } | undefined;
-  return typeof result?.rowCount === 'number' ? result.rowCount : undefined;
+  return executeIdentityOperation(db, async executor => {
+    const result = isDatabaseSqlite(db) ? executor.run(query) : await executor.execute(query);
+    const count = isDatabaseSqlite(db) ? result?.changes : result?.rowCount;
+    return typeof count === 'number' ? count : undefined;
+  });
 }
 
 export async function executePostgresLockedStatements(
@@ -262,9 +319,9 @@ export async function executePostgresLockedStatements(
 ): Promise<void> {
   await ensureDatabaseReady(db);
   if (isDatabaseSqlite(db)) {
-    for (const statement of statements) {
-      db.run(sql.raw(statement));
-    }
+    await withIdentityTransaction(db, async () => {
+      for (const statement of statements) db.run(sql.raw(statement));
+    });
     return;
   }
 
@@ -299,33 +356,35 @@ export async function executePostgresLockedStatements(
  * anything inside that Pod, so it is created on first use rather than by a Pod-side migration.
  */
 export async function ensurePodInterfaceKeyTable(db: IdentityDatabase): Promise<void> {
-  if (isDatabaseSqlite(db)) {
-    db.run(sql`
+  await executeIdentityOperation(db, async executor => {
+    if (isDatabaseSqlite(db)) {
+      executor.run(sql`
+        CREATE TABLE IF NOT EXISTS identity_pod_interface_key (
+          owner_web_id TEXT PRIMARY KEY,
+          client_id TEXT NOT NULL,
+          sealed_secret TEXT NOT NULL,
+          created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+          updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
+        )
+      `);
+      return;
+    }
+    await executor.execute(sql`
       CREATE TABLE IF NOT EXISTS identity_pod_interface_key (
         owner_web_id TEXT PRIMARY KEY,
         client_id TEXT NOT NULL,
         sealed_secret TEXT NOT NULL,
-        created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
-        updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       )
     `);
-    return;
-  }
-  await db.execute(sql`
-    CREATE TABLE IF NOT EXISTS identity_pod_interface_key (
-      owner_web_id TEXT PRIMARY KEY,
-      client_id TEXT NOT NULL,
-      sealed_secret TEXT NOT NULL,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    )
-  `);
+  });
 }
 
 export async function ensureCloudClusterTables(db: IdentityDatabase): Promise<void> {
   await ensureDatabaseReady(db);
 
-  if (db && typeof db === 'object') {
+  if (db && typeof db === 'object' && !currentTransaction(db)) {
     const cached = cloudClusterInitPromises.get(db as object);
     if (cached) {
       await cached;
@@ -345,9 +404,73 @@ export async function ensureCloudClusterTables(db: IdentityDatabase): Promise<vo
 }
 
 async function doEnsureCloudClusterTables(db: IdentityDatabase): Promise<void> {
+  await executeIdentityOperation(db, async executor => {
 
-  if (isDatabaseSqlite(db)) {
-    db.run(sql`
+    if (isDatabaseSqlite(db)) {
+      executor.run(sql`
+        CREATE TABLE IF NOT EXISTS cluster_ddns_record (
+          subdomain TEXT PRIMARY KEY,
+          domain TEXT NOT NULL,
+          ip_address TEXT,
+          ipv6_address TEXT,
+          record_type TEXT DEFAULT 'A',
+          node_id TEXT,
+          username TEXT,
+          status TEXT DEFAULT 'active',
+          banned_reason TEXT,
+          ttl INTEGER DEFAULT 60,
+          created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+          updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
+        )
+      `);
+      executor.run(sql`
+        CREATE TABLE IF NOT EXISTS cluster_service_token (
+          id TEXT PRIMARY KEY,
+          token_hash TEXT NOT NULL UNIQUE,
+          service_type TEXT NOT NULL,
+          service_id TEXT NOT NULL,
+          scopes TEXT NOT NULL,
+          created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+          expires_at INTEGER
+        )
+      `);
+      executor.run(sql`
+        CREATE TABLE IF NOT EXISTS cluster_node (
+          id TEXT PRIMARY KEY,
+          display_name TEXT,
+          token_hash TEXT NOT NULL,
+          node_type TEXT DEFAULT 'edge',
+          subdomain TEXT UNIQUE,
+          access_mode TEXT,
+          ipv4 TEXT,
+          public_port INTEGER,
+          public_url TEXT,
+          service_token_hash TEXT,
+          provision_code_hash TEXT,
+          internal_ip TEXT,
+          internal_port INTEGER,
+          hostname TEXT,
+          ipv6 TEXT,
+          version TEXT,
+          capabilities TEXT,
+          metadata TEXT,
+          pod_base_urls TEXT,
+          connectivity_status TEXT DEFAULT 'unknown',
+          last_connectivity_check INTEGER,
+          created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+          updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+          last_seen INTEGER
+        )
+      `);
+      executor.run(sql`CREATE INDEX IF NOT EXISTS idx_cluster_ddns_record_domain ON cluster_ddns_record(domain)`);
+      executor.run(sql`CREATE INDEX IF NOT EXISTS idx_cluster_ddns_record_node ON cluster_ddns_record(node_id)`);
+      executor.run(sql`CREATE INDEX IF NOT EXISTS idx_cluster_node_subdomain ON cluster_node(subdomain)`);
+      executor.run(sql`CREATE INDEX IF NOT EXISTS idx_cluster_node_access_mode ON cluster_node(access_mode)`);
+      executor.run(sql`CREATE INDEX IF NOT EXISTS idx_cluster_node_connectivity_status ON cluster_node(connectivity_status)`);
+      return;
+    }
+
+    await executor.execute(sql`
       CREATE TABLE IF NOT EXISTS cluster_ddns_record (
         subdomain TEXT PRIMARY KEY,
         domain TEXT NOT NULL,
@@ -359,22 +482,22 @@ async function doEnsureCloudClusterTables(db: IdentityDatabase): Promise<void> {
         status TEXT DEFAULT 'active',
         banned_reason TEXT,
         ttl INTEGER DEFAULT 60,
-        created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
-        updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       )
     `);
-    db.run(sql`
+    await executor.execute(sql`
       CREATE TABLE IF NOT EXISTS cluster_service_token (
         id TEXT PRIMARY KEY,
         token_hash TEXT NOT NULL UNIQUE,
         service_type TEXT NOT NULL,
         service_id TEXT NOT NULL,
         scopes TEXT NOT NULL,
-        created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
-        expires_at INTEGER
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        expires_at TIMESTAMPTZ
       )
     `);
-    db.run(sql`
+    await executor.execute(sql`
       CREATE TABLE IF NOT EXISTS cluster_node (
         id TEXT PRIMARY KEY,
         display_name TEXT,
@@ -383,93 +506,31 @@ async function doEnsureCloudClusterTables(db: IdentityDatabase): Promise<void> {
         subdomain TEXT UNIQUE,
         access_mode TEXT,
         ipv4 TEXT,
-        public_port INTEGER,
+        public_port BIGINT,
         public_url TEXT,
         service_token_hash TEXT,
         provision_code_hash TEXT,
         internal_ip TEXT,
-        internal_port INTEGER,
+        internal_port BIGINT,
         hostname TEXT,
         ipv6 TEXT,
         version TEXT,
-        capabilities TEXT,
-        metadata TEXT,
+        capabilities JSONB,
+        metadata JSONB,
         pod_base_urls TEXT,
         connectivity_status TEXT DEFAULT 'unknown',
-        last_connectivity_check INTEGER,
-        created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
-        updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
-        last_seen INTEGER
+        last_connectivity_check TIMESTAMPTZ,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        last_seen TIMESTAMPTZ
       )
     `);
-    db.run(sql`CREATE INDEX IF NOT EXISTS idx_cluster_ddns_record_domain ON cluster_ddns_record(domain)`);
-    db.run(sql`CREATE INDEX IF NOT EXISTS idx_cluster_ddns_record_node ON cluster_ddns_record(node_id)`);
-    db.run(sql`CREATE INDEX IF NOT EXISTS idx_cluster_node_subdomain ON cluster_node(subdomain)`);
-    db.run(sql`CREATE INDEX IF NOT EXISTS idx_cluster_node_access_mode ON cluster_node(access_mode)`);
-    db.run(sql`CREATE INDEX IF NOT EXISTS idx_cluster_node_connectivity_status ON cluster_node(connectivity_status)`);
-    return;
-  }
-
-  await db.execute(sql`
-    CREATE TABLE IF NOT EXISTS cluster_ddns_record (
-      subdomain TEXT PRIMARY KEY,
-      domain TEXT NOT NULL,
-      ip_address TEXT,
-      ipv6_address TEXT,
-      record_type TEXT DEFAULT 'A',
-      node_id TEXT,
-      username TEXT,
-      status TEXT DEFAULT 'active',
-      banned_reason TEXT,
-      ttl INTEGER DEFAULT 60,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    )
-  `);
-  await db.execute(sql`
-    CREATE TABLE IF NOT EXISTS cluster_service_token (
-      id TEXT PRIMARY KEY,
-      token_hash TEXT NOT NULL UNIQUE,
-      service_type TEXT NOT NULL,
-      service_id TEXT NOT NULL,
-      scopes TEXT NOT NULL,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      expires_at TIMESTAMPTZ
-    )
-  `);
-  await db.execute(sql`
-    CREATE TABLE IF NOT EXISTS cluster_node (
-      id TEXT PRIMARY KEY,
-      display_name TEXT,
-      token_hash TEXT NOT NULL,
-      node_type TEXT DEFAULT 'edge',
-      subdomain TEXT UNIQUE,
-      access_mode TEXT,
-      ipv4 TEXT,
-      public_port BIGINT,
-      public_url TEXT,
-      service_token_hash TEXT,
-      provision_code_hash TEXT,
-      internal_ip TEXT,
-      internal_port BIGINT,
-      hostname TEXT,
-      ipv6 TEXT,
-      version TEXT,
-      capabilities JSONB,
-      metadata JSONB,
-      pod_base_urls TEXT,
-      connectivity_status TEXT DEFAULT 'unknown',
-      last_connectivity_check TIMESTAMPTZ,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      last_seen TIMESTAMPTZ
-    )
-  `);
-  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_cluster_ddns_record_domain ON cluster_ddns_record(domain)`);
-  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_cluster_ddns_record_node ON cluster_ddns_record(node_id)`);
-  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_cluster_node_subdomain ON cluster_node(subdomain)`);
-  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_cluster_node_access_mode ON cluster_node(access_mode)`);
-  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_cluster_node_connectivity_status ON cluster_node(connectivity_status)`);
+    await executor.execute(sql`CREATE INDEX IF NOT EXISTS idx_cluster_ddns_record_domain ON cluster_ddns_record(domain)`);
+    await executor.execute(sql`CREATE INDEX IF NOT EXISTS idx_cluster_ddns_record_node ON cluster_ddns_record(node_id)`);
+    await executor.execute(sql`CREATE INDEX IF NOT EXISTS idx_cluster_node_subdomain ON cluster_node(subdomain)`);
+    await executor.execute(sql`CREATE INDEX IF NOT EXISTS idx_cluster_node_access_mode ON cluster_node(access_mode)`);
+    await executor.execute(sql`CREATE INDEX IF NOT EXISTS idx_cluster_node_connectivity_status ON cluster_node(connectivity_status)`);
+  });
 }
 
 /**

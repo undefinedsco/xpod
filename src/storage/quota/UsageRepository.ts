@@ -1,6 +1,6 @@
 import { sql, eq, and } from 'drizzle-orm';
 import type { IdentityDatabase } from '../../identity/drizzle/db';
-import { getSchema, isDatabaseSqlite } from '../../identity/drizzle/db';
+import { executeIdentityOperation, getSchema, isDatabaseSqlite, withIdentityTransaction } from '../../identity/drizzle/db';
 import type { NodePgTransaction } from 'drizzle-orm/node-postgres/session';
 
 type DbClient = IdentityDatabase | NodePgTransaction<any, any>;
@@ -53,7 +53,7 @@ export class UsageRepository {
     if (normalizedStorage === 0 && normalizedIngress === 0 && normalizedEgress === 0) {
       return;
     }
-    await this.db.transaction(async (tx: IdentityDatabase) => {
+    await withIdentityTransaction(this.db, async (tx: IdentityDatabase) => {
       await this.incrementUsageWith(tx, POD_SCOPE, podId, accountId, normalizedStorage, normalizedIngress, normalizedEgress);
       await this.incrementUsageWith(tx, ACCOUNT_SCOPE, accountId, accountId, normalizedStorage, normalizedIngress, normalizedEgress);
     });
@@ -65,7 +65,7 @@ export class UsageRepository {
 
   public async setPodStorage(accountId: string, podId: string, storageBytes: number): Promise<void> {
     const normalized = this.normalizeValue(storageBytes);
-    await this.db.transaction(async (tx: IdentityDatabase) => {
+    await withIdentityTransaction(this.db, async (tx: IdentityDatabase) => {
       const current = await this.getPodUsageWith(tx, podId);
       const owningAccountId = current?.accountId ?? accountId;
       const previousStorage = current?.storageBytes ?? 0;
@@ -130,7 +130,7 @@ export class UsageRepository {
     if (normalized === 0) {
       return;
     }
-    await this.db.transaction(async (tx: IdentityDatabase) => {
+    await withIdentityTransaction(this.db, async (tx: IdentityDatabase) => {
       await this.incrementTokensWith(tx, POD_SCOPE, podId, accountId, normalized);
       await this.incrementTokensWith(tx, ACCOUNT_SCOPE, accountId, accountId, normalized);
     });
@@ -142,7 +142,7 @@ export class UsageRepository {
     if (normalized === 0 || !normalizedKeyId) {
       return;
     }
-    await this.db.transaction(async (tx: IdentityDatabase) => {
+    await withIdentityTransaction(this.db, async (tx: IdentityDatabase) => {
       await this.incrementTokensWith(tx, POD_SCOPE, podId, accountId, normalized);
       await this.incrementTokensWith(tx, ACCOUNT_SCOPE, accountId, accountId, normalized);
       await this.incrementTokensWith(tx, API_KEY_SCOPE, normalizedKeyId, accountId, normalized);
@@ -150,7 +150,7 @@ export class UsageRepository {
   }
 
   public async listApiKeyUsagesByAccount(accountId: string): Promise<ApiKeyUsageRecord[]> {
-    const rows = await this.db.select({
+    const rows = await executeIdentityOperation(this.db, async executor => executor.select({
       keyId: this.schema.usage.scopeId,
       accountId: this.schema.usage.accountId,
       tokensUsed: this.schema.usage.tokensUsed,
@@ -160,7 +160,7 @@ export class UsageRepository {
         eq(this.schema.usage.scopeType, API_KEY_SCOPE),
         eq(this.schema.usage.accountId, accountId),
       ))
-      .orderBy(this.schema.usage.scopeId);
+      .orderBy(this.schema.usage.scopeId));
 
     return rows.map((row: { keyId: unknown; accountId: unknown; tokensUsed: unknown; updatedAt: unknown }) => ({
       keyId: String(row.keyId),
@@ -175,7 +175,7 @@ export class UsageRepository {
     if (normalized === 0) {
       return;
     }
-    await this.db.transaction(async (tx: IdentityDatabase) => {
+    await withIdentityTransaction(this.db, async (tx: IdentityDatabase) => {
       await this.incrementComputeWith(tx, POD_SCOPE, podId, accountId, normalized);
       await this.incrementComputeWith(tx, ACCOUNT_SCOPE, accountId, accountId, normalized);
     });
@@ -187,7 +187,7 @@ export class UsageRepository {
   }
 
   private async getUsageRow(client: DbClient, scopeType: UsageScopeType, scopeId: string): Promise<Record<string, unknown> | undefined> {
-    const result = await client.select({
+    const result = await executeIdentityOperation(client, async executor => executor.select({
       accountId: this.schema.usage.accountId,
       storage: this.schema.usage.storageBytes,
       ingress: this.schema.usage.ingressBytes,
@@ -203,12 +203,12 @@ export class UsageRepository {
       .where(and(
         eq(this.schema.usage.scopeType, scopeType),
         eq(this.schema.usage.scopeId, scopeId),
-      ));
+      )));
     return result?.[0];
   }
 
   private async incrementTokensWith(client: DbClient, scopeType: UsageScopeType, scopeId: string, accountId: string, tokensDelta: number): Promise<void> {
-    await client.insert(this.schema.usage)
+    await executeIdentityOperation(client, async executor => executor.insert(this.schema.usage)
       .values({
         scopeType,
         scopeId,
@@ -225,11 +225,11 @@ export class UsageRepository {
           accountId,
           updatedAt: this.now(),
         },
-      });
+      }));
   }
 
   private async incrementComputeWith(client: DbClient, scopeType: UsageScopeType, scopeId: string, accountId: string, secondsDelta: number): Promise<void> {
-    await client.insert(this.schema.usage)
+    await executeIdentityOperation(client, async executor => executor.insert(this.schema.usage)
       .values({
         scopeType,
         scopeId,
@@ -246,11 +246,11 @@ export class UsageRepository {
           accountId,
           updatedAt: this.now(),
         },
-      });
+      }));
   }
 
   private async incrementUsageWith(client: DbClient, scopeType: UsageScopeType, scopeId: string, accountId: string, storageDelta: number, ingressDelta: number, egressDelta: number): Promise<void> {
-    await client.insert(this.schema.usage)
+    await executeIdentityOperation(client, async executor => executor.insert(this.schema.usage)
       .values({
         scopeType,
         scopeId,
@@ -268,7 +268,7 @@ export class UsageRepository {
           accountId,
           updatedAt: this.now(),
         },
-      });
+      }));
   }
 
   private async upsertUsage(
@@ -303,12 +303,12 @@ export class UsageRepository {
       }
     }
 
-    await client.insert(this.schema.usage)
+    await executeIdentityOperation(client, async executor => executor.insert(this.schema.usage)
       .values(insertValues)
       .onConflictDoUpdate({
         target: [ this.schema.usage.scopeType, this.schema.usage.scopeId ],
         set: updateSet,
-      });
+      }));
   }
 
   private toAccountUsage(accountId: string, row: Record<string, unknown>): AccountUsageRecord {

@@ -1,16 +1,15 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
 import path from 'node:path';
-import { BaseAccountStore, MemoryResourceLocker, MemoryMapStorage, GreedyReadWriteLocker, WrappedExpiringReadWriteLocker,
+import { BaseAccountStore,
   RepresentationMetadata, AbsolutePathInteractionRoute, RelativePathInteractionRoute, IdInteractionRoute,
   type JsonInteractionHandlerInput, type CookieStore } from '@solid/community-server';
 import { DrizzleIndexedStorage } from '../../../src/identity/drizzle/DrizzleIndexedStorage';
 import { closeAllIdentityConnections } from '../../../src/identity/drizzle/db';
-import { LoginMethodGuardStorage } from '../../../src/identity/LoginMethodGuardStorage';
+import { ExternalIdentityAccountStorage } from '../../../src/identity/external/ExternalIdentityAccountStorage';
 import { ExternalLoginService, EXTERNAL_LOGIN_TYPE } from '../../../src/identity/external/ExternalLoginService';
 import { ExternalLoginHandler, ExternalLoginControls } from '../../../src/identity/external/ExternalLoginHandler';
-import { ExternalLoginRepository } from '../../../src/identity/external/ExternalLoginRepository';
-import { LogtoLoginProvider } from '../../../src/identity/external/ExternalLoginProvider';
+import { LogtoSocialConnectorAdapter } from '../../../src/identity/external/LogtoSocialConnectorAdapter';
 
 mkdirSync('.test-data/external-login', { recursive: true });
 const directory = mkdtempSync(path.resolve('.test-data/external-login/suite-'));
@@ -18,15 +17,13 @@ const baseUrl = 'https://id.example.test/';
 const callback = `${baseUrl}.account/login/wechat/callback/`;
 const proof = 'p'.repeat(64);
 let service: ExternalLoginService;
-let accounts: LoginMethodGuardStorage;
+let accounts: ExternalIdentityAccountStorage;
 let store: BaseAccountStore;
-let repository: ExternalLoginRepository;
 let handler: ExternalLoginHandler;
 let database: string;
 let rowCount = 0;
 const cookies: CookieStore = { generate: vi.fn(async () => `cookie-${++rowCount}`), delete: vi.fn(async () => true), get: vi.fn(), refresh: vi.fn() };
 const route = new IdInteractionRoute(new RelativePathInteractionRoute(new AbsolutePathInteractionRoute(`${baseUrl}.account/`), 'login/'), 'providerId');
-const locker = () => new WrappedExpiringReadWriteLocker(new GreedyReadWriteLocker(new MemoryResourceLocker(), new MemoryMapStorage()), 6000);
 function input(json: unknown, suffix = '', accountId?: string): JsonInteractionHandlerInput {
   const target = { path: `${baseUrl}.account/login/wechat/${suffix}` };
   return { method: 'POST', target, metadata: new RepresentationMetadata(target), json, accountId };
@@ -40,26 +37,66 @@ async function finish(intent: 'login' | 'register' | 'link', accountId?: string)
 beforeEach(async () => {
   vi.clearAllMocks();
   database = `sqlite:${path.join(directory, `${++rowCount}.sqlite`)}`;
-  accounts = new LoginMethodGuardStorage(new DrizzleIndexedStorage(database));
+  accounts = new ExternalIdentityAccountStorage({ storage: new DrizzleIndexedStorage(database), identityDbUrl: database, allowPasswordlessAccounts: true });
   store = new BaseAccountStore(accounts);
   await store.handle();
-  service = new ExternalLoginService({ accountStorage: accounts, accountStore: store, locker: locker(), identityDbUrl: database, baseUrl });
-  service.providers.set('wechat', { id: 'wechat', name: '微信', namespace: 'fixture-app', authorizationUrl: async (state, redirectUri) =>
+  service = new ExternalLoginService({ accountStorage: accounts, accountStore: store, identityDbUrl: database, baseUrl });
+  const identity = vi.fn(async () => ({ subject: 'fixture-openid', unionId: 'fixture-unionid' }));
+  service.registerConnector({ id: 'fixture', create: entry => ({ id: entry.id, provider: 'wechat', name: '微信', namespace: String(entry.config.appId), authorizationUrl: async (state, redirectUri) =>
     `https://open.weixin.qq.com/connect/qrconnect?${new URLSearchParams({ state, redirect_uri: redirectUri })}`,
-  identity: vi.fn(async () => ({ subject: 'fixture-openid', unionId: 'fixture-unionid' })) });
-  repository = new ExternalLoginRepository(database);
+  identity }) });
+  service.registerProvider({ id: 'wechat', connector: 'fixture', config: { appId: 'fixture-app' } });
   handler = new ExternalLoginHandler(service, route, store, cookies);
 });
 afterAll(async () => { await closeAllIdentityConnections(); rmSync(directory, { recursive: true, force: true }); });
 
 describe('External login with real SQLite and CSS account storage', () => {
+  it('keeps external connectors disabled on a managed local even through programmatic registration', () => {
+    const managed = new ExternalLoginService({ accountStorage: accounts, accountStore: store, identityDbUrl: database,
+      baseUrl, oidcIssuer: 'https://central.test/', wechatAppId: 'app', wechatAppSecret: 'secret' });
+    expect(managed.providers.size).toBe(0);
+    expect(() => managed.registerProvider({ id: 'wechat', connector: 'logto-wechat-web', config: { appId: 'app', appSecret: 'secret' } }))
+      .toThrow('account authority');
+  });
+
+  it('routes two instances of the same provider without overwriting their identity namespaces', async () => {
+    const second = { id: 'wechat-second', connector: 'fixture', config: { appId: 'second-app' } };
+    service.registerProvider(second);
+    expect(() => service.registerProvider(second)).toThrow('Duplicate external login entry');
+    const controls = (await new ExternalLoginControls(service, route).handle(input({}))).json;
+    expect(controls).toHaveProperty('wechat');
+    expect(controls).toHaveProperty('wechat-second');
+    const first = await finish('register');
+    const secondCallback = `${baseUrl}.account/login/wechat-second/callback/`;
+    const start = await service.begin(second.id, proof, { ...transaction('link', first.accountId), callback: secondCallback });
+    expect(new URL(start.authorizationUrl).searchParams.get('redirect_uri')).toBe(secondCallback);
+    expect(await service.finish(second.id, { state: start.state, proof, code: 'second-code', callback: secondCallback, accountId: first.accountId }))
+      .toMatchObject({ accountId: first.accountId });
+    const bindings = await accounts.find(EXTERNAL_LOGIN_TYPE, { accountId: first.accountId });
+    expect(bindings).toHaveLength(2);
+    expect(bindings.map(row => row.provider)).toEqual(['wechat', 'wechat']);
+    expect(new Set(bindings.map(row => row.namespace))).toEqual(new Set(['fixture-app', 'second-app']));
+    await service.unlink(second.id, first.accountId);
+    expect(await service.isLinked('wechat', first.accountId)).toBe(true);
+    expect(await service.isLinked(second.id, first.accountId)).toBe(false);
+    expect((await finish('login')).accountId).toBe(first.accountId);
+  });
+
+  it('rejects a callback submitted through another connector instance', async () => {
+    service.registerProvider({ id: 'wechat-second', connector: 'fixture', config: { appId: 'second-app' } });
+    const start = await service.begin('wechat', proof, transaction('register'));
+    await expect(service.finish('wechat-second', { state: start.state, proof, code: 'code', callback })).rejects.toThrow('CONTEXT_CHANGED');
+    expect(service.provider('wechat-second').identity).not.toHaveBeenCalled();
+    expect(await accounts.find('account', {})).toHaveLength(0);
+  });
+
   it('does not advertise an unconfigured provider and preserves password route routing', async () => {
-    const disabled = new ExternalLoginService({ accountStorage: accounts, accountStore: store, locker: locker(), identityDbUrl: database, baseUrl });
+    const disabled = new ExternalLoginService({ accountStorage: accounts, accountStore: store, identityDbUrl: database, baseUrl });
     expect((await new ExternalLoginControls(disabled, route).handle(input({}))).json).toEqual({});
     await expect(handler.canHandle({ ...input({}), target: { path: `${baseUrl}.account/login/password/` } })).rejects.toMatchObject({ statusCode: 404 });
   });
   it('rejects partial deployment credentials', () => {
-    expect(() => new ExternalLoginService({ accountStorage: accounts, accountStore: store, locker: locker(), identityDbUrl: database, baseUrl, wechatAppId: 'app' })).toThrow('both');
+    expect(() => new ExternalLoginService({ accountStorage: accounts, accountStore: store, identityDbUrl: database, baseUrl, wechatAppId: 'app' })).toThrow('both');
   });
   it('creates a passwordless account only on explicit registration, and logs it in again', async () => {
     await expect(finish('login')).rejects.toThrow('EXTERNAL_ACCOUNT_NOT_LINKED');
@@ -114,10 +151,11 @@ describe('External login with real SQLite and CSS account storage', () => {
     expect(await accounts.find(EXTERNAL_LOGIN_TYPE, { accountId })).toHaveLength(0);
     await expect(finish('login')).rejects.toThrow('NOT_LINKED');
   });
-  it('reserves the subject atomically across independent workers', async () => {
-    const repository2 = new ExternalLoginRepository(database);
-    const results = await Promise.allSettled(Array.from({ length: 8 }, (_, index) => (index % 2 ? repository : repository2).reserve('same-subject')));
-    expect(results.filter(result => result.status === 'fulfilled')).toHaveLength(1);
+  it('serializes repeated concurrent registrations without creating extra accounts', async () => {
+    const results = await Promise.all(Array.from({ length: 8 }, () => finish('register')));
+    expect(new Set(results.map(result => result.accountId)).size).toBe(1);
+    expect(await accounts.find('account', {})).toHaveLength(1);
+    expect(await accounts.find(EXTERNAL_LOGIN_TYPE, {})).toHaveLength(1);
   });
   it('uses the normal CSS cookie, remember setting and interaction completion', async () => {
     const start = await handler.handleSafe(input({ intent: 'register', proof, remember: true }));
@@ -144,7 +182,10 @@ describe('External login with real SQLite and CSS account storage', () => {
   });
   it('does not expose upstream secrets in connector errors, or change identity when unionid appears', async () => {
     const getUserInfo = vi.fn(async () => ({ rawData: { openid: 'stable', unionid: 'other' } }));
-    const adapter = new LogtoLoginProvider('wechat', '微信', 'app', async () => ({ getAuthorizationUri: async () => '', getUserInfo }), 'openid', 'unionid');
+    const adapter = new LogtoSocialConnectorAdapter({ id: 'wechat', provider: 'wechat', name: '微信', namespace: 'app' },
+      async () => ({ getAuthorizationUri: async () => '', getUserInfo }), {
+        subject: { source: 'rawData', field: 'openid' }, unionId: { source: 'rawData', field: 'unionid' },
+      });
     expect(await adapter.identity('code')).toEqual({ subject: 'stable', unionId: 'other' });
     getUserInfo.mockRejectedValueOnce(new Error('secret=DO_NOT_EXPOSE'));
     await expect(adapter.identity('code')).rejects.toThrow('EXTERNAL_AUTHORIZATION_FAILED');

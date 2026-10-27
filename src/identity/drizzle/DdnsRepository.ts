@@ -10,7 +10,7 @@
 import { eq } from 'drizzle-orm';
 import type { IdentityDatabase } from './db';
 import { getLoggerFor } from 'global-logger-factory';
-import { ensureCloudClusterTables, getSchema, toDbTimestamp, fromDbTimestamp } from './db';
+import { executeIdentityOperation, ensureCloudClusterTables, getSchema, toDbTimestamp, fromDbTimestamp } from './db';
 
 const logger = getLoggerFor('DdnsRepository');
 
@@ -72,7 +72,7 @@ export class DdnsRepository {
     const now = new Date();
     const recordType = input.recordType ?? (ipv6Address ? 'AAAA' : 'A');
 
-    await this.db.insert(this.schema.ddnsRecords).values({
+    await executeIdentityOperation(this.db, async executor => executor.insert(this.schema.ddnsRecords).values({
       subdomain,
       domain,
       ipAddress,
@@ -84,7 +84,7 @@ export class DdnsRepository {
       ttl: 60,
       createdAt: toDbTimestamp(this.db, now),
       updatedAt: toDbTimestamp(this.db, now),
-    });
+    }));
 
     logger.info(`Allocated subdomain: ${subdomain}.${domain}`);
 
@@ -108,11 +108,11 @@ export class DdnsRepository {
    */
   async getRecord(subdomain: string): Promise<DdnsRecord | null> {
     await this.ready;
-    const results = await this.db
+    const results = await executeIdentityOperation(this.db, async executor => executor
       .select()
       .from(this.schema.ddnsRecords)
       .where(eq(this.schema.ddnsRecords.subdomain, subdomain))
-      .limit(1);
+      .limit(1));
 
     if (results.length === 0) {
       return null;
@@ -171,10 +171,10 @@ export class DdnsRepository {
       updates.recordType = input.recordType;
     }
 
-    await this.db
+    await executeIdentityOperation(this.db, async executor => executor
       .update(this.schema.ddnsRecords)
       .set(updates)
-      .where(eq(this.schema.ddnsRecords.subdomain, subdomain));
+      .where(eq(this.schema.ddnsRecords.subdomain, subdomain)));
 
     logger.info(`Updated DDNS record: ${subdomain} -> ${input.ipAddress ?? input.ipv6Address}`);
 
@@ -192,14 +192,14 @@ export class DdnsRepository {
    */
   async banSubdomain(subdomain: string, reason: string): Promise<void> {
     await this.ready;
-    await this.db
+    await executeIdentityOperation(this.db, async executor => executor
       .update(this.schema.ddnsRecords)
       .set({
         status: 'banned',
         bannedReason: reason,
         updatedAt: toDbTimestamp(this.db, new Date()),
       })
-      .where(eq(this.schema.ddnsRecords.subdomain, subdomain));
+      .where(eq(this.schema.ddnsRecords.subdomain, subdomain)));
 
     logger.warn(`Banned subdomain: ${subdomain}, reason: ${reason}`);
   }
@@ -209,14 +209,14 @@ export class DdnsRepository {
    */
   async unbanSubdomain(subdomain: string): Promise<void> {
     await this.ready;
-    await this.db
+    await executeIdentityOperation(this.db, async executor => executor
       .update(this.schema.ddnsRecords)
       .set({
         status: 'active',
         bannedReason: null,
         updatedAt: toDbTimestamp(this.db, new Date()),
       })
-      .where(eq(this.schema.ddnsRecords.subdomain, subdomain));
+      .where(eq(this.schema.ddnsRecords.subdomain, subdomain)));
 
     logger.info(`Unbanned subdomain: ${subdomain}`);
   }
@@ -226,9 +226,9 @@ export class DdnsRepository {
    */
   async releaseSubdomain(subdomain: string): Promise<boolean> {
     await this.ready;
-    await this.db
+    await executeIdentityOperation(this.db, async executor => executor
       .delete(this.schema.ddnsRecords)
-      .where(eq(this.schema.ddnsRecords.subdomain, subdomain));
+      .where(eq(this.schema.ddnsRecords.subdomain, subdomain)));
 
     logger.info(`Released subdomain: ${subdomain}`);
     return true;
@@ -239,10 +239,10 @@ export class DdnsRepository {
    */
   async getRecordsByUsername(username: string): Promise<DdnsRecord[]> {
     await this.ready;
-    const results = await this.db
+    const results = await executeIdentityOperation(this.db, async executor => executor
       .select()
       .from(this.schema.ddnsRecords)
-      .where(eq(this.schema.ddnsRecords.username, username));
+      .where(eq(this.schema.ddnsRecords.username, username)));
 
     return results.map((row: typeof results[0]) => ({
       subdomain: row.subdomain,
@@ -265,11 +265,11 @@ export class DdnsRepository {
    */
   async getRecordByNodeId(nodeId: string): Promise<DdnsRecord | null> {
     await this.ready;
-    const results = await this.db
+    const results = await executeIdentityOperation(this.db, async executor => executor
       .select()
       .from(this.schema.ddnsRecords)
       .where(eq(this.schema.ddnsRecords.nodeId, nodeId))
-      .limit(1);
+      .limit(1));
 
     if (results.length === 0) {
       return null;

@@ -2,7 +2,7 @@ import { randomUUID, createHash } from 'node:crypto';
 import { eq } from 'drizzle-orm';
 import { getLoggerFor } from 'global-logger-factory';
 import type { IdentityDatabase } from './db';
-import { ensureCloudClusterTables, getSchema, toDbTimestamp, fromDbTimestamp } from './db';
+import { executeIdentityOperation, ensureCloudClusterTables, getSchema, toDbTimestamp, fromDbTimestamp } from './db';
 
 export type ServiceType = 'local' | 'business' | 'cloud' | 'compute';
 
@@ -50,7 +50,7 @@ export class ServiceTokenRepository implements ServiceTokenRepositoryPort {
     const token = `svc-${randomUUID().replace(/-/g, '')}`;
     const tokenHash = this.hashToken(token);
 
-    await this.db.insert(this.schema.serviceTokens).values({
+    await executeIdentityOperation(this.db, async executor => executor.insert(this.schema.serviceTokens).values({
       id,
       tokenHash,
       serviceType: options.serviceType,
@@ -58,7 +58,7 @@ export class ServiceTokenRepository implements ServiceTokenRepositoryPort {
       scopes: JSON.stringify(options.scopes),
       createdAt: toDbTimestamp(this.db, new Date()),
       expiresAt: options.expiresAt ? toDbTimestamp(this.db, options.expiresAt) : null,
-    });
+    }));
 
     this.logger.info(`Created service token ${id} for ${options.serviceType}:${options.serviceId}`);
     return { id, token };
@@ -79,19 +79,19 @@ export class ServiceTokenRepository implements ServiceTokenRepositoryPort {
     const existing = await this.findByService(options.serviceType, options.serviceId);
     if (existing) {
       // Update the hash in case the token changed
-      await this.db.update(this.schema.serviceTokens)
+      await executeIdentityOperation(this.db, async executor => executor.update(this.schema.serviceTokens)
         .set({
           tokenHash,
           scopes: JSON.stringify(options.scopes),
           expiresAt: options.expiresAt ? toDbTimestamp(this.db, options.expiresAt) : null,
         })
-        .where(eq(this.schema.serviceTokens.id, existing.id));
+        .where(eq(this.schema.serviceTokens.id, existing.id)));
       this.logger.info(`Updated service token ${existing.id} for ${options.serviceType}:${options.serviceId}`);
       return existing.id;
     }
 
     const id = randomUUID();
-    await this.db.insert(this.schema.serviceTokens).values({
+    await executeIdentityOperation(this.db, async executor => executor.insert(this.schema.serviceTokens).values({
       id,
       tokenHash,
       serviceType: options.serviceType,
@@ -99,7 +99,7 @@ export class ServiceTokenRepository implements ServiceTokenRepositoryPort {
       scopes: JSON.stringify(options.scopes),
       createdAt: toDbTimestamp(this.db, new Date()),
       expiresAt: options.expiresAt ? toDbTimestamp(this.db, options.expiresAt) : null,
-    });
+    }));
 
     this.logger.info(`Registered service token ${id} for ${options.serviceType}:${options.serviceId}`);
     return id;
@@ -112,9 +112,9 @@ export class ServiceTokenRepository implements ServiceTokenRepositoryPort {
     await this.ready;
     const tokenHash = this.hashToken(token);
 
-    const rows = await this.db.select()
+    const rows = await executeIdentityOperation(this.db, async executor => executor.select()
       .from(this.schema.serviceTokens)
-      .where(eq(this.schema.serviceTokens.tokenHash, tokenHash));
+      .where(eq(this.schema.serviceTokens.tokenHash, tokenHash)));
 
     if (!rows || rows.length === 0) {
       return undefined;
@@ -140,9 +140,9 @@ export class ServiceTokenRepository implements ServiceTokenRepositoryPort {
    */
   public async findByService(serviceType: ServiceType, serviceId: string): Promise<ServiceTokenRecord | undefined> {
     await this.ready;
-    const rows = await this.db.select()
+    const rows = await executeIdentityOperation(this.db, async executor => executor.select()
       .from(this.schema.serviceTokens)
-      .where(eq(this.schema.serviceTokens.serviceType, serviceType));
+      .where(eq(this.schema.serviceTokens.serviceType, serviceType)));
 
     const match = rows.find((r: any) => r.serviceId === serviceId);
     return match ? this.toRecord(match) : undefined;
@@ -153,7 +153,7 @@ export class ServiceTokenRepository implements ServiceTokenRepositoryPort {
    */
   public async deleteToken(id: string): Promise<void> {
     await this.ready;
-    await this.db.delete(this.schema.serviceTokens).where(eq(this.schema.serviceTokens.id, id));
+    await executeIdentityOperation(this.db, async executor => executor.delete(this.schema.serviceTokens).where(eq(this.schema.serviceTokens.id, id)));
     this.logger.info(`Deleted service token ${id}`);
   }
 
@@ -162,14 +162,14 @@ export class ServiceTokenRepository implements ServiceTokenRepositoryPort {
    */
   public async listTokens(): Promise<ServiceTokenRecord[]> {
     await this.ready;
-    const rows = await this.db.select({
+    const rows = await executeIdentityOperation(this.db, async executor => executor.select({
       id: this.schema.serviceTokens.id,
       serviceType: this.schema.serviceTokens.serviceType,
       serviceId: this.schema.serviceTokens.serviceId,
       scopes: this.schema.serviceTokens.scopes,
       createdAt: this.schema.serviceTokens.createdAt,
       expiresAt: this.schema.serviceTokens.expiresAt,
-    }).from(this.schema.serviceTokens);
+    }).from(this.schema.serviceTokens));
 
     return rows.map((r: any) => this.toRecord(r));
   }

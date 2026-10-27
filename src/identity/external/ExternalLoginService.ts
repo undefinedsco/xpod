@@ -1,46 +1,56 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { ACCOUNT_TYPE, BadRequestHttpError, ForbiddenHttpError, NotFoundHttpError,
-  type AccountStore, type LoginStorage, type ExpiringReadWriteLocker } from '@solid/community-server';
-import { createWechatLoginProvider, type ExternalLoginProvider } from './ExternalLoginProvider';
+  type AccountStore, type LoginStorage } from '@solid/community-server';
+import type { ExternalLoginProvider } from './ExternalLoginProvider';
+import type { ExternalLoginConnectorFactory, ExternalLoginEntry } from './ExternalLoginProviderFactory';
+import { configuredExternalLoginEntries, createExternalLoginProviderFactory, type ExternalLoginDeploymentConfig } from './externalLoginProviders';
 import { ExternalLoginRepository, type ExternalLoginTransaction } from './ExternalLoginRepository';
+import type { ExternalIdentityAccountStorage } from './ExternalIdentityAccountStorage';
+import { EXTERNAL_LOGIN_DESCRIPTION, EXTERNAL_LOGIN_TYPE, type ExternalIdentityRow } from './ExternalIdentityStorage';
+export { EXTERNAL_LOGIN_TYPE } from './ExternalIdentityStorage';
 
-export const EXTERNAL_LOGIN_TYPE = 'external-login';
 export const externalLoginDigest = (value: string): string => createHash('sha256').update(value).digest('hex');
 
-export interface ExternalLoginServiceOptions {
+export interface ExternalLoginServiceOptions extends ExternalLoginDeploymentConfig {
   accountStorage: LoginStorage<any>;
   accountStore: AccountStore;
-  locker: ExpiringReadWriteLocker;
   identityDbUrl: string;
   baseUrl: string;
   oidcIssuer?: string;
-  wechatAppId?: string;
-  wechatAppSecret?: string;
 }
 
-interface LoginRow { id: string; accountId: string; provider: string; namespace: string; subject: string; unionId?: string }
-
 export class ExternalLoginService {
+  private readonly providerFactory = createExternalLoginProviderFactory();
   private readonly providerRegistry = new Map<string, ExternalLoginProvider>();
   private readonly repository: ExternalLoginRepository;
   private readonly ready: Promise<void>;
   private readonly accountUrl: URL;
+  private readonly isAuthority: boolean;
+  private readonly accounts: ExternalIdentityAccountStorage;
 
-  public get providers(): Map<string, ExternalLoginProvider> { return this.providerRegistry; }
+  public get providers(): ReadonlyMap<string, ExternalLoginProvider> { return this.providerRegistry; }
   public get accountRoot(): URL { return this.accountUrl; }
 
   public constructor(private readonly options: ExternalLoginServiceOptions) {
-    this.accountUrl = new URL('.account/', options.baseUrl);
-    const isAuthority = !options.oidcIssuer || new URL(options.oidcIssuer).href.replace(/\/$/u, '') === new URL(options.baseUrl).href.replace(/\/$/u, '');
-    if (Boolean(options.wechatAppId) !== Boolean(options.wechatAppSecret)) throw new Error('WeChat requires both AppID and AppSecret');
-    if (isAuthority && options.wechatAppId && options.wechatAppSecret) {
-      const provider = createWechatLoginProvider(options.wechatAppId, options.wechatAppSecret);
-      this.providers.set(provider.id, provider);
+    this.accounts = options.accountStorage as ExternalIdentityAccountStorage;
+    if (typeof this.accounts.withTransaction !== 'function' || typeof this.accounts.withAccountTransaction !== 'function') {
+      throw new Error('External login requires transactional identity account storage');
     }
+    this.accountUrl = new URL('.account/', options.baseUrl);
+    this.isAuthority = !options.oidcIssuer || new URL(options.oidcIssuer).href.replace(/\/$/u, '') === new URL(options.baseUrl).href.replace(/\/$/u, '');
+    const entries = configuredExternalLoginEntries(options);
+    if (this.isAuthority) for (const entry of entries) this.registerProvider(entry);
     this.repository = new ExternalLoginRepository(options.identityDbUrl);
-    this.ready = options.accountStorage.defineType(EXTERNAL_LOGIN_TYPE, {
-      accountId: `id:${ACCOUNT_TYPE}`, provider: 'string', namespace: 'string', subject: 'string', unionId: 'string?',
-    }, true);
+    this.ready = options.accountStorage.defineType(EXTERNAL_LOGIN_TYPE, EXTERNAL_LOGIN_DESCRIPTION, true);
+  }
+
+  public registerConnector(connector: ExternalLoginConnectorFactory): void { this.providerFactory.register(connector); }
+
+  public registerProvider(entry: ExternalLoginEntry): void {
+    if (!this.isAuthority) throw new Error('External login entries require the account authority');
+    if (this.providerRegistry.has(entry.id)) throw new Error(`Duplicate external login entry: ${entry.id}`);
+    const provider = this.providerFactory.create(entry);
+    this.providerRegistry.set(provider.id, provider);
   }
 
   public provider(id: string): ExternalLoginProvider {
@@ -71,62 +81,47 @@ export class ExternalLoginService {
       throw new ForbiddenHttpError('EXTERNAL_LOGIN_CONTEXT_CHANGED');
     }
     const identity = await provider.identity(input.code);
-    const key = this.subjectKey(provider, identity.subject);
     await this.ready;
-    return this.withSubjectLock(key, async () => {
-      const reservation = await this.repository.reserve(key);
-      const previousId = reservation.loginId;
-      try {
-        const previous = previousId ? await this.options.accountStorage.get(EXTERNAL_LOGIN_TYPE, previousId) as LoginRow | undefined : undefined;
-        let accountId: string;
-        if (previousId) {
-          // A stale index must not silently grant an identity to another/new account.
-          if (!previous || previous.provider !== provider.id || previous.namespace !== provider.namespace || previous.subject !== identity.subject
-            || !await this.options.accountStorage.has(ACCOUNT_TYPE, previous.accountId)) throw new ForbiddenHttpError('EXTERNAL_IDENTITY_INVALID');
+    const accounts = this.accounts;
+    return accounts.withTransaction(async () => {
+      const previous = (await accounts.find(EXTERNAL_LOGIN_TYPE, {
+        provider: provider.provider, namespace: provider.namespace, subject: identity.subject,
+      }) as ExternalIdentityRow[])[0];
+      let accountId: string;
+      if (previous) {
+        accountId = await accounts.withAccountTransaction(previous.accountId, async () => {
+          if (!await accounts.has(EXTERNAL_LOGIN_TYPE, previous.id)) throw new ForbiddenHttpError('EXTERNAL_IDENTITY_INVALID');
           if (transaction.intent === 'link' && previous.accountId !== transaction.accountId) throw new BadRequestHttpError('EXTERNAL_IDENTITY_ALREADY_BOUND');
-          accountId = previous.accountId;
-        } else {
-          if (transaction.intent === 'login') throw new BadRequestHttpError('EXTERNAL_ACCOUNT_NOT_LINKED');
-          accountId = transaction.intent === 'link' ? transaction.accountId! : await this.options.accountStore.create();
-          if (!await this.options.accountStorage.has(ACCOUNT_TYPE, accountId)) throw new ForbiddenHttpError('ACCOUNT_LOGIN_REQUIRED');
-          const row = await this.options.accountStorage.create(EXTERNAL_LOGIN_TYPE, {
-            accountId, provider: provider.id, namespace: provider.namespace, subject: identity.subject, ...(identity.unionId ? { unionId: identity.unionId } : {}),
-          });
-          await this.repository.claim(key, reservation.owner!, row.id);
-        }
-        return { accountId, remember: transaction.intent === 'link' ? undefined : transaction.remember, location: transaction.returnTo };
-      } catch (error) {
-        if (reservation.owner) await this.repository.remove(key, reservation.owner);
-        throw error;
+          return previous.accountId;
+        });
+      } else {
+        if (transaction.intent === 'login') throw new BadRequestHttpError('EXTERNAL_ACCOUNT_NOT_LINKED');
+        accountId = transaction.intent === 'link' ? transaction.accountId! : await this.options.accountStore.create();
+        if (!await accounts.has(ACCOUNT_TYPE, accountId)) throw new ForbiddenHttpError('ACCOUNT_LOGIN_REQUIRED');
+        await accounts.create(EXTERNAL_LOGIN_TYPE, {
+          accountId, provider: provider.provider, namespace: provider.namespace, subject: identity.subject,
+          ...(identity.unionId ? { unionId: identity.unionId } : {}),
+        });
       }
-    });
+      return { accountId, remember: transaction.intent === 'link' ? undefined : transaction.remember, location: transaction.returnTo };
+    }, `external:${externalLoginDigest(JSON.stringify([provider.provider, provider.namespace, identity.subject]))}`);
   }
 
   public async unlink(providerId: string, accountId: string): Promise<void> {
     const provider = this.provider(providerId);
     await this.ready;
-    const rows = await this.options.accountStorage.find(EXTERNAL_LOGIN_TYPE, { accountId, provider: provider.id, namespace: provider.namespace }) as unknown as LoginRow[];
-    for (const row of rows) {
-      const key = this.subjectKey(provider, row.subject);
-      await this.withSubjectLock(key, async () => {
-        await this.options.accountStorage.delete(EXTERNAL_LOGIN_TYPE, row.id);
-        await this.repository.remove(key, row.id);
-      });
-    }
+    const accounts = this.accounts;
+    await accounts.withTransaction(async () => {
+      const rows = await accounts.find(EXTERNAL_LOGIN_TYPE, { accountId, provider: provider.provider, namespace: provider.namespace }) as ExternalIdentityRow[];
+      for (const row of rows) await accounts.delete(EXTERNAL_LOGIN_TYPE, row.id);
+    });
   }
 
   public async isLinked(providerId: string, accountId?: string): Promise<boolean> {
     if (!accountId) return false;
     const provider = this.provider(providerId);
     await this.ready;
-    return (await this.options.accountStorage.find(EXTERNAL_LOGIN_TYPE, { accountId, provider: provider.id, namespace: provider.namespace })).length > 0;
+    return (await this.options.accountStorage.find(EXTERNAL_LOGIN_TYPE, { accountId, provider: provider.provider, namespace: provider.namespace })).length > 0;
   }
 
-  private subjectKey(provider: ExternalLoginProvider, subject: string): string {
-    return externalLoginDigest(JSON.stringify([provider.id, provider.namespace, subject]));
-  }
-
-  private withSubjectLock<T>(key: string, action: () => Promise<T>): Promise<T> {
-    return this.options.locker.withWriteLock({ path: new URL(`locks/external-login/${key}`, this.accountRoot).href }, action);
-  }
 }

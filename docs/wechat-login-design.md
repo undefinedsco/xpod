@@ -1,8 +1,11 @@
 # 微信网站登录与本地联调
 
-实现分支：`codex/wechat-login`，基于 `origin/staging` 的 `9b64a697`。更新：2026-10-18。
+身份绑定已收敛到独立扩展表，字段、CSS adapter 与升级步骤见
+[外部身份扩展表设计](external-login-storage.md)。以下测试证据保留原实现时的记录，新存储验收需另行记录。
 
-使用 `@logto/connector-wechat-web@1.6.6`，不需要部署完整 Logto。连接器负责微信授权地址、换码和用户信息；账号、会话、remember、OIDC interaction 和 Pod Consent 仍由现有 CSS 链路管理。
+实现分支：`codex/wechat-login`，基于 `origin/staging` 的 `9b64a697`。更新：2026-10-26。
+
+使用 `@logto/connector-wechat-web@1.6.6`，Logto 只作为连接器供应商。保持 Xpod 单进程，连接器通过工厂创建，负责微信授权地址、换码和用户信息；账号、会话、remember、OIDC interaction 和 Pod Consent 仍由现有 CSS 链路管理。职责与插件接入方式见 [连接器工厂适配](external-login-connectors.md)。
 
 ## 支持范围
 
@@ -32,13 +35,17 @@
 2. proof 与回调关联保存在发起标签页的 `sessionStorage`。proof 是 Xpod 的浏览器事务关联机制，不是声称微信支持 PKCE。
 3. 跳转连接器生成的微信网站授权页，用户扫码确认后携 code/state 返回固定回调页。
 4. 回调页在异步工作前清除地址栏查询参数，原子删除标签页记录，再向原完成回调 POST。服务端验证摘要、有效期、provider、回调、actor、interaction，并原子消费事务后才调用连接器。
-5. 使用固定 `provider + AppID + OpenID` 查找绑定。UnionID 仅作可选元数据，不使用 Logto 的 `unionid ?? openid` 作为持久绑定主键。
+5. 使用固定 `provider + AppID + OpenID` 直接查询扩展表中的账号绑定。UnionID 仅作可选元数据，不使用 Logto 的 `unionid ?? openid` 作为持久绑定主键。
 6. 通过 `ResolveLoginHandler` 建立或轮换原账号 cookie，处理 remember 并恢复原 OIDC interaction。绑定不改变原账号的 remember 选择。
 
 ## 实现归属
 
-- `src/identity/external/ExternalLoginProvider.ts`：统一 provider 接口、通用 Logto social-connector adapter 和唯一微信注册工厂。新连接器复用同一接口，UI 不按 provider 身份分支。
-- `ExternalLoginRepository.ts`：身份库中的短期事务及跨 worker 唯一索引，支持 SQLite、PostgreSQL。
+- `src/identity/external/ExternalLoginProvider.ts`：Xpod 统一接口，不依赖连接器供应商。
+- `ExternalLoginProviderFactory.ts`：根据已注册连接器工厂与应用入口声明创建 provider；拒绝未知连接器、重复注册和非法入口。
+- `LogtoSocialConnectorAdapter.ts`：供应商适配、稳定身份字段声明、初始化和错误脱敏；包含微信网站连接器工厂注册。
+- `externalLoginProviders.ts`：供应商装配与部署凭据到入口声明的唯一转换入口。UI 不按 provider 身份分支。
+- `ExternalLoginRepository.ts`：身份库中的短期授权事务，支持 SQLite、PostgreSQL。
+- `ExternalIdentityStorage.ts` / `ExternalIdentityAccountStorage.ts`：独立身份表、CSS 存储适配与事务协调。
 - `ExternalLoginService.ts`：事务校验、账号绑定与注册、CSS 登录方式登记、解绑。
 - `ExternalLoginHandler.ts`：复用 CSS route、能力发现和 `ResolveLoginHandler`。
 - `config/external-login.json`：组件、路由、ENV extractor 和响应头映射，由 `xpod.base.json` 引入。
@@ -48,10 +55,10 @@
 
 认证元数据属于账号 identity DB，不是用户 Pod RDF，不新增共享 models schema。
 
-- CSS AccountStorage 的 `external-login` 行是绑定事实唯一权威，登记为登录方式并受 `LoginMethodGuardStorage` 保护。
-- `identity_external_login_transactions` 保存 state/proof 的 SHA-256 摘要及上下文，10 分钟到期，使用 `DELETE ... RETURNING` 原子消费；创建新事务时清理过期行。
-- `identity_external_login_index` 是身份摘要到 CSS 登录行 ID 的唯一索引，不复制账号绑定事实；数据库主键和带 owner 的短期 reservation 协调跨 worker 写入。
-- CSS 存储和索引不是跨存储原子事务。异常/崩溃留下不一致记录时必须拒绝登录，不能把身份自动转给新账号。pending reservation 可过期回收，已完成但失效的索引需运维修复。
+- `identity_external_identities` 是绑定事实唯一权威；CSS 的 `external-login` 类型通过 adapter 读写该表，继续登记为登录方式并受原有账号策略保护。
+- `identity_external_login_transactions` 保存 state/proof 的 SHA-256 摘要及上下文，10 分钟到期，使用 `DELETE ... RETURNING` 原子消费。
+- 三元组唯一约束防止跨账号重复绑定；PG 使用事务级账号锁，SQLite 使用写事务协调。密码与外部登录的删除经过同一入口。
+- `created_at`、`updated_at` 由服务端生成；普通登录及重复绑定不修改时间。旧 JSON 绑定和辅助索引按升级流程迁移并清理。
 - actor 不由前端指定账号 ID。绑定/解绑要求已认证账号上下文；同源 JSON、浏览器 proof、CSS 原有请求认证和 interaction 校验共同约束流程。`ExternalLoginRequestGuard` 在 HTTP 元数据解析层拒绝浏览器跨来源修改请求（包括同站兄弟子域），允许微信返回的 GET 页面和不带浏览器头的原有 CLI 认证方式。
 - 回调响应禁止缓存并设置 `Referrer-Policy: no-referrer`；HTML 在资源加载前声明同样策略。应用代码不记录 code、微信 token、AppSecret；上游错误转为无 URL/凭据的固定错误。
 - 其他浏览器/标签页不能完成此事务；重复回调不重复换码。失败页提供重试入口，已知原 interaction 时保留其密码登录地址。

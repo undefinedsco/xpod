@@ -28,7 +28,8 @@ declare module 'drizzle-orm/node-postgres' {
 }
 
 declare module 'drizzle-orm/pg-core' {
-  export function pgTable(name: string, columns: Record<string, any>): any;
+  export function pgTable(name: string, columns: Record<string, any>, extraConfig?: (table: any) => any): any;
+  export { index, uniqueIndex } from 'drizzle-orm/pg-core/indexes';
   export function text(name: string): any;
   export function boolean(name: string): any;
   export function numeric(name: string): any;

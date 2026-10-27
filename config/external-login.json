@@ -6,7 +6,6 @@
     {
       "externalAccounts": "ExternalLoginService:_options_accountStorage",
       "externalAccountStore": "ExternalLoginService:_options_accountStore",
-      "externalLocker": "ExternalLoginService:_options_locker",
       "externalDatabase": "ExternalLoginService:_options_identityDbUrl",
       "externalBase": "ExternalLoginService:_options_baseUrl",
       "externalIssuer": "ExternalLoginService:_options_oidcIssuer",
@@ -19,10 +18,22 @@
       "externalControlsService": "ExternalLoginControls:_service",
       "externalControlsRoute": "ExternalLoginControls:_route",
       "externalGuardService": "ExternalLoginRequestGuard:_service",
-      "environmentKey": "EnvExtractor:_key"
+      "environmentKey": "EnvExtractor:_key",
+      "identityAccountSource": "ExternalIdentityAccountStorage:_options_storage",
+      "identityAccountDatabase": "ExternalIdentityAccountStorage:_options_identityDbUrl"
     }
   ],
   "@graph": [
+    {
+      "@id": "urn:undefineds:xpod:AccountStorageOverride",
+      "@type": "Override",
+      "overrideInstance": { "@id": "urn:solid-server:default:AccountStorage" },
+      "overrideParameters": {
+        "@type": "ExternalIdentityAccountStorage",
+        "identityAccountSource": { "@id": "urn:solid-server:default:IndexedStorage" },
+        "identityAccountDatabase": { "@id": "urn:solid-server:default:variable:identityDbUrl" }
+      }
+    },
     {
       "@id": "urn:solid-server:default:MetadataParser",
       "@type": "ParallelHandler",
@@ -58,7 +69,6 @@
       "@type": "ExternalLoginService",
       "externalAccounts": { "@id": "urn:solid-server:default:AccountStorage" },
       "externalAccountStore": { "@id": "urn:solid-server:default:AccountStore" },
-      "externalLocker": { "@id": "urn:solid-server:default:ResourceLocker" },
       "externalDatabase": { "@id": "urn:solid-server:default:variable:identityDbUrl" },
       "externalBase": { "@id": "urn:solid-server:default:variable:baseUrl" },
       "externalIssuer": { "@id": "urn:solid-server:default:variable:oidcIssuer" },
