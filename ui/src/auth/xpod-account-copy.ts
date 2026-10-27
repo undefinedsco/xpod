@@ -142,6 +142,34 @@ export const xpodRegistrationCopy = {
   podNameTaken: 'Pod 名称已被占用，请换一个。',
 } as const;
 
+/**
+ * Recovery copy for the one server response that proves the scoped OIDC
+ * interaction is gone. It states only what the response establishes and points
+ * to a fresh login from the original app; no cause is asserted.
+ */
+export const xpodInvalidInteractionRecovery = {
+  message: '本次登录请求已失效。请返回原应用，重新发起登录。',
+} as const;
+
+/**
+ * Exact allowlisted invalid-interaction response, as returned by the Account
+ * password handler before password validation. A 400 with a partially matching
+ * or attacker-controlled body must not qualify, so every identity field is
+ * required and no server-provided text is ever rendered.
+ */
+export function isInvalidOidcInteractionResponseBody(body: unknown, status: number): boolean {
+  if (status !== 400 || typeof body !== 'object' || body === null || Array.isArray(body)) return false;
+  const record = body as Record<string, unknown>;
+  return record.name === 'BadRequestHttpError'
+    && record.message === 'Invalid OIDC interaction'
+    && record.statusCode === 400
+    && record.errorCode === 'H400'
+    && typeof record.details === 'object'
+    && record.details !== null
+    && !Array.isArray(record.details)
+    && Object.keys(record.details).length === 0;
+}
+
 export function safeXpodLoginMessage(status: number): string {
   if (status === 401 || status === 403) return '邮箱或密码不正确。';
   if (status === 429) return '尝试次数过多，请稍后再试。';
