@@ -3,6 +3,10 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AuthContext, type AuthContextType, type Controls } from '../context/AuthContextValue';
 import { XpodAccountCredentials } from './XpodAccountCredentials';
+import {
+  isInvalidOidcInteractionResponseBody,
+  xpodInvalidInteractionRecovery,
+} from './xpod-account-copy';
 
 afterEach(() => {
   cleanup();
@@ -240,6 +244,7 @@ describe('XpodAccountCredentials', () => {
   });
 
   it.each([
+    [400, '登录失败，请重试。'],
     [401, '邮箱或密码不正确。'],
     [403, '邮箱或密码不正确。'],
     [429, '尝试次数过多，请稍后再试。'],
@@ -258,6 +263,110 @@ describe('XpodAccountCredentials', () => {
     expect(error.textContent).not.toContain('internal account details');
     expect(onAuthenticated).not.toHaveBeenCalled();
     expect(refetchControls).not.toHaveBeenCalled();
+  });
+
+  it('explains exactly the allowlisted invalid interaction without retrying or downgrading the scoped request', async () => {
+    window.history.replaceState({}, '', '/.account/interaction/opaque-interaction/login/password/');
+    const refetchControls = vi.fn(async () => ({ status: 'authenticated' as const }));
+    const onAuthenticated = vi.fn();
+    const pushState = vi.spyOn(window.history, 'pushState');
+    const replaceState = vi.spyOn(window.history, 'replaceState');
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === '/api/service-info') {
+        return Response.json({ edition: 'local', managed: false });
+      }
+      expect(init?.method).toBe('POST');
+      expect(init?.credentials).toBe('include');
+      expect(new URL(String(input), window.location.origin).pathname).toBe(
+        '/.account/interaction/opaque-interaction/login/password/',
+      );
+      expect(JSON.parse(String(init?.body))).toEqual({
+        email: 'person@example.test',
+        password: 'correct horse battery staple',
+        remember: true,
+      });
+      return Response.json({
+        name: 'BadRequestHttpError',
+        message: 'Invalid OIDC interaction',
+        statusCode: 400,
+        errorCode: 'H400',
+        details: {},
+      }, { status: 400 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    try {
+      renderCredentials({ refetchControls }, { onAuthenticated });
+      fillCredentials();
+      fireEvent.click(screen.getByRole('checkbox', { name: '记住账号' }));
+      fireEvent.click(screen.getByRole('button', { name: '登录' }));
+
+      const error = await screen.findByRole('alert');
+      expect(error.textContent).toBe(xpodInvalidInteractionRecovery.message);
+      expect(error.textContent).toContain('请返回原应用，重新发起登录');
+      expect(error.textContent).not.toContain('登录失败，请重试。');
+      expect(error.textContent).not.toMatch(/Cookie|超时|重启|密码|重试/u);
+      expect(error.textContent).not.toContain('Invalid OIDC interaction');
+      expect(error.textContent).not.toContain('BadRequestHttpError');
+      expect((screen.getByRole('checkbox', { name: '记住账号' }) as HTMLInputElement).checked).toBe(true);
+      expect(onAuthenticated).not.toHaveBeenCalled();
+      expect(refetchControls).not.toHaveBeenCalled();
+      expect(pushState).not.toHaveBeenCalled();
+      expect(replaceState).not.toHaveBeenCalled();
+      expect(window.location.pathname).toBe('/.account/interaction/opaque-interaction/login/password/');
+
+      const posts = fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST');
+      expect(posts).toHaveLength(1);
+      expect(fetchMock.mock.calls.some(([input]) => new URL(String(input), window.location.origin).pathname
+        === '/.account/login/password/')).toBe(false);
+      expect(JSON.stringify({ ...window.localStorage })).not.toContain('correct horse battery staple');
+      expect(JSON.stringify({ ...window.sessionStorage })).not.toContain('correct horse battery staple');
+    } finally {
+      pushState.mockRestore();
+      replaceState.mockRestore();
+    }
+  });
+
+  it.each([
+    ['a near-match message', { name: 'BadRequestHttpError', message: 'Invalid OIDC interaction. Replay this form to continue', statusCode: 400, errorCode: 'H400', details: {} }],
+    ['a missing error code', { name: 'BadRequestHttpError', message: 'Invalid OIDC interaction', statusCode: 400, details: {} }],
+    ['a mismatched status code', { name: 'BadRequestHttpError', message: 'Invalid OIDC interaction', statusCode: 500, errorCode: 'H400', details: {} }],
+    ['an unknown server message', { message: 'Invalid OIDC interaction', errorCode: 'H400' }],
+  ])('does not disclose or classify a non-allowlisted 400 body: %s', async (_label, body) => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input) === '/api/service-info') return Response.json({ edition: 'local', managed: false });
+      return Response.json(body, { status: 400 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderCredentials();
+    fillCredentials();
+    fireEvent.click(screen.getByRole('button', { name: '登录' }));
+
+    const error = await screen.findByRole('alert');
+    expect(error.textContent).toContain('登录失败，请重试。');
+    expect(error.textContent).not.toContain('Invalid OIDC interaction');
+    expect(error.textContent).not.toContain('Replay this form');
+    expect(error.textContent).not.toContain(xpodInvalidInteractionRecovery.message);
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1);
+  });
+
+  it('classifies only the complete exact invalid-interaction response', () => {
+    const exact = {
+      name: 'BadRequestHttpError',
+      message: 'Invalid OIDC interaction',
+      statusCode: 400,
+      errorCode: 'H400',
+      details: {},
+    };
+    expect(isInvalidOidcInteractionResponseBody(exact, 400)).toBe(true);
+    expect(isInvalidOidcInteractionResponseBody({ ...exact, message: `${exact.message}!` }, 400)).toBe(false);
+    expect(isInvalidOidcInteractionResponseBody({ ...exact, name: 'Error' }, 400)).toBe(false);
+    expect(isInvalidOidcInteractionResponseBody({ ...exact, details: null }, 400)).toBe(false);
+    expect(isInvalidOidcInteractionResponseBody({ ...exact, details: { hint: 'retry unscoped' } }, 400)).toBe(false);
+    expect(isInvalidOidcInteractionResponseBody(exact, 401)).toBe(false);
+    expect(isInvalidOidcInteractionResponseBody(null, 400)).toBe(false);
+    expect(isInvalidOidcInteractionResponseBody('Invalid OIDC interaction', 400)).toBe(false);
   });
 
   it('maps an advertised public password endpoint back to the local Xpod Gateway', async () => {
