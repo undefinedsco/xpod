@@ -47,7 +47,7 @@ const prefix=(groups:readonly unknown[],hashes:readonly string[],label:string)=>
 };
 
 it('every published whole prefix is byte-identical to the captured baseline',()=>{
-  expect(SDK).toHaveLength(83);expect(LINUX).toHaveLength(84);
+  expect(SDK).toHaveLength(84);expect(LINUX).toHaveLength(85);
   expect(CONSUMER).toHaveLength(99);expect(CI).toHaveLength(196);
   expect(API).toHaveLength(29);expect(CLI).toHaveLength(12);
   prefix(SDK,OLD_SDK_GROUPS,'sdk');prefix(LINUX,OLD_LINUX_GROUPS,'linux');

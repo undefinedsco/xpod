@@ -94,7 +94,9 @@ def validate_cache(build_dir: Path, source: Path) -> dict[str, str]:
         "CMAKE_POSITION_INDEPENDENT_CODE": "ON",
         "CHEAPER_COMPILATION": "ON",
         "RANGES_NATIVE": "OFF",
-        "USE_PRECOMPILED_HEADERS": "OFF",
+        # SDK84: the Linux SDK build enables upstream PCH; a prior tree built
+        # with OFF must not be accepted as compatible.
+        "USE_PRECOMPILED_HEADERS": "ON",
         "USE_IO_URING": "OFF",
     }
     for key, expected in required.items():

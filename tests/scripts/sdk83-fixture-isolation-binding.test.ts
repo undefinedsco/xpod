@@ -56,7 +56,9 @@ const prefix=(groups:readonly unknown[],hashes:readonly string[],label:string)=>
 };
 
 it('every published 3739 whole prefix is byte-identical',()=>{
-  expect(SDK).toHaveLength(83);expect(LINUX).toHaveLength(84);
+  // LIVE frontier (SDK84 appended): this historical slice is proven by its own
+  // frozen prefix below, not by current lengths.
+  expect(SDK).toHaveLength(84);expect(LINUX).toHaveLength(85);
   expect(CONSUMER).toHaveLength(99);expect(CI).toHaveLength(196);
   expect(API).toHaveLength(29);expect(CLI).toHaveLength(12);
   prefix(SDK.slice(0,82),OLD_SDK,'sdk');
@@ -107,7 +109,10 @@ it('SDK83 whole-inherits SDK82 and re-pins only the pre-owned observer fixture',
   expect(moved.filter(p=>p===FIXTURE)).toHaveLength(2);
   expect(moved.filter(p=>p===LEAFLET)).toHaveLength(1);
   for(const row of next.sourceBindings) if(row.path===FIXTURE) expect(row.sha256).toBe(sha(FIXTURE));
-  expect(next.sourceBindings.find(r=>r.path===LEAFLET)!.sha256).toBe(sha(LEAFLET));
+  // The leaf was re-pinned by SDK83 for its own frontier counts; a later slice
+  // (SDK84) moved it again, so this PUBLISHED tail is asserted against its own
+  // frozen value rather than today's disk bytes.
+  expect(next.sourceBindings.find(r=>r.path===LEAFLET)!.sha256).toBe('5eb6827aa6fd56bf63cc9ff6cb625a7de3857edfad51d660c4a24e551e36f5ea');
   // stage 4 carries that same role; stage 3 (toolchain) is inherited unchanged
   const stages=next.secondarySelectorStages??[];
   expect(stages.length).toBe((old.secondarySelectorStages??[]).length+1);
