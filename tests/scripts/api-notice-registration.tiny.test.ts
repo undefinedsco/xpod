@@ -9,7 +9,7 @@ import {sourceBindingKey as key,selectGitHubSourceBindingGroup as select} from '
 import {completeObserved,observedSecondaryBindings} from './source-binding-group.fixture';
 const root=path.resolve(import.meta.dir,'../..'),read=(name:string)=>fs.readFileSync(path.join(root,name)),sha=(raw:Buffer|string)=>createHash('sha256').update(raw).digest('hex');
 test('Notice API17 closes its executed wrapper/imports and preserves every SDK29 and earlier API/controller whole tree',()=>{
- for(const[name,groups]of Object.entries({api,sdk,consumer,ci})){const prior=before[name as keyof typeof before];expect(groups).toHaveLength(({api:29,sdk:82,ci:194,consumer:98} as Record<string,number>)[name]!);for(let i=0;i<prior.length;i++)expect(sha(JSON.stringify(groups[i]))).toBe(prior[i]);}
+ for(const[name,groups]of Object.entries({api,sdk,consumer,ci})){const prior=before[name as keyof typeof before];expect(groups).toHaveLength(({api:29,sdk:83,ci:196,consumer:99} as Record<string,number>)[name]!);for(let i=0;i<prior.length;i++)expect(sha(JSON.stringify(groups[i]))).toBe(prior[i]);}
  expect(current).toHaveLength(504);for(const row of current)expect(sha(read(row.path))).toBe(row.sha256);
  expect(API_SERVICE_BUILD_SOURCE_BINDINGS).toHaveLength(82);for(const row of API_SERVICE_BUILD_SOURCE_BINDINGS)expect(sha(read(row.path))).toBe(row.sha256);
  for(const role of ['packages/xpod-api/scripts/notice-material.ts','scripts/lib/physical-module-notices.ts','scripts/lib/independent-admission/legal-registry-originals.ts','scripts/lib/registry-legal-original-limits.json','scripts/workspace-package-payload.cjs'])expect(API_SERVICE_BUILD_SOURCE_BINDINGS.some(row=>row.path===role)).toBe(true);

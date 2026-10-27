@@ -57,8 +57,10 @@ const prefix=(groups:readonly unknown[],hashes:readonly string[],label:string)=>
 const helper=(file:string,name:string)=>decodeCatalog('scripts/lib/independent-admission/'+file,name) as readonly unknown[];
 
 it('every published whole prefix is byte-identical to the captured 7863 baseline',()=>{
-  expect(SDK).toHaveLength(82);expect(LINUX).toHaveLength(83);
-  expect(CONSUMER).toHaveLength(98);expect(CI).toHaveLength(194);
+  // LIVE frontier (SDK83 appended): the historical SDK82 slice is proven by its
+  // own frozen prefix below, not by these current lengths.
+  expect(SDK).toHaveLength(83);expect(LINUX).toHaveLength(84);
+  expect(CONSUMER).toHaveLength(99);expect(CI).toHaveLength(196);
   expect(API).toHaveLength(29);expect(CLI).toHaveLength(12);
   prefix(SDK.slice(0,81),OLD_SDK_GROUPS,'sdk');
   prefix(LINUX.slice(0,82),OLD_LINUX_GROUPS,'linux');
@@ -109,8 +111,13 @@ it('SDK82 whole-inherits SDK81 and re-pins exactly two mandatory source bodies',
   }
   expect(moved.map(i=>next.sourceBindings[i]!.path).sort()).toEqual([SDK81_LEAF,TOOL].sort());
   expect(next.sourceBindings.find(r=>r.path===TOOL)!.sha256).toBe(NEW_TOOL);
-  // each re-pinned row binds its actual on-disk bytes
-  for(const i of moved) expect(sha(next.sourceBindings[i]!.path)).toBe(next.sourceBindings[i]!.sha256);
+  // Each re-pinned row bound its actual on-disk bytes AT THIS PUBLISHED SLICE.
+  // The toolchain row is still current; the SDK81 leaf was later re-anchored and
+  // re-pinned by SDK83, so its live bytes are checked by the SDK83 test instead.
+  for(const i of moved){
+    if(next.sourceBindings[i]!.path===SDK81_LEAF)continue;
+    expect(sha(next.sourceBindings[i]!.path)).toBe(next.sourceBindings[i]!.sha256);
+  }
   // the new role is a stage, never a new discriminator/select
   const stages=next.secondarySelectorStages??[];
   expect(stages.length).toBe((old.secondarySelectorStages??[]).length+1);
@@ -118,13 +125,14 @@ it('SDK82 whole-inherits SDK81 and re-pins exactly two mandatory source bodies',
   expect(stage3.map(r=>r.path)).toEqual([TOOL]);
   expect(stage3[0]!.sha256).toBe(NEW_TOOL);
   for(const earlier of stages.slice(0,-1)) expect(JSON.stringify(earlier)).toBe(JSON.stringify((old.secondarySelectorStages??[])[stages.indexOf(earlier)]));
-  // Linux mirrors the SDK tail exactly, as before
-  expect(whole(LINUX[LINUX.length-1]!)).toBe(whole(next));
+  // Linux mirrors the SDK tail exactly, as before; anchor to the SDK82 index
+  // because SDK83 is appended later.
+  expect(whole(LINUX[82]!)).toBe(whole(next));
   expect(LINUX.length).toBe(SDK.length+1);
 });
 
 it('real staged walk: old toolchain selects SDK81, new selects SDK82',()=>{
-  const peers=SDK.slice(-10);          // SDK73..SDK82 (all toolchain owners)
+  const peers=SDK.slice(72,82);        // SDK73..SDK82 (all toolchain owners; SDK83 appended later)
   const old=SDK[80]!,next=SDK[81]!;
   const owned=(g:any)=>new Set([...g.selectors,...(g.secondarySelectors??[]),...(g.secondarySelectorStages??[]).flat(),...g.sourceBindings].map((r:any)=>sourceBindingKey(r)));
   const base=new Map<string,string>();
@@ -139,7 +147,7 @@ it('real staged walk: old toolchain selects SDK81, new selects SDK82',()=>{
 });
 
 it('stage-3 missing, earlier-stage missing, stale and source-only shapes are refused',()=>{
-  const peers=SDK.slice(-10);
+  const peers=SDK.slice(72,82);
   const old=SDK[80]!,next=SDK[81]!;
   const base=new Map<string,string>();
   for(const r of [...old.selectors,...(old.secondarySelectors??[]),...(old.secondarySelectorStages??[]).flat()]) base.set(sourceBindingKey(r),r.sha256);
@@ -179,17 +187,23 @@ it('the live canonical binds 504 real unique rows with no self hash',()=>{
 });
 
 it('the SDK82 consumer/CI tails bind the final policy and canonical bytes',()=>{
-  const tailC=CONSUMER[97]!,tailCi=CI.slice(-2);
+  const tailC=CONSUMER[97]!,tailCi=[CI[192]!,CI[193]!];
   const role=(g:any,keyPath:string)=>[...g.sourceBindings,...(g.secondarySelectors??[])].filter((r:any)=>r.path===keyPath).map((r:any)=>r.sha256);
   for(const group of [tailC,...tailCi]){
     expect(group.sourceBindings.length).toBe(506);
-    expect(role(group,'scripts/lib/independent-admission/consumer-observer-policy.ts')).toEqual([sha('scripts/lib/independent-admission/consumer-observer-policy.ts')]);
-    expect(role(group,'scripts/lib/independent-admission/consumer-execution-current.json')).toEqual([sha('scripts/lib/independent-admission/consumer-execution-current.json')]);
+    // The SDK82 tails are PUBLISHED HISTORY: they bind the frozen 3739 policy and
+    // canonical bytes, never the later live files (SDK83 append).
+    expect(role(group,'scripts/lib/independent-admission/consumer-observer-policy.ts')).toEqual(['933f144e509887ea13bcd2858ec329b9642c3d590e68837bee1a642b0d94c066']);
+    expect(role(group,'scripts/lib/independent-admission/consumer-execution-current.json')).toEqual(['8555ba9f4ee9b229ffc937b3623aac17ca698ef0c17e7f4e36021d1edb55ff80']);
     expect(role(group,TOOL)).toEqual([NEW_TOOL]);
     // the SDK policy is BOTH a canonical row and (in older recipes) a declared
-    // secondary role; every occurrence must carry the one final value.
-    expect(new Set(role(group,'scripts/lib/independent-admission/qlever-sdk-origin-policy.ts'))).toEqual(new Set([sha('scripts/lib/independent-admission/qlever-sdk-origin-policy.ts')]));
-    for(const row of group.sourceBindings) expect(sha(row.path),`${row.path} actual bytes`).toBe(row.sha256);
+    // secondary role; for these PUBLISHED tails every occurrence must carry the
+    // frozen 3739 value (the SDK83 append moved the live policy on).
+    expect(new Set(role(group,'scripts/lib/independent-admission/qlever-sdk-origin-policy.ts'))).toEqual(new Set(['b3126c69ee6a0de6e55e97825dff95f6337c325d939310bc3b35aa5e9eef767f']));
+    // These tails are frozen PUBLISHED HISTORY: their controller anchors, SDK
+    // policy row and the SDK70 observer fixture were all asserted above against
+    // the frozen 3739 values. Live-byte binding of the CURRENT tails is proven by
+    // the SDK83 registration test, so no row here is re-measured against disk.
   }
   // the accepted SDK81 tails stay frozen literals, never the live files
   for(const group of [CONSUMER[96],CI[190],CI[191]] as any[]){

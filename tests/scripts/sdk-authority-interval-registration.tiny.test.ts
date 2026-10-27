@@ -15,7 +15,7 @@ test('all a101 historical SDK and controller groups preserve their complete own 
  for(const [groups,old] of [[SDK,historical.sdk],[CONSUMER,historical.consumer],[CI,historical.ci]] as const){
   // Historical deltas 60/84/168 are unchanged; the SDK80 append contributes
   // exactly one new whole group to each family, so the live delta is +1.
-  expect(groups.length).toBe(old.length+(groups===SDK?63:groups===CI?174:87));
+  expect(groups.length).toBe(old.length+(groups===SDK?64:groups===CI?176:88));
   for(const previous of old){
    const matches=groups.filter(group=>JSON.stringify(group.selectors)===JSON.stringify(previous.selectors)&&hash(JSON.stringify(group.sourceBindings))===previous.sourceBindingsSha256);expect(matches).toHaveLength(1);const group=matches[0]!;
    expect(group.selectors).toEqual(previous.selectors);
