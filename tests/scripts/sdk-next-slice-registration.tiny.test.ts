@@ -171,7 +171,7 @@ test('the accepted SDK823 baseline proves all 299 published whole histories', ()
   // Only genuinely new, UNPUBLISHED current groups follow the 299 published ones:
   // the immutable-input-plan slice, the ORM 0.3.26 joint API/CLI/consumer/CI tail
   // and the ORM 0.3.26 joint SDK tuple.
-  expect([sdk.length, consumer.length, ci.length, api.length]).toEqual([81, 97, 192, 29]);
+  expect([sdk.length, consumer.length, ci.length, api.length]).toEqual([83, 99, 196, 29]);
 });
 
 test('the immutable fae9170b baseline proves its full published 69/84/166/28 prefixes', () => {
@@ -202,12 +202,12 @@ test('only the genuinely new immutable-input-plan slice follows published2406', 
   // Appends beyond published2406: the immutable-input-plan slice, the ORM 0.3.26
   // joint tail, and the candidate-producer-attempt SDK81/new current tails.
   expect([sdk.length, consumer.length, ci.length, api.length, linuxGroups.length, CLI_SOURCE_VERSION_GROUPS.length])
-    .toEqual([81, 97, 192, 29, 82, 12]);
+    .toEqual([83, 99, 196, 29, 84, 12]);
   expect([(n2406Groups as any).published.sdk, (n2406Groups as any).published.consumer,
     (n2406Groups as any).published.ci, (n2406Groups as any).published.linux]).toEqual([73, 88, 174, 74]);
   expect([sdk.length - n2406Groups.published.sdk, consumer.length - n2406Groups.published.consumer,
     ci.length - n2406Groups.published.ci, linuxGroups.length - n2406Groups.published.linux])
-    .toEqual([8, 9, 18, 8]);
+    .toEqual([10, 11, 22, 10]);
   // Every published2406 group keeps its own exact bytes, including its last.
   for (const [name, groups] of Object.entries({sdk, consumer, ci, api, linux: linuxGroups})) {
     const published = (n2406Groups as any).groupHashes[name] as unknown[];
@@ -293,12 +293,16 @@ test('the appended groups bind the actual frozen body and real module bytes', ()
 });
 
 test('the appended SDK recipe carries the published typed service contracts', () => {
-  const last = sdk.at(-1) as any;
+  // This historical case is anchored to the EXPLICIT SDK80/SDK81 indices it was
+  // written against: appending the SDK82 failed-transport tail must not silently
+  // retarget it. The new SDK82 tail is covered by the source-only SDK82 test.
+  const last = sdk[80] as any;
+  expect(sdk[79]!.candidateServiceRelationship?.workflowSha256).toBe('76373a179ec6ac63d24c79fc0b759e09f1045087bd66ce46c26214963d12dc5d');
   expect(last.candidateServiceRelationship).toBeDefined();
   expect(last.outerExecutor).toBeDefined();
-  // SDK79 keeps its reviewed published relationship literal; the current SDK81
-  // binds the final candidate workflow bytes on disk.
-  expect((sdk.at(-3) as any).candidateServiceRelationship.workflowSha256).toBe('999f183da7a146433afeca5cf009556876e9fcec02f9545efaad8b5c6d88f962');
+  // SDK78/SDK79 keep their reviewed published relationship literals; SDK80 moved
+  // the candidate workflow and SDK81 binds the final candidate workflow bytes.
+  expect((sdk[78] as any).candidateServiceRelationship.workflowSha256).toBe('999f183da7a146433afeca5cf009556876e9fcec02f9545efaad8b5c6d88f962');
   expect(last.candidateServiceRelationship?.workflowSha256).toBe(sha(read('.github/workflows/candidate.yml')));
   expect(last.candidateServiceRelationship?.workflowPath).toBe('.github/workflows/candidate.yml');
   // The B794 tail deliberately carries CURRENT outer-executor callers, so it must
@@ -308,7 +312,7 @@ test('the appended SDK recipe carries the published typed service contracts', ()
   for (const caller of last.outerExecutor.additionalWorkflows) expect(caller.sha256).toBe(sha(read(caller.path)));
   // SDK80 differs from the published SDK79 tail ONLY in the reviewed candidate
   // workflow caller: every other outer-executor field is inherited unchanged.
-  const previous=(sdk.at(-2) as any).outerExecutor;
+  const previous=(sdk[79] as any).outerExecutor;
   expect({...last.outerExecutor,additionalWorkflows:undefined})
     .toEqual({...previous,additionalWorkflows:undefined});
   expect(last.outerExecutor.additionalWorkflows.map((row:any)=>row.path))

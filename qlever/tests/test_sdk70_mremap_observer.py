@@ -4,14 +4,19 @@ Uses the production Observer methods (enforce_executable_memory,
 prove_private_anonymous_remap, mremap_cohort_closed, verify_private_anonymous_remap)
 over a fixture that supplies ONLY the kernel-facing surface those methods call:
 `barrier()` (returns a real-shaped all-stop row), the generated-VMA cohort and
-`/proc/<pid>/maps`. The policy, the coverage maths, the re-entrancy guard and the
-entry/exit lifecycle are all the real production code.
+`/proc/<pid>/{maps,task}`. The policy, the coverage maths, the re-entrancy guard
+and the entry/exit lifecycle are all the real production code.
+
+The synthetic pid world is CLOSED: see `ProcNamespace`. An owned pid resolves
+only inside the fixture tree and every other numeric pid is ENOENT, so the
+fixture can never observe whichever processes the host happens to be running.
 
 The negative cases are the point: an executable page, a hole, a file-backed or
 shared VMA, an unknown peer thread, a nested call and a FIXED remap must all end
 in the ORIGINAL refusal reason with no `mremapPending` and no allowance row.
 """
 import builtins
+import errno
 import importlib.util
 import os
 import sys
@@ -141,44 +146,128 @@ class Fixture:
         return row
 
 
-def _wrap_world(fixture, world):
-    """Redirect /proc/<pid>/{maps,task} reads to the fixture tree, nothing else."""
-    real_open, real_listdir = builtins.open, os.listdir
-    mapping = {pid: str(info['base']) for pid, info in world.pids.items()}
+class ProcNamespace:
+    """A CLOSED synthetic /proc pid namespace over a fixture tree.
 
-    def fake_open(path, *a, **kw):
+    WHY: an earlier wrapper only substituted the pids it knew about and fell
+    through to the REAL filesystem for everything else. On a Linux host whose
+    /proc happens to contain the synthetic pid (102 was observed twice) the
+    refusal path's diagnostic `os.open('/proc/102/maps')` succeeded, so the
+    test silently read the host instead of its own world. This namespace makes
+    that impossible: only owned pids resolve, and any other numeric pid raises
+    ENOENT exactly like a dead pid does.
+
+    Only the three kernel-facing collaborators the production code actually
+    calls are redirected:
+
+      * builtins.open('/proc/<pid>/maps', ...)   -> owned maps bytes
+      * os.listdir('/proc/<tgid>/task')          -> owned task directory
+      * os.open('/proc/<pid>[<suffix>]', ...)    -> owned directory / ENOENT
+
+    Everything else -- including every non-/proc path, `/proc/self`,
+    `/proc/thread-self` and the capture directory -- is the real call.
+    """
+    PROC = '/proc/'
+
+    def __init__(self, world):
+        self.world = world
+        self._real_open = builtins.open
+        self._real_listdir = os.listdir
+        self._real_os_open = os.open
+
+    # -- path resolution ---------------------------------------------------
+    def _owned(self, pid):
+        return self.world.pids.get(pid)
+
+    @classmethod
+    def _split(cls, path):
+        """Return (pid, suffix) for an owned-shaped `/proc/<pid><suffix>`."""
         text = str(path)
-        for pid, real in mapping.items():
-            if text == '/proc/%d/maps' % pid:
-                return real_open(real + '/maps', *a, **kw)
-        return real_open(path, *a, **kw)
+        if not text.startswith(cls.PROC):
+            return None, None
+        head, _, suffix = text[len(cls.PROC):].partition('/')
+        if not head.isdigit():
+            return None, None
+        return int(head), ('/' + suffix if suffix else '')
 
-    def fake_listdir(path):
-        text = str(path)
-        for pid, info in world.pids.items():
-            if text == '/proc/%d/task' % pid:
-                return real_listdir(str(info['base'] / 'task'))
-        return real_listdir(path)
+    def _missing(self, path):
+        return FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), str(path))
 
-    return fake_open, fake_listdir
+    # -- patched collaborators --------------------------------------------
+    def open(self, path, *args, **kwargs):
+        pid, suffix = self._split(path)
+        if pid is None:
+            return self._real_open(path, *args, **kwargs)
+        info = self._owned(pid)
+        if info is None:
+            raise self._missing(path)
+        if suffix != '/maps':
+            raise self._missing(path)
+        return self._real_open(str(info['base'] / 'maps'), *args, **kwargs)
+
+    def listdir(self, path):
+        pid, suffix = self._split(path)
+        if pid is None:
+            return self._real_listdir(path)
+        info = self._owned(pid)
+        if info is None or suffix != '/task':
+            raise self._missing(path)
+        return self._real_listdir(str(info['base'] / 'task'))
+
+    def os_open(self, path, flags, *args, **kwargs):
+        pid, suffix = self._split(path)
+        if pid is None:
+            return self._real_os_open(path, flags, *args, **kwargs)
+        info = self._owned(pid)
+        if info is None:
+            raise self._missing(path)
+        directory = info['base'] / suffix.strip('/') if suffix else info['base']
+        if not str(directory) or not Path(directory).exists():
+            raise self._missing(path)
+        return self._real_os_open(str(directory), flags, *args, **kwargs)
+
+    # -- install / restore -------------------------------------------------
+    def install(self):
+        builtins.open = self.open
+        os.listdir = self.listdir
+        os.open = self.os_open
+        return self
+
+    def restore(self):
+        builtins.open = self._real_open
+        os.listdir = self._real_listdir
+        os.open = self._real_os_open
+
+    def __enter__(self):
+        return self.install()
+
+    def __exit__(self, *exc):
+        self.restore()
+        return False
 
 
 class BoundaryCase(unittest.TestCase):
     def setUp(self):
         self.world = MapsWorld()
         self.addCleanup(self.world.cleanup)
-        self._real = (builtins.open, os.listdir)
+        self._real = (builtins.open, os.listdir, os.open)
+        self.namespace = None
 
     def tearDown(self):
-        builtins.open, os.listdir = self._real
+        self.restore()
+
+    def restore(self):
+        builtins.open, os.listdir, os.open = self._real
 
     def build(self, members=(101,), lines=None, threads=None):
         for pid in members:
             self.world.add(pid, lines, threads=threads)
         fx = Fixture(self.world, list(members))
         fx.generated_vma.mapping_domain = lambda pid, barrier=None: (7, sorted(members))
-        fake_open, fake_listdir = _wrap_world(fx, self.world)
-        builtins.open, os.listdir = fake_open, fake_listdir
+        # Re-install from the pristine collaborators so repeated build() calls
+        # (subTest loops) never nest one namespace inside another.
+        self.restore()
+        self.namespace = ProcNamespace(self.world).install()
         return fx
 
     def record(self, **over):
@@ -346,6 +435,131 @@ class Negative(BoundaryCase):
         fx.mm.domains[102] = 7   # claims the same MM but has no /proc task entry
         fx.generated_vma.mapping_domain = lambda pid, barrier=None: (7, [101, 102])
         self._refused(fx)
+
+    # -- deterministic host-collision mock ---------------------------------
+    def _colliding_host(self, pid=102):
+        """A Python mock of a Linux runner whose real /proc contains `pid`.
+
+        Nothing is spawned. The decoy tree simply holds the two facts the
+        production code would read from a live process: a `/proc/<pid>/task`
+        directory and a `/proc/<pid>/maps` body. Its maps cover the whole
+        requested range, so a leak would CLOSE the cohort and turn the expected
+        refusal into the CI `KeyError`.
+        """
+        decoy = Path(self.world.tmp.name) / 'colliding-host'
+        (decoy / str(pid) / 'task' / str(pid)).mkdir(parents=True)
+        (decoy / str(pid) / 'maps').write_bytes(
+            _real_maps_line(0x10000, 0x31000, 'rw-p'))
+        reads = []
+        needle = '/proc/%d' % pid
+
+        def route(real):
+            def call(path, *args, **kwargs):
+                name = str(path)
+                if name == needle or name.startswith(needle + '/'):
+                    reads.append(name)
+                    return real(str(decoy) + name[len('/proc'):], *args, **kwargs)
+                return real(path, *args, **kwargs)
+            return call
+
+        return decoy, reads, route
+
+    def _untracked_102(self):
+        """The scenario: cohort claims 101 and 102, but only 101 is tracked."""
+        fx = self.build(lines=[_real_maps_line(0x10000, 0x31000, 'rw-p')])
+        fx.tasks[102] = dict(stopped=True, exited=False, tgid=102)
+        fx.mm.domains[102] = 7
+        fx.generated_vma.mapping_domain = lambda pid, barrier=None: (7, [101, 102])
+        return fx
+
+    def test_host_pid_collision_cannot_change_the_synthetic_result(self):
+        """REGRESSION: a real host PID equal to a synthetic one must not matter.
+
+        The staging failure was a KEYERROR, not a refusal: on a Linux runner
+        whose /proc really contained pid 102, the old fall-through wrapper let
+        the refusal path read the HOST /proc/102. The untracked cohort member
+        then looked discovered, the cohort check passed, and the test died
+        inside tool_maps(102) instead of failing closed with the policy reason.
+
+        This drives the REAL production cohort check twice against the SAME
+        mocked live host pid:
+
+          * closed namespace   -> 102 is ENOENT, original refusal, host unread;
+          * deliberate leak    -> KeyError(102), exactly as staged CI failed.
+
+        The second run is the negative control: it proves the mocked collision
+        is genuinely capable of reproducing the failure, so the first run's
+        pass is evidence and not an accidentally dead mock.
+        """
+        fx = self._untracked_102()
+        namespace = self.namespace
+        self.assertIsNotNone(namespace)
+        decoy, reads, route = self._colliding_host(102)
+        namespace._real_open = route(self._real[0])
+        namespace._real_listdir = route(self._real[1])
+        namespace._real_os_open = route(self._real[2])
+
+        # The mocked host pid is live and its maps genuinely cover the range.
+        self.assertTrue((decoy / '102' / 'maps').is_file())
+        self.assertNotIn(102, self.world.pids)
+
+        # 1) CLOSED namespace: an unowned pid is a dead pid for every
+        #    kernel-facing call the production code makes.
+        with self.assertRaises(FileNotFoundError):
+            namespace.open('/proc/102/maps')
+        with self.assertRaises(FileNotFoundError):
+            namespace.listdir('/proc/102/task')
+        with self.assertRaises(FileNotFoundError):
+            namespace.os_open('/proc/102', os.O_RDONLY | os.O_DIRECTORY)
+        # ... while the OWNED synthetic pid still resolves normally.
+        self.assertEqual(namespace.listdir('/proc/101/task'), ['101'])
+
+        self._refused(fx)
+        self.assertEqual(reads, [],
+                         'the synthetic pid world read the colliding host /proc: %r'
+                         % (reads,))
+        self.assertNotIn('mremapPending', fx.tasks[101])
+        self.assertEqual(fx.barriers, 1, 'one all-stop, then fail closed')
+
+        # 2) NEGATIVE CONTROL: the old fall-through, on the same mock, must
+        #    reproduce the exact staged failure. If it does not, the mock is
+        #    too weak to justify step 1.
+        class Leaky(ProcNamespace):
+            def open(self, path, *args, **kwargs):
+                pid, suffix = self._split(path)
+                info = self._owned(pid) if pid is not None else None
+                if pid is None or info is None or suffix != '/maps':
+                    return self._real_open(path, *args, **kwargs)
+                return self._real_open(str(info['base'] / 'maps'), *args, **kwargs)
+
+            def listdir(self, path):
+                pid, suffix = self._split(path)
+                info = self._owned(pid) if pid is not None else None
+                if pid is None or info is None or suffix != '/task':
+                    return self._real_listdir(path)
+                return self._real_listdir(str(info['base'] / 'task'))
+
+        self.restore()
+        leaked = self._untracked_102()      # build() first: it re-installs
+        leaky = Leaky(self.world)
+        leaky._real_open = route(self._real[0])
+        leaky._real_listdir = route(self._real[1])
+        leaky._real_os_open = route(self._real[2])
+        leaky.install()
+        try:
+            with self.assertRaises(KeyError) as caught:
+                self.enforce(leaked, self.record())
+            self.assertEqual(caught.exception.args, (102,),
+                             'the control must fail exactly as staged CI did')
+            self.assertTrue(any(r.startswith('/proc/102') for r in reads),
+                            'the control never consulted the mocked host pid: %r'
+                            % (reads,))
+        finally:
+            self.restore()
+
+
+
+
 
     def test_nested_proof_while_pausing_defers_without_admitting_or_recursing(self):
         """A potential mremap collected during a barrier settle is QUEUED.
