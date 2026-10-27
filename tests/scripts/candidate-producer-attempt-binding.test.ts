@@ -47,8 +47,8 @@ const prefix=(groups:readonly unknown[],hashes:readonly string[],label:string)=>
 };
 
 it('every published whole prefix is byte-identical to the captured baseline',()=>{
-  expect(SDK).toHaveLength(81);expect(LINUX).toHaveLength(82);
-  expect(CONSUMER).toHaveLength(97);expect(CI).toHaveLength(192);
+  expect(SDK).toHaveLength(82);expect(LINUX).toHaveLength(83);
+  expect(CONSUMER).toHaveLength(98);expect(CI).toHaveLength(194);
   expect(API).toHaveLength(29);expect(CLI).toHaveLength(12);
   prefix(SDK,OLD_SDK_GROUPS,'sdk');prefix(LINUX,OLD_LINUX_GROUPS,'linux');
   prefix(CONSUMER,OLD_CONSUMER_GROUPS,'consumer');prefix(CI,OLD_CI_GROUPS,'ci');
@@ -80,7 +80,9 @@ it('the general selector and DCA snapshot are untouched',()=>{
 });
 
 it('SDK81 is a genuine later stage over the unchanged SDK80',()=>{
-  const old=SDK[SDK.length-2]!,next=SDK[SDK.length-1]!;
+  // Explicit published indices: SDK82 is appended later and must not retarget
+  // this historical case (it is covered by the source-only SDK82 test).
+  const old=SDK[79]!,next=SDK[80]!;
   expect(JSON.stringify(next.selectors)).toBe(JSON.stringify(old.selectors));
   expect(JSON.stringify(next.secondarySelectors)).toBe(JSON.stringify(old.secondarySelectors));
   expect((next.secondarySelectorStages??[]).length).toBe((old.secondarySelectorStages??[]).length+1);
@@ -95,7 +97,7 @@ it('SDK81 is a genuine later stage over the unchanged SDK80',()=>{
 });
 
 it('real staged walk: old value selects SDK80, new value selects SDK81, no future GET',async()=>{
-  const peers=SDK.slice(-11);              // SDK71..SDK80 + SDK81
+  const peers=SDK.slice(70,81);            // SDK71..SDK80 + SDK81 (explicit)
   const old=peers[peers.length-2]!,next=peers[peers.length-1]!;
   const preowned=(g:any)=>new Set([...g.selectors,...(g.secondarySelectors??[]),...(g.secondarySelectorStages??[]).flat(),...g.sourceBindings].map((r:any)=>sourceBindingKey(r)));
   const stage0=new Map<string,string>([...old.selectors,...(old.secondarySelectors??[]),...(old.secondarySelectorStages??[]).flat()].map((r:any)=>[sourceBindingKey(r),r.sha256]));
@@ -124,6 +126,8 @@ it('the live canonical binds 504 real unique rows and no self hash',()=>{
 });
 
 it('old consumer/CI tails keep the frozen published bytes; new tails bind the new caller',()=>{
+  // 95/188/189 are the published-2406 tails; 96/190/191 are the SDK81 tails.
+  // The SDK82 tail (97/192/193) is covered by the source-only SDK82 test.
   const oldC=CONSUMER[95]!,newC=CONSUMER[96]!,oldCi=CI[188]!,newCi=CI[191]!;
   expect(whole(oldC)).toBe('266805d4beec284b5a75dd04dc768a6af04a82a7108489632c1fdd6edcbf4817');
   expect(whole(CI[188])).toBe('3b45eea3ca48010d22b2d3cef4341c6cff199186dff444f4396ed9a744c423fe');
@@ -137,5 +141,10 @@ it('old consumer/CI tails keep the frozen published bytes; new tails bind the ne
   for(const g of [oldC,oldCi]){
     expect(find(g,'source:scripts/lib/independent-admission/consumer-execution-current.json')).toBe('bb3e91e9ada0f5ae93d44dbb391617979fa255edc93552e741c993a4a297d28b');
   }
-  expect(find(newC,'source:scripts/lib/independent-admission/consumer-execution-current.json')).toBe(sha('scripts/lib/independent-admission/consumer-execution-current.json'));
+  // The SDK81 tails are FROZEN to the canonical they were actually published
+  // with (7863 HEAD), never the later refreshed live file. Live-byte binding of
+  // the newest tails is proven by the source-only SDK82 registration test.
+  for(const g of [newC,newCi]){
+    expect(find(g,'source:scripts/lib/independent-admission/consumer-execution-current.json')).toBe('d3d68597eed58546d1891c42769f439e03e98c4cc437869d1b024446a2b15cce');
+  }
 });

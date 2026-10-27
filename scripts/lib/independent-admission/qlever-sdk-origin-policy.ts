@@ -2124,7 +2124,41 @@ const SDK81_GROUP:GitHubSourceBindingGroup=Object.freeze({...SDK80_GROUP,
  candidateServiceRelationship:Object.freeze({...SDK80_GROUP.candidateServiceRelationship!,workflowSha256:SDK81_SOURCE_HASHES[SDK81_CANDIDATE_WORKFLOW]!}),
  outerExecutor:Object.freeze({...SDK80_GROUP.outerExecutor!,
   additionalWorkflows:Object.freeze((SDK80_GROUP.outerExecutor!.additionalWorkflows??[]).map(row=>row.path===SDK81_CANDIDATE_WORKFLOW?Object.freeze({...row,sha256:SDK81_SOURCE_HASHES[SDK81_CANDIDATE_WORKFLOW]!}):row))})});
-export const QLEVER_SDK_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...PUBLISHED_SDK_GROUPS,NEXT_SDK_GROUP,INPUT_PLAN_SDK_GROUP,ORM326_SDK_GROUP,SDK19_TELEMETRY_GROUP,CAPTURE_INDEX_SDK_GROUP,SDK78_GROUP,SDK79_GROUP,SDK80_GROUP,SDK81_GROUP]);
+/** SDK82 failed-transport diagnostic slice (APPEND-ONLY, UNPUBLISHED).
+ * SDK81 is the WHOLE inherited base: selectors, the SDK80 stage-1 remap wrapper,
+ * the SDK81 stage-2 candidate workflow, the secondarySelectors, the candidate
+ * service relationship and the outer executor are byte-identical.
+ *
+ * Exactly TWO inherited mandatory sourceBindings genuinely move:
+ *   1. `qlever/scripts/sdk-toolchain-materials.py` — the reviewed diagnostic adds
+ *      the validated failed phase's fixed stdout.raw/stderr.raw;
+ *   2. `tests/scripts/candidate-producer-attempt-binding.test.ts` — the SDK81
+ *      closure ALREADY owns this regression test, and its live-count/index
+ *      assertions had to be anchored to explicit published indices, so its bytes
+ *      genuinely changed and it must be re-pinned here rather than dropped.
+ * Both are re-pins of EXISTING roles; no new/expanded selector is introduced.
+ *
+ * Stage 3 carries only the toolchain role because every SDK55-81 stage-0 survivor
+ * already owns it as a mandatory sourceBinding; the value alone differs. A new
+ * discriminator is unnecessary and would weaken those older ownership contracts.
+ * The generic selector `github-source-binding-groups.ts` is NOT edited. */
+const SDK82_TOOLCHAIN_MATERIALS='qlever/scripts/sdk-toolchain-materials.py';
+const SDK82_SOURCE_HASHES:Readonly<Record<string,string>>=Object.freeze({
+ [SDK82_TOOLCHAIN_MATERIALS]:'e1b49dec8e74702bb338c0f1fc40dde43f630a45a192bc930511cb95b5c17c77',
+ // SDK81's own regression test is PART of the inherited mandatory closure; the
+ // live-count/index assertions were anchored to explicit published indices, so its
+ // bytes genuinely moved and it MUST be re-pinned here rather than dropped. It is
+ // NOT a selector role: stage 3 still carries the toolchain path only.
+ 'tests/scripts/candidate-producer-attempt-binding.test.ts':'54bb0591f16d5cd865a6b21af023b3fc1035d9177ebef0f6945f36c1ffd480fe'
+});
+const rebindSdk82Rows=(rows:readonly GitHubSourceBinding[]|undefined)=>Object.freeze((rows??[]).map(row=>Object.freeze({...row,sha256:SDK82_SOURCE_HASHES[row.path]??row.sha256})));
+const SDK82_STAGE3_BINDING:GitHubSourceBinding=Object.freeze({path:SDK82_TOOLCHAIN_MATERIALS,sha256:SDK82_SOURCE_HASHES[SDK82_TOOLCHAIN_MATERIALS]!});
+const SDK82_GROUP:GitHubSourceBindingGroup=Object.freeze({...SDK81_GROUP,
+ selectors:SDK81_GROUP.selectors,
+ secondarySelectors:SDK81_GROUP.secondarySelectors,
+ secondarySelectorStages:Object.freeze([...(SDK81_GROUP.secondarySelectorStages??[]),Object.freeze([SDK82_STAGE3_BINDING])]),
+ sourceBindings:rebindSdk82Rows(SDK81_GROUP.sourceBindings)});
+export const QLEVER_SDK_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...PUBLISHED_SDK_GROUPS,NEXT_SDK_GROUP,INPUT_PLAN_SDK_GROUP,ORM326_SDK_GROUP,SDK19_TELEMETRY_GROUP,CAPTURE_INDEX_SDK_GROUP,SDK78_GROUP,SDK79_GROUP,SDK80_GROUP,SDK81_GROUP,SDK82_GROUP]);
 export const QLEVER_LINUX_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([
  {selectors:sdkSelectors('cbedd3e2478de5e22108b6689c595a658ca891c9bd47552caec830e86f47fea8','a75c7be34b5c5fafff85c0d67d814ba1aaf14bcf5db5404a860fe3b9a11009bd'),sourceBindings:QLEVER_LINUX_SOURCE_BINDINGS.filter(row=>!['.github/workflows/publish-qlever-runtime-sdk.yml','.github/workflows/build-qlever-linux-runtime.yml'].includes(row.path))},
  ...QLEVER_SDK_EXECUTION_GROUPS,

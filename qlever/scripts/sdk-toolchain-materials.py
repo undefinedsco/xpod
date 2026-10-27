@@ -101,14 +101,18 @@ def failure_diagnostic(result,out,directory,check):
 # Failure-only originals, never successful compilation/source authority. Paths
 # are a closed list: the nested actual CMake command owns the first three.
 CMAKE_FAILURE_PATHS=(('materials','generation/configure/command.receipt.json'),('materials','generation/configure/stdout.raw'),('materials','generation/configure/stderr.raw'),('build','CMakeFiles/CMakeError.log'),('build','CMakeFiles/CMakeOutput.log'),('build','CMakeFiles/CMakeConfigureLog.yaml'))
+CMAKE_FAILURE_PHASE_STREAMS=('stdout.raw','stderr.raw')
 CMAKE_FAILURE_SOURCE_LIMIT=4*1024**2
 CMAKE_FAILURE_RETAIN_LIMIT=256*1024
 
 def cmake_failure_originals(out,build,directory,check,remaining_bytes):
     """Read only fixed failed-phase logs, holding every parent without links.
 
-    Large-but-bounded sources retain a labelled tail, not a fictitious complete
-    original. Both source and retained bytes are hashed. No trace/ENV scan.
+    The six fixed CMake/generation paths are followed by the failed phase's own
+    closed stdout/stderr, so a timed-out compile keeps the bytes it actually
+    produced. Large-but-bounded sources retain a labelled tail, not a fictitious
+    complete original. Both source and retained bytes are hashed. No trace/ENV
+    scan, no arbitrary glob, and no build-tree walk.
     """
     check();out=Path(os.path.abspath(out));build=Path(os.path.abspath(build));directory=Path(os.path.abspath(directory))
     if directory not in (out/'stages/configure',out/'stages/compile'):raise ValueError('fixed failed observer phase directory required')
@@ -138,7 +142,11 @@ def cmake_failure_originals(out,build,directory,check,remaining_bytes):
             try:roots[domain]=directory_fd(path)
             except FileNotFoundError:roots[domain]=None
         stage_fd=directory_fd(directory)
-        for ordinal,(domain,relative) in enumerate(CMAKE_FAILURE_PATHS,1):
+        # Append only the actual failed phase's closed stdout/stderr inputs after
+        # the fixed six; a configure run and a compile run never select each
+        # other's stream. Ordinals 1..6 above remain unchanged.
+        paths=(*CMAKE_FAILURE_PATHS,*(('materials',str(Path('stages')/directory.name/name)) for name in CMAKE_FAILURE_PHASE_STREAMS))
+        for ordinal,(domain,relative) in enumerate(paths,1):
             check();base=dict(sourceDomain=domain,sourceRelativePath=relative)
             if roots[domain] is None:rows.append(dict(base,status='missing'));continue
             fd=None

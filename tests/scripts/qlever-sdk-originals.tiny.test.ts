@@ -85,7 +85,7 @@ test('owned SDK RUNs select the complete PID1 registry/guard and preserve earlie
 test('source-prepared SDK group binds the complete changed recipe without mixing historical selectors',()=>{
  const old=QLEVER_SDK_EXECUTION_GROUPS[6]!,next=QLEVER_SDK_EXECUTION_GROUPS[7]!;
  // SDK79 published 79; the SDK80 append adds exactly one whole group.
- expect(QLEVER_SDK_EXECUTION_GROUPS).toHaveLength(81);
+ expect(QLEVER_SDK_EXECUTION_GROUPS).toHaveLength(82);
  const selected=new Map([...next.selectors,...(next.secondarySelectors??[])].map(row=>[sourceBindingKey(row),row.sha256]));
  expect(selectGitHubSourceBindingGroup(QLEVER_SDK_EXECUTION_GROUPS,selected)).toBe(next);
  for(const path of ['docker/qlever-runtime-sdk/Dockerfile.module-bookworm','qlever/scripts/sdk-inner-materials.py']){
@@ -195,7 +195,7 @@ test('combined single observer version preserves old pair and rejects mixed prod
 test('prepared dependency recipe is one exact complete SDK18 group',()=>{
  const next=QLEVER_SDK_EXECUTION_GROUPS[17]!,previous=QLEVER_SDK_EXECUTION_GROUPS[16]!;
  // SDK79 published 79; the SDK80 append adds exactly one whole group.
- expect(QLEVER_SDK_EXECUTION_GROUPS).toHaveLength(81);
+ expect(QLEVER_SDK_EXECUTION_GROUPS).toHaveLength(82);
  for(const group of QLEVER_SDK_EXECUTION_GROUPS){const map=completeObserved(QLEVER_SDK_EXECUTION_GROUPS,group);expect(selectGitHubSourceBindingGroup(QLEVER_SDK_EXECUTION_GROUPS,map)).toBe(group);}
  expect(next.sourceBindings.find(row=>row.path==='qlever/scripts/sdk-fetchcontent-materials.py')?.sha256).toBe('8ec24a7e0e68197bb2bfe127733a18f5db64477e2b3f549feb95af05e4f4097f');
  for(const role of [...next.selectors,...next.secondarySelectors!]){const map=new Map([...next.selectors,...next.secondarySelectors!].map(row=>[sourceBindingKey(row),row.sha256]));map.set(sourceBindingKey(role),'0'.repeat(64));expect(()=>selectGitHubSourceBindingGroup(QLEVER_SDK_EXECUTION_GROUPS,map)).toThrow();}
