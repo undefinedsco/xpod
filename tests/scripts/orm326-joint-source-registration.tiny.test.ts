@@ -32,9 +32,9 @@ test('every published f803 prefix stays byte-identical; only the ORM 0.3.26 tail
     // sdk +1 and linux +1 are the ORM 0.3.26 joint SDK tuple (the f803 prefix
     // above stays byte-identical); api +1, cli +1, consumer +1, CI +2 append.
     // SDK81 + the SDK82 failed-transport consumer/CI tails are appended after this slice.
-    expect(live.length - frozen.length).toBe({sdk: 12, consumer: 10, ci: 20, linux: 12, api: 1, cli: 1}[name] ?? 0);
+    expect(live.length - frozen.length).toBe({sdk: 13, consumer: 10, ci: 20, linux: 13, api: 1, cli: 1}[name] ?? 0);
   }
-  expect([sdk.length, linux.length, consumer.length, ci.length, api.length, cli.length]).toEqual([86, 87, 99, 196, 29, 12]);
+  expect([sdk.length, linux.length, consumer.length, ci.length, api.length, cli.length]).toEqual([87, 88, 99, 196, 29, 12]);
 });
 
 test('the frozen f803 snapshot is the published canonical bytes and the moving canonical only appends', () => {

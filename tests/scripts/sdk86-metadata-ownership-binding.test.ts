@@ -23,6 +23,14 @@ const OBSERVER = 'qlever/scripts/sdk-ptrace-execution.py';
 const LEAF = 'tests/scripts/candidate-producer-attempt-binding.test.ts';
 const all = (g: any) => [...g.selectors, ...(g.secondarySelectors ?? []), ...(g.secondarySelectorStages ?? []).flat(), ...g.sourceBindings];
 
+/** SDK86's OWN recorded bytes, taken from the published 75bccd source. These are
+ * HISTORICAL and must never be replaced with whatever the tree holds today. */
+const SDK86_FROZEN: Readonly<Record<string, string>> = Object.freeze({
+  [BINDER]: 'c59c84466007a7641fa69147bfb5f3301a259085f064ceea0962b04d84f23233',
+  [OBSERVER]: '1bb9533e6a499b35347c2bc5d66644360cf6eff733251c9fac15d2f704e0662d',
+  [LEAF]: '6018218f537a88607be392cb081a53cbdc64cf0fd3f21a00df6f7f9eaf178b76',
+});
+
 it('SDK86 whole-inherits SDK85 and re-pins exactly the two runtime helpers plus the leaf', () => {
   const inherited = SDK[84]!, next = SDK[85]!;
   expect(JSON.stringify(next.selectors)).toBe(JSON.stringify(inherited.selectors));
@@ -46,8 +54,14 @@ it('SDK86 whole-inherits SDK85 and re-pins exactly the two runtime helpers plus 
   expect(moved.filter(p => p === BINDER)).toHaveLength(3);
   expect(moved.filter(p => p === OBSERVER)).toHaveLength(4);
   expect(moved.filter(p => p === LEAF)).toHaveLength(1);
-  for (const row of all(next).filter((r: any) => r.path === BINDER || r.path === OBSERVER)) expect(row.sha256).toBe(sha(row.path));
-  expect(next.sourceBindings.find(r => r.path === LEAF)!.sha256).toBe(sha(LEAF));
+  // SDK86 is HISTORICAL now: pin the EXACT bytes this published slice recorded.
+  // Comparing them to today's tree would silently rewrite history, which is the
+  // regression this test exists to prevent (SDK87 moved OBSERVER and LEAF again).
+  for (const row of all(next).filter((r: any) => r.path === BINDER || r.path === OBSERVER))
+    expect(row.sha256).toBe(SDK86_FROZEN[row.path]!);
+  expect(next.sourceBindings.find(r => r.path === LEAF)!.sha256).toBe(SDK86_FROZEN[LEAF]!);
+  // The BINDER role did not move in SDK87, so it still equals today's bytes.
+  expect(SDK86_FROZEN[BINDER]).toBe(sha(BINDER));
 });
 
 it('generic selector resolves SDK85/current/stale against the real bytes', () => {
@@ -82,8 +96,8 @@ it('every historical SDK whole group is byte-identical to the frozen prefix', ()
   // SDK81 specifically: its leaf keeps the frozen pre-SDK86 value.
   const sdk81 = all(SDK[80]).find((r: any) => r.path === LEAF);
   expect(sdk81!.sha256).toBe('f1a165e7a2f2ad3a6f8f5443c0eb6c255cb84c6caf08eaf0bdb23bc916f895e9');
-  // and the new value lives ONLY in the appended SDK86 group.
+  // and SDK86 carries its OWN frozen leaf value (SDK87 is the current group).
   const sdk86 = all(SDK[85]).filter((r: any) => r.path === LEAF);
   expect(sdk86).toHaveLength(1);
-  expect(sdk86[0].sha256).toBe(sha(LEAF));
+  expect(sdk86[0].sha256).toBe(SDK86_FROZEN[LEAF]!);
 });
