@@ -15,6 +15,7 @@ import { XpodDeploymentIdentity } from '../auth/XpodDeploymentIdentity';
 import type { WebAccountConsentOption, WebAccountConsentSelection } from '../auth/WebAccountViews';
 import { WebAccountErrorBanner, WebAccountFailureView, WebAccountRestoringView } from '../auth/WebAccountViews';
 import { useAuth } from '../context/AuthContextValue';
+import { readXpodAccountRememberChoice } from '../auth/xpod-remembered-login';
 import { consumeReturnTo, persistReturnTo } from '../utils/returnTo';
 import { storedAccountTokenHeaders } from '../utils/account-session';
 import { getStoredProvisionCode, resolveProvisionCodeForCurrentScope } from '../utils/pod';
@@ -171,6 +172,10 @@ export function ConsentPage() {
   const entryBindingScope = useRef<{ transactionId?: string; binding?: StorageBinding } | undefined>(undefined);
   const [entryBinding, setEntryBinding] = useState<StorageBinding>();
   const [resumeState, setResumeState] = useState<'idle' | 'pending' | 'failed'>('idle');
+  const [prebindState, setPrebindState] = useState<'idle' | 'pending' | 'failed'>('idle');
+  // One automatic identity binding per page load. A read refresh, a retried
+  // load or a StrictMode effect replay must never POST the picker again.
+  const prebindAttemptedRef = useRef<string>();
   const transactionStore = useMemo<XpodLoginTransactionStore | undefined>(() => {
     try {
       return createXpodLoginTransactionStore({
@@ -210,7 +215,10 @@ export function ConsentPage() {
     window.location.assign(scopeAccountUrl(redirectUrl));
   }, [consentUrl]);
 
-  const refreshConsentState = useCallback(async (preferredBinding?: StorageBinding): Promise<string[]> => {
+  const refreshConsentState = useCallback(async (
+    preferredBinding?: StorageBinding,
+    options: { allowPrebind?: boolean } = {},
+  ): Promise<string[]> => {
     let activeTransaction: WebIdLoginTransaction | undefined;
     try {
       activeTransaction = transactionStore?.readSinglePending();
@@ -360,6 +368,7 @@ export function ConsentPage() {
         window.location.assign(scopeAccountUrl(location));
       } catch (err: unknown) {
         setResumeState('failed');
+        prebindAttemptedRef.current = currentInteractionScope() ?? consentUrl;
         throw err;
       }
     }
@@ -368,12 +377,64 @@ export function ConsentPage() {
     // remembered-grant path above is authoritative; the browser never transfers an
     // approval merely because client, Account, or WebID happen to match.
 
+    // Unambiguous pre-binding: when the interaction has no session WebID yet and
+    // the Account owns exactly one exact binding, bind that identity once before
+    // rendering approval. The server still validates ownership; the resulting
+    // interaction always asks for real consent and is never approved here.
+    const soleBinding = exactBindings.length === 1 ? exactBindings[0] : undefined;
+    const prebindScope = currentInteractionScope() ?? consentUrl;
+    // Only an explicit, issuer-scoped Account remember choice may persist the
+    // OIDC session identity. Absent or false stays transient; this is separate
+    // from the consent checkbox, which still controls remembered client grants.
+    const rememberAccount = idpIndex ? readXpodAccountRememberChoice(idpIndex) === true : false;
+    const canPrebind = options.allowPrebind === true
+      && isLoggedIn
+      && !consentData.webId
+      && typeof pickData.resumeWebId !== 'string'
+      && soleBinding !== undefined
+      && rawIds.length <= 1
+      && selection.status === 'ready'
+      && storageBindingKey(selection.selected) === storageBindingKey(soleBinding)
+      && !missingOwnerBinding.current
+      && prebindAttemptedRef.current !== prebindScope;
+    if (canPrebind && soleBinding) {
+      prebindAttemptedRef.current = prebindScope;
+      setPrebindState('pending');
+      try {
+        const response = await fetch(scopeAccountUrl(pickWebIdUrl), {
+          method: 'POST',
+          headers: storedAccountTokenHeaders({ 'Content-Type': 'application/json', Accept: 'application/json' }),
+          credentials: 'include',
+          redirect: 'manual',
+          // Carry only the user's already-confirmed explicit choice. The
+          // consent checkbox remains the separate control for remembered client
+          // grants; a later user-initiated pick keeps its existing contract.
+          body: JSON.stringify({ webId: soleBinding.webId, remember: rememberAccount }),
+        });
+        const result = await response.json().catch(() => ({})) as PickWebIdResponse;
+        if (!response.ok) throw new Error(xpodConsentErrors.webIdSelectionFailed);
+        const location = typeof result.location === 'string' ? result.location.trim() : '';
+        if (!location) throw new Error(xpodConsentErrors.missingRedirect);
+        window.location.assign(scopeAccountUrl(location));
+        return ids;
+      } catch {
+        // No retry loop: the failure view offers an explicit reload. A reloaded
+        // page does not pre-bind again, so the user recovers through the
+        // ordinary approval (and explicit identity choice) path.
+        setPrebindState('failed');
+        setError('未能完成唯一身份绑定，请重试；如仍失败，请返回账号页或原应用重新发起登录。');
+        return ids;
+      }
+    }
+
     return ids;
-  }, [consentUrl, isLoggedIn, pickWebIdUrl, provisionCode, refetchControls, transactionStore]);
+  }, [consentUrl, idpIndex, isLoggedIn, pickWebIdUrl, provisionCode, refetchControls, transactionStore]);
 
   const retryConsentLoad = useCallback((allowResume = true) => {
     resumeAttemptedRef.current = !allowResume;
+    prebindAttemptedRef.current = prebindAttemptedRef.current ?? currentInteractionScope() ?? consentUrl;
     setResumeState('idle');
+    setPrebindState('idle');
     setFailedAction('load');
     setIsLoading(true);
     setError(null);
@@ -388,7 +449,7 @@ export function ConsentPage() {
     persistReturnTo(window.location.href);
     (async () => {
       try {
-        await refreshConsentState();
+        await refreshConsentState(undefined, { allowPrebind: true });
       } catch (err: unknown) {
         setError(safeConsentError(err, xpodConsentErrors.loadFailed));
       } finally {
@@ -448,6 +509,7 @@ export function ConsentPage() {
   const handleBackToConsent = () => {
     resumeAttemptedRef.current = true;
     setResumeState('idle');
+    setPrebindState('idle');
     setError(null);
   };
 
@@ -518,6 +580,7 @@ export function ConsentPage() {
       }
 
       if (requestedWebId && requestedWebId !== currentWebId) {
+        prebindAttemptedRef.current = currentInteractionScope() ?? consentUrl;
         const pickRes = await fetch(scopeAccountUrl(pickWebIdUrl), {
           method: 'POST',
           headers: storedAccountTokenHeaders({ 'Content-Type': 'application/json', Accept: 'application/json' }),
@@ -641,7 +704,7 @@ export function ConsentPage() {
   }, [interactionExpired]);
   const needsSignIn = !isLoggedIn || error === xpodConsentErrors.signInRequired;
   const showFailure = Boolean(error && (
-    interactionExpired || failedAction !== 'load' || resumeState === 'failed' || !clientInfo
+    interactionExpired || failedAction !== 'load' || resumeState === 'failed' || prebindState === 'failed' || !clientInfo
   ));
   const canReturnToConsent = Boolean(clientInfo && displayOptions.length > 0 && !interactionExpired && !needsSignIn);
   const returnLabel = window.xpodDesktop?.cancelLogin ? '返回应用' : '返回账号';
@@ -652,7 +715,7 @@ export function ConsentPage() {
     else retryConsentLoad(failedAction !== 'authorize');
   };
 
-  const waiting = isLoading || resumeState === 'pending';
+  const waiting = isLoading || resumeState === 'pending' || prebindState === 'pending';
   const contentAvailable = !needsSignIn && !interactionExpired && !waiting;
   const noPodVisible = contentAvailable && showNoPodStorage;
   const consentVisible = contentAvailable && !showNoPodStorage && !showFailure && !showStorageBootstrap;
@@ -728,7 +791,7 @@ export function ConsentPage() {
           ) : null}
         </div>
       ) : null}
-      {!needsSignIn && !interactionExpired ? (isLoading || resumeState === 'pending' ? (
+      {!needsSignIn && !interactionExpired ? (waiting ? (
         <WebAccountRestoringView label={xpodConsentCopy.restoring} />
       ) : showNoPodStorage ? (
         // WebID 和 Pod 绑定：授权页"缺 Pod"就是账号还没有任何 WebID。这里可以起名并创建，
