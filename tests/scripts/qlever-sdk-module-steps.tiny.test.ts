@@ -7,10 +7,10 @@ import oldTree from '../fixtures/independent-admission/sdk-86cd-tree-originals.j
 import {observeQleverSdkGitHubOrigin,isQleverSdkGitHubOrigin,githubOriginFacts} from '../../scripts/lib/independent-admission/github-origin';
 const root=process.env.XPOD_ORIGIN_SOURCE_FIXTURE??path.resolve(import.meta.dir,'../..'),source='9'.repeat(40),digest='8'.repeat(64),workflow='.github/workflows/publish-qlever-runtime-sdk.yml';
 let fixtureId=200;
-async function scenario(skip?:string,revision?:string,missing?:string,modified?:string,legacyJob=false,nested=false){
+async function scenario(skip?:string,revision?:string,missing?:string,modified?:string,legacyJob=false,nested=false,requestedOut?:string[]){
  const workflow=nested?'.github/workflows/css-native-products.yml':'.github/workflows/publish-qlever-runtime-sdk.yml';
  const source=revision??(++fixtureId).toString(16).padStart(40,'0');
- const requested:string[]=[];
+ const requested:string[]=requestedOut??[];
  const previous=globalThis.fetch;
  const required=revision?['Verify the actual native producer host','Build actual cold module SDK with owned raw streams','Push exact tested module SDK from the same builder cache','Bind actual SDK image and build originals','Upload exact SDK original materials']:['Verify controller closure','Capture immutable source context','Build readonly SDK and linked image','Publish the actual linked readonly SDK','Bind actual readonly SDK image and build originals','Seal controller originals for upload','Upload exact SDK original materials'];
  globalThis.fetch=(async(value)=>{
@@ -69,7 +69,20 @@ test('binary producer imports are required only for the new whole SDK recipe',as
 test('shared-task coverage adapter is checked after the exact observer pair, never on old trees',async()=>{
  const old=await scenario(undefined,oldSdk.sourceSha);expect(old.requested).not.toContain('qlever/scripts/sdk-toolchain-materials.py');
  await expect(scenario(undefined,undefined,'qlever/scripts/sdk-toolchain-materials.py')).rejects.toThrow('metadata request failed');
- await expect(scenario(undefined,undefined,undefined,'qlever/scripts/sdk-toolchain-materials.py')).rejects.toThrow('policy not reviewed');
+ // SDK82 promotes this adapter to an explicit LATER staged selector (stage 3), so
+ // its bytes are now checked against the owning recipe during exact whole-group
+ // selection rather than in the trailing mandatory sourceBindings pass. Bad bytes
+ // therefore reject at that stronger, earlier selection boundary and cannot reach
+ // the older late "policy not reviewed" message.
+ const requested:string[]=[];
+ await expect(scenario(undefined,undefined,undefined,'qlever/scripts/sdk-toolchain-materials.py',false,false,requested)).rejects.toThrow('Independent GitHub origin: exact workflow/source group not reviewed');
+ const adapter='qlever/scripts/sdk-toolchain-materials.py';
+ expect(requested.filter(name=>name===adapter)).toHaveLength(1);
+ // The staged adapter is never fetched before the exact observer pair it follows.
+ for(const role of ['qlever/scripts/sdk-ptrace-execution.py','qlever/scripts/sdk-generation-multiprocess-bindings.py']){
+  expect(requested).toContain(role);
+  expect(requested.indexOf(role)<requested.indexOf(adapter)).toBe(true);
+ }
 });
 
 test('new source group requires the actual trusted outer workflow closure, old SDK never acquires it',async()=>{

@@ -13,7 +13,7 @@ import{completeObserved,observedSecondaryBindings}from'./source-binding-group.fi
 const root=fileURLToPath(new URL('../../',import.meta.url)),read=(p:string)=>readFileSync(join(root,p)),sha=(b:string|Buffer)=>createHash('sha256').update(b).digest('hex');
 test('SDK33 preserves every SDK32/API18 complete original tree and binds its actual diagnostic helpers',()=>{
  // API29/CLI unchanged; the SDK80 append adds one whole group per family.
- const groups={api,sdk,consumer,ci};expect([api.length,sdk.length,consumer.length,ci.length]).toEqual([29,81,97,192]);
+ const groups={api,sdk,consumer,ci};expect([api.length,sdk.length,consumer.length,ci.length]).toEqual([29,82,98,194]);
  for(const name of Object.keys(groups) as (keyof typeof groups)[])for(let i=0;i<before.groups[name].length;i++)expect(sha(JSON.stringify(groups[name][i]))).toBe(before.groups[name][i]!);
  expect(current.length).toBe(504);for(const row of [...current,...sdk[sdk.length-1]!.sourceBindings])expect(sha(read(row.path))).toBe(row.sha256);
  const workflow=read('.github/workflows/qlever-readonly-normal-job.yml').toString(),pins=JSON.parse(workflow.match(/^          pins=(.*)$/mu)![1]!) as Record<string,string>;expect(Object.keys(pins).length).toBe(21);for(const [p,h] of Object.entries(pins))expect(sha(read(p))).toBe(h);

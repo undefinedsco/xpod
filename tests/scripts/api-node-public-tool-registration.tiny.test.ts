@@ -12,7 +12,7 @@ const read=(name:string)=>readFileSync(path.resolve(import.meta.dir,'../..',name
 const sha=(bytes:Buffer)=>createHash('sha256').update(bytes).digest('hex');
 test('Node public tool input adds one complete exact tuple and preserves compressed retention history',()=>{
  // API29/CLI unchanged; the SDK80 append adds one whole group to each family.
- expect(groups).toHaveLength(29);expect(consumers).toHaveLength(97);expect(ci).toHaveLength(192);expect(tcb).toHaveLength(504);
+ expect(groups).toHaveLength(29);expect(consumers).toHaveLength(98);expect(ci).toHaveLength(194);expect(tcb).toHaveLength(504);
  expect(groups.find(g=>'name' in g&&g.name==='root-minimal-compressed-original-retention')!.sourceBindings).toBe(old);expect(groups.find(g=>'name' in g&&g.name==='root-minimal-node-public-tool-input')!.sourceBindings).toBe(prior);
  expect(prior.filter(row=>old.find(previous=>previous.path===row.path)?.sha256!==row.sha256).map(row=>row.path).sort()).toEqual(['packages/xpod-api/scripts/inngest-controlled-build-policy.json','scripts/lib/inngest-controlled-build.py','scripts/lib/module-source-materials.py']);
  for(const row of [...API_SERVICE_BUILD_SOURCE_BINDINGS,...tcb])expect(sha(read(row.path))).toBe(row.sha256);

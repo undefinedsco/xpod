@@ -17,7 +17,7 @@ const legacyRead=(p:string)=>{const compressed=preCompression.files.find(row=>ro
 const old=(p:string)=>p===role?read('tests/fixtures/independent-admission/controlled-pre-stage-0.original.txt'):p===stage?read('tests/fixtures/independent-admission/controlled-pre-stage-1.original.txt'):legacyRead(p);
 test('stage fifth original and index guards add an atomic source tree while all old source trees remain exact',()=>{
  // API29 unchanged; the SDK80 append adds one whole group per consumer family.
- expect(groups).toHaveLength(29);expect(c).toHaveLength(97);expect(ci).toHaveLength(192);expect(tcb).toHaveLength(504);expect(current).toHaveLength(75);
+ expect(groups).toHaveLength(29);expect(c).toHaveLength(98);expect(ci).toHaveLength(194);expect(tcb).toHaveLength(504);expect(current).toHaveLength(75);
  expect(current.filter(row=>previous.find(old=>old.path===row.path)?.sha256!==row.sha256).map(row=>row.path).sort()).toEqual([stage,role].sort());
  for(const row of [...API_SERVICE_BUILD_SOURCE_BINDINGS,...tcb])expect(sha(read(row.path))).toBe(row.sha256);
  expect(groups.find(g=>'name' in g&&g.name==='root-minimal-website-source-projection')!.sourceBindings).toBe(previous);
