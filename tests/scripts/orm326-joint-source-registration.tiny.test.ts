@@ -32,9 +32,9 @@ test('every published f803 prefix stays byte-identical; only the ORM 0.3.26 tail
     // sdk +1 and linux +1 are the ORM 0.3.26 joint SDK tuple (the f803 prefix
     // above stays byte-identical); api +1, cli +1, consumer +1, CI +2 append.
     // SDK81 + the SDK82 failed-transport consumer/CI tails are appended after this slice.
-    expect(live.length - frozen.length).toBe({sdk: 8, consumer: 9, ci: 18, linux: 8, api: 1, cli: 1}[name] ?? 0);
+    expect(live.length - frozen.length).toBe({sdk: 9, consumer: 10, ci: 20, linux: 9, api: 1, cli: 1}[name] ?? 0);
   }
-  expect([sdk.length, linux.length, consumer.length, ci.length, api.length, cli.length]).toEqual([82, 83, 98, 194, 29, 12]);
+  expect([sdk.length, linux.length, consumer.length, ci.length, api.length, cli.length]).toEqual([83, 84, 99, 196, 29, 12]);
 });
 
 test('the frozen f803 snapshot is the published canonical bytes and the moving canonical only appends', () => {
@@ -162,11 +162,11 @@ test('old and new tails are strictly disambiguated by actual bytes, never loosen
   const unknown = observed();
   unknown.set('source:tests/fixtures/independent-admission/f803e9c2-published-slice.original.json', '0'.repeat(64));
   expect(select(consumer, unknown)).toBe(tail);
-  // The previous PUBLISHED consumer tail (index 96, the SDK81 producer-attempt
+  // The previous PUBLISHED consumer tail (index 97, the SDK82 failed-transport
   // slice) still selects itself, untouched. f803 is only the consumer-89 prefix
-  // proved above, so it is not claimed as this previous tail. The newest index 97
-  // is the separately registered SDK82 failed-transport tail.
+  // proved above, so it is not claimed as this previous tail. Index 98 is the
+  // separately registered SDK83 fixture-isolation tail.
   const publishedTail = consumer[consumer.length - 2]!;
-  expect(consumer.indexOf(publishedTail)).toBe(96);
+  expect(consumer.indexOf(publishedTail)).toBe(97);
   expect(select(consumer, new Map([...publishedTail.selectors, ...(publishedTail.secondarySelectors ?? []), ...publishedTail.sourceBindings].map(row => [key(row), row.sha256] as const)))).toBe(publishedTail);
 });
