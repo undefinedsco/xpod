@@ -175,7 +175,7 @@ export function ConsentPage() {
   const [prebindState, setPrebindState] = useState<'idle' | 'pending' | 'failed'>('idle');
   // One automatic identity binding per page load. A read refresh, a retried
   // load or a StrictMode effect replay must never POST the picker again.
-  const prebindAttemptedRef = useRef<string>();
+  const prebindAttemptedRef = useRef<string | undefined>(undefined);
   const transactionStore = useMemo<XpodLoginTransactionStore | undefined>(() => {
     try {
       return createXpodLoginTransactionStore({
