@@ -1201,6 +1201,34 @@ class Observer(CapturesMixin):
                            entryArch=meta['entryArch'],entryNr=meta['entryNr']))
         self.timespec_originals[operand['sequence']]=operand
         task['metadataWindow']=(row,held,access,meta);self.retained.add(held);held=None;return row
+    def settle_absent_link_operand(self,pid,absent,entry,exit):
+        """Settle an entry-observed absent link/unlink operand against a real exit.
+
+        Absence at the entry stop only OBSERVES that the name was missing; peers may
+        run while the tracee is stopped (metadata ops hold no exclusive lease), so a
+        later SUCCESS proves the kernel changed an inode whose entry state we never
+        captured. Only a matching, genuinely FAILING exit with a negative Linux errno
+        can prove that no successful effect happened. Nothing is mutated here.
+        """
+        # The exit must be the SAME syscall entry, dispatched from the real event
+        # path, with the real declared architecture. A wrong-architecture row or a
+        # stale entry cannot settle an absent-operand observation.
+        assert entry is not None and exit.get('op')=='exit','absent operand exit is not an actual syscall exit'
+        assert exit.get('arch')==entry['arch'] and exit.get('entrySequence')==entry['sequence'], \
+            'absent operand exit does not match the actual entry arch/sequence'
+        assert absent['entrySequence']==entry['sequence'] and absent['arch']==entry['arch'] \
+            and absent['nr']==entry['nr'] \
+            and absent['form']==link_metadata_form(entry['arch'],entry['nr']), \
+            'absent-operand binding does not match the actual exit'
+        assert exit['isError'] is True,'absent operand exit was not an actual kernel error'
+        result=exit['result']
+        assert type(result) is int and -4095<=result<=-1,'absent operand exit lacks a genuine negative Linux errno'
+        return self.emit(dict(kind='link-metadata-absent-confirmed',pid=pid,
+                              entrySequence=entry['sequence'],exitSequence=exit['sequence'],
+                              form=absent['form'],errnoValue=result,
+                              newPathHex=absent['newPathHex'],oldPathHex=absent['oldPathHex'],
+                              scope='actual matching exit returned a negative Linux errno; no inode changed and no successful effect is claimed'))
+
     def complete_metadata(self,pid,entry,exit):
         if self.tasks[pid].get('metadataWindow') is None:
             # unobserved/out-of-scope target: no window was claimed
@@ -1288,7 +1316,29 @@ class Observer(CapturesMixin):
         # non-regular operand (directory removal, symlink unlink) changes no
         # retained regular inode, so it is honestly unobserved rather than asserted.
         operand_follow=follow if meta['form'] in ('link','linkat') else False
-        operand=probe.identity(os.stat(held_path,follow_symlinks=operand_follow))
+        # An ABSENT operand is a real, expected kernel outcome for ALL FOUR forms:
+        # a missing unlink/unlinkat target yields ENOENT, and a missing link/linkat
+        # SOURCE also yields a failed kernel ENOENT (it cannot succeed). Build
+        # systems such as CMake legitimately probe that way. Only FileNotFoundError
+        # is tolerated, and it never proves a successful effect: the marker is
+        # settled strictly against the matching real exit below. Every other
+        # unexpected OSError still propagates.
+        try:operand=probe.identity(os.stat(held_path,follow_symlinks=operand_follow))
+        except FileNotFoundError:
+            # Absence at the ENTRY stop is an OBSERVATION only. Peers may run while
+            # the tracee is stopped (exclusive is None for metadata ops), so a peer
+            # could create the name and the real syscall could then SUCCEED. Nothing
+            # may be concluded here: record a marker bound to this exact entry and
+            # settle it only against the matching real exit below.
+            entry=task['entry']
+            self.emit(dict(kind='link-metadata-absent-entry',pid=pid,entrySequence=entry['sequence'],
+                           form=meta['form'],arch=meta['entryArch'],nr=meta['entryNr'],
+                           resolved=False,regular=None,
+                           reason='operand name is absent at the entry stop; absence alone proves no successful effect'))
+            task['absentLinkOperand']=dict(entrySequence=entry['sequence'],arch=meta['entryArch'],
+                                           nr=meta['entryNr'],form=meta['form'],
+                                           newPathHex=new_path_hex,oldPathHex=old_path_hex)
+            return None
         if not stat.S_ISREG(operand[2]):
             self.emit(dict(kind='link-metadata-unobserved',pid=pid,entrySequence=task['entry']['sequence'],
                            form=meta['form'],resolved=True,regular=False,
@@ -2908,8 +2958,14 @@ class Observer(CapturesMixin):
                 (self.capture,(pid,fd,role),'capture')
             capture=self.instrument_substep(substep,function,*arguments)
             if capture is None:
-                # capture declined to claim an endpoint (unobserved/out-of-scope target)
-                task['entry']['captureSequence']=None;break
+                # capture declined to claim an endpoint (unobserved/out-of-scope target).
+                # DRAIN THE REMAINING CANDIDATES before any resume: every peer entry
+                # preserved while stopping must be processed first, otherwise
+                # resume_original (which resumes all peers when exclusive is None)
+                # would let another pending writer run before its entry snapshot.
+                # No callee self-requeues (audited), so this loop still terminates.
+                task['entry']['captureSequence']=None
+                continue
             task['entry']['captureSequence']=capture['sequence'];self.exclusive=(pid,task['entry']['sequence']);self.emit(dict(kind={'generated-vma-operation-window':'exclusive-generated-vma-resume','actual-write-window':'exclusive-write-resume','actual-link-window':'exclusive-link-resume','actual-mode-window':'exclusive-mode-resume','actual-timestamp-window':'exclusive-timestamp-resume','actual-rename-window':'exclusive-rename-resume','empty-read-window':'exclusive-empty-read-resume','alias-close-window':'exclusive-alias-close-resume'}.get(capture['kind'],'exclusive-captured-syscall-resume'),pid=pid,entrySequence=task['entry']['sequence'],captureSequence=capture['sequence']));break
         if self.exclusive is None:self.instrument_substep('capture_queued_identity',self.capture_queued_identity)
     def release_vfork_parent(self,child,event,reason):
@@ -3039,6 +3095,13 @@ class Observer(CapturesMixin):
             assert os.WIFSTOPPED(status) and status>>16==0 and os.WSTOPSIG(status)==(signal.SIGTRAP|0x80),'explicitly denied syscall lost its actual exit stop'
         if os.WIFEXITED(status) or os.WIFSIGNALED(status):
             if getattr(self,'terminal_focus',None)==pid:self.terminal_focus=None
+            # A task that disappears while an absent-operand marker is still
+            # unresolved never produced the required failing syscall exit, so the
+            # observation is unproven and must fail closed. The kernel reaping and
+            # cleanup state below is preserved exactly: the task is still marked
+            # exited and its wait record is still emitted, so no dead task is left
+            # looking live merely because the proof failed.
+            pending_absent=task.pop('absentLinkOperand',None)
             task.update(exited=True,stopped=False);code=os.WEXITSTATUS(status) if os.WIFEXITED(status) else -os.WTERMSIG(status)
             wait=self.emit(dict(kind='actual-wait-exit',pid=pid,returnCode=code,**(dict(waitStatus=status) if getattr(self,'terminal_exit_evidence',False) else {}),**({'actualExecImage':task['diagnosticExec']} if 'diagnosticExec' in task else {})));self.wait_references.append(dict(pid=pid,sequence=wait['sequence'],returnCode=code,phase=self.current_phase))
             task['actualWaitSequence']=wait['sequence']
@@ -3046,6 +3109,7 @@ class Observer(CapturesMixin):
             if terminal and terminal['closed']:terminal['lease'].close()
             self.release_vfork_parent(pid,wait,'actual-terminal-wait')
             if pid==self.root:self.root_code=code
+            assert pending_absent is None,'absent operand marker unresolved at terminal exit without the required failing syscall exit'
             return
         assert os.WIFSTOPPED(status);task['stopped']=True;event=status>>16;sig=os.WSTOPSIG(status)
         if event:
@@ -3240,6 +3304,13 @@ class Observer(CapturesMixin):
             old=task['entry']
             if old is None:assert task['initial'],'orphan syscall exit';task['initial']=False;return
             record['entrySequence']=old['sequence'];task['entry']=None
+            # Settle an entry-observed absent operand against the MATCHING real exit
+            # FIRST, before any early return can bypass it. Absence at entry says
+            # nothing about the kernel's actual result: a peer may have created the
+            # name while the tracee was stopped, so a success here would be an
+            # unproven metadata effect and must fail closed.
+            absent=task.pop('absentLinkOperand',None)
+            if absent is not None:self.settle_absent_link_operand(pid,absent,old,record)
             self.complete_clone3_consumption(pid,record)
             if task.get('btiOriginal'):
                 self.complete_bti(pid,old,record);return
