@@ -49,6 +49,11 @@ jobs:
     outputs:
       artifact-id: ${{ steps.upload.outputs.artifact-id }}
       artifact-digest: ${{ steps.upload.outputs.artifact-digest }}
+      # The ACTUAL attempt that executed this producer. Frozen once at success via
+      # a step output (the same pattern the SDK producer uses): referencing
+      # github.run_attempt directly in a job output would re-evaluate it later, so a
+      # partial rerun would appear to have produced these originals on attempt 2.
+      artifact-attempt: ${{ steps.produce.outputs.attempt }}
     steps:
       - uses: actions/checkout@v4
         timeout-minutes: 5
@@ -66,11 +71,21 @@ jobs:
       - run: bun install --frozen-lockfile
         timeout-minutes: 3
       - name: Produce original CLI, client and standalone AFS JS distributions
+        id: produce
         timeout-minutes: 68
         env:
           SOURCE_SHA: ${{ needs.plan.outputs.sha }}
           EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-        run: bun scripts/legacy-root-afs-supply.ts produce "$RUNNER_TEMP/legacy-root-normal-afs" "$SOURCE_SHA"
+        run: |
+          set -euo pipefail
+          # The producer attempt is frozen here, at the successful producer execution,
+          # so a later partial rerun cannot make these originals look like attempt 2.
+          # Reject invalid attempts explicitly before starting the producer.
+          [[ "$GITHUB_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]] || { echo "invalid GITHUB_RUN_ATTEMPT" >&2; exit 1; }
+          attempt="$GITHUB_RUN_ATTEMPT"
+          bun scripts/legacy-root-afs-supply.ts produce "$RUNNER_TEMP/legacy-root-normal-afs" "$SOURCE_SHA"
+          # Only reached when the producer succeeded (set -e above).
+          echo "attempt=$attempt" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@v4
         timeout-minutes: 10
         id: upload
@@ -130,6 +145,10 @@ jobs:
           RUN_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           SUPPLY_ARTIFACT_ID: ${{ needs.normal_afs.outputs.artifact-id }}
           SUPPLY_ARTIFACT_SHA256: ${{ needs.normal_afs.outputs.artifact-digest }}
+          # Producer coordinate: the frozen step output of the successful producer
+          # execution. The consumer's own attempt is the authoritative, already
+          # present GITHUB_RUN_ATTEMPT; there is no second alias for it.
+          SUPPLY_PRODUCER_ATTEMPT: ${{ needs.normal_afs.outputs.artifact-attempt }}
         run: bun scripts/legacy-root-afs-supply.ts acquire "${{ runner.temp }}/legacy-root-afs-input"
       - name: Run complete-package commands with original private supply and retain outcomes
         env:

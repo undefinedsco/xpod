@@ -7,6 +7,7 @@ const { execFileSync, spawnSync } = require('node:child_process');
 const normal = require('../../scripts/lib/legacy-afs-supply.cjs');
 const helper = require('../../scripts/lib/root-registry-supply.cjs');
 const { verifyContext, verifyProducerClosure, producerClosure } = require('../../scripts/lib/legacy-root-artifact-context.cjs');
+const { buildNormalSupplyFixture, contextFixture } = require('./helpers/legacy-afs-supply-fixture.cjs');
 const hash = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
 const write = (file, value) => { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, typeof value === 'string' || Buffer.isBuffer(value) ? value : JSON.stringify(value)); };
 test('actual eleven-package source graph selects the standalone AFS emitter without mutating private source', () => {
@@ -22,14 +23,6 @@ test('actual eleven-package source graph selects the standalone AFS emitter with
   assert.equal(recipes.filter(row => row.recipe === 'external-git-normal').length, 1);
   assert.equal(JSON.parse(original).private, true); assert.deepEqual(fs.readFileSync(path.join(root, 'packages/xpod-afs/package.json')), original);
 });
-function contextFixture() {
-  const input = { sourceSha: 'a'.repeat(40), runHeadSha: 'b'.repeat(40), runId: 21, runAttempt: 3, artifactId: 47, artifactSha256: 'c'.repeat(64) };
-  const run = { id: 21, run_attempt: 3, head_sha: input.runHeadSha, status: 'in_progress', event: 'pull_request', workflow_id: 9, path: '.github/workflows/legacy-root-compat.yml', repository: { full_name: 'undefinedsco/xpod' }, head_repository: { full_name: 'undefinedsco/xpod' } };
-  const workflow = { id: 9, path: run.path };
-  const artifact = { id: 47, name: `legacy-root-normal-afs-${input.sourceSha}-21-3`, digest: 'sha256:' + input.artifactSha256, expired: false, size_in_bytes: 100, workflow_run: { id: 21, head_sha: input.runHeadSha }, created_at: '2026-10-16T01:01:00Z' };
-  const jobs = { total_count: 1, jobs: [{ name: 'legacy-root-normal-afs', status: 'completed', conclusion: 'success', run_id: 21, run_attempt: 3, head_sha: input.runHeadSha, started_at: '2026-10-16T01:00:00Z', completed_at: '2026-10-16T01:02:00Z' }] };
-  return { input, metadata: { run, workflow, artifact }, jobs };
-}
 test('same-run successful producer is independent from the running workflow; stale and partial originals fail closed', () => {
   const f = contextFixture(); verifyContext(f.input, f.metadata, f.jobs);
   const caller = structuredClone(f); caller.metadata.run.path = caller.metadata.workflow.path = '.github/workflows/candidate.yml';
@@ -40,6 +33,108 @@ test('same-run successful producer is independent from the running workflow; sta
     f => f.metadata.artifact.digest = 'sha256:' + 'd'.repeat(64), f => f.jobs.jobs[0].conclusion = 'failure', f => f.jobs.jobs[0].status = 'in_progress',
     f => f.jobs.jobs = [], f => f.metadata.artifact.created_at = '2026-10-15T00:00:00Z', f => f.metadata.workflow.path = '.github/workflows/cli-package.yml']) {
     const changed = structuredClone(f); mutate(changed); assert.throws(() => verifyContext(changed.input, changed.metadata, changed.jobs));
+  }
+});
+
+test('partial rerun: producer attempt 1 retained for a consumer lane on attempt 2', () => {
+  // The real defect: a successful producer executed on attempt 1, then a partial
+  // rerun makes the consuming lane attempt 2. The artifact name and the producer
+  // job are bound to attempt 1 and must still verify; the consumer keeps its own 2.
+  const f = contextFixture();
+  f.input.runAttempt = 1;
+  f.metadata.run.run_attempt = 1;
+  f.metadata.artifact.name = `legacy-root-normal-afs-${f.input.sourceSha}-${f.input.runId}-1`;
+  f.jobs.jobs[0].run_attempt = 1;
+  verifyContext(f.input, f.metadata, f.jobs);
+
+  // Same-run/same-source/digest positive: identical producer coordinates still verify.
+  verifyContext({ ...f.input }, structuredClone(f.metadata), structuredClone(f.jobs));
+
+  // The producer attempt must NOT be accepted for any other number: a future or
+  // merely-"<=" attempt is a hard failure, never a tolerated window.
+  for (const wrongAttempt of [2, 3, 4, 0, -1]) {
+    const changed = structuredClone(f);
+    changed.input.runAttempt = wrongAttempt;
+    assert.throws(() => verifyContext(changed.input, changed.metadata, changed.jobs),
+      `producer attempt ${wrongAttempt} must not verify`);
+  }
+
+  // Wrong source / run / digest against the retained producer all fail closed.
+  for (const mutate of [
+    c => { c.input.sourceSha = 'd'.repeat(40); },
+    c => { c.input.runId = 999; },
+    c => { c.input.runHeadSha = 'e'.repeat(40); },
+    c => { c.input.artifactSha256 = 'd'.repeat(64); },
+    c => { c.input.artifactId = 999999; },
+    c => { c.metadata.artifact.name = `legacy-root-normal-afs-${c.input.sourceSha}-${c.input.runId}-2`; },
+    c => { c.metadata.artifact.digest = 'sha256:' + 'd'.repeat(64); },
+    c => { c.jobs.jobs[0].conclusion = 'failure'; },
+    c => { c.jobs.jobs[0].status = 'in_progress'; },
+    c => { c.jobs.jobs[0].run_attempt = 2; },
+  ]) {
+    const changed = structuredClone(f); mutate(changed);
+    assert.throws(() => verifyContext(changed.input, changed.metadata, changed.jobs));
+  }
+});
+
+test('real verifyCustody binds the producer coordinate, not the caller context', () => {
+  // Drives the REAL verifyCustody against a minimal on-disk request receipt. This
+  // is the R3/P1 blocker reproduced end to end: readRootSupply hands over the
+  // consumer's own build input (attempt 2) while the retained originals belong to
+  // producer attempt 1. A mirror of the clause cannot show that; this does.
+  const saved = { ...process.env };
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(__dirname, '..', '..', '.test-data', 'legacy-afs-custody-')));
+  try {
+    process.env.GITHUB_ACTIONS = 'true';
+    process.env.GITHUB_RUN_ID = '40637818669';
+    process.env.GITHUB_RUN_ATTEMPT = '2';
+
+    const SOURCE = 'a'.repeat(40), HEAD = 'b'.repeat(40), SHA = 'c'.repeat(64);
+    const make = (dir, producerAttempt, consumerAttempt) => {
+      fs.mkdirSync(path.join(dir, 'custody'), { recursive: true });
+      const input = { sourceSha: SOURCE, runId: 40637818669, runAttempt: producerAttempt,
+        runHeadSha: HEAD, artifactId: 47, artifactSha256: SHA };
+      const request = { input, producerAttempt, consumerAttempt,
+        custodyReceipt: { path: 'receipt.json', bytes: 1, sha256: SHA },
+        index: { path: 'supply-index.original.json', bytes: 1, sha256: SHA } };
+      fs.writeFileSync(path.join(dir, 'request.original.json'), JSON.stringify(request));
+      return request;
+    };
+
+    // The split pair is consistent: producer 1 recorded, and the caller context is
+    // the consumer's own attempt 2 — exactly readRootSupply's situation. Asserting
+    // that the coordinate gate no longer fires 1 !== 2 is the regression proof.
+    const dir = path.join(root, 'split');
+    const request = make(dir, 1, 2);
+    const context = { sourceSha: SOURCE, runId: 40637818669, runAttempt: 2 };
+    // It still fails later (no real custody receipt bytes on disk), but never with
+    // the old coordinate mismatch message.
+    let error;
+    try { normal.verifyCustody(dir, context, root); } catch (caught) { error = caught; }
+    assert.ok(error, 'verifyCustody must fail without real custody originals');
+    assert.doesNotMatch(String(error.message), /1 !== 2|expected 1 to equal 2/,
+      'R2 defect: consumer context must not be compared to the producer coordinate');
+
+    // One-sided replacement of the producer coordinate is refused.
+    const bad = path.join(root, 'onesided');
+    const badRequest = make(bad, 1, 2);
+    badRequest.producerAttempt = 3;
+    fs.writeFileSync(path.join(bad, 'request.original.json'), JSON.stringify(badRequest));
+    assert.throws(() => normal.verifyCustody(bad, context, root), /producer coordinate\/selector mismatch/);
+
+    // consumer < producer is refused as an impossible ordering.
+    const inverted = path.join(root, 'inverted');
+    make(inverted, 2, 1);
+    const invertedRequest = JSON.parse(fs.readFileSync(path.join(inverted, 'request.original.json')));
+    invertedRequest.input.runAttempt = 2;
+    fs.writeFileSync(path.join(inverted, 'request.original.json'), JSON.stringify(invertedRequest));
+    assert.throws(() => normal.verifyCustody(inverted, { ...context, runAttempt: 1 }, root),
+      /consumer attempt precedes its producer/);
+    assert.equal(request.producerAttempt, 1);
+  } finally {
+    for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key];
+    Object.assign(process.env, saved);
+    fs.rmSync(root, { recursive: true, force: true });
   }
 });
 
@@ -174,49 +269,17 @@ function fixture(operation) {
   try { return operation(root); } finally { fs.rmSync(root, { recursive: true, force: true }); }
 }
 test('portable original verifier preserves native receipt coordinates and rejects wrong-source/missing/hash/unclosed inputs', () => fixture(root => {
-  const originals = path.join(root, 'originals'); fs.mkdirSync(originals);
-  const context = { sourceSha: 'a'.repeat(40), runId: '21', runAttempt: 3 };
-  const files = normal.tools.map(file => { const bytes = fs.readFileSync(path.resolve(file)); write(path.join(root, file), bytes); return { path: file, bytes: bytes.length, sha256: hash(bytes), matchesGit: true }; });
-  write(path.join(root, 'packages/xpod-afs/package.json'), JSON.stringify({ name: '@undefineds.co/xpod-afs', version: '1.0.0', private: true }, null, 2) + '\n');
+  // The complete original fixture (root files, three real tgz members, index,
+  // commands, source and tool refs, real ZIP, custody metadata/receipt/request) is
+  // built by the shared helper. Defaults keep producer attempt 3 and a split-less
+  // request, so every existing assertion below observes the same shapes as before.
+  const built = buildNormalSupplyFixture(root);
+  const originals = built.originals, context = built.context, index = built.index, indexFile = built.indexFile;
+  const request = built.request, custody = built.custody, archive = built.archive, archiveRef = built.archiveRef;
+  const f = { input: built.input, metadata: built.metadata, jobs: built.jobs };
+  // The cross-OS source manifest hash the builder bound into the afs publication.
   const sourceHash = helper.reference(path.join(root, 'packages/xpod-afs/package.json')).sha256;
-  const snapshot = { sourceSha: context.sourceSha, clean: true, inputSHA256: 'd'.repeat(64), files };
-  for (const stage of ['before', 'after']) write(path.join(originals, 'producer/source-' + stage + '.original.json'), snapshot);
-  const closed = (directory, prefix) => { const raw = ['stdout', 'stderr'].map(channel => { const name = prefix + '.' + channel + '.raw.log'; write(path.join(originals, directory, name), 'synthetic closed output'); return { ...helper.reference(path.join(originals, directory, name)), path: name }; }); return { spawnError: null, code: 0, signal: null, actualWait: true, actualClose: true, groupAbsent: true, rawComplete: true, rawClosed: true, rawClosedBeforeHash: true, pipeEOF: [true, true], raw }; };
-  const pack = (relative, manifest, entries = {}) => {
-    const stage = fs.mkdtempSync(path.join(root, 'stage-')); write(path.join(stage, 'package/package.json'), manifest);
-    for (const [name, body] of Object.entries(entries)) write(path.join(stage, 'package', name), body);
-    const target = path.join(originals, relative); fs.mkdirSync(path.dirname(target), { recursive: true }); execFileSync('tar', ['czf', target, '-C', stage, 'package']);
-    const bytes = fs.readFileSync(target); return { ...helper.reference(target), integrity: 'sha512-' + crypto.createHash('sha512').update(bytes).digest('base64') };
-  };
-  const material = '{"fixture":"original producer materials"}';
-  const cli = pack('cli/cli.tgz', { name: '@undefineds.co/xpod-cli', version: '1.0.0', exports: { './producer-materials': './dist/producer-materials/index.json' } }, { 'dist/producer-materials/index.json': material });
-  const client = pack('cli/client.tgz', { name: '@undefineds.co/xpod-client', version: '1.0.0' });
-  const cliContext = { checkoutSha: context.sourceSha, workingTreeDirty: false, runId: '21', runAttempt: '3' };
-  write(path.join(originals, 'cli/result.json'), { kind: 'cli-publication-preparation-producer', context: cliContext, privateConsumerArtifactsReused: false, embeddedClientIdentityVerified: true, published: false, releaseQualified: false,
-    products: { cli: { version: '1.0.0', archive: { ...cli, path: 'cli.tgz' } }, client: { version: '1.0.0', archive: { ...client, path: 'client.tgz' } } } });
-  write(path.join(originals, 'cli/source-inputs.json'), { context: cliContext, files: [files[0]] });
-  const cliCommands = Array.from({ length: 10 }, (_, index) => {
-    const label = 'phase-' + String(index).padStart(3, '0'), outcome = closed('cli', label);
-    const member = label + '.receipt.json'; write(path.join(originals, 'cli', member), outcome);
-    return { phase: 'synthetic CLI phase ' + index,
-      receipt: { path: member, sha256: helper.reference(path.join(originals, 'cli', member)).sha256 }, ...outcome };
-  });
-  write(path.join(originals, 'cli/cleanup.json'), { schemaVersion: 1, kind: 'cli-publication-owned-command-cleanup',
-    success: true, sourceAbsent: true, commandOutcomes: cliCommands });
-  const manifest = { name: '@undefineds.co/xpod-afs', version: '1.0.0', private: false, dependencies: { '@undefineds.co/xpod-client': '1.0.0' } };
-  const afs = pack('afs/xpod-afs.tgz', manifest);
-  const parsed = helper.artifact({ ...afs, name: manifest.name, version: manifest.version });
-  const publication = { kind: 'afs-js-normal-publication', name: manifest.name, version: manifest.version, archive: { ...afs, path: '/posix/native/afs/xpod-afs.tgz' }, stage: { manifest, sourceManifestSHA256: sourceHash, inventory: parsed.entries.filter(e => e.type === 'file').map(e => ({ path: e.path.slice(8), bytes: e.content.length, sha256: hash(e.content), mode: e.mode })) }, producerBinding: { indexSHA256: hash(Buffer.from(material)) }, command: closed('afs', 'normal-pack') };
-  write(path.join(originals, 'afs/publication.original.json'), publication);
-  publication.command.command = 'bun'; publication.command.cwd = '/posix/native/afs/package'; publication.command.args = ['pm', 'pack', '--ignore-scripts', '--filename', publication.archive.path];
-  write(path.join(originals, 'afs/publication.original.json'), publication);
-  const phases = [{ ...closed('producer', 'normal-cli'), command: '/posix/node', cwd: '/posix/source', args: ['/posix/source/scripts/check-cli-publication.cjs', '--evidence', '/posix/source/.test-data/afs-js-archive-ci-producer'] },
-    { ...closed('producer', 'normal-afs'), command: 'bun', cwd: '/posix/source', args: ['/posix/source/packages/xpod-afs/scripts/build-client-publication.ts', '--cli-package', '/posix/cli', '--client-package', '/posix/client', '--output', '/posix/native/afs'] }];
-  const nodeRuntime = { ...closed('producer', 'normal-node'), command: 'node', cwd: '/posix/source', args: ['-e', normal.NODE_PROBE] };
-  write(path.join(originals, 'producer', nodeRuntime.raw[0].path), { execPath: '/posix/node', node: '22.21.1', bun: null });
-  nodeRuntime.raw[0] = { ...helper.reference(path.join(originals, 'producer', nodeRuntime.raw[0].path)), path: nodeRuntime.raw[0].path };
-  const index = { kind: 'legacy-root-original-afs-supply', nodeRuntime, nativeSourceRoot: '/posix/source', ...context, runHeadSha: 'b'.repeat(40), sourceBefore: 'producer/source-before.original.json', sourceAfter: 'producer/source-after.original.json', phases, producerTools: normal.tools.map(file => ({ file, ...helper.reference(path.join(root, file)) })), members: normal.inventory(originals), releaseQualified: false };
-  const indexFile = path.join(originals, 'supply-index.original.json'); write(indexFile, index);
+  assert.equal(built.artifacts.length, 3);
   assert.equal(normal.verify(originals, context, root).artifacts.length, 3);
   // All twelve tools remain canonical: only the cross-OS source manifest changes.
   const manifestFile = path.join(root, 'packages/xpod-afs/package.json'), manifestLF = fs.readFileSync(manifestFile);
@@ -231,20 +294,8 @@ test('portable original verifier preserves native receipt coordinates and reject
   assert.throws(() => normal.verify(originals, context, root), /strictly equal/);
   fs.writeFileSync(toolFile, toolBytes);
   assert.equal(normal.verify(originals, context, root).artifacts.length, 3);
-  // Synthetic same-run custody joins the real shared ZIP parser to portable verification.
-  const custody = path.join(root, 'custody'); fs.mkdirSync(custody);
-  const archive = path.join(custody, 'artifact.zip');
-  const zipped = spawnSync('python3', ['-c', "import pathlib,sys,zipfile\nwith zipfile.ZipFile(sys.argv[2],'w',zipfile.ZIP_DEFLATED) as z:\n for p in pathlib.Path(sys.argv[1]).rglob('*'):\n  if p.is_file(): z.write(p,p.relative_to(sys.argv[1]).as_posix())", originals, archive], { encoding: 'utf8' }); assert.equal(zipped.status, 0, zipped.stderr);
-  const archiveRef = helper.reference(archive, 16 * 1024 ** 2);
-  const f = contextFixture(); f.input.artifactSha256 = archiveRef.sha256; f.metadata.artifact.digest = 'sha256:' + archiveRef.sha256; f.metadata.artifact.size_in_bytes = archiveRef.bytes;
-  const inspected = spawnSync('python3', [path.resolve('scripts/lib/inspect-product-artifact.py'), archive, archiveRef.sha256, String(16 * 1024 ** 2), String(40 * 1024 ** 2), '4096'], { encoding: 'utf8' }); assert.equal(inspected.status, 0, inspected.stderr);
-  const originalsBinding = {};
-  for (const name of ['run', 'workflow', 'artifact']) { const member = 'metadata/' + name + '.original.json'; write(path.join(custody, member), f.metadata[name]); originalsBinding[name] = { ...helper.reference(path.join(custody, member)), path: member }; }
-  write(path.join(custody, 'metadata.json'), f.metadata); write(path.join(custody, 'metadata/jobs.original.json'), f.jobs);
-  const custodyReceipt = { kind: 'legacy-root-same-run-acquisition', status: 'blocked', ...f.input, expectedSourceSha: context.sourceSha, archive: { ...archiveRef, path: 'artifact.zip' },
-    inventory: JSON.parse(inspected.stdout), metadata: { originals: originalsBinding, projection: { ...helper.reference(path.join(custody, 'metadata.json')), path: 'metadata.json' } }, producerJob: { ...helper.reference(path.join(custody, 'metadata/jobs.original.json')), path: 'metadata/jobs.original.json' } };
-  write(path.join(custody, 'receipt.json'), custodyReceipt);
-  const request = { input: f.input, custodyReceipt: helper.reference(path.join(custody, 'receipt.json')), index: helper.reference(indexFile) }; write(path.join(root, 'request.original.json'), request);
+  // Custody, archive, metadata and the pre-existing same-run request all come from
+  // the builder; the assertions below still exercise the real verifier paths.
   const environmentKeys = ['GITHUB_ACTIONS', 'GITHUB_REPOSITORY', 'GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT'];
   const saved = Object.fromEntries(environmentKeys.map(key => [key, process.env[key]]));
   try {
@@ -253,6 +304,27 @@ test('portable original verifier preserves native receipt coordinates and reject
     process.env.GITHUB_RUN_ID = '22'; assert.throws(() => normal.verifyCustody(root, context, root));
     process.env.GITHUB_RUN_ID = '21'; process.env.GITHUB_RUN_ATTEMPT = '4'; assert.throws(() => normal.verifyCustody(root, context, root));
     assert.equal(normal.verifyCustody(root, context, root, { retained: true }).artifacts.length, 3);
+
+    // R3 full-chain positive: the SAME real custody/originals are read by a caller
+    // whose own context is consumer attempt 2, while the producer coordinate stays
+    // 3 (this fixture's producer). This is exactly readRootSupply's situation and it
+    // must still return the real three artifacts, not fail 3 !== 2.
+    const splitRequest = { ...request, producerAttempt: 3, consumerAttempt: 4 };
+    write(path.join(root, 'request.original.json'), splitRequest);
+    process.env.GITHUB_RUN_ATTEMPT = '4';
+    const splitResult = normal.verifyCustody(root, { ...context, runAttempt: 4 }, root);
+    assert.equal(splitResult.artifacts.length, 3);
+    assert.equal(splitResult.index.runAttempt, 3, 'retained originals stay bound to the producer');
+    // One-sided producer replacement against the real receipt is still refused.
+    write(path.join(root, 'request.original.json'), { ...splitRequest, producerAttempt: 4 });
+    assert.throws(() => normal.verifyCustody(root, { ...context, runAttempt: 4 }, root),
+      /producer coordinate\/selector mismatch/);
+    // A live lane whose attempt is not the recorded consumer is refused.
+    write(path.join(root, 'request.original.json'), splitRequest);
+    process.env.GITHUB_RUN_ATTEMPT = '5';
+    assert.throws(() => normal.verifyCustody(root, { ...context, runAttempt: 4 }, root));
+    // Restore for the following assertions.
+    write(path.join(root, 'request.original.json'), request);
   } finally {
     for (const [key, value] of Object.entries(saved)) if (value === undefined) delete process.env[key]; else process.env[key] = value;
   }
@@ -263,6 +335,79 @@ test('portable original verifier preserves native receipt coordinates and reject
   }
   write(indexFile, index); fs.unlinkSync(path.join(originals, 'cli/client.tgz')); assert.throws(() => normal.verify(originals, context, root));
 }));
+test('builder produces an internally consistent producer1/consumer2 fixture that the real verifier accepts', () => fixture(root => {
+  // Builder usability check (NOT the final full chain): the same complete fixture,
+  // now with producer attempt 1 and an explicit split request recording consumer 2.
+  // All producer-side coordinates must come from the same options.
+  const built = buildNormalSupplyFixture(root, { runAttempt: 1, consumerAttempt: 2 });
+  assert.equal(built.index.runAttempt, 1);
+  assert.equal(built.index.runId, String(built.context.runId));
+  assert.equal(built.index.sourceSha, built.context.sourceSha);
+  assert.equal(built.metadata.artifact.name,
+    `legacy-root-normal-afs-${built.context.sourceSha}-${built.context.runId}-1`);
+  assert.equal(built.jobs.jobs[0].run_attempt, 1);
+  assert.equal(built.request.producerAttempt, 1);
+  assert.equal(built.request.consumerAttempt, 2);
+  assert.equal(built.request.input.runAttempt, 1, 'producer originals are untouched by the split');
+  assert.equal(built.artifacts.length, 3);
+
+  const saved = { ...process.env };
+  try {
+    Object.assign(process.env, { GITHUB_ACTIONS: 'true', GITHUB_REPOSITORY: 'undefinedsco/xpod',
+      GITHUB_RUN_ID: String(built.context.runId), GITHUB_RUN_ATTEMPT: '2' });
+    // Real verifier, consumer context 2 vs producer originals 1.
+    const verified = normal.verifyCustody(root, { ...built.context, runAttempt: 2 }, root);
+    assert.equal(verified.artifacts.length, 3);
+    assert.equal(verified.index.runAttempt, 1, 'retained originals stay on the producer coordinate');
+  } finally {
+    for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key];
+    Object.assign(process.env, saved);
+  }
+}));
+test('the produce step shell freezes attempt only after a successful producer', () => {
+  // Scope-explicit stub: run the EXACT step body against a temp GITHUB_OUTPUT with a
+  // stand-in producer command, proving the ordering and the positive-integer gate.
+  const workflow = require('yaml').parse(fs.readFileSync(path.resolve('.github/workflows/legacy-root-compat.yml'), 'utf8'));
+  const produce = workflow.jobs.normal_afs.steps.find(row => row.id === 'produce');
+  const root = fs.mkdtempSync(path.join('.test-data/legacy-afs-supply', 'shell-'));
+  try {
+    const runBody = (attempt, producerExit) => {
+      const out = path.join(root, 'out-' + attempt + '-' + producerExit);
+      fs.writeFileSync(out, '');
+      // Replace the real producer invocation with a stub that records it ran.
+      const marker = path.join(root, 'producer-ran-' + attempt + '-' + producerExit);
+      // A producer stub that records it ran; a non-zero exit simulates failure. It
+      // must not `exit` on success, or the following step lines would be skipped.
+      const body = produce.run
+        .replace('bun scripts/legacy-root-afs-supply.ts produce "$RUNNER_TEMP/legacy-root-normal-afs" "$SOURCE_SHA"',
+          `echo ran > ${JSON.stringify(marker)}; ${producerExit === 0 ? 'true' : `exit ${producerExit}`}`);
+      const result = spawnSync('bash', ['-euo', 'pipefail', '-c', body],
+        {env: {...process.env, GITHUB_RUN_ATTEMPT: attempt, GITHUB_OUTPUT: out, RUNNER_TEMP: root, SOURCE_SHA: 'a'.repeat(40)},
+          encoding: 'utf8'});
+      return {status: result.status, output: fs.readFileSync(out, 'utf8'), ran: fs.existsSync(marker)};
+    };
+
+    // attempt 1: producer runs, and the frozen attempt is written afterwards.
+    const ok = runBody('1', 0);
+    assert.equal(ok.status, 0, 'valid attempt must succeed');
+    assert.equal(ok.ran, true, 'the real producer command must still run');
+    assert.equal(ok.output.trim(), 'attempt=1');
+
+    // a non-canonical attempt is refused before the producer runs at all.
+    for (const bad of ['0', '01', '2e0', 'abc', '']) {
+      const rejected = runBody(bad, 0);
+      assert.notEqual(rejected.status, 0, 'invalid attempt ' + JSON.stringify(bad) + ' must fail');
+      assert.equal(rejected.ran, false, 'producer must not run for invalid attempt ' + JSON.stringify(bad));
+      assert.equal(rejected.output.trim(), '', 'no attempt output may be written');
+    }
+
+    // a failing producer must not publish a success attempt.
+    const failed = runBody('1', 3);
+    assert.notEqual(failed.status, 0);
+    assert.equal(failed.output.trim(), '', 'failed producer must not write attempt');
+  } finally { fs.rmSync(root, {recursive: true, force: true}); }
+});
+
 test('shared ZIP projection copies only original canonical members and rejects unsafe or over-budget archives', () => fixture(root => {
   const parser = path.resolve('scripts/lib/inspect-product-artifact.py');
   const make = (entries, selections, limits = [16 * 1024 ** 2, 40 * 1024 ** 2, 4096]) => {
@@ -292,6 +437,23 @@ test('workflow blocks every lane on the same-run successful producer and uses ar
   assert.notEqual(acquisitionDiagnostics.with.name, upload.with.name);
   const produce = workflow.jobs.normal_afs.steps.find(row => row.run?.includes('legacy-root-afs-supply.ts produce'));
   assert.equal(produce.env.EVENT_HEAD_SHA, '${{ github.event.pull_request.head.sha || github.sha }}'); assert.equal(produce.env.GITHUB_EVENT_HEAD_SHA, undefined);
+  // The producer attempt is frozen inside the EXISTING produce step (no extra step):
+  // the job output must reference that step's output, and the step must both run the
+  // real producer command and write the attempt only after it succeeded.
+  assert.equal(produce.id, 'produce');
+  assert.equal(workflow.jobs.normal_afs.outputs['artifact-attempt'], '${{ steps.produce.outputs.attempt }}');
+  assert.equal(workflow.jobs.normal_afs.steps.some(row => row.id === 'producer_identity'), false);
+  // Exactly the budget's eight steps: no extra step can exist without breaking the
+  // strict NORMAL_SUPPLY_BUDGET assertion in the CLI projection test.
+  const { NORMAL_SUPPLY_BUDGET: budget } = require('../../scripts/lib/legacy-afs-publication-budget.cjs');
+  assert.equal(workflow.jobs.normal_afs.steps.length, Object.keys(budget.steps).length);
+  assert.match(produce.run, /set -euo pipefail/);
+  // A bare `[[ ]]` is not fatal under `set -e`, so the step must guard explicitly.
+  assert.match(produce.run, /\[\[ "\$GITHUB_RUN_ATTEMPT" =~ \^\[1-9\]\[0-9\]\*\$ \]\] \|\| \{ echo [^}]+; exit 1; \}/);
+  assert.ok(produce.run.indexOf('legacy-root-afs-supply.ts produce') < produce.run.indexOf('"$GITHUB_OUTPUT"'),
+    'attempt is written only after the producer command');
+  // attempt expression must never fall back to a re-evaluated github.run_attempt.
+  assert.doesNotMatch(JSON.stringify(workflow.jobs.normal_afs.outputs), /github\.run_attempt/);
   const acquire = workflow.jobs.lanes.steps.find(row => row.run?.includes('legacy-root-afs-supply.ts acquire'));
   assert.equal(acquire.if, "matrix.runtime == 'bun'"); assert.equal(acquire.env.SUPPLY_ARTIFACT_ID, '${{ needs.normal_afs.outputs.artifact-id }}'); assert.equal(acquire.env.SUPPLY_ARTIFACT_SHA256, '${{ needs.normal_afs.outputs.artifact-digest }}');
 });
