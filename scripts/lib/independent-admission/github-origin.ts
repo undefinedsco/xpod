@@ -1309,6 +1309,18 @@ export async function observeModuleProductGitHubOrigin(input: ArtifactAcquisitio
   normalModuleOrigins.add(observation);return observation;
 }
 
+/** The mounted-module workflow had to move its darwin-arm64 matrix entry from
+ * the capacity-starved `macos-14` hosted image to the repository's already
+ * exercised `macos-15` Darwin ARM64 image (same `darwin-arm64` target, same six
+ * mounted cases, same NFS driver). The ONLY byte difference from the previously
+ * reviewed 854cc2a4 bytes is that one `runs-on` value: restoring it reproduces
+ * 854cc2a4 exactly. Every older reviewed version stays admitted, so historical
+ * runs keep verifying; every run still has to match one exact whole file. */
+export const AFS_MODULE_MOUNTED_WORKFLOW_SHA256S=Object.freeze([
+  'ccf5f21a6681425ffac52c8efc9547a22b7962310822c84479a39602f466a343',
+  '854cc2a40d0e9bd3d41deb339fbc239693a9f7811cf035be1768a9b496cbb043',
+  'c6420bc5699a84a8adf98a19841cb09e3df155370622d1b7e982cd08064ca4bf',
+] as const);
 /** Normal AFS products come from the mounted-module workflow, independently
  * of the upstream native acceptance workflow and its distinct source revision. */
 export async function observeAfsModuleProductGitHubOrigin(input: ArtifactAcquisitionInput, target: string,
@@ -1316,8 +1328,10 @@ export async function observeAfsModuleProductGitHubOrigin(input: ArtifactAcquisi
   if (!MODULE_TARGETS.some(row => `${row.platform}-${row.arch}` === target)) return fail('unsupported normal AFS target');
   return observeGitHubOrigin(input, options, {
     workflowPath: '.github/workflows/agentfs-module-mounted-acceptance.yml',
-    workflowSha256: '854cc2a40d0e9bd3d41deb339fbc239693a9f7811cf035be1768a9b496cbb043',
-    reviewedWorkflowVersions:[{workflowSha256:'c6420bc5699a84a8adf98a19841cb09e3df155370622d1b7e982cd08064ca4bf',jobName:()=>`mounted-module (${target})`}],
+    workflowSha256: AFS_MODULE_MOUNTED_WORKFLOW_SHA256S[0],
+    reviewedWorkflowVersions:AFS_MODULE_MOUNTED_WORKFLOW_SHA256S.slice(1).map(workflowSha256=>({
+      workflowSha256,jobName:()=>`mounted-module (${target})`,
+    })),
     events: ['push', 'workflow_dispatch', 'pull_request'], target,
     artifactNames: row => [`afs-module-production-${target}-${row.sourceSha}-${row.runId}-${row.runAttempt}`],
     requiredStep: 'Produce controlled normal AFS source and product originals',

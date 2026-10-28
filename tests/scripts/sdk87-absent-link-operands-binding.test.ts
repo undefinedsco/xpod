@@ -22,6 +22,9 @@ const OBSERVER = 'qlever/scripts/sdk-ptrace-execution.py';
 const LEAF = 'tests/scripts/candidate-producer-attempt-binding.test.ts';
 const LOCK = 'qlever/qlever.lock.json';
 const SERIES = 'qlever/patches/series';
+const LEASES = 'qlever/scripts/sdk-tool-lifetime-leases.py';
+const LEASE_EXT = 'qlever/scripts/native/lease_sweep_ext.c';
+const LEASE_BINDING = 'qlever/scripts/native/lease_sweep_binding.py';
 const all = (g: any) => [...g.selectors, ...(g.secondarySelectors ?? []), ...(g.secondarySelectorStages ?? []).flat(), ...g.sourceBindings];
 
 /** SDK86's published bytes — HISTORICAL, never replaced with today's tree. */
@@ -53,9 +56,19 @@ it('SDK87 whole-inherits SDK86 and re-pins only the reviewed current roles', () 
   }
   // The observer (4 inherited occurrences) and the leaf (1) move, plus the QLever
   // lock and patch series whose bytes the new CMake patch necessarily changes.
-  expect(new Set(moved)).toEqual(new Set([OBSERVER, LEAF, LOCK, SERIES]));
+  expect(new Set(moved)).toEqual(new Set([OBSERVER, LEAF, LOCK, SERIES, LEASES, LEASE_EXT, LEASE_BINDING]));
   expect(moved.filter(p => p === OBSERVER)).toHaveLength(4);
   expect(moved.filter(p => p === LEAF)).toHaveLength(1);
+  // The filtered-lease lookup slice moves the lease implementation's CURRENT
+  // binding only: both inherited occurrences (secondary + source rows).
+  expect(moved.filter(p => p === LEASES)).toHaveLength(2);
+  // The same slice moves the native plan source and its binding, twice each.
+  expect(moved.filter(p => p === LEASE_EXT)).toHaveLength(2);
+  expect(moved.filter(p => p === LEASE_BINDING)).toHaveLength(2);
+  for (const role of [LEASES, LEASE_EXT, LEASE_BINDING]) {
+    for (const row of all(next).filter((r: any) => r.path === role)) expect(row.sha256).toBe(sha(role));
+  }
+  for (const row of all(next).filter((r: any) => r.path === LEASES)) expect(row.sha256).toBe(sha(LEASES));
   // the binder is untouched by this slice
   expect(moved).not.toContain(BINDER);
   // current-tree roles bind today's real bytes (OBSERVER/LEAF) ...

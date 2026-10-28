@@ -156,22 +156,33 @@ def load_required():
         spec.loader.exec_module(module)
     except ImportError as error:
         raise NativeBroken('built extension cannot be imported by this interpreter: %s' % error)
-    for attribute in ('sweep', 'OK', 'LEASE', 'IDENTITY', 'ERRNO'):
+    for attribute in ('sweep', 'OK', 'LEASE', 'IDENTITY', 'ERRNO',
+                      'plan_new', 'sweep_plan'):
         if not hasattr(module, attribute):
             raise NativeBroken('built extension incomplete: ' + attribute)
     if module.sweep(()) != (module.OK, -1, 0):
         raise NativeBroken('built extension answers the empty sweep incorrectly')
+    # The current source REQUIRES the immutable-input plan API. A verified
+    # receipt whose ELF lacks it must fail closed here, never silently fall back
+    # to the generic sweep (that would quietly run a different helper than the
+    # one this SDK was reviewed against).
+    #
+    # Same interruption contract as the generic smoke call above: the calls are
+    # NOT wrapped, so a caller-owned SIGALRM/TimeoutError or an allocation
+    # MemoryError propagates unchanged. Only an explicit, well-formed empty verdict
+    # is required; a wrong one is NativeBroken.
+    empty_plan = module.plan_new(())
+    if module.sweep_plan(empty_plan) != (module.OK, -1, 0):
+        raise NativeBroken('built extension answers the empty plan incorrectly')
     return module
 
 
-def sweep_rows(native, rows, reject):
-    """Translate one native sweep verdict using the LeaseSet's own _reject.
+def _translate(native, verdict, errno_value, reject):
+    """The ONE verdict translator shared by every sweep entry point.
 
-    Keeps the oracle's exact message strings and first-error/sticky behaviour.
+    No copy-paste mapping: sweep_rows and sweep_plan differ only in which native
+    call produced the verdict tuple.
     """
-    if native is None:
-        raise NativeBroken('native sweep requires a verified extension')
-    verdict, index, errno_value = native.sweep(rows)
     if verdict == native.OK:
         return
     if verdict == native.LEASE:
@@ -183,3 +194,26 @@ def sweep_rows(native, rows, reject):
             raise OSError('lease check interrupted without errno')
         reject('lease check failed: ' + str(errno_value))
     raise NativeBroken('unknown native verdict: ' + str(verdict))
+
+
+def sweep_plan(native, plan, reject):
+    """Plan-scoped sweep. The capsule is an explicit OWNED argument.
+
+    Every verdict still comes from the live per-row fcntl/fstat inside
+    sweep_plan; only the decode of immutable registration inputs is reused.
+    """
+    if native is None:
+        raise NativeBroken('native sweep requires a verified extension')
+    verdict, _index, errno_value = native.sweep_plan(plan)
+    _translate(native, verdict, errno_value, reject)
+
+
+def sweep_rows(native, rows, reject):
+    """Translate one native sweep verdict using the LeaseSet's own _reject.
+
+    Keeps the oracle's exact message strings and first-error/sticky behaviour.
+    """
+    if native is None:
+        raise NativeBroken('native sweep requires a verified extension')
+    verdict, _index, errno_value = native.sweep(rows)
+    _translate(native, verdict, errno_value, reject)
