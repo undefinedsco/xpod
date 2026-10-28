@@ -61,3 +61,38 @@ test('readonly Linux CSS products require their selected whole source group and 
   await expect(scenario(false,`targets (${target}) / products`,target,'push','staging',false,true,false,true)).rejects.toThrow('ancestor');
  }
 });
+
+// The mac producer gained ONE reviewed continuation line (the resolved
+// `macos-<arch>` ABI for the cached verifier). The standalone and css-module
+// routes must admit that exact file while still refusing any other mutation.
+const macWorkflow='.github/workflows/build-qlever-macos-runtime.yml';
+async function nativeRoute(invocation:'standalone'|'css-module',workflowBytes:Buffer){
+ const run=11,artifact=12,source=(++scenarioId).toString(16).padStart(40,'0'),digest='b'.repeat(64);
+ const tuple={schemaVersion:1 as const,sourceSha:source,runHeadSha:source,runId:run,runAttempt:1,artifactId:artifact,artifactSha256:digest};
+ const runPath=invocation==='standalone'?macWorkflow:'.github/workflows/css-module-product.yml';
+ const jobName=invocation==='standalone'?'build':'native / build';
+ const previous=globalThis.fetch;
+ globalThis.fetch=(async(value)=>{
+  const url=new URL(String(value)),relative=url.pathname.replace('/repos/undefinedsco/xpod/','');
+  let body:unknown;
+  if(relative===`actions/runs/${run}/attempts/1`)body={id:run,run_attempt:1,head_sha:source,repository:{full_name:'undefinedsco/xpod'},head_repository:{full_name:'undefinedsco/xpod'},status:'completed',conclusion:'success',event:'workflow_dispatch',head_branch:'staging',workflow_id:9,path:runPath,run_started_at:'2026-10-17T00:00:00Z',updated_at:'2026-10-17T00:03:00Z'};
+  else if(relative===`actions/workflows/9`)body={id:9,path:runPath};
+  else if(relative.startsWith('contents/')){const name=relative.slice(9);body={type:'file',path:name,encoding:'base64',content:(name===macWorkflow?workflowBytes:fs.readFileSync(path.join(integration,name))).toString('base64')};}
+  else if(relative===`actions/artifacts/${artifact}`)body={id:artifact,expired:false,workflow_run:{id:run,head_sha:source},digest:'sha256:'+digest,size_in_bytes:100,name:`qlever-local-runtime-${target}-${source}`,created_at:'2026-10-17T00:01:00Z'};
+  else if(relative===`actions/runs/${run}/attempts/1/jobs`)body={total_count:1,jobs:[{id:10,run_id:run,run_attempt:1,head_sha:source,name:jobName,status:'completed',conclusion:'success',started_at:'2026-10-17T00:00:00Z',completed_at:'2026-10-17T00:02:00Z',steps:['Bind the qlever-local acceptance evidence','Verify the actual native producer host','Resolve immutable artifact identity','Upload the exact native runtime'].map(name=>({name,status:'completed',conclusion:'success'}))}]};
+  else throw new Error('Unexpected fixture API '+relative);
+  return new Response(JSON.stringify(body));
+ }) as typeof fetch;
+ try{return githubOriginFacts(await observeQleverNativeGitHubOrigin(tuple,target,invocation));}
+ finally{globalThis.fetch=previous;}
+}
+test('standalone and css-module native routes admit the reviewed resolved-target workflow only',async()=>{
+ const reviewed=fs.readFileSync(path.join(integration,macWorkflow));
+ const unreviewed=Buffer.concat([reviewed,Buffer.from('\n# unreviewed\n')]);
+ for(const invocation of ['standalone','css-module'] as const){
+  expect((await nativeRoute(invocation,reviewed))?.target).toBe(target);
+  // A fresh per-run source SHA keeps the immutable-contents cache from masking
+  // the refusal, so the mutated bytes are genuinely re-read and rejected.
+  await expect(nativeRoute(invocation,unreviewed)).rejects.toThrow();
+ }
+});

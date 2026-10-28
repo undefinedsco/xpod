@@ -180,7 +180,8 @@ jobs:
           node scripts/release-gate-evidence.cjs verify-qlever-local \
             --source-sha "$prior_source" \
             --evidence "$RUNTIME_ROOT/qlever-local-acceptance.json" \
-            --expected-archive "$RUNTIME_ROOT/qlever-local-runtime-${{ needs.resolve.outputs.target }}.tar.gz"
+            --expected-archive "$RUNTIME_ROOT/qlever-local-runtime-${{ needs.resolve.outputs.target }}.tar.gz" \
+            --abi-platform macos-${{ needs.resolve.outputs.arch }}
           mkdir -p "$SMOKE_ROOT"
           tar -xzf "$RUNTIME_ROOT/qlever-local-runtime-${{ needs.resolve.outputs.target }}.tar.gz" -C "$SMOKE_ROOT"
           python3 qlever/scripts/verify-local-runtime-artifacts.py \
