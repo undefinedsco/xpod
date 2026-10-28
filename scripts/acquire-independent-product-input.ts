@@ -175,10 +175,30 @@ export async function acquireCandidateServiceOriginals(input:ArtifactAcquisition
  if(!facts||!role||facts.workflowPath!=='.github/workflows/candidate.yml'||facts.sourceSha!==input.sourceSha||facts.runHeadSha!==input.runHeadSha||facts.runId!==input.runId||facts.runAttempt!==input.runAttempt||facts.artifactId!==input.artifactId||facts.artifactSha256!==input.artifactSha256)fail('issued exact candidate original role required');
  return acquireProductInput(input,output,{token:options.token},false,false,true,false,undefined,role);
 }
+/** Same-run legacy runtime context, validated once and reused by every legacy entry.
+ *
+ * `input.runAttempt` is the canonical PRODUCER coordinate the workflow froze at the
+ * successful producer execution; `GITHUB_RUN_ATTEMPT` is this lane's own CONSUMER
+ * attempt. The consumer value must be the canonical decimal form of a positive
+ * integer, so non-canonical spellings ("01", "2e0", "2.0", " 2") are refused exactly
+ * as before. Returns the validated consumer attempt.
+ */
+export function requireLegacyRuntimeContext(input: ArtifactAcquisitionInput): number {
+  const raw = process.env.GITHUB_RUN_ATTEMPT;
+  if (!positive(input.runAttempt)) fail('producer attempt coordinate required');
+  if (typeof raw !== 'string' || !/^[1-9][0-9]*$/u.test(raw) || !positive(Number(raw))) fail('consumer attempt coordinate required');
+  const consumerAttempt = Number(raw);
+  if (input.runAttempt > consumerAttempt) fail('producer attempt is later than the consumer lane');
+  if (process.env.GITHUB_ACTIONS !== 'true' || process.env.GITHUB_REPOSITORY !== REPOSITORY
+    || String(input.runId) !== process.env.GITHUB_RUN_ID) fail('same-run runtime binding required');
+  return consumerAttempt;
+}
 /** Same-run legacy transport; never admits a still-running independent producer run. */
 export async function acquireLegacyRootSupply(input: ArtifactAcquisitionInput, output: string, dependencies: Dependencies = {}) {
-  if (process.env.GITHUB_ACTIONS !== 'true' || process.env.GITHUB_REPOSITORY !== REPOSITORY
-    || String(input.runId) !== process.env.GITHUB_RUN_ID || String(input.runAttempt) !== process.env.GITHUB_RUN_ATTEMPT) fail('same-run runtime binding required');
+  // Coordinates are validated by the shared helper so the legacy wrapper can never
+  // drift from this entry point; the actual GitHub metadata/jobs/artifact endpoints
+  // then pin the exact run, source, job closure, name, digest and time window.
+  requireLegacyRuntimeContext(input);
   return acquireProductInput(input, output, { ...dependencies, limits: { packedBytes: 16 * 1024 ** 2, expandedBytes: 40 * 1024 ** 2, members: 4096 } }, true);
 }
 async function acquireProductInput(input: ArtifactAcquisitionInput, output: string, dependencies: Dependencies, legacy: boolean, registryConsumer = false, nativeOriginals = false, archiveConsumer = false,consumerModule?:'afs',candidateRole?:'service'|'sdk'|'native-runtime') {

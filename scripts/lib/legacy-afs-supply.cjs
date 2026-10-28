@@ -143,8 +143,31 @@ function verify(directory, context, root) {
 }
 function verifyCustody(directory, context, root, { retained = false } = {}) {
   const request = json(path.join(directory, 'request.original.json'));
-  assert.equal(request.input.sourceSha, context.sourceSha); assert.equal(String(request.input.runId), String(context.runId)); assert.equal(Number(request.input.runAttempt), Number(context.runAttempt));
-  if (!retained && process.env.GITHUB_ACTIONS === 'true') { assert.equal(String(request.input.runId), process.env.GITHUB_RUN_ID); assert.equal(String(request.input.runAttempt), process.env.GITHUB_RUN_ATTEMPT); }
+  assert.equal(request.input.sourceSha, context.sourceSha);
+  assert.equal(String(request.input.runId), String(context.runId));
+
+  // `context` is the CONSUMER coordinate (this lane's build input, or the receipt on a
+  // retained readback); the retained originals belong to the PRODUCER, recorded in the
+  // split receipt. Both are validated below and never conflated.
+  const recordedProducer = request.producerAttempt, recordedConsumer = request.consumerAttempt;
+  const split = recordedProducer !== undefined || recordedConsumer !== undefined;
+  if (split) {
+    assert.ok(Number.isSafeInteger(recordedProducer) && recordedProducer >= 1, 'producer attempt coordinate');
+    assert.ok(Number.isSafeInteger(recordedConsumer) && recordedConsumer >= 1, 'consumer attempt coordinate');
+    // One-sided replacement is refused: the pair must stay consistent with the
+    // selector that was actually used for acquisition.
+    assert.equal(recordedProducer, Number(request.input.runAttempt), 'producer coordinate/selector mismatch');
+    assert.ok(recordedConsumer >= recordedProducer, 'consumer attempt precedes its producer');
+    // context is the consumer, so it must be exactly the recorded consumer.
+    assert.equal(recordedConsumer, Number(context.runAttempt), 'consumer coordinate/context mismatch');
+    // A live lane must additionally still be the receipt's recorded consumer.
+    if (!retained && process.env.GITHUB_ACTIONS === 'true') assert.equal(String(recordedConsumer), process.env.GITHUB_RUN_ATTEMPT);
+  } else {
+    // Historical/offline record without split coordinates: producer === consumer.
+    assert.equal(Number(request.input.runAttempt), Number(context.runAttempt));
+    if (!retained && process.env.GITHUB_ACTIONS === 'true') assert.equal(String(request.input.runAttempt), process.env.GITHUB_RUN_ATTEMPT);
+  }
+  if (!retained && process.env.GITHUB_ACTIONS === 'true') assert.equal(String(request.input.runId), process.env.GITHUB_RUN_ID);
   const custody = path.join(directory, 'custody');
   const receipt = JSON.parse(io().bound({ ...request.custodyReceipt, path: path.join(custody, 'receipt.json') }));
   assert.equal(receipt.kind, 'legacy-root-same-run-acquisition'); assert.equal(receipt.status, 'blocked');
@@ -170,7 +193,11 @@ function verifyCustody(directory, context, root, { retained = false } = {}) {
   const indexBytes = io().readRegular(path.join(originals, 'supply-index.original.json'));
   const indexRow = inventory.members.filter(row => row.path === 'supply-index.original.json' && row.kind === 'file'); assert.equal(indexRow.length, 1);
   assert.equal(indexRow[0].sha256, request.index.sha256); assert.equal(indexRow[0].bytes, indexBytes.length);
-  const result = verify(originals, context, root);
+  // The retained originals belong to the PRODUCER, so the original verification runs
+  // with the producer coordinate from the request rather than the consumer context.
+  const producerContext = Object.freeze({ sourceSha: request.input.sourceSha, runId: Number(request.input.runId),
+    runAttempt: Number(request.input.runAttempt) });
+  const result = verify(originals, producerContext, root);
   const files = inventory.members.filter(row => row.kind === 'file' && row.path !== 'supply-index.original.json'); assert.equal(files.length, result.index.members.length);
   for (const row of result.index.members) { const found = files.filter(member => member.path === row.member); assert.equal(found.length, 1); assert.equal(found[0].bytes, row.bytes); assert.equal(found[0].sha256, row.sha256); }
   assert.equal(result.index.runHeadSha, request.input.runHeadSha);

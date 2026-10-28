@@ -2,14 +2,22 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
-import { acquireLegacyRootSupply, type ArtifactAcquisitionInput } from './acquire-independent-product-input';
+import { acquireLegacyRootSupply, requireLegacyRuntimeContext, type ArtifactAcquisitionInput } from './acquire-independent-product-input';
 const require = createRequire(import.meta.url);
 const io = require('./lib/root-registry-supply.cjs');
 const normal = require('./lib/legacy-afs-supply.cjs');
-export async function acquire(input: ArtifactAcquisitionInput, output: string) {
+export async function acquire(input: ArtifactAcquisitionInput, output: string, dependencies: { fetch?: typeof fetch } = {}) {
+  // `input` keeps the EXACT generic selector shape. The shared helper validates the
+  // producer and consumer coordinates before the output directory exists, so an
+  // invalid coordinate leaves nothing behind.
+  const consumerAttempt = requireLegacyRuntimeContext(input);
   fs.mkdirSync(output);
   const custody = path.join(output, 'custody');
-  const receipt = await acquireLegacyRootSupply(input, custody, { token: process.env.GH_TOKEN, diagnostics: path.join(output, 'diagnostics/acquisition') });
+  const receipt = await acquireLegacyRootSupply(input, custody, {
+    fetch: dependencies.fetch,
+    token: process.env.GH_TOKEN,
+    diagnostics: path.join(output, 'diagnostics/acquisition'),
+  });
   const originals = path.join(output, 'originals'); fs.mkdirSync(originals);
   const members = receipt.inventory.members;
   const indexRows = members.filter((row: any) => row.path === 'supply-index.original.json' && row.kind === 'file');
@@ -30,10 +38,24 @@ export async function acquire(input: ArtifactAcquisitionInput, output: string) {
   if (new Set(selected.map((row: any) => row.path)).size !== selected.length || members.filter((row: any) => row.kind === 'file').length !== selected.length + 1) throw new Error('Unexpected or duplicate ZIP original');
   project(selected);
   normal.verify(originals, input, process.cwd());
-  fs.writeFileSync(path.join(output, 'request.original.json'), JSON.stringify({ input, custodyReceipt: io.reference(path.join(custody, 'receipt.json')), index: io.reference(path.join(originals, 'supply-index.original.json')) }, null, 2) + '\n', { flag: 'wx' });
+  // Recorded OUTSIDE `input`, with the producer coordinate frozen alongside it so
+  // the pair cannot be swapped on one side only.
+  fs.writeFileSync(path.join(output, 'request.original.json'), JSON.stringify({
+    input,
+    producerAttempt: input.runAttempt,
+    consumerAttempt,
+    custodyReceipt: io.reference(path.join(custody, 'receipt.json')),
+    index: io.reference(path.join(originals, 'supply-index.original.json')),
+  }, null, 2) + '\n', { flag: 'wx' });
 }
 if (import.meta.main) {
   if (process.argv[2] === 'produce' && process.argv.length === 5) await normal.produce(process.cwd(), path.resolve(process.argv[3]), process.argv[4]);
-  else if (process.argv[2] === 'acquire' && process.argv.length === 4) await acquire({ schemaVersion: 1, sourceSha: process.env.SOURCE_SHA!, runHeadSha: process.env.RUN_HEAD_SHA!, runId: Number(process.env.GITHUB_RUN_ID), runAttempt: Number(process.env.GITHUB_RUN_ATTEMPT), artifactId: Number(process.env.SUPPLY_ARTIFACT_ID), artifactSha256: process.env.SUPPLY_ARTIFACT_SHA256! }, path.resolve(process.argv[3]));
+  else if (process.argv[2] === 'acquire' && process.argv.length === 4) {
+    // `input.runAttempt` is the producer coordinate frozen at the successful producer
+    // execution; the GitHub metadata, jobs and artifact endpoints pin the rest.
+    const producerAttempt = Number(process.env.SUPPLY_PRODUCER_ATTEMPT);
+    if (!Number.isSafeInteger(producerAttempt) || producerAttempt < 1) throw new Error('producer attempt coordinate required');
+    await acquire({ schemaVersion: 1, sourceSha: process.env.SOURCE_SHA!, runHeadSha: process.env.RUN_HEAD_SHA!, runId: Number(process.env.GITHUB_RUN_ID), runAttempt: producerAttempt, artifactId: Number(process.env.SUPPLY_ARTIFACT_ID), artifactSha256: process.env.SUPPLY_ARTIFACT_SHA256! }, path.resolve(process.argv[3]));
+  }
   else throw new Error('produce output sourceSHA or acquire output required');
 }
