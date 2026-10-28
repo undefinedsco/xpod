@@ -1242,11 +1242,19 @@ export const API_WORKSPACE_SOURCE_GROUPS=Object.freeze(API_CONTROLLED_DESCRIPTOR
 function cssStagingParentPolicy(jobName: string): Pick<OriginPolicy,'reviewedWorkflowVersions'|'stagingPushWorkflowSha256'> {
  return {reviewedWorkflowVersions:[{workflowSha256:CSS_STAGING_PARENT_SHA,jobName:()=>jobName}],stagingPushWorkflowSha256:CSS_STAGING_PARENT_SHA};
 }
+/** The mac native producer's cached-verification step now forwards the resolved
+ * `macos-<arch>` ABI to `verify-qlever-local` instead of letting it default to
+ * arm64. That is the ONLY change from the previously reviewed 39609410 bytes:
+ * reverting the argument and its preceding line continuation restores the
+ * 39609410 bytes exactly. It is
+ * registered as one more compatible reviewed version; every prior digest stays
+ * admitted and each run still has to match one exact whole file. */
+const CSS_MACOS_RESOLVED_TARGET_SHA='fc16e99666714ca9fc79605f1382bf99dfb74add7a681d85ad76b8830c2f057b';
 const CSS_NATIVE_SOURCE_BINDINGS=[
  {path:'.github/workflows/css-native-product-target.yml',sha256:'49ee4c223de857cb9d500a7dceb4a54f36ae8759d1d8b3cc9a7b847db3bbf877'},
  {path:'.github/workflows/css-native-source.yml',sha256:'df05d53b957d7b793dd998d46ccbc9a7dea788ac7f341f5e5472e325897a0371'},
  {path:'scripts/module-product-targets.ts',sha256:'5ef511f448c90a6fc9e767fd8224ef890b5fc04d2b6514f85697a0a529fb3eb4'},
- {path:'.github/workflows/build-qlever-macos-runtime.yml',sha256:'76238a58da3384d10d1d1537211540f289531a3c74b43c854c2eb37ec2cb768c',reviewedSha256:['39609410c84a0913e685bd1fb1e5c9ef4e104fd2f04332c179dd3b4f08d3c830']},
+ {path:'.github/workflows/build-qlever-macos-runtime.yml',sha256:'76238a58da3384d10d1d1537211540f289531a3c74b43c854c2eb37ec2cb768c',reviewedSha256:['39609410c84a0913e685bd1fb1e5c9ef4e104fd2f04332c179dd3b4f08d3c830',CSS_MACOS_RESOLVED_TARGET_SHA]},
  {path:'.github/workflows/publish-qlever-runtime-sdk.yml',sha256:'cbedd3e2478de5e22108b6689c595a658ca891c9bd47552caec830e86f47fea8'},
 ] as const;
 
@@ -1367,20 +1375,24 @@ export async function observeQleverNativeGitHubOrigin(input:ArtifactAcquisitionI
   // reusable workflow's darwin-arm64 default. x64 must use its standalone run.
   if(invocation==='css-module' && target!=='darwin-arm64') return fail('reviewed CSS native caller only produces darwin-arm64');
   const nativeWorkflow='.github/workflows/build-qlever-macos-runtime.yml';
-  const nativeHash='39609410c84a0913e685bd1fb1e5c9ef4e104fd2f04332c179dd3b4f08d3c830';
-  const previousNativeHash='76238a58da3384d10d1d1537211540f289531a3c74b43c854c2eb37ec2cb768c';
+  const nativeHash=CSS_MACOS_RESOLVED_TARGET_SHA;
+  const previousNativeHash='39609410c84a0913e685bd1fb1e5c9ef4e104fd2f04332c179dd3b4f08d3c830';
+  const oldestNativeHash='76238a58da3384d10d1d1537211540f289531a3c74b43c854c2eb37ec2cb768c';
   const observation=await observeGitHubOrigin(input,options,{
     workflowPath:invocation==='standalone'?nativeWorkflow:'.github/workflows/css-module-product.yml',
     workflowSha256:invocation==='standalone'?nativeHash:'9f14303a0736391b250598c21211dc5312565adf5bf30256a4f9c61f13cc8257',
     ...(invocation==='css-module'?{reviewedWorkflowVersions:[{
       workflowSha256:'454baf86f674c2c3b5058ad012c09d968c26e4f7d282d702df745a16978542b3',jobName:()=> 'native / build',
-    }]}:{reviewedWorkflowVersions:[{workflowSha256:previousNativeHash,jobName:()=> 'build'}]}),
+    }]}:{reviewedWorkflowVersions:[
+      {workflowSha256:previousNativeHash,jobName:()=> 'build'},
+      {workflowSha256:oldestNativeHash,jobName:()=> 'build'},
+    ]}),
     events:invocation==='standalone'?['push','workflow_dispatch']:['push','workflow_dispatch','pull_request'],target,
     artifactNames:row=>[`qlever-local-runtime-${target}-${row.sourceSha}`],
     jobName:()=>invocation==='standalone'?'build':'native / build',
     requiredStep:'Bind the qlever-local acceptance evidence',
     requiredSteps:['Verify the actual native producer host','Resolve immutable artifact identity','Upload the exact native runtime'],
-    sourceBindings:[...(invocation==='css-module'?[{path:nativeWorkflow,sha256:nativeHash,reviewedSha256:[previousNativeHash]}]:[]),
+    sourceBindings:[...(invocation==='css-module'?[{path:nativeWorkflow,sha256:nativeHash,reviewedSha256:[previousNativeHash,oldestNativeHash]}]:[]),
       {path:'qlever/scripts/observe-macos-native-materials.py',sha256:'79e34893b946458a904544ddb1cce9110a19fe5052503570c865341e7d0ff6d6',
         reviewedSha256:['a92b227ec186a0f53f85c93a732a0542ee3b712fdb571308395ecf17c07b2d86',QLEVER_OBSERVER_V20,QLEVER_OBSERVER_V22,QLEVER_OBSERVER_V23]}],
   });
