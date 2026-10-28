@@ -66,3 +66,4 @@ qlever-execute-update-production-seam.patch
 qlever-execute-update-fresh-blank-nodes.patch
 qlever-filter-split-conjunctions.patch
 qlever-production-only-subdirectories.patch
+qlever-s2-scoped-precompiled-headers.patch

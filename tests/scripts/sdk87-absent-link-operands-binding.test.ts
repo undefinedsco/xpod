@@ -20,6 +20,8 @@ const sha = (p: string) => createHash('sha256').update(readFileSync(path.join(RO
 const BINDER = 'qlever/scripts/sdk-generation-multiprocess-bindings.py';
 const OBSERVER = 'qlever/scripts/sdk-ptrace-execution.py';
 const LEAF = 'tests/scripts/candidate-producer-attempt-binding.test.ts';
+const LOCK = 'qlever/qlever.lock.json';
+const SERIES = 'qlever/patches/series';
 const all = (g: any) => [...g.selectors, ...(g.secondarySelectors ?? []), ...(g.secondarySelectorStages ?? []).flat(), ...g.sourceBindings];
 
 /** SDK86's published bytes — HISTORICAL, never replaced with today's tree. */
@@ -29,7 +31,7 @@ const SDK86_FROZEN: Readonly<Record<string, string>> = Object.freeze({
   [LEAF]: '6018218f537a88607be392cb081a53cbdc64cf0fd3f21a00df6f7f9eaf178b76',
 });
 
-it('SDK87 whole-inherits SDK86 and re-pins only the observer and the leaf', () => {
+it('SDK87 whole-inherits SDK86 and re-pins only the reviewed current roles', () => {
   const inherited = SDK[85]!, next = SDK[86]!;
   expect(JSON.stringify(next.selectors)).toBe(JSON.stringify(inherited.selectors));
   expect(JSON.stringify(next.candidateServiceRelationship)).toBe(JSON.stringify(inherited.candidateServiceRelationship));
@@ -37,16 +39,21 @@ it('SDK87 whole-inherits SDK86 and re-pins only the observer and the leaf', () =
   // this slice adds no stage and keeps the whole stage surface
   expect((next.secondarySelectorStages ?? []).length).toBe((inherited.secondarySelectorStages ?? []).length);
   expect(JSON.stringify(next.secondarySelectorStages)).toBe(JSON.stringify(inherited.secondarySelectorStages));
-  expect(next.sourceBindings.length).toBe(inherited.sourceBindings.length);
+  // The scoped-S2 CMake slice appends ONE new role (the new patch) to the
+  // CURRENT tail; every inherited row keeps its position, so the inherited
+  // prefix is compared positionally and the single appended row is asserted.
+  expect(next.sourceBindings.length).toBe(inherited.sourceBindings.length + 1);
   const before = all(inherited), after = all(next);
-  expect(after.length).toBe(before.length);
+  expect(after.length).toBe(before.length + 1);
+  expect(after.at(-1)!.path).toBe('qlever/patches/qlever-s2-scoped-precompiled-headers.patch');
   const moved: string[] = [];
   for (let i = 0; i < before.length; i++) {
     expect(after[i].path, `role[${i}].path`).toBe(before[i].path);
     if (before[i].sha256 !== after[i].sha256) moved.push(after[i].path);
   }
-  // ONLY the observer (4 inherited occurrences) and the leaf (1) move.
-  expect(new Set(moved)).toEqual(new Set([OBSERVER, LEAF]));
+  // The observer (4 inherited occurrences) and the leaf (1) move, plus the QLever
+  // lock and patch series whose bytes the new CMake patch necessarily changes.
+  expect(new Set(moved)).toEqual(new Set([OBSERVER, LEAF, LOCK, SERIES]));
   expect(moved.filter(p => p === OBSERVER)).toHaveLength(4);
   expect(moved.filter(p => p === LEAF)).toHaveLength(1);
   // the binder is untouched by this slice

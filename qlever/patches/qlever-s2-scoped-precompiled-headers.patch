@@ -1,0 +1,121 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -614,6 +614,117 @@
+     endif ()
+     target_precompile_headers(rdfTypes PRIVATE ${PRECOMPILED_HEADER_FILES_EXTERNAL})
+     target_precompile_headers(rdfEscaping PRIVATE ${PRECOMPILED_HEADER_FILES_EXTERNAL})
++
++    # Scoped precompiled headers for the pinned S2 target (canonical Clang profile only).
++    #
++    # Why scoped: src/s2/s2point.h transitively imports s2/_fp_contract_off.h, which
++    # carries WHOLE-TRANSLATION-UNIT codegen pragmas (STDC FP_CONTRACT OFF for Clang).
++    # Precompiling s2point.h for a TU that did not already reach it would change that
++    # TU's floating-point code generation. So the header is precompiled only for TUs
++    # whose own include closure already reaches it; the remaining 13 are marked
++    # SKIP_PRECOMPILE_HEADERS and still compiled normally. No TU is dropped.
++    #
++    # Trust model: this guard is a CHEAP DRIFT CHECK layered on top of the EXISTING
++    # dependency authority. The prepared SDK source tree is an unpacked archive with
++    # no Git metadata (sdk-fetchcontent-materials.py unpack_stream forbids .git), so
++    # nothing here inspects version control. What is checked is (a) the parent
++    # build recipe still declares the reviewed S2 GIT_TAG literal, (b) the actual S2
++    # CMakeLists bytes still hash to the reviewed value, and (c) the target still has
++    # 98 sources with the 13 exclusions a strict subset. Those are supplementary to
++    # the real provenance (pinned archive sha + prepared inventory + cache originals);
++    # a single file hash is NOT a claim to prove the whole tree.
++    if (TARGET s2 AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang"
++        AND CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 19
++        AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 20)
++        set(XPOD_S2_EXPECTED_GIT_TAG "5b5eccd54a08ae03b4467e79ffbb076d0b5f221e")
++        set(XPOD_S2_EXPECTED_CMAKE_SHA256 "f29f94f93fc5b82d3fe62615bc00d6b04a2556fecbabde347d9f8b25997b2389")
++
++        # (a) The parent recipe's own closed literal declarations must still name the
++        # reviewed S2 tag. Read the current CMakeLists (this file) and match only the
++        # existing FetchContent_Declare(s2 ...) block; no new declaration is added.
++        # Read the PARENT recipe (the top-level CMakeLists), not this include file.
++        file(READ "${CMAKE_SOURCE_DIR}/CMakeLists.txt" XPOD_S2_PARENT_CMAKE)
++        string(REGEX MATCH
++            "FetchContent_Declare[ \t]*[(][ \t\r\n]*s2[ \t\r\n]+[^)]*GIT_TAG[ \t]+([0-9a-f]+)"
++            XPOD_S2_DECLARATION "${XPOD_S2_PARENT_CMAKE}")
++        if (NOT XPOD_S2_DECLARATION OR NOT CMAKE_MATCH_1 STREQUAL XPOD_S2_EXPECTED_GIT_TAG)
++            message(FATAL_ERROR
++                "S2 scoped PCH: parent S2 GIT_TAG is not the reviewed pin "
++                "${XPOD_S2_EXPECTED_GIT_TAG} (found '${CMAKE_MATCH_1}')")
++        endif ()
++
++        # (b) The actual prepared dependency CMakeLists bytes must match the reviewed
++        # digest. Rejects a different pin even when the parent tag line is unchanged.
++        file(SHA256 "${s2_SOURCE_DIR}/CMakeLists.txt" XPOD_S2_ACTUAL_CMAKE_SHA256)
++        if (NOT XPOD_S2_ACTUAL_CMAKE_SHA256 STREQUAL XPOD_S2_EXPECTED_CMAKE_SHA256)
++            message(FATAL_ERROR
++                "S2 scoped PCH: prepared S2 CMakeLists ${XPOD_S2_ACTUAL_CMAKE_SHA256} "
++                "differs from the reviewed ${XPOD_S2_EXPECTED_CMAKE_SHA256}")
++        endif ()
++
++        # The 13 TUs whose local closure does NOT reach s2point.h, derived from the
++        # reviewed S2 source. Count and membership are asserted below.
++        set(XPOD_S2_PCH_SKIP_RELATIVE
++            src/s2/encoded_string_vector.cc
++            src/s2/id_set_lexicon.cc
++            src/s2/r2rect.cc
++            src/s2/s1interval.cc
++            src/s2/s2debug.cc
++            src/s2/s2error.cc
++            src/s2/s2memory_tracker.cc
++            src/s2/util/bits/bit-interleave.cc
++            src/s2/util/coding/coder.cc
++            src/s2/util/coding/varint.cc
++            src/s2/util/math/exactfloat/exactfloat.cc
++            src/s2/util/math/mathutil.cc
++            src/s2/util/units/length-units.cc)
++        list(LENGTH XPOD_S2_PCH_SKIP_RELATIVE XPOD_S2_PCH_SKIP_COUNT)
++        if (NOT XPOD_S2_PCH_SKIP_COUNT EQUAL 13)
++            message(FATAL_ERROR "S2 scoped PCH: expected 13 exclusions, got ${XPOD_S2_PCH_SKIP_COUNT}")
++        endif ()
++
++        set(XPOD_S2_PCH_SKIP)
++        foreach (rel IN LISTS XPOD_S2_PCH_SKIP_RELATIVE)
++            set(abs "${s2_SOURCE_DIR}/${rel}")
++            if (NOT EXISTS "${abs}")
++                message(FATAL_ERROR "S2 scoped PCH: prepared source lacks ${rel}")
++            endif ()
++            list(APPEND XPOD_S2_PCH_SKIP "${abs}")
++        endforeach ()
++
++        # (c) Every declared S2 object must still be accounted for, and each exclusion
++        # must be a real member, so no TU is silently unbuilt.
++        get_target_property(XPOD_S2_DECLARED_SOURCES s2 SOURCES)
++        set(XPOD_S2_DECLARED_ABSOLUTE)
++        foreach (src IN LISTS XPOD_S2_DECLARED_SOURCES)
++            if (IS_ABSOLUTE "${src}")
++                list(APPEND XPOD_S2_DECLARED_ABSOLUTE "${src}")
++            else ()
++                list(APPEND XPOD_S2_DECLARED_ABSOLUTE "${s2_SOURCE_DIR}/${src}")
++            endif ()
++        endforeach ()
++        list(LENGTH XPOD_S2_DECLARED_ABSOLUTE XPOD_S2_DECLARED_COUNT)
++        if (NOT XPOD_S2_DECLARED_COUNT EQUAL 98)
++            message(FATAL_ERROR
++                "S2 scoped PCH: expected 98 declared S2 sources, got ${XPOD_S2_DECLARED_COUNT}")
++        endif ()
++        foreach (excluded IN LISTS XPOD_S2_PCH_SKIP)
++            if (NOT excluded IN_LIST XPOD_S2_DECLARED_ABSOLUTE)
++                message(FATAL_ERROR "S2 scoped PCH: exclusion not in s2 SOURCES: ${excluded}")
++            endif ()
++        endforeach ()
++
++        # DIRECTORY form is required: the property must apply to these sources in the
++        # S2 source-directory scope, not in this parent scope.
++        set_source_files_properties(${XPOD_S2_PCH_SKIP}
++            DIRECTORY "${s2_SOURCE_DIR}"
++            PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
++
++        target_precompile_headers(s2 PRIVATE
++            "${s2_SOURCE_DIR}/src/s2/s2point.h"
++            <algorithm> <cmath> <vector> <utility> <memory> <cfloat>)
++        message(STATUS "Xpod S2 scoped PCH: s2point.h + 6 std headers; 13 reviewed TUs stay PCH-free (all 98 compiled)")
++    endif ()
+ endif ()
+ 
+ option(XPOD_SDK_BUILD_BENCHMARKS "Build the upstream benchmark subdirectory" ON)
