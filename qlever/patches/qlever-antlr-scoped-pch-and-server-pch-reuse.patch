@@ -1,0 +1,38 @@
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -724,6 +724,20 @@
+             "${s2_SOURCE_DIR}/src/s2/s2point.h"
+             <algorithm> <cmath> <vector> <utility> <memory> <cfloat>)
+         message(STATUS "Xpod S2 scoped PCH: s2point.h + 6 std headers; 13 reviewed TUs stay PCH-free (all 98 compiled)")
++    endif ()
++    # Scoped precompiled header for the pinned ANTLR4 C++ runtime target, mirroring
++    # the compiler scope of the S2 block above (canonical Clang profile only).
++    #
++    # runtime/Cpp/runtime/src/antlr4-common.h is ANTLR's own umbrella prelude and is
++    # already in the include closure of every antlr4_static TU, so precompiling it
++    # injects nothing into a TU that did not already reach it. The path is derived
++    # from the dependency root the build already uses; no pin, count or path is
++    # duplicated here - the locked dependency authority owns those facts.
++    if (TARGET antlr4_static AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang"
++        AND CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 19
++        AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 20)
++        target_precompile_headers(antlr4_static PRIVATE
++            "${antlr_SOURCE_DIR}/runtime/Cpp/runtime/src/antlr4-common.h")
+     endif ()
+ endif ()
+ 
+@@ -753,9 +767,11 @@
+ 
+     add_executable(qlever-server src/ServerMain.cpp)
+     qlever_target_link_libraries(qlever-server engine server ${CMAKE_THREAD_LIBS_INIT} Boost::program_options compilationInfo global)
+-    if (USE_PRECOMPILED_HEADERS)
+-        target_precompile_headers(qlever-server REUSE_FROM engine)
+-    endif()
++    # `qlever-server` is an executable, so this TU is compiled with `-fPIE`, while
++    # the `engine` PCH it used to reuse is generated with `-fPIC` (libraries are
++    # position independent). Clang rejects that combination. The engine PCH stays
++    # for the library TUs; this single executable TU compiles without a PCH. PIE
++    # and every link flag are unchanged.
+ endif()
+ 
+ add_executable(LibQLeverExample src/libqlever/LibQLeverExample.cpp)

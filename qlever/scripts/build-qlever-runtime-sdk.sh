@@ -89,8 +89,8 @@ payload = {
             "RANGES_NATIVE": "OFF",
             # SDK84 PCH experiment: precompiled headers are upstream-supported
             # and cover the real engine targets (parser/engine/sparqlExpressions/
-            # index/util/mediaTypes/http/rdfTypes/rdfEscaping, with qlever-server
-            # REUSE_FROM engine). They only cache header parsing; they neither
+            # index/util/mediaTypes/http/rdfTypes/rdfEscaping. The executable keeps
+            # PIE without reusing the library PCH. These cache header parsing; they neither
             # merge translation units nor change the configured target set. The
             # flag stays part of this hashed contract, so an OFF cache identity
             # can never satisfy an ON build.

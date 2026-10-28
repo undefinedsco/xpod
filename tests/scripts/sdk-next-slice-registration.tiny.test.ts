@@ -430,27 +430,25 @@ test('the CURRENT unpublished slice carries the published helper prefixes and it
   const current = sdk.at(-1)!;
   const sec = current.secondarySelectors ?? [];
   expect(sec.length).toBeGreaterThanOrEqual(17);
-  // SDK86 is the LAST PUBLISHED-shape historical slice and keeps exactly 154
-  // source bindings. That 154 is historical fact, NOT a cap: the current
-  // unpublished SDK87 tail legitimately appends one new role for the scoped S2
-  // precompiled-headers CMake patch, so it has 155.
+  // SDK86's 154 bindings are historical. CURRENT SDK87 appends the two
+  // explicitly reviewed PCH patches without changing the inherited path order.
   const previous = sdk[85]!;
   const previousBindings = previous.sourceBindings ?? [];
   expect(previousBindings.length).toBe(154);
-  expect(current.sourceBindings.length).toBe(155);
-  // The inherited 154 rows keep their exact positions and paths; nothing was
-  // reordered, inserted or deleted to reach 155.
+  expect(current.sourceBindings.length).toBe(156);
   expect(current.sourceBindings.slice(0, 154).map(r => r.path))
     .toEqual(previousBindings.map(r => r.path));
-  // Exactly ONE row is appended, and it is the new CMake patch bound to the
-  // actual bytes on disk.
-  expect(current.sourceBindings.length - previousBindings.length).toBe(1);
-  const appended = current.sourceBindings.at(-1)!;
-  expect(appended.path).toBe('qlever/patches/qlever-s2-scoped-precompiled-headers.patch');
-  expect(appended.sha256).toBe(sha(read(appended.path)));
-  // The new role is unique within the current tail and absent from SDK86.
-  expect(current.sourceBindings.filter(r => r.path === appended.path)).toHaveLength(1);
-  expect(previousBindings.some(r => r.path === appended.path)).toBe(false);
+  const expectedAppended = [
+    'qlever/patches/qlever-s2-scoped-precompiled-headers.patch',
+    'qlever/patches/qlever-antlr-scoped-pch-and-server-pch-reuse.patch',
+  ];
+  const appended = current.sourceBindings.slice(previousBindings.length);
+  expect(appended.map(r => r.path)).toEqual(expectedAppended);
+  for (const row of appended) {
+    expect(row.sha256).toBe(sha(read(row.path)));
+    expect(current.sourceBindings.filter(r => r.path === row.path)).toHaveLength(1);
+    expect(previousBindings.some(r => r.path === row.path)).toBe(false);
+  }
   expect(current.sourceBindings.some(r => r.path === 'qlever/tests/test_qlever_owned_window_diagnostic.py')).toBe(true);
   expect(current.sourceBindings.some(r => r.path === 'qlever/tests/test_sdk_refused_caller_diagnostic.py')).toBe(true);
   const newRoles = [

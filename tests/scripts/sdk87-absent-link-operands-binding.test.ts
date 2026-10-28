@@ -1,9 +1,8 @@
 /** SDK87 absent link/unlink operand slice (APPEND-ONLY, UNPUBLISHED).
  *
- * SDK87 inherits SDK86 whole, adds no stage, and re-pins ONLY the roles whose
- * bytes actually moved: the observer body (4 inherited occurrences) and SDK81's
- * mandatory regression leaf (1 sourceBinding). The binder is NOT changed by this
- * slice and keeps SDK86's exact value. SDK86 itself is historical and immutable.
+ * SDK87 inherits SDK86's stage surface and re-pins only the explicitly
+ * reviewed CURRENT roles. Both locked PCH patches append source bindings;
+ * every published SDK1–86 tuple retains its exact historical value.
  */
 import {createHash} from 'node:crypto';
 import {readFileSync} from 'node:fs';
@@ -22,6 +21,8 @@ const OBSERVER = 'qlever/scripts/sdk-ptrace-execution.py';
 const LEAF = 'tests/scripts/candidate-producer-attempt-binding.test.ts';
 const LOCK = 'qlever/qlever.lock.json';
 const SERIES = 'qlever/patches/series';
+const BUILDER = 'qlever/scripts/build-qlever-runtime-sdk.sh';
+const PATCH = 'qlever/patches/qlever-antlr-scoped-pch-and-server-pch-reuse.patch';
 const LEASES = 'qlever/scripts/sdk-tool-lifetime-leases.py';
 const LEASE_EXT = 'qlever/scripts/native/lease_sweep_ext.c';
 const LEASE_BINDING = 'qlever/scripts/native/lease_sweep_binding.py';
@@ -41,22 +42,25 @@ it('SDK87 whole-inherits SDK86 and re-pins only the reviewed current roles', () 
   expect(JSON.stringify(next.outerExecutor)).toBe(JSON.stringify(inherited.outerExecutor));
   // this slice adds no stage and keeps the whole stage surface
   expect((next.secondarySelectorStages ?? []).length).toBe((inherited.secondarySelectorStages ?? []).length);
-  expect(JSON.stringify(next.secondarySelectorStages)).toBe(JSON.stringify(inherited.secondarySelectorStages));
-  // The scoped-S2 CMake slice appends ONE new role (the new patch) to the
-  // CURRENT tail; every inherited row keeps its position, so the inherited
-  // prefix is compared positionally and the single appended row is asserted.
-  expect(next.sourceBindings.length).toBe(inherited.sourceBindings.length + 1);
+  const expectedStages = (inherited.secondarySelectorStages ?? []).map(stage => stage.map(row =>
+    row.path === BUILDER ? {...row, sha256: sha(BUILDER)} : row));
+  expect(JSON.stringify(next.secondarySelectorStages)).toBe(JSON.stringify(expectedStages));
+  // Both locked PCH patches append explicit CURRENT source roles. Every
+  // inherited row keeps its position; the two new rows are asserted exactly.
+  expect(next.sourceBindings.length).toBe(inherited.sourceBindings.length + 2);
   const before = all(inherited), after = all(next);
-  expect(after.length).toBe(before.length + 1);
-  expect(after.at(-1)!.path).toBe('qlever/patches/qlever-s2-scoped-precompiled-headers.patch');
+  expect(after.length).toBe(before.length + 2);
+  expect(after.at(-2)!.path).toBe('qlever/patches/qlever-s2-scoped-precompiled-headers.patch');
+  expect(after.at(-1)!.path).toBe(PATCH);
+  expect(after.at(-1)!.sha256).toBe(sha(PATCH));
   const moved: string[] = [];
   for (let i = 0; i < before.length; i++) {
     expect(after[i].path, `role[${i}].path`).toBe(before[i].path);
     if (before[i].sha256 !== after[i].sha256) moved.push(after[i].path);
   }
   // The observer (4 inherited occurrences) and the leaf (1) move, plus the QLever
-  // lock and patch series whose bytes the new CMake patch necessarily changes.
-  expect(new Set(moved)).toEqual(new Set([OBSERVER, LEAF, LOCK, SERIES, LEASES, LEASE_EXT, LEASE_BINDING]));
+  // lock/series and the current builder documentation whose bytes changed.
+  expect(new Set(moved)).toEqual(new Set([OBSERVER, LEAF, LOCK, SERIES, LEASES, LEASE_EXT, LEASE_BINDING, BUILDER]));
   expect(moved.filter(p => p === OBSERVER)).toHaveLength(4);
   expect(moved.filter(p => p === LEAF)).toHaveLength(1);
   // The filtered-lease lookup slice moves the lease implementation's CURRENT
@@ -65,7 +69,8 @@ it('SDK87 whole-inherits SDK86 and re-pins only the reviewed current roles', () 
   // The same slice moves the native plan source and its binding, twice each.
   expect(moved.filter(p => p === LEASE_EXT)).toHaveLength(2);
   expect(moved.filter(p => p === LEASE_BINDING)).toHaveLength(2);
-  for (const role of [LEASES, LEASE_EXT, LEASE_BINDING]) {
+  expect(moved.filter(p => p === BUILDER)).toHaveLength(3);
+  for (const role of [LEASES, LEASE_EXT, LEASE_BINDING, BUILDER]) {
     for (const row of all(next).filter((r: any) => r.path === role)) expect(row.sha256).toBe(sha(role));
   }
   for (const row of all(next).filter((r: any) => r.path === LEASES)) expect(row.sha256).toBe(sha(LEASES));
@@ -109,7 +114,7 @@ it('generic selector resolves SDK86/current/stale against the real bytes', () =>
     oldObservation.set(sourceBindingKey(row), row.sha256);
   expect(selectGitHubSourceBindingGroup(peers, oldObservation)).toBe(inherited);
   expect(selectGitHubSourceBindingGroup(peers, completeObserved(peers, next))).toBe(next);
-  for (const stale of [OBSERVER, LEAF, BINDER]) {
+  for (const stale of [OBSERVER, LEAF, BINDER, BUILDER, PATCH]) {
     const map = new Map(completeObserved(peers, next));
     map.set('source:' + stale, 'f'.repeat(64));
     expect(() => selectGitHubSourceBindingGroup(peers, map)).toThrow();
