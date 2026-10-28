@@ -27,6 +27,10 @@ const RECIPE='qlever/scripts/build-qlever-runtime-sdk.sh';
 const VALIDATOR='qlever/scripts/validate-prior-sdk.py';
 const LEAF='tests/scripts/candidate-producer-attempt-binding.test.ts';
 const OLD_RECIPE='9244950e1fb801c142e2fafdaab3cf50cebb31c647b4e2bbb9b9e94c2f2812d0';
+/** PUBLISHED SDK84 bytes — historical constants, never today's working tree. */
+const SDK84_RECIPE='0f5a6e7bc1ab900a1bf1fd8368b5ae77ff72b908e8f4812495e5c4497f789c13';
+const SDK84_VALIDATOR='54c3d0df6cc4304fab43a48416a799b6af3309def5ed7f772127c15c28ac516e';
+const SDK84_LEAF='501df8461fac5846e2bb11f251f59e71819e120f88544fb6128b5d4ea9d17d47';
 
 it('SDK84 whole-inherits SDK83 and re-pins exactly three existing mandatory roles',()=>{
   // FIXED HISTORICAL indices: this case tests the SDK84 feature, so it must not
@@ -44,20 +48,19 @@ it('SDK84 whole-inherits SDK83 and re-pins exactly three existing mandatory role
   // Three existing mandatory roles move: the two edited build-contract files and
   // SDK81's regression leaf whose live frontier counts moved for this append.
   expect(moved).toEqual(new Set([RECIPE,VALIDATOR,LEAF]));
-  expect(next.sourceBindings.find(r=>r.path===RECIPE)!.sha256).toBe(sha(RECIPE));
-  expect(next.sourceBindings.find(r=>r.path===VALIDATOR)!.sha256).toBe(sha(VALIDATOR));
+  expect(next.sourceBindings.find(r=>r.path===RECIPE)!.sha256).toBe(SDK84_RECIPE);
+  expect(next.sourceBindings.find(r=>r.path===VALIDATOR)!.sha256).toBe(SDK84_VALIDATOR);
   // The LEAF was re-pinned by SDK84 for its then-live frontier counts. A later
   // slice (SDK85) legitimately moved it again, so this PUBLISHED tuple keeps the
   // SDK84-era value and must NOT follow today's bytes.
-  expect(next.sourceBindings.find(r=>r.path===LEAF)!.sha256)
-    .toBe('501df8461fac5846e2bb11f251f59e71819e120f88544fb6128b5d4ea9d17d47');
+  expect(next.sourceBindings.find(r=>r.path===LEAF)!.sha256).toBe(SDK84_LEAF);
   // stage 5 carries the pre-owned build-recipe role only
   const stages=next.secondarySelectorStages??[];
   expect(stages.length).toBe((old.secondarySelectorStages??[]).length+1);
   expect(stages[stages.length-1]!.map(r=>r.path)).toEqual([RECIPE]);
-  expect(stages[stages.length-1]![0]!.sha256).toBe(sha(RECIPE));
+  expect(stages[stages.length-1]![0]!.sha256).toBe(SDK84_RECIPE);
   // the same role is re-hashed in the inherited stage-0 secondary selectors
-  expect(next.secondarySelectors!.find(r=>r.path===RECIPE)!.sha256).toBe(sha(RECIPE));
+  expect(next.secondarySelectors!.find(r=>r.path===RECIPE)!.sha256).toBe(SDK84_RECIPE);
   // Linux peers SDK with one leading Linux tuple, so the SDK84 historical group
   // is at Linux index 84 (SDK index 83 + 1). Must not follow the latest tail.
   expect(whole(LINUX[84]!)).toBe(whole(next));
@@ -75,7 +78,7 @@ it('real staged walk: old recipe selects SDK83, new selects SDK84',()=>{
   // SDK84 cannot match because its stage-0 secondarySelector already carries the
   // new recipe bytes.
   expect(selectGitHubSourceBindingGroup(peers,base)).toBe(old);
-  const withNew=new Map(base);withNew.set('source:'+RECIPE,sha(RECIPE));
+  const withNew=new Map(base);withNew.set('source:'+RECIPE,SDK84_RECIPE);
   expect(selectGitHubSourceBindingGroup(peers,withNew)).toBe(next);
   // The stage-5 role stays a real outstanding request when the observation does
   // not already carry the recipe hash (it is owned by every survivor).
@@ -98,6 +101,29 @@ it('PCH ON is consistent across recipe, contract and prior-SDK validator; macOS 
   expect(validator).toContain('"USE_PRECOMPILED_HEADERS": "ON"');
   expect(validator).toContain('"USE_PRECOMPILED_HEADERS",'); // still part of the compared field set
   expect(read('qlever/scripts/build-macos-local-runtime.sh')).toContain('-DUSE_PRECOMPILED_HEADERS=OFF');
+});
+
+it('the latest live SDK87 group binds the actual current build-contract bytes',()=>{
+  // This is the CURRENT slice, so here (and only here) the recipe/validator must
+  // equal today's working tree. It complements the frozen SDK84 historical case
+  // above instead of asking that published tuple to follow a later edit.
+  const latest=SDK[SDK.length-1]!;
+  expect(SDK).toHaveLength(87);
+  expect(whole(LINUX[LINUX.length-1]!)).toBe(whole(latest));
+  // three role occurrences: inherited source binding, inherited stage-0 secondary
+  // selector, and the appended final stage — all must carry the same live bytes.
+  const stages=latest.secondarySelectorStages??[];
+  expect(stages.length).toBe(5);
+  expect(stages[stages.length-1]!.map(r=>r.path)).toEqual([RECIPE]);
+  const rows=[...latest.sourceBindings.filter(r=>r.path===RECIPE),
+              ...(latest.secondarySelectors??[]).filter(r=>r.path===RECIPE),
+              ...stages.flat().filter(r=>r.path===RECIPE)];
+  expect(rows).toHaveLength(3);
+  for(const row of rows) expect(row.sha256).toBe(sha(RECIPE));
+  expect(latest.sourceBindings.find(r=>r.path===VALIDATOR)!.sha256).toBe(sha(VALIDATOR));
+  // The frozen SDK84 constants are genuinely historical, i.e. they differ from the
+  // live recipe today — proving the two cases are not accidentally the same value.
+  expect(SDK84_RECIPE).not.toBe(sha(RECIPE));
 });
 
 it('the live canonical still binds 504 actual rows including both edited files',()=>{

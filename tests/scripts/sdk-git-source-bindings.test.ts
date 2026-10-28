@@ -88,11 +88,22 @@ assert sum(len(m.patch_targets((root/name).read_bytes())) for name in historical
 assert historical[-1]=='qlever-production-only-subdirectories.patch'
 assert len(historical[:-1])==67 and sum(len(m.patch_targets((root/name).read_bytes())) for name in historical[:-1])==84
 # The reviewed scoped S2 precompiled-headers patch is appended as the 69th and
-# targets the parent CMakeLists only; the whole corpus is 69 with 86 headers and
-# ordinary patches unchanged at 33.
-assert len(names)==69 and ordinary==33 and files==86
-assert names[-1]=='qlever-s2-scoped-precompiled-headers.patch'
+# targets the parent CMakeLists only. That 69-patch corpus is now frozen history:
+# 33 ordinary patches and 86 file headers.
+frozen69=names[:69]
+assert len(frozen69)==69
+assert sum(1 for name in frozen69 if not (root/name).read_bytes().startswith(b'diff --git '))==33
+assert sum(len(m.patch_targets((root/name).read_bytes())) for name in frozen69)==86
+assert frozen69[-1]=='qlever-s2-scoped-precompiled-headers.patch'
+assert m.patch_targets((root/frozen69[-1]).read_bytes())==['CMakeLists.txt']
+# The current corpus appends the ANTLR scoped-PCH / qlever-server reuse repair as
+# the 70th patch. It is an ordinary unified diff targeting the parent CMakeLists
+# only, so the corpus becomes 34 ordinary patches and 87 file headers.
+assert len(names)==70 and ordinary==34 and files==87
+assert names[-1]=='qlever-antlr-scoped-pch-and-server-pch-reuse.patch'
 assert m.patch_targets((root/names[-1]).read_bytes())==['CMakeLists.txt']
+# Both current tail patches target the single parent CMakeLists.
+assert m.patch_targets((root/names[-2]).read_bytes())==['CMakeLists.txt']
 replayed=[]
 for name in ['qlever-exists-join-test-accessor.patch','qlever-operation-physical-cancellation.patch']:
  raw=(root/name).read_bytes();lines=raw.splitlines(keepends=True);first=next(i for i,line in enumerate(lines) if line.startswith(b'@@ '));end=next((i for i in range(first+1,len(lines)) if lines[i].startswith((b'@@ ',b'diff --git ',b'--- '))),len(lines))
@@ -112,5 +123,5 @@ assert m.patch_targets(b'--- a/file\n+++ b/file\n@@ -1,2 +1,2 @@\n--- a/evil\n++
 print(json.dumps(dict(patches=len(names),ordinary=ordinary,fileHeaders=files,replayed=replayed,rejected=len(invalid))))
 `;
   const value = JSON.parse(execFileSync('/usr/bin/python3', ['-I', '-S', '-B', '-c', program, path.resolve('qlever/scripts/sdk-git-patch-projection.py'), path.resolve('qlever/patches')], {encoding: 'utf8', timeout: 30000}));
-  expect(value).toMatchObject({patches: 69, ordinary: 33, fileHeaders: 86, rejected: 8}); expect(value.replayed).toHaveLength(2);
+  expect(value).toMatchObject({patches: 70, ordinary: 34, fileHeaders: 87, rejected: 8}); expect(value.replayed).toHaveLength(2);
 });
