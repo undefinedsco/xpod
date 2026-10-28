@@ -2277,14 +2277,23 @@ const SDK86_GROUP:GitHubSourceBindingGroup=Object.freeze({...SDK85_GROUP,
  * operands, lease cadence, deadlines and caps remain unchanged. */
 const SDK87_SOURCE_HASHES:Readonly<Record<string,string>>=Object.freeze({
  'qlever/scripts/sdk-ptrace-execution.py':'2cdfd49d2972577ba2fa449007d9a3a8dbda1674217939a97c04ea8fe21ef263',
- 'tests/scripts/candidate-producer-attempt-binding.test.ts':'91caff314e9b1eef6eea46815ace1eb870bf28ab54a7cc075ff736800af52575'
+ 'tests/scripts/candidate-producer-attempt-binding.test.ts':'91caff314e9b1eef6eea46815ace1eb870bf28ab54a7cc075ff736800af52575',
+ // Scoped S2 precompiled headers move the QLever lock (patch series digest)
+ // and the patch series itself. Bound on the CURRENT append only; every
+ // published tuple keeps its own historical bytes.
+ 'qlever/qlever.lock.json':'6ef40f2d71a1835d511f01d7d65e3d3c8b12cc0f934f9a849d808d40b19a1d04',
+ 'qlever/patches/series':'8cabbfeccbebd92f835b940be745782ca825cf93af278c3a259bb30a34ace842'
 });
 const rebindSdk87Rows=(rows:readonly GitHubSourceBinding[]|undefined)=>Object.freeze((rows??[]).map(row=>Object.freeze({...row,sha256:SDK87_SOURCE_HASHES[row.path]??row.sha256})));
 const SDK87_GROUP:GitHubSourceBindingGroup=Object.freeze({...SDK86_GROUP,
  selectors:SDK86_GROUP.selectors,
  secondarySelectors:rebindSdk87Rows(SDK86_GROUP.secondarySelectors),
  secondarySelectorStages:Object.freeze((SDK86_GROUP.secondarySelectorStages??[]).map(stage=>rebindSdk87Rows(stage))),
- sourceBindings:rebindSdk87Rows(SDK86_GROUP.sourceBindings)});
+ sourceBindings:Object.freeze([...rebindSdk87Rows(SDK86_GROUP.sourceBindings),
+ // The new upstream CMake patch is a NEW role no published tuple owns, so it is
+ // appended to the CURRENT tail only (never to a shared historical array).
+ Object.freeze({path:'qlever/patches/qlever-s2-scoped-precompiled-headers.patch',
+  sha256:'d3c81bb1f6ee9ff05ad2f0ffe811e9ac50b47e396c8b1c9fcfe6ffddfeeece2a'})])});
 export const QLEVER_SDK_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...PUBLISHED_SDK_GROUPS,NEXT_SDK_GROUP,INPUT_PLAN_SDK_GROUP,ORM326_SDK_GROUP,SDK19_TELEMETRY_GROUP,CAPTURE_INDEX_SDK_GROUP,SDK78_GROUP,SDK79_GROUP,SDK80_GROUP,SDK81_GROUP,SDK82_GROUP,SDK83_GROUP,SDK84_GROUP,SDK85_GROUP,SDK86_GROUP,SDK87_GROUP]);
 export const QLEVER_LINUX_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([
  {selectors:sdkSelectors('cbedd3e2478de5e22108b6689c595a658ca891c9bd47552caec830e86f47fea8','a75c7be34b5c5fafff85c0d67d814ba1aaf14bcf5db5404a860fe3b9a11009bd'),sourceBindings:QLEVER_LINUX_SOURCE_BINDINGS.filter(row=>!['.github/workflows/publish-qlever-runtime-sdk.yml','.github/workflows/build-qlever-linux-runtime.yml'].includes(row.path))},
