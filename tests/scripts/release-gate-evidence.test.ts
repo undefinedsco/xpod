@@ -1,9 +1,9 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import os from 'node:os';
 import path from 'node:path';
+import { parseDocument } from 'yaml';
 import { afterAll, describe, expect, it } from 'vitest';
 
 const require = createRequire(import.meta.url);
@@ -22,7 +22,13 @@ const { loadQleverSourceConformance, loadWorkspacePackageNames } = require('../.
 };
 
 const conformance = loadQleverSourceConformance();
-const tempRoot = mkdtempSync(path.join(os.tmpdir(), 'xpod-gate-evidence-'));
+// Repository rule: test data lives under .test-data, never the OS temp dir or
+// repo root. Remove only this run's directory so parallel runs keep their parent.
+const suiteRoot = path.join(repoRoot, '.test-data/release-gate-evidence');
+const tempRoot = (() => {
+  mkdirSync(suiteRoot, { recursive: true });
+  return mkdtempSync(path.join(suiteRoot, 'suite-'));
+})();
 afterAll(() => rmSync(tempRoot, { recursive: true, force: true }));
 
 const sha256 = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
@@ -117,6 +123,45 @@ function craftQleverEvidence(archive: QleverArchive, sourceSha: string, outFile:
   return outFile;
 }
 
+interface GateRun {
+  status: number | null;
+  stdout: string;
+  stderr: string;
+}
+
+// Execute the exact multi-line command the workflow step runs (including its
+// shell continuations) instead of a hand-copied argument list.
+function workflowGateCommand(step: { run?: string } | undefined, command: string): string {
+  const lines = (step?.run ?? '').split('\n');
+  const start = lines.findIndex(line => line.includes(`scripts/release-gate-evidence.cjs ${command}`));
+  expect(start, `workflow step must run ${command}`).toBeGreaterThanOrEqual(0);
+  const block: string[] = [];
+  for (let index = start; index < lines.length; index += 1) {
+    block.push(lines[index]);
+    if (!lines[index].trimEnd().endsWith('\\')) break;
+  }
+  return block.join('\n');
+}
+
+function runGate(script: string, env: Record<string, string>): GateRun {
+  const result = spawnSync('/bin/bash', [ '-c', `set -euo pipefail\n${script}` ], {
+    cwd: repoRoot,
+    env: { ...process.env, ...env },
+    encoding: 'utf8',
+  });
+  return { status: result.status, stdout: result.stdout ?? '', stderr: result.stderr ?? '' };
+}
+
+// Stage an existing archive under the cache root layout the workflow reuses:
+// the archive takes the producer's canonical basename and its evidence sits
+// beside it, exactly as the upload/cache step would restore it.
+function stageCachedRuntime(archive: QleverArchive, target: string): { runtimeRoot: string; archive: QleverArchive } {
+  const runtimeRoot = mkdtempSync(path.join(tempRoot, `cache-${target}-`));
+  const staged = path.join(runtimeRoot, `qlever-local-runtime-${target}.tar.gz`);
+  renameSync(archive.archive, staged);
+  return { runtimeRoot, archive: { ...archive, archive: staged } };
+}
+
 describe('qlever-local gate evidence', () => {
   it('binds explicit Linux target evidence and rejects verification under a different target', () => {
     const archive = makeQleverArchive('linux-target', { platform: 'linux-x64' });
@@ -185,6 +230,64 @@ describe('qlever-local gate evidence', () => {
 
     const foreign = makeQleverArchive('foreign', { platform: 'linux-x64' });
     expectFailure([ 'create-qlever-local', '--source-sha', 'a'.repeat(40), '--archive', foreign.archive, '--out', path.join(tempRoot, 'foreign.json') ]);
+  });
+
+  // The cached reuse step must verify the evidence against the same resolved
+  // macOS target its producer wrote, for both architectures the catalog
+  // supports. These execute the real workflow command against real archives.
+  it('executes the cached-verification workflow command for the resolved x64 and arm64 targets', () => {
+    const workflow = parseDocument(readFileSync(path.join(repoRoot,
+      '.github/workflows/build-qlever-macos-runtime.yml'), 'utf8')).toJSON();
+    const reuse = workflow.jobs.build.steps.find((step: { name?: string }) =>
+      step.name === 'Verify and smoke the reused native runtime');
+    const command = workflowGateCommand(reuse, 'verify-qlever-local');
+    const sourceSha = 'b'.repeat(40);
+    for (const [ target, platform ] of [
+      [ 'darwin-x64', 'macos-x64' ],
+      [ 'darwin-arm64', 'macos-arm64' ],
+    ] as const) {
+      const archive = makeQleverArchive(`cache-${target}`, { platform });
+      const staged = stageCachedRuntime(archive, target);
+      try {
+        const evidence = path.join(staged.runtimeRoot, 'qlever-local-acceptance.json');
+        run([ 'create-qlever-local', '--source-sha', sourceSha, '--archive', staged.archive.archive,
+          '--abi-platform', platform, '--out', evidence ]);
+        const resolved = command
+          .replaceAll('${{ needs.resolve.outputs.target }}', target)
+          .replaceAll('${{ needs.resolve.outputs.arch }}', platform.slice('macos-'.length));
+        const passed = runGate(`prior_source=${sourceSha}\n${resolved}`, { RUNTIME_ROOT: staged.runtimeRoot });
+        expect(passed.status, `${target} verification command`).toBe(0);
+        expect(passed.stderr).not.toContain('[release-gate-evidence]');
+        expect(JSON.parse(passed.stdout.trim())).toEqual({ valid: true, 'qlever-local': 'passed' });
+      } finally {
+        rmSync(staged.runtimeRoot, { recursive: true, force: true });
+      }
+    }
+  });
+
+  // A cached x64 runtime verified against the defaulted arm64 expectation must
+  // still be refused: passing the resolved target must not weaken the check.
+  it('refuses a cached x64 runtime when the workflow command expects arm64', () => {
+    const workflow = parseDocument(readFileSync(path.join(repoRoot,
+      '.github/workflows/build-qlever-macos-runtime.yml'), 'utf8')).toJSON();
+    const reuse = workflow.jobs.build.steps.find((step: { name?: string }) =>
+      step.name === 'Verify and smoke the reused native runtime');
+    const command = workflowGateCommand(reuse, 'verify-qlever-local');
+    const sourceSha = 'b'.repeat(40);
+    const staged = stageCachedRuntime(makeQleverArchive('cache-x64-refused', { platform: 'macos-x64' }), 'darwin-x64');
+    try {
+      run([ 'create-qlever-local', '--source-sha', sourceSha, '--archive', staged.archive.archive,
+        '--abi-platform', 'macos-x64', '--out', path.join(staged.runtimeRoot, 'qlever-local-acceptance.json') ]);
+      const wrong = command
+        .replaceAll('${{ needs.resolve.outputs.target }}', 'darwin-x64')
+        .replaceAll('${{ needs.resolve.outputs.arch }}', 'arm64');
+      const refused = runGate(`prior_source=${sourceSha}\n${wrong}`, { RUNTIME_ROOT: staged.runtimeRoot });
+      expect(refused.status).not.toBe(0);
+      expect(refused.stderr).toContain('evidence platform must be macos-arm64');
+      expect(refused.stdout).not.toContain('passed');
+    } finally {
+      rmSync(staged.runtimeRoot, { recursive: true, force: true });
+    }
   });
 });
 
