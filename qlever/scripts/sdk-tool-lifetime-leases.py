@@ -101,6 +101,12 @@ class LeaseSet:
         # delete, rename or in-place row mutation, and acquire() returns a COPY
         # of the token, so callers cannot alias the stored identity.
         self._plan = None
+        # Lifetime-owned NATIVE decode of the same immutable registration input.
+        # Built only by the native backend when the owned set changes; released on
+        # every membership change and on close(). This is a decode cache, never an
+        # observation cache: sweep_plan still runs live fcntl+fstat per row.
+        self._native_plan = None
+        self._native_plan_source = None
         self._failure = None
         # ONE resolution, at construction, through the class seam.
         self._native_binding, self._native = self._resolve_native_backend()
@@ -312,17 +318,49 @@ class LeaseSet:
         if plan is not None:
             pairs = plan           # tuple: no extra O(n) copy per check
         else:
-            rows = list(self._held.values())
-            rows = [row for row in rows if row['token'] == token]
-            if len(rows) != 1:
+            # Filtered call. The row is keyed by the first two identity fields
+            # (st_dev, st_ino), which `acquire` fixes at insertion time, so a
+            # direct lookup replaces a full scan of every held row. The stored
+            # token is then compared with the caller's value EXACTLY as the old
+            # scan did: a row whose token is absent, replaced, or mutated (any
+            # of the six identity fields or the leaseId) fails the same check
+            # and reaches the same _reject string. This only removes the O(n)
+            # rebuild for a single-row query; it adds no cache and no new
+            # authority, and the live lease/identity syscalls below are
+            # unchanged.
+            # NB: must not be named `identity` -- that shadows the module-level
+            # identity(fd) helper used by the pure-Python backend below.
+            token_identity = token.get('identity') if isinstance(token, dict) else None
+            row = None
+            if isinstance(token_identity, list) and len(token_identity) >= 2:
+                try:
+                    row = self._held.get(tuple(token_identity[:2]))
+                except TypeError:
+                    row = None
+            if row is None or row['token'] != token:
                 self._reject('unknown or changed lease token')
-            pairs = [(row['fd'], tuple(row['token']['identity'])) for row in rows]
+            pairs = [(row['fd'], tuple(row['token']['identity']))]
         try:
             if self._native is not None and self._native_binding is not None:
-                self._native_binding.sweep_rows(
-                    self._native,
-                    pairs,
-                    self._reject)
+                # Native plan: the decode of expected values is reused; the live
+                # sweep is NOT. The capsule is owned by THIS LeaseSet and passed
+                # EXPLICITLY, so no module-global plan exists to override another
+                # instance's expectations. generic sweep() is never affected.
+                plan_supported = hasattr(self._native, 'plan_new') and hasattr(self._native, 'sweep_plan')
+                use_plan = (token is None and plan_supported
+                            and getattr(self._native_binding, 'sweep_plan', None) is not None
+                            and pairs is self._plan)
+                if use_plan:
+                    if self._native_plan is None or self._native_plan_source is not self._plan:
+                        self._native_plan = self._native.plan_new(self._plan)
+                        self._native_plan_source = self._plan
+                    self._native_binding.sweep_plan(
+                        self._native, self._native_plan, self._reject)
+                else:
+                    self._native_binding.sweep_rows(
+                        self._native,
+                        pairs,
+                        self._reject)
             else:
                 # Pure-Python backend verifies EVERY pair, planned ones included.
                 for fd, expected in pairs:
@@ -385,6 +423,8 @@ class LeaseSet:
             token = {'leaseId': len(self._held) + 1, 'identity': before}
             self._held[key] = {'fd': owned, 'token': token}
             self._plan = None      # owned set changed: the plan is no longer the whole set
+            self._native_plan = None   # and the native decode no longer covers the set
+            self._native_plan_source = None
             owned = None
             return dict(token, identity=list(before))
         except BaseException as error:
@@ -438,6 +478,8 @@ class LeaseSet:
                 except OSError as caught: error = error or caught
         self._held.clear()
         self._plan = None              # owned set changed
+        self._native_plan = None       # release the native decode with the set
+        self._native_plan_source = None
         self._closed = True
         if signal.getsignal(signal.SIGIO) == self._handler:
             signal.signal(signal.SIGIO, self._previous)

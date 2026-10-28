@@ -168,8 +168,13 @@ acceptance stage (network is allowed only for the apt/Node prep stage):
 
 ## macOS (system NFS, no macFUSE install)
 
-`macos-14` runner runs the same driver with `XPOD_MOUNTED_BACKEND=nfs` against
-the frozen Darwin helper over the system NFS path (no macFUSE install). Actual
+The `darwin-arm64` matrix entry runs on the `macos-15` runner (the same hosted
+Darwin ARM64 image the repository already uses for its Darwin ARM64 producer);
+`darwin-x64` uses `macos-15-intel`. That runner label is an image choice, not a
+minimum-OS acceptance requirement: the contract is the `darwin`/`arm64` target
+and the system NFS backend, and no macOS-version assertion exists. Both entries
+run the shared driver, which selects the `nfs` backend on Darwin, against the
+frozen Darwin helper over the system NFS path (no macFUSE install). Actual
 prerequisite/permission failures are recorded as failures, never as passes.
 
 ## Matrix (tracked, no relaxation)

@@ -37,9 +37,12 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <string.h>
 
 #define NS_PER_SEC 1000000000LL
 #define NS_FAST_MAX_SEC 9223372035LL
+
+typedef struct Plan Plan;
 
 enum { V_OK = 0, V_LEASE = 1, V_IDENTITY = 2, V_ERRNO = 3, V_NEEDPY = 4 };
 
@@ -128,9 +131,244 @@ static PyObject *verdict_tuple(int verdict, Py_ssize_t index, int errno_value)
     return Py_BuildValue("(ini)", (int)verdict, (Py_ssize_t)index, (int)errno_value);
 }
 
-/* One row. Returns 1 matched, 0 verdict reached, -1 Python error. */
+/* ---------------------------------------------------------------------------
+ * IMMUTABLE REGISTRATION-INPUT PLAN (not an observation cache)
+ *
+ * The Python LeaseSet already freezes, per held row, the (fd, expected identity)
+ * pair recorded at `acquire`. Those expected values never change while the owned
+ * set is unchanged, so the PyLong->C decode of the six expected fields can be
+ * done ONCE per membership change instead of on every sweep.
+ *
+ * What this does NOT change, by construction:
+ *   * every sweep still issues the SAME live fcntl(F_GETLEASE) then fstat(fd);
+ *   * all six live fields are still compared, in the same order;
+ *   * the same signal checks, EINTR retry, errno and first-error reporting;
+ *   * every call site still performs its own sweep at its own boundary.
+ * Only the decode of the EXPECTED side is reused. No observation, verdict or
+ * syscall result is ever stored.
+ *
+ * A row whose expected values are not all small exact ints keeps the generic
+ * object path (unsigned high half, huge timespec, non-int comparisons), so
+ * Python semantics are preserved exactly. The plan therefore stores the original
+ * row object too and falls back per row.
+ * ------------------------------------------------------------------------- */
+
+typedef struct {
+    PyObject *row;              /* OWNED: fallback + keeps fd alive */
+    PyObject *fd_object;        /* OWNED */
+    int fd;
+    int decoded;                /* 1 => all six expected values are exact ints */
+    unsigned long long dev, ino, mode;
+    long long size, mtime_ns, ctime_ns;
+} PlanRow;
+
+struct Plan {
+    Py_ssize_t count;
+    PlanRow *rows;
+    PyObject *source;      /* OWNED immutable registration graph; LeaseSet selects the plan. */
+};
+
+#define PLAN_NS_FAST_MAX_SEC 9223372035LL
+
+/* Decode one exact-int expected value to a C integer. Returns 1 on success, 0 if
+ * the value is not a small exact int (caller must use the generic path). */
+static int decode_unsigned_exact(PyObject *value, unsigned long long *out)
+{
+    if (!PyLong_CheckExact(value)) return 0;
+    unsigned long long parsed = PyLong_AsUnsignedLongLong(value);
+    if (parsed == (unsigned long long)-1 && PyErr_Occurred()) { PyErr_Clear(); return 0; }
+    *out = parsed;
+    return 1;
+}
+
+static int decode_signed_exact(PyObject *value, long long *out)
+{
+    if (!PyLong_CheckExact(value)) return 0;
+    int overflow = 0;
+    long long parsed = PyLong_AsLongLongAndOverflow(value, &overflow);
+    if (parsed == -1 && PyErr_Occurred()) return 0;
+    if (overflow != 0) return 0;
+    *out = parsed;
+    return 1;
+}
+
+/* Decode a pre-scaled nanoseconds int (the Python side already stores ns). */
+static int decode_ns_exact(PyObject *value, long long *out)
+{
+    return decode_signed_exact(value, out);
+}
+
+static void plan_row_clear(PlanRow *row)
+{
+    Py_XDECREF(row->row);
+    Py_XDECREF(row->fd_object);
+    row->row = NULL;
+    row->fd_object = NULL;
+}
+
+static void plan_clear(Plan *plan)
+{
+    if (plan == NULL) return;
+    for (Py_ssize_t i = 0; i < plan->count; i++) plan_row_clear(&plan->rows[i]);
+    Py_XDECREF(plan->source);
+    PyMem_Free(plan->rows);
+    PyMem_Free(plan);
+}
+
+/* Build a plan from the caller's sequence of (fd, expected) pairs.
+ *
+ * Every row takes its OWN references before any Python code may run, so a signal
+ * handler that mutates the registry (or drops the plan) cannot free them from
+ * under a later sweep. Rows that are not exactly decodable are stored with
+ * decoded=0 and keep the generic comparison path.
+ */
+static void lease_plan_capsule_free(PyObject *capsule);
+
+/* Strict immutable-input contract for a plan.
+ *
+ * A plan captures EXPECTED values once, so its input must be provably immutable:
+ *   * the outer container is an EXACT tuple,
+ *   * every row is an EXACT 2-tuple `(fd, expected)`,
+ *   * every `fd` is an EXACT int,
+ *   * every `expected` is an EXACT 6-tuple.
+ * Anything else is rejected with TypeError BEFORE any user-defined code runs.
+ *
+ * This is what makes "predecoded once" sound: a list (or any mutable/custom
+ * container) can be mutated after plan creation, which would leave the plan
+ * comparing against STALE expectations. Generic sweep(rows) stays fully
+ * permissive; only the plan path requires the strict shape.
+ *
+ * Individual identity VALUES may still be non-exact (float, huge int): such rows
+ * set decoded=0 and fall back to the original generic comparisons, so precision
+ * semantics are unchanged.
+ *
+ * Using an exact tuple also removes the borrowed-iterator hazard: with a real
+ * tuple, no user code can run between `PySequence_Fast_ITEMS` and our reads, so a
+ * custom `fileno`/iterator cannot clear the container underneath us.
+ */
+static void plan_require_immutable(PyObject *value, const char *what)
+{
+    if (!PyTuple_CheckExact(value)) {
+        PyErr_Format(PyExc_TypeError,
+                     "%s must be an exact tuple (immutable plan input)", what);
+    }
+}
+
+static Plan *plan_build(PyObject *rows)
+{
+    plan_require_immutable(rows, "plan rows");
+    if (PyErr_Occurred()) return NULL;
+
+    Py_ssize_t count = PyTuple_GET_SIZE(rows);
+    Plan *plan = PyMem_New(Plan, 1);
+    if (plan == NULL) { PyErr_NoMemory(); return NULL; }
+    plan->count = 0;
+    plan->rows = NULL;
+    /* Own the caller's tuple BEFORE any allocation that can fail, so every early
+     * return unwinds through plan_clear() (which DECREFs `source`) instead of
+     * leaking it. */
+    plan->source = rows;
+    Py_INCREF(plan->source);
+    plan->rows = count > 0 ? PyMem_New(PlanRow, (size_t)count) : NULL;
+    if (count > 0 && plan->rows == NULL) { plan_clear(plan); PyErr_NoMemory(); return NULL; }
+    /* An EMPTY registration has no row storage, so plan->rows is NULL. C requires a
+     * valid pointer argument even for a zero length: memset(NULL, 0, 0) is undefined
+     * behaviour (UBSAN "null pointer argument declared never null"). */
+    if (count > 0) memset(plan->rows, 0, sizeof(PlanRow) * (size_t)count);
+
+    /* `rows` was already proven to be an EXACT tuple, and it stays alive for the
+     * whole call through the caller's arguments plus plan->source. Iterating it
+     * directly therefore needs NO borrowed-sequence wrapper: PySequence_Fast would
+     * take an extra owning reference on that outer tuple, which every structural
+     * early return would then have to give back. One fewer owner, no cleanup path
+     * to forget. `PyTuple_GET_ITEM` returns a borrowed reference and never runs
+     * user code, so the reads below cannot be invalidated mid-traversal. */
+    for (Py_ssize_t i = 0; i < count; i++) {
+        PlanRow *row = &plan->rows[i];
+        PyObject *pair = PyTuple_GET_ITEM(rows, i);
+        plan_require_immutable(pair, "plan row");
+        if (PyErr_Occurred()) { plan_clear(plan); return NULL; }
+        if (PyTuple_GET_SIZE(pair) != 2) {
+            plan_clear(plan);
+            PyErr_SetString(PyExc_TypeError, "plan row must be an exact 2-tuple (fd, expected)");
+            return NULL;
+        }
+        PyObject *fd_object = PyTuple_GET_ITEM(pair, 0);
+        PyObject *expected_object = PyTuple_GET_ITEM(pair, 1);
+        if (!PyLong_CheckExact(fd_object)) {
+            plan_clear(plan);
+            PyErr_SetString(PyExc_TypeError, "plan fd must be an exact int (no custom fileno)");
+            return NULL;
+        }
+        int fd = PyLong_AsLong(fd_object);
+        if (fd == -1 && PyErr_Occurred()) { plan_clear(plan); return NULL; }
+        plan_require_immutable(expected_object, "plan expected identity");
+        if (PyErr_Occurred()) { plan_clear(plan); return NULL; }
+        if (PyTuple_GET_SIZE(expected_object) != 6) {
+            plan_clear(plan);
+            PyErr_SetString(PyExc_TypeError,
+                            "plan expected identity must be an exact 6-tuple");
+            return NULL;
+        }
+
+        /* From here the row owns its references; plan_clear unwinds it. */
+        Py_INCREF(pair);
+        row->row = pair;
+        plan->count = i + 1;
+        row->fd_object = NULL;   /* the exact tuple keeps fd/expected alive */
+        row->fd = fd;
+        row->decoded = 0;
+
+        /* Same argument: an exact 6-tuple, held alive by its parent row tuple. */
+        if (decode_unsigned_exact(PyTuple_GET_ITEM(expected_object, 0), &row->dev)
+            && decode_unsigned_exact(PyTuple_GET_ITEM(expected_object, 1), &row->ino)
+            && decode_unsigned_exact(PyTuple_GET_ITEM(expected_object, 2), &row->mode)
+            && decode_signed_exact(PyTuple_GET_ITEM(expected_object, 3), &row->size)
+            && decode_ns_exact(PyTuple_GET_ITEM(expected_object, 4), &row->mtime_ns)
+            && decode_ns_exact(PyTuple_GET_ITEM(expected_object, 5), &row->ctime_ns)) {
+            row->decoded = 1;
+        }
+        if (PyErr_Occurred()) { plan_clear(plan); return NULL; }
+    }
+    return plan;
+}
+
+/* Compare live stat data against the SIX expected objects, reusing a prededoded
+ * plan row when available. The fast path applies ONLY to a plan row whose six
+ * values were exact ints and where the live times are inside the int64 fast
+ * range; every other case runs the ORIGINAL object comparisons, so float, huge
+ * integer and unsigned-high-half semantics are preserved exactly.
+ * Returns 1 matched, 0 identity mismatch, -1 Python error. */
+static int compare_identity_from_want(PyObject **want, const PlanRow *plan_row,
+                                      const struct stat *st)
+{
+    if (plan_row != NULL && plan_row->decoded
+        && st->st_mtim.tv_nsec >= 0 && st->st_mtim.tv_nsec < NS_PER_SEC
+        && st->st_mtim.tv_sec >= -NS_FAST_MAX_SEC && st->st_mtim.tv_sec <= NS_FAST_MAX_SEC
+        && st->st_ctim.tv_nsec >= 0 && st->st_ctim.tv_nsec < NS_PER_SEC
+        && st->st_ctim.tv_sec >= -NS_FAST_MAX_SEC && st->st_ctim.tv_sec <= NS_FAST_MAX_SEC) {
+        if ((unsigned long long)st->st_dev != plan_row->dev) return 0;
+        if ((unsigned long long)st->st_ino != plan_row->ino) return 0;
+        if ((unsigned long long)st->st_mode != plan_row->mode) return 0;
+        if ((long long)st->st_size != plan_row->size) return 0;
+        if ((long long)st->st_mtim.tv_sec * NS_PER_SEC + (long long)st->st_mtim.tv_nsec != plan_row->mtime_ns) return 0;
+        if ((long long)st->st_ctim.tv_sec * NS_PER_SEC + (long long)st->st_ctim.tv_nsec != plan_row->ctime_ns) return 0;
+        return 1;
+    }
+    int equal = eq_unsigned(want[0], (unsigned long long)st->st_dev);
+    if (equal > 0) equal = eq_unsigned(want[1], (unsigned long long)st->st_ino);
+    if (equal > 0) equal = eq_unsigned(want[2], (unsigned long long)st->st_mode);
+    if (equal > 0) equal = eq_signed(want[3], (long long)st->st_size);
+    if (equal > 0) equal = eq_timespec(want[4], &st->st_mtim);
+    if (equal > 0) equal = eq_timespec(want[5], &st->st_ctim);
+    return equal;
+}
+
+/* One row: live F_GETLEASE then fstat, then the six-field identity comparison.
+ * `plan_row` is NULL for the generic path; a non-NULL prededoded row only changes
+ * how the EXPECTED side is decoded. Returns 1 matched, 0 verdict, -1 error. */
 static int check_row(PyObject *row, int *verdict, int *errno_out, Py_ssize_t *index_out,
-                     Py_ssize_t row_index)
+                     Py_ssize_t row_index, const PlanRow *plan_row)
 {
     PyObject *pair = PySequence_Fast(row, "row must be (fd, expected)");
     if (pair == NULL) return -1;
@@ -139,7 +377,6 @@ static int check_row(PyObject *row, int *verdict, int *errno_out, Py_ssize_t *in
         PyErr_SetString(PyExc_ValueError, "row must be (fd, expected)");
         return -1;
     }
-    /* OWNED refs on BOTH row items before anything can run Python code. */
     PyObject **items = PySequence_Fast_ITEMS(pair);
     PyObject *fd_object = items[0];
     PyObject *expected_object = items[1];
@@ -161,7 +398,6 @@ static int check_row(PyObject *row, int *verdict, int *errno_out, Py_ssize_t *in
         PyErr_SetString(PyExc_ValueError, "expected identity must have 6 fields");
         return -1;
     }
-    /* OWNED snapshot of all six, before any PyErr_CheckSignals. */
     PyObject *want[6];
     {
         PyObject **snapshot = PySequence_Fast_ITEMS(expected_seq);
@@ -176,23 +412,12 @@ static int check_row(PyObject *row, int *verdict, int *errno_out, Py_ssize_t *in
     if (PyErr_CheckSignals() < 0) goto out;
 
     {
-        /* EINTR CONTRACT FIX (see the observed CPython behaviour): CPython's
-         * fcntl_fcntl_impl loops `while (ret == -1 && errno == EINTR &&
-         * !(async_err = PyErr_CheckSignals()))`, i.e. it retries the SAME call
-         * after checking signals, and only surfaces the error when a handler
-         * raised. We must do the same for the SAME reason:
-         *
-         *   - a raising handler still wins: PyErr_CheckSignals() < 0 -> goto out
-         *     with the handler's own exception object, never a verdict;
-         *   - a non-raising handler means "retry", not "ERRNO(EINTR)";
-         *   - every other errno keeps its existing sticky-ERRNO behaviour.
-         * The retry re-issues fcntl FIRST, preserving the shipped order. */
         int lease;
         for (;;) {
             errno = 0;
             lease = fcntl(fd, F_GETLEASE);
             int saved = errno;
-            if (PyErr_CheckSignals() < 0) goto out;  /* handler exception wins */
+            if (PyErr_CheckSignals() < 0) goto out;
             if (lease == -1 && saved == EINTR) continue;
             if (lease == -1) { *verdict = V_ERRNO; *errno_out = saved; status = 0; goto out; }
             break;
@@ -201,9 +426,6 @@ static int check_row(PyObject *row, int *verdict, int *errno_out, Py_ssize_t *in
     }
     {
         struct stat st;
-        /* Same EINTR retry rule for fstat; os_fstat_impl has the identical
-         * `do { FSTAT } while (res != 0 && errno == EINTR && !CheckSignals())`.
-         * fstat still runs SECOND, after a successful F_GETLEASE. */
         int stat_result;
         for (;;) {
             errno = 0;
@@ -215,23 +437,7 @@ static int check_row(PyObject *row, int *verdict, int *errno_out, Py_ssize_t *in
             break;
         }
         if (PyErr_CheckSignals() < 0) goto out;
-
-        int equal = eq_unsigned(want[0], (unsigned long long)st.st_dev);
-        if (equal < 0) goto out;
-        if (!equal) { *verdict = V_IDENTITY; status = 0; goto out; }
-        equal = eq_unsigned(want[1], (unsigned long long)st.st_ino);
-        if (equal < 0) goto out;
-        if (!equal) { *verdict = V_IDENTITY; status = 0; goto out; }
-        equal = eq_unsigned(want[2], (unsigned long long)st.st_mode);
-        if (equal < 0) goto out;
-        if (!equal) { *verdict = V_IDENTITY; status = 0; goto out; }
-        equal = eq_signed(want[3], (long long)st.st_size);
-        if (equal < 0) goto out;
-        if (!equal) { *verdict = V_IDENTITY; status = 0; goto out; }
-        equal = eq_timespec(want[4], &st.st_mtim);
-        if (equal < 0) goto out;
-        if (!equal) { *verdict = V_IDENTITY; status = 0; goto out; }
-        equal = eq_timespec(want[5], &st.st_ctim);
+        int equal = compare_identity_from_want(want, plan_row, &st);
         if (equal < 0) goto out;
         if (!equal) { *verdict = V_IDENTITY; status = 0; goto out; }
     }
@@ -266,7 +472,9 @@ static PyObject *lease_sweep(PyObject *module_self, PyObject *args)
     for (Py_ssize_t i = 0; i < count; i++) {
         int verdict = V_OK, errno_value = 0;
         Py_ssize_t index = i;
-        int status = check_row(owned[i], &verdict, &errno_value, &index, i);
+        /* NO module-global plan is ever consulted here: generic sweep(rows) is
+         * behaviour-identical regardless of which plan capsules exist. */
+        int status = check_row(owned[i], &verdict, &errno_value, &index, i, NULL);
         if (status < 0) goto done;
         if (status == 0) {
             /* FIX 1: Py_BuildValue is variadic; the format MUST match the
@@ -295,6 +503,65 @@ done:
  * sweep uses, so a test can prove the exact boundary value survives. It touches
  * no fd and makes no lease claim.
  */
+static PyObject *lease_sweep_plan(PyObject *module_self, PyObject *args)
+{
+    (void)module_self;
+    PyObject *capsule;
+    if (!PyArg_ParseTuple(args, "O:sweep_plan", &capsule)) return NULL;
+    if (!PyCapsule_IsValid(capsule, "xpod.lease.plan")) {
+        PyErr_SetString(PyExc_TypeError, "sweep_plan requires a lease plan capsule");
+        return NULL;
+    }
+    Plan *plan = (Plan *)PyCapsule_GetPointer(capsule, "xpod.lease.plan");
+    if (plan == NULL) return NULL;
+
+    Py_ssize_t count = plan->count;
+    PyObject **owned = NULL;
+    if (count > 0) {
+        owned = PyMem_New(PyObject *, (size_t)count);
+        if (owned == NULL) return PyErr_NoMemory();
+        for (Py_ssize_t i = 0; i < count; i++) { owned[i] = plan->rows[i].row; Py_INCREF(owned[i]); }
+    }
+
+    PyObject *result = NULL;
+    for (Py_ssize_t i = 0; i < count; i++) {
+        int verdict = V_OK, errno_value = 0;
+        Py_ssize_t index = i;
+        int status = check_row(owned[i], &verdict, &errno_value, &index, i, &plan->rows[i]);
+        if (status < 0) goto done;
+        if (status == 0) { result = verdict_tuple(verdict, index, errno_value); goto done; }
+    }
+    result = verdict_tuple(V_OK, (Py_ssize_t)-1, 0);
+
+done:
+    if (owned != NULL) {
+        for (Py_ssize_t i = 0; i < count; i++) Py_XDECREF(owned[i]);
+        PyMem_Free(owned);
+    }
+    return result;
+}
+
+/* Capsule destructor: releases the plan's owned row references exactly once. */
+static void lease_plan_capsule_free(PyObject *capsule)
+{
+    Plan *plan = (Plan *)PyCapsule_GetPointer(capsule, "xpod.lease.plan");
+    if (plan == NULL) { PyErr_Clear(); return; }
+    plan_clear(plan);
+}
+
+/* plan_new(rows) -> capsule owning an immutable decoded registration plan. */
+static PyObject *lease_plan_new(PyObject *module_self, PyObject *args)
+{
+    (void)module_self;
+    PyObject *rows;
+    if (!PyArg_ParseTuple(args, "O:plan_new", &rows)) return NULL;
+    Plan *plan = plan_build(rows);
+    if (plan == NULL) return NULL;
+    PyObject *capsule = PyCapsule_New(plan, "xpod.lease.plan", lease_plan_capsule_free);
+    if (capsule == NULL) { plan_clear(plan); return NULL; }
+    return capsule;
+}
+
 static PyObject *lease_index_roundtrip(PyObject *module_self, PyObject *args)
 {
     (void)module_self;
@@ -306,6 +573,10 @@ static PyObject *lease_index_roundtrip(PyObject *module_self, PyObject *args)
 static PyMethodDef methods[] = {
     {"sweep", lease_sweep, METH_VARARGS,
      "sweep(rows) -> (verdict, index, errno); checks every (fd, expected) row"},
+    {"sweep_plan", lease_sweep_plan, METH_VARARGS,
+     "sweep_plan(capsule) -> (verdict, index, errno); live syscalls per row"},
+    {"plan_new", lease_plan_new, METH_VARARGS,
+     "plan_new(rows) -> capsule; decodes immutable expected identities once"},
     {"index_roundtrip", lease_index_roundtrip, METH_VARARGS,
      "index_roundtrip(n) -> (OK, n, 0); SYNTHETIC width seam for tests"},
     {NULL, NULL, 0, NULL},

@@ -941,7 +941,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/github-origin.ts",
-    "sha256": "a169d12510765ae1dae9b396bd559292bc74846190334f2d9c7c8c7e4c6a70e7"
+    "sha256": "9f3ce1e2daa6d4624a8889d0f0e0aede8648e0f2c792fb16fca0170ede9fd589"
   },
   {
     "path": "scripts/lib/independent-admission/github-source-binding-groups.ts",
@@ -1209,7 +1209,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-generation.ts",
-    "sha256": "4ab5f800d09e1ab5644261caf808d466313d7ed497534cf2ec4197b5945b1e64"
+    "sha256": "15cf2711bd42145883e06986286a8bcdf40ced79d19172702f96e4126d94a587"
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-inputs.ts",
@@ -1221,7 +1221,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-origin-policy.ts",
-    "sha256": "9336d650bdbcc8b0f46176925bb367c9099b7ee076ca960226aef91452a7292a"
+    "sha256": "061a4ffb681586a737d9292966f6c022d2fe4b5abfd29f669e269b288b2207c8"
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-originals.ts",
@@ -1697,7 +1697,7 @@
   },
   {
     "path": "qlever/scripts/sdk-tool-lifetime-leases.py",
-    "sha256": "ea2d298d355cc41431ad3cd125eba2a0ec6929b99690628b5b5bcb02d93cfa83"
+    "sha256": "85f5101f1d27644c851145818f791ca52d87dc6087b4f7df8f0d4bbf579d9b0c"
   },
   {
     "path": "qlever/scripts/sdk-executable-memory-policy.py",
@@ -1841,7 +1841,7 @@
   },
   {
     "path": "qlever/scripts/native/lease_sweep_ext.c",
-    "sha256": "b0f1268aad6b0ebdb1122151a75dd8cba6a9a140ff2581f8374f3c85c37c0209"
+    "sha256": "c99287abe2f93bfde4c82abcc4d322605f88addc24e72d3b5899ab961629038d"
   },
   {
     "path": "qlever/scripts/native/build_native_helper.py",
@@ -1849,7 +1849,7 @@
   },
   {
     "path": "qlever/scripts/native/lease_sweep_binding.py",
-    "sha256": "097c756ccae5f0cf44f33e930f7fb0072be0f702c96a43ad0c9b597e8d610643"
+    "sha256": "7386166a878d2a1fbd5f3145759888baa072171ab541b45cd5fbc5bcea6784f8"
   },
   {
     "path": "qlever/scripts/bounded-original-reader.py",
@@ -1873,7 +1873,7 @@
   },
   {
     "path": "qlever/tests/test_native_lease_backend.py",
-    "sha256": "c516e65c90ee0ac4bb979f38346b0cb5e6dd9c973eb438c3ce385ef1914d378a"
+    "sha256": "1391d8df83fabd921847011570e67d743ef0387278b9922fb98881f1ec8e885d"
   },
   {
     "path": "qlever/tests/test_native_lease_eintr.py",

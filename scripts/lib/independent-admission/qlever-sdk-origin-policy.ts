@@ -2277,6 +2277,15 @@ const SDK86_GROUP:GitHubSourceBindingGroup=Object.freeze({...SDK85_GROUP,
  * operands, lease cadence, deadlines and caps remain unchanged. */
 const SDK87_SOURCE_HASHES:Readonly<Record<string,string>>=Object.freeze({
  'qlever/scripts/sdk-ptrace-execution.py':'2cdfd49d2972577ba2fa449007d9a3a8dbda1674217939a97c04ea8fe21ef263',
+ // Filtered-lease lookup: the token-filtered check resolves its single row by the
+ // (st_dev, st_ino) key instead of scanning every held row. Selection semantics,
+ // the live F_GETLEASE+fstat sweep and every rejection string are unchanged, so
+ // only the CURRENT (SDK87) binding moves; published tuples keep their bytes.
+ 'qlever/scripts/sdk-tool-lifetime-leases.py':'85f5101f1d27644c851145818f791ca52d87dc6087b4f7df8f0d4bbf579d9b0c',
+ // Immutable registration-input plan: explicit per-instance capsule, no module
+ // global. Current SDK87 binding only; published tuples keep their bytes.
+ 'qlever/scripts/native/lease_sweep_ext.c':'c99287abe2f93bfde4c82abcc4d322605f88addc24e72d3b5899ab961629038d',
+ 'qlever/scripts/native/lease_sweep_binding.py':'7386166a878d2a1fbd5f3145759888baa072171ab541b45cd5fbc5bcea6784f8',
  'tests/scripts/candidate-producer-attempt-binding.test.ts':'91caff314e9b1eef6eea46815ace1eb870bf28ab54a7cc075ff736800af52575',
  // Scoped S2 precompiled headers move the QLever lock (patch series digest)
  // and the patch series itself. Bound on the CURRENT append only; every

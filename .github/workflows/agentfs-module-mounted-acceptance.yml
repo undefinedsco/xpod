@@ -23,7 +23,7 @@ jobs:
           - target: linux-arm64
             runner: ubuntu-24.04-arm
           - target: darwin-arm64
-            runner: macos-14
+            runner: macos-15
           - target: linux-x64
             runner: ubuntu-24.04
           - target: darwin-x64
