@@ -10,6 +10,14 @@ profiles=importlib.util.module_from_spec(_profile_spec);_profile_spec.loader.exe
 MODEL='controller-owned-daemon-readonly-image-v1'
 WRITABLE={'/opt/qlever-sdk/build','/opt/qlever-sdk/materials'}
 META=4*1024**2
+# The readonly executor is allocated exactly this many CPUs by the caller
+# (docker create --cpus). Build parallelism is DERIVED from that same
+# number, so the lane never leaves its own quota unused and there is only
+# one place the number can come from. This is internal worker allocation,
+# not user configuration: it is a module constant, never read from the host
+# environment, so replay/verification of an old record stays deterministic.
+EXECUTOR_CPUS=4
+EXECUTOR_BUILD_JOBS=EXECUTOR_CPUS
 
 def need(value,why):
     if not value:raise ValueError('readonly SDK executor: '+why)
@@ -34,14 +42,14 @@ def ownership(identity):
 def prepared_argv(builder,platform,identity,deadline,metadata):
     same_tuple(identity,identity);need(re.fullmatch('[A-Za-z0-9_-]{1,100}',builder) is not None,'owned builder name')
     need(platform=={'linux-x64':'linux/amd64','linux-arm64':'linux/arm64'}[identity['target']],'native target/platform exact pair')
-    return local_docker(['docker','buildx','build','--builder',builder,'--file',profiles.declared_profile(identity['sdkProfile'])['dockerfile'],'--target','source-prepared','--platform',platform,'--progress','rawjson','--load','--no-cache-filter','source-prepared','--metadata-file',str(metadata),'--build-arg','XPOD_QLEVER_BUILD_JOBS=2','--build-arg','XPOD_QLEVER_SDK_DEADLINE_UNIX='+str(deadline),'--build-arg','XPOD_QLEVER_SDK_IDENTITY='+json.dumps(identity,sort_keys=True,separators=(',',':')),'.'])
+    return local_docker(['docker','buildx','build','--builder',builder,'--file',profiles.declared_profile(identity['sdkProfile'])['dockerfile'],'--target','source-prepared','--platform',platform,'--progress','rawjson','--load','--no-cache-filter','source-prepared','--metadata-file',str(metadata),'--build-arg','XPOD_QLEVER_BUILD_JOBS='+str(EXECUTOR_BUILD_JOBS),'--build-arg','XPOD_QLEVER_SDK_DEADLINE_UNIX='+str(deadline),'--build-arg','XPOD_QLEVER_SDK_IDENTITY='+json.dumps(identity,sort_keys=True,separators=(',',':')),'.'])
 
 def create_argv(image,identity,deadline,network,nonce):
     need(digest(image) and network in ['none','bridge'] and re.fullmatch('[a-f0-9]{64}',nonce) is not None,'fixed config image/network/nonce')
     name=ownership(identity);volumes={destination:name+'-'+role for destination,role in [('/opt/qlever-sdk/build','build'),('/opt/qlever-sdk/materials','materials')]}
-    argv=['docker','create','--name',name,'--read-only','--cap-drop','ALL','--security-opt','no-new-privileges','--no-healthcheck','--restart','no','--ipc','private','--cgroupns','private','--network',network,'--cpus','4','--memory','4g','--pids-limit','256','--tmpfs','/tmp:rw,nosuid,nodev,size=1073741824']
+    argv=['docker','create','--name',name,'--read-only','--cap-drop','ALL','--security-opt','no-new-privileges','--no-healthcheck','--restart','no','--ipc','private','--cgroupns','private','--network',network,'--cpus',str(EXECUTOR_CPUS),'--memory','4g','--pids-limit','256','--tmpfs','/tmp:rw,nosuid,nodev,size=1073741824']
     for destination,volume in volumes.items():argv+=['--mount','type=volume,src='+volume+',dst='+destination]
-    argv+=['--env','XPOD_QLEVER_SDK_IDENTITY='+json.dumps(identity,sort_keys=True,separators=(',',':')),'--env','XPOD_QLEVER_SDK_DEADLINE_UNIX='+str(deadline),'--env','XPOD_QLEVER_EXECUTOR_NONCE='+nonce,'--env','XPOD_QLEVER_BUILD_JOBS=2','--entrypoint','/usr/bin/python3',image,'-I','-S','-B','/components/qlever/scripts/sdk-readonly-executor-entry.py']
+    argv+=['--env','XPOD_QLEVER_SDK_IDENTITY='+json.dumps(identity,sort_keys=True,separators=(',',':')),'--env','XPOD_QLEVER_SDK_DEADLINE_UNIX='+str(deadline),'--env','XPOD_QLEVER_EXECUTOR_NONCE='+nonce,'--env','XPOD_QLEVER_BUILD_JOBS='+str(EXECUTOR_BUILD_JOBS),'--entrypoint','/usr/bin/python3',image,'-I','-S','-B','/components/qlever/scripts/sdk-readonly-executor-entry.py']
     return argv,volumes
 
 def verify_container(value,image,volumes):

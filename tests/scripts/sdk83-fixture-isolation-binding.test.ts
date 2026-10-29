@@ -76,11 +76,13 @@ it('helper and readonly registries keep every captured whole vector',()=>{
     const live=decodeCatalog('scripts/lib/independent-admission/'+file,name) as readonly unknown[];
     // Frozen vector proves the historical PREFIX only; the live tuple count is
     // the current frontier (observer 55 / controller 36 / fetch 39).
-    expect(live.length).toBe({REVIEWED_OBSERVER_GROUPS:55,REVIEWED_CONTROLLER_HELPER_GROUPS_CURRENT:36,REVIEWED_HELPER_GROUPS_CURRENT:39}[name as 'REVIEWED_OBSERVER_GROUPS']);
+    expect(live.length).toBe({REVIEWED_OBSERVER_GROUPS:56,REVIEWED_CONTROLLER_HELPER_GROUPS_CURRENT:37,REVIEWED_HELPER_GROUPS_CURRENT:40}[name as 'REVIEWED_OBSERVER_GROUPS']);
     for(let i=0;i<hashes.length;i++) expect(whole(live[i]),`${name}[${i}]`).toBe(hashes[i]);
   }
   const readonly=decodeCatalog('scripts/lib/independent-admission/qlever-sdk-readonly-executor.ts','REVIEWED_READONLY_HELPER_GROUPS') as readonly unknown[];
-  expect(readonly).toHaveLength(7);
+  // The live frontier gained one appended current tuple (7 frozen + 1 new);
+  // the frozen prefix vector below is what still proves the history.
+  expect(readonly).toHaveLength(8);
 });
 
 it('the generic selector and budgets are untouched',()=>{

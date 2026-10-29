@@ -155,4 +155,157 @@ class MultiGenerationTests(unittest.TestCase):
     def test_actual_changed_bytes_rehashed_still_reject(self):
         rows,originals=fixture();cap=next(r for r in rows if r['kind']=='fd-capture' and r['role']=='consumer');name=cap['original']['path'];originals[name]=b'change0';cap['original'].update(bytes=7,sha256=hashlib.sha256(originals[name]).hexdigest());cap['identity'][3]=7
         with self.assertRaises(ValueError):observe(rows,originals)
+class StrictAbsentLinkContract(unittest.TestCase):
+    """STRICT matched FAILURE-ONLY settlement of the absent-operand link markers.
+
+    Each case builds the SAME complete legal phase fixture and appends one real
+    unlinkat entry, its real exit, and the link marker rows in stream order, so the
+    raw sequence stays strictly increasing. A declared absent entry may be settled
+    exactly once, and only by its own matching real exit with ``isError`` true and a
+    genuine negative Linux errno; an unobserved operand stays fatal.
+    """
+
+    NR_UNLINKAT = 35
+
+    def _build(self, *, result, is_error, declared=True, confirmed=True,
+               cite_offset=0, unobserved=False, duplicate=False):
+        rows, originals = fixture()
+        rows.pop(); rows.pop()                     # drop the two wait rows
+        seq = [max(row['sequence'] for row in rows)]
+
+        def emit(kind, **fields):
+            seq[0] += 1
+            row = dict(kind=kind, phase='compile', sequence=seq[0], **fields)
+            rows.append(row)
+            return row
+
+        entry = emit('kernel-syscall', pid=11, arch=ARCH, op='entry',
+                     nr=self.NR_UNLINKAT, args=[-100, 4096, 0, 0, 0, 0])
+        # The real emitter declares the absent operand AT THE ENTRY STOP, i.e.
+        # before the exit exists. Mirroring that order is what lets the gate retain
+        # the entry so its own exit can settle the declaration.
+        if declared:
+            # EXACT current emitter envelope + payload (sdk-ptrace-execution.py:1334
+            # plus the common emit_original fields): no key added or omitted.
+            emit('link-metadata-absent-entry', pid=11, entrySequence=entry['sequence'],
+                 form='unlinkat', arch=ARCH, nr=self.NR_UNLINKAT,
+                 resolved=False, regular=None,
+                 observedUnixNs='1793255862193049459',
+                 reason='operand name is absent at the entry stop; absence alone proves no successful effect')
+        emit('kernel-syscall', pid=11, arch=ARCH, op='exit',
+             entrySequence=entry['sequence'], nr=self.NR_UNLINKAT,
+             result=result, isError=is_error)
+        exit_sequence = rows[-1]['sequence']
+        if unobserved:
+            emit('link-metadata-unobserved', pid=11, entrySequence=entry['sequence'],
+                 form='unlinkat', resolved=True, underBuild=False,
+                 observedUnixNs='1793255862193049459',
+                 reason='operand inode is absent or outside the observed generated build root')
+        if confirmed:
+            emit('link-metadata-absent-confirmed', pid=11, entrySequence=entry['sequence'],
+                 exitSequence=exit_sequence + cite_offset, form='unlinkat',
+                 errnoValue=result, newPathHex='2f746d70', oldPathHex=None,
+                 observedUnixNs='1793255862379857501',
+                 scope='actual matching exit returned a negative Linux errno; no inode changed and no successful effect is claimed')
+        if duplicate:
+            emit('link-metadata-absent-confirmed', pid=11, entrySequence=entry['sequence'],
+                 exitSequence=exit_sequence + cite_offset, form='unlinkat',
+                 errnoValue=result, newPathHex='2f746d70', oldPathHex=None,
+                 observedUnixNs='1793255862379857501',
+                 scope='actual matching exit returned a negative Linux errno; no inode changed and no successful effect is claimed')
+        emit('actual-wait-exit', pid=11, returnCode=0)
+        emit('actual-wait-exit', pid=10, returnCode=0)
+        return rows, originals
+
+    def test_marker_field_set_is_exact(self):
+        # A missing "regular" (or any extra key) must be refused: a forged row must
+        # not be able to look like the emitter's deterministic absence marker.
+        rows, originals = self._build(result=-2, is_error=True)
+        marker = next(r for r in rows if r['kind'] == 'link-metadata-absent-entry')
+        del marker['regular']
+        with self.assertRaises(ValueError):
+            observe(rows, originals)
+
+    def test_marker_extra_key_is_refused(self):
+        rows, originals = self._build(result=-2, is_error=True)
+        marker = next(r for r in rows if r['kind'] == 'link-metadata-absent-entry')
+        marker['underBuild'] = False
+        with self.assertRaises(ValueError):
+            observe(rows, originals)
+
+    def test_confirmation_rejects_non_lowercase_hex(self):
+        rows, originals = self._build(result=-2, is_error=True)
+        row = next(r for r in rows if r['kind'] == 'link-metadata-absent-confirmed')
+        row['newPathHex'] = '2F746D70'
+        with self.assertRaises(ValueError):
+            observe(rows, originals)
+
+    def test_confirmation_rejects_odd_length_hex(self):
+        rows, originals = self._build(result=-2, is_error=True)
+        row = next(r for r in rows if r['kind'] == 'link-metadata-absent-confirmed')
+        row['newPathHex'] = '2f746d7'
+        with self.assertRaises(ValueError):
+            observe(rows, originals)
+
+    def test_confirmation_rejects_overlong_path_annotation(self):
+        # The real bound is read_stopped_cstring(..., maximum=4096): 4097 bytes must
+        # be refused, while the 4096-byte maximum itself stays admissible.
+        rows, originals = self._build(result=-2, is_error=True)
+        row = next(r for r in rows if r['kind'] == 'link-metadata-absent-confirmed')
+        row['newPathHex'] = '61' * 4097
+        with self.assertRaises(ValueError):
+            observe(rows, originals)
+
+    def test_confirmation_accepts_the_4096_byte_boundary(self):
+        rows, originals = self._build(result=-2, is_error=True)
+        row = next(r for r in rows if r['kind'] == 'link-metadata-absent-confirmed')
+        row['newPathHex'] = '61' * 4096
+        self.assertTrue(observe(rows, originals))
+
+    def test_marker_phase_must_match_its_entry(self):
+        rows, originals = self._build(result=-2, is_error=True)
+        marker = next(r for r in rows if r['kind'] == 'link-metadata-absent-entry')
+        marker['phase'] = 'cleanup'
+        with self.assertRaises(ValueError):
+            observe(rows, originals)
+
+    def test_matched_enoent_settles_without_any_success_effect(self):
+        # A matched failed unlinkat settles the declared absence and the phase is
+        # admitted; the failure must not produce any successful link effect, so no
+        # link window/transition may appear anywhere in the report.
+        rows, originals = self._build(result=-2, is_error=True)
+        report = observe(rows, originals)
+        self.assertTrue(report)
+        serialized = json.dumps(report)
+        self.assertNotIn('actual-link-window', serialized)
+        self.assertNotIn('actual-link-transition', serialized)
+        self.assertNotIn('link-metadata-unobserved', serialized)
+
+    def test_success_exit_cannot_settle_an_absent_operand(self):
+        rows, originals = self._build(result=0, is_error=False)
+        with self.assertRaises(ValueError):
+            observe(rows, originals)
+
+    def test_unsettled_absent_entry_is_refused(self):
+        rows, originals = self._build(result=-2, is_error=True, confirmed=False)
+        with self.assertRaises(ValueError):
+            observe(rows, originals)
+
+    def test_duplicate_settlement_is_refused(self):
+        rows, originals = self._build(result=-2, is_error=True, duplicate=True)
+        with self.assertRaises(ValueError):
+            observe(rows, originals)
+
+    def test_unobserved_operand_stays_fatal(self):
+        rows, originals = self._build(result=-2, is_error=True, unobserved=True)
+        with self.assertRaises(ValueError):
+            observe(rows, originals)
+
+    def test_confirmation_citing_a_foreign_exit_is_refused(self):
+        rows, originals = self._build(result=-2, is_error=True, cite_offset=999)
+        with self.assertRaises(ValueError):
+            observe(rows, originals)
+
+
+
 if __name__=='__main__':unittest.main()

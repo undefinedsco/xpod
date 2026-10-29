@@ -79,11 +79,13 @@ it('helper and readonly registries keep every captured whole vector',()=>{
     const live=helper(file,name);
     // Frozen vector proves the historical PREFIX; the live frontier is asserted
     // explicitly so a later append can never look like a rewritten history.
-    expect(live.length,name).toBe({REVIEWED_OBSERVER_GROUPS:55,REVIEWED_CONTROLLER_HELPER_GROUPS_CURRENT:36,REVIEWED_HELPER_GROUPS_CURRENT:39}[name as 'REVIEWED_OBSERVER_GROUPS']);
+    expect(live.length,name).toBe({REVIEWED_OBSERVER_GROUPS:56,REVIEWED_CONTROLLER_HELPER_GROUPS_CURRENT:37,REVIEWED_HELPER_GROUPS_CURRENT:40}[name as 'REVIEWED_OBSERVER_GROUPS']);
     for(let i=0;i<hashes.length;i++) expect(whole(live[i]),`${name}[${i}]`).toBe(hashes[i]);
   }
   const readonly=helper('qlever-sdk-readonly-executor.ts','REVIEWED_READONLY_HELPER_GROUPS');
-  expect(readonly).toHaveLength(7);
+  // The live frontier gained one appended current tuple (7 frozen + 1 new);
+  // the frozen prefix vector below is what still proves the history.
+  expect(readonly).toHaveLength(8);
   for(let i=0;i<OLD_READONLY_GROUPS.length;i++) expect(whole(readonly[i]),`readonly[${i}]`).toBe(OLD_READONLY_GROUPS[i]);
 });
 
