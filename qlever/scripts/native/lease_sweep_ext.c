@@ -38,6 +38,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <string.h>
+#include <limits.h>
 
 #define NS_PER_SEC 1000000000LL
 #define NS_FAST_MAX_SEC 9223372035LL
@@ -157,6 +158,7 @@ typedef struct {
     PyObject *row;              /* OWNED: fallback + keeps fd alive */
     PyObject *fd_object;        /* OWNED */
     int fd;
+    int fd_fast_ok;             /* 1 => original int is a valid non-negative int fd */
     int decoded;                /* 1 => all six expected values are exact ints */
     unsigned long long dev, ino, mode;
     long long size, mtime_ns, ctime_ns;
@@ -204,6 +206,7 @@ static void plan_row_clear(PlanRow *row)
     Py_XDECREF(row->fd_object);
     row->row = NULL;
     row->fd_object = NULL;
+    row->fd_fast_ok = 0;
 }
 
 static void plan_clear(Plan *plan)
@@ -300,8 +303,15 @@ static Plan *plan_build(PyObject *rows)
             PyErr_SetString(PyExc_TypeError, "plan fd must be an exact int (no custom fileno)");
             return NULL;
         }
-        int fd = PyLong_AsLong(fd_object);
-        if (fd == -1 && PyErr_Occurred()) { plan_clear(plan); return NULL; }
+        /* Keep the baseline's acceptance and error timing: plan_new accepts every
+         * exact int here, and the fd domain is decided later by the sweep, exactly
+         * as PyObject_AsFileDescriptor would. `fd_fast_ok` records whether the
+         * ORIGINAL integer is a valid non-negative C int (0..INT_MAX) so the decoded
+         * fast path can rely on row->fd without ever using a narrowed value. */
+        long fd_long = PyLong_AsLong(fd_object);
+        if (fd_long == -1 && PyErr_Occurred()) { plan_clear(plan); return NULL; }
+        int fd_fast_ok = (fd_long >= 0 && fd_long <= (long)INT_MAX) ? 1 : 0;
+        int fd = (int)fd_long;
         plan_require_immutable(expected_object, "plan expected identity");
         if (PyErr_Occurred()) { plan_clear(plan); return NULL; }
         if (PyTuple_GET_SIZE(expected_object) != 6) {
@@ -317,6 +327,7 @@ static Plan *plan_build(PyObject *rows)
         plan->count = i + 1;
         row->fd_object = NULL;   /* the exact tuple keeps fd/expected alive */
         row->fd = fd;
+        row->fd_fast_ok = fd_fast_ok;
         row->decoded = 0;
 
         /* Same argument: an exact 6-tuple, held alive by its parent row tuple. */
@@ -367,6 +378,52 @@ static int compare_identity_from_want(PyObject **want, const PlanRow *plan_row,
 /* One row: live F_GETLEASE then fstat, then the six-field identity comparison.
  * `plan_row` is NULL for the generic path; a non-NULL prededoded row only changes
  * how the EXPECTED side is decoded. Returns 1 matched, 0 verdict, -1 error. */
+/* Sample the LIVE state of one row: one PyErr_CheckSignals, then F_GETLEASE with
+ * the original EINTR retry and signal check, then fstat with the original EINTR
+ * retry and signal check, then the fourth signal check. This is the ONLY place
+ * the live syscalls happen, so the decoded fast path and the generic path cannot
+ * drift apart or double-sample a row.
+ *
+ * Returns 1 sampled (*st valid), 0 when a terminal verdict was reached (-1 on
+ * Python error). The four PyErr_CheckSignals boundaries and the EINTR failure
+ * precedence are exactly those of the original check_row. */
+static int sample_live(int fd, struct stat *st, int *verdict, int *errno_out,
+                       Py_ssize_t *index_out, Py_ssize_t row_index)
+{
+    *index_out = row_index;
+    *errno_out = 0;
+    *verdict = V_OK;
+    if (PyErr_CheckSignals() < 0) return -1;          /* check 1 */
+
+    {
+        int lease;
+        for (;;) {
+            errno = 0;
+            lease = fcntl(fd, F_GETLEASE);
+            int saved = errno;
+            if (PyErr_CheckSignals() < 0) return -1;  /* check 2 */
+            if (lease == -1 && saved == EINTR) continue;
+            if (lease == -1) { *verdict = V_ERRNO; *errno_out = saved; return 0; }
+            break;
+        }
+        if (lease != F_RDLCK) { *verdict = V_LEASE; return 0; }
+    }
+    {
+        int stat_result;
+        for (;;) {
+            errno = 0;
+            stat_result = fstat(fd, st);
+            int saved = errno;
+            if (PyErr_CheckSignals() < 0) return -1;  /* check 3 */
+            if (stat_result != 0 && saved == EINTR) continue;
+            if (stat_result != 0) { *verdict = V_ERRNO; *errno_out = saved; return 0; }
+            break;
+        }
+    }
+    if (PyErr_CheckSignals() < 0) return -1;          /* check 4 */
+    return 1;
+}
+
 static int check_row(PyObject *row, int *verdict, int *errno_out, Py_ssize_t *index_out,
                      Py_ssize_t row_index, const PlanRow *plan_row)
 {
@@ -405,48 +462,56 @@ static int check_row(PyObject *row, int *verdict, int *errno_out, Py_ssize_t *in
     }
     Py_DECREF(expected_seq);
 
-    int status = -1;
-    *index_out = row_index;
-    *errno_out = 0;
-    *verdict = V_OK;
-    if (PyErr_CheckSignals() < 0) goto out;
-
-    {
-        int lease;
-        for (;;) {
-            errno = 0;
-            lease = fcntl(fd, F_GETLEASE);
-            int saved = errno;
-            if (PyErr_CheckSignals() < 0) goto out;
-            if (lease == -1 && saved == EINTR) continue;
-            if (lease == -1) { *verdict = V_ERRNO; *errno_out = saved; status = 0; goto out; }
-            break;
-        }
-        if (lease != F_RDLCK) { *verdict = V_LEASE; status = 0; goto out; }
-    }
-    {
-        struct stat st;
-        int stat_result;
-        for (;;) {
-            errno = 0;
-            stat_result = fstat(fd, &st);
-            int saved = errno;
-            if (PyErr_CheckSignals() < 0) goto out;
-            if (stat_result != 0 && saved == EINTR) continue;
-            if (stat_result != 0) { *verdict = V_ERRNO; *errno_out = saved; status = 0; goto out; }
-            break;
-        }
-        if (PyErr_CheckSignals() < 0) goto out;
+    struct stat st;
+    int status = sample_live(fd, &st, verdict, errno_out, index_out, row_index);
+    if (status == 1) {
         int equal = compare_identity_from_want(want, plan_row, &st);
-        if (equal < 0) goto out;
-        if (!equal) { *verdict = V_IDENTITY; status = 0; goto out; }
+        if (equal < 0) status = -1;
+        else if (!equal) { *verdict = V_IDENTITY; status = 0; }
     }
-    status = 1;
 
-out:
     for (int field = 0; field < 6; field++) Py_XDECREF(want[field]);
     Py_DECREF(fd_object);
     return status;
+}
+
+/* Fast path for a row that plan_build already proved to be an exact-int fd plus
+ * six exact-int expectations. It samples the LIVE state through the SAME
+ * sample_live() the generic path uses (so one fcntl+fstat per row per sweep and
+ * the same four signal boundaries), then compares against the stored numbers.
+ * No Python object is touched: nothing to snapshot, nothing to incref.
+ *
+ * If the live times leave the int64 window the generic comparison could still
+ * MATCH using exact PyLong math, so this row is decided by check_row() with the
+ * ALREADY SAMPLED stat reused via compare_identity_from_want -- not by rescanning.
+ * Returns 1 matched, 0 verdict, -1 error, and V_NEEDPY in *verdict for that row. */
+static int check_decoded_row(const PlanRow *row, struct stat *st_out, int *verdict,
+                             int *errno_out, Py_ssize_t *index_out, Py_ssize_t row_index)
+{
+    struct stat st;
+    int status = sample_live(row->fd, &st, verdict, errno_out, index_out, row_index);
+    if (status != 1) return status;
+
+    if (st.st_mtim.tv_nsec >= 0 && st.st_mtim.tv_nsec < NS_PER_SEC
+        && st.st_mtim.tv_sec >= -NS_FAST_MAX_SEC && st.st_mtim.tv_sec <= NS_FAST_MAX_SEC
+        && st.st_ctim.tv_nsec >= 0 && st.st_ctim.tv_nsec < NS_PER_SEC
+        && st.st_ctim.tv_sec >= -NS_FAST_MAX_SEC && st.st_ctim.tv_sec <= NS_FAST_MAX_SEC) {
+        if ((unsigned long long)st.st_dev != row->dev
+            || (unsigned long long)st.st_ino != row->ino
+            || (unsigned long long)st.st_mode != row->mode
+            || (long long)st.st_size != row->size
+            || (long long)st.st_mtim.tv_sec * NS_PER_SEC + (long long)st.st_mtim.tv_nsec != row->mtime_ns
+            || (long long)st.st_ctim.tv_sec * NS_PER_SEC + (long long)st.st_ctim.tv_nsec != row->ctime_ns) {
+            *verdict = V_IDENTITY;
+            return 0;
+        }
+        return 1;
+    }
+    /* Out of the fast window: hand THIS row to the exact comparison, reusing the
+     * stat already sampled above. */
+    *st_out = st;
+    *verdict = V_NEEDPY;
+    return 0;
 }
 
 static PyObject *lease_sweep(PyObject *module_self, PyObject *args)
@@ -503,6 +568,47 @@ done:
  * sweep uses, so a test can prove the exact boundary value survives. It touches
  * no fd and makes no lease claim.
  */
+/* Decide ONE row whose live times fall outside the int64 fast window, using the
+ * stat ALREADY sampled for that row. Only the current row is examined: the exact
+ * PyLong comparison is the same one the generic path uses, and no other row is
+ * re-read or re-ordered. Returns 1 matched, 0 when a verdict was reached.
+ * -1 on Python error. */
+static int exact_compare_sampled_row(const PlanRow *row, const struct stat *st,
+                                     int *verdict, int *errno_out)
+{
+    PyObject *pair = PySequence_Fast(row->row, "row must be (fd, expected)");
+    if (pair == NULL) return -1;
+    if (PySequence_Fast_GET_SIZE(pair) != 2) {
+        Py_DECREF(pair);
+        PyErr_SetString(PyExc_ValueError, "row must be (fd, expected)");
+        return -1;
+    }
+    PyObject *expected = PySequence_Fast_ITEMS(pair)[1];
+    Py_INCREF(expected);
+    Py_DECREF(pair);
+
+    PyObject *seq = PySequence_Fast(expected, "expected must be 6 values");
+    Py_DECREF(expected);
+    if (seq == NULL) return -1;
+    if (PySequence_Fast_GET_SIZE(seq) != 6) {
+        Py_DECREF(seq);
+        PyErr_SetString(PyExc_ValueError, "expected identity must have 6 fields");
+        return -1;
+    }
+    PyObject *want[6];
+    PyObject **snap = PySequence_Fast_ITEMS(seq);
+    for (int field = 0; field < 6; field++) want[field] = snap[field];
+    int equal = compare_identity_from_want(want, row, st);
+    Py_DECREF(seq);
+    if (equal < 0) return -1;
+    if (!equal) {
+        *verdict = V_IDENTITY;
+        *errno_out = 0;
+        return 0;
+    }
+    return 1;
+}
+
 static PyObject *lease_sweep_plan(PyObject *module_self, PyObject *args)
 {
     (void)module_self;
@@ -516,13 +622,55 @@ static PyObject *lease_sweep_plan(PyObject *module_self, PyObject *args)
     if (plan == NULL) return NULL;
 
     Py_ssize_t count = plan->count;
+    if (count > 0) {
+        int all_decoded = 1;
+        for (Py_ssize_t i = 0; i < count; i++) {
+            if (!plan->rows[i].decoded || !plan->rows[i].fd_fast_ok) { all_decoded = 0; break; }
+        }
+        if (all_decoded) {
+            /* Fast path: the capsule argument keeps the plan (and every row it
+             * owns) alive for this synchronous call, and there is no GIL release,
+             * so nothing can drop it mid-sweep. Each row is sampled exactly once
+             * through sample_live(): one F_GETLEASE then one fstat, with the four
+             * original signal boundaries.
+             *
+             * Three ways out: a real verdict (return immediately), a clean full
+             * pass (return V_OK ONCE), or a row whose live times left the int64
+             * window. In the last case only THAT row goes to the exact Python
+             * comparison, reusing the stat already sampled, and the sweep then
+             * continues -- no second pass, no re-ordered sampling. */
+            /* ONE ascending pass. Each row is live-sampled exactly once, by
+             * check_decoded_row(), which performs the single F_GETLEASE then the
+             * single fstat with the four original signal boundaries. When a row's
+             * live times fall outside the int64 fast window, that SAME sampled
+             * stat is compared exactly against that row's expected objects and the
+             * sweep then continues with i+1. Nothing is re-sampled, re-ordered or
+             * restarted, so cadence and first-failure order stay the serial ones. */
+            for (Py_ssize_t i = 0; i < count; i++) {
+                int verdict = V_OK, errno_value = 0;
+                Py_ssize_t index = i;
+                struct stat sampled;
+                int status = check_decoded_row(&plan->rows[i], &sampled, &verdict,
+                                               &errno_value, &index, i);
+                if (status < 0) return NULL;
+                if (status == 0) {
+                    if (verdict != V_NEEDPY) return verdict_tuple(verdict, index, errno_value);
+                    int exact = exact_compare_sampled_row(&plan->rows[i], &sampled,
+                                                          &verdict, &errno_value);
+                    if (exact < 0) return NULL;
+                    if (exact == 0) return verdict_tuple(verdict, i, errno_value);
+                }
+            }
+            return verdict_tuple(V_OK, (Py_ssize_t)-1, 0);
+        }
+    }
+
     PyObject **owned = NULL;
     if (count > 0) {
         owned = PyMem_New(PyObject *, (size_t)count);
         if (owned == NULL) return PyErr_NoMemory();
         for (Py_ssize_t i = 0; i < count; i++) { owned[i] = plan->rows[i].row; Py_INCREF(owned[i]); }
     }
-
     PyObject *result = NULL;
     for (Py_ssize_t i = 0; i < count; i++) {
         int verdict = V_OK, errno_value = 0;

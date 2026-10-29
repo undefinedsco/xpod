@@ -1,13 +1,16 @@
 import importlib.util
 import io
+import os
 from pathlib import Path
 import tarfile
 import tempfile
 import unittest
+from unittest import mock
 HERE=Path(__file__).resolve().parents[1]/'scripts'
 def load(name):
     spec=importlib.util.spec_from_file_location(name,HERE/(name+'.py'));value=importlib.util.module_from_spec(spec);spec.loader.exec_module(value);return value
 route=load('sdk-readonly-normal-route');result=route.result_context
+bindings=load('sdk-readonly-executor-bindings')
 class RouteTest(unittest.TestCase):
     def test_kernel_diagnostic_never_runs_sdk_or_seals_sdk_success_and_always_cleans_builder(self):
         import json,os,types
@@ -51,6 +54,48 @@ class RouteTest(unittest.TestCase):
         self.assertEqual(argv[:3],['docker','--host','unix:///var/run/docker.sock']);self.assertIn('source-prepared',argv);self.assertIn('--load',argv);self.assertNotIn('--push',argv)
         with self.assertRaises(ValueError):route.prepared_argv('owned','linux/amd64',identity,100,'metadata.json')
         with self.assertRaises(ValueError):route.prepared_argv('foreign/name','linux/arm64',identity,100,'metadata.json')
+    def test_build_jobs_derive_from_the_declared_executor_cpu_count(self):
+        # One internal authority: the lane's CPU allocation. Build parallelism must
+        # equal it in BOTH the prepared build-arg and the runtime env, and the
+        # resource bounds themselves must stay exactly 4 CPU / 4 GiB / PID 256.
+        identity=dict(sourceSha='a'*40,runHeadSha='a'*40,runId=12,runAttempt=1,target='linux-arm64',sdkProfile='module-bookworm-gcc12')
+        self.assertEqual(bindings.EXECUTOR_CPUS,4)
+        self.assertEqual(bindings.EXECUTOR_BUILD_JOBS,bindings.EXECUTOR_CPUS)
+        create,volumes=bindings.create_argv('sha256:'+'b'*64,identity,100,'none','c'*64)
+        self.assertEqual(create[create.index('--cpus')+1],str(bindings.EXECUTOR_CPUS))
+        self.assertEqual(create[create.index('--memory')+1],'4g')
+        self.assertEqual(create[create.index('--pids-limit')+1],'256')
+        env=[create[i+1] for i,value in enumerate(create) if value=='--env']
+        jobs=[entry for entry in env if entry.startswith('XPOD_QLEVER_BUILD_JOBS=')]
+        self.assertEqual(len(jobs),1)
+        self.assertEqual(jobs[0],'XPOD_QLEVER_BUILD_JOBS='+str(bindings.EXECUTOR_CPUS))
+        prepared=bindings.prepared_argv('owned','linux/arm64',identity,100,'metadata.json')
+        args=[prepared[i+1] for i,value in enumerate(prepared) if value=='--build-arg']
+        build_jobs=[entry for entry in args if entry.startswith('XPOD_QLEVER_BUILD_JOBS=')]
+        self.assertEqual(len(build_jobs),1)
+        self.assertEqual(build_jobs[0],jobs[0],'prepared and runtime job counts must agree')
+    def test_job_count_is_pure_and_ignores_the_host_environment(self):
+        # Verification replays create_argv() to rebuild the expected command, so the
+        # result must not depend on whatever environment the later verifier runs in.
+        identity=dict(sourceSha='a'*40,runHeadSha='a'*40,runId=12,runAttempt=1,target='linux-arm64',sdkProfile='module-bookworm-gcc12')
+        baseline=bindings.create_argv('sha256:'+'b'*64,identity,100,'none','c'*64)
+        baseline_prepared=bindings.prepared_argv('owned','linux/arm64',identity,100,'metadata.json')
+        for value in ('1','2','8','0'):
+            with mock.patch.dict(os.environ,{'XPOD_QLEVER_BUILD_JOBS':value}):
+                again=bindings.create_argv('sha256:'+'b'*64,identity,100,'none','c'*64)
+                again_prepared=bindings.prepared_argv('owned','linux/arm64',identity,100,'metadata.json')
+            self.assertEqual(again,baseline,'host env must not change the replayed command')
+            self.assertEqual(again_prepared,baseline_prepared,'host env must not change prepared argv')
+    def test_two_way_parallelism_is_a_regression(self):
+        # Guards the specific old override: prepared and runtime both hardcoded 2
+        # while the container was allocated 4 CPUs.
+        identity=dict(sourceSha='a'*40,runHeadSha='a'*40,runId=12,runAttempt=1,target='linux-arm64',sdkProfile='module-bookworm-gcc12')
+        create,_volumes=bindings.create_argv('sha256:'+'b'*64,identity,100,'none','c'*64)
+        prepared=bindings.prepared_argv('owned','linux/arm64',identity,100,'metadata.json')
+        for argv in (create,prepared):
+            for entry in argv:
+                self.assertNotEqual(entry,'XPOD_QLEVER_BUILD_JOBS=2',
+                                    'the two-job override must not come back')
     def test_composition_copies_actual_volumes_and_runs_linked_contract(self):
         value=route.linked_dockerfile('sha256:'+'a'*64)
         self.assertIn('COPY build/ /opt/qlever-sdk/build/',value);self.assertIn('COPY materials/ /opt/qlever-sdk/materials/',value)

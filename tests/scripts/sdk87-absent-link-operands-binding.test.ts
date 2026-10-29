@@ -26,6 +26,8 @@ const PATCH = 'qlever/patches/qlever-antlr-scoped-pch-and-server-pch-reuse.patch
 const LEASES = 'qlever/scripts/sdk-tool-lifetime-leases.py';
 const LEASE_EXT = 'qlever/scripts/native/lease_sweep_ext.c';
 const LEASE_BINDING = 'qlever/scripts/native/lease_sweep_binding.py';
+const EXECUTOR_BINDINGS = 'qlever/scripts/sdk-readonly-executor-bindings.py';
+const READONLY_NORMAL = '.github/workflows/qlever-readonly-normal-job.yml';
 const all = (g: any) => [...g.selectors, ...(g.secondarySelectors ?? []), ...(g.secondarySelectorStages ?? []).flat(), ...g.sourceBindings];
 
 /** SDK86's published bytes — HISTORICAL, never replaced with today's tree. */
@@ -60,7 +62,7 @@ it('SDK87 whole-inherits SDK86 and re-pins only the reviewed current roles', () 
   }
   // The observer (4 inherited occurrences) and the leaf (1) move, plus the QLever
   // lock/series and the current builder documentation whose bytes changed.
-  expect(new Set(moved)).toEqual(new Set([OBSERVER, LEAF, LOCK, SERIES, LEASES, LEASE_EXT, LEASE_BINDING, BUILDER]));
+  expect(new Set(moved)).toEqual(new Set([OBSERVER, LEAF, LOCK, SERIES, LEASES, LEASE_EXT, LEASE_BINDING, BUILDER, EXECUTOR_BINDINGS, READONLY_NORMAL]));
   expect(moved.filter(p => p === OBSERVER)).toHaveLength(4);
   expect(moved.filter(p => p === LEAF)).toHaveLength(1);
   // The filtered-lease lookup slice moves the lease implementation's CURRENT
@@ -70,7 +72,12 @@ it('SDK87 whole-inherits SDK86 and re-pins only the reviewed current roles', () 
   expect(moved.filter(p => p === LEASE_EXT)).toHaveLength(2);
   expect(moved.filter(p => p === LEASE_BINDING)).toHaveLength(2);
   expect(moved.filter(p => p === BUILDER)).toHaveLength(3);
-  for (const role of [LEASES, LEASE_EXT, LEASE_BINDING, BUILDER]) {
+  // The readonly executor lane derives its parallelism from its own 4-CPU
+  // allocation, so its CURRENT bytes move in both inherited occurrences.
+  expect(moved.filter(p => p === EXECUTOR_BINDINGS)).toHaveLength(2);
+  // Its pin list follows the executor lane, so this CURRENT workflow moves once.
+  expect(moved.filter(p => p === READONLY_NORMAL)).toHaveLength(1);
+  for (const role of [LEASES, LEASE_EXT, LEASE_BINDING, BUILDER, EXECUTOR_BINDINGS, READONLY_NORMAL]) {
     for (const row of all(next).filter((r: any) => r.path === role)) expect(row.sha256).toBe(sha(role));
   }
   for (const row of all(next).filter((r: any) => r.path === LEASES)) expect(row.sha256).toBe(sha(LEASES));

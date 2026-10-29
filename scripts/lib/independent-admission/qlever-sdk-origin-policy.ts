@@ -2286,9 +2286,16 @@ const SDK87_SOURCE_HASHES:Readonly<Record<string,string>>=Object.freeze({
  'qlever/scripts/sdk-tool-lifetime-leases.py':'85f5101f1d27644c851145818f791ca52d87dc6087b4f7df8f0d4bbf579d9b0c',
  // Immutable registration-input plan: explicit per-instance capsule, no module
  // global. Current SDK87 binding only; published tuples keep their bytes.
- 'qlever/scripts/native/lease_sweep_ext.c':'c99287abe2f93bfde4c82abcc4d322605f88addc24e72d3b5899ab961629038d',
+ 'qlever/scripts/native/lease_sweep_ext.c':'e3ca18a6d7674b60a65c483d5663308619543d09baf80d344009925f32d5a74b',
+ // The readonly executor lane now DERIVES its build parallelism from its own
+ // 4-CPU allocation instead of hardcoding 2, so its current bytes move too.
+ // Current SDK87 binding only; published tuples keep their bytes.
+ 'qlever/scripts/sdk-readonly-executor-bindings.py':'107e2dea586056c98455e89471c0d303b1c36cb11018ee5a6d67d97caefd0b1e',
+ // The readonly normal job's pin list had to follow the executor lane's new
+ // bytes, so this CURRENT workflow file moves too. Published tuples keep theirs.
+ '.github/workflows/qlever-readonly-normal-job.yml':'3c0735b1ab0c035aef66371d580b2632d69f5cf37eca036f432560e0d034f737',
  'qlever/scripts/native/lease_sweep_binding.py':'7386166a878d2a1fbd5f3145759888baa072171ab541b45cd5fbc5bcea6784f8',
- 'tests/scripts/candidate-producer-attempt-binding.test.ts':'91caff314e9b1eef6eea46815ace1eb870bf28ab54a7cc075ff736800af52575',
+ 'tests/scripts/candidate-producer-attempt-binding.test.ts':'da3d74316849a5915c46660df4ebb76c9d8deecc5522d317f3c3fc471b7f343a',
  // Scoped S2 precompiled headers move the QLever lock (patch series digest)
  // and the patch series itself. Bound on the CURRENT append only; every
  // published tuple keeps its own historical bytes.
