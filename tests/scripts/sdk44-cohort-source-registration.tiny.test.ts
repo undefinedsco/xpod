@@ -17,15 +17,14 @@ test('SDK44 keeps every actual89f complete recipe and binds the final native-tes
  const policy=readFileSync('scripts/lib/independent-admission/consumer-observer-policy.ts');expect(policy.byteLength<1024*1024).toBe(true);
  const base64=policy.toString('base64').match(/.{1,60}/gu)!.join('\n')+'\n';expect(Buffer.byteLength(JSON.stringify({type:'file',size:policy.byteLength,encoding:'base64',content:base64}))<=2*1024*1024).toBe(true);
 });
-test('thirty-nine complete declared helper tuples are admitted; fortieth, ambiguity and observed33 refuse',()=>{
- // The declared VERSION catalogue is now exactly 38 (genuine appends: the B794
- // owned-window diagnostic, the SDK19 failure-telemetry slice, the SDK85
- // fail-only diagnostic tuple and the SDK86 append pushed the fetch CURRENT
- // catalogue to a 39th tuple). This is a declared VERSION count, never an
+test('forty complete declared helper tuples are admitted; forty-first, ambiguity and observed33 refuse',()=>{
+ // The declared VERSION catalogue is now exactly 40 (genuine appends through the
+ // PR124 strict absent-link slice pushed the fetch CURRENT catalogue to a 40th
+ // tuple). This is a declared VERSION count, never an
  // artifact/capture/per-tuple capacity. The observed PER-TUPLE role bound remains 32, asserted by
  // full32/full33 below.
- const groups=Array.from({length:39},(_,i)=>Object.freeze([Object.freeze(['helper',String(i)] as const)]));expect(selectHelpers(groups,new Map(groups[38]!))).toBe(groups[38]!);expect(planHelpers(groups,['helper'],new Map(groups[38]!))).toBe(groups[38]!);
- for(const declared of [[...groups,[['helper','39'] as const]], [...groups.slice(0,25),groups[0]!]]){expect(()=>selectHelpers(declared,new Map(declared[declared.length-1]!))).toThrow();expect(()=>planHelpers(declared,['helper'],new Map(declared[declared.length-1]!))).toThrow();}
+ const groups=Array.from({length:40},(_,i)=>Object.freeze([Object.freeze(['helper',String(i)] as const)]));expect(selectHelpers(groups,new Map(groups[39]!))).toBe(groups[39]!);expect(planHelpers(groups,['helper'],new Map(groups[38]!))).toBe(groups[38]!);
+ for(const declared of [[...groups,[['helper','40'] as const]], [...groups.slice(0,25),groups[0]!]]){expect(()=>selectHelpers(declared,new Map(declared[declared.length-1]!))).toThrow();expect(()=>planHelpers(declared,['helper'],new Map(declared[declared.length-1]!))).toThrow();}
  const full32=Object.freeze(Array.from({length:32},(_,i)=>Object.freeze([String(i),'a'] as const)));expect(selectHelpers([full32],new Map(full32))).toBe(full32);expect(planHelpers([full32],full32.map(row=>row[0]),new Map(full32))).toBe(full32);
  expect(()=>selectHelpers(groups,new Map(Array.from({length:33},(_,i)=>[String(i),'a'] as const)))).toThrow();
  const full33=Object.freeze(Array.from({length:33},(_,i)=>Object.freeze([String(i),'a'] as const)));expect(()=>selectHelpers([full33],new Map(full33))).toThrow();expect(()=>planHelpers([full33],full33.map(row=>row[0]),new Map(full33))).toThrow();

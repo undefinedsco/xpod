@@ -60,8 +60,12 @@ it('SDK86 whole-inherits SDK85 and re-pins exactly the two runtime helpers plus 
   for (const row of all(next).filter((r: any) => r.path === BINDER || r.path === OBSERVER))
     expect(row.sha256).toBe(SDK86_FROZEN[row.path]!);
   expect(next.sourceBindings.find(r => r.path === LEAF)!.sha256).toBe(SDK86_FROZEN[LEAF]!);
-  // The BINDER role did not move in SDK87, so it still equals today's bytes.
-  expect(SDK86_FROZEN[BINDER]).toBe(sha(BINDER));
+  // SDK87 moved the binder; SDK86 keeps its recorded bytes while the current
+  // group's three binder roles must all match the live implementation.
+  expect(SDK86_FROZEN[BINDER]).not.toBe(sha(BINDER));
+  const currentBinder = all(SDK[86]!).filter((r: any) => r.path === BINDER);
+  expect(currentBinder).toHaveLength(3);
+  for (const row of currentBinder) expect(row.sha256).toBe(sha(BINDER));
 });
 
 it('generic selector resolves SDK85/current/stale against the real bytes', () => {

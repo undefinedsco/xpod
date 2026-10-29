@@ -15,3 +15,9 @@ from qlever.tests.test_sdk_shared_task_ownership import Tests as SharedTaskOwner
 from qlever.tests.test_sdk_shared_task_ownership import AliasCloseTests as SharedTaskAliasCloseTests
 from qlever.tests.test_sdk86_metadata_operands import TimestampOperands as Sdk86TimestampOperandTests
 from qlever.tests.test_sdk86_metadata_operands import LinkOperands as Sdk86LinkOperandTests
+# PR124: the strict matched FAILURE-ONLY absent-link settlement must be executed by
+# the CI gate, not merely defined next to it. Re-export the real regression class
+# under this module's discovered prefix so `discover -p test_qlever*` runs it.
+from qlever.tests.test_sdk_generation_multiprocess_bindings import (
+    StrictAbsentLinkContract as Pr124StrictAbsentLinkContractTests,
+)

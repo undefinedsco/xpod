@@ -651,6 +651,19 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
     live=set();last=0;entries={};exits={};barriers={};caps={};paths={};renames=[];consumers=[];source_reads=[];total=0;capture_total=0;exclusive=None;root_codes={};clone_flags=set();clone_flag_values={}
     alias_close_windows={};alias_close_exits=set()
     link_windows={};link_transitions={};link_args={};mode_windows={};mode_transitions={};timestamp_windows={};timestamp_transitions={};metadata_args={};rename_windows={};rename_transitions={};active_rename=None;pending_rename_window=None;latest_execution_sequence=0;write_original_sequences={};namespace_bindings=[]
+    # STRICT matched FAILURE-ONLY settlement for the absent-operand link markers.
+    # absent_entries maps the marker's own entrySequence -> its declaration; a row
+    # may be settled exactly once, and only by the matching real exit (isError true,
+    # genuine negative Linux errno) plus a confirmation that cites that same exit.
+    # `unobserved` entries are collected ONLY so phase-end can refuse them: they
+    # prove nothing, so no window/transition may ever cite them.
+    absent_entries={};absent_settled={};absent_confirmed={};unobserved_entries=set();link_evidence_sequences=set()
+    # EXACT emitter field sets for the two admitted absent-operand markers, taken
+    # from the real emitter (sdk-ptrace-execution.py:1226 and :1334) plus the common
+    # envelope that emit_original adds to every row (:894). A missing or extra key is
+    # a rejection, so a forged row cannot drop "regular" or invent authority.
+    ABSENT_ENTRY_KEYS=frozenset(['kind','phase','sequence','observedUnixNs','pid','entrySequence','form','arch','nr','resolved','regular','reason'])
+    ABSENT_CONFIRMED_KEYS=frozenset(['kind','phase','sequence','observedUnixNs','pid','entrySequence','exitSequence','form','errnoValue','newPathHex','oldPathHex','scope'])
     append_obligations={};append_completed={};append_dirty={};append_checkpoints={};append_hashes={};write_projections={};write_windows={};closed_write_windows=set();write_transitions={};write_consumers=[];write_read_exits={}
     empty_windows={};empty_eofs=set();dependency_roots={};dependency_reads=0;dependency_cache=None;dependency_expected_names=None;dependency_collection_identity=None
     reused_originals={};prepared={};prepared_consumers=[];prepared_digest=hashlib.sha256();prepared_count=0;prepared_sealed=False;prepared_paths=set()
@@ -1602,6 +1615,88 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                 for value in lease_closed:digest.update(json.dumps(value,sort_keys=True,separators=(',',':')).encode()+b'\n')
                 need(row.get('tokenCount')==len(lease_closed) and row.get('tokensSha256')==digest.hexdigest() and row.get('actualClosedPidCount')==len(lease_pids) and lease_pids==sorted(wait['pid'] for wait in waits) and row.get('allTrackedWaitsClosed') is True,'lease terminal count/hash/actual waits differ')
                 lease_terminal=True
+            elif kind=='link-metadata-absent-entry':
+                # Declaration only: the name was absent at the ENTRY stop, which proves
+                # NO successful effect. The row must carry EXACTLY the emitter's field
+                # set, be bound to its own real live entry in the same phase, and may be
+                # settled at most once -- only by a matching real failed exit.
+                keys=set(row)
+                need(keys in (ABSENT_ENTRY_KEYS, ABSENT_ENTRY_KEYS|{'observedMonotonicNs'}),
+                     'absent link entry field set differs from the emitter')
+                sequence=row.get('entrySequence');entry=entries.get(sequence)
+                need(type(sequence) is int and sequence>0,'absent link entry lacks its entry sequence')
+                need(entry is not None and entry.get('op')=='entry','absent link entry does not name a real entry')
+                need(row.get('pid')==entry['pid'],'absent link entry pid differs from its real entry')
+                need(row.get('phase')==entry.get('phase'),'absent link entry phase differs from its real entry')
+                need(row.get('arch')==entry['arch'],'absent link entry arch differs from its real entry')
+                need(row.get('nr')==entry['nr'],'absent link entry nr differs from its real entry')
+                need(isinstance(row.get('form'),str) and row['form'] in LINK_SYSCALLS.get(entry['arch'],{}),
+                     'absent link entry form is not a known link form')
+                need(LINK_SYSCALLS[entry['arch']][row['form']]==entry['nr'],'absent link entry form does not match its real entry syscall')
+                # Deterministic values, not mere presence: a forged row must not be
+                # able to drop "regular" and still read as a clean absence marker.
+                need(row.get('resolved') is False and row.get('regular') is None,'absent link entry claims an observed operand')
+                need(isinstance(row.get('reason'),str) and row['reason'],'absent link entry lacks its reason annotation')
+                need(isinstance(row.get('observedUnixNs'),str) and row['observedUnixNs'].isdigit(),'absent link entry lacks its observation timestamp')
+                need(sequence not in absent_entries,'absent link entry declared twice')
+                absent_entries[sequence]=row
+                # Retain this entry so its real exit is decoded and can settle the
+                # declaration; without this the exit would be dropped and the marker
+                # could never be settled by the matched failed exit.
+                retained_entries.add(sequence)
+            elif kind=='link-metadata-absent-confirmed':
+                # The ONLY settlement, and strictly failure-only. The matching real
+                # exit must be a genuine kernel error with a negative Linux errno, and
+                # the confirmation must cite that exact exit for the same entry,
+                # architecture, pid and phase. Success, orphans, duplicates and foreign
+                # joins are all refused.
+                keys=set(row)
+                need(keys in (ABSENT_CONFIRMED_KEYS, ABSENT_CONFIRMED_KEYS|{'observedMonotonicNs'}),
+                     'absent link confirmation field set differs from the emitter')
+                sequence=row.get('entrySequence');exit_sequence=row.get('exitSequence')
+                declaration=absent_entries.get(sequence)
+                need(declaration is not None,'absent link confirmation without its own absent-entry marker')
+                need(sequence not in absent_settled,'absent link entry settled twice')
+                need(type(exit_sequence) is int and exit_sequence>0,'absent link confirmation lacks its exit sequence')
+                exit=exits.get(sequence)
+                need(exit is not None and exit.get('op')=='exit','absent link confirmation does not cite a real exit')
+                need(exit['sequence']==exit_sequence,'absent link confirmation cites the wrong exit sequence')
+                need(exit.get('entrySequence')==sequence,'absent link exit belongs to a different entry')
+                need(exit.get('arch')==declaration['arch'],'absent link exit architecture differs from its entry')
+                need(exit.get('pid')==declaration['pid'],'absent link exit pid differs from its entry')
+                need(row.get('phase')==declaration['phase'],'absent link confirmation phase differs from its declaration')
+                need(row.get('pid')==declaration['pid'],'absent link confirmation pid differs from its declaration')
+                need(row.get('form')==declaration['form'],'absent link confirmation form differs from its declaration')
+                need(exit['isError'] is True,'absent link settled by a NON-error exit')
+                result=exit['result']
+                need(type(result) is int and -4095<=result<=-1,'absent link exit lacks a genuine negative Linux errno')
+                need(row.get('errnoValue')==result,'absent link confirmation errno differs from the real exit result')
+                # Path bytes are ANNOTATIONS only: they are shape-checked (lowercase,
+                # even-length hex, within the emitter's 4096-byte operand bound) and are
+                # never used to derive a path, namespace, custody or source authority.
+                for field in ('newPathHex','oldPathHex'):
+                    value=row.get(field)
+                    if value is None:
+                        need(field=='oldPathHex','absent link confirmation lacks its new path annotation')
+                        continue
+                    need(isinstance(value,str) and value==value.lower(),'absent link path annotation is not lowercase')
+                    need(len(value)%2==0,'absent link path annotation is not even-length hex')
+                    try: raw=bytes.fromhex(value)
+                    except ValueError: raise ValueError('multi-process generation originals: absent link path annotation is not hex')
+                    need(0<len(raw)<=4096,'absent link path annotation exceeds the actual 4096-byte operand bound')
+                need(isinstance(row.get('scope'),str) and row['scope'],'absent link confirmation lacks its scope annotation')
+                need(isinstance(row.get('observedUnixNs'),str) and row['observedUnixNs'].isdigit(),'absent link confirmation lacks its observation timestamp')
+                absent_settled[sequence]=exit_sequence
+                absent_confirmed[sequence]=row
+            elif kind=='link-metadata-unobserved':
+                # FATAL by construction: an unobserved operand proves nothing, so it
+                # may never be cited by a window or a transition. It is collected so
+                # phase-end can refuse the phase instead of quietly admitting it.
+                sequence=row.get('entrySequence');entry=entries.get(sequence)
+                need(type(sequence) is int and sequence>0,'unobserved link metadata lacks its entry sequence')
+                need(entry is not None and entry.get('op')=='entry','unobserved link metadata does not name a real entry')
+                need(row.get('pid')==entry['pid'] and row.get('form') in LINK_SYSCALLS.get(entry['arch'],{}),'unobserved link metadata does not match its real entry')
+                unobserved_entries.add(sequence)
             elif kind=='retained-fd-rename-binding':renames.append(row)
             elif kind=='generated-consumer-binding':consumers.append(row)
             elif kind=='prepared-consumer-binding':prepared_consumers.append(row)
@@ -1637,6 +1732,18 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
     need(not exec_fd_events,'actual exec FD table change missing')
     need(len(mode_windows)==len(mode_transitions),'actual chmod window missing actual exit')
     need(len(timestamp_windows)==len(timestamp_transitions),'actual timestamp window missing actual exit')
+    # STRICT absent-link closure. Three independent obligations:
+    #  1. no unobserved operand may exist at all -- it proves nothing, so it is fatal;
+    #  2. every declared absent entry is settled exactly once by a matched failed exit;
+    #  3. no window/transition/args original may cite an absent or unobserved entry,
+    #     so a successful effect can never be claimed for a failed operation.
+    need(not unobserved_entries,'link metadata unobserved: an absent or out-of-root operand cannot be qualified')
+    need(set(absent_entries)==set(absent_settled),'absent link entry left unsettled by a matched failed exit')
+    need(len(absent_settled)==len(absent_confirmed)==len(absent_entries),'absent link settlement is not one-to-one')
+    absent_or_unobserved=set(absent_entries)|unobserved_entries
+    need(not (absent_or_unobserved & {row['entrySequence'] for row in link_args.values()}),'link args original cites an absent or unobserved entry')
+    need(not (absent_or_unobserved & {window['entrySequence'] for window in link_windows.values()}),'link window cites an absent or unobserved entry')
+    need(not (absent_or_unobserved & {window['entrySequence'] for window,_ in link_transitions.values()}),'link transition cites an absent or unobserved entry')
     need(len(link_windows)==len(link_transitions),'actual link window missing actual exit')
     need(active_rename is None and pending_rename_window is None and len(rename_windows)==len(rename_transitions),'retained rename window missing actual exit')
     need(len(write_windows)==len(write_transitions),'actual write window missing exit transition')

@@ -375,9 +375,11 @@ test('the live canonical binds every actual row of the final combined tree', () 
 
 test('helper tuples retain the e4 published histories and current role bytes', () => {
   const tables = [
-    ['qlever-sdk-generation.ts', 'REVIEWED_CONTROLLER_HELPER_GROUPS_CURRENT', 'controller', 36],
-    ['qlever-sdk-generation.ts', 'REVIEWED_OBSERVER_GROUPS', 'observer', 55],
-    ['qlever-sdk-fetchcontent.ts', 'REVIEWED_HELPER_GROUPS_CURRENT', 'fetch', 39],
+    // PR124 appends one current tuple on each axis (never rebinding a published
+    // one), so each live frontier grows by exactly one.
+    ['qlever-sdk-generation.ts', 'REVIEWED_CONTROLLER_HELPER_GROUPS_CURRENT', 'controller', 37],
+    ['qlever-sdk-generation.ts', 'REVIEWED_OBSERVER_GROUPS', 'observer', 56],
+    ['qlever-sdk-fetchcontent.ts', 'REVIEWED_HELPER_GROUPS_CURRENT', 'fetch', 40],
   ] as const;
   for (const [file, name, family, count] of tables) {
     const groups = recipes(file, name);
@@ -397,8 +399,10 @@ test('helper tuples retain the e4 published histories and current role bytes', (
   // The native-sweep observer tuple follows the 42 published tuples; the reviewed
   // phase-syscall diagnostic then appended the 44th, and the 351e302e hotpath
   // re-hash appends a 45th rather than rebinding the published one.
+  // The PR124 strict absent-link settlement appends a 56th observer tuple rather
+  // than rebinding the published 55 above.
   const observer = recipes('qlever-sdk-generation.ts', 'REVIEWED_OBSERVER_GROUPS');
-  expect(observer).toHaveLength(55);
+  expect(observer).toHaveLength(56);
 });
 
 test('every group still selects itself uniquely and refuses missing/mixed roles', () => {
@@ -426,7 +430,8 @@ test('the CURRENT unpublished slice carries the published helper prefixes and it
   // secondary selectors and the source bindings of the CURRENT slice, while every
   // published helper tuple keeps its own prefix.
   const helpers = recipes('qlever-sdk-generation.ts', 'REVIEWED_OBSERVER_GROUPS');
-  expect(helpers.length).toBe(55);
+  // PR124 appended the 56th current observer tuple; the 55 published ones remain.
+  expect(helpers.length).toBe(56);
   const current = sdk.at(-1)!;
   const sec = current.secondarySelectors ?? [];
   expect(sec.length).toBeGreaterThanOrEqual(17);

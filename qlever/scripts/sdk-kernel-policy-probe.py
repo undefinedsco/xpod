@@ -96,9 +96,16 @@ def run(destination,identity,deadline,remaining_retained_bytes):
  prepared_data=bytes(data);assert json.loads(prepared_data)['identity']==identity,'same actual prepared source tuple required'
  save(out/'source-prepared.original.json',prepared_data);savejson(out/'diagnostic-scope.original.json',dict(identity=identity,deadlineUnix=deadline,remainingRetainedBytes=remaining_retained_bytes,normalModeEnabled=False,releaseAccepted=False))
  save(source/'numeric.py',NUMERIC);save(source/'CMakeLists.txt',CMAKE);save(source/'own_uid.py',UID)
- cases=[('numeric',['/usr/bin/python3',str(source/'numeric.py')]),('cmake-synchronous',['/usr/bin/cmake','-S',str(source),'-B',str(out/'cmake-build')]),('uid-noop',['/usr/bin/python3',str(source/'own_uid.py')])]
+ # The declared Observer build root and the directory CMake is told to use must be
+ # THE SAME directory. Otherwise link metadata for in-build operands is reported as
+ # outside the observed root, which made the probe's own fixture produce markers it
+ # could never settle. One authority: build_root is computed once, used for both.
+ def build_root_for(name):
+  return out/name/'build'
+ cases=[('numeric',['/usr/bin/python3',str(source/'numeric.py')]),('cmake-synchronous',['/usr/bin/cmake','-S',str(source),'-B',str(build_root_for('cmake-synchronous'))]),('uid-noop',['/usr/bin/python3',str(source/'own_uid.py')])]
  for name,command in cases:
-  case=out/name;case.mkdir();originals=case/'originals';originals.mkdir();build=case/'build';build.mkdir();result={}
+  case=out/name;case.mkdir();originals=case/'originals';originals.mkdir();build=build_root_for(name);build.mkdir();result={}
+  assert build==build_root_for(name),'single build root authority'
   available=min(32*1024**2,remaining_retained_bytes-used()-4*1024**2);assert available>0,'same shared probe remaining budget'
   parameters=case_parameters(name,available)
   observer=backend.Observer(originals,source,build,deadline_monotonic=phase_end,maximum_bytes=available,maximum_stdio_bytes=1024**2,maximum_processes=64,selected_names=None,**parameters)

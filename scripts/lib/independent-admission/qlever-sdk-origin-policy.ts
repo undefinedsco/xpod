@@ -2287,13 +2287,18 @@ const SDK87_SOURCE_HASHES:Readonly<Record<string,string>>=Object.freeze({
  // Immutable registration-input plan: explicit per-instance capsule, no module
  // global. Current SDK87 binding only; published tuples keep their bytes.
  'qlever/scripts/native/lease_sweep_ext.c':'e3ca18a6d7674b60a65c483d5663308619543d09baf80d344009925f32d5a74b',
- // The readonly executor lane now DERIVES its build parallelism from its own
+
+ // PR124 strict absent-link contract: the gate now settles only matched failed
+ // exits and keeps unobserved operands fatal, and the fixed probe uses ONE build
+ // root authority. Both bodies move in the CURRENT unpublished slice only.
+ 'qlever/scripts/sdk-generation-multiprocess-bindings.py':'05445f76632d2c2092680345c0b9f5070b5653b7ab63fee052f3cd292ceac384',
+ 'qlever/scripts/sdk-kernel-policy-probe.py':'e9016aed98d42f205bd3b11eedb55f956a6a855c775ccae0de2e19110b4d144c', // The readonly executor lane now DERIVES its build parallelism from its own
  // 4-CPU allocation instead of hardcoding 2, so its current bytes move too.
  // Current SDK87 binding only; published tuples keep their bytes.
  'qlever/scripts/sdk-readonly-executor-bindings.py':'107e2dea586056c98455e89471c0d303b1c36cb11018ee5a6d67d97caefd0b1e',
  // The readonly normal job's pin list had to follow the executor lane's new
  // bytes, so this CURRENT workflow file moves too. Published tuples keep theirs.
- '.github/workflows/qlever-readonly-normal-job.yml':'3c0735b1ab0c035aef66371d580b2632d69f5cf37eca036f432560e0d034f737',
+ '.github/workflows/qlever-readonly-normal-job.yml':'3a6d5ba02bdbe13bba951c78dc6ca24755dbc5da461f26ce1ebb0a0192fb6c0d',
  'qlever/scripts/native/lease_sweep_binding.py':'7386166a878d2a1fbd5f3145759888baa072171ab541b45cd5fbc5bcea6784f8',
  'tests/scripts/candidate-producer-attempt-binding.test.ts':'da3d74316849a5915c46660df4ebb76c9d8deecc5522d317f3c3fc471b7f343a',
  // Scoped S2 precompiled headers move the QLever lock (patch series digest)

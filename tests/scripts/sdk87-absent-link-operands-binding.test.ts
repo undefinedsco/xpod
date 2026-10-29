@@ -27,6 +27,7 @@ const LEASES = 'qlever/scripts/sdk-tool-lifetime-leases.py';
 const LEASE_EXT = 'qlever/scripts/native/lease_sweep_ext.c';
 const LEASE_BINDING = 'qlever/scripts/native/lease_sweep_binding.py';
 const EXECUTOR_BINDINGS = 'qlever/scripts/sdk-readonly-executor-bindings.py';
+const KERNEL_PROBE = 'qlever/scripts/sdk-kernel-policy-probe.py';
 const READONLY_NORMAL = '.github/workflows/qlever-readonly-normal-job.yml';
 const all = (g: any) => [...g.selectors, ...(g.secondarySelectors ?? []), ...(g.secondarySelectorStages ?? []).flat(), ...g.sourceBindings];
 
@@ -62,7 +63,7 @@ it('SDK87 whole-inherits SDK86 and re-pins only the reviewed current roles', () 
   }
   // The observer (4 inherited occurrences) and the leaf (1) move, plus the QLever
   // lock/series and the current builder documentation whose bytes changed.
-  expect(new Set(moved)).toEqual(new Set([OBSERVER, LEAF, LOCK, SERIES, LEASES, LEASE_EXT, LEASE_BINDING, BUILDER, EXECUTOR_BINDINGS, READONLY_NORMAL]));
+  expect(new Set(moved)).toEqual(new Set([OBSERVER, LEAF, LOCK, SERIES, LEASES, LEASE_EXT, LEASE_BINDING, BUILDER, EXECUTOR_BINDINGS, READONLY_NORMAL, BINDER, KERNEL_PROBE]));
   expect(moved.filter(p => p === OBSERVER)).toHaveLength(4);
   expect(moved.filter(p => p === LEAF)).toHaveLength(1);
   // The filtered-lease lookup slice moves the lease implementation's CURRENT
@@ -77,18 +78,27 @@ it('SDK87 whole-inherits SDK86 and re-pins only the reviewed current roles', () 
   expect(moved.filter(p => p === EXECUTOR_BINDINGS)).toHaveLength(2);
   // Its pin list follows the executor lane, so this CURRENT workflow moves once.
   expect(moved.filter(p => p === READONLY_NORMAL)).toHaveLength(1);
-  for (const role of [LEASES, LEASE_EXT, LEASE_BINDING, BUILDER, EXECUTOR_BINDINGS, READONLY_NORMAL]) {
+  // PR124 strict absent-link contract: the gate consumes the matched failed
+  // exits and the fixed probe uses one build-root authority, so both CURRENT
+  // bodies move in the unpublished slice only.
+  expect(moved.filter(p => p === BINDER)).toHaveLength(3);
+  expect(moved.filter(p => p === KERNEL_PROBE)).toHaveLength(1);
+  for (const role of [LEASES, LEASE_EXT, LEASE_BINDING, BUILDER, EXECUTOR_BINDINGS, READONLY_NORMAL, BINDER, KERNEL_PROBE]) {
     for (const row of all(next).filter((r: any) => r.path === role)) expect(row.sha256).toBe(sha(role));
   }
   for (const row of all(next).filter((r: any) => r.path === LEASES)) expect(row.sha256).toBe(sha(LEASES));
-  // the binder is untouched by this slice
-  expect(moved).not.toContain(BINDER);
+  // PR124 moves the binder: the gate now settles the matched failed link exits,
+  // so its CURRENT bytes legitimately change in this unpublished slice.
+  expect(moved).toContain(BINDER);
+  for (const row of all(next).filter((r: any) => r.path === BINDER)) expect(row.sha256).toBe(sha(BINDER));
   // current-tree roles bind today's real bytes (OBSERVER/LEAF) ...
   for (const row of all(next).filter((r: any) => r.path === OBSERVER)) expect(row.sha256).toBe(sha(OBSERVER));
   expect(next.sourceBindings.find(r => r.path === LEAF)!.sha256).toBe(sha(LEAF));
   // ... while the binder still carries SDK86's frozen bytes, equal to disk today
-  for (const row of all(next).filter((r: any) => r.path === BINDER)) expect(row.sha256).toBe(SDK86_FROZEN[BINDER]!);
-  expect(SDK86_FROZEN[BINDER]).toBe(sha(BINDER));
+  // SDK86's frozen bytes stay historical: they must NOT follow today's tree now
+  // that PR124 legitimately moved the binder in the unpublished slice.
+  expect(SDK86_FROZEN[BINDER]).not.toBe(sha(BINDER));
+  for (const row of all(next).filter((r: any) => r.path === BINDER)) expect(row.sha256).toBe(sha(BINDER));
 });
 
 it('historical SDK86 keeps its own frozen bytes and is not rewritten', () => {
