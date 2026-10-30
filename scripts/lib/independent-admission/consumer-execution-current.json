@@ -725,7 +725,7 @@
   },
   {
     "path": "scripts/css-module-producer.py",
-    "sha256": "9bc6411c30e8f96402f39b80acf9e8af27350bfde84d0ec6d4e5f8eb04a05da4"
+    "sha256": "1ba30f5eaba9070f55135936649c43b109bf7a4a83db43b512edaa6d31abc5cc"
   },
   {
     "path": "scripts/fix-dist-js-imports.mjs",
@@ -1057,7 +1057,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/module-source-phases.ts",
-    "sha256": "38d75efbd178777c7ed5278359ea7429a2d7942cc46f7bd83b7e30f01ad49ec2"
+    "sha256": "5e057bd97f88dfbdecc0554ff7e22e5666d05785b52b024a122e29797a11aa8c"
   },
   {
     "path": "scripts/lib/independent-admission/native-admission-requirements.ts",

@@ -90,9 +90,16 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: css-module-diagnostics-${{ matrix.target }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          # `originals/` carries the exact GitHub API payloads the producer
+          # validated (run.raw.json, artifact.metadata.raw.json,
+          # native-jobs.raw.json) plus the acquisition diagnostics. Without them a
+          # run-identity failure is not attributable after the fact. These payloads
+          # are public Actions metadata and carry no token, secret, or credential
+          # (the download helper never writes the Authorization header into them).
           path: |
             ${{ env.CSS_PRODUCT_ROOT }}/producer.receipt.json
             ${{ env.CSS_PRODUCT_ROOT }}/evidence/
+            ${{ env.CSS_PRODUCT_ROOT }}/originals/
           if-no-files-found: warn
           retention-days: 30
 
