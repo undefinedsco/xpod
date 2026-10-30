@@ -97,6 +97,50 @@ export async function observeQleverSdkGeneratedInputOriginals(capability:unknown
   facts.sdkPreparedBuildInputConsumerByteCustodyVerified=result.preparedInputConsumerBytesVerified===true;if(result.preparedInputConsumers?.length)pending.add('qlever-sdk-prepared-build-input-source-prepare-causality-unverified');facts.sdkSelectedGeneratedConsumerByteCustodyVerified=result.selectedGeneratedConsumerByteCustodyVerified===true;facts.sdkGeneratedInputIoClosureVerified=result.generatedInputIoClosureVerified===true&&unresolved.length===0;facts.sdkGeneratedInputIoClosureExceptDependencyOriginVerified=result.generatedInputIoClosureExceptDependencyOriginVerified===true&&unresolved.length===0;if(result.dependencySourceReadCaptures?.length)pending.add('qlever-sdk-dependency-source-read-origin-unverified');facts.sdkActualConfigureCompileTrackedWaitVerified=result.actualConfigureCompileTrackedWaitVerified===true;const freeze=(value:any):void=>{if(value&&typeof value==='object'){Object.values(value).forEach(freeze);Object.freeze(value);}};freeze(result);facts.sdkGeneratedInputOriginals=result;facts.sdkToolchainOperationCoverage=result.toolchainOperationCoverage;facts.sdkToolchainExecutionLifetimeImmutabilityVerified=result.toolchainExecutionLifetimeImmutabilityVerified===true;facts.sdkToolchainExecutionLifetimeScope=result.toolchainExecutionLifetimeScope;
   for(const row of unresolved)pending.add('qlever-sdk-selected-input-unresolved:'+row.path+':'+row.reason);
   for(const row of result.preparedDependencyPending??[])pending.add(String(row));for(const row of result.pending)pending.add(String(row));for(const row of result.unresolvedSourceReadPaths??[])pending.add('qlever-sdk-unbound-source-read:'+row);for(const row of result.uncoveredOperations??[])pending.add('qlever-sdk-uncovered-generated-operation:'+row);
+  // DERIVED generated-source transport: the per-output witness and the compact
+  // deduplicated causal graph come from the SAME validated replay call above.
+  // They are exposed on the private execution view only; a public JSON copy is
+  // still not a registration path.
+  if(Array.isArray(result.verifiedGeneratedProducerWitness)){
+    facts.sdkVerifiedGeneratedProducerWitness=Object.freeze(result.verifiedGeneratedProducerWitness);
+    facts.sdkVerifiedGeneratedProducerWitnessCount=result.verifiedGeneratedProducerWitness.length;
+  }
+  if(Array.isArray(result.verifiedGeneratedProducerInputs)){
+    facts.sdkVerifiedGeneratedProducerInputs=Object.freeze(result.verifiedGeneratedProducerInputs);
+  }
+  // INDEXED TRANSPORT BRIDGE. The single closed transport is exposed on the SAME
+  // private execution view, frozen row-wise. The leaf decodes it and the three
+  // projections above stay available, so this is an additive transport, not a
+  // replacement of any proved fact. A malformed/absent transport simply leaves
+  // the field undefined and the leaf keeps using the projections.
+  if(result.verifiedGeneratedProducerTransport&&typeof result.verifiedGeneratedProducerTransport==='object'){
+    facts.sdkVerifiedGeneratedProducerTransport=Object.freeze({...result.verifiedGeneratedProducerTransport});
+  }
+  if(result.verifiedGeneratedProducerGraph){
+    facts.sdkVerifiedGeneratedProducerGraph=Object.freeze(result.verifiedGeneratedProducerGraph);
+    facts.sdkVerifiedGeneratedProducerGraphNodes=Number(result.verifiedGeneratedProducerGraph.nodeCount??0);
+    facts.sdkVerifiedGeneratedProducerGraphEdges=Number(result.verifiedGeneratedProducerGraph.edgeCount??0);
+  }
+  // PER-LEASE READ CUSTODY. The decoder exports one row per credited
+  // regular-read kernel read lease. Without this bridge the leaf's
+  // `execution.sdkVerifiedRegularReadCustody` would be `undefined`, its
+  // reference-identity guard would compare undefined===undefined, and the
+  // per-read custody association would be silently SKIPPED. It is therefore part
+  // of the private execution view, frozen row-by-row like the witness.
+  if(Array.isArray(result.verifiedRegularReadCustody)){
+    const custodyRows=Object.freeze(result.verifiedRegularReadCustody.map((row:any)=>Object.freeze({...row})));
+    facts.sdkVerifiedRegularReadCustody=custodyRows;
+    facts.sdkVerifiedRegularReadCustodyCount=custodyRows.length;
+  }
+  // PER-INPUT SOURCE CLASS. Byte custody is not source authority: this table
+  // records, per credited read lease, whether its exact byte image was tied to a
+  // CLOSED same-private origin. Exported on the same private view only.
+  if(Array.isArray(result.verifiedRegularReadSourceClass)){
+    const classRows=Object.freeze(result.verifiedRegularReadSourceClass.map((row:any)=>Object.freeze({...row})));
+    facts.sdkVerifiedRegularReadSourceClass=classRows;
+    facts.sdkVerifiedRegularReadSourceClassCount=classRows.length;
+  }
+  if(result.verifiedRegularInputUniverse)facts.sdkVerifiedRegularInputUniverse=Object.freeze(result.verifiedRegularInputUniverse);
   const snapshot=Object.freeze(facts);
   if(facts.sdkActualConfigureCompileTrackedWaitVerified===true)executionObservations.set(capability as object,Object.freeze({facts:snapshot,assertCurrent}));
   return Object.freeze({facts:snapshot,pending:Object.freeze([...pending]),assertCurrent});
@@ -201,7 +245,7 @@ Object.freeze([["sdk-zip-originals.py","56f5ec76344b82b5e8242508208b5635663c037b
 /** PR124 controller tuple (append-only, never a rebind): the strict absent-link
 * settlement moved sdk-generation-multiprocess-bindings.py; the published
 * 36-tuple prefix above stays byte-identical. */
-Object.freeze([["sdk-zip-originals.py","56f5ec76344b82b5e8242508208b5635663c037b2b915013e23b91c8ccdc3e17"],["sdk-generation-multiprocess-bindings.py","05445f76632d2c2092680345c0b9f5070b5653b7ab63fee052f3cd292ceac384"],["sdk-execution-originals-util.py","bb3e3d40403034e82f42c9243659deeab74c74484c77267ab9a41537caf89bff"],["sdk-generated-source-originals.py","9c5dc796e9eb7df74cbfd0a81a3353d3664edb8cc885338c5160d3fa43a52bb4"],["sdk-tool-provider-originals.py","2b786463648dfa924977224feb281b7e3fae552d1e331c7c2749ce133103317a"],["sdk-generated-vma-originals.py","b5e1d095d60952005bb7820811234e33e1d03f4b29c595faa4ef3c8eb0d8a22c"],["sdk-coordinated-wait.py","778fdaad5802df943c8e7e96e4de79a32845508947c9ae436e742248b2e7aa1a"],["sdk-original-chunk-store.py","67ea1a610f15f74288d623694b1a4886a82b0f29a186c40e69bdd232b39f96db"],["sdk-raw-wire-reader.py","caa95365bc480eec4990d0c1f09d14327e87620d5939b53120db6179a9722a41"],["sdk-executable-memory-policy.py","ae0c241805d4d72a89103a21fe224a29138df4c8c63de55128b107d92c6e7724"]] as const),]);
+Object.freeze([["sdk-zip-originals.py","56f5ec76344b82b5e8242508208b5635663c037b2b915013e23b91c8ccdc3e17"],["sdk-generation-multiprocess-bindings.py","e11827aa845079fc2c2f8d014085bebaeb33c49fa44ad210b6707e7c4128e90f"],["sdk-execution-originals-util.py","bb3e3d40403034e82f42c9243659deeab74c74484c77267ab9a41537caf89bff"],["sdk-generated-source-originals.py","5e9ec62fe5dd341ce402e215c2ec02dfe75de365766493c80bc2eb21c3c01564"],["sdk-tool-provider-originals.py","2b786463648dfa924977224feb281b7e3fae552d1e331c7c2749ce133103317a"],["sdk-generated-vma-originals.py","b5e1d095d60952005bb7820811234e33e1d03f4b29c595faa4ef3c8eb0d8a22c"],["sdk-coordinated-wait.py","778fdaad5802df943c8e7e96e4de79a32845508947c9ae436e742248b2e7aa1a"],["sdk-original-chunk-store.py","67ea1a610f15f74288d623694b1a4886a82b0f29a186c40e69bdd232b39f96db"],["sdk-raw-wire-reader.py","caa95365bc480eec4990d0c1f09d14327e87620d5939b53120db6179a9722a41"],["sdk-executable-memory-policy.py","ae0c241805d4d72a89103a21fe224a29138df4c8c63de55128b107d92c6e7724"],["sdk-generated-producer-transport.py","95738800c54230715a065e3dcaaab1ba5f60f70d4ca2ca264144ee580a360a37"]] as const),]);
 
 const PRE_ROWS_DIAGNOSTIC_OBSERVER_GROUPS:readonly Readonly<Record<string,string>>[]=Object.freeze([...PRE_ROWS_DIAGNOSTIC_REVIEWED_OBSERVER_GROUPS,Object.freeze({"qlever/scripts/sdk-ptrace-execution.py":"d6e4fff348a74be70ffa999b7efa6cf49d9486e724087afe29f8e9dc232fe1f9","qlever/scripts/sdk-ptrace-kernel.py":"730265e9329551a8eebc922edea1e71bb21be32fd205098b5784693235b789d2","qlever/scripts/sdk-execution-originals-util.py":"bb3e3d40403034e82f42c9243659deeab74c74484c77267ab9a41537caf89bff","qlever/scripts/sdk-blocking-owned-wait.py":"8c16b0953312613f792a4cdac51f87c6b554f7b9a28315268e0b7f02fbf3ed99","qlever/scripts/sdk-generation-multiprocess-bindings.py":"1cc352b8df3d1c9eb6b164257c58efe448acd0c0db19815691e2b83237cfb64d","qlever/scripts/sdk-tool-provider-originals.py":"2b786463648dfa924977224feb281b7e3fae552d1e331c7c2749ce133103317a","qlever/scripts/sdk-generated-vma-originals.py":"69085c6b3d963636d7df8600b36bf9336eb8d4e59a04da0982a935b2c708d324","qlever/scripts/sdk-coordinated-wait.py":"66404e23ce92900034cb113b9fcbc6ec63ace7557d2429c16e1c8e2cb5dca51a","qlever/scripts/sdk-original-chunk-store.py":"5bf42b4fa31b99d36d118e74e7b724ad7d7e74d211a2e3ac5e5bac66d366e8a7","qlever/scripts/sdk-raw-wire-codec.py":"6249a3305c45954f991d702cb159daab6ae413104332cd169717df43d6303f80","qlever/scripts/sdk-raw-wire-reader.py":"caa95365bc480eec4990d0c1f09d14327e87620d5939b53120db6179a9722a41","qlever/scripts/sdk-tool-lifetime-leases.py":"4c01049922f5c086475554ed6c179d3e86dd73bdb4263371a32d9be2372cc410","qlever/scripts/sdk-executable-memory-policy.py":"6462e64eb8bcffd9d91d56f4bf7588c867d242782eda55f636c51f9a0a2ee170"})]);
 /** clone3 thread mode observer row with the three actually rehashed helpers. */
@@ -342,6 +386,6 @@ Object.freeze({"qlever/scripts/sdk-ptrace-execution.py":"2cdfd49d2972577ba2fa449
 /** PR124 observer tuple (APPEND-ONLY, UNPUBLISHED): the strict absent-link
  * settlement moved the gate body. Every earlier tuple above stays
  * byte-identical; no role name, stage or selector changed. */
-Object.freeze({"qlever/scripts/sdk-ptrace-execution.py":"2cdfd49d2972577ba2fa449007d9a3a8dbda1674217939a97c04ea8fe21ef263", "qlever/scripts/sdk-coordinated-wait.py":"778fdaad5802df943c8e7e96e4de79a32845508947c9ae436e742248b2e7aa1a", "qlever/scripts/sdk-original-chunk-store.py":"67ea1a610f15f74288d623694b1a4886a82b0f29a186c40e69bdd232b39f96db", "qlever/scripts/sdk-generation-multiprocess-bindings.py":"05445f76632d2c2092680345c0b9f5070b5653b7ab63fee052f3cd292ceac384", "qlever/scripts/sdk-executable-memory-policy.py":"ae0c241805d4d72a89103a21fe224a29138df4c8c63de55128b107d92c6e7724", "qlever/scripts/sdk-tool-lifetime-leases.py":"85f5101f1d27644c851145818f791ca52d87dc6087b4f7df8f0d4bbf579d9b0c", "qlever/scripts/sdk-generated-vma-originals.py":"b5e1d095d60952005bb7820811234e33e1d03f4b29c595faa4ef3c8eb0d8a22c"} as Readonly<Record<string,string>>),]);
+Object.freeze({"qlever/scripts/sdk-ptrace-execution.py":"e12068a7d0b01e69a101cc05d3c1118173c5682a4684834a86d1083117411f2b","qlever/scripts/sdk-coordinated-wait.py":"778fdaad5802df943c8e7e96e4de79a32845508947c9ae436e742248b2e7aa1a","qlever/scripts/sdk-original-chunk-store.py":"67ea1a610f15f74288d623694b1a4886a82b0f29a186c40e69bdd232b39f96db","qlever/scripts/sdk-generation-multiprocess-bindings.py":"e11827aa845079fc2c2f8d014085bebaeb33c49fa44ad210b6707e7c4128e90f","qlever/scripts/sdk-executable-memory-policy.py":"ae0c241805d4d72a89103a21fe224a29138df4c8c63de55128b107d92c6e7724","qlever/scripts/sdk-tool-lifetime-leases.py":"85f5101f1d27644c851145818f791ca52d87dc6087b4f7df8f0d4bbf579d9b0c","qlever/scripts/sdk-generated-vma-originals.py":"b5e1d095d60952005bb7820811234e33e1d03f4b29c595faa4ef3c8eb0d8a22c"} as Readonly<Record<string,string>>),]);
 
 

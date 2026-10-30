@@ -1,4 +1,4 @@
-import {completeObserved,observedSecondaryBindings} from './source-binding-group.fixture';
+import {CURRENT_CANONICAL_SOURCE_ROWS, completeObserved,observedSecondaryBindings} from './source-binding-group.fixture';
 import {test,expect} from 'bun:test';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -18,7 +18,7 @@ test('readonly SDK21 adds a complete producer group and preserves all 9b64 histo
  const group=S.at(-1)!;expect(group.outerExecutor).toBeDefined();expect(group.sourceBindings.some(row=>row.path.endsWith('sdk-readonly-collection.py'))).toBe(true);
  for(const old of S.slice(0,20))expect(old.outerExecutor).toBeUndefined();
  for(const row of [...group.selectors,...group.sourceBindings,...current])expect(sha(fs.readFileSync(path.join(root,row.path)))).toBe(row.sha256);
- expect(current).toHaveLength(504);
+ expect(current).toHaveLength(CURRENT_CANONICAL_SOURCE_ROWS);
 });
 test('real primary then shared secondary resolver rejects missing and changed roles across all historical and current trees',()=>{
  for(const groups of [S,C,I])for(const group of groups){

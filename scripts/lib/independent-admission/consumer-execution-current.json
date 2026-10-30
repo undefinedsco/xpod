@@ -321,7 +321,7 @@
   },
   {
     "path": "qlever/qlever.lock.json",
-    "sha256": "2fc0e86824ea0bcf72cbd3782466d94784420e7c57e4d27470974d9f1c5abc89"
+    "sha256": "63bdee301b97a2c450f7499e3e1a665f0652a6eca4dbb0656f3b093bf34051d0"
   },
   {
     "path": "qlever/scripts/apply-patches.py",
@@ -429,7 +429,7 @@
   },
   {
     "path": "qlever/scripts/sdk-generated-source-originals.py",
-    "sha256": "9c5dc796e9eb7df74cbfd0a81a3353d3664edb8cc885338c5160d3fa43a52bb4"
+    "sha256": "5e9ec62fe5dd341ce402e215c2ec02dfe75de365766493c80bc2eb21c3c01564"
   },
   {
     "path": "qlever/scripts/sdk-generated-vma-originals.py",
@@ -441,7 +441,7 @@
   },
   {
     "path": "qlever/scripts/sdk-generation-multiprocess-bindings.py",
-    "sha256": "05445f76632d2c2092680345c0b9f5070b5653b7ab63fee052f3cd292ceac384"
+    "sha256": "e11827aa845079fc2c2f8d014085bebaeb33c49fa44ad210b6707e7c4128e90f"
   },
   {
     "path": "qlever/scripts/sdk-git-patch-projection.py",
@@ -489,7 +489,7 @@
   },
   {
     "path": "qlever/scripts/sdk-ptrace-execution.py",
-    "sha256": "2cdfd49d2972577ba2fa449007d9a3a8dbda1674217939a97c04ea8fe21ef263"
+    "sha256": "e12068a7d0b01e69a101cc05d3c1118173c5682a4684834a86d1083117411f2b"
   },
   {
     "path": "qlever/scripts/sdk-ptrace-kernel.py",
@@ -941,7 +941,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/github-origin.ts",
-    "sha256": "9f3ce1e2daa6d4624a8889d0f0e0aede8648e0f2c792fb16fca0170ede9fd589"
+    "sha256": "f8903d5c252c7ed5e10926e01f9dc81af95746570d65160287b2ae89bbec59c1"
   },
   {
     "path": "scripts/lib/independent-admission/github-source-binding-groups.ts",
@@ -1205,11 +1205,11 @@
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-fetchcontent.ts",
-    "sha256": "ee937b994bbf689812ebb42308e4e56e46b71a7eafe90378e2619b3345f3e622"
+    "sha256": "86f02e5a8d3ba6ff4245778828446155bde60f567ffb57d3a6345629adc72393"
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-generation.ts",
-    "sha256": "69e1e981d87573b547fa0a86e5884fab086d0192954aa00d7e6c599a1b4dc626"
+    "sha256": "e049247f1855fb991bcf8405917942e4b134a07d5588c1b71f3c321110cf1cc2"
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-inputs.ts",
@@ -1217,11 +1217,11 @@
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-observed-tools.ts",
-    "sha256": "428038e3b2f5cdd103bd1774d34fe2f43b20720288e149c6b9323b9369c02bc1"
+    "sha256": "4a1283bd7c38395510779a42ecc01ef5086507551f51993be66b1e0911414b4f"
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-origin-policy.ts",
-    "sha256": "b052c9522b869b85b03b7b1815eca0833ebffeeaee24e1e2e49d93b096dbd29b"
+    "sha256": "c6febbbac0132567431d5c91c2f74ce0a1667bac4c033b076fa439d625d58a39"
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-originals.ts",
@@ -1245,7 +1245,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-source.ts",
-    "sha256": "331c439602d4370136838946b61b94e82e264af7b933a6d4da2ba0445d7391eb"
+    "sha256": "f4c9baf895dab399784db6f9f4acb03e728af911ae85f9f93a028490de46517e"
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-symlinks.ts",
@@ -1257,11 +1257,11 @@
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-toolchain-source.ts",
-    "sha256": "f96613908fd0bd89ecb3db5ec8f5acc39f0bcbf5db9b3b8c1473317c12ad8e99"
+    "sha256": "94a571b0664f1de88d049717f6adc0673b352580deb764438177bc3f916c22a5"
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-upstream-source.ts",
-    "sha256": "a04784943bbf70679ba61bcc9a6f7c631fe1f2208fa341e94e3a9266e4482c66"
+    "sha256": "d278e6fe83aaa196a8087c50fb7b5d47c0183d5113acf34b0bc2fce96342ab58"
   },
   {
     "path": "scripts/lib/independent-admission/qlever-signature-original-custody.ts",
@@ -2014,5 +2014,9 @@
   {
     "path": "scripts/lib/independent-admission/consumer-execution-dca-snapshot.json",
     "sha256": "230b3feaa3c881b5cc0dd4165df5b5fea9995f2f7724c7992eb019eb36802f7a"
+  },
+  {
+    "path": "qlever/scripts/sdk-generated-producer-transport.py",
+    "sha256": "95738800c54230715a065e3dcaaab1ba5f60f70d4ca2ca264144ee580a360a37"
   }
 ]

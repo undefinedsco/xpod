@@ -16,6 +16,7 @@ import {API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS as API} from '../../scripts/lib/
 import {CLI_SOURCE_VERSION_GROUPS as CLI} from '../../scripts/lib/independent-admission/source-rules';
 import {selectGitHubSourceBindingGroup,acquireOwnedSecondaryBindings,sourceBindingKey} from '../../scripts/lib/independent-admission/github-source-binding-groups';
 import {decodeCatalog} from './sdk-helper-catalog.fixture';
+import {CURRENT_CANONICAL_SOURCE_ROWS} from './source-binding-group.fixture';
 
 const ROOT=path.resolve(import.meta.dirname,'../..');
 const DISK=(p:string)=>createHash('sha256').update(readFileSync(path.join(ROOT,p))).digest('hex');
@@ -114,7 +115,7 @@ it('old/new/unknown/missing/mixed refusals stay load-bearing',()=>{
 
 it('the canonical binds actual bytes and never a self hash',()=>{
   const canonical=JSON.parse(readFileSync(path.join(ROOT,'scripts/lib/independent-admission/consumer-execution-current.json'),'utf8')) as {path:string;sha256:string}[];
-  expect(canonical).toHaveLength(504);
+  expect(canonical).toHaveLength(CURRENT_CANONICAL_SOURCE_ROWS);
   expect(new Set(canonical.map(r=>r.path)).size).toBe(canonical.length);
   for(const row of canonical) expect(DISK(row.path),row.path).toBe(row.sha256);
   // a snapshot file is a MEMBER, and nothing claims its own hash

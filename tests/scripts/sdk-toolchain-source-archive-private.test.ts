@@ -18,8 +18,15 @@ beforeEach(()=>{
  const collection={schemaVersion:1,kind:'qlever-sdk-exact-debian-source-originals',packages:[{name,version,dsc,files:[archive]}],indexOriginals:[{inRelease,sources}]};const data=Buffer.from(JSON.stringify(collection)),collectionRef={path:'inner/debian-source-collection.json',bytes:data.length,sha256:hash(data)},master=Buffer.from(JSON.stringify({debianSources:collectionRef}));
  state.sourceView={sourceSha:'a'.repeat(40)};state.sdk={originFacts:{sourceSha:state.sourceView.sourceSha,target:'linux-arm64'},masterReference:{path:'materials.json',bytes:master.length,sha256:hash(master)},readOriginal:(path:string)=>path==='materials.json'?master:data};
  const identity=['1','7',String(0o100755),'100','1700000000000000001','1700000000000000002'],original={path:'capture-0001.original',bytes:100,sha256:'e'.repeat(64)},file={observedPath:'/usr/bin/tool',identityDecimal:identity,original,originalCaptureSequence:2};
- state.inputs={afterReference:ref('after.json'),rows:[{originalPath:file.observedPath,bytes:100,sha256:original.sha256,mode:0o755}]};
- state.execution={sdkActualConfigureCompileTrackedWaitVerified:true,sdkToolchainOperationCoverage:{schemaVersion:1,operations:[{kind:'exec',phase:'configure',pid:5,entrySequence:1,execEventSequence:3,captureSequence:4,primaryFile:file,mapOriginals:[],expectedFileMappingCount:0,unresolved:[]}],pending:[]}};
+ // The CURRENT private input view always publishes its ownership projection from
+ // the same verified map entry, so a pure signed-Debian fixture must carry the
+ // empty projection rather than omit the field (the leaf refuses a weaker view).
+ state.inputs={afterReference:ref('after.json'),rows:[{originalPath:file.observedPath,bytes:100,sha256:original.sha256,mode:0o755}],ownership:{inputRows:[],unresolvedInputs:[]}};
+ // A pure signed-Debian SDK has NO generated producer outputs, but the CURRENT
+ // private execution view still publishes the two generated tables and the
+ // per-lease custody table (the replay always emits them, empty). The leaf
+ // requires them to be present so a witness can never lose its input table.
+ state.execution={sdkActualConfigureCompileTrackedWaitVerified:true,sdkVerifiedGeneratedProducerWitness:[],sdkVerifiedGeneratedProducerInputs:[],sdkVerifiedRegularReadCustody:[],sdkToolchainOperationCoverage:{schemaVersion:1,operations:[{kind:'exec',phase:'configure',pid:5,entrySequence:1,execEventSequence:3,captureSequence:4,primaryFile:file,mapOriginals:[],expectedFileMappingCount:0,unresolved:[]}],pending:[]}};
  state.tools={facts:{sdkObservedToolAfterShardFiles:[{path:file.observedPath,phase:'configure',captureSequence:2,identityDecimal:identity,bytes:100,sha256:original.sha256,mode:0o755}]},pending:[],assertCurrent:()=>{}};
  state.binary={files:[{installedPath:file.observedPath,bytes:100,sha256:original.sha256,mode:0o755,binary:{name:'fixture',version:'1',architecture:'arm64'},source:{name,version}}],assertCurrent:()=>{}};
  state.archives={sourceSha:state.sourceView.sourceSha,target:'linux-arm64',collection:collectionRef,coordinates:[{name,version,dsc,archives:[archive]}],officialAuthorityVerified:false,assertCurrent:()=>{}};

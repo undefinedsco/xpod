@@ -312,6 +312,30 @@ def profile(arch):return bindings.policy(arch)
 def fdpath(pid,fd):
     try:return os.readlink('/proc/'+str(pid)+'/fd/'+str(fd))
     except FileNotFoundError:return None
+def read_capture_role(selected,item,source,build):
+    """Return the role for ONE read-family entry, or None outside the family.
+
+    The read-family predicate is `nr in policy['reads']`, which CONTAINS
+    `policy['read']` (and every other reviewed read form) on both architectures,
+    so this helper is the single place that decides what a read means. It must be
+    consulted for every read-family entry, not only for the `read` syscall,
+    otherwise regular source/build reads collapse to the `input-read` fallback.
+
+    * regular file under the prepared source or dependency roots -> source-read
+    * regular file under the build root                          -> consumer
+    * anything else (ordinary regular input, non-regular object,
+      unresolvable descriptor, symlinked /proc view)              -> input-read
+
+    The `input-read` answer is also the completeness answer: the dedicated
+    capture path records real bytes or an exact declared disposition for it, so
+    no read-family entry is ever silently dropped.
+    """
+    if selected and item is not None and stat.S_ISREG(item.st_mode):
+        if selected.startswith(source+'/') or selected.startswith('/opt/qlever-sdk/dependencies/'):
+            return 'source-read'
+        if selected.startswith(build+'/'):
+            return 'consumer'
+    return 'input-read'
 
 REFUSED_CALLER_MAX_PATH=512
 REFUSED_CALLER_MAPS_LIMIT=65536
@@ -718,7 +742,12 @@ class Observer(CapturesMixin):
         self.capture_maps_content_entities=capture_maps_content_entities
         assert type(retained_generated_metadata)is bool and(not retained_generated_metadata or generated_vma_output and generated_vma_parked_wait),'retained generated metadata requires complete parked-wait observer'
         self.retained_generated_metadata=retained_generated_metadata
-        self.capture_toolchain=capture_toolchain;self.process_authority=bool(capture_toolchain);self.authority_handles=tool_providers.ProcessAuthorityHandles();self.tool_original_cache={};self.tool_provider_cache={};self.tool_metadata_bytes=json.loads((ROOT/'scripts/lib/module-artifact-limits.json').read_text())['metadataBytes']
+        self.capture_toolchain=capture_toolchain;self.process_authority=bool(capture_toolchain);self.authority_handles=tool_providers.ProcessAuthorityHandles();self.tool_original_cache={};self.tool_provider_cache={};# REGULAR INPUT-READ state. One canonical captured original per stable
+        # protected inode (dev,ino,mode,size,mtime,ctime), plus the exact
+        # FD-generation proof that authorised reading it. Nothing here is
+        # authority by itself; every entry is a projection of a verified
+        # stopped-FD observation and is re-validated before reuse.
+        self.input_read_cache={};self.input_generation={};self.current_gate=None;self.tool_metadata_bytes=json.loads((ROOT/'scripts/lib/module-artifact-limits.json').read_text())['metadataBytes']
         self.prepared_inputs={};self.prepared_sealed=False;self.domain_bytes=0;self.claim_bytes=dict.fromkeys(('raw-wire','capture-body','stdio','provider-other'),0);self.domain_lock=threading.Lock();self.pump_errors=[];self.maximum_stdio_bytes=maximum_stdio_bytes if maximum_stdio_bytes is not None else maximum_file_bytes
         self.compressed_raw=compressed_raw;self.logical_raw_bytes=0;self.raw_logical_limit=json.loads((ROOT/'scripts/lib/module-artifact-limits.json').read_text())['sourceMaterialBytes'];self.require_success=require_success;self.raw_bytes_completed=0;self.maximum_processes=maximum_processes;self.shard_bytes=shard_bytes
         self.deadline_monotonic=deadline_monotonic;self.check_budget=check_budget;self.maximum_bytes=maximum_bytes;self.maximum_file_bytes=maximum_file_bytes;self.selected_names=selected_names
@@ -1109,7 +1138,7 @@ class Observer(CapturesMixin):
             self.check();reader=os.open(path,os.O_RDONLY|os.O_NOFOLLOW|os.O_CLOEXEC)
             try:
                 assert identity==probe.identity(os.fstat(reader)) and identity[3]<=self.maximum_file_bytes,'prepared FD identity/size differs'
-                name='capture-'+str(len(self.captures)).zfill(4)+'.original';offset=0;digest=hashlib.sha256()
+                name=self.next_capture_name();offset=0;digest=hashlib.sha256()
                 with (self.capture_dir/name).open('xb') as output:
                     while True:
                         self.check();block=os.pread(reader,65536,offset)
@@ -1463,7 +1492,7 @@ class Observer(CapturesMixin):
             self.append_capture(row);self.capture_bytes+=physical_bytes
             self.snapshot_telemetry_completed=chunk_store.bounded_snapshot_telemetry(telemetry)
             return reference
-        name='capture-'+str(len(self.captures)).zfill(4)+'.original';count=0;digest=hashlib.sha256()
+        name=self.next_capture_name();count=0;digest=hashlib.sha256()
         with (self.capture_dir/name).open('xb') as output:
             while count<size:
                 self.check();block=os.pread(reader,min(65536,size-count),offset+count);assert block,'short actual write original'
@@ -1606,6 +1635,21 @@ class Observer(CapturesMixin):
         value=os.stat(self.capture_dir/name,follow_symlinks=False)
         assert stat.S_ISREG(value.st_mode) and value.st_nlink==1 and value.st_size==reference['bytes'],'same single-link retained capture entity required'
         return [*probe.identity(value),value.st_nlink]
+    def next_capture_name(self):
+        """Allocate ONE free canonical capture entity name.
+
+        Every capture role shares this allocator. Deriving the name from
+        ``len(self.captures)`` alone is wrong whenever a role reserves an entity
+        before appending its row (or a phase aborts after a partial write): the
+        next role would reuse a live name and overwrite a registered entity.
+        Existence is therefore checked, and the counter only advances.
+        """
+        index=len(self.captures)
+        while True:
+            name='capture-'+str(index).zfill(4)+'.original'
+            if not (self.capture_dir/name).exists():return name
+            index+=1
+
     def register_capture_entity(self,reference):
         reference=bindings.physical_original_reference(reference)
         identity=self.capture_entity_identity(reference);prior=self.capture_entities.get(reference['path'])
@@ -1735,13 +1779,13 @@ class Observer(CapturesMixin):
                 if candidate and candidate[0].get('phase')==self.current_phase and candidate[0]['original']['path'] in self.capture_entities:
                     prior,held,expected=candidate
                     if prior.get('originalEntityIdentity')==self.capture_entities[prior['original']['path']][1] and expected==(prior['original']['bytes'],prior['original']['sha256']):reusable=prior
-            name='capture-'+str(len(self.captures)).zfill(4)+'.original'
+            name=self.next_capture_name()
             if self.capture_content_entities:
                 context=dict(role='fd-capture',captureRole=role,pid=pid,fd=fd,fileBytes=ident[3],captureIdentity=ident,capturePathPrefix=os.fsencode(target)[:128].decode('utf-8','backslashreplace'),capturePathSHA256=hashlib.sha256(os.fsencode(target)).hexdigest(),captureObservationComplete=False)
                 ref,entity_identity,storage,data=self.content_capture_original(reader,target,ident,name,context)
                 offset=data[0]
             else:
-                name='capture-'+str(len(self.captures)).zfill(4)+'.original';offset=0;digest=hashlib.sha256();output=None
+                offset=0;digest=hashlib.sha256();output=None
                 try:
                     if reusable is None:output=(self.capture_dir/name).open('xb')
                     while True:
@@ -2103,7 +2147,7 @@ class Observer(CapturesMixin):
         CLOEXEC duplicate, so a tracee FD may later close without ending evidence.
         """
         assert self.lifetime_leases is not None and depth<=LIFETIME_MAXIMUM_DEPTH,'bounded lifetime lease recursion required'
-        assert role in ['executable','interpreter','mmap'],'typed lifetime lease role required'
+        assert role in ['executable','interpreter','mmap','input-read'],'typed lifetime lease role required'
         local=None
         try:
             try:
@@ -2178,11 +2222,381 @@ class Observer(CapturesMixin):
             if local is not None:os.close(local)
     def tool_unresolved(self,pid,reason,**fields):
         return self.emit(dict(kind='toolchain-unresolved',pid=pid,reason=reason,**fields))
+    def input_read_capture(self,pid,fd,role,form,entry,args,barrier=None):
+        """Capture ONE verified regular-input read under an all-stop barrier.
+
+        The whole read family is admitted here, but each ABI form is decoded
+        with its OWN operand layout:
+          read/readv        -> consumed range starts at the descriptor position
+          pread64/preadv*   -> consumed range starts at the explicit offset
+          readv/preadv*     -> bounded by SUM(iov_len), never by iovcnt, so a
+                               short vector cannot hide unread bytes
+        The capture happens at the ENTRY stop (before the kernel consumes) and
+        records only the pre-use facts: the protected inode bytes, the requested
+        bound, the iovec shape and the exact FD generation. The actual consumed
+        range is derived by the replay from the matching real exit result, so
+        the observer never asserts a transfer it has not yet seen.
+
+        File bytes are captured ONCE per stable protected inode and reused for
+        every later read of the same identity; only the range and the exact
+        per-FD-generation proof are recorded per observation.
+        """
+        # The caller already took the all-stop; reuse THAT barrier so the
+        # observation's barrier sequence is the one the replay validated.
+        barrier=barrier or self.barrier();self.check()
+        path='/proc/'+str(pid)+'/fd/'+str(fd)
+        try:reader=os.open(path,os.O_RDONLY|os.O_CLOEXEC|os.O_NONBLOCK)
+        except OSError as error:
+            if not expected_oserror(error,[errno.EPERM,errno.EACCES,errno.ENOENT,errno.ESRCH]):raise
+            self.tool_unresolved(pid,'regular-input-FD-unavailable',role=role,syscall=form['name'],entrySequence=entry['sequence'],errorCode=error.errno)
+            return None
+        try:
+            value=os.fstat(reader);identity=probe.identity(value)
+            # RESOLVE the descriptor's REAL target. A tracee that opens
+            # /proc/<pid>/fd/<n> (a very common compiler self-reference) is
+            # reading the underlying regular file, not a kernel pseudo-file;
+            # /proc/self/fd is the observer's own stable handle on that object.
+            target=os.readlink('/proc/self/fd/'+str(reader))
+            if target!=path:
+                self.emit(dict(kind='regular-input-target-resolution',pid=pid,fd=fd,
+                    requestedPath=path,resolvedPath=target,identity=identity,
+                    mode=value.st_mode,scope='descriptor target resolved through the observer-held FD; not a claim about the pathname'))
+            # NON-FILE / PSEUDO-FILE INPUTS. These are NOT file/source inputs and
+            # an object kind or path prefix is NOT closure. A positive read is
+            # discharged only through an actual verified chain captured here;
+            # without one the row is evidence and the replay keeps the obligation
+            # open until the exit (and then forever, if the read was positive).
+            if (not stat.S_ISREG(value.st_mode)
+                    or target.startswith(('/proc/','/sys/','/dev/'))
+                    or target.startswith(('pipe:','socket:','anon_inode:'))):
+                chain=self.input_nonexec_chain(pid,fd,target,value,form,entry,barrier)
+                disposition=self.input_nonregular_disposition(pid,fd,target,value,role,form,entry,barrier,chain)
+                self.emit(disposition)
+                return None
+            if identity[3]>self.maximum_file_bytes:
+                self.tool_unresolved(pid,'regular-input-unsupported-or-unbounded',role=role,syscall=form['name'],entrySequence=entry['sequence'],identity=identity,scope='regular bounded input FD required for source-input custody')
+                return None
+            flags=descriptor_flags(pid,fd)
+            if flags&os.O_ACCMODE!=os.O_RDONLY:
+                # A writable descriptor is a POTENTIAL WRITER, never an immutable
+                # source input. It is still an OBSERVED input operation: record
+                # its exact identity/bytes as a typed, NON-creditable disposition
+                # so the universe stays complete while the source axis refuses.
+                disposition=dict(kind='regular-input-disposition',pid=pid,role=role,
+                    syscall=form['name'],form=form['name'],entrySequence=entry['sequence'],
+                    barrierSequence=barrier['sequence'],fd=fd,path=path,
+                    mode=value.st_mode,inode=value.st_ino,device=value.st_dev,
+                    requestedBound=entry['args'][2] if not form['iovec'] else None,
+                    disposition='writable-descriptor',dispositionVerified=True,
+                    descriptorFlags=flags,
+                    scope='actual stopped read on a writable descriptor; a potential writer, never immutable source input')
+                self.emit(disposition)
+                return None
+            if form['iovec']:
+                layout=self.input_iovec_layout(pid,args[1],args[2])
+                if layout is None:
+                    self.tool_unresolved(pid,'regular-input-iovec-layout-unavailable',role=role,syscall=form['name'],entrySequence=entry['sequence'],identity=identity,iovcnt=args[2])
+                    return None
+                bound=layout['bytes'];iovcnt=args[2];iovLengths=layout['lengths']
+            else:
+                bound=args[2];iovcnt=None;iovLengths=None
+            if not 0<=bound<=self.maximum_file_bytes:
+                self.tool_unresolved(pid,'regular-input-requested-bound-invalid',role=role,syscall=form['name'],entrySequence=entry['sequence'],identity=identity,requestedBound=bound)
+                return None
+            start=args[form['offset']] if form['offset'] is not None else descriptor_position(pid,fd)
+            if not 0<=start<=self.maximum_file_bytes:
+                self.tool_unresolved(pid,'regular-input-start-offset-invalid',role=role,syscall=form['name'],entrySequence=entry['sequence'],identity=identity,rangeStart=start)
+                return None
+            generation=self.input_generation_key(pid,fd,identity,flags)
+            self.input_generation[(pid,fd)]=generation
+            cached=self.input_read_cache.get(tuple(identity))
+            if cached is None:
+                name=self.next_capture_name();digest=hashlib.sha256();count=0
+                with (self.capture_dir/name).open('xb') as output:
+                    while True:
+                        self.check();block=os.pread(reader,65536,count)
+                        if not block:break
+                        count+=len(block)
+                        if count>self.maximum_file_bytes:raise AssertionError('regular input FD grew beyond bounded capture')
+                        digest.update(block)
+                        self.claim(len(block),category='capture-body',context=dict(role='input-read',pid=pid,fd=fd,start=count-len(block)))
+                        output.write(block)
+                    output.flush();os.fsync(output.fileno())
+                after=probe.identity(os.fstat(reader))
+                if count!=identity[3] or after!=identity:
+                    # A partial entity is NOT evidence. Remove it so the next
+                    # allocation can never collide with an unreferenced file.
+                    try:(self.capture_dir/name).unlink()
+                    except FileNotFoundError:pass
+                    # The read itself may have advanced mtime/atime or truncated
+                    # the object. Only a SHRINK/SIZE/GENUINE-TYPE change makes the
+                    # captured bytes untrustworthy; a metadata-only change is
+                    # recorded against the exact pre/post pair and is NOT credit.
+                    reason=('regular-input-FD-changed-during-capture'
+                            if after[:4]!=identity[:4] else 'regular-input-FD-metadata-changed-during-capture')
+                    self.tool_unresolved(pid,reason,role=role,syscall=form['name'],
+                        entrySequence=entry['sequence'],identity=identity,
+                        afterIdentity=after,scope='captured regular input bytes are not credited when the FD identity changed')
+                    return None
+                reference=dict(path=name,bytes=count,sha256=digest.hexdigest())
+                entity=self.register_capture_entity(reference);self.capture_bytes+=count
+                captured=self.emit(dict(kind='toolchain-original',captureKind='input-read',
+                    observedPath=path,identity=identity,original=reference,
+                    originalEntityIdentity=entity,regularInputOriginalModel='once-per-stable-protected-inode-v1'))
+                self.append_capture(captured)
+                cached=dict(reference=reference,sequence=captured['sequence'],entity=entity)
+                leaf_sequence=None
+                # REAL IMMUTABILITY. The captured bytes are only usable as an
+                # INPUT if this inode cannot be mutated before the kernel executes
+                # the traced read. O_RDONLY on the tracee's descriptor prevents
+                # only THAT descriptor from writing; a different open file
+                # description or another process could still modify the inode.
+                # The SAME common LeaseSet used for executable/mmap inputs holds a
+                # real kernel read lease (F_RDLCK) on this exact inode, which
+                # blocks foreign writers for the whole remaining window. The leaf
+                # is emitted LAST, so its registration never changes the inode.
+                if self.lifetime_leases is not None:
+                    token=self.lifetime_acquisition(pid,path,'input-read',entry['sequence'],
+                        barrier['sequence'],descriptor=fd)
+                    if token is None:
+                        # No proven exclusivity => the bytes must not become a
+                        # credited input. Keep the uncredited evidence and drop
+                        # the cached reuse so a later read re-tries under a lease.
+                        self.tool_unresolved(pid,'regular-input-read-lease-unavailable',role=role,
+                            syscall=form['name'],entrySequence=entry['sequence'],identity=identity,
+                            scope='regular read input has no held kernel read lease')
+                        return None
+                    # The ACQUISITION row is the binding: its own emitted
+                    # `sequence` is the row number the replay's lease_tokens
+                    # entry records, and `leaseId` is the token. No second
+                    # capture entity is minted, so the byte entity registered
+                    # above stays unique.
+                    leaf_sequence=token['sequence']
+                    lease_id=token['leaseId']
+                    assert token.get('entrySequence')==entry['sequence'],'lease row must bind this exact read entry'
+                else:
+                    self.tool_unresolved(pid,'regular-input-read-lease-unavailable',role=role,
+                        syscall=form['name'],entrySequence=entry['sequence'],identity=identity)
+                    return None
+                cached['leaseSequence']=leaf_sequence;cached['leaseId']=lease_id
+                self.input_read_cache[tuple(identity)]=cached
+                original_sequence=captured['sequence'];reused=False
+            else:
+                # REUSE: identical protected inode only. Re-verify the physical
+                # entity before recording a second reference to the same bytes.
+                entity=self.verify_capture_entity(cached['reference'])
+                if entity!=cached['entity']:
+                    self.tool_unresolved(pid,'regular-input-original-entity-changed',role=role,syscall=form['name'],entrySequence=entry['sequence'],identity=identity)
+                    return None
+                original_sequence=cached['sequence'];reused=True
+                # Reuse keeps the ORIGINAL held lease; verify it is still live for
+                # this exact inode instead of minting a second token.
+                if cached.get('leaseSequence') is None:
+                    self.tool_unresolved(pid,'regular-input-read-lease-unavailable',role=role,
+                        syscall=form['name'],entrySequence=entry['sequence'],identity=identity)
+                    return None
+            observation=self.emit(dict(kind='regular-input-observation',pid=pid,role=role,syscall=form['name'],
+                form=form['name'],entrySequence=entry['sequence'],barrierSequence=barrier['sequence'],fd=fd,path=path,
+                identity=identity,descriptorFlags=flags,generation=generation,
+                resolvedPath=target,
+                original=cached['reference'],originalSequence=original_sequence,
+                readLeaseSequence=cached.get('leaseSequence'),readLeaseId=cached.get('leaseId'),
+                rangeStart=start,requestedBound=bound,iovcnt=iovcnt,
+                iovLengths=iovLengths,
+                reuseModel=('same-protected-inode-exact-fd-generation-v1' if reused else 'canonical-input-original-v1'),
+                scope='actual stopped pre-use regular read-family input facts; consumed range and result are derived from the matching real exit'))
+            return observation
+        finally:os.close(reader)
+
+    def kernel_metadata_original(self,pid,name):
+        """Capture ONE kernel-provided process metadata file of the tracee.
+
+        ``mountinfo``/``cgroup`` are generated by the kernel for THIS pid in THIS
+        mount namespace. They are not source bytes and are not authority on their
+        own: the capture is a bounded byte original that the replay must match
+        against a verified same-interval process-authority sample before any read
+        of that file can be discharged.
+        """
+        assert name in ('mountinfo','cgroup'),'unreviewed kernel metadata name'
+        path='/proc/'+str(pid)+'/'+name
+        fd=os.open(path,os.O_RDONLY|os.O_CLOEXEC)
+        try:
+            self.check();data=bytearray()
+            while True:
+                block=os.read(fd,min(65536,self.tool_metadata_bytes+1-len(data)))
+                if not block:break
+                data.extend(block)
+                assert len(data)<=self.tool_metadata_bytes,'kernel metadata byte bound'
+                self.check()
+            identity=probe.identity(os.fstat(fd))
+        finally:os.close(fd)
+        digest=hashlib.sha256(data).hexdigest();key=(pid,name,digest)
+        reference=self.tool_provider_cache.get(key)
+        if reference is None:
+            assert len(self.tool_provider_cache)<self.maximum_processes,'kernel metadata original count bound'
+            capture_name=self.next_capture_name()
+            with (self.capture_dir/capture_name).open('xb') as output:
+                output.write(data);output.flush();os.fsync(output.fileno())
+            reference=dict(path=capture_name,bytes=len(data),sha256=digest)
+            row=self.emit(dict(kind='toolchain-original',captureKind='kernel-metadata',
+                observedPid=pid,kernelMetadataName=name,contentIdentity=identity,original=reference))
+            self.append_capture(row);self.capture_bytes+=len(data);self.tool_provider_cache[key]=reference
+        return dict(name=name,subjectPid=pid,original=reference,contentIdentity=identity)
+
+    def input_nonregular_disposition(self,pid,fd,path,value,role,form,entry,barrier,chain=None):
+        """Typed observation of a read-family entry on a NON-regular object.
+
+        This row is EVIDENCE ONLY. It never discharges the read obligation: the
+        matching real exit decides whether anything was consumed, and a positive
+        read additionally needs a verified chain (``chain``) built from an actual
+        trusted relation — the observer's own startup gate, or a kernel metadata
+        original for the SAME subject and namespace. A pipe/socket/any-proc-path
+        read without such a chain stays an unresolved input obligation no matter
+        what its name or object kind says.
+        """
+        mode=value.st_mode
+        object_kind=('fifo' if stat.S_ISFIFO(mode) else 'socket' if stat.S_ISSOCK(mode)
+            else 'character-device' if stat.S_ISCHR(mode) else 'block-device' if stat.S_ISBLK(mode)
+            else 'regular' if stat.S_ISREG(mode) else 'other')
+        path_class=('pipe' if path.startswith('pipe:') else 'socket' if path.startswith('socket:')
+            else 'anon-inode' if path.startswith('anon_inode:')
+            else 'proc' if path.startswith('/proc/') else 'sys' if path.startswith('/sys/')
+            else 'dev' if path.startswith('/dev/') else 'other')
+        row=dict(kind='regular-input-disposition',pid=pid,role=role,syscall=form['name'],
+            form=form['name'],entrySequence=entry['sequence'],barrierSequence=barrier['sequence'],
+            fd=fd,path=path,mode=mode,inode=value.st_ino,device=value.st_dev,
+            requestedBound=entry['args'][2] if not form['iovec'] else None,
+            objectKind=object_kind,pathClass=path_class,
+            descriptorFlags=descriptor_flags(pid,fd),
+            scope='actual stopped non-regular read observation; object kind/name alone grants no credit')
+        if chain is not None:row['chain']=chain
+        return row
+
+    def input_nonexec_chain(self,pid,fd,target,value,form,entry,barrier):
+        """Resolve an ACTUAL trusted relation for a positive non-file read.
+
+        Every admitted relation is built HERE from held observer state or a fresh
+        kernel original. Nothing is decided from a path prefix, a name, an object
+        kind or a caller-provided flag.
+
+        * ``observer-startup-gate-v1`` — the exact pre-exec pipe the observer
+          created for this phase, bound to this root, one released byte.
+        * ``kernel-process-metadata-v1`` — ``/proc/<pid>/{mountinfo,cgroup}`` of
+          THIS pid, captured under the current all-stop.
+        * ``kernel-virtual-fs-metadata-v1`` — a read-only KERNEL-GENERATED
+          virtual file (sysfs topology such as ``/sys/devices/system/cpu/online``)
+          whose mount is proven by the SAME tracee mountinfo the process-authority
+          interval verified: the mount is a known kernel virtual filesystem,
+          mounted read-only, the mount id and superblock device of the actually
+          opened FD agree with that mount line, and the captured original bytes
+          come from that exact FD. A regular file bind-mounted at the same path
+          would be on a different filesystem/mount/inode and is REFUSED.
+        """
+        gate=getattr(self,'current_gate',None)
+        if stat.S_ISFIFO(value.st_mode) and gate is not None:
+            bound=gate.get('bindings',{}).get(pid);released=gate.get('released')
+            if (bound is not None and released is not None
+                    and probe.identity(value)==bound['identity']
+                    and released['sequence']<entry['sequence']):
+                return dict(model='observer-startup-gate-v1',
+                    gateSequence=gate['row']['sequence'],bindingSequence=bound['sequence'],
+                    releaseSequence=released['sequence'],subjectPid=pid,
+                    identity=[str(v) for v in bound['identity']],byteLength=1,
+                    byteSha256=hashlib.sha256(b'x').hexdigest(),
+                    scope='exact object is the observer-owned pre-exec startup gate for this traced root')
+        match=re.fullmatch(r'/proc/([0-9]+)/(mountinfo|cgroup)',target)
+        if match is not None and int(match.group(1))==pid:
+            name=match.group(2);original=self.kernel_metadata_original(pid,name)
+            return dict(model='kernel-process-metadata-v1',subjectPid=pid,
+                metadataName=name,subjectOriginal=original['original'],
+                contentIdentity=[str(v) for v in original['contentIdentity']],
+                scope='kernel-generated metadata of this exact pid, captured under the current all-stop')
+        if (stat.S_ISREG(value.st_mode) and target.startswith(('/sys/','/proc/sys/'))
+                and not target.startswith('/proc/'+str(pid)+'/')):
+            return self.kernel_virtual_fs_chain(pid,fd,target,value,form,entry,barrier)
+        return None
+
+    def kernel_virtual_fs_chain(self,pid,fd,target,value,form,entry,barrier):
+        """Prove a read-only kernel-generated virtual filesystem file.
+
+        The mount table used is the tracee's own, already verified by the
+        process-authority interval; the FD's mount id and the mount line's
+        superblock device are cross-checked. Only kernel virtual filesystems are
+        admitted, so a bind-mounted regular file can never satisfy this even at
+        the same path.
+        """
+        KERNEL_VIRTUAL_FS={'sysfs'}
+        with open('/proc/'+str(pid)+'/mountinfo','rb') as source:
+            mountinfo=source.read(self.tool_metadata_bytes+1)
+        assert len(mountinfo)<=self.tool_metadata_bytes,'tracee mountinfo byte bound'
+        # Longest matching mount for THIS path, exactly like the kernel.
+        best=None
+        for line in mountinfo.decode('utf-8','strict').splitlines():
+            fields=line.split();separator=fields.index('-')
+            assert separator>=6 and len(fields)>separator+3,'mountinfo layout'
+            mount=fields[4].replace('\\040',' ').replace('\\011','\t').replace('\\012','\n').replace('\\134','\\')
+            if target==mount or target.startswith(mount.rstrip('/')+'/'):
+                if best is None or len(mount)>len(best[1]):best=(fields,mount)
+        if best is None:return None
+        fields,mount=best
+        try:mount_id=int(fields[0])
+        except ValueError:return None
+        # The FD's OWN kernel mount id (fdinfo) must be that mount: a different
+        # mount with the same pathname cannot be substituted.
+        info_fd=os.open('/proc/'+str(pid)+'/fdinfo/'+str(fd),os.O_RDONLY|os.O_CLOEXEC)
+        try:fdinfo_data=os.pread(info_fd,4096,0)
+        finally:os.close(info_fd)
+        fd_mount=None
+        for line in fdinfo_data.decode('utf-8','replace').splitlines():
+            info_key,_,info_value=line.partition(':')
+            if info_key.strip()=='mnt_id' and info_value.strip().isdigit():fd_mount=int(info_value.strip())
+        if fd_mount!=mount_id:return None
+        return dict(model='kernel-virtual-fs-metadata-v1',subjectPid=pid,path=target,
+            descriptorMountId=fd_mount,
+            mountPoint=mount,mountId=mount_id,mountOptions=fields[5].split(','),
+            fstype=fields[fields.index('-')+1],
+            superblockOptions=fields[fields.index('-')+3].split(','),
+            device=fields[2],
+            allowedKernelVirtualFilesystems=sorted(KERNEL_VIRTUAL_FS),
+            descriptorFlags=descriptor_flags(pid,fd),
+            fileIdentity=[str(v) for v in probe.identity(value)],
+            observedAtAllStop=barrier['sequence'],
+            scope='read-only kernel-generated virtual filesystem file, proven by the tracee mount table and the opened FD')
+
+    def input_generation_key(self,pid,fd,identity,flags):
+        """Exact FD-generation proof: identity + flags + current position.
+
+        A reused descriptor slot after close/reopen normally has a new identity;
+        including the position and flags means an old generation's proof can
+        never authorise a later one.
+        """
+        return dict(identity=list(identity),flags=flags,position=descriptor_position(pid,fd))
+
+    def input_iovec_layout(self,pid,address,count):
+        """Read the ACTUAL iovec vector: (sum(iov_len), individual lengths).
+
+        Bounded by IOVECTOR_MAXIMUM entries and the fixed 16-byte layout of a
+        64-bit {iov_base,iov_len} pair. An unreadable or implausible vector is an
+        unresolved input, never a silently smaller bound.
+        """
+        if not isinstance(count,int) or count<0 or count>IOVECTOR_MAXIMUM:return None
+        def word(position):
+            raw=int(single.trace(single.PEEKDATA,pid,position)).to_bytes(8,'little',signed=True)
+            return int.from_bytes(raw,'little',signed=False)
+        lengths=[];total=0
+        for index in range(count):
+            word(address+index*IOVECTOR_ENTRY_BYTES)      # iov_base: read, not needed
+            length=word(address+index*IOVECTOR_ENTRY_BYTES+8)
+            if not 0<=length<=self.maximum_file_bytes:return None
+            lengths.append(length);total+=length
+            if total>self.maximum_file_bytes:return None
+        return dict(bytes=total,lengths=lengths)
+
     def tool_original(self,reader,observed_path):
         before=probe.identity(os.fstat(reader));assert stat.S_ISREG(before[2]) and before[3]<=self.maximum_file_bytes,'bounded regular tool FD required'
         cached=self.tool_original_cache.get(tuple(before))
         if cached:return cached
-        name='capture-'+str(len(self.captures)).zfill(4)+'.original';offset=0;digest=hashlib.sha256()
+        name=self.next_capture_name();offset=0;digest=hashlib.sha256()
         with (self.capture_dir/name).open('xb') as output:
             while True:
                 self.check();block=os.pread(reader,65536,offset)
@@ -2200,7 +2614,7 @@ class Observer(CapturesMixin):
         reference=self.tool_provider_cache.get(key)
         if reference is None:
             assert len(self.tool_provider_cache)<self.maximum_processes,'actual tool provider original count bound'
-            name='capture-'+str(len(self.captures)).zfill(4)+'.original'
+            name=self.next_capture_name()
             with (self.capture_dir/name).open('xb') as output:
                 for at in range(0,len(data),65536):self.check();block=data[at:at+65536];self.claim(len(block),category='capture-body');output.write(block)
                 output.flush();os.fsync(output.fileno())
@@ -2258,7 +2672,7 @@ class Observer(CapturesMixin):
         emission happens after the frame is gone so it pays its own full sweeps.
         Every fresh read, digest and identity assertion is unchanged.
         """
-        path='/proc/'+str(pid)+'/maps';name='capture-'+str(len(self.captures)).zfill(4)+'.original';data=bytearray();digest=hashlib.sha256()
+        path='/proc/'+str(pid)+'/maps';name=self.next_capture_name();data=bytearray();digest=hashlib.sha256()
         def identity(value):return [*probe.identity(value),value.st_nlink]
         with open(path,'rb')as source:
             before=identity(os.fstat(source.fileno()));named=identity(os.stat(path,follow_symlinks=False))
@@ -2305,7 +2719,7 @@ class Observer(CapturesMixin):
     def tool_maps(self,pid):
         if getattr(self,'capture_maps_content_entities',False):return self.content_tool_maps(pid)
         # Read only while all registered potential writers are at OS stops.
-        name='capture-'+str(len(self.captures)).zfill(4)+'.original';data=bytearray();digest=hashlib.sha256()
+        name=self.next_capture_name();data=bytearray();digest=hashlib.sha256()
         with open('/proc/'+str(pid)+'/maps','rb') as source,(self.capture_dir/name).open('xb') as output:
             while True:
                 self.check();block=source.read(65536)
@@ -2497,7 +2911,14 @@ class Observer(CapturesMixin):
                 pid,task=min(pending,key=lambda pair:(pair[1]['entry']['nr']in [94,231],pair[0]))
                 assert task['stopped']and state(pid)=='t'and not task.get('authorityPending'),'selected terminal task lacks initialized stop'
                 self.terminal_focus=pid
-        for pid,row in list(self.tasks.items()):
+        # Snapshot filtered by ALREADY-EXITED rows only. Every guard below is a
+        # `continue`; the single branch that does work ends in
+        # `if row['stopped'] and not row['exited']`. An exited row can never be
+        # resumed, so removing it from the ITERABLE cannot change which pids
+        # resume, in what order, or how often. Rows stay in self.tasks: full
+        # history, terminal authorities and closed/exited state are untouched.
+        # Constant-factor saving only: this snapshot still scans every row.
+        for pid,row in [(p,t) for p,t in self.tasks.items() if not t['exited']]:
             if getattr(self,'terminal_focus',None)is not None and pid!=self.terminal_focus and not row.get('terminalAuthority',{}).get('closed'):continue
             if self.generated_vma and self.generated_vma.owner is not None and pid!=self.generated_vma.owner:continue
             if self.exclusive and pid!=self.exclusive[0]:continue
@@ -2926,7 +3347,11 @@ class Observer(CapturesMixin):
         # stop (capture_process_authority takes its own all-stop barrier), so this
         # is a scheduling move of real evidence, not synthesised data.
         while self.process_authority:
-            selected=next(((pid,row) for pid,row in self.tasks.items() if row.get('authorityPending') and not row['exited']),None)
+            # `not exited` is tested FIRST: it is a plain field read, while the
+            # pending field is an optional lookup. An exited row can never be
+            # selected (the predicate requires not-exited either way), so hoisting
+            # the guard only short-circuits rows that could not match.
+            selected=next(((pid,row) for pid,row in self.tasks.items() if not row['exited'] and row.get('authorityPending')),None)
             if selected is None:break
             pid,task=selected;role,event_sequence=task['authorityPending'].pop(0);self.instrument_substep('capture_process_authority',self.capture_process_authority,pid,role,event_sequence)
         if self.instrument_substep('capture_queued_identity',self.capture_queued_identity):return
@@ -2935,7 +3360,7 @@ class Observer(CapturesMixin):
         if self.instrument_substep('capture_queued_identity',self.capture_queued_identity):return
         self.instrument_substep('checkpoint_append_boundaries',self.checkpoint_append_boundaries)
         while self.capture_toolchain:
-            selected=next(((pid,row) for pid,row in self.tasks.items() if row.get('toolPending') and not row['exited']),None)
+            selected=next(((pid,row) for pid,row in self.tasks.items() if not row['exited'] and row.get('toolPending')),None)
             if selected is None:break
             pid,task=selected
             self.barrier();self.instrument_substep('checkpoint_appends',self.checkpoint_appends,'toolchain-access',task['entry']['sequence'] if task.get('entry') else None)
@@ -2945,18 +3370,57 @@ class Observer(CapturesMixin):
         # All candidate entries encountered while stopping peers are preserved;
         # process each before resuming any potential writer.
         while True:
-            candidate=next(((pid,r) for pid,r in self.tasks.items() if r.get('capture') and not r['exited']),None)
+            candidate=next(((pid,r) for pid,r in self.tasks.items() if not r['exited'] and r.get('capture')),None)
             if not candidate:break
             pid,task=candidate;fd,role=task.pop('capture');
             if role!='writer-before':
                 self.instrument_substep('barrier_before_capture',self.barrier);self.instrument_substep('checkpoint_appends',self.checkpoint_appends,'captured-access',task['entry']['sequence'])
+            _entry=task.get('entry') or {}
+            _read_form=bindings.read_form(_entry.get('arch',0),_entry.get('nr',-1))
+            _form=_read_form if role=='input-read' else None
+            _citation_role=role
             function,arguments,substep=(self.generated_vma.capture,(pid,),'generated_vma_capture') if role=='generated-vma-before' else \
                 (self.capture_rename,(pid,),'capture_rename') if role=='rename-before' else \
                 (self.capture_metadata,(pid,),'capture_metadata') if role=='metadata-before' else \
                 (self.capture_link_metadata,(pid,),'capture_link_metadata') if role=='link-metadata-before' else \
                 (self.capture_write,(pid,fd),'capture_write') if role=='writer-before' else \
+                (self.input_read_capture,(pid,fd,role,_form,_entry,_entry.get('args')),'input_read_capture') if role=='input-read' and _form is not None else \
                 (self.capture,(pid,fd,role),'capture')
-            capture=self.instrument_substep(substep,function,*arguments)
+            if role in ('source-read','consumer') and _read_form is not None:
+                # ONE REAL READ, TWO OBLIGATIONS. A regular source/dependency or
+                # build-root read carries two independent axes:
+                #   (a) ROLE EVIDENCE. `source-read` is the only producer of the
+                #       source/dependency axis and `consumer` the only producer of
+                #       generated-consumer custody, so the role capture must still
+                #       be emitted.
+                #   (b) COMPLETENESS. R5 requires EVERY read-family entry to be
+                #       discharged by a validated `regular-input-observation` plus
+                #       its matching real exit; role-only captures leave
+                #       `inputComplete=false`, which over-refuses a valid SDK.
+                # The observation is taken FIRST because it owns the canonical byte
+                # original and the held read lease; the role capture then records
+                # its own independently validated row and (under the content-entity
+                # model) aliases that same physical original instead of copying it.
+                # Neither row is relabelled and neither validator is relaxed.
+                observation=self.instrument_substep('input_read_capture',self.input_read_capture,
+                    pid,fd,'input-read',_read_form,_entry,_entry.get('args'))
+                role_capture=self.instrument_substep(substep,function,*arguments)
+                if observation is not None and role_capture is not None and role_capture.get('kind')=='fd-capture':
+                    # Cite the observation as the exclusive window's own validated
+                    # capture: it is the row the regular-input resume must name.
+                    # The role is reported as observed (`input-read`), never
+                    # rewritten to the source/consumer label.
+                    capture=observation;_form=_read_form;_citation_role='input-read'
+                else:
+                    # Either the completeness observation was refused (no lease,
+                    # writable descriptor, non-regular, unresolvable) -- the
+                    # obligation then honestly stays OPEN -- or the role capture is
+                    # a NON-plain window (`empty-read-window`, `readwrite-consumer`)
+                    # whose own resume/EOF closure must stay authoritative. The role
+                    # row is real evidence in both cases and is never relabelled.
+                    capture=role_capture
+            else:
+                capture=self.instrument_substep(substep,function,*arguments)
             if capture is None:
                 # capture declined to claim an endpoint (unobserved/out-of-scope target).
                 # DRAIN THE REMAINING CANDIDATES before any resume: every peer entry
@@ -2966,7 +3430,7 @@ class Observer(CapturesMixin):
                 # No callee self-requeues (audited), so this loop still terminates.
                 task['entry']['captureSequence']=None
                 continue
-            task['entry']['captureSequence']=capture['sequence'];self.exclusive=(pid,task['entry']['sequence']);self.emit(dict(kind={'generated-vma-operation-window':'exclusive-generated-vma-resume','actual-write-window':'exclusive-write-resume','actual-link-window':'exclusive-link-resume','actual-mode-window':'exclusive-mode-resume','actual-timestamp-window':'exclusive-timestamp-resume','actual-rename-window':'exclusive-rename-resume','empty-read-window':'exclusive-empty-read-resume','alias-close-window':'exclusive-alias-close-resume'}.get(capture['kind'],'exclusive-captured-syscall-resume'),pid=pid,entrySequence=task['entry']['sequence'],captureSequence=capture['sequence']));break
+            task['entry']['captureSequence']=capture['sequence'];self.exclusive=(pid,task['entry']['sequence']);self.emit(dict(kind={'generated-vma-operation-window':'exclusive-generated-vma-resume','actual-write-window':'exclusive-write-resume','actual-link-window':'exclusive-link-resume','actual-mode-window':'exclusive-mode-resume','actual-timestamp-window':'exclusive-timestamp-resume','actual-rename-window':'exclusive-rename-resume','empty-read-window':'exclusive-empty-read-resume','alias-close-window':'exclusive-alias-close-resume'}.get(capture['kind'],'exclusive-captured-syscall-resume'),pid=pid,entrySequence=task['entry']['sequence'],captureSequence=capture['sequence'],**({'inputObservationSequence':capture['sequence'],'regularInputRole':_citation_role,'regularInputForm':_form['name']} if _form is not None else {})));break
         if self.exclusive is None:self.instrument_substep('capture_queued_identity',self.capture_queued_identity)
     def release_vfork_parent(self,child,event,reason):
         task=self.tasks[child];parent_pid=task.pop('vforkParent',None)
@@ -3236,17 +3700,37 @@ class Observer(CapturesMixin):
                 except FileNotFoundError:task['toolMmapFd']=None
                 if task['toolMmapFd'] and stat.S_ISREG(task['toolMmapFd']['identity'][2]):task.setdefault('toolPending',[]).append(('mmap-before',record,None))
             selected=None;fd=None
-            if nr in [policy['read'],policy['write'],policy['close']]:fd=args[0];selected=fdpath(pid,fd)
+            if nr in [policy['read'],policy['write'],policy['close']] or nr in policy.get('reads',set()):fd=args[0];selected=fdpath(pid,fd)
             if nr==policy['mmap'] and args[4]<(1<<31):fd=args[4];selected=fdpath(pid,fd)
-            if selected:
+            if nr in policy.get('reads',set()):
+                # EVERY read-family entry becomes an obligation, even when the
+                # descriptor is not a regular file (pipe/socket/procfs) or its
+                # path cannot be resolved. The dedicated capture method records
+                # either real bytes or an exact declared disposition; silence is
+                # what caused the missing-input over-credit.
+                #
+                # ROLE SELECTION MUST STILL HAPPEN. `policy['reads']` CONTAINS
+                # `policy['read']` on both reviewed architectures, so guarding
+                # the whole read family with this branch alone would make the
+                # role decision unreachable and downgrade every regular source
+                # and build-root read to `input-read` (no `source-read`
+                # fd-capture, hence no source/dependency axis). The completeness
+                # obligation is preserved: every read-family form still gets a
+                # capture, and `input-read` remains the fallback whenever the
+                # descriptor is not a resolvable regular file.
+                try:item=os.stat('/proc/'+str(pid)+'/fd/'+str(fd))
+                except FileNotFoundError:item=None
+                task['capture']=(fd,read_capture_role(selected,item,self.source,self.build))
+            elif selected:
                 try:item=os.stat('/proc/'+str(pid)+'/fd/'+str(fd))
                 except FileNotFoundError:item=None
                 if item and stat.S_ISREG(item.st_mode):
                     if nr==policy['write'] and selected.startswith(self.build+'/') and descriptor_flags(pid,fd)&os.O_ACCMODE==os.O_RDWR:task['capture']=(fd,'writer-before')
                     elif nr==policy['close'] and selected.startswith(self.build+'/') and descriptor_flags(pid,fd)&os.O_ACCMODE in [os.O_WRONLY,os.O_RDWR]:task['capture']=(fd,'producer-close')
-                    elif nr==policy['read'] and selected.startswith(self.build+'/') and (self.selected_names is None or Path(selected).name in self.selected_names):task['capture']=(fd,'consumer')
                     elif nr==policy['mmap'] and selected.startswith(self.build+'/') and (self.selected_names is None or Path(selected).name in self.selected_names):self.emit(dict(kind='generated-mmap-unverified',pid=pid,path=selected,entrySequence=record['sequence']))
-                    elif nr==policy['read'] and (selected.startswith(self.source+'/') or selected.startswith('/opt/qlever-sdk/dependencies/')):task['capture']=(fd,'source-read')
+                    # No read-role branch belongs here: the complete read family
+                    # is routed by the `reads` branch above, which is a strict
+                    # superset of `read_form` on both reviewed architectures.
             if nr==TIMESTAMP_SYSCALLS[kernel['arch']] and args[3]==0:
                 # flags==0 only. NOTHING is resolved or stat'ed here: the build-root
                 # decision and every namespace/memory read happen at the fresh
@@ -3410,7 +3894,20 @@ class Observer(CapturesMixin):
             except BaseException:
                 self.raw_bytes_completed+=self.raw.tell();self.raw.close();self.close();raise
         ready_read,ready_write=os.pipe() if self.process_authority else (None,None)
-        read_fd,write_fd=os.pipe();stdout_read,stdout_write=os.pipe();stderr_read,stderr_write=os.pipe();child=os.fork()
+        read_fd,write_fd=os.pipe();stdout_read,stdout_write=os.pipe();stderr_read,stderr_write=os.pipe()
+        # TRUSTED STARTUP CONTROL GATE. The observer creates this pipe itself and
+        # later writes exactly one byte; the child blocks on it before exec. The
+        # gate row records the observer-owned pipe identity and the exact byte so
+        # a tracee read of THIS object can be bound to the observer's own action
+        # instead of being credited from a pipe path prefix. A later read of any
+        # other pipe has no such relation and remains an unresolved obligation.
+        gate_identity=probe.identity(os.fstat(read_fd))
+        gate=dict(kind='toolchain-control-gate',model='observer-owned-startup-gate-v1',phase=name,
+            targetPid=None,readEndFd=read_fd,writeEndFd=write_fd,
+            identity=gate_identity,byteLength=1,byteSha256=hashlib.sha256(b'x').hexdigest())
+        gate=self.emit(gate)
+        self.current_gate=dict(row=gate,bindings={},released=None)
+        child=os.fork()
         if child==0:
             stage='setup'
             try:
@@ -3443,12 +3940,28 @@ class Observer(CapturesMixin):
             # Created only here, in the parent after fork: the child must never
             # inherit a lease FD or SIGIO ownership.
             if self.capture_toolchain:self.lifetime_leases=self.lifetime_leases_class()
+            # LEASES ARE PER-PHASE. The cache and the FD-generation map are keyed
+            # by inode, so carrying them across phases would let a later phase
+            # cite a token that the previous phase already closed. Reset them
+            # exactly where a fresh LeaseSet is created.
+            self.input_read_cache={};self.input_generation={}
             self.lifetime_phase=name;self.lifetime_acquired={};self.lifetime_by_identity={};self.authority_observed=set()
             os.close(read_fd)
             for pump in pumps:pump.start()
             if self.process_authority:
                 os.close(ready_write);ready_write=None;self.check();remaining=max(0,self.deadline-time.monotonic());readable,_,_=select.select([ready_read],[],[],remaining);self.check();assert readable and os.read(ready_read,1)==b'R','child authority setup did not complete before release';os.close(ready_read);ready_read=None
-            self.emit(dict(kind='owned-root-binding',pid=child,command=command,**(dict(toolchainLifetimeModel=LIFETIME_MODEL,executableMemoryPolicy=memory_policy.MODEL,clone3ArgsModel='stopped-clone3-args-v1',btiHardeningModel='held-rx-bti-hardening-v1',**(dict(remapCapabilityModel=memory_policy.REMAP_MODEL) if self.generated_vma else {})) if self.capture_toolchain else {}),**(dict(rawRecordModel=probe.RAW_RECORD_MODEL_V2)if self.indexed_raw_records else {}),backend='ptrace-all-stop-process-v1',**(dict(chunkOriginalStorageModel='chunk-original-v1') if self.capture_content_entities else {}),captureOriginalEntityModel='same-phase-content-entity-v2' if self.capture_content_entities else 'same-phase-producer-original-v1',**(dict(mapsOriginalEntityModel='same-phase-maps-content-entity-v1')if getattr(self,'capture_maps_content_entities',False)else {}),**(dict(generatedVmaModel=self.generated_vma.model,**(dict(generatedVmaMetadataModel=generated_vma_module.RETAINED_METADATA_MODEL)if getattr(self,'retained_generated_metadata',False)else {}),generatedVmaBuildRoot=self.build,generatedVmaParentDeadlineMonotonicNs=str(int(self.waiter.parent_deadline*1e9))) if self.generated_vma else {}),**(dict(stoppedWriterAliasModel='all-stop-exclusive-write-aliases-v1') if getattr(self,'stopped_writer_aliases',False) else {}),**(dict(optionalIoUringModel='explicit-kernel-enosys-denial-v2' if getattr(self,'io_uring_enosys_v2',False) else 'explicit-kernel-enosys-denial-v1') if self.deny_optional_io_uring else {}),**(dict(setresuidNoopModel='actual-stopped-setresuid-noop-v1') if self.verified_setresuid_noop else {}),**(dict(setresIdentityNoopModel='actual-stopped-setres-identity-noop-queued-v2' if getattr(self,'queued_identity_noop',False) else 'actual-stopped-setres-identity-noop-v1') if getattr(self,'verified_identity_noop',False) else {}),**(dict(processAuthorityModel=tool_providers.AUTHORITY_MODEL) if self.process_authority else {}),**(dict(exitAuthorityModel='actual-selected-exit-stop-held-terminal-peers-v2'if getattr(self,'serialize_terminal_syscalls',False)else 'actual-selected-exit-stop-before-peer-barrier-v1') if getattr(self,'terminal_exit_evidence',False) else {}),**(dict(taskOwnershipModel='all-tracked-tids-shared-fd-v1',tgid=child,fdTable=child) if self.shared_tasks else {})));single.trace(SEIZE,child,0,OPTIONS);single.trace(INTERRUPT,child);pid,status=self.wait_one();self.event(pid,status,False);self.pending_captures();os.write(write_fd,b'x');os.close(write_fd);write_fd=None;self.resume()
+            self.emit(dict(kind='owned-root-binding',pid=child,command=command,**(dict(toolchainLifetimeModel=LIFETIME_MODEL,executableMemoryPolicy=memory_policy.MODEL,clone3ArgsModel='stopped-clone3-args-v1',btiHardeningModel='held-rx-bti-hardening-v1',**(dict(remapCapabilityModel=memory_policy.REMAP_MODEL) if self.generated_vma else {})) if self.capture_toolchain else {}),**(dict(rawRecordModel=probe.RAW_RECORD_MODEL_V2)if self.indexed_raw_records else {}),backend='ptrace-all-stop-process-v1',**(dict(chunkOriginalStorageModel='chunk-original-v1') if self.capture_content_entities else {}),captureOriginalEntityModel='same-phase-content-entity-v2' if self.capture_content_entities else 'same-phase-producer-original-v1',**(dict(mapsOriginalEntityModel='same-phase-maps-content-entity-v1')if getattr(self,'capture_maps_content_entities',False)else {}),**(dict(generatedVmaModel=self.generated_vma.model,**(dict(generatedVmaMetadataModel=generated_vma_module.RETAINED_METADATA_MODEL)if getattr(self,'retained_generated_metadata',False)else {}),generatedVmaBuildRoot=self.build,generatedVmaParentDeadlineMonotonicNs=str(int(self.waiter.parent_deadline*1e9))) if self.generated_vma else {}),**(dict(stoppedWriterAliasModel='all-stop-exclusive-write-aliases-v1') if getattr(self,'stopped_writer_aliases',False) else {}),**(dict(optionalIoUringModel='explicit-kernel-enosys-denial-v2' if getattr(self,'io_uring_enosys_v2',False) else 'explicit-kernel-enosys-denial-v1') if self.deny_optional_io_uring else {}),**(dict(setresuidNoopModel='actual-stopped-setresuid-noop-v1') if self.verified_setresuid_noop else {}),**(dict(setresIdentityNoopModel='actual-stopped-setres-identity-noop-queued-v2' if getattr(self,'queued_identity_noop',False) else 'actual-stopped-setres-identity-noop-v1') if getattr(self,'verified_identity_noop',False) else {}),**(dict(processAuthorityModel=tool_providers.AUTHORITY_MODEL) if self.process_authority else {}),**(dict(exitAuthorityModel='actual-selected-exit-stop-held-terminal-peers-v2'if getattr(self,'serialize_terminal_syscalls',False)else 'actual-selected-exit-stop-before-peer-barrier-v1') if getattr(self,'terminal_exit_evidence',False) else {}),**(dict(taskOwnershipModel='all-tracked-tids-shared-fd-v1',tgid=child,fdTable=child) if self.shared_tasks else {})));single.trace(SEIZE,child,0,OPTIONS);single.trace(INTERRUPT,child);pid,status=self.wait_one();self.event(pid,status,False);self.pending_captures()
+            binding=self.emit(dict(kind='toolchain-control-gate-binding',model='observer-owned-startup-gate-v1',
+                gateSequence=gate['sequence'],pid=child,identity=gate_identity,
+                scope='the observer, not the tracee, owns the write end of this exact pipe inode'))
+            self.current_gate['bindings'][child]=dict(sequence=binding['sequence'],identity=gate_identity)
+            os.write(write_fd,b'x')
+            released=self.emit(dict(kind='toolchain-control-gate-release',model='observer-owned-startup-gate-v1',
+                gateSequence=gate['sequence'],pid=child,identity=gate_identity,
+                byteLength=1,byteSha256=hashlib.sha256(b'x').hexdigest(),
+                scope='the single gate byte was written by the observer after the traced root stopped'))
+            self.current_gate['released']=dict(sequence=released['sequence'],identity=gate_identity)
+            os.close(write_fd);write_fd=None;self.resume()
             while any(not r['exited'] for r in self.tasks.values()):
                 progress=self._phase_progress;progress.ticks+=1
                 pid,status=self.wait_one();self.event(pid,status);self.pending_captures();self.resume()

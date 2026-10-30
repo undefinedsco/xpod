@@ -9,12 +9,12 @@ import {API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS as api,API_SERVICE_BUILD_SOURCE_
 import {QLEVER_SDK_EXECUTION_GROUPS as sdk} from '../../scripts/lib/independent-admission/qlever-sdk-origin-policy';
 import {CONSUMER_SOURCE_GROUPS as consumer,CI_CONSUMER_SOURCE_GROUPS as ci} from '../../scripts/lib/independent-admission/consumer-observer-policy';
 import {sourceBindingKey as key,selectGitHubSourceBindingGroup as select} from '../../scripts/lib/independent-admission/github-source-binding-groups';
-import {completeObserved,observedSecondaryBindings} from './source-binding-group.fixture';
+import {CURRENT_CANONICAL_SOURCE_ROWS,completeObserved,observedSecondaryBindings} from './source-binding-group.fixture';
 const sha=(bytes:string|Buffer)=>createHash('sha256').update(bytes).digest('hex');
 test('API18 preserves all SDK31 complete historical groups and binds actual runtime closure',()=>{
  const groups={api,sdk,consumer,ci};expect([api.length,sdk.length,consumer.length,ci.length]).toEqual([29,87,99,196]);
  for(const name of Object.keys(groups) as (keyof typeof groups)[])for(let i=0;i<historical.groups[name].length;i++)expect(sha(JSON.stringify(groups[name][i]))).toBe(historical.groups[name][i]!);
- const root=fileURLToPath(new URL('../../',import.meta.url));expect(current.length).toBe(504);expect(API_SERVICE_BUILD_SOURCE_BINDINGS.length).toBe(82);
+ const root=fileURLToPath(new URL('../../',import.meta.url));expect(current.length).toBe(CURRENT_CANONICAL_SOURCE_ROWS);expect(API_SERVICE_BUILD_SOURCE_BINDINGS.length).toBe(82);
  for(const row of [...current,...API_SERVICE_BUILD_SOURCE_BINDINGS])expect(sha(readFileSync(join(root,row.path)))).toBe(row.sha256);
 });
 // Keep every historical tuple and missing-role assertion in its own bounded test.

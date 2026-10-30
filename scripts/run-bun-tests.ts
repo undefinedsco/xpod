@@ -36,7 +36,8 @@ async function main(argv: string[]): Promise<number> {
   }
 
   console.log(`running ${files.length} Bun-only test file(s) with bun test`);
-  const child = spawn('bun', [ 'test', ...files ], { cwd: ROOT, stdio: 'inherit' });
+  // Keep mock.module replacements and module caches local to each test file.
+  const child = spawn('bun', [ 'test', '--isolate', ...files ], { cwd: ROOT, stdio: 'inherit' });
   return await new Promise<number>((resolve) => {
     child.on('exit', (code) => resolve(code ?? 1));
     child.on('error', (error) => {

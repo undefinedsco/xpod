@@ -116,9 +116,19 @@ for (const [file, historicalName, currentName, historicalCount, currentCount] of
 
   if (currentCount > historicalCount && historicalName !== currentName) {
     // genuine append on an axis whose history is a SEPARATE frozen constant:
-    // the new tail adds exactly the reviewed extra roles
-    expect(latest.slice(historical[0]!.length).map(([name]) => name)).toEqual(
-      ['sdk-generated-vma-originals.py', 'sdk-coordinated-wait.py', 'sdk-original-chunk-store.py', 'sdk-raw-wire-reader.py', 'sdk-executable-memory-policy.py']);
+    // the new tail adds exactly the reviewed extra roles. The lossless
+    // generated-producer transport codec is a NEW controller role on the
+    // generation axis only; it is not a FetchContent observer input, so the
+    // fetch axis keeps its five frozen appended roles byte-for-byte.
+    const appendedRoles = [
+      'sdk-generated-vma-originals.py',
+      'sdk-coordinated-wait.py',
+      'sdk-original-chunk-store.py',
+      'sdk-raw-wire-reader.py',
+      'sdk-executable-memory-policy.py',
+    ];
+    if (file === 'qlever-sdk-generation.ts') appendedRoles.push('sdk-generated-producer-transport.py');
+    expect(latest.slice(historical[0]!.length).map(([name]) => name)).toEqual(appendedRoles);
   } else {
     expect(latest).toHaveLength(historical[0]!.length);
   }

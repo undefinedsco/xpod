@@ -11,7 +11,7 @@
  *     executor change;
  *  3. the REAL generic selector resolves the OLD fixture hash to SDK82 and the NEW
  *     hash to SDK83, and refuses missing/stale/earlier-stage/source-only shapes;
- *  4. the live canonical has 504 unique rows binding actual bytes, and the SDK83
+ *  4. the live canonical has the current canonical physical originals binding actual bytes, and the SDK83
  *     consumer99/CI195-196 tails bind the FINAL policy/canonical bytes;
  *  5. production policy files stay under the reviewed 1,000,000-byte limit and
  *     their Contents-API JSON wire form stays under 2 MiB.
@@ -29,6 +29,7 @@ import {API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS as API} from '../../scripts/lib/
 import {CLI_SOURCE_VERSION_GROUPS as CLI} from '../../scripts/lib/independent-admission/source-rules';
 import {selectGitHubSourceBindingGroup,secondaryGitHubSourceBindingSelectors,sourceBindingKey} from '../../scripts/lib/independent-admission/github-source-binding-groups';
 import {decodeCatalog} from './sdk-helper-catalog.fixture';
+import {CURRENT_CANONICAL_SOURCE_ROWS} from './source-binding-group.fixture';
 
 const ROOT=path.resolve(import.meta.dirname,'../..');
 const whole=(g:unknown)=>createHash('sha256').update(JSON.stringify(g)).digest('hex');
@@ -165,10 +166,10 @@ it('stage-4 missing, earlier-stage missing, stale and source-only shapes are ref
   expect(()=>selectGitHubSourceBindingGroup([...peers,sourceOnly],withNew)).toThrow();
 });
 
-it('the live canonical binds 504 real unique rows with no self hash',()=>{
+it('the live canonical binds the current canonical physical originals with no self hash',()=>{
   const rows=JSON.parse(readFileSync(path.join(ROOT,CANONICAL_JSON),'utf8')) as {path:string;sha256:string}[];
-  expect(rows).toHaveLength(504);
-  expect(new Set(rows.map(r=>r.path)).size).toBe(504);
+  expect(rows).toHaveLength(CURRENT_CANONICAL_SOURCE_ROWS);
+  expect(new Set(rows.map(r=>r.path)).size).toBe(CURRENT_CANONICAL_SOURCE_ROWS);
   for(const row of rows) expect(sha(row.path),row.path).toBe(row.sha256);
   expect(rows.filter(r=>r.path===CANONICAL_JSON)).toHaveLength(0);
   expect(rows.filter(r=>r.path===CONSUMER_POLICY)).toHaveLength(0);
@@ -181,7 +182,7 @@ it('the SDK83 consumer/CI tails bind the final policy and canonical bytes',()=>{
   const tails:any[]=[CONSUMER[98]!,CI[194]!,CI[195]!];
   const role=(g:any,p:string)=>[...g.sourceBindings,...(g.secondarySelectors??[])].filter((r:any)=>r.path===p).map((r:any)=>r.sha256);
   for(const group of tails){
-    expect(group.sourceBindings).toHaveLength(506);
+    expect(group.sourceBindings).toHaveLength(507);
     expect(role(group,CONSUMER_POLICY)).toEqual([sha(CONSUMER_POLICY)]);
     expect(role(group,CANONICAL_JSON)).toEqual([sha(CANONICAL_JSON)]);
     expect(role(group,FIXTURE)).toEqual([sha(FIXTURE)]);

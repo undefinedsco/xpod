@@ -8,6 +8,7 @@ import current from '../../scripts/lib/independent-admission/consumer-execution-
 import {API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS as API,API_WORKSPACE_SOURCE_GROUPS,API_WEBSITE_STAGE_SOURCE_BINDINGS} from '../../scripts/lib/independent-admission/github-origin';
 import {CONSUMER_SOURCE_GROUPS as CONSUMER,CI_CONSUMER_SOURCE_GROUPS as CI} from '../../scripts/lib/independent-admission/consumer-observer-policy';
 import {secondaryGitHubSourceBindingSelectors,selectGitHubSourceBindingGroup,sourceBindingKey} from '../../scripts/lib/independent-admission/github-source-binding-groups';
+import {CURRENT_CANONICAL_SOURCE_ROWS} from './source-binding-group.fixture';
 const role='scripts/lib/api-scoped-dependency-state.ts';
 const hash=(bytes:string|Buffer)=>createHash('sha256').update(bytes).digest('hex');
 const historicalKey=(row:{path:string;sha256:string;ref?:string})=>{if(row.ref!==undefined&&row.ref!=='run-head')throw Error('Unknown historical original role');return sourceBindingKey({path:row.path,sha256:row.sha256,...(row.ref===undefined?{}:{ref:row.ref})});};
@@ -33,5 +34,5 @@ test('only minimal same-primary candidates fetch physical helper; all old global
  for(const group of API_WORKSPACE_SOURCE_GROUPS){const facts=observed(group);for(const role of secondaryGitHubSourceBindingSelectors(API,new Map(group.selectors.map(row=>[sourceBindingKey(row),row.sha256])))){const row=group.sourceBindings.find(row=>sourceBindingKey(row)===sourceBindingKey(role))!;facts.set(sourceBindingKey(role),row.sha256);}expect(selectGitHubSourceBindingGroup(API,facts)).toBe(group);facts.delete('source:'+role);expect(()=>selectGitHubSourceBindingGroup(API,facts)).toThrow();facts.set('source:'+role,'0'.repeat(64));expect(()=>selectGitHubSourceBindingGroup(API,facts)).toThrow();}
 });
 test('unified 362 original controller tree and selected API closure match every actual file byte',()=>{
- expect(current).toHaveLength(504);for(const row of [...current,...API_SERVICE_BUILD_SOURCE_BINDINGS])expect(hash(fs.readFileSync(path.resolve(import.meta.dir,'../..',row.path)))).toBe(row.sha256);
+ expect(current).toHaveLength(CURRENT_CANONICAL_SOURCE_ROWS);for(const row of [...current,...API_SERVICE_BUILD_SOURCE_BINDINGS])expect(hash(fs.readFileSync(path.resolve(import.meta.dir,'../..',row.path)))).toBe(row.sha256);
 });

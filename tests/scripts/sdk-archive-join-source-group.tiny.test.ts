@@ -5,6 +5,7 @@ import {createHash} from 'node:crypto';
 import current from '../../scripts/lib/independent-admission/consumer-execution-current.json';
 import {CONSUMER_SOURCE_GROUPS,CI_CONSUMER_SOURCE_GROUPS} from '../../scripts/lib/independent-admission/consumer-observer-policy';
 import {secondaryGitHubSourceBindingSelectors,sourceBindingKey,selectGitHubSourceBindingGroup} from '../../scripts/lib/independent-admission/github-source-binding-groups';
+import {CURRENT_CANONICAL_SOURCE_ROWS} from './source-binding-group.fixture';
 const root=path.resolve(import.meta.dir,'../..'),sourcePath='scripts/lib/independent-admission/qlever-sdk-source.ts';
 // Keep every historical tuple and missing-role assertion in its own bounded test.
 for(const [name,groups] of Object.entries({consumer:CONSUMER_SOURCE_GROUPS,ci:CI_CONSUMER_SOURCE_GROUPS}))for(const [index,group] of groups.entries())
@@ -15,4 +16,4 @@ test(`source archive consumer implementation retains exact old 348 closure and p
  expect(active.secondarySelectors?.find(row=>row.path===sourcePath)?.sha256).not.toBe(old.secondarySelectors?.find(row=>row.path===sourcePath)?.sha256);
  const observed=new Map(group.selectors.map(row=>[sourceBindingKey(row),row.sha256])),originals=[...group.selectors,...(group.secondarySelectors??[]),...group.sourceBindings];for(const role of secondaryGitHubSourceBindingSelectors(groups,observed)){if(role.path===sourcePath)expect(group.sourceBindings.find(row=>row.path===sourcePath)?.sha256).toBe(group.secondarySelectors?.find(row=>row.path===sourcePath)?.sha256);const actual=originals.find(row=>sourceBindingKey(row)===sourceBindingKey(role));expect(actual).toBeDefined();observed.set(sourceBindingKey(role),actual!.sha256);}expect(selectGitHubSourceBindingGroup(groups,observed)).toBe(group);for(const role of group.secondarySelectors??[]){const missing=new Map(observed);missing.delete(sourceBindingKey(role));expect(()=>selectGitHubSourceBindingGroup(groups,missing)).toThrow();}
 });
-test('all 371 actual controller execution originals match, including changed source archive and leaf code',()=>{expect(current).toHaveLength(504);for(const row of current)expect(createHash('sha256').update(fs.readFileSync(path.join(root,row.path))).digest('hex')).toBe(row.sha256);});
+test('all 371 actual controller execution originals match, including changed source archive and leaf code',()=>{expect(current).toHaveLength(CURRENT_CANONICAL_SOURCE_ROWS);for(const row of current)expect(createHash('sha256').update(fs.readFileSync(path.join(root,row.path))).digest('hex')).toBe(row.sha256);});

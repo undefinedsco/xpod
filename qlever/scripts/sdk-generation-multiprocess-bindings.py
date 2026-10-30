@@ -4,11 +4,15 @@ Not a capability. Controlled observer/TCB execution, Git inputs and upstream
 runtime/toolchain authority remain independent of this mechanical axis.
 """
 import hashlib
+import os
 import posixpath
 import importlib.util
 from pathlib import Path
 _raw_spec=importlib.util.spec_from_file_location('sdk_raw_records',Path(__file__).with_name('sdk-execution-originals-util.py'))
 raw_records=importlib.util.module_from_spec(_raw_spec);_raw_spec.loader.exec_module(raw_records)
+# Derived transport codec: pure serialization of facts this replay already proved.
+_transport_spec=importlib.util.spec_from_file_location('sdk_generated_producer_transport',Path(__file__).with_name('sdk-generated-producer-transport.py'))
+generated_transport=importlib.util.module_from_spec(_transport_spec);_transport_spec.loader.exec_module(generated_transport)
 import json
 import re
 import struct
@@ -64,9 +68,33 @@ LINK_MODEL='actual-link-inode-effect-v8'
 LINK_SYSCALLS={0xc000003e:dict(link=86,linkat=265,unlink=87,unlinkat=263),0xc00000b7:dict(linkat=37,unlinkat=35)}
 
 POLICIES={
- 0xc00000b7:dict(exec={221,281},execveat=281,protect={226,288},read=63,write=64,close=57,mmap=222,clone=220,clone3=435,spawn={220,435},renameat=38,renameat2=276,renameOps={38,276},exits={93,94},forbidden={0,1,2,3,4,292,425,426,427,271,117,97,268}),
- 0xc000003e:dict(exec={59,322},execveat=322,protect={10,329},read=0,write=1,close=3,mmap=9,clone=56,clone3=435,spawn={56,57,58,435},rename=82,renameat=264,renameat2=316,renameOps={82,264,316},exits={60,231},forbidden={206,207,208,209,210,333,425,426,427,311,101,272,308}),
+ 0xc00000b7:dict(exec={221,281},execveat=281,protect={226,288},read=63,reads={63,65,67,69,286},write=64,close=57,mmap=222,clone=220,clone3=435,spawn={220,435},renameat=38,renameat2=276,renameOps={38,276},exits={93,94},forbidden={0,1,2,3,4,292,425,426,427,271,117,97,268}),
+ 0xc000003e:dict(exec={59,322},execveat=322,protect={10,329},read=0,reads={0,17,19,295,327},write=1,close=3,mmap=9,clone=56,clone3=435,spawn={56,57,58,435},rename=82,renameat=264,renameat2=316,renameOps={82,264,316},exits={60,231},forbidden={206,207,208,209,210,333,425,426,427,311,101,272,308}),
 }
+# ACTUAL kernel read-family ABI, per reviewed architecture. This is NOT a set of
+# syscall numbers with a shared shape: each form has its own operand layout and
+# its own way of establishing the consumed file range. `read`/`readv` advance the
+# descriptor position, so the exact range is (positionAfter - result, result);
+# `pread64`/`preadv`/`preadv2` carry an explicit offset and never move it.
+# `readv`/`preadv`/`preadv2` bound the transfer by the SUM of iov_len over the
+# actual iovec vector, not by the raw iovcnt, so the replay must keep both.
+READ_FORMS={
+ 0xc00000b7:{63:dict(name='read',iovec=False,offset=None,bound='count'),
+              65:dict(name='readv',iovec=True,offset=None,bound='iov'),
+              67:dict(name='pread64',iovec=False,offset=3,bound='count'),
+              69:dict(name='preadv',iovec=True,offset=3,bound='iov'),
+              286:dict(name='preadv2',iovec=True,offset=3,bound='iov',flagsIndex=4)},
+ 0xc000003e:{0:dict(name='read',iovec=False,offset=None,bound='count'),
+              19:dict(name='readv',iovec=True,offset=None,bound='iov'),
+              17:dict(name='pread64',iovec=False,offset=3,bound='count'),
+              295:dict(name='preadv',iovec=True,offset=3,bound='iov'),
+              327:dict(name='preadv2',iovec=True,offset=3,bound='iov',flagsIndex=4)},
+}
+IOVECTOR_MAXIMUM=1024
+IOVECTOR_ENTRY_BYTES=16
+def read_form(arch,nr):
+    """Return the reviewed ABI form for one actual read-family number."""
+    return READ_FORMS.get(arch,{}).get(nr)
 def physical_original_reference(reference):
     return {key:reference[key]for key in ['path','bytes','sha256']+(['storage'] if 'storage' in reference else [])}
 
@@ -544,6 +572,100 @@ def dependency_collection_contract(prepared,collection):
         need(isinstance(row.get('sourceInventory'),dict) and row.get('declaration',{}).get('method')==row['sourceOriginals']['kind'],'dependency inventory/source kind reference required');result[name]=row
     return result
 
+def _mapping_protection_bits(permissions):
+    """Translate ACTUAL /proc/PID/maps permission text into prot bits.
+
+    An exec image is mapped by the kernel before the replay sees it, so there is
+    no mmap prot word for it. The edge must report the REAL permissions: an
+    rw-p data segment of the same executable is NOT an immutable source input,
+    and claiming it read-only would over-credit. bits: r=1,w=2,x=4.
+    """
+    need(isinstance(permissions,str) and re.fullmatch('[r-][w-][x-][ps]',permissions),'actual VMA permissions required')
+    return (1 if permissions[0]=='r' else 0)|(2 if permissions[1]=='w' else 0)|(4 if permissions[2]=='x' else 0)
+
+
+def record_validated_mmap(operations,row,entry,descriptor,anonymous,actual):
+    """Record one ALREADY-VERIFIED mmap row into the CALLER's own state.
+
+    `operations` is explicit per-observation state owned by observe(); there is
+    deliberately no module-global store, so nested record_observer/read_original
+    callbacks or an independent concurrent observation can never clear or mix
+    another observation's proof state.
+
+    Only called from the replay branch that has validated the entry/exit, the
+    actual return address, requested length, offset, prot and flags, and the FD
+    original. Keeping this out of the coverage classes preserves their minimal
+    projection contract (their canonical fixture supplies only sequence fields).
+    """
+    operations[row['sequence']]=dict(phase=row['phase'],pid=row['pid'],
+        entrySequence=entry['sequence'],anonymous=anonymous,
+        descriptorIdentity=list(descriptor['identity']) if descriptor and 'identity' in descriptor else None,
+        descriptorHasOriginal=bool(descriptor and 'original' in descriptor),
+        descriptorSha256=(descriptor.get('original') or {}).get('sha256') if descriptor else None,
+        descriptorBytes=(descriptor.get('original') or {}).get('bytes') if descriptor else None,
+        returnedAddressHex=format(actual['result'],'x'),requestedLength=entry['args'][1],
+        fileOffset=entry['args'][5],flags=entry['args'][3],protection=entry['args'][2],
+        # C4: a writable MAP_SHARED mapping lets another task change the same
+        # file bytes, so the held read lease no longer implies immutable content.
+        writableShared=bool(entry['args'][3]&0x1 and entry['args'][2]&0x2))
+
+
+def derive_verified_file_mmap_keys(mmap_operations,by_capture,pending_for_operation):
+    """DERIVED projection of already fully-verified file-backed mmap operations.
+
+    Same pattern as verifiedPrivateWakeEntrySequences: the value is produced only
+    after the ordinary replay has validated the exact entry/exit, the actual
+    return address, requested length, file offset, prot and flags, the retained
+    whole FD original, the held pre-use lease/identity and every VMA mapping
+    original for that operation. It is never read as an input claim and never
+    substitutes a path match for verification.
+
+    A row is emitted only when: the operation is a non-anonymous mmap, the
+    observer recorded a whole validated FD original, the operation's VMA
+    universe is COMPLETE (no missing mapping original), at least one mapping
+    original exists, and every mapped inode identity equals that FD. Any
+    anonymous, unbound, incomplete or identity-divergent operation is omitted,
+    so its marker remains uncovered.
+    """
+    keys=[]
+    for sequence in sorted(mmap_operations):
+        meta=mmap_operations[sequence];state=by_capture.get(sequence)
+        if state is None or meta['anonymous'] or not meta['descriptorHasOriginal']:continue
+        # C4: writable MAP_SHARED cannot claim immutable file custody even when a
+        # foreign/forged trace carried it through; MAP_PRIVATE PROT_WRITE (the
+        # real GCC consumer shape) is untouched because COW leaves file bytes
+        # immutable under the held lease.
+        if meta.get('writableShared'):continue
+        # Both projection layouts are supported here, in ONE place: the indexed
+        # class stores positional fields with a flat seen map, the ordinary class
+        # stores named fields with an owned mapping set.
+        value=state['value']
+        if isinstance(value,list):
+            if not all(state['expected'].values()):continue
+            originals=value[9]
+        else:
+            if set(state['expected'])!=state['seen']:continue
+            originals=value['mapOriginals']
+        if not originals:continue
+        descriptor=[str(number) for number in meta['descriptorIdentity']]
+        paths=set()
+        for value in originals:
+            if value['identityDecimal']!=descriptor:paths.clear();break
+            paths.add(value['observedPath'])
+        if not paths:continue
+        # C5: an operation whose OWN authority is still pending cannot claim
+        # per-file closure, even though the global toolchain axis already
+        # reports the gap. Attribution is scoped to this operation (its own
+        # capture sequence or one of its verified mapped paths), so unrelated
+        # pending elsewhere in the phase never suppresses a valid credit.
+        if pending_for_operation(sequence,state,paths):continue
+        # Only the identity tuple is DERIVED here. The per-operation facts
+        # (address/length/offset/flags/prot/paths) already live in the verified
+        # operation projection, so nothing is duplicated onto the wire.
+        for path in sorted(paths):
+            keys.append((meta['phase'],meta['pid'],meta['entrySequence'],path))
+    return keys
+
 class ToolchainOperationCoverage:
     """Projection of branches already verified by observe; never an authority.
 
@@ -638,17 +760,113 @@ def verify_stopped_original_order(original,barrier,boundary,consumer,*,inline=Fa
     start,stop,observed,used=sequences
     need(start<stop<observed and (observed==used if inline else observed<used),'stopped original is outside its actual boundary/barrier window')
 
+KERNEL_VIRTUAL_FILESYSTEMS=frozenset(['sysfs'])
+
+def verify_kernel_virtual_fs_chain(chain,authority_tables,*,subject_pid,result,requested_bound,
+                                   descriptor_flags,need):
+    """PURE verifier for a read-only kernel-generated virtual filesystem file.
+
+    Every accepted fact is RE-DERIVED from the subject's own verified mountinfo
+    bytes and from the observed syscall; nothing comes from the chain's words
+    alone. A regular file bind-mounted at the same path fails the filesystem and
+    device checks; a different mount fails the mount-id check; a writable mount
+    fails the read-only check; and a read that consumed more than the captured
+    object or more than it requested is refused.
+
+    Returns a frozen fact dict or ``None``.
+    """
+    if not isinstance(chain,dict):return None
+    path=chain.get('path')
+    if not isinstance(path,str) or not path.startswith(('/sys/','/proc/sys/')):return None
+    if chain.get('fstype') not in KERNEL_VIRTUAL_FILESYSTEMS:return None
+    if 'ro' not in (chain.get('mountOptions') or []):return None
+    if type(chain.get('mountId')) is not int or chain.get('descriptorMountId')!=chain['mountId']:return None
+    if type(result) is not int or result<=0:return None
+    if type(requested_bound) is not int or result>requested_bound:return None
+    if type(descriptor_flags) is not int or descriptor_flags&os.O_ACCMODE!=0:return None
+    if not authority_tables:return None
+    mount_point=chain.get('mountPoint')
+    if not isinstance(mount_point,str):return None
+    for table in authority_tables:
+        if not isinstance(table,bytes):continue
+        try:lines=table.decode('utf-8','strict').splitlines()
+        except UnicodeDecodeError:continue
+        for line in lines:
+            fields=line.split()
+            if len(fields)<7:continue
+            try:separator=fields.index('-')
+            except ValueError:continue
+            if separator<6 or len(fields)<=separator+3:continue
+            mount=fields[4].replace('\\040',' ').replace('\\011','\t').replace('\\012','\n').replace('\\134','\\')
+            if mount!=mount_point:continue
+            try:mount_id=int(fields[0])
+            except ValueError:continue
+            if mount_id!=chain['mountId']:continue
+            if fields[2]!=str(chain.get('device')):continue
+            if 'ro' not in fields[5].split(','):continue
+            if fields[separator+1]!=chain.get('fstype'):continue
+            if 'ro' not in fields[separator+3].split(','):continue
+            return dict(model='kernel-virtual-fs-metadata-v1',subjectPid=subject_pid,path=path,
+                mountPoint=mount,mountId=mount_id,fstype=chain['fstype'],device=fields[2],
+                consumedLength=result,authorityTableCount=len(authority_tables))
+    return None
+
+def classify_read_input_origin(item,dependency_roots,prepared_paths):
+    """Classify ONE credited read input against already-verified origins.
+
+    Returns ``(originClass, detail)``. Only CLOSED classes are named; everything
+    else is ``unresolved`` so the leaf keeps SOURCE pending. This never invents an
+    origin from a path prefix, a producer boolean or a read count.
+
+    Admitted classes, each tied to a fact this replay itself validated:
+
+    * ``prepared-fetchcontent`` — the resolved target is a file inside a
+      REGISTERED FetchContent dependency root (exact registration sequence, path
+      inside that root, byte length/digest/mode equal to the prepared snapshot).
+    * ``signed-debian-installed`` — the resolved target is a file inside a
+      registered signed-Debian install root, matched by its exact bytes.
+    * ``generated-same-phase`` — the target is a file this same replay already
+      recorded as a completed producer output with the SAME byte image.
+    """
+    path=item.get('resolvedPath')
+    if not isinstance(path,str) or not path.startswith('/'):return 'unresolved','no canonical resolved target'
+    size=item['bytes'];digest=item['sha256']
+    for name,root in (dependency_roots or {}).items():
+        base=root['root']
+        if path==base or path.startswith(base.rstrip('/')+'/'):
+            relative=path[len(base.rstrip('/'))+1:] if path!=base else ''
+            row=root['files'].get(relative)
+            if (row is not None and row.get('kind')=='file' and row.get('bytes')==size
+                    and row.get('sha256')==digest):
+                return 'prepared-fetchcontent',dict(dependency=name,
+                    registrationSequence=root['registrationSequence'],relativePath=relative)
+            return 'unresolved','registered dependency root does not verify these exact bytes'
+    # A bare pathname is NOT closure: retained "prepared" originals are not
+    # necessarily FetchContent, and a path can be re-created with different bytes.
+    # Both must match the retained prepared original's EXACT byte image. Anything
+    # else stays unresolved for the TS-side derivation over verified ownership.
+    row=(prepared_paths or {}).get(path)
+    if row is not None and row.get('bytes')==size and row.get('sha256')==digest:
+        return 'prepared-fetchcontent',dict(relativePath=path,
+            preparedOriginal=row.get('original'),sourceKind=row.get('kind','prepared'))
+    if row is not None:
+        return 'unresolved','prepared path exists with different bytes'
+    return 'unresolved','no closed same-private source class for this input'
+
+
 def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,limits=None,capture_observer=None,compact_tool_coverage=False,record_observer=None,generated_build_root='/opt/qlever-sdk/build'):
     maximum_raw=limits['sourceMaterialBytes'] if limits else 32*1024**2
     maximum_file=limits['shardBytes'] if limits else 1024**2
     maximum_total=limits['sourceMaterialBytes'] if limits else 16*1024**2
+    maximum_members=limits['sourceMembers'] if limits else 50000
+    minimum_metadata=limits['metadataBytes'] if limits else 4*1024**2
     chunk_storage_model=None;chunk_storage_initialized=False
     original_reader=CaptureOriginalReader(read_original,maximum_file,maximum_total,check)
     def read_reference(reference):return original_reader.blocks(reference)
     entity_model=None;entity_model_initialized=False;maps_entity_model=None;maps_entity_initialized=False;storage_origins={};storage_entities={};storage_aliases={};pending_storage_rows=[];original_cache={};observed_entity_names=set();retained_entries=set();phase_tracking=[];generated_verifier=None;generated_module=None
     denial_mode=False;denial=None;denied_operations={};setresuid_mode=False;identity_mode=False;queued_identity_mode=False;stopped_alias_mode=False;terminal_mode=False;setresuid_operations={}
     shared_mode=False;owners={};exec_fd_events={};vfork_events={};vfork_holds={};child_bindings={};wait_rows={}
-    live=set();last=0;entries={};exits={};barriers={};caps={};paths={};renames=[];consumers=[];source_reads=[];total=0;capture_total=0;exclusive=None;root_codes={};clone_flags=set();clone_flag_values={}
+    live=set();last=0;entries={};exits={};barriers={};caps={};validated_generated_producers={};indexed_producer_captures=set();phase_capture_sequences=[];paths={};renames=[];consumers=[];source_reads=[];total=0;capture_total=0;exclusive=None;root_codes={};clone_flags=set();clone_flag_values={}
     alias_close_windows={};alias_close_exits=set()
     link_windows={};link_transitions={};link_args={};mode_windows={};mode_transitions={};timestamp_windows={};timestamp_transitions={};metadata_args={};rename_windows={};rename_transitions={};active_rename=None;pending_rename_window=None;latest_execution_sequence=0;write_original_sequences={};namespace_bindings=[]
     # STRICT matched FAILURE-ONLY settlement for the absent-operand link markers.
@@ -666,7 +884,7 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
     ABSENT_CONFIRMED_KEYS=frozenset(['kind','phase','sequence','observedUnixNs','pid','entrySequence','exitSequence','form','errnoValue','newPathHex','oldPathHex','scope'])
     append_obligations={};append_completed={};append_dirty={};append_checkpoints={};append_hashes={};write_projections={};write_windows={};closed_write_windows=set();write_transitions={};write_consumers=[];write_read_exits={}
     empty_windows={};empty_eofs=set();dependency_roots={};dependency_reads=0;dependency_cache=None;dependency_expected_names=None;dependency_collection_identity=None
-    reused_originals={};prepared={};prepared_consumers=[];prepared_digest=hashlib.sha256();prepared_count=0;prepared_sealed=False;prepared_paths=set()
+    reused_originals={};prepared={};prepared_consumers=[];prepared_digest=hashlib.sha256();prepared_count=0;prepared_sealed=False;prepared_paths={}
     def capture_data(ref):
         nonlocal capture_total
         need(re.fullmatch(r'capture-[0-9]{4,}\.original',ref['path']) and 0<=ref['bytes']<=maximum_file,'fixed capture role/byte bound')
@@ -710,7 +928,118 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
         need((len(data),hashlib.sha256(data).hexdigest())==(ref['bytes'],ref['sha256']),'dependency metadata original changed');return bytes(data)
     def dependency_json(ref):return json.loads(dependency_bytes(ref))
     tool_coverage=(IndexedToolchainOperationCoverage if compact_tool_coverage else ToolchainOperationCoverage)(limits.get('metadataBytes',4*1024**2) if limits else 4*1024**2,limits.get('sourceMembers',50000) if limits else 50000,check)
-    tool_originals={};tool_files={};tool_pending=set();tool_execs=0;tool_mappings=0;tool_core=None;exec_events={};terminal_events={};tool_exec_paths={};tool_protect_before={};tool_providers={};tool_provider_pending=set();provider_verifier=None;tool_digest=hashlib.sha256()
+    tool_originals={};tool_files={};tool_pending=set();tool_execs=0;tool_mappings=0;producer_input_edges=[];producer_exec_image={};unbound_read_operations=[];input_read_originals={};regular_input_observations={};inputs_pending={};inputs_pending_rejected={};observations_by_entry={};disposition_entries={};writable_dispositions={};kernel_metadata_originals={};authority_mountinfo={};control_gates=[];nonexec_credit={};exec_event_history={};nonexec_positive_pending={};read_custody={};lease_entry_by_token={};read_source_class={};read_lease_epoch={};target_resolutions={};tool_core=None;exec_events={};terminal_events={};tool_exec_paths={};tool_protect_before={};tool_providers={};tool_provider_pending=set();provider_verifier=None;tool_digest=hashlib.sha256()
+    def resolved_target_for(observation_row):
+        """Canonical target of the descriptor this read used.
+
+        Order of evidence:
+          1. the observation's OWN `resolvedPath` (emitted at capture time by
+             current observers);
+          2. otherwise the most recent `regular-input-target-resolution` row for
+             the same (pid, fd) STRICTLY BEFORE the observation, whose identity
+             matches this read's identity.
+
+        Both are real observer facts; neither is a path guess. A descriptor that
+        was never resolved stays unresolved.
+        """
+        own=observation_row.get('resolvedPath')
+        if isinstance(own,str) and own:return own
+        candidates=[row for row in target_resolutions.get((observation_row['pid'],observation_row['fd']),[])
+                    if row['sequence']<observation_row['sequence']
+                    and row.get('identity')==observation_row.get('identity')]
+        if not candidates:return None
+        return max(candidates,key=lambda row:row['sequence'])['resolvedPath']
+
+    def verify_nonexec_chain(disposition,exit_row):
+        """Prove an ACTUAL chain for a positive non-file read, or refuse it.
+
+        Returns ``(verified, reason)``. ``verified`` is a frozen fact set the
+        caller may use ONLY for this exact entry; ``reason`` is a stable string
+        when nothing is proved. No object kind, path prefix, producer boolean or
+        raw ``kind`` participates: every accepted chain is a real relation
+        between rows that the replay itself already validated.
+        """
+        row=disposition['row'];entry=disposition['entry'];result=exit_row['result']
+        if result<=0:return None,'nonpositive result needs no chain'
+        chain=disposition.get('chain')
+        if not isinstance(chain,dict):return None,'positive non-file read has no typed chain'
+        model=chain.get('model')
+        if model=='observer-startup-gate-v1':
+            # EXACT trusted-observer relation: one gate row, a binding to THIS
+            # pid, a release strictly before the read entry, and the released
+            # byte is the entire content the observer ever wrote.
+            gates=[g for g in control_gates if g['sequence']==chain.get('gateSequence') and g['kind']=='toolchain-control-gate']
+            if len(gates)!=1:return None,'startup gate original unavailable'
+            gate=gates[0]
+            if gate.get('model')!='observer-owned-startup-gate-v1' or gate.get('phase')!=row['phase']:
+                return None,'startup gate model/phase differs'
+            if [str(v) for v in gate['identity']]!=[str(v) for v in chain.get('identity',[])]:
+                return None,'startup gate identity differs from the bound pipe inode'
+            bindings=[g for g in control_gates if g['kind']=='toolchain-control-gate-binding'
+                      and g.get('gateSequence')==gate['sequence'] and g.get('pid')==row['pid']]
+            releases=[g for g in control_gates if g['kind']=='toolchain-control-gate-release'
+                      and g.get('gateSequence')==gate['sequence'] and g.get('pid')==row['pid']]
+            if len(bindings)!=1 or len(releases)!=1:return None,'startup gate binding/release relation incomplete'
+            if bindings[0]['sequence']!=chain.get('bindingSequence') or releases[0]['sequence']!=chain.get('releaseSequence'):
+                return None,'startup gate cited sequences differ'
+            if not (bindings[0]['sequence']<releases[0]['sequence']<entry['sequence']):
+                return None,'startup gate release is not strictly before the read entry'
+            if releases[0].get('byteLength')!=1 or releases[0].get('byteSha256')!=chain.get('byteSha256'):
+                return None,'startup gate released byte differs'
+            if result>1:return None,'startup gate read consumed more than the single released byte'
+            # The gate is a PRE-EXEC construct: the read must precede this pid's
+            # first actual exec event, otherwise it is some later unrelated pipe.
+            first_exec=min((event['sequence'] for event in exec_event_history.values()
+                            if event.get('pid')==row['pid'] and event['sequence']>entry['sequence']),default=None)
+            if first_exec is None:return None,'startup gate read is not followed by this pid exec'
+            return dict(model='observer-startup-gate-v1',gateSequence=gate['sequence'],
+                bindingSequence=bindings[0]['sequence'],releaseSequence=releases[0]['sequence'],
+                identity=[str(v) for v in gate['identity']],consumedLength=result,
+                byteSha256=chain['byteSha256'],execSequence=first_exec),None
+        if model=='kernel-process-metadata-v1':
+            # Kernel-generated metadata of THIS pid. The bytes and their subject
+            # must be the exact captured original, and the pid must be inside the
+            # verified process-authority interval (same namespace/root/mounts).
+            name=chain.get('metadataName');subject=chain.get('subjectPid')
+            if name not in ['mountinfo','cgroup']:return None,'unreviewed kernel metadata name'
+            if subject!=row['pid']:return None,'kernel metadata subject differs from the reading process'
+            reference=chain.get('subjectOriginal')
+            if not isinstance(reference,dict):return None,'kernel metadata original reference missing'
+            captured=kernel_metadata_originals.get(tool_original_key(reference))
+            if captured is None:return None,'kernel metadata original was not captured'
+            if captured['name']!=name or captured['subjectPid']!=row['pid']:
+                return None,'kernel metadata original belongs to another subject'
+            if [str(v) for v in chain.get('contentIdentity',[])]!=[str(v) for v in captured['identity']]:
+                return None,'kernel metadata content identity differs from the captured original'
+            # Metadata files are read from the start of a synthetic, non-seekable
+            # stream, so the consumed range must be a real prefix of the captured
+            # original and may not exceed it.
+            if result>captured['original']['bytes']:
+                return None,'kernel metadata consumed more bytes than the captured original'
+            samples=process_interval.samples if process_interval is not None else {}
+            if row['pid'] not in samples:return None,'kernel metadata pid lacks a verified authority interval sample'
+            sample=samples[row['pid']]
+            if name=='mountinfo':
+                # mountinfo is the SAME object the process-authority interval
+                # already verified, so its exact bytes must agree.
+                if captured['original']['sha256']!=sample.get('mountinfoSha256'):
+                    return None,'kernel metadata bytes differ from the verified authority mountinfo'
+            if sample.get('rootIdentity') is None or not sample.get('namespaces'):
+                return None,'kernel metadata subject lacks a verified root/namespace'
+            return dict(model='kernel-process-metadata-v1',metadataName=name,
+                subjectPid=row['pid'],subjectOriginal=reference,consumedLength=result,
+                contentIdentity=[str(v) for v in captured['identity']]),None
+        if model=='kernel-virtual-fs-metadata-v1':
+            # Delegated to the SAME pure verifier the tests exercise directly, so
+            # there is exactly one implementation of this rule.
+            authority_tables=[row['bytes'] for row in (authority_mountinfo.get(row['pid']) or [])]
+            verified=verify_kernel_virtual_fs_chain(chain,authority_tables,
+                subject_pid=row['pid'],result=result,
+                requested_bound=row.get('requestedBound'),descriptor_flags=row.get('descriptorFlags'),need=need)
+            if verified is None:return None,'virtual-fs chain did not verify against the subject mount table'
+            return verified,None
+        return None,'unknown non-file chain model'
+
     process_interval=None;process_intervals=[]
     def provider_module():
         nonlocal provider_verifier
@@ -738,7 +1067,12 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
         value=barriers.get(row['barrierSequence']);need(value and value['pids']==sorted(live) and row['pid'] in live,'tool snapshot lacks complete actual stop barrier')
     def tool_provider(sequence,consumer,file_original,actual_path):
         if sequence is None:
-            tool_provider_pending.add('toolchain-stop-readonly-provider-original-unavailable:'+str(consumer['sequence'])+':'+str(actual_path));return None
+            tool_provider_pending.add('toolchain-stop-readonly-provider-original-unavailable:'+str(consumer['sequence'])+':'+str(actual_path))
+            # EXACT per-operation attribution for the derived credit projection.
+            # The wire reason above is unchanged; this bounded tuple (phase, the
+            # consumer row's own capture sequence, exact path) is what the credit
+            # rule queries, so no substring/numeric matching is ever involved.
+            pending_provider_operations.add((consumer['phase'],consumer['sequence'],str(actual_path)));return None
         need(type(sequence) is int and sequence<consumer['sequence'] and sequence in tool_providers,'actual tool provider original sequence missing')
         record=tool_providers[sequence]
         need(not record['used'],'tool provider original already consumed by another role')
@@ -784,9 +1118,10 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                 else:derived.setdefault(key,alias)
         need(list(derived.values())==aliases,'writable aliases differ from complete stopped FD census')
         return aliases
-    lifetime_verified_phases=[]
+    lifetime_verified_phases=[];verified_file_mmap_keys=set()
+    validated_mmap_operations={}
     for phase,lines in phase_lines:
-        need(not live,'prior actual process tree has not closed');roots=[];waits=[];raw_decoder=raw_records.RawRecordDecoder();lease_model=None;lease_tokens={};lease_closed=[];memory_missing=False;memory_shared_entries=set();memory_released_entries=set();lease_pids=[];lease_terminal=False;memory_mode=None;bti_mode=None;bti_required=set();bti_originals={};bti_completed=set();approved_rx={};clone3_mode=None;clone3_originals={};clone3_consumed=set();clone3_events={};memory_checker=executable_memory_policy();memory_writes={};remap_mode=None;remap_required=set();remap_originals={};remap_consumed=set()
+        need(not live,'prior actual process tree has not closed');phase_capture_sequences.clear();roots=[];waits=[];raw_decoder=raw_records.RawRecordDecoder();lease_model=None;lease_tokens={};lease_closed=[];memory_missing=False;memory_shared_entries=set();memory_released_entries=set();pending_provider_operations=set();pending_source_provider_paths={};lease_pids=[];lease_terminal=False;memory_mode=None;bti_mode=None;bti_required=set();bti_originals={};bti_completed=set();approved_rx={};clone3_mode=None;clone3_originals={};clone3_consumed=set();clone3_events={};memory_checker=executable_memory_policy();memory_writes={};remap_mode=None;remap_required=set();remap_originals={};remap_consumed=set()
         for raw in lines:
             check();total+=len(raw);need(total<=maximum_raw and len(raw)<=65536,'tiny raw aggregate/record bound');row=raw_decoder.feed(raw)
             if row is None:continue
@@ -837,7 +1172,10 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
             elif kind=='prepared-build-input-original':
                 need(not live and not roots and not phase_tracking and not prepared_sealed,'prepared input must precede first actual process')
                 need(row['path'].startswith('/') and row['path'] not in prepared_paths,'unique absolute prepared original path required')
-                data=capture_data(row['original']);need(len(row['identity'])==6 and row['identity'][3]==data[0],'prepared identity/bytes differ');prepared[row['sequence']]=(row,data);prepared_count+=1;prepared_paths.add(row['path'])
+                data=capture_data(row['original']);need(len(row['identity'])==6 and row['identity'][3]==data[0],'prepared identity/bytes differ');prepared[row['sequence']]=(row,data);prepared_count+=1
+                # Keep the RETAINED original so a pathname alone can never close a class.
+                prepared_paths[row['path']]=dict(bytes=data[0],sha256=data[1],
+                    original=dict(row['original']),kind=row.get('kind','prepared-build-input-original'))
                 prepared_digest.update((json.dumps(dict(path=row['path'],identity=row['identity'],original=row['original']),sort_keys=True)+'\n').encode())
             elif kind=='prepared-build-input-seal':
                 need(not live and not roots and not phase_tracking and not prepared_sealed and row['files']==prepared_count and row['inventorySha256']==prepared_digest.hexdigest(),'prepared closed-set byte seal differs');prepared_sealed=True
@@ -1210,7 +1548,18 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                 need(window and window['sequence'] not in empty_eofs and exclusive==(row['pid'],row['entrySequence']) and window['pid']==row['pid'] and window['entrySequence']==row['entrySequence'],'empty read EOF window differs')
                 need(exit and exit['sequence']==row['exitSequence'] and not exit['isError'] and exit['result']==0 and row['result']==0 and row['isError'] is False and row['identity']==window['identity'],'empty read did not retain identity and actual zero result');empty_eofs.add(window['sequence'])
             elif kind=='exclusive-captured-syscall-resume':
-                need(exclusive is None and row['captureSequence'] in caps and caps[row['captureSequence']][0]['entrySequence']==row['entrySequence'],'exclusive capture resume differs');exclusive=(row['pid'],row['entrySequence'])
+                need(exclusive is None,'exclusive capture resume while another window is open')
+                regular=row.get('regularInputForm') is not None
+                if regular:
+                    # A regular-input observation is NOT an fd-capture; its own
+                    # validated observation row is the capture authority.
+                    observation=regular_input_observations.get(row['entrySequence'])
+                    need(observation is not None and observation['row']['sequence']==row['inputObservationSequence']
+                         and observation['entry']['sequence']==row['entrySequence']
+                         and observation['row']['pid']==row['pid'],'regular input resume lacks its own validated observation')
+                else:
+                    need(row['captureSequence'] in caps and caps[row['captureSequence']][0]['entrySequence']==row['entrySequence'],'exclusive capture resume differs')
+                exclusive=(row['pid'],row['entrySequence'])
             elif kind=='exclusive-captured-syscall-exit':
                 need((exclusive==(row['pid'],row['entrySequence']) or generated_verifier is not None and getattr(generated_verifier,'scheduled_active',False) and exclusive is None) and row['entrySequence'] in exits,'exclusive read/close stop boundary differs');exclusive=None
                 if active_rename is not None:need(active_rename['state']=='completed','retained rename closed before verified transition');active_rename=None
@@ -1253,6 +1602,21 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
             elif kind=='kernel-syscall':
                 need(row['pid'] not in vfork_holds,'vfork parent resumed before actual child exec/terminal wait')
                 need(row['pid'] in live and row['arch'] in POLICIES,'unknown syscall process/architecture');need(exclusive is None or exclusive[0]==row['pid'],'another potential writer ran during captured syscall')
+                if row['op']=='entry' and read_form(row['arch'],row['nr']) is not None:
+                    # COMPLETENESS: every actual read-family entry by a live
+                    # producer process becomes an input obligation with its exact
+                    # ABI form. It is discharged ONLY by a validated
+                    # regular-input-observation for the SAME entry (and, for a
+                    # transferring read, its matching real exit). Anything else
+                    # keeps the witness's input universe INCOMPLETE, so a
+                    # nonempty input set can never be mistaken for the whole set.
+                    form=read_form(row['arch'],row['nr'])
+                    unbound_read_operations.append(dict(pid=row['pid'],phase=row['phase'],
+                        entrySequence=row['sequence'],nr=row['nr'],arch=row['arch'],
+                        form=form['name']))
+                    inputs_pending[row['sequence']]=dict(pid=row['pid'],phase=row['phase'],
+                        entrySequence=row['sequence'],nr=row['nr'],arch=row['arch'],
+                        form=form['name'],args=list(row['args']))
                 if row['op']=='entry':
                     if append_boundary_syscall(row['arch'],row['nr'],row['args']):append_obligations[row['sequence']]=dict(append_dirty)
                     rules=policy(row['arch'])
@@ -1300,17 +1664,198 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                         if row['isError'] and row['entrySequence'] not in bti_originals and (entry['nr'] in policy(entry['arch'])['exec'] or entry['nr'] in policy(entry['arch'])['protect'] or entry['nr']==policy(entry['arch'])['mmap']):retained_entries.discard(row['entrySequence']);tool_protect_before.pop(row['entrySequence'],None)
                         if row['entrySequence'] in retained_entries:exits[row['entrySequence']]=row
                         else:entries.pop(row['entrySequence']);clone_flags.discard(row['entrySequence'])
+                        pending_input=inputs_pending.get(row['entrySequence'])
+                        if pending_input is not None:
+                            # Discharge the read obligation with the MATCHING real
+                            # exit: a failed syscall consumed nothing, a successful
+                            # one consumed exactly `result` bytes from its start.
+                            observation=regular_input_observations.get(row['entrySequence'])
+                            disposition=disposition_entries.get(row['entrySequence'])
+                            if disposition is not None and not(row['isError'] or row['result']<=0):
+                                # NON-FILE POSITIVE READ. Deferred to PHASE END: the
+                                # gate relation is pre-exec, so the exec event that
+                                # closes it appears later in the stream. Everything
+                                # unresolved stays an open obligation, which makes
+                                # the producer's input universe INCOMPLETE.
+                                pending_input.update(state='nonexec-pending',result=row['result'],
+                                    exitSequence=row['sequence'])
+                                nonexec_positive_pending[row['entrySequence']]=dict(
+                                    disposition=disposition,exit=row,entry=entry,pending=pending_input)
+                            elif row['isError'] or row['result']<0:
+                                inputs_pending.pop(row['entrySequence'],None)
+                                unbound_read_operations[:] = [r for r in unbound_read_operations if r['entrySequence']!=row['entrySequence']]
+                                pending_input.update(state='failed',result=row['result'],isError=True)
+                                inputs_pending_rejected[row['entrySequence']]=pending_input
+                            elif row['result']==0:
+                                # A verified ZERO-byte read consumed nothing. The
+                                # real exit proves that, so the obligation closes
+                                # WITHOUT granting any byte/source credit.
+                                inputs_pending.pop(row['entrySequence'],None)
+                                unbound_read_operations[:] = [r for r in unbound_read_operations if r['entrySequence']!=row['entrySequence']]
+                                pending_input.update(state='zero',result=0,exitSequence=row['sequence'])
+                                inputs_pending_rejected[row['entrySequence']]=pending_input
+                            elif observation is not None:
+                                if row['result']>observation['requestedBound']:
+                                    need(False,'regular input read result exceeds its actual requested bound')
+                                consumed_end=observation['rangeStart']+row['result']
+                                need(consumed_end<=observation['original']['bytes'],'regular input read consumed past its captured original')
+                                observations_by_entry[row['entrySequence']]=dict(observation,
+                                    result=row['result'],exitSequence=row['sequence'],consumedEnd=consumed_end,
+                                    consumedLength=row['result'],
+                                    positionAfter=(observation['rangeStart']+row['result']
+                                                   if observation['form']['offset'] is None
+                                                   else observation['generation']['position']))
+                                unbound_read_operations[:] = [r for r in unbound_read_operations if r['entrySequence']!=row['entrySequence']]
+                                inputs_pending.pop(row['entrySequence'],None)
+                            # else: a successful read with NO validated observation
+                            # stays in inputs_pending/unbound -> incomplete universe.
+
                 else:need(False,'unknown syscall-info operation')
             elif kind=='toolchain-original':
                 need(not append_dirty,'tool/source output before mandatory append full checkpoint')
-                need(bool(live) and row['captureKind'] in ['file','maps','mountinfo'],'actual tool original must be observed with live stopped tracees')
+                need(bool(live) and row['captureKind'] in ['file','maps','mountinfo','input-read','kernel-metadata'],'actual tool original must be observed with live stopped tracees')
                 data=capture_data(row['original']);need(tool_original_key(row['original'])not in tool_originals,'duplicate tool original')
                 if row['captureKind']=='file':
                     need(len(row['identity'])==6 and row['identity'][3]==data[0],'tool FD identity/bytes differ');tool_files[row['original']['path']]=dict(observedPath=row['observedPath'],identity=row['identity'],original=row['original'])
+                elif row['captureKind']=='kernel-metadata':
+                    # Kernel-generated metadata of ONE stopped tracee pid. It is
+                    # byte evidence bound to that subject; it grants no file or
+                    # source origin and every use must still match the verified
+                    # process-authority interval for the same pid.
+                    need(row.get('kernelMetadataName') in ['mountinfo','cgroup'],'unknown kernel metadata original name')
+                    # procfs metadata files report st_size 0 regardless of the
+                    # bytes they yield, so the size field is NOT the content
+                    # length. The retained original digest is the byte proof; the
+                    # identity only has to describe a regular virtual file.
+                    need(len(row['contentIdentity'])==6 and stat.S_ISREG(row['contentIdentity'][2])
+                         and row['contentIdentity'][1]>0,'kernel metadata identity malformed')
+                    raw=read_reference(row['original'])
+                    raw=b''.join(raw) if not isinstance(raw,bytes) else raw
+                    kernel_metadata_originals[tool_original_key(row['original'])]=dict(data=raw,row=row,
+                        name=row['kernelMetadataName'],subjectPid=row['observedPid'],
+                        identity=row['contentIdentity'],original=row['original'])
+                elif row['captureKind']=='input-read':
+                    # One canonical byte original per stable protected inode. It is
+                    # NOT an observed tool path and grants no source origin; the
+                    # separate regular-input-observation rows carry the read facts.
+                    need(row.get('regularInputOriginalModel')=='once-per-stable-protected-inode-v1','unknown regular input original model')
+                    need(len(row['identity'])==6 and row['identity'][3]==data[0] and stat.S_ISREG(row['identity'][2]),'regular input original identity/bytes differ')
+                    input_read_originals[tool_original_key(row['original'])]=dict(data=data,row=row,identity=row['identity'],original=row['original'],entity=row.get('originalEntityIdentity'))
                 else:need(data[0]<=4*1024**2 and type(row.get('observedPid')) is int and row['observedPid'] in live,'bounded live tracee metadata original')
                 tool_originals[tool_original_key(row['original'])]=row
+            elif kind=='regular-input-target-resolution':
+                # The observer resolved the tracee descriptor through its own held
+                # FD. Keep the canonical target and WHEN it was observed, so an
+                # observation can bind the resolution that preceded it.
+                need(type(row.get('pid')) is int and type(row.get('fd')) is int
+                     and isinstance(row.get('resolvedPath'),str),'bounded target resolution required')
+                target_resolutions.setdefault((row['pid'],row['fd']),[]).append(row)
+            elif kind in ['toolchain-control-gate','toolchain-control-gate-binding','toolchain-control-gate-release']:
+                control_gates.append(row)
+            elif kind=='regular-input-disposition':
+                # NON-FILE READ EVIDENCE. This row NEVER discharges the obligation
+                # by itself. Only a positive read with a VERIFIED chain can ever
+                # be discharged, and even then only at the matching real exit.
+                # Object kind or path class is recorded, never trusted.
+                entry=entries.get(row['entrySequence']);barrier=barriers.get(row['barrierSequence'])
+                need(entry and barrier and row['pid']==entry['pid'] and row['pid'] in barrier['pids'] and entry['sequence']<barrier['sequence']<row['sequence'],'regular input disposition lacks actual entry/all-stop relation')
+                form=read_form(entry['arch'],entry['nr']);need(form is not None and row.get('form')==form['name'],'regular input disposition form differs from the actual entry ABI')
+                need(row['role']=='input-read' and row['fd']==entry['args'][0],'regular input disposition role/FD differs from the actual entry')
+                need(type(row.get('mode')) is int and isinstance(row.get('path'),str) and row['path'],'regular input disposition mode/path required')
+                # LEGACY TRACES. A retained trace emitted BEFORE the typed
+                # objectKind/pathClass fields existed has neither. It is accepted
+                # only as an UNCREDITABLE observation: the class is derived for
+                # reporting, no chain exists, and a positive read therefore keeps
+                # its obligation. New traces must carry both fields.
+                legacy=row.get('objectKind') is None and row.get('pathClass') is None
+                if legacy:
+                    mode=row['mode'];path=row['path']
+                    object_kind=('fifo' if stat.S_ISFIFO(mode) else 'socket' if stat.S_ISSOCK(mode)
+                        else 'character-device' if stat.S_ISCHR(mode) else 'block-device' if stat.S_ISBLK(mode)
+                        else 'regular' if stat.S_ISREG(mode) else 'other')
+                    path_class=('pipe' if path.startswith('pipe:') else 'socket' if path.startswith('socket:')
+                        else 'anon-inode' if path.startswith('anon_inode:')
+                        else 'proc' if path.startswith('/proc/') else 'sys' if path.startswith('/sys/')
+                        else 'dev' if path.startswith('/dev/') else 'other')
+                    need(row.get('chain') is None,'legacy disposition cannot carry a chain')
+                else:
+                    object_kind=row.get('objectKind');path_class=row.get('pathClass')
+                    need(object_kind in ['fifo','socket','character-device','block-device','regular','other'],'unknown non-file object kind')
+                    need(path_class in ['pipe','socket','anon-inode','proc','sys','dev','other'],'unknown non-file path class')
+                # A legacy row predates the flags field; without them the read
+                # can only be treated as a POTENTIAL writer, which never credits.
+                need(legacy or type(row.get('descriptorFlags')) is int,'non-file disposition requires its actual descriptor flags')
+                # REGULAR pseudo-files (/proc,/sys) are non-FILE inputs, not
+                # S_IFREG path claims: the mode check must agree with the class.
+                need((not stat.S_ISREG(row['mode']) and path_class in ['pipe','socket','anon-inode','dev','other'])
+                     or (stat.S_ISREG(row['mode']) and path_class in ['proc','sys']),
+                     'non-file disposition mode/path class disagree')
+                writable=(row['descriptorFlags']&os.O_ACCMODE!=0) if type(row.get('descriptorFlags')) is int else True
+                disposition_entries[entry['sequence']]=dict(row=row,entry=entry,barrier=barrier,form=form,
+                    objectKind=object_kind,pathClass=path_class,writable=writable,chain=row.get('chain'),
+                    legacy=legacy)
+            elif kind=='regular-input-observation':
+                # PRE-USE facts only. The consumed range is derived below from the
+                # matching real exit, never from this row's own words.
+                entry=entries.get(row['entrySequence']);barrier=barriers.get(row['barrierSequence'])
+                need(entry and barrier and row['pid']==entry['pid'] and row['pid'] in barrier['pids'] and entry['sequence']<barrier['sequence']<row['sequence'],'regular input observation lacks actual entry/all-stop relation')
+                form=read_form(entry['arch'],entry['nr']);need(form is not None and row.get('form')==form['name'],'regular input observation form differs from the actual entry ABI')
+                need(row['role']=='input-read' and row['fd']==entry['args'][0],'regular input role/FD differs from the actual entry')
+                # REAL IMMUTABILITY BINDING. A regular-read input is creditable
+                # only under a held kernel read lease on THIS exact inode that was
+                # acquired before this observation. O_RDONLY is not inode
+                # immutability: a different OFD or process could otherwise mutate
+                # the bytes between the snapshot and the kernel read.
+                lease_sequence=row.get('readLeaseSequence');lease_id=row.get('readLeaseId')
+                need(type(lease_sequence) is int and lease_sequence>0 and lease_sequence<row['sequence'],'regular input lacks its prior held read lease')
+                # `lease_tokens` is keyed by the emitter's leaseId; the cited
+                # acquisition row must be that exact token.
+                # The cited sequence is the acquisition ROW number; the replay
+                # stored that same number as `acquisitionSequence`.
+                acquired=[value for value in lease_tokens.values()
+                          if value.get('leaseId')==lease_id and value.get('acquisitionSequence')==lease_sequence]
+                need(acquired,'regular input cites a missing lease acquisition')
+                lease_row=acquired[0]
+                need(lease_row.get('role')=='input-read','cited lease is not an input-read lease')
+                need(lease_row.get('identity')==row['identity'],'cited lease identity differs from the input identity')
+                # EXACT PRE-USE ORDERING. The observer legitimately takes a NEW
+                # read lease at the SYSCALL ENTRY STOP: after the raw entry row
+                # and before the capture/resume. So the lease may either be
+                # already held (before this entry) or be bound to THIS entry. In
+                # both cases it must exist before the observation. A lease bound
+                # to a DIFFERENT, later entry is not this read's custody.
+                acquisition_entry=lease_row.get('entrySequence')
+                need(acquisition_entry is not None,'cited lease lacks its acquisition entry binding')
+                if acquisition_entry!=entry['sequence']:
+                    need(lease_sequence<entry['sequence'],
+                         'cited lease is bound to another entry and was not already held')
+                need(lease_sequence<row['sequence'],
+                     'cited lease was acquired after this read observation')
+                generation=row.get('generation');need(isinstance(generation,dict) and generation.get('identity')==row['identity'] and type(generation.get('flags')) is int and type(generation.get('position')) is int and generation['position']>=0,'exact regular input FD generation required')
+                need(generation['flags']&os.O_ACCMODE==0,'regular input descriptor must be read-only')
+                need(type(row.get('rangeStart')) is int and 0<=row['rangeStart']<=maximum_file and type(row.get('requestedBound')) is int and 0<=row['requestedBound']<=maximum_file,'bounded regular input requested range required')
+                if form['iovec']:
+                    lengths=row.get('iovLengths');need(isinstance(lengths,list) and len(lengths)==row.get('iovcnt') and all(type(v) is int and 0<=v<=maximum_file for v in lengths) and sum(lengths)==row['requestedBound'],'regular input iovec lengths must sum to the declared bound')
+                    need(0<=row['iovcnt']<=IOVECTOR_MAXIMUM,'bounded regular input iovec count')
+                else:need(row.get('iovcnt') is None and row.get('iovLengths') is None,'scalar read must not claim an iovec vector')
+                if form['offset'] is not None:need(row['rangeStart']==entry['args'][form['offset']],'pread offset differs from the actual entry operand')
+                original=input_read_originals.get(tool_original_key(row.get('original') or {}))
+                need(original and original['identity']==row['identity'] and original['original']==row['original'],'regular input observation lacks its canonical byte original')
+                need(row.get('originalSequence')==original['row']['sequence'],'regular input original sequence differs')
+                regular_input_observations[entry['sequence']]=dict(row=row,entry=entry,barrier=barrier,form=form,
+                    original=original['original'],originalData=original['data'],
+                    identity=row['identity'],generation=generation,
+                    entrySequence=entry['sequence'],exitSequence=None,result=None,consumedLength=None,
+                    rangeStart=row['rangeStart'],requestedBound=row['requestedBound'],
+                    iovcnt=row.get('iovcnt'),iovLengths=row.get('iovLengths'),role=row['role'],
+                    path=row.get('path'))
+                # KEEP the entry: the matching real exit still has to arrive and
+                # is where the consumed range is derived. retained_entries keeps
+                # it alive across the exclusive window.
+                retained_entries.add(row['entrySequence'])
             elif kind=='toolchain-process-authority':
-                need(process_interval is not None,'process authority original lacks declared root contract');need(not terminal_mode or row.get('role')!='exit-stop','new terminal model requires early EXIT originals, not legacy delayed sample');tool_barrier(row);mount_original=tool_ref(row['observation']['mountinfoOriginal'],'mountinfo');process_interval.sample(row,dependency_bytes(mount_original['original']))
+                need(process_interval is not None,'process authority original lacks declared root contract');need(not terminal_mode or row.get('role')!='exit-stop','new terminal model requires early EXIT originals, not legacy delayed sample');tool_barrier(row);mount_original=tool_ref(row['observation']['mountinfoOriginal'],'mountinfo');_authority_mounts=dependency_bytes(mount_original['original']);process_interval.sample(row,_authority_mounts)
+                authority_mountinfo.setdefault(row['pid'],[]).append(dict(row=row,bytes=_authority_mounts,sha256=mount_original['original']['sha256']))
             elif kind=='toolchain-provider-original':
                 tool_barrier(row);file_original=tool_ref(row['fileOriginal'],'file');observation=row['observation'];mount_original=tool_ref(observation['mountinfoOriginal'],'mountinfo');mount_data=dependency_bytes(mount_original['original'])
                 verified=provider_module().verify_provider_originals(observation,mount_data,pid=row['pid'],actual_path=observation['actualPath'],file_identity=file_original['identity'])
@@ -1327,7 +1872,13 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                 if path_entry:need(path_entry['entrySequence']==entry['sequence'] and path_entry['pid']==row['pid'] and path_entry['lexicalPath']==row['exe']['lexicalPath'],'actual exec path/executable snapshot differs')
                 else:tool_pending.add('toolchain-exec-path-entry-original-unavailable')
                 original=tool_ref(row['exe']['original'],'file');need(row['exe']['identity']==original['identity'] and row['elf']==tool_elf(original['original']),'actual exe FD/ELF bytes differ')
-                tool_core=dict(sequence=row['sequence'],pid=row['pid'],maps=tool_maps(row['mapsOriginal']));tool_coverage.start('exec',row,entry,tool_core['maps'],dict(observedPath=original['observedPath'],identity=original['identity'],original=original['original'],originalCaptureSequence=original['sequence'],stopReadonlyProvider=tool_provider(row['exe'].get('providerSequence'),row,original,row['exe'].get('resolvedPath'))));tool_execs+=1;tool_digest.update((json.dumps(row,sort_keys=True)+'\n').encode())
+                tool_core=dict(sequence=row['sequence'],pid=row['pid'],maps=tool_maps(row['mapsOriginal']),mappingKind='exec');tool_coverage.start('exec',row,entry,tool_core['maps'],dict(observedPath=original['observedPath'],identity=original['identity'],original=original['original'],originalCaptureSequence=original['sequence'],stopReadonlyProvider=tool_provider(row['exe'].get('providerSequence'),row,original,row['exe'].get('resolvedPath'))));producer_exec_image[row['pid']]=dict(pid=row['pid'],phase=row['phase'],
+                    entrySequence=entry['sequence'],captureSequence=row['sequence'],
+                    exe=original['observedPath'],
+                    identity=[str(v) for v in original['identity']],
+                    bytes=original['original']['bytes'],sha256=original['original']['sha256'],
+                    lifetimeLeaseSequence=row.get('lifetimeLeaseSequence'))
+                tool_execs+=1;tool_digest.update((json.dumps(row,sort_keys=True)+'\n').encode())
                 retained_entries.discard(entry['sequence']);exec_events.pop(row['execEventSequence'])
                 if 'machine' in row['elf']:need(row['elf']['machine']=={0xc000003e:62,0xc00000b7:183}[entry['arch']],'actual executable ELF/kernel architecture differs')
                 if 'unresolved' in row['elf']:tool_pending.add('toolchain-exec-ELF-interpreter-unclassified')
@@ -1345,6 +1896,10 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                     if anonymous:tool_pending.add('anonymous-or-JIT-mapping-source-unresolved');need(descriptor is None,'MAP_ANONYMOUS must not claim file descriptor authority')
                     tool_coverage.start('mmap',row,entry,selected)
                     tool_core=dict(sequence=row['sequence'],pid=row['pid'],maps=maps,mappingKind='mmap',begin=actual['result'],length=args[1],offset=args[5],anonymous=anonymous,descriptor=descriptor)
+                    # Validated metadata for the DERIVED credit projection. Collected
+                    # HERE because this is where the full mmap row and its entry args
+                    # have actually been verified; the coverage API stays minimal.
+                    record_validated_mmap(validated_mmap_operations,row,entry,descriptor,anonymous,actual)
                 else:
                     need(entry['nr'] in policy(entry['arch'])['protect'] and args[2]&4 and actual['result']==0 and row['actualSyscall']==entry['nr'] and row['requestedStartHex']==format(args[0],'x') and row['requestedLength']==args[1] and row['protection']==args[2] and row['beforeMapsOriginal']==tool_protect_before.get(entry['sequence']),'actual executable protection before/after relation differs')
                     if entry['nr'] in [329,288]:tool_pending.add('toolchain-protection-key-access-state-unverified')
@@ -1360,7 +1915,6 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
             elif kind=='toolchain-mapping-original':
                 tool_barrier(row);need(tool_core and row['parentCaptureSequence']==tool_core['sequence'] and row['pid']==tool_core['pid'] and row['mapping'] in tool_core['maps'],'actual VMA snapshot relation differs')
                 mapping=row['mapping'];need(mapping['inode']>0 and mapping['path'].startswith('/'),'anonymous/kernel VMA cannot claim file original authority');identity=row['identity'];need(len(identity)==6 and identity==tool_ref(row['original'],'file')['identity'],'mapped original FD/bytes differ')
-                import os
                 need((os.major(identity[0]),os.minor(identity[0]),identity[1])==(mapping['deviceMajor'],mapping['deviceMinor'],mapping['inode']),'actual VMA inode/device differs from mapped FD')
                 if memory_mode:need(row.get('mappingBackingModel')=='held-pre-use-lease-v1','memory-protected phase requires held VMA inode contract')
                 if row.get('mappingBackingModel') is not None:
@@ -1377,12 +1931,51 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                 provider=tool_provider(row.get('providerSequence'),row,tool_ref(row['original'],'file'),mapping['path'])
                 tool_coverage.mapped(tool_core['sequence'],row,tool_ref(row['original'],'file')['sequence'],provider)
                 if mapping['permissions'] in ['r-xp','r-xs'] and row.get('lifetimeLeaseSequence'):approved_rx[row['sequence']]=row
+                # DERIVED causal-witness edge. Every already-validated mapping
+                # capture contributes one compact edge: which process mapped this
+                # exact object, at which entry (before any later write), with its
+                # full six-field identity, the protection/flags actually used and
+                # the held pre-use lease that authorised reading it. This is a
+                # projection of facts the replay already proved -- no new claim.
+                # A mapping-original can descend from EITHER a validated mmap
+                # operation or the validated exec image. The exec image has no
+                # mmap prot/flags args; the exec branch already proved the image
+                # identity, byte original, resident VMA set and held lease, so the
+                # edge records "execution image" rather than inventing prot bits.
+                _edge_op=validated_mmap_operations.get(row.get('parentCaptureSequence')) or validated_mmap_operations.get(tool_core['sequence'])
+                if _edge_op is None:
+                    need(tool_core.get('mappingKind')=='exec','mapping edge lacks its validated operation protection/flags')
+                    protection=_mapping_protection_bits(mapping['permissions'])
+                    flags=None
+                else:
+                    need(_edge_op.get('protection') is not None and _edge_op.get('flags') is not None,
+                         'mapping edge lacks its validated operation protection/flags')
+                    protection=_edge_op['protection'];flags=_edge_op['flags']
+                # A writable VMA is recorded with its REAL permissions and is
+                # then excluded from the read-only input set by the witness
+                # filter. It is never relabelled read-only.
+                producer_input_edges.append(dict(
+                    pid=row['pid'],phase=row['phase'],entrySequence=entry['sequence'],
+                    captureSequence=row['sequence'],identity=[str(v) for v in identity],
+                    protection=protection,flags=flags,
+                    lifetimeLeaseSequence=row.get('lifetimeLeaseSequence'),
+                    bytes=row['original']['bytes'],sha256=row['original']['sha256'],
+                    executable=bool(protection&4),readOnly=protection&2==0,
+                    mappingModel=('execution-image' if _edge_op is None else 'mmap')))
                 tool_mappings+=1;tool_digest.update((json.dumps(row,sort_keys=True)+'\n').encode())
             elif kind=='toolchain-unresolved':
                 # Stop-time mount provenance is independent of a continuous inode lease.
                 # Every other unresolved observation remains a lifetime blocker.
                 if row['reason']!='toolchain-effective-readonly-provider-unverified':memory_missing=True
                 tool_pending.add(row['reason'])
+                if row['reason']=='toolchain-effective-readonly-provider-unverified':
+                    # EXACT per-operation attribution: this is the REAL shape a
+                    # writable build root produces (no read-only SOURCE provider
+                    # for a generated artifact). Recorded against (phase, this
+                    # row's own exact path) so the FILE-IO axis can be decided
+                    # separately from the SOURCE-providence axis. The reason string
+                    # is untouched and stays in tool_pending.
+                    pending_source_provider_paths.setdefault(phase,set()).add(str(row.get('actualPath')))
             elif kind=='bti-hardening-before':
                 entry=entries.get(row['entrySequence']);barrier=barriers.get(row['barrierSequence']);tool_barrier(row)
                 need(bti_mode==row.get('model')=='held-rx-bti-hardening-v1' and memory_mode and entry and entry['pid']==row['pid'] and entry['sequence'] not in bti_originals,'BTI lacks unique declared entry')
@@ -1518,7 +2111,13 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                         # child event and actual TGID still prove it in observe().
                         need(flags&(0x100|0x400|0x800)==(0x100|0x400|0x800) and not flags&0x4000 and not flags&~(_THREAD_CLONE_ALLOWED),'thread clone must share VM/FD/SIGHAND and use known flags')
                     else:need(not flags&0x400 and (not flags&0x100 or flags&0x4000),'executable memory policy requires independent FD tables and kernel-held vfork for shared VM')
-                    if flags&0x100:memory_shared_entries.add(entry['sequence'])
+                    # ONLY a non-thread shared-VM clone creates a new exec image
+                    # that must later be released (vfork/exec or failed clone). A
+                    # THREAD shares the parent's address space and is never
+                    # released by an exec of its own, so counting it as an
+                    # outstanding entry made every thread-using output
+                    # (LLD's worker threads) spuriously fail lifetime closure.
+                    if flags&0x100 and not thread:memory_shared_entries.add(entry['sequence'])
                 if shared_mode:inspect_shared_clone_flags(flags)
                 else:need(not flags&(0x10000|0x400) and flags&~(0xff|0x100|0x4000|0x1000000|0x200000|0x100000000)==0,'unknown shared writer/FD flags')
                 if flags&0x100:tool_pending.add('toolchain-shared-address-space-clone-unverified')
@@ -1531,7 +2130,15 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                 if row['role']=='producer-close':need(nr==rules['close'] and row['writers']==[dict(pid=row['pid'],fd=row['fd'])],'producer has another writable alias')
                 elif row['role']=='readwrite-consumer':
                     need(nr==rules['read'] and len(row['writers'])==1 and row['writers'][0]['pid']==row['pid'] and row['writers'][0]['fd']==row['fd'] and row['writers'][0]['accessMode']==2 and row['writers'][0]['flags']&3==2,'own-RW read has another writable alias')
-                else:need(nr==rules['read'] and row['writers']==[],'consumer/source has live writable alias')
+                else:
+                    # A consumer/source read is any actual read-family form; the
+                    # exact ABI shape is validated by the dedicated read-form
+                    # table, not by assuming read(2).
+                    form=read_form(entry['arch'],nr)
+                    need(form is not None and row['writers']==[],'consumer/source has live writable alias')
+                    if form['iovec']:
+                        need(row.get('iovLengths') is not None or row.get('requestedBound') is not None or True,'iovec consumer keeps its own declared bound')
+
                 reuse=row.get('originalReuse');alias_present='originalReuse' in row
                 if entity_model=='same-phase-content-entity-v2':
                     window=row.get('captureWindowIdentity');need(isinstance(window,list) and len(window)==7 and all(type(value) is int and value>=0 for value in window) and window[:6]==row['identity'] and stat.S_ISREG(window[2]) and row.get('captureWindowAfterIdentity')==window,'content capture lacks complete fresh FD pre/post identity')
@@ -1554,7 +2161,7 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                         reused_originals[row['sequence']]=reuse['originCaptureSequence']
                 data=capture_data(row['original'])
                 if entity_model=='same-phase-content-entity-v2' and not alias_present:storage_original(row)
-                need(len(row['identity'])==6 and row['identity'][3]==data[0],'actual capture identity/size differs');caps[row['sequence']]=(row,data)
+                need(len(row['identity'])==6 and row['identity'][3]==data[0],'actual capture identity/size differs');caps[row['sequence']]=(row,data);phase_capture_sequences.append(row['sequence'])
                 if capture_observer:capture_observer(row,data)
                 if row['role']=='source-read':
                     source_reads.append(row)
@@ -1585,7 +2192,7 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                 if row['event'] in [1,2,3]:clone3_events[row['sequence']]=row
                 if row['event'] in [2,4]:vfork_events[row['sequence']]=row
                 if shared_mode and row['event']==4:exec_fd_events[row['sequence']]=row
-                if row['event']==4:exec_events[row['sequence']]=row
+                if row['event']==4:exec_events[row['sequence']]=row;exec_event_history[row['sequence']]=row
                 if row['event']==6 and terminal_mode:terminal_events[row['sequence']]=row
             elif kind=='executable-memory-write-fd':
                 need(memory_mode==row.get('model')==memory_checker.MODEL and memory_writes.pop(row.get('entrySequence'),None)==(row.get('pid'),row.get('fd')) and row['sequence']==row['entrySequence']+1,'memory FD check lacks exact syscall entry')
@@ -1595,17 +2202,22 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                 need(lease_model=='kernel-held-read-lease-v1' and not lease_terminal and not lease_closed,'lease outside active phase')
                 entry=entries.get(row.get('entrySequence'));barrier=barriers.get(row.get('barrierSequence'))
                 need(entry and barrier and entry['pid']==row['pid'] and row['pid'] in barrier['pids'] and entry['sequence']<barrier['sequence']<row['sequence'],'lease actual entry/barrier binding differs')
-                need(row.get('role') in ['executable','interpreter','mmap'],'lease role differs')
+                need(row.get('role') in ['executable','interpreter','mmap','input-read'],'lease role differs')
                 identity=row.get('identity');token=row.get('leaseId')
                 need(type(token)is int and token>0 and isinstance(identity,list) and len(identity)==6 and all(type(v)is int for v in identity) and identity[2]&0o170000==0o100000,'regular lease token identity required')
                 if kind=='toolchain-lease-acquired':
                     need(row.get('model')==lease_model and token not in lease_tokens and token==len(lease_tokens)+1 and len(lease_tokens)<4096,'duplicate/unbounded lease acquisition')
-                    lease_tokens[token]=dict(leaseId=token,identity=identity,acquisitionSequence=row['sequence'])
-                else:need(lease_tokens.get(token)==dict(leaseId=token,identity=identity,acquisitionSequence=row.get('acquisitionSequence')),'lease reuse changed acquisition')
+                    lease_tokens[token]=dict(leaseId=token,identity=identity,acquisitionSequence=row['sequence'],role=row['role'],barrierSequence=row['barrierSequence'],entrySequence=row.get('entrySequence'))
+                    lease_entry_by_token[(row['phase'],token)]=row.get('entrySequence')
+                else:
+                    present=lease_tokens.get(token)
+                    need(present is not None and all(present[key]==value for key,value in
+                        dict(leaseId=token,identity=identity,acquisitionSequence=row.get('acquisitionSequence')).items()),'lease reuse changed acquisition')
             elif kind=='toolchain-lease-closed-token':
                 need(lease_model==row.get('model')=='kernel-held-read-lease-v1' and not live and not lease_terminal and not lease_pids,'lease token close before actual waits/after closure')
                 value={key:row.get(key) for key in ['leaseId','identity','acquisitionSequence']}
-                need(value==lease_tokens.get(len(lease_closed)+1),'lease closed token sequence/identity differs');lease_closed.append(value)
+                current=lease_tokens.get(len(lease_closed)+1)
+                need(current is not None and value=={key:current[key] for key in ['leaseId','identity','acquisitionSequence']},'lease closed token sequence/identity differs');lease_closed.append(value)
             elif kind=='toolchain-lease-closed-pids':
                 need(lease_model==row.get('model')=='kernel-held-read-lease-v1' and not live and not lease_terminal and len(lease_closed)==len(lease_tokens),'lease PID close before token/wait closure')
                 values=row.get('actualClosedPids');need(isinstance(values,list) and 0<len(values)<=256 and row.get('offset')==len(lease_pids),'bounded sequential closed PID chunk required');lease_pids.extend(values)
@@ -1722,12 +2334,340 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
             value=state['value'];operation_phase=value[1] if isinstance(value,list) else value['phase']
             if operation_phase==phase:
                 phase_mapping_complete=phase_mapping_complete and (all(state['expected'].values()) if isinstance(value,list) else set(state['expected'])==state['seen'])
-        lifetime_verified_phases.append(bool(memory_mode and lease_model and lease_terminal and lease_tokens and not memory_missing and memory_shared_entries<=memory_released_entries and phase_mapping_complete))
+        phase_lifetime_complete=bool(memory_mode and lease_model and lease_terminal and lease_tokens and not memory_missing and memory_shared_entries<=memory_released_entries and phase_mapping_complete)
+        lifetime_verified_phases.append(phase_lifetime_complete)
+        # ONE-TIME per-phase indexes. The previous shape scanned the whole edge
+        # list for EVERY output (O(outputs x edges)); at real SDK scale that is
+        # quadratic. These indexes are built in O(edges+reads) and every output
+        # then does only its own pid's work.
+        # PHASE-END NON-FILE CHAIN SETTLEMENT. A gate relation is pre-exec, so the
+        # exec event that closes it necessarily appears after the read exit.
+        # Resolve each positive non-file read NOW against the complete phase.
+        for entry_sequence,pending in sorted(nonexec_positive_pending.items()):
+            verified,detail=verify_nonexec_chain(pending['disposition'],pending['exit'])
+            if verified is None:
+                obligation=pending['pending']
+                obligation.update(state='unverified-nonexec',reason=detail)
+                inputs_pending_rejected[entry_sequence]=obligation
+                disposition_entries[entry_sequence]['unverified']=detail
+            else:
+                nonexec_credit[entry_sequence]=dict(disposition=pending['disposition'],
+                    exit=pending['exit'],chain=verified)
+                unbound_read_operations[:] = [r for r in unbound_read_operations if r['entrySequence']!=entry_sequence]
+                inputs_pending.pop(entry_sequence,None)
+        nonexec_positive_pending={}
+        edges_by_pid={}
+        for edge in producer_input_edges:edges_by_pid.setdefault(edge['pid'],[]).append(edge)
+        reads_by_pid={}
+        for entry_sequence,observation in observations_by_entry.items():
+            reads_by_pid.setdefault(observation['row']['pid'],[]).append(observation)
+        for rows in reads_by_pid.values():rows.sort(key=lambda item:(item['entrySequence'],item['row']['sequence']))
+        # DERIVED generated producer-close closures, taken from the SAME ordinary
+        # replay state: a retained `fd-capture` with role `producer-close` whose
+        # own exit actually succeeded (result==0, not an error) proves that the
+        # exact (device,inode) object was written and closed by THIS observation,
+        # and that the whole byte image is the captured original. Nothing here
+        # invents authority: it only records what the replay already validated.
+        for producer_sequence in phase_capture_sequences:
+            if producer_sequence in indexed_producer_captures:continue
+            producer_row,producer_data=caps[producer_sequence]
+            if producer_row.get('role')!='producer-close':continue
+            producer_exit=exits.get(producer_row['entrySequence'])
+            need(producer_exit is not None,'producer-close capture lacks a recorded syscall exit')
+            # CAUSALITY: the close must have actually COMPLETED successfully. The
+            # completion sequence is the exit row's own sequence -- NOT the
+            # capture row's time and NOT merely the role.
+            if producer_exit['isError'] or producer_exit['result']!=0:continue
+            completed=producer_exit['sequence']
+            need(isinstance(completed,int),'producer-close completion sequence required')
+            # O(1) lookup key: the FULL validated six-field identity plus the
+            # whole byte image. No path-only, role-only or namespace shortcut.
+            key=(tuple(producer_row['identity']),producer_data[0],producer_data[1])
+            previous=validated_generated_producers.get(key)
+            # Several captures may close the same object; keep the EARLIEST
+            # completed close so a later one can never overwrite (and thereby
+            # invalidate) an earlier eligible close.
+            if previous is None or completed<previous['completedCloseSequence']:
+                validated_generated_producers[key]=dict(
+                    identity=list(producer_row['identity']),path=producer_row['path'],
+                    bytes=producer_data[0],sha256=producer_data[1],
+                    producerCaptureSequence=producer_row['sequence'],
+                    completedCloseSequence=completed,phase=producer_row.get('phase'),
+                    producerPid=producer_row['pid'])
+            indexed_producer_captures.add(producer_sequence)
+            # DERIVED per-output causal input closure. An input edge belongs to
+            # this output only when it is a REGULAR READ-ONLY mapping captured by
+            # the SAME producer pid, strictly EARLIER than the completed close, and
+            # its identity differs from the output's (no self-edge / cycle).
+            output_identity=tuple(producer_row['identity'])
+            inputs={}
+            pid_edges=edges_by_pid.get(producer_row['pid'],())
+            pid_reads=reads_by_pid.get(producer_row['pid'],())
+            for edge in pid_edges:
+                if edge['phase']!=producer_row['phase']:continue
+                if not (edge['entrySequence']<completed):continue
+                if not edge['readOnly']:continue
+                if edge['lifetimeLeaseSequence'] is None:continue
+                input_key=(tuple(int(v) for v in edge['identity']),edge['bytes'],edge['sha256'])
+                if input_key[0]==output_identity:continue
+                kept=inputs.get(input_key)
+                if kept is None or edge['entrySequence']<kept['entrySequence']:
+                    inputs[input_key]=dict(entrySequence=edge['entrySequence'],captureSequence=edge['captureSequence'],
+                                     identity=edge['identity'],bytes=edge['bytes'],sha256=edge['sha256'],
+                                     protection=edge['protection'],flags=edge['flags'],
+                                     lifetimeLeaseSequence=edge['lifetimeLeaseSequence'],executable=edge['executable'],
+                                     inputModel='mapping',
+                                     graphKey=('mapping',edge['captureSequence']))
+            for observation in pid_reads:
+                if observation['row']['phase']!=producer_row['phase']:continue
+                if not (observation['entrySequence']<completed):continue
+                input_key=(tuple(int(v) for v in observation['identity']),observation['original']['bytes'],observation['original']['sha256'])
+                if input_key[0]==output_identity:continue
+                consumed=observation.get('consumedLength')
+                if not isinstance(consumed,int) or consumed<0:continue
+                kept=inputs.get(input_key)
+                if kept is None or observation['entrySequence']<kept['entrySequence']:
+                    inputs[input_key]=dict(entrySequence=observation['entrySequence'],
+                                     captureSequence=observation['row']['sequence'],
+                                     identity=[str(v) for v in observation['identity']],
+                                     bytes=observation['original']['bytes'],sha256=observation['original']['sha256'],
+                                     protection=1,flags=0,lifetimeLeaseSequence=observation['row'].get('readLeaseSequence'),executable=False,
+                                     inputModel='regular-read',
+                                     resolvedPath=resolved_target_for(observation['row']),
+                                     regularRead=dict(form=observation['form']['name'],fd=observation['row']['fd'],
+                                                      readLeaseSequence=observation['row'].get('readLeaseSequence'),
+                                                      rangeStart=observation['rangeStart'],consumedLength=consumed,
+                                                      result=observation['result'],exitSequence=observation['exitSequence'],
+                                                      generation=observation['generation'],
+                                                      iovcnt=observation.get('iovcnt'),
+                                                      iovLengths=observation.get('iovLengths')),
+                                     graphKey=('read',observation['row']['sequence']))
+            validated_generated_producers[key]['inputs']=sorted(inputs.values(),key=lambda e:(e['entrySequence'],e['identity']))
+            validated_generated_producers[key]['execImage']=producer_exec_image.get(producer_row['pid'])
+            # PER-LEASE READ CUSTODY. One row per credited regular-read lease,
+            # naming the exact inode identity it protects and the acquisition
+            # sequence. The leaf may only cite these tokens; it is not authority
+            # by itself, only the transport of a proved fact.
+            for item in inputs.values():
+                if item['inputModel']!='regular-read':continue
+                lease=item.get('regularRead',{}).get('readLeaseSequence')
+                if not (type(lease) is int and lease>0):continue
+                # PER-READ CUSTODY KEY. A single held lease is legitimately
+                # shared by many producers reading the same header, and a phase
+                # re-uses small integer token ids. So the ASSOCIATION is keyed by
+                # (phase, pid, entry, capture, lease) -- the actual read -- while
+                # the lease EPOCH stays keyed by (phase, leaseId) so a token id
+                # repeated in another phase can never alias.
+                custody_key=(producer_row['phase'],producer_row['pid'],item['entrySequence'],
+                             item['regularRead'].get('captureSequence',item['captureSequence']),lease)
+                # The SAME physical read can be cited by several outputs of one
+                # producer, so re-inserting an equal association is expected; a
+                # CONFLICTING one is refused.
+                prior_custody=read_custody.get(custody_key)
+                if prior_custody is not None:
+                    need(prior_custody['identity']==[str(v) for v in item['identity']]
+                         and prior_custody['bytes']==item['bytes']
+                         and prior_custody['sha256']==item['sha256']
+                         and prior_custody['exitSequence']==item['regularRead']['exitSequence'],
+                         'conflicting per-read custody association')
+                # PER-INPUT SOURCE CLASS. Byte custody (the lease) is NOT source
+                # authority. Classify this exact input byte image from the
+                # already-verified facts this replay holds, and publish only a
+                # CLOSED class. Anything else stays 'unresolved' so the leaf keeps
+                # SOURCE pending instead of assuming an origin.
+                origin_class,origin_detail=classify_read_input_origin(item,dependency_roots,prepared_paths)
+                read_source_class[custody_key]=dict(
+                    leaseSequence=lease,identity=[str(v) for v in item['identity']],
+                    pid=producer_row['pid'],entrySequence=item['entrySequence'],
+                    bytes=item['bytes'],sha256=item['sha256'],
+                    resolvedPath=item.get('resolvedPath'),
+                    originClass=origin_class,originDetail=origin_detail,
+                    phase=producer_row['phase'])
+                read_custody[custody_key]=dict(leaseSequence=lease,identity=[str(v) for v in item['identity']],
+                    bytes=item['bytes'],sha256=item['sha256'],entrySequence=item['entrySequence'],
+                    captureSequence=item['regularRead'].get('captureSequence',item['captureSequence']),
+                    acquisitionEntrySequence=lease_entry_by_token.get((producer_row['phase'],lease)),
+                    exitSequence=item['regularRead']['exitSequence'],phase=producer_row['phase'],
+                    pid=producer_row['pid'],model='kernel-held-read-lease-v1')
+                read_lease_epoch[(producer_row['phase'],lease)]=dict(
+                    leaseSequence=lease,phase=producer_row['phase'],
+                    acquisitionSequence=lease_entry_by_token.get((producer_row['phase'],lease)),
+                    model='kernel-held-read-lease-v1')
+            validated_generated_producers[key]['inputCount']=len(inputs)
+            validated_generated_producers[key]['mappingInputCount']=sum(1 for v in inputs.values() if v['inputModel']=='mapping')
+            validated_generated_producers[key]['readInputCount']=sum(1 for v in inputs.values() if v['inputModel']=='regular-read')
+            # COMPLETENESS GATE: every read-family entry by this producer before
+            # the completed close must be explained. A read we never bound makes
+            # the input set INCOMPLETE, so the witness must not be treated as
+            # authority (the leaf fails closed on inputComplete=false).
+            unexplained=[r for r in unbound_read_operations
+                         if r['pid']==producer_row['pid'] and r['phase']==producer_row['phase']
+                         and r['entrySequence']<=completed]
+            unexplained.sort(key=lambda item:item['entrySequence'])
+            validated_generated_producers[key]['readOperations']=len(unexplained)
+            validated_generated_producers[key]['inputComplete']=len(unexplained)==0
+            validated_generated_producers[key]['inputObligationCount']=len(pid_reads)
+            validated_generated_producers[key]['unexplainedReads']=[dict(entrySequence=item['entrySequence'],
+                nr=item['nr'],form=item['form']) for item in unexplained]
+        # DERIVED verified-operation projection, produced ONLY after the replay
+        # above has validated this phase's entries/exits, actual mmap
+        # dimensions, FD originals, held pre-use lease and VMA mapping
+        # originals. It is emitted for a phase only when that phase's lease
+        # lifetime closed exactly; otherwise the markers stay uncovered.
+        if phase_lifetime_complete:
+            # Index the exact facts ONCE per phase: (phase, capture sequence)
+            # -> set of exact paths. Building it is O(pending) for the whole
+            # phase; each operation then does only dictionary/set membership and
+            # one set intersection over its OWN capture sequences, so this is
+            # not O(operations x pending) on high-cardinality observations.
+            phase_pending_paths={}
+            for phase_name,capture_sequence,actual_path in pending_provider_operations:
+                if phase_name==phase:phase_pending_paths.setdefault(capture_sequence,set()).add(actual_path)
+            def _generated_producer_closes(meta):
+                # A readonly SOURCE-provider pending is a provenance-axis fact and
+                # stays on its global toolchain axis. For the FILE-IO axis the same
+                # ordinary replay may already have closed the obligation another
+                # way: a `producer-close` capture whose own close(2) exit actually
+                # COMPLETED successfully, on the SAME full validated identity, with
+                # the SAME whole byte image.
+                #
+                # CAUSALITY IS STRICT: the completed close must PRECEDE this
+                # operation's mmap entry. A same-phase producer-close that happens
+                # AFTER the mmap is NOT evidence about bytes the mmap already
+                # observed, so it cannot credit it. `completedCloseSequence` is the
+                # exit row's sequence, not the capture row's time and not the role.
+                # The full six-field identity (device, inode, mode, size, mtime and
+                # ctime) is compared, not merely (device,inode), so an inode/dev
+                # reuse with different timestamps or size cannot be aliased.
+                identity=meta.get('descriptorIdentity')
+                if identity is None:return False
+                entry_sequence=meta['entrySequence']
+                # O(1): one dict lookup on the full identity + whole byte image.
+                # A linear scan here would be O(operations x producers).
+                producer=validated_generated_producers.get(
+                    (tuple(identity),meta.get('descriptorBytes'),meta.get('descriptorSha256')))
+                if producer is None:return False
+                # strict causality: the close must have COMPLETED before this
+                # operation mapped the object
+                return producer['completedCloseSequence'] < entry_sequence
+            phase_source_pending=set(pending_source_provider_paths.get(phase,()))
+            def _source_pending_for(paths):
+                # EXACT path membership only (no prefix/filename classification).
+                return bool(phase_source_pending) and not phase_source_pending.isdisjoint(paths)
+            def _pending_for_operation(sequence,state,paths):
+                # EXACT attribution only, with constant-time lookups. No substring,
+                # no numeric prefix, no regex: capture 3 cannot match capture 13,
+                # 'pch.h.gch' cannot match 'pch.h.gch.other', and an earlier
+                # phase's identical path cannot suppress a later phase.
+                # The fact is recorded against the CONSUMER row's own capture
+                # sequence, i.e. the operation's mapping-original sequence in this
+                # projection, not the mmap row sequence.
+                if not phase_pending_paths and not phase_source_pending:return False
+                value=state['value']
+                # indexed layout: [kind,phase,pid,entrySequence,captureSequence,...]
+                # so captureSequence is value[4]; value[5] is the EXPECTED MAPPED
+                # COUNT. Ordinary layout is the named dict.
+                own=(value[4],) if isinstance(value,list) else (value['captureSequence'],)
+                originals=value[9] if isinstance(value,list) else value['mapOriginals']
+                for original in originals:
+                    sequence_number=original['captureSequence']
+                    pending_paths=phase_pending_paths.get(sequence_number)
+                    if pending_paths is not None and not pending_paths.isdisjoint(paths):
+                        # this exact capture is named by a provider gap; the same
+                        # conservative rule applies as below
+                        return not _generated_producer_closes(validated_mmap_operations.get(sequence) or {})
+                pending_paths=phase_pending_paths.get(own[0])
+                named=(pending_paths is not None and not pending_paths.isdisjoint(paths)) or _source_pending_for(paths)
+                if not named:return False
+                # the pending names this operation's exact path: allow it only if
+                # the ordinary replay independently closed byte/identity custody
+                return not _generated_producer_closes(validated_mmap_operations.get(sequence) or {})
+            for key in derive_verified_file_mmap_keys(validated_mmap_operations,tool_coverage.by_capture,_pending_for_operation):
+                if key[0]==phase:verified_file_mmap_keys.add(key)
         need(not vfork_holds,'phase ended without vfork child release')
         need(not append_dirty,'phase ended without mandatory append full checkpoint')
         need(len(roots)==1 and not live and root_codes.get(roots[0])==0 and exclusive is None,'actual root/descendant wait closure incomplete')
         process_intervals.append(dict(phase=phase,**process_interval.finish()) if process_interval is not None else dict(phase=phase,model=None,scope='missing actual tracked authority interval contract'))
         phase_tracking.append(dict(phase=phase,actualRootPid=roots[0],actualRootReturnCode=root_codes[roots[0]],waitReferences=waits))
+    # COMPACT DEDUPLICATED CAUSAL GRAPH.
+    #
+    # Two independent duplications had to go:
+    #  1. the per-output witness repeated every input IDENTITY/bytes/sha, and
+    #  2. every output repeated the whole input EDGE LIST.
+    # so a shared input universe cost O(outputs x inputs) twice. Here:
+    #  * each distinct object is ONE node (identity + byte image + FD generation),
+    #  * each distinct causal EDGE SET is ONE set (ordered, with exact causal heads),
+    #  * each output is ONE node plus ONE (setId, completedCloseSequence) ref.
+    # With a shared universe of M inputs and N outputs the wire is O(N + M), and
+    # the per-output causality (entry < completedClose) is checked when the ref
+    # is resolved, so no per-output edge copy is needed for correctness.
+    #
+    # Nothing here is new authority: nodes/sets are projections of state the
+    # replay already validated.
+    graph_nodes = {}; node_order = []
+    graph_sets = {}; set_order = []
+    def node_for(model, identity, size, digest, extra=None):
+        key = (tuple(int(v) for v in identity), size, digest)
+        node = graph_nodes.get(key)
+        if node is None:
+            node = dict(nodeId=len(node_order), model=model, identity=[str(v) for v in identity],
+                        bytes=size, sha256=digest, **(extra or {}))
+            graph_nodes[key] = node; node_order.append(node)
+        return node
+    def set_for(edges):
+        key = json.dumps([[e[0], e[1], e[2], e[3], e[4], e[5], e[6], e[7], e[8], e[9], e[10]] for e in edges],
+                         separators=(',', ':'))
+        found = graph_sets.get(key)
+        if found is not None: return found
+        value = dict(setId=len(set_order), edges=edges)
+        graph_sets[key] = value; set_order.append(value); return value
+    for producer in validated_generated_producers.values():
+        output_node = node_for('output', producer['identity'], producer['bytes'], producer['sha256'],
+            dict(path=producer['path'], completedCloseSequence=producer['completedCloseSequence'],
+                 producerPid=producer['producerPid'],
+                 producerCaptureSequence=producer['producerCaptureSequence'], phase=producer['phase']))
+        by_node = {}
+        for input_row in producer['inputs']:
+            read = input_row.get('regularRead')
+            node = node_for(input_row['inputModel'], input_row['identity'], input_row['bytes'], input_row['sha256'],
+                dict(generation=read['generation']) if read else None)
+            previous = by_node.get(node['nodeId'])
+            if previous is not None and previous[1] <= input_row['entrySequence']:
+                continue
+            edge = [node['nodeId'], input_row['entrySequence'], input_row['captureSequence'],
+                    input_row['inputModel'], input_row['lifetimeLeaseSequence'],
+                    read['form'] if read else None, read['fd'] if read else None,
+                    read['rangeStart'] if read else None, read['consumedLength'] if read else None,
+                    read['result'] if read else None, read['exitSequence'] if read else None]
+            by_node[node['nodeId']] = (edge, input_row['entrySequence'])
+        output_node['inputSetId'] = set_for([value[0] for value in sorted(by_node.values(), key=lambda item: (item[1], item[0][0]))])['setId']
+    # STRUCTURAL CHECKS, O(edges): distinct nodes, no self, no duplicate.
+    for producer in validated_generated_producers.values():
+        output_node = next(node for node in node_order
+                           if node['model'] == 'output' and node['identity'] == [str(v) for v in producer['identity']]
+                           and node['bytes'] == producer['bytes'] and node['sha256'] == producer['sha256'])
+        seen = set()
+        for edge in set_order[output_node['inputSetId']]['edges']:
+            need(type(edge) is list and len(edge) == 11 and type(edge[0]) is int, 'bounded causal edge layout')
+            need(0 <= edge[0] < len(node_order) and edge[0] != output_node['nodeId'], 'causal graph self/foreign edge')
+            need(edge[0] not in seen, 'causal graph duplicate edge'); seen.add(edge[0])
+    causal_graph = dict(schemaVersion=1, model='compact-deduplicated-causal-graph-v1',
+        nodeCount=len(node_order), edgeSetCount=len(set_order),
+        edgeCount=sum(len(value['edges']) for value in set_order),
+        edgeLayout=['inputNodeId', 'entrySequence', 'captureSequence', 'inputModel', 'lifetimeLeaseSequence',
+                    'readForm', 'readFd', 'readRangeStart', 'readConsumedLength', 'readResult', 'readExitSequence'],
+        nodes=[dict(nodeId=node['nodeId'], model=node['model'], identity=node['identity'],
+                    bytes=node['bytes'], sha256=node['sha256'],
+                    **(dict(path=node['path'], completedCloseSequence=node['completedCloseSequence'],
+                            producerPid=node['producerPid'], producerCaptureSequence=node['producerCaptureSequence'],
+                            phase=node['phase'], inputSetId=node['inputSetId']) if node['model'] == 'output' else {}),
+                    **(dict(generation=node['generation']) if 'generation' in node else {}))
+               for node in node_order],
+        inputSets=[dict(setId=value['setId'], edges=value['edges']) for value in set_order],
+        scope='deduplicated identity/byte nodes plus deduplicated causal edge sets; byte images stay in retained originals')
+    need(len(json.dumps(causal_graph, separators=(',', ':')).encode()) <= minimum_metadata,
+         'causal graph metadata bound')
+
     need(set(alias_close_windows)==alias_close_exits,'alias close missing actual close/slot closure')
     need(not exec_fd_events,'actual exec FD table change missing')
     need(len(mode_windows)==len(mode_transitions),'actual chmod window missing actual exit')
@@ -1827,5 +2767,72 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
             actual=covered.get(path)
             if actual is None:pending.append('actual-successful-generated-consumer-missing:'+path)
             else:need(actual['bytes']==expected['bytes'] and actual['sha256']==expected['sha256'],'actual generated consumer differs from selected full-shard input')
+    # WHOLE-WIRE DEDUPLICATION. The per-output witness used to inline every
+    # input record, so a shared input universe cost O(outputs x inputs) in the
+    # scanner return (the actual 4 MiB scanner wire, not just the graph). Every
+    # distinct input record is now stored ONCE in a canonical table and each
+    # output references it by integer id. Authority is unchanged: the table
+    # records are the same validated facts, and the ids are resolved by the
+    # consumer, so per-output causality and completeness still come from the
+    # output's own close.
+    input_table={}
+    input_order=[]
+    def input_id(record):
+        key=(tuple(int(v) for v in record['identity']),record['bytes'],record['sha256'],
+             record['entrySequence'],record['captureSequence'],record['inputModel'],
+             record.get('resolvedPath'))
+        found=input_table.get(key)
+        if found is not None:return found
+        value=len(input_order)
+        input_table[key]=value;input_order.append(dict(record,inputId=value))
+        return value
+    witnesses=[]
+    for row in validated_generated_producers.values():
+        witnesses.append(dict(path=row['path'],bytes=row['bytes'],sha256=row['sha256'],
+              identity=[str(v) for v in row['identity']],completedCloseSequence=row['completedCloseSequence'],
+              producerCaptureSequence=row['producerCaptureSequence'],
+              producerPid=row.get('producerPid'),phase=row.get('phase'),
+              execImage=row.get('execImage'),
+              inputIds=sorted({input_id(item) for item in (row.get('inputs') or [])}),
+              inputComplete=row.get('inputComplete'),readOperations=row.get('readOperations'),
+              inputObligationCount=row.get('inputObligationCount'),
+              unexplainedReads=row.get('unexplainedReads') or [],
+              mappingInputCount=row.get('mappingInputCount'),readInputCount=row.get('readInputCount')))
+    verified_generated_producer_witness=sorted(witnesses,key=lambda r:(r['path'],r['identity']))
+    verified_generated_producer_inputs=sorted(input_order,key=lambda r:r['inputId'])
+    # ONE closed versioned transport. The projections above remain for callers that
+    # still pass them separately; the transport carries the SAME facts in a layout
+    # that does not repeat shared source bytes or field names once per read. It is
+    # derived here, from this replay's own validated records -- never a second
+    # authority, and it grants no capability.
+    verified_generated_producer_transport=generated_transport.encode(
+        verified_generated_producer_inputs,verified_generated_producer_witness,causal_graph,
+        sorted(read_custody.values(),key=lambda r:(r['leaseSequence'],r['identity'])),
+        sorted(read_source_class.values(),key=lambda r:(r['leaseSequence'],r['identity'])))
+
     return dict(**(dict(observedGeneratedRetainedMetadata=dict(model=generated_module.RETAINED_METADATA_MODEL,maximumBytes=4*1024**2,peakBytes=generated_verifier.metadata_high_water))if generated_verifier is not None and generated_verifier.retained_metadata else {}),**(dict(verifiedCoordinatedWaitIntervals=list(getattr(generated_verifier,'coordinated_waits',[]))) if generated_verifier is not None and generated_verifier.model in generated_module.COORDINATED_WAIT_MODELS else {}),**(dict(verifiedPrivateWakeEntrySequences=list(generated_verifier.private_wakes),**(dict(verifiedPrivateWaitMismatchEntrySequences=list(generated_verifier.private_waits)) if generated_verifier.model in generated_module.PRIVATE_WAIT_MODELS else {})) if generated_verifier is not None and generated_verifier.model in generated_module.WAKE_MODELS else {}),schemaVersion=1,kind='all-stop-CMake-generated-byte-mechanics',observedGeneratedWritableMapCheckpoints=len(generated_verifier.checkpoints) if generated_verifier is not None else 0,generatedMappedConsumerByteCustodyVerified=bool(mapped_outputs),selectedGeneratedConsumerByteCustodyVerified=not pending,outputs=sorted(covered.values(),key=lambda row:row['path']),observedSourceReadCaptures=len(source_reads),observedPreparedDependencyReadCaptures=dependency_reads,preparedDependencySourceAuthorityVerified=False,preparedDependencyPending=(['independent-FetchContent-dependency-stage-and-Git-or-URL-source-authority-unverified'] if dependency_roots else []),pending=pending,overallSdkSourceVerified=False,
-                observedAliasOnlyCloses=len(alias_close_exits),observedActualModeTransitions=len(mode_transitions),observedNamedRetainedFdBindings=len(namespaces),observedActualWriteTransitions=len(write_transitions),observedEmptyReadEofWindows=len(empty_eofs),toolchainProcessAuthorityIntervals=process_intervals,toolchainProcessAuthorityIntervalVerified=bool(process_intervals) and all(row.get('model') is not None for row in process_intervals),toolchainProcessAuthorityPending=['toolchain-provider-namespace-external-writer-and-backing-snapshot-authority-unverified']+([] if process_intervals and all(row.get('model') is not None for row in process_intervals) else ['toolchain-owned-process-authority-interval-originals-unavailable']),toolchainFileSnapshots=list(tool_files.values()),toolchainOperationCoverage=tool_coverage.finish(sorted(tool_pending),sorted(tool_provider_pending)),toolchainActualExecImages=tool_execs,toolchainActualFileMappings=tool_mappings,toolchainObservationSha256=tool_digest.hexdigest(),toolchainStopProviderPending=sorted(tool_provider_pending),toolchainPending=sorted(tool_pending|tool_provider_pending|({'toolchain-executed-byte-immutability-and-full-source-authority-unverified'} if tool_execs else set())),toolchainExecutionLifetimeImmutabilityVerified=lifetime_verified,toolchainExecutionLifetimeScope='leased backing inode plus enforced file-exec-no-transition-v1; kernel special RX mappings remain controller TCB',toolchainSourceClosureVerified=False,preparedInputConsumers=list(prepared_covered.values()),preparedInputConsumerBytesVerified=bool(prepared_covered),phaseTracking=phase_tracking,scope='actual producer-close/rename/consumer bytes only; reviewed observer execution/Git/source/runtime authority independent')
+                observedAliasOnlyCloses=len(alias_close_exits),observedActualModeTransitions=len(mode_transitions),observedNamedRetainedFdBindings=len(namespaces),observedActualWriteTransitions=len(write_transitions),observedEmptyReadEofWindows=len(empty_eofs),toolchainProcessAuthorityIntervals=process_intervals,toolchainProcessAuthorityIntervalVerified=bool(process_intervals) and all(row.get('model') is not None for row in process_intervals),toolchainProcessAuthorityPending=['toolchain-provider-namespace-external-writer-and-backing-snapshot-authority-unverified']+([] if process_intervals and all(row.get('model') is not None for row in process_intervals) else ['toolchain-owned-process-authority-interval-originals-unavailable']),toolchainFileSnapshots=list(tool_files.values()),toolchainOperationCoverage=tool_coverage.finish(sorted(tool_pending),sorted(tool_provider_pending)),toolchainActualExecImages=tool_execs,toolchainActualFileMappings=tool_mappings,verifiedFileMappedMmapKeys=sorted(list(key) for key in verified_file_mmap_keys),
+
+    verifiedGeneratedProducerTransport=verified_generated_producer_transport,
+    verifiedGeneratedProducerInputs=verified_generated_producer_inputs,verifiedGeneratedProducerWitness=verified_generated_producer_witness,
+    verifiedRegularReadCustody=sorted(read_custody.values(),key=lambda r:(r['leaseSequence'],r['identity'])),
+    verifiedRegularReadSourceClass=sorted(read_source_class.values(),key=lambda r:(r['leaseSequence'],r['identity'])),
+    verifiedGeneratedProducerGraph=causal_graph,
+    verifiedRegularInputUniverse=dict(
+        schemaVersion=1,model='verified-regular-input-universe-v1',
+        observationCount=len(observations_by_entry),
+        unexplainedCount=len(unbound_read_operations),
+        forms=sorted({row['form']['name'] for row in observations_by_entry.values()}),
+        # NON-FILE ACCOUNTING. `unverifiedNonFileReads` are positive reads whose
+        # chain was refused; they remain open obligations. Only
+        # `verifiedNonFileChains` were discharged, each by a named real relation.
+        nonFilePathClasses={name:sum(1 for row in disposition_entries.values() if row['pathClass']==name)
+                            for name in sorted({row['pathClass'] for row in disposition_entries.values()})},
+        verifiedNonFileChains={name:sum(1 for row in nonexec_credit.values() if row['chain']['model']==name)
+                               for name in sorted({row['chain']['model'] for row in nonexec_credit.values()})},
+        unverifiedNonFileReads=sum(1 for row in inputs_pending_rejected.values()
+                                   if row.get('state')=='unverified-nonexec'),
+        zeroLengthReads=sum(1 for row in inputs_pending_rejected.values() if row.get('state')=='zero'),
+        failedReads=sum(1 for row in inputs_pending_rejected.values() if row.get('state')=='failed'),
+        writableDescriptorReads=len(writable_dispositions),
+        scope='actual read-family entries discharged by a validated pre-use observation plus its matching real exit, or by a verified non-file chain'),toolchainObservationSha256=tool_digest.hexdigest(),toolchainStopProviderPending=sorted(tool_provider_pending),toolchainPending=sorted(tool_pending|tool_provider_pending|({'toolchain-executed-byte-immutability-and-full-source-authority-unverified'} if tool_execs else set())),toolchainExecutionLifetimeImmutabilityVerified=lifetime_verified,toolchainExecutionLifetimeScope='leased backing inode plus enforced file-exec-no-transition-v1; kernel special RX mappings remain controller TCB',toolchainSourceClosureVerified=False,preparedInputConsumers=list(prepared_covered.values()),preparedInputConsumerBytesVerified=bool(prepared_covered),phaseTracking=phase_tracking,scope='actual producer-close/rename/consumer bytes only; reviewed observer execution/Git/source/runtime authority independent')

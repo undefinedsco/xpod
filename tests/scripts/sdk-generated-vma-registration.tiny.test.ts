@@ -1,10 +1,10 @@
 import fs from'node:fs';import{createHash}from'node:crypto';import{test,expect}from'bun:test';
 import before from'../fixtures/independent-admission/pre-generated-vma-whole-groups.original.json';import{API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS as api}from'../../scripts/lib/independent-admission/github-origin';import{QLEVER_SDK_EXECUTION_GROUPS as sdk}from'../../scripts/lib/independent-admission/qlever-sdk-origin-policy';import{CONSUMER_SOURCE_GROUPS as consumer,CI_CONSUMER_SOURCE_GROUPS as ci}from'../../scripts/lib/independent-admission/consumer-observer-policy';import current from'../../scripts/lib/independent-admission/consumer-execution-current.json';import{sourceBindingKey as key,secondaryGitHubSourceBindingSelectors as secondary,selectGitHubSourceBindingGroup as select}from'../../scripts/lib/independent-admission/github-source-binding-groups';
-import{completeObserved,observedSecondaryBindings}from'./source-binding-group.fixture';
+import{CURRENT_CANONICAL_SOURCE_ROWS, completeObserved,observedSecondaryBindings}from'./source-binding-group.fixture';
 const hash=(v:unknown)=>createHash('sha256').update(JSON.stringify(v)).digest('hex'),groups={api,sdk,consumer,ci};
 test('SDK38 preserves actual 202 published whole recipes and binds only its composed actual import closure',()=>{
  for(const[name,values]of Object.entries(groups)){const old=before.hashes[name as keyof typeof before.hashes];for(let i=0;i<old.length;i++)expect(hash(values[i])).toBe(old[i]!);}
- expect([api.length,sdk.length,consumer.length,ci.length,current.length]).toEqual([29,87,99,196,504]);
+ expect([api.length,sdk.length,consumer.length,ci.length,current.length]).toEqual([29,87,99,196,CURRENT_CANONICAL_SOURCE_ROWS]);
  for(const row of [...current,...sdk.at(-1)!.selectors,...sdk.at(-1)!.sourceBindings])expect(createHash('sha256').update(fs.readFileSync(row.path)).digest('hex')).toBe(row.sha256);
  const name='qlever/scripts/sdk-generated-vma-originals.py';expect(sdk.at(-1)!.sourceBindings.some(row=>row.path===name)).toBe(true);expect(sdk.slice(0,37).some(group=>group.sourceBindings.some(row=>row.path===name))).toBe(false);expect(api.some(group=>group.sourceBindings.some(row=>row.path===name))).toBe(false);
 });

@@ -2269,43 +2269,58 @@ const SDK86_GROUP:GitHubSourceBindingGroup=Object.freeze({...SDK85_GROUP,
  secondarySelectors:rebindSdk86Rows(SDK85_GROUP.secondarySelectors),
  secondarySelectorStages:Object.freeze((SDK85_GROUP.secondarySelectorStages??[]).map(stage=>rebindSdk86Rows(stage))),
  sourceBindings:rebindSdk86Rows(SDK85_GROUP.sourceBindings)});
-/** SDK87 (UNPUBLISHED, append-only): absent link/unlink operands are bound to
- * the matching actual negative syscall exit. Success, stale/ABI-mismatched exits
- * and terminal disappearance without that exit fail closed; terminal wait state
- * is recorded before refusal. Declined captures drain remaining peers before any
- * writer resumes. Existing inode proofs, six-field continuity, both-OMIT, raw
- * operands, lease cadence, deadlines and caps remain unchanged. */
+/** SDK87 (UNPUBLISHED, append-only). Two reviewable changes rebind CURRENT rows:
+ *
+ * 1. Observer (qlever/scripts/sdk-ptrace-execution.py): absent link/unlink
+ *    operands are bound to the matching actual negative syscall exit. Success,
+ *    stale/ABI-mismatched exits and terminal disappearance without that exit fail
+ *    closed; terminal wait state is recorded before refusal. Declined captures
+ *    drain remaining peers before any writer resumes.
+ * 2. Scoped precompiled headers: qlever-s2-scoped-precompiled-headers.patch and
+ *    qlever-antlr-scoped-pch-and-server-pch-reuse.patch (which also covers the
+ *    abseil synchronization/strings units) move both patch rows, the series and
+ *    therefore qlever.lock.json.
+ *
+ * Existing inode proofs, six-field continuity, both-OMIT, raw operands, lease
+ * cadence, deadlines and caps remain unchanged; every published tuple keeps its
+ * own historical bytes. */
 const SDK87_SOURCE_HASHES:Readonly<Record<string,string>>=Object.freeze({
  // Override inherited CURRENT rows only; published SDK1–86 keep their values.
- 'qlever/scripts/build-qlever-runtime-sdk.sh':'8894124d91efb02186482aa1a54acc12126bde19eaaa461cdfd9d22f83dcf122',
- 'qlever/scripts/sdk-ptrace-execution.py':'2cdfd49d2972577ba2fa449007d9a3a8dbda1674217939a97c04ea8fe21ef263',
+ 'qlever/scripts/build-qlever-runtime-sdk.sh':"8894124d91efb02186482aa1a54acc12126bde19eaaa461cdfd9d22f83dcf122",
+ 'qlever/scripts/sdk-ptrace-execution.py':"e12068a7d0b01e69a101cc05d3c1118173c5682a4684834a86d1083117411f2b",
  // Filtered-lease lookup: the token-filtered check resolves its single row by the
  // (st_dev, st_ino) key instead of scanning every held row. Selection semantics,
  // the live F_GETLEASE+fstat sweep and every rejection string are unchanged, so
  // only the CURRENT (SDK87) binding moves; published tuples keep their bytes.
- 'qlever/scripts/sdk-tool-lifetime-leases.py':'85f5101f1d27644c851145818f791ca52d87dc6087b4f7df8f0d4bbf579d9b0c',
+ 'qlever/scripts/sdk-tool-lifetime-leases.py':"85f5101f1d27644c851145818f791ca52d87dc6087b4f7df8f0d4bbf579d9b0c",
  // Immutable registration-input plan: explicit per-instance capsule, no module
  // global. Current SDK87 binding only; published tuples keep their bytes.
- 'qlever/scripts/native/lease_sweep_ext.c':'e3ca18a6d7674b60a65c483d5663308619543d09baf80d344009925f32d5a74b',
+ 'qlever/scripts/native/lease_sweep_ext.c':"e3ca18a6d7674b60a65c483d5663308619543d09baf80d344009925f32d5a74b",
 
  // PR124 strict absent-link contract: the gate now settles only matched failed
  // exits and keeps unobserved operands fatal, and the fixed probe uses ONE build
  // root authority. Both bodies move in the CURRENT unpublished slice only.
- 'qlever/scripts/sdk-generation-multiprocess-bindings.py':'05445f76632d2c2092680345c0b9f5070b5653b7ab63fee052f3cd292ceac384',
- 'qlever/scripts/sdk-kernel-policy-probe.py':'e9016aed98d42f205bd3b11eedb55f956a6a855c775ccae0de2e19110b4d144c', // The readonly executor lane now DERIVES its build parallelism from its own
+ 'qlever/scripts/sdk-generation-multiprocess-bindings.py':"e11827aa845079fc2c2f8d014085bebaeb33c49fa44ad210b6707e7c4128e90f",
+ 'qlever/scripts/sdk-kernel-policy-probe.py':"e9016aed98d42f205bd3b11eedb55f956a6a855c775ccae0de2e19110b4d144c", // The readonly executor lane now DERIVES its build parallelism from its own
  // 4-CPU allocation instead of hardcoding 2, so its current bytes move too.
  // Current SDK87 binding only; published tuples keep their bytes.
- 'qlever/scripts/sdk-readonly-executor-bindings.py':'107e2dea586056c98455e89471c0d303b1c36cb11018ee5a6d67d97caefd0b1e',
+ 'qlever/scripts/sdk-readonly-executor-bindings.py':"107e2dea586056c98455e89471c0d303b1c36cb11018ee5a6d67d97caefd0b1e",
  // The readonly normal job's pin list had to follow the executor lane's new
  // bytes, so this CURRENT workflow file moves too. Published tuples keep theirs.
- '.github/workflows/qlever-readonly-normal-job.yml':'3a6d5ba02bdbe13bba951c78dc6ca24755dbc5da461f26ce1ebb0a0192fb6c0d',
- 'qlever/scripts/native/lease_sweep_binding.py':'7386166a878d2a1fbd5f3145759888baa072171ab541b45cd5fbc5bcea6784f8',
- 'tests/scripts/candidate-producer-attempt-binding.test.ts':'da3d74316849a5915c46660df4ebb76c9d8deecc5522d317f3c3fc471b7f343a',
- // Scoped S2 precompiled headers move the QLever lock (patch series digest)
- // and the patch series itself. Bound on the CURRENT append only; every
+ '.github/workflows/qlever-readonly-normal-job.yml':"3a6d5ba02bdbe13bba951c78dc6ca24755dbc5da461f26ce1ebb0a0192fb6c0d",
+ 'qlever/scripts/native/lease_sweep_binding.py':"7386166a878d2a1fbd5f3145759888baa072171ab541b45cd5fbc5bcea6784f8",
+ 'tests/scripts/candidate-producer-attempt-binding.test.ts':"1d73b68ac5bb7f19be8bdf2af6aedf952979e91e825f276720cdde65da96d4cf",
+ // The scoped precompiled-header work (S2, ANTLR and the two Abseil units) moves
+ // the QLever lock, whose patchSeriesSha256 is the digest of a series that
+ // contains BOTH appended patch paths (qlever-s2-scoped-precompiled-headers.patch
+ // and qlever-antlr-scoped-pch-and-server-pch-reuse.patch), so both patch rows and
+ // the series itself move together. Bound on the CURRENT append only; every
  // published tuple keeps its own historical bytes.
- 'qlever/qlever.lock.json':'2fc0e86824ea0bcf72cbd3782466d94784420e7c57e4d27470974d9f1c5abc89',
- 'qlever/patches/series':'17d10ccafb23dcdd6564cd7691d74b7b3dbd811ce4615b0eb295a63965f48650',
+ 'qlever/qlever.lock.json':"63bdee301b97a2c450f7499e3e1a665f0652a6eca4dbb0656f3b093bf34051d0",
+ 'qlever/patches/series':"17d10ccafb23dcdd6564cd7691d74b7b3dbd811ce4615b0eb295a63965f48650",
+ 'qlever/scripts/sdk-generated-source-originals.py':"5e9ec62fe5dd341ce402e215c2ec02dfe75de365766493c80bc2eb21c3c01564",
+
+"qlever/scripts/sdk-generated-producer-transport.py":"95738800c54230715a065e3dcaaab1ba5f60f70d4ca2ca264144ee580a360a37"
 });
 const rebindSdk87Rows=(rows:readonly GitHubSourceBinding[]|undefined)=>Object.freeze((rows??[]).map(row=>Object.freeze({...row,sha256:SDK87_SOURCE_HASHES[row.path]??row.sha256})));
 const SDK87_GROUP:GitHubSourceBindingGroup=Object.freeze({...SDK86_GROUP,
@@ -2316,9 +2331,11 @@ const SDK87_GROUP:GitHubSourceBindingGroup=Object.freeze({...SDK86_GROUP,
  // The new upstream CMake patch is a NEW role no published tuple owns, so it is
  // appended to the CURRENT tail only (never to a shared historical array).
  Object.freeze({path:'qlever/patches/qlever-s2-scoped-precompiled-headers.patch',
-  sha256:'d3c81bb1f6ee9ff05ad2f0ffe811e9ac50b47e396c8b1c9fcfe6ffddfeeece2a'}),
+  sha256:'21154d3729a3418294ce994fb172606581c1edd9fb8fa461bf752c7149ea7682'}),
  Object.freeze({path:'qlever/patches/qlever-antlr-scoped-pch-and-server-pch-reuse.patch',
-  sha256:'bf079fb3472e82177a0b8d3b40581b121c98670ff13c7569ef9db37b9fe4be7a'})])});
+  sha256:'8e2a1234701985ae42ae3cc6d28e55b33c62a8cf36ad690de3a418e4c52a72d8'}),
+Object.freeze({path:"qlever/scripts/sdk-generated-producer-transport.py",sha256:SDK87_SOURCE_HASHES["qlever/scripts/sdk-generated-producer-transport.py"]})
+])});
 export const QLEVER_SDK_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...PUBLISHED_SDK_GROUPS,NEXT_SDK_GROUP,INPUT_PLAN_SDK_GROUP,ORM326_SDK_GROUP,SDK19_TELEMETRY_GROUP,CAPTURE_INDEX_SDK_GROUP,SDK78_GROUP,SDK79_GROUP,SDK80_GROUP,SDK81_GROUP,SDK82_GROUP,SDK83_GROUP,SDK84_GROUP,SDK85_GROUP,SDK86_GROUP,SDK87_GROUP]);
 export const QLEVER_LINUX_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([
  {selectors:sdkSelectors('cbedd3e2478de5e22108b6689c595a658ca891c9bd47552caec830e86f47fea8','a75c7be34b5c5fafff85c0d67d814ba1aaf14bcf5db5404a860fe3b9a11009bd'),sourceBindings:QLEVER_LINUX_SOURCE_BINDINGS.filter(row=>!['.github/workflows/publish-qlever-runtime-sdk.yml','.github/workflows/build-qlever-linux-runtime.yml'].includes(row.path))},

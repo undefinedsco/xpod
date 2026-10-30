@@ -10,6 +10,7 @@ import {API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS as api} from '../../scripts/lib/
 import {CLI_SOURCE_VERSION_GROUPS as cli} from '../../scripts/lib/independent-admission/source-rules';
 import {selectGitHubSourceBindingGroup as select,sourceBindingKey,secondaryGitHubSourceBindingSelectors as secondary} from '../../scripts/lib/independent-admission/github-source-binding-groups';
 import current from '../../scripts/lib/independent-admission/consumer-execution-current.json';
+import {CURRENT_CANONICAL_SOURCE_ROWS} from './source-binding-group.fixture';
 
 /** This module's ONLY authority is the actual git data at the published 9d02
  * commit plus the files on disk now. The fixture was captured from those blobs. */
@@ -135,7 +136,7 @@ test('the canonical path/hash closure still holds and the frozen 9d02 snapshot i
  // 483 published rows + the refused-caller test + the frozen 9d02 snapshot, then
  // the immutable-input-plan test + the frozen 2406 snapshot (the moving canonical
  // never lists itself).
- expect(current).toHaveLength(504);
+ expect(current).toHaveLength(CURRENT_CANONICAL_SOURCE_ROWS);
  expect(new Set(current.map(row=>row.path)).size).toBe(current.length);
  for(const row of current)expect(createHash('sha256').update(disk(row.path)).digest('hex')).toBe(row.sha256);
  const snapshot=blob('scripts/lib/independent-admission/consumer-execution-current.json');
@@ -152,6 +153,7 @@ test('the canonical path/hash closure still holds and the frozen 9d02 snapshot i
  // 19fe canonical snapshot; all three are genuine registered source rows.
  expect(current.slice(487).map(row=>row.path).sort()).toEqual([
   'patches/@undefineds.co%2Fdrizzle-solid@0.3.26.patch',
+  'qlever/scripts/sdk-generated-producer-transport.py',
   'qlever/tests/run_sdk70_mremap_gate.py',
   'qlever/tests/test_qlever_archive_lifecycle.py',
   'qlever/tests/test_qlever_read_lease_diagnostic.py',
@@ -201,6 +203,7 @@ test('published consumer binding rows are unchanged and the two new rows are exa
  // snapshot. All three are genuine registered source rows.
  expect(current.slice(487).map(row=>row.path).sort()).toEqual([
   'patches/@undefineds.co%2Fdrizzle-solid@0.3.26.patch',
+  'qlever/scripts/sdk-generated-producer-transport.py',
   'qlever/tests/run_sdk70_mremap_gate.py',
   'qlever/tests/test_qlever_archive_lifecycle.py',
   'qlever/tests/test_qlever_read_lease_diagnostic.py',

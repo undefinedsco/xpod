@@ -8,7 +8,7 @@
  *  2. An observation carrying the SDK84-era helper bytes resolves to SDK84, never
  *     to SDK85; the actual helper bytes plus the full declared surface resolve to
  *     SDK85; a stale helper value is refused.
- *  3. Historical prefixes and the 504-row canonical still bind actual bytes.
+ *  3. Historical prefixes and the current canonical physical originals still bind actual bytes.
  */
 import {createHash} from 'node:crypto';
 import {readFileSync} from 'node:fs';
@@ -16,7 +16,7 @@ import path from 'node:path';
 import {it,expect} from 'vitest';
 import {QLEVER_SDK_EXECUTION_GROUPS as SDK,QLEVER_LINUX_EXECUTION_GROUPS as LINUX} from '../../scripts/lib/independent-admission/qlever-sdk-origin-policy';
 import {selectGitHubSourceBindingGroup,secondaryGitHubSourceBindingSelectors,sourceBindingKey} from '../../scripts/lib/independent-admission/github-source-binding-groups';
-import {completeObserved} from './source-binding-group.fixture';
+import {CURRENT_CANONICAL_SOURCE_ROWS, completeObserved} from './source-binding-group.fixture';
 
 const ROOT=path.resolve(import.meta.dirname,'../..');
 const whole=(g:unknown)=>createHash('sha256').update(JSON.stringify(g)).digest('hex');
@@ -88,10 +88,10 @@ it('generic selector reaches SDK85 only with the real helper bytes',()=>{
   expect((next.secondarySelectors??[]).filter(r=>r.path===HELPER).every(r=>r.sha256!==OLD_HELPER)).toBe(true);
 });
 
-it('historical prefixes and the 504-row canonical still bind actual bytes',()=>{
+it('historical prefixes and the current canonical physical originals still bind actual bytes',()=>{
   const rows=JSON.parse(readFileSync(path.join(ROOT,'scripts/lib/independent-admission/consumer-execution-current.json'),'utf8')) as {path:string;sha256:string}[];
-  expect(rows).toHaveLength(504);
-  expect(new Set(rows.map(r=>r.path)).size).toBe(504);
+  expect(rows).toHaveLength(CURRENT_CANONICAL_SOURCE_ROWS);
+  expect(new Set(rows.map(r=>r.path)).size).toBe(CURRENT_CANONICAL_SOURCE_ROWS);
   for(const row of rows) expect(sha(row.path),row.path).toBe(row.sha256);
   expect(rows.find(r=>r.path===HELPER)!.sha256).toBe(sha(HELPER));
   // the regression leaf is a policy-owned mandatory role, not a canonical row

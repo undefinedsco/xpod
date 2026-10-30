@@ -19,7 +19,10 @@ type SelectedReadBudget=Readonly<{check():void;remainingMs():number;remainingRea
 type SelectedReader=Readonly<{postpatchMembers:readonly PostpatchMember[];readSelectedOriginals(paths:readonly string[],budget:SelectedReadBudget):Promise<Readonly<{paths:readonly string[];readTracked(path:string):Buffer;assertCurrent():void}>>;assertCurrent():void}>;
 type StoredObservation=Readonly<{sourceCapability:unknown;cmakeDeclaration:Readonly<{bytes:number;sha256:string}>;assertCurrent():void;postpatchMembers:readonly PostpatchMember[];readSelectedOriginals:(paths:readonly string[],budget:SelectedReadBudget,admission:unknown)=>ReturnType<SelectedReader['readSelectedOriginals']>}>;
 const upstreamObservations=new WeakMap<object,StoredObservation>();
-const publicObservations=new WeakMap<object,Readonly<{cmakeDeclaration:Readonly<{bytes:number;sha256:string}>;assertCurrent():void}>>();
+const publicObservations=new WeakMap<object,Readonly<{cmakeDeclaration:Readonly<{bytes:number;sha256:string}>;
+  /** The already-verified canonical source root. Postpatch member paths are
+   * RELATIVE to it, so a canonical join must prepend it explicitly. */
+  sourceRoot:string;postpatchMembers:readonly PostpatchMember[];assertCurrent():void}>>();
 /** Existing public shape only; selected reader is deliberately absent here. */
 export function qleverSdkUpstreamGitObservation(capability:unknown){if(!capability||typeof capability!=='object')return undefined;const observation=upstreamObservations.get(capability);observation?.assertCurrent();return observation?publicObservations.get(capability):undefined;}
 /** Only the same already-verified upstream observation; this never inserts a view. */
@@ -219,7 +222,7 @@ export async function observeQleverSdkUpstreamGitOriginals(capability: unknown, 
         return Object.freeze({paths:Object.freeze([...requested]),readTracked:(path:string)=>{current();const value=raw.get(path);if(!value)throw Error('SDK upstream selected source: path was not requested');parent.check();need(value.length<=parent.remainingReadBytes(),'selected copy exceeds parent read budget');parent.reserveBytes(value.length);parent.chargeReadBytes(value.length);return Buffer.from(value);},assertCurrent:current});
       };
       const cmakeDeclaration=Object.freeze({bytes:cmake.bytes,sha256:cmake.sha256});
-      publicObservations.set(capability as object,Object.freeze({cmakeDeclaration,assertCurrent}));
+      publicObservations.set(capability as object,Object.freeze({cmakeDeclaration,sourceRoot:upstream.sourceRoot,postpatchMembers,assertCurrent}));
       upstreamObservations.set(capability as object,Object.freeze({sourceCapability,cmakeDeclaration,postpatchMembers,readSelectedOriginals,assertCurrent}));
     }
   } catch (error) { pending.add((error as Error).message); }

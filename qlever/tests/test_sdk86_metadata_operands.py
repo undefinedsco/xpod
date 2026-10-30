@@ -10,6 +10,7 @@ the production ones.
 Absolute operands with ``timesAddress = 0`` keep this portable: no ptrace, no
 kernel deadline, no libc call.
 """
+import copy
 import importlib.util
 import errno
 import os
@@ -78,6 +79,7 @@ class Observer:
     settle_absent_link_operand = backend.Observer.settle_absent_link_operand
     pending_captures_original = backend.Observer.pending_captures_original
     resume_original = backend.Observer.resume_original
+    close_terminal_authorities = backend.Observer.close_terminal_authorities
     args_original = backend.Observer.args_original
 
     def read_cstring(self, pid, address):
@@ -498,3 +500,183 @@ class LinkOperands(Base):
         row = observer.capture_link_metadata(1)
         self.assertEqual(row['kind'], 'actual-link-window')
         self.assertEqual(row['beforeIdentity'], identity(target))
+
+
+class ExitedHistoryIteration(Base):
+    """Resume/pending selection must ignore ALREADY-EXITED rows in the ITERABLE
+    while keeping every one of those rows in self.tasks verbatim.
+
+    These tests add no product behaviour; they only pin the iteration contract.
+
+    The production change filters the resume snapshot by `not exited` and tests
+    `not exited` before the optional pending field in the three pending scans.
+    These tests drive the REAL methods and compare OBSERVED behaviour (which pids
+    resume, in what order, which captures are taken, what stays in the table)
+    against the intended contract. They do not mirror source strings.
+    """
+
+    def _resumable(self, **fields):
+        row = dict(stopped=True, exited=False, tgid=1, fdTable=1,
+                   entry=dict(sequence=10, nr=1, arch=0xc000003e, args=[0] * 6))
+        row.update(fields)
+        return row
+
+    def _resume_and_capture_order(self, observer):
+        resumed = []
+        real_trace = backend.single.trace
+        backend.single.trace = lambda request, pid, *args: resumed.append((request, pid))
+        try:
+            observer.resume_original()
+        finally:
+            backend.single.trace = real_trace
+        return resumed
+
+    def test_exited_rows_are_never_resumed_but_remain_verbatim(self):
+        observer = self.observer({})
+        observer.tasks = {
+            1: self._resumable(tgid=1, fdTable=1),
+            2: self._resumable(tgid=2, fdTable=2, stopped=False, exited=True,
+                               terminalAuthority=dict(closed=True)),
+            3: self._resumable(tgid=3, fdTable=3),
+        }
+        # Keep a deep snapshot so nested history mutations are detected too.
+        before = copy.deepcopy(observer.tasks[2])
+        resumed = self._resume_and_capture_order(observer)
+        self.assertEqual([pid for _r, pid in resumed], [1, 3],
+                         'only live stopped rows may be resumed, in table order')
+        self.assertNotIn(2, [pid for _r, pid in resumed])
+        self.assertEqual(observer.tasks[2], before,
+                         'the exited history row must be retained verbatim')
+        self.assertEqual(sorted(observer.tasks), [1, 2, 3],
+                         'exited rows are never pruned from self.tasks')
+
+    def test_mixed_live_exited_stopped_held_exclusive_vfork_selection(self):
+        observer = self.observer({})
+        observer.exclusive = (4, 40)
+        observer.tasks = {
+            1: self._resumable(tgid=1, fdTable=1),                    # live -> resume
+            2: self._resumable(tgid=2, fdTable=2, exited=True),       # exited -> skip
+            3: self._resumable(tgid=3, fdTable=3, stopped=False),     # not stopped
+            4: self._resumable(tgid=4, fdTable=4),                    # exclusive owner
+            5: self._resumable(tgid=5, fdTable=5, vforkHeldChild=9),  # vfork held
+            6: self._resumable(tgid=6, fdTable=6,
+                               identityNoopPending=1),                # pending identity
+            7: self._resumable(tgid=7, fdTable=7,
+                               authorityPending=[('initial-child', None)]),
+            8: self._resumable(tgid=8, fdTable=8, exited=True,
+                               authorityPending=[('exit-stop', None)]),
+        }
+        resumed = self._resume_and_capture_order(observer)
+        # While `self.exclusive` is held the production gate releases ONLY the
+        # owner; every other live row is deliberately held back. That is the
+        # pre-existing exclusive contract and this change must not alter it.
+        self.assertEqual([pid for _r, pid in resumed], [4],
+                         'while exclusive is held only its owner may resume')
+        self.assertEqual(len(observer.tasks), 8, 'no row is ever removed')
+        self.assertTrue(observer.tasks[8]['exited'],
+                        'an exited row with pending authority stays exited and unmodified')
+
+    def test_nonexclusive_resume_selection_skips_exited_and_held_classes(self):
+        """Without an exclusive slot, the only rows that resume are live+stopped
+        ones that pass every existing guard. Exited history rows never resume,
+        and they are still all present afterwards."""
+        observer = self.observer({})
+        observer.exclusive = None
+        observer.tasks = {
+            1: self._resumable(tgid=1, fdTable=1),                    # resume
+            2: self._resumable(tgid=2, fdTable=2, exited=True),       # exited
+            3: self._resumable(tgid=3, fdTable=3, stopped=False),     # not stopped
+            4: self._resumable(tgid=4, fdTable=4),                    # resume
+            5: self._resumable(tgid=5, fdTable=5, vforkHeldChild=9),  # vfork held
+            6: self._resumable(tgid=6, fdTable=6, clone3Pending=True),
+            7: self._resumable(tgid=7, fdTable=7, exited=True,
+                               vforkHeldChild=9),                     # exited+vfork
+        }
+        before = {pid: dict(row) for pid, row in observer.tasks.items()}
+        resumed = self._resume_and_capture_order(observer)
+        self.assertEqual([pid for _r, pid in resumed], [1, 4],
+                         'only live, stopped, unheld rows resume; table order kept')
+        self.assertEqual(sorted(observer.tasks), [1, 2, 3, 4, 5, 6, 7],
+                         'no row is pruned')
+        for pid in (2, 7):
+            self.assertEqual(observer.tasks[pid], before[pid],
+                             'exited history rows are retained verbatim')
+
+    def test_open_terminal_authority_on_exited_task_is_closed_by_terminal_path(self):
+        observer = self.observer({})
+        observer.terminal_exit_evidence = True
+        terminal = dict(closed=False, event=dict(sequence=5),
+                        original=dict(sequence=4),
+                        lease=type('L', (), {'closed': False,
+                                             'close': lambda self: setattr(self, 'closed', True)})())
+        observer.tasks = {
+            1: self._resumable(tgid=1, fdTable=1),
+            2: self._resumable(tgid=2, fdTable=2, stopped=False, exited=True,
+                               terminalAuthority=terminal),
+        }
+        # resume must not touch an exited row ...
+        self._resume_and_capture_order(observer)
+        self.assertFalse(terminal['closed'],
+                         'resume must not close terminal authority for an exited row')
+        # ... the unchanged terminal closure path still closes it.
+        observer.close_terminal_authorities(dict(sequence=11, pids=[1, 2]))
+        self.assertTrue(terminal['closed'],
+                        'the existing terminal closure path still closes it')
+        self.assertTrue(terminal['lease'].closed,
+                        'the exited task lease is closed by that same path')
+
+    def _dispatch_observer(self):
+        """Own copy of the dispatcher host, so this class does not depend on
+        another test class's helper."""
+        observer = self.observer({})
+        setattr(observer, 'barrier', lambda: dict(sequence=11, pids=[1, 2]))
+        setattr(observer, 'instrument_substep', lambda name, fn, *a, **k: fn(*a, **k))
+        setattr(observer, 'capture_queued_identity', lambda *a, **k: None)
+        setattr(observer, 'checkpoint_append_boundaries', lambda *a, **k: None)
+        setattr(observer, 'checkpoint_appends', lambda *a, **k: None)
+        setattr(observer, 'capture_bti_pending', lambda *a, **k: None)
+        setattr(observer, 'capture_clone3_pending', lambda *a, **k: None)
+        setattr(observer, 'capture_deferred_mremap', lambda *a, **k: False)
+        observer.__class__ = DispatcherObserver
+        DispatcherObserver.processed = []
+        return observer
+
+    def test_pending_selection_survives_callbacks_that_add_and_reap_tasks(self):
+        observer = self._dispatch_observer()
+        observer.capture_toolchain = True
+        observer.process_authority = True
+        observer.tasks = {
+            1: self._resumable(tgid=1, fdTable=1, exited=True,
+                               toolPending=[('exec', None, None)],
+                               authorityPending=[('exit-stop', None)]),
+            2: self._resumable(tgid=2, fdTable=2,
+                               toolPending=[('exec-before', dict(nr=59), None)]),
+        }
+        # The barrier callback adds a live task and reaps the exited one, exactly
+        # as a real stop/exit would between scans.
+        def barrier():
+            # Add the third task exactly ONCE: a barrier that appends a fresh
+            # pending row on every call would legitimately never terminate.
+            if 3 not in observer.tasks:
+                observer.tasks[3] = self._resumable(
+                    tgid=3, fdTable=3,
+                    toolPending=[('exec-before', dict(nr=59), None)])
+            return dict(sequence=11, pids=[1, 2, 3])
+        setattr(observer, 'barrier', barrier)
+        processed = []
+        setattr(observer, 'observe_tool_stop', lambda pid, pending: processed.append(pid))
+        observer.pending_captures_original()
+        # pid 2 is drained first; the barrier then admits live pid 3, which is a
+        # genuine pending tool stop and MUST still be selected. The exited pid 1
+        # is never selected even though it carries toolPending.
+        self.assertEqual(processed, [2, 3],
+                         'live pending rows keep being selected after the barrier')
+        self.assertNotIn(1, processed,
+                         'an exited row is never selected as a pending tool stop')
+        self.assertTrue(observer.tasks[1]['exited'],
+                        'the exited row survives with its pending history intact')
+        self.assertEqual(observer.tasks[1]['toolPending'],
+                         [('exec', None, None)],
+                         'pending data on an exited row is left untouched')
+        self.assertIn(3, observer.tasks,
+                      'a task added by a callback is visible to later scans')

@@ -1482,6 +1482,12 @@ export async function observeProductConsumerGitHubOrigin(input:ArtifactAcquisiti
       // gate source, same declared compiler, same 18 canonical E2E cases.
       {workflowSha256:'3ff5f524e82c30d732a1cefadbf87b6372da61e3e9f5b025507d305642e6990c',
       jobName:()=>callerNames[0]!,
+      sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS},
+      // The scoped-PCH/compiler gates and complete Python regression discovery
+      // retain the same exact registered publication jobs and source contracts.
+      // Preserve every earlier reviewed caller version above.
+      {workflowSha256:'5a6d6a0c3b693db00faf3c30d52c3af59e90674d6db14a70574311f7203d106d',
+      jobName:()=>callerNames[0]!,
       sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS}],requiredBranch:'staging',
     jobName:()=>callerNames[0]!,jobNames:()=>callerNames,
     sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS,

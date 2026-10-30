@@ -1,27 +1,145 @@
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
-@@ -724,6 +724,20 @@
-             "${s2_SOURCE_DIR}/src/s2/s2point.h"
+@@ -724,5 +724,138 @@
              <algorithm> <cmath> <vector> <utility> <memory> <cfloat>)
-         message(STATUS "Xpod S2 scoped PCH: s2point.h + 6 std headers; 13 reviewed TUs stay PCH-free (all 98 compiled)")
+         message(STATUS "Xpod S2 scoped PCH: 6 std headers only (s2point.h excluded to preserve pragma position); 13 reviewed TUs stay PCH-free (all 98 compiled)")
 +    endif ()
-+    # Scoped precompiled header for the pinned ANTLR4 C++ runtime target, mirroring
-+    # the compiler scope of the S2 block above (canonical Clang profile only).
++    # Scoped precompiled header for the pinned ANTLR4 C++ runtime target, using the
++    # same shared compiler predicate as the S2 and abseil blocks.
 +    #
-+    # runtime/Cpp/runtime/src/antlr4-common.h is ANTLR's own umbrella prelude and is
-+    # already in the include closure of every antlr4_static TU, so precompiling it
-+    # injects nothing into a TU that did not already reach it. The path is derived
-+    # from the dependency root the build already uses; no pin, count or path is
-+    # duplicated here - the locked dependency authority owns those facts.
-+    if (TARGET antlr4_static AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang"
-+        AND CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 19
-+        AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 20)
++    # Unit: ANTLR's own umbrella prelude runtime/Cpp/runtime/src/antlr4-common.h,
++    # taken from the dependency root the build already uses, so no pin, count or
++    # path is duplicated here. Correctness rests on the recorded CMake-produced
++    # object comparison, not on an include-reachability argument.
++    if (TARGET antlr4_static AND XPOD_SCOPED_PCH_COMPILER)
 +        target_precompile_headers(antlr4_static PRIVATE
 +            "${antlr_SOURCE_DIR}/runtime/Cpp/runtime/src/antlr4-common.h")
      endif ()
++    # Scoped precompiled headers for two abseil targets that already compile in
++    # every SDK profile. Same mechanism as the S2/ANTLR blocks; no new build
++    # parameter, target or patch path.
++    #
++    # Target naming: AbseilHelpers.cmake names the real target from
++    # ABSL_ENABLE_INSTALL (`synchronization` when ON, `absl_synchronization`
++    # otherwise). The ALIAS `absl::<name>` exists in both cases, so the real target
++    # is resolved through the alias and any drift is a hard configure error rather
++    # than a silently dead block.
++    #
++    # Unit: public top-level absl/ headers only. Private `absl/**/internal/`
++    # headers are excluded because precompiling them previously produced
++    # redefinition / unknown-type failures. Correctness is NOT argued from header
++    # reachability; it rests on the recorded CMake-produced object comparison.
++    if (XPOD_SCOPED_PCH_COMPILER)
++        # Resolve each alias to its real configured target; fail loudly on drift.
++        foreach (pair IN ITEMS "absl::synchronization;synchronization"
++                                "absl::strings;strings")
++            list(GET pair 0 alias_name)
++            list(GET pair 1 short_name)
++            if (NOT TARGET "${alias_name}")
++                message(FATAL_ERROR
++                    "abseil scoped PCH: expected public alias ${alias_name} is absent")
++            endif ()
++            get_target_property(real_target "${alias_name}" ALIASED_TARGET)
++            if (NOT real_target)
++                message(FATAL_ERROR
++                    "abseil scoped PCH: ${alias_name} is not an ALIAS; cannot resolve the real target")
++            endif ()
++            if (NOT real_target STREQUAL "${short_name}"
++                AND NOT real_target STREQUAL "absl_${short_name}")
++                message(FATAL_ERROR
++                    "abseil scoped PCH: ${alias_name} resolves to unexpected target '${real_target}'")
++            endif ()
++            if (NOT TARGET "${real_target}")
++                message(FATAL_ERROR
++                    "abseil scoped PCH: resolved target '${real_target}' does not exist")
++            endif ()
++            set(XPOD_ABSL_${short_name}_REAL "${real_target}")
++            message(STATUS "Xpod abseil scoped PCH: ${alias_name} -> ${real_target}")
++        endforeach ()
++        if (NOT DEFINED abseil_SOURCE_DIR)
++            message(FATAL_ERROR "abseil scoped PCH: prepared abseil source dir is undefined")
++        endif ()
++        # One helper for both units: normalize the target's real SOURCES against
++        # the prepared source dir, keep declaration order, and assert the reviewed
++        # count. Callers only pass target, expected count and the optional skip.
++        function(xpod_absl_pch_unit target expected skip)
++            # Sources of an abseil target are RELATIVE to that target's own source
++            # directory (e.g. internal/win32_waiter.cc), so resolve against it
++            # rather than against the abseil root.
++            get_target_property(src_dir "${target}" SOURCE_DIR)
++            if (NOT src_dir)
++                message(FATAL_ERROR "abseil scoped PCH: ${target} has no SOURCE_DIR")
++            endif ()
++            get_target_property(sources "${target}" SOURCES)
++            set(cc)
++            foreach (src IN LISTS sources)
++                if (src MATCHES "\\.cc$")
++                    if (NOT IS_ABSOLUTE "${src}")
++                        set(src "${src_dir}/${src}")
++                    endif ()
++                    list(APPEND cc "${src}")
++                endif ()
++            endforeach ()
++            list(LENGTH cc count)
++            if (NOT count EQUAL ${expected})
++                message(FATAL_ERROR
++                    "abseil scoped PCH: ${target} has ${count} sources, expected ${expected}")
++            endif ()
++            if (skip)
++                if (NOT IS_ABSOLUTE "${skip}")
++                    set(skip "${src_dir}/${skip}")
++                endif ()
++                if (NOT EXISTS "${skip}")
++                    message(FATAL_ERROR "abseil scoped PCH: prepared source lacks ${skip}")
++                endif ()
++                if (NOT skip IN_LIST cc)
++                    message(FATAL_ERROR
++                        "abseil scoped PCH: exclusion not in ${target} SOURCES: ${skip}")
++                endif ()
++                set_source_files_properties("${skip}" DIRECTORY "${src_dir}"
++                    PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
++            endif ()
++        endfunction()
++        # The skip is expressed relative to the target's own source directory so it
++        # compares against the same normalized SOURCES list the helper builds.
++        # Headers reachable in EVERY covered TU's closure. Equality of generated
++        # code is established empirically by the retained ON/OFF object manifests,
++        # not assumed from reachability. No internal header is NAMED directly; some
++        # are still reached transitively (e.g. nullability.h includes
++        # absl/base/internal/nullability_impl.h).
++        #
++        # The shared entries are split into a leading and a trailing segment so both
++        # targets can reuse them WITHOUT reordering: sync interposes log_severity
++        # between them and appends the time headers, strings uses them back to back.
++        set(XPOD_ABSL_PCH_HEADERS_LEADING
++            "${abseil_SOURCE_DIR}/absl/base/config.h"
++            "${abseil_SOURCE_DIR}/absl/base/options.h"
++            "${abseil_SOURCE_DIR}/absl/base/policy_checks.h"
++            "${abseil_SOURCE_DIR}/absl/base/port.h"
++            "${abseil_SOURCE_DIR}/absl/base/attributes.h"
++            "${abseil_SOURCE_DIR}/absl/base/optimization.h"
++            "${abseil_SOURCE_DIR}/absl/base/macros.h")
++        set(XPOD_ABSL_PCH_HEADERS_TRAILING
++            "${abseil_SOURCE_DIR}/absl/base/nullability.h"
++            "${abseil_SOURCE_DIR}/absl/meta/type_traits.h"
++            "${abseil_SOURCE_DIR}/absl/strings/string_view.h")
++        xpod_absl_pch_unit("${XPOD_ABSL_synchronization_REAL}" 12 "internal/win32_waiter.cc")
++        target_precompile_headers("${XPOD_ABSL_synchronization_REAL}" PRIVATE
++            ${XPOD_ABSL_PCH_HEADERS_LEADING}
++            "${abseil_SOURCE_DIR}/absl/base/log_severity.h"
++            ${XPOD_ABSL_PCH_HEADERS_TRAILING}
++            "${abseil_SOURCE_DIR}/absl/time/civil_time.h"
++            "${abseil_SOURCE_DIR}/absl/time/clock.h"
++            "${abseil_SOURCE_DIR}/absl/time/time.h")
++        xpod_absl_pch_unit("${XPOD_ABSL_strings_REAL}" 14 "")
++        target_precompile_headers("${XPOD_ABSL_strings_REAL}" PRIVATE
++            ${XPOD_ABSL_PCH_HEADERS_LEADING}
++            ${XPOD_ABSL_PCH_HEADERS_TRAILING})
++        message(STATUS "Xpod abseil scoped PCH: synchronization 12 TUs (1 PCH-free) + strings 14 TUs")
++    endif ()
  endif ()
  
-@@ -753,9 +767,11 @@
+@@ -753,9 +886,11 @@
  
      add_executable(qlever-server src/ServerMain.cpp)
      qlever_target_link_libraries(qlever-server engine server ${CMAKE_THREAD_LIBS_INIT} Boost::program_options compilationInfo global)
