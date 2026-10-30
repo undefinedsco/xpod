@@ -106,6 +106,42 @@ for delta in [{'run_attempt':1},{'path':'.github/workflows/other.yml'},{'head_sh
 `);
 });
 
+test('PR head and merge checkout coexist as DISTINCT identities, and the guard names the failed field', () => {
+ python(`BASE='4b0abea6c2195629e9f1f02ec89485896337bbc6'
+HEAD_SHA='9ff10ec78e354cb288775197222824691f467cba'
+MERGE_SHA='4d0d75d3e4790fa305a71973e3b83bada91395df'
+# A pull_request run is bound to the PR HEAD, while the checked-out tree is the
+# synthetic MERGE commit. Both are real and MUST stay distinct.
+identity={'runId':42,'runAttempt':1,'runHeadSha':HEAD_SHA,'actualCheckoutSha':MERGE_SHA,'event':'pull_request','workflowPath':m.WORKFLOW,'target':'darwin-arm64'}
+assert identity['runHeadSha']!=identity['actualCheckoutSha']
+run={'id':42,'run_attempt':1,'head_sha':HEAD_SHA,'path':m.WORKFLOW,'event':'pull_request','repository':{'full_name':m.REPOSITORY},'head_repository':{'full_name':m.REPOSITORY},'status':'in_progress'}
+# The run is identified by the PR HEAD -> accepted.
+assert m.run_identity_mismatches(identity,run)==[]
+m.validate_run(identity,run)
+# The MERGE commit must NOT satisfy the run-head predicate: no accepting both.
+assert m.run_identity_mismatches(identity,dict(run,head_sha=MERGE_SHA))==['head_sha']
+try:m.validate_run(identity,dict(run,head_sha=MERGE_SHA))
+except ValueError as error:
+ assert 'head_sha' in str(error),str(error)
+ assert MERGE_SHA not in str(error) and HEAD_SHA not in str(error),'diagnostic leaked SHA values'
+else:raise AssertionError('merge sha accepted as run head')
+# Field names are reported for every failing predicate, and never values.
+for delta,expected in [({'run_attempt':2},['run_attempt']),({'path':'.github/workflows/other.yml'},['path']),({'event':'push'},['event']),({'status':'queued'},['status']),({'head_repository':{'full_name':'fork/xpod'}},['head_repository']),({'id':43},['id'])]:
+ assert m.run_identity_mismatches(identity,dict(run,**delta))==expected,(delta,m.run_identity_mismatches(identity,dict(run,**delta)))
+# Multiple simultaneous mismatches are all named, in fixed table order.
+assert m.run_identity_mismatches(identity,dict(run,head_sha=MERGE_SHA,status='queued'))==['head_sha','status']
+# The native artifact name binds the MERGE checkout while the run stays on HEAD.
+env={'CSS_NATIVE_ARTIFACT_ID':'7','CSS_NATIVE_ARTIFACT_DIGEST':'c'*64,'CSS_NATIVE_RUN_ID':'42','CSS_NATIVE_RUN_ATTEMPT':'1','CSS_NATIVE_SOURCE_SHA':MERGE_SHA}
+artifact={'id':7,'expired':False,'name':'qlever-local-runtime-darwin-arm64-'+MERGE_SHA,'workflow_run':{'id':42,'head_sha':HEAD_SHA},'digest':'sha256:'+'c'*64,'size_in_bytes':10,'created_at':'2026-10-15T01:01:00Z','updated_at':'2026-10-15T01:01:01Z'}
+job={'id':8,'name':'native / build','run_id':42,'run_attempt':1,'head_sha':HEAD_SHA,'status':'completed','conclusion':'success','started_at':'2026-10-15T01:00:00Z','completed_at':'2026-10-15T01:02:00Z'}
+assert m.validate_native_metadata(identity,env,artifact,{'total_count':1,'jobs':[job]})==('c'*64,8)
+# An artifact named for the HEAD (wrong checkout) is refused.
+try:m.validate_native_metadata(identity,dict(env,CSS_NATIVE_SOURCE_SHA=HEAD_SHA),dict(artifact,name='qlever-local-runtime-darwin-arm64-'+HEAD_SHA),{'total_count':1,'jobs':[job]})
+except ValueError:pass
+else:raise AssertionError('head-named artifact accepted for merge checkout')
+`);
+});
+
 test('CSS metadata revalidates API state before strict run and native custody checks', () => {
  python(`from unittest.mock import patch
 requests=[]

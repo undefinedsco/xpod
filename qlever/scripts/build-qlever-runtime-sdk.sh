@@ -179,7 +179,12 @@ else
 fi
 
 overlay_manifest_file="$build_dir/.xpod-overlay-manifest"
-overlay_manifest_current=$(mktemp)
+# Keep the CURRENT manifest under the retained build root. The observer may still
+# hold a read lease on it after the read below, and unlinking a leased inode moves
+# its identity. Prior-generation cleanup happens before this write, so no lease of
+# this generation can exist yet.
+overlay_manifest_current="$build_dir/.xpod-overlay-manifest.current"
+rm -f "$overlay_manifest_current"
 python3 "$qlever_root/scripts/runtime-overlay-manifest.py" \
   --qlever-root "$qlever_root" >"$overlay_manifest_current"
 overlay_source_sha=$(sha256sum "$overlay_manifest_current" | cut -d' ' -f1)
@@ -200,7 +205,8 @@ if [[ $(cat "$overlay_identity_file" 2>/dev/null || true) != "$overlay_source_sh
   cp "$overlay_manifest_current" "$overlay_manifest_file"
   printf '%s' "$overlay_source_sha" >"$overlay_identity_file"
 fi
-rm -f "$overlay_manifest_current"
+# The current manifest is deliberately retained under the build root: the observer
+# may still hold its read lease for the rest of the window.
 # This marker binds the prepared source/overlay inputs; configure does not rerun
 # clone/reset/sync/touch after the source and components become read-only.
 printf '%s\n%s\n' "$build_identity" "$toolchain_identity" >"$build_dir/.xpod-source-prepared"

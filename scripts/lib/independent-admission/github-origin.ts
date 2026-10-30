@@ -1269,6 +1269,16 @@ function cssLinuxAncestors(group:GitHubSourceBindingGroup|undefined,target:strin
  return [prefix+(group?.outerExecutor?'readonly_publish / published_sdk / sdk':'publish'),prefix+'module_runtime_materials / runtime / publish',...(product?[prefix+'module_runtime_materials / archive']:[])];
 }
 
+/** The normal (NORMAL-path) CSS product workflow advanced to 16f3781a when the
+ * diagnostic-payload retention step was added. That is the ONLY change from the
+ * previously reviewed 9f14303a bytes: restore the artifact `path:` block to its
+ * prior form and the 9f bytes come back exactly. It is registered as one more
+ * compatible reviewed version — every prior digest stays admitted, and each run
+ * must still match one exact whole file. This is the NORMAL product workflow;
+ * the CONTROLLED `css-native-products` workflow (601aa8fe) is untouched and must
+ * NOT be added to CSS_SOURCE_PARENT_VERSIONS. */
+const CSS_NORMAL_WORKFLOW_SHA='16f3781aa25d8a89167538babfcd6bd1eaa8556a54831a1ee78450d158ef2286';
+
 /** Product origin uses the canonical target/native-source declaration. A
  * declared target is still unverified until its exact successful run is seen. */
 export async function observeModuleProductGitHubOrigin(input: ArtifactAcquisitionInput, module: 'api' | 'css',
@@ -1296,7 +1306,12 @@ export async function observeModuleProductGitHubOrigin(input: ArtifactAcquisitio
     reviewedWorkflowVersions: [...(module==='api'?[{workflowSha256:'db6ca21afa33d572f24a92e96c88f425d1bf46a86d966a55be4c10de4d812263',jobName:()=>`products (${target})`,sourceBindingGroups:API_WORKSPACE_SOURCE_GROUPS},{workflowSha256:'04f75d2913e3b6b504cf547d8ba17d1c0011a0a563f42ff708f4ba3f10978153',jobName:()=>`products (${target})`,sourceBindingGroups:API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS},{workflowSha256:'b7a91e8c0b61f8a80a3de2c6c93e78f1d2f9637a741bff7ac2592882ba0c831e',jobName:()=>`products (${target})`,sourceBindings:API_CONTROLLED_SOURCE_BINDINGS},{workflowSha256:'c4aa6b7ea6e384adab1e517a903e50d574c8afb2eb92d8c54dc919320652c5b0',jobName:()=>`products (${target})`}]:[]), { workflowSha256: policies[module].previousShortWorkflowSha256, jobName: () => `products (${target})`,
       sourceBindings: [{ path: 'scripts/module-product-targets.ts', sha256: '35b8752237d620981b1848d6d8876dfac3c1da14509e77358e7f961ca256cf96' }] },
       { workflowSha256: policies[module].legacyWorkflowSha256, jobName: () => `products (${Object.values(row).join(', ')})`,
-        sourceBindings: [{ path: 'scripts/module-product-targets.ts', sha256: '35b8752237d620981b1848d6d8876dfac3c1da14509e77358e7f961ca256cf96' }] }],
+        sourceBindings: [{ path: 'scripts/module-product-targets.ts', sha256: '35b8752237d620981b1848d6d8876dfac3c1da14509e77358e7f961ca256cf96' }] },
+      // CURRENT normal CSS workflow version (append-only). The previously reviewed
+      // 9f14303a above stays admitted, and the same reviewed module-product-targets
+      // closure is required, so this adds a version rather than replacing a proof.
+      ...(module==='css'?[{ workflowSha256: CSS_NORMAL_WORKFLOW_SHA,
+        jobName: () => `products (${target})` }]:[])],
   };
   const current:OriginPolicy={workflowPath:CSS_NATIVE_PRODUCTS_WORKFLOW,workflowSha256:CSS_NATIVE_PARENT_SHA,
     ...cssStagingParentPolicy(`targets (${target}) / products`),events:['workflow_dispatch','push'],target,artifactNames:coordinates=>[`css-module-products-${target}-${coordinates.sourceSha}-${coordinates.runId}-${coordinates.runAttempt}`],
@@ -1394,9 +1409,13 @@ export async function observeQleverNativeGitHubOrigin(input:ArtifactAcquisitionI
   const oldestNativeHash='76238a58da3384d10d1d1537211540f289531a3c74b43c854c2eb37ec2cb768c';
   const observation=await observeGitHubOrigin(input,options,{
     workflowPath:invocation==='standalone'?nativeWorkflow:'.github/workflows/css-module-product.yml',
-    workflowSha256:invocation==='standalone'?nativeHash:'9f14303a0736391b250598c21211dc5312565adf5bf30256a4f9c61f13cc8257',
+    workflowSha256:invocation==='standalone'?nativeHash:CSS_NORMAL_WORKFLOW_SHA,
     ...(invocation==='css-module'?{reviewedWorkflowVersions:[{
       workflowSha256:'454baf86f674c2c3b5058ad012c09d968c26e4f7d282d702df745a16978542b3',jobName:()=> 'native / build',
+    },{
+      // Prior reviewed normal CSS product workflow stays admitted alongside the
+      // current 16f above; each run must still match one exact whole file.
+      workflowSha256:'9f14303a0736391b250598c21211dc5312565adf5bf30256a4f9c61f13cc8257',jobName:()=> 'native / build',
     }]}:{reviewedWorkflowVersions:[
       {workflowSha256:previousNativeHash,jobName:()=> 'build'},
       {workflowSha256:oldestNativeHash,jobName:()=> 'build'},

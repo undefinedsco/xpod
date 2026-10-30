@@ -170,9 +170,32 @@ def download(url, destination, token=None, limit=ARCHIVE_LIMIT, *, revalidate=Fa
     raise ValueError('Native acquisition redirect limit')
 
 
+# Ordered predicate NAMES for the run-identity guard. A failure reports only these
+# fixed names -- never the observed values, the payload body, or any credential --
+# so the mismatch is attributable without leaking data. Every predicate below is
+# exactly as strict as the previous single boolean; nothing is relaxed.
+RUN_IDENTITY_FIELDS=('id','run_attempt','head_sha','path','event','repository','head_repository','status')
+
+
+def run_identity_mismatches(identity, run):
+    """Fixed field NAMES whose strict predicate failed, in table order."""
+    predicates={
+        'id': run.get('id')==identity['runId'],
+        'run_attempt': run.get('run_attempt')==identity['runAttempt'],
+        'head_sha': run.get('head_sha')==identity['runHeadSha'],
+        'path': run.get('path')==identity.get('workflowPath',WORKFLOW),
+        'event': run.get('event')==identity['event'],
+        'repository': (run.get('repository') or {}).get('full_name')==REPOSITORY,
+        'head_repository': (run.get('head_repository') or {}).get('full_name')==REPOSITORY,
+        'status': run.get('status') in ('in_progress','completed'),
+    }
+    return [name for name in RUN_IDENTITY_FIELDS if not predicates[name]]
+
+
 def validate_run(identity, run):
-    if run.get('id')!=identity['runId'] or run.get('run_attempt')!=identity['runAttempt'] or run.get('head_sha')!=identity['runHeadSha'] or run.get('path')!=identity.get('workflowPath',WORKFLOW) or run.get('event')!=identity['event'] or run.get('repository',{}).get('full_name')!=REPOSITORY or run.get('head_repository',{}).get('full_name')!=REPOSITORY or run.get('status') not in ('in_progress','completed'):
-        raise ValueError('Current CSS workflow run identity mismatch')
+    mismatched=run_identity_mismatches(identity,run)
+    if mismatched:
+        raise ValueError('Current CSS workflow run identity mismatch: '+','.join(mismatched))
 
 
 def validate_native_metadata(identity, env, artifact, jobs):

@@ -10,6 +10,9 @@ import path from 'node:path';
 import {it, expect} from 'vitest';
 import {QLEVER_SDK_EXECUTION_GROUPS as SDK, QLEVER_LINUX_EXECUTION_GROUPS as LINUX} from '../../scripts/lib/independent-admission/qlever-sdk-origin-policy';
 import {selectGitHubSourceBindingGroup, sourceBindingKey} from '../../scripts/lib/independent-admission/github-source-binding-groups';
+import {CSS_SOURCE_PARENT_VERSIONS} from '../../scripts/lib/independent-admission/module-source-phases';
+/** Historical CSS diagnostics producer, pinned by published SDK0–86. */
+const HISTORICAL_CSS_PRODUCER = '9bc6411c30e8f96402f39b80acf9e8af27350bfde84d0ec6d4e5f8eb04a05da4';
 import {CURRENT_CANONICAL_SOURCE_ROWS, completeObserved} from './source-binding-group.fixture';
 import historicalWhole from '../fixtures/independent-admission/sdk86-historical-whole-hashes.json';
 
@@ -33,6 +36,8 @@ const READONLY_NORMAL = '.github/workflows/qlever-readonly-normal-job.yml';
 // digest. Its inherited role and SDK1–86 historical values remain unchanged.
 const SDK70_E2E = 'qlever/tests/test_sdk70_mremap_e2e.py';
 const SOURCE_ORIGINALS = 'qlever/scripts/sdk-generated-source-originals.py';
+/** CURRENT CSS diagnostics producer; its PRIMARY selector advanced in this slice. */
+const CSS_PRODUCER = 'scripts/css-module-producer.py';
 const all = (g: any) => [...g.selectors, ...(g.secondarySelectors ?? []), ...(g.secondarySelectorStages ?? []).flat(), ...g.sourceBindings];
 
 /** SDK86's published bytes — HISTORICAL, never replaced with today's tree. */
@@ -44,7 +49,26 @@ const SDK86_FROZEN: Readonly<Record<string, string>> = Object.freeze({
 
 it('SDK87 whole-inherits SDK86 and re-pins only the reviewed current roles', () => {
   const inherited = SDK[85]!, next = SDK[86]!;
-  expect(JSON.stringify(next.selectors)).toBe(JSON.stringify(inherited.selectors));
+  // CURRENT identity advances coherently on the PRIMARY selector axis too: the
+  // reviewed overrides apply to selectors exactly as to the secondary/staged and
+  // source-binding axes, so SDK87 cannot hold a historical selector beside a
+  // current source binding. Only rows with a reviewed override move; every other
+  // selector row keeps SDK86's exact bytes and position.
+  const inheritedSelectors = inherited.selectors ?? [];
+  const currentSelectors = next.selectors ?? [];
+  expect(currentSelectors.length).toBe(inheritedSelectors.length);
+  const movedSelectors: string[] = [];
+  for (let i = 0; i < inheritedSelectors.length; i++) {
+    expect(currentSelectors[i].path, `selector[${i}].path`).toBe(inheritedSelectors[i].path);
+    if (inheritedSelectors[i].sha256 !== currentSelectors[i].sha256) movedSelectors.push(currentSelectors[i].path);
+  }
+  // The only reviewed current selector override at this slice is the CSS producer.
+  expect(movedSelectors).toEqual(['scripts/css-module-producer.py']);
+  expect(currentSelectors.find(r => r.path === 'scripts/css-module-producer.py')!.sha256)
+    .toBe(sha('scripts/css-module-producer.py'));
+  // The historical SDK86 selector for that path keeps its published bytes.
+  expect((inheritedSelectors.find(r => r.path === 'scripts/css-module-producer.py') as any)?.sha256 ?? HISTORICAL_CSS_PRODUCER)
+    .toBe(HISTORICAL_CSS_PRODUCER);
   expect(JSON.stringify(next.candidateServiceRelationship)).toBe(JSON.stringify(inherited.candidateServiceRelationship));
   expect(JSON.stringify(next.outerExecutor)).toBe(JSON.stringify(inherited.outerExecutor));
   // this slice adds no stage and keeps the whole stage surface
@@ -73,7 +97,7 @@ it('SDK87 whole-inherits SDK86 and re-pins only the reviewed current roles', () 
   // lock/series, the current builder documentation whose bytes changed, the
   // generated-source originals module that now emits the transport projection, and
   // the SDK70 replay fixture that now uses the whole canonical limit profile.
-  expect(new Set(moved)).toEqual(new Set([OBSERVER, LEAF, LOCK, SERIES, LEASES, LEASE_EXT, LEASE_BINDING, BUILDER, EXECUTOR_BINDINGS, READONLY_NORMAL, BINDER, KERNEL_PROBE, SOURCE_ORIGINALS, SDK70_E2E]));
+  expect(new Set(moved)).toEqual(new Set([OBSERVER, LEAF, LOCK, SERIES, LEASES, LEASE_EXT, LEASE_BINDING, BUILDER, EXECUTOR_BINDINGS, READONLY_NORMAL, BINDER, KERNEL_PROBE, SOURCE_ORIGINALS, CSS_PRODUCER, SDK70_E2E]));
   expect(moved.filter(p => p === OBSERVER)).toHaveLength(4);
   expect(moved.filter(p => p === LEAF)).toHaveLength(1);
   // The filtered-lease lookup slice moves the lease implementation's CURRENT
@@ -158,4 +182,53 @@ it('the canonical holds the current canonical physical originals matching the li
   for (const row of rows) expect(sha(row.path), row.path).toBe(row.sha256);
   expect(LINUX).toHaveLength(SDK.length + 1);
   expect(LINUX.some((g: any) => whole(g) === whole(SDK[SDK.length - 1]))).toBe(true);
+});
+
+it('SDK87 advances its PRIMARY selectors coherently to the current CSS producer, not a hybrid', () => {
+  // CAUSAL REGRESSION for the main-CI Bun failure (40 files / 68 pairs): the CSS
+  // diagnostics producer advanced to the CURRENT 1ba bytes, but SDK87 inherited
+  // the historical 9bc selector from SDK86, so no real observation of the live
+  // tree could satisfy any reviewed group. The CURRENT identity must move on
+  // EVERY axis; historical SDK0..86 stay frozen and are not touched by this.
+  const next = SDK[SDK.length - 1]!;
+  const css = 'scripts/css-module-producer.py';
+  const current = sha(css);
+  const axes = [next.selectors ?? [], next.secondarySelectors ?? [],
+    (next.secondarySelectorStages ?? []).flat(), next.sourceBindings ?? []];
+  const cells = axes.flat().filter((row: any) => row.path === css);
+  expect(cells.length).toBeGreaterThan(0);
+  // Every current cell names the ACTUAL live bytes; none still names 9bc.
+  for (const row of cells) expect(row.sha256).toBe(current);
+  // The selector axis specifically moved (this is what was stale before the fix).
+  const selector = (next.selectors ?? []).filter((row: any) => row.path === css);
+  expect(selector.length).toBeGreaterThan(0);
+  expect(selector[0].sha256).toBe(current);
+  // Anti-hybrid: substituting the historical value into the current identity must
+  // NOT select SDK87 — the group is refused rather than silently accepted.
+  const observed = new Map(completeObserved(SDK, next));
+  expect(selectGitHubSourceBindingGroup(SDK, observed)).toBe(next);
+  const hybrid = new Map(observed);
+  hybrid.set('source:' + css, HISTORICAL_CSS_PRODUCER);
+  expect(() => selectGitHubSourceBindingGroup(SDK, hybrid)).toThrow();
+});
+
+it('the reviewed NORMAL CSS product workflow admits the current version and keeps the prior one', () => {
+  // CAUSAL REGRESSION for gap 2: the normal css-module-product workflow advanced
+  // 9f14303a -> 16f3781a (diagnostic-payload retention). The prior approval must
+  // remain admitted; this must NOT be conflated with the CONTROLLED
+  // css-native-products table, which is unchanged.
+  const currentNormal = sha('.github/workflows/css-module-product.yml');
+  const priorNormal = '9f14303a0736391b250598c21211dc5312565adf5bf30256a4f9c61f13cc8257';
+  expect(currentNormal).toBe('16f3781aa25d8a89167538babfcd6bd1eaa8556a54831a1ee78450d158ef2286');
+  expect(currentNormal).not.toBe(priorNormal);
+  // The controlled native-products path is a different workflow and stays as-is.
+  const controlled = sha('.github/workflows/css-native-products.yml');
+  expect(controlled).toBe('601aa8fe01ee1367be4e97dc6e868d7bc3e79ed1fea5e8f9531aa759e78d7d51');
+  const parents = CSS_SOURCE_PARENT_VERSIONS.map((row: any) => row.producerSha256);
+  // exactly the 4 reviewed rows; the historical 9bc and current 1ba both present.
+  expect(parents).toHaveLength(4);
+  expect(parents).toContain('9bc6411c30e8f96402f39b80acf9e8af27350bfde84d0ec6d4e5f8eb04a05da4');
+  expect(parents).toContain('1ba30f5eaba9070f55135936649c43b109bf7a4a83db43b512edaa6d31abc5cc');
+  // No normal-workflow hash leaked into the CONTROLLED parent table.
+  expect(CSS_SOURCE_PARENT_VERSIONS.every((row: any) => row.workflowSha256 !== currentNormal)).toBe(true);
 });

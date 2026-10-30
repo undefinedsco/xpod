@@ -333,7 +333,7 @@
   },
   {
     "path": "qlever/scripts/build-qlever-runtime-sdk.sh",
-    "sha256": "8894124d91efb02186482aa1a54acc12126bde19eaaa461cdfd9d22f83dcf122"
+    "sha256": "330d9f470dd51e72625c78d38eee0e06c0b8475bac3582c8dfd44280633f55ad"
   },
   {
     "path": "qlever/scripts/macos_companion_originals.py",
@@ -725,7 +725,7 @@
   },
   {
     "path": "scripts/css-module-producer.py",
-    "sha256": "9bc6411c30e8f96402f39b80acf9e8af27350bfde84d0ec6d4e5f8eb04a05da4"
+    "sha256": "1ba30f5eaba9070f55135936649c43b109bf7a4a83db43b512edaa6d31abc5cc"
   },
   {
     "path": "scripts/fix-dist-js-imports.mjs",
@@ -941,7 +941,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/github-origin.ts",
-    "sha256": "f8903d5c252c7ed5e10926e01f9dc81af95746570d65160287b2ae89bbec59c1"
+    "sha256": "2d69a81b8f71da4c9c693a22b39e3740ac4c0d5d0dc6f28c0590eaf220302f79"
   },
   {
     "path": "scripts/lib/independent-admission/github-source-binding-groups.ts",
@@ -1057,7 +1057,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/module-source-phases.ts",
-    "sha256": "38d75efbd178777c7ed5278359ea7429a2d7942cc46f7bd83b7e30f01ad49ec2"
+    "sha256": "5e057bd97f88dfbdecc0554ff7e22e5666d05785b52b024a122e29797a11aa8c"
   },
   {
     "path": "scripts/lib/independent-admission/native-admission-requirements.ts",
@@ -1221,7 +1221,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-origin-policy.ts",
-    "sha256": "0c831bdc655c51d2ac7424de16120e14e8a757332ca3546da0e497f1f9ce86bb"
+    "sha256": "7088d5c9cd8ed7839ad04172fc16c2b7e8f0d62fb8388b3faf4750a67fe620a2"
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-originals.ts",
@@ -1873,7 +1873,7 @@
   },
   {
     "path": "qlever/tests/test_native_lease_backend.py",
-    "sha256": "6b967cf7ae2ef6b14e361f91883ad55b5f6891c393ef8c93995a0be5ada4ef54"
+    "sha256": "564f16a541b267d753e26155ee10d6de274bce3ca527ac68815773b386534966"
   },
   {
     "path": "qlever/tests/test_native_lease_eintr.py",

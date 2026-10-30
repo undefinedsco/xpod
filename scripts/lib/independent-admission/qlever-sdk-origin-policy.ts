@@ -2286,7 +2286,12 @@ const SDK86_GROUP:GitHubSourceBindingGroup=Object.freeze({...SDK85_GROUP,
  * own historical bytes. */
 const SDK87_SOURCE_HASHES:Readonly<Record<string,string>>=Object.freeze({
  // Override inherited CURRENT rows only; published SDK1–86 keep their values.
- 'qlever/scripts/build-qlever-runtime-sdk.sh':"8894124d91efb02186482aa1a54acc12126bde19eaaa461cdfd9d22f83dcf122",
+ // The CSS diagnostics producer advanced to 1ba30f5e (its OWN reviewed current
+ // value). SDK87 inherits it as a PRIMARY selector from SDK86, so this override is
+ // applied to selectors, secondary selectors, staged selectors AND source bindings
+ // alike — otherwise the current tuple would keep naming the previous 9bc bytes.
+ 'scripts/css-module-producer.py':"1ba30f5eaba9070f55135936649c43b109bf7a4a83db43b512edaa6d31abc5cc",
+ 'qlever/scripts/build-qlever-runtime-sdk.sh':"330d9f470dd51e72625c78d38eee0e06c0b8475bac3582c8dfd44280633f55ad",
  'qlever/scripts/sdk-ptrace-execution.py':"e12068a7d0b01e69a101cc05d3c1118173c5682a4684834a86d1083117411f2b",
  // Filtered-lease lookup: the token-filtered check resolves its single row by the
  // (st_dev, st_ino) key instead of scanning every held row. Selection semantics,
@@ -2327,7 +2332,11 @@ const SDK87_SOURCE_HASHES:Readonly<Record<string,string>>=Object.freeze({
 });
 const rebindSdk87Rows=(rows:readonly GitHubSourceBinding[]|undefined)=>Object.freeze((rows??[]).map(row=>Object.freeze({...row,sha256:SDK87_SOURCE_HASHES[row.path]??row.sha256})));
 const SDK87_GROUP:GitHubSourceBindingGroup=Object.freeze({...SDK86_GROUP,
- selectors:SDK86_GROUP.selectors,
+ // CURRENT identity must advance coherently on EVERY axis: the PRIMARY selectors
+ // also go through the same reviewed override map, so SDK87 cannot disagree with
+ // itself (a historical selector paired with a current source binding is the
+ // hybrid this prevents). SDK1–86 are untouched; they are separate frozen groups.
+ selectors:rebindSdk87Rows(SDK86_GROUP.selectors),
  secondarySelectors:rebindSdk87Rows(SDK86_GROUP.secondarySelectors),
  secondarySelectorStages:Object.freeze((SDK86_GROUP.secondarySelectorStages??[]).map(stage=>rebindSdk87Rows(stage))),
  sourceBindings:Object.freeze([...rebindSdk87Rows(SDK86_GROUP.sourceBindings),

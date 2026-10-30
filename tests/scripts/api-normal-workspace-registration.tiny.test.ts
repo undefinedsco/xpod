@@ -23,8 +23,18 @@ describe('API normal workspace lifecycle atomic registration',()=>{
   const mixed=observed(group);mixed.set('source:scripts/lib/inngest-controlled-build.py','0'.repeat(64));expect(()=>selectGitHubSourceBindingGroup(API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS,mixed)).toThrow();
   originals.set('scripts/lib/api-install-selection.cjs',Buffer.from('changed'));expect(()=>controlledApiSourceRecipe(p=>originals.get(p)!,hash('scripts/api-module-producer.py'),'darwin-arm64')).toThrow();
  });
- it('controller current and historical implementations remain unambiguous and cannot mix workspace phases',()=>{
-  for(const groups of [CONSUMER_SOURCE_GROUPS,CI_CONSUMER_SOURCE_GROUPS])for(const group of groups){const facts=completeObserved(groups,group);expect(()=>secondaryGitHubSourceBindingSelectors(groups,facts)).not.toThrow();expect(selectGitHubSourceBindingGroup(groups,facts)).toBe(group);}
+ // Split per family+index so each group is an independent case: a failure names
+ // the exact family and group index, and no single case can consume the whole
+ // per-test default timeout. The selection and unmixable-phase assertions are
+ // IDENTICAL to the former aggregate; only the iteration shape changed.
+ for(const [name,groups] of [['consumer',CONSUMER_SOURCE_GROUPS],['ci',CI_CONSUMER_SOURCE_GROUPS]] as const){
+  for(const [index,group] of groups.entries()){
+   it(`${name}[${index}] controller current and historical implementations remain unambiguous and cannot mix workspace phases`,()=>{
+    const facts=completeObserved(groups,group);expect(()=>secondaryGitHubSourceBindingSelectors(groups,facts)).not.toThrow();expect(selectGitHubSourceBindingGroup(groups,facts)).toBe(group);
+   });
+  }
+ }
+ it('a mixed workspace phase cannot satisfy the current controller tuple',()=>{
   const group=CONSUMER_SOURCE_GROUPS.find(row=>row.sourceBindings.some(b=>b.path==='scripts/api-producer-dependencies.cjs'))!;const facts=completeObserved(CONSUMER_SOURCE_GROUPS,group);facts.set('source:scripts/lib/independent-admission/module-source-phases.ts','0'.repeat(64));expect(()=>selectGitHubSourceBindingGroup(CONSUMER_SOURCE_GROUPS,facts)).toThrow();
  });
 });
