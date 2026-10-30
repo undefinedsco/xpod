@@ -2286,7 +2286,7 @@ const SDK86_GROUP:GitHubSourceBindingGroup=Object.freeze({...SDK85_GROUP,
  * own historical bytes. */
 const SDK87_SOURCE_HASHES:Readonly<Record<string,string>>=Object.freeze({
  // Override inherited CURRENT rows only; published SDK1–86 keep their values.
- 'qlever/scripts/build-qlever-runtime-sdk.sh':"8894124d91efb02186482aa1a54acc12126bde19eaaa461cdfd9d22f83dcf122",
+ 'qlever/scripts/build-qlever-runtime-sdk.sh':"330d9f470dd51e72625c78d38eee0e06c0b8475bac3582c8dfd44280633f55ad",
  'qlever/scripts/sdk-ptrace-execution.py':"e12068a7d0b01e69a101cc05d3c1118173c5682a4684834a86d1083117411f2b",
  // Filtered-lease lookup: the token-filtered check resolves its single row by the
  // (st_dev, st_ino) key instead of scanning every held row. Selection semantics,

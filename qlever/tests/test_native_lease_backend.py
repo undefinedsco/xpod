@@ -13,8 +13,10 @@ import json
 import fcntl
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -1023,6 +1025,207 @@ class NegativeGateCase(unittest.TestCase):
             ok, index, errno_value = ext.index_roundtrip(2 ** 31)
             self.assertNotEqual((ok, index, errno_value), (0, 2 ** 31, 0),
                                 'a wrong formatter must NOT produce a correct tuple')
+
+
+def harness_for(build, root, path_file, resume, block):
+    """Bash harness that runs the REAL block and pauses exactly once, safely.
+
+    The DEBUG trap is gated on `$BASH_COMMAND` so it fires only when bash is about
+    to run the `overlay_source_sha=` assignment -- i.e. after the current manifest
+    exists and before the block's own consumer logic runs. The guard is nounset-safe
+    (`${var:-}`), so an early command can never trip `set -u` and kill the child.
+
+    Returns the harness text. The parent MUST poll for `ready` while also watching
+    the child, so a child that dies early fails the test instead of blocking.
+    """
+    return (
+        'set -Eeuo pipefail\n'
+        'build_dir=%s\n'
+        'qlever_root=%s\n'
+        '__pause() {\n'
+        '  case "${1:-}" in\n'
+        '    overlay_source_sha=*)\n'
+        '      if [[ -n "${overlay_manifest_current:-}" '
+        '&& -f "${overlay_manifest_current:-}" ]]; then\n'
+        '        printf \'%%s\\n\' "$overlay_manifest_current" > %s\n'
+        '        printf \'PAUSED\\n\' >&2\n'
+        '        read -r _ < %s\n'
+        '      fi\n'
+        '      ;;\n'
+        '  esac\n'
+        '}\n'
+        'trap \'__pause "$BASH_COMMAND"\' DEBUG\n'
+        '%s\n'
+        'trap - DEBUG\n'
+        "printf 'BLOCK-DONE\\n'\n"
+    ) % (build, root, path_file, resume, block)
+
+
+class OverlayManifestLifetime(unittest.TestCase):
+    """The SHIPPED overlay-manifest block must not unlink a leased current manifest.
+
+    Regression for a real CI failure. `build-qlever-runtime-sdk.sh` used to create
+    the current overlay manifest with `mktemp` and `rm -f` it after the traced child
+    read it. The SDK observer may still hold a real kernel read lease (F_RDLCK,
+    role input-read) on that inode for the rest of the observed window, and
+    unlinking a leased inode moves its ctime, so the next native six-field sweep
+    raised `LeaseError: leased inode identity changed`.
+
+    This executes the ACTUAL shipped block, not a copy: the lines between
+    `overlay_manifest_file=` and the source-prepared marker are extracted from the
+    real script and run by bash against a private copy of the qlever inputs, so real
+    `touch` calls can never mutate the repository. A DEBUG trap pauses the block
+    right after the current manifest exists and reports its real path; the parent
+    opens that exact fd and acquires a real native lease through the shared gate
+    fixture, resumes the block, waits for it to finish, then checks the identity.
+
+    Against the ORIGINAL block (which unlinks the manifest) the post-block native
+    sweep rejects; against the FIXED block all six fields stay equal.
+    """
+
+    BLOCK_START = 'overlay_manifest_file='
+    BLOCK_END = 'printf'
+
+    def _repo(self):
+        return os.path.dirname(os.path.dirname(HERE))
+
+    def _extract_block(self, script_text):
+        lines = script_text.splitlines()
+        start = next(i for i, line in enumerate(lines) if line.startswith(self.BLOCK_START))
+        end = next(i for i, line in enumerate(lines)
+                   if line.startswith(self.BLOCK_END) and '$build_identity' in line)
+        return '\n'.join(lines[start:end])
+
+    def _private_inputs(self, directory):
+        """A private copy of only the qlever inputs the block actually needs."""
+        repo = self._repo()
+        root = os.path.join(directory, 'qlever')
+        os.makedirs(os.path.join(root, 'scripts'))
+        for name in ('include', 'qlever_adapter', 'rdf_protocol', 'patches'):
+            source = os.path.join(repo, 'qlever', name)
+            if os.path.isdir(source):
+                shutil.copytree(source, os.path.join(root, name))
+        shutil.copyfile(os.path.join(repo, 'qlever', 'scripts', 'runtime-overlay-manifest.py'),
+                        os.path.join(root, 'scripts', 'runtime-overlay-manifest.py'))
+        return root
+
+    def _run_block(self, block, module, leases):
+        """Execute the real block, leasing its real current manifest mid-flight.
+
+        Returns a dict of observations captured INSIDE the private temp dir (the
+        paths do not survive it): whether the current manifest still exists after
+        the block, its six-field identity before vs after, whether the final
+        manifest was installed, and whether a post-block native check passed.
+
+        Never blocks unconditionally: it polls for the pause marker while watching
+        the child, so a child that exits before the marker fails the test with its
+        real stderr instead of hanging the suite.
+        """
+        with tempfile.TemporaryDirectory(prefix='overlay-block-') as directory:
+            build = os.path.join(directory, 'build')
+            os.makedirs(build)
+            root = self._private_inputs(directory)
+            path_file = os.path.join(directory, 'path')
+            resume = os.path.join(directory, 'resume')
+            os.mkfifo(resume)
+            harness = harness_for(build, root, path_file, resume, block)
+            harness_path = os.path.join(directory, 'harness.sh')
+            with open(harness_path, 'w') as handle:
+                handle.write(harness)
+            process = subprocess.Popen(['bash', harness_path], stdout=subprocess.PIPE,
+                                       stderr=subprocess.PIPE, text=True)
+            deadline = time.monotonic() + 120
+            while time.monotonic() < deadline:
+                if os.path.exists(path_file) and os.path.getsize(path_file) > 0:
+                    break
+                if process.poll() is not None:
+                    out, err = process.communicate()
+                    self.fail('block exited rc=%s before the pause marker; stderr=%s'
+                              % (process.returncode, err[-800:]))
+                time.sleep(0.02)
+            else:
+                process.kill()
+                process.communicate()
+                self.fail('timed out waiting for the block pause marker')
+            with open(path_file) as handle:
+                actual = handle.read().strip()
+            self.assertTrue(actual, 'block must expose its real current-manifest path')
+            self.assertTrue(os.path.isfile(actual), 'current manifest must exist when paused')
+            fd = os.open(actual, os.O_RDONLY)
+            try:
+                before = module.identity(fd)
+                leases.acquire(fd)
+                with open(resume, 'w') as handle:
+                    handle.write('go\n')
+                out, err = process.communicate(timeout=180)
+            finally:
+                os.close(fd)
+                if process.poll() is None:
+                    process.kill()
+                    process.communicate()
+            self.assertEqual(process.returncode, 0, 'shipped block must exit 0: %s' % err[-500:])
+            self.assertIn('BLOCK-DONE', out)
+
+            # Observations captured while the private tree still exists.
+            retained = os.path.isfile(actual)
+            after = None
+            if retained:
+                after_fd = os.open(actual, os.O_RDONLY)
+                try:
+                    after = module.identity(after_fd)
+                finally:
+                    os.close(after_fd)
+            installed = os.path.isfile(os.path.join(build, '.xpod-overlay-manifest'))
+            check_error = None
+            try:
+                leases.check()
+            except Exception as error:          # noqa: BLE001 - reported, not swallowed
+                check_error = str(error)
+            return {'path': actual, 'retained': retained, 'installed': installed,
+                    'before': before, 'after': after, 'check_error': check_error}
+
+    def test_shipped_block_keeps_leased_current_manifest_identity(self):
+        """FIXED-BEHAVIOUR: the real shipped block keeps the leased inode stable."""
+        repo = self._repo()
+        with open(os.path.join(repo, 'qlever', 'scripts',
+                               'build-qlever-runtime-sdk.sh'), encoding='utf-8') as handle:
+            block = self._extract_block(handle.read())
+        module = load_module(os.path.join(g().scripts, 'sdk-tool-lifetime-leases.py'),
+                             'overlay_shipped_leases')
+        leases = module.SdkLeaseSet(16)
+        self.addCleanup(leases.close)
+        seen = self._run_block(block, module, leases)
+        self.assertTrue(seen['retained'], 'current manifest must be retained, not unlinked')
+        self.assertEqual(seen['after'], seen['before'],
+                         'the retained current manifest must keep its six-field identity')
+        self.assertTrue(seen['installed'], 'the block must still install the final manifest')
+        self.assertIsNone(seen['check_error'], 'post-block native check must pass: %s'
+                          % seen['check_error'])
+
+    def test_original_block_unlinks_the_leased_manifest_and_is_rejected(self):
+        """BROKEN-BEFORE: the original block's trailing rm -f must be rejected."""
+        repo = self._repo()
+        with open(os.path.join(repo, 'qlever', 'scripts',
+                               'build-qlever-runtime-sdk.sh'), encoding='utf-8') as handle:
+            shipped = handle.read()
+        current_two = ('overlay_manifest_current="$build_dir/.xpod-overlay-manifest.current"\n'
+                       'rm -f "$overlay_manifest_current"\n')
+        self.assertIn(current_two, shipped, 'shipped current-manifest assignment differs')
+        original = shipped.replace(current_two, 'overlay_manifest_current=$(mktemp)\n', 1)
+        marker = '# This marker binds the prepared source/overlay inputs'
+        index = original.index(marker)
+        original = original[:index] + 'rm -f "$overlay_manifest_current"\n' + original[index:]
+        block = self._extract_block(original)
+
+        module = load_module(os.path.join(g().scripts, 'sdk-tool-lifetime-leases.py'),
+                             'overlay_original_leases')
+        leases = module.SdkLeaseSet(16)
+        self.addCleanup(leases.close)
+        seen = self._run_block(block, module, leases)
+        self.assertFalse(seen['retained'],
+                         'original block must have unlinked the current manifest')
+        self.assertIsNotNone(seen['check_error'], 'original block must fail the native check')
+        self.assertIn('leased inode identity changed', seen['check_error'])
 
 
 if __name__ == '__main__':
