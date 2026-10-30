@@ -17,9 +17,20 @@ import {CURRENT_CANONICAL_SOURCE_ROWS} from './source-binding-group.fixture';
 const ROOT=path.resolve(import.meta.dirname,'../..');
 const BASE='9d02b2d4c3acbb8451b12aba24434749ec0bf59a';
 const git=(args:string[])=>execFileSync('git',args,{cwd:ROOT,encoding:'buffer',stdio:['ignore','pipe','pipe']});
-const blob=(file:string)=>git(['show',`${BASE}:${file}`]);
 const PUBLISHED_2406='2406eac37627ebd515a5db5839eb7856ba228bdf';
-const blob2406=(file:string)=>git(['show',`${PUBLISHED_2406}:${file}`]);
+// Historical rows repeat immutable commit/path pairs; reuse successful Git reads.
+// Return independent buffers so each assertion still checks the original bytes.
+const blobCache=new Map<string,Buffer>();
+const blobAt=(commit:string,file:string):Buffer=>{
+ const key=`${commit}\0${file}`;
+ const hit=blobCache.get(key);
+ if(hit!==undefined)return Buffer.from(hit);
+ const fresh=git(['show',`${commit}:${file}`]);
+ blobCache.set(key,Buffer.from(fresh));
+ return fresh;
+};
+const blob=(file:string)=>blobAt(BASE,file);
+const blob2406=(file:string)=>blobAt(PUBLISHED_2406,file);
 const digest=(v:unknown)=>createHash('sha256').update(JSON.stringify(v)).digest('hex');
 const disk=(file:string)=>readFileSync(path.join(ROOT,file));
 const sha=(file:string)=>createHash('sha256').update(disk(file)).digest('hex');

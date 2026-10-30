@@ -29,6 +29,10 @@ const LEASE_BINDING = 'qlever/scripts/native/lease_sweep_binding.py';
 const EXECUTOR_BINDINGS = 'qlever/scripts/sdk-readonly-executor-bindings.py';
 const KERNEL_PROBE = 'qlever/scripts/sdk-kernel-policy-probe.py';
 const READONLY_NORMAL = '.github/workflows/qlever-readonly-normal-job.yml';
+// SDK70 now uses the whole canonical limit profile, changing only its current
+// digest. Its inherited role and SDK1–86 historical values remain unchanged.
+const SDK70_E2E = 'qlever/tests/test_sdk70_mremap_e2e.py';
+const SOURCE_ORIGINALS = 'qlever/scripts/sdk-generated-source-originals.py';
 const all = (g: any) => [...g.selectors, ...(g.secondarySelectors ?? []), ...(g.secondarySelectorStages ?? []).flat(), ...g.sourceBindings];
 
 /** SDK86's published bytes — HISTORICAL, never replaced with today's tree. */
@@ -66,9 +70,10 @@ it('SDK87 whole-inherits SDK86 and re-pins only the reviewed current roles', () 
     if (before[i].sha256 !== after[i].sha256) moved.push(after[i].path);
   }
   // The observer (4 inherited occurrences) and the leaf (1) move, plus the QLever
-  // lock/series, the current builder documentation whose bytes changed, and the
-  // generated-source originals module that now emits the transport projection.
-  expect(new Set(moved)).toEqual(new Set([OBSERVER, LEAF, LOCK, SERIES, LEASES, LEASE_EXT, LEASE_BINDING, BUILDER, EXECUTOR_BINDINGS, READONLY_NORMAL, BINDER, KERNEL_PROBE, 'qlever/scripts/sdk-generated-source-originals.py']));
+  // lock/series, the current builder documentation whose bytes changed, the
+  // generated-source originals module that now emits the transport projection, and
+  // the SDK70 replay fixture that now uses the whole canonical limit profile.
+  expect(new Set(moved)).toEqual(new Set([OBSERVER, LEAF, LOCK, SERIES, LEASES, LEASE_EXT, LEASE_BINDING, BUILDER, EXECUTOR_BINDINGS, READONLY_NORMAL, BINDER, KERNEL_PROBE, SOURCE_ORIGINALS, SDK70_E2E]));
   expect(moved.filter(p => p === OBSERVER)).toHaveLength(4);
   expect(moved.filter(p => p === LEAF)).toHaveLength(1);
   // The filtered-lease lookup slice moves the lease implementation's CURRENT
@@ -88,7 +93,10 @@ it('SDK87 whole-inherits SDK86 and re-pins only the reviewed current roles', () 
   // bodies move in the unpublished slice only.
   expect(moved.filter(p => p === BINDER)).toHaveLength(3);
   expect(moved.filter(p => p === KERNEL_PROBE)).toHaveLength(1);
-  for (const role of [LEASES, LEASE_EXT, LEASE_BINDING, BUILDER, EXECUTOR_BINDINGS, READONLY_NORMAL, BINDER, KERNEL_PROBE, 'qlever/scripts/sdk-generated-source-originals.py']) {
+  // SDK70 keeps its single inherited occurrence; its current digest moves once.
+  expect(moved.filter(p => p === SDK70_E2E)).toHaveLength(1);
+  expect(all(next).filter((r: any) => r.path === SDK70_E2E)).toHaveLength(1);
+  for (const role of [LEASES, LEASE_EXT, LEASE_BINDING, BUILDER, EXECUTOR_BINDINGS, READONLY_NORMAL, BINDER, KERNEL_PROBE, SOURCE_ORIGINALS, SDK70_E2E]) {
     for (const row of all(next).filter((r: any) => r.path === role)) expect(row.sha256).toBe(sha(role));
   }
   for (const row of all(next).filter((r: any) => r.path === LEASES)) expect(row.sha256).toBe(sha(LEASES));
@@ -136,7 +144,7 @@ it('generic selector resolves SDK86/current/stale against the real bytes', () =>
     oldObservation.set(sourceBindingKey(row), row.sha256);
   expect(selectGitHubSourceBindingGroup(peers, oldObservation)).toBe(inherited);
   expect(selectGitHubSourceBindingGroup(peers, completeObserved(peers, next))).toBe(next);
-  for (const stale of [OBSERVER, LEAF, BINDER, BUILDER, PATCH]) {
+  for (const stale of [OBSERVER, LEAF, BINDER, BUILDER, PATCH, SDK70_E2E]) {
     const map = new Map(completeObserved(peers, next));
     map.set('source:' + stale, 'f'.repeat(64));
     expect(() => selectGitHubSourceBindingGroup(peers, map)).toThrow();

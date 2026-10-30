@@ -6,13 +6,17 @@ import json
 from pathlib import Path
 import signal
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 ROOT=Path(__file__).resolve().parents[2]
 spec=importlib.util.spec_from_file_location('authority_entry_backend',ROOT/'qlever/scripts/sdk-ptrace-execution.py');m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
 class Tests(unittest.TestCase):
  def observer(self):
+  # Mirror the attributes production `Observer.__init__` always defines for the
+  # paths exercised here; only the proc/kernel boundary below is substituted.
   o=object.__new__(m.Observer);o.generated_vma=None;o.generated_vma_output=False;o.tasks={81:dict(stopped=False,exited=False,entry=None,initial=True,tgid=80)};o.root=80;o.current_phase='compile';o.process_authority=True;o.rows=[]
+  o.capture_toolchain=False;o.pump_errors=[];o.deadline=time.monotonic()+30;o.append_chains={};o.unknown_stops={};o.maximum_processes=8
   def emit(row):
    row=dict(row,sequence=len(o.rows)+1);o.rows.append(row);return row
   o.emit=emit;return o

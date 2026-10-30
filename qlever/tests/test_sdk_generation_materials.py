@@ -7,6 +7,14 @@ from unittest.mock import patch
 ROOT=Path(__file__).resolve().parents[2]
 spec=importlib.util.spec_from_file_location('generation_tests',ROOT/'qlever/scripts/sdk-generation-materials.py')
 module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+# ACTUAL `link.txt` shape for a Unix-Makefiles C++ link step: ONE shell command on
+# ONE line (CMake writes the link line as a single line), objects then `-o <target>`.
+# Previously this fixture used a three-line string with two `-o` flags, which is not
+# a valid link command at all; only the existence/regularity of the original is
+# parsed here, but the fixture bytes must still be truthful.
+LINK_TXT = ('/usr/bin/c++ -O2 CMakeFiles/qlever-server.dir/main.cpp.o '
+            'CMakeFiles/qlever-server.dir/server.cpp.o -o qlever-server\n')
+
 
 class GenerationMaterialsTest(unittest.TestCase):
     @classmethod
@@ -28,6 +36,8 @@ class GenerationMaterialsTest(unittest.TestCase):
         with tempfile.TemporaryDirectory(dir=ROOT/'.test-data/sdk-cmake-generation') as directory:
             root=Path(directory);build=root/'build';(build/'CMakeFiles/demo.dir').mkdir(parents=True)
             for name in ['CMakeCache.txt','compile_commands.json','CMakeFiles/Makefile.cmake']:(build/name).write_text('original')
+            (build/'CMakeFiles/qlever-server.dir').mkdir(parents=True)
+            (build/'CMakeFiles/qlever-server.dir/link.txt').write_text(LINK_TXT)
             large=build/'CMakeFiles/demo.dir/build.make'
             with large.open('wb') as stream:stream.truncate(module.MEMBER+1)
             def identity(path):
@@ -62,6 +72,11 @@ class GenerationMaterialsTest(unittest.TestCase):
                 root=Path(directory);build=root/'build';(build/'CMakeFiles').mkdir(parents=True)
                 for required in ['CMakeCache.txt','compile_commands.json','CMakeFiles/Makefile.cmake','Makefile']:
                     (build/required).write_text('original')
+                # Unix Makefiles: link.txt is CMake-owned and MUST exist, otherwise
+                # metadata_paths refuses with "link command original missing" and the
+                # escaped-build-root assertion would pass for the wrong reason.
+                (build/'CMakeFiles/qlever-server.dir').mkdir(parents=True,exist_ok=True)
+                (build/'CMakeFiles/qlever-server.dir/link.txt').write_text(LINK_TXT)
                 outside=root/'external-original';outside.write_text('outside original')
                 (build/name).unlink();(build/name).symlink_to(outside)
                 with self.assertRaisesRegex(ValueError,'escaped build root'):
@@ -71,7 +86,10 @@ class GenerationMaterialsTest(unittest.TestCase):
             build=Path(directory)/'build';(build/'CMakeFiles/demo.dir').mkdir(parents=True)
             for name in ['CMakeCache.txt','compile_commands.json','CMakeFiles/Makefile.cmake','CMakeFiles/demo.dir/build.make','CMakeFiles/demo.dir/DependInfo.cmake']:
                 (build/name).write_text('original')
-            self.assertEqual(len(module.metadata_paths(build,lambda:None)),5)
+            (build/'CMakeFiles/qlever-server.dir').mkdir(parents=True)
+            (build/'CMakeFiles/qlever-server.dir/link.txt').write_text(LINK_TXT)
+            # 5 pre-existing originals + the required CMake-owned link.txt.
+            self.assertEqual(len(module.metadata_paths(build,lambda:None)),6)
             outside=Path(directory)/'outside';outside.write_text('outside')
             (build/'CMakeFiles/demo.dir/flags.make').symlink_to(outside)
             with self.assertRaisesRegex(ValueError,'escaped build root'):module.metadata_paths(build,lambda:None)

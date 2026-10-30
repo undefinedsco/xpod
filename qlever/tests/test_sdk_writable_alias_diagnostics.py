@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 ROOT=Path(__file__).resolve().parents[2]
@@ -16,6 +17,8 @@ class Tests(unittest.TestCase):
         with tempfile.TemporaryDirectory(dir=base) as directory:
             target=Path(directory)/'actual-input';target.write_bytes(b'actual-input-17')
             item=target.stat();held=os.open(target,os.O_RDONLY);observer=object.__new__(backend.Observer);observer.maximum_file_bytes=512*1024*1024;observer.shared_tasks=False
+            # Production `Observer.__init__` defaults read by check_deadline/check.
+            observer.capture_toolchain=False;observer.pump_errors=[];observer.deadline=time.monotonic()+30
             observer.tasks={pid:dict(exited=False,entry={'sequence':13}) for pid,_ in aliases};observer.tasks.setdefault(101,dict(exited=False,entry={'sequence':13}))
             observer.barrier=lambda:{'sequence':17};observer.check=lambda:None;rows=[]
             observer.emit=lambda row:rows.append(dict(row,sequence=19)) or rows[-1]

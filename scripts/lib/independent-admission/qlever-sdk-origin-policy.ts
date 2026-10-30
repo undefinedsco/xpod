@@ -2297,6 +2297,9 @@ const SDK87_SOURCE_HASHES:Readonly<Record<string,string>>=Object.freeze({
  // global. Current SDK87 binding only; published tuples keep their bytes.
  'qlever/scripts/native/lease_sweep_ext.c':"e3ca18a6d7674b60a65c483d5663308619543d09baf80d344009925f32d5a74b",
 
+ // Current SDK87 native-gate fixture follows the complete canonical replay profile.
+ 'qlever/tests/test_sdk70_mremap_e2e.py':"6a470a45c9b81b8e9addafdfe2f6eb1224a5361d8d16d7e983d60f6083532a07",
+
  // PR124 strict absent-link contract: the gate now settles only matched failed
  // exits and keeps unobserved operands fatal, and the fixed probe uses ONE build
  // root authority. Both bodies move in the CURRENT unpublished slice only.

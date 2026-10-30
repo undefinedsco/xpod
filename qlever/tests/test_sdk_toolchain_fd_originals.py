@@ -7,6 +7,7 @@ import io
 import json
 import os
 from pathlib import Path
+import signal
 import struct
 import tempfile
 import time
@@ -81,17 +82,33 @@ class Tests(unittest.TestCase):
         base=ROOT/'.test-data/sdk-toolchain-fd';base.mkdir(parents=True,exist_ok=True)
         with tempfile.TemporaryDirectory(dir=base) as directory:
             out=Path(directory);observer=backend.Observer(out,out,out);observer.deadline=time.monotonic()+5;observer.current_phase='configure';observer.raw=(out/'raw').open('xb')
+            lease_set=None;handler_before=signal.getsignal(signal.SIGIO)
             try:
                 device=os.makedev(1,0)
                 # A real LeaseSet is required: tool_mapping borrows through it, and the
                 # observer only creates one inside a traced phase. Use the class seam.
-                observer.lifetime_leases=observer.lifetime_leases_class()
+                # A production `phase()`/`run_phase()` owns this set and closes it in its
+                # own finally; this unit test injects one OUTSIDE a phase, so it must
+                # own and close that real set itself. `LeaseSet.close()` releases the
+                # held FDs and restores the process-global SIGIO handler it installed;
+                # without this the handler leaks into every later LeaseSet in the same
+                # process. Ownership stays with the real set: nothing is mocked and no
+                # global signal state is edited directly.
+                lease_set=observer.lifetime_leases_class()
+                observer.lifetime_leases=lease_set
                 observer.lifetime_by_identity[(device,2)]=dict(token=dict(identity=[device,2,0o100755,0,5,6]),sequence=1)
                 mapping=bindings.parse_proc_maps(b'1000-2000 r-xp 00000000 01:00 2 /file\n')[0]
                 lease_error=backend.lifetime_leases.LeaseError
                 with patch.object(observer.lifetime_leases,'duplicate_reader',side_effect=lease_error('held reader identity changed')):
                     with self.assertRaises(lease_error):observer.tool_mapping(10,mapping,3,4)
-            finally:observer.raw.close();observer.close()
+            finally:
+                try:
+                    if lease_set is not None:lease_set.close()
+                finally:
+                    observer.lifetime_leases=None;observer.raw.close();observer.close()
+            # The process-global SIGIO handler must be back to what it was, so the
+            # next real LeaseSet in this process can still take ownership.
+            self.assertIs(signal.getsignal(signal.SIGIO),handler_before)
     def test_raw_exec_fd_elf_and_vma_original_relations_do_not_grant_source_closure(self):
         rows,originals=fixture();report=observe(rows,originals);self.assertEqual(report['toolchainActualExecImages'],1);self.assertEqual(report['toolchainActualFileMappings'],1);self.assertFalse(report['toolchainSourceClosureVerified'])
         changed=copy.deepcopy(rows);changed[6]['execEntrySequence']=1

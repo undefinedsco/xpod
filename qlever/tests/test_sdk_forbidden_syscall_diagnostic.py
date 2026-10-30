@@ -5,13 +5,17 @@ import io
 import json
 from pathlib import Path
 import signal
+import time
 import unittest
 from unittest.mock import patch
 ROOT=Path(__file__).resolve().parents[2]
 spec=importlib.util.spec_from_file_location('forbidden_diagnostic_backend',ROOT/'qlever/scripts/sdk-ptrace-execution.py');module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
 class Tests(unittest.TestCase):
  def observer(self):
+  # Mirror the attributes production `Observer.__init__` always defines for the
+  # entry-dispatch path; only the kernel syscall boundary is substituted.
   observer=object.__new__(module.Observer);observer.tasks={71:dict(stopped=False,exited=False,entry=None,initial=True,tgid=70)};observer.root=70;observer.current_phase='configure';observer.process_authority=True;observer.rows=[]
+  observer.capture_toolchain=False;observer.pump_errors=[];observer.deadline=time.monotonic()+30;observer.append_chains={};observer.unknown_stops={};observer.maximum_processes=8
   def emit(row):
    value=dict(row,sequence=len(observer.rows)+1);observer.rows.append(value);return value
   observer.emit=emit;return observer
