@@ -10,15 +10,27 @@ import {API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS as api} from '../../scripts/lib/
 import {CLI_SOURCE_VERSION_GROUPS as cli} from '../../scripts/lib/independent-admission/source-rules';
 import {selectGitHubSourceBindingGroup as select,sourceBindingKey,secondaryGitHubSourceBindingSelectors as secondary} from '../../scripts/lib/independent-admission/github-source-binding-groups';
 import current from '../../scripts/lib/independent-admission/consumer-execution-current.json';
+import {CURRENT_CANONICAL_SOURCE_ROWS} from './source-binding-group.fixture';
 
 /** This module's ONLY authority is the actual git data at the published 9d02
  * commit plus the files on disk now. The fixture was captured from those blobs. */
 const ROOT=path.resolve(import.meta.dirname,'../..');
 const BASE='9d02b2d4c3acbb8451b12aba24434749ec0bf59a';
 const git=(args:string[])=>execFileSync('git',args,{cwd:ROOT,encoding:'buffer',stdio:['ignore','pipe','pipe']});
-const blob=(file:string)=>git(['show',`${BASE}:${file}`]);
 const PUBLISHED_2406='2406eac37627ebd515a5db5839eb7856ba228bdf';
-const blob2406=(file:string)=>git(['show',`${PUBLISHED_2406}:${file}`]);
+// Historical rows repeat immutable commit/path pairs; reuse successful Git reads.
+// Return independent buffers so each assertion still checks the original bytes.
+const blobCache=new Map<string,Buffer>();
+const blobAt=(commit:string,file:string):Buffer=>{
+ const key=`${commit}\0${file}`;
+ const hit=blobCache.get(key);
+ if(hit!==undefined)return Buffer.from(hit);
+ const fresh=git(['show',`${commit}:${file}`]);
+ blobCache.set(key,Buffer.from(fresh));
+ return fresh;
+};
+const blob=(file:string)=>blobAt(BASE,file);
+const blob2406=(file:string)=>blobAt(PUBLISHED_2406,file);
 const digest=(v:unknown)=>createHash('sha256').update(JSON.stringify(v)).digest('hex');
 const disk=(file:string)=>readFileSync(path.join(ROOT,file));
 const sha=(file:string)=>createHash('sha256').update(disk(file)).digest('hex');
@@ -135,7 +147,7 @@ test('the canonical path/hash closure still holds and the frozen 9d02 snapshot i
  // 483 published rows + the refused-caller test + the frozen 9d02 snapshot, then
  // the immutable-input-plan test + the frozen 2406 snapshot (the moving canonical
  // never lists itself).
- expect(current).toHaveLength(504);
+ expect(current).toHaveLength(CURRENT_CANONICAL_SOURCE_ROWS);
  expect(new Set(current.map(row=>row.path)).size).toBe(current.length);
  for(const row of current)expect(createHash('sha256').update(disk(row.path)).digest('hex')).toBe(row.sha256);
  const snapshot=blob('scripts/lib/independent-admission/consumer-execution-current.json');
@@ -152,6 +164,7 @@ test('the canonical path/hash closure still holds and the frozen 9d02 snapshot i
  // 19fe canonical snapshot; all three are genuine registered source rows.
  expect(current.slice(487).map(row=>row.path).sort()).toEqual([
   'patches/@undefineds.co%2Fdrizzle-solid@0.3.26.patch',
+  'qlever/scripts/sdk-generated-producer-transport.py',
   'qlever/tests/run_sdk70_mremap_gate.py',
   'qlever/tests/test_qlever_archive_lifecycle.py',
   'qlever/tests/test_qlever_read_lease_diagnostic.py',
@@ -201,6 +214,7 @@ test('published consumer binding rows are unchanged and the two new rows are exa
  // snapshot. All three are genuine registered source rows.
  expect(current.slice(487).map(row=>row.path).sort()).toEqual([
   'patches/@undefineds.co%2Fdrizzle-solid@0.3.26.patch',
+  'qlever/scripts/sdk-generated-producer-transport.py',
   'qlever/tests/run_sdk70_mremap_gate.py',
   'qlever/tests/test_qlever_archive_lifecycle.py',
   'qlever/tests/test_qlever_read_lease_diagnostic.py',

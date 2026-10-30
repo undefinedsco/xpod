@@ -60,6 +60,64 @@ jobs:
           python3 -m unittest discover -s qlever/tests -p 'test_macos*.py'
           python3 qlever/tests/test_bounded_original_reader.py
 
+      # Standing dual-compiler gate for the shipped scoped-PCH recipe.
+      # The canonical suite executes the REAL recipe block extracted from the
+      # shipped patch, so CMake must actually select a compiler the recipe admits
+      # (Clang 19..<20 or GNU 12..<13). ubuntu-latest preinstalls Clang 16/17/18
+      # and GNU 13 as `g++`, so neither reviewed driver may be assumed.
+      # Ubuntu noble-updates ships clang-19, g++-12 and gcc-12 as ordinary
+      # packages, so no external archive, extra image or default-compiler
+      # substitution is needed.
+      - name: Install the two reviewed scoped-PCH compilers when absent
+        run: |
+          set -eu
+          missing=0
+          for pkg in g++-12 gcc-12 clang-19 cmake ninja-build; do
+            dpkg -s "$pkg" >/dev/null 2>&1 || missing=1
+          done
+          if [ "$missing" -eq 1 ]; then
+            sudo apt-get update
+            # Exact reviewed majors from the existing Ubuntu repositories only.
+            sudo apt-get install -y --no-install-recommends \
+              g++-12 gcc-12 clang-19 cmake ninja-build
+          fi
+          g++-12 --version | head -1
+          clang++-19 --version | head -1
+          cmake --version | head -1
+          ninja --version
+
+      - name: Require both reviewed compilers and tools
+        run: |
+          set -eu
+          for cxx in g++-12 clang++-19; do
+            if ! command -v "$cxx" >/dev/null 2>&1; then
+              echo "::error::required reviewed compiler missing: $cxx"
+              exit 1
+            fi
+          done
+          for tool in cmake ninja; do
+            if ! command -v "$tool" >/dev/null 2>&1; then
+              echo "::error::required tool missing: $tool"
+              exit 1
+            fi
+          done
+          g++-12 --version | head -1
+          clang++-19 --version | head -1
+
+      - name: Scoped-PCH recipe gate (both reviewed compilers, 4 tests 0 skips each)
+        run: |
+          set -eu
+          for cxx in g++-12 clang++-19; do
+            echo "::group::scoped-PCH recipe with CXX_OVERRIDE=$cxx"
+            # Fresh interpreter per arm: the suite captures its CXX constant at
+            # import time, so sharing a process would run both arms against the
+            # first compiler. The guard asserts testsRun==4, zero skips and
+            # wasSuccessful, because a unittest CLI exit code of 0 can mean every
+            # case was skipped.
+            CXX_OVERRIDE="$cxx" PYTHONPATH="$PWD" python3 qlever/tests/pch_scope_case_guard.py "$cxx"
+            echo "::endgroup::"
+          done
+
       # Fast native lease contract gate for the MAIN CI job. Runs after the
       # static contract checks and before this job's own build steps, so a
       # broken reader/formatter/ABI fails in seconds. It is NOT a

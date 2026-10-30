@@ -27,9 +27,21 @@ class ServicePreparedContract(unittest.TestCase):
         for path in ['/opt/qlever-sdk/source','/opt/qlever-sdk/dependencies','/components','/usr','/etc/alternatives','/etc/ld.so.cache','/etc/ld.so.conf','/etc/ld.so.conf.d','/var/lib/dpkg']:
             self.assertIn('source='+path+',target='+path+',ro',build)
     def test_originals_and_real_linked_evidence_are_retained(self):
-        for source in ['.dockerignore','scripts/lib/module-artifact-limits.json','scripts/agentfs-native-ci/supervise.py','qlever/scripts','docker/qlever-runtime-sdk/Dockerfile','docker/qlever-local-runtime/Dockerfile']:
+        # The canonical layout copies the script TREE by single-level glob plus an
+        # explicit complete `native/` directory. Asserting `^COPY qlever/scripts `
+        # pinned a retired layout; the invariant to keep is that BOTH the top-level
+        # scripts and the native backend are copied from the real source paths.
+        for source in ['.dockerignore','scripts/lib/module-artifact-limits.json','scripts/agentfs-native-ci/supervise.py','docker/qlever-runtime-sdk/Dockerfile','docker/qlever-local-runtime/Dockerfile']:
             self.assertRegex(self.text,r'(?m)^COPY '+re.escape(source)+r' ')
             self.assertTrue((ROOT/source).exists(),source)
+        # Script retention: the real canonical COPY of the script tree.
+        self.assertRegex(self.text, r'(?m)^COPY qlever/scripts/\*\.py qlever/scripts/\*\.sh /components/qlever/scripts/$')
+        self.assertRegex(self.text, r'(?m)^COPY qlever/scripts/native /components/qlever/scripts/native$')
+        # The single-level glob alone would drop native/*, which the observer needs;
+        # that regression guard must stay explicit.
+        self.assertIn('qlever/scripts/native', self.text)
+        self.assertTrue((ROOT/'qlever/scripts').is_dir())
+        self.assertTrue((ROOT/'qlever/scripts/native').is_dir())
         runtime=self.text.split('FROM build AS runtime')[1]
         for role in ['linked-inner.json','owner-linked.guard.json','test-adapter.raw.log','test-adapter.receipt.json','test-runtime.raw.log','test-runtime.receipt.json']:
             self.assertIn(role,runtime)

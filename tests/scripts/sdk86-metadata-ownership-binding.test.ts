@@ -12,7 +12,7 @@ import path from 'node:path';
 import {it, expect} from 'vitest';
 import {QLEVER_SDK_EXECUTION_GROUPS as SDK, QLEVER_LINUX_EXECUTION_GROUPS as LINUX} from '../../scripts/lib/independent-admission/qlever-sdk-origin-policy';
 import {selectGitHubSourceBindingGroup, sourceBindingKey} from '../../scripts/lib/independent-admission/github-source-binding-groups';
-import {completeObserved} from './source-binding-group.fixture';
+import {CURRENT_CANONICAL_SOURCE_ROWS, completeObserved} from './source-binding-group.fixture';
 import historicalWhole from '../fixtures/independent-admission/sdk86-historical-whole-hashes.json';
 
 const ROOT = path.resolve(import.meta.dirname, '../..');
@@ -81,10 +81,10 @@ it('generic selector resolves SDK85/current/stale against the real bytes', () =>
   expect(() => selectGitHubSourceBindingGroup(peers, stale)).toThrow();
 });
 
-it('the canonical holds 504 unique rows matching the live tree', () => {
+it('the canonical holds the current canonical physical originals matching the live tree', () => {
   const rows = JSON.parse(readFileSync(path.join(ROOT, 'scripts/lib/independent-admission/consumer-execution-current.json'), 'utf8')) as { path: string; sha256: string }[];
-  expect(rows).toHaveLength(504);
-  expect(new Set(rows.map(r => r.path)).size).toBe(504);
+  expect(rows).toHaveLength(CURRENT_CANONICAL_SOURCE_ROWS);
+  expect(new Set(rows.map(r => r.path)).size).toBe(CURRENT_CANONICAL_SOURCE_ROWS);
   for (const row of rows) expect(sha(row.path), row.path).toBe(row.sha256);
   expect(LINUX).toHaveLength(SDK.length + 1);
   expect(LINUX.some((g: any) => whole(g) === whole(SDK[SDK.length - 1]))).toBe(true);

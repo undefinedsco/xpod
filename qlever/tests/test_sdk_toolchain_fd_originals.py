@@ -7,6 +7,7 @@ import io
 import json
 import os
 from pathlib import Path
+import signal
 import struct
 import tempfile
 import time
@@ -47,15 +48,67 @@ class Tests(unittest.TestCase):
                 first=observer.tool_original(fd,str(file));self.assertIs(observer.tool_original(fd,str(file)),first)
                 file.write_bytes(elf()+b'changed');second=observer.tool_original(fd,str(file));self.assertNotEqual(first['original']['sha256'],second['original']['sha256']);self.assertEqual(len(observer.captures),2)
             finally:os.close(fd);observer.raw.close();observer.close()
-    def test_map_files_permission_denial_retains_specific_pending_without_a_mapping_claim(self):
+    def test_no_held_preuse_inode_refuses_without_a_mapping_claim(self):
+        """NEGATIVE CONTROL: absent held pre-use inode must still fail closed.
+
+        The current Observer resolves a mapping only through the continuously held
+        pre-use lease (`tool_mapping` -> `lifetime_by_identity` ->
+        `duplicate_reader`). With no held inode the mapping must be refused as
+        unresolved and no mapping original/provider may be emitted. This deliberately
+        does NOT assert the retired `actual-map-files-FD-unavailable` string: that hook
+        no longer exists in the product, so pinning it would pass for the wrong reason.
+        """
         base=ROOT/'.test-data/sdk-toolchain-fd';base.mkdir(parents=True,exist_ok=True)
         with tempfile.TemporaryDirectory(dir=base) as directory:
             out=Path(directory);observer=backend.Observer(out,out,out);observer.deadline=time.monotonic()+5;observer.current_phase='configure';observer.raw=(out/'raw').open('xb')
             try:
                 mapping=bindings.parse_proc_maps(b'1000-2000 r-xp 00000000 01:00 2 /file\n')[0]
-                with patch.object(backend.os,'open',side_effect=PermissionError(errno.EPERM,'denied')):row=observer.tool_mapping(10,mapping,3,4)
-                self.assertEqual(row['kind'],'toolchain-unresolved');self.assertEqual(row['reason'],'actual-map-files-FD-unavailable');self.assertNotIn('original',row)
+                row=observer.tool_mapping(10,mapping,3,4)
+                self.assertEqual(row['kind'],'toolchain-unresolved')
+                self.assertEqual(row['reason'],'actual-VMA-has-no-unique-pre-use-held-inode')
+                self.assertNotIn('original',row)
+                self.assertNotIn('providerSequence',row)
+                self.assertNotIn('mappingBackingModel',row)
             finally:observer.raw.close();observer.close()
+
+    def test_held_lease_duplicate_reader_denial_stays_fail_closed(self):
+        """NEGATIVE CONTROL: a refused duplicate_reader must not yield a claim.
+
+        With exactly one held pre-use inode present the mapping can only proceed by
+        borrowing that inode via `LifetimeLeases.duplicate_reader`. If the borrow is
+        refused the observer must propagate the refusal; it may never fall back to
+        opening the path or to an unverified original.
+        """
+        base=ROOT/'.test-data/sdk-toolchain-fd';base.mkdir(parents=True,exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=base) as directory:
+            out=Path(directory);observer=backend.Observer(out,out,out);observer.deadline=time.monotonic()+5;observer.current_phase='configure';observer.raw=(out/'raw').open('xb')
+            lease_set=None;handler_before=signal.getsignal(signal.SIGIO)
+            try:
+                device=os.makedev(1,0)
+                # A real LeaseSet is required: tool_mapping borrows through it, and the
+                # observer only creates one inside a traced phase. Use the class seam.
+                # A production `phase()`/`run_phase()` owns this set and closes it in its
+                # own finally; this unit test injects one OUTSIDE a phase, so it must
+                # own and close that real set itself. `LeaseSet.close()` releases the
+                # held FDs and restores the process-global SIGIO handler it installed;
+                # without this the handler leaks into every later LeaseSet in the same
+                # process. Ownership stays with the real set: nothing is mocked and no
+                # global signal state is edited directly.
+                lease_set=observer.lifetime_leases_class()
+                observer.lifetime_leases=lease_set
+                observer.lifetime_by_identity[(device,2)]=dict(token=dict(identity=[device,2,0o100755,0,5,6]),sequence=1)
+                mapping=bindings.parse_proc_maps(b'1000-2000 r-xp 00000000 01:00 2 /file\n')[0]
+                lease_error=backend.lifetime_leases.LeaseError
+                with patch.object(observer.lifetime_leases,'duplicate_reader',side_effect=lease_error('held reader identity changed')):
+                    with self.assertRaises(lease_error):observer.tool_mapping(10,mapping,3,4)
+            finally:
+                try:
+                    if lease_set is not None:lease_set.close()
+                finally:
+                    observer.lifetime_leases=None;observer.raw.close();observer.close()
+            # The process-global SIGIO handler must be back to what it was, so the
+            # next real LeaseSet in this process can still take ownership.
+            self.assertIs(signal.getsignal(signal.SIGIO),handler_before)
     def test_raw_exec_fd_elf_and_vma_original_relations_do_not_grant_source_closure(self):
         rows,originals=fixture();report=observe(rows,originals);self.assertEqual(report['toolchainActualExecImages'],1);self.assertEqual(report['toolchainActualFileMappings'],1);self.assertFalse(report['toolchainSourceClosureVerified'])
         changed=copy.deepcopy(rows);changed[6]['execEntrySequence']=1

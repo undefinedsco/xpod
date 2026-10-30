@@ -1,5 +1,5 @@
 """Real core dispatch and complete parser joins; system sampling alone is mocked."""
-import copy,importlib.util,json,signal,unittest
+import copy,importlib.util,json,signal,time,unittest
 from pathlib import Path
 from unittest.mock import patch
 ROOT=Path(__file__).resolve().parents[2]
@@ -44,6 +44,8 @@ class Tests(unittest.TestCase):
    with self.subTest(mutation=mutation),self.assertRaises((ValueError,KeyError)):self.inspect(rows)
  def test_actual_core_dispatch_uses_entry_and_exit_allstop_and_holds_lease_exclusively(self):
   _,entry,exit,raw,end,barrier,last,_=f.setup();o=object.__new__(backend.Observer);o.generated_vma=None;o.generated_vma_output=False;o.tasks={10:dict(stopped=False,exited=False,entry=None,initial=True)};o.process_authority=True;o.verified_setresuid_noop=True;o.deny_optional_io_uring=False;o.exclusive=None;o.pausing=False;o.check=lambda:None;o.rows=[]
+  # Production `Observer.__init__` defaults for the attributes this path reads.
+  o.capture_toolchain=False;o.pump_errors=[];o.deadline=time.monotonic()+30;o.append_chains={};o.unknown_stops={}
   def emit(row):
    value=dict(row,sequence=len(o.rows)+5,phase='configure');o.rows.append(value);return value
   o.emit=emit;o.barrier=lambda:emit(dict(kind='all-stop-barrier',pids=[10],osStates=['t']))

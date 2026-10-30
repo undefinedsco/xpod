@@ -1,4 +1,8 @@
 import {secondaryGitHubSourceBindingSelectors,sourceBindingKey,type GitHubSourceBinding,type GitHubSourceBindingGroup} from '../../scripts/lib/independent-admission/github-source-binding-groups';
+/** Expected LIVE canonical source inventory. Kept independent of the JSON under test.
+ * Published/frozen snapshots retain their own historical counts. */
+export const CURRENT_CANONICAL_SOURCE_ROWS = 505;
+
 /** Model the real primary -> requested role -> own mandatory original flow.
  *
  * Bounded: it keeps asking the SAME planner for the roles that are still

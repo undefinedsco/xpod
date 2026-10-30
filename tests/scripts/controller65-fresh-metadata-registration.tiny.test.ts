@@ -7,12 +7,12 @@ import {QLEVER_SDK_EXECUTION_GROUPS as sdk} from '../../scripts/lib/independent-
 import {CONSUMER_SOURCE_GROUPS as consumer,CI_CONSUMER_SOURCE_GROUPS as ci} from '../../scripts/lib/independent-admission/consumer-observer-policy';
 import current from '../../scripts/lib/independent-admission/consumer-execution-current.json';
 import {sourceBindingKey as key,selectGitHubSourceBindingGroup as select} from '../../scripts/lib/independent-admission/github-source-binding-groups';
-import {completeObserved,observedSecondaryBindings} from './source-binding-group.fixture';
+import {CURRENT_CANONICAL_SOURCE_ROWS,completeObserved,observedSecondaryBindings} from './source-binding-group.fixture';
 const sha=(raw:Buffer|string)=>createHash('sha256').update(raw).digest('hex');
-test('Controller65 preserves all 267 exact Git50f complete recipes and binds current 426 physical originals',()=>{
+test('Controller65 preserves all 267 exact Git50f complete recipes and binds current canonical physical originals',()=>{
  expect(before.base).toBe('50f821d16a6fd81ec0c7333df3c71aad0780dff0');
  expect(Object.values(before.hashes).reduce((sum,rows)=>sum+rows.length,0)).toBe(267);
- expect([api.length,sdk.length,consumer.length,ci.length,current.length]).toEqual([29,87,99,196,504]);
+ expect([api.length,sdk.length,consumer.length,ci.length,current.length]).toEqual([29,87,99,196,CURRENT_CANONICAL_SOURCE_ROWS]);
  for(const [name,values] of Object.entries({api,sdk,consumer,ci})){const old=before.hashes[name as keyof typeof before.hashes];expect(values.slice(0,old.length).map(row=>sha(JSON.stringify(row)))).toEqual(old);}
  for(const row of [...current,...actualApi,...sdk.at(-1)!.selectors,...sdk.at(-1)!.sourceBindings])expect(sha(readFileSync(row.path))).toBe(row.sha256);
  expect(api.at(-1)!.sourceBindings).toBe(actualApi);

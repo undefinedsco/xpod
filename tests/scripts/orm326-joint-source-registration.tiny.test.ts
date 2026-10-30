@@ -9,6 +9,7 @@ import {API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS as api} from '../../scripts/lib/
 import {CLI_SOURCE_VERSION_GROUPS as cli} from '../../scripts/lib/independent-admission/source-rules';
 import {selectGitHubSourceBindingGroup as select,sourceBindingKey as key} from '../../scripts/lib/independent-admission/github-source-binding-groups';
 import current from '../../scripts/lib/independent-admission/consumer-execution-current.json';
+import {CURRENT_CANONICAL_SOURCE_ROWS} from './source-binding-group.fixture';
 
 /** Authority is the actual working tree plus the frozen f803 published fixture.
  * No serialized approval boolean is consulted anywhere in this file. */
@@ -45,7 +46,7 @@ test('the frozen f803 snapshot is the published canonical bytes and the moving c
   expect(frozenRows.length).toBe(487);
   // The moving canonical retains every f803 row at its published position.
   expect(current.slice(0, frozenRows.length).map(row => row.path)).toEqual(frozenRows.map(row => row.path));
-  expect(current.length).toBe(frozenRows.length + 17);
+  expect(current.length).toBe(CURRENT_CANONICAL_SOURCE_ROWS);
   // Two genuine appends follow the frozen f803 rows: the ORM 0.3.26 patch +
   // f803 snapshot pair, then the SDK19 telemetry canonical snapshot.
   expect(current.slice(frozenRows.length).map(row => row.path)).toEqual([PATCH_26, SNAPSHOT,
@@ -63,7 +64,8 @@ test('the frozen f803 snapshot is the published canonical bytes and the moving c
     'qlever/tests/test_qlever_read_lease_diagnostic.py',
     'scripts/lib/independent-admission/consumer-execution-cbb-snapshot.json',
     'qlever/tests/test_qlever_archive_lifecycle.py',
-    'scripts/lib/independent-admission/consumer-execution-dca-snapshot.json']);
+    'scripts/lib/independent-admission/consumer-execution-dca-snapshot.json',
+    'qlever/scripts/sdk-generated-producer-transport.py']);
   expect(new Set(current.map(row => row.path)).size).toBe(current.length);
 });
 
@@ -82,7 +84,7 @@ test('the current canonical binds actual disk bytes and re-hashes only rows that
   // re-bound too, never dropped; nothing outside the frozen row set is invented.
   const frozenPaths = new Set(frozenRows.map(row => row.path));
   for (const movedPath of moved) expect(frozenPaths.has(movedPath)).toBe(true);
-  expect(current.length).toBe(frozenRows.length + 17);
+  expect(current.length).toBe(CURRENT_CANONICAL_SOURCE_ROWS);
   // Historical facts are never dropped or relabelled.
   const patch25 = current.find(row => row.path === PATCH_25)!;
   expect(patch25.sha256).toBe('15917daa88260327bb30d5da25d9db7efb0fd3386c7f0494102fa780ac870789');

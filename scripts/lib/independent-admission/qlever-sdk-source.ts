@@ -11,15 +11,31 @@ import { inspectSdkInputOwnership } from './qlever-sdk-inputs';
 import { inspectSdkBuildExecution, SdkTrackedPhaseOriginalsUnobserved, SDK_TRACKED_PHASE_UNOBSERVED } from './qlever-sdk-execution';
 import { inspectSdkSymlinkOriginals } from './qlever-sdk-symlinks';
 import { qleverSdkOriginalsView } from './qlever-sdk-originals';
+import { qleverSdkUpstreamGitObservation } from './qlever-sdk-upstream-source';
+import { qleverSdkFetchContentByteRows } from './qlever-sdk-fetchcontent';
 import { captureLegalFileIdentity, assertLegalFileIdentity,resolveExecutableIdentityPath} from './legal-file-custody';
 const hash = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
 const SHA = /^[a-f0-9]{64}$/u;
 const HELPER_SHA = 'dddb499b82df467ff41511dd6dfab5877ed7d63cbcfa88fb772be9e6152aca6c';
+/** The ONE composite obligation the mechanical byte pass cannot discharge. It
+ * names two real proofs (generated-input causality and full toolchain source
+ * causality) and is retired ONLY by the operational path once every
+ * independently verified axis plus every live same-handle guard holds. */
+export const SDK_COMPOSITE_SOURCE_GAP = 'qlever-sdk-generated-input-and-full-toolchain-source-causality-not-yet-verified';
 const safe = (name: unknown): name is string => typeof name === 'string' && Boolean(name) && !name.startsWith('/') && !/[\\\u0000-\u001f\u007f]/u.test(name) && !name.split('/').some(part => !part || part === '.' || part === '..');
 function need(value: unknown, reason: string): asserts value { if (!value) throw Error('QLever SDK source: ' + reason); }
 type SourceOriginalReference=Readonly<{path:string;bytes:number;sha256:string}>;
 type SourceArchiveOriginalView=Readonly<{sourceSha:string;target:string;collection:SourceOriginalReference;ledger:SourceOriginalReference;coordinates:readonly Readonly<{name:string;version:string;dsc:SourceOriginalReference;archives:readonly SourceOriginalReference[]}>[];requiredCoordinates:readonly Readonly<{name:string;version:string}>[];absentOwnedCoordinates:readonly Readonly<{name:string;version:string}>[];ownedCoordinatesComplete:boolean;scope:'actual DSC and complete archive checksum mechanics only';officialAuthorityVerified:false;assertCurrent():void}>;
-const verifiedInputs = new WeakMap<object, Readonly<{sourceArchiveView?:SourceArchiveOriginalView;sdk: NonNullable<ReturnType<typeof qleverSdkOriginalsView>>; afterReference: Readonly<{path: string; bytes: number; sha256: string}>; rows: readonly Readonly<{originalPath: string; bytes: number; sha256: string; mode: number}>[] }>>();
+/** The SAME verified full-shard input map, now also carrying the verified input
+ * ownership view derived during that one verification. The ownership rows hold
+ * each input's signed-Debian binary/source tuples; without this the leaf had no
+ * bridge to them at all. The map stays private and currentness-guarded. */
+type VerifiedInputOwnership=Readonly<{
+  inputRows:readonly Readonly<{path:string;role:string;observedBeforeCompile:boolean;
+    owners:readonly Readonly<{binary:string;binaryVersion:string;
+      source:Readonly<{name:string;version:string}>}>[]}>[];
+  unresolvedInputs:readonly Readonly<{path:string;role:string;reason:string}>[]}>;
+const verifiedInputs = new WeakMap<object, Readonly<{sourceArchiveView?:SourceArchiveOriginalView;sdk: NonNullable<ReturnType<typeof qleverSdkOriginalsView>>; afterReference: Readonly<{path: string; bytes: number; sha256: string}>; rows: readonly Readonly<{originalPath: string; bytes: number; sha256: string; mode: number}>[]; ownership: VerifiedInputOwnership}>>();
 type SdkSourceAdmissionResult = Readonly<{verified: boolean; facts: Readonly<Record<string, unknown>>; pending: readonly string[]; assertCurrent(): void}>;
 const sourceAdmissions = new WeakMap<object, Readonly<{sdkOriginals: unknown; source: unknown; result: SdkSourceAdmissionResult}>>();
 /** Only the actual complete observer result, bound to both original private handles. */
@@ -37,7 +53,9 @@ export function sdkVerifiedInputOriginalView(capability: unknown) {
   if (value && qleverSdkOriginalsView(capability) === value.sdk) {
     const raw = value.sdk.readOriginal(value.afterReference.path, limits.metadataBytes);
     need(raw.length === value.afterReference.bytes && hash(raw) === value.afterReference.sha256, 'verified input inventory custody changed');
-    return Object.freeze({afterReference: value.afterReference, rows: value.rows});
+    // Ownership comes from the SAME map entry, so a caller cannot supply it and
+    // the existing currentness check covers it exactly like rows/afterReference.
+    return Object.freeze({afterReference: value.afterReference, rows: value.rows, ownership: value.ownership});
   }
   return undefined;
 }
@@ -46,6 +64,18 @@ export function sdkVerifiedSourceArchiveOriginalView(capability:unknown):SourceA
   if(!capability||typeof capability!=='object')return undefined;
   const view=verifiedInputs.get(capability)?.sourceArchiveView;view?.assertCurrent();return view;
 }
+/** Freeze the verified ownership projection. Only these fields are published:
+ * the per-input role/before-compile fact and the signed binary/source tuple that
+ * the SAME verification derived. Nothing here is caller-supplied. */
+const verifiedOwnershipView=(ownership:any):VerifiedInputOwnership=>Object.freeze({
+  inputRows: Object.freeze((ownership.inputRows??[]).map((row:any)=>Object.freeze({
+    path: row.path, role: row.role, observedBeforeCompile: row.observedBeforeCompile === true,
+    owners: Object.freeze((row.owners??[]).map((owner:any)=>Object.freeze({
+      binary: owner.binary, binaryVersion: owner.binaryVersion,
+      source: Object.freeze({name: owner.source.name, version: owner.source.version})}))) }))),
+  unresolvedInputs: Object.freeze((ownership.unresolvedInputs??[]).map((row:any)=>Object.freeze({
+    path: row.path, role: row.role, reason: row.reason})))});
+
 /** SDK byte/source-set facts only. The one central SDK private binding is
  * required; no JSON can reconstruct it, or authorize a native/release gate. */
 export function inspectQleverSdkSourceOriginals(capability: unknown, remainingMilliseconds = limits.timeoutMs): Readonly<{
@@ -126,7 +156,8 @@ export function inspectQleverSdkSourceOriginals(capability: unknown, remainingMi
     } else if (ownership.unresolvedSymlinkOriginalTargets.length) pending.add('qlever-sdk-input-symlink-before-after-causality-unverified');
     need(qleverSdkOriginalsView(capability) === sdk, 'SDK verified input snapshot custody changed');
     if (!ownership.unresolvedSymlinkOriginalTargets.length || facts.sdkSelectedInputSymlinkBeforeAfterBytesVerified === true) verifiedInputs.set(capability as object, Object.freeze({sdk, afterReference: Object.freeze({...reference(master.inputs.after)}),
-      rows: Object.freeze(after.files.map((row: any) => Object.freeze({originalPath: row.originalPath, bytes: row.bytes, sha256: row.sha256, mode: row.mode})))}));
+      rows: Object.freeze(after.files.map((row: any) => Object.freeze({originalPath: row.originalPath, bytes: row.bytes, sha256: row.sha256, mode: row.mode}))),
+      ownership: verifiedOwnershipView(ownership)}));
     facts.sdkExactDebianSourceTuplesDerivedFromActualOwnership = ownership.requiredSources;
     if (ownership.unresolvedInputs.some(row => row.role !== 'installed-metadata')) pending.add('qlever-sdk-Git-generated-or-other-non-Debian-input-source-authority-unresolved');
     need(qleverSdkOriginalsView(capability) === sdk, 'SDK input custody changed');
@@ -168,11 +199,54 @@ export function inspectQleverSdkSourceOriginals(capability: unknown, remainingMi
       const retained=Object.freeze({...inputSnapshot,sourceArchiveView});verifiedInputs.set(capability as object,retained);assertCurrent();
     }
 
-    pending.add('qlever-sdk-generated-input-and-full-toolchain-source-causality-not-yet-verified');
+    pending.add(SDK_COMPOSITE_SOURCE_GAP);
   } catch (error) { pending.add((error as Error).message); }
   return Object.freeze({verified: false, pending: Object.freeze([...pending]), facts: Object.freeze(facts)});
 }
 
+
+/** The CLOSED set of axes the composite SOURCE obligation actually represents.
+ * A caller cannot shrink this list: an unknown/missing/extra axis is refused. */
+export const SDK_SOURCE_REQUIRED_AXES = Object.freeze(['inputOriginals','preparedDependencySources','configureCompileExecution',
+  'ownedDebianSourceArchives','upstreamGitPreimages','reviewedPatchProjection','selectedUpstreamInputOriginals',
+  'generatedInputIoClosure','toolchainSourceClosure'] as const);
+
+/** PURE, FAIL-CLOSED retirement rule for the ONE composite source gap.
+ *
+ * The composite token states: "generated-input causality AND full toolchain
+ * source causality are not yet verified". It may be retired ONLY when the
+ * complete closed axis set is independently true AND no other pending fact
+ * remains AND the caller has just re-run its live same-handle guards.
+ *
+ * Every input here is an already-derived fact (never a caller-supplied
+ * boolean): `axes` comes from verified views in this module, `pending` is the
+ * accumulated set of real obligations, and `guardsCurrent()` re-asserts the
+ * private capability/currentness chain. A missing axis, an extra axis, a false
+ * axis, any residual pending, or a stale guard all leave the token in place.
+ */
+export function inspectSdkCompositeSourceRetirement(input:{
+  axes:Readonly<Record<string,boolean>>;
+  pending:ReadonlySet<string>;
+  guardsCurrent:()=>boolean;
+  contributing?:Readonly<{toolchainOperations:number}>;
+}):Readonly<{retired:boolean;reason:string;axes:readonly string[]}>{
+  const required=[...SDK_SOURCE_REQUIRED_AXES], keys=Object.keys(input.axes);
+  if(keys.length!==required.length||!required.every(name=>Object.prototype.hasOwnProperty.call(input.axes,name)))
+    return Object.freeze({retired:false,reason:'closed axis set differs',axes:required});
+  const missing=required.filter(name=>input.axes[name]!==true);
+  if(missing.length)return Object.freeze({retired:false,reason:'unverified axes: '+missing.join(','),axes:required});
+  if(!input.pending.has(SDK_COMPOSITE_SOURCE_GAP))
+    return Object.freeze({retired:false,reason:'composite obligation not present',axes:required});
+  const residual=[...input.pending].filter(reason=>reason!==SDK_COMPOSITE_SOURCE_GAP);
+  if(residual.length)return Object.freeze({retired:false,reason:'residual source obligations: '+residual.length,axes:required});
+  const contributing=input.contributing;
+  if(!contributing||!Number.isSafeInteger(contributing.toolchainOperations)||contributing.toolchainOperations<=0)
+    return Object.freeze({retired:false,reason:'nonvacuous verified contributor set required',axes:required});
+  let current=false;
+  try{current=input.guardsCurrent()===true;}catch{current=false;}
+  if(!current)return Object.freeze({retired:false,reason:'live same-handle guards are not current',axes:required});
+  return Object.freeze({retired:true,reason:'every closed source axis, contributor and live guard verified',axes:required});
+}
 
 /** Operational source-axis orchestration. Inspect above remains the synchronous
  * byte-mechanics API; only this path consumes independent signature authority. */
@@ -310,15 +384,66 @@ export async function observeQleverSdkSourceAdmission(input: {sdkOriginals: unkn
     if(observedToolGuard && tracked===generation.facts && tracked?.sdkActualConfigureCompileTrackedWaitVerified===true && facts.sdkOwnedDebianSourceArchiveAuthorityVerified===true
       && tools.facts.sdkObservedToolAfterShardBytesVerified===true && tools.facts.sdkObservedToolsSignedDebianBinaryBytesVerified===true
       && Array.isArray(unresolved) && unresolved.some(row=>row.role!=='installed-metadata') && Array.isArray(toolFiles) && inputRows && signedFiles
+      // PER-ROW RESOLUTION. Each unresolved input closes only under a real
+      // same-private origin: an exact signed-Debian binary/after-shard join, a
+      // reviewed Git/patch postpatch member, a prepared FetchContent dependency
+      // byte row, or a transitive generated origin already proven by the
+      // toolchain leaf. Any unknown row keeps the global pending.
       && unresolved.filter(row=>row.role!=='installed-metadata').every(row=>{
-        if(row.role!=='observed-input'||row.reason!=='generated-or-unobserved-before-compile')return false;
         const selected=inputRows.filter(value=>value.originalPath===row.path);
-        const observed=toolFiles.filter((value:any)=>value.path===row.path&&value.observedBeforeCompile===false);
-        if(selected.length!==1||observed.length!==1)return false;
-        const actual=selected[0]!,tool=observed[0];
-        if(tool.bytes!==actual.bytes||tool.sha256!==actual.sha256||tool.mode!==actual.mode)return false;
-        const binaries=signedFiles.filter(value=>value.installedPath===row.path&&value.bytes===actual.bytes&&value.sha256===actual.sha256&&value.mode===actual.mode);
-        return binaries.length===1&&tool.signedDebianBinary===binaries[0]!.binary&&tool.declaredSource===binaries[0]!.source;
+        if(selected.length!==1)return false;
+        const actual=selected[0]!;
+        // (a) signed Debian installed file with its after-shard owner
+        if(row.role==='observed-input'&&row.reason==='generated-or-unobserved-before-compile'){
+          const observed=toolFiles.filter((value:any)=>value.path===row.path&&value.observedBeforeCompile===false);
+          if(observed.length===1){
+            const tool=observed[0];
+            if(tool.bytes===actual.bytes&&tool.sha256===actual.sha256&&tool.mode===actual.mode){
+              const binaries=signedFiles.filter(value=>value.installedPath===row.path&&value.bytes===actual.bytes&&value.sha256===actual.sha256&&value.mode===actual.mode);
+              if(binaries.length===1&&tool.signedDebianBinary===binaries[0]!.binary&&tool.declaredSource===binaries[0]!.source)return true;
+            }
+          }
+        }
+        // (b) reviewed Git/patch postpatch member, via the SAME private getter.
+        // Members carry RELATIVE paths; the canonical join uses the observation's
+        // OWN verified source root, never a path-prefix guess.
+        const git=qleverSdkUpstreamGitObservation(input.sdkOriginals);
+        if(git&&facts.sdkUpstreamReviewedPatchProjectionVerified===true){
+          const root=git.sourceRoot;
+          if(typeof root==='string'&&root.startsWith('/')&&root.length>1&&!root.endsWith('/')){
+            const member=git.postpatchMembers.filter((value:any)=>value&&typeof value.path==='string'
+              &&!value.path.startsWith('/')
+              &&root+'/'+value.path===row.path
+              &&value.bytes===actual.bytes&&value.sha256===actual.sha256&&value.mode===actual.mode);
+            if(member.length===1)return true;
+          }
+        }
+        // (c) prepared FetchContent dependency byte row, from the helper-closed
+        // byte set on the SAME private observation (not a guessed result shape).
+        if(facts.sdkPreparedDependencySourceOriginalsVerified===true
+          &&facts.sdkFetchContentDeclaredSourceByteClosureVerified===true){
+          const prepared=(input.sdkOriginals as any)&&qleverSdkFetchContentByteRows?.(input.sdkOriginals);
+          if(Array.isArray(prepared)&&prepared.some((rec:any)=>rec&&rec.path===row.path
+            &&rec.bytes===actual.bytes&&rec.sha256===actual.sha256&&rec.mode===actual.mode))return true;
+        }
+        // (d) transitive generated origin proven by the toolchain leaf for this
+        // exact path/bytes/sha (the earlier producer chain already closed)
+        const generatedOrigin=(facts.sdkToolchainGeneratedProducerInputOrigins as readonly any[]|undefined);
+        if(Array.isArray(generatedOrigin)&&generatedOrigin.some((entry:any)=>entry
+          &&entry.path===row.path&&entry.bytes===actual.bytes&&entry.sha256===actual.sha256
+          &&entry.closed===true))return true;
+        // (e) CLOSED PRODUCER OUTPUT. A build output is not an INPUT of its own
+        // producer, so it never appears in the input-origin list. It closes here
+        // ONLY through the toolchain leaf's own post-graph-validation output fact,
+        // joined on the exact path/bytes/mode from the SAME private verified
+        // inventory. The `compile-output` role or any boolean is NOT authority:
+        // the leaf emits the fact only after the complete exec/input/custody/
+        // origin graph accepted, so a present row here is already proved.
+        const closedOutputs=(facts.sdkToolchainGeneratedProducerClosedOutputs as readonly any[]|undefined);
+        if(Array.isArray(closedOutputs)&&closedOutputs.some((entry:any)=>entry&&entry.path===row.path
+          &&entry.bytes===actual.bytes&&entry.sha256===actual.sha256&&entry.mode===actual.mode
+          &&entry.closed===true))return true;
+        return false;
       })) {
       assertCurrent();pending.delete('qlever-sdk-Git-generated-or-other-non-Debian-input-source-authority-unresolved');
     }
@@ -331,6 +456,25 @@ export async function observeQleverSdkSourceAdmission(input: {sdkOriginals: unkn
       selectedUpstreamInputOriginals: facts.sdkSelectedUpstreamInputOriginalsVerified === true,
       generatedInputIoClosure: facts.sdkGeneratedInputIoClosureVerified===true, toolchainSourceClosure: toolchainGuard!==undefined && facts.sdkToolchainSourceClosureVerified===true});
     facts.sdkSourceRequiredAxes = axes;
+    // AGGREGATE RETIREMENT. The composite token represents BOTH generated-input
+    // causality and full toolchain source causality, so it can only leave the
+    // set when the closed axis list, the nonvacuous verified contributor set,
+    // every other pending fact and the live same-handle guards all hold. The
+    // rule itself is a pure function of derived facts; no JSON can retire it.
+    const retirement = inspectSdkCompositeSourceRetirement({
+      axes,
+      pending,
+      guardsCurrent: () => { try { assertCurrent(); return true; } catch { return false; } },
+      contributing: {toolchainOperations: Number(facts.sdkToolchainOperationCount ?? 0)},
+    });
+    facts.sdkSourceCompositeRequirement = Object.freeze({
+      token: SDK_COMPOSITE_SOURCE_GAP,
+      closedAxes: SDK_SOURCE_REQUIRED_AXES,
+      retired: retirement.retired,
+      reason: retirement.reason,
+    });
+    if (retirement.retired) pending.delete(SDK_COMPOSITE_SOURCE_GAP);
+    else pending.add(SDK_COMPOSITE_SOURCE_GAP);
     verified = Object.values(axes).every(value => value === true) && pending.size === 0;
     facts.sdkSourceCompletenessVerified = verified;
     check(); assertCurrent();

@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {createHash} from 'node:crypto';
 import historical from '../fixtures/sdk-authority-pre-a101-policy.original.json';
-import {completeObserved,observedSecondaryBindings} from './source-binding-group.fixture';
+import {CURRENT_CANONICAL_SOURCE_ROWS, completeObserved,observedSecondaryBindings} from './source-binding-group.fixture';
 import current from '../../scripts/lib/independent-admission/consumer-execution-current.json';
 import {QLEVER_SDK_EXECUTION_GROUPS as SDK} from '../../scripts/lib/independent-admission/qlever-sdk-origin-policy';
 import {CONSUMER_SOURCE_GROUPS as CONSUMER,CI_CONSUMER_SOURCE_GROUPS as CI} from '../../scripts/lib/independent-admission/consumer-observer-policy';
@@ -50,7 +50,7 @@ test('new SDK20 pairs only the three actual kernel-reviewed authority files whil
  expect(changed.map(row=>row.path).sort()).toEqual(['qlever/scripts/sdk-generation-multiprocess-bindings.py','qlever/scripts/sdk-ptrace-execution.py','qlever/scripts/sdk-tool-provider-originals.py']);
  for(const row of current)expect(hash(fs.readFileSync(path.join(root,row.path)))).toBe(row.sha256);
  for(const role of latest.secondarySelectors??[]){const old=previous.secondarySelectors!.find(row=>row.path===role.path)!;if(old.sha256!==role.sha256){const mixed=observed(latest);mixed.set(sourceBindingKey(role),old.sha256);expect(()=>selectGitHubSourceBindingGroup(SDK,mixed)).toThrow();}}
- expect(current).toHaveLength(504);
+ expect(current).toHaveLength(CURRENT_CANONICAL_SOURCE_ROWS);
  const controller=CONSUMER.find(group=>current.every(row=>group.sourceBindings.some(binding=>binding.path===row.path&&binding.sha256===row.sha256)))!;
  for(const row of current)expect(controller.sourceBindings.find(binding=>binding.path===row.path)?.sha256).toBe(row.sha256);
 });

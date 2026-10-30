@@ -10,7 +10,7 @@
  *     one to SDK84, and refuses missing/stale/source-only shapes;
  *  3. the emitted CMake argument, the hashed contract flag and the prior-SDK
  *     validator all agree on ON, while macOS stays OFF;
- *  4. historical prefixes and the 504-row canonical still bind actual bytes.
+ *  4. historical prefixes and the current canonical physical originals still bind actual bytes.
  */
 import {createHash} from 'node:crypto';
 import {readFileSync} from 'node:fs';
@@ -18,6 +18,7 @@ import path from 'node:path';
 import {it,expect} from 'vitest';
 import {QLEVER_SDK_EXECUTION_GROUPS as SDK,QLEVER_LINUX_EXECUTION_GROUPS as LINUX} from '../../scripts/lib/independent-admission/qlever-sdk-origin-policy';
 import {selectGitHubSourceBindingGroup,secondaryGitHubSourceBindingSelectors,sourceBindingKey} from '../../scripts/lib/independent-admission/github-source-binding-groups';
+import {CURRENT_CANONICAL_SOURCE_ROWS} from './source-binding-group.fixture';
 
 const ROOT=path.resolve(import.meta.dirname,'../..');
 const whole=(g:unknown)=>createHash('sha256').update(JSON.stringify(g)).digest('hex');
@@ -126,10 +127,10 @@ it('the latest live SDK87 group binds the actual current build-contract bytes',(
   expect(SDK84_RECIPE).not.toBe(sha(RECIPE));
 });
 
-it('the live canonical still binds 504 actual rows including both edited files',()=>{
+it('the live canonical still binds the current canonical physical originals including both edited files',()=>{
   const rows=JSON.parse(read('scripts/lib/independent-admission/consumer-execution-current.json')) as {path:string;sha256:string}[];
-  expect(rows).toHaveLength(504);
-  expect(new Set(rows.map(r=>r.path)).size).toBe(504);
+  expect(rows).toHaveLength(CURRENT_CANONICAL_SOURCE_ROWS);
+  expect(new Set(rows.map(r=>r.path)).size).toBe(CURRENT_CANONICAL_SOURCE_ROWS);
   for(const row of rows) expect(sha(row.path),row.path).toBe(row.sha256);
   // The two build-contract files are canonical rows; the regression leaf is a
   // policy-owned mandatory role only (it is not a canonical member).

@@ -10,7 +10,7 @@ import path from 'node:path';
 import {it, expect} from 'vitest';
 import {QLEVER_SDK_EXECUTION_GROUPS as SDK, QLEVER_LINUX_EXECUTION_GROUPS as LINUX} from '../../scripts/lib/independent-admission/qlever-sdk-origin-policy';
 import {selectGitHubSourceBindingGroup, sourceBindingKey} from '../../scripts/lib/independent-admission/github-source-binding-groups';
-import {completeObserved} from './source-binding-group.fixture';
+import {CURRENT_CANONICAL_SOURCE_ROWS, completeObserved} from './source-binding-group.fixture';
 import historicalWhole from '../fixtures/independent-admission/sdk86-historical-whole-hashes.json';
 
 const ROOT = path.resolve(import.meta.dirname, '../..');
@@ -29,6 +29,10 @@ const LEASE_BINDING = 'qlever/scripts/native/lease_sweep_binding.py';
 const EXECUTOR_BINDINGS = 'qlever/scripts/sdk-readonly-executor-bindings.py';
 const KERNEL_PROBE = 'qlever/scripts/sdk-kernel-policy-probe.py';
 const READONLY_NORMAL = '.github/workflows/qlever-readonly-normal-job.yml';
+// SDK70 now uses the whole canonical limit profile, changing only its current
+// digest. Its inherited role and SDK1–86 historical values remain unchanged.
+const SDK70_E2E = 'qlever/tests/test_sdk70_mremap_e2e.py';
+const SOURCE_ORIGINALS = 'qlever/scripts/sdk-generated-source-originals.py';
 const all = (g: any) => [...g.selectors, ...(g.secondarySelectors ?? []), ...(g.secondarySelectorStages ?? []).flat(), ...g.sourceBindings];
 
 /** SDK86's published bytes — HISTORICAL, never replaced with today's tree. */
@@ -48,22 +52,28 @@ it('SDK87 whole-inherits SDK86 and re-pins only the reviewed current roles', () 
   const expectedStages = (inherited.secondarySelectorStages ?? []).map(stage => stage.map(row =>
     row.path === BUILDER ? {...row, sha256: sha(BUILDER)} : row));
   expect(JSON.stringify(next.secondarySelectorStages)).toBe(JSON.stringify(expectedStages));
-  // Both locked PCH patches append explicit CURRENT source roles. Every
-  // inherited row keeps its position; the two new rows are asserted exactly.
-  expect(next.sourceBindings.length).toBe(inherited.sourceBindings.length + 2);
+  // Both locked PCH patches and the lossless generated-producer transport codec
+  // append explicit CURRENT source roles. Every inherited row keeps its position;
+  // the three new rows are asserted exactly, and the codec is the new canonical
+  // role (the appended tail therefore grows by three, not two).
+  expect(next.sourceBindings.length).toBe(inherited.sourceBindings.length + 3);
   const before = all(inherited), after = all(next);
-  expect(after.length).toBe(before.length + 2);
-  expect(after.at(-2)!.path).toBe('qlever/patches/qlever-s2-scoped-precompiled-headers.patch');
-  expect(after.at(-1)!.path).toBe(PATCH);
-  expect(after.at(-1)!.sha256).toBe(sha(PATCH));
+  expect(after.length).toBe(before.length + 3);
+  expect(after.at(-3)!.path).toBe('qlever/patches/qlever-s2-scoped-precompiled-headers.patch');
+  expect(after.at(-2)!.path).toBe(PATCH);
+  expect(after.at(-2)!.sha256).toBe(sha(PATCH));
+  expect(after.at(-1)!.path).toBe('qlever/scripts/sdk-generated-producer-transport.py');
+  expect(after.at(-1)!.sha256).toBe(sha('qlever/scripts/sdk-generated-producer-transport.py'));
   const moved: string[] = [];
   for (let i = 0; i < before.length; i++) {
     expect(after[i].path, `role[${i}].path`).toBe(before[i].path);
     if (before[i].sha256 !== after[i].sha256) moved.push(after[i].path);
   }
   // The observer (4 inherited occurrences) and the leaf (1) move, plus the QLever
-  // lock/series and the current builder documentation whose bytes changed.
-  expect(new Set(moved)).toEqual(new Set([OBSERVER, LEAF, LOCK, SERIES, LEASES, LEASE_EXT, LEASE_BINDING, BUILDER, EXECUTOR_BINDINGS, READONLY_NORMAL, BINDER, KERNEL_PROBE]));
+  // lock/series, the current builder documentation whose bytes changed, the
+  // generated-source originals module that now emits the transport projection, and
+  // the SDK70 replay fixture that now uses the whole canonical limit profile.
+  expect(new Set(moved)).toEqual(new Set([OBSERVER, LEAF, LOCK, SERIES, LEASES, LEASE_EXT, LEASE_BINDING, BUILDER, EXECUTOR_BINDINGS, READONLY_NORMAL, BINDER, KERNEL_PROBE, SOURCE_ORIGINALS, SDK70_E2E]));
   expect(moved.filter(p => p === OBSERVER)).toHaveLength(4);
   expect(moved.filter(p => p === LEAF)).toHaveLength(1);
   // The filtered-lease lookup slice moves the lease implementation's CURRENT
@@ -83,7 +93,10 @@ it('SDK87 whole-inherits SDK86 and re-pins only the reviewed current roles', () 
   // bodies move in the unpublished slice only.
   expect(moved.filter(p => p === BINDER)).toHaveLength(3);
   expect(moved.filter(p => p === KERNEL_PROBE)).toHaveLength(1);
-  for (const role of [LEASES, LEASE_EXT, LEASE_BINDING, BUILDER, EXECUTOR_BINDINGS, READONLY_NORMAL, BINDER, KERNEL_PROBE]) {
+  // SDK70 keeps its single inherited occurrence; its current digest moves once.
+  expect(moved.filter(p => p === SDK70_E2E)).toHaveLength(1);
+  expect(all(next).filter((r: any) => r.path === SDK70_E2E)).toHaveLength(1);
+  for (const role of [LEASES, LEASE_EXT, LEASE_BINDING, BUILDER, EXECUTOR_BINDINGS, READONLY_NORMAL, BINDER, KERNEL_PROBE, SOURCE_ORIGINALS, SDK70_E2E]) {
     for (const row of all(next).filter((r: any) => r.path === role)) expect(row.sha256).toBe(sha(role));
   }
   for (const row of all(next).filter((r: any) => r.path === LEASES)) expect(row.sha256).toBe(sha(LEASES));
@@ -131,17 +144,17 @@ it('generic selector resolves SDK86/current/stale against the real bytes', () =>
     oldObservation.set(sourceBindingKey(row), row.sha256);
   expect(selectGitHubSourceBindingGroup(peers, oldObservation)).toBe(inherited);
   expect(selectGitHubSourceBindingGroup(peers, completeObserved(peers, next))).toBe(next);
-  for (const stale of [OBSERVER, LEAF, BINDER, BUILDER, PATCH]) {
+  for (const stale of [OBSERVER, LEAF, BINDER, BUILDER, PATCH, SDK70_E2E]) {
     const map = new Map(completeObserved(peers, next));
     map.set('source:' + stale, 'f'.repeat(64));
     expect(() => selectGitHubSourceBindingGroup(peers, map)).toThrow();
   }
 });
 
-it('the canonical holds 504 unique rows matching the live tree', () => {
+it('the canonical holds the current canonical physical originals matching the live tree', () => {
   const rows = JSON.parse(readFileSync(path.join(ROOT, 'scripts/lib/independent-admission/consumer-execution-current.json'), 'utf8')) as { path: string; sha256: string }[];
-  expect(rows).toHaveLength(504);
-  expect(new Set(rows.map(r => r.path)).size).toBe(504);
+  expect(rows).toHaveLength(CURRENT_CANONICAL_SOURCE_ROWS);
+  expect(new Set(rows.map(r => r.path)).size).toBe(CURRENT_CANONICAL_SOURCE_ROWS);
   for (const row of rows) expect(sha(row.path), row.path).toBe(row.sha256);
   expect(LINUX).toHaveLength(SDK.length + 1);
   expect(LINUX.some((g: any) => whole(g) === whole(SDK[SDK.length - 1]))).toBe(true);

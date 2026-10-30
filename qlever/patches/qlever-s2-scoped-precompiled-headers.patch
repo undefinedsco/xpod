@@ -1,19 +1,32 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
-@@ -614,6 +614,117 @@
+@@ -614,6 +614,143 @@
      endif ()
      target_precompile_headers(rdfTypes PRIVATE ${PRECOMPILED_HEADER_FILES_EXTERNAL})
      target_precompile_headers(rdfEscaping PRIVATE ${PRECOMPILED_HEADER_FILES_EXTERNAL})
 +
-+    # Scoped precompiled headers for the pinned S2 target (canonical Clang profile only).
++    # Scoped precompiled headers for the pinned S2 target (Clang 19 and GNU 12).
 +    #
-+    # Why scoped: src/s2/s2point.h transitively imports s2/_fp_contract_off.h, which
-+    # carries WHOLE-TRANSLATION-UNIT codegen pragmas (STDC FP_CONTRACT OFF for Clang).
-+    # Precompiling s2point.h for a TU that did not already reach it would change that
-+    # TU's floating-point code generation. So the header is precompiled only for TUs
-+    # whose own include closure already reaches it; the remaining 13 are marked
-+    # SKIP_PRECOMPILE_HEADERS and still compiled normally. No TU is dropped.
++    # The precompiled unit is the SIX standard headers below and nothing else.
++    #
++    # Why s2point.h is deliberately NOT precompiled: src/s2/s2point.h transitively
++    # imports s2/_fp_contract_off.h, which carries WHOLE-TRANSLATION-UNIT codegen
++    # pragmas (STDC FP_CONTRACT OFF for Clang, GCC optimize("fp-contract=off") for
++    # GNU). Precompiling that header moves the pragma from the TU's own first
++    # include position to the front of the translation unit, which changes the
++    # floating-point code generation of TUs that do not include it first. Keeping
++    # it out of the PCH leaves every TU's include order and pragma position exactly
++    # as upstream wrote them. The protected TUs are still compiled normally; the
++    # 13 TUs whose closure does not reach s2point.h are marked
++    # SKIP_PRECOMPILE_HEADERS. No TU is dropped and no target changes.
++    #
++    # Scope of the claim: this is NOT a codegen-equality guarantee. Object bytes are
++    # expected to differ between PCH-on and PCH-off because precompiled standard
++    # headers change inlining and COMDAT emission; GNU 12 legitimately produces a
++    # different object set. Behavioural evidence is finite and empirical only: the
++    # 139 pinned upstream S2 tests and 130 bitwise differential cases exercised so
++    # far, not a proof over all inputs.
 +    #
 +    # Trust model: this guard is a CHEAP DRIFT CHECK layered on top of the EXISTING
 +    # dependency authority. The prepared SDK source tree is an unpacked archive with
@@ -24,9 +37,23 @@ diff --git a/CMakeLists.txt b/CMakeLists.txt
 +    # 98 sources with the 13 exclusions a strict subset. Those are supplementary to
 +    # the real provenance (pinned archive sha + prepared inventory + cache originals);
 +    # a single file hash is NOT a claim to prove the whole tree.
-+    if (TARGET s2 AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang"
++    # Shared compiler predicate for every scoped PCH unit in this file, derived
++    # UNCONDITIONALLY from the compiler CMake actually selected. It is a derived
++    # internal value, not an input: any -D or cache entry of the same name is
++    # overwritten here, so an unsupported compiler can never be admitted by
++    # predefining it. Clang 19 and GNU 12 are the only admitted profiles; no other
++    # version and no AppleClang enters any unit.
++    set(XPOD_SCOPED_PCH_COMPILER OFF)
++    if (CMAKE_CXX_COMPILER_ID STREQUAL "Clang"
 +        AND CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 19
 +        AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 20)
++        set(XPOD_SCOPED_PCH_COMPILER ON)
++    elseif (CMAKE_CXX_COMPILER_ID STREQUAL "GNU"
++        AND CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 12
++        AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 13)
++        set(XPOD_SCOPED_PCH_COMPILER ON)
++    endif ()
++    if (TARGET s2 AND XPOD_SCOPED_PCH_COMPILER)
 +        set(XPOD_S2_EXPECTED_GIT_TAG "5b5eccd54a08ae03b4467e79ffbb076d0b5f221e")
 +        set(XPOD_S2_EXPECTED_CMAKE_SHA256 "f29f94f93fc5b82d3fe62615bc00d6b04a2556fecbabde347d9f8b25997b2389")
 +
@@ -112,9 +139,8 @@ diff --git a/CMakeLists.txt b/CMakeLists.txt
 +            PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
 +
 +        target_precompile_headers(s2 PRIVATE
-+            "${s2_SOURCE_DIR}/src/s2/s2point.h"
 +            <algorithm> <cmath> <vector> <utility> <memory> <cfloat>)
-+        message(STATUS "Xpod S2 scoped PCH: s2point.h + 6 std headers; 13 reviewed TUs stay PCH-free (all 98 compiled)")
++        message(STATUS "Xpod S2 scoped PCH: 6 std headers only (s2point.h excluded to preserve pragma position); 13 reviewed TUs stay PCH-free (all 98 compiled)")
 +    endif ()
  endif ()
  

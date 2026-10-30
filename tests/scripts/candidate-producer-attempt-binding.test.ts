@@ -22,6 +22,7 @@ import {API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS as API} from '../../scripts/lib/
 import {CLI_SOURCE_VERSION_GROUPS as CLI} from '../../scripts/lib/independent-admission/source-rules';
 import {selectGitHubSourceBindingGroup,secondaryGitHubSourceBindingSelectors,sourceBindingKey} from '../../scripts/lib/independent-admission/github-source-binding-groups';
 import {decodeCatalog} from './sdk-helper-catalog.fixture';
+import {CURRENT_CANONICAL_SOURCE_ROWS} from './source-binding-group.fixture';
 
 const ROOT=path.resolve(import.meta.dirname,'../..');
 const whole=(g:unknown)=>createHash('sha256').update(JSON.stringify(g)).digest('hex');
@@ -119,10 +120,10 @@ it('real staged walk: old value selects SDK80, new value selects SDK81, no futur
   expect(()=>selectGitHubSourceBindingGroup(peers,stale)).toThrow();
 });
 
-it('the live canonical binds 504 real unique rows and no self hash',()=>{
+it('the live canonical binds the current canonical physical originals and no self hash',()=>{
   const rows=JSON.parse(readFileSync(path.join(ROOT,'scripts/lib/independent-admission/consumer-execution-current.json'),'utf8')) as {path:string;sha256:string}[];
-  expect(rows).toHaveLength(504);
-  expect(new Set(rows.map(r=>r.path)).size).toBe(504);
+  expect(rows).toHaveLength(CURRENT_CANONICAL_SOURCE_ROWS);
+  expect(new Set(rows.map(r=>r.path)).size).toBe(CURRENT_CANONICAL_SOURCE_ROWS);
   for(const row of rows) expect(sha(row.path),row.path).toBe(row.sha256);
   expect(rows.filter(r=>r.path==='scripts/lib/independent-admission/consumer-execution-current.json')).toHaveLength(0);
 });

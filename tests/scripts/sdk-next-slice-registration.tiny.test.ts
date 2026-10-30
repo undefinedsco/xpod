@@ -220,7 +220,8 @@ test('only the genuinely new immutable-input-plan slice follows published2406', 
 });
 
 test('the appended groups bind the actual frozen body and real module bytes', () => {
-  expect(sha(read(BODY))).toBe('2cdfd49d2972577ba2fa449007d9a3a8dbda1674217939a97c04ea8fe21ef263');
+  // The current observer includes the verified regular-read source capture.
+  expect(sha(read(BODY))).toBe('e12068a7d0b01e69a101cc05d3c1118173c5682a4684834a86d1083117411f2b');
   for (const [name, groups] of Object.entries(families)) {
     // PUBLISHED f803 history ends at the f803 counts (SDK 74, i.e. indices 0..73).
     // Those tuples — including index 73 — are immutable published history: they are
@@ -345,8 +346,10 @@ test('the frozen published canonical keeps its exact 426 rows and accepted bytes
 });
 
 test('the live canonical binds every actual row of the final combined tree', () => {
-  expect(current.length).toBe(504);
-  expect(new Set(current.map((r) => r.path)).size).toBe(504);
+  // The canonical grew by exactly one appended row for this slice; path
+  // uniqueness must still hold at the new count.
+  expect(current.length).toBe(505);
+  expect(new Set(current.map((r) => r.path)).size).toBe(505);
   // The genuinely new roles of this slice: the corrected SDK inner producer and
   // the CI-discovered Ninja regression that now runs under `test_qlever*`.
   expect(current.find((r) => r.path === 'qlever/scripts/sdk-inner-materials.py')!.sha256)
@@ -355,7 +358,7 @@ test('the live canonical binds every actual row of the final combined tree', () 
     .toBe('474fb14d45835438d222abe89e606fa17e0c68f8fafed7d4e3c869bb7d9d3a7b');
   // The reviewed phase-syscall diagnostic plus its three CI-discovered tests.
   expect(current.find((r) => r.path === 'qlever/scripts/sdk-ptrace-execution.py')!.sha256)
-    .toBe('2cdfd49d2972577ba2fa449007d9a3a8dbda1674217939a97c04ea8fe21ef263');
+    .toBe('e12068a7d0b01e69a101cc05d3c1118173c5682a4684834a86d1083117411f2b');
   // The final reviewed VMA diagnostic and its root-corrected behavioural test.
   expect(current.find((r) => r.path === 'qlever/scripts/sdk-generated-vma-originals.py')!.sha256)
     .toBe('b5e1d095d60952005bb7820811234e33e1d03f4b29c595faa4ef3c8eb0d8a22c');
@@ -368,7 +371,7 @@ test('the live canonical binds every actual row of the final combined tree', () 
   ] as const) expect(current.find((r) => r.path === p)!.sha256).toBe(h);
   for (const row of current) expect(sha(read(row.path))).toBe(row.sha256);
   const body = current.find((r) => r.path === BODY)!;
-  expect(body.sha256).toBe('2cdfd49d2972577ba2fa449007d9a3a8dbda1674217939a97c04ea8fe21ef263');
+  expect(body.sha256).toBe('e12068a7d0b01e69a101cc05d3c1118173c5682a4684834a86d1083117411f2b');
   expect(current.find((r) => r.path === 'qlever/scripts/sdk-original-chunk-store.py')!.sha256)
     .toBe('67ea1a610f15f74288d623694b1a4886a82b0f29a186c40e69bdd232b39f96db');
 });
@@ -436,19 +439,28 @@ test('the CURRENT unpublished slice carries the published helper prefixes and it
   const sec = current.secondarySelectors ?? [];
   expect(sec.length).toBeGreaterThanOrEqual(17);
   // SDK86's 154 bindings are historical. CURRENT SDK87 appends the two
-  // explicitly reviewed PCH patches without changing the inherited path order.
+  // explicitly reviewed PCH patches plus the generated-producer transport codec,
+  // in that exact order, without changing the inherited path order.
   const previous = sdk[85]!;
   const previousBindings = previous.sourceBindings ?? [];
   expect(previousBindings.length).toBe(154);
-  expect(current.sourceBindings.length).toBe(156);
+  expect(current.sourceBindings.length).toBe(157);
   expect(current.sourceBindings.slice(0, 154).map(r => r.path))
     .toEqual(previousBindings.map(r => r.path));
   const expectedAppended = [
     'qlever/patches/qlever-s2-scoped-precompiled-headers.patch',
     'qlever/patches/qlever-antlr-scoped-pch-and-server-pch-reuse.patch',
+    'qlever/scripts/sdk-generated-producer-transport.py',
   ];
   const appended = current.sourceBindings.slice(previousBindings.length);
   expect(appended.map(r => r.path)).toEqual(expectedAppended);
+  // The codec row must bind its ACTUAL reviewed bytes, and the two PCH patches
+  // must keep their exact reviewed digests (byte-for-byte, never a prefix).
+  expect(appended.find(r => r.path === 'qlever/scripts/sdk-generated-producer-transport.py')!.sha256)
+    .toBe('95738800c54230715a065e3dcaaab1ba5f60f70d4ca2ca264144ee580a360a37');
+  for (const patch of expectedAppended.slice(0, 2)) {
+    expect(appended.find(r => r.path === patch)!.sha256).toBe(sha(read(patch)));
+  }
   for (const row of appended) {
     expect(row.sha256).toBe(sha(read(row.path)));
     expect(current.sourceBindings.filter(r => r.path === row.path)).toHaveLength(1);

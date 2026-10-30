@@ -472,8 +472,10 @@ class EndToEnd(unittest.TestCase):
         canonical = obs.load_sdk_execution_limits()
         # Harness-only: the replay byte budget must match the declared source
         # profile, not a stale 256 MiB fixture copy. No product value changes.
-        limits = limits or dict(sourceMaterialBytes=canonical['sourceMaterialBytes'],
-                                shardBytes=canonical['shardBytes'])
+        # Reuse the WHOLE canonical profile: production observe() reads
+        # sourceMaterialBytes/shardBytes/sourceMembers/metadataBytes, so a
+        # hand-copied 2-key subset makes the real replay raise KeyError.
+        limits = limits or canonical
 
         def read_original(name, maximum):
             # Preserve production capture layout (chunk subdirs) and stream in

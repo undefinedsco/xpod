@@ -4,7 +4,24 @@ from pathlib import Path
 from unittest.mock import patch
 ROOT=Path(__file__).resolve().parents[2]
 spec=importlib.util.spec_from_file_location('observer_imports',ROOT/'qlever/scripts/sdk-toolchain-materials.py');m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
-NAMES=['sdk-ptrace-execution.py','sdk-ptrace-kernel.py','sdk-execution-originals-util.py','sdk-generation-multiprocess-bindings.py','sdk-blocking-owned-wait.py','sdk-tool-provider-originals.py','sdk-generated-vma-originals.py','sdk-coordinated-wait.py']
+# The CURRENT complete backend import graph (13 components). This list was stale at
+# 8 names and therefore never materialised `sdk-original-chunk-store.py`, so
+# `finalize` correctly raised "Observer original source missing". The fixture must
+# provide every component that production actually copies; the list is duplicated
+# here on purpose so that a future production drift is DETECTED rather than
+# silently followed (see test_production_import_graph_is_exactly_the_fixture_list).
+NAMES=['sdk-ptrace-execution.py','sdk-ptrace-kernel.py','sdk-execution-originals-util.py','sdk-generation-multiprocess-bindings.py','sdk-blocking-owned-wait.py','sdk-tool-provider-originals.py','sdk-generated-vma-originals.py','sdk-coordinated-wait.py','sdk-original-chunk-store.py','sdk-tool-lifetime-leases.py','sdk-executable-memory-policy.py','sdk-raw-wire-codec.py','sdk-raw-wire-reader.py']
+def production_names():
+ """Read the actual literal list `Session.finalize` copies, for drift detection."""
+ import ast
+ tree=ast.parse((ROOT/'qlever/scripts/sdk-toolchain-materials.py').read_text())
+ for node in ast.walk(tree):
+  if isinstance(node,ast.FunctionDef) and node.name=='finalize':
+   for inner in ast.walk(node):
+    if isinstance(inner,ast.For) and isinstance(inner.iter,ast.List):
+     names=[elt.value for elt in inner.iter.elts]
+     if names and names[0]=='sdk-ptrace-execution.py':return names
+ raise AssertionError('production observer import list not found')
 class Tests(unittest.TestCase):
  def test_finalize_preserves_complete_current_source_bodies_and_refs(self):
   parent=ROOT/'.test-data/observer-imports';parent.mkdir(parents=True,exist_ok=True)
@@ -18,7 +35,7 @@ class Tests(unittest.TestCase):
    collection=json.loads((out/reference['path']).read_text());observer=collection['phases'][0]['backend']['observerOriginals'];self.assertEqual([r['sourcePath'] for r in observer],['qlever/scripts/'+name for name in NAMES]);self.assertEqual([r['file'] for r in observer],[m.commands.ref(session.directory/name,out) for name in NAMES])
    for name in NAMES:self.assertEqual((session.directory/name).read_bytes(),(sources/name).read_bytes());self.assertEqual(m.commands.ref(session.directory/name,out)['sha256'],hashlib.sha256((sources/name).read_bytes()).hexdigest())
    # A real phase uses the same observer list; no caller supplies its file set.
-   (sources/NAMES[-1]).unlink();out2=root/'missing';out2.mkdir();session.out=out2;session.directory=out2/'toolchain-execution';session.directory.mkdir()
+   (sources/'sdk-coordinated-wait.py').unlink();out2=root/'missing';out2.mkdir();session.out=out2;session.directory=out2/'toolchain-execution';session.directory.mkdir()
    with patch.object(m,'HERE',sources):
     with self.assertRaisesRegex(ValueError,'sdk-coordinated-wait'):session.finalize(inner,{},dict(files=[],pending=[]))
 if __name__=='__main__':unittest.main()

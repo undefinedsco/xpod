@@ -15,11 +15,18 @@ import {runSdkSelectedOriginalCommand} from './sdk-selected-original-command';
 import {qleverSdkSourceAdmissionView} from './qlever-sdk-source';
 type SelectedRow=Readonly<{path:string;mode:number;bytes:number;sha256:string;requested:boolean}>;
 type SelectedReadInput=Readonly<{sdkOriginals:unknown;source:unknown;sdkAdmission:unknown;budget:any;paths:readonly string[]}>;
-const observations=new WeakMap<object,Readonly<{facts:Readonly<Record<string,unknown>>;assertCurrent():void;readSelected?: (input:SelectedReadInput)=>Promise<readonly (SelectedRow&{readTracked(path:string):Buffer})[]>}>>();
+type DependencyByteRow=Readonly<{path:string;bytes:number;sha256:string;mode:number;dependency:string}>;
+const observations=new WeakMap<object,Readonly<{facts:Readonly<Record<string,unknown>>;
+  /** NARROW view of the SAME helper-closed dependency byte set. Every row was
+   * validated against the prepared physical inventory by the helper itself. */
+  dependencyByteRows:readonly DependencyByteRow[];
+  assertCurrent():void;readSelected?: (input:SelectedReadInput)=>Promise<readonly (SelectedRow&{readTracked(path:string):Buffer})[]>}>>();
 const hash=(bytes:Buffer)=>createHash('sha256').update(bytes).digest('hex');
 
 function need(value:unknown,reason:string):asserts value{if(!value)throw Error('SDK FetchContent originals: '+reason);}
 export function qleverSdkFetchContentObservation(capability:unknown){if(!capability||typeof capability!=='object')return undefined;const view=observations.get(capability);view?.assertCurrent();return view;}
+/** NARROW same-private view: only the helper-closed dependency byte rows. */
+export function qleverSdkFetchContentByteRows(capability:unknown){if(!capability||typeof capability!=='object')return undefined;const view=observations.get(capability);view?.assertCurrent();return view?.dependencyByteRows;}
 type SelectedDependencyCapture=Readonly<{path:string;bytes:number;sha256:string;mode:number;requested:boolean}>;
 /** Same private observation only; returns actual selected dependency bytes. */
 type SdkSelectedBudget={check():void;remainingMs():number;remainingReadBytes():number;reserveBytes(n:number):void;chargeReadBytes(n:number):void};
@@ -161,7 +168,14 @@ export async function observeQleverSdkFetchContentOriginals(capability:unknown,s
   };
   for(const row of result.pending)pending.add(String(row));
   const stageAssert=assertCurrent;const retainedAssert=()=>{stageAssert();identities.forEach(assertLegalFileIdentity);need(sdkVerifiedInputOriginalView(capability)?.rows===inputs.rows&&qleverSdkUpstreamGitObservation(capability)===upstream&&qleverSdkExecutionOriginalObservation(capability)===execution,'actual input/upstream observation revoked');};
-  const snapshot=Object.freeze(facts);observations.set(capability as object,Object.freeze({facts:snapshot,assertCurrent:retainedAssert,readSelected}));return Object.freeze({facts:snapshot,pending:Object.freeze([...pending]),assertCurrent:retainedAssert});
+  // The rows the helper itself closed against the prepared inventory. Only rows
+  // whose dependency record verified are published; anything unresolved is not.
+  const dependencyByteRows: readonly DependencyByteRow[]=Object.freeze([...records.values()]
+    .filter((row:any)=>Number.isSafeInteger(row.bytes)&&Number.isSafeInteger(row.mode)
+      &&typeof row.sha256==='string'&&typeof row.path==='string')
+    .map((row:any)=>Object.freeze({path:row.path,bytes:row.bytes,sha256:row.sha256,mode:row.mode,
+      dependency:String(row.path.split('/')[4]??'')})));
+  const snapshot=Object.freeze(facts);observations.set(capability as object,Object.freeze({facts:snapshot,dependencyByteRows,assertCurrent:retainedAssert,readSelected}));return Object.freeze({facts:snapshot,pending:Object.freeze([...pending]),assertCurrent:retainedAssert});
  }catch(error){pending.add('qlever-sdk-FetchContent-originals-unverified: '+String(error instanceof Error?error.message:error).slice(0,1024));}
  return Object.freeze({facts:Object.freeze(facts),pending:Object.freeze([...pending])});
 }
@@ -210,5 +224,5 @@ Object.freeze([["sdk-fetchcontent-source-observer.py","9386f0327d30507d46a5c775d
 /** PR124 fetchcontent tuple (append-only, never a rebind): the strict
  * absent-link settlement moved the gate body; the published 39-tuple
  * prefix above stays byte-identical. */
-Object.freeze([["sdk-fetchcontent-source-observer.py","9386f0327d30507d46a5c775d18fd182f21e9f37bff43cb350ef676d0740e94c"],["sdk-fetchcontent-source-bindings.py","1c7367873f2f2b58106f50dc80551481c09ca5463a7d68b7fbfcd1f1554c12de"],["sdk-zip-originals.py","56f5ec76344b82b5e8242508208b5635663c037b2b915013e23b91c8ccdc3e17"],["sdk-git-source-bindings.py","4c95c935a5789e1e0669ab1bf7eba67c05f91f013a51c9b6fe968fc288b222ba"],["sdk-debian-binary-originals.py","f9f780094a7e0d7e530ff1f3200b1ef187587bd6e4463b4291940186f6fd5e5c"],["sdk-debian-index-bindings.py","ad87a17bdb781f34a6a78a5e970d1f9c69d0750a1fcc4ba3f711db317bd75e13"],["sdk-generation-multiprocess-bindings.py","05445f76632d2c2092680345c0b9f5070b5653b7ab63fee052f3cd292ceac384"],["sdk-execution-originals-util.py","bb3e3d40403034e82f42c9243659deeab74c74484c77267ab9a41537caf89bff"],["sdk-tool-provider-originals.py","2b786463648dfa924977224feb281b7e3fae552d1e331c7c2749ce133103317a"],["sdk-generated-vma-originals.py","b5e1d095d60952005bb7820811234e33e1d03f4b29c595faa4ef3c8eb0d8a22c"],["sdk-coordinated-wait.py","778fdaad5802df943c8e7e96e4de79a32845508947c9ae436e742248b2e7aa1a"],["sdk-original-chunk-store.py","67ea1a610f15f74288d623694b1a4886a82b0f29a186c40e69bdd232b39f96db"],["sdk-raw-wire-reader.py","caa95365bc480eec4990d0c1f09d14327e87620d5939b53120db6179a9722a41"],["sdk-executable-memory-policy.py","ae0c241805d4d72a89103a21fe224a29138df4c8c63de55128b107d92c6e7724"]] as const),
+Object.freeze([["sdk-fetchcontent-source-observer.py","9386f0327d30507d46a5c775d18fd182f21e9f37bff43cb350ef676d0740e94c"],["sdk-fetchcontent-source-bindings.py","1c7367873f2f2b58106f50dc80551481c09ca5463a7d68b7fbfcd1f1554c12de"],["sdk-zip-originals.py","56f5ec76344b82b5e8242508208b5635663c037b2b915013e23b91c8ccdc3e17"],["sdk-git-source-bindings.py","4c95c935a5789e1e0669ab1bf7eba67c05f91f013a51c9b6fe968fc288b222ba"],["sdk-debian-binary-originals.py","f9f780094a7e0d7e530ff1f3200b1ef187587bd6e4463b4291940186f6fd5e5c"],["sdk-debian-index-bindings.py","ad87a17bdb781f34a6a78a5e970d1f9c69d0750a1fcc4ba3f711db317bd75e13"],["sdk-generation-multiprocess-bindings.py","e11827aa845079fc2c2f8d014085bebaeb33c49fa44ad210b6707e7c4128e90f"],["sdk-execution-originals-util.py","bb3e3d40403034e82f42c9243659deeab74c74484c77267ab9a41537caf89bff"],["sdk-tool-provider-originals.py","2b786463648dfa924977224feb281b7e3fae552d1e331c7c2749ce133103317a"],["sdk-generated-vma-originals.py","b5e1d095d60952005bb7820811234e33e1d03f4b29c595faa4ef3c8eb0d8a22c"],["sdk-coordinated-wait.py","778fdaad5802df943c8e7e96e4de79a32845508947c9ae436e742248b2e7aa1a"],["sdk-original-chunk-store.py","67ea1a610f15f74288d623694b1a4886a82b0f29a186c40e69bdd232b39f96db"],["sdk-raw-wire-reader.py","caa95365bc480eec4990d0c1f09d14327e87620d5939b53120db6179a9722a41"],["sdk-executable-memory-policy.py","ae0c241805d4d72a89103a21fe224a29138df4c8c63de55128b107d92c6e7724"]] as const),
 ]);

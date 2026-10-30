@@ -24,6 +24,7 @@ import path from 'node:path';
 import {describe,expect,it} from 'vitest';
 import {MODULE_CHAIN_CASE,REQUIRED_MOUNTED_CASES} from '../../scripts/agentfs-native-ci/mounted/required-cases';
 import {AFS_MODULE_MOUNTED_WORKFLOW_SHA256S,githubOriginFacts,observeAfsModuleProductGitHubOrigin} from '../../scripts/lib/independent-admission/github-origin';
+import {CURRENT_CANONICAL_SOURCE_ROWS} from './source-binding-group.fixture';
 
 const ROOT=path.resolve(import.meta.dirname,'../..');
 const WORKFLOW='.github/workflows/agentfs-module-mounted-acceptance.yml';
@@ -122,7 +123,7 @@ describe('AgentFS mounted-module darwin-arm64 runner registration',()=>{
 
   it('keeps the canonical row for the observer in sync with the actual disk bytes',()=>{
     const rows=JSON.parse(readFileSync(path.join(ROOT,'scripts/lib/independent-admission/consumer-execution-current.json'),'utf8')) as {path:string;sha256:string}[];
-    expect(rows).toHaveLength(504);
+    expect(rows).toHaveLength(CURRENT_CANONICAL_SOURCE_ROWS);
     expect(rows.filter(row=>row.path==='scripts/lib/independent-admission/consumer-execution-current.json')).toHaveLength(0);
     const origin=rows.filter(row=>row.path==='scripts/lib/independent-admission/github-origin.ts');
     expect(origin).toHaveLength(1);

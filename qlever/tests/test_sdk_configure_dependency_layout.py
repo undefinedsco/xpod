@@ -1,18 +1,33 @@
 """Exercise the actual production function without starting SDK acquisition."""
-import ast
+import importlib.util
 from pathlib import Path
-import re
-import shlex
 import tempfile
 import unittest
 
 SOURCE = Path(__file__).resolve().parents[1] / 'scripts/sdk-inner-materials.py'
+MODULE = Path(__file__).resolve().parents[1] / 'scripts' / 'sdk-inner-materials.py'
+
+_MODULE_CACHE = {}
+
+def production_module():
+    """Load the REAL module, not an extracted single function.
+
+    `configure_inputs` dispatches to `_makefile_depends` and `file_api`, which are
+    module-level bindings. Compiling the one function into a fresh namespace drops
+    them and raises NameError, so this fixture must bind the actual module exactly
+    as production does. Importing is safe: the module only parses argv under its
+    own ``__main__`` guard.
+    """
+    if 'module' in _MODULE_CACHE:
+        return _MODULE_CACHE['module']
+    spec = importlib.util.spec_from_file_location('sdk_inner_materials_fixture', MODULE)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    _MODULE_CACHE['module'] = module
+    return module
+
 def production_function():
-    module = ast.parse(SOURCE.read_text())
-    function = next(node for node in module.body if isinstance(node, ast.FunctionDef) and node.name == 'configure_inputs')
-    namespace = dict(Path=Path, re=re, shlex=shlex)
-    exec(compile(ast.Module(body=[function], type_ignores=[]), str(SOURCE), 'exec'), namespace)
-    return namespace['configure_inputs']
+    return production_module().configure_inputs
 
 class ConfigureDependencies(unittest.TestCase):
     def setUp(self):

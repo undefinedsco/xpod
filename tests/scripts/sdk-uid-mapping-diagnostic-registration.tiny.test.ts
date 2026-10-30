@@ -9,13 +9,13 @@ import {API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS as api} from '../../scripts/lib/
 import {QLEVER_SDK_EXECUTION_GROUPS as sdk} from '../../scripts/lib/independent-admission/qlever-sdk-origin-policy';
 import {CONSUMER_SOURCE_GROUPS as consumer,CI_CONSUMER_SOURCE_GROUPS as ci} from '../../scripts/lib/independent-admission/consumer-observer-policy';
 import {sourceBindingKey as key,secondaryGitHubSourceBindingSelectors as secondary,selectGitHubSourceBindingGroup as select} from '../../scripts/lib/independent-admission/github-source-binding-groups';
-import{completeObserved,observedSecondaryBindings}from'./source-binding-group.fixture';
+import{CURRENT_CANONICAL_SOURCE_ROWS, completeObserved,observedSecondaryBindings}from'./source-binding-group.fixture';
 const root=fileURLToPath(new URL('../../',import.meta.url)),read=(p:string)=>readFileSync(join(root,p)),sha=(b:string|Buffer)=>createHash('sha256').update(b).digest('hex');
 test('SDK33 preserves every SDK32/API18 complete original tree and binds its actual diagnostic helpers',()=>{
  // API29/CLI unchanged; the SDK80 append adds one whole group per family.
  const groups={api,sdk,consumer,ci};expect([api.length,sdk.length,consumer.length,ci.length]).toEqual([29,87,99,196]);
  for(const name of Object.keys(groups) as (keyof typeof groups)[])for(let i=0;i<before.groups[name].length;i++)expect(sha(JSON.stringify(groups[name][i]))).toBe(before.groups[name][i]!);
- expect(current.length).toBe(504);for(const row of [...current,...sdk[sdk.length-1]!.sourceBindings])expect(sha(read(row.path))).toBe(row.sha256);
+ expect(current.length).toBe(CURRENT_CANONICAL_SOURCE_ROWS);for(const row of [...current,...sdk[sdk.length-1]!.sourceBindings])expect(sha(read(row.path))).toBe(row.sha256);
  const workflow=read('.github/workflows/qlever-readonly-normal-job.yml').toString(),pins=JSON.parse(workflow.match(/^          pins=(.*)$/mu)![1]!) as Record<string,string>;expect(Object.keys(pins).length).toBe(21);for(const [p,h] of Object.entries(pins))expect(sha(read(p))).toBe(h);
  const policyPath='scripts/lib/independent-admission/consumer-observer-policy.ts';expect(read(policyPath).length<1000000).toBe(true);const content=read(policyPath).toString('base64').match(/.{1,60}/gu)!.join('\n')+'\n';expect(Buffer.byteLength(JSON.stringify({type:'file',path:policyPath,encoding:'base64',content}))<=2*1024**2).toBe(true);
 });

@@ -6,13 +6,13 @@ import{QLEVER_SDK_EXECUTION_GROUPS as sdk}from'../../scripts/lib/independent-adm
 import{CONSUMER_SOURCE_GROUPS as consumer,CI_CONSUMER_SOURCE_GROUPS as ci}from'../../scripts/lib/independent-admission/consumer-observer-policy';
 import current from'../../scripts/lib/independent-admission/consumer-execution-current.json';
 import{sourceBindingKey as key,secondaryGitHubSourceBindingSelectors as secondary,selectGitHubSourceBindingGroup as select}from'../../scripts/lib/independent-admission/github-source-binding-groups';
-import{completeObserved,observedSecondaryBindings}from'./source-binding-group.fixture';
+import{CURRENT_CANONICAL_SOURCE_ROWS, completeObserved,observedSecondaryBindings}from'./source-binding-group.fixture';
 import{selectSdkControllerHelperGroup as selectHelpers,requiredSdkControllerHelperGroup as planHelpers}from'../../scripts/lib/independent-admission/sdk-controller-helper-groups';
 const digest=(v:unknown)=>createHash('sha256').update(JSON.stringify(v)).digest('hex');
 test('SDK44 keeps every actual89f complete recipe and binds the final native-tested helper bytes',()=>{
  expect(before.base).toBe('89f13664c4a9b83951bd6a0a067a933717e2572a');expect(Object.values(before.hashes).reduce((n,rows)=>n+rows.length,0)).toBe(229);
  for(const[name,groups]of Object.entries({api,sdk,consumer,ci})){const old=before.hashes[name as keyof typeof before.hashes];expect(groups.slice(0,old.length).map(digest)).toEqual(old);expect(groups.length-old.length).toBe((({api:29,sdk:87,ci:196,consumer:99} as Record<string,number>)[name]!)-old.length);}
- expect(current).toHaveLength(504);for(const row of [...current,...sdk[sdk.length-1]!.selectors,...sdk[sdk.length-1]!.sourceBindings])expect(createHash('sha256').update(readFileSync(row.path)).digest('hex')).toBe(row.sha256);
+ expect(current).toHaveLength(CURRENT_CANONICAL_SOURCE_ROWS);for(const row of [...current,...sdk[sdk.length-1]!.selectors,...sdk[sdk.length-1]!.sourceBindings])expect(createHash('sha256').update(readFileSync(row.path)).digest('hex')).toBe(row.sha256);
  for(const row of inputs.files)expect(sdk[43]!.sourceBindings.find(binding=>binding.path===row.path)?.sha256??sdk[43]!.selectors.find(binding=>binding.path===row.path)?.sha256).toBe(row.sha256);
  const policy=readFileSync('scripts/lib/independent-admission/consumer-observer-policy.ts');expect(policy.byteLength<1024*1024).toBe(true);
  const base64=policy.toString('base64').match(/.{1,60}/gu)!.join('\n')+'\n';expect(Buffer.byteLength(JSON.stringify({type:'file',size:policy.byteLength,encoding:'base64',content:base64}))<=2*1024*1024).toBe(true);
