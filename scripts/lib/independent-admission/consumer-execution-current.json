@@ -941,7 +941,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/github-origin.ts",
-    "sha256": "f8903d5c252c7ed5e10926e01f9dc81af95746570d65160287b2ae89bbec59c1"
+    "sha256": "2d69a81b8f71da4c9c693a22b39e3740ac4c0d5d0dc6f28c0590eaf220302f79"
   },
   {
     "path": "scripts/lib/independent-admission/github-source-binding-groups.ts",
@@ -1221,7 +1221,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-origin-policy.ts",
-    "sha256": "c1e6e39edc149672e4d227cb3d992afe7cf5e7c30652e0322e5efe93a69e9259"
+    "sha256": "7088d5c9cd8ed7839ad04172fc16c2b7e8f0d62fb8388b3faf4750a67fe620a2"
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-originals.ts",
