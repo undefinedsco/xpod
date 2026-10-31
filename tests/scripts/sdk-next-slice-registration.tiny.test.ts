@@ -221,7 +221,7 @@ test('only the genuinely new immutable-input-plan slice follows published2406', 
 
 test('the appended groups bind the actual frozen body and real module bytes', () => {
   // The current observer includes the verified regular-read source capture.
-  expect(sha(read(BODY))).toBe('e12068a7d0b01e69a101cc05d3c1118173c5682a4684834a86d1083117411f2b');
+  expect(sha(read(BODY))).toBe('abac392abdc9873eb8127bbde9766644b3de73ce3eef58be5b31abf6a1a74edc');
   for (const [name, groups] of Object.entries(families)) {
     // PUBLISHED f803 history ends at the f803 counts (SDK 74, i.e. indices 0..73).
     // Those tuples — including index 73 — are immutable published history: they are
@@ -358,7 +358,7 @@ test('the live canonical binds every actual row of the final combined tree', () 
     .toBe('474fb14d45835438d222abe89e606fa17e0c68f8fafed7d4e3c869bb7d9d3a7b');
   // The reviewed phase-syscall diagnostic plus its three CI-discovered tests.
   expect(current.find((r) => r.path === 'qlever/scripts/sdk-ptrace-execution.py')!.sha256)
-    .toBe('e12068a7d0b01e69a101cc05d3c1118173c5682a4684834a86d1083117411f2b');
+    .toBe('abac392abdc9873eb8127bbde9766644b3de73ce3eef58be5b31abf6a1a74edc');
   // The final reviewed VMA diagnostic and its root-corrected behavioural test.
   expect(current.find((r) => r.path === 'qlever/scripts/sdk-generated-vma-originals.py')!.sha256)
     .toBe('b5e1d095d60952005bb7820811234e33e1d03f4b29c595faa4ef3c8eb0d8a22c');
@@ -371,7 +371,7 @@ test('the live canonical binds every actual row of the final combined tree', () 
   ] as const) expect(current.find((r) => r.path === p)!.sha256).toBe(h);
   for (const row of current) expect(sha(read(row.path))).toBe(row.sha256);
   const body = current.find((r) => r.path === BODY)!;
-  expect(body.sha256).toBe('e12068a7d0b01e69a101cc05d3c1118173c5682a4684834a86d1083117411f2b');
+  expect(body.sha256).toBe('abac392abdc9873eb8127bbde9766644b3de73ce3eef58be5b31abf6a1a74edc');
   expect(current.find((r) => r.path === 'qlever/scripts/sdk-original-chunk-store.py')!.sha256)
     .toBe('67ea1a610f15f74288d623694b1a4886a82b0f29a186c40e69bdd232b39f96db');
 });
@@ -380,9 +380,9 @@ test('helper tuples retain the e4 published histories and current role bytes', (
   const tables = [
     // PR124 appends one current tuple on each axis (never rebinding a published
     // one), so each live frontier grows by exactly one.
-    ['qlever-sdk-generation.ts', 'REVIEWED_CONTROLLER_HELPER_GROUPS_CURRENT', 'controller', 37],
-    ['qlever-sdk-generation.ts', 'REVIEWED_OBSERVER_GROUPS', 'observer', 57],
-    ['qlever-sdk-fetchcontent.ts', 'REVIEWED_HELPER_GROUPS_CURRENT', 'fetch', 40],
+    ['qlever-sdk-generation.ts', 'REVIEWED_CONTROLLER_HELPER_GROUPS_CURRENT', 'controller', 38],
+    ['qlever-sdk-generation.ts', 'REVIEWED_OBSERVER_GROUPS', 'observer', 58],
+    ['qlever-sdk-fetchcontent.ts', 'REVIEWED_HELPER_GROUPS_CURRENT', 'fetch', 41],
   ] as const;
   for (const [file, name, family, count] of tables) {
     const groups = recipes(file, name);
@@ -406,7 +406,7 @@ test('helper tuples retain the e4 published histories and current role bytes', (
   // than rebinding the published 55 above; the reviewed lease-evidence diagnostic
   // then appends a 57th (the CURRENT observer tail) instead of rebinding PR124.
   const observer = recipes('qlever-sdk-generation.ts', 'REVIEWED_OBSERVER_GROUPS');
-  expect(observer).toHaveLength(57);
+  expect(observer).toHaveLength(58);
 });
 
 test('every group still selects itself uniquely and refuses missing/mixed roles', () => {
@@ -436,7 +436,7 @@ test('the CURRENT unpublished slice carries the published helper prefixes and it
   const helpers = recipes('qlever-sdk-generation.ts', 'REVIEWED_OBSERVER_GROUPS');
   // PR124 appended the 56th current observer tuple and the lease-evidence
   // diagnostic appended the 57th; the 55 already-published ones remain.
-  expect(helpers.length).toBe(57);
+  expect(helpers.length).toBe(58);
   const current = sdk.at(-1)!;
   const sec = current.secondarySelectors ?? [];
   expect(sec.length).toBeGreaterThanOrEqual(17);

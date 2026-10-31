@@ -1289,6 +1289,14 @@ class Observer(CapturesMixin):
                     try:os.stat(row.get('removedPath') or os.fsdecode(bytes.fromhex(operand['newPathHex'])))
                     except FileNotFoundError:pass
                     else:raise AssertionError('actual unlink left the removed pathname present')
+                    # Carry a held READ LEASE across a witnessed UNLINK of the same
+                    # inode, BEFORE the transition row is emitted (every emit sweeps).
+                    # `identity` was already proven above to be this inode with only
+                    # ctime/nlink moved, and the nlink effect was checked against the
+                    # real held FD, so this is the same strictly-witnessed class as the
+                    # rename path: not a path or filename warrant.
+                    if meta['form'] not in ('link','linkat') and getattr(self,'lifetime_leases',None) is not None:
+                        self.advance_witnessed_lease(before,identity,'owned-temp-unlink')
                 change=self.emit(dict(kind='actual-link-transition',model=LINK_MODEL,pid=pid,entrySequence=entry['sequence'],windowSequence=row['sequence'],exitSequence=exit['sequence'],afterIdentity=identity,afterLinks=want,result=exit['result'],isError=exit['isError']))
                 self.metadata_states.append((row,change));return
             if 'model' not in meta:
@@ -1451,12 +1459,31 @@ class Observer(CapturesMixin):
         try:
             assert self.exclusive==(pid,entry['sequence']) and exit['result']==0 and exit['isError'] is False,'retained rename lacks actual exclusive successful exit'
             after=probe.identity(os.fstat(held));assert after[:5]==row['beforeIdentity'][:5] and after==probe.identity(os.stat(row['toPath'],follow_symlinks=False)) and retained_rename_path_absent(row['fromPath']),'retained rename post namespace/identity differs'
-            original=self.snapshot_write_original(held,after[3]);assert (original['bytes'],original['sha256'])==expected,'retained rename changed producer bytes'
-            assert after==probe.identity(os.fstat(held))==probe.identity(os.stat(row['toPath'],follow_symlinks=False)) and retained_rename_path_absent(row['fromPath']),'retained rename postimage changed during capture'
+            # ADVANCE BEFORE ANY FURTHER EMIT. Every emit() runs a full lease sweep,
+            # and by now the owned rename has already moved ctime, so the frozen PRE
+            # token would be rejected by the FIRST emit below (the source snapshot's
+            # `write-original`, and equally the displaced destination's). `after` is
+            # already proven here against BOTH the retained FD and the new pathname,
+            # so this is the earliest correct point: the transition is carried
+            # across using the very endpoints this rename just verified.
+            # (already advanced at the witnessed exit, before any emit)
+            # GATHER the displaced destination's REAL post-state before any emitting
+            # snapshot below, and advance its token first. Overwriting dropped this
+            # inode's last link, so its ctime moved; if it was already leased from an
+            # earlier read, its frozen PRE token would be rejected by the very first
+            # emit. Endpoints are validated against the held destination FD and the
+            # window's own prior identity/links, so this is the same witnessed-
+            # endpoint discipline as the source -- not a waiver, and never merged
+            # into the source's advance: the destination is a DIFFERENT inode.
             replacement_after=None
+            displaced_identity=None
             if destination is not None:
                 displaced=os.fstat(destination);displaced_identity=probe.identity(displaced);prior=row['replacementBefore']
                 assert displaced.st_nlink==0 and displaced_identity[:5]==prior['identity'][:5],'rename replacement displaced target identity/link changed'
+                # (already advanced at the witnessed exit, before any emit)
+            original=self.snapshot_write_original(held,after[3]);assert (original['bytes'],original['sha256'])==expected,'retained rename changed producer bytes'
+            assert after==probe.identity(os.fstat(held))==probe.identity(os.stat(row['toPath'],follow_symlinks=False)) and retained_rename_path_absent(row['fromPath']),'retained rename postimage changed during capture'
+            if displaced_identity is not None:
                 displaced_original=self.snapshot_write_original(destination,displaced_identity[3])
                 assert (displaced_original['bytes'],displaced_original['sha256'])==(prior['original']['bytes'],prior['original']['sha256']) and displaced_identity==probe.identity(os.fstat(destination)) and os.fstat(destination).st_nlink==0,'rename replacement displaced bytes changed'
                 assert after==probe.identity(os.fstat(held))==probe.identity(os.stat(row['toPath'],follow_symlinks=False)) and retained_rename_path_absent(row['fromPath']),'rename replacement namespace changed during displaced capture'
@@ -1464,6 +1491,89 @@ class Observer(CapturesMixin):
             change=self.emit(dict(kind='actual-rename-transition',pid=pid,entrySequence=entry['sequence'],windowSequence=row['sequence'],leaseSequence=row['leaseSequence'],exitSequence=exit['sequence'],afterIdentity=after,namedIdentity=after,afterOriginal=original,oldPathAbsent=True,oldPathAbsenceErrno=errno.ENOENT,result=exit['result'],isError=exit['isError'],**({} if replacement_after is None else {'replacementAfter':replacement_after})))
             self.metadata_states.append((row,change))
         finally:self.close_rename_leases(held,destination)
+    def advance_pending_owned_transitions(self,pid,kernel):
+        """Advance every legitimately affected held inode for a witnessed owned op.
+
+        Called at the raw syscall EXIT of a successful owned operation, BEFORE the
+        kernel row is emitted. The kernel has already applied the effect, so every
+        retained FD here reports its real post-state. Endpoints are read from the
+        observer's own retained FDs (never from a path), and each inode is advanced
+        on its own tuple: an unrelated token is never touched, and a missing lease
+        is a no-op. A refused advance propagates -- it is never absorbed.
+        """
+        # EXACT kernel contract, matching what the downstream handlers require.
+        # `complete_rename` demands `result==0 and isError is False`; accepting a
+        # MISSING/None isError, or `result=False`/a bool, would let this API claim a
+        # refusal it did not actually make. Only an exact successful exit advances.
+        if type(kernel) is not dict or kernel.get('op')!='exit':
+            return
+        if not (type(kernel.get('result')) is int and kernel['result']==0):
+            return
+        if kernel.get('isError') is not False:
+            return
+        task=self.tasks.get(pid,{})
+        metadata=task.get('metadataWindow')
+        if metadata is not None:
+            # Only the EXISTING supported link/unlink inode-effect model is advanced
+            # here -- never a mode/timestamp/unknown window. Those carry different
+            # shapes entirely (a mode window's `meta` is a plain tuple), so keying on
+            # the emitted window kind is both safer and the actual contract.
+            m_row,m_held,_m_access,m_meta=metadata
+            if m_row.get('kind')=='actual-link-window' and m_row.get('model')==LINK_MODEL:
+                form=m_row.get('form')
+                if form in ('link','linkat','unlink','unlinkat'):
+                    m_before=m_row['beforeIdentity']
+                    m_after=probe.identity(os.fstat(m_held))
+                    if m_after[:5]==m_before[:5] and m_after!=m_before:
+                        operation=('owned-rename-over-destination' if form in ('link','linkat')
+                                   else 'owned-temp-unlink')
+                        self.advance_witnessed_lease(m_before,m_after,operation)
+        window=task.get('renameWindow')
+        if window is None:
+            return
+        row,held,expected,destination=window
+        before_source=row['beforeIdentity']
+        after_source=probe.identity(os.fstat(held))
+        # Only a real same-inode ctime move is advanced here; anything else is left
+        # for `complete_rename` to reject with its own precise message.
+        if after_source[:5]==before_source[:5] and after_source!=before_source:
+            self.advance_witnessed_lease(before_source,after_source,'owned-rename-over-destination')
+        replacement=row.get('replacementBefore')
+        if destination is not None and replacement is not None:
+            before_target=replacement['identity']
+            after_target=probe.identity(os.fstat(destination))
+            if after_target[:5]==before_target[:5] and after_target!=before_target:
+                self.advance_witnessed_lease(before_target,after_target,'owned-rename-over-destination')
+
+    def advance_witnessed_lease(self,before,after,operation='owned-rename-over-destination'):
+        """Advance a held lease token across an ALREADY-VALIDATED owned transition.
+
+        Looks the token up by the PRE-transition identity (the key `acquire`
+        fixed), calls the guarded `LeaseSet.advance`, then rekeys the observer's
+        own identity maps so later lookups use the advanced tuple. Absent lease
+        is a no-op: such an inode is simply not leased.
+        """
+        if self.lifetime_leases is None:
+            return
+        key=tuple(before)
+        held=self.lifetime_by_identity.get(key)
+        if held is None:
+            return
+        token=held['token']
+        try:
+            self.lifetime_leases.advance(token,list(before),list(after),operation)
+        except BaseException:
+            # A refused advance is a REAL failure (stale baseline, replaced inode,
+            # foreign move). It must propagate: never absorb it here.
+            raise
+        advanced=dict(token,identity=list(after))
+        sequence=held['sequence']
+        del self.lifetime_by_identity[key]
+        self.lifetime_by_identity[tuple(after)]=dict(token=advanced,sequence=sequence)
+        slot=self.lifetime_acquired.get(tuple(before[:2]))
+        if slot is not None:
+            slot['identity']=list(after)
+            slot['token']=dict(advanced)
     def chunk_identity(self,reference):
         storage=reference['storage'];assert storage['model']=='chunk-original-v1'
         ref=storage['manifest'];value=os.stat(self.capture_dir/ref['path'],follow_symlinks=False)
@@ -3628,6 +3738,18 @@ class Observer(CapturesMixin):
         _kernel_row=dict(kind='kernel-syscall',pid=pid,**kernel,**(dict(waitStatus=status) if getattr(self,'verified_setresuid_noop',False) or getattr(self,'verified_identity_noop',False) else {}))
         _phase_progress=self.phase_progress()
         if _phase_progress is not None:_phase_progress.observe_syscall(_kernel_row)
+        # ADVANCE ANY WITNESSED OWNED TRANSITION **BEFORE** THIS EMIT.
+        # `emit` runs a full lease sweep, and for a rename exit the kernel has
+        # already moved ctime on BOTH affected inodes. A frozen PRE token would
+        # therefore latch here -- before `complete_rename` is ever reached -- which
+        # is exactly the observed failure. The retained FDs held in the rename
+        # window make the real post-state available at this point, so this is the
+        # earliest correct place. Only a SUCCESSFUL exit is advanced; a failed or
+        # unknown exit is left alone and fails closed in `complete_rename`.
+        if (getattr(self,'lifetime_leases',None) is not None
+                and _kernel_row.get('op')=='exit'
+                and not _kernel_row.get('isError') and _kernel_row.get('result')==0):
+            self.advance_pending_owned_transitions(pid,_kernel_row)
         record=self.emit(_kernel_row)
         if record['op']=='entry':
             if self.capture_toolchain and record['nr']!=435 and not memory_policy.bti_candidate(record['arch'],record['nr'],record['args']):self.enforce_executable_memory(pid,record)

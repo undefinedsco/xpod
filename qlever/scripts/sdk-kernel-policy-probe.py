@@ -128,7 +128,12 @@ def run(destination,identity,deadline,remaining_retained_bytes):
       yield block
      assert count==before.st_size and identity(before)==identity(os.fstat(fd))==identity(path.lstat()),'actual capture changed'
     finally:os.close(fd)
-   proof=backend.bindings.observe([('configure',[(json.dumps(r)+'\n').encode() for r in rows])],actual_capture,{},limits={'sourceMaterialBytes':available,'shardBytes':parameters['maximum_file_bytes']})
+   # observe() reads four keys whenever `limits` is truthy, so a partial dict
+   # bypasses its per-key defaults. The two budget keys stay CASE-DERIVED (the
+   # per-case remaining budget is not the global cap); the two structural keys
+   # come from the canonical reviewed LIMITS this module already loads. No new
+   # numbers and no .get fallback: a missing canonical key must still fail loudly.
+   proof=backend.bindings.observe([('configure',[(json.dumps(r)+'\n').encode() for r in rows])],actual_capture,{},limits={'sourceMaterialBytes':available,'shardBytes':parameters['maximum_file_bytes'],'sourceMembers':LIMITS['sourceMembers'],'metadataBytes':LIMITS['metadataBytes']})
    if name=='uid-noop':specific=uid_completion(rows);architecture=specific.pop('architecture')
    else:
     assert denials and len(denials)==len(completions),'probe did not exercise explicit denial'

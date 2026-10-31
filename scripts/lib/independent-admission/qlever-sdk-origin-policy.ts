@@ -2292,15 +2292,17 @@ const SDK87_SOURCE_HASHES:Readonly<Record<string,string>>=Object.freeze({
  // alike — otherwise the current tuple would keep naming the previous 9bc bytes.
  'scripts/css-module-producer.py':"1ba30f5eaba9070f55135936649c43b109bf7a4a83db43b512edaa6d31abc5cc",
  'qlever/scripts/build-qlever-runtime-sdk.sh':"ebe4d4d98e29247f4565f7a7499f1beb48832a5c499833b7bb98ce62bf9467ae",
- 'qlever/scripts/sdk-ptrace-execution.py':"e12068a7d0b01e69a101cc05d3c1118173c5682a4684834a86d1083117411f2b",
+ 'qlever/scripts/sdk-ptrace-execution.py':"abac392abdc9873eb8127bbde9766644b3de73ce3eef58be5b31abf6a1a74edc",
  // Filtered-lease lookup: the token-filtered check resolves its single row by the
  // (st_dev, st_ino) key instead of scanning every held row. Selection semantics,
  // the live F_GETLEASE+fstat sweep and every rejection string are unchanged, so
  // only the CURRENT (SDK87) binding moves; published tuples keep their bytes.
  // The failure DIAGNOSTIC now retains the abnormal row's six-field before/after
- // tuple and a path class; the six-field comparison and every verdict are
- // byte-identical, so again only the CURRENT binding moves.
- 'qlever/scripts/sdk-tool-lifetime-leases.py':"cc27ead74b9f54cc0047ab3e0df2d637d14418ed92504cb5b70eb8b8ccbe3272",
+ // tuple and a path class; the owned-metadata generation transition now
+ // advances a held lease across one witnessed rename/unlink with full
+ // six-field before/current/postimage, the physical lease stays held and
+ // replay bridges acquisition->closing through the validated chain.
+ 'qlever/scripts/sdk-tool-lifetime-leases.py':"435b0f34d36c02fea393d8521ca7c63f0a293e6a987056a9f677d3b74d9b8b78",
  // The executor additionally retains a FIXED bounded set of container-side
  // configure evidence on the failure path (exact members, size cap, no glob and
  // no symlink follow). Admission ordering and cleanup semantics are unchanged.
@@ -2315,16 +2317,16 @@ const SDK87_SOURCE_HASHES:Readonly<Record<string,string>>=Object.freeze({
  // PR124 strict absent-link contract: the gate now settles only matched failed
  // exits and keeps unobserved operands fatal, and the fixed probe uses ONE build
  // root authority. Both bodies move in the CURRENT unpublished slice only.
- 'qlever/scripts/sdk-generation-multiprocess-bindings.py':"e11827aa845079fc2c2f8d014085bebaeb33c49fa44ad210b6707e7c4128e90f",
- 'qlever/scripts/sdk-kernel-policy-probe.py':"e9016aed98d42f205bd3b11eedb55f956a6a855c775ccae0de2e19110b4d144c", // The readonly executor lane now DERIVES its build parallelism from its own
+ 'qlever/scripts/sdk-generation-multiprocess-bindings.py':"58d581b548de1c71a105284c0cb3b9d05017b1535edcdce1ecbdbfc10196ceec",
+ 'qlever/scripts/sdk-kernel-policy-probe.py':"53a7b0f14855a2380ac7718f8219669432e86354131b0f4ad08a0787275e7052", // The readonly executor lane now DERIVES its build parallelism from its own
  // 4-CPU allocation instead of hardcoding 2, so its current bytes move too.
  // Current SDK87 binding only; published tuples keep their bytes.
  'qlever/scripts/sdk-readonly-executor-bindings.py':"107e2dea586056c98455e89471c0d303b1c36cb11018ee5a6d67d97caefd0b1e",
  // The readonly normal job's pin list had to follow the executor lane's new
  // bytes, so this CURRENT workflow file moves too. Published tuples keep theirs.
- '.github/workflows/qlever-readonly-normal-job.yml':"999ae87a2ef9e1617cee38e17e9f31b69cc880ff3c512b30179428f75b3a2de3",
+ '.github/workflows/qlever-readonly-normal-job.yml':"74c974cc86386db99a693be476f82d8d4f8f35738d6a5a371638692bb4761a4a",
  'qlever/scripts/native/lease_sweep_binding.py':"7386166a878d2a1fbd5f3145759888baa072171ab541b45cd5fbc5bcea6784f8",
- 'tests/scripts/candidate-producer-attempt-binding.test.ts':"1d73b68ac5bb7f19be8bdf2af6aedf952979e91e825f276720cdde65da96d4cf",
+ 'tests/scripts/candidate-producer-attempt-binding.test.ts':"8973eb25c1e6d669e2fc2d7c05ffd80d0f040c066d32d83f0a7f24e5b375daba",
  // The scoped precompiled-header work (S2, ANTLR and the two Abseil units) moves
  // the QLever lock, whose patchSeriesSha256 is the digest of a series that
  // contains BOTH appended patch paths (qlever-s2-scoped-precompiled-headers.patch
