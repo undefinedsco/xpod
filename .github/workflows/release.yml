@@ -115,6 +115,10 @@ jobs:
             --required-check ai-connections \
             --required-check models \
             --required-check chat \
+            --required-check rc-pod-sparql \
+            --required-check rc-builtin-models-chat \
+            --required-check rc-matrix-collaboration \
+            --required-check rc-browser-consent \
             --required-check task-approval \
             --required-check native-sparql \
             --required-check native-public16 \

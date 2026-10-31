@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { errors, type Frame, type Locator, type Page, type Request, type Response } from '@playwright/test';
 import type { AccountSetup } from '../integration/helpers/solidAccount';
 
@@ -136,6 +137,10 @@ export interface BrowserOidcTrace {
   authorizationScopeSets?: string[];
   /** Observed native Consent selection, never inferred from requested input. */
   storageBindingSelected?: { webId: string; podUrl: string };
+  /** WebID explicitly selected from a radio-only Consent surface. The matching
+   * storage binding is corroborated by the authenticated runtime, so this is
+   * not inferred from a radio count alone. */
+  consentWebIdSelected?: string;
   /** Explicit Consent remember-client scenario choice and the value the surface
    * actually retained before approval. Never inferred from requested input. */
   rememberClientRequested?: boolean;
@@ -153,6 +158,18 @@ export interface BrowserOidcTrace {
    * never inferred from requested input; it is not user consent and not an
    * approval, which still need the actual callback/approval evidence. */
   consentSingleBindingOffered?: boolean;
+  /** Exact binding painted by a no-chooser Consent surface. The full WebID is
+   * read from the surface; a storage URL is included only when the product
+   * actually renders it. Undefined means no unambiguous WebID was offered;
+   * callers must fail closed. */
+  consentSingleBindingOfferedBinding?: { webId: string; storageUrl?: string };
+  /** Number of visible Consent episodes observed, including reload and
+   * same-URL reentry. Repeated polls of one continuously visible document
+   * count once. */
+  consentSurfaceCount?: number;
+  /** Number of selectable WebID/storage bindings the live Consent surface
+   * offered. A no-chooser surface records the single implied binding as 1. */
+  consentBindingOptionCount?: number;
 }
 
 interface ObservedAuthorization { redirectUri: string; state: string; s256: boolean }
@@ -252,6 +269,37 @@ export function consentOffersSingleBinding(state: ConsentSurfaceState): boolean 
     && state.webIdRadioCount === 0;
 }
 
+/** Classify the full-URL title attributes the product renders for a no-chooser
+ * Consent surface. Only an unambiguous WebID and storage URL are accepted; the
+ * caller must fail closed when either is missing or duplicated. */
+export function classifyConsentOfferedBindingSurface(input: {
+  titles: readonly string[];
+  texts: readonly string[];
+}): { webId: string; storageUrl?: string } | undefined {
+  const parse = (values: readonly string[]): Array<{ value: string; url: URL }> => {
+    const parsed: Array<{ value: string; url: URL }> = [];
+    for (const value of new Set(values.map((entry) => entry.trim()).filter(Boolean))) {
+      try {
+        const url = new URL(value);
+        if (url.protocol === 'http:' || url.protocol === 'https:') parsed.push({ value, url });
+      } catch {
+        // Text that is not an absolute URL is not binding evidence.
+      }
+    }
+    return parsed;
+  };
+  const webIds = [...new Set(parse([...input.titles, ...input.texts])
+    .filter(({ url }) => url.hash.length > 1 || /\/profile\/card(?:$|[/#])/u.test(url.pathname))
+    .map(({ value }) => value))];
+  // A storage URL is accepted only from an explicit title attribute. Free text
+  // can contain the application/client URL, which is not the storage binding.
+  const storageUrls = [...new Set(parse(input.titles)
+    .filter(({ url }) => url.hash === '' && url.pathname.endsWith('/'))
+    .map(({ value }) => value))];
+  if (webIds.length !== 1 || storageUrls.length > 1) return undefined;
+  return { webId: webIds[0], ...(storageUrls[0] === undefined ? {} : { storageUrl: storageUrls[0] }) };
+}
+
 /** The live runtime binding the browser actually established for this login. */
 export interface BrowserRuntimeBinding {
   status?: string;
@@ -275,8 +323,139 @@ export function consentBindingProven(trace: BrowserOidcTrace, binding: { webId: 
     return trace.storageBindingSelected.webId === binding.webId
       && trace.storageBindingSelected.podUrl === binding.storageUrl;
   }
+  if (trace.consentWebIdSelected) {
+    return trace.consentWebIdSelected === binding.webId && runtime?.status === 'authenticated'
+      && runtime.webId === binding.webId && runtime.podUrl === binding.storageUrl;
+  }
   return trace.consentSingleBindingOffered === true && runtime?.status === 'authenticated'
     && runtime.webId === binding.webId && runtime.podUrl === binding.storageUrl;
+}
+
+/** Page-side visibility episode counter. It stores the count per run in
+ * sessionStorage so a same-URL reload continues the count instead of resetting
+ * it, while repeated MutationObserver scans of one visible surface stay one. */
+export function installConsentEpisodeCounter(runId: string): void {
+  const state = window as unknown as {
+    __xpodConsentEpisodeCount?: number;
+    __xpodConsentEpisodeRunId?: string;
+    __xpodConsentEpisodeObserver?: MutationObserver;
+    __xpodConsentEpisodeAvailable?: boolean;
+    __xpodConsentEpisodeFailure?: boolean;
+  };
+  if (state.__xpodConsentEpisodeRunId === runId) return;
+  state.__xpodConsentEpisodeObserver?.disconnect();
+  state.__xpodConsentEpisodeRunId = runId;
+  state.__xpodConsentEpisodeAvailable = false;
+  state.__xpodConsentEpisodeFailure = false;
+  const key = 'xpod.acceptance.consentEpisodes.v1.' + runId;
+  let count = 0;
+  let visible = false;
+  let available = false;
+  const invalidate = (): void => {
+    available = false;
+    state.__xpodConsentEpisodeAvailable = false;
+    state.__xpodConsentEpisodeFailure = true;
+    state.__xpodConsentEpisodeCount = 0;
+    state.__xpodConsentEpisodeObserver?.disconnect();
+    state.__xpodConsentEpisodeObserver = undefined;
+  };
+  try {
+    const stored = sessionStorage.getItem(key);
+    if (stored !== null) {
+      const parsed = Number(stored);
+      if (stored.trim() === '' || !Number.isSafeInteger(parsed) || parsed < 0) throw new Error('invalid consent episode count');
+      count = parsed;
+    }
+  } catch {
+    invalidate();
+    return;
+  }
+  const isVisible = (element: Element | null): boolean => {
+    if (!element) return false;
+    const rect = element.getBoundingClientRect();
+    const style = getComputedStyle(element);
+    return rect.width > 2 && rect.height > 2 && style.visibility !== 'hidden'
+      && style.display !== 'none' && style.opacity !== '0';
+  };
+  const scan = (): void => {
+    if (!available) return;
+    try {
+      const next = isVisible(document.querySelector('[data-pod-sign-in-state="consent"]'));
+      if (next && !visible) {
+        const nextCount = count + 1;
+        if (!Number.isSafeInteger(nextCount) || nextCount < 0) {
+          invalidate();
+          return;
+        }
+        sessionStorage.setItem(key, String(nextCount));
+        if (sessionStorage.getItem(key) !== String(nextCount)) {
+          invalidate();
+          return;
+        }
+        count = nextCount;
+      }
+      visible = next;
+      state.__xpodConsentEpisodeCount = count;
+    } catch {
+      invalidate();
+    }
+  };
+  const start = (): void => {
+    if (!document.documentElement || typeof MutationObserver === 'undefined') {
+      invalidate();
+      return;
+    }
+    try {
+      const observer = new MutationObserver(scan);
+      observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true });
+      state.__xpodConsentEpisodeObserver = observer;
+      available = true;
+      state.__xpodConsentEpisodeAvailable = true;
+      state.__xpodConsentEpisodeCount = count;
+      scan();
+    } catch {
+      invalidate();
+    }
+  };
+  state.__xpodConsentEpisodeCount = count;
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start, { once: true });
+  else start();
+}
+
+async function readConsentEpisodeReading(page: Page, runId: string): Promise<{
+  origin: string;
+  available: boolean;
+  count: number;
+} | undefined> {
+  return page.evaluate((id) => {
+    const state = window as unknown as {
+      __xpodConsentEpisodeCount?: number;
+      __xpodConsentEpisodeRunId?: string;
+      __xpodConsentEpisodeAvailable?: boolean;
+    };
+    if (state.__xpodConsentEpisodeRunId !== id) return undefined;
+    if (state.__xpodConsentEpisodeAvailable !== true) return { origin: window.location.origin, available: false, count: 0 };
+    const count = state.__xpodConsentEpisodeCount;
+    if (!Number.isSafeInteger(count) || (count as number) < 0) return { origin: window.location.origin, available: false, count: 0 };
+    return { origin: window.location.origin, available: true, count: count as number };
+  }, runId).catch(() => undefined);
+}
+
+async function readConsentOfferedBindingSurface(page: Page): Promise<{
+  titles: string[];
+  texts: string[];
+}> {
+  return page.evaluate(() => {
+    const surface = document.querySelector('[data-pod-sign-in-state="consent"]');
+    if (!surface) return { titles: [], texts: [] };
+    const titles = Array.from(surface.querySelectorAll('[title]'))
+      .map((element) => element.getAttribute('title')?.trim() ?? '')
+      .filter(Boolean);
+    const texts = Array.from(surface.querySelectorAll('span, code, p, a'))
+      .map((element) => element.textContent?.trim() ?? '')
+      .filter((text) => text.length > 0 && text.length <= 2048 && !/\s/u.test(text));
+    return { titles, texts };
+  }).catch(() => ({ titles: [], texts: [] }));
 }
 
 export interface CompleteOidcLoginOptions {
@@ -329,7 +508,12 @@ export async function completeOidcLogin(
     passwordSubmitted: false,
     authorizationRedirectUris: [],
     authorizationScopeSets: [],
+    consentSurfaceCount: 0,
+    consentBindingOptionCount: 0,
   };
+  const consentRunId = randomUUID();
+  const consentEpisodeCounts = new Map<string, number>();
+  let consentObservationUnavailable = false;
   const browserErrors: string[] = [];
   const networkDiagnostics: string[] = [];
   const startedAt = Date.now();
@@ -481,10 +665,22 @@ export async function completeOidcLogin(
   page.on('console', observeConsole);
   page.on('pageerror', observePageError);
   try {
+    try {
+      if (typeof page.addInitScript === 'function') {
+        await page.addInitScript(installConsentEpisodeCounter, consentRunId);
+      }
+    } catch {
+      // No page-side counter can be installed. Do not guess a count: the RC
+      // gate will fail closed, while auth-only callers continue normally.
+    }
     const startUrl = options.startUrl;
     if (startUrl) {
       await attributeOidcOperation('login-navigation', () =>
         page.goto(startUrl, { waitUntil: 'domcontentloaded', timeout: Math.min(timeoutMs, 30_000) }));
+    }
+    try { await page.evaluate(installConsentEpisodeCounter, consentRunId); } catch {
+      // The current document could not install the counter; a missing reading
+      // leaves consentSurfaceCount at zero rather than claiming one screen.
     }
 
     const deadline = Date.now() + timeoutMs;
@@ -618,23 +814,51 @@ export async function completeOidcLogin(
       // surface the product has already approved away, so both consumers below
       // must reason about the same rendered fact.
       const consentVisible = await consentSurface.isVisible({ timeout: 100 }).catch(() => false);
+      // Count only the page-side visibility episodes. There is no Node-side
+      // guess when instrumentation is unavailable: a missing/failed reading
+      // leaves the count at zero so the RC gate fails closed, while old callers
+      // that do not require count evidence keep working.
+      const consentDocument = accountDocumentKey(page.url());
+      const pageEpisode = await readConsentEpisodeReading(page, consentRunId);
+      if (pageEpisode?.available && !consentObservationUnavailable) {
+        consentEpisodeCounts.set(pageEpisode.origin,
+          Math.max(consentEpisodeCounts.get(pageEpisode.origin) ?? 0, pageEpisode.count));
+        trace.consentSurfaceCount = [...consentEpisodeCounts.values()]
+          .reduce((total, value) => total + value, 0);
+      } else if (consentVisible) {
+        // Latch the first VISIBLE consent episode whose observation
+        // capability was already unavailable. A later healthy document
+        // cannot turn an incomplete history into an accepted count.
+        consentObservationUnavailable = true;
+        trace.consentSurfaceCount = 0;
+      } else if (consentObservationUnavailable) {
+        trace.consentSurfaceCount = 0;
+      }
       // Record the rendered Consent shape before driving it: a single live
       // binding can render with no chooser, so a caller proving the exact
       // binding needs this observed fact rather than a selection the product
       // never asked for. No chooser is a rendered observation, not consent.
       if (!trace.consentSingleBindingOffered && consentVisible) {
-        trace.consentSingleBindingOffered = consentOffersSingleBinding({
+        const singleBinding = consentOffersSingleBinding({
           surfaceVisible: true,
           webIdChooserVisible: await page.locator('#oidc-consent-webid').isVisible({ timeout: 100 }).catch(() => false),
           storageChooserVisible: await page.locator('#oidc-consent-storage').isVisible({ timeout: 100 }).catch(() => false),
           webIdRadioCount: await attributeOidcOperation('approval-observation',
             () => page.locator('input[type="radio"][name="webId"]').count()),
         });
+        trace.consentSingleBindingOffered = singleBinding;
+        if (singleBinding) trace.consentBindingOptionCount = 1;
+      }
+      if (trace.consentSingleBindingOffered && !trace.consentSingleBindingOfferedBinding && consentVisible) {
+        // The folded request details can paint a tick after the surface first
+        // appears; retry until the rendered WebID is available, but never
+        // replace a recorded binding with a later observation.
+        trace.consentSingleBindingOfferedBinding =
+          classifyConsentOfferedBindingSurface(await readConsentOfferedBindingSurface(page));
       }
       // Pick-WebID and Consent are separate approval documents with independent
       // checkbox state, so an explicit remember-client choice is re-applied on
       // every document that offers it instead of only the first one.
-      const consentDocument = accountDocumentKey(page.url());
       if (consentDocument !== consentRememberDocument) consentRememberApplied = false;
       if (options.rememberClient !== undefined && !consentRememberApplied && consentVisible) {
         const rememberClientChoice = page.getByRole('checkbox', { name: REMEMBER_CLIENT_CHOICE_NAME });
@@ -696,6 +920,7 @@ export async function completeOidcLogin(
             disabled: (option as HTMLOptionElement).disabled,
           }))));
         const selectableOptions = availableOptions.filter((option) => option.value && !option.disabled);
+        trace.consentBindingOptionCount = selectableOptions.length;
         const selectedValue = chooseConsentBinding(availableOptions, currentOptionValue, account);
         const requestedOption = selectableOptions.find(option => option.value === selectedValue);
         if (!requestedOption) {
@@ -738,6 +963,7 @@ export async function completeOidcLogin(
       const webIdRadios = page.locator('input[type="radio"][name="webId"]');
       const webIdRadioCount = await attributeOidcOperation('binding-select', () => webIdRadios.count());
       if (webIdRadioCount > 0) {
+        trace.consentBindingOptionCount = webIdRadioCount;
         let matchingRadio = account.webId ? undefined : webIdRadios.first();
         if (account.webId) {
           for (let index = 0; index < webIdRadioCount; index += 1) {
@@ -760,6 +986,8 @@ export async function completeOidcLogin(
         if (!await attributeOidcOperation('binding-select', () => matchingRadio!.isChecked())) {
           await attributeOidcOperation('binding-select', () => matchingRadio!.check({ timeout: 2_000 }));
         }
+        const selectedWebId = await attributeOidcOperation('binding-select', () => matchingRadio!.getAttribute('value'));
+        if (selectedWebId) trace.consentWebIdSelected = selectedWebId;
       }
 
       // A single offered binding renders without a chooser; multiple eligible

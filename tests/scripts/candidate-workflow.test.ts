@@ -717,6 +717,38 @@ esac
     expect(runText).not.toContain('allow-incomplete --chat');
   });
 
+  it('runs the four deployed RC user-flow facts after seed prep and keeps local LiveGateway separate', async () => {
+    const workflow = await loadWorkflow();
+    const steps = workflow.jobs.deploy_and_accept.steps;
+    const names = steps.map((step: any) => step.name);
+    const rcIndex = names.indexOf('RC user-flow acceptance');
+    const liveIndex = names.indexOf('Live Gateway login and Chat acceptance');
+    expect(rcIndex).toBeGreaterThan(-1);
+    expect(liveIndex).toBeGreaterThan(rcIndex);
+    const rc = steps[rcIndex];
+    expect(rc.run).toContain('bun scripts/accept-rc-user-flows.ts');
+    expect(rc.run).toContain('--base-url "$XPOD_SETTINGS_E2E_BASE_URL"');
+    expect(rc.run).toContain('--seed-config "${RUNNER_TEMP}/xpod-rc-seed.json"');
+    expect(rc.run).toContain('--output-dir "${RUNNER_TEMP}/rc-user-flows"');
+    for (const check of [
+      'rc-pod-sparql',
+      'rc-builtin-models-chat',
+      'rc-matrix-collaboration',
+      'rc-browser-consent',
+    ]) {
+      expect(rc.run).toContain(check);
+    }
+    expect(rc.run).not.toContain('docker run');
+    expect(rc.run).not.toContain('127.0.0.1');
+    expect(rc.run).toContain('env -u XPOD_LIVE_PROVIDER_API_KEY_CONFIG -u XPOD_AI_PROXY_URL');
+    expect(rc.run).not.toContain('XPOD_LIVE_PROVIDER_KEY_FILE');
+    const upload = steps.find((step: any) => step.uses === 'actions/upload-artifact@v4');
+    expect(upload.with.path).toContain('${{ runner.temp }}/checks.json');
+    expect(upload.with.path).toContain('${{ runner.temp }}/rc-user-flows.json');
+    expect(JSON.stringify(workflow.jobs.finalize_acceptance)).toContain('rc-user-flows.json');
+    expect(steps[liveIndex].run).toContain('docker run --detach');
+  });
+
   it('uploads diagnostic Task evidence on failure without relaxing the actual acceptance gate', async () => {
     const workflow = await loadWorkflow();
     const steps = workflow.jobs.deploy_and_accept.steps;
@@ -953,7 +985,8 @@ esac
     expect(desktopUpload.with['if-no-files-found']).toBe('error');
 
     expect(serviceUpload.with.name).toBe('release-service-acceptance-${{ github.sha }}');
-    expect(serviceUpload.with.path).toBe('${{ runner.temp }}/checks.json');
+    expect(serviceUpload.with.path).toContain('${{ runner.temp }}/checks.json');
+    expect(serviceUpload.with.path).toContain('${{ runner.temp }}/rc-user-flows.json');
     expect(finalize.needs).toEqual([
       'metadata',
       'build_image',
@@ -983,6 +1016,10 @@ esac
       'ai-connections',
       'models',
       'chat',
+      'rc-pod-sparql',
+      'rc-builtin-models-chat',
+      'rc-matrix-collaboration',
+      'rc-browser-consent',
       'qlever-local',
       'desktop',
     ]) {
