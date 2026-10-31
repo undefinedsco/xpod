@@ -21,6 +21,7 @@ a positive.
 Linux only: the positive path needs real kernel read leases (``F_SETLEASE``).
 On macOS the whole module skips explicitly rather than reporting a false green.
 """
+import errno
 import fcntl
 import hashlib
 import importlib.util
@@ -596,17 +597,53 @@ class OwnedMetadataObserverRunloop(unittest.TestCase):
         Production runs with ``require_success=False`` (the SDK observer sets it),
         so a failing child surfaces as a real nonzero root code rather than a
         Python raise. The contract to pin is that NO successful
-        ``actual-rename-transition`` is emitted for it -- absence of the transition
-        row is the evidence, never an invented exception.
+        ``actual-rename-transition`` is emitted for the exact paired ENOENT exit,
+        and every actually acquired lease closes with its original identity.
         """
         phase, rows, observer = self._run('rename', fail=True)
         receipt = phase['trackingReceipt']
-        self.assertNotEqual(receipt['actualRootReturnCode'], 0,
-                            'the failing actor must report a real nonzero exit')
+        self.assertEqual(receipt['actualRootReturnCode'], 1,
+                         'the expected failed rename must exit deliberately')
+        operands = [row for row in rows
+                    if row.get('kind') == 'kernel-path-arguments'
+                    and row.get('renamePaths') == [
+                        str(self.build / 'does-not-exist'),
+                        str(self.build / 'CMakeCache.txt')]]
+        self.assertEqual(len(operands), 1, 'one actual failed-rename operand pair')
+        entry_sequence = operands[0]['entrySequence']
+        entries = [row for row in rows
+                   if row.get('kind') == 'kernel-syscall'
+                   and row.get('op') == 'entry'
+                   and row['sequence'] == entry_sequence]
+        self.assertEqual(len(entries), 1)
+        entry = entries[0]
+        self.assertEqual(entry['pid'], operands[0]['pid'])
+        self.assertIn(entry['nr'], self.backend.bindings.policy(entry['arch'])['renameOps'])
+        exits = [row for row in rows
+                 if row.get('kind') == 'kernel-syscall'
+                 and row.get('op') == 'exit'
+                 and row.get('entrySequence') == entry_sequence
+                 and row['pid'] == entry['pid']]
+        self.assertEqual(len(exits), 1, 'the actual rename must reach its paired exit')
+        self.assertEqual(exits[0]['arch'], entry['arch'])
+        self.assertTrue(exits[0]['isError'])
+        self.assertEqual(exits[0]['result'], -errno.ENOENT)
         transitions = [r for r in rows
                        if r.get('kind') == 'actual-rename-transition']
         self.assertEqual(transitions, [],
                          'a failed rename must never emit a success transition')
+        acquired = [row for row in rows
+                    if row.get('kind') == 'toolchain-lease-acquired']
+        closed = [row for row in rows
+                  if row.get('kind') == 'toolchain-lease-closed-token']
+        self.assertTrue(acquired, 'the actual observer must acquire real read leases')
+        self.assertEqual(len({row['leaseId'] for row in acquired}), len(acquired))
+        self.assertEqual(len({row['leaseId'] for row in closed}), len(closed))
+        self.assertEqual({row['leaseId']: row['identity'] for row in closed},
+                         {row['leaseId']: row['identity'] for row in acquired},
+                         'failed rename cannot advance any held metadata identity')
+        self.assertTrue((self.build / '.cmake-cache-tmp').is_file())
+        self.assertFalse((self.build / 'CMakeCache.txt').exists())
 
     # ---- negative: foreign metadata transition is refused ---------------
     def test_foreign_identity_cannot_advance(self):

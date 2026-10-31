@@ -9,6 +9,7 @@ usage: write_then_rename.py <dir> <mode> [<fail>]
   mode: rename | unlink
   fail: "fail" makes the transition syscall fail (foreign/absent target case)
 """
+import errno
 import os
 import sys
 
@@ -37,8 +38,15 @@ if mode == 'rename' and not fail:
 
 if mode == 'rename':
     if fail:
-        # target namespace is absent: a failed/foreign rename must be refused
-        os.rename(os.path.join(directory, 'does-not-exist'), target)
+        # Execute the real failing syscall, then exit deliberately. An expected
+        # ENOENT must not invoke a distro-installed unhandled-exception reporter
+        # whose unrelated syscalls would obscure the transition under test.
+        try:
+            os.rename(os.path.join(directory, 'does-not-exist'), target)
+        except FileNotFoundError as error:
+            if error.errno != errno.ENOENT:
+                raise
+            raise SystemExit(1)
     else:
         os.replace(temp, target)
 else:

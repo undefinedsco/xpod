@@ -474,26 +474,71 @@ class P17WritableAliasReadBody(Base):
         self.leases.check = audit
 
     def child(self, duplicates=0):
+        import json
+        import resource
+        self.assertIs(type(duplicates), int)
+        self.assertTrue(0 <= duplicates <= 1025)
         r, w = os.pipe()
         ready_r, ready_w = os.pipe()
         pid = os.fork()
         if pid == 0:
+            completed = 0
+            limits = resource.getrlimit(resource.RLIMIT_NOFILE)
             try:
                 os.close(w); os.close(ready_r)
-                for _ in range(duplicates): os.dup(self.alias_fd)
+                # This one fixture child must be able to construct the actual
+                # >1024 table that the unchanged observer is required to refuse.
+                # Include its inherited pipes and bounded diagnostic headroom;
+                # never raise the inherited hard limit or the controller limit.
+                required = len(os.listdir('/proc/self/fd')) + duplicates + 4
+                soft, hard = limits
+                if soft != resource.RLIM_INFINITY and soft < required:
+                    if hard != resource.RLIM_INFINITY and required > hard:
+                        raise RuntimeError('alias fixture needs soft NOFILE %d; inherited hard is %d'
+                                           % (required, hard))
+                    resource.setrlimit(resource.RLIMIT_NOFILE, (required, hard))
+                for _ in range(duplicates):
+                    os.dup(self.alias_fd)
+                    completed += 1
                 os.write(ready_w, b'1'); os.close(ready_w)
                 os.read(r, 1)
-            finally:
-                os._exit(0)
+            except BaseException as error:
+                diagnostic = json.dumps(dict(
+                    kind=type(error).__name__[:64], errno=getattr(error, 'errno', None),
+                    duplicatesRequested=duplicates, duplicatesCompleted=completed,
+                    limitsBefore=limits,
+                    limitsAfter=resource.getrlimit(resource.RLIMIT_NOFILE),
+                    message=str(error).encode('ascii', 'backslashreplace')[:128].decode('ascii')),
+                    sort_keys=True).encode()
+                try:os.write(ready_w, b'0' + diagnostic)
+                except OSError:pass
+                os._exit(1)
+            os._exit(0)
         os.close(r); os.close(ready_w)
-        self.assertEqual(os.read(ready_r, 1), b'1')
-        os.close(ready_r)
+        child_state = dict(status=None, ready=False)
+        def reap():
+            if child_state['status'] is None:
+                got, status = os.waitpid(pid, 0)
+                self.assertEqual(got, pid)
+                child_state['status'] = status
+            return child_state['status']
         def close():
             os.close(w)
-            got, status = os.waitpid(pid, 0)
-            self.assertEqual(got, pid)
-            self.assertEqual(status, 0)
+            status = reap()
+            if child_state['ready']:
+                self.assertEqual(status, 0)
+        # Register exact ownership BEFORE any readiness assertion can fail.
         self.addCleanup(close)
+        try:
+            ready = os.read(ready_r, 1)
+            if ready != b'1':
+                diagnostic = os.read(ready_r, 1024).decode(errors='replace')
+                status = reap()
+                self.fail('alias fixture child startup failed: ready=%r status=%d diagnostic=%s'
+                          % (ready, status, diagnostic))
+        finally:
+            os.close(ready_r)
+        child_state['ready'] = True
         self.o.tasks[pid] = dict(exited=False, fdTable=pid)
         return pid
 
