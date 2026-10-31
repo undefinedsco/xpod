@@ -221,7 +221,7 @@ test('only the genuinely new immutable-input-plan slice follows published2406', 
 
 test('the appended groups bind the actual frozen body and real module bytes', () => {
   // The current observer includes the verified regular-read source capture.
-  expect(sha(read(BODY))).toBe('279a6c5d253a07f8cf0d6afaca13b2c2de6b908b9aab1dfdad982adb7cf0c671');
+  expect(sha(read(BODY))).toBe('27855ad775f6dcdea2945689d7f8408c3d34e9e541368a7a3ad9a2d0bacf8d50');
   for (const [name, groups] of Object.entries(families)) {
     // PUBLISHED f803 history ends at the f803 counts (SDK 74, i.e. indices 0..73).
     // Those tuples — including index 73 — are immutable published history: they are
@@ -358,7 +358,7 @@ test('the live canonical binds every actual row of the final combined tree', () 
     .toBe('474fb14d45835438d222abe89e606fa17e0c68f8fafed7d4e3c869bb7d9d3a7b');
   // The reviewed phase-syscall diagnostic plus its three CI-discovered tests.
   expect(current.find((r) => r.path === 'qlever/scripts/sdk-ptrace-execution.py')!.sha256)
-    .toBe('279a6c5d253a07f8cf0d6afaca13b2c2de6b908b9aab1dfdad982adb7cf0c671');
+    .toBe('27855ad775f6dcdea2945689d7f8408c3d34e9e541368a7a3ad9a2d0bacf8d50');
   // The final reviewed VMA diagnostic and its root-corrected behavioural test.
   expect(current.find((r) => r.path === 'qlever/scripts/sdk-generated-vma-originals.py')!.sha256)
     .toBe('652e20f5217c042fb2aaf6ccec2d388d8cbf1e4483ab843cec5ef1b2e51d3cea');
@@ -371,7 +371,7 @@ test('the live canonical binds every actual row of the final combined tree', () 
   ] as const) expect(current.find((r) => r.path === p)!.sha256).toBe(h);
   for (const row of current) expect(sha(read(row.path))).toBe(row.sha256);
   const body = current.find((r) => r.path === BODY)!;
-  expect(body.sha256).toBe('279a6c5d253a07f8cf0d6afaca13b2c2de6b908b9aab1dfdad982adb7cf0c671');
+  expect(body.sha256).toBe('27855ad775f6dcdea2945689d7f8408c3d34e9e541368a7a3ad9a2d0bacf8d50');
   expect(current.find((r) => r.path === 'qlever/scripts/sdk-original-chunk-store.py')!.sha256)
     .toBe('67ea1a610f15f74288d623694b1a4886a82b0f29a186c40e69bdd232b39f96db');
 });

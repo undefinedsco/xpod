@@ -1520,6 +1520,12 @@ export async function observeProductConsumerGitHubOrigin(input:ArtifactAcquisiti
       // Earlier reviewed workflows and their source groups stay selectable.
       {workflowSha256:'4076f89cd1c853e6ff6035d984024eff024c4b35b102d5c5856e03f01bb76686',
       jobName:()=>callerNames[0]!,
+      sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS},
+      // The same required native gate preserves the runner group before exec and
+      // requires all 76 reviewed cases, including the whole alias read body.
+      // Earlier reviewed workflows and their source groups stay selectable.
+      {workflowSha256:'7d66965df7c26e254841a667bdf98ddcdfc7c388a6f15e2c7ed29b3045d11efa',
+      jobName:()=>callerNames[0]!,
       sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS}],requiredBranch:'staging',
     jobName:()=>callerNames[0]!,jobNames:()=>callerNames,
     sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS,

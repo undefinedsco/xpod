@@ -1237,8 +1237,7 @@ class Observer(CapturesMixin):
             self.check()
     def writable_aliases(self,identity,target_pid=None,target_fd=None):
         result={}
-        self.check()
-        try:
+        def read_aliases():
             for pid,row in sorted(self.tasks.items()):
                 if row['exited']:continue
                 for value in self.bounded_fd_slots(pid):
@@ -1251,9 +1250,8 @@ class Observer(CapturesMixin):
                     actual=dict(pid=pid,fd=fd,flags=flags,accessMode=flags&os.O_ACCMODE)
                     if pid==target_pid and fd==target_fd:result[key]=actual
                     else:result.setdefault(key,actual)
-        finally:
-            self.check()
-        return list(result.values())
+            return list(result.values())
+        return self.read_body(read_aliases)
     def barrier(self):
         return self.instrument('barrier',self.barrier_original)
     def barrier_original(self):

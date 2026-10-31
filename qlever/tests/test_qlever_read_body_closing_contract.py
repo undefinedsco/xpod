@@ -446,5 +446,162 @@ class P2CommentContractAccuracy(Base):
             self.o.read_body(lambda: self.o.emit_original({'kind': 'x'}))
 
 
+
+
+class P17WritableAliasReadBody(Base):
+    """Real native leases and stable child /proc tables; no ptrace authority claim."""
+
+    def setUp(self):
+        super().setUp()
+        self.alias_path = self.tmp / 'writable-alias'
+        self.alias_path.write_bytes(b'alias')
+        self.alias_fd = os.open(self.alias_path, os.O_RDWR)
+        self.addCleanup(os.close, self.alias_fd)
+        self.alias_identity = obs_mod.probe.identity(os.fstat(self.alias_fd))
+        self.o.tasks = {}
+        self.o.shared_tasks = False
+        self.audit_count = 0
+        real = self.leases.check
+        def audit(*args, **kwargs):
+            self.audit_count += 1
+            return real(*args, **kwargs)
+        self.leases.check = audit
+
+    def child(self, duplicates=0):
+        r, w = os.pipe()
+        ready_r, ready_w = os.pipe()
+        pid = os.fork()
+        if pid == 0:
+            try:
+                os.close(w); os.close(ready_r)
+                for _ in range(duplicates): os.dup(self.alias_fd)
+                os.write(ready_w, b'1'); os.close(ready_w)
+                os.read(r, 1)
+            finally:
+                os._exit(0)
+        os.close(r); os.close(ready_w)
+        self.assertEqual(os.read(ready_r, 1), b'1')
+        os.close(ready_r)
+        def close():
+            os.close(w)
+            got, status = os.waitpid(pid, 0)
+            self.assertEqual(got, pid)
+            self.assertEqual(status, 0)
+        self.addCleanup(close)
+        self.o.tasks[pid] = dict(exited=False, fdTable=pid)
+        return pid
+
+    def test_multi_owner_two_native_audits_keep_every_nonlease_check(self):
+        first, second = self.child(), self.child()
+        order = []
+        self.o.check_budget = lambda: order.append('budget')
+        class W:
+            active = True
+            def check(inner): order.append('waiter')
+        self.o.waiter = W()
+        cheap = []
+        original = self.o.check_deadline
+        self.o.check_deadline = lambda: (cheap.append(1), original())[1]
+        result = self.o.writable_aliases(self.alias_identity)
+        self.assertEqual({row['pid'] for row in result}, {first, second})
+        self.assertEqual(self.audit_count, 2, 'one actual native entry and closing sweep for the whole cohort')
+        self.assertEqual(order, ['budget', 'waiter'] * 6, 'entry + two checks per owner + closing')
+        slots = sum(len(os.listdir('/proc/%d/fd' % pid)) for pid in (first, second))
+        self.assertEqual(len(cheap), 2 * slots, 'enumeration and stat retain every cheap refusal')
+        self.assertIsNone(self.o.owned_read_body_frame)
+
+    def test_midbody_real_lease_loss_prevents_result_escape(self):
+        import fcntl
+        self.child()
+        original = self.o.check_deadline
+        lost = []
+        def lose():
+            if not lost:
+                lost.append(True)
+                fcntl.fcntl(self.fds[0], fcntl.F_SETLEASE, fcntl.F_UNLCK)
+            return original()
+        self.o.check_deadline = lose
+        with self.assertRaises(obs_mod.lifetime_leases.LeaseError):
+            self.o.writable_aliases(self.alias_identity)
+        self.assertEqual(self.audit_count, 2)
+        self.assertIsNone(self.o.owned_read_body_frame)
+
+    def fail_primary(self, operation):
+        import fcntl
+        from unittest.mock import patch
+        self.child()
+        primary = OSError(5, 'original ' + operation + ' failure')
+        real = obs_mod.os.stat if operation == 'stat' else obs_mod.descriptor_flags
+        def fail(*args, **kwargs):
+            if operation != 'stat' or str(args[0]).startswith('/proc/'):
+                fcntl.fcntl(self.fds[0], fcntl.F_SETLEASE, fcntl.F_UNLCK)
+                raise primary
+            return real(*args, **kwargs)
+        target, attr = (obs_mod.os, 'stat') if operation == 'stat' else (obs_mod, 'descriptor_flags')
+        with patch.object(target, attr, side_effect=fail):
+            with self.assertRaises(OSError) as caught:
+                self.o.writable_aliases(self.alias_identity)
+        self.assertIs(caught.exception, primary, 'failed closing audit must not replace first error object')
+        self.assertEqual(self.audit_count, 2)
+        self.assertIsNone(self.o.owned_read_body_frame)
+
+    def test_stat_primary_survives_failed_closing_audit(self):
+        self.fail_primary('stat')
+
+    def test_flags_primary_survives_failed_closing_audit(self):
+        self.fail_primary('flags')
+
+    def test_actual_1024_descriptor_bound_still_refuses(self):
+        self.child(duplicates=1025)
+        with self.assertRaisesRegex(AssertionError, 'slots unsupported above 1024'):
+            self.o.writable_aliases(self.alias_identity)
+        self.assertEqual(self.audit_count, 2)
+        self.assertIsNone(self.o.owned_read_body_frame)
+
+    def test_actual_64_alias_key_bound_still_refuses(self):
+        self.child(duplicates=65)
+        with self.assertRaisesRegex(AssertionError, 'alias keys unsupported above 64'):
+            self.o.writable_aliases(self.alias_identity)
+        self.assertEqual(self.audit_count, 2)
+        self.assertIsNone(self.o.owned_read_body_frame)
+
+    def test_declared_shared_table_dedup_preserves_selected_owner_priority(self):
+        first, second = self.child(), self.child()
+        # This tests selection against declared rows only. Fork does not prove
+        # CLONE_FILES authority; verify_task_ownership remains responsible for it.
+        self.o.shared_tasks = True
+        for row in self.o.tasks.values(): row['fdTable'] = first
+        result = self.o.writable_aliases(self.alias_identity, second, self.alias_fd)
+        self.assertEqual(result, [dict(pid=second, fd=self.alias_fd, flags=obs_mod.descriptor_flags(second, self.alias_fd), accessMode=os.O_RDWR)])
+        self.assertEqual(self.audit_count, 2)
+
+    def test_exited_owner_is_never_scanned(self):
+        pid = self.child()
+        self.o.tasks[999999999] = dict(exited=True)
+        self.assertEqual([row['pid'] for row in self.o.writable_aliases(self.alias_identity)], [pid])
+        self.assertEqual(self.audit_count, 2)
+
+    def test_standalone_fd_scan_retains_two_full_native_audits(self):
+        pid = self.child()
+        slots = self.o.bounded_fd_slots(pid)
+        self.assertEqual(slots, sorted(os.listdir('/proc/%d/fd' % pid), key=int))
+        self.assertEqual(self.audit_count, 2)
+        self.assertIsNone(self.o.owned_read_body_frame)
+
+    def test_inner_budget_failure_preserves_object_and_clears_frame(self):
+        self.child()
+        primary = RuntimeError('owner enumeration budget')
+        calls = []
+        def budget():
+            calls.append(1)
+            if len(calls) == 2: raise primary
+        self.o.check_budget = budget
+        with self.assertRaises(RuntimeError) as caught:
+            self.o.writable_aliases(self.alias_identity)
+        self.assertIs(caught.exception, primary)
+        self.assertEqual(len(calls), 3, 'fd-scan entry fails before its try; outer closing still checks')
+        self.assertEqual(self.audit_count, 2)
+        self.assertIsNone(self.o.owned_read_body_frame)
+
 if __name__ == '__main__':
     unittest.main()
