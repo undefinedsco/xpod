@@ -203,6 +203,7 @@ jobs:
               'qlever.tests.test_qlever_read_body_closing_contract',
               'qlever.tests.test_qlever_maps_geometry_entry',
               'qlever.tests.test_qlever_owned_pure_entries',
+              'qlever.tests.test_qlever_audit_site_diagnostic',
           )
           CLASS = MODULES[0] + '.OwnedMetadataObserverRunloop'
           WINDOW = MODULES[1] + '.OwnedWindowEmission'
@@ -322,6 +323,32 @@ jobs:
               'qlever.tests.test_qlever_owned_pure_entries.OwnedPureEntries.test_ownership_foreign_frame_cannot_suppress_failed_full_closing',
               'qlever.tests.test_qlever_owned_pure_entries.OwnedPureEntries.test_note_foreign_frame_cannot_suppress_failed_full_closing',
               'qlever.tests.test_qlever_owned_pure_entries.OwnedPureEntries.test_final_task_census_still_runs_after_full_closing',
+              'qlever.tests.test_qlever_audit_site_diagnostic.UnitAuditSites.test_five_body_roles_preserve_exact_calls_order_and_return',
+              'qlever.tests.test_qlever_audit_site_diagnostic.UnitAuditSites.test_disabled_attribution_keeps_identical_original_operations',
+              'qlever.tests.test_qlever_audit_site_diagnostic.UnitAuditSites.test_plain_fault_before_entry_drops_diagnostic_not_callback',
+              'qlever.tests.test_qlever_audit_site_diagnostic.UnitAuditSites.test_control_faults_propagate_same_object_and_restore_progress',
+              'qlever.tests.test_qlever_audit_site_diagnostic.UnitAuditSites.test_failed_native_primary_survives_diagnostic_control_fault',
+              'qlever.tests.test_qlever_audit_site_diagnostic.UnitAuditSites.test_body_primary_survives_remove_fault_and_full_closing_runs',
+              'qlever.tests.test_qlever_audit_site_diagnostic.UnitAuditSites.test_snapshot_fault_cannot_block_original_check',
+              'qlever.tests.test_qlever_audit_site_diagnostic.UnitAuditSites.test_partial_failed_native_site_and_return_identity',
+              'qlever.tests.test_qlever_audit_site_diagnostic.UnitAuditSites.test_wrong_thread_phase_and_window_do_not_inherit_attribution',
+              'qlever.tests.test_qlever_audit_site_diagnostic.UnitAuditSites.test_crossed_rearm_excluded_from_new_window_roles',
+              'qlever.tests.test_qlever_audit_site_diagnostic.UnitAuditSites.test_unknown_roles_and_sites_remain_other_fixed_shape',
+              'qlever.tests.test_qlever_audit_site_diagnostic.UnitAuditSites.test_saturated_output_fixed_six_kib_bound',
+              'qlever.tests.test_qlever_audit_site_diagnostic.UnitAuditSites.test_partial_tag_arm_cleanup_does_not_steal_foreign_tag',
+              'qlever.tests.test_qlever_audit_site_diagnostic.UnitAuditSites.test_same_deadline_rearm_binds_exact_baseline_and_waiter',
+              'qlever.tests.test_qlever_audit_site_diagnostic.UnitAuditSites.test_original_end_clock_failure_wins_over_new_end_hook',
+              'qlever.tests.test_qlever_audit_site_diagnostic.UnitAuditSites.test_body_primary_and_closing_fault_keep_first_object',
+              'qlever.tests.test_qlever_audit_site_diagnostic.UnitAuditSites.test_body_finished_fault_still_runs_original_closing',
+              'qlever.tests.test_qlever_audit_site_diagnostic.UnitAuditSites.test_overflow_transport_preserves_old_line_histogram_and_quotas',
+              'qlever.tests.test_qlever_audit_site_diagnostic.UnitAuditSites.test_sidecar_faults_do_not_replace_primary_or_retry',
+              'qlever.tests.test_qlever_audit_site_diagnostic.UnitAuditSites.test_uncaught_diagnostic_reads_preserve_control_and_policy_override',
+              'qlever.tests.test_qlever_audit_site_diagnostic.UnitAuditSites.test_reset_clears_optional_attribution',
+              'qlever.tests.test_qlever_audit_site_diagnostic.NativeAuditSites.test_real_c_read_counts_order_and_result_identical_off_on',
+              'qlever.tests.test_qlever_audit_site_diagnostic.NativeAuditSites.test_real_chunk_transaction_seven_sites_native_and_fsync_unchanged',
+              'qlever.tests.test_qlever_audit_site_diagnostic.NativeAuditSites.test_real_c_lease_loss_closing_refuses_and_records_partial_site',
+              'qlever.tests.test_qlever_audit_site_diagnostic.NativeAuditSites.test_real_c_closing_loss_keeps_body_primary_object',
+              'qlever.tests.test_qlever_audit_site_diagnostic.NativeAuditSites.test_real_owned_timer_keeps_primary_and_nonlease_closing',
           })
 
 

@@ -1544,6 +1544,11 @@ export async function observeProductConsumerGitHubOrigin(input:ArtifactAcquisiti
       // real lease-loss and closing guards for pure owned entry coalescing.
       {workflowSha256:'1b3574ad2878251c7e5d6cb228739ed8d4ffeb4fb06e46ab7bc55bc1d31c5d9b',
       jobName:()=>callerNames[0]!,
+      sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS},
+      // Preserve all ten actual prior caller versions. The same mandatory gate
+      // now includes bounded attribution, real lease/timer and transport checks.
+      {workflowSha256:'88166f392dc915810b03c594f6044b2978308ac77f33b94b9a35eae316d49f4e',
+      jobName:()=>callerNames[0]!,
       sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS}],requiredBranch:'staging',
     jobName:()=>callerNames[0]!,jobNames:()=>callerNames,
     sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS,

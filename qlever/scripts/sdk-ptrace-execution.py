@@ -90,6 +90,133 @@ PHASE_SYSCALL_TOP = 8
 
 
 
+def held_owned_window_state(waiter):
+    """Pure held-state read. Callers retain their own original fault boundary."""
+    if waiter is None:return (False,None,None)
+    deadline=getattr(waiter,'deadline',None);parent=getattr(waiter,'parent_deadline',None)
+    active=bool(getattr(waiter,'active',False))
+    def ns(value):return None if value is None else int(value*1e9)
+    return (active,ns(deadline),ns(parent))
+
+def held_outer_lease_context_matches(observer,waiter,claim,active,deadline,parent):
+    """One pure comparison shared by policy and optional diagnostic projection."""
+    if not active or deadline is None or parent is None:return False
+    if deadline>=parent or claim is None:return False
+    return (claim['waiter'] is waiter
+            and claim['thread']==threading.get_ident()
+            and claim['phase']==getattr(observer,'current_phase',None)
+            and claim['parent']==parent
+            and claim['local']==deadline)
+
+# Diagnostic roles are a closed set; no observed name can grow a table.
+AUDIT_BODY_ROLES=('writable_aliases','snapshot_raw','read_capture_fd','tool_original','legacy_tool_maps')
+AUDIT_BODY_CALLBACKS=('Observer.writable_aliases.<locals>.read_aliases','Observer.snapshot_write_original.<locals>.body','Observer.read_capture_fd.<locals>.body','Observer.tool_original.<locals>.body','Observer.tool_maps.<locals>.body')
+AUDIT_SNAPSHOT_SITES=('observer-leading','scan','check','publish-chunks','stage-manifest','cleanup','manifest-read')
+AUDIT_SITE_PREFIX='SDK_OWNED_WINDOW_AUDIT_SITES '
+AUDIT_SITE_MAXIMUM_BYTES=6144
+AUDIT_COUNTER_MAXIMUM=(1<<63)-1
+
+class OwnedWindowAuditSites:
+    """Optional attribution only: never consulted by an acceptance decision."""
+    def __init__(self,observer,deadline,parent):
+        self.phase=observer.current_phase;self.deadline=deadline;self.parent=parent
+        self.arm=observer._window_diag;self.waiter=observer.waiter
+        self.window=getattr(self.waiter,'window',None)
+        self.arm_events=min(AUDIT_COUNTER_MAXIMUM,max(0,self.arm['armedSeq']))
+        self.thread=threading.get_ident();self.tag=None;self.active=None;self.first_failed=None
+        self.bodies=[[0]*10 for _ in AUDIT_BODY_ROLES]
+        self.snapshots=[[0]*4 for _ in AUDIT_SNAPSHOT_SITES]
+        self.other=[0]*3;self.crossed=[0]*3;self.clock_misses=0
+    @staticmethod
+    def add(row,index,value=1):row[index]=min(AUDIT_COUNTER_MAXIMUM,row[index]+max(0,value))
+    def valid(self,observer):
+        if self.thread!=threading.get_ident() or observer.current_phase!=self.phase:return False
+        if getattr(observer,'_window_diag',None) is not self.arm or observer.waiter is not self.waiter:return False
+        if self.window is None or getattr(self.waiter,'window',None) is not self.window:return False
+        active,deadline,parent=held_owned_window_state(observer.waiter)
+        return active and deadline==self.deadline and parent==self.parent and deadline<parent
+    def ticket(self,kind,index):return [self,kind,index,None,self.tag,False]
+    def body_ticket(self,observer,body):
+        if not self.valid(observer):return None
+        # Names of these five observer-owned closures only; not a stack walk or
+        # an authorization label. Unknown callbacks remain the fixed other bucket.
+        name=getattr(body,'__qualname__',None)
+        index=AUDIT_BODY_CALLBACKS.index(name) if name in AUDIT_BODY_CALLBACKS else -1
+        return self.ticket('body',index)
+    def snapshot_ticket(self,observer):
+        if not self.valid(observer):return None
+        return self.ticket('snapshot',0)
+    def install(self,observer,ticket):
+        if ticket is None or ticket[0] is not self or not self.valid(observer):return
+        if ticket[1]=='body' and ticket[2]>=0:
+            row=self.bodies[ticket[2]];self.add(row,0)
+            if held_outer_lease_context_matches(observer,observer.waiter,getattr(observer,'_outer_lease_coalesce',None),*held_owned_window_state(observer.waiter)):self.add(row,1)
+        self.tag=ticket
+    def bind_claim(self,observer,ticket,claim):
+        if ticket is not None and ticket[0] is self:ticket[3]=claim
+    def body_finished(self,observer,ticket):
+        if ticket is not None and ticket[0] is self:ticket[5]=True
+    def snapshot_stage(self,observer,ticket,telemetry):
+        self.snapshot_site(observer,ticket,telemetry.get('stage'))
+    def snapshot_site(self,observer,ticket,site):
+        if ticket is None or self.tag is not ticket or not self.valid(observer):return
+        ticket[2]=AUDIT_SNAPSHOT_SITES.index(site) if site in AUDIT_SNAPSHOT_SITES else -1
+        if ticket[2]>=0:self.add(self.snapshots[ticket[2]],0)
+    def remove(self,observer,ticket,started=False,returned=False):
+        if ticket is None or ticket[0] is not self:return
+        if ticket[1]=='body' and ticket[2]>=0 and started and self.valid(observer):
+            self.add(self.bodies[ticket[2]],2 if returned else 3)
+        if self.tag is ticket:self.tag=ticket[4]
+    def native_begin(self,observer,started):
+        if not self.valid(observer):return None
+        tag=self.tag;kind='other';index=-1;boundary=-1
+        if tag is not None and tag[0] is self:
+            kind,index=tag[1:3]
+            if kind=='body':
+                boundary=0 if tag[3] is None else 2 if tag[5] else 1
+        value=[self,kind,index,boundary,started,self.active]
+        self.active=value;return value
+    def native_end(self,observer,ticket,ended,error):
+        if ticket is None or ticket[0] is not self:return
+        try:
+            current=getattr(observer,'_audit_sites',None)
+            same=current is self and self.valid(observer)
+            target=self if same else current
+            if target is None or target.thread!=threading.get_ident():return
+            started=ticket[4]
+            if type(started) is int and type(ended) is int and ended>=started:elapsed=ended-started
+            else:elapsed=0;target.clock_misses=min(AUDIT_COUNTER_MAXIMUM,target.clock_misses+1)
+            if not same:
+                self.add(target.crossed,0);self.add(target.crossed,1,int(error is not None));self.add(target.crossed,2,elapsed)
+            elif ticket[1]=='body' and 0<=ticket[2]<len(self.bodies):
+                row=self.bodies[ticket[2]];at=4+2*ticket[3];self.add(row,at);self.add(row,at+1,elapsed)
+            elif ticket[1]=='snapshot' and 0<=ticket[2]<len(self.snapshots):
+                row=self.snapshots[ticket[2]];self.add(row,1);self.add(row,2,int(error is not None));self.add(row,3,elapsed)
+            else:
+                self.add(self.other,0);self.add(self.other,1,int(error is not None));self.add(self.other,2,elapsed)
+            if error is not None and target.first_failed is None:
+                target.first_failed=(ticket[1],ticket[2],ticket[3],started,True)
+        finally:
+            if self.active is ticket:self.active=ticket[5]
+    @staticmethod
+    def slot(value):
+        if value is None:return None
+        kind,index,boundary,started,failed=value
+        return [kind,index,boundary,None if type(started) is not int else min(AUDIT_COUNTER_MAXIMUM,max(0,started)),failed]
+    def summary(self,observer):
+        if not self.valid(observer):return None
+        active=None if self.active is None else (*self.active[1:5],False)
+        result=dict(model='owned-window-audit-sites-v1',authorityVerified=False,phase=self.phase,armedEventCount=self.arm_events,windowDeadlineNs=str(min(AUDIT_COUNTER_MAXIMUM,self.deadline)),parentDeadlineNs=str(min(AUDIT_COUNTER_MAXIMUM,self.parent)),
+            bodyColumns=['entries','exactOuterEligibleEntries','bodyReturns','bodyErrors','entryLeaseAttempts','entryLeaseNs','innerLeaseAttempts','innerLeaseNs','closingLeaseAttempts','closingLeaseNs'],
+            readBodies={role:list(row) for role,row in zip(AUDIT_BODY_ROLES,self.bodies)},
+            snapshotColumns=['checkCallbacks','leaseAttempts','leaseErrors','leaseNs'],
+            regularSnapshot={site:list(row) for site,row in zip(AUDIT_SNAPSHOT_SITES,self.snapshots)},
+            otherNative=list(self.other),crossedWindowNative=list(self.crossed),clockMisses=self.clock_misses,
+            active=self.slot(active),firstFailed=self.slot(self.first_failed),
+            semantics='lease-attempt wall time only; failed attempts can be partial; crossed-window time separate; never add to inclusive parent buckets')
+        return result if len((AUDIT_SITE_PREFIX+json.dumps(result,separators=(',',':'))+'\n').encode())<=AUDIT_SITE_MAXIMUM_BYTES else None
+
+
 class PhaseProgress:
     """Bounded in-memory progress counters for one phase; diagnostics only.
 
@@ -1069,13 +1196,7 @@ class Observer(CapturesMixin):
             active,deadline,parent=self.owned_window_state()
         except BaseException:
             return False
-        if not active or deadline is None or parent is None:return False
-        if deadline>=parent:return False          # no local clamp armed
-        return (claim['waiter'] is waiter
-                and claim['thread']==threading.get_ident()
-                and claim['phase']==getattr(self,'current_phase',None)
-                and claim['parent']==parent
-                and claim['local']==deadline)
+        return held_outer_lease_context_matches(self,waiter,claim,active,deadline,parent)
     def open_outer_lease_window(self):
         """Claim the ONE owned outer window; refuse re-entrancy and non-clamped.
 
@@ -1100,6 +1221,7 @@ class Observer(CapturesMixin):
     def close_outer_lease_window(self):
         """UNCONDITIONAL reset; safe on any path and idempotent."""
         self._outer_lease_coalesce=None
+        self._audit_sites=None
     def check_owned_entry(self):
         """Leading check of one body with an unconditional full closing audit.
 
@@ -1153,6 +1275,7 @@ class Observer(CapturesMixin):
         self.owned_read_body_frame=None
         self.owned_maps_frame=None
         self.owned_emit_record_frame=None
+        self._audit_sites=None
     def read_frame_any(self):
         """True if ANY read-body frame exists, regardless of who owns it."""
         return getattr(self,'owned_read_body_frame',None) is not None
@@ -1238,17 +1361,25 @@ class Observer(CapturesMixin):
         assert getattr(self,'owned_maps_frame',None) is None,'read body cannot nest inside an owned maps frame'
         claim=None
         primary=None
-        started=False
+        started=False;returned=False;ticket=None
         try:
+            sites=getattr(self,'_audit_sites',None)
+            if sites is not None:
+                ticket=self.audit_site(sites,'body_ticket',body)
+                self.audit_site(sites,'install',ticket)
             self.check()
             # Preallocate BEFORE installing: if this raises, nothing was claimed.
             claim=self.new_read_body_claim()
+            if ticket is not None:self.audit_site(ticket[0],'bind_claim',ticket,claim)
             self.install_read_body_claim(claim)
             started=True
             try:
-                return body()
+                result=body();returned=True
+                if ticket is not None:self.audit_site(ticket[0],'body_finished',ticket)
+                return result
             except BaseException as error:
                 primary=error
+                if ticket is not None:self.audit_site(ticket[0],'body_finished',ticket,primary=error)
                 raise
         except BaseException as error:
             if primary is None:primary=error
@@ -1257,12 +1388,15 @@ class Observer(CapturesMixin):
             # Identity-owned reset: clears the claim ONLY if it is still ours,
             # so an interrupted arm or a foreign owner is never stolen, and a
             # successful arm is always released even if install raised midway.
-            if claim is not None:self.clear_own_read_body_claim(claim)
-            if started:
-                try:
-                    self.check()
-                except BaseException:
-                    if primary is None:raise
+            try:
+                if claim is not None:self.clear_own_read_body_claim(claim)
+                if started:
+                    try:
+                        self.check()
+                    except BaseException:
+                        if primary is None:raise
+            finally:
+                if ticket is not None:self.audit_site(ticket[0],'remove',ticket,started,returned,primary=sys.exc_info()[1])
     def check_deadline(self):
         """Per-iteration fast refusal: deadline/stdio/budget only, no lease sweep.
 
@@ -1970,25 +2104,36 @@ class Observer(CapturesMixin):
         assert 0<=size<=self.maximum_file_bytes,'write original byte bound'
         source=os.fstat(reader)
         if getattr(self,'capture_content_entities',False) and offset==0 and stat.S_ISREG(source.st_mode) and source.st_size==size:
-            self.check();number=len(self.captures);ledger=CaptureReservation(self)
-            # Out-of-band counter sink. It is updated in place by the chunk store
-            # BEFORE each fsync it counts, so a deadline raised inside the manifest
-            # fsync still leaves the exact counters at the failure point in
-            # self.snapshot_telemetry for the existing phase-failure diagnostic.
-            # It is never a proof field, never in the manifest or the receipt.
-            telemetry=dict();self.snapshot_telemetry=telemetry
+            sites=getattr(self,'_audit_sites',None);ticket=None
             try:
-                manifest=chunk_store.snapshot(self.capture_dir,reader,number,ledger,self.check,telemetry=telemetry)
-            except BaseException:
-                self.snapshot_telemetry_failure=chunk_store.bounded_snapshot_telemetry(telemetry)
-                raise
-            data=chunk_store.read_manifest(self.capture_dir,manifest,self.check)
-            reference=dict(path='capture-'+str(number).zfill(4)+'.original',bytes=data['bytes'],sha256=data['sha256'],storage=dict(model='chunk-original-v1',manifest=manifest))
-            physical_bytes=ledger.committed_bytes
-            row=self.emit(dict(kind='write-original',original=reference))
-            self.append_capture(row);self.capture_bytes+=physical_bytes
-            self.snapshot_telemetry_completed=chunk_store.bounded_snapshot_telemetry(telemetry)
-            return reference
+                if sites is not None:
+                    ticket=self.audit_site(sites,'snapshot_ticket')
+                    self.audit_site(sites,'install',ticket)
+                self.audit_site(sites,'snapshot_site',ticket,'observer-leading') if ticket is not None else None
+                self.check();number=len(self.captures);ledger=CaptureReservation(self)
+                # Out-of-band counter sink. It is updated in place by the chunk store
+                # BEFORE each fsync it counts, so a deadline raised inside the manifest
+                # fsync still leaves the exact counters at the failure point in
+                # self.snapshot_telemetry for the existing phase-failure diagnostic.
+                # It is never a proof field, never in the manifest or the receipt.
+                telemetry=dict();self.snapshot_telemetry=telemetry
+                try:
+                    check=self.check if ticket is None else lambda:self.audit_snapshot_check(ticket,telemetry)
+                    manifest=chunk_store.snapshot(self.capture_dir,reader,number,ledger,check,telemetry=telemetry)
+                except BaseException:
+                    self.snapshot_telemetry_failure=chunk_store.bounded_snapshot_telemetry(telemetry)
+                    raise
+                self.audit_site(sites,'snapshot_site',ticket,'manifest-read') if ticket is not None else None
+                data=chunk_store.read_manifest(self.capture_dir,manifest,self.check)
+                reference=dict(path='capture-'+str(number).zfill(4)+'.original',bytes=data['bytes'],sha256=data['sha256'],storage=dict(model='chunk-original-v1',manifest=manifest))
+                physical_bytes=ledger.committed_bytes
+                self.audit_site(sites,'snapshot_site',ticket,None) if ticket is not None else None
+                row=self.emit(dict(kind='write-original',original=reference))
+                self.append_capture(row);self.capture_bytes+=physical_bytes
+                self.snapshot_telemetry_completed=chunk_store.bounded_snapshot_telemetry(telemetry)
+                return reference
+            finally:
+                if ticket is not None:self.audit_site(ticket[0],'remove',ticket,primary=sys.exc_info()[1])
         name=self.next_capture_name();count=0;digest=hashlib.sha256()
         def body():
             nonlocal count
@@ -3559,6 +3704,20 @@ class Observer(CapturesMixin):
     #     untouched: only ordinary diagnostic-internal faults are suppressed.
     WINDOW_METHOD_KEYS=PHASE_PROGRESS_BUCKETS
 
+    def audit_site(self,state,action,*args,primary=None):
+        """An optional diagnostic fault cannot block the original operation."""
+        if state is None:return None
+        try:return getattr(state,action)(self,*args)
+        except (TimeoutError,KeyboardInterrupt,SystemExit):
+            if primary is None:raise
+            if getattr(self,'_audit_sites',None) is state:self._audit_sites=None
+        except BaseException:
+            if getattr(self,'_audit_sites',None) is state:self._audit_sites=None
+        return None
+    def audit_snapshot_check(self,ticket,telemetry):
+        self.audit_site(ticket[0],'snapshot_stage',ticket,telemetry)
+        return self.check()
+
     def window_arm(self,deadline_ns):
         """Record a bounded baseline for the window being armed right now.
 
@@ -3566,7 +3725,7 @@ class Observer(CapturesMixin):
         A previous baseline is dropped first, so a failed arm cannot leave stale
         data behind for the next window.
         """
-        self._window_diag=None
+        self._window_diag=None;self._audit_sites=None
         try:
             progress=self.phase_progress()
             if progress is None:return None
@@ -3577,10 +3736,16 @@ class Observer(CapturesMixin):
                                    baseline=baseline,
                                    activeAtArm=getattr(progress,'active',None),
                                    armedSeq=getattr(progress,'events',0))
+            try:
+                active,local,parent=held_owned_window_state(getattr(self,'waiter',None))
+                if active and local==int(deadline_ns) and parent is not None and local<parent:
+                    self._audit_sites=OwnedWindowAuditSites(self,local,parent)
+            except (TimeoutError,KeyboardInterrupt,SystemExit):raise
+            except BaseException:self._audit_sites=None # keep the original baseline intact
         except (TimeoutError,KeyboardInterrupt,SystemExit):
             raise                      # an owned deadline must never be hidden here
         except BaseException:
-            self._window_diag=None     # ordinary diagnostic fault: stay inert
+            self._window_diag=None;self._audit_sites=None # ordinary diagnostic fault: stay inert
         return None
 
     def window_summary(self):
@@ -3634,17 +3799,26 @@ class Observer(CapturesMixin):
         started=self.phase_progress_ns(progress);previous=(progress.active,progress.active_started)
         progress.active=name;progress.active_started=started
         if previous[0] is None:progress.failed=None;progress.failed_started=None
-        try:return function(*arguments,**keywords)
-        except BaseException:
+        ticket=None;failure=None
+        try:
+            sites=getattr(self,'_audit_sites',None)
+            if name=='lifetime_lease_check' and sites is not None:ticket=self.audit_site(sites,'native_begin',started)
+            return function(*arguments,**keywords)
+        except BaseException as error:
+            failure=error
             try:
                 if progress.failed is None:progress.failed=name;progress.failed_started=started
             except BaseException:pass
             raise
         finally:
+            ended=None
             try:
                 ended=self.phase_progress_ns(progress)
                 if started is not None and ended is not None:progress.record(name,ended-started)
-            finally:progress.active,progress.active_started=previous
+            finally:
+                try:
+                    if ticket is not None:self.audit_site(ticket[0],'native_end',ticket,ended,failure,primary=sys.exc_info()[1])
+                finally:progress.active,progress.active_started=previous
     def owned_window_state(self):
         """Held waiter window metadata only; issues no syscall and never arms.
 
@@ -3655,13 +3829,7 @@ class Observer(CapturesMixin):
         """
         waiter=getattr(self,'waiter',None)
         if waiter is None:return (False,None,None)
-        try:
-            deadline=getattr(waiter,'deadline',None)
-            parent=getattr(waiter,'parent_deadline',None)
-            active=bool(getattr(waiter,'active',False))
-            def ns(value):
-                return None if value is None else int(value*1e9)
-            return (active,ns(deadline),ns(parent))
+        try:return held_owned_window_state(waiter)
         except BaseException:
             return (False,None,None)
     def instrument_substep(self,name,function,*arguments,**keywords):
@@ -3736,6 +3904,10 @@ class Observer(CapturesMixin):
         payload_window=self.window_summary()
         payload=dict(schemaVersion=1,kind=kind,authorityVerified=False,phase=self.current_phase,phaseStartedMonotonicNs=str(started) if started is not None else None,phaseDeadlineMonotonicNs=str(deadline) if deadline is not None else None,nowMonotonicNs=str(now_ns) if now_ns is not None else None,elapsedNs=str(now_ns-started) if now_ns is not None and started is not None else None,remainingNs=str(deadline-now_ns) if deadline is not None and now_ns is not None else None,globalRawSequence=getattr(self,'seq',0),phaseTicks=getattr(progress,'ticks',0) if progress is not None else 0,eventCount=getattr(progress,'events',0) if progress is not None else 0,waitReturnCount=getattr(progress,'waits',0) if progress is not None else 0,lastBoundary=getattr(progress,'last_boundary',None) if progress is not None else None,lastWait=getattr(progress,'last_wait',None) if progress is not None else None,taskCounts=state_counts,exclusiveOwnerPid=exclusive[0] if isinstance(exclusive,tuple) and len(exclusive)==2 else None,exclusiveOwnerSequence=exclusive[1] if isinstance(exclusive,tuple) and len(exclusive)==2 else None,terminalFocusPid=terminal,generatedVmaOwner=getattr(generated,'owner',None) if generated is not None else None,lifetimeLeaseActive=lifecycle is not None,lifetimeLeaseCount=len(lifecycle.fds) if lifecycle is not None else 0,activeInclusiveMethod=getattr(progress,'active',None) if progress is not None else None,activeInclusiveMethodStartedNs=str(getattr(progress,'active_started',None)) if progress is not None and getattr(progress,'active_started',None) is not None else None,lastFailedInclusiveMethod=getattr(progress,'failed',None) if progress is not None else None,lastFailedInclusiveMethodStartedNs=str(getattr(progress,'failed_started',None)) if progress is not None and getattr(progress,'failed_started',None) is not None else None,inclusiveBuckets={name:dict(calls=value[0],totalNs=value[1],maxNs=value[2]) for name,value in (progress.buckets.items() if progress is not None else [])},pendingCaptureSubsteps={name:dict(calls=value[0],totalNs=value[1],maxNs=value[2]) for name,value in (getattr(progress,'substeps',{}) or {}).items()},pendingCaptureSubstepLast=getattr(progress,'substep_last',None),pendingCaptureSpans=list(getattr(progress,'spans',()) or ()),pendingCaptureSpansDropped=getattr(progress,'spans_dropped',0),mapsBodyBytesLast=getattr(progress,'maps_bytes_last',0),mapsBodyBytesMax=getattr(progress,'maps_bytes_max',0),mapsBodyCount=getattr(progress,'maps_bodies',0),syscallStops=getattr(progress,'syscall_summary',lambda:None)() if progress is not None else None,ownedWindowActive=owned_window[0],ownedWindowDeadlineNs=owned_window[1],ownedWindowParentNs=owned_window[2],inclusiveDurationNote='inclusive nested durations; buckets overlap by design; non-additive',failure=bool(failure))
         if payload_window is not None:payload['ownedWindowActivity']=payload_window
+        sites=getattr(self,'_audit_sites',None)
+        if sites is not None:
+            attribution=self.audit_site(sites,'summary',primary=sys.exc_info()[1])
+            if attribution is not None:payload['ownedWindowAuditSites']=attribution
         # Out-of-band chunk-store counters for the active/failed snapshot. Bounded
         # scalars only, diagnostics-only, never read by any verifier and never a
         # proof field: presence here grants no authority over captured bytes.
@@ -3759,17 +3931,26 @@ class Observer(CapturesMixin):
         retried and cannot exceed 32 normal plus at most 1 failure line.
         """
         progress=getattr(self,'_phase_progress',None)
+        failure_claimed=False
         try:
             if progress is not None:
                 if failure:
                     if progress.failure_snapshots>=1:return
-                    progress.failure_snapshots+=1
+                    progress.failure_snapshots+=1;failure_claimed=True
                 else:
                     if progress.snapshots>=PHASE_PROGRESS_MAXIMUM_SNAPSHOTS:return
                     progress.snapshots+=1
             payload=self.phase_progress_payload(kind,failure)
             encoded=json.dumps(payload,sort_keys=True,separators=(',',':'))
             line=(PHASE_PROGRESS_PREFIX+encoded+'\n').encode()
+            sidecar=None
+            if len(line)>PHASE_PROGRESS_MAXIMUM_BYTES and isinstance(payload,dict) and 'ownedWindowAuditSites' in payload:
+                # Restore the ORIGINAL payload before its original histogram
+                # fallback. New optional data must never displace an old field.
+                payload=dict(payload);attribution=payload.pop('ownedWindowAuditSites')
+                encoded=json.dumps(payload,sort_keys=True,separators=(',',':'))
+                line=(PHASE_PROGRESS_PREFIX+encoded+'\n').encode()
+                if failure_claimed:sidecar=attribution
             if len(line)>PHASE_PROGRESS_MAXIMUM_BYTES and isinstance(payload,dict) and 'syscallStops' in payload:
                 # The histogram is OPTIONAL instrumentation. It must never make a
                 # diagnostic that was previously valid become unpublishable, so on
@@ -3783,6 +3964,12 @@ class Observer(CapturesMixin):
                 line=(PHASE_PROGRESS_PREFIX+encoded+'\n').encode()
             assert len(line)<=PHASE_PROGRESS_MAXIMUM_BYTES,'bounded phase progress snapshot line'
             sys.stderr.write(line.decode());sys.stderr.flush()
+            if sidecar is not None:
+                # Only a successfully claimed original failure attempt permits
+                # one extra bounded line; no normal sidecar, retry or new quota.
+                line=(AUDIT_SITE_PREFIX+json.dumps(sidecar,sort_keys=True,separators=(',',':'))+'\n').encode()
+                if len(line)<=AUDIT_SITE_MAXIMUM_BYTES:
+                    sys.stderr.write(line.decode());sys.stderr.flush()
         except BaseException:pass
     def publish_clone3_parse_refusal(self,pid,entry,barrier,size,data,refusal):
         # Exactly the already-read stopped-task struct: no pointer, argv, env or
