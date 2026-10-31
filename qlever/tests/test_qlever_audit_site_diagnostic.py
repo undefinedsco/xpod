@@ -120,6 +120,25 @@ class UnitAuditSites(unittest.TestCase):
         value=self.summary();self.assertEqual(value['otherNative'][0],3)
         self.assertEqual(tuple(value['readBodies']),core.AUDIT_BODY_ROLES)
         self.assertEqual(tuple(value['regularSnapshot']),core.AUDIT_SNAPSHOT_SITES)
+        def unknown():return None
+        self.assertEqual(self.sites.body_ticket(self.o,unknown)[2],-1)
+        ticket=self.sites.snapshot_ticket(self.o);self.sites.install(self.o,ticket)
+        try:
+            self.assertIsNone(self.sites.body_ticket(self.o,unknown))
+            for index,name in enumerate(core.AUDIT_BODY_CALLBACKS):
+                with self.subTest(known=name):
+                    def known():return None
+                    known.__qualname__=name
+                    self.assertEqual(self.sites.body_ticket(self.o,known)[2],index)
+            for field in ('phase','waiter','window'):
+                target=self.o if field in ('phase','waiter') else self.o.waiter
+                attribute='current_phase' if field=='phase' else field
+                previous=getattr(target,attribute)
+                setattr(target,attribute,'other' if field=='phase' else object())
+                try:self.assertIsNone(self.sites.body_ticket(self.o,unknown))
+                finally:setattr(target,attribute,previous)
+        finally:self.sites.remove(self.o,ticket)
+        self.assertIsNone(self.sites.tag)
     def test_saturated_output_fixed_six_kib_bound(self):
         for row in self.sites.bodies+self.sites.snapshots+[self.sites.other,self.sites.crossed]:
             for i in range(len(row)):row[i]=core.AUDIT_COUNTER_MAXIMUM
@@ -166,6 +185,21 @@ class UnitAuditSites(unittest.TestCase):
         with self.assertRaises(OSError) as caught:self.body(body,'tool_original')
         self.assertIs(caught.exception,primary);self.assertEqual(self.events,['nonlease','nonlease'])
         self.assertIsNone(self.o.owned_read_body_frame)
+        for kind in ('read','maps'):
+            with self.subTest(foreign=kind):
+                self.setUp();calls=[];primary=OSError('first body error');secondary=TimeoutError('full closing error')
+                foreign=self.o.new_read_body_claim() if kind=='read' else (threading.get_ident(),self.o.current_phase)
+                field='owned_read_body_frame' if kind=='read' else 'owned_maps_frame'
+                def lease():
+                    calls.append('lease')
+                    if len(calls)==2:raise secondary
+                self.o.lifetime_leases.check=lease
+                def body():setattr(self.o,field,foreign);raise primary
+                try:
+                    with self.assertRaises(OSError) as caught:self.o.read_body(body)
+                    self.assertIs(caught.exception,primary);self.assertEqual(calls,['lease','lease'])
+                    self.assertIs(getattr(self.o,field),foreign)
+                finally:setattr(self.o,field,None)
     def test_body_finished_fault_still_runs_original_closing(self):
         primary=TimeoutError('finished signal')
         self.sites.body_finished=lambda *a:(_ for _ in ()).throw(primary)
@@ -246,6 +280,7 @@ class NativeAuditSites(common.Base):
         super().setUp();o=self.o
         o.initialize_capture_state();o.raw=io.BytesIO();o.logical_raw_bytes=0;o.raw_logical_limit=64*1024*1024
         o.compressed_raw=True;o.generated_vma=None;o.capture_content_entities=True
+        o.owned_emit_record_frame=None
         o.domain_lock=threading.RLock();o.domain_bytes=0;o.chunk_reserved=0;o.maximum_bytes=64*1024*1024;o.claim_bytes={'capture-body':0}
         o._phase_progress=core.PhaseProgress(o.current_phase,o.deadline)
         o.waiter=core.owned_wait.BlockingOwnedWait(o.deadline);o.waiter.__enter__();self.addCleanup(o.waiter.__exit__,None,None,None)
@@ -262,6 +297,16 @@ class NativeAuditSites(common.Base):
     def body(self,callback,role):
         callback.__qualname__=core.AUDIT_BODY_CALLBACKS[core.AUDIT_BODY_ROLES.index(role)] if role in core.AUDIT_BODY_ROLES else 'unknown'
         return self.o.read_body(callback)
+    def reset_snapshot(self,name):
+        o=self.o;o.capture_dir=self.tmp/name;o.capture_dir.mkdir();o.initialize_capture_state()
+        o.capture_bytes=0;o.domain_bytes=0;o.chunk_reserved=0;o.claim_bytes={'capture-body':0}
+        o.logical_raw_bytes=0;o.raw=io.BytesIO();o.seq=0;self.events=[]
+    def assert_snapshot_closed(self):
+        self.assertIsNone(self.o.owned_read_body_frame);self.assertIsNone(self.o.owned_maps_frame)
+        self.assertIsNone(self.o.owned_emit_record_frame)
+        if self.o._audit_sites is not None:
+            self.assertIsNone(self.o._audit_sites.tag);self.assertIsNone(self.o._audit_sites.active)
+        self.assertFalse(list(self.o.capture_dir.glob('.txn-*')));self.assertEqual(self.o.chunk_reserved,0)
     def test_real_c_read_counts_order_and_result_identical_off_on(self):
         out=[]
         for enabled in [False,True]:
@@ -279,23 +324,83 @@ class NativeAuditSites(common.Base):
     def test_real_chunk_transaction_seven_sites_native_and_fsync_unchanged(self):
         outcomes=[]
         for index,enabled in enumerate([False,True]):
-            folder=self.tmp/('capture'+str(index));folder.mkdir();self.o.capture_dir=folder;self.o.initialize_capture_state()
-            self.o.capture_bytes=0;self.o.domain_bytes=0;self.o.logical_raw_bytes=0;self.events=[]
+            self.reset_snapshot('capture'+str(index))
             sites=self.o._audit_sites
             if not enabled:self.o._audit_sites=None
-            sync=[];actual=core.os.fsync
-            with patch.object(core.os,'fsync',side_effect=lambda fd:(sync.append('fsync'),actual(fd))[1]):
-                ref=self.o.snapshot_write_original(self.fds[0],256)
-            outcomes.append((ref['bytes'],ref['sha256'],list(self.events),len(sync),self.o.domain_bytes,len(self.o.captures)))
-            if not enabled:self.o._audit_sites=sites
-        self.assertEqual(outcomes[0],outcomes[1]);self.assertEqual(outcomes[1][2].count('lease'),8)
-        sites=self.summary()['regularSnapshot'];self.assertTrue(all(row[0]==row[1]==1 and row[2]==0 for row in sites.values()))
-        self.assertEqual(self.summary()['otherNative'][0],1)
+            sync=[];actual=core.os.fsync;before=set(os.listdir('/proc/self/fd'))
+            try:
+                with patch.object(core.os,'fsync',side_effect=lambda fd:(sync.append('fsync'),actual(fd))[1]):
+                    refs=[self.o.snapshot_write_original(self.fds[0],256) for _ in range(2)]
+                self.assertEqual(set(os.listdir('/proc/self/fd')),before);self.assert_snapshot_closed()
+                raw=[json.loads(line) for line in self.o.raw.getvalue().splitlines()]
+                for row in raw:
+                    self.assertEqual(row.pop('storageIdentity'),self.o.chunk_identity(row['original']))
+                    row.pop('observedUnixNs');row.pop('observedMonotonicNs',None)
+                physical=sum(p.stat().st_size for p in self.o.capture_dir.rglob('*') if p.is_file())
+                self.assertEqual(self.o.domain_bytes,physical);self.assertEqual(self.o.capture_bytes,physical)
+                self.assertEqual(self.o.claim_bytes['capture-body'],physical)
+                self.assertEqual(self.o.snapshot_telemetry_completed['reusedChunks'],1)
+                outcomes.append((refs,raw,list(self.events),len(sync),physical,len(self.o.captures)))
+            finally:
+                if not enabled:self.o._audit_sites=sites
+        self.assertEqual(outcomes[0],outcomes[1]);self.assertEqual(outcomes[1][2].count('lease'),6)
+        sites=self.summary()['regularSnapshot']
+        for site,row in sites.items():
+            self.assertEqual(row[:3],[2,2 if site=='observer-leading' else 0,0])
+        self.assertEqual(self.summary()['otherNative'][0],4)
+        # An unmatched context never adopts the read-body optimization.
+        o=self.o;claim=o._outer_lease_coalesce;waiter=o.waiter;phase=o.current_phase
+        for kind in ('no-claim','phase','waiter','window','thread','no-clamp'):
+            with self.subTest(context=kind):
+                self.reset_snapshot(kind)
+                if kind=='no-claim':o._outer_lease_coalesce=None
+                elif kind=='phase':o.current_phase='other'
+                elif kind=='waiter':o.waiter=SimpleNamespace(active=True,deadline=waiter.deadline,parent_deadline=waiter.parent_deadline,window=waiter.window,check=lambda:None)
+                elif kind=='window':o._outer_lease_coalesce=dict(claim,local=claim['local']-1)
+                elif kind=='thread':o._outer_lease_coalesce=dict(claim,thread=claim['thread']+1)
+                else:o._outer_lease_coalesce=dict(claim,parent=claim['local'])
+                try:
+                    self.assertFalse(o.outer_lease_window_owned());o.snapshot_write_original(self.fds[0],256)
+                    self.assertEqual(self.events.count('lease'),9);self.assert_snapshot_closed()
+                finally:o._outer_lease_coalesce=claim;o.waiter=waiter;o.current_phase=phase
+        for kind in ('body','manifest','body-and-closing','closing'):
+            with self.subTest(failure=kind):
+                self.reset_snapshot('failure-'+kind);before=set(os.listdir('/proc/self/fd'))
+                primary=OSError('snapshot primary');secondary=TimeoutError('full closing primary')
+                actual=self.leases.check;calls=[]
+                def closing(*a,**k):
+                    calls.append('lease')
+                    if len(calls)==2:raise secondary
+                    return actual(*a,**k)
+                with patch.object(self.leases,'check',side_effect=closing) if kind in ('body-and-closing','closing') else patch.object(self.leases,'check',wraps=actual):
+                    with patch.object(core.chunk_store,'_stage_bytes',side_effect=primary) if kind in ('body','body-and-closing') else patch.object(core.chunk_store,'read_manifest',side_effect=primary) if kind=='manifest' else patch.object(core.chunk_store,'read_manifest',wraps=core.chunk_store.read_manifest):
+                        with self.assertRaises((OSError,TimeoutError)) as caught:o.snapshot_write_original(self.fds[0],256)
+                self.assertIs(caught.exception,secondary if kind=='closing' else primary)
+                self.assertEqual(set(os.listdir('/proc/self/fd')),before);self.assert_snapshot_closed()
+                self.assertEqual(len(o.captures),0);self.assertEqual(o.raw.getvalue(),b'')
+                if kind in ('body','body-and-closing'):self.assertEqual(o.domain_bytes,0);self.assertFalse(any(o.capture_dir.iterdir()))
+                else:self.assertGreater(o.domain_bytes,256)
     def test_real_c_lease_loss_closing_refuses_and_records_partial_site(self):
         def body():fcntl.fcntl(self.leases.fds[0],fcntl.F_SETLEASE,fcntl.F_UNLCK)
         with self.assertRaises(core.lifetime_leases.LeaseError):self.body(body,'read_capture_fd')
         value=self.summary();self.assertEqual(value['readBodies']['read_capture_fd'][8],1)
         self.assertEqual(value['firstFailed'][:3],['body',2,2]);self.assertIsNone(self.o.owned_read_body_frame)
+        # Independent actual lease set for the snapshot boundary: the preceding
+        # real loss intentionally makes its original set permanently failed.
+        self.leases.close() # release its exclusive SIGIO ownership first
+        leases=core.SdkExecutionObserver.lifetime_leases_class(maximum=64);self.addCleanup(leases.close)
+        self.assertIsNotNone(leases._native);self.assertIsNotNone(leases._native_binding)
+        path=self.tmp/'snapshot-lease';path.write_bytes(b'x'*256);fd=os.open(path,os.O_RDONLY);self.addCleanup(os.close,fd)
+        leases.acquire(fd);self.o.lifetime_leases=leases;self.reset_snapshot('kernel-loss')
+        actual=core.chunk_store.read_manifest;calls=[];native=leases.check
+        def check(*a,**k):calls.append('native');return native(*a,**k)
+        leases.check=check
+        def lose(*a,**k):
+            result=actual(*a,**k);fcntl.fcntl(leases.fds[0],fcntl.F_SETLEASE,fcntl.F_UNLCK);return result
+        with patch.object(core.chunk_store,'read_manifest',side_effect=lose):
+            with self.assertRaises(core.lifetime_leases.LeaseError):self.o.snapshot_write_original(fd,256)
+        self.assertEqual(calls,['native','native']);self.assertEqual(len(self.o.captures),0)
+        self.assertEqual(self.o.raw.getvalue(),b'');self.assertGreater(self.o.domain_bytes,256);self.assert_snapshot_closed()
     def test_real_c_closing_loss_keeps_body_primary_object(self):
         primary=OSError('actual body primary')
         def body():fcntl.fcntl(self.leases.fds[0],fcntl.F_SETLEASE,fcntl.F_UNLCK);raise primary

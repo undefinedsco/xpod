@@ -19,6 +19,7 @@ class Tests(unittest.TestCase):
             item=target.stat();held=os.open(target,os.O_RDONLY);observer=object.__new__(backend.Observer);observer.maximum_file_bytes=512*1024*1024;observer.shared_tasks=False
             # Production `Observer.__init__` defaults read by check_deadline/check.
             observer.current_phase='configure';observer.capture_toolchain=False;observer.pump_errors=[];observer.deadline=time.monotonic()+30
+            guard_checks=[];observer.check_budget=lambda:guard_checks.append('budget');observer.lifetime_leases=None
             observer.tasks={pid:dict(exited=False,entry={'sequence':13}) for pid,_ in aliases};observer.tasks.setdefault(101,dict(exited=False,entry={'sequence':13}))
             observer.barrier=lambda:{'sequence':17};observer.check=lambda:None;rows=[]
             observer.emit=lambda row:rows.append(dict(row,sequence=19)) or rows[-1]
@@ -26,6 +27,7 @@ class Tests(unittest.TestCase):
             def listing(path):return [str(fd) for pid,fd in flags if path=='/proc/'+str(pid)+'/fd']
             with patch.object(backend,'fdpath',return_value=str(target)),patch.object(backend,'descriptor_flags',side_effect=lambda p,f:flags[p,f]),patch.object(observer,'bounded_fd_slots',side_effect=lambda pid:listing('/proc/'+str(pid)+'/fd')),patch.object(backend.os,'stat',return_value=item),patch.object(backend.os,'open',return_value=os.dup(held)),contextlib.redirect_stderr(stderr):
                 with self.assertRaisesRegex(AssertionError,'live writable alias before consumer'):observer.capture(101,3,'consumer-before')
+            self.assertEqual(guard_checks,['budget'],'the real full alias-body closing audit must run')
             os.close(held);self.assertEqual(len(rows),1);row=rows[0]
             self.assertEqual(row['identity'][:2],[item.st_dev,item.st_ino] if isinstance(row['identity'],list) else (item.st_dev,item.st_ino))
             self.assertEqual(row['path'],str(target));self.assertEqual(row['barrierSequence'],17)

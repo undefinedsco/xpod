@@ -142,6 +142,8 @@ class OwnedWindowAuditSites:
         # an authorization label. Unknown callbacks remain the fixed other bucket.
         name=getattr(body,'__qualname__',None)
         index=AUDIT_BODY_CALLBACKS.index(name) if name in AUDIT_BODY_CALLBACKS else -1
+        # A regular snapshot keeps its existing seven-site attribution bracket.
+        if index<0 and self.tag is not None and self.tag[0] is self and self.tag[1]=='snapshot':return None
         return self.ticket('body',index)
     def snapshot_ticket(self,observer):
         if not self.valid(observer):return None
@@ -1335,8 +1337,9 @@ class Observer(CapturesMixin):
 
         Contract (STRENGTHENS the previous behaviour):
 
-          * the ORIGINAL `self.check()` runs at entry and at the closing boundary,
-            so every non-lease check (budget, waiter, SIGIO-safe stdio, deadline)
+          * the ORIGINAL `self.check()` runs at entry and `self.check_full()` at
+            the closing boundary, so every non-lease check (budget, waiter,
+            SIGIO-safe stdio, deadline)
             still runs there in the original order, and a wrong thread/phase/
             waiter/window context falls back to the FULL native lease audit;
           * only the redundant PER-BLOCK inner lease sweep is suppressed, by
@@ -1392,7 +1395,7 @@ class Observer(CapturesMixin):
                 if claim is not None:self.clear_own_read_body_claim(claim)
                 if started:
                     try:
-                        self.check()
+                        self.check_full()
                     except BaseException:
                         if primary is None:raise
             finally:
@@ -2110,24 +2113,33 @@ class Observer(CapturesMixin):
                     ticket=self.audit_site(sites,'snapshot_ticket')
                     self.audit_site(sites,'install',ticket)
                 self.audit_site(sites,'snapshot_site',ticket,'observer-leading') if ticket is not None else None
-                self.check();number=len(self.captures);ledger=CaptureReservation(self)
-                # Out-of-band counter sink. It is updated in place by the chunk store
-                # BEFORE each fsync it counts, so a deadline raised inside the manifest
-                # fsync still leaves the exact counters at the failure point in
-                # self.snapshot_telemetry for the existing phase-failure diagnostic.
-                # It is never a proof field, never in the manifest or the receipt.
-                telemetry=dict();self.snapshot_telemetry=telemetry
-                try:
-                    check=self.check if ticket is None else lambda:self.audit_snapshot_check(ticket,telemetry)
-                    manifest=chunk_store.snapshot(self.capture_dir,reader,number,ledger,check,telemetry=telemetry)
-                except BaseException:
-                    self.snapshot_telemetry_failure=chunk_store.bounded_snapshot_telemetry(telemetry)
-                    raise
-                self.audit_site(sites,'snapshot_site',ticket,'manifest-read') if ticket is not None else None
-                data=chunk_store.read_manifest(self.capture_dir,manifest,self.check)
-                reference=dict(path='capture-'+str(number).zfill(4)+'.original',bytes=data['bytes'],sha256=data['sha256'],storage=dict(model='chunk-original-v1',manifest=manifest))
-                physical_bytes=ledger.committed_bytes
-                self.audit_site(sites,'snapshot_site',ticket,None) if ticket is not None else None
+                def regular_snapshot_body():
+                    number=len(self.captures);ledger=CaptureReservation(self)
+                    # Out-of-band counter sink. It is updated in place by the chunk store
+                    # BEFORE each fsync it counts, so a deadline raised inside the manifest
+                    # fsync still leaves the exact counters at the failure point in
+                    # self.snapshot_telemetry for the existing phase-failure diagnostic.
+                    # It is never a proof field, never in the manifest or the receipt.
+                    telemetry=dict();self.snapshot_telemetry=telemetry
+                    try:
+                        check=self.check if ticket is None else lambda:self.audit_snapshot_check(ticket,telemetry)
+                        manifest=chunk_store.snapshot(self.capture_dir,reader,number,ledger,check,telemetry=telemetry)
+                    except BaseException:
+                        self.snapshot_telemetry_failure=chunk_store.bounded_snapshot_telemetry(telemetry)
+                        raise
+                    self.audit_site(sites,'snapshot_site',ticket,'manifest-read') if ticket is not None else None
+                    data=chunk_store.read_manifest(self.capture_dir,manifest,self.check)
+                    reference=dict(path='capture-'+str(number).zfill(4)+'.original',bytes=data['bytes'],sha256=data['sha256'],storage=dict(model='chunk-original-v1',manifest=manifest))
+                    physical_bytes=ledger.committed_bytes
+                    self.audit_site(sites,'snapshot_site',ticket,None) if ticket is not None else None
+                    return reference,physical_bytes,telemetry
+                # Only the exact owned outer window shares the existing read-body
+                # bracket; record publication remains after its complete closing.
+                if self.outer_lease_window_owned():
+                    reference,physical_bytes,telemetry=self.read_body(regular_snapshot_body)
+                else:
+                    self.check()
+                    reference,physical_bytes,telemetry=regular_snapshot_body()
                 row=self.emit(dict(kind='write-original',original=reference))
                 self.append_capture(row);self.capture_bytes+=physical_bytes
                 self.snapshot_telemetry_completed=chunk_store.bounded_snapshot_telemetry(telemetry)

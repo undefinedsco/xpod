@@ -57,12 +57,32 @@ class SourceSafetyTest(unittest.TestCase):
                 self.assertEqual(len(bodies),1,'pure loop must be the delegated body')
                 wrapper=ast.get_source_segment(self.source,self.function('read_body'))
                 self.assertIn('finally:',wrapper,'delegated closing audit runs on exceptions')
-                checks=[call for call in ast.walk(self.function('read_body')) if isinstance(call,ast.Call) and isinstance(call.func,ast.Attribute) and call.func.attr=='check']
-                self.assertEqual(len(checks),2,'delegated entry and closing full audits')
+                calls=[call for call in ast.walk(self.function('read_body')) if isinstance(call,ast.Call)
+                       and isinstance(call.func,ast.Attribute)
+                       and isinstance(call.func.value,ast.Name) and call.func.value.id=='self']
+                checks=[call for call in calls if call.func.attr=='check']
+                full=[call for call in calls if call.func.attr=='check_full']
+                self.assertEqual(len(checks),1,'one delegated entry self.check')
+                self.assertEqual(len(full),1,'one unsuppressible delegated closing self.check_full')
                 guard=[sub for sub in self.function('read_body').body if isinstance(sub,ast.Try)]
                 self.assertEqual(len(guard),1,'one exception-safe outer guard')
-                closing=[call for sub in guard[0].finalbody for call in ast.walk(sub) if isinstance(call,ast.Call) and isinstance(call.func,ast.Attribute) and call.func.attr=='check']
-                self.assertEqual(len(closing),1,'actual full closing call must be inside outer finally')
+                entry=[call for sub in guard[0].body for call in ast.walk(sub) if isinstance(call,ast.Call)
+                       and isinstance(call.func,ast.Attribute)
+                       and isinstance(call.func.value,ast.Name) and call.func.value.id=='self'
+                       and call.func.attr=='check']
+                self.assertEqual(len(entry),1,'entry self.check belongs to the guarded body')
+                closing=[call for sub in guard[0].finalbody for call in ast.walk(sub) if isinstance(call,ast.Call)
+                         and isinstance(call.func,ast.Attribute)
+                         and isinstance(call.func.value,ast.Name) and call.func.value.id=='self'
+                         and call.func.attr=='check_full']
+                self.assertEqual(len(closing),1,'actual unsuppressible full closing is inside outer finally')
+                clear=[call for sub in guard[0].finalbody for call in ast.walk(sub) if isinstance(call,ast.Call)
+                       and isinstance(call.func,ast.Attribute)
+                       and isinstance(call.func.value,ast.Name) and call.func.value.id=='self'
+                       and call.func.attr=='clear_own_read_body_claim']
+                self.assertEqual(len(clear),1,'one identity-owned claim reset in outer finally')
+                self.assertLess(entry[0].lineno,clear[0].lineno,'entry precedes claim cleanup')
+                self.assertLess(clear[0].lineno,closing[0].lineno,'clear owned claim before complete closing')
                 self.assertIn('self.clear_own_read_body_claim(claim)',wrapper,'clear frame before full closing check')
                 self.assertIn('self.bounded_fd_slots(pid)',text,'retain bounded owner scans and inner checks')
                 self.assertIn('self.check_deadline()',text,'retain per-descriptor deadline checks')

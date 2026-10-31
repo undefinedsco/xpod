@@ -104,13 +104,21 @@ class P11NonLeaseChecks(Base):
         self.o.claim = self.claim
         rounds = {'n': 0}
         real_check = self.o.check
+        real_full = self.o.check_full
+        closings = {'n': 0}
         def counting_check():
             rounds['n'] += 1
             return real_check()
+        def counting_full():
+            closings['n'] += 1
+            return real_full()
         self.o.check = counting_check
+        self.o.check_full = counting_full
         self.o.read_capture_fd(fd, None)
-        self.assertEqual(rounds['n'], 7, 'entry, five reads including EOF, closing')
-        self.assertEqual(order, ['budget', 'waiter'] * rounds['n'])
+        self.assertEqual(rounds['n'], 6, 'entry and five reads including EOF')
+        self.assertEqual(closings['n'], 1, 'unconditional complete closing audit')
+        self.assertEqual(order, ['budget', 'waiter'] * 7,
+                         'all seven original non-lease pairs still run')
 
     def test_second_iteration_failure_propagates_object_before_more_io(self):
         payload = os.urandom(8 * 65536)
@@ -306,6 +314,38 @@ class P16BidirectionalExclusion(Base):
     def test_closing_is_a_real_full_audit_not_a_cheap_skip(self):
         """A lease broken during the body must be refused at closing, even though
         the frame suppresses the INNER sweep."""
+        # A foreign claim must remain owned by its installer, but cannot turn
+        # this body's mandatory closing into an inner/frame-suppressed check.
+        original = self.leases.check
+        calls = []
+        def native(*args, **kwargs):
+            calls.append('native')
+            return original(*args, **kwargs)
+        self.leases.check = native
+        for kind in ('read', 'maps'):
+            for failure in (False, True):
+                with self.subTest(foreign=kind, primary=failure):
+                    field = 'owned_read_body_frame' if kind == 'read' else 'owned_maps_frame'
+                    foreign = (self.o.new_read_body_claim() if kind == 'read'
+                               else (threading.get_ident(), self.o.current_phase))
+                    primary = OSError('body primary with foreign claim')
+                    def foreign_body():
+                        setattr(self.o, field, foreign)
+                        if failure:
+                            raise primary
+                        return 'same result'
+                    before = len(calls)
+                    try:
+                        if failure:
+                            with self.assertRaises(OSError) as caught:
+                                self.o.read_body(foreign_body)
+                            self.assertIs(caught.exception, primary)
+                        else:
+                            self.assertEqual(self.o.read_body(foreign_body), 'same result')
+                        self.assertEqual(len(calls) - before, 2, 'entry AND complete native closing')
+                        self.assertIs(getattr(self.o, field), foreign, 'foreign claim is not ours to clear')
+                    finally:
+                        setattr(self.o, field, None)
         target = self.fds[0]
         def body():
             import fcntl

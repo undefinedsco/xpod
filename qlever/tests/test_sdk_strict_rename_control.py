@@ -1,5 +1,5 @@
 """Real regular-file lease/control flow, simulated stops; no ptrace/native run."""
-import ast,errno,hashlib,importlib.util,os,stat,sys,tempfile,types,unittest
+import ast,errno,hashlib,importlib.util,os,stat,sys,tempfile,time,types,unittest
 from unittest import mock
 from pathlib import Path
 ROOT=Path(__file__).resolve().parents[2];source=ROOT/'qlever/scripts/sdk-ptrace-execution.py';tree=ast.parse(source.read_text());observer=next(n for n in tree.body if isinstance(n,ast.ClassDef) and n.name=='Observer')
@@ -15,7 +15,8 @@ _backend=_importlib_util.module_from_spec(_spec);_spec.loader.exec_module(_backe
 _method_names=['capture_rename','complete_rename','snapshot_write_original','close_rename_leases','advance_witnessed_lease','advance_pending_owned_transitions',
                'next_capture_name','register_capture_entity','capture_entity_identity','verify_capture_entity',
                'read_body','read_frame_any','new_read_body_claim','install_read_body_claim',
-               'clear_own_read_body_claim','owned_window_state']
+               'clear_own_read_body_claim','owned_window_state',
+               'check_full','check_nonlease','check_lifetime_leases','instrument','phase_progress']
 Control=type('Control',(_backend.CapturesMixin,),
              {name:getattr(_backend.Observer,name) for name in _method_names})
 retained_rename_path_absent=_backend.retained_rename_path_absent
@@ -25,6 +26,10 @@ class Tests(unittest.TestCase):
  def setUp(self):
   parent=ROOT/'.test-data/strict-rename';parent.mkdir(parents=True,exist_ok=True);self.tmp=tempfile.TemporaryDirectory(dir=parent);self.addCleanup(self.tmp.cleanup);self.root=Path(self.tmp.name).resolve();self.old=self.root/'old';self.new=self.root/'new';self.old.write_bytes(b'actual held regular producer');self.held=os.open(self.old,os.O_RDONLY);self.addCleanup(os.close,self.held)
   c=self.c=Control();c.current_phase='rename-control';c.build=str(self.root);c.seq=10;c.maximum_file_bytes=1024;c.capture_dir=self.root/'captures';c.capture_dir.mkdir();c.capture_bytes=0;
+  # Match the real Observer closing interface, including live lease validation.
+  # This fixture supplies the constructor's budget callback as a recorded oracle;
+  # deadline/stdio guards and LeaseSet.check remain the real production methods.
+  c.guard_checks=[];c.check_budget=lambda:c.guard_checks.append('budget');c.pump_errors=[];c.deadline=time.monotonic()+30;c.lifetime_leases=None
   c.initialize_capture_state();c.capture_entities={};c.retained=set();c.budget_context={};c.metadata_states=[];c.check=lambda:None;c.claim=lambda *a,**kw:None;c.barrier=lambda:dict(sequence=c.seq);c.tasks={11:dict(rename=(str(self.old),str(self.new)),entry=dict(sequence=8))};c.exclusive=(11,8);self.producer=dict(sequence=1,path=str(self.old),identity=identity(os.fstat(self.held)));c.producers={tuple(self.producer['identity'][:2]):(self.producer,self.held,(self.old.stat().st_size,hashlib.sha256(self.old.read_bytes()).hexdigest()))}
   def emit(row):c.seq+=1;row.update(sequence=c.seq);return row
   c.emit=emit
@@ -55,7 +60,7 @@ class Tests(unittest.TestCase):
    with self.assertRaises(OSError):self.c.close_rename_leases(first,second)
   self.assertEqual(seen,[first,second]);self.assertIn(first,self.c.retained);self.assertNotIn(second,self.c.retained)
  def test_actual_methods_capture_same_lease_before_and_after_move(self):
-  window=self.c.capture_rename(11);self.assertEqual(window['beforeIdentity'],self.producer['identity']);os.rename(self.old,self.new);self.c.complete_rename(11,dict(sequence=8),dict(sequence=20,result=0,isError=False));self.assertEqual(len(self.c.metadata_states),1);before,after=self.c.metadata_states[0];self.assertEqual(before['beforeOriginal']['sha256'],after['afterOriginal']['sha256']);self.assertEqual(after['afterIdentity'],identity(self.new.stat()));self.assertEqual(self.c.retained,set())
+  window=self.c.capture_rename(11);self.assertEqual(window['beforeIdentity'],self.producer['identity']);os.rename(self.old,self.new);self.c.complete_rename(11,dict(sequence=8),dict(sequence=20,result=0,isError=False));self.assertEqual(len(self.c.metadata_states),1);before,after=self.c.metadata_states[0];self.assertEqual(before['beforeOriginal']['sha256'],after['afterOriginal']['sha256']);self.assertEqual(after['afterIdentity'],identity(self.new.stat()));self.assertEqual(self.c.retained,set());self.assertGreaterEqual(self.c.guard_checks.count('budget'),2,'each snapshot reaches its real complete closing audit')
  def test_displaced_destination_token_advances_with_source_in_one_transaction(self):
   """N1: the OVERWRITTEN destination inode is leased too, and must advance.
 
