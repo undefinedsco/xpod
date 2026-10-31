@@ -178,7 +178,7 @@ jobs:
         run: |
           # Children drop every capability; retain the runner group so they can
           # still traverse its private home and checked-out source directories.
-          sudo -u root -E -g "$(id -gn)" env PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 -B - <<'PYGATE'
+          sudo -u root -E env PYTHONDONTWRITEBYTECODE=1 /usr/bin/setpriv --regid "$(id -g)" --keep-groups /usr/bin/python3 -B - <<'PYGATE'
           """REQUIRED privileged gate: fail unless the WHOLE known suite actually ran.
 
           An ordinary `python3 -m unittest ...` exits 0 even when every case skips, so a

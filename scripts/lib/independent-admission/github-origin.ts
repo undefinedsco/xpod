@@ -1533,6 +1533,12 @@ export async function observeProductConsumerGitHubOrigin(input:ArtifactAcquisiti
       // requires all 88 cases, including exact record-callback closing audits.
       {workflowSha256:'69ffa4551353b1f519c879f6187923ccfe01f7b496b759e8b31f0e9c3f660b87',
       jobName:()=>callerNames[0]!,
+      sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS},
+      // Request the default root group allowed by sudo, then restore the runner
+      // primary group before Python exec. All eight earlier versions remain
+      // selectable; the exact 88-case gate still requires zero skips.
+      {workflowSha256:'4137533d5bffcae6842c741570b486d181ee9148d57336d9d93835bfd9644380',
+      jobName:()=>callerNames[0]!,
       sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS}],requiredBranch:'staging',
     jobName:()=>callerNames[0]!,jobNames:()=>callerNames,
     sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS,
