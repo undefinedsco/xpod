@@ -26,6 +26,8 @@ const LOCK = 'qlever/qlever.lock.json';
 const SERIES = 'qlever/patches/series';
 const BUILDER = 'qlever/scripts/build-qlever-runtime-sdk.sh';
 const PROFILE = 'qlever/scripts/qlever_compiler_profile.py';
+/** Exact helper SHA carried by the live controller closure; restored byte-exact. */
+const PROFILE_CONTROLLER_PIN = '7b9c05563e21ff05e33e3ac61641ad418fe48b5cc48e3399ca02c14beb6d248b';
 const PATCH = 'qlever/patches/qlever-antlr-scoped-pch-and-server-pch-reuse.patch';
 const LEASES = 'qlever/scripts/sdk-tool-lifetime-leases.py';
 const LEASE_EXT = 'qlever/scripts/native/lease_sweep_ext.c';
@@ -131,7 +133,7 @@ it('SDK87 whole-inherits SDK86 and re-pins only the reviewed current roles', () 
   // the SDK70 replay fixture that now uses the whole canonical limit profile.
   // SDK87 also re-pins the readonly executor ITSELF (2 inherited occurrences) to
   // the reviewed v3 bytes, so that CURRENT role belongs in this exact set.
-  expect(new Set(moved)).toEqual(new Set([OBSERVER, LEAF, LOCK, SERIES, LEASES, LEASE_EXT, LEASE_BINDING, BUILDER, PROFILE, EXECUTOR_BINDINGS, EXECUTOR, READONLY_NORMAL, BINDER, KERNEL_PROBE, SOURCE_ORIGINALS, CSS_PRODUCER, SDK70_E2E, VMA_ORIGINALS, COORDINATED_WAIT, READONLY_ROUTE, READONLY_CONTEXT, VMA_FIXTURE_TEST]));
+  expect(new Set(moved)).toEqual(new Set([OBSERVER, LEAF, LOCK, SERIES, LEASES, LEASE_EXT, LEASE_BINDING, BUILDER, EXECUTOR_BINDINGS, EXECUTOR, READONLY_NORMAL, BINDER, KERNEL_PROBE, SOURCE_ORIGINALS, CSS_PRODUCER, SDK70_E2E, VMA_ORIGINALS, COORDINATED_WAIT, READONLY_ROUTE, READONLY_CONTEXT, VMA_FIXTURE_TEST]));
   // The four appended CURRENT re-registrations must carry the REAL bytes today.
   // VMA_ORIGINALS is bound in BOTH its selector and source row, so its real
   // occurrence count is two; the other three are single-role bindings.
@@ -151,9 +153,10 @@ it('SDK87 whole-inherits SDK86 and re-pins only the reviewed current roles', () 
   expect(moved.filter(p => p === LEASE_EXT)).toHaveLength(2);
   expect(moved.filter(p => p === LEASE_BINDING)).toHaveLength(2);
   expect(moved.filter(p => p === BUILDER)).toHaveLength(3);
-  // The current compiler profile gained the single fixed metadata mode; it is
-  // one inherited current source role and must bind today's exact bytes.
-  expect(moved).toContain(PROFILE);
+  // The helper is restored byte-exact to its inherited original bytes so the
+  // live controller pin remains valid. It must NOT move in this slice, but every
+  // SDK87 occurrence still binds the actual original file.
+  expect(moved).not.toContain(PROFILE);
   for (const row of all(next).filter((r: any) => r.path === PROFILE)) expect(row.sha256).toBe(sha(PROFILE));
   // The readonly executor lane derives its parallelism from its own 4-CPU
   // allocation, so its CURRENT bytes move in both inherited occurrences.
@@ -234,6 +237,18 @@ it('generic selector resolves SDK86/current/stale against the real bytes', () =>
     map.set('source:' + stale, 'f'.repeat(64));
     expect(() => selectGitHubSourceBindingGroup(peers, map)).toThrow();
   }
+});
+
+
+it('live controller workflow pins match the real source files, including the exact helper', () => {
+  const workflow = readFileSync(path.join(ROOT, READONLY_NORMAL), 'utf8');
+  const matches = [...workflow.matchAll(/^\s*pins=(\{.*\})\s*$/gm)];
+  expect(matches).toHaveLength(1);
+  const pins = JSON.parse(matches[0]![1]) as Record<string, string>;
+  expect(Object.keys(pins)).toHaveLength(21);
+  expect(pins[PROFILE]).toBe(PROFILE_CONTROLLER_PIN);
+  expect(pins[PROFILE]).toBe(sha(PROFILE));
+  for (const [source, digest] of Object.entries(pins)) expect(sha(source), source).toBe(digest);
 });
 
 it('the canonical holds the current canonical physical originals matching the live tree', () => {

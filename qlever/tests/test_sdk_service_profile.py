@@ -12,6 +12,20 @@ ROOT=Path(__file__).resolve().parents[2]
 def load(name):
  p=ROOT/'qlever/scripts'/name;spec=importlib.util.spec_from_file_location(name,p);value=importlib.util.module_from_spec(spec);spec.loader.exec_module(value);return value
 profile=load('qlever_compiler_profile.py');service=load('sdk-service-profile-materials.py');route=load('sdk-readonly-normal-route.py');bindings=load('sdk-readonly-executor-bindings.py');collector=load('sdk-readonly-collection.py')
+def initializer_body(root):
+ source=(ROOT/'qlever/scripts/build-qlever-runtime-sdk.sh').read_text()
+ start=source.index('initialize_metadata() {');end=source.index('\n}\n',start)+3
+ return 'set -Eeuo pipefail\nqlever_root='+shlex.quote(str(root))+'\n'+source[start:end]+"""
+initialize_metadata
+printf 'P=%s\nC=%s\nX=%s\nL=%s\nCR=%s\nAP=%s\nFI=%s\nEND=%s\n' "$prepared_profile" "$c_compiler" "$cxx_compiler" "$declared_linker" "$archive_create" "$archive_append" "$archive_finish" "$metadata_end"
+"""
+
+def run_metadata(root,env):
+ source=(ROOT/'qlever/scripts/build-qlever-runtime-sdk.sh').read_text()
+ result=subprocess.run([shutil.which('bash') or '/bin/bash','-c',initializer_body(root)],env=env,capture_output=True,text=True)
+ if result.returncode: raise AssertionError(result.stderr)
+ rows=dict(line.split('=',1) for line in result.stdout.splitlines())
+ return rows,source
 class ServiceProfileTest(unittest.TestCase):
  def test_profiles_preserve_pair_and_dockerfile_authority(self):
   self.assertEqual(profile.declared_profile('service-trixie')['c'],'clang-19');self.assertEqual(profile.declared_profile('service-trixie')['dockerfile'],'docker/qlever-runtime-sdk/Dockerfile')
@@ -19,49 +33,40 @@ class ServiceProfileTest(unittest.TestCase):
   with self.assertRaises(RuntimeError):profile.declared_profile('service-module')
   for name,extra in [('service-trixie',{}),('module-bookworm-gcc12',{'XPOD_QLEVER_CMAKE_C_COMPILER':'gcc-12','XPOD_QLEVER_CMAKE_CXX_COMPILER':'g++-12'})]:
    env={k:v for k,v in os.environ.items() if k not in ('XPOD_QLEVER_CMAKE_C_COMPILER','XPOD_QLEVER_CMAKE_CXX_COMPILER')};env.update(extra)
-   with self.subTest(profile=name,check='metadata'):
-    result=subprocess.run([sys.executable,str(ROOT/'qlever/scripts/qlever_compiler_profile.py'),'metadata'],env=env,capture_output=True,text=True)
-    self.assertEqual(result.returncode,0,result.stderr)
-    fields=result.stdout.rstrip('\n').split('\x1f')
-    self.assertEqual(len(fields),8)
-    self.assertEqual(fields[7],'__END__')
+   with self.subTest(profile=name,check='bash-metadata'):
+    rows,source=run_metadata(ROOT/'qlever',env)
     declared=profile.declared_profile(name);archive=profile.archive_command()
-    self.assertEqual(fields[:4],[name,declared['c'],declared['cxx'],declared['linker_program']])
-    self.assertEqual(fields[4:7],[archive['create'],archive['append'],archive['finish']])
-   with self.subTest(profile=name,check='bash-framing'):
-    source=(ROOT/'qlever/scripts/build-qlever-runtime-sdk.sh').read_text()
-    start=source.index('initialize_metadata() {');end=source.index('\n}\n',start)+3
-    body='set -Eeuo pipefail\nqlever_root='+shlex.quote(str(ROOT/'qlever'))+'\n'+source[start:end]+'''
-initialize_metadata
-printf 'P=%s\nC=%s\nX=%s\nL=%s\nCR=%s\nAP=%s\nFI=%s\nEND=%s\n' "$prepared_profile" "$c_compiler" "$cxx_compiler" "$declared_linker" "$archive_create" "$archive_append" "$archive_finish" "$metadata_end"
-'''
-    result=subprocess.run([shutil.which('bash') or '/bin/bash','-c',body],env=env,capture_output=True,text=True)
-    self.assertEqual(result.returncode,0,result.stderr)
-    rows=dict(line.split('=',1) for line in result.stdout.splitlines())
-    declared=profile.declared_profile(name);archive=profile.archive_command()
+    self.assertIn('python3 -B -',source)
     self.assertEqual([rows['P'],rows['C'],rows['X'],rows['L']],[name,declared['c'],declared['cxx'],declared['linker_program']])
     self.assertEqual([rows['CR'],rows['AP'],rows['FI']],[archive['create'],archive['append'],archive['finish']])
+    self.assertEqual(rows['FI'],'')
     self.assertEqual(rows['END'],'__END__')
   malformed=[
-   ('missing-end','service-trixie\x1fclang-19\x1fclang++-19\x1fld.lld-19\x1fcreate\x1fappend'),
-   ('extra-field','service-trixie\x1fclang-19\x1fclang++-19\x1fld.lld-19\x1fcreate\x1fappend\x1f\x1f__END__\x1fEXTRA'),
-   ('empty-required','service-trixie\x1fclang-19\x1fclang++-19\x1fld.lld-19\x1f\x1fappend\x1f\x1f__END__'),
-   ('invalid-marker','service-trixie\x1fclang-19\x1fclang++-19\x1fld.lld-19\x1fcreate\x1fappend\x1f\x1fNOT_END'),
-   ('newline','service-trixie\x1fclang-19\nINJECT\x1fclang++-19\x1fld.lld-19\x1fcreate\x1fappend\x1f\x1f__END__')]
+   ('missing-end','service-trixie\x1fclang-19\x1fclang++-19\x1fld.lld-19\x1fcreate\x1fappend',0),
+   ('extra-field','service-trixie\x1fclang-19\x1fclang++-19\x1fld.lld-19\x1fcreate\x1fappend\x1f\x1f__END__\x1fEXTRA',0),
+   ('empty-required','service-trixie\x1fclang-19\x1fclang++-19\x1fld.lld-19\x1f\x1fappend\x1f\x1f__END__',0),
+   ('invalid-marker','service-trixie\x1fclang-19\x1fclang++-19\x1fld.lld-19\x1fcreate\x1fappend\x1f\x1fNOT_END',0),
+   ('newline','service-trixie\x1fclang-19\nINJECT\x1fclang++-19\x1fld.lld-19\x1fcreate\x1fappend\x1f\x1f__END__',0),
+   ('python-exit-nonzero','service-trixie\x1fclang-19\x1fclang++-19\x1fld.lld-19\x1fcreate\x1fappend\x1f\x1f__END__',1)]
   base=ROOT/'.test-data/service-profile';base.mkdir(parents=True,exist_ok=True)
   with tempfile.TemporaryDirectory(dir=base) as directory:
    root=Path(directory);(root/'scripts').mkdir();fake=root/'scripts/qlever_compiler_profile.py'
-   source=(ROOT/'qlever/scripts/build-qlever-runtime-sdk.sh').read_text();start=source.index('initialize_metadata() {');end=source.index('\n}\n',start)+3
-   body='set -Eeuo pipefail\nqlever_root='+shlex.quote(str(root))+'\n'+source[start:end]+'\ninitialize_metadata\n'
-   for label,payload in malformed:
-    with self.subTest(profile='service-trixie',check='malformed-'+label):
-     fake.write_text('print('+repr(payload)+')\n')
-     result=subprocess.run([shutil.which('bash') or '/bin/bash','-c',body],capture_output=True,text=True)
+   for label,payload,exit_code in malformed:
+    with self.subTest(profile='service-trixie',check='framing-'+label):
+     fakebin=root/('bin-'+label);fakebin.mkdir();python=fakebin/'python3'
+     python.write_text("#!/bin/sh\nprintf '%s' "+shlex.quote(payload)+"\n"+('exit 1\n' if exit_code else ''));python.chmod(0o755)
+     body=initializer_body(root)
+     result=subprocess.run([shutil.which('bash') or '/bin/bash','-c',body],env=dict(env,PATH=str(fakebin)+os.pathsep+env['PATH']),capture_output=True,text=True)
      self.assertNotEqual(result.returncode,0)
-   with self.subTest(profile='service-trixie',check='python-exit-nonzero-valid-frame'):
-    fake.write_text('print('+repr('service-trixie\x1fclang-19\x1fclang++-19\x1fld.lld-19\x1fcreate\x1fappend\x1f\x1f__END__')+')\nraise SystemExit(1)\n')
-    result=subprocess.run([shutil.which('bash') or '/bin/bash','-c',body],capture_output=True,text=True)
-    self.assertNotEqual(result.returncode,0)
+   for label,field in [('us',"'bad'+chr(31)"),('lf',"'bad\\nmore'"),('cr',"'bad\\rmore'")]:
+    with self.subTest(profile='service-trixie',check='helper-field-'+label):
+     fake.write_text("def compiler_spec():\n return {'profile':'service-trixie','c':'clang-19','cxx':'clang++-19','linker_program':"+field+"}\ndef archive_command():\n return {'create':'create','append':'append','finish':''}\n")
+     result=subprocess.run([shutil.which('bash') or '/bin/bash','-c',initializer_body(root)],env=env,capture_output=True,text=True)
+     self.assertNotEqual(result.returncode,0)
+   with self.subTest(profile='service-trixie',check='space-utf8-and-empty-finish'):
+    fake.write_text("def compiler_spec():\n return {'profile':'service-trixie','c':'clang-19','cxx':'clang++-19','linker_program':'ld.lld-19 café path'}\ndef archive_command():\n return {'create':'create with space','append':'append with space','finish':''}\n")
+    rows,source=run_metadata(root,env)
+    self.assertEqual(rows['L'],'ld.lld-19 café path');self.assertEqual(rows['CR'],'create with space');self.assertEqual(rows['AP'],'append with space');self.assertEqual(rows['FI'],'');self.assertEqual(rows['END'],'__END__')
  def test_actual_service_interior_cannot_borrow_module_or_wrong_compiler(self):
   declared=profile.declared_profile('service-trixie');release=dict(ID='debian',VERSION_CODENAME='trixie');tools=dict(c='Debian clang version 19.1.7',cxx='Debian clang version 19.1.7',linker='Debian LLD 19.1.7')
   service.validate_interior(declared,release,'aarch64',tools)

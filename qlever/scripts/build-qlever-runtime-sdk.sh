@@ -9,9 +9,25 @@ source_dir=${XPOD_QLEVER_SOURCE_DIR:-/opt/qlever-sdk/source}
 build_dir=${XPOD_QLEVER_BUILD_DIR:-/opt/qlever-sdk/build}
 jobs=${XPOD_QLEVER_BUILD_JOBS:-4}
 initialize_metadata() {
-  metadata=$(python3 "$qlever_root/scripts/qlever_compiler_profile.py" metadata)
-  metadata_status=$?
-  if [[ "$metadata_status" -ne 0 ]]; then
+  if ! metadata=$(python3 -B - "$qlever_root/scripts/qlever_compiler_profile.py" <<'PY'
+import importlib.util
+import sys
+
+spec = importlib.util.spec_from_file_location('xpod_qlever_compiler_profile', sys.argv[1])
+if spec is None or spec.loader is None:
+    raise SystemExit('compiler/profile import failed')
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+compiler = module.compiler_spec()
+archive = module.archive_command()
+fields = [compiler['profile'], compiler['c'], compiler['cxx'], compiler['linker_program'],
+          archive['create'], archive['append'], archive['finish']]
+for field in fields:
+    if '\x1f' in field or '\n' in field or '\r' in field:
+        raise SystemExit('compiler/profile metadata framing refused')
+sys.stdout.write('\x1f'.join(fields) + '\x1f__END__')
+PY
+  ); then
     echo 'compiler/profile metadata failed' >&2
     return 1
   fi
