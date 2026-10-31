@@ -2291,7 +2291,7 @@ const SDK87_SOURCE_HASHES:Readonly<Record<string,string>>=Object.freeze({
  // applied to selectors, secondary selectors, staged selectors AND source bindings
  // alike — otherwise the current tuple would keep naming the previous 9bc bytes.
  'scripts/css-module-producer.py':"1ba30f5eaba9070f55135936649c43b109bf7a4a83db43b512edaa6d31abc5cc",
- 'qlever/scripts/build-qlever-runtime-sdk.sh':"330d9f470dd51e72625c78d38eee0e06c0b8475bac3582c8dfd44280633f55ad",
+ 'qlever/scripts/build-qlever-runtime-sdk.sh':"ebe4d4d98e29247f4565f7a7499f1beb48832a5c499833b7bb98ce62bf9467ae",
  'qlever/scripts/sdk-ptrace-execution.py':"e12068a7d0b01e69a101cc05d3c1118173c5682a4684834a86d1083117411f2b",
  // Filtered-lease lookup: the token-filtered check resolves its single row by the
  // (st_dev, st_ino) key instead of scanning every held row. Selection semantics,

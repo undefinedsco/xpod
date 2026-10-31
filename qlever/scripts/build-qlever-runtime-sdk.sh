@@ -234,10 +234,35 @@ cmake_file_api = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(cmake_file_api)
 cmake_file_api.write_queries(build)
 QUERY
+  # RETAINED COMPILER-IDENTIFICATION INTERMEDIATES.
+  # The traced configure observer holds a real kernel read lease for the whole
+  # phase on every regular file a compiler child reads. Both levers below keep the
+  # intermediates those children produce INSIDE the observed window, so no inode
+  # is unlinked while it is still leased (that would move its ctime and the lease
+  # guard would correctly reject it).
+  #
+  #   1. `-save-temps=obj` on the compiler-IDENTIFICATION test build only: the
+  #      driver keeps a stable source-derived object instead of a random temporary
+  #      it would otherwise unlink after linking. Delivered through
+  #      CMAKE_<LANG>_COMPILER_ID_TEST_FLAGS_FIRST, which CMake consults BEFORE its
+  #      empty/global fallbacks (COMPILER_ID_FLAGS is rebuilt from
+  #      CMAKE_<LANG>_FLAGS, so setting that would be overwritten).
+  #   2. `--debug-trycompile` retains the try_compile working directories (the ABI /
+  #      compiler-check probes) instead of deleting their inputs before the phase
+  #      ends. This is a BROADER retention lever than the ID probe: it covers every
+  #      try_compile in configure, not just compiler identification.
+  #
+  # All compiler-ID, ABI, native and generation checks remain fully OBSERVED and
+  # unchanged; nothing is skipped, pre-set or cached. `-save-temps` is deliberately
+  # NOT enabled globally: retaining every QLever C++ intermediate would balloon the
+  # build for no custody benefit.
   cmake_command=(cmake \
+    --debug-trycompile \
     -G Ninja \
     -S "$source_dir" \
     -B "$build_dir" \
+    -DCMAKE_C_COMPILER_ID_TEST_FLAGS_FIRST="-save-temps=obj" \
+    -DCMAKE_CXX_COMPILER_ID_TEST_FLAGS_FIRST="-save-temps=obj" \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
     -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \

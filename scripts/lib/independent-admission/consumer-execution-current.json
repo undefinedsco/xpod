@@ -333,7 +333,7 @@
   },
   {
     "path": "qlever/scripts/build-qlever-runtime-sdk.sh",
-    "sha256": "330d9f470dd51e72625c78d38eee0e06c0b8475bac3582c8dfd44280633f55ad"
+    "sha256": "ebe4d4d98e29247f4565f7a7499f1beb48832a5c499833b7bb98ce62bf9467ae"
   },
   {
     "path": "qlever/scripts/macos_companion_originals.py",
@@ -1221,7 +1221,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-origin-policy.ts",
-    "sha256": "f77170fea5c9833e8087554ba5c675a31811021a79988c8c1341f9c39eb50bc9"
+    "sha256": "063ecb110cc2377422d838f15f62eece177b4e6b1093649714ccf3290aeff1d0"
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-originals.ts",
