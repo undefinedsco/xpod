@@ -19,6 +19,82 @@ from qlever.tests import test_qlever_read_body_closing_contract as common
 
 core=common.obs_mod
 
+
+def assert_resource_failure_transport(test):
+    # Exercise new optional serialization separately from the old fallback and
+    # sidecar writers. A diagnostic fault must not consume their existing data.
+    original_dumps=json.dumps
+    attribution={'marker':'old audit sidecar','padding':'y'*700}
+    old={'kind':'phase-failure','padding':'x'*7900,'syscallStops':{'kept':'old histogram'}}
+    expected=core.PHASE_PROGRESS_PREFIX+original_dumps(old,sort_keys=True,separators=(',',':'))+'\n'
+    sidecar=core.AUDIT_SITE_PREFIX+original_dumps(attribution,sort_keys=True,separators=(',',':'))+'\n'
+    test.assertLessEqual(len(expected.encode()),8192);test.assertLessEqual(len(sidecar.encode()),6144)
+    test.assertGreater(len((core.PHASE_PROGRESS_PREFIX+original_dumps(dict(old,ownedWindowAuditSites=attribution),sort_keys=True,separators=(',',':'))+'\n').encode()),8192)
+    for stage in ('summary','loads','size','serialize'):
+        for error in (TimeoutError('new alarm'),KeyboardInterrupt(),SystemExit(9),OSError('errno absent')):
+            for existing in (False,True):
+                with test.subTest(resourceTransport=stage,control=type(error).__name__,primary=existing):
+                    obj=core.Observer.__new__(core.Observer)
+                    obj._phase_progress=core.PhaseProgress('configure',2800.0)
+                    obj.phase_progress_payload=lambda *a:dict(old,ownedWindowAuditSites=attribution)
+                    summary={'v':1,'authorityVerified':False}
+                    def held():
+                        if stage=='summary':raise error
+                        return summary
+                    obj.resource_summary=held
+                    def dumps(value,*a,**kw):
+                        if stage=='size' and value is summary:raise error
+                        if stage=='serialize' and isinstance(value,dict) and 'phaseResources' in value:raise error
+                        return original_dumps(value,*a,**kw)
+                    output=io.StringIO();primary=ValueError('original phase body')
+                    with patch.object(core.sys,'stderr',output),patch.object(core.json,'dumps',side_effect=dumps),patch.object(core.json,'loads',side_effect=error) if stage=='loads' else patch.object(core.json,'loads',wraps=core.json.loads):
+                        if existing:
+                            with test.assertRaises(ValueError) as caught:
+                                try:raise primary
+                                finally:obj.publish_phase_progress('phase-failure',failure=True)
+                            test.assertIs(caught.exception,primary)
+                        else:
+                            with test.assertRaises(type(error)) as caught:obj.publish_phase_progress('phase-failure',failure=True)
+                            test.assertIs(caught.exception,error)
+                    if existing:test.assertEqual(output.getvalue(),expected+sidecar)
+                    test.assertEqual(obj._phase_progress.failure_snapshots,1)
+                    with patch.object(core.sys,'stderr',output):obj.publish_phase_progress('phase-failure',failure=True)
+                    test.assertEqual(obj._phase_progress.failure_snapshots,1)
+
+def assert_resource_quota(test):
+    obj=core.Observer.__new__(core.Observer);obj._phase_progress=core.PhaseProgress('configure',2800.0)
+    old={'kind':'held','padding':'x'*7900,'syscallStops':{'kept':'old histogram'}}
+    audit={'padding':'y'*700};summary={'v':1,'authorityVerified':False}
+    obj.phase_progress_payload=lambda *a:dict(old,ownedWindowAuditSites=audit);obj.resource_summary=lambda:summary
+    output=io.StringIO()
+    with patch.object(core.sys,'stderr',output):
+        for _ in range(40):obj.publish_phase_progress('phase-progress')
+        for _ in range(4):obj.publish_phase_progress('phase-failure',failure=True)
+    lines=output.getvalue().splitlines(keepends=True)
+    mains=[line for line in lines if line.startswith(core.PHASE_PROGRESS_PREFIX)]
+    sides=[line for line in lines if line.startswith(core.AUDIT_SITE_PREFIX)]
+    test.assertEqual(len(mains),33);test.assertEqual(len(sides),1)
+    test.assertEqual(obj._phase_progress.snapshots,32);test.assertEqual(obj._phase_progress.failure_snapshots,1)
+    for line in mains:
+        test.assertLessEqual(len(line.encode()),8192)
+        payload=json.loads(line[len(core.PHASE_PROGRESS_PREFIX):]);test.assertEqual(payload.pop('phaseResources'),summary);test.assertEqual(payload,old)
+    test.assertEqual(sides,[core.AUDIT_SITE_PREFIX+json.dumps(audit,sort_keys=True,separators=(',',':'))+'\n'])
+    test.assertLessEqual(len(sides[0].encode()),6144)
+
+    for sidecar_bytes in (6144,6145):
+        with test.subTest(originalSidecarBytes=sidecar_bytes):
+            overhead=len((core.AUDIT_SITE_PREFIX+json.dumps({'padding':''},sort_keys=True,separators=(',',':'))+'\n').encode())
+            exact_audit={'padding':'y'*(sidecar_bytes-overhead)}
+            expected_sidecar=core.AUDIT_SITE_PREFIX+json.dumps(exact_audit,sort_keys=True,separators=(',',':'))+'\n'
+            test.assertEqual(len(expected_sidecar.encode()),sidecar_bytes)
+            obj=core.Observer.__new__(core.Observer);obj._phase_progress=core.PhaseProgress('configure',2800.0)
+            obj.phase_progress_payload=lambda *a:dict(old,ownedWindowAuditSites=exact_audit);obj.resource_summary=lambda:summary
+            output=io.StringIO()
+            with patch.object(core.sys,'stderr',output):obj.publish_phase_progress('phase-failure',failure=True)
+            lines=output.getvalue().splitlines(keepends=True);test.assertEqual(len(lines),2 if sidecar_bytes==6144 else 1)
+            main=json.loads(lines[0][len(core.PHASE_PROGRESS_PREFIX):]);test.assertEqual(main.pop('phaseResources'),summary);test.assertEqual(main,old)
+            if sidecar_bytes==6144:test.assertEqual(lines[1],expected_sidecar)
+            test.assertEqual(obj._phase_progress.failure_snapshots,1)
 class UnitAuditSites(unittest.TestCase):
     def setUp(self):
         self.clock=1000.0;self.events=[]
@@ -225,6 +301,7 @@ class UnitAuditSites(unittest.TestCase):
         self.o._phase_progress=None;output=io.StringIO()
         with patch.object(core.sys,'stderr',output):self.o.publish_phase_progress('phase-failure',failure=True)
         self.assertEqual(output.getvalue(),expected) # no claimed original failure quota, no sidecar
+        assert_resource_quota(self)
 
     def test_sidecar_faults_do_not_replace_primary_or_retry(self):
         for error in (OSError('stderr'),TimeoutError('signal'),KeyboardInterrupt(),SystemExit(9)):
@@ -246,12 +323,13 @@ class UnitAuditSites(unittest.TestCase):
         self.setUp();self.o.phase_progress_payload=lambda *a:dict(old,ownedWindowAuditSites=self.summary())
         writes=[]
         class BrokenOld:
-            def write(inner,line):writes.append(line);raise OSError('old stderr')
+            def write(inner,line):writes.append(line);raise BrokenPipeError(32,'old stderr')
             def flush(inner):pass
         with patch.object(core.sys,'stderr',BrokenOld()):
             self.o.publish_phase_progress('phase-failure',failure=True)
             self.o.publish_phase_progress('phase-failure',failure=True)
         self.assertEqual(len(writes),1)
+        assert_resource_failure_transport(self)
     def test_uncaught_diagnostic_reads_preserve_control_and_policy_override(self):
         for error in (TimeoutError('held state'),KeyboardInterrupt(),SystemExit(5)):
             self.setUp();previous=self.o.waiter

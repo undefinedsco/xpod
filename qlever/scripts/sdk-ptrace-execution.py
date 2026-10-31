@@ -3889,6 +3889,143 @@ class Observer(CapturesMixin):
         if now-progress.last_snapshot<PHASE_PROGRESS_INTERVAL:return False
         if progress.snapshots>=PHASE_PROGRESS_MAXIMUM_SNAPSHOTS:return False
         progress.last_snapshot=now;return True
+    def resource_call(self,operation,*args,primary=None):
+        try:return operation(*args)
+        except BaseException as error:
+            if self.resource_control(error) and primary is None:raise
+            return None
+    @staticmethod
+    def resource_control(error):
+        return isinstance(error,(TimeoutError,KeyboardInterrupt,SystemExit)) or (isinstance(error,OSError) and error.errno is None)
+    @staticmethod
+    def resource_uint(value):
+        if not isinstance(value,bytes) or not re.fullmatch(rb'(?:0|[1-9][0-9]{0,19})',value):raise ValueError('counter')
+        number=int(value)
+        if number>(1<<64)-1:raise ValueError('counter')
+        return number
+    def resource_read(self,path,maximum):
+        fd=None
+        try:
+            fd=os.open(path,os.O_RDONLY|os.O_CLOEXEC|os.O_NOFOLLOW|os.O_NONBLOCK)
+            value=os.read(fd,maximum+1);info=os.fstat(fd)
+            if len(value)>maximum or not value.endswith(b'\n'):raise ValueError('bounded endpoint')
+            return value,(info.st_dev,info.st_ino)
+        finally:
+            first=sys.exc_info()[1]
+            if fd is not None:
+                try:os.close(fd)
+                except BaseException as error:
+                    if first is None or (self.resource_control(error) and not self.resource_control(first)):raise
+    def resource_sample(self,frame):
+        value=dict(pid=os.getpid(),tid=threading.get_native_id(),thread=threading.get_ident(),u=0,
+                   wall_clock=time.monotonic_ns,cpu_clock=time.process_time_ns)
+        def optional(operation):
+            try:return operation()
+            except BaseException as error:
+                if self.resource_control(error):raise
+                value['u']|=64
+                return None
+        value['m0']=optional(frame['wall_clock']);value['p']=optional(frame['cpu_clock'])
+        def sched():
+            raw,_=self.resource_read('/proc/self/schedstat',256)
+            parts=raw.strip().split()
+            if len(parts)!=3:raise ValueError('scheduler')
+            return [self.resource_uint(x) for x in parts]
+        value['s']=optional(sched) if value['tid']==value['pid'] else None
+        if value['s'] is None:value['u']|=4
+        def cgroup():
+            raw,_=self.resource_read('/proc/self/cgroup',4096)
+            if raw!=b'0::/\n':raise ValueError('private cgroup v2 root required')
+            return hashlib.sha256(raw).digest()
+        value['g']=optional(cgroup);value['c']=None;value['q']=None
+        if value['g'] is not None:
+            def cpu():
+                raw,identity=self.resource_read('/sys/fs/cgroup/cpu.stat',2048)
+                wanted=('usage_usec','user_usec','system_usec','nr_periods','nr_throttled','throttled_usec');result={}
+                for line in raw.splitlines():
+                    pair=line.split()
+                    if len(pair)!=2:raise ValueError('cpu stat')
+                    key=pair[0].decode('ascii')
+                    if key in wanted:
+                        if key in result:raise ValueError('duplicate cpu stat')
+                        result[key]=self.resource_uint(pair[1])
+                if set(result)!=set(wanted):raise ValueError('incomplete cpu stat')
+                return [result[k] for k in wanted],identity
+            def quota():
+                raw,identity=self.resource_read('/sys/fs/cgroup/cpu.max',128);parts=raw.strip().split()
+                if len(parts)!=2:raise ValueError('quota')
+                quota='max' if parts[0]==b'max' else self.resource_uint(parts[0]);period=self.resource_uint(parts[1])
+                if period==0 or quota==0:raise ValueError('positive quota')
+                return [quota,period],identity
+            value['c']=optional(cpu);value['q']=optional(quota)
+        if value['c'] is None:value['u']|=8
+        if value['q'] is None:value['u']|=16
+        value['m1']=optional(frame['wall_clock'])
+        return value
+    def resource_frame(self,name):
+        if getattr(self,'_phase_resources',None) is not None:return None
+        frame=dict(name=name,deadline=self.deadline,thread=threading.get_ident(),progress=None,
+                   wall_clock=time.monotonic_ns,cpu_clock=time.process_time_ns,start=None,end=None,
+                   finish_attempted=False,summary=None)
+        return frame
+    def resource_start(self,frame):
+        if frame is not None:frame['start']=self.resource_sample(frame)
+    def resource_bind(self):
+        frame=getattr(self,'_phase_resources',None)
+        if frame is not None and frame['thread']==threading.get_ident() and frame['name']==self.current_phase and frame['deadline']==self.deadline:
+            frame['progress']=self._phase_progress
+    def resource_finish(self,frame,primary=None):
+        if frame is None or frame is not getattr(self,'_phase_resources',None) or frame['finish_attempted']:return
+        frame['finish_attempted']=True
+        if frame['start'] is None:return
+        try:
+            end=self.resource_sample(frame);frame['end']=end;start=frame['start'];u=start['u']|end['u']
+            bound=(frame['progress'] is not None and frame['progress'] is getattr(self,'_phase_progress',None) and frame['name']==getattr(self,'current_phase',None)
+                   and frame['deadline']==self.deadline and frame['thread']==threading.get_ident()
+                   and all(start[k]==end[k] for k in ('pid','tid','thread')))
+            if not bound:u|=1
+            def delta(a,b):
+                nonlocal u
+                if type(a) is not int or type(b) is not int or not 0<=a<=b<1<<64:
+                    u|=32;return None
+                return str(b-a)
+            clocks=(start['wall_clock'] is end['wall_clock'] is frame['wall_clock']
+                    and start['cpu_clock'] is end['cpu_clock'] is frame['cpu_clock'])
+            clocks=clocks and all(type(x.get('m0')) is int and type(x.get('m1')) is int and x['m1']>=x['m0'] for x in (start,end))
+            w=p=s=c=q=None
+            if bound and clocks:w=delta(start['m0'],end['m0']);p=delta(start['p'],end['p'])
+            else:u|=2
+            def vector(a,b):
+                values=[delta(x,y) for x,y in zip(a,b)]
+                return values if all(x is not None for x in values) else None
+            if bound and start['s'] is not None and end['s'] is not None:s=vector(start['s'],end['s'])
+            if bound and start['g'] is not None and start['g']==end['g'] and start['c'] is not None and end['c'] is not None and start['q'] is not None and end['q'] is not None and start['c'][1]==end['c'][1] and start['q'][1]==end['q'][1]:
+                c=vector(start['c'][0],end['c'][0])
+                if start['q'][0]==end['q'][0]:q=[str(x) for x in start['q'][0]]
+                else:u|=16
+            else:u|=8|16
+            version=list(sys.version_info[:3]);cache=getattr(sys.implementation,'cache_tag',None)
+            summary=dict(v=1,pt=[start['pid'],start['tid']],w=w,p=p,s=s,c=c,q=q,u=u,py=version,authorityVerified=False)
+            if isinstance(cache,str) and len(cache)<=32 and cache.isascii():summary['ct']=cache
+            if len(json.dumps(summary,separators=(',',':')).encode())<=512:frame['summary']=summary
+        except BaseException as error:
+            frame['summary']=None
+            if self.resource_control(error) and primary is None:raise
+    def resource_summary(self):
+        frame=getattr(self,'_phase_resources',None)
+        if frame is None or frame['progress'] is None or frame['thread']!=threading.get_ident() or frame['progress'] is not getattr(self,'_phase_progress',None) or frame['name']!=getattr(self,'current_phase',None) or frame['deadline']!=getattr(self,'deadline',None):return None
+        return frame['summary']
+    def resource_line(self,line,encoded,primary=None):
+        try:
+            summary=self.resource_summary()
+            if summary is None or len(json.dumps(summary,separators=(',',':')).encode())>512:return line
+            data=json.loads(encoded);data['phaseResources']=summary
+            augmented=(PHASE_PROGRESS_PREFIX+json.dumps(data,sort_keys=True,separators=(',',':'))+'\n').encode()
+            return augmented if len(augmented)<=PHASE_PROGRESS_MAXIMUM_BYTES else line
+        except BaseException as error:
+            if self.resource_control(error) and primary is None:raise
+            return line
+
     def phase_progress_payload(self,kind,failure=False):
         progress=getattr(self,'_phase_progress',None)
         now=(progress.now() if progress is not None else time.monotonic());tasks=getattr(self,'tasks',{}) or {}
@@ -3937,11 +4074,12 @@ class Observer(CapturesMixin):
         except BaseException:pass
         return payload
     def publish_phase_progress(self,kind,failure=False):
-        """Bounded stderr diagnostic from held state only; never raises.
+        """Bounded stderr diagnostic from held state only; ordinary diagnostic faults cannot fail work.
 
         The attempt is counted before writing, so a failed write is never
         retried and cannot exceed 32 normal plus at most 1 failure line.
         """
+        primary=sys.exc_info()[1]
         progress=getattr(self,'_phase_progress',None)
         failure_claimed=False
         try:
@@ -3975,6 +4113,7 @@ class Observer(CapturesMixin):
                 encoded=json.dumps(fallback,sort_keys=True,separators=(',',':'))
                 line=(PHASE_PROGRESS_PREFIX+encoded+'\n').encode()
             assert len(line)<=PHASE_PROGRESS_MAXIMUM_BYTES,'bounded phase progress snapshot line'
+            line=self.resource_line(line,encoded,primary=primary)
             sys.stderr.write(line.decode());sys.stderr.flush()
             if sidecar is not None:
                 # Only a successfully claimed original failure attempt permits
@@ -3982,7 +4121,8 @@ class Observer(CapturesMixin):
                 line=(AUDIT_SITE_PREFIX+json.dumps(sidecar,sort_keys=True,separators=(',',':'))+'\n').encode()
                 if len(line)<=AUDIT_SITE_MAXIMUM_BYTES:
                     sys.stderr.write(line.decode());sys.stderr.flush()
-        except BaseException:pass
+        except BaseException as error:
+            if self.resource_control(error) and primary is None:raise
     def publish_clone3_parse_refusal(self,pid,entry,barrier,size,data,refusal):
         # Exactly the already-read stopped-task struct: no pointer, argv, env or
         # additional /proc access; grants no source, ABI or process authority.
@@ -4616,11 +4756,23 @@ class Observer(CapturesMixin):
         self.check()
         with owned_wait.BlockingOwnedWait(self.deadline,WALL) as waiter:
             self.waiter=waiter
-            return self.phase_armed(name,command,cwd,env,stdoutPath,stderrPath)
+            frame=self.resource_call(self.resource_frame,name)
+            try:
+                if frame is not None:
+                    self._phase_resources=frame
+                    self.resource_call(self.resource_start,frame)
+                return self.phase_armed(name,command,cwd,env,stdoutPath,stderrPath)
+            finally:
+                primary=sys.exc_info()[1]
+                try:self.resource_call(self.resource_finish,frame,primary,primary=primary)
+                finally:
+                    if frame is not None and getattr(self,'_phase_resources',None) is frame:self._phase_resources=None
     def phase_armed(self,name,command,cwd,env,stdoutPath,stderrPath):
         self.reset_owned_frames()
         capture_start=len(self.captures);started_ns=time.time_ns();stdout_path=Path(stdoutPath) if stdoutPath is not None else self.out/(name+'.stdout.raw');stderr_path=Path(stderrPath) if stderrPath is not None else self.out/(name+'.stderr.raw')
-        self.wait_references=[];self.tasks={};self.unknown_stops={};self.root_code=None;self.current_phase=name;self._phase_progress=PhaseProgress(name,self.deadline);self.raw=EncodedShardedRaw(self,name,self.shard_bytes or self.maximum_file_bytes) if self.compressed_raw else ShardedRaw(self.out,name,self.shard_bytes) if self.shard_bytes else open(self.out/(name+'.syscalls.original.jsonl'),'xb')
+        self.wait_references=[];self.tasks={};self.unknown_stops={};self.root_code=None;self.current_phase=name;self._phase_progress=PhaseProgress(name,self.deadline)
+        self.resource_call(self.resource_bind)
+        self.raw=EncodedShardedRaw(self,name,self.shard_bytes or self.maximum_file_bytes) if self.compressed_raw else ShardedRaw(self.out,name,self.shard_bytes) if self.shard_bytes else open(self.out/(name+'.syscalls.original.jsonl'),'xb')
         self.raw_encoder=probe.IndexedRawEncoderV2() if self.indexed_raw_records else None
         if not self.prepared_sealed:
             try:
@@ -4736,48 +4888,56 @@ class Observer(CapturesMixin):
                 observedToolFiles=self.observed_tool_files(capture_start,name))
         finally:
             primary=sys.exc_info()[1]
-            # Exactly one failure snapshot from held state; never self.check after
-            # expiry and never let diagnostic failure replace the primary error.
-            if primary is not None:
-                # One-shot, out-of-band lease failure diagnostic. Fatal path only:
-                # it runs because the phase is already raising, so it cannot alter
-                # admission. Emission is bounded (<=8192 bytes), goes to stderr only,
-                # never enters the raw stream, and every failure inside it is
-                # swallowed so the ORIGINAL exception object still propagates.
-                if not getattr(self,'lease_failure_diagnostic_emitted',False):
-                    self.lease_failure_diagnostic_emitted=True
-                    try:
-                        leases=getattr(self,'lifetime_leases',None)
-                        if leases is not None and getattr(leases,'_failure',None):
-                            # Pass the EXISTING phase deadline; never extend it.
-                            # ONE formatter mechanism: the decisive stop is passed
-                            # into the product formatter so its existing shrink loop
-                            # budgets it together with the rows. The stop is never a
-                            # lease row and is never popped, so it cannot be lost.
-                            text=leases.failure_diagnostic(deadline=getattr(self,'deadline',None),
-                                                           fatal_stop=getattr(self,'fatal_stop',None))
-                            if text is not None and len(text.encode())<=8192:
-                                sys.stderr.write('SDK_READ_LEASE_FATAL '+text+'\n')
-                                sys.stderr.flush()
+            try:
+                self.resource_call(self.resource_finish,getattr(self,'_phase_resources',None),primary,primary=primary)
+                # Exactly one failure snapshot from held state; never self.check after
+                # expiry and never let diagnostic failure replace the primary error.
+                if primary is not None:
+                    # One-shot, out-of-band lease failure diagnostic. Fatal path only:
+                    # it runs because the phase is already raising, so it cannot alter
+                    # admission. Emission is bounded (<=8192 bytes), goes to stderr only,
+                    # never enters the raw stream, and every failure inside it is
+                    # swallowed so the ORIGINAL exception object still propagates.
+                    if not getattr(self,'lease_failure_diagnostic_emitted',False):
+                        self.lease_failure_diagnostic_emitted=True
+                        try:
+                            leases=getattr(self,'lifetime_leases',None)
+                            if leases is not None and getattr(leases,'_failure',None):
+                                # Pass the EXISTING phase deadline; never extend it.
+                                # ONE formatter mechanism: the decisive stop is passed
+                                # into the product formatter so its existing shrink loop
+                                # budgets it together with the rows. The stop is never a
+                                # lease row and is never popped, so it cannot be lost.
+                                text=leases.failure_diagnostic(deadline=getattr(self,'deadline',None),
+                                                               fatal_stop=getattr(self,'fatal_stop',None))
+                                if text is not None and len(text.encode())<=8192:
+                                    sys.stderr.write('SDK_READ_LEASE_FATAL '+text+'\n')
+                                    sys.stderr.flush()
+                        except BaseException:
+                            pass
+                    progress=getattr(self,'_phase_progress',None)
+                    if progress is not None and progress.failure_snapshots<1:self.publish_phase_progress('phase-failure',failure=True)
+                if primary is None and self.resource_call(self.resource_summary) is not None:
+                    self.publish_phase_progress('phase-complete')
+            except BaseException as error:
+                if primary is None:primary=error
+                raise
+            finally:
+                for control_fd in [ready_read,ready_write]:
+                    if control_fd is not None:os.close(control_fd)
+                if write_fd is not None:os.close(write_fd)
+                for pid,row in self.tasks.items():
+                    if not row['exited']:
+                        try:os.kill(pid,signal.SIGKILL)
+                        except ProcessLookupError:pass
+                self.close_outer_lease_window()
+                leases=self.lifetime_leases
+                if leases is not None:
+                    try:leases.close()
                     except BaseException:
-                        pass
-                progress=getattr(self,'_phase_progress',None)
-                if progress is not None and progress.failure_snapshots<1:self.publish_phase_progress('phase-failure',failure=True)
-            for control_fd in [ready_read,ready_write]:
-                if control_fd is not None:os.close(control_fd)
-            if write_fd is not None:os.close(write_fd)
-            for pid,row in self.tasks.items():
-                if not row['exited']:
-                    try:os.kill(pid,signal.SIGKILL)
-                    except ProcessLookupError:pass
-            self.close_outer_lease_window()
-            leases=self.lifetime_leases
-            if leases is not None:
-                try:leases.close()
-                except BaseException:
-                    if primary is None:raise
-                finally:self.lifetime_leases=None
-            self.raw_bytes_completed+=self.raw.tell();self.raw.close()
+                        if primary is None:raise
+                    finally:self.lifetime_leases=None
+                self.raw_bytes_completed+=self.raw.tell();self.raw.close()
     def complete_lifetime_leases(self):
         """Require and emit only real closed lease tokens after all waits."""
         leases=self.lifetime_leases
