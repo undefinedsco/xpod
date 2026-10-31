@@ -1,3 +1,5 @@
+import shutil
+import subprocess
 import unittest
 from pathlib import Path
 
@@ -293,6 +295,165 @@ class QleverRuntimeSdkContractTest(unittest.TestCase):
                 self.assertIn(command, workflow)
                 self.assertLess(fixture_gate, workflow.index(command))
                 self.assertLess(workflow.index(command), buildx)
+
+
+class CompilerIntermediateRetention(unittest.TestCase):
+    """Configure must retain the compiler-generated intermediates it observes.
+
+    Real defect this pins: during the traced `configure` phase the observer holds
+    a real kernel read lease on every regular file a compiler child reads, for the
+    whole phase. The compiler driver's default behaviour is to emit the join
+    object for a compile+link as a RANDOM temporary and then unlink it, and CMake's
+    try_compile probes delete their working directories. Either unlink moves an
+    already-leased inode's ctime, so the lease guard correctly rejects it
+    (observed in CI as a `CMakeCCompilerId-<hex>.o`).
+
+    These cases exercise the ACTUAL shipped shell array: the `cmake_command=( … )`
+    block is extracted and **evaluated by bash** with its referenced variables
+    supplied, so the assertions are on the argv the producer really builds. When a
+    real CMake is present the argv is additionally executed against a minimal
+    C+CXX project and the produced intermediates are inspected. No list is
+    reimplemented here.
+    """
+
+    SCRIPT = BUILD_SCRIPT
+
+    @staticmethod
+    def _bash(argv, check=True):
+        return subprocess.run(['bash'] + argv, capture_output=True, text=True, timeout=120, check=check)
+
+    def _emit_cmake_argv(self):
+        """Evaluate the REAL `cmake_command=(...)` assignment in bash and return argv."""
+        programme = r"""
+set -Eeuo pipefail
+script="$1"
+start=$(grep -n '^  cmake_command=(cmake \\$' "$script" | head -1 | cut -d: -f1)
+[ -n "$start" ] || { echo 'NO-CMAKE-COMMAND' >&2; exit 3; }
+end=$(awk -v s="$start" 'NR>s && /\)$/ {print NR; exit}' "$script")
+[ -n "$end" ] || { echo 'NO-CMAKE-END' >&2; exit 3; }
+source_dir=/src; build_dir=/build
+adapter_flags='-DADAPTER=1'
+archive_create='C'; archive_append='A'; archive_finish='F'
+block=$(sed -n "${start},${end}p" "$script")
+eval "$block"
+printf '%s\n' "${cmake_command[@]}"
+"""
+        result = self._bash(['-c', programme, 'emit', str(self.SCRIPT)])
+        return result.stdout.splitlines()
+
+    def test_real_shell_array_emits_retention_flags(self):
+        """The ACTUAL bash assignment must expand to argv containing the levers."""
+        argv = self._emit_cmake_argv()
+        self.assertTrue(argv, 'the real cmake_command array must expand to argv')
+        self.assertEqual(argv[0], 'cmake')
+        # broad try_compile retention
+        self.assertIn('--debug-trycompile', argv)
+        # ID-probe-scoped object retention, as separate -D flags
+        self.assertIn('-DCMAKE_C_COMPILER_ID_TEST_FLAGS_FIRST=-save-temps=obj', argv)
+        self.assertIn('-DCMAKE_CXX_COMPILER_ID_TEST_FLAGS_FIRST=-save-temps=obj', argv)
+        # still a real configure invocation
+        self.assertIn('-G', argv)
+        self.assertIn('Ninja', argv)
+        self.assertIn('-B', argv)
+
+    def test_no_global_save_temps_and_no_identity_presets_in_argv(self):
+        argv = self._emit_cmake_argv()
+        joined = ' '.join(argv)
+        # no global save-temps: only the two ID-scoped flags carry it
+        save_temps = [a for a in argv if 'save-temps' in a]
+        self.assertEqual(len(save_temps), 2, save_temps)
+        for flag in save_temps:
+            self.assertIn('COMPILER_ID_TEST_FLAGS_FIRST', flag)
+        self.assertNotIn('CMAKE_C_FLAGS=-save-temps', joined)
+        self.assertNotIn('CMAKE_CXX_FLAGS=-save-temps', joined)
+        self.assertNotIn('COMPILER_ID_FLAGS=', joined)
+        # no faked identity / skipped probe
+        for forbidden in ('CMAKE_C_COMPILER_ID=', 'CMAKE_CXX_COMPILER_ID=', 'CMAKE_C_COMPILER_WORKS='):
+            self.assertNotIn(forbidden, joined)
+
+    def test_no_legacy_tmpdir_alias_in_argv_or_body(self):
+        """TMPDIR relocation was falsified; it must not reappear as a lever."""
+        argv = self._emit_cmake_argv()
+        joined = ' '.join(argv)
+        self.assertNotIn('TMPDIR', joined)
+        body = self.SCRIPT.read_text(encoding='utf-8')
+        self.assertNotIn('export TMPDIR=', body)
+        self.assertNotIn('export TMP=', body)
+        self.assertNotIn('export TEMP=', body)
+
+    def test_real_cmake_run_retains_identification_intermediates_and_builds(self):
+        """Run the ACTUAL argv shape against a minimal C+CXX project.
+
+        Locally CMake is absent, so this skips with an explicit reason. It is
+        intended to run on ROOT's cached Linux CMake 3.31.6 image, where it
+        asserts real compiler detection AND that identification intermediates
+        survive configure, plus that compile_commands is still produced.
+        """
+        cmake = shutil.which('cmake')
+        cc = shutil.which('clang') or shutil.which('gcc')
+        cxx = shutil.which('clang++') or shutil.which('g++')
+        if not cmake or not cc or not cxx:
+            self.skipTest('real CMake/C/CXX unavailable on this host; ROOT Linux runs this')
+        import tempfile
+        test_data = ROOT / '.test-data' / 'compiler-intermediate-retention'
+        test_data.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=test_data) as directory:
+            root = Path(directory)
+            (root / 'CMakeLists.txt').write_text(
+                'cmake_minimum_required(VERSION 3.16)\n'
+                'project(minimal C CXX)\n'
+                'add_executable(minimal main.cxx)\n', encoding='utf-8')
+            (root / 'main.cxx').write_text('int main(){return 0;}\n', encoding='utf-8')
+            (root / 'main.c').write_text('int unused_c(void){return 0;}\n', encoding='utf-8')
+            build = root / 'build'
+            argv = self._emit_cmake_argv()
+            # Translate the producer's paths onto this minimal project.
+            translated = []
+            skip_next = False
+            for i, a in enumerate(argv):
+                if skip_next:
+                    skip_next = False
+                    continue
+                if a == '-S':
+                    translated.extend(['-S', str(root)]); skip_next = True; continue
+                if a == '-B':
+                    translated.extend(['-B', str(build)]); skip_next = True; continue
+                if a.startswith('-DXPOD_') or a.startswith('-DUSE_') or a.startswith('-DRANGES_') \
+                        or a.startswith('-DCHEAPER_') or a.startswith('-DCMAKE_CXX_COMPILER_LAUNCHER') \
+                        or a.startswith('-DADAPTER=') or a.startswith('-DCMAKE_C_ARCHIVE') \
+                        or a.startswith('-DCMAKE_CXX_ARCHIVE') or a.startswith('-DCMAKE_POSITION_INDEPENDENT'):
+                    continue
+                translated.append(a)
+            run = subprocess.run(translated, cwd=str(root), capture_output=True, text=True, timeout=600)
+            self.assertEqual(run.returncode, 0, run.stderr[-2000:])
+            # real compiler identification must have happened
+            cache = (build / 'CMakeCache.txt').read_text(encoding='utf-8', errors='replace')
+            self.assertRegex(cache, r'CMAKE_CXX_COMPILER:FILEPATH=.+')
+            self.assertRegex(cache, r'CMAKE_C_COMPILER:FILEPATH=.+')
+            self.assertNotRegex(cache, r'CMAKE_CXX_COMPILER_ID:.*=.*fake')
+            # a real build still works with the retained intermediates around
+            built = subprocess.run(['cmake', '--build', str(build)],
+                                   capture_output=True, text=True, timeout=600)
+            self.assertEqual(built.returncode, 0, built.stderr[-2000:])
+            # compile_commands is produced (no global save-temps interference)
+            import json
+            commands = json.loads((build / 'compile_commands.json').read_text(encoding='utf-8'))
+            self.assertTrue(commands)
+            for command in commands:
+                self.assertNotIn('save-temps', command.get('command', ''))
+                self.assertFalse(any('save-temps' in arg for arg in command.get('arguments', [])))
+            # The generated .c source survives even without retention: require
+            # the actual compiler-generated objects for BOTH language probes.
+            compiler_id_objects = list(build.rglob('*CompilerId*.o'))
+            for language in ('C', 'CXX'):
+                self.assertTrue(any(p.parent.name == 'CompilerId' + language for p in compiler_id_objects),
+                                language + ' compiler-identification object must survive configure')
+            self.assertTrue(list((build / 'CMakeFiles' / 'CMakeScratch').glob('TryCompile-*')),
+                            'ABI try_compile directories must survive the observed configure phase')
+            executable = build / 'minimal'
+            if not executable.is_file():
+                executable = executable.with_suffix('.exe')
+            self.assertEqual(subprocess.run([str(executable)], capture_output=True, timeout=120).returncode, 0)
 
 
 if __name__ == "__main__":

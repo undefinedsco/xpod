@@ -42,6 +42,7 @@ const targetsSha=fs.existsSync(path.join(root,TARGETS))
  * One complete mock GitHub observation for a NORMAL css product run.
  * `workflowName` selects which workflow bytes the contents API returns.
  */
+let scenarioSequence=0;
 async function scenario(options:{
   workflowName:'current'|'historical'|'unregistered';
   targetsName?:'actual'|'foreign';
@@ -50,7 +51,7 @@ async function scenario(options:{
   jobStep?:string;
   workflowPath?:string;
 }={workflowName:'current'}) {
-  const source=(1000+Math.floor(Math.random()*1000)).toString(16).padStart(40,'0');
+  const source=require('node:crypto').createHash('sha1').update('css-normal-current-origin scenario '+(++scenarioSequence)).digest('hex');
   const digest='b'.repeat(64);
   const tuple={schemaVersion:1 as const,sourceSha:source,runHeadSha:source,runId:5,runAttempt:1,artifactId:8,artifactSha256:digest};
   const workflowPath=options.workflowPath??CURRENT_WORKFLOW;

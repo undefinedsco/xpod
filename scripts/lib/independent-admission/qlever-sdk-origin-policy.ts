@@ -2291,13 +2291,22 @@ const SDK87_SOURCE_HASHES:Readonly<Record<string,string>>=Object.freeze({
  // applied to selectors, secondary selectors, staged selectors AND source bindings
  // alike — otherwise the current tuple would keep naming the previous 9bc bytes.
  'scripts/css-module-producer.py':"1ba30f5eaba9070f55135936649c43b109bf7a4a83db43b512edaa6d31abc5cc",
- 'qlever/scripts/build-qlever-runtime-sdk.sh':"330d9f470dd51e72625c78d38eee0e06c0b8475bac3582c8dfd44280633f55ad",
- 'qlever/scripts/sdk-ptrace-execution.py':"e12068a7d0b01e69a101cc05d3c1118173c5682a4684834a86d1083117411f2b",
+ 'qlever/scripts/build-qlever-runtime-sdk.sh':"ebe4d4d98e29247f4565f7a7499f1beb48832a5c499833b7bb98ce62bf9467ae",
+ 'qlever/scripts/sdk-ptrace-execution.py':"41a9c03801f40d5cfa78efe5fccd6cb2c65418e1f6880bbde5f2f3f6cc35f8ed",
  // Filtered-lease lookup: the token-filtered check resolves its single row by the
  // (st_dev, st_ino) key instead of scanning every held row. Selection semantics,
  // the live F_GETLEASE+fstat sweep and every rejection string are unchanged, so
  // only the CURRENT (SDK87) binding moves; published tuples keep their bytes.
- 'qlever/scripts/sdk-tool-lifetime-leases.py':"85f5101f1d27644c851145818f791ca52d87dc6087b4f7df8f0d4bbf579d9b0c",
+ // The failure DIAGNOSTIC now retains the abnormal row's six-field before/after
+ // tuple and a path class; the owned-metadata generation transition now
+ // advances a held lease across one witnessed rename/unlink with full
+ // six-field before/current/postimage, the physical lease stays held and
+ // replay bridges acquisition->closing through the validated chain.
+ 'qlever/scripts/sdk-tool-lifetime-leases.py':"7a2fdf743ccf9a54fca10f578c6ea3554c19e547fca018ba472d0b1fd80d6836",
+ // The executor additionally retains a FIXED bounded set of container-side
+ // configure evidence on the failure path (exact members, size cap, no glob and
+ // no symlink follow). Admission ordering and cleanup semantics are unchanged.
+ 'qlever/scripts/sdk-readonly-executor.py':"7295ad449a9b6557d2e7baf4dbc73e94595902fe9431231d56886941a0712195",
  // Immutable registration-input plan: explicit per-instance capsule, no module
  // global. Current SDK87 binding only; published tuples keep their bytes.
  'qlever/scripts/native/lease_sweep_ext.c':"e3ca18a6d7674b60a65c483d5663308619543d09baf80d344009925f32d5a74b",
@@ -2308,16 +2317,16 @@ const SDK87_SOURCE_HASHES:Readonly<Record<string,string>>=Object.freeze({
  // PR124 strict absent-link contract: the gate now settles only matched failed
  // exits and keeps unobserved operands fatal, and the fixed probe uses ONE build
  // root authority. Both bodies move in the CURRENT unpublished slice only.
- 'qlever/scripts/sdk-generation-multiprocess-bindings.py':"e11827aa845079fc2c2f8d014085bebaeb33c49fa44ad210b6707e7c4128e90f",
- 'qlever/scripts/sdk-kernel-policy-probe.py':"e9016aed98d42f205bd3b11eedb55f956a6a855c775ccae0de2e19110b4d144c", // The readonly executor lane now DERIVES its build parallelism from its own
+ 'qlever/scripts/sdk-generation-multiprocess-bindings.py':"58d581b548de1c71a105284c0cb3b9d05017b1535edcdce1ecbdbfc10196ceec",
+ 'qlever/scripts/sdk-kernel-policy-probe.py':"53a7b0f14855a2380ac7718f8219669432e86354131b0f4ad08a0787275e7052", // The readonly executor lane now DERIVES its build parallelism from its own
  // 4-CPU allocation instead of hardcoding 2, so its current bytes move too.
  // Current SDK87 binding only; published tuples keep their bytes.
  'qlever/scripts/sdk-readonly-executor-bindings.py':"107e2dea586056c98455e89471c0d303b1c36cb11018ee5a6d67d97caefd0b1e",
  // The readonly normal job's pin list had to follow the executor lane's new
  // bytes, so this CURRENT workflow file moves too. Published tuples keep theirs.
- '.github/workflows/qlever-readonly-normal-job.yml':"3a6d5ba02bdbe13bba951c78dc6ca24755dbc5da461f26ce1ebb0a0192fb6c0d",
+ '.github/workflows/qlever-readonly-normal-job.yml':"f4d5a55ac21abb0f2531dc85cb6d0955b22d63cfeaf6ffc710dce04a8800cff2",
  'qlever/scripts/native/lease_sweep_binding.py':"7386166a878d2a1fbd5f3145759888baa072171ab541b45cd5fbc5bcea6784f8",
- 'tests/scripts/candidate-producer-attempt-binding.test.ts':"1d73b68ac5bb7f19be8bdf2af6aedf952979e91e825f276720cdde65da96d4cf",
+ 'tests/scripts/candidate-producer-attempt-binding.test.ts':"8973eb25c1e6d669e2fc2d7c05ffd80d0f040c066d32d83f0a7f24e5b375daba",
  // The scoped precompiled-header work (S2, ANTLR and the two Abseil units) moves
  // the QLever lock, whose patchSeriesSha256 is the digest of a series that
  // contains BOTH appended patch paths (qlever-s2-scoped-precompiled-headers.patch
@@ -2328,7 +2337,18 @@ const SDK87_SOURCE_HASHES:Readonly<Record<string,string>>=Object.freeze({
  'qlever/patches/series':"17d10ccafb23dcdd6564cd7691d74b7b3dbd811ce4615b0eb295a63965f48650",
  'qlever/scripts/sdk-generated-source-originals.py':"5e9ec62fe5dd341ce402e215c2ec02dfe75de365766493c80bc2eb21c3c01564",
 
-"qlever/scripts/sdk-generated-producer-transport.py":"95738800c54230715a065e3dcaaab1ba5f60f70d4ca2ca264144ee580a360a37"
+"qlever/scripts/sdk-generated-producer-transport.py":"95738800c54230715a065e3dcaaab1ba5f60f70d4ca2ca264144ee580a360a37",
+ // owned-fix registration for the CURRENT SDK87 slice
+ 'qlever/scripts/sdk-readonly-result-context.py':"1fe5650b94fe13d62aea8ca55ca0a73740057fb3427f770e5768f6a276d096bb",
+ // owned-fix registration for the CURRENT SDK87 slice
+ 'qlever/scripts/sdk-readonly-normal-route.py':"c620a49809a022126007e6d4bd7470d9d86e88925f39b8a849304832300026d7",
+ // owned-fix registration for the CURRENT SDK87 slice
+ 'qlever/scripts/sdk-generated-vma-originals.py':"602f86ce683409ff83e6c7014c9bed82bb2fe687fdf2d42be36dc1891b4dc5d8",
+ // owned-fix registration for the CURRENT SDK87 slice
+ 'qlever/tests/test_sdk_generated_vma_files.py':"df07665961e97568ea28aa06310aa3e96f2dbabf54e0feb5fdb8969d6bc68051"
+,
+ // Exact same-emission callback audit, CURRENT SDK87 only.
+ "qlever/scripts/sdk-coordinated-wait.py":"8aba97d796c2579d7d9510272decfee77b537ff12220438f04634ff1428598e1"
 });
 const rebindSdk87Rows=(rows:readonly GitHubSourceBinding[]|undefined)=>Object.freeze((rows??[]).map(row=>Object.freeze({...row,sha256:SDK87_SOURCE_HASHES[row.path]??row.sha256})));
 const SDK87_GROUP:GitHubSourceBindingGroup=Object.freeze({...SDK86_GROUP,
@@ -2347,7 +2367,16 @@ const SDK87_GROUP:GitHubSourceBindingGroup=Object.freeze({...SDK86_GROUP,
  Object.freeze({path:'qlever/patches/qlever-antlr-scoped-pch-and-server-pch-reuse.patch',
   sha256:'8e2a1234701985ae42ae3cc6d28e55b33c62a8cf36ad690de3a418e4c52a72d8'}),
 Object.freeze({path:"qlever/scripts/sdk-generated-producer-transport.py",sha256:SDK87_SOURCE_HASHES["qlever/scripts/sdk-generated-producer-transport.py"]})
-])});
+]),
+ // CURRENT outer executor: the collector role is the SAME file as the CURRENT
+ // sourceBindings collector, so the group must name the current collector bytes
+ // (inspectReviewedSdkOuterExecutorOrigin rejects a group whose fixed collector
+ // differs from its own source binding). A NEW object is built rather than
+ // mutating the inherited one, so every field except `collector` is preserved
+ // and SDK1–86 keep their own historical outerExecutor untouched.
+ outerExecutor:Object.freeze({...SDK86_GROUP.outerExecutor!,
+  collector:Object.freeze({path:'qlever/scripts/sdk-readonly-executor.py',
+   sha256:SDK87_SOURCE_HASHES['qlever/scripts/sdk-readonly-executor.py']})})});
 export const QLEVER_SDK_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...PUBLISHED_SDK_GROUPS,NEXT_SDK_GROUP,INPUT_PLAN_SDK_GROUP,ORM326_SDK_GROUP,SDK19_TELEMETRY_GROUP,CAPTURE_INDEX_SDK_GROUP,SDK78_GROUP,SDK79_GROUP,SDK80_GROUP,SDK81_GROUP,SDK82_GROUP,SDK83_GROUP,SDK84_GROUP,SDK85_GROUP,SDK86_GROUP,SDK87_GROUP]);
 export const QLEVER_LINUX_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([
  {selectors:sdkSelectors('cbedd3e2478de5e22108b6689c595a658ca891c9bd47552caec830e86f47fea8','a75c7be34b5c5fafff85c0d67d814ba1aaf14bcf5db5404a860fe3b9a11009bd'),sourceBindings:QLEVER_LINUX_SOURCE_BINDINGS.filter(row=>!['.github/workflows/publish-qlever-runtime-sdk.yml','.github/workflows/build-qlever-linux-runtime.yml'].includes(row.path))},

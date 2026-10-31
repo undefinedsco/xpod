@@ -8,15 +8,14 @@ function recipes(file:string,name:string):unknown[]{
  return decodeCatalog('scripts/lib/independent-admission/'+file,name) as unknown[];
 }
 test('SDK chunk addition preserves all 76 historical helper and observer whole recipes',()=>{
- for(const [file,name,current,key,count] of [['qlever-sdk-generation.ts','REVIEWED_CONTROLLER_HELPER_GROUPS_NEXT','REVIEWED_CONTROLLER_HELPER_GROUPS_CURRENT','helpers',30],['qlever-sdk-generation.ts','REVIEWED_OBSERVER_GROUPS','REVIEWED_OBSERVER_GROUPS','observer',56],['qlever-sdk-fetchcontent.ts','REVIEWED_HELPER_GROUPS_NEXT','REVIEWED_HELPER_GROUPS_CURRENT','fetch',33]]as const){
+ for(const [file,name,current,key,count] of [['qlever-sdk-generation.ts','REVIEWED_CONTROLLER_HELPER_GROUPS_NEXT','REVIEWED_CONTROLLER_HELPER_GROUPS_CURRENT','helpers',30],['qlever-sdk-generation.ts','REVIEWED_OBSERVER_GROUPS','REVIEWED_OBSERVER_GROUPS','observer',59],['qlever-sdk-fetchcontent.ts','REVIEWED_HELPER_GROUPS_NEXT','REVIEWED_HELPER_GROUPS_CURRENT','fetch',33]]as const){
   const groups=recipes(file,name);expect(groups).toHaveLength(count);expect(groups.slice(0,before[key].length).map(hash)).toEqual(before[key]);
   // the CURRENT catalogue is a sequence of genuine appends on top of that history.
-  // Six genuine cumulative appends now sit on top of the frozen NEXT history
-  // (ab94021, 351e302e, the B794 owned-window diagnostic, the SDK19 telemetry +
-  // remap slice, the SDK85 fail-only diagnostic tuple, and the PR124 strict
-  // absent-link controller tuple). The observer table IS its own current name, so
-  // it is counted by `count` above and never double-extended here.
-  if (current !== name) expect(recipes(file,current)).toHaveLength(count+7);
+  // CURRENT has nine appended whole versions beyond the frozen NEXT history,
+  // including the SDK87 owned-metadata transition tuple and the newest appended
+  // slice. The observer table is its own current name, so `count` includes its
+  // tail without a second extension.
+  if (current !== name) expect(recipes(file,current)).toHaveLength(count+9);
   // The HISTORICAL tuple list is frozen history: its last tuple still carries the
   // bytes it was published with. The catalogue that must match the files TODAY is
   // the appended CURRENT one, so freshness is asserted there, not on history.

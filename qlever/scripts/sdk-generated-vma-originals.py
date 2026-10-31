@@ -156,28 +156,36 @@ def same_mapping_geometry(first,second,check=lambda:None):
         check();need(left==right,'same-MM numeric VMA geometry differs')
     return True
 
-def cohort_mapping_geometry(parsed_members,bracket,local=lambda:None):
+def cohort_mapping_geometry(parsed_members,bracket,local=lambda:None,*,entry=None):
     """One coherent same-MM geometry primitive shared by every actual caller.
 
     ``parsed_members`` is the complete ordered list of pure-local parsed maps
     for one stopped cohort. ``bracket`` is the caller's full live validation at
     the entry/exit boundary (lease/source/ownership); ``local`` is only the
     cheap deadline/stdio refusal iterated over the local projection. Identity
-    of the complete numeric geometry stays exact.
+    of the complete numeric geometry stays exact. An explicit entry policy may
+    coalesce only the leading native audit; the complete closing bracket stays
+    unconditional, and every previous caller defaults to its original full entry.
     """
     need(isinstance(parsed_members,list) and 1<=len(parsed_members)<=128,'bounded complete ordered cohort mappings required')
-    bracket()
+    (entry if entry is not None else bracket)()
+    primary=None
     try:
         values=[numeric_mapping_geometry(parsed,local) for parsed in parsed_members]
         geometry=values[0]
         for value in values[1:]:same_mapping_geometry(value,geometry,local)
+    except BaseException as error:
+        primary=error
+        raise
     finally:
-        bracket()
+        try:bracket()
+        except BaseException:
+            if primary is None:raise
     return geometry
 
-def verify_peer_geometry(peer_maps,owner_maps,bracket,local=lambda:None):
+def verify_peer_geometry(peer_maps,owner_maps,bracket,local=lambda:None,*,entry=None):
     """Peer/owner geometry through the same shared cohort primitive."""
-    return cohort_mapping_geometry([owner_maps,peer_maps],bracket,local)
+    return cohort_mapping_geometry([owner_maps,peer_maps],bracket,local,entry=entry)
 
 def complete_memory_cohort(mm,pid,barrier=None):
     need(pid in mm.domains and 0<len(mm.domains)<=128,'bounded actual memory domain required')
@@ -390,7 +398,7 @@ class Runtime:
                     if origin.get('checkpointed'):continue
                     os.close(origin['held']);self.b.retained.remove(origin['held']);del self.origins[key]
         if self.active is not None:
-            self.b.check();kind=row['kind']
+            self.b.check_record(self,row);kind=row['kind']
             if self.model in COHORT_MODELS:need(self.mapping_domain(self.owner)==(self.active['memoryDomain'],self.active['memoryDomainMembers']),'dirty mapping cohort changed')
             if kind in ['actual-child-binding','ptrace-event','signal-delivery','actual-wait-exit']:raise ValueError('generated VMA: unsupported event while finite mapping dirty')
             if kind=='kernel-syscall':
@@ -538,11 +546,11 @@ class Runtime:
                 for peer,task in (sorted(b.tasks.items()) if self.model in COHORT_MODELS else b.tasks.items()):
                     if task['exited'] or peer==pid:continue
                     other,items=self.maps(peer);need(not matching_maps(items,current),'peer already maps output backing')
-                    if op=='map' and self.model in COHORT_MODELS and peer in cohort:verify_peer_geometry(items,values,b.check,b.check_deadline)
+                    if op=='map' and self.model in COHORT_MODELS and peer in cohort:verify_peer_geometry(items,values,b.check_full,b.check_deadline,entry=b.check_owned_entry)
                     common.setdefault('peerMaps',[]).append(dict(pid=peer,original=other['original']))
                 common.update(beforeMapsOriginal=maps['original'],aliases=aliases)
                 if op=='map':
-                    page=os.sysconf('SC_PAGE_SIZE');rounded_span(0,current[3],page);end=min(b.deadline,time.monotonic()+WINDOW_SECONDS);pending.update(alarmToken=b.waiter.clamp(end),windowEnd=end);getattr(b,'window_arm',lambda _d:None)(int(end*1e9))
+                    page=os.sysconf('SC_PAGE_SIZE');rounded_span(0,current[3],page);end=min(b.deadline,time.monotonic()+WINDOW_SECONDS);pending.update(alarmToken=b.waiter.clamp(end),windowEnd=end);getattr(b,'window_arm',lambda _d:None)(int(end*1e9));b.open_outer_lease_window()
                     common.update(pageBytes=page,memoryDomain=domain,windowDeadlineMonotonicNs=str(int(end*1e9)),parentDeadlineMonotonicNs=str(int(b.waiter.parent_deadline*1e9)))
             if op=='unmap':
                 current,ref=self.snapshot(held);maps,values=self.maps(pid);mapping=verify_established(values,self.active['address'],self.active['page'],current,self.active['length']);common.update(beforeOriginal=ref,beforeMapsOriginal=maps['original'],epochSequence=self.active['sequence'])
@@ -550,7 +558,7 @@ class Runtime:
                     domain,cohort=self.mapping_domain(pid,barrier);need((domain,cohort)==(self.active['memoryDomain'],self.active['memoryDomainMembers']),'active mmap cohort changed before unmap');same=[]
                     for peer in cohort:
                         if peer==pid:continue
-                        other,items=self.maps(peer);verify_peer_geometry(items,values,b.check,b.check_deadline);need(verify_established(items,self.active['address'],self.active['page'],current,self.active['length'])==mapping,'same-MM pre-unmap VMA differs');same.append(dict(pid=peer,original=other['original']))
+                        other,items=self.maps(peer);verify_peer_geometry(items,values,b.check_full,b.check_deadline,entry=b.check_owned_entry);need(verify_established(items,self.active['address'],self.active['page'],current,self.active['length'])==mapping,'same-MM pre-unmap VMA differs');same.append(dict(pid=peer,original=other['original']))
                     common.update(memoryDomainMembers=cohort,sameMemoryDomainMaps=same)
         row=b.emit(common);pending.update(window=row,preBarrier=barrier);return row
     def finish(self,pid,entry,exit):
@@ -609,7 +617,7 @@ class Runtime:
                 domain,cohort=self.mapping_domain(pid,barrier);need((domain,cohort)==(pending['memoryDomain'],pending['memoryDomainMembers']),'actual mmap post-stop cohort differs');same=[]
                 for peer in cohort:
                     if peer==pid:continue
-                    other,items=self.maps(peer);verify_peer_geometry(items,confirmed,b.check,b.check_deadline);need(verify_established(items,exit['result'],window['pageBytes'],current,current[3])==mapping,'same-MM post-map VMA differs');same.append(dict(pid=peer,original=other['original']))
+                    other,items=self.maps(peer);verify_peer_geometry(items,confirmed,b.check_full,b.check_deadline,entry=b.check_owned_entry);need(verify_established(items,exit['result'],window['pageBytes'],current,current[3])==mapping,'same-MM post-map VMA differs');same.append(dict(pid=peer,original=other['original']))
                 extra=dict(memoryDomainMembers=cohort,postMapPeerMaps=same)
             row=b.emit(dict(common,identity=current,kernelMappingEvidence=evidence,mapsOriginal=maps['original'],mapping=mapping,memoryDomain=self.mapping_domain(pid)[0],windowDeadlineMonotonicNs=str(int(end*1e9)),parentDeadlineMonotonicNs=str(int(b.waiter.parent_deadline*1e9)),**extra))
             primary=sys.exc_info()[1];errors=pending['procLease'].close()+self.cleanup_fds([pending['selectedHeld']]);need(not errors,'mmap lease cleanup failed');pending.pop('procLease');pending.pop('selectedHeld')
@@ -628,13 +636,13 @@ class Runtime:
             for peer,task in (sorted(b.tasks.items()) if self.model in COHORT_MODELS else b.tasks.items()):
                 if task['exited'] or peer==pid:continue
                 other,items=self.maps(peer);need(not matching_maps(items,current),'peer backing alias remained at checkpoint')
-                if self.model in COHORT_MODELS and peer in cohort:verify_peer_geometry(items,values,b.check,b.check_deadline)
+                if self.model in COHORT_MODELS and peer in cohort:verify_peer_geometry(items,values,b.check_full,b.check_deadline,entry=b.check_owned_entry)
                 peers.append(dict(pid=peer,original=other['original']))
             # split measurement only: instrument_substep preserves the return value
             # and exception identity exactly, so a TimeoutError propagates unchanged
             # while this span is recorded on the existing bounded ring.
             row=b.instrument_substep('generated_vma_finish_emit',b.emit,dict(common,path=origin['path'],identity=current,retainedIdentity=current,original=ref,afterMapsOriginal=maps['original'],afterPeerMaps=peers,epochSequence=self.active['sequence'],originSequence=origin['sequence'],**post_extra))
-            token=self.active['token'];self.active=None;b.waiter.restore(token);self.reserved=0;self.spending_thread=None;origin.update(identity=current,data=(ref['bytes'],ref['sha256']),original=ref,checkpointed=True);self.checkpoints[tuple(current[:2])]=row
+            token=self.active['token'];self.active=None;b.close_outer_lease_window();b.waiter.restore(token);self.reserved=0;self.spending_thread=None;origin.update(identity=current,data=(ref['bytes'],ref['sha256']),original=ref,checkpointed=True);self.checkpoints[tuple(current[:2])]=row
         self.pending.pop(pid)
         if self.retained_metadata and self.active is None and not self.pending:self.metadata_close_entry=(pid,entry['sequence'],self.b.seq+1)
         return row if op!='close' else None
@@ -649,6 +657,9 @@ class Runtime:
         self.b.emit(dict(kind='generated-vma-consumer-binding',captureSequence=row['sequence'],checkpointSequence=checkpoint['sequence'],path=row['path'],identity=identity_value,**extra));return True
     def complete_phase(self):need(self.active is None and not self.pending,'phase ended with unclosed generated mapping')
     def close(self):
+        # Unconditional: a leaked claim must never outlive this runtime, even if
+        # any lease cleanup below raises.
+        self.b.close_outer_lease_window()
         self.reserved=0;self.spending_thread=None
         # Failed closes remain in the existing observer retained set for its
         # outer cleanup retry. Try every lease, never hide a propagating error.

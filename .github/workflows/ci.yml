@@ -154,6 +154,248 @@ jobs:
           NATIVE_LEASE_CC: clang
         run: sudo -E /usr/bin/python3 qlever/tests/run_sdk70_mremap_gate.py -v
 
+      # REQUIRED privileged gate for the owned-metadata observer.
+      #
+      # The module drives the REAL observer profile, whose child authority
+      # handshake drops the whole capability bounding set before it releases the
+      # observer; a plain user has no CAP_SETPCAP so PR_CAPBSET_DROP returns EPERM
+      # and the child never signals readiness. Same precedent as the SDK70 remap
+      # gate: run it privileged, and let the observed child still drop every
+      # capability.
+      #
+      # A bare `python3 -m unittest` exits 0 even when every case SKIPS, so this
+      # step uses an explicit runner: it requires the exact known case set and
+      # count, and fails on any skip, failure, missing case or unexpected case.
+      # Importing the module already runs its ONE real capability probe, so there
+      # is no duplicated preflight here; an incapable host skips and the zero-skip
+      # rule below turns that into a failure.
+      - name: Build canonical SDK native lease helper for the required gate
+        run: |
+          sudo -E env PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 -B qlever/scripts/native/build_native_helper.py \
+            qlever/scripts/native/lease_sweep_ext.c qlever/scripts/native --cc gcc-12
+
+      - name: Owned observer native regressions (required, no skip)
+        run: |
+          # Children drop every capability; retain the runner group so they can
+          # still traverse its private home and checked-out source directories.
+          sudo -u root -E env PYTHONDONTWRITEBYTECODE=1 /usr/bin/setpriv --regid "$(id -g)" --keep-groups /usr/bin/python3 -B - <<'PYGATE'
+          """REQUIRED privileged gate: fail unless the WHOLE known suite actually ran.
+
+          An ordinary `python3 -m unittest ...` exits 0 even when every case skips, so a
+          privileged context that lacks CAP_SETPCAP could look green. This runner loads the
+          REAL module, requires the exact known case set and count, and exits non-zero on
+          any skip, any failure, any missing case or any unexpected extra case.
+
+          There is deliberately NO second capability preflight here. Importing the module
+          already runs its real `capabilities()` probe, which sets `_AUTHORITY`; when the
+          host cannot empty the capability bounding set the class skips, and the zero-skip
+          requirement below then fails the gate. One implementation only -- the module's.
+          """
+          import sys
+          import unittest
+
+          MODULES = (
+              'qlever.tests.test_qlever_owned_metadata_observer',
+              'qlever.tests.test_qlever_owned_window_emission',
+              'qlever.tests.test_qlever_owned_fatal_stop_frame',
+              'qlever.tests.test_qlever_external_scope_errors',
+              'qlever.tests.test_qlever_leased_external_scope',
+              'qlever.tests.test_qlever_read_body_closing_contract',
+              'qlever.tests.test_qlever_maps_geometry_entry',
+              'qlever.tests.test_qlever_owned_pure_entries',
+              'qlever.tests.test_qlever_audit_site_diagnostic',
+          )
+          CLASS = MODULES[0] + '.OwnedMetadataObserverRunloop'
+          WINDOW = MODULES[1] + '.OwnedWindowEmission'
+          FATAL = MODULES[2] + '.FatalStopFrame'
+          EXPECTED = frozenset({
+              CLASS + '.test_failed_rename_is_not_absorbed',
+              CLASS + '.test_foreign_identity_cannot_advance',
+              CLASS + '.test_real_rename_emit_and_lease_advance',
+              CLASS + '.test_real_semantic_observe_accepts_advanced_rename_and_unlink',
+              CLASS + '.test_real_unlink_emit_and_lease_advance',
+              CLASS + '.test_semantic_observe_refuses_forged_closing_identity',
+              CLASS + '.test_unknown_operation_refused',
+              WINDOW + '.test_window_coalesces_leading_sweep_and_trailing_check_always_runs',
+              WINDOW + '.test_trailing_check_still_rejects_a_mutated_identity',
+              WINDOW + '.test_nested_reclamp_under_same_parent_does_not_inherit',
+              WINDOW + '.test_wrong_thread_does_not_inherit',
+              WINDOW + '.test_open_refuses_without_a_real_clamp',
+              WINDOW + '.test_wrong_phase_runs_both_sweeps',
+              WINDOW + '.test_another_waiter_cannot_inherit_the_same_deadlines',
+              WINDOW + '.test_open_refuses_reentrancy',
+              WINDOW + '.test_exception_after_arm_leaves_no_claim',
+              WINDOW + '.test_abort_clears_claim',
+              FATAL + '.test_real_event_path_captures_stop_from_real_lease_verdict',
+              FATAL + '.test_original_injected_exception_object_propagates',
+              FATAL + '.test_diagnostic_failure_preserves_original_exception',
+              FATAL + '.test_real_architectures_and_timestamp_identity_are_preserved',
+              FATAL + '.test_fatal_context_survives_full_row_pressure',
+              FATAL + '.test_malformed_pending_fields_degrade_and_stay_bounded',
+              FATAL + '.test_no_frame_on_a_passing_event',
+              FATAL + '.test_no_frame_on_a_non_kernel_error',
+              FATAL + '.test_exclusive_needs_pid_and_entry_sequence',
+              'qlever.tests.test_qlever_external_scope_errors.ExternalScopeErrorContract.test_caller_timeout_propagates_unchanged_before_any_emit',
+              'qlever.tests.test_qlever_external_scope_errors.ExternalScopeErrorContract.test_eio_propagates_unchanged_before_any_emit',
+              'qlever.tests.test_qlever_external_scope_errors.ExternalScopeErrorContract.test_enoent_yields_the_unobserved_row',
+              'qlever.tests.test_qlever_external_scope_errors.ExternalScopeErrorContract.test_parent_symlink_swap_cannot_admit_an_unleased_inode',
+              'qlever.tests.test_qlever_leased_external_scope.LeasedExternalScope.test_already_held_external_unlink_is_witnessed_advanced_and_replayed',
+              'qlever.tests.test_qlever_leased_external_scope.LeasedExternalScope.test_linkat_symlink_follow_witnesses_followed_target',
+              'qlever.tests.test_qlever_leased_external_scope.LeasedExternalScope.test_unleased_external_operand_has_no_witness',
+              'qlever.tests.test_qlever_leased_external_scope.LeasedExternalScope.test_unlink_symlink_does_not_advance_followed_target',
+              'qlever.tests.test_qlever_leased_external_scope.LeasedExternalScope.test_semantic_replay_refuses_forged_external_closing_identity',
+              'qlever.tests.test_qlever_read_body_closing_contract.P11NonLeaseChecks.test_budget_and_waiter_run_every_iteration_in_original_order',
+              'qlever.tests.test_qlever_read_body_closing_contract.P11NonLeaseChecks.test_second_iteration_failure_propagates_object_before_more_io',
+              'qlever.tests.test_qlever_read_body_closing_contract.P12WaiterIdentity.test_distinct_waiters_with_same_deadline_do_not_inherit',
+              'qlever.tests.test_qlever_read_body_closing_contract.P12WaiterIdentity.test_none_waiter_during_bootstrap_still_works_and_fails_closed_on_swap',
+              'qlever.tests.test_qlever_read_body_closing_contract.P12WaiterIdentity.test_observer_deadline_change_invalidates_the_frame',
+              'qlever.tests.test_qlever_read_body_closing_contract.P13PrimaryAndNesting.test_nested_attempt_does_not_steal_outer_claim',
+              'qlever.tests.test_qlever_read_body_closing_contract.P13PrimaryAndNesting.test_entry_failure_preserves_object_and_opens_no_frame',
+              'qlever.tests.test_qlever_read_body_closing_contract.P13PrimaryAndNesting.test_pre_existing_maps_frame_is_refused_before_entry',
+              'qlever.tests.test_qlever_read_body_closing_contract.P13PrimaryAndNesting.test_closing_failure_never_replaces_body_primary',
+              'qlever.tests.test_qlever_read_body_closing_contract.P13PrimaryAndNesting.test_phase_change_path_resets_the_frame',
+              'qlever.tests.test_qlever_read_body_closing_contract.P14RealConvertedMethods.test_real_tool_original_no_NameError_and_bytes_accounted',
+              'qlever.tests.test_qlever_read_body_closing_contract.P14RealConvertedMethods.test_real_tool_original_cache_hit_returns_same_row',
+              'qlever.tests.test_qlever_read_body_closing_contract.P14RealConvertedMethods.test_real_read_capture_fd_full_read',
+              'qlever.tests.test_qlever_read_body_closing_contract.P14RealConvertedMethods.test_real_snapshot_write_original_fallback',
+              'qlever.tests.test_qlever_read_body_closing_contract.P14RealConvertedMethods.test_real_snapshot_short_read_still_hard_fails',
+              'qlever.tests.test_qlever_read_body_closing_contract.P15CoreGuards.test_core_emit_original_blocked_whenever_any_read_frame_exists',
+              'qlever.tests.test_qlever_read_body_closing_contract.P15CoreGuards.test_core_resume_original_blocked_whenever_any_read_frame_exists',
+              'qlever.tests.test_qlever_read_body_closing_contract.P15CoreGuards.test_no_raw_row_written_when_core_emit_refuses',
+              'qlever.tests.test_qlever_read_body_closing_contract.P16BidirectionalExclusion.test_maps_frame_cannot_open_inside_a_read_body',
+              'qlever.tests.test_qlever_read_body_closing_contract.P16BidirectionalExclusion.test_read_body_cannot_open_inside_a_maps_frame',
+              'qlever.tests.test_qlever_read_body_closing_contract.P16BidirectionalExclusion.test_closing_is_a_real_full_audit_not_a_cheap_skip',
+              'qlever.tests.test_qlever_read_body_closing_contract.P1OpenArmRaceFinalisation.test_real_install_then_raise_sentinel_clears_own_claim_and_preserves_object',
+              'qlever.tests.test_qlever_read_body_closing_contract.P1OpenArmRaceFinalisation.test_entry_failure_installs_no_frame',
+              'qlever.tests.test_qlever_read_body_closing_contract.P1OpenArmRaceFinalisation.test_nested_failure_leaves_outer_claim_untouched',
+              'qlever.tests.test_qlever_read_body_closing_contract.P1OpenArmRaceFinalisation.test_foreign_open_claim_is_never_cleared_by_our_finaliser',
+              'qlever.tests.test_qlever_read_body_closing_contract.P1OpenArmRaceFinalisation.test_clear_own_claim_ignores_a_replacement',
+              'qlever.tests.test_qlever_read_body_closing_contract.P2ResetIntegration.test_close_resets_owned_frames',
+              'qlever.tests.test_qlever_read_body_closing_contract.P2ResetIntegration.test_reset_owned_frames_is_idempotent',
+              'qlever.tests.test_qlever_read_body_closing_contract.P2ResetIntegration.test_phase_entry_resets_so_a_stale_claim_cannot_carry_over',
+              'qlever.tests.test_qlever_read_body_closing_contract.P2ResetIntegration.test_abort_resets_before_any_cleanup_can_fail',
+              'qlever.tests.test_qlever_read_body_closing_contract.P2CommentContractAccuracy.test_body_may_write_private_originals_but_not_publish',
+              'qlever.tests.test_qlever_read_body_closing_contract.P17WritableAliasReadBody.test_multi_owner_two_native_audits_keep_every_nonlease_check',
+              'qlever.tests.test_qlever_read_body_closing_contract.P17WritableAliasReadBody.test_midbody_real_lease_loss_prevents_result_escape',
+              'qlever.tests.test_qlever_read_body_closing_contract.P17WritableAliasReadBody.test_stat_primary_survives_failed_closing_audit',
+              'qlever.tests.test_qlever_read_body_closing_contract.P17WritableAliasReadBody.test_flags_primary_survives_failed_closing_audit',
+              'qlever.tests.test_qlever_read_body_closing_contract.P17WritableAliasReadBody.test_actual_1024_descriptor_bound_still_refuses',
+              'qlever.tests.test_qlever_read_body_closing_contract.P17WritableAliasReadBody.test_actual_64_alias_key_bound_still_refuses',
+              'qlever.tests.test_qlever_read_body_closing_contract.P17WritableAliasReadBody.test_declared_shared_table_dedup_preserves_selected_owner_priority',
+              'qlever.tests.test_qlever_read_body_closing_contract.P17WritableAliasReadBody.test_exited_owner_is_never_scanned',
+              'qlever.tests.test_qlever_read_body_closing_contract.P17WritableAliasReadBody.test_standalone_fd_scan_retains_two_full_native_audits',
+              'qlever.tests.test_qlever_read_body_closing_contract.P17WritableAliasReadBody.test_inner_budget_failure_preserves_object_and_clears_frame',
+              'qlever.tests.test_qlever_read_body_closing_contract.P18ExactRecordCallback.test_owned_emit_one_native_sweep_and_all_three_nonlease_checks',
+              'qlever.tests.test_qlever_read_body_closing_contract.P18ExactRecordCallback.test_outside_window_keeps_three_full_sweeps',
+              'qlever.tests.test_qlever_read_body_closing_contract.P18ExactRecordCallback.test_direct_runtime_record_inside_window_keeps_full_sweep',
+              'qlever.tests.test_qlever_read_body_closing_contract.P18ExactRecordCallback.test_real_coordinated_callback_one_sweep_and_round_can_close',
+              'qlever.tests.test_qlever_read_body_closing_contract.P18ExactRecordCallback.test_real_lease_loss_during_callback_prevents_result_escape',
+              'qlever.tests.test_qlever_read_body_closing_contract.P18ExactRecordCallback.test_callback_primary_object_survives_failed_full_closing',
+              'qlever.tests.test_qlever_read_body_closing_contract.P18ExactRecordCallback.test_callback_cannot_open_read_primitive_or_publish_or_resume',
+              'qlever.tests.test_qlever_read_body_closing_contract.P18ExactRecordCallback.test_foreign_slot_replacement_refused_without_stealing',
+              'qlever.tests.test_qlever_read_body_closing_contract.P18ExactRecordCallback.test_partial_install_failure_clears_only_own_claim_and_preserves_primary',
+              'qlever.tests.test_qlever_read_body_closing_contract.P18ExactRecordCallback.test_every_changed_binding_falls_back_to_full_callback_audit',
+              'qlever.tests.test_qlever_read_body_closing_contract.P18ExactRecordCallback.test_actual_context_changes_and_equal_waiter_never_inherit',
+              'qlever.tests.test_qlever_read_body_closing_contract.P18ExactRecordCallback.test_parked_profile_round_none_uses_real_cohort_record_validation',
+              'qlever.tests.test_qlever_maps_geometry_entry.MapsGeometryEntry.test_owned_maps_new_write_and_reuse_keep_complete_closing',
+              'qlever.tests.test_qlever_maps_geometry_entry.MapsGeometryEntry.test_owned_maps_full_entry_three_to_two_for_both_storage_paths',
+              'qlever.tests.test_qlever_maps_geometry_entry.MapsGeometryEntry.test_outside_window_maps_keep_five_and_geometry_two_full_audits',
+              'qlever.tests.test_qlever_maps_geometry_entry.MapsGeometryEntry.test_owned_actual_geometry_two_to_one_without_changing_local_checks',
+              'qlever.tests.test_qlever_maps_geometry_entry.MapsGeometryEntry.test_legacy_geometry_call_defaults_to_two_full_audits_inside_window',
+              'qlever.tests.test_qlever_maps_geometry_entry.MapsGeometryEntry.test_maps_real_lease_loss_refused_before_any_record_is_published',
+              'qlever.tests.test_qlever_maps_geometry_entry.MapsGeometryEntry.test_geometry_real_lease_loss_refused_at_complete_closing',
+              'qlever.tests.test_qlever_maps_geometry_entry.MapsGeometryEntry.test_geometry_primary_object_wins_over_failed_native_closing',
+              'qlever.tests.test_qlever_maps_geometry_entry.MapsGeometryEntry.test_maps_primary_object_wins_over_failed_native_closing',
+              'qlever.tests.test_qlever_maps_geometry_entry.MapsGeometryEntry.test_maps_partial_install_clears_own_claim_and_closes_with_full_audit',
+              'qlever.tests.test_qlever_maps_geometry_entry.MapsGeometryEntry.test_foreign_maps_claim_kept_but_cannot_suppress_real_failed_closing',
+              'qlever.tests.test_qlever_maps_geometry_entry.MapsGeometryEntry.test_partial_arm_primary_wins_and_foreign_claim_cannot_hide_lease_loss',
+              'qlever.tests.test_qlever_maps_geometry_entry.MapsGeometryEntry.test_geometry_foreign_frame_cannot_hide_real_failed_full_closing',
+              'qlever.tests.test_qlever_maps_geometry_entry.MapsGeometryEntry.test_entry_refuses_all_existing_frames_before_any_check',
+              'qlever.tests.test_qlever_maps_geometry_entry.MapsGeometryEntry.test_context_mismatch_and_missing_window_use_full_entries',
+              'qlever.tests.test_qlever_owned_pure_entries.OwnedPureEntries.test_owned_entries_remove_only_leading_native_and_keep_all_local_work',
+              'qlever.tests.test_qlever_owned_pure_entries.OwnedPureEntries.test_outside_window_retains_full_two_and_five',
+              'qlever.tests.test_qlever_owned_pure_entries.OwnedPureEntries.test_equal_distinct_waiter_cannot_inherit_coalescing',
+              'qlever.tests.test_qlever_owned_pure_entries.OwnedPureEntries.test_ownership_actual_lease_loss_refused_by_full_closing',
+              'qlever.tests.test_qlever_owned_pure_entries.OwnedPureEntries.test_note_actual_lease_loss_refused_before_emit',
+              'qlever.tests.test_qlever_owned_pure_entries.OwnedPureEntries.test_ownership_primary_object_survives_failed_closing',
+              'qlever.tests.test_qlever_owned_pure_entries.OwnedPureEntries.test_note_primary_object_survives_failed_closing',
+              'qlever.tests.test_qlever_owned_pure_entries.OwnedPureEntries.test_both_entries_refuse_any_existing_frame_before_checks',
+              'qlever.tests.test_qlever_owned_pure_entries.OwnedPureEntries.test_ownership_foreign_frame_cannot_suppress_failed_full_closing',
+              'qlever.tests.test_qlever_owned_pure_entries.OwnedPureEntries.test_note_foreign_frame_cannot_suppress_failed_full_closing',
+              'qlever.tests.test_qlever_owned_pure_entries.OwnedPureEntries.test_final_task_census_still_runs_after_full_closing',
+              'qlever.tests.test_qlever_audit_site_diagnostic.UnitAuditSites.test_five_body_roles_preserve_exact_calls_order_and_return',
+              'qlever.tests.test_qlever_audit_site_diagnostic.UnitAuditSites.test_disabled_attribution_keeps_identical_original_operations',
+              'qlever.tests.test_qlever_audit_site_diagnostic.UnitAuditSites.test_plain_fault_before_entry_drops_diagnostic_not_callback',
+              'qlever.tests.test_qlever_audit_site_diagnostic.UnitAuditSites.test_control_faults_propagate_same_object_and_restore_progress',
+              'qlever.tests.test_qlever_audit_site_diagnostic.UnitAuditSites.test_failed_native_primary_survives_diagnostic_control_fault',
+              'qlever.tests.test_qlever_audit_site_diagnostic.UnitAuditSites.test_body_primary_survives_remove_fault_and_full_closing_runs',
+              'qlever.tests.test_qlever_audit_site_diagnostic.UnitAuditSites.test_snapshot_fault_cannot_block_original_check',
+              'qlever.tests.test_qlever_audit_site_diagnostic.UnitAuditSites.test_partial_failed_native_site_and_return_identity',
+              'qlever.tests.test_qlever_audit_site_diagnostic.UnitAuditSites.test_wrong_thread_phase_and_window_do_not_inherit_attribution',
+              'qlever.tests.test_qlever_audit_site_diagnostic.UnitAuditSites.test_crossed_rearm_excluded_from_new_window_roles',
+              'qlever.tests.test_qlever_audit_site_diagnostic.UnitAuditSites.test_unknown_roles_and_sites_remain_other_fixed_shape',
+              'qlever.tests.test_qlever_audit_site_diagnostic.UnitAuditSites.test_saturated_output_fixed_six_kib_bound',
+              'qlever.tests.test_qlever_audit_site_diagnostic.UnitAuditSites.test_partial_tag_arm_cleanup_does_not_steal_foreign_tag',
+              'qlever.tests.test_qlever_audit_site_diagnostic.UnitAuditSites.test_same_deadline_rearm_binds_exact_baseline_and_waiter',
+              'qlever.tests.test_qlever_audit_site_diagnostic.UnitAuditSites.test_original_end_clock_failure_wins_over_new_end_hook',
+              'qlever.tests.test_qlever_audit_site_diagnostic.UnitAuditSites.test_body_primary_and_closing_fault_keep_first_object',
+              'qlever.tests.test_qlever_audit_site_diagnostic.UnitAuditSites.test_body_finished_fault_still_runs_original_closing',
+              'qlever.tests.test_qlever_audit_site_diagnostic.UnitAuditSites.test_overflow_transport_preserves_old_line_histogram_and_quotas',
+              'qlever.tests.test_qlever_audit_site_diagnostic.UnitAuditSites.test_sidecar_faults_do_not_replace_primary_or_retry',
+              'qlever.tests.test_qlever_audit_site_diagnostic.UnitAuditSites.test_uncaught_diagnostic_reads_preserve_control_and_policy_override',
+              'qlever.tests.test_qlever_audit_site_diagnostic.UnitAuditSites.test_reset_clears_optional_attribution',
+              'qlever.tests.test_qlever_audit_site_diagnostic.NativeAuditSites.test_real_c_read_counts_order_and_result_identical_off_on',
+              'qlever.tests.test_qlever_audit_site_diagnostic.NativeAuditSites.test_real_chunk_transaction_seven_sites_native_and_fsync_unchanged',
+              'qlever.tests.test_qlever_audit_site_diagnostic.NativeAuditSites.test_real_c_lease_loss_closing_refuses_and_records_partial_site',
+              'qlever.tests.test_qlever_audit_site_diagnostic.NativeAuditSites.test_real_c_closing_loss_keeps_body_primary_object',
+              'qlever.tests.test_qlever_audit_site_diagnostic.NativeAuditSites.test_real_owned_timer_keeps_primary_and_nonlease_closing',
+          })
+
+
+          def flatten(suite):
+              ids = []
+              for item in suite:
+                  if isinstance(item, unittest.TestSuite):
+                      ids.extend(flatten(item))
+                  else:
+                      ids.append(item.id())
+              return ids
+
+
+          def main():
+              suite = unittest.TestSuite(
+                  unittest.TestLoader().loadTestsFromName(module) for module in MODULES
+              )
+              discovered = flatten(suite)
+              missing = sorted(EXPECTED - set(discovered))
+              unexpected = sorted(set(discovered) - EXPECTED)
+              if missing or unexpected or len(discovered) != len(EXPECTED):
+                  print('REQUIRED GATE: suite shape differs (count=%d missing=%r unexpected=%r)'
+                        % (len(discovered), missing, unexpected), file=sys.stderr)
+                  return 1
+
+              result = unittest.TextTestRunner(verbosity=2).run(suite)
+              problems = []
+              if not result.wasSuccessful():
+                  problems.append('failures/errors')
+              if result.skipped:
+                  problems.append('skipped=%d' % len(result.skipped))
+              if result.testsRun != len(EXPECTED):
+                  problems.append('testsRun=%d expected=%d' % (result.testsRun, len(EXPECTED)))
+              if problems:
+                  print('REQUIRED GATE FAILED: ' + '; '.join(problems), file=sys.stderr)
+                  for case, why in result.skipped:
+                      print('  skipped: %s -> %s' % (case.id(), why), file=sys.stderr)
+                  return 1
+              print('REQUIRED GATE OK: %d/%d cases ran, 0 skipped'
+                    % (result.testsRun, len(EXPECTED)))
+              return 0
+
+
+          if __name__ == '__main__':
+              sys.exit(main())
+          PYGATE
+
       - name: Install ripgrep differential oracle
         run: |
           sudo apt-get update

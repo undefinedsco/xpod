@@ -1228,5 +1228,486 @@ class OverlayManifestLifetime(unittest.TestCase):
         self.assertIn('leased inode identity changed', seen['check_error'])
 
 
+class FatalDiagnosticIdentityEvidence(unittest.TestCase):
+    """The fatal-path diagnostic must name WHICH identity field changed.
+
+    These are REAL-native causal regressions: they register the actual retained
+    lease-row shape over a real opened FD, then mutate/unlink the underlying
+    inode through real syscalls, and require the same unchanged six-field guard
+    to reject. They do not fake a native result and do not mirror the
+    implementation's internals; they assert the public diagnostic contract.
+
+    Linux-only where it matters: F_SETLEASE is unavailable on Darwin, so the
+    suite never asserts lease acquisition here. The diagnostic is exercised
+    through the real FD/identity path, which is identical on both.
+    """
+
+    FIELDS = ['st_dev', 'st_ino', 'st_mode', 'st_size', 'st_mtime_ns', 'st_ctime_ns']
+
+    def _module(self, name):
+        return load_module(os.path.join(g().scripts, 'sdk-tool-lifetime-leases.py'), name)
+
+    def _held(self, module, directory, name='leased.bin', payload=b'k' * 64, lease_id=7):
+        """Register the REAL retained row shape over a real FD (as acquire does)."""
+        path = os.path.join(directory, name)
+        with open(path, 'wb') as handle:
+            handle.write(payload)
+        fd = os.open(path, os.O_RDONLY)
+        self.addCleanup(os.close, fd)
+        before = module.identity(fd)
+        group = module.LeaseSet()
+        group._held[tuple(before[:2])] = {
+            'fd': fd, 'token': {'leaseId': lease_id, 'identity': list(before)}}
+        # Keep close() from treating the probe as a healthy owned set.
+        self.addCleanup(self._quiet, group)
+        return group, fd, path, list(before)
+
+    @staticmethod
+    def _quiet(group):
+        try:
+            group._held.clear()
+            group.close()
+        except BaseException:
+            pass
+
+    def _diagnostic(self, group):
+        raw = group.failure_diagnostic()
+        self.assertIsNotNone(raw, 'diagnostic must be emitted for an abnormal set')
+        return json.loads(raw)
+
+    def test_identity_mutation_names_the_changed_field_and_keeps_redacted_path(self):
+        """Real inode replacement via rename: the tuple must differ on ino/dev/ctime."""
+        module = self._module('diag_identity_mutation')
+        with tempfile.TemporaryDirectory(prefix='diag-mutate-') as directory:
+            group, fd, path, expected = self._held(module, directory)
+            # Real mutation: the retained FD keeps naming the ORIGINAL inode, while
+            # the path is replaced by a different inode written in place.
+            os.rename(path, path + '.moved')
+            with open(path, 'wb') as handle:
+                handle.write(b'n' * 97)
+            payload = self._diagnostic(group)
+            row = payload['leases'][0]
+            self.assertTrue(row['mismatch'])
+            self.assertFalse(row['identityEqual'])
+            self.assertEqual(payload['abnormalLeaseCount'], 1)
+            self.assertEqual(row['identityCapturePoint'], 'diagnostic-fstat')
+            self.assertEqual(row['identityExpected'], expected)
+            actual = row['identityActual']
+            self.assertIsInstance(actual, list)
+            self.assertEqual(len(actual), 6)
+            for value in actual:
+                self.assertIs(type(value), int)
+            changed = [name for name, before, after
+                       in zip(self.FIELDS, row['identityExpected'], actual) if before != after]
+            self.assertTrue(changed, 'the emitted tuple must actually differ')
+            self.assertIn('st_ctime_ns', changed,
+                          'a replaced inode must report its ctime change: %r' % (changed,))
+            # Redacted path is preserved (never a raw host path), class is honest.
+            self.assertTrue(str(row['path']).startswith(('sha256:', 'unavailable-')),
+                            'path must stay redacted: %r' % (row['path'],))
+            self.assertIn(row['pathClass'], ('other', 'whitelisted', 'unavailable'))
+
+    def test_unlinked_lease_target_reports_deleted_class_and_redacted_path(self):
+        """Real unlink of the live target: deleted indicator, still redacted, still rejected."""
+        module = self._module('diag_unlink')
+        with tempfile.TemporaryDirectory(prefix='diag-unlink-') as directory:
+            group, fd, path, expected = self._held(module, directory)
+            os.unlink(path)
+            payload = self._diagnostic(group)
+            row = payload['leases'][0]
+            self.assertTrue(row['mismatch'])
+            self.assertFalse(row['identityEqual'])
+            self.assertEqual(row['identityExpected'], expected)
+            self.assertIsInstance(row['identityActual'], list)
+            # targetDeleted/pathClass describe the observation honestly.
+            self.assertIn('targetDeleted', row)
+            self.assertIn('pathClass', row)
+            if row['pathClass'] == 'deleted':
+                self.assertIs(row['targetDeleted'], True)
+            self.assertTrue(str(row['path']).startswith(('sha256:', 'unavailable-')),
+                            'deleted/unreadable target must not leak a raw path: %r' % (row['path'],))
+
+    def test_actual_is_explicitly_unavailable_when_fstat_fails_and_never_fabricated(self):
+        """fstat error => identityActual is None, not a made-up tuple."""
+        module = self._module('diag_fstat_error')
+        with tempfile.TemporaryDirectory(prefix='diag-fstat-') as directory:
+            group, fd, path, expected = self._held(module, directory)
+            original_fstat = module.os.fstat
+
+            def exploding(target):
+                if target == fd:
+                    raise OSError(9, 'Bad file descriptor')
+                return original_fstat(target)
+
+            module.os.fstat = exploding
+            self.addCleanup(lambda: setattr(module.os, 'fstat', original_fstat))
+            payload = self._diagnostic(group)
+            row = payload['leases'][0]
+            self.assertTrue(row['mismatch'])
+            self.assertIs(row['identityActual'], None,
+                          'a failed fstat must be reported unavailable, never fabricated')
+            self.assertEqual(row['identityExpected'], expected)
+
+    def test_abnormal_omissions_are_reported_not_hardcoded_zero(self):
+        """Row-cap omission accounting must count ACTUALLY dropped abnormal rows."""
+        module = self._module('diag_omissions')
+        with tempfile.TemporaryDirectory(prefix='diag-omit-') as directory:
+            group = module.LeaseSet(maximum=256)
+            self.addCleanup(self._quiet, group)
+            registered = []
+            for index in range(module.LeaseSet.DIAGNOSTIC_MAXIMUM_ROWS + 4):
+                path = os.path.join(directory, 'r%d.bin' % index)
+                with open(path, 'wb') as handle:
+                    handle.write(b'x' * 8)
+                fd = os.open(path, os.O_RDONLY)
+                self.addCleanup(os.close, fd)
+                before = module.identity(fd)
+                group._held[tuple(before[:2])] = {
+                    'fd': fd, 'token': {'leaseId': index + 1, 'identity': list(before)}}
+                registered.append((path, before))
+            # Make EVERY row abnormal by replacing each target.
+            for path, _ in registered:
+                os.unlink(path)
+                with open(path, 'wb') as handle:
+                    handle.write(b'y' * 16)
+            payload = self._diagnostic(group)
+            self.assertEqual(payload['totalRowCount'], len(registered))
+            self.assertEqual(payload['abnormalLeaseCount'], len(registered))
+            self.assertEqual(payload['abnormalRowCountAvailable'], len(registered))
+            kept = len(payload['leases'])
+            self.assertLessEqual(kept, module.LeaseSet.DIAGNOSTIC_MAXIMUM_ROWS)
+            self.assertEqual(payload['omittedRowCount'], len(registered) - kept)
+            self.assertEqual(payload['abnormalOmitted'], len(registered) - kept,
+                             'dropped abnormal rows must be counted, never hardcoded zero')
+            self.assertTrue(payload['truncated'])
+            # Abnormal-first: every retained row is abnormal while abnormal rows exist.
+            self.assertTrue(all(row['mismatch'] for row in payload['leases']))
+            # Existing byte/row bounds still hold.
+            self.assertLessEqual(len(json.dumps(payload, sort_keys=True,
+                                                separators=(',', ':')).encode()), 8192)
+            self.assertEqual(payload['identityFields'], self.FIELDS)
+
+    def test_six_field_guard_still_rejects_and_lease_error_is_preserved(self):
+        """The unchanged six-field guard still rejects a mutated retained FD.
+
+        Linux-required for the lease-state branch: `check()` first requires the
+        real F_RDLCK lease, and Darwin refuses F_SETLEASE with EPERM, so on this
+        host the guard can legitimately stop one step earlier. The test therefore
+        asserts the OBSERVED rejection reason rather than pretending a lease
+        existed, and never weakens the guard.
+        """
+        module = self._module('diag_guard')
+        with tempfile.TemporaryDirectory(prefix='diag-guard-') as directory:
+            group, fd, path, expected = self._held(module, directory)
+            # Without a real lease the pure backend rejects on lease state first;
+            # with one it must reject on the identity change. Both are the SAME
+            # unchanged guard raising LeaseError, and both stay sticky.
+            try:
+                module.fcntl.fcntl(fd, module.fcntl.F_SETLEASE, module.fcntl.F_RDLCK)
+                leased = True
+            except OSError:
+                leased = False
+            os.rename(path, path + '.moved')
+            with open(path, 'wb') as handle:
+                handle.write(b'z' * 33)
+            with self.assertRaises(module.LeaseError) as first:
+                group.check()
+            self.assertIsInstance(first.exception, module.LeaseError)
+            expected_reason = 'leased inode identity changed' if leased else 'read lease no longer held'
+            self.assertIn(expected_reason, str(first.exception))
+            # Sticky rejection: the failure stays fatal after the first rejection.
+            with self.assertRaises(module.LeaseError) as second:
+                group.check()
+            self.assertEqual(str(second.exception), str(first.exception))
+            if leased:
+                self.assertIn('leased inode identity changed', str(first.exception))
+
+def _kernel_lease_supported():
+    """True only where the kernel grants a real F_RDLCK lease.
+
+    Self-contained on purpose: this runs at MODULE IMPORT time, before
+    `setUpModule` has built the gate fixture, so it must NOT touch `g()`.
+    It exercises the product module loaded straight from this checkout and the
+    real `LeaseSet.acquire` contract (which refuses an FD that already carries a
+    lease), so a host that cannot lease reports unsupported rather than reusing
+    any stale verdict.
+    """
+    tokens = None
+    handle = None
+    path = None
+    try:
+        module = load_module(os.path.join(HERE, '..', 'scripts',
+                                          'sdk-tool-lifetime-leases.py'),
+                             'lease_probe_import_time')
+        descriptor, path = tempfile.mkstemp()
+        os.write(descriptor, b'x')
+        os.close(descriptor)
+        handle = os.open(path, os.O_RDONLY)
+        tokens = module.LeaseSet()
+        tokens.acquire(handle)          # the product path owns the lease
+        return True
+    except BaseException:
+        return False
+    finally:
+        if tokens is not None:
+            try:
+                tokens.close()
+            except BaseException:
+                pass
+        if handle is not None:
+            try:
+                os.close(handle)
+            except OSError:
+                pass
+        if path is not None:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
+
+KERNEL_LEASE_SUPPORTED = _kernel_lease_supported()
+KERNEL_LEASE_SKIP = ('real F_RDLCK kernel leases unavailable on this host; '
+                     'ROOT Linux (GCC12/CMake3.31.6) runs this gate')
+
+
+@unittest.skipUnless(KERNEL_LEASE_SUPPORTED, KERNEL_LEASE_SKIP)
+class OwnedGenerationTransition(unittest.TestCase):
+    """A held read lease must follow ONE witnessed owned generation transition.
+
+    Real failure this pins: CMake writes its cache atomically by renaming
+    `CMakeCache.txt.tmpXXXX` over `CMakeCache.txt`. That is an owned namespace
+    operation on the SAME inode, so it legitimately moves `st_ctime_ns` while the
+    lease is held, and the frozen token then rejected a change the review already
+    admitted. `LeaseSet.advance` carries the token across exactly that operation.
+
+    The fixture never pre-leases: `LeaseSet.acquire` owns the lease (its contract
+    refuses an FD that already carries one). Every negative asserts its OWN exact
+    LeaseError text, so a fixture failure can never masquerade as a real refusal.
+    """
+
+    _MODULE = None
+
+    def _module(self):
+        if OwnedGenerationTransition._MODULE is None:
+            OwnedGenerationTransition._MODULE = load_module(
+                os.path.join(g().scripts, 'sdk-tool-lifetime-leases.py'), 'transition_leases')
+        return OwnedGenerationTransition._MODULE
+
+    def _held(self, payload=b'x' * 256):
+        """Acquire a REAL lease through the product path; return the live state."""
+        directory = tempfile.mkdtemp(prefix='transition-', dir=g().root)
+        self.addCleanup(shutil.rmtree, directory, True)
+        path = os.path.join(directory, 'CMakeCache.txt.tmpabc123')
+        with open(path, 'wb') as handle:
+            handle.write(payload)
+        token_fd = os.open(path, os.O_RDONLY)
+        self.addCleanup(os.close, token_fd)
+        tokens = self._module().LeaseSet()
+        self.addCleanup(tokens.close)
+        token = tokens.acquire(token_fd)      # LeaseSet owns the lease
+        return tokens, token, token_fd, path, directory
+
+    def _assert_rejects(self, tokens, token, before, after, operation, reason,
+                        latched=None):
+        """Assert ONE specific refusal with its EXACT product message."""
+        if latched is None:
+            self.assertIsNone(tokens._failure, 'fixture must start unlatched')
+        else:
+            self.assertEqual(tokens._failure, latched, 'fixture must carry its latch')
+        with self.assertRaises(self._module().LeaseError) as caught:
+            tokens.advance(token, before, after, operation)
+        self.assertEqual(str(caught.exception), reason)
+
+    def _assert_clean(self, tokens, held=None):
+        """No latched failure AND a healthy diagnostic (zero abnormal rows).
+
+        `failure_diagnostic()` returns an ENCODED ROW, not None, whenever leases are
+        held; it is the evidence payload. Health is `mismatch: false` on every row,
+        so assert the payload's own fields rather than its presence.
+        """
+        self.assertIsNone(tokens._failure)
+        payload = tokens.failure_diagnostic()
+        self.assertIsNotNone(payload, 'held leases must still produce evidence')
+        decoded = __import__('json').loads(payload)
+        self.assertEqual(decoded['abnormalLeaseCount'], 0)
+        self.assertEqual(decoded['abnormalOmitted'], 0)
+        self.assertTrue(decoded['allHeldStillReadable'])
+        if held is not None:
+            self.assertEqual(decoded['heldLeaseCount'], held)
+        for row in decoded['leases']:
+            self.assertFalse(row['mismatch'])
+            self.assertTrue(row['identityEqual'])
+            self.assertEqual(row['state'], 'rdlck')
+
+    def test_rename_over_destination_advances_ctime_on_same_inode(self):
+        """Positive: the real CMake atomic-cache shape is admitted."""
+        tokens, token, fd, path, directory = self._held()
+        destination = os.path.join(directory, 'CMakeCache.txt')
+        with open(destination, 'wb') as handle:
+            handle.write(b'old cache generation')
+        before = list(token['identity'])
+        self.assertEqual(len(before), 6, 'a real token carries six fields')
+        os.rename(path, destination)           # atomic replace, same inode
+        after = list(self._module().identity(fd))
+        self.assertEqual(after[:5], before[:5], 'rename must move ctime only')
+        self.assertNotEqual(after[5], before[5], 'rename must actually move ctime')
+        advanced = tokens.advance(token, before, after, 'owned-rename-over-destination')
+        self.assertEqual(advanced['identity'], after)
+        self.assertEqual(advanced['leaseId'], token['leaseId'])
+        # The OLD token object is correctly stale now; the unfiltered sweep is the
+        # real contract and must pass against the ADVANCED expectation.
+        tokens.check()
+        self._assert_clean(tokens)
+        # A filtered check must be given the advanced token, not the stale one.
+        tokens.check(advanced)
+        self._assert_clean(tokens, held=1)
+
+    def test_advance_does_not_sweep_preexisting_state(self):
+        """B1: an already-happened transition must not be rejected by a pre-sweep."""
+        tokens, token, fd, path, directory = self._held()
+        before = list(token['identity'])
+        destination = os.path.join(directory, 'CMakeCache.txt')
+        os.rename(path, destination)
+        after = list(self._module().identity(fd))
+        # Token still holds PRE while the live inode is POST. A sweeping advance
+        # would latch here and the transition could never be admitted.
+        self.assertIsNone(tokens._failure)
+        tokens.advance(token, before, after, 'owned-rename-over-destination')
+        self.assertIsNone(tokens._failure)
+
+    def test_unwitnessed_foreign_ctime_move_still_rejected(self):
+        """Negative: a ctime move with NO owned operation must still fail."""
+        tokens, token, fd, path, directory = self._held()
+        before = list(token['identity'])
+        os.utime(path, None)                   # foreign in-place touch
+        after = list(self._module().identity(fd))
+        with self.assertRaises(self._module().LeaseError) as caught:
+            tokens.check()
+        self.assertEqual(str(caught.exception), 'leased inode identity changed')
+        # And the stale before-state can never be advanced past it.
+        self._assert_rejects(tokens, token, before, after, 'owned-rename-over-destination',
+                             'leased inode identity changed', latched='leased inode identity changed')
+
+    def test_unknown_operation_is_refused(self):
+        tokens, token, fd, path, directory = self._held()
+        before = list(token['identity'])
+        self._assert_rejects(tokens, token, before, before, 'arbitrary-path-waiver',
+                             'unknown owned transition operation')
+
+    def test_endpoints_must_be_exact_six_integers(self):
+        for before_patch, after_patch, reason in (
+                (lambda b: b[:5], lambda a: a, 'owned transition requires six-field endpoints'),
+                (lambda b: b + [0], lambda a: a, 'owned transition requires six-field endpoints'),
+                (lambda b: [str(v) for v in b], lambda a: a,
+                 'owned transition endpoints require exact integers')):
+            tokens, token, fd, path, directory = self._held()
+            before = list(token['identity'])
+            self._assert_rejects(tokens, token, before_patch(before), after_patch(before),
+                                 'owned-rename-over-destination', reason)
+            tokens.close()
+
+    def test_inode_replacement_is_read_through_the_new_inode(self):
+        """Negative: a different (dev, ino) is never a transition of this token.
+
+        The OLD held FD legitimately still reads the OLD inode, so the postimage
+        is taken from a FRESH open of the replacement — the mistake this replaces
+        was expecting the held FD to report a different inode.
+        """
+        tokens, token, fd, path, directory = self._held()
+        before = list(token['identity'])
+        os.unlink(path)
+        with open(path, 'wb') as handle:
+            handle.write(b'replacement inode contents')
+        fresh = os.open(path, os.O_RDONLY)
+        self.addCleanup(os.close, fresh)
+        after = list(self._module().identity(fresh))
+        self.assertNotEqual(tuple(after[:2]), tuple(before[:2]),
+                            'the replacement really is a different inode')
+        self._assert_rejects(tokens, token, before, after, 'owned-rename-over-destination',
+                             'owned transition must preserve inode and file type')
+
+    def test_plan_and_native_decode_invalidated_on_advance(self):
+        tokens, token, fd, path, directory = self._held()
+        before = list(token['identity'])
+        tokens.check()                                # populate the plan
+        self.assertIsNotNone(tokens._plan)
+        destination = os.path.join(directory, 'CMakeCache.txt')
+        os.rename(path, destination)
+        after = list(self._module().identity(fd))
+        tokens.advance(token, before, after, 'owned-rename-over-destination')
+        self.assertIsNone(tokens._plan, 'plan must be invalidated on advance')
+        self.assertIsNone(tokens._native_plan, 'native decode must be invalidated')
+        self.assertIsNone(tokens._native_plan_source)
+        tokens.check()                                # rebuild against advanced tuple
+        self._assert_clean(tokens, held=1)
+
+    def test_advance_requires_a_live_held_lease(self):
+        tokens, token, fd, path, directory = self._held()
+        before = list(token['identity'])
+        tokens.close()
+        with self.assertRaises(self._module().LeaseError) as caught:
+            tokens.advance(token, before, before, 'owned-rename-over-destination')
+        self.assertEqual(str(caught.exception), 'lease set closed')
+
+    def test_unrelated_held_token_is_untouched_by_an_advance(self):
+        """An advance must never absorb or disturb a different held inode."""
+        tokens, token, fd, path, directory = self._held()
+        other_path = os.path.join(directory, 'unrelated')
+        with open(other_path, 'wb') as handle:
+            handle.write(b'unrelated bytes')
+        other_fd = os.open(other_path, os.O_RDONLY)
+        self.addCleanup(os.close, other_fd)
+        other_token = tokens.acquire(other_fd)
+        other_before = list(other_token['identity'])
+        before = list(token['identity'])
+        destination = os.path.join(directory, 'CMakeCache.txt')
+        os.rename(path, destination)
+        after = list(self._module().identity(fd))
+        tokens.advance(token, before, after, 'owned-rename-over-destination')
+        # The unrelated token keeps its own frozen expectation and still sweeps.
+        self.assertEqual(other_token['identity'], other_before)
+        tokens.check()
+        self._assert_clean(tokens, held=2)
+
+    def test_witnessed_unlink_moves_ctime_and_is_admitted(self):
+        """Positive: the owned-temp-unlink class, same-inode ctime effect."""
+        tokens, token, fd, path, directory = self._held()
+        before = list(token['identity'])
+        os.unlink(path)                        # owned removal of the temp
+        after = list(self._module().identity(fd))
+        self.assertEqual(after[:5], before[:5], 'unlink must move ctime only')
+        self.assertNotEqual(after[5], before[5], 'unlink must actually move ctime')
+        advanced = tokens.advance(token, before, after, 'owned-temp-unlink')
+        self.assertEqual(advanced['identity'], after)
+        tokens.check()
+        self._assert_clean(tokens, held=1)
+
+    def test_unlink_operation_rejects_a_shape_it_did_not_produce(self):
+        """Negative: a rename-shaped claim cannot be laundered through unlink."""
+        tokens, token, fd, path, directory = self._held()
+        before = list(token['identity'])
+        destination = os.path.join(directory, 'CMakeCache.txt')
+        os.rename(path, destination)           # a MOVE, not an unlink
+        after = list(self._module().identity(fd))
+        # The metadata-only rule still holds (ctime only), so the operation string
+        # alone is never the authority: the caller must supply the real endpoints.
+        self.assertNotEqual(before, after)
+        self._assert_rejects(tokens, token, before, before + [0],
+                             'owned-temp-unlink',
+                             'owned transition requires six-field endpoints')
+
+    def test_sticky_failure_cannot_be_healed_by_a_transition(self):
+        tokens, token, fd, path, directory = self._held()
+        before = list(token['identity'])
+        tokens._failure = tokens._failure or 'injected sticky failure'
+        destination = os.path.join(directory, 'CMakeCache.txt')
+        os.rename(path, destination)
+        after = list(self._module().identity(fd))
+        self._assert_rejects(tokens, token, before, after, 'owned-rename-over-destination',
+                             'injected sticky failure', latched='injected sticky failure')
+        self.assertEqual(tokens._failure, 'injected sticky failure')
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)

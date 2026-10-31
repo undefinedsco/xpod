@@ -1,12 +1,14 @@
 """Real Runtime guard; simulated observed rows only, no new kernel permission."""
 import contextlib,importlib.util,io,json,unittest
 from pathlib import Path
-from types import SimpleNamespace
+from types import SimpleNamespace,MethodType
 from unittest.mock import patch
 spec=importlib.util.spec_from_file_location('dirty_diag',Path(__file__).resolve().parents[1]/'scripts/sdk-generated-vma-originals.py');m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
+owner_spec=importlib.util.spec_from_file_location('dirty_diag_owner',Path(__file__).resolve().parents[1]/'scripts/sdk-ptrace-execution.py');owner=importlib.util.module_from_spec(owner_spec);owner_spec.loader.exec_module(owner)
 class Tests(unittest.TestCase):
  def setUp(self):
   self.r=m.Runtime(SimpleNamespace(check=lambda:None,generated_vma_shared_mm=True));self.r.mm.record(dict(kind='owned-root-binding',pid=10,sequence=1));self.r.active=dict(pid=10,address=4096,length=6336,span=8192,page=4096,sequence=40,memoryDomain=1,memoryDomainMembers=[10],origin=dict(pid=10,fd=6,sequence=20,identity=[1,2,33188,6336,3,4],original=dict(path='capture-20.original',bytes=6336,sha256='a'*64)));self.row=dict(kind='kernel-syscall',op='entry',pid=10,sequence=41,arch=0xc000003e,nr=10,args=[4096,8192,1,0,0,0]);self.out=io.StringIO()
+  self.r.b.check_record=MethodType(owner.Observer.check_record,self.r.b)
  def reject(self):
   with contextlib.redirect_stderr(self.out):
    with self.assertRaisesRegex(ValueError,'unsupported syscall while finite mapping dirty'):self.r.record(self.row)

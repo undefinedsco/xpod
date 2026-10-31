@@ -1,10 +1,46 @@
 """Actual temporary regular FDs; simulated stop/backend, never ptrace or child."""
-import hashlib,importlib.util,os,tempfile,unittest
+import hashlib,importlib.util,os,tempfile,time,unittest
 from pathlib import Path
 from unittest.mock import patch
 spec=importlib.util.spec_from_file_location('vma_files',Path(__file__).resolve().parents[1]/'scripts/sdk-generated-vma-originals.py');m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
+_OBSERVER=importlib.util.spec_from_file_location('vma_observer_owner',Path(__file__).resolve().parents[1]/'scripts/sdk-ptrace-execution.py')
+_observer=importlib.util.module_from_spec(_OBSERVER);_OBSERVER.loader.exec_module(_observer)
+class Wait:
+ # Mirrors BlockingOwnedWait's shape closely enough for the REAL
+ # open/close/owned_window_state code: an active window whose armed deadline is
+ # strictly before the parent, one-shot clamp, and restore back to parent.
+ def __init__(inner,parent_deadline):
+  inner.parent_deadline=parent_deadline;inner.deadline=parent_deadline
+  inner.active=True;inner.window=None;inner.token=None;inner.restored=False
+ def clamp(inner,end):
+  if not inner.active:raise ValueError('active owned wait required to clamp')
+  if inner.window is not None:raise ValueError('one active owned wait window required')
+  if end>inner.parent_deadline:raise ValueError('window may not extend owned parent deadline')
+  inner.deadline=end;inner.token=object();inner.window=inner.token;return inner.token
+ def restore(inner,token):
+  assert token is inner.token,'owned wait token differs'
+  inner.window=None;inner.deadline=inner.parent_deadline;inner.restored=True
+
 class Backend:
- def __init__(self,root):self.maximum_file_bytes=1024**2;self.check=lambda:None;self.check_deadline=lambda:None;self.build=str(root);self.retained=set();self.tasks={10:{'entry':None,'exited':False}};self.seq=0;self.exclusive=None;self.originals={}
+ def __init__(self,root):self.maximum_file_bytes=1024**2;self.check=lambda:None;self.check_deadline=lambda:None;self.build=str(root);self.retained=set();self.tasks={10:{'entry':None,'exited':False}};self.seq=0;self.exclusive=None;self.originals={};self.deadline=time.monotonic()+600;self.current_phase='generated-vma-files'
+ # REAL owned-window lifecycle: bind the production Observer methods instead of
+ # re-implementing them here, so the fixture exercises the actual clamp claim,
+ # re-entrancy refusal, exact-tuple ownership test and unconditional reset.
+ check_nonlease=lambda self:self.check()
+ read_frame_any=_observer.Observer.read_frame_any
+ check_owned_entry=_observer.Observer.check_owned_entry
+ lifetime_leases=None
+ check_lifetime_leases=_observer.Observer.check_lifetime_leases
+ check_full=_observer.Observer.check_full
+ open_outer_lease_window=_observer.Observer.open_outer_lease_window
+ close_outer_lease_window=_observer.Observer.close_outer_lease_window
+ outer_lease_window_owned=_observer.Observer.outer_lease_window_owned
+ owned_window_state=_observer.Observer.owned_window_state
+ def window_arm(self,deadline_ns):self.armed_windows=getattr(self,'armed_windows',[])+[deadline_ns]
+ def assert_no_nested_claim(self):
+  """No claim may still be held once the runtime/observer finished."""
+  if getattr(self,'_outer_lease_coalesce',None) is not None:raise AssertionError('leaked outer lease claim')
+  return True
  # Production finish() now brackets its snapshot with the declared substep
  # boundary. Mirror that interface instead of stubbing it out, so the existing
  # timeout/order assertions still exercise the real call shape.
@@ -139,11 +175,7 @@ class Tests(unittest.TestCase):
   self.r.mm.domains={10:1};self.b.tool_metadata_bytes=4*1024**2;self.b.deadline=m.time.monotonic()+100;self.b.check=lambda:None;self.b.writable_aliases=lambda *args:[dict(pid=10,fd=fd,accessMode=2,flags=2)];reserved=[];self.b.reserve_generated_bytes=lambda count:reserved.append(count)
   if shared_mm:
    self.r.model=m.COHORT_MODEL;self.r.mm.domains[11]=1;self.b.tasks[11]={'entry':None,'exited':False};self.b.barrier=lambda:self.b.emit(dict(kind='all-stop-barrier',pids=[10,11],osStates=['t','t'],taskOwnership=[dict(tid=10,tgid=10,fdTable=10),dict(tid=11,tgid=10,fdTable=10)]))
-  class Wait:
-   parent_deadline=self.b.deadline
-   def clamp(inner,end):inner.end=end;inner.token=object();return inner.token
-   def restore(inner,token):self.assertIs(token,inner.token);inner.restored=True
-  self.b.waiter=Wait();state={'mapped':False}
+  self.b.waiter=Wait(self.b.deadline);state={'mapped':False}
   proc=self.root/'proc-task';proc.mkdir();(proc/'stat').write_bytes(b'10 (fixture) t '+b' '.join([b'0']*18+[b'123'])+b'\n')
   def maps(pid):
    current=m.identity(os.fstat(fd));rows=[dict(startHex='1000',endHex='2000',permissions='rw-s',fileOffset=0,deviceMajor=os.major(current[0]),deviceMinor=os.minor(current[0]),inode=current[1])] if state['mapped'] else []
@@ -225,9 +257,50 @@ class Tests(unittest.TestCase):
  def test_two_epochs_keep_same_actual_fd_and_updated_full_snapshot_both_abis(self):
   original_root=self.root
   for arch in [0xc00000b7,0xc000003e]:
-   self.root=original_root/str(arch);self.root.mkdir();self.b=Backend(self.root);self.r=m.Runtime(self.b);self.addCleanup(self.r.close);self.mapping_control(arch,2)
+   self.root=original_root/str(arch);self.root.mkdir();self.b=Backend(self.root);self.r=m.Runtime(self.b);self.addCleanup(self.r.close)
+   self.mapping_control(arch,2)
+   # OWNED-WINDOW LIFECYCLE across both epochs, asserted on the real observer
+   # methods bound into this fixture: each epoch armed exactly one clamp, the
+   # claim is released after each finish, and nothing leaks at close.
+   self.assertTrue(self.b.waiter.restored,'the clamped window must be restored per epoch')
+   self.assertIsNone(getattr(self.b,'_outer_lease_coalesce',None),
+                     'no outer lease claim may outlive a finished epoch')
+   self.assertEqual(len(self.b.armed_windows),2,'each epoch must arm exactly one window')
+   self.assertFalse(self.b.outer_lease_window_owned(),
+                    'a released claim must not report ownership')
+   self.b.assert_no_nested_claim()
  def test_new_selected_fd_full_binding_two_epochs_both_abis(self):
   original_root=self.root
   for arch in [0xc00000b7,0xc000003e]:
    self.root=original_root/str(arch);self.root.mkdir();self.b=Backend(self.root);self.r=m.Runtime(self.b);self.addCleanup(self.r.close);self.mapping_control(arch,2,True)
+ def test_outer_lease_window_refuses_nested_and_incomplete_claims(self):
+  """Non-no-op lifecycle proof using the REAL open/close methods.
+
+  A claim requires an armed local clamp and is never re-entrant; closing is
+  unconditional and idempotent, and a nested attempt must be refused rather than
+  silently coalescing into the outer claim.
+  """
+  self.b=Backend(self.root)
+  self.b.waiter=Wait(self.b.deadline)
+  self.assertIsNone(getattr(self.b,'_outer_lease_coalesce',None))
+  # no clamp armed yet -> claiming must be refused, never silently accepted
+  with self.assertRaises(AssertionError):
+   self.b.open_outer_lease_window()
+  end=min(self.b.deadline,time.monotonic()+m.WINDOW_SECONDS)
+  self.b.waiter.clamp(end)
+  self.b.open_outer_lease_window()
+  claim=self.b._outer_lease_coalesce
+  self.assertIsNotNone(claim)
+  self.assertTrue(self.b.outer_lease_window_owned())
+  # nested claim must be REFUSED, not merged into the held claim
+  with self.assertRaises(AssertionError):
+   self.b.open_outer_lease_window()
+  self.assertIs(self.b._outer_lease_coalesce,claim,'a refused nested claim must not replace the held claim')
+  # close is unconditional + idempotent
+  self.b.close_outer_lease_window()
+  self.assertIsNone(self.b._outer_lease_coalesce)
+  self.assertFalse(self.b.outer_lease_window_owned())
+  self.b.close_outer_lease_window()
+  self.assertTrue(self.b.assert_no_nested_claim())
+
 if __name__=='__main__':unittest.main()

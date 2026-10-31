@@ -181,20 +181,58 @@ def cleanup_builder(plan,budget):
                 budget.check();part=child.stdout.read(min(65536,LIMITS['metadataBytes']+1-len(data)))
                 if not part:break
                 data.extend(part);need(len(data)<=LIMITS['metadataBytes'],'bounded actual cleanup builder list')
-            need(child.wait(timeout=budget.timeout(10))==0,'actual cleanup builder listing failed')
+            # Same rule as the teardown: the listing wait has no private 10s
+            # authority, only the shared producer deadline.
+            budget.check()
+            need(child.wait(timeout=budget.remaining())==0,'actual cleanup builder listing failed')
         finally:
             child.stdout.close()
             if child.poll() is None:child.kill();child.wait()
         path=Path(plan['originals'])/('cleanup-builders-'+role+'.original.jsonlines')
         with path.open('xb') as raw:raw.write(data);raw.flush();os.fsync(raw.fileno())
         return [json.loads(line) for line in data.splitlines()]
+    def deadline_remains():
+        """True only if the shared producer deadline allows another wait.
+
+        ONLY the budget's own exhaustion (TimeoutError) is a deadline verdict.
+        Any other exception is a real defect and must propagate unchanged -- it
+        must never be relabelled as an exhausted deadline.
+        """
+        try:budget.check()
+        except TimeoutError:return False
+        return True
     before=names('before')
+    removal=None
     if builder in before:
         child=subprocess.Popen(outer.binding.local_docker(['docker','buildx','rm',builder]),preexec_fn=bound_docker_raw)
-        try:need(child.wait(timeout=budget.timeout(10))==0,'actual owned builder cleanup exit')
+        try:
+            # NO independent time authority here; the removed literal 10s WAS one.
+            # `remaining()` is the phase's single authenticated producer deadline
+            # already carried by this ExecutionBudget, so this wait cannot outlive
+            # it and no new cap, threshold or config is introduced.
+            if not deadline_remains():removal='deadline-exhausted'
+            elif child.wait(timeout=budget.remaining())!=0:removal='nonzero-exit'
+        except subprocess.TimeoutExpired:
+            if child.poll() is None:child.kill();child.wait()
+            removal='deadline-exhausted'
         finally:
             if child.poll() is None:child.kill();child.wait()
-    need(builder not in names('after'),'owned builder still present after cleanup')
+    # Absence is proven ONLY by an after-listing. If the shared deadline is spent
+    # the listing is UNAVAILABLE, which is never treated as absence.
+    try:after=names('after')
+    except BaseException as listing_error:
+        # A SPENT shared deadline is the only reason absence becomes UNAVAILABLE.
+        # ONLY a genuine shared-deadline exhaustion makes the proof UNAVAILABLE.
+        # It must be BOTH a TimeoutError from the budget AND an actually spent
+        # deadline; any other listing failure is a real defect and surfaces
+        # unchanged, never relabelled as "unavailable".
+        exhausted=isinstance(listing_error,TimeoutError) and not deadline_remains()
+        if not exhausted:raise
+        need(False,'owned builder cleanup unverified: after-listing unavailable'
+                   +((' ('+removal+')') if removal else '')+' ['+type(listing_error).__name__+']')
+    need(builder not in after,'owned builder still present after cleanup')
+    if removal is not None:
+        need(False,'owned builder cleanup did not complete: '+removal)
 
 def final_image_copy(mode,plan,budget):
     config=plan['imageConfig'];need(outer.binding.digest(config),'actual linked image config')

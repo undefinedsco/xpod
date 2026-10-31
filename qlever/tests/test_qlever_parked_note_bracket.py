@@ -53,6 +53,8 @@ def load(name, path):
     return module
 
 
+observer = load('parked_note_observer', ROOT / 'qlever/scripts/sdk-ptrace-execution.py')
+
 class _Runtime:
     pass
 
@@ -88,6 +90,16 @@ class BodyDeadline(TimeoutError):
 
 class Binder:
     """Stand-in coordinator with genuinely separate entry/closing checks."""
+
+    # Bind the actual entry/full policy. This abstract guard-count fixture has
+    # no live lease set; native behavior is covered by the real kernel suite.
+    lifetime_leases = None
+    read_frame_any = observer.Observer.read_frame_any
+    outer_lease_window_owned = observer.Observer.outer_lease_window_owned
+    check_owned_entry = observer.Observer.check_owned_entry
+    check_lifetime_leases = observer.Observer.check_lifetime_leases
+    check_full = observer.Observer.check_full
+    def check_nonlease(self):return self.check()
 
     def __init__(self, guard_error=None, fail_on_checks=(), deadline_at=None):
         self.guard_error = guard_error

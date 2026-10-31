@@ -12,6 +12,15 @@ class LeaseError(RuntimeError):
     pass
 
 
+# Owned generation transitions a held lease token may legally advance across.
+# These are OWNED OPERATION KINDS witnessed by the observer's own rename/unlink
+# path, never a path, filename or profile: a foreign or unwitnessed change has no
+# operation to name and therefore still fails the six-field sweep.
+ADVANCE_OPERATIONS = ('owned-rename-over-destination', 'owned-temp-unlink')
+# Of those, the inode-metadata-only kind may legitimately move ctime alone.
+ADVANCE_METADATA_ONLY = ('owned-rename-over-destination', 'owned-temp-unlink')
+
+
 def identity(fd):
     value = os.fstat(fd)
     return [value.st_dev, value.st_ino, value.st_mode, value.st_size,
@@ -128,7 +137,7 @@ class LeaseSet:
     DIAGNOSTIC_MAXIMUM_ROWS=64
     DIAGNOSTIC_SCAN_MAXIMUM=4096
 
-    def failure_diagnostic(self, deadline=None):
+    def failure_diagnostic(self, deadline=None, fatal_stop=None):
         """Read-only fatal-path snapshot over the ALREADY-OWNED lease FDs.
 
         Issued only after the set is already fatally failed, so it can never
@@ -219,28 +228,54 @@ class LeaseSet:
                     entry['identityEqual'] = actual == expected
                     if entry['identityEqual'] is False:
                         entry['mismatch'] = True
+                # The six-field pair is captured from THIS SAME fstat observation
+                # that produced identityEqual, so the two can never disagree.
+                # Only abnormal rows carry it (cheap, and the decisive datum).
+                diagnostic_actual = actual
             except OSError as exc:
                 entry['identityEqual'] = False
                 entry['mismatch'] = True
+                diagnostic_actual = None
                 if entry['error'] is None:
                     entry['error'] = ('errno-%d' % exc.errno) if type(exc.errno) is int else 'errno-None'
             except BaseException as exc:
                 entry['identityEqual'] = False
                 entry['mismatch'] = True
+                diagnostic_actual = None
                 if entry['error'] is None:
                     entry['error'] = type(exc).__name__
             if entry['mismatch']:
                 abnormal += 1
+                # Six integers ordered st_dev, st_ino, st_mode, st_size,
+                # st_mtime_ns, st_ctime_ns. `actual` is explicitly unavailable
+                # (None) when fstat failed; it is never fabricated.
+                entry['identityCapturePoint'] = 'diagnostic-fstat'
+                if isinstance(expected, list) and len(expected) == 6 and all(type(v) is int for v in expected):
+                    entry['identityExpected'] = list(expected)
+                else:
+                    entry['identityExpected'] = None
+                entry['identityActual'] = list(diagnostic_actual) if diagnostic_actual is not None else None
                 try:
                     target = os.readlink('/proc/self/fd/%d' % fd)
-                    if target.startswith(('/opt/qlever-sdk/', '/components/', '/usr/')):
+                    deleted = target.endswith(' (deleted)')
+                    entry['targetDeleted'] = deleted
+                    entry['pathClass'] = ('whitelisted'
+                                          if target.startswith(('/opt/qlever-sdk/', '/components/', '/usr/'))
+                                          else ('deleted' if deleted else 'other'))
+                    if entry['pathClass'] == 'whitelisted':
                         entry['path'] = target[:256]
                     else:
+                        # Keep the redacted form: no arbitrary raw host path is
+                        # ever copied into CI artifacts.
                         entry['path'] = 'sha256:' + hashlib.sha256(
                             os.fsencode(target)).hexdigest()
                 except OSError as exc:
+                    entry['targetDeleted'] = None
+                    entry['pathClass'] = 'unavailable'
                     entry['path'] = ('unavailable-errno-%d' % exc.errno) if type(exc.errno) is int else 'unavailable-errno-None'
                 except BaseException as exc:
+                    entry['targetDeleted'] = None
+                    entry['pathClass'] = 'unavailable'
                     entry['path'] = 'unavailable-' + type(exc).__name__
             rows.append(entry)
 
@@ -257,6 +292,10 @@ class LeaseSet:
                    [r for r in rows if not r['mismatch']])
         omitted = max(0, len(ordered) - self.DIAGNOSTIC_MAXIMUM_ROWS)
         kept = ordered[:self.DIAGNOSTIC_MAXIMUM_ROWS]
+        # Count abnormal rows ACTUALLY dropped rather than hardcoding zero, so an
+        # incomplete abnormal picture is always visible in the payload.
+        abnormal_available = sum(1 for r in ordered if r['mismatch'])
+        abnormal_kept = sum(1 for r in kept if r['mismatch'])
 
         payload = dict(
             schemaVersion=2, kind='read-lease-fatal-diagnostic', authority=False,
@@ -270,8 +309,16 @@ class LeaseSet:
             truncated=bool(omitted or partial or not scanned_complete),
             partialReason=partial,
             abnormalLeaseCount=abnormal,
+            abnormalRowCountAvailable=abnormal_available,
+            abnormalOmitted=max(0, abnormal_available - abnormal_kept),
+            identityFields=['st_dev', 'st_ino', 'st_mode', 'st_size', 'st_mtime_ns', 'st_ctime_ns'],
             allHeldStillReadable=(scanned_complete and abnormal == 0 and total > 0),
             leases=kept)
+        # DECISIVE fatality context rides the SAME payload, so the existing
+        # shrink loop below budgets it together with the rows and can never
+        # silently drop it: it is not a lease row and is never popped.
+        if fatal_stop is not None:
+            payload['failedKernelStop']=fatal_stop
         # Byte bound: shrink the RETAINED rows (abnormal-first order preserved)
         # until the frame fits, then report the omission explicitly. Only if even
         # the empty base payload cannot fit do we return None.
@@ -281,6 +328,8 @@ class LeaseSet:
                 dropped = payload['leases'].pop()
                 payload['omittedRowCount'] += 1
                 payload['truncated'] = True
+                if dropped['mismatch']:
+                    payload['abnormalOmitted'] += 1
                 encoded = _json.dumps(payload, sort_keys=True, separators=(',', ':'))
         except BaseException:
             return None
@@ -441,6 +490,89 @@ class LeaseSet:
                         fcntl.fcntl(owned, fcntl.F_SETLEASE, fcntl.F_UNLCK)
                 finally:
                     os.close(owned)
+
+    def advance(self, token, before, after, operation):
+        """Admit ONE witnessed owned generation transition; never a waiver.
+
+        A held read lease freezes the six-field identity recorded at `acquire`.
+        A genuinely owned namespace transition (rename over a destination, or an
+        owned temp unlink) legitimately moves `st_ctime_ns` on the SAME inode, so
+        the frozen token would reject a change that a reviewed owned operation
+        already admitted. This method advances the frozen identity to the
+        transition's verified postimage.
+
+        It grants no authority by itself and cannot invent a transition. The
+        caller must have already validated the owned operation and its endpoints
+        (the existing `retained_metadata_chain` / rename-window / producer
+        discipline), and must pass those exact endpoints here:
+
+        * `before` must equal the token's CURRENT expected identity exactly
+          (six fields) — so a stale, foreign or already-moved baseline refuses;
+        * `after` must be the transition's verified postimage, six exact ints,
+          with the same `(st_dev, st_ino)` and the same file type — an inode
+          replacement or a foreign path can never be absorbed;
+        * `operation` must name a known owned transition kind, and the ctime-only
+          shape is enforced for the metadata-only kinds.
+
+        Nothing else relaxes: the six-field sweep still compares every held row
+        against its (now advanced) token, the sticky first failure is untouched,
+        and the native capsule plus both Python plans are invalidated exactly as
+        `acquire` does so the next sweep re-decodes the advanced expected tuple.
+        """
+        # NOTE: deliberately NOT self.check(). At this point the owned operation
+        # has ALREADY happened, so the live inode is the POST image while the
+        # token still holds PRE; an unfiltered sweep would reject the very row we
+        # are about to advance and latch a sticky failure. `_ready` performs the
+        # meta-checks this method needs (closed, latched failure, SIGIO owner)
+        # WITHOUT sweeping held tokens. The live state is still proven below by
+        # the still-held F_GETLEASE check and the exact postimage comparison.
+        self._ready()
+        if not isinstance(operation, str) or operation not in ADVANCE_OPERATIONS:
+            self._reject('unknown owned transition operation')
+        if not (isinstance(before, list) and isinstance(after, list)
+                and len(before) == 6 and len(after) == 6):
+            self._reject('owned transition requires six-field endpoints')
+        if not all(type(v) is int for v in before) or not all(type(v) is int for v in after):
+            self._reject('owned transition endpoints require exact integers')
+        token_identity = token.get('identity') if isinstance(token, dict) else None
+        # A real token carries SIX fields (acquire() stores `identity(fd)`), while
+        # `_held` is keyed by the first two. Conflating them rejects every genuine
+        # token, so the length check and the key derivation must agree with
+        # acquire(): six fields in the token, `[:2]` for the lookup.
+        if not isinstance(token_identity, list) or len(token_identity) != 6:
+            self._reject('owned transition requires a held token')
+        if not all(type(value) is int for value in token_identity):
+            self._reject('owned transition requires a held token')
+        row = self._held.get(tuple(token_identity[:2]))
+        if row is None or row['token'] != token:
+            self._reject('owned transition token is not a live held lease')
+        expected = row['token']['identity']
+        if list(before) != list(expected):
+            # The transition's BEFORE must BE our frozen expectation; a gap means
+            # an unwitnessed change already happened and stays fatal.
+            self._reject('owned transition before-state differs from held identity')
+        if after[:2] != before[:2] or stat.S_IFMT(after[2]) != stat.S_IFMT(before[2]):
+            self._reject('owned transition must preserve inode and file type')
+        if operation in ADVANCE_METADATA_ONLY:
+            if after[:4] != before[:4] or after[4] != before[4]:
+                self._reject('owned metadata transition may only move ctime')
+            if after[5] == before[5]:
+                self._reject('owned metadata transition requires an actual ctime move')
+        # The lease must still be really held on this exact FD at admission time.
+        fd = row['fd']
+        if fcntl.fcntl(fd, fcntl.F_GETLEASE) != fcntl.F_RDLCK:
+            self._reject('owned transition requires a still-held read lease')
+        if identity(fd) != list(after):
+            self._reject('owned transition postimage differs from live identity')
+        row['token'] = {'leaseId': row['token']['leaseId'], 'identity': list(after)}
+        self._plan = None            # expected tuple advanced: plan is stale
+        self._native_plan = None     # native decode no longer covers the set
+        self._native_plan_source = None
+        # Return the SAME token shape `acquire()` returns (leaseId + identity
+        # only). A filtered `check()` compares a supplied token EXACTLY, so
+        # decorating it with extra keys would make the advanced token unusable
+        # there. Transition bookkeeping lives in the emitted raw rows, not here.
+        return {'leaseId': row['token']['leaseId'], 'identity': list(after)}
 
     def complete(self):
         self.check()

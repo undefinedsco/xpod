@@ -1507,6 +1507,48 @@ export async function observeProductConsumerGitHubOrigin(input:ArtifactAcquisiti
       // Preserve every earlier reviewed caller version above.
       {workflowSha256:'5a6d6a0c3b693db00faf3c30d52c3af59e90674d6db14a70574311f7203d106d',
       jobName:()=>callerNames[0]!,
+      sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS},
+      // APPEND-ONLY: the `test` job gained the REQUIRED privileged owned-metadata
+      // observer gate (explicit runner: exact case set/count, zero skips). Same
+      // jobs, same required step name, unchanged source groups. Every earlier
+      // reviewed caller version above stays byte-identical and selectable.
+      {workflowSha256:'2d3c9e6b32ba47bfef47be1c79e5c16f3c1fdf4e1233b86c7e2f611b245635a4',
+      jobName:()=>callerNames[0]!,
+      sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS},
+      // The same required native gate now builds its canonical C backend and
+      // requires all 66 reviewed cases (external held operands and read bodies).
+      // Earlier reviewed workflows and their source groups stay selectable.
+      {workflowSha256:'4076f89cd1c853e6ff6035d984024eff024c4b35b102d5c5856e03f01bb76686',
+      jobName:()=>callerNames[0]!,
+      sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS},
+      // The same required native gate preserves the runner group before exec and
+      // requires all 76 reviewed cases, including the whole alias read body.
+      // Earlier reviewed workflows and their source groups stay selectable.
+      {workflowSha256:'7d66965df7c26e254841a667bdf98ddcdfc7c388a6f15e2c7ed29b3045d11efa',
+      jobName:()=>callerNames[0]!,
+      sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS},
+      // Explicit root identity retains CAP_SETPCAP while the runner primary
+      // group permits capability-stripped children to traverse private paths.
+      // All seven earlier reviewed workflows remain byte-identical. The gate
+      // requires all 88 cases, including exact record-callback closing audits.
+      {workflowSha256:'69ffa4551353b1f519c879f6187923ccfe01f7b496b759e8b31f0e9c3f660b87',
+      jobName:()=>callerNames[0]!,
+      sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS},
+      // Request the default root group allowed by sudo, then restore the runner
+      // primary group before Python exec. All eight earlier versions remain
+      // selectable; the exact 103-case gate still requires zero skips.
+      {workflowSha256:'f15c65e59d6cbbf5e4b5c529a09f1d1bf30e9d094a6f3c1fbf36df43e12c9c86',
+      jobName:()=>callerNames[0]!,
+      sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS},
+      // Retain every earlier workflow; require all 114 cases, including the
+      // real lease-loss and closing guards for pure owned entry coalescing.
+      {workflowSha256:'1b3574ad2878251c7e5d6cb228739ed8d4ffeb4fb06e46ab7bc55bc1d31c5d9b',
+      jobName:()=>callerNames[0]!,
+      sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS},
+      // Preserve all ten actual prior caller versions. The same mandatory gate
+      // now includes bounded attribution, real lease/timer and transport checks.
+      {workflowSha256:'88166f392dc915810b03c594f6044b2978308ac77f33b94b9a35eae316d49f4e',
+      jobName:()=>callerNames[0]!,
       sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS}],requiredBranch:'staging',
     jobName:()=>callerNames[0]!,jobNames:()=>callerNames,
     sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS,

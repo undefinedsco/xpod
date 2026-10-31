@@ -259,18 +259,106 @@ def metadata_chain_diagnostic(producer, consumer, current, path, references):
     except BaseException:
         return _METADATA_CHAIN_DIAGNOSTIC_FALLBACK
 
-def retained_metadata_chain(producer,consumer,states):
+def retained_metadata_chain(producer,consumer,states,identity_only=False):
     """Join only independently verified operation endpoints; never infer a gap.
 
     Callers must validate each window/exit/lease/original first. This helper
     only composes their exact endpoints and grants no authority by itself.
     """
-    current=producer['identity'];path=producer['path'];references=[];previous=producer['sequence']
+    current=producer['identity'];references=[];previous=producer['sequence']
     need(len(current)==6 and producer['sequence']<consumer['sequence'],'retained metadata chain endpoints/order')
+    if not identity_only:
+        # LEGACY DEFAULT PATH IS MANDATORY. `identity_only=False` composes an owned
+        # NAMESPACE chain, so a missing endpoint path is a malformed stream and must
+        # be refused explicitly -- not merely caught later by a branch that happens
+        # to use it. This keeps the legacy contract exactly as strict as before.
+        need('path' in producer and 'path' in consumer,
+             'retained metadata chain requires endpoint paths')
+    path=producer['path'] if not identity_only else None
+    if identity_only:
+        # A held LEASE token is identified by its inode tuple alone; the acquisition
+        # records a /proc pseudo path that is never path authority. Compose the same
+        # verified endpoints with the identical before-continuity and per-kind effect
+        # rules, and prove the final identity only.
+        need('path' not in producer and 'path' not in consumer,
+             'identity-only chain must not carry a path')
+        for window,change in states:
+            sequence=change['sequence']
+            if not (producer['sequence']<sequence<consumer['sequence']):continue
+            before=window['beforeIdentity'];after=change['afterIdentity']
+            # UNIQUENESS, checked before dispatch: source-before and replacementBefore
+            # are the two independently verified inodes of ONE real rename. If they
+            # name the SAME inode the row is ambiguous -- neither a distinct displaced
+            # inode nor a trustworthy source claim -- so the chain refuses outright
+            # instead of silently composing one side.
+            replacement=window.get('replacementBefore')
+            if isinstance(replacement,dict) and isinstance(replacement.get('identity'),list):
+                displaced_identity=replacement['identity']
+                if (len(displaced_identity)==6
+                        and displaced_identity[:2]==window['beforeIdentity'][:2]):
+                    need(False,'retained displaced rename inode is not distinct from the source')
+            if before[:2]!=producer['identity'][:2]:
+                # A rename ALSO overwrites a DESTINATION inode, which the observer
+                # advances in the same transaction. Its endpoints are the SAME real
+                # rename row's already-validated `replacementBefore` ->
+                # `replacementAfter` (shape, distinct single-link inode, sealed
+                # bytes and nlink==0 are all verified by the replay rename branch).
+                # This selects the displaced endpoint ONLY for that distinct inode;
+                # it invents no link state, grants no path authority, and never
+                # matches a source endpoint.
+                if window.get('kind')!='actual-rename-window':
+                    continue
+                replacement=window.get('replacementBefore')
+                displaced=change.get('replacementAfter')
+                if not (isinstance(replacement,dict) and isinstance(displaced,dict)):
+                    continue
+                target_before=replacement.get('identity');target_after=displaced.get('identity')
+                if not (isinstance(target_before,list) and isinstance(target_after,list)
+                        and len(target_before)==len(target_after)==6):
+                    continue
+                # (uniqueness is enforced for every window at the top of this loop)
+                if target_before[:2]!=producer['identity'][:2]:
+                    continue
+                if displaced.get('links')!=0:
+                    continue
+                before=target_before;after=target_after
+                need(previous<sequence and before==current,
+                     'retained metadata chain gap/order')
+                need(after[:5]==before[:5] and after!=before,
+                     'retained displaced rename changed more than ctime')
+                current=after;previous=sequence;references.append(sequence)
+                continue
+            need(previous<sequence and len(before)==len(after)==6 and before==current,
+                 'retained metadata chain gap/order')
+            if window['kind']=='actual-link-window':
+                need(after[:5]==before[:5],'retained link changed inode/mode/size/mtime')
+            elif window['kind']=='actual-timestamp-window':
+                need(after[:4]==before[:4] and stat.S_IMODE(after[2])==stat.S_IMODE(before[2]),
+                     'retained timestamp changed inode/mode/size')
+            elif window['kind']=='actual-rename-window':
+                need(after[:5]==before[:5],'retained rename changed inode/mode/size/mtime')
+            else:
+                need(window['kind']=='actual-mode-window' and after[:2]==before[:2]
+                     and after[3:5]==before[3:5],'retained metadata chain unknown operation/changed bytes')
+            current=after;previous=sequence;references.append(sequence)
+        if current!=consumer['identity']:
+            raise ValueError('multi-process generation originals: retained metadata chain final full identity differs; '+
+                metadata_chain_diagnostic(producer,consumer,current,None,references))
+        return references
     for window,change in states:
         sequence=change['sequence']
         if not (producer['sequence']<sequence<consumer['sequence']):continue
         before=window['beforeIdentity'];after=change['afterIdentity']
+        # A replacement that names the SOURCE inode is ambiguous regardless of which
+        # side we are composing, so check it before dispatching on the source match.
+        replacement=window.get('replacementBefore')
+        if isinstance(replacement,dict) and isinstance(replacement.get('identity'),list):
+            displaced_identity=replacement['identity']
+            if len(displaced_identity)==6 and displaced_identity[:2]==window['beforeIdentity'][:2]:
+                # The rename names the SAME inode as both source and displaced target.
+                # That is ambiguous: it can be neither a distinct displaced inode nor
+                # a trustworthy source claim, so the chain refuses outright.
+                need(False,'retained displaced rename inode is not distinct from the source')
         if before[:2]!=producer['identity'][:2]:continue
         # FULL six-field BEFORE continuity for EVERY admitted operation. A timestamp
         # writes afterIdentity (mtime/ctime); it never justifies a mismatched BEFORE.
@@ -2217,7 +2305,26 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                 need(lease_model==row.get('model')=='kernel-held-read-lease-v1' and not live and not lease_terminal and not lease_pids,'lease token close before actual waits/after closure')
                 value={key:row.get(key) for key in ['leaseId','identity','acquisitionSequence']}
                 current=lease_tokens.get(len(lease_closed)+1)
-                need(current is not None and value=={key:current[key] for key in ['leaseId','identity','acquisitionSequence']},'lease closed token sequence/identity differs');lease_closed.append(value)
+                need(current is not None and value['leaseId']==current['leaseId'] and value['acquisitionSequence']==current['acquisitionSequence'],'lease closed token sequence/identity differs')
+                # ACQUISITION IDENTITY IS IMMUTABLE. The closing token may carry a
+                # DIFFERENT identity ONLY where an already-witnessed owned metadata
+                # transition bridges acquisition -> current, using the SAME
+                # `retained_metadata_chain` authorizer the rename/link/mode paths
+                # already use (six-field BEFORE == composed current, exact AFTER,
+                # per-kind effect rules, final full-identity match). No ctime ignore,
+                # no dropped field, no loose equality, and the operation string is
+                # never authority by itself: the chain composes only independently
+                # verified endpoints and refuses any gap.
+                closing=list(value['identity'])
+                if closing!=list(current['identity']):
+                    producer=dict(sequence=current['acquisitionSequence'],
+                                  identity=list(current['identity']))
+                    consumer=dict(sequence=row['sequence'],identity=closing)
+                    states=sorted([*rename_transitions.values(),*link_transitions.values(),
+                                   *mode_transitions.values(),*timestamp_transitions.values()],
+                                  key=lambda item:item[1]['sequence'])
+                    retained_metadata_chain(producer,consumer,states,identity_only=True)
+                lease_closed.append(value)
             elif kind=='toolchain-lease-closed-pids':
                 need(lease_model==row.get('model')=='kernel-held-read-lease-v1' and not live and not lease_terminal and len(lease_closed)==len(lease_tokens),'lease PID close before token/wait closure')
                 values=row.get('actualClosedPids');need(isinstance(values,list) and 0<len(values)<=256 and row.get('offset')==len(lease_pids),'bounded sequential closed PID chunk required');lease_pids.extend(values)
