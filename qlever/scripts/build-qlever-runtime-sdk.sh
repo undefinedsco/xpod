@@ -8,8 +8,29 @@ qlever_root="$component_root/qlever"
 source_dir=${XPOD_QLEVER_SOURCE_DIR:-/opt/qlever-sdk/source}
 build_dir=${XPOD_QLEVER_BUILD_DIR:-/opt/qlever-sdk/build}
 jobs=${XPOD_QLEVER_BUILD_JOBS:-4}
+initialize_metadata() {
+  metadata=$(python3 "$qlever_root/scripts/qlever_compiler_profile.py" metadata)
+  metadata_status=$?
+  if [[ "$metadata_status" -ne 0 ]]; then
+    echo 'compiler/profile metadata failed' >&2
+    return 1
+  fi
+  case $metadata in
+    *$'\n'*|*$'\r'*)
+      echo 'compiler/profile metadata framing refused' >&2
+      return 1
+      ;;
+  esac
+  IFS=$'\x1f' read -r prepared_profile c_compiler cxx_compiler declared_linker archive_create archive_append archive_finish metadata_end <<<"$metadata"
+  if [[ "$metadata_end" != '__END__' ||
+        -z "$prepared_profile" || -z "$c_compiler" || -z "$cxx_compiler" ||
+        -z "$declared_linker" || -z "$archive_create" || -z "$archive_append" ]]; then
+    echo 'compiler/profile metadata framing refused' >&2
+    return 1
+  fi
+}
 if [[ "$mode" != all ]]; then
-  prepared_profile=$(python3 "$qlever_root/scripts/qlever_compiler_profile.py" profile)
+  initialize_metadata
   python3 - "$prepared_profile" <<'PROFILE'
 import json,os,sys
 identity=json.loads(os.environ['XPOD_QLEVER_SDK_IDENTITY'])
@@ -33,15 +54,9 @@ toolchain_identity_file="$build_dir/.xpod-toolchain-identity"
 build_contract_file="$build_dir/.xpod-build-contract.json"
 build_contract_pending="$build_dir/.xpod-build-contract.json.pending"
 
-c_compiler=$(python3 "$qlever_root/scripts/qlever_compiler_profile.py" c)
-cxx_compiler=$(python3 "$qlever_root/scripts/qlever_compiler_profile.py" cxx)
-# Full canonical archive lifecycle: CREATE/APPEND are indexed single-pass, FINISH
-# is explicitly EMPTY so CMake does not append its default `ranlib <TARGET>`
-# step (CMake only applies defaults for undefined variables).
-archive_lifecycle=$(python3 "$qlever_root/scripts/qlever_compiler_profile.py" archive)
-archive_create=$(printf '%s' "$archive_lifecycle" | python3 -c 'import json,sys; print(json.load(sys.stdin)["create"])')
-archive_append=$(printf '%s' "$archive_lifecycle" | python3 -c 'import json,sys; print(json.load(sys.stdin)["append"])')
-archive_finish=$(printf '%s' "$archive_lifecycle" | python3 -c 'import json,sys; print(json.load(sys.stdin)["finish"])')
+if [[ "$mode" == all ]]; then
+  initialize_metadata
+fi
 
 build_contract=$(python3 - "$source_dir" "$build_dir" "$qlever_root/scripts" <<'PY'
 import json
@@ -281,7 +296,6 @@ QUERY
     -DCMAKE_CXX_ARCHIVE_APPEND="$archive_append" \
     -DCMAKE_CXX_ARCHIVE_FINISH="$archive_finish")
   if [[ "$mode" == configure-prepared && "$prepared_profile" == service-trixie ]]; then
-    declared_linker=$(python3 "$qlever_root/scripts/qlever_compiler_profile.py" linker_program)
     linker_path=$(command -v "$declared_linker")
     [[ "$linker_path" == /* && -x "$linker_path" ]] || { echo 'actual declared service linker absent' >&2; exit 64; }
     cmake_command+=(-DCMAKE_EXE_LINKER_FLAGS="-fuse-ld=$linker_path" -DCMAKE_SHARED_LINKER_FLAGS="-fuse-ld=$linker_path")

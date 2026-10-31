@@ -79,6 +79,18 @@ def archive_command():
     return dict(ARCHIVE_COMMAND)
 
 
+def metadata():
+    """Fixed compiler/archive fields for the Bash framing, no version probes."""
+    spec = compiler_spec()
+    archive = archive_command()
+    fields = [spec['profile'], spec['c'], spec['cxx'], spec['linker_program'],
+              archive['create'], archive['append'], archive['finish']]
+    for field in fields:
+        if '\x1f' in field or '\n' in field or '\r' in field:
+            raise RuntimeError('metadata field framing refused')
+    return '\x1f'.join(fields) + '\x1f__END__'
+
+
 def compiler_versions():
     spec = compiler_spec()
     def version(command):
@@ -99,6 +111,8 @@ if __name__ == '__main__':
     import sys
     if len(sys.argv) == 3 and sys.argv[1] == 'sdk-profile':
         print(json.dumps(sdk_profile(sys.argv[2]), sort_keys=True))
+    elif sys.argv[1:] == ['metadata']:
+        print(metadata())
     elif sys.argv[1:] == ['archive']:
         print(json.dumps(archive_command(), sort_keys=True))
     elif sys.argv[1:] in [['c'], ['cxx'], ['linker'], ['profile'], ['linker_program']]:
