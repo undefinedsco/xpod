@@ -1514,6 +1514,12 @@ export async function observeProductConsumerGitHubOrigin(input:ArtifactAcquisiti
       // reviewed caller version above stays byte-identical and selectable.
       {workflowSha256:'2d3c9e6b32ba47bfef47be1c79e5c16f3c1fdf4e1233b86c7e2f611b245635a4',
       jobName:()=>callerNames[0]!,
+      sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS},
+      // The same required native gate now builds its canonical C backend and
+      // requires all 66 reviewed cases (external held operands and read bodies).
+      // Earlier reviewed workflows and their source groups stay selectable.
+      {workflowSha256:'4076f89cd1c853e6ff6035d984024eff024c4b35b102d5c5856e03f01bb76686',
+      jobName:()=>callerNames[0]!,
       sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS}],requiredBranch:'staging',
     jobName:()=>callerNames[0]!,jobNames:()=>callerNames,
     sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS,

@@ -79,6 +79,7 @@ class Observer:
     settle_absent_link_operand = backend.Observer.settle_absent_link_operand
     pending_captures_original = backend.Observer.pending_captures_original
     resume_original = backend.Observer.resume_original
+    read_frame_any = backend.Observer.read_frame_any
     close_terminal_authorities = backend.Observer.close_terminal_authorities
     args_original = backend.Observer.args_original
 

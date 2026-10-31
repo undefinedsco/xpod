@@ -169,6 +169,11 @@ jobs:
       # Importing the module already runs its ONE real capability probe, so there
       # is no duplicated preflight here; an incapable host skips and the zero-skip
       # rule below turns that into a failure.
+      - name: Build canonical SDK native lease helper for the required gate
+        run: |
+          sudo -E env PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 -B qlever/scripts/native/build_native_helper.py \
+            qlever/scripts/native/lease_sweep_ext.c qlever/scripts/native --cc gcc-12
+
       - name: Owned observer native regressions (required, no skip)
         run: |
           sudo -E env PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 -B - <<'PYGATE'
@@ -191,6 +196,9 @@ jobs:
               'qlever.tests.test_qlever_owned_metadata_observer',
               'qlever.tests.test_qlever_owned_window_emission',
               'qlever.tests.test_qlever_owned_fatal_stop_frame',
+              'qlever.tests.test_qlever_external_scope_errors',
+              'qlever.tests.test_qlever_leased_external_scope',
+              'qlever.tests.test_qlever_read_body_closing_contract',
           )
           CLASS = MODULES[0] + '.OwnedMetadataObserverRunloop'
           WINDOW = MODULES[1] + '.OwnedWindowEmission'
@@ -222,6 +230,46 @@ jobs:
               FATAL + '.test_no_frame_on_a_passing_event',
               FATAL + '.test_no_frame_on_a_non_kernel_error',
               FATAL + '.test_exclusive_needs_pid_and_entry_sequence',
+              'qlever.tests.test_qlever_external_scope_errors.ExternalScopeErrorContract.test_caller_timeout_propagates_unchanged_before_any_emit',
+              'qlever.tests.test_qlever_external_scope_errors.ExternalScopeErrorContract.test_eio_propagates_unchanged_before_any_emit',
+              'qlever.tests.test_qlever_external_scope_errors.ExternalScopeErrorContract.test_enoent_yields_the_unobserved_row',
+              'qlever.tests.test_qlever_external_scope_errors.ExternalScopeErrorContract.test_parent_symlink_swap_cannot_admit_an_unleased_inode',
+              'qlever.tests.test_qlever_leased_external_scope.LeasedExternalScope.test_already_held_external_unlink_is_witnessed_advanced_and_replayed',
+              'qlever.tests.test_qlever_leased_external_scope.LeasedExternalScope.test_linkat_symlink_follow_witnesses_followed_target',
+              'qlever.tests.test_qlever_leased_external_scope.LeasedExternalScope.test_unleased_external_operand_has_no_witness',
+              'qlever.tests.test_qlever_leased_external_scope.LeasedExternalScope.test_unlink_symlink_does_not_advance_followed_target',
+              'qlever.tests.test_qlever_leased_external_scope.LeasedExternalScope.test_semantic_replay_refuses_forged_external_closing_identity',
+              'qlever.tests.test_qlever_read_body_closing_contract.P11NonLeaseChecks.test_budget_and_waiter_run_every_iteration_in_original_order',
+              'qlever.tests.test_qlever_read_body_closing_contract.P11NonLeaseChecks.test_second_iteration_failure_propagates_object_before_more_io',
+              'qlever.tests.test_qlever_read_body_closing_contract.P12WaiterIdentity.test_distinct_waiters_with_same_deadline_do_not_inherit',
+              'qlever.tests.test_qlever_read_body_closing_contract.P12WaiterIdentity.test_none_waiter_during_bootstrap_still_works_and_fails_closed_on_swap',
+              'qlever.tests.test_qlever_read_body_closing_contract.P12WaiterIdentity.test_observer_deadline_change_invalidates_the_frame',
+              'qlever.tests.test_qlever_read_body_closing_contract.P13PrimaryAndNesting.test_nested_attempt_does_not_steal_outer_claim',
+              'qlever.tests.test_qlever_read_body_closing_contract.P13PrimaryAndNesting.test_entry_failure_preserves_object_and_opens_no_frame',
+              'qlever.tests.test_qlever_read_body_closing_contract.P13PrimaryAndNesting.test_pre_existing_maps_frame_is_refused_before_entry',
+              'qlever.tests.test_qlever_read_body_closing_contract.P13PrimaryAndNesting.test_closing_failure_never_replaces_body_primary',
+              'qlever.tests.test_qlever_read_body_closing_contract.P13PrimaryAndNesting.test_phase_change_path_resets_the_frame',
+              'qlever.tests.test_qlever_read_body_closing_contract.P14RealConvertedMethods.test_real_tool_original_no_NameError_and_bytes_accounted',
+              'qlever.tests.test_qlever_read_body_closing_contract.P14RealConvertedMethods.test_real_tool_original_cache_hit_returns_same_row',
+              'qlever.tests.test_qlever_read_body_closing_contract.P14RealConvertedMethods.test_real_read_capture_fd_full_read',
+              'qlever.tests.test_qlever_read_body_closing_contract.P14RealConvertedMethods.test_real_snapshot_write_original_fallback',
+              'qlever.tests.test_qlever_read_body_closing_contract.P14RealConvertedMethods.test_real_snapshot_short_read_still_hard_fails',
+              'qlever.tests.test_qlever_read_body_closing_contract.P15CoreGuards.test_core_emit_original_blocked_whenever_any_read_frame_exists',
+              'qlever.tests.test_qlever_read_body_closing_contract.P15CoreGuards.test_core_resume_original_blocked_whenever_any_read_frame_exists',
+              'qlever.tests.test_qlever_read_body_closing_contract.P15CoreGuards.test_no_raw_row_written_when_core_emit_refuses',
+              'qlever.tests.test_qlever_read_body_closing_contract.P16BidirectionalExclusion.test_maps_frame_cannot_open_inside_a_read_body',
+              'qlever.tests.test_qlever_read_body_closing_contract.P16BidirectionalExclusion.test_read_body_cannot_open_inside_a_maps_frame',
+              'qlever.tests.test_qlever_read_body_closing_contract.P16BidirectionalExclusion.test_closing_is_a_real_full_audit_not_a_cheap_skip',
+              'qlever.tests.test_qlever_read_body_closing_contract.P1OpenArmRaceFinalisation.test_real_install_then_raise_sentinel_clears_own_claim_and_preserves_object',
+              'qlever.tests.test_qlever_read_body_closing_contract.P1OpenArmRaceFinalisation.test_entry_failure_installs_no_frame',
+              'qlever.tests.test_qlever_read_body_closing_contract.P1OpenArmRaceFinalisation.test_nested_failure_leaves_outer_claim_untouched',
+              'qlever.tests.test_qlever_read_body_closing_contract.P1OpenArmRaceFinalisation.test_foreign_open_claim_is_never_cleared_by_our_finaliser',
+              'qlever.tests.test_qlever_read_body_closing_contract.P1OpenArmRaceFinalisation.test_clear_own_claim_ignores_a_replacement',
+              'qlever.tests.test_qlever_read_body_closing_contract.P2ResetIntegration.test_close_resets_owned_frames',
+              'qlever.tests.test_qlever_read_body_closing_contract.P2ResetIntegration.test_reset_owned_frames_is_idempotent',
+              'qlever.tests.test_qlever_read_body_closing_contract.P2ResetIntegration.test_phase_entry_resets_so_a_stale_claim_cannot_carry_over',
+              'qlever.tests.test_qlever_read_body_closing_contract.P2ResetIntegration.test_abort_resets_before_any_cleanup_can_fail',
+              'qlever.tests.test_qlever_read_body_closing_contract.P2CommentContractAccuracy.test_body_may_write_private_originals_but_not_publish',
           })
 
 
