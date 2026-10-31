@@ -1536,8 +1536,8 @@ export async function observeProductConsumerGitHubOrigin(input:ArtifactAcquisiti
       sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS},
       // Request the default root group allowed by sudo, then restore the runner
       // primary group before Python exec. All eight earlier versions remain
-      // selectable; the exact 88-case gate still requires zero skips.
-      {workflowSha256:'4137533d5bffcae6842c741570b486d181ee9148d57336d9d93835bfd9644380',
+      // selectable; the exact 103-case gate still requires zero skips.
+      {workflowSha256:'f15c65e59d6cbbf5e4b5c529a09f1d1bf30e9d094a6f3c1fbf36df43e12c9c86',
       jobName:()=>callerNames[0]!,
       sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS}],requiredBranch:'staging',
     jobName:()=>callerNames[0]!,jobNames:()=>callerNames,

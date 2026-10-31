@@ -991,10 +991,17 @@ class Observer(CapturesMixin):
         return result
     def wait_one_original(self):
         return self.waiter.wait_one()
+    def check_lifetime_leases(self):
+        if self.lifetime_leases is not None:
+            self.instrument('lifetime_lease_check',self.lifetime_leases.check)
+    def check_full(self):
+        """A complete closing audit that no diagnostic frame can suppress."""
+        self.check_nonlease()
+        self.check_lifetime_leases()
     def check(self):
         self.check_nonlease()
         if self.lifetime_leases is not None and not (self.owned_maps_frame_active() or self.read_body_frame_active()):
-            self.instrument('lifetime_lease_check',self.lifetime_leases.check)
+            self.check_lifetime_leases()
     def emit_record_frame_active(self,owner,row):
         """Only the exact synchronous callback of this one owned emitted row."""
         frame=getattr(self,'owned_emit_record_frame',None)
@@ -1093,18 +1100,24 @@ class Observer(CapturesMixin):
     def close_outer_lease_window(self):
         """UNCONDITIONAL reset; safe on any path and idempotent."""
         self._outer_lease_coalesce=None
-    def check_emit(self):
-        """`check()` for one emitted record, coalescing only inside one owned window.
+    def check_owned_entry(self):
+        """Leading check of one body with an unconditional full closing audit.
 
-        Requirement: a full identity validation must still happen at EVERY
-        explicit closing boundary (notably `content_tool_maps`' close-then-check)
-        and before any tracee resumes or any result is accepted. Those boundaries
-        call `check()`, never this method, so they are untouched.
+        Only the exact existing outer window may omit this leading native sweep.
+        Every budget/waiter/stdio/deadline refusal still runs. Callers must arm
+        their own complete closing check before any result can escape; generic
+        check() and all closing checks remain unchanged.
         """
+        assert not self.read_frame_any(),'owned entry cannot inherit a read body'
+        assert getattr(self,'owned_maps_frame',None) is None,'owned entry cannot inherit a maps body'
+        assert getattr(self,'owned_emit_record_frame',None) is None,'owned entry cannot inherit a record callback'
         if self.outer_lease_window_owned():
             self.check_nonlease()
             return
         self.check()
+    def check_emit(self):
+        """The emitted record retains its complete per-record closing audit."""
+        self.check_owned_entry()
     def owned_maps_frame_active(self):
         """True only on the exact thread/phase that opened the private maps frame.
 
@@ -1114,12 +1127,18 @@ class Observer(CapturesMixin):
         """
         frame=getattr(self,'owned_maps_frame',None)
         return frame is not None and frame[0]==threading.get_ident() and frame[1]==self.current_phase
-    def open_owned_maps_frame(self):
-        """Open the single private maps frame; refuse if ANY frame already exists."""
+    def install_owned_maps_frame(self,frame):
+        """Install one preallocated maps claim; refuse every nested frame."""
         assert getattr(self,'owned_maps_frame',None) is None,'owned maps frame is not re-entrant'
         assert getattr(self,'owned_read_body_frame',None) is None,'maps frame cannot open inside a read body'
         assert getattr(self,'owned_emit_record_frame',None) is None,'maps frame cannot open inside a record callback'
-        self.owned_maps_frame=(threading.get_ident(),self.current_phase)
+        self.owned_maps_frame=frame
+    def open_owned_maps_frame(self):
+        """Open the single private maps frame; refuse if ANY frame already exists."""
+        self.install_owned_maps_frame((threading.get_ident(),self.current_phase))
+    def clear_own_maps_frame(self,frame):
+        """Drop only this invocation's claim, including an interrupted install."""
+        if getattr(self,'owned_maps_frame',None) is frame:self.owned_maps_frame=None
     def close_owned_maps_frame(self):
         """Unconditionally drop the frame, whatever the caller observed."""
         self.owned_maps_frame=None
@@ -3153,15 +3172,19 @@ class Observer(CapturesMixin):
         emission happens after the frame is gone so it pays its own full sweeps.
         Every fresh read, digest and identity assertion is unchanged.
         """
+        assert getattr(self,'owned_maps_frame',None) is None,'owned maps frame is not re-entrant'
+        assert not self.read_frame_any(),'maps frame cannot open inside a read body'
+        assert getattr(self,'owned_emit_record_frame',None) is None,'maps frame cannot open inside a record callback'
         path='/proc/'+str(pid)+'/maps';name=self.next_capture_name();data=bytearray();digest=hashlib.sha256()
         def identity(value):return [*probe.identity(value),value.st_nlink]
         with open(path,'rb')as source:
             before=identity(os.fstat(source.fileno()));named=identity(os.stat(path,follow_symlinks=False))
             assert stat.S_ISREG(before[2])and before[3]==0 and before[6]==1 and before==named,'actual proc maps descriptor/named identity differs'
-            self.check()
+            self.check_owned_entry()
             pending=None;failure=None
-            self.open_owned_maps_frame()
+            frame=(threading.get_ident(),self.current_phase)
             try:
+                self.install_owned_maps_frame(frame)
                 while True:
                     self.check_deadline();block=source.read(65536)
                     if not block:break
@@ -3182,14 +3205,15 @@ class Observer(CapturesMixin):
                 assert before==identity(os.fstat(source.fileno()))==identity(os.stat(path,follow_symlinks=False)),'maps FD/named identity changed during physical original verification'
                 ref=dict(ref,observationSequence=self.seq+1)
                 pending=dict(kind='toolchain-original',captureKind='maps',observedPid=pid,original=ref,mapsWindowIdentity=before,mapsWindowAfterIdentity=after,mapsNamedWindowIdentity=named,mapsNamedWindowAfterIdentity=identity(os.stat(path,follow_symlinks=False)),**extra)
+                assert getattr(self,'owned_maps_frame',None) is frame,'maps claim ownership changed'
             except BaseException as error:
                 failure=error
             finally:
                 # Unconditional reset, then a COMPLETE validation that cannot be
                 # suppressed by any frame. A broken lease refuses the result even
                 # when the body bytes and digests were complete.
-                self.close_owned_maps_frame()
-                try:self.check()
+                self.clear_own_maps_frame(frame)
+                try:self.check_full()
                 except BaseException as error:
                     failure=error if failure is None else failure
             if failure is not None:raise failure

@@ -139,7 +139,7 @@ def runtime_type(core):
                 raw,parsed=self.maps(pid)
                 if 'initialMappings'not in self.round:self.round['initialMappings']=parsed
                 parsed_members.append(parsed);samples.append(dict(pid=pid,original=raw['original']))
-            geometry=base.cohort_mapping_geometry(parsed_members,self.b.check,self.b.check_deadline)
+            geometry=base.cohort_mapping_geometry(parsed_members,self.b.check_full,self.b.check_deadline,entry=self.b.check_owned_entry)
             self.last_samples=samples;return geometry
         def kernel_state(self):
             current=self.round;lease=current['lease'];pid=current['owner'];entry=current['entry']

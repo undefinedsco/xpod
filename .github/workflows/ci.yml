@@ -201,6 +201,7 @@ jobs:
               'qlever.tests.test_qlever_external_scope_errors',
               'qlever.tests.test_qlever_leased_external_scope',
               'qlever.tests.test_qlever_read_body_closing_contract',
+              'qlever.tests.test_qlever_maps_geometry_entry',
           )
           CLASS = MODULES[0] + '.OwnedMetadataObserverRunloop'
           WINDOW = MODULES[1] + '.OwnedWindowEmission'
@@ -294,6 +295,21 @@ jobs:
               'qlever.tests.test_qlever_read_body_closing_contract.P18ExactRecordCallback.test_every_changed_binding_falls_back_to_full_callback_audit',
               'qlever.tests.test_qlever_read_body_closing_contract.P18ExactRecordCallback.test_actual_context_changes_and_equal_waiter_never_inherit',
               'qlever.tests.test_qlever_read_body_closing_contract.P18ExactRecordCallback.test_parked_profile_round_none_uses_real_cohort_record_validation',
+              'qlever.tests.test_qlever_maps_geometry_entry.MapsGeometryEntry.test_owned_maps_new_write_and_reuse_keep_complete_closing',
+              'qlever.tests.test_qlever_maps_geometry_entry.MapsGeometryEntry.test_owned_maps_full_entry_three_to_two_for_both_storage_paths',
+              'qlever.tests.test_qlever_maps_geometry_entry.MapsGeometryEntry.test_outside_window_maps_keep_five_and_geometry_two_full_audits',
+              'qlever.tests.test_qlever_maps_geometry_entry.MapsGeometryEntry.test_owned_actual_geometry_two_to_one_without_changing_local_checks',
+              'qlever.tests.test_qlever_maps_geometry_entry.MapsGeometryEntry.test_legacy_geometry_call_defaults_to_two_full_audits_inside_window',
+              'qlever.tests.test_qlever_maps_geometry_entry.MapsGeometryEntry.test_maps_real_lease_loss_refused_before_any_record_is_published',
+              'qlever.tests.test_qlever_maps_geometry_entry.MapsGeometryEntry.test_geometry_real_lease_loss_refused_at_complete_closing',
+              'qlever.tests.test_qlever_maps_geometry_entry.MapsGeometryEntry.test_geometry_primary_object_wins_over_failed_native_closing',
+              'qlever.tests.test_qlever_maps_geometry_entry.MapsGeometryEntry.test_maps_primary_object_wins_over_failed_native_closing',
+              'qlever.tests.test_qlever_maps_geometry_entry.MapsGeometryEntry.test_maps_partial_install_clears_own_claim_and_closes_with_full_audit',
+              'qlever.tests.test_qlever_maps_geometry_entry.MapsGeometryEntry.test_foreign_maps_claim_kept_but_cannot_suppress_real_failed_closing',
+              'qlever.tests.test_qlever_maps_geometry_entry.MapsGeometryEntry.test_partial_arm_primary_wins_and_foreign_claim_cannot_hide_lease_loss',
+              'qlever.tests.test_qlever_maps_geometry_entry.MapsGeometryEntry.test_geometry_foreign_frame_cannot_hide_real_failed_full_closing',
+              'qlever.tests.test_qlever_maps_geometry_entry.MapsGeometryEntry.test_entry_refuses_all_existing_frames_before_any_check',
+              'qlever.tests.test_qlever_maps_geometry_entry.MapsGeometryEntry.test_context_mismatch_and_missing_window_use_full_entries',
           })
 
 

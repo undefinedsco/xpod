@@ -26,6 +26,12 @@ class Backend:
  # REAL owned-window lifecycle: bind the production Observer methods instead of
  # re-implementing them here, so the fixture exercises the actual clamp claim,
  # re-entrancy refusal, exact-tuple ownership test and unconditional reset.
+ check_nonlease=lambda self:self.check()
+ read_frame_any=_observer.Observer.read_frame_any
+ check_owned_entry=_observer.Observer.check_owned_entry
+ lifetime_leases=None
+ check_lifetime_leases=_observer.Observer.check_lifetime_leases
+ check_full=_observer.Observer.check_full
  open_outer_lease_window=_observer.Observer.open_outer_lease_window
  close_outer_lease_window=_observer.Observer.close_outer_lease_window
  outer_lease_window_owned=_observer.Observer.outer_lease_window_owned

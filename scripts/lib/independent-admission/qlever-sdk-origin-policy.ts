@@ -2292,7 +2292,7 @@ const SDK87_SOURCE_HASHES:Readonly<Record<string,string>>=Object.freeze({
  // alike — otherwise the current tuple would keep naming the previous 9bc bytes.
  'scripts/css-module-producer.py':"1ba30f5eaba9070f55135936649c43b109bf7a4a83db43b512edaa6d31abc5cc",
  'qlever/scripts/build-qlever-runtime-sdk.sh':"ebe4d4d98e29247f4565f7a7499f1beb48832a5c499833b7bb98ce62bf9467ae",
- 'qlever/scripts/sdk-ptrace-execution.py':"0322453cbd398efcf4b2919cba57de797f77b39be6fc725c779fcd8b97171f08",
+ 'qlever/scripts/sdk-ptrace-execution.py':"7c633b17d9c0957a5becb3e559a2a4d8316e248f28fdd8de53109b1c65f78328",
  // Filtered-lease lookup: the token-filtered check resolves its single row by the
  // (st_dev, st_ino) key instead of scanning every held row. Selection semantics,
  // the live F_GETLEASE+fstat sweep and every rejection string are unchanged, so
@@ -2343,12 +2343,12 @@ const SDK87_SOURCE_HASHES:Readonly<Record<string,string>>=Object.freeze({
  // owned-fix registration for the CURRENT SDK87 slice
  'qlever/scripts/sdk-readonly-normal-route.py':"c620a49809a022126007e6d4bd7470d9d86e88925f39b8a849304832300026d7",
  // owned-fix registration for the CURRENT SDK87 slice
- 'qlever/scripts/sdk-generated-vma-originals.py':"d0ae010089fd7fed8e4e5b5da46e25e174e423845b31fe37ff3b949e31cdc54a",
+ 'qlever/scripts/sdk-generated-vma-originals.py':"602f86ce683409ff83e6c7014c9bed82bb2fe687fdf2d42be36dc1891b4dc5d8",
  // owned-fix registration for the CURRENT SDK87 slice
- 'qlever/tests/test_sdk_generated_vma_files.py':"f230e0f63c0f26a133d5478b38d98a0334a9466f1bc97850746075558be0cf07"
+ 'qlever/tests/test_sdk_generated_vma_files.py':"df07665961e97568ea28aa06310aa3e96f2dbabf54e0feb5fdb8969d6bc68051"
 ,
  // Exact same-emission callback audit, CURRENT SDK87 only.
- "qlever/scripts/sdk-coordinated-wait.py":"8beabf1111e9a6aed318264a6cfcf61b486783e14259f38d2370da0f334226c3"
+ "qlever/scripts/sdk-coordinated-wait.py":"e65d8a60279051459fe39e531b9282a0d472a8239c71f296ab09bf2c3c112db6"
 });
 const rebindSdk87Rows=(rows:readonly GitHubSourceBinding[]|undefined)=>Object.freeze((rows??[]).map(row=>Object.freeze({...row,sha256:SDK87_SOURCE_HASHES[row.path]??row.sha256})));
 const SDK87_GROUP:GitHubSourceBindingGroup=Object.freeze({...SDK86_GROUP,
