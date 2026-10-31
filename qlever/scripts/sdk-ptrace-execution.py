@@ -913,6 +913,8 @@ class Observer(CapturesMixin):
         return self.instrument('emit',self.emit_original,row)
     def emit_original(self,row):
         assert not self.read_frame_any(),'record publication is forbidden inside an owned read-only body'
+        assert getattr(self,'owned_maps_frame',None) is None,'record publication is forbidden inside a maps body'
+        assert getattr(self,'owned_emit_record_frame',None) is None,'record publication is forbidden inside a record callback'
         # One complete live validation brackets this single record publication.
         # Encoding/compression/write of this same already-captured row is pure
         # local work: it pays only the cheap deadline/stdio refusal per
@@ -923,6 +925,7 @@ class Observer(CapturesMixin):
         # sweep is coalesced (every non-lease check still runs per record); the
         # mandatory full sweep at the closing/acceptance boundary is unchanged.
         self.check_emit()
+        primary=None
         try:
             self.seq+=1;row=dict(row,sequence=self.seq,phase=self.current_phase,observedUnixNs=str(time.time_ns()),**(dict(observedMonotonicNs=str(time.monotonic_ns())) if getattr(self,'generated_vma_output',False) else {}));data=None
             if row.get('original',{}).get('storage'):
@@ -949,14 +952,34 @@ class Observer(CapturesMixin):
                 if isinstance(self.raw,EncodedShardedRaw):self.raw.write(data,bracketed=True)
                 else:self.raw.write(data)
             self.raw.flush()
-            if self.generated_vma:self.generated_vma.record(row)
+            if self.generated_vma:
+                owner=self.generated_vma;claim=None
+                # This claim can only be installed INSIDE this already-armed
+                # complete emit finally. No separate callable wrapper can return
+                # a coalesced callback result without the full closing audit.
+                if self.outer_lease_window_owned() and getattr(owner,'active',None) is not None:
+                    claim=self.new_emit_record_claim(owner,row)
+                try:
+                    if claim is not None:self.install_emit_record_claim(claim)
+                    owner.record(row)
+                    if claim is not None:
+                        assert getattr(self,'owned_emit_record_frame',None) is claim,'record callback claim ownership changed'
+                finally:
+                    if claim is not None:self.clear_own_emit_record_claim(claim)
             if getattr(self,'capture_content_entities',False) and row.get('kind') in ['fd-capture','prepared-build-input-original','write-original','toolchain-original'] and 'original' in row and 'originalReuse' not in row and 'storage' not in row['original']:
                 ref=row['original'];scope=('maps',)if getattr(self,'capture_maps_content_entities',False)and row.get('captureKind')=='maps'else ()
                 self.content_capture_pool.setdefault((self.current_phase,*scope,ref['bytes'],ref['sha256']),row)
             progress=self.phase_progress()
             if progress is not None:progress.observe_boundary(row)
+        except BaseException as error:
+            primary=error
+            raise
         finally:
-            self.check()
+            # This COMPLETE per-record trailing audit is never coalesced.
+            # A closing failure must not replace an earlier body/callback error.
+            try:self.check()
+            except BaseException:
+                if primary is None:raise
         return row
     def wait_one(self):
         progress=self.phase_progress()
@@ -972,6 +995,42 @@ class Observer(CapturesMixin):
         self.check_nonlease()
         if self.lifetime_leases is not None and not (self.owned_maps_frame_active() or self.read_body_frame_active()):
             self.instrument('lifetime_lease_check',self.lifetime_leases.check)
+    def emit_record_frame_active(self,owner,row):
+        """Only the exact synchronous callback of this one owned emitted row."""
+        frame=getattr(self,'owned_emit_record_frame',None)
+        if frame is None:return False
+        if frame['owner'] is not owner or frame['row'] is not row:return False
+        if getattr(self,'generated_vma',None) is not owner:return False
+        if frame['sequence']!=self.seq or row.get('sequence')!=frame['sequence']:return False
+        if frame['outer'] is not getattr(self,'_outer_lease_coalesce',None):return False
+        if frame['active'] is not getattr(owner,'active',None):return False
+        if frame['round'] is not getattr(owner,'round',None):return False
+        if not self.outer_lease_window_owned():return False
+        # Use the existing context factory as the sole declaration of axes.
+        # Waiter equality is deliberately NEVER substituted for object identity.
+        before=frame['context'];now=self.new_read_body_claim()
+        return (before.keys()==now.keys() and before['waiter'] is now['waiter']
+                and all(before[key]==now[key] for key in before if key!='waiter'))
+    def check_record(self,owner,row):
+        """Callback entry check; every direct/unmatched invocation stays FULL.
+
+        Coalescing applies only during the core emitter's exact owned call.
+        The mandatory full emit closing check runs after its claim is cleared.
+        Generic check() does not recognize this frame and is never weakened.
+        """
+        if getattr(self,'owned_emit_record_frame',None) is not None and self.emit_record_frame_active(owner,row):self.check_nonlease()
+        else:self.check()
+    def new_emit_record_claim(self,owner,row):
+        return dict(owner=owner,row=row,sequence=self.seq,
+            context=self.new_read_body_claim(),outer=self._outer_lease_coalesce,
+            active=owner.active,round=getattr(owner,'round',None))
+    def install_emit_record_claim(self,claim):
+        assert getattr(self,'owned_emit_record_frame',None) is None,'record callback is not re-entrant'
+        assert not self.read_frame_any(),'record callback cannot open inside a read body'
+        assert getattr(self,'owned_maps_frame',None) is None,'record callback cannot open inside a maps body'
+        self.owned_emit_record_frame=claim
+    def clear_own_emit_record_claim(self,claim):
+        if getattr(self,'owned_emit_record_frame',None) is claim:self.owned_emit_record_frame=None
     def check_nonlease(self):
         """Every non-lease check of `check()`, in the same order.
 
@@ -1059,6 +1118,7 @@ class Observer(CapturesMixin):
         """Open the single private maps frame; refuse if ANY frame already exists."""
         assert getattr(self,'owned_maps_frame',None) is None,'owned maps frame is not re-entrant'
         assert getattr(self,'owned_read_body_frame',None) is None,'maps frame cannot open inside a read body'
+        assert getattr(self,'owned_emit_record_frame',None) is None,'maps frame cannot open inside a record callback'
         self.owned_maps_frame=(threading.get_ident(),self.current_phase)
     def close_owned_maps_frame(self):
         """Unconditionally drop the frame, whatever the caller observed."""
@@ -1068,11 +1128,12 @@ class Observer(CapturesMixin):
 
         Used on explicit destruction (close/abort) and at phase entry, so a
         claim abandoned by an interrupted arm can never coalesce a later phase.
-        Deliberately does NOT touch foreign state: these two attributes are
+        Deliberately does NOT touch foreign state: these private attributes are
         owned by this observer alone.
         """
         self.owned_read_body_frame=None
         self.owned_maps_frame=None
+        self.owned_emit_record_frame=None
     def read_frame_any(self):
         """True if ANY read-body frame exists, regardless of who owns it."""
         return getattr(self,'owned_read_body_frame',None) is not None
@@ -1113,6 +1174,7 @@ class Observer(CapturesMixin):
     def install_read_body_claim(self,claim):
         """Install a preallocated claim; refuse nesting in EITHER direction."""
         assert isinstance(claim,dict),'preallocated read body claim required'
+        assert getattr(self,'owned_emit_record_frame',None) is None,'read body cannot open inside a record callback'
         assert getattr(self,'owned_read_body_frame',None) is None,'owned read body is not re-entrant'
         assert getattr(self,'owned_maps_frame',None) is None,'read body cannot nest inside an owned maps frame'
         self.owned_read_body_frame=claim
@@ -1153,6 +1215,7 @@ class Observer(CapturesMixin):
         until the closing audit succeeds.
         """
         assert not self.read_frame_any(),'owned read body is not re-entrant'
+        assert getattr(self,'owned_emit_record_frame',None) is None,'read body cannot open inside a record callback'
         assert getattr(self,'owned_maps_frame',None) is None,'read body cannot nest inside an owned maps frame'
         claim=None
         primary=None
@@ -3318,6 +3381,7 @@ class Observer(CapturesMixin):
         return self.instrument('resume',self.resume_original)
     def resume_original(self):
         assert not self.read_frame_any(),'tracee resume is forbidden inside an owned read-only body'
+        assert getattr(self,'owned_emit_record_frame',None) is None,'tracee resume is forbidden inside a record callback'
         if self.generated_vma and getattr(self.generated_vma,'round',None) is not None:return self.generated_vma.drive()
         focus=getattr(self,'terminal_focus',None)
         if focus is not None and self.tasks[focus].get('terminalAuthority',{}).get('closed')and state(focus)=='Z':self.terminal_focus=None

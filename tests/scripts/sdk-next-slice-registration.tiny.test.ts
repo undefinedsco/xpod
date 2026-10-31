@@ -221,7 +221,7 @@ test('only the genuinely new immutable-input-plan slice follows published2406', 
 
 test('the appended groups bind the actual frozen body and real module bytes', () => {
   // The current observer includes the verified regular-read source capture.
-  expect(sha(read(BODY))).toBe('27855ad775f6dcdea2945689d7f8408c3d34e9e541368a7a3ad9a2d0bacf8d50');
+  expect(sha(read(BODY))).toBe('0322453cbd398efcf4b2919cba57de797f77b39be6fc725c779fcd8b97171f08');
   for (const [name, groups] of Object.entries(families)) {
     // PUBLISHED f803 history ends at the f803 counts (SDK 74, i.e. indices 0..73).
     // Those tuples — including index 73 — are immutable published history: they are
@@ -358,10 +358,10 @@ test('the live canonical binds every actual row of the final combined tree', () 
     .toBe('474fb14d45835438d222abe89e606fa17e0c68f8fafed7d4e3c869bb7d9d3a7b');
   // The reviewed phase-syscall diagnostic plus its three CI-discovered tests.
   expect(current.find((r) => r.path === 'qlever/scripts/sdk-ptrace-execution.py')!.sha256)
-    .toBe('27855ad775f6dcdea2945689d7f8408c3d34e9e541368a7a3ad9a2d0bacf8d50');
+    .toBe('0322453cbd398efcf4b2919cba57de797f77b39be6fc725c779fcd8b97171f08');
   // The final reviewed VMA diagnostic and its root-corrected behavioural test.
   expect(current.find((r) => r.path === 'qlever/scripts/sdk-generated-vma-originals.py')!.sha256)
-    .toBe('652e20f5217c042fb2aaf6ccec2d388d8cbf1e4483ab843cec5ef1b2e51d3cea');
+    .toBe('d0ae010089fd7fed8e4e5b5da46e25e174e423845b31fe37ff3b949e31cdc54a');
   expect(current.find((r) => r.path === 'qlever/tests/test_qlever_vma_finish_split.py')!.sha256)
     .toBe('b64ce9f4d0370809f54108f2fd417633984dd23b469ab6fc49b75c69c2bdd453');
   for (const [p, h] of [
@@ -371,7 +371,7 @@ test('the live canonical binds every actual row of the final combined tree', () 
   ] as const) expect(current.find((r) => r.path === p)!.sha256).toBe(h);
   for (const row of current) expect(sha(read(row.path))).toBe(row.sha256);
   const body = current.find((r) => r.path === BODY)!;
-  expect(body.sha256).toBe('27855ad775f6dcdea2945689d7f8408c3d34e9e541368a7a3ad9a2d0bacf8d50');
+  expect(body.sha256).toBe('0322453cbd398efcf4b2919cba57de797f77b39be6fc725c779fcd8b97171f08');
   expect(current.find((r) => r.path === 'qlever/scripts/sdk-original-chunk-store.py')!.sha256)
     .toBe('67ea1a610f15f74288d623694b1a4886a82b0f29a186c40e69bdd232b39f96db');
 });

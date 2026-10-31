@@ -390,7 +390,7 @@ class Runtime:
                     if origin.get('checkpointed'):continue
                     os.close(origin['held']);self.b.retained.remove(origin['held']);del self.origins[key]
         if self.active is not None:
-            self.b.check();kind=row['kind']
+            self.b.check_record(self,row);kind=row['kind']
             if self.model in COHORT_MODELS:need(self.mapping_domain(self.owner)==(self.active['memoryDomain'],self.active['memoryDomainMembers']),'dirty mapping cohort changed')
             if kind in ['actual-child-binding','ptrace-event','signal-delivery','actual-wait-exit']:raise ValueError('generated VMA: unsupported event while finite mapping dirty')
             if kind=='kernel-syscall':

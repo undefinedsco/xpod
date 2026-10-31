@@ -178,7 +178,7 @@ jobs:
         run: |
           # Children drop every capability; retain the runner group so they can
           # still traverse its private home and checked-out source directories.
-          sudo -E -g "$(id -gn)" env PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 -B - <<'PYGATE'
+          sudo -u root -E -g "$(id -gn)" env PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 -B - <<'PYGATE'
           """REQUIRED privileged gate: fail unless the WHOLE known suite actually ran.
 
           An ordinary `python3 -m unittest ...` exits 0 even when every case skips, so a
@@ -282,6 +282,18 @@ jobs:
               'qlever.tests.test_qlever_read_body_closing_contract.P17WritableAliasReadBody.test_exited_owner_is_never_scanned',
               'qlever.tests.test_qlever_read_body_closing_contract.P17WritableAliasReadBody.test_standalone_fd_scan_retains_two_full_native_audits',
               'qlever.tests.test_qlever_read_body_closing_contract.P17WritableAliasReadBody.test_inner_budget_failure_preserves_object_and_clears_frame',
+              'qlever.tests.test_qlever_read_body_closing_contract.P18ExactRecordCallback.test_owned_emit_one_native_sweep_and_all_three_nonlease_checks',
+              'qlever.tests.test_qlever_read_body_closing_contract.P18ExactRecordCallback.test_outside_window_keeps_three_full_sweeps',
+              'qlever.tests.test_qlever_read_body_closing_contract.P18ExactRecordCallback.test_direct_runtime_record_inside_window_keeps_full_sweep',
+              'qlever.tests.test_qlever_read_body_closing_contract.P18ExactRecordCallback.test_real_coordinated_callback_one_sweep_and_round_can_close',
+              'qlever.tests.test_qlever_read_body_closing_contract.P18ExactRecordCallback.test_real_lease_loss_during_callback_prevents_result_escape',
+              'qlever.tests.test_qlever_read_body_closing_contract.P18ExactRecordCallback.test_callback_primary_object_survives_failed_full_closing',
+              'qlever.tests.test_qlever_read_body_closing_contract.P18ExactRecordCallback.test_callback_cannot_open_read_primitive_or_publish_or_resume',
+              'qlever.tests.test_qlever_read_body_closing_contract.P18ExactRecordCallback.test_foreign_slot_replacement_refused_without_stealing',
+              'qlever.tests.test_qlever_read_body_closing_contract.P18ExactRecordCallback.test_partial_install_failure_clears_only_own_claim_and_preserves_primary',
+              'qlever.tests.test_qlever_read_body_closing_contract.P18ExactRecordCallback.test_every_changed_binding_falls_back_to_full_callback_audit',
+              'qlever.tests.test_qlever_read_body_closing_contract.P18ExactRecordCallback.test_actual_context_changes_and_equal_waiter_never_inherit',
+              'qlever.tests.test_qlever_read_body_closing_contract.P18ExactRecordCallback.test_parked_profile_round_none_uses_real_cohort_record_validation',
           })
 
 

@@ -61,7 +61,7 @@ def runtime_type(core):
                 result=super().record(row)
                 if self.active is None:self.deferred={}
                 return result
-            self.b.check()
+            self.b.check_record(self,row)
             self.charge_metadata(row)
             kind=row['kind']
             if kind=='ptrace-event':

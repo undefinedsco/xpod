@@ -388,9 +388,11 @@ class P2ResetIntegration(Base):
         self.o.tasks = {}
         self.o.owned_read_body_frame = {'thread': 1}
         self.o.owned_maps_frame = (1, 'p1')
+        self.o.owned_emit_record_frame = object()
         self.o.close()
         self.assertIsNone(self.o.owned_read_body_frame)
         self.assertIsNone(self.o.owned_maps_frame)
+        self.assertIsNone(self.o.owned_emit_record_frame)
 
     def test_reset_owned_frames_is_idempotent(self):
         self.o.reset_owned_frames()
@@ -399,6 +401,7 @@ class P2ResetIntegration(Base):
 
     def test_phase_entry_resets_so_a_stale_claim_cannot_carry_over(self):
         self.o.owned_read_body_frame = {'thread': 'stale', 'phase': 'p1'}
+        self.o.owned_emit_record_frame = object()
         sentinel = RuntimeError('first phase capture access')
         class Captures:
             def __len__(inner):
@@ -409,17 +412,20 @@ class P2ResetIntegration(Base):
         self.assertIs(caught.exception, sentinel)
         self.assertIsNone(self.o.owned_read_body_frame)
         self.assertFalse(self.o.read_body_frame_active())
+        self.assertIsNone(self.o.owned_emit_record_frame)
 
     def test_abort_resets_before_any_cleanup_can_fail(self):
         sentinel = RuntimeError('outer cleanup failed')
         self.o.owned_read_body_frame = {'thread': 'stale'}
         self.o.owned_maps_frame = (1, 'old')
+        self.o.owned_emit_record_frame = object()
         self.o.close_outer_lease_window = lambda: (_ for _ in ()).throw(sentinel)
         with self.assertRaises(RuntimeError) as caught:
             self.o.abort()
         self.assertIs(caught.exception, sentinel)
         self.assertIsNone(self.o.owned_read_body_frame)
         self.assertIsNone(self.o.owned_maps_frame)
+        self.assertIsNone(self.o.owned_emit_record_frame)
 
 
 class P2CommentContractAccuracy(Base):
@@ -602,6 +608,248 @@ class P17WritableAliasReadBody(Base):
         self.assertEqual(len(calls), 3, 'fd-scan entry fails before its try; outer closing still checks')
         self.assertEqual(self.audit_count, 2)
         self.assertIsNone(self.o.owned_read_body_frame)
+
+class P18ExactRecordCallback(Base):
+    """Real native sweeps around the actual Runtime.record entry points."""
+
+    def setUp(self):
+        super().setUp()
+        import io
+        self.o.raw = io.BytesIO()
+        self.o.logical_raw_bytes = 0
+        self.o.raw_logical_limit = 1024 * 1024
+        self.o.compressed_raw = True
+        self.o.phase_progress = lambda: None
+        self.audits = 0
+        self.order = []
+        actual = self.leases.check
+        def audit(*args, **kwargs):
+            self.audits += 1
+            return actual(*args, **kwargs)
+        self.leases.check = audit
+        self.o.check_budget = lambda: self.order.append('budget')
+        self.o.waiter = obs_mod.owned_wait.BlockingOwnedWait(time.monotonic() + 120)
+        self.o.waiter.__enter__()
+        self.addCleanup(self.o.waiter.__exit__, None, None, None)
+        actual_wait_check = self.o.waiter.check
+        def wait_check():
+            self.order.append('waiter')
+            return actual_wait_check()
+        self.o.waiter.check = wait_check
+        self.runtime = obs_mod.generated_vma_module.Runtime(self.o)
+        self.runtime.active = dict(pid=os.getpid())
+        self.o.generated_vma = self.runtime
+
+    def arm(self):
+        end = time.monotonic() + 0.9
+        self.o.waiter.clamp(end)
+        self.o.window_arm(int(end * 1e9))
+        self.o.open_outer_lease_window()
+        # Measure the following emit; clamp has its own real waiter check.
+        self.order.clear()
+
+    def row(self):
+        return dict(kind='owned-record-test')
+
+    def test_owned_emit_one_native_sweep_and_all_three_nonlease_checks(self):
+        self.arm()
+        row = self.o.emit_original(self.row())
+        self.assertEqual(row['sequence'], 1)
+        self.assertEqual(self.audits, 1)
+        self.assertEqual(self.order, ['budget', 'waiter'] * 3)
+        self.assertIsNone(self.o.owned_emit_record_frame)
+
+    def test_outside_window_keeps_three_full_sweeps(self):
+        self.o.emit_original(self.row())
+        self.assertEqual(self.audits, 3)
+        self.assertEqual(self.order, ['budget', 'waiter'] * 3)
+
+    def test_direct_runtime_record_inside_window_keeps_full_sweep(self):
+        self.arm()
+        self.runtime.record(self.row())
+        self.assertEqual(self.audits, 1)
+        self.assertIsNone(getattr(self.o, 'owned_emit_record_frame', None))
+
+    def test_real_coordinated_callback_one_sweep_and_round_can_close(self):
+        coordinated = load('sdk-coordinated-wait').runtime_type(obs_mod)
+        self.runtime = coordinated(self.o)
+        self.runtime.active = dict(pid=os.getpid())
+        self.runtime.round = dict(stage='closed', exits={1: dict(entrySequence=5)}, closedExits={2})
+        self.o.generated_vma = self.runtime
+        self.arm()
+        self.o.emit_original(dict(kind='exclusive-captured-syscall-exit', pid=1, entrySequence=5))
+        self.assertIsNone(self.runtime.round)
+        self.assertEqual(self.audits, 1)
+        self.assertEqual(self.order, ['budget', 'waiter'] * 3)
+
+    def test_real_lease_loss_during_callback_prevents_result_escape(self):
+        import fcntl
+        self.arm()
+        actual = self.runtime.record
+        def record(row):
+            actual(row)
+            fcntl.fcntl(self.fds[0], fcntl.F_SETLEASE, fcntl.F_UNLCK)
+        self.runtime.record = record
+        with self.assertRaises(obs_mod.lifetime_leases.LeaseError):
+            self.o.emit_original(self.row())
+        self.assertEqual(self.audits, 1)
+        self.assertIsNone(self.o.owned_emit_record_frame)
+
+    def test_callback_primary_object_survives_failed_full_closing(self):
+        import fcntl
+        self.arm()
+        primary = ValueError('callback primary')
+        def record(row):
+            fcntl.fcntl(self.fds[0], fcntl.F_SETLEASE, fcntl.F_UNLCK)
+            raise primary
+        self.runtime.record = record
+        with self.assertRaises(ValueError) as caught:
+            self.o.emit_original(self.row())
+        self.assertIs(caught.exception, primary)
+        self.assertEqual(self.audits, 1)
+        self.assertIsNone(self.o.owned_emit_record_frame)
+
+    def test_callback_cannot_open_read_primitive_or_publish_or_resume(self):
+        self.arm()
+        actual = self.runtime.record
+        rejected = []
+        def record(row):
+            actual(row)
+            for operation in [self.o.open_read_body_frame,
+                    lambda: self.o.install_read_body_claim(self.o.new_read_body_claim()),
+                    lambda: self.o.read_body(lambda: None), self.o.open_owned_maps_frame,
+                    lambda: self.o.emit_original(self.row()),
+                    self.o.resume_original]:
+                with self.assertRaises(AssertionError): operation()
+                rejected.append(True)
+        self.runtime.record = record
+        self.o.emit_original(self.row())
+        self.assertEqual(len(rejected), 6)
+        self.assertEqual(self.audits, 1)
+        self.assertIsNone(self.o.owned_read_body_frame)
+        self.assertIsNone(self.o.owned_maps_frame)
+
+    def test_foreign_slot_replacement_refused_without_stealing(self):
+        self.arm()
+        foreign = object()
+        def record(row): self.o.owned_emit_record_frame = foreign
+        self.runtime.record = record
+        with self.assertRaisesRegex(AssertionError, 'ownership changed'):
+            self.o.emit_original(self.row())
+        self.assertIs(self.o.owned_emit_record_frame, foreign)
+        self.assertEqual(self.audits, 1)
+        self.o.reset_owned_frames()
+        self.assertIsNone(self.o.owned_emit_record_frame)
+
+    def test_partial_install_failure_clears_only_own_claim_and_preserves_primary(self):
+        self.arm()
+        primary = RuntimeError('partial installation')
+        actual = self.o.install_emit_record_claim
+        def install(claim):
+            actual(claim)
+            raise primary
+        self.o.install_emit_record_claim = install
+        with self.assertRaises(RuntimeError) as caught:
+            self.o.emit_original(self.row())
+        self.assertIs(caught.exception, primary)
+        self.assertIsNone(self.o.owned_emit_record_frame)
+        self.assertEqual(self.audits, 1)
+
+    def test_every_changed_binding_falls_back_to_full_callback_audit(self):
+        import copy
+        self.arm()
+        row = dict(self.row(), sequence=self.o.seq)
+        claim = self.o.new_emit_record_claim(self.runtime, row)
+        self.o.install_emit_record_claim(claim)
+        try:
+            self.assertTrue(self.o.emit_record_frame_active(self.runtime, row))
+            for key in ['thread', 'phase', 'observerDeadline', 'waiter', 'windowDeadline', 'windowParent', 'windowActive']:
+                with self.subTest(binding=key):
+                    original = claim['context'][key]
+                    claim['context'][key] = object() if key == 'waiter' else not original if key == 'windowActive' else str(original) + '-changed'
+                    self.assertFalse(self.o.emit_record_frame_active(self.runtime, row))
+                    before = self.audits
+                    self.o.check_record(self.runtime, row)
+                    self.assertEqual(self.audits, before + 1)
+                    claim['context'][key] = original
+            for key in ['owner', 'row', 'outer', 'active', 'round', 'sequence']:
+                with self.subTest(binding=key):
+                    original = claim[key]
+                    claim[key] = copy.copy(row) if key == 'row' else object()
+                    before = self.audits
+                    self.o.check_record(self.runtime, row)
+                    self.assertEqual(self.audits, before + 1)
+                    claim[key] = original
+        finally:
+            self.o.clear_own_emit_record_claim(claim)
+
+    def test_actual_context_changes_and_equal_waiter_never_inherit(self):
+        self.arm()
+        row = dict(self.row(), sequence=self.o.seq)
+        claim = self.o.new_emit_record_claim(self.runtime, row)
+        self.o.install_emit_record_claim(claim)
+        original_waiter = self.o.waiter
+        class EqualWaiter:
+            def __eq__(inner, other): return True
+            def __getattr__(inner, key): return getattr(original_waiter, key)
+        mutations = [(self.o, 'waiter', EqualWaiter()),
+                     (self.o, 'generated_vma', obs_mod.generated_vma_module.Runtime(self.o)),
+                     (self.runtime, 'active', dict(self.runtime.active)),
+                     (self.runtime, 'round', {}),
+                     (self.o, 'seq', self.o.seq + 1),
+                     (self.o, 'current_phase', 'new-phase'),
+                     (self.o, 'deadline', self.o.deadline + 1)]
+        try:
+            self.assertEqual(original_waiter.deadline, mutations[0][2].deadline)
+            self.assertTrue(mutations[0][2] == original_waiter)
+            for target, key, changed in mutations:
+                with self.subTest(binding=key):
+                    present = hasattr(target, key)
+                    original = getattr(target, key, None)
+                    try:
+                        setattr(target, key, changed)
+                        before = self.audits
+                        self.o.check_record(self.runtime, row)
+                        self.assertEqual(self.audits, before + 1)
+                    finally:
+                        if present: setattr(target, key, original)
+                        else: delattr(target, key)
+            before = self.audits
+            self.o.check_record(self.runtime, dict(row))
+            self.assertEqual(self.audits, before + 1)
+            errors = []
+            def worker():
+                try: self.o.check_record(self.runtime, row)
+                except BaseException as error: errors.append(error)
+            before = self.audits
+            thread = threading.Thread(target=worker)
+            thread.start(); thread.join()
+            self.assertEqual(errors, [])
+            self.assertEqual(self.audits, before + 1)
+        finally:
+            self.o.clear_own_emit_record_claim(claim)
+
+    def test_parked_profile_round_none_uses_real_cohort_record_validation(self):
+        self.o.generated_vma_parked_wait = True
+        coordinated = load('sdk-coordinated-wait').runtime_type(obs_mod)
+        self.runtime = coordinated(self.o)
+        pid = os.getpid()
+        self.runtime.mm.record(dict(kind='owned-root-binding', pid=pid, sequence=1))
+        self.runtime.active = dict(pid=pid, memoryDomain=1, memoryDomainMembers=[pid])
+        self.o.generated_vma = self.runtime
+        self.assertEqual(self.runtime.model, obs_mod.generated_vma_module.PARKED_WAIT_MODEL)
+        self.assertIsNone(self.runtime.round)
+        self.arm()
+        self.o.emit_original(dict(kind='toolchain-original', captureKind='maps', observedPid=pid))
+        self.assertEqual(self.audits, 1)
+        self.assertEqual(self.order, ['budget', 'waiter'] * 3)
+        # The actual base callback must still reject a changed cohort.
+        self.runtime.mm.domains[pid + 1] = 1
+        with self.assertRaisesRegex(ValueError, 'dirty mapping cohort changed'):
+            self.o.emit_original(dict(kind='toolchain-original', captureKind='maps', observedPid=pid))
+        self.assertEqual(self.audits, 2)
+        self.assertIsNone(self.o.owned_emit_record_frame)
+
 
 if __name__ == '__main__':
     unittest.main()

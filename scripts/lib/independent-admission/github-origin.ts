@@ -1526,6 +1526,13 @@ export async function observeProductConsumerGitHubOrigin(input:ArtifactAcquisiti
       // Earlier reviewed workflows and their source groups stay selectable.
       {workflowSha256:'7d66965df7c26e254841a667bdf98ddcdfc7c388a6f15e2c7ed29b3045d11efa',
       jobName:()=>callerNames[0]!,
+      sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS},
+      // Explicit root identity retains CAP_SETPCAP while the runner primary
+      // group permits capability-stripped children to traverse private paths.
+      // All seven earlier reviewed workflows remain byte-identical. The gate
+      // requires all 88 cases, including exact record-callback closing audits.
+      {workflowSha256:'69ffa4551353b1f519c879f6187923ccfe01f7b496b759e8b31f0e9c3f660b87',
+      jobName:()=>callerNames[0]!,
       sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS}],requiredBranch:'staging',
     jobName:()=>callerNames[0]!,jobNames:()=>callerNames,
     sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS,
