@@ -219,28 +219,54 @@ class LeaseSet:
                     entry['identityEqual'] = actual == expected
                     if entry['identityEqual'] is False:
                         entry['mismatch'] = True
+                # The six-field pair is captured from THIS SAME fstat observation
+                # that produced identityEqual, so the two can never disagree.
+                # Only abnormal rows carry it (cheap, and the decisive datum).
+                diagnostic_actual = actual
             except OSError as exc:
                 entry['identityEqual'] = False
                 entry['mismatch'] = True
+                diagnostic_actual = None
                 if entry['error'] is None:
                     entry['error'] = ('errno-%d' % exc.errno) if type(exc.errno) is int else 'errno-None'
             except BaseException as exc:
                 entry['identityEqual'] = False
                 entry['mismatch'] = True
+                diagnostic_actual = None
                 if entry['error'] is None:
                     entry['error'] = type(exc).__name__
             if entry['mismatch']:
                 abnormal += 1
+                # Six integers ordered st_dev, st_ino, st_mode, st_size,
+                # st_mtime_ns, st_ctime_ns. `actual` is explicitly unavailable
+                # (None) when fstat failed; it is never fabricated.
+                entry['identityCapturePoint'] = 'diagnostic-fstat'
+                if isinstance(expected, list) and len(expected) == 6 and all(type(v) is int for v in expected):
+                    entry['identityExpected'] = list(expected)
+                else:
+                    entry['identityExpected'] = None
+                entry['identityActual'] = list(diagnostic_actual) if diagnostic_actual is not None else None
                 try:
                     target = os.readlink('/proc/self/fd/%d' % fd)
-                    if target.startswith(('/opt/qlever-sdk/', '/components/', '/usr/')):
+                    deleted = target.endswith(' (deleted)')
+                    entry['targetDeleted'] = deleted
+                    entry['pathClass'] = ('whitelisted'
+                                          if target.startswith(('/opt/qlever-sdk/', '/components/', '/usr/'))
+                                          else ('deleted' if deleted else 'other'))
+                    if entry['pathClass'] == 'whitelisted':
                         entry['path'] = target[:256]
                     else:
+                        # Keep the redacted form: no arbitrary raw host path is
+                        # ever copied into CI artifacts.
                         entry['path'] = 'sha256:' + hashlib.sha256(
                             os.fsencode(target)).hexdigest()
                 except OSError as exc:
+                    entry['targetDeleted'] = None
+                    entry['pathClass'] = 'unavailable'
                     entry['path'] = ('unavailable-errno-%d' % exc.errno) if type(exc.errno) is int else 'unavailable-errno-None'
                 except BaseException as exc:
+                    entry['targetDeleted'] = None
+                    entry['pathClass'] = 'unavailable'
                     entry['path'] = 'unavailable-' + type(exc).__name__
             rows.append(entry)
 
@@ -257,6 +283,10 @@ class LeaseSet:
                    [r for r in rows if not r['mismatch']])
         omitted = max(0, len(ordered) - self.DIAGNOSTIC_MAXIMUM_ROWS)
         kept = ordered[:self.DIAGNOSTIC_MAXIMUM_ROWS]
+        # Count abnormal rows ACTUALLY dropped rather than hardcoding zero, so an
+        # incomplete abnormal picture is always visible in the payload.
+        abnormal_available = sum(1 for r in ordered if r['mismatch'])
+        abnormal_kept = sum(1 for r in kept if r['mismatch'])
 
         payload = dict(
             schemaVersion=2, kind='read-lease-fatal-diagnostic', authority=False,
@@ -270,6 +300,9 @@ class LeaseSet:
             truncated=bool(omitted or partial or not scanned_complete),
             partialReason=partial,
             abnormalLeaseCount=abnormal,
+            abnormalRowCountAvailable=abnormal_available,
+            abnormalOmitted=max(0, abnormal_available - abnormal_kept),
+            identityFields=['st_dev', 'st_ino', 'st_mode', 'st_size', 'st_mtime_ns', 'st_ctime_ns'],
             allHeldStillReadable=(scanned_complete and abnormal == 0 and total > 0),
             leases=kept)
         # Byte bound: shrink the RETAINED rows (abnormal-first order preserved)
@@ -281,6 +314,8 @@ class LeaseSet:
                 dropped = payload['leases'].pop()
                 payload['omittedRowCount'] += 1
                 payload['truncated'] = True
+                if dropped['mismatch']:
+                    payload['abnormalOmitted'] += 1
                 encoded = _json.dumps(payload, sort_keys=True, separators=(',', ':'))
         except BaseException:
             return None

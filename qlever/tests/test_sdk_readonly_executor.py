@@ -3,6 +3,7 @@ import copy
 import hashlib
 import importlib.util
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -197,4 +198,129 @@ func main(){var input struct{Template string;Value map[string]interface{}};if er
  def test_no_inner_json_can_omit_or_change_outer_original_bytes(self):
   record,raw,values=fixture();raw['wait.json']+=b' '
   with self.assertRaises(ValueError):b.verify(record,raw,ID)
+
+ def _tar_bytes(self,name,data,mode=None,extra=None):
+  import io,tarfile
+  buf=io.BytesIO()
+  with tarfile.open(fileobj=buf,mode='w:') as archive:
+   info=tarfile.TarInfo(name);info.size=len(data)
+   if mode is not None:info.mode=mode
+   archive.addfile(info,io.BytesIO(data))
+   if extra:archive.addfile(extra,io.BytesIO(b''))
+  return buf.getvalue()
+ def test_retention_anchors_on_absolute_out_not_process_or_stage_cwd(self):
+  """CONCERN 1: out must be the caller's ABSOLUTE dir, independent of cwd.
+
+  The process cwd and the stage cwd are deliberately DIFFERENT directories from
+  `out`; a cwd-relative Path() would land in the wrong one and never be uploaded.
+  """
+  with tempfile.TemporaryDirectory(dir=TESTDATA) as directory:
+   root=Path(directory);out=root/'uploaded-out';out.mkdir()
+   process_cwd=root/'process-cwd';process_cwd.mkdir()
+   stage_cwd=root/'stage-cwd';stage_cwd.mkdir()
+   tar=self._tar_bytes('configure.trace.jsonl',b'{"kind":"trace"}\n')
+   def stage(name,argv,*rest):
+    # stage() executes with cwd=HERE in production; here it is an explicit dir
+    self.assertEqual(Path.cwd(),stage_cwd,'stage must run from its own cwd')
+    return tar if name.startswith('failed-evidence-configure-trace') else b''
+   previous=Path.cwd()
+   os.chdir(stage_cwd)
+   try:rows=e.retain_failed_configure_evidence(stage,'c'*64,out)
+   finally:os.chdir(previous)
+   self.assertIsNotNone(rows)
+   retained=out/'failed-configure-evidence'
+   self.assertTrue((retained/'manifest.json').is_file(),'manifest must live under absolute out')
+   self.assertTrue((retained/'configure.trace.jsonl').is_file())
+   self.assertEqual(sorted(p.name for p in process_cwd.iterdir()),[],'process cwd must stay clean')
+   self.assertEqual(sorted(p.name for p in stage_cwd.iterdir()),[],'stage cwd must stay clean')
+ def test_retention_bounds_transport_and_refuses_oversize_before_materialising(self):
+  """CONCERN 2: oversize is refusal-by-transport, not copy-then-delete."""
+  with tempfile.TemporaryDirectory(dir=TESTDATA) as directory:
+   root=Path(directory);out=root/'out';out.mkdir()
+   big=b'z'*(e.CONFIGURE_EVIDENCE_MEMBER_LIMIT+1)
+   tar_big=self._tar_bytes('CMakeError.log',big)
+   def stage(name,argv,*rest):
+    if name.startswith('failed-evidence-cmake-error-log'):return tar_big
+    return self._tar_bytes('stderr.raw',b'trace\n') if name.startswith('failed-evidence-configure-stderr') else b''
+   rows=e.retain_failed_configure_evidence(stage,'c'*64,out)
+   by={Path(r['member']).name:r for r in rows}
+   self.assertTrue(by['CMakeError.log']['status'].startswith('refused-'),by['CMakeError.log'])
+   self.assertNotIn('sha256',by['CMakeError.log'])
+   self.assertFalse((out/'failed-configure-evidence'/'CMakeError.log').exists(),
+                    'oversize member must never be materialised')
+   self.assertEqual(by['stderr.raw']['status'],'retained')
+ def test_retention_refuses_nonregular_members_and_parent_symlinks(self):
+  """CONCERN 2: a directory/symlink/multi-member tar is not the requested original."""
+  import io,tarfile
+  with tempfile.TemporaryDirectory(dir=TESTDATA) as directory:
+   root=Path(directory);out=root/'out';out.mkdir()
+   buf=io.BytesIO()
+   with tarfile.open(fileobj=buf,mode='w:') as archive:
+    info=tarfile.TarInfo('configure.trace.jsonl');info.type=tarfile.DIRTYPE
+    archive.addfile(info)
+   dir_tar=buf.getvalue()
+   multi=self._tar_bytes('configure.trace.jsonl',b'a\n',extra=tarfile.TarInfo('extra'))
+   def stage(name,argv,*rest):
+    if name.startswith('failed-evidence-configure-trace'):return dir_tar
+    if name.startswith('failed-evidence-cmake-output-log'):return multi
+    return b''
+   rows=e.retain_failed_configure_evidence(stage,'c'*64,out)
+   by={Path(r['member']).name:r for r in rows}
+   self.assertTrue(by['configure.trace.jsonl']['status'].startswith('refused-'))
+   self.assertTrue(by['CMakeOutput.log']['status'].startswith('refused-'))
+   self.assertFalse((out/'failed-configure-evidence'/'configure.trace.jsonl').exists())
+ def test_retention_names_decisive_shards_at_the_real_producer_directory_without_exec(self):
+  """REAL RED fix: shards live at materials/toolchain-execution, and the container
+  is STOPPED, so `docker exec` cannot be used (it exits non-zero). Names must be
+  derived deterministically from the producer's own naming and fetched by
+  `docker cp`, which reads a stopped container's filesystem through the daemon.
+  """
+  with tempfile.TemporaryDirectory(dir=TESTDATA) as directory:
+   root=Path(directory);out=root/'out';out.mkdir()
+   seen=[]
+   def stage(name,argv,*rest):
+    seen.append((name,list(argv)))
+    self.assertNotIn('exec',argv,'stopped container must never be probed with docker exec')
+    if name.startswith('failed-evidence-lease-trace-configure-trace-0000-jsonl-gz'):
+     return self._tar_bytes('configure.trace-0000.jsonl.gz',b'{"kind":"toolchain-lease-acquired","leaseId":200}\n')
+    raise ValueError('no such member')
+   rows=e.retain_failed_configure_evidence(stage,'c'*64,out)
+   names=[Path(r['member']).name for r in rows if r['status']=='retained']
+   self.assertIn('configure.trace-0000.jsonl.gz',names,'decisive acquisition shard must be retained')
+   paths=[argv[2] for name,argv in seen if name.startswith('failed-evidence-lease-trace')]
+   self.assertTrue(paths,'shard probes must run')
+   for p in paths:
+    self.assertIn('/materials/toolchain-execution/',p,'producer writes under toolchain-execution, not materials root')
+   manifest=json.loads((out/'failed-configure-evidence'/'manifest.json').read_text())
+   self.assertEqual(manifest['model'],'bounded-tar-transport-v3')
+   self.assertEqual(manifest['leaseTraceDir'],'materials/toolchain-execution')
+   self.assertTrue(manifest['decisiveEvidenceRetained'])
+   self.assertEqual(manifest['retainedDecisiveShards'],1)
+ def test_retention_reports_absent_decisive_shards_honestly_and_claims_nothing(self):
+  with tempfile.TemporaryDirectory(dir=TESTDATA) as directory:
+   root=Path(directory);out=root/'out';out.mkdir()
+   def stage(name,argv,*rest):raise ValueError('not present in stopped container')
+   rows=e.retain_failed_configure_evidence(stage,'c'*64,out)
+   manifest=json.loads((out/'failed-configure-evidence'/'manifest.json').read_text())
+   self.assertFalse(manifest['decisiveEvidenceRetained'],'absence must never be reported as decisive')
+   self.assertEqual(manifest['retainedDecisiveShards'],0)
+   self.assertGreater(manifest['leaseTraceProbeCount'],0,'probes were attempted and recorded')
+   self.assertTrue(any(r['status']=='absent-or-unreadable' for r in rows))
+ def test_decisive_member_read_uses_its_own_ceiling_not_the_generic_meta_bound(self):
+  """The decisive shard ceiling must exceed the generic 4 MiB stdout/META bound,
+  otherwise a legitimate compressed shard would be silently discarded."""
+  self.assertGreater(e.LEASE_TRACE_MEMBER_LIMIT, b.META)
+  self.assertLessEqual(e.LEASE_TRACE_MEMBER_LIMIT, 512*1024**2,'still bounded')
+ def test_retention_retains_decisive_lease_acquisition_shards_only(self):
+  with tempfile.TemporaryDirectory(dir=TESTDATA) as directory:
+   root=Path(directory);out=root/'out';out.mkdir()
+   shard=self._tar_bytes('configure.trace-0000.jsonl.gz',b'{"kind":"toolchain-lease-acquired"}\n')
+   def stage(name,argv,*rest):
+    if name.startswith('failed-evidence-lease-trace-configure-trace-0000-jsonl-gz'):return shard
+    raise ValueError('absent')
+   rows=e.retain_failed_configure_evidence(stage,'c'*64,out)
+   names=[Path(r['member']).name for r in rows if r['status']=='retained']
+   self.assertFalse(any(n=='run.log' for n in names),'unrelated logs must not be pulled in')
+   self.assertFalse(any(n.startswith('other.') for n in names),'fixed prefix only')
+
 if __name__=='__main__':unittest.main()

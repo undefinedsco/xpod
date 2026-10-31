@@ -2297,7 +2297,14 @@ const SDK87_SOURCE_HASHES:Readonly<Record<string,string>>=Object.freeze({
  // (st_dev, st_ino) key instead of scanning every held row. Selection semantics,
  // the live F_GETLEASE+fstat sweep and every rejection string are unchanged, so
  // only the CURRENT (SDK87) binding moves; published tuples keep their bytes.
- 'qlever/scripts/sdk-tool-lifetime-leases.py':"85f5101f1d27644c851145818f791ca52d87dc6087b4f7df8f0d4bbf579d9b0c",
+ // The failure DIAGNOSTIC now retains the abnormal row's six-field before/after
+ // tuple and a path class; the six-field comparison and every verdict are
+ // byte-identical, so again only the CURRENT binding moves.
+ 'qlever/scripts/sdk-tool-lifetime-leases.py':"cc27ead74b9f54cc0047ab3e0df2d637d14418ed92504cb5b70eb8b8ccbe3272",
+ // The executor additionally retains a FIXED bounded set of container-side
+ // configure evidence on the failure path (exact members, size cap, no glob and
+ // no symlink follow). Admission ordering and cleanup semantics are unchanged.
+ 'qlever/scripts/sdk-readonly-executor.py':"7295ad449a9b6557d2e7baf4dbc73e94595902fe9431231d56886941a0712195",
  // Immutable registration-input plan: explicit per-instance capsule, no module
  // global. Current SDK87 binding only; published tuples keep their bytes.
  'qlever/scripts/native/lease_sweep_ext.c':"e3ca18a6d7674b60a65c483d5663308619543d09baf80d344009925f32d5a74b",
@@ -2315,7 +2322,7 @@ const SDK87_SOURCE_HASHES:Readonly<Record<string,string>>=Object.freeze({
  'qlever/scripts/sdk-readonly-executor-bindings.py':"107e2dea586056c98455e89471c0d303b1c36cb11018ee5a6d67d97caefd0b1e",
  // The readonly normal job's pin list had to follow the executor lane's new
  // bytes, so this CURRENT workflow file moves too. Published tuples keep theirs.
- '.github/workflows/qlever-readonly-normal-job.yml':"3a6d5ba02bdbe13bba951c78dc6ca24755dbc5da461f26ce1ebb0a0192fb6c0d",
+ '.github/workflows/qlever-readonly-normal-job.yml':"999ae87a2ef9e1617cee38e17e9f31b69cc880ff3c512b30179428f75b3a2de3",
  'qlever/scripts/native/lease_sweep_binding.py':"7386166a878d2a1fbd5f3145759888baa072171ab541b45cd5fbc5bcea6784f8",
  'tests/scripts/candidate-producer-attempt-binding.test.ts':"1d73b68ac5bb7f19be8bdf2af6aedf952979e91e825f276720cdde65da96d4cf",
  // The scoped precompiled-header work (S2, ANTLR and the two Abseil units) moves
@@ -2347,7 +2354,16 @@ const SDK87_GROUP:GitHubSourceBindingGroup=Object.freeze({...SDK86_GROUP,
  Object.freeze({path:'qlever/patches/qlever-antlr-scoped-pch-and-server-pch-reuse.patch',
   sha256:'8e2a1234701985ae42ae3cc6d28e55b33c62a8cf36ad690de3a418e4c52a72d8'}),
 Object.freeze({path:"qlever/scripts/sdk-generated-producer-transport.py",sha256:SDK87_SOURCE_HASHES["qlever/scripts/sdk-generated-producer-transport.py"]})
-])});
+]),
+ // CURRENT outer executor: the collector role is the SAME file as the CURRENT
+ // sourceBindings collector, so the group must name the current collector bytes
+ // (inspectReviewedSdkOuterExecutorOrigin rejects a group whose fixed collector
+ // differs from its own source binding). A NEW object is built rather than
+ // mutating the inherited one, so every field except `collector` is preserved
+ // and SDK1–86 keep their own historical outerExecutor untouched.
+ outerExecutor:Object.freeze({...SDK86_GROUP.outerExecutor!,
+  collector:Object.freeze({path:'qlever/scripts/sdk-readonly-executor.py',
+   sha256:SDK87_SOURCE_HASHES['qlever/scripts/sdk-readonly-executor.py']})})});
 export const QLEVER_SDK_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...PUBLISHED_SDK_GROUPS,NEXT_SDK_GROUP,INPUT_PLAN_SDK_GROUP,ORM326_SDK_GROUP,SDK19_TELEMETRY_GROUP,CAPTURE_INDEX_SDK_GROUP,SDK78_GROUP,SDK79_GROUP,SDK80_GROUP,SDK81_GROUP,SDK82_GROUP,SDK83_GROUP,SDK84_GROUP,SDK85_GROUP,SDK86_GROUP,SDK87_GROUP]);
 export const QLEVER_LINUX_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([
  {selectors:sdkSelectors('cbedd3e2478de5e22108b6689c595a658ca891c9bd47552caec830e86f47fea8','a75c7be34b5c5fafff85c0d67d814ba1aaf14bcf5db5404a860fe3b9a11009bd'),sourceBindings:QLEVER_LINUX_SOURCE_BINDINGS.filter(row=>!['.github/workflows/publish-qlever-runtime-sdk.yml','.github/workflows/build-qlever-linux-runtime.yml'].includes(row.path))},

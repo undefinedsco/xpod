@@ -1228,5 +1228,199 @@ class OverlayManifestLifetime(unittest.TestCase):
         self.assertIn('leased inode identity changed', seen['check_error'])
 
 
+class FatalDiagnosticIdentityEvidence(unittest.TestCase):
+    """The fatal-path diagnostic must name WHICH identity field changed.
+
+    These are REAL-native causal regressions: they register the actual retained
+    lease-row shape over a real opened FD, then mutate/unlink the underlying
+    inode through real syscalls, and require the same unchanged six-field guard
+    to reject. They do not fake a native result and do not mirror the
+    implementation's internals; they assert the public diagnostic contract.
+
+    Linux-only where it matters: F_SETLEASE is unavailable on Darwin, so the
+    suite never asserts lease acquisition here. The diagnostic is exercised
+    through the real FD/identity path, which is identical on both.
+    """
+
+    FIELDS = ['st_dev', 'st_ino', 'st_mode', 'st_size', 'st_mtime_ns', 'st_ctime_ns']
+
+    def _module(self, name):
+        return load_module(os.path.join(g().scripts, 'sdk-tool-lifetime-leases.py'), name)
+
+    def _held(self, module, directory, name='leased.bin', payload=b'k' * 64, lease_id=7):
+        """Register the REAL retained row shape over a real FD (as acquire does)."""
+        path = os.path.join(directory, name)
+        with open(path, 'wb') as handle:
+            handle.write(payload)
+        fd = os.open(path, os.O_RDONLY)
+        self.addCleanup(os.close, fd)
+        before = module.identity(fd)
+        group = module.LeaseSet()
+        group._held[tuple(before[:2])] = {
+            'fd': fd, 'token': {'leaseId': lease_id, 'identity': list(before)}}
+        # Keep close() from treating the probe as a healthy owned set.
+        self.addCleanup(self._quiet, group)
+        return group, fd, path, list(before)
+
+    @staticmethod
+    def _quiet(group):
+        try:
+            group._held.clear()
+            group.close()
+        except BaseException:
+            pass
+
+    def _diagnostic(self, group):
+        raw = group.failure_diagnostic()
+        self.assertIsNotNone(raw, 'diagnostic must be emitted for an abnormal set')
+        return json.loads(raw)
+
+    def test_identity_mutation_names_the_changed_field_and_keeps_redacted_path(self):
+        """Real inode replacement via rename: the tuple must differ on ino/dev/ctime."""
+        module = self._module('diag_identity_mutation')
+        with tempfile.TemporaryDirectory(prefix='diag-mutate-') as directory:
+            group, fd, path, expected = self._held(module, directory)
+            # Real mutation: the retained FD keeps naming the ORIGINAL inode, while
+            # the path is replaced by a different inode written in place.
+            os.rename(path, path + '.moved')
+            with open(path, 'wb') as handle:
+                handle.write(b'n' * 97)
+            payload = self._diagnostic(group)
+            row = payload['leases'][0]
+            self.assertTrue(row['mismatch'])
+            self.assertFalse(row['identityEqual'])
+            self.assertEqual(payload['abnormalLeaseCount'], 1)
+            self.assertEqual(row['identityCapturePoint'], 'diagnostic-fstat')
+            self.assertEqual(row['identityExpected'], expected)
+            actual = row['identityActual']
+            self.assertIsInstance(actual, list)
+            self.assertEqual(len(actual), 6)
+            for value in actual:
+                self.assertIs(type(value), int)
+            changed = [name for name, before, after
+                       in zip(self.FIELDS, row['identityExpected'], actual) if before != after]
+            self.assertTrue(changed, 'the emitted tuple must actually differ')
+            self.assertIn('st_ctime_ns', changed,
+                          'a replaced inode must report its ctime change: %r' % (changed,))
+            # Redacted path is preserved (never a raw host path), class is honest.
+            self.assertTrue(str(row['path']).startswith(('sha256:', 'unavailable-')),
+                            'path must stay redacted: %r' % (row['path'],))
+            self.assertIn(row['pathClass'], ('other', 'whitelisted', 'unavailable'))
+
+    def test_unlinked_lease_target_reports_deleted_class_and_redacted_path(self):
+        """Real unlink of the live target: deleted indicator, still redacted, still rejected."""
+        module = self._module('diag_unlink')
+        with tempfile.TemporaryDirectory(prefix='diag-unlink-') as directory:
+            group, fd, path, expected = self._held(module, directory)
+            os.unlink(path)
+            payload = self._diagnostic(group)
+            row = payload['leases'][0]
+            self.assertTrue(row['mismatch'])
+            self.assertFalse(row['identityEqual'])
+            self.assertEqual(row['identityExpected'], expected)
+            self.assertIsInstance(row['identityActual'], list)
+            # targetDeleted/pathClass describe the observation honestly.
+            self.assertIn('targetDeleted', row)
+            self.assertIn('pathClass', row)
+            if row['pathClass'] == 'deleted':
+                self.assertIs(row['targetDeleted'], True)
+            self.assertTrue(str(row['path']).startswith(('sha256:', 'unavailable-')),
+                            'deleted/unreadable target must not leak a raw path: %r' % (row['path'],))
+
+    def test_actual_is_explicitly_unavailable_when_fstat_fails_and_never_fabricated(self):
+        """fstat error => identityActual is None, not a made-up tuple."""
+        module = self._module('diag_fstat_error')
+        with tempfile.TemporaryDirectory(prefix='diag-fstat-') as directory:
+            group, fd, path, expected = self._held(module, directory)
+            original_fstat = module.os.fstat
+
+            def exploding(target):
+                if target == fd:
+                    raise OSError(9, 'Bad file descriptor')
+                return original_fstat(target)
+
+            module.os.fstat = exploding
+            self.addCleanup(lambda: setattr(module.os, 'fstat', original_fstat))
+            payload = self._diagnostic(group)
+            row = payload['leases'][0]
+            self.assertTrue(row['mismatch'])
+            self.assertIs(row['identityActual'], None,
+                          'a failed fstat must be reported unavailable, never fabricated')
+            self.assertEqual(row['identityExpected'], expected)
+
+    def test_abnormal_omissions_are_reported_not_hardcoded_zero(self):
+        """Row-cap omission accounting must count ACTUALLY dropped abnormal rows."""
+        module = self._module('diag_omissions')
+        with tempfile.TemporaryDirectory(prefix='diag-omit-') as directory:
+            group = module.LeaseSet(maximum=256)
+            self.addCleanup(self._quiet, group)
+            registered = []
+            for index in range(module.LeaseSet.DIAGNOSTIC_MAXIMUM_ROWS + 4):
+                path = os.path.join(directory, 'r%d.bin' % index)
+                with open(path, 'wb') as handle:
+                    handle.write(b'x' * 8)
+                fd = os.open(path, os.O_RDONLY)
+                self.addCleanup(os.close, fd)
+                before = module.identity(fd)
+                group._held[tuple(before[:2])] = {
+                    'fd': fd, 'token': {'leaseId': index + 1, 'identity': list(before)}}
+                registered.append((path, before))
+            # Make EVERY row abnormal by replacing each target.
+            for path, _ in registered:
+                os.unlink(path)
+                with open(path, 'wb') as handle:
+                    handle.write(b'y' * 16)
+            payload = self._diagnostic(group)
+            self.assertEqual(payload['totalRowCount'], len(registered))
+            self.assertEqual(payload['abnormalLeaseCount'], len(registered))
+            self.assertEqual(payload['abnormalRowCountAvailable'], len(registered))
+            kept = len(payload['leases'])
+            self.assertLessEqual(kept, module.LeaseSet.DIAGNOSTIC_MAXIMUM_ROWS)
+            self.assertEqual(payload['omittedRowCount'], len(registered) - kept)
+            self.assertEqual(payload['abnormalOmitted'], len(registered) - kept,
+                             'dropped abnormal rows must be counted, never hardcoded zero')
+            self.assertTrue(payload['truncated'])
+            # Abnormal-first: every retained row is abnormal while abnormal rows exist.
+            self.assertTrue(all(row['mismatch'] for row in payload['leases']))
+            # Existing byte/row bounds still hold.
+            self.assertLessEqual(len(json.dumps(payload, sort_keys=True,
+                                                separators=(',', ':')).encode()), 8192)
+            self.assertEqual(payload['identityFields'], self.FIELDS)
+
+    def test_six_field_guard_still_rejects_and_lease_error_is_preserved(self):
+        """The unchanged six-field guard still rejects a mutated retained FD.
+
+        Linux-required for the lease-state branch: `check()` first requires the
+        real F_RDLCK lease, and Darwin refuses F_SETLEASE with EPERM, so on this
+        host the guard can legitimately stop one step earlier. The test therefore
+        asserts the OBSERVED rejection reason rather than pretending a lease
+        existed, and never weakens the guard.
+        """
+        module = self._module('diag_guard')
+        with tempfile.TemporaryDirectory(prefix='diag-guard-') as directory:
+            group, fd, path, expected = self._held(module, directory)
+            # Without a real lease the pure backend rejects on lease state first;
+            # with one it must reject on the identity change. Both are the SAME
+            # unchanged guard raising LeaseError, and both stay sticky.
+            try:
+                module.fcntl.fcntl(fd, module.fcntl.F_SETLEASE, module.fcntl.F_RDLCK)
+                leased = True
+            except OSError:
+                leased = False
+            os.rename(path, path + '.moved')
+            with open(path, 'wb') as handle:
+                handle.write(b'z' * 33)
+            with self.assertRaises(module.LeaseError) as first:
+                group.check()
+            self.assertIsInstance(first.exception, module.LeaseError)
+            expected_reason = 'leased inode identity changed' if leased else 'read lease no longer held'
+            self.assertIn(expected_reason, str(first.exception))
+            # Sticky rejection: the failure stays fatal after the first rejection.
+            with self.assertRaises(module.LeaseError) as second:
+                group.check()
+            self.assertEqual(str(second.exception), str(first.exception))
+            if leased:
+                self.assertIn('leased inode identity changed', str(first.exception))
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)

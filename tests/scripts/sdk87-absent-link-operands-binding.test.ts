@@ -30,6 +30,10 @@ const LEASES = 'qlever/scripts/sdk-tool-lifetime-leases.py';
 const LEASE_EXT = 'qlever/scripts/native/lease_sweep_ext.c';
 const LEASE_BINDING = 'qlever/scripts/native/lease_sweep_binding.py';
 const EXECUTOR_BINDINGS = 'qlever/scripts/sdk-readonly-executor-bindings.py';
+/** The readonly executor itself is a CURRENT SDK87 role re-pinned to the v3 bytes. */
+const EXECUTOR = 'qlever/scripts/sdk-readonly-executor.py';
+/** Its last reviewed historical (SDK86) digest; the CURRENT one must differ. */
+const EXECUTOR_STALE = '70fe276f4e696145e9befb6b24822a6ee9f03fedb9a931ce0c02ff5215580d86';
 const KERNEL_PROBE = 'qlever/scripts/sdk-kernel-policy-probe.py';
 const READONLY_NORMAL = '.github/workflows/qlever-readonly-normal-job.yml';
 // SDK70 now uses the whole canonical limit profile, changing only its current
@@ -70,7 +74,25 @@ it('SDK87 whole-inherits SDK86 and re-pins only the reviewed current roles', () 
   expect((inheritedSelectors.find(r => r.path === 'scripts/css-module-producer.py') as any)?.sha256 ?? HISTORICAL_CSS_PRODUCER)
     .toBe(HISTORICAL_CSS_PRODUCER);
   expect(JSON.stringify(next.candidateServiceRelationship)).toBe(JSON.stringify(inherited.candidateServiceRelationship));
-  expect(JSON.stringify(next.outerExecutor)).toBe(JSON.stringify(inherited.outerExecutor));
+  // CURRENT outerExecutor: the ONLY field that advances is `collector`, and it must
+  // equal the group's OWN current source binding for that exact file. Every other
+  // whole field (workflow/additionalWorkflows/uploadDomain/steps/model) stays
+  // identical to the inherited group, and the historical group keeps its own
+  // collector — so a hybrid (current bindings + old collector) cannot arise.
+  const nextOuter: any = next.outerExecutor;
+  const inheritedOuter: any = inherited.outerExecutor;
+  expect(nextOuter.collector.sha256).toBe(sha('qlever/scripts/sdk-readonly-executor.py'));
+  expect(nextOuter.collector.sha256).not.toBe(inheritedOuter.collector.sha256);
+  const ownBinding = (next.sourceBindings ?? []).find(r => r.path === nextOuter.collector.path);
+  expect(ownBinding?.sha256).toBe(nextOuter.collector.sha256);
+  expect(ownBinding?.reviewedSha256?.length ?? 0).toBe(0);
+  for (const key of ['schemaVersion', 'model', 'workflowPath', 'workflowSha256',
+    'uploadDomain', 'ownedSteps', 'allowedBeforeController'] as const) {
+    expect(JSON.stringify(nextOuter[key])).toBe(JSON.stringify(inheritedOuter[key]));
+  }
+  expect(JSON.stringify(nextOuter.additionalWorkflows)).toBe(JSON.stringify(inheritedOuter.additionalWorkflows));
+  // The historical group is untouched: it keeps its own collector value.
+  expect(inheritedOuter.collector.sha256).not.toBe(nextOuter.collector.sha256);
   // this slice adds no stage and keeps the whole stage surface
   expect((next.secondarySelectorStages ?? []).length).toBe((inherited.secondarySelectorStages ?? []).length);
   const expectedStages = (inherited.secondarySelectorStages ?? []).map(stage => stage.map(row =>
@@ -97,7 +119,9 @@ it('SDK87 whole-inherits SDK86 and re-pins only the reviewed current roles', () 
   // lock/series, the current builder documentation whose bytes changed, the
   // generated-source originals module that now emits the transport projection, and
   // the SDK70 replay fixture that now uses the whole canonical limit profile.
-  expect(new Set(moved)).toEqual(new Set([OBSERVER, LEAF, LOCK, SERIES, LEASES, LEASE_EXT, LEASE_BINDING, BUILDER, EXECUTOR_BINDINGS, READONLY_NORMAL, BINDER, KERNEL_PROBE, SOURCE_ORIGINALS, CSS_PRODUCER, SDK70_E2E]));
+  // SDK87 also re-pins the readonly executor ITSELF (2 inherited occurrences) to
+  // the reviewed v3 bytes, so that CURRENT role belongs in this exact set.
+  expect(new Set(moved)).toEqual(new Set([OBSERVER, LEAF, LOCK, SERIES, LEASES, LEASE_EXT, LEASE_BINDING, BUILDER, EXECUTOR_BINDINGS, EXECUTOR, READONLY_NORMAL, BINDER, KERNEL_PROBE, SOURCE_ORIGINALS, CSS_PRODUCER, SDK70_E2E]));
   expect(moved.filter(p => p === OBSERVER)).toHaveLength(4);
   expect(moved.filter(p => p === LEAF)).toHaveLength(1);
   // The filtered-lease lookup slice moves the lease implementation's CURRENT
@@ -110,6 +134,19 @@ it('SDK87 whole-inherits SDK86 and re-pins only the reviewed current roles', () 
   // The readonly executor lane derives its parallelism from its own 4-CPU
   // allocation, so its CURRENT bytes move in both inherited occurrences.
   expect(moved.filter(p => p === EXECUTOR_BINDINGS)).toHaveLength(2);
+  // SDK87 re-pins the readonly executor ITSELF to the reviewed v3 bytes. It moves
+  // in both inherited occurrences, the CURRENT digest must equal the real working
+  // tree, and it must genuinely DIFFER from the last reviewed historical digest
+  // (a stale re-pin that copied the old value would otherwise pass unnoticed).
+  expect(moved.filter(p => p === EXECUTOR)).toHaveLength(2);
+  {
+    const current = all(next).filter(r => r.path === EXECUTOR).map(r => r.sha256);
+    const stale = all(inherited).filter(r => r.path === EXECUTOR).map(r => r.sha256);
+    expect(current).toHaveLength(2);
+    expect(new Set(current)).toEqual(new Set([sha(EXECUTOR)]));
+    expect(new Set(stale)).toEqual(new Set([EXECUTOR_STALE]));
+    expect(new Set(current)).not.toEqual(new Set(stale));
+  }
   // Its pin list follows the executor lane, so this CURRENT workflow moves once.
   expect(moved.filter(p => p === READONLY_NORMAL)).toHaveLength(1);
   // PR124 strict absent-link contract: the gate consumes the matched failed

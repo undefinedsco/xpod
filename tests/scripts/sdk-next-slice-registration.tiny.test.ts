@@ -381,7 +381,7 @@ test('helper tuples retain the e4 published histories and current role bytes', (
     // PR124 appends one current tuple on each axis (never rebinding a published
     // one), so each live frontier grows by exactly one.
     ['qlever-sdk-generation.ts', 'REVIEWED_CONTROLLER_HELPER_GROUPS_CURRENT', 'controller', 37],
-    ['qlever-sdk-generation.ts', 'REVIEWED_OBSERVER_GROUPS', 'observer', 56],
+    ['qlever-sdk-generation.ts', 'REVIEWED_OBSERVER_GROUPS', 'observer', 57],
     ['qlever-sdk-fetchcontent.ts', 'REVIEWED_HELPER_GROUPS_CURRENT', 'fetch', 40],
   ] as const;
   for (const [file, name, family, count] of tables) {
@@ -403,9 +403,10 @@ test('helper tuples retain the e4 published histories and current role bytes', (
   // phase-syscall diagnostic then appended the 44th, and the 351e302e hotpath
   // re-hash appends a 45th rather than rebinding the published one.
   // The PR124 strict absent-link settlement appends a 56th observer tuple rather
-  // than rebinding the published 55 above.
+  // than rebinding the published 55 above; the reviewed lease-evidence diagnostic
+  // then appends a 57th (the CURRENT observer tail) instead of rebinding PR124.
   const observer = recipes('qlever-sdk-generation.ts', 'REVIEWED_OBSERVER_GROUPS');
-  expect(observer).toHaveLength(56);
+  expect(observer).toHaveLength(57);
 });
 
 test('every group still selects itself uniquely and refuses missing/mixed roles', () => {
@@ -433,8 +434,9 @@ test('the CURRENT unpublished slice carries the published helper prefixes and it
   // secondary selectors and the source bindings of the CURRENT slice, while every
   // published helper tuple keeps its own prefix.
   const helpers = recipes('qlever-sdk-generation.ts', 'REVIEWED_OBSERVER_GROUPS');
-  // PR124 appended the 56th current observer tuple; the 55 published ones remain.
-  expect(helpers.length).toBe(56);
+  // PR124 appended the 56th current observer tuple and the lease-evidence
+  // diagnostic appended the 57th; the 55 already-published ones remain.
+  expect(helpers.length).toBe(57);
   const current = sdk.at(-1)!;
   const sec = current.secondarySelectors ?? [];
   expect(sec.length).toBeGreaterThanOrEqual(17);
