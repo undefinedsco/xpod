@@ -1,6 +1,9 @@
 """Bounded same-MM wait scheduling and independent interval replay."""
 import json,os,stat,time
 
+def parked_models(base):
+    return getattr(base,'PARKED_WAIT_MODELS',(base.PARKED_WAIT_MODEL,))
+
 def side_wait_address(base,entry,active):
     base.need(base.operation(entry)=='wake','actual peer futex ABI required')
     args=entry['args'];base.need(isinstance(args,list) and len(args)==6 and all(type(value)is int and 0<=value<1<<64 for value in args),'canonical peer futex arguments required')
@@ -23,7 +26,7 @@ def runtime_type(core):
     class CoordinatedRuntime(base.Runtime):
         round=None
         def note(self,kind,**fields):
-            if self.model==base.PARKED_WAIT_MODEL and kind in ['window','quiescent','peer-stopped','wake-window','closed','side-wait-window','side-wait-closed','side-wait-deferred']:
+            if self.model in parked_models(base) and kind in ['window','quiescent','peer-stopped','wake-window','closed','side-wait-window','side-wait-closed','side-wait-deferred']:
                 current=self.round;assert current is not None
                 # One synchronous read-only cohort sweep per note(). Bracket it the
                 # way verify_task_ownership_original does: the exact owned-window
@@ -101,7 +104,7 @@ def runtime_type(core):
             assert kind.startswith('generated-kernel-wait-'),'unhandled event inside coordinated native prototype: '+kind
         def peer_entry(self,row):
             current=self.round;pid=row['pid']
-            if self.model==base.PARKED_WAIT_MODEL and(row['args'][1]in [128,393] or row['args'][1]==129 and row['args'][0]!=current['entry']['args'][0]):
+            if self.model in parked_models(base) and(row['args'][1]in [128,393] or row['args'][1]==129 and row['args'][0]!=current['entry']['args'][0]):
                 side_wake=row['args'][1]==129
                 address=side_wake_address(base,row,self.active,current['entry']['args'][0])if side_wake else side_wait_address(base,row,self.active);base.wait_word_mapping(current['initialMappings'],address,allow_heap=True)
                 word=self.b.generated_wait_word(pid,address);assert len(word)==4
@@ -128,7 +131,7 @@ def runtime_type(core):
                 self.round=dict(stage='captured',owner=pid,peer=None,candidates=[p for p in members if p!=pid and p not in deferred],members=members,universe=universe,entry=entry,lease=pending['lease'],exits={},closedExits=set(),baseline=pending['baselineReserved'])
                 self.round['initialEntries']={p:self.b.tasks[p]['entry']for p in members if p!=pid and self.b.tasks[p]['entry']is not None};self.round['selectedInitial']=set()
                 self.round['beforeGeometry']=self.geometry()
-                row=self.note('window',pid=pid,entrySequence=entry['sequence'],members=members,barrierSequence=barrier['sequence'],wordOriginal=base.raw_record(word),procLease=pending['lease'].first,cohortMaps=self.last_samples,epochSequence=self.active['sequence'],originSequence=self.active['origin']['sequence'],qualification=False,**(dict(deferredPeerEntries=[dict(pid=p,entrySequence=call['sequence'])for p,call in sorted(self.deferred.items())],initialPeerEntries=[dict(pid=p,entrySequence=call['sequence'])for p,call in sorted(self.round['initialEntries'].items())])if self.model==base.PARKED_WAIT_MODEL else {}))
+                row=self.note('window',pid=pid,entrySequence=entry['sequence'],members=members,barrierSequence=barrier['sequence'],wordOriginal=base.raw_record(word),procLease=pending['lease'].first,cohortMaps=self.last_samples,epochSequence=self.active['sequence'],originSequence=self.active['origin']['sequence'],qualification=False,**(dict(deferredPeerEntries=[dict(pid=p,entrySequence=call['sequence'])for p,call in sorted(self.deferred.items())],initialPeerEntries=[dict(pid=p,entrySequence=call['sequence'])for p,call in sorted(self.round['initialEntries'].items())])if self.model in parked_models(base) else {}))
                 pending['window']=row;return row
         def geometry(self):
             # One shared cohort primitive: full live validation brackets the
@@ -194,7 +197,7 @@ def runtime_type(core):
                 assert self.b.tasks[peer]['stopped'] and core.state(peer)=='t'
                 prior=self.b.tasks[peer]['entry']
                 if prior is not None:
-                    assert self.model==base.PARKED_WAIT_MODEL and current['initialEntries'].get(peer)==prior and peer not in current['selectedInitial'],'peer trial has an unbound prior syscall entry'
+                    assert self.model in parked_models(base) and current['initialEntries'].get(peer)==prior and peer not in current['selectedInitial'],'peer trial has an unbound prior syscall entry'
                     current['selectedInitial'].add(peer)
                     self.note('peer-entry-selected',pid=peer,waiter=current['owner'],entrySequence=prior['sequence'],request=None,signal=0)
                     self.peer_entry(prior);self.classify(peer,prior,None)
@@ -271,7 +274,7 @@ def verify_interval(rows,context,read_blocks,maps_data,base,maximum_file):
     mapped_window=events[epoch['windowSequence']];active=dict(address=epoch['result'],span=base.rounded_span(epoch['result'],epoch['identity'][3],mapped_window['pageBytes']));address=base.private_wait_dimensions(entry,active,model=context['model'])
     need(entry['kind']=='kernel-syscall' and entry['op']=='entry' and entry['pid']==owner and base.raw_bytes(window['wordOriginal'])==entry['args'][2].to_bytes(4,'little'),'actual equal private wait entry required')
     domain,actual_members=context['domain'],context['members'];need(actual_members==members and epoch['memoryDomain']==domain and epoch['memoryDomainMembers']==members,'actual CLONE_VM cohort differs')
-    parked=context['model']==base.PARKED_WAIT_MODEL
+    parked=context['model'] in parked_models(base)
     universe=window.get('stoppedUniverse') if parked else members
     need(isinstance(universe,list) and universe==sorted(set(universe)) and 0<len(universe)<=128 and set(members)<=set(universe),'bounded complete stopped universe required')
     stop=context['barrier'];need(window['barrierSequence']==stop['sequence'] and stop['pids']==universe and stop['osStates']==['t']*len(universe),'initial complete all-stop universe required');ownership=stop['taskOwnership'];need([x['tid']for x in ownership]==universe,'initial complete ownership required')
@@ -282,7 +285,7 @@ def verify_interval(rows,context,read_blocks,maps_data,base,maximum_file):
     parked_states(window)
     lease=base.verify_proc_lease(window['procLease'],owner,canonical=True)
     def original(ref):
-        need(isinstance(ref,dict) and (set(ref)=={'path','bytes','sha256'}or context['model']==base.PARKED_WAIT_MODEL and set(ref)=={'path','bytes','sha256','observationSequence'}and type(ref['observationSequence'])is int and ref['observationSequence']>0) and re.fullmatch(r'capture-[0-9]{4,8}\.original',ref['path']) and type(ref['bytes'])is int and 0<=ref['bytes']<=maximum_file,'bounded actual original reference')
+        need(isinstance(ref,dict) and (set(ref)=={'path','bytes','sha256'}or context['model'] in parked_models(base) and set(ref)=={'path','bytes','sha256','observationSequence'}and type(ref['observationSequence'])is int and ref['observationSequence']>0) and re.fullmatch(r'capture-[0-9]{4,8}\.original',ref['path']) and type(ref['bytes'])is int and 0<=ref['bytes']<=maximum_file,'bounded actual original reference')
         count=0;digest=hashlib.sha256()
         for block in read_blocks(ref):
             need(isinstance(block,bytes) and 0<len(block)<=65536,'bounded complete original blocks required');count+=len(block);need(count<=ref['bytes'],'original byte bound');digest.update(block)
@@ -408,7 +411,7 @@ def verifier_type(base):
                     need(sequence and owner==sample['pid'] and barrier['sequence']<sequence<row['sequence'],'initial scheduled maps source/order differs')
                     records.append(dict(kind='toolchain-original',captureKind='maps',observedPid=owner,original=sample['original'],sequence=sequence))
                 initial_entries={}
-                if self.model==base.PARKED_WAIT_MODEL:
+                if self.model in parked_models(base):
                     for sequence,call in entries.items():
                         if call['pid']in members and call['pid']!=row['pid']and call['phase']==row['phase']and sequence not in exits:
                             need(call['pid']not in initial_entries,'multiple unclosed initial peer entries');initial_entries[call['pid']]=call
@@ -423,7 +426,7 @@ def verifier_type(base):
                     summary=verify_interval(self.scheduled_rows,self.scheduled_context,self.read_blocks,self.maps_data,base,self.maximum_file)
                     if not hasattr(self,'coordinated_waits'):self.coordinated_waits=[]
                     self.deferred=summary['deferred']
-                    self.coordinated_waits.append(dict(waitEntrySequence=summary['entrySequence'],closeSequence=summary['closeSequence'],waiter=summary['owner'],waker=summary['peer'],peerTrials=summary['peerTrials'],**(dict(sideWaitMismatches=summary['sideWaitMismatches'],sideWakeEntries=summary['sideWakeEntries'])if self.model==base.PARKED_WAIT_MODEL else {})))
+                    self.coordinated_waits.append(dict(waitEntrySequence=summary['entrySequence'],closeSequence=summary['closeSequence'],waiter=summary['owner'],waker=summary['peer'],peerTrials=summary['peerTrials'],**(dict(sideWaitMismatches=summary['sideWaitMismatches'],sideWakeEntries=summary['sideWakeEntries'])if self.model in parked_models(base) else {})))
                     self.scheduled_rows=None;self.scheduled_context=None
                 return
             epoch_window=self.windows.get(row.get('windowSequence')) if kind=='generated-vma-operation-exit' and row.get('operation')=='map' else None

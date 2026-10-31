@@ -34,6 +34,7 @@ chunk_store=load('sdk_chunk_originals',ROOT/'qlever/scripts/sdk-original-chunk-s
 lifetime_leases=load('sdk_tool_lifetime_leases',ROOT/'qlever/scripts/sdk-tool-lifetime-leases.py')
 raw_wire_codec=load('sdk_raw_wire_codec',ROOT/'qlever/scripts/sdk-raw-wire-codec.py')
 memory_policy=load('sdk_executable_memory_policy',ROOT/'qlever/scripts/sdk-executable-memory-policy.py')
+budget_policy_module=load('sdk_execution_budget_policy',ROOT/'qlever/scripts/sdk-execution-budget.py')
 LIFETIME_MODEL='kernel-held-read-lease-v1'
 LIFETIME_MAXIMUM_DEPTH=8
 PHASE_PROGRESS_INTERVAL=60.0
@@ -98,10 +99,13 @@ def held_owned_window_state(waiter):
     def ns(value):return None if value is None else int(value*1e9)
     return (active,ns(deadline),ns(parent))
 
-def held_outer_lease_context_matches(observer,waiter,claim,active,deadline,parent):
+def held_outer_lease_context_matches(observer,waiter,claim,active,deadline,parent,policy=None):
     """One pure comparison shared by policy and optional diagnostic projection."""
     if not active or deadline is None or parent is None:return False
-    if deadline>=parent or claim is None:return False
+    policy=policy or getattr(observer,'phase_budget_policy',None) or budget_policy_module.LEGACY_PHASE_BUDGET_POLICY
+    equal_parent=policy.observation_window=='phase-parent'
+    if deadline>parent or (deadline==parent and not equal_parent) or claim is None:return False
+    if equal_parent and claim.get('policyVersion')!=policy.version:return False
     return (claim['waiter'] is waiter
             and claim['thread']==threading.get_ident()
             and claim['phase']==getattr(observer,'current_phase',None)
@@ -161,7 +165,7 @@ class OwnedWindowAuditSites:
         if ticket is None or ticket[0] is not self or not self.valid(observer):return
         if ticket[1]=='body' and ticket[2]>=0:
             row=self.bodies[ticket[2]];self.add(row,0)
-            if held_outer_lease_context_matches(observer,observer.waiter,getattr(observer,'_outer_lease_coalesce',None),*held_owned_window_state(observer.waiter)):self.add(row,1)
+            if held_outer_lease_context_matches(observer,observer.waiter,getattr(observer,'_outer_lease_coalesce',None),*held_owned_window_state(observer.waiter),getattr(observer,'phase_budget_policy',None)):self.add(row,1)
         self.tag=ticket
     def bind_claim(self,observer,ticket,claim):
         if ticket is not None and ticket[0] is self:ticket[3]=claim
@@ -868,7 +872,7 @@ class CapturesMixin:
 class Observer(CapturesMixin):
     # Base host observer: pure-Python lease checking, exactly as before.
     lifetime_leases_class = lifetime_leases.LeaseSet
-    def __init__(self,out,source,build,*,deadline_monotonic=None,check_budget=lambda:None,maximum_bytes=32*1024**2,maximum_file_bytes=1024**2,selected_names=SELECTED,maximum_processes=128,shard_bytes=None,require_success=True,maximum_stdio_bytes=None,shared_tasks=False,capture_toolchain=False,deny_optional_io_uring=False,verified_setresuid_noop=False,verified_identity_noop=False,terminal_exit_evidence=False,generated_vma_output=False,generated_vma_shared_mm=False,generated_vma_private_wake=False,generated_vma_private_wait_mismatch=False,capture_content_entities=False,queued_identity_noop=False,stopped_writer_aliases=False,generated_vma_coordinated_wait=False,generated_vma_parked_wait=False,io_uring_enosys_v2=False,serialize_terminal_syscalls=False,capture_maps_content_entities=False,retained_generated_metadata=False,indexed_raw_records=False,compressed_raw=False,generated_build_root=generated_vma_module.BUILD_ROOT):
+    def __init__(self,out,source,build,*,deadline_monotonic=None,check_budget=lambda:None,maximum_bytes=32*1024**2,maximum_file_bytes=1024**2,selected_names=SELECTED,maximum_processes=128,shard_bytes=None,require_success=True,maximum_stdio_bytes=None,shared_tasks=False,capture_toolchain=False,deny_optional_io_uring=False,verified_setresuid_noop=False,verified_identity_noop=False,terminal_exit_evidence=False,generated_vma_output=False,generated_vma_shared_mm=False,generated_vma_private_wake=False,generated_vma_private_wait_mismatch=False,capture_content_entities=False,queued_identity_noop=False,stopped_writer_aliases=False,generated_vma_coordinated_wait=False,generated_vma_parked_wait=False,io_uring_enosys_v2=False,serialize_terminal_syscalls=False,capture_maps_content_entities=False,retained_generated_metadata=False,indexed_raw_records=False,compressed_raw=False,phase_budget_policy_version=None,generated_build_root=generated_vma_module.BUILD_ROOT):
         assert type(indexed_raw_records) is bool
         self.indexed_raw_records=indexed_raw_records
         self.prepared_dependency_plan=None;self.dependency_roots={};self.dependency_cache=None
@@ -907,6 +911,9 @@ class Observer(CapturesMixin):
         self.input_read_cache={};self.input_generation={};self.current_gate=None;self.tool_metadata_bytes=json.loads((ROOT/'scripts/lib/module-artifact-limits.json').read_text())['metadataBytes']
         self.prepared_inputs={};self.prepared_sealed=False;self.domain_bytes=0;self.claim_bytes=dict.fromkeys(('raw-wire','capture-body','stdio','provider-other'),0);self.domain_lock=threading.Lock();self.pump_errors=[];self.maximum_stdio_bytes=maximum_stdio_bytes if maximum_stdio_bytes is not None else maximum_file_bytes
         self.compressed_raw=compressed_raw;self.logical_raw_bytes=0;self.raw_logical_limit=json.loads((ROOT/'scripts/lib/module-artifact-limits.json').read_text())['sourceMaterialBytes'];self.require_success=require_success;self.raw_bytes_completed=0;self.maximum_processes=maximum_processes;self.shard_bytes=shard_bytes
+        if phase_budget_policy_version is None:phase_budget_policy=budget_policy_module.LEGACY_PHASE_BUDGET_POLICY
+        else:phase_budget_policy=budget_policy_module.policy_for_version(phase_budget_policy_version)
+        self.phase_budget_policy=phase_budget_policy
         self.deadline_monotonic=deadline_monotonic;self.check_budget=check_budget;self.maximum_bytes=maximum_bytes;self.maximum_file_bytes=maximum_file_bytes;self.selected_names=selected_names
         self.out=Path(out);self.capture_dir=self.out;self.source=str(source);self.build=str(build);self.tasks={};self.seq=0;self.records=[];self.initialize_capture_state();self.retained=set();self.producers={};self.write_states={};self.write_projections={};self.append_chains={};self.budget_context={};self.metadata_states=[];self.timespec_originals={};self.rename_records=[];self.consumers=[];self.raw=None;self.deadline=0;self.pausing=False;self.root=None;self.root_code=None;self.failures=[];self.current_phase=None;self.unknown_stops={};self.capture_bytes=0;self.capture_entities={};self.content_capture_pool={};self.snapshot_telemetry=None;self.snapshot_telemetry_completed=None;self.snapshot_telemetry_failure=None;self.mremap_proof_active=False;self.mremap_barriers=0;self.mremapDeferred=None;self.exclusive=None;self.wait_references=[]
         self.lifetime_leases=None;self.lifetime_phase=None;self.lifetime_acquired={};self.lifetime_by_identity={};self.authority_observed=set()
@@ -1226,7 +1233,7 @@ class Observer(CapturesMixin):
             active,deadline,parent=self.owned_window_state()
         except BaseException:
             return False
-        return held_outer_lease_context_matches(self,waiter,claim,active,deadline,parent)
+        return held_outer_lease_context_matches(self,waiter,claim,active,deadline,parent,getattr(self,'phase_budget_policy',None))
     def open_outer_lease_window(self):
         """Claim the ONE owned outer window; refuse re-entrancy and non-clamped.
 
@@ -1244,10 +1251,11 @@ class Observer(CapturesMixin):
         active,deadline,parent=self.owned_window_state()
         if not active or deadline is None or parent is None:
             raise AssertionError('owned waiter window required before claiming')
-        if deadline>=parent:
+        policy=getattr(self,'phase_budget_policy',budget_policy_module.LEGACY_PHASE_BUDGET_POLICY)
+        if deadline>parent or (deadline==parent and policy.observation_window!='phase-parent'):
             raise AssertionError('real local clamp required before claiming')
         self._outer_lease_coalesce=dict(waiter=waiter,thread=threading.get_ident(),
-            phase=getattr(self,'current_phase',None),parent=parent,local=deadline)
+            phase=getattr(self,'current_phase',None),parent=parent,local=deadline,policyVersion=policy.version)
     def close_outer_lease_window(self):
         """UNCONDITIONAL reset; safe on any path and idempotent."""
         self._outer_lease_coalesce=None
@@ -5028,14 +5036,14 @@ class SdkExecutionObserver(Observer):
     .phase returns real command/tracked receipts; it does not claim a closed
     process group while this long-lived observer still retains descriptors.
     """
-    def __init__(self,out,source,build,*,deadline_monotonic,check_budget,maximum_bytes,maximum_stdio_bytes,prepared_dependencies=None):
+    def __init__(self,out,source,build,*,deadline_monotonic,check_budget,maximum_bytes,maximum_stdio_bytes,prepared_dependencies=None,phase_budget_policy_version=None):
         limits=load_sdk_execution_limits()
         assert isinstance(maximum_bytes,int) and 0<maximum_bytes<=limits['sourceMaterialBytes'],'canonical shared execution byte bound required'
         assert isinstance(maximum_stdio_bytes,int) and 0<maximum_stdio_bytes<=min(maximum_bytes,limits['shardBytes']),'existing bounded command raw limit required'
         assert Path(source)==Path('/opt/qlever-sdk/source') and Path(build)==Path('/opt/qlever-sdk/build'),'fixed SDK source/build roots required'
         assert isinstance(deadline_monotonic,(float,int)) and math.isfinite(deadline_monotonic) and time.monotonic()<deadline_monotonic,'existing live SDK deadline required'
         super().__init__(out,source,build,deadline_monotonic=deadline_monotonic,check_budget=check_budget,maximum_bytes=maximum_bytes,
-            maximum_file_bytes=limits['shardBytes'],selected_names=None,maximum_processes=limits['sourceMembers'],shard_bytes=limits['shardBytes'],require_success=False,maximum_stdio_bytes=maximum_stdio_bytes,shared_tasks=True,capture_toolchain=True,deny_optional_io_uring=True,verified_identity_noop=True,terminal_exit_evidence=True,generated_vma_output=True,generated_vma_shared_mm=True,generated_vma_private_wake=True,generated_vma_private_wait_mismatch=True,capture_content_entities=True,queued_identity_noop=True,stopped_writer_aliases=True,generated_vma_coordinated_wait=True,generated_vma_parked_wait=True,io_uring_enosys_v2=True,serialize_terminal_syscalls=True,capture_maps_content_entities=True,retained_generated_metadata=True,indexed_raw_records=True,compressed_raw=True)
+            maximum_file_bytes=limits['shardBytes'],phase_budget_policy_version=phase_budget_policy_version,selected_names=None,maximum_processes=limits['sourceMembers'],shard_bytes=limits['shardBytes'],require_success=False,maximum_stdio_bytes=maximum_stdio_bytes,shared_tasks=True,capture_toolchain=True,deny_optional_io_uring=True,verified_identity_noop=True,terminal_exit_evidence=True,generated_vma_output=True,generated_vma_shared_mm=True,generated_vma_private_wake=True,generated_vma_private_wait_mismatch=True,capture_content_entities=True,queued_identity_noop=True,stopped_writer_aliases=True,generated_vma_coordinated_wait=True,generated_vma_parked_wait=True,io_uring_enosys_v2=True,serialize_terminal_syscalls=True,capture_maps_content_entities=True,retained_generated_metadata=True,indexed_raw_records=True,compressed_raw=True)
         self.capture_dir=self.out/'captures';self.capture_dir.mkdir(exist_ok=False);self.sdk_phase_index=0;self.sdk_failed=False
         mounts=Path('/proc/self/mountinfo').read_bytes();assert len(mounts)<=limits['metadataBytes'],'source provider metadata bound'
         self.source_provider=probe.effective_readonly(source,mounts);self.source_provider_originals=dict(mountinfo=probe.put(self.out/'source-provider.mountinfo.raw',mounts));self.claim(len(mounts))

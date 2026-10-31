@@ -2378,7 +2378,36 @@ Object.freeze({path:"qlever/scripts/sdk-generated-producer-transport.py",sha256:
  outerExecutor:Object.freeze({...SDK86_GROUP.outerExecutor!,
   collector:Object.freeze({path:'qlever/scripts/sdk-readonly-executor.py',
    sha256:SDK87_SOURCE_HASHES['qlever/scripts/sdk-readonly-executor.py']})})});
-export const QLEVER_SDK_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...PUBLISHED_SDK_GROUPS,NEXT_SDK_GROUP,INPUT_PLAN_SDK_GROUP,ORM326_SDK_GROUP,SDK19_TELEMETRY_GROUP,CAPTURE_INDEX_SDK_GROUP,SDK78_GROUP,SDK79_GROUP,SDK80_GROUP,SDK81_GROUP,SDK82_GROUP,SDK83_GROUP,SDK84_GROUP,SDK85_GROUP,SDK86_GROUP,SDK87_GROUP]);
+/** SDK88 phase-derived budget policy (APPEND-ONLY, UNPUBLISHED).
+ *
+ * The historical SDK1–87 tuples retain their exact source bytes, including the
+ * legacy 1 s VMA window and 1800 s configure cap. This slice binds only the
+ * explicit current policy implementation; no SDK-id branch selects the policy.
+ */
+const SDK88_SOURCE_HASHES:Readonly<Record<string,string>>=Object.freeze({
+ '.github/workflows/candidate.yml':"4411f065fba095c9f3bb6c3962a668cb26c869b80ea702860d50fb89397077bb",
+ 'qlever/scripts/sdk-execution-budget.py':"a66aca9e68010a80cac474cb004c58c2244efe08f772c1215c74103dae68de80",
+ '.github/workflows/qlever-readonly-normal-job.yml':"69c59abc132646596c6a370d642fc9a11a27a0e4d5bae3bc728c103483c8f39d",
+ 'qlever/scripts/sdk-inner-materials.py':"3f9c3133523f8de6e5faec7946a5145ce6a09c7a299ca6f9e738d1f9c7a403f0",
+ 'qlever/scripts/sdk-toolchain-materials.py':"ab1f10f7641c638c15f43e32db2eb7542ae5ee2fbec397bc83e35dd6a79596cc",
+ 'qlever/scripts/sdk-ptrace-execution.py':"c12b639308e9221825d87b9c4e2e48ed88265cd67555231694a618a98d4025bc",
+ 'qlever/scripts/sdk-generated-vma-originals.py':"dc7aa03908fdd1eae3bc4d474fc4045b1b09a49568c446709fb2b78a2c326c1f",
+ 'qlever/scripts/sdk-coordinated-wait.py':"9870836b5b0cb69d55495ec4923c6800046aa52cdd1741219308df4149c1281a",
+ 'tests/scripts/candidate-producer-attempt-binding.test.ts':"3e0f2ca3fdbfba54f3af985450413e45087e32cf2193470a9ba2568590612ca6",
+ 'scripts/lib/independent-admission/qlever-sdk-fetchcontent.ts':"d11535d091e18bea2b2578196f625937f5f7fcacdd6f033206c6fed5775cd071",
+});
+const rebindSdk88Rows=(rows:readonly GitHubSourceBinding[]|undefined)=>Object.freeze((rows??[]).map(row=>Object.freeze({...row,sha256:SDK88_SOURCE_HASHES[row.path]??row.sha256})));
+const SDK88_CANDIDATE_WORKFLOW='.github/workflows/candidate.yml';
+const SDK88_CANDIDATE_WORKFLOW_SHA='4411f065fba095c9f3bb6c3962a668cb26c869b80ea702860d50fb89397077bb';
+const SDK88_GROUP:GitHubSourceBindingGroup=Object.freeze({...SDK87_GROUP,
+ selectors:rebindSdk88Rows(SDK87_GROUP.selectors),
+ secondarySelectors:rebindSdk88Rows(SDK87_GROUP.secondarySelectors),
+ secondarySelectorStages:Object.freeze((SDK87_GROUP.secondarySelectorStages??[]).map(stage=>rebindSdk88Rows(stage))),
+ sourceBindings:rebindSdk88Rows(SDK87_GROUP.sourceBindings),
+ candidateServiceRelationship:Object.freeze({...SDK87_GROUP.candidateServiceRelationship!,workflowSha256:SDK88_CANDIDATE_WORKFLOW_SHA}),
+ outerExecutor:Object.freeze({...SDK87_GROUP.outerExecutor!,
+  additionalWorkflows:Object.freeze((SDK87_GROUP.outerExecutor!.additionalWorkflows??[]).map(row=>row.path===SDK88_CANDIDATE_WORKFLOW?Object.freeze({...row,sha256:SDK88_CANDIDATE_WORKFLOW_SHA}):row))})});
+export const QLEVER_SDK_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...PUBLISHED_SDK_GROUPS,NEXT_SDK_GROUP,INPUT_PLAN_SDK_GROUP,ORM326_SDK_GROUP,SDK19_TELEMETRY_GROUP,CAPTURE_INDEX_SDK_GROUP,SDK78_GROUP,SDK79_GROUP,SDK80_GROUP,SDK81_GROUP,SDK82_GROUP,SDK83_GROUP,SDK84_GROUP,SDK85_GROUP,SDK86_GROUP,SDK87_GROUP,SDK88_GROUP]);
 export const QLEVER_LINUX_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([
  {selectors:sdkSelectors('cbedd3e2478de5e22108b6689c595a658ca891c9bd47552caec830e86f47fea8','a75c7be34b5c5fafff85c0d67d814ba1aaf14bcf5db5404a860fe3b9a11009bd'),sourceBindings:QLEVER_LINUX_SOURCE_BINDINGS.filter(row=>!['.github/workflows/publish-qlever-runtime-sdk.yml','.github/workflows/build-qlever-linux-runtime.yml'].includes(row.path))},
  ...QLEVER_SDK_EXECUTION_GROUPS,

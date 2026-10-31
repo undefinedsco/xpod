@@ -104,12 +104,12 @@ it('PCH ON is consistent across recipe, contract and prior-SDK validator; macOS 
   expect(read('qlever/scripts/build-macos-local-runtime.sh')).toContain('-DUSE_PRECOMPILED_HEADERS=OFF');
 });
 
-it('the latest live SDK87 group binds the actual current build-contract bytes',()=>{
+it('the latest live SDK88 group binds the actual current build-contract bytes',()=>{
   // This is the CURRENT slice, so here (and only here) the recipe/validator must
   // equal today's working tree. It complements the frozen SDK84 historical case
   // above instead of asking that published tuple to follow a later edit.
   const latest=SDK[SDK.length-1]!;
-  expect(SDK).toHaveLength(87);
+  expect(SDK).toHaveLength(88);
   expect(whole(LINUX[LINUX.length-1]!)).toBe(whole(latest));
   // three role occurrences: inherited source binding, inherited stage-0 secondary
   // selector, and the appended final stage — all must carry the same live bytes.

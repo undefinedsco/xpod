@@ -219,7 +219,7 @@ def emit_cmake_failure_originals(out,build,directory,check,remaining_bytes,resul
         except BaseException:pass
 
 class Session:
-    def __init__(self,out,source,build,budget,check,maximum_bytes,prepared_dependencies=None):
+    def __init__(self,out,source,build,budget,check,maximum_bytes,prepared_dependencies=None,phase_budget_policy_version=None):
         self.out=Path(out);self.build=Path(build);self.directory=self.out/'toolchain-execution';self.directory.mkdir()
         self.budget=budget;self.phases=[];self.results=[];self.closed=False;self.tool_files=[];self.tool_captures=set()
         backend=load('execution_backend','sdk-ptrace-execution.py')
@@ -232,7 +232,7 @@ class Session:
             mount_path=self.directory/'dependency-provider.mountinfo.raw'
             with mount_path.open('xb') as stream:stream.write(mounts)
             dependency_options['prepared_dependencies']=dict(collection=dict(prepared_dependencies,path=str(collection)),mountinfo=dict(commands.ref(mount_path,self.out),path=str(mount_path)))
-        self.observer=backend.SdkExecutionObserver(self.directory,source,build,deadline_monotonic=budget.end,check_budget=check,maximum_bytes=maximum_bytes,maximum_stdio_bytes=commands.RAW_LIMIT,**dependency_options)
+        self.observer=backend.SdkExecutionObserver(self.directory,source,build,deadline_monotonic=budget.end,check_budget=check,maximum_bytes=maximum_bytes,maximum_stdio_bytes=commands.RAW_LIMIT,phase_budget_policy_version=phase_budget_policy_version,**dependency_options)
     def original_bytes(self):
         # Stage originals live outside the execution directory. Count the unique
         # canonical set, not one directory or repeated collection references.
@@ -248,7 +248,7 @@ class Session:
         # tighten the observer's existing ceiling; retain the same live instance.
         available=remaining_source_bytes(self.out)
         self.observer.tighten_remaining(available)
-        timeout=self.budget.timeout(cap,reserve)
+        timeout=self.budget.phase_timeout(name,cap,reserve) if hasattr(self.budget,'phase_timeout') else self.budget.timeout(cap,reserve)
         for row in inputs:
             if commands.ref(self.out/row['path'],self.out)!=row:raise ValueError('Execution phase input differs')
         directory=self.out/'stages'/name;directory.mkdir(parents=True)

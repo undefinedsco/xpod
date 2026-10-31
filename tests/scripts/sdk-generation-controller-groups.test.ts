@@ -30,10 +30,10 @@ const READONLY_DCA_PUBLISHED_SIX = Object.freeze([
 ]);
 
 for (const [file, historicalName, currentName, historicalCount, currentCount] of [
-  ['qlever-sdk-generation.ts', 'REVIEWED_CONTROLLER_HELPER_GROUPS_NEXT', 'REVIEWED_CONTROLLER_HELPER_GROUPS_CURRENT', 30, 39],
+  ['qlever-sdk-generation.ts', 'REVIEWED_CONTROLLER_HELPER_GROUPS_NEXT', 'REVIEWED_CONTROLLER_HELPER_GROUPS_CURRENT', 30, 40],
   ['qlever-sdk-upstream-source.ts', 'REVIEWED_HELPER_GROUPS', 'REVIEWED_HELPER_GROUPS', 7, 7],
-  ['qlever-sdk-fetchcontent.ts', 'REVIEWED_HELPER_GROUPS_NEXT', 'REVIEWED_HELPER_GROUPS_CURRENT', 33, 42],
-  ['qlever-sdk-readonly-executor.ts', 'REVIEWED_READONLY_HELPER_GROUPS', 'REVIEWED_READONLY_HELPER_GROUPS', 7, 9],
+  ['qlever-sdk-fetchcontent.ts', 'REVIEWED_HELPER_GROUPS_NEXT', 'REVIEWED_HELPER_GROUPS_CURRENT', 33, 43],
+  ['qlever-sdk-readonly-executor.ts', 'REVIEWED_READONLY_HELPER_GROUPS', 'REVIEWED_READONLY_HELPER_GROUPS', 7, 10],
 ] as const) it(file + ' keeps its whole historical tuples and admits the real current bytes', () => {
   // The published/historical catalogue is frozen history: every one of its whole
   // tuples must still select exclusively from its own declared bytes, even though
@@ -80,7 +80,7 @@ for (const [file, historicalName, currentName, historicalCount, currentCount] of
   if (file === 'qlever-sdk-readonly-executor.ts') {
     const wholeHash = (group: readonly (readonly [string, string])[]) =>
       createHash('sha256').update(JSON.stringify(group)).digest('hex');
-    expect(current).toHaveLength(9);
+    expect(current).toHaveLength(10);
     expect(READONLY_DCA_PUBLISHED_SIX).toHaveLength(6);
     const published = current.slice(0, 6);
     expect(published.map(wholeHash)).toEqual([...READONLY_DCA_PUBLISHED_SIX]);
@@ -92,7 +92,7 @@ for (const [file, historicalName, currentName, historicalCount, currentCount] of
     // The seventh tuple is frozen HISTORY now: it stays byte-identical, and the
     // same role universe observed against today's disk resolves to the appended
     // ninth (which is exactly what production must select).
-    expect(select(current, actual(appended))).toBe(current[8]);
+    expect(select(current, actual(appended))).toBe(current[9]);
     // The CURRENT frontier appended one more whole tuple instead of editing the
     // frozen seventh, so the same ordered helper universe now binds today's
     // executor-bindings bytes. Keep proving that historical change independently
@@ -111,7 +111,8 @@ for (const [file, historicalName, currentName, historicalCount, currentCount] of
       .map(([name, sha], index) => (appendedCurrent[index]![1] === sha ? null : name))
       .filter((name): name is string => name !== null))
       .toEqual(['qlever/scripts/sdk-readonly-executor.py']);
-    expect(select(current, actual(collectorAppend))).toBe(collectorAppend);
+    expect(select(current, actual(collectorAppend))).toBe(current[9]);
+    expect(select(current, actual(current[9]))).toBe(current[9]);
     // The frozen prefix must be proven against LITERALS, not against itself: the
     // six published constants, the seventh hash pinned by SDK82/SDK83, and the
     // eighth hash decoded from immutable f2f2544d. No expected value here is
@@ -154,19 +155,19 @@ for (const [file, historicalName, currentName, historicalCount, currentCount] of
   }
 });
 
-it('bounds forty-two reviewed whole tuples, accepting only the production maximum and rejecting forty-three or an ambiguous tuple', () => {
-  // The declared VERSION maximum is genuinely 41: the fetch CURRENT catalogue holds
-  // 41 whole tuples after the SDK87 owned-metadata transition append. This is a
+it('bounds forty-three reviewed whole tuples, accepting only the production maximum and rejecting forty-four or an ambiguous tuple', () => {
+  // The declared VERSION maximum is genuinely 43: the fetch CURRENT catalogue holds
+  // 43 whole tuples after the SDK88 phase-budget helper append. This is a
   // version-count ceiling, never a capture/role capacity: the observed PER-TUPLE
   // role bound stays 32 (asserted by the next case), and every time/byte budget is
   // untouched.
-  const groups = Array.from({length: 42}, (_, i) => Object.freeze([Object.freeze(['helper', String(i)] as const)]));
+  const groups = Array.from({length: 43}, (_, i) => Object.freeze([Object.freeze(['helper', String(i)] as const)]));
   // the genuine 41st declared version is the current production maximum and selects
-  expect(groups).toHaveLength(42);
-  expect(select(groups, new Map(groups[41]!))).toBe(groups[41]);
+  expect(groups).toHaveLength(43);
+  expect(select(groups, new Map(groups[42]!))).toBe(groups[42]);
   expect(select(groups, new Map(groups[0]!))).toBe(groups[0]);
-  // a 42nd declared version exceeds the reviewed catalogue and is refused
-  expect(() => select([...groups, [['helper', '42']]], new Map([['helper', '42']]))).toThrow();
+  // a 44th declared version exceeds the reviewed catalogue and is refused
+  expect(() => select([...groups, [['helper', '43']]], new Map([['helper', '43']]))).toThrow();
   // a duplicate/ambiguous tuple is refused
   expect(() => select([...groups.slice(0, 25), groups[0]!], new Map(groups[0]!))).toThrow();
 });

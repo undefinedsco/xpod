@@ -7,6 +7,7 @@ only the existing selected-stop ptrace primitive and retains four bytes.
 """
 import base64
 import errno
+import importlib.util
 import hashlib
 import json
 import math
@@ -25,7 +26,10 @@ PRIVATE_WAKE_MODEL='actual-generated-file-vma-stopped-mm-cohort-private-wake-v5'
 PRIVATE_WAIT_MODEL='actual-generated-file-vma-stopped-mm-cohort-private-wait-mismatch-v6'
 COORDINATED_WAIT_MODEL='actual-generated-file-vma-stopped-mm-cohort-coordinated-wait-v7'
 PARKED_WAIT_MODEL='actual-generated-file-vma-stopped-mm-cohort-parked-universe-wait-v8'
-COORDINATED_WAIT_MODELS=(COORDINATED_WAIT_MODEL,PARKED_WAIT_MODEL)
+PHASE_PARENT_MODEL='actual-generated-file-vma-stopped-mm-cohort-phase-parent-budget-v9'
+PHASE_PARENT_MODELS=(PHASE_PARENT_MODEL,)
+PARKED_WAIT_MODELS=(PARKED_WAIT_MODEL,PHASE_PARENT_MODEL)
+COORDINATED_WAIT_MODELS=(COORDINATED_WAIT_MODEL,PARKED_WAIT_MODEL,PHASE_PARENT_MODEL)
 PRIVATE_WAIT_MODELS=(PRIVATE_WAIT_MODEL,*COORDINATED_WAIT_MODELS)
 WAKE_MODELS=(PRIVATE_WAKE_MODEL,*PRIVATE_WAIT_MODELS)
 COHORT_MODELS=(COHORT_MODEL,*WAKE_MODELS)
@@ -35,6 +39,8 @@ WAKE_RESERVATION_BYTES=WAKE_RAW_RECORDS*65536
 CANONICAL_FILE_MAXIMUM=json.loads((Path(__file__).resolve().parents[2]/'scripts/lib/module-artifact-limits.json').read_bytes())['shardBytes']
 MAPPING_KIND='actual-exclusive-mmap-selected-file-v1'
 BUILD_ROOT='/opt/qlever-sdk/build'
+_budget_spec=importlib.util.spec_from_file_location('sdk_phase_budget_vma',Path(__file__).resolve().parent/'sdk-execution-budget.py')
+budget_policy_module=importlib.util.module_from_spec(_budget_spec);_budget_spec.loader.exec_module(budget_policy_module)
 
 def validated_build_root(value):
     # Supplied by the trusted caller, never inferred from a trace declaration.
@@ -44,6 +50,18 @@ def validated_build_root(value):
 FLAGS=0x4001  # Linux v6.12 UAPI: MAP_SHARED | MAP_NORESERVE; exact word only.
 PROTECTION=3
 WINDOW_SECONDS=1.0
+
+def validate_window_budget(window,row,parent,model):
+    """Independent exact check of the declared window budget policy."""
+    start=int(window['observedMonotonicNs']);deadline=int(window['windowDeadlineMonotonicNs']);observed_parent=int(window['parentDeadlineMonotonicNs'])
+    if model==PHASE_PARENT_MODEL:
+        policy=budget_policy_module.PHASE_PARENT_BUDGET_POLICY.declaration()
+        need(window.get('budgetPolicy')==policy and row.get('budgetPolicy')==policy,'exact declared phase-parent budget policy required')
+        need(row['windowDeadlineMonotonicNs']==window['windowDeadlineMonotonicNs'] and row['parentDeadlineMonotonicNs']==window['parentDeadlineMonotonicNs'] and start<int(row['observedMonotonicNs'])<deadline==observed_parent==parent,'exact parent-owned phase budget window required')
+    else:
+        need('budgetPolicy' not in window and 'budgetPolicy' not in row,'legacy mapping window cannot borrow phase-parent policy')
+        need(row['windowDeadlineMonotonicNs']==window['windowDeadlineMonotonicNs'] and row['parentDeadlineMonotonicNs']==window['parentDeadlineMonotonicNs'] and start<int(row['observedMonotonicNs'])<deadline<=observed_parent==parent and deadline-start<=int(WINDOW_SECONDS*1e9),'bounded single parent-owned mapping window required')
+    return True
 # One operation/ABI table, consumed by producer and independent replay.
 ABI={0xc000003e:dict(open=2,openat=257,resize=77,map=9,unmap=11,close=3,write=1,wake=202),0xc00000b7:dict(open=None,openat=56,resize=46,map=222,unmap=215,close=57,write=64,wake=98)}
 CREATE_REQUIRED=0x40|0x80
@@ -83,7 +101,7 @@ def map_dimensions(entry,fd,length=1):
 def private_wait_dimensions(entry,active,*,model=PRIVATE_WAIT_MODEL):
     need(operation(entry)=='wake','actual futex syscall ABI required')
     args=entry['args'];need(all(type(word) is int and 0<=word<1<<64 for word in args),'canonical six raw futex words required')
-    if model==PARKED_WAIT_MODEL:
+    if model in PARKED_WAIT_MODELS:
         need(args[2]<=0xffffffff and (args[1]==128 and args[3]==0 or args[1]==393 and args[3:]==[0,0,0xffffffff]),'only private untimed WAIT or realtime WAIT_BITSET supported')
     else:need(args[1:]==[393,0,0,0,0xffffffff],'only exact private WAIT_BITSET realtime mismatch dimensions supported')
     address=args[0];need(address>0 and address%4==0 and address+4<=1<<64 and (address+4<=active['address'] or address>=active['address']+active['span']),'wait word aligned and outside dirty mapping required')
@@ -357,8 +375,8 @@ class MemoryDomains:
 class Runtime:
     def __init__(self,backend):
         need(not getattr(backend,'generated_vma_private_wake',False) or getattr(backend,'generated_vma_shared_mm',False),'private wake requires existing stopped-MM model')
-        self.b=backend;self.model=PARKED_WAIT_MODEL if getattr(backend,'generated_vma_parked_wait',False) else COORDINATED_WAIT_MODEL if getattr(backend,'generated_vma_coordinated_wait',False) else PRIVATE_WAIT_MODEL if getattr(backend,'generated_vma_private_wait_mismatch',False) else PRIVATE_WAKE_MODEL if getattr(backend,'generated_vma_private_wake',False) else (COHORT_MODEL if getattr(backend,'generated_vma_shared_mm',False) else MODEL);self.mm=MemoryDomains();self.origins={};self.pending={};self.active=None;self.checkpoints={};self.reserved=0;self.metadata_bytes=0;self.spending_thread=None;self.cleanup_errors=[];self.wake_closing=None;self.retained_metadata=getattr(backend,'retained_generated_metadata',False);self.metadata_close_entry=None;self.metadata_high_water=0
-        need(not self.retained_metadata or self.model==PARKED_WAIT_MODEL,'retained metadata requires explicit parked-wait model')
+        self.b=backend;policy=getattr(backend,'phase_budget_policy',None) or budget_policy_module.LEGACY_PHASE_BUDGET_POLICY;self.policy=policy;self.model=PHASE_PARENT_MODEL if policy.observation_window=='phase-parent' else PARKED_WAIT_MODEL if getattr(backend,'generated_vma_parked_wait',False) else COORDINATED_WAIT_MODEL if getattr(backend,'generated_vma_coordinated_wait',False) else PRIVATE_WAIT_MODEL if getattr(backend,'generated_vma_private_wait_mismatch',False) else PRIVATE_WAKE_MODEL if getattr(backend,'generated_vma_private_wake',False) else (COHORT_MODEL if getattr(backend,'generated_vma_shared_mm',False) else MODEL);self.mm=MemoryDomains();self.origins={};self.pending={};self.active=None;self.checkpoints={};self.reserved=0;self.metadata_bytes=0;self.spending_thread=None;self.cleanup_errors=[];self.wake_closing=None;self.retained_metadata=getattr(backend,'retained_generated_metadata',False);self.metadata_close_entry=None;self.metadata_high_water=0
+        need(not self.retained_metadata or self.model in PARKED_WAIT_MODELS,'retained metadata requires explicit parked-wait model')
     def charge_metadata(self,row):
         self.metadata_bytes+=len(json.dumps(row,separators=(',',':')).encode());need(self.metadata_bytes<=4*1024**2,'shared generated metadata bound');self.metadata_high_water=max(self.metadata_high_water,self.metadata_bytes)
     def checkpoint_metadata(self,close):
@@ -485,7 +503,7 @@ class Runtime:
         need((domain,members)==(self.active['memoryDomain'],self.active['memoryDomainMembers']),'wait cohort changed')
         rows=[];baseline=None
         for member in members:
-            raw,parsed=self.maps(member);mapping=wait_word_mapping(parsed,address,allow_heap=self.model==PARKED_WAIT_MODEL);geometry=numeric_mapping_geometry(parsed,self.b.check_deadline)
+            raw,parsed=self.maps(member);mapping=wait_word_mapping(parsed,address,allow_heap=self.model in PARKED_WAIT_MODELS);geometry=numeric_mapping_geometry(parsed,self.b.check_deadline)
             if baseline is None:baseline=geometry
             else:same_mapping_geometry(geometry,baseline,self.b.check_deadline)
             rows.append(dict(pid=member,original=raw['original'],mapping=mapping))
@@ -550,8 +568,9 @@ class Runtime:
                     common.setdefault('peerMaps',[]).append(dict(pid=peer,original=other['original']))
                 common.update(beforeMapsOriginal=maps['original'],aliases=aliases)
                 if op=='map':
-                    page=os.sysconf('SC_PAGE_SIZE');rounded_span(0,current[3],page);end=min(b.deadline,time.monotonic()+WINDOW_SECONDS);pending.update(alarmToken=b.waiter.clamp(end),windowEnd=end);getattr(b,'window_arm',lambda _d:None)(int(end*1e9));b.open_outer_lease_window()
+                    page=os.sysconf('SC_PAGE_SIZE');rounded_span(0,current[3],page);end=self.policy.observation_window_deadline(b.waiter.parent_deadline,time.monotonic());pending.update(alarmToken=b.waiter.clamp(end),windowEnd=end);getattr(b,'window_arm',lambda _d:None)(int(end*1e9));b.open_outer_lease_window()
                     common.update(pageBytes=page,memoryDomain=domain,windowDeadlineMonotonicNs=str(int(end*1e9)),parentDeadlineMonotonicNs=str(int(b.waiter.parent_deadline*1e9)))
+                    if self.model==PHASE_PARENT_MODEL:common['budgetPolicy']=self.policy.declaration()
             if op=='unmap':
                 current,ref=self.snapshot(held);maps,values=self.maps(pid);mapping=verify_established(values,self.active['address'],self.active['page'],current,self.active['length']);common.update(beforeOriginal=ref,beforeMapsOriginal=maps['original'],epochSequence=self.active['sequence'])
                 if self.model in COHORT_MODELS:
@@ -651,7 +670,7 @@ class Runtime:
         if checkpoint is None:return False
         need(origin and identity(os.fstat(origin['held']))==identity_value and data==(checkpoint['original']['bytes'],checkpoint['original']['sha256']),'mapped consumer held byte checkpoint differs')
         extra={}
-        if self.model==PARKED_WAIT_MODEL:
+        if self.model in PARKED_WAIT_MODELS:
             extra['metadataTransitions']=self.b.retained_metadata_chain(checkpoint,row)
         else:need(identity_value==checkpoint['identity'] and row['path']==checkpoint['path'],'mapped consumer held byte checkpoint differs')
         self.b.emit(dict(kind='generated-vma-consumer-binding',captureSequence=row['sequence'],checkpointSequence=checkpoint['sequence'],path=row['path'],identity=identity_value,**extra));return True
@@ -673,8 +692,8 @@ class Verifier:
     """Independent bounded raw/original replay; no caller Boolean approval."""
     def __init__(self,capture_data,maps_data,metadata_maximum=4*1024**2,model=LEGACY_MODEL,read_blocks=None,maximum_file=1024**2,retained_metadata=False,build_root=BUILD_ROOT):
         self.build_root=validated_build_root(build_root)
-        need(model in [LEGACY_MODEL,KERNEL_LINK_MODEL,MODEL,COHORT_MODEL,*WAKE_MODELS],'unknown mapping evidence model');self.model=model;self.read_blocks=read_blocks;self.maximum_file=maximum_file
-        need(type(retained_metadata)is bool and(not retained_metadata or model==PARKED_WAIT_MODEL),'retained metadata requires explicit parked-wait model');self.retained_metadata=retained_metadata;self.metadata_high_water=0;self.metadata_closed_operation=None
+        need(model in [LEGACY_MODEL,KERNEL_LINK_MODEL,MODEL,COHORT_MODEL,PHASE_PARENT_MODEL,*WAKE_MODELS],'unknown mapping evidence model');self.model=model;self.read_blocks=read_blocks;self.maximum_file=maximum_file
+        need(type(retained_metadata)is bool and(not retained_metadata or model in PARKED_WAIT_MODELS),'retained metadata requires explicit parked-wait model');self.retained_metadata=retained_metadata;self.metadata_high_water=0;self.metadata_closed_operation=None
         self.capture_data=capture_data;self.maps_data=maps_data;self.metadata_maximum=metadata_maximum;self.mm=MemoryDomains();self.windows={};self.origins={};self.original_sequences={};self.map_sequences={};self.map_owners={};self.pending_window=None;self.transaction=None;self.active=None;self.events={};self.checkpoints={};self.consumers=[];self.metadata_bytes=0;self.pending_mapping_entries=set();self.create_paths={};self.last_observed_ns=None;self.parent_deadline_ns=None;self.fd_bindings={};self.private_wakes=[];self.private_waits=[]
     def charge_metadata(self,row):
         self.metadata_bytes+=len(json.dumps(row,separators=(',',':')).encode());need(self.metadata_bytes<=4*1024**2,'shared generated replay metadata bound');self.metadata_high_water=max(self.metadata_high_water,self.metadata_bytes)
@@ -705,7 +724,7 @@ class Verifier:
         geometry=None
         for offset,sample in enumerate(samples):
             ref=sample['original'];key=self.map_key(ref);need(self.map_sequences.get(key)==barrier['sequence']+offset+1 and self.map_owners.get(key)==sample['pid'],'wait maps raw owner/order differs')
-            parsed=self.maps_data(ref);need(wait_word_mapping(parsed,address,allow_heap=self.model==PARKED_WAIT_MODEL)==sample['mapping'],'wait private anonymous mapping differs');current=numeric_mapping_geometry(parsed)
+            parsed=self.maps_data(ref);need(wait_word_mapping(parsed,address,allow_heap=self.model in PARKED_WAIT_MODELS)==sample['mapping'],'wait private anonymous mapping differs');current=numeric_mapping_geometry(parsed)
             if geometry is None:geometry=current
             else:need(current==geometry,'wait cohort VMA geometry differs')
         need(row['sequence']==barrier['sequence']+len(samples)+1,'wait maps closure adjacency differs');verify_wait_word(row['wordOriginal'],entry,self.active,model=self.model)
@@ -907,7 +926,7 @@ class Verifier:
                         before=window['procLease'];need(sample['directoryIdentity']==before['directoryIdentity'] and sample['statIdentity']==before['statIdentity'] and sample['starttime']==before['starttime'] and proc_identity(raw_bytes(sample['statOriginal']),row['pid'])==int(before['starttime']),'actual held proc lifetime differs')
                 if self.model in COHORT_MODELS:
                     domain,members=self.mapping_domain(row['pid'],post);need(row.get('memoryDomainMembers')==window['memoryDomainMembers']==members and domain==window['memoryDomain'],'post-map cohort changed');self.verify_cohort_maps(row.get('postMapPeerMaps'),row['pid'],members,self.maps_data(row['mapsOriginal']),post,seq,origin['identity'],actual['result'],window['pageBytes'],origin['identity'][3])
-                start=int(window['observedMonotonicNs']);deadline=int(window['windowDeadlineMonotonicNs']);parent=int(window['parentDeadlineMonotonicNs']);need(row['windowDeadlineMonotonicNs']==window['windowDeadlineMonotonicNs'] and row['parentDeadlineMonotonicNs']==window['parentDeadlineMonotonicNs'] and start<int(row['observedMonotonicNs'])<deadline<=parent==self.parent_deadline_ns and deadline-start<=int(WINDOW_SECONDS*1e9),'bounded single parent-owned mapping window required')
+                start=int(window['observedMonotonicNs']);deadline=int(window['windowDeadlineMonotonicNs']);validate_window_budget(window,row,self.parent_deadline_ns,self.model)
                 origin['fd']=window['fd'];self.active=dict(pid=row['pid'],originSequence=window['originSequence'],address=actual['result'],page=window['pageBytes'],length=origin['identity'][3] if self.model in [MODEL,COHORT_MODEL,*WAKE_MODELS] else 1,span=rounded_span(actual['result'],origin['identity'][3] if self.model in [MODEL,COHORT_MODEL,*WAKE_MODELS] else 1,window['pageBytes']),deadline=deadline,start=start,sequence=seq)
                 if self.model in COHORT_MODELS:self.active.update(memoryDomain=window['memoryDomain'],memoryDomainMembers=window['memoryDomainMembers'])
             elif op=='close':
@@ -939,7 +958,7 @@ class Verifier:
             cap=caps.get(row['captureSequence']);checkpoint=self.checkpoints.get(row['checkpointSequence']);need(cap and checkpoint,'mapped consumer originals missing');actual,data=cap;exit=exits.get(actual['entrySequence'])
             if exit is None or exit['isError'] or exit['result']<=0:continue
             need(actual['role']=='consumer' and checkpoint['sequence']<actual['sequence']<row['sequence'] and actual['identity']==row['identity'] and actual['path']==row['path'] and data==checkpoint['data'],'mapped generated consumer byte/identity checkpoint differs')
-            if self.model==PARKED_WAIT_MODEL:
+            if self.model in PARKED_WAIT_MODELS:
                 need(row.get('metadataTransitions')==self.metadata_chain(checkpoint,actual,self.verified_metadata_states),'mapped consumer verified metadata chain differs')
             else:need(actual['identity']==checkpoint['identity']and 'metadataTransitions'not in row,'mapped generated consumer byte/identity checkpoint differs')
             outputs.append(dict(path=actual['path'],bytes=data[0],sha256=data[1],consumerCaptureSequence=actual['sequence'],mappedCheckpointSequence=checkpoint['sequence']))

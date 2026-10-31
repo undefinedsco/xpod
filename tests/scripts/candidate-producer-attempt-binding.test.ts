@@ -48,7 +48,7 @@ const prefix=(groups:readonly unknown[],hashes:readonly string[],label:string)=>
 };
 
 it('every published whole prefix is byte-identical to the captured baseline',()=>{
-  expect(SDK).toHaveLength(87);expect(LINUX).toHaveLength(88);
+  expect(SDK).toHaveLength(88);expect(LINUX).toHaveLength(89);
   expect(CONSUMER).toHaveLength(99);expect(CI).toHaveLength(196);
   expect(API).toHaveLength(29);expect(CLI).toHaveLength(12);
   prefix(SDK,OLD_SDK_GROUPS,'sdk');prefix(LINUX,OLD_LINUX_GROUPS,'linux');
@@ -72,7 +72,7 @@ it('helper and readonly prefixes are unchanged',()=>{
   const readonly=decodeCatalog('scripts/lib/independent-admission/qlever-sdk-readonly-executor.ts','REVIEWED_READONLY_HELPER_GROUPS') as readonly unknown[];
   // The live frontier gained two appended current tuples (7 frozen + 2 new);
   // the frozen prefix vector below is what still proves the history.
-  expect(readonly).toHaveLength(9);
+  expect(readonly).toHaveLength(10);
   for(let i=0;i<OLD_READONLY_GROUPS.length;i++) expect(whole(readonly[i]),`readonly[${i}]`).toBe(OLD_READONLY_GROUPS[i]);
 });
 

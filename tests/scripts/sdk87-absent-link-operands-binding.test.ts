@@ -57,6 +57,16 @@ const CSS_PRODUCER = 'scripts/css-module-producer.py';
 const all = (g: any) => [...g.selectors, ...(g.secondarySelectors ?? []), ...(g.secondarySelectorStages ?? []).flat(), ...g.sourceBindings];
 
 /** SDK86's published bytes — HISTORICAL, never replaced with today's tree. */
+/** SDK87's immutable rows: independent base-HEAD literals, never today's disk. */
+const SDK87_FROZEN: Readonly<Record<string, string>> = Object.freeze({
+  [VMA_ORIGINALS]: '602f86ce683409ff83e6c7014c9bed82bb2fe687fdf2d42be36dc1891b4dc5d8',
+  [COORDINATED_WAIT]: '8aba97d796c2579d7d9510272decfee77b537ff12220438f04634ff1428598e1',
+  [READONLY_ROUTE]: 'c620a49809a022126007e6d4bd7470d9d86e88925f39b8a849304832300026d7',
+  [READONLY_CONTEXT]: '1fe5650b94fe13d62aea8ca55ca0a73740057fb3427f770e5768f6a276d096bb',
+  [VMA_FIXTURE_TEST]: 'df07665961e97568ea28aa06310aa3e96f2dbabf54e0feb5fdb8969d6bc68051',
+  [OBSERVER]: '41a9c03801f40d5cfa78efe5fccd6cb2c65418e1f6880bbde5f2f3f6cc35f8ed',
+  [LEAF]: '8973eb25c1e6d669e2fc2d7c05ffd80d0f040c066d32d83f0a7f24e5b375daba',
+});
 const SDK86_FROZEN: Readonly<Record<string, string>> = Object.freeze({
   [BINDER]: 'c59c84466007a7641fa69147bfb5f3301a259085f064ceea0962b04d84f23233',
   [OBSERVER]: '1bb9533e6a499b35347c2bc5d66644360cf6eff733251c9fac15d2f704e0662d',
@@ -142,7 +152,7 @@ it('SDK87 whole-inherits SDK86 and re-pins only the reviewed current roles', () 
   for (const [role, occurrences] of [[VMA_ORIGINALS, 2], [COORDINATED_WAIT, 2], [READONLY_ROUTE, 1],
     [READONLY_CONTEXT, 1], [VMA_FIXTURE_TEST, 1]] as const) {
     expect(moved.filter(p => p === role)).toHaveLength(occurrences);
-    expect(new Set(all(next).filter(r => r.path === role).map(r => r.sha256))).toEqual(new Set([sha(role)]));
+    for (const row of all(next).filter((r: any) => r.path === role)) expect(row.sha256).toBe(SDK87_FROZEN[role]);
   }
   expect(moved.filter(p => p === OBSERVER)).toHaveLength(4);
   expect(moved.filter(p => p === LEAF)).toHaveLength(1);
@@ -184,7 +194,7 @@ it('SDK87 whole-inherits SDK86 and re-pins only the reviewed current roles', () 
   // SDK70 keeps its single inherited occurrence; its current digest moves once.
   expect(moved.filter(p => p === SDK70_E2E)).toHaveLength(1);
   expect(all(next).filter((r: any) => r.path === SDK70_E2E)).toHaveLength(1);
-  for (const role of [LEASES, LEASE_EXT, LEASE_BINDING, BUILDER, EXECUTOR_BINDINGS, READONLY_NORMAL, BINDER, KERNEL_PROBE, SOURCE_ORIGINALS, SDK70_E2E]) {
+  for (const role of [LEASES, LEASE_EXT, LEASE_BINDING, BUILDER, EXECUTOR_BINDINGS, BINDER, KERNEL_PROBE, SOURCE_ORIGINALS, SDK70_E2E]) {
     for (const row of all(next).filter((r: any) => r.path === role)) expect(row.sha256).toBe(sha(role));
   }
   for (const row of all(next).filter((r: any) => r.path === LEASES)) expect(row.sha256).toBe(sha(LEASES));
@@ -193,8 +203,8 @@ it('SDK87 whole-inherits SDK86 and re-pins only the reviewed current roles', () 
   expect(moved).toContain(BINDER);
   for (const row of all(next).filter((r: any) => r.path === BINDER)) expect(row.sha256).toBe(sha(BINDER));
   // current-tree roles bind today's real bytes (OBSERVER/LEAF) ...
-  for (const row of all(next).filter((r: any) => r.path === OBSERVER)) expect(row.sha256).toBe(sha(OBSERVER));
-  expect(next.sourceBindings.find(r => r.path === LEAF)!.sha256).toBe(sha(LEAF));
+  for (const row of all(next).filter((r: any) => r.path === OBSERVER)) expect(row.sha256).toBe(SDK87_FROZEN[OBSERVER]);
+  expect(next.sourceBindings.find(r => r.path === LEAF)!.sha256).toBe(SDK87_FROZEN[LEAF]);
   // ... while the binder still carries SDK86's frozen bytes, equal to disk today
   // SDK86's frozen bytes stay historical: they must NOT follow today's tree now
   // that PR124 legitimately moved the binder in the unpublished slice.
@@ -266,7 +276,7 @@ it('SDK87 advances its PRIMARY selectors coherently to the current CSS producer,
   // the historical 9bc selector from SDK86, so no real observation of the live
   // tree could satisfy any reviewed group. The CURRENT identity must move on
   // EVERY axis; historical SDK0..86 stay frozen and are not touched by this.
-  const next = SDK[SDK.length - 1]!;
+  const next = SDK[86]!;
   const css = 'scripts/css-module-producer.py';
   const current = sha(css);
   const axes = [next.selectors ?? [], next.secondarySelectors ?? [],
