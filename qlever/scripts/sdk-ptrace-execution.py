@@ -112,6 +112,14 @@ def held_outer_lease_context_matches(observer,waiter,claim,active,deadline,paren
 AUDIT_BODY_ROLES=('writable_aliases','snapshot_raw','read_capture_fd','tool_original','legacy_tool_maps')
 AUDIT_BODY_CALLBACKS=('Observer.writable_aliases.<locals>.read_aliases','Observer.snapshot_write_original.<locals>.body','Observer.read_capture_fd.<locals>.body','Observer.tool_original.<locals>.body','Observer.tool_maps.<locals>.body')
 AUDIT_SNAPSHOT_SITES=('observer-leading','scan','check','publish-chunks','stage-manifest','cleanup','manifest-read')
+# Fixed parent buckets for the same-window `otherNative` residual.  The bucket
+# is the nearest enclosing instrument() name at the sweep's start; this is
+# already held state, not a stack walk.  Unknown names never become keys.
+AUDIT_NATIVE_PARENT_BUCKETS=(*PHASE_PROGRESS_BUCKETS,'none','unknown')
+_AUDIT_NATIVE_PARENT_INDEX={name:index for index,name in enumerate(AUDIT_NATIVE_PARENT_BUCKETS)}
+AUDIT_NATIVE_PARENT_NONE=_AUDIT_NATIVE_PARENT_INDEX['none']
+AUDIT_NATIVE_PARENT_UNKNOWN=_AUDIT_NATIVE_PARENT_INDEX['unknown']
+AUDIT_NATIVE_PARENT_COLUMNS=['bucket','calls','errors','elapsedNs']
 AUDIT_SITE_PREFIX='SDK_OWNED_WINDOW_AUDIT_SITES '
 AUDIT_SITE_MAXIMUM_BYTES=6144
 AUDIT_COUNTER_MAXIMUM=(1<<63)-1
@@ -127,6 +135,7 @@ class OwnedWindowAuditSites:
         self.bodies=[[0]*10 for _ in AUDIT_BODY_ROLES]
         self.snapshots=[[0]*4 for _ in AUDIT_SNAPSHOT_SITES]
         self.other=[0]*3;self.crossed=[0]*3;self.clock_misses=0
+        self.nativeParents=[[0,0,0] for _ in AUDIT_NATIVE_PARENT_BUCKETS]
     @staticmethod
     def add(row,index,value=1):row[index]=min(AUDIT_COUNTER_MAXIMUM,row[index]+max(0,value))
     def valid(self,observer):
@@ -169,14 +178,17 @@ class OwnedWindowAuditSites:
         if ticket[1]=='body' and ticket[2]>=0 and started and self.valid(observer):
             self.add(self.bodies[ticket[2]],2 if returned else 3)
         if self.tag is ticket:self.tag=ticket[4]
-    def native_begin(self,observer,started):
+    def native_begin(self,observer,started,parent=None):
         if not self.valid(observer):return None
         tag=self.tag;kind='other';index=-1;boundary=-1
         if tag is not None and tag[0] is self:
             kind,index=tag[1:3]
             if kind=='body':
                 boundary=0 if tag[3] is None else 2 if tag[5] else 1
-        value=[self,kind,index,boundary,started,self.active]
+        if parent is None:parent_index=AUDIT_NATIVE_PARENT_NONE
+        elif type(parent) is str and parent in PHASE_PROGRESS_BUCKETS:parent_index=_AUDIT_NATIVE_PARENT_INDEX[parent]
+        else:parent_index=AUDIT_NATIVE_PARENT_UNKNOWN
+        value=[self,kind,index,boundary,started,self.active,parent_index]
         self.active=value;return value
     def native_end(self,observer,ticket,ended,error):
         if ticket is None or ticket[0] is not self:return
@@ -196,6 +208,10 @@ class OwnedWindowAuditSites:
                 row=self.snapshots[ticket[2]];self.add(row,1);self.add(row,2,int(error is not None));self.add(row,3,elapsed)
             else:
                 self.add(self.other,0);self.add(self.other,1,int(error is not None));self.add(self.other,2,elapsed)
+                parent_index=ticket[6] if len(ticket)>6 and type(ticket[6]) is int else AUDIT_NATIVE_PARENT_UNKNOWN
+                if not 0<=parent_index<len(self.nativeParents):parent_index=AUDIT_NATIVE_PARENT_UNKNOWN
+                row=self.nativeParents[parent_index]
+                self.add(row,0);self.add(row,1,int(error is not None));self.add(row,2,elapsed)
             if error is not None and target.first_failed is None:
                 target.first_failed=(ticket[1],ticket[2],ticket[3],started,True)
         finally:
@@ -216,7 +232,19 @@ class OwnedWindowAuditSites:
             otherNative=list(self.other),crossedWindowNative=list(self.crossed),clockMisses=self.clock_misses,
             active=self.slot(active),firstFailed=self.slot(self.first_failed),
             semantics='lease-attempt wall time only; failed attempts can be partial; crossed-window time separate; never add to inclusive parent buckets')
-        return result if len((AUDIT_SITE_PREFIX+json.dumps(result,separators=(',',':'))+'\n').encode())<=AUDIT_SITE_MAXIMUM_BYTES else None
+        if len((AUDIT_SITE_PREFIX+json.dumps(result,separators=(',',':'))+'\n').encode())>AUDIT_SITE_MAXIMUM_BYTES:return None
+        # Optional split of the same-window otherNative residual.  The old
+        # result is already serialized above; if this field does not fit, return
+        # that old result unchanged rather than dropping the whole summary.
+        parents=[[name,*row] for name,row in zip(AUDIT_NATIVE_PARENT_BUCKETS,self.nativeParents)]
+        enriched=dict(result,
+            otherNativeParentColumns=list(AUDIT_NATIVE_PARENT_COLUMNS),
+            otherNativeParents=parents,
+            otherNativeParentSemantics=('same-window otherNative only; bucket is the nearest enclosing instrument() '
+                'at sweep start; calls/errors reconcile absent saturation; body/snapshot and crossedWindowNative are separate; '
+                'per-attempt elapsed is already in otherNative and may overlap nested attempts; failures may be partial'))
+        if len((AUDIT_SITE_PREFIX+json.dumps(enriched,separators=(',',':'))+'\n').encode())<=AUDIT_SITE_MAXIMUM_BYTES:return enriched
+        return result
 
 
 class PhaseProgress:
@@ -3814,7 +3842,7 @@ class Observer(CapturesMixin):
         ticket=None;failure=None
         try:
             sites=getattr(self,'_audit_sites',None)
-            if name=='lifetime_lease_check' and sites is not None:ticket=self.audit_site(sites,'native_begin',started)
+            if name=='lifetime_lease_check' and sites is not None:ticket=self.audit_site(sites,'native_begin',started,previous[0])
             return function(*arguments,**keywords)
         except BaseException as error:
             failure=error

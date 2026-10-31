@@ -215,6 +215,15 @@ class UnitAuditSites(unittest.TestCase):
                 finally:setattr(target,attribute,previous)
         finally:self.sites.remove(self.o,ticket)
         self.assertIsNone(self.sites.tag)
+        # Keep the exact required case set while exercising each new subcheck.
+        for name in _CALLER_ATTRIBUTION_CHECK_NAMES:
+            with self.subTest(native_parent=name):
+                result = unittest.TestResult()
+                _CallerAttributionChecks(name).run(result)
+                self.assertEqual(result.testsRun, 1)
+                self.assertEqual(result.skipped, [])
+                self.assertEqual(result.errors, [])
+                self.assertEqual(result.failures, [])
     def test_saturated_output_fixed_six_kib_bound(self):
         for row in self.sites.bodies+self.sites.snapshots+[self.sites.other,self.sites.crossed]:
             for i in range(len(row)):row[i]=core.AUDIT_COUNTER_MAXIMUM
@@ -352,6 +361,201 @@ class UnitAuditSites(unittest.TestCase):
         self.assertEqual(self.summary()['readBodies']['read_capture_fd'][:2],[1,0])
     def test_reset_clears_optional_attribution(self):
         self.o.reset_owned_frames();self.assertIsNone(self.o._audit_sites)
+
+class _CallerAttributionChecks(unittest.TestCase):
+    # Explicit subchecks reuse the existing fixture and run inside a required case.
+    setUp = UnitAuditSites.setUp
+    summary = UnitAuditSites.summary
+    body = UnitAuditSites.body
+
+    def rows(self, value):
+        self.assertEqual(value['otherNativeParentColumns'], core.AUDIT_NATIVE_PARENT_COLUMNS)
+        rows = value['otherNativeParents']
+        self.assertEqual([row[0] for row in rows], list(core.AUDIT_NATIVE_PARENT_BUCKETS))
+        return {row[0]: row[1:] for row in rows}
+
+    def check_exact_parent_buckets_split_other_native_and_sum(self):
+        for parent in ('emit', 'barrier', 'verify_task_ownership', 'not-a-bucket'):
+            self.o.instrument(parent, self.o.check)
+        self.o.check()  # no enclosing instrument -> fixed none bucket
+
+        value = self.summary()
+        rows = self.rows(value)
+        expected = {'emit': 1, 'barrier': 1, 'verify_task_ownership': 1, 'unknown': 1, 'none': 1}
+        for bucket, calls in expected.items():
+            self.assertEqual(rows[bucket][0], calls, bucket)
+        self.assertEqual(value['otherNative'][0], 5)
+        self.assertEqual(sum(row[0] for row in rows.values()), value['otherNative'][0])
+        self.assertEqual(sum(row[1] for row in rows.values()), value['otherNative'][1])
+        self.assertEqual(sum(row[2] for row in rows.values()), value['otherNative'][2])
+        self.assertGreater(rows['emit'][2], 0)
+
+    def check_body_native_is_not_double_counted_as_parent_residual(self):
+        self.body(lambda: None, 'read_capture_fd')
+        value = self.summary()
+        self.assertEqual(value['otherNative'][0], 0)
+        self.assertEqual(sum(row[0] for row in self.rows(value).values()), 0)
+        self.assertEqual(value['readBodies']['read_capture_fd'][4], 1)
+
+    def check_unknown_parent_names_never_grow_or_leak(self):
+        fixed = len(core.AUDIT_NATIVE_PARENT_BUCKETS)
+        for parent in ('emit2', '/proc/private', 'x' * 200, 'none', 'unknown'):
+            self.o.instrument(parent, self.o.check)
+        value = self.summary()
+        rows = self.rows(value)
+        self.assertEqual(len(rows), fixed)
+        self.assertEqual(rows['unknown'][0], 5)
+        self.assertEqual(rows['none'][0], 0)
+        self.assertNotIn('emit2', json.dumps(value))
+        self.assertNotIn('/proc/private', json.dumps(value))
+
+    def check_crossed_window_is_separate_from_parent_buckets(self):
+        def crossing():
+            self.clock += 0.001
+            self.o.waiter.deadline = 1002.0
+            self.o.window_arm(1002000000000)
+
+        self.o.instrument('emit', lambda: self.o.instrument('lifetime_lease_check', crossing))
+        value = self.summary()
+        self.assertEqual(value['crossedWindowNative'][0], 1)
+        self.assertEqual(value['otherNative'][0], 0)
+        self.assertEqual(sum(row[0] for row in self.rows(value).values()), 0)
+
+    def check_invalid_binding_does_not_attach_parent(self):
+        thread = threading.Thread(target=lambda: self.o.instrument('emit', self.o.check))
+        thread.start(); thread.join()
+        self.assertEqual(self.o._audit_sites.nativeParents, [[0, 0, 0] for _ in core.AUDIT_NATIVE_PARENT_BUCKETS])
+
+        previous = self.o.current_phase
+        self.o.current_phase = 'other'
+        try:
+            self.o.instrument('emit', self.o.check)
+            self.assertIsNone(self.summary())
+        finally:
+            self.o.current_phase = previous
+        self.assertEqual(self.o._audit_sites.nativeParents, [[0, 0, 0] for _ in core.AUDIT_NATIVE_PARENT_BUCKETS])
+
+        for attribute, value in (('deadline', 1002.0), ('window', object())):
+            old = getattr(self.o.waiter, attribute)
+            setattr(self.o.waiter, attribute, value)
+            try:
+                self.o.instrument('emit', self.o.check)
+                self.assertIsNone(self.summary())
+            finally:
+                setattr(self.o.waiter, attribute, old)
+        self.assertEqual(self.o._audit_sites.nativeParents, [[0, 0, 0] for _ in core.AUDIT_NATIVE_PARENT_BUCKETS])
+
+    def check_parent_rows_saturate_and_remain_bounded(self):
+        for row in self.o._audit_sites.nativeParents:
+            row[:] = [core.AUDIT_COUNTER_MAXIMUM] * 3
+        self.o._audit_sites.other[:] = [core.AUDIT_COUNTER_MAXIMUM] * 3
+        for _ in range(3):
+            self.o.instrument('emit', self.o.check)
+        value = self.summary()
+        rows = self.rows(value)
+        self.assertEqual(rows['emit'], [core.AUDIT_COUNTER_MAXIMUM] * 3)
+        self.assertEqual(value['otherNative'][0], core.AUDIT_COUNTER_MAXIMUM)
+        self.assertLessEqual(len(json.dumps(value).encode()), 6144)
+        self.o.lifetime_leases.fds = ()
+        output = io.StringIO()
+        with patch.object(core.sys, 'stderr', output):
+            self.o.publish_phase_progress('phase-progress')
+        line = output.getvalue().splitlines(keepends=True)[0]
+        self.assertLessEqual(len(line.encode()), core.PHASE_PROGRESS_MAXIMUM_BYTES)
+        payload = json.loads(line[len(core.PHASE_PROGRESS_PREFIX):])
+        self.assertIn('otherNativeParents', payload['ownedWindowAuditSites'])
+
+    def check_new_field_overflow_returns_the_old_summary(self):
+        for row in self.o._audit_sites.nativeParents:
+            row[:] = [10 ** 300, 10 ** 300, 10 ** 300]
+        value = self.summary()
+        self.assertIsNotNone(value)
+        self.assertNotIn('otherNativeParentColumns', value)
+        self.assertNotIn('otherNativeParents', value)
+        self.assertNotIn('otherNativeParentSemantics', value)
+        self.assertIn('otherNative', value)
+        self.assertIn('readBodies', value)
+        self.assertLessEqual(len((core.AUDIT_SITE_PREFIX + json.dumps(value, separators=(',', ':')) + '\n').encode()), core.AUDIT_SITE_MAXIMUM_BYTES)
+
+    def check_published_payload_contains_parent_split_and_stays_mainline_bounded(self):
+        self.o.lifetime_leases.fds = ()
+        output = io.StringIO()
+        with patch.object(core.sys, 'stderr', output):
+            self.o.publish_phase_progress('phase-progress')
+        lines = output.getvalue().splitlines(keepends=True)
+        self.assertEqual(len(lines), 1)
+        self.assertLessEqual(len(lines[0].encode()), core.PHASE_PROGRESS_MAXIMUM_BYTES)
+        payload = json.loads(lines[0][len(core.PHASE_PROGRESS_PREFIX):])
+        audit = payload['ownedWindowAuditSites']
+        self.assertEqual(audit['otherNativeParentColumns'], core.AUDIT_NATIVE_PARENT_COLUMNS)
+        self.assertEqual([row[0] for row in audit['otherNativeParents']], list(core.AUDIT_NATIVE_PARENT_BUCKETS))
+        for old in ('bodyColumns', 'readBodies', 'snapshotColumns', 'regularSnapshot', 'otherNative',
+                    'crossedWindowNative', 'clockMisses', 'active', 'firstFailed', 'semantics'):
+            self.assertIn(old, audit)
+
+    def check_failure_sidecar_keeps_new_field_and_6144_bound(self):
+        audit = self.summary()
+        old = {'kind': 'phase-failure', 'padding': 'x' * 7000}
+        self.o.phase_progress_payload = lambda *a: dict(old, ownedWindowAuditSites=audit)
+        output = io.StringIO()
+        with patch.object(core.sys, 'stderr', output):
+            self.o.publish_phase_progress('phase-failure', failure=True)
+        lines = output.getvalue().splitlines(keepends=True)
+        self.assertEqual(len(lines), 2)
+        main = json.loads(lines[0][len(core.PHASE_PROGRESS_PREFIX):])
+        side = json.loads(lines[1][len(core.AUDIT_SITE_PREFIX):])
+        self.assertEqual(main, old)
+        self.assertEqual(side, audit)
+        self.assertEqual(side['otherNativeParentColumns'], core.AUDIT_NATIVE_PARENT_COLUMNS)
+        self.assertLessEqual(len(lines[0].encode()), 8192)
+        self.assertLessEqual(len(lines[1].encode()), 6144)
+
+    def check_parent_attribution_adds_no_clock_or_io(self):
+        def run(enabled):
+            self.setUp()
+            clocks = []
+            original = self.o.phase_progress_ns
+            def clock(progress):
+                clocks.append('clock')
+                return original(progress)
+            self.o.phase_progress_ns = clock
+            if not enabled:
+                self.o._audit_sites = None
+            with patch.object(core.os, 'open', side_effect=AssertionError('new I/O')), \
+                 patch.object(core.os, 'read', side_effect=AssertionError('new I/O')), \
+                 patch.object(core.os, 'stat', side_effect=AssertionError('new I/O')), \
+                 patch.object(core.os, 'scandir', side_effect=AssertionError('new I/O')):
+                self.o.instrument('emit', self.o.check)
+            return len(clocks), list(self.events)
+        disabled, enabled = run(False), run(True)
+        self.assertEqual(disabled, enabled,
+                         'enabling parent attribution must not add a clock read or I/O')
+        self.assertEqual(enabled[0], 4,
+                         'only the existing outer emit and inner lease start/end clocks')
+
+    def check_parent_native_error_keeps_primary_and_counts_failure(self):
+        primary = OSError('native primary')
+        self.o.lifetime_leases.check = lambda: (_ for _ in ()).throw(primary)
+        with self.assertRaises(OSError) as caught:
+            self.o.instrument('emit', self.o.check)
+        self.assertIs(caught.exception, primary)
+        self.assertIsNone(self.o._phase_progress.active)
+        value = self.summary()
+        self.assertEqual(value['otherNative'][1], 1)
+        self.assertEqual(self.rows(value)['emit'][1], 1)
+        self.assertTrue(value['firstFailed'][4])
+
+    def check_parent_failure_does_not_swallow_control_and_cleanup_stays(self):
+        for error in (TimeoutError('signal'), KeyboardInterrupt(), SystemExit(9)):
+            self.setUp()
+            self.o._audit_sites.native_begin = lambda *a, e=error, **k: (_ for _ in ()).throw(e)
+            with self.assertRaises(type(error)) as caught:
+                self.o.instrument('emit', self.o.check)
+            self.assertIs(caught.exception, error)
+            self.assertIsNone(self.o._phase_progress.active)
+
+_CALLER_ATTRIBUTION_CHECK_NAMES = ('check_exact_parent_buckets_split_other_native_and_sum', 'check_body_native_is_not_double_counted_as_parent_residual', 'check_unknown_parent_names_never_grow_or_leak', 'check_crossed_window_is_separate_from_parent_buckets', 'check_invalid_binding_does_not_attach_parent', 'check_parent_rows_saturate_and_remain_bounded', 'check_new_field_overflow_returns_the_old_summary', 'check_published_payload_contains_parent_split_and_stays_mainline_bounded', 'check_failure_sidecar_keeps_new_field_and_6144_bound', 'check_parent_attribution_adds_no_clock_or_io', 'check_parent_native_error_keeps_primary_and_counts_failure', 'check_parent_failure_does_not_swallow_control_and_cleanup_stays')
+
 
 class NativeAuditSites(common.Base):
     def setUp(self):
