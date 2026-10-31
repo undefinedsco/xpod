@@ -2292,7 +2292,7 @@ const SDK87_SOURCE_HASHES:Readonly<Record<string,string>>=Object.freeze({
  // alike — otherwise the current tuple would keep naming the previous 9bc bytes.
  'scripts/css-module-producer.py':"1ba30f5eaba9070f55135936649c43b109bf7a4a83db43b512edaa6d31abc5cc",
  'qlever/scripts/build-qlever-runtime-sdk.sh':"ebe4d4d98e29247f4565f7a7499f1beb48832a5c499833b7bb98ce62bf9467ae",
- 'qlever/scripts/sdk-ptrace-execution.py':"7c633b17d9c0957a5becb3e559a2a4d8316e248f28fdd8de53109b1c65f78328",
+ 'qlever/scripts/sdk-ptrace-execution.py':"10f9065ff3f6017b46339f9b4f51ddb6b63f15faec49530f673dc87f60a7101b",
  // Filtered-lease lookup: the token-filtered check resolves its single row by the
  // (st_dev, st_ino) key instead of scanning every held row. Selection semantics,
  // the live F_GETLEASE+fstat sweep and every rejection string are unchanged, so
@@ -2348,7 +2348,7 @@ const SDK87_SOURCE_HASHES:Readonly<Record<string,string>>=Object.freeze({
  'qlever/tests/test_sdk_generated_vma_files.py':"df07665961e97568ea28aa06310aa3e96f2dbabf54e0feb5fdb8969d6bc68051"
 ,
  // Exact same-emission callback audit, CURRENT SDK87 only.
- "qlever/scripts/sdk-coordinated-wait.py":"e65d8a60279051459fe39e531b9282a0d472a8239c71f296ab09bf2c3c112db6"
+ "qlever/scripts/sdk-coordinated-wait.py":"8aba97d796c2579d7d9510272decfee77b537ff12220438f04634ff1428598e1"
 });
 const rebindSdk87Rows=(rows:readonly GitHubSourceBinding[]|undefined)=>Object.freeze((rows??[]).map(row=>Object.freeze({...row,sha256:SDK87_SOURCE_HASHES[row.path]??row.sha256})));
 const SDK87_GROUP:GitHubSourceBindingGroup=Object.freeze({...SDK86_GROUP,

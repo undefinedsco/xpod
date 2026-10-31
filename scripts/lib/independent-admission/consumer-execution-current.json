@@ -381,7 +381,7 @@
   },
   {
     "path": "qlever/scripts/sdk-coordinated-wait.py",
-    "sha256": "e65d8a60279051459fe39e531b9282a0d472a8239c71f296ab09bf2c3c112db6"
+    "sha256": "8aba97d796c2579d7d9510272decfee77b537ff12220438f04634ff1428598e1"
   },
   {
     "path": "qlever/scripts/sdk-debian-binary-hook.py",
@@ -489,7 +489,7 @@
   },
   {
     "path": "qlever/scripts/sdk-ptrace-execution.py",
-    "sha256": "7c633b17d9c0957a5becb3e559a2a4d8316e248f28fdd8de53109b1c65f78328"
+    "sha256": "10f9065ff3f6017b46339f9b4f51ddb6b63f15faec49530f673dc87f60a7101b"
   },
   {
     "path": "qlever/scripts/sdk-ptrace-kernel.py",
@@ -941,7 +941,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/github-origin.ts",
-    "sha256": "d57cb355645363eb5ccd60ccf0e848842f1972dfdcb7a4ad95dbd3ace6cd7711"
+    "sha256": "194f1c4f7ef817c5a7d8684a6356123be4d2267db2f83f77a0ddfcc369ab0b80"
   },
   {
     "path": "scripts/lib/independent-admission/github-source-binding-groups.ts",
@@ -1205,11 +1205,11 @@
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-fetchcontent.ts",
-    "sha256": "f1ae3d3dcda1fdc0cfe2c2b3e6c762adaca67a9b95926b34f23168a7f742bde6"
+    "sha256": "2cf1fa91fd65142a8c59072ca288bc6c116e4f111213b2f054d0bd9d1893eb18"
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-generation.ts",
-    "sha256": "a2a621646a36a534c0758a6963acd37cf548796f13c735216f93595a2956f2ae"
+    "sha256": "f92c32049275a44ea1f3d2bc4d019449660fc3f304202fb653b95fbe45d3dcc8"
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-inputs.ts",
@@ -1221,7 +1221,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-origin-policy.ts",
-    "sha256": "23c2ddba61490dce5f7b47cb71b0db1ae7e60b391a89fbbd8e95d130842a4db2"
+    "sha256": "7b688c924d2513e1a78b91518f2cd58e6ef432e0a364da60aeb135931d3bef59"
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-originals.ts",
@@ -1857,7 +1857,7 @@
   },
   {
     "path": "qlever/tests/test_qlever_parked_note_bracket.py",
-    "sha256": "990363da02eb78daba1a8040ef17cad0dc19d700fe080c5c848a0441ee150bf3"
+    "sha256": "0231357f7433f6ff592381a2b57571442f6b8e5be3c88a042c7aaf86338fa17d"
   },
   {
     "path": "qlever/tests/test_qlever_parked_note_real_lease.py",

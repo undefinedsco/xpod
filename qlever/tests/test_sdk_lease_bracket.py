@@ -67,6 +67,23 @@ class SourceSafetyTest(unittest.TestCase):
                 self.assertIn('self.bounded_fd_slots(pid)',text,'retain bounded owner scans and inner checks')
                 self.assertIn('self.check_deadline()',text,'retain per-descriptor deadline checks')
                 continue
+            if name=='verify_task_ownership_original':
+                calls=[call for call in ast.walk(node) if isinstance(call,ast.Call)
+                       and isinstance(call.func,ast.Attribute)
+                       and isinstance(call.func.value,ast.Name) and call.func.value.id=='self']
+                entry=[call for call in calls if call.func.attr=='check_owned_entry']
+                full=[call for call in calls if call.func.attr=='check_full']
+                self.assertEqual(len(entry),1,'one exact owned-window entry policy')
+                self.assertEqual(len(full),1,'one unconditional complete closing audit')
+                guard=[sub for sub in node.body if isinstance(sub,ast.Try)]
+                self.assertEqual(len(guard),1,'one exception-safe ownership body')
+                self.assertLess(entry[0].lineno,guard[0].lineno,'entry precedes the pure body')
+                closing=[call for sub in guard[0].finalbody for call in ast.walk(sub)
+                         if isinstance(call,ast.Call) and isinstance(call.func,ast.Attribute)
+                         and isinstance(call.func.value,ast.Name) and call.func.value.id=='self'
+                         and call.func.attr=='check_full']
+                self.assertEqual(len(closing),1,'actual complete closing call is inside outer finally')
+                continue
             self.assertIn('self.check()',text,name+' must bracket')
             # the trailing full check must be in a finally so exceptions still run it
             self.assertIn('finally:',text,name+' must run the trailing check on every path')

@@ -202,6 +202,7 @@ jobs:
               'qlever.tests.test_qlever_leased_external_scope',
               'qlever.tests.test_qlever_read_body_closing_contract',
               'qlever.tests.test_qlever_maps_geometry_entry',
+              'qlever.tests.test_qlever_owned_pure_entries',
           )
           CLASS = MODULES[0] + '.OwnedMetadataObserverRunloop'
           WINDOW = MODULES[1] + '.OwnedWindowEmission'
@@ -310,6 +311,17 @@ jobs:
               'qlever.tests.test_qlever_maps_geometry_entry.MapsGeometryEntry.test_geometry_foreign_frame_cannot_hide_real_failed_full_closing',
               'qlever.tests.test_qlever_maps_geometry_entry.MapsGeometryEntry.test_entry_refuses_all_existing_frames_before_any_check',
               'qlever.tests.test_qlever_maps_geometry_entry.MapsGeometryEntry.test_context_mismatch_and_missing_window_use_full_entries',
+              'qlever.tests.test_qlever_owned_pure_entries.OwnedPureEntries.test_owned_entries_remove_only_leading_native_and_keep_all_local_work',
+              'qlever.tests.test_qlever_owned_pure_entries.OwnedPureEntries.test_outside_window_retains_full_two_and_five',
+              'qlever.tests.test_qlever_owned_pure_entries.OwnedPureEntries.test_equal_distinct_waiter_cannot_inherit_coalescing',
+              'qlever.tests.test_qlever_owned_pure_entries.OwnedPureEntries.test_ownership_actual_lease_loss_refused_by_full_closing',
+              'qlever.tests.test_qlever_owned_pure_entries.OwnedPureEntries.test_note_actual_lease_loss_refused_before_emit',
+              'qlever.tests.test_qlever_owned_pure_entries.OwnedPureEntries.test_ownership_primary_object_survives_failed_closing',
+              'qlever.tests.test_qlever_owned_pure_entries.OwnedPureEntries.test_note_primary_object_survives_failed_closing',
+              'qlever.tests.test_qlever_owned_pure_entries.OwnedPureEntries.test_both_entries_refuse_any_existing_frame_before_checks',
+              'qlever.tests.test_qlever_owned_pure_entries.OwnedPureEntries.test_ownership_foreign_frame_cannot_suppress_failed_full_closing',
+              'qlever.tests.test_qlever_owned_pure_entries.OwnedPureEntries.test_note_foreign_frame_cannot_suppress_failed_full_closing',
+              'qlever.tests.test_qlever_owned_pure_entries.OwnedPureEntries.test_final_task_census_still_runs_after_full_closing',
           })
 
 

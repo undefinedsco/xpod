@@ -1539,6 +1539,11 @@ export async function observeProductConsumerGitHubOrigin(input:ArtifactAcquisiti
       // selectable; the exact 103-case gate still requires zero skips.
       {workflowSha256:'f15c65e59d6cbbf5e4b5c529a09f1d1bf30e9d094a6f3c1fbf36df43e12c9c86',
       jobName:()=>callerNames[0]!,
+      sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS},
+      // Retain every earlier workflow; require all 114 cases, including the
+      // real lease-loss and closing guards for pure owned entry coalescing.
+      {workflowSha256:'1b3574ad2878251c7e5d6cb228739ed8d4ffeb4fb06e46ab7bc55bc1d31c5d9b',
+      jobName:()=>callerNames[0]!,
       sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS}],requiredBranch:'staging',
     jobName:()=>callerNames[0]!,jobNames:()=>callerNames,
     sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS,

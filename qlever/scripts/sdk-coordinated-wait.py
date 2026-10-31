@@ -26,9 +26,9 @@ def runtime_type(core):
             if self.model==base.PARKED_WAIT_MODEL and kind in ['window','quiescent','peer-stopped','wake-window','closed','side-wait-window','side-wait-closed','side-wait-deferred']:
                 current=self.round;assert current is not None
                 # One synchronous read-only cohort sweep per note(). Bracket it the
-                # way verify_task_ownership_original does: a full self.b.check()
-                # entry, cheap per-member deadline/stdio refusal inside the body,
-                # and a full self.b.check() in finally. Every member is still read
+                # way verify_task_ownership_original does: the exact owned-window
+                # entry policy, cheap per-member deadline/stdio refusal inside
+                # the body, and an unconditional full check in finally. Every member is still read
                 # for real on every note() -- nothing is cached across notes.
                 #
                 # The closing guard must never replace an error raised inside the
@@ -37,7 +37,7 @@ def runtime_type(core):
                 # actually needs to see. This mirrors the repository's existing
                 # cleanup pattern (sdk-ptrace-execution.py:947-953): keep the
                 # primary and only raise the guard error when there is none.
-                self.b.check()
+                self.b.check_owned_entry()
                 states=[]
                 failure=None
                 try:
@@ -50,7 +50,7 @@ def runtime_type(core):
                     raise
                 finally:
                     try:
-                        self.b.check()
+                        self.b.check_full()
                     except BaseException as guard:
                         if failure is None:raise
                 fields.update(stoppedUniverse=current['universe'],stoppedTaskStates=states)

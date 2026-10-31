@@ -1286,7 +1286,8 @@ class Observer(CapturesMixin):
         # its 1024-slot cap still run for every owner below, at the original point.
         counts={}
         for row in live.values():counts[row['fdTable']]=counts.get(row['fdTable'],0)+1
-        self.check()
+        self.check_owned_entry()
+        primary=None
         try:
             for pid,row in sorted(live.items()):
                 self.check_deadline();tgid=self.actual_tgid(pid);assert tgid==row['tgid'],'actual TGID differs from kernel clone binding';groups.setdefault(tgid,[]).append(pid)
@@ -1297,7 +1298,7 @@ class Observer(CapturesMixin):
                 shared=counts[row['fdTable']]>1
                 descriptors=[] if shared else None
                 # This whole live cohort is already bracketed by the entry and
-                # finally self.check() below, so each member's read-only FD name
+                # finally self.check_full() below, so each member's read-only FD name
                 # scan pays only the cheap deadline/stdio refusal. Standalone
                 # bounded_fd_slots keeps its full entry/finally guards.
                 for value in bounded_fd_slot_names(pid,self.check_deadline):
@@ -1307,8 +1308,13 @@ class Observer(CapturesMixin):
                 if shared:
                     prior=tables.setdefault(table,descriptors);assert prior==descriptors,'CLONE_FILES table differs between stopped owners'
                 ownership.append(dict(tid=pid,tgid=tgid,fdTable=table))
+        except BaseException as error:
+            primary=error
+            raise
         finally:
-            self.check()
+            try:self.check_full()
+            except BaseException:
+                if primary is None:raise
         for tgid,tids in groups.items():assert sorted(int(value) for value in os.listdir('/proc/'+str(tgid)+'/task'))==sorted(tids+[pid for pid in excluded if self.tasks[pid]['tgid']==tgid]),'unregistered or missing actual TGID task'
         return ownership
     def bounded_fd_slots(self,pid):

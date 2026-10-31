@@ -120,12 +120,15 @@ class Fixture:
         observer._phase_progress = None
         observer.shared_tasks = True
 
-        def full():
-            self.full += 1
-            self.events.append(('full', self.full))
-            backend.Observer.check(observer)
+        def counted(method):
+            def full():
+                self.full += 1
+                self.events.append(('full', self.full))
+                return method(observer)
+            return full
 
-        observer.check = full
+        observer.check = counted(backend.Observer.check)
+        observer.check_full = counted(backend.Observer.check_full)
         observer.check_deadline = lambda: backend.Observer.check_deadline(observer)
         observer.actual_tgid = lambda pid: self.tgids[pid]
         return observer
