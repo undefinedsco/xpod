@@ -542,7 +542,7 @@ class Runtime:
                     common.setdefault('peerMaps',[]).append(dict(pid=peer,original=other['original']))
                 common.update(beforeMapsOriginal=maps['original'],aliases=aliases)
                 if op=='map':
-                    page=os.sysconf('SC_PAGE_SIZE');rounded_span(0,current[3],page);end=min(b.deadline,time.monotonic()+WINDOW_SECONDS);pending.update(alarmToken=b.waiter.clamp(end),windowEnd=end);getattr(b,'window_arm',lambda _d:None)(int(end*1e9))
+                    page=os.sysconf('SC_PAGE_SIZE');rounded_span(0,current[3],page);end=min(b.deadline,time.monotonic()+WINDOW_SECONDS);pending.update(alarmToken=b.waiter.clamp(end),windowEnd=end);getattr(b,'window_arm',lambda _d:None)(int(end*1e9));b.open_outer_lease_window()
                     common.update(pageBytes=page,memoryDomain=domain,windowDeadlineMonotonicNs=str(int(end*1e9)),parentDeadlineMonotonicNs=str(int(b.waiter.parent_deadline*1e9)))
             if op=='unmap':
                 current,ref=self.snapshot(held);maps,values=self.maps(pid);mapping=verify_established(values,self.active['address'],self.active['page'],current,self.active['length']);common.update(beforeOriginal=ref,beforeMapsOriginal=maps['original'],epochSequence=self.active['sequence'])
@@ -634,7 +634,7 @@ class Runtime:
             # and exception identity exactly, so a TimeoutError propagates unchanged
             # while this span is recorded on the existing bounded ring.
             row=b.instrument_substep('generated_vma_finish_emit',b.emit,dict(common,path=origin['path'],identity=current,retainedIdentity=current,original=ref,afterMapsOriginal=maps['original'],afterPeerMaps=peers,epochSequence=self.active['sequence'],originSequence=origin['sequence'],**post_extra))
-            token=self.active['token'];self.active=None;b.waiter.restore(token);self.reserved=0;self.spending_thread=None;origin.update(identity=current,data=(ref['bytes'],ref['sha256']),original=ref,checkpointed=True);self.checkpoints[tuple(current[:2])]=row
+            token=self.active['token'];self.active=None;b.close_outer_lease_window();b.waiter.restore(token);self.reserved=0;self.spending_thread=None;origin.update(identity=current,data=(ref['bytes'],ref['sha256']),original=ref,checkpointed=True);self.checkpoints[tuple(current[:2])]=row
         self.pending.pop(pid)
         if self.retained_metadata and self.active is None and not self.pending:self.metadata_close_entry=(pid,entry['sequence'],self.b.seq+1)
         return row if op!='close' else None
@@ -649,6 +649,9 @@ class Runtime:
         self.b.emit(dict(kind='generated-vma-consumer-binding',captureSequence=row['sequence'],checkpointSequence=checkpoint['sequence'],path=row['path'],identity=identity_value,**extra));return True
     def complete_phase(self):need(self.active is None and not self.pending,'phase ended with unclosed generated mapping')
     def close(self):
+        # Unconditional: a leaked claim must never outlive this runtime, even if
+        # any lease cleanup below raises.
+        self.b.close_outer_lease_window()
         self.reserved=0;self.spending_thread=None
         # Failed closes remain in the existing observer retained set for its
         # outer cleanup retry. Try every lease, never hide a propagating error.

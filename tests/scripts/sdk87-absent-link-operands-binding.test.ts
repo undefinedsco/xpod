@@ -40,6 +40,14 @@ const READONLY_NORMAL = '.github/workflows/qlever-readonly-normal-job.yml';
 // digest. Its inherited role and SDK1–86 historical values remain unchanged.
 const SDK70_E2E = 'qlever/tests/test_sdk70_mremap_e2e.py';
 const SOURCE_ORIGINALS = 'qlever/scripts/sdk-generated-source-originals.py';
+// SDK87 genuine CURRENT re-registrations appended by subsequent reviewed slices:
+// the generated-VMA originals module, the readonly normal route, the readonly
+// result context, and the generated-VMA fixtures test. Each is asserted by exact
+// path below, so the whole set stays an exact equality (no subset assertion).
+const VMA_ORIGINALS = 'qlever/scripts/sdk-generated-vma-originals.py';
+const READONLY_ROUTE = 'qlever/scripts/sdk-readonly-normal-route.py';
+const READONLY_CONTEXT = 'qlever/scripts/sdk-readonly-result-context.py';
+const VMA_FIXTURE_TEST = 'qlever/tests/test_sdk_generated_vma_files.py';
 /** CURRENT CSS diagnostics producer; its PRIMARY selector advanced in this slice. */
 const CSS_PRODUCER = 'scripts/css-module-producer.py';
 const all = (g: any) => [...g.selectors, ...(g.secondarySelectors ?? []), ...(g.secondarySelectorStages ?? []).flat(), ...g.sourceBindings];
@@ -121,7 +129,15 @@ it('SDK87 whole-inherits SDK86 and re-pins only the reviewed current roles', () 
   // the SDK70 replay fixture that now uses the whole canonical limit profile.
   // SDK87 also re-pins the readonly executor ITSELF (2 inherited occurrences) to
   // the reviewed v3 bytes, so that CURRENT role belongs in this exact set.
-  expect(new Set(moved)).toEqual(new Set([OBSERVER, LEAF, LOCK, SERIES, LEASES, LEASE_EXT, LEASE_BINDING, BUILDER, EXECUTOR_BINDINGS, EXECUTOR, READONLY_NORMAL, BINDER, KERNEL_PROBE, SOURCE_ORIGINALS, CSS_PRODUCER, SDK70_E2E]));
+  expect(new Set(moved)).toEqual(new Set([OBSERVER, LEAF, LOCK, SERIES, LEASES, LEASE_EXT, LEASE_BINDING, BUILDER, EXECUTOR_BINDINGS, EXECUTOR, READONLY_NORMAL, BINDER, KERNEL_PROBE, SOURCE_ORIGINALS, CSS_PRODUCER, SDK70_E2E, VMA_ORIGINALS, READONLY_ROUTE, READONLY_CONTEXT, VMA_FIXTURE_TEST]));
+  // The four appended CURRENT re-registrations must carry the REAL bytes today.
+  // VMA_ORIGINALS is bound in BOTH its selector and source row, so its real
+  // occurrence count is two; the other three are single-role bindings.
+  for (const [role, occurrences] of [[VMA_ORIGINALS, 2], [READONLY_ROUTE, 1],
+    [READONLY_CONTEXT, 1], [VMA_FIXTURE_TEST, 1]] as const) {
+    expect(moved.filter(p => p === role)).toHaveLength(occurrences);
+    expect(new Set(all(next).filter(r => r.path === role).map(r => r.sha256))).toEqual(new Set([sha(role)]));
+  }
   expect(moved.filter(p => p === OBSERVER)).toHaveLength(4);
   expect(moved.filter(p => p === LEAF)).toHaveLength(1);
   // The filtered-lease lookup slice moves the lease implementation's CURRENT

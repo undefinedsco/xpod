@@ -137,7 +137,7 @@ class LeaseSet:
     DIAGNOSTIC_MAXIMUM_ROWS=64
     DIAGNOSTIC_SCAN_MAXIMUM=4096
 
-    def failure_diagnostic(self, deadline=None):
+    def failure_diagnostic(self, deadline=None, fatal_stop=None):
         """Read-only fatal-path snapshot over the ALREADY-OWNED lease FDs.
 
         Issued only after the set is already fatally failed, so it can never
@@ -314,6 +314,11 @@ class LeaseSet:
             identityFields=['st_dev', 'st_ino', 'st_mode', 'st_size', 'st_mtime_ns', 'st_ctime_ns'],
             allHeldStillReadable=(scanned_complete and abnormal == 0 and total > 0),
             leases=kept)
+        # DECISIVE fatality context rides the SAME payload, so the existing
+        # shrink loop below budgets it together with the rows and can never
+        # silently drop it: it is not a lease row and is never popped.
+        if fatal_stop is not None:
+            payload['failedKernelStop']=fatal_stop
         # Byte bound: shrink the RETAINED rows (abnormal-first order preserved)
         # until the frame fits, then report the omission explicitly. Only if even
         # the empty base payload cannot fit do we return None.

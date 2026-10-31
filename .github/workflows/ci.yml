@@ -154,6 +154,121 @@ jobs:
           NATIVE_LEASE_CC: clang
         run: sudo -E /usr/bin/python3 qlever/tests/run_sdk70_mremap_gate.py -v
 
+      # REQUIRED privileged gate for the owned-metadata observer.
+      #
+      # The module drives the REAL observer profile, whose child authority
+      # handshake drops the whole capability bounding set before it releases the
+      # observer; a plain user has no CAP_SETPCAP so PR_CAPBSET_DROP returns EPERM
+      # and the child never signals readiness. Same precedent as the SDK70 remap
+      # gate: run it privileged, and let the observed child still drop every
+      # capability.
+      #
+      # A bare `python3 -m unittest` exits 0 even when every case SKIPS, so this
+      # step uses an explicit runner: it requires the exact known case set and
+      # count, and fails on any skip, failure, missing case or unexpected case.
+      # Importing the module already runs its ONE real capability probe, so there
+      # is no duplicated preflight here; an incapable host skips and the zero-skip
+      # rule below turns that into a failure.
+      - name: Owned observer native regressions (required, no skip)
+        run: |
+          sudo -E env PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 -B - <<'PYGATE'
+          """REQUIRED privileged gate: fail unless the WHOLE known suite actually ran.
+
+          An ordinary `python3 -m unittest ...` exits 0 even when every case skips, so a
+          privileged context that lacks CAP_SETPCAP could look green. This runner loads the
+          REAL module, requires the exact known case set and count, and exits non-zero on
+          any skip, any failure, any missing case or any unexpected extra case.
+
+          There is deliberately NO second capability preflight here. Importing the module
+          already runs its real `capabilities()` probe, which sets `_AUTHORITY`; when the
+          host cannot empty the capability bounding set the class skips, and the zero-skip
+          requirement below then fails the gate. One implementation only -- the module's.
+          """
+          import sys
+          import unittest
+
+          MODULES = (
+              'qlever.tests.test_qlever_owned_metadata_observer',
+              'qlever.tests.test_qlever_owned_window_emission',
+              'qlever.tests.test_qlever_owned_fatal_stop_frame',
+          )
+          CLASS = MODULES[0] + '.OwnedMetadataObserverRunloop'
+          WINDOW = MODULES[1] + '.OwnedWindowEmission'
+          FATAL = MODULES[2] + '.FatalStopFrame'
+          EXPECTED = frozenset({
+              CLASS + '.test_failed_rename_is_not_absorbed',
+              CLASS + '.test_foreign_identity_cannot_advance',
+              CLASS + '.test_real_rename_emit_and_lease_advance',
+              CLASS + '.test_real_semantic_observe_accepts_advanced_rename_and_unlink',
+              CLASS + '.test_real_unlink_emit_and_lease_advance',
+              CLASS + '.test_semantic_observe_refuses_forged_closing_identity',
+              CLASS + '.test_unknown_operation_refused',
+              WINDOW + '.test_window_coalesces_leading_sweep_and_trailing_check_always_runs',
+              WINDOW + '.test_trailing_check_still_rejects_a_mutated_identity',
+              WINDOW + '.test_nested_reclamp_under_same_parent_does_not_inherit',
+              WINDOW + '.test_wrong_thread_does_not_inherit',
+              WINDOW + '.test_open_refuses_without_a_real_clamp',
+              WINDOW + '.test_wrong_phase_runs_both_sweeps',
+              WINDOW + '.test_another_waiter_cannot_inherit_the_same_deadlines',
+              WINDOW + '.test_open_refuses_reentrancy',
+              WINDOW + '.test_exception_after_arm_leaves_no_claim',
+              WINDOW + '.test_abort_clears_claim',
+              FATAL + '.test_real_event_path_captures_stop_from_real_lease_verdict',
+              FATAL + '.test_original_injected_exception_object_propagates',
+              FATAL + '.test_diagnostic_failure_preserves_original_exception',
+              FATAL + '.test_real_architectures_and_timestamp_identity_are_preserved',
+              FATAL + '.test_fatal_context_survives_full_row_pressure',
+              FATAL + '.test_malformed_pending_fields_degrade_and_stay_bounded',
+              FATAL + '.test_no_frame_on_a_passing_event',
+              FATAL + '.test_no_frame_on_a_non_kernel_error',
+              FATAL + '.test_exclusive_needs_pid_and_entry_sequence',
+          })
+
+
+          def flatten(suite):
+              ids = []
+              for item in suite:
+                  if isinstance(item, unittest.TestSuite):
+                      ids.extend(flatten(item))
+                  else:
+                      ids.append(item.id())
+              return ids
+
+
+          def main():
+              suite = unittest.TestSuite(
+                  unittest.TestLoader().loadTestsFromName(module) for module in MODULES
+              )
+              discovered = flatten(suite)
+              missing = sorted(EXPECTED - set(discovered))
+              unexpected = sorted(set(discovered) - EXPECTED)
+              if missing or unexpected or len(discovered) != len(EXPECTED):
+                  print('REQUIRED GATE: suite shape differs (count=%d missing=%r unexpected=%r)'
+                        % (len(discovered), missing, unexpected), file=sys.stderr)
+                  return 1
+
+              result = unittest.TextTestRunner(verbosity=2).run(suite)
+              problems = []
+              if not result.wasSuccessful():
+                  problems.append('failures/errors')
+              if result.skipped:
+                  problems.append('skipped=%d' % len(result.skipped))
+              if result.testsRun != len(EXPECTED):
+                  problems.append('testsRun=%d expected=%d' % (result.testsRun, len(EXPECTED)))
+              if problems:
+                  print('REQUIRED GATE FAILED: ' + '; '.join(problems), file=sys.stderr)
+                  for case, why in result.skipped:
+                      print('  skipped: %s -> %s' % (case.id(), why), file=sys.stderr)
+                  return 1
+              print('REQUIRED GATE OK: %d/%d cases ran, 0 skipped'
+                    % (result.testsRun, len(EXPECTED)))
+              return 0
+
+
+          if __name__ == '__main__':
+              sys.exit(main())
+          PYGATE
+
       - name: Install ripgrep differential oracle
         run: |
           sudo apt-get update

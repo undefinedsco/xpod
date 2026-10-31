@@ -51,9 +51,14 @@ def capabilities():
     """Probe the REAL capabilities this module needs, without a blanket UID gate.
 
     CI may run as an ordinary user, so gate on what the tests actually require:
-    (a) our own FD can take a real kernel read lease, and (b) we can ptrace and
-    reap our own child. Both are tested directly; a normal Linux CI user passes
-    when the kernel permits it, and only a genuinely incapable host skips.
+    (a) our own FD can take a real kernel read lease, (b) we can ptrace and reap
+    our own child, and (c) the child authority handshake can actually empty the
+    inherited capability bounding set. (c) is a REAL prerequisite: the product
+    child calls ``restrict_child_authority`` and the shipped contract then asserts
+    every capability set is empty, so a host without CAP_SETPCAP gets EPERM from
+    PR_CAPBSET_DROP and cannot run this profile at all. This is the ONLY
+    implementation of that probe; the required CI gate adds no second copy and
+    simply fails when this probe leaves the class skipped.
     """
     import tempfile
     lease = False
@@ -79,6 +84,43 @@ def capabilities():
                 except OSError:
                     pass
 
+    authority_ok = False
+    if sys.platform.startswith('linux'):
+        # Probe the SAME prctl sequence the product child uses, in a throwaway
+        # child, so the observer process never mutates its own capabilities.
+        pid = os.fork()
+        if pid == 0:
+            ok = 0
+            try:
+                import ctypes
+                libc = ctypes.CDLL(None, use_errno=True)
+                with open('/proc/sys/kernel/cap_last_cap', 'rb') as source:
+                    last = int(source.read(17).strip())
+                dropped = True
+                for capability in range(last + 1):
+                    present = libc.prctl(23, capability, 0, 0, 0)
+                    if present not in (0, 1):
+                        dropped = False
+                        break
+                    if present == 1 and libc.prctl(24, capability, 0, 0, 0) != 0:
+                        dropped = False
+                        break
+                ok = 1 if dropped else 0
+            except BaseException:
+                ok = 0
+            os._exit(ok)
+        try:
+            waited, status = os.waitpid(pid, 0)
+            authority_ok = (waited == pid and os.WIFEXITED(status)
+                            and os.WEXITSTATUS(status) == 1)
+        except BaseException:
+            # Never leave our OWN child unreaped if the wait itself fails.
+            try:
+                os.waitpid(pid, 0)
+            except BaseException:
+                pass
+            authority_ok = False
+
     ptrace_ok = False
     if sys.platform.startswith('linux'):
         pid = os.fork()
@@ -92,7 +134,7 @@ def capabilities():
             ptrace_ok = waited == pid
         except OSError:
             ptrace_ok = False
-    return lease, ptrace_ok
+    return lease, ptrace_ok, authority_ok
 
 
 def production_profile(backend):
@@ -158,14 +200,17 @@ def production_profile(backend):
     return profile
 
 
-_LEASE, _PTRACE = (capabilities() if sys.platform.startswith('linux')
-                   else (False, False))
+_LEASE, _PTRACE, _AUTHORITY = (capabilities() if sys.platform.startswith('linux')
+                               else (False, False, False))
 
 
 @unittest.skipUnless(sys.platform.startswith('linux'),
                      'real kernel read leases and ptrace require Linux')
 @unittest.skipUnless(_LEASE, 'kernel refuses F_SETLEASE on this host')
 @unittest.skipUnless(_PTRACE, 'cannot ptrace/reap own child on this host')
+@unittest.skipUnless(_AUTHORITY,
+                     'cannot empty the child capability bounding set '
+                     '(needs CAP_SETPCAP; the required CI gate runs this module privileged)')
 class OwnedMetadataObserverRunloop(unittest.TestCase):
     """One real Observer, one real phase, real child transitions."""
 

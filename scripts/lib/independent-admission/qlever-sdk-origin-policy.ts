@@ -2292,7 +2292,7 @@ const SDK87_SOURCE_HASHES:Readonly<Record<string,string>>=Object.freeze({
  // alike — otherwise the current tuple would keep naming the previous 9bc bytes.
  'scripts/css-module-producer.py':"1ba30f5eaba9070f55135936649c43b109bf7a4a83db43b512edaa6d31abc5cc",
  'qlever/scripts/build-qlever-runtime-sdk.sh':"ebe4d4d98e29247f4565f7a7499f1beb48832a5c499833b7bb98ce62bf9467ae",
- 'qlever/scripts/sdk-ptrace-execution.py':"abac392abdc9873eb8127bbde9766644b3de73ce3eef58be5b31abf6a1a74edc",
+ 'qlever/scripts/sdk-ptrace-execution.py':"dfac1bedfc12c81d816e7dabee998fd1ceee4108ded02a66b0fb1721094bf771",
  // Filtered-lease lookup: the token-filtered check resolves its single row by the
  // (st_dev, st_ino) key instead of scanning every held row. Selection semantics,
  // the live F_GETLEASE+fstat sweep and every rejection string are unchanged, so
@@ -2302,7 +2302,7 @@ const SDK87_SOURCE_HASHES:Readonly<Record<string,string>>=Object.freeze({
  // advances a held lease across one witnessed rename/unlink with full
  // six-field before/current/postimage, the physical lease stays held and
  // replay bridges acquisition->closing through the validated chain.
- 'qlever/scripts/sdk-tool-lifetime-leases.py':"435b0f34d36c02fea393d8521ca7c63f0a293e6a987056a9f677d3b74d9b8b78",
+ 'qlever/scripts/sdk-tool-lifetime-leases.py':"7a2fdf743ccf9a54fca10f578c6ea3554c19e547fca018ba472d0b1fd80d6836",
  // The executor additionally retains a FIXED bounded set of container-side
  // configure evidence on the failure path (exact members, size cap, no glob and
  // no symlink follow). Admission ordering and cleanup semantics are unchanged.
@@ -2324,7 +2324,7 @@ const SDK87_SOURCE_HASHES:Readonly<Record<string,string>>=Object.freeze({
  'qlever/scripts/sdk-readonly-executor-bindings.py':"107e2dea586056c98455e89471c0d303b1c36cb11018ee5a6d67d97caefd0b1e",
  // The readonly normal job's pin list had to follow the executor lane's new
  // bytes, so this CURRENT workflow file moves too. Published tuples keep theirs.
- '.github/workflows/qlever-readonly-normal-job.yml':"74c974cc86386db99a693be476f82d8d4f8f35738d6a5a371638692bb4761a4a",
+ '.github/workflows/qlever-readonly-normal-job.yml':"f4d5a55ac21abb0f2531dc85cb6d0955b22d63cfeaf6ffc710dce04a8800cff2",
  'qlever/scripts/native/lease_sweep_binding.py':"7386166a878d2a1fbd5f3145759888baa072171ab541b45cd5fbc5bcea6784f8",
  'tests/scripts/candidate-producer-attempt-binding.test.ts':"8973eb25c1e6d669e2fc2d7c05ffd80d0f040c066d32d83f0a7f24e5b375daba",
  // The scoped precompiled-header work (S2, ANTLR and the two Abseil units) moves
@@ -2337,7 +2337,15 @@ const SDK87_SOURCE_HASHES:Readonly<Record<string,string>>=Object.freeze({
  'qlever/patches/series':"17d10ccafb23dcdd6564cd7691d74b7b3dbd811ce4615b0eb295a63965f48650",
  'qlever/scripts/sdk-generated-source-originals.py':"5e9ec62fe5dd341ce402e215c2ec02dfe75de365766493c80bc2eb21c3c01564",
 
-"qlever/scripts/sdk-generated-producer-transport.py":"95738800c54230715a065e3dcaaab1ba5f60f70d4ca2ca264144ee580a360a37"
+"qlever/scripts/sdk-generated-producer-transport.py":"95738800c54230715a065e3dcaaab1ba5f60f70d4ca2ca264144ee580a360a37",
+ // owned-fix registration for the CURRENT SDK87 slice
+ 'qlever/scripts/sdk-readonly-result-context.py':"1fe5650b94fe13d62aea8ca55ca0a73740057fb3427f770e5768f6a276d096bb",
+ // owned-fix registration for the CURRENT SDK87 slice
+ 'qlever/scripts/sdk-readonly-normal-route.py':"c620a49809a022126007e6d4bd7470d9d86e88925f39b8a849304832300026d7",
+ // owned-fix registration for the CURRENT SDK87 slice
+ 'qlever/scripts/sdk-generated-vma-originals.py':"652e20f5217c042fb2aaf6ccec2d388d8cbf1e4483ab843cec5ef1b2e51d3cea",
+ // owned-fix registration for the CURRENT SDK87 slice
+ 'qlever/tests/test_sdk_generated_vma_files.py':"f230e0f63c0f26a133d5478b38d98a0334a9466f1bc97850746075558be0cf07"
 });
 const rebindSdk87Rows=(rows:readonly GitHubSourceBinding[]|undefined)=>Object.freeze((rows??[]).map(row=>Object.freeze({...row,sha256:SDK87_SOURCE_HASHES[row.path]??row.sha256})));
 const SDK87_GROUP:GitHubSourceBindingGroup=Object.freeze({...SDK86_GROUP,

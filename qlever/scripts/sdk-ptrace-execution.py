@@ -918,7 +918,10 @@ class Observer(CapturesMixin):
         # iteration (record_check). The trailing check runs on success AND on
         # every exception, so an altered lease/source/ownership state can never
         # let a row escape; no validated state is reused across records.
-        self.check()
+        # Inside ONE owned outer window the redundant per-record native lease
+        # sweep is coalesced (every non-lease check still runs per record); the
+        # mandatory full sweep at the closing/acceptance boundary is unchanged.
+        self.check_emit()
         try:
             self.seq+=1;row=dict(row,sequence=self.seq,phase=self.current_phase,observedUnixNs=str(time.time_ns()),**(dict(observedMonotonicNs=str(time.monotonic_ns())) if getattr(self,'generated_vma_output',False) else {}));data=None
             if row.get('original',{}).get('storage'):
@@ -965,10 +968,82 @@ class Observer(CapturesMixin):
     def wait_one_original(self):
         return self.waiter.wait_one()
     def check(self):
+        self.check_nonlease()
+        if self.lifetime_leases is not None and not self.owned_maps_frame_active():self.instrument('lifetime_lease_check',self.lifetime_leases.check)
+    def check_nonlease(self):
+        """Every non-lease check of `check()`, in the same order.
+
+        Split out so the EMIT fast path can coalesce ONLY the redundant
+        per-record native lease sweep inside one owned outer VMA window, while
+        still performing every budget/waiter/SIGIO-safe stdio/deadline check on
+        every single record. `check()` keeps its exact previous semantics: it
+        calls this and then the full lease sweep, so no existing caller of
+        `check()` changes behaviour.
+        """
         self.check_budget()
         if hasattr(self,'waiter') and self.waiter.active:self.waiter.check()
         assert not self.pump_errors,'actual bounded stdio failed: '+str(self.pump_errors);assert time.monotonic()<self.deadline,'all-stop observer deadline'
-        if self.lifetime_leases is not None and not self.owned_maps_frame_active():self.instrument('lifetime_lease_check',self.lifetime_leases.check)
+    def outer_lease_window_owned(self):
+        """True only for the EXACT one owned window that armed the claim.
+
+        The claim records the exact LOCAL clamped deadline plus the identity of
+        the concrete waiter object that was clamped, together with thread, phase
+        and parent deadline. A nested/local re-clamp under the same parent (even
+        on the same thread and phase) therefore CANNOT inherit coalescing,
+        because either the local deadline or the waiter identity differs.
+        Reuses the existing waiter authority; there is no parallel registry.
+        """
+        waiter=getattr(self,'waiter',None)
+        if waiter is None or not getattr(waiter,'active',False):return False
+        claim=getattr(self,'_outer_lease_coalesce',None)
+        if claim is None:return False
+        try:
+            active,deadline,parent=self.owned_window_state()
+        except BaseException:
+            return False
+        if not active or deadline is None or parent is None:return False
+        if deadline>=parent:return False          # no local clamp armed
+        return (claim['waiter'] is waiter
+                and claim['thread']==threading.get_ident()
+                and claim['phase']==getattr(self,'current_phase',None)
+                and claim['parent']==parent
+                and claim['local']==deadline)
+    def open_outer_lease_window(self):
+        """Claim the ONE owned outer window; refuse re-entrancy and non-clamped.
+
+        Verifies a REAL clamp is armed (local deadline strictly before parent),
+        an active waiter exists and a phase is set, then records the exact
+        local deadline plus the concrete waiter identity.
+        """
+        if getattr(self,'_outer_lease_coalesce',None) is not None:
+            raise AssertionError('outer lease window is not re-entrant')
+        waiter=getattr(self,'waiter',None)
+        if waiter is None or not getattr(waiter,'active',False):
+            raise AssertionError('active owned waiter required before claiming')
+        if getattr(self,'current_phase',None) is None:
+            raise AssertionError('observer phase required before claiming')
+        active,deadline,parent=self.owned_window_state()
+        if not active or deadline is None or parent is None:
+            raise AssertionError('owned waiter window required before claiming')
+        if deadline>=parent:
+            raise AssertionError('real local clamp required before claiming')
+        self._outer_lease_coalesce=dict(waiter=waiter,thread=threading.get_ident(),
+            phase=getattr(self,'current_phase',None),parent=parent,local=deadline)
+    def close_outer_lease_window(self):
+        """UNCONDITIONAL reset; safe on any path and idempotent."""
+        self._outer_lease_coalesce=None
+    def check_emit(self):
+        """`check()` for one emitted record, coalescing only inside one owned window.
+
+        Requirement: a full identity validation must still happen at EVERY
+        explicit closing boundary (notably `content_tool_maps`' close-then-check)
+        and before any tracee resumes or any result is accepted. Those boundaries
+        call `check()`, never this method, so they are untouched.
+        """
+        if self.outer_lease_window_owned():
+            self.check_nonlease()
+            return
+        self.check()
     def owned_maps_frame_active(self):
         """True only on the exact thread/phase that opened the private maps frame.
 
@@ -1491,6 +1566,91 @@ class Observer(CapturesMixin):
             change=self.emit(dict(kind='actual-rename-transition',pid=pid,entrySequence=entry['sequence'],windowSequence=row['sequence'],leaseSequence=row['leaseSequence'],exitSequence=exit['sequence'],afterIdentity=after,namedIdentity=after,afterOriginal=original,oldPathAbsent=True,oldPathAbsenceErrno=errno.ENOENT,result=exit['result'],isError=exit['isError'],**({} if replacement_after is None else {'replacementAfter':replacement_after})))
             self.metadata_states.append((row,change))
         finally:self.close_rename_leases(held,destination)
+    FATAL_WINDOW_KINDS=('actual-mode-window','actual-timestamp-window','actual-link-window','actual-rename-window')
+    FATAL_WINDOW_FORMS=('link','linkat','unlink','unlinkat','path','fd')
+    def record_failed_kernel_stop(self,pid,kernel,task=None):
+        """Snapshot the failed kernel stop without claiming whether it was written.
+
+        Fatal path only, and only after the row already failed, so it can never
+        change admission or create authority. Every value is an exact int inside
+        a per-field range, an exact bool, or a fixed whitelisted enum; anything
+        else becomes the fixed string 'unavailable'. No paths, argv, env, bodies
+        or key material are ever copied.
+        """
+        def unsigned(value,bits):
+            return value if type(value) is int and 0<=value<(1<<bits) else 'unavailable'
+        def signed(value,bits):
+            low=-(1<<(bits-1))
+            return value if type(value) is int and low<=value<(1<<(bits-1)) else 'unavailable'
+        try:
+            if type(kernel) is not dict:
+                # Not a kernel stop at all: record nothing rather than a frame
+                # composed entirely of 'unavailable'.
+                self.fatal_stop=None
+                return
+            row=kernel
+            task=task if type(task) is dict else {}
+            entry=task.get('entry') or {}
+            op=row.get('op')
+            stop=dict(pid=unsigned(pid,31),
+                      op=op if op in ('entry','exit') else 'unavailable',
+                      # an EXIT row carries no nr/arch: fall back to the
+                      # authoritative SAME-TASK entry the observer recorded.
+                      nr=unsigned(row.get('nr'),32),
+                      arch=unsigned(row.get('arch'),32))
+            if stop['nr']=='unavailable':stop['nr']=unsigned(entry.get('nr'),32)
+            if stop['arch']=='unavailable':stop['arch']=unsigned(entry.get('arch'),32)
+            seq=row.get('entrySequence')
+            if type(seq) is not int:seq=entry.get('sequence')
+            stop['entrySequence']=unsigned(seq,32)
+            stop['result']=signed(row.get('result'),64)
+            is_error=row.get('isError')
+            stop['isError']=is_error if type(is_error) is bool else 'unavailable'
+            pending=[]
+            for name in ('metadataWindow','renameWindow'):
+                window=task.get(name)
+                if window is None:continue
+                window_row=window[0] if isinstance(window,(tuple,list)) and window else {}
+                if type(window_row) is not dict:continue
+                kind=window_row.get('kind')
+                form=window_row.get('form')
+                pending.append(dict(
+                    kind=kind if kind in self.FATAL_WINDOW_KINDS else 'unavailable',
+                    form=form if form in self.FATAL_WINDOW_FORMS else 'unavailable',
+                    sequence=unsigned(window_row.get('sequence'),32)))
+            # exclusive ownership needs BOTH the pid AND the live task entry
+            exclusive=self.exclusive
+            stop_sequence=stop['entrySequence']
+            owned=bool(exclusive is not None and len(exclusive)==2
+                       and exclusive[0]==pid
+                       and type(exclusive[1]) is int
+                       and stop_sequence!='unavailable'
+                       and exclusive[1]==stop_sequence)
+            # Target token identity ONLY from already-held own state.
+            target=None
+            try:
+                held=getattr(self,'lifetime_by_identity',None)
+                if held is not None:
+                    for name in ('metadataWindow','renameWindow'):
+                        window=task.get(name)
+                        if window is None:continue
+                        window_row=window[0] if isinstance(window,(tuple,list)) and window else {}
+                        before=window_row.get('beforeIdentity') if type(window_row) is dict else None
+                        if type(before) is not list or len(before)!=6:continue
+                        found=held.get(tuple(before))
+                        if found is None:continue
+                        candidate=[signed(v,64) for v in (found.get('token') or {}).get('identity') or []]
+                        if len(candidate)==6 and signed(candidate[0],64)!='unavailable':target=candidate
+                        break
+            except BaseException:
+                target=None
+            # A trailing check can fail after the raw row was written. Report
+            # rejection without claiming that the raw stream was untouched.
+            self.fatal_stop=dict(kind='failed-kernel-stop',accepted=False,stop=stop,
+                                 pendingWindows=pending[:2],exclusiveOwned=owned,
+                                 pendingTargetIdentity=target)
+        except BaseException:
+            self.fatal_stop=None
     def advance_pending_owned_transitions(self,pid,kernel):
         """Advance every legitimately affected held inode for a witnessed owned op.
 
@@ -3746,11 +3906,18 @@ class Observer(CapturesMixin):
         # window make the real post-state available at this point, so this is the
         # earliest correct place. Only a SUCCESSFUL exit is advanced; a failed or
         # unknown exit is left alone and fails closed in `complete_rename`.
-        if (getattr(self,'lifetime_leases',None) is not None
-                and _kernel_row.get('op')=='exit'
-                and not _kernel_row.get('isError') and _kernel_row.get('result')==0):
-            self.advance_pending_owned_transitions(pid,_kernel_row)
-        record=self.emit(_kernel_row)
+        try:
+            # Advance AND emit share one boundary: the identity refusal can be
+            # raised by either, so both must be inside the recording scope.
+            if (getattr(self,'lifetime_leases',None) is not None
+                    and _kernel_row.get('op')=='exit'
+                    and not _kernel_row.get('isError') and _kernel_row.get('result')==0):
+                self.advance_pending_owned_transitions(pid,_kernel_row)
+            record=self.emit(_kernel_row)
+        except BaseException:
+            try:self.record_failed_kernel_stop(pid,_kernel_row,task)
+            except BaseException:pass  # diagnostic faults never replace the original
+            raise
         if record['op']=='entry':
             if self.capture_toolchain and record['nr']!=435 and not memory_policy.bti_candidate(record['arch'],record['nr'],record['args']):self.enforce_executable_memory(pid,record)
             assert task['entry'] is None,'syscall entry missing prior exit';task['initial']=False;task['entry']=record;nr=record['nr'];args=record['args']
@@ -4137,7 +4304,12 @@ class Observer(CapturesMixin):
                         leases=getattr(self,'lifetime_leases',None)
                         if leases is not None and getattr(leases,'_failure',None):
                             # Pass the EXISTING phase deadline; never extend it.
-                            text=leases.failure_diagnostic(deadline=getattr(self,'deadline',None))
+                            # ONE formatter mechanism: the decisive stop is passed
+                            # into the product formatter so its existing shrink loop
+                            # budgets it together with the rows. The stop is never a
+                            # lease row and is never popped, so it cannot be lost.
+                            text=leases.failure_diagnostic(deadline=getattr(self,'deadline',None),
+                                                           fatal_stop=getattr(self,'fatal_stop',None))
                             if text is not None and len(text.encode())<=8192:
                                 sys.stderr.write('SDK_READ_LEASE_FATAL '+text+'\n')
                                 sys.stderr.flush()
@@ -4152,6 +4324,7 @@ class Observer(CapturesMixin):
                 if not row['exited']:
                     try:os.kill(pid,signal.SIGKILL)
                     except ProcessLookupError:pass
+            self.close_outer_lease_window()
             leases=self.lifetime_leases
             if leases is not None:
                 try:leases.close()
@@ -4184,6 +4357,7 @@ class Observer(CapturesMixin):
         assert all(row['phase']==name for row in rows),'tool original belongs to another phase'
         return rows
     def close(self):
+        self.close_outer_lease_window()
         if getattr(self,'generated_vma',None):self.generated_vma.close()
         for task in getattr(self,'tasks',{}).values():
             transition=task.pop('setresuidTransition',None)
@@ -4193,6 +4367,7 @@ class Observer(CapturesMixin):
         if hasattr(self,'authority_handles'):self.authority_handles.close()
         for fd in list(self.retained):os.close(fd);self.retained.remove(fd)
     def abort(self):
+        self.close_outer_lease_window()
         # Never claim whole-kernel ownership from this traced PID registry. The
         # producer must propagate failure to its existing PID1 owner, whose
         # actual wait/ECHILD cleanup closes descendants outside this registry.

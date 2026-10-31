@@ -76,8 +76,8 @@ it('helper and readonly registries keep every captured whole vector',()=>{
     ['qlever-sdk-fetchcontent.ts','REVIEWED_HELPER_GROUPS_CURRENT',OLD_FETCH]] as const){
     const live=decodeCatalog('scripts/lib/independent-admission/'+file,name) as readonly unknown[];
     // Frozen vector proves the historical PREFIX only; the live tuple count is
-    // the current frontier (observer 58 / controller 38 / fetch 41).
-    expect(live.length).toBe({REVIEWED_OBSERVER_GROUPS:58,REVIEWED_CONTROLLER_HELPER_GROUPS_CURRENT:38,REVIEWED_HELPER_GROUPS_CURRENT:41}[name as 'REVIEWED_OBSERVER_GROUPS']);
+    // the current frontier (observer 59 / controller 39 / fetch 42).
+    expect(live.length).toBe({REVIEWED_OBSERVER_GROUPS:59,REVIEWED_CONTROLLER_HELPER_GROUPS_CURRENT:39,REVIEWED_HELPER_GROUPS_CURRENT:42}[name as 'REVIEWED_OBSERVER_GROUPS']);
     for(let i=0;i<hashes.length;i++) expect(whole(live[i]),`${name}[${i}]`).toBe(hashes[i]);
   }
   const readonly=decodeCatalog('scripts/lib/independent-admission/qlever-sdk-readonly-executor.ts','REVIEWED_READONLY_HELPER_GROUPS') as readonly unknown[];

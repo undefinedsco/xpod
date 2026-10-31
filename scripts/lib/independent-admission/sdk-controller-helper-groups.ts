@@ -8,7 +8,7 @@
 // tuples after the SDK87 owned-metadata transition append. It is the declared
 // VERSION count only - it is not an artifact, capture, per-tuple, time or budget
 // bound.
-const MAXIMUM_DECLARED_HELPER_GROUPS = 41;
+const MAXIMUM_DECLARED_HELPER_GROUPS = 42;
 const MAXIMUM_OBSERVED_HELPERS = 32;
 const DIFFERS = 'SDK controller complete helper group differs';
 

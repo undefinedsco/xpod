@@ -1507,6 +1507,13 @@ export async function observeProductConsumerGitHubOrigin(input:ArtifactAcquisiti
       // Preserve every earlier reviewed caller version above.
       {workflowSha256:'5a6d6a0c3b693db00faf3c30d52c3af59e90674d6db14a70574311f7203d106d',
       jobName:()=>callerNames[0]!,
+      sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS},
+      // APPEND-ONLY: the `test` job gained the REQUIRED privileged owned-metadata
+      // observer gate (explicit runner: exact case set/count, zero skips). Same
+      // jobs, same required step name, unchanged source groups. Every earlier
+      // reviewed caller version above stays byte-identical and selectable.
+      {workflowSha256:'2d3c9e6b32ba47bfef47be1c79e5c16f3c1fdf4e1233b86c7e2f611b245635a4',
+      jobName:()=>callerNames[0]!,
       sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS}],requiredBranch:'staging',
     jobName:()=>callerNames[0]!,jobNames:()=>callerNames,
     sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS,

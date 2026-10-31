@@ -12,14 +12,14 @@ test('sixteen declared complete groups only; observed original bound remains thi
  const groups=Array.from({length:16},(_,i)=>[['model.py',String(i)],['shared.py','b']]as const);expect(select(groups,new Map(groups[15]!))).toBe(groups[15]);expect(()=>select([...groups,groups[15]!],new Map(groups[15]!))).toThrow();expect(()=>plan([...groups,groups[15]!],names,new Map(groups[15]!))).toThrow();expect(()=>select([old],new Map(Array.from({length:33},(_,i)=>[String(i),'a'])))).toThrow();
 });
 
-test('forty-one registered recipes fit capacity; a forty-second rejects before extra reads',()=>{
- // The declared VERSION catalogue is exactly 41 after the SDK87 owned-metadata
+test('forty-two registered recipes fit capacity; a forty-third rejects before extra reads',()=>{
+ // The declared VERSION catalogue is exactly 42 after the SDK87 owned-metadata
  // transition append pushed the fetch CURRENT catalogue to a 41st tuple. Only the catalogue length changed; the
  // observed PER-TUPLE role bound stays 32 (see the previous case) and the 1024-slot
  // FD cap, lease cadence and capture bounds are untouched. Every non-matching tuple
  // carries a DISTINCT digest, so the overflow refusal comes from the COUNT bound,
  // not from ambiguity.
- const groups=Array.from({length:41},(_,i)=>[['model.py',String(i)],['shared.py','b']]as const);
- const observed=new Map(groups[40]!);expect(plan(groups,names,observed)).toBe(groups[40]);expect(select(groups,observed)).toBe(groups[40]);
- const overflow=[...groups,[['model.py','41'],['shared.py','b']]as const];expect(()=>plan(overflow,names,observed)).toThrow();expect(()=>select(overflow,observed)).toThrow();
+ const groups=Array.from({length:42},(_,i)=>[['model.py',String(i)],['shared.py','b']]as const);
+ const observed=new Map(groups[41]!);expect(plan(groups,names,observed)).toBe(groups[41]);expect(select(groups,observed)).toBe(groups[41]);
+ const overflow=[...groups,[['model.py','42'],['shared.py','b']]as const];expect(()=>plan(overflow,names,observed)).toThrow();expect(()=>select(overflow,observed)).toThrow();
 });
