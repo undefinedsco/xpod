@@ -83,7 +83,7 @@ it('helper and readonly registries keep every captured whole vector',()=>{
   const readonly=decodeCatalog('scripts/lib/independent-admission/qlever-sdk-readonly-executor.ts','REVIEWED_READONLY_HELPER_GROUPS') as readonly unknown[];
   // The live frontier includes two appended current tuples (7 frozen + 2 new);
   // the frozen prefix vector below is what still proves the history.
-  expect(readonly).toHaveLength(10);
+  expect(readonly).toHaveLength(11);
 });
 
 it('the generic selector and budgets are untouched',()=>{

@@ -473,7 +473,7 @@
   },
   {
     "path": "qlever/scripts/sdk-local-daemon-originals.py",
-    "sha256": "9c5541b959d86d690f1d1806e123ce046008d8e82ab5127685e51d31c8e5dcd5"
+    "sha256": "773a7d367446d8b1262780e9fecd07ec90f394ec80a63366a7ce7f39618e5694"
   },
   {
     "path": "qlever/scripts/sdk-observed-tool-originals.py",
@@ -1221,7 +1221,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-origin-policy.ts",
-    "sha256": "a1e5ed1a96ba84489f540255b0f092debff1e8d1b44d2ccd4a86b5e533ea87dd"
+    "sha256": "5cf74dfc71ef729f8c2de4e030bec0e8493452d07fe0efd22e6d2270744e0676"
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-originals.ts",
@@ -1237,7 +1237,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-readonly-executor.ts",
-    "sha256": "4e78d94677721d3868cf8b9ea9bc4f2f99bfdf013eba8762fce3faebd6c44273"
+    "sha256": "9cdcb47912c1f6a742bbdd90c1232cd11d94f05e5862041d09ffaaf7ee54361d"
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-service-relationship.ts",

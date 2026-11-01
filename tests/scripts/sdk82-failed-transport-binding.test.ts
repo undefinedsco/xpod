@@ -63,7 +63,7 @@ it('every published whole prefix is byte-identical to the captured 7863 baseline
   // LIVE frontier (SDK83 appended): the historical SDK82 slice is proven by its
   // own frozen prefix below, not by these current lengths.
   // LIVE frontier (SDK84 appended); this slice is proven by its frozen prefix.
-  expect(SDK).toHaveLength(89);expect(LINUX).toHaveLength(90);
+  expect(SDK).toHaveLength(90);expect(LINUX).toHaveLength(91);
   expect(CONSUMER).toHaveLength(99);expect(CI).toHaveLength(196);
   expect(API).toHaveLength(29);expect(CLI).toHaveLength(12);
   prefix(SDK.slice(0,81),OLD_SDK_GROUPS,'sdk');
@@ -82,13 +82,13 @@ it('helper and readonly registries keep every captured whole vector',()=>{
     const live=helper(file,name);
     // Frozen vector proves the historical PREFIX; the live frontier is asserted
     // explicitly so a later append can never look like a rewritten history.
-    expect(live.length,name).toBe({REVIEWED_OBSERVER_GROUPS:61,REVIEWED_CONTROLLER_HELPER_GROUPS_CURRENT:41,REVIEWED_HELPER_GROUPS_CURRENT:44}[name as 'REVIEWED_OBSERVER_GROUPS']);
+    expect(live.length,name).toBe({REVIEWED_OBSERVER_GROUPS:62,REVIEWED_CONTROLLER_HELPER_GROUPS_CURRENT:42,REVIEWED_HELPER_GROUPS_CURRENT:45}[name as 'REVIEWED_OBSERVER_GROUPS']);
     for(let i=0;i<hashes.length;i++) expect(whole(live[i]),`${name}[${i}]`).toBe(hashes[i]);
   }
   const readonly=helper('qlever-sdk-readonly-executor.ts','REVIEWED_READONLY_HELPER_GROUPS');
   // The live frontier includes two appended current tuples (7 frozen + 2 new);
   // the frozen prefix vector below is what still proves the history.
-  expect(readonly).toHaveLength(10);
+  expect(readonly).toHaveLength(11);
   for(let i=0;i<OLD_READONLY_GROUPS.length;i++) expect(whole(readonly[i]),`readonly[${i}]`).toBe(OLD_READONLY_GROUPS[i]);
 });
 
@@ -187,7 +187,7 @@ it('the live canonical binds the current canonical physical originals with no se
   for(const row of rows) expect(sha(row.path),row.path).toBe(row.sha256);
   expect(rows.filter(r=>r.path==='scripts/lib/independent-admission/consumer-execution-current.json')).toHaveLength(0);
   expect(rows.filter(r=>r.path==='scripts/lib/independent-admission/consumer-observer-policy.ts')).toHaveLength(0);
-  expect(rows.find(r=>r.path===TOOL)!.sha256).toBe(SDK[87]!.sourceBindings.find(r=>r.path===TOOL)!.sha256);
+  expect(rows.find(r=>r.path===TOOL)!.sha256).toBe(SDK[SDK.length-1]!.sourceBindings.find(r=>r.path===TOOL)!.sha256);
   expect(rows.find(r=>r.path==='scripts/lib/independent-admission/qlever-sdk-origin-policy.ts')!.sha256).toBe(sha('scripts/lib/independent-admission/qlever-sdk-origin-policy.ts'));
   expect(rows.filter(r=>r.path==='qlever/tests/test_sdk_cmake_failure_originals.py')).toHaveLength(0);
   for(const anchor of CONTROLLER_POLICY_BINDINGS) expect(sha(anchor.path)).toBe(anchor.sha256);

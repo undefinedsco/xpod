@@ -18,6 +18,7 @@ class RouteTest(unittest.TestCase):
         identity=dict(sourceSha='a'*40,runHeadSha='a'*40,runId=12,runAttempt=1,target='linux-arm64',sdkProfile='service-trixie')
         root=HERE.parents[1]/'.test-data/sdk-readonly-normal-route';root.mkdir(parents=True,exist_ok=True)
         class Budget:
+            def remaining(self):return 120
             def check(self,*args):pass
             def timeout(self,cap,*args):return cap
         class Daemon:
@@ -135,11 +136,11 @@ class RouteTest(unittest.TestCase):
         identity=dict(sourceSha='a'*40,runHeadSha='a'*40,runId=12,runAttempt=1,target='linux-arm64',sdkProfile='module-bookworm-gcc12')
         root=HERE.parents[1]/'.test-data/sdk-readonly-normal-route';root.mkdir(parents=True,exist_ok=True)
         class Budget:
-            remaining=120
-            def __init__(self,*args):pass
+            def __init__(self,*args):self._remaining=120
+            def remaining(self):return self._remaining
             def check(self,reserve=0):
-                if self.remaining<=reserve:raise TimeoutError('reserve')
-            def timeout(self,cap,reserve=0):self.check(reserve);return min(cap,self.remaining-reserve)
+                if self._remaining<=reserve:raise TimeoutError('reserve')
+            def timeout(self,cap,reserve=0):self.check(reserve);return min(cap,self._remaining-reserve)
         budget=Budget();calls=[]
         class Daemon:
             def __init__(self,*args):pass
@@ -148,9 +149,9 @@ class RouteTest(unittest.TestCase):
             directory=Path(directory).resolve();source=directory/'source-context.json';source.write_text(json.dumps({'sourceSha':identity['sourceSha']}));out=directory/'qlever-sdk-outer'
             def capture(name,argv,materials,cwd,**kwargs):
                 calls.append(name)
-                if name=='create-owned-builder':budget.remaining=45;raise ValueError('actual bootstrap failure')
+                if name=='create-owned-builder':budget._remaining=45;raise ValueError('actual bootstrap failure')
                 if name=='remove-owned-builder':
-                    plan=json.loads((out/'cleanup.plan.json').read_text());self.assertEqual(plan['builder'],route.binding.ownership(identity)+'-builder');self.assertEqual(kwargs['timeout'],30);return {}
+                    plan=json.loads((out/'cleanup.plan.json').read_text());self.assertEqual(plan['builder'],route.binding.ownership(identity)+'-builder');self.assertEqual(kwargs['timeout'],45);return {}
                 path=out/(name+'.raw');path.write_bytes(b'');return {'stdout':{'path':path.name}}
             with patch.dict(os.environ,{'RUNNER_TEMP':str(directory)}),patch.object(route.outer.platform,'system',return_value='Linux'),patch.object(route.os,'geteuid',return_value=0),patch.object(route.outer,'LocalDaemon',Daemon),patch.object(route.outer.budgets,'ExecutionBudget',return_value=budget),patch.object(route.outer.commands,'capture',side_effect=capture):
                 with self.assertRaisesRegex(ValueError,'actual bootstrap failure'):route.run(identity,2000000000,out,source)
