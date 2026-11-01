@@ -73,7 +73,10 @@ class Generation(e2e.EndToEnd):
   label=('source-' if source else 'build-')+mode
   base=self.root/label;base.mkdir();originals=base/'originals';originals.mkdir();build=base/'build';build.mkdir();src=base/'source';src.mkdir()
   self.trusted_roots[label]=str(build.resolve())
-  observer=e2e.make_observer(originals,str(build.resolve()))
+  # Hosted x64 ar exceeds the 256MiB fixture budget while capturing toolchain
+  # originals, including 123671544-byte bodies. Bound only this original ar case
+  # at 512MiB; other fixture defaults and product limits are unchanged.
+  observer=e2e.make_observer(originals,str(build.resolve()),maximum_bytes=(512 * 1024 * 1024 if mode == 'ar' else 256 * 1024 * 1024))
   for key in ('generated_vma_output','generated_vma_shared_mm','generated_vma_private_wake','generated_vma_private_wait_mismatch','generated_vma_coordinated_wait','generated_vma_parked_wait','retained_generated_metadata'):setattr(observer,key,False)
   observer.generated_vma=None
   observer.source=str(src)

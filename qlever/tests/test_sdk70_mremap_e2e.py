@@ -273,7 +273,7 @@ def build(source, directory, name):
     return str(binary)
 
 
-def make_observer(originals, trusted_root, *, phase_parent=False):
+def make_observer(originals, trusted_root, *, phase_parent=False, maximum_bytes=256 * 1024 * 1024):
     """Real base Observer + the SDK's own native lease DI decision.
 
     `SdkExecutionObserver` is the single place that selects the native backend
@@ -290,7 +290,7 @@ def make_observer(originals, trusted_root, *, phase_parent=False):
     observer = obs.Observer(
         originals, ROOT, trusted_root,
         deadline_monotonic=time.monotonic() + 120,
-        maximum_bytes=256 * 1024 * 1024,
+        maximum_bytes=maximum_bytes,
         maximum_file_bytes=limits['shardBytes'],
         maximum_stdio_bytes=2 * 1024 * 1024,
         selected_names=None,
