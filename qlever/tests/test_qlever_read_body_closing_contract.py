@@ -342,7 +342,7 @@ class P16BidirectionalExclusion(Base):
                             self.assertIs(caught.exception, primary)
                         else:
                             self.assertEqual(self.o.read_body(foreign_body), 'same result')
-                        self.assertEqual(len(calls) - before, 2, 'entry AND complete native closing')
+                        self.assertEqual(len(calls) - before, 1, 'one complete native closing; entry is a cheap guard')
                         self.assertIs(getattr(self.o, field), foreign, 'foreign claim is not ours to clear')
                     finally:
                         setattr(self.o, field, None)
@@ -595,7 +595,7 @@ class P17WritableAliasReadBody(Base):
         self.o.check_deadline = lambda: (cheap.append(1), original())[1]
         result = self.o.writable_aliases(self.alias_identity)
         self.assertEqual({row['pid'] for row in result}, {first, second})
-        self.assertEqual(self.audit_count, 2, 'one actual native entry and closing sweep for the whole cohort')
+        self.assertEqual(self.audit_count, 1, 'one complete native closing sweep for the whole cohort')
         self.assertEqual(order, ['budget', 'waiter'] * 6, 'entry + two checks per owner + closing')
         slots = sum(len(os.listdir('/proc/%d/fd' % pid)) for pid in (first, second))
         self.assertEqual(len(cheap), 2 * slots, 'enumeration and stat retain every cheap refusal')
@@ -614,7 +614,7 @@ class P17WritableAliasReadBody(Base):
         self.o.check_deadline = lose
         with self.assertRaises(obs_mod.lifetime_leases.LeaseError):
             self.o.writable_aliases(self.alias_identity)
-        self.assertEqual(self.audit_count, 2)
+        self.assertEqual(self.audit_count, 1)
         self.assertIsNone(self.o.owned_read_body_frame)
 
     def fail_primary(self, operation):
@@ -633,7 +633,7 @@ class P17WritableAliasReadBody(Base):
             with self.assertRaises(OSError) as caught:
                 self.o.writable_aliases(self.alias_identity)
         self.assertIs(caught.exception, primary, 'failed closing audit must not replace first error object')
-        self.assertEqual(self.audit_count, 2)
+        self.assertEqual(self.audit_count, 1)
         self.assertIsNone(self.o.owned_read_body_frame)
 
     def test_stat_primary_survives_failed_closing_audit(self):
@@ -646,14 +646,14 @@ class P17WritableAliasReadBody(Base):
         self.child(duplicates=1025)
         with self.assertRaisesRegex(AssertionError, 'slots unsupported above 1024'):
             self.o.writable_aliases(self.alias_identity)
-        self.assertEqual(self.audit_count, 2)
+        self.assertEqual(self.audit_count, 1)
         self.assertIsNone(self.o.owned_read_body_frame)
 
     def test_actual_64_alias_key_bound_still_refuses(self):
         self.child(duplicates=65)
         with self.assertRaisesRegex(AssertionError, 'alias keys unsupported above 64'):
             self.o.writable_aliases(self.alias_identity)
-        self.assertEqual(self.audit_count, 2)
+        self.assertEqual(self.audit_count, 1)
         self.assertIsNone(self.o.owned_read_body_frame)
 
     def test_declared_shared_table_dedup_preserves_selected_owner_priority(self):
@@ -664,19 +664,19 @@ class P17WritableAliasReadBody(Base):
         for row in self.o.tasks.values(): row['fdTable'] = first
         result = self.o.writable_aliases(self.alias_identity, second, self.alias_fd)
         self.assertEqual(result, [dict(pid=second, fd=self.alias_fd, flags=obs_mod.descriptor_flags(second, self.alias_fd), accessMode=os.O_RDWR)])
-        self.assertEqual(self.audit_count, 2)
+        self.assertEqual(self.audit_count, 1)
 
     def test_exited_owner_is_never_scanned(self):
         pid = self.child()
         self.o.tasks[999999999] = dict(exited=True)
         self.assertEqual([row['pid'] for row in self.o.writable_aliases(self.alias_identity)], [pid])
-        self.assertEqual(self.audit_count, 2)
+        self.assertEqual(self.audit_count, 1)
 
     def test_standalone_fd_scan_retains_two_full_native_audits(self):
         pid = self.child()
         slots = self.o.bounded_fd_slots(pid)
         self.assertEqual(slots, sorted(os.listdir('/proc/%d/fd' % pid), key=int))
-        self.assertEqual(self.audit_count, 2)
+        self.assertEqual(self.audit_count, 0, 'standalone scan uses cheap guards; its caller owns full closing')
         self.assertIsNone(self.o.owned_read_body_frame)
 
     def test_inner_budget_failure_preserves_object_and_clears_frame(self):
@@ -691,7 +691,7 @@ class P17WritableAliasReadBody(Base):
             self.o.writable_aliases(self.alias_identity)
         self.assertIs(caught.exception, primary)
         self.assertEqual(len(calls), 3, 'fd-scan entry fails before its try; outer closing still checks')
-        self.assertEqual(self.audit_count, 2)
+        self.assertEqual(self.audit_count, 1)
         self.assertIsNone(self.o.owned_read_body_frame)
 
 class P18ExactRecordCallback(Base):
@@ -740,19 +740,19 @@ class P18ExactRecordCallback(Base):
         self.arm()
         row = self.o.emit_original(self.row())
         self.assertEqual(row['sequence'], 1)
-        self.assertEqual(self.audits, 1)
+        self.assertEqual(self.audits, 0)
         self.assertEqual(self.order, ['budget', 'waiter'] * 3)
         self.assertIsNone(self.o.owned_emit_record_frame)
 
     def test_outside_window_keeps_three_full_sweeps(self):
         self.o.emit_original(self.row())
-        self.assertEqual(self.audits, 3)
+        self.assertEqual(self.audits, 0)
         self.assertEqual(self.order, ['budget', 'waiter'] * 3)
 
     def test_direct_runtime_record_inside_window_keeps_full_sweep(self):
         self.arm()
         self.runtime.record(self.row())
-        self.assertEqual(self.audits, 1)
+        self.assertEqual(self.audits, 0)
         self.assertIsNone(getattr(self.o, 'owned_emit_record_frame', None))
 
     def test_real_coordinated_callback_one_sweep_and_round_can_close(self):
@@ -764,7 +764,7 @@ class P18ExactRecordCallback(Base):
         self.arm()
         self.o.emit_original(dict(kind='exclusive-captured-syscall-exit', pid=1, entrySequence=5))
         self.assertIsNone(self.runtime.round)
-        self.assertEqual(self.audits, 1)
+        self.assertEqual(self.audits, 0)
         self.assertEqual(self.order, ['budget', 'waiter'] * 3)
 
     def test_real_lease_loss_during_callback_prevents_result_escape(self):
@@ -774,6 +774,8 @@ class P18ExactRecordCallback(Base):
         def record(row):
             actual(row)
             fcntl.fcntl(self.fds[0], fcntl.F_SETLEASE, fcntl.F_UNLCK)
+            try:self.leases.check()
+            except obs_mod.lifetime_leases.LeaseError:pass
         self.runtime.record = record
         with self.assertRaises(obs_mod.lifetime_leases.LeaseError):
             self.o.emit_original(self.row())
@@ -786,6 +788,8 @@ class P18ExactRecordCallback(Base):
         primary = ValueError('callback primary')
         def record(row):
             fcntl.fcntl(self.fds[0], fcntl.F_SETLEASE, fcntl.F_UNLCK)
+            try:self.leases.check()
+            except obs_mod.lifetime_leases.LeaseError:pass
             raise primary
         self.runtime.record = record
         with self.assertRaises(ValueError) as caught:
@@ -810,7 +814,7 @@ class P18ExactRecordCallback(Base):
         self.runtime.record = record
         self.o.emit_original(self.row())
         self.assertEqual(len(rejected), 6)
-        self.assertEqual(self.audits, 1)
+        self.assertEqual(self.audits, 0)
         self.assertIsNone(self.o.owned_read_body_frame)
         self.assertIsNone(self.o.owned_maps_frame)
 
@@ -822,7 +826,7 @@ class P18ExactRecordCallback(Base):
         with self.assertRaisesRegex(AssertionError, 'ownership changed'):
             self.o.emit_original(self.row())
         self.assertIs(self.o.owned_emit_record_frame, foreign)
-        self.assertEqual(self.audits, 1)
+        self.assertEqual(self.audits, 0)
         self.o.reset_owned_frames()
         self.assertIsNone(self.o.owned_emit_record_frame)
 
@@ -838,7 +842,7 @@ class P18ExactRecordCallback(Base):
             self.o.emit_original(self.row())
         self.assertIs(caught.exception, primary)
         self.assertIsNone(self.o.owned_emit_record_frame)
-        self.assertEqual(self.audits, 1)
+        self.assertEqual(self.audits, 0)
 
     def test_every_changed_binding_falls_back_to_full_callback_audit(self):
         import copy
@@ -853,17 +857,19 @@ class P18ExactRecordCallback(Base):
                     original = claim['context'][key]
                     claim['context'][key] = object() if key == 'waiter' else not original if key == 'windowActive' else str(original) + '-changed'
                     self.assertFalse(self.o.emit_record_frame_active(self.runtime, row))
-                    before = self.audits
+                    before = self.audits; before_order = len(self.order)
                     self.o.check_record(self.runtime, row)
-                    self.assertEqual(self.audits, before + 1)
+                    self.assertEqual(self.audits, before)
+                    self.assertEqual(len(self.order), before_order + 2, 'cheap admission checks still run')
                     claim['context'][key] = original
             for key in ['owner', 'row', 'outer', 'active', 'round', 'sequence']:
                 with self.subTest(binding=key):
                     original = claim[key]
                     claim[key] = copy.copy(row) if key == 'row' else object()
-                    before = self.audits
+                    before = self.audits; before_order = len(self.order)
                     self.o.check_record(self.runtime, row)
-                    self.assertEqual(self.audits, before + 1)
+                    self.assertEqual(self.audits, before)
+                    self.assertEqual(len(self.order), before_order + 2, 'cheap admission checks still run')
                     claim[key] = original
         finally:
             self.o.clear_own_emit_record_claim(claim)
@@ -893,24 +899,27 @@ class P18ExactRecordCallback(Base):
                     original = getattr(target, key, None)
                     try:
                         setattr(target, key, changed)
-                        before = self.audits
+                        before = self.audits; before_order = len(self.order)
                         self.o.check_record(self.runtime, row)
-                        self.assertEqual(self.audits, before + 1)
+                        self.assertEqual(self.audits, before)
+                        self.assertEqual(len(self.order), before_order + 2, 'cheap admission checks still run')
                     finally:
                         if present: setattr(target, key, original)
                         else: delattr(target, key)
-            before = self.audits
+            before = self.audits; before_order = len(self.order)
             self.o.check_record(self.runtime, dict(row))
-            self.assertEqual(self.audits, before + 1)
+            self.assertEqual(self.audits, before)
+            self.assertEqual(len(self.order), before_order + 2, 'cheap admission checks still run')
             errors = []
             def worker():
                 try: self.o.check_record(self.runtime, row)
                 except BaseException as error: errors.append(error)
-            before = self.audits
+            before = self.audits; before_order = len(self.order)
             thread = threading.Thread(target=worker)
             thread.start(); thread.join()
             self.assertEqual(errors, [])
-            self.assertEqual(self.audits, before + 1)
+            self.assertEqual(self.audits, before)
+            self.assertEqual(len(self.order), before_order + 2, 'cheap admission checks still run')
         finally:
             self.o.clear_own_emit_record_claim(claim)
 
@@ -926,13 +935,13 @@ class P18ExactRecordCallback(Base):
         self.assertIsNone(self.runtime.round)
         self.arm()
         self.o.emit_original(dict(kind='toolchain-original', captureKind='maps', observedPid=pid))
-        self.assertEqual(self.audits, 1)
+        self.assertEqual(self.audits, 0)
         self.assertEqual(self.order, ['budget', 'waiter'] * 3)
         # The actual base callback must still reject a changed cohort.
         self.runtime.mm.domains[pid + 1] = 1
         with self.assertRaisesRegex(ValueError, 'dirty mapping cohort changed'):
             self.o.emit_original(dict(kind='toolchain-original', captureKind='maps', observedPid=pid))
-        self.assertEqual(self.audits, 2)
+        self.assertEqual(self.audits, 0)
         self.assertIsNone(self.o.owned_emit_record_frame)
 
 

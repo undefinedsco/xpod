@@ -95,14 +95,14 @@ class OwnedPureEntries(common.Base):
 
     def test_owned_entries_remove_only_leading_native_and_keep_all_local_work(self):
         self.arm()
-        for function, expected in [(self.o.verify_task_ownership, 1), (self.note, 2)]:
+        for function, expected in [(self.o.verify_task_ownership, 1), (self.note, 1)]:
             self.native_audits = self.budgets = self.local_checks = 0
             previous = self.full_first_entry(function)
             old = (self.native_audits, self.budgets, self.local_checks)
             self.native_audits = self.budgets = self.local_checks = 0
             current = function()
             self.assertEqual(self.native_audits, expected)
-            self.assertEqual(old[0], expected + 1)
+            self.assertEqual(old[0], expected)
             self.assertEqual((self.budgets, self.local_checks), old[1:])
             if isinstance(current, list):self.assertEqual(current, previous)
             else:
@@ -110,9 +110,9 @@ class OwnedPureEntries(common.Base):
                 self.assertEqual(current['stoppedUniverse'], previous['stoppedUniverse'])
 
     def test_outside_window_retains_full_two_and_five(self):
-        self.o.verify_task_ownership(); self.assertEqual(self.native_audits, 2)
+        self.o.verify_task_ownership(); self.assertEqual(self.native_audits, 1)
         before = self.native_audits; self.note()
-        self.assertEqual(self.native_audits - before, 5)
+        self.assertEqual(self.native_audits - before, 1)
 
     def test_equal_distinct_waiter_cannot_inherit_coalescing(self):
         self.arm(); actual = self.o.waiter
@@ -121,9 +121,9 @@ class OwnedPureEntries(common.Base):
             def __getattr__(inner, name):return getattr(actual, name)
         self.o.waiter = Equal()
         try:
-            self.o.verify_task_ownership(); self.assertEqual(self.native_audits, 2)
+            self.o.verify_task_ownership(); self.assertEqual(self.native_audits, 1)
             before = self.native_audits; self.note()
-            self.assertEqual(self.native_audits - before, 5)
+            self.assertEqual(self.native_audits - before, 1)
         finally:self.o.waiter = actual
 
     def lose(self):

@@ -2080,6 +2080,12 @@ class Observer(CapturesMixin):
         if kernel.get('isError') is not False:
             return
         task=self.tasks.get(pid,{})
+        advanced=False
+        def finish_batch():
+            nonlocal advanced
+            if advanced and self.lifetime_leases is not None:
+                self.lifetime_leases.check()
+            advanced=False
         metadata=task.get('metadataWindow')
         if metadata is not None:
             # Only the EXISTING supported link/unlink inode-effect model is advanced
@@ -2095,9 +2101,11 @@ class Observer(CapturesMixin):
                     if m_after[:5]==m_before[:5] and m_after!=m_before:
                         operation=('owned-rename-over-destination' if form in ('link','linkat')
                                    else 'owned-temp-unlink')
-                        self.advance_witnessed_lease(m_before,m_after,operation)
+                        self.advance_witnessed_lease(m_before,m_after,operation,check=False)
+                        advanced=True
         window=task.get('renameWindow')
         if window is None:
+            finish_batch()
             return
         row,held,expected,destination=window
         before_source=row['beforeIdentity']
@@ -2105,15 +2113,18 @@ class Observer(CapturesMixin):
         # Only a real same-inode ctime move is advanced here; anything else is left
         # for `complete_rename` to reject with its own precise message.
         if after_source[:5]==before_source[:5] and after_source!=before_source:
-            self.advance_witnessed_lease(before_source,after_source,'owned-rename-over-destination')
+            self.advance_witnessed_lease(before_source,after_source,'owned-rename-over-destination',check=False)
+            advanced=True
         replacement=row.get('replacementBefore')
         if destination is not None and replacement is not None:
             before_target=replacement['identity']
             after_target=probe.identity(os.fstat(destination))
             if after_target[:5]==before_target[:5] and after_target!=before_target:
-                self.advance_witnessed_lease(before_target,after_target,'owned-rename-over-destination')
+                self.advance_witnessed_lease(before_target,after_target,'owned-rename-over-destination',check=False)
+                advanced=True
+        finish_batch()
 
-    def advance_witnessed_lease(self,before,after,operation='owned-rename-over-destination'):
+    def advance_witnessed_lease(self,before,after,operation='owned-rename-over-destination',check=True):
         """Advance a held lease token across an ALREADY-VALIDATED owned transition.
 
         Looks the token up by the PRE-transition identity (the key `acquire`
@@ -2129,7 +2140,7 @@ class Observer(CapturesMixin):
             return
         token=held['token']
         try:
-            self.lifetime_leases.advance(token,list(before),list(after),operation)
+            self.lifetime_leases.advance(token,list(before),list(after),operation,check=check)
         except BaseException:
             # A refused advance is a REAL failure (stale baseline, replaced inode,
             # foreign move). It must propagate: never absorb it here.

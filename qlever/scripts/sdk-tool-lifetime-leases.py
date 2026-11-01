@@ -519,7 +519,7 @@ class LeaseSet:
         self._native_plan_source = None
         self.check()
 
-    def advance(self, token, before, after, operation):
+    def advance(self, token, before, after, operation, check=True):
         """Admit ONE witnessed owned generation transition; never a waiver.
 
         A held read lease freezes the six-field identity recorded at `acquire`.
@@ -599,8 +599,10 @@ class LeaseSet:
         # The transition itself is a full-set boundary: other held rows may
         # have broken while this owned transition was being admitted.  The
         # stale plan must be cleared before this sweep so the new token is
-        # compared against every held row.
-        self.check()
+        # compared against every held row.  Authorized owned batches may defer
+        # this sweep until every affected held inode has been advanced.
+        if check:
+            self.check()
         # Return the SAME token shape `acquire()` returns (leaseId + identity
         # only). A filtered `check()` compares a supplied token EXACTLY, so
         # decorating it with extra keys would make the advanced token unusable
