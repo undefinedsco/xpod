@@ -336,7 +336,7 @@ class Session:
         observer=[]
         # Preserve the complete fixed backend import graph; same immutable Git
         # sourcePath verification remains the receiver's responsibility.
-        for filename in ['sdk-ptrace-execution.py','sdk-ptrace-kernel.py','sdk-execution-originals-util.py','sdk-generation-multiprocess-bindings.py','sdk-blocking-owned-wait.py','sdk-tool-provider-originals.py','sdk-generated-vma-originals.py','sdk-coordinated-wait.py','sdk-original-chunk-store.py','sdk-tool-lifetime-leases.py','sdk-executable-memory-policy.py','sdk-raw-wire-codec.py','sdk-raw-wire-reader.py']:
+        for filename in ['sdk-ptrace-execution.py','sdk-ptrace-kernel.py','sdk-execution-originals-util.py','sdk-generation-multiprocess-bindings.py','sdk-blocking-owned-wait.py','sdk-tool-provider-originals.py','sdk-generated-vma-originals.py','sdk-coordinated-wait.py','sdk-original-chunk-store.py','sdk-tool-lifetime-leases.py','sdk-owned-input-generation.py','sdk-executable-memory-policy.py','sdk-raw-wire-codec.py','sdk-raw-wire-reader.py']:
             path=HERE/filename
             if not path.is_file():raise ValueError('Observer original source missing: '+filename)
             target=self.directory/filename

@@ -35,6 +35,7 @@ lifetime_leases=load('sdk_tool_lifetime_leases',ROOT/'qlever/scripts/sdk-tool-li
 raw_wire_codec=load('sdk_raw_wire_codec',ROOT/'qlever/scripts/sdk-raw-wire-codec.py')
 memory_policy=load('sdk_executable_memory_policy',ROOT/'qlever/scripts/sdk-executable-memory-policy.py')
 budget_policy_module=load('sdk_execution_budget_policy',ROOT/'qlever/scripts/sdk-execution-budget.py')
+owned_input_module=load('sdk_owned_input_generation',ROOT/'qlever/scripts/sdk-owned-input-generation.py')
 LIFETIME_MODEL='kernel-held-read-lease-v1'
 LIFETIME_MAXIMUM_DEPTH=8
 PHASE_PROGRESS_INTERVAL=60.0
@@ -872,7 +873,8 @@ class CapturesMixin:
 class Observer(CapturesMixin):
     # Base host observer: pure-Python lease checking, exactly as before.
     lifetime_leases_class = lifetime_leases.LeaseSet
-    def __init__(self,out,source,build,*,deadline_monotonic=None,check_budget=lambda:None,maximum_bytes=32*1024**2,maximum_file_bytes=1024**2,selected_names=SELECTED,maximum_processes=128,shard_bytes=None,require_success=True,maximum_stdio_bytes=None,shared_tasks=False,capture_toolchain=False,deny_optional_io_uring=False,verified_setresuid_noop=False,verified_identity_noop=False,terminal_exit_evidence=False,generated_vma_output=False,generated_vma_shared_mm=False,generated_vma_private_wake=False,generated_vma_private_wait_mismatch=False,capture_content_entities=False,queued_identity_noop=False,stopped_writer_aliases=False,generated_vma_coordinated_wait=False,generated_vma_parked_wait=False,io_uring_enosys_v2=False,serialize_terminal_syscalls=False,capture_maps_content_entities=False,retained_generated_metadata=False,indexed_raw_records=False,compressed_raw=False,phase_budget_policy_version=None,generated_build_root=generated_vma_module.BUILD_ROOT):
+    owned_input_generations = None
+    def __init__(self,out,source,build,*,deadline_monotonic=None,check_budget=lambda:None,maximum_bytes=32*1024**2,maximum_file_bytes=1024**2,selected_names=SELECTED,maximum_processes=128,shard_bytes=None,require_success=True,maximum_stdio_bytes=None,shared_tasks=False,capture_toolchain=False,deny_optional_io_uring=False,verified_setresuid_noop=False,verified_identity_noop=False,terminal_exit_evidence=False,generated_vma_output=False,generated_vma_shared_mm=False,generated_vma_private_wake=False,generated_vma_private_wait_mismatch=False,capture_content_entities=False,queued_identity_noop=False,stopped_writer_aliases=False,generated_vma_coordinated_wait=False,generated_vma_parked_wait=False,io_uring_enosys_v2=False,serialize_terminal_syscalls=False,capture_maps_content_entities=False,retained_generated_metadata=False,indexed_raw_records=False,compressed_raw=False,phase_budget_policy_version=None,generated_build_root=generated_vma_module.BUILD_ROOT,owned_input_generations=False):
         assert type(indexed_raw_records) is bool
         self.indexed_raw_records=indexed_raw_records
         self.prepared_dependency_plan=None;self.dependency_roots={};self.dependency_cache=None
@@ -916,6 +918,8 @@ class Observer(CapturesMixin):
         self.phase_budget_policy=phase_budget_policy
         self.deadline_monotonic=deadline_monotonic;self.check_budget=check_budget;self.maximum_bytes=maximum_bytes;self.maximum_file_bytes=maximum_file_bytes;self.selected_names=selected_names
         self.out=Path(out);self.capture_dir=self.out;self.source=str(source);self.build=str(build);self.tasks={};self.seq=0;self.records=[];self.initialize_capture_state();self.retained=set();self.producers={};self.write_states={};self.write_projections={};self.append_chains={};self.budget_context={};self.metadata_states=[];self.timespec_originals={};self.rename_records=[];self.consumers=[];self.raw=None;self.deadline=0;self.pausing=False;self.root=None;self.root_code=None;self.failures=[];self.current_phase=None;self.unknown_stops={};self.capture_bytes=0;self.capture_entities={};self.content_capture_pool={};self.snapshot_telemetry=None;self.snapshot_telemetry_completed=None;self.snapshot_telemetry_failure=None;self.mremap_proof_active=False;self.mremap_barriers=0;self.mremapDeferred=None;self.exclusive=None;self.wait_references=[]
+        assert type(owned_input_generations) is bool and (not owned_input_generations or shared_tasks and capture_toolchain and stopped_writer_aliases),'owned generations require existing complete task/FD/write custody'
+        self.owned_input_generations=owned_input_module.Runtime(self,SimpleNamespace(probe=probe,bindings=bindings,memory_policy=memory_policy,profile=profile,path_argument=path_argument,descriptor_flags=descriptor_flags)) if owned_input_generations else None
         self.lifetime_leases=None;self.lifetime_phase=None;self.lifetime_acquired={};self.lifetime_by_identity={};self.authority_observed=set()
         assert type(generated_vma_output) is bool and (not generated_vma_output or shared_tasks and capture_toolchain),'generated VMA requires existing actual shared-task/tool observation'
         self.generated_build_root=generated_vma_module.validated_build_root(generated_build_root)
@@ -1073,8 +1077,9 @@ class Observer(CapturesMixin):
     def generated_fd_path(self,pid,fd):return fdpath(pid,fd)
     def emit(self,row):
         progress=self.phase_progress()
-        if progress is None:return self.emit_original(row)
-        return self.instrument('emit',self.emit_original,row)
+        result=self.emit_original(row) if progress is None else self.instrument('emit',self.emit_original,row)
+        if self.owned_input_generations is not None:self.owned_input_generations.record(result)
+        return result
     def emit_original(self,row):
         assert not self.read_frame_any(),'record publication is forbidden inside an owned read-only body'
         assert getattr(self,'owned_maps_frame',None) is None,'record publication is forbidden inside a maps body'
@@ -2210,12 +2215,18 @@ class Observer(CapturesMixin):
                 self.check_deadline();block=stream.read(65536)
                 if not block:break
                 yield block
+    def bindings_retained_generation(self,producer,identity,path):
+        return bindings.retained_metadata_chain(producer,dict(sequence=self.seq+1,identity=identity,path=path),self.metadata_states)
+    def bindings_digest_fd(self,held,identity):
+        result=bindings.digest_blocks(self.fd_blocks(held,identity[3]),self.maximum_file_bytes,self.check)
+        assert identity==probe.identity(os.fstat(held)),'generated held FD changed during digest'
+        return (result['bytes'],result['sha256'])
     def capture_write(self,pid,fd):
         barrier=self.barrier();entry=self.tasks[pid]['entry'];path=fdpath(pid,fd);reader=os.open('/proc/'+str(pid)+'/fd/'+str(fd),os.O_RDONLY|os.O_CLOEXEC)
         try:
             identity=probe.identity(os.fstat(reader));assert stat.S_ISREG(identity[2]) and identity[3]<=self.maximum_file_bytes
             alias_inventory=self.stopped_write_alias_inventory(pid,fd,identity) if getattr(self,'stopped_writer_aliases',False) else None
-            writers=[dict(pid=pid,fd=fd)] if alias_inventory else self.sole_writer(pid,fd,identity);flags=descriptor_flags(pid,fd);assert flags&os.O_ACCMODE==os.O_RDWR
+            writers=[dict(pid=pid,fd=fd)] if alias_inventory else self.sole_writer(pid,fd,identity);flags=descriptor_flags(pid,fd);assert flags&os.O_ACCMODE==os.O_RDWR or self.owned_input_generations is not None and tuple(identity[:2]) in self.owned_input_generations.active and flags&os.O_ACCMODE==os.O_WRONLY
             position=descriptor_position(pid,fd);offset=identity[3] if flags&os.O_APPEND else position;count=entry['args'][2]
             assert count<=self.maximum_file_bytes and offset+count<=self.maximum_file_bytes,'bounded actual write range'
             self.budget_context=dict(path=path[:4096],pathTruncated=len(path)>4096,pathSha256=hashlib.sha256(os.fsencode(path)).hexdigest(),role='write-before',pid=pid,fd=fd,identity=identity,writeCount=count,writeOffset=offset)
@@ -4258,6 +4269,7 @@ class Observer(CapturesMixin):
             self.instrument_substep('observe_tool_stop',self.observe_tool_stop,pid,task['toolPending'].pop(0))
         if self.instrument_substep('capture_bti_pending',self.capture_bti_pending):return
         if self.instrument_substep('capture_clone3_pending',self.capture_clone3_pending):return
+        if self.owned_input_generations is not None and self.owned_input_generations.pending():return
         # All candidate entries encountered while stopping peers are preserved;
         # process each before resuming any potential writer.
         while True:
@@ -4542,6 +4554,7 @@ class Observer(CapturesMixin):
         if record['op']=='entry':
             if self.capture_toolchain and record['nr']!=435 and not memory_policy.bti_candidate(record['arch'],record['nr'],record['args']):self.enforce_executable_memory(pid,record)
             assert task['entry'] is None,'syscall entry missing prior exit';task['initial']=False;task['entry']=record;nr=record['nr'];args=record['args']
+            if self.owned_input_generations is not None:self.owned_input_generations.classify(pid,record)
             identity_axis=tool_providers.identity_noop_axis(kernel['arch'],nr)
             if self.process_authority and ((getattr(self,'verified_identity_noop',False) and identity_axis is not None) or (getattr(self,'verified_setresuid_noop',False) and identity_axis=='Uid')):
                 assert self.exclusive is None,'identity entry crossed an active exclusive operation'
@@ -4635,7 +4648,7 @@ class Observer(CapturesMixin):
                 try:item=os.stat('/proc/'+str(pid)+'/fd/'+str(fd))
                 except FileNotFoundError:item=None
                 if item and stat.S_ISREG(item.st_mode):
-                    if nr==policy['write'] and selected.startswith(self.build+'/') and descriptor_flags(pid,fd)&os.O_ACCMODE==os.O_RDWR:task['capture']=(fd,'writer-before')
+                    if nr==policy['write'] and selected.startswith(self.build+'/') and (descriptor_flags(pid,fd)&os.O_ACCMODE==os.O_RDWR or self.owned_input_generations is not None and (item.st_dev,item.st_ino) in self.owned_input_generations.active):task['capture']=(fd,'writer-before')
                     elif nr==policy['close'] and selected.startswith(self.build+'/') and descriptor_flags(pid,fd)&os.O_ACCMODE in [os.O_WRONLY,os.O_RDWR]:task['capture']=(fd,'producer-close')
                     elif nr==policy['mmap'] and selected.startswith(self.build+'/') and (self.selected_names is None or Path(selected).name in self.selected_names):self.emit(dict(kind='generated-mmap-unverified',pid=pid,path=selected,entrySequence=record['sequence']))
                     # No read-role branch belongs here: the complete read family
@@ -4775,6 +4788,7 @@ class Observer(CapturesMixin):
                 if not record['isError'] and record['result']>=0 and old['nr']==rules['mmap'] and (not(old['args'][3]&0x20) or old['args'][2]&4):task.setdefault('toolPending',[]).append(('mmap',old,record))
                 if not record['isError'] and record['result']==0 and old['nr'] in rules['protect'] and old['args'][2]&4:task.setdefault('toolPending',[]).append(('protect-after',old,record))
             if task.get('renameWindow') is not None:self.complete_rename(pid,old,record)
+            if self.owned_input_generations is not None:self.owned_input_generations.exit(pid,old,record)
             if self.exclusive==(pid,old['sequence']):self.emit(dict(kind='exclusive-captured-syscall-exit',pid=pid,entrySequence=old['sequence'],result=record['result'],isError=record['isError']));self.exclusive=None
             release_fd=task.pop('releaseCaptureFd',None)
             if release_fd is not None:os.close(release_fd);self.retained.remove(release_fd)
@@ -4868,12 +4882,13 @@ class Observer(CapturesMixin):
             # cite a token that the previous phase already closed. Reset them
             # exactly where a fresh LeaseSet is created.
             self.input_read_cache={};self.input_generation={}
+            if self.owned_input_generations is not None:self.owned_input_generations.reset_phase()
             self.lifetime_phase=name;self.lifetime_acquired={};self.lifetime_by_identity={};self.authority_observed=set()
             os.close(read_fd)
             for pump in pumps:pump.start()
             if self.process_authority:
                 os.close(ready_write);ready_write=None;self.check();remaining=max(0,self.deadline-time.monotonic());readable,_,_=select.select([ready_read],[],[],remaining);self.check();assert readable and os.read(ready_read,1)==b'R','child authority setup did not complete before release';os.close(ready_read);ready_read=None
-            self.emit(dict(kind='owned-root-binding',pid=child,command=command,**(dict(toolchainLifetimeModel=LIFETIME_MODEL,executableMemoryPolicy=memory_policy.MODEL,clone3ArgsModel='stopped-clone3-args-v1',btiHardeningModel='held-rx-bti-hardening-v1',**(dict(remapCapabilityModel=memory_policy.REMAP_MODEL) if self.generated_vma else {})) if self.capture_toolchain else {}),**(dict(rawRecordModel=probe.RAW_RECORD_MODEL_V2)if self.indexed_raw_records else {}),backend='ptrace-all-stop-process-v1',**(dict(chunkOriginalStorageModel='chunk-original-v1') if self.capture_content_entities else {}),captureOriginalEntityModel='same-phase-content-entity-v2' if self.capture_content_entities else 'same-phase-producer-original-v1',**(dict(mapsOriginalEntityModel='same-phase-maps-content-entity-v1')if getattr(self,'capture_maps_content_entities',False)else {}),**(dict(generatedVmaModel=self.generated_vma.model,**(dict(generatedVmaMetadataModel=generated_vma_module.RETAINED_METADATA_MODEL)if getattr(self,'retained_generated_metadata',False)else {}),generatedVmaBuildRoot=self.build,generatedVmaParentDeadlineMonotonicNs=str(int(self.waiter.parent_deadline*1e9))) if self.generated_vma else {}),**(dict(stoppedWriterAliasModel='all-stop-exclusive-write-aliases-v1') if getattr(self,'stopped_writer_aliases',False) else {}),**(dict(optionalIoUringModel='explicit-kernel-enosys-denial-v2' if getattr(self,'io_uring_enosys_v2',False) else 'explicit-kernel-enosys-denial-v1') if self.deny_optional_io_uring else {}),**(dict(setresuidNoopModel='actual-stopped-setresuid-noop-v1') if self.verified_setresuid_noop else {}),**(dict(setresIdentityNoopModel='actual-stopped-setres-identity-noop-queued-v2' if getattr(self,'queued_identity_noop',False) else 'actual-stopped-setres-identity-noop-v1') if getattr(self,'verified_identity_noop',False) else {}),**(dict(processAuthorityModel=tool_providers.AUTHORITY_MODEL) if self.process_authority else {}),**(dict(exitAuthorityModel='actual-selected-exit-stop-held-terminal-peers-v2'if getattr(self,'serialize_terminal_syscalls',False)else 'actual-selected-exit-stop-before-peer-barrier-v1') if getattr(self,'terminal_exit_evidence',False) else {}),**(dict(taskOwnershipModel='all-tracked-tids-shared-fd-v1',tgid=child,fdTable=child) if self.shared_tasks else {})));single.trace(SEIZE,child,0,OPTIONS);single.trace(INTERRUPT,child);pid,status=self.wait_one();self.event(pid,status,False);self.pending_captures()
+            self.emit(dict(kind='owned-root-binding',pid=child,command=command,**(dict(ownedInputGenerationModel=owned_input_module.MODEL) if self.owned_input_generations is not None else {}),**(dict(toolchainLifetimeModel=LIFETIME_MODEL,executableMemoryPolicy=memory_policy.MODEL,clone3ArgsModel='stopped-clone3-args-v1',btiHardeningModel='held-rx-bti-hardening-v1',**(dict(remapCapabilityModel=memory_policy.REMAP_MODEL) if self.generated_vma else {})) if self.capture_toolchain else {}),**(dict(rawRecordModel=probe.RAW_RECORD_MODEL_V2)if self.indexed_raw_records else {}),backend='ptrace-all-stop-process-v1',**(dict(chunkOriginalStorageModel='chunk-original-v1') if self.capture_content_entities else {}),captureOriginalEntityModel='same-phase-content-entity-v2' if self.capture_content_entities else 'same-phase-producer-original-v1',**(dict(mapsOriginalEntityModel='same-phase-maps-content-entity-v1')if getattr(self,'capture_maps_content_entities',False)else {}),**(dict(generatedVmaModel=self.generated_vma.model,**(dict(generatedVmaMetadataModel=generated_vma_module.RETAINED_METADATA_MODEL)if getattr(self,'retained_generated_metadata',False)else {}),generatedVmaBuildRoot=self.build,generatedVmaParentDeadlineMonotonicNs=str(int(self.waiter.parent_deadline*1e9))) if self.generated_vma else {}),**(dict(stoppedWriterAliasModel='all-stop-exclusive-write-aliases-v1') if getattr(self,'stopped_writer_aliases',False) else {}),**(dict(optionalIoUringModel='explicit-kernel-enosys-denial-v2' if getattr(self,'io_uring_enosys_v2',False) else 'explicit-kernel-enosys-denial-v1') if self.deny_optional_io_uring else {}),**(dict(setresuidNoopModel='actual-stopped-setresuid-noop-v1') if self.verified_setresuid_noop else {}),**(dict(setresIdentityNoopModel='actual-stopped-setres-identity-noop-queued-v2' if getattr(self,'queued_identity_noop',False) else 'actual-stopped-setres-identity-noop-v1') if getattr(self,'verified_identity_noop',False) else {}),**(dict(processAuthorityModel=tool_providers.AUTHORITY_MODEL) if self.process_authority else {}),**(dict(exitAuthorityModel='actual-selected-exit-stop-held-terminal-peers-v2'if getattr(self,'serialize_terminal_syscalls',False)else 'actual-selected-exit-stop-before-peer-barrier-v1') if getattr(self,'terminal_exit_evidence',False) else {}),**(dict(taskOwnershipModel='all-tracked-tids-shared-fd-v1',tgid=child,fdTable=child) if self.shared_tasks else {})));single.trace(SEIZE,child,0,OPTIONS);single.trace(INTERRUPT,child);pid,status=self.wait_one();self.event(pid,status,False);self.pending_captures()
             binding=self.emit(dict(kind='toolchain-control-gate-binding',model='observer-owned-startup-gate-v1',
                 gateSequence=gate['sequence'],pid=child,identity=gate_identity,
                 scope='the observer, not the tracee, owns the write end of this exact pipe inode'))
@@ -4980,6 +4995,7 @@ class Observer(CapturesMixin):
         if leases is None:return None
         assert all(row['exited'] for row in self.tasks.values()),'lifetime lease closure before allTrackedWaitsClosed'
         closed_pids=sorted(pid for pid,row in self.tasks.items() if row['exited'])
+        if self.owned_input_generations is not None:self.owned_input_generations.finish()
         tokens=leases.complete()
         acquired={row['token']['leaseId']:row['sequence'] for row in self.lifetime_acquired.values()}
         assert set(acquired)=={token['leaseId'] for token in tokens} and sorted(acquired)==[token['leaseId'] for token in tokens],'lease tokens/acquisitions differ'
@@ -4992,7 +5008,7 @@ class Observer(CapturesMixin):
             self.emit(dict(kind='toolchain-lease-closed-token',model=LIFETIME_MODEL,pid=self.root,phaseName=self.lifetime_phase,**value))
         for offset in range(0,len(closed_pids),256):
             self.emit(dict(kind='toolchain-lease-closed-pids',model=LIFETIME_MODEL,pid=self.root,phaseName=self.lifetime_phase,offset=offset,actualClosedPids=closed_pids[offset:offset+256]))
-        row=self.emit(dict(kind='toolchain-leases-closed',model=LIFETIME_MODEL,pid=self.root,phaseName=self.lifetime_phase,tokenCount=len(tokens),tokensSha256=digest.hexdigest(),actualClosedPidCount=len(closed_pids),allTrackedWaitsClosed=True,scope='actual kernel-held read leases closed after all tracked waits; no source authority'))
+        row=self.emit(dict(kind='toolchain-leases-closed',model=LIFETIME_MODEL,pid=self.root,phaseName=self.lifetime_phase,tokenCount=len(tokens),**(dict(ownedInputRetiredTokenCount=len(self.owned_input_generations.retired_tokens)) if self.owned_input_generations is not None else {}),tokensSha256=digest.hexdigest(),actualClosedPidCount=len(closed_pids),allTrackedWaitsClosed=True,scope='actual kernel-held read leases closed after all tracked waits; no source authority'))
         return row
     def observed_tool_files(self,capture_start,name):
         rows=[dict(actualOriginalPath=row['observedPath'],identity=row['identity'],actualMode=row['identity'][2],sourceKind='actual-tool-file-fd-snapshot',role='observed-tool-file',phase=row['phase'],rawEventKind='toolchain-original',captureSequence=row['sequence'],original=dict(row['original'],path=str(self.capture_dir/row['original']['path']))) for row in self.captures[capture_start:] if row.get('kind')=='toolchain-original' and row.get('captureKind')=='file']
@@ -5043,7 +5059,7 @@ class SdkExecutionObserver(Observer):
         assert Path(source)==Path('/opt/qlever-sdk/source') and Path(build)==Path('/opt/qlever-sdk/build'),'fixed SDK source/build roots required'
         assert isinstance(deadline_monotonic,(float,int)) and math.isfinite(deadline_monotonic) and time.monotonic()<deadline_monotonic,'existing live SDK deadline required'
         super().__init__(out,source,build,deadline_monotonic=deadline_monotonic,check_budget=check_budget,maximum_bytes=maximum_bytes,
-            maximum_file_bytes=limits['shardBytes'],phase_budget_policy_version=phase_budget_policy_version,selected_names=None,maximum_processes=limits['sourceMembers'],shard_bytes=limits['shardBytes'],require_success=False,maximum_stdio_bytes=maximum_stdio_bytes,shared_tasks=True,capture_toolchain=True,deny_optional_io_uring=True,verified_identity_noop=True,terminal_exit_evidence=True,generated_vma_output=True,generated_vma_shared_mm=True,generated_vma_private_wake=True,generated_vma_private_wait_mismatch=True,capture_content_entities=True,queued_identity_noop=True,stopped_writer_aliases=True,generated_vma_coordinated_wait=True,generated_vma_parked_wait=True,io_uring_enosys_v2=True,serialize_terminal_syscalls=True,capture_maps_content_entities=True,retained_generated_metadata=True,indexed_raw_records=True,compressed_raw=True)
+            owned_input_generations=True,maximum_file_bytes=limits['shardBytes'],phase_budget_policy_version=phase_budget_policy_version,selected_names=None,maximum_processes=limits['sourceMembers'],shard_bytes=limits['shardBytes'],require_success=False,maximum_stdio_bytes=maximum_stdio_bytes,shared_tasks=True,capture_toolchain=True,deny_optional_io_uring=True,verified_identity_noop=True,terminal_exit_evidence=True,generated_vma_output=True,generated_vma_shared_mm=True,generated_vma_private_wake=True,generated_vma_private_wait_mismatch=True,capture_content_entities=True,queued_identity_noop=True,stopped_writer_aliases=True,generated_vma_coordinated_wait=True,generated_vma_parked_wait=True,io_uring_enosys_v2=True,serialize_terminal_syscalls=True,capture_maps_content_entities=True,retained_generated_metadata=True,indexed_raw_records=True,compressed_raw=True)
         self.capture_dir=self.out/'captures';self.capture_dir.mkdir(exist_ok=False);self.sdk_phase_index=0;self.sdk_failed=False
         mounts=Path('/proc/self/mountinfo').read_bytes();assert len(mounts)<=limits['metadataBytes'],'source provider metadata bound'
         self.source_provider=probe.effective_readonly(source,mounts);self.source_provider_originals=dict(mountinfo=probe.put(self.out/'source-provider.mountinfo.raw',mounts));self.claim(len(mounts))

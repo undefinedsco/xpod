@@ -21,7 +21,7 @@ import path from 'node:path';
 import {createHash} from 'node:crypto';
 import vm from 'node:vm';
 import ts from 'typescript';
-import {completeObserved} from './source-binding-group.fixture';
+import {CURRENT_CANONICAL_SOURCE_ROWS, CURRENT_HELPER_GROUP_COUNTS, CURRENT_OBSERVER_GROUPS, CURRENT_SOURCE_GROUP_COUNTS, completeObserved} from './source-binding-group.fixture';
 import {CLI_SOURCE_VERSION_GROUPS} from '../../scripts/lib/independent-admission/source-rules';
 import f6Groups from '../fixtures/independent-admission/f6-published-sdk-slice.original.json';
 /** Immutable PUBLISHED SDK823 baseline (64/79/156 = 299, API27, helpers 29/39/32). */
@@ -171,7 +171,7 @@ test('the accepted SDK823 baseline proves all 299 published whole histories', ()
   // Only genuinely new, UNPUBLISHED current groups follow the 299 published ones:
   // the immutable-input-plan slice, the ORM 0.3.26 joint API/CLI/consumer/CI tail
   // and the ORM 0.3.26 joint SDK tuple.
-  expect([sdk.length, consumer.length, ci.length, api.length]).toEqual([89, 99, 196, 29]);
+  expect([sdk.length, consumer.length, ci.length, api.length]).toEqual([CURRENT_SOURCE_GROUP_COUNTS.sdk, CURRENT_SOURCE_GROUP_COUNTS.consumer, CURRENT_SOURCE_GROUP_COUNTS.ci, 29]);
 });
 
 test('the immutable fae9170b baseline proves its full published 69/84/166/28 prefixes', () => {
@@ -202,12 +202,12 @@ test('only the genuinely new immutable-input-plan slice follows published2406', 
   // Appends beyond published2406: the immutable-input-plan slice, the ORM 0.3.26
   // joint tail, and the candidate-producer-attempt SDK81/new current tails.
   expect([sdk.length, consumer.length, ci.length, api.length, linuxGroups.length, CLI_SOURCE_VERSION_GROUPS.length])
-    .toEqual([89, 99, 196, 29, 90, 12]);
+    .toEqual([CURRENT_SOURCE_GROUP_COUNTS.sdk, CURRENT_SOURCE_GROUP_COUNTS.consumer, CURRENT_SOURCE_GROUP_COUNTS.ci, 29, CURRENT_SOURCE_GROUP_COUNTS.linux, 12]);
   expect([(n2406Groups as any).published.sdk, (n2406Groups as any).published.consumer,
     (n2406Groups as any).published.ci, (n2406Groups as any).published.linux]).toEqual([73, 88, 174, 74]);
   expect([sdk.length - n2406Groups.published.sdk, consumer.length - n2406Groups.published.consumer,
     ci.length - n2406Groups.published.ci, linuxGroups.length - n2406Groups.published.linux])
-    .toEqual([16, 11, 22, 16]);
+    .toEqual([17, 11, 22, 17]);
   // Every published2406 group keeps its own exact bytes, including its last.
   for (const [name, groups] of Object.entries({sdk, consumer, ci, api, linux: linuxGroups})) {
     const published = (n2406Groups as any).groupHashes[name] as unknown[];
@@ -221,7 +221,7 @@ test('only the genuinely new immutable-input-plan slice follows published2406', 
 
 test('the appended groups bind the actual frozen body and real module bytes', () => {
   // The current observer includes the verified regular-read source capture.
-  expect(sha(read(BODY))).toBe('26f8f3194e9e746512b54d7d4d200ce0d9b96809ffa2140aadd657dc3e9c03b6');
+  expect(sha(read(BODY))).toBe('3ade1dca1145e0dbde649e609658a8c39c4d537667b1152fe9b39b494c5c7c8a');
   for (const [name, groups] of Object.entries(families)) {
     // PUBLISHED f803 history ends at the f803 counts (SDK 74, i.e. indices 0..73).
     // Those tuples — including index 73 — are immutable published history: they are
@@ -348,8 +348,8 @@ test('the frozen published canonical keeps its exact 426 rows and accepted bytes
 test('the live canonical binds every actual row of the final combined tree', () => {
   // The canonical grew by exactly one appended row for this slice; path
   // uniqueness must still hold at the new count.
-  expect(current.length).toBe(505);
-  expect(new Set(current.map((r) => r.path)).size).toBe(505);
+  expect(current.length).toBe(CURRENT_CANONICAL_SOURCE_ROWS);
+  expect(new Set(current.map((r) => r.path)).size).toBe(CURRENT_CANONICAL_SOURCE_ROWS);
   // The genuinely new roles of this slice: the corrected SDK inner producer and
   // the CI-discovered Ninja regression that now runs under `test_qlever*`.
   expect(current.find((r) => r.path === 'qlever/scripts/sdk-inner-materials.py')!.sha256)
@@ -358,7 +358,7 @@ test('the live canonical binds every actual row of the final combined tree', () 
     .toBe('a2cb860d7300d62931a354c90ade3a00ada1c831c37f719b24f77385de93e4fc');
   // The reviewed phase-syscall diagnostic plus its three CI-discovered tests.
   expect(current.find((r) => r.path === 'qlever/scripts/sdk-ptrace-execution.py')!.sha256)
-    .toBe('26f8f3194e9e746512b54d7d4d200ce0d9b96809ffa2140aadd657dc3e9c03b6');
+    .toBe('3ade1dca1145e0dbde649e609658a8c39c4d537667b1152fe9b39b494c5c7c8a');
   // The final reviewed VMA diagnostic and its root-corrected behavioural test.
   expect(current.find((r) => r.path === 'qlever/scripts/sdk-generated-vma-originals.py')!.sha256)
     .toBe('340b66af0944e70e99f26453e2d5f94d8dfa5d3a41e93f2a9e4448bce70b2114');
@@ -371,7 +371,7 @@ test('the live canonical binds every actual row of the final combined tree', () 
   ] as const) expect(current.find((r) => r.path === p)!.sha256).toBe(h);
   for (const row of current) expect(sha(read(row.path))).toBe(row.sha256);
   const body = current.find((r) => r.path === BODY)!;
-  expect(body.sha256).toBe('26f8f3194e9e746512b54d7d4d200ce0d9b96809ffa2140aadd657dc3e9c03b6');
+  expect(body.sha256).toBe('3ade1dca1145e0dbde649e609658a8c39c4d537667b1152fe9b39b494c5c7c8a');
   expect(current.find((r) => r.path === 'qlever/scripts/sdk-original-chunk-store.py')!.sha256)
     .toBe('67ea1a610f15f74288d623694b1a4886a82b0f29a186c40e69bdd232b39f96db');
 });
@@ -380,9 +380,9 @@ test('helper tuples retain the e4 published histories and current role bytes', (
   const tables = [
     // PR124 appends one current tuple on each axis (never rebinding a published
     // one), so each live frontier grows by exactly one.
-    ['qlever-sdk-generation.ts', 'REVIEWED_CONTROLLER_HELPER_GROUPS_CURRENT', 'controller', 41],
-    ['qlever-sdk-generation.ts', 'REVIEWED_OBSERVER_GROUPS', 'observer', 61],
-    ['qlever-sdk-fetchcontent.ts', 'REVIEWED_HELPER_GROUPS_CURRENT', 'fetch', 44],
+    ['qlever-sdk-generation.ts', 'REVIEWED_CONTROLLER_HELPER_GROUPS_CURRENT', 'controller', CURRENT_HELPER_GROUP_COUNTS.controller],
+    ['qlever-sdk-generation.ts', 'REVIEWED_OBSERVER_GROUPS', 'observer', CURRENT_OBSERVER_GROUPS],
+    ['qlever-sdk-fetchcontent.ts', 'REVIEWED_HELPER_GROUPS_CURRENT', 'fetch', CURRENT_HELPER_GROUP_COUNTS.fetch],
   ] as const;
   for (const [file, name, family, count] of tables) {
     const groups = recipes(file, name);
@@ -406,7 +406,7 @@ test('helper tuples retain the e4 published histories and current role bytes', (
   // than rebinding the published 55 above; the reviewed lease-evidence diagnostic
   // then appends a 57th (the CURRENT observer tail) instead of rebinding PR124.
   const observer = recipes('qlever-sdk-generation.ts', 'REVIEWED_OBSERVER_GROUPS');
-  expect(observer).toHaveLength(61);
+  expect(observer).toHaveLength(CURRENT_OBSERVER_GROUPS);
 });
 
 test('every group still selects itself uniquely and refuses missing/mixed roles', () => {
@@ -436,7 +436,7 @@ test('the CURRENT unpublished slice carries the published helper prefixes and it
   const helpers = recipes('qlever-sdk-generation.ts', 'REVIEWED_OBSERVER_GROUPS');
   // PR124 appended the 56th current observer tuple and the lease-evidence
   // diagnostic appended the 57th; the 55 already-published ones remain.
-  expect(helpers.length).toBe(61);
+  expect(helpers.length).toBe(CURRENT_OBSERVER_GROUPS);
   const current = sdk.at(-1)!;
   const sec = current.secondarySelectors ?? [];
   expect(sec.length).toBeGreaterThanOrEqual(17);
@@ -446,13 +446,17 @@ test('the CURRENT unpublished slice carries the published helper prefixes and it
   const previous = sdk[85]!;
   const previousBindings = previous.sourceBindings ?? [];
   expect(previousBindings.length).toBe(154);
-  expect(current.sourceBindings.length).toBe(157);
+  expect(current.sourceBindings.length).toBe(161);
   expect(current.sourceBindings.slice(0, 154).map(r => r.path))
     .toEqual(previousBindings.map(r => r.path));
   const expectedAppended = [
     'qlever/patches/qlever-s2-scoped-precompiled-headers.patch',
     'qlever/patches/qlever-antlr-scoped-pch-and-server-pch-reuse.patch',
     'qlever/scripts/sdk-generated-producer-transport.py',
+    'qlever/scripts/sdk-owned-input-generation.py',
+    'qlever/tests/test_sdk_owned_input_generation.py',
+    'qlever/tests/run_sdk_owned_input_generation_gate.py',
+    '.github/workflows/ci.yml',
   ];
   const appended = current.sourceBindings.slice(previousBindings.length);
   expect(appended.map(r => r.path)).toEqual(expectedAppended);

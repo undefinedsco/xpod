@@ -1549,6 +1549,12 @@ export async function observeProductConsumerGitHubOrigin(input:ArtifactAcquisiti
       // now includes bounded attribution, real lease/timer and transport checks.
       {workflowSha256:'88166f392dc915810b03c594f6044b2978308ac77f33b94b9a35eae316d49f4e',
       jobName:()=>callerNames[0]!,
+      sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS},
+      // APPEND-ONLY: SDK90 native owned-input gate. All prior caller versions
+      // remain byte-identical and selectable; this current ci.yml adds the exact
+      // explicit 17-case gate after the canonical native helper build.
+      {workflowSha256:'eb4067fbcf7ce260010aafde8d5b89b3a0890a88af877bd91018d372a6358bbe',
+      jobName:()=>callerNames[0]!,
       sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS}],requiredBranch:'staging',
     jobName:()=>callerNames[0]!,jobNames:()=>callerNames,
     sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS,

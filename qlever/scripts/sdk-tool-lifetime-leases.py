@@ -96,6 +96,7 @@ class LeaseSet:
             raise ValueError('positive unique lease bound required')
         self.maximum = maximum
         self._held = {}
+        self._next_lease_id = 1
         # Immutable REGISTRATION input for the unfiltered sweep: one
         # (fd, expected identity tuple) per held row, built only from data fixed
         # at acquire time. It is never authority for an observation: every check
@@ -458,7 +459,7 @@ class LeaseSet:
                     self._reject('same inode changed before reuse')
                 self.check(row['token'])
                 return dict(row['token'], identity=list(before))
-            if len(self._held) >= self.maximum:
+            if len(self._held) >= self.maximum or self._next_lease_id > self.maximum:
                 self._reject('unique lease bound exceeded')
             owned = fcntl.fcntl(fd, fcntl.F_DUPFD_CLOEXEC, 0)
             if fcntl.fcntl(owned, fcntl.F_GETLEASE) != fcntl.F_UNLCK:
@@ -469,7 +470,8 @@ class LeaseSet:
             if identity(owned) != before or fcntl.fcntl(owned, fcntl.F_GETLEASE) != fcntl.F_RDLCK:
                 self._reject('inode changed during lease acquisition')
             self._ready()
-            token = {'leaseId': len(self._held) + 1, 'identity': before}
+            token = {'leaseId': self._next_lease_id, 'identity': before}
+            self._next_lease_id += 1
             self._held[key] = {'fd': owned, 'token': token}
             self._plan = None      # owned set changed: the plan is no longer the whole set
             self._native_plan = None   # and the native decode no longer covers the set
@@ -490,6 +492,22 @@ class LeaseSet:
                         fcntl.fcntl(owned, fcntl.F_SETLEASE, fcntl.F_UNLCK)
                 finally:
                     os.close(owned)
+
+    def retire(self, token):
+        """Close exactly one verified generation; sticky SIGIO remains fatal."""
+        self.check(token)
+        key = tuple(token['identity'][:2])
+        row = self._held[key]
+        fcntl.fcntl(row['fd'], fcntl.F_SETLEASE, fcntl.F_UNLCK)
+        self._ready()
+        if identity(row['fd']) != token['identity']:
+            self._reject('retired generation identity changed')
+        os.close(row['fd'])
+        del self._held[key]
+        self._plan = None
+        self._native_plan = None
+        self._native_plan_source = None
+        self.check()
 
     def advance(self, token, before, after, operation):
         """Admit ONE witnessed owned generation transition; never a waiver.

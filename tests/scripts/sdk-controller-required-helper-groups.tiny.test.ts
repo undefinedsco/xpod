@@ -1,5 +1,6 @@
 import{test,expect}from'bun:test';
 import{requiredSdkControllerHelperGroup as plan,selectSdkControllerHelperGroup as select}from'../../scripts/lib/independent-admission/sdk-controller-helper-groups';
+import{CURRENT_HELPER_GROUP_COUNTS}from'./source-binding-group.fixture';
 const old=[['model.py','a'],['shared.py','b']]as const,newer=[['model.py','c'],['shared.py','b'],['new.py','d']]as const,names=['model.py','shared.py'];
 test('complete common tuple selects only its declared additional originals; old never asks for future role',()=>{
  expect(plan([old,newer],names,new Map(old))).toBe(old);expect(plan([old,newer],names,new Map(newer.slice(0,2)))).toBe(newer);expect(()=>select([old,newer],new Map(newer.slice(0,2)))).toThrow();expect(select([old,newer],new Map(newer))).toBe(newer);
@@ -12,14 +13,12 @@ test('sixteen declared complete groups only; observed original bound remains thi
  const groups=Array.from({length:16},(_,i)=>[['model.py',String(i)],['shared.py','b']]as const);expect(select(groups,new Map(groups[15]!))).toBe(groups[15]);expect(()=>select([...groups,groups[15]!],new Map(groups[15]!))).toThrow();expect(()=>plan([...groups,groups[15]!],names,new Map(groups[15]!))).toThrow();expect(()=>select([old],new Map(Array.from({length:33},(_,i)=>[String(i),'a'])))).toThrow();
 });
 
-test('forty-two registered recipes fit capacity; a forty-third rejects before extra reads',()=>{
- // The declared VERSION catalogue is exactly 42 after the SDK87 owned-metadata
- // transition append pushed the fetch CURRENT catalogue to a 41st tuple. Only the catalogue length changed; the
- // observed PER-TUPLE role bound stays 32 (see the previous case) and the 1024-slot
- // FD cap, lease cadence and capture bounds are untouched. Every non-matching tuple
- // carries a DISTINCT digest, so the overflow refusal comes from the COUNT bound,
- // not from ambiguity.
- const groups=Array.from({length:42},(_,i)=>[['model.py',String(i)],['shared.py','b']]as const);
- const observed=new Map(groups[41]!);expect(plan(groups,names,observed)).toBe(groups[41]);expect(select(groups,observed)).toBe(groups[41]);
- const overflow=[...groups,[['model.py','42'],['shared.py','b']]as const];expect(()=>plan(overflow,names,observed)).toThrow();expect(()=>select(overflow,observed)).toThrow();
+test('the CURRENT maximum registered recipes fit capacity; one beyond rejects before extra reads',()=>{
+ // The declared VERSION count is the explicit CURRENT helper maximum; the
+ // observed per-tuple role bound and capture bounds are untouched. The extra
+ // tuple has a fresh digest so refusal proves the count bound, not ambiguity.
+ const maximum=CURRENT_HELPER_GROUP_COUNTS.maximum;
+ const groups=Array.from({length:maximum},(_,i)=>[['model.py',String(i)],['shared.py','b']]as const);
+ const observed=new Map(groups[maximum-1]!);expect(plan(groups,names,observed)).toBe(groups[maximum-1]);expect(select(groups,observed)).toBe(groups[maximum-1]);
+ const overflow=[...groups,[['model.py',String(maximum)],['shared.py','b']]as const];expect(overflow).toHaveLength(maximum+1);expect(()=>plan(overflow,names,observed)).toThrow();expect(()=>select(overflow,observed)).toThrow();
 });

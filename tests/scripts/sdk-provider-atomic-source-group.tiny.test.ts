@@ -1,5 +1,6 @@
 import {completeObserved} from './source-binding-group.fixture';
 import {test,expect} from 'bun:test';
+import {CURRENT_SOURCE_GROUP_COUNTS} from './source-binding-group.fixture';
 import fs from 'node:fs';
 import path from 'node:path';
 import {createHash} from 'node:crypto';
@@ -36,7 +37,7 @@ const preselectionBatches=batchesOf(preselectionJobs);
 
 test('all twenty-two SDK whole recipes select uniquely and current runtime imports match actual bytes',()=>{
  // SDK79 published 79; the SDK80 append adds exactly one whole group.
- expect(QLEVER_SDK_EXECUTION_GROUPS).toHaveLength(89);
+ expect(QLEVER_SDK_EXECUTION_GROUPS).toHaveLength(CURRENT_SOURCE_GROUP_COUNTS.sdk);
  for(const group of QLEVER_SDK_EXECUTION_GROUPS)expect(selectGitHubSourceBindingGroup(QLEVER_SDK_EXECUTION_GROUPS,completeObserved(QLEVER_SDK_EXECUTION_GROUPS,group))).toBe(group);
  const current=QLEVER_SDK_EXECUTION_GROUPS.at(-1)!;
  for(const row of [...current.selectors,...current.sourceBindings])expect(createHash('sha256').update(fs.readFileSync(path.join(root,row.path))).digest('hex')).toBe(row.sha256);
