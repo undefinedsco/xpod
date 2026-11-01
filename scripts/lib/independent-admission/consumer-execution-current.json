@@ -1221,7 +1221,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-origin-policy.ts",
-    "sha256": "0c898ed0a99040b94dba57d222efc21a0f79d82c8aadf889fb7086fee8c19bf6"
+    "sha256": "a1e5ed1a96ba84489f540255b0f092debff1e8d1b44d2ccd4a86b5e533ea87dd"
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-originals.ts",
@@ -2025,7 +2025,7 @@
   },
   {
     "path": "qlever/tests/test_sdk_owned_input_generation.py",
-    "sha256": "a0ad185002f8ea06df79ad5d5e61ffa5d0f6b7c30a1d1f57c89322e66d5de780"
+    "sha256": "aed04979fbbb6c3eacc4b017197a993a3445bacab209a988c8dd679362351e79"
   },
   {
     "path": "qlever/tests/run_sdk_owned_input_generation_gate.py",

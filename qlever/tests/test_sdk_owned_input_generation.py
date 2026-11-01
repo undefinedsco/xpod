@@ -73,10 +73,13 @@ class Generation(e2e.EndToEnd):
   label=('source-' if source else 'build-')+mode
   base=self.root/label;base.mkdir();originals=base/'originals';originals.mkdir();build=base/'build';build.mkdir();src=base/'source';src.mkdir()
   self.trusted_roots[label]=str(build.resolve())
-  # Hosted x64 ar exceeds the 256MiB fixture budget while capturing toolchain
-  # originals, including 123671544-byte bodies. Bound only this original ar case
-  # at 512MiB; other fixture defaults and product limits are unchanged.
-  observer=e2e.make_observer(originals,str(build.resolve()),maximum_bytes=(512 * 1024 * 1024 if mode == 'ar' else 256 * 1024 * 1024))
+  # Canonical production sourceMaterialBytes is 4GiB. The actual Ubuntu x64 ar
+  # toolchain loads real preinstalled binaries and legitimately exceeds the former
+  # 512MiB fixture allowance; all other modes retain the factory default.
+  if mode == "ar":
+   observer=e2e.make_observer(originals,str(build.resolve()),maximum_bytes=e2e.obs.load_sdk_execution_limits()["sourceMaterialBytes"])
+  else:
+   observer=e2e.make_observer(originals,str(build.resolve()))
   for key in ('generated_vma_output','generated_vma_shared_mm','generated_vma_private_wake','generated_vma_private_wait_mismatch','generated_vma_coordinated_wait','generated_vma_parked_wait','retained_generated_metadata'):setattr(observer,key,False)
   observer.generated_vma=None
   observer.source=str(src)
@@ -104,7 +107,11 @@ print(json.dumps(result),flush=True)
 sys.stdin.read(1)
 """
    external=subprocess.Popen([sys.executable,'-c',program,str(archive)],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
-  try:phase=observer.phase('configure',[binary,str(archive),mode,str(alias_source)],time.monotonic()+30,cwd=str(e2e.ROOT),env={'PATH':'/usr/bin:/bin','LANG':'C','LC_ALL':'C'})
+  if mode == "ar":
+   phase_deadline=observer.deadline_monotonic
+  else:
+   phase_deadline=min(time.monotonic()+30,observer.deadline_monotonic)
+  try:phase=observer.phase("configure",[binary,str(archive),mode,str(alias_source)],phase_deadline,cwd=str(e2e.ROOT),env={"PATH":"/usr/bin:/bin","LANG":"C","LC_ALL":"C"})
   except Exception as exc:error=exc;traceback.print_exc()
   finally:
    observer.close()
@@ -139,7 +146,7 @@ sys.stdin.read(1)
   phases=[];error=None
   try:
    for name,mode in [('configure','source-read-only' if source_alias else 'create'),('compile','existing')]:
-    try:phases.append((name,observer.phase(name,[binary,str(archive),mode,str(alias_source)],time.monotonic()+30,cwd=str(e2e.ROOT),env={'PATH':'/usr/bin:/bin','LANG':'C','LC_ALL':'C'})))
+    try:phases.append((name,observer.phase(name,[binary,str(archive),mode,str(alias_source)],min(time.monotonic()+30,observer.deadline_monotonic),cwd=str(e2e.ROOT),env={"PATH":"/usr/bin:/bin","LANG":"C","LC_ALL":"C"})))
     except AssertionError as exc:
      if not source_alias:raise
      error=exc;break
